@@ -198,9 +198,9 @@ export async function runTaskCommand(
           );
         }
         const tentRole = (process.env.TENT_ROLE || "").trim();
-        const dispatchedBy = explicitBy || tentRole || "user";
-        if (asSub && (!dispatchedBy || dispatchedBy === "user")) {
-          return failUsage("--as-sub requires --by <dispatching-role> or TENT_ROLE");
+        const parentRole = explicitBy || (tentRole && tentRole !== "user" ? tentRole : "");
+        if (asSub && !parentRole) {
+          return failUsage("--as-sub requires --by <parent-role> or TENT_ROLE");
         }
         // Profile form always starts managed ACP; role form never auto-starts.
         // A2A attribution: any dispatch attributed to a role (explicit --by/--from/
@@ -210,6 +210,12 @@ export async function runTaskCommand(
         const roleAttributed =
           asSub || Boolean(explicitBy) || Boolean(tentRole && tentRole !== "user");
         const callerKind: "user" | "role" = roleAttributed ? "role" : "user";
+        const parentActor = parentRole
+          ? ({ kind: "role" as const, id: parentRole })
+          : ({ kind: "user" as const, id: "user" });
+        // Legacy dispatchedBy still sent for one-shot service mapping when parentActor omitted
+        // by older clients; CLI always sends explicit parentActor.
+        const dispatchedBy = parentRole || "user";
 
         const result = await client.taskDispatch(
           workspaceId,
@@ -219,6 +225,8 @@ export async function runTaskCommand(
                 assigneeKind: "agentProfile",
                 profileId: profileIdRaw,
                 prompt,
+                parentActor,
+                reviewer: parentActor,
                 dispatchedBy,
                 asSub: asSub || undefined,
                 deliveryPolicy: flags["delivery-policy"] || flags.deliveryPolicy,
@@ -229,6 +237,8 @@ export async function runTaskCommand(
                 boxId,
                 role,
                 prompt,
+                parentActor,
+                reviewer: parentActor,
                 dispatchedBy,
                 asSub: asSub || undefined,
                 deliveryPolicy: flags["delivery-policy"] || flags.deliveryPolicy,
@@ -567,6 +577,8 @@ function formatTaskDispatch(result: unknown): string {
     state?: string;
     relayPrompt?: string;
     asSub?: boolean;
+    parentActor?: { kind?: string; id?: string };
+    reviewer?: { kind?: string; id?: string };
     assigneeKind?: string;
     assignee?: string;
     session?:
@@ -594,6 +606,14 @@ function formatTaskDispatch(result: unknown): string {
       : undefined;
   const sessionState = sessionView?.state ? String(sessionView.state) : undefined;
   const sessionProfileId = sessionView?.profileId ? String(sessionView.profileId) : undefined;
+  const parentLabel =
+    row.parentActor?.kind && row.parentActor?.id
+      ? `${row.parentActor.kind}:${row.parentActor.id}`
+      : undefined;
+  const reviewerLabel =
+    row.reviewer?.kind && row.reviewer?.id
+      ? `${row.reviewer.kind}:${row.reviewer.id}`
+      : undefined;
 
   return (
     `✓ Dispatched via service RPC\n` +
@@ -601,6 +621,8 @@ function formatTaskDispatch(result: unknown): string {
     `state: ${row.state ?? "queued"}\n` +
     (row.assigneeKind ? `assigneeKind: ${row.assigneeKind}\n` : "") +
     (row.assignee ? `assignee: ${row.assignee}\n` : "") +
+    (parentLabel ? `parentActor: ${parentLabel}\n` : "") +
+    (reviewerLabel ? `reviewer: ${reviewerLabel}\n` : "") +
     (row.asSub ? `asSub: true\n` : "") +
     (sessionId ? `sessionId: ${sessionId}\n` : "") +
     (sessionState ? `sessionState: ${sessionState}\n` : "") +

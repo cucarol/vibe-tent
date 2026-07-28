@@ -305,7 +305,12 @@ test("external tent: dispatch task-ack lifecycle (no workspace lane)", async () 
   const peerTask = taskPath(peerDispatch);
   const peerData = parseFrontmatter(await fs.readFile(externalPath(tent, peerTask), "utf8")).data;
   assert.equal(peerData.status, "pending");
-  assert.equal(peerData.dispatchedBy, "user");
+  const peerParent = peerData.parentActor as { kind?: string; id?: string } | undefined;
+  const peerReviewer = peerData.reviewer as { kind?: string; id?: string } | undefined;
+  assert.equal(peerParent?.kind, "user");
+  assert.equal(peerParent?.id, "user");
+  assert.equal(peerReviewer?.id, "user");
+  assert.equal(peerData.dispatchedBy, undefined);
   assert.equal(peerData.handoff, undefined);
   assert.match(peerDispatch.stdout, new RegExp(`systemRoot: ${escapeRegExp(path.resolve(tent))}`));
   assert.match(

@@ -1063,6 +1063,76 @@ var init_id = __esm({
 });
 
 // src/core/task-model.ts
+function isTaskActorKind(value) {
+  return value === "user" || value === "role";
+}
+function parseTaskActorRef(value, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label} must be an object { kind, id }.`
+    );
+  }
+  const raw = value;
+  const kind = raw.kind;
+  const id = typeof raw.id === "string" ? raw.id.trim() : "";
+  if (!isTaskActorKind(kind)) {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label}.kind must be user|role; got ${String(kind)}.`
+    );
+  }
+  if (!id) {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label}.id must be a non-empty string.`
+    );
+  }
+  if (kind === "user" && id !== "user") {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label} with kind=user requires id "user"; got ${id}.`
+    );
+  }
+  if (kind === "role" && id === "user") {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label} with kind=role must name a durable role (not user).`
+    );
+  }
+  return { kind, id };
+}
+function userTaskActors() {
+  return {
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" }
+  };
+}
+function roleTaskActors(roleName) {
+  const id = roleName.trim();
+  if (!id || id === "user") {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      "Role parent/reviewer requires a durable role name (not user)."
+    );
+  }
+  return {
+    parentActor: { kind: "role", id },
+    reviewer: { kind: "role", id }
+  };
+}
+function migrateParentReviewerFromLegacy(input) {
+  const dispatcher = (input.dispatchedBy || "").trim();
+  if (dispatcher && dispatcher !== "user") {
+    return roleTaskActors(dispatcher);
+  }
+  return userTaskActors();
+}
+function mayElevateDeliveryPolicy(input) {
+  const parent = input.parentActor;
+  if (!parent || parent.kind !== "user") return false;
+  return (input.assigneeKind ?? "role") === "role";
+}
 function isDeliveryPolicy(value) {
   return value === "review" || value === "bypass" || value === "agent-decide";
 }
@@ -1133,18 +1203,12 @@ function allowedTransitions(from) {
       return [];
   }
 }
-var DEFAULT_DELIVERY_POLICY, ACTIVE_TASK_STATES, TaskLifecycleError;
+var DEFAULT_DELIVERY_POLICY, TaskLifecycleError, ACTIVE_TASK_STATES;
 var init_task_model = __esm({
   "src/core/task-model.ts"() {
     "use strict";
     init_id();
     DEFAULT_DELIVERY_POLICY = "review";
-    ACTIVE_TASK_STATES = /* @__PURE__ */ new Set([
-      "queued",
-      "running",
-      "waiting",
-      "delivered"
-    ]);
     TaskLifecycleError = class extends Error {
       constructor(code, message) {
         super(message);
@@ -1152,6 +1216,12 @@ var init_task_model = __esm({
         this.name = "TaskLifecycleError";
       }
     };
+    ACTIVE_TASK_STATES = /* @__PURE__ */ new Set([
+      "queued",
+      "running",
+      "waiting",
+      "delivered"
+    ]);
   }
 });
 
@@ -1299,13 +1369,18 @@ __export(task_exports, {
   extractTaskUserPrompt: () => extractTaskUserPrompt,
   loadTaskEnvelope: () => loadTaskEnvelope,
   loadTaskEnvelopes: () => loadTaskEnvelopes,
+  migrateParentReviewerEnvelopes: () => migrateParentReviewerEnvelopes,
   patchTaskEnvelope: () => patchTaskEnvelope,
   primaryBoxId: () => primaryBoxId,
   relayPromptForTask: () => relayPromptForTask,
+  resolveDispatchActors: () => resolveDispatchActors,
   resolveTaskPromptRoots: () => resolveTaskPromptRoots,
+  serializeTaskActorRef: () => serializeTaskActorRef,
   sessionBootstrapPromptForTask: () => sessionBootstrapPromptForTask,
   taskAsSub: () => taskAsSub,
   taskAssigneeKind: () => taskAssigneeKind,
+  taskParentIsRole: () => taskParentIsRole,
+  taskParentRoleId: () => taskParentRoleId,
   workspaceLaneOf: () => workspaceLaneOf,
   writeTaskEnvelope: () => writeTaskEnvelope
 });
@@ -1327,6 +1402,95 @@ async function loadTaskEnvelopes(fs10) {
   }
   return tasks.sort((a, b) => a.path.localeCompare(b.path));
 }
+async function migrateParentReviewerEnvelopes(fs10, clock, options) {
+  const dryRun = options?.dryRun === true;
+  const report = {
+    scanned: 0,
+    rewritten: [],
+    skipped: [],
+    warnings: []
+  };
+  if (!await fs10.exists(TEMP_DIR)) return report;
+  const paths = [];
+  for (const entry2 of await fs10.listDir(TEMP_DIR)) {
+    if (!entry2.isDir) continue;
+    if (entry2.name === AGENT_PROFILES_TEMP_DIR) {
+      const profilesRoot = join3(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
+      if (!await fs10.exists(profilesRoot)) continue;
+      for (const profileEntry of await fs10.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        const taskDir2 = join3(profilesRoot, profileEntry.name, "tasks");
+        if (!await fs10.exists(taskDir2)) continue;
+        for (const f of await fs10.listDir(taskDir2)) {
+          if (!f.isDir && f.name.endsWith(".md")) paths.push(join3(taskDir2, f.name));
+        }
+      }
+      continue;
+    }
+    const taskDir = join3(TEMP_DIR, entry2.name, "tasks");
+    if (!await fs10.exists(taskDir)) continue;
+    for (const f of await fs10.listDir(taskDir)) {
+      if (!f.isDir && f.name.endsWith(".md")) paths.push(join3(taskDir, f.name));
+    }
+  }
+  for (const path9 of paths.sort((a, b) => a.localeCompare(b))) {
+    report.scanned += 1;
+    try {
+      const raw = await fs10.readFile(path9);
+      const { data, body, keyOrder } = parseFrontmatter(raw);
+      if (data.type !== "task") {
+        report.skipped.push(path9);
+        continue;
+      }
+      const hasParent = data.parentActor !== void 0 && data.parentActor !== null;
+      const hasReviewer = data.reviewer !== void 0 && data.reviewer !== null;
+      const hasLegacyDispatcher = typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
+      if (hasParent && hasReviewer && !hasLegacyDispatcher) {
+        report.skipped.push(path9);
+        continue;
+      }
+      let parentActor;
+      let reviewer;
+      if (hasParent && hasReviewer) {
+        parentActor = parseTaskActorRef(data.parentActor, "parentActor");
+        reviewer = parseTaskActorRef(data.reviewer, "reviewer");
+      } else if (hasParent || hasReviewer) {
+        report.warnings.push(
+          `${path9}: partial parentActor/reviewer pair; refusing silent repair`
+        );
+        report.skipped.push(path9);
+        continue;
+      } else {
+        const migrated = migrateParentReviewerFromLegacy({
+          asSub: data.asSub === true,
+          dispatchedBy: typeof data.dispatchedBy === "string" ? data.dispatchedBy : void 0
+        });
+        parentActor = migrated.parentActor;
+        reviewer = migrated.reviewer;
+      }
+      const next = { ...data };
+      next.parentActor = serializeTaskActorRef(parentActor);
+      next.reviewer = serializeTaskActorRef(reviewer);
+      delete next.dispatchedBy;
+      const nextRaw = serializeFrontmatter(next, body, keyOrder);
+      if (nextRaw === raw) {
+        report.skipped.push(path9);
+        continue;
+      }
+      if (!dryRun) {
+        next.updatedAt = clock.now();
+        await fs10.writeFile(path9, serializeFrontmatter(next, body, keyOrder));
+      }
+      report.rewritten.push(path9);
+    } catch (err) {
+      report.warnings.push(
+        `${path9}: ${err instanceof Error ? err.message : String(err)}`
+      );
+      report.skipped.push(path9);
+    }
+  }
+  return report;
+}
 async function collectTaskFiles(fs10, taskDir, tasks) {
   if (!await fs10.exists(taskDir)) return;
   for (const entry2 of await fs10.listDir(taskDir)) {
@@ -1344,6 +1508,29 @@ function taskAssigneeKind(task) {
 function taskAsSub(task) {
   return task.asSub === true;
 }
+function taskParentIsRole(task) {
+  return task.parentActor?.kind === "role";
+}
+function taskParentRoleId(task) {
+  return task.parentActor?.kind === "role" ? task.parentActor.id : void 0;
+}
+function serializeTaskActorRef(actor) {
+  return { kind: actor.kind, id: actor.id };
+}
+function resolveDispatchActors(input) {
+  if (input.parentActor) {
+    const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
+    const reviewer = input.reviewer ? parseTaskActorRef(input.reviewer, "reviewer") : { ...parentActor };
+    return { parentActor, reviewer };
+  }
+  if (input.reviewer) {
+    throw new Error("task.dispatch reviewer requires parentActor");
+  }
+  return migrateParentReviewerFromLegacy({
+    asSub: input.asSub,
+    dispatchedBy: input.dispatchedBy
+  });
+}
 async function loadTaskEnvelope(fs10, path9) {
   if (!await fs10.exists(path9)) throw new Error(`Task envelope not found: ${path9}.`);
   const { data, body } = parseFrontmatter(await fs10.readFile(path9));
@@ -1352,6 +1539,7 @@ async function loadTaskEnvelope(fs10, path9) {
   }
   const legacyStatus = data.status === "taken" ? "taken" : "pending";
   const state = parseTaskState(data.state, legacyStatus);
+  const actors = resolveActorsFromDisk(data);
   const task = {
     path: path9,
     role: data.role,
@@ -1359,10 +1547,11 @@ async function loadTaskEnvelope(fs10, path9) {
     manifest: data.manifest,
     status: stateToLegacyStatus(state),
     state,
+    parentActor: actors.parentActor,
+    reviewer: actors.reviewer,
     prompt: body.trim() || void 0
   };
   if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
-  if (typeof data.dispatchedBy === "string") task.dispatchedBy = data.dispatchedBy;
   if (data.asSub === true) task.asSub = true;
   if (typeof data.workspace === "string") task.workspace = data.workspace;
   if (typeof data.worktree === "string") task.worktree = data.worktree;
@@ -1378,11 +1567,34 @@ async function loadTaskEnvelope(fs10, path9) {
   }
   if (typeof data.sessionId === "string") task.sessionId = data.sessionId;
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
+  if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
+    task.lastOutcome = data.lastOutcome;
+  }
   if (typeof data.createdAt === "string") task.createdAt = data.createdAt;
   if (typeof data.updatedAt === "string") task.updatedAt = data.updatedAt;
   const wait = parseWaitFields(data);
   if (wait) task.wait = wait;
   return task;
+}
+function resolveActorsFromDisk(data) {
+  const hasParent = data.parentActor !== void 0 && data.parentActor !== null;
+  const hasReviewer = data.reviewer !== void 0 && data.reviewer !== null;
+  if (hasParent || hasReviewer) {
+    if (!hasParent || !hasReviewer) {
+      throw new Error(
+        "Invalid task envelope: parentActor and reviewer must both be present when either is set."
+      );
+    }
+    return {
+      parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
+      reviewer: parseTaskActorRef(data.reviewer, "reviewer")
+    };
+  }
+  const legacyDispatcher = typeof data.dispatchedBy === "string" ? data.dispatchedBy : void 0;
+  return migrateParentReviewerFromLegacy({
+    asSub: data.asSub === true,
+    dispatchedBy: legacyDispatcher
+  });
 }
 function resolveTaskPromptRoots(roots) {
   if (typeof roots !== "string") {
@@ -1405,6 +1617,14 @@ function formatTaskPointers(task) {
   ];
   if (task.claims?.length) {
     lines.push(`claims: ${task.claims.join(", ")}`);
+  }
+  if (task.parentActor) {
+    lines.push(
+      `parentActor: ${task.parentActor.kind}:${task.parentActor.id}`
+    );
+  }
+  if (task.reviewer) {
+    lines.push(`reviewer: ${task.reviewer.kind}:${task.reviewer.id}`);
   }
   if (task.deliveryPolicy) {
     lines.push(`deliveryPolicy: ${task.deliveryPolicy}`);
@@ -1462,7 +1682,7 @@ function sessionBootstrapPromptForTask(task, _roots) {
 `;
   return readyLine + `${formatTaskPointers(task)}
 Service status: this task is already claimed (state=${task.state || "running"}).
-Managed path: Local Service already claimed this task; your final assistant reply is the report and will be delivered automatically (Review policy waits for independent accept; no auto-accept).
+Managed path: Local Service already claimed this task; end with an explicit outcome wire (\`outcome: delivered|blocked|needs-input\`) then the report body. Only \`delivered\` may become a ready Delivery after turn settle; blocker/question must use needs-input/blocked or ask-user \u2014 never self-accept.
 ` + (kind === "agentProfile" ? `One-shot agentProfile task: rely on task/manifest pointers only \u2014 no role init.
 ` : "") + (userPrompt ? `
 ## User Prompt
@@ -1505,6 +1725,21 @@ async function writeTaskEnvelope(fs10, clock, input) {
   const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
   const path9 = await uniqueMarkdownPath(fs10, dir, stem);
   const now = clock.now();
+  const actors = resolveDispatchActors({
+    parentActor: input.parentActor,
+    reviewer: input.reviewer,
+    dispatchedBy: input.dispatchedBy,
+    asSub: input.asSub
+  });
+  const deliveryPolicy = input.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY;
+  if (deliveryPolicy !== "review" && !mayElevateDeliveryPolicy({
+    parentActor: actors.parentActor,
+    assigneeKind
+  })) {
+    throw new Error(
+      `deliveryPolicy=${deliveryPolicy} is only legal for a durable Role's user-facing delivery; downstream Task Agent \u2192 parent must use review (parent=${actors.parentActor.kind}:${actors.parentActor.id}).`
+    );
+  }
   const data = {
     type: "task",
     id,
@@ -1512,10 +1747,11 @@ async function writeTaskEnvelope(fs10, clock, input) {
     state: "queued",
     role: input.role,
     assigneeKind,
-    dispatchedBy: input.dispatchedBy?.trim() || "user",
+    parentActor: serializeTaskActorRef(actors.parentActor),
+    reviewer: serializeTaskActorRef(actors.reviewer),
     claims: input.claims.map((claim) => claim.id),
     manifest: input.manifestPath,
-    deliveryPolicy: input.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY,
+    deliveryPolicy,
     createdAt: now,
     updatedAt: now
   };
@@ -1585,6 +1821,21 @@ async function patchTaskEnvelope(fs10, path9, patch) {
   if (patch.activeDeliveryId === null) delete data.activeDeliveryId;
   else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
   if (patch.deliveryPolicy) data.deliveryPolicy = patch.deliveryPolicy;
+  if (patch.parentActor) {
+    data.parentActor = serializeTaskActorRef(
+      parseTaskActorRef(patch.parentActor, "parentActor")
+    );
+  }
+  if (patch.reviewer) {
+    data.reviewer = serializeTaskActorRef(parseTaskActorRef(patch.reviewer, "reviewer"));
+  }
+  if (patch.clearLegacyDispatchedBy) {
+    delete data.dispatchedBy;
+  }
+  if (patch.lastOutcome === null) delete data.lastOutcome;
+  else if (patch.lastOutcome === "delivered" || patch.lastOutcome === "blocked" || patch.lastOutcome === "needs-input") {
+    data.lastOutcome = patch.lastOutcome;
+  }
   if (patch.updatedAt) data.updatedAt = patch.updatedAt;
   for (const key of ["workspace", "worktree", "branch", "targetBranch"]) {
     const value = patch[key];
@@ -3341,7 +3592,8 @@ async function taskClaim(env, taskPath, options = {}) {
     assertTransition(task.state, "claim", "running");
     const tent = await loadTent(env.fs);
     const claimedBoxes = task.claims.filter((claimId) => claimId !== "root").map((claimId) => requireBoxById(tent, claimId));
-    const allowAncestorClaimedBy = taskAsSub(task) && task.dispatchedBy && task.dispatchedBy !== "user" && task.dispatchedBy !== task.role ? task.dispatchedBy : void 0;
+    const parentRole = task.parentActor?.kind === "role" ? task.parentActor.id : void 0;
+    const allowAncestorClaimedBy = taskAsSub(task) && parentRole && parentRole !== task.role ? parentRole : void 0;
     const allTasks = await loadTaskEnvelopes(env.fs);
     const peerTasks = allTasks.filter((t) => t.path !== taskPath && t.path !== task.path);
     for (const box of claimedBoxes) {
@@ -3708,8 +3960,8 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const createdRoot = assigneeKind === "agentProfile" ? agentProfileTempRoot(assigneeLabel) : join3("temp", assigneeLabel);
   const createdRootExisted = await env.fs.exists(createdRoot);
   const asSub = options.asSub === true;
-  const dispatcher = (options.dispatchedBy || "").trim();
-  const subUnderDispatcher = asSub && Boolean(dispatcher) && dispatcher !== "user" && dispatcher !== assigneeLabel;
+  const parentRoleId = options.parentActor?.kind === "role" ? options.parentActor.id : (options.dispatchedBy || "").trim() && (options.dispatchedBy || "").trim() !== "user" ? (options.dispatchedBy || "").trim() : "";
+  const subUnderDispatcher = asSub && Boolean(parentRoleId) && parentRoleId !== assigneeLabel;
   if (claim.root) {
     const blocker = findAnyActiveTask(tasks);
     if (blocker) {
@@ -3726,7 +3978,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     const claimable = canClaim(claim.box, {
       tent,
       tasks,
-      ...subUnderDispatcher ? { allowAncestorClaimedBy: dispatcher } : {}
+      ...subUnderDispatcher ? { allowAncestorClaimedBy: parentRoleId } : {}
     });
     if (!claimable.ok) {
       throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
@@ -3759,6 +4011,8 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       manifestPath,
       userPrompt,
       workspace: options.workspace,
+      parentActor: options.parentActor,
+      reviewer: options.reviewer,
       dispatchedBy: options.dispatchedBy,
       asSub: options.asSub === true,
       deliveryPolicy: options.deliveryPolicy,
@@ -3766,8 +4020,15 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       id: taskId,
       tasksDir: assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : void 0
     });
+    const actorsForRelay = {
+      parentActor: options.parentActor,
+      reviewer: options.reviewer,
+      dispatchedBy: options.dispatchedBy,
+      asSub: options.asSub
+    };
+    const written = await loadTaskEnvelope(env.fs, taskPath).catch(() => null);
     const relayPrompt = relayPromptForTask(
-      {
+      written ?? {
         path: taskPath,
         role: assigneeLabel,
         claims: taskClaims.map((taskClaim2) => taskClaim2.id),
@@ -3775,7 +4036,8 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
         status: "pending",
         state: "queued",
         assigneeKind,
-        id: taskId
+        id: taskId,
+        ...migrateParentReviewerFromLegacy(actorsForRelay)
       },
       env.tentRoot || env.tentName
     );
@@ -6073,12 +6335,14 @@ ${usageProfile}`);
           );
         }
         const tentRole = (process.env.TENT_ROLE || "").trim();
-        const dispatchedBy = explicitBy || tentRole || "user";
-        if (asSub && (!dispatchedBy || dispatchedBy === "user")) {
-          return failUsage("--as-sub requires --by <dispatching-role> or TENT_ROLE");
+        const parentRole = explicitBy || (tentRole && tentRole !== "user" ? tentRole : "");
+        if (asSub && !parentRole) {
+          return failUsage("--as-sub requires --by <parent-role> or TENT_ROLE");
         }
         const roleAttributed = asSub || Boolean(explicitBy) || Boolean(tentRole && tentRole !== "user");
         const callerKind = roleAttributed ? "role" : "user";
+        const parentActor = parentRole ? { kind: "role", id: parentRole } : { kind: "user", id: "user" };
+        const dispatchedBy = parentRole || "user";
         const result = await client.taskDispatch(
           workspaceId,
           isProfileForm ? {
@@ -6086,6 +6350,8 @@ ${usageProfile}`);
             assigneeKind: "agentProfile",
             profileId: profileIdRaw,
             prompt,
+            parentActor,
+            reviewer: parentActor,
             dispatchedBy,
             asSub: asSub || void 0,
             deliveryPolicy: flags["delivery-policy"] || flags.deliveryPolicy,
@@ -6095,6 +6361,8 @@ ${usageProfile}`);
             boxId,
             role,
             prompt,
+            parentActor,
+            reviewer: parentActor,
             dispatchedBy,
             asSub: asSub || void 0,
             deliveryPolicy: flags["delivery-policy"] || flags.deliveryPolicy,
@@ -6384,11 +6652,15 @@ function formatTaskDispatch(result) {
   const sessionId = sessionView && (sessionView.sessionId || sessionView.id) ? String(sessionView.sessionId || sessionView.id) : void 0;
   const sessionState = sessionView?.state ? String(sessionView.state) : void 0;
   const sessionProfileId = sessionView?.profileId ? String(sessionView.profileId) : void 0;
+  const parentLabel = row.parentActor?.kind && row.parentActor?.id ? `${row.parentActor.kind}:${row.parentActor.id}` : void 0;
+  const reviewerLabel = row.reviewer?.kind && row.reviewer?.id ? `${row.reviewer.kind}:${row.reviewer.id}` : void 0;
   return `\u2713 Dispatched via service RPC
 taskPath: ${row.taskPath}
 state: ${row.state ?? "queued"}
 ` + (row.assigneeKind ? `assigneeKind: ${row.assigneeKind}
 ` : "") + (row.assignee ? `assignee: ${row.assignee}
+` : "") + (parentLabel ? `parentActor: ${parentLabel}
+` : "") + (reviewerLabel ? `reviewer: ${reviewerLabel}
 ` : "") + (row.asSub ? `asSub: true
 ` : "") + (sessionId ? `sessionId: ${sessionId}
 ` : "") + (sessionState ? `sessionState: ${sessionState}
@@ -7343,18 +7615,20 @@ Commands: new migrate import task agent agent-hooks role-init roles dispatch tas
           );
         }
         if (!dispatcher || dispatcher === "user") return fail("--as-sub requires --by <dispatching-role> or TENT_ROLE");
-        if (dispatcher === role) return fail("--as-sub dispatchedBy must not equal the assignee itself");
+        if (dispatcher === role) return fail("--as-sub parent role must not equal the assignee itself");
         const registry = await loadRolesRegistry(env.fs);
         if (!registry.roles.some((item) => item.name === dispatcher)) {
-          return fail(`--as-sub dispatchedBy role not found in registry: ${dispatcher}`);
+          return fail(`--as-sub parent role not found in registry: ${dispatcher}`);
         }
         const dispatcherWorkspace = await ensureRoleWorkspace(workspacePath, dispatcher);
         workspace = { ...workspace ?? await ensureRoleWorkspace(workspacePath, role), targetBranch: dispatcherWorkspace.branch };
       }
+      const parentActor = dispatcher && dispatcher !== "user" ? { kind: "role", id: dispatcher } : { kind: "user", id: "user" };
       const r = await dispatch(env, boxId, role, {
         userPrompt: localPrompt,
         workspace,
-        dispatchedBy: dispatcher,
+        parentActor,
+        reviewer: parentActor,
         asSub: flags["as-sub"] === "true"
       });
       console.log(`\u2713 Dispatched. Task: ${r.taskPath}

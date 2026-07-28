@@ -1500,6 +1500,76 @@ var init_skillRoleRegistry = __esm({
 });
 
 // src/core/task-model.ts
+function isTaskActorKind(value) {
+  return value === "user" || value === "role";
+}
+function parseTaskActorRef(value, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label} must be an object { kind, id }.`
+    );
+  }
+  const raw = value;
+  const kind = raw.kind;
+  const id = typeof raw.id === "string" ? raw.id.trim() : "";
+  if (!isTaskActorKind(kind)) {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label}.kind must be user|role; got ${String(kind)}.`
+    );
+  }
+  if (!id) {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label}.id must be a non-empty string.`
+    );
+  }
+  if (kind === "user" && id !== "user") {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label} with kind=user requires id "user"; got ${id}.`
+    );
+  }
+  if (kind === "role" && id === "user") {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label} with kind=role must name a durable role (not user).`
+    );
+  }
+  return { kind, id };
+}
+function userTaskActors() {
+  return {
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" }
+  };
+}
+function roleTaskActors(roleName) {
+  const id = roleName.trim();
+  if (!id || id === "user") {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      "Role parent/reviewer requires a durable role name (not user)."
+    );
+  }
+  return {
+    parentActor: { kind: "role", id },
+    reviewer: { kind: "role", id }
+  };
+}
+function migrateParentReviewerFromLegacy(input) {
+  const dispatcher = (input.dispatchedBy || "").trim();
+  if (dispatcher && dispatcher !== "user") {
+    return roleTaskActors(dispatcher);
+  }
+  return userTaskActors();
+}
+function mayElevateDeliveryPolicy(input) {
+  const parent = input.parentActor;
+  if (!parent || parent.kind !== "user") return false;
+  return (input.assigneeKind ?? "role") === "role";
+}
 function isDeliveryPolicy(value) {
   return value === "review" || value === "bypass" || value === "agent-decide";
 }
@@ -1586,27 +1656,32 @@ function assertReviewAuthority(input) {
       `task.${action} actor must not equal delivery submitter (${submitter}).`
     );
   }
-  if (input.asSub !== true) return;
-  const dispatcher = (input.dispatchedBy || "").trim();
+  const reviewer = input.reviewer;
+  if (!reviewer) {
+    throw new TaskLifecycleError(
+      "REVIEW_FORBIDDEN",
+      `task.${action} requires an explicit Task.reviewer (parent-reviewer wire).`
+    );
+  }
   if (actor === "user") return;
-  if (dispatcher && actor === dispatcher) return;
+  if (reviewer.kind === "user") {
+    throw new TaskLifecycleError(
+      "REVIEW_FORBIDDEN",
+      `task.${action} on user-reviewed task requires actor user; got ${actor}.`
+    );
+  }
+  if (actor === reviewer.id) return;
   throw new TaskLifecycleError(
     "REVIEW_FORBIDDEN",
-    `task.${action} on sub task requires actor user or dispatchedBy role` + (dispatcher ? ` (${dispatcher})` : "") + `; got ${actor}.`
+    `task.${action} requires actor user or reviewer role (${reviewer.id}); got ${actor}.`
   );
 }
-var DEFAULT_DELIVERY_POLICY, ACTIVE_TASK_STATES, TaskLifecycleError;
+var DEFAULT_DELIVERY_POLICY, TaskLifecycleError, ACTIVE_TASK_STATES;
 var init_task_model = __esm({
   "src/core/task-model.ts"() {
     "use strict";
     init_id();
     DEFAULT_DELIVERY_POLICY = "review";
-    ACTIVE_TASK_STATES = /* @__PURE__ */ new Set([
-      "queued",
-      "running",
-      "waiting",
-      "delivered"
-    ]);
     TaskLifecycleError = class extends Error {
       constructor(code, message) {
         super(message);
@@ -1614,6 +1689,12 @@ var init_task_model = __esm({
         this.name = "TaskLifecycleError";
       }
     };
+    ACTIVE_TASK_STATES = /* @__PURE__ */ new Set([
+      "queued",
+      "running",
+      "waiting",
+      "delivered"
+    ]);
   }
 });
 
@@ -1766,6 +1847,23 @@ function taskAssigneeKind(task) {
 function taskAsSub(task) {
   return task.asSub === true;
 }
+function serializeTaskActorRef(actor) {
+  return { kind: actor.kind, id: actor.id };
+}
+function resolveDispatchActors(input) {
+  if (input.parentActor) {
+    const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
+    const reviewer = input.reviewer ? parseTaskActorRef(input.reviewer, "reviewer") : { ...parentActor };
+    return { parentActor, reviewer };
+  }
+  if (input.reviewer) {
+    throw new Error("task.dispatch reviewer requires parentActor");
+  }
+  return migrateParentReviewerFromLegacy({
+    asSub: input.asSub,
+    dispatchedBy: input.dispatchedBy
+  });
+}
 async function loadTaskEnvelope(fs2, path) {
   if (!await fs2.exists(path)) throw new Error(`Task envelope not found: ${path}.`);
   const { data, body } = parseFrontmatter(await fs2.readFile(path));
@@ -1774,6 +1872,7 @@ async function loadTaskEnvelope(fs2, path) {
   }
   const legacyStatus = data.status === "taken" ? "taken" : "pending";
   const state = parseTaskState(data.state, legacyStatus);
+  const actors = resolveActorsFromDisk(data);
   const task = {
     path,
     role: data.role,
@@ -1781,10 +1880,11 @@ async function loadTaskEnvelope(fs2, path) {
     manifest: data.manifest,
     status: stateToLegacyStatus(state),
     state,
+    parentActor: actors.parentActor,
+    reviewer: actors.reviewer,
     prompt: body.trim() || void 0
   };
   if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
-  if (typeof data.dispatchedBy === "string") task.dispatchedBy = data.dispatchedBy;
   if (data.asSub === true) task.asSub = true;
   if (typeof data.workspace === "string") task.workspace = data.workspace;
   if (typeof data.worktree === "string") task.worktree = data.worktree;
@@ -1800,11 +1900,34 @@ async function loadTaskEnvelope(fs2, path) {
   }
   if (typeof data.sessionId === "string") task.sessionId = data.sessionId;
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
+  if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
+    task.lastOutcome = data.lastOutcome;
+  }
   if (typeof data.createdAt === "string") task.createdAt = data.createdAt;
   if (typeof data.updatedAt === "string") task.updatedAt = data.updatedAt;
   const wait = parseWaitFields(data);
   if (wait) task.wait = wait;
   return task;
+}
+function resolveActorsFromDisk(data) {
+  const hasParent = data.parentActor !== void 0 && data.parentActor !== null;
+  const hasReviewer = data.reviewer !== void 0 && data.reviewer !== null;
+  if (hasParent || hasReviewer) {
+    if (!hasParent || !hasReviewer) {
+      throw new Error(
+        "Invalid task envelope: parentActor and reviewer must both be present when either is set."
+      );
+    }
+    return {
+      parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
+      reviewer: parseTaskActorRef(data.reviewer, "reviewer")
+    };
+  }
+  const legacyDispatcher = typeof data.dispatchedBy === "string" ? data.dispatchedBy : void 0;
+  return migrateParentReviewerFromLegacy({
+    asSub: data.asSub === true,
+    dispatchedBy: legacyDispatcher
+  });
 }
 function resolveTaskPromptRoots(roots) {
   if (typeof roots !== "string") {
@@ -1827,6 +1950,14 @@ function formatTaskPointers(task) {
   ];
   if (task.claims?.length) {
     lines.push(`claims: ${task.claims.join(", ")}`);
+  }
+  if (task.parentActor) {
+    lines.push(
+      `parentActor: ${task.parentActor.kind}:${task.parentActor.id}`
+    );
+  }
+  if (task.reviewer) {
+    lines.push(`reviewer: ${task.reviewer.kind}:${task.reviewer.id}`);
   }
   if (task.deliveryPolicy) {
     lines.push(`deliveryPolicy: ${task.deliveryPolicy}`);
@@ -1900,6 +2031,21 @@ async function writeTaskEnvelope(fs2, clock, input) {
   const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
   const path = await uniqueMarkdownPath(fs2, dir, stem);
   const now = clock.now();
+  const actors = resolveDispatchActors({
+    parentActor: input.parentActor,
+    reviewer: input.reviewer,
+    dispatchedBy: input.dispatchedBy,
+    asSub: input.asSub
+  });
+  const deliveryPolicy = input.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY;
+  if (deliveryPolicy !== "review" && !mayElevateDeliveryPolicy({
+    parentActor: actors.parentActor,
+    assigneeKind
+  })) {
+    throw new Error(
+      `deliveryPolicy=${deliveryPolicy} is only legal for a durable Role's user-facing delivery; downstream Task Agent \u2192 parent must use review (parent=${actors.parentActor.kind}:${actors.parentActor.id}).`
+    );
+  }
   const data = {
     type: "task",
     id,
@@ -1907,10 +2053,11 @@ async function writeTaskEnvelope(fs2, clock, input) {
     state: "queued",
     role: input.role,
     assigneeKind,
-    dispatchedBy: input.dispatchedBy?.trim() || "user",
+    parentActor: serializeTaskActorRef(actors.parentActor),
+    reviewer: serializeTaskActorRef(actors.reviewer),
     claims: input.claims.map((claim) => claim.id),
     manifest: input.manifestPath,
-    deliveryPolicy: input.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY,
+    deliveryPolicy,
     createdAt: now,
     updatedAt: now
   };
@@ -1980,6 +2127,21 @@ async function patchTaskEnvelope(fs2, path, patch) {
   if (patch.activeDeliveryId === null) delete data.activeDeliveryId;
   else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
   if (patch.deliveryPolicy) data.deliveryPolicy = patch.deliveryPolicy;
+  if (patch.parentActor) {
+    data.parentActor = serializeTaskActorRef(
+      parseTaskActorRef(patch.parentActor, "parentActor")
+    );
+  }
+  if (patch.reviewer) {
+    data.reviewer = serializeTaskActorRef(parseTaskActorRef(patch.reviewer, "reviewer"));
+  }
+  if (patch.clearLegacyDispatchedBy) {
+    delete data.dispatchedBy;
+  }
+  if (patch.lastOutcome === null) delete data.lastOutcome;
+  else if (patch.lastOutcome === "delivered" || patch.lastOutcome === "blocked" || patch.lastOutcome === "needs-input") {
+    data.lastOutcome = patch.lastOutcome;
+  }
   if (patch.updatedAt) data.updatedAt = patch.updatedAt;
   for (const key of ["workspace", "worktree", "branch", "targetBranch"]) {
     const value = patch[key];
@@ -2447,7 +2609,8 @@ async function taskClaim(env, taskPath, options = {}) {
     assertTransition(task.state, "claim", "running");
     const tent = await loadTent(env.fs);
     const claimedBoxes = task.claims.filter((claimId) => claimId !== "root").map((claimId) => requireBoxById(tent, claimId));
-    const allowAncestorClaimedBy = taskAsSub(task) && task.dispatchedBy && task.dispatchedBy !== "user" && task.dispatchedBy !== task.role ? task.dispatchedBy : void 0;
+    const parentRole = task.parentActor?.kind === "role" ? task.parentActor.id : void 0;
+    const allowAncestorClaimedBy = taskAsSub(task) && parentRole && parentRole !== task.role ? parentRole : void 0;
     const allTasks = await loadTaskEnvelopes(env.fs);
     const peerTasks = allTasks.filter((t) => t.path !== taskPath && t.path !== task.path);
     for (const box of claimedBoxes) {
@@ -2476,8 +2639,7 @@ async function prepareTaskAccept(env, taskPath, options) {
     assertReviewAuthority({
       actor: options.actor,
       submitterRole: delivery.role,
-      asSub: taskAsSub(task),
-      dispatchedBy: task.dispatchedBy,
+      reviewer: task.reviewer,
       action: "accept"
     });
     if (options.outputNodeIds && options.outputNodeIds.length > 0) {
@@ -2506,8 +2668,7 @@ async function finalizeTaskAccept(env, taskPath, options, prepared) {
     assertReviewAuthority({
       actor: options.actor,
       submitterRole: delivery.role,
-      asSub: taskAsSub(task),
-      dispatchedBy: task.dispatchedBy,
+      reviewer: task.reviewer,
       action: "accept"
     });
     const deliveryRawBefore = await env.fs.readFile(delivery.path);
@@ -2601,8 +2762,7 @@ async function taskReject(env, taskPath, options) {
     assertReviewAuthority({
       actor: options.actor,
       submitterRole: delivery.role,
-      asSub: taskAsSub(task),
-      dispatchedBy: task.dispatchedBy,
+      reviewer: task.reviewer,
       action: "reject"
     });
     delivery.status = "rejected";
@@ -3729,8 +3889,8 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const createdRoot = assigneeKind === "agentProfile" ? agentProfileTempRoot(assigneeLabel) : join2("temp", assigneeLabel);
   const createdRootExisted = await env.fs.exists(createdRoot);
   const asSub = options.asSub === true;
-  const dispatcher = (options.dispatchedBy || "").trim();
-  const subUnderDispatcher = asSub && Boolean(dispatcher) && dispatcher !== "user" && dispatcher !== assigneeLabel;
+  const parentRoleId = options.parentActor?.kind === "role" ? options.parentActor.id : (options.dispatchedBy || "").trim() && (options.dispatchedBy || "").trim() !== "user" ? (options.dispatchedBy || "").trim() : "";
+  const subUnderDispatcher = asSub && Boolean(parentRoleId) && parentRoleId !== assigneeLabel;
   if (claim.root) {
     const blocker = findAnyActiveTask(tasks);
     if (blocker) {
@@ -3747,7 +3907,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     const claimable = canClaim(claim.box, {
       tent,
       tasks,
-      ...subUnderDispatcher ? { allowAncestorClaimedBy: dispatcher } : {}
+      ...subUnderDispatcher ? { allowAncestorClaimedBy: parentRoleId } : {}
     });
     if (!claimable.ok) {
       throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
@@ -3780,6 +3940,8 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       manifestPath,
       userPrompt,
       workspace: options.workspace,
+      parentActor: options.parentActor,
+      reviewer: options.reviewer,
       dispatchedBy: options.dispatchedBy,
       asSub: options.asSub === true,
       deliveryPolicy: options.deliveryPolicy,
@@ -3787,8 +3949,15 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       id: taskId,
       tasksDir: assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : void 0
     });
+    const actorsForRelay = {
+      parentActor: options.parentActor,
+      reviewer: options.reviewer,
+      dispatchedBy: options.dispatchedBy,
+      asSub: options.asSub
+    };
+    const written = await loadTaskEnvelope(env.fs, taskPath).catch(() => null);
     const relayPrompt = relayPromptForTask(
-      {
+      written ?? {
         path: taskPath,
         role: assigneeLabel,
         claims: taskClaims.map((taskClaim2) => taskClaim2.id),
@@ -3796,7 +3965,8 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
         status: "pending",
         state: "queued",
         assigneeKind,
-        id: taskId
+        id: taskId,
+        ...migrateParentReviewerFromLegacy(actorsForRelay)
       },
       env.tentRoot || env.tentName
     );

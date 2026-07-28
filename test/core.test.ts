@@ -430,7 +430,9 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.equal(tasks[0].manifest, "temp/analyst/manifest.yml");
   assert.equal(tasks[0].status, "pending");
   assert.equal(tasks[0].state, "queued");
-  assert.equal(tasks[0].dispatchedBy, "user");
+  assert.equal(tasks[0].parentActor?.kind, "user");
+  assert.equal(tasks[0].parentActor?.id, "user");
+  assert.equal(tasks[0].reviewer?.id, "user");
   assert.equal(tasks[0].deliveryPolicy, "review");
   assert.ok(tasks[0].id?.startsWith("tk-"));
   const relay = relayPromptForTask(tasks[1], dir);
@@ -466,10 +468,11 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   );
   assert.match(bootstrap, /already claimed/i);
   assert.match(bootstrap, /managed ACP session/i);
-  assert.match(bootstrap, /delivered automatically/i);
+  assert.match(bootstrap, /outcome:\s*delivered\|blocked\|needs-input|explicit outcome/i);
   assert.match(bootstrap, /Task envelope:/);
   assert.match(bootstrap, /Manifest:/);
   assert.match(bootstrap, /claims:/);
+  assert.match(bootstrap, /parentActor:|reviewer:/);
   assert.match(bootstrap, /deliveryPolicy:/);
   assert.match(bootstrap, /## User Prompt/);
   // Path tutorial is owned by Context Card, not repeated in session body.

@@ -97,7 +97,7 @@ function mockAcpProfile(
     env: {
       MOCK_ACP_LOG: opts.logPath,
       MOCK_ACP_KEEP_ALIVE: opts.keepAlive === false ? "0" : "1",
-      MOCK_ACP_PROMPT_TEXT: opts.promptText ?? "MANAGED_FINAL_REPORT",
+      MOCK_ACP_PROMPT_TEXT: opts.promptText ?? "outcome: delivered\n\nMANAGED_FINAL_REPORT",
       ...(opts.promptMode && opts.promptMode !== "ok"
         ? { MOCK_ACP_PROMPT_MODE: opts.promptMode }
         : {}),
@@ -1016,7 +1016,7 @@ test("B5: startSession bootstrap is managed (Context Card + user prompt); relay 
     assert.match(bootstrap!, /managed ACP session|managed session bootstrap/i);
     assert.match(bootstrap!, /## User Prompt/);
     assert.match(bootstrap!, /bootstrap path semantics/);
-    assert.match(bootstrap!, /delivered automatically|auto/i);
+    assert.match(bootstrap!, /outcome:\s*delivered\|blocked\|needs-input|explicit outcome|delivered/i);
     assert.match(bootstrap!, /Task envelope:/);
     assert.match(bootstrap!, /Manifest:/);
     assert.match(bootstrap!, /claims:/);
@@ -1043,7 +1043,8 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual deli
   const ws = await makeWorkspace();
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-macp-"));
   const logPath = path.join(dataDir, "mock-acp-log.json");
-  const reportText = "MANAGED_FINAL_REPORT_OK";
+  const reportBody = "MANAGED_FINAL_REPORT_OK";
+  const reportText = `outcome: delivered\n\n${reportBody}`;
 
   await withService(
     async (svc) => {
@@ -1084,7 +1085,7 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual deli
       const deliveries = (list.result as { deliveries: Array<{ summary: string; status: string }> })
         .deliveries;
       assert.equal(deliveries.length, 1);
-      assert.equal(deliveries[0].summary, reportText);
+      assert.equal(deliveries[0].summary, reportBody);
       assert.equal(deliveries[0].status, "ready");
 
       // User prompt must have entered ACP session/prompt text.
@@ -1093,7 +1094,14 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual deli
       assert.ok(log.prompts.some((p) => p.includes(userPrompt)));
       assert.ok(log.prompts.some((p) => /contextCard|Tent contextCard/i.test(p)));
       assert.ok(log.prompts.some((p) => /already claimed/i.test(p)));
-      assert.ok(log.prompts.some((p) => /delivered automatically/i.test(p)));
+      assert.ok(
+        log.prompts.some(
+          (p) =>
+            /outcome:\s*delivered\|blocked\|needs-input|explicit outcome|delivered automatically/i.test(
+              p
+            )
+        )
+      );
       assert.ok(
         log.prompts.every((p) => !/tent task deliver /.test(p)),
         "managed bootstrap must not instruct tent task deliver"
@@ -1107,7 +1115,7 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual deli
       mapRuntimeEventToService(svc.ctx, {
         type: "session.prompt_complete",
         sessionId,
-        assistantText: "SECOND_SHOULD_BE_IGNORED",
+        assistantText: "outcome: delivered\n\nSECOND_SHOULD_BE_IGNORED",
         stopReason: "end_turn",
       });
       await new Promise((r) => setTimeout(r, 200));
@@ -1116,7 +1124,7 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual deli
         list2.result as { deliveries: Array<{ summary: string }> }
       ).deliveries;
       assert.equal(deliveries2.length, 1);
-      assert.equal(deliveries2[0].summary, reportText);
+      assert.equal(deliveries2[0].summary, reportBody);
 
       // Still pending user review — not auto-accepted.
       const g2 = await rpc(svc, "task.get", { workspaceId, taskPath });
@@ -1139,7 +1147,8 @@ test("P0: Delivery only after turn seal — post-response tail write cannot land
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-seal-"));
   const logPath = path.join(dataDir, "mock-acp-log.json");
   const tailMarker = path.join(ws, "POST_RESPONSE_TAIL_MARKER.txt");
-  const reportText = "SEAL_BEFORE_DELIVER_REPORT";
+  const reportBody = "SEAL_BEFORE_DELIVER_REPORT";
+  const reportText = `outcome: delivered\n\n${reportBody}`;
 
   await withService(
     async (svc) => {
@@ -1213,7 +1222,7 @@ test("P0: Delivery only after turn seal — post-response tail write cannot land
         list.result as { deliveries: Array<{ summary: string; status: string }> }
       ).deliveries;
       assert.equal(deliveries.length, 1);
-      assert.equal(deliveries[0].summary, reportText);
+      assert.equal(deliveries[0].summary, reportBody);
       assert.equal(deliveries[0].status, "ready");
     },
     {
@@ -1241,7 +1250,8 @@ test("P0: public task.deliver/requestReview refuse while managed turnBusy; idle 
   // Long enough that manual deliver probes run while bootstrap turn is open;
   // process stays alive (keepAlive) so turnBusy is the authority signal.
   const promptDelayMs = 4_000;
-  const reportText = "BUSY_TURN_AUTO_REPORT";
+  const reportBody = "BUSY_TURN_AUTO_REPORT";
+  const reportText = `outcome: delivered\n\n${reportBody}`;
 
   await withService(
     async (svc) => {
@@ -1391,7 +1401,7 @@ test("P0: public task.deliver/requestReview refuse while managed turnBusy; idle 
       ).deliveries;
       assert.equal(deliveries.length, 1);
       assert.equal(deliveries[0].status, "ready");
-      assert.equal(deliveries[0].summary, reportText);
+      assert.equal(deliveries[0].summary, reportBody);
     },
     {
       profiles: [
@@ -1629,7 +1639,7 @@ test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review 
         assert.equal(deliveries[0].review, undefined);
       },
       {
-        profiles: [mockAcpProfile("mock-acp-bypass", { logPath, promptText: "BYPASS_OK" })],
+        profiles: [mockAcpProfile("mock-acp-bypass", { logPath, promptText: "outcome: delivered\n\nBYPASS_OK" })],
       }
     );
   }
@@ -1689,7 +1699,7 @@ test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review 
         assert.equal(deliveries[0].status, "ready");
       },
       {
-        profiles: [mockAcpProfile("mock-acp-ad", { logPath, promptText: "AD_OK" })],
+        profiles: [mockAcpProfile("mock-acp-ad", { logPath, promptText: "outcome: delivered\n\nAD_OK" })],
       }
     );
   }
@@ -1994,7 +2004,7 @@ test("B5 tool approval: ask → pending → approve once → running → deliver
       profiles: [
         mockAcpProfile("mock-acp-tool-ask", {
           logPath,
-          promptText: "TOOL_APPROVED_REPORT",
+          promptText: "outcome: delivered\n\nTOOL_APPROVED_REPORT",
           permissionPolicy: "ask",
           requestPermission: true,
           permissionTimeoutMs: 30_000,
@@ -2146,7 +2156,7 @@ test("B5 tool approval: user deny cancels tool (ACP cancelled)", async () => {
       profiles: [
         mockAcpProfile("mock-acp-tool-deny", {
           logPath,
-          promptText: "AFTER_DENY",
+          promptText: "outcome: delivered\n\nAFTER_DENY",
           permissionPolicy: "ask",
           requestPermission: true,
           permissionTimeoutMs: 30_000,
@@ -2230,7 +2240,7 @@ test("B5 tool approval: ask timeout expires pending; late approve fails", async 
       profiles: [
         mockAcpProfile("mock-acp-tool-timeout", {
           logPath,
-          promptText: "AFTER_TIMEOUT",
+          promptText: "outcome: delivered\n\nAFTER_TIMEOUT",
           permissionPolicy: "ask",
           requestPermission: true,
           permissionTimeoutMs,
@@ -3200,7 +3210,7 @@ test("P0 fix: managed auto-deliver integrate failure keeps running; session diag
       workspaceId,
       taskPath,
       sessionId,
-      assistantText: "MANAGED_INTEGRATE_FAIL_REPORT",
+      assistantText: "outcome: delivered\n\nMANAGED_INTEGRATE_FAIL_REPORT",
       commits: [sourceRef],
     });
 
@@ -3285,7 +3295,7 @@ test("P0 fix: managed auto-deliver collects role-lane commit; manual accept inte
       workspaceId,
       taskPath,
       sessionId,
-      assistantText: "COLLECTED_MANUAL_REPORT",
+      assistantText: "outcome: delivered\n\nCOLLECTED_MANUAL_REPORT",
     });
 
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
@@ -3356,7 +3366,7 @@ test("P0 fix: managed auto-deliver bypass integrates auto-collected commit", asy
       workspaceId,
       taskPath,
       sessionId,
-      assistantText: "COLLECTED_BYPASS_REPORT",
+      assistantText: "outcome: delivered\n\nCOLLECTED_BYPASS_REPORT",
     });
 
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
@@ -3408,7 +3418,7 @@ test("P0 fix: managed auto-deliver zero-commit / non-Git remains legal", async (
       workspaceId,
       taskPath,
       sessionId,
-      assistantText: "ZERO_COMMIT_REPORT",
+      assistantText: "outcome: delivered\n\nZERO_COMMIT_REPORT",
     });
 
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
@@ -3450,7 +3460,7 @@ test("P0 fix: managed auto-deliver zero-commit / non-Git remains legal", async (
       workspaceId,
       taskPath,
       sessionId,
-      assistantText: "GIT_ZERO_COMMIT_REPORT",
+      assistantText: "outcome: delivered\n\nGIT_ZERO_COMMIT_REPORT",
     });
 
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
@@ -3519,7 +3529,7 @@ test("P0: dirty task worktree refuses managed auto-deliver and public task.deliv
       workspaceId,
       taskPath,
       sessionId,
-      assistantText: "DIRTY_SHOULD_NOT_DELIVER",
+      assistantText: "outcome: delivered\n\nDIRTY_SHOULD_NOT_DELIVER",
     });
     unsub();
 
@@ -3586,7 +3596,7 @@ test("P0: dirty task worktree refuses managed auto-deliver and public task.deliv
       workspaceId,
       taskPath,
       sessionId,
-      assistantText: "CLEAN_AFTER_COMMIT_OK",
+      assistantText: "outcome: delivered\n\nCLEAN_AFTER_COMMIT_OK",
     });
 
     const after = await rpc(svc, "task.get", { workspaceId, taskPath });
@@ -3660,7 +3670,7 @@ test("P0 fix: managed auto-collect excludes pre-session role commits; includes a
       workspaceId,
       taskPath,
       sessionId,
-      assistantText: "SCOPED_COLLECT",
+      assistantText: "outcome: delivered\n\nSCOPED_COLLECT",
     });
 
     const list = await rpc(svc, "delivery.list", { workspaceId });
@@ -3717,7 +3727,7 @@ test("P0 fix: roleBranchBase is stable across startSession and reject-resume", a
       workspaceId,
       taskPath,
       sessionId,
-      assistantText: "NEED_REWORK",
+      assistantText: "outcome: delivered\n\nNEED_REWORK",
     });
     assert.equal(
       (await loadTaskEnvelope(mount.env.fs, taskPath)).roleBranchBase,
@@ -3783,7 +3793,7 @@ test("reject-resume restores live managed session for durable role (no false-run
       workspaceId,
       taskPath,
       sessionId,
-      assistantText: "FIRST_DELIVERY",
+      assistantText: "outcome: delivered\n\nFIRST_DELIVERY",
     });
 
     const afterDeliver = await loadTaskEnvelope(
@@ -3836,7 +3846,7 @@ test("reject-resume restores live managed session for durable role (no false-run
       workspaceId,
       taskPath,
       sessionId: body.session!.sessionId,
-      assistantText: "REWORK_DELIVERY",
+      assistantText: "outcome: delivered\n\nREWORK_DELIVERY",
     });
     const afterRework = await loadTaskEnvelope(
       svc.ctx.host.require(workspaceId).env.fs,
@@ -3879,7 +3889,7 @@ test("reject-resume restores live managed session for agentProfile tasks", async
       workspaceId,
       taskPath,
       sessionId,
-      assistantText: "PROFILE_FIRST",
+      assistantText: "outcome: delivered\n\nPROFILE_FIRST",
     });
     assert.equal(
       (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath)).state,
@@ -4006,7 +4016,7 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
   );
   const profile = mockAcpProfile("mock-reject-resume", {
     logPath,
-    promptText: "NATIVE_REJECT_FIRST",
+    promptText: "outcome: delivered\n\nNATIVE_REJECT_FIRST",
     keepAlive: true,
     loadSession: true,
   });
@@ -4037,7 +4047,7 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
         workspaceId,
         taskPath,
         sessionId,
-        assistantText: "NATIVE_REJECT_FIRST",
+        assistantText: "outcome: delivered\n\nNATIVE_REJECT_FIRST",
       });
       assert.equal(
         (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath)).state,
@@ -4160,8 +4170,8 @@ test("reject-resume native load failure falls back to new session (contextRestor
   );
   const profile = mockAcpProfile("mock-reject-fail-load", {
     logPath,
-    promptText: "FIRST_DELIVERY_BEFORE_NATIVE_FAIL",
-    followupText: "REWORK_AFTER_NATIVE_FAIL_FALLBACK",
+    promptText: "outcome: delivered\n\nFIRST_DELIVERY_BEFORE_NATIVE_FAIL",
+    followupText: "outcome: delivered\n\nREWORK_AFTER_NATIVE_FAIL_FALLBACK",
     keepAlive: true,
     loadSession: true,
     failLoad: true,
@@ -4194,7 +4204,7 @@ test("reject-resume native load failure falls back to new session (contextRestor
         workspaceId,
         taskPath,
         sessionId: priorSessionId,
-        assistantText: "FIRST_DELIVERY_BEFORE_NATIVE_FAIL",
+        assistantText: "outcome: delivered\n\nFIRST_DELIVERY_BEFORE_NATIVE_FAIL",
       });
       await svc.runtime.stopSession(priorSessionId, "user");
       assert.equal((await svc.runtime.probe(priorSessionId)).resumeCapable, true);
@@ -4365,8 +4375,8 @@ test("late session.failed on prior after native-fallback keeps rework + review-f
   );
   const profile = mockAcpProfile("mock-rr-late-fail", {
     logPath,
-    promptText: "LATE_FAIL_PRIOR",
-    followupText: "REWORK_DESPITE_LATE_PRIOR_FAIL",
+    promptText: "outcome: delivered\n\nLATE_FAIL_PRIOR",
+    followupText: "outcome: delivered\n\nREWORK_DESPITE_LATE_PRIOR_FAIL",
     keepAlive: true,
     loadSession: true,
     failLoad: true,
@@ -4398,7 +4408,7 @@ test("late session.failed on prior after native-fallback keeps rework + review-f
         workspaceId,
         taskPath,
         sessionId: priorSessionId,
-        assistantText: "LATE_FAIL_PRIOR",
+        assistantText: "outcome: delivered\n\nLATE_FAIL_PRIOR",
       });
       await svc.runtime.stopSession(priorSessionId, "user");
       assert.equal((await svc.runtime.probe(priorSessionId)).resumeCapable, true);
@@ -4499,7 +4509,7 @@ test("late session.failed after managed Delivery is diagnostic only", async () =
       workspaceId,
       taskPath,
       sessionId,
-      assistantText: "CLEAN_DELIVERY_REPORT",
+      assistantText: "outcome: delivered\n\nCLEAN_DELIVERY_REPORT",
     });
 
     const delivered = await rpc(svc, "task.get", { workspaceId, taskPath });
@@ -5012,7 +5022,7 @@ test("P0 explicit replacement session resume after recoverable park", async () =
       workspaceId,
       taskPath,
       sessionId: oldSessionId,
-      assistantText: "draft preserved across park",
+      assistantText: "outcome: delivered\n\ndraft preserved across park",
     });
 
     await mapRuntimeEventToService(svc.ctx, {
@@ -5036,7 +5046,7 @@ test("P0 explicit replacement session resume after recoverable park", async () =
 
     const draft = await svc.ctx.managedDeliveryReportDrafts.get(workspaceId, taskPath);
     assert.ok(draft, "report draft preserved");
-    assert.equal(draft!.assistantText, "draft preserved across park");
+    assert.equal(draft!.assistantText, "outcome: delivered\n\ndraft preserved across park");
 
     const inputBefore = await svc.ctx.taskInputs.get(inputId, workspaceId, taskPath);
     assert.ok(inputBefore);
@@ -5081,7 +5091,7 @@ test("P0 explicit replacement session resume after recoverable park", async () =
 
     const draftAfter = await svc.ctx.managedDeliveryReportDrafts.get(workspaceId, taskPath);
     assert.ok(draftAfter, "report draft still present until successful deliver");
-    assert.equal(draftAfter!.assistantText, "draft preserved across park");
+    assert.equal(draftAfter!.assistantText, "outcome: delivered\n\ndraft preserved across park");
 
     assertOccupationHeld(await boxCollabProjection(svc, workspaceId, boxId), {
       label: "after replacement session",
@@ -5258,7 +5268,7 @@ test("P0 UserAsk reply after park targets replacement Session, not dead origin",
         mockAcpProfile("mock-ua-park-reply", {
           logPath,
           promptText: "BOOTSTRAP_PLACEHOLDER",
-          followupText: "AFTER_USER_ANSWER_ON_REPLACEMENT",
+          followupText: "outcome: delivered\n\nAFTER_USER_ANSWER_ON_REPLACEMENT",
           promptDelayMs: 2_500,
           keepAlive: true,
         }),
@@ -5281,8 +5291,8 @@ test("reject-resume allocates new session only when prior is not resumeCapable",
   // No loadSession: after stop, probe.resumeCapable is false → honest new-session path.
   const profile = mockAcpProfile("mock-reject-not-capable", {
     logPath,
-    promptText: "NOT_CAPABLE_FIRST",
-    followupText: "REWORK_AFTER_NOT_CAPABLE",
+    promptText: "outcome: delivered\n\nNOT_CAPABLE_FIRST",
+    followupText: "outcome: delivered\n\nREWORK_AFTER_NOT_CAPABLE",
     keepAlive: true,
   });
 
@@ -5312,7 +5322,7 @@ test("reject-resume allocates new session only when prior is not resumeCapable",
         workspaceId,
         taskPath,
         sessionId,
-        assistantText: "NOT_CAPABLE_FIRST",
+        assistantText: "outcome: delivered\n\nNOT_CAPABLE_FIRST",
       });
       await svc.runtime.stopSession(sessionId, "user");
       // Strip any residual token so probe.resumeCapable is false (honest new-session).
@@ -5442,8 +5452,8 @@ test("reject-resume recovery orientation rebuilds after simulated restart/retry"
   );
   const profile = mockAcpProfile("mock-rr-restart", {
     logPath,
-    promptText: "RESTART_REBUILD_FIRST",
-    followupText: "REWORK_AFTER_RESTART_RETRY",
+    promptText: "outcome: delivered\n\nRESTART_REBUILD_FIRST",
+    followupText: "outcome: delivered\n\nREWORK_AFTER_RESTART_RETRY",
     keepAlive: true,
   });
 
@@ -5473,7 +5483,7 @@ test("reject-resume recovery orientation rebuilds after simulated restart/retry"
         workspaceId,
         taskPath,
         sessionId: priorSessionId,
-        assistantText: "RESTART_REBUILD_FIRST",
+        assistantText: "outcome: delivered\n\nRESTART_REBUILD_FIRST",
       });
       await svc.runtime.stopSession(priorSessionId, "user");
       await svc.runtime.registry.update(priorSessionId, {
@@ -5613,7 +5623,7 @@ test("reject-resume post-start context failure stops orphan Session and parks oc
       workspaceId,
       taskPath,
       sessionId: priorSessionId,
-      assistantText: "POST_START_FAIL_FIRST",
+      assistantText: "outcome: delivered\n\nPOST_START_FAIL_FIRST",
     });
     await svc.runtime.stopSession(priorSessionId, "user");
     await svc.runtime.registry.update(priorSessionId, {
@@ -5737,7 +5747,7 @@ test("reject-resume fails loud and parks waiting when session cannot be restored
       workspaceId,
       taskPath,
       sessionId,
-      assistantText: "WILL_REJECT",
+      assistantText: "outcome: delivered\n\nWILL_REJECT",
     });
 
     // Destroy registry identity so restore cannot resume or re-bind profile.
@@ -5813,7 +5823,7 @@ test("P0 fix: recorded workspace lane collection errors stay retryable", async (
       workspaceId,
       taskPath,
       sessionId,
-      assistantText: "MUST_NOT_DELIVER_AS_ZERO_COMMITS",
+      assistantText: "outcome: delivered\n\nMUST_NOT_DELIVER_AS_ZERO_COMMITS",
     });
 
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
@@ -5899,7 +5909,7 @@ test("P0 fix: successful managed delivery frees same role for next task", async 
       workspaceId,
       taskPath: taskPath1,
       sessionId: sessionId1,
-      assistantText: "FIRST_DONE",
+      assistantText: "outcome: delivered\n\nFIRST_DONE",
     });
 
     const rec1 = await svc.runtime.registry.read(sessionId1);
@@ -5929,7 +5939,7 @@ test("P0 fix: successful managed delivery frees same role for next task", async 
       workspaceId,
       taskPath: taskPath2,
       sessionId: sessionId2,
-      assistantText: "SECOND_DONE",
+      assistantText: "outcome: delivered\n\nSECOND_DONE",
     });
     const listed = await rpc(svc, "delivery.list", { workspaceId });
     const secondDelivery = (
@@ -6770,7 +6780,7 @@ test("task.startSession reuses old sessionId via native load when resumeCapable 
   );
   const profile = mockAcpProfile("mock-acp-resume", {
     logPath,
-    promptText: "RESUME_REUSE_OK",
+    promptText: "outcome: delivered\n\nRESUME_REUSE_OK",
     keepAlive: true,
   });
   profile.env = {
@@ -6909,7 +6919,7 @@ test("durable role reuses one provider session across delivered tasks", async ()
   );
   const profile = mockAcpProfile("mock-acp-role-session", {
     logPath,
-    promptText: "ROLE_SESSION_DONE",
+    promptText: "outcome: delivered\n\nROLE_SESSION_DONE",
     keepAlive: true,
   });
   profile.env = {
@@ -7104,7 +7114,7 @@ test("task.startSession does not resume a provider session bound to another work
   );
   const profile = mockAcpProfile("mock-acp-boundary", {
     logPath,
-    promptText: "NEW_SESSION_OK",
+    promptText: "outcome: delivered\n\nNEW_SESSION_OK",
     keepAlive: true,
   });
   profile.env = { ...profile.env, MOCK_ACP_LOAD_SESSION: "1" };

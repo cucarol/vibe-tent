@@ -37,7 +37,7 @@ import {
   TaskEnvelope,
   writeTaskEnvelope,
 } from "./task.js";
-import { makeTaskId } from "./task-model.js";
+import { makeTaskId, migrateParentReviewerFromLegacy } from "./task-model.js";
 import type { AssigneeKind, DeliveryPolicy } from "./task-model.js";
 import {
   agentProfileManifestPath,
@@ -75,10 +75,21 @@ export interface DispatchResult {
 export interface DispatchOptions {
   userPrompt?: string;
   workspace?: RoleWorkspaceContract;
+  /**
+   * Explicit parent actor (V0.2). Prefer this over legacy dispatchedBy.
+   * Role-dispatched Task Agent → parent Role; user-direct → user.
+   */
+  parentActor?: import("./task-model.js").TaskActorRef;
+  /** Explicit reviewer; defaults to parentActor. */
+  reviewer?: import("./task-model.js").TaskActorRef;
+  /**
+   * @deprecated Dispatch convenience — mapped once to parentActor/reviewer.
+   * Not dual-written on new envelopes.
+   */
   dispatchedBy?: string;
   /**
-   * Sub-dispatch flag. Missing/false = peer. When true, requires real Git lane
-   * and a durable dispatcher role in dispatchedBy (validated by service/CLI).
+   * Sub-dispatch Git lane flag. Missing/false = peer. When true, requires real
+   * Git lane and a durable parent Role (validated by service/CLI).
    */
   asSub?: boolean;
   /** Delivery policy for this task (default review). */
@@ -148,13 +159,19 @@ async function dispatchUnlocked(
       : join("temp", assigneeLabel);
   const createdRootExisted = await env.fs.exists(createdRoot);
 
-  // asSub: dispatcher may hand a free child under its own active task to a helper.
+  // asSub Git lane: parent Role may hand a free child under its own active task.
   // Peer dispatch forbids any active-task overlap (including ancestor claims).
   // Stale frontmatter owner is NOT a mutex — only active Task envelopes are.
+  // Parent/reviewer authority is explicit; asSub only gates Git lane + occupation.
   const asSub = options.asSub === true;
-  const dispatcher = (options.dispatchedBy || "").trim();
+  const parentRoleId =
+    options.parentActor?.kind === "role"
+      ? options.parentActor.id
+      : (options.dispatchedBy || "").trim() && (options.dispatchedBy || "").trim() !== "user"
+        ? (options.dispatchedBy || "").trim()
+        : "";
   const subUnderDispatcher =
-    asSub && Boolean(dispatcher) && dispatcher !== "user" && dispatcher !== assigneeLabel;
+    asSub && Boolean(parentRoleId) && parentRoleId !== assigneeLabel;
 
   if (claim.root) {
     // Root occupies the whole tent. Sole oracle: any active Task envelope
@@ -177,7 +194,7 @@ async function dispatchUnlocked(
     const claimable = canClaim(claim.box, {
       tent,
       tasks,
-      ...(subUnderDispatcher ? { allowAncestorClaimedBy: dispatcher } : {}),
+      ...(subUnderDispatcher ? { allowAncestorClaimedBy: parentRoleId } : {}),
     });
     if (!claimable.ok) {
       throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
@@ -230,6 +247,8 @@ async function dispatchUnlocked(
       manifestPath,
       userPrompt,
       workspace: options.workspace,
+      parentActor: options.parentActor,
+      reviewer: options.reviewer,
       dispatchedBy: options.dispatchedBy,
       asSub: options.asSub === true,
       deliveryPolicy: options.deliveryPolicy,
@@ -239,8 +258,16 @@ async function dispatchUnlocked(
         assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : undefined,
     });
 
+    const actorsForRelay = {
+      parentActor: options.parentActor,
+      reviewer: options.reviewer,
+      dispatchedBy: options.dispatchedBy,
+      asSub: options.asSub,
+    };
+    // Load the just-written envelope for an honest relay projection (parent/reviewer included).
+    const written = await loadTaskEnvelope(env.fs, taskPath).catch(() => null);
     const relayPrompt = relayPromptForTask(
-      {
+      written ?? {
         path: taskPath,
         role: assigneeLabel,
         claims: taskClaims.map((taskClaim) => taskClaim.id),
@@ -249,6 +276,7 @@ async function dispatchUnlocked(
         state: "queued",
         assigneeKind,
         id: taskId,
+        ...migrateParentReviewerFromLegacy(actorsForRelay),
       },
       env.tentRoot || env.tentName
     );

@@ -699,10 +699,20 @@ export class ServiceClient {
       /** Defaults to role. agentProfile requires profileId and does not register a role. */
       assigneeKind?: "role" | "agentProfile";
       prompt: string;
+      /**
+       * Explicit parent actor (V0.2). Prefer over dispatchedBy.
+       * Role-dispatched Task Agent → { kind:"role", id:<role> }; user-direct → { kind:"user", id:"user" }.
+       */
+      parentActor?: { kind: "user" | "role"; id: string };
+      /** Explicit reviewer; defaults to parentActor. */
+      reviewer?: { kind: "user" | "role"; id: string };
+      /**
+       * @deprecated Mapped once to parentActor/reviewer at dispatch. Not dual-written.
+       */
       dispatchedBy?: string;
       /**
-       * Sub-dispatch. When true, requires durable dispatcher role in dispatchedBy
-       * and a real Git workspace lane; targetBranch becomes tent-role/<dispatcher>.
+       * Sub-dispatch Git lane. When true, requires durable parent Role
+       * and a real Git workspace lane; targetBranch becomes tent-role/<parent>.
        */
       asSub?: boolean;
       deliveryPolicy?: string;

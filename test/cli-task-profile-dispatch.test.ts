@@ -360,7 +360,9 @@ test("CLI profile dispatch rejects ambiguous prompt / low-level flags; sub wires
     const subTask = await loadTaskEnvelope(envFs, subParsed.taskPath);
     assert.equal(subTask.assigneeKind, "agentProfile");
     assert.equal(subTask.asSub, true);
-    assert.equal(subTask.dispatchedBy, "orchestrator");
+    assert.equal(subTask.parentActor?.kind, "role");
+    assert.equal(subTask.parentActor?.id, "orchestrator");
+    assert.equal(subTask.reviewer?.id, "orchestrator");
     assert.ok(subTask.sessionId);
   } finally {
     await svc.stop();

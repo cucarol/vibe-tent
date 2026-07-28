@@ -12,10 +12,17 @@ import {
   isTaskId,
   legacyStatusToState,
   makeTaskId,
+  mayElevateDeliveryPolicy,
+  migrateParentReviewerFromLegacy,
   normalizeDeliveryPolicyRead,
+  parseTaskActorRef,
+  roleTaskActors,
   stateToLegacyStatus,
+  userTaskActors,
   type AssigneeKind,
   type DeliveryPolicy,
+  type TaskActorRef,
+  type TaskOutcome,
   type TaskState,
   type TaskWait,
   type WorkspaceLane,
@@ -38,11 +45,21 @@ export interface TaskEnvelopeInput {
   manifestPath: string;
   userPrompt: string;
   workspace?: RoleWorkspaceContract;
+  /**
+   * Explicit parent actor (V0.2). When omitted, derived from parentRole / asSub legacy args.
+   */
+  parentActor?: TaskActorRef;
+  /** Explicit reviewer; defaults to same as parentActor. */
+  reviewer?: TaskActorRef;
+  /**
+   * @deprecated Dispatch convenience only — mapped to parentActor/reviewer once.
+   * Not persisted on new envelopes.
+   */
   dispatchedBy?: string;
   /**
-   * Sub-dispatch flag. Missing on disk reads as false (peer).
-   * When true, targetBranch is the dispatcher role branch and review/A2A
-   * authority follow dispatchedBy.
+   * Sub-dispatch Git lane flag. Missing on disk reads as false (peer).
+   * When true, targetBranch is the parent role branch. Review authority uses
+   * parentActor/reviewer, not this flag.
    */
   asSub?: boolean;
   /** Full operational id (tk-…). Generated if omitted. */
@@ -75,10 +92,20 @@ export interface TaskEnvelope {
   state: TaskState;
   /** Operational task id (tk-…). May be absent on pre-B4 envelopes. */
   id?: string;
-  dispatchedBy?: string;
   /**
-   * Peer vs sub. Missing field reads as false (backward compatible).
-   * Persisted only when true; see taskAsSub().
+   * Explicit parent actor (V0.2). Present after load (migrated once from
+   * legacy asSub+dispatchedBy when missing on disk). Optional only on
+   * synthetic/partial fixtures before write.
+   */
+  parentActor?: TaskActorRef;
+  /**
+   * Explicit Delivery reviewer (V0.2). Derived equal to parentActor on write;
+   * present after load.
+   */
+  reviewer?: TaskActorRef;
+  /**
+   * Peer vs sub Git lane. Missing field reads as false.
+   * Persisted only when true; see taskAsSub(). Not used for review authority.
    */
   asSub?: boolean;
   workspace?: string;
@@ -95,6 +122,11 @@ export interface TaskEnvelope {
   sessionId?: string;
   wait?: TaskWait;
   activeDeliveryId?: string;
+  /**
+   * Last explicit Task execution outcome when recorded (managed final report).
+   * Optional; absence does not block public task.deliver.
+   */
+  lastOutcome?: TaskOutcome;
   createdAt?: string;
   updatedAt?: string;
   /** Immutable user prompt body (after frontmatter). */
@@ -126,6 +158,126 @@ export async function loadTaskEnvelopes(fs: FsAdapter): Promise<TaskEnvelope[]> 
   return tasks.sort((a, b) => a.path.localeCompare(b.path));
 }
 
+export type ParentReviewerMigrationReport = {
+  scanned: number;
+  rewritten: string[];
+  skipped: string[];
+  warnings: string[];
+};
+
+/**
+ * One-time disk migration: write explicit parentActor/reviewer and strip
+ * legacy `dispatchedBy` from task envelopes that still carry it without
+ * parentActor. Preserves asSub (Git lane), accepted records, and audit body.
+ * Idempotent — envelopes that already have parentActor+reviewer and no
+ * dispatchedBy are left untouched. Fail-loud per file is recorded in warnings
+ * without aborting the whole scan.
+ */
+export async function migrateParentReviewerEnvelopes(
+  fs: FsAdapter,
+  clock: Clock,
+  options?: { dryRun?: boolean }
+): Promise<ParentReviewerMigrationReport> {
+  const dryRun = options?.dryRun === true;
+  const report: ParentReviewerMigrationReport = {
+    scanned: 0,
+    rewritten: [],
+    skipped: [],
+    warnings: [],
+  };
+  if (!(await fs.exists(TEMP_DIR))) return report;
+
+  const paths: string[] = [];
+  for (const entry of await fs.listDir(TEMP_DIR)) {
+    if (!entry.isDir) continue;
+    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
+      const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
+      if (!(await fs.exists(profilesRoot))) continue;
+      for (const profileEntry of await fs.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        const taskDir = join(profilesRoot, profileEntry.name, "tasks");
+        if (!(await fs.exists(taskDir))) continue;
+        for (const f of await fs.listDir(taskDir)) {
+          if (!f.isDir && f.name.endsWith(".md")) paths.push(join(taskDir, f.name));
+        }
+      }
+      continue;
+    }
+    const taskDir = join(TEMP_DIR, entry.name, "tasks");
+    if (!(await fs.exists(taskDir))) continue;
+    for (const f of await fs.listDir(taskDir)) {
+      if (!f.isDir && f.name.endsWith(".md")) paths.push(join(taskDir, f.name));
+    }
+  }
+
+  for (const path of paths.sort((a, b) => a.localeCompare(b))) {
+    report.scanned += 1;
+    try {
+      const raw = await fs.readFile(path);
+      const { data, body, keyOrder } = parseFrontmatter(raw);
+      if (data.type !== "task") {
+        report.skipped.push(path);
+        continue;
+      }
+      const hasParent =
+        data.parentActor !== undefined && data.parentActor !== null;
+      const hasReviewer = data.reviewer !== undefined && data.reviewer !== null;
+      const hasLegacyDispatcher =
+        typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
+
+      // Already on V0.2 wire with no legacy key — nothing to do.
+      if (hasParent && hasReviewer && !hasLegacyDispatcher) {
+        report.skipped.push(path);
+        continue;
+      }
+
+      let parentActor: TaskActorRef;
+      let reviewer: TaskActorRef;
+      if (hasParent && hasReviewer) {
+        parentActor = parseTaskActorRef(data.parentActor, "parentActor");
+        reviewer = parseTaskActorRef(data.reviewer, "reviewer");
+      } else if (hasParent || hasReviewer) {
+        report.warnings.push(
+          `${path}: partial parentActor/reviewer pair; refusing silent repair`
+        );
+        report.skipped.push(path);
+        continue;
+      } else {
+        const migrated = migrateParentReviewerFromLegacy({
+          asSub: data.asSub === true,
+          dispatchedBy:
+            typeof data.dispatchedBy === "string" ? data.dispatchedBy : undefined,
+        });
+        parentActor = migrated.parentActor;
+        reviewer = migrated.reviewer;
+      }
+
+      const next: Record<string, unknown> = { ...data };
+      next.parentActor = serializeTaskActorRef(parentActor);
+      next.reviewer = serializeTaskActorRef(reviewer);
+      delete next.dispatchedBy;
+
+      const nextRaw = serializeFrontmatter(next, body, keyOrder);
+      if (nextRaw === raw) {
+        report.skipped.push(path);
+        continue;
+      }
+      if (!dryRun) {
+        // Touch updatedAt only when we actually rewrite keys.
+        next.updatedAt = clock.now();
+        await fs.writeFile(path, serializeFrontmatter(next, body, keyOrder));
+      }
+      report.rewritten.push(path);
+    } catch (err) {
+      report.warnings.push(
+        `${path}: ${err instanceof Error ? err.message : String(err)}`
+      );
+      report.skipped.push(path);
+    }
+  }
+  return report;
+}
+
 async function collectTaskFiles(
   fs: FsAdapter,
   taskDir: string,
@@ -148,9 +300,58 @@ export function taskAssigneeKind(task: Pick<TaskEnvelope, "assigneeKind">): Assi
   return task.assigneeKind === "agentProfile" ? "agentProfile" : "role";
 }
 
-/** Effective sub-dispatch flag; missing field reads as false (peer). */
+/** Effective sub-dispatch Git-lane flag; missing field reads as false (peer). */
 export function taskAsSub(task: Pick<TaskEnvelope, "asSub">): boolean {
   return task.asSub === true;
+}
+
+/** Parent is a durable Role (Role-dispatched Task). */
+export function taskParentIsRole(
+  task: Pick<TaskEnvelope, "parentActor">
+): boolean {
+  return task.parentActor?.kind === "role";
+}
+
+/** Durable parent role id, or undefined when parent is user. */
+export function taskParentRoleId(
+  task: Pick<TaskEnvelope, "parentActor">
+): string | undefined {
+  return task.parentActor?.kind === "role" ? task.parentActor.id : undefined;
+}
+
+/**
+ * Serialize actor ref for frontmatter (inline map).
+ * Kept small and explicit — no dual-write of dispatchedBy.
+ */
+export function serializeTaskActorRef(actor: TaskActorRef): { kind: string; id: string } {
+  return { kind: actor.kind, id: actor.id };
+}
+
+/**
+ * Resolve parentActor + reviewer for a new dispatch write.
+ * Prefer explicit parentActor/reviewer; else map legacy dispatchedBy once.
+ */
+export function resolveDispatchActors(input: {
+  parentActor?: TaskActorRef;
+  reviewer?: TaskActorRef;
+  dispatchedBy?: string;
+  asSub?: boolean;
+}): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
+  if (input.parentActor) {
+    const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
+    const reviewer = input.reviewer
+      ? parseTaskActorRef(input.reviewer, "reviewer")
+      : { ...parentActor };
+    return { parentActor, reviewer };
+  }
+  if (input.reviewer) {
+    // Reviewer without parent is invalid — parent is the authority root.
+    throw new Error("task.dispatch reviewer requires parentActor");
+  }
+  return migrateParentReviewerFromLegacy({
+    asSub: input.asSub,
+    dispatchedBy: input.dispatchedBy,
+  });
 }
 
 export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<TaskEnvelope> {
@@ -169,6 +370,10 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   const legacyStatus: TaskEnvelopeStatus = data.status === "taken" ? "taken" : "pending";
   const state = parseTaskState(data.state, legacyStatus);
 
+  // V0.2 parent/reviewer: prefer explicit wire. One-time in-memory migration from
+  // legacy asSub+dispatchedBy when missing — does not dual-read after disk rewrite.
+  const actors = resolveActorsFromDisk(data);
+
   const task: TaskEnvelope = {
     path,
     role: data.role,
@@ -176,10 +381,11 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
     manifest: data.manifest,
     status: stateToLegacyStatus(state),
     state,
+    parentActor: actors.parentActor,
+    reviewer: actors.reviewer,
     prompt: body.trim() || undefined,
   };
   if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
-  if (typeof data.dispatchedBy === "string") task.dispatchedBy = data.dispatchedBy;
   if (data.asSub === true) task.asSub = true;
   if (typeof data.workspace === "string") task.workspace = data.workspace;
   if (typeof data.worktree === "string") task.worktree = data.worktree;
@@ -196,11 +402,45 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   }
   if (typeof data.sessionId === "string") task.sessionId = data.sessionId;
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
+  if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
+    task.lastOutcome = data.lastOutcome;
+  }
   if (typeof data.createdAt === "string") task.createdAt = data.createdAt;
   if (typeof data.updatedAt === "string") task.updatedAt = data.updatedAt;
   const wait = parseWaitFields(data);
   if (wait) task.wait = wait;
   return task;
+}
+
+/**
+ * Resolve parentActor/reviewer from on-disk frontmatter.
+ * Explicit fields win. Legacy asSub+dispatchedBy migrate once in memory.
+ * Corrupt explicit fields fail loud (do not silently fall back).
+ */
+function resolveActorsFromDisk(data: Record<string, unknown>): {
+  parentActor: TaskActorRef;
+  reviewer: TaskActorRef;
+} {
+  const hasParent = data.parentActor !== undefined && data.parentActor !== null;
+  const hasReviewer = data.reviewer !== undefined && data.reviewer !== null;
+  if (hasParent || hasReviewer) {
+    if (!hasParent || !hasReviewer) {
+      throw new Error(
+        "Invalid task envelope: parentActor and reviewer must both be present when either is set."
+      );
+    }
+    return {
+      parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
+      reviewer: parseTaskActorRef(data.reviewer, "reviewer"),
+    };
+  }
+  // Legacy one-shot derivation (in-memory only until migrateParentReviewerEnvelopes writes).
+  const legacyDispatcher =
+    typeof data.dispatchedBy === "string" ? data.dispatchedBy : undefined;
+  return migrateParentReviewerFromLegacy({
+    asSub: data.asSub === true,
+    dispatchedBy: legacyDispatcher,
+  });
 }
 
 /**
@@ -248,6 +488,14 @@ function formatTaskPointers(task: TaskEnvelope): string {
   ];
   if (task.claims?.length) {
     lines.push(`claims: ${task.claims.join(", ")}`);
+  }
+  if (task.parentActor) {
+    lines.push(
+      `parentActor: ${task.parentActor.kind}:${task.parentActor.id}`
+    );
+  }
+  if (task.reviewer) {
+    lines.push(`reviewer: ${task.reviewer.kind}:${task.reviewer.id}`);
   }
   if (task.deliveryPolicy) {
     lines.push(`deliveryPolicy: ${task.deliveryPolicy}`);
@@ -346,7 +594,8 @@ export function sessionBootstrapPromptForTask(
     readyLine +
     `${formatTaskPointers(task)}\n` +
     `Service status: this task is already claimed (state=${task.state || "running"}).\n` +
-    `Managed path: Local Service already claimed this task; your final assistant reply is the report and will be delivered automatically (Review policy waits for independent accept; no auto-accept).\n` +
+    `Managed path: Local Service already claimed this task; end with an explicit outcome wire ` +
+    `(\`outcome: delivered|blocked|needs-input\`) then the report body. Only \`delivered\` may become a ready Delivery after turn settle; blocker/question must use needs-input/blocked or ask-user — never self-accept.\n` +
     (kind === "agentProfile"
       ? `One-shot agentProfile task: rely on task/manifest pointers only — no role init.\n`
       : "") +
@@ -395,6 +644,27 @@ export async function writeTaskEnvelope(
   const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
   const path = await uniqueMarkdownPath(fs, dir, stem);
   const now = clock.now();
+  const actors = resolveDispatchActors({
+    parentActor: input.parentActor,
+    reviewer: input.reviewer,
+    dispatchedBy: input.dispatchedBy,
+    asSub: input.asSub,
+  });
+  const deliveryPolicy = input.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY;
+  // Downstream Task Agent → parent: always review. Elevated policies only for
+  // durable Role user-facing deliveries (parent=user + assigneeKind=role).
+  if (
+    deliveryPolicy !== "review" &&
+    !mayElevateDeliveryPolicy({
+      parentActor: actors.parentActor,
+      assigneeKind,
+    })
+  ) {
+    throw new Error(
+      `deliveryPolicy=${deliveryPolicy} is only legal for a durable Role's user-facing delivery; ` +
+        `downstream Task Agent → parent must use review (parent=${actors.parentActor.kind}:${actors.parentActor.id}).`
+    );
+  }
   const data: Record<string, unknown> = {
     type: "task",
     id,
@@ -402,14 +672,15 @@ export async function writeTaskEnvelope(
     state: "queued",
     role: input.role,
     assigneeKind,
-    dispatchedBy: input.dispatchedBy?.trim() || "user",
+    parentActor: serializeTaskActorRef(actors.parentActor),
+    reviewer: serializeTaskActorRef(actors.reviewer),
     claims: input.claims.map((claim) => claim.id),
     manifest: input.manifestPath,
-    deliveryPolicy: input.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY,
+    deliveryPolicy,
     createdAt: now,
     updatedAt: now,
   };
-  // Persist only when true; missing means peer (false).
+  // Persist only when true; missing means peer (false). Git-lane sub marker only.
   if (input.asSub === true) data.asSub = true;
   if (input.sessionId) data.sessionId = input.sessionId;
   if (input.workspace) {
@@ -451,6 +722,14 @@ export interface TaskEnvelopePatch {
   wait?: TaskWait | null;
   activeDeliveryId?: string | null;
   deliveryPolicy?: DeliveryPolicy;
+  parentActor?: TaskActorRef;
+  reviewer?: TaskActorRef;
+  lastOutcome?: TaskOutcome | null;
+  /**
+   * When true, strip legacy dispatchedBy from disk after parent/reviewer write
+   * (one-time migration). Does not dual-write.
+   */
+  clearLegacyDispatchedBy?: boolean;
   updatedAt?: string;
   /** Role WorkspaceLane fields (real workspace Git only). */
   workspace?: string | null;
@@ -502,6 +781,25 @@ export async function patchTaskEnvelope(
   else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
 
   if (patch.deliveryPolicy) data.deliveryPolicy = patch.deliveryPolicy;
+  if (patch.parentActor) {
+    data.parentActor = serializeTaskActorRef(
+      parseTaskActorRef(patch.parentActor, "parentActor")
+    );
+  }
+  if (patch.reviewer) {
+    data.reviewer = serializeTaskActorRef(parseTaskActorRef(patch.reviewer, "reviewer"));
+  }
+  if (patch.clearLegacyDispatchedBy) {
+    delete data.dispatchedBy;
+  }
+  if (patch.lastOutcome === null) delete data.lastOutcome;
+  else if (
+    patch.lastOutcome === "delivered" ||
+    patch.lastOutcome === "blocked" ||
+    patch.lastOutcome === "needs-input"
+  ) {
+    data.lastOutcome = patch.lastOutcome;
+  }
   if (patch.updatedAt) data.updatedAt = patch.updatedAt;
 
   for (const key of ["workspace", "worktree", "branch", "targetBranch"] as const) {

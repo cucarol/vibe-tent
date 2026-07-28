@@ -149,29 +149,35 @@ async function createNote(
 
 // ---- pure unit: review authority + envelope asSub ----
 
-test("assertReviewAuthority: peer allows any non-submitter; sub restricts to user/dispatchedBy", () => {
+test("assertReviewAuthority: user reviewer only user; role reviewer user|parent; never self", () => {
+  const userReviewer = { kind: "user" as const, id: "user" };
+  const orchReviewer = { kind: "role" as const, id: "orchestrator" };
+
   assert.doesNotThrow(() =>
     assertReviewAuthority({
       actor: "user",
       submitterRole: "executor",
-      asSub: false,
+      reviewer: userReviewer,
       action: "accept",
     })
   );
-  assert.doesNotThrow(() =>
-    assertReviewAuthority({
-      actor: "orchestrator",
-      submitterRole: "executor",
-      asSub: false,
-      action: "reject",
-    })
+  // User-reviewed tasks: non-user roles may not impersonate the user reviewer.
+  assert.throws(
+    () =>
+      assertReviewAuthority({
+        actor: "orchestrator",
+        submitterRole: "executor",
+        reviewer: userReviewer,
+        action: "reject",
+      }),
+    (err: unknown) => err instanceof TaskLifecycleError && err.code === "REVIEW_FORBIDDEN"
   );
   assert.throws(
     () =>
       assertReviewAuthority({
         actor: "executor",
         submitterRole: "executor",
-        asSub: false,
+        reviewer: userReviewer,
         action: "accept",
       }),
     (err: unknown) => err instanceof TaskLifecycleError && err.code === "SELF_ACCEPT_FORBIDDEN"
@@ -181,8 +187,7 @@ test("assertReviewAuthority: peer allows any non-submitter; sub restricts to use
     assertReviewAuthority({
       actor: "user",
       submitterRole: "helper",
-      asSub: true,
-      dispatchedBy: "orchestrator",
+      reviewer: orchReviewer,
       action: "accept",
     })
   );
@@ -190,8 +195,7 @@ test("assertReviewAuthority: peer allows any non-submitter; sub restricts to use
     assertReviewAuthority({
       actor: "orchestrator",
       submitterRole: "helper",
-      asSub: true,
-      dispatchedBy: "orchestrator",
+      reviewer: orchReviewer,
       action: "reject",
     })
   );
@@ -200,8 +204,7 @@ test("assertReviewAuthority: peer allows any non-submitter; sub restricts to use
       assertReviewAuthority({
         actor: "executor",
         submitterRole: "helper",
-        asSub: true,
-        dispatchedBy: "orchestrator",
+        reviewer: orchReviewer,
         action: "accept",
       }),
     (err: unknown) => err instanceof TaskLifecycleError && err.code === "REVIEW_FORBIDDEN"
@@ -211,8 +214,7 @@ test("assertReviewAuthority: peer allows any non-submitter; sub restricts to use
       assertReviewAuthority({
         actor: "helper",
         submitterRole: "helper",
-        asSub: true,
-        dispatchedBy: "orchestrator",
+        reviewer: orchReviewer,
         action: "accept",
       }),
     (err: unknown) => err instanceof TaskLifecycleError && err.code === "SELF_ACCEPT_FORBIDDEN"
@@ -229,20 +231,26 @@ test("writeTaskEnvelope: asSub true persists; missing/false omitted (reads as pe
     claims: [{ id: "bx-1", path: "a.md" }],
     manifestPath: "temp/helper/manifest.yml",
     userPrompt: "peer",
-    dispatchedBy: "user",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
   });
   const peer = await loadTaskEnvelope(fsa, peerPath);
   assert.equal(peer.asSub, undefined);
   assert.equal(taskAsSub(peer), false);
+  assert.equal(peer.parentActor?.kind, "user");
+  assert.equal(peer.reviewer?.id, "user");
   const peerRaw = await fsa.readFile(peerPath);
   assert.doesNotMatch(peerRaw, /^asSub:/m);
+  assert.doesNotMatch(peerRaw, /^dispatchedBy:/m);
+  assert.match(peerRaw, /parentActor:/);
 
   const subPath = await writeTaskEnvelope(fsa, clock, {
     role: "helper",
     claims: [{ id: "bx-2", path: "b.md" }],
     manifestPath: "temp/helper/manifest.yml",
     userPrompt: "sub",
-    dispatchedBy: "orchestrator",
+    parentActor: { kind: "role", id: "orchestrator" },
+    reviewer: { kind: "role", id: "orchestrator" },
     asSub: true,
     workspace: {
       workspace: dir,
@@ -254,9 +262,12 @@ test("writeTaskEnvelope: asSub true persists; missing/false omitted (reads as pe
   const sub = await loadTaskEnvelope(fsa, subPath);
   assert.equal(sub.asSub, true);
   assert.equal(taskAsSub(sub), true);
+  assert.equal(sub.parentActor?.id, "orchestrator");
+  assert.equal(sub.reviewer?.id, "orchestrator");
   assert.equal(sub.targetBranch, "tent-role/orchestrator");
   const subRaw = await fsa.readFile(subPath);
   assert.match(subRaw, /^asSub:\s*true$/m);
+  assert.doesNotMatch(subRaw, /^dispatchedBy:/m);
 });
 
 // ---- Git integration into dispatcher worktree (not mainline switch) ----
@@ -344,7 +355,8 @@ test("task.dispatch asSub role: tent-role assignee lane + dispatcher targetBranc
     const envFs = new NodeFs(path.join(ws, ".tent"));
     const task = await loadTaskEnvelope(envFs, subResult.taskPath);
     assert.equal(taskAsSub(task), true);
-    assert.equal(task.dispatchedBy, "orchestrator");
+    assert.equal(task.parentActor?.id, "orchestrator");
+    assert.equal(task.reviewer?.id, "orchestrator");
     assert.equal(task.branch, "tent-role/helper");
     assert.equal(task.targetBranch, "tent-role/orchestrator");
     assert.match(task.worktree || "", /helper/);

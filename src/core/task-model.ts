@@ -33,8 +33,199 @@ export type WaitReason = "user-input" | "a2a-approval" | "review" | "external";
 export type AssigneeKind = "role" | "agentProfile";
 export type A2APolicy = "allow" | "ask" | "deny";
 
+/**
+ * Explicit Task execution terminal outcome (V0.2).
+ * Service may publish a ready Delivery only for `delivered`.
+ */
+export type TaskOutcome = "delivered" | "blocked" | "needs-input";
+
+/** Parent / reviewer actor on a Task (V0.2 explicit wire; replaces asSub+dispatchedBy inference). */
+export type TaskActorKind = "user" | "role";
+export type TaskActorRef = {
+  kind: TaskActorKind;
+  /** `user` when kind=user; durable role name when kind=role. */
+  id: string;
+};
+
 export type DeliveryStatus = "draft" | "ready" | "accepted" | "rejected";
 export type IntegrationMode = "manual-accept" | "bypass-auto" | "agent-decided-integrate" | null;
+
+export type TransitionErrorCode =
+  | "INVALID_TRANSITION"
+  | "POLICY_FORBIDS_AUTO_INTEGRATE"
+  | "DECISION_REQUIRED"
+  | "SELF_ACCEPT_FORBIDDEN"
+  | "REVIEW_FORBIDDEN"
+  | "INVALID_ACTOR"
+  | "OUTCOME_REQUIRED"
+  | "OUTCOME_NOT_DELIVERED"
+  | "A2A_DENIED"
+  | "NO_ACTIVE_DELIVERY"
+  | "TASK_NOT_ACTIVE"
+  | "DELIVERY_NOT_READY"
+  /** Compensating rollback after partial accept (Output bind + Delivery/Task) failed. */
+  | "ACCEPT_ROLLBACK_FAILED";
+
+export class TaskLifecycleError extends Error {
+  code: TransitionErrorCode;
+  constructor(code: TransitionErrorCode, message: string) {
+    super(message);
+    this.code = code;
+    this.name = "TaskLifecycleError";
+  }
+}
+
+export const TASK_OUTCOMES: readonly TaskOutcome[] = [
+  "delivered",
+  "blocked",
+  "needs-input",
+] as const;
+
+export function isTaskOutcome(value: unknown): value is TaskOutcome {
+  return value === "delivered" || value === "blocked" || value === "needs-input";
+}
+
+export function isTaskActorKind(value: unknown): value is TaskActorKind {
+  return value === "user" || value === "role";
+}
+
+/**
+ * Fail-loud parse of parentActor / reviewer wire objects.
+ * Accepts `{ kind, id }` only — no dual-read of legacy dispatchedBy here.
+ */
+export function parseTaskActorRef(
+  value: unknown,
+  label: "parentActor" | "reviewer"
+): TaskActorRef {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label} must be an object { kind, id }.`
+    );
+  }
+  const raw = value as Record<string, unknown>;
+  const kind = raw.kind;
+  const id = typeof raw.id === "string" ? raw.id.trim() : "";
+  if (!isTaskActorKind(kind)) {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label}.kind must be user|role; got ${String(kind)}.`
+    );
+  }
+  if (!id) {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label}.id must be a non-empty string.`
+    );
+  }
+  if (kind === "user" && id !== "user") {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label} with kind=user requires id "user"; got ${id}.`
+    );
+  }
+  if (kind === "role" && id === "user") {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label} with kind=role must name a durable role (not user).`
+    );
+  }
+  return { kind, id };
+}
+
+/** User parent + user reviewer (user-direct Task). */
+export function userTaskActors(): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
+  return {
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+  };
+}
+
+/** Role parent + same-role reviewer (Role-dispatched Task Agent / sub). */
+export function roleTaskActors(
+  roleName: string
+): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
+  const id = roleName.trim();
+  if (!id || id === "user") {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      "Role parent/reviewer requires a durable role name (not user)."
+    );
+  }
+  return {
+    parentActor: { kind: "role", id },
+    reviewer: { kind: "role", id },
+  };
+}
+
+/**
+ * One-time migration: derive parentActor/reviewer from legacy asSub+dispatchedBy.
+ * Deterministic; does not invent roles. Missing/invalid dispatcher → user parent.
+ */
+export function migrateParentReviewerFromLegacy(input: {
+  asSub?: boolean;
+  dispatchedBy?: string;
+}): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
+  const dispatcher = (input.dispatchedBy || "").trim();
+  if (dispatcher && dispatcher !== "user") {
+    return roleTaskActors(dispatcher);
+  }
+  return userTaskActors();
+}
+
+/**
+ * Elevated deliveryPolicy (bypass | agent-decide) is legal only for a durable
+ * Role's own user-facing delivery (parent=user, assigneeKind=role).
+ * Downstream Task Agent → parent is always review-to-parent.
+ */
+export function mayElevateDeliveryPolicy(input: {
+  parentActor?: TaskActorRef;
+  assigneeKind?: AssigneeKind;
+}): boolean {
+  const parent = input.parentActor;
+  if (!parent || parent.kind !== "user") return false;
+  return (input.assigneeKind ?? "role") === "role";
+}
+
+/**
+ * Parse explicit outcome from a managed final assistant report.
+ * Accepts a leading `outcome: delivered|blocked|needs-input` line, optionally
+ * inside a leading `---` / `---` fence. Returns remainder as report body.
+ * Missing/invalid outcome → null (caller must not publish ready Delivery).
+ */
+export function parseTaskOutcomeReport(text: string): {
+  outcome: TaskOutcome;
+  report: string;
+} | null {
+  const raw = typeof text === "string" ? text.replace(/^\uFEFF/, "") : "";
+  if (!raw.trim()) return null;
+  const lines = raw.replace(/\r\n/g, "\n").split("\n");
+  let i = 0;
+  while (i < lines.length && lines[i].trim() === "") i += 1;
+  if (i >= lines.length) return null;
+
+  let fence = false;
+  if (lines[i].trim() === "---") {
+    fence = true;
+    i += 1;
+    while (i < lines.length && lines[i].trim() === "") i += 1;
+  }
+  if (i >= lines.length) return null;
+
+  const match = lines[i].trim().match(/^outcome\s*:\s*(delivered|blocked|needs-input)\s*$/i);
+  if (!match) return null;
+  const outcome = match[1].toLowerCase() as TaskOutcome;
+  i += 1;
+
+  if (fence) {
+    while (i < lines.length && lines[i].trim() === "") i += 1;
+    if (i < lines.length && lines[i].trim() === "---") i += 1;
+  }
+  // Drop one blank line after the outcome header for cleaner summaries.
+  if (i < lines.length && lines[i].trim() === "") i += 1;
+  const report = lines.slice(i).join("\n").replace(/^\n+/, "").replace(/\n+$/, "");
+  return { outcome, report };
+}
 
 /** True for canonical wire values only (not historical `manual`). */
 export function isDeliveryPolicy(value: unknown): value is DeliveryPolicy {
@@ -139,28 +330,6 @@ export function isDeliveryId(id: string): boolean {
   return id.startsWith("dl-") && id.length > 3;
 }
 
-export type TransitionErrorCode =
-  | "INVALID_TRANSITION"
-  | "POLICY_FORBIDS_AUTO_INTEGRATE"
-  | "DECISION_REQUIRED"
-  | "SELF_ACCEPT_FORBIDDEN"
-  | "REVIEW_FORBIDDEN"
-  | "A2A_DENIED"
-  | "NO_ACTIVE_DELIVERY"
-  | "TASK_NOT_ACTIVE"
-  | "DELIVERY_NOT_READY"
-  /** Compensating rollback after partial accept (Output bind + Delivery/Task) failed. */
-  | "ACCEPT_ROLLBACK_FAILED";
-
-export class TaskLifecycleError extends Error {
-  code: TransitionErrorCode;
-  constructor(code: TransitionErrorCode, message: string) {
-    super(message);
-    this.code = code;
-    this.name = "TaskLifecycleError";
-  }
-}
-
 /** Pure transition table (task-api §2.2). */
 export function assertTransition(from: TaskState, event: string, to: TaskState): void {
   const ok = allowedTransitions(from).some((t) => t.event === event && t.to === to);
@@ -261,16 +430,22 @@ export function assertNotSelfAccept(actor: string, submitterRole: string): void 
 }
 
 /**
- * Review authority for task.accept / task.reject (task-api §4.4 / §4.5).
+ * Review authority for task.accept / task.reject (V0.2 parent/reviewer wire).
  * - Self-review (actor === submitter) is always forbidden.
- * - Peer tasks: any non-submitter actor may review (typically user; not crypto-bound).
- * - Sub tasks (`asSub`): actor must be `user` or the exact `dispatchedBy` role.
- *   Unrelated roles fail. This is a soft policy check, not cryptographic auth.
+ * - Executor never self-accepts.
+ * - Authorized reviewers: `user` (root) or the exact Task.reviewer when kind=role.
+ * - Soft policy check only — not cryptographic auth on the shared service token.
+ *
+ * Legacy `asSub`/`dispatchedBy` are not read here. Callers must pass the explicit
+ * reviewer (from envelope or one-time migration). Missing reviewer fails loud.
  */
 export function assertReviewAuthority(input: {
   actor: string;
   submitterRole: string;
+  reviewer?: TaskActorRef;
+  /** @deprecated Ignored — kept only so old call sites fail closed via reviewer. */
   asSub?: boolean;
+  /** @deprecated Ignored — use reviewer. */
   dispatchedBy?: string;
   action?: "accept" | "reject";
 }): void {
@@ -289,15 +464,30 @@ export function assertReviewAuthority(input: {
       `task.${action} actor must not equal delivery submitter (${submitter}).`
     );
   }
-  if (input.asSub !== true) return;
-  const dispatcher = (input.dispatchedBy || "").trim();
+  const reviewer = input.reviewer;
+  if (!reviewer) {
+    throw new TaskLifecycleError(
+      "REVIEW_FORBIDDEN",
+      `task.${action} requires an explicit Task.reviewer (parent-reviewer wire).`
+    );
+  }
+  // User is always root reviewer authority.
   if (actor === "user") return;
-  if (dispatcher && actor === dispatcher) return;
+  if (reviewer.kind === "user") {
+    // User-facing review: only user (or non-submitter peers historically). V0.2:
+    // durable Role user-facing delivery is reviewed by user; other roles may not
+    // impersonate. Keep soft allowance for any non-submitter only when reviewer
+    // is user? Product: user-direct → review-to-user. Restrict to user only.
+    throw new TaskLifecycleError(
+      "REVIEW_FORBIDDEN",
+      `task.${action} on user-reviewed task requires actor user; got ${actor}.`
+    );
+  }
+  // Role reviewer: exact parent role only (plus user root above).
+  if (actor === reviewer.id) return;
   throw new TaskLifecycleError(
     "REVIEW_FORBIDDEN",
-    `task.${action} on sub task requires actor user or dispatchedBy role` +
-      (dispatcher ? ` (${dispatcher})` : "") +
-      `; got ${actor}.`
+    `task.${action} requires actor user or reviewer role (${reviewer.id}); got ${actor}.`
   );
 }
 

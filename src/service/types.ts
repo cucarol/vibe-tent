@@ -307,6 +307,11 @@ export type BoxProjectionsResult = {
   projections: BoxProjection[];
 };
 
+export type TaskActorRefWire = {
+  kind: "user" | "role";
+  id: string;
+};
+
 export type TaskProjection = {
   path: string;
   id?: string;
@@ -317,14 +322,19 @@ export type TaskProjection = {
   /** Full lifecycle state (task-api §2). */
   state: string;
   manifest: string;
-  dispatchedBy?: string;
-  /** Peer vs sub; missing/false = peer. */
+  /** Explicit parent actor (V0.2). */
+  parentActor?: TaskActorRefWire;
+  /** Explicit Delivery reviewer (V0.2). */
+  reviewer?: TaskActorRefWire;
+  /** Peer vs sub Git lane; missing/false = peer. */
   asSub?: boolean;
   deliveryPolicy?: string;
   assigneeKind?: string;
   sessionId?: string;
   wait?: { reason: string; summary: string; code?: string };
   activeDeliveryId?: string;
+  /** Last explicit managed Task outcome when recorded. */
+  lastOutcome?: "delivered" | "blocked" | "needs-input";
   workspaceLane?: {
     workspace?: string;
     worktree?: string;

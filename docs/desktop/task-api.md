@@ -41,17 +41,23 @@ assigneeKind: role | agentProfile   # missing → role (backward compatible; no 
 # stable assignee label (role name OR profileId). API projections may also expose
 # `assignee` as that same label.
 role: <role-name|profile-id>
-dispatchedBy: user | <role>      # for agentProfile + role caller, must name a real dispatcher role
-asSub: true                      # optional; missing → false (peer). Sub requires durable dispatcher + Git lane
+# V0.2 explicit parent/reviewer (replaces asSub+dispatchedBy inference for authority).
+parentActor: { kind: user|role, id: user|<role> }
+reviewer:    { kind: user|role, id: user|<role> }   # equals parentActor on write
+asSub: true                      # optional Git-lane sub marker only; missing → false (peer).
+                                 # Sub requires durable parent Role + Git lane.
 sessionId: ss-…                  # optional until claim/start; **reference only**
 manifest: temp/…                 # honor-contract snapshot path at dispatch
 workspaceLane:                   # omit when tent has no Git/workspace lane (pure Tent task)
   workspace: …
   worktree: …
   branch: …                      # role: tent-role/<role>; profile: tent-task/<taskId>
-  targetBranch: …                # peer → mainline; sub → dispatcher role branch tent-role/<dispatcher>
+  targetBranch: …                # peer → mainline; sub → parent role branch tent-role/<parent>
   roleBranchBase: <full-sha>      # captured once when managed execution acquires the lane slot
 deliveryPolicy: review | bypass | agent-decide
+# Elevated bypass|agent-decide only for durable Role user-facing (parent=user, assigneeKind=role).
+# Downstream Task Agent → parent is always review.
+lastOutcome: delivered | blocked | needs-input   # optional; managed final report
 wait:
   reason: user-input | a2a-approval | review | external
   summary: …
@@ -60,6 +66,13 @@ createdAt / updatedAt: …
 prompt: |                        # immutable after dispatch
   …
 ```
+
+**Migration (one-time, deterministic):** envelopes that still carry legacy
+`dispatchedBy` without `parentActor`/`reviewer` are rewritten on
+`workspace.mount` (`migrateParentReviewerEnvelopes`): durable non-user
+`dispatchedBy` → `{kind:role,id:<dispatcher>}` parent+reviewer; otherwise
+user parent+reviewer. `dispatchedBy` is stripped. `asSub`, accepted Delivery
+records, and audit bodies are preserved. No permanent dual-read/dual-write.
 
 #### assigneeKind: role vs agentProfile
 
@@ -71,10 +84,11 @@ prompt: |                        # immutable after dispatch
 | Git lane | durable `tent-role/<role>` worktree (created at dispatch when Git) | task-scoped `tent-task/<taskId>` (created at managed acquisition; **not** `tent-role/<profile>`) |
 | Concurrency | one live managed session per durable role | multiple concurrent tasks/sessions even with the same profile config |
 | startSession | any authorized profileId | **must** equal envelope profileId / assignee label |
-| A2A (role caller) | peer: authority = task role’s `a2aPolicy` / `allowedProfiles`; **sub (`asSub`)**: authority = **dispatcher** in `dispatchedBy` | authority = **dispatcher** role named in `dispatchedBy` (must be a real registry role); profile is not a role — peer and sub |
+| A2A (role caller) | peer (parent=user): authority = task role’s `a2aPolicy` / `allowedProfiles`; **parent Role**: authority = **parentActor** role | authority = **parentActor** role (must be a real registry role); profile is not a role |
 | Claim / delivery | submitter / box.assignee = role name | submitter / box.assignee = profileId |
+| Reviewer | `reviewer` (user for user-direct; parent Role for Role-dispatched) | same — executor never self-accepts |
 
-Missing `assigneeKind` on disk **reads as `role`**. Missing `asSub` **reads as `false` (peer)**. Historical tasks are not migrated.
+Missing `assigneeKind` on disk **reads as `role`**. Missing `asSub` **reads as `false` (peer Git lane)**. Legacy `dispatchedBy` migrates once to `parentActor`/`reviewer` (see above).
 
 #### WorkspaceLane (task) vs RuntimeWorkspace (runtime)
 
@@ -416,24 +430,46 @@ An approval is bound to its exact `workspaceId`, `taskPath`, and `profileId`; it
 
 Successful create/update/delete emits **exactly one** `registry.roles.updated` (`action`, `name`). Failures emit nothing.
 
-### 4.4 Self-accept ban
+### 4.4 Self-accept ban + reviewer authority
 
-- `task.accept` / `task.reject` actor **must not** equal the delivery submitter (self-review ban).
-- Peer tasks: any non-submitter actor may review (typically user). This is **not** cryptographic auth — self-declared `actor` rides the shared service token.
-- Sub tasks (`asSub: true`): actor must be **`user`** or the exact **`dispatchedBy`** role; an unrelated role fails. Dispatcher still cannot self-accept if they were also the submitter.
+- `task.accept` / `task.reject` actor **must not** equal the delivery submitter (self-review ban). Executor never self-accepts.
+- Authorized reviewers: **`user`** (root) or the exact Task **`reviewer`** when `kind=role`.
+- User-reviewed tasks (`reviewer.kind=user`): only `actor=user` (no other role may impersonate).
+- Role-reviewed tasks: `actor=user` **or** exact `reviewer.id` parent Role.
 - Recording `review.by = submitter` is a hard error.
+- Soft policy only — self-declared `actor` rides the shared service token (not cryptographic auth).
 
-### 4.5 Peer vs sub (hardened)
+### 4.5 Peer vs sub (hardened) + parent/reviewer
 
-| | Peer | Sub (`asSub: true`) |
+| | Peer (parent often user) | Sub (`asSub: true`, parent Role) |
 | --- | --- | --- |
-| Target | first-class role or **AgentProfile** | tool-like helper of dispatcher (role **or** agentProfile assignee) |
-| `targetBranch` | workspace mainline (e.g. `main`) | dispatcher role branch `tent-role/<dispatcher>` |
+| Target | first-class role or **AgentProfile** | tool-like helper of parent Role (role **or** agentProfile assignee) |
+| `targetBranch` | workspace mainline (e.g. `main`) | parent role branch `tent-role/<parent>` |
 | Execution lane | role: `tent-role/<assignee>` at dispatch; profile: deferred to `startSession` as `tent-task/<taskId>` | role: `tent-role/<assignee>`; profile: `tent-task/<taskId>` allocated at dispatch (taskId before lane) |
-| Default accept authority | user (or any non-submitter actor; soft policy) | user **or** exact `dispatchedBy` (still not self) |
-| A2A (`callerKind=role`) | role assignee → task role; profile assignee → `dispatchedBy` | **always** `dispatchedBy` durable role (role and profile assignees) |
-| **WorkspaceLane** | optional (pure Tent tasks legal—no code lane) | required (dispatch rejected without Git + dispatcher lane) |
-| Integrate cwd | worktree that already has target (usually main workspace on mainline) | dispatcher worktree (already on `tent-role/<dispatcher>`); **never** auto-switch branches |
+| Default accept authority | Task.`reviewer` (user for user-direct) | user **or** exact parent Role in `reviewer` (still not self) |
+| A2A (`callerKind=role`) | role assignee → task role; profile assignee → parent Role | **always** parent Role (role and profile assignees) |
+| **WorkspaceLane** | optional (pure Tent tasks legal—no code lane) | required (dispatch rejected without Git + parent Role lane) |
+| Integrate cwd | worktree that already has target (usually main workspace on mainline) | parent worktree (already on `tent-role/<parent>`); **never** auto-switch branches |
+| deliveryPolicy elevate | Role user-facing only (`bypass`/`agent-decide`) | **always `review`** — no downstream bypass/agent-decide |
+
+### 4.6 Explicit Task outcome (managed final report)
+
+Managed ACP final assistant replies must lead with an explicit outcome wire:
+
+```text
+outcome: delivered | blocked | needs-input
+
+<report body>
+```
+
+| Outcome | Service behavior |
+| --- | --- |
+| `delivered` | After turn seal + worktree clean + TaskInput gates, publish ready Delivery (or auto-integrate when policy allows). Summary = report body only. |
+| `blocked` | No ready Delivery. Park via `task.wait` (`reason=external`, `code=blocked`). |
+| `needs-input` | No ready Delivery. Park via `task.wait` (`reason=user-input`, `code=needs_input`). Prefer existing UserAsk/`task.askUser` when a structured question is needed. |
+| missing/invalid | No ready Delivery. Session diagnostic; task stays retryable. |
+
+Public `task.deliver` remains an explicit Delivery publish API (external/relay). It does not invent outcome from free text.
 
 ---
 

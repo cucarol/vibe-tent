@@ -147,15 +147,17 @@ neither dispatcher nor receiver hand-writes those envelope fields. Without a
 Git workspace, a normal peer dispatch is a valid pure-Tent task and its envelope
 has no WorkspaceLane.
 
-`--as-sub --by <role>` sets envelope `asSub: true`, records the dispatching role
-in `dispatchedBy`, and sets `targetBranch` to the dispatcher's role branch
-(`tent-role/<dispatcher>`). Sub commits integrate into that dispatcher lane
-(not mainline). Service `task.dispatch` with `asSub: true` is the same contract
-for durable role and agentProfile assignees. **asSub rule:** sub dispatch
-requires a durable registry dispatcher role (not `user`, not the assignee) and
-a real Git WorkspaceLane for that dispatcher; it fails before envelope creation
-without them. User/peer dispatch does not require a Git workspace. Missing
-`asSub` reads as peer (`false`).
+`--as-sub --by <role>` sets envelope `asSub: true` (Git-lane sub marker), writes
+explicit `parentActor`/`reviewer` for the parent Role, and sets `targetBranch`
+to the parent role branch (`tent-role/<parent>`). Sub commits integrate into
+that parent lane (not mainline). Service `task.dispatch` with `asSub: true` is
+the same contract for durable role and agentProfile assignees. **asSub rule:**
+sub dispatch requires a durable registry parent Role (not `user`, not the
+assignee) and a real Git WorkspaceLane for that parent; it fails before
+envelope creation without them. User/peer dispatch does not require a Git
+workspace. Missing `asSub` reads as peer (`false`). Review authority uses
+`parentActor`/`reviewer`, not `asSub`. Legacy `dispatchedBy` migrates once to
+the explicit wire and is not dual-written.
 
 Manifest fields include `claims`, `readable`, `writable`, and the workspace
 lane. Dynamic claim/task data never enters role init.

@@ -43,13 +43,26 @@ import {
   extractTaskUserPrompt,
   loadTaskEnvelope,
   loadTaskEnvelopes,
+  migrateParentReviewerEnvelopes,
   patchTaskEnvelope,
   sessionBootstrapPromptForTask,
   taskAssigneeKind,
   taskAsSub,
+  taskParentIsRole,
+  taskParentRoleId,
   type RoleWorkspaceContract,
   type TaskEnvelope,
 } from "../core/task.js";
+import {
+  mayElevateDeliveryPolicy,
+  migrateParentReviewerFromLegacy,
+  parseTaskActorRef,
+  parseTaskOutcomeReport,
+  roleTaskActors,
+  userTaskActors,
+  type TaskActorRef,
+  type TaskOutcome,
+} from "../core/task-model.js";
 import { taskContextCard } from "../core/context-card.js";
 import { systemRootFromWorkspace } from "../core/paths.js";
 import {
@@ -620,9 +633,38 @@ async function workspaceMount(ctx: HandlerContext, p: Record<string, unknown>) {
   // changed (sha256 digest). Must run before task/session reconcile so list,
   // resume, event routing, and active-role lookup see the current mount id.
   await migrateSessionWorkspaceIdsOnMount(ctx, info.workspaceId);
+  // One-shot parentActor/reviewer wire rewrite (strip legacy dispatchedBy).
+  // Runs under MutationBus; preserves accepted audit; idempotent.
+  await migrateParentReviewerOnMount(ctx, info.workspaceId);
   // After SessionRegistry boot reconcile, each mount must re-bind tasks to live sessions.
   await reconcileTaskSessionsOnMount(ctx, info.workspaceId);
   return info;
+}
+
+/**
+ * Deterministic one-time Task envelope migration on workspace.mount:
+ * write parentActor/reviewer, strip dispatchedBy. No permanent dual-read.
+ */
+async function migrateParentReviewerOnMount(
+  ctx: HandlerContext,
+  workspaceId: string
+): Promise<void> {
+  const mount = ctx.host.get(workspaceId);
+  if (!mount) return;
+  try {
+    await ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      await migrateParentReviewerEnvelopes(mount.env.fs, mount.env.clock);
+    });
+  } catch (err) {
+    // Migration failure must not block mount; log and continue. Load path still
+    // derives actors in memory until a successful rewrite.
+    console.error(
+      `[workspace.mount] parent/reviewer migration failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+  }
 }
 
 /**
@@ -3193,12 +3235,22 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   const prompt = requireString(p, "prompt");
   const dispatchedBy = optionalString(p, "dispatchedBy");
   const asSub = p.asSub === true;
+  const explicitParentActor = parseOptionalTaskActor(p.parentActor, "parentActor");
+  const explicitReviewer = parseOptionalTaskActor(p.reviewer, "reviewer");
   const explicitDeliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
   const startSession = p.startSession === true;
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
   if ("a2aPolicyOverride" in p) {
     throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
   }
+
+  // Resolve explicit parent/reviewer once at the RPC boundary (no dual-write of dispatchedBy).
+  const resolvedActors = resolveDispatchActorsFromRpc({
+    parentActor: explicitParentActor,
+    reviewer: explicitReviewer,
+    dispatchedBy,
+    asSub,
+  });
 
   if (assigneeKind === "role" && !role) {
     throw new RpcError(-32602, "task.dispatch with assigneeKind=role requires role");
@@ -3237,7 +3289,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     if (asSub) {
       await assertSubDispatchPreconditions(mount.env.fs, {
         workspaceRoot: mount.workspaceRoot,
-        dispatcher: dispatchedBy,
+        parentActor: resolvedActors.parentActor,
         assigneeKind,
         assigneeLabel,
       });
@@ -3246,8 +3298,9 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     let preallocatedTaskId: string | undefined;
 
     if (asSub) {
-      // Dispatcher lane must exist so targetBranch is a real checked-out worktree.
-      const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, dispatchedBy!.trim());
+      // Parent Role lane must exist so targetBranch is a real checked-out worktree.
+      const parentRole = resolvedActors.parentActor.id;
+      const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, parentRole);
       if (assigneeKind === "role") {
         const assigneeLane = await ensureRoleWorkspace(mount.workspaceRoot, assigneeLabel);
         workspaceLane = { ...assigneeLane, targetBranch: dispatcherLane.branch };
@@ -3272,9 +3325,34 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       const settings = await loadWorkspaceSettings(mount.env.fs);
       deliveryPolicy = settings.defaultDeliveryPolicy;
     }
+    // Downstream Task Agent → parent: force review (no bypass/agent-decide).
+    // Elevated policies only for durable Role user-facing delivery.
+    if (
+      deliveryPolicy !== "review" &&
+      !mayElevateDeliveryPolicy({
+        parentActor: resolvedActors.parentActor,
+        assigneeKind,
+      })
+    ) {
+      if (explicitDeliveryPolicy !== undefined) {
+        throw new RpcError(
+          -32602,
+          `deliveryPolicy=${deliveryPolicy} is only legal for a durable Role's user-facing delivery; ` +
+            `Task Agent → parent must use review (parent=${resolvedActors.parentActor.kind}:${resolvedActors.parentActor.id})`,
+          {
+            deliveryPolicy,
+            parentActor: resolvedActors.parentActor,
+            assigneeKind,
+          }
+        );
+      }
+      // Workspace default elevated while dispatching a downstream Task Agent → clamp to review.
+      deliveryPolicy = "review";
+    }
     const dispatched = await dispatch(mount.env, boxId, assigneeKind === "role" ? role : undefined, {
       userPrompt: prompt,
-      dispatchedBy,
+      parentActor: resolvedActors.parentActor,
+      reviewer: resolvedActors.reviewer,
       asSub,
       deliveryPolicy,
       workspace: workspaceLane,
@@ -3339,6 +3417,8 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     assigneeKind: dispatched.assigneeKind,
     assignee: dispatched.assignee,
     asSub: taskAfter ? taskAsSub(taskAfter) : asSub,
+    parentActor: taskAfter?.parentActor ?? resolvedActors.parentActor,
+    reviewer: taskAfter?.reviewer ?? resolvedActors.reviewer,
     // Prefer durable envelope state so success/failure projections stay honest.
     state: taskAfter?.state ?? (startSession ? "running" : "queued"),
     session,
@@ -3405,31 +3485,38 @@ async function compensateCombinedDispatchStartSessionFailure(
 }
 
 /**
- * Fail before lane/envelope creation for asSub dispatch.
- * Requires durable registry dispatcher role (not user, not the assignee itself),
+ * Fail before lane/envelope creation for asSub (Git-lane sub) dispatch.
+ * Requires durable registry parent Role (not user, not the assignee itself),
  * and a real Git workspace. Soft policy only — not cryptographic auth.
  */
 async function assertSubDispatchPreconditions(
   fs: import("../core/adapter.js").FsAdapter,
   input: {
     workspaceRoot: string;
-    dispatcher: string | undefined;
+    parentActor: TaskActorRef;
     assigneeKind: "role" | "agentProfile";
     assigneeLabel: string;
   }
 ): Promise<void> {
-  const dispatcher = (input.dispatcher || "").trim();
+  if (input.parentActor.kind !== "role") {
+    throw new RpcError(
+      -32602,
+      "task.dispatch asSub requires parentActor kind=role naming a real durable registry role (not user)",
+      { parentActor: input.parentActor }
+    );
+  }
+  const dispatcher = input.parentActor.id.trim();
   if (!dispatcher || dispatcher === "user") {
     throw new RpcError(
       -32602,
-      "task.dispatch asSub requires dispatchedBy naming a real durable registry role (not user)"
+      "task.dispatch asSub requires parentActor naming a real durable registry role (not user)"
     );
   }
   if (dispatcher === input.assigneeLabel) {
     throw new RpcError(
       -32602,
-      "task.dispatch asSub dispatchedBy must not equal the assignee itself",
-      { dispatchedBy: dispatcher, assignee: input.assigneeLabel }
+      "task.dispatch asSub parentActor must not equal the assignee itself",
+      { parentActor: input.parentActor, assignee: input.assigneeLabel }
     );
   }
   const registry = await loadRolesRegistry(fs);
@@ -3437,8 +3524,8 @@ async function assertSubDispatchPreconditions(
   if (!role) {
     throw new RpcError(
       -32602,
-      `task.dispatch asSub dispatchedBy role not found in registry: ${dispatcher}`,
-      { dispatchedBy: dispatcher }
+      `task.dispatch asSub parentActor role not found in registry: ${dispatcher}`,
+      { parentActor: input.parentActor }
     );
   }
   if (!(await isGitWorkspace(input.workspaceRoot))) {
@@ -3447,6 +3534,43 @@ async function assertSubDispatchPreconditions(
       "task.dispatch asSub requires a real Git workspace lane; pure Tent / non-Git workspaces cannot host sub dispatch"
     );
   }
+}
+
+function parseOptionalTaskActor(
+  value: unknown,
+  label: "parentActor" | "reviewer"
+): TaskActorRef | undefined {
+  if (value === undefined || value === null) return undefined;
+  try {
+    return parseTaskActorRef(value, label);
+  } catch (err) {
+    throw new RpcError(
+      -32602,
+      err instanceof Error ? err.message : `Invalid ${label}`,
+      { field: label }
+    );
+  }
+}
+
+/** Resolve parent/reviewer at dispatch RPC from explicit wire or legacy dispatchedBy once. */
+function resolveDispatchActorsFromRpc(input: {
+  parentActor?: TaskActorRef;
+  reviewer?: TaskActorRef;
+  dispatchedBy?: string;
+  asSub?: boolean;
+}): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
+  if (input.parentActor) {
+    const parentActor = input.parentActor;
+    const reviewer = input.reviewer ?? { ...parentActor };
+    return { parentActor, reviewer };
+  }
+  if (input.reviewer) {
+    throw new RpcError(-32602, "task.dispatch reviewer requires parentActor");
+  }
+  return migrateParentReviewerFromLegacy({
+    asSub: input.asSub,
+    dispatchedBy: input.dispatchedBy,
+  });
 }
 
 async function taskClaimRpc(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -4343,9 +4467,9 @@ async function resolveTaskWorktreeForDirtyCheck(
   const isProfile = taskAssigneeKind(task) === "agentProfile";
   let targetBranch = task.targetBranch?.trim();
   if (isProfile && taskAsSub(task)) {
-    const dispatcher = (task.dispatchedBy || "").trim();
-    if (dispatcher && dispatcher !== "user") {
-      targetBranch = (await ensureRoleWorkspace(mountedRoot, dispatcher)).branch;
+    const parentRole = taskParentRoleId(task);
+    if (parentRole) {
+      targetBranch = (await ensureRoleWorkspace(mountedRoot, parentRole)).branch;
     }
   }
   const lane = isProfile
@@ -5020,7 +5144,7 @@ async function prepareAuthorizedTaskStartSession(
     }
   } else {
     const taskForPolicy = await loadTaskEnvelope(mount.env.fs, taskPath);
-    // A2A authority: user is root. Role callers use dispatchedBy for sub tasks
+    // A2A authority: user is root. Role callers use parent Role for sub tasks
     // (role or profile assignee) and for peer agentProfile tasks; peer role tasks
     // use task.role.
     const authorityRole = resolveA2AAuthorityRole(taskForPolicy, callerKind);
@@ -5029,7 +5153,9 @@ async function prepareAuthorizedTaskStartSession(
       taskRole: authorityRole,
       requireRegisteredRole:
         callerKind === "role" &&
-        (taskAsSub(taskForPolicy) || taskAssigneeKind(taskForPolicy) === "agentProfile"),
+        (taskParentIsRole(taskForPolicy) ||
+          taskAsSub(taskForPolicy) ||
+          taskAssigneeKind(taskForPolicy) === "agentProfile"),
     });
     // User root bypasses policy + profile whitelist.
     // Role caller + registry allow: profileId must be in role.allowedProfiles.
@@ -8682,9 +8808,12 @@ function shouldSkipTaskFailOnSessionTerminal(input: {
 }
 
 /**
- * Managed ACP path: capture final assistant response → same task.deliver lifecycle.
- * - summary/report = assistant final reply
- * - never auto-accept; review → pending independent accept; bypass/agent-decide use existing policy
+ * Managed ACP path: capture final assistant response → same task.deliver lifecycle
+ * **only when explicit outcome=delivered**.
+ * - summary/report = assistant final reply body after outcome wire
+ * - outcome blocked|needs-input → park via existing wait/UserAsk paths; no ready Delivery
+ * - never auto-accept; review → pending independent accept; bypass/agent-decide only when
+ *   legal for Role user-facing delivery (downstream always review)
  * - empty/error already filtered by adapter; still refuse empty here
  * - duplicate completion / already-delivered / terminal → ignore (no second delivery)
  * - production auto-collects pending commits from the task's authoritative role lane
@@ -8712,16 +8841,16 @@ async function tryManagedAutoDeliver(
 ): Promise<void> {
   // Prefer explicit assistantText; empty callers may recover a durable draft
   // (service restart / idempotent retry without re-prompting the Agent).
-  let summary = input.assistantText.trim();
+  let rawReport = input.assistantText.trim();
   let sessionId = input.sessionId.trim();
-  if (!summary) {
+  if (!rawReport) {
     try {
       const draft = await ctx.managedDeliveryReportDrafts.get(
         input.workspaceId,
         input.taskPath
       );
       if (draft?.assistantText?.trim()) {
-        summary = draft.assistantText.trim();
+        rawReport = draft.assistantText.trim();
         if (!sessionId && draft.sessionId) {
           sessionId = draft.sessionId;
         }
@@ -8730,10 +8859,49 @@ async function tryManagedAutoDeliver(
       // Draft lookup failure must not invent a delivery.
     }
   }
-  if (!summary || !sessionId) {
+  if (!rawReport || !sessionId) {
     // Adapter should have failed already; do not invent a delivery.
     return;
   }
+
+  // Explicit outcome gate: only outcome=delivered may publish a ready Delivery.
+  // Missing/invalid outcome → no Delivery (fail loud via session diagnostic).
+  const parsedOutcome = parseTaskOutcomeReport(rawReport);
+  if (!parsedOutcome) {
+    await handleManagedNonDeliveredOutcome(ctx, {
+      workspaceId: input.workspaceId,
+      taskPath: input.taskPath,
+      sessionId,
+      outcome: null,
+      report: rawReport,
+    });
+    return;
+  }
+  if (parsedOutcome.outcome !== "delivered") {
+    await handleManagedNonDeliveredOutcome(ctx, {
+      workspaceId: input.workspaceId,
+      taskPath: input.taskPath,
+      sessionId,
+      outcome: parsedOutcome.outcome,
+      report: parsedOutcome.report || rawReport,
+    });
+    return;
+  }
+  const summary = (parsedOutcome.report || rawReport).trim();
+  if (!summary) {
+    // delivered with empty body is not a usable Delivery.
+    await handleManagedNonDeliveredOutcome(ctx, {
+      workspaceId: input.workspaceId,
+      taskPath: input.taskPath,
+      sessionId,
+      outcome: "delivered",
+      report: "",
+      emptyDeliveredBody: true,
+    });
+    return;
+  }
+  // Keep the full outcome wire in drafts so idempotent retry re-parses correctly.
+  const draftText = rawReport;
 
   const key = managedDeliverKey(sessionId, input.taskPath);
   if (managedAutoDeliverDone.has(key) || managedAutoDeliverInFlight.has(key)) {
@@ -8777,7 +8945,7 @@ async function tryManagedAutoDeliver(
       taskPath: input.taskPath,
       taskId: pre.id || input.taskPath,
       sessionId,
-      assistantText: summary,
+      assistantText: draftText,
     });
     draftPreserved = true;
 
@@ -8878,6 +9046,7 @@ async function tryManagedAutoDeliver(
         ctx.host.markSelfWrite(input.workspaceId);
 
         // agent-decide without an explicit agent decision: request-review (never auto-accept).
+        // Downstream Task Agent → parent is always review (elevated policy already refused at dispatch).
         const policy = task.deliveryPolicy ?? "review";
         const decision =
           policy === "agent-decide" ? ("request-review" as const) : undefined;
@@ -8888,6 +9057,11 @@ async function tryManagedAutoDeliver(
           ...(pendingCommits.length > 0 ? { commits: pendingCommits } : {}),
           ...(targetHead ? { targetHead } : {}),
         };
+        // Record explicit outcome on the envelope before/with deliver state write.
+        await patchTaskEnvelope(mount.env.fs, input.taskPath, {
+          lastOutcome: "delivered",
+          updatedAt: mount.env.clock.now(),
+        });
         const prepared = await prepareTaskDeliver(mount.env, input.taskPath, opts);
         if (prepared.kind === "done") {
           return { kind: "done", result: prepared.result };
@@ -9016,6 +9190,111 @@ async function tryManagedAutoDeliver(
       // ignore nested mapping failures
     }
   } finally {
+    managedAutoDeliverInFlight.delete(key);
+  }
+}
+
+/**
+ * Managed final report with outcome ≠ delivered (or missing/invalid/empty).
+ * Never publishes a ready Delivery. Records lastOutcome when known; parks
+ * needs-input / blocked via existing task.wait paths; leaves session diagnostic.
+ */
+async function handleManagedNonDeliveredOutcome(
+  ctx: HandlerContext,
+  input: {
+    workspaceId: string;
+    taskPath: string;
+    sessionId: string;
+    outcome: TaskOutcome | null;
+    report: string;
+    emptyDeliveredBody?: boolean;
+  }
+): Promise<void> {
+  const mount = ctx.host.get(input.workspaceId);
+  if (!mount) return;
+  const sessionId = input.sessionId.trim();
+  const key = managedDeliverKey(sessionId, input.taskPath);
+  // Do not mark done — a later turn may still deliver.
+  try {
+    const task = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
+    if (!task) return;
+    if (task.state !== "running" && task.state !== "waiting") return;
+    if (task.sessionId && task.sessionId !== sessionId) return;
+
+    const outcome = input.outcome;
+    const report =
+      input.report.trim() ||
+      (input.emptyDeliveredBody
+        ? "outcome=delivered but report body was empty"
+        : outcome
+          ? `outcome=${outcome}`
+          : "managed final report missing explicit outcome: delivered|blocked|needs-input");
+
+    if (outcome === "needs-input" || outcome === "blocked") {
+      await runTaskLifecycle(input.workspaceId, input.taskPath, async () => {
+        await ctx.mutations.run(input.workspaceId, async () => {
+          ctx.host.markSelfWrite(input.workspaceId);
+          const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+          if (current.state !== "running") return;
+          await patchTaskEnvelope(mount.env.fs, input.taskPath, {
+            lastOutcome: outcome,
+            state: "waiting",
+            wait: {
+              reason: outcome === "needs-input" ? "user-input" : "external",
+              summary: report.slice(0, 2000),
+              code: outcome === "needs-input" ? "needs_input" : "blocked",
+            },
+            updatedAt: mount.env.clock.now(),
+          });
+        });
+      });
+      const after = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
+      if (after) emitTaskState(ctx, input.workspaceId, after, "session.prompt_complete");
+    } else if (outcome === "delivered" && input.emptyDeliveredBody) {
+      await ctx.mutations.run(input.workspaceId, async () => {
+        ctx.host.markSelfWrite(input.workspaceId);
+        await patchTaskEnvelope(mount.env.fs, input.taskPath, {
+          lastOutcome: "delivered",
+          updatedAt: mount.env.clock.now(),
+        });
+      });
+    }
+
+    try {
+      await ctx.runtime.registry.update(sessionId, {
+        lastError: input.emptyDeliveredBody
+          ? "managed outcome=delivered but empty report body (no Delivery)"
+          : outcome
+            ? `managed outcome=${outcome} (no ready Delivery)`
+            : "managed final report missing explicit outcome (no ready Delivery)",
+      });
+    } catch {
+      // Session row may be gone.
+    }
+    ctx.events.emit(
+      "session.state",
+      input.workspaceId,
+      {
+        sessionId,
+        taskPath: input.taskPath,
+        taskState: (await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null))
+          ?.state,
+        runtimeEvent: "session.prompt_complete.outcome",
+        outcome: outcome ?? "missing",
+        error: report.slice(0, 500),
+        deliveryPublished: false,
+        taskFailed: false,
+      },
+      "service"
+    );
+  } catch (err) {
+    console.error(
+      `[managed outcome] non-delivered handling failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+  } finally {
+    // Allow a later successful delivered turn for the same session+task.
     managedAutoDeliverInFlight.delete(key);
   }
 }
@@ -10263,11 +10542,11 @@ async function resolveIntegrationContract(
   const isProfile = taskAssigneeKind(task) === "agentProfile";
   let dispatcherLane: RoleWorkspaceContract | undefined;
   if (taskAsSub(task)) {
-    const dispatcher = (task.dispatchedBy || "").trim();
+    const dispatcher = taskParentRoleId(task);
     const label = isProfile ? `task ${task.id || task.path}` : `role ${task.role}`;
-    if (!dispatcher || dispatcher === "user") {
+    if (!dispatcher) {
       throw new Error(
-        `Sub task envelope missing durable dispatchedBy for ${label}; cannot resolve targetBranch`
+        `Sub task envelope missing durable parent Role for ${label}; cannot resolve targetBranch`
       );
     }
     dispatcherLane = await ensureRoleWorkspace(mountedRoot, dispatcher);
@@ -10353,10 +10632,10 @@ async function ensureTaskWorkspaceLane(
     const isProfile = taskAssigneeKind(current) === "agentProfile";
     let taskTargetBranch: string | undefined;
     if (isProfile && taskAsSub(current)) {
-      const dispatcher = (current.dispatchedBy || "").trim();
-      if (!dispatcher || dispatcher === "user") {
+      const dispatcher = taskParentRoleId(current);
+      if (!dispatcher) {
         throw new Error(
-          `Sub task ${current.id || current.path} is missing a durable dispatcher role.`
+          `Sub task ${current.id || current.path} is missing a durable parent Role.`
         );
       }
       const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, dispatcher);
@@ -10472,31 +10751,35 @@ async function findResumableManagedSessionForRole(
 /**
  * Resolve the durable role whose a2aPolicy/allowedProfiles govern startSession.
  * - user caller: unused (root authority)
- * - sub task (asSub) + role caller: authority = dispatchedBy (role or profile assignee)
- * - peer role task: authority = task.role
- * - peer agentProfile task + role caller: dispatchedBy must name a real role (not the profile)
+ * - parent Role task (sub or agentProfile under Role) + role caller: authority = parent Role
+ * - peer role task (parent=user): authority = task.role
+ * - peer agentProfile with parent=user + role caller: fails (needs durable parent Role)
  */
 function resolveA2AAuthorityRole(
   task: TaskEnvelope,
   callerKind: "user" | "role"
 ): string {
   if (callerKind === "user") return task.role;
-  if (taskAsSub(task) || taskAssigneeKind(task) === "agentProfile") {
-    const dispatcher = (task.dispatchedBy || "").trim();
-    if (!dispatcher || dispatcher === "user") {
+  if (taskParentIsRole(task) || taskAsSub(task) || taskAssigneeKind(task) === "agentProfile") {
+    const dispatcher = taskParentRoleId(task);
+    if (!dispatcher) {
       throw new RpcError(
         -32602,
-        taskAsSub(task)
-          ? "callerKind=role startSession on sub task requires dispatchedBy to name a real dispatcher role"
-          : "callerKind=role startSession on agentProfile task requires dispatchedBy to name a real dispatcher role",
-        { dispatchedBy: task.dispatchedBy, assignee: task.role, asSub: taskAsSub(task) }
+        taskAsSub(task) || taskParentIsRole(task)
+          ? "callerKind=role startSession on parent-Role task requires parentActor kind=role"
+          : "callerKind=role startSession on agentProfile task requires parentActor kind=role",
+        {
+          parentActor: task.parentActor,
+          assignee: task.role,
+          asSub: taskAsSub(task),
+        }
       );
     }
     if (dispatcher === task.role) {
       throw new RpcError(
         -32602,
-        "callerKind=role startSession must not use the assignee label as dispatcher role",
-        { dispatchedBy: dispatcher, assignee: task.role }
+        "callerKind=role startSession must not use the assignee label as parent Role",
+        { parentActor: task.parentActor, assignee: task.role }
       );
     }
     return dispatcher;
@@ -10610,8 +10893,9 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
     status: task.status,
     state: task.state,
     manifest: task.manifest,
-    dispatchedBy: task.dispatchedBy,
-    // Missing asSub on disk reads as false (peer).
+    parentActor: task.parentActor,
+    reviewer: task.reviewer,
+    // Missing asSub on disk reads as false (peer Git lane).
     asSub: taskAsSub(task),
     deliveryPolicy: task.deliveryPolicy,
     // Missing assigneeKind on disk reads as role (backward compatible).
@@ -10619,6 +10903,7 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
     sessionId: task.sessionId,
     wait: task.wait,
     activeDeliveryId: task.activeDeliveryId,
+    lastOutcome: task.lastOutcome,
     workspaceLane: lane,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,

@@ -1332,6 +1332,109 @@ function isRoleId(id) {
 
 // src/core/task-model.ts
 var DEFAULT_DELIVERY_POLICY = "review";
+var TaskLifecycleError = class extends Error {
+  constructor(code, message2) {
+    super(message2);
+    this.code = code;
+    this.name = "TaskLifecycleError";
+  }
+};
+function isTaskActorKind(value) {
+  return value === "user" || value === "role";
+}
+function parseTaskActorRef(value, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label} must be an object { kind, id }.`
+    );
+  }
+  const raw = value;
+  const kind = raw.kind;
+  const id = typeof raw.id === "string" ? raw.id.trim() : "";
+  if (!isTaskActorKind(kind)) {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label}.kind must be user|role; got ${String(kind)}.`
+    );
+  }
+  if (!id) {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label}.id must be a non-empty string.`
+    );
+  }
+  if (kind === "user" && id !== "user") {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label} with kind=user requires id "user"; got ${id}.`
+    );
+  }
+  if (kind === "role" && id === "user") {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task ${label} with kind=role must name a durable role (not user).`
+    );
+  }
+  return { kind, id };
+}
+function userTaskActors() {
+  return {
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" }
+  };
+}
+function roleTaskActors(roleName) {
+  const id = roleName.trim();
+  if (!id || id === "user") {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      "Role parent/reviewer requires a durable role name (not user)."
+    );
+  }
+  return {
+    parentActor: { kind: "role", id },
+    reviewer: { kind: "role", id }
+  };
+}
+function migrateParentReviewerFromLegacy(input) {
+  const dispatcher = (input.dispatchedBy || "").trim();
+  if (dispatcher && dispatcher !== "user") {
+    return roleTaskActors(dispatcher);
+  }
+  return userTaskActors();
+}
+function mayElevateDeliveryPolicy(input) {
+  const parent = input.parentActor;
+  if (!parent || parent.kind !== "user") return false;
+  return (input.assigneeKind ?? "role") === "role";
+}
+function parseTaskOutcomeReport(text3) {
+  const raw = typeof text3 === "string" ? text3.replace(/^\uFEFF/, "") : "";
+  if (!raw.trim()) return null;
+  const lines = raw.replace(/\r\n/g, "\n").split("\n");
+  let i = 0;
+  while (i < lines.length && lines[i].trim() === "") i += 1;
+  if (i >= lines.length) return null;
+  let fence = false;
+  if (lines[i].trim() === "---") {
+    fence = true;
+    i += 1;
+    while (i < lines.length && lines[i].trim() === "") i += 1;
+  }
+  if (i >= lines.length) return null;
+  const match = lines[i].trim().match(/^outcome\s*:\s*(delivered|blocked|needs-input)\s*$/i);
+  if (!match) return null;
+  const outcome = match[1].toLowerCase();
+  i += 1;
+  if (fence) {
+    while (i < lines.length && lines[i].trim() === "") i += 1;
+    if (i < lines.length && lines[i].trim() === "---") i += 1;
+  }
+  if (i < lines.length && lines[i].trim() === "") i += 1;
+  const report = lines.slice(i).join("\n").replace(/^\n+/, "").replace(/\n+$/, "");
+  return { outcome, report };
+}
 function isDeliveryPolicy(value) {
   return value === "review" || value === "bypass" || value === "agent-decide";
 }
@@ -1375,13 +1478,6 @@ function isTaskId(id) {
 function isDeliveryId(id) {
   return id.startsWith("dl-") && id.length > 3;
 }
-var TaskLifecycleError = class extends Error {
-  constructor(code, message2) {
-    super(message2);
-    this.code = code;
-    this.name = "TaskLifecycleError";
-  }
-};
 function assertTransition(from, event, to) {
   const ok = allowedTransitions(from).some((t) => t.event === event && t.to === to);
   if (!ok) {
@@ -1474,13 +1570,24 @@ function assertReviewAuthority(input) {
       `task.${action} actor must not equal delivery submitter (${submitter}).`
     );
   }
-  if (input.asSub !== true) return;
-  const dispatcher = (input.dispatchedBy || "").trim();
+  const reviewer = input.reviewer;
+  if (!reviewer) {
+    throw new TaskLifecycleError(
+      "REVIEW_FORBIDDEN",
+      `task.${action} requires an explicit Task.reviewer (parent-reviewer wire).`
+    );
+  }
   if (actor === "user") return;
-  if (dispatcher && actor === dispatcher) return;
+  if (reviewer.kind === "user") {
+    throw new TaskLifecycleError(
+      "REVIEW_FORBIDDEN",
+      `task.${action} on user-reviewed task requires actor user; got ${actor}.`
+    );
+  }
+  if (actor === reviewer.id) return;
   throw new TaskLifecycleError(
     "REVIEW_FORBIDDEN",
-    `task.${action} on sub task requires actor user or dispatchedBy role` + (dispatcher ? ` (${dispatcher})` : "") + `; got ${actor}.`
+    `task.${action} requires actor user or reviewer role (${reviewer.id}); got ${actor}.`
   );
 }
 function evaluateA2A(input) {
@@ -2013,6 +2120,95 @@ async function loadTaskEnvelopes(fs21) {
   }
   return tasks.sort((a, b) => a.path.localeCompare(b.path));
 }
+async function migrateParentReviewerEnvelopes(fs21, clock, options) {
+  const dryRun = options?.dryRun === true;
+  const report = {
+    scanned: 0,
+    rewritten: [],
+    skipped: [],
+    warnings: []
+  };
+  if (!await fs21.exists(TEMP_DIR)) return report;
+  const paths = [];
+  for (const entry of await fs21.listDir(TEMP_DIR)) {
+    if (!entry.isDir) continue;
+    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
+      const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
+      if (!await fs21.exists(profilesRoot)) continue;
+      for (const profileEntry of await fs21.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        const taskDir2 = join(profilesRoot, profileEntry.name, "tasks");
+        if (!await fs21.exists(taskDir2)) continue;
+        for (const f of await fs21.listDir(taskDir2)) {
+          if (!f.isDir && f.name.endsWith(".md")) paths.push(join(taskDir2, f.name));
+        }
+      }
+      continue;
+    }
+    const taskDir = join(TEMP_DIR, entry.name, "tasks");
+    if (!await fs21.exists(taskDir)) continue;
+    for (const f of await fs21.listDir(taskDir)) {
+      if (!f.isDir && f.name.endsWith(".md")) paths.push(join(taskDir, f.name));
+    }
+  }
+  for (const path22 of paths.sort((a, b) => a.localeCompare(b))) {
+    report.scanned += 1;
+    try {
+      const raw = await fs21.readFile(path22);
+      const { data, body, keyOrder } = parseFrontmatter(raw);
+      if (data.type !== "task") {
+        report.skipped.push(path22);
+        continue;
+      }
+      const hasParent = data.parentActor !== void 0 && data.parentActor !== null;
+      const hasReviewer = data.reviewer !== void 0 && data.reviewer !== null;
+      const hasLegacyDispatcher = typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
+      if (hasParent && hasReviewer && !hasLegacyDispatcher) {
+        report.skipped.push(path22);
+        continue;
+      }
+      let parentActor;
+      let reviewer;
+      if (hasParent && hasReviewer) {
+        parentActor = parseTaskActorRef(data.parentActor, "parentActor");
+        reviewer = parseTaskActorRef(data.reviewer, "reviewer");
+      } else if (hasParent || hasReviewer) {
+        report.warnings.push(
+          `${path22}: partial parentActor/reviewer pair; refusing silent repair`
+        );
+        report.skipped.push(path22);
+        continue;
+      } else {
+        const migrated = migrateParentReviewerFromLegacy({
+          asSub: data.asSub === true,
+          dispatchedBy: typeof data.dispatchedBy === "string" ? data.dispatchedBy : void 0
+        });
+        parentActor = migrated.parentActor;
+        reviewer = migrated.reviewer;
+      }
+      const next = { ...data };
+      next.parentActor = serializeTaskActorRef(parentActor);
+      next.reviewer = serializeTaskActorRef(reviewer);
+      delete next.dispatchedBy;
+      const nextRaw = serializeFrontmatter(next, body, keyOrder);
+      if (nextRaw === raw) {
+        report.skipped.push(path22);
+        continue;
+      }
+      if (!dryRun) {
+        next.updatedAt = clock.now();
+        await fs21.writeFile(path22, serializeFrontmatter(next, body, keyOrder));
+      }
+      report.rewritten.push(path22);
+    } catch (err) {
+      report.warnings.push(
+        `${path22}: ${err instanceof Error ? err.message : String(err)}`
+      );
+      report.skipped.push(path22);
+    }
+  }
+  return report;
+}
 async function collectTaskFiles(fs21, taskDir, tasks) {
   if (!await fs21.exists(taskDir)) return;
   for (const entry of await fs21.listDir(taskDir)) {
@@ -2030,6 +2226,29 @@ function taskAssigneeKind(task) {
 function taskAsSub(task) {
   return task.asSub === true;
 }
+function taskParentIsRole(task) {
+  return task.parentActor?.kind === "role";
+}
+function taskParentRoleId(task) {
+  return task.parentActor?.kind === "role" ? task.parentActor.id : void 0;
+}
+function serializeTaskActorRef(actor) {
+  return { kind: actor.kind, id: actor.id };
+}
+function resolveDispatchActors(input) {
+  if (input.parentActor) {
+    const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
+    const reviewer = input.reviewer ? parseTaskActorRef(input.reviewer, "reviewer") : { ...parentActor };
+    return { parentActor, reviewer };
+  }
+  if (input.reviewer) {
+    throw new Error("task.dispatch reviewer requires parentActor");
+  }
+  return migrateParentReviewerFromLegacy({
+    asSub: input.asSub,
+    dispatchedBy: input.dispatchedBy
+  });
+}
 async function loadTaskEnvelope(fs21, path22) {
   if (!await fs21.exists(path22)) throw new Error(`Task envelope not found: ${path22}.`);
   const { data, body } = parseFrontmatter(await fs21.readFile(path22));
@@ -2038,6 +2257,7 @@ async function loadTaskEnvelope(fs21, path22) {
   }
   const legacyStatus = data.status === "taken" ? "taken" : "pending";
   const state = parseTaskState(data.state, legacyStatus);
+  const actors = resolveActorsFromDisk(data);
   const task = {
     path: path22,
     role: data.role,
@@ -2045,10 +2265,11 @@ async function loadTaskEnvelope(fs21, path22) {
     manifest: data.manifest,
     status: stateToLegacyStatus(state),
     state,
+    parentActor: actors.parentActor,
+    reviewer: actors.reviewer,
     prompt: body.trim() || void 0
   };
   if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
-  if (typeof data.dispatchedBy === "string") task.dispatchedBy = data.dispatchedBy;
   if (data.asSub === true) task.asSub = true;
   if (typeof data.workspace === "string") task.workspace = data.workspace;
   if (typeof data.worktree === "string") task.worktree = data.worktree;
@@ -2064,11 +2285,34 @@ async function loadTaskEnvelope(fs21, path22) {
   }
   if (typeof data.sessionId === "string") task.sessionId = data.sessionId;
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
+  if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
+    task.lastOutcome = data.lastOutcome;
+  }
   if (typeof data.createdAt === "string") task.createdAt = data.createdAt;
   if (typeof data.updatedAt === "string") task.updatedAt = data.updatedAt;
   const wait = parseWaitFields(data);
   if (wait) task.wait = wait;
   return task;
+}
+function resolveActorsFromDisk(data) {
+  const hasParent = data.parentActor !== void 0 && data.parentActor !== null;
+  const hasReviewer = data.reviewer !== void 0 && data.reviewer !== null;
+  if (hasParent || hasReviewer) {
+    if (!hasParent || !hasReviewer) {
+      throw new Error(
+        "Invalid task envelope: parentActor and reviewer must both be present when either is set."
+      );
+    }
+    return {
+      parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
+      reviewer: parseTaskActorRef(data.reviewer, "reviewer")
+    };
+  }
+  const legacyDispatcher = typeof data.dispatchedBy === "string" ? data.dispatchedBy : void 0;
+  return migrateParentReviewerFromLegacy({
+    asSub: data.asSub === true,
+    dispatchedBy: legacyDispatcher
+  });
 }
 function resolveTaskPromptRoots(roots) {
   if (typeof roots !== "string") {
@@ -2091,6 +2335,14 @@ function formatTaskPointers(task) {
   ];
   if (task.claims?.length) {
     lines.push(`claims: ${task.claims.join(", ")}`);
+  }
+  if (task.parentActor) {
+    lines.push(
+      `parentActor: ${task.parentActor.kind}:${task.parentActor.id}`
+    );
+  }
+  if (task.reviewer) {
+    lines.push(`reviewer: ${task.reviewer.kind}:${task.reviewer.id}`);
   }
   if (task.deliveryPolicy) {
     lines.push(`deliveryPolicy: ${task.deliveryPolicy}`);
@@ -2148,7 +2400,7 @@ function sessionBootstrapPromptForTask(task, _roots) {
 `;
   return readyLine + `${formatTaskPointers(task)}
 Service status: this task is already claimed (state=${task.state || "running"}).
-Managed path: Local Service already claimed this task; your final assistant reply is the report and will be delivered automatically (Review policy waits for independent accept; no auto-accept).
+Managed path: Local Service already claimed this task; end with an explicit outcome wire (\`outcome: delivered|blocked|needs-input\`) then the report body. Only \`delivered\` may become a ready Delivery after turn settle; blocker/question must use needs-input/blocked or ask-user \u2014 never self-accept.
 ` + (kind === "agentProfile" ? `One-shot agentProfile task: rely on task/manifest pointers only \u2014 no role init.
 ` : "") + (userPrompt ? `
 ## User Prompt
@@ -2191,6 +2443,21 @@ async function writeTaskEnvelope(fs21, clock, input) {
   const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
   const path22 = await uniqueMarkdownPath(fs21, dir, stem);
   const now = clock.now();
+  const actors = resolveDispatchActors({
+    parentActor: input.parentActor,
+    reviewer: input.reviewer,
+    dispatchedBy: input.dispatchedBy,
+    asSub: input.asSub
+  });
+  const deliveryPolicy = input.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY;
+  if (deliveryPolicy !== "review" && !mayElevateDeliveryPolicy({
+    parentActor: actors.parentActor,
+    assigneeKind
+  })) {
+    throw new Error(
+      `deliveryPolicy=${deliveryPolicy} is only legal for a durable Role's user-facing delivery; downstream Task Agent \u2192 parent must use review (parent=${actors.parentActor.kind}:${actors.parentActor.id}).`
+    );
+  }
   const data = {
     type: "task",
     id,
@@ -2198,10 +2465,11 @@ async function writeTaskEnvelope(fs21, clock, input) {
     state: "queued",
     role: input.role,
     assigneeKind,
-    dispatchedBy: input.dispatchedBy?.trim() || "user",
+    parentActor: serializeTaskActorRef(actors.parentActor),
+    reviewer: serializeTaskActorRef(actors.reviewer),
     claims: input.claims.map((claim) => claim.id),
     manifest: input.manifestPath,
-    deliveryPolicy: input.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY,
+    deliveryPolicy,
     createdAt: now,
     updatedAt: now
   };
@@ -2264,6 +2532,21 @@ async function patchTaskEnvelope(fs21, path22, patch) {
   if (patch.activeDeliveryId === null) delete data.activeDeliveryId;
   else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
   if (patch.deliveryPolicy) data.deliveryPolicy = patch.deliveryPolicy;
+  if (patch.parentActor) {
+    data.parentActor = serializeTaskActorRef(
+      parseTaskActorRef(patch.parentActor, "parentActor")
+    );
+  }
+  if (patch.reviewer) {
+    data.reviewer = serializeTaskActorRef(parseTaskActorRef(patch.reviewer, "reviewer"));
+  }
+  if (patch.clearLegacyDispatchedBy) {
+    delete data.dispatchedBy;
+  }
+  if (patch.lastOutcome === null) delete data.lastOutcome;
+  else if (patch.lastOutcome === "delivered" || patch.lastOutcome === "blocked" || patch.lastOutcome === "needs-input") {
+    data.lastOutcome = patch.lastOutcome;
+  }
   if (patch.updatedAt) data.updatedAt = patch.updatedAt;
   for (const key2 of ["workspace", "worktree", "branch", "targetBranch"]) {
     const value = patch[key2];
@@ -2884,7 +3167,8 @@ async function taskClaim(env, taskPath, options = {}) {
     assertTransition(task.state, "claim", "running");
     const tent = await loadTent(env.fs);
     const claimedBoxes = task.claims.filter((claimId) => claimId !== "root").map((claimId) => requireBoxById(tent, claimId));
-    const allowAncestorClaimedBy = taskAsSub(task) && task.dispatchedBy && task.dispatchedBy !== "user" && task.dispatchedBy !== task.role ? task.dispatchedBy : void 0;
+    const parentRole = task.parentActor?.kind === "role" ? task.parentActor.id : void 0;
+    const allowAncestorClaimedBy = taskAsSub(task) && parentRole && parentRole !== task.role ? parentRole : void 0;
     const allTasks = await loadTaskEnvelopes(env.fs);
     const peerTasks = allTasks.filter((t) => t.path !== taskPath && t.path !== task.path);
     for (const box of claimedBoxes) {
@@ -3013,8 +3297,7 @@ async function prepareTaskAccept(env, taskPath, options) {
     assertReviewAuthority({
       actor: options.actor,
       submitterRole: delivery.role,
-      asSub: taskAsSub(task),
-      dispatchedBy: task.dispatchedBy,
+      reviewer: task.reviewer,
       action: "accept"
     });
     if (options.outputNodeIds && options.outputNodeIds.length > 0) {
@@ -3043,8 +3326,7 @@ async function finalizeTaskAccept(env, taskPath, options, prepared) {
     assertReviewAuthority({
       actor: options.actor,
       submitterRole: delivery.role,
-      asSub: taskAsSub(task),
-      dispatchedBy: task.dispatchedBy,
+      reviewer: task.reviewer,
       action: "accept"
     });
     const deliveryRawBefore = await env.fs.readFile(delivery.path);
@@ -3128,8 +3410,7 @@ async function taskReject(env, taskPath, options) {
     assertReviewAuthority({
       actor: options.actor,
       submitterRole: delivery.role,
-      asSub: taskAsSub(task),
-      dispatchedBy: task.dispatchedBy,
+      reviewer: task.reviewer,
       action: "reject"
     });
     delivery.status = "rejected";
@@ -4032,8 +4313,8 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const createdRoot = assigneeKind === "agentProfile" ? agentProfileTempRoot(assigneeLabel) : join("temp", assigneeLabel);
   const createdRootExisted = await env.fs.exists(createdRoot);
   const asSub = options.asSub === true;
-  const dispatcher = (options.dispatchedBy || "").trim();
-  const subUnderDispatcher = asSub && Boolean(dispatcher) && dispatcher !== "user" && dispatcher !== assigneeLabel;
+  const parentRoleId = options.parentActor?.kind === "role" ? options.parentActor.id : (options.dispatchedBy || "").trim() && (options.dispatchedBy || "").trim() !== "user" ? (options.dispatchedBy || "").trim() : "";
+  const subUnderDispatcher = asSub && Boolean(parentRoleId) && parentRoleId !== assigneeLabel;
   if (claim.root) {
     const blocker = findAnyActiveTask(tasks);
     if (blocker) {
@@ -4050,7 +4331,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     const claimable = canClaim(claim.box, {
       tent,
       tasks,
-      ...subUnderDispatcher ? { allowAncestorClaimedBy: dispatcher } : {}
+      ...subUnderDispatcher ? { allowAncestorClaimedBy: parentRoleId } : {}
     });
     if (!claimable.ok) {
       throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
@@ -4083,6 +4364,8 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       manifestPath,
       userPrompt,
       workspace: options.workspace,
+      parentActor: options.parentActor,
+      reviewer: options.reviewer,
       dispatchedBy: options.dispatchedBy,
       asSub: options.asSub === true,
       deliveryPolicy: options.deliveryPolicy,
@@ -4090,8 +4373,15 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       id: taskId,
       tasksDir: assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : void 0
     });
+    const actorsForRelay = {
+      parentActor: options.parentActor,
+      reviewer: options.reviewer,
+      dispatchedBy: options.dispatchedBy,
+      asSub: options.asSub
+    };
+    const written = await loadTaskEnvelope(env.fs, taskPath).catch(() => null);
     const relayPrompt = relayPromptForTask(
-      {
+      written ?? {
         path: taskPath,
         role: assigneeLabel,
         claims: taskClaims.map((taskClaim2) => taskClaim2.id),
@@ -4099,7 +4389,8 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
         status: "pending",
         state: "queued",
         assigneeKind,
-        id: taskId
+        id: taskId,
+        ...migrateParentReviewerFromLegacy(actorsForRelay)
       },
       env.tentRoot || env.tentName
     );
@@ -4615,7 +4906,7 @@ function attachmentResult(relativePath4, label, sourceNotePath) {
 import * as nodePath2 from "node:path";
 import { pathToFileURL } from "node:url";
 
-// ../../Tent/node_modules/mdast-util-to-string/lib/index.js
+// node_modules/mdast-util-to-string/lib/index.js
 var emptyOptions = {};
 function toString(value, options) {
   const settings = options || emptyOptions;
@@ -4652,7 +4943,7 @@ function node(value) {
   return Boolean(value && typeof value === "object");
 }
 
-// ../../Tent/node_modules/character-entities/index.js
+// node_modules/character-entities/index.js
 var characterEntities = {
   AElig: "\xC6",
   AMP: "&",
@@ -6781,13 +7072,13 @@ var characterEntities = {
   zwnj: "\u200C"
 };
 
-// ../../Tent/node_modules/decode-named-character-reference/index.js
+// node_modules/decode-named-character-reference/index.js
 var own = {}.hasOwnProperty;
 function decodeNamedCharacterReference(value) {
   return own.call(characterEntities, value) ? characterEntities[value] : false;
 }
 
-// ../../Tent/node_modules/micromark-util-chunked/index.js
+// node_modules/micromark-util-chunked/index.js
 function splice(list2, start, remove, items) {
   const end = list2.length;
   let chunkStart = 0;
@@ -6821,7 +7112,7 @@ function push(list2, items) {
   return items;
 }
 
-// ../../Tent/node_modules/micromark-util-combine-extensions/index.js
+// node_modules/micromark-util-combine-extensions/index.js
 var hasOwnProperty = {}.hasOwnProperty;
 function combineExtensions(extensions) {
   const all2 = {};
@@ -6861,7 +7152,7 @@ function constructs(existing, list2) {
   splice(existing, 0, 0, before);
 }
 
-// ../../Tent/node_modules/micromark-util-decode-numeric-character-reference/index.js
+// node_modules/micromark-util-decode-numeric-character-reference/index.js
 function decodeNumericCharacterReference(value, base) {
   const code = Number.parseInt(value, base);
   if (
@@ -6879,12 +7170,12 @@ function decodeNumericCharacterReference(value, base) {
   return String.fromCodePoint(code);
 }
 
-// ../../Tent/node_modules/micromark-util-normalize-identifier/index.js
+// node_modules/micromark-util-normalize-identifier/index.js
 function normalizeIdentifier(value) {
   return value.replace(/[\t\n\r ]+/g, " ").replace(/^ | $/g, "").toLowerCase().toUpperCase();
 }
 
-// ../../Tent/node_modules/micromark-util-character/index.js
+// node_modules/micromark-util-character/index.js
 var asciiAlpha = regexCheck(/[A-Za-z]/);
 var asciiAlphanumeric = regexCheck(/[\dA-Za-z]/);
 var asciiAtext = regexCheck(/[#-'*+\--9=?A-Z^-~]/);
@@ -6916,7 +7207,7 @@ function regexCheck(regex) {
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-space/index.js
+// node_modules/micromark-factory-space/index.js
 function factorySpace(effects, ok, type, max) {
   const limit = max ? max - 1 : Number.POSITIVE_INFINITY;
   let size = 0;
@@ -6938,7 +7229,7 @@ function factorySpace(effects, ok, type, max) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/initialize/content.js
+// node_modules/micromark/lib/initialize/content.js
 var content = {
   tokenize: initializeContent
 };
@@ -6988,7 +7279,7 @@ function initializeContent(effects) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/initialize/document.js
+// node_modules/micromark/lib/initialize/document.js
 var document = {
   tokenize: initializeDocument
 };
@@ -7170,7 +7461,7 @@ function tokenizeContainer(effects, ok, nok) {
   return factorySpace(effects, effects.attempt(this.parser.constructs.document, ok, nok), "linePrefix", this.parser.constructs.disable.null.includes("codeIndented") ? void 0 : 4);
 }
 
-// ../../Tent/node_modules/micromark-util-classify-character/index.js
+// node_modules/micromark-util-classify-character/index.js
 function classifyCharacter(code) {
   if (code === null || markdownLineEndingOrSpace(code) || unicodeWhitespace(code)) {
     return 1;
@@ -7180,7 +7471,7 @@ function classifyCharacter(code) {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-resolve-all/index.js
+// node_modules/micromark-util-resolve-all/index.js
 function resolveAll(constructs2, events, context) {
   const called = [];
   let index2 = -1;
@@ -7194,7 +7485,7 @@ function resolveAll(constructs2, events, context) {
   return events;
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/attention.js
+// node_modules/micromark-core-commonmark/lib/attention.js
 var attention = {
   name: "attention",
   resolveAll: resolveAllAttention,
@@ -7325,7 +7616,7 @@ function movePoint(point3, offset) {
   point3._bufferIndex += offset;
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/autolink.js
+// node_modules/micromark-core-commonmark/lib/autolink.js
 var autolink = {
   name: "autolink",
   tokenize: tokenizeAutolink
@@ -7426,7 +7717,7 @@ function tokenizeAutolink(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/blank-line.js
+// node_modules/micromark-core-commonmark/lib/blank-line.js
 var blankLine = {
   partial: true,
   tokenize: tokenizeBlankLine
@@ -7441,7 +7732,7 @@ function tokenizeBlankLine(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/block-quote.js
+// node_modules/micromark-core-commonmark/lib/block-quote.js
 var blockQuote = {
   continuation: {
     tokenize: tokenizeBlockQuoteContinuation
@@ -7499,7 +7790,7 @@ function exit(effects) {
   effects.exit("blockQuote");
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/character-escape.js
+// node_modules/micromark-core-commonmark/lib/character-escape.js
 var characterEscape = {
   name: "characterEscape",
   tokenize: tokenizeCharacterEscape
@@ -7525,7 +7816,7 @@ function tokenizeCharacterEscape(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/character-reference.js
+// node_modules/micromark-core-commonmark/lib/character-reference.js
 var characterReference = {
   name: "characterReference",
   tokenize: tokenizeCharacterReference
@@ -7590,7 +7881,7 @@ function tokenizeCharacterReference(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/code-fenced.js
+// node_modules/micromark-core-commonmark/lib/code-fenced.js
 var nonLazyContinuation = {
   partial: true,
   tokenize: tokenizeNonLazyContinuation
@@ -7773,7 +8064,7 @@ function tokenizeNonLazyContinuation(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/code-indented.js
+// node_modules/micromark-core-commonmark/lib/code-indented.js
 var codeIndented = {
   name: "codeIndented",
   tokenize: tokenizeCodeIndented
@@ -7837,7 +8128,7 @@ function tokenizeFurtherStart(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/code-text.js
+// node_modules/micromark-core-commonmark/lib/code-text.js
 var codeText = {
   name: "codeText",
   previous,
@@ -7952,7 +8243,7 @@ function tokenizeCodeText(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-subtokenize/lib/splice-buffer.js
+// node_modules/micromark-util-subtokenize/lib/splice-buffer.js
 var SpliceBuffer = class {
   /**
    * @param {ReadonlyArray<T> | null | undefined} [initial]
@@ -8145,7 +8436,7 @@ function chunkedPush(list2, right) {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-subtokenize/index.js
+// node_modules/micromark-util-subtokenize/index.js
 function subtokenize(eventsArray) {
   const jumps = {};
   let index2 = -1;
@@ -8298,7 +8589,7 @@ function subcontent(events, eventIndex) {
   return gaps;
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/content.js
+// node_modules/micromark-core-commonmark/lib/content.js
 var content2 = {
   resolve: resolveContent,
   tokenize: tokenizeContent
@@ -8369,7 +8660,7 @@ function tokenizeContinuation(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-destination/index.js
+// node_modules/micromark-factory-destination/index.js
 function factoryDestination(effects, ok, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
@@ -8461,7 +8752,7 @@ function factoryDestination(effects, ok, nok, type, literalType, literalMarkerTy
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-label/index.js
+// node_modules/micromark-factory-label/index.js
 function factoryLabel(effects, ok, nok, type, markerType, stringType) {
   const self = this;
   let size = 0;
@@ -8522,7 +8813,7 @@ function factoryLabel(effects, ok, nok, type, markerType, stringType) {
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-title/index.js
+// node_modules/micromark-factory-title/index.js
 function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   let marker;
   return start;
@@ -8584,7 +8875,7 @@ function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-whitespace/index.js
+// node_modules/micromark-factory-whitespace/index.js
 function factoryWhitespace(effects, ok) {
   let seen;
   return start;
@@ -8603,7 +8894,7 @@ function factoryWhitespace(effects, ok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/definition.js
+// node_modules/micromark-core-commonmark/lib/definition.js
 var definition = {
   name: "definition",
   tokenize: tokenizeDefinition
@@ -8689,7 +8980,7 @@ function tokenizeTitleBefore(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/hard-break-escape.js
+// node_modules/micromark-core-commonmark/lib/hard-break-escape.js
 var hardBreakEscape = {
   name: "hardBreakEscape",
   tokenize: tokenizeHardBreakEscape
@@ -8710,7 +9001,7 @@ function tokenizeHardBreakEscape(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/heading-atx.js
+// node_modules/micromark-core-commonmark/lib/heading-atx.js
 var headingAtx = {
   name: "headingAtx",
   resolve: resolveHeadingAtx,
@@ -8801,7 +9092,7 @@ function tokenizeHeadingAtx(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-html-tag-name/index.js
+// node_modules/micromark-util-html-tag-name/index.js
 var htmlBlockNames = [
   "address",
   "article",
@@ -8868,7 +9159,7 @@ var htmlBlockNames = [
 ];
 var htmlRawNames = ["pre", "script", "style", "textarea"];
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/html-flow.js
+// node_modules/micromark-core-commonmark/lib/html-flow.js
 var htmlFlow = {
   concrete: true,
   name: "htmlFlow",
@@ -9247,7 +9538,7 @@ function tokenizeBlankLineBefore(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/html-text.js
+// node_modules/micromark-core-commonmark/lib/html-text.js
 var htmlText = {
   name: "htmlText",
   tokenize: tokenizeHtmlText
@@ -9553,7 +9844,7 @@ function tokenizeHtmlText(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/label-end.js
+// node_modules/micromark-core-commonmark/lib/label-end.js
 var labelEnd = {
   name: "labelEnd",
   resolveAll: resolveAllLabelEnd,
@@ -9779,7 +10070,7 @@ function tokenizeReferenceCollapsed(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/label-start-image.js
+// node_modules/micromark-core-commonmark/lib/label-start-image.js
 var labelStartImage = {
   name: "labelStartImage",
   resolveAll: labelEnd.resolveAll,
@@ -9810,7 +10101,7 @@ function tokenizeLabelStartImage(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/label-start-link.js
+// node_modules/micromark-core-commonmark/lib/label-start-link.js
 var labelStartLink = {
   name: "labelStartLink",
   resolveAll: labelEnd.resolveAll,
@@ -9832,7 +10123,7 @@ function tokenizeLabelStartLink(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/line-ending.js
+// node_modules/micromark-core-commonmark/lib/line-ending.js
 var lineEnding = {
   name: "lineEnding",
   tokenize: tokenizeLineEnding
@@ -9847,7 +10138,7 @@ function tokenizeLineEnding(effects, ok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/thematic-break.js
+// node_modules/micromark-core-commonmark/lib/thematic-break.js
 var thematicBreak = {
   name: "thematicBreak",
   tokenize: tokenizeThematicBreak
@@ -9886,7 +10177,7 @@ function tokenizeThematicBreak(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/list.js
+// node_modules/micromark-core-commonmark/lib/list.js
 var list = {
   continuation: {
     tokenize: tokenizeListContinuation
@@ -10016,7 +10307,7 @@ function tokenizeListItemPrefixWhitespace(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/setext-underline.js
+// node_modules/micromark-core-commonmark/lib/setext-underline.js
 var setextUnderline = {
   name: "setextUnderline",
   resolveTo: resolveToSetextUnderline,
@@ -10108,7 +10399,7 @@ function tokenizeSetextUnderline(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/initialize/flow.js
+// node_modules/micromark/lib/initialize/flow.js
 var flow = {
   tokenize: initializeFlow
 };
@@ -10146,7 +10437,7 @@ function initializeFlow(effects) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/initialize/text.js
+// node_modules/micromark/lib/initialize/text.js
 var resolver = {
   resolveAll: createResolver()
 };
@@ -10285,7 +10576,7 @@ function resolveAllLineSuffixes(events, context) {
   return events;
 }
 
-// ../../Tent/node_modules/micromark/lib/constructs.js
+// node_modules/micromark/lib/constructs.js
 var constructs_exports = {};
 __export(constructs_exports, {
   attentionMarkers: () => attentionMarkers,
@@ -10360,7 +10651,7 @@ var disable = {
   null: []
 };
 
-// ../../Tent/node_modules/micromark/lib/create-tokenizer.js
+// node_modules/micromark/lib/create-tokenizer.js
 function createTokenizer(parser, initialize, from) {
   let point3 = {
     _bufferIndex: -1,
@@ -10683,7 +10974,7 @@ function serializeChunks(chunks, expandTabs) {
   return result.join("");
 }
 
-// ../../Tent/node_modules/micromark/lib/parse.js
+// node_modules/micromark/lib/parse.js
 function parse(options) {
   const settings = options || {};
   const constructs2 = (
@@ -10709,14 +11000,14 @@ function parse(options) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/postprocess.js
+// node_modules/micromark/lib/postprocess.js
 function postprocess(events) {
   while (!subtokenize(events)) {
   }
   return events;
 }
 
-// ../../Tent/node_modules/micromark/lib/preprocess.js
+// node_modules/micromark/lib/preprocess.js
 var search = /[\0\t\n\r]/g;
 function preprocess() {
   let column = 1;
@@ -10795,7 +11086,7 @@ function preprocess() {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-decode-string/index.js
+// node_modules/micromark-util-decode-string/index.js
 var characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
 function decodeString(value) {
   return value.replace(characterEscapeOrReference, decode);
@@ -10813,7 +11104,7 @@ function decode($0, $1, $2) {
   return decodeNamedCharacterReference($2) || $0;
 }
 
-// ../../Tent/node_modules/unist-util-stringify-position/lib/index.js
+// node_modules/unist-util-stringify-position/lib/index.js
 function stringifyPosition(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -10839,7 +11130,7 @@ function index(value) {
   return value && typeof value === "number" ? value : 1;
 }
 
-// ../../Tent/node_modules/mdast-util-from-markdown/lib/index.js
+// node_modules/mdast-util-from-markdown/lib/index.js
 var own2 = {}.hasOwnProperty;
 function fromMarkdown(value, encoding, options) {
   if (encoding && typeof encoding === "object") {
@@ -20100,8 +20391,23 @@ async function workspaceMount(ctx, p) {
     tentName: optionalString(p, "tentName")
   });
   await migrateSessionWorkspaceIdsOnMount(ctx, info.workspaceId);
+  await migrateParentReviewerOnMount(ctx, info.workspaceId);
   await reconcileTaskSessionsOnMount(ctx, info.workspaceId);
   return info;
+}
+async function migrateParentReviewerOnMount(ctx, workspaceId) {
+  const mount = ctx.host.get(workspaceId);
+  if (!mount) return;
+  try {
+    await ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      await migrateParentReviewerEnvelopes(mount.env.fs, mount.env.clock);
+    });
+  } catch (err) {
+    console.error(
+      `[workspace.mount] parent/reviewer migration failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
 }
 async function migrateSessionWorkspaceIdsOnMount(ctx, workspaceId) {
   const mount = ctx.host.require(workspaceId);
@@ -22107,12 +22413,20 @@ async function taskDispatch(ctx, p) {
   const prompt = requireString(p, "prompt");
   const dispatchedBy = optionalString(p, "dispatchedBy");
   const asSub = p.asSub === true;
+  const explicitParentActor = parseOptionalTaskActor(p.parentActor, "parentActor");
+  const explicitReviewer = parseOptionalTaskActor(p.reviewer, "reviewer");
   const explicitDeliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
   const startSession = p.startSession === true;
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
   if ("a2aPolicyOverride" in p) {
     throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
   }
+  const resolvedActors = resolveDispatchActorsFromRpc({
+    parentActor: explicitParentActor,
+    reviewer: explicitReviewer,
+    dispatchedBy,
+    asSub
+  });
   if (assigneeKind === "role" && !role) {
     throw new RpcError(-32602, "task.dispatch with assigneeKind=role requires role");
   }
@@ -22139,7 +22453,7 @@ async function taskDispatch(ctx, p) {
     if (asSub) {
       await assertSubDispatchPreconditions(mount.env.fs, {
         workspaceRoot: mount.workspaceRoot,
-        dispatcher: dispatchedBy,
+        parentActor: resolvedActors.parentActor,
         assigneeKind,
         assigneeLabel
       });
@@ -22147,7 +22461,8 @@ async function taskDispatch(ctx, p) {
     let workspaceLane2;
     let preallocatedTaskId;
     if (asSub) {
-      const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, dispatchedBy.trim());
+      const parentRole = resolvedActors.parentActor.id;
+      const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, parentRole);
       if (assigneeKind === "role") {
         const assigneeLane = await ensureRoleWorkspace(mount.workspaceRoot, assigneeLabel);
         workspaceLane2 = { ...assigneeLane, targetBranch: dispatcherLane.branch };
@@ -22168,9 +22483,27 @@ async function taskDispatch(ctx, p) {
       const settings = await loadWorkspaceSettings(mount.env.fs);
       deliveryPolicy = settings.defaultDeliveryPolicy;
     }
+    if (deliveryPolicy !== "review" && !mayElevateDeliveryPolicy({
+      parentActor: resolvedActors.parentActor,
+      assigneeKind
+    })) {
+      if (explicitDeliveryPolicy !== void 0) {
+        throw new RpcError(
+          -32602,
+          `deliveryPolicy=${deliveryPolicy} is only legal for a durable Role's user-facing delivery; Task Agent \u2192 parent must use review (parent=${resolvedActors.parentActor.kind}:${resolvedActors.parentActor.id})`,
+          {
+            deliveryPolicy,
+            parentActor: resolvedActors.parentActor,
+            assigneeKind
+          }
+        );
+      }
+      deliveryPolicy = "review";
+    }
     const dispatched2 = await dispatch(mount.env, boxId, assigneeKind === "role" ? role : void 0, {
       userPrompt: prompt,
-      dispatchedBy,
+      parentActor: resolvedActors.parentActor,
+      reviewer: resolvedActors.reviewer,
       asSub,
       deliveryPolicy,
       workspace: workspaceLane2,
@@ -22226,6 +22559,8 @@ async function taskDispatch(ctx, p) {
     assigneeKind: dispatched.assigneeKind,
     assignee: dispatched.assignee,
     asSub: taskAfter ? taskAsSub(taskAfter) : asSub,
+    parentActor: taskAfter?.parentActor ?? resolvedActors.parentActor,
+    reviewer: taskAfter?.reviewer ?? resolvedActors.reviewer,
     // Prefer durable envelope state so success/failure projections stay honest.
     state: taskAfter?.state ?? (startSession ? "running" : "queued"),
     session,
@@ -22269,18 +22604,25 @@ async function compensateCombinedDispatchStartSessionFailure(ctx, input) {
   }
 }
 async function assertSubDispatchPreconditions(fs21, input) {
-  const dispatcher = (input.dispatcher || "").trim();
+  if (input.parentActor.kind !== "role") {
+    throw new RpcError(
+      -32602,
+      "task.dispatch asSub requires parentActor kind=role naming a real durable registry role (not user)",
+      { parentActor: input.parentActor }
+    );
+  }
+  const dispatcher = input.parentActor.id.trim();
   if (!dispatcher || dispatcher === "user") {
     throw new RpcError(
       -32602,
-      "task.dispatch asSub requires dispatchedBy naming a real durable registry role (not user)"
+      "task.dispatch asSub requires parentActor naming a real durable registry role (not user)"
     );
   }
   if (dispatcher === input.assigneeLabel) {
     throw new RpcError(
       -32602,
-      "task.dispatch asSub dispatchedBy must not equal the assignee itself",
-      { dispatchedBy: dispatcher, assignee: input.assigneeLabel }
+      "task.dispatch asSub parentActor must not equal the assignee itself",
+      { parentActor: input.parentActor, assignee: input.assigneeLabel }
     );
   }
   const registry = await loadRolesRegistry(fs21);
@@ -22288,8 +22630,8 @@ async function assertSubDispatchPreconditions(fs21, input) {
   if (!role) {
     throw new RpcError(
       -32602,
-      `task.dispatch asSub dispatchedBy role not found in registry: ${dispatcher}`,
-      { dispatchedBy: dispatcher }
+      `task.dispatch asSub parentActor role not found in registry: ${dispatcher}`,
+      { parentActor: input.parentActor }
     );
   }
   if (!await isGitWorkspace(input.workspaceRoot)) {
@@ -22298,6 +22640,32 @@ async function assertSubDispatchPreconditions(fs21, input) {
       "task.dispatch asSub requires a real Git workspace lane; pure Tent / non-Git workspaces cannot host sub dispatch"
     );
   }
+}
+function parseOptionalTaskActor(value, label) {
+  if (value === void 0 || value === null) return void 0;
+  try {
+    return parseTaskActorRef(value, label);
+  } catch (err) {
+    throw new RpcError(
+      -32602,
+      err instanceof Error ? err.message : `Invalid ${label}`,
+      { field: label }
+    );
+  }
+}
+function resolveDispatchActorsFromRpc(input) {
+  if (input.parentActor) {
+    const parentActor = input.parentActor;
+    const reviewer = input.reviewer ?? { ...parentActor };
+    return { parentActor, reviewer };
+  }
+  if (input.reviewer) {
+    throw new RpcError(-32602, "task.dispatch reviewer requires parentActor");
+  }
+  return migrateParentReviewerFromLegacy({
+    asSub: input.asSub,
+    dispatchedBy: input.dispatchedBy
+  });
 }
 async function taskClaimRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -22936,9 +23304,9 @@ async function resolveTaskWorktreeForDirtyCheck(workspaceRoot, task) {
   const isProfile = taskAssigneeKind(task) === "agentProfile";
   let targetBranch = task.targetBranch?.trim();
   if (isProfile && taskAsSub(task)) {
-    const dispatcher = (task.dispatchedBy || "").trim();
-    if (dispatcher && dispatcher !== "user") {
-      targetBranch = (await ensureRoleWorkspace(mountedRoot, dispatcher)).branch;
+    const parentRole = taskParentRoleId(task);
+    if (parentRole) {
+      targetBranch = (await ensureRoleWorkspace(mountedRoot, parentRole)).branch;
     }
   }
   const lane = isProfile ? await ensureTaskWorkspace(mountedRoot, task.id || task.path, {
@@ -23443,7 +23811,7 @@ async function prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, 
     const a2aPolicy = await resolveStartSessionA2APolicy(mount.env.fs, {
       callerKind,
       taskRole: authorityRole,
-      requireRegisteredRole: callerKind === "role" && (taskAsSub(taskForPolicy) || taskAssigneeKind(taskForPolicy) === "agentProfile")
+      requireRegisteredRole: callerKind === "role" && (taskParentIsRole(taskForPolicy) || taskAsSub(taskForPolicy) || taskAssigneeKind(taskForPolicy) === "agentProfile")
     });
     const profileAllowed = callerKind === "user" ? true : await resolveRoleProfileAllowed(mount.env.fs, {
       taskRole: authorityRole,
@@ -26114,16 +26482,16 @@ function shouldSkipTaskFailOnSessionTerminal(input) {
   return false;
 }
 async function tryManagedAutoDeliver(ctx, input) {
-  let summary = input.assistantText.trim();
+  let rawReport = input.assistantText.trim();
   let sessionId = input.sessionId.trim();
-  if (!summary) {
+  if (!rawReport) {
     try {
       const draft = await ctx.managedDeliveryReportDrafts.get(
         input.workspaceId,
         input.taskPath
       );
       if (draft?.assistantText?.trim()) {
-        summary = draft.assistantText.trim();
+        rawReport = draft.assistantText.trim();
         if (!sessionId && draft.sessionId) {
           sessionId = draft.sessionId;
         }
@@ -26131,9 +26499,43 @@ async function tryManagedAutoDeliver(ctx, input) {
     } catch {
     }
   }
-  if (!summary || !sessionId) {
+  if (!rawReport || !sessionId) {
     return;
   }
+  const parsedOutcome = parseTaskOutcomeReport(rawReport);
+  if (!parsedOutcome) {
+    await handleManagedNonDeliveredOutcome(ctx, {
+      workspaceId: input.workspaceId,
+      taskPath: input.taskPath,
+      sessionId,
+      outcome: null,
+      report: rawReport
+    });
+    return;
+  }
+  if (parsedOutcome.outcome !== "delivered") {
+    await handleManagedNonDeliveredOutcome(ctx, {
+      workspaceId: input.workspaceId,
+      taskPath: input.taskPath,
+      sessionId,
+      outcome: parsedOutcome.outcome,
+      report: parsedOutcome.report || rawReport
+    });
+    return;
+  }
+  const summary = (parsedOutcome.report || rawReport).trim();
+  if (!summary) {
+    await handleManagedNonDeliveredOutcome(ctx, {
+      workspaceId: input.workspaceId,
+      taskPath: input.taskPath,
+      sessionId,
+      outcome: "delivered",
+      report: "",
+      emptyDeliveredBody: true
+    });
+    return;
+  }
+  const draftText = rawReport;
   const key2 = managedDeliverKey(sessionId, input.taskPath);
   if (managedAutoDeliverDone.has(key2) || managedAutoDeliverInFlight.has(key2)) {
     return;
@@ -26166,7 +26568,7 @@ async function tryManagedAutoDeliver(ctx, input) {
       taskPath: input.taskPath,
       taskId: pre.id || input.taskPath,
       sessionId,
-      assistantText: summary
+      assistantText: draftText
     });
     draftPreserved = true;
     if (input.commits === void 0) {
@@ -26221,6 +26623,10 @@ async function tryManagedAutoDeliver(ctx, input) {
           ...pendingCommits.length > 0 ? { commits: pendingCommits } : {},
           ...targetHead ? { targetHead } : {}
         };
+        await patchTaskEnvelope(mount.env.fs, input.taskPath, {
+          lastOutcome: "delivered",
+          updatedAt: mount.env.clock.now()
+        });
         const prepared = await prepareTaskDeliver(mount.env, input.taskPath, opts);
         if (prepared.kind === "done") {
           return { kind: "done", result: prepared.result };
@@ -26323,6 +26729,76 @@ async function tryManagedAutoDeliver(ctx, input) {
       }
     } catch {
     }
+  } finally {
+    managedAutoDeliverInFlight.delete(key2);
+  }
+}
+async function handleManagedNonDeliveredOutcome(ctx, input) {
+  const mount = ctx.host.get(input.workspaceId);
+  if (!mount) return;
+  const sessionId = input.sessionId.trim();
+  const key2 = managedDeliverKey(sessionId, input.taskPath);
+  try {
+    const task = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
+    if (!task) return;
+    if (task.state !== "running" && task.state !== "waiting") return;
+    if (task.sessionId && task.sessionId !== sessionId) return;
+    const outcome = input.outcome;
+    const report = input.report.trim() || (input.emptyDeliveredBody ? "outcome=delivered but report body was empty" : outcome ? `outcome=${outcome}` : "managed final report missing explicit outcome: delivered|blocked|needs-input");
+    if (outcome === "needs-input" || outcome === "blocked") {
+      await runTaskLifecycle(input.workspaceId, input.taskPath, async () => {
+        await ctx.mutations.run(input.workspaceId, async () => {
+          ctx.host.markSelfWrite(input.workspaceId);
+          const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+          if (current.state !== "running") return;
+          await patchTaskEnvelope(mount.env.fs, input.taskPath, {
+            lastOutcome: outcome,
+            state: "waiting",
+            wait: {
+              reason: outcome === "needs-input" ? "user-input" : "external",
+              summary: report.slice(0, 2e3),
+              code: outcome === "needs-input" ? "needs_input" : "blocked"
+            },
+            updatedAt: mount.env.clock.now()
+          });
+        });
+      });
+      const after = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
+      if (after) emitTaskState(ctx, input.workspaceId, after, "session.prompt_complete");
+    } else if (outcome === "delivered" && input.emptyDeliveredBody) {
+      await ctx.mutations.run(input.workspaceId, async () => {
+        ctx.host.markSelfWrite(input.workspaceId);
+        await patchTaskEnvelope(mount.env.fs, input.taskPath, {
+          lastOutcome: "delivered",
+          updatedAt: mount.env.clock.now()
+        });
+      });
+    }
+    try {
+      await ctx.runtime.registry.update(sessionId, {
+        lastError: input.emptyDeliveredBody ? "managed outcome=delivered but empty report body (no Delivery)" : outcome ? `managed outcome=${outcome} (no ready Delivery)` : "managed final report missing explicit outcome (no ready Delivery)"
+      });
+    } catch {
+    }
+    ctx.events.emit(
+      "session.state",
+      input.workspaceId,
+      {
+        sessionId,
+        taskPath: input.taskPath,
+        taskState: (await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null))?.state,
+        runtimeEvent: "session.prompt_complete.outcome",
+        outcome: outcome ?? "missing",
+        error: report.slice(0, 500),
+        deliveryPublished: false,
+        taskFailed: false
+      },
+      "service"
+    );
+  } catch (err) {
+    console.error(
+      `[managed outcome] non-delivered handling failed: ${err instanceof Error ? err.message : String(err)}`
+    );
   } finally {
     managedAutoDeliverInFlight.delete(key2);
   }
@@ -27101,11 +27577,11 @@ async function resolveIntegrationContract(workspaceRoot, task) {
   const isProfile = taskAssigneeKind(task) === "agentProfile";
   let dispatcherLane;
   if (taskAsSub(task)) {
-    const dispatcher = (task.dispatchedBy || "").trim();
+    const dispatcher = taskParentRoleId(task);
     const label2 = isProfile ? `task ${task.id || task.path}` : `role ${task.role}`;
-    if (!dispatcher || dispatcher === "user") {
+    if (!dispatcher) {
       throw new Error(
-        `Sub task envelope missing durable dispatchedBy for ${label2}; cannot resolve targetBranch`
+        `Sub task envelope missing durable parent Role for ${label2}; cannot resolve targetBranch`
       );
     }
     dispatcherLane = await ensureRoleWorkspace(mountedRoot, dispatcher);
@@ -27167,10 +27643,10 @@ async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
     const isProfile = taskAssigneeKind(current) === "agentProfile";
     let taskTargetBranch;
     if (isProfile && taskAsSub(current)) {
-      const dispatcher = (current.dispatchedBy || "").trim();
-      if (!dispatcher || dispatcher === "user") {
+      const dispatcher = taskParentRoleId(current);
+      if (!dispatcher) {
         throw new Error(
-          `Sub task ${current.id || current.path} is missing a durable dispatcher role.`
+          `Sub task ${current.id || current.path} is missing a durable parent Role.`
         );
       }
       const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, dispatcher);
@@ -27236,20 +27712,24 @@ async function findResumableManagedSessionForRole(ctx, workspaceId, roleName, pr
 }
 function resolveA2AAuthorityRole(task, callerKind) {
   if (callerKind === "user") return task.role;
-  if (taskAsSub(task) || taskAssigneeKind(task) === "agentProfile") {
-    const dispatcher = (task.dispatchedBy || "").trim();
-    if (!dispatcher || dispatcher === "user") {
+  if (taskParentIsRole(task) || taskAsSub(task) || taskAssigneeKind(task) === "agentProfile") {
+    const dispatcher = taskParentRoleId(task);
+    if (!dispatcher) {
       throw new RpcError(
         -32602,
-        taskAsSub(task) ? "callerKind=role startSession on sub task requires dispatchedBy to name a real dispatcher role" : "callerKind=role startSession on agentProfile task requires dispatchedBy to name a real dispatcher role",
-        { dispatchedBy: task.dispatchedBy, assignee: task.role, asSub: taskAsSub(task) }
+        taskAsSub(task) || taskParentIsRole(task) ? "callerKind=role startSession on parent-Role task requires parentActor kind=role" : "callerKind=role startSession on agentProfile task requires parentActor kind=role",
+        {
+          parentActor: task.parentActor,
+          assignee: task.role,
+          asSub: taskAsSub(task)
+        }
       );
     }
     if (dispatcher === task.role) {
       throw new RpcError(
         -32602,
-        "callerKind=role startSession must not use the assignee label as dispatcher role",
-        { dispatchedBy: dispatcher, assignee: task.role }
+        "callerKind=role startSession must not use the assignee label as parent Role",
+        { parentActor: task.parentActor, assignee: task.role }
       );
     }
     return dispatcher;
@@ -27324,8 +27804,9 @@ function projectTask(task) {
     status: task.status,
     state: task.state,
     manifest: task.manifest,
-    dispatchedBy: task.dispatchedBy,
-    // Missing asSub on disk reads as false (peer).
+    parentActor: task.parentActor,
+    reviewer: task.reviewer,
+    // Missing asSub on disk reads as false (peer Git lane).
     asSub: taskAsSub(task),
     deliveryPolicy: task.deliveryPolicy,
     // Missing assigneeKind on disk reads as role (backward compatible).
@@ -27333,6 +27814,7 @@ function projectTask(task) {
     sessionId: task.sessionId,
     wait: task.wait,
     activeDeliveryId: task.activeDeliveryId,
+    lastOutcome: task.lastOutcome,
     workspaceLane: lane,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,

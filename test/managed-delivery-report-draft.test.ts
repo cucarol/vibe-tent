@@ -218,7 +218,8 @@ test("P0: dirty worktree preserves report draft; clean retry publishes and clear
       "untracked dirty\n"
     );
 
-    const reportText = "DIRTY_PRESERVED_REPORT_BODY";
+    const reportBody = "DIRTY_PRESERVED_REPORT_BODY";
+    const reportText = `outcome: delivered\n\n${reportBody}`;
     const diag: Array<Record<string, unknown>> = [];
     const unsub = svc.events.subscribe((ev) => {
       if (ev.type === "session.state") diag.push(ev.payload as Record<string, unknown>);
@@ -277,7 +278,7 @@ test("P0: dirty worktree preserves report draft; clean retry publishes and clear
       afterList.result as { deliveries: Array<{ summary: string; status: string }> }
     ).deliveries;
     assert.equal(deliveries.length, 1);
-    assert.equal(deliveries[0].summary, reportText);
+    assert.equal(deliveries[0].summary, reportBody);
     assert.equal(deliveries[0].status, "ready");
 
     const cleared = await svc.ctx.managedDeliveryReportDrafts.get(workspaceId, taskPath);
@@ -290,7 +291,8 @@ test("P0: report draft survives service restart; retry publishes without re-prom
   const ws = await makeWorkspace("mrd-restart");
   await initGitOnWorkspace(ws);
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-mrd-restart-data-"));
-  const reportText = "RESTART_SURVIVES_REPORT_BODY";
+  const reportBody = "RESTART_SURVIVES_REPORT_BODY";
+  const reportText = `outcome: delivered\n\n${reportBody}`;
 
   let workspaceId = "";
   let taskPath = "";
@@ -407,7 +409,7 @@ test("P0: report draft survives service restart; retry publishes without re-prom
         list.result as { deliveries: Array<{ summary: string; status: string }> }
       ).deliveries;
       assert.equal(deliveries.length, 1);
-      assert.equal(deliveries[0].summary, reportText);
+      assert.equal(deliveries[0].summary, reportBody);
       assert.equal(deliveries[0].status, "ready");
 
       assert.equal(
@@ -456,7 +458,8 @@ test("P0: integrate failure preserves draft; second attempt with clean commits s
     const sessionId = (started.result as { session: { sessionId: string } }).session
       .sessionId;
 
-    const reportText = "INTEGRATE_FAIL_PRESERVED_REPORT";
+    const reportBody = "INTEGRATE_FAIL_PRESERVED_REPORT";
+    const reportText = `outcome: delivered\n\n${reportBody}`;
     await invokeManagedAutoDeliverForTests(svc.ctx, {
       workspaceId,
       taskPath,
@@ -501,7 +504,7 @@ test("P0: integrate failure preserves draft; second attempt with clean commits s
     const deliveries = (
       list2.result as { deliveries: Array<{ summary: string }> }
     ).deliveries;
-    assert.ok(deliveries.some((d) => d.summary === reportText));
+    assert.ok(deliveries.some((d) => d.summary === reportBody));
     assert.equal(
       await svc.ctx.managedDeliveryReportDrafts.get(workspaceId, taskPath),
       undefined,

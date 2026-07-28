@@ -121,13 +121,13 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
       .filter((claimId) => claimId !== "root")
       .map((claimId) => requireBoxById(tent, claimId));
 
-    // asSub: helper may claim a free child under dispatchedBy's active ancestor occupation.
+    // asSub Git lane: helper may claim a free child under parent Role's active ancestor.
     // Peer claims still require a fully free ancestor/descendant chain.
-    // Occupation oracle = active Task envelopes only.
+    // Occupation oracle = active Task envelopes only. Authority uses parentActor.
+    const parentRole =
+      task.parentActor?.kind === "role" ? task.parentActor.id : undefined;
     const allowAncestorClaimedBy =
-      taskAsSub(task) && task.dispatchedBy && task.dispatchedBy !== "user" && task.dispatchedBy !== task.role
-        ? task.dispatchedBy
-        : undefined;
+      taskAsSub(task) && parentRole && parentRole !== task.role ? parentRole : undefined;
 
     const allTasks = await loadTaskEnvelopes(env.fs);
     // Exclude this task itself (still queued) so claim is not blocked by its own envelope.
@@ -357,8 +357,7 @@ export async function prepareTaskAccept(
     assertReviewAuthority({
       actor: options.actor,
       submitterRole: delivery.role,
-      asSub: taskAsSub(task),
-      dispatchedBy: task.dispatchedBy,
+      reviewer: task.reviewer,
       action: "accept",
     });
     // Pre-validate Outputs before integrate so bad selectors fail before side effects.
@@ -398,8 +397,7 @@ export async function finalizeTaskAccept(
     assertReviewAuthority({
       actor: options.actor,
       submitterRole: delivery.role,
-      asSub: taskAsSub(task),
-      dispatchedBy: task.dispatchedBy,
+      reviewer: task.reviewer,
       action: "accept",
     });
 
@@ -536,12 +534,11 @@ export async function taskReject(
     assertTransition(task.state, event, to);
 
     const delivery = await requireActiveReadyDelivery(env.fs, task);
-    // Self-reject-as-review forbidden; sub tasks further require user or exact dispatchedBy.
+    // Self-reject-as-review forbidden; reviewer must be user or exact Task.reviewer role.
     assertReviewAuthority({
       actor: options.actor,
       submitterRole: delivery.role,
-      asSub: taskAsSub(task),
-      dispatchedBy: task.dispatchedBy,
+      reviewer: task.reviewer,
       action: "reject",
     });
 
