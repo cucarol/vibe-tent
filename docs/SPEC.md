@@ -127,18 +127,18 @@ commits by logical delivery/box; boxes do not create branches.
 
 Confirmed dispatch:
 
-1. validates owner and pending-envelope overlap;
-2. updates `temp/<role>/manifest.yml` with current active claims plus pending
-   claims for that role;
-3. creates/reuses the role workspace lane;
-4. writes a pending task envelope under `temp/<role>/tasks/`;
+1. validates structural gates (invalid/archived) for the target Node;
+2. updates `temp/<role>/manifest.yml` with readable/writable context pointers
+   for the ephemeral dispatch selection (no `claims` YAML key);
+3. creates/reuses the role workspace lane when Git is present;
+4. writes a pending task envelope under `temp/<role>/tasks/` with Node refs
+   only on `contextCard.refs.nodes[]` (never a second on-disk `claims` source);
 5. returns the relay prompt for delivery to the agent session.
 
 Dispatch authority is independent of the dispatcher's `readable` and `writable`
 manifest grants. Those grants govern the receiving role's work contract, not
-who may claim a box. The dispatch gate is topology and lifecycle state: the
-target subtree must not overlap an owner or another pending envelope, and it
-must not be archived or structurally invalid.
+who may start work on a Node. The dispatch gate is structural: the target must
+not be archived or structurally invalid. Node refs are non-exclusive.
 
 When the in-workspace Git root exists, the CLI derives and creates/reuses the
 target role's **WorkspaceLane** from the role name
