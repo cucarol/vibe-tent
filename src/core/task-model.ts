@@ -133,12 +133,37 @@ export function parseTaskActorRef(
   return { kind, id };
 }
 
+/**
+ * V0.2 invariant: reviewer is derived from parentActor — not arbitrary delegation.
+ * `reviewer.kind/id` must equal `parentActor.kind/id`. Role A may not assign
+ * reviewer Role B. Fail-loud on mismatch.
+ */
+export function assertParentReviewerEqual(
+  parentActor: TaskActorRef,
+  reviewer: TaskActorRef
+): void {
+  if (parentActor.kind !== reviewer.kind || parentActor.id !== reviewer.id) {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task reviewer must equal parentActor (no arbitrary delegation); ` +
+        `got parentActor=${parentActor.kind}:${parentActor.id} ` +
+        `reviewer=${reviewer.kind}:${reviewer.id}.`
+    );
+  }
+}
+
+/** True when parent and reviewer are the same actor ref. */
+export function parentReviewerEqual(
+  parentActor: TaskActorRef,
+  reviewer: TaskActorRef
+): boolean {
+  return parentActor.kind === reviewer.kind && parentActor.id === reviewer.id;
+}
+
 /** User parent + user reviewer (user-direct Task). */
 export function userTaskActors(): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
-  return {
-    parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
-  };
+  const parentActor: TaskActorRef = { kind: "user", id: "user" };
+  return { parentActor, reviewer: { ...parentActor } };
 }
 
 /** Role parent + same-role reviewer (Role-dispatched Task Agent / sub). */
@@ -152,10 +177,8 @@ export function roleTaskActors(
       "Role parent/reviewer requires a durable role name (not user)."
     );
   }
-  return {
-    parentActor: { kind: "role", id },
-    reviewer: { kind: "role", id },
-  };
+  const parentActor: TaskActorRef = { kind: "role", id };
+  return { parentActor, reviewer: { ...parentActor } };
 }
 
 /**

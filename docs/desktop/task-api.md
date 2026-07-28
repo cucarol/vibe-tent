@@ -42,8 +42,9 @@ assigneeKind: role | agentProfile   # missing → role (backward compatible; no 
 # `assignee` as that same label.
 role: <role-name|profile-id>
 # V0.2 explicit parent/reviewer (replaces asSub+dispatchedBy inference for authority).
+# reviewer is derived from parentActor — kind/id must match exactly (no Role A → Role B).
 parentActor: { kind: user|role, id: user|<role> }
-reviewer:    { kind: user|role, id: user|<role> }   # equals parentActor on write
+reviewer:    { kind: user|role, id: user|<role> }   # must equal parentActor; both persisted
 asSub: true                      # optional Git-lane sub marker only; missing → false (peer).
                                  # Sub requires durable parent Role + Git lane.
 sessionId: ss-…                  # optional until claim/start; **reference only**
@@ -436,6 +437,7 @@ Successful create/update/delete emits **exactly one** `registry.roles.updated` (
 
 - `task.accept` / `task.reject` actor **must not** equal the delivery submitter (self-review ban). Executor never self-accepts.
 - Ordinary accept/reject authority equals the **exact persisted Task.`reviewer`** only — never a different actor and never the submitter.
+- **`reviewer` is derived from `parentActor`:** on every new write, `reviewer.kind/id` must equal `parentActor.kind/id` (callers may omit `reviewer` and Core/Service derive it once; both fields are still persisted). An explicit mismatched pair fails loud — Role A cannot assign reviewer Role B.
 - User-reviewed tasks (`reviewer.kind=user`, user-direct): only `actor=user`.
 - Role-reviewed tasks (`reviewer.kind=role`, Role-dispatched child): only exact `reviewer.id` parent Role. **User must not bypass the parent Role via ordinary review.**
 - Recording `review.by = submitter` is a hard error.

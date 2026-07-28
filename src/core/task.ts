@@ -8,6 +8,7 @@ import {
 import { join } from "./tree.js";
 import type { RoleDefinition } from "./skillRoleRegistry.js";
 import {
+  assertParentReviewerEqual,
   DEFAULT_DELIVERY_POLICY,
   isTaskId,
   legacyStatusToState,
@@ -50,10 +51,11 @@ export interface TaskEnvelopeInput {
    */
   parentActor: TaskActorRef;
   /**
-   * Explicit Delivery reviewer (V0.2). Required on new writes; equals parentActor
-   * when callers pass the same ref twice (CLI/Service default).
+   * Explicit Delivery reviewer (V0.2). Optional: when omitted, derived equal to
+   * parentActor once. When present, must match parentActor exactly (both
+   * fields are still persisted).
    */
-  reviewer: TaskActorRef;
+  reviewer?: TaskActorRef;
   /**
    * Sub-dispatch Git lane flag. Missing on disk reads as false (peer).
    * When true, targetBranch is the parent role branch. Review authority uses
@@ -222,17 +224,30 @@ export async function migrateParentReviewerEnvelopes(
       const hasLegacyDispatcher =
         typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
 
-      // Already on V0.2 wire with no legacy key — nothing to do.
+      // Already on V0.2 wire with matching pair and no legacy key — nothing to do.
+      // Mismatched explicit pairs fail loud (recorded as warnings; not silently repaired).
       if (hasParent && hasReviewer && !hasLegacyDispatcher) {
-        report.skipped.push(path);
+        try {
+          const parentActor = parseTaskActorRef(data.parentActor, "parentActor");
+          const reviewer = parseTaskActorRef(data.reviewer, "reviewer");
+          assertParentReviewerEqual(parentActor, reviewer);
+          report.skipped.push(path);
+        } catch (err) {
+          report.warnings.push(
+            `${path}: ${err instanceof Error ? err.message : String(err)}`
+          );
+          report.skipped.push(path);
+        }
         continue;
       }
 
       let parentActor: TaskActorRef;
       let reviewer: TaskActorRef;
       if (hasParent && hasReviewer) {
+        // Has legacy key too — parse, enforce equal, then strip dispatchedBy.
         parentActor = parseTaskActorRef(data.parentActor, "parentActor");
         reviewer = parseTaskActorRef(data.reviewer, "reviewer");
+        assertParentReviewerEqual(parentActor, reviewer);
       } else if (hasParent || hasReviewer) {
         report.warnings.push(
           `${path}: partial parentActor/reviewer pair; refusing silent repair`
@@ -240,6 +255,7 @@ export async function migrateParentReviewerEnvelopes(
         report.skipped.push(path);
         continue;
       } else {
+        // Legacy derives equal parent+reviewer pair (never mismatched).
         const migrated = migrateParentReviewerFromLegacy({
           asSub: data.asSub === true,
           dispatchedBy:
@@ -326,8 +342,9 @@ export function serializeTaskActorRef(actor: TaskActorRef): { kind: string; id: 
 
 /**
  * Resolve parentActor + reviewer for a **new** dispatch write.
- * Requires explicit parentActor + reviewer. Legacy dispatchedBy is not accepted
- * on create (migration/load only via migrateParentReviewerFromLegacy).
+ * Requires explicit parentActor. Reviewer may be omitted and is then derived
+ * equal to parentActor; when present it must match exactly (no Role A → Role B).
+ * Legacy dispatchedBy is not accepted on create.
  */
 export function resolveDispatchActors(input: {
   parentActor?: TaskActorRef;
@@ -338,13 +355,11 @@ export function resolveDispatchActors(input: {
       "task.dispatch requires explicit parentActor { kind, id } (legacy dispatchedBy is migration-only)."
     );
   }
-  if (!input.reviewer) {
-    throw new Error(
-      "task.dispatch requires explicit reviewer { kind, id } (defaults are applied only by callers that copy parentActor)."
-    );
-  }
   const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
-  const reviewer = parseTaskActorRef(input.reviewer, "reviewer");
+  const reviewer = input.reviewer
+    ? parseTaskActorRef(input.reviewer, "reviewer")
+    : { ...parentActor };
+  assertParentReviewerEqual(parentActor, reviewer);
   return { parentActor, reviewer };
 }
 
@@ -423,10 +438,10 @@ function resolveActorsFromDisk(data: Record<string, unknown>): {
         "Invalid task envelope: parentActor and reviewer must both be present when either is set."
       );
     }
-    return {
-      parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
-      reviewer: parseTaskActorRef(data.reviewer, "reviewer"),
-    };
+    const parentActor = parseTaskActorRef(data.parentActor, "parentActor");
+    const reviewer = parseTaskActorRef(data.reviewer, "reviewer");
+    assertParentReviewerEqual(parentActor, reviewer);
+    return { parentActor, reviewer };
   }
   const hasLegacy =
     typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
@@ -774,13 +789,29 @@ export async function patchTaskEnvelope(
   else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
 
   if (patch.deliveryPolicy) data.deliveryPolicy = patch.deliveryPolicy;
-  if (patch.parentActor) {
-    data.parentActor = serializeTaskActorRef(
-      parseTaskActorRef(patch.parentActor, "parentActor")
-    );
-  }
-  if (patch.reviewer) {
-    data.reviewer = serializeTaskActorRef(parseTaskActorRef(patch.reviewer, "reviewer"));
+  if (patch.parentActor || patch.reviewer) {
+    // Keep parent/reviewer equal on every write. Patching one without the other
+    // derives/copies so Role A cannot leave reviewer as Role B.
+    const nextParent = patch.parentActor
+      ? parseTaskActorRef(patch.parentActor, "parentActor")
+      : data.parentActor !== undefined && data.parentActor !== null
+        ? parseTaskActorRef(data.parentActor, "parentActor")
+        : undefined;
+    if (!nextParent) {
+      throw new Error(
+        "patchTaskEnvelope parentActor/reviewer requires an existing or explicit parentActor."
+      );
+    }
+    const nextReviewer = patch.reviewer
+      ? parseTaskActorRef(patch.reviewer, "reviewer")
+      : patch.parentActor
+        ? { ...nextParent }
+        : data.reviewer !== undefined && data.reviewer !== null
+          ? parseTaskActorRef(data.reviewer, "reviewer")
+          : { ...nextParent };
+    assertParentReviewerEqual(nextParent, nextReviewer);
+    data.parentActor = serializeTaskActorRef(nextParent);
+    data.reviewer = serializeTaskActorRef(nextReviewer);
   }
   if (patch.clearLegacyDispatchedBy) {
     delete data.dispatchedBy;

@@ -194,12 +194,12 @@ test("resolveDispatchActors / writeTaskEnvelope refuse missing actors and dispat
     () => resolveDispatchActors({} as never),
     /requires explicit parentActor/i
   );
-  assert.throws(
-    () =>
-      resolveDispatchActors({
-        parentActor: { kind: "user", id: "user" },
-      } as never),
-    /requires explicit reviewer/i
+  // Omitted reviewer is derived equal to parentActor.
+  assert.deepEqual(
+    resolveDispatchActors({
+      parentActor: { kind: "user", id: "user" },
+    }),
+    userTaskActors()
   );
   assert.deepEqual(
     resolveDispatchActors({
@@ -223,6 +223,94 @@ test("resolveDispatchActors / writeTaskEnvelope refuse missing actors and dispat
       } as never),
     /parentActor|reviewer/i
   );
+});
+
+test("Core: parentActor/reviewer mismatch rejected on write, load, and migration", async () => {
+  const { resolveDispatchActors, migrateParentReviewerEnvelopes } = await import(
+    "../src/core/task.js"
+  );
+  const { assertParentReviewerEqual, TaskLifecycleError: TLE } = await import(
+    "../src/core/task-model.js"
+  );
+
+  assert.throws(
+    () =>
+      assertParentReviewerEqual(
+        { kind: "role", id: "orchestrator" },
+        { kind: "role", id: "planner" }
+      ),
+    (err: unknown) =>
+      err instanceof TLE &&
+      err.code === "INVALID_ACTOR" &&
+      /must equal parentActor|no arbitrary delegation/i.test(String(err.message))
+  );
+
+  assert.throws(
+    () =>
+      resolveDispatchActors({
+        parentActor: { kind: "role", id: "orchestrator" },
+        reviewer: { kind: "role", id: "planner" },
+      }),
+    /must equal parentActor|no arbitrary delegation/i
+  );
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-parent-mismatch-"));
+  const fsa = new NodeFs(dir);
+  await fsa.mkdir("temp/helper/tasks");
+  const clock = new SystemClock();
+
+  await assert.rejects(
+    () =>
+      writeTaskEnvelope(fsa, clock, {
+        role: "helper",
+        claims: [{ id: "cx-1", path: "a.md" }],
+        manifestPath: "temp/helper/manifest.yml",
+        userPrompt: "mismatch",
+        parentActor: { kind: "role", id: "orchestrator" },
+        reviewer: { kind: "role", id: "planner" },
+      }),
+    /must equal parentActor|no arbitrary delegation/i
+  );
+
+  // Persisted mismatched pair fails loud on load (not silently repaired).
+  // Use inline maps — Tent frontmatter does not nest block maps under keys.
+  await fsa.writeFile(
+    "temp/helper/tasks/task-mismatch.md",
+    [
+      "---",
+      "type: task",
+      "id: tk-mis0001",
+      "status: pending",
+      "state: queued",
+      "role: helper",
+      "parentActor: { kind: role, id: orchestrator }",
+      "reviewer: { kind: role, id: planner }",
+      "claims: [cx-1]",
+      "manifest: temp/helper/manifest.yml",
+      "deliveryPolicy: review",
+      "---",
+      "# Task",
+      "",
+      "## User Prompt",
+      "",
+      "bad pair",
+      "",
+    ].join("\n")
+  );
+  await assert.rejects(
+    () => loadTaskEnvelope(fsa, "temp/helper/tasks/task-mismatch.md"),
+    /must equal parentActor|no arbitrary delegation/i
+  );
+
+  // Migration records mismatch as warning; does not rewrite to invent equality.
+  const report = await migrateParentReviewerEnvelopes(fsa, clock);
+  assert.ok(
+    report.warnings.some((w) => /must equal parentActor|no arbitrary delegation/i.test(w)),
+    `expected mismatch warning, got ${JSON.stringify(report.warnings)}`
+  );
+  assert.equal(report.rewritten.length, 0);
+  const raw = await fsa.readFile("temp/helper/tasks/task-mismatch.md");
+  assert.match(raw, /id:\s*planner/);
 });
 
 test("assertReviewAuthority: exact reviewer only — user cannot accept/reject role:X", () => {
@@ -348,6 +436,69 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
     assert.equal(missing.error!.code, -32602);
     assert.match(String(missing.error!.message), /parentActor|reviewer/i);
 
+    // Role A cannot assign reviewer Role B.
+    const mismatched = await rpcCall(
+      svc.url,
+      "task.dispatch",
+      {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "mismatch pair",
+        parentActor: { kind: "role", id: "orchestrator" },
+        reviewer: { kind: "role", id: "planner" },
+      },
+      { token: svc.token }
+    );
+    assert.ok(mismatched.error);
+    assert.equal(mismatched.error!.code, -32602);
+    assert.match(
+      String(mismatched.error!.message),
+      /must equal parentActor|no arbitrary delegation/i
+    );
+
+    // Omitted reviewer is derived equal to parentActor and both are persisted.
+    const derived = await rpcCall(
+      svc.url,
+      "task.dispatch",
+      {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "derived reviewer",
+        parentActor: { kind: "user", id: "user" },
+      },
+      { token: svc.token }
+    );
+    assert.ok(!derived.error, JSON.stringify(derived.error));
+    const derivedPath = (derived.result as { taskPath: string }).taskPath;
+    const derivedTask = await loadTaskEnvelope(
+      new NodeFs(path.join(dir, ".tent")),
+      derivedPath
+    );
+    assert.equal(derivedTask.parentActor?.kind, "user");
+    assert.equal(derivedTask.reviewer?.id, "user");
+    assert.deepEqual(derivedTask.parentActor, derivedTask.reviewer);
+    const derivedRaw = await fs.readFile(path.join(dir, ".tent", derivedPath), "utf8");
+    assert.doesNotMatch(derivedRaw, /^dispatchedBy:/m);
+    const projected = derived.result as {
+      parentActor?: { kind: string; id: string };
+      reviewer?: { kind: string; id: string };
+      dispatchedBy?: string;
+    };
+    assert.equal(projected.dispatchedBy, undefined);
+    assert.equal(projected.parentActor?.id, "user");
+    assert.equal(projected.reviewer?.id, "user");
+
+    // Cancel so a second explicit-pair dispatch can reuse the free box.
+    const cancelled = await rpcCall(
+      svc.url,
+      "task.cancel",
+      { workspaceId, taskPath: derivedPath },
+      { token: svc.token }
+    );
+    assert.ok(!cancelled.error, JSON.stringify(cancelled.error));
+
     const ok = await rpcCall(
       svc.url,
       "task.dispatch",
@@ -366,17 +517,9 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
     const task = await loadTaskEnvelope(new NodeFs(path.join(dir, ".tent")), taskPath);
     assert.equal(task.parentActor?.kind, "user");
     assert.equal(task.reviewer?.id, "user");
+    assert.deepEqual(task.parentActor, task.reviewer);
     const raw = await fs.readFile(path.join(dir, ".tent", taskPath), "utf8");
     assert.doesNotMatch(raw, /^dispatchedBy:/m);
-    // Projection must not reintroduce dispatchedBy.
-    const projected = ok.result as {
-      parentActor?: { kind: string; id: string };
-      reviewer?: { kind: string; id: string };
-      dispatchedBy?: string;
-    };
-    assert.equal(projected.dispatchedBy, undefined);
-    assert.equal(projected.parentActor?.id, "user");
-    assert.equal(projected.reviewer?.id, "user");
   } finally {
     await svc.stop();
   }

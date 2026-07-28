@@ -81,9 +81,10 @@ export interface DispatchOptions {
    */
   parentActor: import("./task-model.js").TaskActorRef;
   /**
-   * Explicit reviewer (V0.2). Required on new dispatch; typically equals parentActor.
+   * Explicit reviewer (V0.2). Optional: derived equal to parentActor when omitted.
+   * When present must equal parentActor (no arbitrary Role A → Role B).
    */
-  reviewer: import("./task-model.js").TaskActorRef;
+  reviewer?: import("./task-model.js").TaskActorRef;
   /**
    * Sub-dispatch Git lane flag. Missing/false = peer. When true, requires real
    * Git lane and a durable parent Role (validated by service/CLI). asSub is lane-only.
@@ -163,9 +164,9 @@ async function dispatchUnlocked(
   // Stale frontmatter owner is NOT a mutex — only active Task envelopes are.
   // Parent/reviewer authority is explicit; asSub only gates Git lane + occupation.
   const asSub = options.asSub === true;
-  if (!options.parentActor || !options.reviewer) {
+  if (!options.parentActor) {
     throw new Error(
-      "Dispatch requires explicit parentActor and reviewer (legacy dispatchedBy is migration-only)."
+      "Dispatch requires explicit parentActor (legacy dispatchedBy is migration-only; reviewer may be derived equal)."
     );
   }
   const parentRoleId =
@@ -259,6 +260,8 @@ async function dispatchUnlocked(
 
     // Load the just-written envelope for an honest relay projection (parent/reviewer included).
     const written = await loadTaskEnvelope(env.fs, taskPath).catch(() => null);
+    const parentActor = options.parentActor;
+    const reviewer = options.reviewer ?? { ...parentActor };
     const relayPrompt = relayPromptForTask(
       written ?? {
         path: taskPath,
@@ -269,8 +272,8 @@ async function dispatchUnlocked(
         state: "queued" as const,
         assigneeKind,
         id: taskId,
-        parentActor: options.parentActor,
-        reviewer: options.reviewer,
+        parentActor,
+        reviewer,
         ...(options.asSub === true ? { asSub: true as const } : {}),
       },
       env.tentRoot || env.tentName

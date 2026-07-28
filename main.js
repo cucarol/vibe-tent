@@ -1539,11 +1539,17 @@ function parseTaskActorRef(value, label) {
   }
   return { kind, id };
 }
+function assertParentReviewerEqual(parentActor, reviewer) {
+  if (parentActor.kind !== reviewer.kind || parentActor.id !== reviewer.id) {
+    throw new TaskLifecycleError(
+      "INVALID_ACTOR",
+      `Task reviewer must equal parentActor (no arbitrary delegation); got parentActor=${parentActor.kind}:${parentActor.id} reviewer=${reviewer.kind}:${reviewer.id}.`
+    );
+  }
+}
 function userTaskActors() {
-  return {
-    parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" }
-  };
+  const parentActor = { kind: "user", id: "user" };
+  return { parentActor, reviewer: { ...parentActor } };
 }
 function mayElevateDeliveryPolicy(input) {
   const parent = input.parentActor;
@@ -1836,13 +1842,9 @@ function resolveDispatchActors(input) {
       "task.dispatch requires explicit parentActor { kind, id } (legacy dispatchedBy is migration-only)."
     );
   }
-  if (!input.reviewer) {
-    throw new Error(
-      "task.dispatch requires explicit reviewer { kind, id } (defaults are applied only by callers that copy parentActor)."
-    );
-  }
   const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
-  const reviewer = parseTaskActorRef(input.reviewer, "reviewer");
+  const reviewer = input.reviewer ? parseTaskActorRef(input.reviewer, "reviewer") : { ...parentActor };
+  assertParentReviewerEqual(parentActor, reviewer);
   return { parentActor, reviewer };
 }
 async function loadTaskEnvelope(fs2, path) {
@@ -1899,10 +1901,10 @@ function resolveActorsFromDisk(data) {
         "Invalid task envelope: parentActor and reviewer must both be present when either is set."
       );
     }
-    return {
-      parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
-      reviewer: parseTaskActorRef(data.reviewer, "reviewer")
-    };
+    const parentActor = parseTaskActorRef(data.parentActor, "parentActor");
+    const reviewer = parseTaskActorRef(data.reviewer, "reviewer");
+    assertParentReviewerEqual(parentActor, reviewer);
+    return { parentActor, reviewer };
   }
   const hasLegacy = typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
   throw new Error(
@@ -2105,13 +2107,17 @@ async function patchTaskEnvelope(fs2, path, patch) {
   if (patch.activeDeliveryId === null) delete data.activeDeliveryId;
   else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
   if (patch.deliveryPolicy) data.deliveryPolicy = patch.deliveryPolicy;
-  if (patch.parentActor) {
-    data.parentActor = serializeTaskActorRef(
-      parseTaskActorRef(patch.parentActor, "parentActor")
-    );
-  }
-  if (patch.reviewer) {
-    data.reviewer = serializeTaskActorRef(parseTaskActorRef(patch.reviewer, "reviewer"));
+  if (patch.parentActor || patch.reviewer) {
+    const nextParent = patch.parentActor ? parseTaskActorRef(patch.parentActor, "parentActor") : data.parentActor !== void 0 && data.parentActor !== null ? parseTaskActorRef(data.parentActor, "parentActor") : void 0;
+    if (!nextParent) {
+      throw new Error(
+        "patchTaskEnvelope parentActor/reviewer requires an existing or explicit parentActor."
+      );
+    }
+    const nextReviewer = patch.reviewer ? parseTaskActorRef(patch.reviewer, "reviewer") : patch.parentActor ? { ...nextParent } : data.reviewer !== void 0 && data.reviewer !== null ? parseTaskActorRef(data.reviewer, "reviewer") : { ...nextParent };
+    assertParentReviewerEqual(nextParent, nextReviewer);
+    data.parentActor = serializeTaskActorRef(nextParent);
+    data.reviewer = serializeTaskActorRef(nextReviewer);
   }
   if (patch.clearLegacyDispatchedBy) {
     delete data.dispatchedBy;
@@ -3867,9 +3873,9 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const createdRoot = assigneeKind === "agentProfile" ? agentProfileTempRoot(assigneeLabel) : join2("temp", assigneeLabel);
   const createdRootExisted = await env.fs.exists(createdRoot);
   const asSub = options.asSub === true;
-  if (!options.parentActor || !options.reviewer) {
+  if (!options.parentActor) {
     throw new Error(
-      "Dispatch requires explicit parentActor and reviewer (legacy dispatchedBy is migration-only)."
+      "Dispatch requires explicit parentActor (legacy dispatchedBy is migration-only; reviewer may be derived equal)."
     );
   }
   const parentRoleId = options.parentActor.kind === "role" ? options.parentActor.id.trim() : "";
@@ -3932,6 +3938,8 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       tasksDir: assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : void 0
     });
     const written = await loadTaskEnvelope(env.fs, taskPath).catch(() => null);
+    const parentActor = options.parentActor;
+    const reviewer = options.reviewer ?? { ...parentActor };
     const relayPrompt = relayPromptForTask(
       written ?? {
         path: taskPath,
@@ -3942,8 +3950,8 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
         state: "queued",
         assigneeKind,
         id: taskId,
-        parentActor: options.parentActor,
-        reviewer: options.reviewer,
+        parentActor,
+        reviewer,
         ...options.asSub === true ? { asSub: true } : {}
       },
       env.tentRoot || env.tentName

@@ -706,10 +706,10 @@ export class ServiceClient {
        */
       parentActor: { kind: "user" | "role"; id: string };
       /**
-       * Explicit reviewer (V0.2). Required; typically equals parentActor.
-       * Ordinary accept/reject authority equals this actor only.
+       * Explicit reviewer (V0.2). Optional: derived equal to parentActor when omitted.
+       * When present must equal parentActor. Ordinary accept/reject equals this actor only.
        */
-      reviewer: { kind: "user" | "role"; id: string };
+      reviewer?: { kind: "user" | "role"; id: string };
       /**
        * Sub-dispatch Git lane. When true, requires durable parent Role
        * and a real Git workspace lane; targetBranch becomes tent-role/<parent>.
