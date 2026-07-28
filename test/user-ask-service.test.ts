@@ -41,7 +41,9 @@ function mockAcpProfile(
     env: {
       MOCK_ACP_LOG: opts.logPath,
       MOCK_ACP_KEEP_ALIVE: opts.keepAlive === false ? "0" : "1",
-      MOCK_ACP_PROMPT_TEXT: opts.promptText ?? "MANAGED_FINAL_REPORT",
+      // Managed finals must lead with structured outcome: delivered|blocked|needs-input.
+      MOCK_ACP_PROMPT_TEXT:
+        opts.promptText ?? "outcome: delivered\n\nMANAGED_FINAL_REPORT",
       ...(opts.followupText
         ? { MOCK_ACP_FOLLOWUP_TEXT: opts.followupText }
         : {}),
@@ -292,7 +294,7 @@ test("managed ACP: UserAsk reply continues same session with User Answer prompt 
       // Slow bootstrap so askUser can park the task before auto-delivery races.
       // Follow-up User Answer prompt returns the real deliverable report.
       promptText: "BOOTSTRAP_PLACEHOLDER",
-      followupText: "MANAGED_FINAL_REPORT_AFTER_USER_ANSWER",
+      followupText: "outcome: delivered\n\nMANAGED_FINAL_REPORT_AFTER_USER_ANSWER",
       promptDelayMs: 2_500,
       keepAlive: true,
     }),
@@ -433,12 +435,9 @@ test("two workspaces sharing relative taskPath keep independent UserAsk pending"
       "state: running\n" +
       "role: executor\n" +
       "assigneeKind: role\n" +
-      "parentActor:\n" +
-      "  kind: user\n" +
-      "  id: user\n" +
-      "reviewer:\n" +
-      "  kind: user\n" +
-      "  id: user\n" +
+      // Flow maps only — frontmatter parser does not read nested block maps.
+      "parentActor: {kind: user, id: user}\n" +
+      "reviewer: {kind: user, id: user}\n" +
       `claims: [${boxId}]\n` +
       "manifest: temp/executor/manifest.yml\n" +
       "deliveryPolicy: review\n" +

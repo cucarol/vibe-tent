@@ -315,10 +315,11 @@ test("session/new projects mcpServers + skill meta from profile snapshot; live e
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-log-")),
     "mock.json"
   );
-  // Create a real skill path so requirePathExists=true succeeds at start.
+  // Optional extra Skill (non-built-in): tent-role/tent-task are reserved and
+  // model-visible only via stable bootstrap — never re-advertised in ACP meta.
   const skillRoot = path.join(
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-skills-")),
-    "tent-role"
+    "extra-skill-fixture"
   );
   await fs.mkdir(skillRoot, { recursive: true });
   await fs.writeFile(path.join(skillRoot, "SKILL.md"), "# fixture\n", "utf8");
@@ -326,7 +327,7 @@ test("session/new projects mcpServers + skill meta from profile snapshot; live e
   // not be under home roots — path existence is what start/resume validates.
   // For CRUD roots check is separate; runtime only checks existence when path set.
   // Use a path under ~/.agents/skills if possible, else any existing path.
-  const homeSkill = path.join(os.homedir(), ".agents", "skills", "tent-role-skmcp-fixture");
+  const homeSkill = path.join(os.homedir(), ".agents", "skills", "extra-skill-skmcp-fixture");
   await fs.mkdir(homeSkill, { recursive: true });
   await fs.writeFile(path.join(homeSkill, "SKILL.md"), "# fixture\n", "utf8");
 
@@ -351,7 +352,7 @@ test("session/new projects mcpServers + skill meta from profile snapshot; live e
       permissionPolicy: "deny",
       promptTimeoutMs: 8_000,
     },
-    skills: [{ name: "tent-role", path: homeSkill }],
+    skills: [{ name: "extra-skill-fixture", path: homeSkill }],
     mcpServers: [
       {
         name: "fs",
@@ -395,7 +396,7 @@ test("session/new projects mcpServers + skill meta from profile snapshot; live e
     const news = log.news[0]!;
     assert.equal(news.mcpServersLen, 1); // disabled excluded
     assert.deepEqual(news.mcpServerNames, ["fs"]);
-    assert.deepEqual(news.skillNames, ["tent-role"]);
+    assert.deepEqual(news.skillNames, ["extra-skill-fixture"]);
     // Secret must not appear in mock log
     assert.equal(logRaw.includes("mcp-secret-should-not-log"), false);
 
@@ -407,7 +408,7 @@ test("session/new projects mcpServers + skill meta from profile snapshot; live e
     });
     const record = await runtime.registry.read(sessionId);
     assert.ok(record?.profileSnapshot);
-    assert.equal(record!.profileSnapshot!.skills?.[0]?.name, "tent-role");
+    assert.equal(record!.profileSnapshot!.skills?.[0]?.name, "extra-skill-fixture");
     assert.equal(record!.profileSnapshot!.mcpServers?.length, 2);
 
     await runtime.stopSession(sessionId, "user");
@@ -427,7 +428,7 @@ test("session/load sends original snapshot mcpServers/skills after live profile 
     os.homedir(),
     ".agents",
     "skills",
-    "tent-role-skmcp-load-fixture"
+    "extra-skill-skmcp-load-fixture"
   );
   await fs.mkdir(homeSkill, { recursive: true });
   await fs.writeFile(path.join(homeSkill, "SKILL.md"), "# fixture load\n", "utf8");
@@ -459,7 +460,7 @@ test("session/load sends original snapshot mcpServers/skills after live profile 
       permissionPolicy: "deny",
       promptTimeoutMs: 8_000,
     },
-    skills: [{ name: "tent-role", path: homeSkill }],
+    skills: [{ name: "extra-skill-fixture", path: homeSkill }],
     mcpServers: [
       {
         name: "fs",
@@ -509,7 +510,7 @@ test("session/load sends original snapshot mcpServers/skills after live profile 
     assert.ok(startLog.methods.includes("session/new"));
     assert.equal(startLog.news?.[0]?.mcpServersLen, 1);
     assert.deepEqual(startLog.news?.[0]?.mcpServerNames, ["fs"]);
-    assert.deepEqual(startLog.news?.[0]?.skillNames, ["tent-role"]);
+    assert.deepEqual(startLog.news?.[0]?.skillNames, ["extra-skill-fixture"]);
 
     // Live catalog mutation after start must not affect resume projection.
     // Also point resume bridge log at a separate file (snapshot env still has start path).
@@ -571,13 +572,13 @@ test("session/load sends original snapshot mcpServers/skills after live profile 
     // Original snapshot wire — not the mutated live profile.
     assert.equal(load.mcpServersLen, 1);
     assert.deepEqual(load.mcpServerNames, ["fs"]);
-    assert.deepEqual(load.skillNames, ["tent-role"]);
+    assert.deepEqual(load.skillNames, ["extra-skill-fixture"]);
     assert.equal(loadRaw.includes("mcp-secret-should-not-log"), false);
     assert.equal(loadRaw.includes("mutated-only"), false);
     assert.equal(loadRaw.includes("mutated-skill-only"), false);
 
     const record = await runtime.registry.read(sessionId);
-    assert.equal(record?.profileSnapshot?.skills?.[0]?.name, "tent-role");
+    assert.equal(record?.profileSnapshot?.skills?.[0]?.name, "extra-skill-fixture");
     assert.equal(record?.profileSnapshot?.mcpServers?.[0]?.name, "fs");
 
     await runtime.stopSession(sessionId, "user");

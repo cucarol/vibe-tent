@@ -54,7 +54,9 @@ function mockAcpProfile(
     env: {
       MOCK_ACP_LOG: opts.logPath,
       MOCK_ACP_KEEP_ALIVE: opts.keepAlive === false ? "0" : "1",
-      MOCK_ACP_PROMPT_TEXT: opts.promptText ?? "MANAGED_FINAL_REPORT",
+      // Managed finals must lead with structured outcome: delivered|blocked|needs-input.
+      MOCK_ACP_PROMPT_TEXT:
+        opts.promptText ?? "outcome: delivered\n\nMANAGED_FINAL_REPORT",
       ...(opts.followupText
         ? { MOCK_ACP_FOLLOWUP_TEXT: opts.followupText }
         : {}),
@@ -381,12 +383,9 @@ test("taskInput list/get/ack are isolated across workspaces (no cross get/ack)",
       "state: running\n" +
       "role: executor\n" +
       "assigneeKind: role\n" +
-      "parentActor:\n" +
-      "  kind: user\n" +
-      "  id: user\n" +
-      "reviewer:\n" +
-      "  kind: user\n" +
-      "  id: user\n" +
+      // Flow maps only — frontmatter parser does not read nested block maps.
+      "parentActor: {kind: user, id: user}\n" +
+      "reviewer: {kind: user, id: user}\n" +
       `claims: [${boxId}]\n` +
       "manifest: temp/executor/manifest.yml\n" +
       "deliveryPolicy: review\n" +
@@ -496,7 +495,7 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
     mockAcpProfile("mock-ti", {
       logPath,
       promptText: "BOOTSTRAP_PLACEHOLDER",
-      followupText: "MANAGED_FINAL_REPORT_AFTER_USER_INPUT",
+      followupText: "outcome: delivered\n\nMANAGED_FINAL_REPORT_AFTER_USER_INPUT",
       promptDelayMs: 2_500,
       keepAlive: true,
     }),
@@ -646,8 +645,8 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
   const profiles = [
     mockAcpProfile("mock-ti", {
       logPath,
-      promptText: "FIRST_DELIVERY_REPORT",
-      followupText: "REWORK_AFTER_REVIEW_FEEDBACK",
+      promptText: "outcome: delivered\n\nFIRST_DELIVERY_REPORT",
+      followupText: "outcome: delivered\n\nREWORK_AFTER_REVIEW_FEEDBACK",
       // Bootstrap completes quickly; follow-up is the review inject.
       promptDelayMs: 200,
       keepAlive: true,
@@ -796,8 +795,8 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
   const profiles = [
     mockAcpProfile("mock-ti", {
       logPath,
-      promptText: "FIRST_DELIVERY_NATIVE_RESUME",
-      followupText: "REWORK_ON_NATIVE_RESUME",
+      promptText: "outcome: delivered\n\nFIRST_DELIVERY_NATIVE_RESUME",
+      followupText: "outcome: delivered\n\nREWORK_ON_NATIVE_RESUME",
       promptDelayMs: 200,
       // keepAlive + explicit stop forces dead prior; loadSession enables same-ss resume.
       keepAlive: true,
@@ -1080,8 +1079,8 @@ test("reject-resume: slow follow-up returns accepted without headers-timeout wai
   const profiles = [
     mockAcpProfile("mock-ti", {
       logPath,
-      promptText: "FIRST_SLOW_REJECT",
-      followupText: "REWORK_SLOW_DONE",
+      promptText: "outcome: delivered\n\nFIRST_SLOW_REJECT",
+      followupText: "outcome: delivered\n\nREWORK_SLOW_DONE",
       promptDelayMs: 150,
       followupDelayMs,
       keepAlive: true,
@@ -1181,8 +1180,8 @@ test("reject-resume: background completion projects processing → delivered", a
   const profiles = [
     mockAcpProfile("mock-ti", {
       logPath,
-      promptText: "FIRST_BG_REJECT",
-      followupText: "BG_REWORK_OK",
+      promptText: "outcome: delivered\n\nFIRST_BG_REJECT",
+      followupText: "outcome: delivered\n\nBG_REWORK_OK",
       promptDelayMs: 150,
       followupDelayMs: 800,
       keepAlive: true,
@@ -1365,8 +1364,8 @@ test("reject-resume: second reject while rework running is rejected (no double i
   const profiles = [
     mockAcpProfile("mock-ti", {
       logPath,
-      promptText: "FIRST_DUP_REJECT",
-      followupText: "REWORK_DUP",
+      promptText: "outcome: delivered\n\nFIRST_DUP_REJECT",
+      followupText: "outcome: delivered\n\nREWORK_DUP",
       // Slow inject so second reject races while first feedback is in flight.
       promptDelayMs: 150,
       followupDelayMs: 1_200,
@@ -1535,7 +1534,7 @@ test("managed U2A: concurrent sends on same task are FIFO and non-overlapping", 
     mockAcpProfile("mock-ti", {
       logPath,
       promptText: "BOOTSTRAP_HOLD",
-      followupText: "FOLLOWUP_OK",
+      followupText: "outcome: delivered\n\nFOLLOWUP_OK",
       // Long enough that overlapping turns would interleave if not serialized.
       promptDelayMs: 400,
       keepAlive: true,
@@ -1669,15 +1668,15 @@ test("managed U2A: different tasks remain concurrent (not process-wide serial)",
   const profiles = [
     mockAcpProfile("mock-ti-a", {
       logPath: logA,
-      promptText: "BOOT_A",
-      followupText: "DONE_A",
+      promptText: "outcome: delivered\n\nBOOT_A",
+      followupText: "outcome: delivered\n\nDONE_A",
       promptDelayMs: 900,
       keepAlive: true,
     }),
     mockAcpProfile("mock-ti-b", {
       logPath: logB,
-      promptText: "BOOT_B",
-      followupText: "DONE_B",
+      promptText: "outcome: delivered\n\nBOOT_B",
+      followupText: "outcome: delivered\n\nDONE_B",
       promptDelayMs: 900,
       keepAlive: true,
     }),
@@ -1923,8 +1922,8 @@ test("task.sendInput: RPC returns accepted before managed turn finishes; status 
   const profiles = [
     mockAcpProfile("mock-ti", {
       logPath,
-      promptText: "BOOTSTRAP_ASYNC",
-      followupText: "AFTER_ASYNC_INPUT",
+      promptText: "outcome: delivered\n\nBOOTSTRAP_ASYNC",
+      followupText: "outcome: delivered\n\nAFTER_ASYNC_INPUT",
       // Long turn so accept-vs-delivered gap is measurable.
       promptDelayMs: 1_200,
       keepAlive: true,
@@ -2050,8 +2049,8 @@ test("task.sendInput: service stop drains background work without unhandled reje
   const profiles = [
     mockAcpProfile("mock-ti", {
       logPath,
-      promptText: "BOOT_DRAIN",
-      followupText: "FOLLOW_DRAIN",
+      promptText: "outcome: delivered\n\nBOOT_DRAIN",
+      followupText: "outcome: delivered\n\nFOLLOW_DRAIN",
       promptDelayMs: 800,
       keepAlive: true,
     }),

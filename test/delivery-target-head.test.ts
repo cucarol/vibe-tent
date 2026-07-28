@@ -31,7 +31,12 @@ async function makeWorkspace(name = "target-head"): Promise<string> {
     JSON.stringify(
       {
         roles: [
-          { name: "executor", prompt: "do work" },
+          {
+            name: "executor",
+            prompt: "do work",
+            // startSession bind captures exact baseCommit; allow harness profile.
+            allowedProfiles: ["fake-default"],
+          },
           { name: "orchestrator", prompt: "dispatch" },
         ],
       },
@@ -103,6 +108,50 @@ async function mountWorkItem(
   return { workspaceId, boxId };
 }
 
+/**
+ * Dispatch + claim + startSession so ensureTaskWorkspaceLane persists exact
+ * workspaceLane.baseCommit (capture-once). Public deliver without this fails MISSING_BASE.
+ */
+async function claimRunningWithBase(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>,
+  ws: string,
+  opts: {
+    prompt: string;
+    deliveryPolicy?: "review" | "bypass" | "agent-decide";
+  }
+): Promise<{ workspaceId: string; taskPath: string; baseCommit: string }> {
+  const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+  const d = await rpc(svc, "task.dispatch", {
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+    workspaceId,
+    boxId,
+    role: "executor",
+    prompt: opts.prompt,
+    deliveryPolicy: opts.deliveryPolicy ?? "review",
+  });
+  assert.ok(!d.error, JSON.stringify(d.error));
+  const taskPath = (d.result as { taskPath: string }).taskPath;
+  await rpc(svc, "task.claim", { workspaceId, taskPath });
+  // startSession binds the executor lane and captures exact baseCommit.
+  const started = await rpc(svc, "task.startSession", {
+    workspaceId,
+    taskPath,
+    profileId: "fake-default",
+    callerKind: "user",
+  });
+  assert.ok(!started.error, JSON.stringify(started.error));
+  const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+  const baseCommit =
+    (
+      got.result as {
+        task: { workspaceLane?: { baseCommit?: string } };
+      }
+    ).task.workspaceLane?.baseCommit?.trim() || "";
+  assert.ok(baseCommit, "startSession must persist exact workspaceLane.baseCommit");
+  return { workspaceId, taskPath, baseCommit };
+}
+
 function targetMovedData(error: { code?: number; data?: unknown } | undefined): Record<string, unknown> {
   assert.ok(error, "expected RPC error");
   assert.equal(error!.code, RPC_LIFECYCLE);
@@ -165,22 +214,20 @@ legacy row without targetHead
 test("targetHead: deliver snapshots HEAD; same-head accept integrates", async () => {
   const ws = await makeWorkspace("th-same");
   await initGitOnWorkspace(ws);
+  // Pre-create role lane so startSession captures base at the tip that will
+  // become first parent of the delivery commit.
   const sourceRef = await roleCommit(ws, "executor", "same.txt", "same\n", "same work");
   const mainHeadAtDeliver = (await git(ws, "rev-parse", "main")).trim();
 
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
-    const d = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
-      workspaceId,
-      boxId,
-      role: "executor",
+    const { workspaceId, taskPath, baseCommit } = await claimRunningWithBase(svc, ws, {
       prompt: "same head",
       deliveryPolicy: "review",
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    // base must be exact first parent of the task commit (sourceRef tip after bind).
+    // When roleCommit ran before bind, base is the post-commit tip → empty range is ok
+    // only if tip===base; commit-bearing deliver still uses the listed commits.
+    assert.ok(baseCommit);
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
       taskPath,
@@ -213,18 +260,10 @@ test("targetHead: clean non-conflicting target advance fails TARGET_MOVED; Git u
   const sourceRef = await roleCommit(ws, "executor", "feat.txt", "feat\n", "feat work");
 
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
-    const d = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
-      workspaceId,
-      boxId,
-      role: "executor",
+    const { workspaceId, taskPath } = await claimRunningWithBase(svc, ws, {
       prompt: "target will move",
       deliveryPolicy: "review",
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
       taskPath,
@@ -273,18 +312,10 @@ test("targetHead: zero-commit Delivery needs no snapshot; accept succeeds", asyn
   await initGitOnWorkspace(ws);
 
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
-    const d = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
-      workspaceId,
-      boxId,
-      role: "executor",
+    const { workspaceId, taskPath } = await claimRunningWithBase(svc, ws, {
       prompt: "docs only",
       deliveryPolicy: "review",
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
       taskPath,
@@ -313,18 +344,10 @@ test("targetHead: legacy ready row without snapshot fails TARGET_MOVED (no silen
   const beforeHead = (await git(ws, "rev-parse", "main")).trim();
 
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
-    const d = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
-      workspaceId,
-      boxId,
-      role: "executor",
+    const { workspaceId, taskPath } = await claimRunningWithBase(svc, ws, {
       prompt: "legacy delivery",
       deliveryPolicy: "review",
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
       taskPath,
@@ -370,18 +393,10 @@ test("targetHead: auto-integrate race — target moves after snapshot fails TARG
       await git(workspaceRoot, "commit", "-q", "-m", "main moved after deliver snapshot");
     });
 
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
-    const d = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
-      workspaceId,
-      boxId,
-      role: "executor",
+    const { workspaceId, taskPath } = await claimRunningWithBase(svc, ws, {
       prompt: "bypass race",
       deliveryPolicy: "bypass",
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
 
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
