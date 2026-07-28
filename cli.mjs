@@ -360,14 +360,14 @@ var init_frontmatter = __esm({
 });
 
 // src/core/registryRecovery.ts
-async function backupCorruptRegistry(fs10, path9) {
-  const backupPath = `${path9}.corrupt-${timestamp()}`;
-  await fs10.writeFile(backupPath, await fs10.readFile(path9));
+async function backupCorruptRegistry(fs10, path10) {
+  const backupPath = `${path10}.corrupt-${timestamp()}`;
+  await fs10.writeFile(backupPath, await fs10.readFile(path10));
   return backupPath;
 }
-function warnRegistryRecovered(path9, backupPath, action, extra = "") {
+function warnRegistryRecovered(path10, backupPath, action, extra = "") {
   console.error(
-    `WARNING: ${path9} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
+    `WARNING: ${path10} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
   );
 }
 function timestamp() {
@@ -393,9 +393,9 @@ function systemRootFromWorkspace(workspaceRoot) {
   return `${root}${sep2}${TENT_SYSTEM_DIR}`;
 }
 function isOperationalPath(relativePath2) {
-  const path9 = relativePath2.replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!path9) return false;
-  const top = path9.split("/")[0] ?? "";
+  const path10 = relativePath2.replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!path10) return false;
+  const top = path10.split("/")[0] ?? "";
   return OPERATIONAL_TOP_LEVEL.has(top);
 }
 function safeOperationalSegment(value, emptyPrefix = "id") {
@@ -821,9 +821,9 @@ function sortChildren(box, order) {
   box.children = sortByOrder(box.children, order[box.id], (a, b) => a.name.localeCompare(b.name));
   for (const c of box.children) sortChildren(c, order);
 }
-async function loadBox(fs10, path9, parent, registry) {
-  if (isOperationalPath(path9)) return null;
-  const boxFile = boxNotePath(path9);
+async function loadBox(fs10, path10, parent, registry) {
+  if (isOperationalPath(path10)) return null;
+  const boxFile = boxNotePath(path10);
   if (!await fs10.exists(boxFile)) {
     return null;
   }
@@ -837,7 +837,7 @@ async function loadBox(fs10, path9, parent, registry) {
     parsed = { data: {}, body: raw, keyOrder: [] };
   }
   const { data, body } = parsed;
-  const name = baseName(path9);
+  const name = baseName(path10);
   const { fm, tags, relations } = normalizeIdentity(data);
   const box = {
     id: fm.id,
@@ -847,7 +847,7 @@ async function loadBox(fs10, path9, parent, registry) {
     mode: "editable",
     archived: false,
     invalid: !!parseError,
-    path: path9,
+    path: path10,
     name,
     fm,
     body,
@@ -855,14 +855,14 @@ async function loadBox(fs10, path9, parent, registry) {
     parent
   };
   if (parseError) {
-    box.invalidRootId = path9;
+    box.invalidRootId = path10;
     box.invalidReason = `Invalid frontmatter: ${parseError}`;
   }
-  const sub = await fs10.listDir(path9);
+  const sub = await fs10.listDir(path10);
   for (const entry2 of sub) {
     if (!entry2.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry2.name)) continue;
-    await loadBoxInto(fs10, join3(path9, entry2.name), box, registry, box.children);
+    await loadBoxInto(fs10, join3(path10, entry2.name), box, registry, box.children);
   }
   return box;
 }
@@ -907,18 +907,18 @@ function normalizeTags(value) {
   }
   return out;
 }
-async function loadBoxInto(fs10, path9, parent, registry, target) {
-  if (isOperationalPath(path9)) return;
-  const box = await loadBox(fs10, path9, parent, registry);
+async function loadBoxInto(fs10, path10, parent, registry, target) {
+  if (isOperationalPath(path10)) return;
+  const box = await loadBox(fs10, path10, parent, registry);
   if (box) {
     target.push(box);
     return;
   }
-  const sub = await fs10.listDir(path9);
+  const sub = await fs10.listDir(path10);
   for (const entry2 of sub) {
     if (!entry2.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry2.name)) continue;
-    await loadBoxInto(fs10, join3(path9, entry2.name), parent, registry, target);
+    await loadBoxInto(fs10, join3(path10, entry2.name), parent, registry, target);
   }
 }
 function resolveSubtree(box, registry, inheritedInvalid, inheritedArchived = false) {
@@ -960,13 +960,13 @@ function indexSubtree(box, byId, byPath, duplicateIds) {
 function join3(...parts) {
   return parts.filter((p) => p !== "").join("/");
 }
-function baseName(path9) {
-  const i = path9.lastIndexOf("/");
-  return i === -1 ? path9 : path9.slice(i + 1);
+function baseName(path10) {
+  const i = path10.lastIndexOf("/");
+  return i === -1 ? path10 : path10.slice(i + 1);
 }
-function dirName(path9) {
-  const i = path9.lastIndexOf("/");
-  return i === -1 ? "" : path9.slice(0, i);
+function dirName(path10) {
+  const i = path10.lastIndexOf("/");
+  return i === -1 ? "" : path10.slice(0, i);
 }
 var init_tree = __esm({
   "src/core/tree.ts"() {
@@ -1308,13 +1308,13 @@ async function migrateParentReviewerEnvelopes(fs10, clock, options) {
       if (!f.isDir && f.name.endsWith(".md")) paths.push(join3(taskDir, f.name));
     }
   }
-  for (const path9 of paths.sort((a, b) => a.localeCompare(b))) {
+  for (const path10 of paths.sort((a, b) => a.localeCompare(b))) {
     report.scanned += 1;
     try {
-      const raw = await fs10.readFile(path9);
+      const raw = await fs10.readFile(path10);
       const { data, body, keyOrder } = parseFrontmatter(raw);
       if (data.type !== "task") {
-        report.skipped.push(path9);
+        report.skipped.push(path10);
         continue;
       }
       const hasParent = data.parentActor !== void 0 && data.parentActor !== null;
@@ -1326,12 +1326,12 @@ async function migrateParentReviewerEnvelopes(fs10, clock, options) {
             parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
             reviewer: parseTaskActorRef(data.reviewer, "reviewer")
           });
-          report.skipped.push(path9);
+          report.skipped.push(path10);
         } catch (err) {
           report.warnings.push(
-            `${path9}: ${err instanceof Error ? err.message : String(err)}`
+            `${path10}: ${err instanceof Error ? err.message : String(err)}`
           );
-          report.skipped.push(path9);
+          report.skipped.push(path10);
         }
         continue;
       }
@@ -1346,9 +1346,9 @@ async function migrateParentReviewerEnvelopes(fs10, clock, options) {
         reviewer = pair.reviewer;
       } else if (hasParent || hasReviewer) {
         report.warnings.push(
-          `${path9}: partial parentActor/reviewer pair; refusing silent repair`
+          `${path10}: partial parentActor/reviewer pair; refusing silent repair`
         );
-        report.skipped.push(path9);
+        report.skipped.push(path10);
         continue;
       } else {
         const migrated = migrateParentReviewerFromLegacy({
@@ -1364,19 +1364,19 @@ async function migrateParentReviewerEnvelopes(fs10, clock, options) {
       delete next.dispatchedBy;
       const nextRaw = serializeFrontmatter(next, body, keyOrder);
       if (nextRaw === raw) {
-        report.skipped.push(path9);
+        report.skipped.push(path10);
         continue;
       }
       if (!dryRun) {
         next.updatedAt = clock.now();
-        await fs10.writeFile(path9, serializeFrontmatter(next, body, keyOrder));
+        await fs10.writeFile(path10, serializeFrontmatter(next, body, keyOrder));
       }
-      report.rewritten.push(path9);
+      report.rewritten.push(path10);
     } catch (err) {
       report.warnings.push(
-        `${path9}: ${err instanceof Error ? err.message : String(err)}`
+        `${path10}: ${err instanceof Error ? err.message : String(err)}`
       );
-      report.skipped.push(path9);
+      report.skipped.push(path10);
     }
   }
   return report;
@@ -1385,9 +1385,9 @@ async function collectTaskFiles(fs10, taskDir, tasks) {
   if (!await fs10.exists(taskDir)) return;
   for (const entry2 of await fs10.listDir(taskDir)) {
     if (entry2.isDir || !entry2.name.endsWith(".md")) continue;
-    const path9 = join3(taskDir, entry2.name);
+    const path10 = join3(taskDir, entry2.name);
     try {
-      tasks.push(await loadTaskEnvelope(fs10, path9));
+      tasks.push(await loadTaskEnvelope(fs10, path10));
     } catch {
     }
   }
@@ -1418,11 +1418,11 @@ function resolveDispatchActors(input) {
     reviewer: input.reviewer
   });
 }
-async function loadTaskEnvelope(fs10, path9) {
-  if (!await fs10.exists(path9)) throw new Error(`Task envelope not found: ${path9}.`);
-  const { data, body } = parseFrontmatter(await fs10.readFile(path9));
+async function loadTaskEnvelope(fs10, path10) {
+  if (!await fs10.exists(path10)) throw new Error(`Task envelope not found: ${path10}.`);
+  const { data, body } = parseFrontmatter(await fs10.readFile(path10));
   if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string") {
-    throw new Error(`Invalid task envelope format: ${path9}.`);
+    throw new Error(`Invalid task envelope format: ${path10}.`);
   }
   const legacyStatus = data.status === "taken" ? "taken" : "pending";
   const state = parseTaskState(data.state, legacyStatus);
@@ -1431,11 +1431,11 @@ async function loadTaskEnvelope(fs10, path9) {
   const hasClaimsKey = Array.isArray(data.claims) && data.claims.every((claim) => typeof claim === "string");
   if (!contextCard && !hasClaimsKey) {
     throw new Error(
-      `Invalid task envelope format: ${path9} (missing Task.contextCard.refs.nodes; run claims\u2192refs migration).`
+      `Invalid task envelope format: ${path10} (missing Task.contextCard.refs.nodes; run claims\u2192refs migration).`
     );
   }
   const task = {
-    path: path9,
+    path: path10,
     role: data.role,
     manifest: data.manifest,
     status: stateToLegacyStatus(state),
@@ -1615,7 +1615,7 @@ ${userPrompt}
 `);
 }
 async function ensureRoleInit(fs10, role, tentName) {
-  const path9 = join3("temp", role.name, "init.md");
+  const path10 = join3("temp", role.name, "init.md");
   const body = `# Role Init
 
 - Tent: ${tentName}
@@ -1632,8 +1632,8 @@ ${role.prompt?.trim() || "(no persistent role prompt)"}
 Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
 Task lifecycle uses \`tent task *\` (Local Service). Do not invent paths as <workspace>/temp \u2014 operational files live under .tent/temp.
 `;
-  await fs10.writeFile(path9, serializeFrontmatter({ type: "role-init", role: role.name }, body));
-  return path9;
+  await fs10.writeFile(path10, serializeFrontmatter({ type: "role-init", role: role.name }, body));
+  return path10;
 }
 async function writeTaskEnvelope(fs10, clock, input) {
   const userPrompt = input.userPrompt?.trim() || "";
@@ -1647,7 +1647,7 @@ async function writeTaskEnvelope(fs10, clock, input) {
   const nodeRefs = input.claims.filter((c) => !isRootToken(c.id)).map((c) => normalizeContextCardNodeRef({ id: c.id, path: c.path }));
   const primaryRef = nodeRefs[0]?.id || (workspaceOnly ? "root" : "node");
   const stem = taskStem(clock.now(), primaryRef);
-  const path9 = await uniqueMarkdownPath(fs10, dir, stem);
+  const path10 = await uniqueMarkdownPath(fs10, dir, stem);
   const now = clock.now();
   const actors = resolveDispatchActors({
     parentActor: input.parentActor,
@@ -1742,27 +1742,27 @@ ${pointers || "(none)"}
 
 ${userPrompt}
 `;
-  await fs10.writeFile(path9, serializeFrontmatter(data, body));
-  return path9;
+  await fs10.writeFile(path10, serializeFrontmatter(data, body));
+  return path10;
 }
-async function ackTaskEnvelope(fs10, path9) {
-  await patchTaskEnvelope(fs10, path9, {
+async function ackTaskEnvelope(fs10, path10) {
+  await patchTaskEnvelope(fs10, path10, {
     status: "taken",
     state: "running"
   });
 }
-async function cancelTaskEnvelope(fs10, path9) {
-  const task = await loadTaskEnvelope(fs10, path9);
+async function cancelTaskEnvelope(fs10, path10) {
+  const task = await loadTaskEnvelope(fs10, path10);
   if (task.state !== "queued" && task.status !== "pending") {
     throw new Error("Only queued (pending) task envelopes can be cancelled.");
   }
-  await fs10.remove(path9);
+  await fs10.remove(path10);
 }
-async function patchTaskEnvelope(fs10, path9, patch) {
-  if (!await fs10.exists(path9)) throw new Error(`Task envelope not found: ${path9}.`);
-  const raw = await fs10.readFile(path9);
+async function patchTaskEnvelope(fs10, path10, patch) {
+  if (!await fs10.exists(path10)) throw new Error(`Task envelope not found: ${path10}.`);
+  const raw = await fs10.readFile(path10);
   const { data, body, keyOrder } = parseFrontmatter(raw);
-  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path9}.`);
+  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path10}.`);
   if (patch.state) {
     data.state = patch.state;
     data.status = stateToLegacyStatus(patch.state);
@@ -1866,8 +1866,8 @@ async function patchTaskEnvelope(fs10, path9, patch) {
   else if (typeof patch.taskDeltaDigest === "string" && patch.taskDeltaDigest.trim()) {
     data.taskDeltaDigest = patch.taskDeltaDigest.trim();
   }
-  await fs10.writeFile(path9, serializeFrontmatter(data, body, keyOrder));
-  return loadTaskEnvelope(fs10, path9);
+  await fs10.writeFile(path10, serializeFrontmatter(data, body, keyOrder));
+  return loadTaskEnvelope(fs10, path10);
 }
 function workspaceLaneOf(task) {
   if (!task.workspace && !task.worktree && !task.branch && !task.targetBranch && !task.baseCommit && !task.integrationAuthority) {
@@ -1912,12 +1912,12 @@ function taskStem(now, claimId) {
 async function uniqueMarkdownPath(fs10, dir, stem) {
   for (let n = 1; ; n++) {
     const suffix = n === 1 ? "" : `-${n}`;
-    const path9 = join3(dir, `${stem}${suffix}.md`);
-    if (!await fs10.exists(path9)) return path9;
+    const path10 = join3(dir, `${stem}${suffix}.md`);
+    if (!await fs10.exists(path10)) return path10;
   }
 }
-async function ensureDir(fs10, path9) {
-  if (!await fs10.exists(path9)) await fs10.mkdir(path9);
+async function ensureDir(fs10, path10) {
+  if (!await fs10.exists(path10)) await fs10.mkdir(path10);
 }
 var init_task = __esm({
   "src/core/task.ts"() {
@@ -2471,7 +2471,7 @@ var init_claim = __esm({
 });
 
 // src/cli/tent.ts
-import * as path8 from "node:path";
+import * as path9 from "node:path";
 import * as fs9 from "node:fs/promises";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
@@ -2629,20 +2629,20 @@ var NodeFs = class {
     const entries = await fs2.readdir(this.abs(dir), { withFileTypes: true });
     return entries.filter((e) => !e.name.startsWith(".git")).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
   }
-  async readFile(path9) {
-    return fs2.readFile(this.abs(path9), "utf8");
+  async readFile(path10) {
+    return fs2.readFile(this.abs(path10), "utf8");
   }
-  async writeFile(path9, content) {
-    const abs = this.abs(path9);
+  async writeFile(path10, content) {
+    const abs = this.abs(path10);
     await fs2.mkdir(nodePath.dirname(abs), { recursive: true });
     await this.atomicReplace(abs, content, "utf8");
   }
-  async readBinary(path9) {
-    const buf = await fs2.readFile(this.abs(path9));
+  async readBinary(path10) {
+    const buf = await fs2.readFile(this.abs(path10));
     return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   }
-  async writeBinary(path9, data) {
-    const abs = this.abs(path9);
+  async writeBinary(path10, data) {
+    const abs = this.abs(path10);
     await fs2.mkdir(nodePath.dirname(abs), { recursive: true });
     const payload = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     await this.atomicReplace(abs, payload);
@@ -2668,30 +2668,30 @@ var NodeFs = class {
         const transient = code === "EPERM" || code === "EACCES" || code === "EBUSY";
         if (!transient || attempt === attempts - 1) throw err;
         const delayMs = Math.min(10 * 2 ** attempt, 100);
-        await new Promise((resolve10) => setTimeout(resolve10, delayMs));
+        await new Promise((resolve11) => setTimeout(resolve11, delayMs));
       }
     }
   }
-  async exists(path9) {
+  async exists(path10) {
     try {
-      await fs2.access(this.abs(path9));
+      await fs2.access(this.abs(path10));
       return true;
     } catch {
       return false;
     }
   }
-  async mkdir(path9) {
-    await fs2.mkdir(this.abs(path9), { recursive: true });
+  async mkdir(path10) {
+    await fs2.mkdir(this.abs(path10), { recursive: true });
   }
   async move(from, to) {
     await fs2.mkdir(nodePath.dirname(this.abs(to)), { recursive: true });
     await fs2.rename(this.abs(from), this.abs(to));
   }
-  async remove(path9) {
-    await fs2.rm(this.abs(path9), { recursive: true, force: true });
+  async remove(path10) {
+    await fs2.rm(this.abs(path10), { recursive: true, force: true });
   }
-  async withLock(path9, action) {
-    return withFileMutationLock(this.abs(path9), action, {
+  async withLock(path10, action) {
+    return withFileMutationLock(this.abs(path10), action, {
       busyMessage: "Tent is already running another write operation; try again later.",
       acquireFailedMessage: "Cannot acquire the Tent mutation lock."
     });
@@ -3653,12 +3653,12 @@ function normalizeTagName(name) {
   return tag;
 }
 async function writeBoxTags(fs10, box, tags) {
-  const path9 = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs10.readFile(path9));
+  const path10 = boxNotePath(box.path);
+  const { data, body, keyOrder } = parseFrontmatter(await fs10.readFile(path10));
   const next = uniqueSorted(tags);
   if (next.length === 0) delete data.tags;
   else data.tags = next;
-  await fs10.writeFile(path9, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
+  await fs10.writeFile(path10, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
 }
 function normalizeRegistry2(value) {
   if (!isRecord3(value) || !Array.isArray(value.tags)) return { tags: [] };
@@ -3875,9 +3875,9 @@ function cloneDefaultRoles() {
     roles: DEFAULT_ROLES_REGISTRY.roles.map((role) => ({ ...role }))
   };
 }
-async function writeJson(fs10, path9, value) {
+async function writeJson(fs10, path10, value) {
   if (!await fs10.exists(".tent")) await fs10.mkdir(".tent");
-  await fs10.writeFile(path9, JSON.stringify(value, null, 2) + "\n");
+  await fs10.writeFile(path10, JSON.stringify(value, null, 2) + "\n");
 }
 function isRecord4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -3895,14 +3895,14 @@ init_paths();
 init_tree();
 init_task_model();
 async function loadDelivery(fs10, inputPath) {
-  const path9 = normalizeDeliveryPath(inputPath);
-  if (!await fs10.exists(path9)) throw new Error(`Delivery not found: ${path9}.`);
-  const { data, body } = parseFrontmatter(await fs10.readFile(path9));
+  const path10 = normalizeDeliveryPath(inputPath);
+  if (!await fs10.exists(path10)) throw new Error(`Delivery not found: ${path10}.`);
+  const { data, body } = parseFrontmatter(await fs10.readFile(path10));
   if (data.type !== "delivery" || typeof data.id !== "string" || !isDeliveryId(data.id)) {
-    throw new Error(`Invalid delivery format: ${path9}.`);
+    throw new Error(`Invalid delivery format: ${path10}.`);
   }
   if (typeof data.taskId !== "string" || typeof data.boxId !== "string" || typeof data.role !== "string") {
-    throw new Error(`Invalid delivery format: ${path9}.`);
+    throw new Error(`Invalid delivery format: ${path10}.`);
   }
   const status = parseDeliveryStatus(data.status);
   const reviewBy = typeof data.reviewBy === "string" ? data.reviewBy : void 0;
@@ -3911,7 +3911,7 @@ async function loadDelivery(fs10, inputPath) {
     typeof data.targetHead === "string" ? data.targetHead : void 0
   );
   return {
-    path: path9,
+    path: path10,
     id: data.id,
     taskId: data.taskId,
     boxId: data.boxId,
@@ -3975,13 +3975,13 @@ async function removeNonAcceptedDeliveriesForBox(fs10, boxId) {
   }
 }
 function normalizeDeliveryPath(input) {
-  const path9 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path9) && !/^temp\/agent-profiles\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path9)) {
+  const path10 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path10) && !/^temp\/agent-profiles\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path10)) {
     throw new Error(
       "Delivery must point to temp/<role>/deliveries/<dl-id>.md or temp/agent-profiles/<profile>/deliveries/<dl-id>.md."
     );
   }
-  return path9;
+  return path10;
 }
 function parseDeliveryStatus(value) {
   if (value === "draft" || value === "ready" || value === "accepted" || value === "rejected") return value;
@@ -4058,10 +4058,10 @@ async function scaffoldInWorkspace(workspaceFs, options) {
     const id = box.id?.trim() || makeUniqueConceptId(usedIds);
     usedIds.add(id);
     const frontmatter = { id, type };
-    const path9 = nested(boxName);
-    await workspaceFs.mkdir(path9);
+    const path10 = nested(boxName);
+    await workspaceFs.mkdir(path10);
     await workspaceFs.writeFile(
-      `${path9}/${boxName}.md`,
+      `${path10}/${boxName}.md`,
       serializeFrontmatter(frontmatter, `
 ${box.body ?? `# ${boxName}
 `}
@@ -4087,14 +4087,14 @@ ${box.body ?? `# ${boxName}
   return { systemRootRelative: systemRelative };
 }
 async function ensureWorkspaceGitignore(workspaceFs) {
-  const path9 = ".gitignore";
+  const path10 = ".gitignore";
   const entry2 = `${TENT_SYSTEM_DIR}/`;
-  if (!await workspaceFs.exists(path9)) {
-    await workspaceFs.writeFile(path9, `${entry2}
+  if (!await workspaceFs.exists(path10)) {
+    await workspaceFs.writeFile(path10, `${entry2}
 `);
     return;
   }
-  const text = await workspaceFs.readFile(path9);
+  const text = await workspaceFs.readFile(path10);
   const lines = text.split(/\r?\n/);
   const has = lines.some((line) => {
     const t = line.trim();
@@ -4105,7 +4105,7 @@ async function ensureWorkspaceGitignore(workspaceFs) {
 ` : `${text}
 ${entry2}
 `;
-  await workspaceFs.writeFile(path9, next);
+  await workspaceFs.writeFile(path10, next);
 }
 function validateBoxName(value) {
   const name = value.trim();
@@ -4740,14 +4740,14 @@ async function createBoxUnlocked(env, input) {
   }
   const existing = new Set(tent.byId.keys());
   const id = makeUniqueConceptId(existing, env.rand);
-  const path9 = join3(input.parentPath, name);
-  assertNotTempPath(path9);
-  await ensureDir2(env.fs, path9);
+  const path10 = join3(input.parentPath, name);
+  assertNotTempPath(path10);
+  await ensureDir2(env.fs, path10);
   const fm = { id, type: input.type };
   const content = serializeFrontmatter(fm, `
 # ${name}
 `, BOX_FRONTMATTER_KEY_ORDER);
-  await env.fs.writeFile(boxNotePath(path9), content);
+  await env.fs.writeFile(boxNotePath(path10), content);
   const parent = input.parentPath ? tent.byPath.get(input.parentPath) : void 0;
   const parentKey = parent ? parent.id : ROOT_KEY;
   try {
@@ -4756,16 +4756,16 @@ async function createBoxUnlocked(env, input) {
     order[parentKey] = siblings.includes(id) ? siblings : [...siblings, id];
     await saveOrder(env.fs, order);
   } catch (error) {
-    await env.fs.remove(path9);
+    await env.fs.remove(path10);
     throw error;
   }
   return id;
 }
-async function ensureDir2(fs10, path9) {
-  if (path9 && !await fs10.exists(path9)) await fs10.mkdir(path9);
+async function ensureDir2(fs10, path10) {
+  if (path10 && !await fs10.exists(path10)) await fs10.mkdir(path10);
 }
-function assertNotTempPath(path9) {
-  if (path9 === "temp" || path9.startsWith("temp/")) {
+function assertNotTempPath(path10) {
+  if (path10 === "temp" || path10.startsWith("temp/")) {
     throw new Error("temp/ is a system pipeline; typed boxes cannot be created or moved there.");
   }
 }
@@ -4822,13 +4822,13 @@ async function submitProposalUnlocked(fs10, clock, roleInput, boxId, body) {
   if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
   const box = tent.byId.get(boxId);
   if (!box) throw new Error(`Box not found: ${boxId}.`);
-  const path9 = proposalPath(role, box.id);
-  if (await fs10.exists(path9)) {
-    const current = await loadProposal(fs10, path9);
+  const path10 = proposalPath(role, box.id);
+  if (await fs10.exists(path10)) {
+    const current = await loadProposal(fs10, path10);
     if (current.status === "pending") throw new Error("A proposal is already pending triage; the user must confirm or reject it first.");
   }
   const proposal = {
-    path: path9,
+    path: path10,
     boxId: box.id,
     role,
     status: "pending",
@@ -4848,9 +4848,9 @@ async function loadProposals(fs10) {
     if (!await fs10.exists(dir)) continue;
     for (const entry2 of await fs10.listDir(dir)) {
       if (entry2.isDir || !entry2.name.endsWith(".md")) continue;
-      const path9 = join3(dir, entry2.name);
+      const path10 = join3(dir, entry2.name);
       try {
-        proposals.push(await loadProposal(fs10, path9));
+        proposals.push(await loadProposal(fs10, path10));
       } catch {
       }
     }
@@ -4858,14 +4858,14 @@ async function loadProposals(fs10) {
   return proposals.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
 }
 async function loadProposal(fs10, inputPath) {
-  const path9 = normalizeProposalPath(inputPath);
-  if (!await fs10.exists(path9)) throw new Error(`Proposal not found: ${path9}.`);
-  const { data, body } = parseFrontmatter(await fs10.readFile(path9));
+  const path10 = normalizeProposalPath(inputPath);
+  if (!await fs10.exists(path10)) throw new Error(`Proposal not found: ${path10}.`);
+  const { data, body } = parseFrontmatter(await fs10.readFile(path10));
   if (data.type !== "proposal" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "pending" && data.status !== "accepted" && data.status !== "rejected") {
-    throw new Error(`Invalid proposal format: ${path9}.`);
+    throw new Error(`Invalid proposal format: ${path10}.`);
   }
   return {
-    path: path9,
+    path: path10,
     boxId: data.box,
     role: data.role,
     status: data.status,
@@ -4877,11 +4877,11 @@ function proposalPath(role, boxId) {
   return join3("temp", role, "proposals", `${boxId}.md`);
 }
 function normalizeProposalPath(input) {
-  const path9 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/proposals\/[bc]x-[^/]+\.md$/.test(path9)) {
+  const path10 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/proposals\/[bc]x-[^/]+\.md$/.test(path10)) {
     throw new Error("Proposal must point to temp/<role>/proposals/<boxId>.md.");
   }
-  return path9;
+  return path10;
 }
 async function writeProposal(fs10, proposal) {
   const data = {
@@ -4896,8 +4896,8 @@ async function writeProposal(fs10, proposal) {
     serializeFrontmatter(data, proposal.body + "\n", ["type", "box", "role", "status", "createdAt"])
   );
 }
-async function ensureDir3(fs10, path9) {
-  if (!await fs10.exists(path9)) await fs10.mkdir(path9);
+async function ensureDir3(fs10, path10) {
+  if (!await fs10.exists(path10)) await fs10.mkdir(path10);
 }
 function normalizeRole(role) {
   const normalized = role.trim();
@@ -5001,9 +5001,9 @@ function shortHash(value) {
   }
   return (hash >>> 0).toString(36).padStart(6, "0").slice(0, 6);
 }
-async function pathExists(path9) {
+async function pathExists(path10) {
   try {
-    await nodeFs.access(path9);
+    await nodeFs.access(path10);
     return true;
   } catch {
     return false;
@@ -5018,14 +5018,14 @@ async function gitOk(cwd, args) {
   }
 }
 function git(cwd, args) {
-  return new Promise((resolve10, reject) => {
+  return new Promise((resolve11, reject) => {
     const child = spawn("git", args, { cwd, windowsHide: true });
     let out = "";
     let err = "";
     child.stdout.on("data", (data) => out += data);
     child.stderr.on("data", (data) => err += data);
     child.on("close", (code) => {
-      if (code === 0) resolve10(out);
+      if (code === 0) resolve11(out);
       else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
     });
     child.on("error", reject);
@@ -5468,14 +5468,14 @@ async function rewriteOperationalTree(fs10, idMap, report, dryRun) {
   const walk = async (dir) => {
     if (!await fs10.exists(dir)) return;
     for (const entry2 of await fs10.listDir(dir)) {
-      const path9 = join3(dir, entry2.name);
+      const path10 = join3(dir, entry2.name);
       if (entry2.isDir) {
-        await walk(path9);
+        await walk(path10);
         continue;
       }
       const lower = entry2.name.toLowerCase();
       if (!lower.endsWith(".md") && !lower.endsWith(".yml") && !lower.endsWith(".yaml")) continue;
-      const text = await fs10.readFile(path9);
+      const text = await fs10.readFile(path10);
       const rewritten = rewriteOperationalText(text, idMap);
       let targetName = entry2.name;
       for (const [from, to] of idMap) {
@@ -5484,14 +5484,14 @@ async function rewriteOperationalTree(fs10, idMap, report, dryRun) {
         }
       }
       const targetPath = join3(dir, targetName);
-      if (rewritten === text && targetPath === path9) continue;
-      report.registryChanges.push(`operational rewrite: ${path9}`);
+      if (rewritten === text && targetPath === path10) continue;
+      report.registryChanges.push(`operational rewrite: ${path10}`);
       if (!dryRun) {
-        if (targetPath !== path9) {
+        if (targetPath !== path10) {
           await fs10.writeFile(targetPath, rewritten);
-          await fs10.remove(path9);
+          await fs10.remove(path10);
         } else {
-          await fs10.writeFile(path9, rewritten);
+          await fs10.writeFile(path10, rewritten);
         }
       }
     }
@@ -6434,8 +6434,8 @@ var ServiceClient = class {
    * User-only resolve (accept|reject). actor defaults to "user";
    * non-user actors are rejected by the service.
    */
-  proposalResolve(workspaceId, path9, decision, actor = "user") {
-    return this.call("proposal.resolve", { workspaceId, path: path9, decision, actor });
+  proposalResolve(workspaceId, path10, decision, actor = "user") {
+    return this.call("proposal.resolve", { workspaceId, path: path10, decision, actor });
   }
   sessionList(workspaceId) {
     return this.call("session.list", workspaceId ? { workspaceId } : {});
@@ -6449,6 +6449,23 @@ var ServiceClient = class {
    */
   sessionEnter(args = {}) {
     return this.call("session.enter", { ...args });
+  }
+  /**
+   * Optional Role Checkpoint (cooperative continuation note).
+   * Operational under temp/<role>/checkpoint.md — not Delivery or Task state.
+   */
+  roleCheckpointGet(workspaceId, role) {
+    return this.call("role.checkpoint.get", { workspaceId, role });
+  }
+  roleCheckpointSet(workspaceId, args) {
+    return this.call("role.checkpoint.set", { workspaceId, ...args });
+  }
+  roleCheckpointClear(workspaceId, role, opts) {
+    return this.call("role.checkpoint.clear", {
+      workspaceId,
+      role,
+      ...opts?.actor ? { actor: opts.actor } : {}
+    });
   }
   /** Probe external/managed session + incomplete task bindings. */
   sessionStatus(args = {}) {
@@ -7456,11 +7473,11 @@ function parseTaskFlags(args) {
   return { positionals, flags };
 }
 function readStdinText() {
-  return new Promise((resolve10, reject) => {
+  return new Promise((resolve11, reject) => {
     let data = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => data += chunk);
-    process.stdin.on("end", () => resolve10(data));
+    process.stdin.on("end", () => resolve11(data));
     process.stdin.on("error", reject);
   });
 }
@@ -7762,9 +7779,9 @@ async function loadHookMeta(flags, globals) {
   return { stdin: parseNativeHookStdin(text), host };
 }
 function readStdinIfAny() {
-  return new Promise((resolve10, reject) => {
+  return new Promise((resolve11, reject) => {
     if (process.stdin.isTTY) {
-      resolve10("");
+      resolve11("");
       return;
     }
     let data = "";
@@ -7772,7 +7789,7 @@ function readStdinIfAny() {
     const done = (value) => {
       if (settled) return;
       settled = true;
-      resolve10(value);
+      resolve11(value);
     };
     const timer = setTimeout(() => done(data), 500);
     process.stdin.setEncoding("utf8");
@@ -7943,6 +7960,420 @@ function parseAgentFlags(args) {
   return { positionals, flags };
 }
 
+// src/cli/role-checkpoint-rpc.ts
+import * as path8 from "node:path";
+
+// src/core/role-checkpoint.ts
+init_frontmatter();
+init_paths();
+init_tree();
+var ROLE_CHECKPOINT_TYPE = "role-checkpoint";
+var ROLE_CHECKPOINT_MAX_TEXT_CHARS = 4e3;
+var ROLE_CHECKPOINT_FILENAME = "checkpoint.md";
+var WINDOWS_RESERVED_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+function assertRoleCheckpointRoleName(role) {
+  const name = typeof role === "string" ? role.trim() : "";
+  if (!name) throw new Error("Role name cannot be empty.");
+  if (/[\u0000-\u001f\u007f]/.test(name)) {
+    throw new Error("Role name cannot contain control characters.");
+  }
+  if (/[\/\\<>:"|?*]/.test(name)) {
+    throw new Error("Role name cannot contain path separators or reserved path characters.");
+  }
+  if (name === "." || name === ".." || name.includes("..")) {
+    throw new Error("Role name cannot be a dot segment or contain path traversal.");
+  }
+  if (name.startsWith(".") || name.endsWith(".")) {
+    throw new Error("Role name cannot start or end with a dot.");
+  }
+  if (WINDOWS_RESERVED_DEVICE.test(name)) {
+    throw new Error(`Role name is a reserved Windows path segment: ${name}.`);
+  }
+  assertRoleNameAvailable(name);
+  if (name.toLowerCase() === AGENT_PROFILES_TEMP_DIR) {
+    throw new Error(`Role name is reserved by Tent: ${AGENT_PROFILES_TEMP_DIR}.`);
+  }
+  if (name.toLowerCase() === TEMP_DIR) {
+    throw new Error(`Role name is reserved by Tent: ${TEMP_DIR}.`);
+  }
+  return name;
+}
+function assertRoleSegment(role) {
+  return assertRoleCheckpointRoleName(role);
+}
+function roleCheckpointPath(role) {
+  const name = assertRoleCheckpointRoleName(role);
+  return join3(TEMP_DIR, name, ROLE_CHECKPOINT_FILENAME);
+}
+function roleCheckpointFileReadPath(role) {
+  return join3(".tent", roleCheckpointPath(role));
+}
+function normalizePointerList(raw, label) {
+  if (raw === void 0 || raw === null) return void 0;
+  if (!Array.isArray(raw)) {
+    throw new Error(`Role Checkpoint pointers.${label} must be an array of strings.`);
+  }
+  const out = [];
+  for (const item of raw) {
+    if (typeof item !== "string" || !item.trim()) {
+      throw new Error(`Role Checkpoint pointers.${label} entries must be non-empty strings.`);
+    }
+    out.push(item.trim());
+  }
+  return out.length > 0 ? out : void 0;
+}
+function normalizePointers(raw) {
+  if (!raw || typeof raw !== "object") return void 0;
+  const nodes = normalizePointerList(raw.nodes, "nodes");
+  const tasks = normalizePointerList(raw.tasks, "tasks");
+  const deliveries = normalizePointerList(raw.deliveries, "deliveries");
+  const git2 = normalizePointerList(raw.git, "git");
+  if (!nodes && !tasks && !deliveries && !git2) return void 0;
+  return {
+    ...nodes ? { nodes } : {},
+    ...tasks ? { tasks } : {},
+    ...deliveries ? { deliveries } : {},
+    ...git2 ? { git: git2 } : {}
+  };
+}
+async function readRoleCheckpoint(fs10, role) {
+  const name = assertRoleSegment(role);
+  const path10 = roleCheckpointPath(name);
+  if (!await fs10.exists(path10)) return null;
+  const raw = await fs10.readFile(path10);
+  const parsed = parseFrontmatter(raw);
+  const type = typeof parsed.data.type === "string" ? parsed.data.type.trim() : "";
+  if (type && type !== ROLE_CHECKPOINT_TYPE) {
+    throw new Error(
+      `Role Checkpoint at ${path10} has unexpected type ${type}; expected ${ROLE_CHECKPOINT_TYPE}.`
+    );
+  }
+  const fmRole = typeof parsed.data.role === "string" ? parsed.data.role.trim() : name;
+  if (fmRole !== name) {
+    throw new Error(`Role Checkpoint role mismatch at ${path10}: file has ${fmRole}, expected ${name}.`);
+  }
+  const updatedAt = typeof parsed.data.updatedAt === "string" ? parsed.data.updatedAt.trim() : "";
+  if (!updatedAt) {
+    throw new Error(`Role Checkpoint at ${path10} is missing updatedAt.`);
+  }
+  const sourceSessionId = typeof parsed.data.sourceSessionId === "string" ? parsed.data.sourceSessionId.trim() || void 0 : void 0;
+  const pointers = normalizePointers({
+    nodes: parsed.data.nodes,
+    tasks: parsed.data.tasks,
+    deliveries: parsed.data.deliveries,
+    git: parsed.data.git
+  });
+  let text = "";
+  const body = parsed.body.replace(/\r\n/g, "\n");
+  const cont = body.match(/##\s*Continuation\s*\r?\n+([\s\S]*?)\s*$/i);
+  if (cont) {
+    text = cont[1].trim();
+  } else {
+    text = body.replace(/^#\s*Role Checkpoint\s*/i, "").replace(
+      /^Optional cooperative continuation[\s\S]*?stable Role init\.\s*/i,
+      ""
+    ).trim();
+  }
+  if (!text) {
+    throw new Error(`Role Checkpoint at ${path10} has empty continuation text.`);
+  }
+  if (text.length > ROLE_CHECKPOINT_MAX_TEXT_CHARS) {
+    throw new Error(
+      `Role Checkpoint at ${path10} exceeds ${ROLE_CHECKPOINT_MAX_TEXT_CHARS} characters.`
+    );
+  }
+  return {
+    role: name,
+    text,
+    updatedAt,
+    ...sourceSessionId ? { sourceSessionId } : {},
+    ...pointers ? { pointers } : {},
+    path: path10
+  };
+}
+function formatRoleCheckpointTail(record) {
+  if (!record) return "";
+  const lines = [
+    "--- Tent Role Checkpoint (dynamic tail; optional) ---",
+    "This is cooperative continuation only. It is not Delivery, Task state, or stable Role init.",
+    "Abnormal recovery must re-query persisted Tent Nodes, Tasks, Deliveries, and Git \u2014 never invent from this note alone.",
+    `role: ${record.role}`,
+    `updatedAt: ${record.updatedAt}`,
+    `checkpointPath: ${record.path}`,
+    `fileRead: ${roleCheckpointFileReadPath(record.role)}`
+  ];
+  if (record.sourceSessionId) {
+    lines.push(`sourceSessionId: ${record.sourceSessionId}`);
+  }
+  const p = record.pointers;
+  if (p?.nodes?.length) lines.push(`nodes: ${p.nodes.join(", ")}`);
+  if (p?.tasks?.length) lines.push(`tasks: ${p.tasks.join(", ")}`);
+  if (p?.deliveries?.length) lines.push(`deliveries: ${p.deliveries.join(", ")}`);
+  if (p?.git?.length) lines.push(`git: ${p.git.join(", ")}`);
+  lines.push("");
+  lines.push("## Continuation");
+  lines.push("");
+  lines.push(record.text);
+  return lines.join("\n");
+}
+
+// src/cli/role-checkpoint-rpc.ts
+init_paths();
+function isInWorkspaceSystemRoot(systemRoot) {
+  return workspaceRootFromSystemRoot(systemRoot) !== void 0;
+}
+function roleCheckpointHelpText() {
+  return `tent role-checkpoint \u2014 optional cooperative Role Session continuation note
+
+Usage:
+  tent role-checkpoint set  <role> --text <note> [--actor user|<role>]
+                            [--session <ss-\u2026>] [--nodes id,id] [--tasks id,id]
+                            [--deliveries id,id] [--git ref,ref]
+  tent role-checkpoint show <role>
+  tent role-checkpoint clear <role> [--actor user|<role>]
+
+Semantics:
+  set    Overwrite the single current note under temp/<role>/checkpoint.md
+         (in-workspace: Local Service RPC + MutationBus; never direct-write)
+  show   Print the note + dynamic-tail projection (or report absent; read-only)
+  clear  Remove the note (idempotent; same Service mutation path as set)
+
+Actor (set/clear):
+  --actor user          User / UI path (default)
+  --actor <role>        Exact target Role operational name (future tent-role Skill)
+  Unrelated Role actors are refused by the Service.
+
+Rules:
+  - Dynamic tail only \u2014 never stable Role init / cache prefix.
+  - Not a Delivery, Task state, Core entity, or OS-temp artifact.
+  - Crash recovery must work without this note (re-query Tent/Git facts).
+  - One note per Role; later writes replace earlier ones.
+  - Direct core mutation of set/clear is fail-loud on in-workspace .tent.
+
+Common flags:
+  --workspace <path>   Workspace root (wins over cwd for set/show/clear)
+  --data-dir <path>    Service data area
+  --attach-only        Do not bootstrap Local Service
+  --json               Machine-readable result
+`;
+}
+async function runRoleCheckpointCommand(sub, args, globals = {}) {
+  const normalized = (sub || "").trim().toLowerCase();
+  if (!normalized || normalized === "help" || normalized === "--help" || normalized === "-h") {
+    return { exitCode: 0, stdout: roleCheckpointHelpText() + "\n", stderr: "" };
+  }
+  if (normalized !== "set" && normalized !== "show" && normalized !== "clear") {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: `Unknown role-checkpoint subcommand: ${sub || "(empty)"}
+` + roleCheckpointHelpText() + "\n"
+    };
+  }
+  try {
+    const { positionals, flags } = parseRoleCheckpointFlags(args);
+    const json = globals.json === true || flags.json === "true";
+    const role = positionals[0]?.trim();
+    if (!role) {
+      return failUsage3(
+        `Usage: tent role-checkpoint ${normalized} <role> \u2026
+` + roleCheckpointHelpText()
+      );
+    }
+    if (normalized === "set" && positionals.length > 1) {
+      return failUsage3(
+        "Usage: tent role-checkpoint set <role> --text <note> [--actor user|<role>] \u2026"
+      );
+    }
+    if (normalized !== "set" && positionals.length > 1) {
+      return failUsage3(`Usage: tent role-checkpoint ${normalized} <role>`);
+    }
+    if ((normalized === "set" || normalized === "clear") && (flags.direct === "true" || flags["no-service"] === "true")) {
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: `role-checkpoint ${normalized} refuses --direct / --no-service: in-workspace mutations must use Local Service (MutationBus).
+Omit those flags; attach/bootstrap Service is the default path.
+`
+      };
+    }
+    if (normalized === "show" && !globals.client && flags.service !== "true") {
+      return await runShowDirect(role, flags, json, globals);
+    }
+    return await runViaService(normalized, role, flags, json, globals);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { exitCode: 1, stdout: "", stderr: message + "\n" };
+  }
+}
+async function runViaService(normalized, role, flags, json, globals) {
+  const attachOpts = {
+    dataDir: flags["data-dir"] || globals.dataDir,
+    attachOnly: globals.attachOnly === true || flags["attach-only"] === "true",
+    serviceEntry: flags["service-entry"] || globals.serviceEntry,
+    packageRoot: globals.packageRoot,
+    env: globals.env
+  };
+  const client = globals.client ?? (await attachOrBootstrapService(attachOpts)).client;
+  const ctx = await ensureMountedWorkspace(client, {
+    cwd: globals.cwd,
+    workspace: flags.workspace || globals.workspace
+  });
+  const workspaceId = ctx.workspaceId;
+  const actor = resolveActorFlag(flags);
+  if (normalized === "show") {
+    const result2 = await client.roleCheckpointGet(workspaceId, role);
+    if (json) return okJson(result2);
+    if (!result2.checkpoint) {
+      return {
+        exitCode: 0,
+        stdout: `No Role Checkpoint for role ${role}.
+`,
+        stderr: ""
+      };
+    }
+    return {
+      exitCode: 0,
+      stdout: (result2.tail?.trim() ? result2.tail.trim() + "\n" : "") || "",
+      stderr: ""
+    };
+  }
+  if (normalized === "clear") {
+    const result2 = await client.roleCheckpointClear(workspaceId, role, {
+      actor
+    });
+    if (json) return okJson(result2);
+    return {
+      exitCode: 0,
+      stdout: result2.cleared ? `\u2713 Role Checkpoint cleared for ${role}
+` : `No Role Checkpoint to clear for ${role}
+`,
+      stderr: ""
+    };
+  }
+  const text = flags.text || flags.note || flags.body;
+  if (!text?.trim()) {
+    return failUsage3(
+      "Usage: tent role-checkpoint set <role> --text <note> [--actor user|<role>] [--session <ss-\u2026>] [--nodes \u2026]"
+    );
+  }
+  const pointers = pointersFromFlags(flags);
+  const result = await client.roleCheckpointSet(workspaceId, {
+    role,
+    text,
+    actor,
+    sourceSessionId: flags.session || flags["session-id"] || flags.sourceSessionId,
+    ...pointers ? { pointers } : {}
+  });
+  if (json) return okJson(result);
+  const path10 = result?.checkpoint?.path || `temp/${role}/checkpoint.md`;
+  return {
+    exitCode: 0,
+    stdout: `\u2713 Role Checkpoint written: ${path10}
+`,
+    stderr: ""
+  };
+}
+async function runShowDirect(role, flags, json, globals) {
+  const explicitWorkspace = (flags.workspace || globals.workspace || "").trim();
+  const start = explicitWorkspace ? path8.resolve(explicitWorkspace) : path8.resolve(globals.cwd || process.cwd());
+  const systemRoot = await findTentSystemRoot(start);
+  if (!systemRoot) {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: NOT_INSIDE_TENT_MESSAGE + (explicitWorkspace ? ` (searched from --workspace ${start})` : "") + "\n"
+    };
+  }
+  void isInWorkspaceSystemRoot;
+  const fsa = new NodeFs(systemRoot);
+  try {
+    const record = await readRoleCheckpoint(fsa, role);
+    if (json) {
+      return okJson({
+        role,
+        checkpoint: record,
+        tail: formatRoleCheckpointTail(record)
+      });
+    }
+    if (!record) {
+      return {
+        exitCode: 0,
+        stdout: `No Role Checkpoint for role ${role}.
+`,
+        stderr: ""
+      };
+    }
+    return {
+      exitCode: 0,
+      stdout: formatRoleCheckpointTail(record) + "\n",
+      stderr: ""
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { exitCode: 1, stdout: "", stderr: message + "\n" };
+  }
+}
+function resolveActorFlag(flags) {
+  const raw = (flags.actor || flags.by || "").trim();
+  return raw || "user";
+}
+function pointersFromFlags(flags) {
+  const split = (raw) => {
+    if (!raw?.trim()) return void 0;
+    const items = raw.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
+    return items.length ? items : void 0;
+  };
+  const nodes = split(flags.nodes || flags.node);
+  const tasks = split(flags.tasks || flags.task);
+  const deliveries = split(flags.deliveries || flags.delivery);
+  const git2 = split(flags.git);
+  if (!nodes && !tasks && !deliveries && !git2) return void 0;
+  return {
+    ...nodes ? { nodes } : {},
+    ...tasks ? { tasks } : {},
+    ...deliveries ? { deliveries } : {},
+    ...git2 ? { git: git2 } : {}
+  };
+}
+function parseRoleCheckpointFlags(args) {
+  const positionals = [];
+  const flags = {};
+  const booleanFlags = /* @__PURE__ */ new Set([
+    "json",
+    "service",
+    "via-service",
+    "attach-only",
+    "direct",
+    "no-service"
+  ]);
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.startsWith("--")) {
+      const name = a.slice(2);
+      if (booleanFlags.has(name)) {
+        flags[name] = "true";
+      } else {
+        flags[name] = args[i + 1] ?? "";
+        i++;
+      }
+    } else {
+      positionals.push(a);
+    }
+  }
+  return { positionals, flags };
+}
+function failUsage3(msg) {
+  return { exitCode: 1, stdout: "", stderr: msg + "\n" };
+}
+function okJson(value) {
+  return {
+    exitCode: 0,
+    stdout: JSON.stringify(value, null, 2) + "\n",
+    stderr: ""
+  };
+}
+
 // src/cli/proposal-rpc.ts
 async function runProposalSubmit(args, globals = {}) {
   try {
@@ -8002,7 +8433,7 @@ var LEGACY_MUTATION_COMMANDS = /* @__PURE__ */ new Set([
   "okf-sync"
 ]);
 var LEGACY_READONLY_COMMANDS = /* @__PURE__ */ new Set(["tree", "status", "roles", "find", "tags"]);
-function isInWorkspaceSystemRoot(systemRoot) {
+function isInWorkspaceSystemRoot2(systemRoot) {
   return workspaceRootFromSystemRoot(systemRoot) !== void 0;
 }
 function isLegacyMutationCommand(cmd) {
@@ -8016,7 +8447,8 @@ function inWorkspaceLegacyMutationMessage(cmd, systemRoot) {
   return `Legacy CLI command "${cmd}" refuses to direct-write an in-workspace Tent at ${systemRoot}.
 Desktop co-located collaboration must go through Local Service (tent task * / Desktop).
 systemRoot is <workspace>/${TENT_SYSTEM_DIR}` + (workspace ? ` (workspace: ${workspace})` : "") + `.
-Allowed without Service: read-only tree/status/roles/find/tags; init/derived new/migrate/role-init/skill-install/agent-hooks.
+Allowed without Service: read-only tree/status/roles/find/tags; init/derived new/migrate/role-init/skill-install/agent-hooks; role-checkpoint show (read-only).
+role-checkpoint set|clear are Service-routed mutations (MutationBus) on in-workspace .tent.
 External (non-${TENT_SYSTEM_DIR}) Tent roots still accept legacy mutation commands during the migration window.`;
 }
 async function makeEnv() {
@@ -8026,13 +8458,13 @@ async function makeEnv() {
   return {
     fs: new NodeFs(systemRoot),
     clock: new SystemClock(),
-    tentName: path8.basename(workspace ?? systemRoot),
+    tentName: path9.basename(workspace ?? systemRoot),
     tentRoot: systemRoot
   };
 }
 function assertLegacyDirectWriteAllowed(cmd, systemRoot) {
   if (!LEGACY_MUTATION_COMMANDS.has(cmd)) return;
-  if (!isInWorkspaceSystemRoot(systemRoot)) return;
+  if (!isInWorkspaceSystemRoot2(systemRoot)) return;
   throw new Error(inWorkspaceLegacyMutationMessage(cmd, systemRoot));
 }
 async function main() {
@@ -8125,8 +8557,8 @@ Usage: tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copi
     const asJson = flags.json === "true";
     try {
       const report = await importExternalTentRoot({
-        sourceRoot: path8.resolve(source),
-        workspaceRoot: path8.resolve(workspace),
+        sourceRoot: path9.resolve(source),
+        workspaceRoot: path9.resolve(workspace),
         createFs: (root) => new NodeFs(root),
         dryRun,
         force
@@ -8165,6 +8597,20 @@ Usage: tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copi
     if (result.exitCode !== 0) process.exitCode = result.exitCode;
     return;
   }
+  if (cmd === "role-checkpoint") {
+    const [sub, ...rest] = args;
+    if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
+      console.log(roleCheckpointHelpText());
+      return;
+    }
+    const result = await runRoleCheckpointCommand(sub, rest, {
+      packageRoot: packageRoot()
+    });
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    if (result.exitCode !== 0) process.exitCode = result.exitCode;
+    return;
+  }
   const tentCommands = /* @__PURE__ */ new Set([
     ...LEGACY_MUTATION_COMMANDS,
     ...LEGACY_READONLY_COMMANDS,
@@ -8174,14 +8620,14 @@ Usage: tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copi
   if (!tentCommands.has(cmd)) {
     return fail(
       `Unknown command: ${cmd || "(empty)"}
-Commands: new migrate import task agent agent-hooks role-init roles dispatch task-ack task-cancel propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
+Commands: new migrate import task agent agent-hooks role-init role-checkpoint roles dispatch task-ack task-cancel propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
     );
   }
   const env = await makeEnv();
   if (!cmd) return fail("Unknown command: (empty)");
   const systemRoot = env.tentRoot;
   if (!systemRoot) return fail(NOT_INSIDE_TENT_MESSAGE);
-  if (cmd === "propose" && isInWorkspaceSystemRoot(systemRoot)) {
+  if (cmd === "propose" && isInWorkspaceSystemRoot2(systemRoot)) {
     const { positionals } = parseFlags(args);
     const [boxId, bodySource] = positionals;
     if (!boxId || !bodySource) {
@@ -8470,16 +8916,16 @@ unresolved wiki links: ${result.unresolved.length}`
   }
 }
 function readStdin() {
-  return new Promise((resolve10, reject) => {
+  return new Promise((resolve11, reject) => {
     let data = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => data += chunk);
-    process.stdin.on("end", () => resolve10(data));
+    process.stdin.on("end", () => resolve11(data));
     process.stdin.on("error", reject);
   });
 }
 async function readBodyFile(bodySource) {
-  const resolved = path8.resolve(bodySource);
+  const resolved = path9.resolve(bodySource);
   if (!await existsPath2(resolved)) throw new Error(`Body file not found: ${bodySource}.`);
   return fs9.readFile(resolved, "utf8");
 }
@@ -8566,9 +9012,9 @@ function formatSkillInstallResults(target, results) {
   return lines.join("\n");
 }
 function packageRoot() {
-  const here = path8.dirname(fileURLToPath2(import.meta.url));
-  if (path8.basename(here) === "cli" && path8.basename(path8.dirname(here)) === "src") {
-    return path8.resolve(here, "../..");
+  const here = path9.dirname(fileURLToPath2(import.meta.url));
+  if (path9.basename(here) === "cli" && path9.basename(path9.dirname(here)) === "src") {
+    return path9.resolve(here, "../..");
   }
   return here;
 }
@@ -8581,7 +9027,7 @@ async function existsPath2(target) {
   }
 }
 async function packageVersion() {
-  const pkg = JSON.parse(await fs9.readFile(path8.join(packageRoot(), "package.json"), "utf8"));
+  const pkg = JSON.parse(await fs9.readFile(path9.join(packageRoot(), "package.json"), "utf8"));
   return String(pkg.version ?? "0.0.0");
 }
 function helpText() {
@@ -8597,6 +9043,8 @@ Service-backed collaboration (required for Desktop / in-workspace mutates):
   tent task --help                    Full task subcommand help
   tent agent enter|status|leave       External session lifecycle (no ACP spawn)
   tent agent --help                   Pull-host enter/status/leave + hook aliases
+  tent role-checkpoint set|show|clear Optional cooperative Role continuation note
+  tent role-checkpoint --help         set/clear \u2192 Service; show read-only; --actor
   propose <boxId> <file|->            Submit a proposal (in-workspace \u2192 proposal.submit RPC)
   CLI exit does not stop Local Service. Token stays in machine-local service.json.
 
@@ -8613,6 +9061,8 @@ Init / machine config (always allowed):
                                      Project Tent-managed SessionStart/Stop hooks into
                                      verified agent configs (no permissions / MCP).
   role-init <role>                   Regenerate the derived stable role init document.
+  role-checkpoint set|show|clear     Continuation note: set/clear via Local Service; show read-only.
+                                     set/clear accept --actor user|<role> (default user).
 
 Read-only (allowed on in-workspace .tent):
   status                             Print a read-only Tent status summary.
@@ -8644,7 +9094,7 @@ Options:
 }
 async function readVaultPluginSettings(vault) {
   const fsmod = await import("node:fs/promises");
-  const dataPath = path8.join(path8.resolve(vault), ".obsidian", "plugins", "tent", "data.json");
+  const dataPath = path9.join(path9.resolve(vault), ".obsidian", "plugins", "tent", "data.json");
   try {
     const data = JSON.parse(await fsmod.readFile(dataPath, "utf8"));
     const root = typeof data?.tentsRoot === "string" ? data.tentsRoot.trim() : "";
@@ -8667,13 +9117,13 @@ async function newTent(target, vault) {
       return fail(`In --vault mode, <name> cannot contain path separators: ${target}`);
     }
     pluginSettings = await readVaultPluginSettings(vault);
-    target = path8.join(path8.resolve(vault), pluginSettings.tentsRoot, target);
+    target = path9.join(path9.resolve(vault), pluginSettings.tentsRoot, target);
   }
-  const workspaceRoot = path8.resolve(target);
+  const workspaceRoot = path9.resolve(target);
   const fsa = new NodeFs(workspaceRoot);
   if (await fsa.exists(".tent")) return fail(`Target is already a Tent: ${workspaceRoot}`);
   await fsmod.mkdir(workspaceRoot, { recursive: true });
-  const name = path8.basename(workspaceRoot);
+  const name = path9.basename(workspaceRoot);
   const fallbackRules = `# ${name} - Project Rules
 
 > Local project rules for this Tent; edit freely.
@@ -8691,7 +9141,7 @@ async function newTent(target, vault) {
     rolesRegistry: pluginSettings?.rolesRegistry
   });
   console.log(
-    `\u2713 Created Tent: ${path8.join(workspaceRoot, ".tent")}
+    `\u2713 Created Tent: ${path9.join(workspaceRoot, ".tent")}
 In-workspace layout: collaboration facts live under <workspace>/.tent/.
 The concept tree starts empty; add notes/boxes as folder + same-named Markdown.`
   );
@@ -8747,8 +9197,8 @@ function normalizeTemplateRoles(value) {
   }
   return { roles };
 }
-var entry = process.argv[1] ? path8.resolve(process.argv[1]) : "";
-var thisFile = path8.resolve(fileURLToPath2(import.meta.url));
+var entry = process.argv[1] ? path9.resolve(process.argv[1]) : "";
+var thisFile = path9.resolve(fileURLToPath2(import.meta.url));
 var normalizeEntryPath = (value) => process.platform === "win32" ? value.toLowerCase() : value;
 void (async () => {
   if (!entry) return;
@@ -8763,7 +9213,7 @@ void (async () => {
 });
 export {
   inWorkspaceLegacyMutationMessage,
-  isInWorkspaceSystemRoot,
+  isInWorkspaceSystemRoot2 as isInWorkspaceSystemRoot,
   isLegacyMutationCommand,
   listLegacyMutationCommands
 };

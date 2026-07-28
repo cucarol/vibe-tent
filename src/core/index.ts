@@ -37,3 +37,4 @@ export * from "./annotation.js";
 export * from "./context-card.js";
 export * from "./task-context-card.js";
 export * from "./task-node-refs.js";
+export * from "./role-checkpoint.js";

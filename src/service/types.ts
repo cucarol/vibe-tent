@@ -979,6 +979,15 @@ export const CLIENT_METHODS = [
   "session.enter",
   "session.status",
   "session.leave",
+  /**
+   * Optional Role Checkpoint (cooperative Session replacement continuation note).
+   * Operational under temp/<role>/checkpoint.md only — not a Core entity, Task state,
+   * Delivery, or OS-temp artifact. set overwrites; get returns null when absent;
+   * clear is idempotent. Dynamic tail context only.
+   */
+  "role.checkpoint.get",
+  "role.checkpoint.set",
+  "role.checkpoint.clear",
   "a2a.listPending",
   "a2a.resolve",
   /** ACP tool permission approvals (permissionPolicy=ask) — distinct from a2a.* spawn gate. */

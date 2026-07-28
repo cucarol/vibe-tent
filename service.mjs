@@ -5625,6 +5625,210 @@ function relatedBoxes(reference, boxes) {
   );
 }
 
+// src/core/role-checkpoint.ts
+var ROLE_CHECKPOINT_TYPE = "role-checkpoint";
+var ROLE_CHECKPOINT_MAX_TEXT_CHARS = 4e3;
+var ROLE_CHECKPOINT_FILENAME = "checkpoint.md";
+var WINDOWS_RESERVED_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+function assertRoleCheckpointRoleName(role) {
+  const name = typeof role === "string" ? role.trim() : "";
+  if (!name) throw new Error("Role name cannot be empty.");
+  if (/[\u0000-\u001f\u007f]/.test(name)) {
+    throw new Error("Role name cannot contain control characters.");
+  }
+  if (/[\/\\<>:"|?*]/.test(name)) {
+    throw new Error("Role name cannot contain path separators or reserved path characters.");
+  }
+  if (name === "." || name === ".." || name.includes("..")) {
+    throw new Error("Role name cannot be a dot segment or contain path traversal.");
+  }
+  if (name.startsWith(".") || name.endsWith(".")) {
+    throw new Error("Role name cannot start or end with a dot.");
+  }
+  if (WINDOWS_RESERVED_DEVICE.test(name)) {
+    throw new Error(`Role name is a reserved Windows path segment: ${name}.`);
+  }
+  assertRoleNameAvailable(name);
+  if (name.toLowerCase() === AGENT_PROFILES_TEMP_DIR) {
+    throw new Error(`Role name is reserved by Tent: ${AGENT_PROFILES_TEMP_DIR}.`);
+  }
+  if (name.toLowerCase() === TEMP_DIR) {
+    throw new Error(`Role name is reserved by Tent: ${TEMP_DIR}.`);
+  }
+  return name;
+}
+function assertRoleSegment(role) {
+  return assertRoleCheckpointRoleName(role);
+}
+function roleCheckpointPath(role) {
+  const name = assertRoleCheckpointRoleName(role);
+  return join(TEMP_DIR, name, ROLE_CHECKPOINT_FILENAME);
+}
+function roleCheckpointFileReadPath(role) {
+  return join(".tent", roleCheckpointPath(role));
+}
+function normalizePointerList(raw, label) {
+  if (raw === void 0 || raw === null) return void 0;
+  if (!Array.isArray(raw)) {
+    throw new Error(`Role Checkpoint pointers.${label} must be an array of strings.`);
+  }
+  const out = [];
+  for (const item of raw) {
+    if (typeof item !== "string" || !item.trim()) {
+      throw new Error(`Role Checkpoint pointers.${label} entries must be non-empty strings.`);
+    }
+    out.push(item.trim());
+  }
+  return out.length > 0 ? out : void 0;
+}
+function normalizePointers(raw) {
+  if (!raw || typeof raw !== "object") return void 0;
+  const nodes = normalizePointerList(raw.nodes, "nodes");
+  const tasks = normalizePointerList(raw.tasks, "tasks");
+  const deliveries = normalizePointerList(raw.deliveries, "deliveries");
+  const git3 = normalizePointerList(raw.git, "git");
+  if (!nodes && !tasks && !deliveries && !git3) return void 0;
+  return {
+    ...nodes ? { nodes } : {},
+    ...tasks ? { tasks } : {},
+    ...deliveries ? { deliveries } : {},
+    ...git3 ? { git: git3 } : {}
+  };
+}
+function normalizeText(text3) {
+  const trimmed = text3.replace(/\r\n/g, "\n").trim();
+  if (!trimmed) throw new Error("Role Checkpoint text cannot be empty.");
+  if (trimmed.length > ROLE_CHECKPOINT_MAX_TEXT_CHARS) {
+    throw new Error(
+      `Role Checkpoint text exceeds ${ROLE_CHECKPOINT_MAX_TEXT_CHARS} characters; keep a short continuation note with pointers only.`
+    );
+  }
+  return trimmed;
+}
+async function writeRoleCheckpoint(fs23, input) {
+  const role = assertRoleSegment(input.role);
+  const text3 = normalizeText(input.text);
+  const pointers = normalizePointers(input.pointers);
+  const updatedAt = input.updatedAt?.trim();
+  if (!updatedAt) throw new Error("Role Checkpoint updatedAt is required.");
+  const sourceSessionId = input.sourceSessionId?.trim() || void 0;
+  const path24 = roleCheckpointPath(role);
+  const data = {
+    type: ROLE_CHECKPOINT_TYPE,
+    role,
+    updatedAt
+  };
+  if (sourceSessionId) data.sourceSessionId = sourceSessionId;
+  if (pointers?.nodes) data.nodes = pointers.nodes;
+  if (pointers?.tasks) data.tasks = pointers.tasks;
+  if (pointers?.deliveries) data.deliveries = pointers.deliveries;
+  if (pointers?.git) data.git = pointers.git;
+  const body = `# Role Checkpoint
+
+Optional cooperative continuation for Role Session replacement/transfer.
+Dynamic tail only \u2014 not Delivery, not Task state, not stable Role init.
+
+## Continuation
+
+${text3}
+`;
+  await fs23.writeFile(path24, serializeFrontmatter(data, body));
+  return {
+    role,
+    text: text3,
+    updatedAt,
+    ...sourceSessionId ? { sourceSessionId } : {},
+    ...pointers ? { pointers } : {},
+    path: path24
+  };
+}
+async function readRoleCheckpoint(fs23, role) {
+  const name = assertRoleSegment(role);
+  const path24 = roleCheckpointPath(name);
+  if (!await fs23.exists(path24)) return null;
+  const raw = await fs23.readFile(path24);
+  const parsed = parseFrontmatter(raw);
+  const type = typeof parsed.data.type === "string" ? parsed.data.type.trim() : "";
+  if (type && type !== ROLE_CHECKPOINT_TYPE) {
+    throw new Error(
+      `Role Checkpoint at ${path24} has unexpected type ${type}; expected ${ROLE_CHECKPOINT_TYPE}.`
+    );
+  }
+  const fmRole = typeof parsed.data.role === "string" ? parsed.data.role.trim() : name;
+  if (fmRole !== name) {
+    throw new Error(`Role Checkpoint role mismatch at ${path24}: file has ${fmRole}, expected ${name}.`);
+  }
+  const updatedAt = typeof parsed.data.updatedAt === "string" ? parsed.data.updatedAt.trim() : "";
+  if (!updatedAt) {
+    throw new Error(`Role Checkpoint at ${path24} is missing updatedAt.`);
+  }
+  const sourceSessionId = typeof parsed.data.sourceSessionId === "string" ? parsed.data.sourceSessionId.trim() || void 0 : void 0;
+  const pointers = normalizePointers({
+    nodes: parsed.data.nodes,
+    tasks: parsed.data.tasks,
+    deliveries: parsed.data.deliveries,
+    git: parsed.data.git
+  });
+  let text3 = "";
+  const body = parsed.body.replace(/\r\n/g, "\n");
+  const cont = body.match(/##\s*Continuation\s*\r?\n+([\s\S]*?)\s*$/i);
+  if (cont) {
+    text3 = cont[1].trim();
+  } else {
+    text3 = body.replace(/^#\s*Role Checkpoint\s*/i, "").replace(
+      /^Optional cooperative continuation[\s\S]*?stable Role init\.\s*/i,
+      ""
+    ).trim();
+  }
+  if (!text3) {
+    throw new Error(`Role Checkpoint at ${path24} has empty continuation text.`);
+  }
+  if (text3.length > ROLE_CHECKPOINT_MAX_TEXT_CHARS) {
+    throw new Error(
+      `Role Checkpoint at ${path24} exceeds ${ROLE_CHECKPOINT_MAX_TEXT_CHARS} characters.`
+    );
+  }
+  return {
+    role: name,
+    text: text3,
+    updatedAt,
+    ...sourceSessionId ? { sourceSessionId } : {},
+    ...pointers ? { pointers } : {},
+    path: path24
+  };
+}
+async function clearRoleCheckpoint(fs23, role) {
+  const path24 = roleCheckpointPath(role);
+  if (!await fs23.exists(path24)) return false;
+  await fs23.remove(path24);
+  return true;
+}
+function formatRoleCheckpointTail(record) {
+  if (!record) return "";
+  const lines = [
+    "--- Tent Role Checkpoint (dynamic tail; optional) ---",
+    "This is cooperative continuation only. It is not Delivery, Task state, or stable Role init.",
+    "Abnormal recovery must re-query persisted Tent Nodes, Tasks, Deliveries, and Git \u2014 never invent from this note alone.",
+    `role: ${record.role}`,
+    `updatedAt: ${record.updatedAt}`,
+    `checkpointPath: ${record.path}`,
+    `fileRead: ${roleCheckpointFileReadPath(record.role)}`
+  ];
+  if (record.sourceSessionId) {
+    lines.push(`sourceSessionId: ${record.sourceSessionId}`);
+  }
+  const p = record.pointers;
+  if (p?.nodes?.length) lines.push(`nodes: ${p.nodes.join(", ")}`);
+  if (p?.tasks?.length) lines.push(`tasks: ${p.tasks.join(", ")}`);
+  if (p?.deliveries?.length) lines.push(`deliveries: ${p.deliveries.join(", ")}`);
+  if (p?.git?.length) lines.push(`git: ${p.git.join(", ")}`);
+  lines.push("");
+  lines.push("## Continuation");
+  lines.push("");
+  lines.push(record.text);
+  return lines.join("\n");
+}
+
 // src/core/context-card.ts
 var CONTEXT_CARD_TEMPLATE_VERSION = "v1";
 function buildContextCard(ref, options) {
@@ -18694,6 +18898,15 @@ var CLIENT_METHODS = [
   "session.enter",
   "session.status",
   "session.leave",
+  /**
+   * Optional Role Checkpoint (cooperative Session replacement continuation note).
+   * Operational under temp/<role>/checkpoint.md only — not a Core entity, Task state,
+   * Delivery, or OS-temp artifact. set overwrites; get returns null when absent;
+   * clear is idempotent. Dynamic tail context only.
+   */
+  "role.checkpoint.get",
+  "role.checkpoint.set",
+  "role.checkpoint.clear",
   "a2a.listPending",
   "a2a.resolve",
   /** ACP tool permission approvals (permissionPolicy=ask) — distinct from a2a.* spawn gate. */
@@ -22680,6 +22893,12 @@ async function dispatchMethod(ctx, method, params) {
         return sessionStatus(ctx, p);
       case "session.leave":
         return sessionLeave(ctx, p);
+      case "role.checkpoint.get":
+        return roleCheckpointGetRpc(ctx, p);
+      case "role.checkpoint.set":
+        return roleCheckpointSetRpc(ctx, p);
+      case "role.checkpoint.clear":
+        return roleCheckpointClearRpc(ctx, p);
       case "a2a.listPending":
         return a2aListPending(ctx, p);
       case "a2a.resolve":
@@ -27651,10 +27870,189 @@ async function sessionEnter(ctx, p) {
     createdAt: handle.createdAt,
     updatedAt: handle.updatedAt
   };
+  const roleCheckpointTail = handle.roleName && (handle.assigneeKind ?? "role") !== "agentProfile" ? await loadRoleCheckpointTailSafe(ctx, workspaceId, handle.roleName) : "";
   return {
     session,
-    reused: priorExternalId === handle.sessionId
+    reused: priorExternalId === handle.sessionId,
+    /**
+     * Optional cooperative Role Checkpoint tail for the durable Role just entered.
+     * Dynamic only — callers append after stable Role init / bootstrap prefix.
+     * Absent when no role, agentProfile, or no note on disk.
+     */
+    ...roleCheckpointTail ? { roleCheckpointTail } : {}
   };
+}
+function projectRoleCheckpoint(record) {
+  return {
+    role: record.role,
+    text: record.text,
+    updatedAt: record.updatedAt,
+    path: record.path,
+    ...record.sourceSessionId ? { sourceSessionId: record.sourceSessionId } : {},
+    ...record.pointers ? { pointers: record.pointers } : {}
+  };
+}
+async function resolveDurableCheckpointRole(ctx, workspaceId, roleRef) {
+  let safe;
+  try {
+    safe = assertRoleCheckpointRoleName(roleRef);
+  } catch (err) {
+    const message2 = err instanceof Error ? err.message : String(err);
+    throw new RpcError(-32602, message2, { code: "INVALID_ROLE_NAME", role: roleRef });
+  }
+  const mount = ctx.host.require(workspaceId);
+  const registry = await loadRolesRegistry(mount.env.fs);
+  const found = resolveRole(registry.roles, safe) ?? resolveRole(registry.roles, roleRef.trim());
+  if (!found?.name) {
+    throw new RpcError(-32602, `Unknown durable Role for checkpoint: ${roleRef.trim()}`, {
+      code: "UNKNOWN_ROLE",
+      role: roleRef.trim()
+    });
+  }
+  let roleName;
+  try {
+    roleName = assertRoleCheckpointRoleName(found.name);
+  } catch (err) {
+    const message2 = err instanceof Error ? err.message : String(err);
+    throw new RpcError(-32602, message2, { code: "INVALID_ROLE_NAME", role: found.name });
+  }
+  return { roleName, roleId: found.id };
+}
+function requireRoleCheckpointActor(p, targetRoleName, surface) {
+  const actorRaw = (optionalString(p, "actor") ?? "user").trim();
+  if (!actorRaw) {
+    throw new RpcError(-32001, `${surface} actor cannot be empty`, { code: "ACTOR_FORBIDDEN" });
+  }
+  if (actorRaw === "user") return actorRaw;
+  if (actorRaw === targetRoleName) return actorRaw;
+  throw new RpcError(
+    -32001,
+    `${surface} allows actor "user" or the exact target Role "${targetRoleName}"; got "${actorRaw}"`,
+    { code: "ACTOR_FORBIDDEN", actor: actorRaw, role: targetRoleName }
+  );
+}
+async function resolveRoleCheckpointSourceSessionId(ctx, workspaceId, roleName, raw) {
+  const sessionId = raw?.trim();
+  if (!sessionId) return void 0;
+  try {
+    const rec = await ctx.runtime.registry.read(sessionId);
+    if (!rec) return void 0;
+    if (!rec.workspace || rec.workspace !== workspaceId) return void 0;
+    const recRole = rec.roleName?.trim() || "";
+    if (!recRole || recRole !== roleName) return void 0;
+    return sessionId;
+  } catch {
+    return void 0;
+  }
+}
+async function roleCheckpointGetRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const roleRef = requireString(p, "role");
+  const { roleName } = await resolveDurableCheckpointRole(ctx, workspaceId, roleRef);
+  try {
+    const record = await readRoleCheckpoint(mount.env.fs, roleName);
+    return {
+      workspaceId,
+      role: roleName,
+      checkpoint: record ? projectRoleCheckpoint(record) : null,
+      tail: formatRoleCheckpointTail(record)
+    };
+  } catch (err) {
+    if (err instanceof RpcError) throw err;
+    const message2 = err instanceof Error ? err.message : String(err);
+    throw new RpcError(-32602, message2);
+  }
+}
+async function roleCheckpointSetRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const roleRef = requireString(p, "role");
+  const { roleName } = await resolveDurableCheckpointRole(ctx, workspaceId, roleRef);
+  const actor = requireRoleCheckpointActor(p, roleName, "role.checkpoint.set");
+  const text3 = requireString(p, "text");
+  const rawSource = optionalString(p, "sourceSessionId") || optionalString(p, "sessionId") || void 0;
+  const sourceSessionId = await resolveRoleCheckpointSourceSessionId(
+    ctx,
+    workspaceId,
+    roleName,
+    rawSource
+  );
+  const pointersRaw = p.pointers;
+  let pointers;
+  if (pointersRaw !== void 0 && pointersRaw !== null) {
+    if (typeof pointersRaw !== "object" || Array.isArray(pointersRaw)) {
+      throw new RpcError(-32602, "role.checkpoint.set pointers must be an object");
+    }
+    pointers = pointersRaw;
+  } else {
+    const nodes = optionalStringArray(p, "nodes");
+    const tasks = optionalStringArray(p, "tasks");
+    const deliveries = optionalStringArray(p, "deliveries");
+    const git3 = optionalStringArray(p, "git");
+    if (nodes || tasks || deliveries || git3) {
+      pointers = {
+        ...nodes ? { nodes } : {},
+        ...tasks ? { tasks } : {},
+        ...deliveries ? { deliveries } : {},
+        ...git3 ? { git: git3 } : {}
+      };
+    }
+  }
+  try {
+    const record = await ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      return writeRoleCheckpoint(mount.env.fs, {
+        role: roleName,
+        text: text3,
+        updatedAt: mount.env.clock.now(),
+        sourceSessionId,
+        pointers
+      });
+    });
+    return {
+      workspaceId,
+      role: roleName,
+      actor,
+      checkpoint: projectRoleCheckpoint(record),
+      tail: formatRoleCheckpointTail(record),
+      // Echo whether caller-supplied sourceSessionId was kept (audit honesty).
+      sourceSessionIdAccepted: Boolean(sourceSessionId)
+    };
+  } catch (err) {
+    if (err instanceof RpcError) throw err;
+    const message2 = err instanceof Error ? err.message : String(err);
+    throw new RpcError(-32602, message2);
+  }
+}
+async function roleCheckpointClearRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const roleRef = requireString(p, "role");
+  const { roleName } = await resolveDurableCheckpointRole(ctx, workspaceId, roleRef);
+  const actor = requireRoleCheckpointActor(p, roleName, "role.checkpoint.clear");
+  try {
+    const cleared = await ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      return clearRoleCheckpoint(mount.env.fs, roleName);
+    });
+    return { workspaceId, role: roleName, actor, cleared };
+  } catch (err) {
+    if (err instanceof RpcError) throw err;
+    const message2 = err instanceof Error ? err.message : String(err);
+    throw new RpcError(-32602, message2);
+  }
+}
+async function loadRoleCheckpointTailSafe(ctx, workspaceId, roleName) {
+  if (!workspaceId || !roleName.trim()) return "";
+  try {
+    const safe = assertRoleCheckpointRoleName(roleName);
+    const mount = ctx.host.require(workspaceId);
+    const record = await readRoleCheckpoint(mount.env.fs, safe);
+    return formatRoleCheckpointTail(record);
+  } catch {
+    return "";
+  }
 }
 async function sessionStatus(ctx, p) {
   const sessionIdArg = optionalString(p, "sessionId");
@@ -30997,32 +31395,51 @@ async function buildSessionBootstrapPrompt(ctx, task, roots, roleFs) {
     assigneeKind: kind,
     role: roleDef
   });
+  let base;
   if (task.contextCard) {
-    return buildContextCardManagedBootstrap(task, task.contextCard, {
+    base = buildContextCardManagedBootstrap(task, task.contextCard, {
       workspaceRoot: roots.workspaceRoot,
       systemRoot,
       sessionContextGeneration: roots.sessionContextGeneration,
       // 52a0da2 skill compose already freezes tent-role → Role → tent-task order.
       tentTaskSection: skillPrefix,
       taskInputDelta: roots.taskInputDelta,
+      // Explicit caller checkpoint only (digest slot). On-disk Role Checkpoint is
+      // appended after full assembly as dynamic tail — never stable prefix.
       checkpoint: roots.checkpoint
     });
+  } else {
+    const card = taskContextCard(task.id || task.path, {
+      path: task.path,
+      workspaceRoot: roots.workspaceRoot,
+      systemRoot,
+      label: kind === "agentProfile" ? `task:profile:${task.role}` : `task:${task.role}`
+    });
+    const sessionSteps = sessionBootstrapPromptForTask(task, {
+      workspaceRoot: roots.workspaceRoot,
+      systemRoot
+    });
+    base = assembleManagedSessionBootstrap({
+      stableSkillPrefix: skillPrefix,
+      contextCardPrompt: card.prompt,
+      dynamicTaskTail: sessionSteps
+    });
   }
-  const card = taskContextCard(task.id || task.path, {
-    path: task.path,
-    workspaceRoot: roots.workspaceRoot,
-    systemRoot,
-    label: kind === "agentProfile" ? `task:profile:${task.role}` : `task:${task.role}`
-  });
-  const sessionSteps = sessionBootstrapPromptForTask(task, {
-    workspaceRoot: roots.workspaceRoot,
-    systemRoot
-  });
-  return assembleManagedSessionBootstrap({
-    stableSkillPrefix: skillPrefix,
-    contextCardPrompt: card.prompt,
-    dynamicTaskTail: sessionSteps
-  });
+  return appendRoleCheckpointTail(base, kind, task.role, roleFs);
+}
+async function appendRoleCheckpointTail(base, kind, roleName, roleFs) {
+  if (kind !== "role" || !roleName?.trim() || !roleFs) return base;
+  try {
+    const record = await readRoleCheckpoint(roleFs, roleName);
+    const tail = formatRoleCheckpointTail(record);
+    if (!tail) return base;
+    return `${base.trimEnd()}
+
+${tail}
+`;
+  } catch {
+    return base;
+  }
 }
 function buildContextCardManagedBootstrap(task, contextCard, roots) {
   assertRefsResolved(contextCard, (bucket, ref) => {

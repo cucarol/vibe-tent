@@ -187,7 +187,30 @@ temp/<role>/init.md
 ```
 
 It contains only Tent identity, the `RULES.md` pointer, role prompt, and honor
-protocol. A task envelope must contain the user prompt that caused dispatch.
+protocol. Dynamic task data and optional continuation notes never enter
+role init.
+
+Optional **Role Checkpoint** (cooperative Session replacement only):
+
+```text
+temp/<role>/checkpoint.md
+```
+
+One current continuation note per durable Role (later writes overwrite). It
+holds short judgment text plus Node / Task / Delivery / Git pointers, records
+source Session and `updatedAt`, and is loaded only as **dynamic tail** after
+stable prefix (Context Card, Role init, task bootstrap). It is not a Core
+entity, Task state, Delivery, or OS-temp artifact; crash recovery must work
+from persisted Tent projections and Git alone. CLI: `tent role-checkpoint
+set|show|clear` — on in-workspace `.tent`, `set`/`clear` go through Local
+Service (`role.checkpoint.set|clear`, MutationBus) with `--actor user|<role>`;
+`show` is read-only (explicit `--workspace` wins over cwd). Optional
+`sourceSessionId` is kept only when the persisted Session row has exact
+`workspace` + `roleName` match; otherwise omitted. Service:
+`role.checkpoint.get|set|clear`. agentProfile one-shots never load a Role
+checkpoint.
+
+A task envelope must contain the user prompt that caused dispatch.
 Whether to reuse an existing session is controlled by the user, not Tent.
 
 ## 5. Completion And Interruption

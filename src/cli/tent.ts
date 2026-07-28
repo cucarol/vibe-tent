@@ -64,6 +64,10 @@ import { TENT_SYSTEM_DIR, workspaceRootFromSystemRoot } from "../core/paths.js";
 import { importExternalTentRoot } from "../core/migration.js";
 import { runTaskCommand, taskHelpText } from "./task-rpc.js";
 import { runAgentCommand, agentHelpText } from "./agent-rpc.js";
+import {
+  runRoleCheckpointCommand,
+  roleCheckpointHelpText,
+} from "./role-checkpoint-rpc.js";
 import { runProposalSubmit } from "./proposal-rpc.js";
 
 /**
@@ -114,7 +118,8 @@ export function inWorkspaceLegacyMutationMessage(cmd: string, systemRoot: string
     `systemRoot is <workspace>/${TENT_SYSTEM_DIR}` +
     (workspace ? ` (workspace: ${workspace})` : "") +
     `.\n` +
-    `Allowed without Service: read-only tree/status/roles/find/tags; init/derived new/migrate/role-init/skill-install/agent-hooks.\n` +
+    `Allowed without Service: read-only tree/status/roles/find/tags; init/derived new/migrate/role-init/skill-install/agent-hooks; role-checkpoint show (read-only).\n` +
+    `role-checkpoint set|clear are Service-routed mutations (MutationBus) on in-workspace .tent.\n` +
     `External (non-${TENT_SYSTEM_DIR}) Tent roots still accept legacy mutation commands during the migration window.`
   );
 }
@@ -291,6 +296,22 @@ async function main() {
     return;
   }
 
+  // Optional cooperative Role Checkpoint (continuation note for Session replacement).
+  if (cmd === "role-checkpoint") {
+    const [sub, ...rest] = args;
+    if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
+      console.log(roleCheckpointHelpText());
+      return;
+    }
+    const result = await runRoleCheckpointCommand(sub, rest, {
+      packageRoot: packageRoot(),
+    });
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    if (result.exitCode !== 0) process.exitCode = result.exitCode;
+    return;
+  }
+
   // Unknown commands fail before system-root resolution (no cwd fallback writes).
   const tentCommands = new Set([
     ...LEGACY_MUTATION_COMMANDS,
@@ -300,7 +321,7 @@ async function main() {
   ]);
   if (!tentCommands.has(cmd)) {
     return fail(
-      `Unknown command: ${cmd || "(empty)"}\nCommands: new migrate import task agent agent-hooks role-init roles dispatch task-ack task-cancel propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
+      `Unknown command: ${cmd || "(empty)"}\nCommands: new migrate import task agent agent-hooks role-init role-checkpoint roles dispatch task-ack task-cancel propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
     );
   }
 
@@ -748,6 +769,8 @@ Service-backed collaboration (required for Desktop / in-workspace mutates):
   tent task --help                    Full task subcommand help
   tent agent enter|status|leave       External session lifecycle (no ACP spawn)
   tent agent --help                   Pull-host enter/status/leave + hook aliases
+  tent role-checkpoint set|show|clear Optional cooperative Role continuation note
+  tent role-checkpoint --help         set/clear → Service; show read-only; --actor
   propose <boxId> <file|->            Submit a proposal (in-workspace → proposal.submit RPC)
   CLI exit does not stop Local Service. Token stays in machine-local service.json.
 
@@ -764,6 +787,8 @@ Init / machine config (always allowed):
                                      Project Tent-managed SessionStart/Stop hooks into
                                      verified agent configs (no permissions / MCP).
   role-init <role>                   Regenerate the derived stable role init document.
+  role-checkpoint set|show|clear     Continuation note: set/clear via Local Service; show read-only.
+                                     set/clear accept --actor user|<role> (default user).
 
 Read-only (allowed on in-workspace .tent):
   status                             Print a read-only Tent status summary.
