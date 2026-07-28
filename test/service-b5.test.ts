@@ -3525,6 +3525,9 @@ test("P0 fix: managed auto-deliver collects role-lane commit; manual accept inte
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
+    const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
+      .baseCommit;
+    assert.ok(base, "Git Role dispatch must record baseCommit before Task commits");
     await rpc(svc, "task.claim", { workspaceId, taskPath });
     const started = await rpc(svc, "task.startSession", {
       workspaceId,
@@ -3541,6 +3544,7 @@ test("P0 fix: managed auto-deliver collects role-lane commit; manual accept inte
       "ship\n",
       "collect manual"
     );
+    await assertTaskCommitFirstParent(ws, sourceRef, base!);
 
     // Production path: omit commits → collect from authoritative role lane.
     await invokeManagedAutoDeliverForTests(svc.ctx, {
@@ -3599,6 +3603,9 @@ test("P0 fix: managed auto-deliver bypass integrates auto-collected commit", asy
       deliveryPolicy: "bypass",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
+    const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
+      .baseCommit;
+    assert.ok(base, "Git Role dispatch must record baseCommit before Task commits");
     await rpc(svc, "task.claim", { workspaceId, taskPath });
     const started = await rpc(svc, "task.startSession", {
       workspaceId,
@@ -3615,6 +3622,7 @@ test("P0 fix: managed auto-deliver bypass integrates auto-collected commit", asy
       "auto\n",
       "collect bypass"
     );
+    await assertTaskCommitFirstParent(ws, sourceRef, base!);
 
     await invokeManagedAutoDeliverForTests(svc.ctx, {
       workspaceId,
@@ -3748,6 +3756,9 @@ test("P0: dirty task worktree refuses managed auto-deliver and public task.deliv
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
+    const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
+      .baseCommit;
+    assert.ok(base, "Git Role dispatch must record baseCommit before Task commits");
     await rpc(svc, "task.claim", { workspaceId, taskPath });
     const started = await rpc(svc, "task.startSession", {
       workspaceId,
@@ -3760,6 +3771,7 @@ test("P0: dirty task worktree refuses managed auto-deliver and public task.deliv
       .sessionId;
 
     // One committed change (would be collectable) plus uncommitted tracked + untracked.
+    // Task commit only after dispatch base capture so ancestry remains exact.
     const sourceRef = await roleCommit(
       ws,
       "executor",
@@ -3767,6 +3779,7 @@ test("P0: dirty task worktree refuses managed auto-deliver and public task.deliv
       "committed\n",
       "committed before dirty"
     );
+    await assertTaskCommitFirstParent(ws, sourceRef, base!);
     const contract = await ensureRoleWorkspace(ws, "executor");
     await fs.writeFile(
       path.join(contract.worktree, "committed-before-dirty.txt"),
@@ -3920,6 +3933,7 @@ test("P0 fix: managed auto-collect excludes pre-session role commits; includes a
     const afterStart = await loadTaskEnvelope(mount.env.fs, taskPath);
     assert.equal(afterStart.roleBranchBase, preExisting);
     assert.equal(afterStart.baseCommit, preExisting);
+    // Active-window Task commit only after base capture; first parent must equal base.
     const taskRef = await roleCommit(
       ws,
       "executor",
@@ -3927,6 +3941,7 @@ test("P0 fix: managed auto-collect excludes pre-session role commits; includes a
       "mine\n",
       "task active-window commit"
     );
+    await assertTaskCommitFirstParent(ws, taskRef, preExisting);
 
     await invokeManagedAutoDeliverForTests(svc.ctx, {
       workspaceId,
@@ -6169,6 +6184,9 @@ test("P0 fix: successful managed delivery frees same role for next task", async 
       deliveryPolicy: "review",
     });
     const taskPath1 = (d1.result as { taskPath: string }).taskPath;
+    const base1 = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath1))
+      .baseCommit;
+    assert.ok(base1, "Git Role dispatch must record baseCommit before Task commits");
     await rpc(svc, "task.claim", { workspaceId, taskPath: taskPath1 });
     const s1 = await rpc(svc, "task.startSession", {
       workspaceId,
@@ -6215,6 +6233,8 @@ test("P0 fix: successful managed delivery frees same role for next task", async 
       baseAtDispatch2
     );
 
+    // Task1 commit only after its dispatch base; tip may move before this commit
+    // (task2 dispatch reuses the role lane tip) so first parent is current tip, not base1.
     const firstRef = await roleCommit(
       ws,
       "executor",
@@ -6222,6 +6242,7 @@ test("P0 fix: successful managed delivery frees same role for next task", async 
       "first\n",
       "first task commit"
     );
+    assert.notEqual(firstRef, base1, "Task commit must be after recorded base");
     await invokeManagedAutoDeliverForTests(svc.ctx, {
       workspaceId,
       taskPath: taskPath1,
