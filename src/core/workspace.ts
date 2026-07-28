@@ -4,6 +4,11 @@ import { spawn } from "node:child_process";
 import type { LoadedTent } from "./tree.js";
 import type { RoleWorkspaceContract } from "./task.js";
 import { workspaceRootFromSystemRoot } from "./paths.js";
+import {
+  assertOrdinaryExecutorLaneHistory,
+  ExecutorLaneHistoryError,
+  type ExecutorLaneCommitInfo,
+} from "./task-context-card.js";
 
 export interface IntegrationResult {
   sourceRef: string;
@@ -483,6 +488,88 @@ export async function listRoleCommitsFor(workspace: string, role: string): Promi
     return [];
   }
 }
+
+/**
+ * Read base..tip commits oldest-first with parent SHAs (for history gate).
+ * Pure inspection — does not mutate the repository.
+ */
+export async function listExecutorLaneCommitsWithParents(
+  workspace: string,
+  baseCommit: string,
+  tipCommit: string
+): Promise<ExecutorLaneCommitInfo[]> {
+  const root = nodePath.resolve(workspace);
+  await assertGitWorkspace(root);
+  const base = (await fullRef(root, baseCommit.trim())).trim();
+  const tip = (await fullRef(root, tipCommit.trim())).trim();
+  if (base === tip) return [];
+  // Oldest-first; %P = parent SHAs space-separated.
+  const output = await git(root, [
+    "log",
+    "--reverse",
+    "--format=%H%x09%P",
+    `${base}..${tip}`,
+  ]);
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [sha = "", parentsRaw = ""] = line.split("\t");
+      const parents = parentsRaw
+        .trim()
+        .split(/\s+/)
+        .map((p) => p.trim())
+        .filter(Boolean);
+      return { sha: sha.trim(), parents };
+    })
+    .filter((c) => c.sha);
+}
+
+/**
+ * Pre-ready Delivery history gate for ordinary executor lanes (cx-5q6za6).
+ * Loads real Git parent graph and runs the pure Core assert.
+ * Unauthorized merge / foreign ancestry fails loud; does not mutate lane.
+ */
+export async function assertOrdinaryExecutorLaneHistoryInGit(input: {
+  workspace: string;
+  baseCommit: string;
+  tipCommit?: string;
+  /** When tip omitted, resolve refs/heads/<branch>. */
+  branch?: string;
+}): Promise<void> {
+  const root = nodePath.resolve(input.workspace);
+  await assertGitWorkspace(root);
+  const base = input.baseCommit?.trim();
+  if (!base) {
+    throw new ExecutorLaneHistoryError(
+      "MISSING_BASE",
+      "Executor lane history gate requires recorded baseCommit (fail-loud; no ready Delivery)."
+    );
+  }
+  let tip = input.tipCommit?.trim() || "";
+  if (!tip) {
+    const branch = input.branch?.trim();
+    if (!branch) {
+      throw new ExecutorLaneHistoryError(
+        "MISSING_TIP",
+        "Executor lane history gate requires tip commit or branch."
+      );
+    }
+    tip = (await git(root, ["rev-parse", `refs/heads/${branch}`])).trim();
+  }
+  const fullBase = await fullRef(root, base);
+  const fullTip = await fullRef(root, tip);
+  const commits = await listExecutorLaneCommitsWithParents(root, fullBase, fullTip);
+  assertOrdinaryExecutorLaneHistory({
+    baseCommit: fullBase,
+    tipCommit: fullTip,
+    commits,
+  });
+}
+
+/** Re-export pure gate error for Service mapping. */
+export { ExecutorLaneHistoryError };
 
 async function assertGitWorkspace(root: string): Promise<void> {
   const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();

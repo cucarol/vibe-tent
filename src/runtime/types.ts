@@ -203,6 +203,33 @@ export interface SessionRecord {
    * First-class field on the session row — not profile env.
    */
   externalKey?: string;
+  /**
+   * Context Card v1 stable-prefix generation last injected on this Session
+   * (`cg-v1-<sha256>`). Used for prompt-cache reuse: same generation → delta only.
+   * Not a new lifecycle entity — machine-local Session projection (cx-5q6za6).
+   */
+  contextGeneration?: string;
+  /**
+   * Last taskDeltaDigest observed on this Session (audit / compatibility only).
+   */
+  taskDeltaDigest?: string;
+  /**
+   * Non-secret skills compatibility digest captured at bind time
+   * (for Session reuse gate; never skill bodies or secrets).
+   */
+  skillsDigest?: string;
+  /**
+   * purpose / subKey for Session reuse identity (empty when unused).
+   */
+  purpose?: string;
+  /**
+   * Logical agentId for reuse identity (roster agent or profile assignee label).
+   */
+  agentId?: string;
+  /**
+   * Parent Role operational id for reuse identity (omit for user-parent).
+   */
+  parentRoleId?: string;
 }
 
 /**

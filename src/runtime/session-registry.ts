@@ -88,6 +88,12 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
     "lastTaskId",
     "lastError",
     "externalKey",
+    "contextGeneration",
+    "taskDeltaDigest",
+    "skillsDigest",
+    "purpose",
+    "agentId",
+    "parentRoleId",
   ] as const) {
     if (key in data && data[key] !== undefined && typeof data[key] !== "string") {
       return null;

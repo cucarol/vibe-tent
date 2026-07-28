@@ -1370,6 +1370,296 @@ var init_claim = __esm({
   }
 });
 
+// src/core/task-context-card.ts
+import { createHash } from "node:crypto";
+function canonicalJson(value) {
+  return JSON.stringify(sortForCanonical(value));
+}
+function sortForCanonical(value) {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(sortForCanonical);
+  const obj = value;
+  const out = {};
+  for (const key of Object.keys(obj).sort((a, b) => a.localeCompare(b))) {
+    const v = obj[key];
+    if (v === void 0) continue;
+    out[key] = sortForCanonical(v);
+  }
+  return out;
+}
+function sha256Hex(text) {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+function isContextGenerationId(value) {
+  return typeof value === "string" && /^cg-v1-[a-f0-9]{64}$/.test(value);
+}
+function computeTaskDeltaDigest(inputs) {
+  const { card, taskInputDelta, checkpoint, userPrompt } = inputs;
+  const payload = {
+    v: TASK_CONTEXT_CARD_SCHEMA_VERSION,
+    objective: card.objective,
+    frozenDecisions: card.frozenDecisions,
+    scope: card.scope,
+    acceptance: card.acceptance,
+    refs: card.refs,
+    parentActor: card.parentActor,
+    reviewer: card.reviewer,
+    assignee: card.assignee,
+    taskInputDelta: taskInputDelta?.trim() || "",
+    checkpoint: checkpoint?.trim() || "",
+    userPrompt: userPrompt?.trim() || ""
+  };
+  return sha256Hex(canonicalJson(payload));
+}
+function asStringList(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => typeof item === "string").map((s) => s.trim()).filter(Boolean);
+}
+function parseActorRef(value, label) {
+  if (value === void 0 || value === null) {
+    throw new TaskContextCardError(
+      label === "parentActor" ? "MISSING_PARENT_ACTOR" : "MISSING_REVIEWER",
+      `Context Card requires ${label} { kind, id } (canonical TaskActorRef).`,
+      { label, value }
+    );
+  }
+  try {
+    return parseTaskActorRef(value, label);
+  } catch (err) {
+    if (err instanceof TaskLifecycleError) {
+      const code = err.code === "INVALID_ACTOR" ? "INVALID_ACTOR" : label === "parentActor" ? "MISSING_PARENT_ACTOR" : "MISSING_REVIEWER";
+      throw new TaskContextCardError(code, err.message, { label, value });
+    }
+    throw err;
+  }
+}
+function parseAssignee(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TaskContextCardError(
+      "MISSING_ASSIGNEE",
+      "Context Card requires assignee { kind: role|agentId, id }."
+    );
+  }
+  const raw = value;
+  const kind = raw.kind;
+  const id = typeof raw.id === "string" ? raw.id.trim() : "";
+  if (kind !== "role" && kind !== "agentId" || !id) {
+    throw new TaskContextCardError(
+      "MISSING_ASSIGNEE",
+      "Context Card assignee must be { kind: role|agentId, id: non-empty }."
+    );
+  }
+  return { kind, id };
+}
+function parseRefList(value, bucket) {
+  if (value === void 0 || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new TaskContextCardError(
+      "INVALID_CARD",
+      `Context Card refs.${bucket} must be an array of durable pointers.`,
+      { bucket, value }
+    );
+  }
+  const out = [];
+  for (let i = 0; i < value.length; i++) {
+    const item = value[i];
+    if (typeof item === "string") {
+      const id2 = item.trim();
+      if (!id2) {
+        throw new TaskContextCardError(
+          "UNRESOLVED_REF",
+          `Context Card refs.${bucket}[${i}] id is empty.`,
+          { bucket, index: i }
+        );
+      }
+      out.push({ id: id2 });
+      continue;
+    }
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new TaskContextCardError(
+        "UNRESOLVED_REF",
+        `Context Card refs.${bucket}[${i}] is not a durable pointer.`,
+        { bucket, index: i, value: item }
+      );
+    }
+    const raw = item;
+    const id = typeof raw.id === "string" ? raw.id.trim() : "";
+    if (!id) {
+      throw new TaskContextCardError(
+        "UNRESOLVED_REF",
+        `Context Card refs.${bucket}[${i}] missing id.`,
+        { bucket, index: i }
+      );
+    }
+    const ref = { id };
+    if (typeof raw.path === "string" && raw.path.trim()) ref.path = raw.path.trim();
+    if (typeof raw.revision === "string" && raw.revision.trim()) {
+      ref.revision = raw.revision.trim();
+    }
+    out.push(ref);
+  }
+  return out;
+}
+function buildTaskContextCard(input) {
+  const objective = input.objective?.trim() || "";
+  if (!objective) {
+    throw new TaskContextCardError(
+      "MISSING_OBJECTIVE",
+      "Context Card requires objective (fail-loud to parent; do not invent from chat memory)."
+    );
+  }
+  const acceptance = asStringList([...input.acceptance ?? []]);
+  if (acceptance.length === 0) {
+    throw new TaskContextCardError(
+      "MISSING_ACCEPTANCE",
+      "Context Card requires at least one acceptance criterion (fail-loud to parent)."
+    );
+  }
+  const parentActor = parseActorRef(input.parentActor, "parentActor");
+  const reviewer = parseActorRef(input.reviewer, "reviewer");
+  const assignee = parseAssignee(input.assignee);
+  if (!isContextGenerationId(input.contextGeneration)) {
+    throw new TaskContextCardError(
+      "INVALID_GENERATION",
+      `contextGeneration must match cg-v1-<sha256>; got ${String(input.contextGeneration)}`
+    );
+  }
+  const cardBody = {
+    schemaVersion: TASK_CONTEXT_CARD_SCHEMA_VERSION,
+    objective,
+    frozenDecisions: asStringList([...input.frozenDecisions ?? []]),
+    scope: {
+      include: asStringList([...input.scope?.include ?? []]),
+      exclude: asStringList([...input.scope?.exclude ?? []])
+    },
+    acceptance,
+    refs: {
+      nodes: parseRefList(input.refs?.nodes ?? [], "nodes"),
+      tasks: parseRefList(input.refs?.tasks ?? [], "tasks"),
+      deliveries: parseRefList(input.refs?.deliveries ?? [], "deliveries"),
+      git: parseRefList(input.refs?.git ?? [], "git")
+    },
+    parentActor,
+    reviewer,
+    assignee
+  };
+  const taskDeltaDigest = input.taskDeltaDigest?.trim() || computeTaskDeltaDigest({
+    card: cardBody,
+    taskInputDelta: input.taskInputDelta,
+    checkpoint: input.checkpoint,
+    userPrompt: input.userPrompt
+  });
+  return {
+    ...cardBody,
+    contextGeneration: input.contextGeneration,
+    taskDeltaDigest
+  };
+}
+function parseTaskContextCard(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new TaskContextCardError(
+      "INVALID_CARD",
+      "Context Card payload must be a plain object."
+    );
+  }
+  const raw = data;
+  const scopeRaw = raw.scope && typeof raw.scope === "object" && !Array.isArray(raw.scope) ? raw.scope : {};
+  const refsRaw = raw.refs && typeof raw.refs === "object" && !Array.isArray(raw.refs) ? raw.refs : {};
+  return buildTaskContextCard({
+    objective: typeof raw.objective === "string" ? raw.objective : "",
+    frozenDecisions: asStringList(raw.frozenDecisions),
+    scope: {
+      include: asStringList(scopeRaw.include ?? raw.scopeInclude),
+      exclude: asStringList(scopeRaw.exclude ?? raw.scopeExclude)
+    },
+    acceptance: asStringList(raw.acceptance),
+    refs: {
+      nodes: parseRefList(refsRaw.nodes ?? raw.refsNodes, "nodes"),
+      tasks: parseRefList(refsRaw.tasks ?? raw.refsTasks, "tasks"),
+      deliveries: parseRefList(refsRaw.deliveries ?? raw.refsDeliveries, "deliveries"),
+      git: parseRefList(refsRaw.git ?? raw.refsGit, "git")
+    },
+    parentActor: raw.parentActor,
+    reviewer: raw.reviewer,
+    assignee: raw.assignee,
+    contextGeneration: typeof raw.contextGeneration === "string" ? raw.contextGeneration : "",
+    taskDeltaDigest: typeof raw.taskDeltaDigest === "string" ? raw.taskDeltaDigest : void 0
+  });
+}
+function hasTaskContextCardBodyFields(data) {
+  const keys = [
+    "objective",
+    "frozenDecisions",
+    "acceptance",
+    "scope",
+    "scopeInclude",
+    "scopeExclude",
+    "refs",
+    "refsNodes",
+    "refsTasks",
+    "refsDeliveries",
+    "refsGit",
+    "assignee",
+    "contextCard"
+  ];
+  return keys.some((k) => data[k] !== void 0 && data[k] !== null);
+}
+function loadTaskContextCardFromFrontmatter(data) {
+  if (data.contextCard !== void 0 && data.contextCard !== null) {
+    return parseTaskContextCard(data.contextCard);
+  }
+  if (!hasTaskContextCardBodyFields(data)) return null;
+  return parseTaskContextCard(data);
+}
+function serializeTaskContextCardForFrontmatter(card) {
+  return {
+    schemaVersion: card.schemaVersion,
+    objective: card.objective,
+    frozenDecisions: [...card.frozenDecisions],
+    scope: {
+      include: [...card.scope.include],
+      exclude: [...card.scope.exclude]
+    },
+    acceptance: [...card.acceptance],
+    refs: {
+      nodes: card.refs.nodes.map((r) => ({ ...r })),
+      tasks: card.refs.tasks.map((r) => ({ ...r })),
+      deliveries: card.refs.deliveries.map((r) => ({ ...r })),
+      git: card.refs.git.map((r) => ({ ...r }))
+    },
+    parentActor: { kind: card.parentActor.kind, id: card.parentActor.id },
+    reviewer: { kind: card.reviewer.kind, id: card.reviewer.id },
+    assignee: { kind: card.assignee.kind, id: card.assignee.id },
+    contextGeneration: card.contextGeneration,
+    taskDeltaDigest: card.taskDeltaDigest
+  };
+}
+function buildIntegrationAuthority(actor) {
+  const parsed = parseTaskActorRef(actor, "parentActor");
+  return {
+    actor: { kind: parsed.kind, id: parsed.id },
+    mutator: INTEGRATION_MUTATOR_SERVICE
+  };
+}
+var TASK_CONTEXT_CARD_SCHEMA_VERSION, INTEGRATION_MUTATOR_SERVICE, TaskContextCardError;
+var init_task_context_card = __esm({
+  "src/core/task-context-card.ts"() {
+    "use strict";
+    init_task_model();
+    init_task();
+    TASK_CONTEXT_CARD_SCHEMA_VERSION = "v1";
+    INTEGRATION_MUTATOR_SERVICE = "service";
+    TaskContextCardError = class extends Error {
+      constructor(code, message, details) {
+        super(message);
+        this.name = "TaskContextCardError";
+        this.code = code;
+        this.details = details;
+      }
+    };
+  }
+});
+
 // src/core/task.ts
 var task_exports = {};
 __export(task_exports, {
@@ -1581,6 +1871,38 @@ async function loadTaskEnvelope(fs10, path9) {
   if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
   if (typeof data.roleBranchBase === "string" && data.roleBranchBase.trim()) {
     task.roleBranchBase = data.roleBranchBase.trim();
+  }
+  if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
+    task.baseCommit = data.baseCommit.trim();
+  } else if (task.roleBranchBase) {
+    task.baseCommit = task.roleBranchBase;
+  }
+  if (data.integrationAuthority && typeof data.integrationAuthority === "object") {
+    const raw = data.integrationAuthority;
+    if (raw.actor && raw.mutator === "service") {
+      try {
+        task.integrationAuthority = buildIntegrationAuthority(
+          parseTaskActorRef(raw.actor, "parentActor")
+        );
+      } catch {
+      }
+    }
+  } else if (task.parentActor) {
+    try {
+      task.integrationAuthority = buildIntegrationAuthority(task.parentActor);
+    } catch {
+    }
+  }
+  const contextCard = loadTaskContextCardFromFrontmatter(data);
+  if (contextCard) {
+    task.contextCard = contextCard;
+    task.contextGeneration = contextCard.contextGeneration;
+    task.taskDeltaDigest = contextCard.taskDeltaDigest;
+  } else if (typeof data.contextGeneration === "string" && data.contextGeneration.trim()) {
+    task.contextGeneration = data.contextGeneration.trim();
+  }
+  if (!task.taskDeltaDigest && typeof data.taskDeltaDigest === "string" && data.taskDeltaDigest.trim()) {
+    task.taskDeltaDigest = data.taskDeltaDigest.trim();
   }
   const deliveryPolicy = normalizeDeliveryPolicyRead(data.deliveryPolicy);
   if (deliveryPolicy) task.deliveryPolicy = deliveryPolicy;
@@ -1876,16 +2198,54 @@ async function patchTaskEnvelope(fs10, path9, patch) {
   else if (typeof patch.roleBranchBase === "string" && patch.roleBranchBase.trim()) {
     data.roleBranchBase = patch.roleBranchBase.trim();
   }
+  if (patch.baseCommit === null) delete data.baseCommit;
+  else if (typeof patch.baseCommit === "string" && patch.baseCommit.trim()) {
+    data.baseCommit = patch.baseCommit.trim();
+    if (!data.roleBranchBase || typeof data.roleBranchBase !== "string" || !String(data.roleBranchBase).trim()) {
+      data.roleBranchBase = data.baseCommit;
+    }
+  }
+  if (patch.integrationAuthority === null) delete data.integrationAuthority;
+  else if (patch.integrationAuthority) {
+    data.integrationAuthority = {
+      actor: {
+        kind: patch.integrationAuthority.actor.kind,
+        id: patch.integrationAuthority.actor.id
+      },
+      mutator: "service"
+    };
+  }
+  if (patch.contextCard === null) {
+    delete data.contextCard;
+    delete data.contextGeneration;
+    delete data.taskDeltaDigest;
+  } else if (patch.contextCard) {
+    data.contextCard = serializeTaskContextCardForFrontmatter(patch.contextCard);
+    data.contextGeneration = patch.contextCard.contextGeneration;
+    data.taskDeltaDigest = patch.contextCard.taskDeltaDigest;
+  }
+  if (patch.contextGeneration === null) delete data.contextGeneration;
+  else if (typeof patch.contextGeneration === "string" && patch.contextGeneration.trim()) {
+    data.contextGeneration = patch.contextGeneration.trim();
+  }
+  if (patch.taskDeltaDigest === null) delete data.taskDeltaDigest;
+  else if (typeof patch.taskDeltaDigest === "string" && patch.taskDeltaDigest.trim()) {
+    data.taskDeltaDigest = patch.taskDeltaDigest.trim();
+  }
   await fs10.writeFile(path9, serializeFrontmatter(data, body, keyOrder));
   return loadTaskEnvelope(fs10, path9);
 }
 function workspaceLaneOf(task) {
-  if (!task.workspace && !task.worktree && !task.branch && !task.targetBranch) return void 0;
+  if (!task.workspace && !task.worktree && !task.branch && !task.targetBranch && !task.baseCommit && !task.roleBranchBase && !task.integrationAuthority) {
+    return void 0;
+  }
   return {
     workspace: task.workspace,
     worktree: task.worktree,
     branch: task.branch,
-    targetBranch: task.targetBranch
+    targetBranch: task.targetBranch,
+    baseCommit: task.baseCommit || task.roleBranchBase,
+    integrationAuthority: task.integrationAuthority
   };
 }
 function primaryBoxId(task) {
@@ -1927,6 +2287,7 @@ var init_task = __esm({
     init_paths();
     init_tree();
     init_task_model();
+    init_task_context_card();
   }
 });
 
@@ -4389,6 +4750,7 @@ init_claim();
 
 // src/core/workspace.ts
 init_paths();
+init_task_context_card();
 import * as nodePath2 from "node:path";
 import * as nodeFs from "node:fs/promises";
 import { spawn } from "node:child_process";

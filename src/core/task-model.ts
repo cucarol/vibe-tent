@@ -294,11 +294,29 @@ export type ArtifactRef = {
   label?: string;
 };
 
+/**
+ * Task Git lane projection (operational truth on the envelope).
+ * baseCommit + targetBranch + integrationAuthority are authoritative;
+ * Context Card executionLane is a derived dynamic view only (cx-5q6za6).
+ */
 export type WorkspaceLane = {
   workspace?: string;
   worktree?: string;
   branch?: string;
   targetBranch?: string;
+  /**
+   * Exact full SHA of the Task worktree start (first parent of the first Task commit).
+   * Capture-once at lane bind; never rewrite on resume.
+   */
+  baseCommit?: string;
+  /**
+   * Integration authority: actor equals parent/reviewer; mutator is always service.
+   * Ordinary executors do not hold Git integration authority.
+   */
+  integrationAuthority?: {
+    actor: TaskActorRef;
+    mutator: "service";
+  };
 };
 
 export type TaskWait = {

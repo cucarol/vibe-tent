@@ -29,6 +29,13 @@ import {
   type TaskWait,
   type WorkspaceLane,
 } from "./task-model.js";
+import {
+  buildIntegrationAuthority,
+  loadTaskContextCardFromFrontmatter,
+  serializeTaskContextCardForFrontmatter,
+  type IntegrationAuthority,
+  type TaskContextCardV1,
+} from "./task-context-card.js";
 
 export interface RoleWorkspaceContract {
   workspace: string;
@@ -120,8 +127,33 @@ export interface TaskEnvelope {
   /**
    * Immutable full SHA of the role branch tip at first Git-lane bind for this task.
    * Optional; absent on non-Git / pre-baseline envelopes until backfilled once.
+   * Kept in sync with baseCommit for managed collection (same capture-once baseline).
    */
   roleBranchBase?: string;
+  /**
+   * Exact full SHA of the Task worktree start (cx-5q6za6).
+   * Authoritative for pre-ready Delivery history gate; capture-once with roleBranchBase.
+   */
+  baseCommit?: string;
+  /**
+   * Integration authority on the workspace lane (actor = parent/reviewer, mutator = service).
+   * Ordinary executors never mutate target; Service integrates after parent accept.
+   */
+  integrationAuthority?: IntegrationAuthority;
+  /**
+   * Authoritative Task Context Card v1 (cx-5q6za6).
+   * Projected from envelope frontmatter `contextCard` (or flat card fields).
+   * Missing on legacy envelopes; when any card body field is present, load fails loud
+   * on incomplete cards (never invent from chat memory).
+   */
+  contextCard?: TaskContextCardV1;
+  /**
+   * Convenience projection of contextCard.contextGeneration when present.
+   * Also readable as a top-level frontmatter key for Session compatibility.
+   */
+  contextGeneration?: string;
+  /** Convenience projection of contextCard.taskDeltaDigest when present. */
+  taskDeltaDigest?: string;
   deliveryPolicy?: DeliveryPolicy;
   assigneeKind?: AssigneeKind;
   /**
@@ -416,6 +448,46 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
   if (typeof data.roleBranchBase === "string" && data.roleBranchBase.trim()) {
     task.roleBranchBase = data.roleBranchBase.trim();
+  }
+  if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
+    task.baseCommit = data.baseCommit.trim();
+  } else if (task.roleBranchBase) {
+    // Pre-baseCommit envelopes: roleBranchBase is the capture-once lane start.
+    task.baseCommit = task.roleBranchBase;
+  }
+  if (data.integrationAuthority && typeof data.integrationAuthority === "object") {
+    const raw = data.integrationAuthority as Record<string, unknown>;
+    if (raw.actor && raw.mutator === "service") {
+      try {
+        task.integrationAuthority = buildIntegrationAuthority(
+          parseTaskActorRef(raw.actor, "parentActor")
+        );
+      } catch {
+        // Invalid authority on disk fails at write boundaries; skip broken projection.
+      }
+    }
+  } else if (task.parentActor) {
+    try {
+      task.integrationAuthority = buildIntegrationAuthority(task.parentActor);
+    } catch {
+      // leave unset
+    }
+  }
+  // Context Card v1: nested `contextCard` or flat fields. Partial → fail loud.
+  const contextCard = loadTaskContextCardFromFrontmatter(data);
+  if (contextCard) {
+    task.contextCard = contextCard;
+    task.contextGeneration = contextCard.contextGeneration;
+    task.taskDeltaDigest = contextCard.taskDeltaDigest;
+  } else if (typeof data.contextGeneration === "string" && data.contextGeneration.trim()) {
+    task.contextGeneration = data.contextGeneration.trim();
+  }
+  if (
+    !task.taskDeltaDigest &&
+    typeof data.taskDeltaDigest === "string" &&
+    data.taskDeltaDigest.trim()
+  ) {
+    task.taskDeltaDigest = data.taskDeltaDigest.trim();
   }
   // Narrow read boundary: historical on-disk `manual` projects as `review`.
   const deliveryPolicy = normalizeDeliveryPolicyRead(data.deliveryPolicy);
@@ -770,6 +842,23 @@ export interface TaskEnvelopePatch {
    * normal bind/resume paths.
    */
   roleBranchBase?: string | null;
+  /**
+   * Capture-once Task lane start (cx-5q6za6 history gate). Prefer omit once set.
+   * When set, also mirrors roleBranchBase for collection compatibility unless
+   * roleBranchBase is already present.
+   */
+  baseCommit?: string | null;
+  /** Persist integrationAuthority; null clears. */
+  integrationAuthority?: IntegrationAuthority | null;
+  /**
+   * Persist authoritative Context Card v1 under frontmatter `contextCard`.
+   * Also mirrors contextGeneration / taskDeltaDigest as top-level keys for
+   * Session compatibility projections. null clears all three.
+   */
+  contextCard?: TaskContextCardV1 | null;
+  /** Top-level generation only (when full card is not yet written). */
+  contextGeneration?: string | null;
+  taskDeltaDigest?: string | null;
 }
 
 /** Low-level patch of task operational frontmatter (body stays immutable). */
@@ -859,17 +948,67 @@ export async function patchTaskEnvelope(
     data.roleBranchBase = patch.roleBranchBase.trim();
   }
 
+  if (patch.baseCommit === null) delete data.baseCommit;
+  else if (typeof patch.baseCommit === "string" && patch.baseCommit.trim()) {
+    data.baseCommit = patch.baseCommit.trim();
+    // Keep roleBranchBase aligned for managed collection when still empty.
+    if (!data.roleBranchBase || typeof data.roleBranchBase !== "string" || !String(data.roleBranchBase).trim()) {
+      data.roleBranchBase = data.baseCommit;
+    }
+  }
+
+  if (patch.integrationAuthority === null) delete data.integrationAuthority;
+  else if (patch.integrationAuthority) {
+    data.integrationAuthority = {
+      actor: {
+        kind: patch.integrationAuthority.actor.kind,
+        id: patch.integrationAuthority.actor.id,
+      },
+      mutator: "service",
+    };
+  }
+
+  if (patch.contextCard === null) {
+    delete data.contextCard;
+    delete data.contextGeneration;
+    delete data.taskDeltaDigest;
+  } else if (patch.contextCard) {
+    data.contextCard = serializeTaskContextCardForFrontmatter(patch.contextCard);
+    data.contextGeneration = patch.contextCard.contextGeneration;
+    data.taskDeltaDigest = patch.contextCard.taskDeltaDigest;
+  }
+  if (patch.contextGeneration === null) delete data.contextGeneration;
+  else if (typeof patch.contextGeneration === "string" && patch.contextGeneration.trim()) {
+    data.contextGeneration = patch.contextGeneration.trim();
+  }
+  if (patch.taskDeltaDigest === null) delete data.taskDeltaDigest;
+  else if (typeof patch.taskDeltaDigest === "string" && patch.taskDeltaDigest.trim()) {
+    data.taskDeltaDigest = patch.taskDeltaDigest.trim();
+  }
+
   await fs.writeFile(path, serializeFrontmatter(data, body, keyOrder));
   return loadTaskEnvelope(fs, path);
 }
 
 export function workspaceLaneOf(task: TaskEnvelope): WorkspaceLane | undefined {
-  if (!task.workspace && !task.worktree && !task.branch && !task.targetBranch) return undefined;
+  if (
+    !task.workspace &&
+    !task.worktree &&
+    !task.branch &&
+    !task.targetBranch &&
+    !task.baseCommit &&
+    !task.roleBranchBase &&
+    !task.integrationAuthority
+  ) {
+    return undefined;
+  }
   return {
     workspace: task.workspace,
     worktree: task.worktree,
     branch: task.branch,
     targetBranch: task.targetBranch,
+    baseCommit: task.baseCommit || task.roleBranchBase,
+    integrationAuthority: task.integrationAuthority,
   };
 }
 

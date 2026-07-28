@@ -62,6 +62,18 @@ import {
   type TaskOutcome,
 } from "../core/task-model.js";
 import { taskContextCard } from "../core/context-card.js";
+import {
+  assembleManagedPrompt,
+  assertRefsResolved,
+  buildIntegrationAuthority,
+  decideStablePrefixInjection,
+  ExecutorLaneHistoryError,
+  formatExecutionLanePrompt,
+  projectExecutionLaneFromTask,
+  shouldInjectStablePrefix,
+  TaskContextCardError,
+  type TaskContextCardV1,
+} from "../core/task-context-card.js";
 import { systemRootFromWorkspace } from "../core/paths.js";
 import {
   decodeBase64Strict,
@@ -176,6 +188,7 @@ import {
   evaluateA2A,
 } from "../core/task-model.js";
 import {
+  assertOrdinaryExecutorLaneHistoryInGit,
   ensureRoleWorkspace,
   ensureRoleWorkspaceIfGit,
   ensureTaskWorkspace,
@@ -4772,6 +4785,53 @@ async function assertTaskWorktreeCleanForDeliver(
   );
 }
 
+/**
+ * Pre-ready Delivery history gate for ordinary executor lanes (cx-5q6za6).
+ * recorded baseCommit must be exact first parent of first Task commit;
+ * base..tip must be single-parent linear history. Unauthorized merge/foreign
+ * ancestry fails loud while preserving lane/audit — no ready Delivery.
+ * No generic allowMerge switch; parent accept + Service integration only.
+ * Non-Git / no-lane / no-base tasks pass through (legacy / docs-only).
+ */
+async function assertOrdinaryExecutorLaneHistoryForDeliver(
+  workspaceRoot: string,
+  task: TaskEnvelope
+): Promise<void> {
+  const base =
+    task.baseCommit?.trim() ||
+    task.roleBranchBase?.trim() ||
+    "";
+  const branch = task.branch?.trim() || "";
+  // No recorded lane baseline → not an ordinary Git executor lane yet.
+  if (!base || !branch) return;
+  if (!(await isGitWorkspace(workspaceRoot))) return;
+  try {
+    await assertOrdinaryExecutorLaneHistoryInGit({
+      workspace: workspaceRoot,
+      baseCommit: base,
+      branch,
+    });
+  } catch (err) {
+    if (err instanceof ExecutorLaneHistoryError) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `task.deliver refused: ordinary executor lane history gate failed (${err.code}): ${err.message} ` +
+          `(task remains ${task.state}, no ready Delivery; lane/audit preserved)`,
+        {
+          code: "EXECUTOR_LANE_HISTORY",
+          historyCode: err.code,
+          taskPath: task.path,
+          taskId: task.id,
+          baseCommit: base,
+          branch,
+          ...(err.details ?? {}),
+        }
+      );
+    }
+    throw err;
+  }
+}
+
 async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -4798,6 +4858,8 @@ async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       await assertNoBlockingTaskInputsForDeliver(ctx, workspaceId, taskForIntegrate);
       // Same gate for public deliver: dirty task worktree must not publish stale commits.
       await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, taskForIntegrate);
+      // Ordinary executor lane: linear single-parent history from recorded base (cx-5q6za6).
+      await assertOrdinaryExecutorLaneHistoryForDeliver(mount.workspaceRoot, taskForIntegrate);
       const pendingCommits = uniqueCommitRefs(commits);
       // Commit-bearing Deliveries durably snapshot resolved target HEAD at review time.
       targetHead =
@@ -5647,9 +5709,19 @@ async function launchAndBindTaskStartSession(
         }
       : undefined;
 
-  // Managed ACP bootstrap: stable skill/role prefix first, then Context Card + Task tail.
-  // Does not copy box/manifest bodies. Does not instruct claim/get/deliver CLI —
-  // Local Service auto-delivers the final assistant response. External relay is separate.
+  // Managed ACP bootstrap: Context Card v1 assembly when present, else stable
+  // skill/role prefix + path Context Card + Task tail (legacy migration path).
+  // Stable prefix once per contextGeneration on Session. Does not copy box/manifest
+  // bodies. Does not instruct claim/get/deliver CLI — Local Service auto-delivers.
+  let priorContextGeneration: string | undefined;
+  if (task.sessionId?.trim()) {
+    try {
+      const priorRow = await ctx.runtime.registry.read(task.sessionId.trim());
+      priorContextGeneration = priorRow?.contextGeneration;
+    } catch {
+      // Missing prior row → full stable prefix on fresh Session.
+    }
+  }
   const sessionBootstrap =
     prepared.bootstrapPrompt?.trim() ||
     (await buildSessionBootstrapPrompt(
@@ -5658,6 +5730,7 @@ async function launchAndBindTaskStartSession(
       {
         workspaceRoot: mount.workspaceRoot,
         systemRoot: mount.systemRoot,
+        sessionContextGeneration: priorContextGeneration,
       },
       mount.env.fs
     ));
@@ -5768,12 +5841,36 @@ async function launchAndBindTaskStartSession(
   }
 
   // Bind sessionId reference only on task (never PID/token).
+  // Project contextGeneration onto the Session row for stable-prefix cache reuse.
   const bound = await ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     const next = await patchTaskEnvelope(mount.env.fs, taskPath, {
       sessionId: handle.sessionId,
       updatedAt: mount.env.clock.now(),
     });
+    const generation =
+      next.contextGeneration?.trim() ||
+      next.contextCard?.contextGeneration?.trim() ||
+      "";
+    if (generation) {
+      try {
+        const parentRoleId =
+          next.parentActor?.kind === "role" ? next.parentActor.id : undefined;
+        const agentId =
+          (typeof next.agentId === "string" && next.agentId.trim()) ||
+          next.role;
+        await ctx.runtime.registry.update(handle.sessionId, {
+          contextGeneration: generation,
+          ...(next.taskDeltaDigest
+            ? { taskDeltaDigest: next.taskDeltaDigest }
+            : {}),
+          agentId,
+          ...(parentRoleId ? { parentRoleId } : {}),
+        });
+      } catch {
+        // Session row projection is best-effort; Task remains authoritative.
+      }
+    }
     emitTaskState(ctx, workspaceId, next, "task.startSession");
     ctx.events.emit(
       "session.state",
@@ -9322,6 +9419,8 @@ async function tryManagedAutoDeliver(
         // agent edits cannot be skipped in favor of stale already-committed SHAs.
         // Fail-loud keeps task running for commit-then-retry (same as public deliver).
         await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, task);
+        // Ordinary executor lane history gate (cx-5q6za6): no merge/foreign ancestry.
+        await assertOrdinaryExecutorLaneHistoryForDeliver(mount.workspaceRoot, task);
 
         // Collect pending role-lane commits unless the caller supplied an explicit list
         // (tests only). Production always auto-collects via the authoritative lane contract.
@@ -11010,20 +11109,26 @@ async function ensureTaskWorkspaceLane(
   workspaceId: string,
   task: TaskEnvelope
 ): Promise<TaskEnvelope> {
+  const hasBase =
+    Boolean(task.baseCommit?.trim()) || Boolean(task.roleBranchBase?.trim());
+  const hasAuthority = Boolean(task.integrationAuthority);
   const laneComplete = Boolean(
     task.worktree && task.branch && task.workspace && task.targetBranch
   );
-  if (laneComplete && task.roleBranchBase?.trim()) {
+  if (laneComplete && hasBase && hasAuthority) {
     return task;
   }
   const mount = ctx.host.require(workspaceId);
   return ctx.mutations.run(workspaceId, async () => {
     // Re-load under the bus so concurrent bind cannot double-write baseline.
     const current = await loadTaskEnvelope(mount.env.fs, task.path);
+    const currentHasBase =
+      Boolean(current.baseCommit?.trim()) || Boolean(current.roleBranchBase?.trim());
+    const currentHasAuthority = Boolean(current.integrationAuthority);
     const currentLaneComplete = Boolean(
       current.worktree && current.branch && current.workspace && current.targetBranch
     );
-    if (currentLaneComplete && current.roleBranchBase?.trim()) {
+    if (currentLaneComplete && currentHasBase && currentHasAuthority) {
       return current;
     }
 
@@ -11078,9 +11183,15 @@ async function ensureTaskWorkspaceLane(
       patch.branch = lane.branch;
       patch.targetBranch = targetBranch;
     }
-    // Capture-once: only set when still missing. Never rewrite on restart/resume.
-    if (!current.roleBranchBase?.trim()) {
-      patch.roleBranchBase = await readRoleBranchTip(lane.workspace, lane.branch);
+    // Capture-once baseCommit (+ roleBranchBase mirror): never rewrite on resume.
+    if (!currentHasBase) {
+      const tip = await readRoleBranchTip(lane.workspace, lane.branch);
+      patch.baseCommit = tip;
+      patch.roleBranchBase = tip;
+    }
+    // integrationAuthority: actor = exact parent/reviewer; mutator = service.
+    if (!currentHasAuthority && current.parentActor) {
+      patch.integrationAuthority = buildIntegrationAuthority(current.parentActor);
     }
     ctx.host.markSelfWrite(workspaceId);
     return patchTaskEnvelope(mount.env.fs, current.path, patch);
@@ -11217,20 +11328,29 @@ function projectStartSessionResult(
 }
 
 /**
- * Build managed ACP bootstrap with frozen stable-first order (prompt-cache friendly):
- * 1. Short invariant banner
- * 2. tent-role body + Role prompt/roster (when durable Role)
- * 3. tent-task body + stable end marker
- * 4. Dynamic tail: Context Card (taskId/path) + Task pointer / user prompt / delta
+ * Build managed ACP bootstrap.
  *
+ * When Task carries Context Card v1 (cx-5q6za6):
+ *   frozen order via assembleManagedPrompt — stable prefix once per
+ *   contextGeneration; later Tasks on the same Session append delta only.
+ *   Skill/role bodies from 52a0da2 compose fill tent-role / Role / tent-task slots.
+ *
+ * Legacy envelopes without a card keep the skill-prefix + path Context Card path
+ * (migration-compatible until explicit migration).
  * Never copies box/manifest bodies. Never instructs tent task claim/get/deliver.
  * Distinct from relayPromptForTask (external manual path still claim+deliver).
- * Does not claim reusable cross-Task Session support — composition only.
  */
 async function buildSessionBootstrapPrompt(
   ctx: HandlerContext,
   task: TaskEnvelope,
-  roots: { workspaceRoot: string; systemRoot: string },
+  roots: {
+    workspaceRoot: string;
+    systemRoot: string;
+    /** Prior Session contextGeneration when reusing the same managed Session. */
+    sessionContextGeneration?: string | null;
+    taskInputDelta?: string;
+    checkpoint?: string;
+  },
   roleFs?: import("../core/adapter.js").FsAdapter
 ): Promise<string> {
   const systemRoot = roots.systemRoot || systemRootFromWorkspace(roots.workspaceRoot);
@@ -11255,7 +11375,19 @@ async function buildSessionBootstrapPrompt(
     role: roleDef,
   });
 
-  // Dynamic tail only: Context Card + session steps (taskId, path, user prompt, …).
+  if (task.contextCard) {
+    return buildContextCardManagedBootstrap(task, task.contextCard, {
+      workspaceRoot: roots.workspaceRoot,
+      systemRoot,
+      sessionContextGeneration: roots.sessionContextGeneration,
+      // 52a0da2 skill compose already freezes tent-role → Role → tent-task order.
+      tentTaskSection: skillPrefix,
+      taskInputDelta: roots.taskInputDelta,
+      checkpoint: roots.checkpoint,
+    });
+  }
+
+  // Legacy no-card envelopes: path Context Card + session steps after skill prefix.
   const card = taskContextCard(task.id || task.path, {
     path: task.path,
     workspaceRoot: roots.workspaceRoot,
@@ -11272,6 +11404,93 @@ async function buildSessionBootstrapPrompt(
     contextCardPrompt: card.prompt,
     dynamicTaskTail: sessionSteps,
   });
+}
+
+/**
+ * Context Card v1 managed bootstrap (stable prefix + dynamic delta).
+ * Skill bodies / roster come from 52a0da2 compose when provided as tentTaskSection.
+ */
+function buildContextCardManagedBootstrap(
+  task: TaskEnvelope,
+  contextCard: TaskContextCardV1,
+  roots: {
+    workspaceRoot: string;
+    systemRoot: string;
+    sessionContextGeneration?: string | null;
+    tentRoleSection?: string;
+    rolePromptRosterSection?: string;
+    tentTaskSection?: string;
+    taskInputDelta?: string;
+    checkpoint?: string;
+  }
+): string {
+  // Fail-loud on unresolved declared durable refs (never invent / drop).
+  assertRefsResolved(contextCard, (bucket, ref) => {
+    // git refs are revision pointers — presence of id is enough at bootstrap.
+    if (bucket === "git") return Boolean(ref.id?.trim());
+    // nodes/tasks/deliveries: id required (full FS resolve is Service's job at dispatch).
+    return Boolean(ref.id?.trim());
+  });
+
+  const includeStablePrefix = shouldInjectStablePrefix({
+    sessionContextGeneration: roots.sessionContextGeneration,
+    taskContextGeneration: contextCard.contextGeneration,
+  });
+  // Structured reason available for audit (no prompt-memory inference).
+  void decideStablePrefixInjection({
+    sessionContextGeneration: roots.sessionContextGeneration,
+    taskContextGeneration: contextCard.contextGeneration,
+  });
+
+  const executionLane = projectExecutionLaneFromTask(task);
+  const executionLaneText = formatExecutionLanePrompt(executionLane);
+  const pointers = [
+    `Task envelope: ${task.path}`,
+    `Manifest: ${task.manifest}`,
+    ...(task.id ? [`Task id: ${task.id}`] : []),
+    ...(task.claims?.length ? [`claims: ${task.claims.join(", ")}`] : []),
+    `deliveryPolicy: ${task.deliveryPolicy ?? "review"}`,
+    `Service status: this task is already claimed (state=${task.state || "running"}).`,
+    "Managed path: Local Service already claimed this task; final assistant reply is the report and will be delivered automatically.",
+    ...(executionLaneText ? [executionLaneText] : []),
+  ].join("\n");
+
+  const assembly = assembleManagedPrompt({
+    workspaceRoot: roots.workspaceRoot,
+    systemRoot: roots.systemRoot,
+    rulesPointer: ".tent/RULES.md (CLI: RULES.md under systemRoot)",
+    agentsPointer: "AGENTS.md at workspace root (authoritative workspace agents file)",
+    tentRoleSection: roots.tentRoleSection,
+    rolePromptRosterSection: roots.rolePromptRosterSection,
+    tentTaskSection: roots.tentTaskSection,
+    contextCard,
+    taskPointers: pointers,
+    userPrompt: extractTaskUserPrompt(task),
+    taskInputDelta: roots.taskInputDelta,
+    checkpoint: roots.checkpoint,
+    includeStablePrefix,
+  });
+
+  // Keep a short path-contract Context Card pointer when stable prefix is injected
+  // so agents still see workspaceRoot/systemRoot once (matches drag Context Card).
+  if (includeStablePrefix) {
+    const kind = taskAssigneeKind(task);
+    const pathCard = taskContextCard(task.id || task.path, {
+      path: task.path,
+      workspaceRoot: roots.workspaceRoot,
+      systemRoot: roots.systemRoot,
+      label: kind === "agentProfile" ? `task:profile:${task.role}` : `task:${task.role}`,
+    });
+    return (
+      `${pathCard.prompt}\n\n` +
+      `--- Tent managed session bootstrap ---\n` +
+      `${assembly.text}`
+    );
+  }
+  return (
+    `--- Tent managed session delta (contextGeneration=${contextCard.contextGeneration}) ---\n` +
+    `${assembly.text}`
+  );
 }
 
 /**
@@ -11303,15 +11522,29 @@ async function collectTaskBootstrapImageRefs(
 }
 
 function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjection {
-  const lane =
-    task.workspace || task.worktree || task.branch || task.targetBranch
-      ? {
-          workspace: task.workspace,
-          worktree: task.worktree,
-          branch: task.branch,
-          targetBranch: task.targetBranch,
-        }
-      : undefined;
+  const hasLane = Boolean(
+    task.workspace ||
+      task.worktree ||
+      task.branch ||
+      task.targetBranch ||
+      task.baseCommit ||
+      task.roleBranchBase ||
+      task.integrationAuthority
+  );
+  const lane = hasLane
+    ? {
+        workspace: task.workspace,
+        worktree: task.worktree,
+        branch: task.branch,
+        targetBranch: task.targetBranch,
+        ...(task.baseCommit || task.roleBranchBase
+          ? { baseCommit: task.baseCommit || task.roleBranchBase }
+          : {}),
+        ...(task.integrationAuthority
+          ? { integrationAuthority: task.integrationAuthority }
+          : {}),
+      }
+    : undefined;
   const proj: TaskProjection = {
     path: task.path,
     id: task.id,
@@ -11335,6 +11568,10 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     prompt: task.prompt,
+    // Context Card v1 projections (cx-5q6za6) — omit when absent (legacy).
+    ...(task.contextCard ? { contextCard: task.contextCard } : {}),
+    ...(task.contextGeneration ? { contextGeneration: task.contextGeneration } : {}),
+    ...(task.taskDeltaDigest ? { taskDeltaDigest: task.taskDeltaDigest } : {}),
   };
   if (typeof task.agentId === "string" && task.agentId.trim()) {
     proj.agentId = task.agentId.trim();

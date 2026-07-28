@@ -2159,6 +2159,624 @@ function isRecord4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// src/core/task-context-card.ts
+import { createHash } from "node:crypto";
+var TASK_CONTEXT_CARD_SCHEMA_VERSION = "v1";
+var MANAGED_BOOTSTRAP_INVARIANT = "Tent managed bootstrap invariant v1: Core is authoritative. Fetch by durable id before answering. Never invent missing Context Card fields, refs, parent/reviewer, or chat-memory continuity. Final report goes through Delivery only.";
+var INTEGRATION_MUTATOR_SERVICE = "service";
+var TaskContextCardError = class extends Error {
+  constructor(code, message2, details) {
+    super(message2);
+    this.name = "TaskContextCardError";
+    this.code = code;
+    this.details = details;
+  }
+};
+function canonicalJson(value) {
+  return JSON.stringify(sortForCanonical(value));
+}
+function sortForCanonical(value) {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(sortForCanonical);
+  const obj = value;
+  const out = {};
+  for (const key2 of Object.keys(obj).sort((a, b) => a.localeCompare(b))) {
+    const v = obj[key2];
+    if (v === void 0) continue;
+    out[key2] = sortForCanonical(v);
+  }
+  return out;
+}
+function sha256Hex(text3) {
+  return createHash("sha256").update(text3, "utf8").digest("hex");
+}
+function isContextGenerationId(value) {
+  return typeof value === "string" && /^cg-v1-[a-f0-9]{64}$/.test(value);
+}
+function computeTaskDeltaDigest(inputs) {
+  const { card, taskInputDelta, checkpoint, userPrompt } = inputs;
+  const payload = {
+    v: TASK_CONTEXT_CARD_SCHEMA_VERSION,
+    objective: card.objective,
+    frozenDecisions: card.frozenDecisions,
+    scope: card.scope,
+    acceptance: card.acceptance,
+    refs: card.refs,
+    parentActor: card.parentActor,
+    reviewer: card.reviewer,
+    assignee: card.assignee,
+    taskInputDelta: taskInputDelta?.trim() || "",
+    checkpoint: checkpoint?.trim() || "",
+    userPrompt: userPrompt?.trim() || ""
+  };
+  return sha256Hex(canonicalJson(payload));
+}
+function asStringList(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => typeof item === "string").map((s) => s.trim()).filter(Boolean);
+}
+function parseActorRef(value, label) {
+  if (value === void 0 || value === null) {
+    throw new TaskContextCardError(
+      label === "parentActor" ? "MISSING_PARENT_ACTOR" : "MISSING_REVIEWER",
+      `Context Card requires ${label} { kind, id } (canonical TaskActorRef).`,
+      { label, value }
+    );
+  }
+  try {
+    return parseTaskActorRef(value, label);
+  } catch (err) {
+    if (err instanceof TaskLifecycleError) {
+      const code = err.code === "INVALID_ACTOR" ? "INVALID_ACTOR" : label === "parentActor" ? "MISSING_PARENT_ACTOR" : "MISSING_REVIEWER";
+      throw new TaskContextCardError(code, err.message, { label, value });
+    }
+    throw err;
+  }
+}
+function parseAssignee(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TaskContextCardError(
+      "MISSING_ASSIGNEE",
+      "Context Card requires assignee { kind: role|agentId, id }."
+    );
+  }
+  const raw = value;
+  const kind = raw.kind;
+  const id = typeof raw.id === "string" ? raw.id.trim() : "";
+  if (kind !== "role" && kind !== "agentId" || !id) {
+    throw new TaskContextCardError(
+      "MISSING_ASSIGNEE",
+      "Context Card assignee must be { kind: role|agentId, id: non-empty }."
+    );
+  }
+  return { kind, id };
+}
+function parseRefList(value, bucket) {
+  if (value === void 0 || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new TaskContextCardError(
+      "INVALID_CARD",
+      `Context Card refs.${bucket} must be an array of durable pointers.`,
+      { bucket, value }
+    );
+  }
+  const out = [];
+  for (let i = 0; i < value.length; i++) {
+    const item = value[i];
+    if (typeof item === "string") {
+      const id2 = item.trim();
+      if (!id2) {
+        throw new TaskContextCardError(
+          "UNRESOLVED_REF",
+          `Context Card refs.${bucket}[${i}] id is empty.`,
+          { bucket, index: i }
+        );
+      }
+      out.push({ id: id2 });
+      continue;
+    }
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new TaskContextCardError(
+        "UNRESOLVED_REF",
+        `Context Card refs.${bucket}[${i}] is not a durable pointer.`,
+        { bucket, index: i, value: item }
+      );
+    }
+    const raw = item;
+    const id = typeof raw.id === "string" ? raw.id.trim() : "";
+    if (!id) {
+      throw new TaskContextCardError(
+        "UNRESOLVED_REF",
+        `Context Card refs.${bucket}[${i}] missing id.`,
+        { bucket, index: i }
+      );
+    }
+    const ref = { id };
+    if (typeof raw.path === "string" && raw.path.trim()) ref.path = raw.path.trim();
+    if (typeof raw.revision === "string" && raw.revision.trim()) {
+      ref.revision = raw.revision.trim();
+    }
+    out.push(ref);
+  }
+  return out;
+}
+function buildTaskContextCard(input) {
+  const objective = input.objective?.trim() || "";
+  if (!objective) {
+    throw new TaskContextCardError(
+      "MISSING_OBJECTIVE",
+      "Context Card requires objective (fail-loud to parent; do not invent from chat memory)."
+    );
+  }
+  const acceptance = asStringList([...input.acceptance ?? []]);
+  if (acceptance.length === 0) {
+    throw new TaskContextCardError(
+      "MISSING_ACCEPTANCE",
+      "Context Card requires at least one acceptance criterion (fail-loud to parent)."
+    );
+  }
+  const parentActor = parseActorRef(input.parentActor, "parentActor");
+  const reviewer = parseActorRef(input.reviewer, "reviewer");
+  const assignee = parseAssignee(input.assignee);
+  if (!isContextGenerationId(input.contextGeneration)) {
+    throw new TaskContextCardError(
+      "INVALID_GENERATION",
+      `contextGeneration must match cg-v1-<sha256>; got ${String(input.contextGeneration)}`
+    );
+  }
+  const cardBody = {
+    schemaVersion: TASK_CONTEXT_CARD_SCHEMA_VERSION,
+    objective,
+    frozenDecisions: asStringList([...input.frozenDecisions ?? []]),
+    scope: {
+      include: asStringList([...input.scope?.include ?? []]),
+      exclude: asStringList([...input.scope?.exclude ?? []])
+    },
+    acceptance,
+    refs: {
+      nodes: parseRefList(input.refs?.nodes ?? [], "nodes"),
+      tasks: parseRefList(input.refs?.tasks ?? [], "tasks"),
+      deliveries: parseRefList(input.refs?.deliveries ?? [], "deliveries"),
+      git: parseRefList(input.refs?.git ?? [], "git")
+    },
+    parentActor,
+    reviewer,
+    assignee
+  };
+  const taskDeltaDigest = input.taskDeltaDigest?.trim() || computeTaskDeltaDigest({
+    card: cardBody,
+    taskInputDelta: input.taskInputDelta,
+    checkpoint: input.checkpoint,
+    userPrompt: input.userPrompt
+  });
+  return {
+    ...cardBody,
+    contextGeneration: input.contextGeneration,
+    taskDeltaDigest
+  };
+}
+function parseTaskContextCard(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new TaskContextCardError(
+      "INVALID_CARD",
+      "Context Card payload must be a plain object."
+    );
+  }
+  const raw = data;
+  const scopeRaw = raw.scope && typeof raw.scope === "object" && !Array.isArray(raw.scope) ? raw.scope : {};
+  const refsRaw = raw.refs && typeof raw.refs === "object" && !Array.isArray(raw.refs) ? raw.refs : {};
+  return buildTaskContextCard({
+    objective: typeof raw.objective === "string" ? raw.objective : "",
+    frozenDecisions: asStringList(raw.frozenDecisions),
+    scope: {
+      include: asStringList(scopeRaw.include ?? raw.scopeInclude),
+      exclude: asStringList(scopeRaw.exclude ?? raw.scopeExclude)
+    },
+    acceptance: asStringList(raw.acceptance),
+    refs: {
+      nodes: parseRefList(refsRaw.nodes ?? raw.refsNodes, "nodes"),
+      tasks: parseRefList(refsRaw.tasks ?? raw.refsTasks, "tasks"),
+      deliveries: parseRefList(refsRaw.deliveries ?? raw.refsDeliveries, "deliveries"),
+      git: parseRefList(refsRaw.git ?? raw.refsGit, "git")
+    },
+    parentActor: raw.parentActor,
+    reviewer: raw.reviewer,
+    assignee: raw.assignee,
+    contextGeneration: typeof raw.contextGeneration === "string" ? raw.contextGeneration : "",
+    taskDeltaDigest: typeof raw.taskDeltaDigest === "string" ? raw.taskDeltaDigest : void 0
+  });
+}
+function hasTaskContextCardBodyFields(data) {
+  const keys = [
+    "objective",
+    "frozenDecisions",
+    "acceptance",
+    "scope",
+    "scopeInclude",
+    "scopeExclude",
+    "refs",
+    "refsNodes",
+    "refsTasks",
+    "refsDeliveries",
+    "refsGit",
+    "assignee",
+    "contextCard"
+  ];
+  return keys.some((k) => data[k] !== void 0 && data[k] !== null);
+}
+function loadTaskContextCardFromFrontmatter(data) {
+  if (data.contextCard !== void 0 && data.contextCard !== null) {
+    return parseTaskContextCard(data.contextCard);
+  }
+  if (!hasTaskContextCardBodyFields(data)) return null;
+  return parseTaskContextCard(data);
+}
+function serializeTaskContextCardForFrontmatter(card) {
+  return {
+    schemaVersion: card.schemaVersion,
+    objective: card.objective,
+    frozenDecisions: [...card.frozenDecisions],
+    scope: {
+      include: [...card.scope.include],
+      exclude: [...card.scope.exclude]
+    },
+    acceptance: [...card.acceptance],
+    refs: {
+      nodes: card.refs.nodes.map((r) => ({ ...r })),
+      tasks: card.refs.tasks.map((r) => ({ ...r })),
+      deliveries: card.refs.deliveries.map((r) => ({ ...r })),
+      git: card.refs.git.map((r) => ({ ...r }))
+    },
+    parentActor: { kind: card.parentActor.kind, id: card.parentActor.id },
+    reviewer: { kind: card.reviewer.kind, id: card.reviewer.id },
+    assignee: { kind: card.assignee.kind, id: card.assignee.id },
+    contextGeneration: card.contextGeneration,
+    taskDeltaDigest: card.taskDeltaDigest
+  };
+}
+function assertRefsResolved(card, resolve14) {
+  const buckets = [
+    "nodes",
+    "tasks",
+    "deliveries",
+    "git"
+  ];
+  for (const bucket of buckets) {
+    for (const ref of card.refs[bucket]) {
+      if (!resolve14(bucket, ref)) {
+        throw new TaskContextCardError(
+          "UNRESOLVED_REF",
+          `Context Card refs.${bucket} id=${ref.id} could not be resolved (fail-loud to parent).`,
+          { bucket, ref }
+        );
+      }
+    }
+  }
+}
+function formatTaskContextCardPrompt(card) {
+  const lines = [
+    "Tent Task Context Card v1",
+    `schemaVersion: ${card.schemaVersion}`,
+    `contextGeneration: ${card.contextGeneration}`,
+    `taskDeltaDigest: ${card.taskDeltaDigest}`,
+    `objective: ${card.objective}`
+  ];
+  if (card.frozenDecisions.length) {
+    lines.push("frozenDecisions:");
+    for (const d of card.frozenDecisions) lines.push(`  - ${d}`);
+  } else {
+    lines.push("frozenDecisions: []");
+  }
+  lines.push("scope.include:");
+  if (card.scope.include.length === 0) lines.push("  (none)");
+  else for (const s of card.scope.include) lines.push(`  - ${s}`);
+  lines.push("scope.exclude:");
+  if (card.scope.exclude.length === 0) lines.push("  (none)");
+  else for (const s of card.scope.exclude) lines.push(`  - ${s}`);
+  lines.push("acceptance:");
+  for (const a of card.acceptance) lines.push(`  - ${a}`);
+  lines.push(
+    `parentActor: ${card.parentActor.kind}:${card.parentActor.id}`,
+    `reviewer: ${card.reviewer.kind}:${card.reviewer.id}`,
+    `assignee: ${card.assignee.kind}:${card.assignee.id}`
+  );
+  const fmtRefs = (label, refs) => {
+    lines.push(`refs.${label}:`);
+    if (refs.length === 0) {
+      lines.push("  (none)");
+      return;
+    }
+    for (const r of refs) {
+      const bits = [r.id];
+      if (r.path) bits.push(`path=${r.path}`);
+      if (r.revision) bits.push(`rev=${r.revision}`);
+      lines.push(`  - ${bits.join(" ")}`);
+    }
+  };
+  fmtRefs("nodes", card.refs.nodes);
+  fmtRefs("tasks", card.refs.tasks);
+  fmtRefs("deliveries", card.refs.deliveries);
+  fmtRefs("git", card.refs.git);
+  lines.push(
+    "Core is authoritative for this card. Missing fields or unresolved refs must fail loud to parent \u2014 never invent from chat memory."
+  );
+  return lines.join("\n");
+}
+function formatStableProjectContext(input) {
+  return [
+    "Tent stable project context v1",
+    `workspaceRoot: ${input.workspaceRoot}`,
+    `systemRoot: ${input.systemRoot}`,
+    `RULES: ${input.rulesPointer}`,
+    `AGENTS: ${input.agentsPointer}`,
+    "CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent).",
+    "Do not resolve operational files as <workspaceRoot>/temp \u2014 use .tent/temp."
+  ].join("\n");
+}
+function formatDynamicDelta(input) {
+  const parts = [
+    "--- Tent Task dynamic context ---",
+    formatTaskContextCardPrompt(input.contextCard)
+  ];
+  if (input.taskPointers?.trim()) {
+    parts.push("", input.taskPointers.trim());
+  }
+  const userPrompt = input.userPrompt?.trim();
+  parts.push(
+    "",
+    "## User Prompt",
+    "",
+    userPrompt || "(no user prompt on envelope)"
+  );
+  if (input.taskInputDelta?.trim()) {
+    parts.push("", input.taskInputDelta.trim());
+  }
+  if (input.checkpoint?.trim()) {
+    parts.push("", "--- Role Checkpoint ---", input.checkpoint.trim());
+  }
+  return parts.join("\n");
+}
+function assembleManagedPrompt(input) {
+  const card = buildTaskContextCard({
+    objective: input.contextCard.objective,
+    frozenDecisions: input.contextCard.frozenDecisions,
+    scope: input.contextCard.scope,
+    acceptance: input.contextCard.acceptance,
+    refs: input.contextCard.refs,
+    parentActor: input.contextCard.parentActor,
+    reviewer: input.contextCard.reviewer,
+    assignee: input.contextCard.assignee,
+    contextGeneration: input.contextCard.contextGeneration,
+    taskDeltaDigest: input.contextCard.taskDeltaDigest,
+    taskInputDelta: input.taskInputDelta,
+    checkpoint: input.checkpoint,
+    userPrompt: input.userPrompt
+  });
+  const includeStablePrefix = input.includeStablePrefix !== false;
+  const dynamicDelta = formatDynamicDelta({ ...input, contextCard: card });
+  if (!includeStablePrefix) {
+    return {
+      text: dynamicDelta + "\n",
+      contextGeneration: card.contextGeneration,
+      taskDeltaDigest: card.taskDeltaDigest,
+      includedStablePrefix: false,
+      stablePrefix: "",
+      dynamicDelta
+    };
+  }
+  const stableParts = [
+    MANAGED_BOOTSTRAP_INVARIANT,
+    formatStableProjectContext(input)
+  ];
+  if (input.tentRoleSection?.trim()) {
+    stableParts.push(input.tentRoleSection.trim());
+  }
+  if (input.rolePromptRosterSection?.trim()) {
+    stableParts.push(input.rolePromptRosterSection.trim());
+  }
+  if (input.tentTaskSection?.trim()) {
+    stableParts.push(input.tentTaskSection.trim());
+  }
+  const stablePrefix = stableParts.join("\n\n");
+  const text3 = `${stablePrefix}
+
+${dynamicDelta}
+`;
+  return {
+    text: text3,
+    contextGeneration: card.contextGeneration,
+    taskDeltaDigest: card.taskDeltaDigest,
+    includedStablePrefix: true,
+    stablePrefix,
+    dynamicDelta
+  };
+}
+function decideStablePrefixInjection(input) {
+  const taskGen = input.taskContextGeneration?.trim() || "";
+  if (!isContextGenerationId(taskGen)) {
+    return {
+      includeStablePrefix: true,
+      reason: "task_context_generation_invalid_or_missing"
+    };
+  }
+  const prior = input.sessionContextGeneration?.trim() || "";
+  if (!prior) {
+    return { includeStablePrefix: true, reason: "session_has_no_context_generation" };
+  }
+  if (!isContextGenerationId(prior)) {
+    return {
+      includeStablePrefix: true,
+      reason: "session_context_generation_invalid"
+    };
+  }
+  if (prior !== taskGen) {
+    return {
+      includeStablePrefix: true,
+      reason: "context_generation_mismatch"
+    };
+  }
+  return {
+    includeStablePrefix: false,
+    reason: "same_context_generation"
+  };
+}
+function shouldInjectStablePrefix(input) {
+  return decideStablePrefixInjection(input).includeStablePrefix;
+}
+function buildIntegrationAuthority(actor) {
+  const parsed = parseTaskActorRef(actor, "parentActor");
+  return {
+    actor: { kind: parsed.kind, id: parsed.id },
+    mutator: INTEGRATION_MUTATOR_SERVICE
+  };
+}
+function projectExecutionLaneFromTask(task) {
+  const baseCommit = typeof task.baseCommit === "string" && task.baseCommit.trim() || typeof task.roleBranchBase === "string" && task.roleBranchBase.trim() || "";
+  const targetBranch = typeof task.targetBranch === "string" ? task.targetBranch.trim() : "";
+  const branch = typeof task.branch === "string" ? task.branch.trim() : "";
+  const worktree = typeof task.worktree === "string" ? task.worktree.trim() : "";
+  let integrationAuthority = task.integrationAuthority;
+  if (!integrationAuthority && task.parentActor) {
+    try {
+      integrationAuthority = buildIntegrationAuthority(task.parentActor);
+    } catch {
+      integrationAuthority = void 0;
+    }
+  }
+  if (!baseCommit && !targetBranch && !branch && !worktree && !integrationAuthority) {
+    return void 0;
+  }
+  const out = {};
+  if (baseCommit) out.baseCommit = baseCommit;
+  if (targetBranch) out.targetBranch = targetBranch;
+  if (branch) out.branch = branch;
+  if (worktree) out.worktree = worktree;
+  if (integrationAuthority) out.integrationAuthority = integrationAuthority;
+  return out;
+}
+function formatExecutionLanePrompt(lane) {
+  if (!lane) return "";
+  const lines = ["executionLane (derived projection \u2014 Task workspaceLane is truth):"];
+  if (lane.baseCommit) lines.push(`  baseCommit: ${lane.baseCommit}`);
+  if (lane.targetBranch) lines.push(`  targetBranch: ${lane.targetBranch}`);
+  if (lane.branch) lines.push(`  branch: ${lane.branch}`);
+  if (lane.worktree) lines.push(`  worktree: ${lane.worktree}`);
+  if (lane.integrationAuthority) {
+    const a = lane.integrationAuthority.actor;
+    lines.push(
+      `  integrationAuthority.actor: ${a.kind}:${a.id}`,
+      `  integrationAuthority.mutator: ${lane.integrationAuthority.mutator}`
+    );
+  }
+  return lines.join("\n");
+}
+var ExecutorLaneHistoryError = class extends Error {
+  constructor(code, message2, details) {
+    super(message2);
+    this.name = "ExecutorLaneHistoryError";
+    this.code = code;
+    this.details = details;
+  }
+};
+function assertOrdinaryExecutorLaneHistory(input) {
+  const base = input.baseCommit?.trim() || "";
+  const tip = input.tipCommit?.trim() || "";
+  if (!base) {
+    throw new ExecutorLaneHistoryError(
+      "MISSING_BASE",
+      "Executor lane history gate requires recorded baseCommit (fail-loud; no ready Delivery)."
+    );
+  }
+  if (!tip) {
+    throw new ExecutorLaneHistoryError(
+      "MISSING_TIP",
+      "Executor lane history gate requires tip commit (fail-loud; no ready Delivery)."
+    );
+  }
+  const commits = input.commits ?? [];
+  if (commits.length === 0) {
+    if (base !== tip) {
+      throw new ExecutorLaneHistoryError(
+        "TIP_MISMATCH",
+        `Executor lane has no commits in base..tip but tip ${tip} !== base ${base}.`,
+        { base, tip }
+      );
+    }
+    return;
+  }
+  const first = commits[0];
+  if (!first.sha?.trim()) {
+    throw new ExecutorLaneHistoryError(
+      "FOREIGN_ANCESTRY",
+      "Executor lane history contains a commit with empty sha.",
+      { index: 0 }
+    );
+  }
+  if (!first.parents || first.parents.length === 0) {
+    throw new ExecutorLaneHistoryError(
+      "EMPTY_PARENT",
+      `Executor lane commit ${first.sha} has no parents (unexpected root in task range).`,
+      { sha: first.sha }
+    );
+  }
+  if (first.parents.length !== 1) {
+    throw new ExecutorLaneHistoryError(
+      "MERGE_COMMIT",
+      `Unauthorized merge commit on ordinary executor lane: ${first.sha} has ${first.parents.length} parents (no ready Delivery; lane/audit preserved).`,
+      { sha: first.sha, parents: first.parents }
+    );
+  }
+  if (first.parents[0] !== base) {
+    throw new ExecutorLaneHistoryError(
+      "BASE_NOT_FIRST_PARENT",
+      `Recorded baseCommit ${base} is not the exact first parent of the first Task commit ${first.sha} (parent=${first.parents[0]}). Unauthorized foreign ancestry; no ready Delivery.`,
+      { base, firstSha: first.sha, firstParent: first.parents[0] }
+    );
+  }
+  let prev = first.sha;
+  for (let i = 0; i < commits.length; i++) {
+    const c = commits[i];
+    const sha = c.sha?.trim() || "";
+    if (!sha) {
+      throw new ExecutorLaneHistoryError(
+        "FOREIGN_ANCESTRY",
+        `Executor lane history contains a commit with empty sha at index ${i}.`,
+        { index: i }
+      );
+    }
+    const parents = c.parents ?? [];
+    if (parents.length === 0) {
+      throw new ExecutorLaneHistoryError(
+        "EMPTY_PARENT",
+        `Executor lane commit ${sha} has no parents.`,
+        { sha, index: i }
+      );
+    }
+    if (parents.length !== 1) {
+      throw new ExecutorLaneHistoryError(
+        "MERGE_COMMIT",
+        `Unauthorized merge commit on ordinary executor lane: ${sha} has ${parents.length} parents (executor must not merge parent/target/dependency; no ready Delivery).`,
+        { sha, parents, index: i }
+      );
+    }
+    if (i > 0 && parents[0] !== prev) {
+      throw new ExecutorLaneHistoryError(
+        "FOREIGN_ANCESTRY",
+        `Executor lane commit ${sha} first parent ${parents[0]} is not prior tip ${prev} (foreign ancestry / non-linear history; no ready Delivery).`,
+        { sha, firstParent: parents[0], expectedParent: prev, index: i }
+      );
+    }
+    prev = sha;
+  }
+  if (prev !== tip) {
+    throw new ExecutorLaneHistoryError(
+      "TIP_MISMATCH",
+      `Executor lane tip ${tip} does not match last commit in base..tip range ${prev}.`,
+      { tip, last: prev, base }
+    );
+  }
+}
+
 // src/core/task.ts
 async function loadTaskEnvelopes(fs23) {
   const tasks = [];
@@ -2347,6 +2965,38 @@ async function loadTaskEnvelope(fs23, path24) {
   if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
   if (typeof data.roleBranchBase === "string" && data.roleBranchBase.trim()) {
     task.roleBranchBase = data.roleBranchBase.trim();
+  }
+  if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
+    task.baseCommit = data.baseCommit.trim();
+  } else if (task.roleBranchBase) {
+    task.baseCommit = task.roleBranchBase;
+  }
+  if (data.integrationAuthority && typeof data.integrationAuthority === "object") {
+    const raw = data.integrationAuthority;
+    if (raw.actor && raw.mutator === "service") {
+      try {
+        task.integrationAuthority = buildIntegrationAuthority(
+          parseTaskActorRef(raw.actor, "parentActor")
+        );
+      } catch {
+      }
+    }
+  } else if (task.parentActor) {
+    try {
+      task.integrationAuthority = buildIntegrationAuthority(task.parentActor);
+    } catch {
+    }
+  }
+  const contextCard = loadTaskContextCardFromFrontmatter(data);
+  if (contextCard) {
+    task.contextCard = contextCard;
+    task.contextGeneration = contextCard.contextGeneration;
+    task.taskDeltaDigest = contextCard.taskDeltaDigest;
+  } else if (typeof data.contextGeneration === "string" && data.contextGeneration.trim()) {
+    task.contextGeneration = data.contextGeneration.trim();
+  }
+  if (!task.taskDeltaDigest && typeof data.taskDeltaDigest === "string" && data.taskDeltaDigest.trim()) {
+    task.taskDeltaDigest = data.taskDeltaDigest.trim();
   }
   const deliveryPolicy = normalizeDeliveryPolicyRead(data.deliveryPolicy);
   if (deliveryPolicy) task.deliveryPolicy = deliveryPolicy;
@@ -2634,6 +3284,40 @@ async function patchTaskEnvelope(fs23, path24, patch) {
   if (patch.roleBranchBase === null) delete data.roleBranchBase;
   else if (typeof patch.roleBranchBase === "string" && patch.roleBranchBase.trim()) {
     data.roleBranchBase = patch.roleBranchBase.trim();
+  }
+  if (patch.baseCommit === null) delete data.baseCommit;
+  else if (typeof patch.baseCommit === "string" && patch.baseCommit.trim()) {
+    data.baseCommit = patch.baseCommit.trim();
+    if (!data.roleBranchBase || typeof data.roleBranchBase !== "string" || !String(data.roleBranchBase).trim()) {
+      data.roleBranchBase = data.baseCommit;
+    }
+  }
+  if (patch.integrationAuthority === null) delete data.integrationAuthority;
+  else if (patch.integrationAuthority) {
+    data.integrationAuthority = {
+      actor: {
+        kind: patch.integrationAuthority.actor.kind,
+        id: patch.integrationAuthority.actor.id
+      },
+      mutator: "service"
+    };
+  }
+  if (patch.contextCard === null) {
+    delete data.contextCard;
+    delete data.contextGeneration;
+    delete data.taskDeltaDigest;
+  } else if (patch.contextCard) {
+    data.contextCard = serializeTaskContextCardForFrontmatter(patch.contextCard);
+    data.contextGeneration = patch.contextCard.contextGeneration;
+    data.taskDeltaDigest = patch.contextCard.taskDeltaDigest;
+  }
+  if (patch.contextGeneration === null) delete data.contextGeneration;
+  else if (typeof patch.contextGeneration === "string" && patch.contextGeneration.trim()) {
+    data.contextGeneration = patch.contextGeneration.trim();
+  }
+  if (patch.taskDeltaDigest === null) delete data.taskDeltaDigest;
+  else if (typeof patch.taskDeltaDigest === "string" && patch.taskDeltaDigest.trim()) {
+    data.taskDeltaDigest = patch.taskDeltaDigest.trim();
   }
   await fs23.writeFile(path24, serializeFrontmatter(data, body, keyOrder));
   return loadTaskEnvelope(fs23, path24);
@@ -4883,7 +5567,7 @@ function taskContextCard(taskId, opts) {
 }
 
 // src/markdown/attachments.ts
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 import * as nodePath from "node:path";
 var MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 function sanitizeAttachmentFileName(fileName) {
@@ -4938,7 +5622,7 @@ function assertAttachmentSize(byteLength) {
   }
 }
 function contentId(bytes) {
-  return createHash("sha256").update(Buffer.from(bytes)).digest("hex").slice(0, 12);
+  return createHash2("sha256").update(Buffer.from(bytes)).digest("hex").slice(0, 12);
 }
 function attachmentRelativePath(conceptId, safeName, bytes) {
   const id = contentId(bytes);
@@ -14575,6 +15259,54 @@ async function listPendingRoleCommits(contract, base) {
   }
   return pending.reverse();
 }
+async function listExecutorLaneCommitsWithParents(workspace, baseCommit, tipCommit) {
+  const root = nodePath3.resolve(workspace);
+  await assertGitWorkspace(root);
+  const base = (await fullRef(root, baseCommit.trim())).trim();
+  const tip = (await fullRef(root, tipCommit.trim())).trim();
+  if (base === tip) return [];
+  const output = await git(root, [
+    "log",
+    "--reverse",
+    "--format=%H%x09%P",
+    `${base}..${tip}`
+  ]);
+  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const [sha = "", parentsRaw = ""] = line.split("	");
+    const parents = parentsRaw.trim().split(/\s+/).map((p) => p.trim()).filter(Boolean);
+    return { sha: sha.trim(), parents };
+  }).filter((c) => c.sha);
+}
+async function assertOrdinaryExecutorLaneHistoryInGit(input) {
+  const root = nodePath3.resolve(input.workspace);
+  await assertGitWorkspace(root);
+  const base = input.baseCommit?.trim();
+  if (!base) {
+    throw new ExecutorLaneHistoryError(
+      "MISSING_BASE",
+      "Executor lane history gate requires recorded baseCommit (fail-loud; no ready Delivery)."
+    );
+  }
+  let tip = input.tipCommit?.trim() || "";
+  if (!tip) {
+    const branch = input.branch?.trim();
+    if (!branch) {
+      throw new ExecutorLaneHistoryError(
+        "MISSING_TIP",
+        "Executor lane history gate requires tip commit or branch."
+      );
+    }
+    tip = (await git(root, ["rev-parse", `refs/heads/${branch}`])).trim();
+  }
+  const fullBase = await fullRef(root, base);
+  const fullTip = await fullRef(root, tip);
+  const commits = await listExecutorLaneCommitsWithParents(root, fullBase, fullTip);
+  assertOrdinaryExecutorLaneHistory({
+    baseCommit: fullBase,
+    tipCommit: fullTip,
+    commits
+  });
+}
 async function assertGitWorkspace(root) {
   const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
   const [realTop, realRoot] = await Promise.all([
@@ -14785,7 +15517,13 @@ function parseSessionRecord(data, sessionId) {
     "workspace",
     "lastTaskId",
     "lastError",
-    "externalKey"
+    "externalKey",
+    "contextGeneration",
+    "taskDeltaDigest",
+    "skillsDigest",
+    "purpose",
+    "agentId",
+    "parentRoleId"
   ]) {
     if (key2 in data && data[key2] !== void 0 && typeof data[key2] !== "string") {
       return null;
@@ -15240,9 +15978,9 @@ function add(index2, key2, concept) {
 }
 
 // src/service/etag.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 function contentEtag(content3) {
-  return createHash2("sha256").update(content3, "utf8").digest("hex").slice(0, 24);
+  return createHash3("sha256").update(content3, "utf8").digest("hex").slice(0, 24);
 }
 
 // src/service/a2a-store.ts
@@ -23955,6 +24693,36 @@ async function assertTaskWorktreeCleanForDeliver(workspaceRoot, task) {
     }
   );
 }
+async function assertOrdinaryExecutorLaneHistoryForDeliver(workspaceRoot, task) {
+  const base = task.baseCommit?.trim() || task.roleBranchBase?.trim() || "";
+  const branch = task.branch?.trim() || "";
+  if (!base || !branch) return;
+  if (!await isGitWorkspace(workspaceRoot)) return;
+  try {
+    await assertOrdinaryExecutorLaneHistoryInGit({
+      workspace: workspaceRoot,
+      baseCommit: base,
+      branch
+    });
+  } catch (err) {
+    if (err instanceof ExecutorLaneHistoryError) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `task.deliver refused: ordinary executor lane history gate failed (${err.code}): ${err.message} (task remains ${task.state}, no ready Delivery; lane/audit preserved)`,
+        {
+          code: "EXECUTOR_LANE_HISTORY",
+          historyCode: err.code,
+          taskPath: task.path,
+          taskId: task.id,
+          baseCommit: base,
+          branch,
+          ...err.details ?? {}
+        }
+      );
+    }
+    throw err;
+  }
+}
 async function taskDeliverRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -23972,6 +24740,7 @@ async function taskDeliverRpc(ctx, p) {
       await assertManagedTurnIdleForPublicDeliver(ctx, taskForIntegrate);
       await assertNoBlockingTaskInputsForDeliver(ctx, workspaceId, taskForIntegrate);
       await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, taskForIntegrate);
+      await assertOrdinaryExecutorLaneHistoryForDeliver(mount.workspaceRoot, taskForIntegrate);
       const pendingCommits2 = uniqueCommitRefs(commits);
       targetHead = pendingCommits2.length > 0 ? await snapshotIntegrationTargetHead(mount.workspaceRoot, taskForIntegrate) : void 0;
       if (targetHead && afterTargetHeadSnapshotForTests) {
@@ -24610,12 +25379,21 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
     branch: task.branch || "HEAD",
     targetBranch: task.targetBranch
   } : void 0;
+  let priorContextGeneration;
+  if (task.sessionId?.trim()) {
+    try {
+      const priorRow = await ctx.runtime.registry.read(task.sessionId.trim());
+      priorContextGeneration = priorRow?.contextGeneration;
+    } catch {
+    }
+  }
   const sessionBootstrap = prepared.bootstrapPrompt?.trim() || await buildSessionBootstrapPrompt(
     ctx,
     task,
     {
       workspaceRoot: mount.workspaceRoot,
-      systemRoot: mount.systemRoot
+      systemRoot: mount.systemRoot,
+      sessionContextGeneration: priorContextGeneration
     },
     mount.env.fs
   );
@@ -24699,6 +25477,20 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
       sessionId: handle.sessionId,
       updatedAt: mount.env.clock.now()
     });
+    const generation = next.contextGeneration?.trim() || next.contextCard?.contextGeneration?.trim() || "";
+    if (generation) {
+      try {
+        const parentRoleId = next.parentActor?.kind === "role" ? next.parentActor.id : void 0;
+        const agentId = typeof next.agentId === "string" && next.agentId.trim() || next.role;
+        await ctx.runtime.registry.update(handle.sessionId, {
+          contextGeneration: generation,
+          ...next.taskDeltaDigest ? { taskDeltaDigest: next.taskDeltaDigest } : {},
+          agentId,
+          ...parentRoleId ? { parentRoleId } : {}
+        });
+      } catch {
+      }
+    }
     emitTaskState(ctx, workspaceId, next, "task.startSession");
     ctx.events.emit(
       "session.state",
@@ -27250,6 +28042,7 @@ async function tryManagedAutoDeliver(ctx, input) {
         }
         await assertNoBlockingTaskInputsForDeliver(ctx, input.workspaceId, task);
         await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, task);
+        await assertOrdinaryExecutorLaneHistoryForDeliver(mount.workspaceRoot, task);
         let commits = input.commits;
         if (commits === void 0) {
           commits = await collectManagedDeliveryCommits(mount.workspaceRoot, task);
@@ -28346,19 +29139,23 @@ async function resolveIntegrationContract(workspaceRoot, task) {
   return real;
 }
 async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
+  const hasBase = Boolean(task.baseCommit?.trim()) || Boolean(task.roleBranchBase?.trim());
+  const hasAuthority = Boolean(task.integrationAuthority);
   const laneComplete = Boolean(
     task.worktree && task.branch && task.workspace && task.targetBranch
   );
-  if (laneComplete && task.roleBranchBase?.trim()) {
+  if (laneComplete && hasBase && hasAuthority) {
     return task;
   }
   const mount = ctx.host.require(workspaceId);
   return ctx.mutations.run(workspaceId, async () => {
     const current = await loadTaskEnvelope(mount.env.fs, task.path);
+    const currentHasBase = Boolean(current.baseCommit?.trim()) || Boolean(current.roleBranchBase?.trim());
+    const currentHasAuthority = Boolean(current.integrationAuthority);
     const currentLaneComplete = Boolean(
       current.worktree && current.branch && current.workspace && current.targetBranch
     );
-    if (currentLaneComplete && current.roleBranchBase?.trim()) {
+    if (currentLaneComplete && currentHasBase && currentHasAuthority) {
       return current;
     }
     const isProfile = taskAssigneeKind(current) === "agentProfile";
@@ -28403,8 +29200,13 @@ async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
       patch.branch = lane.branch;
       patch.targetBranch = targetBranch;
     }
-    if (!current.roleBranchBase?.trim()) {
-      patch.roleBranchBase = await readRoleBranchTip(lane.workspace, lane.branch);
+    if (!currentHasBase) {
+      const tip = await readRoleBranchTip(lane.workspace, lane.branch);
+      patch.baseCommit = tip;
+      patch.roleBranchBase = tip;
+    }
+    if (!currentHasAuthority && current.parentActor) {
+      patch.integrationAuthority = buildIntegrationAuthority(current.parentActor);
     }
     ctx.host.markSelfWrite(workspaceId);
     return patchTaskEnvelope(mount.env.fs, current.path, patch);
@@ -28490,6 +29292,17 @@ async function buildSessionBootstrapPrompt(ctx, task, roots, roleFs) {
     assigneeKind: kind,
     role: roleDef
   });
+  if (task.contextCard) {
+    return buildContextCardManagedBootstrap(task, task.contextCard, {
+      workspaceRoot: roots.workspaceRoot,
+      systemRoot,
+      sessionContextGeneration: roots.sessionContextGeneration,
+      // 52a0da2 skill compose already freezes tent-role → Role → tent-task order.
+      tentTaskSection: skillPrefix,
+      taskInputDelta: roots.taskInputDelta,
+      checkpoint: roots.checkpoint
+    });
+  }
   const card = taskContextCard(task.id || task.path, {
     path: task.path,
     workspaceRoot: roots.workspaceRoot,
@@ -28505,6 +29318,62 @@ async function buildSessionBootstrapPrompt(ctx, task, roots, roleFs) {
     contextCardPrompt: card.prompt,
     dynamicTaskTail: sessionSteps
   });
+}
+function buildContextCardManagedBootstrap(task, contextCard, roots) {
+  assertRefsResolved(contextCard, (bucket, ref) => {
+    if (bucket === "git") return Boolean(ref.id?.trim());
+    return Boolean(ref.id?.trim());
+  });
+  const includeStablePrefix = shouldInjectStablePrefix({
+    sessionContextGeneration: roots.sessionContextGeneration,
+    taskContextGeneration: contextCard.contextGeneration
+  });
+  void decideStablePrefixInjection({
+    sessionContextGeneration: roots.sessionContextGeneration,
+    taskContextGeneration: contextCard.contextGeneration
+  });
+  const executionLane = projectExecutionLaneFromTask(task);
+  const executionLaneText = formatExecutionLanePrompt(executionLane);
+  const pointers = [
+    `Task envelope: ${task.path}`,
+    `Manifest: ${task.manifest}`,
+    ...task.id ? [`Task id: ${task.id}`] : [],
+    ...task.claims?.length ? [`claims: ${task.claims.join(", ")}`] : [],
+    `deliveryPolicy: ${task.deliveryPolicy ?? "review"}`,
+    `Service status: this task is already claimed (state=${task.state || "running"}).`,
+    "Managed path: Local Service already claimed this task; final assistant reply is the report and will be delivered automatically.",
+    ...executionLaneText ? [executionLaneText] : []
+  ].join("\n");
+  const assembly = assembleManagedPrompt({
+    workspaceRoot: roots.workspaceRoot,
+    systemRoot: roots.systemRoot,
+    rulesPointer: ".tent/RULES.md (CLI: RULES.md under systemRoot)",
+    agentsPointer: "AGENTS.md at workspace root (authoritative workspace agents file)",
+    tentRoleSection: roots.tentRoleSection,
+    rolePromptRosterSection: roots.rolePromptRosterSection,
+    tentTaskSection: roots.tentTaskSection,
+    contextCard,
+    taskPointers: pointers,
+    userPrompt: extractTaskUserPrompt(task),
+    taskInputDelta: roots.taskInputDelta,
+    checkpoint: roots.checkpoint,
+    includeStablePrefix
+  });
+  if (includeStablePrefix) {
+    const kind = taskAssigneeKind(task);
+    const pathCard = taskContextCard(task.id || task.path, {
+      path: task.path,
+      workspaceRoot: roots.workspaceRoot,
+      systemRoot: roots.systemRoot,
+      label: kind === "agentProfile" ? `task:profile:${task.role}` : `task:${task.role}`
+    });
+    return `${pathCard.prompt}
+
+--- Tent managed session bootstrap ---
+${assembly.text}`;
+  }
+  return `--- Tent managed session delta (contextGeneration=${contextCard.contextGeneration}) ---
+${assembly.text}`;
 }
 async function collectTaskBootstrapImageRefs(fs23, task) {
   const userPrompt = extractTaskUserPrompt(task);
@@ -28525,11 +29394,16 @@ async function collectTaskBootstrapImageRefs(fs23, task) {
   return collectBootstrapImageRefsFromTask({ userPrompt, claimBodies });
 }
 function projectTask(task) {
-  const lane = task.workspace || task.worktree || task.branch || task.targetBranch ? {
+  const hasLane = Boolean(
+    task.workspace || task.worktree || task.branch || task.targetBranch || task.baseCommit || task.roleBranchBase || task.integrationAuthority
+  );
+  const lane = hasLane ? {
     workspace: task.workspace,
     worktree: task.worktree,
     branch: task.branch,
-    targetBranch: task.targetBranch
+    targetBranch: task.targetBranch,
+    ...task.baseCommit || task.roleBranchBase ? { baseCommit: task.baseCommit || task.roleBranchBase } : {},
+    ...task.integrationAuthority ? { integrationAuthority: task.integrationAuthority } : {}
   } : void 0;
   const proj = {
     path: task.path,
@@ -28553,7 +29427,11 @@ function projectTask(task) {
     workspaceLane: lane,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
-    prompt: task.prompt
+    prompt: task.prompt,
+    // Context Card v1 projections (cx-5q6za6) — omit when absent (legacy).
+    ...task.contextCard ? { contextCard: task.contextCard } : {},
+    ...task.contextGeneration ? { contextGeneration: task.contextGeneration } : {},
+    ...task.taskDeltaDigest ? { taskDeltaDigest: task.taskDeltaDigest } : {}
   };
   if (typeof task.agentId === "string" && task.agentId.trim()) {
     proj.agentId = task.agentId.trim();
@@ -29286,7 +30164,7 @@ var EventBus = class {
 };
 
 // src/service/workspace-host.ts
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import { watch } from "node:fs";
 import * as fs19 from "node:fs/promises";
 import * as path17 from "node:path";
@@ -29521,7 +30399,7 @@ var WorkspaceHost = class {
 function makeWorkspaceId(workspaceRoot) {
   const base = path17.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
   const identity = process.platform === "win32" ? workspaceRoot.toLowerCase() : workspaceRoot;
-  const digest = createHash3("sha256").update(identity).digest("base64url").slice(0, WORKSPACE_ID_DIGEST_LEN);
+  const digest = createHash4("sha256").update(identity).digest("base64url").slice(0, WORKSPACE_ID_DIGEST_LEN);
   return `ws-${base}-${digest}`;
 }
 

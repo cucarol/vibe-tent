@@ -345,10 +345,26 @@ export type TaskProjection = {
     worktree?: string;
     branch?: string;
     targetBranch?: string;
+    /** Exact Task lane start SHA (cx-5q6za6). */
+    baseCommit?: string;
+    /** actor = parent/reviewer; mutator = service. */
+    integrationAuthority?: {
+      actor: TaskActorRefWire;
+      mutator: "service";
+    };
   };
   createdAt?: string;
   updatedAt?: string;
   prompt?: string;
+  /**
+   * Authoritative Task Context Card v1 when present on the envelope (cx-5q6za6).
+   * Omitted on legacy tasks. Shape matches core TaskContextCardV1.
+   */
+  contextCard?: import("../core/task-context-card.js").TaskContextCardV1;
+  /** `cg-v1-<sha256>` stable-prefix generation when projected. */
+  contextGeneration?: string;
+  /** Current task context + input delta digest when projected. */
+  taskDeltaDigest?: string;
 };
 
 export type DeliveryProjection = {
