@@ -144,7 +144,9 @@ export async function ensureRoleWorkspace(
 
   const existing = await worktreeForBranch(root, branch);
   if (existing) {
-    return { workspace: root, worktree: await nodeFs.realpath(nodePath.resolve(existing)), branch, targetBranch };
+    const wt = await nodeFs.realpath(nodePath.resolve(existing));
+    const baseCommit = await readRoleBranchTip(root, branch);
+    return { workspace: root, worktree: wt, branch, targetBranch, baseCommit };
   }
   if (await pathExists(worktree)) {
     throw new Error(`Role worktree path exists but is not registered to ${branch}: ${worktree}.`);
@@ -156,7 +158,14 @@ export async function ensureRoleWorkspace(
   } else {
     await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
   }
-  return { workspace: root, worktree: await nodeFs.realpath(worktree), branch, targetBranch };
+  const baseCommit = await readRoleBranchTip(root, branch);
+  return {
+    workspace: root,
+    worktree: await nodeFs.realpath(worktree),
+    branch,
+    targetBranch,
+    baseCommit,
+  };
 }
 
 /**
@@ -234,11 +243,14 @@ export async function ensureTaskWorkspace(
 
   const existing = await worktreeForBranch(root, branch);
   if (existing) {
+    const wt = await nodeFs.realpath(nodePath.resolve(existing));
+    const baseCommit = await readRoleBranchTip(root, branch);
     return {
       workspace: root,
-      worktree: await nodeFs.realpath(nodePath.resolve(existing)),
+      worktree: wt,
       branch,
       targetBranch,
+      baseCommit,
     };
   }
   if (await pathExists(worktree)) {
@@ -251,11 +263,13 @@ export async function ensureTaskWorkspace(
   } else {
     await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
   }
+  const baseCommit = await readRoleBranchTip(root, branch);
   return {
     workspace: root,
     worktree: await nodeFs.realpath(worktree),
     branch,
     targetBranch,
+    baseCommit,
   };
 }
 

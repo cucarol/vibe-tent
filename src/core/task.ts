@@ -51,6 +51,12 @@ export interface RoleWorkspaceContract {
   worktree: string;
   branch: string;
   targetBranch: string;
+  /**
+   * Exact branch tip (full SHA) at ensure/create time.
+   * Written as Task baseCommit + roleBranchBase when the lane is first bound
+   * (dispatch for Role/asSub; startSession for peer agentProfile).
+   */
+  baseCommit?: string;
 }
 
 export interface TaskEnvelopeInput {
@@ -890,6 +896,16 @@ export async function writeTaskEnvelope(
     data.worktree = input.workspace.worktree;
     data.branch = input.workspace.branch;
     data.targetBranch = input.workspace.targetBranch;
+    // Lane exists: persist exact tip as Delivery baseCommit + legacy collection baseline.
+    // Peer agentProfile / non-Git dispatch omit workspace entirely (no fake base).
+    const tip =
+      typeof input.workspace.baseCommit === "string"
+        ? input.workspace.baseCommit.trim()
+        : "";
+    if (tip) {
+      data.baseCommit = tip;
+      data.roleBranchBase = tip;
+    }
   }
   const pointers = [
     ...(workspaceOnly || nodeRefs.length === 0

@@ -137,10 +137,14 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(taskSkill, /name: tent-task/);
   assert.match(taskSkill, /tent task ask-user/);
   assert.match(taskSkill, /task-input/i);
-  assert.match(taskSkill, /Delivery never means accept/i);
-  assert.match(taskSkill, /context pointer/i);
+  assert.match(taskSkill, /Delivery is never acceptance/i);
+  assert.match(taskSkill, /non-exclusive context/i);
+  assert.match(taskSkill, /Context Card/i);
   assert.match(taskSkill, /references\//);
-  assert.match(taskSkill, /self-send input|self.*send-input/i);
+  assert.match(
+    taskSkill,
+    /Never send input to the same Task as its executor|same Task as its executor/i
+  );
   assert.match(taskSkill, /dispatcher/i);
   assert.doesNotMatch(taskSkill, /Agents never call `tent task send-input`/i);
   assert.doesNotMatch(taskSkill, /honor contract|manifest-writable|Honor manifest readable/i);
@@ -148,7 +152,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
 
   assert.match(taskPaths, /system root/i);
   assert.match(taskPaths, /\.tent\/temp/);
-  assert.match(taskPaths, /context pointer/i);
+  assert.match(taskPaths, /refs\.nodes|Context Card/i);
   assert.doesNotMatch(taskPaths, /honor contract/i);
   assert.match(taskCli, /tent task deliver/);
   assert.match(taskCli, /tent task ask-user/);
@@ -161,7 +165,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(taskSession, /tent agent enter/i);
   assert.match(taskSession, /tent agent leave/i);
   assert.match(taskSession, /never delivers|never deliver/i);
-  assert.match(taskSession, /context pointer/i);
+  assert.match(taskSession, /Context Card|manifest is only an auxiliary/i);
   assert.doesNotMatch(`${roleSkill}\n${taskSkill}`, /name: tent-agent|tent handoff/i);
 });
 

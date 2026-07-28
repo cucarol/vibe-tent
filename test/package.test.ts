@@ -685,8 +685,8 @@ async function assertInstalledTentSkills(root: string) {
   assert.match(task, /name: tent-task/);
   assert.match(task, /tent task ask-user/);
   assert.match(task, /TaskInputs|task-input/i);
-  assert.match(task, /Delivery never means accept/i);
-  assert.match(task, /context pointer/i);
+  assert.match(task, /Delivery is never acceptance/i);
+  assert.match(task, /non-exclusive context|Context Card/i);
   assert.doesNotMatch(`${role}\n${task}`, /name: tent-agent|tent handoff/i);
   assert.ok(role.length < 6000, "tent-role SKILL.md should stay cache-friendly");
   assert.ok(task.length < 6000, "tent-task SKILL.md should stay cache-friendly");

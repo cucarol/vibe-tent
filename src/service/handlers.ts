@@ -3716,14 +3716,20 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     // Prefer durable envelope state so success/failure projections stay honest.
     state: taskAfter?.state ?? (startSession ? "running" : "queued"),
     session,
-    workspaceLane: taskAfter ? projectTask(taskAfter).workspaceLane : workspaceLane
-      ? {
-          workspace: workspaceLane.workspace,
-          worktree: workspaceLane.worktree,
-          branch: workspaceLane.branch,
-          targetBranch: workspaceLane.targetBranch,
-        }
-      : undefined,
+    // Prefer envelope projection (includes dispatch-time baseCommit + derived authority).
+    workspaceLane: taskAfter
+      ? projectTask(taskAfter).workspaceLane
+      : workspaceLane
+        ? {
+            workspace: workspaceLane.workspace,
+            worktree: workspaceLane.worktree,
+            branch: workspaceLane.branch,
+            targetBranch: workspaceLane.targetBranch,
+            ...(workspaceLane.baseCommit
+              ? { baseCommit: workspaceLane.baseCommit }
+              : {}),
+          }
+        : undefined,
   };
 }
 
@@ -12023,14 +12029,15 @@ async function resolveIntegrationContract(
 
 /**
  * Ensure task envelope carries WorkspaceLane before managed startSession.
- * - Role: create/reuse durable tent-role/<role> worktree.
- * - agentProfile: create unique tent-task/<taskId> worktree (never tent-role/<profile>).
- * Persists exact workspaceLane.baseCommit at Task worktree creation (capture-once).
- * Also backfills roleBranchBase for managed collection once when missing (separate field).
- * integrationAuthority: only the on-disk bag counts as recorded truth.
- * loadTaskEnvelope does not invent a phantom; absence here triggers explicit
- * persist of the canonical derived bag (parent/reviewer + service mutator).
- * Non-Git / pure docs → leave unset (cwd falls back to workspace root).
+ * - Role / asSub: lane + baseCommit are normally captured at task.dispatch; this
+ *   path is capture-once backfill only and must never overwrite an existing base.
+ * - Peer agentProfile: first create tent-task/<taskId> here (never tent-role/<profile>).
+ * Persists exact workspaceLane.baseCommit at first bind (capture-once).
+ * Also backfills roleBranchBase for managed collection once when missing.
+ * integrationAuthority: only the on-disk bag counts as recorded truth; absence
+ * triggers explicit persist of parent/reviewer + service mutator.
+ * Non-Git / pure docs → no fake Git fields (cwd falls back to workspace root);
+ * authority remains a derived projection from parent/reviewer, not a Profile permission.
  */
 async function ensureTaskWorkspaceLane(
   ctx: HandlerContext,
@@ -12110,10 +12117,15 @@ async function ensureTaskWorkspaceLane(
       patch.branch = lane.branch;
       patch.targetBranch = targetBranch;
     }
-    // Capture-once exact baseCommit at worktree creation/bind. Never rewrite on resume.
+    // Capture-once exact baseCommit at first bind. Never rewrite on resume.
+    // Prefer tip from ensure* result when present (same tip used at lane create).
     // roleBranchBase remains a separate managed-collection baseline (set once if missing).
     if (!currentHasBase) {
-      const tip = await readRoleBranchTip(lane.workspace, lane.branch);
+      const fromEnsure =
+        typeof (lane as RoleWorkspaceContract).baseCommit === "string"
+          ? (lane as RoleWorkspaceContract).baseCommit!.trim()
+          : "";
+      const tip = fromEnsure || (await readRoleBranchTip(lane.workspace, lane.branch));
       patch.baseCommit = tip;
       if (!current.roleBranchBase?.trim()) {
         patch.roleBranchBase = tip;
@@ -12439,21 +12451,11 @@ function buildContextCardManagedBootstrap(
     includeStablePrefix,
   });
 
-  // Keep a short path-contract Context Card pointer when stable prefix is injected
-  // so agents still see workspaceRoot/systemRoot once (matches drag Context Card).
+  // Stable project context inside assembleManagedPrompt is the single path tutorial.
+  // Do not prepend legacy drag-style formatContextCardPrompt here (duplicates roots).
+  // External/drag formatContextCardPrompt remains unchanged for desktop/export paths.
   if (includeStablePrefix) {
-    const kind = taskAssigneeKind(task);
-    const pathCard = taskContextCard(task.id || task.path, {
-      path: task.path,
-      workspaceRoot: roots.workspaceRoot,
-      systemRoot: roots.systemRoot,
-      label: kind === "agentProfile" ? `task:profile:${task.role}` : `task:${task.role}`,
-    });
-    return (
-      `${pathCard.prompt}\n\n` +
-      `--- Tent managed session bootstrap ---\n` +
-      `${assembly.text}`
-    );
+    return `--- Tent managed session bootstrap ---\n${assembly.text}`;
   }
   return (
     `--- Tent managed session delta (contextGeneration=${contextCard.contextGeneration}) ---\n` +

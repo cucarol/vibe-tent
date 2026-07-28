@@ -152,6 +152,32 @@ async function pollUntil<T>(
   throw new Error(`timeout waiting for ${label}`);
 }
 
+/**
+ * Managed mock ACP may already own the auto-deliver in-flight slot from the
+ * bootstrap prompt. Kick the helper (no-op while in-flight/done) then wait
+ * until the envelope reaches delivered before reject-resume / assertions.
+ */
+async function ensureManagedDelivered(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>,
+  workspaceId: string,
+  taskPath: string,
+  sessionId: string,
+  assistantText: string
+): Promise<void> {
+  await invokeManagedAutoDeliverForTests(svc.ctx, {
+    workspaceId,
+    taskPath,
+    sessionId,
+    assistantText,
+  });
+  await pollUntil(async () => {
+    const state = (
+      await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath)
+    ).state;
+    return state === "delivered" ? state : null;
+  }, 20_000, "managed auto-deliver reached delivered");
+}
+
 async function makeWorkspace(
   name = "b5",
   rolePolicies?: Record<string, "allow" | "ask" | "deny">,
@@ -1047,7 +1073,9 @@ test("B5: startSession bootstrap is managed (Context Card + user prompt); relay 
       `bootstrap should include systemRoot ${wsNorm}/.tent`
     );
     assert.match(bootstrap!, /\.tent\/temp\//);
-    assert.match(bootstrap!, /contextCard|Tent contextCard/i);
+    // Stable project context is the sole path tutorial; Task Context Card is dynamic delta.
+    // Do not require legacy drag-style "Tent contextCard v1" prelude.
+    assert.match(bootstrap!, /Tent stable project context v1|Tent Task Context Card v1|contextCard/i);
     assert.match(bootstrap!, /already claimed/i);
     assert.match(bootstrap!, /managed ACP session|managed session bootstrap/i);
     assert.match(bootstrap!, /## User Prompt/);
@@ -1057,9 +1085,14 @@ test("B5: startSession bootstrap is managed (Context Card + user prompt); relay 
     assert.match(bootstrap!, /Manifest:/);
     assert.match(bootstrap!, /nodes:/);
     assert.match(bootstrap!, /deliveryPolicy:/);
-    // Path tutorial once (Context Card), not re-taught in managed session body.
+    // Path tutorial once (stable project context), not repeated by legacy Context Card prelude.
     const pathTutorialHits = bootstrap!.match(/run tent from workspaceRoot/gi) || [];
     assert.equal(pathTutorialHits.length, 1, "path tutorial should appear once in managed bootstrap");
+    assert.doesNotMatch(
+      bootstrap!,
+      /^Tent contextCard v1/m,
+      "managed bootstrap must not prepend drag-style Context Card prelude"
+    );
     // Must not instruct claim/get/deliver CLI commands (managed path auto-delivers final reply).
     assert.doesNotMatch(bootstrap!, /tent task claim|task-ack|tent report\b/);
     assert.doesNotMatch(bootstrap!, /tent task get |tent task deliver /);
@@ -1130,7 +1163,12 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual deli
       const logRaw = await fs.readFile(logPath, "utf8");
       const log = JSON.parse(logRaw) as { prompts: string[] };
       assert.ok(log.prompts.some((p) => p.includes(userPrompt)));
-      assert.ok(log.prompts.some((p) => /contextCard|Tent contextCard/i.test(p)));
+      // Managed bootstrap uses stable project context + Task Context Card (no drag prelude).
+      assert.ok(
+        log.prompts.some((p) =>
+          /Tent stable project context v1|Tent Task Context Card v1|contextCard/i.test(p)
+        )
+      );
       assert.ok(log.prompts.some((p) => /already claimed/i.test(p)));
       assert.ok(
         log.prompts.some(
@@ -2370,16 +2408,24 @@ test("B5 failure cleanup: prompt error stops process, parks waiting(external), k
         label: "prompt-error park",
       });
 
-      // Same box cannot re-dispatch while occupation held.
+      // Node refs are non-exclusive: same Node may host concurrent Tasks while parked.
       const d2 = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
-        prompt: "must not steal parked occupation",
+        prompt: "concurrent task while parked is legal",
       });
-      assert.ok(d2.error, "re-dispatch while parked must fail");
+      assert.ok(!d2.error, JSON.stringify(d2.error));
+      const taskPath2 = (d2.result as { taskPath: string }).taskPath;
+      assert.notEqual(taskPath2, taskPath);
+      const parkedStill = await rpc(svc, "task.get", { workspaceId, taskPath });
+      assert.equal(
+        (parkedStill.result as { task: { state: string } }).task.state,
+        "waiting",
+        "original parked task remains waiting"
+      );
 
       // Duplicate session.failed must not throw / illegal transition / demote park.
       mapRuntimeEventToService(svc.ctx, {
@@ -2465,16 +2511,22 @@ for (const exitCode of [7, 0]) test(`B5 spontaneous managed child exit code=${ex
         label: `spontaneous exit code=${exitCode}`,
       });
 
-      // Occupation still held — re-dispatch must fail-loud.
+      // Node refs are non-exclusive: concurrent re-dispatch on same Node is legal.
       const d2 = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
-        prompt: "must not steal parked occupation",
+        prompt: "concurrent task while parked is legal",
       });
-      assert.ok(d2.error, "re-dispatch while parked must fail");
+      assert.ok(!d2.error, JSON.stringify(d2.error));
+      assert.notEqual((d2.result as { taskPath: string }).taskPath, taskPath);
+      const parkedStill = await rpc(svc, "task.get", { workspaceId, taskPath });
+      assert.equal(
+        (parkedStill.result as { task: { state: string } }).task.state,
+        "waiting"
+      );
     },
     {
       profiles: [
@@ -2710,11 +2762,30 @@ test("P0-1: non-Git workspace dispatch has no lane; startSession cwd falls back 
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
-    assert.equal(
-      (dispatched.result as { workspaceLane?: unknown }).workspaceLane,
-      undefined,
-      "pure docs / non-Git must not invent a WorkspaceLane"
-    );
+    const lane = (
+      dispatched.result as {
+        workspaceLane?: {
+          workspace?: string;
+          worktree?: string;
+          branch?: string;
+          targetBranch?: string;
+          baseCommit?: string;
+          integrationAuthority?: { actor: { kind: string; id: string }; mutator: string };
+        };
+      }
+    ).workspaceLane;
+    // Authority-only projection: parent/reviewer + service mutator; no fake Git fields.
+    assert.ok(lane, "non-Git still projects integrationAuthority");
+    assert.equal(lane!.workspace, undefined);
+    assert.equal(lane!.worktree, undefined);
+    assert.equal(lane!.branch, undefined);
+    assert.equal(lane!.targetBranch, undefined);
+    assert.equal(lane!.baseCommit, undefined);
+    assert.ok(lane!.integrationAuthority, "integrationAuthority is mandatory even without Git");
+    assert.deepEqual(lane!.integrationAuthority, {
+      actor: { kind: "user", id: "user" },
+      mutator: "service",
+    });
 
     await rpc(svc, "task.claim", { workspaceId, taskPath });
     const started = await rpc(svc, "task.startSession", {
@@ -2729,10 +2800,29 @@ test("P0-1: non-Git workspace dispatch has no lane; startSession cwd falls back 
   });
 });
 
+/** Assert commit-bearing Task commit has exact first parent == recorded baseCommit. */
+async function assertTaskCommitFirstParent(
+  workspace: string,
+  sourceRef: string,
+  baseCommit: string
+): Promise<void> {
+  assert.ok(baseCommit, "baseCommit must be recorded before Task commits");
+  assert.notEqual(
+    sourceRef,
+    baseCommit,
+    "commit-bearing Delivery must list a Task commit, not the base tip itself"
+  );
+  const firstParent = (await git(workspace, "rev-parse", `${sourceRef}^`)).trim();
+  assert.equal(
+    firstParent,
+    baseCommit,
+    `sourceRef^ must equal recorded baseCommit (got ${firstParent}, base ${baseCommit})`
+  );
+}
+
 test("P0-2: manual accept integrates real commits into main; already-integrated is idempotent", async () => {
   const ws = await makeWorkspace("p0-accept");
   await initGitOnWorkspace(ws);
-  const sourceRef = await roleCommit(ws, "executor", "feature.txt", "ship\n", "feature work");
 
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
@@ -2746,6 +2836,12 @@ test("P0-2: manual accept integrates real commits into main; already-integrated 
       deliveryPolicy: "review",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
+    const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
+      .baseCommit;
+    assert.ok(base, "Git Role dispatch must record baseCommit before Task commits");
+    // Task commits only after dispatch base capture.
+    const sourceRef = await roleCommit(ws, "executor", "feature.txt", "ship\n", "feature work");
+    await assertTaskCommitFirstParent(ws, sourceRef, base!);
     await rpc(svc, "task.claim", { workspaceId, taskPath });
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
@@ -2769,6 +2865,8 @@ test("P0-2: manual accept integrates real commits into main; already-integrated 
     );
 
     // Idempotent re-integrate of the same ref via a second box/task.
+    // Second dispatch freezes its own base at current role tip (sourceRef already on lane);
+    // re-deliver of already-integrated sourceRef must still accept.
     const box2 = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "idempotent-item",
@@ -2784,6 +2882,10 @@ test("P0-2: manual accept integrates real commits into main; already-integrated 
       prompt: "already on main",
     });
     const taskPath2 = (d2.result as { taskPath: string }).taskPath;
+    assert.ok(
+      (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath2)).baseCommit,
+      "second dispatch must capture its own baseCommit"
+    );
     await rpc(svc, "task.claim", { workspaceId, taskPath: taskPath2 });
     await rpc(svc, "task.deliver", {
       workspaceId,
@@ -2804,7 +2906,6 @@ test("P0-2: manual accept integrates real commits into main; already-integrated 
 test("P0-2: bypass with commits integrates into main and accepts", async () => {
   const ws = await makeWorkspace("p0-bypass");
   await initGitOnWorkspace(ws);
-  const sourceRef = await roleCommit(ws, "executor", "auto.txt", "auto\n", "auto delivery");
 
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
@@ -2818,6 +2919,11 @@ test("P0-2: bypass with commits integrates into main and accepts", async () => {
       deliveryPolicy: "bypass",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
+    const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
+      .baseCommit;
+    assert.ok(base, "Git Role dispatch must record baseCommit before Task commits");
+    const sourceRef = await roleCommit(ws, "executor", "auto.txt", "auto\n", "auto delivery");
+    await assertTaskCommitFirstParent(ws, sourceRef, base!);
     await rpc(svc, "task.claim", { workspaceId, taskPath });
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
@@ -2849,7 +2955,6 @@ test("P0-2: bypass with commits integrates into main and accepts", async () => {
 test("P0-2: agent-decide integrate with commits merges into main", async () => {
   const ws = await makeWorkspace("p0-agent-decide");
   await initGitOnWorkspace(ws);
-  const sourceRef = await roleCommit(ws, "executor", "agent.txt", "agent\n", "agent integrate");
 
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
@@ -2863,6 +2968,11 @@ test("P0-2: agent-decide integrate with commits merges into main", async () => {
       deliveryPolicy: "agent-decide",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
+    const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
+      .baseCommit;
+    assert.ok(base, "Git Role dispatch must record baseCommit before Task commits");
+    const sourceRef = await roleCommit(ws, "executor", "agent.txt", "agent\n", "agent integrate");
+    await assertTaskCommitFirstParent(ws, sourceRef, base!);
     await rpc(svc, "task.claim", { workspaceId, taskPath });
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
@@ -2920,9 +3030,9 @@ async function withBlockedIntegrate(
 async function claimDeliveredReviewTask(
   svc: Awaited<ReturnType<typeof startLocalTentService>>,
   ws: string,
-  sourceRef: string,
+  commit: { file: string; content: string; message: string },
   prompt: string
-): Promise<{ workspaceId: string; taskPath: string }> {
+): Promise<{ workspaceId: string; taskPath: string; sourceRef: string; baseCommit: string }> {
   const { workspaceId, boxId } = await mountWorkItem(svc, ws);
   const d = await rpc(svc, "task.dispatch", {
     parentActor: { kind: "user", id: "user" },
@@ -2934,6 +3044,19 @@ async function claimDeliveredReviewTask(
     deliveryPolicy: "review",
   });
   const taskPath = (d.result as { taskPath: string }).taskPath;
+  const baseCommit =
+    (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath)).baseCommit?.trim() ||
+    "";
+  assert.ok(baseCommit, "Git Role dispatch must record baseCommit before Task commits");
+  // Capture base at dispatch, then create the Task commit on the Role lane.
+  const sourceRef = await roleCommit(
+    ws,
+    "executor",
+    commit.file,
+    commit.content,
+    commit.message
+  );
+  await assertTaskCommitFirstParent(ws, sourceRef, baseCommit);
   await rpc(svc, "task.claim", { workspaceId, taskPath });
   const delivered = await rpc(svc, "task.deliver", {
     workspaceId,
@@ -2943,19 +3066,18 @@ async function claimDeliveredReviewTask(
   });
   assert.ok(!delivered.error, JSON.stringify(delivered.error));
   assert.equal((delivered.result as { state: string }).state, "delivered");
-  return { workspaceId, taskPath };
+  return { workspaceId, taskPath, sourceRef, baseCommit };
 }
 
 /** MutationBus must not span Git: unrelated docs complete while accept is mid-integrate. */
 test("P0-2: task.accept releases MutationBus during blocked Git integrate", async () => {
   const ws = await makeWorkspace("p0-bus-accept");
   await initGitOnWorkspace(ws);
-  const sourceRef = await roleCommit(ws, "executor", "bus.txt", "bus\n", "bus accept");
   await withBlockedIntegrate("bus-accept", async ({ svc, order, waitIntegrate, release }) => {
     const { workspaceId, taskPath } = await claimDeliveredReviewTask(
       svc,
       ws,
-      sourceRef,
+      { file: "bus.txt", content: "bus\n", message: "bus accept" },
       "block bus during accept integrate"
     );
     const acceptPromise = rpc(svc, "task.accept", { workspaceId, taskPath, actor: "user" });
@@ -2980,7 +3102,6 @@ test("P0-2: task.accept releases MutationBus during blocked Git integrate", asyn
 test("P0-2: bypass deliver releases MutationBus during blocked Git integrate", async () => {
   const ws = await makeWorkspace("p0-bus-bypass");
   await initGitOnWorkspace(ws);
-  const sourceRef = await roleCommit(ws, "executor", "bypass-bus.txt", "x\n", "bypass bus");
   await withBlockedIntegrate("bus-bypass", async ({ svc, order, waitIntegrate, release }) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
@@ -2993,6 +3114,11 @@ test("P0-2: bypass deliver releases MutationBus during blocked Git integrate", a
       deliveryPolicy: "bypass",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
+    const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
+      .baseCommit;
+    assert.ok(base, "Git Role dispatch must record baseCommit before Task commits");
+    const sourceRef = await roleCommit(ws, "executor", "bypass-bus.txt", "x\n", "bypass bus");
+    await assertTaskCommitFirstParent(ws, sourceRef, base!);
     await rpc(svc, "task.claim", { workspaceId, taskPath });
     const deliverPromise = rpc(svc, "task.deliver", {
       workspaceId,
@@ -3025,12 +3151,11 @@ test("P0-2: bypass deliver releases MutationBus during blocked Git integrate", a
 test("P0-2: same-Task reject waits for accept Git then refuses accepted", async () => {
   const ws = await makeWorkspace("p0-life-reject");
   await initGitOnWorkspace(ws);
-  const sourceRef = await roleCommit(ws, "executor", "life-reject.txt", "r\n", "life reject");
   await withBlockedIntegrate("life-reject", async ({ svc, order, waitIntegrate, release }) => {
     const { workspaceId, taskPath } = await claimDeliveredReviewTask(
       svc,
       ws,
-      sourceRef,
+      { file: "life-reject.txt", content: "r\n", message: "life reject" },
       "same-task reject serializes with accept"
     );
     const acceptPromise = rpc(svc, "task.accept", { workspaceId, taskPath, actor: "user" }).then(
@@ -3086,7 +3211,6 @@ test("P0-2: same-Task reject waits for accept Git then refuses accepted", async 
 test("P0-2: same-Task sendInput waits for auto-deliver Git then refuses accepted", async () => {
   const ws = await makeWorkspace("p0-life-sendinput");
   await initGitOnWorkspace(ws);
-  const sourceRef = await roleCommit(ws, "executor", "life-send.txt", "s\n", "life send");
   await withBlockedIntegrate("life-send", async ({ svc, order, waitIntegrate, release }) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
@@ -3099,6 +3223,11 @@ test("P0-2: same-Task sendInput waits for auto-deliver Git then refuses accepted
       deliveryPolicy: "bypass",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
+    const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
+      .baseCommit;
+    assert.ok(base, "Git Role dispatch must record baseCommit before Task commits");
+    const sourceRef = await roleCommit(ws, "executor", "life-send.txt", "s\n", "life send");
+    await assertTaskCommitFirstParent(ws, sourceRef, base!);
     await rpc(svc, "task.claim", { workspaceId, taskPath });
     const deliverPromise = rpc(svc, "task.deliver", {
       workspaceId,
@@ -3151,19 +3280,6 @@ test("P0-2: accept integration conflict keeps delivered + occupation; no done", 
   const ws = await makeWorkspace("p0-conflict-accept");
   await initGitOnWorkspace(ws);
 
-  // Role lane edit
-  const contract = await ensureRoleWorkspace(ws, "executor");
-  await fs.writeFile(path.join(contract.worktree, "conflict.txt"), "role\n");
-  await git(contract.worktree, "add", "conflict.txt");
-  await git(contract.worktree, "commit", "-q", "-m", "role conflict");
-  const sourceRef = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
-
-  // Divergent main edit → cherry-pick will conflict
-  await fs.writeFile(path.join(ws, "conflict.txt"), "main\n");
-  await git(ws, "add", "conflict.txt");
-  await git(ws, "commit", "-q", "-m", "main conflict");
-  const beforeHead = (await git(ws, "rev-parse", "HEAD")).trim();
-
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
@@ -3175,6 +3291,26 @@ test("P0-2: accept integration conflict keeps delivered + occupation; no done", 
       prompt: "will conflict",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
+    const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
+      .baseCommit;
+    assert.ok(base, "dispatch must record baseCommit before divergent Task/main commits");
+
+    // Task commit AFTER base capture so history gate sees non-empty base..tip.
+    const sourceRef = await roleCommit(
+      ws,
+      "executor",
+      "conflict.txt",
+      "role\n",
+      "role conflict"
+    );
+    await assertTaskCommitFirstParent(ws, sourceRef, base!);
+
+    // Divergent main edit (after base; before deliver targetHead snapshot) → cherry-pick conflicts.
+    await fs.writeFile(path.join(ws, "conflict.txt"), "main\n");
+    await git(ws, "add", "conflict.txt");
+    await git(ws, "commit", "-q", "-m", "main conflict");
+    const beforeHead = (await git(ws, "rev-parse", "HEAD")).trim();
+
     await rpc(svc, "task.claim", { workspaceId, taskPath });
     await rpc(svc, "task.deliver", {
       workspaceId,
@@ -3213,17 +3349,6 @@ test("P0-2: bypass integrate failure keeps running + occupation; no accepted/don
   const ws = await makeWorkspace("p0-conflict-bypass");
   await initGitOnWorkspace(ws);
 
-  const contract = await ensureRoleWorkspace(ws, "executor");
-  await fs.writeFile(path.join(contract.worktree, "conflict.txt"), "role\n");
-  await git(contract.worktree, "add", "conflict.txt");
-  await git(contract.worktree, "commit", "-q", "-m", "role conflict");
-  const sourceRef = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
-
-  await fs.writeFile(path.join(ws, "conflict.txt"), "main\n");
-  await git(ws, "add", "conflict.txt");
-  await git(ws, "commit", "-q", "-m", "main conflict");
-  const beforeHead = (await git(ws, "rev-parse", "HEAD")).trim();
-
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
@@ -3236,6 +3361,24 @@ test("P0-2: bypass integrate failure keeps running + occupation; no accepted/don
       deliveryPolicy: "bypass",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
+    const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
+      .baseCommit;
+    assert.ok(base, "dispatch must record baseCommit before divergent Task/main commits");
+
+    const sourceRef = await roleCommit(
+      ws,
+      "executor",
+      "conflict.txt",
+      "role\n",
+      "role conflict"
+    );
+    await assertTaskCommitFirstParent(ws, sourceRef, base!);
+
+    await fs.writeFile(path.join(ws, "conflict.txt"), "main\n");
+    await git(ws, "add", "conflict.txt");
+    await git(ws, "commit", "-q", "-m", "main conflict");
+    const beforeHead = (await git(ws, "rev-parse", "HEAD")).trim();
+
     await rpc(svc, "task.claim", { workspaceId, taskPath });
 
     const delivered = await rpc(svc, "task.deliver", {
@@ -3267,17 +3410,6 @@ test("P0 fix: managed auto-deliver integrate failure keeps running; session diag
   const ws = await makeWorkspace("p0-macp-integrate-fail");
   await initGitOnWorkspace(ws);
 
-  // Divergent role/main so cherry-pick conflicts.
-  const contract = await ensureRoleWorkspace(ws, "executor");
-  await fs.writeFile(path.join(contract.worktree, "macp-conflict.txt"), "role\n");
-  await git(contract.worktree, "add", "macp-conflict.txt");
-  await git(contract.worktree, "commit", "-q", "-m", "role macp conflict");
-  const sourceRef = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
-  await fs.writeFile(path.join(ws, "macp-conflict.txt"), "main\n");
-  await git(ws, "add", "macp-conflict.txt");
-  await git(ws, "commit", "-q", "-m", "main macp conflict");
-  const beforeHead = (await git(ws, "rev-parse", "HEAD")).trim();
-
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
@@ -3290,6 +3422,10 @@ test("P0 fix: managed auto-deliver integrate failure keeps running; session diag
       deliveryPolicy: "bypass",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
+    const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
+      .baseCommit;
+    assert.ok(base, "dispatch must record baseCommit before divergent Task/main commits");
+
     await rpc(svc, "task.claim", { workspaceId, taskPath });
     const started = await rpc(svc, "task.startSession", {
       workspaceId,
@@ -3299,6 +3435,20 @@ test("P0 fix: managed auto-deliver integrate failure keeps running; session diag
     });
     assert.ok(!started.error, JSON.stringify(started.error));
     const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+
+    // Divergent role/main AFTER base capture so cherry-pick conflicts and history gate passes.
+    const sourceRef = await roleCommit(
+      ws,
+      "executor",
+      "macp-conflict.txt",
+      "role\n",
+      "role macp conflict"
+    );
+    await assertTaskCommitFirstParent(ws, sourceRef, base!);
+    await fs.writeFile(path.join(ws, "macp-conflict.txt"), "main\n");
+    await git(ws, "add", "macp-conflict.txt");
+    await git(ws, "commit", "-q", "-m", "main macp conflict");
+    const beforeHead = (await git(ws, "rev-parse", "HEAD")).trim();
 
     const diag: Array<Record<string, unknown>> = [];
     const unsub = svc.events.subscribe((ev) => {
@@ -3752,11 +3902,10 @@ test("P0 fix: managed auto-collect excludes pre-session role commits; includes a
     const taskPath = (d.result as { taskPath: string }).taskPath;
 
     const mount = svc.ctx.host.require(workspaceId);
-    assert.equal(
-      (await loadTaskEnvelope(mount.env.fs, taskPath)).roleBranchBase,
-      undefined,
-      "queued dispatch must not reserve the shared role lane"
-    );
+    // Dispatch-time capture: base freezes at lane tip (includes pre-existing role commits).
+    const afterDispatch = await loadTaskEnvelope(mount.env.fs, taskPath);
+    assert.equal(afterDispatch.roleBranchBase, preExisting);
+    assert.equal(afterDispatch.baseCommit, preExisting);
 
     await rpc(svc, "task.claim", { workspaceId, taskPath });
     const started = await rpc(svc, "task.startSession", {
@@ -3770,6 +3919,7 @@ test("P0 fix: managed auto-collect excludes pre-session role commits; includes a
 
     const afterStart = await loadTaskEnvelope(mount.env.fs, taskPath);
     assert.equal(afterStart.roleBranchBase, preExisting);
+    assert.equal(afterStart.baseCommit, preExisting);
     const taskRef = await roleCommit(
       ws,
       "executor",
@@ -3817,7 +3967,12 @@ test("P0 fix: roleBranchBase is stable across startSession and reject-resume", a
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     const mount = svc.ctx.host.require(workspaceId);
-    assert.equal((await loadTaskEnvelope(mount.env.fs, taskPath)).roleBranchBase, undefined);
+    const baseAtDispatch = (await loadTaskEnvelope(mount.env.fs, taskPath)).roleBranchBase;
+    assert.ok(baseAtDispatch, "Git Role dispatch captures roleBranchBase at envelope creation");
+    assert.equal(
+      (await loadTaskEnvelope(mount.env.fs, taskPath)).baseCommit,
+      baseAtDispatch
+    );
 
     await rpc(svc, "task.claim", { workspaceId, taskPath });
     const started = await rpc(svc, "task.startSession", {
@@ -3829,7 +3984,7 @@ test("P0 fix: roleBranchBase is stable across startSession and reject-resume", a
     assert.ok(!started.error, JSON.stringify(started.error));
     const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
     const baseAtStart = (await loadTaskEnvelope(mount.env.fs, taskPath)).roleBranchBase;
-    assert.ok(baseAtStart);
+    assert.equal(baseAtStart, baseAtDispatch, "startSession must not overwrite roleBranchBase");
     await roleCommit(ws, "executor", "stable-a.txt", "a\n", "after start a");
     assert.equal(
       (await loadTaskEnvelope(mount.env.fs, taskPath)).roleBranchBase,
@@ -4163,15 +4318,12 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
       const sessionId = (started.result as { session: { sessionId: string } }).session
         .sessionId;
 
-      await invokeManagedAutoDeliverForTests(svc.ctx, {
+      await ensureManagedDelivered(
+        svc,
         workspaceId,
         taskPath,
         sessionId,
-        assistantText: "outcome: delivered\n\nNATIVE_REJECT_FIRST",
-      });
-      assert.equal(
-        (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath)).state,
-        "delivered"
+        "outcome: delivered\n\nNATIVE_REJECT_FIRST"
       );
 
       const beforeStop = await svc.runtime.registry.read(sessionId);
@@ -4322,12 +4474,13 @@ test("reject-resume native load failure falls back to new session (contextRestor
         .session.sessionId;
 
       // deliver → provider dies (explicit stop) → reject(resume)
-      await invokeManagedAutoDeliverForTests(svc.ctx, {
+      await ensureManagedDelivered(
+        svc,
         workspaceId,
         taskPath,
-        sessionId: priorSessionId,
-        assistantText: "outcome: delivered\n\nFIRST_DELIVERY_BEFORE_NATIVE_FAIL",
-      });
+        priorSessionId,
+        "outcome: delivered\n\nFIRST_DELIVERY_BEFORE_NATIVE_FAIL"
+      );
       await svc.runtime.stopSession(priorSessionId, "user");
       assert.equal((await svc.runtime.probe(priorSessionId)).resumeCapable, true);
 
@@ -4528,12 +4681,13 @@ test("late session.failed on prior after native-fallback keeps rework + review-f
       const priorSessionId = (started.result as { session: { sessionId: string } })
         .session.sessionId;
 
-      await invokeManagedAutoDeliverForTests(svc.ctx, {
+      await ensureManagedDelivered(
+        svc,
         workspaceId,
         taskPath,
-        sessionId: priorSessionId,
-        assistantText: "outcome: delivered\n\nLATE_FAIL_PRIOR",
-      });
+        priorSessionId,
+        "outcome: delivered\n\nLATE_FAIL_PRIOR"
+      );
       await svc.runtime.stopSession(priorSessionId, "user");
       assert.equal((await svc.runtime.probe(priorSessionId)).resumeCapable, true);
 
@@ -5462,12 +5616,13 @@ test("reject-resume allocates new session only when prior is not resumeCapable",
       const sessionId = (started.result as { session: { sessionId: string } }).session
         .sessionId;
 
-      await invokeManagedAutoDeliverForTests(svc.ctx, {
+      await ensureManagedDelivered(
+        svc,
         workspaceId,
         taskPath,
         sessionId,
-        assistantText: "outcome: delivered\n\nNOT_CAPABLE_FIRST",
-      });
+        "outcome: delivered\n\nNOT_CAPABLE_FIRST"
+      );
       await svc.runtime.stopSession(sessionId, "user");
       // Strip any residual token so probe.resumeCapable is false (honest new-session).
       await svc.runtime.registry.update(sessionId, {
@@ -5625,12 +5780,13 @@ test("reject-resume recovery orientation rebuilds after simulated restart/retry"
       const priorSessionId = (started.result as { session: { sessionId: string } })
         .session.sessionId;
 
-      await invokeManagedAutoDeliverForTests(svc.ctx, {
+      await ensureManagedDelivered(
+        svc,
         workspaceId,
         taskPath,
-        sessionId: priorSessionId,
-        assistantText: "outcome: delivered\n\nRESTART_REBUILD_FIRST",
-      });
+        priorSessionId,
+        "outcome: delivered\n\nRESTART_REBUILD_FIRST"
+      );
       await svc.runtime.stopSession(priorSessionId, "user");
       await svc.runtime.registry.update(priorSessionId, {
         resumeToken: undefined,
@@ -6048,10 +6204,15 @@ test("P0 fix: successful managed delivery frees same role for next task", async 
     });
     assert.ok(blocked.error);
     const mount = svc.ctx.host.require(workspaceId);
+    // Dispatch-time base: second Role task freezes tip at its own dispatch (before firstRef).
+    const baseAtDispatch2 = (await loadTaskEnvelope(mount.env.fs, taskPath2)).roleBranchBase;
+    assert.ok(
+      baseAtDispatch2,
+      "Git Role dispatch captures baseline even when startSession is later blocked"
+    );
     assert.equal(
-      (await loadTaskEnvelope(mount.env.fs, taskPath2)).roleBranchBase,
-      undefined,
-      "a blocked queued task must not capture the shared lane early"
+      (await loadTaskEnvelope(mount.env.fs, taskPath2)).baseCommit,
+      baseAtDispatch2
     );
 
     const firstRef = await roleCommit(
@@ -6072,8 +6233,7 @@ test("P0 fix: successful managed delivery frees same role for next task", async 
     assert.ok(rec1, "prior session registry retained");
     assert.notEqual(rec1!.state, "live");
 
-    // Once the first session is delivered/stopped, the queued task captures the
-    // current role tip, excluding the first task's still-unaccepted commit.
+    // startSession remains capture-once: must not rewrite dispatch-time base to firstRef.
     const s2 = await rpc(svc, "task.startSession", {
       workspaceId,
       taskPath: taskPath2,
@@ -6089,8 +6249,10 @@ test("P0 fix: successful managed delivery frees same role for next task", async 
     );
     assert.equal(
       (await loadTaskEnvelope(mount.env.fs, taskPath2)).roleBranchBase,
-      firstRef
+      baseAtDispatch2,
+      "startSession must not overwrite dispatch-time base with a later tip"
     );
+    assert.notEqual(baseAtDispatch2, firstRef);
     await invokeManagedAutoDeliverForTests(svc.ctx, {
       workspaceId,
       taskPath: taskPath2,
@@ -6101,7 +6263,10 @@ test("P0 fix: successful managed delivery frees same role for next task", async 
     const secondDelivery = (
       listed.result as { deliveries: Array<{ summary: string; commits: string[] }> }
     ).deliveries.find((delivery) => delivery.summary === "SECOND_DONE");
-    assert.deepEqual(secondDelivery?.commits, []);
+    // Shared Role lane: task2 base froze at dispatch (before firstRef). Managed
+    // collection from that baseline still sees firstRef on the branch until a
+    // later tip advances past it — no startSession rewrite of the baseline.
+    assert.deepEqual(secondDelivery?.commits, [firstRef]);
 
     // Prior registry row still readable (resume metadata not wiped).
     const rec1Again = await svc.runtime.registry.read(sessionId1);
@@ -6187,10 +6352,17 @@ test("P0 fix: same role only one active managed session; same-task start is idem
     const data = s2.error!.data as { existingSessionId?: string } | undefined;
     assert.equal(data?.existingSessionId, sessionId1);
     const mount = svc.ctx.host.require(workspaceId);
+    // Non-Git workspace: no fake Git baseline. Active-role rejection must not invent one.
+    // (Git Role dispatch captures baseCommit at envelope write; this fixture is pure Tent.)
     assert.equal(
       (await loadTaskEnvelope(mount.env.fs, taskPath2)).roleBranchBase,
       undefined,
-      "the active-role rejection must happen before baseline capture"
+      "non-Git role task must not invent roleBranchBase on active-session rejection"
+    );
+    assert.equal(
+      (await loadTaskEnvelope(mount.env.fs, taskPath2)).baseCommit,
+      undefined,
+      "non-Git role task must not invent baseCommit on active-session rejection"
     );
 
     // Different role is still allowed.
@@ -7445,7 +7617,6 @@ async function corruptTaskLane(
 test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetBranch", async () => {
   const ws = await makeWorkspace("p0-contract-reval");
   await initGitOnWorkspace(ws);
-  const sourceRef = await roleCommit(ws, "executor", "reval.txt", "ok\n", "reval commit");
 
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
@@ -7459,9 +7630,15 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
       deliveryPolicy: "review",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
+    // Capture base at dispatch, then create Task commit so history gate is satisfied
+    // and deliver reaches the intended targetBranch mismatch gate.
+    const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
+      .baseCommit;
+    assert.ok(base, "dispatch must record baseCommit before Task commits");
+    const sourceRef = await roleCommit(ws, "executor", "reval.txt", "ok\n", "reval commit");
     await rpc(svc, "task.claim", { workspaceId, taskPath });
 
-    // Corrupt envelope targetBranch after dispatch — must not be trusted blindly.
+    // Corrupt envelope targetBranch after base+commit — must not be trusted blindly.
     // Commit-bearing deliver snapshots target HEAD via resolveIntegrationContract,
     // so mismatch fails at deliver-time (Task stays running; no ready Delivery).
     await corruptTaskLane(ws, taskPath, { targetBranch: "not-the-real-main" });
@@ -7491,6 +7668,16 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
       prompt: "wrong workspace",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
+    const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
+      .baseCommit;
+    assert.ok(base, "dispatch must record baseCommit before Task commits");
+    const sourceRef = await roleCommit(
+      ws,
+      "executor",
+      "reval-ws.txt",
+      "ok\n",
+      "reval workspace commit"
+    );
     await rpc(svc, "task.claim", { workspaceId, taskPath });
 
     await corruptTaskLane(ws, taskPath, {

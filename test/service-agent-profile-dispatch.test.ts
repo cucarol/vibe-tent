@@ -179,7 +179,27 @@ test("agentProfile dispatch: envelope path, task-scoped manifest, no init/regist
       result.manifestPath,
       /^temp\/agent-profiles\/fake-default\/manifests\/tk-.+\.yml$/
     );
-    assert.equal(result.workspaceLane, undefined);
+    // Non-Git peer profile: no Git lane fields; authority-only projection is mandatory.
+    const lane = result.workspaceLane as
+      | {
+          workspace?: string;
+          worktree?: string;
+          branch?: string;
+          targetBranch?: string;
+          baseCommit?: string;
+          integrationAuthority?: { mutator: string; actor: { kind: string; id: string } };
+        }
+      | undefined;
+    assert.ok(lane, "non-Git peer still projects authority-only workspaceLane");
+    assert.equal(lane!.workspace, undefined);
+    assert.equal(lane!.worktree, undefined);
+    assert.equal(lane!.branch, undefined);
+    assert.equal(lane!.targetBranch, undefined);
+    assert.equal(lane!.baseCommit, undefined);
+    assert.deepEqual(lane!.integrationAuthority, {
+      actor: { kind: "user", id: "user" },
+      mutator: "service",
+    });
     assert.match(result.relayPrompt, /agentProfile fake-default/);
     assert.doesNotMatch(result.relayPrompt, /Role init file/);
     assert.match(result.relayPrompt, /do not look for a role init/i);
@@ -289,8 +309,25 @@ test("Git agentProfile task gets tent-task/<taskId> isolated lane; commits from 
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
-    // Dispatch does not create a lane for profile tasks.
-    assert.equal((d.result as { workspaceLane?: unknown }).workspaceLane, undefined);
+    // Peer profile: no Git lane at dispatch; authority-only projection is mandatory.
+    const dispatchLane = (
+      d.result as {
+        workspaceLane?: {
+          branch?: string;
+          worktree?: string;
+          baseCommit?: string;
+          integrationAuthority?: { mutator: string; actor: { kind: string; id: string } };
+        };
+      }
+    ).workspaceLane;
+    assert.ok(dispatchLane, "peer profile still projects authority-only workspaceLane at dispatch");
+    assert.equal(dispatchLane!.branch, undefined);
+    assert.equal(dispatchLane!.worktree, undefined);
+    assert.equal(dispatchLane!.baseCommit, undefined);
+    assert.deepEqual(dispatchLane!.integrationAuthority, {
+      actor: { kind: "user", id: "user" },
+      mutator: "service",
+    });
 
     await rpc(svc, "task.claim", { workspaceId, taskPath });
     const started = await rpc(svc, "task.startSession", {

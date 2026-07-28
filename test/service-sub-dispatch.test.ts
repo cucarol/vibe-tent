@@ -467,10 +467,27 @@ test("task.dispatch asSub profile: tent-task lane at dispatch; peer profile stay
       workspaceLane?: unknown;
     };
     assert.equal(peerResult.asSub, false);
-    assert.equal(peerResult.workspaceLane, undefined);
+    // Peer profile defers Git lane; authority-only projection is mandatory without base/branch.
+    const peerLane = peerResult.workspaceLane as
+      | {
+          branch?: string;
+          worktree?: string;
+          baseCommit?: string;
+          integrationAuthority?: { mutator: string; actor: { kind: string; id: string } };
+        }
+      | undefined;
+    assert.ok(peerLane, "peer profile still projects authority-only workspaceLane");
+    assert.equal(peerLane!.branch, undefined);
+    assert.equal(peerLane!.worktree, undefined);
+    assert.equal(peerLane!.baseCommit, undefined);
+    assert.deepEqual(peerLane!.integrationAuthority, {
+      actor: { kind: "user", id: "user" },
+      mutator: "service",
+    });
     const peerTask = await loadTaskEnvelope(envFs, peerResult.taskPath);
     assert.equal(peerTask.branch, undefined);
     assert.equal(peerTask.worktree, undefined);
+    assert.equal(peerTask.baseCommit, undefined);
     assert.equal(taskAsSub(peerTask), false);
   });
 });
@@ -771,10 +788,24 @@ test("resolveIntegrationContract: sub targetBranch mismatch fails loud", async (
     });
     assert.ok(!sub.error, JSON.stringify(sub.error));
     const taskPath = (sub.result as { taskPath: string }).taskPath;
-    const lane = (sub.result as { workspaceLane: { worktree: string } }).workspaceLane;
+    const lane = (
+      sub.result as { workspaceLane: { worktree: string; baseCommit?: string } }
+    ).workspaceLane;
+    // Dispatch captures base first; Task commit after base so history gate is valid
+    // and deliver reaches the intended targetBranch mismatch gate.
+    assert.ok(lane.baseCommit, "asSub dispatch must record baseCommit");
+    const envFs = new NodeFs(path.join(ws, ".tent"));
+    const envelope = await loadTaskEnvelope(envFs, taskPath);
+    assert.equal(envelope.baseCommit, lane.baseCommit);
+
+    await fs.writeFile(path.join(lane.worktree, "x.txt"), "x\n");
+    await git(lane.worktree, "add", "x.txt");
+    await git(lane.worktree, "commit", "-q", "-m", "x");
+    const commit = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
+    const firstParent = (await git(lane.worktree, "rev-parse", `${commit}^`)).trim();
+    assert.equal(firstParent, lane.baseCommit);
 
     // Corrupt targetBranch on disk to mainline (peer-like) while asSub stays true.
-    const envFs = new NodeFs(path.join(ws, ".tent"));
     const raw = await envFs.readFile(taskPath);
     const corrupted = raw.replace(
       /targetBranch:\s*tent-role\/orchestrator/,
@@ -782,11 +813,6 @@ test("resolveIntegrationContract: sub targetBranch mismatch fails loud", async (
     );
     assert.notEqual(raw, corrupted);
     await envFs.writeFile(taskPath, corrupted);
-
-    await fs.writeFile(path.join(lane.worktree, "x.txt"), "x\n");
-    await git(lane.worktree, "add", "x.txt");
-    await git(lane.worktree, "commit", "-q", "-m", "x");
-    const commit = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
 
     await rpc(svc, "task.claim", { workspaceId, taskPath });
     // Commit-bearing deliver re-resolves integration contract (targetHead snapshot);
@@ -810,7 +836,7 @@ test("resolveIntegrationContract: sub targetBranch mismatch fails loud", async (
 
 // ---- asSub under dispatcher's own active ancestor task ----
 
-test("task.dispatch asSub: allowed under dispatcher's active ancestor task; peer still blocked", async () => {
+test("task.dispatch asSub: concurrent peer and sub under active ancestor are legal", async () => {
   const ws = await makeWorkspace("sub-under-claim");
   await initGitOnWorkspace(ws);
 
@@ -849,19 +875,17 @@ test("task.dispatch asSub: allowed under dispatcher's active ancestor task; peer
     const parentTaskPath = (parentDispatch.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath: parentTaskPath });
 
-    const peerBlocked = await rpc(svc, "task.dispatch", {
+    // Node refs are non-exclusive: peer on descendant under active ancestor is legal.
+    const peerOk = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId: childId,
       role: "helper",
-      prompt: "peer should fail",
+      prompt: "peer concurrent under ancestor",
     });
-    assert.ok(peerBlocked.error);
-    assert.match(
-      String(peerBlocked.error!.message),
-      /ancestor .* occupied by active task for orchestrator/i
-    );
+    assert.ok(!peerOk.error, JSON.stringify(peerOk.error));
+    assert.equal((peerOk.result as { asSub?: boolean }).asSub, false);
 
     const subOk = await rpc(svc, "task.dispatch", {
       workspaceId,
@@ -876,13 +900,15 @@ test("task.dispatch asSub: allowed under dispatcher's active ancestor task; peer
     const subResult = subOk.result as {
       taskPath: string;
       asSub?: boolean;
-      workspaceLane?: { branch?: string; targetBranch?: string };
+      workspaceLane?: { branch?: string; targetBranch?: string; baseCommit?: string };
     };
     assert.equal(subResult.asSub, true);
     assert.equal(subResult.workspaceLane?.branch, "tent-role/helper");
     assert.equal(subResult.workspaceLane?.targetBranch, "tent-role/orchestrator");
+    assert.ok(subResult.workspaceLane?.baseCommit, "asSub lane captures baseCommit at dispatch");
 
-    // Wrong dispatcher still blocked even with asSub.
+    // asSub with a different durable parent Role is still a legal Git sub-lane
+    // (Node refs are not an occupation mutex).
     const otherChild = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "child-prompt-2",
@@ -890,19 +916,21 @@ test("task.dispatch asSub: allowed under dispatcher's active ancestor task; peer
       parentPath,
     });
     assert.ok(!otherChild.error, JSON.stringify(otherChild.error));
-    const wrongDispatcher = await rpc(svc, "task.dispatch", {
+    const otherParent = await rpc(svc, "task.dispatch", {
       workspaceId,
       boxId: (otherChild.result as { id: string }).id,
       role: "helper",
-      prompt: "wrong by",
+      prompt: "sub with executor parent",
       asSub: true,
       parentActor: { kind: "role", id: "executor" },
       reviewer: { kind: "role", id: "executor" },
     });
-    assert.ok(wrongDispatcher.error);
-    assert.match(
-      String(wrongDispatcher.error!.message),
-      /ancestor .* occupied by active task for orchestrator/i
+    assert.ok(!otherParent.error, JSON.stringify(otherParent.error));
+    assert.equal((otherParent.result as { asSub?: boolean }).asSub, true);
+    assert.equal(
+      (otherParent.result as { workspaceLane?: { targetBranch?: string } }).workspaceLane
+        ?.targetBranch,
+      "tent-role/executor"
     );
   });
 });
@@ -1151,7 +1179,24 @@ test("peer profile dispatch still defers lane; startSession creates tent-task", 
     });
     assert.ok(!peer.error, JSON.stringify(peer.error));
     const taskPath = (peer.result as { taskPath: string }).taskPath;
-    assert.equal((peer.result as { workspaceLane?: unknown }).workspaceLane, undefined);
+    const peerLane = (
+      peer.result as {
+        workspaceLane?: {
+          branch?: string;
+          worktree?: string;
+          baseCommit?: string;
+          integrationAuthority?: { mutator: string; actor: { kind: string; id: string } };
+        };
+      }
+    ).workspaceLane;
+    assert.ok(peerLane, "peer profile still projects authority-only workspaceLane at dispatch");
+    assert.equal(peerLane!.branch, undefined);
+    assert.equal(peerLane!.worktree, undefined);
+    assert.equal(peerLane!.baseCommit, undefined);
+    assert.deepEqual(peerLane!.integrationAuthority, {
+      actor: { kind: "user", id: "user" },
+      mutator: "service",
+    });
 
     await rpc(svc, "task.claim", { workspaceId, taskPath });
     const started = await rpc(svc, "task.startSession", {

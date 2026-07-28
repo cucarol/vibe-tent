@@ -478,8 +478,15 @@ rl.on("line", (line) => {
       .filter((p) => p?.type === "text")
       .map((p) => p.text)
       .join("");
-    // Log full prompt (tests assert user prompt entered ACP); cap huge dumps.
-    log.prompts.push(textParts.slice(0, 8000));
+    // Log full prompt for test assertions. Keep head+tail when very large so the
+    // trailing ## User Prompt (after stable skill sections) is never dropped.
+    const PROMPT_LOG_CAP = 24_000;
+    const PROMPT_LOG_EDGE = 10_000;
+    log.prompts.push(
+      textParts.length <= PROMPT_LOG_CAP
+        ? textParts
+        : `${textParts.slice(0, PROMPT_LOG_EDGE)}\n...[truncated ${textParts.length} chars]...\n${textParts.slice(-PROMPT_LOG_EDGE)}`
+    );
     // Structured blocks: types + image mime/size only (never full base64 payloads).
     log.promptBlocks.push(
       promptArr.map((p) => {
