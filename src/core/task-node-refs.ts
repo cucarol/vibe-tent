@@ -34,6 +34,7 @@ import {
 /**
  * Fields needed to resolve Node refs without importing TaskEnvelope (avoids cycles).
  * Runtime occupation / collaboration reads **only** contextCard.refs.nodes.
+ * Accepts full TaskContextCardV1 or a minimal `{ refs: { nodes } }` projection.
  */
 export type ContextCardNodeRefSource = {
   path?: string;
@@ -41,8 +42,18 @@ export type ContextCardNodeRefSource = {
   createdAt?: string;
   state?: string;
   status?: string;
-  /** Full Context Card when loaded; Node refs are refs.nodes only. */
-  contextCard?: Pick<TaskContextCardV1, "refs"> | TaskContextCardV1 | null;
+  /**
+   * Context Card (full or projection). `refs.nodes` must be an explicit array when
+   * present; absence of contextCard / nodes fails loud in taskReferencedNodeIds.
+   */
+  contextCard?:
+    | TaskContextCardV1
+    | {
+        refs?: {
+          nodes?: TaskContextCardRef[] | null;
+        } | null;
+      }
+    | null;
 };
 
 /** Normalize a single node ref; empty id / fake root rejected. */

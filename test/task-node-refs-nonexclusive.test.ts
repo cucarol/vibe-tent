@@ -380,7 +380,7 @@ test("taskReferencedNodeIds: missing card/nodes throws; explicit empty nodes is 
     () =>
       taskReferencedNodeIds({
         id: "tk-no-nodes",
-        contextCard: { refs: {} as { nodes: never } },
+        contextCard: { refs: {} },
       }),
     /MISSING_CONTEXT_CARD/
   );
@@ -388,7 +388,7 @@ test("taskReferencedNodeIds: missing card/nodes throws; explicit empty nodes is 
     () =>
       taskReferencedNodeIds({
         id: "tk-no-refs",
-        contextCard: {} as { refs: { nodes: never } },
+        contextCard: {},
       }),
     /MISSING_CONTEXT_CARD/
   );
@@ -396,7 +396,7 @@ test("taskReferencedNodeIds: missing card/nodes throws; explicit empty nodes is 
   // Explicit empty nodes[] is the only valid workspace-context case.
   const workspaceOnly = {
     id: "tk-ws",
-    contextCard: { refs: { nodes: [] as { id: string }[] } },
+    contextCard: { refs: { nodes: [] } },
   };
   assert.deepEqual(taskReferencedNodeIds(workspaceOnly), []);
   assert.equal(taskHasWorkspaceOnlyContext(workspaceOnly), true);
