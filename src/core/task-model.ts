@@ -160,6 +160,28 @@ export function parentReviewerEqual(
   return parentActor.kind === reviewer.kind && parentActor.id === reviewer.id;
 }
 
+/**
+ * Single authoritative resolve for parentActor + reviewer pairs.
+ * Used by Core new-write, load, migration, and Service RPC — equality is
+ * enforced here so no boundary can parse two actors and return them unchecked.
+ *
+ * - `parentActor` required (already-parsed TaskActorRef).
+ * - `reviewer` optional: when omitted, derived as a copy of parentActor.
+ * - When present, must equal parentActor (assertParentReviewerEqual).
+ * - Always returns both fields (both must be persisted on write).
+ */
+export function resolveParentReviewerPair(input: {
+  parentActor: TaskActorRef;
+  reviewer?: TaskActorRef;
+}): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
+  const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
+  const reviewer = input.reviewer
+    ? parseTaskActorRef(input.reviewer, "reviewer")
+    : { ...parentActor };
+  assertParentReviewerEqual(parentActor, reviewer);
+  return { parentActor, reviewer };
+}
+
 /** User parent + user reviewer (user-direct Task). */
 export function userTaskActors(): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
   const parentActor: TaskActorRef = { kind: "user", id: "user" };

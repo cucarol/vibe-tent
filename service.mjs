@@ -1386,6 +1386,12 @@ function assertParentReviewerEqual(parentActor, reviewer) {
     );
   }
 }
+function resolveParentReviewerPair(input) {
+  const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
+  const reviewer = input.reviewer ? parseTaskActorRef(input.reviewer, "reviewer") : { ...parentActor };
+  assertParentReviewerEqual(parentActor, reviewer);
+  return { parentActor, reviewer };
+}
 function userTaskActors() {
   const parentActor = { kind: "user", id: "user" };
   return { parentActor, reviewer: { ...parentActor } };
@@ -2169,9 +2175,10 @@ async function migrateParentReviewerEnvelopes(fs21, clock, options) {
       const hasLegacyDispatcher = typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
       if (hasParent && hasReviewer && !hasLegacyDispatcher) {
         try {
-          const parentActor2 = parseTaskActorRef(data.parentActor, "parentActor");
-          const reviewer2 = parseTaskActorRef(data.reviewer, "reviewer");
-          assertParentReviewerEqual(parentActor2, reviewer2);
+          resolveParentReviewerPair({
+            parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
+            reviewer: parseTaskActorRef(data.reviewer, "reviewer")
+          });
           report.skipped.push(path22);
         } catch (err) {
           report.warnings.push(
@@ -2184,9 +2191,12 @@ async function migrateParentReviewerEnvelopes(fs21, clock, options) {
       let parentActor;
       let reviewer;
       if (hasParent && hasReviewer) {
-        parentActor = parseTaskActorRef(data.parentActor, "parentActor");
-        reviewer = parseTaskActorRef(data.reviewer, "reviewer");
-        assertParentReviewerEqual(parentActor, reviewer);
+        const pair = resolveParentReviewerPair({
+          parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
+          reviewer: parseTaskActorRef(data.reviewer, "reviewer")
+        });
+        parentActor = pair.parentActor;
+        reviewer = pair.reviewer;
       } else if (hasParent || hasReviewer) {
         report.warnings.push(
           `${path22}: partial parentActor/reviewer pair; refusing silent repair`
@@ -2256,10 +2266,10 @@ function resolveDispatchActors(input) {
       "task.dispatch requires explicit parentActor { kind, id } (legacy dispatchedBy is migration-only)."
     );
   }
-  const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
-  const reviewer = input.reviewer ? parseTaskActorRef(input.reviewer, "reviewer") : { ...parentActor };
-  assertParentReviewerEqual(parentActor, reviewer);
-  return { parentActor, reviewer };
+  return resolveParentReviewerPair({
+    parentActor: input.parentActor,
+    reviewer: input.reviewer
+  });
 }
 async function loadTaskEnvelope(fs21, path22) {
   if (!await fs21.exists(path22)) throw new Error(`Task envelope not found: ${path22}.`);
@@ -2315,10 +2325,10 @@ function resolveActorsFromDisk(data) {
         "Invalid task envelope: parentActor and reviewer must both be present when either is set."
       );
     }
-    const parentActor = parseTaskActorRef(data.parentActor, "parentActor");
-    const reviewer = parseTaskActorRef(data.reviewer, "reviewer");
-    assertParentReviewerEqual(parentActor, reviewer);
-    return { parentActor, reviewer };
+    return resolveParentReviewerPair({
+      parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
+      reviewer: parseTaskActorRef(data.reviewer, "reviewer")
+    });
   }
   const hasLegacy = typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
   throw new Error(
@@ -2548,10 +2558,13 @@ async function patchTaskEnvelope(fs21, path22, patch) {
         "patchTaskEnvelope parentActor/reviewer requires an existing or explicit parentActor."
       );
     }
-    const nextReviewer = patch.reviewer ? parseTaskActorRef(patch.reviewer, "reviewer") : patch.parentActor ? { ...nextParent } : data.reviewer !== void 0 && data.reviewer !== null ? parseTaskActorRef(data.reviewer, "reviewer") : { ...nextParent };
-    assertParentReviewerEqual(nextParent, nextReviewer);
-    data.parentActor = serializeTaskActorRef(nextParent);
-    data.reviewer = serializeTaskActorRef(nextReviewer);
+    const nextReviewer = patch.reviewer ? parseTaskActorRef(patch.reviewer, "reviewer") : patch.parentActor ? void 0 : data.reviewer !== void 0 && data.reviewer !== null ? parseTaskActorRef(data.reviewer, "reviewer") : void 0;
+    const pair = resolveParentReviewerPair({
+      parentActor: nextParent,
+      reviewer: nextReviewer
+    });
+    data.parentActor = serializeTaskActorRef(pair.parentActor);
+    data.reviewer = serializeTaskActorRef(pair.reviewer);
   }
   if (patch.clearLegacyDispatchedBy) {
     delete data.dispatchedBy;
@@ -22678,21 +22691,21 @@ function resolveDispatchActorsFromRpc(input) {
       "task.dispatch requires explicit parentActor { kind: user|role, id }"
     );
   }
-  const parentActor = input.parentActor;
-  const reviewer = input.reviewer ?? { ...parentActor };
   try {
-    assertParentReviewerEqual(parentActor, reviewer);
+    return resolveParentReviewerPair({
+      parentActor: input.parentActor,
+      reviewer: input.reviewer
+    });
   } catch (err) {
     throw new RpcError(
       -32602,
       err instanceof Error ? err.message : "task.dispatch reviewer must equal parentActor",
       {
-        parentActor,
-        reviewer
+        parentActor: input.parentActor,
+        reviewer: input.reviewer
       }
     );
   }
-  return { parentActor, reviewer };
 }
 async function taskClaimRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);

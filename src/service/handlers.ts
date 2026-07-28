@@ -54,10 +54,10 @@ import {
   type TaskEnvelope,
 } from "../core/task.js";
 import {
-  assertParentReviewerEqual,
   mayElevateDeliveryPolicy,
   parseTaskActorRef,
   parseTaskOutcomeReport,
+  resolveParentReviewerPair,
   type TaskActorRef,
   type TaskOutcome,
 } from "../core/task-model.js";
@@ -3559,6 +3559,7 @@ function parseOptionalTaskActor(
  * Resolve parent/reviewer at dispatch RPC.
  * Requires explicit parentActor. Reviewer may be omitted (derived equal to
  * parent); when present must match exactly — no Role A → reviewer Role B.
+ * Equality is enforced only via resolveParentReviewerPair (same as Core write/load).
  * Legacy dispatchedBy is rejected at the RPC boundary (migration/load only).
  */
 function resolveDispatchActorsFromRpc(input: {
@@ -3571,10 +3572,11 @@ function resolveDispatchActorsFromRpc(input: {
       "task.dispatch requires explicit parentActor { kind: user|role, id }"
     );
   }
-  const parentActor = input.parentActor;
-  const reviewer = input.reviewer ?? { ...parentActor };
   try {
-    assertParentReviewerEqual(parentActor, reviewer);
+    return resolveParentReviewerPair({
+      parentActor: input.parentActor,
+      reviewer: input.reviewer,
+    });
   } catch (err) {
     throw new RpcError(
       -32602,
@@ -3582,12 +3584,11 @@ function resolveDispatchActorsFromRpc(input: {
         ? err.message
         : "task.dispatch reviewer must equal parentActor",
       {
-        parentActor,
-        reviewer,
+        parentActor: input.parentActor,
+        reviewer: input.reviewer,
       }
     );
   }
-  return { parentActor, reviewer };
 }
 
 async function taskClaimRpc(ctx: HandlerContext, p: Record<string, unknown>) {

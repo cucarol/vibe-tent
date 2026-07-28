@@ -225,12 +225,36 @@ test("resolveDispatchActors / writeTaskEnvelope refuse missing actors and dispat
   );
 });
 
-test("Core: parentActor/reviewer mismatch rejected on write, load, and migration", async () => {
+test("Core+Service: parentActor/reviewer mismatch rejected at write, load, migration, and RPC", async () => {
   const { resolveDispatchActors, migrateParentReviewerEnvelopes } = await import(
     "../src/core/task.js"
   );
-  const { assertParentReviewerEqual, TaskLifecycleError: TLE } = await import(
-    "../src/core/task-model.js"
+  const {
+    assertParentReviewerEqual,
+    resolveParentReviewerPair,
+    TaskLifecycleError: TLE,
+  } = await import("../src/core/task-model.js");
+
+  // Shared pair resolver is the single equality gate for all three boundaries.
+  assert.throws(
+    () =>
+      resolveParentReviewerPair({
+        parentActor: { kind: "role", id: "orchestrator" },
+        reviewer: { kind: "role", id: "planner" },
+      }),
+    (err: unknown) =>
+      err instanceof TLE &&
+      err.code === "INVALID_ACTOR" &&
+      /must equal parentActor|no arbitrary delegation/i.test(String(err.message))
+  );
+  assert.deepEqual(
+    resolveParentReviewerPair({
+      parentActor: { kind: "role", id: "orchestrator" },
+    }),
+    {
+      parentActor: { kind: "role", id: "orchestrator" },
+      reviewer: { kind: "role", id: "orchestrator" },
+    }
   );
 
   assert.throws(
@@ -239,12 +263,10 @@ test("Core: parentActor/reviewer mismatch rejected on write, load, and migration
         { kind: "role", id: "orchestrator" },
         { kind: "role", id: "planner" }
       ),
-    (err: unknown) =>
-      err instanceof TLE &&
-      err.code === "INVALID_ACTOR" &&
-      /must equal parentActor|no arbitrary delegation/i.test(String(err.message))
+    (err: unknown) => err instanceof TLE && err.code === "INVALID_ACTOR"
   );
 
+  // Core new-write boundary (resolveDispatchActors → resolveParentReviewerPair).
   assert.throws(
     () =>
       resolveDispatchActors({
@@ -259,6 +281,7 @@ test("Core: parentActor/reviewer mismatch rejected on write, load, and migration
   await fsa.mkdir("temp/helper/tasks");
   const clock = new SystemClock();
 
+  // Core writeTaskEnvelope boundary.
   await assert.rejects(
     () =>
       writeTaskEnvelope(fsa, clock, {
@@ -272,7 +295,7 @@ test("Core: parentActor/reviewer mismatch rejected on write, load, and migration
     /must equal parentActor|no arbitrary delegation/i
   );
 
-  // Persisted mismatched pair fails loud on load (not silently repaired).
+  // Persisted mismatched pair fails loud on load (resolveActorsFromDisk).
   // Use inline maps — Tent frontmatter does not nest block maps under keys.
   await fsa.writeFile(
     "temp/helper/tasks/task-mismatch.md",
