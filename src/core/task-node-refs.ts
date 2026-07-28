@@ -1,9 +1,9 @@
 // Task Node refs (V0.2 cx-tsw53f): sole persisted source is Task.contextCard.refs.nodes[].
 // Durable id is authoritative; path is a refreshable hint only.
-// Integrated on Context Card / parentActor / roster baseline (36a38bf).
-// Full TaskContextCardV1 lives in task-context-card.ts; this module owns Node-ref
-// helpers, claims→refs migration, and non-exclusive occupation retirement.
-// No parallel nodeRefs/sourceRefs. New writes never persist claims[].
+// Canonical card types / build / parse / digests live in task-context-card.ts —
+// this module owns Node-ref helpers, claims→refs one-shot migration, and
+// non-exclusive occupation projection helpers. No parallel nodeRefs/sourceRefs.
+// New writes never persist claims[]. Runtime never falls back to claims[].
 
 import type { FsAdapter } from "./adapter.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
@@ -12,56 +12,50 @@ import {
   TEMP_DIR,
 } from "./paths.js";
 import { join } from "./tree.js";
-import { isActiveTaskState, legacyStatusToState, type TaskState } from "./task-model.js";
+import {
+  isActiveTaskState,
+  legacyStatusToState,
+  parseTaskActorRef,
+  resolveParentReviewerPair,
+  type TaskActorRef,
+  type TaskState,
+} from "./task-model.js";
+import {
+  buildTaskContextCard,
+  computeContextGeneration,
+  loadTaskContextCardFromFrontmatter,
+  projectAssigneeFromTask,
+  serializeTaskContextCardForFrontmatter,
+  type TaskContextCardRef,
+  type TaskContextCardV1,
+} from "./task-context-card.js";
 
-/** Durable Node pointer on Task.contextCard.refs.nodes[]. */
-export type TaskNodeRef = {
-  id: string;
-  /** Refreshable path hint — never authoritative. */
-  path?: string;
-  revision?: string;
-};
+/** Re-export canonical Node ref shape (TaskContextCardRef). */
+export type TaskNodeRef = TaskContextCardRef;
 
 /**
- * Partial / migration Context Card shape carrying Node refs.
- * Full TaskContextCardV1 (actors/digests/…) is authoritative when present on TaskEnvelope;
- * this shape is used by claims→refs migration and by ref helpers that only need nodes[].
+ * Fields needed to resolve Node refs without importing TaskEnvelope (avoids cycles).
+ * Runtime occupation / collaboration reads **only** contextCard.refs.nodes.
+ * `claims` is never consulted here — one-shot migrator only.
  */
-export type TaskContextCardNodeRefs = {
-  schemaVersion?: "v1";
-  /** Required on active Tasks after migration (fail-loud when missing/empty). */
-  objective?: string;
-  /** Minimal acceptance; may equal objective when legacy had no explicit acceptance. */
-  acceptance?: string[];
-  refs: {
-    nodes: TaskNodeRef[];
-    tasks?: TaskNodeRef[];
-    deliveries?: TaskNodeRef[];
-    git?: TaskNodeRef[];
-  };
-};
-
-/** Fields needed to resolve Node refs without importing TaskEnvelope (avoids cycles). */
 export type TaskNodeRefSource = {
   path?: string;
   id?: string;
   createdAt?: string;
   state?: string;
   status?: string;
-  claims?: string[];
-  contextCard?: TaskContextCardNodeRefs;
-  /** Workspace-wide context flag (legacy claims included "root"). */
-  workspaceContext?: boolean;
+  /** Full Context Card when loaded; Node refs are refs.nodes only. */
+  contextCard?: Pick<TaskContextCardV1, "refs"> | TaskContextCardV1;
 };
 
-/** Legacy claim token for workspace-wide context (not a Node id). */
-export const WORKSPACE_ROOT_CLAIM = "root";
+/** Legacy claim token for workspace-wide context (not a Node id). Migrator-only. */
+const WORKSPACE_ROOT_CLAIM = "root";
 
-export function isWorkspaceRootClaim(id: string): boolean {
+function isWorkspaceRootClaim(id: string): boolean {
   return id.trim() === WORKSPACE_ROOT_CLAIM;
 }
 
-/** Normalize a single node ref; empty id rejected. */
+/** Normalize a single node ref; empty id / fake root rejected. */
 export function normalizeTaskNodeRef(raw: {
   id: string;
   path?: string;
@@ -119,22 +113,22 @@ export function parseTaskNodeRefs(value: unknown): TaskNodeRef[] {
 
 /**
  * Authoritative Node ids referenced by a Task (direct only).
- * Prefers contextCard.refs.nodes when present; otherwise legacy claims (migrate bridge only).
+ * **Runtime:** only `contextCard.refs.nodes`. Never reads claims[]
+ * (claims access is confined to the one-shot migrator below).
  */
 export function taskReferencedNodeIds(task: TaskNodeRefSource): string[] {
-  if (task.contextCard?.refs?.nodes) {
-    return task.contextCard.refs.nodes
-      .map((n) => n.id)
-      .filter((id) => id && !isWorkspaceRootClaim(id));
-  }
-  return (task.claims ?? []).filter((id) => id && !isWorkspaceRootClaim(id));
+  const nodes = task.contextCard?.refs?.nodes;
+  if (!nodes || nodes.length === 0) return [];
+  return nodes.map((n) => n.id).filter((id) => id && !isWorkspaceRootClaim(id));
 }
 
-/** True when Task carries workspace/root context (not a Tent-wide lock). */
+/**
+ * True when Task carries workspace-level context only (no direct Node refs).
+ * Not a persisted source flag and not a Tent-wide lock — concurrent workspace
+ * Tasks are legal. Derived from empty refs.nodes after migration / new writes.
+ */
 export function taskHasWorkspaceContext(task: TaskNodeRefSource): boolean {
-  if (task.workspaceContext === true) return true;
-  if ((task.claims ?? []).some(isWorkspaceRootClaim)) return true;
-  return false;
+  return taskReferencedNodeIds(task).length === 0;
 }
 
 /** True when Task directly references this Node id (not ancestor/descendant fan-out). */
@@ -181,102 +175,28 @@ export function sortTasksDeterministically<T extends TaskNodeRefSource>(tasks: r
   });
 }
 
-/** Build contextCard.refs.nodes (+ objective/acceptance) for new Task writes. */
-export function buildContextCardNodeRefs(input: {
-  nodes: Array<{ id: string; path?: string; revision?: string }>;
-  objective: string;
-  acceptance?: string[];
-}): TaskContextCardNodeRefs {
-  const objective = input.objective.trim();
-  if (!objective) {
-    throw new Error("Task.contextCard.objective cannot be empty.");
-  }
-  const acceptance =
-    input.acceptance && input.acceptance.length > 0
-      ? input.acceptance.map((s) => s.trim()).filter(Boolean)
-      : [objective];
-  if (acceptance.length === 0) {
-    throw new Error("Task.contextCard.acceptance cannot be empty.");
-  }
-  const nodes = input.nodes.map((n) => normalizeTaskNodeRef(n));
-  return {
-    schemaVersion: "v1",
-    objective,
-    acceptance,
-    refs: { nodes },
-  };
-}
-
-/** Serialize minimal contextCard for frontmatter (plain JSON-compatible). */
-export function serializeContextCardNodeRefs(
-  card: TaskContextCardNodeRefs
-): Record<string, unknown> {
-  const refs: Record<string, unknown> = {
-    nodes: card.refs.nodes.map((n) => {
-      const o: Record<string, string> = { id: n.id };
-      if (n.path) o.path = n.path;
-      if (n.revision) o.revision = n.revision;
-      return o;
-    }),
-  };
-  if (card.refs.tasks?.length) {
-    refs.tasks = card.refs.tasks.map((n) => ({ ...n }));
-  }
-  if (card.refs.deliveries?.length) {
-    refs.deliveries = card.refs.deliveries.map((n) => ({ ...n }));
-  }
-  if (card.refs.git?.length) {
-    refs.git = card.refs.git.map((n) => ({ ...n }));
-  }
-  const out: Record<string, unknown> = {
-    schemaVersion: card.schemaVersion ?? "v1",
-    refs,
-  };
-  if (card.objective) out.objective = card.objective;
-  if (card.acceptance?.length) out.acceptance = [...card.acceptance];
-  return out;
-}
-
-/** Load minimal contextCard from frontmatter data. */
-export function loadContextCardNodeRefsFromFrontmatter(
-  data: Record<string, unknown>
-): TaskContextCardNodeRefs | undefined {
-  const raw = data.contextCard;
-  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
-  const card = raw as Record<string, unknown>;
-  const refsRaw = card.refs;
-  if (refsRaw == null || typeof refsRaw !== "object" || Array.isArray(refsRaw)) {
-    return undefined;
-  }
-  const refsObj = refsRaw as Record<string, unknown>;
-  const nodes = parseTaskNodeRefs(refsObj.nodes ?? []);
-  const out: TaskContextCardNodeRefs = {
-    refs: { nodes },
-  };
-  if (card.schemaVersion === "v1") out.schemaVersion = "v1";
-  if (typeof card.objective === "string") out.objective = card.objective;
-  if (Array.isArray(card.acceptance) && card.acceptance.every((a) => typeof a === "string")) {
-    out.acceptance = card.acceptance as string[];
-  }
-  return out;
-}
-
 export type ClaimsMigrationResult = {
   path: string;
   migrated: boolean;
   /** Skipped because already on nodes wire or no claims. */
   skipped: boolean;
   nodeIds: string[];
-  workspaceContext: boolean;
+  /** True when legacy claims included "root" (discarded; not persisted). */
+  discardedRootClaim: boolean;
   reason?: string;
 };
 
 /**
  * One-shot idempotent disk migration: legacy claims[] → contextCard.refs.nodes[].
  * - Deletes claims from frontmatter after success.
- * - "root" becomes workspaceContext (not a fake Node ref).
+ * - "root" is discarded into stable workspace context (empty nodes); never a fake Node
+ *   and never a persisted workspaceContext source flag.
+ * - Writes a **complete** TaskContextCardV1 (actors/assignee/digests) when building
+ *   a new card; merges nodes into an existing full card when present.
  * - Active Task with empty/missing objective fails loud (never chat-memory inference).
  * - Missing acceptance → mechanical reuse of exact objective text.
+ *
+ * This is the **only** path that may read claims[].
  */
 export async function migrateTaskClaimsToContextCardRefs(
   fs: FsAdapter,
@@ -292,56 +212,84 @@ export async function migrateTaskClaimsToContextCardRefs(
     throw new Error(`Invalid task envelope format: ${taskPath}.`);
   }
 
-  const existingCard = loadContextCardNodeRefsFromFrontmatter(data);
+  const existingFull = tryLoadFullContextCard(data);
   const hasClaims =
     Array.isArray(data.claims) &&
     data.claims.length > 0 &&
     data.claims.every((c) => typeof c === "string");
   const claims = hasClaims ? (data.claims as string[]) : [];
+  const hasClaimsKey = "claims" in data;
+  const hasLegacyWorkspaceFlag = data.workspaceContext !== undefined;
 
-  // Already on nodes wire with no residual claims → idempotent skip.
-  if (existingCard && !hasClaims && !("claims" in data)) {
+  // Already on nodes wire with no residual claims / workspaceContext flag → skip.
+  if (existingFull && !hasClaims && !hasClaimsKey && !hasLegacyWorkspaceFlag) {
     return {
       path: taskPath,
       migrated: false,
       skipped: true,
-      nodeIds: existingCard.refs.nodes.map((n) => n.id),
-      workspaceContext: data.workspaceContext === true,
+      nodeIds: existingFull.refs.nodes.map((n) => n.id),
+      discardedRootClaim: false,
       reason: "already migrated",
     };
   }
 
-  // contextCard.refs present and claims already gone (empty claims key or absent)
-  if (existingCard && !hasClaims) {
-    if (!options?.dryRun && "claims" in data) {
+  // Full card present: strip residual claims key and/or obsolete workspaceContext.
+  if (existingFull && !hasClaims) {
+    if (!options?.dryRun && (hasClaimsKey || hasLegacyWorkspaceFlag)) {
       delete data.claims;
+      delete data.workspaceContext;
       await fs.writeFile(taskPath, serializeFrontmatter(data, body, keyOrder));
       return {
         path: taskPath,
         migrated: true,
         skipped: false,
-        nodeIds: existingCard.refs.nodes.map((n) => n.id),
-        workspaceContext: data.workspaceContext === true,
-        reason: "stripped residual empty claims",
+        nodeIds: existingFull.refs.nodes.map((n) => n.id),
+        discardedRootClaim: false,
+        reason: "stripped residual claims/workspaceContext",
       };
     }
     return {
       path: taskPath,
       migrated: false,
       skipped: true,
-      nodeIds: existingCard.refs.nodes.map((n) => n.id),
-      workspaceContext: data.workspaceContext === true,
+      nodeIds: existingFull.refs.nodes.map((n) => n.id),
+      discardedRootClaim: false,
       reason: "already migrated",
     };
   }
 
-  const workspaceContext = claims.some(isWorkspaceRootClaim) || data.workspaceContext === true;
+  if (!hasClaims && !existingFull) {
+    // Nothing to migrate (no claims, no card) — leave alone.
+    if (!options?.dryRun && (hasClaimsKey || hasLegacyWorkspaceFlag)) {
+      delete data.claims;
+      delete data.workspaceContext;
+      await fs.writeFile(taskPath, serializeFrontmatter(data, body, keyOrder));
+      return {
+        path: taskPath,
+        migrated: true,
+        skipped: false,
+        nodeIds: [],
+        discardedRootClaim: false,
+        reason: "stripped residual claims/workspaceContext without card",
+      };
+    }
+    return {
+      path: taskPath,
+      migrated: false,
+      skipped: true,
+      nodeIds: [],
+      discardedRootClaim: false,
+      reason: "no claims to migrate",
+    };
+  }
+
+  const discardedRootClaim = claims.some(isWorkspaceRootClaim);
   const nodeClaims = claims.filter((c) => !isWorkspaceRootClaim(c));
 
   // Merge with any existing nodes (prefer existing path hints).
   const byId = new Map<string, TaskNodeRef>();
-  for (const n of existingCard?.refs.nodes ?? []) {
-    byId.set(n.id, n);
+  for (const n of existingFull?.refs.nodes ?? []) {
+    if (!isWorkspaceRootClaim(n.id)) byId.set(n.id, n);
   }
   for (const id of nodeClaims) {
     if (!byId.has(id)) byId.set(id, { id });
@@ -349,41 +297,36 @@ export async function migrateTaskClaimsToContextCardRefs(
   const nodes = [...byId.values()];
 
   const requireObjective = isActiveEnvelopeData(data);
-  let objective: string | null = null;
-  try {
-    objective = resolveMigrationObjective(data, body, taskPath, requireObjective);
-  } catch (err) {
-    throw err;
-  }
-
+  const objective = resolveMigrationObjective(data, body, taskPath, requireObjective);
   const acceptanceFromCard =
-    existingCard?.acceptance && existingCard.acceptance.length > 0
-      ? existingCard.acceptance
+    existingFull?.acceptance && existingFull.acceptance.length > 0
+      ? existingFull.acceptance
       : undefined;
+  const acceptance =
+    acceptanceFromCard && acceptanceFromCard.length > 0
+      ? acceptanceFromCard
+      : objective
+        ? [objective]
+        : existingFull?.acceptance ?? [];
 
-  const card: TaskContextCardNodeRefs = {
-    schemaVersion: "v1",
-    refs: { nodes },
-  };
-  if (objective) {
-    card.objective = objective;
-    card.acceptance =
-      acceptanceFromCard && acceptanceFromCard.length > 0
-        ? acceptanceFromCard
-        : [objective];
-  } else if (existingCard?.objective?.trim()) {
-    card.objective = existingCard.objective.trim();
-    card.acceptance =
-      existingCard.acceptance && existingCard.acceptance.length > 0
-        ? existingCard.acceptance
-        : [card.objective];
-  }
+  // Build or merge a **complete** Context Card v1 — never a partial minimal card.
+  const card = buildMigratedFullContextCard({
+    data,
+    existingFull,
+    nodes,
+    objective,
+    acceptance,
+    taskPath,
+    body,
+  });
 
   if (!options?.dryRun) {
-    data.contextCard = serializeContextCardNodeRefs(card);
+    data.contextCard = serializeTaskContextCardForFrontmatter(card);
+    data.contextGeneration = card.contextGeneration;
+    data.taskDeltaDigest = card.taskDeltaDigest;
     delete data.claims;
-    if (workspaceContext) data.workspaceContext = true;
-    else delete data.workspaceContext;
+    // Never persist workspaceContext as a Task source flag.
+    delete data.workspaceContext;
     await fs.writeFile(taskPath, serializeFrontmatter(data, body, keyOrder));
   }
 
@@ -392,7 +335,7 @@ export async function migrateTaskClaimsToContextCardRefs(
     migrated: true,
     skipped: false,
     nodeIds: nodes.map((n) => n.id),
-    workspaceContext,
+    discardedRootClaim,
   };
 }
 
@@ -448,11 +391,116 @@ async function migrateTaskDir(
         migrated: false,
         skipped: true,
         nodeIds: [],
-        workspaceContext: false,
+        discardedRootClaim: false,
         reason: msg,
       });
     }
   }
+}
+
+function tryLoadFullContextCard(data: Record<string, unknown>): TaskContextCardV1 | null {
+  try {
+    return loadTaskContextCardFromFrontmatter(data);
+  } catch {
+    return null;
+  }
+}
+
+function buildMigratedFullContextCard(input: {
+  data: Record<string, unknown>;
+  existingFull: TaskContextCardV1 | null;
+  nodes: TaskNodeRef[];
+  objective: string | null;
+  acceptance: string[];
+  taskPath: string;
+  body: string;
+}): TaskContextCardV1 {
+  const { data, existingFull, nodes, taskPath } = input;
+  const objective =
+    (input.objective?.trim() || existingFull?.objective?.trim() || "").trim();
+  if (!objective) {
+    throw new Error(
+      `Active Task ${taskPath} has empty/missing objective; claims→contextCard migration fails loud (never invent from chat memory).`
+    );
+  }
+  const acceptance =
+    input.acceptance.length > 0
+      ? input.acceptance
+      : existingFull?.acceptance?.length
+        ? existingFull.acceptance
+        : [objective];
+
+  const actors = resolveMigrationActors(data, existingFull);
+  const assignee =
+    existingFull?.assignee ??
+    projectAssigneeFromTask({
+      role: typeof data.role === "string" ? data.role : "unknown",
+      assigneeKind:
+        data.assigneeKind === "agentProfile" ? "agentProfile" : "role",
+      agentId: typeof data.agentId === "string" ? data.agentId : undefined,
+    });
+
+  const contextGeneration =
+    existingFull?.contextGeneration?.trim() ||
+    (typeof data.contextGeneration === "string" && data.contextGeneration.trim()
+      ? data.contextGeneration.trim()
+      : computeContextGeneration({
+          workspaceIdentity:
+            (typeof data.workspace === "string" && data.workspace.trim()) ||
+            "local-workspace",
+          rulesPointerDigest: "migration-default-rules",
+          agentsPointerDigest: "migration-default-agents",
+          extraStable: {
+            taskPath,
+            role: typeof data.role === "string" ? data.role : "",
+          },
+        }));
+
+  return buildTaskContextCard({
+    objective,
+    frozenDecisions: existingFull?.frozenDecisions ?? [],
+    scope: existingFull?.scope ?? { include: [], exclude: [] },
+    acceptance,
+    refs: {
+      nodes,
+      tasks: existingFull?.refs.tasks ?? [],
+      deliveries: existingFull?.refs.deliveries ?? [],
+      git: existingFull?.refs.git ?? [],
+    },
+    parentActor: actors.parentActor,
+    reviewer: actors.reviewer,
+    assignee,
+    contextGeneration,
+    userPrompt: extractObjectiveFromBody(input.body) ?? objective,
+  });
+}
+
+function resolveMigrationActors(
+  data: Record<string, unknown>,
+  existingFull: TaskContextCardV1 | null
+): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
+  if (existingFull) {
+    return {
+      parentActor: existingFull.parentActor,
+      reviewer: existingFull.reviewer,
+    };
+  }
+  const hasParent = data.parentActor !== undefined && data.parentActor !== null;
+  const hasReviewer = data.reviewer !== undefined && data.reviewer !== null;
+  if (hasParent && hasReviewer) {
+    return resolveParentReviewerPair({
+      parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
+      reviewer: parseTaskActorRef(data.reviewer, "reviewer"),
+    });
+  }
+  if (hasParent) {
+    const parentActor = parseTaskActorRef(data.parentActor, "parentActor");
+    return resolveParentReviewerPair({ parentActor });
+  }
+  // Last resort for pre-actor legacy envelopes: user parent (migrator-only; never invent from chat).
+  return resolveParentReviewerPair({
+    parentActor: { kind: "user", id: "user" },
+  });
 }
 
 function isActiveEnvelopeData(data: Record<string, unknown>): boolean {

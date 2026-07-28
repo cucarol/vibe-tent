@@ -119,8 +119,9 @@ export function boxHasDirectActiveTask(
 }
 
 /**
- * Active tasks that carry workspace/root context (not a Tent-wide lock).
- * Multiple concurrent workspace-context Tasks are legal.
+ * Active tasks with no direct Node refs (stable workspace context only).
+ * Not a Tent-wide lock — multiple concurrent workspace-context Tasks are legal.
+ * Derived from empty contextCard.refs.nodes; no persisted workspaceContext flag.
  */
 export function findActiveRootTask(
   tasks: readonly TaskEnvelope[]

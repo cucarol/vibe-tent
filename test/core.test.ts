@@ -17,7 +17,12 @@ import { buildManifest, manifestToYaml } from "../src/core/manifest.js";
 import { parseFrontmatter } from "../src/core/frontmatter.js";
 import { syncOkfBundle } from "../src/core/okf.js";
 import { createDelivery } from "../src/core/delivery.js";
-import { loadTaskEnvelope, loadTaskEnvelopes, relayPromptForTask } from "../src/core/task.js";
+import {
+  loadTaskEnvelope,
+  loadTaskEnvelopes,
+  relayPromptForTask,
+  writeTaskEnvelope,
+} from "../src/core/task.js";
 import { cli, makeTent } from "./helpers.js";
 // loadTaskEnvelopes used by occupation tests
 
@@ -107,32 +112,22 @@ test("V0.2 non-exclusive refs: same/ancestor/descendant concurrent; structural f
     path.join(dir, "goal", "挖新alpha", "写表达式", "实现细节", "实现细节.md"),
     "---\nid: bx-g3\ntype: goal\n---\n",
   );
-  // Seed an active task envelope referencing bx-g2 (direct ref), independent of residual owner.
+  // Seed active task via full Context Card (runtime never loads residual claims[]).
   await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
-  await fs.writeFile(
-    path.join(dir, "temp", "executor", "tasks", "task-active-g2.md"),
-    [
-      "---",
-      "type: task",
-      "id: tk-activeg2",
-      "status: taken",
-      "state: running",
-      "role: executor",
-      "parentActor: { kind: user, id: user }",
-      "reviewer: { kind: user, id: user }",
-      "claims: [bx-g2]",
-      "manifest: temp/executor/manifest.yml",
-      "---",
-      "# Task",
-      "",
-      "## User Prompt",
-      "",
-      "hold g2",
-      "",
-    ].join("\n"),
-    "utf8"
-  );
   const fsa = new NodeFs(dir);
+  const g2Path = await writeTaskEnvelope(fsa, { now: () => "2026-07-28T12:00:00.000Z" }, {
+    role: "executor",
+    claims: [{ id: "bx-g2", path: "goal/x" }],
+    manifestPath: "temp/executor/manifest.yml",
+    userPrompt: "hold g2",
+    id: "tk-activeg2",
+    parentActor: { kind: "user", id: "user" },
+  });
+  const g2Raw = await fsa.readFile(g2Path);
+  await fsa.writeFile(
+    g2Path,
+    g2Raw.replace("status: pending", "status: taken").replace("state: queued", "state: running")
+  );
   const tent = await loadTent(fsa);
   const tasks = await loadTaskEnvelopes(fsa);
 
@@ -150,7 +145,7 @@ test("V0.2 non-exclusive refs: same/ancestor/descendant concurrent; structural f
   assert.equal(isFrozen(g3), false);
 
   // Without active task, claim remains free (no owner lock projection).
-  await fs.rm(path.join(dir, "temp", "executor", "tasks", "task-active-g2.md"));
+  await fsa.remove(g2Path);
   const tent2 = await loadTent(fsa);
   const tasks2 = await loadTaskEnvelopes(fsa);
   assert.equal(canClaim(tent2.byId.get("bx-g2")!, { tent: tent2, tasks: tasks2 }).ok, true);
@@ -163,29 +158,19 @@ test("workspace context is not a Tent-wide lock; box panel lists direct refs onl
   const fsa = new NodeFs(dir);
   const tent = await loadTent(fsa);
 
-  // Seed active workspace context (legacy claims=[root] — not a box id).
-  await fs.writeFile(
-    path.join(dir, "temp", "executor", "tasks", "task-root.md"),
-    [
-      "---",
-      "type: task",
-      "id: tk-rootocc",
-      "status: taken",
-      "state: running",
-      "role: executor",
-      "parentActor: { kind: user, id: user }",
-      "reviewer: { kind: user, id: user }",
-      "claims: [root]",
-      "manifest: temp/executor/manifest.yml",
-      "---",
-      "# root",
-      "",
-      "## User Prompt",
-      "",
-      "workspace",
-      "",
-    ].join("\n"),
-    "utf8"
+  // Seed active workspace-only context (empty refs.nodes; not a Tent-wide lock).
+  const rootPath = await writeTaskEnvelope(fsa, { now: () => "2026-07-28T12:00:00.000Z" }, {
+    role: "executor",
+    claims: [{ id: "root", path: "./" }],
+    manifestPath: "temp/executor/manifest.yml",
+    userPrompt: "workspace",
+    id: "tk-rootocc",
+    parentActor: { kind: "user", id: "user" },
+  });
+  const rootRaw = await fsa.readFile(rootPath);
+  await fsa.writeFile(
+    rootPath,
+    rootRaw.replace("status: pending", "status: taken").replace("state: queued", "state: running")
   );
   let tasks = await loadTaskEnvelopes(fsa);
 
@@ -205,30 +190,15 @@ test("workspace context is not a Tent-wide lock; box panel lists direct refs onl
   );
 
   // Clear workspace context; seed a direct box ref — panel lists the box.
-  await fs.rm(path.join(dir, "temp", "executor", "tasks", "task-root.md"));
-  await fs.writeFile(
-    path.join(dir, "temp", "reviewer", "tasks", "task-box.md"),
-    [
-      "---",
-      "type: task",
-      "id: tk-boxocc",
-      "status: pending",
-      "state: queued",
-      "role: reviewer",
-      "parentActor: { kind: user, id: user }",
-      "reviewer: { kind: user, id: user }",
-      "claims: [bx-p1]",
-      "manifest: temp/reviewer/manifest.yml",
-      "---",
-      "# box",
-      "",
-      "## User Prompt",
-      "",
-      "box ref",
-      "",
-    ].join("\n"),
-    "utf8"
-  );
+  await fsa.remove(rootPath);
+  await writeTaskEnvelope(fsa, { now: () => "2026-07-28T12:00:00.000Z" }, {
+    role: "reviewer",
+    claims: [{ id: "bx-p1", path: "prompt/x" }],
+    manifestPath: "temp/reviewer/manifest.yml",
+    userPrompt: "box ref",
+    id: "tk-boxocc",
+    parentActor: { kind: "user", id: "user" },
+  });
   tasks = await loadTaskEnvelopes(fsa);
   assert.equal(findActiveRootTask(tasks), undefined);
   const anyBox = findAnyActiveTask(tasks);
@@ -596,29 +566,22 @@ test("placeBox: concurrent Task refs do not freeze move (cx-tsw53f)", async () =
   const dir = await makeTent();
   // Active direct ref on g2 must not block placeBox of g2 or into g2.
   await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
-  await fs.writeFile(
-    path.join(dir, "temp", "executor", "tasks", "task-move-g2.md"),
-    [
-      "---",
-      "type: task",
-      "id: tk-moveg2",
-      "status: taken",
-      "state: running",
-      "role: executor",
-      "claims: [bx-g2]",
-      "manifest: temp/executor/manifest.yml",
-      "---",
-      "# Task",
-      "",
-      "## User Prompt",
-      "",
-      "hold",
-      "",
-    ].join("\n"),
-    "utf8"
+  const fsa = new NodeFs(dir);
+  const movePath = await writeTaskEnvelope(fsa, { now: () => "t" }, {
+    role: "executor",
+    claims: [{ id: "bx-g2", path: "goal/x" }],
+    manifestPath: "temp/executor/manifest.yml",
+    userPrompt: "hold",
+    id: "tk-moveg2",
+    parentActor: { kind: "user", id: "user" },
+  });
+  const moveRaw = await fsa.readFile(movePath);
+  await fsa.writeFile(
+    movePath,
+    moveRaw.replace("status: pending", "status: taken").replace("state: queued", "state: running")
   );
   const env = {
-    fs: new NodeFs(dir),
+    fs: fsa,
     git: { run: async () => "" },
     clock: { now: () => "t" },
     tentName: "wqb",

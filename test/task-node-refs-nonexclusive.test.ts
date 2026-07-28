@@ -20,14 +20,15 @@ import {
   occupiedBoxesFromTasks,
 } from "../src/core/claim.js";
 import {
-  buildContextCardNodeRefs,
   listDirectActiveTasksForNode,
   migrateAllTaskClaimsToContextCardRefs,
   migrateTaskClaimsToContextCardRefs,
+  normalizeTaskNodeRef,
   taskDirectlyReferencesNode,
   taskHasWorkspaceContext,
   taskReferencedNodeIds,
 } from "../src/core/task-node-refs.js";
+import { buildTaskContextCard, computeContextGeneration } from "../src/core/task-context-card.js";
 import {
   loadTaskEnvelope,
   loadTaskEnvelopes,
@@ -47,31 +48,22 @@ function envFor(dir: string) {
 
 test("canClaim: concurrent same/ancestor/descendant refs are legal; archived/invalid still deny", async () => {
   const dir = await makeTent();
-  await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
-  await fs.writeFile(
-    path.join(dir, "temp", "executor", "tasks", "task-active-g2.md"),
-    [
-      "---",
-      "type: task",
-      "id: tk-activeg2",
-      "status: taken",
-      "state: running",
-      "role: executor",
-      "parentActor: { kind: user, id: user }",
-      "reviewer: { kind: user, id: user }",
-      "claims: [bx-g2]",
-      "manifest: temp/executor/manifest.yml",
-      "---",
-      "# Task",
-      "",
-      "## User Prompt",
-      "",
-      "occupy g2",
-      "",
-    ].join("\n"),
-    "utf8"
-  );
   const fsa = new NodeFs(dir);
+  await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
+  // Full Context Card write — runtime never loads residual claims[].
+  const taskPath = await writeTaskEnvelope(fsa, { now: () => "2026-07-28T12:00:00.000Z" }, {
+    role: "executor",
+    claims: [{ id: "bx-g2", path: "goal/x" }],
+    manifestPath: "temp/executor/manifest.yml",
+    userPrompt: "occupy g2",
+    id: "tk-activeg2",
+    parentActor: { kind: "user", id: "user" },
+  });
+  const raw = await fsa.readFile(taskPath);
+  await fsa.writeFile(
+    taskPath,
+    raw.replace("status: pending", "status: taken").replace("state: queued", "state: running")
+  );
   const tent = await loadTent(fsa);
   const tasks = await loadTaskEnvelopes(fsa);
 
@@ -151,7 +143,7 @@ test("dispatch: concurrent same Node + ancestor + workspace context allowed", as
   assert.ok(loaded.contextCard?.refs.nodes.length === 1);
 });
 
-test("migration: claims → contextCard.refs.nodes is idempotent; root → workspaceContext", async () => {
+test("migration: claims → contextCard.refs.nodes is idempotent; root discarded (no workspaceContext flag)", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
@@ -183,15 +175,21 @@ test("migration: claims → contextCard.refs.nodes is idempotent; root → works
   const once = await migrateTaskClaimsToContextCardRefs(fsa, taskPath);
   assert.equal(once.migrated, true);
   assert.deepEqual(once.nodeIds, ["bx-p1"]);
-  assert.equal(once.workspaceContext, true);
+  assert.equal(once.discardedRootClaim, true);
 
   const raw = await fsa.readFile(taskPath);
   const { data } = parseFrontmatter(raw);
   assert.equal("claims" in data, false);
-  assert.equal(data.workspaceContext, true);
+  // Never persist workspaceContext as a Task source flag.
+  assert.equal("workspaceContext" in data, false);
   const card = data.contextCard as {
     objective?: string;
     acceptance?: string[];
+    parentActor?: { kind: string; id: string };
+    reviewer?: { kind: string; id: string };
+    assignee?: { kind: string; id: string };
+    contextGeneration?: string;
+    taskDeltaDigest?: string;
     refs: { nodes: { id: string }[] };
   };
   assert.equal(card.objective, "legacy objective text");
@@ -200,6 +198,12 @@ test("migration: claims → contextCard.refs.nodes is idempotent; root → works
     card.refs.nodes.map((n) => n.id),
     ["bx-p1"]
   );
+  // Complete card: actors + digests present (never a minimal partial card).
+  assert.equal(card.parentActor?.kind, "user");
+  assert.equal(card.reviewer?.kind, "user");
+  assert.ok(card.assignee?.id);
+  assert.ok(card.contextGeneration?.startsWith("cg-v1-"));
+  assert.ok(card.taskDeltaDigest);
   // No fake root node ref.
   assert.ok(!card.refs.nodes.some((n) => n.id === "root"));
 
@@ -209,7 +213,8 @@ test("migration: claims → contextCard.refs.nodes is idempotent; root → works
 
   const loaded = await loadTaskEnvelope(fsa, taskPath);
   assert.deepEqual(taskReferencedNodeIds(loaded), ["bx-p1"]);
-  assert.equal(taskHasWorkspaceContext(loaded), true);
+  // Has direct Node ref → not workspace-only context.
+  assert.equal(taskHasWorkspaceContext(loaded), false);
   assert.equal(taskDirectlyReferencesNode(loaded, "bx-p1"), true);
 });
 
@@ -355,21 +360,42 @@ test("listDirectActiveTasksForNode: deterministic createdAt/id/path order", asyn
   assert.equal(listed[1]!.id, "tk-later");
 });
 
-test("buildContextCardNodeRefs rejects empty objective and fake root node", () => {
+test("normalizeTaskNodeRef + buildTaskContextCard: full card; reject fake root", () => {
   assert.throws(
-    () => buildContextCardNodeRefs({ nodes: [{ id: "cx-1" }], objective: "  " }),
-    /objective cannot be empty/
-  );
-  assert.throws(
-    () => buildContextCardNodeRefs({ nodes: [{ id: "root" }], objective: "x" }),
+    () => normalizeTaskNodeRef({ id: "root" }),
     /fake "root"/
   );
-  const card = buildContextCardNodeRefs({
-    nodes: [{ id: "cx-1", path: "a/b" }],
+  const gen = computeContextGeneration({
+    workspaceIdentity: "ws",
+    rulesPointerDigest: "r",
+    agentsPointerDigest: "a",
+  });
+  assert.throws(
+    () =>
+      buildTaskContextCard({
+        objective: "  ",
+        acceptance: ["ok"],
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+        assignee: { kind: "role", id: "r" },
+        contextGeneration: gen,
+        refs: { nodes: [{ id: "cx-1" }] },
+      }),
+    /objective/i
+  );
+  const card = buildTaskContextCard({
     objective: "do it",
+    acceptance: ["do it"],
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+    assignee: { kind: "role", id: "r" },
+    contextGeneration: gen,
+    refs: { nodes: [normalizeTaskNodeRef({ id: "cx-1", path: "a/b" })] },
   });
   assert.deepEqual(card.acceptance, ["do it"]);
   assert.equal(card.refs.nodes[0]!.path, "a/b");
+  assert.ok(card.contextGeneration.startsWith("cg-v1-"));
+  assert.ok(card.taskDeltaDigest);
 });
 
 test("migrateAllTaskClaimsToContextCardRefs scans role and profile lanes", async () => {
