@@ -2317,6 +2317,17 @@ function buildTaskContextCard(input) {
   }
   const parentActor = parseActorRef(input.parentActor, "parentActor");
   const reviewer = parseActorRef(input.reviewer, "reviewer");
+  try {
+    assertParentReviewerEqual(parentActor, reviewer);
+  } catch (err) {
+    if (err instanceof TaskLifecycleError) {
+      throw new TaskContextCardError("INVALID_ACTOR", err.message, {
+        parentActor,
+        reviewer
+      });
+    }
+    throw err;
+  }
   const assignee = parseAssignee(input.assignee);
   if (!isContextGenerationId(input.contextGeneration)) {
     throw new TaskContextCardError(
@@ -2623,25 +2634,79 @@ function decideStablePrefixInjection(input) {
 function shouldInjectStablePrefix(input) {
   return decideStablePrefixInjection(input).includeStablePrefix;
 }
-function buildIntegrationAuthority(actor) {
-  const parsed = parseTaskActorRef(actor, "parentActor");
-  return {
-    actor: { kind: parsed.kind, id: parsed.id },
-    mutator: INTEGRATION_MUTATOR_SERVICE
-  };
+function deriveIntegrationAuthority(input) {
+  try {
+    const pair = resolveParentReviewerPair({
+      parentActor: input.parentActor,
+      reviewer: input.reviewer
+    });
+    return {
+      actor: { kind: pair.parentActor.kind, id: pair.parentActor.id },
+      mutator: INTEGRATION_MUTATOR_SERVICE
+    };
+  } catch (err) {
+    if (err instanceof TaskLifecycleError) {
+      throw new TaskContextCardError("INVALID_ACTOR", err.message, {
+        parentActor: input.parentActor,
+        reviewer: input.reviewer
+      });
+    }
+    throw err;
+  }
+}
+function assertIntegrationAuthorityMatchesParent(authority, parentActor, reviewer) {
+  const derived = deriveIntegrationAuthority({ parentActor, reviewer });
+  if (!authority || typeof authority !== "object" || Array.isArray(authority)) {
+    throw new TaskContextCardError(
+      "INVALID_ACTOR",
+      "integrationAuthority must be { actor, mutator: service } derived from parent/reviewer.",
+      { authority }
+    );
+  }
+  const raw = authority;
+  if (raw.mutator !== INTEGRATION_MUTATOR_SERVICE) {
+    throw new TaskContextCardError(
+      "INVALID_ACTOR",
+      `integrationAuthority.mutator must be "${INTEGRATION_MUTATOR_SERVICE}" (Service only); got ${String(raw.mutator)}.`,
+      { authority }
+    );
+  }
+  let actor;
+  try {
+    actor = parseTaskActorRef(raw.actor, "parentActor");
+  } catch (err) {
+    if (err instanceof TaskLifecycleError) {
+      throw new TaskContextCardError("INVALID_ACTOR", err.message, { authority });
+    }
+    throw err;
+  }
+  if (actor.kind !== derived.actor.kind || actor.id !== derived.actor.id) {
+    throw new TaskContextCardError(
+      "INVALID_ACTOR",
+      `integrationAuthority.actor must equal Task parent/reviewer (${derived.actor.kind}:${derived.actor.id}); got ${actor.kind}:${actor.id}.`,
+      { authority, derived }
+    );
+  }
+  return derived;
 }
 function projectExecutionLaneFromTask(task) {
-  const baseCommit = typeof task.baseCommit === "string" && task.baseCommit.trim() || typeof task.roleBranchBase === "string" && task.roleBranchBase.trim() || "";
+  const baseCommit = typeof task.baseCommit === "string" && task.baseCommit.trim() ? task.baseCommit.trim() : "";
   const targetBranch = typeof task.targetBranch === "string" ? task.targetBranch.trim() : "";
   const branch = typeof task.branch === "string" ? task.branch.trim() : "";
   const worktree = typeof task.worktree === "string" ? task.worktree.trim() : "";
-  let integrationAuthority = task.integrationAuthority;
-  if (!integrationAuthority && task.parentActor) {
-    try {
-      integrationAuthority = buildIntegrationAuthority(task.parentActor);
-    } catch {
-      integrationAuthority = void 0;
+  let integrationAuthority;
+  if (task.parentActor || task.reviewer) {
+    if (!task.parentActor || !task.reviewer) {
+      throw new TaskContextCardError(
+        "INVALID_ACTOR",
+        "executionLane requires both parentActor and reviewer to derive integrationAuthority.",
+        { parentActor: task.parentActor, reviewer: task.reviewer }
+      );
     }
+    integrationAuthority = deriveIntegrationAuthority({
+      parentActor: task.parentActor,
+      reviewer: task.reviewer
+    });
   }
   if (!baseCommit && !targetBranch && !branch && !worktree && !integrationAuthority) {
     return void 0;
@@ -2968,23 +3033,20 @@ async function loadTaskEnvelope(fs23, path24) {
   }
   if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
     task.baseCommit = data.baseCommit.trim();
-  } else if (task.roleBranchBase) {
-    task.baseCommit = task.roleBranchBase;
   }
-  if (data.integrationAuthority && typeof data.integrationAuthority === "object") {
-    const raw = data.integrationAuthority;
-    if (raw.actor && raw.mutator === "service") {
-      try {
-        task.integrationAuthority = buildIntegrationAuthority(
-          parseTaskActorRef(raw.actor, "parentActor")
-        );
-      } catch {
-      }
-    }
-  } else if (task.parentActor) {
-    try {
-      task.integrationAuthority = buildIntegrationAuthority(task.parentActor);
-    } catch {
+  if (task.parentActor && task.reviewer) {
+    const derived = deriveIntegrationAuthority({
+      parentActor: task.parentActor,
+      reviewer: task.reviewer
+    });
+    if (data.integrationAuthority !== void 0 && data.integrationAuthority !== null) {
+      task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
+        data.integrationAuthority,
+        task.parentActor,
+        task.reviewer
+      );
+    } else {
+      task.integrationAuthority = derived;
     }
   }
   const contextCard = loadTaskContextCardFromFrontmatter(data);
@@ -3267,6 +3329,14 @@ async function patchTaskEnvelope(fs23, path24, patch) {
     });
     data.parentActor = serializeTaskActorRef(pair.parentActor);
     data.reviewer = serializeTaskActorRef(pair.reviewer);
+    const derived = deriveIntegrationAuthority({
+      parentActor: pair.parentActor,
+      reviewer: pair.reviewer
+    });
+    data.integrationAuthority = {
+      actor: { kind: derived.actor.kind, id: derived.actor.id },
+      mutator: "service"
+    };
   }
   if (patch.clearLegacyDispatchedBy) {
     delete data.dispatchedBy;
@@ -3288,17 +3358,23 @@ async function patchTaskEnvelope(fs23, path24, patch) {
   if (patch.baseCommit === null) delete data.baseCommit;
   else if (typeof patch.baseCommit === "string" && patch.baseCommit.trim()) {
     data.baseCommit = patch.baseCommit.trim();
-    if (!data.roleBranchBase || typeof data.roleBranchBase !== "string" || !String(data.roleBranchBase).trim()) {
-      data.roleBranchBase = data.baseCommit;
-    }
   }
   if (patch.integrationAuthority === null) delete data.integrationAuthority;
   else if (patch.integrationAuthority) {
+    if (data.parentActor === void 0 || data.parentActor === null) {
+      throw new Error(
+        "patchTaskEnvelope integrationAuthority requires parentActor/reviewer on the envelope."
+      );
+    }
+    const parentForAuth = parseTaskActorRef(data.parentActor, "parentActor");
+    const reviewerForAuth = data.reviewer !== void 0 && data.reviewer !== null ? parseTaskActorRef(data.reviewer, "reviewer") : parentForAuth;
+    const validated = assertIntegrationAuthorityMatchesParent(
+      patch.integrationAuthority,
+      parentForAuth,
+      reviewerForAuth
+    );
     data.integrationAuthority = {
-      actor: {
-        kind: patch.integrationAuthority.actor.kind,
-        id: patch.integrationAuthority.actor.id
-      },
+      actor: { kind: validated.actor.kind, id: validated.actor.id },
       mutator: "service"
     };
   }
@@ -15266,15 +15342,16 @@ async function listExecutorLaneCommitsWithParents(workspace, baseCommit, tipComm
   const tip = (await fullRef(root, tipCommit.trim())).trim();
   if (base === tip) return [];
   const output = await git(root, [
-    "log",
+    "rev-list",
+    "--parents",
     "--reverse",
-    "--format=%H%x09%P",
     `${base}..${tip}`
   ]);
   return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
-    const [sha = "", parentsRaw = ""] = line.split("	");
-    const parents = parentsRaw.trim().split(/\s+/).map((p) => p.trim()).filter(Boolean);
-    return { sha: sha.trim(), parents };
+    const parts = line.split(/\s+/).map((p) => p.trim()).filter(Boolean);
+    const sha = parts[0] || "";
+    const parents = parts.slice(1);
+    return { sha, parents };
   }).filter((c) => c.sha);
 }
 async function assertOrdinaryExecutorLaneHistoryInGit(input) {
@@ -24694,10 +24771,39 @@ async function assertTaskWorktreeCleanForDeliver(workspaceRoot, task) {
   );
 }
 async function assertOrdinaryExecutorLaneHistoryForDeliver(workspaceRoot, task) {
-  const base = task.baseCommit?.trim() || task.roleBranchBase?.trim() || "";
   const branch = task.branch?.trim() || "";
-  if (!base || !branch) return;
+  const hasExecutorLane = Boolean(
+    branch || task.worktree?.trim() || task.workspace?.trim()
+  );
+  if (!hasExecutorLane) return;
   if (!await isGitWorkspace(workspaceRoot)) return;
+  const base = task.baseCommit?.trim() || "";
+  if (!base) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `task.deliver refused: ordinary executor lane requires exact workspaceLane.baseCommit (recorded at Task worktree creation); roleBranchBase is not a Delivery substitute (task remains ${task.state}, no ready Delivery; lane/audit preserved)`,
+      {
+        code: "EXECUTOR_LANE_HISTORY",
+        historyCode: "MISSING_BASE",
+        taskPath: task.path,
+        taskId: task.id,
+        branch: branch || void 0
+      }
+    );
+  }
+  if (!branch) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `task.deliver refused: ordinary executor lane missing branch for history tip (task remains ${task.state}, no ready Delivery; lane/audit preserved)`,
+      {
+        code: "EXECUTOR_LANE_HISTORY",
+        historyCode: "MISSING_TIP",
+        taskPath: task.path,
+        taskId: task.id,
+        baseCommit: base
+      }
+    );
+  }
   try {
     await assertOrdinaryExecutorLaneHistoryInGit({
       workspace: workspaceRoot,
@@ -29139,7 +29245,7 @@ async function resolveIntegrationContract(workspaceRoot, task) {
   return real;
 }
 async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
-  const hasBase = Boolean(task.baseCommit?.trim()) || Boolean(task.roleBranchBase?.trim());
+  const hasBase = Boolean(task.baseCommit?.trim());
   const hasAuthority = Boolean(task.integrationAuthority);
   const laneComplete = Boolean(
     task.worktree && task.branch && task.workspace && task.targetBranch
@@ -29150,7 +29256,7 @@ async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
   const mount = ctx.host.require(workspaceId);
   return ctx.mutations.run(workspaceId, async () => {
     const current = await loadTaskEnvelope(mount.env.fs, task.path);
-    const currentHasBase = Boolean(current.baseCommit?.trim()) || Boolean(current.roleBranchBase?.trim());
+    const currentHasBase = Boolean(current.baseCommit?.trim());
     const currentHasAuthority = Boolean(current.integrationAuthority);
     const currentLaneComplete = Boolean(
       current.worktree && current.branch && current.workspace && current.targetBranch
@@ -29203,10 +29309,20 @@ async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
     if (!currentHasBase) {
       const tip = await readRoleBranchTip(lane.workspace, lane.branch);
       patch.baseCommit = tip;
-      patch.roleBranchBase = tip;
+      if (!current.roleBranchBase?.trim()) {
+        patch.roleBranchBase = tip;
+      }
     }
-    if (!currentHasAuthority && current.parentActor) {
-      patch.integrationAuthority = buildIntegrationAuthority(current.parentActor);
+    if (!currentHasAuthority) {
+      if (!current.parentActor || !current.reviewer) {
+        throw new Error(
+          `Task ${current.id || current.path} missing parentActor/reviewer; cannot derive integrationAuthority (actor=parent/reviewer, mutator=service).`
+        );
+      }
+      patch.integrationAuthority = deriveIntegrationAuthority({
+        parentActor: current.parentActor,
+        reviewer: current.reviewer
+      });
     }
     ctx.host.markSelfWrite(workspaceId);
     return patchTaskEnvelope(mount.env.fs, current.path, patch);
@@ -29394,16 +29510,21 @@ async function collectTaskBootstrapImageRefs(fs23, task) {
   return collectBootstrapImageRefsFromTask({ userPrompt, claimBodies });
 }
 function projectTask(task) {
+  const derivedAuthority = task.parentActor && task.reviewer ? deriveIntegrationAuthority({
+    parentActor: task.parentActor,
+    reviewer: task.reviewer
+  }) : void 0;
   const hasLane = Boolean(
-    task.workspace || task.worktree || task.branch || task.targetBranch || task.baseCommit || task.roleBranchBase || task.integrationAuthority
+    task.workspace || task.worktree || task.branch || task.targetBranch || task.baseCommit || derivedAuthority
   );
   const lane = hasLane ? {
     workspace: task.workspace,
     worktree: task.worktree,
     branch: task.branch,
     targetBranch: task.targetBranch,
-    ...task.baseCommit || task.roleBranchBase ? { baseCommit: task.baseCommit || task.roleBranchBase } : {},
-    ...task.integrationAuthority ? { integrationAuthority: task.integrationAuthority } : {}
+    // Exact baseCommit only — never substitute roleBranchBase in the projection.
+    ...task.baseCommit ? { baseCommit: task.baseCommit } : {},
+    ...derivedAuthority ? { integrationAuthority: derivedAuthority } : {}
   } : void 0;
   const proj = {
     path: task.path,

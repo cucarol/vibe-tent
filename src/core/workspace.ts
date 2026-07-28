@@ -491,7 +491,8 @@ export async function listRoleCommitsFor(workspace: string, role: string): Promi
 
 /**
  * Read base..tip commits oldest-first with parent SHAs (for history gate).
- * Pure inspection — does not mutate the repository.
+ * Uses `git rev-list --parents --reverse base..tip` — Service/Core only.
+ * Commit facts never come from executor/prompt. Pure inspection; no mutation.
  */
 export async function listExecutorLaneCommitsWithParents(
   workspace: string,
@@ -503,11 +504,11 @@ export async function listExecutorLaneCommitsWithParents(
   const base = (await fullRef(root, baseCommit.trim())).trim();
   const tip = (await fullRef(root, tipCommit.trim())).trim();
   if (base === tip) return [];
-  // Oldest-first; %P = parent SHAs space-separated.
+  // rev-list --parents --reverse: oldest-first; each line "sha parent1 parent2…"
   const output = await git(root, [
-    "log",
+    "rev-list",
+    "--parents",
     "--reverse",
-    "--format=%H%x09%P",
     `${base}..${tip}`,
   ]);
   return output
@@ -515,21 +516,19 @@ export async function listExecutorLaneCommitsWithParents(
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const [sha = "", parentsRaw = ""] = line.split("\t");
-      const parents = parentsRaw
-        .trim()
-        .split(/\s+/)
-        .map((p) => p.trim())
-        .filter(Boolean);
-      return { sha: sha.trim(), parents };
+      const parts = line.split(/\s+/).map((p) => p.trim()).filter(Boolean);
+      const sha = parts[0] || "";
+      const parents = parts.slice(1);
+      return { sha, parents };
     })
     .filter((c) => c.sha);
 }
 
 /**
  * Pre-ready Delivery history gate for ordinary executor lanes (cx-5q6za6).
- * Loads real Git parent graph and runs the pure Core assert.
- * Unauthorized merge / foreign ancestry fails loud; does not mutate lane.
+ * Service must call this under the Task lifecycle boundary before ready Delivery:
+ * obtains actual `git rev-list --parents --reverse base..tip`, then pure Core assert.
+ * Unauthorized merge / foreign ancestry fails loud; does not mutate lane/audit.
  */
 export async function assertOrdinaryExecutorLaneHistoryInGit(input: {
   workspace: string;
@@ -560,6 +559,7 @@ export async function assertOrdinaryExecutorLaneHistoryInGit(input: {
   }
   const fullBase = await fullRef(root, base);
   const fullTip = await fullRef(root, tip);
+  // Commit graph facts from Service-side git only — never executor/prompt.
   const commits = await listExecutorLaneCommitsWithParents(root, fullBase, fullTip);
   assertOrdinaryExecutorLaneHistory({
     baseCommit: fullBase,

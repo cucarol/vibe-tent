@@ -1981,6 +1981,17 @@ function buildTaskContextCard(input) {
   }
   const parentActor = parseActorRef(input.parentActor, "parentActor");
   const reviewer = parseActorRef(input.reviewer, "reviewer");
+  try {
+    assertParentReviewerEqual(parentActor, reviewer);
+  } catch (err) {
+    if (err instanceof TaskLifecycleError) {
+      throw new TaskContextCardError("INVALID_ACTOR", err.message, {
+        parentActor,
+        reviewer
+      });
+    }
+    throw err;
+  }
   const assignee = parseAssignee(input.assignee);
   if (!isContextGenerationId(input.contextGeneration)) {
     throw new TaskContextCardError(
@@ -2098,12 +2109,60 @@ function serializeTaskContextCardForFrontmatter(card) {
     taskDeltaDigest: card.taskDeltaDigest
   };
 }
-function buildIntegrationAuthority(actor) {
-  const parsed = parseTaskActorRef(actor, "parentActor");
-  return {
-    actor: { kind: parsed.kind, id: parsed.id },
-    mutator: INTEGRATION_MUTATOR_SERVICE
-  };
+function deriveIntegrationAuthority(input) {
+  try {
+    const pair = resolveParentReviewerPair({
+      parentActor: input.parentActor,
+      reviewer: input.reviewer
+    });
+    return {
+      actor: { kind: pair.parentActor.kind, id: pair.parentActor.id },
+      mutator: INTEGRATION_MUTATOR_SERVICE
+    };
+  } catch (err) {
+    if (err instanceof TaskLifecycleError) {
+      throw new TaskContextCardError("INVALID_ACTOR", err.message, {
+        parentActor: input.parentActor,
+        reviewer: input.reviewer
+      });
+    }
+    throw err;
+  }
+}
+function assertIntegrationAuthorityMatchesParent(authority, parentActor, reviewer) {
+  const derived = deriveIntegrationAuthority({ parentActor, reviewer });
+  if (!authority || typeof authority !== "object" || Array.isArray(authority)) {
+    throw new TaskContextCardError(
+      "INVALID_ACTOR",
+      "integrationAuthority must be { actor, mutator: service } derived from parent/reviewer.",
+      { authority }
+    );
+  }
+  const raw = authority;
+  if (raw.mutator !== INTEGRATION_MUTATOR_SERVICE) {
+    throw new TaskContextCardError(
+      "INVALID_ACTOR",
+      `integrationAuthority.mutator must be "${INTEGRATION_MUTATOR_SERVICE}" (Service only); got ${String(raw.mutator)}.`,
+      { authority }
+    );
+  }
+  let actor;
+  try {
+    actor = parseTaskActorRef(raw.actor, "parentActor");
+  } catch (err) {
+    if (err instanceof TaskLifecycleError) {
+      throw new TaskContextCardError("INVALID_ACTOR", err.message, { authority });
+    }
+    throw err;
+  }
+  if (actor.kind !== derived.actor.kind || actor.id !== derived.actor.id) {
+    throw new TaskContextCardError(
+      "INVALID_ACTOR",
+      `integrationAuthority.actor must equal Task parent/reviewer (${derived.actor.kind}:${derived.actor.id}); got ${actor.kind}:${actor.id}.`,
+      { authority, derived }
+    );
+  }
+  return derived;
 }
 var import_node_crypto2, TASK_CONTEXT_CARD_SCHEMA_VERSION, INTEGRATION_MUTATOR_SERVICE, TaskContextCardError;
 var init_task_context_card = __esm({
@@ -2206,23 +2265,20 @@ async function loadTaskEnvelope(fs2, path) {
   }
   if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
     task.baseCommit = data.baseCommit.trim();
-  } else if (task.roleBranchBase) {
-    task.baseCommit = task.roleBranchBase;
   }
-  if (data.integrationAuthority && typeof data.integrationAuthority === "object") {
-    const raw = data.integrationAuthority;
-    if (raw.actor && raw.mutator === "service") {
-      try {
-        task.integrationAuthority = buildIntegrationAuthority(
-          parseTaskActorRef(raw.actor, "parentActor")
-        );
-      } catch {
-      }
-    }
-  } else if (task.parentActor) {
-    try {
-      task.integrationAuthority = buildIntegrationAuthority(task.parentActor);
-    } catch {
+  if (task.parentActor && task.reviewer) {
+    const derived = deriveIntegrationAuthority({
+      parentActor: task.parentActor,
+      reviewer: task.reviewer
+    });
+    if (data.integrationAuthority !== void 0 && data.integrationAuthority !== null) {
+      task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
+        data.integrationAuthority,
+        task.parentActor,
+        task.reviewer
+      );
+    } else {
+      task.integrationAuthority = derived;
     }
   }
   const contextCard = loadTaskContextCardFromFrontmatter(data);
@@ -2485,6 +2541,14 @@ async function patchTaskEnvelope(fs2, path, patch) {
     });
     data.parentActor = serializeTaskActorRef(pair.parentActor);
     data.reviewer = serializeTaskActorRef(pair.reviewer);
+    const derived = deriveIntegrationAuthority({
+      parentActor: pair.parentActor,
+      reviewer: pair.reviewer
+    });
+    data.integrationAuthority = {
+      actor: { kind: derived.actor.kind, id: derived.actor.id },
+      mutator: "service"
+    };
   }
   if (patch.clearLegacyDispatchedBy) {
     delete data.dispatchedBy;
@@ -2506,17 +2570,23 @@ async function patchTaskEnvelope(fs2, path, patch) {
   if (patch.baseCommit === null) delete data.baseCommit;
   else if (typeof patch.baseCommit === "string" && patch.baseCommit.trim()) {
     data.baseCommit = patch.baseCommit.trim();
-    if (!data.roleBranchBase || typeof data.roleBranchBase !== "string" || !String(data.roleBranchBase).trim()) {
-      data.roleBranchBase = data.baseCommit;
-    }
   }
   if (patch.integrationAuthority === null) delete data.integrationAuthority;
   else if (patch.integrationAuthority) {
+    if (data.parentActor === void 0 || data.parentActor === null) {
+      throw new Error(
+        "patchTaskEnvelope integrationAuthority requires parentActor/reviewer on the envelope."
+      );
+    }
+    const parentForAuth = parseTaskActorRef(data.parentActor, "parentActor");
+    const reviewerForAuth = data.reviewer !== void 0 && data.reviewer !== null ? parseTaskActorRef(data.reviewer, "reviewer") : parentForAuth;
+    const validated = assertIntegrationAuthorityMatchesParent(
+      patch.integrationAuthority,
+      parentForAuth,
+      reviewerForAuth
+    );
     data.integrationAuthority = {
-      actor: {
-        kind: patch.integrationAuthority.actor.kind,
-        id: patch.integrationAuthority.actor.id
-      },
+      actor: { kind: validated.actor.kind, id: validated.actor.id },
       mutator: "service"
     };
   }

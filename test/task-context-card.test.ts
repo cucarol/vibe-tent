@@ -33,7 +33,8 @@ import {
   assertOrdinaryExecutorLaneHistory,
   ExecutorLaneHistoryError,
   projectExecutionLaneFromTask,
-  buildIntegrationAuthority,
+  deriveIntegrationAuthority,
+  assertIntegrationAuthorityMatchesParent,
   type TaskContextCardV1,
 } from "../src/core/task-context-card.js";
 import {
@@ -201,6 +202,19 @@ test("buildTaskContextCard fail-loud: missing objective / acceptance / parent / 
       }),
     (err: unknown) =>
       err instanceof TaskContextCardError && err.code === "MISSING_REVIEWER"
+  );
+  assert.throws(
+    () =>
+      buildTaskContextCard({
+        objective: "x",
+        acceptance: ["a"],
+        parentActor: { kind: "role", id: "规划" },
+        reviewer: { kind: "role", id: "other-role" },
+        assignee: { kind: "role", id: "r" },
+        contextGeneration: gen,
+      }),
+    (err: unknown) =>
+      err instanceof TaskContextCardError && err.code === "INVALID_ACTOR"
   );
 });
 
@@ -538,9 +552,9 @@ test("projectAssigneeFromTask prefers logical agentId over profile label", () =>
   );
 });
 
-test("projectExecutionLaneFromTask derives from Task truth", () => {
+test("projectExecutionLaneFromTask uses exact baseCommit only; derives authority from parent/reviewer", () => {
   const lane = projectExecutionLaneFromTask({
-    roleBranchBase: "abc123base",
+    baseCommit: "abc123base",
     targetBranch: "tent-role/规划",
     branch: "tent-task/tk-x",
     worktree: "C:/wt",
@@ -551,9 +565,66 @@ test("projectExecutionLaneFromTask derives from Task truth", () => {
   assert.equal(lane?.targetBranch, "tent-role/规划");
   assert.equal(lane?.integrationAuthority?.mutator, "service");
   assert.equal(lane?.integrationAuthority?.actor.id, "规划");
+  // roleBranchBase is not a baseCommit substitute — omitted baseCommit stays empty.
+  const noBase = projectExecutionLaneFromTask({
+    targetBranch: "tent-role/规划",
+    branch: "tent-task/tk-x",
+    parentActor: { kind: "role", id: "规划" },
+    reviewer: { kind: "role", id: "规划" },
+  });
+  assert.equal(noBase?.baseCommit, undefined);
+  assert.equal(noBase?.integrationAuthority?.mutator, "service");
   assert.deepEqual(
-    buildIntegrationAuthority({ kind: "user", id: "user" }),
+    deriveIntegrationAuthority({
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+    }),
     { actor: { kind: "user", id: "user" }, mutator: "service" }
+  );
+});
+
+test("projectExecutionLaneFromTask fails loud on parent/reviewer mismatch", () => {
+  assert.throws(
+    () =>
+      projectExecutionLaneFromTask({
+        baseCommit: "abc",
+        parentActor: { kind: "role", id: "规划" },
+        reviewer: { kind: "role", id: "other" },
+      }),
+    (err: unknown) =>
+      err instanceof TaskContextCardError && err.code === "INVALID_ACTOR"
+  );
+});
+
+test("assertIntegrationAuthorityMatchesParent rejects arbitrary Task-supplied authority", () => {
+  const parent = { kind: "role" as const, id: "规划" };
+  const reviewer = { kind: "role" as const, id: "规划" };
+  assert.doesNotThrow(() =>
+    assertIntegrationAuthorityMatchesParent(
+      { actor: parent, mutator: "service" },
+      parent,
+      reviewer
+    )
+  );
+  assert.throws(
+    () =>
+      assertIntegrationAuthorityMatchesParent(
+        { actor: { kind: "role", id: "forged" }, mutator: "service" },
+        parent,
+        reviewer
+      ),
+    (err: unknown) =>
+      err instanceof TaskContextCardError && err.code === "INVALID_ACTOR"
+  );
+  assert.throws(
+    () =>
+      assertIntegrationAuthorityMatchesParent(
+        { actor: parent, mutator: "executor" },
+        parent,
+        reviewer
+      ),
+    (err: unknown) =>
+      err instanceof TaskContextCardError && err.code === "INVALID_ACTOR"
   );
 });
 

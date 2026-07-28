@@ -65,7 +65,7 @@ import { taskContextCard } from "../core/context-card.js";
 import {
   assembleManagedPrompt,
   assertRefsResolved,
-  buildIntegrationAuthority,
+  deriveIntegrationAuthority,
   decideStablePrefixInjection,
   ExecutorLaneHistoryError,
   formatExecutionLanePrompt,
@@ -4787,25 +4787,66 @@ async function assertTaskWorktreeCleanForDeliver(
 
 /**
  * Pre-ready Delivery history gate for ordinary executor lanes (cx-5q6za6).
- * recorded baseCommit must be exact first parent of first Task commit;
- * base..tip must be single-parent linear history. Unauthorized merge/foreign
- * ancestry fails loud while preserving lane/audit — no ready Delivery.
- * No generic allowMerge switch; parent accept + Service integration only.
- * Non-Git / no-lane / no-base tasks pass through (legacy / docs-only).
+ *
+ * Under the Task lifecycle boundary (public deliver / managed auto-deliver),
+ * Service obtains actual `git rev-list --parents --reverse base..tip` and
+ * invokes the pure Core assert. Commit facts never come from executor/prompt.
+ *
+ * recorded workspaceLane.baseCommit (exact) must be first parent of first Task
+ * commit; base..tip single-parent linear. Unauthorized merge/foreign ancestry
+ * fails loud while preserving lane/audit — no ready Delivery.
+ * No generic allowMerge; parent accept + Service integration only.
+ *
+ * - Docs-only / non-Git / no recorded executor branch → pass through.
+ * - Ordinary code-task lane (branch recorded) without exact baseCommit → fail
+ *   loud (never silently substitute roleBranchBase at Delivery).
  */
 async function assertOrdinaryExecutorLaneHistoryForDeliver(
   workspaceRoot: string,
   task: TaskEnvelope
 ): Promise<void> {
-  const base =
-    task.baseCommit?.trim() ||
-    task.roleBranchBase?.trim() ||
-    "";
   const branch = task.branch?.trim() || "";
-  // No recorded lane baseline → not an ordinary Git executor lane yet.
-  if (!base || !branch) return;
+  const hasExecutorLane = Boolean(
+    branch || task.worktree?.trim() || task.workspace?.trim()
+  );
+  // No executor Git lane recorded → not an ordinary code-task Delivery path.
+  if (!hasExecutorLane) return;
   if (!(await isGitWorkspace(workspaceRoot))) return;
+
+  const base = task.baseCommit?.trim() || "";
+  // Exact baseCommit required for ordinary code-task Delivery. No roleBranchBase
+  // silent substitution — legacy envelopes need explicit migration / re-bind.
+  if (!base) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `task.deliver refused: ordinary executor lane requires exact workspaceLane.baseCommit ` +
+        `(recorded at Task worktree creation); roleBranchBase is not a Delivery substitute ` +
+        `(task remains ${task.state}, no ready Delivery; lane/audit preserved)`,
+      {
+        code: "EXECUTOR_LANE_HISTORY",
+        historyCode: "MISSING_BASE",
+        taskPath: task.path,
+        taskId: task.id,
+        branch: branch || undefined,
+      }
+    );
+  }
+  if (!branch) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `task.deliver refused: ordinary executor lane missing branch for history tip ` +
+        `(task remains ${task.state}, no ready Delivery; lane/audit preserved)`,
+      {
+        code: "EXECUTOR_LANE_HISTORY",
+        historyCode: "MISSING_TIP",
+        taskPath: task.path,
+        taskId: task.id,
+        baseCommit: base,
+      }
+    );
+  }
   try {
+    // Service-side git rev-list --parents --reverse under lifecycle boundary.
     await assertOrdinaryExecutorLaneHistoryInGit({
       workspace: workspaceRoot,
       baseCommit: base,
@@ -11101,7 +11142,9 @@ async function resolveIntegrationContract(
  * Ensure task envelope carries WorkspaceLane before managed startSession.
  * - Role: create/reuse durable tent-role/<role> worktree.
  * - agentProfile: create unique tent-task/<taskId> worktree (never tent-role/<profile>).
- * Also backfills roleBranchBase once when missing; never overwrites an existing baseline.
+ * Persists exact workspaceLane.baseCommit at Task worktree creation (capture-once).
+ * Also backfills roleBranchBase for managed collection once when missing (separate field).
+ * integrationAuthority derived from parent/reviewer + service mutator only.
  * Non-Git / pure docs → leave unset (cwd falls back to workspace root).
  */
 async function ensureTaskWorkspaceLane(
@@ -11109,8 +11152,7 @@ async function ensureTaskWorkspaceLane(
   workspaceId: string,
   task: TaskEnvelope
 ): Promise<TaskEnvelope> {
-  const hasBase =
-    Boolean(task.baseCommit?.trim()) || Boolean(task.roleBranchBase?.trim());
+  const hasBase = Boolean(task.baseCommit?.trim());
   const hasAuthority = Boolean(task.integrationAuthority);
   const laneComplete = Boolean(
     task.worktree && task.branch && task.workspace && task.targetBranch
@@ -11122,8 +11164,7 @@ async function ensureTaskWorkspaceLane(
   return ctx.mutations.run(workspaceId, async () => {
     // Re-load under the bus so concurrent bind cannot double-write baseline.
     const current = await loadTaskEnvelope(mount.env.fs, task.path);
-    const currentHasBase =
-      Boolean(current.baseCommit?.trim()) || Boolean(current.roleBranchBase?.trim());
+    const currentHasBase = Boolean(current.baseCommit?.trim());
     const currentHasAuthority = Boolean(current.integrationAuthority);
     const currentLaneComplete = Boolean(
       current.worktree && current.branch && current.workspace && current.targetBranch
@@ -11183,15 +11224,27 @@ async function ensureTaskWorkspaceLane(
       patch.branch = lane.branch;
       patch.targetBranch = targetBranch;
     }
-    // Capture-once baseCommit (+ roleBranchBase mirror): never rewrite on resume.
+    // Capture-once exact baseCommit at worktree creation/bind. Never rewrite on resume.
+    // roleBranchBase remains a separate managed-collection baseline (set once if missing).
     if (!currentHasBase) {
       const tip = await readRoleBranchTip(lane.workspace, lane.branch);
       patch.baseCommit = tip;
-      patch.roleBranchBase = tip;
+      if (!current.roleBranchBase?.trim()) {
+        patch.roleBranchBase = tip;
+      }
     }
-    // integrationAuthority: actor = exact parent/reviewer; mutator = service.
-    if (!currentHasAuthority && current.parentActor) {
-      patch.integrationAuthority = buildIntegrationAuthority(current.parentActor);
+    // integrationAuthority: always derived from parent/reviewer + service mutator.
+    if (!currentHasAuthority) {
+      if (!current.parentActor || !current.reviewer) {
+        throw new Error(
+          `Task ${current.id || current.path} missing parentActor/reviewer; ` +
+            `cannot derive integrationAuthority (actor=parent/reviewer, mutator=service).`
+        );
+      }
+      patch.integrationAuthority = deriveIntegrationAuthority({
+        parentActor: current.parentActor,
+        reviewer: current.reviewer,
+      });
     }
     ctx.host.markSelfWrite(workspaceId);
     return patchTaskEnvelope(mount.env.fs, current.path, patch);
@@ -11522,14 +11575,20 @@ async function collectTaskBootstrapImageRefs(
 }
 
 function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjection {
+  const derivedAuthority =
+    task.parentActor && task.reviewer
+      ? deriveIntegrationAuthority({
+          parentActor: task.parentActor,
+          reviewer: task.reviewer,
+        })
+      : undefined;
   const hasLane = Boolean(
     task.workspace ||
       task.worktree ||
       task.branch ||
       task.targetBranch ||
       task.baseCommit ||
-      task.roleBranchBase ||
-      task.integrationAuthority
+      derivedAuthority
   );
   const lane = hasLane
     ? {
@@ -11537,12 +11596,9 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
         worktree: task.worktree,
         branch: task.branch,
         targetBranch: task.targetBranch,
-        ...(task.baseCommit || task.roleBranchBase
-          ? { baseCommit: task.baseCommit || task.roleBranchBase }
-          : {}),
-        ...(task.integrationAuthority
-          ? { integrationAuthority: task.integrationAuthority }
-          : {}),
+        // Exact baseCommit only — never substitute roleBranchBase in the projection.
+        ...(task.baseCommit ? { baseCommit: task.baseCommit } : {}),
+        ...(derivedAuthority ? { integrationAuthority: derivedAuthority } : {}),
       }
     : undefined;
   const proj: TaskProjection = {

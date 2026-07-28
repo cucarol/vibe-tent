@@ -11,7 +11,9 @@
 
 import { createHash } from "node:crypto";
 import {
+  assertParentReviewerEqual,
   parseTaskActorRef,
+  resolveParentReviewerPair,
   TaskLifecycleError,
   type AssigneeKind,
   type TaskActorRef,
@@ -380,6 +382,18 @@ export function buildTaskContextCard(input: BuildTaskContextCardInput): TaskCont
   }
   const parentActor = parseActorRef(input.parentActor, "parentActor");
   const reviewer = parseActorRef(input.reviewer, "reviewer");
+  // Canonical V0.2: reviewer must equal parentActor (no arbitrary delegation).
+  try {
+    assertParentReviewerEqual(parentActor, reviewer);
+  } catch (err) {
+    if (err instanceof TaskLifecycleError) {
+      throw new TaskContextCardError("INVALID_ACTOR", err.message, {
+        parentActor,
+        reviewer,
+      });
+    }
+    throw err;
+  }
   const assignee = parseAssignee(input.assignee);
   if (!isContextGenerationId(input.contextGeneration)) {
     throw new TaskContextCardError(
@@ -1040,7 +1054,39 @@ export type ExecutionLaneProjection = {
   integrationAuthority?: IntegrationAuthority;
 };
 
-/** Build integrationAuthority from exact parent/reviewer (must already be equal). */
+/**
+ * Derive integrationAuthority from persisted Task parent/reviewer only.
+ * mutator is always `service`. Rejects parent/reviewer mismatch (fail loud).
+ * Never accepts an arbitrary Task-supplied authority object as truth.
+ */
+export function deriveIntegrationAuthority(input: {
+  parentActor: TaskActorRef;
+  reviewer: TaskActorRef;
+}): IntegrationAuthority {
+  try {
+    const pair = resolveParentReviewerPair({
+      parentActor: input.parentActor,
+      reviewer: input.reviewer,
+    });
+    return {
+      actor: { kind: pair.parentActor.kind, id: pair.parentActor.id },
+      mutator: INTEGRATION_MUTATOR_SERVICE,
+    };
+  } catch (err) {
+    if (err instanceof TaskLifecycleError) {
+      throw new TaskContextCardError("INVALID_ACTOR", err.message, {
+        parentActor: input.parentActor,
+        reviewer: input.reviewer,
+      });
+    }
+    throw err;
+  }
+}
+
+/**
+ * @deprecated Prefer {@link deriveIntegrationAuthority} with both parent+reviewer.
+ * Single-actor helper still fail-loud-parses the actor; mutator is always service.
+ */
 export function buildIntegrationAuthority(actor: TaskActorRef): IntegrationAuthority {
   const parsed = parseTaskActorRef(actor, "parentActor");
   return {
@@ -1050,36 +1096,87 @@ export function buildIntegrationAuthority(actor: TaskActorRef): IntegrationAutho
 }
 
 /**
+ * Assert a projected/persisted authority bag matches derived parent/reviewer + service.
+ * Fail loud on actor mismatch or non-service mutator — never trust executor-supplied bags.
+ */
+export function assertIntegrationAuthorityMatchesParent(
+  authority: IntegrationAuthority | unknown,
+  parentActor: TaskActorRef,
+  reviewer: TaskActorRef
+): IntegrationAuthority {
+  const derived = deriveIntegrationAuthority({ parentActor, reviewer });
+  if (!authority || typeof authority !== "object" || Array.isArray(authority)) {
+    throw new TaskContextCardError(
+      "INVALID_ACTOR",
+      "integrationAuthority must be { actor, mutator: service } derived from parent/reviewer.",
+      { authority }
+    );
+  }
+  const raw = authority as Record<string, unknown>;
+  if (raw.mutator !== INTEGRATION_MUTATOR_SERVICE) {
+    throw new TaskContextCardError(
+      "INVALID_ACTOR",
+      `integrationAuthority.mutator must be "${INTEGRATION_MUTATOR_SERVICE}" (Service only); got ${String(raw.mutator)}.`,
+      { authority }
+    );
+  }
+  let actor: TaskActorRef;
+  try {
+    actor = parseTaskActorRef(raw.actor, "parentActor");
+  } catch (err) {
+    if (err instanceof TaskLifecycleError) {
+      throw new TaskContextCardError("INVALID_ACTOR", err.message, { authority });
+    }
+    throw err;
+  }
+  if (actor.kind !== derived.actor.kind || actor.id !== derived.actor.id) {
+    throw new TaskContextCardError(
+      "INVALID_ACTOR",
+      `integrationAuthority.actor must equal Task parent/reviewer ` +
+        `(${derived.actor.kind}:${derived.actor.id}); got ${actor.kind}:${actor.id}.`,
+      { authority, derived }
+    );
+  }
+  return derived;
+}
+
+/**
  * Derive executionLane projection from Task lane truth.
- * baseCommit prefers explicit baseCommit, then roleBranchBase (capture-once baseline).
+ * - baseCommit: exact workspaceLane.baseCommit only (never roleBranchBase substitution).
+ * - integrationAuthority: always re-derived from parentActor+reviewer + service mutator.
+ * Invalid parent/reviewer fails loud — never silently drop authority.
  */
 export function projectExecutionLaneFromTask(
   task: Pick<
     TaskEnvelope,
-    | "roleBranchBase"
-    | "targetBranch"
-    | "branch"
-    | "worktree"
-    | "parentActor"
-    | "reviewer"
-  > & { baseCommit?: string; integrationAuthority?: IntegrationAuthority }
+    "targetBranch" | "branch" | "worktree" | "parentActor" | "reviewer" | "baseCommit"
+  >
 ): ExecutionLaneProjection | undefined {
   const baseCommit =
-    (typeof task.baseCommit === "string" && task.baseCommit.trim()) ||
-    (typeof task.roleBranchBase === "string" && task.roleBranchBase.trim()) ||
-    "";
+    typeof task.baseCommit === "string" && task.baseCommit.trim()
+      ? task.baseCommit.trim()
+      : "";
   const targetBranch =
     typeof task.targetBranch === "string" ? task.targetBranch.trim() : "";
   const branch = typeof task.branch === "string" ? task.branch.trim() : "";
   const worktree = typeof task.worktree === "string" ? task.worktree.trim() : "";
-  let integrationAuthority = task.integrationAuthority;
-  if (!integrationAuthority && task.parentActor) {
-    try {
-      integrationAuthority = buildIntegrationAuthority(task.parentActor);
-    } catch {
-      integrationAuthority = undefined;
+
+  let integrationAuthority: IntegrationAuthority | undefined;
+  if (task.parentActor || task.reviewer) {
+    if (!task.parentActor || !task.reviewer) {
+      throw new TaskContextCardError(
+        "INVALID_ACTOR",
+        "executionLane requires both parentActor and reviewer to derive integrationAuthority.",
+        { parentActor: task.parentActor, reviewer: task.reviewer }
+      );
     }
+    // Fail loud on invalid / mismatched actors — do not catch and drop.
+    integrationAuthority = deriveIntegrationAuthority({
+      parentActor: task.parentActor,
+      reviewer: task.reviewer,
+    });
   }
+
   if (!baseCommit && !targetBranch && !branch && !worktree && !integrationAuthority) {
     return undefined;
   }

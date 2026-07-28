@@ -30,7 +30,8 @@ import {
   type WorkspaceLane,
 } from "./task-model.js";
 import {
-  buildIntegrationAuthority,
+  assertIntegrationAuthorityMatchesParent,
+  deriveIntegrationAuthority,
   loadTaskContextCardFromFrontmatter,
   serializeTaskContextCardForFrontmatter,
   type IntegrationAuthority,
@@ -449,28 +450,26 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   if (typeof data.roleBranchBase === "string" && data.roleBranchBase.trim()) {
     task.roleBranchBase = data.roleBranchBase.trim();
   }
+  // Exact workspaceLane.baseCommit only — never silently substitute roleBranchBase.
+  // Legacy envelopes without baseCommit stay without it until explicit migration / new bind.
   if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
     task.baseCommit = data.baseCommit.trim();
-  } else if (task.roleBranchBase) {
-    // Pre-baseCommit envelopes: roleBranchBase is the capture-once lane start.
-    task.baseCommit = task.roleBranchBase;
   }
-  if (data.integrationAuthority && typeof data.integrationAuthority === "object") {
-    const raw = data.integrationAuthority as Record<string, unknown>;
-    if (raw.actor && raw.mutator === "service") {
-      try {
-        task.integrationAuthority = buildIntegrationAuthority(
-          parseTaskActorRef(raw.actor, "parentActor")
-        );
-      } catch {
-        // Invalid authority on disk fails at write boundaries; skip broken projection.
-      }
-    }
-  } else if (task.parentActor) {
-    try {
-      task.integrationAuthority = buildIntegrationAuthority(task.parentActor);
-    } catch {
-      // leave unset
+  // integrationAuthority is always re-derived from persisted parent/reviewer + service.
+  // On-disk bags are validated against that derivation (reject mismatches); never trusted alone.
+  if (task.parentActor && task.reviewer) {
+    const derived = deriveIntegrationAuthority({
+      parentActor: task.parentActor,
+      reviewer: task.reviewer,
+    });
+    if (data.integrationAuthority !== undefined && data.integrationAuthority !== null) {
+      task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
+        data.integrationAuthority,
+        task.parentActor,
+        task.reviewer
+      );
+    } else {
+      task.integrationAuthority = derived;
     }
   }
   // Context Card v1: nested `contextCard` or flat fields. Partial → fail loud.
@@ -923,6 +922,15 @@ export async function patchTaskEnvelope(
     });
     data.parentActor = serializeTaskActorRef(pair.parentActor);
     data.reviewer = serializeTaskActorRef(pair.reviewer);
+    // Authority is a projection of parent/reviewer + service — re-derive on actor write.
+    const derived = deriveIntegrationAuthority({
+      parentActor: pair.parentActor,
+      reviewer: pair.reviewer,
+    });
+    data.integrationAuthority = {
+      actor: { kind: derived.actor.kind, id: derived.actor.id },
+      mutator: "service",
+    };
   }
   if (patch.clearLegacyDispatchedBy) {
     delete data.dispatchedBy;
@@ -950,20 +958,31 @@ export async function patchTaskEnvelope(
 
   if (patch.baseCommit === null) delete data.baseCommit;
   else if (typeof patch.baseCommit === "string" && patch.baseCommit.trim()) {
+    // Exact workspaceLane.baseCommit only — do not auto-mirror into roleBranchBase.
     data.baseCommit = patch.baseCommit.trim();
-    // Keep roleBranchBase aligned for managed collection when still empty.
-    if (!data.roleBranchBase || typeof data.roleBranchBase !== "string" || !String(data.roleBranchBase).trim()) {
-      data.roleBranchBase = data.baseCommit;
-    }
   }
 
   if (patch.integrationAuthority === null) delete data.integrationAuthority;
   else if (patch.integrationAuthority) {
+    // Persist only after validating against envelope parent/reviewer (already
+    // equal-resolved above when actors were patched). Reject forged bags.
+    if (data.parentActor === undefined || data.parentActor === null) {
+      throw new Error(
+        "patchTaskEnvelope integrationAuthority requires parentActor/reviewer on the envelope."
+      );
+    }
+    const parentForAuth = parseTaskActorRef(data.parentActor, "parentActor");
+    const reviewerForAuth =
+      data.reviewer !== undefined && data.reviewer !== null
+        ? parseTaskActorRef(data.reviewer, "reviewer")
+        : parentForAuth;
+    const validated = assertIntegrationAuthorityMatchesParent(
+      patch.integrationAuthority,
+      parentForAuth,
+      reviewerForAuth
+    );
     data.integrationAuthority = {
-      actor: {
-        kind: patch.integrationAuthority.actor.kind,
-        id: patch.integrationAuthority.actor.id,
-      },
+      actor: { kind: validated.actor.kind, id: validated.actor.id },
       mutator: "service",
     };
   }
@@ -997,18 +1016,25 @@ export function workspaceLaneOf(task: TaskEnvelope): WorkspaceLane | undefined {
     !task.branch &&
     !task.targetBranch &&
     !task.baseCommit &&
-    !task.roleBranchBase &&
     !task.integrationAuthority
   ) {
     return undefined;
   }
+  // baseCommit is exact only — never substitute roleBranchBase in the projection.
+  const integrationAuthority =
+    task.parentActor && task.reviewer
+      ? deriveIntegrationAuthority({
+          parentActor: task.parentActor,
+          reviewer: task.reviewer,
+        })
+      : task.integrationAuthority;
   return {
     workspace: task.workspace,
     worktree: task.worktree,
     branch: task.branch,
     targetBranch: task.targetBranch,
-    baseCommit: task.baseCommit || task.roleBranchBase,
-    integrationAuthority: task.integrationAuthority,
+    ...(task.baseCommit ? { baseCommit: task.baseCommit } : {}),
+    ...(integrationAuthority ? { integrationAuthority } : {}),
   };
 }
 
