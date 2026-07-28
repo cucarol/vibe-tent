@@ -462,7 +462,9 @@ test("P0: managed auto-deliver refuses open TaskInput pre-seal; Session stays li
   const ws = await makeWorkspace("tent-ti-gate-managed-");
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-gate-log-"));
   const logPath = path.join(dataDir, "mock-acp.json");
-  const reportText = "MANAGED_AFTER_INPUT_OK";
+  // Explicit outcome wire required for managed ready Delivery; body is the summary.
+  const reportBody = "MANAGED_AFTER_INPUT_OK";
+  const reportText = `outcome: delivered\n\n${reportBody}`;
 
   await withService(
     async (svc) => {
@@ -539,6 +541,7 @@ test("P0: managed auto-deliver refuses open TaskInput pre-seal; Session stays li
       assert.equal(failEv!.reportDraftPreserved, true);
 
       // Report draft retained for production-style retry without re-prompt.
+      // Full outcome wire is stored so idempotent retry re-parses correctly.
       const draft = await svc.ctx.managedDeliveryReportDrafts.get(
         workspaceId,
         taskPath
@@ -572,7 +575,7 @@ test("P0: managed auto-deliver refuses open TaskInput pre-seal; Session stays li
       ).deliveries;
       assert.equal(deliveries.length, 1);
       assert.equal(deliveries[0].status, "ready");
-      assert.equal(deliveries[0].summary, reportText);
+      assert.equal(deliveries[0].summary, reportBody);
       assert.equal(
         await svc.ctx.managedDeliveryReportDrafts.get(workspaceId, taskPath),
         undefined,
@@ -944,7 +947,9 @@ test("P0: public and managed paths share PENDING_TASK_INPUT authority payload sh
         workspaceId,
         taskPath: managedPath,
         sessionId: managedSession,
-        assistantText: "MANAGED_SHAPE",
+        // Explicit outcome wire so managed path reaches TaskInput authority
+        // (not the missing-outcome short-circuit).
+        assistantText: "outcome: delivered\n\nMANAGED_SHAPE",
       });
       unsub();
       const failEv = diag.find(
