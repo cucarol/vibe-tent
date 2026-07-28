@@ -32,7 +32,7 @@ import { configureTestGitIdentity, git } from "./helpers.js";
 const MOCK_ACP = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "mock-acp-server.mjs");
 type Svc = Awaited<ReturnType<typeof startLocalTentService>>;
 type TaskSnap = {
-  id?: string; state: string; sessionId?: string; claims?: string[];
+  id?: string; state: string; sessionId?: string; referencedNodeIds?: string[];
   worktree?: string; branch?: string; deliveryPolicy?: string;
   wait?: { reason?: string; summary?: string; code?: string } | null;
 };
@@ -192,7 +192,7 @@ test("replaceSession: success preserves Task + contextRestored=false + audit", a
     assert.equal(replaced.task.id, before.id);
     assert.equal(replaced.task.state, "running");
     assert.equal(replaced.task.sessionId, replaced.session.sessionId);
-    assert.deepEqual(replaced.task.claims ?? [], before.claims ?? []);
+    assert.deepEqual(replaced.task.referencedNodeIds ?? [], before.referencedNodeIds ?? []);
     assert.equal(replaced.task.worktree, before.worktree);
     assert.equal(replaced.task.branch, before.branch);
     assert.equal(replaced.task.deliveryPolicy, before.deliveryPolicy);

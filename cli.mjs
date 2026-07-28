@@ -1434,11 +1434,9 @@ async function loadTaskEnvelope(fs10, path9) {
       `Invalid task envelope format: ${path9} (missing Task.contextCard.refs.nodes; run claims\u2192refs migration).`
     );
   }
-  const projectedClaims = contextCard ? contextCard.refs.nodes.map((n) => n.id).filter(Boolean) : [];
   const task = {
     path: path9,
     role: data.role,
-    claims: projectedClaims,
     manifest: data.manifest,
     status: stateToLegacyStatus(state),
     state,
@@ -4244,9 +4242,10 @@ async function taskFail(env, taskPath, options = {}) {
   });
 }
 async function releaseOccupationForTask(env, task) {
-  for (const claimId of task.claims) {
-    if (claimId === "root") continue;
-    await removeNonAcceptedDeliveriesForBox(env.fs, claimId);
+  if (task.contextCard == null) return;
+  for (const nodeId of taskReferencedNodeIds(task)) {
+    if (nodeId === "root") continue;
+    await removeNonAcceptedDeliveriesForBox(env.fs, nodeId);
   }
 }
 function requireBoxById(tent, boxId) {
@@ -4613,7 +4612,6 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       written ?? {
         path: taskPath,
         role: assigneeLabel,
-        claims: taskClaims.map((taskClaim2) => taskClaim2.id),
         manifest: manifestPath,
         status: "pending",
         state: "queued",
@@ -4681,7 +4679,7 @@ async function forceRelease(env, boxId) {
   });
   const tasks = await loadTaskEnvelopes(env.fs);
   const active = tasks.filter(
-    (t) => envelopeIsActiveOccupation(t) && t.claims.includes(boxId)
+    (t) => envelopeIsActiveOccupation(t) && t.contextCard != null && taskDirectlyReferencesNode(t, boxId)
   );
   if (active.length === 0) {
     await withMutation2(env.fs, async () => {
@@ -4915,6 +4913,7 @@ import * as path3 from "node:path";
 init_task();
 init_tree();
 init_claim();
+init_task_node_refs();
 
 // src/core/workspace.ts
 init_paths();
@@ -5071,7 +5070,10 @@ async function renderTentStatus(cwd = process.cwd(), role = process.env.TENT_ROL
   } else {
     lines.push("Pending tasks (task-ack):");
     for (const task of pendingTasks) {
-      lines.push(`- ${task.role}/${path3.posix.basename(task.path)} -> ${task.claims.join(", ")}`);
+      const nodeIds = task.contextCard != null ? taskReferencedNodeIds(task) : [];
+      lines.push(
+        `- ${task.role}/${path3.posix.basename(task.path)} -> ${nodeIds.join(", ") || "-"}`
+      );
     }
   }
   const activeTasks = allTasks.filter((task) => envelopeIsActiveOccupation(task)).filter((task) => task.state !== "queued" && task.status !== "pending").filter((task) => !role || task.role === role);
@@ -5082,8 +5084,9 @@ async function renderTentStatus(cwd = process.cwd(), role = process.env.TENT_ROL
     lines.push("Active tasks:");
     for (const task of activeTasks) {
       const state = task.state || task.status || "unknown";
+      const nodeIds = task.contextCard != null ? taskReferencedNodeIds(task) : [];
       lines.push(
-        `- ${task.id || path3.posix.basename(task.path)}: ${task.role} [${state}] claims=${task.claims.join(",")}`
+        `- ${task.id || path3.posix.basename(task.path)}: ${task.role} [${state}] nodes=${nodeIds.join(",") || "-"}`
       );
     }
   }
@@ -7294,7 +7297,7 @@ tasks: (none)
   const lines = [`workspaceId: ${row.workspaceId ?? "?"}`, `tasks: ${tasks.length}`, ""];
   for (const t of tasks) {
     lines.push(
-      `- ${t.path ?? t.id ?? "?"}	state=${t.state ?? t.status ?? "?"}	role=${t.role ?? "?"}	claims=${(t.claims ?? []).join(",") || "-"}` + (t.sessionId ? `	session=${t.sessionId}` : "")
+      `- ${t.path ?? t.id ?? "?"}	state=${t.state ?? t.status ?? "?"}	role=${t.role ?? "?"}	nodes=${(t.referencedNodeIds ?? []).join(",") || "-"}` + (t.sessionId ? `	session=${t.sessionId}` : "")
     );
   }
   return lines.join("\n") + "\n";
@@ -7307,7 +7310,7 @@ function formatTaskGet(result) {
     `role: ${t.role ?? "?"}`,
     `state: ${t.state ?? t.status ?? "?"}`,
     `status: ${t.status ?? "?"}`,
-    `claims: ${(t.claims ?? []).join(", ") || "-"}`
+    `nodes: ${(t.referencedNodeIds ?? []).join(", ") || "-"}`
   ];
   if (t.sessionId) lines.push(`sessionId: ${t.sessionId}`);
   if (t.prompt) {

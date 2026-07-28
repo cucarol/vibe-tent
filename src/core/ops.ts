@@ -13,7 +13,7 @@ import {
   envelopeIsActiveOccupation,
   structuralClaimGate,
 } from "./claim.js";
-import { taskReferencedNodeIds } from "./task-node-refs.js";
+import { taskDirectlyReferencesNode, taskReferencedNodeIds } from "./task-node-refs.js";
 import { assertContentMutable, isExplicitArchiveRoot, isUsableBox, parseNodeMode } from "./tree.js";
 import {
   addRegistryTag,
@@ -253,11 +253,11 @@ async function dispatchUnlocked(
     const written = await loadTaskEnvelope(env.fs, taskPath).catch(() => null);
     const parentActor = options.parentActor;
     const reviewer = options.reviewer ?? { ...parentActor };
+    // Fallback is relay-only (no claims[] projection). Prefer the loaded envelope with contextCard.
     const relayPrompt = relayPromptForTask(
       written ?? {
         path: taskPath,
         role: assigneeLabel,
-        claims: taskClaims.map((taskClaim) => taskClaim.id),
         manifest: manifestPath,
         status: "pending" as const,
         state: "queued" as const,
@@ -386,7 +386,10 @@ export async function forceRelease(env: OpsEnv, boxId: string): Promise<void> {
 
   const tasks = await loadTaskEnvelopes(env.fs);
   const active = tasks.filter(
-    (t) => envelopeIsActiveOccupation(t) && t.claims.includes(boxId)
+    (t) =>
+      envelopeIsActiveOccupation(t) &&
+      t.contextCard != null &&
+      taskDirectlyReferencesNode(t, boxId)
   );
   if (active.length === 0) {
     // Still clean stray non-accepted deliveries for the box.

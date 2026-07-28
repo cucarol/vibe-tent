@@ -45,6 +45,7 @@ import {
   loadTaskEnvelopes,
   migrateParentReviewerEnvelopes,
   patchTaskEnvelope,
+  primaryBoxId,
   sessionBootstrapPromptForTask,
   taskAssigneeKind,
   taskAsSub,
@@ -180,6 +181,7 @@ import {
 import {
   listDirectActiveTasksForNode,
   taskDirectlyReferencesNode,
+  taskReferencedNodeIds,
 } from "../core/task-node-refs.js";
 import {
   TaskLifecycleError,
@@ -3858,12 +3860,14 @@ async function taskClaimRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     ctx.host.markSelfWrite(workspaceId);
     const task = await taskClaim(mount.env, taskPath, { sessionId });
     emitTaskState(ctx, workspaceId, task, "task.claim");
-    for (const claimId of task.claims) {
-      if (claimId === "root") continue;
+    const nodeIds =
+      task.contextCard != null ? taskReferencedNodeIds(task) : [];
+    for (const nodeId of nodeIds) {
+      if (nodeId === "root") continue;
       ctx.events.emit(
         "concept.changed",
         workspaceId,
-        { id: claimId, reason: "task.claim-projection" },
+        { id: nodeId, reason: "task.claim-projection" },
         "self"
       );
     }
@@ -3873,7 +3877,7 @@ async function taskClaimRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       task: projectTask(task),
       state: task.state,
       role: task.role,
-      claims: task.claims,
+      referencedNodeIds: nodeIds,
       sessionId: task.sessionId,
     };
   });
@@ -5035,12 +5039,14 @@ async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     },
     "self"
   );
-  for (const claimId of result.task.claims) {
-    if (claimId === "root") continue;
+  const acceptNodeIds =
+    result.task.contextCard != null ? taskReferencedNodeIds(result.task) : [];
+  for (const nodeId of acceptNodeIds) {
+    if (nodeId === "root") continue;
     ctx.events.emit(
       "concept.changed",
       workspaceId,
-      { id: claimId, reason: "task.accept-projection" },
+      { id: nodeId, reason: "task.accept-projection" },
       "self"
     );
   }
@@ -6039,7 +6045,7 @@ async function executeTaskReplaceSession(
   const priorSessionId = task.sessionId!.trim();
   const preserved = {
     taskId: task.id,
-    claims: [...(task.claims ?? [])],
+    nodeIds: task.contextCard != null ? [...taskReferencedNodeIds(task)] : [],
     worktree: task.worktree,
     branch: task.branch,
     deliveryPolicy: task.deliveryPolicy,
@@ -6193,17 +6199,18 @@ async function executeTaskReplaceSession(
       return next;
     });
 
-    const claims = bound.claims ?? [];
+    const nodeIds =
+      bound.contextCard != null ? taskReferencedNodeIds(bound) : [];
     if (
       bound.id !== preserved.taskId ||
       bound.role !== preserved.role ||
       bound.deliveryPolicy !== preserved.deliveryPolicy ||
       bound.worktree !== preserved.worktree ||
       bound.branch !== preserved.branch ||
-      claims.length !== preserved.claims.length ||
-      claims.some((c, i) => c !== preserved.claims[i])
+      nodeIds.length !== preserved.nodeIds.length ||
+      nodeIds.some((id, i) => id !== preserved.nodeIds[i])
     ) {
-      throw new RpcError(RPC_LIFECYCLE, "task.replaceSession mutated task lane/claims/identity", {
+      throw new RpcError(RPC_LIFECYCLE, "task.replaceSession mutated task lane/nodeRefs/identity", {
         code: "TASK_IDENTITY_DRIFT",
       });
     }
@@ -6295,7 +6302,9 @@ async function buildFreshReplaceSessionBootstrap(
     `Task envelope: ${task.path}`,
     ...(task.id ? [`Task id: ${task.id}`] : []),
     ...(task.manifest ? [`Manifest: ${task.manifest}`] : []),
-    ...(task.claims?.length ? [`claims (Node refs): ${task.claims.join(", ")}`] : []),
+    ...(task.contextCard != null && taskReferencedNodeIds(task).length
+      ? [`Node refs: ${taskReferencedNodeIds(task).join(", ")}`]
+      : []),
     "Pending TaskInputs and delivery policy are preserved on this Task. Final report still goes through Delivery only.",
   ].join("\n");
   return `${base}\n\n${tail}\n`;
@@ -7534,7 +7543,7 @@ async function interactionListPending(
       createdAt: ask.createdAt,
       taskPath: ask.taskPath,
       ...(ask.taskId ? { taskId: ask.taskId } : task?.id ? { taskId: task.id } : {}),
-      ...(task?.claims?.[0] ? { boxId: task.claims[0] } : {}),
+      ...(task && primaryBoxId(task) ? { boxId: primaryBoxId(task) } : {}),
       ...(ask.role ?? task?.role ? { role: ask.role ?? task?.role } : {}),
       ...(ask.sessionId ?? task?.sessionId
         ? { sessionId: ask.sessionId ?? task?.sessionId }
@@ -7556,7 +7565,7 @@ async function interactionListPending(
       createdAt: approval.createdAt,
       taskPath: approval.taskPath,
       ...(approval.taskId ? { taskId: approval.taskId } : task?.id ? { taskId: task.id } : {}),
-      ...(task?.claims?.[0] ? { boxId: task.claims[0] } : {}),
+      ...(task && primaryBoxId(task) ? { boxId: primaryBoxId(task) } : {}),
       role: approval.role,
       ...(task?.sessionId ? { sessionId: task.sessionId } : {}),
       profileId: approval.profileId,
@@ -7586,7 +7595,7 @@ async function interactionListPending(
         : task?.id
           ? { taskId: task.id }
           : {}),
-      ...(task?.claims?.[0] ? { boxId: task.claims[0] } : {}),
+      ...(task && primaryBoxId(task) ? { boxId: primaryBoxId(task) } : {}),
       ...(projected.role ?? task?.role ? { role: projected.role ?? task?.role } : {}),
       toolTitle: projected.toolTitle,
       options: projected.options.map((o) => ({
@@ -10038,8 +10047,9 @@ async function buildRejectResumeRecoveryOrientation(
   lines.push(`Task envelope: ${task.path}`);
   if (task.id) lines.push(`Task id: ${task.id}`);
   if (task.manifest) lines.push(`Manifest: ${task.manifest}`);
-  if (task.claims?.length) {
-    lines.push(`claims (Node refs): ${task.claims.join(", ")}`);
+  if (task.contextCard != null) {
+    const nodeIds = taskReferencedNodeIds(task);
+    if (nodeIds.length) lines.push(`Node refs: ${nodeIds.join(", ")}`);
   }
   if (opts.workspaceLane) {
     lines.push("workspace lane:");
@@ -10607,7 +10617,8 @@ function emitTaskState(
       id: task.id,
       state: task.state,
       role: task.role,
-      claims: task.claims,
+      referencedNodeIds:
+        task.contextCard != null ? taskReferencedNodeIds(task) : [],
       sessionId: task.sessionId,
       reason,
     },
@@ -11477,11 +11488,13 @@ function buildContextCardManagedBootstrap(
 
   const executionLane = projectExecutionLaneFromTask(task);
   const executionLaneText = formatExecutionLanePrompt(executionLane);
+  const bootstrapNodeIds =
+    task.contextCard != null ? taskReferencedNodeIds(task) : [];
   const pointers = [
     `Task envelope: ${task.path}`,
     `Manifest: ${task.manifest}`,
     ...(task.id ? [`Task id: ${task.id}`] : []),
-    ...(task.claims?.length ? [`claims: ${task.claims.join(", ")}`] : []),
+    ...(bootstrapNodeIds.length ? [`nodes: ${bootstrapNodeIds.join(", ")}`] : []),
     `deliveryPolicy: ${task.deliveryPolicy ?? "review"}`,
     `Service status: this task is already claimed (state=${task.state || "running"}).`,
     "Managed path: Local Service already claimed this task; final assistant reply is the report and will be delivered automatically.",
@@ -11527,8 +11540,8 @@ function buildContextCardManagedBootstrap(
 }
 
 /**
- * Collect local image path refs from task user prompt + claimed concept bodies.
- * Explicit sources only — no workspace scan. Missing claims/files are skipped.
+ * Collect local image path refs from task user prompt + referenced Node bodies.
+ * Explicit sources only — no workspace scan. Missing node ids/files are skipped.
  * Returns paths only (never base64).
  */
 async function collectTaskBootstrapImageRefs(
@@ -11539,9 +11552,11 @@ async function collectTaskBootstrapImageRefs(
   const claimBodies: Array<{ body: string; notePath?: string }> = [];
   try {
     const tent = await loadTent(fs);
-    for (const claimId of task.claims ?? []) {
-      if (!claimId || claimId === "root") continue;
-      const box = tent.byId.get(claimId);
+    const nodeIds =
+      task.contextCard != null ? taskReferencedNodeIds(task) : [];
+    for (const nodeId of nodeIds) {
+      if (!nodeId || nodeId === "root") continue;
+      const box = tent.byId.get(nodeId);
       if (!box || typeof box.body !== "string") continue;
       claimBodies.push({
         body: box.body,
@@ -11585,7 +11600,8 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
     path: task.path,
     id: task.id,
     role: task.role,
-    claims: task.claims,
+    referencedNodeIds:
+      task.contextCard != null ? taskReferencedNodeIds(task) : [],
     status: task.status,
     state: task.state,
     manifest: task.manifest,

@@ -296,7 +296,7 @@ test("lifecycle: residual disk owner/status is stripped on load and does not blo
   assert.equal(active!.role, "reviewer");
 });
 
-test("lifecycle: second active task on same box is rejected (envelope oracle)", async () => {
+test("lifecycle: second active task on same box is legal (non-exclusive refs)", async () => {
   const dir = await makeTent();
   const e = env(dir);
   const r1 = await dispatch(e as any, "bx-p1", "executor", {
@@ -305,15 +305,13 @@ test("lifecycle: second active task on same box is rejected (envelope oracle)", 
     reviewer: { kind: "user", id: "user" },
   });
   assert.equal((await loadTaskEnvelope(e.fs, r1.taskPath)).state, "queued");
-  await assert.rejects(
-    () =>
-      dispatch(e as any, "bx-p1", "reviewer", {
-        userPrompt: "overlap",
-        parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
-      }),
-    /already occupied by active task|Cannot dispatch/
-  );
+  // Concurrent direct refs on the same Node are legal (cx-tsw53f).
+  const overlap = await dispatch(e as any, "bx-p1", "reviewer", {
+    userPrompt: "overlap",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+  });
+  assert.ok(overlap.taskPath);
   // Peer claim of a different free box still works (bx-o1 is outside p1 subtree).
   const r2 = await dispatch(e as any, "bx-o1", "reviewer", {
     userPrompt: "other box",
@@ -321,11 +319,14 @@ test("lifecycle: second active task on same box is rejected (envelope oracle)", 
     reviewer: { kind: "user", id: "user" },
   });
   assert.ok(r2.taskPath);
+  const active = await findActiveTaskForBox(e.fs, "bx-p1");
+  assert.ok(active);
 });
 
-test("lifecycle: active root claim blocks box dispatch (root-vs-box)", async () => {
+test("lifecycle: workspace-only context Task does not block box dispatch (non-exclusive)", async () => {
   const dir = await makeTent();
   const e = env(dir);
+  // Explicit empty refs.nodes = stable workspace context (not a Tent-wide lock).
   await e.fs.writeFile(
     "temp/executor/tasks/task-root-active.md",
     [
@@ -335,34 +336,58 @@ test("lifecycle: active root claim blocks box dispatch (root-vs-box)", async () 
       "status: taken",
       "state: running",
       "role: executor",
-      "claims: [root]",
+      "parentActor:",
+      "  kind: user",
+      "  id: user",
+      "reviewer:",
+      "  kind: user",
+      "  id: user",
+      "contextCard:",
+      "  schemaVersion: v1",
+      "  objective: workspace context",
+      "  frozenDecisions: []",
+      "  scope:",
+      "    include: []",
+      "    exclude: []",
+      "  acceptance:",
+      "    - workspace context",
+      "  refs:",
+      "    nodes: []",
+      "    tasks: []",
+      "    deliveries: []",
+      "    git: []",
+      "  parentActor:",
+      "    kind: user",
+      "    id: user",
+      "  reviewer:",
+      "    kind: user",
+      "    id: user",
+      "  assignee:",
+      "    kind: role",
+      "    id: executor",
+      "  contextGeneration: cg-v1-workspace",
+      "  taskDeltaDigest: td-workspace",
       "manifest: temp/executor/manifest.yml",
       "---",
-      "# root occupation",
+      "# workspace context",
       "",
     ].join("\n")
   );
-  await assert.rejects(
-    () =>
-      dispatch(e as any, "bx-p1", "reviewer", {
-        userPrompt: "blocked by root",
-        parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
-      }),
-    /Tent root is occupied by active task|Cannot dispatch/
-  );
-  await assert.rejects(
-    () =>
-      dispatch(e as any, "bx-o1", "reviewer", {
-        userPrompt: "also blocked",
-        parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
-      }),
-    /Tent root is occupied by active task|Cannot dispatch/
-  );
+  const r1 = await dispatch(e as any, "bx-p1", "reviewer", {
+    userPrompt: "concurrent with workspace task",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+  });
+  assert.ok(r1.taskPath);
+  const r2 = await dispatch(e as any, "bx-o1", "reviewer", {
+    userPrompt: "also concurrent",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+  });
+  assert.ok(r2.taskPath);
 });
 
-test("lifecycle: asSub cannot bypass active root occupation", async () => {
+test("lifecycle: asSub under workspace-context parent is allowed (non-exclusive)", async () => {
   const dir = await makeTent();
   const e = env(dir);
   await e.fs.writeFile(
@@ -374,27 +399,53 @@ test("lifecycle: asSub cannot bypass active root occupation", async () => {
       "status: taken",
       "state: running",
       "role: architect",
-      "claims: [root]",
+      "parentActor:",
+      "  kind: user",
+      "  id: user",
+      "reviewer:",
+      "  kind: user",
+      "  id: user",
+      "contextCard:",
+      "  schemaVersion: v1",
+      "  objective: workspace",
+      "  frozenDecisions: []",
+      "  scope:",
+      "    include: []",
+      "    exclude: []",
+      "  acceptance:",
+      "    - workspace",
+      "  refs:",
+      "    nodes: []",
+      "    tasks: []",
+      "    deliveries: []",
+      "    git: []",
+      "  parentActor:",
+      "    kind: user",
+      "    id: user",
+      "  reviewer:",
+      "    kind: user",
+      "    id: user",
+      "  assignee:",
+      "    kind: role",
+      "    id: architect",
+      "  contextGeneration: cg-v1-ws",
+      "  taskDeltaDigest: td-ws",
       "manifest: temp/architect/manifest.yml",
       "---",
-      "# root by architect",
+      "# workspace by architect",
       "",
     ].join("\n")
   );
-  // asSub under the root holder still must not open a child box — root is tent-wide.
-  await assert.rejects(
-    () =>
-      dispatch(e as any, "bx-p1", "helper", {
-        userPrompt: "sub under root holder",
-        asSub: true,
-        parentActor: { kind: "role", id: "architect" },
-        reviewer: { kind: "role", id: "architect" },
-      }),
-    /Tent root is occupied by active task|Cannot dispatch/
-  );
+  const child = await dispatch(e as any, "bx-p1", "helper", {
+    userPrompt: "sub under workspace holder",
+    asSub: true,
+    parentActor: { kind: "role", id: "architect" },
+    reviewer: { kind: "role", id: "architect" },
+  });
+  assert.ok(child.taskPath);
 });
 
-test("lifecycle: legacy envelope without state still occupies via status", async () => {
+test("lifecycle: legacy claims-only envelope loads; occupation requires migrated contextCard", async () => {
   const dir = await makeTent();
   const e = env(dir);
   await e.fs.writeFile(
@@ -405,6 +456,8 @@ test("lifecycle: legacy envelope without state still occupies via status", async
       "id: tk-legacy1",
       "status: pending",
       "role: executor",
+      "parentActor: { kind: user, id: user }",
+      "reviewer: { kind: user, id: user }",
       "claims: [bx-p1]",
       "manifest: temp/executor/manifest.yml",
       "---",
@@ -412,18 +465,20 @@ test("lifecycle: legacy envelope without state still occupies via status", async
       "",
     ].join("\n")
   );
-  // loadTaskEnvelope normalizes state from legacy status when missing.
+  // loadTaskEnvelope still allows unmigrated claims key (no contextCard projection).
   const legacy = await loadTaskEnvelope(e.fs, "temp/executor/tasks/task-legacy-only.md");
   assert.equal(legacy.state, "queued");
-  await assert.rejects(
-    () =>
-      dispatch(e as any, "bx-p1", "reviewer", {
-        userPrompt: "blocked by legacy",
-        parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
-      }),
-    /already occupied by active task|Cannot dispatch/
-  );
+  assert.equal(legacy.contextCard, undefined);
+  // Without contextCard, unmigrated tasks are not in the occupation set.
+  assert.equal(await findActiveTaskForBox(e.fs, "bx-p1"), undefined);
+  // Concurrent dispatch of the same box is legal (and succeeds for unmigrated residual).
+  const concurrent = await dispatch(e as any, "bx-p1", "reviewer", {
+    userPrompt: "ok concurrent",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+  });
+  assert.ok(concurrent.taskPath);
+  // boxProjectionOf still derives from lifecycle state when envelope is passed directly.
   const proj = boxProjectionOf(legacy);
   assert.equal(proj.status, "doing");
   assert.equal(proj.assignee, "executor");

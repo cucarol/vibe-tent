@@ -41,7 +41,8 @@ export type ShellTaskRow = {
   path: string;
   role: string;
   status: string;
-  claims: string[];
+  /** Node ids from TaskProjection.referencedNodeIds (Context Card refs). */
+  referencedNodeIds: string[];
   /** Full lifecycle state when available (task-api). */
   state?: string;
   id?: string;
@@ -120,7 +121,7 @@ export class DesktopShellModel {
           path: t.path,
           id: t.id,
           role: t.role,
-          claims: t.claims,
+          referencedNodeIds: t.referencedNodeIds,
           status: (t.status === "taken" ? "taken" : "pending") as "pending" | "taken",
           state: t.state || t.status,
           prompt: t.prompt,
@@ -296,7 +297,7 @@ export class DesktopShellModel {
         path: t.path,
         role: t.role,
         status: t.status,
-        claims: t.claims ?? [],
+        referencedNodeIds: t.referencedNodeIds ?? [],
         state: t.state,
         id: t.id,
         prompt: t.prompt,

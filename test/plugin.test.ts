@@ -151,12 +151,34 @@ test("plugin ui-model:tree pending filter includes pending dispatches (not owner
   assert.equal(hasTreePending({ pendingProposals: 0, pendingDispatches: 0 }), false);
 });
 
-test("plugin pending dispatch:only taken status clears the newest task claims", () => {
+/** Minimal contextCard projection for pending-dispatch fixtures (refs.nodes only). */
+function fixtureCard(nodeIds: string[]): NonNullable<TaskEnvelope["contextCard"]> {
+  return {
+    schemaVersion: "v1",
+    objective: "fixture",
+    frozenDecisions: [],
+    scope: { include: [], exclude: [] },
+    acceptance: ["fixture"],
+    refs: {
+      nodes: nodeIds.filter((id) => id !== "root").map((id) => ({ id })),
+      tasks: [],
+      deliveries: [],
+      git: [],
+    },
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+    assignee: { kind: "role", id: "executor" },
+    contextGeneration: "cg-v1-fixture",
+    taskDeltaDigest: "td-fixture",
+  };
+}
+
+test("plugin pending dispatch:only taken status clears the newest task node refs", () => {
   const tasks: TaskEnvelope[] = [
     {
       path: "temp/executor/tasks/task-20260703T08000-bx-one.md",
       role: "executor",
-      claims: ["bx-one"],
+      contextCard: fixtureCard(["bx-one"]),
       manifest: "temp/executor/manifest.yml",
       status: "pending",
       state: "queued",
@@ -164,7 +186,8 @@ test("plugin pending dispatch:only taken status clears the newest task claims", 
     {
       path: "temp/executor/tasks/task-20260703T08100-bx-one.md",
       role: "executor",
-      claims: ["bx-one", "bx-two", "root"],
+      // "root" is not a Node ref; fixtureCard drops it (workspace context separate).
+      contextCard: fixtureCard(["bx-one", "bx-two", "root"]),
       manifest: "temp/executor/manifest.yml",
       status: "pending",
       state: "queued",
@@ -172,7 +195,7 @@ test("plugin pending dispatch:only taken status clears the newest task claims", 
     {
       path: "temp/planner/tasks/task-20260703T08200-bx-three.md",
       role: "planner",
-      claims: ["bx-three"],
+      contextCard: fixtureCard(["bx-three"]),
       manifest: "temp/planner/manifest.yml",
       status: "pending",
       state: "queued",
@@ -180,7 +203,7 @@ test("plugin pending dispatch:only taken status clears the newest task claims", 
     {
       path: "temp/zeta/tasks/task-20260703T07000-bx-four.md",
       role: "zeta",
-      claims: ["bx-four"],
+      contextCard: fixtureCard(["bx-four"]),
       manifest: "temp/zeta/manifest.yml",
       status: "pending",
       state: "queued",
@@ -188,7 +211,7 @@ test("plugin pending dispatch:only taken status clears the newest task claims", 
     {
       path: "temp/alpha/tasks/task-20260703T09000-bx-four.md",
       role: "alpha",
-      claims: ["bx-four"],
+      contextCard: fixtureCard(["bx-four"]),
       manifest: "temp/alpha/manifest.yml",
       status: "pending",
       state: "queued",

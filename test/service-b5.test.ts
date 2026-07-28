@@ -1055,7 +1055,7 @@ test("B5: startSession bootstrap is managed (Context Card + user prompt); relay 
     assert.match(bootstrap!, /outcome:\s*delivered\|blocked\|needs-input|explicit outcome|delivered/i);
     assert.match(bootstrap!, /Task envelope:/);
     assert.match(bootstrap!, /Manifest:/);
-    assert.match(bootstrap!, /claims:/);
+    assert.match(bootstrap!, /nodes:/);
     assert.match(bootstrap!, /deliveryPolicy:/);
     // Path tutorial once (Context Card), not re-taught in managed session body.
     const pathTutorialHits = bootstrap!.match(/run tent from workspaceRoot/gi) || [];

@@ -269,7 +269,7 @@ function applyShell(s: ShellState): void {
           path: t.path,
           id: t.id,
           role: t.role,
-          claims: t.claims || [],
+          referencedNodeIds: t.referencedNodeIds || [],
           status: (t.status === "taken" ? "taken" : "pending") as "pending" | "taken",
           state: t.state || t.status,
           prompt: t.prompt,

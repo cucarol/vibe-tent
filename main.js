@@ -1785,11 +1785,9 @@ async function loadTaskEnvelope(fs2, path) {
       `Invalid task envelope format: ${path} (missing Task.contextCard.refs.nodes; run claims\u2192refs migration).`
     );
   }
-  const projectedClaims = contextCard ? contextCard.refs.nodes.map((n) => n.id).filter(Boolean) : [];
   const task = {
     path,
     role: data.role,
-    claims: projectedClaims,
     manifest: data.manifest,
     status: stateToLegacyStatus(state),
     state,
@@ -3354,9 +3352,10 @@ async function taskFail(env, taskPath, options = {}) {
   });
 }
 async function releaseOccupationForTask(env, task) {
-  for (const claimId of task.claims) {
-    if (claimId === "root") continue;
-    await removeNonAcceptedDeliveriesForBox(env.fs, claimId);
+  if (task.contextCard == null) return;
+  for (const nodeId2 of taskReferencedNodeIds(task)) {
+    if (nodeId2 === "root") continue;
+    await removeNonAcceptedDeliveriesForBox(env.fs, nodeId2);
   }
 }
 async function requireActiveReadyDelivery(fs2, task) {
@@ -4466,7 +4465,6 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       written ?? {
         path: taskPath,
         role: assigneeLabel,
-        claims: taskClaims.map((taskClaim2) => taskClaim2.id),
         manifest: manifestPath,
         status: "pending",
         state: "queued",
@@ -4549,7 +4547,7 @@ async function forceRelease(env, boxId) {
   });
   const tasks = await loadTaskEnvelopes(env.fs);
   const active = tasks.filter(
-    (t) => envelopeIsActiveOccupation(t) && t.claims.includes(boxId)
+    (t) => envelopeIsActiveOccupation(t) && t.contextCard != null && taskDirectlyReferencesNode(t, boxId)
   );
   if (active.length === 0) {
     await withMutation2(env.fs, async () => {
@@ -5225,6 +5223,7 @@ init_tree();
 init_typeRegistry();
 init_skillRoleRegistry();
 init_claim();
+init_task_node_refs();
 
 // src/core/inbox.ts
 init_task();
@@ -6409,10 +6408,12 @@ var TimedCache = class {
 };
 
 // src/plugin/pending-dispatch.ts
+init_task_node_refs();
 function pendingDispatches(tasks) {
   const latestByBox = /* @__PURE__ */ new Map();
   for (const task of [...tasks].sort(compareTaskOrder)) {
-    for (const boxId of task.claims) {
+    if (task.contextCard == null) continue;
+    for (const boxId of taskReferencedNodeIds(task)) {
       if (boxId !== "root") latestByBox.set(boxId, task);
     }
   }
@@ -7749,7 +7750,7 @@ var TentView = class extends import_obsidian4.ItemView {
       };
     } else {
       const activeTask = this.tasks.find(
-        (t) => (t.state === "running" || t.state === "waiting" || t.state === "delivered" || t.state === "queued" || t.status === "pending" || t.status === "taken") && t.claims.includes(box.id)
+        (t) => (t.state === "running" || t.state === "waiting" || t.state === "delivered" || t.state === "queued" || t.status === "pending" || t.status === "taken") && t.contextCard != null && taskDirectlyReferencesNode(t, box.id)
       );
       if (activeTask) {
         body.createDiv({ cls: "tent-dispatch-sec tent-dispatch-status-sec", text: "\u6295\u9012\u72B6\u6001" });

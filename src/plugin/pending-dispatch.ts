@@ -1,4 +1,5 @@
 import type { TaskEnvelope } from "../core/task.js";
+import { taskReferencedNodeIds } from "../core/task-node-refs.js";
 
 export interface PendingDispatch {
   boxId: string;
@@ -8,7 +9,8 @@ export interface PendingDispatch {
 export function pendingDispatches(tasks: TaskEnvelope[]): PendingDispatch[] {
   const latestByBox = new Map<string, TaskEnvelope>();
   for (const task of [...tasks].sort(compareTaskOrder)) {
-    for (const boxId of task.claims) {
+    if (task.contextCard == null) continue;
+    for (const boxId of taskReferencedNodeIds(task)) {
       if (boxId !== "root") latestByBox.set(boxId, task);
     }
   }

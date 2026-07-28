@@ -339,7 +339,11 @@ export type TaskProjection = {
   path: string;
   id?: string;
   role: string;
-  claims: string[];
+  /**
+   * Node ids from Task.contextCard.refs.nodes (via taskReferencedNodeIds).
+   * Replaces the removed claims[] projection — occupation truth is Context Card only.
+   */
+  referencedNodeIds: string[];
   /** Legacy envelope status (pending|taken). */
   status: "pending" | "taken";
   /** Full lifecycle state (task-api §2). */
@@ -907,7 +911,7 @@ export const CLIENT_METHODS = [
    * Explicit fresh managed Session on the same Task (unusable provider context).
    * Never a silent fallback from task.startSession. Same A2A gate as startSession.
    * Shares the per-Task managed-session execution slot with startSession.
-   * Preserves claims/worktree/branch/lane/pending TaskInputs/deliveryPolicy;
+   * Preserves nodeRefs/worktree/branch/lane/pending TaskInputs/deliveryPolicy;
    * stops the old Session first; new ss- has contextRestored=false + stable restoreReason.
    * turnBusy → fail-loud TURN_BUSY (retryable); no force flag in this contract.
    * waiting only when durable waitCode=session_unavailable (not user-input/a2a/tool).

@@ -13,6 +13,7 @@ import { splitType, joinType } from "../core/typeRegistry.js";
 import { loadRolesRegistry } from "../core/skillRoleRegistry.js";
 import type { RoleDefinition } from "../core/skillRoleRegistry.js";
 import { canClaim, isFrozen } from "../core/claim.js";
+import { taskDirectlyReferencesNode } from "../core/task-node-refs.js";
 import { buildInbox, InboxItem } from "../core/inbox.js";
 import { loadDeliveries, type DeliveryRecord } from "../core/delivery.js";
 import { acceptProposal, loadProposals, rejectProposal, type Proposal } from "../core/proposal.js";
@@ -1595,7 +1596,8 @@ export class TentView extends ItemView {
             t.state === "queued" ||
             t.status === "pending" ||
             t.status === "taken") &&
-          t.claims.includes(box.id)
+          t.contextCard != null &&
+          taskDirectlyReferencesNode(t, box.id)
       );
       if (activeTask) {
         body.createDiv({ cls: "tent-dispatch-sec tent-dispatch-status-sec", text: "投递状态" });

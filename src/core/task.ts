@@ -127,11 +127,10 @@ export interface TaskEnvelope {
   path: string;
   role: string;
   /**
-   * @deprecated In-memory projection of contextCard.refs.nodes ids only.
-   * Prefer taskReferencedNodeIds(task). Never written on new envelopes;
-   * never rebuilt from residual claims[] at runtime.
+   * Node refs are sole-sourced from `contextCard.refs.nodes` via
+   * `taskReferencedNodeIds(task)` / `primaryBoxId(task)`.
+   * No in-memory claims[] projection — migrator is the only on-disk claims reader.
    */
-  claims: string[];
   manifest: string;
   status: TaskEnvelopeStatus;
   /** Full lifecycle state; always derived for legacy files. */
@@ -460,8 +459,9 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
 
   // Complete Context Card v1 is the sole Node-ref source. Incomplete/partial → fail loud.
   // Transitional pre-migration envelopes may still carry residual claims[] on disk;
-  // those are NOT used by taskReferencedNodeIds (migrator-only). Load projects an empty
-  // in-memory claims list until claims→refs migration writes a full card.
+  // those are NOT used at runtime (migrator-only). hasClaimsKey only gates load so
+  // unmigrated envelopes can still be loaded (without claims projection) until
+  // migrateLegacyTaskNodeRefs writes a full card.
   const contextCard = loadTaskContextCardFromFrontmatter(data) ?? undefined;
   const hasClaimsKey =
     Array.isArray(data.claims) &&
@@ -471,16 +471,10 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
       `Invalid task envelope format: ${path} (missing Task.contextCard.refs.nodes; run claims→refs migration).`
     );
   }
-  // In-memory claims projection = contextCard.refs.nodes ids only when card present.
-  // Never project residual on-disk claims[] into occupation/ref truth.
-  const projectedClaims = contextCard
-    ? contextCard.refs.nodes.map((n) => n.id).filter(Boolean)
-    : [];
 
   const task: TaskEnvelope = {
     path,
     role: data.role,
-    claims: projectedClaims,
     manifest: data.manifest,
     status: stateToLegacyStatus(state),
     state,

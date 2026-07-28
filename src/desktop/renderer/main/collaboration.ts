@@ -355,11 +355,11 @@ export function renderTasks(): void {
         // 谁 / 在做什么 / 一句摘要 / 动作；id/path/状态字收进详情
         const who = escapeHtml(t.role);
         // 主行不裸露 cx-/rl-/tk- 等技术 id
-        const claims = (t.claims || []).filter(
+        const nodeIds = (t.referencedNodeIds || []).filter(
           (c) => c !== "root" && !/^(cx|rl|tk|ss|dl|ti)-/i.test(c)
         );
-        const claimBit = claims.length
-          ? `<span class="task-claims muted">${claims.map((c) => escapeHtml(c)).join(" · ")}</span>`
+        const claimBit = nodeIds.length
+          ? `<span class="task-claims muted">${nodeIds.map((c) => escapeHtml(c)).join(" · ")}</span>`
           : "";
         const blurbRaw = t.deliverySummary || t.prompt || "";
         const blurb = blurbRaw

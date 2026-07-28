@@ -576,7 +576,8 @@ type TaskLike = {
   role?: string;
   state?: string;
   status?: string;
-  claims?: string[];
+  /** Node ids from TaskProjection.referencedNodeIds (Context Card refs). */
+  referencedNodeIds?: string[];
   sessionId?: string;
   prompt?: string;
 };
@@ -654,7 +655,7 @@ function formatTaskList(result: unknown): string {
       `- ${t.path ?? t.id ?? "?"}` +
         `\tstate=${t.state ?? t.status ?? "?"}` +
         `\trole=${t.role ?? "?"}` +
-        `\tclaims=${(t.claims ?? []).join(",") || "-"}` +
+        `\tnodes=${(t.referencedNodeIds ?? []).join(",") || "-"}` +
         (t.sessionId ? `\tsession=${t.sessionId}` : "")
     );
   }
@@ -669,7 +670,7 @@ function formatTaskGet(result: { task: TaskLike }): string {
     `role: ${t.role ?? "?"}`,
     `state: ${t.state ?? t.status ?? "?"}`,
     `status: ${t.status ?? "?"}`,
-    `claims: ${(t.claims ?? []).join(", ") || "-"}`,
+    `nodes: ${(t.referencedNodeIds ?? []).join(", ") || "-"}`,
   ];
   if (t.sessionId) lines.push(`sessionId: ${t.sessionId}`);
   if (t.prompt) {

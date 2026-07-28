@@ -164,7 +164,7 @@ test("accept/reject payload builders and task review model", () => {
         path: "temp/executor/tasks/a.md",
         id: "tk-a",
         role: "executor",
-        claims: ["cx-box"],
+        referencedNodeIds: ["cx-box"],
         status: "taken",
         state: "delivered",
         manifest: "m",
@@ -175,7 +175,7 @@ test("accept/reject payload builders and task review model", () => {
         path: "temp/executor/tasks/b.md",
         id: "tk-b",
         role: "executor",
-        claims: ["cx-box"],
+        referencedNodeIds: ["cx-box"],
         status: "pending",
         state: "queued",
         manifest: "m",
@@ -200,6 +200,8 @@ test("accept/reject payload builders and task review model", () => {
   assert.equal(items[0].canAcceptOrReject, true);
   assert.equal(items[0].deliverySummary, "Done with tests");
   assert.deepEqual(items[0].commits, ["abcdef123456"]);
+  assert.deepEqual(items[0].referencedNodeIds, ["cx-box"]);
+  assert.deepEqual(items[1].referencedNodeIds, ["cx-box"]);
   assert.equal(items[1].canAcceptOrReject, false);
   assert.equal(items[1].canStartAgent, true);
   assert.equal(items[0].canStartAgent, false);
@@ -340,7 +342,7 @@ test("task/session state labels and start/interrupt gates", () => {
         path: "temp/executor/tasks/live.md",
         id: "tk-live",
         role: "executor",
-        claims: ["cx-1"],
+        referencedNodeIds: ["cx-1"],
         status: "taken",
         state: "running",
         manifest: "m",

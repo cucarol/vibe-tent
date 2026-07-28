@@ -286,7 +286,6 @@ test("stable bootstrap prefix is byte-identical across two Tasks; only dynamic t
   const taskA = {
     path: "temp/规划/tasks/task-aaa-cx-1.md",
     role: "规划",
-    claims: ["cx-aaaaaa"],
     manifest: "temp/规划/manifest.yml",
     status: "taken" as const,
     state: "running" as const,
@@ -298,7 +297,6 @@ test("stable bootstrap prefix is byte-identical across two Tasks; only dynamic t
   const taskB = {
     path: "temp/规划/tasks/task-bbb-cx-2.md",
     role: "规划",
-    claims: ["cx-bbbbbb"],
     manifest: "temp/规划/manifest.yml",
     status: "taken" as const,
     state: "running" as const,

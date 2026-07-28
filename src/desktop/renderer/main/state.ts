@@ -189,7 +189,10 @@ export function tasksForActiveNode(states?: string[]): TaskReviewItem[] {
   if (!activeCx) return [];
   return actionableTasks().filter((task) => {
     const st = String(task.state || task.status || "");
-    return task.claims.includes(activeCx!) && (!states || states.includes(st));
+    return (
+      task.referencedNodeIds.includes(activeCx!) &&
+      (!states || states.includes(st))
+    );
   });
 }
 

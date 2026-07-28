@@ -204,7 +204,7 @@ test("workspace context is not a Tent-wide lock; box panel lists direct refs onl
   const anyBox = findAnyActiveTask(tasks);
   assert.ok(anyBox);
   assert.equal(anyBox!.role, "reviewer");
-  assert.ok(anyBox!.claims.includes("bx-p1") || anyBox!.contextCard?.refs.nodes.some((n) => n.id === "bx-p1"));
+  assert.ok(anyBox!.contextCard?.refs.nodes.some((n) => n.id === "bx-p1"));
   assert.equal(occupiedBoxesFromTasks(tent, tasks).map((b) => b.id).join(","), "bx-p1");
 });
 
@@ -401,7 +401,10 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.deepEqual(tasks.map((task) => task.path), [first.taskPath, second.taskPath]);
   assert.equal(tasks[0].path, first.taskPath);
   assert.equal(tasks[0].role, "analyst");
-  assert.deepEqual(tasks[0].claims, ["bx-p1"]);
+  assert.deepEqual(
+    tasks[0].contextCard?.refs.nodes.map((n) => n.id) ?? [],
+    ["bx-p1"]
+  );
   assert.equal(tasks[0].manifest, "temp/analyst/manifest.yml");
   assert.equal(tasks[0].status, "pending");
   assert.equal(tasks[0].state, "queued");
@@ -621,6 +624,49 @@ test("中断认领:force-release 清理非 accepted delivery（不写 Node owner
   assert.equal(box.fm.owner, undefined);
   assert.equal(box.fm.status, undefined);
   assert.equal(await fsa.exists(delivery.path), false);
+});
+
+test("force-release: migrated no-claims Task (contextCard refs only) ends occupation", async () => {
+  const dir = await makeTent();
+  const fsa = new NodeFs(dir);
+  const clock = { now: () => "2026-07-28T15:00:00.000Z" };
+  const env = { fs: fsa, clock, tentName: "wqb", tentRoot: dir };
+  await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
+  const taskPath = await writeTaskEnvelope(fsa, clock, {
+    role: "executor",
+    claims: [{ id: "bx-g2", path: "goal/x" }],
+    manifestPath: "temp/executor/manifest.yml",
+    userPrompt: "hold g2 for force-release",
+    id: "tk-fr-card",
+    parentActor: { kind: "user", id: "user" },
+  });
+  const raw = await fsa.readFile(taskPath);
+  // New write must not persist claims[]; occupation is contextCard only.
+  assert.doesNotMatch(raw, /^claims:/m);
+  assert.match(raw, /contextCard:/);
+  await fsa.writeFile(
+    taskPath,
+    raw.replace("status: pending", "status: taken").replace("state: queued", "state: running")
+  );
+  const delivery = await createDelivery(fsa, clock, {
+    taskId: "tk-fr-card",
+    boxId: "bx-g2",
+    role: "executor",
+    summary: "stray ready",
+    status: "ready",
+  });
+  const { forceRelease } = await import("../src/core/ops.js");
+  const { findActiveTaskForBox } = await import("../src/core/task-lifecycle.js");
+  assert.ok(await findActiveTaskForBox(fsa, "bx-g2"));
+  await forceRelease(env as any, "bx-g2");
+  assert.equal(await findActiveTaskForBox(fsa, "bx-g2"), undefined);
+  assert.equal(await fsa.exists(delivery.path), false);
+  const after = await loadTaskEnvelope(fsa, taskPath);
+  assert.ok(
+    after.state === "interrupted" || after.state === "failed" || after.state === "accepted",
+    `expected terminal occupation end, got ${after.state}`
+  );
+  assert.ok(!("claims" in after));
 });
 
 test("orphan box:同名 md 缺 id 时进入 invalid 态且不进 byId", async () => {

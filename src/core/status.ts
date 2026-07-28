@@ -5,6 +5,7 @@ import { loadProposals } from "./proposal.js";
 import { loadTaskEnvelopes } from "./task.js";
 import { loadTent, type LoadedTent } from "./tree.js";
 import { envelopeIsActiveOccupation } from "./claim.js";
+import { taskReferencedNodeIds } from "./task-node-refs.js";
 import { resolveTentWorkspace } from "./workspace.js";
 
 export const NOT_INSIDE_TENT_MESSAGE = "Not inside a Tent (no .tent/ system root with RULES.md found).";
@@ -56,7 +57,11 @@ export async function renderTentStatus(
   } else {
     lines.push("Pending tasks (task-ack):");
     for (const task of pendingTasks) {
-      lines.push(`- ${task.role}/${path.posix.basename(task.path)} -> ${task.claims.join(", ")}`);
+      const nodeIds =
+        task.contextCard != null ? taskReferencedNodeIds(task) : [];
+      lines.push(
+        `- ${task.role}/${path.posix.basename(task.path)} -> ${nodeIds.join(", ") || "-"}`
+      );
     }
   }
 
@@ -72,8 +77,10 @@ export async function renderTentStatus(
     lines.push("Active tasks:");
     for (const task of activeTasks) {
       const state = task.state || task.status || "unknown";
+      const nodeIds =
+        task.contextCard != null ? taskReferencedNodeIds(task) : [];
       lines.push(
-        `- ${task.id || path.posix.basename(task.path)}: ${task.role} [${state}] claims=${task.claims.join(",")}`
+        `- ${task.id || path.posix.basename(task.path)}: ${task.role} [${state}] nodes=${nodeIds.join(",") || "-"}`
       );
     }
   }

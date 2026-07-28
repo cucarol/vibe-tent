@@ -5,7 +5,10 @@
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
 import { canClaim, envelopeIsActiveOccupation } from "./claim.js";
-import { taskReferencedNodeIds } from "./task-node-refs.js";
+import {
+  listDirectActiveTasksForNode,
+  taskReferencedNodeIds,
+} from "./task-node-refs.js";
 import {
   createDeliveryUnlocked,
   loadDeliveries,
@@ -607,11 +610,12 @@ export async function taskFail(
   });
 }
 
-/** Clear non-accepted deliveries for claimed boxes; occupation ends with task state. */
+/** Clear non-accepted deliveries for referenced nodes; occupation ends with task state. */
 async function releaseOccupationForTask(env: OpsEnv, task: TaskEnvelope): Promise<void> {
-  for (const claimId of task.claims) {
-    if (claimId === "root") continue;
-    await removeNonAcceptedDeliveriesForBox(env.fs, claimId);
+  if (task.contextCard == null) return;
+  for (const nodeId of taskReferencedNodeIds(task)) {
+    if (nodeId === "root") continue;
+    await removeNonAcceptedDeliveriesForBox(env.fs, nodeId);
   }
 }
 
@@ -644,7 +648,7 @@ export function assertA2AAllow(input: TaskStartSessionGateInput): void {
 /** Find active operational task for a box (envelope oracle; not frontmatter owner). */
 export async function findActiveTaskForBox(fs: FsAdapter, boxId: string): Promise<TaskEnvelope | undefined> {
   const tasks = await loadTaskEnvelopes(fs);
-  return tasks.find((t) => t.claims.includes(boxId) && envelopeIsActiveOccupation(t));
+  return listDirectActiveTasksForNode(boxId, tasks)[0];
 }
 
 export function boxProjectionOf(task: TaskEnvelope | undefined): {

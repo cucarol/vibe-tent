@@ -53,7 +53,8 @@ export type TaskReviewItem = {
   role: string;
   status: string;
   state: string;
-  claims: string[];
+  /** Node ids from TaskProjection.referencedNodeIds (Context Card refs). */
+  referencedNodeIds: string[];
   prompt?: string;
   activeDeliveryId?: string;
   sessionId?: string;
@@ -496,7 +497,7 @@ export function buildTaskReviewItems(
       role: task.role,
       status: task.status,
       state,
-      claims: task.claims ?? [],
+      referencedNodeIds: task.referencedNodeIds ?? [],
       prompt: task.prompt,
       activeDeliveryId: task.activeDeliveryId,
       sessionId: task.sessionId ?? session?.sessionId,

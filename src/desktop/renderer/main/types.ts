@@ -96,7 +96,7 @@ export type ShellState = {
     path: string;
     role: string;
     status: string;
-    claims: string[];
+    referencedNodeIds: string[];
     state?: string;
     id?: string;
     prompt?: string;
