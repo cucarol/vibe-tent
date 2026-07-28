@@ -46,20 +46,18 @@ export interface TaskEnvelopeInput {
   userPrompt: string;
   workspace?: RoleWorkspaceContract;
   /**
-   * Explicit parent actor (V0.2). When omitted, derived from parentRole / asSub legacy args.
+   * Explicit parent actor (V0.2). Required on new writes — no dispatchedBy fallback.
    */
-  parentActor?: TaskActorRef;
-  /** Explicit reviewer; defaults to same as parentActor. */
-  reviewer?: TaskActorRef;
+  parentActor: TaskActorRef;
   /**
-   * @deprecated Dispatch convenience only — mapped to parentActor/reviewer once.
-   * Not persisted on new envelopes.
+   * Explicit Delivery reviewer (V0.2). Required on new writes; equals parentActor
+   * when callers pass the same ref twice (CLI/Service default).
    */
-  dispatchedBy?: string;
+  reviewer: TaskActorRef;
   /**
    * Sub-dispatch Git lane flag. Missing on disk reads as false (peer).
    * When true, targetBranch is the parent role branch. Review authority uses
-   * parentActor/reviewer, not this flag.
+   * parentActor/reviewer, not this flag. asSub is lane-only.
    */
   asSub?: boolean;
   /** Full operational id (tk-…). Generated if omitted. */
@@ -328,30 +326,27 @@ export function serializeTaskActorRef(actor: TaskActorRef): { kind: string; id: 
 }
 
 /**
- * Resolve parentActor + reviewer for a new dispatch write.
- * Prefer explicit parentActor/reviewer; else map legacy dispatchedBy once.
+ * Resolve parentActor + reviewer for a **new** dispatch write.
+ * Requires explicit parentActor + reviewer. Legacy dispatchedBy is not accepted
+ * on create (migration/load only via migrateParentReviewerFromLegacy).
  */
 export function resolveDispatchActors(input: {
   parentActor?: TaskActorRef;
   reviewer?: TaskActorRef;
-  dispatchedBy?: string;
-  asSub?: boolean;
 }): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
-  if (input.parentActor) {
-    const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
-    const reviewer = input.reviewer
-      ? parseTaskActorRef(input.reviewer, "reviewer")
-      : { ...parentActor };
-    return { parentActor, reviewer };
+  if (!input.parentActor) {
+    throw new Error(
+      "task.dispatch requires explicit parentActor { kind, id } (legacy dispatchedBy is migration-only)."
+    );
   }
-  if (input.reviewer) {
-    // Reviewer without parent is invalid — parent is the authority root.
-    throw new Error("task.dispatch reviewer requires parentActor");
+  if (!input.reviewer) {
+    throw new Error(
+      "task.dispatch requires explicit reviewer { kind, id } (defaults are applied only by callers that copy parentActor)."
+    );
   }
-  return migrateParentReviewerFromLegacy({
-    asSub: input.asSub,
-    dispatchedBy: input.dispatchedBy,
-  });
+  const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
+  const reviewer = parseTaskActorRef(input.reviewer, "reviewer");
+  return { parentActor, reviewer };
 }
 
 export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<TaskEnvelope> {
@@ -647,8 +642,6 @@ export async function writeTaskEnvelope(
   const actors = resolveDispatchActors({
     parentActor: input.parentActor,
     reviewer: input.reviewer,
-    dispatchedBy: input.dispatchedBy,
-    asSub: input.asSub,
   });
   const deliveryPolicy = input.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY;
   // Downstream Task Agent → parent: always review. Elevated policies only for

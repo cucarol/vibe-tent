@@ -181,7 +181,8 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
       boxId: note.id,
       role: "executor",
       prompt: "do the thing",
-      dispatchedBy: "user",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, dispatched.taskPath, sessionId);
 

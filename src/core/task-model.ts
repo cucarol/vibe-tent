@@ -431,10 +431,13 @@ export function assertNotSelfAccept(actor: string, submitterRole: string): void 
 
 /**
  * Review authority for task.accept / task.reject (V0.2 parent/reviewer wire).
- * - Self-review (actor === submitter) is always forbidden.
- * - Executor never self-accepts.
- * - Authorized reviewers: `user` (root) or the exact Task.reviewer when kind=role.
- * - Soft policy check only — not cryptographic auth on the shared service token.
+ * Ordinary accept/reject must equal the exact persisted Task.reviewer and never
+ * the submitter. Executor never self-accepts.
+ *
+ * - User-reviewed (`reviewer.kind=user`): only `actor=user`.
+ * - Role-reviewed (`reviewer.kind=role`): only the exact parent Role id.
+ *   User must not bypass the parent Role via ordinary review.
+ * - Soft policy only — not cryptographic auth on the shared service token.
  *
  * Legacy `asSub`/`dispatchedBy` are not read here. Callers must pass the explicit
  * reviewer (from envelope or one-time migration). Missing reviewer fails loud.
@@ -443,7 +446,7 @@ export function assertReviewAuthority(input: {
   actor: string;
   submitterRole: string;
   reviewer?: TaskActorRef;
-  /** @deprecated Ignored — kept only so old call sites fail closed via reviewer. */
+  /** @deprecated Ignored — authority uses reviewer only. */
   asSub?: boolean;
   /** @deprecated Ignored — use reviewer. */
   dispatchedBy?: string;
@@ -471,23 +474,18 @@ export function assertReviewAuthority(input: {
       `task.${action} requires an explicit Task.reviewer (parent-reviewer wire).`
     );
   }
-  // User is always root reviewer authority.
-  if (actor === "user") return;
   if (reviewer.kind === "user") {
-    // User-facing review: only user (or non-submitter peers historically). V0.2:
-    // durable Role user-facing delivery is reviewed by user; other roles may not
-    // impersonate. Keep soft allowance for any non-submitter only when reviewer
-    // is user? Product: user-direct → review-to-user. Restrict to user only.
+    if (actor === "user") return;
     throw new TaskLifecycleError(
       "REVIEW_FORBIDDEN",
       `task.${action} on user-reviewed task requires actor user; got ${actor}.`
     );
   }
-  // Role reviewer: exact parent role only (plus user root above).
+  // Role-reviewed: exact parent Role only — user may not ordinary-bypass.
   if (actor === reviewer.id) return;
   throw new TaskLifecycleError(
     "REVIEW_FORBIDDEN",
-    `task.${action} requires actor user or reviewer role (${reviewer.id}); got ${actor}.`
+    `task.${action} requires actor equal to reviewer role (${reviewer.id}); got ${actor}.`
   );
 }
 

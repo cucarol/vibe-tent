@@ -416,7 +416,9 @@ test("CLI dispatch callerKind: role --by, role TENT_ROLE, profile TENT_ROLE, pla
       assert.equal(r.exitCode, 0, r.stderr + r.stdout);
       const last = calls[calls.length - 1];
       assert.equal(last.callerKind, "user");
-      assert.equal(last.dispatchedBy, "user");
+      assert.equal(last.dispatchedBy, undefined);
+      assert.deepEqual(last.parentActor, { kind: "user", id: "user" });
+      assert.deepEqual(last.reviewer, { kind: "user", id: "user" });
       assert.equal(last.role, "executor");
       assert.equal(last.assigneeKind, undefined);
       assert.equal(last.startSession, undefined);
@@ -439,7 +441,9 @@ test("CLI dispatch callerKind: role --by, role TENT_ROLE, profile TENT_ROLE, pla
       assert.equal(r.exitCode, 0, r.stderr + r.stdout);
       const last = calls[calls.length - 1];
       assert.equal(last.callerKind, "role");
-      assert.equal(last.dispatchedBy, "orchestrator");
+      assert.equal(last.dispatchedBy, undefined);
+      assert.deepEqual(last.parentActor, { kind: "role", id: "orchestrator" });
+      assert.deepEqual(last.reviewer, { kind: "role", id: "orchestrator" });
       assert.equal(last.role, "executor");
     } finally {
       if (previous === undefined) delete process.env.TENT_ROLE;
@@ -460,7 +464,9 @@ test("CLI dispatch callerKind: role --by, role TENT_ROLE, profile TENT_ROLE, pla
       assert.equal(r.exitCode, 0, r.stderr + r.stdout);
       const last = calls[calls.length - 1];
       assert.equal(last.callerKind, "role");
-      assert.equal(last.dispatchedBy, "orchestrator");
+      assert.equal(last.dispatchedBy, undefined);
+      assert.deepEqual(last.parentActor, { kind: "role", id: "orchestrator" });
+      assert.deepEqual(last.reviewer, { kind: "role", id: "orchestrator" });
       assert.equal(last.role, "executor");
       assert.ok(
         Object.prototype.hasOwnProperty.call(last, "callerKind"),
@@ -485,7 +491,9 @@ test("CLI dispatch callerKind: role --by, role TENT_ROLE, profile TENT_ROLE, pla
       assert.equal(r.exitCode, 0, r.stderr + r.stdout);
       const last = calls[calls.length - 1];
       assert.equal(last.callerKind, "role");
-      assert.equal(last.dispatchedBy, "orchestrator");
+      assert.equal(last.dispatchedBy, undefined);
+      assert.deepEqual(last.parentActor, { kind: "role", id: "orchestrator" });
+      assert.deepEqual(last.reviewer, { kind: "role", id: "orchestrator" });
       assert.equal(last.assigneeKind, "agentProfile");
       assert.equal(last.profileId, "fake-default");
       assert.equal(last.startSession, true);
@@ -508,7 +516,9 @@ test("CLI dispatch callerKind: role --by, role TENT_ROLE, profile TENT_ROLE, pla
       assert.equal(r.exitCode, 0, r.stderr + r.stdout);
       const last = calls[calls.length - 1];
       assert.equal(last.callerKind, "user");
-      assert.equal(last.dispatchedBy, "user");
+      assert.equal(last.dispatchedBy, undefined);
+      assert.deepEqual(last.parentActor, { kind: "user", id: "user" });
+      assert.deepEqual(last.reviewer, { kind: "user", id: "user" });
       assert.equal(last.assigneeKind, "agentProfile");
       assert.equal(last.startSession, true);
     } finally {

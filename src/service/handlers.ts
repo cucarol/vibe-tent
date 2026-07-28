@@ -55,11 +55,8 @@ import {
 } from "../core/task.js";
 import {
   mayElevateDeliveryPolicy,
-  migrateParentReviewerFromLegacy,
   parseTaskActorRef,
   parseTaskOutcomeReport,
-  roleTaskActors,
-  userTaskActors,
   type TaskActorRef,
   type TaskOutcome,
 } from "../core/task-model.js";
@@ -3233,8 +3230,15 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   const role = optionalString(p, "role");
   const profileId = optionalString(p, "profileId");
   const prompt = requireString(p, "prompt");
-  const dispatchedBy = optionalString(p, "dispatchedBy");
   const asSub = p.asSub === true;
+  // Legacy dispatchedBy is migration-only; refuse permanent new-write support.
+  if ("dispatchedBy" in p && p.dispatchedBy !== undefined && p.dispatchedBy !== null) {
+    throw new RpcError(
+      -32602,
+      "task.dispatch dispatchedBy is retired; pass explicit parentActor and reviewer " +
+        "({ kind: user|role, id }). Legacy envelopes migrate once on workspace.mount."
+    );
+  }
   const explicitParentActor = parseOptionalTaskActor(p.parentActor, "parentActor");
   const explicitReviewer = parseOptionalTaskActor(p.reviewer, "reviewer");
   const explicitDeliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
@@ -3244,12 +3248,10 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
   }
 
-  // Resolve explicit parent/reviewer once at the RPC boundary (no dual-write of dispatchedBy).
+  // New create requires explicit parentActor + reviewer (no dispatchedBy fallback).
   const resolvedActors = resolveDispatchActorsFromRpc({
     parentActor: explicitParentActor,
     reviewer: explicitReviewer,
-    dispatchedBy,
-    asSub,
   });
 
   if (assigneeKind === "role" && !role) {
@@ -3552,25 +3554,28 @@ function parseOptionalTaskActor(
   }
 }
 
-/** Resolve parent/reviewer at dispatch RPC from explicit wire or legacy dispatchedBy once. */
+/**
+ * Resolve parent/reviewer at dispatch RPC.
+ * New writes require explicit parentActor + reviewer. Legacy dispatchedBy is
+ * rejected at the RPC boundary (migration/load only).
+ */
 function resolveDispatchActorsFromRpc(input: {
   parentActor?: TaskActorRef;
   reviewer?: TaskActorRef;
-  dispatchedBy?: string;
-  asSub?: boolean;
 }): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
-  if (input.parentActor) {
-    const parentActor = input.parentActor;
-    const reviewer = input.reviewer ?? { ...parentActor };
-    return { parentActor, reviewer };
+  if (!input.parentActor) {
+    throw new RpcError(
+      -32602,
+      "task.dispatch requires explicit parentActor { kind: user|role, id }"
+    );
   }
-  if (input.reviewer) {
-    throw new RpcError(-32602, "task.dispatch reviewer requires parentActor");
+  if (!input.reviewer) {
+    throw new RpcError(
+      -32602,
+      "task.dispatch requires explicit reviewer { kind: user|role, id }"
+    );
   }
-  return migrateParentReviewerFromLegacy({
-    asSub: input.asSub,
-    dispatchedBy: input.dispatchedBy,
-  });
+  return { parentActor: input.parentActor, reviewer: input.reviewer };
 }
 
 async function taskClaimRpc(ctx: HandlerContext, p: Record<string, unknown>) {

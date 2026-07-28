@@ -1518,18 +1518,19 @@ function serializeTaskActorRef(actor) {
   return { kind: actor.kind, id: actor.id };
 }
 function resolveDispatchActors(input) {
-  if (input.parentActor) {
-    const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
-    const reviewer = input.reviewer ? parseTaskActorRef(input.reviewer, "reviewer") : { ...parentActor };
-    return { parentActor, reviewer };
+  if (!input.parentActor) {
+    throw new Error(
+      "task.dispatch requires explicit parentActor { kind, id } (legacy dispatchedBy is migration-only)."
+    );
   }
-  if (input.reviewer) {
-    throw new Error("task.dispatch reviewer requires parentActor");
+  if (!input.reviewer) {
+    throw new Error(
+      "task.dispatch requires explicit reviewer { kind, id } (defaults are applied only by callers that copy parentActor)."
+    );
   }
-  return migrateParentReviewerFromLegacy({
-    asSub: input.asSub,
-    dispatchedBy: input.dispatchedBy
-  });
+  const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
+  const reviewer = parseTaskActorRef(input.reviewer, "reviewer");
+  return { parentActor, reviewer };
 }
 async function loadTaskEnvelope(fs10, path9) {
   if (!await fs10.exists(path9)) throw new Error(`Task envelope not found: ${path9}.`);
@@ -1727,9 +1728,7 @@ async function writeTaskEnvelope(fs10, clock, input) {
   const now = clock.now();
   const actors = resolveDispatchActors({
     parentActor: input.parentActor,
-    reviewer: input.reviewer,
-    dispatchedBy: input.dispatchedBy,
-    asSub: input.asSub
+    reviewer: input.reviewer
   });
   const deliveryPolicy = input.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY;
   if (deliveryPolicy !== "review" && !mayElevateDeliveryPolicy({
@@ -3934,7 +3933,7 @@ async function dispatch(env, claimId, role, promptOrOptions) {
 }
 async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const tent = await loadTent(env.fs);
-  const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions } : promptOrOptions;
+  const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions, ...userTaskActors() } : promptOrOptions;
   const assigneeKind = options.assigneeKind === "agentProfile" ? "agentProfile" : "role";
   const userPrompt = options.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
@@ -3960,7 +3959,12 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const createdRoot = assigneeKind === "agentProfile" ? agentProfileTempRoot(assigneeLabel) : join3("temp", assigneeLabel);
   const createdRootExisted = await env.fs.exists(createdRoot);
   const asSub = options.asSub === true;
-  const parentRoleId = options.parentActor?.kind === "role" ? options.parentActor.id : (options.dispatchedBy || "").trim() && (options.dispatchedBy || "").trim() !== "user" ? (options.dispatchedBy || "").trim() : "";
+  if (!options.parentActor || !options.reviewer) {
+    throw new Error(
+      "Dispatch requires explicit parentActor and reviewer (legacy dispatchedBy is migration-only)."
+    );
+  }
+  const parentRoleId = options.parentActor.kind === "role" ? options.parentActor.id.trim() : "";
   const subUnderDispatcher = asSub && Boolean(parentRoleId) && parentRoleId !== assigneeLabel;
   if (claim.root) {
     const blocker = findAnyActiveTask(tasks);
@@ -4013,19 +4017,12 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       workspace: options.workspace,
       parentActor: options.parentActor,
       reviewer: options.reviewer,
-      dispatchedBy: options.dispatchedBy,
       asSub: options.asSub === true,
       deliveryPolicy: options.deliveryPolicy,
       assigneeKind,
       id: taskId,
       tasksDir: assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : void 0
     });
-    const actorsForRelay = {
-      parentActor: options.parentActor,
-      reviewer: options.reviewer,
-      dispatchedBy: options.dispatchedBy,
-      asSub: options.asSub
-    };
     const written = await loadTaskEnvelope(env.fs, taskPath).catch(() => null);
     const relayPrompt = relayPromptForTask(
       written ?? {
@@ -4037,7 +4034,9 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
         state: "queued",
         assigneeKind,
         id: taskId,
-        ...migrateParentReviewerFromLegacy(actorsForRelay)
+        parentActor: options.parentActor,
+        reviewer: options.reviewer,
+        ...options.asSub === true ? { asSub: true } : {}
       },
       env.tentRoot || env.tentName
     );
@@ -6342,7 +6341,6 @@ ${usageProfile}`);
         const roleAttributed = asSub || Boolean(explicitBy) || Boolean(tentRole && tentRole !== "user");
         const callerKind = roleAttributed ? "role" : "user";
         const parentActor = parentRole ? { kind: "role", id: parentRole } : { kind: "user", id: "user" };
-        const dispatchedBy = parentRole || "user";
         const result = await client.taskDispatch(
           workspaceId,
           isProfileForm ? {
@@ -6352,7 +6350,6 @@ ${usageProfile}`);
             prompt,
             parentActor,
             reviewer: parentActor,
-            dispatchedBy,
             asSub: asSub || void 0,
             deliveryPolicy: flags["delivery-policy"] || flags.deliveryPolicy,
             startSession: true,
@@ -6363,7 +6360,6 @@ ${usageProfile}`);
             prompt,
             parentActor,
             reviewer: parentActor,
-            dispatchedBy,
             asSub: asSub || void 0,
             deliveryPolicy: flags["delivery-policy"] || flags.deliveryPolicy,
             callerKind

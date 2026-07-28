@@ -261,6 +261,8 @@ test("box.projections: order stable; item semantics match box.projection", async
       boxId: a.id,
       role: "executor",
       prompt: "work a",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     assert.ok(dispatched.taskPath);
 
@@ -272,6 +274,8 @@ test("box.projections: order stable; item semantics match box.projection", async
       boxId: c.id,
       role: "executor",
       prompt: "finish c",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       deliveryPolicy: "review",
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, d2.taskPath);

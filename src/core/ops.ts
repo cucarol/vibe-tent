@@ -37,7 +37,7 @@ import {
   TaskEnvelope,
   writeTaskEnvelope,
 } from "./task.js";
-import { makeTaskId, migrateParentReviewerFromLegacy } from "./task-model.js";
+import { makeTaskId, userTaskActors } from "./task-model.js";
 import type { AssigneeKind, DeliveryPolicy } from "./task-model.js";
 import {
   agentProfileManifestPath,
@@ -76,20 +76,17 @@ export interface DispatchOptions {
   userPrompt?: string;
   workspace?: RoleWorkspaceContract;
   /**
-   * Explicit parent actor (V0.2). Prefer this over legacy dispatchedBy.
+   * Explicit parent actor (V0.2). Required on new dispatch.
    * Role-dispatched Task Agent → parent Role; user-direct → user.
    */
-  parentActor?: import("./task-model.js").TaskActorRef;
-  /** Explicit reviewer; defaults to parentActor. */
-  reviewer?: import("./task-model.js").TaskActorRef;
+  parentActor: import("./task-model.js").TaskActorRef;
   /**
-   * @deprecated Dispatch convenience — mapped once to parentActor/reviewer.
-   * Not dual-written on new envelopes.
+   * Explicit reviewer (V0.2). Required on new dispatch; typically equals parentActor.
    */
-  dispatchedBy?: string;
+  reviewer: import("./task-model.js").TaskActorRef;
   /**
    * Sub-dispatch Git lane flag. Missing/false = peer. When true, requires real
-   * Git lane and a durable parent Role (validated by service/CLI).
+   * Git lane and a durable parent Role (validated by service/CLI). asSub is lane-only.
    */
   asSub?: boolean;
   /** Delivery policy for this task (default review). */
@@ -123,8 +120,10 @@ async function dispatchUnlocked(
   promptOrOptions: string | DispatchOptions
 ): Promise<DispatchResult> {
   const tent = await loadTent(env.fs);
+  // String shorthand = user-direct Task; translate locally to explicit actors
+  // (no dispatchedBy). Object form must already carry parentActor+reviewer.
   const options: DispatchOptions = typeof promptOrOptions === "string"
-    ? { userPrompt: promptOrOptions }
+    ? { userPrompt: promptOrOptions, ...userTaskActors() }
     : promptOrOptions;
   const assigneeKind: AssigneeKind =
     options.assigneeKind === "agentProfile" ? "agentProfile" : "role";
@@ -164,12 +163,13 @@ async function dispatchUnlocked(
   // Stale frontmatter owner is NOT a mutex — only active Task envelopes are.
   // Parent/reviewer authority is explicit; asSub only gates Git lane + occupation.
   const asSub = options.asSub === true;
+  if (!options.parentActor || !options.reviewer) {
+    throw new Error(
+      "Dispatch requires explicit parentActor and reviewer (legacy dispatchedBy is migration-only)."
+    );
+  }
   const parentRoleId =
-    options.parentActor?.kind === "role"
-      ? options.parentActor.id
-      : (options.dispatchedBy || "").trim() && (options.dispatchedBy || "").trim() !== "user"
-        ? (options.dispatchedBy || "").trim()
-        : "";
+    options.parentActor.kind === "role" ? options.parentActor.id.trim() : "";
   const subUnderDispatcher =
     asSub && Boolean(parentRoleId) && parentRoleId !== assigneeLabel;
 
@@ -249,7 +249,6 @@ async function dispatchUnlocked(
       workspace: options.workspace,
       parentActor: options.parentActor,
       reviewer: options.reviewer,
-      dispatchedBy: options.dispatchedBy,
       asSub: options.asSub === true,
       deliveryPolicy: options.deliveryPolicy,
       assigneeKind,
@@ -258,12 +257,6 @@ async function dispatchUnlocked(
         assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : undefined,
     });
 
-    const actorsForRelay = {
-      parentActor: options.parentActor,
-      reviewer: options.reviewer,
-      dispatchedBy: options.dispatchedBy,
-      asSub: options.asSub,
-    };
     // Load the just-written envelope for an honest relay projection (parent/reviewer included).
     const written = await loadTaskEnvelope(env.fs, taskPath).catch(() => null);
     const relayPrompt = relayPromptForTask(
@@ -272,11 +265,13 @@ async function dispatchUnlocked(
         role: assigneeLabel,
         claims: taskClaims.map((taskClaim) => taskClaim.id),
         manifest: manifestPath,
-        status: "pending",
-        state: "queued",
+        status: "pending" as const,
+        state: "queued" as const,
         assigneeKind,
         id: taskId,
-        ...migrateParentReviewerFromLegacy(actorsForRelay),
+        parentActor: options.parentActor,
+        reviewer: options.reviewer,
+        ...(options.asSub === true ? { asSub: true as const } : {}),
       },
       env.tentRoot || env.tentName
     );

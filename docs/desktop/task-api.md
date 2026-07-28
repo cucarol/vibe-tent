@@ -433,9 +433,9 @@ Successful create/update/delete emits **exactly one** `registry.roles.updated` (
 ### 4.4 Self-accept ban + reviewer authority
 
 - `task.accept` / `task.reject` actor **must not** equal the delivery submitter (self-review ban). Executor never self-accepts.
-- Authorized reviewers: **`user`** (root) or the exact Task **`reviewer`** when `kind=role`.
-- User-reviewed tasks (`reviewer.kind=user`): only `actor=user` (no other role may impersonate).
-- Role-reviewed tasks: `actor=user` **or** exact `reviewer.id` parent Role.
+- Ordinary accept/reject authority equals the **exact persisted Task.`reviewer`** only — never a different actor and never the submitter.
+- User-reviewed tasks (`reviewer.kind=user`, user-direct): only `actor=user`.
+- Role-reviewed tasks (`reviewer.kind=role`, Role-dispatched child): only exact `reviewer.id` parent Role. **User must not bypass the parent Role via ordinary review.**
 - Recording `review.by = submitter` is a hard error.
 - Soft policy only — self-declared `actor` rides the shared service token (not cryptographic auth).
 
@@ -446,11 +446,12 @@ Successful create/update/delete emits **exactly one** `registry.roles.updated` (
 | Target | first-class role or **AgentProfile** | tool-like helper of parent Role (role **or** agentProfile assignee) |
 | `targetBranch` | workspace mainline (e.g. `main`) | parent role branch `tent-role/<parent>` |
 | Execution lane | role: `tent-role/<assignee>` at dispatch; profile: deferred to `startSession` as `tent-task/<taskId>` | role: `tent-role/<assignee>`; profile: `tent-task/<taskId>` allocated at dispatch (taskId before lane) |
-| Default accept authority | Task.`reviewer` (user for user-direct) | user **or** exact parent Role in `reviewer` (still not self) |
+| Default accept authority | exact Task.`reviewer` (user for user-direct) | exact parent Role in `reviewer` only (not user ordinary-bypass; still not self) |
 | A2A (`callerKind=role`) | role assignee → task role; profile assignee → parent Role | **always** parent Role (role and profile assignees) |
 | **WorkspaceLane** | optional (pure Tent tasks legal—no code lane) | required (dispatch rejected without Git + parent Role lane) |
 | Integrate cwd | worktree that already has target (usually main workspace on mainline) | parent worktree (already on `tent-role/<parent>`); **never** auto-switch branches |
 | deliveryPolicy elevate | Role user-facing only (`bypass`/`agent-decide`) | **always `review`** — no downstream bypass/agent-decide |
+| Create wire | explicit `parentActor`+`reviewer` required; `dispatchedBy` rejected (migration-only) | same — CLI `--by` translates locally to actors, never sends `dispatchedBy` |
 
 ### 4.6 Explicit Task outcome (managed final report)
 

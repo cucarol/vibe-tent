@@ -700,19 +700,20 @@ export class ServiceClient {
       assigneeKind?: "role" | "agentProfile";
       prompt: string;
       /**
-       * Explicit parent actor (V0.2). Prefer over dispatchedBy.
+       * Explicit parent actor (V0.2). Required.
        * Role-dispatched Task Agent → { kind:"role", id:<role> }; user-direct → { kind:"user", id:"user" }.
+       * Legacy dispatchedBy is not accepted (migration-only on disk).
        */
-      parentActor?: { kind: "user" | "role"; id: string };
-      /** Explicit reviewer; defaults to parentActor. */
-      reviewer?: { kind: "user" | "role"; id: string };
+      parentActor: { kind: "user" | "role"; id: string };
       /**
-       * @deprecated Mapped once to parentActor/reviewer at dispatch. Not dual-written.
+       * Explicit reviewer (V0.2). Required; typically equals parentActor.
+       * Ordinary accept/reject authority equals this actor only.
        */
-      dispatchedBy?: string;
+      reviewer: { kind: "user" | "role"; id: string };
       /**
        * Sub-dispatch Git lane. When true, requires durable parent Role
        * and a real Git workspace lane; targetBranch becomes tent-role/<parent>.
+       * asSub is lane-only — not review authority.
        */
       asSub?: boolean;
       deliveryPolicy?: string;

@@ -210,12 +210,11 @@ export async function runTaskCommand(
         const roleAttributed =
           asSub || Boolean(explicitBy) || Boolean(tentRole && tentRole !== "user");
         const callerKind: "user" | "role" = roleAttributed ? "role" : "user";
+        // CLI --by / TENT_ROLE translate locally to parentActor+reviewer.
+        // Never send or persist legacy dispatchedBy.
         const parentActor = parentRole
           ? ({ kind: "role" as const, id: parentRole })
           : ({ kind: "user" as const, id: "user" });
-        // Legacy dispatchedBy still sent for one-shot service mapping when parentActor omitted
-        // by older clients; CLI always sends explicit parentActor.
-        const dispatchedBy = parentRole || "user";
 
         const result = await client.taskDispatch(
           workspaceId,
@@ -227,7 +226,6 @@ export async function runTaskCommand(
                 prompt,
                 parentActor,
                 reviewer: parentActor,
-                dispatchedBy,
                 asSub: asSub || undefined,
                 deliveryPolicy: flags["delivery-policy"] || flags.deliveryPolicy,
                 startSession: true,
@@ -239,7 +237,6 @@ export async function runTaskCommand(
                 prompt,
                 parentActor,
                 reviewer: parentActor,
-                dispatchedBy,
                 asSub: asSub || undefined,
                 deliveryPolicy: flags["delivery-policy"] || flags.deliveryPolicy,
                 callerKind,

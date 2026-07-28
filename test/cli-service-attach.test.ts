@@ -248,6 +248,8 @@ test("task RPC layer: claim → deliver; ServiceClient observes same state; serv
       boxId,
       role: "executor",
       prompt: "Ship CLI attach",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       deliveryPolicy: "review",
     })) as { taskPath: string; state: string };
     assert.equal(dispatched.state, "queued");
@@ -310,6 +312,8 @@ test("task claim/deliver via attach (not injected client) sees same ServiceClien
       boxId: created.id,
       role: "executor",
       prompt: "agent path",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
 
     // Attach from endpoint file (what a real CLI process does)
@@ -362,6 +366,8 @@ test("task command errors: missing summary / unknown sub / attach-only miss", as
       boxId: created.id,
       role: "executor",
       prompt: "x",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await client.taskClaim(mount.workspaceId, dispatched.taskPath);
 
@@ -388,6 +394,8 @@ test("task list/get human output for agents", async () => {
       boxId: created.id,
       role: "executor",
       prompt: "list test",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
 
     const list = await runTaskCommand("list", [], { client, cwd: ws, dataDir });

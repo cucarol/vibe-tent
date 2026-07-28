@@ -149,7 +149,7 @@ async function createNote(
 
 // ---- pure unit: review authority + envelope asSub ----
 
-test("assertReviewAuthority: user reviewer only user; role reviewer user|parent; never self", () => {
+test("assertReviewAuthority: exact reviewer only; user cannot ordinary-bypass Role", () => {
   const userReviewer = { kind: "user" as const, id: "user" };
   const orchReviewer = { kind: "role" as const, id: "orchestrator" };
 
@@ -183,13 +183,16 @@ test("assertReviewAuthority: user reviewer only user; role reviewer user|parent;
     (err: unknown) => err instanceof TaskLifecycleError && err.code === "SELF_ACCEPT_FORBIDDEN"
   );
 
-  assert.doesNotThrow(() =>
-    assertReviewAuthority({
-      actor: "user",
-      submitterRole: "helper",
-      reviewer: orchReviewer,
-      action: "accept",
-    })
+  // Role-reviewed: exact parent Role only — user must not ordinary-bypass.
+  assert.throws(
+    () =>
+      assertReviewAuthority({
+        actor: "user",
+        submitterRole: "helper",
+        reviewer: orchReviewer,
+        action: "accept",
+      }),
+    (err: unknown) => err instanceof TaskLifecycleError && err.code === "REVIEW_FORBIDDEN"
   );
   assert.doesNotThrow(() =>
     assertReviewAuthority({
@@ -340,7 +343,8 @@ test("task.dispatch asSub role: tent-role assignee lane + dispatcher targetBranc
       role: "helper",
       prompt: "help orchestrator",
       asSub: true,
-      dispatchedBy: "orchestrator",
+      parentActor: { kind: "role", id: "orchestrator" },
+      reviewer: { kind: "role", id: "orchestrator" },
     });
     assert.ok(!sub.error, JSON.stringify(sub.error));
     const subResult = sub.result as {
@@ -368,7 +372,8 @@ test("task.dispatch asSub role: tent-role assignee lane + dispatcher targetBranc
       boxId: peerBox,
       role: "executor",
       prompt: "peer work",
-      dispatchedBy: "user",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     });
     assert.ok(!peer.error, JSON.stringify(peer.error));
     const peerResult = peer.result as {
@@ -410,7 +415,8 @@ test("task.dispatch asSub profile: tent-task lane at dispatch; peer profile stay
       profileId: "fake-default",
       prompt: "profile helper",
       asSub: true,
-      dispatchedBy: "orchestrator",
+      parentActor: { kind: "role", id: "orchestrator" },
+      reviewer: { kind: "role", id: "orchestrator" },
     });
     assert.ok(!sub.error, JSON.stringify(sub.error));
     const subResult = sub.result as {
@@ -451,7 +457,8 @@ test("task.dispatch asSub profile: tent-task lane at dispatch; peer profile stay
       assigneeKind: "agentProfile",
       profileId: "fake-default",
       prompt: "peer profile",
-      dispatchedBy: "user",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     });
     assert.ok(!peer.error, JSON.stringify(peer.error));
     const peerResult = peer.result as {
@@ -486,11 +493,12 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
       role: "helper",
       prompt: "nope",
       asSub: true,
-      dispatchedBy: "user",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     });
     assert.ok(asUser.error);
     assert.equal(asUser.error!.code, -32602);
-    assert.match(String(asUser.error!.message), /dispatchedBy|durable registry role|not user/i);
+    assert.match(String(asUser.error!.message), /parentActor|durable registry role|not user/i);
 
     const asSelf = await rpc(svc, "task.dispatch", {
       workspaceId: gitMount.workspaceId,
@@ -498,7 +506,8 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
       role: "helper",
       prompt: "nope",
       asSub: true,
-      dispatchedBy: "helper",
+      parentActor: { kind: "role", id: "helper" },
+      reviewer: { kind: "role", id: "helper" },
     });
     assert.ok(asSelf.error);
     assert.match(String(asSelf.error!.message), /must not equal the assignee/i);
@@ -509,7 +518,8 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
       role: "helper",
       prompt: "nope",
       asSub: true,
-      dispatchedBy: "ghost-role",
+      parentActor: { kind: "role", id: "ghost-role" },
+      reviewer: { kind: "role", id: "ghost-role" },
     });
     assert.ok(unknown.error);
     assert.match(String(unknown.error!.message), /not found in registry/i);
@@ -523,7 +533,8 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
       role: "helper",
       prompt: "nope",
       asSub: true,
-      dispatchedBy: "orchestrator",
+      parentActor: { kind: "role", id: "orchestrator" },
+      reviewer: { kind: "role", id: "orchestrator" },
     });
     assert.ok(noGit.error);
     assert.match(String(noGit.error!.message), /Git workspace|pure Tent/i);
@@ -532,6 +543,8 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
     // Peer still works without Git.
     const peer = await rpc(svc, "task.dispatch", {
       workspaceId: noGitMount.workspaceId,
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       boxId: noGitMount.boxId,
       role: "executor",
       prompt: "pure tent peer",
@@ -548,7 +561,7 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
 
 // ---- Review authority via lifecycle on sub envelopes ----
 
-test("sub task accept/reject: user or dispatchedBy only; self still forbidden", async () => {
+test("sub task accept/reject: exact parent Role only; user cannot ordinary-bypass; self forbidden", async () => {
   const ws = await makeWorkspace("sub-review");
   await initGitOnWorkspace(ws);
   const fsa = new NodeFs(path.join(ws, ".tent"));
@@ -581,7 +594,8 @@ test("sub task accept/reject: user or dispatchedBy only; self still forbidden", 
       role: "helper",
       prompt: "sub review",
       asSub: true,
-      dispatchedBy: "orchestrator",
+      parentActor: { kind: "role", id: "orchestrator" },
+      reviewer: { kind: "role", id: "orchestrator" },
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -600,8 +614,13 @@ test("sub task accept/reject: user or dispatchedBy only; self still forbidden", 
       () => taskReject(env as any, taskPath, { actor: "executor", note: "nope" }),
       (err: unknown) => err instanceof TaskLifecycleError && err.code === "REVIEW_FORBIDDEN"
     );
+    // User must not ordinary-bypass parent Role review.
+    await assert.rejects(
+      () => taskAccept(env as any, taskPath, { actor: "user" }),
+      (err: unknown) => err instanceof TaskLifecycleError && err.code === "REVIEW_FORBIDDEN"
+    );
 
-    // Dispatcher may reject; re-deliver for accept path.
+    // Parent Role may reject; re-deliver for accept path.
     const rejected = await taskReject(env as any, taskPath, {
       actor: "orchestrator",
       note: "rework",
@@ -609,9 +628,9 @@ test("sub task accept/reject: user or dispatchedBy only; self still forbidden", 
     });
     assert.equal(rejected.task.state, "running");
     await taskDeliver(env as any, taskPath, { summary: "done v2", commits: [] });
-    const accepted = await taskAccept(env as any, taskPath, { actor: "user" });
+    const accepted = await taskAccept(env as any, taskPath, { actor: "orchestrator" });
     assert.equal(accepted.task.state, "accepted");
-    assert.equal(accepted.delivery.review?.by, "user");
+    assert.equal(accepted.delivery.review?.by, "orchestrator");
   });
 });
 
@@ -634,7 +653,8 @@ test("startSession A2A on sub role uses dispatchedBy policy not assignee", async
       role: "helper",
       prompt: "spawn via dispatcher authority",
       asSub: true,
-      dispatchedBy: "orchestrator",
+      parentActor: { kind: "role", id: "orchestrator" },
+      reviewer: { kind: "role", id: "orchestrator" },
     });
     assert.ok(!sub.error, JSON.stringify(sub.error));
     const taskPath = (sub.result as { taskPath: string }).taskPath;
@@ -652,6 +672,8 @@ test("startSession A2A on sub role uses dispatchedBy policy not assignee", async
     // Peer role helper with deny policy still blocks role caller.
     const peerBox = await createNote(svc, workspaceId, "a2a-peer");
     const peer = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId: peerBox,
       role: "helper",
@@ -686,7 +708,8 @@ test("sub accept integrates commits into dispatcher worktree; main stays put", a
       role: "helper",
       prompt: "integrate to dispatcher",
       asSub: true,
-      dispatchedBy: "orchestrator",
+      parentActor: { kind: "role", id: "orchestrator" },
+      reviewer: { kind: "role", id: "orchestrator" },
     });
     assert.ok(!sub.error, JSON.stringify(sub.error));
     const taskPath = (sub.result as { taskPath: string }).taskPath;
@@ -743,7 +766,8 @@ test("resolveIntegrationContract: sub targetBranch mismatch fails loud", async (
       role: "helper",
       prompt: "corrupt me",
       asSub: true,
-      dispatchedBy: "orchestrator",
+      parentActor: { kind: "role", id: "orchestrator" },
+      reviewer: { kind: "role", id: "orchestrator" },
     });
     assert.ok(!sub.error, JSON.stringify(sub.error));
     const taskPath = (sub.result as { taskPath: string }).taskPath;
@@ -814,6 +838,8 @@ test("task.dispatch asSub: allowed under dispatcher's active ancestor task; peer
     const childId = (child.result as { id: string }).id;
 
     const parentDispatch = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId: parentId,
       role: "orchestrator",
@@ -824,6 +850,8 @@ test("task.dispatch asSub: allowed under dispatcher's active ancestor task; peer
     await rpc(svc, "task.claim", { workspaceId, taskPath: parentTaskPath });
 
     const peerBlocked = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId: childId,
       role: "helper",
@@ -841,7 +869,8 @@ test("task.dispatch asSub: allowed under dispatcher's active ancestor task; peer
       role: "helper",
       prompt: "sub under dispatcher claim",
       asSub: true,
-      dispatchedBy: "orchestrator",
+      parentActor: { kind: "role", id: "orchestrator" },
+      reviewer: { kind: "role", id: "orchestrator" },
     });
     assert.ok(!subOk.error, JSON.stringify(subOk.error));
     const subResult = subOk.result as {
@@ -867,7 +896,8 @@ test("task.dispatch asSub: allowed under dispatcher's active ancestor task; peer
       role: "helper",
       prompt: "wrong by",
       asSub: true,
-      dispatchedBy: "executor",
+      parentActor: { kind: "role", id: "executor" },
+      reviewer: { kind: "role", id: "executor" },
     });
     assert.ok(wrongDispatcher.error);
     assert.match(
@@ -975,6 +1005,8 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
 
     // 2. Orchestrator dispatch + claim parent.
     const parentDispatch = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId: parentId,
       role: "orchestrator",
@@ -1004,7 +1036,8 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
       role: "helper",
       prompt: "produce sub artifact for parent",
       asSub: true,
-      dispatchedBy: "orchestrator",
+      parentActor: { kind: "role", id: "orchestrator" },
+      reviewer: { kind: "role", id: "orchestrator" },
       deliveryPolicy: "review",
     });
     assert.ok(!subDispatch.error, JSON.stringify(subDispatch.error));
@@ -1108,6 +1141,8 @@ test("peer profile dispatch still defers lane; startSession creates tent-task", 
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws, "peer-prof");
     const peer = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       assigneeKind: "agentProfile",

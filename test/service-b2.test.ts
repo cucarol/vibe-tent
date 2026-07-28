@@ -592,6 +592,8 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
     const boxId = (created.result as { id: string }).id;
 
     const dispatched = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",

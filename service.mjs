@@ -1577,8 +1577,8 @@ function assertReviewAuthority(input) {
       `task.${action} requires an explicit Task.reviewer (parent-reviewer wire).`
     );
   }
-  if (actor === "user") return;
   if (reviewer.kind === "user") {
+    if (actor === "user") return;
     throw new TaskLifecycleError(
       "REVIEW_FORBIDDEN",
       `task.${action} on user-reviewed task requires actor user; got ${actor}.`
@@ -1587,7 +1587,7 @@ function assertReviewAuthority(input) {
   if (actor === reviewer.id) return;
   throw new TaskLifecycleError(
     "REVIEW_FORBIDDEN",
-    `task.${action} requires actor user or reviewer role (${reviewer.id}); got ${actor}.`
+    `task.${action} requires actor equal to reviewer role (${reviewer.id}); got ${actor}.`
   );
 }
 function evaluateA2A(input) {
@@ -2236,18 +2236,19 @@ function serializeTaskActorRef(actor) {
   return { kind: actor.kind, id: actor.id };
 }
 function resolveDispatchActors(input) {
-  if (input.parentActor) {
-    const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
-    const reviewer = input.reviewer ? parseTaskActorRef(input.reviewer, "reviewer") : { ...parentActor };
-    return { parentActor, reviewer };
+  if (!input.parentActor) {
+    throw new Error(
+      "task.dispatch requires explicit parentActor { kind, id } (legacy dispatchedBy is migration-only)."
+    );
   }
-  if (input.reviewer) {
-    throw new Error("task.dispatch reviewer requires parentActor");
+  if (!input.reviewer) {
+    throw new Error(
+      "task.dispatch requires explicit reviewer { kind, id } (defaults are applied only by callers that copy parentActor)."
+    );
   }
-  return migrateParentReviewerFromLegacy({
-    asSub: input.asSub,
-    dispatchedBy: input.dispatchedBy
-  });
+  const parentActor = parseTaskActorRef(input.parentActor, "parentActor");
+  const reviewer = parseTaskActorRef(input.reviewer, "reviewer");
+  return { parentActor, reviewer };
 }
 async function loadTaskEnvelope(fs21, path22) {
   if (!await fs21.exists(path22)) throw new Error(`Task envelope not found: ${path22}.`);
@@ -2445,9 +2446,7 @@ async function writeTaskEnvelope(fs21, clock, input) {
   const now = clock.now();
   const actors = resolveDispatchActors({
     parentActor: input.parentActor,
-    reviewer: input.reviewer,
-    dispatchedBy: input.dispatchedBy,
-    asSub: input.asSub
+    reviewer: input.reviewer
   });
   const deliveryPolicy = input.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY;
   if (deliveryPolicy !== "review" && !mayElevateDeliveryPolicy({
@@ -4287,7 +4286,7 @@ async function dispatch(env, claimId, role, promptOrOptions) {
 }
 async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const tent = await loadTent(env.fs);
-  const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions } : promptOrOptions;
+  const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions, ...userTaskActors() } : promptOrOptions;
   const assigneeKind = options.assigneeKind === "agentProfile" ? "agentProfile" : "role";
   const userPrompt = options.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
@@ -4313,7 +4312,12 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const createdRoot = assigneeKind === "agentProfile" ? agentProfileTempRoot(assigneeLabel) : join("temp", assigneeLabel);
   const createdRootExisted = await env.fs.exists(createdRoot);
   const asSub = options.asSub === true;
-  const parentRoleId = options.parentActor?.kind === "role" ? options.parentActor.id : (options.dispatchedBy || "").trim() && (options.dispatchedBy || "").trim() !== "user" ? (options.dispatchedBy || "").trim() : "";
+  if (!options.parentActor || !options.reviewer) {
+    throw new Error(
+      "Dispatch requires explicit parentActor and reviewer (legacy dispatchedBy is migration-only)."
+    );
+  }
+  const parentRoleId = options.parentActor.kind === "role" ? options.parentActor.id.trim() : "";
   const subUnderDispatcher = asSub && Boolean(parentRoleId) && parentRoleId !== assigneeLabel;
   if (claim.root) {
     const blocker = findAnyActiveTask(tasks);
@@ -4366,19 +4370,12 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       workspace: options.workspace,
       parentActor: options.parentActor,
       reviewer: options.reviewer,
-      dispatchedBy: options.dispatchedBy,
       asSub: options.asSub === true,
       deliveryPolicy: options.deliveryPolicy,
       assigneeKind,
       id: taskId,
       tasksDir: assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : void 0
     });
-    const actorsForRelay = {
-      parentActor: options.parentActor,
-      reviewer: options.reviewer,
-      dispatchedBy: options.dispatchedBy,
-      asSub: options.asSub
-    };
     const written = await loadTaskEnvelope(env.fs, taskPath).catch(() => null);
     const relayPrompt = relayPromptForTask(
       written ?? {
@@ -4390,7 +4387,9 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
         state: "queued",
         assigneeKind,
         id: taskId,
-        ...migrateParentReviewerFromLegacy(actorsForRelay)
+        parentActor: options.parentActor,
+        reviewer: options.reviewer,
+        ...options.asSub === true ? { asSub: true } : {}
       },
       env.tentRoot || env.tentName
     );
@@ -22411,8 +22410,13 @@ async function taskDispatch(ctx, p) {
   const role = optionalString(p, "role");
   const profileId = optionalString(p, "profileId");
   const prompt = requireString(p, "prompt");
-  const dispatchedBy = optionalString(p, "dispatchedBy");
   const asSub = p.asSub === true;
+  if ("dispatchedBy" in p && p.dispatchedBy !== void 0 && p.dispatchedBy !== null) {
+    throw new RpcError(
+      -32602,
+      "task.dispatch dispatchedBy is retired; pass explicit parentActor and reviewer ({ kind: user|role, id }). Legacy envelopes migrate once on workspace.mount."
+    );
+  }
   const explicitParentActor = parseOptionalTaskActor(p.parentActor, "parentActor");
   const explicitReviewer = parseOptionalTaskActor(p.reviewer, "reviewer");
   const explicitDeliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
@@ -22423,9 +22427,7 @@ async function taskDispatch(ctx, p) {
   }
   const resolvedActors = resolveDispatchActorsFromRpc({
     parentActor: explicitParentActor,
-    reviewer: explicitReviewer,
-    dispatchedBy,
-    asSub
+    reviewer: explicitReviewer
   });
   if (assigneeKind === "role" && !role) {
     throw new RpcError(-32602, "task.dispatch with assigneeKind=role requires role");
@@ -22654,18 +22656,19 @@ function parseOptionalTaskActor(value, label) {
   }
 }
 function resolveDispatchActorsFromRpc(input) {
-  if (input.parentActor) {
-    const parentActor = input.parentActor;
-    const reviewer = input.reviewer ?? { ...parentActor };
-    return { parentActor, reviewer };
+  if (!input.parentActor) {
+    throw new RpcError(
+      -32602,
+      "task.dispatch requires explicit parentActor { kind: user|role, id }"
+    );
   }
-  if (input.reviewer) {
-    throw new RpcError(-32602, "task.dispatch reviewer requires parentActor");
+  if (!input.reviewer) {
+    throw new RpcError(
+      -32602,
+      "task.dispatch requires explicit reviewer { kind: user|role, id }"
+    );
   }
-  return migrateParentReviewerFromLegacy({
-    asSub: input.asSub,
-    dispatchedBy: input.dispatchedBy
-  });
+  return { parentActor: input.parentActor, reviewer: input.reviewer };
 }
 async function taskClaimRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);

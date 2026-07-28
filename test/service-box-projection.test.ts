@@ -136,6 +136,8 @@ test("box.projection: active task → doing + assignee + activeTaskId", async ()
       boxId,
       role: "executor",
       prompt: "ship it",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     assert.ok(dispatched.taskPath);
 
@@ -167,6 +169,8 @@ test("box.projection: accepted → done (no assignee, no activeTaskId)", async (
       boxId,
       role: "executor",
       prompt: "finish work",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       deliveryPolicy: "review",
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, dispatched.taskPath);
@@ -194,6 +198,8 @@ test("box.projection: interrupt → todo (clears occupation)", async () => {
       boxId,
       role: "executor",
       prompt: "stop me",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, dispatched.taskPath);
     await client.taskInterrupt(workspaceId, dispatched.taskPath);
@@ -233,6 +239,8 @@ test("box.projection: stale owner/doing without active task → todo, no assigne
       boxId,
       role: "executor",
       prompt: "reclaim after orphan owner",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     assert.ok(dispatched.taskPath);
     const after = (await client.boxProjection(workspaceId, { id: boxId })) as BoxProjectionResult;

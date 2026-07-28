@@ -142,7 +142,10 @@ test("bindContextCardDrag: dragstart sets text/plain and never calls clipboard",
   assert.match(el.getAttribute("title") ?? "", /拖/);
 
   const dt = mockDataTransfer();
-  el.dispatch("dragstart", { dataTransfer: dt });
+  el.dispatch("dragstart", { 
+  parentActor: { kind: "user", id: "user" },
+  reviewer: { kind: "user", id: "user" },
+dataTransfer: dt });
   assert.equal(dt.getData("text/plain"), text);
   assert.equal(dt.effectAllowed, "copy");
   assert.equal(clipboardCalls, 0, "drag must not write clipboard");
@@ -166,7 +169,10 @@ test("bindContextCardDrag: click may copy as auxiliary path only", async () => {
     },
   });
 
-  el.dispatch("click", {});
+  el.dispatch("click", {
+  parentActor: { kind: "user", id: "user" },
+  reviewer: { kind: "user", id: "user" },
+});
   // click handler is async; flush microtasks
   await Promise.resolve();
   await Promise.resolve();

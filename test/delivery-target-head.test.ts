@@ -171,6 +171,8 @@ test("targetHead: deliver snapshots HEAD; same-head accept integrates", async ()
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -213,6 +215,8 @@ test("targetHead: clean non-conflicting target advance fails TARGET_MOVED; Git u
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -271,6 +275,8 @@ test("targetHead: zero-commit Delivery needs no snapshot; accept succeeds", asyn
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -309,6 +315,8 @@ test("targetHead: legacy ready row without snapshot fails TARGET_MOVED (no silen
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -364,6 +372,8 @@ test("targetHead: auto-integrate race — target moves after snapshot fails TARG
 
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",

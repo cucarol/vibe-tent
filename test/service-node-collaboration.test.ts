@@ -151,6 +151,8 @@ test("node.collaboration: running Task projects raw state + role; no session/del
       boxId: note.id,
       role: "executor",
       prompt: "do running work",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, dispatched.taskPath);
 
@@ -191,6 +193,8 @@ test("node.collaboration: waiting Task projects raw waiting state", async () => 
       boxId: note.id,
       role: "executor",
       prompt: "need input",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, dispatched.taskPath);
     await client.taskWait(workspaceId, dispatched.taskPath, "user-input", "Need criteria");
@@ -217,6 +221,8 @@ test("node.collaboration: delivered Task attaches Delivery summary via activeDel
       boxId: note.id,
       role: "executor",
       prompt: "ship for review",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       deliveryPolicy: "review",
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, dispatched.taskPath);
@@ -258,6 +264,8 @@ test("node.collaboration: accepted Task clears occupation (null task)", async ()
       boxId: note.id,
       role: "executor",
       prompt: "finish",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       deliveryPolicy: "review",
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, dispatched.taskPath);
@@ -285,6 +293,8 @@ test("node.collaborations: order preserved; empty ids → empty items", async ()
       boxId: a.id,
       role: "executor",
       prompt: "work a",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     });
 
     const empty = (await client.nodeCollaborations(
@@ -395,6 +405,8 @@ test("node.collaboration: direct claim only — ancestor occupation does not pai
       boxId: parent.id,
       role: "executor",
       prompt: "occupy parent only",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     });
 
     const parentItem = (await client.nodeCollaboration(workspaceId, {
@@ -440,6 +452,8 @@ test("node.collaboration: session linkage only through explicit task.sessionId",
       boxId: note.id,
       role: "executor",
       prompt: "bind session",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, dispatched.taskPath, sessionId);
 
@@ -468,6 +482,8 @@ test("node.collaboration: session linkage only through explicit task.sessionId",
       boxId: note2.id,
       role: "executor",
       prompt: "no bind",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     });
     const bare = (await client.nodeCollaboration(workspaceId, {
       id: note2.id,
@@ -490,6 +506,8 @@ test("node.collaboration: multi-active direct claims fail loud with nodeId + tas
       boxId: note.id,
       role: "executor",
       prompt: "first",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string; taskId?: string };
     // Second active task written under a different role lane (corrupt dual claim).
     const fsa = new NodeFs(path.join(ws, ".tent"));
@@ -502,6 +520,8 @@ test("node.collaboration: multi-active direct claims fail loud with nodeId + tas
         manifestPath: "temp/planner/manifests/corrupt.yml",
         userPrompt: "second corrupt claim",
         id: "tk-corrupt2",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
       }
     );
     assert.ok(secondPath);
@@ -552,6 +572,8 @@ test("node.collaborations: duplicate ids preserve order and project same item", 
       boxId: note.id,
       role: "executor",
       prompt: "dup",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     });
 
     const batch = (await client.nodeCollaborations(workspaceId, [
@@ -587,6 +609,8 @@ test("node.collaboration: descendant claim does not paint parent", async () => {
       boxId: child.id,
       role: "executor",
       prompt: "occupy child only",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     });
 
     const childItem = (await client.nodeCollaboration(workspaceId, {
@@ -614,6 +638,8 @@ test("node.collaboration: terminal rejected/interrupted/failed clear occupation"
       boxId: n1.id,
       role: "executor",
       prompt: "interrupt me",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, d1.taskPath);
     await client.taskInterrupt(workspaceId, d1.taskPath);
@@ -629,6 +655,8 @@ test("node.collaboration: terminal rejected/interrupted/failed clear occupation"
       boxId: n2.id,
       role: "executor",
       prompt: "reject me",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       deliveryPolicy: "review",
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, d2.taskPath);
@@ -649,6 +677,8 @@ test("node.collaboration: terminal rejected/interrupted/failed clear occupation"
       boxId: n3.id,
       role: "executor",
       prompt: "fail me",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, d3.taskPath);
     const fsa = new NodeFs(path.join(ws, ".tent"));
@@ -672,6 +702,8 @@ test("node.collaboration: stale sessionId/activeDeliveryId keep task, null summa
       boxId: note.id,
       role: "executor",
       prompt: "stale pointers",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, dispatched.taskPath);
 
@@ -705,6 +737,8 @@ test("node.collaboration: agentProfile projects profileId not role", async () =>
       assigneeKind: "agentProfile",
       profileId: "fake-default",
       prompt: "profile work",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
 
     const item = (await client.nodeCollaboration(workspaceId, {
@@ -730,6 +764,8 @@ test("node.collaboration: idle / no sessionId incurs no session probe", async ()
       boxId: active.id,
       role: "executor",
       prompt: "no session bind",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     });
 
     // Unrelated sessions exist on the machine.
@@ -816,11 +852,15 @@ test("node.collaborations: duplicate sessionId probes once", async () => {
       boxId: a.id,
       role: "executor",
       prompt: "a",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const dB = (await client.taskDispatch(workspaceId, {
       boxId: b.id,
       role: "executor",
       prompt: "b",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, dA.taskPath, sessionId);
     await client.taskClaim(workspaceId, dB.taskPath, sessionId);

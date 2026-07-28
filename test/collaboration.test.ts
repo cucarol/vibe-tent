@@ -29,6 +29,8 @@ test("buildInbox: active task occupation 聚合,不计入待裁", async () => {
   };
   const result = await dispatch(env as any, "bx-p1", "executor", {
     userPrompt: "for inbox",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
   });
   await taskClaim(env as any, result.taskPath);
   const tent = await loadTent(fsa);
@@ -52,6 +54,8 @@ test("delivery:驳回后 task 仍 running,重新交付后 accept 保留 accepted
 
   const result = await dispatch(env as any, "bx-p1", "executor", {
     userPrompt: "Implement delivery single-track",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
   });
   await taskClaim(env as any, result.taskPath);
 
@@ -113,6 +117,8 @@ test("delivery:单轨写入 deliveries，不创建 legacy reports 路径", async
   };
   const result = await dispatch(env as any, "bx-p1", "executor", {
     userPrompt: "Delivery-only formal record",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
   });
   await taskClaim(env as any, result.taskPath);
   const delivered = await taskDeliver(env as any, result.taskPath, {

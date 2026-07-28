@@ -50,6 +50,8 @@ async function dispatchOnFreeBox(dir: string, role = "executor") {
   // bx-p1 is free (no owner) in makeTent fixture
   const result = await dispatch(e as any, "bx-p1", role, {
     userPrompt: "Implement the lifecycle slice",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
   });
   return { e, result };
 }
@@ -124,6 +126,8 @@ test("lifecycle: agent-decide integrate auto-integrates without review.by=submit
   const e = env(dir);
   const result = await dispatch(e as any, "bx-p1", "executor", {
     userPrompt: "auto path",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
     deliveryPolicy: "agent-decide",
   });
   await taskClaim(e as any, result.taskPath);
@@ -148,6 +152,8 @@ test("lifecycle: auto-integrate failure keeps running, no delivery, occupation h
   const e = env(dir);
   const result = await dispatch(e as any, "bx-p1", "executor", {
     userPrompt: "bypass fail",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
     deliveryPolicy: "bypass",
   });
   await taskClaim(e as any, result.taskPath);
@@ -200,6 +206,8 @@ test("lifecycle: agent-decide without decision fails; review forbids integrate",
   const e = env(dir);
   const r1 = await dispatch(e as any, "bx-p1", "executor", {
     userPrompt: "need decision",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
     deliveryPolicy: "agent-decide",
   });
   await taskClaim(e as any, r1.taskPath);
@@ -211,6 +219,8 @@ test("lifecycle: agent-decide without decision fails; review forbids integrate",
 
   const r2 = await dispatch(e as any, "bx-p1", "executor", {
     userPrompt: "review only",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
     deliveryPolicy: "review",
   });
   await taskClaim(e as any, r2.taskPath);
@@ -252,7 +262,11 @@ test("lifecycle: cancel queued; interrupt running clears occupation", async () =
   await taskCancel(e as any, result.taskPath);
   assert.equal(await e.fs.exists(result.taskPath), false);
 
-  const r2 = await dispatch(e as any, "bx-p1", "executor", { userPrompt: "again" });
+  const r2 = await dispatch(e as any, "bx-p1", "executor", {
+    userPrompt: "again",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+  });
   await taskClaim(e as any, r2.taskPath);
   await taskInterrupt(e as any, r2.taskPath);
   assert.equal(await findActiveTaskForBox(e.fs, "bx-p1"), undefined);
@@ -270,6 +284,8 @@ test("lifecycle: residual disk owner/status is stripped on load and does not blo
   await e.fs.writeFile(note, raw.replace("type: goal", "type: goal\nowner: executor\nstatus: doing"));
   const r = await dispatch(e as any, "bx-g2", "reviewer", {
     userPrompt: "reclaim after orphan owner",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
   });
   assert.ok(r.taskPath);
   const claimed = await taskClaim(e as any, r.taskPath);
@@ -283,14 +299,27 @@ test("lifecycle: residual disk owner/status is stripped on load and does not blo
 test("lifecycle: second active task on same box is rejected (envelope oracle)", async () => {
   const dir = await makeTent();
   const e = env(dir);
-  const r1 = await dispatch(e as any, "bx-p1", "executor", { userPrompt: "first" });
+  const r1 = await dispatch(e as any, "bx-p1", "executor", {
+    userPrompt: "first",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+  });
   assert.equal((await loadTaskEnvelope(e.fs, r1.taskPath)).state, "queued");
   await assert.rejects(
-    () => dispatch(e as any, "bx-p1", "reviewer", { userPrompt: "overlap" }),
+    () =>
+      dispatch(e as any, "bx-p1", "reviewer", {
+        userPrompt: "overlap",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+      }),
     /already occupied by active task|Cannot dispatch/
   );
   // Peer claim of a different free box still works (bx-o1 is outside p1 subtree).
-  const r2 = await dispatch(e as any, "bx-o1", "reviewer", { userPrompt: "other box" });
+  const r2 = await dispatch(e as any, "bx-o1", "reviewer", {
+    userPrompt: "other box",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+  });
   assert.ok(r2.taskPath);
 });
 
@@ -314,11 +343,21 @@ test("lifecycle: active root claim blocks box dispatch (root-vs-box)", async () 
     ].join("\n")
   );
   await assert.rejects(
-    () => dispatch(e as any, "bx-p1", "reviewer", { userPrompt: "blocked by root" }),
+    () =>
+      dispatch(e as any, "bx-p1", "reviewer", {
+        userPrompt: "blocked by root",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+      }),
     /Tent root is occupied by active task|Cannot dispatch/
   );
   await assert.rejects(
-    () => dispatch(e as any, "bx-o1", "reviewer", { userPrompt: "also blocked" }),
+    () =>
+      dispatch(e as any, "bx-o1", "reviewer", {
+        userPrompt: "also blocked",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+      }),
     /Tent root is occupied by active task|Cannot dispatch/
   );
 });
@@ -348,7 +387,8 @@ test("lifecycle: asSub cannot bypass active root occupation", async () => {
       dispatch(e as any, "bx-p1", "helper", {
         userPrompt: "sub under root holder",
         asSub: true,
-        dispatchedBy: "architect",
+        parentActor: { kind: "role", id: "architect" },
+        reviewer: { kind: "role", id: "architect" },
       }),
     /Tent root is occupied by active task|Cannot dispatch/
   );
@@ -376,7 +416,12 @@ test("lifecycle: legacy envelope without state still occupies via status", async
   const legacy = await loadTaskEnvelope(e.fs, "temp/executor/tasks/task-legacy-only.md");
   assert.equal(legacy.state, "queued");
   await assert.rejects(
-    () => dispatch(e as any, "bx-p1", "reviewer", { userPrompt: "blocked by legacy" }),
+    () =>
+      dispatch(e as any, "bx-p1", "reviewer", {
+        userPrompt: "blocked by legacy",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+      }),
     /already occupied by active task|Cannot dispatch/
   );
   const proj = boxProjectionOf(legacy);
@@ -404,7 +449,11 @@ test("lifecycle: taskFail releases occupation; idempotent; re-dispatch same box"
   assertNoFmCollab((await loadTent(e.fs)).byId.get("bx-p1")!);
 
   // Same box can be re-dispatched without fork / manual frontmatter edit.
-  const r2 = await dispatch(e as any, "bx-p1", "executor", { userPrompt: "retry after fail" });
+  const r2 = await dispatch(e as any, "bx-p1", "executor", {
+    userPrompt: "retry after fail",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+  });
   await taskClaim(e as any, r2.taskPath);
   assert.ok(await findActiveTaskForBox(e.fs, "bx-p1"));
   assertNoFmCollab((await loadTent(e.fs)).byId.get("bx-p1")!);

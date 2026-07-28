@@ -123,6 +123,8 @@ async function mountWorkItem(svc: Svc, ws: string) {
 async function dispatchClaimStart(svc: Svc, workspaceId: string, boxId: string, opts?: { profileId?: string }) {
   const profileId = opts?.profileId ?? "fake-default";
   const d = await rpc(svc, "task.dispatch", {
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
     workspaceId, boxId, role: "executor", prompt: "replace-session fixture", deliveryPolicy: "review",
   });
   assert.ok(!d.error, JSON.stringify(d.error));
@@ -218,6 +220,8 @@ test("replaceSession: eligibility - turnBusy, waitCode, A2A deny, force refused"
     await withService(async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId, boxId, role: "executor", prompt: "busy replace must fail-loud", deliveryPolicy: "review",
       });
       assert.ok(!d.error, JSON.stringify(d.error));
@@ -530,6 +534,8 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
     assert.ok(!otherNote.error, JSON.stringify(otherNote.error));
     const otherBoxId = (otherNote.result as { id: string }).id;
     const otherDispatch = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId: otherBoxId,
       role: "orchestrator",

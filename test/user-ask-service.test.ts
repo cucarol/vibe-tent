@@ -145,6 +145,8 @@ test("task.askUser parks running task; second ask rejected; reply resumes + pers
       boxId,
       role: "executor",
       prompt: "Need a product decision",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -241,6 +243,8 @@ test("userAsk.deny resumes task; interrupt cancels pending ask", async () => {
       boxId: created.id,
       role: "executor",
       prompt: "Ask then deny",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -307,6 +311,8 @@ test("managed ACP: UserAsk reply continues same session with User Answer prompt 
       boxId: created.id,
       role: "executor",
       prompt: "Managed ask flow",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -530,6 +536,8 @@ test("task.askUser rejects non-running task", async () => {
       boxId: created.id,
       role: "executor",
       prompt: "not claimed",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
 
     const res = await rpcCall(

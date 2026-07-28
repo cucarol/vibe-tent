@@ -198,6 +198,8 @@ test("lifecycle: auto-integrate runs outside mutation.lock and failure leaves no
   const e = env(dir);
   const result = await dispatch(e as any, "bx-p1", "executor", {
     userPrompt: "bypass integrate outside lock",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
     deliveryPolicy: "bypass",
   });
   await taskClaim(e as any, result.taskPath);
@@ -234,6 +236,8 @@ test("lifecycle: accept integrate runs outside mutation.lock; failure keeps deli
   const e = env(dir);
   const result = await dispatch(e as any, "bx-p1", "executor", {
     userPrompt: "manual accept outside lock",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
   });
   await taskClaim(e as any, result.taskPath);
   await taskDeliver(e as any, result.taskPath, {
@@ -273,6 +277,8 @@ test("lifecycle: successful auto-integrate still accepts atomically after unlock
   const e = env(dir);
   const result = await dispatch(e as any, "bx-p1", "executor", {
     userPrompt: "agent decide",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
     deliveryPolicy: "agent-decide",
   });
   await taskClaim(e as any, result.taskPath);

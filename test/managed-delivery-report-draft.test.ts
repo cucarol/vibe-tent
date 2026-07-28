@@ -193,6 +193,8 @@ test("P0: dirty worktree preserves report draft; clean retry publishes and clear
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -304,6 +306,8 @@ test("P0: report draft survives service restart; retry publishes without re-prom
       const mounted = await mountWorkItem(svc, ws);
       workspaceId = mounted.workspaceId;
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId: mounted.boxId,
         role: "executor",
@@ -440,6 +444,8 @@ test("P0: integrate failure preserves draft; second attempt with clean commits s
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",

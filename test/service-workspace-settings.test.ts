@@ -209,6 +209,8 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
       boxId: box1,
       role: "executor",
       prompt: "first task uses default review",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const t1 = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d1.taskPath);
     assert.equal(t1.deliveryPolicy, "review");
@@ -221,6 +223,8 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
       boxId: box2,
       role: "executor",
       prompt: "second task snapshots bypass",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const t2 = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d2.taskPath);
     assert.equal(t2.deliveryPolicy, "bypass");
@@ -230,6 +234,8 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
       boxId: box3,
       role: "executor",
       prompt: "third task explicit agent-decide",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       deliveryPolicy: "agent-decide",
     })) as { taskPath: string };
     const t3 = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d3.taskPath);
@@ -248,6 +254,8 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
 
     // Explicit historical `manual` is rejected on dispatch (use review).
     const rejectManual = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId: await createBox("work-item-manual-reject"),
       role: "executor",
@@ -268,6 +276,8 @@ test("task envelope on-disk manual projects as review; new serialize writes revi
       boxId,
       role: "executor",
       prompt: "new wire writes review",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string; task?: { deliveryPolicy?: string } };
     const fsa = new NodeFs(path.join(ws, ".tent"));
     const raw = await fsa.readFile(d.taskPath);

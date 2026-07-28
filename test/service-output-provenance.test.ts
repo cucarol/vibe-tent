@@ -123,7 +123,8 @@ async function readyDeliveryTask(
     boxId,
     role,
     prompt: "do the work",
-    dispatchedBy: "user",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
   });
   assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
   const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -462,7 +463,9 @@ test("retention pins Delivery+Task referenced by Output.deliveryId (including ar
   );
 
   const taskPath = await writeTaskEnvelope(fsa, clock, {
-    role: "executor",
+    
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },role: "executor",
     claims: [{ id: "cx-src", path: "inbox" }],
     manifestPath: "temp/executor/manifests/m.md",
     userPrompt: "old accepted",
@@ -514,7 +517,9 @@ test("retention pins Delivery+Task referenced by Output.deliveryId (including ar
 
   // Unrelated old terminal still purges
   const otherPath = await writeTaskEnvelope(fsa, clock, {
-    role: "executor",
+    
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },role: "executor",
     claims: [{ id: "cx-other", path: "inbox" }],
     manifestPath: "temp/executor/manifests/m2.md",
     userPrompt: "unrelated",

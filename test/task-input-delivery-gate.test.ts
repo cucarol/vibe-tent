@@ -141,6 +141,8 @@ async function runningTask(
 ): Promise<{ workspaceId: string; taskPath: string; sessionId?: string }> {
   const { workspaceId, boxId } = await mountWorkItem(svc, ws);
   const d = await rpc(svc, "task.dispatch", {
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
     workspaceId,
     boxId,
     role: "executor",
@@ -653,6 +655,8 @@ test("P0 race: input before deliver blocks; deliver first makes sendInput refuse
     const boxId = (created.result as { id: string }).id;
     const d = await rpc(svc, "task.dispatch", {
       workspaceId: a.workspaceId,
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       boxId,
       role: "executor",
       prompt: "deliver first ordering",
@@ -902,6 +906,8 @@ test("P0: public and managed paths share PENDING_TASK_INPUT authority payload sh
       assert.ok(!created2.error, JSON.stringify(created2.error));
       const boxId2 = (created2.result as { id: string }).id;
       const dManaged = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId: boxId2,
         role: "executor",

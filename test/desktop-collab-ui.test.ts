@@ -75,7 +75,8 @@ test("validateDispatchForm builds task.dispatch payload and blocks invalid cases
     boxId: "cx-1",
     role: "executor",
     prompt: "implement feature",
-    dispatchedBy: "user",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
   });
 
   assert.equal(
@@ -437,7 +438,10 @@ test("service+client: registry → create coordination box → dispatch → deli
       boxId: form.payload!.boxId,
       role: form.payload!.role,
       prompt: form.payload!.prompt,
-      dispatchedBy: form.payload!.dispatchedBy,
+      parentActor: form.payload!.parentActor ?? { kind: "user", id: "user" },
+      reviewer:
+        form.payload!.reviewer ??
+        form.payload!.parentActor ?? { kind: "user", id: "user" },
       deliveryPolicy: "review",
     })) as { taskPath: string; state: string };
     assert.equal(dispatched.state, "queued");
@@ -474,6 +478,8 @@ test("service+client: registry → create coordination box → dispatch → deli
       boxId: box2.id,
       role: "executor",
       prompt: "will be rejected",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       deliveryPolicy: "review",
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, d2.taskPath);
@@ -566,7 +572,8 @@ test("service+client: profile.list safe metadata + startSession/interrupt via sh
       boxId: box.id,
       role: "executor",
       prompt: "start via UI model",
-      dispatchedBy: "user",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       deliveryPolicy: "review",
       // Explicit: dispatch must not auto-start session.
       startSession: false,

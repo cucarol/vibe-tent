@@ -360,6 +360,8 @@ test("B5: dispatch → claim → startSession → deliver → accept (manual) vi
       boxId,
       role: "executor",
       prompt: "Ship B5 wiring",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       deliveryPolicy: "review",
     })) as { taskPath: string; state: string };
     assert.equal(dispatched.state, "queued");
@@ -447,6 +449,8 @@ test("B5: deliveryPolicy=bypass auto-integrates without review", async () => {
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -474,6 +478,8 @@ test("B5: agent-decide integrate vs request-review", async () => {
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d1 = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -506,6 +512,8 @@ test("B5: agent-decide integrate vs request-review", async () => {
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws2);
     const d1 = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -543,6 +551,8 @@ test("B5: missing profileId fails loud (no fake-default fallback)", async () => 
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -566,6 +576,8 @@ test("B5: missing profileId fails loud (no fake-default fallback)", async () => 
     });
     assert.ok(!note.error, JSON.stringify(note.error));
     const startMiss = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId: (note.result as { id: string }).id,
       role: "executor",
@@ -583,6 +595,8 @@ test("B5: explicit fake-default profile still works when passed", async () => {
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -610,6 +624,8 @@ test("B5: role a2aPolicy default deny; client a2aPolicy cannot elevate", async (
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -643,6 +659,8 @@ test("B5: role a2aPolicy=allow from registry permits role startSession", async (
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -669,6 +687,8 @@ test("B5: A2A ask from role registry; resolve approve starts session", async () 
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -719,6 +739,8 @@ test("B5: A2A ask deny leaves no live session", async () => {
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -755,6 +777,8 @@ test("B5: A2A resolve is user-only and approval is bound to workspace/task/profi
       workspaceRoot: otherWs,
     })).result as { workspaceId: string };
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -813,6 +837,8 @@ test("B5: a2aPolicyOverride cannot raise role authority over RPC", async () => {
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -839,6 +865,8 @@ test("B5: user callerKind always allows startSession even if role a2aPolicy=deny
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -870,6 +898,8 @@ test("B5: role a2aPolicy=allow requires profileId in allowedProfiles", async () 
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -917,6 +947,8 @@ test("B5: role a2aPolicy=ask still parks even when profile not on whitelist; use
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -953,6 +985,8 @@ test("B5: dispatch relayPrompt uses task claim/deliver (not task-ack)", async ()
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -972,6 +1006,8 @@ test("B5: startSession bootstrap is managed (Context Card + user prompt); relay 
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -1051,6 +1087,8 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual deli
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const userPrompt = "near-field: summarize the box intent without tools";
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -1154,6 +1192,8 @@ test("P0: Delivery only after turn seal — post-response tail write cannot land
     async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -1257,6 +1297,8 @@ test("P0: public task.deliver/requestReview refuse while managed turnBusy; idle 
     async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -1424,6 +1466,8 @@ test("P0: public task.deliver/requestReview refuse while managed turnBusy; idle 
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, wsIdle);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -1483,6 +1527,8 @@ test("B5 managed ACP: empty / error / non-end_turn do not deliver", async () => 
       async (svc) => {
         const { workspaceId, boxId } = await mountWorkItem(svc, ws);
         const d = await rpc(svc, "task.dispatch", {
+          parentActor: { kind: "user", id: "user" },
+          reviewer: { kind: "user", id: "user" },
           workspaceId,
           boxId,
           role: "executor",
@@ -1538,6 +1584,8 @@ test("B5 managed ACP: interrupt / stop does not deliver", async () => {
     async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -1597,6 +1645,8 @@ test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review 
         });
         const { workspaceId, boxId } = await mountWorkItem(svc, ws);
         const d = await rpc(svc, "task.dispatch", {
+          parentActor: { kind: "user", id: "user" },
+          reviewer: { kind: "user", id: "user" },
           workspaceId,
           boxId,
           role: "executor",
@@ -1658,6 +1708,8 @@ test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review 
         });
         const { workspaceId, boxId } = await mountWorkItem(svc, ws);
         const d = await rpc(svc, "task.dispatch", {
+          parentActor: { kind: "user", id: "user" },
+          reviewer: { kind: "user", id: "user" },
           workspaceId,
           boxId,
           role: "executor",
@@ -1739,6 +1791,8 @@ test("B5: task.interrupt stops bound session", async () => {
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -1775,6 +1829,8 @@ test("B5: task.cancel removes queued envelope", async () => {
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -1901,6 +1957,8 @@ test("B5 tool approval: ask → pending → approve once → running → deliver
     async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -2019,6 +2077,8 @@ test("B5 tool approval: concurrent asks keep task waiting until the final decisi
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -2108,6 +2168,8 @@ test("B5 tool approval: user deny cancels tool (ACP cancelled)", async () => {
     async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -2177,6 +2239,8 @@ test("B5 tool approval: ask timeout expires pending; late approve fails", async 
     async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -2259,6 +2323,8 @@ test("B5 failure cleanup: prompt error stops process, parks waiting(external), k
     async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -2306,6 +2372,8 @@ test("B5 failure cleanup: prompt error stops process, parks waiting(external), k
 
       // Same box cannot re-dispatch while occupation held.
       const d2 = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -2351,6 +2419,8 @@ for (const exitCode of [7, 0]) test(`B5 spontaneous managed child exit code=${ex
     async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -2397,6 +2467,8 @@ for (const exitCode of [7, 0]) test(`B5 spontaneous managed child exit code=${ex
 
       // Occupation still held — re-dispatch must fail-loud.
       const d2 = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -2440,6 +2512,8 @@ test("B5: crash restart + mount parks running task bound to dead session (task-s
       boxId = mounted.boxId;
       const d = await rpc(svc, "task.dispatch", {
         workspaceId: mounted.workspaceId,
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         boxId,
         role: "executor",
         prompt: "crash mid-session",
@@ -2562,6 +2636,8 @@ test("P0-1: task.dispatch ensures role WorkspaceLane; startSession cwd is role w
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
 
     const dispatched = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -2592,6 +2668,8 @@ test("P0-1: task.dispatch ensures role WorkspaceLane; startSession cwd is role w
     });
     const boxId2 = (box2.result as { id: string }).id;
     const d2 = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId: boxId2,
       role: "executor",
@@ -2623,6 +2701,8 @@ test("P0-1: non-Git workspace dispatch has no lane; startSession cwd falls back 
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -2657,6 +2737,8 @@ test("P0-2: manual accept integrates real commits into main; already-integrated 
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -2694,6 +2776,8 @@ test("P0-2: manual accept integrates real commits into main; already-integrated 
     });
     const boxId2 = (box2.result as { id: string }).id;
     const d2 = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId: boxId2,
       role: "executor",
@@ -2725,6 +2809,8 @@ test("P0-2: bypass with commits integrates into main and accepts", async () => {
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -2768,6 +2854,8 @@ test("P0-2: agent-decide integrate with commits merges into main", async () => {
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -2837,6 +2925,8 @@ async function claimDeliveredReviewTask(
 ): Promise<{ workspaceId: string; taskPath: string }> {
   const { workspaceId, boxId } = await mountWorkItem(svc, ws);
   const d = await rpc(svc, "task.dispatch", {
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
     workspaceId,
     boxId,
     role: "executor",
@@ -2894,6 +2984,8 @@ test("P0-2: bypass deliver releases MutationBus during blocked Git integrate", a
   await withBlockedIntegrate("bus-bypass", async ({ svc, order, waitIntegrate, release }) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -2998,6 +3090,8 @@ test("P0-2: same-Task sendInput waits for auto-deliver Git then refuses accepted
   await withBlockedIntegrate("life-send", async ({ svc, order, waitIntegrate, release }) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -3073,6 +3167,8 @@ test("P0-2: accept integration conflict keeps delivered + occupation; no done", 
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -3131,6 +3227,8 @@ test("P0-2: bypass integrate failure keeps running + occupation; no accepted/don
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -3183,6 +3281,8 @@ test("P0 fix: managed auto-deliver integrate failure keeps running; session diag
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -3265,6 +3365,8 @@ test("P0 fix: managed auto-deliver collects role-lane commit; manual accept inte
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -3338,6 +3440,8 @@ test("P0 fix: managed auto-deliver bypass integrates auto-collected commit", asy
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -3397,6 +3501,8 @@ test("P0 fix: managed auto-deliver zero-commit / non-Git remains legal", async (
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -3439,6 +3545,8 @@ test("P0 fix: managed auto-deliver zero-commit / non-Git remains legal", async (
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, wsGit);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -3480,6 +3588,8 @@ test("P0: dirty task worktree refuses managed auto-deliver and public task.deliv
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -3631,6 +3741,8 @@ test("P0 fix: managed auto-collect excludes pre-session role commits; includes a
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -3695,6 +3807,8 @@ test("P0 fix: roleBranchBase is stable across startSession and reject-resume", a
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -3771,6 +3885,8 @@ test("reject-resume restores live managed session for durable role (no false-run
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -3863,6 +3979,8 @@ test("reject-resume restores live managed session for agentProfile tasks", async
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       assigneeKind: "agentProfile",
@@ -4025,6 +4143,8 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
     async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -4181,6 +4301,8 @@ test("reject-resume native load failure falls back to new session (contextRestor
     async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -4386,6 +4508,8 @@ test("late session.failed on prior after native-fallback keeps rework + review-f
     async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -4487,6 +4611,8 @@ test("late session.failed after managed Delivery is diagnostic only", async () =
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -4559,6 +4685,8 @@ test("P0 pre-Delivery session.failed parks waiting(external) and preserves TaskI
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -4655,6 +4783,8 @@ test("P0 pre-Delivery session.exited parks waiting(external) with stable summary
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -4705,6 +4835,8 @@ test("P0 duplicate session.failed/exited on same session is idempotent park", as
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -4758,6 +4890,8 @@ test("P0 late terminal from old session after rebind does not affect new occupat
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -4863,6 +4997,8 @@ test("P0 three independent same-tick session terminals each park only their own 
       });
       const boxId = (created.result as { id: string }).id;
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role,
@@ -4933,6 +5069,8 @@ test("P0 explicit interrupt remains terminal and releases occupation after park"
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -4991,6 +5129,8 @@ test("P0 explicit replacement session resume after recoverable park", async () =
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -5115,6 +5255,8 @@ test("P0 UserAsk reply after park targets replacement Session, not dead origin",
     async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -5300,6 +5442,8 @@ test("reject-resume allocates new session only when prior is not resumeCapable",
     async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -5461,6 +5605,8 @@ test("reject-resume recovery orientation rebuilds after simulated restart/retry"
     async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -5601,6 +5747,8 @@ test("reject-resume post-start context failure stops orphan Session and parks oc
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -5725,6 +5873,8 @@ test("reject-resume fails loud and parks waiting when session cannot be restored
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -5795,6 +5945,8 @@ test("P0 fix: recorded workspace lane collection errors stay retryable", async (
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -5852,6 +6004,8 @@ test("P0 fix: successful managed delivery frees same role for next task", async 
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d1 = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -5877,6 +6031,8 @@ test("P0 fix: successful managed delivery frees same role for next task", async 
     });
     const boxId2 = (box2.result as { id: string }).id;
     const d2 = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId: boxId2,
       role: "executor",
@@ -5971,6 +6127,8 @@ test("P0 fix: same role only one active managed session; same-task start is idem
     });
 
     const d1 = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -6008,6 +6166,8 @@ test("P0 fix: same role only one active managed session; same-task start is idem
     });
     const boxId2 = (box2.result as { id: string }).id;
     const d2 = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId: boxId2,
       role: "executor",
@@ -6041,6 +6201,8 @@ test("P0 fix: same role only one active managed session; same-task start is idem
     });
     const boxId3 = (box3.result as { id: string }).id;
     const d3 = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId: boxId3,
       role: "orchestrator",
@@ -6065,6 +6227,8 @@ test("P0 fix: same role only one active managed session; same-task start is idem
     const other = await mountWorkItem(svc, ws2);
     const d4 = await rpc(svc, "task.dispatch", {
       workspaceId: other.workspaceId,
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       boxId: other.boxId,
       role: "executor",
       prompt: "same role name, different workspace",
@@ -6096,6 +6260,8 @@ test("P0: concurrent task.startSession same tick coalesces to one Session", asyn
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -6147,6 +6313,8 @@ test("P0: repeated task.startSession after success reuses bound Session", async 
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -6203,6 +6371,8 @@ test("P0: failed launch clears same-task flight slot (lifecycle failed)", async 
     async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -6280,6 +6450,8 @@ test("P0: unauthorized concurrent start is denied; only one authorized launch", 
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -6369,6 +6541,8 @@ test("mount reconcile: dead/missing/stale-live session → waiting(external); tr
       const created = await rpc(svc, "docs.createNote", { workspaceId, name, type: "prompt" });
       const boxId = (created.result as { id: string }).id;
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role,
@@ -6592,6 +6766,8 @@ test("mount migrates SessionRecord.workspace from pre-sha256 id; does not steal 
     const boxId = (created.result as { id: string }).id;
     const d = await rpc(svc, "task.dispatch", {
       workspaceId: idA,
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       boxId,
       role: "executor",
       prompt: "migrate session workspace id",
@@ -6735,6 +6911,8 @@ test("task.startSession resumes any waiting (external/a2a) before launch", async
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -6797,6 +6975,8 @@ test("task.startSession reuses old sessionId via native load when resumeCapable 
     async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -6932,6 +7112,8 @@ test("durable role reuses one provider session across delivered tasks", async ()
     async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const firstDispatch = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -6961,6 +7143,8 @@ test("durable role reuses one provider session across delivered tasks", async ()
         type: "prompt",
       });
       const secondDispatch = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId: (secondBox.result as { id: string }).id,
         role: "executor",
@@ -7022,6 +7206,8 @@ test("task.startSession allocates new session when prior token not resumeCapable
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -7070,6 +7256,8 @@ test("task.startSession ignores a stale sessionId whose machine registry row is 
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -7123,6 +7311,8 @@ test("task.startSession does not resume a provider session bound to another work
     async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const dispatched = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         workspaceId,
         boxId,
         role: "executor",
@@ -7209,6 +7399,8 @@ test("P0 fix: concurrent dispatch same role serializes worktree ensure (no race)
     const results = await Promise.all(
       boxes.map((boxId, i) =>
         rpc(svc, "task.dispatch", {
+          parentActor: { kind: "user", id: "user" },
+          reviewer: { kind: "user", id: "user" },
           workspaceId,
           boxId,
           role: "executor",
@@ -7258,6 +7450,8 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -7289,6 +7483,8 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -7321,6 +7517,8 @@ test("P0 fix: bypass with zero commits is legal (pure docs / no auto-collect)", 
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",

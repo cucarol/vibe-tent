@@ -316,6 +316,8 @@ test("registry.role.delete: confirmation, blocks active task, one event on succe
     assert.ok(!note.error, JSON.stringify(note.error));
     const boxId = (note.result as { id: string }).id;
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",
@@ -405,6 +407,8 @@ test("ServiceClient registry role convenience + startSession allow whitelist", a
     });
     const boxId = (note.result as { id: string }).id;
     const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
       boxId,
       role: "executor",

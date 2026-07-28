@@ -53,6 +53,8 @@ async function readyAcceptFixture(dir: string) {
   const e = env(dir);
   const result = await dispatch(e as any, "bx-p1", "executor", {
     userPrompt: "atomic provenance fixture",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
   });
   await taskClaim(e as any, result.taskPath, { sessionId: "ss-atomic1" });
   const delivered = await taskDeliver(e as any, result.taskPath, {
@@ -378,7 +380,9 @@ test("retention pin scan fails closed: preview and purge refuse when loadTent br
   const OLD = "2026-06-01T12:00:00.000Z";
   const clock = { now: () => OLD };
   const taskPath = await writeTaskEnvelope(base, clock, {
-    role: "executor",
+    
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },role: "executor",
     claims: [{ id: "bx-p1", path: "prompt/表达式任务书" }],
     manifestPath: "temp/executor/manifests/m.md",
     userPrompt: "old terminal",

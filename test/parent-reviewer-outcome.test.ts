@@ -136,6 +136,7 @@ test("writeTaskEnvelope refuses elevated policy for downstream Task Agent", asyn
         manifestPath: "temp/helper/manifest.yml",
         userPrompt: "do it",
         parentActor: { kind: "role", id: "orchestrator" },
+        reviewer: { kind: "role", id: "orchestrator" },
         deliveryPolicy: "bypass",
       }),
     /only legal for a durable Role's user-facing delivery|must use review/i
@@ -185,6 +186,158 @@ test("migrateParentReviewerEnvelopes: one-time rewrite strips dispatchedBy", asy
   const task = await loadTaskEnvelope(fsa, "temp/helper/tasks/task-legacy.md");
   assert.equal(task.parentActor?.id, "orchestrator");
   assert.equal(task.reviewer?.id, "orchestrator");
+});
+
+test("resolveDispatchActors / writeTaskEnvelope refuse missing actors and dispatchedBy create path", async () => {
+  const { resolveDispatchActors } = await import("../src/core/task.js");
+  assert.throws(
+    () => resolveDispatchActors({} as never),
+    /requires explicit parentActor/i
+  );
+  assert.throws(
+    () =>
+      resolveDispatchActors({
+        parentActor: { kind: "user", id: "user" },
+      } as never),
+    /requires explicit reviewer/i
+  );
+  assert.deepEqual(
+    resolveDispatchActors({
+      parentActor: { kind: "role", id: "规划" },
+      reviewer: { kind: "role", id: "规划" },
+    }),
+    roleTaskActors("规划")
+  );
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-parent-req-"));
+  const fsa = new NodeFs(dir);
+  await fsa.mkdir("temp/helper/tasks");
+  const clock = new SystemClock();
+  await assert.rejects(
+    () =>
+      writeTaskEnvelope(fsa, clock, {
+        role: "helper",
+        claims: [{ id: "cx-1", path: "a.md" }],
+        manifestPath: "temp/helper/manifest.yml",
+        userPrompt: "missing actors",
+      } as never),
+    /parentActor|reviewer/i
+  );
+});
+
+test("assertReviewAuthority: Role-reviewed forbids user ordinary bypass", () => {
+  assert.throws(
+    () =>
+      assertReviewAuthority({
+        actor: "user",
+        submitterRole: "helper",
+        reviewer: { kind: "role", id: "规划" },
+        action: "accept",
+      }),
+    (err: unknown) =>
+      err instanceof TaskLifecycleError &&
+      err.code === "REVIEW_FORBIDDEN" &&
+      /reviewer role \(规划\)/i.test(String((err as Error).message))
+  );
+  assert.doesNotThrow(() =>
+    assertReviewAuthority({
+      actor: "规划",
+      submitterRole: "helper",
+      reviewer: { kind: "role", id: "规划" },
+      action: "accept",
+    })
+  );
+});
+
+test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/reviewer", async () => {
+  const { scaffoldInWorkspace } = await import("../src/core/scaffold.js");
+  const { startLocalTentService } = await import("../src/service/service.js");
+  const { rpcCall } = await import("../src/service/http-server.js");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-parent-rpc-"));
+  const fsa = new NodeFs(dir);
+  await scaffoldInWorkspace(fsa, {
+    name: "parent-rpc",
+    rules: "# RULES\n",
+    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+  });
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-parent-rpc-data-"));
+  const svc = await startLocalTentService({
+    dataDir,
+    host: "127.0.0.1",
+    port: 0,
+  });
+  try {
+    const mount = await rpcCall(
+      svc.url,
+      "workspace.mount",
+      { workspaceRoot: dir },
+      { token: svc.token }
+    );
+    assert.ok(!mount.error, JSON.stringify(mount.error));
+    const workspaceId = (mount.result as { workspaceId: string }).workspaceId;
+    const created = await rpcCall(
+      svc.url,
+      "docs.createNote",
+      { workspaceId, name: "p0-box", type: "prompt" },
+      { token: svc.token }
+    );
+    assert.ok(!created.error, JSON.stringify(created.error));
+    const boxId = (created.result as { id: string }).id;
+
+    const legacy = await rpcCall(
+      svc.url,
+      "task.dispatch",
+      {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "legacy wire",
+        dispatchedBy: "user",
+      },
+      { token: svc.token }
+    );
+    assert.ok(legacy.error);
+    assert.equal(legacy.error!.code, -32602);
+    assert.match(String(legacy.error!.message), /dispatchedBy is retired|parentActor/i);
+
+    const missing = await rpcCall(
+      svc.url,
+      "task.dispatch",
+      {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "missing actors",
+      },
+      { token: svc.token }
+    );
+    assert.ok(missing.error);
+    assert.equal(missing.error!.code, -32602);
+    assert.match(String(missing.error!.message), /parentActor|reviewer/i);
+
+    const ok = await rpcCall(
+      svc.url,
+      "task.dispatch",
+      {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "explicit actors",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+      },
+      { token: svc.token }
+    );
+    assert.ok(!ok.error, JSON.stringify(ok.error));
+    const taskPath = (ok.result as { taskPath: string }).taskPath;
+    const task = await loadTaskEnvelope(new NodeFs(path.join(dir, ".tent")), taskPath);
+    assert.equal(task.parentActor?.kind, "user");
+    assert.equal(task.reviewer?.id, "user");
+    const raw = await fs.readFile(path.join(dir, ".tent", taskPath), "utf8");
+    assert.doesNotMatch(raw, /^dispatchedBy:/m);
+  } finally {
+    await svc.stop();
+  }
 });
 
 test("loadTaskEnvelope: in-memory migrate when disk still has legacy only", async () => {

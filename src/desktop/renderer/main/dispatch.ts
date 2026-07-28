@@ -137,7 +137,8 @@ async function onDispatch(): Promise<void> {
       boxId: validation.payload.boxId,
       role: validation.payload.role,
       prompt: validation.payload.prompt,
-      dispatchedBy: validation.payload.dispatchedBy,
+      parentActor: validation.payload.parentActor,
+      reviewer: validation.payload.reviewer,
       deliveryPolicy: "review",
     })) as { taskPath: string; state: string };
     el.status.textContent = `已派活 → ${result.taskPath}（${result.state}）`;

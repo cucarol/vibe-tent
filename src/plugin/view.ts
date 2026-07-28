@@ -1047,7 +1047,12 @@ export class TentView extends ItemView {
   private async dispatchBox(box: Box, roleName: string, userPrompt: string) {
     const workspacePath = this.tent ? resolveTentWorkspace(this.tent) : undefined;
     const workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, roleName) : undefined;
-    return dispatch(this.env(), box.id, roleName, { userPrompt, workspace });
+    return dispatch(this.env(), box.id, roleName, {
+      userPrompt,
+      workspace,
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+    });
   }
 
   private tentRootAbsolutePath(): string | null {
