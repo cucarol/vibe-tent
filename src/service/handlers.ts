@@ -3588,9 +3588,12 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   if (assigneeKind === "role" && !role) {
     throw new RpcError(-32602, "task.dispatch with assigneeKind=role requires role");
   }
-  // Role-authorized agentId path: resolve logical worker → machine-local profileId.
-  // Roster membership is standing authorization (no per-call a2a ask/deny).
-  // User-direct --profile / profileId one-shot remains separate (no agentId required).
+  // agentId path: always resolve AgentDefinition → machine-local profileId and
+  // verify any explicit profileId matches. Roster standing auth applies only when
+  // parentActor and/or caller is a Role (Role owns the roster). User-direct
+  // parentActor=reviewer=user + callerKind=user is root: no Role/roster required;
+  // persist agentId, launch managed ACP, review-to-user. ProfileId one-shot
+  // without agentId remains a separate user-direct path (no logical agentId).
   let resolvedAgentId: string | undefined;
   if (agentIdParam) {
     if (assigneeKind !== "agentProfile") {
@@ -3617,15 +3620,22 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       }
       throw new RpcError(-32602, message);
     }
-    // Standing roster gate for Role-agent dispatch (parent Role owns the roster).
-    await assertRoleRosterStandingAuth(ctx, mount.env.fs, {
-      dispatcher:
-        resolvedActors.parentActor.kind === "role"
-          ? resolvedActors.parentActor.id
-          : undefined,
-      agentId: resolvedAgentId,
-      profileId,
-    });
+    // Role parent/caller → standing roster gate (out-of-roster fails loud).
+    // User-direct (parent=user + callerKind=user) skips roster; no bypass flag.
+    // Inconsistent combinations (e.g. callerKind=role with parent user) still fail
+    // loud via assertRoleRosterStandingAuth / existing actor authority rules.
+    const roleOwnedDispatch =
+      resolvedActors.parentActor.kind === "role" || callerKind === "role";
+    if (roleOwnedDispatch) {
+      await assertRoleRosterStandingAuth(ctx, mount.env.fs, {
+        dispatcher:
+          resolvedActors.parentActor.kind === "role"
+            ? resolvedActors.parentActor.id
+            : undefined,
+        agentId: resolvedAgentId,
+        profileId,
+      });
+    }
   }
   if (assigneeKind === "agentProfile" && !profileId) {
     throw new RpcError(
@@ -3857,7 +3867,8 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       workspace: workspaceLane,
       assigneeKind,
       profileId: assigneeKind === "agentProfile" ? profileId : undefined,
-      // Persist logical agentId only for Role-agent dispatch (not user-direct profile).
+      // Persist logical agentId for agentId dispatch (Role-agent and user-direct).
+      // User-direct profileId one-shot without agentId leaves this undefined.
       agentId: resolvedAgentId,
       // Authoritative ordered Node refs (transient). Core writes Context Card only.
       nodeIds,

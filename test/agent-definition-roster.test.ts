@@ -592,22 +592,74 @@ test("Task records agentId; multi-agent same profile is unambiguous", async () =
   });
 });
 
-test("CLI help documents --agent; user --profile one-shot still works", async () => {
+test("CLI help documents --target agent:<agentId>; user-direct real Service flow", async () => {
   const help = taskHelpText();
-  assert.match(help, /--agent <agentId>/);
-  assert.match(help, /--profile <profileId>/);
+  assert.match(help, /--target role:<roleIdOrName>\|agent:<agentId>/);
+  assert.match(help, /Rejected \(no alias\)/);
+  assert.match(help, /--profile|--agent/);
+  // Active usage line must not re-offer retired public selectors.
+  const usageLine = help
+    .split("\n")
+    .find((l) => l.includes("tent task dispatch --target"));
+  assert.ok(usageLine);
+  assert.doesNotMatch(usageLine!, /--profile|--agent\b/);
 
-  const ws = await makeWorkspace("cli-profile-ok");
+  const helpRejectProfile = await runTaskCommand(
+    "dispatch",
+    [
+      "--target",
+      "agent:worker-x",
+      "--node",
+      "cx-dummy",
+      "--prompt",
+      "no",
+      "--profile",
+      "fake-default",
+    ],
+    { cwd: await makeWorkspace("cli-help-reject-profile"), json: true }
+  );
+  assert.notEqual(helpRejectProfile.exitCode, 0);
+  assert.match(helpRejectProfile.stderr + helpRejectProfile.stdout, /no longer accepts|--profile/i);
+
+  const helpRejectAgent = await runTaskCommand(
+    "dispatch",
+    [
+      "--target",
+      "agent:worker-x",
+      "--node",
+      "cx-dummy",
+      "--prompt",
+      "no",
+      "--agent",
+      "worker-x",
+    ],
+    { cwd: await makeWorkspace("cli-help-reject-agent"), json: true }
+  );
+  assert.notEqual(helpRejectAgent.exitCode, 0);
+  assert.match(helpRejectAgent.stderr + helpRejectAgent.stdout, /no longer accepts|--agent/i);
+
+  const ws = await makeWorkspace("cli-agent-direct");
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-cli-agent-data-"));
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
     packageRoot: repoRoot,
   });
+  const previousTentRole = process.env.TENT_ROLE;
   try {
+    delete process.env.TENT_ROLE;
     const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
     assert.ok(!mounted.error, JSON.stringify(mounted.error));
     const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+
+    // AgentDefinition → machine-local fake profile (generic fixture; no product names).
+    await client.agentCreate({
+      id: "direct-worker",
+      profileId: FAKE_DEFAULT_PROFILE_ID,
+      displayName: "Direct worker",
+    });
+
     const created = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "job",
@@ -616,26 +668,77 @@ test("CLI help documents --agent; user --profile one-shot still works", async ()
     assert.ok(!created.error, JSON.stringify(created.error));
     const boxId = (created.result as { id: string }).id;
 
+    // User-direct: TENT_ROLE empty → parentActor=reviewer=user, callerKind=user.
+    // Public CLI sends agentId + startSession; Service must not require Role roster.
     const result = await runTaskCommand(
       "dispatch",
-      [boxId, "--profile", "fake-default", "one-shot still works", "--json"],
+      [
+        "--target",
+        "agent:direct-worker",
+        "--node",
+        boxId,
+        "--prompt",
+        "user-direct logical agent dispatch",
+        "--json",
+      ],
       {
         cwd: ws,
         dataDir,
         attachOnly: true,
         packageRoot: repoRoot,
         json: true,
+        env: { ...process.env, TENT_ROLE: "" },
       }
     );
     assert.equal(result.exitCode, 0, result.stderr + result.stdout);
     const payload = JSON.parse(result.stdout) as {
       assigneeKind?: string;
       assignee?: string;
-      session?: { profileId?: string };
+      taskPath?: string;
+      state?: string;
+      parentActor?: { kind?: string; id?: string };
+      reviewer?: { kind?: string; id?: string };
+      session?: {
+        session?: { sessionId?: string; profileId?: string; state?: string };
+        profileId?: string;
+      };
     };
     assert.equal(payload.assigneeKind, "agentProfile");
-    assert.equal(payload.assignee, "fake-default");
+    assert.equal(payload.assignee, FAKE_DEFAULT_PROFILE_ID);
+    assert.deepEqual(payload.parentActor, { kind: "user", id: "user" });
+    assert.deepEqual(payload.reviewer, { kind: "user", id: "user" });
+    assert.equal(payload.state, "running");
+    const sessionProfile =
+      payload.session?.session?.profileId ?? payload.session?.profileId;
+    const sessionId = payload.session?.session?.sessionId;
+    assert.equal(sessionProfile, FAKE_DEFAULT_PROFILE_ID);
+    assert.ok(sessionId, "managed ACP session must start for user-direct agent:*");
+
+    assert.ok(payload.taskPath, "dispatch must return taskPath");
+    const got = await rpc(svc, "task.get", {
+      workspaceId,
+      taskPath: payload.taskPath,
+    });
+    assert.ok(!got.error, JSON.stringify(got.error));
+    const task = (
+      got.result as {
+        task: {
+          agentId?: string;
+          role?: string;
+          parentActor?: { kind?: string; id?: string };
+          reviewer?: { kind?: string; id?: string };
+          sessionId?: string;
+        };
+      }
+    ).task;
+    assert.equal(task.agentId, "direct-worker");
+    assert.equal(task.role, FAKE_DEFAULT_PROFILE_ID);
+    assert.deepEqual(task.parentActor, { kind: "user", id: "user" });
+    assert.deepEqual(task.reviewer, { kind: "user", id: "user" });
+    assert.ok(task.sessionId, "envelope must bind managed sessionId");
   } finally {
+    if (previousTentRole === undefined) delete process.env.TENT_ROLE;
+    else process.env.TENT_ROLE = previousTentRole;
     await svc.stop();
   }
 });
