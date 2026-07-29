@@ -148,6 +148,143 @@ test("workspace Git:中文 role 复用单一 worktree/branch,验收 commit 合�
   assert.equal(again.integratedRef, integrated.integratedRef);
 });
 
+test("integration lock identity: common-dir + full target ref shared across worktree paths", async () => {
+  const workspace = await makeGitWorkspace("tent-lock-id-");
+  const {
+    ensureRoleWorkspace,
+    resolveIntegrationTargetLockIdentity,
+  } = await import("../src/core/workspace.js");
+  const contract = await ensureRoleWorkspace(workspace, "executor");
+
+  const fromRoot = await resolveIntegrationTargetLockIdentity(workspace, "main");
+  const fromWorktree = await resolveIntegrationTargetLockIdentity(contract.worktree, "main");
+  const fromBareName = await resolveIntegrationTargetLockIdentity(workspace, "main");
+  const fromFullRef = await resolveIntegrationTargetLockIdentity(workspace, "refs/heads/main");
+
+  assert.equal(fromRoot.targetRef, "refs/heads/main");
+  assert.equal(fromWorktree.targetRef, "refs/heads/main");
+  assert.equal(fromFullRef.targetRef, "refs/heads/main");
+  assert.equal(
+    fromRoot.gitCommonDir,
+    fromWorktree.gitCommonDir,
+    "workspace root and role worktree must share git-common-dir"
+  );
+  assert.equal(fromRoot.gitCommonDir, fromBareName.gitCommonDir);
+  assert.equal(fromRoot.gitCommonDir, fromFullRef.gitCommonDir);
+  assert.match(fromRoot.gitCommonDir, /[/\\]\.git$/i);
+  // Lexical path alone is not the key: common-dir is absolute and realpathed.
+  assert.ok(path.isAbsolute(fromRoot.gitCommonDir));
+});
+
+test("integration lock flight: distinct path projections into same repo+target serialize", async () => {
+  const workspace = await makeGitWorkspace("tent-lock-flight-");
+  const { ensureRoleWorkspace } = await import("../src/core/workspace.js");
+  const {
+    integrationTargetLockKey,
+    runIntegrationTargetFlight,
+  } = await import("../src/service/integration-target-flight.js");
+  const contract = await ensureRoleWorkspace(workspace, "executor");
+
+  const keyRoot = await integrationTargetLockKey(workspace, "main");
+  const keyWt = await integrationTargetLockKey(contract.worktree, "main");
+  assert.equal(keyRoot, keyWt, "lock key must ignore worktree path spelling");
+
+  let active = 0;
+  let maxActive = 0;
+  const order: string[] = [];
+  const hold = new Promise<void>((resolve) => {
+    setTimeout(resolve, 80);
+  });
+
+  async function critical(label: string, pathForLock: string): Promise<void> {
+    await runIntegrationTargetFlight(pathForLock, "main", async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      order.push(`${label}-enter`);
+      await hold;
+      order.push(`${label}-exit`);
+      active -= 1;
+    });
+  }
+
+  await Promise.all([
+    critical("root", workspace),
+    critical("worktree", contract.worktree),
+  ]);
+  assert.equal(maxActive, 1, "same repo+target must not run integrate critical sections concurrently");
+  assert.equal(order.length, 4);
+  assert.ok(
+    (order[0] === "root-enter" && order[1] === "root-exit") ||
+      (order[0] === "worktree-enter" && order[1] === "worktree-exit"),
+    `expected nested enter/exit for one projection first, got ${order.join(",")}`
+  );
+});
+
+test("rollback CAS: after own write, external advance is preserved (no overwrite)", async () => {
+  const workspace = await makeGitWorkspace("tent-cas-external-");
+  const { rollbackIntegrationCas } = await import("../src/core/workspace.js");
+
+  const originalRef = (await git(workspace, "rev-parse", "HEAD")).trim();
+  // Simulate this operation's successful write landing ownedTip.
+  await fs.writeFile(path.join(workspace, "ours.txt"), "ours\n");
+  await git(workspace, "add", "ours.txt");
+  await git(workspace, "commit", "-q", "-m", "our integration write");
+  const ownedTip = (await git(workspace, "rev-parse", "HEAD")).trim();
+  assert.notEqual(ownedTip, originalRef);
+
+  // External / other legal writer advances target after our write.
+  await fs.writeFile(path.join(workspace, "external.txt"), "external\n");
+  await git(workspace, "add", "external.txt");
+  await git(workspace, "commit", "-q", "-m", "external advance");
+  const externalTip = (await git(workspace, "rev-parse", "HEAD")).trim();
+  assert.notEqual(externalTip, ownedTip);
+
+  await assert.rejects(
+    () =>
+      rollbackIntegrationCas({
+        root: workspace,
+        originalRef,
+        targetBranch: "main",
+        ownedTip,
+        cause: new Error("simulated conflict after external advance"),
+      }),
+    /rollback refused|advanced by another writer|evidence preserved/i
+  );
+
+  // Foreign tip must remain; never reset --hard over it.
+  assert.equal((await git(workspace, "rev-parse", "main")).trim(), externalTip);
+  assert.equal(await pathExists(path.join(workspace, "external.txt")), true);
+  assert.equal(await pathExists(path.join(workspace, "ours.txt")), true);
+  assert.equal((await git(workspace, "status", "--porcelain")).trim(), "");
+});
+
+test("rollback CAS: owned tip still current may restore original without clobber risk", async () => {
+  const workspace = await makeGitWorkspace("tent-cas-owned-");
+  const { rollbackIntegrationCas } = await import("../src/core/workspace.js");
+
+  const originalRef = (await git(workspace, "rev-parse", "HEAD")).trim();
+  await fs.writeFile(path.join(workspace, "owned-only.txt"), "owned\n");
+  await git(workspace, "add", "owned-only.txt");
+  await git(workspace, "commit", "-q", "-m", "our write still tip");
+  const ownedTip = (await git(workspace, "rev-parse", "HEAD")).trim();
+
+  await assert.rejects(
+    () =>
+      rollbackIntegrationCas({
+        root: workspace,
+        originalRef,
+        targetBranch: "main",
+        ownedTip,
+        cause: new Error("simulated conflict while we still own tip"),
+      }),
+    /rolled back/
+  );
+
+  assert.equal((await git(workspace, "rev-parse", "main")).trim(), originalRef);
+  assert.equal(await pathExists(path.join(workspace, "owned-only.txt")), false);
+  assert.equal((await git(workspace, "status", "--porcelain")).trim(), "");
+});
+
 test("workspace integration:second cherry-pick conflict rolls the whole batch back", async () => {
   const workspace = await makeGitWorkspace("tent-workspace-rollback-");
   await fs.writeFile(path.join(workspace, "conflict.txt"), "base\n");

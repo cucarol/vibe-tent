@@ -11979,9 +11979,10 @@ function parseArtifactRefs(data: Record<string, unknown>): ArtifactRef[] {
  * Reuses core ensureRoleWorkspace + integrateWorkspaceCommits (idempotent).
  * Failures propagate so accept/bypass cannot mark accepted/done or release occupation.
  *
- * Production serializes by canonical workspace + targetBranch (not taskPath).
- * Under that flight: re-read Task/Delivery/lane facts, re-resolve expected target
- * HEAD, and run every Git write/rollback. Never trust caller branch/target.
+ * Production serializes by canonical git-common-dir + fully resolved target ref
+ * (not workspaceId, taskPath, or lexical workspace path). Under that flight:
+ * re-read Task/Delivery/lane facts, re-resolve expected target HEAD, and run
+ * every Git write/rollback. Never trust caller branch/target.
  *
  * Before any Git write, re-resolves the integration contract and compares the
  * current target branch HEAD to the review-time snapshot (Delivery.targetHead or

@@ -1,36 +1,42 @@
 /**
- * Production Git integration flight keyed by canonical workspace + targetBranch.
+ * Production Git integration flight keyed by canonical Git repository identity.
  *
- * Cross-Task accept/deliver integrate paths that share the same integration target
- * must serialize here — not by taskPath (per-Task lifecycle flight alone is not enough).
+ * Lock identity = absolute realpath(git-common-dir) + fully resolved target ref
+ * (e.g. refs/heads/main). NOT workspaceId, taskPath, or a merely lexical workspace
+ * path: the same repo/target may be mounted or projection-addressed through
+ * different workspaceIds/worktrees. workspaceId is audit only.
+ *
  * Hold this lock around review-time target HEAD re-read and every Git write/rollback.
  */
-import * as nodeFs from "node:fs/promises";
-import * as nodePath from "node:path";
+import {
+  resolveIntegrationTargetLockIdentity,
+  type IntegrationTargetLockIdentity,
+} from "../core/workspace.js";
 import { MutationBus } from "./mutation-bus.js";
 
 const queue = new MutationBus();
 
+export type { IntegrationTargetLockIdentity };
+
 /**
- * Canonical workspace identity for lock keys (realpath when possible).
- * Different path spellings of the same repo must share one target flight.
+ * Canonical integration lock key for (repo common-dir, fully resolved target ref).
+ * Worktree path aliases of one repo share the same key.
  */
-export async function canonicalWorkspaceLockKey(workspaceRoot: string): Promise<string> {
-  const resolved = nodePath.resolve(workspaceRoot);
-  try {
-    return await nodeFs.realpath(resolved);
-  } catch {
-    return resolved;
-  }
+export async function integrationTargetLockKey(
+  workspaceRoot: string,
+  targetBranch: string
+): Promise<string> {
+  const id = await resolveIntegrationTargetLockIdentity(workspaceRoot, targetBranch);
+  return targetFlightKey(id);
 }
 
-function targetFlightKey(canonicalWorkspace: string, targetBranch: string): string {
-  // Intentionally NOT taskPath — two Tasks integrating into the same target serialize.
-  return `${canonicalWorkspace}\0${targetBranch.trim()}`;
+function targetFlightKey(id: IntegrationTargetLockIdentity): string {
+  // Intentionally NOT workspaceId / taskPath / lexical workspace path.
+  return `${id.gitCommonDir}\0${id.targetRef}`;
 }
 
 /**
- * Run `action` exclusively for (canonical workspace, targetBranch).
+ * Run `action` exclusively for the resolved (git-common-dir, target ref) identity.
  * Nested calls with the same key queue FIFO via MutationBus.
  */
 export async function runIntegrationTargetFlight<T>(
@@ -38,10 +44,6 @@ export async function runIntegrationTargetFlight<T>(
   targetBranch: string,
   action: () => Promise<T>
 ): Promise<T> {
-  const branch = targetBranch.trim();
-  if (!branch) {
-    throw new Error("runIntegrationTargetFlight requires a non-empty targetBranch");
-  }
-  const canonical = await canonicalWorkspaceLockKey(workspaceRoot);
-  return queue.run(targetFlightKey(canonical, branch), action);
+  const id = await resolveIntegrationTargetLockIdentity(workspaceRoot, targetBranch);
+  return queue.run(targetFlightKey(id), action);
 }

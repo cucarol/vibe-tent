@@ -319,6 +319,78 @@ export async function inspectWorktreeDirtiness(worktree: string): Promise<Worktr
 }
 
 /**
+ * Canonical integration lock identity for a Git target.
+ *
+ * Identity = absolute realpath of `git rev-parse --git-common-dir` plus the fully
+ * resolved symbolic target ref (e.g. `refs/heads/main`). Worktree path aliases of
+ * one repository share the same common-dir. Not workspaceId / lexical workspace path.
+ */
+export type IntegrationTargetLockIdentity = {
+  /** Absolute realpath of the repository common dir (shared across worktrees). */
+  gitCommonDir: string;
+  /** Fully resolved target ref, e.g. refs/heads/main. */
+  targetRef: string;
+};
+
+/**
+ * Resolve lock identity from any path inside the repo (workspace root or worktree).
+ * Fail-loud when Git cannot resolve common-dir or the target branch ref.
+ */
+export async function resolveIntegrationTargetLockIdentity(
+  workspaceOrWorktree: string,
+  targetBranch: string
+): Promise<IntegrationTargetLockIdentity> {
+  const cwd = nodePath.resolve(workspaceOrWorktree);
+  const branch = targetBranch.trim();
+  if (!branch) {
+    throw new Error("resolveIntegrationTargetLockIdentity requires a non-empty targetBranch");
+  }
+
+  // Prefer absolute path-format when available; fall back for older Git.
+  let commonRaw = "";
+  try {
+    commonRaw = (
+      await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"])
+    ).trim();
+  } catch {
+    commonRaw = (await git(cwd, ["rev-parse", "--git-common-dir"])).trim();
+  }
+  if (!commonRaw) {
+    throw new Error(`Cannot resolve git-common-dir for integration lock at ${cwd}`);
+  }
+  const commonResolved = nodePath.isAbsolute(commonRaw)
+    ? commonRaw
+    : nodePath.resolve(cwd, commonRaw);
+  let gitCommonDir = commonResolved;
+  try {
+    gitCommonDir = await nodeFs.realpath(commonResolved);
+  } catch {
+    gitCommonDir = commonResolved;
+  }
+
+  // Fully resolve the target ref (branch name → refs/heads/…); never key on bare name alone.
+  const want = branch.startsWith("refs/") ? branch : `refs/heads/${branch}`;
+  let targetRef = "";
+  try {
+    targetRef = (await git(cwd, ["rev-parse", "--verify", "--symbolic-full-name", want])).trim();
+  } catch {
+    targetRef = "";
+  }
+  if (!targetRef) {
+    // Last resort: verify the ref exists as a commit-ish and normalize to refs/heads/.
+    await git(cwd, ["rev-parse", "--verify", `${want}^{commit}`]);
+    targetRef = want.startsWith("refs/") ? want : `refs/heads/${branch}`;
+  }
+  if (!targetRef.startsWith("refs/")) {
+    throw new Error(
+      `Integration target ref did not fully resolve for lock identity: branch=${branch} got=${targetRef}`
+    );
+  }
+
+  return { gitCommonDir, targetRef };
+}
+
+/**
  * Integrate selected commits into contract.targetBranch.
  *
  * Mutations run in the worktree that already has targetBranch checked out
@@ -326,9 +398,11 @@ export async function inspectWorktreeDirtiness(worktree: string): Promise<Worktr
  * tent-role/<dispatcher>). Never switches branches automatically.
  * Preserves dirty checks, rollback, and idempotence (ancestor / -x cherry-pick).
  *
- * Rollback uses a CAS update-ref guard so a failed batch never hard-resets over a
- * target tip advanced by another integration. Production callers must also hold the
- * workspace+targetBranch integration flight around assert + write + rollback.
+ * Rollback is CAS/ownership-checked: it may move target from pre-write back to
+ * original only when target HEAD still equals this operation's last expected
+ * post-write HEAD (`ownedTip`). `ownedTip` advances only after a successful write
+ * by this operation — never by re-reading a possibly foreign tip on failure.
+ * Production callers must hold the git-common-dir + target-ref integration flight.
  */
 export async function integrateWorkspaceCommits(
   contract: RoleWorkspaceContract,
@@ -357,8 +431,9 @@ export async function integrateWorkspaceCommits(
   }
 
   const originalRef = (await git(root, ["rev-parse", `refs/heads/${target}`])).trim();
-  // Ownership tip for CAS rollback: only restore originalRef when target still
-  // points at a tip this batch last wrote (never clobber a foreign advance).
+  // Last expected post-write HEAD owned by this operation. Starts at pre-write tip.
+  // Advances ONLY immediately after a successful Git write by this batch — never by
+  // re-reading current target on failure (that would label a foreign advance as ours).
   let ownedTip = originalRef;
   const resolved = [];
   for (const sourceRef of commits) {
@@ -375,18 +450,15 @@ export async function integrateWorkspaceCommits(
   if (fastForwardRef) {
     try {
       await git(integrationCwd, ["merge", "--ff-only", fastForwardRef]);
+      // Successful write: owned tip is the FF result (same as tip we merged).
+      ownedTip = (await git(integrationCwd, ["rev-parse", "HEAD"])).trim();
       return resolved.map(({ sourceRef, fullRef: integratedRef }) => ({
         sourceRef,
         integratedRef,
         alreadyIntegrated: false,
       }));
     } catch (error) {
-      // FF may have partially moved HEAD; re-read tip for CAS ownership.
-      try {
-        ownedTip = (await git(root, ["rev-parse", `refs/heads/${target}`])).trim();
-      } catch {
-        /* keep prior ownedTip */
-      }
+      // Do NOT re-read current target into ownedTip — foreign advances must not look owned.
       await rollbackIntegration(integrationCwd, originalRef, target, ownedTip, error);
     }
   }
@@ -405,16 +477,13 @@ export async function integrateWorkspaceCommits(
         continue;
       }
       await git(integrationCwd, ["cherry-pick", "-x", sourceRef]);
+      // Successful write by this operation — only then advance ownedTip.
       const integratedRef = (await git(integrationCwd, ["rev-parse", "HEAD"])).trim();
       ownedTip = integratedRef;
       results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
     }
   } catch (error) {
-    try {
-      ownedTip = (await git(root, ["rev-parse", `refs/heads/${target}`])).trim();
-    } catch {
-      /* keep last successful ownedTip */
-    }
+    // Keep last successful ownedTip; never adopt a foreign tip from rev-parse here.
     await rollbackIntegration(integrationCwd, originalRef, target, ownedTip, error);
   }
   return results;
@@ -891,16 +960,23 @@ async function completeFastForwardRef(
 }
 
 /**
- * Roll back a failed integration batch without clobbering a target advanced by
- * another integration.
+ * Roll back a failed integration batch with CAS/ownership checks.
  *
- * 1. Abort any in-progress cherry-pick.
- * 2. Re-read target tip. If it still equals `ownedTip` (the tip this batch last
- *    wrote, or the pre-batch tip), CAS `update-ref` back to `originalRef`.
- *    If tip differs from `ownedTip`, another integration advanced the branch —
- *    refuse hard reset over that foreign tip.
- * 3. `reset --hard originalRef` only after a successful ownership CAS (or when
- *    already at originalRef). Production callers hold workspace+targetBranch flight.
+ * Contract:
+ * - May move target from this op's last expected post-write HEAD (`ownedTip`) back
+ *   to pre-write (`originalRef`) only when target HEAD still equals `ownedTip`.
+ * - If an external/other legal writer advanced after our write, fail loud and
+ *   preserve the current ref + worktree/sequencer evidence; never `reset --hard`
+ *   over that advance.
+ *
+ * Steps:
+ * 1. Re-read target tip first (before any sequencer/ref mutation).
+ * 2. If current is neither `originalRef` nor `ownedTip` → foreign advance: clear
+ *    sequencer without moving the ref (`cherry-pick --quit`), preserve evidence, fail.
+ * 3. If current === `ownedTip` and differs from `originalRef` → CAS
+ *    `update-ref target originalRef ownedTip`, then reconcile index/worktree to the
+ *    restored tip without a pre-CAS ref-moving reset.
+ * 4. If current === `originalRef` → only clear sequencer + reconcile worktree.
  */
 async function rollbackIntegration(
   root: string,
@@ -909,9 +985,34 @@ async function rollbackIntegration(
   ownedTip: string,
   cause: unknown
 ): Promise<never> {
-  await git(root, ["cherry-pick", "--abort"]).catch(() => "");
-  const target = targetBranch.trim();
+  return rollbackIntegrationCas({
+    root,
+    originalRef,
+    targetBranch,
+    ownedTip,
+    cause,
+  });
+}
+
+/**
+ * CAS/ownership-checked integration rollback (exported for deterministic tests).
+ * See `rollbackIntegration` contract above.
+ */
+export async function rollbackIntegrationCas(input: {
+  root: string;
+  originalRef: string;
+  targetBranch: string;
+  /** This operation's last expected post-write HEAD (or pre-write when no write landed). */
+  ownedTip: string;
+  cause: unknown;
+}): Promise<never> {
+  const root = nodePath.resolve(input.root);
+  const target = input.targetBranch.trim();
   const targetRef = `refs/heads/${target}`;
+  const originalRef = input.originalRef.trim();
+  const ownedTip = input.ownedTip.trim();
+  const cause = input.cause;
+
   let currentTip = "";
   try {
     currentTip = (await git(root, ["rev-parse", targetRef])).trim();
@@ -922,44 +1023,49 @@ async function rollbackIntegration(
     );
   }
 
-  if (currentTip === originalRef) {
-    // Already restored (e.g. cherry-pick --abort undid a partial pick). Sync worktree.
-    try {
-      await git(root, ["reset", "--hard", originalRef]);
-    } catch (rollbackError) {
-      throw new Error(
-        `Workspace integration failed and rollback also failed: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
-      );
-    }
-    throw new Error(`Workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
-  }
-
-  // Only CAS-restore when the tip still matches what this batch last owned.
-  // A foreign advance (currentTip !== ownedTip) must never be reset away.
-  if (currentTip !== ownedTip) {
+  // Foreign advance: current is neither our pre-write tip nor our last owned post-write tip.
+  if (currentTip !== originalRef && currentTip !== ownedTip) {
+    // Clear in-progress sequencer without moving the symbolic target ref.
+    await git(root, ["cherry-pick", "--quit"]).catch(() => "");
     throw new Error(
       `Workspace integration conflicted; rollback refused because target ${target} ` +
-        `advanced by another integration (owned ${ownedTip}, current ${currentTip}, ` +
-        `original ${originalRef}): ${errorMessage(cause)}`
+        `advanced by another writer after this operation's write ` +
+        `(owned ${ownedTip}, current ${currentTip}, original ${originalRef}); ` +
+        `ref and worktree evidence preserved: ${errorMessage(cause)}`
     );
   }
 
-  try {
-    // CAS: only move target when it still points at ownedTip.
-    await git(root, ["update-ref", targetRef, originalRef, ownedTip]);
-  } catch (casError) {
-    throw new Error(
-      `Workspace integration conflicted; rollback CAS failed for target ${target} ` +
-        `(owned ${ownedTip}, original ${originalRef}): ${errorMessage(cause)}; cas: ${errorMessage(casError)}`
-    );
+  // Clear sequencer without moving ref first (quit, not abort).
+  await git(root, ["cherry-pick", "--quit"]).catch(() => "");
+
+  if (currentTip === ownedTip && currentTip !== originalRef) {
+    // CAS: only move target when it still points at our last expected post-write HEAD.
+    try {
+      await git(root, ["update-ref", targetRef, originalRef, ownedTip]);
+    } catch (casError) {
+      throw new Error(
+        `Workspace integration conflicted; rollback CAS failed for target ${target} ` +
+          `(owned ${ownedTip}, original ${originalRef}): ${errorMessage(cause)}; cas: ${errorMessage(casError)}`
+      );
+    }
+    currentTip = originalRef;
   }
 
+  // Reconcile index/worktree to the (now) current target tip without a ref-moving reset
+  // over a foreign tip. After a successful CAS (or when already at original), tip is ours.
   try {
-    await git(root, ["reset", "--hard", originalRef]);
+    await git(root, ["read-tree", "-u", "--reset", currentTip]);
+    await git(root, ["checkout-index", "-a", "-f"]).catch(() => "");
   } catch (rollbackError) {
-    throw new Error(
-      `Workspace integration failed and rollback also failed: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
-    );
+    // Fallback: reset --hard only against the tip we already own (original or CAS result).
+    try {
+      await git(root, ["reset", "--hard", currentTip]);
+    } catch (hardError) {
+      throw new Error(
+        `Workspace integration failed and rollback also failed: ${errorMessage(cause)}; ` +
+          `reconcile: ${errorMessage(rollbackError)}; hard: ${errorMessage(hardError)}`
+      );
+    }
   }
   throw new Error(`Workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
 }

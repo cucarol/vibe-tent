@@ -3,9 +3,12 @@
  *
  * 1. Two ready Deliveries with the same targetHead accepted concurrently:
  *    exactly one integrates; the other fails stable retryable TARGET_MOVED and
- *    remains ready/delivered. Serialization is by workspace+targetBranch, not taskPath.
+ *    remains ready/delivered. Serialization is by git-common-dir + fully resolved
+ *    target ref (not workspaceId / taskPath / lexical workspace path).
  * 2. Public task.deliver commits[] foreign/missing/base SHAs refuse ready Delivery
  *    and leave Git unchanged.
+ * 3. Lock identity and CAS rollback ownership are covered in workspace.test
+ *    (common-dir key across worktree projections; external advance after own write).
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -283,7 +286,8 @@ test("concurrent accept same targetHead: one integrates; other TARGET_MOVED rema
     assert.equal(headB, mainAtDeliver);
     assert.equal(headA, headB, "both Deliveries snapshot the same targetHead");
 
-    // Fire concurrent accepts on different taskPaths sharing target main.
+    // Fire concurrent accepts on different taskPaths sharing the same
+    // git-common-dir + refs/heads/main lock (not workspaceId/taskPath).
     const [resA, resB] = await Promise.all([
       rpc(svc, "task.accept", {
         workspaceId,
