@@ -7,6 +7,7 @@ import {
   dispatch,
   patchBody,
   patchBox,
+  resolveDispatchNodeIds,
   setNodeMode,
 } from "../core/ops.js";
 import {
@@ -3544,7 +3545,11 @@ function mapDocsMoveError(err: unknown): RpcError {
 async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const boxId = optionalString(p, "boxId") ?? optionalString(p, "id") ?? requireString(p, "claimId");
+  // Authoritative multi-Node source is nodeIds[]; legacy boxId/id/claimId remain
+  // single-primary fallbacks. Prefer nodeIds; when both present they must agree.
+  const dispatchSelection = resolveTaskDispatchNodeSelection(p, mount.env.tentName);
+  const boxId = dispatchSelection.primaryId;
+  const nodeIds = dispatchSelection.nodeIds;
   const assigneeKindRaw = optionalString(p, "assigneeKind");
   const assigneeKind =
     assigneeKindRaw === "agentProfile" ? "agentProfile" : assigneeKindRaw === "role" || !assigneeKindRaw
@@ -3854,6 +3859,8 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       profileId: assigneeKind === "agentProfile" ? profileId : undefined,
       // Persist logical agentId only for Role-agent dispatch (not user-direct profile).
       agentId: resolvedAgentId,
+      // Authoritative ordered Node refs (transient). Core writes Context Card only.
+      nodeIds,
       ...(preallocatedTaskId ? { taskId: preallocatedTaskId } : {}),
       ...(purposeParam ? { purpose: purposeParam } : {}),
       ...(dispatchContextGeneration
@@ -3870,6 +3877,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
         role: dispatched.assignee,
         assigneeKind: dispatched.assigneeKind,
         boxId,
+        nodeIds,
         reason: "task.dispatch",
       },
       "self"
@@ -4058,6 +4066,42 @@ function parseOptionalTaskActor(
       err instanceof Error ? err.message : `Invalid ${label}`,
       { field: label }
     );
+  }
+}
+
+/**
+ * Resolve authoritative Node selection for task.dispatch.
+ * Prefer transient `nodeIds` (ordered, deduped). Legacy boxId/id/claimId remain
+ * single-primary fallbacks. When both are present they must agree on primary.
+ * Fail loud before MutationBus Task/manifest writes for malformed input.
+ * Node existence/archive gates run inside Core under the same workspace lock.
+ */
+function resolveTaskDispatchNodeSelection(
+  p: Record<string, unknown>,
+  tentName: string
+): { nodeIds: string[]; primaryId: string } {
+  // Refuse non-array / non-string-element nodeIds fail-loud (not silent ignore).
+  if ("nodeIds" in p && p.nodeIds !== undefined && p.nodeIds !== null) {
+    if (!Array.isArray(p.nodeIds)) {
+      throw new RpcError(-32602, "Invalid string[] param: nodeIds");
+    }
+    if (!p.nodeIds.every((x) => typeof x === "string")) {
+      throw new RpcError(-32602, "Invalid string[] param: nodeIds");
+    }
+  }
+  const rawNodeIds = optionalStringArray(p, "nodeIds");
+  const legacyPrimary =
+    optionalString(p, "boxId") ?? optionalString(p, "id") ?? optionalString(p, "claimId");
+  try {
+    const nodeIds = resolveDispatchNodeIds({
+      nodeIds: rawNodeIds,
+      legacyClaimId: legacyPrimary,
+      tentName,
+    });
+    return { nodeIds, primaryId: nodeIds[0]! };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new RpcError(-32602, message, { field: "nodeIds" });
   }
 }
 

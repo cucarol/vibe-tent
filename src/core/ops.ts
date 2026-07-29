@@ -117,8 +117,100 @@ export interface DispatchOptions {
   contextGenerationFacts?: import("./task.js").TaskEnvelopeInput["contextGenerationFacts"];
   /** Optional stable purpose/subKey for Session reuse identity. */
   purpose?: string;
+  /**
+   * Authoritative transient multi-Node dispatch source (durable Node IDs).
+   * Non-empty; order-preserving dedupe; each id resolved + structurally gated
+   * before any Task/manifest write. Persisted only as Task.contextCard.refs.nodes[]
+   * (never a second claims/nodeIds fact). When omitted, the legacy single claimId
+   * argument is used as a one-element list.
+   */
+  nodeIds?: string[];
 }
 
+/**
+ * Resolve the authoritative ordered Node id list for dispatch.
+ * Prefers `nodeIds` when present; legacy single claimId remains the fallback.
+ * When both are present, legacy primary must equal the first deduped nodeId.
+ * Rejects empty/malformed lists and root/workspace tokens (no fake root Node).
+ */
+export function resolveDispatchNodeIds(input: {
+  nodeIds?: string[] | null;
+  legacyClaimId?: string | null;
+  tentName: string;
+}): string[] {
+  const tentName = input.tentName.trim();
+  const legacyRaw = typeof input.legacyClaimId === "string" ? input.legacyClaimId.trim() : "";
+  const legacy = legacyRaw || undefined;
+
+  if (input.nodeIds !== undefined && input.nodeIds !== null) {
+    if (!Array.isArray(input.nodeIds)) {
+      throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
+    }
+    if (input.nodeIds.length === 0) {
+      throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
+    }
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (let i = 0; i < input.nodeIds.length; i++) {
+      const raw = input.nodeIds[i];
+      if (typeof raw !== "string" || !raw.trim()) {
+        throw new Error(
+          `Dispatch nodeIds[${i}] must be a non-empty durable Node ID string.`
+        );
+      }
+      const id = raw.trim();
+      if (isForbiddenRootDispatchToken(id, tentName)) {
+        throw new Error(
+          "Cannot dispatch the whole Tent directly; dispatch specific boxes " +
+            "(nodeIds cannot include ., root, or the Tent name)."
+        );
+      }
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    if (out.length === 0) {
+      throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
+    }
+    if (legacy) {
+      if (isForbiddenRootDispatchToken(legacy, tentName)) {
+        throw new Error(
+          "Cannot dispatch the whole Tent directly; dispatch a specific box " +
+            "(boxId cannot be ., root, or the Tent name)."
+        );
+      }
+      // Exact compatible primary: legacy single id must equal the first authoritative id.
+      if (legacy !== out[0]) {
+        throw new Error(
+          `Dispatch legacy primary '${legacy}' conflicts with authoritative nodeIds primary '${out[0]}'; ` +
+            "when both are present they must agree (prefer nodeIds)."
+        );
+      }
+    }
+    return out;
+  }
+
+  if (!legacy) {
+    throw new Error("Dispatch requires nodeIds or a legacy single boxId/id/claimId.");
+  }
+  if (isForbiddenRootDispatchToken(legacy, tentName)) {
+    throw new Error(
+      "Cannot dispatch the whole Tent directly; dispatch a specific box " +
+        "(boxId cannot be ., root, or the Tent name)."
+    );
+  }
+  return [legacy];
+}
+
+function isForbiddenRootDispatchToken(id: string, tentName: string): boolean {
+  return id === "." || id === "root" || (tentName !== "" && id === tentName);
+}
+
+/**
+ * Dispatch a Task. Prefer `options.nodeIds` for multi-Node selection.
+ * `claimId` is the legacy single primary; when `nodeIds` is set it may be omitted
+ * (`""`) or must equal the first deduped nodeId.
+ */
 export async function dispatch(
   env: OpsEnv,
   claimId: string,
@@ -163,7 +255,13 @@ async function dispatchUnlocked(
     assigneeLabel = assertRoleName(roleName);
   }
 
-  const claim = resolveDispatchClaim(tent, claimId, env.tentName);
+  // Authoritative ordered Node refs (transient). Prefer options.nodeIds; legacy
+  // claimId remains the single-id fallback. Resolve + gate every id before writes.
+  const nodeIds = resolveDispatchNodeIds({
+    nodeIds: options.nodeIds,
+    legacyClaimId: claimId,
+    tentName: env.tentName,
+  });
   const tasks = await loadTaskEnvelopes(env.fs);
   // Cleanup only removes what this dispatch creates. Role: temp/<role>/ when new.
   // Profile: temp/agent-profiles/<safe>/ when new (never tent-role/*).
@@ -184,33 +282,37 @@ async function dispatchUnlocked(
     );
   }
   void options.asSub;
-  void tasks;
 
-  if (claim.root) {
-    // Workspace/root context is stable context, not a Tent-wide lock.
-    // Concurrent root/workspace dispatches are legal.
-  } else {
-    const structural = structuralClaimGate(claim.box);
+  // Resolve every requested Node under this mutation; fail loud before any write.
+  // Exact ordered refs only — no silent ancestry/descendant expansion into Context Card.
+  const selectedBoxes: Box[] = [];
+  for (const id of nodeIds) {
+    const box = requireBoxById(tent, id);
+    const structural = structuralClaimGate(box);
     if (!structural.ok) {
       throw new Error(`Cannot dispatch: ${structural.reason || "box cannot be claimed"}`);
     }
-    const claimable = canClaim(claim.box, { tent, tasks });
+    const claimable = canClaim(box, { tent, tasks });
     if (!claimable.ok) {
       throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
     }
+    selectedBoxes.push(box);
   }
 
   try {
-    // Role tasks reuse durable multi-ref aggregation for writable context pointers;
-    // profile tasks are one-shot and only select the target box (ephemeral claimBoxes).
-    const roleSelection = claim.root
-      ? []
-      : assigneeKind === "role"
-        ? roleManifestSelection(tent, assigneeLabel, claim.box, tasks)
-        : [claim.box];
-    const input: DispatchInput = claim.root
-      ? { tentName: env.tentName, role: assigneeLabel, claimRoot: true, ...options.workspace }
-      : { tentName: env.tentName, role: assigneeLabel, claimBoxes: roleSelection, ...options.workspace };
+    // Manifest is auxiliary: snapshot exact requested boxes (+ role multi-ref
+    // aggregation of other active role tasks for shared role manifest.yml).
+    // Profile tasks are one-shot and only select the requested boxes.
+    const roleSelection =
+      assigneeKind === "role"
+        ? roleManifestSelection(tent, assigneeLabel, selectedBoxes, tasks)
+        : selectedBoxes;
+    const input: DispatchInput = {
+      tentName: env.tentName,
+      role: assigneeLabel,
+      claimBoxes: roleSelection,
+      ...options.workspace,
+    };
     const manifest = buildManifest(tent, input);
     const yaml = manifestToYaml(manifest);
 
@@ -238,9 +340,9 @@ async function dispatchUnlocked(
       initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
     }
 
-    const taskClaims = claim.root
-      ? [{ id: "root", path: "./" }]
-      : [{ id: claim.box.id, path: claim.box.path }];
+    // Sole persisted Node-ref source is contextCard.refs.nodes via writeTaskEnvelope.
+    // Pass exact ordered selection only (no fake root; no dual claims fact).
+    const taskClaims = selectedBoxes.map((box) => ({ id: box.id, path: box.path }));
     const agentId = options.agentId?.trim() || undefined;
     const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
       role: assigneeLabel,
@@ -322,19 +424,6 @@ export async function taskAck(env: OpsEnv, taskPath: string): Promise<void> {
 
 export async function cancelPendingTask(env: OpsEnv, taskPath: string): Promise<void> {
   await withMutation(env.fs, () => cancelTaskEnvelope(env.fs, taskPath));
-}
-
-type DispatchClaim =
-  | { root: true; id: "root"; name: string }
-  | { root: false; id: string; name: string; box: Box };
-
-function resolveDispatchClaim(tent: LoadedTent, claimId: string, tentName: string): DispatchClaim {
-  const id = claimId.trim();
-  if (id === "." || id === "root" || id === tentName) {
-    throw new Error("Cannot dispatch the whole Tent directly; dispatch a specific box (boxId cannot be ., root, or the Tent name).");
-  }
-  const box = requireBoxById(tent, id);
-  return { root: false, id: box.id, name: box.name, box };
 }
 
 // ---- stamp / complete (legacy CLI; Node owner/status dual-write retired) ----
@@ -865,8 +954,17 @@ function assertRoleName(role: string): string {
   return name;
 }
 
-/** Aggregate active role Task Node refs into ephemeral manifest selection boxes. */
-function roleManifestSelection(tent: LoadedTent, role: string, current: Box, tasks: TaskEnvelope[]): Box[] {
+/**
+ * Aggregate active role Task Node refs into ephemeral manifest selection boxes.
+ * `current` is the exact requested selection for this dispatch (one or many).
+ * Does not expand tree ancestry/descendants into Context Card — manifest only.
+ */
+function roleManifestSelection(
+  tent: LoadedTent,
+  role: string,
+  current: Box | readonly Box[],
+  tasks: TaskEnvelope[]
+): Box[] {
   const selected = new Map<string, Box>();
   for (const task of tasks) {
     // Only durable role tasks share multi-ref aggregation; profile tasks are one-shot.
@@ -880,7 +978,10 @@ function roleManifestSelection(tent: LoadedTent, role: string, current: Box, tas
       if (box) selected.set(box.id, box);
     }
   }
-  selected.set(current.id, current);
+  const currents = Array.isArray(current) ? current : [current];
+  for (const box of currents) {
+    selected.set(box.id, box);
+  }
   return [...selected.values()];
 }
 

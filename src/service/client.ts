@@ -744,8 +744,18 @@ export class ServiceClient {
   taskDispatch(
     workspaceId: string,
     args: {
+      /**
+       * Authoritative multi-Node dispatch source (durable Node IDs).
+       * Non-empty; Service dedupes while preserving order and resolves every id
+       * under the workspace MutationBus before Task/manifest writes.
+       * Persisted only as Task.contextCard.refs.nodes[] — not a second claims fact.
+       * Prefer this over legacy single boxId/id/claimId.
+       */
+      nodeIds?: string[];
+      /** Legacy single primary Node id (compatible with first nodeIds entry when both present). */
       boxId?: string;
       id?: string;
+      claimId?: string;
       /**
        * Required for assigneeKind=role (default). Optional/ignored for agentProfile
        * when equal to profileId; must not differ from profileId.
