@@ -271,7 +271,7 @@ test("tokens.css defines semantic structure without a locked brand hex palette",
   assert.doesNotMatch(css, /#[0-9a-fA-F]{3,8}\b/);
 });
 
-test("default Electron main HTML entry is still the legacy renderer", async () => {
+test("Desktop keeps its private Electron entry without exposing it as the CLI package main", async () => {
   const windows = await read("src/desktop/main/windows.ts");
   assert.match(
     windows,
@@ -279,10 +279,12 @@ test("default Electron main HTML entry is still the legacy renderer", async () =
   );
   assert.doesNotMatch(windows, /renderer-next/);
 
-  const packageJson = JSON.parse(await read("package.json")) as {
+  const packageJson = JSON.parse(await read("package.json")) as { main?: string };
+  assert.equal(packageJson.main, undefined);
+  const desktopPackageJson = JSON.parse(await read("desktop/package.json")) as {
     main: string;
   };
-  assert.equal(packageJson.main, "desktop/dist/main/index.cjs");
+  assert.equal(desktopPackageJson.main, "dist/main/index.cjs");
 });
 
 test("ADR documents foundation boundary", async () => {

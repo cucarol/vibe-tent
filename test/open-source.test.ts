@@ -222,12 +222,13 @@ test("docs/skill drift: workspacePointer retired; WorkspaceLane + coordination +
   }
   assert.match(viewSrc, /in-workspace[^\n]*workspace root/i);
 
-  // Legacy external CLI complete/stamp retired — no workspace-pointer wording; dual-write gone
+  // Retired direct-write commands are removed from the public CLI surface.
   const tentCli = await fs.readFile(path.join(repoRoot, "src", "cli", "tent.ts"), "utf8");
   assert.doesNotMatch(tentCli, /requires a workspace pointer/);
   assert.doesNotMatch(tentCli, /has no workspace pointer/);
   assert.doesNotMatch(tentCli, /require-check requires a workspace root/);
-  assert.match(tentCli, /stamp is retired|complete is retired|owner\/status dual-write/i);
+  assert.doesNotMatch(tentCli, /case "(?:complete|stamp|grant-readable)"/);
+  assert.doesNotMatch(tentCli, /\bcomplete\|stamp\b|\bgrant-readable\b/);
 });
 
 test("OKF validator:angle-bracket markdown links may target filenames with spaces", async () => {

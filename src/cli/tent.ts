@@ -10,7 +10,7 @@
 //   tent skill-install [--target all|claude|shared-agents] [--force]
 //   tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copilot]
 //   tent tree | status | roles | find | tags       // 只读
-//   tent dispatch / task-ack / complete / …        // external root migration window only
+//   tent dispatch / task-ack / …                   // external root migration window only
 
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
@@ -81,9 +81,6 @@ const LEGACY_MUTATION_COMMANDS = new Set([
   "dispatch",
   "task-ack",
   "task-cancel",
-  "complete",
-  "stamp",
-  "grant-readable",
   "new-box",
   "tag",
   "untag",
@@ -321,7 +318,7 @@ async function main() {
   ]);
   if (!tentCommands.has(cmd)) {
     return fail(
-      `Unknown command: ${cmd || "(empty)"}\nCommands: new migrate import task agent agent-hooks role-init role-checkpoint roles dispatch task-ack task-cancel propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
+      `Unknown command: ${cmd || "(empty)"}\nCommands: new migrate import task agent agent-hooks role-init role-checkpoint roles dispatch task-ack task-cancel propose status new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
     );
   }
 
@@ -471,16 +468,6 @@ async function main() {
       console.log(`✓ Proposal submitted for triage: ${proposal.path}`);
       break;
     }
-    case "complete": {
-      return fail(
-        "complete is retired: Node owner/status dual-write is removed. Use tent task deliver/accept (or task.fail)."
-      );
-    }
-    case "stamp": {
-      return fail(
-        "stamp is retired: Node owner/status dual-write is removed. Use tent task deliver/accept (or task.fail)."
-      );
-    }
     case "status": {
       if (args.length > 0) return fail("Usage: tent status");
       try {
@@ -492,11 +479,6 @@ async function main() {
         throw error;
       }
       break;
-    }
-    case "grant-readable": {
-      return fail(
-        "grant-readable is retired in V0.2: Node readable/writable axes are removed; use Task context pointers."
-      );
     }
     case "new-box": {
       const [name, type, parentId] = args;
@@ -802,9 +784,7 @@ Legacy direct-core mutations (external / non-.tent system root only — migratio
   dispatch <boxId> <role> <prompt>   Create a pending task envelope.
   task-ack <taskPath>                Mark a task taken and claim its box (legacy claim).
   task-cancel <taskPath>             Delete a pending task envelope.
-  complete|stamp                     Retired (no Node owner/status dual-write; use task.*).
   force-release <boxId>              Interrupt/cancel active tasks for the box (no FM write).
-  grant-readable                     Retired (V0.2: no Node R/W axes).
   new-box <name> <type> [parentId]   Create a box (type: goal|prompt|output[-secondary]).
   tag|untag <boxId> <tag>            Add or remove a tag.
   tag-new | tag-rm                   Manage the tag registry.

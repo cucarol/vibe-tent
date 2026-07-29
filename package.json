@@ -23,7 +23,6 @@
     "SECURITY.md",
     "LICENSE"
   ],
-  "main": "desktop/dist/main/index.cjs",
   "scripts": {
     "build": "node esbuild.config.mjs production",
     "build:plugin": "node esbuild.config.mjs production",
