@@ -981,6 +981,158 @@ test("skillSetCompatibilityDigest includes body/version; profile launch digest f
   assert.equal(fromCfg.length, 64);
 });
 
+test("same-profileId in-place: ACP model/baseUrlEnvKey and MCP env/credentialRef mappings flip digest", () => {
+  const base = {
+    id: "same-profile",
+    adapterId: "grok-acp",
+    command: "node",
+    args: ["agent.js"],
+    acp: {
+      executable: "/usr/bin/grok",
+      model: "grok-4",
+      envKey: "XAI_API_KEY",
+      credentialRef: "cred-main",
+      baseUrlEnvKey: "XAI_BASE_URL",
+      baseUrl: undefined as string | undefined,
+      permissionPolicy: "deny" as const,
+      promptTimeoutMs: 60_000,
+      permissionTimeoutMs: 30_000,
+    },
+    skills: [{ name: "extra-skill", path: "/skills/extra", enabled: true }],
+    mcpServers: [
+      {
+        name: "docs-mcp",
+        transport: "stdio" as const,
+        enabled: true,
+        command: "mcp-docs",
+        args: ["--stdio"],
+        envKeys: { API_TOKEN: "DOCS_TOKEN_ENV" },
+        envCredentialRefs: { API_TOKEN: "cred-docs" },
+        headerEnvKeys: {},
+        headerCredentialRefs: {},
+      },
+    ],
+  };
+
+  const d0 = profileLaunchCompatibilityDigestFromConfig(base);
+
+  // ACP model change (same profileId).
+  const dModel = profileLaunchCompatibilityDigestFromConfig({
+    ...base,
+    acp: { ...base.acp, model: "grok-4-fast" },
+  });
+  assert.notEqual(d0, dModel, "ACP model in-place edit must flip launch digest");
+
+  // ACP baseUrlEnvKey change.
+  const dBaseUrlEnv = profileLaunchCompatibilityDigestFromConfig({
+    ...base,
+    acp: { ...base.acp, baseUrlEnvKey: "XAI_BASE_URL_ALT" },
+  });
+  assert.notEqual(d0, dBaseUrlEnv, "ACP baseUrlEnvKey in-place edit must flip launch digest");
+
+  // ACP executable / timeouts also matter.
+  const dExec = profileLaunchCompatibilityDigestFromConfig({
+    ...base,
+    acp: { ...base.acp, executable: "/opt/grok/bin" },
+  });
+  assert.notEqual(d0, dExec);
+  const dTimeout = profileLaunchCompatibilityDigestFromConfig({
+    ...base,
+    acp: { ...base.acp, promptTimeoutMs: 90_000 },
+  });
+  assert.notEqual(d0, dTimeout);
+
+  // MCP envKeys mapping *value* (process env key name) under same map key.
+  const dEnvKeyVal = profileLaunchCompatibilityDigestFromConfig({
+    ...base,
+    mcpServers: [
+      {
+        ...base.mcpServers[0]!,
+        envKeys: { API_TOKEN: "DOCS_TOKEN_ENV_ALT" },
+      },
+    ],
+  });
+  assert.notEqual(
+    d0,
+    dEnvKeyVal,
+    "MCP envKeys value (process env key name) under same key must flip digest"
+  );
+
+  // MCP envCredentialRefs mapping *value* (credentialRef id) under same map key.
+  const dCredVal = profileLaunchCompatibilityDigestFromConfig({
+    ...base,
+    mcpServers: [
+      {
+        ...base.mcpServers[0]!,
+        envCredentialRefs: { API_TOKEN: "cred-docs-alt" },
+      },
+    ],
+  });
+  assert.notEqual(
+    d0,
+    dCredVal,
+    "MCP envCredentialRefs value (credentialRef id) under same key must flip digest"
+  );
+
+  // MCP envKeys mapping *key* change (different process-var name).
+  const dEnvKeyKey = profileLaunchCompatibilityDigestFromConfig({
+    ...base,
+    mcpServers: [
+      {
+        ...base.mcpServers[0]!,
+        envKeys: { OTHER_TOKEN: "DOCS_TOKEN_ENV" },
+      },
+    ],
+  });
+  assert.notEqual(d0, dEnvKeyKey);
+
+  // MCP transport / command / url / headerCredentialRefs.
+  const dTransport = profileLaunchCompatibilityDigestFromConfig({
+    ...base,
+    mcpServers: [
+      {
+        ...base.mcpServers[0]!,
+        transport: "http",
+        url: "https://mcp.example/docs",
+        command: undefined,
+        args: undefined,
+        headerCredentialRefs: { Authorization: "cred-http-auth" },
+      },
+    ],
+  });
+  assert.notEqual(d0, dTransport);
+
+  // Skill path identity (enabled).
+  const dSkillPath = profileLaunchCompatibilityDigestFromConfig({
+    ...base,
+    skills: [{ name: "extra-skill", path: "/skills/extra-v2", enabled: true }],
+  });
+  assert.notEqual(d0, dSkillPath);
+
+  // Disabled MCP must not contribute (removing enabled server flips; adding disabled does not restore).
+  const dNoMcp = profileLaunchCompatibilityDigestFromConfig({
+    ...base,
+    mcpServers: [{ ...base.mcpServers[0]!, enabled: false }],
+  });
+  assert.notEqual(d0, dNoMcp);
+
+  // Profile env *key names* only — values ignored (secret-safe).
+  const dEnvKeyOnly = profileLaunchCompatibilityDigestFromConfig({
+    ...base,
+    env: { VISIBLE_KEY: "anything" },
+  });
+  const dEnvKeyOnly2 = profileLaunchCompatibilityDigestFromConfig({
+    ...base,
+    env: { VISIBLE_KEY: "different-value-same-key" },
+  });
+  assert.equal(
+    dEnvKeyOnly,
+    dEnvKeyOnly2,
+    "profile env values must not enter digest (key names only)"
+  );
+  assert.notEqual(d0, dEnvKeyOnly, "adding a profile env key name must flip digest");
+});
+
 test("live generation: AGENTS/Role/Skill/profile mutations force fresh Session and refresh Task gen", async () => {
   const skillRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skills-live-"));
   try {

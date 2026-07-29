@@ -266,49 +266,34 @@ export async function collectStableContextGeneration(
   };
 }
 
-/** Build launch compatibility digest from a machine-local profile (no secrets). */
+/**
+ * Build launch compatibility digest from a machine-local profile (no secrets).
+ * Passes the full non-secret ACP/MCP/Skill launch snapshot into
+ * {@link profileLaunchCompatibilityDigest} so in-place edits to model,
+ * baseUrlEnvKey, MCP credentialRef/env-key mappings, etc. flip the digest.
+ */
 export function profileLaunchCompatibilityDigestFromConfig(
   profile: AgentProfileConfig
 ): string {
-  const envKeyNames: string[] = [];
-  if (profile.env) envKeyNames.push(...Object.keys(profile.env));
-  // Fold MCP env/header *key names* and credentialRef *ids* into env map keys only.
-  const syntheticEnv: Record<string, string> = { ...(profile.env ?? {}) };
-  for (const m of profile.mcpServers ?? []) {
-    if (m.envKeys) {
-      for (const [k, v] of Object.entries(m.envKeys)) {
-        syntheticEnv[`mcp.envKeys.${m.name}.${k}`] = v;
-      }
-    }
-    if (m.envCredentialRefs) {
-      for (const [k, v] of Object.entries(m.envCredentialRefs)) {
-        syntheticEnv[`mcp.envCredentialRefs.${m.name}.${k}`] = v;
-      }
-    }
-    if (m.headerEnvKeys) {
-      for (const [k, v] of Object.entries(m.headerEnvKeys)) {
-        syntheticEnv[`mcp.headerEnvKeys.${m.name}.${k}`] = v;
-      }
-    }
-    if (m.headerCredentialRefs) {
-      for (const [k, v] of Object.entries(m.headerCredentialRefs)) {
-        syntheticEnv[`mcp.headerCredentialRefs.${m.name}.${k}`] = v;
-      }
-    }
-  }
-  void envKeyNames;
   return profileLaunchCompatibilityDigest({
     profileId: profile.id,
     adapterId: profile.adapterId,
     command: profile.command,
     args: profile.args,
-    env: syntheticEnv,
+    // Profile env: key names only — never values (may hold non-secret config, but
+    // secret-shaped values must never enter the digest).
+    envKeyNames: Object.keys(profile.env ?? {}),
     acp: profile.acp
       ? {
+          executable: profile.acp.executable,
           model: profile.acp.model,
           envKey: profile.acp.envKey,
           credentialRef: profile.acp.credentialRef,
+          baseUrlEnvKey: profile.acp.baseUrlEnvKey,
+          baseUrl: profile.acp.baseUrl,
           permissionPolicy: profile.acp.permissionPolicy,
+          promptTimeoutMs: profile.acp.promptTimeoutMs,
+          permissionTimeoutMs: profile.acp.permissionTimeoutMs,
         }
       : undefined,
     fake: profile.fake
@@ -318,12 +303,27 @@ export function profileLaunchCompatibilityDigestFromConfig(
           waitForSignal: profile.fake.waitForSignal,
         }
       : undefined,
-    skillNames: (profile.skills ?? [])
-      .filter((s) => s && s.enabled !== false)
-      .map((s) => s.name),
-    mcpServers: (profile.mcpServers ?? []).map((m) => ({
-      name: m.name,
-    })),
+    skills: (profile.skills ?? [])
+      .filter((s) => s && s.enabled !== false && s.name?.trim())
+      .map((s) => ({
+        name: s.name,
+        path: s.path,
+      })),
+    mcpServers: (profile.mcpServers ?? [])
+      .filter((m) => m && m.enabled !== false && m.name?.trim())
+      .map((m) => ({
+        name: m.name,
+        transport: m.transport,
+        command: m.command,
+        args: m.args,
+        url: m.url,
+        // Mapping values are process env *key names* or credentialRef *ids* —
+        // hashed fully (keys + values), never resolved secret plaintext.
+        envKeys: m.envKeys,
+        envCredentialRefs: m.envCredentialRefs,
+        headerEnvKeys: m.headerEnvKeys,
+        headerCredentialRefs: m.headerCredentialRefs,
+      })),
   });
 }
 

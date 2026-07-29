@@ -1202,80 +1202,147 @@ export function profileAdapterCompatibilityDigest(input: {
 }
 
 /**
+ * Sort a string→string map for canonical hashing (both keys and values matter).
+ * Used for MCP envKeys / envCredentialRefs / headerEnvKeys / headerCredentialRefs
+ * where values are process env *key names* or credentialRef *ids* — never secrets.
+ */
+export function canonicalStringMap(
+  map: Record<string, string> | undefined | null
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!map) return out;
+  for (const key of Object.keys(map).sort((a, b) => a.localeCompare(b))) {
+    const k = key.trim();
+    if (!k) continue;
+    const v = typeof map[key] === "string" ? map[key].trim() : "";
+    out[k] = v;
+  }
+  return out;
+}
+
+/**
  * Non-secret profile/launch compatibility snapshot for same-profileId in-place edits.
- * Includes adapter, model, command, args, env *key names*, credentialRef *ids*,
- * fake capability flags — never secret values or plaintext credentials.
+ *
+ * Hashes the exact canonical launch configuration that can change provider/MCP/Skill
+ * context — never resolved secret values:
+ * - ACP: executable, model, envKey, credentialRef, baseUrlEnvKey, baseUrl,
+ *   permissionPolicy, promptTimeoutMs, permissionTimeoutMs
+ * - generic: command, args, profile env *key names* only
+ * - enabled Skills: name + path identity
+ * - enabled MCP: name, transport, command, args, url, and every env/header
+ *   process-key name or credentialRef id (mapping keys *and* values)
  */
 export function profileLaunchCompatibilityDigest(input: {
   profileId: string;
   adapterId: string;
   command?: string;
   args?: readonly string[];
-  /** Non-secret env map: only keys are hashed (values ignored). */
-  env?: Record<string, string>;
-  /** ACP/model options (ids and names only). */
+  /**
+   * Profile process env: only *key names* are hashed (values may be non-secret
+   * but are still omitted so secret-shaped values never enter the digest).
+   */
+  envKeyNames?: readonly string[];
+  /** ACP options — ids, names, paths, timeouts only. */
   acp?: {
+    executable?: string;
     model?: string;
     envKey?: string;
     credentialRef?: string;
-    command?: string;
+    baseUrlEnvKey?: string;
+    baseUrl?: string;
     permissionPolicy?: string;
+    promptTimeoutMs?: number;
+    permissionTimeoutMs?: number;
   };
   fake?: {
     canResume?: boolean;
     failLaunch?: string;
     waitForSignal?: boolean;
   };
-  /** Skill ref names only (bodies live in skillSet digest). */
-  skillNames?: readonly string[];
-  /** MCP server names / envKey / credentialRef ids only. */
+  /** Enabled skill refs: name + optional path (bodies live in skillSet digest). */
+  skills?: readonly {
+    name: string;
+    path?: string;
+  }[];
+  /**
+   * Enabled MCP servers: full non-secret launch identity including mapping
+   * values (process env key names / credentialRef ids).
+   */
   mcpServers?: readonly {
-    name?: string;
-    envKey?: string;
-    credentialRef?: string;
+    name: string;
+    transport?: string;
+    command?: string;
+    args?: readonly string[];
+    url?: string;
+    envKeys?: Record<string, string>;
+    envCredentialRefs?: Record<string, string>;
+    headerEnvKeys?: Record<string, string>;
+    headerCredentialRefs?: Record<string, string>;
   }[];
   capabilityFlags?: readonly string[];
 }): string {
-  const envKeys = Object.keys(input.env ?? {})
+  const envKeyNames = [...(input.envKeyNames ?? [])]
     .map((k) => k.trim())
     .filter(Boolean)
     .sort((a, b) => a.localeCompare(b));
   const args = [...(input.args ?? [])].map((s) => String(s));
-  const skillNames = [...(input.skillNames ?? [])]
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean)
-    .sort((a, b) => a.localeCompare(b));
+  const skills = [...(input.skills ?? [])]
+    .map((s) => ({
+      name: s.name.trim().toLowerCase(),
+      path: s.path?.trim() || "",
+    }))
+    .filter((s) => s.name)
+    .sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path));
   const mcp = [...(input.mcpServers ?? [])]
     .map((m) => ({
-      name: m.name?.trim() || "",
-      envKey: m.envKey?.trim() || "",
-      credentialRef: m.credentialRef?.trim() || "",
+      name: m.name.trim(),
+      transport: m.transport?.trim() || "",
+      command: m.command?.trim() || "",
+      args: [...(m.args ?? [])].map((s) => String(s)),
+      url: m.url?.trim() || "",
+      envKeys: canonicalStringMap(m.envKeys),
+      envCredentialRefs: canonicalStringMap(m.envCredentialRefs),
+      headerEnvKeys: canonicalStringMap(m.headerEnvKeys),
+      headerCredentialRefs: canonicalStringMap(m.headerCredentialRefs),
     }))
+    .filter((m) => m.name)
     .sort((a, b) => a.name.localeCompare(b.name));
   const flags = [...(input.capabilityFlags ?? [])]
     .map((s) => s.trim())
     .filter(Boolean)
     .sort((a, b) => a.localeCompare(b));
+  const acp = input.acp;
   return sha256Hex(
     canonicalJson({
       profileId: input.profileId.trim(),
       adapterId: input.adapterId.trim(),
       command: input.command?.trim() || "",
       args,
-      envKeys,
+      envKeyNames,
       acp: {
-        model: input.acp?.model?.trim() || "",
-        envKey: input.acp?.envKey?.trim() || "",
-        credentialRef: input.acp?.credentialRef?.trim() || "",
-        command: input.acp?.command?.trim() || "",
-        permissionPolicy: input.acp?.permissionPolicy?.trim() || "",
+        executable: acp?.executable?.trim() || "",
+        model: acp?.model?.trim() || "",
+        envKey: acp?.envKey?.trim() || "",
+        credentialRef: acp?.credentialRef?.trim() || "",
+        baseUrlEnvKey: acp?.baseUrlEnvKey?.trim() || "",
+        baseUrl: acp?.baseUrl?.trim() || "",
+        permissionPolicy: acp?.permissionPolicy?.trim() || "",
+        promptTimeoutMs:
+          typeof acp?.promptTimeoutMs === "number" && Number.isFinite(acp.promptTimeoutMs)
+            ? acp.promptTimeoutMs
+            : null,
+        permissionTimeoutMs:
+          typeof acp?.permissionTimeoutMs === "number" &&
+          Number.isFinite(acp.permissionTimeoutMs)
+            ? acp.permissionTimeoutMs
+            : null,
       },
       fake: {
         canResume: input.fake?.canResume === true,
         failLaunch: Boolean(input.fake?.failLaunch),
         waitForSignal: input.fake?.waitForSignal !== false,
       },
-      skillNames,
+      skills,
       mcp,
       flags,
     })
