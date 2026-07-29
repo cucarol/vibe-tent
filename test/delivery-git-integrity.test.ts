@@ -28,7 +28,6 @@ async function makeWorkspace(name = "git-integrity"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    rules: "# RULES\n\nGit/Delivery integrity\n",
     boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
@@ -367,7 +366,6 @@ test("Service dual workspaceId projections same common-dir+target: concurrent ac
     const fsa = new NodeFs(root);
     await scaffoldInWorkspace(fsa, {
       name: path.basename(root),
-      rules: "# RULES\n\ndual projection\n",
       boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
     });
     await fsa.writeFile(
@@ -529,7 +527,6 @@ test("Service dual workspaceId: blocked integrate critical section is exclusive"
     const fsa = new NodeFs(root);
     await scaffoldInWorkspace(fsa, {
       name: path.basename(root),
-      rules: "# RULES\n\ndual hold\n",
       boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
     });
     await fsa.writeFile(
