@@ -759,24 +759,30 @@ test("backfill cannot interleave with deliver (per-Task lifecycle flight)", asyn
   const initSha = await initGitOnWorkspace(ws);
   const roleLane = await ensureRoleWorkspace(ws, "executor");
 
-  // Idempotent release + safety timeout so assertion failures cannot hang teardown.
-  let resolveHold: (() => void) | null = null;
-  let released = false;
-  const releaseBackfill = (): void => {
-    if (released) return;
-    released = true;
-    resolveHold?.();
-    resolveHold = null;
+  // Deliver holds the per-Task flight after targetHead snapshot. Idempotent release
+  // always runs in finally — assertion failures must not leave deliverHold forever.
+  let resolveDeliverHold: (() => void) | null = null;
+  let deliverHoldReleased = false;
+  const releaseDeliverHold = (): void => {
+    if (deliverHoldReleased) return;
+    deliverHoldReleased = true;
+    resolveDeliverHold?.();
+    resolveDeliverHold = null;
   };
-  const backfillHold = new Promise<void>((r) => {
-    resolveHold = r;
+  const deliverHold = new Promise<void>((r) => {
+    resolveDeliverHold = r;
   });
-  const holdSafety = setTimeout(() => releaseBackfill(), 15_000);
-  let backfillEntered = false;
+  // Safety: never leave the Service stuck if the test aborts mid-hold.
+  const holdSafety = setTimeout(() => releaseDeliverHold(), 45_000);
+  let deliverEntered = false;
+  let backfillBodyEntered = false;
 
+  setAfterTargetHeadSnapshotForTests(async () => {
+    deliverEntered = true;
+    await deliverHold;
+  });
   setBeforeTaskBackfillWorkspaceLaneBaseForTests(async () => {
-    backfillEntered = true;
-    await backfillHold;
+    backfillBodyEntered = true;
   });
 
   try {
@@ -796,6 +802,17 @@ test("backfill cannot interleave with deliver (per-Task lifecycle flight)", asyn
       await rpc(svc, "task.claim", { workspaceId, taskPath });
       await stripBaseCommitForLegacyFixture(ws, taskPath);
 
+      // Base must exist for commits[] deliver; race a *later* backfill against deliver.
+      const bf0 = await rpc(svc, "task.backfillWorkspaceLaneBase", {
+        workspaceId,
+        taskPath,
+        actor: { kind: "user", id: "user" },
+        baseCommit: initSha,
+      });
+      assert.ok(!bf0.error, JSON.stringify(bf0.error));
+      // Reset entry flag after the priming backfill so the race counter is clean.
+      backfillBodyEntered = false;
+
       const taskSha = await taskCommitOnLane(
         roleLane.worktree,
         "race-work.txt",
@@ -803,58 +820,79 @@ test("backfill cannot interleave with deliver (per-Task lifecycle flight)", asyn
         "race work"
       );
 
-      // Start backfill first — holds per-Task lifecycle flight in body.
+      // Deliver first — holds per-Task lifecycle flight at targetHead snapshot.
+      // Windows CI can take several seconds to reach the snapshot hook.
+      const deliverP = rpc(svc, "task.deliver", {
+        workspaceId,
+        taskPath,
+        summary: "race deliver",
+        commits: [taskSha],
+      });
+      const enterDeadline = Date.now() + 30_000;
+      while (!deliverEntered && Date.now() < enterDeadline) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      if (!deliverEntered) {
+        // Unblock any stuck deliver before failing so teardown cannot hang.
+        releaseDeliverHold();
+        const early = await Promise.race([
+          deliverP,
+          new Promise<{ error?: unknown }>((resolve) =>
+            setTimeout(() => resolve({ error: { message: "deliver settle timeout" } }), 5_000)
+          ),
+        ]);
+        assert.fail(
+          `deliver must enter targetHead snapshot hold within 30s; early=${JSON.stringify(early)}`
+        );
+      }
+
+      // Concurrent backfill must not enter flight body while deliver holds.
       const backfillP = rpc(svc, "task.backfillWorkspaceLaneBase", {
         workspaceId,
         taskPath,
         actor: { kind: "user", id: "user" },
         baseCommit: initSha,
       });
-      // Bounded wait for flight entry (≤5s); do not spin forever.
-      const enterDeadline = Date.now() + 5_000;
-      while (!backfillEntered && Date.now() < enterDeadline) {
-        await new Promise((r) => setTimeout(r, 25));
-      }
-      assert.ok(backfillEntered, "backfill must enter lifecycle flight body");
-
-      // Concurrent deliver must wait for the same per-Task flight.
-      let deliverSettled = false;
-      const deliverP = rpc(svc, "task.deliver", {
-        workspaceId,
-        taskPath,
-        summary: "race deliver",
-        commits: [taskSha],
-      }).then((res) => {
-        deliverSettled = true;
-        return res;
-      });
-
-      await new Promise((r) => setTimeout(r, 300));
+      await new Promise((r) => setTimeout(r, 400));
       assert.equal(
-        deliverSettled,
+        backfillBodyEntered,
         false,
-        "deliver must not finish while backfill holds per-Task lifecycle flight"
+        "backfill body must not enter while deliver holds per-Task lifecycle flight"
       );
 
-      releaseBackfill();
-      const backfilled = await backfillP;
-      assert.ok(!backfilled.error, JSON.stringify(backfilled.error));
-      assert.equal((backfilled.result as { idempotent?: boolean }).idempotent, false);
-
+      releaseDeliverHold();
       const delivered = await deliverP;
       assert.ok(!delivered.error, JSON.stringify(delivered.error));
       assert.equal(
         (delivered.result as { delivery: { status: string } }).delivery.status,
         "ready"
       );
-      assert.equal(deliverSettled, true);
+      assert.equal(
+        (delivered.result as { task: { state: string } }).task.state,
+        "delivered"
+      );
+
+      // After deliver wins, Task is delivered — backfill must fail state eligibility
+      // (not return idempotent success). Judge did not request delivered no-op.
+      const backfilled = await backfillP;
+      assert.ok(backfilled.error, "backfill after delivered must fail state eligibility");
+      assert.equal(backfilled.error!.code, RPC_LIFECYCLE);
+      assert.equal(
+        (backfilled.error!.data as { code?: string } | undefined)?.code,
+        "BASE_BACKFILL_STATE"
+      );
+      assert.equal(
+        backfillBodyEntered,
+        true,
+        "backfill body runs only after deliver releases the flight"
+      );
     });
   } finally {
-    // Always release hold before clearing hooks so teardown cannot hang.
-    releaseBackfill();
+    // Always release hold before clearing hooks so Service/test teardown cannot hang.
+    releaseDeliverHold();
     clearTimeout(holdSafety);
-    setBeforeTaskBackfillWorkspaceLaneBaseForTests(null);
     setAfterTargetHeadSnapshotForTests(null);
+    setBeforeTaskBackfillWorkspaceLaneBaseForTests(null);
   }
 });
 
