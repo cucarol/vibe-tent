@@ -578,3 +578,185 @@ test("P0: pending reclaim queue is explicit opt-in only", async () => {
   assert.equal(await dequeueTaskWorktreeReclaimPending(fsa, "tk-a"), true);
   assert.equal((await listTaskWorktreeReclaimPending(fsa)).length, 1);
 });
+
+/** Slow FsAdapter: delay queue-file IO so concurrent RMW would race without a lock. */
+function delayMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function slowQueueFs(
+  inner: import("../src/core/adapter.js").FsAdapter,
+  delayReadMs: number,
+  delayWriteMs: number
+): import("../src/core/adapter.js").FsAdapter {
+  return {
+    listDir: (dir) => inner.listDir(dir),
+    readFile: async (p) => {
+      if (p.includes("task-worktree-reclaim-pending")) {
+        await delayMs(delayReadMs);
+      }
+      return inner.readFile(p);
+    },
+    writeFile: async (p, content) => {
+      if (p.includes("task-worktree-reclaim-pending")) {
+        await delayMs(delayWriteMs);
+      }
+      return inner.writeFile(p, content);
+    },
+    readBinary: (p) => inner.readBinary(p),
+    writeBinary: (p, data) => inner.writeBinary(p, data),
+    exists: async (p) => {
+      if (p.includes("task-worktree-reclaim-pending")) {
+        await delayMs(delayReadMs);
+      }
+      return inner.exists(p);
+    },
+    mkdir: (p) => inner.mkdir(p),
+    move: (from, to) => inner.move(from, to),
+    remove: (p) => inner.remove(p),
+    withLock: inner.withLock?.bind(inner),
+  };
+}
+
+test("P0: concurrent distinct enqueues retain all siblings", async () => {
+  const { NodeFs } = await import("../src/fs/node-fs.js");
+  const {
+    enqueueTaskWorktreeReclaimPending,
+    listTaskWorktreeReclaimPending,
+  } = await import("../src/core/task-worktree-reclaim-queue.js");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-q-par-"));
+  const fsa = slowQueueFs(new NodeFs(dir), 15, 10);
+  const ids = Array.from({ length: 12 }, (_, i) => `tk-par-${String(i).padStart(2, "0")}`);
+  await Promise.all(
+    ids.map((taskId) =>
+      enqueueTaskWorktreeReclaimPending(fsa, {
+        taskId,
+        taskPath: `temp/agent-profiles/x/tasks/${taskId}.md`,
+        workspaceRoot: "/ws/shared",
+        trigger: "task.accept",
+      })
+    )
+  );
+  const all = await listTaskWorktreeReclaimPending(fsa);
+  assert.equal(all.length, ids.length, "every distinct enqueue must survive concurrent RMW");
+  assert.deepEqual(
+    all.map((e) => e.taskId).sort(),
+    [...ids].sort()
+  );
+});
+
+test("P0: enqueue/dequeue interleaving cannot resurrect or delete siblings", async () => {
+  const { NodeFs } = await import("../src/fs/node-fs.js");
+  const {
+    enqueueTaskWorktreeReclaimPending,
+    dequeueTaskWorktreeReclaimPending,
+    listTaskWorktreeReclaimPending,
+  } = await import("../src/core/task-worktree-reclaim-queue.js");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-q-mix-"));
+  const fsa = slowQueueFs(new NodeFs(dir), 12, 8);
+
+  // Seed siblings that must remain through concurrent remove/add of other ids.
+  await enqueueTaskWorktreeReclaimPending(fsa, {
+    taskId: "tk-keep-a",
+    taskPath: "temp/agent-profiles/x/tasks/keep-a.md",
+    workspaceRoot: "/ws/a",
+    trigger: "seed",
+  });
+  await enqueueTaskWorktreeReclaimPending(fsa, {
+    taskId: "tk-keep-b",
+    taskPath: "temp/agent-profiles/x/tasks/keep-b.md",
+    workspaceRoot: "/ws/a",
+    trigger: "seed",
+  });
+  await enqueueTaskWorktreeReclaimPending(fsa, {
+    taskId: "tk-remove-me",
+    taskPath: "temp/agent-profiles/x/tasks/remove-me.md",
+    workspaceRoot: "/ws/a",
+    trigger: "seed",
+  });
+
+  const ops: Promise<unknown>[] = [];
+  // Parallel: dequeue one id, enqueue several new ones, re-enqueue removed id once.
+  ops.push(dequeueTaskWorktreeReclaimPending(fsa, "tk-remove-me"));
+  for (let i = 0; i < 8; i++) {
+    const taskId = `tk-new-${i}`;
+    ops.push(
+      enqueueTaskWorktreeReclaimPending(fsa, {
+        taskId,
+        taskPath: `temp/agent-profiles/x/tasks/${taskId}.md`,
+        workspaceRoot: "/ws/a",
+        trigger: "parallel",
+      })
+    );
+  }
+  // Attempt to re-add the dequeued id after interleaving starts (may win either order).
+  ops.push(
+    enqueueTaskWorktreeReclaimPending(fsa, {
+      taskId: "tk-remove-me",
+      taskPath: "temp/agent-profiles/x/tasks/remove-me-again.md",
+      workspaceRoot: "/ws/a",
+      trigger: "re-add",
+    })
+  );
+  // Concurrent dequeues of a never-present id must not wipe siblings.
+  ops.push(dequeueTaskWorktreeReclaimPending(fsa, "tk-never-existed"));
+  await Promise.all(ops);
+
+  const all = await listTaskWorktreeReclaimPending(fsa);
+  const ids = new Set(all.map((e) => e.taskId));
+  assert.ok(ids.has("tk-keep-a"), "sibling keep-a must not be deleted by interleaving");
+  assert.ok(ids.has("tk-keep-b"), "sibling keep-b must not be deleted by interleaving");
+  for (let i = 0; i < 8; i++) {
+    assert.ok(ids.has(`tk-new-${i}`), `new enqueue tk-new-${i} must be retained`);
+  }
+  // remove-me was dequeued then re-enqueued; final state is exactly one entry (idempotent).
+  assert.equal(
+    all.filter((e) => e.taskId === "tk-remove-me").length,
+    1,
+    "re-enqueued taskId must appear exactly once (no resurrection duplicates)"
+  );
+  assert.equal(
+    all.find((e) => e.taskId === "tk-remove-me")?.taskPath,
+    "temp/agent-profiles/x/tasks/remove-me-again.md"
+  );
+});
+
+test("P0: list after mutation observes committed queue state", async () => {
+  const { NodeFs } = await import("../src/fs/node-fs.js");
+  const {
+    enqueueTaskWorktreeReclaimPending,
+    dequeueTaskWorktreeReclaimPending,
+    listTaskWorktreeReclaimPending,
+  } = await import("../src/core/task-worktree-reclaim-queue.js");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-q-list-"));
+  const fsa = slowQueueFs(new NodeFs(dir), 20, 15);
+
+  // Start a slow enqueue, then list must not return until that mutation commits
+  // (or after it, with the entry visible) — never a torn mid-RMW snapshot.
+  const enqueueP = enqueueTaskWorktreeReclaimPending(fsa, {
+    taskId: "tk-visible",
+    taskPath: "temp/agent-profiles/x/tasks/visible.md",
+    workspaceRoot: "/ws/v",
+    trigger: "list-observe",
+  });
+  // Schedule list slightly after enqueue starts so it queues behind the critical section.
+  await delayMs(5);
+  const listDuring = listTaskWorktreeReclaimPending(fsa);
+  const [enqueued, listed] = await Promise.all([enqueueP, listDuring]);
+  assert.equal(enqueued.taskId, "tk-visible");
+  assert.ok(
+    listed.some((e) => e.taskId === "tk-visible"),
+    "list serialized after enqueue must observe the committed entry"
+  );
+
+  const dequeueP = dequeueTaskWorktreeReclaimPending(fsa, "tk-visible");
+  await delayMs(5);
+  const listAfterDeqStart = listTaskWorktreeReclaimPending(fsa);
+  const [removed, listed2] = await Promise.all([dequeueP, listAfterDeqStart]);
+  assert.equal(removed, true);
+  assert.ok(
+    !listed2.some((e) => e.taskId === "tk-visible"),
+    "list serialized after dequeue must not resurrect the removed entry"
+  );
+  assert.deepEqual(await listTaskWorktreeReclaimPending(fsa), []);
+});

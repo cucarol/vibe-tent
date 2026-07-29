@@ -26,6 +26,27 @@ type PendingFile = {
   entries: TaskWorktreeReclaimPendingEntry[];
 };
 
+/**
+ * Per-FsAdapter FIFO critical section for queue RMW.
+ * WeakMap keys are adapter identity only — unrelated workspaces/adapters do not
+ * share a chain (no process-wide bottleneck). Same pattern as in-process stores.
+ */
+const queueChains = new WeakMap<object, Promise<unknown>>();
+
+function withQueueCriticalSection<T>(fs: FsAdapter, fn: () => Promise<T>): Promise<T> {
+  const key = fs as object;
+  const prev = queueChains.get(key) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  queueChains.set(
+    key,
+    run.then(
+      () => undefined,
+      () => undefined
+    )
+  );
+  return run;
+}
+
 function emptyFile(): PendingFile {
   return { version: 1, entries: [] };
 }
@@ -104,19 +125,21 @@ export async function enqueueTaskWorktreeReclaimPending(
   if (!taskId || !taskPath || !workspaceRoot) {
     throw new Error("enqueueTaskWorktreeReclaimPending requires taskId, taskPath, workspaceRoot");
   }
-  const file = await readPending(fs);
-  const next: TaskWorktreeReclaimPendingEntry = {
-    taskId,
-    taskPath,
-    workspaceRoot,
-    enqueuedAt: entry.enqueuedAt ?? new Date().toISOString(),
-    ...(entry.trigger?.trim() ? { trigger: entry.trigger.trim() } : {}),
-  };
-  const without = file.entries.filter((e) => e.taskId !== taskId);
-  without.push(next);
-  without.sort((a, b) => a.taskId.localeCompare(b.taskId));
-  await writePending(fs, { version: 1, entries: without });
-  return next;
+  return withQueueCriticalSection(fs, async () => {
+    const file = await readPending(fs);
+    const next: TaskWorktreeReclaimPendingEntry = {
+      taskId,
+      taskPath,
+      workspaceRoot,
+      enqueuedAt: entry.enqueuedAt ?? new Date().toISOString(),
+      ...(entry.trigger?.trim() ? { trigger: entry.trigger.trim() } : {}),
+    };
+    const without = file.entries.filter((e) => e.taskId !== taskId);
+    without.push(next);
+    without.sort((a, b) => a.taskId.localeCompare(b.taskId));
+    await writePending(fs, { version: 1, entries: without });
+    return next;
+  });
 }
 
 /** Drop a pending entry after successful reclaim or permanent NOT_APPLICABLE. */
@@ -126,19 +149,23 @@ export async function dequeueTaskWorktreeReclaimPending(
 ): Promise<boolean> {
   const id = taskId.trim();
   if (!id) return false;
-  const file = await readPending(fs);
-  const next = file.entries.filter((e) => e.taskId !== id);
-  if (next.length === file.entries.length) return false;
-  await writePending(fs, { version: 1, entries: next });
-  return true;
+  return withQueueCriticalSection(fs, async () => {
+    const file = await readPending(fs);
+    const next = file.entries.filter((e) => e.taskId !== id);
+    if (next.length === file.entries.length) return false;
+    await writePending(fs, { version: 1, entries: next });
+    return true;
+  });
 }
 
 /** Read-only list of pending reclaim entries (for mount recovery). */
 export async function listTaskWorktreeReclaimPending(
   fs: FsAdapter
 ): Promise<TaskWorktreeReclaimPendingEntry[]> {
-  const file = await readPending(fs);
-  return [...file.entries];
+  return withQueueCriticalSection(fs, async () => {
+    const file = await readPending(fs);
+    return [...file.entries];
+  });
 }
 
 /** Entries whose workspaceRoot matches the mounted root (path-normalized). */
