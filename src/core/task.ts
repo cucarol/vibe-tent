@@ -30,11 +30,13 @@ import {
   type WorkspaceLane,
 } from "./task-model.js";
 import {
+  agentsBodyCompatibilityDigest,
   assertIntegrationAuthorityMatchesParent,
   buildTaskContextCard,
   computeContextGeneration,
   deriveIntegrationAuthority,
   loadTaskContextCardFromFrontmatter,
+  profileAdapterCompatibilityDigest,
   projectAssigneeFromTask,
   serializeTaskContextCardForFrontmatter,
   type IntegrationAuthority,
@@ -133,9 +135,30 @@ export interface TaskEnvelopeInput {
   /**
    * Optional precomputed contextGeneration for new writes.
    * When omitted, a deterministic dispatch-time generation is derived from
-   * workspace/assignee identity (no chat-memory invention).
+   * stable workspace/assignee/profile facts (never taskId / objective / delta).
+   * Production Service should pass a real generation from
+   * computeContextGenerationFromStableFacts.
    */
   contextGeneration?: string;
+  /**
+   * Optional stable compatibility inputs used only when contextGeneration is
+   * omitted. Never includes taskId/objective/acceptance/Task delta.
+   */
+  contextGenerationFacts?: {
+    agentsPointerDigest?: string;
+    agentsBody?: string;
+    tentRoleDigest?: string;
+    tentRoleVersion?: string;
+    tentTaskDigest?: string;
+    tentTaskVersion?: string;
+    rolePrompt?: string;
+    rosterAgentIds?: readonly string[];
+    profileId?: string;
+    adapterId?: string;
+    purpose?: string;
+    capabilityFlags?: readonly string[];
+    extraStable?: Record<string, string | number | boolean | null | undefined>;
+  };
 }
 
 /** Legacy two-state for B2 / dogfood CLI. */
@@ -953,16 +976,34 @@ export async function writeTaskEnvelope(
   }
 
   // Full Context Card v1 on every new write — sole Node-ref wire is refs.nodes[].
-  // contextGeneration is deterministic from workspace/assignee identity (no secrets).
+  // contextGeneration is deterministic from stable compatibility facts only
+  // (workspace / AGENTS / skills / Role roster / profile-adapter / purpose).
+  // Never hashes taskId, objective, acceptance, or current Task delta.
+  const facts = input.contextGenerationFacts;
   const contextGeneration =
     input.contextGeneration?.trim() ||
     computeContextGeneration({
       workspaceIdentity: input.workspace?.workspace || "local-workspace",
-      agentsPointerDigest: "dispatch-default-agents",
+      agentsPointerDigest:
+        facts?.agentsPointerDigest?.trim() ||
+        agentsBodyCompatibilityDigest(facts?.agentsBody ?? ""),
+      tentRoleDigest: facts?.tentRoleDigest,
+      tentRoleVersion: facts?.tentRoleVersion,
+      rolePrompt: facts?.rolePrompt,
+      rosterAgentIds: facts?.rosterAgentIds,
+      tentTaskDigest: facts?.tentTaskDigest,
+      tentTaskVersion: facts?.tentTaskVersion,
+      profileAdapterCompatibility: profileAdapterCompatibilityDigest({
+        profileId: facts?.profileId || input.role,
+        adapterId: facts?.adapterId || "unknown-adapter",
+        capabilityFlags: facts?.capabilityFlags,
+      }),
+      purpose: facts?.purpose,
       extraStable: {
         assigneeKind,
         assignee: input.role,
-        taskId: id,
+        ...(input.agentId?.trim() ? { agentId: input.agentId.trim() } : {}),
+        ...facts?.extraStable,
       },
     });
   const assignee = projectAssigneeFromTask({

@@ -64,6 +64,54 @@ export function readBundledSkillBody(packageRoot: string, skillName: string): st
   return stripYamlFrontmatter(raw).trim();
 }
 
+/**
+ * Read raw SKILL.md including YAML frontmatter (for version extraction).
+ */
+export function readBundledSkillRaw(packageRoot: string, skillName: string): string {
+  const file = bundledSkillMdPath(packageRoot, skillName);
+  if (!fs.existsSync(file)) {
+    throw new Error(`Built-in skill missing: ${skillName} (${file})`);
+  }
+  return fs.readFileSync(file, "utf8");
+}
+
+/**
+ * Skill version label for contextGeneration: frontmatter `version` / `compatibility`
+ * when present, else package version, else skill name as stable marker.
+ */
+export function readBundledSkillVersion(
+  packageRoot: string,
+  skillName: string,
+  packageVersion?: string
+): string {
+  try {
+    const raw = readBundledSkillRaw(packageRoot, skillName);
+    const fromFm = parseSkillFrontmatterVersion(raw);
+    if (fromFm) return fromFm;
+  } catch {
+    // fall through
+  }
+  const pkg = packageVersion?.trim();
+  if (pkg) return pkg;
+  return skillName;
+}
+
+/** Extract version-like field from SKILL.md YAML frontmatter. */
+export function parseSkillFrontmatterVersion(raw: string): string | undefined {
+  const text = raw.replace(/^\uFEFF/, "");
+  if (!text.startsWith("---")) return undefined;
+  const end = text.indexOf("\n---", 3);
+  if (end === -1) return undefined;
+  const fm = text.slice(3, end);
+  for (const key of ["version", "compatibility", "schemaVersion"]) {
+    const re = new RegExp(`^${key}\\s*:\\s*["']?([^"'\\n#]+)`, "im");
+    const m = fm.match(re);
+    if (m?.[1]?.trim()) return m[1].trim();
+  }
+  // name field is not a version — skip
+  return undefined;
+}
+
 export function stripYamlFrontmatter(raw: string): string {
   const text = raw.replace(/^\uFEFF/, "");
   if (!text.startsWith("---")) return text;
@@ -241,17 +289,29 @@ export function managedSkillCompatibilityInputs(input: {
   packageRoot: string;
   assigneeKind?: AssigneeKind;
   role?: RoleDefinition;
+  /** Package version used when skill frontmatter has no version field. */
+  packageVersion?: string;
 }): {
   builtinSkills: BuiltinTentSkillName[];
   rolePrompt: string;
   roster: string[];
   skillBodyDigests: Record<string, string>;
+  skillVersions: Record<string, string>;
+  skillBodies: Record<string, string>;
 } {
   const builtinSkills = builtinSkillNamesForExecutor(input.assigneeKind);
   const skillBodyDigests: Record<string, string> = {};
+  const skillVersions: Record<string, string> = {};
+  const skillBodies: Record<string, string> = {};
   for (const name of builtinSkills) {
     const body = readBundledSkillBody(input.packageRoot, name);
+    skillBodies[name] = body;
     skillBodyDigests[name] = simpleDigest(body);
+    skillVersions[name] = readBundledSkillVersion(
+      input.packageRoot,
+      name,
+      input.packageVersion
+    );
   }
   const roster = [...(input.role?.roster ?? [])]
     .map((s) => s.trim())
@@ -262,6 +322,8 @@ export function managedSkillCompatibilityInputs(input: {
     rolePrompt: input.role?.prompt?.trim() || "",
     roster,
     skillBodyDigests,
+    skillVersions,
+    skillBodies,
   };
 }
 

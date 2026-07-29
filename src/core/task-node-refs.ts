@@ -470,13 +470,16 @@ function buildMigratedFullContextCard(input: {
     (typeof data.contextGeneration === "string" && data.contextGeneration.trim()
       ? data.contextGeneration.trim()
       : computeContextGeneration({
+          // Migration-only fallback: stable workspace/role identity only.
+          // Never include taskPath/taskId/objective (poison cross-Task cache).
           workspaceIdentity:
             (typeof data.workspace === "string" && data.workspace.trim()) ||
             "local-workspace",
           agentsPointerDigest: "migration-default-agents",
           extraStable: {
-            taskPath,
             role: typeof data.role === "string" ? data.role : "",
+            assigneeKind:
+              data.assigneeKind === "agentProfile" ? "agentProfile" : "role",
           },
         }));
 

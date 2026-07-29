@@ -83,8 +83,16 @@ import {
   projectExecutionLaneFromTask,
   shouldInjectStablePrefix,
   TaskContextCardError,
+  type SessionReuseCompatibilityFacts,
   type TaskContextCardV1,
 } from "../core/task-context-card.js";
+import {
+  assertDurableContextCardRefsResolved,
+  buildSessionReuseRequestFacts,
+  collectStableContextGeneration,
+  evaluateManagedSessionReuse,
+  type StableContextGenerationBundle,
+} from "./session-context-generation.js";
 import { systemRootFromWorkspace } from "../core/paths.js";
 import {
   decodeBase64Strict,
@@ -3656,13 +3664,60 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       // Workspace default elevated while dispatching a downstream Task Agent → clamp to review.
       deliveryPolicy = "review";
     }
+    // Real stable contextGeneration at dispatch (no taskId/objective/delta).
+    const dispatchProfileId =
+      assigneeKind === "agentProfile" ? profileId! : profileId || assigneeLabel;
+    const dispatchProfile = dispatchProfileId
+      ? ctx.profileCatalog.get(dispatchProfileId)
+      : undefined;
+    const dispatchAdapterId = dispatchProfile?.adapterId || "unknown-adapter";
+    const parentRoleIdForGen =
+      resolvedActors.parentActor.kind === "role"
+        ? resolvedActors.parentActor.id
+        : undefined;
+    let dispatchContextGeneration: string | undefined;
+    let dispatchContextFacts:
+      | import("../core/task.js").TaskEnvelopeInput["contextGenerationFacts"]
+      | undefined;
+    try {
+      const bundle = await collectStableContextGeneration({
+        workspaceRoot: mount.workspaceRoot,
+        workspaceIdentity: workspaceId,
+        packageRoot: ctx.packageRoot,
+        packageVersion: ctx.version,
+        assigneeKind,
+        assigneeLabel,
+        agentId: resolvedAgentId,
+        profileId: dispatchProfileId || assigneeLabel,
+        adapterId: dispatchAdapterId,
+        parentRoleId: parentRoleIdForGen,
+        roleFs: mount.env.fs,
+      });
+      dispatchContextGeneration = bundle.contextGeneration;
+      dispatchContextFacts = {
+        agentsPointerDigest: bundle.agentsPointerDigest,
+        tentRoleDigest: bundle.tentRoleDigest || undefined,
+        tentRoleVersion: bundle.tentRoleVersion || undefined,
+        tentTaskDigest: bundle.tentTaskDigest || undefined,
+        tentTaskVersion: bundle.tentTaskVersion || undefined,
+        rolePrompt: bundle.rolePrompt || undefined,
+        rosterAgentIds: bundle.rosterAgentIds,
+        profileId: bundle.profileId,
+        adapterId: bundle.adapterId,
+        purpose: bundle.purpose || undefined,
+      };
+    } catch {
+      dispatchContextGeneration = undefined;
+      dispatchContextFacts = undefined;
+    }
+
     const dispatched = await dispatch(mount.env, boxId, assigneeKind === "role" ? role : undefined, {
       userPrompt: prompt,
       parentActor: resolvedActors.parentActor,
       reviewer: resolvedActors.reviewer,
       asSub,
       deliveryPolicy,
-      // Only profile-asSub (and similar) may bind a Git lane at queue.
+      // Only profile-asSub (and similar) may bind a Git lane at dispatch.
       // Role assignee never freezes workspaceLane/baseCommit here.
       workspace: workspaceLane,
       assigneeKind,
@@ -3670,6 +3725,10 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       // Persist logical agentId only for Role-agent dispatch (not user-direct profile).
       agentId: resolvedAgentId,
       ...(preallocatedTaskId ? { taskId: preallocatedTaskId } : {}),
+      ...(dispatchContextGeneration
+        ? { contextGeneration: dispatchContextGeneration }
+        : {}),
+      ...(dispatchContextFacts ? { contextGenerationFacts: dispatchContextFacts } : {}),
     });
     ctx.events.emit(
       "task.state",
@@ -6391,20 +6450,172 @@ async function launchAndBindTaskStartSession(
         }
       : undefined;
 
-  // Managed ACP bootstrap: Context Card v1 assembly when present, else stable
-  // skill/role prefix + path Context Card + Task tail (legacy migration path).
-  // Stable prefix once per contextGeneration on Session. Does not copy box/manifest
-  // bodies. Does not instruct claim/get/deliver CLI — Local Service auto-delivers.
-  // Optional Role Checkpoint is appended last as dynamic tail only.
-  let priorContextGeneration: string | undefined;
-  if (task.sessionId?.trim()) {
+  // Before managed start: validate every declared durable Node/Task/Delivery ref
+  // against persisted workspace facts — fail loud to parent (never invent).
+  if (task.contextCard) {
     try {
-      const priorRow = await ctx.runtime.registry.read(task.sessionId.trim());
-      priorContextGeneration = priorRow?.contextGeneration;
-    } catch {
-      // Missing prior row → full stable prefix on fresh Session.
+      await assertDurableContextCardRefsResolved(mount.env.fs, task.contextCard);
+    } catch (err) {
+      if (err instanceof TaskContextCardError) {
+        throw new RpcError(-32000, err.message, {
+          code: err.code,
+          details: err.details,
+          taskPath,
+          taskId: task.id,
+        });
+      }
+      throw err;
     }
   }
+
+  // Collect real stable compatibility facts for Session reuse + optional generation refresh.
+  const profile = ctx.profileCatalog.get(profileId);
+  const adapterId = profile?.adapterId || "unknown-adapter";
+  const parentRoleId =
+    task.parentActor?.kind === "role" ? task.parentActor.id : undefined;
+  const assigneeKind = taskAssigneeKind(task);
+  let stableBundle: StableContextGenerationBundle | undefined;
+  try {
+    stableBundle = await collectStableContextGeneration({
+      workspaceRoot: mount.workspaceRoot,
+      workspaceIdentity: workspaceId,
+      packageRoot: ctx.packageRoot,
+      packageVersion: ctx.version,
+      assigneeKind,
+      assigneeLabel: task.role,
+      agentId: typeof task.agentId === "string" ? task.agentId : undefined,
+      profileId,
+      adapterId,
+      parentRoleId,
+      roleFs: mount.env.fs,
+    });
+  } catch {
+    stableBundle = undefined;
+  }
+
+  // Task envelope contextGeneration is the compatibility identity once written at
+  // dispatch. Live recompute supplies skillsDigest/purpose/agent facts for the Session
+  // row; it must not silently replace a persisted generation (would poison reuse).
+  const requestGeneration =
+    task.contextGeneration?.trim() ||
+    task.contextCard?.contextGeneration?.trim() ||
+    stableBundle?.contextGeneration ||
+    "";
+
+  // Include worktree/lane in reuse identity (acceptance: same lane required).
+  // Role Tasks share tent-role/<role> → cross-Task Session reuse is possible.
+  // agentProfile Tasks use distinct tent-task/<id> lanes → mismatch → fresh Session
+  // (contextGeneration may still match for prompt-cache compatibility across Tasks).
+  const requestFacts: SessionReuseCompatibilityFacts | undefined = stableBundle
+    ? buildSessionReuseRequestFacts({
+        workspaceId,
+        bundle: {
+          ...stableBundle,
+          // Align bundle agent/parent with request when reusing Task generation.
+          contextGeneration: requestGeneration || stableBundle.contextGeneration,
+        },
+        contextGeneration: requestGeneration,
+        worktree: cwd,
+      })
+    : requestGeneration
+      ? {
+          workspaceId,
+          parentRoleId: parentRoleId || "",
+          agentId:
+            (typeof task.agentId === "string" && task.agentId.trim()) || task.role,
+          purpose: "",
+          skillsDigest: "",
+          profileId,
+          adapterId,
+          contextGeneration: requestGeneration,
+          worktree: cwd,
+        }
+      : undefined;
+
+  // Candidate selection: task binding first, then Role/profile stopped sessions.
+  // Reuse only after Core evaluateSessionReuseCompatibility proves full match + runtime gates.
+  // Cross-Task cache-compatible reuse is allowed when all compatibility facts match.
+  const candidateIds: string[] = [];
+  if (task.sessionId?.trim()) candidateIds.push(task.sessionId.trim());
+  if (!isProfileTask) {
+    const roleSession = await findResumableManagedSessionForRole(
+      ctx,
+      workspaceId,
+      task.role,
+      profileId,
+      cwd
+    );
+    if (roleSession?.id && !candidateIds.includes(roleSession.id)) {
+      candidateIds.push(roleSession.id);
+    }
+  } else {
+    // agentProfile: also consider stopped same-profile sessions in this workspace/cwd
+    // so cross-Task cache-compatible reuse can be proven by the Core gate.
+    const profileCandidates = await findResumableManagedSessionsForProfile(
+      ctx,
+      workspaceId,
+      profileId,
+      cwd
+    );
+    for (const c of profileCandidates) {
+      if (c.id && !candidateIds.includes(c.id)) candidateIds.push(c.id);
+    }
+  }
+
+  let resumePrior = false;
+  let priorSessionId = "";
+  let priorContextGeneration: string | undefined;
+  let continuityProven = false;
+
+  if (requestFacts) {
+    for (const candidateId of candidateIds) {
+      try {
+        const probe = await ctx.runtime.probe(candidateId);
+        const prior = await ctx.runtime.registry.read(candidateId);
+        if (!prior || !probe.resumeCapable || probe.alive) continue;
+
+        const pendingInputs = await ctx.taskInputs.listPending(workspaceId, taskPath);
+        const pendingUserAsk = await ctx.userAsks.hasPendingForTask(
+          workspaceId,
+          taskPath
+        );
+        const noPendingInput = pendingInputs.length === 0 && !pendingUserAsk;
+        const noPendingDelivery = !task.activeDeliveryId;
+        // Exclusive idle lease: stopped session, not dual-bound to another live Task.
+        const exclusiveLease = prior.state === "stopped";
+
+        const evaluation = evaluateManagedSessionReuse({
+          request: requestFacts,
+          candidate: prior,
+          runtime: {
+            previousTurnSettled: probe.turnBusy !== true,
+            noPendingInput,
+            noPendingDelivery,
+            exclusiveLease,
+          },
+        });
+
+        if (evaluation.allowed) {
+          resumePrior = true;
+          priorSessionId = candidateId;
+          continuityProven = true;
+          priorContextGeneration = prior.contextGeneration;
+          break;
+        }
+      } catch (err) {
+        if (
+          !/Session not found/i.test(err instanceof Error ? err.message : String(err))
+        ) {
+          throw err;
+        }
+      }
+    }
+  }
+  // No requestFacts or no allowed candidate → fail closed to fresh Session generation.
+
+  // Managed ACP bootstrap: stable prefix omitted only when Core proved continuity
+  // (same contextGeneration already on the reused Session).
+  const sessionContextGeneration = continuityProven ? priorContextGeneration : undefined;
   const sessionBootstrap =
     prepared.bootstrapPrompt?.trim() ||
     (await buildSessionBootstrapPrompt(
@@ -6413,7 +6624,7 @@ async function launchAndBindTaskStartSession(
       {
         workspaceRoot: mount.workspaceRoot,
         systemRoot: mount.systemRoot,
-        sessionContextGeneration: priorContextGeneration,
+        sessionContextGeneration,
       },
       mount.env.fs
     ));
@@ -6424,55 +6635,6 @@ async function launchAndBindTaskStartSession(
   const bootstrapImageRefs = await collectTaskBootstrapImageRefs(mount.env.fs, task);
   const bootstrapImageSystemRoot =
     bootstrapImageRefs.length > 0 ? mount.systemRoot : undefined;
-
-  // A durable role owns one provider session across tasks. Prefer the task's
-  // historical binding, then the latest stopped role session with the same
-  // profile and runtime cwd. agentProfile tasks remain task-scoped.
-  const roleSession = isProfileTask
-    ? undefined
-    : await findResumableManagedSessionForRole(
-        ctx,
-        workspaceId,
-        task.role,
-        profileId,
-        cwd
-      );
-  const priorSessionId = task.sessionId?.trim() || roleSession?.id || "";
-  let resumePrior = false;
-  if (priorSessionId) {
-    try {
-      const probe = await ctx.runtime.probe(priorSessionId);
-      if (probe.resumeCapable && !probe.alive) {
-        const prior = await ctx.runtime.registry.read(priorSessionId);
-        const recordedCwd = prior?.runtimeWorkspace?.cwd?.trim() || "";
-        const cwdMatches =
-          !!recordedCwd &&
-          isSameWorkspaceRoot(nodePath.resolve(recordedCwd), nodePath.resolve(cwd));
-        const profileMatches = !prior?.profileId || prior.profileId === profileId;
-        const workspaceMatches = prior?.workspace === workspaceId;
-        const roleMatches = prior?.roleName === task.role;
-        const assigneeKindMatches =
-          (prior?.assigneeKind ?? "role") === taskAssigneeKind(task);
-        const taskMatches =
-          prior?.lastTaskId === taskPath ||
-          (!!task.id && prior?.lastTaskId === task.id);
-        resumePrior =
-          cwdMatches &&
-          profileMatches &&
-          workspaceMatches &&
-          roleMatches &&
-          assigneeKindMatches &&
-          (!isProfileTask || taskMatches);
-      }
-    } catch (err) {
-      // A stale task.sessionId whose machine-local registry row was cleaned is
-      // not a resume candidate. Preserve the established create-new behavior;
-      // only unexpected probe failures are surfaced.
-      if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) {
-        throw err;
-      }
-    }
-  }
 
   let handle;
   try {
@@ -6524,7 +6686,7 @@ async function launchAndBindTaskStartSession(
   }
 
   // Bind sessionId reference only on task (never PID/token).
-  // Project contextGeneration onto the Session row for stable-prefix cache reuse.
+  // Persist full compatibility facts needed for later evaluateSessionReuseCompatibility.
   const bound = await ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     const next = await patchTaskEnvelope(mount.env.fs, taskPath, {
@@ -6532,27 +6694,33 @@ async function launchAndBindTaskStartSession(
       updatedAt: mount.env.clock.now(),
     });
     const generation =
+      requestGeneration ||
       next.contextGeneration?.trim() ||
       next.contextCard?.contextGeneration?.trim() ||
       "";
-    if (generation) {
-      try {
-        const parentRoleId =
-          next.parentActor?.kind === "role" ? next.parentActor.id : undefined;
-        const agentId =
-          (typeof next.agentId === "string" && next.agentId.trim()) ||
-          next.role;
-        await ctx.runtime.registry.update(handle.sessionId, {
-          contextGeneration: generation,
-          ...(next.taskDeltaDigest
-            ? { taskDeltaDigest: next.taskDeltaDigest }
-            : {}),
-          agentId,
-          ...(parentRoleId ? { parentRoleId } : {}),
-        });
-      } catch {
-        // Session row projection is best-effort; Task remains authoritative.
-      }
+    try {
+      const parentRoleIdBound =
+        next.parentActor?.kind === "role" ? next.parentActor.id : undefined;
+      const agentId =
+        stableBundle?.agentId ||
+        (typeof next.agentId === "string" && next.agentId.trim()) ||
+        next.role;
+      await ctx.runtime.registry.update(handle.sessionId, {
+        ...(generation ? { contextGeneration: generation } : {}),
+        ...(next.taskDeltaDigest
+          ? { taskDeltaDigest: next.taskDeltaDigest }
+          : {}),
+        agentId,
+        ...(parentRoleIdBound ? { parentRoleId: parentRoleIdBound } : {}),
+        ...(stableBundle?.skillsDigest
+          ? { skillsDigest: stableBundle.skillsDigest }
+          : {}),
+        ...(stableBundle
+          ? { purpose: stableBundle.purpose || "" }
+          : {}),
+      });
+    } catch {
+      // Session row projection is best-effort; Task remains authoritative.
     }
     emitTaskState(ctx, workspaceId, next, "task.startSession");
     ctx.events.emit(
@@ -12894,6 +13062,42 @@ async function findResumableManagedSessionForRole(
     if (!probe.alive && probe.resumeCapable) return candidate;
   }
   return undefined;
+}
+
+/**
+ * Stopped resume-capable agentProfile sessions for the same profile + workspace cwd.
+ * Same-lane only (tent-task worktree): cross-Task profile lanes differ and fail the
+ * Core gate. Used as candidates; launch path still runs evaluateSessionReuseCompatibility.
+ */
+async function findResumableManagedSessionsForProfile(
+  ctx: HandlerContext,
+  workspaceId: string,
+  profileId: string,
+  cwd: string
+): Promise<SessionRecord[]> {
+  if (!profileId) return [];
+  const candidates = (await ctx.runtime.registry.list())
+    .filter(
+      (rec) =>
+        rec.workspace === workspaceId &&
+        rec.profileId === profileId &&
+        rec.assigneeKind === "agentProfile" &&
+        rec.state === "stopped" &&
+        !!rec.resumeToken &&
+        !!rec.runtimeWorkspace?.cwd &&
+        isSameWorkspaceRoot(
+          nodePath.resolve(rec.runtimeWorkspace.cwd),
+          nodePath.resolve(cwd)
+        )
+    )
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+
+  const out: SessionRecord[] = [];
+  for (const candidate of candidates) {
+    const probe = await ctx.runtime.probe(candidate.id);
+    if (!probe.alive && probe.resumeCapable) out.push(candidate);
+  }
+  return out;
 }
 
 /**

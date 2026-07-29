@@ -108,6 +108,13 @@ export interface DispatchOptions {
    * tent-task/<taskId> lane can be created before the envelope is written.
    */
   taskId?: string;
+  /**
+   * Optional precomputed contextGeneration (cg-v1-…) from Service stable facts.
+   * When omitted, writeTaskEnvelope derives a stable (non-taskId) fallback.
+   */
+  contextGeneration?: string;
+  /** Optional stable fact bag for writeTaskEnvelope when generation is omitted. */
+  contextGenerationFacts?: import("./task.js").TaskEnvelopeInput["contextGenerationFacts"];
 }
 
 export async function dispatch(
@@ -248,6 +255,12 @@ async function dispatchUnlocked(
       id: taskId,
       tasksDir:
         assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : undefined,
+      ...(options.contextGeneration
+        ? { contextGeneration: options.contextGeneration }
+        : {}),
+      ...(options.contextGenerationFacts
+        ? { contextGenerationFacts: options.contextGenerationFacts }
+        : {}),
     });
 
     // Load the just-written envelope for an honest relay projection (parent/reviewer included).

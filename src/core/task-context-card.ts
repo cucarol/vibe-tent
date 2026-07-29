@@ -97,17 +97,48 @@ export type ContextGenerationInputs = {
   agentsPointerDigest: string;
   /** Optional tent-role skill body digest (tk-3s598jtn). */
   tentRoleDigest?: string;
+  /**
+   * tent-role skill version marker (package/skill version string).
+   * Body digest alone is not enough when version labels change without body edit.
+   */
+  tentRoleVersion?: string;
   /** Role prompt text (durable Role only). */
   rolePrompt?: string;
   /** Sorted authorized agentIds / profile ids for roster digest. */
   rosterAgentIds?: readonly string[];
   /** Optional tent-task skill body digest. */
   tentTaskDigest?: string;
+  /** tent-task skill version marker. */
+  tentTaskVersion?: string;
   /** Profile/adapter compatibility fingerprint (ids only — no secrets). */
   profileAdapterCompatibility?: string;
-  /** Extra stable compatibility bytes (skills set, purpose, …). */
+  /**
+   * purpose / subKey for Session reuse identity (empty when unused).
+   * Never taskId / objective / acceptance / Task delta.
+   */
+  purpose?: string;
+  /**
+   * Extra stable compatibility bytes (agent/profile purpose flags, …).
+   * Must never include taskId, objective, acceptance, or current Task delta.
+   */
   extraStable?: Record<string, string | number | boolean | null | undefined>;
 };
+
+/**
+ * Forbidden dynamic keys that must never enter contextGeneration extraStable.
+ * Production collectors strip these; pure compute still hashes whatever is passed,
+ * so callers must not put Task-dynamic fields here.
+ */
+export const CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS = [
+  "taskId",
+  "taskPath",
+  "objective",
+  "acceptance",
+  "taskDeltaDigest",
+  "userPrompt",
+  "taskInputDelta",
+  "checkpoint",
+] as const;
 
 /** Dynamic delta inputs (per Task / turn). */
 export type TaskDeltaInputs = {
@@ -186,25 +217,142 @@ export function isContextGenerationId(value: unknown): value is string {
 
 /**
  * Build contextGeneration from stable prefix / compatibility inputs.
- * Does not include per-Task objective, TaskInput, or checkpoint.
+ * Does not include per-Task objective, TaskInput, acceptance, taskId, or checkpoint.
  */
 export function computeContextGeneration(inputs: ContextGenerationInputs): string {
   const roster = [...(inputs.rosterAgentIds ?? [])]
     .map((s) => s.trim())
     .filter(Boolean)
     .sort((a, b) => a.localeCompare(b));
+  const extraStable = sanitizeContextGenerationExtraStable(inputs.extraStable);
   const payload = {
     v: CONTEXT_GENERATION_VERSION,
     workspaceIdentity: inputs.workspaceIdentity.trim(),
     agentsPointerDigest: inputs.agentsPointerDigest.trim(),
     tentRoleDigest: inputs.tentRoleDigest?.trim() || "",
+    tentRoleVersion: inputs.tentRoleVersion?.trim() || "",
     rolePrompt: inputs.rolePrompt?.trim() || "",
     roster,
     tentTaskDigest: inputs.tentTaskDigest?.trim() || "",
+    tentTaskVersion: inputs.tentTaskVersion?.trim() || "",
     profileAdapterCompatibility: inputs.profileAdapterCompatibility?.trim() || "",
-    extraStable: inputs.extraStable ?? {},
+    purpose: inputs.purpose?.trim() || "",
+    extraStable,
   };
   return formatContextGeneration(canonicalJson(payload));
+}
+
+/**
+ * Strip Task-dynamic keys from extraStable so contextGeneration stays cache-stable
+ * across Tasks that share workspace/Role/Skills/profile facts.
+ */
+export function sanitizeContextGenerationExtraStable(
+  extra?: Record<string, string | number | boolean | null | undefined>
+): Record<string, string | number | boolean | null> {
+  const out: Record<string, string | number | boolean | null> = {};
+  if (!extra) return out;
+  const forbidden = new Set<string>(
+    CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS.map((k) => k.toLowerCase())
+  );
+  for (const key of Object.keys(extra).sort((a, b) => a.localeCompare(b))) {
+    if (forbidden.has(key.toLowerCase())) continue;
+    const v = extra[key];
+    if (v === undefined) continue;
+    out[key] = v;
+  }
+  return out;
+}
+
+/**
+ * Digest AGENTS.md body for contextGeneration (empty body → stable empty digest).
+ * Pointer path is fixed (workspace-root AGENTS.md); content is the compatibility byte.
+ */
+export function agentsBodyCompatibilityDigest(agentsBody: string | undefined | null): string {
+  return sha256Hex(typeof agentsBody === "string" ? agentsBody : "");
+}
+
+/**
+ * Digest a skill body (+ optional version label) for contextGeneration.
+ * Version alone changing without body still flips the digest when provided.
+ */
+export function skillBodyCompatibilityDigest(input: {
+  body: string;
+  version?: string;
+  name?: string;
+}): string {
+  return sha256Hex(
+    canonicalJson({
+      name: input.name?.trim() || "",
+      version: input.version?.trim() || "",
+      body: input.body,
+    })
+  );
+}
+
+/**
+ * Build real stable contextGeneration from collected workspace/Skill/Role/profile facts.
+ * Callers supply already-loaded bodies — no I/O here. Never accepts taskId/objective.
+ */
+export function computeContextGenerationFromStableFacts(input: {
+  workspaceIdentity: string;
+  /** Raw AGENTS.md body (may be empty when file missing). */
+  agentsBody?: string;
+  /** Precomputed agents digest; wins over agentsBody when both set. */
+  agentsPointerDigest?: string;
+  tentRoleBody?: string;
+  tentRoleVersion?: string;
+  tentTaskBody?: string;
+  tentTaskVersion?: string;
+  rolePrompt?: string;
+  rosterAgentIds?: readonly string[];
+  profileId: string;
+  adapterId: string;
+  purpose?: string;
+  /** Logical agentId or profile assignee label for extraStable only. */
+  agentId?: string;
+  assigneeKind?: AssigneeKind | string;
+  capabilityFlags?: readonly string[];
+  extraStable?: Record<string, string | number | boolean | null | undefined>;
+}): string {
+  const tentRoleDigest =
+    input.tentRoleBody !== undefined
+      ? skillBodyCompatibilityDigest({
+          body: input.tentRoleBody,
+          version: input.tentRoleVersion,
+          name: "tent-role",
+        })
+      : "";
+  const tentTaskDigest =
+    input.tentTaskBody !== undefined
+      ? skillBodyCompatibilityDigest({
+          body: input.tentTaskBody,
+          version: input.tentTaskVersion,
+          name: "tent-task",
+        })
+      : "";
+  return computeContextGeneration({
+    workspaceIdentity: input.workspaceIdentity,
+    agentsPointerDigest:
+      input.agentsPointerDigest?.trim() ||
+      agentsBodyCompatibilityDigest(input.agentsBody),
+    tentRoleDigest: tentRoleDigest || undefined,
+    tentRoleVersion: input.tentRoleVersion,
+    rolePrompt: input.rolePrompt,
+    rosterAgentIds: input.rosterAgentIds,
+    tentTaskDigest: tentTaskDigest || undefined,
+    tentTaskVersion: input.tentTaskVersion,
+    profileAdapterCompatibility: profileAdapterCompatibilityDigest({
+      profileId: input.profileId,
+      adapterId: input.adapterId,
+      capabilityFlags: input.capabilityFlags,
+    }),
+    purpose: input.purpose,
+    extraStable: {
+      ...(input.assigneeKind ? { assigneeKind: String(input.assigneeKind) } : {}),
+      ...(input.agentId?.trim() ? { agentId: input.agentId.trim() } : {}),
+      ...input.extraStable,
+    },
+  });
 }
 
 /**
@@ -960,6 +1108,9 @@ export function evaluateSessionReuseCompatibility(input: {
   if (!isContextGenerationId(cand.contextGeneration)) {
     reasons.push("candidate_context_generation_invalid");
   }
+  // Lane/worktree must match when either side declares one (acceptance: same lane).
+  // Durable Role Tasks share tent-role/<role> across Tasks → cross-Task Session reuse.
+  // agentProfile Tasks use tent-task/<taskId> → different Tasks fail closed to fresh.
   const reqWt = norm(req.worktree);
   const candWt = norm(cand.worktree);
   if (reqWt || candWt) {
@@ -1013,6 +1164,55 @@ export function profileAdapterCompatibilityDigest(input: {
       flags,
     })
   );
+}
+
+/**
+ * Project SessionRecord compatibility fields into the pure reuse gate request shape.
+ * Missing optional fields normalize to empty strings (fail closed on mismatch).
+ */
+export function sessionRecordToReuseCompatibilityFacts(
+  record: {
+    workspace?: string;
+    parentRoleId?: string;
+    agentId?: string;
+    roleName?: string;
+    purpose?: string;
+    skillsDigest?: string;
+    profileId: string;
+    adapterId: string;
+    contextGeneration?: string;
+    runtimeWorkspace?: { cwd?: string };
+    workspaceLane?: { worktree?: string };
+  }
+): SessionReuseCompatibilityFacts {
+  return {
+    workspaceId: record.workspace?.trim() || "",
+    parentRoleId: record.parentRoleId?.trim() || "",
+    agentId: (record.agentId || record.roleName || "").trim(),
+    purpose: record.purpose?.trim() || "",
+    skillsDigest: record.skillsDigest?.trim() || "",
+    profileId: record.profileId.trim(),
+    adapterId: record.adapterId.trim(),
+    contextGeneration: record.contextGeneration?.trim() || "",
+    worktree:
+      record.workspaceLane?.worktree?.trim() ||
+      record.runtimeWorkspace?.cwd?.trim() ||
+      undefined,
+  };
+}
+
+/**
+ * Default managed purpose/subKey when none is declared on the Task.
+ * Empty string keeps purpose optional in the gate (both sides must match).
+ */
+export function managedSessionPurpose(input?: {
+  purpose?: string | null;
+  subKey?: string | null;
+}): string {
+  const purpose = input?.purpose?.trim() || "";
+  const subKey = input?.subKey?.trim() || "";
+  if (purpose && subKey) return `${purpose}:${subKey}`;
+  return purpose || subKey || "";
 }
 
 /** Helper: assignee kind → card assignee kind label. */

@@ -126,6 +126,63 @@ test("contextGeneration changes when stable compatibility inputs change", () => 
   assert.notEqual(base, rulesChange);
 });
 
+test("contextGeneration excludes taskId/objective and strips forbidden extraStable keys", () => {
+  const a = computeContextGeneration({
+    workspaceIdentity: "ws-test",
+    agentsPointerDigest: "agents-d1",
+    tentTaskDigest: "task-skill-d1",
+    profileAdapterCompatibility: profileAdapterCompatibilityDigest({
+      profileId: "p",
+      adapterId: "a",
+    }),
+    extraStable: { assigneeKind: "agentProfile", note: "stable" },
+  });
+  const b = computeContextGeneration({
+    workspaceIdentity: "ws-test",
+    agentsPointerDigest: "agents-d1",
+    tentTaskDigest: "task-skill-d1",
+    profileAdapterCompatibility: profileAdapterCompatibilityDigest({
+      profileId: "p",
+      adapterId: "a",
+    }),
+    extraStable: {
+      assigneeKind: "agentProfile",
+      note: "stable",
+      taskId: "tk-different",
+      objective: "should not matter",
+      acceptance: "nope",
+      taskPath: "temp/x.md",
+    },
+  });
+  assert.equal(a, b, "taskId/objective must not affect contextGeneration");
+});
+
+test("contextGeneration changes when skill version or purpose changes", () => {
+  const base = computeContextGeneration({
+    workspaceIdentity: "ws",
+    agentsPointerDigest: "ag",
+    tentTaskDigest: "body",
+    tentTaskVersion: "0.1.0",
+    purpose: "",
+  });
+  const versionBump = computeContextGeneration({
+    workspaceIdentity: "ws",
+    agentsPointerDigest: "ag",
+    tentTaskDigest: "body",
+    tentTaskVersion: "0.2.0",
+    purpose: "",
+  });
+  const purposeChange = computeContextGeneration({
+    workspaceIdentity: "ws",
+    agentsPointerDigest: "ag",
+    tentTaskDigest: "body",
+    tentTaskVersion: "0.1.0",
+    purpose: "review",
+  });
+  assert.notEqual(base, versionBump);
+  assert.notEqual(base, purposeChange);
+});
+
 test("taskDeltaDigest is independent of contextGeneration and tracks card+delta", () => {
   const card = sampleCard();
   const d1 = computeTaskDeltaDigest({ card, userPrompt: "do the work" });
@@ -438,6 +495,15 @@ test("evaluateSessionReuseCompatibility allows only when all gates match", () =>
   });
   assert.equal(worktree.allowed, false);
   assert.ok(worktree.reasons.includes("worktree_mismatch"));
+
+  // One-sided worktree still fails closed (lane required when either side has it).
+  const omitWt = evaluateSessionReuseCompatibility({
+    request: { ...base, worktree: undefined },
+    candidate: { ...base, worktree: "C:/wt/task-b" },
+    runtime: runtimeOk,
+  });
+  assert.equal(omitWt.allowed, false);
+  assert.ok(omitWt.reasons.includes("worktree_mismatch"));
 });
 
 test("projectAssigneeFromTask maps role vs agentProfile", () => {
