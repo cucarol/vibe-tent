@@ -115,6 +115,8 @@ export interface DispatchOptions {
   contextGeneration?: string;
   /** Optional stable fact bag for writeTaskEnvelope when generation is omitted. */
   contextGenerationFacts?: import("./task.js").TaskEnvelopeInput["contextGenerationFacts"];
+  /** Optional stable purpose/subKey for Session reuse identity. */
+  purpose?: string;
 }
 
 export async function dispatch(
@@ -261,6 +263,7 @@ async function dispatchUnlocked(
       ...(options.contextGenerationFacts
         ? { contextGenerationFacts: options.contextGenerationFacts }
         : {}),
+      ...(options.purpose?.trim() ? { purpose: options.purpose.trim() } : {}),
     });
 
     // Load the just-written envelope for an honest relay projection (parent/reviewer included).

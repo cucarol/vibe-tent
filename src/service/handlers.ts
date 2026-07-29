@@ -90,7 +90,9 @@ import {
   assertDurableContextCardRefsResolved,
   buildSessionReuseRequestFacts,
   collectStableContextGeneration,
+  evaluateCandidateSessionLeaseGates,
   evaluateManagedSessionReuse,
+  taskPurposeFromEnvelope,
   type StableContextGenerationBundle,
 } from "./session-context-generation.js";
 import { systemRootFromWorkspace } from "../core/paths.js";
@@ -3664,52 +3666,118 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       // Workspace default elevated while dispatching a downstream Task Agent → clamp to review.
       deliveryPolicy = "review";
     }
-    // Real stable contextGeneration at dispatch (no taskId/objective/delta).
-    const dispatchProfileId =
-      assigneeKind === "agentProfile" ? profileId! : profileId || assigneeLabel;
-    const dispatchProfile = dispatchProfileId
-      ? ctx.profileCatalog.get(dispatchProfileId)
-      : undefined;
-    const dispatchAdapterId = dispatchProfile?.adapterId || "unknown-adapter";
-    const parentRoleIdForGen =
-      resolvedActors.parentActor.kind === "role"
-        ? resolvedActors.parentActor.id
-        : undefined;
+    // Real stable contextGeneration at dispatch when launch profile is known.
+    // agentProfile: profile/adapter known → compute immediately (fail loud).
+    // Role without profileId: defer generation until startSession chooses the profile
+    // (do not freeze role-name/unknown-adapter placeholders).
+    const purposeParam =
+      typeof p.purpose === "string" && p.purpose.trim() ? p.purpose.trim() : undefined;
     let dispatchContextGeneration: string | undefined;
     let dispatchContextFacts:
       | import("../core/task.js").TaskEnvelopeInput["contextGenerationFacts"]
       | undefined;
-    try {
-      const bundle = await collectStableContextGeneration({
-        workspaceRoot: mount.workspaceRoot,
-        workspaceIdentity: workspaceId,
-        packageRoot: ctx.packageRoot,
-        packageVersion: ctx.version,
-        assigneeKind,
-        assigneeLabel,
-        agentId: resolvedAgentId,
-        profileId: dispatchProfileId || assigneeLabel,
-        adapterId: dispatchAdapterId,
-        parentRoleId: parentRoleIdForGen,
-        roleFs: mount.env.fs,
-      });
-      dispatchContextGeneration = bundle.contextGeneration;
-      dispatchContextFacts = {
-        agentsPointerDigest: bundle.agentsPointerDigest,
-        tentRoleDigest: bundle.tentRoleDigest || undefined,
-        tentRoleVersion: bundle.tentRoleVersion || undefined,
-        tentTaskDigest: bundle.tentTaskDigest || undefined,
-        tentTaskVersion: bundle.tentTaskVersion || undefined,
-        rolePrompt: bundle.rolePrompt || undefined,
-        rosterAgentIds: bundle.rosterAgentIds,
-        profileId: bundle.profileId,
-        adapterId: bundle.adapterId,
-        purpose: bundle.purpose || undefined,
-      };
-    } catch {
-      dispatchContextGeneration = undefined;
-      dispatchContextFacts = undefined;
+    if (assigneeKind === "agentProfile") {
+      const dispatchProfileId = profileId!;
+      const dispatchProfile = ctx.profileCatalog.get(dispatchProfileId);
+      if (!dispatchProfile?.adapterId) {
+        throw new RpcError(
+          -32602,
+          `task.dispatch cannot compute contextGeneration: profile ${dispatchProfileId} missing or has no adapterId`,
+          { profileId: dispatchProfileId }
+        );
+      }
+      const parentRoleIdForGen =
+        resolvedActors.parentActor.kind === "role"
+          ? resolvedActors.parentActor.id
+          : undefined;
+      try {
+        const bundle = await collectStableContextGeneration({
+          workspaceRoot: mount.workspaceRoot,
+          workspaceIdentity: workspaceId,
+          packageRoot: ctx.packageRoot,
+          packageVersion: ctx.version,
+          assigneeKind,
+          assigneeLabel,
+          agentId: resolvedAgentId,
+          profileId: dispatchProfileId,
+          adapterId: dispatchProfile.adapterId,
+          parentRoleId: parentRoleIdForGen,
+          purpose: purposeParam,
+          roleFs: mount.env.fs,
+        });
+        dispatchContextGeneration = bundle.contextGeneration;
+        dispatchContextFacts = {
+          agentsPointerDigest: bundle.agentsPointerDigest,
+          tentRoleDigest: bundle.tentRoleDigest || undefined,
+          tentRoleVersion: bundle.tentRoleVersion || undefined,
+          tentTaskDigest: bundle.tentTaskDigest || undefined,
+          tentTaskVersion: bundle.tentTaskVersion || undefined,
+          rolePrompt: bundle.rolePrompt || undefined,
+          rosterAgentIds: bundle.rosterAgentIds,
+          profileId: bundle.profileId,
+          adapterId: bundle.adapterId,
+          purpose: bundle.purpose || undefined,
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new RpcError(
+          -32000,
+          `task.dispatch contextGeneration collection failed: ${message}`,
+          { code: "CONTEXT_GENERATION_COLLECT_FAILED" }
+        );
+      }
+    } else if (profileId) {
+      // Role dispatch with explicit launch profile: compute real generation now.
+      const dispatchProfile = ctx.profileCatalog.get(profileId);
+      if (!dispatchProfile?.adapterId) {
+        throw new RpcError(
+          -32602,
+          `task.dispatch cannot compute contextGeneration: profile ${profileId} missing or has no adapterId`,
+          { profileId }
+        );
+      }
+      const parentRoleIdForGen =
+        resolvedActors.parentActor.kind === "role"
+          ? resolvedActors.parentActor.id
+          : undefined;
+      try {
+        const bundle = await collectStableContextGeneration({
+          workspaceRoot: mount.workspaceRoot,
+          workspaceIdentity: workspaceId,
+          packageRoot: ctx.packageRoot,
+          packageVersion: ctx.version,
+          assigneeKind,
+          assigneeLabel,
+          agentId: resolvedAgentId,
+          profileId,
+          adapterId: dispatchProfile.adapterId,
+          parentRoleId: parentRoleIdForGen,
+          purpose: purposeParam,
+          roleFs: mount.env.fs,
+        });
+        dispatchContextGeneration = bundle.contextGeneration;
+        dispatchContextFacts = {
+          agentsPointerDigest: bundle.agentsPointerDigest,
+          tentRoleDigest: bundle.tentRoleDigest || undefined,
+          tentRoleVersion: bundle.tentRoleVersion || undefined,
+          tentTaskDigest: bundle.tentTaskDigest || undefined,
+          tentTaskVersion: bundle.tentTaskVersion || undefined,
+          rolePrompt: bundle.rolePrompt || undefined,
+          rosterAgentIds: bundle.rosterAgentIds,
+          profileId: bundle.profileId,
+          adapterId: bundle.adapterId,
+          purpose: bundle.purpose || undefined,
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new RpcError(
+          -32000,
+          `task.dispatch contextGeneration collection failed: ${message}`,
+          { code: "CONTEXT_GENERATION_COLLECT_FAILED" }
+        );
+      }
     }
+    // else: Role without profile — generation finalized at startSession.
 
     const dispatched = await dispatch(mount.env, boxId, assigneeKind === "role" ? role : undefined, {
       userPrompt: prompt,
@@ -3725,6 +3793,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       // Persist logical agentId only for Role-agent dispatch (not user-direct profile).
       agentId: resolvedAgentId,
       ...(preallocatedTaskId ? { taskId: preallocatedTaskId } : {}),
+      ...(purposeParam ? { purpose: purposeParam } : {}),
       ...(dispatchContextGeneration
         ? { contextGeneration: dispatchContextGeneration }
         : {}),
@@ -6468,13 +6537,23 @@ async function launchAndBindTaskStartSession(
     }
   }
 
-  // Collect real stable compatibility facts for Session reuse + optional generation refresh.
+  // Collect real stable compatibility facts. Fail loud — never catch-to-placeholder.
+  // Role Tasks: finalize/capture real generation with launch profile/adapter here
+  // (before bootstrap/prefix decision), then persist on Task Context Card.
   const profile = ctx.profileCatalog.get(profileId);
-  const adapterId = profile?.adapterId || "unknown-adapter";
+  if (!profile?.adapterId) {
+    throw new RpcError(
+      -32602,
+      `task.startSession cannot compute contextGeneration: profile ${profileId} missing or has no adapterId`,
+      { profileId }
+    );
+  }
+  const adapterId = profile.adapterId;
   const parentRoleId =
     task.parentActor?.kind === "role" ? task.parentActor.id : undefined;
   const assigneeKind = taskAssigneeKind(task);
-  let stableBundle: StableContextGenerationBundle | undefined;
+  const taskPurpose = taskPurposeFromEnvelope(task);
+  let stableBundle: StableContextGenerationBundle;
   try {
     stableBundle = await collectStableContextGeneration({
       workspaceRoot: mount.workspaceRoot,
@@ -6487,54 +6566,69 @@ async function launchAndBindTaskStartSession(
       profileId,
       adapterId,
       parentRoleId,
+      purpose: taskPurpose || undefined,
       roleFs: mount.env.fs,
     });
-  } catch {
-    stableBundle = undefined;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new RpcError(
+      -32000,
+      `task.startSession contextGeneration collection failed: ${message}`,
+      { code: "CONTEXT_GENERATION_COLLECT_FAILED", taskPath, profileId }
+    );
   }
 
-  // Task envelope contextGeneration is the compatibility identity once written at
-  // dispatch. Live recompute supplies skillsDigest/purpose/agent facts for the Session
-  // row; it must not silently replace a persisted generation (would poison reuse).
-  const requestGeneration =
+  // Prefer live real generation (profile/adapter known). Persist when it differs from
+  // a deferred Role placeholder or missing generation so Session reuse identity is honest.
+  const priorPersistedGeneration =
     task.contextGeneration?.trim() ||
     task.contextCard?.contextGeneration?.trim() ||
-    stableBundle?.contextGeneration ||
     "";
-
-  // Include worktree/lane in reuse identity (acceptance: same lane required).
-  // Role Tasks share tent-role/<role> → cross-Task Session reuse is possible.
-  // agentProfile Tasks use distinct tent-task/<id> lanes → mismatch → fresh Session
-  // (contextGeneration may still match for prompt-cache compatibility across Tasks).
-  const requestFacts: SessionReuseCompatibilityFacts | undefined = stableBundle
-    ? buildSessionReuseRequestFacts({
-        workspaceId,
-        bundle: {
-          ...stableBundle,
-          // Align bundle agent/parent with request when reusing Task generation.
-          contextGeneration: requestGeneration || stableBundle.contextGeneration,
-        },
-        contextGeneration: requestGeneration,
-        worktree: cwd,
-      })
-    : requestGeneration
-      ? {
-          workspaceId,
-          parentRoleId: parentRoleId || "",
-          agentId:
-            (typeof task.agentId === "string" && task.agentId.trim()) || task.role,
-          purpose: "",
-          skillsDigest: "",
-          profileId,
-          adapterId,
+  const requestGeneration = stableBundle.contextGeneration;
+  if (!requestGeneration) {
+    throw new RpcError(
+      -32000,
+      "task.startSession produced empty contextGeneration (fail closed)",
+      { code: "CONTEXT_GENERATION_EMPTY", taskPath }
+    );
+  }
+  if (priorPersistedGeneration !== requestGeneration) {
+    // Atomically capture real generation on Task before bootstrap/prefix decision.
+    task = await ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      if (task.contextCard) {
+        const nextCard = {
+          ...task.contextCard,
           contextGeneration: requestGeneration,
-          worktree: cwd,
-        }
-      : undefined;
+        };
+        return patchTaskEnvelope(mount.env.fs, taskPath, {
+          contextCard: nextCard,
+          contextGeneration: requestGeneration,
+          ...(taskPurpose ? { purpose: taskPurpose } : {}),
+          updatedAt: mount.env.clock.now(),
+        });
+      }
+      return patchTaskEnvelope(mount.env.fs, taskPath, {
+        contextGeneration: requestGeneration,
+        ...(taskPurpose ? { purpose: taskPurpose } : {}),
+        updatedAt: mount.env.clock.now(),
+      });
+    });
+  }
+
+  const requestFacts = buildSessionReuseRequestFacts({
+    workspaceId,
+    bundle: {
+      ...stableBundle,
+      contextGeneration: requestGeneration,
+      purpose: taskPurpose || stableBundle.purpose,
+    },
+    contextGeneration: requestGeneration,
+    worktree: cwd,
+  });
 
   // Candidate selection: task binding first, then Role/profile stopped sessions.
-  // Reuse only after Core evaluateSessionReuseCompatibility proves full match + runtime gates.
-  // Cross-Task cache-compatible reuse is allowed when all compatibility facts match.
+  // Reuse only after Core gate + prior-Task lease evaluation (not request Task alone).
   const candidateIds: string[] = [];
   if (task.sessionId?.trim()) candidateIds.push(task.sessionId.trim());
   if (!isProfileTask) {
@@ -6549,8 +6643,6 @@ async function launchAndBindTaskStartSession(
       candidateIds.push(roleSession.id);
     }
   } else {
-    // agentProfile: also consider stopped same-profile sessions in this workspace/cwd
-    // so cross-Task cache-compatible reuse can be proven by the Core gate.
     const profileCandidates = await findResumableManagedSessionsForProfile(
       ctx,
       workspaceId,
@@ -6567,51 +6659,71 @@ async function launchAndBindTaskStartSession(
   let priorContextGeneration: string | undefined;
   let continuityProven = false;
 
-  if (requestFacts) {
-    for (const candidateId of candidateIds) {
-      try {
-        const probe = await ctx.runtime.probe(candidateId);
-        const prior = await ctx.runtime.registry.read(candidateId);
-        if (!prior || !probe.resumeCapable || probe.alive) continue;
+  const allTasks = await loadTaskEnvelopes(mount.env.fs);
+  let deliveriesCache: Awaited<ReturnType<typeof loadDeliveries>> | null = null;
+  const hasBlockingDelivery = async (
+    t: import("../core/task.js").TaskEnvelope
+  ): Promise<boolean> => {
+    if (t.activeDeliveryId) return true;
+    if (t.state === "delivered") return true;
+    if (!t.id) return false;
+    try {
+      if (!deliveriesCache) deliveriesCache = await loadDeliveries(mount.env.fs);
+      return deliveriesCache.some(
+        (d) =>
+          d.taskId === t.id &&
+          (d.status === "ready" || d.status === "draft")
+      );
+    } catch {
+      return false;
+    }
+  };
 
-        const pendingInputs = await ctx.taskInputs.listPending(workspaceId, taskPath);
-        const pendingUserAsk = await ctx.userAsks.hasPendingForTask(
-          workspaceId,
-          taskPath
-        );
-        const noPendingInput = pendingInputs.length === 0 && !pendingUserAsk;
-        const noPendingDelivery = !task.activeDeliveryId;
-        // Exclusive idle lease: stopped session, not dual-bound to another live Task.
-        const exclusiveLease = prior.state === "stopped";
+  for (const candidateId of candidateIds) {
+    try {
+      const probe = await ctx.runtime.probe(candidateId);
+      const prior = await ctx.runtime.registry.read(candidateId);
+      if (!prior || !probe.resumeCapable || probe.alive) continue;
 
-        const evaluation = evaluateManagedSessionReuse({
-          request: requestFacts,
-          candidate: prior,
-          runtime: {
-            previousTurnSettled: probe.turnBusy !== true,
-            noPendingInput,
-            noPendingDelivery,
-            exclusiveLease,
-          },
-        });
+      const lease = await evaluateCandidateSessionLeaseGates({
+        allTasks,
+        candidate: prior,
+        requestTaskPath: taskPath,
+        requestTaskId: task.id,
+        turnBusy: probe.turnBusy === true,
+        workspaceId,
+        listPendingInputs: (ws, tp) => ctx.taskInputs.listPending(ws, tp),
+        hasPendingUserAsk: (ws, tp) => ctx.userAsks.hasPendingForTask(ws, tp),
+        hasBlockingDelivery,
+      });
 
-        if (evaluation.allowed) {
-          resumePrior = true;
-          priorSessionId = candidateId;
-          continuityProven = true;
-          priorContextGeneration = prior.contextGeneration;
-          break;
-        }
-      } catch (err) {
-        if (
-          !/Session not found/i.test(err instanceof Error ? err.message : String(err))
-        ) {
-          throw err;
-        }
+      const evaluation = evaluateManagedSessionReuse({
+        request: requestFacts,
+        candidate: prior,
+        runtime: {
+          previousTurnSettled: lease.previousTurnSettled,
+          noPendingInput: lease.noPendingInput,
+          noPendingDelivery: lease.noPendingDelivery,
+          exclusiveLease: lease.exclusiveLease,
+        },
+      });
+
+      if (evaluation.allowed) {
+        resumePrior = true;
+        priorSessionId = candidateId;
+        continuityProven = true;
+        priorContextGeneration = prior.contextGeneration;
+        break;
+      }
+    } catch (err) {
+      if (
+        !/Session not found/i.test(err instanceof Error ? err.message : String(err))
+      ) {
+        throw err;
       }
     }
   }
-  // No requestFacts or no allowed candidate → fail closed to fresh Session generation.
+  // No allowed candidate → fail closed to fresh Session generation.
 
   // Managed ACP bootstrap: stable prefix omitted only when Core proved continuity
   // (same contextGeneration already on the reused Session).
@@ -6702,9 +6814,11 @@ async function launchAndBindTaskStartSession(
       const parentRoleIdBound =
         next.parentActor?.kind === "role" ? next.parentActor.id : undefined;
       const agentId =
-        stableBundle?.agentId ||
+        stableBundle.agentId ||
         (typeof next.agentId === "string" && next.agentId.trim()) ||
         next.role;
+      const purposeBound =
+        taskPurposeFromEnvelope(next) || stableBundle.purpose || "";
       await ctx.runtime.registry.update(handle.sessionId, {
         ...(generation ? { contextGeneration: generation } : {}),
         ...(next.taskDeltaDigest
@@ -6712,12 +6826,8 @@ async function launchAndBindTaskStartSession(
           : {}),
         agentId,
         ...(parentRoleIdBound ? { parentRoleId: parentRoleIdBound } : {}),
-        ...(stableBundle?.skillsDigest
-          ? { skillsDigest: stableBundle.skillsDigest }
-          : {}),
-        ...(stableBundle
-          ? { purpose: stableBundle.purpose || "" }
-          : {}),
+        skillsDigest: stableBundle.skillsDigest,
+        purpose: purposeBound,
       });
     } catch {
       // Session row projection is best-effort; Task remains authoritative.

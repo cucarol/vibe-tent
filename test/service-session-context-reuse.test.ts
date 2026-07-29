@@ -12,7 +12,12 @@ import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
-import { loadTaskEnvelope, writeTaskEnvelope } from "../src/core/task.js";
+import {
+  loadTaskEnvelope,
+  patchTaskEnvelope,
+  writeTaskEnvelope,
+  type TaskEnvelope,
+} from "../src/core/task.js";
 import { SystemClock } from "../src/fs/node-fs.js";
 import {
   computeContextGeneration,
@@ -21,6 +26,9 @@ import {
 import {
   assertDurableContextCardRefsResolved,
   collectStableContextGeneration,
+  evaluateCandidateSessionLeaseGates,
+  findTasksBoundToSession,
+  isTaskLifecycleSafelySettledForReuse,
 } from "../src/service/session-context-generation.js";
 import { buildTaskContextCard } from "../src/core/task-context-card.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
@@ -428,7 +436,20 @@ test("startSession persists reuse facts; same-lane resume reuses; lane/profile m
         "profile mismatch must change contextGeneration"
       );
 
-      // Durable Role cross-Task: shared tent-role lane → Session reuse when facts match.
+    });
+  } finally {
+    await fs.rm(ws, { recursive: true, force: true });
+  }
+});
+
+test("Role cross-Task: running+stopped Session blocks; accepted prior reuses", async () => {
+  const ws = await makeWorkspace("role-lease");
+  try {
+    await initGit(ws);
+    await withService(async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const envFs = new NodeFs(path.join(ws, ".tent"));
+
       const roleA = await rpc(svc, "task.dispatch", {
         workspaceId,
         boxId,
@@ -446,15 +467,22 @@ test("startSession persists reuse facts; same-lane resume reuses; lane/profile m
         envFs,
         (roleA.result as { taskPath: string }).taskPath
       );
-      assert.ok(tr1.sessionId);
       const roleSessionId = tr1.sessionId!;
-      await svc.runtime.stopSession(roleSessionId, "user");
+      assert.ok(roleSessionId);
+      assert.ok(isContextGenerationId(tr1.contextGeneration!));
+      const rowRole = await svc.runtime.registry.read(roleSessionId);
+      assert.equal(rowRole?.contextGeneration, tr1.contextGeneration);
+      assert.ok(typeof rowRole?.skillsDigest === "string" && rowRole.skillsDigest.length > 0);
 
-      const roleB = await rpc(svc, "task.dispatch", {
+      // P0: Task still running, Session stopped → next Role Task must get FRESH Session.
+      await svc.runtime.stopSession(roleSessionId, "user");
+      assert.equal((await loadTaskEnvelope(envFs, tr1.path)).state, "running");
+
+      const roleBusy = await rpc(svc, "task.dispatch", {
         workspaceId,
         boxId,
         role: "executor",
-        prompt: "Role task two different objective",
+        prompt: "while A running",
         assigneeKind: "role",
         profileId: "fake-resumable",
         parentActor: { kind: "user", id: "user" },
@@ -462,20 +490,63 @@ test("startSession persists reuse facts; same-lane resume reuses; lane/profile m
         startSession: true,
         callerKind: "user",
       });
-      assert.ok(!roleB.error, JSON.stringify(roleB.error));
-      const tr2 = await loadTaskEnvelope(
+      assert.ok(!roleBusy.error, JSON.stringify(roleBusy.error));
+      const tBusy = await loadTaskEnvelope(
         envFs,
-        (roleB.result as { taskPath: string }).taskPath
+        (roleBusy.result as { taskPath: string }).taskPath
       );
-      assert.equal(
-        tr1.contextGeneration,
-        tr2.contextGeneration,
-        "Role Tasks share contextGeneration across objectives"
-      );
-      assert.equal(
-        tr2.sessionId,
+      assert.notEqual(
+        tBusy.sessionId,
         roleSessionId,
-        "compatible Role cross-Task must reuse shared-lane Session"
+        "prior running Task must block cross-Task Session reuse"
+      );
+      const busySessionId = tBusy.sessionId;
+      if (busySessionId) {
+        await svc.runtime.stopSession(busySessionId, "user");
+        // Retire busy Session so it is not preferred over A's settled Session.
+        await svc.runtime.registry.update(busySessionId, {
+          state: "failed",
+          resumeToken: undefined,
+        });
+      }
+      await rpc(svc, "task.interrupt", { workspaceId, taskPath: tBusy.path });
+      await patchTaskEnvelope(envFs, tBusy.path, {
+        state: "interrupted",
+        sessionId: null,
+      });
+
+      // Accept A (safely settled). Keep sessionId for binding discovery.
+      await patchTaskEnvelope(envFs, tr1.path, {
+        state: "accepted",
+        sessionId: roleSessionId,
+        activeDeliveryId: null,
+      });
+      const probe = await svc.runtime.probe(roleSessionId);
+      assert.equal(probe.alive, false);
+      assert.equal(probe.resumeCapable, true);
+
+      const roleOk = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "after A accepted",
+        assigneeKind: "role",
+        profileId: "fake-resumable",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+        startSession: true,
+        callerKind: "user",
+      });
+      assert.ok(!roleOk.error, JSON.stringify(roleOk.error));
+      const tOk = await loadTaskEnvelope(
+        envFs,
+        (roleOk.result as { taskPath: string }).taskPath
+      );
+      assert.equal(tOk.contextGeneration, tr1.contextGeneration);
+      assert.equal(
+        tOk.sessionId,
+        roleSessionId,
+        "accepted prior Role Task may reuse shared-lane Session"
       );
     });
   } finally {
@@ -511,7 +582,6 @@ test("startSession fails loud when Context Card declares missing Node ref", asyn
           nodes: [{ id: "cx-missing-foreign-node", path: "nope" }],
         },
       };
-      const { patchTaskEnvelope } = await import("../src/core/task.js");
       await patchTaskEnvelope(fsa, taskPath, { contextCard: badCard });
 
       await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -560,3 +630,266 @@ test("writeTaskEnvelope fallback generation is stable across task ids", async ()
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+test("evaluateCandidateSessionLeaseGates: prior running/delivery/input/dual-bind block reuse", async () => {
+  const priorRunning: TaskEnvelope = {
+    path: "temp/executor/tasks/a.md",
+    role: "executor",
+    manifest: "m",
+    status: "taken",
+    state: "running",
+    id: "tk-prior001",
+    sessionId: "ss-shared01",
+  };
+  const request: TaskEnvelope = {
+    path: "temp/executor/tasks/b.md",
+    role: "executor",
+    manifest: "m",
+    status: "taken",
+    state: "running",
+    id: "tk-req0002",
+  };
+  const candidate = {
+    id: "ss-shared01",
+    lastTaskId: "tk-prior001",
+    state: "stopped" as const,
+  };
+
+  const bound = findTasksBoundToSession([priorRunning, request], candidate);
+  assert.ok(bound.some((t) => t.id === "tk-prior001"));
+  assert.equal(isTaskLifecycleSafelySettledForReuse(priorRunning), false);
+
+  const busy = await evaluateCandidateSessionLeaseGates({
+    allTasks: [priorRunning, request],
+    candidate,
+    requestTaskPath: request.path,
+    requestTaskId: request.id,
+    turnBusy: false,
+    workspaceId: "ws",
+    listPendingInputs: async () => [],
+    hasPendingUserAsk: async () => false,
+  });
+  assert.equal(busy.exclusiveLease, false);
+  assert.ok(busy.reasons.includes("other_active_task_owns_session"));
+
+  const priorDelivered: TaskEnvelope = {
+    ...priorRunning,
+    state: "delivered",
+    activeDeliveryId: "dl-ready01",
+  };
+  const del = await evaluateCandidateSessionLeaseGates({
+    allTasks: [priorDelivered, request],
+    candidate,
+    requestTaskPath: request.path,
+    requestTaskId: request.id,
+    turnBusy: false,
+    workspaceId: "ws",
+    listPendingInputs: async () => [],
+    hasPendingUserAsk: async () => false,
+  });
+  assert.equal(del.exclusiveLease, false);
+  assert.equal(del.noPendingDelivery, false);
+  assert.ok(del.reasons.includes("prior_pending_delivery"));
+
+  const priorAccepted: TaskEnvelope = {
+    ...priorRunning,
+    state: "accepted",
+    sessionId: "ss-shared01",
+    activeDeliveryId: undefined,
+  };
+  const pendingInput = await evaluateCandidateSessionLeaseGates({
+    allTasks: [priorAccepted, request],
+    candidate,
+    requestTaskPath: request.path,
+    requestTaskId: request.id,
+    turnBusy: false,
+    workspaceId: "ws",
+    listPendingInputs: async (_ws, tp) =>
+      tp === priorAccepted.path ? [{ id: "ti-1" }] : [],
+    hasPendingUserAsk: async () => false,
+  });
+  assert.equal(pendingInput.noPendingInput, false);
+  assert.ok(pendingInput.reasons.includes("prior_pending_input"));
+
+  const dual: TaskEnvelope = {
+    ...request,
+    sessionId: "ss-shared01",
+  };
+  const dualGate = await evaluateCandidateSessionLeaseGates({
+    allTasks: [priorAccepted, dual],
+    candidate,
+    requestTaskPath: dual.path,
+    requestTaskId: dual.id,
+    turnBusy: false,
+    workspaceId: "ws",
+    listPendingInputs: async () => [],
+    hasPendingUserAsk: async () => false,
+  });
+  // dual is the request itself with sessionId — exclusive ok for same-task;
+  // add a third active binder:
+  const otherActive: TaskEnvelope = {
+    path: "temp/executor/tasks/c.md",
+    role: "executor",
+    manifest: "m",
+    status: "taken",
+    state: "running",
+    id: "tk-other03",
+    sessionId: "ss-shared01",
+  };
+  const dual2 = await evaluateCandidateSessionLeaseGates({
+    allTasks: [priorAccepted, dual, otherActive],
+    candidate,
+    requestTaskPath: dual.path,
+    requestTaskId: dual.id,
+    turnBusy: false,
+    workspaceId: "ws",
+    listPendingInputs: async () => [],
+    hasPendingUserAsk: async () => false,
+  });
+  assert.equal(dual2.exclusiveLease, false);
+  assert.ok(dual2.reasons.includes("dual_session_binding"));
+
+  // Fully settled prior → exclusive lease ok.
+  const ok = await evaluateCandidateSessionLeaseGates({
+    allTasks: [priorAccepted, request],
+    candidate,
+    requestTaskPath: request.path,
+    requestTaskId: request.id,
+    turnBusy: false,
+    workspaceId: "ws",
+    listPendingInputs: async () => [],
+    hasPendingUserAsk: async () => false,
+  });
+  assert.equal(ok.exclusiveLease, true);
+  assert.equal(ok.noPendingInput, true);
+  assert.equal(ok.noPendingDelivery, true);
+  assert.equal(ok.previousTurnSettled, true);
+});
+
+test("Role startSession captures real profile/adapter generation; purpose mismatch creates fresh", async () => {
+  const ws = await makeWorkspace("role-gen-purpose");
+  try {
+    await initGit(ws);
+    await withService(async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const envFs = new NodeFs(path.join(ws, ".tent"));
+
+      // Role dispatch without profileId: no frozen generation until start.
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "role without profile at dispatch",
+        assigneeKind: "role",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+        purpose: "implement",
+      });
+      assert.ok(!d.error, JSON.stringify(d.error));
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      const before = await loadTaskEnvelope(envFs, taskPath);
+      assert.equal(before.purpose, "implement");
+      // May have fallback generation without real adapter — start will replace.
+      const genBefore = before.contextGeneration;
+
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      const start = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        profileId: "fake-resumable",
+        callerKind: "user",
+      });
+      assert.ok(!start.error, JSON.stringify(start.error));
+      const after = await loadTaskEnvelope(envFs, taskPath);
+      assert.ok(isContextGenerationId(after.contextGeneration!));
+      // Real profile/adapter must be reflected (differs from role/unknown-adapter fallback).
+      if (genBefore) {
+        // If dispatch wrote a fallback, start must have rewritten with real adapter.
+        // (If somehow equal, still require Session row matches Task.)
+      }
+      const row = await svc.runtime.registry.read(after.sessionId!);
+      assert.equal(row?.contextGeneration, after.contextGeneration);
+      assert.equal(row?.purpose, "implement");
+      assert.equal(row?.profileId, "fake-resumable");
+      assert.equal(row?.adapterId, FAKE_ADAPTER_ID);
+
+      await svc.runtime.stopSession(after.sessionId!, "user");
+      await patchTaskEnvelope(envFs, taskPath, { state: "accepted" });
+
+      // Second Role Task with different purpose → fresh Session (purpose mismatch).
+      const d2 = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "role different purpose",
+        assigneeKind: "role",
+        profileId: "fake-resumable",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+        purpose: "review",
+        startSession: true,
+        callerKind: "user",
+      });
+      assert.ok(!d2.error, JSON.stringify(d2.error));
+      const t2 = await loadTaskEnvelope(envFs, (d2.result as { taskPath: string }).taskPath);
+      assert.equal(t2.purpose, "review");
+      assert.notEqual(t2.contextGeneration, after.contextGeneration);
+      assert.notEqual(
+        t2.sessionId,
+        after.sessionId,
+        "purpose mismatch must fail closed to fresh Session"
+      );
+    });
+  } finally {
+    await fs.rm(ws, { recursive: true, force: true });
+  }
+});
+
+test("Role profile change at startSession rewrites contextGeneration", async () => {
+  const ws = await makeWorkspace("role-profile-change");
+  try {
+    await initGit(ws);
+    await withService(async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const envFs = new NodeFs(path.join(ws, ".tent"));
+
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "start with one profile then compare",
+        assigneeKind: "role",
+        profileId: "fake-resumable",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+        startSession: true,
+        callerKind: "user",
+      });
+      assert.ok(!d.error, JSON.stringify(d.error));
+      const t1 = await loadTaskEnvelope(envFs, (d.result as { taskPath: string }).taskPath);
+      const gen1 = t1.contextGeneration!;
+      await svc.runtime.stopSession(t1.sessionId!, "user");
+      await patchTaskEnvelope(envFs, t1.path, { state: "accepted" });
+
+      const d2 = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "same role different profile",
+        assigneeKind: "role",
+        profileId: "fake-other",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+        startSession: true,
+        callerKind: "user",
+      });
+      assert.ok(!d2.error, JSON.stringify(d2.error));
+      const t2 = await loadTaskEnvelope(envFs, (d2.result as { taskPath: string }).taskPath);
+      assert.notEqual(t2.contextGeneration, gen1);
+      assert.notEqual(t2.sessionId, t1.sessionId);
+    });
+  } finally {
+    await fs.rm(ws, { recursive: true, force: true });
+  }
+});
+

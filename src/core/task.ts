@@ -141,6 +141,11 @@ export interface TaskEnvelopeInput {
    */
   contextGeneration?: string;
   /**
+   * Optional stable purpose/subKey for Session reuse identity (not a new entity).
+   * Included in contextGeneration extraStable via facts.purpose when provided.
+   */
+  purpose?: string;
+  /**
    * Optional stable compatibility inputs used only when contextGeneration is
    * omitted. Never includes taskId/objective/acceptance/Task delta.
    */
@@ -247,6 +252,11 @@ export interface TaskEnvelope {
    */
   agentId?: string;
   sessionId?: string;
+  /**
+   * Optional stable purpose/subKey for Session reuse identity (cx-5q6za6).
+   * Not a new lifecycle entity — Task frontmatter + Session row projection only.
+   */
+  purpose?: string;
   wait?: TaskWait;
   activeDeliveryId?: string;
   /**
@@ -686,6 +696,9 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
     task.agentId = data.agentId.trim();
   }
   if (typeof data.sessionId === "string") task.sessionId = data.sessionId;
+  if (typeof data.purpose === "string" && data.purpose.trim()) {
+    task.purpose = data.purpose.trim();
+  }
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
   if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
     task.lastOutcome = data.lastOutcome;
@@ -1049,6 +1062,8 @@ export async function writeTaskEnvelope(
   if (input.asSub === true) data.asSub = true;
   if (input.agentId?.trim()) data.agentId = input.agentId.trim();
   if (input.sessionId) data.sessionId = input.sessionId;
+  if (input.purpose?.trim()) data.purpose = input.purpose.trim();
+  else if (facts?.purpose?.trim()) data.purpose = facts.purpose.trim();
   if (input.workspace) {
     data.workspace = input.workspace.workspace;
     data.worktree = input.workspace.worktree;
@@ -1147,6 +1162,8 @@ export interface TaskEnvelopePatch {
   /** Top-level generation only (when full card is not yet written). */
   contextGeneration?: string | null;
   taskDeltaDigest?: string | null;
+  /** Optional stable purpose/subKey; null clears. */
+  purpose?: string | null;
 }
 
 /** Low-level patch of task operational frontmatter (body stays immutable). */
@@ -1297,6 +1314,10 @@ export async function patchTaskEnvelope(
   if (patch.taskDeltaDigest === null) delete data.taskDeltaDigest;
   else if (typeof patch.taskDeltaDigest === "string" && patch.taskDeltaDigest.trim()) {
     data.taskDeltaDigest = patch.taskDeltaDigest.trim();
+  }
+  if (patch.purpose === null) delete data.purpose;
+  else if (typeof patch.purpose === "string" && patch.purpose.trim()) {
+    data.purpose = patch.purpose.trim();
   }
 
   await fs.writeFile(path, serializeFrontmatter(data, body, keyOrder));

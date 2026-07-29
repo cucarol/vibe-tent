@@ -29,10 +29,10 @@ import {
 import { loadDeliveries } from "../core/delivery.js";
 import { isDeliveryId, isTaskId, type AssigneeKind } from "../core/task-model.js";
 // isDeliveryId / isTaskId: durable id shape checks before workspace lookup.
+import { envelopeIsActiveOccupation } from "../core/claim.js";
 import {
   loadTaskEnvelope,
   loadTaskEnvelopes,
-  taskAssigneeKind,
   type TaskEnvelope,
 } from "../core/task.js";
 import { loadTent } from "../core/tree.js";
@@ -356,17 +356,211 @@ export async function assertDurableContextCardRefsResolved(
 /**
  * Runtime gates for Session reuse (Service probe + stores).
  */
-export async function collectSessionReuseRuntimeGates(input: {
+export function collectSessionReuseRuntimeGates(input: {
   previousTurnSettled: boolean;
   exclusiveLease: boolean;
   noPendingInput: boolean;
   noPendingDelivery: boolean;
-}): Promise<SessionReuseRuntimeGates> {
+}): SessionReuseRuntimeGates {
   return {
     previousTurnSettled: input.previousTurnSettled,
     exclusiveLease: input.exclusiveLease,
     noPendingInput: input.noPendingInput,
     noPendingDelivery: input.noPendingDelivery,
+  };
+}
+
+/**
+ * Tasks that currently bind or last-bound a candidate Session.
+ * Scans persisted envelopes by sessionId and by lastTaskId (id or path).
+ */
+export function findTasksBoundToSession(
+  allTasks: readonly TaskEnvelope[],
+  candidate: Pick<SessionRecord, "id" | "lastTaskId">
+): TaskEnvelope[] {
+  const sessionId = candidate.id?.trim() || "";
+  const last = candidate.lastTaskId?.trim() || "";
+  const out: TaskEnvelope[] = [];
+  const seen = new Set<string>();
+  for (const t of allTasks) {
+    const key = t.path || t.id || "";
+    if (!key || seen.has(key)) continue;
+    const boundBySession =
+      !!sessionId && typeof t.sessionId === "string" && t.sessionId.trim() === sessionId;
+    const boundByLast =
+      !!last && (t.id === last || t.path === last || t.path.endsWith(last));
+    if (boundBySession || boundByLast) {
+      seen.add(key);
+      out.push(t);
+    }
+  }
+  return out;
+}
+
+function isSameTaskRef(
+  task: TaskEnvelope,
+  requestTaskPath: string,
+  requestTaskId?: string
+): boolean {
+  if (task.path === requestTaskPath) return true;
+  if (requestTaskId && task.id === requestTaskId) return true;
+  return false;
+}
+
+/**
+ * Whether a Task lifecycle is safely settled for cross-Task Session reuse.
+ * Terminal accepted/rejected/interrupted/failed only — not running/waiting/delivered/queued.
+ */
+export function isTaskLifecycleSafelySettledForReuse(task: TaskEnvelope): boolean {
+  const state = task.state;
+  return (
+    state === "accepted" ||
+    state === "rejected" ||
+    state === "interrupted" ||
+    state === "failed"
+  );
+}
+
+export type CandidateSessionLeaseEvaluation = SessionReuseRuntimeGates & {
+  /** Diagnostic reasons (not fed to pure gate; for tests/logs). */
+  reasons: string[];
+  boundTasks: TaskEnvelope[];
+};
+
+/**
+ * Build runtime gates for a candidate Session by scanning **bound/last Tasks**,
+ * not the request Task alone (P0: exclusive lease / pending / Delivery).
+ *
+ * Cross-Task reuse requires:
+ * - Session stopped (idle);
+ * - no other active Task owns this Session (exclusive lease);
+ * - prior turn settled (!turnBusy);
+ * - every other bound Task is lifecycle-settled (accepted/…);
+ * - no pending TaskInput/UserAsk on any other bound Task;
+ * - no ready/unresolved Delivery on any other bound Task.
+ *
+ * Same-Task resume: the request Task may still be running and own the Session.
+ */
+export async function evaluateCandidateSessionLeaseGates(input: {
+  allTasks: readonly TaskEnvelope[];
+  candidate: Pick<SessionRecord, "id" | "lastTaskId" | "state">;
+  requestTaskPath: string;
+  requestTaskId?: string;
+  turnBusy: boolean;
+  workspaceId: string;
+  listPendingInputs: (
+    workspaceId: string,
+    taskPath: string
+  ) => Promise<readonly unknown[]>;
+  hasPendingUserAsk: (workspaceId: string, taskPath: string) => Promise<boolean>;
+  /**
+   * Optional Delivery probe: true when task has a ready/unresolved Delivery.
+   * Defaults to activeDeliveryId presence + state===delivered.
+   */
+  hasBlockingDelivery?: (task: TaskEnvelope) => boolean | Promise<boolean>;
+}): Promise<CandidateSessionLeaseEvaluation> {
+  const reasons: string[] = [];
+  const boundTasks = findTasksBoundToSession(input.allTasks, input.candidate);
+  const others = boundTasks.filter(
+    (t) => !isSameTaskRef(t, input.requestTaskPath, input.requestTaskId)
+  );
+
+  const sessionStopped = input.candidate.state === "stopped";
+  if (!sessionStopped) reasons.push("session_not_stopped");
+
+  const otherActive = others.filter((t) => envelopeIsActiveOccupation(t));
+  if (otherActive.length > 0) {
+    reasons.push("other_active_task_owns_session");
+  }
+
+  // Dual binding: more than one active envelope carries this sessionId.
+  const activeWithSession = input.allTasks.filter(
+    (t) =>
+      envelopeIsActiveOccupation(t) &&
+      typeof t.sessionId === "string" &&
+      t.sessionId.trim() === input.candidate.id
+  );
+  const dualBind = activeWithSession.some(
+    (t) => !isSameTaskRef(t, input.requestTaskPath, input.requestTaskId)
+  );
+  if (dualBind) reasons.push("dual_session_binding");
+
+  // Cross-Task: every other bound Task must be fully lifecycle-settled
+  // (accepted/rejected/interrupted/failed). Active states already covered above;
+  // this also rejects odd non-terminal leftovers.
+  let othersSettled = true;
+  for (const prior of others) {
+    if (!isTaskLifecycleSafelySettledForReuse(prior)) {
+      othersSettled = false;
+      if (!reasons.includes("prior_task_not_settled")) {
+        reasons.push("prior_task_not_settled");
+      }
+    }
+  }
+
+  const exclusiveLease =
+    sessionStopped &&
+    otherActive.length === 0 &&
+    !dualBind &&
+    othersSettled;
+
+  const previousTurnSettled = input.turnBusy !== true;
+  if (!previousTurnSettled) reasons.push("previous_turn_not_settled");
+
+  let noPendingInput = true;
+  let noPendingDelivery = true;
+
+  for (const prior of others) {
+    const pending = await input.listPendingInputs(input.workspaceId, prior.path);
+    const ask = await input.hasPendingUserAsk(input.workspaceId, prior.path);
+    if (pending.length > 0 || ask) {
+      noPendingInput = false;
+      reasons.push("prior_pending_input");
+    }
+    const blockingDelivery =
+      input.hasBlockingDelivery != null
+        ? await input.hasBlockingDelivery(prior)
+        : Boolean(prior.activeDeliveryId) || prior.state === "delivered";
+    if (blockingDelivery) {
+      noPendingDelivery = false;
+      reasons.push("prior_pending_delivery");
+    }
+  }
+
+  // Request Task itself: pending input/delivery also blocks (same-Task resume safety).
+  const reqPending = await input.listPendingInputs(
+    input.workspaceId,
+    input.requestTaskPath
+  );
+  const reqAsk = await input.hasPendingUserAsk(
+    input.workspaceId,
+    input.requestTaskPath
+  );
+  if (reqPending.length > 0 || reqAsk) {
+    noPendingInput = false;
+    reasons.push("request_pending_input");
+  }
+  const requestTask = input.allTasks.find((t) =>
+    isSameTaskRef(t, input.requestTaskPath, input.requestTaskId)
+  );
+  if (requestTask) {
+    const reqDel =
+      input.hasBlockingDelivery != null
+        ? await input.hasBlockingDelivery(requestTask)
+        : Boolean(requestTask.activeDeliveryId) || requestTask.state === "delivered";
+    if (reqDel) {
+      noPendingDelivery = false;
+      reasons.push("request_pending_delivery");
+    }
+  }
+
+  return {
+    previousTurnSettled,
+    exclusiveLease,
+    noPendingInput,
+    noPendingDelivery,
+    reasons,
+    boundTasks,
   };
 }
 
@@ -396,8 +590,9 @@ export function sameWorkspacePath(a: string, b: string): boolean {
   return na === nb;
 }
 
-export function taskPurposeFromEnvelope(task: TaskEnvelope): string {
-  // No first-class purpose field on Task yet — empty keeps gate optional-match.
-  void taskAssigneeKind;
-  return managedSessionPurpose({});
+/** Read optional stable purpose/subKey from Task envelope (Session reuse identity). */
+export function taskPurposeFromEnvelope(
+  task: Pick<TaskEnvelope, "purpose"> | { purpose?: string }
+): string {
+  return managedSessionPurpose({ purpose: task.purpose });
 }
