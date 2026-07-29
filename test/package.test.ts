@@ -152,6 +152,7 @@ test("CLI help and version expose only the current surface", async () => {
   assert.match(help.stdout, /tent node/);
   assert.match(help.stdout, /tent task/);
   assert.match(help.stdout, /tent new \./);
+  assert.match(help.stdout, /--repair-existing/);
   assert.match(help.stdout, /skill-install/);
   assert.doesNotMatch(help.stdout, /migrate|new-box|task-ack|clean-temp|--vault/);
 

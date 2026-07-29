@@ -94,35 +94,35 @@ test("parseAgentHookId: aliases and rejection", () => {
 test("managed identity: only session-start/end --host; never bare enter/leave", () => {
   assert.equal(
     managedSessionStartCommand("claude"),
-    "tent agent session-start --host claude"
+    "tent session session-start --host claude"
   );
   assert.equal(
     managedSessionEndCommand("claude"),
-    "tent agent session-end --host claude"
+    "tent session session-end --host claude"
   );
   assert.equal(
     managedSessionStartCommand("codex"),
-    "tent agent session-start --host codex"
+    "tent session session-start --host codex"
   );
   assert.equal(
     managedSessionEndCommand("codex"),
-    "tent agent session-end --host codex"
+    "tent session session-end --host codex"
   );
 
-  assert.ok(isManagedHookCommand("tent agent session-start --host claude"));
-  assert.ok(isManagedEnterCommand("tent agent session-start --host claude"));
-  assert.ok(isManagedLeaveCommand("tent agent session-end --host claude"));
-  assert.ok(isManagedSessionStartForHost("tent agent session-start --host claude", "claude"));
-  assert.ok(isManagedSessionEndForHost("tent agent session-end --host codex", "codex"));
+  assert.ok(isManagedHookCommand("tent session session-start --host claude"));
+  assert.ok(isManagedEnterCommand("tent session session-start --host claude"));
+  assert.ok(isManagedLeaveCommand("tent session session-end --host claude"));
+  assert.ok(isManagedSessionStartForHost("tent session session-start --host claude", "claude"));
+  assert.ok(isManagedSessionEndForHost("tent session session-end --host codex", "codex"));
   assert.equal(
-    isManagedSessionStartForHost("tent agent session-start --host codex", "claude"),
+    isManagedSessionStartForHost("tent session session-start --host codex", "claude"),
     false
   );
 
-  assert.equal(managedCommandHost("tent agent session-start --host claude"), "claude");
-  assert.equal(managedCommandHost("tent agent session-end --host codex"), "codex");
+  assert.equal(managedCommandHost("tent session session-start --host claude"), "claude");
+  assert.equal(managedCommandHost("tent session session-end --host codex"), "codex");
 
-  assert.ok(isManagedEnterCommand('"/path/to/tent" agent session-start --host claude'));
+  assert.ok(isManagedEnterCommand('"/path/to/tent" session session-start --host claude'));
 
   // Bare / unpublished enter|leave must NOT be managed identity (avoid removing user commands).
   assert.equal(isManagedHookCommand("tent agent enter"), false);
@@ -133,11 +133,18 @@ test("managed identity: only session-start/end --host; never bare enter/leave", 
   assert.equal(isManagedSessionEndForHost("tent agent leave", "claude"), false);
 
   // session-* without --host is not managed.
-  assert.equal(isManagedHookCommand("tent agent session-start"), false);
-  assert.equal(isManagedHookCommand("tent agent session-end"), false);
+  assert.equal(isManagedHookCommand("tent session session-start"), false);
+  assert.equal(isManagedHookCommand("tent session session-end"), false);
 
   assert.equal(isManagedEnterCommand("echo hello"), false);
-  assert.equal(isManagedLeaveCommand("tent agent session-start --host claude"), false);
+  assert.equal(isManagedLeaveCommand("tent session session-start --host claude"), false);
+
+  // Legacy agent session-* with --host is recognized only for replace/remove (not generated).
+  assert.ok(isManagedHookCommand("tent agent session-start --host claude"));
+  assert.ok(isManagedEnterCommand("tent agent session-start --host claude"));
+  assert.ok(isManagedLeaveCommand("tent agent session-end --host claude"));
+  assert.ok(isManagedSessionStartForHost("tent agent session-start --host claude", "claude"));
+  assert.equal(isManagedHookCommand("tent agent session-start"), false);
 });
 
 test("Claude: install merges SessionStart/Stop with --host claude; preserves permissions", async () => {
@@ -171,8 +178,8 @@ test("Claude: install merges SessionStart/Stop with --host claude; preserves per
 
   const enterCmds = allCommands(after.hooks!, "SessionStart");
   const leaveCmds = allCommands(after.hooks!, "Stop");
-  assert.ok(enterCmds.some((c) => c === "tent agent session-start --host claude"));
-  assert.ok(leaveCmds.some((c) => c === "tent agent session-end --host claude"));
+  assert.ok(enterCmds.some((c) => c === "tent session session-start --host claude"));
+  assert.ok(leaveCmds.some((c) => c === "tent session session-end --host claude"));
   assert.equal(enterCmds.some((c) => /\bagent\s+enter\b/.test(c)), false);
   assert.equal(leaveCmds.some((c) => /\bagent\s+leave\b/.test(c)), false);
 
@@ -288,7 +295,7 @@ test("Codex: install into hooks.json preserves foreign handlers; host=codex; JSO
     isManagedSessionStartForHost(String(h.command), "codex")
   )!;
   assert.ok(managed);
-  assert.equal(managed.command, "tent agent session-start --host codex");
+  assert.equal(managed.command, "tent session session-start --host codex");
   assert.equal(managedCommandHost(String(managed.command)), "codex");
   assert.equal(managed.statusMessage, TENT_HOOK_MARKER);
   assert.equal(managed.async, undefined);
@@ -299,7 +306,7 @@ test("Codex: install into hooks.json preserves foreign handlers; host=codex; JSO
   const managedLeave = leaveHandlers.find((h) =>
     isManagedSessionEndForHost(String(h.command), "codex")
   )!;
-  assert.equal(managedLeave.command, "tent agent session-end --host codex");
+  assert.equal(managedLeave.command, "tent session session-end --host codex");
   assert.equal(managedLeave.async, undefined);
   assert.equal(managedLeave.timeout, 60);
   assert.equal(managedLeave.statusMessage, TENT_HOOK_MARKER);
@@ -410,12 +417,12 @@ test("install all: lifecycle agents + unsupported; host params per agent", async
   };
   assert.ok(
     allCommands(claudeSettings.hooks, "SessionStart").includes(
-      "tent agent session-start --host claude"
+      "tent session session-start --host claude"
     )
   );
   assert.ok(
     allCommands(claudeSettings.hooks, "Stop").includes(
-      "tent agent session-end --host claude"
+      "tent session session-end --host claude"
     )
   );
 
@@ -426,11 +433,11 @@ test("install all: lifecycle agents + unsupported; host params per agent", async
   ).hooks;
   assert.ok(
     allCommands(codexHooks, "SessionStart").includes(
-      "tent agent session-start --host codex"
+      "tent session session-start --host codex"
     )
   );
   assert.ok(
-    allCommands(codexHooks, "Stop").includes("tent agent session-end --host codex")
+    allCommands(codexHooks, "Stop").includes("tent session session-end --host codex")
   );
 
   const home2 = await tempHome("tent-hooks-custom-tent-");
@@ -444,10 +451,10 @@ test("install all: lifecycle agents + unsupported; host params per agent", async
   };
   const startCmd = settings.hooks.SessionStart[0]!.hooks[0]!.command!;
   const endCmd = settings.hooks.Stop[0]!.hooks[0]!.command!;
-  assert.ok(startCmd.includes("agent session-start"));
+  assert.ok(startCmd.includes("session session-start"));
   assert.ok(startCmd.includes("--host claude"));
   assert.ok(startCmd.includes("tent"));
-  assert.ok(endCmd.includes("agent session-end"));
+  assert.ok(endCmd.includes("session session-end"));
   assert.ok(endCmd.includes("--host claude"));
 });
 
@@ -512,10 +519,111 @@ test("install does not rewrite user bare enter/leave commands", async () => {
   // User bare commands untouched; formal managed added alongside.
   assert.ok(enterCmds.includes("tent agent enter"));
   assert.ok(leaveCmds.includes("tent agent leave"));
-  assert.ok(enterCmds.includes("tent agent session-start --host claude"));
-  assert.ok(leaveCmds.includes("tent agent session-end --host claude"));
+  assert.ok(enterCmds.includes("tent session session-start --host claude"));
+  assert.ok(leaveCmds.includes("tent session session-end --host claude"));
   assert.equal(
     (after.hooks!.PreToolUse as HookGroup[])[0]!.hooks[0]!.command,
     "echo foreign"
   );
+});
+
+test("install migrates legacy tent agent session-* to session namespace; never re-generates agent form", async () => {
+  const home = await tempHome("tent-hooks-legacy-migrate-");
+  const settingsPath = claudeSettingsPath(home);
+  await writeJson(settingsPath, {
+    model: "keep-me",
+    hooks: {
+      SessionStart: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: "tent agent session-start --host claude",
+              timeout: 60,
+            },
+            { type: "command", command: "echo user-unrelated", timeout: 5 },
+          ],
+        },
+      ],
+      Stop: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: "tent agent session-end --host claude",
+              timeout: 60,
+            },
+          ],
+        },
+      ],
+    },
+  });
+
+  const batch = await installAgentHooks({ home, agents: ["claude"] });
+  assert.equal(batch.results[0]!.status, "installed");
+
+  const after = (await readJson(settingsPath)) as {
+    model?: string;
+    hooks?: Record<string, HookGroup[]>;
+  };
+  assert.equal(after.model, "keep-me");
+  const enterCmds = allCommands(after.hooks!, "SessionStart");
+  const leaveCmds = allCommands(after.hooks!, "Stop");
+  assert.ok(enterCmds.includes("tent session session-start --host claude"));
+  assert.ok(leaveCmds.includes("tent session session-end --host claude"));
+  assert.equal(
+    enterCmds.some((c) => /agent\s+session-start/i.test(c)),
+    false
+  );
+  assert.equal(
+    leaveCmds.some((c) => /agent\s+session-end/i.test(c)),
+    false
+  );
+  assert.ok(enterCmds.includes("echo user-unrelated"));
+  // Idempotent after migration.
+  const second = await installAgentHooks({ home, agents: ["claude"] });
+  assert.equal(second.results[0]!.status, "skipped");
+});
+
+test("remove clears legacy agent session-* managed entries", async () => {
+  const home = await tempHome("tent-hooks-legacy-rm-");
+  const settingsPath = claudeSettingsPath(home);
+  await writeJson(settingsPath, {
+    hooks: {
+      SessionStart: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: "tent agent session-start --host claude",
+              timeout: 60,
+            },
+            { type: "command", command: "echo keep-me", timeout: 5 },
+          ],
+        },
+      ],
+      Stop: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: "tent agent session-end --host claude",
+              timeout: 60,
+            },
+          ],
+        },
+      ],
+    },
+  });
+
+  const batch = await removeAgentHooks({ home, agents: ["claude"] });
+  assert.equal(batch.results[0]!.status, "removed");
+  const after = (await readJson(settingsPath)) as {
+    hooks?: Record<string, HookGroup[]>;
+  };
+  const enterCmds = allCommands(after.hooks ?? {}, "SessionStart");
+  const leaveCmds = allCommands(after.hooks ?? {}, "Stop");
+  assert.ok(enterCmds.includes("echo keep-me"));
+  assert.equal(enterCmds.some((c) => isManagedHookCommand(c)), false);
+  assert.equal(leaveCmds.some((c) => isManagedHookCommand(c)), false);
 });

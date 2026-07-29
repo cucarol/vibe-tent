@@ -954,8 +954,15 @@ test("CLI public session surface is tent session; old tent agent lifecycle is re
   assert.match(sessionHelpText, /tent session leave/);
   assert.doesNotMatch(sessionHelpText, /tent agent enter/);
 
-  // No compatibility alias: tent agent enter|status|leave must fail as unknown top-level command.
-  for (const sub of ["enter", "status", "leave"] as const) {
+  // No compatibility alias: tent agent enter|status|leave|session-* must fail as unknown top-level command.
+  for (const sub of [
+    "enter",
+    "status",
+    "leave",
+    "session-start",
+    "session-status",
+    "session-end",
+  ] as const) {
     const result = await cli(dir, "agent", sub);
     assert.notEqual(result.code, 0, `tent agent ${sub} must be rejected`);
     assert.match(result.stderr, /Unknown command: agent/);

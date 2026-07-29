@@ -29,7 +29,7 @@ import { ensureRoleInit } from "../core/task.js";
 import { loadRolesRegistry } from "../core/skillRoleRegistry.js";
 import { findTentSystemRoot, NOT_INSIDE_TENT_MESSAGE, renderTentStatus } from "../core/status.js";
 import { withTentMutation } from "../core/adapter.js";
-import { scaffoldInWorkspace } from "../core/scaffold.js";
+import { reAdoptOrphanTent, scaffoldInWorkspace } from "../core/scaffold.js";
 import { workspaceRootFromSystemRoot } from "../core/paths.js";
 import { runTaskCommand, taskHelpText } from "./task-rpc.js";
 import { runSessionCommand, sessionHelpText } from "./session-rpc.js";
@@ -73,12 +73,34 @@ async function main() {
 
   // Commands that do not require an existing system root
   if (cmd === "new") {
-    const { positionals } = parseFlags(args);
+    const { positionals, flags } = parseFlags(args);
     if (!positionals[0]) {
-      return fail("Usage: tent new <workspace-path>");
+      return fail(
+        "Usage: tent new <workspace-path>\n" +
+          "       tent new <workspace-path> --repair-existing"
+      );
     }
-    if (positionals.length > 1) return fail("Usage: tent new <workspace-path>");
-    await newTent(positionals[0]);
+    if (positionals.length > 1) {
+      return fail(
+        "Usage: tent new <workspace-path>\n" +
+          "       tent new <workspace-path> --repair-existing"
+      );
+    }
+    const repairExisting = flags["repair-existing"] === "true";
+    // Reject unknown flags so --repair-existing stays the only new-path switch.
+    const unknown = Object.keys(flags).filter((k) => k !== "repair-existing");
+    if (unknown.length > 0) {
+      return fail(
+        `Unknown flag for tent new: --${unknown[0]}\n` +
+          "Usage: tent new <workspace-path>\n" +
+          "       tent new <workspace-path> --repair-existing"
+      );
+    }
+    if (repairExisting) {
+      await repairExistingTent(positionals[0]);
+    } else {
+      await newTent(positionals[0]);
+    }
     return;
   }
   if (cmd === "skill-install") {
@@ -345,7 +367,7 @@ function fail(msg: string) {
 function parseFlags(args: string[]): { positionals: string[]; flags: Record<string, string> } {
   const positionals: string[] = [];
   const flags: Record<string, string> = {};
-  const booleanFlags = new Set(["force", "json"]);
+  const booleanFlags = new Set(["force", "json", "repair-existing"]);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a.startsWith("--")) {
@@ -372,12 +394,14 @@ Usage:
   tent agent-hooks remove  [--agent all|claude|codex|agy|copilot] [--json]
 
 Behavior:
-  - SessionStart → tent agent session-start --host <agent>
-  - Stop         → tent agent session-end --host <agent>
+  - SessionStart → tent session session-start --host <agent>
+  - Stop         → tent session session-end --host <agent>
   - CLI hook aliases parse session identity/cwd from native hook stdin and
     silently skip non-Tent workspaces (leave never needs a sessionId positional).
   - Merges into existing agent configs; never rewrites permissions or MCP.
   - install / doctor / remove are idempotent; remove only Tent-managed handlers.
+  - Legacy tent agent session-* entries may be replaced/removed on install only;
+    they are not generated or advertised as callable aliases.
   - Antigravity (agy) and Copilot report unsupported when no verified lifecycle hook surface exists.
   - Projection only writes under --home (tests) or os.homedir(); never smoke real user configs.
 
@@ -453,6 +477,9 @@ Service-backed workspace operations:
 Initialization and machine config:
   new <workspace-path>               Create <workspace>/.tent without touching project files.
                                      Use "tent new ." to adopt an existing project.
+  new <workspace-path> --repair-existing
+                                     One-shot re-adopt of an orphan <workspace>/.tent
+                                     (missing index + Tent evidence). Never runs genesis.
   skill-install [--target all|claude|shared-agents] [--force]
                                      Install bundled skills to selected machine roots.
   agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copilot]
@@ -493,6 +520,39 @@ async function newTent(target: string): Promise<void> {
     `✓ Created Tent: ${path.join(workspaceRoot, ".tent")}\n` +
       `In-workspace layout: collaboration facts live under <workspace>/.tent/.\n` +
       `The Node tree starts empty; use tent-init to propose and approve its initial structure.`
+  );
+}
+
+/**
+ * One-shot re-adopt: `tent new <target> --repair-existing`.
+ * Calls Core reAdoptOrphanTent on that exact workspace only — never genesis/scaffold.
+ * Fail-closed Core errors surface as non-zero exit with zero writes.
+ */
+async function repairExistingTent(target: string): Promise<void> {
+  const workspaceRoot = path.resolve(target);
+  const fsa = new NodeFs(workspaceRoot);
+  let result;
+  try {
+    result = await reAdoptOrphanTent(fsa);
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
+
+  const created: string[] = [];
+  if (result.createdIndex) created.push("index.md");
+  for (const dir of result.createdDirs) created.push(`${dir}/`);
+  for (const reg of result.createdRegistries) created.push(reg);
+  if (result.gitignoreUpdated) created.push(".gitignore (.tent/ entry)");
+
+  const createdLine =
+    created.length > 0
+      ? `Created structural pieces: ${created.join(", ")}`
+      : "Created structural pieces: (none beyond index)";
+
+  console.log(
+    `✓ Re-adopted orphan Tent: ${path.join(workspaceRoot, ".tent")}\n` +
+      `${createdLine}\n` +
+      `Existing Node/registry/temp bytes were preserved; no genesis scaffold ran.`
   );
 }
 
