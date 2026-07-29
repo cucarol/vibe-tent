@@ -325,6 +325,10 @@ export async function inspectWorktreeDirtiness(worktree: string): Promise<Worktr
  * (main workspace for peer → mainline; dispatcher role worktree for sub →
  * tent-role/<dispatcher>). Never switches branches automatically.
  * Preserves dirty checks, rollback, and idempotence (ancestor / -x cherry-pick).
+ *
+ * Rollback uses a CAS update-ref guard so a failed batch never hard-resets over a
+ * target tip advanced by another integration. Production callers must also hold the
+ * workspace+targetBranch integration flight around assert + write + rollback.
  */
 export async function integrateWorkspaceCommits(
   contract: RoleWorkspaceContract,
@@ -353,6 +357,9 @@ export async function integrateWorkspaceCommits(
   }
 
   const originalRef = (await git(root, ["rev-parse", `refs/heads/${target}`])).trim();
+  // Ownership tip for CAS rollback: only restore originalRef when target still
+  // points at a tip this batch last wrote (never clobber a foreign advance).
+  let ownedTip = originalRef;
   const resolved = [];
   for (const sourceRef of commits) {
     // Object database is shared; resolve via repo root.
@@ -374,7 +381,13 @@ export async function integrateWorkspaceCommits(
         alreadyIntegrated: false,
       }));
     } catch (error) {
-      await rollbackIntegration(integrationCwd, originalRef, error);
+      // FF may have partially moved HEAD; re-read tip for CAS ownership.
+      try {
+        ownedTip = (await git(root, ["rev-parse", `refs/heads/${target}`])).trim();
+      } catch {
+        /* keep prior ownedTip */
+      }
+      await rollbackIntegration(integrationCwd, originalRef, target, ownedTip, error);
     }
   }
 
@@ -393,10 +406,16 @@ export async function integrateWorkspaceCommits(
       }
       await git(integrationCwd, ["cherry-pick", "-x", sourceRef]);
       const integratedRef = (await git(integrationCwd, ["rev-parse", "HEAD"])).trim();
+      ownedTip = integratedRef;
       results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
     }
   } catch (error) {
-    await rollbackIntegration(integrationCwd, originalRef, error);
+    try {
+      ownedTip = (await git(root, ["rev-parse", `refs/heads/${target}`])).trim();
+    } catch {
+      /* keep last successful ownedTip */
+    }
+    await rollbackIntegration(integrationCwd, originalRef, target, ownedTip, error);
   }
   return results;
 }
@@ -613,6 +632,148 @@ export async function assertOrdinaryExecutorLaneHistoryInGit(input: {
 /** Re-export pure gate error for Service mapping. */
 export { ExecutorLaneHistoryError };
 
+/**
+ * Codes for public task.deliver commits[] membership (pre-ready Delivery).
+ * Fail-loud; no ready Delivery; Git untouched.
+ */
+export type DeliverCommitLaneErrorCode =
+  | "MISSING_COMMIT"
+  | "NOT_A_COMMIT"
+  | "BASE_COMMIT"
+  | "NOT_IN_LANE_RANGE"
+  | "NOT_REACHABLE_FROM_BRANCH"
+  | "MISSING_BASE"
+  | "MISSING_BRANCH";
+
+export class DeliverCommitLaneError extends Error {
+  code: DeliverCommitLaneErrorCode;
+  details?: Record<string, unknown>;
+  constructor(
+    code: DeliverCommitLaneErrorCode,
+    message: string,
+    details?: Record<string, unknown>
+  ) {
+    super(message);
+    this.name = "DeliverCommitLaneError";
+    this.code = code;
+    this.details = details;
+  }
+}
+
+/**
+ * Public task.deliver commits[] membership gate (ordinary executor lanes).
+ *
+ * Every non-empty commits[] entry must:
+ * 1. resolve as a commit object in the workspace Git odb;
+ * 2. lie in the exact recorded `baseCommit..refs/heads/<task branch>` range;
+ * 3. be reachable from that branch tip.
+ *
+ * Rejects missing, non-commit, base tip itself, target-only, sibling/foreign
+ * branch, and unrelated ancestry before ready Delivery. Empty commits[] is a
+ * no-op (zero-commit docs tasks / managed auto-collect empty lanes).
+ */
+export async function assertDeliverCommitsInExecutorLane(input: {
+  workspace: string;
+  baseCommit: string;
+  branch: string;
+  commits: string[];
+}): Promise<void> {
+  const refs = [...new Set(input.commits.map((c) => c.trim()).filter(Boolean))];
+  if (refs.length === 0) return;
+
+  const root = nodePath.resolve(input.workspace);
+  await assertGitWorkspace(root);
+
+  const baseRaw = input.baseCommit?.trim() || "";
+  if (!baseRaw) {
+    throw new DeliverCommitLaneError(
+      "MISSING_BASE",
+      "task.deliver commits[] require recorded baseCommit (fail-loud; no ready Delivery)."
+    );
+  }
+  const branch = input.branch?.trim() || "";
+  if (!branch) {
+    throw new DeliverCommitLaneError(
+      "MISSING_BRANCH",
+      "task.deliver commits[] require recorded executor branch (fail-loud; no ready Delivery)."
+    );
+  }
+
+  const fullBase = await fullRef(root, baseRaw);
+  const branchRef = `refs/heads/${branch}`;
+  if (!(await gitOk(root, ["show-ref", "--verify", "--quiet", branchRef]))) {
+    throw new DeliverCommitLaneError(
+      "MISSING_BRANCH",
+      `task.deliver commits[] executor branch missing: ${branch} (no ready Delivery).`,
+      { branch }
+    );
+  }
+
+  // Exact lane range: commits reachable from branch tip and not from base.
+  const rangeOutput = await git(root, ["rev-list", "--reverse", `${fullBase}..${branchRef}`]);
+  const laneRange = new Set(
+    rangeOutput
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+  );
+
+  for (const sourceRef of refs) {
+    const isCommit = await gitOk(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
+    if (!isCommit) {
+      // Distinguish unknown object vs exists-but-not-commit when possible.
+      const exists = await gitOk(root, ["cat-file", "-e", sourceRef]);
+      throw new DeliverCommitLaneError(
+        exists ? "NOT_A_COMMIT" : "MISSING_COMMIT",
+        exists
+          ? `task.deliver commits[] entry is not a commit object: ${sourceRef} (no ready Delivery; Git untouched).`
+          : `task.deliver commits[] entry does not resolve in workspace Git: ${sourceRef} (no ready Delivery; Git untouched).`,
+        { commit: sourceRef }
+      );
+    }
+    const full = await fullRef(root, sourceRef);
+    if (full === fullBase) {
+      throw new DeliverCommitLaneError(
+        "BASE_COMMIT",
+        `task.deliver commits[] must not list recorded baseCommit ${fullBase} itself (no ready Delivery; Git untouched).`,
+        { commit: full, baseCommit: fullBase, branch }
+      );
+    }
+    if (!laneRange.has(full)) {
+      const reachableFromBranch = await gitOk(root, [
+        "merge-base",
+        "--is-ancestor",
+        full,
+        branchRef,
+      ]);
+      if (!reachableFromBranch) {
+        throw new DeliverCommitLaneError(
+          "NOT_REACHABLE_FROM_BRANCH",
+          `task.deliver commits[] entry ${full} is not reachable from executor branch ${branch} ` +
+            `(foreign/sibling/unrelated ancestry; no ready Delivery; Git untouched).`,
+          { commit: full, baseCommit: fullBase, branch }
+        );
+      }
+      // Reachable from branch but outside base..branch → base ancestor, or otherwise
+      // not exclusive to the task range (e.g. target-only / pre-base history).
+      throw new DeliverCommitLaneError(
+        "NOT_IN_LANE_RANGE",
+        `task.deliver commits[] entry ${full} is not in exact range ${fullBase}..${branch} ` +
+          `(target-only, base history, or foreign to this task lane; no ready Delivery; Git untouched).`,
+        { commit: full, baseCommit: fullBase, branch }
+      );
+    }
+    // Belt: membership in rev-list base..branch already implies branch reachability.
+    if (!(await gitOk(root, ["merge-base", "--is-ancestor", full, branchRef]))) {
+      throw new DeliverCommitLaneError(
+        "NOT_REACHABLE_FROM_BRANCH",
+        `task.deliver commits[] entry ${full} failed branch reachability re-check for ${branch}.`,
+        { commit: full, baseCommit: fullBase, branch }
+      );
+    }
+  }
+}
+
 async function assertGitWorkspace(root: string): Promise<void> {
   const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
   const [realTop, realRoot] = await Promise.all([
@@ -729,8 +890,70 @@ async function completeFastForwardRef(
   return range.every((ref) => supplied.has(ref)) ? lastRef : undefined;
 }
 
-async function rollbackIntegration(root: string, originalRef: string, cause: unknown): Promise<never> {
+/**
+ * Roll back a failed integration batch without clobbering a target advanced by
+ * another integration.
+ *
+ * 1. Abort any in-progress cherry-pick.
+ * 2. Re-read target tip. If it still equals `ownedTip` (the tip this batch last
+ *    wrote, or the pre-batch tip), CAS `update-ref` back to `originalRef`.
+ *    If tip differs from `ownedTip`, another integration advanced the branch —
+ *    refuse hard reset over that foreign tip.
+ * 3. `reset --hard originalRef` only after a successful ownership CAS (or when
+ *    already at originalRef). Production callers hold workspace+targetBranch flight.
+ */
+async function rollbackIntegration(
+  root: string,
+  originalRef: string,
+  targetBranch: string,
+  ownedTip: string,
+  cause: unknown
+): Promise<never> {
   await git(root, ["cherry-pick", "--abort"]).catch(() => "");
+  const target = targetBranch.trim();
+  const targetRef = `refs/heads/${target}`;
+  let currentTip = "";
+  try {
+    currentTip = (await git(root, ["rev-parse", targetRef])).trim();
+  } catch (readError) {
+    throw new Error(
+      `Workspace integration conflicted; rollback could not read target ${target}: ` +
+        `${errorMessage(cause)}; read: ${errorMessage(readError)}`
+    );
+  }
+
+  if (currentTip === originalRef) {
+    // Already restored (e.g. cherry-pick --abort undid a partial pick). Sync worktree.
+    try {
+      await git(root, ["reset", "--hard", originalRef]);
+    } catch (rollbackError) {
+      throw new Error(
+        `Workspace integration failed and rollback also failed: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
+      );
+    }
+    throw new Error(`Workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
+  }
+
+  // Only CAS-restore when the tip still matches what this batch last owned.
+  // A foreign advance (currentTip !== ownedTip) must never be reset away.
+  if (currentTip !== ownedTip) {
+    throw new Error(
+      `Workspace integration conflicted; rollback refused because target ${target} ` +
+        `advanced by another integration (owned ${ownedTip}, current ${currentTip}, ` +
+        `original ${originalRef}): ${errorMessage(cause)}`
+    );
+  }
+
+  try {
+    // CAS: only move target when it still points at ownedTip.
+    await git(root, ["update-ref", targetRef, originalRef, ownedTip]);
+  } catch (casError) {
+    throw new Error(
+      `Workspace integration conflicted; rollback CAS failed for target ${target} ` +
+        `(owned ${ownedTip}, original ${originalRef}): ${errorMessage(cause)}; cas: ${errorMessage(casError)}`
+    );
+  }
+
   try {
     await git(root, ["reset", "--hard", originalRef]);
   } catch (rollbackError) {

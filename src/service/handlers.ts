@@ -156,6 +156,7 @@ import {
   type TaskDeliverResult,
 } from "../core/task-lifecycle.js";
 import { runTaskLifecycle } from "./task-lifecycle-flight.js";
+import { runIntegrationTargetFlight } from "./integration-target-flight.js";
 import {
   normalizeKeepTerminalTasksDays,
   previewOperationalRetention,
@@ -214,7 +215,9 @@ import {
   evaluateA2A,
 } from "../core/task-model.js";
 import {
+  assertDeliverCommitsInExecutorLane,
   assertOrdinaryExecutorLaneHistoryInGit,
+  DeliverCommitLaneError,
   ensureRoleWorkspace,
   ensureRoleWorkspaceIfGit,
   ensureTaskWorkspace,
@@ -4946,6 +4949,86 @@ async function assertOrdinaryExecutorLaneHistoryForDeliver(
   }
 }
 
+/**
+ * Public task.deliver commits[] membership: each SHA must resolve as a commit
+ * object in exact recorded baseCommit..refs/heads/<task branch> and be reachable
+ * from that branch. Empty commits[] is a no-op (docs / managed auto-collect).
+ * Fail-loud before ready Delivery; Git untouched.
+ */
+async function assertDeliverCommitsBelongToExecutorLane(
+  workspaceRoot: string,
+  task: TaskEnvelope,
+  commits: string[] | undefined
+): Promise<void> {
+  const refs = uniqueCommitRefs(commits);
+  if (refs.length === 0) return;
+
+  const branch = task.branch?.trim() || "";
+  const hasExecutorLane = Boolean(
+    branch || task.worktree?.trim() || task.workspace?.trim()
+  );
+  // No executor Git lane → not an ordinary code-task Delivery path; membership N/A.
+  if (!hasExecutorLane) return;
+  if (!(await isGitWorkspace(workspaceRoot))) return;
+
+  const base = task.baseCommit?.trim() || "";
+  if (!base) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `task.deliver refused: commits[] require exact workspaceLane.baseCommit ` +
+        `(task remains ${task.state}, no ready Delivery; lane/audit preserved; Git untouched)`,
+      {
+        code: "DELIVER_COMMIT_LANE",
+        laneCode: "MISSING_BASE",
+        taskPath: task.path,
+        taskId: task.id,
+        branch: branch || undefined,
+      }
+    );
+  }
+  if (!branch) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `task.deliver refused: commits[] require recorded executor branch ` +
+        `(task remains ${task.state}, no ready Delivery; lane/audit preserved; Git untouched)`,
+      {
+        code: "DELIVER_COMMIT_LANE",
+        laneCode: "MISSING_BRANCH",
+        taskPath: task.path,
+        taskId: task.id,
+        baseCommit: base,
+      }
+    );
+  }
+
+  try {
+    await assertDeliverCommitsInExecutorLane({
+      workspace: workspaceRoot,
+      baseCommit: base,
+      branch,
+      commits: refs,
+    });
+  } catch (err) {
+    if (err instanceof DeliverCommitLaneError) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `task.deliver refused: commits[] not in executor lane (${err.code}): ${err.message} ` +
+          `(task remains ${task.state}, no ready Delivery; Git untouched)`,
+        {
+          code: "DELIVER_COMMIT_LANE",
+          laneCode: err.code,
+          taskPath: task.path,
+          taskId: task.id,
+          baseCommit: base,
+          branch,
+          ...(err.details ?? {}),
+        }
+      );
+    }
+    throw err;
+  }
+}
+
 async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -4974,6 +5057,12 @@ async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, taskForIntegrate);
       // Ordinary executor lane: linear single-parent history from recorded base (cx-5q6za6).
       await assertOrdinaryExecutorLaneHistoryForDeliver(mount.workspaceRoot, taskForIntegrate);
+      // Public commits[] must resolve as commit objects in exact base..task-branch range.
+      await assertDeliverCommitsBelongToExecutorLane(
+        mount.workspaceRoot,
+        taskForIntegrate,
+        commits
+      );
       const pendingCommits = uniqueCommitRefs(commits);
       // Commit-bearing Deliveries durably snapshot resolved target HEAD at review time.
       targetHead =
@@ -4999,6 +5088,7 @@ async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       await makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate, {
         expectedTargetHead: targetHead,
         action: "task.deliver",
+        taskPath,
       })(pendingCommits);
     }
     return ctx.mutations.run(workspaceId, async () => {
@@ -5085,6 +5175,7 @@ async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       await makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate, {
         expectedTargetHead,
         action: "task.accept",
+        taskPath,
       })(prepared.commits);
     }
     try {
@@ -10392,6 +10483,8 @@ async function tryManagedAutoDeliver(
         if (commits === undefined) {
           commits = await collectManagedDeliveryCommits(mount.workspaceRoot, task);
         }
+        // Explicit or auto-collected commits[] must belong to the recorded executor lane.
+        await assertDeliverCommitsBelongToExecutorLane(mount.workspaceRoot, task, commits);
         const pendingCommits = uniqueCommitRefs(commits);
         const targetHead =
           pendingCommits.length > 0
@@ -10443,6 +10536,7 @@ async function tryManagedAutoDeliver(
           await makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate, {
             expectedTargetHead: phase.targetHead,
             action: "task.deliver",
+            taskPath: input.taskPath,
           })(phase.commits);
         }
         result = await ctx.mutations.run(input.workspaceId, async () => {
@@ -11885,6 +11979,10 @@ function parseArtifactRefs(data: Record<string, unknown>): ArtifactRef[] {
  * Reuses core ensureRoleWorkspace + integrateWorkspaceCommits (idempotent).
  * Failures propagate so accept/bypass cannot mark accepted/done or release occupation.
  *
+ * Production serializes by canonical workspace + targetBranch (not taskPath).
+ * Under that flight: re-read Task/Delivery/lane facts, re-resolve expected target
+ * HEAD, and run every Git write/rollback. Never trust caller branch/target.
+ *
  * Before any Git write, re-resolves the integration contract and compares the
  * current target branch HEAD to the review-time snapshot (Delivery.targetHead or
  * the expected SHA captured at deliver/auto-integrate start). Drift or a missing
@@ -11899,37 +11997,91 @@ function makeCommitIntegrator(
      * Review-time snapshot: Delivery.targetHead on accept, or SHA captured at
      * deliver / auto-integrate start for commit-bearing paths.
      * Missing on commit-bearing integrate → TARGET_MOVED (legacy fail-loud).
+     * Re-resolved from ready Delivery under the target flight on accept.
      */
     expectedTargetHead?: string;
     action: "task.accept" | "task.deliver";
+    /** Task path for write-boundary re-read (never trust the stale envelope alone). */
+    taskPath: string;
   }
 ): (commits: string[]) => Promise<void> {
   return async (commits: string[]) => {
     const refs = uniqueCommitRefs(commits);
     if (refs.length === 0) return;
 
-    await assertIntegrationTargetHeadUnchanged(
-      workspaceRoot,
-      task,
-      options.expectedTargetHead,
-      { action: options.action }
-    );
+    const taskPath = options.taskPath.trim() || task.path;
+    // Lock key from live Task + resolved lane (not caller-supplied branch/target).
+    const lockTask = await loadTaskEnvelopeForIntegration(ctx, workspaceRoot, taskPath, task);
+    const lockContract = await resolveIntegrationContract(workspaceRoot, lockTask);
 
-    if (ctx.integrateCommits) {
-      await ctx.integrateCommits(workspaceRoot, refs, task.role);
-      return;
-    }
-    await integrateWorkspaceCommitsForTask(workspaceRoot, task, refs);
+    await runIntegrationTargetFlight(workspaceRoot, lockContract.targetBranch, async () => {
+      // Write boundary: re-read Task/lane; never trust caller branch/target or stale envelope.
+      const liveTask = await loadTaskEnvelopeForIntegration(
+        ctx,
+        workspaceRoot,
+        taskPath,
+        lockTask
+      );
+      const contract = await resolveIntegrationContract(workspaceRoot, liveTask);
+      if (contract.targetBranch !== lockContract.targetBranch) {
+        throw new Error(
+          `Integration targetBranch changed under flight key ` +
+            `(lock=${lockContract.targetBranch} live=${contract.targetBranch}); refuse Git write`
+        );
+      }
+
+      // Accept path: re-load ready Delivery targetHead under the same target lock.
+      // Deliver/auto-integrate keeps the snapshot captured at publish prepare.
+      let expected = options.expectedTargetHead;
+      if (options.action === "task.accept") {
+        const mount = requireMountByWorkspaceRoot(ctx, workspaceRoot);
+        expected = await loadReadyDeliveryTargetHead(mount.env.fs, liveTask);
+      }
+
+      await assertIntegrationTargetHeadUnchanged(workspaceRoot, liveTask, expected, {
+        action: options.action,
+      });
+
+      if (ctx.integrateCommits) {
+        await ctx.integrateCommits(workspaceRoot, refs, liveTask.role);
+        return;
+      }
+      // Re-resolve contract immediately before Git write (lane facts at boundary).
+      const writeContract = await resolveIntegrationContract(workspaceRoot, liveTask);
+      await integrateWorkspaceCommits(writeContract, refs);
+    });
   };
 }
 
-async function integrateWorkspaceCommitsForTask(
+/** Find the mounted workspace whose root matches workspaceRoot (realpath-safe). */
+function requireMountByWorkspaceRoot(
+  ctx: HandlerContext,
+  workspaceRoot: string
+): import("./workspace-host.js").MountedWorkspace {
+  const mounted = nodePath.resolve(workspaceRoot);
+  for (const info of ctx.host.list()) {
+    const m = ctx.host.require(info.workspaceId);
+    if (isSameWorkspaceRoot(m.workspaceRoot, mounted)) return m;
+  }
+  throw new Error(`No mounted workspace for integration re-read: ${workspaceRoot}`);
+}
+
+/**
+ * Re-load Task envelope at the Git write boundary from the mounted workspace.
+ * Fail-loud when the mount or path cannot be re-read — never invent lane facts.
+ */
+async function loadTaskEnvelopeForIntegration(
+  ctx: HandlerContext,
   workspaceRoot: string,
-  task: TaskEnvelope,
-  commits: string[]
-): Promise<void> {
-  const contract = await resolveIntegrationContract(workspaceRoot, task);
-  await integrateWorkspaceCommits(contract, commits);
+  taskPath: string,
+  fallback: TaskEnvelope
+): Promise<TaskEnvelope> {
+  const path = taskPath.trim() || fallback.path;
+  if (!path) {
+    throw new Error("Integration re-read requires taskPath");
+  }
+  const mount = requireMountByWorkspaceRoot(ctx, workspaceRoot);
+  return loadTaskEnvelope(mount.env.fs, path);
 }
 
 function uniqueCommitRefs(commits: string[] | undefined): string[] {

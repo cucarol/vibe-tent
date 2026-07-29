@@ -2819,7 +2819,7 @@ async function assertTaskCommitFirstParent(
   );
 }
 
-test("P0-2: manual accept integrates real commits into main; already-integrated is idempotent", async () => {
+test("P0-2: manual accept integrates real commits into main; re-deliver of integrated SHA refuses lane membership", async () => {
   const ws = await makeWorkspace("p0-accept");
   await initGitOnWorkspace(ws);
 
@@ -2863,9 +2863,11 @@ test("P0-2: manual accept integrates real commits into main; already-integrated 
       "ship\n"
     );
 
-    // Idempotent re-integrate of the same ref via a second box/task.
-    // Second dispatch freezes its own base at current role tip (sourceRef already on lane);
-    // re-deliver of already-integrated sourceRef must still accept.
+    // Second task: re-listing the already-integrated sourceRef is outside that
+    // task's exact baseCommit..branch range (tip == base after prior integrate on
+    // shared role lane, or sourceRef is pre-base history). Public deliver must
+    // refuse before ready Delivery; integrate idempotence is covered at accept of
+    // the first Delivery and by core integrateWorkspaceCommits alreadyIntegrated.
     const box2 = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "idempotent-item",
@@ -2886,19 +2888,33 @@ test("P0-2: manual accept integrates real commits into main; already-integrated 
       "second dispatch must capture its own baseCommit"
     );
     await rpc(svc, "task.claim", { workspaceId, taskPath: taskPath2 });
-    await rpc(svc, "task.deliver", {
+    const reDeliver = await rpc(svc, "task.deliver", {
       workspaceId,
       taskPath: taskPath2,
       summary: "same commit again",
       commits: [sourceRef],
     });
-    const again = await rpc(svc, "task.accept", {
-      workspaceId,
-      taskPath: taskPath2,
-      actor: "user",
-    });
-    assert.ok(!again.error, JSON.stringify(again.error));
-    assert.equal((again.result as { state: string }).state, "accepted");
+    assert.ok(reDeliver.error, "re-deliver of SHA outside base..branch must refuse");
+    assert.equal(reDeliver.error?.code, RPC_LIFECYCLE);
+    const reData = reDeliver.error?.data as { code?: string; laneCode?: string } | undefined;
+    assert.equal(reData?.code, "DELIVER_COMMIT_LANE");
+    assert.ok(
+      reData?.laneCode === "NOT_IN_LANE_RANGE" ||
+        reData?.laneCode === "BASE_COMMIT" ||
+        reData?.laneCode === "NOT_REACHABLE_FROM_BRANCH",
+      `unexpected laneCode ${String(reData?.laneCode)}`
+    );
+    const got2 = await rpc(svc, "task.get", { workspaceId, taskPath: taskPath2 });
+    assert.equal(
+      (got2.result as { task: { state: string } }).task.state,
+      "running",
+      "refused re-deliver must leave task running with no ready Delivery"
+    );
+    // First integration still on main; Git unchanged by the refused re-deliver.
+    assert.equal(
+      normalizeLf(await fs.readFile(path.join(ws, "feature.txt"), "utf8")),
+      "ship\n"
+    );
   });
 });
 
