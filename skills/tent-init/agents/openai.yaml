@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tent Init"
+  short_description: "Initialize or adopt a project into Tent"
+  default_prompt: "Initialize this project as a Tent workspace, draft the initial Node structure, and wait for my approval before applying it."
