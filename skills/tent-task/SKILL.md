@@ -27,6 +27,7 @@ External Agents with the installed Skill bundle may read [references/paths.md](r
 - Start from recorded `baseCommit`. Ordinary executors produce only linear Task commits and must not merge or rebase the parent, target, or dependency branches. Parent/Service owns integration. Core rejects unauthorized merge/foreign ancestry at Delivery.
 - Stay within Context Card scope and acceptance. Ask the parent before changing product intent, authority, irreversible scope, or explicit exclusions.
 - Implement and test in proportion to risk. Commit code work in the Task lane; never commit `.tent/`.
+- Never infer test success from truncated, tailed, or grepped output. Record the process exit code and the test runner's authoritative pass/fail counts; JSON and verbose logs may obscure the final lines.
 
 ## Handle Task communication
 
