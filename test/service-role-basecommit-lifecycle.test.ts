@@ -1,0 +1,526 @@
+/**
+ * P0: external Role Task workspaceLane.baseCommit lifecycle
+ * - Role claim capture-once (immutable; first-claim audit)
+ * - Explicit task.backfillWorkspaceLaneBase for legacy running/waiting missing base
+ * - Idempotent same SHA; conflict / foreign / unauthorized / lane mismatch fail loud
+ * - Persistence reload after Service restart
+ *
+ * Production Service path only — no pure-helper-only coverage.
+ */
+import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { test } from "node:test";
+import { scaffoldInWorkspace } from "../src/core/scaffold.js";
+import { loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
+import { ensureRoleWorkspace } from "../src/core/workspace.js";
+import { NodeFs } from "../src/fs/node-fs.js";
+import { rpcCall } from "../src/service/http-server.js";
+import { startLocalTentService } from "../src/service/service.js";
+import { RPC_LIFECYCLE } from "../src/service/types.js";
+import { configureTestGitIdentity, git } from "./helpers.js";
+
+async function makeWorkspace(name = "base-life"): Promise<string> {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), `tent-${name}-`));
+  const fsa = new NodeFs(workspace);
+  await scaffoldInWorkspace(fsa, {
+    name,
+    rules: "# RULES\n\nRole baseCommit lifecycle\n",
+    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+  });
+  await fsa.writeFile(
+    ".tent/roles.json",
+    JSON.stringify(
+      {
+        roles: [
+          {
+            name: "executor",
+            prompt: "do work",
+            allowedProfiles: ["fake-default"],
+          },
+          {
+            name: "planner",
+            prompt: "plan",
+            allowedProfiles: ["fake-default"],
+          },
+        ],
+      },
+      null,
+      2
+    ) + "\n"
+  );
+  return workspace;
+}
+
+async function initGitOnWorkspace(workspace: string): Promise<string> {
+  await git(workspace, "init", "-q", "-b", "main");
+  await configureTestGitIdentity(workspace);
+  await fs.writeFile(path.join(workspace, ".gitignore"), ".tent/\n");
+  await fs.writeFile(path.join(workspace, "README.md"), "# repo\n");
+  await git(workspace, "add", ".gitignore", "README.md");
+  await git(workspace, "commit", "-q", "-m", "init");
+  return (await git(workspace, "rev-parse", "HEAD")).trim();
+}
+
+async function withService<T>(
+  fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>,
+  dataDir?: string
+): Promise<T> {
+  const dir = dataDir ?? (await fs.mkdtemp(path.join(os.tmpdir(), "tent-base-life-svc-")));
+  const svc = await startLocalTentService({ dataDir: dir, writeEndpoint: true });
+  try {
+    return await fn(svc);
+  } finally {
+    await svc.stop();
+  }
+}
+
+function rpc(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>,
+  method: string,
+  params?: Record<string, unknown>
+) {
+  return rpcCall(svc.url, method, params, { token: svc.token });
+}
+
+async function mountWorkItem(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>,
+  ws: string,
+  noteName = "work-item"
+) {
+  const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+  assert.ok(!mounted.error, JSON.stringify(mounted.error));
+  const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+  const created = await rpc(svc, "docs.createNote", {
+    workspaceId,
+    name: noteName,
+    type: "prompt",
+  });
+  assert.ok(!created.error, JSON.stringify(created.error));
+  const boxId = (created.result as { id: string }).id;
+  return { workspaceId, boxId };
+}
+
+type TaskLaneProjection = {
+  state: string;
+  workspaceLane?: {
+    baseCommit?: string;
+    worktree?: string;
+    branch?: string;
+    targetBranch?: string;
+    workspace?: string;
+  };
+  baseCommitCapture?: {
+    source: string;
+    baseCommit: string;
+    actor: { kind: string; id: string };
+    capturedAt: string;
+  };
+};
+
+async function getTask(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>,
+  workspaceId: string,
+  taskPath: string
+): Promise<TaskLaneProjection> {
+  const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+  assert.ok(!got.error, JSON.stringify(got.error));
+  return (got.result as { task: TaskLaneProjection }).task;
+}
+
+async function taskCommitOnLane(
+  worktree: string,
+  filename: string,
+  contents: string,
+  message: string
+): Promise<string> {
+  await fs.writeFile(path.join(worktree, filename), contents);
+  await git(worktree, "add", filename);
+  await git(worktree, "commit", "-q", "-m", message);
+  return (await git(worktree, "rev-parse", "HEAD")).trim();
+}
+
+/** NodeFs for Task envelopes is rooted at workspace/.tent (system root). */
+function tentFs(ws: string): NodeFs {
+  return new NodeFs(path.join(ws, ".tent"));
+}
+
+async function stripBaseCommitForLegacyFixture(
+  ws: string,
+  taskPath: string
+): Promise<void> {
+  // Manual envelope write allowed only to construct legacy missing-base fixture.
+  const fsa = tentFs(ws);
+  const task = await loadTaskEnvelope(fsa, taskPath);
+  assert.ok(task.baseCommit, "fixture setup expects a base to strip");
+  await patchTaskEnvelope(fsa, taskPath, {
+    baseCommit: null,
+    baseCommitCapture: null,
+    // Keep roleBranchBase so tests prove we never substitute it for baseCommit.
+  });
+  const reloaded = await loadTaskEnvelope(fsa, taskPath);
+  assert.equal(reloaded.baseCommit, undefined);
+  assert.equal(reloaded.baseCommitCapture, undefined);
+}
+
+test("fresh Role claim captures immutable baseCommit then commits[] deliver succeeds", async () => {
+  const ws = await makeWorkspace("fresh-claim");
+  const initSha = await initGitOnWorkspace(ws);
+  const roleLane = await ensureRoleWorkspace(ws, "executor");
+  assert.equal(roleLane.baseCommit, initSha);
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "fresh role claim base capture",
+      deliveryPolicy: "review",
+    });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    const dispatchBase = (d.result as { workspaceLane?: { baseCommit?: string } })
+      .workspaceLane?.baseCommit;
+    assert.ok(dispatchBase, "dispatch records base on Git Role lane");
+
+    const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(!claimed.error, JSON.stringify(claimed.error));
+    const claimedTask = (claimed.result as { task: TaskLaneProjection }).task;
+    const baseAtClaim = claimedTask.workspaceLane?.baseCommit?.trim() || "";
+    assert.equal(baseAtClaim, dispatchBase);
+    assert.ok(claimedTask.baseCommitCapture, "first-claim audit required");
+    assert.equal(claimedTask.baseCommitCapture!.source, "first-claim");
+    assert.equal(claimedTask.baseCommitCapture!.baseCommit, baseAtClaim);
+    assert.equal(claimedTask.baseCommitCapture!.actor.kind, "user");
+    assert.equal(claimedTask.baseCommitCapture!.actor.id, "user");
+    assert.ok(claimedTask.baseCommitCapture!.capturedAt);
+
+    // Advance role tip after capture — base must stay immutable.
+    await taskCommitOnLane(
+      roleLane.worktree,
+      "advance-after-claim.txt",
+      "advance\n",
+      "advance role tip after claim"
+    );
+    const tipAfter = (await git(roleLane.worktree, "rev-parse", "HEAD")).trim();
+    assert.notEqual(tipAfter, baseAtClaim);
+
+    const reclaimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(!reclaimed.error, JSON.stringify(reclaimed.error));
+    const again = (reclaimed.result as { task: TaskLaneProjection }).task;
+    assert.equal(again.workspaceLane?.baseCommit, baseAtClaim, "reclaim must not recalculate");
+    assert.equal(again.baseCommitCapture?.capturedAt, claimedTask.baseCommitCapture!.capturedAt);
+    assert.equal(again.baseCommitCapture?.source, "first-claim");
+
+    // Task commit on role lane then deliver with commits[].
+    const taskSha = await taskCommitOnLane(
+      roleLane.worktree,
+      "work.txt",
+      "done\n",
+      "task work commit"
+    );
+    const delivered = await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "fresh claim deliver",
+      commits: [taskSha],
+    });
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    const del = delivered.result as {
+      task: { state: string };
+      delivery: { status: string; commits: string[] };
+    };
+    assert.equal(del.task.state, "delivered");
+    assert.equal(del.delivery.status, "ready");
+    assert.deepEqual(del.delivery.commits, [taskSha]);
+
+    const final = await getTask(svc, workspaceId, taskPath);
+    assert.equal(final.workspaceLane?.baseCommit, baseAtClaim);
+  });
+});
+
+test("legacy running backfill then deliver; idempotent repeat; conflicts and rejects", async () => {
+  const ws = await makeWorkspace("legacy-backfill");
+  const initSha = await initGitOnWorkspace(ws);
+  const roleLane = await ensureRoleWorkspace(ws, "executor");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "legacy-item");
+    const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "legacy missing base",
+      deliveryPolicy: "review",
+    });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+
+    // Construct legacy: lane present, baseCommit absent (roleBranchBase may remain).
+    await stripBaseCommitForLegacyFixture(ws, taskPath);
+    let task = await getTask(svc, workspaceId, taskPath);
+    assert.equal(task.workspaceLane?.baseCommit, undefined);
+    assert.ok(task.workspaceLane?.branch);
+    assert.ok(task.workspaceLane?.worktree);
+
+    // Deliver without base must fail loud.
+    const taskShaPrep = await taskCommitOnLane(
+      roleLane.worktree,
+      "pre.txt",
+      "pre\n",
+      "pre work before backfill"
+    );
+    const refuse = await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "no base yet",
+      commits: [taskShaPrep],
+    });
+    assert.ok(refuse.error, "deliver without base must fail");
+    assert.equal(refuse.error!.code, RPC_LIFECYCLE);
+
+    // Unauthorized actor rejected.
+    const unauth = await rpc(svc, "task.backfillWorkspaceLaneBase", {
+      workspaceId,
+      taskPath,
+      actor: { kind: "role", id: "planner" },
+      baseCommit: initSha,
+    });
+    assert.ok(unauth.error, "unauthorized actor must fail");
+    assert.equal(unauth.error!.code, RPC_LIFECYCLE);
+    assert.equal(
+      (unauth.error!.data as { code?: string } | undefined)?.code,
+      "BASE_BACKFILL_UNAUTHORIZED"
+    );
+
+    // Foreign / unreachable SHA rejected.
+    const foreign = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    const foreignRpc = await rpc(svc, "task.backfillWorkspaceLaneBase", {
+      workspaceId,
+      taskPath,
+      actor: { kind: "user", id: "user" },
+      baseCommit: foreign,
+    });
+    assert.ok(foreignRpc.error, "foreign SHA must fail");
+    assert.equal(
+      (foreignRpc.error!.data as { code?: string } | undefined)?.code,
+      "BASE_BACKFILL_FOREIGN"
+    );
+
+    // Explicit backfill with real init SHA (ancestor of role branch tip).
+    const backfilled = await rpc(svc, "task.backfillWorkspaceLaneBase", {
+      workspaceId,
+      taskPath,
+      actor: { kind: "user", id: "user" },
+      baseCommit: initSha,
+    });
+    assert.ok(!backfilled.error, JSON.stringify(backfilled.error));
+    const bf = backfilled.result as {
+      baseCommit: string;
+      idempotent: boolean;
+      task: TaskLaneProjection;
+    };
+    assert.equal(bf.idempotent, false);
+    assert.equal(bf.baseCommit, initSha);
+    assert.equal(bf.task.workspaceLane?.baseCommit, initSha);
+    assert.equal(bf.task.baseCommitCapture?.source, "explicit-backfill");
+    assert.equal(bf.task.baseCommitCapture?.baseCommit, initSha);
+    assert.equal(bf.task.baseCommitCapture?.actor.id, "user");
+    const originalCapturedAt = bf.task.baseCommitCapture!.capturedAt;
+
+    // Idempotent same SHA: original audit unchanged.
+    const again = await rpc(svc, "task.backfillWorkspaceLaneBase", {
+      workspaceId,
+      taskPath,
+      actor: { kind: "user", id: "user" },
+      baseCommit: initSha,
+    });
+    assert.ok(!again.error, JSON.stringify(again.error));
+    const ag = again.result as {
+      idempotent: boolean;
+      task: TaskLaneProjection;
+    };
+    assert.equal(ag.idempotent, true);
+    assert.equal(ag.task.baseCommitCapture?.capturedAt, originalCapturedAt);
+    assert.equal(ag.task.baseCommitCapture?.source, "explicit-backfill");
+    assert.equal(ag.task.workspaceLane?.baseCommit, initSha);
+
+    // Conflicting different SHA rejected (use tip after extra commit as different ancestor-legal tip? 
+    // tip is descendant of init — still a valid ancestor of branch tip, but conflicts with recorded).
+    const advanced = (await git(roleLane.worktree, "rev-parse", "HEAD")).trim();
+    assert.notEqual(advanced, initSha);
+    const conflict = await rpc(svc, "task.backfillWorkspaceLaneBase", {
+      workspaceId,
+      taskPath,
+      actor: { kind: "user", id: "user" },
+      baseCommit: advanced,
+    });
+    assert.ok(conflict.error, "conflicting SHA must fail");
+    assert.equal(
+      (conflict.error!.data as { code?: string } | undefined)?.code,
+      "BASE_BACKFILL_CONFLICT"
+    );
+    task = await getTask(svc, workspaceId, taskPath);
+    assert.equal(task.workspaceLane?.baseCommit, initSha);
+    assert.equal(task.baseCommitCapture?.capturedAt, originalCapturedAt);
+
+    // Deliver succeeds after backfill.
+    const delivered = await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "legacy backfill deliver",
+      commits: [taskShaPrep],
+    });
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    assert.equal(
+      (delivered.result as { delivery: { status: string } }).delivery.status,
+      "ready"
+    );
+  });
+});
+
+test("backfill rejects workspace/target mismatch and non-ancestor base", async () => {
+  const ws = await makeWorkspace("mismatch");
+  await initGitOnWorkspace(ws);
+  const roleLane = await ensureRoleWorkspace(ws, "executor");
+
+  // Side commit not on role branch ancestry from a detached lineage.
+  const side = "tent-test/side-base";
+  await git(ws, "checkout", "-q", "-b", side);
+  await fs.writeFile(path.join(ws, "side.txt"), "side\n");
+  await git(ws, "add", "side.txt");
+  await git(ws, "commit", "-q", "-m", "side only");
+  const sideSha = (await git(ws, "rev-parse", "HEAD")).trim();
+  await git(ws, "checkout", "-q", "main");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "mm-item");
+    const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "mismatch fixture",
+      deliveryPolicy: "review",
+    });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    await stripBaseCommitForLegacyFixture(ws, taskPath);
+
+    // Corrupt recorded targetBranch → lane mismatch.
+    const fsa = tentFs(ws);
+    await patchTaskEnvelope(fsa, taskPath, {
+      targetBranch: "tent-role/does-not-exist-for-mismatch",
+    });
+    const mismatch = await rpc(svc, "task.backfillWorkspaceLaneBase", {
+      workspaceId,
+      taskPath,
+      actor: { kind: "user", id: "user" },
+      baseCommit: roleLane.baseCommit!,
+    });
+    assert.ok(mismatch.error, "target mismatch must fail");
+    assert.equal(mismatch.error!.code, RPC_LIFECYCLE);
+    assert.match(
+      String((mismatch.error!.data as { code?: string } | undefined)?.code || mismatch.error!.message),
+      /BASE_BACKFILL_LANE_MISMATCH|mismatch|targetBranch/i
+    );
+
+    // Restore targetBranch; side SHA is not ancestor of role branch tip.
+    await patchTaskEnvelope(fsa, taskPath, {
+      targetBranch: roleLane.targetBranch,
+      baseCommit: null,
+      baseCommitCapture: null,
+    });
+    const notAnc = await rpc(svc, "task.backfillWorkspaceLaneBase", {
+      workspaceId,
+      taskPath,
+      actor: { kind: "user", id: "user" },
+      baseCommit: sideSha,
+    });
+    assert.ok(notAnc.error, "non-ancestor base must fail");
+    assert.equal(
+      (notAnc.error!.data as { code?: string } | undefined)?.code,
+      "BASE_BACKFILL_NOT_ANCESTOR"
+    );
+  });
+});
+
+test("baseCommitCapture persists across Service restart reload", async () => {
+  const ws = await makeWorkspace("persist-reload");
+  await initGitOnWorkspace(ws);
+  await ensureRoleWorkspace(ws, "executor");
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-base-life-persist-"));
+
+  let workspaceId = "";
+  let taskPath = "";
+  let captureSnapshot: TaskLaneProjection["baseCommitCapture"];
+  let baseCommit = "";
+
+  await withService(async (svc) => {
+    const mounted = await mountWorkItem(svc, ws, "persist-item");
+    workspaceId = mounted.workspaceId;
+    const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId,
+      boxId: mounted.boxId,
+      role: "executor",
+      prompt: "persist audit",
+      deliveryPolicy: "review",
+    });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    taskPath = (d.result as { taskPath: string }).taskPath;
+    const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(!claimed.error, JSON.stringify(claimed.error));
+    const task = (claimed.result as { task: TaskLaneProjection }).task;
+    baseCommit = task.workspaceLane?.baseCommit || "";
+    captureSnapshot = task.baseCommitCapture;
+    assert.ok(baseCommit);
+    assert.ok(captureSnapshot);
+    assert.equal(captureSnapshot!.source, "first-claim");
+  }, dataDir);
+
+  // Restart Service with same dataDir; re-mount workspace and reload task.
+  await withService(async (svc) => {
+    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+    assert.ok(!mounted.error, JSON.stringify(mounted.error));
+    const wid = (mounted.result as { workspaceId: string }).workspaceId;
+    const task = await getTask(svc, wid, taskPath);
+    assert.equal(task.workspaceLane?.baseCommit, baseCommit);
+    assert.deepEqual(task.baseCommitCapture, captureSnapshot);
+  }, dataDir);
+});
+
+test("non-Git Role claim invents no baseCommit", async () => {
+  const ws = await makeWorkspace("nongit-claim");
+  // intentionally no git init
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "docs-item");
+    const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "docs only",
+      deliveryPolicy: "review",
+    });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(!claimed.error, JSON.stringify(claimed.error));
+    const task = (claimed.result as { task: TaskLaneProjection }).task;
+    assert.equal(task.workspaceLane?.baseCommit, undefined);
+    assert.equal(task.baseCommitCapture, undefined);
+    assert.equal(task.workspaceLane?.branch, undefined);
+  });
+});

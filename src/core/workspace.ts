@@ -1078,6 +1078,39 @@ async function fullRef(root: string, ref: string): Promise<string> {
   return (await git(root, ["rev-parse", ref])).trim();
 }
 
+/**
+ * Resolve a commit-ish to a full SHA in the workspace Git object database.
+ * Fail-loud when the ref is missing or not a commit object.
+ */
+export async function resolveCommitSha(workspace: string, commitish: string): Promise<string> {
+  const root = nodePath.resolve(workspace);
+  await assertGitWorkspace(root);
+  const raw = commitish.trim();
+  if (!raw) throw new Error("resolveCommitSha requires a non-empty commitish.");
+  const isCommit = await gitOk(root, ["cat-file", "-e", `${raw}^{commit}`]);
+  if (!isCommit) {
+    throw new Error(`Not a commit in workspace Git: ${raw}`);
+  }
+  return (await fullRef(root, raw)).trim();
+}
+
+/**
+ * True when `ancestor` is an ancestor of `descendant` (inclusive: equal SHAs → true).
+ * Both must resolve as commits in the same repo.
+ */
+export async function isCommitAncestor(
+  workspace: string,
+  ancestor: string,
+  descendant: string
+): Promise<boolean> {
+  const root = nodePath.resolve(workspace);
+  await assertGitWorkspace(root);
+  const fullAncestor = await fullRef(root, ancestor.trim());
+  const fullDescendant = await fullRef(root, descendant.trim());
+  if (fullAncestor === fullDescendant) return true;
+  return gitOk(root, ["merge-base", "--is-ancestor", fullAncestor, fullDescendant]);
+}
+
 function safeComponent(value: string): string {
   const source = value.trim();
   const normalized = source.normalize("NFKC");

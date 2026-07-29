@@ -380,6 +380,16 @@ export type TaskProjection = {
       mutator: "service";
     };
   };
+  /**
+   * Compact audit for capture-once baseCommit (first-claim | explicit-backfill).
+   * Omitted on legacy / non-Git Tasks. Never rewritten on same-SHA idempotent backfill.
+   */
+  baseCommitCapture?: {
+    source: "first-claim" | "explicit-backfill";
+    baseCommit: string;
+    actor: TaskActorRefWire;
+    capturedAt: string;
+  };
   createdAt?: string;
   updatedAt?: string;
   prompt?: string;
@@ -888,6 +898,12 @@ export const CLIENT_METHODS = [
   "skill.install",
   "task.dispatch",
   "task.claim",
+  /**
+   * Explicit legacy backfill of workspaceLane.baseCommit for running/waiting Tasks
+   * whose lane exists but base is missing. Authorized by exact parent/reviewer only.
+   * Never infers from roleBranchBase/cwd/current tip. Same SHA is idempotent.
+   */
+  "task.backfillWorkspaceLaneBase",
   "task.wait",
   "task.resume",
   /**

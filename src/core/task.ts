@@ -59,6 +59,23 @@ export interface RoleWorkspaceContract {
   baseCommit?: string;
 }
 
+/** How workspaceLane.baseCommit was first recorded (compact Task audit; no new entity). */
+export type BaseCommitCaptureSource = "first-claim" | "explicit-backfill";
+
+/**
+ * Compact audit bag for capture-once baseCommit.
+ * Written on Role first-claim or explicit legacy backfill; never rewritten on same-SHA idempotent repeat.
+ */
+export type BaseCommitCapture = {
+  source: BaseCommitCaptureSource;
+  /** Exact full SHA captured (same as Task.baseCommit). */
+  baseCommit: string;
+  /** Authorizing actor (parent/reviewer for backfill; parentActor for first-claim). */
+  actor: TaskActorRef;
+  /** ISO-8601 capture timestamp. */
+  capturedAt: string;
+};
+
 export interface TaskEnvelopeInput {
   /**
    * Stable assignee label.
@@ -173,6 +190,12 @@ export interface TaskEnvelope {
    * Authoritative for pre-ready Delivery history gate; capture-once with roleBranchBase.
    */
   baseCommit?: string;
+  /**
+   * Compact audit for capture-once workspaceLane.baseCommit (no separate entity).
+   * source distinguishes Role first-claim vs explicit legacy backfill.
+   * Immutable once written: same-SHA backfill leaves this bag unchanged.
+   */
+  baseCommitCapture?: BaseCommitCapture;
   /**
    * Integration authority on the workspace lane (actor = parent/reviewer, mutator = service).
    * Ordinary executors never mutate target; Service integrates after parent accept.
@@ -426,6 +449,57 @@ export function serializeTaskActorRef(actor: TaskActorRef): { kind: string; id: 
   return { kind: actor.kind, id: actor.id };
 }
 
+/** Serialize compact baseCommit capture audit for frontmatter. */
+export function serializeBaseCommitCapture(
+  capture: BaseCommitCapture
+): { source: string; baseCommit: string; actor: { kind: string; id: string }; capturedAt: string } {
+  return {
+    source: capture.source,
+    baseCommit: capture.baseCommit,
+    actor: serializeTaskActorRef(capture.actor),
+    capturedAt: capture.capturedAt,
+  };
+}
+
+/**
+ * Parse compact baseCommit capture audit from frontmatter.
+ * Missing/empty → undefined. Partial or invalid bags fail loud.
+ */
+export function parseBaseCommitCapture(value: unknown): BaseCommitCapture | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(
+      "Task baseCommitCapture must be an object { source, baseCommit, actor, capturedAt }."
+    );
+  }
+  const raw = value as Record<string, unknown>;
+  const source = raw.source;
+  if (source !== "first-claim" && source !== "explicit-backfill") {
+    throw new Error(
+      `Task baseCommitCapture.source must be first-claim|explicit-backfill; got ${String(source)}.`
+    );
+  }
+  const baseCommit =
+    typeof raw.baseCommit === "string" ? raw.baseCommit.trim() : "";
+  if (!baseCommit) {
+    throw new Error("Task baseCommitCapture.baseCommit must be a non-empty SHA.");
+  }
+  const capturedAt =
+    typeof raw.capturedAt === "string" ? raw.capturedAt.trim() : "";
+  if (!capturedAt) {
+    throw new Error("Task baseCommitCapture.capturedAt must be a non-empty ISO timestamp.");
+  }
+  // Reuse parent/reviewer wire shape; re-label errors for capture audit.
+  let actor: TaskActorRef;
+  try {
+    actor = parseTaskActorRef(raw.actor, "parentActor");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(msg.replace(/Task parentActor/g, "Task baseCommitCapture.actor"));
+  }
+  return { source, baseCommit, actor, capturedAt };
+}
+
 /**
  * Resolve parentActor + reviewer for a **new** dispatch write.
  * Requires explicit parentActor. Reviewer may be omitted and is then derived
@@ -502,6 +576,10 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
     task.baseCommit = data.baseCommit.trim();
   }
+  // Compact baseCommit audit (first-claim | explicit-backfill). Absence is fine for
+  // pre-audit envelopes and non-Git Tasks; never invent from roleBranchBase.
+  const baseCommitCapture = parseBaseCommitCapture(data.baseCommitCapture);
+  if (baseCommitCapture) task.baseCommitCapture = baseCommitCapture;
   // Recorded lane truth: only set TaskEnvelope.integrationAuthority when the on-disk
   // bag exists and validates against parent/reviewer + service mutator.
   // Absence stays absent so ensureTaskWorkspaceLane can detect and persist the
@@ -969,6 +1047,11 @@ export interface TaskEnvelopePatch {
    * roleBranchBase is already present.
    */
   baseCommit?: string | null;
+  /**
+   * Compact capture audit. Prefer omit once set; null clears (tests only).
+   * Same-SHA idempotent backfill must not rewrite an existing bag.
+   */
+  baseCommitCapture?: BaseCommitCapture | null;
   /** Persist integrationAuthority; null clears. */
   integrationAuthority?: IntegrationAuthority | null;
   /**
@@ -1082,6 +1165,11 @@ export async function patchTaskEnvelope(
   else if (typeof patch.baseCommit === "string" && patch.baseCommit.trim()) {
     // Exact workspaceLane.baseCommit only — do not auto-mirror into roleBranchBase.
     data.baseCommit = patch.baseCommit.trim();
+  }
+
+  if (patch.baseCommitCapture === null) delete data.baseCommitCapture;
+  else if (patch.baseCommitCapture) {
+    data.baseCommitCapture = serializeBaseCommitCapture(patch.baseCommitCapture);
   }
 
   if (patch.integrationAuthority === null) delete data.integrationAuthority;

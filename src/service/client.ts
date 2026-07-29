@@ -787,6 +787,24 @@ export class ServiceClient {
   taskClaim(workspaceId: string, taskPath: string, sessionId?: string) {
     return this.call("task.claim", { workspaceId, taskPath, sessionId });
   }
+  /**
+   * Explicit legacy baseCommit backfill for running/waiting Tasks missing base.
+   * Actor must equal exact persisted parent/reviewer. Same SHA is idempotent.
+   */
+  taskBackfillWorkspaceLaneBase(
+    workspaceId: string,
+    taskPath: string,
+    args: {
+      actor: { kind: "user" | "role"; id: string } | string;
+      baseCommit: string;
+    }
+  ) {
+    return this.call("task.backfillWorkspaceLaneBase", {
+      workspaceId,
+      taskPath,
+      ...args,
+    });
+  }
   taskWait(
     workspaceId: string,
     taskPath: string,
