@@ -485,7 +485,11 @@ test("Service: legacy allowedProfiles on disk migrates once; public RPC rejects 
     const listed = await rpc(svc, "registry.roles", { workspaceId });
     assert.ok(!listed.error, JSON.stringify(listed.error));
     const roles = (listed.result as {
-      roles: Array<{ name: string; roster?: string[] }>;
+      roles: Array<{
+        name: string;
+        roster?: string[];
+        rosterEntries?: Array<{ agentId: string; readiness: string }>;
+      }>;
     }).roles;
     const orch = roles.find((r) => r.name === "orchestrator");
     assert.deepEqual(orch?.roster, ["fake-default"]);
@@ -494,6 +498,10 @@ test("Service: legacy allowedProfiles on disk migrates once; public RPC rejects 
       false,
       "projection is roster-only"
     );
+    // Read-only readiness: list must not invent AgentDefinitions for migrated roster ids.
+    assert.deepEqual(orch?.rosterEntries, [
+      { agentId: "fake-default", readiness: "missing-definition" },
+    ]);
 
     const disk = JSON.parse(
       await fs.readFile(path.join(ws, ".tent", "roles.json"), "utf8")
@@ -512,10 +520,15 @@ test("Service: legacy allowedProfiles on disk migrates once; public RPC rejects 
       false
     );
 
+    // registry.roles must not auto-create AgentDefinitions (read-only projection).
     const agents = await rpc(svc, "agent.list", {});
     assert.ok(!agents.error, JSON.stringify(agents.error));
     const rows = (agents.result as { agents: Array<{ id: string; profileId: string }> }).agents;
-    assert.ok(rows.some((a) => a.id === "fake-default" && a.profileId === "fake-default"));
+    assert.equal(
+      rows.some((a) => a.id === "fake-default"),
+      false,
+      "list path must not invent AgentDefinitions for roster agentIds"
+    );
 
     const reject = await rpc(svc, "registry.role.update", {
       workspaceId,

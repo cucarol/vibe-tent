@@ -577,6 +577,37 @@ export type TypeRegistryEntryProjection = {
   tier: "base" | "modifier";
 };
 
+/**
+ * Closed readiness enum for one Role roster agentId (registry.roles projection).
+ * Derived only — never auto-creates AgentDefinitions or profiles.
+ */
+export const ROLE_ROSTER_READINESS = [
+  "ready",
+  "missing-definition",
+  "missing-profile",
+] as const;
+
+export type RoleRosterReadiness = (typeof ROLE_ROSTER_READINESS)[number];
+
+/**
+ * One roster agentId readiness row (registry.roles).
+ * Never includes credentials, env values, provider secrets, or full profile config.
+ */
+export type RoleRosterEntryProjection = {
+  /** Persisted roster agentId (Role standing authorization key). */
+  agentId: string;
+  /** From machine-local AgentDefinition when present. */
+  displayName?: string;
+  /** From machine-local AgentDefinition when present. */
+  profileId?: string;
+  /**
+   * ready = definition exists and bound profile is in the injected catalog;
+   * missing-definition = no machine-local AgentDefinition;
+   * missing-profile = definition exists but bound profile is absent from catalog.
+   */
+  readiness: RoleRosterReadiness;
+};
+
 /** Project role registry row (read-only projection for clients). */
 export type RoleRegistryEntryProjection = {
   /** Stable immutable role handle (`rl-…`). */
@@ -600,6 +631,12 @@ export type RoleRegistryEntryProjection = {
    * Public surface is roster-only; legacy allowedProfiles is disk-migrated once.
    */
   roster?: string[];
+  /**
+   * Per-roster-agentId readiness projection (same order as `roster`).
+   * One derived entry per persisted roster agentId. Read-only: never invents
+   * AgentDefinitions or mutates machine files. Omitted when roster is empty.
+   */
+  rosterEntries?: RoleRosterEntryProjection[];
 };
 
 /**

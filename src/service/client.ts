@@ -569,6 +569,11 @@ export class ServiceClient {
       actor: args.actor ?? "user",
     });
   }
+  /**
+   * Read-only role registry projection (name-sorted).
+   * Each role may include roster agentIds plus rosterEntries readiness
+   * (`ready` | `missing-definition` | `missing-profile`). Never secrets.
+   */
   registryRoles(workspaceId: string) {
     return this.call("registry.roles", { workspaceId });
   }

@@ -322,6 +322,7 @@ import {
   type ProposalProjection,
   type ProviderCatalogProjection,
   type RoleRegistryEntryProjection,
+  type RoleRosterEntryProjection,
   type SessionProjection,
   type TaskProjection,
   type TypeRegistryEntryProjection,
@@ -2300,24 +2301,36 @@ function mapDocsSemanticError(err: unknown, surface: string): RpcError {
   return new RpcError(-32000, message);
 }
 
-/** Read-only role registry projection (dispatch target picker). */
+/** Read-only role registry projection (dispatch target picker + roster readiness). */
 async function registryRoles(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   // One-time allowedProfiles → roster write-forward (idempotent; no dual-write).
   const { registry } = await ensureRolesRosterMigrated(mount.env.fs);
-  // Auto-create AgentDefinitions for roster agentIds (agentId defaults to former profileId).
-  const allAgentIds = registry.roles.flatMap((r) => roleRoster(r));
-  if (allAgentIds.length > 0) {
-    await ensureAgentDefsForRosterIds(ctx, allAgentIds);
-  }
+  // Read-only projection: never auto-create AgentDefinitions or mutate machine files.
+  const agentById = await loadAgentDefinitionIndex(ctx);
   const roles: RoleRegistryEntryProjection[] = registry.roles
-    .map((role) => projectRoleRegistryEntry(role))
+    .map((role) => projectRoleRegistryEntry(role, agentById, ctx))
     .sort((a, b) => a.name.localeCompare(b.name));
   return { workspaceId, roles };
 }
 
-function projectRoleRegistryEntry(role: RoleDefinition): RoleRegistryEntryProjection {
+async function loadAgentDefinitionIndex(
+  ctx: HandlerContext
+): Promise<Map<string, AgentDefinition>> {
+  const { agents } = await loadAgentDefinitions(ctx.dataDir);
+  return new Map(agents.map((a) => [a.id, a]));
+}
+
+/**
+ * Project one Role row for clients. When agent index is provided, derive
+ * per-roster readiness without inventing definitions or reading secrets.
+ */
+function projectRoleRegistryEntry(
+  role: RoleDefinition,
+  agentById?: Map<string, AgentDefinition>,
+  ctx?: HandlerContext
+): RoleRegistryEntryProjection {
   const proj: RoleRegistryEntryProjection = {
     roleId: role.id ?? "",
     name: role.name,
@@ -2330,8 +2343,47 @@ function projectRoleRegistryEntry(role: RoleDefinition): RoleRegistryEntryProjec
   const roster = roleRoster(role);
   if (roster.length > 0) {
     proj.roster = roster;
+    if (agentById && ctx) {
+      proj.rosterEntries = roster.map((agentId) =>
+        projectRoleRosterEntry(agentId, agentById, ctx)
+      );
+    }
   }
   return proj;
+}
+
+/**
+ * Derive readiness for one persisted roster agentId.
+ * ready | missing-definition | missing-profile — never credentials or full profile.
+ */
+function projectRoleRosterEntry(
+  agentId: string,
+  agentById: Map<string, AgentDefinition>,
+  ctx: HandlerContext
+): RoleRosterEntryProjection {
+  const def = agentById.get(agentId);
+  if (!def) {
+    return { agentId, readiness: "missing-definition" };
+  }
+  const entry: RoleRosterEntryProjection = {
+    agentId,
+    profileId: def.profileId,
+    readiness: ctx.profileCatalog.get(def.profileId)
+      ? "ready"
+      : "missing-profile",
+  };
+  if (def.displayName) {
+    entry.displayName = def.displayName;
+  }
+  return entry;
+}
+
+async function projectRoleRegistryEntryLive(
+  ctx: HandlerContext,
+  role: RoleDefinition
+): Promise<RoleRegistryEntryProjection> {
+  const agentById = await loadAgentDefinitionIndex(ctx);
+  return projectRoleRegistryEntry(role, agentById, ctx);
 }
 
 /**
@@ -2368,7 +2420,10 @@ async function registryRoleCreate(ctx: HandlerContext, p: Record<string, unknown
       roleId: role.id || "",
       displayName: role.displayName || role.name,
     });
-    return { workspaceId, role: projectRoleRegistryEntry(role) };
+    return {
+      workspaceId,
+      role: await projectRoleRegistryEntryLive(ctx, role),
+    };
   });
 }
 
@@ -2449,7 +2504,10 @@ async function registryRoleUpdate(ctx: HandlerContext, p: Record<string, unknown
       roleId: role.id || "",
       displayName: role.displayName || role.name,
     });
-    return { workspaceId, role: projectRoleRegistryEntry(role) };
+    return {
+      workspaceId,
+      role: await projectRoleRegistryEntryLive(ctx, role),
+    };
   });
 }
 
