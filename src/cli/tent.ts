@@ -807,7 +807,6 @@ interface VaultPluginSettings {
   tentsRoot: string;
   typeRegistry?: TypeRegistry;
   rolesRegistry?: RolesRegistry;
-  rulesTemplate?: string;
 }
 
 async function readVaultPluginSettings(vault: string): Promise<VaultPluginSettings> {
@@ -821,9 +820,6 @@ async function readVaultPluginSettings(vault: string): Promise<VaultPluginSettin
       tentsRoot: root || "tents",
       ...(defaults?.typeRegistry ? { typeRegistry: normalizeRegistry(defaults.typeRegistry) } : {}),
       ...(defaults?.rolesRegistry ? { rolesRegistry: normalizeTemplateRoles(defaults.rolesRegistry) } : {}),
-      ...(typeof defaults?.rulesTemplate === "string" && defaults.rulesTemplate.trim()
-        ? { rulesTemplate: defaults.rulesTemplate }
-        : {}),
     };
   } catch {
     return { tentsRoot: "tents" };
@@ -833,7 +829,7 @@ async function readVaultPluginSettings(vault: string): Promise<VaultPluginSettin
 /**
  * 建一顶新帐：in-workspace 布局 `<target>/.tent/`。
  * `target` 为 workspace 根（或 vault 模式下 vault/tentsRoot/name）。
- * 不写外置双路径；注册表与 RULES 落在 `.tent/` 内。
+ * 不写外置双路径；注册表与结构标记落在 `.tent/` 内。
  */
 async function newTent(target: string, vault?: string): Promise<void> {
   const fsmod = await import("node:fs/promises");
@@ -854,19 +850,8 @@ async function newTent(target: string, vault?: string): Promise<void> {
 
   await fsmod.mkdir(workspaceRoot, { recursive: true });
   const name = path.basename(workspaceRoot);
-  const fallbackRules =
-    `# ${name} - Project Rules\n\n` +
-      `> Local project rules for this Tent; edit freely.\n` +
-    `> Mechanism-level rules live in the Tent repository docs/SPEC.md; agent behavior contracts live in the tent-role and tent-task skills.\n\n` +
-    `- Output workspace: ${workspaceRoot.replaceAll("\\", "/")}\n` +
-    `- Commit / naming conventions: <fill in>\n` +
-    `- Other project rules: <fill in>\n`;
-  const rules = pluginSettings?.rulesTemplate
-    ? pluginSettings.rulesTemplate.replaceAll("{tent}", name)
-    : fallbackRules;
   await scaffoldInWorkspace(fsa, {
     name,
-    rules,
     typeRegistry: pluginSettings?.typeRegistry,
     rolesRegistry: pluginSettings?.rolesRegistry,
   });

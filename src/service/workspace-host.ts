@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { NodeFs } from "../fs/node-fs.js";
 import type { Clock } from "../core/adapter.js";
 import type { OpsEnv } from "../core/ops-context.js";
-import { TENT_SYSTEM_DIR, systemRootFromWorkspace } from "../core/paths.js";
+import { INDEX_PATH, TENT_SYSTEM_DIR, systemRootFromWorkspace } from "../core/paths.js";
 import { isSameWorkspaceRoot } from "../core/workspace.js";
 import { EventBus } from "./events.js";
 import type { MountedWorkspaceInfo } from "./types.js";
@@ -97,12 +97,12 @@ export class WorkspaceHost {
     }
 
     const systemRoot = systemRootFromWorkspace(root);
-    const rulesPath = path.join(systemRoot, "RULES.md");
+    const indexPath = path.join(systemRoot, INDEX_PATH);
     try {
-      await fs.access(rulesPath);
+      await fs.access(indexPath);
     } catch {
       throw new Error(
-        `No in-workspace Tent at ${systemRoot}. Expected ${TENT_SYSTEM_DIR}/RULES.md (B1 single-location model).`
+        `No in-workspace Tent at ${systemRoot}. Expected ${TENT_SYSTEM_DIR}/${INDEX_PATH}.`
       );
     }
 

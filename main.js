@@ -81,7 +81,7 @@ function agentProfileManifestPath(profileId, taskId) {
 function isSystemNoteName(fileName) {
   return SYSTEM_REGISTRY_FILES.has(fileName) || fileName === "MIGRATED.md";
 }
-var TENT_SYSTEM_DIR, TYPE_REGISTRY_PATH, ROLES_REGISTRY_PATH, TAGS_REGISTRY_PATH, ORDER_PATH, MUTATION_LOCK_PATH, RULES_PATH, WORKSPACE_SETTINGS_PATH, ANNOTATIONS_PATH, TEMP_DIR, ATTACHMENTS_DIR, AGENT_PROFILES_TEMP_DIR, OPERATIONAL_TOP_LEVEL, SYSTEM_REGISTRY_FILES;
+var TENT_SYSTEM_DIR, TYPE_REGISTRY_PATH, ROLES_REGISTRY_PATH, TAGS_REGISTRY_PATH, ORDER_PATH, MUTATION_LOCK_PATH, INDEX_PATH, WORKSPACE_SETTINGS_PATH, ANNOTATIONS_PATH, TEMP_DIR, ATTACHMENTS_DIR, AGENT_PROFILES_TEMP_DIR, OPERATIONAL_TOP_LEVEL, SYSTEM_REGISTRY_FILES;
 var init_paths = __esm({
   "src/core/paths.ts"() {
     "use strict";
@@ -91,7 +91,7 @@ var init_paths = __esm({
     TAGS_REGISTRY_PATH = "tags.json";
     ORDER_PATH = "order.json";
     MUTATION_LOCK_PATH = "mutation.lock";
-    RULES_PATH = "RULES.md";
+    INDEX_PATH = "index.md";
     WORKSPACE_SETTINGS_PATH = "settings.json";
     ANNOTATIONS_PATH = "annotations.json";
     TEMP_DIR = "temp";
@@ -109,10 +109,9 @@ var init_paths = __esm({
       TAGS_REGISTRY_PATH,
       ORDER_PATH,
       MUTATION_LOCK_PATH,
-      RULES_PATH,
       WORKSPACE_SETTINGS_PATH,
       ANNOTATIONS_PATH,
-      "index.md",
+      INDEX_PATH,
       "log.md"
     ]);
   }
@@ -1943,8 +1942,7 @@ async function ensureRoleInit(fs2, role, tentName) {
   const body = `# Role Init
 
 - Tent: ${tentName}
-- Rules (CLI / system-root relative): RULES.md
-- Rules (workspace file read): .tent/RULES.md
+- Agent rules (workspace file read): AGENTS.md at the workspace root
 - Role registry (workspace file read): .tent/roles.json (or run \`tent roles\` from workspace root)
 
 ## Role Prompt
@@ -1994,7 +1992,6 @@ async function writeTaskEnvelope(fs2, clock, input) {
   }
   const contextGeneration = input.contextGeneration?.trim() || computeContextGeneration({
     workspaceIdentity: input.workspace?.workspace || "local-workspace",
-    rulesPointerDigest: "dispatch-default-rules",
     agentsPointerDigest: "dispatch-default-agents",
     extraStable: {
       assigneeKind,
@@ -2269,7 +2266,6 @@ function computeContextGeneration(inputs) {
   const payload = {
     v: CONTEXT_GENERATION_VERSION,
     workspaceIdentity: inputs.workspaceIdentity.trim(),
-    rulesPointerDigest: inputs.rulesPointerDigest.trim(),
     agentsPointerDigest: inputs.agentsPointerDigest.trim(),
     tentRoleDigest: inputs.tentRoleDigest?.trim() || "",
     rolePrompt: inputs.rolePrompt?.trim() || "",
@@ -7940,7 +7936,6 @@ var TentView = class extends import_obsidian4.ItemView {
 // src/plugin/settings-model.ts
 init_typeRegistry();
 init_skillRoleRegistry();
-var DEFAULT_RULES_TEMPLATE = "# {tent} - Project Rules\n\n> Local rules for this Tent; mechanism-level rules are provided by Tent and the tent-role / tent-task skills.\n\n- Output workspace: <real code repository path>\n- Commit / naming conventions: <fill in>\n- Other project rules: <fill in>\n";
 var DEFAULT_ROLES_REGISTRY2 = { roles: [] };
 var DEFAULT_SETTINGS = {
   tentsRoot: "tents",
@@ -7952,8 +7947,7 @@ var DEFAULT_SETTINGS = {
   triageReminder: "status",
   newTentDefaults: {
     typeRegistry: cloneTypeRegistry(DEFAULT_TYPE_REGISTRY),
-    rolesRegistry: { roles: [] },
-    rulesTemplate: DEFAULT_RULES_TEMPLATE
+    rolesRegistry: { roles: [] }
   }
 };
 function cloneTypeRegistry(registry) {
@@ -7982,8 +7976,6 @@ function mergeSettings(raw) {
   const defaults = saved.newTentDefaults;
   const typeRegistry = normalizeRegistry(defaults?.typeRegistry ?? legacyDefaults?.typeRegistry ?? DEFAULT_TYPE_REGISTRY);
   const rolesRegistry = normalizeRoles(defaults?.rolesRegistry ?? legacyDefaults?.rolesRegistry ?? DEFAULT_ROLES_REGISTRY2);
-  const rulesCandidate = defaults?.rulesTemplate ?? legacyDefaults?.rulesTemplate;
-  const rulesTemplate = typeof rulesCandidate === "string" && rulesCandidate.trim() ? rulesCandidate : DEFAULT_RULES_TEMPLATE;
   const triageReminder = saved.triageReminder === "off" || saved.triageReminder === "status" || saved.triageReminder === "notice" ? saved.triageReminder : DEFAULT_SETTINGS.triageReminder;
   return {
     tentsRoot: typeof saved.tentsRoot === "string" && saved.tentsRoot.trim() ? saved.tentsRoot : DEFAULT_SETTINGS.tentsRoot,
@@ -7995,8 +7987,7 @@ function mergeSettings(raw) {
     triageReminder,
     newTentDefaults: {
       typeRegistry,
-      rolesRegistry,
-      rulesTemplate
+      rolesRegistry
     }
   };
 }
@@ -8056,16 +8047,6 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
     });
     this.drawDefaultTypes(parent);
     this.drawDefaultRoles(parent);
-    settingHeading(parent, "\u9ED8\u8BA4 RULES.md");
-    const rules = new import_obsidian5.Setting(parent).setName("\u89C4\u5219\u6A21\u677F").setDesc("\u65B0\u5EFA\u5E10\u65F6\u5199\u5165 RULES.md\uFF1B{tent} \u4F1A\u66FF\u6362\u4E3A\u5E10\u540D\u3002");
-    rules.settingEl.addClass("tent-settings-rules-row");
-    rules.addTextArea((textarea) => {
-      textarea.setValue(this.plugin.settings.newTentDefaults.rulesTemplate).onChange(async (value) => {
-        this.plugin.settings.newTentDefaults.rulesTemplate = value || DEFAULT_RULES_TEMPLATE;
-        await this.plugin.saveSettings();
-      });
-      textarea.inputEl.addClass("tent-settings-rules");
-    });
   }
   drawDefaultTypes(parent) {
     const registry = this.plugin.settings.newTentDefaults.typeRegistry;

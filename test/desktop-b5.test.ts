@@ -32,7 +32,6 @@ async function makeWorkspace(): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "desk",
-    rules: "# RULES\n\nB5 desktop test\n",
     boxes: [
       { name: "inbox", type: "prompt", body: "# inbox\nhello desktop\n" },
       { name: "goal-a", type: "goal", body: "# goal\n" },

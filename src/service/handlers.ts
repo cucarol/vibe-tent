@@ -12506,7 +12506,6 @@ function buildContextCardManagedBootstrap(
   const assembly = assembleManagedPrompt({
     workspaceRoot: roots.workspaceRoot,
     systemRoot: roots.systemRoot,
-    rulesPointer: ".tent/RULES.md (CLI: RULES.md under systemRoot)",
     agentsPointer: "AGENTS.md at workspace root (authoritative workspace agents file)",
     tentRoleSection: roots.tentRoleSection,
     rolePromptRosterSection: roots.rolePromptRosterSection,

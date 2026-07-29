@@ -24,7 +24,7 @@ const T31 = "2026-02-01T00:00:01.000Z";
 async function makeEnv() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-asset-gc-"));
   const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, { name: "asset-gc", rules: "# rules\n" });
+  await scaffoldTent(fsa, { name: "asset-gc" });
   let seq = 0.1;
   const env = {
     fs: fsa,
@@ -148,7 +148,7 @@ test("corrupt GC state resets candidates and never deletes on that sweep", async
 
 test("workspace housekeeping runs invisibly after mount and disposes its timer", async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-housekeeper-"));
-  await scaffoldInWorkspace(new NodeFs(workspace), { name: "housekeeper", rules: "# rules\n" });
+  await scaffoldInWorkspace(new NodeFs(workspace), { name: "housekeeper" });
   let resolveRun!: () => void;
   const ran = new Promise<void>((resolve) => (resolveRun = resolve));
   let calls = 0;

@@ -130,16 +130,16 @@ One-shot migration: `note`→`prompt`, `artifact`→`output`; strip R/W/chrome; 
 
 Every valid non-archived concept may enter the task lifecycle. There is no coordination gate and no `docs.promote`.
 
-### 3.3 Fork (parallel occupation)
+### 3.3 Fork (copy / variant)
 
 Canonical command: **`docs.fork(boxId | path)`** (CLI alias: `tent fork`).
 
 | Rule | Detail |
 | --- | --- |
-| Effect | Copy concept/box **subtree**; new `cx-` ids; clear owner/status occupation on the fork root |
+| Effect | Copy concept/box **subtree**; new `cx-` ids; preserve content and descendant names |
 | Does **not** | Start a task, claim, or session |
-| Parallelism | After fork, `task.dispatch` on the fork root (Task API §2.4) |
-| Active task | Source box occupation is unchanged unless separately interrupted |
+| Parallelism | Not required: Task Node refs are non-exclusive; use fork only when a separate copy/variant is desired |
+| Active task | Source Task projections are unchanged |
 
 Fork is a **docs** group command, not a Task API verb, and not an AgentRuntime call.
 
@@ -151,7 +151,7 @@ Principles:
 
 - Organization follows Tent logical entities.
 - On disk: ordinary directories + Markdown files under the **fixed** tent system location **`<workspace>/.tent/`** (architecture §3.1; name not reopened in B1).
-- MVP **forces note layout isomorphic to box** so promote is zero-move.
+- Node layout is always folder + same-named Markdown; there is no note-to-box promotion step.
 
 | Form | Layout | MVP |
 | --- | --- | --- |
@@ -485,13 +485,13 @@ Concept dual identity (`path` + `cx-`) is specified above. Other registries:
 ## 13. Frozen decisions (B0)
 
 1. **OKF path** = concept identity; **`cx-`** = immutable handle; no semantic key.
-2. **`coordination`** is a type capability; box = coordination-enabled concept.
-3. **Promote is in-place**; same path, body, and handle.
-4. **Operational pipeline is outside** concept index and OKF validation.
-5. **Workspace files** enter only as **`ArtifactRef`**; Tent is not an IDE or disk browser.
+2. Primary type is fixed `goal|prompt|output`; secondary type and tags are orthogonal.
+3. Every valid non-archived Node may be referenced by Tasks; there is no coordination gate or exclusive occupation.
+4. Operational Task/Session/Delivery state is outside concept index and OKF validation.
+5. **Workspace files** enter only through explicit output/provenance references; Tent is not an IDE or disk browser.
 6. **External edits** use minimal etag optimistic concurrency; dirty tabs never silent-reload.
-7. **Index is rebuildable cache** in machine-local service data, not tent identity truth.
-8. **MVP note layout** is folder + same-named Markdown, isomorphic to boxes.
+7. **Index is rebuildable cache** in machine-local service data, not Tent identity truth.
+8. Node layout is folder + same-named Markdown.
 9. **Link project** is explicit; resolve and index are non-destructive by default.
 10. **Events** are `concept.changed` / `concept.removed` only—no `box.changed` dual channel.
 11. **`docs.fork`** is the parallel-occupation command; active-task fields cannot be bypassed via `docs.write`.

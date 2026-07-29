@@ -59,7 +59,7 @@ Common flags:
 - `--attach-only` — do not bootstrap; fail if service missing
 - `--service-entry <path>` — entry used when bootstrapping
 
-Workspace must be an **in-workspace tent** (`<workspace>/.tent/RULES.md`). CLI mounts via `workspace.mount` (idempotent if already mounted).
+Workspace must be an **in-workspace Tent** (`<workspace>/.tent/index.md`). CLI mounts via `workspace.mount` (idempotent if already mounted).
 
 ## Legacy CLI (not service RPC)
 
@@ -70,7 +70,7 @@ Legacy commands that **direct-write** core are **blocked on in-workspace** syste
 | Read-only | `tree`, `status`, `roles`, `find`, `tags` | allowed | allowed |
 | Init / derived / machine | `new`, `migrate`/`import`, `role-init`, `skill-install` | allowed | allowed |
 | Service-routed | `task *`, `propose`, `role-checkpoint set\|clear` | attach → mount → RPC (`task.*` / `proposal.submit` / `role.checkpoint.*`); `role-checkpoint show` may read files | `propose` still direct-core (migration window); prefer Service when mounted |
-| Mutation (direct-core) | `dispatch`, `task-ack`, `task-cancel`, `report`, `complete`, `stamp`, `new-box`, `tag`, `untag`, `tag-new`, `tag-rm`, `fork`, `clean-temp`, `force-release`, `okf-sync` (`grant-readable` retired in V0.2) | **fail-loud** | allowed (migration window) |
+| Mutation (direct-core) | `dispatch`, `task-ack`, `task-cancel`, `new-box`, `tag`, `untag`, `tag-new`, `tag-rm`, `fork`, `clean-temp`, `force-release`, `okf-sync` | **fail-loud** | allowed (migration window) |
 
 Machine-local bundled skills are also available through authenticated Local
 Service RPC: `skill.list` and `skill.install`. Installation sources are fixed to

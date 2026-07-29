@@ -10,7 +10,8 @@ export const ROLES_REGISTRY_PATH = "roles.json";
 export const TAGS_REGISTRY_PATH = "tags.json";
 export const ORDER_PATH = "order.json";
 export const MUTATION_LOCK_PATH = "mutation.lock";
-export const RULES_PATH = "RULES.md";
+/** Structural marker for an initialized Tent system root. */
+export const INDEX_PATH = "index.md";
 /** Workspace collaboration settings (defaultDeliveryPolicy, extensible). */
 export const WORKSPACE_SETTINGS_PATH = "settings.json";
 /**
@@ -41,10 +42,9 @@ export const SYSTEM_REGISTRY_FILES = new Set([
   TAGS_REGISTRY_PATH,
   ORDER_PATH,
   MUTATION_LOCK_PATH,
-  RULES_PATH,
   WORKSPACE_SETTINGS_PATH,
   ANNOTATIONS_PATH,
-  "index.md",
+  INDEX_PATH,
   "log.md",
 ]);
 

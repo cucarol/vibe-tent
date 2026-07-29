@@ -13,8 +13,8 @@ Desktop / co-located agents use **in-workspace** layout only.
 
 ## Hard rules
 
-1. Workspace root contains `.tent/`. Rules, temp, roles/types registries live **inside** `.tent/`.
-2. **Never** join operational paths as `<workspaceRoot>/temp` or `<workspaceRoot>/RULES.md`.
+1. Workspace root contains `.tent/`. Project Agent rules live at workspace-root `AGENTS.md`; temp and registries live **inside** `.tent/`.
+2. **Never** join operational paths as `<workspaceRoot>/temp`. Operational files live under `<workspaceRoot>/.tent/`.
 3. CLI args (`taskPath`, most core-relative paths) stay `temp/...` relative to system root. On disk for editors/agents reading files: `.tent/temp/...`.
 4. Context Card / bootstrap may give `workspaceRoot` + `systemRoot`. Prefer those. If `tentRoot` appears, it means **system root** (`.tent`), not workspace.
 5. Do not invent a missing envelope, Context Card, manifest, or Node body — open the persisted source or fetch the Task first.
@@ -24,7 +24,8 @@ Desktop / co-located agents use **in-workspace** layout only.
 
 | Kind | On disk (from workspace root) | CLI / system-relative |
 | --- | --- | --- |
-| Project rules | `.tent/RULES.md` | `RULES.md` |
+| Project Agent rules | `AGENTS.md` | (workspace file read) |
+| Tent structural marker | `.tent/index.md` | `index.md` |
 | Durable role init | `.tent/temp/<role>/init.md` | `temp/<role>/init.md` |
 | Role task envelope | `.tent/temp/<role>/tasks/*.md` | `temp/<role>/tasks/*.md` |
 | AgentProfile task | `.tent/temp/agent-profiles/<profileId>/tasks/*.md` | `temp/agent-profiles/<profileId>/tasks/*.md` |

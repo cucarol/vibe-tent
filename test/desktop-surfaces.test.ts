@@ -418,7 +418,6 @@ test("service smoke: docs.backlinks + provider.catalog for graph/settings", asyn
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "surf",
-    rules: "# RULES\n",
     boxes: [
       { name: "alpha", type: "prompt", body: "# alpha\nsee [[beta]]\n" },
       { name: "beta", type: "prompt", body: "# beta\n" },

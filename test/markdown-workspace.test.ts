@@ -29,7 +29,7 @@ import { boxNotePath } from "../src/core/tree.js";
 async function makeEnv() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-md-"));
   const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, { name: "md", rules: "# rules\n" });
+  await scaffoldTent(fsa, { name: "md" });
   const env = {
     fs: fsa,
     clock: { now: () => "2026-07-12T00:00:00.000Z" },

@@ -84,7 +84,7 @@ test("isClientMethod includes docs.move and not docs.reparent", () => {
 test("moveNode: reparent keeps cx-, moves subtree, rewrites path links", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-move-reparent-"));
   const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
+  await scaffoldTent(fsa, { name: "x" });
   const env = envFor(fsa);
   const parentId = await createBox(env as any, { parentPath: "", name: "parent", type: "prompt" });
   const childId = await createBox(env as any, { parentPath: "parent", name: "child", type: "prompt" });
@@ -119,7 +119,7 @@ test("moveNode: depth-changing reparent restyles ./ and ../ inside moved subtree
   // Reviewer probe (dl-f9qmacqr): parent/child → dest/nest/child must not corrupt relatives.
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-move-depth-"));
   const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
+  await scaffoldTent(fsa, { name: "x" });
   const env = envFor(fsa);
   await createBox(env as any, { parentPath: "", name: "parent", type: "prompt" });
   const childId = await createBox(env as any, {
@@ -179,7 +179,7 @@ test("moveNode: depth-changing reparent restyles ./ and ../ inside moved subtree
 test("moveNode: reparent to root restyles outbound relative to unmoved peer", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-move-root-rel-"));
   const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
+  await scaffoldTent(fsa, { name: "x" });
   const env = envFor(fsa);
   await createBox(env as any, { parentPath: "", name: "parent", type: "prompt" });
   const childId = await createBox(env as any, {
@@ -252,7 +252,7 @@ test("rewriteConceptLinks: restyleFromNotePath fixes relatives when source moves
 test("moveNode: same-parent reorder is order-only (no link rewrite)", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-move-reorder-"));
   const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
+  await scaffoldTent(fsa, { name: "x" });
   const env = envFor(fsa);
   const a = await createBox(env as any, { parentPath: "", name: "alpha", type: "prompt" });
   const b = await createBox(env as any, { parentPath: "", name: "beta", type: "prompt" });
@@ -282,7 +282,7 @@ test("moveNode: same-parent reorder is order-only (no link rewrite)", async () =
 test("moveNode: concurrent Task refs do not freeze move (cx-tsw53f)", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-move-occ-"));
   const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
+  await scaffoldTent(fsa, { name: "x" });
   const env = envFor(fsa);
   const root = await createBox(env as any, { parentPath: "", name: "zone", type: "prompt" });
   const child = await createBox(env as any, { parentPath: "zone", name: "busy", type: "prompt" });
@@ -345,7 +345,7 @@ test("moveNode: concurrent Task refs do not freeze move (cx-tsw53f)", async () =
 test("moveNode: refuses cycle and archived", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-move-guard-"));
   const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
+  await scaffoldTent(fsa, { name: "x" });
   const env = envFor(fsa);
   const parent = await createBox(env as any, { parentPath: "", name: "p", type: "prompt" });
   const child = await createBox(env as any, { parentPath: "p", name: "c", type: "prompt" });
@@ -369,7 +369,7 @@ test("moveNode: refuses cycle and archived", async () => {
 test("moveNode: injected write failure restores tree and note bytes", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-move-rollback-"));
   const base = new NodeFs(dir);
-  await scaffoldTent(base, { name: "x", rules: "# r\n" });
+  await scaffoldTent(base, { name: "x" });
   const setupEnv = envFor(base);
   const a = await createBox(setupEnv as any, { parentPath: "", name: "alpha", type: "prompt" });
   const b = await createBox(setupEnv as any, { parentPath: "", name: "beta", type: "prompt" });
@@ -411,7 +411,6 @@ test("docs.move: service user-only, expectedPath stale, event once, client metho
     const fsa = new NodeFs(workspace);
     await scaffoldInWorkspace(fsa, {
       name: "demo",
-      rules: "# RULES\n\nmove test\n",
       boxes: [
         { name: "inbox", type: "prompt", body: "# inbox\n" },
         { name: "shelf", type: "prompt", body: "# shelf\n" },

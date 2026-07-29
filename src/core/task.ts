@@ -765,8 +765,7 @@ export async function ensureRoleInit(
   const body =
     `# Role Init\n\n` +
     `- Tent: ${tentName}\n` +
-    `- Rules (CLI / system-root relative): RULES.md\n` +
-    `- Rules (workspace file read): .tent/RULES.md\n` +
+    `- Agent rules (workspace file read): AGENTS.md at the workspace root\n` +
     `- Role registry (workspace file read): .tent/roles.json (or run \`tent roles\` from workspace root)\n\n` +
     `## Role Prompt\n\n${role.prompt?.trim() || "(no persistent role prompt)"}\n\n` +
     `## Operating Model\n\n` +
@@ -840,7 +839,6 @@ export async function writeTaskEnvelope(
     input.contextGeneration?.trim() ||
     computeContextGeneration({
       workspaceIdentity: input.workspace?.workspace || "local-workspace",
-      rulesPointerDigest: "dispatch-default-rules",
       agentsPointerDigest: "dispatch-default-agents",
       extraStable: {
         assigneeKind,

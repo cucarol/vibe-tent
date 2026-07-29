@@ -373,7 +373,7 @@ var ROLES_REGISTRY_PATH = "roles.json";
 var TAGS_REGISTRY_PATH = "tags.json";
 var ORDER_PATH = "order.json";
 var MUTATION_LOCK_PATH = "mutation.lock";
-var RULES_PATH = "RULES.md";
+var INDEX_PATH = "index.md";
 var WORKSPACE_SETTINGS_PATH = "settings.json";
 var ANNOTATIONS_PATH = "annotations.json";
 var TEMP_DIR = "temp";
@@ -391,10 +391,9 @@ var SYSTEM_REGISTRY_FILES = /* @__PURE__ */ new Set([
   TAGS_REGISTRY_PATH,
   ORDER_PATH,
   MUTATION_LOCK_PATH,
-  RULES_PATH,
   WORKSPACE_SETTINGS_PATH,
   ANNOTATIONS_PATH,
-  "index.md",
+  INDEX_PATH,
   "log.md"
 ]);
 function systemRootFromWorkspace(workspaceRoot) {
@@ -1972,8 +1971,7 @@ async function ensureRoleInit(fs23, role, tentName) {
   const body = `# Role Init
 
 - Tent: ${tentName}
-- Rules (CLI / system-root relative): RULES.md
-- Rules (workspace file read): .tent/RULES.md
+- Agent rules (workspace file read): AGENTS.md at the workspace root
 - Role registry (workspace file read): .tent/roles.json (or run \`tent roles\` from workspace root)
 
 ## Role Prompt
@@ -2023,7 +2021,6 @@ async function writeTaskEnvelope(fs23, clock, input) {
   }
   const contextGeneration = input.contextGeneration?.trim() || computeContextGeneration({
     workspaceIdentity: input.workspace?.workspace || "local-workspace",
-    rulesPointerDigest: "dispatch-default-rules",
     agentsPointerDigest: "dispatch-default-agents",
     extraStable: {
       assigneeKind,
@@ -2296,7 +2293,6 @@ function computeContextGeneration(inputs) {
   const payload = {
     v: CONTEXT_GENERATION_VERSION,
     workspaceIdentity: inputs.workspaceIdentity.trim(),
-    rulesPointerDigest: inputs.rulesPointerDigest.trim(),
     agentsPointerDigest: inputs.agentsPointerDigest.trim(),
     tentRoleDigest: inputs.tentRoleDigest?.trim() || "",
     rolePrompt: inputs.rolePrompt?.trim() || "",
@@ -2643,7 +2639,6 @@ function formatStableProjectContext(input) {
     "Tent stable project context v1",
     `workspaceRoot: ${input.workspaceRoot}`,
     `systemRoot: ${input.systemRoot}`,
-    `RULES: ${input.rulesPointer}`,
     `AGENTS: ${input.agentsPointer}`,
     "CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent).",
     "Do not resolve operational files as <workspaceRoot>/temp \u2014 use .tent/temp."
@@ -31512,7 +31507,6 @@ function buildContextCardManagedBootstrap(task, contextCard, roots) {
   const assembly = assembleManagedPrompt({
     workspaceRoot: roots.workspaceRoot,
     systemRoot: roots.systemRoot,
-    rulesPointer: ".tent/RULES.md (CLI: RULES.md under systemRoot)",
     agentsPointer: "AGENTS.md at workspace root (authoritative workspace agents file)",
     tentRoleSection: roots.tentRoleSection,
     rolePromptRosterSection: roots.rolePromptRosterSection,
@@ -32360,12 +32354,12 @@ var WorkspaceHost = class {
       throw error;
     }
     const systemRoot = systemRootFromWorkspace(root);
-    const rulesPath = path17.join(systemRoot, "RULES.md");
+    const indexPath = path17.join(systemRoot, INDEX_PATH);
     try {
-      await fs19.access(rulesPath);
+      await fs19.access(indexPath);
     } catch {
       throw new Error(
-        `No in-workspace Tent at ${systemRoot}. Expected ${TENT_SYSTEM_DIR}/RULES.md (B1 single-location model).`
+        `No in-workspace Tent at ${systemRoot}. Expected ${TENT_SYSTEM_DIR}/${INDEX_PATH}.`
       );
     }
     for (const existing of this.mounts.values()) {

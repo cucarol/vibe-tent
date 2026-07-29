@@ -11,7 +11,6 @@ export type TriageReminder = "off" | "status" | "notice";
 interface NewTentDefaults {
   typeRegistry: TypeRegistry;
   rolesRegistry: RolesRegistry;
-  rulesTemplate: string;
 }
 
 export interface TentSettings {
@@ -28,13 +27,6 @@ export interface TentSettings {
   newTentDefaults: NewTentDefaults;
 }
 
-export const DEFAULT_RULES_TEMPLATE =
-  "# {tent} - Project Rules\n\n" +
-  "> Local rules for this Tent; mechanism-level rules are provided by Tent and the tent-role / tent-task skills.\n\n" +
-  "- Output workspace: <real code repository path>\n" +
-  "- Commit / naming conventions: <fill in>\n" +
-  "- Other project rules: <fill in>\n";
-
 const DEFAULT_ROLES_REGISTRY: RolesRegistry = { roles: [] };
 
 export const DEFAULT_SETTINGS: TentSettings = {
@@ -48,7 +40,6 @@ export const DEFAULT_SETTINGS: TentSettings = {
   newTentDefaults: {
     typeRegistry: cloneTypeRegistry(DEFAULT_TYPE_REGISTRY),
     rolesRegistry: { roles: [] },
-    rulesTemplate: DEFAULT_RULES_TEMPLATE,
   },
 };
 
@@ -79,7 +70,6 @@ export function mergeSettings(raw: unknown): TentSettings {
     newTentTemplate?: {
       typeRegistry?: unknown;
       rolesRegistry?: unknown;
-      rulesTemplate?: unknown;
     };
   };
   const appearance: Appearance =
@@ -92,9 +82,6 @@ export function mergeSettings(raw: unknown): TentSettings {
   const defaults = saved.newTentDefaults;
   const typeRegistry = normalizeRegistry(defaults?.typeRegistry ?? legacyDefaults?.typeRegistry ?? DEFAULT_TYPE_REGISTRY);
   const rolesRegistry = normalizeRoles(defaults?.rolesRegistry ?? legacyDefaults?.rolesRegistry ?? DEFAULT_ROLES_REGISTRY);
-  const rulesCandidate = defaults?.rulesTemplate ?? legacyDefaults?.rulesTemplate;
-  const rulesTemplate =
-    typeof rulesCandidate === "string" && rulesCandidate.trim() ? rulesCandidate : DEFAULT_RULES_TEMPLATE;
   const triageReminder: TriageReminder =
     saved.triageReminder === "off" || saved.triageReminder === "status" || saved.triageReminder === "notice"
       ? saved.triageReminder
@@ -113,7 +100,6 @@ export function mergeSettings(raw: unknown): TentSettings {
     newTentDefaults: {
       typeRegistry,
       rolesRegistry,
-      rulesTemplate,
     },
   };
 }

@@ -43,7 +43,6 @@ async function makeWorkspace(name = "role-cp"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    rules: "# RULES\n\nRole Checkpoint tests\n",
     boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(

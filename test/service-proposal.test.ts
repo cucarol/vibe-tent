@@ -54,7 +54,6 @@ async function makeWorkspace(name = "proposal-rpc"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    rules: "# RULES\n\nProposal service RPC\n",
     boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(

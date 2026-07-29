@@ -473,7 +473,6 @@ function buildMigratedFullContextCard(input: {
           workspaceIdentity:
             (typeof data.workspace === "string" && data.workspace.trim()) ||
             "local-workspace",
-          rulesPointerDigest: "migration-default-rules",
           agentsPointerDigest: "migration-default-agents",
           extraStable: {
             taskPath,

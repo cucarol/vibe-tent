@@ -72,7 +72,7 @@ async function makeSkeletonTent(withGit = true): Promise<string> {
     await run("git", ["config", "user.name", gitIdentity.GIT_AUTHOR_NAME], target);
     await run("git", ["config", "user.email", gitIdentity.GIT_AUTHOR_EMAIL], target);
     await fs.writeFile(path.join(target, "README.md"), "# workspace\n", "utf8");
-    // 必须提交 .gitignore，否则 porcelain 脏状态会挡住 complete 的 commit 合入
+    // 提交 workspace 基线，避免后续 Git lane 检查被 fixture 自身挡住。
     await run("git", ["add", "README.md", ".gitignore"], target);
     await run("git", ["commit", "-q", "-m", "init workspace"], target);
   }
@@ -105,9 +105,6 @@ const LEGACY_MUTATION_COMMANDS = [
   "dispatch",
   "task-ack",
   "task-cancel",
-  "complete",
-  "stamp",
-  "grant-readable",
   "new-box",
   "tag",
   "untag",
@@ -171,9 +168,6 @@ test("in-workspace .tent: legacy mutation CLI fail-loud; read-only + init still 
     dispatch: ["cx-missing", "reviewer", "prompt"],
     "task-ack": ["temp/reviewer/tasks/x.md"],
     "task-cancel": ["temp/reviewer/tasks/x.md"],
-    complete: ["cx-missing"],
-    stamp: ["cx-missing"],
-    "grant-readable": ["cx-missing"],
     "new-box": ["blocked-box", "goal"],
     tag: ["cx-missing", "t"],
     untag: ["cx-missing", "t"],
@@ -207,7 +201,7 @@ test("in-workspace .tent: legacy mutation CLI fail-loud; read-only + init still 
   const parent = path.dirname(tent);
   const another = path.join(parent, "another-ws");
   await runCli(parent, "new", another);
-  assert.equal(await exists(path.join(another, ".tent", "RULES.md")), true);
+  assert.equal(await exists(path.join(another, ".tent", "index.md")), true);
 });
 
 test("external tent root: legacy CLI 全链路 tree → dispatch → task-ack → clean-temp", async () => {
@@ -288,9 +282,6 @@ test("external tent root: legacy CLI 全链路 tree → dispatch → task-ack �
   goalRaw += "\n集成测试已落地。\n";
   await fs.writeFile(checkPath, goalRaw);
 
-  // stamp is retired (no FM dual-write)
-  await assert.rejects(() => runCli(tent, "stamp", checkId), /retired|owner\/status/i);
-
   await runCli(tent, "clean-temp");
   assert.equal(await exists(externalPath(tent, "temp")), true);
   assert.deepEqual(await fs.readdir(externalPath(tent, "temp")), []);
@@ -339,7 +330,7 @@ test("external tent: dispatch task-ack lifecycle (no workspace lane)", async () 
 });
 
 test("tent status:read-only on in-workspace; full status on external root", async () => {
-  // in-workspace: status is read-only (no propose/dispatch/stamp via legacy CLI)
+  // in-workspace: status is read-only (no legacy direct mutation path)
   const ws = await makeSkeletonTent(false);
   const systemRoot = systemPath(ws);
   const emptyStatus = await runCli(ws, "status");
@@ -381,8 +372,6 @@ test("tent status:read-only on in-workspace; full status on external root", asyn
   assert.match(ackedStatus.stdout, /reviewer/);
   assert.match(ackedStatus.stdout, new RegExp(claimId));
 
-  // stamp retired — use force-release / task lifecycle to clear occupation
-  await assert.rejects(() => runCli(tent, "stamp", claimId), /retired|owner\/status/i);
   await runCli(tent, "force-release", claimId);
   const doneStatus = await runCli(tent, "status");
   assert.match(doneStatus.stdout, /Pending tasks \(task-ack\): none/);
@@ -392,7 +381,7 @@ test("tent status:read-only on in-workspace; full status on external root", asyn
   const failed = await runCliWithExit(outside, "status");
   assert.equal(failed.code, 1);
   assert.equal(failed.stdout, "");
-  assert.match(failed.stderr, /Not inside a Tent \(no \.tent\/ system root with RULES\.md found\)\./);
+  assert.match(failed.stderr, /Not inside a Tent \(no \.tent\/index\.md marker found\)\./);
 });
 
 test("external tent dispatch --as-sub:missing dispatcher fails before side effects", async () => {
@@ -445,36 +434,15 @@ test("external tent clean-temp:rejects traversal role names and preserves root s
   }
 });
 
-test("external tent complete/stamp are retired (no Node owner/status dual-write)", async () => {
-  const fixture = await makeCompletionFixture();
-  const beforeBox = await fs.readFile(fixture.boxNote, "utf8");
-
-  await assert.rejects(() => runCli(fixture.tent, "complete", fixture.boxId), /retired|owner\/status/i);
-  await assert.rejects(
-    () => runCli(fixture.tent, "complete", fixture.boxId, "--by", "planner"),
-    /retired|owner\/status/i
-  );
-  await assert.rejects(
-    () => runCli(fixture.tent, "stamp", fixture.boxId, "--by", "planner"),
-    /retired|owner\/status/i
-  );
-  await assert.rejects(
-    () => runCli(fixture.tent, "complete", fixture.boxId, "--require-check", "git --version"),
-    /retired|owner\/status/i
-  );
-
-  assert.equal(await fs.readFile(fixture.boxNote, "utf8"), beforeBox);
-});
-
-test("tent new:in-workspace .tent 空骨架,生成 RULES 且 workspace 可无 Git", async () => {
+test("tent new:in-workspace .tent 空骨架,生成 index 且 workspace 可无 Git", async () => {
   const parent = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-new-")));
   const target = path.join(parent, "fresh-tent");
   await runCli(parent, "new", target);
 
   const systemRoot = path.join(target, ".tent");
   // 协作事实在 <workspace>/.tent/
-  const rules = await fs.readFile(path.join(systemRoot, "RULES.md"), "utf8");
-  assert.match(rules, /Project Rules/);
+  const index = await fs.readFile(path.join(systemRoot, "index.md"), "utf8");
+  assert.match(index, /type: index/);
   assert.equal(await exists(path.join(systemRoot, "SPEC.md")), false);
   assert.equal(await exists(path.join(systemRoot, "CLAUDE.md")), false);
   assert.equal(await exists(path.join(systemRoot, "AGENTS.md")), false);
@@ -510,7 +478,7 @@ test("tent new:in-workspace .tent 空骨架,生成 RULES 且 workspace 可无 Gi
   await assert.rejects(() => runCli(parent, "new", target));
 });
 
-test("tent new --vault:使用插件的新帐 type、role 与 RULES 默认值", async () => {
+test("tent new --vault:使用插件的新帐 type 与 role 默认值", async () => {
   const vault = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-vault-defaults-")));
   const settingsDir = path.join(vault, ".obsidian", "plugins", "tent");
   await fs.mkdir(settingsDir, { recursive: true });
@@ -531,7 +499,6 @@ test("tent new --vault:使用插件的新帐 type、role 与 RULES 默认值", a
         rolesRegistry: {
           roles: [{ name: "maker", color: "green", description: "负责实现" }],
         },
-        rulesTemplate: "# {tent}\n\n本机默认规则\n",
       },
     }),
     "utf8",
@@ -557,7 +524,7 @@ test("tent new --vault:使用插件的新帐 type、role 与 RULES 默认值", a
     color: "green",
     description: "负责实现",
   });
-  assert.equal(await fs.readFile(path.join(systemRoot, "RULES.md"), "utf8"), "# demo\n\n本机默认规则\n");
+  assert.match(await fs.readFile(path.join(systemRoot, "index.md"), "utf8"), /type: index/);
 });
 
 const BUNDLED_AGENT_SKILLS = ["tent-role", "tent-task"] as const;
@@ -743,24 +710,6 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-async function makeCompletionFixture(): Promise<{
-  tent: string;
-  boxId: string;
-  boxNote: string;
-}> {
-  // External system root fixture for retired complete/stamp (must not dual-write FM).
-  // Formal Delivery is task.deliver only; Git integrate paths are covered by service/core tests.
-  const tent = await makeExternalTent();
-  const deliveryId = boxId(await runCli(tent, "new-box", "delivery", "prompt"));
-  const dispatched = await runCli(tent, "dispatch", deliveryId, "reviewer", "Implement the delivery.");
-  await runCli(tent, "task-ack", taskPath(dispatched));
-  return {
-    tent,
-    boxId: deliveryId,
-    boxNote: externalPath(tent, "delivery", "delivery.md"),
-  };
-}
-
 test("npm 包冒烟:产物可安装并运行打包 CLI", async () => {
   const npmCli = process.env.npm_execpath;
   assert.ok(npmCli, "测试必须由 npm script 启动");
@@ -801,7 +750,7 @@ test("npm 包冒烟:产物可安装并运行打包 CLI", async () => {
       run(tentCommand, windows ? [path.join(installed, "cli.mjs"), ...cliArgs] : cliArgs, cwd);
     await tentCli(parent, "new", target);
     // in-workspace: new-box is sealed; smoke uses read-only tree + blocked mutate message
-    assert.equal(await exists(path.join(target, ".tent", "RULES.md")), true);
+    assert.equal(await exists(path.join(target, ".tent", "index.md")), true);
     const tree = await tentCli(target, "tree");
     assert.equal(tree.stderr ?? "", "");
     const blocked = await run(

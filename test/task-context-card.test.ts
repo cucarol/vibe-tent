@@ -50,7 +50,6 @@ import { spawnSync } from "node:child_process";
 function sampleGeneration(extra?: string): string {
   return computeContextGeneration({
     workspaceIdentity: "ws-test",
-    rulesPointerDigest: "rules-d1",
     agentsPointerDigest: "agents-d1",
     tentRoleDigest: "role-skill-d1",
     rolePrompt: "Stay in scope.",
@@ -113,7 +112,6 @@ test("contextGeneration changes when stable compatibility inputs change", () => 
   const base = sampleGeneration();
   const rosterChange = computeContextGeneration({
     workspaceIdentity: "ws-test",
-    rulesPointerDigest: "rules-d1",
     agentsPointerDigest: "agents-d1",
     rolePrompt: "Stay in scope.",
     rosterAgentIds: ["coder", "reviewer", "new-agent"],
@@ -282,7 +280,6 @@ test("assembleManagedPrompt order: invariant → project → role → task → c
   const assembled = assembleManagedPrompt({
     workspaceRoot: "C:/ws",
     systemRoot: "C:/ws/.tent",
-    rulesPointer: "RULES.md#d1",
     agentsPointer: "AGENTS.md#d1",
     tentRoleSection: "## Built-in skill: tent-role\n\nrole contract body",
     rolePromptRosterSection: "## Role prompt\n\nStay sharp.\n\n## Role roster\n\n- coder",
@@ -351,7 +348,6 @@ test("stable prefix injected once per generation; later Tasks append delta only"
   const full = assembleManagedPrompt({
     workspaceRoot: "/w",
     systemRoot: "/w/.tent",
-    rulesPointer: "r",
     agentsPointer: "a",
     tentTaskSection: "## Built-in skill: tent-task\n\nbody",
     contextCard: card,
@@ -361,7 +357,6 @@ test("stable prefix injected once per generation; later Tasks append delta only"
   const delta = assembleManagedPrompt({
     workspaceRoot: "/w",
     systemRoot: "/w/.tent",
-    rulesPointer: "r",
     agentsPointer: "a",
     tentTaskSection: "## Built-in skill: tent-task\n\nbody",
     contextCard: card,
@@ -380,7 +375,6 @@ test("stable prefix injected once per generation; later Tasks append delta only"
   const full2 = assembleManagedPrompt({
     workspaceRoot: "/w",
     systemRoot: "/w/.tent",
-    rulesPointer: "r",
     agentsPointer: "a",
     tentTaskSection: "## Built-in skill: tent-task\n\nbody",
     contextCard: card,

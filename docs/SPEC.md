@@ -1,381 +1,294 @@
 # Tent Specification
 
-Tent / 帷幄 is an OKF v0.1 bundle plus a coordination layer for user-agent work.
-The Obsidian plugin and CLI are clients of the same core rules.
+Tent / 帷幄 is a local control plane for durable user-agent collaboration. It
+stores project intent, context, relationships, work packages, execution state,
+review, and delivery without replacing the user's editor or Agent UI.
 
-## 1. Two Spaces
+The Local Service is the authority for mounted workspaces and mutations. The
+Desktop app, CLI, and optional plugins are clients of that same contract.
 
-A Tent lives **in-workspace**: the Tent system root is always
-`workspaceRoot/.tent`. Workspace root is derived from that layout (the parent of
-the `.tent` directory), not from a box field or a type-axis “workspace pointer.”
+## 1. Workspace And System Root
 
-- **Workspace** is the real project root. It stores code and deliverables and
-  must use Git when agents integrate commits.
-- **Tent (system root)** stores intent, context, box state, role contracts, and
-  task envelopes under `.tent/`. It consists of plain files and does not use
-  Git.
-
-Task code channels use **WorkspaceLane** fields on the task envelope
-(`workspace`, `worktree`, `branch`, `targetBranch`). Service/core prepares the
-lane at dispatch or managed execution; agents do not invent those paths.
-
-`output` is the built-in primary type for real deliverables or structured
-`artifactRefs` pointers. It is an ordinary concept type (not a workspace-binding
-mechanism). Legacy names `note` and `artifact` migrate one-shot to `prompt` and
-`output`; there is no permanent type alias. The retired `workspacePointer` type
-axis is stripped on load and rejected on write.
-
-## 2. Boxes And Identity
-
-A box is a folder plus a same-named Markdown identity note:
+A Tent belongs to one project workspace:
 
 ```text
-some task/
-  some task.md
+workspace/
+  AGENTS.md          # project-wide Agent instructions (optional)
+  .tent/             # Tent system root, ignored by workspace Git
+    index.md          # structural marker
+    types.json
+    tags.json
+    roles.json
+    temp/             # operational Task/Delivery pipeline
+    attachments/
 ```
 
-A folder without a same-name note is a transparent group. `temp/` is a system
-pipeline, never a box.
+The workspace stores real project files and Git history. `.tent/` stores Tent
+facts and does not use its own Git repository. Workspace identity comes from
+the mounted workspace path, never from a Node field or type setting.
 
-Box frontmatter:
+Runtime discovery requires `.tent/index.md`. The retired `.tent/RULES.md` is
+not read at runtime. A one-shot importer may recognize and discard it when
+migrating a v0.1 external Tent root.
+
+## 2. Nodes
+
+A Node is a folder plus a same-named Markdown identity note:
+
+```text
+Release plan/
+  Release plan.md
+```
+
+A folder without a same-named note is a transparent group. `temp/` and
+`attachments/` are system areas, not Nodes.
+
+Minimal Node frontmatter:
 
 ```yaml
 id: cx-7k2f9q
 type: goal
-tags: [backend]
+tags: [release]
 mode: archived
 ```
 
-- Concepts have persistent ids: `cx-` plus a short collision-checked suffix
-  (legacy `bx-` migrates one-shot).
-- A box name is chosen at creation. Controlled renames go through Service.
-- Native moves are supported; paths may change while ids stay stable.
-- Durable Node facts are body, id, hierarchy/relations, type/tags, archive, and
-  annotations. Collaboration progress is projected from Task/Session/Delivery.
-- Legacy `owner` / `status` / `acceptedBy` are stripped by one-shot migration and
-  are never written by runtime claim/accept paths.
-- Tags are orthogonal lookup facets (not a substitute for secondary type).
+Durable Node facts are:
 
-Duplicate ids are never silently indexed. A native copied subtree is adopted as
-a fork: every copied box gets a fresh id and copied `owner`/`status` are
-cleared. Any duplicate that cannot be identified as a fresh copy is invalid.
+- stable `cx-` identity;
+- name and parent hierarchy;
+- Markdown body;
+- primary and optional secondary type;
+- tags and explicit semantic relations;
+- archive state;
+- annotations;
+- Output provenance fields where applicable.
 
-## 3. Type Model (V0.2)
+Paths may change; ids do not. Controlled rename and move mutations use the
+stable id plus stale-path checks. Duplicate ids fail loud unless a copied
+subtree is explicitly adopted as a fork and receives fresh ids.
 
-`.tent/types.json` is a flat type map storing **tier only** (`base` |
-`modifier`). Domain R/W, coordination, color, and description are not part of
-the type domain.
+Node collaboration progress is never persisted as generic `owner`, `status`,
+or `acceptedBy` fields. It is projected from Task, Session, and Delivery.
 
-**Canonical primary types (fixed product set):** `goal` | `prompt` | `output`.
+## 3. Type, Tags, And Archive
 
-**Built-in secondary (optional modifiers):** `reference` | `asset`. Users may
-register additional custom secondaries without chrome; tags remain the reusable
-cross-cutting facet.
-
-A compound type such as `goal-asset` is `base-modifier`. Type is semantic only:
-every valid non-archived concept may be claimed and enter the task lifecycle.
-There is no `coordination` gate and no note→box promote path.
-
-**Node mode:** default editable; `mode: archived` freezes the subtree (soft
-delete / history). There is no `read-only` mode.
-
-**Mutation gate:** invalid or archived Nodes reject content/structure writes.
-Agent-visible context comes from Task claims and manifest **context pointers**,
-not from Node `readable`/`writable` axes (those axes are retired).
-
-One-shot migration rewrites `note`→`prompt`, `artifact`→`output`, strips domain
-R/W and type chrome, and clears legacy `read-only` mode. No permanent dual-write
-or runtime type alias.
-
-## 4. Roles, Claims, And Dispatch
-
-A role is `name + optional stable prompt + optional host CLI hint`. One role
-represents one long-lived agent session in a Tent. A role may own multiple
-non-overlapping boxes, including boxes under unrelated parents.
-
-`.tent/roles.json` may include an optional `cli` object:
-
-```json
-{
-  "roles": [
-    {
-      "name": "planner",
-      "prompt": "Plan work and review reports.",
-      "cli": {
-        "command": "codex",
-        "resume": "codex resume"
-      }
-    }
-  ]
-}
-```
-
-`cli.command` is required when `cli` exists; `cli.resume` is optional. Tent
-stores and validates these fields but never spawns the process. They are read-only
-hints for a user or external orchestrator.
-
-Each role gets one long-lived workspace lane:
+Primary type is a fixed product vocabulary:
 
 ```text
-branch:   tent-role/<safe-role-name>
-worktree: <workspace-parent>/<workspace-name>-worktrees/<safe-role-name>
+goal | prompt | output
 ```
 
-Unicode role names are allowed, but filesystem/Git-invalid characters such as
-`/` are rejected. The lane is reused across dispatches. Agents split workspace
-commits by logical delivery/box; boxes do not create branches.
+These words are stable Tent terms and are not localized. They describe the
+Node's main semantic role:
 
-Confirmed dispatch:
+- `goal`: a result or direction to achieve;
+- `prompt`: instructions, context, questions, decisions, or working material;
+- `output`: a result or pointer produced from work.
 
-1. validates structural gates (invalid/archived) for the target Node;
-2. updates `temp/<role>/manifest.yml` with readable/writable context pointers
-   for the ephemeral dispatch selection (no `claims` YAML key);
-3. creates/reuses the role workspace lane when Git is present;
-4. writes a pending task envelope under `temp/<role>/tasks/` with Node refs
-   only on `contextCard.refs.nodes[]` (never a second on-disk `claims` source);
-5. returns the relay prompt for delivery to the agent session.
+Secondary type is optional. Built-ins are `reference` and `asset`; users may
+register additional stable identifiers. Secondary type is a semantic modifier,
+not a progress field. Tags are independent reusable facets for retrieval and
+cross-cutting classification.
 
-Dispatch authority is independent of the dispatcher's `readable` and `writable`
-manifest grants. Those grants govern the receiving role's work contract, not
-who may start work on a Node. The dispatch gate is structural: the target must
-not be archived or structurally invalid. Node refs are non-exclusive.
+`.tent/types.json` stores type identity and tier only. Color, description,
+read/write policy, and coordination flags are presentation or retired concerns
+and are not Core type semantics.
 
-When the in-workspace Git root exists, the CLI derives and creates/reuses the
-target role's **WorkspaceLane** from the role name
-(`branch: tent-role/<role>`, `worktree: <parent>/<workspace>-worktrees/<role>`);
-neither dispatcher nor receiver hand-writes those envelope fields. Without a
-Git workspace, a normal peer dispatch is a valid pure-Tent task and its envelope
-has no WorkspaceLane.
+`mode: archived` freezes a Node subtree and acts as reversible soft deletion.
+Archived or invalid Nodes reject ordinary content and structure mutations.
+There is no general `read-only` Node mode and no type-based R/W gate.
 
-`--as-sub --by <role>` sets envelope `asSub: true` (Git-lane sub marker), writes
-explicit `parentActor`/`reviewer` for the parent Role, and sets `targetBranch`
-to the parent role branch (`tent-role/<parent>`). Sub commits integrate into
-that parent lane (not mainline). Service `task.dispatch` with `asSub: true` is
-the same contract for durable role and agentProfile assignees. **asSub rule:**
-sub dispatch requires a durable registry parent Role (not `user`, not the
-assignee) and a real Git WorkspaceLane for that parent; it fails before
-envelope creation without them. User/peer dispatch does not require a Git
-workspace. Missing `asSub` reads as peer (`false`). Review authority uses
-`parentActor`/`reviewer`, not `asSub`. Legacy `dispatchedBy` migrates once to
-the explicit wire and is not dual-written.
+## 4. Roles And Agents
 
-Manifest fields include `readable`, `writable`, and the workspace lane.
-Task Node refs live only on `Task.contextCard.refs.nodes[]` — Manifest YAML
-does not persist a second `claims` source. Dispatch selection is ephemeral
-(`claimBoxes` / `claimRoot` input only). Dynamic task data never enters role init.
+A Role is a durable responsibility to the user. Its registry definition has a
+stable Role id, name/display name, optional prompt, user-facing delivery policy,
+and a roster of logical Agent ids.
 
-`temp/<role>/manifest.yml` is a snapshot from dispatch time. Changing a box's
-`readable`, `writable`, or `type` after dispatch does not affect already issued
-manifests; dispatch the concrete box again after release if the role needs a
-fresh contract.
+An AgentDefinition is a stable logical worker identity. An AgentProfile is
+machine-local launch resolution (provider, model, credentials, command, and
+runtime options). A Role roster authorizes Agent ids, not Profiles.
 
-The task envelope is the machine-readable delivery record. Its prompt body is immutable;
-its `status` field flips one way from `pending` to `taken` when `task-ack`
-acknowledges the task. Neither dispatch nor `task-ack` dual-writes Node
-`owner`/`status`; occupation is the active Task envelope only. Until claim,
-the pending envelope is the dispatch placeholder and blocks dispatch of the
-same box or any overlapping ancestor/descendant subtree. The claimed box
-remains the document truth: scope, background, context, and acceptance
-criteria belong in the box body or child boxes. A draft or incomplete box may
-be dispatched; after `task-ack`, the agent aligns the task, asks when unclear,
-and writes confirmed conclusions back to the box.
+Role and Session are different:
 
-Role init is stable and cache-friendly:
+- a Role survives Session replacement;
+- a Session is one execution instance, managed or external;
+- compatible downstream Sessions may be reused by the Role;
+- persisted Nodes, Tasks, Deliveries, checkpoint, and Git are the recovery
+  authority when a Session cannot continue.
+
+Two composable Skills define Agent behavior:
+
+- `tent-role`: durable Role responsibility, roster use, downstream review, and
+  user-facing delivery;
+- `tent-task`: the execution protocol for every concrete Tent Task.
+
+A Role executing a Task uses both. A one-shot or managed downstream executor
+uses `tent-task` only.
+
+## 5. Task And Context Card
+
+A Task is one work package and one review unit. It is not a Node and does not
+own a Node exclusively. Multiple Tasks may reference the same Node.
+
+Dispatch persists:
+
+- exact `parentActor` and `reviewer` authority;
+- assignee (`role`, logical `agentId`, or direct AgentProfile path);
+- objective, acceptance criteria, prompt delta, and referenced entities in a
+  Context Card;
+- optional Git WorkspaceLane;
+- context compatibility generation and task delta digest.
+
+Node references live authoritatively in `Task.contextCard.refs.nodes[]`; ids are
+authoritative and paths are refreshable hints. Dispatch drafts are UI state and
+become Tasks only on confirmed dispatch.
+
+The stable managed prompt prefix contains the Task protocol, project
+instructions, Role prompt where applicable, and compatible Agent context.
+Dynamic Task state and TaskInput are appended as a tail. Exact compatibility
+generation is required before a managed Session may reuse a cached prefix.
+
+Task states and transitions are owned by Core. Clients must use Service
+commands and consume projections rather than deriving lifecycle from files.
+
+## 6. Sessions And Runtime
+
+The Service owns managed ACP Session launch, binding, replacement, input
+injection, and terminal projection. External Sessions explicitly enter/claim
+and leave through the same persisted Task contract.
+
+A Session may execute more than one compatible Task, but a Task remains the
+delivery boundary. Replacing a Session must preserve the same Task and
+worktree, rehydrate from persisted context, and never require envelope edits.
+
+Provider/model/key configuration belongs to machine-local AgentProfiles or the
+Agent's native tooling. Tent does not become a general CLI configuration
+manager. Skill and MCP availability may be reported, but Tent does not silently
+rewrite every Agent's native configuration.
+
+## 7. Delivery And Review
+
+A Delivery is an executor's formal result for one Task. It is separate from the
+Task, Session, and any Output Node. It contains a human summary plus optional
+commits, checks, and artifact references.
+
+The executor submits Delivery to the exact persisted reviewer. Downstream Task
+Agents always use review-to-parent and cannot self-accept.
+
+Role-to-user delivery policy is one of:
+
+- `review`: user accepts or rejects;
+- `bypass`: Service may complete without user review under the persisted policy;
+- `agent-decide`: the accountable Role decides whether user review is needed.
+
+Reject may resume the same Task with review feedback. Accept may integrate
+declared commits and then atomically update Task/Delivery state. Integration is
+fail-loud, never pushes, and does not write generic status back to Nodes.
+
+A managed Delivery is published only after the producing turn and workspace
+lane have settled. An Agent report is not sufficient while the same turn can
+still write or commit.
+
+## 8. User And Agent Interaction
+
+The Service persists interaction types separately:
+
+- TaskInput for user/parent feedback to a Task executor;
+- UserAsk for an Agent question requiring a user answer;
+- A2A approval for controlled Agent-to-Agent launch;
+- tool approval where a provider requires it;
+- Delivery review.
+
+`interaction.listPending` is a read-only aggregate projection. Resolution must
+return to the owning domain command; there is no generic "resolve pending"
+mutation.
+
+Annotations belong to Node text. They become Agent work only when the user
+explicitly converts or sends them as Task context/input.
+
+## 9. Git Lanes
+
+Durable Role lane:
 
 ```text
-temp/<role>/init.md
+branch:   tent-role/<role>
+worktree: <workspace>-worktrees/<role>
 ```
 
-It contains only Tent identity, the `RULES.md` pointer, role prompt, and honor
-protocol. Dynamic task data and optional continuation notes never enter
-role init.
-
-Optional **Role Checkpoint** (cooperative Session replacement only):
+Managed Task Agent lane:
 
 ```text
-temp/<role>/checkpoint.md
+branch:   tent-task/<task-id>
+worktree: <workspace>-worktrees/task-<task-id>
 ```
 
-One current continuation note per durable Role (later writes overwrite). It
-holds short judgment text plus Node / Task / Delivery / Git pointers, records
-source Session and `updatedAt`, and is loaded only as **dynamic tail** after
-stable prefix (Context Card, Role init, task bootstrap). It is not a Core
-entity, Task state, Delivery, or OS-temp artifact; crash recovery must work
-from persisted Tent projections and Git alone. CLI: `tent role-checkpoint
-set|show|clear` — on in-workspace `.tent`, `set`/`clear` go through Local
-Service (`role.checkpoint.set|clear`, MutationBus) with `--actor user|<role>`;
-`show` is read-only (explicit `--workspace` wins over cwd). Optional
-`sourceSessionId` is kept only when the persisted Session row has exact
-`workspace` + `roleName` match; otherwise omitted. Service:
-`role.checkpoint.get|set|clear`. agentProfile one-shots never load a Role
-checkpoint.
+Role lanes are durable. Task lanes are temporary and enter exact pending
+reclaim only after terminal Task state, Session settle, clean worktree,
+unambiguous ownership, and required integration. Reclaim never deletes commits,
+branches, Task records, or Role lanes and never performs historical mass-prune.
 
-A task envelope must contain the user prompt that caused dispatch.
-Whether to reuse an existing session is controlled by the user, not Tent.
+Delivery commit ancestry is checked against the Task's dispatch-time base.
+Ordinary executors may not merge parent history into their lane to bypass
+review.
 
-## 5. Completion And Interruption
+## 10. Mutation And Projection
 
-An agent's chat response is still human-readable progress. Formal delivery is a
-**Delivery** record (`dl-`) written under `temp/<role>/deliveries/<dl-id>.md`
-(or `temp/agent-profiles/<profile>/deliveries/…` for profile tasks). The body
-of that file is `Delivery.summary` — the same report text the user reviews —
-with commits, checks, artifactRefs, and review metadata in frontmatter.
+All in-workspace mutations go through the Local Service and MutationBus. The
+CLI, Desktop, and plugins do not directly edit `.tent` operational state.
 
-Only user confirmation (`task.accept`) completes delivery under the default
-`review` policy. Agents submit via `task.deliver` / `tent task deliver`.
+Core fails loud on duplicate identity, stale paths/etags, archived mutation,
+invalid registries, authority mismatch, dirty or ambiguous Git lanes, and
+integration conflicts.
 
-**Accept (task.accept)**
+Events are invalidation signals, not a second fact store. Clients re-query the
+relevant projection after an event. Transport health and projection health are
+distinct; clients must bound queries, expose retryable errors, and avoid
+presenting stale local view state as authoritative graph data.
 
-1. optional workspace checks and commit integration run before Tent mutation
-   when the ready Delivery lists commits;
-2. integrate every commit bound to the ready Delivery into the workspace target
-   branch (normally `main`): fast-forward when the selected commits are exactly
-   the complete `target..last` interval, otherwise use conflict-aware
-   cherry-pick;
-3. if integration succeeds, mark the task `accepted`, record review on the
-   Delivery, leave the accepted Delivery file for operational history/retention
-   (Node frontmatter is not dual-written);
-4. if integration fails, leave workspace state and Task/Delivery state unchanged.
+## 11. Public CLI
 
-A Delivery can be rejected (`task.reject`). This performs no workspace
-integration, keeps occupation via task state (resume path), marks the Delivery
-`rejected`, and lets the agent deliver again.
+Primary collaboration commands attach to the Local Service:
 
-The workspace target branch must be checked out and clean. A cherry-pick batch
-is atomic: Tent records the original target tip and resets the workspace to it
-if any selected commit fails. Tent never pushes. Repeated confirmation of the
-same `-x` cherry-pick is idempotent.
+```text
+tent status
+tent tree
+tent roles
+tent task list|get|dispatch|claim|deliver|accept|reject|cancel|send-input|...
+tent role-init <role>
+tent role-checkpoint set|show|clear
+tent agent status|enter|leave
+tent skill-install [--target ...] [--force]
+```
 
-**Interrupt / force release**
+One-shot migration and external-root maintenance commands are explicitly
+separate from the normal in-workspace mutation path. Retired public commands
+are removed rather than kept as aliases.
 
-- performs no workspace integration;
-- ends occupation by terminating active tasks for the box (interrupt/cancel/fail);
-- removes non-accepted Delivery records for that box;
-- does not write Node `owner`/`status`;
-- preserves the role branch/worktree and all workspace changes.
+## 12. Migration And Conformance
 
-Completion and interruption are distinct core actions even if a UI groups them
-under one release control.
+V0.2 migration is one-shot:
 
-## 6. Proposal, Delivery, And Fork
+- `bx-` ids become `cx-`;
+- `note` becomes `prompt` and `artifact` becomes `output`;
+- legacy owner/status, type R/W/chrome, coordination, and read-only mode are
+  removed;
+- old external roots are copied into `<workspace>/.tent` without deleting the
+  source;
+- retired `RULES.md` is not copied; project rules live in workspace
+  `AGENTS.md` and `.tent/index.md` becomes the structural marker.
 
-Proposal:
+There is no permanent dual-read or dual-write compatibility layer.
 
-- agent-to-user prompt text about one target box;
-- deterministic temporary path `temp/<role>/proposals/<boxId>.md`;
-- no tree box is created or modified by submission;
-- the lifecycle is `pending -> accepted` or `pending -> rejected`;
-- only pending proposals enter triage;
-- accepted and rejected proposal files remain on disk so the submitting agent can read the result.
-
-Delivery:
-
-- formal agent-to-user delivery record (`dl-`) under
-  `temp/<role>/deliveries/<dl-id>.md` (or profile deliveries dir);
-- body is `Delivery.summary` (user-facing report text) plus commits, checks,
-  artifactRefs, and review metadata in frontmatter;
-- lifecycle is `ready -> rejected -> ready` until `task.accept` marks it
-  `accepted` (accepted files remain for operational history/retention);
-- only a ready Delivery enables completion under the default `review` policy.
-
-Fork:
-
-- copies a complete subtree, including artifact boxes;
-- changes only the copied root name;
-- preserves descendant names and content;
-- regenerates all copied box ids;
-- clears copied owner/status;
-- records no permanent lineage or A/B selection history.
-
-Forking is available through the CLI/UI and through automatic adoption of a native
-Obsidian subtree copy.
-
-## 7. Mutation And Conflict Rules
-
-Every Tent mutation uses a short-lived per-Tent global lock at
-`.tent/mutation.lock`. This serializes file writes from the CLI and Obsidian
-without restricting agent work in workspace worktrees.
-
-Core fails loudly on:
-
-- duplicate ids that are not adopted copies;
-- owner or pending-envelope overlap on confirmed dispatch;
-- stale/active mutation lock;
-- dirty or wrong workspace target branch;
-- Git integration conflict;
-- invalid order/type state.
-
-Core does not hard-enforce role competence, prompt precedence, or semantic write
-intent. Agents are expected to stop and ask the user when honor rules conflict.
-
-## 8. OKF Projection
-
-`tent okf-sync` projects resolvable wiki links to relative Markdown links and
-writes root/folder `index.md` plus a root `log.md`. Since Tent has no Git,
-`log.md` is an OKF placeholder rather than repository history.
-
-The vendored validator lives in `vendor/okf-conformance/`.
+OKF validation:
 
 ```text
 npm run okf:check
 npm run okf:check:strict
 ```
 
-## 9. CLI Surface
+## 13. Product Boundary
 
-Run from a Tent root:
-
-```text
-tent role-init <role>
-tent roles
-tent task list|get|claim|deliver|accept|reject|…
-tent task dispatch <boxId> <role> [prompt...] [--as-sub --by <role>]
-tent task dispatch <boxId> --profile <profileId> [prompt...]   # one-shot agentProfile + startSession; does not register a role
-tent dispatch <boxId> <role> [prompt...] [--as-sub --by <role>]   # legacy external root only
-tent task-ack <taskPath>
-tent task-cancel <taskPath>
-tent complete|stamp                  # retired (no Node owner/status dual-write)
-tent status
-tent force-release <boxId>
-tent new-box <name> <type> [parentId]
-tent fork <boxId>
-tent clean-temp [role]
-tent okf-sync
-tent skill-install [--target all|claude|shared-agents] [--force]  # default: all
-tent tree
-```
-
-Formal delivery is **Delivery-only** via `tent task deliver` / `task.deliver`.
-There is no legacy `tent report` path. `stamp` / `complete` are **retired**
-(they no longer dual-write Node `owner`/`status`; use `task.accept` /
-`task.fail`). Desktop and in-workspace mutates use Local Service `task.*` only.
-When a ready Delivery exists, `task.accept` uses that Delivery's commit list; an
-explicit `--commits` list may override. Accepted Deliveries remain as
-operational history (subject to retention). Rejected Deliveries stay until the
-agent delivers again or interrupt/force-release drops non-accepted records.
-
-`status` is a read-only status view for quick orientation: Tent root, workspace,
-pending proposals, pending task envelopes, and active (claimed) tasks.
-
-Legacy `--require-check` was a user-supplied mechanical gate on external-root
-`complete` (now retired with that command). Workspace integration gates live on
-the Service/task accept path instead.
-
-## 10. UI Contract
-
-The UI renders core state and invokes core actions:
-
-- property edits and drag/drop update files immediately;
-- native copy is adopted as fork;
-- chat progress stays conversational; formal report body is `Delivery.summary`;
-- proposals are temporary prompt deliveries resolved by confirmation or rejection;
-- completion integrates commits then accepts the task (Node FM is not dual-written);
-- interruption ends active tasks without integration;
-- pending task envelopes are shown as task envelopes; copying relay text does
-  not consume them, only `task-ack` does;
-- pending task envelopes may be cancelled without force-release; taken tasks
-  require the interruption path because the box is already claimed;
-- immutable names have no rename control;
-- errors are shown rather than silently repaired.
-
-The UI may change presentation, but must not invent a second lifecycle.
+Tent may provide Canvas, Outline, Focus, Search, Pending, and settings surfaces,
+but the presentation is not the Core model. Canvas placement is local view
+state; dragging a card does not reparent a Node. Tent does not become an IDE,
+workspace file explorer, or replacement Agent chat router.

@@ -50,7 +50,6 @@ async function makeWorkspace(name = "agent-roster"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    rules: "# RULES\n\nAgent roster slice\n",
     boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   return workspace;

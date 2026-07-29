@@ -88,7 +88,6 @@ async function makeWs(): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "pcat",
-    rules: "# RULES\n",
     boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(

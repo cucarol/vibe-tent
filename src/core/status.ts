@@ -7,8 +7,9 @@ import { loadTent, type LoadedTent } from "./tree.js";
 import { envelopeIsActiveOccupation } from "./claim.js";
 import { taskReferencedNodeIds } from "./task-node-refs.js";
 import { resolveTentWorkspace } from "./workspace.js";
+import { INDEX_PATH } from "./paths.js";
 
-export const NOT_INSIDE_TENT_MESSAGE = "Not inside a Tent (no .tent/ system root with RULES.md found).";
+export const NOT_INSIDE_TENT_MESSAGE = "Not inside a Tent (no .tent/index.md marker found).";
 
 /** Host factory for Node/Obsidian FsAdapter — Core never imports `src/fs`. */
 export type StatusFsFactory = (systemRoot: string) => FsAdapter;
@@ -90,7 +91,7 @@ export async function renderTentStatus(
 
 /**
  * 定位 tent system root：
- * 1. cwd 本身是 system root（含 RULES.md + types.json 或 temp/）
+ * 1. cwd 本身是 system root（含 index.md marker）
  * 2. cwd 下有 `.tent/` system dir（workspace 根）
  * 3. 向上查找（兼容从子目录调用）
  */
@@ -107,13 +108,7 @@ export async function findTentSystemRoot(cwd = process.cwd()): Promise<string | 
 }
 
 async function isSystemRoot(root: string): Promise<boolean> {
-  if (!(await exists(path.join(root, "RULES.md")))) return false;
-  // 新布局：注册表扁平在 system root；兼容极旧 fixture 仍有嵌套 .tent 的判定略宽松
-  return (
-    (await exists(path.join(root, "types.json"))) ||
-    (await exists(path.join(root, "temp"))) ||
-    (await exists(path.join(root, ".tent")))
-  );
+  return exists(path.join(root, INDEX_PATH));
 }
 
 async function exists(target: string): Promise<boolean> {

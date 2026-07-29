@@ -93,8 +93,6 @@ export type TaskContextCardV1 = {
 export type ContextGenerationInputs = {
   /** Workspace identity string (mounted workspace id or absolute root). */
   workspaceIdentity: string;
-  /** Authoritative RULES.md pointer and/or content digest. */
-  rulesPointerDigest: string;
   /** Authoritative AGENTS.md pointer and/or content digest. */
   agentsPointerDigest: string;
   /** Optional tent-role skill body digest (tk-3s598jtn). */
@@ -198,7 +196,6 @@ export function computeContextGeneration(inputs: ContextGenerationInputs): strin
   const payload = {
     v: CONTEXT_GENERATION_VERSION,
     workspaceIdentity: inputs.workspaceIdentity.trim(),
-    rulesPointerDigest: inputs.rulesPointerDigest.trim(),
     agentsPointerDigest: inputs.agentsPointerDigest.trim(),
     tentRoleDigest: inputs.tentRoleDigest?.trim() || "",
     rolePrompt: inputs.rolePrompt?.trim() || "",
@@ -614,8 +611,6 @@ export type ManagedPromptAssemblyInput = {
   workspaceRoot: string;
   /** Tent system root (`.tent`). */
   systemRoot: string;
-  /** RULES pointer line(s) or digest note. */
-  rulesPointer: string;
   /** AGENTS pointer line(s) or digest note. */
   agentsPointer: string;
   /**
@@ -717,7 +712,6 @@ function formatStableProjectContext(input: ManagedPromptAssemblyInput): string {
     "Tent stable project context v1",
     `workspaceRoot: ${input.workspaceRoot}`,
     `systemRoot: ${input.systemRoot}`,
-    `RULES: ${input.rulesPointer}`,
     `AGENTS: ${input.agentsPointer}`,
     "CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent).",
     "Do not resolve operational files as <workspaceRoot>/temp — use .tent/temp.",

@@ -254,7 +254,6 @@ test("plugin settings:migrates legacy defaults", () => {
           { name: " ", color: "gray" },
         ],
       },
-      rulesTemplate: "# Custom",
     },
     dispatchPrefs: {
       copyPromptToClipboard: false,
@@ -282,7 +281,6 @@ test("plugin settings:migrates legacy defaults", () => {
     color: "purple",
     description: "Plan",
   });
-  assert.equal(settings.newTentDefaults.rulesTemplate, "# Custom");
 });
 
 test("plugin settings:default type registry is V0.2 goal|prompt|output", () => {

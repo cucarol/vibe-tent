@@ -8,7 +8,6 @@ import type { RoleDefinition } from "../core/skillRoleRegistry.js";
 import { TYPE_COLOR_PALETTE, typeColorValue } from "./colors.js";
 import type TentPlugin from "./main.js";
 import {
-  DEFAULT_RULES_TEMPLATE,
   cloneTypeRegistry,
   type Appearance,
   type TriageReminder,
@@ -98,20 +97,6 @@ export class TentSettingTab extends PluginSettingTab {
     this.drawDefaultTypes(parent);
     this.drawDefaultRoles(parent);
 
-    settingHeading(parent, "默认 RULES.md");
-    const rules = new Setting(parent)
-      .setName("规则模板")
-      .setDesc("新建帐时写入 RULES.md；{tent} 会替换为帐名。");
-    rules.settingEl.addClass("tent-settings-rules-row");
-    rules.addTextArea((textarea) => {
-      textarea
-        .setValue(this.plugin.settings.newTentDefaults.rulesTemplate)
-        .onChange(async (value) => {
-          this.plugin.settings.newTentDefaults.rulesTemplate = value || DEFAULT_RULES_TEMPLATE;
-          await this.plugin.saveSettings();
-        });
-      textarea.inputEl.addClass("tent-settings-rules");
-    });
   }
 
   private drawDefaultTypes(parent: HTMLElement) {

@@ -47,7 +47,6 @@ async function mountScaffold(
   const workspaceFs = new NodeFs(workspace);
   await scaffoldInWorkspace(workspaceFs, {
     name: "rel-svc",
-    rules: "# RULES\n\nrelation service\n",
     boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   const systemFs = new NodeFs(path.join(workspace, ".tent"));

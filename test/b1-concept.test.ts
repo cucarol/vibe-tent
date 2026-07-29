@@ -33,10 +33,9 @@ test("scaffoldInWorkspace:写 <workspace>/.tent 且 gitignore 忽略系统目录
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "demo",
-    rules: "# RULES\n\nbody\n",
     boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
-  assert.equal(await fsa.exists(".tent/RULES.md"), true);
+  assert.equal(await fsa.exists(".tent/index.md"), true);
   assert.equal(await fsa.exists(".tent/types.json"), true);
   assert.equal(await fsa.exists(".tent/temp"), true);
   assert.equal(await fsa.exists(".tent/attachments"), true);
@@ -51,7 +50,7 @@ test("scaffoldInWorkspace:写 <workspace>/.tent 且 gitignore 忽略系统目录
 test("loadTent:temp 与 operational 不进 concept 索引", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b1-op-"));
   const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
+  await scaffoldTent(fsa, { name: "x" });
   await fsa.mkdir("temp/role/tasks");
   await fsa.writeFile(
     "temp/role/tasks/task.md",
@@ -69,7 +68,7 @@ test("loadTent:temp 与 operational 不进 concept 索引", async () => {
 test("createBox usable concept: no coordination/R/W projection", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b1-usable-"));
   const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
+  await scaffoldTent(fsa, { name: "x" });
   const env = { fs: fsa, clock: { now: () => "t" }, tentName: "x", rand: () => 0.2 };
   const id = await createBox(env as any, { parentPath: "", name: "idea", type: "prompt" });
   assert.match(id, /^cx-/);
@@ -108,7 +107,7 @@ test("migration:bx→cx 与 note/artifact→prompt/output 纯函数 + 落盘", a
     "legacy/legacy.md",
     "---\nid: bx-leg001\ntype: artifact\n---\n# L\n",
   );
-  await fsa.writeFile("RULES.md", "# r\n");
+  await fsa.writeFile("index.md", "---\ntype: index\n---\n# Index\n");
 
   const dry = await migrateLegacySchema(fsa, { dryRun: true, rand: () => 0.1 });
   assert.ok(dry.idMap.some((e) => e.from === "bx-leg001"));
@@ -222,7 +221,7 @@ test("findCherryPick:仅目标分支可达历史，其他分支痕迹不得误�
 test("migration:嵌套 .tent 注册表单次搬迁后切断 dual-read", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b1-lift-"));
   const fsa = new NodeFs(dir);
-  await fsa.writeFile("RULES.md", "# r\n");
+  await fsa.writeFile("index.md", "---\ntype: index\n---\n# Index\n");
   await fsa.mkdir(".tent");
   await fsa.writeFile(
     ".tent/types.json",
@@ -318,7 +317,7 @@ test("migration:operational 引用有界改写且幂等", async () => {
 
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b1-oprw-"));
   const fsa = new NodeFs(dir);
-  await fsa.writeFile("RULES.md", "# r\n");
+  await fsa.writeFile("index.md", "---\ntype: index\n---\n# Index\n");
   await fsa.mkdir("work");
   await fsa.writeFile("work/work.md", "---\nid: bx-abc123\ntype: prompt\n---\n# w\n");
   await fsa.mkdir("temp/role/tasks");
@@ -337,7 +336,7 @@ test("migration:operational 引用有界改写且幂等", async () => {
 test("dispatch/claim:V0.2 无 coordination 门；prompt 与 output 均可认领", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b1-dispatch-"));
   const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
+  await scaffoldTent(fsa, { name: "x" });
   const env = { fs: fsa, clock: { now: () => "2026-07-12T00:00:00.000Z" }, tentName: "x", tentRoot: dir, rand: () => 0.3 };
   // type "note" is not a permanent alias — createBox rejects unknown types
   await assert.rejects(
@@ -389,7 +388,7 @@ test("CLI makeEnv:无 system root 明确失败，不回退 cwd", async () => {
 test("唯一锁:withTentMutation 只使用 system root mutation.lock", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b1-lock-"));
   const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
+  await scaffoldTent(fsa, { name: "x" });
   // 嵌套锁路径即使存在也不应被 withTentMutation 使用
   await fsa.mkdir(".tent");
   await fsa.writeFile(".tent/mutation.lock", "stale\n");
@@ -494,7 +493,7 @@ test("importExternalTentRoot:拒绝覆盖已有 .tent", async () => {
   const workspace = path.join(parent, "ws");
   await fs.mkdir(workspace);
   await fs.mkdir(path.join(workspace, ".tent"));
-  await fs.writeFile(path.join(workspace, ".tent", "RULES.md"), "# existing\n");
+  await fs.writeFile(path.join(workspace, ".tent", "index.md"), "---\ntype: index\n---\n# Existing\n");
 
   await assert.rejects(
     () =>
@@ -509,7 +508,7 @@ test("importExternalTentRoot:拒绝覆盖已有 .tent", async () => {
   );
   // Source untouched
   assert.equal(await fsaExists(path.join(source, "MIGRATED.md")), false);
-  assert.match(await fs.readFile(path.join(workspace, ".tent", "RULES.md"), "utf8"), /existing/);
+  assert.match(await fs.readFile(path.join(workspace, ".tent", "index.md"), "utf8"), /Existing/);
 });
 
 test("importExternalTentRoot:live 复制保留层级/正文/注册表/task 且不删源", async () => {
@@ -532,7 +531,9 @@ test("importExternalTentRoot:live 复制保留层级/正文/注册表/task 且�
   assert.match(await fs.readFile(path.join(source, "MIGRATED.md"), "utf8"), /Migrated/);
 
   const systemRoot = path.join(workspace, ".tent");
-  assert.ok(await fsaExists(path.join(systemRoot, "RULES.md")));
+  assert.ok(await fsaExists(path.join(systemRoot, "index.md")));
+  assert.equal(await fsaExists(path.join(systemRoot, "RULES.md")), false);
+  assert.ok(report.skipped.some((entry) => entry.includes("retired-rules:RULES.md")));
   assert.ok(await fsaExists(path.join(systemRoot, "types.json")));
   assert.ok(await fsaExists(path.join(systemRoot, "roles.json")));
   assert.ok(await fsaExists(path.join(systemRoot, "tags.json")));
@@ -618,7 +619,7 @@ test("importExternalTentRoot:中途 schema 失败后无 .tent / marker / staging
   });
   assert.equal(report.copied, true);
   assert.equal(report.sourceMarked, true);
-  assert.ok(await fsaExists(path.join(workspace, ".tent", "RULES.md")));
+  assert.ok(await fsaExists(path.join(workspace, ".tent", "index.md")));
   assert.ok(await fsaExists(path.join(source, "MIGRATED.md")));
 });
 
@@ -697,8 +698,8 @@ test("importExternalTentRoot:不跟随符号链接并记入 skipped/warnings", a
   assert.match(allNotes, /skipped symlink \(not followed\): leaked-dir/);
 
   // Destination content must not contain the outside secret payload.
-  const rules = await fs.readFile(path.join(systemRoot, "RULES.md"), "utf8");
-  assert.doesNotMatch(rules, /SECRET_OUTSIDE_SOURCE/);
+  const index = await fs.readFile(path.join(systemRoot, "index.md"), "utf8");
+  assert.doesNotMatch(index, /SECRET_OUTSIDE_SOURCE/);
   assert.ok(await fsaExists(path.join(systemRoot, "goal", "goal.md")));
 });
 

@@ -418,7 +418,6 @@ test("normalizeContextCardNodeRef + buildTaskContextCard: full card; reject fake
   );
   const gen = computeContextGeneration({
     workspaceIdentity: "ws",
-    rulesPointerDigest: "r",
     agentsPointerDigest: "a",
   });
   assert.throws(

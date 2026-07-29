@@ -17,8 +17,11 @@ export async function makeTent(): Promise<string> {
         )
       );
   };
-  // System root markers: CLI must locate RULES.md (+ types/temp) and must not fall back to cwd.
-  await fs.writeFile(path.join(dir, "RULES.md"), "# test tent\n");
+  // System root marker: CLI must locate index.md and must not fall back to cwd.
+  await fs.writeFile(
+    path.join(dir, "index.md"),
+    '---\ntype: index\nokf_version: "0.1"\n---\n# Index\n',
+  );
   await fs.writeFile(
     path.join(dir, "types.json"),
     JSON.stringify(

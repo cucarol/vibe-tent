@@ -51,7 +51,6 @@ function fixtureContextCard(overrides?: {
   const nodePath = overrides?.nodePath ?? "inbox";
   const contextGeneration = computeContextGeneration({
     workspaceIdentity: "reclaim-fixture",
-    rulesPointerDigest: "reclaim-rules",
     agentsPointerDigest: "reclaim-agents",
     extraStable: { task: "worktree-reclaim", nodeId },
   });

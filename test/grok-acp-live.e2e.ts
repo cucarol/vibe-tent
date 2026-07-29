@@ -76,7 +76,6 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "grok-e2e",
-    rules: "# RULES\n\nReal Grok ACP smoke. Do not use tools.\n",
     boxes: [],
   });
   await fsa.writeFile(

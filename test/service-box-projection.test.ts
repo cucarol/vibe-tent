@@ -29,7 +29,6 @@ async function makeWorkspace(name = "box-projection"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    rules: "# RULES\n\nBox projection service\n",
     boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(

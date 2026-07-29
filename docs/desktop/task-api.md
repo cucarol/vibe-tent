@@ -344,7 +344,6 @@ CLI: `tent task accept <taskPath> --actor <user\|role> [--outputs id,id]`.
 | `tent task-ack` | `task.claim` |
 | `tent task-cancel` | `task.cancel` |
 | *(removed)* `tent report` | `task.deliver` only — no dual track |
-| `tent complete` / `tent stamp` | external-root stamp helpers; review path is `task.accept` |
 | `tent force-release` | `task.interrupt` |
 | `tent fork` | `docs.fork` |
 | `tent propose` | `proposal.submit` |
@@ -427,7 +426,7 @@ the service MUST:
 
 An approval is bound to its exact `workspaceId`, `taskPath`, and `profileId`; it cannot be replayed for another launch target. `a2a.resolve` is user-only. Role-agent standing roster paths never enqueue approvals.
 
-**Prohibited:** using skill text, RULES.md, or honor manifest alone as spawn authorization; trusting ordinary RPC `a2aPolicy` to raise authority; re-inferring Role authorization from profileId history when Task.agentId is present.
+**Prohibited:** using skill text, workspace `AGENTS.md`, or an honor manifest alone as spawn authorization; trusting ordinary RPC `a2aPolicy` to raise authority; re-inferring Role authorization from profileId history when Task.agentId is present.
 **Orthogonal:** manifest readable/writable remains an honor contract for file edits after claim; it does not authorize process start.
 **Clients** call `task.startSession` (or dispatch with `startSession: true`); they never call `AgentRuntimePort` directly.
 **Roles** may store `a2aPolicy` and `roster` (**agentIds** only) — never provider secrets, model, or tokens.

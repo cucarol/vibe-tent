@@ -12,3 +12,11 @@
 - 长期协作绑定 Tent task/role/agent profile；临时调查使用 Tent 管理的临时 task/session，可以不认领长期 role，但仍需保留统一的运行状态、上下文与交付链路。
 
 目标是节省主 Agent 的 token 与上下文，把它留给真正需要连续判断、与 user 对齐和最终验收的工作。
+
+## Project Conventions
+
+- Use Conventional Commits: `feat|fix|chore|ci|test|refactor(scope): description`.
+- Durable Role branches use `tent-role/<role>`. Release tags exactly match `manifest.json.version` and do not use a `v` prefix.
+- Put rule and authority semantics in `src/core/` and `docs/SPEC.md`; keep CLI and plugin layers thin.
+- `.tent/` is local collaboration state and must not be committed to the product repository.
+- Ask cuca before changing unresolved product or architecture decisions.

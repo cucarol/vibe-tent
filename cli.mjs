@@ -430,7 +430,7 @@ function agentProfileManifestPath(profileId, taskId) {
 function isSystemNoteName(fileName) {
   return SYSTEM_REGISTRY_FILES.has(fileName) || fileName === "MIGRATED.md";
 }
-var TENT_SYSTEM_DIR, TYPE_REGISTRY_PATH, ROLES_REGISTRY_PATH, TAGS_REGISTRY_PATH, ORDER_PATH, MUTATION_LOCK_PATH, RULES_PATH, WORKSPACE_SETTINGS_PATH, ANNOTATIONS_PATH, TEMP_DIR, ATTACHMENTS_DIR, AGENT_PROFILES_TEMP_DIR, OPERATIONAL_TOP_LEVEL, SYSTEM_REGISTRY_FILES;
+var TENT_SYSTEM_DIR, TYPE_REGISTRY_PATH, ROLES_REGISTRY_PATH, TAGS_REGISTRY_PATH, ORDER_PATH, MUTATION_LOCK_PATH, INDEX_PATH, WORKSPACE_SETTINGS_PATH, ANNOTATIONS_PATH, TEMP_DIR, ATTACHMENTS_DIR, AGENT_PROFILES_TEMP_DIR, OPERATIONAL_TOP_LEVEL, SYSTEM_REGISTRY_FILES;
 var init_paths = __esm({
   "src/core/paths.ts"() {
     "use strict";
@@ -440,7 +440,7 @@ var init_paths = __esm({
     TAGS_REGISTRY_PATH = "tags.json";
     ORDER_PATH = "order.json";
     MUTATION_LOCK_PATH = "mutation.lock";
-    RULES_PATH = "RULES.md";
+    INDEX_PATH = "index.md";
     WORKSPACE_SETTINGS_PATH = "settings.json";
     ANNOTATIONS_PATH = "annotations.json";
     TEMP_DIR = "temp";
@@ -458,10 +458,9 @@ var init_paths = __esm({
       TAGS_REGISTRY_PATH,
       ORDER_PATH,
       MUTATION_LOCK_PATH,
-      RULES_PATH,
       WORKSPACE_SETTINGS_PATH,
       ANNOTATIONS_PATH,
-      "index.md",
+      INDEX_PATH,
       "log.md"
     ]);
   }
@@ -1619,8 +1618,7 @@ async function ensureRoleInit(fs10, role, tentName) {
   const body = `# Role Init
 
 - Tent: ${tentName}
-- Rules (CLI / system-root relative): RULES.md
-- Rules (workspace file read): .tent/RULES.md
+- Agent rules (workspace file read): AGENTS.md at the workspace root
 - Role registry (workspace file read): .tent/roles.json (or run \`tent roles\` from workspace root)
 
 ## Role Prompt
@@ -1670,7 +1668,6 @@ async function writeTaskEnvelope(fs10, clock, input) {
   }
   const contextGeneration = input.contextGeneration?.trim() || computeContextGeneration({
     workspaceIdentity: input.workspace?.workspace || "local-workspace",
-    rulesPointerDigest: "dispatch-default-rules",
     agentsPointerDigest: "dispatch-default-agents",
     extraStable: {
       assigneeKind,
@@ -1967,7 +1964,6 @@ function computeContextGeneration(inputs) {
   const payload = {
     v: CONTEXT_GENERATION_VERSION,
     workspaceIdentity: inputs.workspaceIdentity.trim(),
-    rulesPointerDigest: inputs.rulesPointerDigest.trim(),
     agentsPointerDigest: inputs.agentsPointerDigest.trim(),
     tentRoleDigest: inputs.tentRoleDigest?.trim() || "",
     rolePrompt: inputs.rolePrompt?.trim() || "",
@@ -4087,7 +4083,7 @@ ${box.body ?? `# ${boxName}
     nested(TAGS_REGISTRY_PATH),
     JSON.stringify(DEFAULT_TAG_REGISTRY, null, 2) + "\n"
   );
-  await workspaceFs.writeFile(nested(RULES_PATH), options.rules);
+  await workspaceFs.writeFile(nested(INDEX_PATH), tentIndexMarker());
   await ensureWorkspaceGitignore(workspaceFs);
   return { systemRootRelative: systemRelative };
 }
@@ -4120,6 +4116,14 @@ function validateBoxName(value) {
   if (/[\r\n]/.test(name)) throw new Error("Box name cannot contain newlines.");
   if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(name)) throw new Error("Box name cannot contain control characters.");
   return name;
+}
+function tentIndexMarker() {
+  return `---
+type: index
+okf_version: "0.1"
+---
+# Index
+`;
 }
 
 // src/core/task-lifecycle.ts
@@ -5056,7 +5060,8 @@ function git(cwd, args) {
 }
 
 // src/core/status.ts
-var NOT_INSIDE_TENT_MESSAGE = "Not inside a Tent (no .tent/ system root with RULES.md found).";
+init_paths();
+var NOT_INSIDE_TENT_MESSAGE = "Not inside a Tent (no .tent/index.md marker found).";
 async function renderTentStatus(cwd = process.cwd(), role = process.env.TENT_ROLE, createFs) {
   const systemRoot = await findTentSystemRoot(cwd);
   if (!systemRoot) throw new Error(NOT_INSIDE_TENT_MESSAGE);
@@ -5126,8 +5131,7 @@ async function findTentSystemRoot(cwd = process.cwd()) {
   }
 }
 async function isSystemRoot(root) {
-  if (!await exists(path3.join(root, "RULES.md"))) return false;
-  return await exists(path3.join(root, "types.json")) || await exists(path3.join(root, "temp")) || await exists(path3.join(root, ".tent"));
+  return exists(path3.join(root, INDEX_PATH));
 }
 async function exists(target) {
   try {
@@ -5154,8 +5158,7 @@ var NESTED_REGISTRY_FILES = [
   TYPE_REGISTRY_PATH,
   ROLES_REGISTRY_PATH,
   TAGS_REGISTRY_PATH,
-  ORDER_PATH,
-  RULES_PATH
+  ORDER_PATH
 ];
 function planIdRemap(legacyIds, existing, rand = Math.random) {
   const used = new Set(existing);
@@ -5551,9 +5554,9 @@ function replaceExactIdTokens(text, from, to) {
 var IMPORT_SKIP_DIR_NAMES = /* @__PURE__ */ new Set([".git", "node_modules"]);
 var IMPORT_STAGING_DIR_PREFIX = `${TENT_SYSTEM_DIR}.import-staging-`;
 async function isLegacyTentRoot(root) {
-  const rules = nodePath3.join(root, RULES_PATH);
-  if (!await pathExists2(rules)) return false;
-  return await pathExists2(nodePath3.join(root, TYPE_REGISTRY_PATH)) || await pathExists2(nodePath3.join(root, TEMP_DIR)) || await pathExists2(nodePath3.join(root, TENT_SYSTEM_DIR)) || await pathExists2(nodePath3.join(root, ORDER_PATH)) || await pathExists2(nodePath3.join(root, "index.md"));
+  const hasMarker = await pathExists2(nodePath3.join(root, INDEX_PATH)) || await pathExists2(nodePath3.join(root, "RULES.md"));
+  if (!hasMarker) return false;
+  return await pathExists2(nodePath3.join(root, TYPE_REGISTRY_PATH)) || await pathExists2(nodePath3.join(root, TEMP_DIR)) || await pathExists2(nodePath3.join(root, TENT_SYSTEM_DIR)) || await pathExists2(nodePath3.join(root, ORDER_PATH));
 }
 async function importExternalTentRoot(options) {
   const dryRun = options.dryRun === true;
@@ -5580,7 +5583,7 @@ async function importExternalTentRoot(options) {
   }
   if (!await isLegacyTentRoot(sourceRoot)) {
     throw new Error(
-      `Source does not look like a Tent root (need RULES.md and types/temp/.tent/order/index): ${sourceRoot}`
+      `Source does not look like a Tent root (need index.md or legacy RULES.md plus types/temp/.tent/order): ${sourceRoot}`
     );
   }
   if (samePath(sourceRoot, systemRoot)) {
@@ -5647,6 +5650,9 @@ async function importExternalTentRoot(options) {
     await copyHostTree(sourceRoot, stagingRoot, skipped, warnings);
     if (options._testHooks?.afterCopy) await options._testHooks.afterCopy(stagingRoot);
     const destFs = createFs(stagingRoot);
+    if (!await destFs.exists(INDEX_PATH)) {
+      await destFs.writeFile(INDEX_PATH, tentIndexMarker());
+    }
     const schema = await migrateLegacySchema(destFs, {
       dryRun: false,
       rand: options.rand,
@@ -5742,6 +5748,10 @@ async function copyHostTree(from, to, skipped, warnings, relBase = "") {
     const relPosix = rel.replace(/\\/g, "/");
     const src = nodePath3.join(from, entry2.name);
     const dst = nodePath3.join(to, entry2.name);
+    if (entry2.name === "RULES.md") {
+      skipped.push(`retired-rules:${relPosix}`);
+      continue;
+    }
     if (entry2.isSymbolicLink()) {
       noteSkippedSymlink(relPosix, skipped, warnings);
       continue;
@@ -8470,9 +8480,6 @@ var LEGACY_MUTATION_COMMANDS = /* @__PURE__ */ new Set([
   "dispatch",
   "task-ack",
   "task-cancel",
-  "complete",
-  "stamp",
-  "grant-readable",
   "new-box",
   "tag",
   "untag",
@@ -8671,7 +8678,7 @@ Usage: tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copi
   if (!tentCommands.has(cmd)) {
     return fail(
       `Unknown command: ${cmd || "(empty)"}
-Commands: new migrate import task agent agent-hooks role-init role-checkpoint roles dispatch task-ack task-cancel propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
+Commands: new migrate import task agent agent-hooks role-init role-checkpoint roles dispatch task-ack task-cancel propose status new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
     );
   }
   const env = await makeEnv();
@@ -8812,16 +8819,6 @@ ${r.relayPrompt}`);
       console.log(`\u2713 Proposal submitted for triage: ${proposal.path}`);
       break;
     }
-    case "complete": {
-      return fail(
-        "complete is retired: Node owner/status dual-write is removed. Use tent task deliver/accept (or task.fail)."
-      );
-    }
-    case "stamp": {
-      return fail(
-        "stamp is retired: Node owner/status dual-write is removed. Use tent task deliver/accept (or task.fail)."
-      );
-    }
     case "status": {
       if (args.length > 0) return fail("Usage: tent status");
       try {
@@ -8833,11 +8830,6 @@ ${r.relayPrompt}`);
         throw error;
       }
       break;
-    }
-    case "grant-readable": {
-      return fail(
-        "grant-readable is retired in V0.2: Node readable/writable axes are removed; use Task context pointers."
-      );
     }
     case "new-box": {
       const [name, type, parentId] = args;
@@ -9127,9 +9119,7 @@ Legacy direct-core mutations (external / non-.tent system root only \u2014 migra
   dispatch <boxId> <role> <prompt>   Create a pending task envelope.
   task-ack <taskPath>                Mark a task taken and claim its box (legacy claim).
   task-cancel <taskPath>             Delete a pending task envelope.
-  complete|stamp                     Retired (no Node owner/status dual-write; use task.*).
   force-release <boxId>              Interrupt/cancel active tasks for the box (no FM write).
-  grant-readable                     Retired (V0.2: no Node R/W axes).
   new-box <name> <type> [parentId]   Create a box (type: goal|prompt|output[-secondary]).
   tag|untag <boxId> <tag>            Add or remove a tag.
   tag-new | tag-rm                   Manage the tag registry.
@@ -9153,8 +9143,7 @@ async function readVaultPluginSettings(vault) {
     return {
       tentsRoot: root || "tents",
       ...defaults?.typeRegistry ? { typeRegistry: normalizeRegistry(defaults.typeRegistry) } : {},
-      ...defaults?.rolesRegistry ? { rolesRegistry: normalizeTemplateRoles(defaults.rolesRegistry) } : {},
-      ...typeof defaults?.rulesTemplate === "string" && defaults.rulesTemplate.trim() ? { rulesTemplate: defaults.rulesTemplate } : {}
+      ...defaults?.rolesRegistry ? { rolesRegistry: normalizeTemplateRoles(defaults.rolesRegistry) } : {}
     };
   } catch {
     return { tentsRoot: "tents" };
@@ -9175,19 +9164,8 @@ async function newTent(target, vault) {
   if (await fsa.exists(".tent")) return fail(`Target is already a Tent: ${workspaceRoot}`);
   await fsmod.mkdir(workspaceRoot, { recursive: true });
   const name = path9.basename(workspaceRoot);
-  const fallbackRules = `# ${name} - Project Rules
-
-> Local project rules for this Tent; edit freely.
-> Mechanism-level rules live in the Tent repository docs/SPEC.md; agent behavior contracts live in the tent-role and tent-task skills.
-
-- Output workspace: ${workspaceRoot.replaceAll("\\", "/")}
-- Commit / naming conventions: <fill in>
-- Other project rules: <fill in>
-`;
-  const rules = pluginSettings?.rulesTemplate ? pluginSettings.rulesTemplate.replaceAll("{tent}", name) : fallbackRules;
   await scaffoldInWorkspace(fsa, {
     name,
-    rules,
     typeRegistry: pluginSettings?.typeRegistry,
     rolesRegistry: pluginSettings?.rolesRegistry
   });

@@ -19,7 +19,6 @@ async function makeWorkspace(name = "ws-ann"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    rules: "# RULES\n\nAnnotation service\n",
     boxes: [{ name: "doc", type: "prompt", body: "hello world hello\n" }],
   });
   return workspace;

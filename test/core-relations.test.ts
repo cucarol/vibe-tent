@@ -27,7 +27,6 @@ async function makeSystemRoot(): Promise<{ workspace: string; systemFs: NodeFs }
   const workspaceFs = new NodeFs(workspace);
   await scaffoldInWorkspace(workspaceFs, {
     name: "rel-core",
-    rules: "# RULES\n\ncore relations\n",
     boxes: [
       { name: "Alpha", type: "prompt", body: "# Alpha\n" },
       { name: "Beta", type: "prompt", body: "# Beta\n" },

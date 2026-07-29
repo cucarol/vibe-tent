@@ -7,7 +7,7 @@ description: "Execute one concrete Tent (帷幄) Task from its persisted Context
 
 Apply this contract whenever executing a Tent Task. Every Tent Agent uses it while doing concrete work; a durable Role additionally applies `tent-role`.
 
-Load unchanged Skill text once per Session. For later compatible Tasks, append only the new Context Card and incremental TaskInput/review delta; never repeat the stable prefix merely to remind the Agent.
+Load unchanged Skill text once per compatible `contextGeneration`. For later compatible Tasks, append only the new Context Card and incremental TaskInput/review delta; never repeat the stable prefix merely to remind the Agent.
 
 ## Resolve the authoritative Task
 
@@ -17,7 +17,9 @@ Load unchanged Skill text once per Session. For later compatible Tasks, append o
 4. Resolve Node refs by stable ID; treat any stored path as a refreshable hint. Node references are non-exclusive context, not tree locks or authority.
 5. Fail loud to the parent when required context or a declared ref is missing. Never infer it from prompt memory, stale Session handles, old `claims`, or a manifest.
 
-Read [references/paths.md](references/paths.md) for path/lane details, [references/session-boundaries.md](references/session-boundaries.md) for managed/external recovery, and [references/task-cli.md](references/task-cli.md) only for commands needed by the current responsibility.
+The Task envelope and Context Card are the execution contract. Referenced Node bodies provide project context; they are not the Task definition or Delivery. Delivery is a separate terminal record created only after the Task contract is satisfied.
+
+External Agents with the installed Skill bundle may read [references/paths.md](references/paths.md) for path/lane details, [references/session-boundaries.md](references/session-boundaries.md) for managed/external recovery, and [references/task-cli.md](references/task-cli.md) only for commands needed by the current responsibility. Managed ACP bootstrap must include every required rule from this main body and must not assume those relative reference files are available.
 
 ## Work inside the recorded lane
 

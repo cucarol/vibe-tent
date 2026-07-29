@@ -376,7 +376,6 @@ async function makeCollabWorkspace(): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "collab",
-    rules: "# RULES\n\nDesktop collab smoke\n",
     boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(

@@ -75,7 +75,7 @@ async function makeWorkspace(
 ): Promise<string> {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-replace-ws-"));
   const fsa = new NodeFs(workspace);
-  await scaffoldInWorkspace(fsa, { name, rules: "# RULES\n\nreplaceSession tests\n", boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }] });
+  await scaffoldInWorkspace(fsa, { name, boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }] });
   await fsa.writeFile(".tent/roles.json", JSON.stringify({
     roles: [
       {

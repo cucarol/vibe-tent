@@ -398,7 +398,6 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
   const fsa = new NodeFs(dir);
   await scaffoldInWorkspace(fsa, {
     name: "parent-rpc",
-    rules: "# RULES\n",
     boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-parent-rpc-data-"));

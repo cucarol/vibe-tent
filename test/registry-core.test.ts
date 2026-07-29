@@ -37,12 +37,11 @@ import {
 } from "../src/core/tags.js";
 import { makeTent } from "./helpers.js";
 
-test("scaffoldTent:core 生成自包含帐骨架(RULES,不进 SPEC/CLAUDE/AGENTS)", async () => {
+test("scaffoldTent:core 生成自包含帐骨架(index,不进 SPEC/CLAUDE/AGENTS)", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-scaffold-"));
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, {
     name: "demo",
-    rules: "# RULES\n\n规则正文\n",
     boxes: [
       { name: "aim", type: "goal", body: "# demo · aim" },
       { name: "out", type: "asset" },
@@ -59,10 +58,10 @@ test("scaffoldTent:core 生成自包含帐骨架(RULES,不进 SPEC/CLAUDE/AGENTS
 
   const emptyDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-scaffold-empty-"));
   const emptyFs = new NodeFs(emptyDir);
-  await scaffoldTent(emptyFs, { name: "empty", rules: "# RULES\n" });
+  await scaffoldTent(emptyFs, { name: "empty" });
   assert.deepEqual((await loadTent(emptyFs)).roots, []);
   assert.equal(await fsa.exists("temp/temp.md"), false);
-  assert.equal(await fsa.readFile("RULES.md"), "# RULES\n\n规则正文\n");
+  assert.match(await fsa.readFile("index.md"), /type: index/);
   assert.equal(await fsa.exists("SPEC.md"), false);
   assert.equal(await fsa.exists("CLAUDE.md"), false);
   assert.equal(await fsa.exists("AGENTS.md"), false);
@@ -81,7 +80,7 @@ test("scaffoldTent:core 生成自包含帐骨架(RULES,不进 SPEC/CLAUDE/AGENTS
     path.join(os.tmpdir(), "tent-scaffold-invalid-"),
   );
   await assert.rejects(
-    () => scaffoldTent(new NodeFs(invalidDir), { name: "", rules: "# RULES" }),
+    () => scaffoldTent(new NodeFs(invalidDir), { name: "" }),
     /Tent name cannot be empty\./,
   );
 });
@@ -246,7 +245,6 @@ test("role 注册表:core 创建修改删除与 scaffold 模板写入", async ()
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, {
     name: "demo",
-    rules: "# RULES\n",
     // Custom secondary may be present; V0.2 normalize strips R/W/color chrome to tier only
     typeRegistry: {
       goal: { tier: "base" },
@@ -296,7 +294,6 @@ test("role 注册表:可选 cli 宿主配置会校验并保留", async () => {
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, {
     name: "demo",
-    rules: "# RULES\n",
     rolesRegistry: {
       roles: [
         {
@@ -337,7 +334,6 @@ test("role 注册表: a2aPolicy allow|ask|deny 默认为 deny，不存 secret", 
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, {
     name: "demo",
-    rules: "# RULES\n",
     rolesRegistry: {
       roles: [
         { name: "plain" },
@@ -384,7 +380,6 @@ test("role 注册表: roster trim 去重，只存 agentId；disk allowedProfiles
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, {
     name: "demo",
-    rules: "# RULES\n",
     rolesRegistry: {
       roles: [
         {

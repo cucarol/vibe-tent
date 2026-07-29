@@ -9,7 +9,7 @@ import { boxNotePath } from "./tree.js";
 import { makeUniqueConceptId } from "./id.js";
 import {
   ATTACHMENTS_DIR,
-  RULES_PATH,
+  INDEX_PATH,
   TEMP_DIR,
   TENT_SYSTEM_DIR,
   systemRootFromWorkspace,
@@ -25,8 +25,6 @@ export interface ScaffoldBox {
 
 export interface ScaffoldTentOptions {
   name: string;
-  /** 帐根 RULES.md 正文:本项目约定(global rule)。机制规范不进帐(见仓库 docs/SPEC.md)。 */
-  rules: string;
   /** 顶层节点;由 genesis grill 决定。缺省 = 空帐(不强制建顶层文件夹)。 */
   boxes?: ScaffoldBox[];
   typeRegistry?: TypeRegistry;
@@ -40,7 +38,6 @@ export interface ScaffoldTentOptions {
 export async function scaffoldTent(fs: FsAdapter, options: ScaffoldTentOptions): Promise<void> {
   const name = options.name.trim();
   if (!name) throw new Error("Tent name cannot be empty.");
-  if (!options.rules.trim()) throw new Error("RULES.md content cannot be empty.");
 
   const usedIds = new Set<string>();
   for (const box of options.boxes ?? []) {
@@ -59,7 +56,7 @@ export async function scaffoldTent(fs: FsAdapter, options: ScaffoldTentOptions):
   await fs.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(options.typeRegistry ?? DEFAULT_TYPE_REGISTRY, null, 2) + "\n");
   await fs.writeFile(ROLES_REGISTRY_PATH, JSON.stringify(options.rolesRegistry ?? { roles: [] }, null, 2) + "\n");
   await fs.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(DEFAULT_TAG_REGISTRY, null, 2) + "\n");
-  await fs.writeFile(RULES_PATH, options.rules);
+  await fs.writeFile(INDEX_PATH, tentIndexMarker());
 }
 
 /**
@@ -109,7 +106,7 @@ export async function scaffoldInWorkspace(
     nested(TAGS_REGISTRY_PATH),
     JSON.stringify(DEFAULT_TAG_REGISTRY, null, 2) + "\n"
   );
-  await workspaceFs.writeFile(nested(RULES_PATH), options.rules);
+  await workspaceFs.writeFile(nested(INDEX_PATH), tentIndexMarker());
 
   await ensureWorkspaceGitignore(workspaceFs);
   return { systemRootRelative: systemRelative };
@@ -142,6 +139,10 @@ export function validateBoxName(value: string): string {
   if (/[\r\n]/.test(name)) throw new Error("Box name cannot contain newlines.");
   if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(name)) throw new Error("Box name cannot contain control characters.");
   return name;
+}
+
+export function tentIndexMarker(): string {
+  return `---\ntype: index\nokf_version: "0.1"\n---\n# Index\n`;
 }
 
 async function writeBox(

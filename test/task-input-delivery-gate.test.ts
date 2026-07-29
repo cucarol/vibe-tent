@@ -69,7 +69,6 @@ async function makeWorkspace(prefix = "tent-ti-gate-"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "task-input-delivery-gate",
-    rules: "# RULES\n\nTaskInput Delivery gate\n",
     boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(

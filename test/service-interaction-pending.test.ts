@@ -25,7 +25,6 @@ async function makeWorkspace(): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "interaction-pending",
-    rules: "# RULES\n\ninteraction.listPending tests\n",
     boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(

@@ -44,7 +44,6 @@ async function mountScaffold(
   const workspaceFs = new NodeFs(workspace);
   await scaffoldInWorkspace(workspaceFs, {
     name: "demo",
-    rules: "# RULES\n\ntype tags service\n",
     boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   // Core FsAdapter for Tent data is the system root (.tent), not workspace root.

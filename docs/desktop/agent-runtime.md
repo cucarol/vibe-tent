@@ -28,7 +28,7 @@ A2APolicy allow|ask|deny (policy)        spawn only after service already author
 1. **Task API owns collaboration (external).** Adapters never implement box occupancy, claim topology, dispatch, deliver, accept, reject, or proposal review.
 2. **AgentRuntimePort owns execution (internal).** Start, resume, stop, probe, and structured **runtime** events only. No chat message API. **Not** exposed to Desktop/CLI/MCP as a command group.
 3. **Service maps events → task states.** Adapter process events never write concept/box frontmatter. Mapping into `running | waiting | failed` and binding optional **`task.sessionId`** (reference only) is a service responsibility aligned with the Task API contract.
-4. **A2A hard gate lives only in the service** (`A2APolicy` = `allow | ask | deny` per Task API). When the runtime port is invoked, authorization is already decided. Adapters must not re-interpret skill text, RULES.md, or honor manifests as spawn authority.
+4. **A2A hard gate lives only in the service** (`A2APolicy` = `allow | ask | deny` per Task API). When the runtime port is invoked, authorization is already decided. Adapters must not re-interpret skill text, workspace `AGENTS.md`, or honor manifests as spawn authority.
 5. **Adapters are injected by Local Service.** They must not open a second mutation path into tent operational files or core lifecycle modules (architecture: sole service mutation entry).
 
 Forbidden reverse edges:

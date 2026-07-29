@@ -10,7 +10,7 @@ Apply this contract whenever acting as a durable Role. Also apply `tent-task` wh
 ## Resume from persisted facts
 
 1. Work from the workspace root containing `.tent/`; never resolve Tent state as `<workspace>/temp`.
-2. Read `.tent/RULES.md`, `.tent/temp/<role>/init.md`, the Role projection, and relevant durable Nodes. Generate a missing init with `tent role-init <role>`; never fabricate it.
+2. Read workspace-root `AGENTS.md` when present, `.tent/temp/<role>/init.md`, the Role projection, and relevant durable Nodes. Generate a missing init with `tent role-init <role>`; never fabricate it.
 3. For an external host fallback, bind with `tent agent enter --role <role>`, inspect with `tent agent status`, and unbind with `tent agent leave`. Managed bootstrap belongs to Service/adapter.
 4. Re-query Task, Delivery, Session, Context Card, and Git/worktree state after restart, compaction, replacement, or handoff. A Session is replaceable execution state, not the Role identity.
 5. Treat the Role prompt as jointly maintained by user and Role. Update it through an authorized mutation when preserving confirmed intent; ask before changing responsibility, values, or confirmed boundaries.

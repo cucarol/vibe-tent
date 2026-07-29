@@ -30,7 +30,6 @@ async function makeGitTentWorkspace(name = "reclaim-svc"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    rules: "# RULES\n\nTask worktree reclaim\n",
     boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await git(workspace, "add", "-A");

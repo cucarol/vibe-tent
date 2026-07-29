@@ -34,7 +34,7 @@ test("resolveTentWorkspace:仅 in-workspace 布局,不再扫描 concept workspac
   const workspace = path.join(parent, "repo");
   const systemRoot = path.join(workspace, ".tent");
   await fs.mkdir(systemRoot, { recursive: true });
-  await fs.writeFile(path.join(systemRoot, "RULES.md"), "# r\n");
+  await fs.writeFile(path.join(systemRoot, "index.md"), "---\ntype: index\n---\n# Index\n");
   const layoutFs = new NodeFs(systemRoot);
   tent = await loadTent(layoutFs);
   assert.equal(path.resolve(resolveTentWorkspace(tent, systemRoot)!), path.resolve(workspace));

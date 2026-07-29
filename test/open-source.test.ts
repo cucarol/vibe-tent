@@ -112,13 +112,13 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.equal(await exists(path.join(repoRoot, "skills", "tent-task", "SKILL.md")), true);
   assert.equal(await exists(path.join(repoRoot, "skills", "tent-agent", "SKILL.md")), false);
   assert.equal(await exists(path.join(repoRoot, "skills", "tent-genesis", "SKILL.md")), false);
-  assert.match(spec, /`cli\.command` is required when `cli` exists/);
-  assert.match(spec, /The task envelope is the machine-readable delivery record/);
-  assert.match(spec, /Legacy `--require-check` was a user-supplied mechanical gate/);
-  assert.match(spec, /A cherry-pick batch\s+is atomic/);
-  assert.match(spec, /fast-forward when the selected commits are exactly/);
-  assert.match(spec, /## 6\. Proposal, Delivery, And Fork/);
-  assert.match(spec, /Formal delivery is \*\*Delivery-only\*\*/);
+  assert.match(spec, /Role and Session are different/);
+  assert.match(spec, /A Task is one work package and one review unit/);
+  assert.match(spec, /A Delivery is an executor's formal result for one Task/);
+  assert.match(spec, /Task, Session, and any Output Node/);
+  assert.match(spec, /Multiple Tasks may reference the same Node/);
+  assert.match(spec, /Retired public commands\s+are removed rather than kept as aliases/);
+  assert.match(spec, /project rules live in workspace\s+`AGENTS\.md`/);
   assert.doesNotMatch(spec, /temp\/<role>\/reports\//);
   assert.doesNotMatch(spec, /## 6\. Proposal, Report, And Fork/);
   assert.doesNotMatch(spec, /handoff/i);
@@ -169,7 +169,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.doesNotMatch(`${roleSkill}\n${taskSkill}`, /name: tent-agent|tent handoff/i);
 });
 
-test("docs/skill drift: workspacePointer retired; WorkspaceLane + coordination + artifact", async () => {
+test("docs/skill drift: in-workspace Node/Task/Delivery model and retired type axes", async () => {
   const spec = await fs.readFile(path.join(repoRoot, "docs", "SPEC.md"), "utf8");
   const taskPaths = await fs.readFile(
     path.join(repoRoot, "skills", "tent-task", "references", "paths.md"),
@@ -179,20 +179,20 @@ test("docs/skill drift: workspacePointer retired; WorkspaceLane + coordination +
   const pluginSettings = await fs.readFile(path.join(repoRoot, "src", "plugin", "settings.ts"), "utf8");
   const uiControls = await fs.readFile(path.join(repoRoot, "src", "plugin", "ui-controls.ts"), "utf8");
 
-  // SPEC: in-workspace root, WorkspaceLane, coordination, artifact; no live workspacePointer product axis
+  // SPEC: in-workspace root, fixed Node semantics, WorkspaceLane; no live workspacePointer axis.
   assert.match(spec, /in-workspace/i);
   assert.match(spec, /WorkspaceLane/);
-  assert.match(spec, /coordination:\s*true|`coordination`/);
-  assert.match(spec, /`artifact`/);
-  assert.match(spec, /asSub rule|asSub/i);
+  assert.match(spec, /goal \| prompt \| output/);
+  assert.match(spec, /Task, Session, and Delivery/);
+  assert.match(spec, /coordination flags are presentation or retired concerns/);
+  assert.match(spec, /`artifact` becomes `output`/);
   assert.doesNotMatch(
     spec,
     /Base type definitions may set optional `workspacePointer: true`/
   );
   assert.doesNotMatch(spec, /Built-in `output` enables the flag/);
   assert.doesNotMatch(spec, /multiple workspace pointer boxes/);
-  // retirement may be named; must not describe it as a live type configuration surface
-  assert.match(spec, /retired `workspacePointer`|workspacePointer.*retired|retired.*workspacePointer/i);
+  assert.doesNotMatch(spec, /workspacePointer/);
 
   // tent-task keeps the automatic lane naming contract in its path reference.
   assert.match(taskPaths, /WorkspaceLane/);

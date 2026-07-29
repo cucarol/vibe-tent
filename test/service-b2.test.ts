@@ -58,7 +58,6 @@ async function makeWorkspace(name = "demo"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    rules: "# RULES\n\nB2 test tent\n",
     boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   // Register a role so dispatch manifest preloads cleanly
@@ -296,7 +295,6 @@ test("WorkspaceHost: same basename + long shared path prefix still gets distinct
     const fsa = new NodeFs(dir);
     await scaffoldInWorkspace(fsa, {
       name,
-      rules: "# RULES\n\nB2 id collision tent\n",
       boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
     });
     await fsa.writeFile(

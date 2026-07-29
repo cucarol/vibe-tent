@@ -58,7 +58,7 @@ Agents never self-accept. Review authority is the exact persisted `reviewer`, wh
 
 1. **claim** — external path only when state is still `queued`. Moves the Task to `running`; Node collaboration remains a projection and Node refs are non-exclusive.
    Managed ACP: service already claimed via `startSession` — **do not claim again**.
-2. **get** — re-read machine state after claim or mid-run. Envelope is the delivery record; box body is the task definition.
+2. **get** — re-read machine state after claim or mid-run. The Task envelope and Context Card are the execution contract; referenced Node bodies are context. Delivery is a separate record.
 3. **deliver** — submit Delivery with a human summary and optional commit SHAs.  
    Creates a Delivery; does **not** accept. A downstream executor delivers only for its exact parent reviewer. A durable Role's own user-facing Task may use its configured `review | bypass | agent-decide` policy.
    Service refuses ready Delivery while this task still has open TaskInput (`pending` / `processing` / retryable `failed`) with stable code `PENDING_TASK_INPUT` — consume via managed inject or `task-input ack` first; do not expect seal/cleanup to cancel blockers for you.
@@ -134,7 +134,6 @@ tent agent status    # external session orientation
 | Avoid as primary | Why |
 | --- | --- |
 | `tent task-ack` | Legacy direct-core; blocked on in-workspace `.tent` |
-| `tent complete` / old report flows | Formal delivery is Delivery-only via `task.deliver` |
 | Chat-only “done” without deliver | External path must `task.deliver` |
 | Self `task.accept` | User (or authorized) review only |
 | Self `send-input` on **this** task | Executor consumes via `task-input *`; writers are user/dispatcher |

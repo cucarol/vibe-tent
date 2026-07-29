@@ -10,15 +10,15 @@ import { BOX_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } fro
 import { CONCEPT_ID_PREFIX, isLegacyBoxId, makeUniqueConceptId, type RandomSource } from "./id.js";
 import {
   MUTATION_LOCK_PATH,
+  INDEX_PATH,
   ORDER_PATH,
   ROLES_REGISTRY_PATH,
-  RULES_PATH,
   systemRootFromWorkspace,
   TAGS_REGISTRY_PATH,
   TEMP_DIR,
   TENT_SYSTEM_DIR,
 } from "./paths.js";
-import { ensureWorkspaceGitignore } from "./scaffold.js";
+import { ensureWorkspaceGitignore, tentIndexMarker } from "./scaffold.js";
 import { boxNotePath, join, loadTent } from "./tree.js";
 import {
   DEFAULT_TYPE_REGISTRY,
@@ -55,7 +55,6 @@ const NESTED_REGISTRY_FILES = [
   ROLES_REGISTRY_PATH,
   TAGS_REGISTRY_PATH,
   ORDER_PATH,
-  RULES_PATH,
 ] as const;
 
 /**
@@ -626,7 +625,7 @@ export function replaceExactIdTokens(text: string, from: string, to: string): st
 export type MigrationFsFactory = (root: string) => FsAdapter;
 
 export interface ImportExternalTentOptions {
-  /** Absolute or relative path to legacy tent root (contains RULES.md + boxes/temp/…). */
+  /** Absolute or relative path to a legacy Tent root. */
   sourceRoot: string;
   /** Absolute or relative path to target workspace root (receives `.tent/`). */
   workspaceRoot: string;
@@ -675,18 +674,20 @@ const IMPORT_SKIP_DIR_NAMES = new Set([".git", "node_modules"]);
 export const IMPORT_STAGING_DIR_PREFIX = `${TENT_SYSTEM_DIR}.import-staging-`;
 
 /**
- * Detect a usable legacy (or flat) tent system root directory.
- * Accepts both flat layout (RULES.md + types/temp) and roots that still nest registries under `.tent/`.
+ * Detect a usable legacy (or flat) Tent system root directory.
+ * `index.md` is the current structural marker. A retired `RULES.md` is accepted
+ * only here as a one-shot v0.1 import marker; runtime discovery never reads it.
  */
 export async function isLegacyTentRoot(root: string): Promise<boolean> {
-  const rules = nodePath.join(root, RULES_PATH);
-  if (!(await pathExists(rules))) return false;
+  const hasMarker =
+    (await pathExists(nodePath.join(root, INDEX_PATH))) ||
+    (await pathExists(nodePath.join(root, "RULES.md")));
+  if (!hasMarker) return false;
   return (
     (await pathExists(nodePath.join(root, TYPE_REGISTRY_PATH))) ||
     (await pathExists(nodePath.join(root, TEMP_DIR))) ||
     (await pathExists(nodePath.join(root, TENT_SYSTEM_DIR))) ||
-    (await pathExists(nodePath.join(root, ORDER_PATH))) ||
-    (await pathExists(nodePath.join(root, "index.md")))
+    (await pathExists(nodePath.join(root, ORDER_PATH)))
   );
 }
 
@@ -723,7 +724,7 @@ export async function importExternalTentRoot(
   }
   if (!(await isLegacyTentRoot(sourceRoot))) {
     throw new Error(
-      `Source does not look like a Tent root (need RULES.md and types/temp/.tent/order/index): ${sourceRoot}`
+      `Source does not look like a Tent root (need index.md or legacy RULES.md plus types/temp/.tent/order): ${sourceRoot}`
     );
   }
 
@@ -807,6 +808,9 @@ export async function importExternalTentRoot(
     if (options._testHooks?.afterCopy) await options._testHooks.afterCopy(stagingRoot);
 
     const destFs = createFs(stagingRoot);
+    if (!(await destFs.exists(INDEX_PATH))) {
+      await destFs.writeFile(INDEX_PATH, tentIndexMarker());
+    }
     const schema = await migrateLegacySchema(destFs, {
       dryRun: false,
       rand: options.rand,
@@ -938,6 +942,13 @@ async function copyHostTree(
     const relPosix = rel.replace(/\\/g, "/");
     const src = nodePath.join(from, entry.name);
     const dst = nodePath.join(to, entry.name);
+
+    // One-shot import discards the retired project-rules file. Workspace AGENTS.md
+    // is the sole Agent rule source after import; no runtime dual-read is kept.
+    if (entry.name === "RULES.md") {
+      skipped.push(`retired-rules:${relPosix}`);
+      continue;
+    }
 
     // Dirent type checks do not follow symlinks; check links first.
     if (entry.isSymbolicLink()) {

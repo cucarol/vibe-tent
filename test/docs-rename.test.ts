@@ -188,7 +188,7 @@ test("rewriteConceptLinks: leaves ambiguous unqualified wiki name unchanged", ()
 test("renameNode: leaf keeps cx-, renames folder + identity note", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-rename-leaf-"));
   const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
+  await scaffoldTent(fsa, { name: "x" });
   const env = envFor(fsa);
   const id = await createBox(env as any, { parentPath: "", name: "leaf", type: "prompt" });
   const result = await renameNode(env as any, id, "renamed-leaf");
@@ -207,7 +207,7 @@ test("renameNode: leaf keeps cx-, renames folder + identity note", async () => {
 test("renameNode: subtree preserves child relative paths and ids", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-rename-sub-"));
   const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
+  await scaffoldTent(fsa, { name: "x" });
   const env = envFor(fsa);
   const parentId = await createBox(env as any, { parentPath: "", name: "parent", type: "prompt" });
   const childId = await createBox(env as any, { parentPath: "parent", name: "child", type: "prompt" });
@@ -235,7 +235,7 @@ test("renameNode: subtree preserves child relative paths and ids", async () => {
 test("renameNode: rewrites inbound md links; order stays id-keyed", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-rename-links-"));
   const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
+  await scaffoldTent(fsa, { name: "x" });
   const env = envFor(fsa);
   const a = await createBox(env as any, { parentPath: "", name: "alpha", type: "prompt" });
   const b = await createBox(env as any, { parentPath: "", name: "beta", type: "prompt" });
@@ -260,7 +260,7 @@ test("renameNode: rewrites inbound md links; order stays id-keyed", async () => 
 test("renameNode: duplicate display names leave unqualified wiki unchanged", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-rename-dup-"));
   const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
+  await scaffoldTent(fsa, { name: "x" });
   const env = envFor(fsa);
   const branchA = await createBox(env as any, { parentPath: "", name: "branch-a", type: "prompt" });
   const branchB = await createBox(env as any, { parentPath: "", name: "branch-b", type: "prompt" });
@@ -307,7 +307,7 @@ test("renameNode: duplicate display names leave unqualified wiki unchanged", asy
 test("renameNode: injected write failure restores tree and every note byte-for-byte", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-rename-rollback-"));
   const base = new NodeFs(dir);
-  await scaffoldTent(base, { name: "x", rules: "# r\n" });
+  await scaffoldTent(base, { name: "x" });
   const setupEnv = envFor(base);
   const a = await createBox(setupEnv as any, { parentPath: "", name: "alpha", type: "prompt" });
   const b = await createBox(setupEnv as any, { parentPath: "", name: "beta", type: "prompt" });
@@ -374,7 +374,7 @@ test("renameNode: injected write failure restores tree and every note byte-for-b
 test("renameNode: refuses collision and occupied range", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-rename-guard-"));
   const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
+  await scaffoldTent(fsa, { name: "x" });
   const env = envFor(fsa);
   const a = await createBox(env as any, { parentPath: "", name: "one", type: "prompt" });
   await createBox(env as any, { parentPath: "", name: "two", type: "prompt" });
@@ -442,7 +442,6 @@ test("docs.rename: service user-only, event, client, etag-independent resolve by
     const fsa = new NodeFs(workspace);
     await scaffoldInWorkspace(fsa, {
       name: "demo",
-      rules: "# RULES\n\nrename test\n",
       boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
     });
     // sibling for inbound links
