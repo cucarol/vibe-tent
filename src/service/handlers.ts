@@ -91,6 +91,7 @@ import {
   buildSessionReuseRequestFacts,
   collectStableContextGeneration,
   evaluateCandidateSessionLeaseGates,
+  evaluateTaskBlockingDelivery,
   appendCallerBootstrapSection,
   evaluateManagedSessionReuse,
   readTaskPurpose,
@@ -6732,14 +6733,12 @@ async function launchAndBindTaskStartSession(
 
   const allTasks = await loadTaskEnvelopes(mount.env.fs);
   let deliveriesCache: Awaited<ReturnType<typeof loadDeliveries>> | null = null;
-  // Corrupt/unreadable Delivery store must never prove noPendingDelivery.
-  // Propagate load failures (fail loud); never catch→false.
+  // Delivery truth: accepted/rejected activeDeliveryId is historical and does not
+  // block. ready/draft, task.state delivered, missing/foreign pointer, or unreadable
+  // store fail closed (never prove noPendingDelivery).
   const hasBlockingDelivery = async (
     t: import("../core/task.js").TaskEnvelope
   ): Promise<boolean> => {
-    if (t.activeDeliveryId) return true;
-    if (t.state === "delivered") return true;
-    if (!t.id) return false;
     if (!deliveriesCache) {
       try {
         deliveriesCache = await loadDeliveries(mount.env.fs);
@@ -6752,11 +6751,25 @@ async function launchAndBindTaskStartSession(
         );
       }
     }
-    return deliveriesCache.some(
-      (d) =>
-        d.taskId === t.id &&
-        (d.status === "ready" || d.status === "draft")
-    );
+    try {
+      const evaluation = evaluateTaskBlockingDelivery({
+        task: t,
+        deliveries: deliveriesCache,
+      });
+      return evaluation.blocking;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new RpcError(
+        -32000,
+        `task.startSession cannot prove noPendingDelivery: ${message}`,
+        {
+          code: "DELIVERY_POINTER_UNRESOLVED",
+          taskPath,
+          priorTaskPath: t.path,
+          activeDeliveryId: t.activeDeliveryId,
+        }
+      );
+    }
   };
 
   for (const candidateId of candidateIds) {

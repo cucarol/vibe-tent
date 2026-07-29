@@ -27,7 +27,7 @@ import {
   type TaskContextCardV1,
 } from "../core/task-context-card.js";
 import type { AgentProfileConfig } from "../runtime/types.js";
-import { loadDeliveries } from "../core/delivery.js";
+import { loadDeliveries, type DeliveryRecord } from "../core/delivery.js";
 import { isDeliveryId, isTaskId, type AssigneeKind } from "../core/task-model.js";
 // isDeliveryId / isTaskId: durable id shape checks before workspace lookup.
 import { envelopeIsActiveOccupation } from "../core/claim.js";
@@ -492,6 +492,84 @@ export async function assertDurableContextCardRefsResolved(
 }
 
 /**
+ * Unresolved Delivery statuses that block Session reuse.
+ * accepted/rejected are historical/resolved and do not block.
+ */
+const UNRESOLVED_DELIVERY_STATUSES = new Set(["ready", "draft"]);
+
+export type TaskBlockingDeliveryEvaluation = {
+  blocking: boolean;
+  reason?: string;
+};
+
+/**
+ * Decide whether a Task still has an unresolved Delivery that blocks Session reuse.
+ *
+ * Uses persisted Delivery truth — never treats Task.activeDeliveryId alone as blocking:
+ * real task.accept keeps the historical pointer to the accepted Delivery.
+ *
+ * - task.state === "delivered" → blocking (awaiting accept)
+ * - activeDeliveryId present → must resolve to a Delivery owned by this Task;
+ *   missing/foreign → fail loud (never prove safety)
+ * - pointed Delivery ready/draft → blocking; accepted/rejected → not blocking by itself
+ * - any ready/draft Delivery for this Task → blocking (even when active pointer is historical)
+ */
+export function evaluateTaskBlockingDelivery(input: {
+  task: Pick<TaskEnvelope, "id" | "path" | "state" | "activeDeliveryId">;
+  deliveries: readonly Pick<DeliveryRecord, "id" | "taskId" | "status">[];
+}): TaskBlockingDeliveryEvaluation {
+  const taskId = input.task.id?.trim() || "";
+  const taskPath = input.task.path?.trim() || "";
+  const belongsToTask = (d: Pick<DeliveryRecord, "taskId">): boolean => {
+    const dt = d.taskId?.trim() || "";
+    if (!dt) return false;
+    if (taskId && dt === taskId) return true;
+    if (taskPath && dt === taskPath) return true;
+    return false;
+  };
+
+  // Lifecycle: delivered means a ready Delivery is still awaiting accept/reject.
+  if (input.task.state === "delivered") {
+    return { blocking: true, reason: "task_state_delivered" };
+  }
+
+  const activeId = input.task.activeDeliveryId?.trim() || "";
+  if (activeId) {
+    const pointed = input.deliveries.find((d) => d.id === activeId);
+    if (!pointed) {
+      throw new Error(
+        `Task activeDeliveryId ${activeId} does not resolve to a persisted Delivery ` +
+          `(missing/foreign); cannot prove noPendingDelivery`
+      );
+    }
+    if (!belongsToTask(pointed)) {
+      throw new Error(
+        `Task activeDeliveryId ${activeId} is foreign ` +
+          `(delivery.taskId=${pointed.taskId}, taskId=${taskId || taskPath || "?"}); ` +
+          `cannot prove noPendingDelivery`
+      );
+    }
+    if (UNRESOLVED_DELIVERY_STATUSES.has(pointed.status)) {
+      return { blocking: true, reason: "active_delivery_unresolved" };
+    }
+    // accepted/rejected historical pointer: not blocking by itself.
+  }
+
+  // Scan Task deliveries for any unresolved ready/draft even when the active
+  // pointer is a historical accepted/rejected Delivery.
+  if (taskId || taskPath) {
+    const unresolved = input.deliveries.some(
+      (d) => belongsToTask(d) && UNRESOLVED_DELIVERY_STATUSES.has(d.status)
+    );
+    if (unresolved) {
+      return { blocking: true, reason: "task_has_unresolved_delivery" };
+    }
+  }
+
+  return { blocking: false };
+}
+
+/**
  * Tasks that currently bind or last-bound a candidate Session.
  * Scans persisted envelopes by sessionId and by lastTaskId (id or path).
  */
@@ -529,17 +607,14 @@ function isSameTaskRef(
 }
 
 /**
- * Whether a Task lifecycle is safely settled for cross-Task Session reuse.
- * Terminal accepted/rejected/interrupted/failed only — not running/waiting/delivered/queued.
+ * Whether a Task lifecycle is safely settled for **cross-Task** Session reuse.
+ * Only `accepted` proves continuity-safe settlement.
+ * rejected / interrupted / failed are terminal but must force a fresh Session
+ * (even with no unresolved Delivery). Same-Task resume is handled separately
+ * and does not use this helper for the request Task's own occupation.
  */
 export function isTaskLifecycleSafelySettledForReuse(task: TaskEnvelope): boolean {
-  const state = task.state;
-  return (
-    state === "accepted" ||
-    state === "rejected" ||
-    state === "interrupted" ||
-    state === "failed"
-  );
+  return task.state === "accepted";
 }
 
 export type CandidateSessionLeaseEvaluation = SessionReuseRuntimeGates & {
@@ -556,7 +631,7 @@ export type CandidateSessionLeaseEvaluation = SessionReuseRuntimeGates & {
  * - Session stopped (idle);
  * - no other active Task owns this Session (exclusive lease);
  * - prior turn settled (!turnBusy);
- * - every other bound Task is lifecycle-settled (accepted/…);
+ * - every other bound Task is lifecycle-settled (`accepted` only);
  * - no pending TaskInput/UserAsk on any other bound Task;
  * - no ready/unresolved Delivery on any other bound Task.
  *
@@ -576,7 +651,9 @@ export async function evaluateCandidateSessionLeaseGates(input: {
   hasPendingUserAsk: (workspaceId: string, taskPath: string) => Promise<boolean>;
   /**
    * Optional Delivery probe: true when task has a ready/unresolved Delivery.
-   * Defaults to activeDeliveryId presence + state===delivered.
+   * Prefer {@link evaluateTaskBlockingDelivery} with loaded Delivery records.
+   * Default (no probe): only task.state===delivered blocks — bare activeDeliveryId
+   * is a historical pointer after accept and must not block by itself.
    */
   hasBlockingDelivery?: (task: TaskEnvelope) => boolean | Promise<boolean>;
 }): Promise<CandidateSessionLeaseEvaluation> {
@@ -606,9 +683,8 @@ export async function evaluateCandidateSessionLeaseGates(input: {
   );
   if (dualBind) reasons.push("dual_session_binding");
 
-  // Cross-Task: every other bound Task must be fully lifecycle-settled
-  // (accepted/rejected/interrupted/failed). Active states already covered above;
-  // this also rejects odd non-terminal leftovers.
+  // Cross-Task: every other bound Task must be accepted (only). Active states
+  // already covered above; rejected/interrupted/failed force fresh Session.
   let othersSettled = true;
   for (const prior of others) {
     if (!isTaskLifecycleSafelySettledForReuse(prior)) {
@@ -641,7 +717,7 @@ export async function evaluateCandidateSessionLeaseGates(input: {
     const blockingDelivery =
       input.hasBlockingDelivery != null
         ? await input.hasBlockingDelivery(prior)
-        : Boolean(prior.activeDeliveryId) || prior.state === "delivered";
+        : prior.state === "delivered";
     if (blockingDelivery) {
       noPendingDelivery = false;
       reasons.push("prior_pending_delivery");
@@ -668,7 +744,7 @@ export async function evaluateCandidateSessionLeaseGates(input: {
     const reqDel =
       input.hasBlockingDelivery != null
         ? await input.hasBlockingDelivery(requestTask)
-        : Boolean(requestTask.activeDeliveryId) || requestTask.state === "delivered";
+        : requestTask.state === "delivered";
     if (reqDel) {
       noPendingDelivery = false;
       reasons.push("request_pending_delivery");

@@ -28,6 +28,7 @@ import {
   assertDurableContextCardRefsResolved,
   collectStableContextGeneration,
   evaluateCandidateSessionLeaseGates,
+  evaluateTaskBlockingDelivery,
   findTasksBoundToSession,
   isTaskLifecycleSafelySettledForReuse,
   profileLaunchCompatibilityDigestFromConfig,
@@ -587,11 +588,30 @@ test("Role cross-Task: running+stopped Session blocks; accepted prior reuses", a
         sessionId: null,
       });
 
-      // Accept A (safely settled). Keep sessionId for binding discovery.
+          // Real production settle: deliver → authorized accept. activeDeliveryId must
+      // remain as the historical accepted pointer (do not clear it).
+      const delivered = await rpc(svc, "task.deliver", {
+        workspaceId,
+        taskPath: tr1.path,
+        summary: "role A ready for accept",
+        commits: [],
+      });
+      assert.ok(!delivered.error, JSON.stringify(delivered.error));
+      const accepted = await rpc(svc, "task.accept", {
+        workspaceId,
+        taskPath: tr1.path,
+        actor: "user",
+      });
+      assert.ok(!accepted.error, JSON.stringify(accepted.error));
+      const tr1Accepted = await loadTaskEnvelope(envFs, tr1.path);
+      assert.equal(tr1Accepted.state, "accepted");
+      assert.ok(
+        tr1Accepted.activeDeliveryId,
+        "task.accept must retain historical activeDeliveryId"
+      );
+      // Keep sessionId binding for cross-Task discovery.
       await patchTaskEnvelope(envFs, tr1.path, {
-        state: "accepted",
         sessionId: roleSessionId,
-        activeDeliveryId: null,
       });
       const probe = await svc.runtime.probe(roleSessionId);
       assert.equal(probe.alive, false);
@@ -618,7 +638,12 @@ test("Role cross-Task: running+stopped Session blocks; accepted prior reuses", a
       assert.equal(
         tOk.sessionId,
         roleSessionId,
-        "accepted prior Role Task may reuse shared-lane Session"
+        "accepted prior Role Task with historical activeDeliveryId may reuse shared-lane Session"
+      );
+      // Prior still holds its historical pointer after reuse.
+      assert.equal(
+        (await loadTaskEnvelope(envFs, tr1.path)).activeDeliveryId,
+        tr1Accepted.activeDeliveryId
       );
     });
   } finally {
@@ -730,6 +755,18 @@ test("evaluateCandidateSessionLeaseGates: prior running/delivery/input/dual-bind
   const bound = findTasksBoundToSession([priorRunning, request], candidate);
   assert.ok(bound.some((t) => t.id === "tk-prior001"));
   assert.equal(isTaskLifecycleSafelySettledForReuse(priorRunning), false);
+  // Cross-Task continuity: only accepted is safely settled.
+  assert.equal(
+    isTaskLifecycleSafelySettledForReuse({ ...priorRunning, state: "accepted" }),
+    true
+  );
+  for (const terminal of ["rejected", "interrupted", "failed"] as const) {
+    assert.equal(
+      isTaskLifecycleSafelySettledForReuse({ ...priorRunning, state: terminal }),
+      false,
+      `${terminal} prior must not be treated as safely settled for cross-Task reuse`
+    );
+  }
 
   const busy = await evaluateCandidateSessionLeaseGates({
     allTasks: [priorRunning, request],
@@ -763,11 +800,81 @@ test("evaluateCandidateSessionLeaseGates: prior running/delivery/input/dual-bind
   assert.equal(del.noPendingDelivery, false);
   assert.ok(del.reasons.includes("prior_pending_delivery"));
 
+  // Historical accepted activeDeliveryId alone must NOT block (Delivery truth).
+  const acceptedHist = evaluateTaskBlockingDelivery({
+    task: {
+      id: "tk-prior001",
+      path: priorRunning.path,
+      state: "accepted",
+      activeDeliveryId: "dl-accepted01",
+    },
+    deliveries: [
+      {
+        id: "dl-accepted01",
+        taskId: "tk-prior001",
+        status: "accepted",
+      },
+    ],
+  });
+  assert.equal(
+    acceptedHist.blocking,
+    false,
+    "accepted historical activeDeliveryId must not block reuse"
+  );
+
+  // Missing activeDeliveryId pointer fails loud.
+  assert.throws(
+    () =>
+      evaluateTaskBlockingDelivery({
+        task: {
+          id: "tk-prior001",
+          path: priorRunning.path,
+          state: "accepted",
+          activeDeliveryId: "dl-missing",
+        },
+        deliveries: [],
+      }),
+    /does not resolve|missing\/foreign|cannot prove noPendingDelivery/i
+  );
+
+  // Foreign activeDeliveryId (wrong taskId) fails loud.
+  assert.throws(
+    () =>
+      evaluateTaskBlockingDelivery({
+        task: {
+          id: "tk-prior001",
+          path: priorRunning.path,
+          state: "accepted",
+          activeDeliveryId: "dl-foreign",
+        },
+        deliveries: [
+          { id: "dl-foreign", taskId: "tk-other", status: "accepted" },
+        ],
+      }),
+    /foreign|cannot prove noPendingDelivery/i
+  );
+
+  // ready Delivery for task blocks even when active pointer is historical accepted.
+  const readyScan = evaluateTaskBlockingDelivery({
+    task: {
+      id: "tk-prior001",
+      path: priorRunning.path,
+      state: "accepted",
+      activeDeliveryId: "dl-accepted01",
+    },
+    deliveries: [
+      { id: "dl-accepted01", taskId: "tk-prior001", status: "accepted" },
+      { id: "dl-ready02", taskId: "tk-prior001", status: "ready" },
+    ],
+  });
+  assert.equal(readyScan.blocking, true);
+
   const priorAccepted: TaskEnvelope = {
     ...priorRunning,
     state: "accepted",
     sessionId: "ss-shared01",
-    activeDeliveryId: undefined,
+    // Real accept retains historical pointer; bare id must not force block without probe.
+    activeDeliveryId: "dl-accepted01",
   };
   const pendingInput = await evaluateCandidateSessionLeaseGates({
     allTasks: [priorAccepted, request],
@@ -1577,6 +1684,106 @@ test("active same-Task path fails loud on empty/legacy Session contextGeneration
   }
 });
 
+test("missing/foreign activeDeliveryId fails loud (cannot prove noPendingDelivery)", async () => {
+  const ws = await makeWorkspace("del-pointer-fail");
+  try {
+    await initGit(ws);
+    await withService(async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const envFs = new NodeFs(path.join(ws, ".tent"));
+
+      const d1 = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "prior with foreign delivery pointer",
+        assigneeKind: "role",
+        profileId: "fake-resumable",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+        startSession: true,
+        callerKind: "user",
+      });
+      assert.ok(!d1.error, JSON.stringify(d1.error));
+      const t1 = await loadTaskEnvelope(
+        envFs,
+        (d1.result as { taskPath: string }).taskPath
+      );
+      const sid = t1.sessionId!;
+      await svc.runtime.stopSession(sid, "user");
+
+      // Missing pointer: activeDeliveryId does not resolve.
+      await patchTaskEnvelope(envFs, t1.path, {
+        state: "accepted",
+        sessionId: sid,
+        activeDeliveryId: "dl-does-not-exist",
+      });
+
+      const dMissing = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "next after missing delivery pointer",
+        assigneeKind: "role",
+        profileId: "fake-resumable",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+        startSession: true,
+        callerKind: "user",
+      });
+      assert.ok(dMissing.error, "missing activeDeliveryId must fail loud");
+      const missingMsg = String(dMissing.error.message || dMissing.error);
+      assert.match(
+        missingMsg,
+        /noPendingDelivery|does not resolve|DELIVERY_POINTER|missing|foreign/i
+      );
+      assert.equal(
+        (dMissing.error as { data?: { code?: string } }).data?.code,
+        "DELIVERY_POINTER_UNRESOLVED"
+      );
+
+      // Foreign pointer: Delivery exists but belongs to another taskId.
+      const foreign = await createDelivery(envFs, new SystemClock(), {
+        taskId: "tk-someone-else",
+        boxId,
+        role: "executor",
+        summary: "foreign delivery",
+        status: "accepted",
+        commits: [],
+      });
+      await patchTaskEnvelope(envFs, t1.path, {
+        state: "accepted",
+        sessionId: sid,
+        activeDeliveryId: foreign.id,
+      });
+
+      const dForeign = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "next after foreign delivery pointer",
+        assigneeKind: "role",
+        profileId: "fake-resumable",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+        startSession: true,
+        callerKind: "user",
+      });
+      assert.ok(dForeign.error, "foreign activeDeliveryId must fail loud");
+      assert.match(
+        String(dForeign.error.message || dForeign.error),
+        /foreign|noPendingDelivery|DELIVERY_POINTER/i
+      );
+      assert.equal(
+        (dForeign.error as { data?: { code?: string } }).data?.code,
+        "DELIVERY_POINTER_UNRESOLVED"
+      );
+    });
+  } finally {
+    await fs.rm(ws, { recursive: true, force: true });
+  }
+});
+
 test("hasBlockingDelivery fails loud when Delivery store is unreadable", async () => {
   const ws = await makeWorkspace("del-store-fail");
   try {
@@ -1932,20 +2139,40 @@ test("Service cross-Task prior blockers force fresh; accepted+settled reuses", a
         });
       }
 
-      // Baseline: accepted prior reuses (positive control).
+      // Baseline: real deliver → accept; historical activeDeliveryId retained.
       const tAccept = await dispatchRole("prior accepted baseline");
       const sidAccept = tAccept.sessionId!;
       await svc.runtime.stopSession(sidAccept, "user");
-      await patchTaskEnvelope(envFs, tAccept.path, {
-        state: "accepted",
-        sessionId: sidAccept,
-        activeDeliveryId: null,
+      const del0 = await rpc(svc, "task.deliver", {
+        workspaceId,
+        taskPath: tAccept.path,
+        summary: "baseline ready",
+        commits: [],
       });
+      assert.ok(!del0.error, JSON.stringify(del0.error));
+      const acc0 = await rpc(svc, "task.accept", {
+        workspaceId,
+        taskPath: tAccept.path,
+        actor: "user",
+      });
+      assert.ok(!acc0.error, JSON.stringify(acc0.error));
+      const tAcceptSettled = await loadTaskEnvelope(envFs, tAccept.path);
+      assert.equal(tAcceptSettled.state, "accepted");
+      assert.ok(
+        tAcceptSettled.activeDeliveryId,
+        "accept must leave historical activeDeliveryId intact"
+      );
+      await patchTaskEnvelope(envFs, tAccept.path, { sessionId: sidAccept });
       const tReuse = await dispatchRole("after accepted should reuse");
-      assert.equal(tReuse.sessionId, sidAccept, "accepted+settled prior must reuse");
+      assert.equal(
+        tReuse.sessionId,
+        sidAccept,
+        "accepted+settled prior with historical activeDeliveryId must reuse"
+      );
       await svc.runtime.stopSession(sidAccept, "user");
+      // Settle the reuse Task without clearing the baseline's historical pointer.
       await patchTaskEnvelope(envFs, tReuse.path, {
-        state: "accepted",
+        state: "interrupted",
         sessionId: null,
         activeDeliveryId: null,
       });
@@ -1953,8 +2180,12 @@ test("Service cross-Task prior blockers force fresh; accepted+settled reuses", a
       await patchTaskEnvelope(envFs, tAccept.path, {
         state: "accepted",
         sessionId: sidAccept,
-        activeDeliveryId: null,
+        // Do not clear activeDeliveryId — production accept keeps it.
       });
+      assert.ok(
+        (await loadTaskEnvelope(envFs, tAccept.path)).activeDeliveryId,
+        "historical activeDeliveryId must still be present for blocker cases"
+      );
 
       // ---- pending TaskInput on prior ----
       await svc.ctx.taskInputs.add({
@@ -1981,15 +2212,31 @@ test("Service cross-Task prior blockers force fresh; accepted+settled reuses", a
       });
       await patchTaskEnvelope(envFs, tAccept.path, { sessionId: null });
 
-      // Fresh accepted prior for UserAsk gate.
+      // Fresh accepted prior for UserAsk gate (real deliver→accept).
       const tBase2 = await dispatchRole("fresh prior for UserAsk");
       const sid2 = tBase2.sessionId!;
       await svc.runtime.stopSession(sid2, "user");
-      await patchTaskEnvelope(envFs, tBase2.path, {
-        state: "accepted",
-        sessionId: sid2,
-        activeDeliveryId: null,
-      });
+      assert.ok(
+        !(
+          await rpc(svc, "task.deliver", {
+            workspaceId,
+            taskPath: tBase2.path,
+            summary: "userask prior ready",
+            commits: [],
+          })
+        ).error
+      );
+      assert.ok(
+        !(
+          await rpc(svc, "task.accept", {
+            workspaceId,
+            taskPath: tBase2.path,
+            actor: "user",
+          })
+        ).error
+      );
+      await patchTaskEnvelope(envFs, tBase2.path, { sessionId: sid2 });
+      assert.ok((await loadTaskEnvelope(envFs, tBase2.path)).activeDeliveryId);
 
       // ---- pending UserAsk on prior ----
       await svc.ctx.userAsks.add({
@@ -2019,13 +2266,8 @@ test("Service cross-Task prior blockers force fresh; accepted+settled reuses", a
       const tBase3 = await dispatchRole("prior for ready delivery");
       const sid3 = tBase3.sessionId!;
       await svc.runtime.stopSession(sid3, "user");
-      await patchTaskEnvelope(envFs, tBase3.path, {
-        state: "accepted",
-        sessionId: sid3,
-        activeDeliveryId: null,
-      });
 
-      // ---- ready Delivery on prior ----
+      // ---- ready Delivery on prior (unresolved) ----
       const delivery = await createDelivery(envFs, new SystemClock(), {
         taskId: tBase3.id!,
         boxId,
@@ -2062,11 +2304,27 @@ test("Service cross-Task prior blockers force fresh; accepted+settled reuses", a
       const tBase4 = await dispatchRole("prior for dual bind");
       const sid4 = tBase4.sessionId!;
       await svc.runtime.stopSession(sid4, "user");
-      await patchTaskEnvelope(envFs, tBase4.path, {
-        state: "accepted",
-        sessionId: sid4,
-        activeDeliveryId: null,
-      });
+      assert.ok(
+        !(
+          await rpc(svc, "task.deliver", {
+            workspaceId,
+            taskPath: tBase4.path,
+            summary: "dual prior ready",
+            commits: [],
+          })
+        ).error
+      );
+      assert.ok(
+        !(
+          await rpc(svc, "task.accept", {
+            workspaceId,
+            taskPath: tBase4.path,
+            actor: "user",
+          })
+        ).error
+      );
+      await patchTaskEnvelope(envFs, tBase4.path, { sessionId: sid4 });
+      assert.ok((await loadTaskEnvelope(envFs, tBase4.path)).activeDeliveryId);
 
       // Create a second Role task without starting a session, then bind it to sid4.
       const dDualOther = await rpc(svc, "task.dispatch", {
@@ -2096,6 +2354,48 @@ test("Service cross-Task prior blockers force fresh; accepted+settled reuses", a
         sid4,
         "dual Session binding must force fresh Session"
       );
+      await retireSessionTask(tDual, tDual.sessionId);
+      await patchTaskEnvelope(envFs, dualOtherPath, {
+        state: "interrupted",
+        sessionId: null,
+      });
+      await svc.runtime.registry.update(sid4, {
+        state: "failed",
+        resumeToken: undefined,
+      });
+      await patchTaskEnvelope(envFs, tBase4.path, { sessionId: null });
+
+      // ---- rejected / interrupted / failed priors force fresh (no unresolved Delivery) ----
+      // Cross-Task continuity requires accepted only; other terminals are not safe.
+      for (const terminal of ["rejected", "interrupted", "failed"] as const) {
+        const tTerm = await dispatchRole(`prior terminal ${terminal}`);
+        const sidTerm = tTerm.sessionId!;
+        await svc.runtime.stopSession(sidTerm, "user");
+        // No ready Delivery — only non-accepted terminal state.
+        await patchTaskEnvelope(envFs, tTerm.path, {
+          state: terminal,
+          sessionId: sidTerm,
+          activeDeliveryId: null,
+        });
+        assert.equal(
+          isTaskLifecycleSafelySettledForReuse(
+            await loadTaskEnvelope(envFs, tTerm.path)
+          ),
+          false
+        );
+        const tNext = await dispatchRole(`after prior ${terminal}`);
+        assert.notEqual(
+          tNext.sessionId,
+          sidTerm,
+          `${terminal} prior (no unresolved Delivery) must force fresh Session`
+        );
+        await retireSessionTask(tNext, tNext.sessionId);
+        await svc.runtime.registry.update(sidTerm, {
+          state: "failed",
+          resumeToken: undefined,
+        });
+        await patchTaskEnvelope(envFs, tTerm.path, { sessionId: null });
+      }
     });
   } finally {
     await fs.rm(ws, { recursive: true, force: true });
