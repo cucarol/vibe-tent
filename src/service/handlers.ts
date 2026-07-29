@@ -53,6 +53,7 @@ import {
   taskParentRoleId,
   type RoleWorkspaceContract,
   type TaskEnvelope,
+  type TaskEnvelopePatch,
 } from "../core/task.js";
 import {
   mayElevateDeliveryPolicy,
@@ -3901,35 +3902,48 @@ async function taskClaimRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const taskPath = requireString(p, "taskPath");
   const sessionId = optionalString(p, "sessionId");
 
-  return ctx.mutations.run(workspaceId, async () => {
-    ctx.host.markSelfWrite(workspaceId);
-    let task = await taskClaim(mount.env, taskPath, { sessionId });
-    // Role-assignee external claim: atomically bind real Git Role lane and
-    // capture-once exact workspaceLane.baseCommit. Later claims never recalculate.
-    // Non-Git / profile Tasks invent nothing here.
-    task = await captureRoleBaseCommitOnClaim(ctx, workspaceId, task);
-    emitTaskState(ctx, workspaceId, task, "task.claim");
-    const nodeIds =
-      task.contextCard != null ? taskReferencedNodeIds(task) : [];
-    for (const nodeId of nodeIds) {
-      if (nodeId === "root") continue;
-      ctx.events.emit(
-        "concept.changed",
+  // Per-Task lifecycle flight + workspace mutation: claim must not race deliver/backfill.
+  return runTaskLifecycle(workspaceId, taskPath, () =>
+    ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      // Prepare Role lane/base BEFORE Core claim transition so a failed prepare
+      // leaves the Task queued (no intermediate running without base).
+      const pre = await loadTaskEnvelope(mount.env.fs, taskPath);
+      let claimWrite: TaskEnvelopePatch | undefined;
+      if (!(pre.state === "running" && pre.status === "taken")) {
+        // First claim only: prepare lane/base (no disk write) then single-patch claim.
+        claimWrite = await prepareRoleClaimWrite(ctx, workspaceId, pre);
+        if (beforeTaskClaimCoreForTests) {
+          await beforeTaskClaimCoreForTests({ workspaceId, taskPath, task: pre });
+        }
+      }
+      const task = await taskClaim(mount.env, taskPath, {
+        sessionId,
+        ...(claimWrite ? { claimWrite } : {}),
+      });
+      emitTaskState(ctx, workspaceId, task, "task.claim");
+      const nodeIds =
+        task.contextCard != null ? taskReferencedNodeIds(task) : [];
+      for (const nodeId of nodeIds) {
+        if (nodeId === "root") continue;
+        ctx.events.emit(
+          "concept.changed",
+          workspaceId,
+          { id: nodeId, reason: "task.claim-projection" },
+          "self"
+        );
+      }
+      return {
         workspaceId,
-        { id: nodeId, reason: "task.claim-projection" },
-        "self"
-      );
-    }
-    return {
-      workspaceId,
-      taskPath,
-      task: projectTask(task),
-      state: task.state,
-      role: task.role,
-      referencedNodeIds: nodeIds,
-      sessionId: task.sessionId,
-    };
-  });
+        taskPath,
+        task: projectTask(task),
+        state: task.state,
+        role: task.role,
+        referencedNodeIds: nodeIds,
+        sessionId: task.sessionId,
+      };
+    })
+  );
 }
 
 /**
@@ -3937,6 +3951,7 @@ async function taskClaimRpc(ctx: HandlerContext, p: Record<string, unknown>) {
  * whose lane exists but base is missing. Authorized only by exact persisted
  * parent/reviewer. Never infers from roleBranchBase/cwd/current tip.
  * Same SHA is idempotent (original audit unchanged); different SHA fails loud.
+ * Wrapped by per-Task lifecycle flight so it cannot race deliver/accept.
  */
 async function taskBackfillWorkspaceLaneBaseRpc(
   ctx: HandlerContext,
@@ -3948,193 +3963,203 @@ async function taskBackfillWorkspaceLaneBaseRpc(
   const baseCommitRaw = requireString(p, "baseCommit");
   const actor = parseBackfillActor(p.actor);
 
-  return ctx.mutations.run(workspaceId, async () => {
-    ctx.host.markSelfWrite(workspaceId);
-    // Re-read under task lifecycle + workspace mutation lock.
-    const current = await loadTaskEnvelope(mount.env.fs, taskPath);
-
-    if (current.state !== "running" && current.state !== "waiting") {
-      throw new RpcError(
-        RPC_LIFECYCLE,
-        `task.backfillWorkspaceLaneBase requires running|waiting task (state=${current.state})`,
-        { taskPath, state: current.state, code: "BASE_BACKFILL_STATE" }
-      );
-    }
-
-    if (!current.parentActor || !current.reviewer) {
-      throw new RpcError(
-        RPC_LIFECYCLE,
-        "task.backfillWorkspaceLaneBase requires exact persisted parentActor/reviewer",
-        { taskPath, code: "BASE_BACKFILL_ACTOR" }
-      );
-    }
-    // Only exact persisted parent/reviewer may authorize (they are equal by invariant).
-    const authorized =
-      (actor.kind === current.parentActor.kind &&
-        actor.id === current.parentActor.id) ||
-      (actor.kind === current.reviewer.kind && actor.id === current.reviewer.id);
-    if (!authorized) {
-      throw new RpcError(
-        RPC_LIFECYCLE,
-        `task.backfillWorkspaceLaneBase unauthorized actor ${actor.kind}:${actor.id}; ` +
-          `requires exact parent/reviewer ${current.parentActor.kind}:${current.parentActor.id}`,
-        {
-          taskPath,
-          actor,
-          parentActor: current.parentActor,
-          reviewer: current.reviewer,
-          code: "BASE_BACKFILL_UNAUTHORIZED",
-        }
-      );
-    }
-
-    const laneComplete = Boolean(
-      current.workspace && current.worktree && current.branch && current.targetBranch
-    );
-    if (!laneComplete) {
-      throw new RpcError(
-        RPC_LIFECYCLE,
-        "task.backfillWorkspaceLaneBase requires recorded workspace/worktree/branch/targetBranch " +
-          "(legacy lane must already exist; never invent lane facts)",
-        { taskPath, code: "BASE_BACKFILL_LANE_INCOMPLETE" }
-      );
-    }
-
-    // Validate recorded lane against real Role/Task integration contract.
-    let real: RoleWorkspaceContract;
-    try {
-      real = await resolveIntegrationContract(mount.workspaceRoot, current);
-    } catch (err) {
-      throw new RpcError(
-        RPC_LIFECYCLE,
-        err instanceof Error
-          ? err.message
-          : "task.backfillWorkspaceLaneBase lane/workspace mismatch",
-        { taskPath, code: "BASE_BACKFILL_LANE_MISMATCH" }
-      );
-    }
-    // Target branch must exist in the same repo (resolveIntegrationContract already
-    // cross-checks envelope vs real; re-verify tip resolvable for fail-loud clarity).
-    try {
-      await readRoleBranchTip(real.workspace, real.targetBranch);
-    } catch (err) {
-      throw new RpcError(
-        RPC_LIFECYCLE,
-        err instanceof Error
-          ? `task.backfillWorkspaceLaneBase targetBranch invalid: ${err.message}`
-          : "task.backfillWorkspaceLaneBase targetBranch invalid",
-        {
-          taskPath,
-          targetBranch: real.targetBranch,
-          code: "BASE_BACKFILL_TARGET",
-        }
-      );
-    }
-
-    // Supplied SHA must be a commit in this repo — never infer from tip/cwd/roleBranchBase.
-    let fullBase: string;
-    try {
-      fullBase = await resolveCommitSha(real.workspace, baseCommitRaw);
-    } catch (err) {
-      throw new RpcError(
-        RPC_LIFECYCLE,
-        err instanceof Error
-          ? `task.backfillWorkspaceLaneBase baseCommit rejected: ${err.message}`
-          : "task.backfillWorkspaceLaneBase baseCommit rejected (foreign/unreachable)",
-        {
-          taskPath,
-          baseCommit: baseCommitRaw,
-          code: "BASE_BACKFILL_FOREIGN",
-        }
-      );
-    }
-
-    // Ancestor of recorded Task branch tip (inclusive: tip itself is legal).
-    const branchTip = await readRoleBranchTip(real.workspace, real.branch);
-    const isAncestor = await isCommitAncestor(real.workspace, fullBase, branchTip);
-    if (!isAncestor) {
-      throw new RpcError(
-        RPC_LIFECYCLE,
-        `task.backfillWorkspaceLaneBase baseCommit ${fullBase} is not an ancestor of ` +
-          `recorded Task branch ${real.branch} tip ${branchTip}`,
-        {
-          taskPath,
-          baseCommit: fullBase,
-          branch: real.branch,
-          branchTip,
-          code: "BASE_BACKFILL_NOT_ANCESTOR",
-        }
-      );
-    }
-
-    const existingBase = current.baseCommit?.trim() || "";
-    if (existingBase) {
-      // Idempotent same SHA: leave original audit untouched.
-      let existingFull = existingBase;
-      try {
-        existingFull = await resolveCommitSha(real.workspace, existingBase);
-      } catch {
-        // Compare raw when existing cannot resolve (still conflict if different).
-      }
-      if (existingFull === fullBase || existingBase === fullBase) {
-        return {
+  return runTaskLifecycle(workspaceId, taskPath, () =>
+    ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      if (beforeTaskBackfillWorkspaceLaneBaseForTests) {
+        await beforeTaskBackfillWorkspaceLaneBaseForTests({
           workspaceId,
           taskPath,
-          task: projectTask(current),
-          state: current.state,
-          baseCommit: existingFull || existingBase,
-          idempotent: true,
-        };
+        });
       }
-      throw new RpcError(
-        RPC_LIFECYCLE,
-        `task.backfillWorkspaceLaneBase conflicts with recorded baseCommit ` +
-          `${existingFull || existingBase}; supplied ${fullBase} (capture-once immutable)`,
-        {
-          taskPath,
-          recorded: existingFull || existingBase,
-          supplied: fullBase,
-          code: "BASE_BACKFILL_CONFLICT",
-        }
-      );
-    }
+      // Re-read under task lifecycle + workspace mutation lock.
+      const current = await loadTaskEnvelope(mount.env.fs, taskPath);
 
-    const now = mount.env.clock.now();
-    const patched = await patchTaskEnvelope(mount.env.fs, current.path, {
-      baseCommit: fullBase,
-      // Keep managed collection baseline once when missing; do not invent from tip.
-      ...(current.roleBranchBase?.trim()
-        ? {}
-        : { roleBranchBase: fullBase }),
-      baseCommitCapture: {
-        source: "explicit-backfill",
+      if (current.state !== "running" && current.state !== "waiting") {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          `task.backfillWorkspaceLaneBase requires running|waiting task (state=${current.state})`,
+          { taskPath, state: current.state, code: "BASE_BACKFILL_STATE" }
+        );
+      }
+
+      if (!current.parentActor || !current.reviewer) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          "task.backfillWorkspaceLaneBase requires exact persisted parentActor/reviewer",
+          { taskPath, code: "BASE_BACKFILL_ACTOR" }
+        );
+      }
+      // Only exact persisted parent/reviewer may authorize (they are equal by invariant).
+      const authorized =
+        (actor.kind === current.parentActor.kind &&
+          actor.id === current.parentActor.id) ||
+        (actor.kind === current.reviewer.kind && actor.id === current.reviewer.id);
+      if (!authorized) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          `task.backfillWorkspaceLaneBase unauthorized actor ${actor.kind}:${actor.id}; ` +
+            `requires exact parent/reviewer ${current.parentActor.kind}:${current.parentActor.id}`,
+          {
+            taskPath,
+            actor,
+            parentActor: current.parentActor,
+            reviewer: current.reviewer,
+            code: "BASE_BACKFILL_UNAUTHORIZED",
+          }
+        );
+      }
+
+      const laneComplete = Boolean(
+        current.workspace && current.worktree && current.branch && current.targetBranch
+      );
+      if (!laneComplete) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          "task.backfillWorkspaceLaneBase requires recorded workspace/worktree/branch/targetBranch " +
+            "(legacy lane must already exist; never invent lane facts)",
+          { taskPath, code: "BASE_BACKFILL_LANE_INCOMPLETE" }
+        );
+      }
+
+      // Validate recorded lane against real Role/Task integration contract.
+      let real: RoleWorkspaceContract;
+      try {
+        real = await resolveIntegrationContract(mount.workspaceRoot, current);
+      } catch (err) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          err instanceof Error
+            ? err.message
+            : "task.backfillWorkspaceLaneBase lane/workspace mismatch",
+          { taskPath, code: "BASE_BACKFILL_LANE_MISMATCH" }
+        );
+      }
+      // Target branch must exist in the same repo (resolveIntegrationContract already
+      // cross-checks envelope vs real; re-verify tip resolvable for fail-loud clarity).
+      try {
+        await readRoleBranchTip(real.workspace, real.targetBranch);
+      } catch (err) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          err instanceof Error
+            ? `task.backfillWorkspaceLaneBase targetBranch invalid: ${err.message}`
+            : "task.backfillWorkspaceLaneBase targetBranch invalid",
+          {
+            taskPath,
+            targetBranch: real.targetBranch,
+            code: "BASE_BACKFILL_TARGET",
+          }
+        );
+      }
+
+      // Supplied SHA must be a commit in this repo — never infer from tip/cwd/roleBranchBase.
+      let fullBase: string;
+      try {
+        fullBase = await resolveCommitSha(real.workspace, baseCommitRaw);
+      } catch (err) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          err instanceof Error
+            ? `task.backfillWorkspaceLaneBase baseCommit rejected: ${err.message}`
+            : "task.backfillWorkspaceLaneBase baseCommit rejected (foreign/unreachable)",
+          {
+            taskPath,
+            baseCommit: baseCommitRaw,
+            code: "BASE_BACKFILL_FOREIGN",
+          }
+        );
+      }
+
+      // Ancestor of recorded Task branch tip (inclusive: tip itself is legal).
+      const branchTip = await readRoleBranchTip(real.workspace, real.branch);
+      const isAncestor = await isCommitAncestor(real.workspace, fullBase, branchTip);
+      if (!isAncestor) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          `task.backfillWorkspaceLaneBase baseCommit ${fullBase} is not an ancestor of ` +
+            `recorded Task branch ${real.branch} tip ${branchTip}`,
+          {
+            taskPath,
+            baseCommit: fullBase,
+            branch: real.branch,
+            branchTip,
+            code: "BASE_BACKFILL_NOT_ANCESTOR",
+          }
+        );
+      }
+
+      const existingBase = current.baseCommit?.trim() || "";
+      if (existingBase) {
+        // Idempotent same SHA: leave original audit untouched.
+        let existingFull = existingBase;
+        try {
+          existingFull = await resolveCommitSha(real.workspace, existingBase);
+        } catch {
+          // Compare raw when existing cannot resolve (still conflict if different).
+        }
+        if (existingFull === fullBase || existingBase === fullBase) {
+          return {
+            workspaceId,
+            taskPath,
+            task: projectTask(current),
+            state: current.state,
+            baseCommit: existingFull || existingBase,
+            idempotent: true,
+          };
+        }
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          `task.backfillWorkspaceLaneBase conflicts with recorded baseCommit ` +
+            `${existingFull || existingBase}; supplied ${fullBase} (capture-once immutable)`,
+          {
+            taskPath,
+            recorded: existingFull || existingBase,
+            supplied: fullBase,
+            code: "BASE_BACKFILL_CONFLICT",
+          }
+        );
+      }
+
+      const now = mount.env.clock.now();
+      const patched = await patchTaskEnvelope(mount.env.fs, current.path, {
         baseCommit: fullBase,
-        actor,
-        capturedAt: now,
-      },
-      updatedAt: now,
-    });
-    emitTaskState(ctx, workspaceId, patched, "task.backfillWorkspaceLaneBase");
-    return {
-      workspaceId,
-      taskPath,
-      task: projectTask(patched),
-      state: patched.state,
-      baseCommit: fullBase,
-      idempotent: false,
-    };
-  });
+        // Keep managed collection baseline once when missing; do not invent from tip.
+        ...(current.roleBranchBase?.trim()
+          ? {}
+          : { roleBranchBase: fullBase }),
+        baseCommitCapture: {
+          source: "explicit-backfill",
+          baseCommit: fullBase,
+          actor,
+          capturedAt: now,
+        },
+        updatedAt: now,
+      });
+      emitTaskState(ctx, workspaceId, patched, "task.backfillWorkspaceLaneBase");
+      return {
+        workspaceId,
+        taskPath,
+        task: projectTask(patched),
+        state: patched.state,
+        baseCommit: fullBase,
+        idempotent: false,
+      };
+    })
+  );
 }
 
 /**
- * Parse backfill actor: accept TaskActorRef wire `{kind,id}` or legacy bare role/user string.
- * Bare "user" → {kind:user,id:user}; other non-empty strings → {kind:role,id}.
+ * Parse backfill actor: explicit TaskActorRef `{ kind, id }` only.
+ * Bare strings are rejected — authority must not be inferred.
  */
 function parseBackfillActor(raw: unknown): TaskActorRef {
-  if (typeof raw === "string" && raw.trim()) {
-    const id = raw.trim();
-    if (id === "user") return { kind: "user", id: "user" };
-    return { kind: "role", id };
+  if (typeof raw === "string") {
+    throw new RpcError(
+      -32602,
+      "task.backfillWorkspaceLaneBase actor must be { kind, id } (bare string rejected; no kind inference)",
+      { code: "BASE_BACKFILL_ACTOR" }
+    );
   }
   try {
     return parseTaskActorRef(raw, "parentActor");
@@ -4150,25 +4175,23 @@ function parseBackfillActor(raw: unknown): TaskActorRef {
 }
 
 /**
- * On Role-assignee claim: bind real Git Role lane (if needed) and capture-once
- * exact baseCommit under the same workspace mutation as claim.
- * - Already has baseCommit → immutable (never recalculate tip); may attach
- *   first-claim audit once when missing (dispatch-time base without audit).
- * - Non-Git / agentProfile → invent nothing.
- * - Missing parentActor → fail loud (needed for audit actor).
+ * Prepare Role-assignee claim write payload without mutating the envelope.
+ * Returns undefined when no lane/base fields need to be written (non-Git / profile /
+ * already complete). Throws before Core claim so the Task stays queued on failure.
+ * Never writes intermediate lane-only patches.
  */
-async function captureRoleBaseCommitOnClaim(
+async function prepareRoleClaimWrite(
   ctx: HandlerContext,
   workspaceId: string,
   task: TaskEnvelope
-): Promise<TaskEnvelope> {
-  if (taskAssigneeKind(task) !== "role") return task;
+): Promise<TaskEnvelopePatch | undefined> {
+  if (taskAssigneeKind(task) !== "role") return undefined;
 
   const mount = ctx.host.require(workspaceId);
-  if (!(await isGitWorkspace(mount.workspaceRoot))) return task;
+  if (!(await isGitWorkspace(mount.workspaceRoot))) return undefined;
 
-  // Immutable base already fully audited — nothing to do.
-  if (task.baseCommit?.trim() && task.baseCommitCapture) return task;
+  // Immutable base already fully audited — nothing extra to write with claim.
+  if (task.baseCommit?.trim() && task.baseCommitCapture) return undefined;
 
   if (!task.parentActor || !task.reviewer) {
     throw new RpcError(
@@ -4179,104 +4202,101 @@ async function captureRoleBaseCommitOnClaim(
     );
   }
 
-  // Bind / re-validate real Role lane (and asSub dispatcher target).
+  // Resolve real Role lane (and asSub dispatcher target) without envelope writes.
   let real: RoleWorkspaceContract;
   try {
-    // When lane fields are incomplete, ensure Role worktree then re-resolve.
-    if (!(task.worktree && task.branch && task.workspace && task.targetBranch)) {
-      const ensured = await ensureRoleWorkspace(mount.workspaceRoot, task.role);
-      const now = mount.env.clock.now();
-      let targetBranch = ensured.targetBranch;
-      if (taskAsSub(task)) {
-        const dispatcher = taskParentRoleId(task);
-        if (!dispatcher) {
-          throw new Error(
-            `Sub task ${task.id || task.path} is missing a durable parent Role for claim lane bind.`
-          );
-        }
-        const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, dispatcher);
-        targetBranch = dispatcherLane.branch;
+    let targetBranchHint: string | undefined;
+    if (taskAsSub(task)) {
+      const dispatcher = taskParentRoleId(task);
+      if (!dispatcher) {
+        throw new Error(
+          `Sub task ${task.id || task.path} is missing a durable parent Role for claim lane bind.`
+        );
       }
-      await patchTaskEnvelope(mount.env.fs, task.path, {
-        workspace: ensured.workspace,
-        worktree: ensured.worktree,
-        branch: ensured.branch,
-        targetBranch,
-        updatedAt: now,
-      });
+      const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, dispatcher);
+      targetBranchHint = dispatcherLane.branch;
+      const recordedTarget = task.targetBranch?.trim();
+      if (recordedTarget && recordedTarget !== targetBranchHint) {
+        throw new Error(
+          `Task envelope targetBranch mismatch for role ${task.role}: ` +
+            `envelope=${recordedTarget} expected=${targetBranchHint}`
+        );
+      }
     }
-    const reloaded = await loadTaskEnvelope(mount.env.fs, task.path);
-    real = await resolveIntegrationContract(mount.workspaceRoot, reloaded);
+    // Ensure durable Role worktree/branch exists; do not patch envelope yet.
+    const ensured = await ensureRoleWorkspace(mount.workspaceRoot, task.role);
+    // Build a transient view for integration contract validation (no disk write).
+    const view: TaskEnvelope = {
+      ...task,
+      workspace: task.workspace || ensured.workspace,
+      worktree: task.worktree || ensured.worktree,
+      branch: task.branch || ensured.branch,
+      targetBranch: task.targetBranch || targetBranchHint || ensured.targetBranch,
+    };
+    real = await resolveIntegrationContract(mount.workspaceRoot, view);
   } catch (err) {
     throw new RpcError(
       RPC_LIFECYCLE,
       err instanceof Error
-        ? `task.claim Role lane bind failed: ${err.message}`
-        : "task.claim Role lane bind failed",
+        ? `task.claim Role lane prepare failed: ${err.message}`
+        : "task.claim Role lane prepare failed",
       { taskPath: task.path, code: "BASE_CAPTURE_LANE" }
     );
   }
 
   const now = mount.env.clock.now();
-  const current = await loadTaskEnvelope(mount.env.fs, task.path);
+  const patch: TaskEnvelopePatch = {
+    workspace: real.workspace,
+    worktree: real.worktree,
+    branch: real.branch,
+    targetBranch: real.targetBranch,
+    updatedAt: now,
+  };
 
   // Existing base is immutable: never re-read tip. Only attach missing audit.
-  const existingBase = current.baseCommit?.trim() || "";
+  const existingBase = task.baseCommit?.trim() || "";
   if (existingBase) {
-    if (current.baseCommitCapture) return current;
     let fullExisting = existingBase;
     try {
       fullExisting = await resolveCommitSha(real.workspace, existingBase);
     } catch {
       // Keep raw recorded value if Git cannot re-resolve (still do not invent tip).
     }
-    return patchTaskEnvelope(mount.env.fs, current.path, {
-      workspace: real.workspace,
-      worktree: real.worktree,
-      branch: real.branch,
-      targetBranch: real.targetBranch,
-      // Normalize to full SHA when resolvable; never change to a different tip.
-      baseCommit: fullExisting,
-      baseCommitCapture: {
+    patch.baseCommit = fullExisting;
+    if (!task.baseCommitCapture) {
+      patch.baseCommitCapture = {
         source: "first-claim",
         baseCommit: fullExisting,
-        actor: current.parentActor!,
+        actor: task.parentActor,
         capturedAt: now,
-      },
-      updatedAt: now,
-    });
+      };
+    }
+    return patch;
   }
 
-  // Capture-once tip of the real Role branch at claim — never rewrite later.
+  // Capture-once tip of the real Role branch at claim prepare — never rewrite later.
   const tip =
     typeof real.baseCommit === "string" && real.baseCommit.trim()
       ? real.baseCommit.trim()
       : await readRoleBranchTip(real.workspace, real.branch);
   const fullTip = await resolveCommitSha(real.workspace, tip);
-
-  return patchTaskEnvelope(mount.env.fs, current.path, {
-    workspace: real.workspace,
-    worktree: real.worktree,
-    branch: real.branch,
-    targetBranch: real.targetBranch,
+  patch.baseCommit = fullTip;
+  if (!task.roleBranchBase?.trim()) {
+    patch.roleBranchBase = fullTip;
+  }
+  patch.baseCommitCapture = {
+    source: "first-claim",
     baseCommit: fullTip,
-    ...(current.roleBranchBase?.trim() ? {} : { roleBranchBase: fullTip }),
-    baseCommitCapture: {
-      source: "first-claim",
-      baseCommit: fullTip,
-      actor: current.parentActor!,
-      capturedAt: now,
-    },
-    ...(current.integrationAuthority
-      ? {}
-      : {
-          integrationAuthority: deriveIntegrationAuthority({
-            parentActor: current.parentActor!,
-            reviewer: current.reviewer!,
-          }),
-        }),
-    updatedAt: now,
-  });
+    actor: task.parentActor,
+    capturedAt: now,
+  };
+  if (!task.integrationAuthority) {
+    patch.integrationAuthority = deriveIntegrationAuthority({
+      parentActor: task.parentActor,
+      reviewer: task.reviewer,
+    });
+  }
+  return patch;
 }
 
 async function taskWaitRpc(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -11351,6 +11371,44 @@ export function setAfterTargetHeadSnapshotForTests(
   afterTargetHeadSnapshotForTests = fn;
 }
 
+/**
+ * Test-only: after Role claim prepare succeeds and before Core taskClaim write.
+ * Production never sets this. Used to prove failed claim leaves Task queued.
+ */
+let beforeTaskClaimCoreForTests:
+  | ((input: {
+      workspaceId: string;
+      taskPath: string;
+      task: TaskEnvelope;
+    }) => Promise<void>)
+  | null = null;
+
+export function setBeforeTaskClaimCoreForTests(
+  fn:
+    | ((input: {
+        workspaceId: string;
+        taskPath: string;
+        task: TaskEnvelope;
+      }) => Promise<void>)
+    | null
+): void {
+  beforeTaskClaimCoreForTests = fn;
+}
+
+/**
+ * Test-only: inside backfill lifecycle flight + mutation, before re-read/write.
+ * Production never sets this. Used to prove backfill cannot interleave with deliver.
+ */
+let beforeTaskBackfillWorkspaceLaneBaseForTests:
+  | ((input: { workspaceId: string; taskPath: string }) => Promise<void>)
+  | null = null;
+
+export function setBeforeTaskBackfillWorkspaceLaneBaseForTests(
+  fn: ((input: { workspaceId: string; taskPath: string }) => Promise<void>) | null
+): void {
+  beforeTaskBackfillWorkspaceLaneBaseForTests = fn;
+}
+
 /** Test helper: clear in-process managed deliver dedup (does not touch disk). */
 export function resetManagedAutoDeliverDedupForTests(): void {
   managedAutoDeliverInFlight.clear();
@@ -11360,6 +11418,8 @@ export function resetManagedAutoDeliverDedupForTests(): void {
   managedSessionInFlight.clear();
   rejectResumePostStartFailureForTests = null;
   beforeCombinedDispatchCompensateForTests = null;
+  beforeTaskClaimCoreForTests = null;
+  beforeTaskBackfillWorkspaceLaneBaseForTests = null;
 }
 
 /** Test helper: clear per-task managed-session single-flight slots. */

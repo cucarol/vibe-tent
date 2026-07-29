@@ -54,6 +54,14 @@ import {
 
 export interface TaskClaimOptions {
   sessionId?: string;
+  /**
+   * Optional single-write claim payload after structural checks.
+   * When set on first claim (queued→running), status/state + session/lane/base/audit
+   * are persisted in **one** envelope patch. Callers must prepare lane/base before
+   * invoking claim so a failed prepare leaves the Task queued.
+   * Keys that would change lifecycle state are forced to running/taken by claim.
+   */
+  claimWrite?: import("./task.js").TaskEnvelopePatch;
 }
 
 export interface TaskWaitOptions {
@@ -136,12 +144,25 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
     }
 
+    // Single envelope write: running + optional session/lane/base/audit together.
+    // No intermediate lane-only patch; failed prepare must not reach this path.
+    const now = env.clock.now();
+    if (options.claimWrite) {
+      return patchTaskEnvelope(env.fs, taskPath, {
+        ...options.claimWrite,
+        status: "taken",
+        state: "running",
+        ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+        updatedAt: options.claimWrite.updatedAt ?? now,
+      });
+    }
+
     // Claim only acks the envelope — no Node frontmatter owner/status dual-write.
     await ackTaskEnvelope(env.fs, taskPath);
     if (options.sessionId) {
       return patchTaskEnvelope(env.fs, taskPath, {
         sessionId: options.sessionId,
-        updatedAt: env.clock.now(),
+        updatedAt: now,
       });
     }
     return loadTaskEnvelope(env.fs, taskPath);

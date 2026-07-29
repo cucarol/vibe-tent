@@ -462,8 +462,33 @@ export function serializeBaseCommitCapture(
 }
 
 /**
+ * Fail-loud ISO-8601 timestamp check for baseCommitCapture.capturedAt.
+ * Requires a real parseable instant with explicit timezone (Z or ±HH:MM).
+ */
+export function assertIsoTimestamp(value: string, label: string): string {
+  const raw = value.trim();
+  if (!raw) {
+    throw new Error(`${label} must be a non-empty ISO-8601 timestamp.`);
+  }
+  // Accept fractional seconds; require timezone designator (Z or offset).
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(raw)
+  ) {
+    throw new Error(
+      `${label} must be a real ISO-8601 timestamp with timezone; got ${raw}.`
+    );
+  }
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) {
+    throw new Error(`${label} is not a parseable ISO-8601 instant: ${raw}.`);
+  }
+  return raw;
+}
+
+/**
  * Parse compact baseCommit capture audit from frontmatter.
  * Missing/empty → undefined. Partial or invalid bags fail loud.
+ * Caller must still enforce baseCommit presence/equality when capture is present.
  */
 export function parseBaseCommitCapture(value: unknown): BaseCommitCapture | undefined {
   if (value === undefined || value === null) return undefined;
@@ -484,11 +509,12 @@ export function parseBaseCommitCapture(value: unknown): BaseCommitCapture | unde
   if (!baseCommit) {
     throw new Error("Task baseCommitCapture.baseCommit must be a non-empty SHA.");
   }
-  const capturedAt =
+  const capturedAtRaw =
     typeof raw.capturedAt === "string" ? raw.capturedAt.trim() : "";
-  if (!capturedAt) {
-    throw new Error("Task baseCommitCapture.capturedAt must be a non-empty ISO timestamp.");
-  }
+  const capturedAt = assertIsoTimestamp(
+    capturedAtRaw,
+    "Task baseCommitCapture.capturedAt"
+  );
   // Reuse parent/reviewer wire shape; re-label errors for capture audit.
   let actor: TaskActorRef;
   try {
@@ -578,8 +604,23 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   }
   // Compact baseCommit audit (first-claim | explicit-backfill). Absence is fine for
   // pre-audit envelopes and non-Git Tasks; never invent from roleBranchBase.
+  // When capture exists: baseCommit must exist and equal capture.baseCommit (fail loud).
   const baseCommitCapture = parseBaseCommitCapture(data.baseCommitCapture);
-  if (baseCommitCapture) task.baseCommitCapture = baseCommitCapture;
+  if (baseCommitCapture) {
+    const recordedBase = task.baseCommit?.trim() || "";
+    if (!recordedBase) {
+      throw new Error(
+        `Invalid task envelope format: ${path} (baseCommitCapture present but baseCommit missing).`
+      );
+    }
+    if (recordedBase !== baseCommitCapture.baseCommit) {
+      throw new Error(
+        `Invalid task envelope format: ${path} (baseCommit ${recordedBase} !== ` +
+          `baseCommitCapture.baseCommit ${baseCommitCapture.baseCommit}).`
+      );
+    }
+    task.baseCommitCapture = baseCommitCapture;
+  }
   // Recorded lane truth: only set TaskEnvelope.integrationAuthority when the on-disk
   // bag exists and validates against parent/reviewer + service mutator.
   // Absence stays absent so ensureTaskWorkspaceLane can detect and persist the

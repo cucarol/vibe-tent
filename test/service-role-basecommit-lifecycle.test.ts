@@ -12,10 +12,20 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
+import { parseFrontmatter, serializeFrontmatter } from "../src/core/frontmatter.js";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
-import { loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
+import {
+  loadTaskEnvelope,
+  parseBaseCommitCapture,
+  patchTaskEnvelope,
+} from "../src/core/task.js";
 import { ensureRoleWorkspace } from "../src/core/workspace.js";
 import { NodeFs } from "../src/fs/node-fs.js";
+import {
+  setAfterTargetHeadSnapshotForTests,
+  setBeforeTaskBackfillWorkspaceLaneBaseForTests,
+  setBeforeTaskClaimCoreForTests,
+} from "../src/service/handlers.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { RPC_LIFECYCLE } from "../src/service/types.js";
@@ -522,5 +532,256 @@ test("non-Git Role claim invents no baseCommit", async () => {
     assert.equal(task.workspaceLane?.baseCommit, undefined);
     assert.equal(task.baseCommitCapture, undefined);
     assert.equal(task.workspaceLane?.branch, undefined);
+  });
+});
+
+test("backfill rejects bare string actor (no kind inference)", async () => {
+  const ws = await makeWorkspace("bare-actor");
+  const initSha = await initGitOnWorkspace(ws);
+  await ensureRoleWorkspace(ws, "executor");
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "bare-item");
+    const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "bare actor",
+      deliveryPolicy: "review",
+    });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    await stripBaseCommitForLegacyFixture(ws, taskPath);
+
+    const bare = await rpc(svc, "task.backfillWorkspaceLaneBase", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+      baseCommit: initSha,
+    });
+    assert.ok(bare.error, "bare string actor must fail");
+    assert.equal(bare.error!.code, -32602);
+    assert.match(String(bare.error!.message), /kind.*id|bare string/i);
+    const task = await getTask(svc, workspaceId, taskPath);
+    assert.equal(task.workspaceLane?.baseCommit, undefined);
+  });
+});
+
+test("failed claim preparation leaves Task queued (no intermediate running)", async () => {
+  const ws = await makeWorkspace("claim-fail-queued");
+  await initGitOnWorkspace(ws);
+  await ensureRoleWorkspace(ws, "executor");
+
+  setBeforeTaskClaimCoreForTests(async () => {
+    throw new Error("injected claim prepare-after failure");
+  });
+  try {
+    await withService(async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws, "fail-claim-item");
+      const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "must stay queued on claim fail",
+        deliveryPolicy: "review",
+      });
+      assert.ok(!d.error, JSON.stringify(d.error));
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+
+      const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
+      assert.ok(claimed.error, "claim must fail from injected hook");
+
+      const task = await getTask(svc, workspaceId, taskPath);
+      assert.equal(task.state, "queued", "failed claim must leave Task queued");
+
+      // Envelope must not have been partially written to running.
+      const fsa = tentFs(ws);
+      const env = await loadTaskEnvelope(fsa, taskPath);
+      assert.equal(env.state, "queued");
+      assert.equal(env.status, "pending");
+    });
+  } finally {
+    setBeforeTaskClaimCoreForTests(null);
+  }
+});
+
+test("backfill cannot interleave with deliver (per-Task lifecycle flight)", async () => {
+  const ws = await makeWorkspace("backfill-vs-deliver");
+  const initSha = await initGitOnWorkspace(ws);
+  const roleLane = await ensureRoleWorkspace(ws, "executor");
+
+  let releaseBackfill!: () => void;
+  const backfillHold = new Promise<void>((r) => {
+    releaseBackfill = r;
+  });
+  let backfillEntered = false;
+
+  setBeforeTaskBackfillWorkspaceLaneBaseForTests(async () => {
+    backfillEntered = true;
+    await backfillHold;
+  });
+
+  try {
+    await withService(async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws, "race-item");
+      const d = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "race backfill vs deliver",
+        deliveryPolicy: "review",
+      });
+      assert.ok(!d.error, JSON.stringify(d.error));
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      await stripBaseCommitForLegacyFixture(ws, taskPath);
+
+      const taskSha = await taskCommitOnLane(
+        roleLane.worktree,
+        "race-work.txt",
+        "race\n",
+        "race work"
+      );
+
+      // Start backfill first — holds per-Task lifecycle flight in body.
+      const backfillP = rpc(svc, "task.backfillWorkspaceLaneBase", {
+        workspaceId,
+        taskPath,
+        actor: { kind: "user", id: "user" },
+        baseCommit: initSha,
+      });
+      for (let i = 0; i < 200 && !backfillEntered; i++) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      assert.ok(backfillEntered, "backfill must enter lifecycle flight body");
+
+      // Concurrent deliver must wait for the same per-Task flight.
+      let deliverSettled = false;
+      const deliverP = rpc(svc, "task.deliver", {
+        workspaceId,
+        taskPath,
+        summary: "race deliver",
+        commits: [taskSha],
+      }).then((res) => {
+        deliverSettled = true;
+        return res;
+      });
+
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(
+        deliverSettled,
+        false,
+        "deliver must not finish while backfill holds per-Task lifecycle flight"
+      );
+
+      releaseBackfill();
+      const backfilled = await backfillP;
+      assert.ok(!backfilled.error, JSON.stringify(backfilled.error));
+      assert.equal((backfilled.result as { idempotent?: boolean }).idempotent, false);
+
+      const delivered = await deliverP;
+      assert.ok(!delivered.error, JSON.stringify(delivered.error));
+      assert.equal(
+        (delivered.result as { delivery: { status: string } }).delivery.status,
+        "ready"
+      );
+      assert.equal(deliverSettled, true);
+    });
+  } finally {
+    setBeforeTaskBackfillWorkspaceLaneBaseForTests(null);
+    setAfterTargetHeadSnapshotForTests(null);
+  }
+});
+
+test("load fails loud on corrupt baseCommitCapture", async () => {
+  const ws = await makeWorkspace("capture-corrupt");
+  await initGitOnWorkspace(ws);
+  await ensureRoleWorkspace(ws, "executor");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "corrupt-item");
+    const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "corrupt capture load",
+      deliveryPolicy: "review",
+    });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+
+    const fsa = tentFs(ws);
+    const env = await loadTaskEnvelope(fsa, taskPath);
+    assert.ok(env.baseCommit);
+    assert.ok(env.baseCommitCapture);
+    const goodBase = env.baseCommit!;
+    const goodCapture = env.baseCommitCapture!;
+
+    // Capture without baseCommit (raw write only — patch/load would fail loud).
+    {
+      const raw = await fsa.readFile(taskPath);
+      const { data, body, keyOrder } = parseFrontmatter(raw);
+      data.baseCommitCapture = {
+        source: "first-claim",
+        baseCommit: goodBase,
+        actor: { kind: "user", id: "user" },
+        capturedAt: goodCapture.capturedAt,
+      };
+      delete data.baseCommit;
+      await fsa.writeFile(taskPath, serializeFrontmatter(data, body, keyOrder));
+    }
+    await assert.rejects(
+      () => loadTaskEnvelope(fsa, taskPath),
+      /baseCommitCapture present but baseCommit missing/
+    );
+
+    // Mismatch base vs capture (raw write — load/patch would fail on prior corruption).
+    {
+      const raw = await fsa.readFile(taskPath);
+      const { data, body, keyOrder } = parseFrontmatter(raw);
+      data.baseCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      data.baseCommitCapture = {
+        source: "first-claim",
+        baseCommit: goodBase,
+        actor: { kind: "user", id: "user" },
+        capturedAt: goodCapture.capturedAt,
+      };
+      await fsa.writeFile(taskPath, serializeFrontmatter(data, body, keyOrder));
+    }
+    await assert.rejects(
+      () => loadTaskEnvelope(fsa, taskPath),
+      /baseCommit .* !== baseCommitCapture\.baseCommit/
+    );
+
+    // Invalid capturedAt.
+    assert.throws(
+      () =>
+        parseBaseCommitCapture({
+          source: "first-claim",
+          baseCommit: goodBase,
+          actor: { kind: "user", id: "user" },
+          capturedAt: "not-a-timestamp",
+        }),
+      /ISO-8601/
+    );
+    assert.throws(
+      () =>
+        parseBaseCommitCapture({
+          source: "first-claim",
+          baseCommit: goodBase,
+          actor: { kind: "user", id: "user" },
+          capturedAt: "2026-07-29T10:00:00", // missing timezone
+        }),
+      /ISO-8601/
+    );
   });
 });

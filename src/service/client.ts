@@ -795,7 +795,8 @@ export class ServiceClient {
     workspaceId: string,
     taskPath: string,
     args: {
-      actor: { kind: "user" | "role"; id: string } | string;
+      /** Exact TaskActorRef only — bare strings are rejected by the Service. */
+      actor: { kind: "user" | "role"; id: string };
       baseCommit: string;
     }
   ) {
