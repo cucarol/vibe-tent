@@ -32,7 +32,7 @@ import { withTentMutation } from "../core/adapter.js";
 import { scaffoldInWorkspace } from "../core/scaffold.js";
 import { workspaceRootFromSystemRoot } from "../core/paths.js";
 import { runTaskCommand, taskHelpText } from "./task-rpc.js";
-import { runAgentCommand, agentHelpText } from "./agent-rpc.js";
+import { runSessionCommand, sessionHelpText } from "./session-rpc.js";
 import { runNodeCommand, nodeHelpText } from "./node-rpc.js";
 import {
   runRoleCheckpointCommand,
@@ -158,13 +158,14 @@ async function main() {
   }
 
   // External / pull-host session lifecycle (SessionRegistry state=external; no ACP spawn).
-  if (cmd === "agent") {
+  // Public surface is tent session only — no tent agent enter|status|leave alias.
+  if (cmd === "session") {
     const [sub, ...rest] = args;
     if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
-      console.log(agentHelpText());
+      console.log(sessionHelpText());
       return;
     }
-    const result = await runAgentCommand(sub, rest, { packageRoot: packageRoot() });
+    const result = await runSessionCommand(sub, rest, { packageRoot: packageRoot() });
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     if (result.exitCode !== 0) process.exitCode = result.exitCode;
@@ -227,7 +228,7 @@ async function main() {
   const tentCommands = new Set(["role-init", "roles", "status", "tags", "find", "tree"]);
   if (!tentCommands.has(cmd)) {
     return fail(
-      `Unknown command: ${cmd || "(empty)"}\nCommands: new node task agent propose role-init role-checkpoint roles status tags find tree skill-install agent-hooks`
+      `Unknown command: ${cmd || "(empty)"}\nCommands: new node task session propose role-init role-checkpoint roles status tags find tree skill-install agent-hooks`
     );
   }
 
@@ -442,8 +443,8 @@ Service-backed workspace operations:
   tent node --help                   Full Node subcommand help
   tent task list|get|claim|deliver|…  Attach Local Service → mount → task.* RPC
   tent task --help                    Full task subcommand help
-  tent agent enter|status|leave       External session lifecycle (no ACP spawn)
-  tent agent --help                   Pull-host enter/status/leave + hook aliases
+  tent session enter|status|leave     External session lifecycle (no ACP spawn)
+  tent session --help                 Pull-host enter/status/leave + hook aliases
   tent role-checkpoint set|show|clear Optional cooperative Role continuation note
   tent role-checkpoint --help         set/clear → Service; show read-only; --actor
   propose <boxId> <file|->            Submit a proposal (in-workspace → proposal.submit RPC)

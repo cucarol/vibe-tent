@@ -1,6 +1,6 @@
-// External agent session lifecycle via Local Service RPC (V0.2 pull-host).
-// Surface: tent agent enter|status|leave — machine-callable JSON, idempotent.
-// Hook aliases: tent agent session-start|session-end [--host <agent>]
+// External Session lifecycle via Local Service RPC (V0.2 pull-host).
+// Surface: tent session enter|status|leave — machine-callable JSON, idempotent.
+// Hook aliases: tent session session-start|session-end [--host <agent>]
 // Does not start ACP; leave never deliver/accept.
 
 import type { ServiceClient } from "../service/client.js";
@@ -11,7 +11,7 @@ import {
 } from "./workspace-context.js";
 import { findTentSystemRoot, NOT_INSIDE_TENT_MESSAGE } from "../core/status.js";
 
-export type AgentRpcGlobalOptions = {
+export type SessionRpcGlobalOptions = {
   workspace?: string;
   cwd?: string;
   dataDir?: string;
@@ -35,7 +35,7 @@ export type AgentRpcGlobalOptions = {
   skipStdin?: boolean;
 };
 
-export type AgentCommandResult = {
+export type SessionCommandResult = {
   exitCode: number;
   stdout: string;
   stderr: string;
@@ -53,24 +53,24 @@ export type NativeHookStdin = {
 };
 
 /**
- * Run `tent agent <sub>` (or internal hook aliases session-start / session-end / session-status).
+ * Run `tent session <sub>` (or internal hook aliases session-start / session-end / session-status).
  */
-export async function runAgentCommand(
+export async function runSessionCommand(
   sub: string,
   args: string[],
-  globals: AgentRpcGlobalOptions = {}
-): Promise<AgentCommandResult> {
-  const normalized = normalizeAgentSub(sub);
+  globals: SessionRpcGlobalOptions = {}
+): Promise<SessionCommandResult> {
+  const normalized = normalizeSessionSub(sub);
   if (!normalized) {
     return failUsage(
-      `Unknown agent subcommand: ${sub || "(empty)"}\n` + agentHelpText()
+      `Unknown session subcommand: ${sub || "(empty)"}\n` + sessionHelpText()
     );
   }
 
   const hookAlias = isHookAlias(sub);
 
   try {
-    const { positionals, flags } = parseAgentFlags(args);
+    const { positionals, flags } = parseSessionFlags(args);
     const json = globals.json === true || flags.json === "true";
     const silent =
       globals.silentOutsideTent === true ||
@@ -174,7 +174,7 @@ export async function runAgentCommand(
       case "enter": {
         if (positionals.length > 0) {
           return failUsage(
-            "Usage: tent agent enter [--session <ss-…>] [--role <name>] [--profile <id>] [--key <externalKey>] [--host <agent>] [--task <taskId>] [--json]"
+            "Usage: tent session enter [--session <ss-…>] [--role <name>] [--profile <id>] [--key <externalKey>] [--host <agent>] [--task <taskId>] [--json]"
           );
         }
         if (hookAlias && !externalKey) {
@@ -223,7 +223,7 @@ export async function runAgentCommand(
       case "status": {
         if (positionals.length > 1) {
           return failUsage(
-            "Usage: tent agent status [sessionId] [--key <externalKey>] [--host <agent>] [--workspace <path>] [--json]"
+            "Usage: tent session status [sessionId] [--key <externalKey>] [--host <agent>] [--workspace <path>] [--json]"
           );
         }
         const sessionIdPos =
@@ -272,7 +272,7 @@ export async function runAgentCommand(
             };
           }
           return failUsage(
-            "Usage: tent agent leave [<sessionId>] [--key <externalKey>] [--host <agent>] [--workspace <path>] [--json]"
+            "Usage: tent session leave [<sessionId>] [--key <externalKey>] [--host <agent>] [--workspace <path>] [--json]"
           );
         }
         const result = await client.sessionLeave({
@@ -283,7 +283,7 @@ export async function runAgentCommand(
         return okPrint(result, json, (r) => formatLeave(r));
       }
       default:
-        return failUsage(agentHelpText());
+        return failUsage(sessionHelpText());
     }
   } catch (error) {
     // Hook aliases: only missing Tent is silent; real Tent errors still fail loud.
@@ -295,14 +295,14 @@ export async function runAgentCommand(
   }
 }
 
-export function agentHelpText(): string {
-  return `tent agent — external / pull-host session lifecycle (Local Service RPC)
+export function sessionHelpText(): string {
+  return `tent session — external / pull-host session lifecycle (Local Service RPC)
 
 Usage:
-  tent agent enter   [--session <ss-…>] [--role <name>] [--profile <id>]
-                     [--key <externalKey>] [--host <agent>] [--task <taskId>] [--json]
-  tent agent status  [sessionId|externalKey] [--key <externalKey>] [--json]
-  tent agent leave   [sessionId|externalKey] [--key <externalKey>] [--json]
+  tent session enter   [--session <ss-…>] [--role <name>] [--profile <id>]
+                       [--key <externalKey>] [--host <agent>] [--task <taskId>] [--json]
+  tent session status  [sessionId|externalKey] [--key <externalKey>] [--json]
+  tent session leave   [sessionId|externalKey] [--key <externalKey>] [--json]
 
 Semantics:
   enter   Register or reuse a SessionRegistry row with state=external.
@@ -312,9 +312,9 @@ Semantics:
           Reports incompleteTasks still open for the caller to handle.
 
 Hook aliases (projection contract with Agent Hook task):
-  tent agent session-start --host <agent>   → enter via stable externalKey
-  tent agent session-end   --host <agent>   → leave via same externalKey
-  tent agent session-status --host <agent>  → status via same externalKey
+  tent session session-start --host <agent>   → enter via stable externalKey
+  tent session session-end   --host <agent>   → leave via same externalKey
+  tent session session-status --host <agent>  → status via same externalKey
 
   Reads native hook stdin JSON when present (session_id / sessionId / cwd /
   workspace). externalKey = host + ":" + nativeSessionId, or host + ":ws:" +
@@ -332,7 +332,7 @@ Common flags:
 }
 
 /** Map public + internal hook subcommands to enter|status|leave. */
-export function normalizeAgentSub(
+export function normalizeSessionSub(
   sub: string
 ): "enter" | "status" | "leave" | null {
   const s = (sub || "").trim().toLowerCase();
@@ -453,7 +453,7 @@ function isTentSessionId(id: string): boolean {
 
 async function loadHookMeta(
   flags: Record<string, string>,
-  globals: AgentRpcGlobalOptions
+  globals: SessionRpcGlobalOptions
 ): Promise<{ stdin: NativeHookStdin | null; host?: string }> {
   const host =
     flags.host ||
@@ -533,7 +533,7 @@ async function probeTentPresence(options: {
 function silentOutsideResult(
   kind: "enter" | "status" | "leave",
   json: boolean
-): AgentCommandResult {
+): SessionCommandResult {
   const payload =
     kind === "enter"
       ? { skipped: true, reason: "not-a-tent-workspace", session: null }
@@ -682,12 +682,12 @@ function okPrint(
   result: unknown,
   json: boolean,
   human: (r: unknown) => string
-): AgentCommandResult {
+): SessionCommandResult {
   const stdout = json ? JSON.stringify(result, null, 2) + "\n" : human(result);
   return { exitCode: 0, stdout, stderr: "" };
 }
 
-function failUsage(msg: string): AgentCommandResult {
+function failUsage(msg: string): SessionCommandResult {
   return { exitCode: 1, stdout: "", stderr: msg + "\n" };
 }
 
@@ -696,7 +696,7 @@ function pathResolve(cwd?: string): string | undefined {
   return cwd;
 }
 
-function parseAgentFlags(args: string[]): {
+function parseSessionFlags(args: string[]): {
   positionals: string[];
   flags: Record<string, string>;
 } {

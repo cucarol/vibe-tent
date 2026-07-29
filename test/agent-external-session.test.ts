@@ -2,7 +2,7 @@
  * V0.2 external / pull-host session lifecycle:
  * - Runtime enterExternalSession (no ACP spawn)
  * - Service RPC session.enter / status / leave
- * - CLI tent agent enter|status|leave (+ hook aliases)
+ * - CLI tent session enter|status|leave (+ hook aliases)
  * - Idempotency, non-Tent silent exit 0 for hooks
  * - leave never deliver/accept
  */
@@ -24,11 +24,11 @@ import {
 } from "../src/runtime/index.js";
 import {
   buildHookExternalKey,
-  normalizeAgentSub,
+  normalizeSessionSub,
   parseNativeHookStdin,
   pickNativeSessionId,
-  runAgentCommand,
-} from "../src/cli/agent-rpc.js";
+  runSessionCommand,
+} from "../src/cli/session-rpc.js";
 import { recordExternalKey } from "../src/runtime/types.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -71,14 +71,14 @@ async function withService<T>(
   }
 }
 
-test("normalizeAgentSub maps public + hook aliases", () => {
-  assert.equal(normalizeAgentSub("enter"), "enter");
-  assert.equal(normalizeAgentSub("session-start"), "enter");
-  assert.equal(normalizeAgentSub("status"), "status");
-  assert.equal(normalizeAgentSub("session-status"), "status");
-  assert.equal(normalizeAgentSub("leave"), "leave");
-  assert.equal(normalizeAgentSub("session-end"), "leave");
-  assert.equal(normalizeAgentSub("nope"), null);
+test("normalizeSessionSub maps public + hook aliases", () => {
+  assert.equal(normalizeSessionSub("enter"), "enter");
+  assert.equal(normalizeSessionSub("session-start"), "enter");
+  assert.equal(normalizeSessionSub("status"), "status");
+  assert.equal(normalizeSessionSub("session-status"), "status");
+  assert.equal(normalizeSessionSub("leave"), "leave");
+  assert.equal(normalizeSessionSub("session-end"), "leave");
+  assert.equal(normalizeSessionSub("nope"), null);
 });
 
 test("SessionRegistry.isOpen includes external; isNonTerminal does not", () => {
@@ -233,13 +233,13 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
   });
 });
 
-test("CLI agent enter/status/leave via service", async () => {
+test("CLI session enter/status/leave via service", async () => {
   await withService(async (svc, dataDir) => {
     const ws = await makeWorkspace();
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     await client.mount(ws);
 
-    const enter = await runAgentCommand(
+    const enter = await runSessionCommand(
       "enter",
       ["--role", "executor", "--key", "cli-key-1", "--json"],
       { client, cwd: ws, dataDir, packageRoot: repoRoot }
@@ -252,7 +252,7 @@ test("CLI agent enter/status/leave via service", async () => {
     assert.equal(enterBody.session.state, "external");
     const sessionId = enterBody.session.sessionId;
 
-    const enter2 = await runAgentCommand(
+    const enter2 = await runSessionCommand(
       "enter",
       ["--session", sessionId, "--json"],
       { client, cwd: ws, dataDir }
@@ -261,7 +261,7 @@ test("CLI agent enter/status/leave via service", async () => {
     const enter2Body = JSON.parse(enter2.stdout) as { reused: boolean };
     assert.equal(enter2Body.reused, true);
 
-    const status = await runAgentCommand("status", [sessionId, "--json"], {
+    const status = await runSessionCommand("status", [sessionId, "--json"], {
       client,
       cwd: ws,
       dataDir,
@@ -274,7 +274,7 @@ test("CLI agent enter/status/leave via service", async () => {
     assert.equal(statusBody.session.sessionId, sessionId);
     assert.equal(statusBody.open, true);
 
-    const leave = await runAgentCommand("leave", [sessionId, "--json"], {
+    const leave = await runSessionCommand("leave", [sessionId, "--json"], {
       client,
       cwd: ws,
       dataDir,
@@ -295,7 +295,7 @@ test("CLI agent enter/status/leave via service", async () => {
 
 test("hook alias session-start outside Tent: silent exit 0", async () => {
   const nonTent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-not-ws-"));
-  const result = await runAgentCommand("session-start", ["--json"], {
+  const result = await runSessionCommand("session-start", ["--json"], {
     cwd: nonTent,
     attachOnly: true,
     dataDir: path.join(os.tmpdir(), "no-svc-" + Date.now()),
@@ -310,7 +310,7 @@ test("hook alias session-start outside Tent: silent exit 0", async () => {
 
 test("public enter outside Tent: fail-loud (not silent)", async () => {
   const nonTent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-not-ws2-"));
-  const result = await runAgentCommand("enter", ["--json"], {
+  const result = await runSessionCommand("enter", ["--json"], {
     cwd: nonTent,
     attachOnly: true,
     dataDir: path.join(os.tmpdir(), "no-svc2-" + Date.now()),
@@ -321,7 +321,7 @@ test("public enter outside Tent: fail-loud (not silent)", async () => {
 
 test("hook session-end outside Tent: silent exit 0", async () => {
   const nonTent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-not-ws3-"));
-  const result = await runAgentCommand(
+  const result = await runSessionCommand(
     "session-end",
     ["ss-doesnotmatter", "--json"],
     {
@@ -457,7 +457,7 @@ test("hook session-start → status → session-end closed loop via --host + std
       session_id: "provider-sess-42",
       cwd: ws,
     });
-    const start = await runAgentCommand(
+    const start = await runSessionCommand(
       "session-start",
       ["--host", "codex", "--json"],
       {
@@ -480,7 +480,7 @@ test("hook session-start → status → session-end closed loop via --host + std
     const sessionId = startBody.session.sessionId;
 
     // Re-enter same host+native id reuses (idempotent) without knowing ss-
-    const start2 = await runAgentCommand(
+    const start2 = await runSessionCommand(
       "session-start",
       ["--host", "codex", "--json"],
       {
@@ -500,7 +500,7 @@ test("hook session-start → status → session-end closed loop via --host + std
     assert.equal(start2Body.reused, true);
 
     // status without sessionId — only --host + same stdin
-    const status = await runAgentCommand(
+    const status = await runSessionCommand(
       "session-status",
       ["--host", "codex", "--json"],
       {
@@ -521,7 +521,7 @@ test("hook session-start → status → session-end closed loop via --host + std
     assert.equal(statusBody.open, true);
 
     // end in a "separate process" style call: no sessionId positional
-    const end = await runAgentCommand(
+    const end = await runSessionCommand(
       "session-end",
       ["--host", "codex", "--json"],
       {
@@ -555,7 +555,7 @@ test("hook session-start without native id uses host+workspace fallback; no host
     await client.mount(ws);
 
     // No host → refuse enter (would create un-findable orphans)
-    const noHost = await runAgentCommand("session-start", ["--json"], {
+    const noHost = await runSessionCommand("session-start", ["--json"], {
       client,
       cwd: ws,
       dataDir,
@@ -566,7 +566,7 @@ test("hook session-start without native id uses host+workspace fallback; no host
     assert.match(noHost.stderr, /externalKey|orphan|--host/i);
 
     // host + workspace fallback (empty stdin, no session_id)
-    const start = await runAgentCommand(
+    const start = await runSessionCommand(
       "session-start",
       ["--host", "claude", "--json"],
       {
@@ -587,7 +587,7 @@ test("hook session-start without native id uses host+workspace fallback; no host
     });
     assert.equal(startBody.session.externalKey, expectedKey);
 
-    const end = await runAgentCommand(
+    const end = await runSessionCommand(
       "session-end",
       ["--host", "claude", "--json"],
       {
@@ -607,7 +607,7 @@ test("hook session-start without native id uses host+workspace fallback; no host
 
 test("hook aliases silent outside Tent even with --host", async () => {
   const nonTent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-not-ws4-"));
-  const result = await runAgentCommand(
+  const result = await runSessionCommand(
     "session-start",
     ["--host", "codex", "--json"],
     {

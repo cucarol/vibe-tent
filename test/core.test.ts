@@ -439,6 +439,9 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
     relay,
     new RegExp(`tent task get ${second.taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`)
   );
+  assert.match(relay, /Task Context Card/);
+  assert.match(relay, /contextCard\.refs\.nodes/);
+  assert.match(relay, /tent node get <nodeId>/);
   assert.match(
     relay,
     new RegExp(
@@ -448,6 +451,8 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.match(relay, /complete role init first/);
   assert.doesNotMatch(relay, /task-ack|tent report\b/);
   assert.doesNotMatch(relay, /whether to reuse|是否复用/i);
+  // Agent-facing relay must not use box vocabulary (Node/nodeId only).
+  assert.doesNotMatch(relay, /\bbox\b|\bboxes\b|\bbox notes\b|\bboxId\b/i);
 
   const { sessionBootstrapPromptForTask, extractTaskUserPrompt } = await import(
     "../src/core/task.js"
@@ -931,6 +936,30 @@ test("CLI rejects removed direct-core commands cleanly", async () => {
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /Unknown command: report/);
   assert.doesNotMatch(result.stderr, /\breport <boxId>/);
+});
+
+test("CLI public session surface is tent session; old tent agent lifecycle is rejected", async () => {
+  const dir = await makeTent();
+
+  const help = await cli(dir, "--help");
+  const helpText = `${help.stdout}${help.stderr}`;
+  assert.match(helpText, /tent session enter\|status\|leave/);
+  assert.doesNotMatch(helpText, /tent agent enter\|status\|leave/);
+
+  const sessionHelp = await cli(dir, "session", "--help");
+  const sessionHelpText = `${sessionHelp.stdout}${sessionHelp.stderr}`;
+  assert.equal(sessionHelp.code, 0, sessionHelp.stderr);
+  assert.match(sessionHelpText, /tent session enter/);
+  assert.match(sessionHelpText, /tent session status/);
+  assert.match(sessionHelpText, /tent session leave/);
+  assert.doesNotMatch(sessionHelpText, /tent agent enter/);
+
+  // No compatibility alias: tent agent enter|status|leave must fail as unknown top-level command.
+  for (const sub of ["enter", "status", "leave"] as const) {
+    const result = await cli(dir, "agent", sub);
+    assert.notEqual(result.code, 0, `tent agent ${sub} must be rejected`);
+    assert.match(result.stderr, /Unknown command: agent/);
+  }
 });
 
 test("CLI help is Delivery-only (no legacy tent report migration track)", async () => {

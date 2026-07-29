@@ -1022,7 +1022,9 @@ test("B5: dispatch relayPrompt uses task claim/deliver (not task-ack)", async ()
     const taskPath = (d.result as { taskPath: string }).taskPath;
     assert.match(relay, new RegExp(`tent task claim ${taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
     assert.match(relay, new RegExp(`tent task deliver ${taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} --summary`));
+    assert.match(relay, /Task Context Card|contextCard\.refs\.nodes|tent node get/);
     assert.doesNotMatch(relay, /task-ack|tent report\b/);
+    assert.doesNotMatch(relay, /\bbox\b|\bboxes\b|\bbox notes\b|\bboxId\b/i);
   });
 });
 

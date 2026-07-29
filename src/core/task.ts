@@ -858,7 +858,7 @@ export function relayPromptForTask(
     `${formatExternalPathBlock(task, resolved)}\n` +
     `${formatTaskPointers(task)}\n` +
     `1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).\n` +
-    `2. Inspect with \`tent task get ${task.path}\` (or read the envelope file), then open the claimed boxes; the box notes contain the task definition.\n` +
+    `2. Read the Task Context Card (\`tent task get ${task.path}\` or the envelope file), then resolve each id in \`contextCard.refs.nodes\` with \`tent node get <nodeId>\`.\n` +
     `3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).\n` +
     initStep
   );
