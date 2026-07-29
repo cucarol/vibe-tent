@@ -1316,6 +1316,108 @@ test("reject-resume: background completion projects processing → delivered", a
         delivery.status === "ready" && delivery.summary === "BG_REWORK_OK"
     );
     assert.equal(readyRework.length, 1, "durable draft retry publishes exactly once");
+
+    const beforeUncertain = (await client.taskGet(workspaceId, taskPath)) as {
+      task: { activeDeliveryId?: string };
+    };
+    const priorDeliveryId = beforeUncertain.task.activeDeliveryId;
+    assert.ok(priorDeliveryId);
+
+    // Repeat with the provider-accepted/local-confirmation-failed state. Keep
+    // markDelivered blocked until prompt_complete has hit PENDING_TASK_INPUT,
+    // then fail only that write so markUncertain succeeds.
+    const originalUncertainMarkDelivered = svc.ctx.taskInputs.markDelivered.bind(
+      svc.ctx.taskInputs
+    );
+    let releaseUncertainMark!: () => void;
+    const uncertainMarkHold = new Promise<void>((resolve) => {
+      releaseUncertainMark = resolve;
+    });
+    let enteredUncertainMark!: () => void;
+    const uncertainMarkEntered = new Promise<void>((resolve) => {
+      enteredUncertainMark = resolve;
+    });
+    svc.ctx.taskInputs.markDelivered = async (...args) => {
+      enteredUncertainMark();
+      await uncertainMarkHold;
+      svc.ctx.taskInputs.setNextPersistErrorForTests(
+        new Error("injected markDelivered persist failure")
+      );
+      return originalUncertainMarkDelivered(...args);
+    };
+    const uncertainDiagnostics: Array<Record<string, unknown>> = [];
+    const unsubscribeUncertain = svc.events.subscribe((ev) => {
+      if (ev.type === "session.state") {
+        uncertainDiagnostics.push(ev.payload as Record<string, unknown>);
+      }
+    });
+
+    let uncertainRejected!: { input: { id: string } };
+    try {
+      uncertainRejected = (await client.taskReject(
+        workspaceId,
+        taskPath,
+        "user",
+        { resume: true, note: "BG_UNCERTAIN_NOTE" }
+      )) as typeof uncertainRejected;
+      await enteredUncertainMark;
+      await pollUntil(async () =>
+        uncertainDiagnostics.some(
+          (ev) =>
+            ev.runtimeEvent === "session.prompt_complete.failed" &&
+            ev.errorCode === "PENDING_TASK_INPUT"
+        )
+          ? true
+          : null,
+      5_000, "uncertain path prompt_complete blocked by processing input");
+    } finally {
+      releaseUncertainMark();
+      unsubscribeUncertain();
+    }
+
+    try {
+      await pollUntil(async () => {
+        const got = (await client.taskInputGet(
+          workspaceId,
+          taskPath,
+          uncertainRejected.input.id
+        )) as { input: { status: string } };
+        return got.input.status === "uncertain" ? got.input : null;
+      }, 20_000, "provider-accepted review-feedback becomes uncertain");
+    } finally {
+      svc.ctx.taskInputs.markDelivered = originalUncertainMarkDelivered;
+    }
+
+    await pollUntil(async () => {
+      const got = (await client.taskGet(workspaceId, taskPath)) as {
+        task: { state: string; activeDeliveryId?: string };
+      };
+      return got.task.state === "delivered" &&
+        got.task.activeDeliveryId &&
+        got.task.activeDeliveryId !== priorDeliveryId
+        ? got.task
+        : null;
+    }, 20_000, "uncertain TaskInput still closes rework Delivery");
+
+    const logRaw = await fs.readFile(logPath, "utf8");
+    const log = JSON.parse(logRaw) as { prompts?: string[] };
+    assert.equal(
+      (log.prompts ?? []).filter((prompt) => prompt.includes("BG_UNCERTAIN_NOTE"))
+        .length,
+      1,
+      "uncertain draft retry must not inject the provider prompt twice"
+    );
+    const afterUncertain = (await client.deliveryList(workspaceId)) as {
+      deliveries: Array<{ summary: string; status: string }>;
+    };
+    assert.equal(
+      afterUncertain.deliveries.filter(
+        (delivery) =>
+          delivery.status === "ready" && delivery.summary === "BG_REWORK_OK"
+      ).length,
+      1,
+      "uncertain durable draft retry publishes exactly one ready Delivery"
+    );
   });
 });
 

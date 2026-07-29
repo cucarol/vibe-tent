@@ -925,6 +925,7 @@ test("native resume uses immutable profile snapshot but resolves rotated credent
   const original = {
     id: "snapshot-profile",
     adapterId: adapter.id,
+    env: { TENT_SERVICE_DATA_DIR: "C:\\profile-must-not-win" },
     acp: {
       model: "old-model",
       baseUrl: "https://old.invalid/v1",
@@ -933,7 +934,7 @@ test("native resume uses immutable profile snapshot but resolves rotated credent
     },
   };
   const runtime = createAgentRuntime({
-    dataDir,
+    dataDir: path.relative(process.cwd(), dataDir),
     adapters: [adapter],
     profiles: [original],
     resolveProfileEnv: (profile) => {
@@ -963,7 +964,11 @@ test("native resume uses immutable profile snapshot but resolves rotated credent
     },
   ]);
   secret = "secret-v2";
-  await runtime.resumeSession({ sessionId, cwd });
+  await runtime.resumeSession({
+    sessionId,
+    cwd,
+    env: { TENT_SERVICE_DATA_DIR: "C:\\request-must-not-win" },
+  });
   assert.deepEqual(resumedPlans[0], {
     model: "old-model",
     baseUrl: "https://old.invalid/v1",

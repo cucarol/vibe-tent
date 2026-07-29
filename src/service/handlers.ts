@@ -4535,6 +4535,20 @@ async function deliverManagedTaskInput(
               },
               "service"
             );
+            // Current wire treats uncertain as at-most-once and non-blocking:
+            // the provider accepted the prompt, but only the local confirmation
+            // write failed. Honor that existing gate semantics by retrying any
+            // preserved report draft; never inject the TaskInput again.
+            try {
+              await requestManagedAutoDeliverRetryFromDraft(ctx, {
+                workspaceId: forInject.workspaceId,
+                taskPath: forInject.taskPath,
+                sessionId,
+              });
+            } catch {
+              // Uncertain remains authoritative and at-most-once. The report
+              // draft retains its own failure diagnostics for a later retry.
+            }
           } catch {
             // leave processing if store closed mid-shutdown
           }

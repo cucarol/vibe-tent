@@ -382,6 +382,7 @@ test("AgentRuntime: resolveProfileEnv injects env; missing ref fails; no secret 
   const profile: AgentProfileConfig = {
     id: "prof-with-cred",
     adapterId: "mock-env-capture",
+    env: { TENT_SERVICE_DATA_DIR: "C:\\profile-must-not-win" },
     acp: {
       envKey: "CPA_GROK_API_KEY",
       credentialRef: "vault-1",
@@ -390,7 +391,8 @@ test("AgentRuntime: resolveProfileEnv injects env; missing ref fails; no secret 
   };
 
   const runtime = createAgentRuntime({
-    dataDir,
+    // Relative input must still become an absolute child routing authority.
+    dataDir: path.relative(process.cwd(), dataDir),
     profiles: [profile],
     adapters: [mockAdapter, createFakeAdapter()],
     resolveProfileEnv: async (p) => {

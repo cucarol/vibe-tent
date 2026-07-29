@@ -135,8 +135,10 @@ export class AgentRuntime implements AgentRuntimePort {
   private closed = false;
 
   constructor(options: AgentRuntimeOptions) {
-    this.dataDir = options.dataDir;
-    this.registry = new SessionRegistry(options.dataDir);
+    // Children run in Task worktrees, so a relative data-dir would resolve to a
+    // different registry there. Normalize once at the runtime ownership boundary.
+    this.dataDir = path.resolve(options.dataDir);
+    this.registry = new SessionRegistry(this.dataDir);
     this.resolveProfileEnv = options.resolveProfileEnv;
     this.resolveCredentialRef = options.resolveCredentialRef;
     this.packageRoot = options.packageRoot;
