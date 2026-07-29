@@ -1,12 +1,12 @@
 import { FsAdapter } from "./adapter.js";
-import { BOX_FRONTMATTER_KEY_ORDER, serializeFrontmatter } from "./frontmatter.js";
+import { BOX_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { DEFAULT_TYPE_REGISTRY, TYPE_REGISTRY_PATH } from "./typeRegistry.js";
 import type { TypeRegistry } from "./typeRegistry.js";
 import { ROLES_REGISTRY_PATH } from "./skillRoleRegistry.js";
 import type { RolesRegistry } from "./skillRoleRegistry.js";
 import { DEFAULT_TAG_REGISTRY, TAGS_REGISTRY_PATH } from "./tags.js";
 import { boxNotePath } from "./tree.js";
-import { makeUniqueConceptId } from "./id.js";
+import { isConceptId, makeUniqueConceptId } from "./id.js";
 import {
   ATTACHMENTS_DIR,
   INDEX_PATH,
@@ -14,6 +14,13 @@ import {
   TENT_SYSTEM_DIR,
   systemRootFromWorkspace,
 } from "./paths.js";
+
+/** Registry files that count as clear Tent evidence and may be default-filled on re-adopt. */
+const RECOGNIZED_REGISTRY_PATHS = [
+  TYPE_REGISTRY_PATH,
+  ROLES_REGISTRY_PATH,
+  TAGS_REGISTRY_PATH,
+] as const;
 
 /** 顶层 concept:genesis grill 出的真名节点(非强制通用顶层文件夹)。 */
 export interface ScaffoldBox {
@@ -110,6 +117,187 @@ export async function scaffoldInWorkspace(
 
   await ensureWorkspaceGitignore(workspaceFs);
   return { systemRootRelative: systemRelative };
+}
+
+/**
+ * Result of a successful one-shot re-adopt of an orphan in-workspace `.tent/`.
+ * Only missing structural pieces are created; existing bytes are never rewritten.
+ */
+export interface ReAdoptOrphanTentResult {
+  systemRootRelative: string;
+  /** Always true on success — re-adopt only runs when index.md was absent. */
+  createdIndex: true;
+  /** Required empty dirs that were missing and created (`temp`, `attachments`). */
+  createdDirs: string[];
+  /** Missing registry basenames written with scaffold defaults. */
+  createdRegistries: string[];
+  /** Whether workspace `.gitignore` gained a `.tent/` entry (or was created). */
+  gitignoreUpdated: boolean;
+}
+
+/**
+ * One-shot Core re-adopt for a workspace that already has `.tent/` with Tent evidence
+ * but no current valid index marker.
+ *
+ * Preconditions (all checked before any write; failure → zero writes):
+ * - `.tent/` exists
+ * - `index.md` is **absent** (present valid index → already a Tent; present invalid/non-index → refuse overwrite)
+ * - clear evidence: at least one recognized registry (`types.json` / `roles.json` / `tags.json`)
+ *   **or** at least one Markdown Node whose frontmatter `id` is a durable `cx-` handle
+ *
+ * On success: preserve every existing file byte-for-byte; add only the current index marker,
+ * missing required empty dirs, missing registry defaults, and `.tent/` gitignore coverage.
+ * Never deletes, renames, or rewrites Nodes, roles, temp history, or other user content.
+ */
+export async function reAdoptOrphanTent(
+  workspaceFs: FsAdapter
+): Promise<ReAdoptOrphanTentResult> {
+  const systemRelative = TENT_SYSTEM_DIR;
+  const nested = (p: string) => `${systemRelative}/${p}`.replace(/\\/g, "/");
+
+  if (!(await workspaceFs.exists(systemRelative))) {
+    throw new Error(
+      `Cannot re-adopt: workspace has no ${TENT_SYSTEM_DIR}/ system directory.`
+    );
+  }
+
+  const indexRel = nested(INDEX_PATH);
+  if (await workspaceFs.exists(indexRel)) {
+    const raw = await workspaceFs.readFile(indexRel);
+    if (isValidTentIndexMarker(raw)) {
+      throw new Error(
+        `Cannot re-adopt: ${TENT_SYSTEM_DIR}/${INDEX_PATH} already marks a valid Tent.`
+      );
+    }
+    throw new Error(
+      `Cannot re-adopt: ${TENT_SYSTEM_DIR}/${INDEX_PATH} exists but is not a valid Tent index marker; refusing to overwrite ambiguous content.`
+    );
+  }
+
+  const hasEvidence = await hasOrphanTentEvidence(workspaceFs, nested);
+  if (!hasEvidence) {
+    throw new Error(
+      `Cannot re-adopt: ${TENT_SYSTEM_DIR}/ has no recognized Tent evidence ` +
+        `(expected a registry file or a Markdown Node with durable cx- id).`
+    );
+  }
+
+  // Plan missing pieces from pure reads, then write only what is absent.
+  const createdDirs: string[] = [];
+  for (const dir of [TEMP_DIR, ATTACHMENTS_DIR]) {
+    const rel = nested(dir);
+    if (!(await workspaceFs.exists(rel))) createdDirs.push(dir);
+  }
+
+  const createdRegistries: string[] = [];
+  const registryBodies = new Map<string, string>();
+  for (const reg of RECOGNIZED_REGISTRY_PATHS) {
+    const rel = nested(reg);
+    if (await workspaceFs.exists(rel)) continue;
+    createdRegistries.push(reg);
+    registryBodies.set(reg, defaultRegistryBody(reg));
+  }
+
+  const gitignoreWillUpdate = await workspaceGitignoreNeedsTentEntry(workspaceFs);
+
+  // Writes only after preconditions + plan are complete.
+  for (const dir of createdDirs) {
+    await workspaceFs.mkdir(nested(dir));
+  }
+  for (const reg of createdRegistries) {
+    await workspaceFs.writeFile(nested(reg), registryBodies.get(reg)!);
+  }
+  await workspaceFs.writeFile(indexRel, tentIndexMarker());
+  if (gitignoreWillUpdate) {
+    await ensureWorkspaceGitignore(workspaceFs);
+  }
+
+  return {
+    systemRootRelative: systemRelative,
+    createdIndex: true,
+    createdDirs,
+    createdRegistries,
+    gitignoreUpdated: gitignoreWillUpdate,
+  };
+}
+
+/** True when raw content is a structural Tent index marker (`type: index`). */
+export function isValidTentIndexMarker(raw: string): boolean {
+  try {
+    const { data } = parseFrontmatter(raw);
+    return data.type === "index";
+  } catch {
+    return false;
+  }
+}
+
+async function hasOrphanTentEvidence(
+  workspaceFs: FsAdapter,
+  nested: (p: string) => string
+): Promise<boolean> {
+  for (const reg of RECOGNIZED_REGISTRY_PATHS) {
+    if (await workspaceFs.exists(nested(reg))) return true;
+  }
+  return hasDurableConceptNode(workspaceFs, TENT_SYSTEM_DIR);
+}
+
+/** Depth-first scan under `.tent/` for any `.md` with frontmatter `id: cx-…`. */
+async function hasDurableConceptNode(workspaceFs: FsAdapter, dir: string): Promise<boolean> {
+  let entries: { name: string; isDir: boolean }[];
+  try {
+    entries = await workspaceFs.listDir(dir);
+  } catch {
+    return false;
+  }
+  for (const entry of entries) {
+    const child = `${dir}/${entry.name}`.replace(/\\/g, "/");
+    if (entry.isDir) {
+      if (await hasDurableConceptNode(workspaceFs, child)) return true;
+      continue;
+    }
+    if (!entry.name.endsWith(".md")) continue;
+    // index.md is handled by preconditions; skip other system note names only as non-nodes.
+    if (entry.name === INDEX_PATH) continue;
+    let raw: string;
+    try {
+      raw = await workspaceFs.readFile(child);
+    } catch {
+      continue;
+    }
+    try {
+      const { data } = parseFrontmatter(raw);
+      const id = typeof data.id === "string" ? data.id.trim() : "";
+      if (id && isConceptId(id)) return true;
+    } catch {
+      // Unreadable / invalid frontmatter is not evidence.
+    }
+  }
+  return false;
+}
+
+function defaultRegistryBody(reg: string): string {
+  if (reg === TYPE_REGISTRY_PATH) {
+    return JSON.stringify(DEFAULT_TYPE_REGISTRY, null, 2) + "\n";
+  }
+  if (reg === ROLES_REGISTRY_PATH) {
+    return JSON.stringify({ roles: [] }, null, 2) + "\n";
+  }
+  if (reg === TAGS_REGISTRY_PATH) {
+    return JSON.stringify(DEFAULT_TAG_REGISTRY, null, 2) + "\n";
+  }
+  throw new Error(`Unknown registry path for re-adopt defaults: ${reg}`);
+}
+
+async function workspaceGitignoreNeedsTentEntry(workspaceFs: FsAdapter): Promise<boolean> {
+  const path = ".gitignore";
+  const entry = `${TENT_SYSTEM_DIR}/`;
+  if (!(await workspaceFs.exists(path))) return true;
+  const text = await workspaceFs.readFile(path);
+  const lines = text.split(/\r?\n/);
+  return !lines.some((line) => {
+    const t = line.trim();
+    return t === entry || t === TENT_SYSTEM_DIR || t === `/${entry}` || t === `/${TENT_SYSTEM_DIR}`;
+  });
 }
 
 /** 确保 workspace 根 `.gitignore` 含 `.tent/` 条目。 */
