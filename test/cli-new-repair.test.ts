@@ -226,7 +226,8 @@ test("old public tent agent session-* routing is rejected after Session rename",
   for (const sub of ["session-start", "session-status", "session-end", "enter", "status", "leave"] as const) {
     const result = await runCli(repoRoot, "agent", sub, "--host", "claude");
     assert.notEqual(result.code, 0, `tent agent ${sub} must be rejected`);
-    assert.match(result.stderr, /Unknown command: agent/);
+    // tent agent is logical AgentDefinition only; Session lifecycle is tent session.
+    assert.match(result.stderr, /Unknown agent-definition subcommand/);
   }
 });
 

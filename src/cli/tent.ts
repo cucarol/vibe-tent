@@ -35,6 +35,11 @@ import { runTaskCommand, taskHelpText } from "./task-rpc.js";
 import { runSessionCommand, sessionHelpText } from "./session-rpc.js";
 import { runNodeCommand, nodeHelpText } from "./node-rpc.js";
 import {
+  runAgentDefinitionCommand,
+  agentDefinitionHelpText,
+} from "./agent-definition-rpc.js";
+import { runRoleCommand, roleHelpText } from "./role-rpc.js";
+import {
   runRoleCheckpointCommand,
   roleCheckpointHelpText,
 } from "./role-checkpoint-rpc.js";
@@ -180,7 +185,7 @@ async function main() {
   }
 
   // External / pull-host session lifecycle (SessionRegistry state=external; no ACP spawn).
-  // Public surface is tent session only — no tent agent enter|status|leave alias.
+  // Public surface is tent session only — Session enter|status|leave|session-* never under tent agent.
   if (cmd === "session") {
     const [sub, ...rest] = args;
     if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
@@ -188,6 +193,34 @@ async function main() {
       return;
     }
     const result = await runSessionCommand(sub, rest, { packageRoot: packageRoot() });
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    if (result.exitCode !== 0) process.exitCode = result.exitCode;
+    return;
+  }
+
+  // Logical AgentDefinition management only (list|get|config). Not Session lifecycle.
+  if (cmd === "agent") {
+    const [sub, ...rest] = args;
+    if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
+      console.log(agentDefinitionHelpText());
+      return;
+    }
+    const result = await runAgentDefinitionCommand(sub, rest, { packageRoot: packageRoot() });
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    if (result.exitCode !== 0) process.exitCode = result.exitCode;
+    return;
+  }
+
+  // Durable Role discovery + roster config (list|show|config). Not the old registry-list alias.
+  if (cmd === "role") {
+    const [sub, ...rest] = args;
+    if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
+      console.log(roleHelpText());
+      return;
+    }
+    const result = await runRoleCommand(sub, rest, { packageRoot: packageRoot() });
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     if (result.exitCode !== 0) process.exitCode = result.exitCode;
@@ -247,10 +280,10 @@ async function main() {
     return;
   }
 
-  const tentCommands = new Set(["role-init", "roles", "status", "tags", "find", "tree"]);
+  const tentCommands = new Set(["role-init", "status", "tags", "find", "tree"]);
   if (!tentCommands.has(cmd)) {
     return fail(
-      `Unknown command: ${cmd || "(empty)"}\nCommands: new node task session propose role-init role-checkpoint roles status tags find tree skill-install agent-hooks`
+      `Unknown command: ${cmd || "(empty)"}\nCommands: new node task session agent role propose role-init role-checkpoint status tags find tree skill-install agent-hooks`
     );
   }
 
@@ -268,12 +301,6 @@ async function main() {
         () => ensureRoleInit(env.fs, role, env.tentName)
       );
       console.log(`Read ${initPath} to complete role initialization.`);
-      break;
-    }
-    case "roles": {
-      if (args.length > 0) return fail("Usage: tent roles");
-      const registry = await loadRolesRegistry(env.fs);
-      console.log(JSON.stringify(registry, null, 2));
       break;
     }
     case "status": {
@@ -462,13 +489,19 @@ Usage:
 
 Run commands from a workspace with <workspace>/.tent/ unless noted.
 
+Logical Agent, durable Role, Session, and Task (distinct surfaces):
+  tent agent list|get|config          Logical AgentDefinition (id→profileId; no secrets/Session)
+  tent agent --help                   AgentDefinition subcommand help
+  tent role list|show|config          Durable Role discovery + roster config (Service-backed)
+  tent role --help                    Role subcommand help
+  tent session enter|status|leave     External session lifecycle (no ACP spawn)
+  tent session --help                 Pull-host enter/status/leave + hook aliases
+  tent task list|get|claim|deliver|…  Attach Local Service → mount → task.* RPC
+  tent task --help                    Full task subcommand help
+
 Service-backed workspace operations:
   tent node list|get|create|write|… Agent-facing Node operations through Local Service
   tent node --help                   Full Node subcommand help
-  tent task list|get|claim|deliver|…  Attach Local Service → mount → task.* RPC
-  tent task --help                    Full task subcommand help
-  tent session enter|status|leave     External session lifecycle (no ACP spawn)
-  tent session --help                 Pull-host enter/status/leave + hook aliases
   tent role-checkpoint set|show|clear Optional cooperative Role continuation note
   tent role-checkpoint --help         set/clear → Service; show read-only; --actor
   propose <boxId> <file|->            Submit a proposal (in-workspace → proposal.submit RPC)
@@ -491,7 +524,6 @@ Initialization and machine config:
 
 Read-only:
   status                             Print a read-only Tent status summary.
-  roles                              Print the role registry.
   tags                               List registered tags.
   find <tag>                         Find boxes by tag.
   tree                               Print the Node tree.
