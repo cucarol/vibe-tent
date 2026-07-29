@@ -25,25 +25,21 @@ tent task user-ask list|get <askId>|reply <askId>|deny <askId> […]
 tent task accept <taskPath> --actor <user|role> …
 tent task reject <taskPath> --actor <user|role> [--note …] [--resume|--no-resume] …
 tent task cancel <taskPath> …
-tent task dispatch <boxId> <role> …
-tent task dispatch <boxId> --profile <profileId> …
-tent task dispatch <boxId> --agent <agentId> …
+tent task dispatch --target role:<roleIdOrName>|agent:<agentId> \
+  --node <nodeId> [--node <nodeId> …] --prompt <text>|-
 ```
 
 Dispatch forms:
 
 | Form | Assignee | Session |
 | --- | --- | --- |
-| `tent task dispatch <boxId> <role> [prompt…]` | Durable **role** (registry) | Queued only; no auto start |
-| `tent task dispatch <boxId> --profile <profileId> [prompt…]` | User-direct one-shot **AgentProfile** | Starts a managed Session |
-| `tent task dispatch <boxId> --agent <agentId> [prompt…] --by <role>` | Logical worker in the parent Role roster | Resolves its machine-local Profile and starts a managed Session |
+| `--target role:<roleIdOrName>` | Durable Role | Queued only; no managed ACP start at dispatch |
+| `--target agent:<agentId>` | Logical AgentDefinition | Resolves the machine-local LaunchProfile and starts managed ACP |
 
-- `--agent` is the normal Role-to-downstream path. `agentId` is stable logical identity; Profile is local launch resolution. Out-of-roster dispatch fails loud.
-- `--profile` does **not** register a Role or authorize a roster worker; it is the user-direct one-shot path.
-- A bare role-like string is **never** inferred as a profile; use `--profile` explicitly.
-- Do not pass low-level `--assignee-kind` / `--start-session` on the CLI.
-- Prompt: positionals **or** `--prompt <text>|-`, not both.
-- CLI `--by <role>` translates to explicit equal `parentActor` + `reviewer`; it never writes legacy `dispatchedBy`. User-direct dispatch uses user as both. `asSub` affects the Git lane only, never reviewer authority or Node concurrency.
+- `--node` is repeatable and supplies the exact ordered Context Card Node refs; at least one is required. Node refs are non-exclusive.
+- `agentId` is stable logical identity; LaunchProfile is local resolution and never a public dispatch selector. A Role caller may use only its ready roster; user-direct dispatch is authorized by the user actor.
+- Caller identity supplies equal `parentActor` and `reviewer`. A Role caller also derives the parent Role Git lane internally; user-direct dispatch uses user. Do not pass or recreate `--profile`, `--agent`, `--delivery-policy`, `--as-sub`, `--by`, `--caller-kind`, or `--assignee-kind`.
+- Prompt is required through `--prompt <text>|-`; positional Task source or prompt forms are not aliases.
 
 Agents never self-accept. Review authority is the exact persisted `reviewer`, which must equal `parentActor`. Downstream Task Agents always use review-to-parent and cannot elevate `bypass` or `agent-decide`; the three-state policy is only for a durable Role's user-facing Delivery.
 
@@ -123,17 +119,18 @@ For external Session entry/status/leave, read [session-boundaries.md](session-bo
 
 ```bash
 tent status          # proposals, tasks, paths (read-only)
-tent roles           # role registry
-tent tree            # box tree
+tent role list       # durable Role registry projection
+tent role show <id>  # roster readiness for one Role
+tent agent list      # logical AgentDefinitions (not Sessions)
+tent tree            # Node tree
 tent task list       # service task list
-tent agent status    # external session orientation
+tent session status  # external Session orientation
 ```
 
 ## What not to use as the main path
 
 | Avoid as primary | Why |
 | --- | --- |
-| `tent task-ack` | Legacy direct-core; blocked on in-workspace `.tent` |
 | Chat-only “done” without deliver | External path must `task.deliver` |
 | Self `task.accept` | User (or authorized) review only |
 | Self `send-input` on **this** task | Executor consumes via `task-input *`; writers are user/dispatcher |

@@ -4,10 +4,10 @@
 
 | | Managed ACP | External / relay |
 | --- | --- | --- |
-| Start | Desktop / Service `task.startSession` | Host process + `tent agent enter` |
+| Start | Desktop / Service `task.startSession` | Host process + `tent session enter` |
 | Claim | Service claims first | Executor runs `tent task claim` |
 | Delivery | Service captures the final report | Executor runs `tent task deliver` |
-| Session ID | Service-owned `ss-…` | `tent agent enter`, optionally with `--session` / `--key` |
+| Session ID | Service-owned `ss-…` | `tent session enter`, optionally with `--session` / `--key` |
 | Process | ACP child under Tent Service | Claude, Codex, Grok, or another host process |
 
 This file covers Session boundaries only. Read [task-cli.md](task-cli.md) for the Task lifecycle.
@@ -15,13 +15,13 @@ This file covers Session boundaries only. Read [task-cli.md](task-cli.md) for th
 ## External Session CLI
 
 ```text
-tent agent enter   → state=external registry row; no ACP spawn; idempotent
-tent agent status  → open? + incompleteTasks
-tent agent leave   → unbind only; delivered=false, accepted=false
+tent session enter   → state=external registry row; no ACP spawn; idempotent
+tent session status  → open? + incompleteTasks
+tent session leave   → unbind only; delivered=false, accepted=false
 ```
 
 - `leave` never delivers, accepts, or stops unrelated external processes.
-- Hook aliases are `tent agent session-start|session-status|session-end --host <agent>` using a stable external key. Outside Tent, hooks exit silently.
+- Hook aliases are `tent session session-start|session-status|session-end --host <agent>` using a stable external key. Outside Tent, hooks exit silently.
 - External GUI Sessions are registry/orientation records; this Skill never turns them into ACP child processes.
 
 ## Recover from stale or replaced Sessions

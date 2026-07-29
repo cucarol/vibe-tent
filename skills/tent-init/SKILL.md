@@ -11,7 +11,7 @@ Use this one-time onboarding contract to establish a Tent workspace. It does not
 
 1. Resolve the directory the user means. Prefer the Git root for an existing repository unless the user explicitly chooses a subdirectory.
 2. Check for an existing `.tent/`, workspace-root `AGENTS.md`, Git state, and the public `tent` CLI before mutation.
-3. If `.tent/` already exists, do not initialize again. Re-query the existing workspace and offer recovery, mounting, or orientation instead.
+3. If `.tent/` already exists, do not initialize again. Re-query the existing workspace and offer mounting or orientation. When it is an orphan with a missing index and recognizable generic Tent evidence, use the explicit one-shot `tent new <target> --repair-existing`; it must fail closed for empty, unrecognized, invalid-index, or already-valid state.
 4. Never overwrite `AGENTS.md`, application files, Git history, uncommitted changes, or an existing Tent.
 
 For a repository with uncommitted work, explain that those changes are not part of a Task worktree's recorded Git base. Do not commit, stash, reset, clean, or discard them on the user's behalf.
@@ -48,6 +48,7 @@ For a new project, ask at most one or two lightweight questions about the intend
 
 - New directory: use `tent new <path>`.
 - Existing project root: run `tent new .` from that root.
+- Existing orphan `.tent/`: use `tent new <target> --repair-existing` only for the narrow re-adopt case above. It preserves existing bytes and fills structural gaps; it is not a migration or doctor framework.
 - Use only public Tent CLI, Desktop, or Service mutation surfaces. Never hand-write files under `.tent/` or call provider adapters directly.
 - Preserve an existing workspace-root `AGENTS.md`. Tent operational state belongs under `.tent/`, which the initializer adds to Git ignore rules.
 - A non-Git project may use Tent Nodes, but managed worktrees and commit integration require Git. Ask before initializing Git.
