@@ -759,10 +759,19 @@ test("backfill cannot interleave with deliver (per-Task lifecycle flight)", asyn
   const initSha = await initGitOnWorkspace(ws);
   const roleLane = await ensureRoleWorkspace(ws, "executor");
 
-  let releaseBackfill!: () => void;
+  // Idempotent release + safety timeout so assertion failures cannot hang teardown.
+  let resolveHold: (() => void) | null = null;
+  let released = false;
+  const releaseBackfill = (): void => {
+    if (released) return;
+    released = true;
+    resolveHold?.();
+    resolveHold = null;
+  };
   const backfillHold = new Promise<void>((r) => {
-    releaseBackfill = r;
+    resolveHold = r;
   });
+  const holdSafety = setTimeout(() => releaseBackfill(), 15_000);
   let backfillEntered = false;
 
   setBeforeTaskBackfillWorkspaceLaneBaseForTests(async () => {
@@ -801,7 +810,9 @@ test("backfill cannot interleave with deliver (per-Task lifecycle flight)", asyn
         actor: { kind: "user", id: "user" },
         baseCommit: initSha,
       });
-      for (let i = 0; i < 200 && !backfillEntered; i++) {
+      // Bounded wait for flight entry (≤5s); do not spin forever.
+      const enterDeadline = Date.now() + 5_000;
+      while (!backfillEntered && Date.now() < enterDeadline) {
         await new Promise((r) => setTimeout(r, 25));
       }
       assert.ok(backfillEntered, "backfill must enter lifecycle flight body");
@@ -839,6 +850,9 @@ test("backfill cannot interleave with deliver (per-Task lifecycle flight)", asyn
       assert.equal(deliverSettled, true);
     });
   } finally {
+    // Always release hold before clearing hooks so teardown cannot hang.
+    releaseBackfill();
+    clearTimeout(holdSafety);
     setBeforeTaskBackfillWorkspaceLaneBaseForTests(null);
     setAfterTargetHeadSnapshotForTests(null);
   }
