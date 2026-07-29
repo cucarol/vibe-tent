@@ -22,7 +22,7 @@ function envFor(dir: string) {
   return {
     fs: new NodeFs(dir),
     clock: { now: () => "2026-07-30T12:00:00.000Z" },
-    tentName: "wqb",
+    tentName: "demo",
     tentRoot: dir,
   };
 }
@@ -33,7 +33,7 @@ test("resolveDispatchNodeIds: prefers nodeIds, dedupes order, rejects empty/root
   assert.deepEqual(
     resolveDispatchNodeIds({
       nodeIds: ["bx-p1", "bx-o1", "bx-p1", "bx-g1"],
-      tentName: "wqb",
+      tentName: "demo",
     }),
     ["bx-p1", "bx-o1", "bx-g1"]
   );
@@ -41,24 +41,24 @@ test("resolveDispatchNodeIds: prefers nodeIds, dedupes order, rejects empty/root
     resolveDispatchNodeIds({
       nodeIds: ["bx-p1", "bx-o1"],
       legacyClaimId: "bx-p1",
-      tentName: "wqb",
+      tentName: "demo",
     }),
     ["bx-p1", "bx-o1"]
   );
   assert.deepEqual(
-    resolveDispatchNodeIds({ legacyClaimId: "bx-p1", tentName: "wqb" }),
+    resolveDispatchNodeIds({ legacyClaimId: "bx-p1", tentName: "demo" }),
     ["bx-p1"]
   );
 
   assert.throws(
-    () => resolveDispatchNodeIds({ nodeIds: [], tentName: "wqb" }),
+    () => resolveDispatchNodeIds({ nodeIds: [], tentName: "demo" }),
     /non-empty/
   );
   assert.throws(
     () =>
       resolveDispatchNodeIds({
         nodeIds: ["bx-p1", "  "],
-        tentName: "wqb",
+        tentName: "demo",
       }),
     /nodeIds\[1\]/
   );
@@ -66,7 +66,7 @@ test("resolveDispatchNodeIds: prefers nodeIds, dedupes order, rejects empty/root
     () =>
       resolveDispatchNodeIds({
         nodeIds: ["root"],
-        tentName: "wqb",
+        tentName: "demo",
       }),
     /whole Tent/
   );
@@ -75,12 +75,12 @@ test("resolveDispatchNodeIds: prefers nodeIds, dedupes order, rejects empty/root
       resolveDispatchNodeIds({
         nodeIds: ["bx-p1"],
         legacyClaimId: "bx-o1",
-        tentName: "wqb",
+        tentName: "demo",
       }),
     /conflicts with authoritative nodeIds/
   );
   assert.throws(
-    () => resolveDispatchNodeIds({ tentName: "wqb" }),
+    () => resolveDispatchNodeIds({ tentName: "demo" }),
     /requires nodeIds or a legacy/
   );
 });

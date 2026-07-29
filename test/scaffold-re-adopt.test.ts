@@ -1,6 +1,6 @@
 /**
  * Focused Core tests for one-shot orphan `.tent/` re-adopt (cx-b9bf58 / tk-xwmtvh1v).
- * Synthetic generic fixture only — no project-specific WQB content.
+ * Uses only synthetic generic fixtures.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
