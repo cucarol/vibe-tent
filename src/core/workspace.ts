@@ -1024,18 +1024,18 @@ export async function rollbackIntegrationCas(input: {
   }
 
   // Foreign advance: current is neither our pre-write tip nor our last owned post-write tip.
+  // Do NOT clear sequencer here — preserve ref, worktree, and sequencer evidence, fail loud.
   if (currentTip !== originalRef && currentTip !== ownedTip) {
-    // Clear in-progress sequencer without moving the symbolic target ref.
-    await git(root, ["cherry-pick", "--quit"]).catch(() => "");
     throw new Error(
       `Workspace integration conflicted; rollback refused because target ${target} ` +
         `advanced by another writer after this operation's write ` +
         `(owned ${ownedTip}, current ${currentTip}, original ${originalRef}); ` +
-        `ref and worktree evidence preserved: ${errorMessage(cause)}`
+        `ref, worktree, and sequencer evidence preserved: ${errorMessage(cause)}`
     );
   }
 
-  // Clear sequencer without moving ref first (quit, not abort).
+  // Ownership established (current is originalRef or ownedTip): clear sequencer without
+  // moving the ref (quit, not abort), then CAS/reconcile.
   await git(root, ["cherry-pick", "--quit"]).catch(() => "");
 
   if (currentTip === ownedTip && currentTip !== originalRef) {

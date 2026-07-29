@@ -342,6 +342,305 @@ test("concurrent accept same targetHead: one integrates; other TARGET_MOVED rema
   });
 });
 
+/**
+ * Production path: two distinct Service workspaceId mounts whose roots are
+ * different git worktrees of the same repository (shared git-common-dir) and
+ * the same target ref. Concurrent accept must serialize on that lock identity
+ * (not workspaceId) — exactly one integrates; the other TARGET_MOVED.
+ */
+test("Service dual workspaceId projections same common-dir+target: concurrent accept serializes", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-gi-dual-"));
+  const projA = path.join(parent, "proj-a");
+  const projB = path.join(parent, "proj-b");
+  await fs.mkdir(projA, { recursive: true });
+
+  // Shared repo: proj-a on main; proj-b is a linked worktree (same git-common-dir).
+  await git(projA, "init", "-q", "-b", "main");
+  await configureTestGitIdentity(projA);
+  await fs.writeFile(path.join(projA, ".gitignore"), ".tent/\n");
+  await fs.writeFile(path.join(projA, "README.md"), "# dual\n");
+  await git(projA, "add", ".gitignore", "README.md");
+  await git(projA, "commit", "-q", "-m", "init");
+  await git(projA, "worktree", "add", "-q", projB, "-b", "tent-test/proj-b-lane");
+
+  for (const root of [projA, projB]) {
+    const fsa = new NodeFs(root);
+    await scaffoldInWorkspace(fsa, {
+      name: path.basename(root),
+      rules: "# RULES\n\ndual projection\n",
+      boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    });
+    await fsa.writeFile(
+      ".tent/roles.json",
+      JSON.stringify(
+        {
+          roles: [
+            {
+              name: "executor-a",
+              prompt: "a",
+              allowedProfiles: ["fake-default"],
+            },
+            {
+              name: "executor-b",
+              prompt: "b",
+              allowedProfiles: ["fake-default"],
+            },
+          ],
+        },
+        null,
+        2
+      ) + "\n"
+    );
+  }
+
+  const { resolveIntegrationTargetLockIdentity } = await import(
+    "../src/core/workspace.js"
+  );
+  const idA = await resolveIntegrationTargetLockIdentity(projA, "main");
+  const idB = await resolveIntegrationTargetLockIdentity(projB, "main");
+  assert.equal(idA.gitCommonDir, idB.gitCommonDir, "projections share git-common-dir");
+  assert.equal(idA.targetRef, "refs/heads/main");
+  assert.equal(idB.targetRef, "refs/heads/main");
+
+  // Role lanes live in the shared object store (created from either projection).
+  await ensureRoleWorkspace(projA, "executor-a");
+  await ensureRoleWorkspace(projA, "executor-b");
+  const mainAtDeliver = (await git(projA, "rev-parse", "main")).trim();
+
+  await withService(async (svc) => {
+    const mountA = await rpc(svc, "workspace.mount", { workspaceRoot: projA });
+    const mountB = await rpc(svc, "workspace.mount", { workspaceRoot: projB });
+    assert.ok(!mountA.error, JSON.stringify(mountA.error));
+    assert.ok(!mountB.error, JSON.stringify(mountB.error));
+    const workspaceIdA = (mountA.result as { workspaceId: string }).workspaceId;
+    const workspaceIdB = (mountB.result as { workspaceId: string }).workspaceId;
+    assert.notEqual(
+      workspaceIdA,
+      workspaceIdB,
+      "distinct path projections must yield distinct workspaceIds"
+    );
+
+    const taskA = await claimRunningWithBase(svc, projA, {
+      role: "executor-a",
+      prompt: "dual A",
+      workspaceId: workspaceIdA,
+      noteName: "item-a",
+    });
+    const taskB = await claimRunningWithBase(svc, projB, {
+      role: "executor-b",
+      prompt: "dual B",
+      workspaceId: workspaceIdB,
+      noteName: "item-b",
+    });
+    assert.equal(taskA.workspaceId, workspaceIdA);
+    assert.equal(taskB.workspaceId, workspaceIdB);
+
+    const refA = await taskCommitOnLane(taskA.worktree, "dual-a.txt", "a\n", "dual a");
+    const refB = await taskCommitOnLane(taskB.worktree, "dual-b.txt", "b\n", "dual b");
+
+    const deliveredA = await rpc(svc, "task.deliver", {
+      workspaceId: workspaceIdA,
+      taskPath: taskA.taskPath,
+      summary: "ready dual A",
+      commits: [refA],
+    });
+    assert.ok(!deliveredA.error, JSON.stringify(deliveredA.error));
+    assert.equal(
+      (deliveredA.result as { delivery: { targetHead?: string } }).delivery.targetHead,
+      mainAtDeliver
+    );
+
+    const deliveredB = await rpc(svc, "task.deliver", {
+      workspaceId: workspaceIdB,
+      taskPath: taskB.taskPath,
+      summary: "ready dual B",
+      commits: [refB],
+    });
+    assert.ok(!deliveredB.error, JSON.stringify(deliveredB.error));
+    assert.equal(
+      (deliveredB.result as { delivery: { targetHead?: string } }).delivery.targetHead,
+      mainAtDeliver
+    );
+
+    const [resA, resB] = await Promise.all([
+      rpc(svc, "task.accept", {
+        workspaceId: workspaceIdA,
+        taskPath: taskA.taskPath,
+        actor: "user",
+      }),
+      rpc(svc, "task.accept", {
+        workspaceId: workspaceIdB,
+        taskPath: taskB.taskPath,
+        actor: "user",
+      }),
+    ]);
+
+    const outcomes = [
+      { res: resA, workspaceId: workspaceIdA, taskPath: taskA.taskPath, file: "dual-a.txt" },
+      { res: resB, workspaceId: workspaceIdB, taskPath: taskB.taskPath, file: "dual-b.txt" },
+    ];
+    const winners = outcomes.filter((o) => !o.res.error);
+    const losers = outcomes.filter((o) => o.res.error);
+    assert.equal(winners.length, 1, "exactly one dual-projection accept integrates");
+    assert.equal(losers.length, 1, "exactly one dual-projection accept TARGET_MOVED");
+
+    const winner = winners[0]!;
+    const loser = losers[0]!;
+    assert.equal((winner.res.result as { state: string }).state, "accepted");
+    const moved = targetMovedData(loser.res.error as { code?: number; data?: unknown });
+    assert.equal(moved.reason, "head_moved");
+    assert.equal(moved.expectedTargetHead, mainAtDeliver);
+
+    const gotLoser = await rpc(svc, "task.get", {
+      workspaceId: loser.workspaceId,
+      taskPath: loser.taskPath,
+    });
+    assert.equal(
+      (gotLoser.result as { task: { state: string } }).task.state,
+      "delivered",
+      "loser remains ready/delivered under its own workspaceId"
+    );
+
+    // Winner artifact on shared main; loser file absent from main worktree.
+    assert.equal(await pathExists(path.join(projA, winner.file)), true);
+    assert.equal(await pathExists(path.join(projA, loser.file)), false);
+    assert.notEqual((await git(projA, "rev-parse", "main")).trim(), mainAtDeliver);
+  });
+});
+
+/**
+ * Same dual-projection setup: blocked integrate hook proves at most one critical
+ * writer enters at a time across distinct workspaceIds (common-dir lock).
+ */
+test("Service dual workspaceId: blocked integrate critical section is exclusive", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-gi-dual-hold-"));
+  const projA = path.join(parent, "proj-a");
+  const projB = path.join(parent, "proj-b");
+  await fs.mkdir(projA, { recursive: true });
+  await git(projA, "init", "-q", "-b", "main");
+  await configureTestGitIdentity(projA);
+  await fs.writeFile(path.join(projA, ".gitignore"), ".tent/\n");
+  await fs.writeFile(path.join(projA, "README.md"), "# dual hold\n");
+  await git(projA, "add", ".gitignore", "README.md");
+  await git(projA, "commit", "-q", "-m", "init");
+  await git(projA, "worktree", "add", "-q", projB, "-b", "tent-test/proj-b-hold");
+
+  for (const root of [projA, projB]) {
+    const fsa = new NodeFs(root);
+    await scaffoldInWorkspace(fsa, {
+      name: path.basename(root),
+      rules: "# RULES\n\ndual hold\n",
+      boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    });
+    await fsa.writeFile(
+      ".tent/roles.json",
+      JSON.stringify(
+        {
+          roles: [
+            {
+              name: "executor-a",
+              prompt: "a",
+              allowedProfiles: ["fake-default"],
+            },
+            {
+              name: "executor-b",
+              prompt: "b",
+              allowedProfiles: ["fake-default"],
+            },
+          ],
+        },
+        null,
+        2
+      ) + "\n"
+    );
+  }
+  await ensureRoleWorkspace(projA, "executor-a");
+  await ensureRoleWorkspace(projA, "executor-b");
+
+  let active = 0;
+  let maxActive = 0;
+  let release!: () => void;
+  const hold = new Promise<void>((r) => {
+    release = r;
+  });
+  let entered = 0;
+
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-gi-dual-hold-svc-"));
+  const svc = await startLocalTentService({
+    dataDir,
+    integrateCommits: async () => {
+      entered += 1;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await hold;
+      active -= 1;
+    },
+  });
+  try {
+    const mountA = await rpc(svc, "workspace.mount", { workspaceRoot: projA });
+    const mountB = await rpc(svc, "workspace.mount", { workspaceRoot: projB });
+    const workspaceIdA = (mountA.result as { workspaceId: string }).workspaceId;
+    const workspaceIdB = (mountB.result as { workspaceId: string }).workspaceId;
+    assert.notEqual(workspaceIdA, workspaceIdB);
+
+    const taskA = await claimRunningWithBase(svc, projA, {
+      role: "executor-a",
+      prompt: "hold A",
+      workspaceId: workspaceIdA,
+      noteName: "hold-a",
+    });
+    const taskB = await claimRunningWithBase(svc, projB, {
+      role: "executor-b",
+      prompt: "hold B",
+      workspaceId: workspaceIdB,
+      noteName: "hold-b",
+    });
+    const refA = await taskCommitOnLane(taskA.worktree, "hold-a.txt", "a\n", "hold a");
+    const refB = await taskCommitOnLane(taskB.worktree, "hold-b.txt", "b\n", "hold b");
+
+    for (const row of [
+      { workspaceId: workspaceIdA, taskPath: taskA.taskPath, commits: [refA] },
+      { workspaceId: workspaceIdB, taskPath: taskB.taskPath, commits: [refB] },
+    ]) {
+      const d = await rpc(svc, "task.deliver", {
+        workspaceId: row.workspaceId,
+        taskPath: row.taskPath,
+        summary: "ready hold",
+        commits: row.commits,
+      });
+      assert.ok(!d.error, JSON.stringify(d.error));
+    }
+
+    const acceptA = rpc(svc, "task.accept", {
+      workspaceId: workspaceIdA,
+      taskPath: taskA.taskPath,
+      actor: "user",
+    });
+    const acceptB = rpc(svc, "task.accept", {
+      workspaceId: workspaceIdB,
+      taskPath: taskB.taskPath,
+      actor: "user",
+    });
+
+    const deadline = Date.now() + 15000;
+    while (entered < 1 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.ok(entered >= 1, "at least one accept must enter integrate");
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(maxActive, 1, "common-dir lock allows only one integrate critical section");
+    assert.equal(entered, 1, "second accept must wait on flight before entering integrate");
+
+    release();
+    await Promise.all([acceptA, acceptB]);
+    assert.equal(maxActive, 1);
+    assert.ok(entered >= 1);
+  } finally {
+    release();
+    await svc.stop();
+  }
+});
+
 test("task.deliver foreign SHA: no ready Delivery; Git unchanged", async () => {
   const ws = await makeWorkspace("foreign-sha");
   await initGitOnWorkspace(ws);

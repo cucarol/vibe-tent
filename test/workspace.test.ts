@@ -232,12 +232,34 @@ test("rollback CAS: after own write, external advance is preserved (no overwrite
   const ownedTip = (await git(workspace, "rev-parse", "HEAD")).trim();
   assert.notEqual(ownedTip, originalRef);
 
-  // External / other legal writer advances target after our write.
-  await fs.writeFile(path.join(workspace, "external.txt"), "external\n");
-  await git(workspace, "add", "external.txt");
-  await git(workspace, "commit", "-q", "-m", "external advance");
-  const externalTip = (await git(workspace, "rev-parse", "HEAD")).trim();
-  assert.notEqual(externalTip, ownedTip);
+  // Leave sequencer evidence as if a later cherry-pick in this op is in progress.
+  const gitDir = (await git(workspace, "rev-parse", "--path-format=absolute", "--git-dir")).trim();
+  const sequencerDir = path.join(gitDir, "sequencer");
+  await fs.mkdir(sequencerDir, { recursive: true });
+  await fs.writeFile(path.join(sequencerDir, "head"), `${ownedTip}\n`);
+  await fs.writeFile(path.join(sequencerDir, "todo"), `pick ${ownedTip}\n`);
+  await fs.writeFile(path.join(gitDir, "CHERRY_PICK_HEAD"), `${ownedTip}\n`);
+  assert.equal(await pathExists(path.join(gitDir, "CHERRY_PICK_HEAD")), true);
+  assert.equal(await pathExists(path.join(sequencerDir, "todo")), true);
+
+  // External / other legal writer advances target after our write (ref moves; sequencer stays).
+  // Use a new branch worktree so we do not fight main's existing checkout, then
+  // CAS-move refs/heads/main to that tip without resetting this worktree.
+  const sideWt = path.join(path.dirname(workspace), "cas-external-side");
+  await git(workspace, "worktree", "add", "-q", "-b", "tent-test/cas-external", sideWt, ownedTip);
+  try {
+    await fs.writeFile(path.join(sideWt, "external.txt"), "external\n");
+    await git(sideWt, "add", "external.txt");
+    await git(sideWt, "commit", "-q", "-m", "external advance");
+    const externalTip = (await git(sideWt, "rev-parse", "HEAD")).trim();
+    // Advance main ref only (no checkout in the primary worktree → sequencer preserved).
+    await git(workspace, "update-ref", "refs/heads/main", externalTip);
+    assert.notEqual(externalTip, ownedTip);
+    assert.equal((await git(workspace, "rev-parse", "main")).trim(), externalTip);
+  } finally {
+    await git(workspace, "worktree", "remove", "--force", sideWt).catch(() => undefined);
+  }
+  const externalTip = (await git(workspace, "rev-parse", "main")).trim();
 
   await assert.rejects(
     () =>
@@ -253,9 +275,21 @@ test("rollback CAS: after own write, external advance is preserved (no overwrite
 
   // Foreign tip must remain; never reset --hard over it.
   assert.equal((await git(workspace, "rev-parse", "main")).trim(), externalTip);
-  assert.equal(await pathExists(path.join(workspace, "external.txt")), true);
-  assert.equal(await pathExists(path.join(workspace, "ours.txt")), true);
-  assert.equal((await git(workspace, "status", "--porcelain")).trim(), "");
+  // Sequencer / cherry-pick evidence must survive foreign-advance refusal (no --quit).
+  assert.equal(
+    await pathExists(path.join(gitDir, "CHERRY_PICK_HEAD")),
+    true,
+    "CHERRY_PICK_HEAD must be preserved on foreign-advance refuse"
+  );
+  assert.equal(
+    await pathExists(path.join(sequencerDir, "todo")),
+    true,
+    "sequencer todo must be preserved on foreign-advance refuse"
+  );
+  assert.equal(
+    (await fs.readFile(path.join(gitDir, "CHERRY_PICK_HEAD"), "utf8")).trim(),
+    ownedTip
+  );
 });
 
 test("rollback CAS: owned tip still current may restore original without clobber risk", async () => {
