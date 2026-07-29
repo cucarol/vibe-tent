@@ -53,8 +53,8 @@ export interface RoleWorkspaceContract {
   targetBranch: string;
   /**
    * Exact branch tip (full SHA) at ensure/create time.
-   * Written as Task baseCommit + roleBranchBase when the lane is first bound
-   * (dispatch for Role/asSub; startSession for peer agentProfile).
+   * Written as Task baseCommit + roleBranchBase when the execution lane is first bound
+   * (first claim for Role assignee; startSession / asSub dispatch for agentProfile).
    */
   baseCommit?: string;
 }
@@ -1014,7 +1014,9 @@ export async function writeTaskEnvelope(
     data.branch = input.workspace.branch;
     data.targetBranch = input.workspace.targetBranch;
     // Lane exists: persist exact tip as Delivery baseCommit + legacy collection baseline.
-    // Peer agentProfile / non-Git dispatch omit workspace entirely (no fake base).
+    // Role assignee dispatch omits workspace entirely (base captured at first claim).
+    // Peer agentProfile / non-Git also omit workspace (no fake base).
+    // Profile-asSub may still bind tent-task lane + tip at dispatch.
     const tip =
       typeof input.workspace.baseCommit === "string"
         ? input.workspace.baseCommit.trim()

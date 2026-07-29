@@ -3579,6 +3579,9 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   // bus action (never nested mutations.run).
   // Peer profile tasks: lane deferred until startSession (tent-task/<taskId>).
   // Sub profile tasks: allocate taskId + create task lane at dispatch (target = dispatcher).
+  // Role assignee (peer + asSub): ensure durable Role/parent worktrees for validation only;
+  // do NOT persist execution workspaceLane/baseCommit/roleBranchBase at queue — first claim
+  // captures the real Role tip in the same lifecycle + workspace mutation boundary.
   // When deliveryPolicy is omitted, snapshot current workspace default into the task
   // envelope at dispatch time (settings changes never rewrite existing tasks).
   const result = await ctx.mutations.run(workspaceId, async () => {
@@ -3598,12 +3601,14 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     let preallocatedTaskId: string | undefined;
 
     if (asSub) {
-      // Parent Role lane must exist so targetBranch is a real checked-out worktree.
+      // Parent Role lane must exist so asSub target can be validated / later bound at claim.
       const parentRole = resolvedActors.parentActor.id;
       const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, parentRole);
       if (assigneeKind === "role") {
-        const assigneeLane = await ensureRoleWorkspace(mount.workspaceRoot, assigneeLabel);
-        workspaceLane = { ...assigneeLane, targetBranch: dispatcherLane.branch };
+        // Ensure assignee Role worktree exists; leave envelope without execution lane/base.
+        await ensureRoleWorkspace(mount.workspaceRoot, assigneeLabel);
+        // Delay entire Role execution lane until first claim (do not freeze Git tip).
+        workspaceLane = undefined;
       } else {
         // Profile sub: allocate taskId before lane creation; peer profile stays deferred.
         preallocatedTaskId = makeTaskId();
@@ -3614,8 +3619,10 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
         );
       }
     } else if (assigneeKind === "role") {
-      // Peer role: durable tent-role lane when Git; pure Tent otherwise.
-      workspaceLane = await ensureRoleWorkspaceIfGit(mount.workspaceRoot, assigneeLabel);
+      // Peer role: ensure durable tent-role worktree when Git (validation only).
+      // Execution lane + baseCommit are captured at first claim, not queue.
+      await ensureRoleWorkspaceIfGit(mount.workspaceRoot, assigneeLabel);
+      workspaceLane = undefined;
     }
     // Peer profile: no lane at dispatch (deferred to startSession).
 
@@ -3655,6 +3662,8 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       reviewer: resolvedActors.reviewer,
       asSub,
       deliveryPolicy,
+      // Only profile-asSub (and similar) may bind a Git lane at queue.
+      // Role assignee never freezes workspaceLane/baseCommit here.
       workspace: workspaceLane,
       assigneeKind,
       profileId: assigneeKind === "agentProfile" ? profileId : undefined,
@@ -3689,6 +3698,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     // Task is still running without sessionId, release via the existing interrupt path
     // (preserve audit; no deletion of non-queued Tasks). Separate claim/startSession APIs
     // are unchanged. Do not overwrite honest waiting/failed from A2A ask or provider launch.
+    // Role first claim also captures execution lane + baseCommit in that same claim boundary.
     await taskClaimRpc(ctx, {
       workspaceId,
       taskPath: dispatched.taskPath,
@@ -3724,7 +3734,8 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     // Prefer durable envelope state so success/failure projections stay honest.
     state: taskAfter?.state ?? (startSession ? "running" : "queued"),
     session,
-    // Prefer envelope projection (includes dispatch-time baseCommit + derived authority).
+    // Prefer envelope projection (Role baseCommit only after claim; profile-asSub may
+    // still carry dispatch-time lane). Fall back to in-memory lane only when present.
     workspaceLane: taskAfter
       ? projectTask(taskAfter).workspaceLane
       : workspaceLane

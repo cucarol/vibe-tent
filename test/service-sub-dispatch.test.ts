@@ -352,17 +352,36 @@ test("task.dispatch asSub role: tent-role assignee lane + dispatcher targetBranc
       workspaceLane?: { branch?: string; targetBranch?: string; worktree?: string };
     };
     assert.equal(subResult.asSub, true);
-    assert.equal(subResult.workspaceLane?.branch, "tent-role/helper");
-    assert.equal(subResult.workspaceLane?.targetBranch, "tent-role/orchestrator");
+    // Role execution lane is delayed until first claim (validation may ensure worktrees).
+    assert.equal(subResult.workspaceLane?.branch, undefined);
+    assert.equal(subResult.workspaceLane?.targetBranch, undefined);
+    assert.equal(subResult.workspaceLane?.baseCommit, undefined);
 
     const envFs = new NodeFs(path.join(ws, ".tent"));
     const task = await loadTaskEnvelope(envFs, subResult.taskPath);
     assert.equal(taskAsSub(task), true);
     assert.equal(task.parentActor?.id, "orchestrator");
     assert.equal(task.reviewer?.id, "orchestrator");
-    assert.equal(task.branch, "tent-role/helper");
-    assert.equal(task.targetBranch, "tent-role/orchestrator");
-    assert.match(task.worktree || "", /helper/);
+    assert.equal(task.branch, undefined);
+    assert.equal(task.targetBranch, undefined);
+    assert.equal(task.worktree, undefined);
+    assert.equal(task.baseCommit, undefined);
+
+    // First claim binds real Role lane + parent target + capture-once tip.
+    const claimed = await rpc(svc, "task.claim", {
+      workspaceId,
+      taskPath: subResult.taskPath,
+    });
+    assert.ok(!claimed.error, JSON.stringify(claimed.error));
+    const claimedTask = (claimed.result as { task: {
+      workspaceLane?: { branch?: string; targetBranch?: string; worktree?: string; baseCommit?: string };
+      baseCommitCapture?: { source: string };
+    } }).task;
+    assert.equal(claimedTask.workspaceLane?.branch, "tent-role/helper");
+    assert.equal(claimedTask.workspaceLane?.targetBranch, "tent-role/orchestrator");
+    assert.match(claimedTask.workspaceLane?.worktree || "", /helper/);
+    assert.ok(claimedTask.workspaceLane?.baseCommit);
+    assert.equal(claimedTask.baseCommitCapture?.source, "first-claim");
 
     // Peer regression on a second box: mainline target, no asSub.
     const peerBox = await createNote(svc, workspaceId, "role-peer");
@@ -381,11 +400,26 @@ test("task.dispatch asSub role: tent-role assignee lane + dispatcher targetBranc
       taskPath: string;
     };
     assert.equal(peerResult.asSub, false);
-    assert.equal(peerResult.workspaceLane?.branch, "tent-role/executor");
-    assert.equal(peerResult.workspaceLane?.targetBranch, "main");
+    assert.equal(peerResult.workspaceLane?.branch, undefined);
+    assert.equal(peerResult.workspaceLane?.targetBranch, undefined);
+    assert.equal(peerResult.workspaceLane?.baseCommit, undefined);
     const peerTask = await loadTaskEnvelope(envFs, peerResult.taskPath);
     assert.equal(taskAsSub(peerTask), false);
     assert.equal(peerTask.asSub, undefined);
+    assert.equal(peerTask.branch, undefined);
+    assert.equal(peerTask.baseCommit, undefined);
+
+    const peerClaimed = await rpc(svc, "task.claim", {
+      workspaceId,
+      taskPath: peerResult.taskPath,
+    });
+    assert.ok(!peerClaimed.error, JSON.stringify(peerClaimed.error));
+    const peerLane = (peerClaimed.result as { task: {
+      workspaceLane?: { branch?: string; targetBranch?: string; baseCommit?: string };
+    } }).task.workspaceLane;
+    assert.equal(peerLane?.branch, "tent-role/executor");
+    assert.equal(peerLane?.targetBranch, "main");
+    assert.ok(peerLane?.baseCommit);
   });
 });
 
@@ -729,15 +763,19 @@ test("sub accept integrates commits into dispatcher worktree; main stays put", a
     });
     assert.ok(!sub.error, JSON.stringify(sub.error));
     const taskPath = (sub.result as { taskPath: string }).taskPath;
-    const lane = (sub.result as { workspaceLane: { worktree: string; branch: string } })
-      .workspaceLane;
+    // Role asSub defers execution lane until claim.
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const claimed = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.ok(!claimed.error, JSON.stringify(claimed.error));
+    const lane = (claimed.result as { task: { workspaceLane: { worktree: string; branch: string; baseCommit?: string } } })
+      .task.workspaceLane;
+    assert.ok(lane.worktree);
+    assert.ok(lane.baseCommit);
 
     await fs.writeFile(path.join(lane.worktree, "shipped.txt"), "ok\n");
     await git(lane.worktree, "add", "shipped.txt");
     await git(lane.worktree, "commit", "-q", "-m", "helper ships");
     const commit = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
-
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
       taskPath,
@@ -787,12 +825,15 @@ test("resolveIntegrationContract: sub targetBranch mismatch fails loud", async (
     });
     assert.ok(!sub.error, JSON.stringify(sub.error));
     const taskPath = (sub.result as { taskPath: string }).taskPath;
-    const lane = (
-      sub.result as { workspaceLane: { worktree: string; baseCommit?: string } }
-    ).workspaceLane;
-    // Dispatch captures base first; Task commit after base so history gate is valid
+    // Claim captures Role base + parent target; Task commit after base so history gate is valid
     // and deliver reaches the intended targetBranch mismatch gate.
-    assert.ok(lane.baseCommit, "asSub dispatch must record baseCommit");
+    const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(!claimed.error, JSON.stringify(claimed.error));
+    const lane = (
+      claimed.result as { task: { workspaceLane: { worktree: string; baseCommit?: string; targetBranch?: string } } }
+    ).task.workspaceLane;
+    assert.ok(lane.baseCommit, "asSub claim must capture baseCommit");
+    assert.equal(lane.targetBranch, "tent-role/orchestrator");
     const envFs = new NodeFs(path.join(ws, ".tent"));
     const envelope = await loadTaskEnvelope(envFs, taskPath);
     assert.equal(envelope.baseCommit, lane.baseCommit);
@@ -812,8 +853,6 @@ test("resolveIntegrationContract: sub targetBranch mismatch fails loud", async (
     );
     assert.notEqual(raw, corrupted);
     await envFs.writeFile(taskPath, corrupted);
-
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
     // Commit-bearing deliver re-resolves integration contract (targetHead snapshot);
     // corrupted targetBranch fails before Task reaches delivered.
     const delivered = await rpc(svc, "task.deliver", {
@@ -902,9 +941,9 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
       workspaceLane?: { branch?: string; targetBranch?: string; baseCommit?: string };
     };
     assert.equal(subResult.asSub, true);
-    assert.equal(subResult.workspaceLane?.branch, "tent-role/helper");
-    assert.equal(subResult.workspaceLane?.targetBranch, "tent-role/orchestrator");
-    assert.ok(subResult.workspaceLane?.baseCommit, "asSub lane captures baseCommit at dispatch");
+    assert.equal(subResult.workspaceLane?.branch, undefined);
+    assert.equal(subResult.workspaceLane?.targetBranch, undefined);
+    assert.equal(subResult.workspaceLane?.baseCommit, undefined, "Role asSub defers base to claim");
 
     // asSub with a different durable parent Role is still a legal Git sub-lane
     // (Node refs are not an occupation mutex).
@@ -929,6 +968,17 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
     assert.equal(
       (otherParent.result as { workspaceLane?: { targetBranch?: string } }).workspaceLane
         ?.targetBranch,
+      undefined,
+      "Role asSub defers parent target bind to claim"
+    );
+    const otherClaimed = await rpc(svc, "task.claim", {
+      workspaceId,
+      taskPath: (otherParent.result as { taskPath: string }).taskPath,
+    });
+    assert.ok(!otherClaimed.error, JSON.stringify(otherClaimed.error));
+    assert.equal(
+      (otherClaimed.result as { task: { workspaceLane?: { targetBranch?: string } } }).task
+        .workspaceLane?.targetBranch,
       "tent-role/executor"
     );
   });
@@ -962,11 +1012,13 @@ test("CLI tent task dispatch --as-sub --by wires RPC asSub", async () => {
     const parsed = JSON.parse(result.stdout) as {
       taskPath: string;
       asSub?: boolean;
-      workspaceLane?: { branch?: string; targetBranch?: string };
+      workspaceLane?: { branch?: string; targetBranch?: string; baseCommit?: string };
     };
     assert.equal(parsed.asSub, true);
-    assert.equal(parsed.workspaceLane?.branch, "tent-role/helper");
-    assert.equal(parsed.workspaceLane?.targetBranch, "tent-role/orchestrator");
+    // Role asSub defers execution lane until claim (CLI dispatch must not freeze tip).
+    assert.equal(parsed.workspaceLane?.branch, undefined);
+    assert.equal(parsed.workspaceLane?.targetBranch, undefined);
+    assert.equal(parsed.workspaceLane?.baseCommit, undefined);
 
     const previousTentRole = process.env.TENT_ROLE;
     delete process.env.TENT_ROLE;
@@ -1042,19 +1094,24 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
     });
     assert.ok(!parentDispatch.error, JSON.stringify(parentDispatch.error));
     const parentTaskPath = (parentDispatch.result as { taskPath: string }).taskPath;
-    const parentLane = (
-      parentDispatch.result as {
-        workspaceLane?: { worktree?: string; branch?: string; targetBranch?: string };
-      }
-    ).workspaceLane;
-    assert.ok(parentLane?.worktree, "parent must have orchestrator role lane");
-    assert.equal(parentLane?.branch, "tent-role/orchestrator");
-    assert.equal(parentLane?.targetBranch, "main");
+    // Role parent: dispatch omits execution lane; claim binds orchestrator lane.
+    assert.equal(
+      (parentDispatch.result as { workspaceLane?: { branch?: string } }).workspaceLane?.branch,
+      undefined
+    );
     const parentClaim = await rpc(svc, "task.claim", {
       workspaceId,
       taskPath: parentTaskPath,
     });
     assert.ok(!parentClaim.error, JSON.stringify(parentClaim.error));
+    const parentLane = (
+      parentClaim.result as {
+        task: { workspaceLane?: { worktree?: string; branch?: string; targetBranch?: string } };
+      }
+    ).task.workspaceLane;
+    assert.ok(parentLane?.worktree, "parent claim must bind orchestrator role lane");
+    assert.equal(parentLane?.branch, "tent-role/orchestrator");
+    assert.equal(parentLane?.targetBranch, "main");
 
     // 3. Orchestrator dispatches helper asSub under the claimed parent.
     const subDispatch = await rpc(svc, "task.dispatch", {
@@ -1069,19 +1126,24 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
     });
     assert.ok(!subDispatch.error, JSON.stringify(subDispatch.error));
     const subTaskPath = (subDispatch.result as { taskPath: string }).taskPath;
-    const subLane = (
-      subDispatch.result as {
-        workspaceLane?: { worktree?: string; branch?: string; targetBranch?: string };
-      }
-    ).workspaceLane;
-    assert.equal(subLane?.branch, "tent-role/helper");
-    assert.equal(subLane?.targetBranch, "tent-role/orchestrator");
-    assert.ok(subLane?.worktree);
+    assert.equal(
+      (subDispatch.result as { workspaceLane?: { branch?: string } }).workspaceLane?.branch,
+      undefined,
+      "Role asSub dispatch defers execution lane"
+    );
     const subClaim = await rpc(svc, "task.claim", {
       workspaceId,
       taskPath: subTaskPath,
     });
     assert.ok(!subClaim.error, JSON.stringify(subClaim.error));
+    const subLane = (
+      subClaim.result as {
+        task: { workspaceLane?: { worktree?: string; branch?: string; targetBranch?: string } };
+      }
+    ).task.workspaceLane;
+    assert.equal(subLane?.branch, "tent-role/helper");
+    assert.equal(subLane?.targetBranch, "tent-role/orchestrator");
+    assert.ok(subLane?.worktree);
 
     // 4. Helper ships sub artifact on its lane → deliver → orchestrator accept.
     await fs.writeFile(path.join(subLane!.worktree!, "sub-artifact.txt"), "sub-work\n");

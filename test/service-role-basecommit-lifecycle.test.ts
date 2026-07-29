@@ -174,36 +174,34 @@ async function stripBaseCommitForLegacyFixture(
 }
 
 /**
- * Queued external Role Task with lane + base absent (production-path fixture).
- * Dispatch may have written them; strip before claim so claim must bind/capture.
+ * Assert queued Role envelope has no execution lane / base frozen at dispatch.
+ * Production path: Role dispatch ensures worktrees for validation only.
  */
-async function stripLaneAndBaseForQueuedClaimFixture(
+async function assertQueuedRoleHasNoExecutionLane(
   ws: string,
-  taskPath: string
+  taskPath: string,
+  projected?: TaskLaneProjection
 ): Promise<void> {
-  const fsa = tentFs(ws);
-  const task = await loadTaskEnvelope(fsa, taskPath);
-  assert.equal(task.state, "queued", "fixture requires queued Task");
-  await patchTaskEnvelope(fsa, taskPath, {
-    workspace: null,
-    worktree: null,
-    branch: null,
-    targetBranch: null,
-    baseCommit: null,
-    baseCommitCapture: null,
-    roleBranchBase: null,
-  });
-  const reloaded = await loadTaskEnvelope(fsa, taskPath);
-  assert.equal(reloaded.state, "queued");
-  assert.equal(reloaded.workspace, undefined);
-  assert.equal(reloaded.worktree, undefined);
-  assert.equal(reloaded.branch, undefined);
-  assert.equal(reloaded.targetBranch, undefined);
-  assert.equal(reloaded.baseCommit, undefined);
-  assert.equal(reloaded.baseCommitCapture, undefined);
+  const env = await loadTaskEnvelope(tentFs(ws), taskPath);
+  assert.equal(env.state, "queued");
+  assert.equal(env.workspace, undefined, "Role dispatch must not persist workspace");
+  assert.equal(env.worktree, undefined, "Role dispatch must not persist worktree");
+  assert.equal(env.branch, undefined, "Role dispatch must not persist branch");
+  assert.equal(env.targetBranch, undefined, "Role dispatch must not persist targetBranch");
+  assert.equal(env.baseCommit, undefined, "Role dispatch must not freeze baseCommit");
+  assert.equal(env.roleBranchBase, undefined, "Role dispatch must not freeze roleBranchBase");
+  assert.equal(env.baseCommitCapture, undefined);
+  if (projected) {
+    assert.equal(projected.state, "queued");
+    // Authority-only projection may exist from parent/reviewer; never execution tip.
+    assert.equal(projected.workspaceLane?.baseCommit, undefined);
+    assert.equal(projected.workspaceLane?.branch, undefined);
+    assert.equal(projected.workspaceLane?.worktree, undefined);
+    assert.equal(projected.workspaceLane?.targetBranch, undefined);
+  }
 }
 
-test("fresh Role claim captures immutable baseCommit then commits[] deliver succeeds", async () => {
+test("ordinary Role: dispatch omits lane/base; claim captures advanced tip; reclaim immutable", async () => {
   const ws = await makeWorkspace("fresh-claim");
   const initSha = await initGitOnWorkspace(ws);
   const roleLane = await ensureRoleWorkspace(ws, "executor");
@@ -222,18 +220,31 @@ test("fresh Role claim captures immutable baseCommit then commits[] deliver succ
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
-    // Prove claim capture on genuinely missing external Role base (not dispatch-supplied).
-    await stripLaneAndBaseForQueuedClaimFixture(ws, taskPath);
+    const dispatchLane = (d.result as { workspaceLane?: TaskLaneProjection["workspaceLane"] })
+      .workspaceLane;
+    assert.equal(dispatchLane?.baseCommit, undefined);
+    assert.equal(dispatchLane?.branch, undefined);
+
+    // Production path: queued envelope has no execution lane/base (no artificial strip).
     const preClaim = await getTask(svc, workspaceId, taskPath);
-    assert.equal(preClaim.state, "queued");
-    assert.equal(preClaim.workspaceLane?.baseCommit, undefined);
+    await assertQueuedRoleHasNoExecutionLane(ws, taskPath, preClaim);
+
+    // Advance Role tip after dispatch and before claim — claim must capture the new tip.
+    const advancedTip = await taskCommitOnLane(
+      roleLane.worktree,
+      "advance-before-claim.txt",
+      "advanced\n",
+      "advance role tip after dispatch before claim"
+    );
+    assert.notEqual(advancedTip, initSha);
 
     const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
     assert.ok(!claimed.error, JSON.stringify(claimed.error));
     const claimedTask = (claimed.result as { task: TaskLaneProjection }).task;
     const baseAtClaim = claimedTask.workspaceLane?.baseCommit?.trim() || "";
     assert.ok(baseAtClaim, "claim must capture exact base when missing");
-    assert.equal(baseAtClaim, initSha, "capture-once tip of Role lane at claim");
+    assert.equal(baseAtClaim, advancedTip, "capture-once tip of Role lane at claim time");
+    assert.notEqual(baseAtClaim, initSha, "must not freeze dispatch-time tip");
     assert.equal(claimedTask.workspaceLane?.branch, "tent-role/executor");
     assert.equal(claimedTask.workspaceLane?.targetBranch, "main");
     assert.ok(claimedTask.workspaceLane?.worktree, "claim binds real Role worktree");
@@ -285,6 +296,81 @@ test("fresh Role claim captures immutable baseCommit then commits[] deliver succ
 
     const final = await getTask(svc, workspaceId, taskPath);
     assert.equal(final.workspaceLane?.baseCommit, baseAtClaim);
+  });
+});
+
+test("Role asSub: dispatch omits lane/base; claim captures advanced tip + parent target; reclaim immutable", async () => {
+  const ws = await makeWorkspace("asub-claim");
+  const initSha = await initGitOnWorkspace(ws);
+  const helperLane = await ensureRoleWorkspace(ws, "executor");
+  const parentLane = await ensureRoleWorkspace(ws, "planner");
+  assert.equal(helperLane.baseCommit, initSha);
+  assert.equal(parentLane.baseCommit, initSha);
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "asub-item");
+    const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "role", id: "planner" },
+      reviewer: { kind: "role", id: "planner" },
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "role asSub claim base capture",
+      asSub: true,
+      deliveryPolicy: "review",
+    });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    assert.equal((d.result as { asSub?: boolean }).asSub, true);
+    const dispatchLane = (d.result as { workspaceLane?: TaskLaneProjection["workspaceLane"] })
+      .workspaceLane;
+    assert.equal(dispatchLane?.baseCommit, undefined);
+    assert.equal(dispatchLane?.branch, undefined);
+
+    const preClaim = await getTask(svc, workspaceId, taskPath);
+    await assertQueuedRoleHasNoExecutionLane(ws, taskPath, preClaim);
+    const envQueued = await loadTaskEnvelope(tentFs(ws), taskPath);
+    assert.equal(envQueued.asSub, true);
+
+    // Advance assignee Role tip after dispatch; claim must bind that tip + parent target.
+    const advancedTip = await taskCommitOnLane(
+      helperLane.worktree,
+      "asub-advance.txt",
+      "asub advanced\n",
+      "advance helper tip after asSub dispatch"
+    );
+    assert.notEqual(advancedTip, initSha);
+
+    const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(!claimed.error, JSON.stringify(claimed.error));
+    const claimedTask = (claimed.result as { task: TaskLaneProjection }).task;
+    const baseAtClaim = claimedTask.workspaceLane?.baseCommit?.trim() || "";
+    assert.equal(baseAtClaim, advancedTip, "asSub claim captures Role tip at claim time");
+    assert.equal(claimedTask.workspaceLane?.branch, "tent-role/executor");
+    assert.equal(
+      claimedTask.workspaceLane?.targetBranch,
+      "tent-role/planner",
+      "asSub claim binds parent Role target"
+    );
+    assert.ok(claimedTask.workspaceLane?.worktree);
+    assert.equal(claimedTask.baseCommitCapture?.source, "first-claim");
+    assert.equal(claimedTask.baseCommitCapture?.baseCommit, baseAtClaim);
+    assert.equal(claimedTask.baseCommitCapture?.actor.kind, "role");
+    assert.equal(claimedTask.baseCommitCapture?.actor.id, "planner");
+
+    // Further tip advance must not rewrite capture on reclaim.
+    await taskCommitOnLane(
+      helperLane.worktree,
+      "asub-after-claim.txt",
+      "after\n",
+      "advance after asSub claim"
+    );
+    const reclaimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(!reclaimed.error, JSON.stringify(reclaimed.error));
+    const again = (reclaimed.result as { task: TaskLaneProjection }).task;
+    assert.equal(again.workspaceLane?.baseCommit, baseAtClaim);
+    assert.equal(again.baseCommitCapture?.capturedAt, claimedTask.baseCommitCapture!.capturedAt);
+    assert.equal(again.workspaceLane?.targetBranch, "tent-role/planner");
   });
 });
 
