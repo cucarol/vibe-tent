@@ -34,7 +34,7 @@ export async function runTaskCommand(
   globals: TaskRpcGlobalOptions = {}
 ): Promise<TaskCommandResult> {
   try {
-    const { positionals, flags } = parseTaskFlags(args);
+    const { positionals, flags, repeatable } = parseTaskFlags(args);
     const json = globals.json === true || flags.json === "true";
     const workspaceFlag = flags.workspace || globals.workspace;
     const attachOpts: CliAttachOptions = {
@@ -136,126 +136,122 @@ export async function runTaskCommand(
         });
       }
       case "dispatch": {
-        // Optional RPC mapping of dispatch (no second lifecycle in CLI).
-        // User-facing forms (do not infer profile from a bare role-like string):
-        //   tent task dispatch <boxId> <role> [localPrompt...]
-        //   tent task dispatch <boxId> --profile <profileId> [localPrompt...]
-        //   tent task dispatch <boxId> --agent <agentId> [localPrompt...]  (Role roster path)
-        const usageRole =
-          "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]";
-        const usageProfile =
-          "Usage: tent task dispatch <boxId> --profile <profileId> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]";
-        const usageAgent =
-          "Usage: tent task dispatch <boxId> --agent <agentId> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]";
-        const usageBoth =
-          `${usageRole}\n   or: ${usageProfile.replace(/^Usage: /, "")}\n   or: ${usageAgent.replace(/^Usage: /, "")}`;
+        // Public ordinary dispatch (cx-b9bf58):
+        //   tent task dispatch --target role:<id>|agent:<id> --node <nodeId>… --prompt <text>|-
+        // Node refs map to transient RPC nodeIds[] (→ contextCard.refs.nodes sole persist).
+        // boxId = primary node for legacy single-claim wire compatibility.
+        // LaunchProfile is never a public selector; AgentDefinition is agent:<agentId>.
+        const usage =
+          "Usage: tent task dispatch --target role:<roleIdOrName>|agent:<agentId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]";
 
-        // Low-level Service fields are not the primary CLI UX.
-        if (
-          Object.prototype.hasOwnProperty.call(flags, "assignee-kind") ||
-          Object.prototype.hasOwnProperty.call(flags, "assigneeKind")
-        ) {
+        const retiredPublic = detectRetiredDispatchFlags(flags);
+        if (retiredPublic) {
           return failUsage(
-            "Do not pass --assignee-kind; use <role> for durable role dispatch, --profile <profileId> for user one-shot, or --agent <agentId> for Role roster dispatch"
+            `Public ordinary dispatch no longer accepts ${retiredPublic}; ` +
+              `use --target role:<roleIdOrName>|agent:<agentId> with --node and --prompt.\n` +
+              usage
           );
         }
-        if (Object.prototype.hasOwnProperty.call(flags, "start-session") ||
-            Object.prototype.hasOwnProperty.call(flags, "startSession")) {
+        if (positionals.length > 0) {
           return failUsage(
-            "Do not pass --start-session; managed --profile / --agent dispatch always starts a session"
+            "Public ordinary dispatch no longer accepts positional <boxId> <role> grammar; " +
+              "use --target and --node.\n" +
+              usage
           );
         }
 
-        const boxId = positionals[0];
-        if (!boxId) {
-          return failUsage(usageBoth);
+        const targetRaw = String(flags.target ?? "").trim();
+        if (!targetRaw) {
+          return failUsage(`--target is required\n${usage}`);
         }
-
-        const hasProfileFlag = Object.prototype.hasOwnProperty.call(flags, "profile");
-        const hasAgentFlag = Object.prototype.hasOwnProperty.call(flags, "agent");
-        const profileIdRaw = hasProfileFlag ? String(flags.profile ?? "").trim() : "";
-        const agentIdRaw = hasAgentFlag ? String(flags.agent ?? "").trim() : "";
-        if (hasProfileFlag && !profileIdRaw) {
-          return failUsage(`--profile requires <profileId>\n${usageProfile}`);
-        }
-        if (hasAgentFlag && !agentIdRaw) {
-          return failUsage(`--agent requires <agentId>\n${usageAgent}`);
-        }
-        if (hasProfileFlag && hasAgentFlag) {
+        const targetMatch = /^(role|agent):(.+)$/i.exec(targetRaw);
+        if (!targetMatch) {
           return failUsage(
-            "Pass either --profile <profileId> or --agent <agentId>, not both\n" + usageBoth
+            `--target must be role:<roleIdOrName> or agent:<agentId> (got ${JSON.stringify(targetRaw)})\n` +
+              usage
           );
         }
-        const isManagedOneShotForm = hasProfileFlag || hasAgentFlag;
-
-        // Role form needs <role>; managed forms treat every positional after boxId as prompt.
-        const role = isManagedOneShotForm ? undefined : positionals[1];
-        const promptParts = isManagedOneShotForm ? positionals.slice(1) : positionals.slice(2);
-        if (!isManagedOneShotForm && !role) {
-          return failUsage(usageBoth);
-        }
-        if (Object.prototype.hasOwnProperty.call(flags, "prompt") && promptParts.length > 0) {
+        const targetKind = targetMatch[1]!.toLowerCase() as "role" | "agent";
+        const targetId = targetMatch[2]!.trim();
+        if (!targetId) {
           return failUsage(
-            "Pass prompt either as positionals or via --prompt <text>|- , not both\n" + usageBoth
+            `--target ${targetKind}: requires a non-empty id\n${usage}`
           );
         }
-        let prompt = typeof flags.prompt === "string" ? flags.prompt : promptParts.join(" ");
+
+        const rawNodes = repeatable.node ?? [];
+        // Every --node occurrence must be non-empty; do not silently drop blanks
+        // when another valid Node is present in the same batch.
+        for (const value of rawNodes) {
+          if (!String(value ?? "").trim()) {
+            return failUsage(
+              `Every --node value must be a non-empty nodeId (got empty/whitespace)\n${usage}`
+            );
+          }
+        }
+        const nodeIds = collectDispatchNodeIds(rawNodes);
+        if (nodeIds.length === 0) {
+          return failUsage(
+            `At least one --node <nodeId> is required in this batch\n${usage}`
+          );
+        }
+
+        if (!Object.prototype.hasOwnProperty.call(flags, "prompt")) {
+          return failUsage(`--prompt is required (<text> or -)\n${usage}`);
+        }
+        let prompt = flags.prompt ?? "";
         if (prompt === "-") prompt = await readStdinText();
-        const asSub = flags["as-sub"] === "true";
-        const explicitBy = (flags.by || flags.from || flags["dispatched-by"] || "").trim();
-        // --by / --from / --dispatched-by name a dispatching *role*, not the user actor.
-        // Plain user-originated dispatch needs no --by; reject explicit "user" so it is
-        // never misclassified as callerKind=role.
-        if (explicitBy && explicitBy === "user") {
-          return failUsage(
-            "--by/--from/--dispatched-by must name a dispatching role, not user; omit the flag for plain user-originated dispatch"
-          );
+        if (!prompt.trim()) {
+          return failUsage("tent task dispatch: --prompt must be non-empty");
         }
-        const tentRole = (process.env.TENT_ROLE || "").trim();
-        const parentRole = explicitBy || (tentRole && tentRole !== "user" ? tentRole : "");
-        if (asSub && !parentRole) {
-          return failUsage("--as-sub requires --by <parent-role> or TENT_ROLE");
-        }
-        // Profile/agent forms always start managed ACP; role form never auto-starts.
-        // A2A attribution: any dispatch attributed to a role (explicit --by/--from/
-        // --dispatched-by, implicit TENT_ROLE, or --as-sub) must send callerKind=role.
-        // Plain user-originated dispatch (no role attribution) sends callerKind=user.
-        // Both profile and role forms pass callerKind so Service policy is correct.
-        const roleAttributed =
-          asSub || Boolean(explicitBy) || Boolean(tentRole && tentRole !== "user");
-        const callerKind: "user" | "role" = roleAttributed ? "role" : "user";
-        // CLI --by / TENT_ROLE translate locally to parentActor+reviewer.
-        // Never send or persist legacy dispatchedBy.
-        const parentActor = parentRole
-          ? ({ kind: "role" as const, id: parentRole })
-          : ({ kind: "user" as const, id: "user" });
 
-        const result = await client.taskDispatch(
-          workspaceId,
-          isManagedOneShotForm
+        // Caller authority from environment / current actor only (no public --by / --as-sub).
+        // Role caller → parentActor=reviewer=that Role + callerKind=role (downstream review).
+        // User-direct → parentActor=reviewer=user + callerKind=user.
+        // Git-lane meaning of asSub is derived, not a public knob: Role caller dispatching
+        // role:* or agent:* → asSub:true (Task targets parent Role lane); user-direct omits it.
+        const envRole = String(
+          (globals.env?.TENT_ROLE ?? process.env.TENT_ROLE ?? "") as string
+        ).trim();
+        const roleCaller = Boolean(envRole && envRole !== "user");
+        const parentActor = roleCaller
+          ? ({ kind: "role" as const, id: envRole })
+          : ({ kind: "user" as const, id: "user" });
+        const callerKind: "user" | "role" = roleCaller ? "role" : "user";
+        const asSub = roleCaller ? true : undefined;
+
+        // Internal RPC fields required by current Service wire only:
+        // - role target: durable Role handoff, queued, never startSession
+        // - agent target: agentId + assigneeKind=agentProfile + startSession (managed ACP)
+        // nodeIds is the transient multi-ref seam (tk-g60jy7fj) → Context Card refs.nodes
+        // (sole persisted source). boxId remains the primary node for legacy single-claim
+        // callers; when both are sent they must agree (primary = nodeIds[0]).
+        // Dependency: old Service that only reads boxId ignores extra nodeIds — repeated
+        // refs are not claimed to work end-to-end until that seam lands.
+        const primaryNodeId = nodeIds[0]!;
+        const common = {
+          boxId: primaryNodeId,
+          nodeIds,
+          prompt,
+          parentActor,
+          reviewer: parentActor,
+          callerKind,
+          ...(asSub ? { asSub: true as const } : {}),
+        };
+        const dispatchArgs =
+          targetKind === "role"
             ? {
-                boxId,
-                assigneeKind: "agentProfile",
-                ...(hasAgentFlag ? { agentId: agentIdRaw } : { profileId: profileIdRaw }),
-                prompt,
-                parentActor,
-                reviewer: parentActor,
-                asSub: asSub || undefined,
-                deliveryPolicy: flags["delivery-policy"] || flags.deliveryPolicy,
-                startSession: true,
-                callerKind,
+                ...common,
+                role: targetId,
               }
             : {
-                boxId,
-                role,
-                prompt,
-                parentActor,
-                reviewer: parentActor,
-                asSub: asSub || undefined,
-                deliveryPolicy: flags["delivery-policy"] || flags.deliveryPolicy,
-                callerKind,
-              }
-        );
+                ...common,
+                assigneeKind: "agentProfile" as const,
+                agentId: targetId,
+                startSession: true as const,
+              };
+
+        const result = await client.taskDispatch(workspaceId, dispatchArgs);
         return okPrint(result, json, (r) => formatTaskDispatch(r));
       }
       case "accept": {
@@ -869,18 +865,69 @@ const BOOLEAN_FLAGS = new Set([
   "as-sub",
 ]);
 
+/** Flags that may appear more than once (values collected in order). */
+const REPEATABLE_FLAGS = new Set(["node"]);
+
+/**
+ * Retired public ordinary-dispatch knobs (cx-b9bf58). Detected for fail-loud rejection.
+ * No compatibility alias — use --target / --node / --prompt only.
+ */
+const RETIRED_PUBLIC_DISPATCH_FLAGS: Array<{ flag: string; aliases: string[] }> = [
+  { flag: "--profile", aliases: ["profile"] },
+  { flag: "--agent", aliases: ["agent"] },
+  { flag: "--delivery-policy", aliases: ["delivery-policy", "deliveryPolicy"] },
+  { flag: "--as-sub", aliases: ["as-sub", "asSub"] },
+  { flag: "--by", aliases: ["by", "from", "dispatched-by", "dispatchedBy"] },
+  { flag: "--caller-kind", aliases: ["caller-kind", "callerKind"] },
+  { flag: "--assignee-kind", aliases: ["assignee-kind", "assigneeKind"] },
+];
+
+function detectRetiredDispatchFlags(flags: Record<string, string>): string | null {
+  for (const entry of RETIRED_PUBLIC_DISPATCH_FLAGS) {
+    for (const alias of entry.aliases) {
+      if (Object.prototype.hasOwnProperty.call(flags, alias)) {
+        return entry.flag;
+      }
+    }
+  }
+  return null;
+}
+
+/** Deduplicate --node values while preserving first-seen order. */
+function collectDispatchNodeIds(raw: string[] | undefined): string[] {
+  const nodes: string[] = [];
+  const seen = new Set<string>();
+  for (const value of raw ?? []) {
+    const id = String(value ?? "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    nodes.push(id);
+  }
+  return nodes;
+}
+
 export function parseTaskFlags(args: string[]): {
   positionals: string[];
   flags: Record<string, string>;
+  /** Multi-value flags (e.g. repeated --node). */
+  repeatable: Record<string, string[]>;
 } {
   const positionals: string[] = [];
   const flags: Record<string, string> = {};
+  const repeatable: Record<string, string[]> = {};
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a.startsWith("--")) {
       const name = a.slice(2);
       if (BOOLEAN_FLAGS.has(name)) {
         flags[name] = "true";
+      } else if (REPEATABLE_FLAGS.has(name)) {
+        const value = args[i + 1] ?? "";
+        i++;
+        if (!repeatable[name]) repeatable[name] = [];
+        repeatable[name]!.push(value);
+        // Last occurrence also lands in flags for simple presence checks.
+        flags[name] = value;
       } else {
         flags[name] = args[i + 1] ?? "";
         i++;
@@ -889,7 +936,7 @@ export function parseTaskFlags(args: string[]): {
       positionals.push(a);
     }
   }
-  return { positionals, flags };
+  return { positionals, flags, repeatable };
 }
 
 function readStdinText(): Promise<string> {
@@ -913,14 +960,14 @@ Commands:
   tent task get <taskPath> [--workspace <path>] [--json]
   tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]
   tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
-  tent task dispatch <boxId> <role> [prompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]
-  tent task dispatch <boxId> --profile <profileId> [prompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]
-  tent task dispatch <boxId> --agent <agentId> [prompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]
-      # --profile: user-direct one-shot agentProfile + startSession (does not register a role)
-      # --agent: Role roster logical agentId → resolves machine-local profileId + startSession
-      # role form: durable role assignee (queued; no auto session)
-      # --profile form: one-shot agentProfile + startSession (prints sessionId/sessionState); does not register a role
-      # Do not pass --assignee-kind; a bare role-like string is never inferred as a profile
+  tent task dispatch --target role:<roleIdOrName>|agent:<agentId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]
+      # --target role:*  durable Role handoff (queued; never starts managed ACP at dispatch)
+      # --target agent:* logical AgentDefinition id → machine-local LaunchProfile + startSession
+      # --node           repeatable Node refs (at least one); sole source for contextCard.refs.nodes
+      # parentActor/reviewer from TENT_ROLE (role caller) or user-direct; no public --by
+      # Role caller also derives internal asSub (parent Role Git lane); not a public flag
+      # Rejected (no alias): --profile, --agent, --delivery-policy, --as-sub, --by, --caller-kind,
+      #   --assignee-kind, and old positional <boxId> <role> grammar
   tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--workspace <path>] [--json]
   tent task reject <taskPath> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]
