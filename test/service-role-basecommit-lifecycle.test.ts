@@ -398,7 +398,7 @@ test("legacy running backfill then deliver; idempotent repeat; conflicts and rej
     assert.equal(ag.task.baseCommitCapture?.source, "explicit-backfill");
     assert.equal(ag.task.workspaceLane?.baseCommit, initSha);
 
-    // Conflicting different SHA rejected (use tip after extra commit as different ancestor-legal tip? 
+    // Conflicting different SHA rejected (use tip after extra commit as different ancestor-legal tip?
     // tip is descendant of init — still a valid ancestor of branch tip, but conflicts with recorded).
     const advanced = (await git(roleLane.worktree, "rev-parse", "HEAD")).trim();
     assert.notEqual(advanced, initSha);
