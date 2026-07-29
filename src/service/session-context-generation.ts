@@ -99,8 +99,51 @@ export type CollectStableContextGenerationInput = {
 };
 
 /**
+ * Resolve a required Role from the workspace registry.
+ * Fail loud on missing roleFs, registry read/parse failure, or missing named Role —
+ * never invent empty prompt/roster fallback facts for a required Role.
+ */
+async function requireResolvedRoleFromRegistry(
+  roleFs: FsAdapter | undefined,
+  roleName: string,
+  reason: string
+): Promise<RoleDefinition> {
+  const key = roleName.trim();
+  if (!key) {
+    throw new Error(
+      `contextGeneration requires a non-empty Role name (${reason})`
+    );
+  }
+  if (!roleFs) {
+    throw new Error(
+      `contextGeneration requires Role "${key}" (${reason}) but roleFs was not provided`
+    );
+  }
+  let registry: Awaited<ReturnType<typeof loadRolesRegistry>>;
+  try {
+    registry = await loadRolesRegistry(roleFs);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `contextGeneration cannot load roles registry for Role "${key}" (${reason}): ${message}`
+    );
+  }
+  const role = resolveRole(registry.roles, key);
+  if (!role) {
+    throw new Error(
+      `contextGeneration required Role not found: "${key}" (${reason})`
+    );
+  }
+  return role;
+}
+
+/**
  * Collect real stable compatibility facts and compute contextGeneration.
  * Excludes taskId / objective / acceptance / Task delta.
+ *
+ * Collector failures (missing required Role, unreadable registry, missing built-in
+ * Skill body) throw — never yield reusable empty/fallback facts.
+ * User-direct agentProfile with no parentRoleId does not require Role resolution.
  */
 export async function collectStableContextGeneration(
   input: CollectStableContextGenerationInput
@@ -109,34 +152,31 @@ export async function collectStableContextGeneration(
   const agentsPointerDigest = agentsBodyCompatibilityDigest(agents.content);
 
   let role = input.role;
-  if (
-    !role &&
-    input.assigneeKind === "role" &&
-    input.assigneeLabel &&
-    input.roleFs
-  ) {
-    try {
-      const registry = await loadRolesRegistry(input.roleFs);
-      role = resolveRole(registry.roles, input.assigneeLabel);
-    } catch {
-      role = undefined;
+  if (input.assigneeKind === "role") {
+    // Durable Role assignee: Role definition is required for real generation facts.
+    if (!role) {
+      role = await requireResolvedRoleFromRegistry(
+        input.roleFs,
+        input.assigneeLabel,
+        "durable Role assignee"
+      );
     }
-  }
-  // For agentProfile under a parent Role, roster/prompt come from parent Role when provided.
-  if (
-    !role &&
-    input.parentRoleId &&
-    input.roleFs &&
-    input.assigneeKind === "agentProfile"
+  } else if (
+    input.assigneeKind === "agentProfile" &&
+    input.parentRoleId?.trim()
   ) {
-    try {
-      const registry = await loadRolesRegistry(input.roleFs);
-      role = resolveRole(registry.roles, input.parentRoleId);
-    } catch {
-      role = undefined;
+    // Parent-Role-bound agentProfile: parent Role must resolve (no empty fallback).
+    // User-direct one-shot agentProfile without parentRoleId skips Role resolution.
+    if (!role) {
+      role = await requireResolvedRoleFromRegistry(
+        input.roleFs,
+        input.parentRoleId,
+        "parent Role for agentProfile"
+      );
     }
   }
 
+  // Skill body/version reads fail loud when required built-in SKILL.md is missing.
   const skillInputs = managedSkillCompatibilityInputs({
     packageRoot: input.packageRoot,
     assigneeKind: input.assigneeKind,

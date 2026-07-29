@@ -191,6 +191,8 @@ async function initGit(workspace: string): Promise<void> {
 test("collectStableContextGeneration digests real AGENTS + skill bodies; excludes taskId", async () => {
   const ws = await makeWorkspace("collect");
   try {
+    // roleFs is systemRoot (.tent) — same as Service mount.env.fs.
+    const roleFs = new NodeFs(path.join(ws, ".tent"));
     const a = await collectStableContextGeneration({
       workspaceRoot: ws,
       workspaceIdentity: "ws-collect",
@@ -201,7 +203,7 @@ test("collectStableContextGeneration digests real AGENTS + skill bodies; exclude
       profileId: "fake-resumable",
       adapterId: FAKE_ADAPTER_ID,
       parentRoleId: "orchestrator",
-      roleFs: new NodeFs(ws),
+      roleFs,
     });
     assert.ok(isContextGenerationId(a.contextGeneration));
     assert.ok(a.tentTaskDigest.length > 0);
@@ -220,7 +222,7 @@ test("collectStableContextGeneration digests real AGENTS + skill bodies; exclude
       profileId: "fake-resumable",
       adapterId: FAKE_ADAPTER_ID,
       parentRoleId: "orchestrator",
-      roleFs: new NodeFs(ws),
+      roleFs,
     });
     // agentId is part of extraStable — different agentId flips generation.
     // Same agentId/profile:
@@ -234,7 +236,7 @@ test("collectStableContextGeneration digests real AGENTS + skill bodies; exclude
       profileId: "fake-resumable",
       adapterId: FAKE_ADAPTER_ID,
       parentRoleId: "orchestrator",
-      roleFs: new NodeFs(ws),
+      roleFs,
     });
     assert.equal(a.contextGeneration, c.contextGeneration);
 
@@ -250,9 +252,22 @@ test("collectStableContextGeneration digests real AGENTS + skill bodies; exclude
       profileId: "fake-resumable",
       adapterId: FAKE_ADAPTER_ID,
       parentRoleId: "orchestrator",
-      roleFs: new NodeFs(ws),
+      roleFs,
     });
     assert.notEqual(a.contextGeneration, d.contextGeneration);
+
+    // User-direct agentProfile without parentRoleId remains valid without Role facts.
+    const direct = await collectStableContextGeneration({
+      workspaceRoot: ws,
+      workspaceIdentity: "ws-collect",
+      packageRoot: repoRoot,
+      packageVersion: "0.1.0",
+      assigneeKind: "agentProfile",
+      assigneeLabel: "fake-resumable",
+      profileId: "fake-resumable",
+      adapterId: FAKE_ADAPTER_ID,
+    });
+    assert.ok(isContextGenerationId(direct.contextGeneration));
   } finally {
     await fs.rm(ws, { recursive: true, force: true });
   }
@@ -1646,54 +1661,226 @@ test("hasBlockingDelivery fails loud when Delivery store is unreadable", async (
 });
 
 test("collector failure at startSession fails loud (no reusable fallback)", async () => {
-  const ws = await makeWorkspace("collector-fail");
+  const skillRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skills-collect-fail-"));
   try {
-    await initGit(ws);
-    await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
-      const envFs = new NodeFs(path.join(ws, ".tent"));
+    await writeMinimalSkillPackage(skillRoot);
+    const ws = await makeWorkspace("collector-fail");
+    try {
+      await initGit(ws);
+      await withService(
+        async (svc) => {
+          const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+          const envFs = new NodeFs(path.join(ws, ".tent"));
+          const rolesPath = path.join(ws, ".tent", "roles.json");
 
-      const d = await rpc(svc, "task.dispatch", {
-        workspaceId,
-        boxId,
-        prompt: "collector fail path",
-        assigneeKind: "agentProfile",
-        profileId: "fake-resumable",
-        parentActor: { kind: "role", id: "orchestrator" },
-        reviewer: { kind: "role", id: "orchestrator" },
-        startSession: false,
-        callerKind: "user",
-      });
-      assert.ok(!d.error, JSON.stringify(d.error));
-      const taskPath = (d.result as { taskPath: string }).taskPath;
-      const before = await loadTaskEnvelope(envFs, taskPath);
-      assert.ok(isContextGenerationId(before.contextGeneration!));
+          async function rolesWithout(name: string): Promise<void> {
+            const raw = JSON.parse(await fs.readFile(rolesPath, "utf8")) as {
+              roles: Array<{ name: string }>;
+            };
+            raw.roles = raw.roles.filter((r) => r.name !== name);
+            await fs.writeFile(rolesPath, JSON.stringify(raw, null, 2) + "\n");
+          }
 
-      // Remove profile adapter so live collect at startSession fails loud.
-      const cat = svc.ctx.profileCatalog as unknown as {
-        profiles: import("../src/runtime/types.js").AgentProfileConfig[];
-        runtime: { replaceProfileCatalog: (p: unknown[]) => void };
-      };
-      const idx = cat.profiles.findIndex((p) => p.id === "fake-resumable");
-      assert.ok(idx >= 0);
-      const cur = cat.profiles[idx]!;
-      cat.profiles[idx] = { ...cur, adapterId: "" as unknown as string };
-      cat.runtime.replaceProfileCatalog(cat.profiles);
+          // ---- durable Role assignee: remove required Role after dispatch ----
+          const dRole = await rpc(svc, "task.dispatch", {
+            workspaceId,
+            boxId,
+            role: "executor",
+            prompt: "role collector fail",
+            assigneeKind: "role",
+            profileId: "fake-resumable",
+            parentActor: { kind: "user", id: "user" },
+            reviewer: { kind: "user", id: "user" },
+            startSession: false,
+            callerKind: "user",
+          });
+          assert.ok(!dRole.error, JSON.stringify(dRole.error));
+          const rolePath = (dRole.result as { taskPath: string }).taskPath;
+          const roleBefore = await loadTaskEnvelope(envFs, rolePath);
+          const roleGenBefore = roleBefore.contextGeneration!;
+          assert.ok(isContextGenerationId(roleGenBefore));
 
-      const started = await rpc(svc, "task.startSession", {
-        workspaceId,
-        taskPath,
-        profileId: "fake-resumable",
-        callerKind: "user",
-      });
-      assert.ok(started.error, "missing adapterId must fail collector/start loud");
-      const msg = String(started.error.message || started.error);
-      assert.match(msg, /contextGeneration|adapterId|CONTEXT_GENERATION/i);
-      const after = await loadTaskEnvelope(envFs, taskPath);
-      assert.equal(after.sessionId, undefined);
-    });
+          await rolesWithout("executor");
+
+          const startRole = await rpc(svc, "task.startSession", {
+            workspaceId,
+            taskPath: rolePath,
+            profileId: "fake-resumable",
+            callerKind: "user",
+          });
+          assert.ok(
+            startRole.error,
+            "missing durable Role must fail collector loud (no empty Role facts)"
+          );
+          const roleMsg = String(startRole.error.message || startRole.error);
+          assert.match(
+            roleMsg,
+            /contextGeneration collection failed|required Role not found|Role "executor"/i
+          );
+          const roleCode = (startRole.error as { data?: { code?: string } }).data
+            ?.code;
+          assert.equal(roleCode, "CONTEXT_GENERATION_COLLECT_FAILED");
+          const roleAfter = await loadTaskEnvelope(envFs, rolePath);
+          assert.equal(roleAfter.sessionId, undefined, "no Session launch on collect fail");
+          assert.equal(
+            roleAfter.contextGeneration,
+            roleGenBefore,
+            "must not refresh generation to empty/fallback facts"
+          );
+
+          // Restore executor so later harness steps can use roles.json again.
+          await fs.writeFile(
+            rolesPath,
+            JSON.stringify(
+              {
+                roles: [
+                  {
+                    name: "orchestrator",
+                    prompt: "dispatch work",
+                    a2aPolicy: "allow",
+                    allowedProfiles: ["fake-resumable", "fake-other"],
+                    roster: ["worker-a"],
+                  },
+                  {
+                    name: "executor",
+                    prompt: "do work",
+                    a2aPolicy: "allow",
+                    allowedProfiles: ["fake-resumable"],
+                  },
+                ],
+              },
+              null,
+              2
+            ) + "\n"
+          );
+
+          // ---- parentRole-bound agentProfile: remove parent Role after dispatch ----
+          const dProf = await rpc(svc, "task.dispatch", {
+            workspaceId,
+            boxId,
+            prompt: "parent-role collector fail",
+            assigneeKind: "agentProfile",
+            profileId: "fake-resumable",
+            parentActor: { kind: "role", id: "orchestrator" },
+            reviewer: { kind: "role", id: "orchestrator" },
+            startSession: false,
+            callerKind: "user",
+          });
+          assert.ok(!dProf.error, JSON.stringify(dProf.error));
+          const profPath = (dProf.result as { taskPath: string }).taskPath;
+          const profBefore = await loadTaskEnvelope(envFs, profPath);
+          const profGenBefore = profBefore.contextGeneration!;
+          assert.ok(isContextGenerationId(profGenBefore));
+
+          await rolesWithout("orchestrator");
+
+          const startProf = await rpc(svc, "task.startSession", {
+            workspaceId,
+            taskPath: profPath,
+            profileId: "fake-resumable",
+            callerKind: "user",
+          });
+          assert.ok(
+            startProf.error,
+            "missing parent Role must fail collector loud for agentProfile"
+          );
+          const profMsg = String(startProf.error.message || startProf.error);
+          assert.match(
+            profMsg,
+            /contextGeneration collection failed|required Role not found|Role "orchestrator"|parent Role/i
+          );
+          assert.equal(
+            (startProf.error as { data?: { code?: string } }).data?.code,
+            "CONTEXT_GENERATION_COLLECT_FAILED"
+          );
+          const profAfter = await loadTaskEnvelope(envFs, profPath);
+          assert.equal(profAfter.sessionId, undefined);
+          assert.equal(
+            profAfter.contextGeneration,
+            profGenBefore,
+            "must not refresh generation to empty/fallback facts"
+          );
+
+          // Restore roles; then remove required built-in tent-task SKILL.md.
+          await fs.writeFile(
+            rolesPath,
+            JSON.stringify(
+              {
+                roles: [
+                  {
+                    name: "orchestrator",
+                    prompt: "dispatch work",
+                    a2aPolicy: "allow",
+                    allowedProfiles: ["fake-resumable", "fake-other"],
+                    roster: ["worker-a"],
+                  },
+                  {
+                    name: "executor",
+                    prompt: "do work",
+                    a2aPolicy: "allow",
+                    allowedProfiles: ["fake-resumable"],
+                  },
+                ],
+              },
+              null,
+              2
+            ) + "\n"
+          );
+
+          const dSkill = await rpc(svc, "task.dispatch", {
+            workspaceId,
+            boxId,
+            prompt: "missing skill collector fail",
+            assigneeKind: "agentProfile",
+            profileId: "fake-resumable",
+            parentActor: { kind: "role", id: "orchestrator" },
+            reviewer: { kind: "role", id: "orchestrator" },
+            startSession: false,
+            callerKind: "user",
+          });
+          assert.ok(!dSkill.error, JSON.stringify(dSkill.error));
+          const skillPath = (dSkill.result as { taskPath: string }).taskPath;
+          const skillBefore = await loadTaskEnvelope(envFs, skillPath);
+          const skillGenBefore = skillBefore.contextGeneration!;
+          assert.ok(isContextGenerationId(skillGenBefore));
+
+          await fs.rm(path.join(skillRoot, "skills", "tent-task", "SKILL.md"), {
+            force: true,
+          });
+
+          const startSkill = await rpc(svc, "task.startSession", {
+            workspaceId,
+            taskPath: skillPath,
+            profileId: "fake-resumable",
+            callerKind: "user",
+          });
+          assert.ok(
+            startSkill.error,
+            "missing built-in SKILL.md must fail collector loud"
+          );
+          const skillMsg = String(startSkill.error.message || startSkill.error);
+          assert.match(
+            skillMsg,
+            /contextGeneration collection failed|Built-in skill missing|tent-task/i
+          );
+          assert.equal(
+            (startSkill.error as { data?: { code?: string } }).data?.code,
+            "CONTEXT_GENERATION_COLLECT_FAILED"
+          );
+          const skillAfter = await loadTaskEnvelope(envFs, skillPath);
+          assert.equal(skillAfter.sessionId, undefined);
+          assert.equal(skillAfter.contextGeneration, skillGenBefore);
+        },
+        {
+          profiles: [FAKE_RESUMABLE, FAKE_OTHER],
+          packageRoot: skillRoot,
+        }
+      );
+    } finally {
+      await fs.rm(ws, { recursive: true, force: true });
+    }
   } finally {
-    await fs.rm(ws, { recursive: true, force: true });
+    await fs.rm(skillRoot, { recursive: true, force: true });
   }
 });
 
