@@ -312,6 +312,11 @@ export function computeContextGenerationFromStableFacts(input: {
   agentId?: string;
   assigneeKind?: AssigneeKind | string;
   capabilityFlags?: readonly string[];
+  /**
+   * Non-secret launch snapshot digest (same profileId edited in place).
+   * When set, folds into profileAdapterCompatibility.
+   */
+  profileLaunchDigest?: string;
   extraStable?: Record<string, string | number | boolean | null | undefined>;
 }): string {
   const tentRoleDigest =
@@ -345,11 +350,15 @@ export function computeContextGenerationFromStableFacts(input: {
       profileId: input.profileId,
       adapterId: input.adapterId,
       capabilityFlags: input.capabilityFlags,
+      launchDigest: input.profileLaunchDigest,
     }),
     purpose: input.purpose,
     extraStable: {
       ...(input.assigneeKind ? { assigneeKind: String(input.assigneeKind) } : {}),
       ...(input.agentId?.trim() ? { agentId: input.agentId.trim() } : {}),
+      ...(input.profileLaunchDigest?.trim()
+        ? { profileLaunchDigest: input.profileLaunchDigest.trim() }
+        : {}),
       ...input.extraStable,
     },
   });
@@ -1131,8 +1140,8 @@ export function evaluateSessionReuseCompatibility(input: {
 }
 
 /**
- * Digest skills names for compatibility facts (sorted, lowercased names).
- * Paths/secrets must not appear here.
+ * @deprecated Prefer {@link skillSetCompatibilityDigest} (names-only is insufficient).
+ * Sorted skill *names* only — kept for pure-function fixtures.
  */
 export function skillsCompatibilityDigest(
   skillNames: readonly string[] | undefined
@@ -1145,13 +1154,38 @@ export function skillsCompatibilityDigest(
 }
 
 /**
- * Profile/adapter compatibility string (ids only).
+ * Skill-set compatibility digest: name + body/version digests (sorted by name).
+ * Production Session/reuse facts must use this, not names-only.
+ */
+export function skillSetCompatibilityDigest(
+  skills: readonly {
+    name: string;
+    bodyDigest: string;
+    version?: string;
+  }[]
+): string {
+  const rows = [...skills]
+    .map((s) => ({
+      name: s.name.trim().toLowerCase(),
+      bodyDigest: s.bodyDigest.trim(),
+      version: s.version?.trim() || "",
+    }))
+    .filter((s) => s.name && s.bodyDigest)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return sha256Hex(canonicalJson(rows));
+}
+
+/**
+ * Profile/adapter compatibility string (ids + optional non-secret flags).
+ * For full launch identity prefer {@link profileLaunchCompatibilityDigest}.
  */
 export function profileAdapterCompatibilityDigest(input: {
   profileId: string;
   adapterId: string;
   /** Optional non-secret capability flags. */
   capabilityFlags?: readonly string[];
+  /** Optional launch snapshot digest (command/model/envKey/… — never secrets). */
+  launchDigest?: string;
 }): string {
   const flags = [...(input.capabilityFlags ?? [])]
     .map((s) => s.trim())
@@ -1161,6 +1195,88 @@ export function profileAdapterCompatibilityDigest(input: {
     canonicalJson({
       profileId: input.profileId.trim(),
       adapterId: input.adapterId.trim(),
+      flags,
+      launchDigest: input.launchDigest?.trim() || "",
+    })
+  );
+}
+
+/**
+ * Non-secret profile/launch compatibility snapshot for same-profileId in-place edits.
+ * Includes adapter, model, command, args, env *key names*, credentialRef *ids*,
+ * fake capability flags — never secret values or plaintext credentials.
+ */
+export function profileLaunchCompatibilityDigest(input: {
+  profileId: string;
+  adapterId: string;
+  command?: string;
+  args?: readonly string[];
+  /** Non-secret env map: only keys are hashed (values ignored). */
+  env?: Record<string, string>;
+  /** ACP/model options (ids and names only). */
+  acp?: {
+    model?: string;
+    envKey?: string;
+    credentialRef?: string;
+    command?: string;
+    permissionPolicy?: string;
+  };
+  fake?: {
+    canResume?: boolean;
+    failLaunch?: string;
+    waitForSignal?: boolean;
+  };
+  /** Skill ref names only (bodies live in skillSet digest). */
+  skillNames?: readonly string[];
+  /** MCP server names / envKey / credentialRef ids only. */
+  mcpServers?: readonly {
+    name?: string;
+    envKey?: string;
+    credentialRef?: string;
+  }[];
+  capabilityFlags?: readonly string[];
+}): string {
+  const envKeys = Object.keys(input.env ?? {})
+    .map((k) => k.trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+  const args = [...(input.args ?? [])].map((s) => String(s));
+  const skillNames = [...(input.skillNames ?? [])]
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+  const mcp = [...(input.mcpServers ?? [])]
+    .map((m) => ({
+      name: m.name?.trim() || "",
+      envKey: m.envKey?.trim() || "",
+      credentialRef: m.credentialRef?.trim() || "",
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const flags = [...(input.capabilityFlags ?? [])]
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+  return sha256Hex(
+    canonicalJson({
+      profileId: input.profileId.trim(),
+      adapterId: input.adapterId.trim(),
+      command: input.command?.trim() || "",
+      args,
+      envKeys,
+      acp: {
+        model: input.acp?.model?.trim() || "",
+        envKey: input.acp?.envKey?.trim() || "",
+        credentialRef: input.acp?.credentialRef?.trim() || "",
+        command: input.acp?.command?.trim() || "",
+        permissionPolicy: input.acp?.permissionPolicy?.trim() || "",
+      },
+      fake: {
+        canResume: input.fake?.canResume === true,
+        failLaunch: Boolean(input.fake?.failLaunch),
+        waitForSignal: input.fake?.waitForSignal !== false,
+      },
+      skillNames,
+      mcp,
       flags,
     })
   );

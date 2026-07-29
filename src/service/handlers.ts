@@ -91,8 +91,9 @@ import {
   buildSessionReuseRequestFacts,
   collectStableContextGeneration,
   evaluateCandidateSessionLeaseGates,
+  appendCallerBootstrapSection,
   evaluateManagedSessionReuse,
-  taskPurposeFromEnvelope,
+  readTaskPurpose,
   type StableContextGenerationBundle,
 } from "./session-context-generation.js";
 import { systemRootFromWorkspace } from "../core/paths.js";
@@ -3704,6 +3705,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
           parentRoleId: parentRoleIdForGen,
           purpose: purposeParam,
           roleFs: mount.env.fs,
+        profile: dispatchProfile,
         });
         dispatchContextGeneration = bundle.contextGeneration;
         dispatchContextFacts = {
@@ -3754,6 +3756,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
           parentRoleId: parentRoleIdForGen,
           purpose: purposeParam,
           roleFs: mount.env.fs,
+        profile: dispatchProfile,
         });
         dispatchContextGeneration = bundle.contextGeneration;
         dispatchContextFacts = {
@@ -6428,10 +6431,68 @@ async function prepareAuthorizedTaskStartSession(
     task = await loadTaskEnvelope(mount.env.fs, taskPath);
   }
 
-  // Durable roles: only one managed ACP session in starting/live/waiting-user.
-  // agentProfile tasks may run concurrently (even same profileId) — only same-task
-  // idempotency reuses an existing binding.
+  // Same-Task alive idempotency only — NOT cross-Task continuity.
+  // When an active Session is already bound to this Task, return it only if live
+  // contextGeneration still matches; otherwise fail loud (cannot safely start fresh
+  // while the turn/session is active).
   const isProfileTask = taskAssigneeKind(task) === "agentProfile";
+  const callerBootstrapAppend = bootstrapPrompt; // never replaces managed bootstrap
+
+  async function assertAliveSessionLiveGenerationOrFail(
+    activeRec: import("../runtime/types.js").SessionRecord
+  ): Promise<void> {
+    const profile = ctx.profileCatalog.get(profileId);
+    if (!profile?.adapterId) {
+      throw new RpcError(
+        -32602,
+        `task.startSession cannot verify live contextGeneration: profile ${profileId} missing or has no adapterId`,
+        { profileId, code: "CONTEXT_GENERATION_COLLECT_FAILED" }
+      );
+    }
+    let live: StableContextGenerationBundle;
+    try {
+      live = await collectStableContextGeneration({
+        workspaceRoot: mount.workspaceRoot,
+        workspaceIdentity: workspaceId,
+        packageRoot: ctx.packageRoot,
+        packageVersion: ctx.version,
+        assigneeKind: taskAssigneeKind(task),
+        assigneeLabel: task.role,
+        agentId: typeof task.agentId === "string" ? task.agentId : undefined,
+        profileId,
+        adapterId: profile.adapterId,
+        parentRoleId:
+          task.parentActor?.kind === "role" ? task.parentActor.id : undefined,
+        purpose: readTaskPurpose(task) || undefined,
+        roleFs: mount.env.fs,
+        profile,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new RpcError(
+        -32000,
+        `task.startSession live contextGeneration collection failed: ${message}`,
+        { code: "CONTEXT_GENERATION_COLLECT_FAILED", taskPath, profileId }
+      );
+    }
+    const sessionGen = activeRec.contextGeneration?.trim() || "";
+    if (sessionGen && sessionGen !== live.contextGeneration) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Active managed session ${activeRec.id} contextGeneration drifted from live stable facts ` +
+          `(session=${sessionGen}, live=${live.contextGeneration}); cannot safely start a fresh ` +
+          `Session while the prior turn/session is active. Stop/replace the Session first.`,
+        {
+          code: "CONTEXT_GENERATION_LIVE_DRIFT_ACTIVE",
+          sessionId: activeRec.id,
+          sessionContextGeneration: sessionGen,
+          liveContextGeneration: live.contextGeneration,
+          taskPath,
+        }
+      );
+    }
+  }
+
   if (!isProfileTask) {
     const activeForRole = await findActiveManagedSessionForRole(ctx, workspaceId, task.role);
     if (activeForRole) {
@@ -6440,6 +6501,7 @@ async function prepareAuthorizedTaskStartSession(
         (!!task.id && activeForRole.lastTaskId === task.id) ||
         activeForRole.lastTaskId === taskPath;
       if (boundToThisTask) {
+        await assertAliveSessionLiveGenerationOrFail(activeForRole);
         const boundTask =
           task.sessionId === activeForRole.id
             ? task
@@ -6469,9 +6531,10 @@ async function prepareAuthorizedTaskStartSession(
       );
     }
   } else if (task.sessionId) {
-    // Profile task idempotency: same task already bound to an active session.
+    // Profile task same-Task alive idempotency only.
     const prior = await ctx.runtime.registry.read(task.sessionId);
     if (prior && SessionRegistry.isNonTerminal(prior.state) && prior.state !== "external") {
+      await assertAliveSessionLiveGenerationOrFail(prior);
       return {
         kind: "reuse",
         result: projectStartSessionResult(workspaceId, taskPath, task, prior, {
@@ -6488,7 +6551,8 @@ async function prepareAuthorizedTaskStartSession(
     profileId,
     task,
     isProfileTask,
-    bootstrapPrompt,
+    // Caller text is an optional dynamic append only — never the managed bootstrap itself.
+    bootstrapPrompt: callerBootstrapAppend,
   };
 }
 
@@ -6537,22 +6601,23 @@ async function launchAndBindTaskStartSession(
     }
   }
 
-  // Collect real stable compatibility facts. Fail loud — never catch-to-placeholder.
-  // Role Tasks: finalize/capture real generation with launch profile/adapter here
-  // (before bootstrap/prefix decision), then persist on Task Context Card.
+  // Live authoritative contextGeneration: always recompute from current AGENTS /
+  // Skill body+version / Role prompt+roster / profile launch snapshot. Persisted
+  // Task/card generation never overrides live facts. Collector failure is fail-loud
+  // (never yields reusable fallback facts).
   const profile = ctx.profileCatalog.get(profileId);
   if (!profile?.adapterId) {
     throw new RpcError(
       -32602,
       `task.startSession cannot compute contextGeneration: profile ${profileId} missing or has no adapterId`,
-      { profileId }
+      { profileId, code: "CONTEXT_GENERATION_COLLECT_FAILED" }
     );
   }
   const adapterId = profile.adapterId;
   const parentRoleId =
     task.parentActor?.kind === "role" ? task.parentActor.id : undefined;
   const assigneeKind = taskAssigneeKind(task);
-  const taskPurpose = taskPurposeFromEnvelope(task);
+  const taskPurpose = readTaskPurpose(task);
   let stableBundle: StableContextGenerationBundle;
   try {
     stableBundle = await collectStableContextGeneration({
@@ -6568,6 +6633,7 @@ async function launchAndBindTaskStartSession(
       parentRoleId,
       purpose: taskPurpose || undefined,
       roleFs: mount.env.fs,
+      profile,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -6578,38 +6644,36 @@ async function launchAndBindTaskStartSession(
     );
   }
 
-  // Prefer live real generation (profile/adapter known). Persist when it differs from
-  // a deferred Role placeholder or missing generation so Session reuse identity is honest.
-  const priorPersistedGeneration =
-    task.contextGeneration?.trim() ||
-    task.contextCard?.contextGeneration?.trim() ||
-    "";
-  const requestGeneration = stableBundle.contextGeneration;
-  if (!requestGeneration) {
+  const liveGeneration = stableBundle.contextGeneration;
+  if (!liveGeneration) {
     throw new RpcError(
       -32000,
       "task.startSession produced empty contextGeneration (fail closed)",
       { code: "CONTEXT_GENERATION_EMPTY", taskPath }
     );
   }
-  if (priorPersistedGeneration !== requestGeneration) {
-    // Atomically capture real generation on Task before bootstrap/prefix decision.
+  const priorPersistedGeneration =
+    task.contextGeneration?.trim() ||
+    task.contextCard?.contextGeneration?.trim() ||
+    "";
+  // Live id is always authoritative for this prompt. Refresh Task/card when drifted.
+  if (priorPersistedGeneration !== liveGeneration) {
     task = await ctx.mutations.run(workspaceId, async () => {
       ctx.host.markSelfWrite(workspaceId);
       if (task.contextCard) {
         const nextCard = {
           ...task.contextCard,
-          contextGeneration: requestGeneration,
+          contextGeneration: liveGeneration,
         };
         return patchTaskEnvelope(mount.env.fs, taskPath, {
           contextCard: nextCard,
-          contextGeneration: requestGeneration,
+          contextGeneration: liveGeneration,
           ...(taskPurpose ? { purpose: taskPurpose } : {}),
           updatedAt: mount.env.clock.now(),
         });
       }
       return patchTaskEnvelope(mount.env.fs, taskPath, {
-        contextGeneration: requestGeneration,
+        contextGeneration: liveGeneration,
         ...(taskPurpose ? { purpose: taskPurpose } : {}),
         updatedAt: mount.env.clock.now(),
       });
@@ -6620,15 +6684,15 @@ async function launchAndBindTaskStartSession(
     workspaceId,
     bundle: {
       ...stableBundle,
-      contextGeneration: requestGeneration,
+      contextGeneration: liveGeneration,
       purpose: taskPurpose || stableBundle.purpose,
     },
-    contextGeneration: requestGeneration,
+    contextGeneration: liveGeneration,
     worktree: cwd,
   });
 
   // Candidate selection: task binding first, then Role/profile stopped sessions.
-  // Reuse only after Core gate + prior-Task lease evaluation (not request Task alone).
+  // Reuse only after Core gate + prior-Task lease + live generation match on candidate.
   const candidateIds: string[] = [];
   if (task.sessionId?.trim()) candidateIds.push(task.sessionId.trim());
   if (!isProfileTask) {
@@ -6656,7 +6720,6 @@ async function launchAndBindTaskStartSession(
 
   let resumePrior = false;
   let priorSessionId = "";
-  let priorContextGeneration: string | undefined;
   let continuityProven = false;
 
   const allTasks = await loadTaskEnvelopes(mount.env.fs);
@@ -6685,6 +6748,13 @@ async function launchAndBindTaskStartSession(
       const prior = await ctx.runtime.registry.read(candidateId);
       if (!prior || !probe.resumeCapable || probe.alive) continue;
 
+      // Live generation must match Session-recorded generation — never label a live
+      // prompt with an old id. Drift forces fresh Session + full stable prefix.
+      const priorGen = prior.contextGeneration?.trim() || "";
+      if (!priorGen || priorGen !== liveGeneration) {
+        continue;
+      }
+
       const lease = await evaluateCandidateSessionLeaseGates({
         allTasks,
         candidate: prior,
@@ -6712,7 +6782,6 @@ async function launchAndBindTaskStartSession(
         resumePrior = true;
         priorSessionId = candidateId;
         continuityProven = true;
-        priorContextGeneration = prior.contextGeneration;
         break;
       }
     } catch (err) {
@@ -6725,21 +6794,25 @@ async function launchAndBindTaskStartSession(
   }
   // No allowed candidate → fail closed to fresh Session generation.
 
-  // Managed ACP bootstrap: stable prefix omitted only when Core proved continuity
-  // (same contextGeneration already on the reused Session).
-  const sessionContextGeneration = continuityProven ? priorContextGeneration : undefined;
-  const sessionBootstrap =
-    prepared.bootstrapPrompt?.trim() ||
-    (await buildSessionBootstrapPrompt(
-      ctx,
-      task,
-      {
-        workspaceRoot: mount.workspaceRoot,
-        systemRoot: mount.systemRoot,
-        sessionContextGeneration,
-      },
-      mount.env.fs
-    ));
+  // Official managed bootstrap is always Service-owned (stable + delta).
+  // Public bootstrapPrompt is an appended dynamic section only — never a replacement.
+  // Stable prefix omitted only when Core proved continuity (live gen === session gen
+  // and full reuse gate passed).
+  const sessionContextGeneration = continuityProven ? liveGeneration : undefined;
+  let sessionBootstrap = await buildSessionBootstrapPrompt(
+    ctx,
+    task,
+    {
+      workspaceRoot: mount.workspaceRoot,
+      systemRoot: mount.systemRoot,
+      sessionContextGeneration,
+    },
+    mount.env.fs
+  );
+  sessionBootstrap = appendCallerBootstrapSection(
+    sessionBootstrap,
+    prepared.bootstrapPrompt
+  );
 
   // Ephemeral image path refs from task user prompt + claimed node bodies only.
   // Paths only — never base64; never written to task/session/profile disk.
@@ -6805,11 +6878,7 @@ async function launchAndBindTaskStartSession(
       sessionId: handle.sessionId,
       updatedAt: mount.env.clock.now(),
     });
-    const generation =
-      requestGeneration ||
-      next.contextGeneration?.trim() ||
-      next.contextCard?.contextGeneration?.trim() ||
-      "";
+    const generation = liveGeneration;
     try {
       const parentRoleIdBound =
         next.parentActor?.kind === "role" ? next.parentActor.id : undefined;
@@ -6817,16 +6886,15 @@ async function launchAndBindTaskStartSession(
         stableBundle.agentId ||
         (typeof next.agentId === "string" && next.agentId.trim()) ||
         next.role;
-      const purposeBound =
-        taskPurposeFromEnvelope(next) || stableBundle.purpose || "";
+      const purposeBound = readTaskPurpose(next) || stableBundle.purpose || "";
       await ctx.runtime.registry.update(handle.sessionId, {
-        ...(generation ? { contextGeneration: generation } : {}),
+        contextGeneration: generation,
         ...(next.taskDeltaDigest
           ? { taskDeltaDigest: next.taskDeltaDigest }
           : {}),
         agentId,
         ...(parentRoleIdBound ? { parentRoleId: parentRoleIdBound } : {}),
-        skillsDigest: stableBundle.skillsDigest,
+        skillsDigest: stableBundle.skillSetDigest || stableBundle.skillsDigest,
         purpose: purposeBound,
       });
     } catch {

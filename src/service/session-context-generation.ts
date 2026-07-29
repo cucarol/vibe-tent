@@ -2,7 +2,6 @@
  * Production collectors for contextGeneration + Session reuse facts (cx-5q6za6).
  * Core owns pure digests/gates; Service loads workspace/skill/role/profile facts here.
  */
-import * as nodePath from "node:path";
 import type { FsAdapter } from "../core/adapter.js";
 import {
   BUILTIN_TENT_ROLE_SKILL,
@@ -17,15 +16,17 @@ import {
   computeContextGenerationFromStableFacts,
   evaluateSessionReuseCompatibility,
   managedSessionPurpose,
+  profileLaunchCompatibilityDigest,
   sessionRecordToReuseCompatibilityFacts,
-  skillsCompatibilityDigest,
   skillBodyCompatibilityDigest,
+  skillSetCompatibilityDigest,
   TaskContextCardError,
   type SessionReuseCompatibilityFacts,
   type SessionReuseEvaluation,
   type SessionReuseRuntimeGates,
   type TaskContextCardV1,
 } from "../core/task-context-card.js";
+import type { AgentProfileConfig } from "../runtime/types.js";
 import { loadDeliveries } from "../core/delivery.js";
 import { isDeliveryId, isTaskId, type AssigneeKind } from "../core/task-model.js";
 // isDeliveryId / isTaskId: durable id shape checks before workspace lookup.
@@ -53,10 +54,18 @@ export type StableContextGenerationBundle = {
   tentTaskVersion: string;
   rolePrompt: string;
   rosterAgentIds: string[];
+  /**
+   * Skill-set compatibility digest (name + body/version).
+   * Session row field remains `skillsDigest` for wire compatibility.
+   */
   skillsDigest: string;
+  /** Alias of skillsDigest — body/version aware skill-set digest. */
+  skillSetDigest: string;
   purpose: string;
   profileId: string;
   adapterId: string;
+  /** Non-secret launch snapshot (same profileId edited in place). */
+  profileLaunchDigest: string;
   agentId: string;
   parentRoleId: string;
   assigneeKind: AssigneeKind;
@@ -82,6 +91,11 @@ export type CollectStableContextGenerationInput = {
   /** Optional preloaded Role definition (avoids double load). */
   role?: RoleDefinition;
   capabilityFlags?: readonly string[];
+  /**
+   * Full machine-local profile for launch compatibility digest.
+   * Required for honest same-profileId edit detection (never secret values).
+   */
+  profile?: AgentProfileConfig;
 };
 
 /**
@@ -187,6 +201,14 @@ export async function collectStableContextGeneration(
     input.agentId?.trim() ||
     (input.assigneeKind === "agentProfile" ? input.assigneeLabel : input.assigneeLabel);
 
+  const profileLaunchDigest = input.profile
+    ? profileLaunchCompatibilityDigestFromConfig(input.profile)
+    : profileLaunchCompatibilityDigest({
+        profileId: input.profileId,
+        adapterId: input.adapterId,
+        capabilityFlags: input.capabilityFlags,
+      });
+
   const contextGeneration = computeContextGenerationFromStableFacts({
     workspaceIdentity: input.workspaceIdentity,
     agentsBody: agents.content,
@@ -203,12 +225,25 @@ export async function collectStableContextGeneration(
     agentId,
     assigneeKind: input.assigneeKind,
     capabilityFlags: input.capabilityFlags,
+    profileLaunchDigest,
   });
 
-  const skillsDigest = skillsCompatibilityDigest([
-    ...(input.assigneeKind === "role" ? [BUILTIN_TENT_ROLE_SKILL] : []),
-    BUILTIN_TENT_TASK_SKILL,
-  ]);
+  // Body+version aware skill-set digest (not names-only).
+  const skillSetRows: { name: string; bodyDigest: string; version?: string }[] = [
+    {
+      name: BUILTIN_TENT_TASK_SKILL,
+      bodyDigest: tentTaskDigest,
+      version: tentTaskVersion,
+    },
+  ];
+  if (input.assigneeKind === "role" && tentRoleDigest) {
+    skillSetRows.push({
+      name: BUILTIN_TENT_ROLE_SKILL,
+      bodyDigest: tentRoleDigest,
+      version: tentRoleVersion,
+    });
+  }
+  const skillSetDigest = skillSetCompatibilityDigest(skillSetRows);
 
   return {
     contextGeneration,
@@ -219,14 +254,77 @@ export async function collectStableContextGeneration(
     tentTaskVersion,
     rolePrompt,
     rosterAgentIds,
-    skillsDigest,
+    skillsDigest: skillSetDigest,
+    skillSetDigest,
     purpose,
     profileId: input.profileId,
     adapterId: input.adapterId,
+    profileLaunchDigest,
     agentId,
     parentRoleId: input.parentRoleId?.trim() || "",
     assigneeKind: input.assigneeKind,
   };
+}
+
+/** Build launch compatibility digest from a machine-local profile (no secrets). */
+export function profileLaunchCompatibilityDigestFromConfig(
+  profile: AgentProfileConfig
+): string {
+  const envKeyNames: string[] = [];
+  if (profile.env) envKeyNames.push(...Object.keys(profile.env));
+  // Fold MCP env/header *key names* and credentialRef *ids* into env map keys only.
+  const syntheticEnv: Record<string, string> = { ...(profile.env ?? {}) };
+  for (const m of profile.mcpServers ?? []) {
+    if (m.envKeys) {
+      for (const [k, v] of Object.entries(m.envKeys)) {
+        syntheticEnv[`mcp.envKeys.${m.name}.${k}`] = v;
+      }
+    }
+    if (m.envCredentialRefs) {
+      for (const [k, v] of Object.entries(m.envCredentialRefs)) {
+        syntheticEnv[`mcp.envCredentialRefs.${m.name}.${k}`] = v;
+      }
+    }
+    if (m.headerEnvKeys) {
+      for (const [k, v] of Object.entries(m.headerEnvKeys)) {
+        syntheticEnv[`mcp.headerEnvKeys.${m.name}.${k}`] = v;
+      }
+    }
+    if (m.headerCredentialRefs) {
+      for (const [k, v] of Object.entries(m.headerCredentialRefs)) {
+        syntheticEnv[`mcp.headerCredentialRefs.${m.name}.${k}`] = v;
+      }
+    }
+  }
+  void envKeyNames;
+  return profileLaunchCompatibilityDigest({
+    profileId: profile.id,
+    adapterId: profile.adapterId,
+    command: profile.command,
+    args: profile.args,
+    env: syntheticEnv,
+    acp: profile.acp
+      ? {
+          model: profile.acp.model,
+          envKey: profile.acp.envKey,
+          credentialRef: profile.acp.credentialRef,
+          permissionPolicy: profile.acp.permissionPolicy,
+        }
+      : undefined,
+    fake: profile.fake
+      ? {
+          canResume: profile.fake.canResume,
+          failLaunch: profile.fake.failLaunch,
+          waitForSignal: profile.fake.waitForSignal,
+        }
+      : undefined,
+    skillNames: (profile.skills ?? [])
+      .filter((s) => s && s.enabled !== false)
+      .map((s) => s.name),
+    mcpServers: (profile.mcpServers ?? []).map((m) => ({
+      name: m.name,
+    })),
+  });
 }
 
 /**
@@ -351,23 +449,6 @@ export async function assertDurableContextCardRefsResolved(
     if (err instanceof TaskContextCardError) throw err;
     throw err;
   }
-}
-
-/**
- * Runtime gates for Session reuse (Service probe + stores).
- */
-export function collectSessionReuseRuntimeGates(input: {
-  previousTurnSettled: boolean;
-  exclusiveLease: boolean;
-  noPendingInput: boolean;
-  noPendingDelivery: boolean;
-}): SessionReuseRuntimeGates {
-  return {
-    previousTurnSettled: input.previousTurnSettled,
-    exclusiveLease: input.exclusiveLease,
-    noPendingInput: input.noPendingInput,
-    noPendingDelivery: input.noPendingDelivery,
-  };
 }
 
 /**
@@ -580,19 +661,31 @@ export function evaluateManagedSessionReuse(input: {
   });
 }
 
-/**
- * Normalize path comparison for worktree / cwd (Windows-safe).
- */
-export function sameWorkspacePath(a: string, b: string): boolean {
-  if (!a || !b) return a === b;
-  const na = nodePath.resolve(a).replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  const nb = nodePath.resolve(b).replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  return na === nb;
-}
-
 /** Read optional stable purpose/subKey from Task envelope (Session reuse identity). */
-export function taskPurposeFromEnvelope(
+function taskPurposeFromEnvelope(
   task: Pick<TaskEnvelope, "purpose"> | { purpose?: string }
 ): string {
   return managedSessionPurpose({ purpose: task.purpose });
+}
+
+/** Public thin wrapper used by Service start path. */
+export function readTaskPurpose(
+  task: Pick<TaskEnvelope, "purpose"> | { purpose?: string }
+): string {
+  return taskPurposeFromEnvelope(task);
+}
+
+/**
+ * Official managed bootstrap is always Service-owned.
+ * Optional public bootstrapPrompt is appended as a dynamic section only —
+ * never a replacement of stable+delta (fresh or resumed).
+ */
+export function appendCallerBootstrapSection(
+  officialManagedBootstrap: string,
+  callerAppend?: string | null
+): string {
+  const base = officialManagedBootstrap.trimEnd();
+  const append = typeof callerAppend === "string" ? callerAppend.trim() : "";
+  if (!append) return base ? `${base}\n` : "";
+  return `${base}\n\n--- Caller bootstrap append ---\n${append}\n`;
 }

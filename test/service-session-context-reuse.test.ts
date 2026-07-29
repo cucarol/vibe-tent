@@ -24,12 +24,18 @@ import {
   isContextGenerationId,
 } from "../src/core/task-context-card.js";
 import {
+  appendCallerBootstrapSection,
   assertDurableContextCardRefsResolved,
   collectStableContextGeneration,
   evaluateCandidateSessionLeaseGates,
   findTasksBoundToSession,
   isTaskLifecycleSafelySettledForReuse,
+  profileLaunchCompatibilityDigestFromConfig,
 } from "../src/service/session-context-generation.js";
+import {
+  profileLaunchCompatibilityDigest,
+  skillSetCompatibilityDigest,
+} from "../src/core/task-context-card.js";
 import { buildTaskContextCard } from "../src/core/task-context-card.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
@@ -853,6 +859,32 @@ test("Role profile change at startSession rewrites contextGeneration", async () 
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const envFs = new NodeFs(path.join(ws, ".tent"));
 
+      // Allow fake-other on executor for this test.
+      await fs.writeFile(
+        path.join(ws, ".tent", "roles.json"),
+        JSON.stringify(
+          {
+            roles: [
+              {
+                name: "orchestrator",
+                prompt: "dispatch work",
+                a2aPolicy: "allow",
+                allowedProfiles: ["fake-resumable", "fake-other"],
+                roster: ["worker-a"],
+              },
+              {
+                name: "executor",
+                prompt: "do work",
+                a2aPolicy: "allow",
+                allowedProfiles: ["fake-resumable", "fake-other"],
+              },
+            ],
+          },
+          null,
+          2
+        ) + "\n"
+      );
+
       const d = await rpc(svc, "task.dispatch", {
         workspaceId,
         boxId,
@@ -887,6 +919,324 @@ test("Role profile change at startSession rewrites contextGeneration", async () 
       const t2 = await loadTaskEnvelope(envFs, (d2.result as { taskPath: string }).taskPath);
       assert.notEqual(t2.contextGeneration, gen1);
       assert.notEqual(t2.sessionId, t1.sessionId);
+    });
+  } finally {
+    await fs.rm(ws, { recursive: true, force: true });
+  }
+});
+
+test("appendCallerBootstrapSection never replaces official managed bootstrap", () => {
+  const official =
+    "--- Tent managed session bootstrap ---\n" +
+    "Tent managed bootstrap invariant v1\n" +
+    "--- End of stable Tent skill contracts ---\n" +
+    "dynamic card\n";
+  const only = appendCallerBootstrapSection(official, undefined);
+  assert.match(only, /managed session bootstrap/);
+  assert.doesNotMatch(only, /Caller bootstrap append/);
+
+  const withCaller = appendCallerBootstrapSection(official, "CUSTOM_ONLY_TEXT");
+  assert.match(withCaller, /managed session bootstrap/);
+  assert.match(withCaller, /Caller bootstrap append/);
+  assert.match(withCaller, /CUSTOM_ONLY_TEXT/);
+  assert.ok(withCaller.indexOf("managed session bootstrap") < withCaller.indexOf("CUSTOM_ONLY_TEXT"));
+  // Caller text alone is not the whole bootstrap.
+  assert.notEqual(withCaller.trim(), "CUSTOM_ONLY_TEXT");
+});
+
+test("skillSetCompatibilityDigest includes body/version; profile launch digest flips on in-place edit", () => {
+  const a = skillSetCompatibilityDigest([
+    { name: "tent-task", bodyDigest: "body-a", version: "0.1.0" },
+  ]);
+  const b = skillSetCompatibilityDigest([
+    { name: "tent-task", bodyDigest: "body-b", version: "0.1.0" },
+  ]);
+  const c = skillSetCompatibilityDigest([
+    { name: "tent-task", bodyDigest: "body-a", version: "0.2.0" },
+  ]);
+  assert.notEqual(a, b);
+  assert.notEqual(a, c);
+
+  const p1 = profileLaunchCompatibilityDigest({
+    profileId: "fake-resumable",
+    adapterId: FAKE_ADAPTER_ID,
+    command: "cmd-a",
+    args: ["--x"],
+  });
+  const p2 = profileLaunchCompatibilityDigest({
+    profileId: "fake-resumable",
+    adapterId: FAKE_ADAPTER_ID,
+    command: "cmd-b",
+    args: ["--x"],
+  });
+  assert.notEqual(p1, p2);
+  const fromCfg = profileLaunchCompatibilityDigestFromConfig({
+    id: "fake-resumable",
+    adapterId: FAKE_ADAPTER_ID,
+    command: "cmd-a",
+    args: ["--x"],
+    fake: { canResume: true },
+  });
+  assert.equal(typeof fromCfg, "string");
+  assert.equal(fromCfg.length, 64);
+});
+
+test("live generation: AGENTS/Role/Skill/profile mutations force fresh Session and refresh Task gen", async () => {
+  const skillRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skills-live-"));
+  try {
+    // Minimal skill bundle for packageRoot override.
+    for (const name of ["tent-task", "tent-role"]) {
+      const dir = path.join(skillRoot, "skills", name);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        path.join(dir, "SKILL.md"),
+        `---\nname: ${name}\nversion: "1.0.0"\n---\n\n# ${name}\nbody-v1\n`
+      );
+    }
+
+    const ws = await makeWorkspace("live-gen");
+    try {
+      await initGit(ws);
+      await withService(
+        async (svc) => {
+          const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+          const envFs = new NodeFs(path.join(ws, ".tent"));
+
+          const d1 = await rpc(svc, "task.dispatch", {
+            workspaceId,
+            boxId,
+            prompt: "first",
+            assigneeKind: "agentProfile",
+            profileId: "fake-resumable",
+            parentActor: { kind: "role", id: "orchestrator" },
+            reviewer: { kind: "role", id: "orchestrator" },
+            startSession: true,
+            callerKind: "user",
+            bootstrapPrompt: "CUSTOM_CALLER_ONLY",
+          });
+          assert.ok(!d1.error, JSON.stringify(d1.error));
+          const t1 = await loadTaskEnvelope(
+            envFs,
+            (d1.result as { taskPath: string }).taskPath
+          );
+          const gen1 = t1.contextGeneration!;
+          const sid1 = t1.sessionId!;
+          assert.ok(isContextGenerationId(gen1));
+          // Session facts use live generation (not empty / placeholder).
+          const row1 = await svc.runtime.registry.read(sid1);
+          assert.equal(row1?.contextGeneration, gen1);
+
+          await svc.runtime.stopSession(sid1, "user");
+
+          // Mutate AGENTS between sessions → live generation must change.
+          await writeWorkspaceAgents(ws, "# AGENTS mutated for live generation\n");
+
+          const d2 = await rpc(svc, "task.dispatch", {
+            workspaceId,
+            boxId,
+            prompt: "second after AGENTS mutate",
+            assigneeKind: "agentProfile",
+            profileId: "fake-resumable",
+            parentActor: { kind: "role", id: "orchestrator" },
+            reviewer: { kind: "role", id: "orchestrator" },
+            startSession: true,
+            callerKind: "user",
+            bootstrapPrompt: "ANOTHER_CUSTOM",
+          });
+          assert.ok(!d2.error, JSON.stringify(d2.error));
+          const t2 = await loadTaskEnvelope(
+            envFs,
+            (d2.result as { taskPath: string }).taskPath
+          );
+          assert.notEqual(
+            t2.contextGeneration,
+            gen1,
+            "live AGENTS mutation must change contextGeneration"
+          );
+          assert.notEqual(
+            t2.sessionId,
+            sid1,
+            "generation drift must force fresh Session (not reuse old id)"
+          );
+          assert.equal(
+            (await svc.runtime.registry.read(t2.sessionId!))?.contextGeneration,
+            t2.contextGeneration
+          );
+
+          await svc.runtime.stopSession(t2.sessionId!, "user");
+
+          // Same profileId edited in place (non-secret env key / args) → launch digest
+          // flips → fresh Session, without breaking spawn command.
+          const cat = svc.ctx.profileCatalog as unknown as {
+            profiles: import("../src/runtime/types.js").AgentProfileConfig[];
+            runtime: { replaceProfileCatalog: (p: unknown[]) => void };
+          };
+          const idx = cat.profiles.findIndex((p) => p.id === "fake-resumable");
+          assert.ok(idx >= 0);
+          const cur = cat.profiles[idx]!;
+          cat.profiles[idx] = {
+            ...cur,
+            args: [...(cur.args ?? []), "--compat-flag-mutated"],
+            env: { ...(cur.env ?? {}), TENT_COMPAT_FLAG: "1" },
+          };
+          cat.runtime.replaceProfileCatalog(cat.profiles);
+
+          const d3 = await rpc(svc, "task.dispatch", {
+            workspaceId,
+            boxId,
+            prompt: "third after profile in-place edit",
+            assigneeKind: "agentProfile",
+            profileId: "fake-resumable",
+            parentActor: { kind: "role", id: "orchestrator" },
+            reviewer: { kind: "role", id: "orchestrator" },
+            startSession: true,
+            callerKind: "user",
+          });
+          assert.ok(!d3.error, JSON.stringify(d3.error));
+          const t3 = await loadTaskEnvelope(
+            envFs,
+            (d3.result as { taskPath: string }).taskPath
+          );
+          assert.notEqual(t3.contextGeneration, t2.contextGeneration);
+          assert.notEqual(t3.sessionId, t2.sessionId);
+        },
+        {
+          profiles: [FAKE_RESUMABLE, FAKE_OTHER],
+        }
+      );
+      // packageRoot skill mutation path (collector-level production facts).
+      const before = await collectStableContextGeneration({
+        workspaceRoot: ws,
+        workspaceIdentity: "ws-skill",
+        packageRoot: skillRoot,
+        packageVersion: "0.1.0",
+        assigneeKind: "agentProfile",
+        assigneeLabel: "fake-resumable",
+        profileId: "fake-resumable",
+        adapterId: FAKE_ADAPTER_ID,
+        profile: { ...FAKE_RESUMABLE },
+      });
+      await fs.writeFile(
+        path.join(skillRoot, "skills", "tent-task", "SKILL.md"),
+        `---\nname: tent-task\nversion: "1.0.1"\n---\n\n# tent-task\nbody-v2-mutated\n`
+      );
+      const after = await collectStableContextGeneration({
+        workspaceRoot: ws,
+        workspaceIdentity: "ws-skill",
+        packageRoot: skillRoot,
+        packageVersion: "0.1.0",
+        assigneeKind: "agentProfile",
+        assigneeLabel: "fake-resumable",
+        profileId: "fake-resumable",
+        adapterId: FAKE_ADAPTER_ID,
+        profile: { ...FAKE_RESUMABLE },
+      });
+      assert.notEqual(before.contextGeneration, after.contextGeneration);
+      assert.notEqual(before.skillSetDigest, after.skillSetDigest);
+
+      // Role prompt/roster mutation flips generation.
+      const roleBefore = await collectStableContextGeneration({
+        workspaceRoot: ws,
+        workspaceIdentity: "ws-role",
+        packageRoot: skillRoot,
+        packageVersion: "0.1.0",
+        assigneeKind: "role",
+        assigneeLabel: "executor",
+        profileId: "fake-resumable",
+        adapterId: FAKE_ADAPTER_ID,
+        roleFs: new NodeFs(path.join(ws, ".tent")),
+        profile: { ...FAKE_RESUMABLE },
+      });
+      await fs.writeFile(
+        path.join(ws, ".tent", "roles.json"),
+        JSON.stringify(
+          {
+            roles: [
+              {
+                name: "orchestrator",
+                prompt: "dispatch work",
+                a2aPolicy: "allow",
+                allowedProfiles: ["fake-resumable", "fake-other"],
+                roster: ["worker-a"],
+              },
+              {
+                name: "executor",
+                prompt: "do work MUTATED PROMPT",
+                a2aPolicy: "allow",
+                allowedProfiles: ["fake-resumable"],
+                roster: ["worker-b"],
+              },
+            ],
+          },
+          null,
+          2
+        ) + "\n"
+      );
+      const roleAfter = await collectStableContextGeneration({
+        workspaceRoot: ws,
+        workspaceIdentity: "ws-role",
+        packageRoot: skillRoot,
+        packageVersion: "0.1.0",
+        assigneeKind: "role",
+        assigneeLabel: "executor",
+        profileId: "fake-resumable",
+        adapterId: FAKE_ADAPTER_ID,
+        roleFs: new NodeFs(path.join(ws, ".tent")),
+        profile: { ...FAKE_RESUMABLE },
+      });
+      assert.notEqual(roleBefore.contextGeneration, roleAfter.contextGeneration);
+    } finally {
+      await fs.rm(ws, { recursive: true, force: true });
+    }
+  } finally {
+    await fs.rm(skillRoot, { recursive: true, force: true });
+  }
+});
+
+test("bootstrapPrompt custom append on fresh and resumed same-Task start", async () => {
+  const ws = await makeWorkspace("boot-append");
+  try {
+    await initGit(ws);
+    await withService(async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const envFs = new NodeFs(path.join(ws, ".tent"));
+
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        prompt: "bootstrap append task",
+        assigneeKind: "agentProfile",
+        profileId: "fake-resumable",
+        parentActor: { kind: "role", id: "orchestrator" },
+        reviewer: { kind: "role", id: "orchestrator" },
+        startSession: true,
+        callerKind: "user",
+        bootstrapPrompt: "FRESH_CUSTOM_APPEND",
+      });
+      assert.ok(!d.error, JSON.stringify(d.error));
+      const t = await loadTaskEnvelope(envFs, (d.result as { taskPath: string }).taskPath);
+      const sid = t.sessionId!;
+      assert.ok(sid);
+      // Official path still bound a real generation (caller text did not replace bootstrap).
+      assert.ok(isContextGenerationId(t.contextGeneration!));
+      assert.equal(
+        (await svc.runtime.registry.read(sid))?.contextGeneration,
+        t.contextGeneration
+      );
+
+      await svc.runtime.stopSession(sid, "user");
+      const restart = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath: t.path,
+        profileId: "fake-resumable",
+        callerKind: "user",
+        bootstrapPrompt: "RESUME_CUSTOM_APPEND",
+      });
+      assert.ok(!restart.error, JSON.stringify(restart.error));
+      const t2 = await loadTaskEnvelope(envFs, t.path);
+      // Same live facts + settled same Task → reuse Session; generation unchanged.
+      assert.equal(t2.sessionId, sid);
+      assert.equal(t2.contextGeneration, t.contextGeneration);
     });
   } finally {
     await fs.rm(ws, { recursive: true, force: true });
