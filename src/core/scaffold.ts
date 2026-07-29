@@ -12,6 +12,8 @@ import {
   INDEX_PATH,
   TEMP_DIR,
   TENT_SYSTEM_DIR,
+  isOperationalPath,
+  isSystemNoteName,
   systemRootFromWorkspace,
 } from "./paths.js";
 
@@ -238,29 +240,50 @@ async function hasOrphanTentEvidence(
   for (const reg of RECOGNIZED_REGISTRY_PATHS) {
     if (await workspaceFs.exists(nested(reg))) return true;
   }
-  return hasDurableConceptNode(workspaceFs, TENT_SYSTEM_DIR);
+  // Scan concept content only — never operational/system subtrees under system root.
+  return hasDurableConceptNode(workspaceFs, "");
 }
 
-/** Depth-first scan under `.tent/` for any `.md` with frontmatter `id: cx-…`. */
-async function hasDurableConceptNode(workspaceFs: FsAdapter, dir: string): Promise<boolean> {
+/**
+ * Depth-first scan for Markdown Nodes with durable `cx-` ids.
+ * Paths are relative to system root (`.tent/` contents). Skips operational
+ * top-level subtrees (`temp/`, `attachments/`, nested `.tent/`) so Task history
+ * and attachment dumps cannot masquerade as Node evidence; arbitrary real
+ * content folders remain eligible.
+ */
+async function hasDurableConceptNode(
+  workspaceFs: FsAdapter,
+  systemRelDir: string
+): Promise<boolean> {
+  if (systemRelDir && isOperationalPath(systemRelDir)) return false;
+
+  const workspaceDir = systemRelDir
+    ? `${TENT_SYSTEM_DIR}/${systemRelDir}`.replace(/\\/g, "/")
+    : TENT_SYSTEM_DIR;
+
   let entries: { name: string; isDir: boolean }[];
   try {
-    entries = await workspaceFs.listDir(dir);
+    entries = await workspaceFs.listDir(workspaceDir);
   } catch {
     return false;
   }
   for (const entry of entries) {
-    const child = `${dir}/${entry.name}`.replace(/\\/g, "/");
+    const childSystemRel = systemRelDir
+      ? `${systemRelDir}/${entry.name}`.replace(/\\/g, "/")
+      : entry.name;
     if (entry.isDir) {
-      if (await hasDurableConceptNode(workspaceFs, child)) return true;
+      // Exclude temp/, attachments/, nested .tent/ at system-root top (and their descendants).
+      if (isOperationalPath(childSystemRel)) continue;
+      if (await hasDurableConceptNode(workspaceFs, childSystemRel)) return true;
       continue;
     }
     if (!entry.name.endsWith(".md")) continue;
-    // index.md is handled by preconditions; skip other system note names only as non-nodes.
-    if (entry.name === INDEX_PATH) continue;
+    // index.md / log.md / other system note basenames are not durable Nodes.
+    if (isSystemNoteName(entry.name)) continue;
+    const workspaceFile = `${workspaceDir}/${entry.name}`.replace(/\\/g, "/");
     let raw: string;
     try {
-      raw = await workspaceFs.readFile(child);
+      raw = await workspaceFs.readFile(workspaceFile);
     } catch {
       continue;
     }

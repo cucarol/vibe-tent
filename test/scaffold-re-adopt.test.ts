@@ -348,6 +348,78 @@ test("reAdoptOrphanTent: fail-closed empty/unrecognized .tent with zero writes",
   assert.equal(await fsa.exists(".gitignore"), false);
 });
 
+test("reAdoptOrphanTent: cx- ids only under temp/attachments/nested .tent are not evidence (zero writes)", async () => {
+  const { workspace, fsa } = await mkWorkspace();
+  const system = path.join(workspace, TENT_SYSTEM_DIR);
+  await fs.mkdir(system, { recursive: true });
+
+  const spoof =
+    "---\nid: cx-tempfake\ntype: task\n---\n# Historical task envelope — not a Node\n";
+
+  // Operational history that must never count as durable Node evidence.
+  const tempTask = path.join(system, TEMP_DIR, "history", "task-old.md");
+  await fs.mkdir(path.dirname(tempTask), { recursive: true });
+  await fs.writeFile(tempTask, spoof, "utf8");
+
+  const attachNote = path.join(system, ATTACHMENTS_DIR, "cx-attach.md");
+  await fs.mkdir(path.dirname(attachNote), { recursive: true });
+  await fs.writeFile(attachNote, spoof, "utf8");
+
+  const nestedTent = path.join(system, TENT_SYSTEM_DIR, "topic", "topic.md");
+  await fs.mkdir(path.dirname(nestedTent), { recursive: true });
+  await fs.writeFile(nestedTent, spoof, "utf8");
+
+  // Non-evidence root junk so the tree is non-empty.
+  await fs.writeFile(path.join(system, "notes.txt"), "noise\n", "utf8");
+
+  const before = await snapshotExistingFiles(workspace, [
+    `.tent/${TEMP_DIR}/history/task-old.md`,
+    `.tent/${ATTACHMENTS_DIR}/cx-attach.md`,
+    `.tent/${TENT_SYSTEM_DIR}/topic/topic.md`,
+    ".tent/notes.txt",
+  ]);
+
+  const probe = new WriteProbeFs(fsa);
+  probe.arm();
+  await assert.rejects(
+    () => reAdoptOrphanTent(probe),
+    /no recognized Tent evidence/
+  );
+  assert.equal(probe.mutationCount, 0, "operational-only cx- must not re-adopt");
+  await assertBytesUnchanged(workspace, before);
+  assert.equal(await fsa.exists(`${TENT_SYSTEM_DIR}/${INDEX_PATH}`), false);
+});
+
+test("reAdoptOrphanTent: real content folders still count as Node evidence", async () => {
+  const { workspace, fsa } = await mkWorkspace();
+  const system = path.join(workspace, TENT_SYSTEM_DIR);
+  // Arbitrary nested real content (not operational top-level).
+  const deep = path.join(system, "area", "sub", "leaf", "leaf.md");
+  await fs.mkdir(path.dirname(deep), { recursive: true });
+  const body = "---\nid: cx-deep01\ntype: prompt\n---\n# Deep real node\n";
+  await fs.writeFile(deep, body, "utf8");
+  // Also plant operational spoof that must be ignored when real evidence exists.
+  const spoofPath = path.join(system, TEMP_DIR, "spoof.md");
+  await fs.mkdir(path.dirname(spoofPath), { recursive: true });
+  await fs.writeFile(
+    spoofPath,
+    "---\nid: cx-spoof1\ntype: task\n---\nspoof\n",
+    "utf8"
+  );
+
+  const result = await reAdoptOrphanTent(fsa);
+  assert.equal(result.createdIndex, true);
+  assert.equal(
+    await fs.readFile(deep, "utf8"),
+    body,
+    "deep real Node bytes preserved"
+  );
+  assert.equal(
+    await fs.readFile(spoofPath, "utf8"),
+    "---\nid: cx-spoof1\ntype: task\n---\nspoof\n"
+  );
+});
+
 test("reAdoptOrphanTent: fail-closed when already a valid Tent (zero writes)", async () => {
   const { workspace, fsa } = await mkWorkspace();
   await scaffoldInWorkspace(fsa, {
