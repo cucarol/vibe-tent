@@ -4497,6 +4497,20 @@ async function deliverManagedTaskInput(
             },
             "service"
           );
+          // prompt_complete is projected asynchronously. It may already have
+          // preserved a report draft and failed its pre-seal gate while this row
+          // was still processing. Retry from that durable draft after the input
+          // is terminal; never prompt the provider a second time.
+          try {
+            await requestManagedAutoDeliverRetryFromDraft(ctx, {
+              workspaceId: forInject.workspaceId,
+              taskPath: forInject.taskPath,
+              sessionId,
+            });
+          } catch {
+            // TaskInput delivery is already authoritative. Auto-delivery keeps
+            // its own durable draft + diagnostics and remains independently retryable.
+          }
         } catch (err) {
           // Provider already accepted the inject — never markFailed (that would
           // re-open ordinary retry / listPending and risk a second inject).
@@ -9428,6 +9442,12 @@ function emitRetentionPurged(
  */
 const managedAutoDeliverInFlight = new Set<string>();
 const managedAutoDeliverDone = new Set<string>();
+/**
+ * A TaskInput may settle while prompt_complete auto-delivery is still in flight.
+ * Remember one durable-draft retry so the pre-seal TaskInput gate cannot swallow
+ * an otherwise completed managed turn.
+ */
+const managedAutoDeliverRetryRequested = new Set<string>();
 
 /**
  * Session ids currently inside reject-resume native resumeSession.
@@ -9546,6 +9566,27 @@ export function resetRuntimeProjectionForTests(): void {
 
 function managedDeliverKey(sessionId: string, taskPath: string): string {
   return `${sessionId}::${taskPath}`;
+}
+
+/**
+ * Retry a preserved managed report after its blocking TaskInput is durable.
+ * If prompt_complete is still projecting, its finally block drains exactly one
+ * retry after releasing the in-flight key. No timers or provider re-prompting.
+ */
+async function requestManagedAutoDeliverRetryFromDraft(
+  ctx: HandlerContext,
+  input: { workspaceId: string; taskPath: string; sessionId: string }
+): Promise<void> {
+  const key = managedDeliverKey(input.sessionId, input.taskPath);
+  if (managedAutoDeliverDone.has(key)) return;
+  if (managedAutoDeliverInFlight.has(key)) {
+    managedAutoDeliverRetryRequested.add(key);
+    return;
+  }
+  await tryManagedAutoDeliver(ctx, {
+    ...input,
+    assistantText: "",
+  });
 }
 
 /** True while seal-before-deliver holds the in-flight lock for this session+task. */
@@ -10514,6 +10555,17 @@ async function tryManagedAutoDeliver(
     }
   } finally {
     managedAutoDeliverInFlight.delete(key);
+    const retryRequested = managedAutoDeliverRetryRequested.delete(key);
+    if (retryRequested && !managedAutoDeliverDone.has(key)) {
+      // Drain only after the first attempt releases its key. Awaiting keeps the
+      // retry within Service lifecycle accounting without recursive overlap.
+      await tryManagedAutoDeliver(ctx, {
+        workspaceId: input.workspaceId,
+        taskPath: input.taskPath,
+        sessionId,
+        assistantText: "",
+      });
+    }
   }
 }
 
@@ -10840,6 +10892,7 @@ export function setAfterTargetHeadSnapshotForTests(
 export function resetManagedAutoDeliverDedupForTests(): void {
   managedAutoDeliverInFlight.clear();
   managedAutoDeliverDone.clear();
+  managedAutoDeliverRetryRequested.clear();
   rejectResumeNativeInFlight.clear();
   managedSessionInFlight.clear();
   rejectResumePostStartFailureForTests = null;
@@ -10869,6 +10922,7 @@ function clearManagedAutoDeliverDedup(sessionId: string, taskPath: string): void
   const key = managedDeliverKey(sessionId, taskPath);
   managedAutoDeliverDone.delete(key);
   managedAutoDeliverInFlight.delete(key);
+  managedAutoDeliverRetryRequested.delete(key);
 }
 
 /**

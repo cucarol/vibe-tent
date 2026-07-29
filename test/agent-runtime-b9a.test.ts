@@ -874,6 +874,7 @@ test("native resume uses immutable profile snapshot but resolves rotated credent
     model?: string;
     baseUrl?: string;
     secret?: string;
+    serviceDataDir?: string;
   }> = [];
   let secret = "secret-v1";
   const adapter: ProviderAdapter = {
@@ -907,6 +908,7 @@ test("native resume uses immutable profile snapshot but resolves rotated credent
         model: acp?.model,
         baseUrl: acp?.baseUrl,
         secret: plan.env?.SNAPSHOT_KEY,
+        serviceDataDir: plan.env?.TENT_SERVICE_DATA_DIR,
       });
       emit({ type: "session.live", sessionId: plan.sessionId, pid: 7002 });
       return {
@@ -966,6 +968,7 @@ test("native resume uses immutable profile snapshot but resolves rotated credent
     model: "old-model",
     baseUrl: "https://old.invalid/v1",
     secret: "secret-v2",
+    serviceDataDir: dataDir,
   });
   await runtime.stopSession(sessionId, "user");
 

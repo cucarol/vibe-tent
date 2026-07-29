@@ -33,7 +33,12 @@ type ProviderName = "grok" | "codex" | "claude" | "opencode" | "copilot";
 type ProviderCase = {
   name: ProviderName;
   profile: AgentProfileConfig;
-  nativeResume: (sessionId: string, prompt: string, cwd: string) => Promise<string>;
+  nativeResume: (
+    sessionId: string,
+    prompt: string,
+    cwd: string,
+    dataDir: string
+  ) => Promise<string>;
 };
 
 const home = os.homedir();
@@ -105,8 +110,10 @@ const providers: ProviderCase[] = [
         promptTimeoutMs: 300_000,
       },
     },
-    nativeResume: (sessionId, prompt, cwd) =>
-      runNative(nativePaths.grok, ["--resume", sessionId, "--single", prompt], cwd),
+    nativeResume: (sessionId, prompt, cwd, dataDir) =>
+      runNative(nativePaths.grok, ["--resume", sessionId, "--single", prompt], cwd, {
+        TENT_SERVICE_DATA_DIR: dataDir,
+      }),
   },
   {
     name: "codex",
@@ -117,7 +124,7 @@ const providers: ProviderCase[] = [
         model: codexModel,
       },
     },
-    nativeResume: async (sessionId, prompt, cwd) => {
+    nativeResume: async (sessionId, prompt, cwd, dataDir) => {
       const outputFile = path.join(cwd, "codex-last-message.txt");
       await runNative(
         nativePaths.codex,
@@ -132,7 +139,8 @@ const providers: ProviderCase[] = [
           sessionId,
           prompt,
         ],
-        cwd
+        cwd,
+        { TENT_SERVICE_DATA_DIR: dataDir }
       );
       return fs.readFile(outputFile, "utf8");
     },
@@ -140,18 +148,21 @@ const providers: ProviderCase[] = [
   {
     name: "claude",
     profile: profile("foreground-claude", CLAUDE_ACP_ADAPTER_ID),
-    nativeResume: (sessionId, prompt, cwd) =>
+    nativeResume: (sessionId, prompt, cwd, dataDir) =>
       runNative(
         nativePaths.claude,
         ["--resume", sessionId, "--print", "--permission-mode", "dontAsk", prompt],
-        cwd
+        cwd,
+        { TENT_SERVICE_DATA_DIR: dataDir }
       ),
   },
   {
     name: "opencode",
     profile: profile("foreground-opencode", OPENCODE_ACP_ADAPTER_ID, nativePaths.opencode, ["acp"]),
-    nativeResume: (sessionId, prompt, cwd) =>
-      runNative(nativePaths.opencode, ["run", "--session", sessionId, prompt], cwd),
+    nativeResume: (sessionId, prompt, cwd, dataDir) =>
+      runNative(nativePaths.opencode, ["run", "--session", sessionId, prompt], cwd, {
+        TENT_SERVICE_DATA_DIR: dataDir,
+      }),
   },
   {
     name: "copilot",
@@ -161,7 +172,7 @@ const providers: ProviderCase[] = [
       nativePaths.copilot,
       ["--acp", "--stdio"]
     ),
-    nativeResume: (sessionId, prompt, cwd) =>
+    nativeResume: (sessionId, prompt, cwd, dataDir) =>
       runNative(
         nativePaths.copilot,
         [
@@ -173,7 +184,8 @@ const providers: ProviderCase[] = [
           "--disable-builtin-mcps",
           "--silent",
         ],
-        cwd
+        cwd,
+        { TENT_SERVICE_DATA_DIR: dataDir }
       ),
   },
 ];
@@ -251,7 +263,8 @@ for (const provider of providers) {
         const native = await provider.nativeResume(
           providerSessionId,
           `Recall ${nonceA}, remember ${nonceB}, and reply only CLI_READY ${nonceA} ${nonceB}. Do not use tools.`,
-          cwd
+          cwd,
+          dataDir
         );
         assert.match(native, new RegExp(nonceA));
         assert.match(native, new RegExp(nonceB));

@@ -114,6 +114,8 @@ function cloneProfileConfig(p: AgentProfileConfig): AgentProfileConfig {
 export class AgentRuntime implements AgentRuntimePort {
   readonly registry: SessionRegistry;
   readonly supervisor: ProcessSupervisor;
+  /** Owning Service data directory; inherited by managed children for native Tent hooks. */
+  private readonly dataDir: string;
   private readonly profiles = new Map<string, AgentProfileConfig>();
   private readonly adapters = new Map<string, ProviderAdapter>();
   private readonly managed = new Map<string, ManagedSession>();
@@ -133,6 +135,7 @@ export class AgentRuntime implements AgentRuntimePort {
   private closed = false;
 
   constructor(options: AgentRuntimeOptions) {
+    this.dataDir = options.dataDir;
     this.registry = new SessionRegistry(options.dataDir);
     this.resolveProfileEnv = options.resolveProfileEnv;
     this.resolveCredentialRef = options.resolveCredentialRef;
@@ -465,7 +468,14 @@ export class AgentRuntime implements AgentRuntimePort {
       // becomes an ordinary failed session without ever persisting the plaintext.
       const resolvedEnv = await this.resolveCredentialEnv(profile);
       // Vault injection wins for envKey; profile.env / req.env supply non-secret knobs.
-      const planEnv = { ...(profile.env ?? {}), ...(req.env ?? {}), ...resolvedEnv };
+      const planEnv = {
+        ...(profile.env ?? {}),
+        ...(req.env ?? {}),
+        ...resolvedEnv,
+        // Reserved routing authority: installed native Tent hooks spawned by an
+        // isolated Service must attach back to that Service, never %APPDATA%\Tent.
+        TENT_SERVICE_DATA_DIR: this.dataDir,
+      };
       const plan = {
         sessionId: req.sessionId,
         profileId: profile.id,
@@ -726,7 +736,13 @@ export class AgentRuntime implements AgentRuntimePort {
 
     try {
       const resolvedEnv = await this.resolveCredentialEnv(profile);
-      const planEnv = { ...(profile.env ?? {}), ...(req.env ?? {}), ...resolvedEnv };
+      const planEnv = {
+        ...(profile.env ?? {}),
+        ...(req.env ?? {}),
+        ...resolvedEnv,
+        // Preserve the owning Service boundary across provider-native resume.
+        TENT_SERVICE_DATA_DIR: this.dataDir,
+      };
       const plan = {
         sessionId: req.sessionId,
         profileId: profile.id,

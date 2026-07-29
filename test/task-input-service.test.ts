@@ -1221,14 +1221,58 @@ test("reject-resume: background completion projects processing → delivered", a
       return t.task.state === "delivered" ? t : null;
     }, 20_000, "first delivery for bg reject");
 
-    const rejected = (await client.taskReject(workspaceId, taskPath, "user", {
-      resume: true,
-      note: "BG_COMPLETE_NOTE",
-    })) as {
+    // Deterministically reproduce the real Codex ordering: the follow-up emits
+    // prompt_complete while review-feedback is still processing, then the
+    // TaskInput row becomes delivered. Production must retry the durable draft
+    // without another provider prompt.
+    const originalMarkDelivered = svc.ctx.taskInputs.markDelivered.bind(
+      svc.ctx.taskInputs
+    );
+    let releaseMarkDelivered!: () => void;
+    const markDeliveredHold = new Promise<void>((resolve) => {
+      releaseMarkDelivered = resolve;
+    });
+    let enteredMarkDelivered!: () => void;
+    const markDeliveredEntered = new Promise<void>((resolve) => {
+      enteredMarkDelivered = resolve;
+    });
+    svc.ctx.taskInputs.markDelivered = async (...args) => {
+      enteredMarkDelivered();
+      await markDeliveredHold;
+      return originalMarkDelivered(...args);
+    };
+    const diagnostics: Array<Record<string, unknown>> = [];
+    const unsubscribe = svc.events.subscribe((ev) => {
+      if (ev.type === "session.state") {
+        diagnostics.push(ev.payload as Record<string, unknown>);
+      }
+    });
+
+    let rejected!: {
       accepted?: boolean;
       continued?: boolean;
       input: { id: string; status: string };
     };
+    try {
+      rejected = (await client.taskReject(workspaceId, taskPath, "user", {
+        resume: true,
+        note: "BG_COMPLETE_NOTE",
+      })) as typeof rejected;
+      await markDeliveredEntered;
+      await pollUntil(async () =>
+        diagnostics.some(
+          (ev) =>
+            ev.runtimeEvent === "session.prompt_complete.failed" &&
+            ev.errorCode === "PENDING_TASK_INPUT"
+        )
+          ? true
+          : null,
+      5_000, "prompt_complete blocked while review-feedback processing");
+    } finally {
+      releaseMarkDelivered();
+      svc.ctx.taskInputs.markDelivered = originalMarkDelivered;
+      unsubscribe();
+    }
     assert.equal(rejected.accepted, true);
     assert.equal(rejected.continued, false);
 
@@ -1263,6 +1307,15 @@ test("reject-resume: background completion projects processing → delivered", a
       };
       return t.task.state === "delivered" ? t : null;
     }, 20_000, "rework delivery after bg review-feedback");
+
+    const deliveries = (await client.deliveryList(workspaceId)) as {
+      deliveries: Array<{ summary: string; status: string }>;
+    };
+    const readyRework = deliveries.deliveries.filter(
+      (delivery) =>
+        delivery.status === "ready" && delivery.summary === "BG_REWORK_OK"
+    );
+    assert.equal(readyRework.length, 1, "durable draft retry publishes exactly once");
   });
 });
 

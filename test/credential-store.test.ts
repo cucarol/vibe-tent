@@ -410,10 +410,16 @@ test("AgentRuntime: resolveProfileEnv injects env; missing ref fails; no secret 
     sessionId,
     profileId: "prof-with-cred",
     cwd,
+    env: { TENT_SERVICE_DATA_DIR: "C:\\must-not-win" },
   });
   assert.equal(handle.state, "live");
   assert.ok(capturedEnv);
   assert.equal(capturedEnv!["CPA_GROK_API_KEY"], SECRET);
+  assert.equal(
+    capturedEnv!["TENT_SERVICE_DATA_DIR"],
+    dataDir,
+    "managed child hooks must route to the owning Service data-dir"
+  );
 
   const rec = await runtime.registry.read(sessionId);
   assert.ok(rec);
