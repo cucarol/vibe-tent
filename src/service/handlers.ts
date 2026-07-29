@@ -4071,27 +4071,10 @@ async function taskBackfillWorkspaceLaneBaseRpc(
         );
       }
 
-      // Ancestor of recorded Task branch tip (inclusive: tip itself is legal).
-      const branchTip = await readRoleBranchTip(real.workspace, real.branch);
-      const isAncestor = await isCommitAncestor(real.workspace, fullBase, branchTip);
-      if (!isAncestor) {
-        throw new RpcError(
-          RPC_LIFECYCLE,
-          `task.backfillWorkspaceLaneBase baseCommit ${fullBase} is not an ancestor of ` +
-            `recorded Task branch ${real.branch} tip ${branchTip}`,
-          {
-            taskPath,
-            baseCommit: fullBase,
-            branch: real.branch,
-            branchTip,
-            code: "BASE_BACKFILL_NOT_ANCESTOR",
-          }
-        );
-      }
-
+      // Capture-once: when base already exists, same SHA is idempotent; any other
+      // resolvable SHA conflicts immediately (do not re-run ancestry as a substitute).
       const existingBase = current.baseCommit?.trim() || "";
       if (existingBase) {
-        // Idempotent same SHA: leave original audit untouched.
         let existingFull = existingBase;
         try {
           existingFull = await resolveCommitSha(real.workspace, existingBase);
@@ -4117,6 +4100,50 @@ async function taskBackfillWorkspaceLaneBaseRpc(
             recorded: existingFull || existingBase,
             supplied: fullBase,
             code: "BASE_BACKFILL_CONFLICT",
+          }
+        );
+      }
+
+      // Ancestor of recorded Task branch tip (inclusive: tip itself is legal).
+      const branchTip = await readRoleBranchTip(real.workspace, real.branch);
+      const isAncestor = await isCommitAncestor(real.workspace, fullBase, branchTip);
+      if (!isAncestor) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          `task.backfillWorkspaceLaneBase baseCommit ${fullBase} is not an ancestor of ` +
+            `recorded Task branch ${real.branch} tip ${branchTip}`,
+          {
+            taskPath,
+            baseCommit: fullBase,
+            branch: real.branch,
+            branchTip,
+            code: "BASE_BACKFILL_NOT_ANCESTOR",
+          }
+        );
+      }
+      // Also legal for the recorded target/Role integration lane: must be an ancestor
+      // of the resolved targetBranch tip (not only Task branch). A tip exclusive to the
+      // executor lane is not a valid workspaceLane.baseCommit for Delivery history.
+      const targetTip = await readRoleBranchTip(real.workspace, real.targetBranch);
+      const isTargetAncestor = await isCommitAncestor(
+        real.workspace,
+        fullBase,
+        targetTip
+      );
+      if (!isTargetAncestor) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          `task.backfillWorkspaceLaneBase baseCommit ${fullBase} is not an ancestor of ` +
+            `recorded targetBranch ${real.targetBranch} tip ${targetTip} ` +
+            `(Task-lane-only / foreign to target ancestry)`,
+          {
+            taskPath,
+            baseCommit: fullBase,
+            targetBranch: real.targetBranch,
+            targetTip,
+            branch: real.branch,
+            branchTip,
+            code: "BASE_BACKFILL_NOT_TARGET_ANCESTOR",
           }
         );
       }
@@ -4254,13 +4281,25 @@ async function prepareRoleClaimWrite(
   };
 
   // Existing base is immutable: never re-read tip. Only attach missing audit.
+  // Must resolve as a real commit in the lane repo — never persist raw unverified
+  // SHA under first-claim audit.
   const existingBase = task.baseCommit?.trim() || "";
   if (existingBase) {
-    let fullExisting = existingBase;
+    let fullExisting: string;
     try {
       fullExisting = await resolveCommitSha(real.workspace, existingBase);
-    } catch {
-      // Keep raw recorded value if Git cannot re-resolve (still do not invent tip).
+    } catch (err) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        err instanceof Error
+          ? `task.claim Role baseCommit unresolvable in lane repo: ${err.message}`
+          : "task.claim Role baseCommit unresolvable in lane repo",
+        {
+          taskPath: task.path,
+          baseCommit: existingBase,
+          code: "BASE_CAPTURE_UNRESOLVED",
+        }
+      );
     }
     patch.baseCommit = fullExisting;
     if (!task.baseCommitCapture) {

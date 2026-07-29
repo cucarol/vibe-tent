@@ -174,6 +174,36 @@ async function stripBaseCommitForLegacyFixture(
   assert.equal(reloaded.baseCommitCapture, undefined);
 }
 
+/**
+ * Queued external Role Task with lane + base absent (production-path fixture).
+ * Dispatch may have written them; strip before claim so claim must bind/capture.
+ */
+async function stripLaneAndBaseForQueuedClaimFixture(
+  ws: string,
+  taskPath: string
+): Promise<void> {
+  const fsa = tentFs(ws);
+  const task = await loadTaskEnvelope(fsa, taskPath);
+  assert.equal(task.state, "queued", "fixture requires queued Task");
+  await patchTaskEnvelope(fsa, taskPath, {
+    workspace: null,
+    worktree: null,
+    branch: null,
+    targetBranch: null,
+    baseCommit: null,
+    baseCommitCapture: null,
+    roleBranchBase: null,
+  });
+  const reloaded = await loadTaskEnvelope(fsa, taskPath);
+  assert.equal(reloaded.state, "queued");
+  assert.equal(reloaded.workspace, undefined);
+  assert.equal(reloaded.worktree, undefined);
+  assert.equal(reloaded.branch, undefined);
+  assert.equal(reloaded.targetBranch, undefined);
+  assert.equal(reloaded.baseCommit, undefined);
+  assert.equal(reloaded.baseCommitCapture, undefined);
+}
+
 test("fresh Role claim captures immutable baseCommit then commits[] deliver succeeds", async () => {
   const ws = await makeWorkspace("fresh-claim");
   const initSha = await initGitOnWorkspace(ws);
@@ -193,15 +223,21 @@ test("fresh Role claim captures immutable baseCommit then commits[] deliver succ
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
-    const dispatchBase = (d.result as { workspaceLane?: { baseCommit?: string } })
-      .workspaceLane?.baseCommit;
-    assert.ok(dispatchBase, "dispatch records base on Git Role lane");
+    // Prove claim capture on genuinely missing external Role base (not dispatch-supplied).
+    await stripLaneAndBaseForQueuedClaimFixture(ws, taskPath);
+    const preClaim = await getTask(svc, workspaceId, taskPath);
+    assert.equal(preClaim.state, "queued");
+    assert.equal(preClaim.workspaceLane?.baseCommit, undefined);
 
     const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
     assert.ok(!claimed.error, JSON.stringify(claimed.error));
     const claimedTask = (claimed.result as { task: TaskLaneProjection }).task;
     const baseAtClaim = claimedTask.workspaceLane?.baseCommit?.trim() || "";
-    assert.equal(baseAtClaim, dispatchBase);
+    assert.ok(baseAtClaim, "claim must capture exact base when missing");
+    assert.equal(baseAtClaim, initSha, "capture-once tip of Role lane at claim");
+    assert.equal(claimedTask.workspaceLane?.branch, "tent-role/executor");
+    assert.equal(claimedTask.workspaceLane?.targetBranch, "main");
+    assert.ok(claimedTask.workspaceLane?.worktree, "claim binds real Role worktree");
     assert.ok(claimedTask.baseCommitCapture, "first-claim audit required");
     assert.equal(claimedTask.baseCommitCapture!.source, "first-claim");
     assert.equal(claimedTask.baseCommitCapture!.baseCommit, baseAtClaim);
@@ -532,6 +568,115 @@ test("non-Git Role claim invents no baseCommit", async () => {
     assert.equal(task.workspaceLane?.baseCommit, undefined);
     assert.equal(task.baseCommitCapture, undefined);
     assert.equal(task.workspaceLane?.branch, undefined);
+  });
+});
+
+test("claim fails loud when recorded baseCommit is unresolvable (stays queued)", async () => {
+  const ws = await makeWorkspace("unresolved-base");
+  await initGitOnWorkspace(ws);
+  await ensureRoleWorkspace(ws, "executor");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "unresolved-item");
+    const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "unresolvable base",
+      deliveryPolicy: "review",
+    });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+
+    const fsa = tentFs(ws);
+    await patchTaskEnvelope(fsa, taskPath, {
+      baseCommit: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      baseCommitCapture: null,
+    });
+    const pre = await loadTaskEnvelope(fsa, taskPath);
+    assert.equal(pre.state, "queued");
+    assert.equal(pre.baseCommit, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+
+    const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(claimed.error, "unresolvable base must fail claim");
+    assert.equal(claimed.error!.code, RPC_LIFECYCLE);
+    assert.equal(
+      (claimed.error!.data as { code?: string } | undefined)?.code,
+      "BASE_CAPTURE_UNRESOLVED"
+    );
+
+    const task = await getTask(svc, workspaceId, taskPath);
+    assert.equal(task.state, "queued");
+    const env = await loadTaskEnvelope(fsa, taskPath);
+    assert.equal(env.state, "queued");
+    assert.equal(env.status, "pending");
+    // Must not write first-claim audit over an unverified raw SHA.
+    assert.equal(env.baseCommitCapture, undefined);
+  });
+});
+
+test("backfill rejects Task-lane tip that is foreign to target ancestry", async () => {
+  const ws = await makeWorkspace("target-ancestor");
+  const initSha = await initGitOnWorkspace(ws);
+  const roleLane = await ensureRoleWorkspace(ws, "executor");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "tgt-anc-item");
+    const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "target ancestry backfill",
+      deliveryPolicy: "review",
+    });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    await stripBaseCommitForLegacyFixture(ws, taskPath);
+
+    // Commit only on Role/Task branch — tip is ancestor of Task branch but not of main.
+    const laneOnly = await taskCommitOnLane(
+      roleLane.worktree,
+      "lane-only.txt",
+      "lane only\n",
+      "role-lane only commit"
+    );
+    const mainTip = (await git(ws, "rev-parse", "main")).trim();
+    assert.equal(mainTip, initSha);
+    assert.notEqual(laneOnly, mainTip);
+
+    // Sanity: laneOnly is ancestor of role tip (itself) but not of main.
+    const roleTip = (await git(roleLane.worktree, "rev-parse", "HEAD")).trim();
+    assert.equal(roleTip, laneOnly);
+
+    const rejected = await rpc(svc, "task.backfillWorkspaceLaneBase", {
+      workspaceId,
+      taskPath,
+      actor: { kind: "user", id: "user" },
+      baseCommit: laneOnly,
+    });
+    assert.ok(rejected.error, "Task-lane-only tip must fail target ancestry");
+    assert.equal(rejected.error!.code, RPC_LIFECYCLE);
+    assert.equal(
+      (rejected.error!.data as { code?: string } | undefined)?.code,
+      "BASE_BACKFILL_NOT_TARGET_ANCESTOR"
+    );
+    const task = await getTask(svc, workspaceId, taskPath);
+    assert.equal(task.workspaceLane?.baseCommit, undefined);
+
+    // Legal base (init on both lanes) still succeeds.
+    const ok = await rpc(svc, "task.backfillWorkspaceLaneBase", {
+      workspaceId,
+      taskPath,
+      actor: { kind: "user", id: "user" },
+      baseCommit: initSha,
+    });
+    assert.ok(!ok.error, JSON.stringify(ok.error));
+    assert.equal((ok.result as { baseCommit: string }).baseCommit, initSha);
   });
 });
 
