@@ -54,9 +54,9 @@ export async function renderTentStatus(
     .filter((task) => !role || task.role === role);
   lines.push("");
   if (pendingTasks.length === 0) {
-    lines.push("Pending tasks (task-ack): none");
+    lines.push("Pending tasks: none");
   } else {
-    lines.push("Pending tasks (task-ack):");
+    lines.push("Pending tasks:");
     for (const task of pendingTasks) {
       const nodeIds =
         task.contextCard != null ? taskReferencedNodeIds(task) : [];

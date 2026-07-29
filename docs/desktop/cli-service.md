@@ -61,16 +61,14 @@ Common flags:
 
 Workspace must be an **in-workspace Tent** (`<workspace>/.tent/index.md`). CLI mounts via `workspace.mount` (idempotent if already mounted).
 
-## Legacy CLI (not service RPC)
+## CLI boundary
 
-Legacy commands that **direct-write** core are **blocked on in-workspace** system roots (`<workspace>/.tent`): they **fail-loud** and tell the agent to use `tent task *` / Desktop Service. There is **no** env escape hatch, dual-write, or silent compat path.
-
-| Class | Commands | In-workspace `.tent` | External / flat system root |
-| --- | --- | --- | --- |
-| Read-only | `tree`, `status`, `roles`, `find`, `tags` | allowed | allowed |
-| Init / derived / machine | `new`, `migrate`/`import`, `role-init`, `skill-install` | allowed | allowed |
-| Service-routed | `task *`, `propose`, `role-checkpoint set\|clear` | attach → mount → RPC (`task.*` / `proposal.submit` / `role.checkpoint.*`); `role-checkpoint show` may read files | `propose` still direct-core (migration window); prefer Service when mounted |
-| Mutation (direct-core) | `dispatch`, `task-ack`, `task-cancel`, `new-box`, `tag`, `untag`, `tag-new`, `tag-rm`, `fork`, `clean-temp`, `force-release`, `okf-sync` | **fail-loud** | allowed (migration window) |
+The supported layout is `<workspace>/.tent`. `tent new .` adopts an existing
+project without copying project files. Node, Task, Proposal, Role Checkpoint,
+Session, and Agent mutations route through Local Service; the CLI has no
+direct-core fallback, external-root mode, migration command, or compatibility
+aliases. Read-only `tree`, `status`, `roles`, `find`, and `tags` remain local
+queries.
 
 Machine-local bundled skills are also available through authenticated Local
 Service RPC: `skill.list` and `skill.install`. Installation sources are fixed to
@@ -80,18 +78,8 @@ uses the same backend via `tent skill-install --target all|shared-agents|claude`
 There is intentionally no remote marketplace, arbitrary path, uninstall, or
 third-party hook editor in this surface.
 
-Prefer `tent task *` and service-routed `tent propose` whenever Desktop or another client shares the same Local Service.
-
-## One-shot external tent import (B5)
-
-Copy a legacy independent tent root into a workspace `.tent/` (no service required):
-
-```bash
-tent migrate --source <legacy-tent-root> --workspace <workspace-root> [--dry-run] [--force] [--json]
-# alias: tent import …
-```
-
-Hard refuse if `<workspace>/.tent` already exists. Source is never deleted (`MIGRATED.md` only). Details: `docs/desktop/migration.md`.
+Use `tent node *`, `tent task *`, and service-routed `tent propose` whenever
+Desktop or another client shares the same Local Service.
 
 ## Agent minimal flow
 

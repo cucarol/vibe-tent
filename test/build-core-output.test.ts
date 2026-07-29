@@ -85,7 +85,7 @@ test("build:core succeeds with flat dist-core layout and no src sibling emission
   assert.equal(await exists(distCore), true, "dist-core must exist after build:core");
   assert.equal(await exists(path.join(distCore, "index.js")), true);
   assert.equal(await exists(path.join(distCore, "index.d.ts")), true);
-  assert.equal(await exists(path.join(distCore, "migration.js")), true);
+  assert.equal(await exists(path.join(distCore, "migration.js")), false);
   assert.equal(await exists(path.join(distCore, "status.js")), true);
   assert.equal(await exists(path.join(distCore, "renameOps.js")), true);
   assert.equal(await exists(path.join(distCore, "link-target.js")), true);
@@ -108,7 +108,7 @@ test("build:core succeeds with flat dist-core layout and no src sibling emission
   }
 
   // Core modules must not reach outside rootDir via relative imports in emit.
-  for (const name of ["migration.js", "status.js", "renameOps.js"]) {
+  for (const name of ["status.js", "renameOps.js"]) {
     const text = await fs.readFile(path.join(distCore, name), "utf8");
     assert.doesNotMatch(text, /from ["']\.\.\/fs\//, `${name} must not import ../fs/`);
     assert.doesNotMatch(text, /from ["']\.\.\/markdown\//, `${name} must not import ../markdown/`);

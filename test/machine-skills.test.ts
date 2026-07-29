@@ -66,7 +66,7 @@ test("listSkills: reports bundled names and per-target installed status", async 
   const home = await tempDir("tent-skill-list-");
   const listed = await listSkills({ packageRoot: repoRoot, home });
   const names = listed.skills.map((s) => s.name).sort();
-  assert.deepEqual(names, ["tent-role", "tent-task"]);
+  assert.deepEqual(names, ["tent-init", "tent-role", "tent-task"]);
 
   for (const skill of listed.skills) {
     assert.equal(skill.targets.length, SKILL_TARGET_IDS.length);
@@ -216,7 +216,7 @@ test("RPC skill.list / skill.install: offline dual-target + validation", async (
         targets: Array<{ target: string; path: string; installed: boolean }>;
       }>;
     };
-    assert.deepEqual(listed.skills.map((s) => s.name), ["tent-role", "tent-task"]);
+    assert.deepEqual(listed.skills.map((s) => s.name), ["tent-init", "tent-role", "tent-task"]);
     for (const s of listed.skills) {
       for (const t of s.targets) {
         assert.ok(t.path.startsWith(home), `path under injected home: ${t.path}`);

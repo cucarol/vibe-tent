@@ -336,20 +336,11 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 
 CLI: `tent task accept <taskPath> --actor <user\|role> [--outputs id,id]`.
 
-### 3.3 CLI compatibility aliases
+### 3.3 CLI surface
 
-| Legacy CLI | Canonical API |
-| --- | --- |
-| `tent dispatch` | `task.dispatch` |
-| `tent task-ack` | `task.claim` |
-| `tent task-cancel` | `task.cancel` |
-| *(removed)* `tent report` | `task.deliver` only — no dual track |
-| `tent force-release` | `task.interrupt` |
-| `tent fork` | `docs.fork` |
-| `tent propose` | `proposal.submit` |
-| `tent status` | aggregate query |
-
-Formal delivery is Delivery-only. SPEC and skills use canonical `task.*` names.
+The CLI exposes canonical `tent task *` commands only. There are no legacy
+aliases or direct-core Task mutations. Formal delivery is Delivery-only through
+`tent task deliver`.
 
 ### 3.4 Decoupling from runtime
 
@@ -696,7 +687,7 @@ One-shot cutover; no long-lived dual aliases.
 | `box.fm.owner` / `status` | **stripped on migrate**; collab chips from `node.collaboration` (raw Task + Session/Delivery pointers) |
 | envelope `pending` / `taken` | task `queued` / `running` |
 | `temp/.../reports/<boxId>.md` + `DeliveryReport` | **removed** — only `delivery` (`dl-`) on the task |
-| `force-release` | interrupt/cancel active tasks for the box (no FM write) |
+| `task.interrupt` | interrupt an active Task and stop its managed Session |
 | `complete` / `stamp` | **retired** (no Node dual-write); review path is `task.accept` |
 | honor-only A2A spawn | service **`A2APolicy`** `allow|ask|deny` gate |
 | “workspace pointer” product term | **WorkspaceLane** on task; tent lives in-workspace at `.tent/` |

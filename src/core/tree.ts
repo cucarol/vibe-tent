@@ -274,7 +274,7 @@ function invalidTypeReference(
   registry: TypeRegistry
 ): { rootId: string; reason: string } | undefined {
   if (!box.id) {
-    return { rootId: box.path, reason: "Missing id: likely a manually created orphan box; use tent new-box or repair." };
+    return { rootId: box.path, reason: "Missing id: likely a manually created orphan Node; use tent node create or repair." };
   }
   if (!typeExists(box.type, registry)) {
     return { rootId: box.id, reason: `Unknown type: ${box.type}.` };

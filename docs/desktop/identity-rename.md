@@ -8,7 +8,7 @@ Non-scope: moving `temp/<role>/`, Git branch/worktree renames, bulk historical t
 
 | Entity | Stable id | Mutable label | Path / operational key | Batch 1 action |
 | --- | --- | --- | --- | --- |
-| **Node / concept** | `cx-…` (legacy `bx-` only in migration window) | folder stem / optional `title` | OKF path (`Name/Name.md`) | Immutable id; **native rename via `docs.rename`** (atomic move + link rewrite + rollback) |
+| **Node / concept** | `cx-…` | folder stem / optional `title` | OKF path (`Name/Name.md`) | Immutable id; **native rename via `docs.rename`** (atomic move + link rewrite + rollback) |
 | **AgentProfile** | profile `id` (machine-local) | `displayName` / `displayNameKey` | n/a (not tent-tree) | Already id-based; no change |
 | **Role** | **`rl-…` (new)** | **`displayName` (new)** | `name` → `temp/<name>/`, `task.role`, worktree labels | **Implement**: fill id + displayName; project both; compat resolve |
 | **Type** | registry key string | same string (UI) | `types.json` key; box `type` field | **No id** this batch — keys are semantic R/W vocabulary; rename would rewrite every box type string (separate batch if product needs it) |

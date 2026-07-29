@@ -322,6 +322,21 @@ export async function runTaskCommand(
           return `✓ Cancelled via service RPC\ntaskPath: ${row.taskPath}\nstate: ${row.state ?? "interrupted"}\n`;
         });
       }
+      case "interrupt": {
+        const taskPath = positionals[0];
+        if (!taskPath || positionals.length > 1) {
+          return failUsage("Usage: tent task interrupt <taskPath> [--workspace <path>] [--json]");
+        }
+        const result = await client.taskInterrupt(workspaceId, taskPath);
+        return okPrint(result, json, (r) => {
+          const row = r as { taskPath: string; task?: { state?: string }; state?: string };
+          return (
+            `✓ Interrupted via service RPC\n` +
+            `taskPath: ${row.taskPath}\n` +
+            `state: ${row.task?.state ?? row.state ?? "interrupted"}\n`
+          );
+        });
+      }
       case "ask-user":
       case "askUser": {
         const taskPath = positionals[0];
@@ -909,6 +924,7 @@ Commands:
   tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--workspace <path>] [--json]
   tent task reject <taskPath> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]
+  tent task interrupt <taskPath> [--workspace <path>] [--json]
   tent task ask-user <taskPath> --question <text>|- [--choices id=label,…] [--workspace <path>] [--json]
   tent task user-ask list|get <askId>|reply <askId>|deny <askId> […] [--workspace <path>] [--json]
   tent task send-input <taskPath> [--text <text>|-] [--refs id,id] [--workspace <path>] [--json]
@@ -919,10 +935,8 @@ Service options:
   --attach-only           Fail if no healthy service (do not bootstrap)
   --service-entry <path>  Path to service.mjs when bootstrapping
 
-Legacy CLI direct core write is blocked on in-workspace <workspace>/.tent
-(fail-loud; use tent task * / Desktop Service). External tent roots keep
-dispatch / task-ack / complete / stamp … for the migration window only.
-Formal delivery is Delivery-only via tent task deliver (no tent report).
+Task mutations are Local Service RPC only. Formal delivery is Delivery-only
+via tent task deliver (no direct-core or report compatibility path).
 Derived role-init remains available because it regenerates bootstrap context only.
 `;
 }

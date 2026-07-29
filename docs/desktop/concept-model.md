@@ -438,7 +438,7 @@ Aligned with architecture one-shot migration; document-specific requirements:
 | Product term “workspace pointer” | Retired; WorkspaceLane is a **task** field, not a concept type |
 | Auto OKF project rewriting bodies | Explicit project; default non-destructive resolve |
 
-During migration window only: resolve layer may dual-read `bx-` and `cx-`. After cutover, new writes use `cx-` exclusively.
+New Node writes use `cx-` identifiers exclusively. Existing `bx-` identifiers are read as stable historical IDs, not generated for new Nodes.
 
 ---
 

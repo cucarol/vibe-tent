@@ -17,10 +17,6 @@ import { rpcCall } from "../src/service/http-server.js";
 import { createServiceClient } from "../src/service/client.js";
 import { CLIENT_METHODS, isClientMethod } from "../src/service/types.js";
 import { runProposalSubmit } from "../src/cli/proposal-rpc.js";
-import {
-  isLegacyMutationCommand,
-  listLegacyMutationCommands,
-} from "../src/cli/tent.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tsxImport = import.meta.resolve("tsx");
@@ -125,11 +121,6 @@ test("CLIENT_METHODS includes proposal.list/submit/resolve", () => {
   assert.ok(isClientMethod("proposal.resolve"));
   assert.ok(CLIENT_METHODS.includes("proposal.list"));
   assert.equal(isClientMethod("proposal.apply"), false);
-});
-
-test("propose is not a sealed legacy direct-write mutation", () => {
-  assert.equal(isLegacyMutationCommand("propose"), false);
-  assert.ok(!listLegacyMutationCommands().includes("propose"));
 });
 
 test("proposal RPC: submit → list pending → accept → lists + file terminal", async () => {

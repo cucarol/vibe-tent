@@ -1,11 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { parseFrontmatter } from "../src/core/frontmatter.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
@@ -19,15 +18,17 @@ const gitIdentity = {
 };
 
 interface RunResult {
+  code: number | null;
   stdout: string;
   stderr: string;
 }
 
-interface RunExitResult extends RunResult {
-  code: number | null;
-}
-
-function run(command: string, args: string[], cwd: string, envExtra: Record<string, string> = {}): Promise<RunResult> {
+function run(
+  command: string,
+  args: string[],
+  cwd: string,
+  envExtra: Record<string, string> = {}
+): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd,
@@ -39,736 +40,185 @@ function run(command: string, args: string[], cwd: string, envExtra: Record<stri
     child.stdout.on("data", (chunk) => (stdout += chunk));
     child.stderr.on("data", (chunk) => (stderr += chunk));
     child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(`${command} ${args.join(" ")} exited ${code}\n${stdout}\n${stderr}`));
-    });
-  });
-}
-
-function runWithExit(command: string, args: string[], cwd: string): Promise<RunExitResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd,
-      env: { ...process.env, ...gitIdentity },
-      windowsHide: true,
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => (stdout += chunk));
-    child.stderr.on("data", (chunk) => (stderr += chunk));
-    child.on("error", reject);
     child.on("close", (code) => resolve({ code, stdout, stderr }));
   });
 }
 
-/** 创建 in-workspace tent：返回 **workspace 根**（CLI cwd）；协作文件在 `<root>/.tent/`。 */
-async function makeSkeletonTent(withGit = true): Promise<string> {
-  const parent = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-open-source-")));
-  const target = path.join(parent, "example-tent");
-  await run(process.execPath, ["--import", tsxImport, cliSource, "new", target], parent);
-  if (withGit) {
-    await run("git", ["init", "-q", "-b", "main"], target);
-    await run("git", ["config", "user.name", gitIdentity.GIT_AUTHOR_NAME], target);
-    await run("git", ["config", "user.email", gitIdentity.GIT_AUTHOR_EMAIL], target);
-    await fs.writeFile(path.join(target, "README.md"), "# workspace\n", "utf8");
-    // 提交 workspace 基线，避免后续 Git lane 检查被 fixture 自身挡住。
-    await run("git", ["add", "README.md", ".gitignore"], target);
-    await run("git", ["commit", "-q", "-m", "init workspace"], target);
-  }
-  return target;
+async function runOk(
+  command: string,
+  args: string[],
+  cwd: string,
+  envExtra: Record<string, string> = {}
+): Promise<RunResult> {
+  const result = await run(command, args, cwd, envExtra);
+  assert.equal(
+    result.code,
+    0,
+    `${command} ${args.join(" ")} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
+  );
+  return result;
 }
-
-/**
- * External / flat collaboration system root（目录名不是 `.tent`）。
- * Legacy mutation CLI 仍允许；用于 migration-window 回归，不模拟 Desktop 共置路径。
- */
-async function makeExternalTent(): Promise<string> {
-  return makeFlatCollaborationTent();
-}
-
-/** workspace 内 system root 相对路径拼接。 */
-function systemPath(workspace: string, ...parts: string[]): string {
-  return path.join(workspace, ".tent", ...parts);
-}
-
-/** external tent system root 路径拼接（cwd 即 system root）。 */
-function externalPath(tent: string, ...parts: string[]): string {
-  return path.join(tent, ...parts);
-}
-
-/**
- * Every legacy mutation command sealed on in-workspace `.tent` (must stay exhaustive).
- * `propose` is service-routed on in-workspace and is not in this sealed set.
- */
-const LEGACY_MUTATION_COMMANDS = [
-  "dispatch",
-  "task-ack",
-  "task-cancel",
-  "new-box",
-  "tag",
-  "untag",
-  "tag-new",
-  "tag-rm",
-  "fork",
-  "clean-temp",
-  "force-release",
-  "okf-sync",
-] as const;
 
 function runCli(cwd: string, ...args: string[]): Promise<RunResult> {
   return run(process.execPath, ["--import", tsxImport, cliSource, ...args], cwd);
 }
 
-function runCliAsRole(cwd: string, role: string, ...args: string[]): Promise<RunResult> {
-  return run(process.execPath, ["--import", tsxImport, cliSource, ...args], cwd, { TENT_ROLE: role });
+async function runCliOk(cwd: string, ...args: string[]): Promise<RunResult> {
+  return runOk(process.execPath, ["--import", tsxImport, cliSource, ...args], cwd);
 }
 
-function runCliWithExit(cwd: string, ...args: string[]): Promise<RunExitResult> {
-  return runWithExit(process.execPath, ["--import", tsxImport, cliSource, ...args], cwd);
-}
+test("tent new adopts an existing project without touching project files", async () => {
+  const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-adopt-")));
+  const readme = path.join(workspace, "README.md");
+  const agents = path.join(workspace, "AGENTS.md");
+  await fs.writeFile(readme, "# Existing project\n", "utf8");
+  await fs.writeFile(agents, "# Existing rules\n", "utf8");
 
-function boxId(result: RunResult): string {
-  const id = result.stdout.match(/\(([bc]x-[^)]+)\)/)?.[1];
-  assert.ok(id, `new-box should print the new id: ${result.stdout}`);
-  assert.match(result.stdout, /^✓ Created box /);
-  return id;
-}
+  await runCliOk(workspace, "new", ".");
 
-function taskPath(result: RunResult): string {
-  const task = result.stdout.match(/Task: (temp\/[^\s]+)/)?.[1];
-  assert.ok(task, `dispatch should print task path: ${result.stdout}`);
-  return task;
-}
-
-async function readOrder(tentRoot: string, inWorkspace = false): Promise<Record<string, string[]>> {
-  const orderFile = inWorkspace ? systemPath(tentRoot, "order.json") : externalPath(tentRoot, "order.json");
-  return JSON.parse(await fs.readFile(orderFile, "utf8"));
-}
-
-test("in-workspace .tent: legacy mutation CLI fail-loud; read-only + init still work", async () => {
-  const tent = await makeSkeletonTent(false);
-  const systemRoot = systemPath(tent);
-
-  // Read-only still works on in-workspace.
-  const tree = await runCli(tent, "tree");
-  assert.equal(tree.stderr, "");
-  const status = await runCli(tent, "status");
-  assert.match(status.stdout, new RegExp(`Tent: ${escapeRegExp(path.resolve(systemRoot))}`));
-  assert.match(status.stdout, new RegExp(`Workspace: ${escapeRegExp(path.resolve(tent))}`));
-  const roles = await runCli(tent, "roles");
-  assert.match(roles.stdout, /"roles"/);
-  const tags = await runCli(tent, "tags");
-  assert.match(tags.stdout, /\(no tags\)|\w+/);
-  const find = await runCli(tent, "find", "no-such-tag-zzz");
-  assert.match(find.stdout, /\(no matches\)/);
-
-  // Exhaustive: every direct-core mutation command is blocked (no silent write, no env escape).
-  const blockedSamples: Record<(typeof LEGACY_MUTATION_COMMANDS)[number], string[]> = {
-    dispatch: ["cx-missing", "reviewer", "prompt"],
-    "task-ack": ["temp/reviewer/tasks/x.md"],
-    "task-cancel": ["temp/reviewer/tasks/x.md"],
-    "new-box": ["blocked-box", "goal"],
-    tag: ["cx-missing", "t"],
-    untag: ["cx-missing", "t"],
-    "tag-new": ["blocked-tag"],
-    "tag-rm": ["blocked-tag", "--yes"],
-    fork: ["cx-missing"],
-    "clean-temp": [],
-    "force-release": ["cx-missing"],
-    "okf-sync": [],
-  };
-  for (const cmd of LEGACY_MUTATION_COMMANDS) {
-    const result = await runCliWithExit(tent, cmd, ...blockedSamples[cmd]);
-    assert.equal(result.code, 1, `${cmd} should exit 1 on in-workspace .tent`);
-    assert.match(
-      result.stderr,
-      /refuses to direct-write an in-workspace Tent|tent task \*|Local Service|Desktop/,
-      `${cmd} should fail-loud with Service guidance:\n${result.stderr}`,
-    );
-    assert.doesNotMatch(result.stderr, /TENT_ALLOW|escape|FORCE_LEGACY/i);
-  }
-
-  // No structure mutation leaked through new-box.
-  assert.equal(await exists(systemPath(tent, "blocked-box")), false);
-  assert.equal(await exists(systemPath(tent, "tags.json")), true);
-
-  // Init / machine commands remain available.
-  const roleInit = await runCli(tent, "role-init", "reviewer");
-  assert.match(roleInit.stdout, /Read .*init\.md to complete role initialization\./);
-  assert.equal(await exists(systemPath(tent, "temp", "reviewer", "init.md")), true);
-
-  const parent = path.dirname(tent);
-  const another = path.join(parent, "another-ws");
-  await runCli(parent, "new", another);
-  assert.equal(await exists(path.join(another, ".tent", "index.md")), true);
-});
-
-test("external tent root: legacy CLI 全链路 tree → dispatch → task-ack → clean-temp", async () => {
-  // migration window: external system root (not named .tent) still accepts direct core writes
-  const tent = await makeExternalTent();
-
-  const goalId = boxId(await runCli(tent, "new-box", "挖掘目标", "goal"));
-  const checkId = boxId(await runCli(tent, "new-box", "检查项", "goal", goalId));
-  const artifactId = boxId(await runCli(tent, "new-box", "仓库指针", "output"));
-  const artifactPath = externalPath(tent, "仓库指针", "仓库指针.md");
-  await fs.writeFile(
-    artifactPath,
-    `---\nid: ${artifactId}\ntype: output\nref: a1b2c3d\n---\n\n# 仓库指针\n`,
-    "utf8",
-  );
-
-  const tree = await runCli(tent, "tree");
-  assert.match(tree.stdout, new RegExp(checkId));
-  assert.doesNotMatch(tree.stdout, /legacy-temp/);
-
-  const topId = boxId(await runCli(tent, "new-box", "新线索", "goal"));
-  let order = await readOrder(tent);
-  assert.ok(order.__root__.includes(topId), "new top-level box should be registered in root order");
-  assert.equal(new Set(order.__root__).size, order.__root__.length, "root order should not contain duplicate ids");
-  let newBoxRaw = await fs.readFile(externalPath(tent, "新线索", "新线索.md"), "utf8");
-  assert.equal(parseFrontmatter(newBoxRaw).data.id, topId);
-  assert.equal(parseFrontmatter(newBoxRaw).data.type, "goal");
-
-  const childId = boxId(await runCli(tent, "new-box", "子任务", "prompt", topId));
-  order = await readOrder(tent);
-  assert.deepEqual(order[topId], [childId], "new child box should be registered under its parent order");
-  newBoxRaw = await fs.readFile(externalPath(tent, "新线索", "子任务", "子任务.md"), "utf8");
-  assert.equal(parseFrontmatter(newBoxRaw).data.id, childId);
-  assert.equal(parseFrontmatter(newBoxRaw).data.type, "prompt");
-  const nestedTree = await runCli(tent, "tree");
-  assert.match(nestedTree.stdout, /新线索/);
-  assert.match(nestedTree.stdout, /子任务/);
-
-  await runCli(tent, "tag-new", "concept");
-  let tags = await runCli(tent, "tags");
-  assert.match(tags.stdout, /concept/);
-  await runCli(tent, "tag", topId, "backend-hardening");
-  await runCli(tent, "tag", artifactId, "backend-hardening");
-  newBoxRaw = await fs.readFile(externalPath(tent, "新线索", "新线索.md"), "utf8");
-  assert.deepEqual(parseFrontmatter(newBoxRaw).data.tags, ["backend-hardening"]);
-  let tagFind = await runCli(tent, "find", "backend-hardening");
-  assert.match(tagFind.stdout, new RegExp(topId));
-  assert.match(tagFind.stdout, /新线索/);
-  assert.match(tagFind.stdout, new RegExp(artifactId));
-  assert.match(tagFind.stdout, /ref=a1b2c3d/);
-  await runCli(tent, "untag", topId, "backend-hardening");
-  newBoxRaw = await fs.readFile(externalPath(tent, "新线索", "新线索.md"), "utf8");
-  assert.equal(parseFrontmatter(newBoxRaw).data.tags, undefined);
-  await runCli(tent, "tag-rm", "backend-hardening", "--yes");
-  tags = await runCli(tent, "tags");
-  assert.doesNotMatch(tags.stdout, /backend-hardening/);
-  tagFind = await runCli(tent, "find", "backend-hardening");
-  assert.match(tagFind.stdout, /\(no matches\)/);
-
-  const checkDispatch = await runCli(tent, "dispatch", checkId, "reviewer", "请重点检查发布说明。");
-  const manifest = await fs.readFile(externalPath(tent, "temp", "reviewer", "manifest.yml"), "utf8");
-  assert.match(manifest, /role: reviewer/);
-  const tasks = await fs.readdir(externalPath(tent, "temp", "reviewer", "tasks"));
-  assert.equal(tasks.length, 1);
-  const localPrompt = await fs.readFile(externalPath(tent, "temp", "reviewer", "tasks", tasks[0]), "utf8");
-  assert.match(localPrompt, /重点检查发布说明/);
-  const checkPath = externalPath(tent, "挖掘目标", "检查项", "检查项.md");
-  await runCli(tent, "task-ack", taskPath(checkDispatch));
-  let goalRaw = await fs.readFile(checkPath, "utf8");
-  // claim does not dual-write Node owner/status
-  assert.equal(parseFrontmatter(goalRaw).data.owner, undefined);
-  assert.equal(parseFrontmatter(goalRaw).data.status, undefined);
-  const ackedTask = parseFrontmatter(
-    await fs.readFile(externalPath(tent, taskPath(checkDispatch)), "utf8")
-  ).data;
-  assert.equal(ackedTask.status, "taken");
-
-  goalRaw += "\n集成测试已落地。\n";
-  await fs.writeFile(checkPath, goalRaw);
-
-  await runCli(tent, "clean-temp");
-  assert.equal(await exists(externalPath(tent, "temp")), true);
-  assert.deepEqual(await fs.readdir(externalPath(tent, "temp")), []);
-});
-
-test("external tent: dispatch task-ack lifecycle (no workspace lane)", async () => {
-  const tent = await makeExternalTent();
-  const peerId = boxId(await runCli(tent, "new-box", "peer", "prompt"));
-  const subId = boxId(await runCli(tent, "new-box", "sub", "prompt"));
-
-  const peerDispatch = await runCli(tent, "dispatch", peerId, "reviewer", "Peer task.");
-  const peerTask = taskPath(peerDispatch);
-  const peerData = parseFrontmatter(await fs.readFile(externalPath(tent, peerTask), "utf8")).data;
-  assert.equal(peerData.status, "pending");
-  const peerParent = peerData.parentActor as { kind?: string; id?: string } | undefined;
-  const peerReviewer = peerData.reviewer as { kind?: string; id?: string } | undefined;
-  assert.equal(peerParent?.kind, "user");
-  assert.equal(peerParent?.id, "user");
-  assert.equal(peerReviewer?.id, "user");
-  assert.equal(peerData.dispatchedBy, undefined);
-  assert.equal(peerData.handoff, undefined);
-  assert.match(peerDispatch.stdout, new RegExp(`systemRoot: ${escapeRegExp(path.resolve(tent))}`));
-  assert.match(
-    peerDispatch.stdout,
-    new RegExp(`1\\. Run \`tent task claim ${escapeRegExp(peerTask)}\` to take this task`),
-  );
-  assert.doesNotMatch(peerDispatch.stdout, /task-ack/);
-  const peerBoxPath = externalPath(tent, "peer", "peer.md");
-  let peerBox = parseFrontmatter(await fs.readFile(peerBoxPath, "utf8")).data;
-  assert.equal(peerBox.owner, undefined);
-  assert.equal(peerBox.status, undefined);
-
-  await runCli(tent, "task-ack", peerTask);
-  await runCli(tent, "task-ack", peerTask);
-  const ackedData = parseFrontmatter(await fs.readFile(externalPath(tent, peerTask), "utf8")).data;
-  assert.equal(ackedData.status, "taken");
-  peerBox = parseFrontmatter(await fs.readFile(peerBoxPath, "utf8")).data;
-  assert.equal(peerBox.owner, undefined);
-  assert.equal(peerBox.status, undefined);
-
-  // --as-sub requires workspace contract; external flat root has none.
-  await assert.rejects(
-    () => runCli(tent, "dispatch", subId, "executor", "Sub task.", "--as-sub", "--by", "planner"),
-    /Scaffold an in-workspace tent at <workspace>\/\.tent\//,
-  );
-});
-
-test("tent status:read-only on in-workspace; full status on external root", async () => {
-  // in-workspace: status is read-only (no legacy direct mutation path)
-  const ws = await makeSkeletonTent(false);
-  const systemRoot = systemPath(ws);
-  const emptyStatus = await runCli(ws, "status");
-  assert.match(emptyStatus.stdout, new RegExp(`Tent: ${escapeRegExp(path.resolve(systemRoot))}`));
-  assert.match(emptyStatus.stdout, new RegExp(`Workspace: ${escapeRegExp(path.resolve(ws))}`));
-  assert.match(emptyStatus.stdout, /Pending proposals: none/);
-  assert.match(emptyStatus.stdout, /Pending tasks \(task-ack\): none/);
-  assert.equal(emptyStatus.stderr, "");
-
-  // external: mutate + status still works for migration window
-  const tent = await makeExternalTent();
-  const proposalId = boxId(await runCli(tent, "new-box", "Choose release lane", "prompt"));
-  const proposalBody = path.join(path.dirname(tent), "proposal.md");
-  await fs.writeFile(proposalBody, "建议选择低风险发布路径\n", "utf8");
-  const proposed = await runCliAsRole(tent, "planner", "propose", proposalId, proposalBody);
-  assert.match(proposed.stdout, new RegExp(`temp/planner/proposals/${proposalId}\\.md`));
-  const claimId = boxId(await runCli(tent, "new-box", "Implement release notes", "prompt"));
-
-  const dispatched = await runCli(tent, "dispatch", claimId, "reviewer", "Draft release notes.");
-  const task = path.posix.basename(taskPath(dispatched));
-  const status = await runCli(tent, "status");
-
-  assert.match(status.stdout, new RegExp(`Tent: ${escapeRegExp(path.resolve(tent))}`));
-  assert.match(status.stdout, /Workspace: \(none\)/);
-  assert.match(status.stdout, /Pending proposals:/);
-  assert.match(
-    status.stdout,
-    new RegExp(`- ${proposalId}: Choose release lane \\(planner\\) - 建议选择低风险发布路径`),
-  );
-  assert.match(status.stdout, /Pending tasks \(task-ack\):/);
-  assert.match(status.stdout, new RegExp(`- reviewer/${escapeRegExp(task)} -> ${claimId}`));
-  assert.match(status.stdout, /Active tasks: none/);
-  assert.equal(status.stderr, "");
-
-  await runCli(tent, "task-ack", taskPath(dispatched));
-  const ackedStatus = await runCli(tent, "status");
-  assert.match(ackedStatus.stdout, /Pending tasks \(task-ack\): none/);
-  assert.match(ackedStatus.stdout, /Active tasks:/);
-  assert.match(ackedStatus.stdout, /reviewer/);
-  assert.match(ackedStatus.stdout, new RegExp(claimId));
-
-  await runCli(tent, "force-release", claimId);
-  const doneStatus = await runCli(tent, "status");
-  assert.match(doneStatus.stdout, /Pending tasks \(task-ack\): none/);
-  assert.match(doneStatus.stdout, /Active tasks: none/);
-
-  const outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-status-outside-")));
-  const failed = await runCliWithExit(outside, "status");
-  assert.equal(failed.code, 1);
-  assert.equal(failed.stdout, "");
-  assert.match(failed.stderr, /Not inside a Tent \(no \.tent\/index\.md marker found\)\./);
-});
-
-test("external tent dispatch --as-sub:missing dispatcher fails before side effects", async () => {
-  const tent = await makeExternalTent();
-  const subId = boxId(await runCli(tent, "new-box", "sub", "prompt"));
-  const previousTentRole = process.env.TENT_ROLE;
-  delete process.env.TENT_ROLE;
-  try {
-    await assert.rejects(
-      () => runCli(tent, "dispatch", subId, "reviewer", "Sub task.", "--as-sub"),
-      /--as-sub requires --by <dispatching-role> or TENT_ROLE/,
-    );
-  } finally {
-    if (previousTentRole === undefined) delete process.env.TENT_ROLE;
-    else process.env.TENT_ROLE = previousTentRole;
-  }
-});
-
-test("external tent dispatch --as-sub:missing workspace explains how to register the contract", async () => {
-  // 纯协作目录（system root 不叫 .tent，且无 workspace 字段）→ 无 workspace 契约
-  const tent = await makeFlatCollaborationTent();
-  const subId = boxId(await runCli(tent, "new-box", "sub", "prompt"));
-  const noteId = boxId(await runCli(tent, "new-box", "delivery", "prompt"));
-  assert.ok(noteId, "prompt without workspace field is not a workspace contract");
-
-  await assert.rejects(
-    () => runCli(tent, "dispatch", subId, "reviewer", "Sub task.", "--as-sub", "--by", "planner"),
-    /Scaffold an in-workspace tent at <workspace>\/\.tent\//,
-  );
-});
-
-test("external tent clean-temp:rejects traversal role names and preserves root siblings", async () => {
-  const tent = await makeExternalTent();
-  const victim = path.join(path.dirname(tent), "victim");
-  await fs.mkdir(victim, { recursive: true });
-  await fs.writeFile(path.join(victim, "keep.txt"), "keep\n", "utf8");
-
-  await fs.mkdir(externalPath(tent, "temp", "reviewer", "tasks"), { recursive: true });
-  await fs.writeFile(externalPath(tent, "temp", "reviewer", "tasks", "task.md"), "task\n", "utf8");
-  await runCli(tent, "clean-temp", "reviewer");
-  assert.equal(await exists(externalPath(tent, "temp", "reviewer")), false);
-
-  for (const badRole of ["../../victim", "..\\..\\victim"]) {
-    await fs.mkdir(externalPath(tent, "temp", "reviewer"), { recursive: true });
-    await assert.rejects(
-      () => runCli(tent, "clean-temp", badRole),
-      /Invalid role for clean-temp/,
-    );
-    assert.equal(await exists(path.join(victim, "keep.txt")), true);
-  }
-});
-
-test("tent new:in-workspace .tent 空骨架,生成 index 且 workspace 可无 Git", async () => {
-  const parent = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-new-")));
-  const target = path.join(parent, "fresh-tent");
-  await runCli(parent, "new", target);
-
-  const systemRoot = path.join(target, ".tent");
-  // 协作事实在 <workspace>/.tent/
-  const index = await fs.readFile(path.join(systemRoot, "index.md"), "utf8");
-  assert.match(index, /type: index/);
-  assert.equal(await exists(path.join(systemRoot, "SPEC.md")), false);
-  assert.equal(await exists(path.join(systemRoot, "CLAUDE.md")), false);
-  assert.equal(await exists(path.join(systemRoot, "AGENTS.md")), false);
-
-  // 空骨架:无强制顶层文件夹,但有 temp / 注册表
-  assert.equal(await exists(path.join(systemRoot, "goal")), false);
-  assert.equal(await exists(path.join(systemRoot, "temp")), true);
-  assert.equal(await exists(path.join(systemRoot, "temp", "temp.md")), false);
-  const registry = JSON.parse(await fs.readFile(path.join(systemRoot, "types.json"), "utf8"));
+  assert.equal(await fs.readFile(readme, "utf8"), "# Existing project\n");
+  assert.equal(await fs.readFile(agents, "utf8"), "# Existing rules\n");
+  assert.match(await fs.readFile(path.join(workspace, ".tent", "index.md"), "utf8"), /type: index/);
   assert.deepEqual(
-    Object.keys(registry).sort(),
-    ["asset", "goal", "output", "prompt", "reference"],
+    Object.keys(JSON.parse(await fs.readFile(path.join(workspace, ".tent", "types.json"), "utf8"))).sort(),
+    ["asset", "goal", "output", "prompt", "reference"]
   );
-  assert.deepEqual(registry.goal, { tier: "base" });
-  assert.deepEqual(registry.prompt, { tier: "base" });
-  assert.deepEqual(registry.output, { tier: "base" });
-  assert.deepEqual(registry.reference, { tier: "modifier" });
-  assert.deepEqual(registry.asset, { tier: "modifier" });
-  assert.equal(registry.note, undefined);
-  assert.equal(registry.artifact, undefined);
-  assert.equal(await exists(path.join(systemRoot, "roles.json")), true);
-  assert.equal(await exists(path.join(systemRoot, "skills.json")), false);
-  assert.deepEqual(JSON.parse(await fs.readFile(path.join(systemRoot, "tags.json"), "utf8")), { tags: [] });
-  assert.equal(await exists(path.join(target, ".gitignore")), true, "workspace gitignore 忽略 .tent/");
+  assert.equal(await exists(path.join(workspace, ".tent", "temp")), true);
+  assert.equal(await exists(path.join(workspace, ".git")), false);
+  assert.match(await fs.readFile(path.join(workspace, ".gitignore"), "utf8"), /\.tent\//);
 
-  // 不生成 agent 配置层文件。
-  assert.equal(await exists(path.join(target, ".claude")), false);
-  assert.equal(await exists(path.join(systemRoot, ".claude")), false);
-
-  assert.equal(await exists(path.join(target, ".git")), false);
-
-  // 已是帐 → 再 new 拒绝
-  await assert.rejects(() => runCli(parent, "new", target));
+  const repeated = await runCli(workspace, "new", ".");
+  assert.notEqual(repeated.code, 0);
+  assert.match(repeated.stderr, /already a Tent/);
 });
 
-test("tent new --vault:使用插件的新帐 type 与 role 默认值", async () => {
-  const vault = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-vault-defaults-")));
-  const settingsDir = path.join(vault, ".obsidian", "plugins", "tent");
-  await fs.mkdir(settingsDir, { recursive: true });
-  await fs.writeFile(
-    path.join(settingsDir, "data.json"),
-    JSON.stringify({
-      tentsRoot: "_tents",
-      newTentDefaults: {
-        typeRegistry: {
-          goal: {
-            tier: "base",
-            readable: true,
-            writable: false,
-            color: "orange",
-            description: "自定义目标",
-          },
-        },
-        rolesRegistry: {
-          roles: [{ name: "maker", color: "green", description: "负责实现" }],
-        },
-      },
-    }),
-    "utf8",
-  );
-
-  await runCli(repoRoot, "new", "demo", "--vault", vault);
-  const target = path.join(vault, "_tents", "demo");
-  const systemRoot = path.join(target, ".tent");
-  const registry = JSON.parse(await fs.readFile(path.join(systemRoot, "types.json"), "utf8"));
-  const roles = JSON.parse(await fs.readFile(path.join(systemRoot, "roles.json"), "utf8"));
-  // V0.2: vault type defaults are normalized to tier-only (color/description stripped).
-  assert.deepEqual(registry.goal, { tier: "base" });
-  assert.ok(registry.prompt);
-  assert.ok(registry.output);
-  assert.equal(registry.goal.color, undefined);
-  assert.equal(registry.goal.description, undefined);
-  assert.equal(roles.roles.length, 1);
-  assert.match(roles.roles[0].id, /^rl-[a-z0-9]+$/);
-  assert.deepEqual(roles.roles[0], {
-    id: roles.roles[0].id,
-    name: "maker",
-    displayName: "maker",
-    color: "green",
-    description: "负责实现",
-  });
-  assert.match(await fs.readFile(path.join(systemRoot, "index.md"), "utf8"), /type: index/);
+test("removed legacy and migration commands are not part of the CLI", async () => {
+  const removed = [
+    "migrate",
+    "import",
+    "dispatch",
+    "task-ack",
+    "task-cancel",
+    "new-box",
+    "tag",
+    "untag",
+    "tag-new",
+    "tag-rm",
+    "fork",
+    "clean-temp",
+    "force-release",
+    "okf-sync",
+  ];
+  for (const command of removed) {
+    const result = await runCli(repoRoot, command);
+    assert.notEqual(result.code, 0, `${command} must not remain callable`);
+    assert.match(result.stderr, new RegExp(`Unknown command: ${command}`));
+  }
 });
 
-const BUNDLED_AGENT_SKILLS = ["tent-role", "tent-task"] as const;
+const BUNDLED_SKILLS = ["tent-init", "tent-role", "tent-task"] as const;
 
-test("skill-install:安装两个内置 skills,重复执行跳过,需 --force 覆盖", async () => {
+test("skill-install installs all current Tent skills idempotently", async () => {
   const target = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-skill-install-")));
-  const installed = await runCli(repoRoot, "skill-install", "--dir", target);
-  for (const name of BUNDLED_AGENT_SKILLS) {
-    assert.match(installed.stdout, new RegExp(`${name}: installed`));
+  const first = await runCliOk(repoRoot, "skill-install", "--dir", target);
+  for (const name of BUNDLED_SKILLS) {
+    assert.match(first.stdout, new RegExp(`${name}: installed`));
     assert.equal(await exists(path.join(target, name, "SKILL.md")), true);
     assert.equal(
       await fs.readFile(path.join(target, name, "SKILL.md"), "utf8"),
-      await fs.readFile(path.join(repoRoot, "skills", name, "SKILL.md"), "utf8"),
-      `skill-install must copy ${name} byte-for-byte`,
+      await fs.readFile(path.join(repoRoot, "skills", name, "SKILL.md"), "utf8")
     );
   }
-  assert.doesNotMatch(installed.stdout, /tent-agent|tent-genesis/);
-  assert.equal(await exists(path.join(target, "tent-task", "references", "paths.md")), true);
-  assert.equal(await exists(path.join(target, "tent-task", "references", "task-cli.md")), true);
-  assert.equal(await exists(path.join(target, "tent-task", "references", "session-boundaries.md")), true);
-  await assertInstalledTentSkills(target);
 
-  const skipped = await runCli(repoRoot, "skill-install", "--dir", target);
-  for (const name of BUNDLED_AGENT_SKILLS) {
-    assert.match(skipped.stdout, new RegExp(`${name}: skipped`));
-  }
-  assert.match(skipped.stdout, /already exists/);
+  const second = await runCliOk(repoRoot, "skill-install", "--dir", target);
+  for (const name of BUNDLED_SKILLS) assert.match(second.stdout, new RegExp(`${name}: skipped`));
 
-  const bundledTask = await fs.readFile(path.join(repoRoot, "skills", "tent-task", "SKILL.md"), "utf8");
-  await fs.writeFile(path.join(target, "tent-task", "SKILL.md"), "# stale\n", "utf8");
-  await runCli(repoRoot, "skill-install", "--dir", target, "--force");
-  assert.equal(
-    await fs.readFile(path.join(target, "tent-task", "SKILL.md"), "utf8"),
-    bundledTask,
-    "skill-install --force must refresh tent-task",
-  );
-  await assertInstalledTentSkills(target);
-
-  await assert.rejects(
-    () => runCli(repoRoot, "skill-install", "--target", "codex", "--dir", target),
-    /Unknown skill target/,
-  );
+  await fs.writeFile(path.join(target, "tent-init", "SKILL.md"), "# stale\n", "utf8");
+  await runCliOk(repoRoot, "skill-install", "--dir", target, "--force");
+  assert.match(await fs.readFile(path.join(target, "tent-init", "SKILL.md"), "utf8"), /name: tent-init/);
+  await assertInstalledSkills(target);
 });
 
-test("skill-install:默认同步到 Claude 与 .agents/skills,目标独立判断", async () => {
-  const fakeHome = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-skill-home-")));
-  const claudeSkills = path.join(fakeHome, ".claude", "skills");
-  const agentsSkills = path.join(fakeHome, ".agents", "skills");
-  const homeEnv = { HOME: fakeHome, USERPROFILE: fakeHome };
-  const bundledTask = await fs.readFile(path.join(repoRoot, "skills", "tent-task", "SKILL.md"), "utf8");
-
-  const first = await run(
-    process.execPath,
-    ["--import", tsxImport, cliSource, "skill-install"],
-    repoRoot,
-    homeEnv,
-  );
-  assert.match(first.stdout, /skill-install/);
-  assert.match(first.stdout, new RegExp(escapeRegExp(claudeSkills)));
-  assert.match(first.stdout, new RegExp(escapeRegExp(agentsSkills)));
-  for (const name of BUNDLED_AGENT_SKILLS) {
-    assert.match(first.stdout, new RegExp(`${name}: installed`));
-  }
-  assert.doesNotMatch(first.stdout, /tent-agent|tent-genesis/);
-
-  for (const line of first.stdout.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("✓") || trimmed.startsWith("-")) continue;
-    if (trimmed.includes("installed") || trimmed.includes("skipped")) continue;
-    assert.ok(
-      trimmed === claudeSkills || trimmed === agentsSkills || trimmed.startsWith(fakeHome + path.sep),
-      `skill-install target must stay under temp HOME, got: ${trimmed}`,
-    );
-  }
-  const installerSource = await fs.readFile(path.join(repoRoot, "src", "machine", "skills.ts"), "utf8");
-  assert.match(installerSource, /os\.homedir\(\)/);
-  assert.doesNotMatch(installerSource, /C:\\\\Users\\\\|\/Users\/[A-Za-z0-9._-]+\/\.claude/);
-
-  for (const root of [claudeSkills, agentsSkills]) {
-    await assertInstalledTentSkills(root);
-  }
-
-  await fs.writeFile(path.join(claudeSkills, "tent-task", "SKILL.md"), "# stale claude only\n", "utf8");
-  await fs.rm(path.join(agentsSkills, "tent-task"), { recursive: true, force: true });
-
-  const partial = await run(
-    process.execPath,
-    ["--import", tsxImport, cliSource, "skill-install"],
-    repoRoot,
-    homeEnv,
-  );
-  assert.match(partial.stdout, new RegExp(`${escapeRegExp(claudeSkills)}[\\s\\S]*tent-task: skipped`));
-  assert.match(partial.stdout, new RegExp(`${escapeRegExp(agentsSkills)}[\\s\\S]*tent-task: installed`));
-  assert.equal(
-    await fs.readFile(path.join(claudeSkills, "tent-task", "SKILL.md"), "utf8"),
-    "# stale claude only\n",
-    "without --force, existing Claude skill must not be overwritten",
-  );
-  assert.equal(
-    await fs.readFile(path.join(agentsSkills, "tent-task", "SKILL.md"), "utf8"),
-    bundledTask,
-    "missing agents skill must still install when Claude already has one",
-  );
-
-  const forced = await run(
-    process.execPath,
-    ["--import", tsxImport, cliSource, "skill-install", "--force"],
-    repoRoot,
-    homeEnv,
-  );
-  for (const name of BUNDLED_AGENT_SKILLS) {
-    assert.match(forced.stdout, new RegExp(`${name}: installed`));
-  }
-  await assertInstalledTentSkills(claudeSkills);
-  await assertInstalledTentSkills(agentsSkills);
+test("skill-install targets derive only from the selected home", async () => {
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-skill-home-")));
+  const env = { HOME: home, USERPROFILE: home };
+  await runOk(process.execPath, ["--import", tsxImport, cliSource, "skill-install"], repoRoot, env);
+  await assertInstalledSkills(path.join(home, ".agents", "skills"));
+  await assertInstalledSkills(path.join(home, ".claude", "skills"));
 });
 
-async function assertInstalledTentSkills(root: string) {
-  const role = await fs.readFile(path.join(root, "tent-role", "SKILL.md"), "utf8");
-  const task = await fs.readFile(path.join(root, "tent-task", "SKILL.md"), "utf8");
-  assert.match(role, /name: tent-role/);
-  assert.match(role, /also apply `tent-task`/i);
-  assert.match(role, /Role prompt/);
-  assert.match(role, /downstream/i);
-  assert.match(task, /name: tent-task/);
-  assert.match(task, /tent task ask-user/);
-  assert.match(task, /TaskInputs|task-input/i);
-  assert.match(task, /Delivery is never acceptance/i);
-  assert.match(task, /non-exclusive context|Context Card/i);
-  assert.doesNotMatch(`${role}\n${task}`, /name: tent-agent|tent handoff/i);
-  assert.ok(role.length < 6000, "tent-role SKILL.md should stay cache-friendly");
-  assert.ok(task.length < 6000, "tent-task SKILL.md should stay cache-friendly");
-}
-
-test("CLI 表面:help 与 version 正常退出", async () => {
-  const help = await runCli(repoRoot, "--help");
-  assert.match(help.stdout, /Usage:/);
+test("CLI help and version expose only the current surface", async () => {
+  const help = await runCliOk(repoRoot, "--help");
+  assert.match(help.stdout, /tent node/);
+  assert.match(help.stdout, /tent task/);
+  assert.match(help.stdout, /tent new \./);
   assert.match(help.stdout, /skill-install/);
-  assert.match(help.stdout, /agent-hooks/);
-  assert.match(help.stdout, /status/);
-  assert.match(help.stdout, /task-ack/);
-  assert.match(help.stdout, /clean-temp/);
-  assert.match(help.stdout, /fail-loud|in-workspace|Local Service|tent task \*/i);
-  assert.doesNotMatch(help.stdout, /handoff/i);
-  assert.equal(help.stderr, "");
-
-  const helpCommand = await runCli(repoRoot, "help");
-  assert.match(helpCommand.stdout, /Tent CLI/);
+  assert.doesNotMatch(help.stdout, /migrate|new-box|task-ack|clean-temp|--vault/);
 
   const pkg = JSON.parse(await fs.readFile(path.join(repoRoot, "package.json"), "utf8"));
-  const version = await runCli(repoRoot, "--version");
-  assert.equal(version.stdout.trim(), pkg.version);
-  const shortVersion = await runCli(repoRoot, "-v");
-  assert.equal(shortVersion.stdout.trim(), pkg.version);
-
-  await assert.rejects(
-    () => runCli(repoRoot, "not-a-command"),
-    /Unknown command: not-a-command/,
-  );
+  assert.equal((await runCliOk(repoRoot, "--version")).stdout.trim(), pkg.version);
+  assert.equal((await runCliOk(repoRoot, "-v")).stdout.trim(), pkg.version);
 });
 
-/**
- * 纯协作目录：system root 即 cwd，目录名不是 `.tent`，无法从布局推导 workspace。
- * 用于验证无 workspace 契约时的 CLI 错误路径。
- */
-async function makeFlatCollaborationTent(): Promise<string> {
-  const parent = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-flat-")));
-  const target = path.join(parent, "collab-only");
-  await run(process.execPath, ["--import", tsxImport, cliSource, "new", target], parent);
-  // 把 `.tent/` 内容上提到 collab-only 根，去掉 in-workspace 布局
-  const systemRoot = path.join(target, ".tent");
-  const entries = await fs.readdir(systemRoot);
-  for (const name of entries) {
-    await fs.rename(path.join(systemRoot, name), path.join(target, name));
-  }
-  await fs.rm(systemRoot, { recursive: true, force: true });
-  // 移除 workspace 级 gitignore（若有），避免误导
-  await fs.rm(path.join(target, ".gitignore"), { force: true });
-  return target;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-test("npm 包冒烟:产物可安装并运行打包 CLI", async () => {
+test("packed npm CLI keeps the current initialization and help surface", async (t) => {
   const npmCli = process.env.npm_execpath;
-  assert.ok(npmCli, "测试必须由 npm script 启动");
+  if (!npmCli) {
+    t.skip("package smoke runs under npm test");
+    return;
+  }
   const packDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-pack-")));
-  const packed = await run(process.execPath, [
-    npmCli,
-    "pack",
-    "--ignore-scripts",
-    "--dry-run=false",
-    "--json",
-    "--pack-destination",
-    packDir,
-  ], repoRoot);
+  const packed = await runOk(
+    process.execPath,
+    [npmCli, "pack", "--ignore-scripts", "--dry-run=false", "--json", "--pack-destination", packDir],
+    repoRoot
+  );
   const packageInfo = JSON.parse(packed.stdout)[0];
   const tarball = path.join(packDir, packageInfo.filename);
   const parent = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-package-")));
   const prefix = path.join(parent, "install");
-  const target = path.join(parent, "packed-tent");
+  const workspace = path.join(parent, "workspace");
 
   try {
     await fs.mkdir(prefix, { recursive: true });
-    await run(process.execPath, [
-      npmCli,
-      "install",
-      "--ignore-scripts",
-      "--dry-run=false",
-      "--prefix",
-      prefix,
-      tarball,
-    ], repoRoot);
-    const installed = path.join(prefix, "node_modules", packageInfo.name);
-    const binDir = path.join(prefix, "node_modules", ".bin");
-    const windows = process.platform === "win32";
-    const tentBin = path.join(binDir, windows ? "tent.cmd" : "tent");
-    assert.equal(await exists(tentBin), true);
-    const tentCommand = windows ? process.execPath : tentBin;
-    const tentCli = (cwd: string, ...cliArgs: string[]) =>
-      run(tentCommand, windows ? [path.join(installed, "cli.mjs"), ...cliArgs] : cliArgs, cwd);
-    await tentCli(parent, "new", target);
-    // in-workspace: new-box is sealed; smoke uses read-only tree + blocked mutate message
-    assert.equal(await exists(path.join(target, ".tent", "index.md")), true);
-    const tree = await tentCli(target, "tree");
-    assert.equal(tree.stderr ?? "", "");
-    const blocked = await run(
-      tentCommand,
-      windows ? [path.join(installed, "cli.mjs"), "new-box", "冒烟检查", "goal"] : ["new-box", "冒烟检查", "goal"],
-      target,
-    ).then(
-      () => null,
-      (err: Error) => err.message,
+    await runOk(
+      process.execPath,
+      [npmCli, "install", "--ignore-scripts", "--dry-run=false", "--prefix", prefix, tarball],
+      repoRoot
     );
-    assert.ok(blocked, "packed CLI must refuse in-workspace new-box");
-    assert.match(blocked!, /refuses to direct-write an in-workspace Tent|tent task \*|Local Service/);
+    const installed = path.join(prefix, "node_modules", packageInfo.name);
+    const cli = path.join(installed, "cli.mjs");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(path.join(workspace, "README.md"), "# keep\n", "utf8");
+    await runOk(process.execPath, [cli, "new", "."], workspace);
+    assert.equal(await fs.readFile(path.join(workspace, "README.md"), "utf8"), "# keep\n");
+    assert.equal(await exists(path.join(workspace, ".tent", "index.md")), true);
+    const help = await runOk(process.execPath, [cli, "--help"], workspace);
+    assert.match(help.stdout, /tent node/);
+    assert.doesNotMatch(help.stdout, /new-box|migrate|--vault/);
+    for (const name of BUNDLED_SKILLS) {
+      assert.equal(await exists(path.join(installed, "skills", name, "SKILL.md")), true);
+    }
     assert.equal(await exists(path.join(installed, "LICENSE")), true);
     assert.equal(await exists(path.join(installed, "docs", "SPEC.md")), true);
   } finally {
     await fs.rm(tarball, { force: true });
   }
 });
+
+async function assertInstalledSkills(root: string): Promise<void> {
+  const init = await fs.readFile(path.join(root, "tent-init", "SKILL.md"), "utf8");
+  const role = await fs.readFile(path.join(root, "tent-role", "SKILL.md"), "utf8");
+  const task = await fs.readFile(path.join(root, "tent-task", "SKILL.md"), "utf8");
+  assert.match(init, /name: tent-init/);
+  assert.match(init, /wait for explicit user approval/i);
+  assert.match(role, /name: tent-role/);
+  assert.match(role, /also apply `tent-task`/i);
+  assert.match(task, /name: tent-task/);
+  assert.match(task, /Delivery is never acceptance/i);
+  assert.ok(init.length < 6000, "tent-init should stay cache-friendly");
+  assert.ok(role.length < 6000, "tent-role should stay cache-friendly");
+  assert.ok(task.length < 6000, "tent-task should stay cache-friendly");
+}
 
 async function exists(target: string): Promise<boolean> {
   try {

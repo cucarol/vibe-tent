@@ -12,7 +12,6 @@ export * from "./adapter.js";
 export * from "./frontmatter.js";
 export * from "./tree.js";
 // concept.ts is empty after promoteConcept retirement — no re-export.
-export * from "./migration.js";
 export * from "./link-target.js";
 export * from "./claim.js";
 export * from "./manifest.js";

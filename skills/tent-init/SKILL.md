@@ -52,7 +52,7 @@ For a new project, ask at most one or two lightweight questions about the intend
 - Preserve an existing workspace-root `AGENTS.md`. Tent operational state belongs under `.tent/`, which the initializer adds to Git ignore rules.
 - A non-Git project may use Tent Nodes, but managed worktrees and commit integration require Git. Ask before initializing Git.
 
-After the user approves the draft, create the Nodes through the host's supported official Node mutation surface and retain their stable IDs. If the host exposes no supported Node mutation surface, stop after the approved draft and report that exact capability gap; never fall back to direct filesystem edits or raw private RPC calls.
+After approval, create parents before children with `tent node create`, pass substantial bodies through stdin, and retain every returned stable ID. Use `tent node write|rename|move|type|tags|archive|restore` for corrections. If the installed CLI does not expose `tent node`, stop after the approved draft and report that exact version gap; never fall back to direct filesystem edits or raw private RPC calls.
 
 ## Verify and hand off
 

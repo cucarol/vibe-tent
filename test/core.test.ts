@@ -916,16 +916,16 @@ test("永久删除:node 必须先归档,删除父级会删除整棵子树", asyn
   assert.equal(tent.byId.has("bx-p2"), false);
 });
 
-test("CLI rejects unexpected positional args and unknown legacy report command cleanly", async () => {
+test("CLI rejects removed direct-core commands cleanly", async () => {
   const dir = await makeTent();
 
   let result = await cli(dir, "new-box", "Extra", "goal", "parent", "ignored");
   assert.notEqual(result.code, 0);
-  assert.match(result.stderr, /Usage: tent new-box <name> <type> \[parentId\]/);
+  assert.match(result.stderr, /Unknown command: new-box/);
 
   result = await cli(dir, "tag-new", "release", "ignored");
   assert.notEqual(result.code, 0);
-  assert.match(result.stderr, /Usage: tent tag-new <name>/);
+  assert.match(result.stderr, /Unknown command: tag-new/);
 
   result = await cli(dir, "report", "bx-p1", path.join(dir, "missing-report.txt"));
   assert.notEqual(result.code, 0);

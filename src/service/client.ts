@@ -242,6 +242,24 @@ export class ServiceClient {
   docsGet(workspaceId: string, idOrPath: { id?: string; path?: string }) {
     return this.call("docs.get", { workspaceId, ...idOrPath });
   }
+  docsReadForEdit(
+    workspaceId: string,
+    idOrPath: { id?: string; path?: string; boxId?: string }
+  ) {
+    return this.call<{
+      workspaceId: string;
+      id: string;
+      cx: string;
+      path: string;
+      name: string;
+      type: string;
+      body: string;
+      raw: string;
+      etag: string;
+      frontmatter: Record<string, unknown>;
+      artifactRefs: unknown[];
+    }>("docs.readForEdit", { workspaceId, ...idOrPath });
+  }
   /**
    * Existing-node body/frontmatter write. baseEtag is required (from docs.readForEdit).
    * Missing → -32008; stale → -32009. Errors carry currentEtag only (no body).
@@ -261,7 +279,7 @@ export class ServiceClient {
   }
   docsCreateNote(
     workspaceId: string,
-    args: { name: string; type?: string; parentPath?: string }
+    args: { name: string; type?: string; parentPath?: string; body?: string }
   ) {
     return this.call("docs.createNote", { workspaceId, ...args });
   }

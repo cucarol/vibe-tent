@@ -1,16 +1,6 @@
 #!/usr/bin/env node
-// tent CLI —— agent 侧的薄壳。tent-role / tent-task skills 通过这个命令进入 Tent。
-// 用法(cwd = 帐根 / workspace 根, new 例外):
-//   --- 新架构协作生命周期（Local Service RPC；不直写）---
-//   tent task list|get|claim|deliver|…  attach → mount → task.* （见 task-rpc.ts）
-//   --- Legacy 直写：仅 external / 非 <ws>/.tent system root；in-workspace 协作 mutate 已封死 ---
-//   tent new <帐路径>                  建一顶新帐(空骨架);genesis 调用
-//   tent new <帐名> --vault <vault>    同上,但读 vault 的 tentsRoot 设置,落到 <vault>/<tentsRoot>/<帐名>
-//   tent migrate|import --source <legacyRoot> --workspace <ws> [--dry-run] [--force]  旧独立帐根 → <ws>/.tent
-//   tent skill-install [--target all|claude|shared-agents] [--force]
-//   tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copilot]
-//   tent tree | status | roles | find | tags       // 只读
-//   tent dispatch / task-ack / …                   // external root migration window only
+// Tent CLI is the thin Agent-facing shell. Product mutations go through Local Service.
+// First-time workspace initialization is the only direct scaffold operation.
 
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
@@ -31,94 +21,27 @@ import {
   type AgentHookId,
 } from "../machine/agent-hooks.js";
 import { loadTent } from "../core/tree.js";
-import {
-  OpsEnv,
-  dispatch,
-  cleanTemp,
-  cancelPendingTask,
-  forceRelease,
-  forkNode,
-  createBox,
-  tagBox,
-  untagBox,
-  createTag,
-  deleteTag,
-  taskAck,
-} from "../core/ops.js";
+import type { OpsEnv } from "../core/ops-context.js";
 
 import { findBoxesByTag, loadTagRegistry, normalizeTagName } from "../core/tags.js";
 import { parseOutputPointer } from "../core/output.js";
-import { syncOkfBundle } from "../core/okf.js";
-import { normalizeRegistry, splitType, type TypeRegistry } from "../core/typeRegistry.js";
 import { ensureRoleInit } from "../core/task.js";
-import { loadRolesRegistry, normalizeRoleDefinition, type RoleDefinition, type RolesRegistry } from "../core/skillRoleRegistry.js";
-import { submitProposal } from "../core/proposal.js";
+import { loadRolesRegistry } from "../core/skillRoleRegistry.js";
 import { findTentSystemRoot, NOT_INSIDE_TENT_MESSAGE, renderTentStatus } from "../core/status.js";
 import { withTentMutation } from "../core/adapter.js";
-import { scaffoldInWorkspace, validateBoxName } from "../core/scaffold.js";
-import {
-  ensureRoleWorkspace,
-  resolveTentWorkspace,
-} from "../core/workspace.js";
-import { TENT_SYSTEM_DIR, workspaceRootFromSystemRoot } from "../core/paths.js";
-import { importExternalTentRoot } from "../core/migration.js";
+import { scaffoldInWorkspace } from "../core/scaffold.js";
+import { workspaceRootFromSystemRoot } from "../core/paths.js";
 import { runTaskCommand, taskHelpText } from "./task-rpc.js";
 import { runAgentCommand, agentHelpText } from "./agent-rpc.js";
+import { runNodeCommand, nodeHelpText } from "./node-rpc.js";
 import {
   runRoleCheckpointCommand,
   roleCheckpointHelpText,
 } from "./role-checkpoint-rpc.js";
 import { runProposalSubmit } from "./proposal-rpc.js";
 
-/**
- * Legacy CLI commands that still direct-write core.
- * On in-workspace system root (`<workspace>/.tent`) these fail-loud — use tent task * / Desktop Service.
- * External / flat collab roots keep them for the migration window (no env escape hatch).
- * `propose` is service-routed on in-workspace (not in this set).
- * Formal delivery is Delivery-only (`tent task deliver`); no legacy report command.
- */
-const LEGACY_MUTATION_COMMANDS = new Set([
-  "dispatch",
-  "task-ack",
-  "task-cancel",
-  "new-box",
-  "tag",
-  "untag",
-  "tag-new",
-  "tag-rm",
-  "fork",
-  "clean-temp",
-  "force-release",
-  "okf-sync",
-]);
-
-/** Read-only legacy commands allowed on in-workspace `.tent`. */
-const LEGACY_READONLY_COMMANDS = new Set(["tree", "status", "roles", "find", "tags"]);
-
 export function isInWorkspaceSystemRoot(systemRoot: string): boolean {
   return workspaceRootFromSystemRoot(systemRoot) !== undefined;
-}
-
-export function isLegacyMutationCommand(cmd: string): boolean {
-  return LEGACY_MUTATION_COMMANDS.has(cmd);
-}
-
-export function listLegacyMutationCommands(): string[] {
-  return [...LEGACY_MUTATION_COMMANDS].sort();
-}
-
-export function inWorkspaceLegacyMutationMessage(cmd: string, systemRoot: string): string {
-  const workspace = workspaceRootFromSystemRoot(systemRoot);
-  return (
-    `Legacy CLI command "${cmd}" refuses to direct-write an in-workspace Tent at ${systemRoot}.\n` +
-    `Desktop co-located collaboration must go through Local Service (tent task * / Desktop).\n` +
-    `systemRoot is <workspace>/${TENT_SYSTEM_DIR}` +
-    (workspace ? ` (workspace: ${workspace})` : "") +
-    `.\n` +
-    `Allowed without Service: read-only tree/status/roles/find/tags; init/derived new/migrate/role-init/skill-install/agent-hooks; role-checkpoint show (read-only).\n` +
-    `role-checkpoint set|clear are Service-routed mutations (MutationBus) on in-workspace .tent.\n` +
-    `External (non-${TENT_SYSTEM_DIR}) Tent roots still accept legacy mutation commands during the migration window.`
-  );
 }
 
 async function makeEnv(): Promise<OpsEnv> {
@@ -126,23 +49,15 @@ async function makeEnv(): Promise<OpsEnv> {
   const systemRoot = await findTentSystemRoot(process.cwd());
   if (!systemRoot) throw new Error(NOT_INSIDE_TENT_MESSAGE);
   const workspace = workspaceRootFromSystemRoot(systemRoot);
+  if (!workspace) throw new Error("Tent requires an in-workspace <workspace>/.tent layout.");
   return {
     fs: new NodeFs(systemRoot),
     clock: new SystemClock(),
-    tentName: path.basename(workspace ?? systemRoot),
+    tentName: path.basename(workspace),
     tentRoot: systemRoot,
   };
 }
 
-/**
- * Fail-loud before any core mutate when cwd resolves to in-workspace `.tent`.
- * No env escape hatch, no dual-write, no silent compat.
- */
-function assertLegacyDirectWriteAllowed(cmd: string, systemRoot: string): void {
-  if (!LEGACY_MUTATION_COMMANDS.has(cmd)) return;
-  if (!isInWorkspaceSystemRoot(systemRoot)) return;
-  throw new Error(inWorkspaceLegacyMutationMessage(cmd, systemRoot));
-}
 
 async function main() {
   const [cmd, ...args] = process.argv.slice(2);
@@ -158,12 +73,12 @@ async function main() {
 
   // Commands that do not require an existing system root
   if (cmd === "new") {
-    const { positionals, flags } = parseFlags(args);
+    const { positionals } = parseFlags(args);
     if (!positionals[0]) {
-      return fail("Usage: tent new <path> OR tent new <name> --vault <vault-path>");
+      return fail("Usage: tent new <workspace-path>");
     }
-    if (positionals.length > 1) return fail("Usage: tent new <path> OR tent new <name> --vault <vault-path>");
-    await newTent(positionals[0], flags.vault);
+    if (positionals.length > 1) return fail("Usage: tent new <workspace-path>");
+    await newTent(positionals[0]);
     return;
   }
   if (cmd === "skill-install") {
@@ -228,43 +143,6 @@ async function main() {
     }
     return;
   }
-  // External/legacy tent root → in-workspace `.tent` (B5). Does not require an existing system root.
-  if (cmd === "migrate" || cmd === "import") {
-    const { positionals, flags } = parseFlags(args);
-    if (positionals.length > 0) {
-      return fail(
-        `Usage: tent ${cmd} --source <legacy-tent-root> --workspace <workspace-root> [--dry-run] [--force] [--json]`
-      );
-    }
-    const source = flags.source || flags.from || flags.src;
-    const workspace = flags.workspace || flags.to || flags.dest || flags.target;
-    if (!source || !workspace) {
-      return fail(
-        `Usage: tent ${cmd} --source <legacy-tent-root> --workspace <workspace-root> [--dry-run] [--force] [--json]`
-      );
-    }
-    const dryRun = flags["dry-run"] === "true" || flags.dryRun === "true";
-    const force = flags.force === "true";
-    const asJson = flags.json === "true";
-    try {
-      const report = await importExternalTentRoot({
-        sourceRoot: path.resolve(source),
-        workspaceRoot: path.resolve(workspace),
-        createFs: (root) => new NodeFs(root),
-        dryRun,
-        force,
-      });
-      if (asJson) {
-        console.log(JSON.stringify(report, null, 2));
-      } else {
-        console.log(formatImportReport(report));
-      }
-    } catch (error) {
-      return fail(error instanceof Error ? error.message : String(error));
-    }
-    return;
-  }
-
   // New-architecture task lifecycle: Local Service RPC only (no core direct write).
   if (cmd === "task") {
     const [sub, ...rest] = args;
@@ -293,6 +171,20 @@ async function main() {
     return;
   }
 
+  // Agent-facing Node reads and mutations: Local Service only.
+  if (cmd === "node") {
+    const [sub, ...rest] = args;
+    if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
+      console.log(nodeHelpText());
+      return;
+    }
+    const result = await runNodeCommand(sub, rest, { packageRoot: packageRoot() });
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    if (result.exitCode !== 0) process.exitCode = result.exitCode;
+    return;
+  }
+
   // Optional cooperative Role Checkpoint (continuation note for Session replacement).
   if (cmd === "role-checkpoint") {
     const [sub, ...rest] = args;
@@ -309,45 +201,22 @@ async function main() {
     return;
   }
 
-  // Unknown commands fail before system-root resolution (no cwd fallback writes).
-  const tentCommands = new Set([
-    ...LEGACY_MUTATION_COMMANDS,
-    ...LEGACY_READONLY_COMMANDS,
-    "role-init",
-    "propose",
-  ]);
-  if (!tentCommands.has(cmd)) {
-    return fail(
-      `Unknown command: ${cmd || "(empty)"}\nCommands: new migrate import task agent agent-hooks role-init role-checkpoint roles dispatch task-ack task-cancel propose status new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
-    );
-  }
-
-  const env = await makeEnv();
-  // Seal legacy core mutates against Desktop in-workspace `.tent` (sole mutation = Service).
-  if (!cmd) return fail("Unknown command: (empty)");
-  const systemRoot = env.tentRoot;
-  if (!systemRoot) return fail(NOT_INSIDE_TENT_MESSAGE);
-
-  // in-workspace propose → Local Service RPC only (no dual-write / direct core path).
-  if (cmd === "propose" && isInWorkspaceSystemRoot(systemRoot)) {
+  if (cmd === "propose") {
     const { positionals } = parseFlags(args);
-    const [boxId, bodySource] = positionals;
-    if (!boxId || !bodySource) {
-      return fail("Usage: tent propose <boxId> <bodyFile|->");
+    const [nodeId, bodySource] = positionals;
+    if (!nodeId || !bodySource || positionals.length > 2) {
+      return fail("Usage: tent propose <nodeId> <bodyFile|->");
     }
-    if (positionals.length > 2) return fail("Usage: tent propose <boxId> <bodyFile|->");
     const role = process.env.TENT_ROLE;
     if (!role) return fail("tent propose requires TENT_ROLE to identify the submitting role");
-    const body =
-      bodySource === "-" ? await readStdin() : await readBodyFile(bodySource);
+    const body = bodySource === "-" ? await readStdin() : await readBodyFile(bodySource);
+    const systemRoot = await findTentSystemRoot(process.cwd());
+    if (!systemRoot) return fail(NOT_INSIDE_TENT_MESSAGE);
     const workspace = workspaceRootFromSystemRoot(systemRoot);
+    if (!workspace) return fail("tent propose requires an in-workspace <workspace>/.tent layout");
     const result = await runProposalSubmit(
-      { boxId, role, body },
-      {
-        cwd: workspace ?? process.cwd(),
-        workspace: workspace ?? undefined,
-        packageRoot: packageRoot(),
-      }
+      { boxId: nodeId, role, body },
+      { cwd: workspace, workspace, packageRoot: packageRoot() }
     );
     if (result.stdout) process.stdout.write(result.stdout.endsWith("\n") ? result.stdout : result.stdout + "\n");
     if (result.stderr) process.stderr.write(result.stderr.endsWith("\n") ? result.stderr : result.stderr + "\n");
@@ -355,84 +224,16 @@ async function main() {
     return;
   }
 
-  try {
-    assertLegacyDirectWriteAllowed(cmd, systemRoot);
-  } catch (error) {
-    return fail(error instanceof Error ? error.message : String(error));
+  const tentCommands = new Set(["role-init", "roles", "status", "tags", "find", "tree"]);
+  if (!tentCommands.has(cmd)) {
+    return fail(
+      `Unknown command: ${cmd || "(empty)"}\nCommands: new node task agent propose role-init role-checkpoint roles status tags find tree skill-install agent-hooks`
+    );
   }
 
+  const env = await makeEnv();
+
   switch (cmd) {
-    case "dispatch": {
-      const { positionals, flags } = parseFlags(args);
-      const [boxId, role, ...promptParts] = positionals;
-      if (!boxId || !role) {
-        return fail("Usage: tent dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>]");
-      }
-      if (Object.prototype.hasOwnProperty.call(flags, "prompt") && promptParts.length > 0) {
-        return fail("Usage: tent dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>]");
-      }
-      if (isUnsafeRoleSegment(role)) return fail(`Invalid role for dispatch: ${role}`);
-      let localPrompt = typeof flags.prompt === "string" ? flags.prompt : promptParts.join(" ");
-      if (localPrompt === "-") localPrompt = await readStdin();
-      const requestedDispatcher = flags.by || flags.from || flags["dispatched-by"] || process.env.TENT_ROLE;
-      if (flags["as-sub"]) {
-        if (!requestedDispatcher) return fail("--as-sub requires --by <dispatching-role> or TENT_ROLE");
-        if (isUnsafeRoleSegment(requestedDispatcher)) {
-          return fail(`Invalid dispatching role for --as-sub: ${requestedDispatcher}`);
-        }
-      }
-      const tent = await loadTent(env.fs);
-      const workspacePath = resolveTentWorkspace(tent, env.tentRoot);
-      const dispatcher = requestedDispatcher || "user";
-      let workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, role) : undefined;
-      if (!workspacePath) {
-        console.log("Note: this Tent has no in-workspace .tent layout; the task envelope has no workspace contract.");
-      }
-      if (flags["as-sub"]) {
-        if (!workspacePath) {
-          return fail(
-            "--as-sub requires a workspace contract. Scaffold an in-workspace tent at <workspace>/.tent/."
-          );
-        }
-        if (!dispatcher || dispatcher === "user") return fail("--as-sub requires --by <dispatching-role> or TENT_ROLE");
-        if (dispatcher === role) return fail("--as-sub parent role must not equal the assignee itself");
-        const registry = await loadRolesRegistry(env.fs);
-        if (!registry.roles.some((item) => item.name === dispatcher)) {
-          return fail(`--as-sub parent role not found in registry: ${dispatcher}`);
-        }
-        const dispatcherWorkspace = await ensureRoleWorkspace(workspacePath, dispatcher);
-        workspace = { ...(workspace ?? await ensureRoleWorkspace(workspacePath, role)), targetBranch: dispatcherWorkspace.branch };
-      }
-      const parentActor =
-        dispatcher && dispatcher !== "user"
-          ? { kind: "role" as const, id: dispatcher }
-          : { kind: "user" as const, id: "user" };
-      const r = await dispatch(env, boxId, role, {
-        userPrompt: localPrompt,
-        workspace,
-        parentActor,
-        reviewer: parentActor,
-        asSub: flags["as-sub"] === "true",
-      });
-      console.log(`✓ Dispatched. Task: ${r.taskPath}\n\n--- Relay prompt ---\n${r.relayPrompt}`);
-      break;
-    }
-    case "task-ack": {
-      const taskPath = args[0];
-      if (!taskPath) return fail("Usage: tent task-ack <taskPath>");
-      if (args.length > 1) return fail("Usage: tent task-ack <taskPath>");
-      await taskAck(env, taskPath);
-      console.log(`✓ Task acknowledged: ${taskPath}`);
-      break;
-    }
-    case "task-cancel": {
-      const taskPath = args[0];
-      if (!taskPath) return fail("Usage: tent task-cancel <taskPath>");
-      if (args.length > 1) return fail("Usage: tent task-cancel <taskPath>");
-      await cancelPendingTask(env, taskPath);
-      console.log(`✓ Task cancelled: ${taskPath}`);
-      break;
-    }
     case "role-init": {
       const roleName = args[0];
       if (!roleName) return fail("Usage: tent role-init <role>");
@@ -452,22 +253,6 @@ async function main() {
       console.log(JSON.stringify(registry, null, 2));
       break;
     }
-    case "propose": {
-      const { positionals } = parseFlags(args);
-      const [boxId, bodySource] = positionals;
-      if (!boxId || !bodySource) {
-        return fail("Usage: tent propose <boxId> <bodyFile|->");
-      }
-      if (positionals.length > 2) return fail("Usage: tent propose <boxId> <bodyFile|->");
-      const role = process.env.TENT_ROLE;
-      if (!role) return fail("tent propose requires TENT_ROLE to identify the submitting role");
-      const body = bodySource === "-"
-        ? await readStdin()
-        : await readBodyFile(bodySource);
-      const proposal = await submitProposal(env.fs, env.clock, role, boxId, body);
-      console.log(`✓ Proposal submitted for triage: ${proposal.path}`);
-      break;
-    }
     case "status": {
       if (args.length > 0) return fail("Usage: tent status");
       try {
@@ -478,61 +263,6 @@ async function main() {
         if (error instanceof Error && error.message === NOT_INSIDE_TENT_MESSAGE) return fail(error.message);
         throw error;
       }
-      break;
-    }
-    case "new-box": {
-      const [name, type, parentId] = args;
-      if (!name || !type) return fail("Usage: tent new-box <name> <type> [parentId]");
-      if (args.length > 3) return fail("Usage: tent new-box <name> <type> [parentId]");
-      try {
-        validateBoxName(name);
-      } catch (error) {
-        return fail(error instanceof Error ? error.message : String(error));
-      }
-      let parentPath = "";
-      if (parentId) {
-        const tent = await loadTent(env.fs);
-        const parent = tent.byId.get(parentId);
-        if (!parent) return fail(`Parent box not found: ${parentId}`);
-        parentPath = parent.path;
-      }
-      const id = await createBox(env, { parentPath, name, type });
-      console.log(`✓ Created box ${name} (${id})`);
-      break;
-    }
-    case "tag": {
-      const [boxId, name] = args;
-      if (!boxId || !name) return fail("Usage: tent tag <boxId> <name>");
-      if (args.length > 2) return fail("Usage: tent tag <boxId> <name>");
-      await tagBox(env, boxId, name);
-      console.log(`✓ Added tag to ${boxId}: ${name}`);
-      break;
-    }
-    case "untag": {
-      const [boxId, name] = args;
-      if (!boxId || !name) return fail("Usage: tent untag <boxId> <name>");
-      if (args.length > 2) return fail("Usage: tent untag <boxId> <name>");
-      await untagBox(env, boxId, name);
-      console.log(`✓ Removed tag from ${boxId}: ${name}`);
-      break;
-    }
-    case "tag-new": {
-      if (!args[0]) return fail("Usage: tent tag-new <name>");
-      if (args.length > 1) return fail("Usage: tent tag-new <name>");
-      await createTag(env, args[0]);
-      console.log(`✓ Registered tag: ${args[0]}`);
-      break;
-    }
-    case "tag-rm": {
-      const { positionals, flags } = parseFlags(args);
-      const [name, confirmation] = positionals;
-      if (!name) return fail("Usage: tent tag-rm <name> --yes OR tent tag-rm <name> <name>");
-      if (positionals.length > 2) return fail("Usage: tent tag-rm <name> --yes OR tent tag-rm <name> <name>");
-      if (!flags.yes && confirmation !== name) {
-        return fail(`Deleting a tag removes it from every box. Add --yes or repeat the tag name to confirm: tent tag-rm ${name} ${name}`);
-      }
-      await deleteTag(env, name);
-      console.log(`✓ Deleted tag from registry and all boxes: ${name}`);
       break;
     }
     case "tags": {
@@ -559,41 +289,6 @@ async function main() {
       for (const box of boxes) {
         const pointer = outputPointer(box.fm, box.body);
         console.log(`${box.id}\t${box.path}\t${box.type}${pointer ? `\t${pointer}` : ""}`);
-      }
-      break;
-    }
-    case "fork": {
-      if (!args[0]) return fail("Usage: tent fork <boxId>");
-      if (args.length > 1) return fail("Usage: tent fork <boxId>");
-      const id = await forkNode(env, args[0]);
-      console.log(`✓ Forked ${args[0]} → ${id}`);
-      break;
-    }
-    case "clean-temp": {
-      if (args.length > 1) return fail("Usage: tent clean-temp [role]");
-      if (args[0] && isUnsafeRoleSegment(args[0])) return fail(`Invalid role for clean-temp: ${args[0]}`);
-      await cleanTemp(env, args[0]);
-      console.log(`✓ Cleared temp/${args[0] || "(all)"}`);
-      break;
-    }
-    case "force-release": {
-      if (!args[0]) return fail("Usage: tent force-release <boxId>");
-      if (args.length > 1) return fail("Usage: tent force-release <boxId>");
-      await forceRelease(env, args[0]);
-      console.log(`✓ Force-released active tasks for box: ${args[0]}`);
-      break;
-    }
-    case "okf-sync": {
-      if (args.length > 0) return fail("Usage: tent okf-sync");
-      const result = await syncOkfBundle(env.fs);
-      console.log(
-        `✓ OKF synchronized\n` +
-          `generated: ${result.generatedFiles.length}\n` +
-          `projected: ${result.projectedFiles.length}\n` +
-          `unresolved wiki links: ${result.unresolved.length}`
-      );
-      if (result.unresolved.length > 0) {
-        for (const item of result.unresolved) console.log(`! ${item.file}: [[${item.target}]]`);
       }
       break;
     }
@@ -645,15 +340,11 @@ function fail(msg: string) {
   process.exitCode = 1;
 }
 
-function isUnsafeRoleSegment(value: string): boolean {
-  return value.includes("..") || /[\/\\\r\n]/.test(value);
-}
-
 /** 解析 args 里的 --flag <value>,其余作为位置参数。 */
 function parseFlags(args: string[]): { positionals: string[]; flags: Record<string, string> } {
   const positionals: string[] = [];
   const flags: Record<string, string> = {};
-  const booleanFlags = new Set(["force", "yes", "as-sub", "dry-run", "json"]);
+  const booleanFlags = new Set(["force", "json"]);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a.startsWith("--")) {
@@ -744,9 +435,11 @@ function helpText(): string {
 Usage:
   tent <command> [args]
 
-Run commands from a workspace with <workspace>/.tent/ (or legacy external tent root) unless noted.
+Run commands from a workspace with <workspace>/.tent/ unless noted.
 
-Service-backed collaboration (required for Desktop / in-workspace mutates):
+Service-backed workspace operations:
+  tent node list|get|create|write|… Agent-facing Node operations through Local Service
+  tent node --help                   Full Node subcommand help
   tent task list|get|claim|deliver|…  Attach Local Service → mount → task.* RPC
   tent task --help                    Full task subcommand help
   tent agent enter|status|leave       External session lifecycle (no ACP spawn)
@@ -756,13 +449,9 @@ Service-backed collaboration (required for Desktop / in-workspace mutates):
   propose <boxId> <file|->            Submit a proposal (in-workspace → proposal.submit RPC)
   CLI exit does not stop Local Service. Token stays in machine-local service.json.
 
-Init / machine config (always allowed):
-  new <path>                         Create an empty in-workspace Tent at <path>/.tent.
-  new <name> --vault <vault>         Create a Tent under the vault's configured tents root.
-  migrate --source <root> --workspace <ws>
-                                     Copy legacy external tent root into <ws>/.tent (alias: import).
-                                     Refuses if <ws>/.tent exists. Never deletes source.
-                                     Options: --dry-run --force --json
+Initialization and machine config:
+  new <workspace-path>               Create <workspace>/.tent without touching project files.
+                                     Use "tent new ." to adopt an existing project.
   skill-install [--target all|claude|shared-agents] [--force]
                                      Install bundled skills to selected machine roots.
   agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copilot]
@@ -772,26 +461,12 @@ Init / machine config (always allowed):
   role-checkpoint set|show|clear     Continuation note: set/clear via Local Service; show read-only.
                                      set/clear accept --actor user|<role> (default user).
 
-Read-only (allowed on in-workspace .tent):
+Read-only:
   status                             Print a read-only Tent status summary.
   roles                              Print the role registry.
   tags                               List registered tags.
   find <tag>                         Find boxes by tag.
-  tree                               Print the box tree.
-
-Legacy direct-core mutations (external / non-.tent system root only — migration window):
-  On <workspace>/.tent these fail-loud; use tent task * or Desktop Service instead.
-  dispatch <boxId> <role> <prompt>   Create a pending task envelope.
-  task-ack <taskPath>                Mark a task taken and claim its box (legacy claim).
-  task-cancel <taskPath>             Delete a pending task envelope.
-  force-release <boxId>              Interrupt/cancel active tasks for the box (no FM write).
-  new-box <name> <type> [parentId]   Create a box (type: goal|prompt|output[-secondary]).
-  tag|untag <boxId> <tag>            Add or remove a tag.
-  tag-new | tag-rm                   Manage the tag registry.
-  fork <boxId>                       Copy a box subtree with new ids.
-  clean-temp [role]                  Remove temp state for one role or all roles.
-  okf-sync                           Regenerate OKF indexes and projected links.
-  propose <boxId> <file|->           External roots only: direct-core proposal submit.
+  tree                               Print the Node tree.
 
 Options:
   -h, --help                         Show this help.
@@ -800,120 +475,24 @@ Options:
 }
 
 /**
- * 从 Obsidian 插件设置读 tentsRoot。帐根目录是用户可改的设置(面板里),genesis 不该写死。
- * 读不到/解析失败,回退默认 "tents"(对齐 src/plugin/main.ts 的 DEFAULT_SETTINGS)。
- */
-interface VaultPluginSettings {
-  tentsRoot: string;
-  typeRegistry?: TypeRegistry;
-  rolesRegistry?: RolesRegistry;
-}
-
-async function readVaultPluginSettings(vault: string): Promise<VaultPluginSettings> {
-  const fsmod = await import("node:fs/promises");
-  const dataPath = path.join(path.resolve(vault), ".obsidian", "plugins", "tent", "data.json");
-  try {
-    const data = JSON.parse(await fsmod.readFile(dataPath, "utf8"));
-    const root = typeof data?.tentsRoot === "string" ? data.tentsRoot.trim() : "";
-    const defaults = data?.newTentDefaults ?? data?.newTentTemplate;
-    return {
-      tentsRoot: root || "tents",
-      ...(defaults?.typeRegistry ? { typeRegistry: normalizeRegistry(defaults.typeRegistry) } : {}),
-      ...(defaults?.rolesRegistry ? { rolesRegistry: normalizeTemplateRoles(defaults.rolesRegistry) } : {}),
-    };
-  } catch {
-    return { tentsRoot: "tents" };
-  }
-}
-
-/**
  * 建一顶新帐：in-workspace 布局 `<target>/.tent/`。
- * `target` 为 workspace 根（或 vault 模式下 vault/tentsRoot/name）。
- * 不写外置双路径；注册表与结构标记落在 `.tent/` 内。
+ * `target` is the workspace root. Existing project files remain untouched.
  */
-async function newTent(target: string, vault?: string): Promise<void> {
+async function newTent(target: string): Promise<void> {
   const fsmod = await import("node:fs/promises");
-  let pluginSettings: VaultPluginSettings | undefined;
-
-  // --vault 模式:target 当帐名,落到 vault 配置的 tentsRoot 下(绑 Obsidian 设置层)。
-  if (vault) {
-    if (target.includes("/") || target.includes("\\")) {
-      return fail(`In --vault mode, <name> cannot contain path separators: ${target}`);
-    }
-    pluginSettings = await readVaultPluginSettings(vault);
-    target = path.join(path.resolve(vault), pluginSettings.tentsRoot, target);
-  }
-
   const workspaceRoot = path.resolve(target);
   const fsa = new NodeFs(workspaceRoot);
   if (await fsa.exists(".tent")) return fail(`Target is already a Tent: ${workspaceRoot}`);
 
   await fsmod.mkdir(workspaceRoot, { recursive: true });
   const name = path.basename(workspaceRoot);
-  await scaffoldInWorkspace(fsa, {
-    name,
-    typeRegistry: pluginSettings?.typeRegistry,
-    rolesRegistry: pluginSettings?.rolesRegistry,
-  });
+  await scaffoldInWorkspace(fsa, { name });
 
   console.log(
     `✓ Created Tent: ${path.join(workspaceRoot, ".tent")}\n` +
       `In-workspace layout: collaboration facts live under <workspace>/.tent/.\n` +
-      `The concept tree starts empty; add notes/boxes as folder + same-named Markdown.`
+      `The Node tree starts empty; use tent-init to propose and approve its initial structure.`
   );
-}
-
-function formatImportReport(report: Awaited<ReturnType<typeof importExternalTentRoot>>): string {
-  const lines = [
-    report.dryRun ? "Tent migrate (dry-run)" : "Tent migrate",
-    `  source:     ${report.sourceRoot}`,
-    `  workspace:  ${report.workspaceRoot}`,
-    `  systemRoot: ${report.systemRoot}`,
-    `  copied:     ${report.copied}`,
-    `  sourceMarked (MIGRATED.md): ${report.sourceMarked}`,
-    `  id remaps:  ${report.schema.idMap.length}`,
-    `  type rewrites: ${report.schema.typeRewrites.length}`,
-  ];
-  if (report.schema.registryChanges.length) {
-    lines.push("  registry:");
-    for (const c of report.schema.registryChanges.slice(0, 40)) {
-      lines.push(`    - ${c}`);
-    }
-    if (report.schema.registryChanges.length > 40) {
-      lines.push(`    … +${report.schema.registryChanges.length - 40} more`);
-    }
-  }
-  if (report.schema.idMap.length) {
-    lines.push("  id map (sample):");
-    for (const e of report.schema.idMap.slice(0, 12)) {
-      lines.push(`    - ${e.from} → ${e.to} (${e.path})`);
-    }
-    if (report.schema.idMap.length > 12) {
-      lines.push(`    … +${report.schema.idMap.length - 12} more`);
-    }
-  }
-  for (const w of report.warnings) lines.push(`  warning: ${w}`);
-  for (const s of report.skipped) lines.push(`  skipped: ${s}`);
-  if (!report.dryRun) {
-    lines.push(
-      "Source was not deleted. Verify <workspace>/.tent then remove the old root manually if desired."
-    );
-  }
-  return lines.join("\n");
-}
-
-function normalizeTemplateRoles(value: unknown): RolesRegistry {
-  if (typeof value !== "object" || value === null) return { roles: [] };
-  const raw = value as { roles?: unknown };
-  if (!Array.isArray(raw.roles)) return { roles: [] };
-  const roles: RoleDefinition[] = [];
-  for (const item of raw.roles) {
-    if (typeof item !== "object" || item === null) continue;
-    const role = normalizeRoleDefinition(item as Record<string, unknown>);
-    if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
-    roles.push(role);
-  }
-  return { roles };
 }
 
 // Only auto-run when this file is the process entry (not when imported by tests).
