@@ -3589,11 +3589,11 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     throw new RpcError(-32602, "task.dispatch with assigneeKind=role requires role");
   }
   // agentId path: always resolve AgentDefinition → machine-local profileId and
-  // verify any explicit profileId matches. Roster standing auth applies only when
-  // parentActor and/or caller is a Role (Role owns the roster). User-direct
-  // parentActor=reviewer=user + callerKind=user is root: no Role/roster required;
-  // persist agentId, launch managed ACP, review-to-user. ProfileId one-shot
-  // without agentId remains a separate user-direct path (no logical agentId).
+  // verify any explicit profileId matches. Actor authority is strict:
+  // callerKind=role iff parentActor.kind=role (reviewer already equals parent).
+  // Role pair → standing roster auth. User pair → root, no roster; persist
+  // agentId, launch managed ACP, review-to-user. ProfileId one-shot without
+  // agentId remains a separate user-direct path (no logical agentId).
   let resolvedAgentId: string | undefined;
   if (agentIdParam) {
     if (assigneeKind !== "agentProfile") {
@@ -3620,22 +3620,32 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       }
       throw new RpcError(-32602, message);
     }
-    // Role parent/caller → standing roster gate (out-of-roster fails loud).
-    // User-direct (parent=user + callerKind=user) skips roster; no bypass flag.
-    // Inconsistent combinations (e.g. callerKind=role with parent user) still fail
-    // loud via assertRoleRosterStandingAuth / existing actor authority rules.
-    const roleOwnedDispatch =
-      resolvedActors.parentActor.kind === "role" || callerKind === "role";
-    if (roleOwnedDispatch) {
+    // Explicit invariant: callerKind and parentActor kind must agree for agentId.
+    // Do not silently pass roster when callerKind=user + parentActor=role (or the reverse).
+    const parentIsRole = resolvedActors.parentActor.kind === "role";
+    const callerIsRole = callerKind === "role";
+    if (callerIsRole !== parentIsRole) {
+      throw new RpcError(
+        -32602,
+        callerIsRole
+          ? "task.dispatch with agentId: callerKind=role requires parentActor kind=role (got user)"
+          : "task.dispatch with agentId: callerKind=user requires parentActor kind=user (got role)",
+        {
+          callerKind,
+          parentActor: resolvedActors.parentActor,
+          reviewer: resolvedActors.reviewer,
+        }
+      );
+    }
+    if (parentIsRole) {
+      // Role/role pair → standing roster gate (out-of-roster fails loud).
       await assertRoleRosterStandingAuth(ctx, mount.env.fs, {
-        dispatcher:
-          resolvedActors.parentActor.kind === "role"
-            ? resolvedActors.parentActor.id
-            : undefined,
+        dispatcher: resolvedActors.parentActor.id,
         agentId: resolvedAgentId,
         profileId,
       });
     }
+    // else: user/user pair — no Role/roster; agentId + managed ACP + review-to-user.
   }
   if (assigneeKind === "agentProfile" && !profileId) {
     throw new RpcError(

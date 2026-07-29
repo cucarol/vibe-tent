@@ -455,6 +455,48 @@ test("Service agent CRUD + role roster projection; out-of-roster denies", async 
     assert.ok(out.error);
     assert.equal(out.error!.code, RPC_A2A_DENIED);
     assert.match(String(out.error!.message), /roster|not on role/i);
+
+    // Restore roster so mismatch cases are not confounded with out-of-roster.
+    await client.registryRoleUpdate(workspaceId, "dispatcher", {
+      roster: ["core-worker"],
+    });
+
+    // Inconsistent actor combinations must fail loud (both directions), even in-roster.
+    const userCallerRoleParent = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      assigneeKind: "agentProfile",
+      agentId: "core-worker",
+      prompt: "callerKind user with parent role",
+      callerKind: "user",
+      parentActor: { kind: "role", id: "dispatcher" },
+      reviewer: { kind: "role", id: "dispatcher" },
+      startSession: true,
+    });
+    assert.ok(userCallerRoleParent.error);
+    assert.equal(userCallerRoleParent.error!.code, -32602);
+    assert.match(
+      String(userCallerRoleParent.error!.message),
+      /callerKind=user requires parentActor kind=user|got role/i
+    );
+
+    const roleCallerUserParent = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      assigneeKind: "agentProfile",
+      agentId: "core-worker",
+      prompt: "callerKind role with parent user",
+      callerKind: "role",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      startSession: true,
+    });
+    assert.ok(roleCallerUserParent.error);
+    assert.equal(roleCallerUserParent.error!.code, -32602);
+    assert.match(
+      String(roleCallerUserParent.error!.message),
+      /callerKind=role requires parentActor kind=role|got user/i
+    );
   });
 });
 
@@ -598,45 +640,12 @@ test("CLI help documents --target agent:<agentId>; user-direct real Service flow
   assert.match(help, /Rejected \(no alias\)/);
   assert.match(help, /--profile|--agent/);
   // Active usage line must not re-offer retired public selectors.
+  // Full retired-flag rejection is covered by cli-task-dispatch-grammar.
   const usageLine = help
     .split("\n")
     .find((l) => l.includes("tent task dispatch --target"));
   assert.ok(usageLine);
   assert.doesNotMatch(usageLine!, /--profile|--agent\b/);
-
-  const helpRejectProfile = await runTaskCommand(
-    "dispatch",
-    [
-      "--target",
-      "agent:worker-x",
-      "--node",
-      "cx-dummy",
-      "--prompt",
-      "no",
-      "--profile",
-      "fake-default",
-    ],
-    { cwd: await makeWorkspace("cli-help-reject-profile"), json: true }
-  );
-  assert.notEqual(helpRejectProfile.exitCode, 0);
-  assert.match(helpRejectProfile.stderr + helpRejectProfile.stdout, /no longer accepts|--profile/i);
-
-  const helpRejectAgent = await runTaskCommand(
-    "dispatch",
-    [
-      "--target",
-      "agent:worker-x",
-      "--node",
-      "cx-dummy",
-      "--prompt",
-      "no",
-      "--agent",
-      "worker-x",
-    ],
-    { cwd: await makeWorkspace("cli-help-reject-agent"), json: true }
-  );
-  assert.notEqual(helpRejectAgent.exitCode, 0);
-  assert.match(helpRejectAgent.stderr + helpRejectAgent.stdout, /no longer accepts|--agent/i);
 
   const ws = await makeWorkspace("cli-agent-direct");
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-cli-agent-data-"));
@@ -645,9 +654,7 @@ test("CLI help documents --target agent:<agentId>; user-direct real Service flow
     writeEndpoint: true,
     packageRoot: repoRoot,
   });
-  const previousTentRole = process.env.TENT_ROLE;
   try {
-    delete process.env.TENT_ROLE;
     const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
     assert.ok(!mounted.error, JSON.stringify(mounted.error));
     const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
@@ -668,7 +675,7 @@ test("CLI help documents --target agent:<agentId>; user-direct real Service flow
     assert.ok(!created.error, JSON.stringify(created.error));
     const boxId = (created.result as { id: string }).id;
 
-    // User-direct: TENT_ROLE empty → parentActor=reviewer=user, callerKind=user.
+    // User-direct via globals.env TENT_ROLE="" only (no process.env mutation).
     // Public CLI sends agentId + startSession; Service must not require Role roster.
     const result = await runTaskCommand(
       "dispatch",
@@ -737,8 +744,6 @@ test("CLI help documents --target agent:<agentId>; user-direct real Service flow
     assert.deepEqual(task.reviewer, { kind: "user", id: "user" });
     assert.ok(task.sessionId, "envelope must bind managed sessionId");
   } finally {
-    if (previousTentRole === undefined) delete process.env.TENT_ROLE;
-    else process.env.TENT_ROLE = previousTentRole;
     await svc.stop();
   }
 });
