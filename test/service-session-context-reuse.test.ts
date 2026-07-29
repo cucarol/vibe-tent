@@ -38,6 +38,9 @@ import {
 } from "../src/core/task-context-card.js";
 import { buildTaskContextCard } from "../src/core/task-context-card.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
+import { createDelivery } from "../src/core/delivery.js";
+import { makeTaskInputId } from "../src/service/task-input-store.js";
+import { makeUserAskId } from "../src/service/user-ask-store.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
 import { writeWorkspaceAgents } from "../src/core/workspace-agents.js";
 
@@ -94,18 +97,66 @@ async function makeWorkspace(name = "ctx-reuse"): Promise<string> {
 
 async function withService<T>(
   fn: (svc: Svc) => Promise<T>,
-  opts?: { profiles?: import("../src/runtime/types.js").AgentProfileConfig[] }
+  opts?: {
+    profiles?: import("../src/runtime/types.js").AgentProfileConfig[];
+    packageRoot?: string;
+  }
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ctx-reuse-data-"));
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
     profiles: opts?.profiles ?? [FAKE_RESUMABLE, FAKE_OTHER],
+    ...(opts?.packageRoot ? { packageRoot: opts.packageRoot } : {}),
   });
   try {
     return await fn(svc);
   } finally {
     await svc.stop();
+  }
+}
+
+/** Read managed bootstrap text written by the fake adapter for a session. */
+async function findFakeBootstrapPrompt(sessionId: string): Promise<string | null> {
+  const tmp = os.tmpdir();
+  const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, "");
+  const candidates = [
+    path.join(tmp, `tent-bootstrap-${safe}.txt`),
+    path.join(tmp, `tent-bootstrap-${sessionId}.txt`),
+  ];
+  for (const p of candidates) {
+    try {
+      return await fs.readFile(p, "utf8");
+    } catch {
+      /* try next */
+    }
+  }
+  try {
+    for (const name of await fs.readdir(tmp)) {
+      if (name.startsWith("tent-bootstrap-") && name.includes(safe) && name.endsWith(".txt")) {
+        return await fs.readFile(path.join(tmp, name), "utf8");
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+async function writeMinimalSkillPackage(
+  skillRoot: string,
+  tentTaskBody = "body-v1",
+  tentTaskVersion = "1.0.0"
+): Promise<void> {
+  for (const name of ["tent-task", "tent-role"]) {
+    const dir = path.join(skillRoot, "skills", name);
+    await fs.mkdir(dir, { recursive: true });
+    const body = name === "tent-task" ? tentTaskBody : "role-body-v1";
+    const version = name === "tent-task" ? tentTaskVersion : "1.0.0";
+    await fs.writeFile(
+      path.join(dir, "SKILL.md"),
+      `---\nname: ${name}\nversion: "${version}"\n---\n\n# ${name}\n${body}\n`
+    );
   }
 }
 
@@ -1136,16 +1187,7 @@ test("same-profileId in-place: ACP model/baseUrlEnvKey and MCP env/credentialRef
 test("live generation: AGENTS/Role/Skill/profile mutations force fresh Session and refresh Task gen", async () => {
   const skillRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skills-live-"));
   try {
-    // Minimal skill bundle for packageRoot override.
-    for (const name of ["tent-task", "tent-role"]) {
-      const dir = path.join(skillRoot, "skills", name);
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(
-        path.join(dir, "SKILL.md"),
-        `---\nname: ${name}\nversion: "1.0.0"\n---\n\n# ${name}\nbody-v1\n`
-      );
-    }
-
+    await writeMinimalSkillPackage(skillRoot);
     const ws = await makeWorkspace("live-gen");
     try {
       await initGit(ws);
@@ -1154,71 +1196,125 @@ test("live generation: AGENTS/Role/Skill/profile mutations force fresh Session a
           const { workspaceId, boxId } = await mountWorkItem(svc, ws);
           const envFs = new NodeFs(path.join(ws, ".tent"));
 
-          const d1 = await rpc(svc, "task.dispatch", {
+          // ---- AGENTS: dispatch without start → mutate → startSession ----
+          const dAgents = await rpc(svc, "task.dispatch", {
             workspaceId,
             boxId,
-            prompt: "first",
+            prompt: "agents mutate path",
             assigneeKind: "agentProfile",
             profileId: "fake-resumable",
             parentActor: { kind: "role", id: "orchestrator" },
             reviewer: { kind: "role", id: "orchestrator" },
-            startSession: true,
+            startSession: false,
             callerKind: "user",
-            bootstrapPrompt: "CUSTOM_CALLER_ONLY",
           });
-          assert.ok(!d1.error, JSON.stringify(d1.error));
-          const t1 = await loadTaskEnvelope(
-            envFs,
-            (d1.result as { taskPath: string }).taskPath
-          );
-          const gen1 = t1.contextGeneration!;
-          const sid1 = t1.sessionId!;
-          assert.ok(isContextGenerationId(gen1));
-          // Session facts use live generation (not empty / placeholder).
-          const row1 = await svc.runtime.registry.read(sid1);
-          assert.equal(row1?.contextGeneration, gen1);
+          assert.ok(!dAgents.error, JSON.stringify(dAgents.error));
+          const tAgentsPath = (dAgents.result as { taskPath: string }).taskPath;
+          const tAgentsBefore = await loadTaskEnvelope(envFs, tAgentsPath);
+          const genAgentsDispatch = tAgentsBefore.contextGeneration!;
+          assert.ok(isContextGenerationId(genAgentsDispatch));
 
-          await svc.runtime.stopSession(sid1, "user");
+          await writeWorkspaceAgents(ws, "# AGENTS mutated after dispatch before start\n");
 
-          // Mutate AGENTS between sessions → live generation must change.
-          await writeWorkspaceAgents(ws, "# AGENTS mutated for live generation\n");
-
-          const d2 = await rpc(svc, "task.dispatch", {
+          const startAgents = await rpc(svc, "task.startSession", {
             workspaceId,
-            boxId,
-            prompt: "second after AGENTS mutate",
-            assigneeKind: "agentProfile",
+            taskPath: tAgentsPath,
             profileId: "fake-resumable",
-            parentActor: { kind: "role", id: "orchestrator" },
-            reviewer: { kind: "role", id: "orchestrator" },
-            startSession: true,
             callerKind: "user",
-            bootstrapPrompt: "ANOTHER_CUSTOM",
           });
-          assert.ok(!d2.error, JSON.stringify(d2.error));
-          const t2 = await loadTaskEnvelope(
-            envFs,
-            (d2.result as { taskPath: string }).taskPath
-          );
+          assert.ok(!startAgents.error, JSON.stringify(startAgents.error));
+          const tAgents = await loadTaskEnvelope(envFs, tAgentsPath);
           assert.notEqual(
-            t2.contextGeneration,
-            gen1,
-            "live AGENTS mutation must change contextGeneration"
+            tAgents.contextGeneration,
+            genAgentsDispatch,
+            "live AGENTS mutation must refresh Task/card generation to live id"
           );
-          assert.notEqual(
-            t2.sessionId,
-            sid1,
-            "generation drift must force fresh Session (not reuse old id)"
-          );
+          assert.ok(isContextGenerationId(tAgents.contextGeneration!));
           assert.equal(
-            (await svc.runtime.registry.read(t2.sessionId!))?.contextGeneration,
-            t2.contextGeneration
+            (await svc.runtime.registry.read(tAgents.sessionId!))?.contextGeneration,
+            tAgents.contextGeneration
+          );
+          const bootAgents = await findFakeBootstrapPrompt(tAgents.sessionId!);
+          assert.ok(bootAgents, "fresh AGENTS path must capture adapter bootstrap");
+          assert.match(bootAgents!, /Tent managed session bootstrap/);
+          assert.doesNotMatch(bootAgents!, /Tent managed session delta/);
+
+          await svc.runtime.stopSession(tAgents.sessionId!, "user");
+          await patchTaskEnvelope(envFs, tAgentsPath, {
+            state: "accepted",
+            sessionId: null,
+            activeDeliveryId: null,
+          });
+
+          // ---- tent-task skill body/version: dispatch → mutate package → start ----
+          const dSkill = await rpc(svc, "task.dispatch", {
+            workspaceId,
+            boxId,
+            prompt: "skill mutate path",
+            assigneeKind: "agentProfile",
+            profileId: "fake-resumable",
+            parentActor: { kind: "role", id: "orchestrator" },
+            reviewer: { kind: "role", id: "orchestrator" },
+            startSession: false,
+            callerKind: "user",
+          });
+          assert.ok(!dSkill.error, JSON.stringify(dSkill.error));
+          const tSkillPath = (dSkill.result as { taskPath: string }).taskPath;
+          const genSkillDispatch = (await loadTaskEnvelope(envFs, tSkillPath))
+            .contextGeneration!;
+
+          await fs.writeFile(
+            path.join(skillRoot, "skills", "tent-task", "SKILL.md"),
+            `---\nname: tent-task\nversion: "1.0.1"\n---\n\n# tent-task\nbody-v2-mutated\n`
           );
 
-          await svc.runtime.stopSession(t2.sessionId!, "user");
+          const startSkill = await rpc(svc, "task.startSession", {
+            workspaceId,
+            taskPath: tSkillPath,
+            profileId: "fake-resumable",
+            callerKind: "user",
+          });
+          assert.ok(!startSkill.error, JSON.stringify(startSkill.error));
+          const tSkill = await loadTaskEnvelope(envFs, tSkillPath);
+          assert.notEqual(
+            tSkill.contextGeneration,
+            genSkillDispatch,
+            "tent-task body/version mutation must refresh live generation"
+          );
+          assert.notEqual(
+            tSkill.contextGeneration,
+            tAgents.contextGeneration,
+            "skill mutation must not reuse prior Task generation"
+          );
+          const bootSkill = await findFakeBootstrapPrompt(tSkill.sessionId!);
+          assert.ok(bootSkill);
+          assert.match(bootSkill!, /Tent managed session bootstrap/);
+          assert.match(bootSkill!, /body-v2-mutated|tent-task/i);
 
-          // Same profileId edited in place (non-secret env key / args) → launch digest
-          // flips → fresh Session, without breaking spawn command.
+          await svc.runtime.stopSession(tSkill.sessionId!, "user");
+          await patchTaskEnvelope(envFs, tSkillPath, {
+            state: "accepted",
+            sessionId: null,
+            activeDeliveryId: null,
+          });
+
+          // ---- same-profileId launch config in-place edit ----
+          const dProf = await rpc(svc, "task.dispatch", {
+            workspaceId,
+            boxId,
+            prompt: "profile mutate path",
+            assigneeKind: "agentProfile",
+            profileId: "fake-resumable",
+            parentActor: { kind: "role", id: "orchestrator" },
+            reviewer: { kind: "role", id: "orchestrator" },
+            startSession: false,
+            callerKind: "user",
+          });
+          assert.ok(!dProf.error, JSON.stringify(dProf.error));
+          const tProfPath = (dProf.result as { taskPath: string }).taskPath;
+          const genProfDispatch = (await loadTaskEnvelope(envFs, tProfPath))
+            .contextGeneration!;
+
           const cat = svc.ctx.profileCatalog as unknown as {
             profiles: import("../src/runtime/types.js").AgentProfileConfig[];
             runtime: { replaceProfileCatalog: (p: unknown[]) => void };
@@ -1233,110 +1329,95 @@ test("live generation: AGENTS/Role/Skill/profile mutations force fresh Session a
           };
           cat.runtime.replaceProfileCatalog(cat.profiles);
 
-          const d3 = await rpc(svc, "task.dispatch", {
+          const startProf = await rpc(svc, "task.startSession", {
             workspaceId,
-            boxId,
-            prompt: "third after profile in-place edit",
-            assigneeKind: "agentProfile",
+            taskPath: tProfPath,
             profileId: "fake-resumable",
-            parentActor: { kind: "role", id: "orchestrator" },
-            reviewer: { kind: "role", id: "orchestrator" },
-            startSession: true,
             callerKind: "user",
           });
-          assert.ok(!d3.error, JSON.stringify(d3.error));
-          const t3 = await loadTaskEnvelope(
-            envFs,
-            (d3.result as { taskPath: string }).taskPath
+          assert.ok(!startProf.error, JSON.stringify(startProf.error));
+          const tProf = await loadTaskEnvelope(envFs, tProfPath);
+          assert.notEqual(tProf.contextGeneration, genProfDispatch);
+          assert.notEqual(tProf.sessionId, tSkill.sessionId);
+          assert.equal(
+            (await svc.runtime.registry.read(tProf.sessionId!))?.contextGeneration,
+            tProf.contextGeneration
           );
-          assert.notEqual(t3.contextGeneration, t2.contextGeneration);
-          assert.notEqual(t3.sessionId, t2.sessionId);
+
+          await svc.runtime.stopSession(tProf.sessionId!, "user");
+          await patchTaskEnvelope(envFs, tProfPath, {
+            state: "accepted",
+            sessionId: null,
+            activeDeliveryId: null,
+          });
+
+          // ---- Role prompt+roster: dispatch → mutate roles.json → startSession ----
+          const dRole = await rpc(svc, "task.dispatch", {
+            workspaceId,
+            boxId,
+            role: "executor",
+            prompt: "role mutate path",
+            assigneeKind: "role",
+            profileId: "fake-resumable",
+            parentActor: { kind: "user", id: "user" },
+            reviewer: { kind: "user", id: "user" },
+            startSession: false,
+            callerKind: "user",
+          });
+          assert.ok(!dRole.error, JSON.stringify(dRole.error));
+          const tRolePath = (dRole.result as { taskPath: string }).taskPath;
+          const genRoleDispatch = (await loadTaskEnvelope(envFs, tRolePath))
+            .contextGeneration!;
+
+          await fs.writeFile(
+            path.join(ws, ".tent", "roles.json"),
+            JSON.stringify(
+              {
+                roles: [
+                  {
+                    name: "orchestrator",
+                    prompt: "dispatch work",
+                    a2aPolicy: "allow",
+                    allowedProfiles: ["fake-resumable", "fake-other"],
+                    roster: ["worker-a"],
+                  },
+                  {
+                    name: "executor",
+                    prompt: "do work MUTATED PROMPT",
+                    a2aPolicy: "allow",
+                    allowedProfiles: ["fake-resumable"],
+                    roster: ["worker-b", "worker-c"],
+                  },
+                ],
+              },
+              null,
+              2
+            ) + "\n"
+          );
+
+          const startRole = await rpc(svc, "task.startSession", {
+            workspaceId,
+            taskPath: tRolePath,
+            profileId: "fake-resumable",
+            callerKind: "user",
+          });
+          assert.ok(!startRole.error, JSON.stringify(startRole.error));
+          const tRole = await loadTaskEnvelope(envFs, tRolePath);
+          assert.notEqual(
+            tRole.contextGeneration,
+            genRoleDispatch,
+            "Role prompt+roster mutation must refresh live generation"
+          );
+          const bootRole = await findFakeBootstrapPrompt(tRole.sessionId!);
+          assert.ok(bootRole);
+          assert.match(bootRole!, /Tent managed session bootstrap/);
+          assert.match(bootRole!, /MUTATED PROMPT|do work/);
         },
         {
           profiles: [FAKE_RESUMABLE, FAKE_OTHER],
+          packageRoot: skillRoot,
         }
       );
-      // packageRoot skill mutation path (collector-level production facts).
-      const before = await collectStableContextGeneration({
-        workspaceRoot: ws,
-        workspaceIdentity: "ws-skill",
-        packageRoot: skillRoot,
-        packageVersion: "0.1.0",
-        assigneeKind: "agentProfile",
-        assigneeLabel: "fake-resumable",
-        profileId: "fake-resumable",
-        adapterId: FAKE_ADAPTER_ID,
-        profile: { ...FAKE_RESUMABLE },
-      });
-      await fs.writeFile(
-        path.join(skillRoot, "skills", "tent-task", "SKILL.md"),
-        `---\nname: tent-task\nversion: "1.0.1"\n---\n\n# tent-task\nbody-v2-mutated\n`
-      );
-      const after = await collectStableContextGeneration({
-        workspaceRoot: ws,
-        workspaceIdentity: "ws-skill",
-        packageRoot: skillRoot,
-        packageVersion: "0.1.0",
-        assigneeKind: "agentProfile",
-        assigneeLabel: "fake-resumable",
-        profileId: "fake-resumable",
-        adapterId: FAKE_ADAPTER_ID,
-        profile: { ...FAKE_RESUMABLE },
-      });
-      assert.notEqual(before.contextGeneration, after.contextGeneration);
-      assert.notEqual(before.skillSetDigest, after.skillSetDigest);
-
-      // Role prompt/roster mutation flips generation.
-      const roleBefore = await collectStableContextGeneration({
-        workspaceRoot: ws,
-        workspaceIdentity: "ws-role",
-        packageRoot: skillRoot,
-        packageVersion: "0.1.0",
-        assigneeKind: "role",
-        assigneeLabel: "executor",
-        profileId: "fake-resumable",
-        adapterId: FAKE_ADAPTER_ID,
-        roleFs: new NodeFs(path.join(ws, ".tent")),
-        profile: { ...FAKE_RESUMABLE },
-      });
-      await fs.writeFile(
-        path.join(ws, ".tent", "roles.json"),
-        JSON.stringify(
-          {
-            roles: [
-              {
-                name: "orchestrator",
-                prompt: "dispatch work",
-                a2aPolicy: "allow",
-                allowedProfiles: ["fake-resumable", "fake-other"],
-                roster: ["worker-a"],
-              },
-              {
-                name: "executor",
-                prompt: "do work MUTATED PROMPT",
-                a2aPolicy: "allow",
-                allowedProfiles: ["fake-resumable"],
-                roster: ["worker-b"],
-              },
-            ],
-          },
-          null,
-          2
-        ) + "\n"
-      );
-      const roleAfter = await collectStableContextGeneration({
-        workspaceRoot: ws,
-        workspaceIdentity: "ws-role",
-        packageRoot: skillRoot,
-        packageVersion: "0.1.0",
-        assigneeKind: "role",
-        assigneeLabel: "executor",
-        profileId: "fake-resumable",
-        adapterId: FAKE_ADAPTER_ID,
-        roleFs: new NodeFs(path.join(ws, ".tent")),
-        profile: { ...FAKE_RESUMABLE },
-      });
-      assert.notEqual(roleBefore.contextGeneration, roleAfter.contextGeneration);
     } finally {
       await fs.rm(ws, { recursive: true, force: true });
     }
@@ -1353,6 +1434,7 @@ test("bootstrapPrompt custom append on fresh and resumed same-Task start", async
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const envFs = new NodeFs(path.join(ws, ".tent"));
 
+      // dispatch does not forward bootstrapPrompt; startSession is the production append path.
       const d = await rpc(svc, "task.dispatch", {
         workspaceId,
         boxId,
@@ -1361,20 +1443,43 @@ test("bootstrapPrompt custom append on fresh and resumed same-Task start", async
         profileId: "fake-resumable",
         parentActor: { kind: "role", id: "orchestrator" },
         reviewer: { kind: "role", id: "orchestrator" },
-        startSession: true,
+        startSession: false,
+        callerKind: "user",
+      });
+      assert.ok(!d.error, JSON.stringify(d.error));
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        profileId: "fake-resumable",
         callerKind: "user",
         bootstrapPrompt: "FRESH_CUSTOM_APPEND",
       });
-      assert.ok(!d.error, JSON.stringify(d.error));
-      const t = await loadTaskEnvelope(envFs, (d.result as { taskPath: string }).taskPath);
+      assert.ok(!started.error, JSON.stringify(started.error));
+      const t = await loadTaskEnvelope(envFs, taskPath);
       const sid = t.sessionId!;
       assert.ok(sid);
-      // Official path still bound a real generation (caller text did not replace bootstrap).
       assert.ok(isContextGenerationId(t.contextGeneration!));
       assert.equal(
         (await svc.runtime.registry.read(sid))?.contextGeneration,
         t.contextGeneration
       );
+
+      // Capture real adapter/provider bootstrap: official content remains; caller appends.
+      const freshBoot = await findFakeBootstrapPrompt(sid);
+      assert.ok(freshBoot, "fake adapter must write bootstrap file for fresh start");
+      assert.match(freshBoot!, /Tent managed session bootstrap/);
+      assert.match(freshBoot!, /tent-task|Tent Task Context Card|contextGeneration/i);
+      assert.match(freshBoot!, /Caller bootstrap append/);
+      assert.match(freshBoot!, /FRESH_CUSTOM_APPEND/);
+      assert.ok(
+        freshBoot!.indexOf("Tent managed session bootstrap") <
+          freshBoot!.indexOf("FRESH_CUSTOM_APPEND"),
+        "caller text must append after official managed bootstrap, never replace"
+      );
+      // Fresh path always injects full stable prefix (continuity not yet proven).
+      assert.doesNotMatch(freshBoot!, /Tent managed session delta/);
 
       await svc.runtime.stopSession(sid, "user");
       const restart = await rpc(svc, "task.startSession", {
@@ -1389,9 +1494,423 @@ test("bootstrapPrompt custom append on fresh and resumed same-Task start", async
       // Same live facts + settled same Task → reuse Session; generation unchanged.
       assert.equal(t2.sessionId, sid);
       assert.equal(t2.contextGeneration, t.contextGeneration);
+
+      const resumeBoot = await findFakeBootstrapPrompt(sid);
+      assert.ok(resumeBoot, "fake adapter must write bootstrap file for resume");
+      // Continuity proven → stable prefix omitted; delta + caller append only.
+      assert.match(resumeBoot!, /Tent managed session delta/);
+      assert.match(resumeBoot!, /RESUME_CUSTOM_APPEND/);
+      assert.match(resumeBoot!, /Caller bootstrap append/);
+      assert.doesNotMatch(
+        resumeBoot!,
+        /Tent managed session bootstrap/,
+        "stable prefix omitted only after continuity gate"
+      );
+      // Official delta content still present (Context Card / task pointers), not replaced.
+      assert.match(resumeBoot!, /contextGeneration|Task envelope|## User Prompt/i);
     });
   } finally {
     await fs.rm(ws, { recursive: true, force: true });
   }
 });
 
+test("active same-Task path fails loud on empty/legacy Session contextGeneration", async () => {
+  const ws = await makeWorkspace("empty-gen-active");
+  try {
+    await initGit(ws);
+    await withService(async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const envFs = new NodeFs(path.join(ws, ".tent"));
+
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        prompt: "empty gen active path",
+        assigneeKind: "agentProfile",
+        profileId: "fake-resumable",
+        parentActor: { kind: "role", id: "orchestrator" },
+        reviewer: { kind: "role", id: "orchestrator" },
+        startSession: true,
+        callerKind: "user",
+      });
+      assert.ok(!d.error, JSON.stringify(d.error));
+      const t = await loadTaskEnvelope(envFs, (d.result as { taskPath: string }).taskPath);
+      const sid = t.sessionId!;
+      assert.ok(sid);
+      assert.ok(isContextGenerationId(t.contextGeneration!));
+
+      // Strip generation to simulate empty/legacy Session row while Session stays active.
+      await svc.runtime.registry.update(sid, { contextGeneration: "" });
+      const row = await svc.runtime.registry.read(sid);
+      assert.ok(row);
+      assert.ok(!row.contextGeneration?.trim());
+
+      const again = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath: t.path,
+        profileId: "fake-resumable",
+        callerKind: "user",
+      });
+      assert.ok(again.error, "empty Session contextGeneration must fail loud");
+      const msg = String(again.error.message || again.error);
+      assert.match(msg, /empty\/legacy contextGeneration|cannot prove continuity/i);
+      const data = (again.error as { data?: { code?: string } }).data;
+      assert.equal(data?.code, "CONTEXT_GENERATION_EMPTY_ACTIVE");
+    });
+  } finally {
+    await fs.rm(ws, { recursive: true, force: true });
+  }
+});
+
+test("hasBlockingDelivery fails loud when Delivery store is unreadable", async () => {
+  const ws = await makeWorkspace("del-store-fail");
+  try {
+    await initGit(ws);
+    await withService(async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const envFs = new NodeFs(path.join(ws, ".tent"));
+
+      const d1 = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "prior for delivery store fail",
+        assigneeKind: "role",
+        profileId: "fake-resumable",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+        startSession: true,
+        callerKind: "user",
+      });
+      assert.ok(!d1.error, JSON.stringify(d1.error));
+      const t1 = await loadTaskEnvelope(
+        envFs,
+        (d1.result as { taskPath: string }).taskPath
+      );
+      const sid = t1.sessionId!;
+      await svc.runtime.stopSession(sid, "user");
+      await patchTaskEnvelope(envFs, t1.path, {
+        state: "accepted",
+        sessionId: sid,
+        activeDeliveryId: null,
+      });
+
+      // Ensure deliveries dir exists so loadDeliveries actually listDirs it.
+      await fs.mkdir(path.join(ws, ".tent", "temp", "executor", "deliveries"), {
+        recursive: true,
+      });
+      await fs.writeFile(
+        path.join(ws, ".tent", "temp", "executor", "deliveries", "placeholder.md"),
+        "---\ntype: delivery\nid: dl-placeholder1\ntaskId: none\nboxId: none\nrole: executor\nstatus: draft\n---\n",
+        "utf8"
+      );
+
+      // Monkey-patch mount fs.listDir: Delivery scan must fail loud (never prove empty).
+      const mount = svc.ctx.host.require(workspaceId);
+      const originalListDir = mount.env.fs.listDir.bind(mount.env.fs);
+      mount.env.fs.listDir = async (dir: string) => {
+        const norm = String(dir).replace(/\\/g, "/");
+        if (norm.includes("deliveries")) {
+          throw new Error("simulated Delivery store unreadable");
+        }
+        return originalListDir(dir);
+      };
+
+      const d2 = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "next after corrupt delivery store",
+        assigneeKind: "role",
+        profileId: "fake-resumable",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+        startSession: true,
+        callerKind: "user",
+      });
+      assert.ok(
+        d2.error,
+        "unreadable Delivery store must fail loud (not reuse / not silent empty)"
+      );
+      const msg = String(d2.error.message || d2.error);
+      assert.match(
+        msg,
+        /Delivery|DELIVERY_STORE_UNREADABLE|noPendingDelivery|unreadable/i
+      );
+      const code = (d2.error as { data?: { code?: string } }).data?.code;
+      assert.equal(code, "DELIVERY_STORE_UNREADABLE");
+    });
+  } finally {
+    await fs.rm(ws, { recursive: true, force: true });
+  }
+});
+
+test("collector failure at startSession fails loud (no reusable fallback)", async () => {
+  const ws = await makeWorkspace("collector-fail");
+  try {
+    await initGit(ws);
+    await withService(async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const envFs = new NodeFs(path.join(ws, ".tent"));
+
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        prompt: "collector fail path",
+        assigneeKind: "agentProfile",
+        profileId: "fake-resumable",
+        parentActor: { kind: "role", id: "orchestrator" },
+        reviewer: { kind: "role", id: "orchestrator" },
+        startSession: false,
+        callerKind: "user",
+      });
+      assert.ok(!d.error, JSON.stringify(d.error));
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      const before = await loadTaskEnvelope(envFs, taskPath);
+      assert.ok(isContextGenerationId(before.contextGeneration!));
+
+      // Remove profile adapter so live collect at startSession fails loud.
+      const cat = svc.ctx.profileCatalog as unknown as {
+        profiles: import("../src/runtime/types.js").AgentProfileConfig[];
+        runtime: { replaceProfileCatalog: (p: unknown[]) => void };
+      };
+      const idx = cat.profiles.findIndex((p) => p.id === "fake-resumable");
+      assert.ok(idx >= 0);
+      const cur = cat.profiles[idx]!;
+      cat.profiles[idx] = { ...cur, adapterId: "" as unknown as string };
+      cat.runtime.replaceProfileCatalog(cat.profiles);
+
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        profileId: "fake-resumable",
+        callerKind: "user",
+      });
+      assert.ok(started.error, "missing adapterId must fail collector/start loud");
+      const msg = String(started.error.message || started.error);
+      assert.match(msg, /contextGeneration|adapterId|CONTEXT_GENERATION/i);
+      const after = await loadTaskEnvelope(envFs, taskPath);
+      assert.equal(after.sessionId, undefined);
+    });
+  } finally {
+    await fs.rm(ws, { recursive: true, force: true });
+  }
+});
+
+test("Service cross-Task prior blockers force fresh; accepted+settled reuses", async () => {
+  const ws = await makeWorkspace("prior-blockers");
+  try {
+    await initGit(ws);
+    await withService(async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const envFs = new NodeFs(path.join(ws, ".tent"));
+      const now = new Date().toISOString();
+
+      async function dispatchRole(prompt: string) {
+        const r = await rpc(svc, "task.dispatch", {
+          workspaceId,
+          boxId,
+          role: "executor",
+          prompt,
+          assigneeKind: "role",
+          profileId: "fake-resumable",
+          parentActor: { kind: "user", id: "user" },
+          reviewer: { kind: "user", id: "user" },
+          startSession: true,
+          callerKind: "user",
+        });
+        assert.ok(!r.error, JSON.stringify(r.error));
+        return loadTaskEnvelope(envFs, (r.result as { taskPath: string }).taskPath);
+      }
+
+      async function retireSessionTask(
+        task: Awaited<ReturnType<typeof loadTaskEnvelope>>,
+        sid: string | undefined
+      ) {
+        if (sid) {
+          try {
+            await svc.runtime.stopSession(sid, "user");
+          } catch {
+            /* already stopped */
+          }
+          await svc.runtime.registry.update(sid, {
+            state: "failed",
+            resumeToken: undefined,
+          });
+        }
+        await patchTaskEnvelope(envFs, task.path, {
+          state: "interrupted",
+          sessionId: null,
+          activeDeliveryId: null,
+        });
+      }
+
+      // Baseline: accepted prior reuses (positive control).
+      const tAccept = await dispatchRole("prior accepted baseline");
+      const sidAccept = tAccept.sessionId!;
+      await svc.runtime.stopSession(sidAccept, "user");
+      await patchTaskEnvelope(envFs, tAccept.path, {
+        state: "accepted",
+        sessionId: sidAccept,
+        activeDeliveryId: null,
+      });
+      const tReuse = await dispatchRole("after accepted should reuse");
+      assert.equal(tReuse.sessionId, sidAccept, "accepted+settled prior must reuse");
+      await svc.runtime.stopSession(sidAccept, "user");
+      await patchTaskEnvelope(envFs, tReuse.path, {
+        state: "accepted",
+        sessionId: null,
+        activeDeliveryId: null,
+      });
+      // Keep sidAccept bound only on tAccept for subsequent blocker tests.
+      await patchTaskEnvelope(envFs, tAccept.path, {
+        state: "accepted",
+        sessionId: sidAccept,
+        activeDeliveryId: null,
+      });
+
+      // ---- pending TaskInput on prior ----
+      await svc.ctx.taskInputs.add({
+        id: makeTaskInputId(),
+        workspaceId,
+        taskPath: tAccept.path,
+        taskId: tAccept.id,
+        text: "blocking prior input",
+        status: "pending",
+        createdAt: now,
+        updatedAt: now,
+      });
+      const tInput = await dispatchRole("while prior has pending TaskInput");
+      assert.notEqual(
+        tInput.sessionId,
+        sidAccept,
+        "pending TaskInput on prior must force fresh Session"
+      );
+      await retireSessionTask(tInput, tInput.sessionId);
+      await svc.ctx.taskInputs.cancelTask(workspaceId, tAccept.path, "test");
+      await svc.runtime.registry.update(sidAccept, {
+        state: "failed",
+        resumeToken: undefined,
+      });
+      await patchTaskEnvelope(envFs, tAccept.path, { sessionId: null });
+
+      // Fresh accepted prior for UserAsk gate.
+      const tBase2 = await dispatchRole("fresh prior for UserAsk");
+      const sid2 = tBase2.sessionId!;
+      await svc.runtime.stopSession(sid2, "user");
+      await patchTaskEnvelope(envFs, tBase2.path, {
+        state: "accepted",
+        sessionId: sid2,
+        activeDeliveryId: null,
+      });
+
+      // ---- pending UserAsk on prior ----
+      await svc.ctx.userAsks.add({
+        id: makeUserAskId(),
+        workspaceId,
+        taskPath: tBase2.path,
+        taskId: tBase2.id,
+        question: "block reuse?",
+        status: "pending",
+        createdAt: now,
+        updatedAt: now,
+      });
+      const tAsk = await dispatchRole("while prior has pending UserAsk");
+      assert.notEqual(
+        tAsk.sessionId,
+        sid2,
+        "pending UserAsk on prior must force fresh Session"
+      );
+      await retireSessionTask(tAsk, tAsk.sessionId);
+      await svc.ctx.userAsks.cancelTask(workspaceId, tBase2.path, "test");
+      await svc.runtime.registry.update(sid2, {
+        state: "failed",
+        resumeToken: undefined,
+      });
+      await patchTaskEnvelope(envFs, tBase2.path, { sessionId: null });
+
+      const tBase3 = await dispatchRole("prior for ready delivery");
+      const sid3 = tBase3.sessionId!;
+      await svc.runtime.stopSession(sid3, "user");
+      await patchTaskEnvelope(envFs, tBase3.path, {
+        state: "accepted",
+        sessionId: sid3,
+        activeDeliveryId: null,
+      });
+
+      // ---- ready Delivery on prior ----
+      const delivery = await createDelivery(envFs, new SystemClock(), {
+        taskId: tBase3.id!,
+        boxId,
+        role: "executor",
+        summary: "ready delivery blocks reuse",
+        status: "ready",
+        commits: [],
+      });
+      await patchTaskEnvelope(envFs, tBase3.path, {
+        state: "delivered",
+        sessionId: sid3,
+        activeDeliveryId: delivery.id,
+      });
+      const tDel = await dispatchRole("while prior has ready Delivery");
+      assert.notEqual(
+        tDel.sessionId,
+        sid3,
+        "ready Delivery on prior must force fresh Session"
+      );
+      await retireSessionTask(tDel, tDel.sessionId);
+      await svc.runtime.registry.update(sid3, {
+        state: "failed",
+        resumeToken: undefined,
+      });
+      await patchTaskEnvelope(envFs, tBase3.path, {
+        sessionId: null,
+        activeDeliveryId: null,
+        state: "accepted",
+      });
+
+      // ---- dual binding: another active Task envelope holds the stopped Session ----
+      // Do not start a second live Role session (Role exclusive live lock). Seed a
+      // synthetic running binder on the stopped Session instead.
+      const tBase4 = await dispatchRole("prior for dual bind");
+      const sid4 = tBase4.sessionId!;
+      await svc.runtime.stopSession(sid4, "user");
+      await patchTaskEnvelope(envFs, tBase4.path, {
+        state: "accepted",
+        sessionId: sid4,
+        activeDeliveryId: null,
+      });
+
+      // Create a second Role task without starting a session, then bind it to sid4.
+      const dDualOther = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "synthetic dual binder",
+        assigneeKind: "role",
+        profileId: "fake-resumable",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+        startSession: false,
+        callerKind: "user",
+      });
+      assert.ok(!dDualOther.error, JSON.stringify(dDualOther.error));
+      const dualOtherPath = (dDualOther.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath: dualOtherPath });
+      await patchTaskEnvelope(envFs, dualOtherPath, {
+        state: "running",
+        sessionId: sid4,
+        activeDeliveryId: null,
+      });
+
+      const tDual = await dispatchRole("while dual bind active");
+      assert.notEqual(
+        tDual.sessionId,
+        sid4,
+        "dual Session binding must force fresh Session"
+      );
+    });
+  } finally {
+    await fs.rm(ws, { recursive: true, force: true });
+  }
+});

@@ -6475,17 +6475,25 @@ async function prepareAuthorizedTaskStartSession(
         { code: "CONTEXT_GENERATION_COLLECT_FAILED", taskPath, profileId }
       );
     }
+    // Empty/legacy generation does not prove continuity — only non-empty exact match.
     const sessionGen = activeRec.contextGeneration?.trim() || "";
-    if (sessionGen && sessionGen !== live.contextGeneration) {
+    if (!sessionGen || sessionGen !== live.contextGeneration) {
+      const emptyOrLegacy = !sessionGen;
       throw new RpcError(
         RPC_LIFECYCLE,
-        `Active managed session ${activeRec.id} contextGeneration drifted from live stable facts ` +
-          `(session=${sessionGen}, live=${live.contextGeneration}); cannot safely start a fresh ` +
-          `Session while the prior turn/session is active. Stop/replace the Session first.`,
+        emptyOrLegacy
+          ? `Active managed session ${activeRec.id} has empty/legacy contextGeneration; ` +
+              `cannot prove continuity with live stable facts (live=${live.contextGeneration}). ` +
+              `Stop/replace the Session first.`
+          : `Active managed session ${activeRec.id} contextGeneration drifted from live stable facts ` +
+              `(session=${sessionGen}, live=${live.contextGeneration}); cannot safely start a fresh ` +
+              `Session while the prior turn/session is active. Stop/replace the Session first.`,
         {
-          code: "CONTEXT_GENERATION_LIVE_DRIFT_ACTIVE",
+          code: emptyOrLegacy
+            ? "CONTEXT_GENERATION_EMPTY_ACTIVE"
+            : "CONTEXT_GENERATION_LIVE_DRIFT_ACTIVE",
           sessionId: activeRec.id,
-          sessionContextGeneration: sessionGen,
+          sessionContextGeneration: sessionGen || null,
           liveContextGeneration: live.contextGeneration,
           taskPath,
         }
@@ -6724,22 +6732,31 @@ async function launchAndBindTaskStartSession(
 
   const allTasks = await loadTaskEnvelopes(mount.env.fs);
   let deliveriesCache: Awaited<ReturnType<typeof loadDeliveries>> | null = null;
+  // Corrupt/unreadable Delivery store must never prove noPendingDelivery.
+  // Propagate load failures (fail loud); never catch→false.
   const hasBlockingDelivery = async (
     t: import("../core/task.js").TaskEnvelope
   ): Promise<boolean> => {
     if (t.activeDeliveryId) return true;
     if (t.state === "delivered") return true;
     if (!t.id) return false;
-    try {
-      if (!deliveriesCache) deliveriesCache = await loadDeliveries(mount.env.fs);
-      return deliveriesCache.some(
-        (d) =>
-          d.taskId === t.id &&
-          (d.status === "ready" || d.status === "draft")
-      );
-    } catch {
-      return false;
+    if (!deliveriesCache) {
+      try {
+        deliveriesCache = await loadDeliveries(mount.env.fs);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new RpcError(
+          -32000,
+          `task.startSession cannot load Deliveries to prove noPendingDelivery: ${message}`,
+          { code: "DELIVERY_STORE_UNREADABLE", taskPath }
+        );
+      }
     }
+    return deliveriesCache.some(
+      (d) =>
+        d.taskId === t.id &&
+        (d.status === "ready" || d.status === "draft")
+    );
   };
 
   for (const candidateId of candidateIds) {
