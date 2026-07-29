@@ -349,7 +349,12 @@ test("task.dispatch asSub role: tent-role assignee lane + dispatcher targetBranc
     const subResult = sub.result as {
       taskPath: string;
       asSub?: boolean;
-      workspaceLane?: { branch?: string; targetBranch?: string; worktree?: string };
+      workspaceLane?: {
+        branch?: string;
+        targetBranch?: string;
+        worktree?: string;
+        baseCommit?: string;
+      };
     };
     assert.equal(subResult.asSub, true);
     // Role execution lane is delayed until first claim (validation may ensure worktrees).
@@ -396,7 +401,11 @@ test("task.dispatch asSub role: tent-role assignee lane + dispatcher targetBranc
     assert.ok(!peer.error, JSON.stringify(peer.error));
     const peerResult = peer.result as {
       asSub?: boolean;
-      workspaceLane?: { branch?: string; targetBranch?: string };
+      workspaceLane?: {
+        branch?: string;
+        targetBranch?: string;
+        baseCommit?: string;
+      };
       taskPath: string;
     };
     assert.equal(peerResult.asSub, false);
