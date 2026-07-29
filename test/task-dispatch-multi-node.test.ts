@@ -105,7 +105,7 @@ test("dispatch: multi nodeIds preserve exact order in Context Card; dedupe; no c
     loaded.contextCard?.refs.nodes.map((n) => n.id),
     ["bx-o1", "bx-p1", "bx-g1"]
   );
-  // Path hints present for resolved boxes.
+  // Path hints present for resolved Nodes.
   assert.ok(loaded.contextCard!.refs.nodes.every((n) => typeof n.path === "string" && n.path));
 
   const raw = await env.fs.readFile(result.taskPath);
@@ -116,6 +116,50 @@ test("dispatch: multi nodeIds preserve exact order in Context Card; dedupe; no c
   assert.match(result.manifestYaml, /id: bx-p1/);
   assert.match(result.manifestYaml, /id: bx-g1/);
   assert.doesNotMatch(result.manifestYaml, /^claims:/m);
+});
+
+test("dispatch: Role manifest snapshots only newly requested Nodes (no prior Role aggregation)", async () => {
+  const dir = await makeTent();
+  const env = envFor(dir);
+
+  // Prior active Role Task on the same Role with a different Node set.
+  const prior = await dispatch(env as any, "bx-p1", "analyst", {
+    userPrompt: "prior active role task",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+    nodeIds: ["bx-p1", "bx-p2"],
+  });
+  assert.deepEqual(
+    taskReferencedNodeIds(await loadTaskEnvelope(env.fs, prior.taskPath)),
+    ["bx-p1", "bx-p2"]
+  );
+
+  // New Task for the same Role must not silently import prior refs into manifest
+  // or Context Card — exact requested ordered selection only (one fact).
+  const next = await dispatch(env as any, "bx-o1", "analyst", {
+    userPrompt: "new role task exact selection",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+    nodeIds: ["bx-o1", "bx-g1"],
+  });
+
+  const loaded = await loadTaskEnvelope(env.fs, next.taskPath);
+  assert.deepEqual(taskReferencedNodeIds(loaded), ["bx-o1", "bx-g1"]);
+  assert.deepEqual(
+    loaded.contextCard?.refs.nodes.map((n) => n.id),
+    ["bx-o1", "bx-g1"]
+  );
+
+  // Auxiliary manifest selection is claimBoxes → writable scope. Readable still
+  // lists full Tent context, so assert only the writable section for exactness.
+  const writableSection = next.manifestYaml.split(/^writable:\r?\n/m)[1] ?? "";
+  assert.ok(writableSection.length > 0, "manifest must emit writable section");
+  assert.match(writableSection, /id: bx-o1/);
+  assert.match(writableSection, /id: bx-g1/);
+  // Prior Role Task Nodes must not enter this Task's selection/writable scope.
+  assert.doesNotMatch(writableSection, /id: bx-p1\b/);
+  assert.doesNotMatch(writableSection, /id: bx-p2\b/);
+  assert.doesNotMatch(next.manifestYaml, /^claims:/m);
 });
 
 test("dispatch: missing / archived / invalid nodeIds zero-write (no task/manifest)", async () => {

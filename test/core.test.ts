@@ -354,10 +354,14 @@ test("dispatch:只写 pending envelope + contextCard.refs.nodes；并发引用�
 
   const second = await dispatch(env as any, "bx-o1", "analyst", "继续处理 output 指针");
   assert.notEqual(second.taskPath, result.taskPath, "task 信封不可变,不覆盖");
-  // Role multi-ref aggregation still appears on dynamic manifest writable pointers.
+  // Manifest snapshots only this Task's exact requested Node (no prior Role aggregation).
   assert.doesNotMatch(second.manifestYaml, /^claims:/m);
   assert.match(second.manifestYaml, /writable:/);
   assert.match(second.manifestYaml, /id: bx-o1/);
+  // Prior active analyst Task Nodes must not bleed into this Task's writable selection.
+  const secondWritable = second.manifestYaml.split(/^writable:\r?\n/m)[1] ?? "";
+  assert.doesNotMatch(secondWritable, /id: bx-p1\b/);
+  assert.doesNotMatch(secondWritable, /id: bx-p2\b/);
 
   const { cancelPendingTask, taskAck } = await import("../src/core/ops.js");
   await cancelPendingTask(env as any, result.taskPath);
@@ -514,7 +518,8 @@ test("dispatch:拒绝整帐 claim,具体框仍可派活", async () => {
     tentName: "wqb",
   };
   const { dispatch } = await import("../src/core/ops.js");
-  const message = /Cannot dispatch the whole Tent directly; dispatch a specific box \(boxId cannot be \., root, or the Tent name\)\./;
+  const message =
+    /Cannot dispatch the whole Tent directly; dispatch a specific Node \(legacy primary cannot be \., root, or the Tent name\)\./;
   await assert.rejects(() => dispatch(env as any, ".", "architect", "接管全帐"), message);
   await assert.rejects(() => dispatch(env as any, "root", "architect", "接管全帐"), message);
   await assert.rejects(() => dispatch(env as any, "wqb", "architect", "接管全帐"), message);

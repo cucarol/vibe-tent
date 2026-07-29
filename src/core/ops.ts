@@ -33,7 +33,6 @@ import {
   patchTaskEnvelope,
   relayPromptForTask,
   RoleWorkspaceContract,
-  taskAssigneeKind,
   TaskEnvelope,
   writeTaskEnvelope,
 } from "./task.js";
@@ -161,7 +160,7 @@ export function resolveDispatchNodeIds(input: {
       const id = raw.trim();
       if (isForbiddenRootDispatchToken(id, tentName)) {
         throw new Error(
-          "Cannot dispatch the whole Tent directly; dispatch specific boxes " +
+          "Cannot dispatch the whole Tent directly; dispatch specific Nodes " +
             "(nodeIds cannot include ., root, or the Tent name)."
         );
       }
@@ -175,8 +174,8 @@ export function resolveDispatchNodeIds(input: {
     if (legacy) {
       if (isForbiddenRootDispatchToken(legacy, tentName)) {
         throw new Error(
-          "Cannot dispatch the whole Tent directly; dispatch a specific box " +
-            "(boxId cannot be ., root, or the Tent name)."
+          "Cannot dispatch the whole Tent directly; dispatch a specific Node " +
+            "(legacy primary cannot be ., root, or the Tent name)."
         );
       }
       // Exact compatible primary: legacy single id must equal the first authoritative id.
@@ -195,8 +194,8 @@ export function resolveDispatchNodeIds(input: {
   }
   if (isForbiddenRootDispatchToken(legacy, tentName)) {
     throw new Error(
-      "Cannot dispatch the whole Tent directly; dispatch a specific box " +
-        "(boxId cannot be ., root, or the Tent name)."
+      "Cannot dispatch the whole Tent directly; dispatch a specific Node " +
+        "(legacy primary cannot be ., root, or the Tent name)."
     );
   }
   return [legacy];
@@ -284,33 +283,29 @@ async function dispatchUnlocked(
   void options.asSub;
 
   // Resolve every requested Node under this mutation; fail loud before any write.
-  // Exact ordered refs only — no silent ancestry/descendant expansion into Context Card.
-  const selectedBoxes: Box[] = [];
+  // Exact ordered refs only — no silent ancestry/descendant expansion into Context Card
+  // and no aggregation of other active Role Task refs into this Task's selection.
+  const selectedNodes: Box[] = [];
   for (const id of nodeIds) {
-    const box = requireBoxById(tent, id);
-    const structural = structuralClaimGate(box);
+    const node = requireBoxById(tent, id);
+    const structural = structuralClaimGate(node);
     if (!structural.ok) {
-      throw new Error(`Cannot dispatch: ${structural.reason || "box cannot be claimed"}`);
+      throw new Error(`Cannot dispatch: ${structural.reason || "Node cannot be claimed"}`);
     }
-    const claimable = canClaim(box, { tent, tasks });
+    const claimable = canClaim(node, { tent, tasks });
     if (!claimable.ok) {
-      throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
+      throw new Error(`Cannot dispatch: ${claimable.reason || "Node cannot be claimed"}`);
     }
-    selectedBoxes.push(box);
+    selectedNodes.push(node);
   }
 
   try {
-    // Manifest is auxiliary: snapshot exact requested boxes (+ role multi-ref
-    // aggregation of other active role tasks for shared role manifest.yml).
-    // Profile tasks are one-shot and only select the requested boxes.
-    const roleSelection =
-      assigneeKind === "role"
-        ? roleManifestSelection(tent, assigneeLabel, selectedBoxes, tasks)
-        : selectedBoxes;
+    // Manifest is auxiliary and must snapshot the same exact requested Node set
+    // (one fact with Context Card). Do not pull in other active Role Task refs.
     const input: DispatchInput = {
       tentName: env.tentName,
       role: assigneeLabel,
-      claimBoxes: roleSelection,
+      claimBoxes: selectedNodes,
       ...options.workspace,
     };
     const manifest = buildManifest(tent, input);
@@ -342,7 +337,7 @@ async function dispatchUnlocked(
 
     // Sole persisted Node-ref source is contextCard.refs.nodes via writeTaskEnvelope.
     // Pass exact ordered selection only (no fake root; no dual claims fact).
-    const taskClaims = selectedBoxes.map((box) => ({ id: box.id, path: box.path }));
+    const taskClaims = selectedNodes.map((node) => ({ id: node.id, path: node.path }));
     const agentId = options.agentId?.trim() || undefined;
     const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
       role: assigneeLabel,
@@ -952,37 +947,6 @@ function assertRoleName(role: string): string {
   if (/[\/\\\r\n]/.test(name)) throw new Error("Role name cannot contain path separators or newlines.");
   assertRoleNameAvailable(name);
   return name;
-}
-
-/**
- * Aggregate active role Task Node refs into ephemeral manifest selection boxes.
- * `current` is the exact requested selection for this dispatch (one or many).
- * Does not expand tree ancestry/descendants into Context Card — manifest only.
- */
-function roleManifestSelection(
-  tent: LoadedTent,
-  role: string,
-  current: Box | readonly Box[],
-  tasks: TaskEnvelope[]
-): Box[] {
-  const selected = new Map<string, Box>();
-  for (const task of tasks) {
-    // Only durable role tasks share multi-ref aggregation; profile tasks are one-shot.
-    if (taskAssigneeKind(task) !== "role") continue;
-    if (task.role !== role) continue;
-    // Active tasks only — aggregate direct Node refs (contextCard.refs.nodes).
-    if (!envelopeIsActiveOccupation(task)) continue;
-    if (task.contextCard == null) continue;
-    for (const nodeId of taskReferencedNodeIds(task)) {
-      const box = tent.byId.get(nodeId);
-      if (box) selected.set(box.id, box);
-    }
-  }
-  const currents = Array.isArray(current) ? current : [current];
-  for (const box of currents) {
-    selected.set(box.id, box);
-  }
-  return [...selected.values()];
 }
 
 function requireBoxById(tent: LoadedTent, boxId: string): Box {
