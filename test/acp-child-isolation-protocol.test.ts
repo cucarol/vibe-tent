@@ -1053,4 +1053,3 @@ test("bootstrap images project once on first managed prompt; not on follow-up", 
   );
   await session.stop("shutdown");
 });
-
