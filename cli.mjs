@@ -4174,6 +4174,46 @@ function createServiceClient(options) {
   return new ServiceClient(options);
 }
 
+// src/service/protocol.ts
+var TENT_SERVICE_PROTOCOL_VERSION = 1;
+var ServiceProtocolIncompatibleError = class extends Error {
+  constructor(kind, options = {}) {
+    const servicePackageVersion = typeof options.servicePackageVersion === "string" && options.servicePackageVersion.trim() ? options.servicePackageVersion.trim() : "unknown";
+    const serviceProtocolVersion = options.serviceProtocolVersion;
+    const message = options.message ?? (kind === "missing" ? `Local Tent Service protocol is missing (legacy endpoint). This CLI requires protocol ${TENT_SERVICE_PROTOCOL_VERSION} (package version stays 0.1.0; protocol is a separate contract). Service package version=${servicePackageVersion}. Restart or upgrade tent-service, then retry. Refusing to attach or spawn a competing service against an incompatible process.` : `Local Tent Service protocol mismatch: service=${String(serviceProtocolVersion)}, client=${TENT_SERVICE_PROTOCOL_VERSION} (package 0.1.0; protocol is separate). Service package version=${servicePackageVersion}. Restart or upgrade tent-service to a compatible build before any business RPC. Refusing attach success and refusing to spawn a competing service.`);
+    super(message);
+    this.code = "TENT_SERVICE_PROTOCOL_INCOMPATIBLE";
+    this.name = "ServiceProtocolIncompatibleError";
+    this.kind = kind;
+    this.clientProtocolVersion = TENT_SERVICE_PROTOCOL_VERSION;
+    this.serviceProtocolVersion = serviceProtocolVersion;
+    this.servicePackageVersion = servicePackageVersion;
+  }
+};
+function isServiceProtocolIncompatibleError(err) {
+  return err instanceof ServiceProtocolIncompatibleError || typeof err === "object" && err !== null && err.code === "TENT_SERVICE_PROTOCOL_INCOMPATIBLE";
+}
+function isServiceProtocolCompatible(health) {
+  if (!health || typeof health !== "object") return false;
+  return health.protocolVersion === TENT_SERVICE_PROTOCOL_VERSION;
+}
+function assertServiceProtocolCompatible(health) {
+  const servicePackageVersion = health && typeof health.version === "string" && health.version.trim() ? health.version.trim() : "unknown";
+  const raw = health?.protocolVersion;
+  if (raw === void 0 || raw === null) {
+    throw new ServiceProtocolIncompatibleError("missing", {
+      servicePackageVersion,
+      serviceProtocolVersion: raw
+    });
+  }
+  if (raw !== TENT_SERVICE_PROTOCOL_VERSION) {
+    throw new ServiceProtocolIncompatibleError("mismatch", {
+      servicePackageVersion,
+      serviceProtocolVersion: raw
+    });
+  }
+}
+
 // src/cli/service-attach.ts
 async function attachOrBootstrapService(options = {}) {
   const dataDir = options.dataDir ?? defaultServiceDataDir(options.env);
@@ -4185,6 +4225,7 @@ async function attachOrBootstrapService(options = {}) {
   if (existing) {
     return { ...existing, started: false, child: null, dataDir };
   }
+  await rejectIncompatibleHealthyService(dataDir, fetchImpl);
   if (options.attachOnly) {
     throw new Error(
       `No healthy Local Tent Service endpoint in ${dataDir}. Start tent-service, or omit --attach-only to let CLI bootstrap one.`
@@ -4251,9 +4292,28 @@ async function tryAttachService(dataDir, fetchImpl = fetch) {
   try {
     const health = await client.health();
     if (health.status !== "ok") return null;
+    assertServiceProtocolCompatible(health);
     return { url, endpoint, client };
-  } catch {
+  } catch (err) {
+    if (isServiceProtocolIncompatibleError(err)) throw err;
     return null;
+  }
+}
+async function rejectIncompatibleHealthyService(dataDir, fetchImpl) {
+  const endpoint = await readServiceEndpoint(dataDir);
+  if (!endpoint?.token || typeof endpoint.token !== "string" || !endpoint.token.trim()) {
+    return;
+  }
+  const url = serviceBaseUrl(endpoint.host, endpoint.port);
+  const client = createServiceClient({ baseUrl: url, token: endpoint.token, fetchImpl });
+  try {
+    const health = await client.health();
+    if (health.status !== "ok") return;
+    if (!isServiceProtocolCompatible(health)) {
+      assertServiceProtocolCompatible(health);
+    }
+  } catch (err) {
+    if (isServiceProtocolIncompatibleError(err)) throw err;
   }
 }
 async function resolveDefaultServiceEntry(packageRootHint) {

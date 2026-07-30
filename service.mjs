@@ -7152,7 +7152,7 @@ function attachmentResult(relativePath4, label, sourceNotePath) {
 import * as nodePath2 from "node:path";
 import { pathToFileURL } from "node:url";
 
-// node_modules/mdast-util-to-string/lib/index.js
+// ../../Tent/node_modules/mdast-util-to-string/lib/index.js
 var emptyOptions = {};
 function toString(value, options) {
   const settings = options || emptyOptions;
@@ -7189,7 +7189,7 @@ function node(value) {
   return Boolean(value && typeof value === "object");
 }
 
-// node_modules/character-entities/index.js
+// ../../Tent/node_modules/character-entities/index.js
 var characterEntities = {
   AElig: "\xC6",
   AMP: "&",
@@ -9318,13 +9318,13 @@ var characterEntities = {
   zwnj: "\u200C"
 };
 
-// node_modules/decode-named-character-reference/index.js
+// ../../Tent/node_modules/decode-named-character-reference/index.js
 var own = {}.hasOwnProperty;
 function decodeNamedCharacterReference(value) {
   return own.call(characterEntities, value) ? characterEntities[value] : false;
 }
 
-// node_modules/micromark-util-chunked/index.js
+// ../../Tent/node_modules/micromark-util-chunked/index.js
 function splice(list2, start, remove, items) {
   const end = list2.length;
   let chunkStart = 0;
@@ -9358,7 +9358,7 @@ function push(list2, items) {
   return items;
 }
 
-// node_modules/micromark-util-combine-extensions/index.js
+// ../../Tent/node_modules/micromark-util-combine-extensions/index.js
 var hasOwnProperty = {}.hasOwnProperty;
 function combineExtensions(extensions) {
   const all2 = {};
@@ -9398,7 +9398,7 @@ function constructs(existing, list2) {
   splice(existing, 0, 0, before);
 }
 
-// node_modules/micromark-util-decode-numeric-character-reference/index.js
+// ../../Tent/node_modules/micromark-util-decode-numeric-character-reference/index.js
 function decodeNumericCharacterReference(value, base) {
   const code = Number.parseInt(value, base);
   if (
@@ -9416,12 +9416,12 @@ function decodeNumericCharacterReference(value, base) {
   return String.fromCodePoint(code);
 }
 
-// node_modules/micromark-util-normalize-identifier/index.js
+// ../../Tent/node_modules/micromark-util-normalize-identifier/index.js
 function normalizeIdentifier(value) {
   return value.replace(/[\t\n\r ]+/g, " ").replace(/^ | $/g, "").toLowerCase().toUpperCase();
 }
 
-// node_modules/micromark-util-character/index.js
+// ../../Tent/node_modules/micromark-util-character/index.js
 var asciiAlpha = regexCheck(/[A-Za-z]/);
 var asciiAlphanumeric = regexCheck(/[\dA-Za-z]/);
 var asciiAtext = regexCheck(/[#-'*+\--9=?A-Z^-~]/);
@@ -9453,7 +9453,7 @@ function regexCheck(regex) {
   }
 }
 
-// node_modules/micromark-factory-space/index.js
+// ../../Tent/node_modules/micromark-factory-space/index.js
 function factorySpace(effects, ok, type, max) {
   const limit = max ? max - 1 : Number.POSITIVE_INFINITY;
   let size = 0;
@@ -9475,7 +9475,7 @@ function factorySpace(effects, ok, type, max) {
   }
 }
 
-// node_modules/micromark/lib/initialize/content.js
+// ../../Tent/node_modules/micromark/lib/initialize/content.js
 var content = {
   tokenize: initializeContent
 };
@@ -9525,7 +9525,7 @@ function initializeContent(effects) {
   }
 }
 
-// node_modules/micromark/lib/initialize/document.js
+// ../../Tent/node_modules/micromark/lib/initialize/document.js
 var document = {
   tokenize: initializeDocument
 };
@@ -9707,7 +9707,7 @@ function tokenizeContainer(effects, ok, nok) {
   return factorySpace(effects, effects.attempt(this.parser.constructs.document, ok, nok), "linePrefix", this.parser.constructs.disable.null.includes("codeIndented") ? void 0 : 4);
 }
 
-// node_modules/micromark-util-classify-character/index.js
+// ../../Tent/node_modules/micromark-util-classify-character/index.js
 function classifyCharacter(code) {
   if (code === null || markdownLineEndingOrSpace(code) || unicodeWhitespace(code)) {
     return 1;
@@ -9717,7 +9717,7 @@ function classifyCharacter(code) {
   }
 }
 
-// node_modules/micromark-util-resolve-all/index.js
+// ../../Tent/node_modules/micromark-util-resolve-all/index.js
 function resolveAll(constructs2, events, context) {
   const called = [];
   let index2 = -1;
@@ -9731,7 +9731,7 @@ function resolveAll(constructs2, events, context) {
   return events;
 }
 
-// node_modules/micromark-core-commonmark/lib/attention.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/attention.js
 var attention = {
   name: "attention",
   resolveAll: resolveAllAttention,
@@ -9862,7 +9862,7 @@ function movePoint(point3, offset) {
   point3._bufferIndex += offset;
 }
 
-// node_modules/micromark-core-commonmark/lib/autolink.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/autolink.js
 var autolink = {
   name: "autolink",
   tokenize: tokenizeAutolink
@@ -9963,7 +9963,7 @@ function tokenizeAutolink(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/blank-line.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/blank-line.js
 var blankLine = {
   partial: true,
   tokenize: tokenizeBlankLine
@@ -9978,7 +9978,7 @@ function tokenizeBlankLine(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/block-quote.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/block-quote.js
 var blockQuote = {
   continuation: {
     tokenize: tokenizeBlockQuoteContinuation
@@ -10036,7 +10036,7 @@ function exit(effects) {
   effects.exit("blockQuote");
 }
 
-// node_modules/micromark-core-commonmark/lib/character-escape.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/character-escape.js
 var characterEscape = {
   name: "characterEscape",
   tokenize: tokenizeCharacterEscape
@@ -10062,7 +10062,7 @@ function tokenizeCharacterEscape(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/character-reference.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/character-reference.js
 var characterReference = {
   name: "characterReference",
   tokenize: tokenizeCharacterReference
@@ -10127,7 +10127,7 @@ function tokenizeCharacterReference(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-fenced.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/code-fenced.js
 var nonLazyContinuation = {
   partial: true,
   tokenize: tokenizeNonLazyContinuation
@@ -10310,7 +10310,7 @@ function tokenizeNonLazyContinuation(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-indented.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/code-indented.js
 var codeIndented = {
   name: "codeIndented",
   tokenize: tokenizeCodeIndented
@@ -10374,7 +10374,7 @@ function tokenizeFurtherStart(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-text.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/code-text.js
 var codeText = {
   name: "codeText",
   previous,
@@ -10489,7 +10489,7 @@ function tokenizeCodeText(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-util-subtokenize/lib/splice-buffer.js
+// ../../Tent/node_modules/micromark-util-subtokenize/lib/splice-buffer.js
 var SpliceBuffer = class {
   /**
    * @param {ReadonlyArray<T> | null | undefined} [initial]
@@ -10682,7 +10682,7 @@ function chunkedPush(list2, right) {
   }
 }
 
-// node_modules/micromark-util-subtokenize/index.js
+// ../../Tent/node_modules/micromark-util-subtokenize/index.js
 function subtokenize(eventsArray) {
   const jumps = {};
   let index2 = -1;
@@ -10835,7 +10835,7 @@ function subcontent(events, eventIndex) {
   return gaps;
 }
 
-// node_modules/micromark-core-commonmark/lib/content.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/content.js
 var content2 = {
   resolve: resolveContent,
   tokenize: tokenizeContent
@@ -10906,7 +10906,7 @@ function tokenizeContinuation(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-factory-destination/index.js
+// ../../Tent/node_modules/micromark-factory-destination/index.js
 function factoryDestination(effects, ok, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
@@ -10998,7 +10998,7 @@ function factoryDestination(effects, ok, nok, type, literalType, literalMarkerTy
   }
 }
 
-// node_modules/micromark-factory-label/index.js
+// ../../Tent/node_modules/micromark-factory-label/index.js
 function factoryLabel(effects, ok, nok, type, markerType, stringType) {
   const self = this;
   let size = 0;
@@ -11059,7 +11059,7 @@ function factoryLabel(effects, ok, nok, type, markerType, stringType) {
   }
 }
 
-// node_modules/micromark-factory-title/index.js
+// ../../Tent/node_modules/micromark-factory-title/index.js
 function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   let marker;
   return start;
@@ -11121,7 +11121,7 @@ function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   }
 }
 
-// node_modules/micromark-factory-whitespace/index.js
+// ../../Tent/node_modules/micromark-factory-whitespace/index.js
 function factoryWhitespace(effects, ok) {
   let seen;
   return start;
@@ -11140,7 +11140,7 @@ function factoryWhitespace(effects, ok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/definition.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/definition.js
 var definition = {
   name: "definition",
   tokenize: tokenizeDefinition
@@ -11226,7 +11226,7 @@ function tokenizeTitleBefore(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/hard-break-escape.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/hard-break-escape.js
 var hardBreakEscape = {
   name: "hardBreakEscape",
   tokenize: tokenizeHardBreakEscape
@@ -11247,7 +11247,7 @@ function tokenizeHardBreakEscape(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/heading-atx.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/heading-atx.js
 var headingAtx = {
   name: "headingAtx",
   resolve: resolveHeadingAtx,
@@ -11338,7 +11338,7 @@ function tokenizeHeadingAtx(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-util-html-tag-name/index.js
+// ../../Tent/node_modules/micromark-util-html-tag-name/index.js
 var htmlBlockNames = [
   "address",
   "article",
@@ -11405,7 +11405,7 @@ var htmlBlockNames = [
 ];
 var htmlRawNames = ["pre", "script", "style", "textarea"];
 
-// node_modules/micromark-core-commonmark/lib/html-flow.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/html-flow.js
 var htmlFlow = {
   concrete: true,
   name: "htmlFlow",
@@ -11784,7 +11784,7 @@ function tokenizeBlankLineBefore(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/html-text.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/html-text.js
 var htmlText = {
   name: "htmlText",
   tokenize: tokenizeHtmlText
@@ -12090,7 +12090,7 @@ function tokenizeHtmlText(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-end.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/label-end.js
 var labelEnd = {
   name: "labelEnd",
   resolveAll: resolveAllLabelEnd,
@@ -12316,7 +12316,7 @@ function tokenizeReferenceCollapsed(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-start-image.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/label-start-image.js
 var labelStartImage = {
   name: "labelStartImage",
   resolveAll: labelEnd.resolveAll,
@@ -12347,7 +12347,7 @@ function tokenizeLabelStartImage(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-start-link.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/label-start-link.js
 var labelStartLink = {
   name: "labelStartLink",
   resolveAll: labelEnd.resolveAll,
@@ -12369,7 +12369,7 @@ function tokenizeLabelStartLink(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/line-ending.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/line-ending.js
 var lineEnding = {
   name: "lineEnding",
   tokenize: tokenizeLineEnding
@@ -12384,7 +12384,7 @@ function tokenizeLineEnding(effects, ok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/thematic-break.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/thematic-break.js
 var thematicBreak = {
   name: "thematicBreak",
   tokenize: tokenizeThematicBreak
@@ -12423,7 +12423,7 @@ function tokenizeThematicBreak(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/list.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/list.js
 var list = {
   continuation: {
     tokenize: tokenizeListContinuation
@@ -12553,7 +12553,7 @@ function tokenizeListItemPrefixWhitespace(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/setext-underline.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/setext-underline.js
 var setextUnderline = {
   name: "setextUnderline",
   resolveTo: resolveToSetextUnderline,
@@ -12645,7 +12645,7 @@ function tokenizeSetextUnderline(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark/lib/initialize/flow.js
+// ../../Tent/node_modules/micromark/lib/initialize/flow.js
 var flow = {
   tokenize: initializeFlow
 };
@@ -12683,7 +12683,7 @@ function initializeFlow(effects) {
   }
 }
 
-// node_modules/micromark/lib/initialize/text.js
+// ../../Tent/node_modules/micromark/lib/initialize/text.js
 var resolver = {
   resolveAll: createResolver()
 };
@@ -12822,7 +12822,7 @@ function resolveAllLineSuffixes(events, context) {
   return events;
 }
 
-// node_modules/micromark/lib/constructs.js
+// ../../Tent/node_modules/micromark/lib/constructs.js
 var constructs_exports = {};
 __export(constructs_exports, {
   attentionMarkers: () => attentionMarkers,
@@ -12897,7 +12897,7 @@ var disable = {
   null: []
 };
 
-// node_modules/micromark/lib/create-tokenizer.js
+// ../../Tent/node_modules/micromark/lib/create-tokenizer.js
 function createTokenizer(parser, initialize, from) {
   let point3 = {
     _bufferIndex: -1,
@@ -13220,7 +13220,7 @@ function serializeChunks(chunks, expandTabs) {
   return result.join("");
 }
 
-// node_modules/micromark/lib/parse.js
+// ../../Tent/node_modules/micromark/lib/parse.js
 function parse(options) {
   const settings = options || {};
   const constructs2 = (
@@ -13246,14 +13246,14 @@ function parse(options) {
   }
 }
 
-// node_modules/micromark/lib/postprocess.js
+// ../../Tent/node_modules/micromark/lib/postprocess.js
 function postprocess(events) {
   while (!subtokenize(events)) {
   }
   return events;
 }
 
-// node_modules/micromark/lib/preprocess.js
+// ../../Tent/node_modules/micromark/lib/preprocess.js
 var search = /[\0\t\n\r]/g;
 function preprocess() {
   let column = 1;
@@ -13332,7 +13332,7 @@ function preprocess() {
   }
 }
 
-// node_modules/micromark-util-decode-string/index.js
+// ../../Tent/node_modules/micromark-util-decode-string/index.js
 var characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
 function decodeString(value) {
   return value.replace(characterEscapeOrReference, decode);
@@ -13350,7 +13350,7 @@ function decode($0, $1, $2) {
   return decodeNamedCharacterReference($2) || $0;
 }
 
-// node_modules/unist-util-stringify-position/lib/index.js
+// ../../Tent/node_modules/unist-util-stringify-position/lib/index.js
 function stringifyPosition(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -13376,7 +13376,7 @@ function index(value) {
   return value && typeof value === "number" ? value : 1;
 }
 
-// node_modules/mdast-util-from-markdown/lib/index.js
+// ../../Tent/node_modules/mdast-util-from-markdown/lib/index.js
 var own2 = {}.hasOwnProperty;
 function fromMarkdown(value, encoding, options) {
   if (encoding && typeof encoding === "object") {
@@ -16879,7 +16879,7 @@ async function reclaimTaskWorktree(input) {
           ...diagnostic,
           eligible: false,
           code: "DIRTY",
-          reason: `Refusing remove: worktree became dirty before git worktree remove (${dirty.changeCount} change(s)).`,
+          reason: `Refusing remove: worktree became dirty before lane delete (${dirty.changeCount} change(s)).`,
           reclaimed: false,
           alreadyGone: false,
           details: {
@@ -16903,7 +16903,7 @@ async function reclaimTaskWorktree(input) {
           ...diagnostic,
           eligible: false,
           code: preRegCompare.code,
-          reason: `Refusing remove: registration mismatch immediately before git worktree remove \u2014 ${preRegCompare.reason}`,
+          reason: `Refusing remove: registration mismatch immediately before lane delete \u2014 ${preRegCompare.reason}`,
           reclaimed: false,
           alreadyGone: false,
           details: {
@@ -16923,7 +16923,7 @@ async function reclaimTaskWorktree(input) {
           ...diagnostic,
           eligible: false,
           code: preRemove.code,
-          reason: `Refusing remove: ownership revalidation failed immediately before git worktree remove \u2014 ${preRemove.reason}`,
+          reason: `Refusing remove: ownership revalidation failed immediately before lane delete \u2014 ${preRemove.reason}`,
           reclaimed: false,
           alreadyGone: false,
           details: {
@@ -16937,76 +16937,104 @@ async function reclaimTaskWorktree(input) {
         diagnostic
       );
       if (preRemoveSession) return preRemoveSession;
-      try {
-        await git2(workspaceRoot, ["worktree", "remove", worktree]);
-      } catch (err) {
+      const laneRm = await removeTaskLaneDirectorySafe(worktree, {
+        rmLaneDirectoryForTests: input.rmLaneDirectoryForTests
+      });
+      if (!laneRm.ok) {
         return {
           ...diagnostic,
           eligible: false,
           code: "REMOVE_FAILED",
-          reason: `git worktree remove failed without force (directory still present): ${err instanceof Error ? err.message : String(err)}; retry later.`,
+          reason: laneRm.reason,
           reclaimed: false,
-          alreadyGone: false
+          alreadyGone: false,
+          details: {
+            ...diagnostic.details ?? {},
+            ...laneRm.details ?? {},
+            linkSafety: "node-fs-rm-lane"
+          }
         };
       }
-    } else if (registration.registered) {
       if (await pathExists2(worktree)) {
         return {
           ...diagnostic,
           eligible: false,
           code: "REMOVE_FAILED",
-          reason: `Refusing metadata force cleanup: directory reappeared at ${worktree}; retry with non-force path.`,
-          reclaimed: false,
-          alreadyGone: false
-        };
-      }
-      const preForce = await revalidateExactWorktreeOwnership({
-        workspaceRoot,
-        expectedPath: worktree,
-        expectedBranch,
-        requireOnDiskHead: false
-      });
-      if (!preForce.ok) {
-        return {
-          ...diagnostic,
-          eligible: false,
-          code: preForce.code,
-          reason: `Refusing exact-path force metadata drop \u2014 ${preForce.reason}`,
+          reason: `Task lane directory still present after Node-safe remove at ${worktree}; leaving Git registration untouched.`,
           reclaimed: false,
           alreadyGone: false,
           details: {
             ...diagnostic.details ?? {},
-            ...preForce.details ?? {}
+            linkSafety: "node-fs-rm-lane"
           }
         };
       }
-      const preForceSession = await probeSessionSettledBeforeRemove(
-        input,
-        diagnostic
-      );
-      if (preForceSession) return preForceSession;
-      try {
-        await git2(workspaceRoot, ["worktree", "remove", "--force", worktree]);
-      } catch (err) {
-        return {
-          ...diagnostic,
-          eligible: false,
-          code: "REMOVE_FAILED",
-          reason: `Failed to drop exact stale registration at ${worktree} (dir already absent): ${err instanceof Error ? err.message : String(err)}`,
-          reclaimed: false,
-          alreadyGone: false
-        };
-      }
-      const afterMeta = await inspectWorktreeRegistration(workspaceRoot, worktree);
-      if (afterMeta.registered || await pathExists2(worktree)) {
-        return {
-          ...diagnostic,
-          eligible: false,
-          code: "REMOVE_FAILED",
-          reason: `Exact stale registration for ${worktree} remained after targeted metadata remove; refusing broader cleanup.`,
-          reclaimed: false,
-          alreadyGone: false
-        };
+    }
+    {
+      const liveReg = await inspectWorktreeRegistration(workspaceRoot, worktree);
+      if (liveReg.registered) {
+        if (await pathExists2(worktree)) {
+          return {
+            ...diagnostic,
+            eligible: false,
+            code: "REMOVE_FAILED",
+            reason: `Refusing metadata force cleanup: directory present at ${worktree}; Node-safe lane remove must clear it first.`,
+            reclaimed: false,
+            alreadyGone: false
+          };
+        }
+        const preForce = await revalidateExactWorktreeOwnership({
+          workspaceRoot,
+          expectedPath: worktree,
+          expectedBranch,
+          requireOnDiskHead: false
+        });
+        if (!preForce.ok) {
+          return {
+            ...diagnostic,
+            eligible: false,
+            code: preForce.code,
+            reason: `Refusing exact-path force metadata drop \u2014 ${preForce.reason}`,
+            reclaimed: false,
+            alreadyGone: false,
+            details: {
+              ...diagnostic.details ?? {},
+              ...preForce.details ?? {}
+            }
+          };
+        }
+        const preForceSession = await probeSessionSettledBeforeRemove(
+          input,
+          diagnostic
+        );
+        if (preForceSession) return preForceSession;
+        try {
+          if (input.removeWorktreeMetadataForTests) {
+            await input.removeWorktreeMetadataForTests(workspaceRoot, worktree);
+          } else {
+            await git2(workspaceRoot, ["worktree", "remove", "--force", worktree]);
+          }
+        } catch (err) {
+          return {
+            ...diagnostic,
+            eligible: false,
+            code: "REMOVE_FAILED",
+            reason: `Failed to drop exact stale registration at ${worktree} (dir already absent): ${err instanceof Error ? err.message : String(err)}`,
+            reclaimed: false,
+            alreadyGone: false
+          };
+        }
+        const afterMeta = await inspectWorktreeRegistration(workspaceRoot, worktree);
+        if (afterMeta.registered || await pathExists2(worktree)) {
+          return {
+            ...diagnostic,
+            eligible: false,
+            code: "REMOVE_FAILED",
+            reason: `Exact stale registration for ${worktree} remained after targeted metadata remove; refusing broader cleanup.`,
+            reclaimed: false,
+            alreadyGone: false
+          };
+        }
       }
     }
     const afterExists = await pathExists2(worktree);
@@ -17053,6 +17081,8 @@ async function reclaimTaskWorktreeForEnvelope(fs23, workspaceRoot, task, options
     deliveries,
     preview: options.preview,
     beforeRemoveForTests: options.beforeRemoveForTests,
+    rmLaneDirectoryForTests: options.rmLaneDirectoryForTests,
+    removeWorktreeMetadataForTests: options.removeWorktreeMetadataForTests,
     assertSessionSettledBeforeRemove: options.assertSessionSettledBeforeRemove
   });
 }
@@ -17078,6 +17108,47 @@ async function evaluateTaskWorktreeReclaimForEnvelope(fs23, workspaceRoot, task)
   const taskId = task.id?.trim();
   const deliveries = taskId ? await loadDeliveries(fs23, { taskId }) : [];
   return evaluateTaskWorktreeReclaim({ workspaceRoot, task, deliveries });
+}
+async function removeTaskLaneDirectorySafe(lanePath, options = {}) {
+  const resolved = nodePath4.resolve(lanePath);
+  let rootStat;
+  try {
+    rootStat = await nodeFs2.lstat(resolved);
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `Cannot lstat Task lane root before Node-safe remove at ${resolved}: ${err instanceof Error ? err.message : String(err)}`,
+      details: { lanePath: resolved }
+    };
+  }
+  if (rootStat.isSymbolicLink()) {
+    return {
+      ok: false,
+      reason: `Task lane root is a symlink/junction/reparse point at ${resolved}; refusing Node-safe remove (fail-closed, registration untouched).`,
+      details: { lanePath: resolved, linkSafety: "lane-root-reparse" }
+    };
+  }
+  if (!rootStat.isDirectory()) {
+    return {
+      ok: false,
+      reason: `Task lane root is not a directory at ${resolved}; refusing Node-safe remove.`,
+      details: { lanePath: resolved }
+    };
+  }
+  try {
+    if (options.rmLaneDirectoryForTests) {
+      await options.rmLaneDirectoryForTests(resolved);
+    } else {
+      await nodeFs2.rm(resolved, { recursive: true, force: false });
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `Node-safe Task lane directory remove failed at ${resolved} (possible partial lane; Git registration left untouched; no prune/rollback): ${err instanceof Error ? err.message : String(err)}`,
+      details: { lanePath: resolved, linkSafety: "node-fs-rm-lane" }
+    };
+  }
+  return { ok: true };
 }
 async function evaluateAcceptedSettle(input) {
   const target = input.targetBranch.trim();
@@ -20669,6 +20740,51 @@ function resolveAcpSkillMeta(skills, opts) {
   return out;
 }
 
+// src/adapters/acp/redact.ts
+var SECRET_ENV_KEY_RE = /^(.*_)?(API[_-]?KEY|TOKEN|SECRET|PASSWORD|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|AUTH)$/i;
+var DEFAULT_PLACEHOLDER = "[redacted]";
+function isSecretEnvKeyName(key2) {
+  if (SECRET_ENV_KEY_RE.test(key2)) return true;
+  if (/AUTH_REQUEST/i.test(key2)) return true;
+  if (/^TENT_.*_(KEY|TOKEN|SECRET)$/i.test(key2)) return true;
+  return false;
+}
+function collectSecretValues(env, extraSecrets) {
+  const found = /* @__PURE__ */ new Set();
+  if (env) {
+    for (const [key2, value] of Object.entries(env)) {
+      if (typeof value !== "string" || !value) continue;
+      if (isSecretEnvKeyName(key2) || valueLooksLikeHighEntropySecret(value)) {
+        if (isSecretEnvKeyName(key2)) found.add(value);
+      }
+    }
+  }
+  if (extraSecrets) {
+    for (const value of extraSecrets) {
+      if (typeof value === "string" && value.length > 0) found.add(value);
+    }
+  }
+  return [...found].sort((a, b) => b.length - a.length);
+}
+function valueLooksLikeHighEntropySecret(value) {
+  void value;
+  return false;
+}
+function redactSecrets(text3, secrets, placeholder = DEFAULT_PLACEHOLDER) {
+  if (!text3 || secrets.length === 0) return text3;
+  let out = text3;
+  for (const secret of secrets) {
+    if (!secret || secret.length < 4) continue;
+    if (!out.includes(secret)) continue;
+    out = out.split(secret).join(placeholder);
+  }
+  return out;
+}
+function redactDiagnosticText(text3, options) {
+  const secrets = collectSecretValues(options?.env, options?.secrets);
+  return redactSecrets(text3, secrets, options?.placeholder ?? DEFAULT_PLACEHOLDER);
+}
+
 // src/runtime/profile-config.ts
 function normalizeProfileToCanonicalAcp(raw) {
   const legacy = raw.grokAcp;
@@ -20690,6 +20806,15 @@ function normalizeProfileToCanonicalAcp(raw) {
   }
   return { profile: { ...rest }, migrated: false };
 }
+function sanitizeProfileEnvForSnapshot(env) {
+  if (!env) return void 0;
+  const out = {};
+  for (const [key2, value] of Object.entries(env)) {
+    if (typeof value !== "string") continue;
+    out[key2] = isSecretEnvKeyName(key2) ? "[redacted]" : value;
+  }
+  return out;
+}
 function cloneAgentProfileConfig(p) {
   const { profile: canonical } = normalizeProfileToCanonicalAcp(p);
   return {
@@ -20700,6 +20825,13 @@ function cloneAgentProfileConfig(p) {
     args: canonical.args ? [...canonical.args] : void 0,
     skills: cloneSkillRefs(canonical.skills),
     mcpServers: cloneMcpServers(canonical.mcpServers)
+  };
+}
+function cloneAgentProfileConfigForSnapshot(p) {
+  const cloned = cloneAgentProfileConfig(p);
+  return {
+    ...cloned,
+    env: sanitizeProfileEnvForSnapshot(cloned.env)
   };
 }
 
@@ -20838,6 +20970,100 @@ import * as path13 from "node:path";
 import { spawn as spawn4 } from "node:child_process";
 import * as readline from "node:readline";
 
+// src/runtime/child-env.ts
+var RESERVED_TENT_CHILD_ENV_KEYS = [
+  "TENT_SERVICE_DATA_DIR",
+  "TENT_SERVICE_TOKEN",
+  "TENT_SERVICE_URL",
+  "TENT_SERVICE_HOST",
+  "TENT_SERVICE_PORT",
+  "TENT_SESSION_ID",
+  "TENT_SESSION_TOKEN"
+];
+var RESERVED_KEY_SET = new Set(
+  RESERVED_TENT_CHILD_ENV_KEYS.map((k) => k.toUpperCase())
+);
+var COMMON_HOST_ENV_KEYS = [
+  "PATH",
+  "Path",
+  // Windows may expose mixed case
+  "TMP",
+  "TEMP",
+  "TMPDIR",
+  // Narrow locale only — enough for libc/node message catalogs, not full user identity.
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ"
+];
+var WIN32_HOST_ENV_KEYS = [
+  "PATHEXT",
+  "SystemRoot",
+  "SYSTEMROOT",
+  "windir",
+  "WINDIR",
+  "ComSpec",
+  "COMSPEC",
+  "USERPROFILE",
+  "HOME",
+  // HOMEDRIVE+HOMEPATH together resolve ~ equivalent on some Windows toolchains
+  "HOMEDRIVE",
+  "HOMEPATH"
+];
+var POSIX_HOST_ENV_KEYS = ["HOME"];
+function isReservedTentChildEnvKey(key2) {
+  return RESERVED_KEY_SET.has(key2.toUpperCase());
+}
+function stripReservedTentChildEnv(env) {
+  const out = {};
+  if (!env) return out;
+  for (const [key2, value] of Object.entries(env)) {
+    if (value == null) continue;
+    if (isReservedTentChildEnvKey(key2)) continue;
+    if (typeof value !== "string") continue;
+    out[key2] = value;
+  }
+  return out;
+}
+function pickMinimalHostEnv(hostEnv = process.env, platform = process.platform) {
+  const keys = /* @__PURE__ */ new Set([
+    ...COMMON_HOST_ENV_KEYS,
+    ...platform === "win32" ? WIN32_HOST_ENV_KEYS : POSIX_HOST_ENV_KEYS
+  ]);
+  const out = {};
+  for (const key2 of keys) {
+    const value = hostEnv[key2];
+    if (typeof value === "string" && value.length > 0) {
+      out[key2] = value;
+    }
+  }
+  if (platform === "win32" && out.PATH == null && typeof hostEnv.Path === "string") {
+    out.PATH = hostEnv.Path;
+  }
+  return out;
+}
+function buildManagedChildEnv(options = {}) {
+  const platform = options.platform ?? process.platform;
+  const host = pickMinimalHostEnv(options.hostEnv ?? process.env, platform);
+  const launch = stripReservedTentChildEnv(options.launchEnv);
+  const out = {
+    ...host,
+    ...launch
+  };
+  for (const key2 of Object.keys(out)) {
+    if (isReservedTentChildEnvKey(key2)) delete out[key2];
+  }
+  if (options.reserved) {
+    for (const key2 of RESERVED_TENT_CHILD_ENV_KEYS) {
+      const value = options.reserved[key2];
+      if (typeof value === "string" && value.length > 0) {
+        out[key2] = value;
+      }
+    }
+  }
+  return out;
+}
+
 // src/adapters/acp/types.ts
 var DEFAULT_PROMPT_TIMEOUT_MS = 30 * 6e4;
 var DEFAULT_PERMISSION_TIMEOUT_MS = 12e4;
@@ -20877,16 +21103,17 @@ var RPC_ERROR_SAFE_KEYS = /* @__PURE__ */ new Set([
   "details",
   "errorKind"
 ]);
-function formatRpcError(error) {
-  const message2 = error.message || "ACP JSON-RPC error";
+function formatRpcError(error, secrets = []) {
+  const message2 = redactSecrets(error.message || "ACP JSON-RPC error", secrets);
   const code = Number.isFinite(error.code) ? ` [JSON-RPC ${error.code}]` : "";
-  const data = summarizeRpcErrorData(error.data);
+  const data = summarizeRpcErrorData(error.data, secrets);
   return `${message2}${code}${data ? ` (${data})` : ""}`;
 }
-function summarizeRpcErrorData(data) {
+function summarizeRpcErrorData(data, secrets = []) {
   if (data == null) return void 0;
   if (typeof data === "string" || typeof data === "number" || typeof data === "boolean") {
-    return `data=${String(data).slice(0, RPC_ERROR_DATA_MAX_CHARS)}`;
+    const raw = typeof data === "string" ? redactSecrets(data, secrets) : String(data);
+    return `data=${raw.slice(0, RPC_ERROR_DATA_MAX_CHARS)}`;
   }
   if (typeof data !== "object" || Array.isArray(data)) {
     return `dataType=${Array.isArray(data) ? "array" : typeof data}`;
@@ -20895,7 +21122,7 @@ function summarizeRpcErrorData(data) {
   for (const [key2, value] of Object.entries(data)) {
     if (!RPC_ERROR_SAFE_KEYS.has(key2)) continue;
     if (value == null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-      safe[key2] = value == null ? null : typeof value === "string" ? value.slice(0, RPC_ERROR_DATA_MAX_CHARS) : value;
+      safe[key2] = value == null ? null : typeof value === "string" ? redactSecrets(value, secrets).slice(0, RPC_ERROR_DATA_MAX_CHARS) : value;
     }
   }
   if (Object.keys(safe).length === 0) return void 0;
@@ -20941,6 +21168,11 @@ var AcpClient = class {
     /** Defensive quarantine for bridges that resolve load before their final replay notification. */
     this.quarantiningLoadReplay = false;
     this.lastLoadReplayUpdateAt = 0;
+    /**
+     * Bootstrap image refs are projected on the first managed session/prompt only.
+     * Follow-up / resume prompts must not re-send image bytes (one-shot contract).
+     */
+    this.bootstrapImagesProjected = false;
     /** Cached from initialize agentCapabilities.loadSession (default false). */
     this.loadSessionSupported = false;
     /**
@@ -21179,7 +21411,7 @@ var AcpClient = class {
     this.collectingPromptResponse = true;
     try {
       const promptTimeout = this.options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS;
-      const prompt = Array.isArray(this.options.bootstrapImageRefs) && this.options.bootstrapImageRefs.length > 0 ? await this.buildPromptBlocks(bootstrapPrompt) : [{ type: "text", text: bootstrapPrompt }];
+      const prompt = Array.isArray(this.options.bootstrapImageRefs) && this.options.bootstrapImageRefs.length > 0 && !this.bootstrapImagesProjected ? await this.buildPromptBlocks(bootstrapPrompt) : [{ type: "text", text: bootstrapPrompt }];
       const result = await this.request(
         "session/prompt",
         {
@@ -21201,7 +21433,9 @@ var AcpClient = class {
       if (this.stopRequested) {
         throw new Error("session interrupted before prompt completed");
       }
-      const message2 = err instanceof Error ? err.message : String(err);
+      const message2 = this.redactText(
+        err instanceof Error ? err.message : String(err)
+      );
       const detail = this.stderrTail ? `${message2} (stderr: ${this.stderrTail.slice(-500)})` : message2;
       throw new Error(detail);
     } finally {
@@ -21212,12 +21446,14 @@ var AcpClient = class {
    * Project bootstrap text (+ optional image refs) to ACP content blocks.
    * Image bytes are process-scoped for this RPC only — never stored on the client.
    * Sole gate: cached live promptCapabilities.image from initialize.
+   * Bootstrap images are one-shot: only the first managed prompt may project them.
    */
   async buildPromptBlocks(bootstrapPrompt) {
     const refs = Array.isArray(this.options.bootstrapImageRefs) ? this.options.bootstrapImageRefs : [];
-    if (refs.length === 0) {
+    if (refs.length === 0 || this.bootstrapImagesProjected) {
       return [{ type: "text", text: bootstrapPrompt }];
     }
+    this.bootstrapImagesProjected = true;
     const projected = await projectBootstrapImagesToAcpPrompt({
       bootstrapText: bootstrapPrompt,
       imageRefs: refs,
@@ -21257,7 +21493,7 @@ var AcpClient = class {
     this.options.emit({
       type: "session.failed",
       sessionId: this.options.sessionId,
-      error
+      error: this.redactText(error)
     });
   }
   /**
@@ -21273,13 +21509,27 @@ var AcpClient = class {
       exitCode
     });
   }
+  /** Secret values from launch/core env + explicit resolver outputs — diagnostics only. */
+  secretValues() {
+    const coreSecrets = collectSecretValues(this.options.coreEnv);
+    return collectSecretValues(this.options.env, [
+      ...this.options.diagnosticSecrets ?? [],
+      ...coreSecrets
+    ]);
+  }
+  redactText(text3) {
+    return redactDiagnosticText(text3, {
+      secrets: this.secretValues()
+    });
+  }
   spawnProcess() {
+    const env = buildManagedChildEnv({
+      launchEnv: this.options.env,
+      reserved: this.options.coreEnv
+    });
     const child = spawn4(this.options.command, this.options.args, {
       cwd: this.options.cwd,
-      env: {
-        ...process.env,
-        ...this.options.env
-      },
+      env,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       detached: false
@@ -21297,7 +21547,7 @@ var AcpClient = class {
       );
     });
     child.stderr?.on("data", (chunk) => {
-      const text3 = chunk.toString("utf8");
+      const text3 = this.redactText(chunk.toString("utf8"));
       this.stderrTail = (this.stderrTail + text3).slice(-4e3);
       this.options.emit({
         type: "session.stdout_tail",
@@ -21389,7 +21639,7 @@ var AcpClient = class {
     this.pending.delete(id);
     clearTimeout(pending.timer);
     if ("error" in message2 && message2.error) {
-      pending.reject(new Error(formatRpcError(message2.error)));
+      pending.reject(new Error(formatRpcError(message2.error, this.secretValues())));
     } else {
       pending.resolve(("result" in message2 ? message2.result : void 0) ?? {});
     }
@@ -21407,7 +21657,7 @@ var AcpClient = class {
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
-        text: `[${kind}] ${update.content.text}`
+        text: this.redactText(`[${kind}] ${update.content.text}`)
       });
       return;
     }
@@ -21418,7 +21668,7 @@ var AcpClient = class {
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
-        text: `[${kind}] ${update.content.text}`
+        text: this.redactText(`[${kind}] ${update.content.text}`)
       });
       return;
     }
@@ -21428,8 +21678,10 @@ var AcpClient = class {
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
-        text: `[${kind}] ${title}${status ? ` (${status})` : ""}
+        text: this.redactText(
+          `[${kind}] ${title}${status ? ` (${status})` : ""}
 `
+        )
       });
       return;
     }
@@ -21437,8 +21689,8 @@ var AcpClient = class {
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
-        text: `[session/update] ${kind}
-`
+        text: this.redactText(`[session/update] ${kind}
+`)
       });
     }
   }
@@ -22106,6 +22358,18 @@ function readAcpSessionProjection(extras) {
   const skills = Array.isArray(skillRaw) ? skillRaw : [];
   return { mcpServers, skills };
 }
+function readCoreChildEnvClientOptions(plan) {
+  const out = {};
+  if (plan.coreEnv && Object.keys(plan.coreEnv).length > 0) {
+    out.coreEnv = plan.coreEnv;
+  }
+  if (Array.isArray(plan.diagnosticSecrets) && plan.diagnosticSecrets.length > 0) {
+    out.diagnosticSecrets = plan.diagnosticSecrets.filter(
+      (v) => typeof v === "string" && v.length > 0
+    );
+  }
+  return out;
+}
 function readBootstrapImageClientOptions(plan) {
   const refs = Array.isArray(plan.bootstrapImageRefs) ? plan.bootstrapImageRefs : [];
   const systemRoot = typeof plan.extras?.bootstrapImageSystemRoot === "string" ? plan.extras.bootstrapImageSystemRoot.trim() : "";
@@ -22186,6 +22450,8 @@ var GrokAcpClient = class {
       args: options.args,
       cwd: options.cwd,
       env: options.env,
+      coreEnv: options.coreEnv,
+      diagnosticSecrets: options.diagnosticSecrets,
       sessionId: options.sessionId,
       promptTimeoutMs: options.promptTimeoutMs,
       permissionPolicy: options.permissionPolicy,
@@ -22427,6 +22693,7 @@ var GrokAcpProviderAdapter = class {
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
     const imageOpts = readBootstrapImageClientOptions(plan);
+    const coreChildOpts = readCoreChildEnvClientOptions(plan);
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -22442,6 +22709,7 @@ var GrokAcpProviderAdapter = class {
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
       ...imageOpts,
+      ...coreChildOpts,
       emit: emit2,
       onPermissionAsk: permHooks.onPermissionAsk
     });
@@ -22549,6 +22817,7 @@ var CodexAcpProviderAdapter = class {
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
     const imageOpts = readBootstrapImageClientOptions(plan);
+    const coreChildOpts = readCoreChildEnvClientOptions(plan);
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -22563,6 +22832,7 @@ var CodexAcpProviderAdapter = class {
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
       ...imageOpts,
+      ...coreChildOpts,
       label: "Codex ACP",
       emit: emit2,
       onPermissionAsk: permHooks.onPermissionAsk
@@ -22665,6 +22935,7 @@ var ClaudeAcpProviderAdapter = class {
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
     const imageOpts = readBootstrapImageClientOptions(plan);
+    const coreChildOpts = readCoreChildEnvClientOptions(plan);
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -22679,6 +22950,7 @@ var ClaudeAcpProviderAdapter = class {
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
       ...imageOpts,
+      ...coreChildOpts,
       label: "Claude ACP",
       emit: emit2,
       onPermissionAsk: permHooks.onPermissionAsk
@@ -22743,6 +23015,7 @@ var AntigravityAcpProviderAdapter = class {
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
     const imageOpts = readBootstrapImageClientOptions(plan);
+    const coreChildOpts = readCoreChildEnvClientOptions(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -22757,6 +23030,7 @@ var AntigravityAcpProviderAdapter = class {
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
       ...imageOpts,
+      ...coreChildOpts,
       label: "Antigravity ACP (third-party agy-acp bridge)",
       emit: emit2,
       onPermissionAsk: hooks.onPermissionAsk
@@ -22845,6 +23119,7 @@ var OpenCodeAcpProviderAdapter = class {
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
     const imageOpts = readBootstrapImageClientOptions(plan);
+    const coreChildOpts = readCoreChildEnvClientOptions(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -22859,6 +23134,7 @@ var OpenCodeAcpProviderAdapter = class {
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
       ...imageOpts,
+      ...coreChildOpts,
       label: "OpenCode ACP",
       emit: emit2,
       onPermissionAsk: hooks.onPermissionAsk
@@ -22956,6 +23232,7 @@ var CopilotAcpProviderAdapter = class {
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
     const imageOpts = readBootstrapImageClientOptions(plan);
+    const coreChildOpts = readCoreChildEnvClientOptions(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -22970,6 +23247,7 @@ var CopilotAcpProviderAdapter = class {
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
       ...imageOpts,
+      ...coreChildOpts,
       label: "GitHub Copilot ACP",
       emit: emit2,
       onPermissionAsk: hooks.onPermissionAsk
@@ -23065,6 +23343,7 @@ var PiAcpProviderAdapter = class {
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
     const imageOpts = readBootstrapImageClientOptions(plan);
+    const coreChildOpts = readCoreChildEnvClientOptions(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -23079,6 +23358,7 @@ var PiAcpProviderAdapter = class {
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
       ...imageOpts,
+      ...coreChildOpts,
       label: "Pi ACP",
       emit: emit2,
       onPermissionAsk: hooks.onPermissionAsk
@@ -24156,6 +24436,8 @@ function health(ctx) {
     status: "ok",
     pid: ctx.getPid(),
     version: ctx.version,
+    /** Wire protocol contract — independent of package version (0.1.0). */
+    protocolVersion: ctx.protocolVersion,
     startedAt: ctx.startedAt,
     workspaceCount: ctx.host.list().length,
     foregroundWorkspaceId: ctx.host.getForegroundId()
@@ -34567,6 +34849,9 @@ function makeWorkspaceId(workspaceRoot) {
   return `ws-${base}-${digest}`;
 }
 
+// src/service/protocol.ts
+var TENT_SERVICE_PROTOCOL_VERSION = 1;
+
 // src/service/tool-approval-store.ts
 import * as fs20 from "node:fs/promises";
 import * as path18 from "node:path";
@@ -35686,15 +35971,18 @@ var ProcessSupervisor = class {
     if (this.children.has(sessionId) && this.isAlive(sessionId)) {
       throw new Error(`Process already live for session ${sessionId}`);
     }
-    const env = {
-      ...process.env,
-      ...launch.env
-    };
-    for (const key2 of Object.keys(env)) {
-      if (/^(.*_)?(API_KEY|TOKEN|SECRET|PASSWORD)$/i.test(key2) && launch.env[key2] === void 0) {
-        delete env[key2];
-      }
-    }
+    const env = buildManagedChildEnv({
+      launchEnv: launch.env,
+      reserved: launch.coreEnv
+    });
+    const coreSecrets = collectSecretValues(launch.coreEnv);
+    const secretValues = collectSecretValues(launch.env, [
+      ...launch.diagnosticSecrets ?? [],
+      ...coreSecrets
+    ]);
+    const redactChunk = (text3) => redactDiagnosticText(text3, {
+      secrets: secretValues
+    });
     const child = spawn5(launch.command, launch.args, {
       cwd: launch.cwd,
       env,
@@ -35715,17 +36003,19 @@ var ProcessSupervisor = class {
     this.children.set(sessionId, live);
     let spawned = false;
     let exitNotified = false;
-    const appendRing = (chunk) => {
+    const appendRing = (text3) => {
       if (this.stdoutRingBytes <= 0) return;
-      live.stdoutBuf = (live.stdoutBuf + chunk.toString("utf8")).slice(-this.stdoutRingBytes);
+      live.stdoutBuf = (live.stdoutBuf + text3).slice(-this.stdoutRingBytes);
     };
     child.stdout?.on("data", (chunk) => {
-      appendRing(chunk);
-      this.onStdout?.(sessionId, chunk.toString("utf8"));
+      const text3 = redactChunk(chunk.toString("utf8"));
+      appendRing(text3);
+      this.onStdout?.(sessionId, text3);
     });
     child.stderr?.on("data", (chunk) => {
-      appendRing(chunk);
-      this.onStdout?.(sessionId, chunk.toString("utf8"));
+      const text3 = redactChunk(chunk.toString("utf8"));
+      appendRing(text3);
+      this.onStdout?.(sessionId, text3);
     });
     const notifyExit = () => {
       if (!spawned || exitNotified) return;
@@ -35886,6 +36176,9 @@ function handleFrom(record) {
 }
 function cloneProfileConfig(p) {
   return cloneAgentProfileConfig(p);
+}
+function cloneProfileSnapshot(p) {
+  return cloneAgentProfileConfigForSnapshot(p);
 }
 var AgentRuntime = class {
   constructor(options) {
@@ -36177,7 +36470,7 @@ var AgentRuntime = class {
       id: req.sessionId,
       profileId: profile.id,
       adapterId: adapter.id,
-      profileSnapshot: cloneProfileConfig(profile),
+      profileSnapshot: cloneProfileSnapshot(profile),
       roleName: req.roleName,
       assigneeKind: req.assigneeKind,
       state: "starting",
@@ -36191,22 +36484,32 @@ var AgentRuntime = class {
     await this.registry.write(record);
     this.emit({ type: "session.starting", sessionId: req.sessionId });
     let startedManaged;
+    let resolvedEnv = {};
     try {
-      const resolvedEnv = await this.resolveCredentialEnv(profile);
-      const planEnv = {
-        ...profile.env ?? {},
-        ...req.env ?? {},
-        ...resolvedEnv,
+      resolvedEnv = await this.resolveCredentialEnv(profile);
+      const coreEnv = {
         // Reserved routing authority: installed native Tent hooks spawned by an
         // isolated Service must attach back to that Service, never %APPDATA%\Tent.
-        TENT_SERVICE_DATA_DIR: this.dataDir
+        TENT_SERVICE_DATA_DIR: this.dataDir,
+        TENT_SESSION_ID: req.sessionId
       };
+      const planEnv = {
+        ...stripProfileRequestEnv(profile.env),
+        ...stripProfileRequestEnv(req.env),
+        ...resolvedEnv,
+        ...coreEnv
+      };
+      const diagnosticSecrets = Object.values(resolvedEnv).filter(
+        (v) => typeof v === "string" && v.length > 0
+      );
       const plan = {
         sessionId: req.sessionId,
         profileId: profile.id,
         roleName: req.roleName,
         cwd,
         env: planEnv,
+        coreEnv,
+        diagnosticSecrets,
         bootstrapPrompt: req.bootstrapPrompt,
         // Ephemeral path refs only — never base64; not written to SessionRecord.
         bootstrapImageRefs: req.bootstrapImageRefs,
@@ -36284,7 +36587,17 @@ var AgentRuntime = class {
         }
       } else {
         const launch = await adapter.resolveLaunch(plan);
-        const proc = await this.supervisor.start(req.sessionId, launch);
+        const proc = await this.supervisor.start(req.sessionId, {
+          ...launch,
+          coreEnv: {
+            ...launch.coreEnv,
+            ...coreEnv
+          },
+          diagnosticSecrets: [
+            ...launch.diagnosticSecrets ?? [],
+            ...diagnosticSecrets
+          ]
+        });
         pid = proc.pid;
         resumeToken = profile.fake?.canResume || adapter.capabilities().canResume ? `fake-resume:${req.sessionId}` : void 0;
       }
@@ -36312,7 +36625,14 @@ var AgentRuntime = class {
         await this.supervisor.stop(req.sessionId).catch(() => void 0);
         await this.waitForChildExit(req.sessionId, true);
       }
-      const message2 = err instanceof Error ? err.message : String(err);
+      const rawMessage = err instanceof Error ? err.message : String(err);
+      const message2 = redactDiagnosticText(rawMessage, {
+        env: {
+          ...profile.env ?? {},
+          ...req.env ?? {}
+        },
+        secrets: Object.values(resolvedEnv)
+      });
       const failed = await this.registry.update(req.sessionId, {
         state: "failed",
         lastError: message2,
@@ -36409,21 +36729,30 @@ var AgentRuntime = class {
       updatedAt: now
     });
     this.emit({ type: "session.starting", sessionId: req.sessionId });
+    let resolvedEnv = {};
     try {
-      const resolvedEnv = await this.resolveCredentialEnv(profile);
-      const planEnv = {
-        ...profile.env ?? {},
-        ...req.env ?? {},
-        ...resolvedEnv,
-        // Preserve the owning Service boundary across provider-native resume.
-        TENT_SERVICE_DATA_DIR: this.dataDir
+      resolvedEnv = await this.resolveCredentialEnv(profile);
+      const coreEnv = {
+        TENT_SERVICE_DATA_DIR: this.dataDir,
+        TENT_SESSION_ID: req.sessionId
       };
+      const planEnv = {
+        ...stripProfileRequestEnv(profile.env),
+        ...stripProfileRequestEnv(req.env),
+        ...resolvedEnv,
+        ...coreEnv
+      };
+      const diagnosticSecrets = Object.values(resolvedEnv).filter(
+        (v) => typeof v === "string" && v.length > 0
+      );
       const plan = {
         sessionId: req.sessionId,
         profileId: profile.id,
         roleName: record.roleName,
         cwd,
         env: planEnv,
+        coreEnv,
+        diagnosticSecrets,
         bootstrapPrompt: req.bootstrapPrompt,
         bootstrapImageRefs: req.bootstrapImageRefs,
         command: profile.command,
@@ -36522,7 +36851,14 @@ var AgentRuntime = class {
         await this.waitForManagedTerminal(req.sessionId, true);
       }
       const rawMessage = err instanceof Error ? err.message : String(err);
-      const message2 = redactRuntimeValue(rawMessage, tokenRaw);
+      const tokenRedacted = redactRuntimeValue(rawMessage, tokenRaw);
+      const message2 = redactDiagnosticText(tokenRedacted, {
+        env: {
+          ...profile.env ?? {},
+          ...req.env ?? {}
+        },
+        secrets: Object.values(resolvedEnv)
+      });
       const failed = await this.registry.update(req.sessionId, {
         state: "failed",
         lastError: message2,
@@ -36841,6 +37177,16 @@ var AgentRuntime = class {
         error: signal ? `signal:${signal}` : `exit:${exitCode}`
       };
     }
+    if (event.type === "session.failed") {
+      const tail = this.supervisor.getStdoutTail(sessionId).trim();
+      if (tail) {
+        const snippet = tail.slice(-500);
+        event = {
+          ...event,
+          error: `${event.error} (stderr: ${snippet})`
+        };
+      }
+    }
     const terminalState = event.type === "session.failed" ? "failed" : "stopped";
     if (SessionRegistry.isNonTerminal(record.state) || record.state === "starting") {
       await this.registry.update(sessionId, {
@@ -36976,6 +37322,9 @@ function sameRuntimeCwd(left, right) {
 }
 function redactRuntimeValue(message2, value) {
   return value ? message2.split(value).join("[provider-session]") : message2;
+}
+function stripProfileRequestEnv(env) {
+  return stripReservedTentChildEnv(env);
 }
 function createAgentRuntime(options) {
   return new AgentRuntime(options);
@@ -37531,6 +37880,7 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
     mutations,
     events,
     version,
+    protocolVersion: TENT_SERVICE_PROTOCOL_VERSION,
     startedAt,
     getPid,
     runtime,
