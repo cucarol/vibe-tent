@@ -41,6 +41,14 @@ export function parseFrontmatter(raw: string): ParsedFrontmatter {
     let valuePart = trimmed.slice(colon + 1).trim();
     // 砍掉行尾 ` # 注释`(简单实现:非引号内的 # 之后)
     valuePart = stripInlineComment(valuePart);
+    if (
+      (valuePart.startsWith("{") || valuePart.startsWith("[")) &&
+      !flowCollectionCloses(valuePart)
+    ) {
+      const recovered = readLegacyMultilineFlowCollection(lines, i, valuePart);
+      valuePart = recovered.value;
+      i = recovered.nextIndex;
+    }
     if (valuePart === "" && isBlockSequenceStart(lines[i + 1])) {
       const { value, nextIndex } = readBlockSequence(lines, i + 1, key);
       data[key] = normalizeValueForKey(key, value);
@@ -57,6 +65,74 @@ function stripInlineComment(v: string): string {
   if (v.startsWith('"') || v.startsWith("'")) return v;
   const hash = v.indexOf(" #");
   return hash === -1 ? v : v.slice(0, hash).trim();
+}
+
+interface FlowCollectionScan {
+  stack: string[];
+  quote: '"' | "'" | null;
+  invalid: boolean;
+}
+
+function scanFlowCollection(text: string, initial?: FlowCollectionScan): FlowCollectionScan {
+  const state: FlowCollectionScan = initial ?? { stack: [], quote: null, invalid: false };
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (state.quote) {
+      if (ch === "\\" && state.quote === '"' && i + 1 < text.length) {
+        i += 1;
+        continue;
+      }
+      if (ch === state.quote) state.quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      state.quote = ch;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      state.stack.push(ch);
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      const expected = ch === "}" ? "{" : "[";
+      if (state.stack.pop() !== expected) {
+        state.invalid = true;
+        return state;
+      }
+    }
+  }
+  return state;
+}
+
+function flowCollectionCloses(value: string): boolean {
+  const state = scanFlowCollection(value);
+  return !state.invalid && state.quote === null && state.stack.length === 0;
+}
+
+/**
+ * Historical recovery for values emitted by the old minimal serializer, which
+ * could place an unquoted multiline string inside a flow mapping/array.
+ * Collection structure still has to be balanced; malformed input stays fail-loud.
+ */
+function readLegacyMultilineFlowCollection(
+  lines: string[],
+  startIndex: number,
+  initialValue: string
+): { value: string; nextIndex: number } {
+  let value = initialValue;
+  let state = scanFlowCollection(initialValue);
+  if (state.invalid) return { value, nextIndex: startIndex };
+
+  for (let i = startIndex + 1; i < lines.length; i++) {
+    const continuation = `\n${lines[i]}`;
+    value += continuation;
+    state = scanFlowCollection(continuation, state);
+    if (state.invalid) return { value, nextIndex: i };
+    if (state.quote === null && state.stack.length === 0) {
+      return { value, nextIndex: i };
+    }
+  }
+  return { value, nextIndex: lines.length - 1 };
 }
 
 function coerce(v: string): unknown {
@@ -399,10 +475,11 @@ function emit(v: unknown): string {
     );
   }
   const s = String(v);
-  // 需要引号的情况:含 YAML/flow 标点或首尾空白
+  // 需要引号的情况:含 YAML/flow 标点、控制字符或首尾空白
   if (
     /^-?(?:\d+|\d*\.\d+)$/.test(s) ||
     /[:,#\[\]{}]/.test(s) ||
+    /[\u0000-\u001f\u007f-\u009f]/.test(s) ||
     s !== s.trim() ||
     s === ""
   ) {

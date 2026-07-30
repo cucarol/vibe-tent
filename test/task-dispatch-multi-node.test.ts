@@ -118,6 +118,25 @@ test("dispatch: multi nodeIds preserve exact order in Context Card; dedupe; no c
   assert.doesNotMatch(result.manifestYaml, /^claims:/m);
 });
 
+test("dispatch: multiline Context Card strings round-trip without corrupting the Task envelope", async () => {
+  const dir = await makeTent();
+  const env = envFor(dir);
+  const prompt = "先读取项目说明\n\n只修改核心解析器\n\n完成后运行测试";
+
+  const result = await dispatch(env as any, "bx-o1", "analyst", {
+    userPrompt: prompt,
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+    nodeIds: ["bx-o1"],
+  });
+
+  const raw = await env.fs.readFile(result.taskPath);
+  assert.match(raw, /objective: "先读取项目说明\\n\\n只修改核心解析器/);
+  const loaded = await loadTaskEnvelope(env.fs, result.taskPath);
+  assert.equal(loaded.contextCard?.objective, prompt);
+  assert.deepEqual(loaded.contextCard?.acceptance, [prompt]);
+});
+
 test("dispatch: Role manifest snapshots only newly requested Nodes (no prior Role aggregation)", async () => {
   const dir = await makeTent();
   const env = envFor(dir);
