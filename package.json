@@ -39,7 +39,7 @@
     "test:grok-e2e": "node --test --import tsx test/grok-acp-live.e2e.ts",
     "test:foreground-e2e": "node --test --import tsx test/mainstream-acp-cli-live.e2e.ts",
     "typecheck": "tsc -noEmit",
-    "security:audit": "npm audit --audit-level=high",
+    "security:audit": "npm audit --omit=dev --audit-level=high",
     "okf:check": "node scripts/okf-check.mjs",
     "okf:check:strict": "node scripts/okf-check.mjs --strict",
     "markdown:preview": "tsx src/markdown/preview-server.ts",
