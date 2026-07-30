@@ -108,6 +108,22 @@ export type AcpClientOptions = {
   args: string[];
   cwd: string;
   env: Record<string, string>;
+  /**
+   * Explicit credential resolver outputs (and other non-key-named secrets)
+   * for diagnostic redaction. Always scrubbed from stderr/RPC/errors even when
+   * the env key name does not look secret-shaped.
+   */
+  diagnosticSecrets?: string[];
+  /**
+   * Core-owned reserved Tent keys. Only these may set TENT_SERVICE_* / session
+   * identity — arbitrary env values for reserved keys are stripped at spawn.
+   */
+  coreEnv?: Partial<
+    Record<
+      import("../../runtime/child-env.js").ReservedTentChildEnvKey,
+      string
+    >
+  >;
   sessionId: string;
   promptTimeoutMs?: number;
   permissionPolicy: AcpPermissionPolicy;
@@ -680,28 +696,24 @@ export class AcpClient {
     });
   }
 
-  /** Secret values from launch env — used for stderr / RPC / thrown diagnostics only. */
+  /** Secret values from launch env + explicit resolver outputs — diagnostics only. */
   private secretValues(): string[] {
-    return collectSecretValues(this.options.env);
+    return collectSecretValues(this.options.env, this.options.diagnosticSecrets);
   }
 
   private redactText(text: string): string {
-    return redactDiagnosticText(text, { env: this.options.env });
+    return redactDiagnosticText(text, {
+      env: this.options.env,
+      secrets: this.options.diagnosticSecrets,
+    });
   }
 
   private spawnProcess(): void {
-    // Minimal host allowlist + validated adapter/plan env; Core reserved keys from plan win.
+    // Minimal host allowlist + validated adapter/plan env.
+    // Reserved Tent keys only from explicit coreEnv (never smuggled via env alone).
     const env = buildManagedChildEnv({
       launchEnv: this.options.env,
-      reserved: {
-        TENT_SERVICE_DATA_DIR: this.options.env.TENT_SERVICE_DATA_DIR,
-        TENT_SERVICE_TOKEN: this.options.env.TENT_SERVICE_TOKEN,
-        TENT_SERVICE_URL: this.options.env.TENT_SERVICE_URL,
-        TENT_SERVICE_HOST: this.options.env.TENT_SERVICE_HOST,
-        TENT_SERVICE_PORT: this.options.env.TENT_SERVICE_PORT,
-        TENT_SESSION_ID: this.options.env.TENT_SESSION_ID,
-        TENT_SESSION_TOKEN: this.options.env.TENT_SESSION_TOKEN,
-      },
+      reserved: this.options.coreEnv,
     });
     const child = spawn(this.options.command, this.options.args, {
       cwd: this.options.cwd,

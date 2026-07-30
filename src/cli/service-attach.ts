@@ -15,6 +15,7 @@ import { createServiceClient, type ServiceClient } from "../service/client.js";
 import {
   assertServiceProtocolCompatible,
   isServiceProtocolCompatible,
+  isServiceProtocolIncompatibleError,
 } from "../service/protocol.js";
 
 export type CliAttachResult = {
@@ -159,10 +160,8 @@ export async function tryAttachService(
     assertServiceProtocolCompatible(health);
     return { url, endpoint, client };
   } catch (err) {
-    // Protocol mismatch must not be swallowed as "no service".
-    if (err instanceof Error && /protocol/i.test(err.message)) {
-      throw err;
-    }
+    // Typed protocol incompatibility must not be swallowed as "no service".
+    if (isServiceProtocolIncompatibleError(err)) throw err;
     return null;
   }
 }
@@ -192,9 +191,7 @@ async function rejectIncompatibleHealthyService(
       assertServiceProtocolCompatible(health);
     }
   } catch (err) {
-    if (err instanceof Error && /protocol/i.test(err.message)) {
-      throw err;
-    }
+    if (isServiceProtocolIncompatibleError(err)) throw err;
     // Unreachable / network — allow bootstrap path.
   }
 }

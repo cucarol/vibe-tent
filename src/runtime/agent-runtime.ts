@@ -483,20 +483,31 @@ export class AgentRuntime implements AgentRuntimePort {
       // Vault injection wins for envKey; profile.env / req.env supply non-secret knobs.
       // Reserved Tent Service/data-dir/session keys are Core-owned and cannot be
       // overridden by arbitrary profile or request env.
+      // Profile/request cannot set reserved keys (stripped). Core mirrors reserved
+      // into plan.env for adapter/hook visibility; spawn authority is coreEnv only.
+      const coreEnv = {
+        // Reserved routing authority: installed native Tent hooks spawned by an
+        // isolated Service must attach back to that Service, never %APPDATA%\Tent.
+        TENT_SERVICE_DATA_DIR: this.dataDir,
+        TENT_SESSION_ID: req.sessionId,
+      };
       const planEnv = {
         ...stripProfileRequestEnv(profile.env),
         ...stripProfileRequestEnv(req.env),
         ...resolvedEnv,
-        // Reserved routing authority: installed native Tent hooks spawned by an
-        // isolated Service must attach back to that Service, never %APPDATA%\Tent.
-        TENT_SERVICE_DATA_DIR: this.dataDir,
+        ...coreEnv,
       };
+      const diagnosticSecrets = Object.values(resolvedEnv).filter(
+        (v): v is string => typeof v === "string" && v.length > 0
+      );
       const plan = {
         sessionId: req.sessionId,
         profileId: profile.id,
         roleName: req.roleName,
         cwd,
         env: planEnv,
+        coreEnv,
+        diagnosticSecrets,
         bootstrapPrompt: req.bootstrapPrompt,
         // Ephemeral path refs only — never base64; not written to SessionRecord.
         bootstrapImageRefs: req.bootstrapImageRefs,
@@ -599,7 +610,18 @@ export class AgentRuntime implements AgentRuntimePort {
         }
       } else {
         const launch = await adapter.resolveLaunch(plan);
-        const proc = await this.supervisor.start(req.sessionId, launch);
+        // Core reserved overlay + credential secrets for redaction — not adapter authority.
+        const proc = await this.supervisor.start(req.sessionId, {
+          ...launch,
+          coreEnv: {
+            ...launch.coreEnv,
+            ...coreEnv,
+          },
+          diagnosticSecrets: [
+            ...(launch.diagnosticSecrets ?? []),
+            ...diagnosticSecrets,
+          ],
+        });
         pid = proc.pid;
         resumeToken =
           profile.fake?.canResume || adapter.capabilities().canResume
@@ -760,20 +782,29 @@ export class AgentRuntime implements AgentRuntimePort {
     let resolvedEnv: Record<string, string> = {};
     try {
       resolvedEnv = await this.resolveCredentialEnv(profile);
+      // Preserve the owning Service boundary across provider-native resume.
+      // Reserved keys remain Core-owned (profile/request cannot override).
+      const coreEnv = {
+        TENT_SERVICE_DATA_DIR: this.dataDir,
+        TENT_SESSION_ID: req.sessionId,
+      };
       const planEnv = {
         ...stripProfileRequestEnv(profile.env),
         ...stripProfileRequestEnv(req.env),
         ...resolvedEnv,
-        // Preserve the owning Service boundary across provider-native resume.
-        // Reserved keys remain Core-owned (profile/request cannot override).
-        TENT_SERVICE_DATA_DIR: this.dataDir,
+        ...coreEnv,
       };
+      const diagnosticSecrets = Object.values(resolvedEnv).filter(
+        (v): v is string => typeof v === "string" && v.length > 0
+      );
       const plan = {
         sessionId: req.sessionId,
         profileId: profile.id,
         roleName: record.roleName,
         cwd,
         env: planEnv,
+        coreEnv,
+        diagnosticSecrets,
         bootstrapPrompt: req.bootstrapPrompt,
         bootstrapImageRefs: req.bootstrapImageRefs,
         command: profile.command,
@@ -1289,6 +1320,19 @@ export class AgentRuntime implements AgentRuntimePort {
         sessionId,
         error: signal ? `signal:${signal}` : `exit:${exitCode}`,
       };
+    }
+
+    // ProcessSupervisor ring is already redacted; attach a short tail so failures
+    // stay useful without reintroducing secrets into SessionRegistry / events.
+    if (event.type === "session.failed") {
+      const tail = this.supervisor.getStdoutTail(sessionId).trim();
+      if (tail) {
+        const snippet = tail.slice(-500);
+        event = {
+          ...event,
+          error: `${event.error} (stderr: ${snippet})`,
+        };
+      }
     }
 
     const terminalState = event.type === "session.failed" ? "failed" : "stopped";

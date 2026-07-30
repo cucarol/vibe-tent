@@ -19,6 +19,7 @@ import {
   readAcpExtras,
   readAcpSessionProjection,
   readBootstrapImageClientOptions,
+  readCoreChildEnvClientOptions,
   resolvePlanOrProcessEnv,
   resumeManagedAcpSession,
   startManagedAcpSession,
@@ -139,6 +140,7 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
     const imageOpts = readBootstrapImageClientOptions(plan);
+    const coreChildOpts = readCoreChildEnvClientOptions(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
     });
@@ -153,6 +155,7 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
       ...imageOpts,
+      ...coreChildOpts,
       label: "OpenCode ACP",
       emit,
       onPermissionAsk: hooks.onPermissionAsk,

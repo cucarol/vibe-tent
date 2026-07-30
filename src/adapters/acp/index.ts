@@ -58,6 +58,7 @@ export {
   readAcpExtras,
   readAcpSessionProjection,
   readBootstrapImageClientOptions,
+  readCoreChildEnvClientOptions,
   resolveNpxAcpLaunch,
   resolvePlanOrProcessEnv,
 } from "./profile.js";

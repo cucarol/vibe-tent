@@ -21,6 +21,7 @@ import {
   readAcpExtras,
   readAcpSessionProjection,
   readBootstrapImageClientOptions,
+  readCoreChildEnvClientOptions,
   resumeManagedAcpSession,
   startManagedAcpSession,
 } from "../acp/index.js";
@@ -341,6 +342,7 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
     const imageOpts = readBootstrapImageClientOptions(plan);
+    const coreChildOpts = readCoreChildEnvClientOptions(plan);
 
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
@@ -358,6 +360,7 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
       ...imageOpts,
+      ...coreChildOpts,
       emit,
       onPermissionAsk: permHooks.onPermissionAsk,
     });

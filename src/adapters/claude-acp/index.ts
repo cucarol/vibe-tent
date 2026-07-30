@@ -21,6 +21,7 @@ import {
   readAcpExtras,
   readAcpSessionProjection,
   readBootstrapImageClientOptions,
+  readCoreChildEnvClientOptions,
   resolveNpxAcpLaunch,
   resolvePlanOrProcessEnv,
   resumeManagedAcpSession,
@@ -166,6 +167,7 @@ export class ClaudeAcpProviderAdapter implements ProviderAdapter {
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
     const imageOpts = readBootstrapImageClientOptions(plan);
+    const coreChildOpts = readCoreChildEnvClientOptions(plan);
 
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
@@ -183,6 +185,7 @@ export class ClaudeAcpProviderAdapter implements ProviderAdapter {
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
       ...imageOpts,
+      ...coreChildOpts,
       label: "Claude ACP",
       emit,
       onPermissionAsk: permHooks.onPermissionAsk,

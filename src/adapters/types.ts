@@ -19,6 +19,22 @@ export interface LaunchPlan {
   roleName?: string;
   cwd: string;
   env: Record<string, string>;
+  /**
+   * Core-owned reserved Tent keys (set only by AgentRuntime).
+   * Adapters/ProcessSupervisor pass this as the sole reserved overlay — never
+   * promote arbitrary env values for these keys.
+   */
+  coreEnv?: Partial<
+    Record<
+      import("../runtime/child-env.js").ReservedTentChildEnvKey,
+      string
+    >
+  >;
+  /**
+   * Credential resolver outputs for diagnostic redaction (never persist/log).
+   * Includes values that may not sit under secret-named env keys.
+   */
+  diagnosticSecrets?: string[];
   bootstrapPrompt?: string;
   /**
    * Ephemeral local image path refs for managed ACP bootstrap (paths only, no base64).
@@ -37,6 +53,22 @@ export interface ResolvedLaunch {
   args: string[];
   cwd: string;
   env: Record<string, string>;
+  /**
+   * Core-owned reserved Tent keys (Service data-dir, session id, …).
+   * Only AgentRuntime (or equivalent Core path) may set these; arbitrary
+   * launch.env cannot smuggle reserved keys into the child.
+   */
+  coreEnv?: Partial<
+    Record<
+      import("../runtime/child-env.js").ReservedTentChildEnvKey,
+      string
+    >
+  >;
+  /**
+   * Explicit credential / secret values for diagnostic redaction
+   * (resolver outputs). Never logged; used only to scrub stderr/events.
+   */
+  diagnosticSecrets?: string[];
   /** Prefer non-argv bootstrap channels on Windows. */
   bootstrapFile?: string;
   /** Optional graceful stop signal (default SIGTERM). */

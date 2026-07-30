@@ -19,6 +19,9 @@
  *   MOCK_ACP_KEEP_ALIVE — "1" stay alive after prompt until SIGTERM (default 1)
  *   MOCK_ACP_FAIL_AUTH — "1" reject authenticate
  *   MOCK_ACP_FAIL_NEW — "1" reject session/new with safe + secret-shaped data
+ *   MOCK_ACP_STDERR — optional text written to stderr before fail-new (tests redaction)
+ *   MOCK_ACP_STDERR_ENV_KEY — if set, append process.env[key] to stderr (resolved secret proof)
+ *   MOCK_ACP_ERROR_ENV_KEY — if set, put process.env[key] into JSON-RPC error data.message
  *   MOCK_ACP_LOG — optional path to write JSON log of requests
  *   MOCK_ACP_LOAD_SESSION — "1" advertise agentCapabilities.loadSession (default 0)
  *   MOCK_ACP_RESUME_SESSION — "1" advertise agentCapabilities.sessionCapabilities.resume={} (default 0)
@@ -63,6 +66,10 @@ const permissionCount = Math.max(
 const keepAlive = process.env.MOCK_ACP_KEEP_ALIVE !== "0";
 const failAuth = process.env.MOCK_ACP_FAIL_AUTH === "1";
 const failNew = process.env.MOCK_ACP_FAIL_NEW === "1";
+/** Optional stderr text for redaction tests (may include secrets from env). */
+const mockStderrExtra = process.env.MOCK_ACP_STDERR || "";
+const mockStderrEnvKey = process.env.MOCK_ACP_STDERR_ENV_KEY || "";
+const mockErrorEnvKey = process.env.MOCK_ACP_ERROR_ENV_KEY || "";
 /** empty | error | interrupt — special prompt outcomes for managed-delivery tests */
 const promptMode = process.env.MOCK_ACP_PROMPT_MODE || "ok";
 const stopReasonEnv = process.env.MOCK_ACP_STOP_REASON || "end_turn";
@@ -126,6 +133,19 @@ const log = {
     CPA_GROK_BASE_URL: Boolean(process.env.CPA_GROK_BASE_URL),
     XAI_API_BASE_URL: Boolean(process.env.XAI_API_BASE_URL),
     OPENAI_BASE_URL: Boolean(process.env.OPENAI_BASE_URL),
+    TENT_SERVICE_DATA_DIR: Boolean(process.env.TENT_SERVICE_DATA_DIR),
+    TENT_SESSION_ID: Boolean(process.env.TENT_SESSION_ID),
+    NODE_OPTIONS: Boolean(process.env.NODE_OPTIONS),
+    HTTPS_PROXY: Boolean(process.env.HTTPS_PROXY),
+  },
+  /** Values for isolation tests — never include secret material in production logs. */
+  envValues: {
+    TENT_SERVICE_DATA_DIR: process.env.TENT_SERVICE_DATA_DIR || null,
+    TENT_SESSION_ID: process.env.TENT_SESSION_ID || null,
+    NODE_OPTIONS: process.env.NODE_OPTIONS || null,
+    HTTPS_PROXY: process.env.HTTPS_PROXY || null,
+    // Host-leak probes (must stay absent under minimal allowlist)
+    TENT_TEST_HOST_LEAK_SECRET: process.env.TENT_TEST_HOST_LEAK_SECRET || null,
   },
   xaiApiBaseUrlFlag: (() => {
     const i = process.argv.indexOf("--xai-api-base-url");
@@ -256,17 +276,27 @@ rl.on("line", (line) => {
     // Never log secret values from mcpServers env/headers — names + counts only.
     log.news.push(summarizeSessionStartParams(params));
     if (failNew) {
-      process.stderr.write("mock bridge session initialization failed\n");
+      let stderrLine = "mock bridge session initialization failed";
+      if (mockStderrExtra) stderrLine += ` ${mockStderrExtra}`;
+      if (mockStderrEnvKey && process.env[mockStderrEnvKey]) {
+        stderrLine += ` envSecret=${process.env[mockStderrEnvKey]}`;
+      }
+      process.stderr.write(`${stderrLine}\n`);
+      const errorData = {
+        reason: "mock provider unavailable",
+        token: "must-not-leak",
+        details: "mock bridge session initialization failed",
+      };
+      if (mockErrorEnvKey && process.env[mockErrorEnvKey]) {
+        errorData.message = `provider detail with secret ${process.env[mockErrorEnvKey]}`;
+      }
       write({
         jsonrpc: "2.0",
         id: msg.id,
         error: {
           code: -32603,
           message: "Internal error",
-          data: {
-            reason: "mock provider unavailable",
-            token: "must-not-leak",
-          },
+          data: errorData,
         },
       });
       flushLog();

@@ -1,10 +1,10 @@
 // Minimal host env for managed ACP / provider children (cross-platform).
 // Full process.env inheritance is intentionally not used.
+// Contract: OS/process launch necessities only — not convenience network/Node tooling.
 
 /**
- * Core-owned keys: profile / request / adapter env cannot override these.
- * AgentRuntime forces TENT_SERVICE_DATA_DIR; session identity is set by adapters
- * from the LaunchPlan and re-asserted here when building the final child env.
+ * Core-owned keys: profile / request / adapter / arbitrary launchEnv cannot set these.
+ * Only an explicit `reserved` / `coreEnv` overlay from AgentRuntime (or equivalent) may.
  */
 export const RESERVED_TENT_CHILD_ENV_KEYS = [
   "TENT_SERVICE_DATA_DIR",
@@ -22,35 +22,22 @@ const RESERVED_KEY_SET = new Set<string>(
   RESERVED_TENT_CHILD_ENV_KEYS.map((k) => k.toUpperCase())
 );
 
-/** Cross-platform launch necessities only (PATH/HOME/TMP + Windows cmd/npm resolution). */
+/**
+ * Cross-platform launch necessities only.
+ * Explicitly NOT inherited (must come from validated launchEnv if needed):
+ * NODE_OPTIONS, NODE_PATH, npm_*, proxy vars, SSL/CA cert paths, usernames, ProgramFiles.
+ */
 const COMMON_HOST_ENV_KEYS = [
   "PATH",
-  "Path", // Windows may expose mixed case; we copy both if present
+  "Path", // Windows may expose mixed case
   "TMP",
   "TEMP",
   "TMPDIR",
+  // Narrow locale only — enough for libc/node message catalogs, not full user identity.
   "LANG",
   "LC_ALL",
   "LC_CTYPE",
-  "LC_MESSAGES",
   "TZ",
-  "TERM",
-  "COLORTERM",
-  "NO_COLOR",
-  "FORCE_COLOR",
-  "NODE_OPTIONS",
-  "NODE_PATH",
-  "NODE_EXTRA_CA_CERTS",
-  "SSL_CERT_FILE",
-  "SSL_CERT_DIR",
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "NO_PROXY",
-  "http_proxy",
-  "https_proxy",
-  "no_proxy",
-  "ALL_PROXY",
-  "all_proxy",
 ] as const;
 
 const WIN32_HOST_ENV_KEYS = [
@@ -62,53 +49,21 @@ const WIN32_HOST_ENV_KEYS = [
   "ComSpec",
   "COMSPEC",
   "USERPROFILE",
+  "HOME",
+  // HOMEDRIVE+HOMEPATH together resolve ~ equivalent on some Windows toolchains
   "HOMEDRIVE",
   "HOMEPATH",
-  "HOME",
-  "USERNAME",
-  "USERDOMAIN",
-  "USERDOMAIN_ROAMINGPROFILE",
-  "APPDATA",
-  "LOCALAPPDATA",
-  "ProgramData",
-  "ProgramFiles",
-  "ProgramFiles(x86)",
-  "ProgramW6432",
-  "CommonProgramFiles",
-  "CommonProgramFiles(x86)",
-  "PUBLIC",
-  "OS",
-  "PROCESSOR_ARCHITECTURE",
-  "PROCESSOR_ARCHITEW6432",
-  "NUMBER_OF_PROCESSORS",
-  "PATHEXT",
-  // npm / node resolution on Windows often needs these when spawning .cmd shims
-  "npm_config_user_agent",
-  "npm_node_execpath",
-  "npm_execpath",
 ] as const;
 
-const POSIX_HOST_ENV_KEYS = [
-  "HOME",
-  "USER",
-  "LOGNAME",
-  "SHELL",
-  "XDG_RUNTIME_DIR",
-  "XDG_DATA_HOME",
-  "XDG_CONFIG_HOME",
-  "XDG_STATE_HOME",
-  "XDG_CACHE_HOME",
-  "DISPLAY",
-  "DBUS_SESSION_BUS_ADDRESS",
-] as const;
+const POSIX_HOST_ENV_KEYS = ["HOME"] as const;
 
 export function isReservedTentChildEnvKey(key: string): boolean {
   return RESERVED_KEY_SET.has(key.toUpperCase());
 }
 
 /**
- * Strip reserved Tent keys from an arbitrary env bag (profile / request overlay).
- * Core re-applies authoritative values after the overlay.
+ * Strip reserved Tent keys from an arbitrary env bag (profile / request / launch overlay).
+ * Core re-applies authoritative values only via the explicit `reserved` argument.
  */
 export function stripReservedTentChildEnv(
   env: Record<string, string> | NodeJS.ProcessEnv | undefined
@@ -126,7 +81,7 @@ export function stripReservedTentChildEnv(
 
 /**
  * Copy only the minimal host allowlist from `hostEnv` (default: process.env).
- * Does not include arbitrary caller secrets or Tent service routing keys.
+ * Does not include NODE_OPTIONS, proxies, npm_* paths, or Tent service routing keys.
  */
 export function pickMinimalHostEnv(
   hostEnv: NodeJS.ProcessEnv = process.env,
@@ -151,21 +106,23 @@ export function pickMinimalHostEnv(
 }
 
 export type BuildManagedChildEnvOptions = {
-  /** Validated LaunchProfile / adapter / plan env (non-reserved keys preferred). */
+  /** Validated LaunchProfile / adapter env. Reserved keys are always stripped. */
   launchEnv?: Record<string, string> | NodeJS.ProcessEnv;
   /** Host process env to sample allowlist from (tests inject). */
   hostEnv?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   /**
    * Core-owned reserved values forced last (Service data-dir, session id, …).
-   * Always win over host allowlist and launchEnv.
+   * Only this overlay may set reserved keys — never launchEnv alone.
    */
   reserved?: Partial<Record<ReservedTentChildEnvKey, string | undefined>>;
 };
 
 /**
  * Final child env for managed ACP / provider spawns:
- * minimal host allowlist → launchEnv (reserved stripped) → Core reserved overlay.
+ * minimal host allowlist → launchEnv (reserved stripped) → explicit Core reserved overlay.
+ *
+ * Arbitrary launchEnv cannot smuggle reserved Tent keys; callers must pass `reserved`.
  */
 export function buildManagedChildEnv(
   options: BuildManagedChildEnvOptions = {}
@@ -177,21 +134,15 @@ export function buildManagedChildEnv(
     ...host,
     ...launch,
   };
+  // Drop any reserved key that slipped in via host allowlist (none today) or case variants.
+  for (const key of Object.keys(out)) {
+    if (isReservedTentChildEnvKey(key)) delete out[key];
+  }
   if (options.reserved) {
     for (const key of RESERVED_TENT_CHILD_ENV_KEYS) {
       const value = options.reserved[key];
       if (typeof value === "string" && value.length > 0) {
         out[key] = value;
-      } else {
-        // Do not leave stale host/launch values for reserved keys.
-        delete out[key];
-      }
-    }
-  } else {
-    for (const key of Object.keys(out)) {
-      if (isReservedTentChildEnvKey(key) && options.launchEnv?.[key] === undefined) {
-        // No core reserved overlay: drop accidental host reserved bleed.
-        delete out[key];
       }
     }
   }

@@ -3,6 +3,10 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import type { ResolvedLaunch } from "../adapters/types.js";
+import {
+  collectSecretValues,
+  redactDiagnosticText,
+} from "../adapters/acp/redact.js";
 import { buildManagedChildEnv } from "./child-env.js";
 
 export interface SupervisedProcess {
@@ -89,20 +93,21 @@ export class ProcessSupervisor {
       throw new Error(`Process already live for session ${sessionId}`);
     }
 
-    // Minimal host allowlist + validated launch env; reserved Tent keys from launch
-    // (AgentRuntime forces TENT_SERVICE_DATA_DIR) win — never full process.env.
+    // Minimal host allowlist + validated launch env. Reserved Tent keys only from
+    // explicit launch.coreEnv (AgentRuntime) — never smuggled via launch.env alone.
     const env = buildManagedChildEnv({
       launchEnv: launch.env,
-      reserved: {
-        TENT_SERVICE_DATA_DIR: launch.env.TENT_SERVICE_DATA_DIR,
-        TENT_SERVICE_TOKEN: launch.env.TENT_SERVICE_TOKEN,
-        TENT_SERVICE_URL: launch.env.TENT_SERVICE_URL,
-        TENT_SERVICE_HOST: launch.env.TENT_SERVICE_HOST,
-        TENT_SERVICE_PORT: launch.env.TENT_SERVICE_PORT,
-        TENT_SESSION_ID: launch.env.TENT_SESSION_ID,
-        TENT_SESSION_TOKEN: launch.env.TENT_SESSION_TOKEN,
-      },
+      reserved: launch.coreEnv,
     });
+    const secretValues = collectSecretValues(
+      launch.env,
+      launch.diagnosticSecrets
+    );
+    const redactChunk = (text: string): string =>
+      redactDiagnosticText(text, {
+        env: launch.env,
+        secrets: secretValues,
+      });
 
     const child = spawn(launch.command, launch.args, {
       cwd: launch.cwd,
@@ -126,18 +131,20 @@ export class ProcessSupervisor {
     let spawned = false;
     let exitNotified = false;
 
-    const appendRing = (chunk: Buffer) => {
+    const appendRing = (text: string) => {
       if (this.stdoutRingBytes <= 0) return;
-      live.stdoutBuf = (live.stdoutBuf + chunk.toString("utf8")).slice(-this.stdoutRingBytes);
+      live.stdoutBuf = (live.stdoutBuf + text).slice(-this.stdoutRingBytes);
     };
 
     child.stdout?.on("data", (chunk: Buffer) => {
-      appendRing(chunk);
-      this.onStdout?.(sessionId, chunk.toString("utf8"));
+      const text = redactChunk(chunk.toString("utf8"));
+      appendRing(text);
+      this.onStdout?.(sessionId, text);
     });
     child.stderr?.on("data", (chunk: Buffer) => {
-      appendRing(chunk);
-      this.onStdout?.(sessionId, chunk.toString("utf8"));
+      const text = redactChunk(chunk.toString("utf8"));
+      appendRing(text);
+      this.onStdout?.(sessionId, text);
     });
 
     const notifyExit = () => {

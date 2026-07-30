@@ -23,6 +23,7 @@ import {
   readAcpExtras,
   readAcpSessionProjection,
   readBootstrapImageClientOptions,
+  readCoreChildEnvClientOptions,
   resolveNpxAcpLaunch,
   resolvePlanOrProcessEnv,
   resumeManagedAcpSession,
@@ -161,6 +162,7 @@ export class PiAcpProviderAdapter implements ProviderAdapter {
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
     const imageOpts = readBootstrapImageClientOptions(plan);
+    const coreChildOpts = readCoreChildEnvClientOptions(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
     });
@@ -175,6 +177,7 @@ export class PiAcpProviderAdapter implements ProviderAdapter {
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
       ...imageOpts,
+      ...coreChildOpts,
       label: "Pi ACP",
       emit,
       onPermissionAsk: hooks.onPermissionAsk,

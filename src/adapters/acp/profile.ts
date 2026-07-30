@@ -54,6 +54,29 @@ export function readAcpSessionProjection(extras: Record<string, unknown> | undef
  * Image blocks still require live initialize promptCapabilities.image === true.
  * Never log or persist resolved bytes.
  */
+/**
+ * Core-owned spawn overlay + diagnostic secrets from LaunchPlan.
+ * Passed through to AcpClient so reserved keys and resolver outputs are not lost.
+ */
+export function readCoreChildEnvClientOptions(plan: LaunchPlan): {
+  coreEnv?: LaunchPlan["coreEnv"];
+  diagnosticSecrets?: string[];
+} {
+  const out: {
+    coreEnv?: LaunchPlan["coreEnv"];
+    diagnosticSecrets?: string[];
+  } = {};
+  if (plan.coreEnv && Object.keys(plan.coreEnv).length > 0) {
+    out.coreEnv = plan.coreEnv;
+  }
+  if (Array.isArray(plan.diagnosticSecrets) && plan.diagnosticSecrets.length > 0) {
+    out.diagnosticSecrets = plan.diagnosticSecrets.filter(
+      (v): v is string => typeof v === "string" && v.length > 0
+    );
+  }
+  return out;
+}
+
 export function readBootstrapImageClientOptions(plan: LaunchPlan): {
   bootstrapImageRefs?: BootstrapImageRef[];
   bootstrapImageSystemRoot?: string;

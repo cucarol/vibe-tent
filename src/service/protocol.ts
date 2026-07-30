@@ -16,6 +16,67 @@ export type ServiceHealthProtocolFields = {
   version?: unknown;
 };
 
+export type ServiceProtocolIncompatibilityKind = "missing" | "mismatch";
+
+/**
+ * Typed fail-loud error for healthy-but-incompatible/legacy Service endpoints.
+ * Attach paths rethrow this class only — ordinary network/health failures stay null.
+ */
+export class ServiceProtocolIncompatibleError extends Error {
+  readonly code = "TENT_SERVICE_PROTOCOL_INCOMPATIBLE" as const;
+  readonly kind: ServiceProtocolIncompatibilityKind;
+  readonly clientProtocolVersion: number;
+  readonly serviceProtocolVersion: unknown;
+  readonly servicePackageVersion: string;
+
+  constructor(
+    kind: ServiceProtocolIncompatibilityKind,
+    options: {
+      serviceProtocolVersion?: unknown;
+      servicePackageVersion?: string;
+      message?: string;
+    } = {}
+  ) {
+    const servicePackageVersion =
+      typeof options.servicePackageVersion === "string" &&
+      options.servicePackageVersion.trim()
+        ? options.servicePackageVersion.trim()
+        : "unknown";
+    const serviceProtocolVersion = options.serviceProtocolVersion;
+    const message =
+      options.message ??
+      (kind === "missing"
+        ? `Local Tent Service protocol is missing (legacy endpoint). ` +
+          `This CLI requires protocol ${TENT_SERVICE_PROTOCOL_VERSION} ` +
+          `(package version stays 0.1.0; protocol is a separate contract). ` +
+          `Service package version=${servicePackageVersion}. ` +
+          `Restart or upgrade tent-service, then retry. ` +
+          `Refusing to attach or spawn a competing service against an incompatible process.`
+        : `Local Tent Service protocol mismatch: service=${String(serviceProtocolVersion)}, ` +
+          `client=${TENT_SERVICE_PROTOCOL_VERSION} (package 0.1.0; protocol is separate). ` +
+          `Service package version=${servicePackageVersion}. ` +
+          `Restart or upgrade tent-service to a compatible build before any business RPC. ` +
+          `Refusing attach success and refusing to spawn a competing service.`);
+    super(message);
+    this.name = "ServiceProtocolIncompatibleError";
+    this.kind = kind;
+    this.clientProtocolVersion = TENT_SERVICE_PROTOCOL_VERSION;
+    this.serviceProtocolVersion = serviceProtocolVersion;
+    this.servicePackageVersion = servicePackageVersion;
+  }
+}
+
+export function isServiceProtocolIncompatibleError(
+  err: unknown
+): err is ServiceProtocolIncompatibleError {
+  return (
+    err instanceof ServiceProtocolIncompatibleError ||
+    (typeof err === "object" &&
+      err !== null &&
+      (err as { code?: unknown }).code === "TENT_SERVICE_PROTOCOL_INCOMPATIBLE")
+  );
+}
+
 /**
  * True when health payload advertises the exact protocol this client speaks.
  */
@@ -33,30 +94,23 @@ export function isServiceProtocolCompatible(
 export function assertServiceProtocolCompatible(
   health: ServiceHealthProtocolFields | null | undefined
 ): void {
-  const serviceVersion =
+  const servicePackageVersion =
     health && typeof health.version === "string" && health.version.trim()
       ? health.version.trim()
       : "unknown";
   const raw = health?.protocolVersion;
 
   if (raw === undefined || raw === null) {
-    throw new Error(
-      `Local Tent Service protocol is missing (legacy endpoint). ` +
-        `This CLI requires protocol ${TENT_SERVICE_PROTOCOL_VERSION} ` +
-        `(package version stays 0.1.0; protocol is a separate contract). ` +
-        `Service package version=${serviceVersion}. ` +
-        `Restart or upgrade tent-service, then retry. ` +
-        `Refusing to attach or spawn a competing service against an incompatible process.`
-    );
+    throw new ServiceProtocolIncompatibleError("missing", {
+      servicePackageVersion,
+      serviceProtocolVersion: raw,
+    });
   }
 
   if (raw !== TENT_SERVICE_PROTOCOL_VERSION) {
-    throw new Error(
-      `Local Tent Service protocol mismatch: service=${String(raw)}, ` +
-        `client=${TENT_SERVICE_PROTOCOL_VERSION} (package 0.1.0; protocol is separate). ` +
-        `Service package version=${serviceVersion}. ` +
-        `Restart or upgrade tent-service to a compatible build before any business RPC. ` +
-        `Refusing attach success and refusing to spawn a competing service.`
-    );
+    throw new ServiceProtocolIncompatibleError("mismatch", {
+      servicePackageVersion,
+      serviceProtocolVersion: raw,
+    });
   }
 }

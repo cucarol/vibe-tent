@@ -12,6 +12,7 @@ import {
 import {
   assertServiceProtocolCompatible,
   isServiceProtocolCompatible,
+  isServiceProtocolIncompatibleError,
 } from "../../service/protocol.js";
 import { ServiceRpcClient } from "./rpc-client.js";
 
@@ -141,9 +142,7 @@ export async function tryAttach(
     assertServiceProtocolCompatible(health);
     return { url, endpoint, client };
   } catch (err) {
-    if (err instanceof Error && /protocol/i.test(err.message)) {
-      throw err;
-    }
+    if (isServiceProtocolIncompatibleError(err)) throw err;
     return null;
   }
 }
@@ -165,9 +164,7 @@ async function rejectIncompatibleHealthyService(
       assertServiceProtocolCompatible(health);
     }
   } catch (err) {
-    if (err instanceof Error && /protocol/i.test(err.message)) {
-      throw err;
-    }
+    if (isServiceProtocolIncompatibleError(err)) throw err;
   }
 }
 

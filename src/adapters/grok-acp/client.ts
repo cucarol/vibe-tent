@@ -19,6 +19,8 @@ export type GrokAcpClientOptions = {
   args: string[];
   cwd: string;
   env: Record<string, string>;
+  coreEnv?: AcpClientOptions["coreEnv"];
+  diagnosticSecrets?: string[];
   sessionId: string;
   /** Retained for call-site compatibility; not used by the stdio transport. */
   model: string;
@@ -64,6 +66,8 @@ export class GrokAcpClient {
       args: options.args,
       cwd: options.cwd,
       env: options.env,
+      coreEnv: options.coreEnv,
+      diagnosticSecrets: options.diagnosticSecrets,
       sessionId: options.sessionId,
       promptTimeoutMs: options.promptTimeoutMs,
       permissionPolicy: options.permissionPolicy,
