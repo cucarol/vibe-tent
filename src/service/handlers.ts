@@ -9874,12 +9874,22 @@ async function retryPendingWorktreeReclaimAfterSessionSettle(
 let beforeTaskWorktreeReclaimRemoveForTests:
   | (() => void | Promise<void>)
   | undefined;
+let beforeTaskWorktreeReclaimReloadForTests:
+  | (() => void | Promise<void>)
+  | undefined;
 
 /** Install/clear the Service reclaim pre-remove TOCTOU hook (tests only). */
 export function setBeforeTaskWorktreeReclaimRemoveForTests(
   hook: (() => void | Promise<void>) | undefined
 ): void {
   beforeTaskWorktreeReclaimRemoveForTests = hook;
+}
+
+/** Test-only hook immediately before the exact envelope reload under lock. */
+export function setBeforeTaskWorktreeReclaimReloadForTests(
+  hook: (() => void | Promise<void>) | undefined
+): void {
+  beforeTaskWorktreeReclaimReloadForTests = hook;
 }
 
 /**
@@ -9934,11 +9944,60 @@ async function maybeAutoReclaimTaskWorktree(
     // against Task lifecycle / restart / rebind for this taskPath.
     return await runTaskLifecycle(workspaceId, taskPath, async () => {
       // Fresh envelope under the lock (rebind / resume may have mutated sessionId).
-      let liveTask = task;
+      let liveTask: TaskEnvelope;
       try {
+        await beforeTaskWorktreeReclaimReloadForTests?.();
         liveTask = await loadTaskEnvelope(mount.env.fs, taskPath);
-      } catch {
-        liveTask = task;
+      } catch (error) {
+        const blocked: TaskWorktreeReclaimResult = {
+          eligible: false,
+          code: "REMOVE_FAILED",
+          reason: `Exact Task envelope is unreadable under reclaim critical section; refuse remove: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          taskId,
+          taskPath,
+          taskState: task.state,
+          workspace: task.workspace,
+          worktree: task.worktree,
+          branch: task.branch,
+          targetBranch: task.targetBranch,
+          details: { stage: "reload-task-envelope" },
+          reclaimed: false,
+          alreadyGone: false,
+        };
+        try {
+          await recordTaskWorktreeReclaimNeedsAttention(mount.env.fs, {
+            taskId,
+            taskPath,
+            workspaceRoot: mount.workspaceRoot,
+            code: "UNREADABLE_TASK",
+            reason: blocked.reason,
+            attemptedAt: mount.env.clock.now(),
+            trigger: reason,
+          });
+        } catch {
+          // The existing pending row remains the fail-closed retry authority.
+        }
+        ctx.events.emit(
+          "task.worktreeReclaim",
+          workspaceId,
+          {
+            taskId,
+            taskPath,
+            taskState: task.state,
+            code: "UNREADABLE_TASK",
+            eligible: false,
+            reclaimed: false,
+            alreadyGone: false,
+            reason: blocked.reason,
+            worktree: task.worktree,
+            branch: task.branch,
+            trigger: reason,
+          },
+          "self"
+        );
+        return blocked;
       }
       if (!isTaskWorktreeReclaimTerminalState(liveTask.state)) {
         const blocked: TaskWorktreeReclaimResult = {
@@ -10138,12 +10197,26 @@ export async function recoverTerminalTaskWorktreesOnMount(
     let task: TaskEnvelope;
     try {
       task = await loadTaskEnvelope(mount.env.fs, entry.taskPath);
-    } catch {
-      // Envelope gone — drop stale pending (nothing left to reclaim by Task identity).
+    } catch (error) {
+      const exists = await mount.env.fs
+        .exists(entry.taskPath)
+        .catch(() => true);
       try {
-        await dequeueTaskWorktreeReclaimPending(mount.env.fs, entry.taskId);
+        await recordTaskWorktreeReclaimNeedsAttention(mount.env.fs, {
+          taskId: entry.taskId,
+          taskPath: entry.taskPath,
+          workspaceRoot: mount.workspaceRoot,
+          code: exists ? "UNREADABLE_TASK" : "TASK_MISSING",
+          reason: exists
+            ? `Pending reclaim Task envelope is unreadable: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            : "Pending reclaim Task envelope is missing; exact lane ownership cannot be proven",
+          attemptedAt: mount.env.clock.now(),
+          trigger: entry.trigger ?? "workspace.mount",
+        });
       } catch {
-        // ignore
+        // Keep the pre-existing row when even diagnostic persistence fails.
       }
       refused += 1;
       continue;
@@ -10192,10 +10265,23 @@ async function recoverTerminalTaskWorktreeBatch(
     let task: TaskEnvelope;
     try {
       task = await loadTaskEnvelope(mount.env.fs, entry.taskPath);
-    } catch {
-      // The exact Task no longer exists. Removing only its stale queue row is
-      // safe and remains serialized with scanner/terminal queue mutations.
-      await dequeueTaskWorktreeReclaimPending(mount.env.fs, entry.taskId);
+    } catch (error) {
+      const exists = await mount.env.fs
+        .exists(entry.taskPath)
+        .catch(() => true);
+      await recordTaskWorktreeReclaimNeedsAttention(mount.env.fs, {
+        taskId: entry.taskId,
+        taskPath: entry.taskPath,
+        workspaceRoot: mount.workspaceRoot,
+        code: exists ? "UNREADABLE_TASK" : "TASK_MISSING",
+        reason: exists
+          ? `Pending reclaim Task envelope is unreadable: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          : "Pending reclaim Task envelope is missing; exact lane ownership cannot be proven",
+        attemptedAt: mount.env.clock.now(),
+        trigger: entry.trigger ?? "workspace.mount",
+      });
       continue;
     }
     if (task.id !== entry.taskId) {
@@ -10655,6 +10741,14 @@ export function resetHistoricalTaskWorktreeReclaimForTests(): void {
 /** Test helper: process-local runner count (one per mounted FsAdapter). */
 export function historicalTaskWorktreeReclaimJobCountForTests(): number {
   return historicalReclaimJobs.size;
+}
+
+/** Test helper: whether a workspace runner currently owns an in-flight batch. */
+export function historicalTaskWorktreeReclaimInFlightForTests(
+  workspaceId: string
+): boolean {
+  return historicalReclaimJobs.get(workspaceId)?.inflight !== null &&
+    historicalReclaimJobs.get(workspaceId)?.inflight !== undefined;
 }
 
 /**

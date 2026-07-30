@@ -92,6 +92,8 @@ export interface LocalTentServiceOptions {
    * Production uses real workspace Git via handlers → integrateWorkspaceCommits.
    */
   integrateCommits?: (workspaceRoot: string, commits: string[], role: string) => Promise<void>;
+  /** Test-only override for the bounded historical reclaim shutdown drain. */
+  historicalReclaimDrainTimeoutMs?: number;
 }
 
 export interface LocalTentService {
@@ -467,7 +469,9 @@ async function startOwnedLocalTentService(
           true
         );
         try {
-          await drainHistoricalTaskWorktreeReclaimForShutdown(5_000);
+          await drainHistoricalTaskWorktreeReclaimForShutdown(
+            options.historicalReclaimDrainTimeoutMs ?? 5_000
+          );
         } catch (error) {
           // A timed-out runner may still be using its mounted FsAdapter. Keep
           // WorkspaceHost alive and fail stop rather than disposing beneath it.
@@ -484,10 +488,17 @@ async function startOwnedLocalTentService(
           await attempt(() => workspaceHost.dispose());
         }
       } finally {
-        if (options.writeEndpoint !== false) {
-          await attempt(() => removeServiceEndpoint(dataDir, serviceLease.instanceId));
+        // A timed-out runner may still write through its mounted FsAdapter.
+        // Keep both ownership records until that runner settles or this process
+        // exits; publishing an unowned dataDir would permit a second writer.
+        if (historicalReclaimDrainSafe) {
+          if (options.writeEndpoint !== false) {
+            await attempt(() =>
+              removeServiceEndpoint(dataDir, serviceLease.instanceId)
+            );
+          }
+          await attempt(() => serviceLease.release());
         }
-        await attempt(() => serviceLease.release());
       }
       if (firstError !== undefined) throw firstError;
     })();

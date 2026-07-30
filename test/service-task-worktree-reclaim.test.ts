@@ -9,6 +9,10 @@ import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
+import {
+  acquireServiceDataDirLease,
+  ServiceDataDirBusyError,
+} from "../src/service/service-lease.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { CLIENT_METHODS, isClientMethod } from "../src/service/types.js";
 import { ensureRoleWorkspace, ensureTaskWorkspace } from "../src/core/workspace.js";
@@ -19,12 +23,14 @@ import { FAKE_DEFAULT_PROFILE_ID, defaultAgentProfiles } from "../src/service/pr
 import {
   cancelAndDrainHistoricalTaskWorktreeReclaim,
   historicalTaskWorktreeReclaimJobCountForTests,
+  historicalTaskWorktreeReclaimInFlightForTests,
   isHistoricalReclaimScanCandidate,
   recoverTerminalTaskWorktreesOnMount,
   resetHistoricalTaskWorktreeReclaimForTests,
   runOneHistoricalTaskWorktreeReclaimBatch,
   scheduleHistoricalTaskWorktreeReclaimAfterMount,
   setBeforeTaskWorktreeReclaimRemoveForTests,
+  setBeforeTaskWorktreeReclaimReloadForTests,
   setHistoricalReclaimBatchHoldForTests,
 } from "../src/service/handlers.js";
 import {
@@ -113,6 +119,19 @@ async function pathExists(target: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function waitForCondition(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs = 5_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await predicate())) {
+    if (Date.now() >= deadline) {
+      throw new Error("Timed out waiting for test condition");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
 
@@ -964,6 +983,183 @@ test("P0: one runner owns an FsAdapter until bounded drain settles", async () =>
     hold?.release();
     resetHistoricalTaskWorktreeReclaimForTests();
   }
+});
+
+test("P0: Service retains sole-writer lease when historical drain times out", async () => {
+  resetHistoricalTaskWorktreeReclaimForTests();
+  const ws = await makeGitTentWorkspace("reclaim-service-lease");
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-lease-"));
+  const hold = setHistoricalReclaimBatchHoldForTests(true);
+  const svc = await startLocalTentService({
+    dataDir,
+    writeEndpoint: true,
+    profiles: defaultAgentProfiles(),
+    historicalReclaimDrainTimeoutMs: 20,
+  });
+  let workspaceId = "";
+  try {
+    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+    assert.ok(!mounted.error, JSON.stringify(mounted.error));
+    workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+    await waitForCondition(() =>
+      historicalTaskWorktreeReclaimInFlightForTests(workspaceId)
+    );
+
+    await assert.rejects(() => svc.stop(), /drain timed out/);
+    await assert.rejects(
+      () => acquireServiceDataDirLease(dataDir),
+      ServiceDataDirBusyError,
+      "a second Service must not acquire the dataDir while the timed-out runner owns FsAdapter"
+    );
+  } finally {
+    hold?.release();
+    if (workspaceId) {
+      await cancelAndDrainHistoricalTaskWorktreeReclaim(workspaceId, 0);
+    }
+    setHistoricalReclaimBatchHoldForTests(false);
+    await svc.hostApi.dispose();
+    resetHistoricalTaskWorktreeReclaimForTests();
+    await fs.rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("P1: exact envelope reload failure keeps lane and pending diagnostic", async () => {
+  resetHistoricalTaskWorktreeReclaimForTests();
+  const ws = await makeGitTentWorkspace("reclaim-reload-fail");
+  const systemRoot = path.join(ws, ".tent");
+  const sysFs = new NodeFs(systemRoot);
+  const clock = { now: () => new Date().toISOString() };
+  const tent = await import("../src/core/tree.js").then((m) => m.loadTent(sysFs));
+  const inbox = [...tent.byId.values()][0];
+  const taskId = "tk-reload-unreadable";
+  const lane = await ensureTaskWorkspace(ws, taskId);
+  const taskPath = await writeTaskEnvelope(sysFs, clock, {
+    parentActor: { kind: "user", id: "user" },
+    role: FAKE_DEFAULT_PROFILE_ID,
+    claims: [{ id: inbox?.id ?? "bx-1", path: inbox?.path ?? "inbox" }],
+    manifestPath: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/manifests/${taskId}.yml`,
+    userPrompt: "reload must fail closed",
+    id: taskId,
+    assigneeKind: "agentProfile",
+    tasksDir: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/tasks`,
+    workspace: {
+      workspace: lane.workspace,
+      worktree: lane.worktree,
+      branch: lane.branch,
+      targetBranch: lane.targetBranch,
+    },
+  });
+  await patchTaskEnvelope(sysFs, taskPath, {
+    state: "rejected",
+    status: "taken",
+    updatedAt: clock.now(),
+  });
+
+  await withService(async (svc) => {
+    const hold = setHistoricalReclaimBatchHoldForTests(true);
+    let removeCalls = 0;
+    try {
+      const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+      assert.ok(!mounted.error, JSON.stringify(mounted.error));
+      const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+      await stopHeldAutomaticHistoricalRunner(workspaceId, hold!);
+      await replaceTaskWorktreeReclaimQueueForTests(sysFs, {
+        entries: [
+          {
+            taskId,
+            taskPath,
+            workspaceRoot: ws,
+            enqueuedAt: clock.now(),
+            status: "pending",
+          },
+        ],
+        historicalScan: { complete: true, workspaceRoot: ws },
+      });
+      setBeforeTaskWorktreeReclaimRemoveForTests(() => {
+        removeCalls += 1;
+      });
+      setBeforeTaskWorktreeReclaimReloadForTests(async () => {
+        setBeforeTaskWorktreeReclaimReloadForTests(undefined);
+        await sysFs.writeFile(taskPath, "---\nid: [unterminated\n");
+      });
+
+      const stats = await recoverTerminalTaskWorktreesOnMount(
+        svc.ctx,
+        workspaceId
+      );
+      assert.equal(stats.reclaimed, 0);
+      assert.equal(stats.refused, 1);
+      assert.equal(removeCalls, 0, "unreadable exact envelope never reaches remover");
+      assert.equal(await pathExists(lane.worktree), true);
+      const row = (await listTaskWorktreeReclaimPending(sysFs)).find(
+        (entry) => entry.taskId === taskId
+      );
+      assert.equal(row?.status, "needs-attention");
+      assert.equal(row?.lastDiagnostic?.code, "UNREADABLE_TASK");
+    } finally {
+      setBeforeTaskWorktreeReclaimReloadForTests(undefined);
+      setBeforeTaskWorktreeReclaimRemoveForTests(undefined);
+      hold?.release();
+      resetHistoricalTaskWorktreeReclaimForTests();
+    }
+  });
+});
+
+test("P1: pending runner retains missing and unreadable Task diagnostics", async () => {
+  resetHistoricalTaskWorktreeReclaimForTests();
+  const ws = await makeGitTentWorkspace("reclaim-pending-unreadable");
+  const sysFs = new NodeFs(path.join(ws, ".tent"));
+  const unreadablePath = "temp/agent-profiles/broken/tasks/unreadable.md";
+  const missingPath = "temp/agent-profiles/broken/tasks/missing.md";
+  await sysFs.writeFile(unreadablePath, "---\nid: [unterminated\n");
+
+  await withService(async (svc) => {
+    const hold = setHistoricalReclaimBatchHoldForTests(true);
+    try {
+      const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+      assert.ok(!mounted.error, JSON.stringify(mounted.error));
+      const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+      await stopHeldAutomaticHistoricalRunner(workspaceId, hold!);
+      await replaceTaskWorktreeReclaimQueueForTests(sysFs, {
+        entries: [
+          {
+            taskId: "tk-missing",
+            taskPath: missingPath,
+            workspaceRoot: ws,
+            enqueuedAt: new Date().toISOString(),
+            status: "pending",
+          },
+          {
+            taskId: "tk-unreadable",
+            taskPath: unreadablePath,
+            workspaceRoot: ws,
+            enqueuedAt: new Date().toISOString(),
+            status: "pending",
+          },
+        ],
+        historicalScan: { complete: true, workspaceRoot: ws },
+      });
+      scheduleHistoricalTaskWorktreeReclaimAfterMount(svc.ctx, workspaceId);
+      await waitForCondition(async () => {
+        const rows = await listTaskWorktreeReclaimPending(sysFs);
+        return rows.length === 2 && rows.every((row) => row.status === "needs-attention");
+      });
+
+      const rows = await listTaskWorktreeReclaimPending(sysFs);
+      assert.equal(
+        rows.find((row) => row.taskId === "tk-missing")?.lastDiagnostic?.code,
+        "TASK_MISSING"
+      );
+      assert.equal(
+        rows.find((row) => row.taskId === "tk-unreadable")?.lastDiagnostic?.code,
+        "UNREADABLE_TASK"
+      );
+      assert.equal(rows.length, 2, "neither diagnostic authority is dequeued");
+    } finally {
+      hold?.release();
+      resetHistoricalTaskWorktreeReclaimForTests();
+    }
+  });
 });
 
 test("P0: unreadable historical envelope records diagnostic without cursor advance", async () => {
