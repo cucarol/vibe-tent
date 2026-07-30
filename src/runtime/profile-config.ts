@@ -7,6 +7,7 @@ import {
   cloneMcpServers,
   cloneSkillRefs,
 } from "../adapters/acp/mcp-skills.js";
+import { isSecretEnvKeyName } from "../adapters/acp/redact.js";
 import type { AgentProfileConfig } from "./types.js";
 
 /**
@@ -53,6 +54,23 @@ export function normalizeProfileToCanonicalAcp(
   return { profile: { ...rest }, migrated: false };
 }
 
+/**
+ * Clone profile.env for durable SessionRegistry snapshots.
+ * Secret-named keys keep the key (resume still knows which env to re-resolve)
+ * but never persist the raw value — placeholders only.
+ */
+export function sanitizeProfileEnvForSnapshot(
+  env: Record<string, string> | undefined
+): Record<string, string> | undefined {
+  if (!env) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value !== "string") continue;
+    out[key] = isSecretEnvKeyName(key) ? "[redacted]" : value;
+  }
+  return out;
+}
+
 /** Shallow clone of a canonical profile (one level of acp / fake / env / args / skills / mcp). */
 export function cloneAgentProfileConfig(p: AgentProfileConfig): AgentProfileConfig {
   const { profile: canonical } = normalizeProfileToCanonicalAcp(p as AgentProfileConfigRaw);
@@ -64,6 +82,20 @@ export function cloneAgentProfileConfig(p: AgentProfileConfig): AgentProfileConf
     args: canonical.args ? [...canonical.args] : undefined,
     skills: cloneSkillRefs(canonical.skills),
     mcpServers: cloneMcpServers(canonical.mcpServers),
+  };
+}
+
+/**
+ * Durable SessionRegistry profileSnapshot: same shape as clone, but secret-named
+ * env values are redacted so projections/disk never retain raw credentials.
+ */
+export function cloneAgentProfileConfigForSnapshot(
+  p: AgentProfileConfig
+): AgentProfileConfig {
+  const cloned = cloneAgentProfileConfig(p);
+  return {
+    ...cloned,
+    env: sanitizeProfileEnvForSnapshot(cloned.env),
   };
 }
 

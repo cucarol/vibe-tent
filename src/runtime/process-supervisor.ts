@@ -3,6 +3,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import type { ResolvedLaunch } from "../adapters/types.js";
+import { buildManagedChildEnv } from "./child-env.js";
 
 export interface SupervisedProcess {
   sessionId: string;
@@ -88,18 +89,20 @@ export class ProcessSupervisor {
       throw new Error(`Process already live for session ${sessionId}`);
     }
 
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      ...launch.env,
-    };
-    // Never inherit host TENT_SERVICE secrets into agent logs via accidental dumps;
-    // adapters whitelist env. Strip common secret-looking keys from parent bleed-through
-    // only when not explicitly provided in launch.env.
-    for (const key of Object.keys(env)) {
-      if (/^(.*_)?(API_KEY|TOKEN|SECRET|PASSWORD)$/i.test(key) && launch.env[key] === undefined) {
-        delete env[key];
-      }
-    }
+    // Minimal host allowlist + validated launch env; reserved Tent keys from launch
+    // (AgentRuntime forces TENT_SERVICE_DATA_DIR) win — never full process.env.
+    const env = buildManagedChildEnv({
+      launchEnv: launch.env,
+      reserved: {
+        TENT_SERVICE_DATA_DIR: launch.env.TENT_SERVICE_DATA_DIR,
+        TENT_SERVICE_TOKEN: launch.env.TENT_SERVICE_TOKEN,
+        TENT_SERVICE_URL: launch.env.TENT_SERVICE_URL,
+        TENT_SERVICE_HOST: launch.env.TENT_SERVICE_HOST,
+        TENT_SERVICE_PORT: launch.env.TENT_SERVICE_PORT,
+        TENT_SESSION_ID: launch.env.TENT_SESSION_ID,
+        TENT_SESSION_TOKEN: launch.env.TENT_SESSION_TOKEN,
+      },
+    });
 
     const child = spawn(launch.command, launch.args, {
       cwd: launch.cwd,

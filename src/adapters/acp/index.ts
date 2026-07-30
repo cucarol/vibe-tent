@@ -11,6 +11,13 @@ export {
   type AcpStartResult,
 } from "./client.js";
 export {
+  collectSecretValues,
+  isSecretEnvKeyName,
+  redactDiagnosticText,
+  redactDiagnosticValue,
+  redactSecrets,
+} from "./redact.js";
+export {
   isAssistantMessageChunkKind,
   sealAssistantMessageSegment,
   selectFinalAssistantReport,

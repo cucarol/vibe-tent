@@ -12,6 +12,7 @@ import {
   mapRuntimeEventToService,
   type HandlerContext,
 } from "./handlers.js";
+import { TENT_SERVICE_PROTOCOL_VERSION } from "./protocol.js";
 import {
   defaultServiceDataDir,
   removeServiceEndpoint,
@@ -347,6 +348,7 @@ async function startOwnedLocalTentService(
     mutations,
     events,
     version,
+    protocolVersion: TENT_SERVICE_PROTOCOL_VERSION,
     startedAt,
     getPid,
     runtime,

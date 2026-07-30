@@ -9,6 +9,10 @@ import {
   serviceBaseUrl,
   type ServiceEndpointRecord,
 } from "../../service/data-dir.js";
+import {
+  assertServiceProtocolCompatible,
+  isServiceProtocolCompatible,
+} from "../../service/protocol.js";
 import { ServiceRpcClient } from "./rpc-client.js";
 
 export type AttachResult = {
@@ -51,6 +55,7 @@ export async function attachOrStartService(options: AttachOptions = {}): Promise
   if (existing) {
     return { ...existing, started: false, child: null };
   }
+  await rejectIncompatibleHealthyService(dataDir, fetchImpl);
 
   if (options.attachOnly) {
     throw new Error(`No healthy Local Tent Service endpoint in ${dataDir}`);
@@ -133,9 +138,36 @@ export async function tryAttach(
   try {
     const health = await client.health();
     if (health.status !== "ok") return null;
+    assertServiceProtocolCompatible(health);
     return { url, endpoint, client };
-  } catch {
+  } catch (err) {
+    if (err instanceof Error && /protocol/i.test(err.message)) {
+      throw err;
+    }
     return null;
+  }
+}
+
+async function rejectIncompatibleHealthyService(
+  dataDir: string,
+  fetchImpl: typeof fetch
+): Promise<void> {
+  const endpoint = await readServiceEndpoint(dataDir);
+  if (!endpoint?.token || typeof endpoint.token !== "string" || !endpoint.token.trim()) {
+    return;
+  }
+  const url = serviceBaseUrl(endpoint.host, endpoint.port);
+  const client = new ServiceRpcClient({ baseUrl: url, token: endpoint.token, fetchImpl });
+  try {
+    const health = await client.health();
+    if (health.status !== "ok") return;
+    if (!isServiceProtocolCompatible(health)) {
+      assertServiceProtocolCompatible(health);
+    }
+  } catch (err) {
+    if (err instanceof Error && /protocol/i.test(err.message)) {
+      throw err;
+    }
   }
 }
 

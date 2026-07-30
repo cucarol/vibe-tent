@@ -34,9 +34,14 @@ import {
   resolveAcpSkillMeta,
 } from "../adapters/acp/mcp-skills.js";
 import { composeManagedSkillRefs } from "../core/managed-skill-compose.js";
-import { cloneAgentProfileConfig } from "./profile-config.js";
+import {
+  cloneAgentProfileConfig,
+  cloneAgentProfileConfigForSnapshot,
+} from "./profile-config.js";
+import { stripReservedTentChildEnv } from "./child-env.js";
 import { ProcessSupervisor } from "./process-supervisor.js";
 import { SessionRegistry } from "./session-registry.js";
+import { redactDiagnosticText } from "../adapters/acp/redact.js";
 import type {
   AgentProfileConfig,
   AgentRuntimePort,
@@ -109,6 +114,11 @@ function handleFrom(record: SessionRecord): SessionHandle {
 /** Shallow clone profile + one level of acp / fake (callers must not mutate the Map). */
 function cloneProfileConfig(p: AgentProfileConfig): AgentProfileConfig {
   return cloneAgentProfileConfig(p);
+}
+
+/** Snapshot written to SessionRegistry — secret-named env values redacted. */
+function cloneProfileSnapshot(p: AgentProfileConfig): AgentProfileConfig {
+  return cloneAgentProfileConfigForSnapshot(p);
 }
 
 export class AgentRuntime implements AgentRuntimePort {
@@ -450,7 +460,7 @@ export class AgentRuntime implements AgentRuntimePort {
       id: req.sessionId,
       profileId: profile.id,
       adapterId: adapter.id,
-      profileSnapshot: cloneProfileConfig(profile),
+      profileSnapshot: cloneProfileSnapshot(profile),
       roleName: req.roleName,
       assigneeKind: req.assigneeKind,
       state: "starting",
@@ -465,14 +475,17 @@ export class AgentRuntime implements AgentRuntimePort {
     this.emit({ type: "session.starting", sessionId: req.sessionId });
 
     let startedManaged: ManagedSession | undefined;
+    let resolvedEnv: Record<string, string> = {};
     try {
       // Resolve after the diagnostic row exists, so a missing/stale vault reference
       // becomes an ordinary failed session without ever persisting the plaintext.
-      const resolvedEnv = await this.resolveCredentialEnv(profile);
+      resolvedEnv = await this.resolveCredentialEnv(profile);
       // Vault injection wins for envKey; profile.env / req.env supply non-secret knobs.
+      // Reserved Tent Service/data-dir/session keys are Core-owned and cannot be
+      // overridden by arbitrary profile or request env.
       const planEnv = {
-        ...(profile.env ?? {}),
-        ...(req.env ?? {}),
+        ...stripProfileRequestEnv(profile.env),
+        ...stripProfileRequestEnv(req.env),
         ...resolvedEnv,
         // Reserved routing authority: installed native Tent hooks spawned by an
         // isolated Service must attach back to that Service, never %APPDATA%\Tent.
@@ -618,7 +631,15 @@ export class AgentRuntime implements AgentRuntimePort {
         await this.supervisor.stop(req.sessionId).catch(() => undefined);
         await this.waitForChildExit(req.sessionId, true);
       }
-      const message = err instanceof Error ? err.message : String(err);
+      const rawMessage = err instanceof Error ? err.message : String(err);
+      // Never persist raw credential values into SessionRegistry / Service errors.
+      const message = redactDiagnosticText(rawMessage, {
+        env: {
+          ...(profile.env ?? {}),
+          ...(req.env ?? {}),
+        },
+        secrets: Object.values(resolvedEnv),
+      });
       const failed = await this.registry.update(req.sessionId, {
         state: "failed",
         lastError: message,
@@ -736,13 +757,15 @@ export class AgentRuntime implements AgentRuntimePort {
     });
     this.emit({ type: "session.starting", sessionId: req.sessionId });
 
+    let resolvedEnv: Record<string, string> = {};
     try {
-      const resolvedEnv = await this.resolveCredentialEnv(profile);
+      resolvedEnv = await this.resolveCredentialEnv(profile);
       const planEnv = {
-        ...(profile.env ?? {}),
-        ...(req.env ?? {}),
+        ...stripProfileRequestEnv(profile.env),
+        ...stripProfileRequestEnv(req.env),
         ...resolvedEnv,
         // Preserve the owning Service boundary across provider-native resume.
+        // Reserved keys remain Core-owned (profile/request cannot override).
         TENT_SERVICE_DATA_DIR: this.dataDir,
       };
       const plan = {
@@ -878,7 +901,14 @@ export class AgentRuntime implements AgentRuntimePort {
         await this.waitForManagedTerminal(req.sessionId, true);
       }
       const rawMessage = err instanceof Error ? err.message : String(err);
-      const message = redactRuntimeValue(rawMessage, tokenRaw);
+      const tokenRedacted = redactRuntimeValue(rawMessage, tokenRaw);
+      const message = redactDiagnosticText(tokenRedacted, {
+        env: {
+          ...(profile.env ?? {}),
+          ...(req.env ?? {}),
+        },
+        secrets: Object.values(resolvedEnv),
+      });
       const failed = await this.registry.update(req.sessionId, {
         state: "failed",
         lastError: message,
@@ -1435,6 +1465,13 @@ function sameRuntimeCwd(left: string, right: string): boolean {
 
 function redactRuntimeValue(message: string, value: string): string {
   return value ? message.split(value).join("[provider-session]") : message;
+}
+
+/** Profile / request env may not override Core-owned Tent Service / session keys. */
+function stripProfileRequestEnv(
+  env: Record<string, string> | undefined
+): Record<string, string> {
+  return stripReservedTentChildEnv(env);
 }
 
 export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {

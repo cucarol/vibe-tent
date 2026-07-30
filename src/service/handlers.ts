@@ -350,6 +350,11 @@ export interface HandlerContext {
   mutations: MutationBus;
   events: EventBus;
   version: string;
+  /**
+   * CLI↔Service wire protocol version (independent of package version).
+   * Advertised on service.health / GET /health for attach handshake.
+   */
+  protocolVersion: number;
   startedAt: string;
   getPid: () => number;
   /** Service-internal runtime (never exposed as client methods). */
@@ -712,6 +717,8 @@ function health(ctx: HandlerContext) {
     status: "ok" as const,
     pid: ctx.getPid(),
     version: ctx.version,
+    /** Wire protocol contract — independent of package version (0.1.0). */
+    protocolVersion: ctx.protocolVersion,
     startedAt: ctx.startedAt,
     workspaceCount: ctx.host.list().length,
     foregroundWorkspaceId: ctx.host.getForegroundId(),

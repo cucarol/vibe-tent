@@ -127,6 +127,8 @@ export class ServiceRpcClient {
     status: string;
     pid: number;
     version: string;
+    /** Wire protocol; independent of package version. */
+    protocolVersion?: number;
     startedAt: string;
     workspaceCount: number;
     foregroundWorkspaceId: string | null;
@@ -138,6 +140,7 @@ export class ServiceRpcClient {
       status: string;
       pid: number;
       version: string;
+      protocolVersion?: number;
       startedAt: string;
       workspaceCount: number;
       foregroundWorkspaceId: string | null;

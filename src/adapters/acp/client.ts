@@ -4,6 +4,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import * as readline from "node:readline";
 import type { RuntimeEvent } from "../../runtime/types.js";
+import { buildManagedChildEnv } from "../../runtime/child-env.js";
 import type {
   AcpAuthenticateParams,
   AcpJsonRpcNotification,
@@ -27,6 +28,11 @@ import {
   sealAssistantMessageSegment,
   selectFinalAssistantReport,
 } from "./assistant-report.js";
+import {
+  collectSecretValues,
+  redactDiagnosticText,
+  redactSecrets,
+} from "./redact.js";
 
 const LOAD_REPLAY_QUIET_MS = 100;
 const LOAD_REPLAY_MAX_WAIT_MS = 2_000;
@@ -44,10 +50,13 @@ const RPC_ERROR_SAFE_KEYS = new Set([
   "errorKind",
 ]);
 
-function formatRpcError(error: NonNullable<AcpJsonRpcResponse["error"]>): string {
-  const message = error.message || "ACP JSON-RPC error";
+function formatRpcError(
+  error: NonNullable<AcpJsonRpcResponse["error"]>,
+  secrets: readonly string[] = []
+): string {
+  const message = redactSecrets(error.message || "ACP JSON-RPC error", secrets);
   const code = Number.isFinite(error.code) ? ` [JSON-RPC ${error.code}]` : "";
-  const data = summarizeRpcErrorData(error.data);
+  const data = summarizeRpcErrorData(error.data, secrets);
   return `${message}${code}${data ? ` (${data})` : ""}`;
 }
 
@@ -55,14 +64,19 @@ function formatRpcError(error: NonNullable<AcpJsonRpcResponse["error"]>): string
  * Keep provider diagnostics useful without persisting arbitrary payloads.
  * ACP error data may contain tool args, headers, prompts, or credentials.
  */
-function summarizeRpcErrorData(data: unknown): string | undefined {
+function summarizeRpcErrorData(
+  data: unknown,
+  secrets: readonly string[] = []
+): string | undefined {
   if (data == null) return undefined;
   if (
     typeof data === "string" ||
     typeof data === "number" ||
     typeof data === "boolean"
   ) {
-    return `data=${String(data).slice(0, RPC_ERROR_DATA_MAX_CHARS)}`;
+    const raw =
+      typeof data === "string" ? redactSecrets(data, secrets) : String(data);
+    return `data=${raw.slice(0, RPC_ERROR_DATA_MAX_CHARS)}`;
   }
   if (typeof data !== "object" || Array.isArray(data)) {
     return `dataType=${Array.isArray(data) ? "array" : typeof data}`;
@@ -81,7 +95,7 @@ function summarizeRpcErrorData(data: unknown): string | undefined {
         value == null
           ? null
           : typeof value === "string"
-          ? value.slice(0, RPC_ERROR_DATA_MAX_CHARS)
+          ? redactSecrets(value, secrets).slice(0, RPC_ERROR_DATA_MAX_CHARS)
           : value;
     }
   }
@@ -245,6 +259,11 @@ export class AcpClient {
   /** Defensive quarantine for bridges that resolve load before their final replay notification. */
   private quarantiningLoadReplay = false;
   private lastLoadReplayUpdateAt = 0;
+  /**
+   * Bootstrap image refs are projected on the first managed session/prompt only.
+   * Follow-up / resume prompts must not re-send image bytes (one-shot contract).
+   */
+  private bootstrapImagesProjected = false;
   /** Cached from initialize agentCapabilities.loadSession (default false). */
   private loadSessionSupported = false;
   /**
@@ -543,7 +562,8 @@ export class AcpClient {
       // observe the request after sendPrompt().
       const prompt =
         Array.isArray(this.options.bootstrapImageRefs) &&
-        this.options.bootstrapImageRefs.length > 0
+        this.options.bootstrapImageRefs.length > 0 &&
+        !this.bootstrapImagesProjected
           ? await this.buildPromptBlocks(bootstrapPrompt)
           : [{ type: "text" as const, text: bootstrapPrompt }];
       const result = (await this.request(
@@ -569,7 +589,9 @@ export class AcpClient {
       if (this.stopRequested) {
         throw new Error("session interrupted before prompt completed");
       }
-      const message = err instanceof Error ? err.message : String(err);
+      const message = this.redactText(
+        err instanceof Error ? err.message : String(err)
+      );
       const detail = this.stderrTail
         ? `${message} (stderr: ${this.stderrTail.slice(-500)})`
         : message;
@@ -583,6 +605,7 @@ export class AcpClient {
    * Project bootstrap text (+ optional image refs) to ACP content blocks.
    * Image bytes are process-scoped for this RPC only — never stored on the client.
    * Sole gate: cached live promptCapabilities.image from initialize.
+   * Bootstrap images are one-shot: only the first managed prompt may project them.
    */
   private async buildPromptBlocks(
     bootstrapPrompt: string
@@ -590,9 +613,10 @@ export class AcpClient {
     const refs = Array.isArray(this.options.bootstrapImageRefs)
       ? this.options.bootstrapImageRefs
       : [];
-    if (refs.length === 0) {
+    if (refs.length === 0 || this.bootstrapImagesProjected) {
       return [{ type: "text", text: bootstrapPrompt }];
     }
+    this.bootstrapImagesProjected = true;
     const projected = await projectBootstrapImagesToAcpPrompt({
       bootstrapText: bootstrapPrompt,
       imageRefs: refs,
@@ -638,7 +662,7 @@ export class AcpClient {
     this.options.emit({
       type: "session.failed",
       sessionId: this.options.sessionId,
-      error,
+      error: this.redactText(error),
     });
   }
 
@@ -656,13 +680,32 @@ export class AcpClient {
     });
   }
 
+  /** Secret values from launch env — used for stderr / RPC / thrown diagnostics only. */
+  private secretValues(): string[] {
+    return collectSecretValues(this.options.env);
+  }
+
+  private redactText(text: string): string {
+    return redactDiagnosticText(text, { env: this.options.env });
+  }
+
   private spawnProcess(): void {
+    // Minimal host allowlist + validated adapter/plan env; Core reserved keys from plan win.
+    const env = buildManagedChildEnv({
+      launchEnv: this.options.env,
+      reserved: {
+        TENT_SERVICE_DATA_DIR: this.options.env.TENT_SERVICE_DATA_DIR,
+        TENT_SERVICE_TOKEN: this.options.env.TENT_SERVICE_TOKEN,
+        TENT_SERVICE_URL: this.options.env.TENT_SERVICE_URL,
+        TENT_SERVICE_HOST: this.options.env.TENT_SERVICE_HOST,
+        TENT_SERVICE_PORT: this.options.env.TENT_SERVICE_PORT,
+        TENT_SESSION_ID: this.options.env.TENT_SESSION_ID,
+        TENT_SESSION_TOKEN: this.options.env.TENT_SESSION_TOKEN,
+      },
+    });
     const child = spawn(this.options.command, this.options.args, {
       cwd: this.options.cwd,
-      env: {
-        ...process.env,
-        ...this.options.env,
-      },
+      env,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       detached: false,
@@ -684,7 +727,7 @@ export class AcpClient {
     });
 
     child.stderr?.on("data", (chunk: Buffer) => {
-      const text = chunk.toString("utf8");
+      const text = this.redactText(chunk.toString("utf8"));
       this.stderrTail = (this.stderrTail + text).slice(-4000);
       this.options.emit({
         type: "session.stdout_tail",
@@ -803,7 +846,7 @@ export class AcpClient {
     this.pending.delete(id);
     clearTimeout(pending.timer);
     if ("error" in message && message.error) {
-      pending.reject(new Error(formatRpcError(message.error)));
+      pending.reject(new Error(formatRpcError(message.error, this.secretValues())));
     } else {
       pending.resolve(("result" in message ? message.result : undefined) ?? {});
     }
@@ -826,7 +869,7 @@ export class AcpClient {
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
-        text: `[${kind}] ${update.content.text}`,
+        text: this.redactText(`[${kind}] ${update.content.text}`),
       });
       return;
     }
@@ -838,7 +881,7 @@ export class AcpClient {
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
-        text: `[${kind}] ${update.content.text}`,
+        text: this.redactText(`[${kind}] ${update.content.text}`),
       });
       return;
     }
@@ -851,7 +894,9 @@ export class AcpClient {
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
-        text: `[${kind}] ${title}${status ? ` (${status})` : ""}\n`,
+        text: this.redactText(
+          `[${kind}] ${title}${status ? ` (${status})` : ""}\n`
+        ),
       });
       return;
     }
@@ -859,7 +904,7 @@ export class AcpClient {
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
-        text: `[session/update] ${kind}\n`,
+        text: this.redactText(`[session/update] ${kind}\n`),
       });
     }
   }

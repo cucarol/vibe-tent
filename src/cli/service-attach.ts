@@ -12,6 +12,10 @@ import {
   type ServiceEndpointRecord,
 } from "../service/data-dir.js";
 import { createServiceClient, type ServiceClient } from "../service/client.js";
+import {
+  assertServiceProtocolCompatible,
+  isServiceProtocolCompatible,
+} from "../service/protocol.js";
 
 export type CliAttachResult = {
   url: string;
@@ -54,10 +58,13 @@ export async function attachOrBootstrapService(
   const fetchImpl = options.fetchImpl ?? fetch;
   const spawnFn = options.spawnFn ?? spawn;
 
+  // Protocol handshake before business RPC. A healthy-but-incompatible/legacy
+  // Service must fail loud — never attach success and never spawn a competitor.
   const existing = await tryAttachService(dataDir, fetchImpl);
   if (existing) {
     return { ...existing, started: false, child: null, dataDir };
   }
+  await rejectIncompatibleHealthyService(dataDir, fetchImpl);
 
   if (options.attachOnly) {
     throw new Error(
@@ -126,8 +133,10 @@ export function cliServiceChildEnv(
 }
 
 /**
- * Read machine-local endpoint + token; probe /health.
+ * Read machine-local endpoint + token; probe /health + protocol compatibility.
  * Returns null when missing, unhealthy, or token absent.
+ * Throws (does not return null) when the Service is healthy but protocol-incompatible
+ * so callers never treat mismatch as "missing → bootstrap another service".
  */
 export async function tryAttachService(
   dataDir: string,
@@ -141,11 +150,52 @@ export async function tryAttachService(
   const url = serviceBaseUrl(endpoint.host, endpoint.port);
   const client = createServiceClient({ baseUrl: url, token: endpoint.token, fetchImpl });
   try {
-    const health = (await client.health()) as { status?: string };
+    const health = (await client.health()) as {
+      status?: string;
+      protocolVersion?: unknown;
+      version?: string;
+    };
     if (health.status !== "ok") return null;
+    assertServiceProtocolCompatible(health);
     return { url, endpoint, client };
-  } catch {
+  } catch (err) {
+    // Protocol mismatch must not be swallowed as "no service".
+    if (err instanceof Error && /protocol/i.test(err.message)) {
+      throw err;
+    }
     return null;
+  }
+}
+
+/**
+ * When endpoint+token+health exist but protocol is missing/mismatched, throw
+ * before bootstrap so CLI does not spawn a competing service.
+ */
+async function rejectIncompatibleHealthyService(
+  dataDir: string,
+  fetchImpl: typeof fetch
+): Promise<void> {
+  const endpoint = await readServiceEndpoint(dataDir);
+  if (!endpoint?.token || typeof endpoint.token !== "string" || !endpoint.token.trim()) {
+    return;
+  }
+  const url = serviceBaseUrl(endpoint.host, endpoint.port);
+  const client = createServiceClient({ baseUrl: url, token: endpoint.token, fetchImpl });
+  try {
+    const health = (await client.health()) as {
+      status?: string;
+      protocolVersion?: unknown;
+      version?: string;
+    };
+    if (health.status !== "ok") return;
+    if (!isServiceProtocolCompatible(health)) {
+      assertServiceProtocolCompatible(health);
+    }
+  } catch (err) {
+    if (err instanceof Error && /protocol/i.test(err.message)) {
+      throw err;
+    }
+    // Unreachable / network — allow bootstrap path.
   }
 }
 
