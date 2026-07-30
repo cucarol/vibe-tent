@@ -9,10 +9,13 @@ import {
   removeNonAcceptedDeliveriesForBox,
 } from "../src/core/delivery.js";
 import { dispatch, forceRelease } from "../src/core/ops.js";
+import { loadTaskEnvelope } from "../src/core/task.js";
 import {
   taskAccept,
   taskClaim,
   taskDeliver,
+  taskFail,
+  taskInterrupt,
   taskReject,
 } from "../src/core/task-lifecycle.js";
 import { acceptProposal, loadProposal, loadProposals, rejectProposal, submitProposal } from "../src/core/proposal.js";
@@ -180,6 +183,66 @@ test("delivery:force-release 删除非 accepted，保留 accepted 历史", async
   const box = (await loadTent(fsa)).byId.get("bx-g2")!;
   assert.equal(box.fm.owner, undefined);
   assert.equal(box.fm.status, undefined);
+});
+
+test("task interrupt/fail remove only their own non-accepted Delivery on a shared Node", async () => {
+  const dir = await makeTent();
+  const fsa = new NodeFs(dir);
+  const clock = { now: () => "2026-07-01T02:30:00.000Z" };
+  const env = { fs: fsa, clock, tentName: "demo", tentRoot: dir };
+
+  const first = await dispatch(env as any, "bx-g2", "worker-a", {
+    userPrompt: "first shared-node task",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+  });
+  const second = await dispatch(env as any, "bx-g2", "worker-b", {
+    userPrompt: "second shared-node task",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+  });
+  await taskClaim(env as any, first.taskPath);
+  await taskClaim(env as any, second.taskPath);
+
+  const firstTask = await loadTaskEnvelope(fsa, first.taskPath);
+  const secondTask = await loadTaskEnvelope(fsa, second.taskPath);
+  const firstDelivery = await createDelivery(fsa, clock, {
+    taskId: firstTask.id!,
+    boxId: "bx-g2",
+    role: "worker-a",
+    summary: "remove only this task",
+    status: "ready",
+  });
+  const secondDelivery = await createDelivery(fsa, clock, {
+    taskId: secondTask.id!,
+    boxId: "bx-g2",
+    role: "worker-b",
+    summary: "must remain",
+    status: "ready",
+  });
+
+  await taskInterrupt(env as any, first.taskPath);
+  assert.equal(await fsa.exists(firstDelivery.path), false);
+  assert.equal(await fsa.exists(secondDelivery.path), true);
+
+  const third = await dispatch(env as any, "bx-g2", "worker-c", {
+    userPrompt: "third shared-node task",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+  });
+  await taskClaim(env as any, third.taskPath);
+  const thirdTask = await loadTaskEnvelope(fsa, third.taskPath);
+  const thirdDelivery = await createDelivery(fsa, clock, {
+    taskId: thirdTask.id!,
+    boxId: "bx-g2",
+    role: "worker-c",
+    summary: "fail removes only this task",
+    status: "rejected",
+  });
+
+  await taskFail(env as any, third.taskPath);
+  assert.equal(await fsa.exists(thirdDelivery.path), false);
+  assert.equal(await fsa.exists(secondDelivery.path), true);
 });
 
 test("delivery:纯数字 commit ref 保持字符串", async () => {

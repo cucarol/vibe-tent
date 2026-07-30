@@ -662,6 +662,57 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
   });
 });
 
+test("docs.write always rejects retired collaboration fields on an idle Node", async () => {
+  const ws = await makeWorkspace();
+  await withService(async (svc) => {
+    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+    const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+    const created = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "idle-collaboration-fields",
+      type: "prompt",
+    });
+    const id = (created.result as { id: string }).id;
+
+    for (const field of ["owner", "status", "assignee"] as const) {
+      const edit = await rpc(svc, "docs.readForEdit", { workspaceId, id });
+      const { etag, raw } = edit.result as { etag: string; raw: string };
+
+      const structured = await rpc(svc, "docs.write", {
+        workspaceId,
+        id,
+        frontmatter: { [field]: "retired-value" },
+        baseEtag: etag,
+      });
+      assert.ok(structured.error, `${field} structured write must fail`);
+      assert.equal(structured.error!.code, -32010);
+
+      const rawWithRetiredField = raw.replace(
+        /^---\r?\n/,
+        (opening) => `${opening}${field}: retired-value\n`
+      );
+      const rawWrite = await rpc(svc, "docs.write", {
+        workspaceId,
+        id,
+        raw: rawWithRetiredField,
+        baseEtag: etag,
+      });
+      assert.ok(rawWrite.error, `${field} raw write must fail`);
+      assert.equal(rawWrite.error!.code, -32010);
+    }
+
+    const edit = await rpc(svc, "docs.readForEdit", { workspaceId, id });
+    const { etag, body } = edit.result as { etag: string; body: string };
+    const bodyWrite = await rpc(svc, "docs.write", {
+      workspaceId,
+      id,
+      body: `${body}\nbody-only remains allowed\n`,
+      baseEtag: etag,
+    });
+    assert.ok(!bodyWrite.error, JSON.stringify(bodyWrite.error));
+  });
+});
+
 test("docs.setMode + docs.write mode gates; raw cannot set mode/id; no read-only", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {

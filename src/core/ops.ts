@@ -529,6 +529,12 @@ export async function forceRelease(env: OpsEnv, boxId: string): Promise<void> {
       }
     }
   }
+
+  // force-release is the explicit Node-wide cleanup operation. Ordinary
+  // task.fail/task.interrupt cleanup is deliberately exact-Task only.
+  await withMutation(env.fs, async () => {
+    await removeNonAcceptedDeliveriesForBox(env.fs, boxId);
+  });
 }
 
 // ---- tags ----
@@ -701,6 +707,7 @@ async function patchBoxUnlocked(
   const reserved = [
     "id",
     "owner",
+    "assignee",
     "mode",
     "archived",
     "readable",

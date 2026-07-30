@@ -272,6 +272,21 @@ export async function removeNonAcceptedDeliveriesForBox(
   }
 }
 
+/**
+ * Drop non-accepted deliveries for one exact Task only.
+ * Ordinary Task terminal transitions must never delete another Task's Delivery
+ * merely because both Tasks reference the same Node.
+ */
+export async function removeNonAcceptedDeliveriesForTask(
+  fs: FsAdapter,
+  taskId: string
+): Promise<void> {
+  for (const delivery of await loadDeliveries(fs, { taskId })) {
+    if (delivery.status === "accepted") continue;
+    if (await fs.exists(delivery.path)) await fs.remove(delivery.path);
+  }
+}
+
 export async function writeDelivery(fs: FsAdapter, record: DeliveryRecord): Promise<void> {
   const data: Record<string, unknown> = {
     type: "delivery",

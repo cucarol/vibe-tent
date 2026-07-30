@@ -12,7 +12,7 @@ import {
 import {
   createDeliveryUnlocked,
   loadDeliveries,
-  removeNonAcceptedDeliveriesForBox,
+  removeNonAcceptedDeliveriesForTask,
   writeDelivery,
   type DeliveryRecord,
 } from "./delivery.js";
@@ -631,13 +631,9 @@ export async function taskFail(
   });
 }
 
-/** Clear non-accepted deliveries for referenced nodes; occupation ends with task state. */
+/** Clear this Task's non-accepted deliveries; occupation ends with task state. */
 async function releaseOccupationForTask(env: OpsEnv, task: TaskEnvelope): Promise<void> {
-  if (task.contextCard == null) return;
-  for (const nodeId of taskReferencedNodeIds(task)) {
-    if (nodeId === "root") continue;
-    await removeNonAcceptedDeliveriesForBox(env.fs, nodeId);
-  }
+  await removeNonAcceptedDeliveriesForTask(env.fs, task.id || task.path);
 }
 
 export async function taskCancel(env: OpsEnv, taskPath: string): Promise<void> {
@@ -747,4 +743,3 @@ function requireBoxById(tent: LoadedTent, boxId: string): Box {
 async function withMutation<T>(fs: FsAdapter, action: () => Promise<T>): Promise<T> {
   return withTentMutation(fs, action);
 }
-

@@ -1347,17 +1347,7 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
       assertRawDocsWriteReserved(diskParsed.data, nextParsed.data);
       // Public type/tags mutations use dedicated RPCs — raw cannot change them.
       assertRawDocsWriteSemantic(diskParsed.data, nextParsed.data);
-      const tasks = await loadTaskEnvelopes(mount.env.fs);
-      // Only reject when protected collab projection fields actually change.
-      const changed: Record<string, unknown> = {};
-      for (const field of PROTECTED_COLLAB_FIELDS) {
-        if (String(nextParsed.data[field] ?? "") !== String(diskParsed.data[field] ?? "")) {
-          changed[field] = nextParsed.data[field];
-        }
-      }
-      if (Object.keys(changed).length > 0) {
-        assertDocsWriteAllowed(tent, concept.id, changed, tasks);
-      }
+      assertRawDocsWriteCollaborationFields(nextParsed.data);
       ctx.host.markSelfWrite(workspaceId);
       await mount.env.fs.writeFile(notePath, rawInput);
       // Tags cannot change via docs.write (asserted above); keep sync as no-op safety.
@@ -1370,7 +1360,7 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
       if (frontmatter) {
         assertReservedDocsWriteFields(frontmatter);
         assertSemanticDocsWriteFields(frontmatter);
-        assertDocsWriteAllowed(tent, concept.id, frontmatter, await loadTaskEnvelopes(mount.env.fs));
+        assertDocsWriteCollaborationFields(frontmatter);
       }
 
       ctx.host.markSelfWrite(workspaceId);
@@ -13809,26 +13799,26 @@ function projectDelivery(d: import("../core/delivery.js").DeliveryRecord): Deliv
   };
 }
 
-function assertDocsWriteAllowed(
-  tent: LoadedTent,
-  conceptId: string,
-  frontmatter: Record<string, unknown>,
-  tasks: import("../core/task.js").TaskEnvelope[]
+function assertDocsWriteCollaborationFields(
+  frontmatter: Record<string, unknown>
 ): void {
   const protectedHit = PROTECTED_COLLAB_FIELDS.filter((k) => k in frontmatter);
   if (protectedHit.length === 0) return;
 
-  const concept = tent.byId.get(conceptId);
-  if (!concept) return;
-
-  // Occupation oracle = active task envelopes only (stale owner is not a write lock).
-  const active = hasActiveTaskForConcept(tent, conceptId, concept.path, tasks);
-  if (!active) return;
-
   throw new RpcError(
     -32010,
-    `docs.write cannot change collaboration projection fields while box has an active task: ${protectedHit.join(", ")}. Use task.* transitions.`,
-    { fields: protectedHit, conceptId }
+    `docs.write cannot set retired collaboration fields: ${protectedHit.join(", ")}. Collaboration truth lives on Task/Delivery projections.`,
+    { fields: protectedHit }
+  );
+}
+
+function assertRawDocsWriteCollaborationFields(next: Record<string, unknown>): void {
+  const protectedHit = PROTECTED_COLLAB_FIELDS.filter((field) => field in next);
+  if (protectedHit.length === 0) return;
+  throw new RpcError(
+    -32010,
+    `docs.write raw cannot contain retired collaboration fields: ${protectedHit.join(", ")}. Collaboration truth lives on Task/Delivery projections.`,
+    { fields: protectedHit }
   );
 }
 
@@ -13957,21 +13947,6 @@ function normalizeRelationsForCompare(value: unknown): unknown[] {
 function tagsFromFrontmatterData(data: Record<string, unknown>): string[] {
   if (!Array.isArray(data.tags)) return [];
   return data.tags.filter((item): item is string => typeof item === "string");
-}
-
-/**
- * Direct active Node ref only (cx-tsw53f). Workspace context and
- * ancestor/descendant refs do not freeze concept mutations.
- */
-function hasActiveTaskForConcept(
-  tent: LoadedTent,
-  conceptId: string,
-  conceptPath: string,
-  tasks: import("../core/task.js").TaskEnvelope[]
-): boolean {
-  void tent;
-  void conceptPath;
-  return listDirectActiveTasksForNode(conceptId, tasks).length > 0;
 }
 
 function isAncestorPath(ancestor: string, child: string): boolean {
