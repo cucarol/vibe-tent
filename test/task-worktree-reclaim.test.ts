@@ -1126,3 +1126,313 @@ test("P0: list after mutation observes committed queue state", async () => {
   );
   assert.deepEqual(await listTaskWorktreeReclaimPending(fsa), []);
 });
+
+test("P0: historical scan batch atomically advances cursor + enqueues candidates", async () => {
+  const { NodeFs } = await import("../src/fs/node-fs.js");
+  const {
+    persistHistoricalReclaimScanBatch,
+    readTaskWorktreeReclaimHistoricalScan,
+    listTaskWorktreeReclaimPending,
+    TASK_WORKTREE_RECLAIM_HISTORICAL_BATCH_SIZE,
+  } = await import("../src/core/task-worktree-reclaim-queue.js");
+  assert.ok(
+    TASK_WORKTREE_RECLAIM_HISTORICAL_BATCH_SIZE >= 1 &&
+      TASK_WORKTREE_RECLAIM_HISTORICAL_BATCH_SIZE <= 32,
+    "batch size must stay a small exported constant"
+  );
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-hist-q-"));
+  const fsa = new NodeFs(dir);
+
+  const batch1 = await persistHistoricalReclaimScanBatch(fsa, {
+    workspaceRoot: "/ws",
+    examinedTaskPaths: [
+      "temp/agent-profiles/x/tasks/a.md",
+      "temp/agent-profiles/x/tasks/b.md",
+    ],
+    newCandidates: [
+      {
+        taskId: "tk-a",
+        taskPath: "temp/agent-profiles/x/tasks/a.md",
+        workspaceRoot: "/ws",
+      },
+    ],
+    decisions: [
+      {
+        taskPath: "temp/agent-profiles/x/tasks/b.md",
+        code: "NOT_APPLICABLE",
+        reason: "nonterminal",
+        attemptedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ],
+    scanComplete: false,
+  });
+  assert.equal(batch1.historicalScan.complete, false);
+  assert.equal(batch1.historicalScan.nextTaskPath, "temp/agent-profiles/x/tasks/b.md");
+  assert.equal(batch1.enqueued.length, 1);
+  assert.equal((await listTaskWorktreeReclaimPending(fsa)).length, 1);
+  assert.equal(
+    (await readTaskWorktreeReclaimHistoricalScan(fsa))?.nextTaskPath,
+    "temp/agent-profiles/x/tasks/b.md"
+  );
+
+  // Crash-between-batches resume: next batch starts after cursor; does not skip a/b.
+  const batch2 = await persistHistoricalReclaimScanBatch(fsa, {
+    workspaceRoot: "/ws",
+    examinedTaskPaths: ["temp/agent-profiles/x/tasks/c.md"],
+    newCandidates: [
+      {
+        taskId: "tk-c",
+        taskPath: "temp/agent-profiles/x/tasks/c.md",
+        workspaceRoot: "/ws",
+      },
+    ],
+    scanComplete: true,
+  });
+  assert.equal(batch2.historicalScan.complete, true);
+  assert.equal((await listTaskWorktreeReclaimPending(fsa)).length, 2);
+  // Idempotent complete: further persist is no-op.
+  const again = await persistHistoricalReclaimScanBatch(fsa, {
+    workspaceRoot: "/ws",
+    examinedTaskPaths: ["temp/agent-profiles/x/tasks/z.md"],
+    newCandidates: [
+      {
+        taskId: "tk-z",
+        taskPath: "temp/agent-profiles/x/tasks/z.md",
+        workspaceRoot: "/ws",
+      },
+    ],
+    scanComplete: false,
+  });
+  assert.equal(again.historicalScan.complete, true);
+  assert.equal(again.enqueued.length, 0);
+  assert.equal((await listTaskWorktreeReclaimPending(fsa)).length, 2);
+});
+
+test("P0: historical cursor refuses an examined path without durable proof", async () => {
+  const { NodeFs } = await import("../src/fs/node-fs.js");
+  const {
+    persistHistoricalReclaimScanBatch,
+    readTaskWorktreeReclaimHistoricalScan,
+  } = await import("../src/core/task-worktree-reclaim-queue.js");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-proof-"));
+  const fsa = new NodeFs(dir);
+  await assert.rejects(
+    () =>
+      persistHistoricalReclaimScanBatch(fsa, {
+        workspaceRoot: "/ws",
+        examinedTaskPaths: ["temp/agent-profiles/x/tasks/a.md"],
+        newCandidates: [],
+        scanComplete: false,
+      }),
+    /cursor proof missing/
+  );
+  assert.equal(
+    await readTaskWorktreeReclaimHistoricalScan(fsa),
+    undefined,
+    "failed proof must not advance or complete the cursor"
+  );
+});
+
+test("P0: v1 pending rows survive historical cursor migration losslessly", async () => {
+  const { NodeFs } = await import("../src/fs/node-fs.js");
+  const {
+    TASK_WORKTREE_RECLAIM_PENDING_PATH,
+    listTaskWorktreeReclaimPending,
+    persistHistoricalReclaimScanBatch,
+  } = await import("../src/core/task-worktree-reclaim-queue.js");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-v1-"));
+  const fsa = new NodeFs(dir);
+  await fsa.writeFile("temp/.keep", "");
+  await fsa.writeFile(
+    TASK_WORKTREE_RECLAIM_PENDING_PATH,
+    JSON.stringify({
+      version: 1,
+      entries: [
+        {
+          taskId: "tk-legacy",
+          taskPath: "temp/agent-profiles/x/tasks/legacy.md",
+          workspaceRoot: "/ws",
+          enqueuedAt: "2026-01-01T00:00:00.000Z",
+          trigger: "task.accept",
+        },
+      ],
+    }) + "\n"
+  );
+  await persistHistoricalReclaimScanBatch(fsa, {
+    workspaceRoot: "/ws",
+    examinedTaskPaths: ["temp/agent-profiles/x/tasks/a.md"],
+    newCandidates: [],
+    decisions: [
+      {
+        taskPath: "temp/agent-profiles/x/tasks/a.md",
+        code: "NOT_APPLICABLE",
+        reason: "nonterminal",
+        attemptedAt: "2026-01-02T00:00:00.000Z",
+      },
+    ],
+    scanComplete: true,
+  });
+  assert.deepEqual(await listTaskWorktreeReclaimPending(fsa), [
+    {
+      taskId: "tk-legacy",
+      taskPath: "temp/agent-profiles/x/tasks/legacy.md",
+      workspaceRoot: "/ws",
+      enqueuedAt: "2026-01-01T00:00:00.000Z",
+      trigger: "task.accept",
+    },
+  ]);
+});
+
+test("P0: historical discovery does not re-enqueue existing queue rows", async () => {
+  const { NodeFs } = await import("../src/fs/node-fs.js");
+  const {
+    enqueueTaskWorktreeReclaimPending,
+    persistHistoricalReclaimScanBatch,
+    recordTaskWorktreeReclaimNeedsAttention,
+    listTaskWorktreeReclaimPending,
+  } = await import("../src/core/task-worktree-reclaim-queue.js");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-hist-dedupe-"));
+  const fsa = new NodeFs(dir);
+  await enqueueTaskWorktreeReclaimPending(fsa, {
+    taskId: "tk-pending",
+    taskPath: "temp/agent-profiles/x/tasks/p.md",
+    workspaceRoot: "/ws",
+    trigger: "task.accept",
+  });
+  await recordTaskWorktreeReclaimNeedsAttention(fsa, {
+    taskId: "tk-attn",
+    taskPath: "temp/agent-profiles/x/tasks/a.md",
+    workspaceRoot: "/ws",
+    code: "DIRTY",
+    reason: "dirty",
+    attemptedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const result = await persistHistoricalReclaimScanBatch(fsa, {
+    workspaceRoot: "/ws",
+    examinedTaskPaths: [
+      "temp/agent-profiles/x/tasks/a.md",
+      "temp/agent-profiles/x/tasks/n.md",
+      "temp/agent-profiles/x/tasks/p.md",
+    ],
+    newCandidates: [
+      {
+        taskId: "tk-pending",
+        taskPath: "temp/agent-profiles/x/tasks/p.md",
+        workspaceRoot: "/ws",
+      },
+      {
+        taskId: "tk-attn",
+        taskPath: "temp/agent-profiles/x/tasks/a.md",
+        workspaceRoot: "/ws",
+      },
+      {
+        taskId: "tk-new",
+        taskPath: "temp/agent-profiles/x/tasks/n.md",
+        workspaceRoot: "/ws",
+      },
+    ],
+    scanComplete: false,
+  });
+  assert.equal(result.enqueued.length, 1);
+  assert.equal(result.enqueued[0]!.taskId, "tk-new");
+  const all = await listTaskWorktreeReclaimPending(fsa);
+  assert.equal(all.length, 3);
+  assert.equal(all.find((e) => e.taskId === "tk-attn")?.status, "needs-attention");
+  assert.equal(all.find((e) => e.taskId === "tk-attn")?.lastDiagnostic?.code, "DIRTY");
+});
+
+test("P0: concurrent historical batch + enqueue retain siblings (queue RMW)", async () => {
+  const { NodeFs } = await import("../src/fs/node-fs.js");
+  const {
+    enqueueTaskWorktreeReclaimPending,
+    persistHistoricalReclaimScanBatch,
+    listTaskWorktreeReclaimPending,
+  } = await import("../src/core/task-worktree-reclaim-queue.js");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-hist-rmw-"));
+  const fsa = slowQueueFs(new NodeFs(dir), 12, 8);
+  const ops: Promise<unknown>[] = [];
+  for (let i = 0; i < 6; i++) {
+    const taskId = `tk-term-${i}`;
+    ops.push(
+      enqueueTaskWorktreeReclaimPending(fsa, {
+        taskId,
+        taskPath: `temp/agent-profiles/x/tasks/${taskId}.md`,
+        workspaceRoot: "/ws",
+        trigger: "task.reject",
+      })
+    );
+  }
+  ops.push(
+    persistHistoricalReclaimScanBatch(fsa, {
+      workspaceRoot: "/ws",
+      examinedTaskPaths: ["temp/agent-profiles/x/tasks/h0.md", "temp/agent-profiles/x/tasks/h1.md"],
+      newCandidates: [
+        {
+          taskId: "tk-hist-0",
+          taskPath: "temp/agent-profiles/x/tasks/h0.md",
+          workspaceRoot: "/ws",
+        },
+        {
+          taskId: "tk-hist-1",
+          taskPath: "temp/agent-profiles/x/tasks/h1.md",
+          workspaceRoot: "/ws",
+        },
+      ],
+      scanComplete: false,
+    })
+  );
+  await Promise.all(ops);
+  const all = await listTaskWorktreeReclaimPending(fsa);
+  const ids = new Set(all.map((e) => e.taskId));
+  for (let i = 0; i < 6; i++) {
+    assert.ok(ids.has(`tk-term-${i}`), `terminal enqueue tk-term-${i} retained`);
+  }
+  assert.ok(ids.has("tk-hist-0"));
+  assert.ok(ids.has("tk-hist-1"));
+  assert.equal(all.length, 8);
+});
+
+test("P0: corrupt queue never silently marks historical scan complete", async () => {
+  const { NodeFs } = await import("../src/fs/node-fs.js");
+  const {
+    readTaskWorktreeReclaimHistoricalScan,
+    listTaskWorktreeReclaimPending,
+    TASK_WORKTREE_RECLAIM_PENDING_PATH,
+  } = await import("../src/core/task-worktree-reclaim-queue.js");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-corrupt-"));
+  const fsa = new NodeFs(dir);
+  await fsa.writeFile("temp/.keep", "");
+  await fsa.writeFile(TASK_WORKTREE_RECLAIM_PENDING_PATH, "{not-json");
+  await assert.rejects(
+    () => listTaskWorktreeReclaimPending(fsa),
+    /Invalid Task worktree reclaim queue JSON/
+  );
+  await assert.rejects(
+    () => readTaskWorktreeReclaimHistoricalScan(fsa),
+    /Invalid Task worktree reclaim queue JSON/
+  );
+  assert.equal(
+    await fsa.readFile(TASK_WORKTREE_RECLAIM_PENDING_PATH),
+    "{not-json",
+    "corrupt queue must remain untouched"
+  );
+
+  await fsa.writeFile(
+    TASK_WORKTREE_RECLAIM_PENDING_PATH,
+    JSON.stringify({ version: 1, entries: [], historicalScan: { complete: "yes" } }) + "\n"
+  );
+  await assert.rejects(
+    () => readTaskWorktreeReclaimHistoricalScan(fsa),
+    /historical completion/
+  );
+});
+
+test("P0: task path cursor is exclusive and stable-ordered", async () => {
+  const {
+    taskPathsAfterHistoricalCursor,
+  } = await import("../src/core/task-worktree-reclaim-queue.js");
+  const paths = ["a.md", "b.md", "c.md", "d.md"];
+  assert.deepEqual(taskPathsAfterHistoricalCursor(paths, undefined), paths);
+  assert.deepEqual(taskPathsAfterHistoricalCursor(paths, "b.md"), ["c.md", "d.md"]);
+  assert.deepEqual(taskPathsAfterHistoricalCursor(paths, "d.md"), []);
+});

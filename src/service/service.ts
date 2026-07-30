@@ -6,8 +6,11 @@ import { EventBus } from "./events.js";
 import { MutationBus } from "./mutation-bus.js";
 import { WorkspaceHost } from "./workspace-host.js";
 import {
+  drainHistoricalTaskWorktreeReclaimForShutdown,
   drainManagedTaskInputBackgroundForShutdown,
+  enableHistoricalTaskWorktreeReclaimAccept,
   enableManagedTaskInputBackgroundAccept,
+  stopHistoricalTaskWorktreeReclaimAccept,
   stopManagedTaskInputBackgroundAccept,
   mapRuntimeEventToService,
   type HandlerContext,
@@ -168,8 +171,10 @@ async function startOwnedLocalTentService(
   await taskInputs.ensureLoaded();
   const managedDeliveryReportDrafts = new ManagedDeliveryReportDraftStore(dataDir);
   await managedDeliveryReportDrafts.ensureLoaded();
-  // Process-local: previous in-process stop may have drained background U2A.
+  // Process-local: previous in-process stop may have drained background U2A /
+  // historical reclaim accept flags.
   enableManagedTaskInputBackgroundAccept();
+  enableHistoricalTaskWorktreeReclaimAccept();
 
   const credentials = new CredentialStore(dataDir, {
     protector: options.credentialProtector,
@@ -430,6 +435,7 @@ async function startOwnedLocalTentService(
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
       let firstError: unknown;
+      let historicalReclaimDrainSafe = true;
       const attempt = async (action: () => void | Promise<void>, bestEffort = false) => {
         try {
           await action();
@@ -448,24 +454,35 @@ async function startOwnedLocalTentService(
         // children so service-owned waiters/timers cannot outlive shutdown.
         await attempt(() => toolApprovals.shutdown(), true);
         await attempt(() => userAsks.shutdown(), true);
-        // U2A shutdown order (bounded, no full promptTimeout wait):
-        // 1) stop accepting new background enqueues
+        // U2A + historical reclaim shutdown order (bounded, no full promptTimeout wait):
+        // 1) stop accepting new background enqueues (U2A + historical scan batches)
         // 2) interrupt/stop runtime so hung session/prompt can settle
-        // 3) bounded drain of in-flight managed injects (store still writable)
+        // 3) bounded drain of in-flight managed injects + historical batches
         // 4) close task-input store last so markDelivered|failed|uncertain can land
         stopManagedTaskInputBackgroundAccept();
+        stopHistoricalTaskWorktreeReclaimAccept();
         await attempt(() => runtime.shutdown(), true);
         await attempt(
           () => drainManagedTaskInputBackgroundForShutdown(5_000),
           true
         );
+        try {
+          await drainHistoricalTaskWorktreeReclaimForShutdown(5_000);
+        } catch (error) {
+          // A timed-out runner may still be using its mounted FsAdapter. Keep
+          // WorkspaceHost alive and fail stop rather than disposing beneath it.
+          historicalReclaimDrainSafe = false;
+          if (firstError === undefined) firstError = error;
+        }
         await attempt(() => taskInputs.shutdown(), true);
         // Report drafts are durable operational state (not process-bound); close
         // after runtime projections so a late clear() from deliver can still land.
         await attempt(() => managedDeliveryReportDrafts.shutdown(), true);
         await attempt(() => drainRuntimeProjections());
         unsubscribeRuntimeEvents();
-        await attempt(() => workspaceHost.dispose());
+        if (historicalReclaimDrainSafe) {
+          await attempt(() => workspaceHost.dispose());
+        }
       } finally {
         if (options.writeEndpoint !== false) {
           await attempt(() => removeServiceEndpoint(dataDir, serviceLease.instanceId));
