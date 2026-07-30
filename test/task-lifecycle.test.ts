@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { loadTent } from "../src/core/tree.js";
 import { dispatch } from "../src/core/ops.js";
-import { loadTaskEnvelope } from "../src/core/task.js";
+import { loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
 import { loadDeliveries } from "../src/core/delivery.js";
 import {
   assertA2AAllow,
@@ -273,6 +273,49 @@ test("lifecycle: cancel queued; interrupt running clears occupation", async () =
   assertNoFmCollab((await loadTent(e.fs)).byId.get("bx-p1")!);
   const task = await loadTaskEnvelope(e.fs, r2.taskPath);
   assert.equal(task.state, "interrupted");
+});
+
+test("lifecycle: published Delivery wins over interrupt and remains reviewable", async () => {
+  const dir = await makeTent();
+  const { e, result } = await dispatchOnFreeBox(dir);
+  await taskClaim(e as any, result.taskPath);
+  const delivered = await taskDeliver(e as any, result.taskPath, {
+    summary: "published before interrupt",
+    lastOutcome: "delivered",
+  });
+
+  await assert.rejects(
+    () => taskInterrupt(e as any, result.taskPath),
+    (err: unknown) =>
+      err instanceof TaskLifecycleError &&
+      err.code === "INVALID_TRANSITION"
+  );
+
+  const task = await loadTaskEnvelope(e.fs, result.taskPath);
+  assert.equal(task.state, "delivered");
+  assert.equal(task.lastOutcome, "delivered");
+  assert.equal(task.activeDeliveryId, delivered.delivery.id);
+  const deliveries = await loadDeliveries(e.fs, { taskId: task.id });
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0]!.id, delivered.delivery.id);
+  assert.equal(deliveries[0]!.status, "ready");
+});
+
+test("lifecycle: repeated interrupt repairs dangling Delivery projection", async () => {
+  const dir = await makeTent();
+  const { e, result } = await dispatchOnFreeBox(dir);
+  await taskClaim(e as any, result.taskPath);
+  await taskInterrupt(e as any, result.taskPath);
+
+  await patchTaskEnvelope(e.fs, result.taskPath, {
+    activeDeliveryId: "dl-missing",
+    lastOutcome: "delivered",
+  });
+  const repaired = await taskInterrupt(e as any, result.taskPath);
+
+  assert.equal(repaired.state, "interrupted");
+  assert.equal(repaired.activeDeliveryId, undefined);
+  assert.equal(repaired.lastOutcome, undefined);
 });
 
 test("lifecycle: residual disk owner/status is stripped on load and does not block claim", async () => {

@@ -202,7 +202,7 @@ running ◄───────────────────────
                     ├── reject(resume:true) ──► running
                     └── reject(resume:false) ──► rejected (terminal)
 
-running | waiting | delivered ──interrupt──► interrupted
+running | waiting ──interrupt──► interrupted
 unintentional managed Session death (pre-Delivery) ──► waiting(reason=external, code=session_unavailable)
   # durable waitCode + stable English summary; occupation + TaskInput/UserAsk/report draft preserved
   # explicit task.startSession to resume (no auto re-prompt)
@@ -213,7 +213,7 @@ adapter / launch unrecoverable (no recoverable Session binding) ──► failed
 Rules:
 
 - `cancel` is only valid in `queued`.
-- `interrupt` is valid for `running | waiting | delivered` (and may apply to `queued` as an equivalent of cancel where UIs unify the verb).
+- `interrupt` is valid for `running | waiting` (and may apply to `queued` as an equivalent of cancel where UIs unify the verb). Once a Delivery is published, finalization has won: the reviewer must accept or reject it, and a later interrupt must not delete the Delivery or replace its terminal facts.
 - Default reject path is **rework**: `delivered → running` with review note, matching current “reject keeps occupation”.
 - Adapter process events never write box frontmatter; the service maps them into `running | waiting | failed`.
 

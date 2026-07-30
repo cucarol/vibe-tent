@@ -11354,6 +11354,7 @@ async function tryManagedAutoDeliver(
               decision?: DeliverDecision;
               commits?: string[];
               targetHead?: string;
+              lastOutcome?: "delivered";
             };
           };
       const phase = await ctx.mutations.run(input.workspaceId, async (): Promise<Phase> => {
@@ -11419,14 +11420,10 @@ async function tryManagedAutoDeliver(
         const opts = {
           summary,
           decision,
+          lastOutcome: "delivered" as const,
           ...(pendingCommits.length > 0 ? { commits: pendingCommits } : {}),
           ...(targetHead ? { targetHead } : {}),
         };
-        // Record explicit outcome on the envelope before/with deliver state write.
-        await patchTaskEnvelope(mount.env.fs, input.taskPath, {
-          lastOutcome: "delivered",
-          updatedAt: mount.env.clock.now(),
-        });
         const prepared = await prepareTaskDeliver(mount.env, input.taskPath, opts);
         if (prepared.kind === "done") {
           return { kind: "done", result: prepared.result };
@@ -11647,14 +11644,6 @@ async function handleManagedNonDeliveredOutcome(
       });
       const after = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
       if (after) emitTaskState(ctx, input.workspaceId, after, "session.prompt_complete");
-    } else if (outcome === "delivered" && input.emptyDeliveredBody) {
-      await ctx.mutations.run(input.workspaceId, async () => {
-        ctx.host.markSelfWrite(input.workspaceId);
-        await patchTaskEnvelope(mount.env.fs, input.taskPath, {
-          lastOutcome: "delivered",
-          updatedAt: mount.env.clock.now(),
-        });
-      });
     }
 
     try {

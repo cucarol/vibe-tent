@@ -75,6 +75,11 @@ export interface TaskDeliverOptions {
   summary: string;
   commits?: string[];
   /**
+   * Internal explicit execution outcome to publish with the legal Delivery
+   * transition. Service callers must never persist it before Delivery creation.
+   */
+  lastOutcome?: "delivered";
+  /**
    * Review-time full SHA of the resolved integration target branch HEAD.
    * Service snapshots this for commit-bearing Deliveries; Core persists it.
    */
@@ -274,6 +279,7 @@ export async function prepareTaskDeliver(
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "delivered",
       activeDeliveryId: delivery.id,
+      ...(options.lastOutcome ? { lastOutcome: options.lastOutcome } : {}),
       updatedAt: env.clock.now(),
     });
     return { kind: "done", result: { task: next, delivery, autoIntegrated: false } };
@@ -324,6 +330,7 @@ export async function finalizeTaskDeliverAuto(
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "accepted",
       activeDeliveryId: delivery.id,
+      ...(options.lastOutcome ? { lastOutcome: options.lastOutcome } : {}),
       wait: null,
       updatedAt: env.clock.now(),
     });
@@ -579,6 +586,19 @@ export async function taskReject(
 export async function taskInterrupt(env: OpsEnv, taskPath: string): Promise<TaskEnvelope> {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
+    if (task.state === "interrupted") {
+      // Repair legacy/racy terminal projections idempotently. An interrupted
+      // Task never has an active Delivery; a delivered outcome is impossible.
+      await releaseOccupationForTask(env, task);
+      if (!task.activeDeliveryId && task.lastOutcome !== "delivered") {
+        return task;
+      }
+      return patchTaskEnvelope(env.fs, taskPath, {
+        activeDeliveryId: null,
+        ...(task.lastOutcome === "delivered" ? { lastOutcome: null } : {}),
+        updatedAt: env.clock.now(),
+      });
+    }
     if (task.state === "queued") {
       assertTransition(task.state, "interrupt", "interrupted");
       await env.fs.remove(taskPath);
@@ -592,6 +612,8 @@ export async function taskInterrupt(env: OpsEnv, taskPath: string): Promise<Task
     return patchTaskEnvelope(env.fs, taskPath, {
       state: "interrupted",
       wait: null,
+      activeDeliveryId: null,
+      ...(task.lastOutcome === "delivered" ? { lastOutcome: null } : {}),
       updatedAt: env.clock.now(),
     });
   });

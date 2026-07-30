@@ -37,6 +37,7 @@ import {
   resetManagedAutoDeliverDedupForTests,
   resetManagedTaskInputBackgroundForTests,
   resetRuntimeProjectionForTests,
+  setAfterTargetHeadSnapshotForTests,
   setRejectResumePostStartFailureForTests,
   setRuntimeProjectionTestHooksForTests,
   SESSION_UNAVAILABLE_WAIT_CODE,
@@ -1861,6 +1862,55 @@ test("B5: task.interrupt stops bound session", async () => {
   });
 });
 
+test("B5: repeated interrupt repairs a late-bound Session projection", async () => {
+  const ws = await makeWorkspace();
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "late bind repair",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "user",
+      profileId: "fake-default",
+    });
+    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+    assert.equal((await svc.runtime.probe(sessionId)).alive, true);
+
+    // Reproduce a stale-bundle late bind: terminal Task still carries the
+    // just-bound Session plus a delivered outcome/pointer that never existed.
+    const envFs = svc.ctx.host.require(workspaceId).env.fs;
+    await patchTaskEnvelope(envFs, taskPath, {
+      state: "interrupted",
+      activeDeliveryId: "dl-missing",
+      lastOutcome: "delivered",
+    });
+
+    const repaired = await rpc(svc, "task.interrupt", { workspaceId, taskPath });
+    assert.ok(!repaired.error, JSON.stringify(repaired.error));
+    const task = (repaired.result as {
+      task: { state: string; activeDeliveryId?: string; lastOutcome?: string };
+    }).task;
+    assert.equal(task.state, "interrupted");
+    assert.equal(task.activeDeliveryId, undefined);
+    assert.equal(task.lastOutcome, undefined);
+
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline && (await svc.runtime.probe(sessionId)).alive) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.equal((await svc.runtime.probe(sessionId)).alive, false);
+  });
+});
+
 // ---- cancel queued ----
 
 test("B5: task.cancel removes queued envelope", async () => {
@@ -3486,6 +3536,11 @@ test("P0 fix: managed auto-deliver integrate failure keeps running; session diag
       "running",
       "integrate failure must not terminal-fail the task"
     );
+    assert.equal(
+      (got.result as { task: { lastOutcome?: string } }).task.lastOutcome,
+      undefined,
+      "delivered outcome must not publish before Delivery creation succeeds"
+    );
 
     assertOccupationHeld(await boxCollabProjection(svc, workspaceId, boxId), {
       assignee: "executor",
@@ -3518,6 +3573,148 @@ test("P0 fix: managed auto-deliver integrate failure keeps running; session diag
     assert.equal(probe.alive, false, "sealed process must not stay alive after failed deliver");
 
     assert.equal((await git(ws, "rev-parse", "HEAD")).trim(), beforeHead);
+  });
+});
+
+test("terminal consistency: managed finalization and interrupt have one winner", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("terminal-finalize-interrupt");
+  await initGitOnWorkspace(ws);
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "race finalization and interrupt",
+      deliveryPolicy: "review",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const base = (await loadTaskEnvelope(
+      svc.ctx.host.require(workspaceId).env.fs,
+      taskPath
+    )).baseCommit;
+    assert.ok(base);
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+    const sourceRef = await roleCommit(
+      ws,
+      "executor",
+      "terminal-race.txt",
+      "ready\n",
+      "terminal race"
+    );
+    await assertTaskCommitFirstParent(ws, sourceRef, base!);
+
+    let entered!: () => void;
+    const atPublishBoundary = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const continuePublish = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    setAfterTargetHeadSnapshotForTests(async () => {
+      entered();
+      await continuePublish;
+    });
+
+    try {
+      const deliverPromise = invokeManagedAutoDeliverForTests(svc.ctx, {
+        workspaceId,
+        taskPath,
+        sessionId,
+        assistantText: "outcome: delivered\n\nFINALIZATION_WINS",
+        commits: [sourceRef],
+      });
+      await atPublishBoundary;
+      const interruptPromise = rpc(svc, "task.interrupt", { workspaceId, taskPath });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      release();
+
+      await deliverPromise;
+      const interrupted = await interruptPromise;
+      assert.ok(interrupted.error, "interrupt must lose after Delivery publication wins");
+      assert.equal(interrupted.error!.code, RPC_LIFECYCLE);
+      assert.match(interrupted.error!.message, /Invalid task transition|delivered/i);
+    } finally {
+      release();
+      setAfterTargetHeadSnapshotForTests(null);
+    }
+
+    const task = await loadTaskEnvelope(
+      svc.ctx.host.require(workspaceId).env.fs,
+      taskPath
+    );
+    assert.equal(task.state, "delivered");
+    assert.equal(task.lastOutcome, "delivered");
+    assert.ok(task.activeDeliveryId);
+    const listed = await rpc(svc, "delivery.list", { workspaceId });
+    const deliveries = (listed.result as {
+      deliveries: Array<{ id: string; taskId: string; status: string }>;
+    }).deliveries.filter((delivery) => delivery.taskId === task.id);
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0]!.id, task.activeDeliveryId);
+    assert.equal(deliveries[0]!.status, "ready");
+  });
+});
+
+test("terminal consistency: interrupt first suppresses managed finalization", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("terminal-interrupt-first");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "interrupt first",
+      deliveryPolicy: "review",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+
+    const interrupted = await rpc(svc, "task.interrupt", { workspaceId, taskPath });
+    assert.ok(!interrupted.error, JSON.stringify(interrupted.error));
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "outcome: delivered\n\nMUST_NOT_PUBLISH",
+      commits: [],
+    });
+
+    const task = await loadTaskEnvelope(
+      svc.ctx.host.require(workspaceId).env.fs,
+      taskPath
+    );
+    assert.equal(task.state, "interrupted");
+    assert.equal(task.activeDeliveryId, undefined);
+    assert.equal(task.lastOutcome, undefined);
+    const listed = await rpc(svc, "delivery.list", { workspaceId });
+    const deliveries = (listed.result as {
+      deliveries: Array<{ taskId: string }>;
+    }).deliveries.filter((delivery) => delivery.taskId === task.id);
+    assert.equal(deliveries.length, 0);
   });
 });
 

@@ -430,7 +430,6 @@ export function allowedTransitions(from: TaskState): { event: string; to: TaskSt
         { event: "accept", to: "accepted" },
         { event: "reject-resume", to: "running" },
         { event: "reject-terminal", to: "rejected" },
-        { event: "interrupt", to: "interrupted" },
       ];
     case "rejected":
       // Terminal rejected has no further transitions; rework uses running instead.
