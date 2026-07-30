@@ -4098,7 +4098,8 @@ var ServiceClient = class {
     });
   }
   /**
-   * U2A pending one-shot inputs for external poll.
+   * U2A attention rows for external/parent review (pending|failed|uncertain).
+   * This projection is never a provider inject source.
    * Always requires workspaceId + taskPath — no machine-global inbox.
    */
   taskInputListPending(workspaceId, taskPath) {
@@ -4111,8 +4112,8 @@ var ServiceClient = class {
     return this.call("taskInput.get", { workspaceId, taskPath, inputId });
   }
   /**
-   * External agent formal ack after observing one-shot input (poll+ack).
-   * Actor must match stored task role / session binding; scope is workspaceId+taskPath.
+   * Formal ack after observing one-shot input. Omit actor for the user path;
+   * Role/session callers pass their exact bound identity.
    */
   taskInputAck(workspaceId, taskPath, inputId, actor) {
     return this.call("taskInput.ack", {
@@ -4876,12 +4877,7 @@ taskPath: ${row.taskPath ?? taskPath}
           const taskPathFilter = flags.task || flags["task-path"] || flags.taskPath;
           if (!inputId || !taskPathFilter) {
             return failUsage(
-              "Usage: tent task task-input ack <inputId> --task <taskPath> --actor <role|sessionId> [--workspace <path>] [--json]"
-            );
-          }
-          if (!flags.actor) {
-            return failUsage(
-              "tent task task-input ack requires --actor matching the task role or verified session id"
+              "Usage: tent task task-input ack <inputId> --task <taskPath> [--actor <role|sessionId>] [--workspace <path>] [--json]"
             );
           }
           const result = await client.taskInputAck(
@@ -5054,7 +5050,7 @@ function formatTaskInputList(result) {
   for (const i of inputs) {
     const preview = (i.text ?? "").slice(0, 60) || (i.contextRefs?.length ? `refs=${i.contextRefs.join(",")}` : "");
     lines.push(
-      `- ${i.id ?? "?"}	task=${i.taskPath ?? "?"}	status=${i.status ?? "?"}` + (preview ? `	${preview}` : "")
+      `- ${i.id ?? "?"}	task=${i.taskPath ?? "?"}	status=${i.status ?? "?"}` + (i.uncertainAt ? `	uncertainAt=${i.uncertainAt}` : "") + (i.lastError ? `	error=${i.lastError.slice(0, 80)}` : "") + (preview ? `	${preview}` : "")
     );
   }
   return lines.join("\n") + "\n";
@@ -5175,7 +5171,7 @@ Commands:
   tent task ask-user <taskPath> --question <text>|- [--choices id=label,\u2026] [--workspace <path>] [--json]
   tent task user-ask list|get <askId>|reply <askId>|deny <askId> [\u2026] [--workspace <path>] [--json]
   tent task send-input <taskPath> [--text <text>|-] [--refs id,id] [--workspace <path>] [--json]
-  tent task task-input list <taskPath>|get <inputId>|ack <inputId> --task <taskPath> --actor <role|sessionId> [--workspace <path>] [--json]
+  tent task task-input list <taskPath>|get <inputId>|ack <inputId> --task <taskPath> [--actor <role|sessionId>] [--workspace <path>] [--json]
 
 Service options:
   --data-dir <path>       Machine-local service data area (default: %APPDATA%/Tent)

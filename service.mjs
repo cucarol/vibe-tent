@@ -19605,7 +19605,7 @@ function isTaskInputOpenStatus(status) {
   return status === "pending" || status === "processing" || status === "failed";
 }
 function isTaskInputDeliveryBlockingStatus(status) {
-  return isTaskInputOpenStatus(status);
+  return isTaskInputOpenStatus(status) || status === "uncertain";
 }
 function isTaskInputCancelEligibleStatus(status) {
   return status === "pending" || status === "failed";
@@ -19798,20 +19798,29 @@ var TaskInputStore = class {
     });
   }
   /**
-   * Open inputs for external poll (pending + failed; not mid-inject processing).
+   * Retry/inject source (pending + failed; never processing or uncertain).
    * Always scoped by workspaceId + taskPath — no machine-global inbox.
-   * `failed` remains visible so agents can ack/retry and nothing is dropped.
    */
-  async listPending(workspaceId, taskPath) {
+  async listRetryableForTask(workspaceId, taskPath) {
     if (!workspaceId?.trim() || !taskPath?.trim()) {
       throw new Error(
-        "TaskInput.listPending requires workspaceId and taskPath (no global inbox)"
+        "TaskInput.listRetryableForTask requires workspaceId and taskPath (no global inbox)"
       );
     }
     await this.ensureLoaded();
     return [...this.items.values()].filter(
       (i) => (i.status === "pending" || i.status === "failed") && i.workspaceId === workspaceId && i.taskPath === taskPath
     ).map(cloneInput);
+  }
+  /**
+   * Exact-task attention rows for humans/parents: retryable pending|failed plus
+   * at-most-once uncertain. Never use this as a provider inject source.
+   */
+  async listAttentionForTask(workspaceId, taskPath) {
+    const all2 = await this.listForTask(workspaceId, taskPath);
+    return all2.filter(
+      (item) => item.status === "pending" || item.status === "failed" || item.status === "uncertain"
+    );
   }
   /**
    * All TaskInput rows for one (workspaceId, taskPath), any status.
@@ -19829,8 +19838,8 @@ var TaskInputStore = class {
     ).map(cloneInput).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   }
   /**
-   * Rows that must block a ready Delivery for this task (pending/processing/failed).
-   * Uncertain and terminal statuses are excluded.
+   * Rows that must block a ready Delivery for this task
+   * (pending/processing/failed/uncertain).
    */
   async listBlockingForDeliver(workspaceId, taskPath) {
     const all2 = await this.listForTask(workspaceId, taskPath);
@@ -20044,7 +20053,8 @@ var TaskInputStore = class {
   }
   /**
    * At-most-once uncertain delivery: provider inject already succeeded, but durable
-   * markDelivered failed. Terminal for re-inject — not listPending, not cancel-eligible,
+   * markDelivered failed. Terminal for re-inject — not listRetryableForTask,
+   * not cancel-eligible,
    * not markPendingForRetry. Survives restart as uncertain (never reloads as pending).
    */
   async markUncertain(id, error, resolvedBy = "service", opts) {
@@ -28300,14 +28310,6 @@ async function deliverManagedTaskInput(ctx, item, opts) {
               },
               "service"
             );
-            try {
-              await requestManagedAutoDeliverRetryFromDraft(ctx, {
-                workspaceId: forInject.workspaceId,
-                taskPath: forInject.taskPath,
-                sessionId
-              });
-            } catch {
-            }
           } catch {
           }
           return {
@@ -29558,7 +29560,7 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
         requestTaskId: task.id,
         turnBusy: probe.turnBusy === true,
         workspaceId,
-        listPendingInputs: (ws, tp) => ctx.taskInputs.listPending(ws, tp),
+        listPendingInputs: (ws, tp) => ctx.taskInputs.listRetryableForTask(ws, tp),
         hasPendingUserAsk: (ws, tp) => ctx.userAsks.hasPendingForTask(ws, tp),
         hasBlockingDelivery
       });
@@ -31436,8 +31438,11 @@ async function taskInputListPending(ctx, p) {
   const { workspaceId, taskPath } = requireTaskInputScope(p);
   ctx.host.require(workspaceId);
   try {
-    const pending = await ctx.taskInputs.listPending(workspaceId, taskPath);
-    return { inputs: pending.map(projectTaskInput) };
+    const attention2 = await ctx.taskInputs.listAttentionForTask(
+      workspaceId,
+      taskPath
+    );
+    return { inputs: attention2.map(projectTaskInput) };
   } catch (err) {
     const message2 = err instanceof Error ? err.message : String(err);
     throw new RpcError(-32602, message2);
@@ -31460,14 +31465,7 @@ async function taskInputGet(ctx, p) {
 async function taskInputAckRpc(ctx, p) {
   const { workspaceId, taskPath } = requireTaskInputScope(p);
   const inputId = requireString(p, "inputId");
-  const actorRaw = optionalString(p, "actor");
-  if (!actorRaw?.trim()) {
-    throw new RpcError(
-      -32602,
-      "taskInput.ack requires actor matching the task role or a verified session binding"
-    );
-  }
-  const actor = actorRaw.trim();
+  const actorRaw = optionalString(p, "actor")?.trim();
   ctx.host.require(workspaceId);
   let existing;
   try {
@@ -31477,21 +31475,8 @@ async function taskInputAckRpc(ctx, p) {
     throw new RpcError(-32602, message2);
   }
   if (!existing) throw new RpcError(-32004, `TaskInput not found: ${inputId}`);
-  const allowed = await isTaskInputAckActorAllowed(ctx, existing, actor);
-  if (!allowed) {
-    throw new RpcError(
-      -32001,
-      "taskInput.ack actor must match the stored task role or a service-verified session binding",
-      {
-        inputId,
-        actor,
-        expectedRole: existing.role,
-        sessionId: existing.sessionId,
-        workspaceId,
-        taskPath
-      }
-    );
-  }
+  const authority = await resolveTaskInputAckAuthority(ctx, existing, actorRaw);
+  const actor = authority.actor;
   let item;
   try {
     item = await ctx.taskInputs.ack(inputId, workspaceId, taskPath, actor);
@@ -31517,30 +31502,79 @@ async function taskInputAckRpc(ctx, p) {
     },
     "self"
   );
+  if (existing.status === "uncertain") {
+    const sessionId = existing.sessionId ?? authority.task.sessionId;
+    if (sessionId) {
+      await requestManagedAutoDeliverRetryFromDraft(ctx, {
+        workspaceId,
+        taskPath,
+        sessionId
+      });
+    }
+  }
   return { input: projectTaskInput(item) };
 }
-async function isTaskInputAckActorAllowed(ctx, item, actor) {
-  if (item.role && actor === item.role) return true;
-  if (!item.sessionId) return false;
-  if (actor !== item.sessionId) return false;
-  try {
-    const rec = await ctx.runtime.registry.read(item.sessionId);
-    if (!rec) return false;
-    if (rec.workspace && rec.workspace !== item.workspaceId) return false;
-    if (rec.lastTaskId) {
-      if (rec.lastTaskId === item.taskId || rec.lastTaskId === item.taskPath) {
-        return true;
-      }
-    }
-    const mount = ctx.host.get(item.workspaceId);
-    if (!mount) return false;
-    const task = await loadTaskEnvelope(mount.env.fs, item.taskPath).catch(
-      () => null
-    );
-    return !!task && task.sessionId === item.sessionId;
-  } catch {
-    return false;
+async function resolveTaskInputAckAuthority(ctx, item, actorRaw) {
+  const mount = ctx.host.get(item.workspaceId);
+  if (!mount) {
+    throw new RpcError(-32e3, `Workspace not mounted: ${item.workspaceId}`);
   }
+  const task = await loadTaskEnvelope(mount.env.fs, item.taskPath).catch(
+    (error) => {
+      throw new RpcError(
+        -32e3,
+        `taskInput.ack cannot read exact Task: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  );
+  if (!actorRaw) {
+    if (task.parentActor?.kind === "user" && task.reviewer?.kind === "user") {
+      return { actor: "user", task };
+    }
+    throw new RpcError(
+      -32001,
+      "taskInput.ack user path requires the exact persisted parent/reviewer to be user",
+      { inputId: item.id, workspaceId: item.workspaceId, taskPath: item.taskPath }
+    );
+  }
+  if (actorRaw === "user") {
+    throw new RpcError(
+      -32001,
+      'taskInput.ack rejects caller-supplied actor "user"; omit actor for the Local Service user path',
+      { inputId: item.id, workspaceId: item.workspaceId, taskPath: item.taskPath }
+    );
+  }
+  if (actorRaw === task.role) return { actor: actorRaw, task };
+  if (task.parentActor?.kind === "role" && task.parentActor.id === actorRaw || task.reviewer?.kind === "role" && task.reviewer.id === actorRaw) {
+    return { actor: actorRaw, task };
+  }
+  if (item.sessionId && actorRaw === item.sessionId) {
+    try {
+      const rec = await ctx.runtime.registry.read(item.sessionId);
+      if (rec) {
+        const workspaceMatches = !rec.workspace || rec.workspace === item.workspaceId;
+        const taskMatches = rec.lastTaskId === item.taskId || rec.lastTaskId === item.taskPath || task.sessionId === item.sessionId;
+        if (workspaceMatches && taskMatches) {
+          return { actor: actorRaw, task };
+        }
+      }
+    } catch {
+    }
+  }
+  throw new RpcError(
+    -32001,
+    "taskInput.ack actor must match the exact Task role, persisted parent/reviewer Role, or a service-verified Session binding",
+    {
+      inputId: item.id,
+      actor: actorRaw,
+      expectedRole: task.role,
+      parentActor: task.parentActor,
+      reviewer: task.reviewer,
+      sessionId: item.sessionId,
+      workspaceId: item.workspaceId,
+      taskPath: item.taskPath
+    }
+  );
 }
 function projectTaskInput(item) {
   return {
