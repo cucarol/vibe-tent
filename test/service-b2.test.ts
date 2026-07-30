@@ -6,7 +6,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
+import { patchTaskEnvelope } from "../src/core/task.js";
 import { NodeFs } from "../src/fs/node-fs.js";
+import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import { contentEtag } from "../src/service/etag.js";
 import { EventBus } from "../src/service/events.js";
 import {
@@ -51,6 +53,35 @@ function createStubWatchFn(onCreate?: () => void): typeof import("node:fs").watc
     };
     return watcher as unknown as FSWatcher;
   }) as typeof import("node:fs").watch;
+}
+
+function createControllableWatchFn(): {
+  watchFn: typeof import("node:fs").watch;
+  fire: (event: string, filename: string | Buffer | null) => void;
+} {
+  type Listener = (event: string, filename: string | Buffer | null) => void;
+  let listener: Listener | undefined;
+  const watchFn = ((_target, optsOrListener?, maybeListener?) => {
+    listener =
+      typeof optsOrListener === "function"
+        ? (optsOrListener as Listener)
+        : typeof maybeListener === "function"
+          ? (maybeListener as Listener)
+          : undefined;
+    const watcher = {
+      close() {},
+      on() {
+        return watcher;
+      },
+    };
+    return watcher as unknown as FSWatcher;
+  }) as typeof import("node:fs").watch;
+  return {
+    watchFn,
+    fire(event, filename) {
+      listener?.(event, filename);
+    },
+  };
 }
 
 async function makeWorkspace(name = "demo"): Promise<string> {
@@ -839,6 +870,230 @@ test("external concept file change fans concept.changed via watch", async () => 
       await new Promise((r) => setTimeout(r, 50));
     }
     assert.ok(events.length >= 1, "expected concept.changed from watch");
+  });
+});
+
+test("WorkspaceHost preserves concept and task events from one watch co-burst", async () => {
+  const ws = await makeWorkspace("watch-co-burst");
+  const events = new EventBus();
+  const controlled = createControllableWatchFn();
+  const host = new WorkspaceHost({
+    events,
+    watchFn: controlled.watchFn,
+    watchDebounceMs: 20,
+  });
+  const conceptPaths: string[] = [];
+  const taskPaths: string[] = [];
+  events.subscribe((event) => {
+    const eventPath = String((event.payload as { path?: string }).path ?? "");
+    if (event.type === "concept.changed") conceptPaths.push(eventPath);
+    if (event.type === "task.state") taskPaths.push(eventPath);
+  });
+
+  try {
+    await host.mount(ws);
+    controlled.fire("change", path.join("inbox", "inbox.md"));
+    controlled.fire("rename", path.join("temp", "task-worktree-reclaim-pending.json"));
+    controlled.fire("change", "temp");
+
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline && (conceptPaths.length === 0 || taskPaths.length === 0)) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.deepEqual(conceptPaths, ["inbox/inbox.md"]);
+    assert.equal(taskPaths.length, 1, "temp paths coalesce to one task.state event");
+  } finally {
+    await host.dispose();
+  }
+});
+
+test("WorkspaceHost does not retroactively suppress an admitted external event", async () => {
+  const ws = await makeWorkspace("watch-ingress-authority");
+  const events = new EventBus();
+  const controlled = createControllableWatchFn();
+  const host = new WorkspaceHost({
+    events,
+    watchFn: controlled.watchFn,
+    watchDebounceMs: 40,
+  });
+  const conceptPaths: string[] = [];
+  events.subscribe((event) => {
+    if (event.type === "concept.changed") {
+      conceptPaths.push(String((event.payload as { path?: string }).path ?? ""));
+    }
+  });
+
+  try {
+    const mounted = await host.mount(ws);
+    controlled.fire("change", path.join("inbox", "inbox.md"));
+    host.markSelfWrite(mounted.workspaceId, 200);
+
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline && conceptPaths.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.deepEqual(conceptPaths, ["inbox/inbox.md"]);
+  } finally {
+    await host.dispose();
+  }
+});
+
+test("WorkspaceHost scoped self-write suppresses only matching paths", async () => {
+  const ws = await makeWorkspace("watch-scoped-self-write");
+  const events = new EventBus();
+  const controlled = createControllableWatchFn();
+  const host = new WorkspaceHost({
+    events,
+    watchFn: controlled.watchFn,
+    watchDebounceMs: 20,
+  });
+  const conceptPaths: string[] = [];
+  const taskPaths: string[] = [];
+  events.subscribe((event) => {
+    const eventPath = String((event.payload as { path?: string }).path ?? "");
+    if (event.type === "concept.changed") conceptPaths.push(eventPath);
+    if (event.type === "task.state") taskPaths.push(eventPath);
+  });
+
+  try {
+    const mounted = await host.mount(ws);
+    host.markSelfWrite(mounted.workspaceId, 200, "temp");
+    controlled.fire("rename", path.join("temp", "task.json"));
+    controlled.fire("change", path.join("inbox", "inbox.md"));
+
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline && conceptPaths.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.deepEqual(conceptPaths, ["inbox/inbox.md"]);
+    assert.deepEqual(taskPaths, []);
+  } finally {
+    await host.dispose();
+  }
+});
+
+test(
+  "WorkspaceHost case-folds Windows suppression and dedupe identity",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const ws = await makeWorkspace("watch-case-fold");
+    const events = new EventBus();
+    const controlled = createControllableWatchFn();
+    const host = new WorkspaceHost({
+      events,
+      watchFn: controlled.watchFn,
+      watchDebounceMs: 20,
+    });
+    const conceptPaths: string[] = [];
+    const taskPaths: string[] = [];
+    events.subscribe((event) => {
+      const eventPath = String((event.payload as { path?: string }).path ?? "");
+      if (event.type === "concept.changed") conceptPaths.push(eventPath);
+      if (event.type === "task.state") taskPaths.push(eventPath);
+    });
+
+    try {
+      const mounted = await host.mount(ws);
+      host.markSelfWrite(mounted.workspaceId, 200, "temp");
+      controlled.fire("change", "TEMP/Task.md");
+      controlled.fire("change", "Inbox/Inbox.md");
+      controlled.fire("rename", "inbox/inbox.md");
+
+      const deadline = Date.now() + 1000;
+      while (Date.now() < deadline && conceptPaths.length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.deepEqual(conceptPaths, ["Inbox/Inbox.md"]);
+      assert.deepEqual(taskPaths, []);
+    } finally {
+      await host.dispose();
+    }
+  }
+);
+
+test("mount dead-session reconcile does not suppress an immediate external Node edit", async () => {
+  const ws = await makeWorkspace("watch-after-reconcile");
+  await withService(async (svc) => {
+    const firstMount = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+    assert.ok(!firstMount.error, JSON.stringify(firstMount.error));
+    const workspaceId = (firstMount.result as { workspaceId: string }).workspaceId;
+
+    const created = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "dead-session-watch",
+      type: "prompt",
+    });
+    assert.ok(!created.error, JSON.stringify(created.error));
+    const nodeId = (created.result as { id: string }).id;
+    const dispatched = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: nodeId,
+      role: "executor",
+      prompt: "seed dead session reconciliation",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+    });
+    assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
+    const taskPath = (dispatched.result as { taskPath: string }).taskPath;
+    const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(!claimed.error, JSON.stringify(claimed.error));
+
+    const sessionId = "ss-watchdead1";
+    const now = new Date().toISOString();
+    await svc.runtime.registry.write({
+      id: sessionId,
+      profileId: "fake-default",
+      adapterId: FAKE_ADAPTER_ID,
+      roleName: "executor",
+      state: "stopped",
+      workspace: workspaceId,
+      lastTaskId: taskPath,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const mounted = svc.ctx.host.require(workspaceId);
+    await patchTaskEnvelope(mounted.env.fs, taskPath, {
+      sessionId,
+      updatedAt: mounted.env.clock.now(),
+    });
+    const unmounted = await rpc(svc, "workspace.unmount", { workspaceId });
+    assert.ok(!unmounted.error, JSON.stringify(unmounted.error));
+
+    const conceptPaths: string[] = [];
+    const unsubscribe = svc.events.subscribe((event) => {
+      if (event.type === "concept.changed") {
+        conceptPaths.push(String((event.payload as { path?: string }).path ?? ""));
+      }
+    });
+    try {
+      const remounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+      assert.ok(!remounted.error, JSON.stringify(remounted.error));
+      const remountedId = (remounted.result as { workspaceId: string }).workspaceId;
+
+      // The reconcile Task write happens before mount returns and starts a 200ms
+      // self-write window. This external write must still be admitted immediately.
+      const notePath = path.join(ws, ".tent", "inbox", "inbox.md");
+      const raw = await fs.readFile(notePath, "utf8");
+      await fs.writeFile(notePath, raw + "\n<!-- immediate after reconcile -->\n", "utf8");
+
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline && conceptPaths.length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      assert.ok(
+        conceptPaths.some((value) => value.toLowerCase() === "inbox/inbox.md"),
+        `expected immediate concept.changed after reconcile; got ${JSON.stringify(conceptPaths)}`
+      );
+
+      const taskResult = await rpc(svc, "task.get", {
+        workspaceId: remountedId,
+        taskPath,
+      });
+      assert.ok(!taskResult.error, JSON.stringify(taskResult.error));
+      assert.equal((taskResult.result as { task: { state: string } }).task.state, "waiting");
+    } finally {
+      unsubscribe();
+    }
   });
 });
 

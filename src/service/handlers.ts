@@ -98,7 +98,7 @@ import {
   readTaskPurpose,
   type StableContextGenerationBundle,
 } from "./session-context-generation.js";
-import { systemRootFromWorkspace } from "../core/paths.js";
+import { systemRootFromWorkspace, TEMP_DIR } from "../core/paths.js";
 import {
   decodeBase64Strict,
   MAX_ATTACHMENT_BYTES,
@@ -766,7 +766,7 @@ async function migrateParentReviewerOnMount(
   if (!mount) return;
   try {
     await ctx.mutations.run(workspaceId, async () => {
-      ctx.host.markSelfWrite(workspaceId);
+      ctx.host.markSelfWrite(workspaceId, 200, TEMP_DIR);
       await migrateParentReviewerEnvelopes(mount.env.fs, mount.env.clock);
     });
   } catch (err) {
@@ -1036,7 +1036,7 @@ export async function reconcileTaskSessionsOnMount(
     if (isSessionUnavailableParkedWait(task)) continue;
 
     await ctx.mutations.run(workspaceId, async () => {
-      ctx.host.markSelfWrite(workspaceId);
+      ctx.host.markSelfWrite(workspaceId, 200, TEMP_DIR);
       // Re-load + re-probe inside the bus for races; only park when still non-terminal + dead.
       const current = await loadTaskEnvelope(mount.env.fs, task.path);
       if (current.state !== "running" && current.state !== "waiting") return;

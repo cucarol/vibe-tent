@@ -15,6 +15,13 @@ import type { MountedWorkspaceInfo } from "./types.js";
 /** Digested into workspaceId; long enough to avoid path-prefix collisions. */
 const WORKSPACE_ID_DIGEST_LEN = 12;
 
+type WatchSuppressWindow = {
+  /** Epoch ms; ignored after this time. */
+  until: number;
+  /** Normalized comparison keys; null means a legacy global hold. */
+  pathKeys: string[] | null;
+};
+
 export interface MountedWorkspace {
   workspaceId: string;
   workspaceRoot: string;
@@ -22,8 +29,10 @@ export interface MountedWorkspace {
   tentName: string;
   env: OpsEnv;
   watcher?: FSWatcher;
-  /** Suppress self-echo concept events for this many ms after a service write. */
+  /** Latest global suppression deadline; retained for diagnostic compatibility. */
   suppressWatchUntil: number;
+  /** Path-scoped and global self-write windows applied at watcher ingress only. */
+  suppressWindows: WatchSuppressWindow[];
 }
 
 export interface WorkspaceHostOptions {
@@ -47,6 +56,8 @@ export class WorkspaceHost {
   private readonly watchFn: typeof watch;
   private readonly watchDebounceMs: number;
   private watchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Distinct admitted paths in the current debounce window, keyed by path identity. */
+  private watchPendingPaths = new Map<string, Map<string, string>>();
   private readonly housekeeper?: (mount: MountedWorkspace) => Promise<void>;
   private readonly housekeepingInitialDelayMs: number;
   private readonly housekeepingIntervalMs: number;
@@ -135,6 +146,7 @@ export class WorkspaceHost {
       tentName,
       env,
       suppressWatchUntil: 0,
+      suppressWindows: [],
     };
 
     mount.watcher = this.startWatch(mount);
@@ -195,10 +207,25 @@ export class WorkspaceHost {
   }
 
   /** Call before service-originated disk writes to reduce watch self-echo noise. */
-  markSelfWrite(workspaceId: string, holdMs = 200): void {
+  markSelfWrite(workspaceId: string, holdMs = 200, paths?: string | string[]): void {
     const mount = this.mounts.get(workspaceId);
     if (!mount) return;
-    mount.suppressWatchUntil = Date.now() + holdMs;
+    const now = Date.now();
+    const until = now + Math.max(0, holdMs);
+    let pathKeys: string[] | null = null;
+    if (paths !== undefined) {
+      const normalized = (Array.isArray(paths) ? paths : [paths])
+        .map(normalizeWatchPath)
+        .filter((value) => value.length > 0)
+        .map(watchPathKey);
+      // Empty scoped input fails closed as a global hold.
+      pathKeys = normalized.length > 0 ? [...new Set(normalized)] : null;
+    }
+    mount.suppressWindows = mount.suppressWindows.filter((window) => window.until > now);
+    mount.suppressWindows.push({ until, pathKeys });
+    if (pathKeys === null) {
+      mount.suppressWatchUntil = Math.max(mount.suppressWatchUntil, until);
+    }
   }
 
   async dispose(): Promise<void> {
@@ -207,6 +234,7 @@ export class WorkspaceHost {
     }
     for (const timer of this.watchTimers.values()) clearTimeout(timer);
     this.watchTimers.clear();
+    this.watchPendingPaths.clear();
     for (const timer of this.housekeepingTimers.values()) clearTimeout(timer);
     this.housekeepingTimers.clear();
     this.housekeepingRunning.clear();
@@ -228,10 +256,20 @@ export class WorkspaceHost {
       { recursive: true },
       (_event, filename) => {
         if (!filename) return;
-        const rel = String(filename).replace(/\\/g, "/");
+        const rel = normalizeWatchPath(String(filename));
         if (rel === "mutation.lock" || rel.endsWith("/mutation.lock")) return;
         if (rel === "attachments/.gc-state.json") return;
-        if (Date.now() < mount.suppressWatchUntil) return;
+        // Suppression is decided once, at ingress. A later Service write must
+        // not retroactively erase an already-admitted external event at flush.
+        if (this.isWatchSuppressed(mount, rel)) return;
+
+        let pending = this.watchPendingPaths.get(mount.workspaceId);
+        if (!pending) {
+          pending = new Map();
+          this.watchPendingPaths.set(mount.workspaceId, pending);
+        }
+        const key = watchPathKey(rel);
+        if (!pending.has(key)) pending.set(key, rel);
 
         const prev = this.watchTimers.get(mount.workspaceId);
         if (prev) clearTimeout(prev);
@@ -239,18 +277,10 @@ export class WorkspaceHost {
           mount.workspaceId,
           setTimeout(() => {
             this.watchTimers.delete(mount.workspaceId);
-            // Operational pipeline changes may still matter for task.state; concept paths fan concept.changed.
-            if (rel.startsWith("temp/") || rel === "temp") {
-              this.events.emit("task.state", mount.workspaceId, {
-                reason: "watch",
-                path: rel,
-              });
-              return;
-            }
-            this.events.emit("concept.changed", mount.workspaceId, {
-              reason: "watch",
-              path: rel,
-            });
+            const admitted = this.watchPendingPaths.get(mount.workspaceId);
+            this.watchPendingPaths.delete(mount.workspaceId);
+            if (!admitted || admitted.size === 0) return;
+            this.flushWatchPaths(mount, admitted.values());
           }, this.watchDebounceMs)
         );
       }
@@ -261,12 +291,49 @@ export class WorkspaceHost {
     return watcher;
   }
 
+  private flushWatchPaths(mount: MountedWorkspace, paths: Iterable<string>): void {
+    let emittedTaskState = false;
+    for (const rel of paths) {
+      if (isTempWatchPath(rel)) {
+        if (!emittedTaskState) {
+          this.events.emit("task.state", mount.workspaceId, {
+            reason: "watch",
+            path: rel,
+          });
+          emittedTaskState = true;
+        }
+        continue;
+      }
+      this.events.emit("concept.changed", mount.workspaceId, {
+        reason: "watch",
+        path: rel,
+      });
+    }
+  }
+
+  private isWatchSuppressed(mount: MountedWorkspace, rel: string): boolean {
+    const now = Date.now();
+    mount.suppressWindows = mount.suppressWindows.filter((window) => window.until > now);
+    mount.suppressWatchUntil = mount.suppressWindows
+      .filter((window) => window.pathKeys === null)
+      .reduce((latest, window) => Math.max(latest, window.until), 0);
+    const relKey = watchPathKey(rel);
+    for (const window of mount.suppressWindows) {
+      if (window.pathKeys === null) return true;
+      for (const pathKey of window.pathKeys) {
+        if (relKey === pathKey || relKey.startsWith(pathKey + "/")) return true;
+      }
+    }
+    return false;
+  }
+
   private stopWatch(mount: MountedWorkspace): void {
     const timer = this.watchTimers.get(mount.workspaceId);
     if (timer) {
       clearTimeout(timer);
       this.watchTimers.delete(mount.workspaceId);
     }
+    this.watchPendingPaths.delete(mount.workspaceId);
     try {
       mount.watcher?.close();
     } catch {
@@ -306,6 +373,19 @@ export class WorkspaceHost {
     if (timer) clearTimeout(timer);
     this.housekeepingTimers.delete(workspaceId);
   }
+}
+
+function normalizeWatchPath(value: string): string {
+  return value.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
+function watchPathKey(value: string): string {
+  return process.platform === "win32" ? value.toLowerCase() : value;
+}
+
+function isTempWatchPath(value: string): boolean {
+  const key = watchPathKey(value);
+  return key === "temp" || key.startsWith("temp/");
 }
 
 function makeWorkspaceId(workspaceRoot: string): string {
