@@ -1520,8 +1520,7 @@ function allowedTransitions(from) {
       return [
         { event: "accept", to: "accepted" },
         { event: "reject-resume", to: "running" },
-        { event: "reject-terminal", to: "rejected" },
-        { event: "interrupt", to: "interrupted" }
+        { event: "reject-terminal", to: "rejected" }
       ];
     case "rejected":
       return [];
@@ -1759,6 +1758,62 @@ function taskParentRoleId(task) {
 function serializeTaskActorRef(actor) {
   return { kind: actor.kind, id: actor.id };
 }
+function serializeBaseCommitCapture(capture) {
+  return {
+    source: capture.source,
+    baseCommit: capture.baseCommit,
+    actor: serializeTaskActorRef(capture.actor),
+    capturedAt: capture.capturedAt
+  };
+}
+function assertIsoTimestamp(value, label) {
+  const raw = value.trim();
+  if (!raw) {
+    throw new Error(`${label} must be a non-empty ISO-8601 timestamp.`);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(raw)) {
+    throw new Error(
+      `${label} must be a real ISO-8601 timestamp with timezone; got ${raw}.`
+    );
+  }
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) {
+    throw new Error(`${label} is not a parseable ISO-8601 instant: ${raw}.`);
+  }
+  return raw;
+}
+function parseBaseCommitCapture(value) {
+  if (value === void 0 || value === null) return void 0;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(
+      "Task baseCommitCapture must be an object { source, baseCommit, actor, capturedAt }."
+    );
+  }
+  const raw = value;
+  const source = raw.source;
+  if (source !== "first-claim" && source !== "explicit-backfill") {
+    throw new Error(
+      `Task baseCommitCapture.source must be first-claim|explicit-backfill; got ${String(source)}.`
+    );
+  }
+  const baseCommit = typeof raw.baseCommit === "string" ? raw.baseCommit.trim() : "";
+  if (!baseCommit) {
+    throw new Error("Task baseCommitCapture.baseCommit must be a non-empty SHA.");
+  }
+  const capturedAtRaw = typeof raw.capturedAt === "string" ? raw.capturedAt.trim() : "";
+  const capturedAt = assertIsoTimestamp(
+    capturedAtRaw,
+    "Task baseCommitCapture.capturedAt"
+  );
+  let actor;
+  try {
+    actor = parseTaskActorRef(raw.actor, "parentActor");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(msg.replace(/Task parentActor/g, "Task baseCommitCapture.actor"));
+  }
+  return { source, baseCommit, actor, capturedAt };
+}
 function resolveDispatchActors(input) {
   if (!input.parentActor) {
     throw new Error(
@@ -1808,6 +1863,21 @@ async function loadTaskEnvelope(fs23, path24) {
   if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
     task.baseCommit = data.baseCommit.trim();
   }
+  const baseCommitCapture = parseBaseCommitCapture(data.baseCommitCapture);
+  if (baseCommitCapture) {
+    const recordedBase = task.baseCommit?.trim() || "";
+    if (!recordedBase) {
+      throw new Error(
+        `Invalid task envelope format: ${path24} (baseCommitCapture present but baseCommit missing).`
+      );
+    }
+    if (recordedBase !== baseCommitCapture.baseCommit) {
+      throw new Error(
+        `Invalid task envelope format: ${path24} (baseCommit ${recordedBase} !== baseCommitCapture.baseCommit ${baseCommitCapture.baseCommit}).`
+      );
+    }
+    task.baseCommitCapture = baseCommitCapture;
+  }
   if (data.integrationAuthority !== void 0 && data.integrationAuthority !== null && task.parentActor && task.reviewer) {
     task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
       data.integrationAuthority,
@@ -1834,6 +1904,9 @@ async function loadTaskEnvelope(fs23, path24) {
     task.agentId = data.agentId.trim();
   }
   if (typeof data.sessionId === "string") task.sessionId = data.sessionId;
+  if (typeof data.purpose === "string" && data.purpose.trim()) {
+    task.purpose = data.purpose.trim();
+  }
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
   if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
     task.lastOutcome = data.lastOutcome;
@@ -1935,7 +2008,7 @@ function relayPromptForTask(task, roots) {
   return assigneeLine + `${formatExternalPathBlock(task, resolved)}
 ${formatTaskPointers(task)}
 1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).
-2. Inspect with \`tent task get ${task.path}\` (or read the envelope file), then open the claimed boxes; the box notes contain the task definition.
+2. Read the Task Context Card (\`tent task get ${task.path}\` or the envelope file), then resolve each id in \`contextCard.refs.nodes\` with \`tent node get <nodeId>\`.
 3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).
 ` + initStep;
 }
@@ -2019,13 +2092,27 @@ async function writeTaskEnvelope(fs23, clock, input) {
   if (acceptance.length === 0) {
     throw new Error("Dispatch requires non-empty acceptance (or objective).");
   }
+  const facts = input.contextGenerationFacts;
   const contextGeneration = input.contextGeneration?.trim() || computeContextGeneration({
     workspaceIdentity: input.workspace?.workspace || "local-workspace",
-    agentsPointerDigest: "dispatch-default-agents",
+    agentsPointerDigest: facts?.agentsPointerDigest?.trim() || agentsBodyCompatibilityDigest(facts?.agentsBody ?? ""),
+    tentRoleDigest: facts?.tentRoleDigest,
+    tentRoleVersion: facts?.tentRoleVersion,
+    rolePrompt: facts?.rolePrompt,
+    rosterAgentIds: facts?.rosterAgentIds,
+    tentTaskDigest: facts?.tentTaskDigest,
+    tentTaskVersion: facts?.tentTaskVersion,
+    profileAdapterCompatibility: profileAdapterCompatibilityDigest({
+      profileId: facts?.profileId || input.role,
+      adapterId: facts?.adapterId || "unknown-adapter",
+      capabilityFlags: facts?.capabilityFlags
+    }),
+    purpose: facts?.purpose,
     extraStable: {
       assigneeKind,
       assignee: input.role,
-      taskId: id
+      ...input.agentId?.trim() ? { agentId: input.agentId.trim() } : {},
+      ...facts?.extraStable
     }
   });
   const assignee = projectAssigneeFromTask({
@@ -2069,6 +2156,8 @@ async function writeTaskEnvelope(fs23, clock, input) {
   if (input.asSub === true) data.asSub = true;
   if (input.agentId?.trim()) data.agentId = input.agentId.trim();
   if (input.sessionId) data.sessionId = input.sessionId;
+  if (input.purpose?.trim()) data.purpose = input.purpose.trim();
+  else if (facts?.purpose?.trim()) data.purpose = facts.purpose.trim();
   if (input.workspace) {
     data.workspace = input.workspace.workspace;
     data.worktree = input.workspace.worktree;
@@ -2178,6 +2267,10 @@ async function patchTaskEnvelope(fs23, path24, patch) {
   else if (typeof patch.baseCommit === "string" && patch.baseCommit.trim()) {
     data.baseCommit = patch.baseCommit.trim();
   }
+  if (patch.baseCommitCapture === null) delete data.baseCommitCapture;
+  else if (patch.baseCommitCapture) {
+    data.baseCommitCapture = serializeBaseCommitCapture(patch.baseCommitCapture);
+  }
   if (patch.integrationAuthority === null) delete data.integrationAuthority;
   else if (patch.integrationAuthority) {
     if (data.parentActor === void 0 || data.parentActor === null) {
@@ -2213,6 +2306,10 @@ async function patchTaskEnvelope(fs23, path24, patch) {
   if (patch.taskDeltaDigest === null) delete data.taskDeltaDigest;
   else if (typeof patch.taskDeltaDigest === "string" && patch.taskDeltaDigest.trim()) {
     data.taskDeltaDigest = patch.taskDeltaDigest.trim();
+  }
+  if (patch.purpose === null) delete data.purpose;
+  else if (typeof patch.purpose === "string" && patch.purpose.trim()) {
+    data.purpose = patch.purpose.trim();
   }
   await fs23.writeFile(path24, serializeFrontmatter(data, body, keyOrder));
   return loadTaskEnvelope(fs23, path24);
@@ -2256,6 +2353,16 @@ var TASK_CONTEXT_CARD_SCHEMA_VERSION = "v1";
 var CONTEXT_GENERATION_VERSION = "v1";
 var MANAGED_BOOTSTRAP_INVARIANT = "Tent managed bootstrap invariant v1: Core is authoritative. Fetch by durable id before answering. Never invent missing Context Card fields, refs, parent/reviewer, or chat-memory continuity. Final report goes through Delivery only.";
 var INTEGRATION_MUTATOR_SERVICE = "service";
+var CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS = [
+  "taskId",
+  "taskPath",
+  "objective",
+  "acceptance",
+  "taskDeltaDigest",
+  "userPrompt",
+  "taskInputDelta",
+  "checkpoint"
+];
 var TaskContextCardError = class extends Error {
   constructor(code, message2, details) {
     super(message2);
@@ -2290,18 +2397,83 @@ function isContextGenerationId(value) {
 }
 function computeContextGeneration(inputs) {
   const roster = [...inputs.rosterAgentIds ?? []].map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
+  const extraStable = sanitizeContextGenerationExtraStable(inputs.extraStable);
   const payload = {
     v: CONTEXT_GENERATION_VERSION,
     workspaceIdentity: inputs.workspaceIdentity.trim(),
     agentsPointerDigest: inputs.agentsPointerDigest.trim(),
     tentRoleDigest: inputs.tentRoleDigest?.trim() || "",
+    tentRoleVersion: inputs.tentRoleVersion?.trim() || "",
     rolePrompt: inputs.rolePrompt?.trim() || "",
     roster,
     tentTaskDigest: inputs.tentTaskDigest?.trim() || "",
+    tentTaskVersion: inputs.tentTaskVersion?.trim() || "",
     profileAdapterCompatibility: inputs.profileAdapterCompatibility?.trim() || "",
-    extraStable: inputs.extraStable ?? {}
+    purpose: inputs.purpose?.trim() || "",
+    extraStable
   };
   return formatContextGeneration(canonicalJson(payload));
+}
+function sanitizeContextGenerationExtraStable(extra) {
+  const out = {};
+  if (!extra) return out;
+  const forbidden = new Set(
+    CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS.map((k) => k.toLowerCase())
+  );
+  for (const key2 of Object.keys(extra).sort((a, b) => a.localeCompare(b))) {
+    if (forbidden.has(key2.toLowerCase())) continue;
+    const v = extra[key2];
+    if (v === void 0) continue;
+    out[key2] = v;
+  }
+  return out;
+}
+function agentsBodyCompatibilityDigest(agentsBody) {
+  return sha256Hex(typeof agentsBody === "string" ? agentsBody : "");
+}
+function skillBodyCompatibilityDigest(input) {
+  return sha256Hex(
+    canonicalJson({
+      name: input.name?.trim() || "",
+      version: input.version?.trim() || "",
+      body: input.body
+    })
+  );
+}
+function computeContextGenerationFromStableFacts(input) {
+  const tentRoleDigest = input.tentRoleBody !== void 0 ? skillBodyCompatibilityDigest({
+    body: input.tentRoleBody,
+    version: input.tentRoleVersion,
+    name: "tent-role"
+  }) : "";
+  const tentTaskDigest = input.tentTaskBody !== void 0 ? skillBodyCompatibilityDigest({
+    body: input.tentTaskBody,
+    version: input.tentTaskVersion,
+    name: "tent-task"
+  }) : "";
+  return computeContextGeneration({
+    workspaceIdentity: input.workspaceIdentity,
+    agentsPointerDigest: input.agentsPointerDigest?.trim() || agentsBodyCompatibilityDigest(input.agentsBody),
+    tentRoleDigest: tentRoleDigest || void 0,
+    tentRoleVersion: input.tentRoleVersion,
+    rolePrompt: input.rolePrompt,
+    rosterAgentIds: input.rosterAgentIds,
+    tentTaskDigest: tentTaskDigest || void 0,
+    tentTaskVersion: input.tentTaskVersion,
+    profileAdapterCompatibility: profileAdapterCompatibilityDigest({
+      profileId: input.profileId,
+      adapterId: input.adapterId,
+      capabilityFlags: input.capabilityFlags,
+      launchDigest: input.profileLaunchDigest
+    }),
+    purpose: input.purpose,
+    extraStable: {
+      ...input.assigneeKind ? { assigneeKind: String(input.assigneeKind) } : {},
+      ...input.agentId?.trim() ? { agentId: input.agentId.trim() } : {},
+      ...input.profileLaunchDigest?.trim() ? { profileLaunchDigest: input.profileLaunchDigest.trim() } : {},
+      ...input.extraStable
+    }
+  });
 }
 function computeTaskDeltaDigest(inputs) {
   const { card, taskInputDelta, checkpoint, userPrompt } = inputs;
@@ -2753,6 +2925,163 @@ function decideStablePrefixInjection(input) {
 }
 function shouldInjectStablePrefix(input) {
   return decideStablePrefixInjection(input).includeStablePrefix;
+}
+function norm(value) {
+  return (value ?? "").trim();
+}
+function samePathish(a, b) {
+  if (!a || !b) return a === b;
+  const na = a.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const nb = b.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  return na === nb;
+}
+function evaluateSessionReuseCompatibility(input) {
+  const reasons = [];
+  const req = input.request;
+  const cand = input.candidate;
+  if (norm(req.workspaceId) !== norm(cand.workspaceId)) {
+    reasons.push("workspace_mismatch");
+  }
+  if (norm(req.parentRoleId) !== norm(cand.parentRoleId)) {
+    reasons.push("parent_role_mismatch");
+  }
+  if (norm(req.agentId) !== norm(cand.agentId)) {
+    reasons.push("agent_mismatch");
+  }
+  if (norm(req.purpose) !== norm(cand.purpose)) {
+    reasons.push("purpose_mismatch");
+  }
+  if (norm(req.skillsDigest) !== norm(cand.skillsDigest)) {
+    reasons.push("skills_mismatch");
+  }
+  if (norm(req.profileId) !== norm(cand.profileId)) {
+    reasons.push("profile_mismatch");
+  }
+  if (norm(req.adapterId) !== norm(cand.adapterId)) {
+    reasons.push("adapter_mismatch");
+  }
+  if (norm(req.contextGeneration) !== norm(cand.contextGeneration)) {
+    reasons.push("context_generation_mismatch");
+  }
+  if (!isContextGenerationId(req.contextGeneration)) {
+    reasons.push("request_context_generation_invalid");
+  }
+  if (!isContextGenerationId(cand.contextGeneration)) {
+    reasons.push("candidate_context_generation_invalid");
+  }
+  const reqWt = norm(req.worktree);
+  const candWt = norm(cand.worktree);
+  if (reqWt || candWt) {
+    if (!samePathish(reqWt, candWt)) reasons.push("worktree_mismatch");
+  }
+  if (!input.runtime.previousTurnSettled) reasons.push("previous_turn_not_settled");
+  if (!input.runtime.noPendingInput) reasons.push("pending_input");
+  if (!input.runtime.noPendingDelivery) reasons.push("pending_delivery");
+  if (!input.runtime.exclusiveLease) reasons.push("lease_not_exclusive");
+  return {
+    allowed: reasons.length === 0,
+    reasons,
+    request: req,
+    candidate: cand
+  };
+}
+function skillSetCompatibilityDigest(skills) {
+  const rows = [...skills].map((s) => ({
+    name: s.name.trim().toLowerCase(),
+    bodyDigest: s.bodyDigest.trim(),
+    version: s.version?.trim() || ""
+  })).filter((s) => s.name && s.bodyDigest).sort((a, b) => a.name.localeCompare(b.name));
+  return sha256Hex(canonicalJson(rows));
+}
+function profileAdapterCompatibilityDigest(input) {
+  const flags = [...input.capabilityFlags ?? []].map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
+  return sha256Hex(
+    canonicalJson({
+      profileId: input.profileId.trim(),
+      adapterId: input.adapterId.trim(),
+      flags,
+      launchDigest: input.launchDigest?.trim() || ""
+    })
+  );
+}
+function canonicalStringMap(map) {
+  const out = {};
+  if (!map) return out;
+  for (const key2 of Object.keys(map).sort((a, b) => a.localeCompare(b))) {
+    const k = key2.trim();
+    if (!k) continue;
+    const v = typeof map[key2] === "string" ? map[key2].trim() : "";
+    out[k] = v;
+  }
+  return out;
+}
+function profileLaunchCompatibilityDigest(input) {
+  const envKeyNames = [...input.envKeyNames ?? []].map((k) => k.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
+  const args = [...input.args ?? []].map((s) => String(s));
+  const skills = [...input.skills ?? []].map((s) => ({
+    name: s.name.trim().toLowerCase(),
+    path: s.path?.trim() || ""
+  })).filter((s) => s.name).sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path));
+  const mcp = [...input.mcpServers ?? []].map((m) => ({
+    name: m.name.trim(),
+    transport: m.transport?.trim() || "",
+    command: m.command?.trim() || "",
+    args: [...m.args ?? []].map((s) => String(s)),
+    url: m.url?.trim() || "",
+    envKeys: canonicalStringMap(m.envKeys),
+    envCredentialRefs: canonicalStringMap(m.envCredentialRefs),
+    headerEnvKeys: canonicalStringMap(m.headerEnvKeys),
+    headerCredentialRefs: canonicalStringMap(m.headerCredentialRefs)
+  })).filter((m) => m.name).sort((a, b) => a.name.localeCompare(b.name));
+  const flags = [...input.capabilityFlags ?? []].map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
+  const acp = input.acp;
+  return sha256Hex(
+    canonicalJson({
+      profileId: input.profileId.trim(),
+      adapterId: input.adapterId.trim(),
+      command: input.command?.trim() || "",
+      args,
+      envKeyNames,
+      acp: {
+        executable: acp?.executable?.trim() || "",
+        model: acp?.model?.trim() || "",
+        envKey: acp?.envKey?.trim() || "",
+        credentialRef: acp?.credentialRef?.trim() || "",
+        baseUrlEnvKey: acp?.baseUrlEnvKey?.trim() || "",
+        baseUrl: acp?.baseUrl?.trim() || "",
+        permissionPolicy: acp?.permissionPolicy?.trim() || "",
+        promptTimeoutMs: typeof acp?.promptTimeoutMs === "number" && Number.isFinite(acp.promptTimeoutMs) ? acp.promptTimeoutMs : null,
+        permissionTimeoutMs: typeof acp?.permissionTimeoutMs === "number" && Number.isFinite(acp.permissionTimeoutMs) ? acp.permissionTimeoutMs : null
+      },
+      fake: {
+        canResume: input.fake?.canResume === true,
+        failLaunch: Boolean(input.fake?.failLaunch),
+        waitForSignal: input.fake?.waitForSignal !== false
+      },
+      skills,
+      mcp,
+      flags
+    })
+  );
+}
+function sessionRecordToReuseCompatibilityFacts(record) {
+  return {
+    workspaceId: record.workspace?.trim() || "",
+    parentRoleId: record.parentRoleId?.trim() || "",
+    agentId: (record.agentId || record.roleName || "").trim(),
+    purpose: record.purpose?.trim() || "",
+    skillsDigest: record.skillsDigest?.trim() || "",
+    profileId: record.profileId.trim(),
+    adapterId: record.adapterId.trim(),
+    contextGeneration: record.contextGeneration?.trim() || "",
+    worktree: record.workspaceLane?.worktree?.trim() || record.runtimeWorkspace?.cwd?.trim() || void 0
+  };
+}
+function managedSessionPurpose(input) {
+  const purpose = input?.purpose?.trim() || "";
+  const subKey = input?.subKey?.trim() || "";
+  if (purpose && subKey) return `${purpose}:${subKey}`;
+  return purpose || subKey || "";
 }
 function deriveIntegrationAuthority(input) {
   try {
@@ -3627,8 +3956,8 @@ async function collectDeliveryFiles(fs23, dir, filter, out) {
     }
   }
 }
-async function removeNonAcceptedDeliveriesForBox(fs23, boxId) {
-  for (const delivery of await loadDeliveries(fs23, { boxId })) {
+async function removeNonAcceptedDeliveriesForTask(fs23, taskId) {
+  for (const delivery of await loadDeliveries(fs23, { taskId })) {
     if (delivery.status === "accepted") continue;
     if (await fs23.exists(delivery.path)) await fs23.remove(delivery.path);
   }
@@ -4089,11 +4418,21 @@ async function taskClaim(env, taskPath, options = {}) {
       const claimable = canClaim(box);
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
     }
+    const now = env.clock.now();
+    if (options.claimWrite) {
+      return patchTaskEnvelope(env.fs, taskPath, {
+        ...options.claimWrite,
+        status: "taken",
+        state: "running",
+        ...options.sessionId ? { sessionId: options.sessionId } : {},
+        updatedAt: options.claimWrite.updatedAt ?? now
+      });
+    }
     await ackTaskEnvelope(env.fs, taskPath);
     if (options.sessionId) {
       return patchTaskEnvelope(env.fs, taskPath, {
         sessionId: options.sessionId,
-        updatedAt: env.clock.now()
+        updatedAt: now
       });
     }
     return loadTaskEnvelope(env.fs, taskPath);
@@ -4158,6 +4497,7 @@ async function prepareTaskDeliver(env, taskPath, options) {
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "delivered",
       activeDeliveryId: delivery.id,
+      ...options.lastOutcome ? { lastOutcome: options.lastOutcome } : {},
       updatedAt: env.clock.now()
     });
     return { kind: "done", result: { task: next, delivery, autoIntegrated: false } };
@@ -4193,6 +4533,7 @@ async function finalizeTaskDeliverAuto(env, taskPath, options, prepared) {
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "accepted",
       activeDeliveryId: delivery.id,
+      ...options.lastOutcome ? { lastOutcome: options.lastOutcome } : {},
       wait: null,
       updatedAt: env.clock.now()
     });
@@ -4342,6 +4683,17 @@ async function taskReject(env, taskPath, options) {
 async function taskInterrupt(env, taskPath) {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
+    if (task.state === "interrupted") {
+      await releaseOccupationForTask(env, task);
+      if (!task.activeDeliveryId && task.lastOutcome !== "delivered") {
+        return task;
+      }
+      return patchTaskEnvelope(env.fs, taskPath, {
+        activeDeliveryId: null,
+        ...task.lastOutcome === "delivered" ? { lastOutcome: null } : {},
+        updatedAt: env.clock.now()
+      });
+    }
     if (task.state === "queued") {
       assertTransition(task.state, "interrupt", "interrupted");
       await env.fs.remove(taskPath);
@@ -4352,6 +4704,8 @@ async function taskInterrupt(env, taskPath) {
     return patchTaskEnvelope(env.fs, taskPath, {
       state: "interrupted",
       wait: null,
+      activeDeliveryId: null,
+      ...task.lastOutcome === "delivered" ? { lastOutcome: null } : {},
       updatedAt: env.clock.now()
     });
   });
@@ -4374,11 +4728,7 @@ async function taskFail(env, taskPath, options = {}) {
   });
 }
 async function releaseOccupationForTask(env, task) {
-  if (task.contextCard == null) return;
-  for (const nodeId of taskReferencedNodeIds(task)) {
-    if (nodeId === "root") continue;
-    await removeNonAcceptedDeliveriesForBox(env.fs, nodeId);
-  }
+  await removeNonAcceptedDeliveriesForTask(env.fs, task.id || task.path);
 }
 async function taskCancel(env, taskPath) {
   return withMutation(env.fs, async () => {
@@ -5173,6 +5523,66 @@ function relativePath3(root, child) {
 }
 
 // src/core/ops.ts
+function resolveDispatchNodeIds(input) {
+  const tentName = input.tentName.trim();
+  const legacyRaw = typeof input.legacyClaimId === "string" ? input.legacyClaimId.trim() : "";
+  const legacy = legacyRaw || void 0;
+  if (input.nodeIds !== void 0 && input.nodeIds !== null) {
+    if (!Array.isArray(input.nodeIds)) {
+      throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
+    }
+    if (input.nodeIds.length === 0) {
+      throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
+    }
+    const out = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (let i = 0; i < input.nodeIds.length; i++) {
+      const raw = input.nodeIds[i];
+      if (typeof raw !== "string" || !raw.trim()) {
+        throw new Error(
+          `Dispatch nodeIds[${i}] must be a non-empty durable Node ID string.`
+        );
+      }
+      const id = raw.trim();
+      if (isForbiddenRootDispatchToken(id, tentName)) {
+        throw new Error(
+          "Cannot dispatch the whole Tent directly; dispatch specific Nodes (nodeIds cannot include ., root, or the Tent name)."
+        );
+      }
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    if (out.length === 0) {
+      throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
+    }
+    if (legacy) {
+      if (isForbiddenRootDispatchToken(legacy, tentName)) {
+        throw new Error(
+          "Cannot dispatch the whole Tent directly; dispatch a specific Node (legacy primary cannot be ., root, or the Tent name)."
+        );
+      }
+      if (legacy !== out[0]) {
+        throw new Error(
+          `Dispatch legacy primary '${legacy}' conflicts with authoritative nodeIds primary '${out[0]}'; when both are present they must agree (prefer nodeIds).`
+        );
+      }
+    }
+    return out;
+  }
+  if (!legacy) {
+    throw new Error("Dispatch requires nodeIds or a legacy single boxId/id/claimId.");
+  }
+  if (isForbiddenRootDispatchToken(legacy, tentName)) {
+    throw new Error(
+      "Cannot dispatch the whole Tent directly; dispatch a specific Node (legacy primary cannot be ., root, or the Tent name)."
+    );
+  }
+  return [legacy];
+}
+function isForbiddenRootDispatchToken(id, tentName) {
+  return id === "." || id === "root" || tentName !== "" && id === tentName;
+}
 async function dispatch(env, claimId, role, promptOrOptions) {
   return withMutation2(env.fs, async () => dispatchUnlocked(env, claimId, role, promptOrOptions));
 }
@@ -5199,7 +5609,11 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     if (!roleName) throw new Error("Dispatch with assigneeKind=role requires role.");
     assigneeLabel = assertRoleName(roleName);
   }
-  const claim = resolveDispatchClaim(tent, claimId, env.tentName);
+  const nodeIds = resolveDispatchNodeIds({
+    nodeIds: options.nodeIds,
+    legacyClaimId: claimId,
+    tentName: env.tentName
+  });
   const tasks = await loadTaskEnvelopes(env.fs);
   const createdRoot = assigneeKind === "agentProfile" ? agentProfileTempRoot(assigneeLabel) : join("temp", assigneeLabel);
   const createdRootExisted = await env.fs.exists(createdRoot);
@@ -5209,21 +5623,26 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     );
   }
   void options.asSub;
-  void tasks;
-  if (claim.root) {
-  } else {
-    const structural = structuralClaimGate(claim.box);
+  const selectedNodes = [];
+  for (const id of nodeIds) {
+    const node2 = requireBoxById2(tent, id);
+    const structural = structuralClaimGate(node2);
     if (!structural.ok) {
-      throw new Error(`Cannot dispatch: ${structural.reason || "box cannot be claimed"}`);
+      throw new Error(`Cannot dispatch: ${structural.reason || "Node cannot be claimed"}`);
     }
-    const claimable = canClaim(claim.box, { tent, tasks });
+    const claimable = canClaim(node2, { tent, tasks });
     if (!claimable.ok) {
-      throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
+      throw new Error(`Cannot dispatch: ${claimable.reason || "Node cannot be claimed"}`);
     }
+    selectedNodes.push(node2);
   }
   try {
-    const roleSelection = claim.root ? [] : assigneeKind === "role" ? roleManifestSelection(tent, assigneeLabel, claim.box, tasks) : [claim.box];
-    const input = claim.root ? { tentName: env.tentName, role: assigneeLabel, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: assigneeLabel, claimBoxes: roleSelection, ...options.workspace };
+    const input = {
+      tentName: env.tentName,
+      role: assigneeLabel,
+      claimBoxes: selectedNodes,
+      ...options.workspace
+    };
     const manifest = buildManifest(tent, input);
     const yaml = manifestToYaml(manifest);
     const taskId = options.taskId && options.taskId.trim() ? options.taskId.trim() : makeTaskId();
@@ -5241,7 +5660,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       const roleDefinition = registry.roles.find((item) => item.name === assigneeLabel) ?? { name: assigneeLabel };
       initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
     }
-    const taskClaims = claim.root ? [{ id: "root", path: "./" }] : [{ id: claim.box.id, path: claim.box.path }];
+    const taskClaims = selectedNodes.map((node2) => ({ id: node2.id, path: node2.path }));
     const agentId = options.agentId?.trim() || void 0;
     const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
       role: assigneeLabel,
@@ -5256,7 +5675,10 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       assigneeKind,
       agentId,
       id: taskId,
-      tasksDir: assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : void 0
+      tasksDir: assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : void 0,
+      ...options.contextGeneration ? { contextGeneration: options.contextGeneration } : {},
+      ...options.contextGenerationFacts ? { contextGenerationFacts: options.contextGenerationFacts } : {},
+      ...options.purpose?.trim() ? { purpose: options.purpose.trim() } : {}
     });
     const written = await loadTaskEnvelope(env.fs, taskPath).catch(() => null);
     const parentActor = options.parentActor;
@@ -5300,14 +5722,6 @@ function assertProfileId(profileId) {
     throw new Error("profileId cannot contain path separators or newlines.");
   }
   return id;
-}
-function resolveDispatchClaim(tent, claimId, tentName) {
-  const id = claimId.trim();
-  if (id === "." || id === "root" || id === tentName) {
-    throw new Error("Cannot dispatch the whole Tent directly; dispatch a specific box (boxId cannot be ., root, or the Tent name).");
-  }
-  const box = requireBoxById2(tent, id);
-  return { root: false, id: box.id, name: box.name, box };
 }
 async function createBox(env, input) {
   return withMutation2(env.fs, async () => createBoxUnlocked(env, input));
@@ -5355,6 +5769,7 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
   const reserved = [
     "id",
     "owner",
+    "assignee",
     "mode",
     "archived",
     "readable",
@@ -5497,21 +5912,6 @@ function assertRoleName(role) {
   if (/[\/\\\r\n]/.test(name)) throw new Error("Role name cannot contain path separators or newlines.");
   assertRoleNameAvailable(name);
   return name;
-}
-function roleManifestSelection(tent, role, current, tasks) {
-  const selected = /* @__PURE__ */ new Map();
-  for (const task of tasks) {
-    if (taskAssigneeKind(task) !== "role") continue;
-    if (task.role !== role) continue;
-    if (!envelopeIsActiveOccupation(task)) continue;
-    if (task.contextCard == null) continue;
-    for (const nodeId of taskReferencedNodeIds(task)) {
-      const box = tent.byId.get(nodeId);
-      if (box) selected.set(box.id, box);
-    }
-  }
-  selected.set(current.id, current);
-  return [...selected.values()];
 }
 function requireBoxById2(tent, boxId) {
   if (tent.duplicateIds.has(boxId)) {
@@ -5900,6 +6300,749 @@ function formatContextCardPrompt(ref, hints) {
 }
 function taskContextCard(taskId, opts) {
   return buildContextCard({ kind: "task", id: taskId, path: opts?.path }, opts);
+}
+
+// src/core/managed-skill-compose.ts
+import * as fs from "node:fs";
+import * as path from "node:path";
+var BUILTIN_TENT_TASK_SKILL = "tent-task";
+var BUILTIN_TENT_ROLE_SKILL = "tent-role";
+function builtinSkillNamesForExecutor(assigneeKind) {
+  const kind = assigneeKind === "agentProfile" ? "agentProfile" : "role";
+  if (kind === "role") {
+    return [BUILTIN_TENT_ROLE_SKILL, BUILTIN_TENT_TASK_SKILL];
+  }
+  return [BUILTIN_TENT_TASK_SKILL];
+}
+function bundledSkillDir(packageRoot, skillName) {
+  return path.join(packageRoot, "skills", skillName);
+}
+function bundledSkillMdPath(packageRoot, skillName) {
+  return path.join(bundledSkillDir(packageRoot, skillName), "SKILL.md");
+}
+function readBundledSkillBody(packageRoot, skillName) {
+  const file = bundledSkillMdPath(packageRoot, skillName);
+  if (!fs.existsSync(file)) {
+    throw new Error(`Built-in skill missing: ${skillName} (${file})`);
+  }
+  const raw = fs.readFileSync(file, "utf8");
+  return stripYamlFrontmatter(raw).trim();
+}
+function readBundledSkillRaw(packageRoot, skillName) {
+  const file = bundledSkillMdPath(packageRoot, skillName);
+  if (!fs.existsSync(file)) {
+    throw new Error(`Built-in skill missing: ${skillName} (${file})`);
+  }
+  return fs.readFileSync(file, "utf8");
+}
+function readBundledSkillVersion(packageRoot, skillName, packageVersion) {
+  try {
+    const raw = readBundledSkillRaw(packageRoot, skillName);
+    const fromFm = parseSkillFrontmatterVersion(raw);
+    if (fromFm) return fromFm;
+  } catch {
+  }
+  const pkg = packageVersion?.trim();
+  if (pkg) return pkg;
+  return skillName;
+}
+function parseSkillFrontmatterVersion(raw) {
+  const text3 = raw.replace(/^\uFEFF/, "");
+  if (!text3.startsWith("---")) return void 0;
+  const end = text3.indexOf("\n---", 3);
+  if (end === -1) return void 0;
+  const fm = text3.slice(3, end);
+  for (const key2 of ["version", "compatibility", "schemaVersion"]) {
+    const re = new RegExp(`^${key2}\\s*:\\s*["']?([^"'\\n#]+)`, "im");
+    const m = fm.match(re);
+    if (m?.[1]?.trim()) return m[1].trim();
+  }
+  return void 0;
+}
+function stripYamlFrontmatter(raw) {
+  const text3 = raw.replace(/^\uFEFF/, "");
+  if (!text3.startsWith("---")) return text3;
+  const end = text3.indexOf("\n---", 3);
+  if (end === -1) return text3;
+  const after = text3.slice(end + 4);
+  return after.replace(/^\r?\n/, "");
+}
+function formatStableRosterDigest(roster) {
+  const ids = [...roster ?? []].map((s) => s.trim()).filter(Boolean);
+  ids.sort((a, b) => a.localeCompare(b));
+  if (ids.length === 0) return "(empty roster)";
+  return ids.map((id) => `- ${id}`).join("\n");
+}
+var STABLE_SKILL_CONTRACTS_END_MARKER = "--- End of stable Tent skill contracts ---";
+var MANAGED_SESSION_BOOTSTRAP_BANNER = "--- Tent managed session bootstrap ---";
+function composeManagedSkillBootstrapPrefix(input) {
+  const names = builtinSkillNamesForExecutor(input.assigneeKind);
+  const sections = [];
+  if (names.includes(BUILTIN_TENT_ROLE_SKILL)) {
+    const body = readBundledSkillBody(input.packageRoot, BUILTIN_TENT_ROLE_SKILL);
+    sections.push(`## Built-in skill: ${BUILTIN_TENT_ROLE_SKILL}
+
+${body}`);
+    const role = input.role;
+    const rolePrompt = role?.prompt?.trim() || "(no persistent role prompt)";
+    const roster = formatStableRosterDigest(role?.roster);
+    sections.push(
+      `## Role prompt
+
+${rolePrompt}
+
+## Role roster (authorized agentIds)
+
+${roster}`
+    );
+  }
+  if (names.includes(BUILTIN_TENT_TASK_SKILL)) {
+    const body = readBundledSkillBody(input.packageRoot, BUILTIN_TENT_TASK_SKILL);
+    sections.push(`## Built-in skill: ${BUILTIN_TENT_TASK_SKILL}
+
+${body}`);
+  }
+  sections.push(STABLE_SKILL_CONTRACTS_END_MARKER);
+  return sections.join("\n\n");
+}
+function assembleManagedSessionBootstrap(input) {
+  const stable = input.stableSkillPrefix.trimEnd();
+  const card = input.contextCardPrompt.trim();
+  const tail = input.dynamicTaskTail.trim();
+  return `${MANAGED_SESSION_BOOTSTRAP_BANNER}
+` + (stable ? `${stable}
+
+` : "") + `${card}
+
+${tail}
+`;
+}
+function composeManagedSkillRefs(input) {
+  void input.packageRoot;
+  const reserved = /* @__PURE__ */ new Set([
+    BUILTIN_TENT_ROLE_SKILL.toLowerCase(),
+    BUILTIN_TENT_TASK_SKILL.toLowerCase()
+  ]);
+  const out = [];
+  const seen = new Set(reserved);
+  for (const ref of input.profileSkills ?? []) {
+    if (!ref || ref.enabled === false) continue;
+    const name = typeof ref.name === "string" ? ref.name.trim() : "";
+    if (!name) continue;
+    const key2 = name.toLowerCase();
+    if (seen.has(key2)) continue;
+    seen.add(key2);
+    out.push({
+      name,
+      ...ref.path !== void 0 ? { path: ref.path } : {},
+      enabled: true
+    });
+  }
+  return out;
+}
+function managedSkillCompatibilityInputs(input) {
+  const builtinSkills = builtinSkillNamesForExecutor(input.assigneeKind);
+  const skillBodyDigests = {};
+  const skillVersions = {};
+  const skillBodies = {};
+  for (const name of builtinSkills) {
+    const body = readBundledSkillBody(input.packageRoot, name);
+    skillBodies[name] = body;
+    skillBodyDigests[name] = simpleDigest(body);
+    skillVersions[name] = readBundledSkillVersion(
+      input.packageRoot,
+      name,
+      input.packageVersion
+    );
+  }
+  const roster = [...input.role?.roster ?? []].map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
+  return {
+    builtinSkills,
+    rolePrompt: input.role?.prompt?.trim() || "",
+    roster,
+    skillBodyDigests,
+    skillVersions,
+    skillBodies
+  };
+}
+function simpleDigest(text3) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < text3.length; i++) {
+    h ^= text3.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return `d${h.toString(16).padStart(8, "0")}`;
+}
+
+// src/core/workspace-agents.ts
+import * as fs2 from "node:fs/promises";
+import * as path2 from "node:path";
+var WORKSPACE_AGENTS_FILENAME = "AGENTS.md";
+function resolveWorkspaceAgentsPath(workspaceRoot) {
+  const root = path2.resolve(workspaceRoot);
+  const agentsPath = path2.resolve(root, WORKSPACE_AGENTS_FILENAME);
+  if (path2.basename(agentsPath) !== WORKSPACE_AGENTS_FILENAME) {
+    throw new WorkspaceAgentsError(
+      "INVALID_PATH",
+      `Workspace agents file must be named ${WORKSPACE_AGENTS_FILENAME}`
+    );
+  }
+  if (path2.dirname(agentsPath) !== root) {
+    throw new WorkspaceAgentsError(
+      "INVALID_PATH",
+      `${WORKSPACE_AGENTS_FILENAME} must be a direct child of the workspace root`
+    );
+  }
+  return agentsPath;
+}
+async function loadWorkspaceAgents(workspaceRoot) {
+  const agentsPath = resolveWorkspaceAgentsPath(workspaceRoot);
+  try {
+    const content3 = await fs2.readFile(agentsPath, "utf8");
+    return {
+      path: WORKSPACE_AGENTS_FILENAME,
+      content: content3,
+      exists: true
+    };
+  } catch (error) {
+    if (isNotFound(error)) {
+      return {
+        path: WORKSPACE_AGENTS_FILENAME,
+        content: "",
+        exists: false
+      };
+    }
+    throw error;
+  }
+}
+async function writeWorkspaceAgents(workspaceRoot, content3) {
+  if (typeof content3 !== "string") {
+    throw new WorkspaceAgentsError("INVALID_CONTENT", "AGENTS.md content must be a string");
+  }
+  const agentsPath = resolveWorkspaceAgentsPath(workspaceRoot);
+  const before = await loadWorkspaceAgents(workspaceRoot);
+  const changed = !before.exists || before.content !== content3;
+  if (!changed) {
+    return {
+      file: {
+        path: WORKSPACE_AGENTS_FILENAME,
+        content: before.content,
+        exists: true
+      },
+      changed: false
+    };
+  }
+  await writeTextAtomic(agentsPath, content3);
+  return {
+    file: {
+      path: WORKSPACE_AGENTS_FILENAME,
+      content: content3,
+      exists: true
+    },
+    changed: true
+  };
+}
+var WorkspaceAgentsError = class extends Error {
+  constructor(code, message2) {
+    super(message2);
+    this.code = code;
+    this.name = "WorkspaceAgentsError";
+  }
+};
+async function writeTextAtomic(filePath, content3) {
+  await fs2.mkdir(path2.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  try {
+    await fs2.writeFile(tmp, content3, "utf8");
+    await renameReplace(tmp, filePath);
+  } catch (err) {
+    try {
+      await fs2.unlink(tmp);
+    } catch {
+    }
+    throw err;
+  }
+}
+async function renameReplace(tmp, filePath) {
+  const attempts = process.platform === "win32" ? 8 : 1;
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await fs2.rename(tmp, filePath);
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableRenameError(err) || i === attempts - 1) break;
+      await new Promise((r) => setTimeout(r, 5 + i * 5));
+    }
+  }
+  throw lastErr;
+}
+function isRetryableRenameError(err) {
+  if (!err || typeof err !== "object") return false;
+  const code = err.code;
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY" || code === "EEXIST";
+}
+function isNotFound(error) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+// src/service/session-context-generation.ts
+async function requireResolvedRoleFromRegistry(roleFs, roleName, reason) {
+  const key2 = roleName.trim();
+  if (!key2) {
+    throw new Error(
+      `contextGeneration requires a non-empty Role name (${reason})`
+    );
+  }
+  if (!roleFs) {
+    throw new Error(
+      `contextGeneration requires Role "${key2}" (${reason}) but roleFs was not provided`
+    );
+  }
+  let registry;
+  try {
+    registry = await loadRolesRegistry(roleFs);
+  } catch (err) {
+    const message2 = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `contextGeneration cannot load roles registry for Role "${key2}" (${reason}): ${message2}`
+    );
+  }
+  const role = resolveRole(registry.roles, key2);
+  if (!role) {
+    throw new Error(
+      `contextGeneration required Role not found: "${key2}" (${reason})`
+    );
+  }
+  return role;
+}
+async function collectStableContextGeneration(input) {
+  const agents = await loadWorkspaceAgents(input.workspaceRoot);
+  const agentsPointerDigest = agentsBodyCompatibilityDigest(agents.content);
+  let role = input.role;
+  if (input.assigneeKind === "role") {
+    if (!role) {
+      role = await requireResolvedRoleFromRegistry(
+        input.roleFs,
+        input.assigneeLabel,
+        "durable Role assignee"
+      );
+    }
+  } else if (input.assigneeKind === "agentProfile" && input.parentRoleId?.trim()) {
+    if (!role) {
+      role = await requireResolvedRoleFromRegistry(
+        input.roleFs,
+        input.parentRoleId,
+        "parent Role for agentProfile"
+      );
+    }
+  }
+  const skillInputs = managedSkillCompatibilityInputs({
+    packageRoot: input.packageRoot,
+    assigneeKind: input.assigneeKind,
+    role: input.assigneeKind === "role" ? role : void 0,
+    packageVersion: input.packageVersion
+  });
+  const tentTaskBody = skillInputs.skillBodies[BUILTIN_TENT_TASK_SKILL] ?? readBundledSkillBody(input.packageRoot, BUILTIN_TENT_TASK_SKILL);
+  const tentTaskVersion = skillInputs.skillVersions[BUILTIN_TENT_TASK_SKILL] ?? readBundledSkillVersion(
+    input.packageRoot,
+    BUILTIN_TENT_TASK_SKILL,
+    input.packageVersion
+  );
+  const tentTaskDigest = skillBodyCompatibilityDigest({
+    body: tentTaskBody,
+    version: tentTaskVersion,
+    name: BUILTIN_TENT_TASK_SKILL
+  });
+  let tentRoleBody = "";
+  let tentRoleVersion = "";
+  let tentRoleDigest = "";
+  if (input.assigneeKind === "role") {
+    tentRoleBody = skillInputs.skillBodies[BUILTIN_TENT_ROLE_SKILL] ?? readBundledSkillBody(input.packageRoot, BUILTIN_TENT_ROLE_SKILL);
+    tentRoleVersion = skillInputs.skillVersions[BUILTIN_TENT_ROLE_SKILL] ?? readBundledSkillVersion(
+      input.packageRoot,
+      BUILTIN_TENT_ROLE_SKILL,
+      input.packageVersion
+    );
+    tentRoleDigest = skillBodyCompatibilityDigest({
+      body: tentRoleBody,
+      version: tentRoleVersion,
+      name: BUILTIN_TENT_ROLE_SKILL
+    });
+  }
+  const rolePrompt = input.assigneeKind === "role" ? skillInputs.rolePrompt : role?.prompt?.trim() || "";
+  const rosterAgentIds = input.assigneeKind === "role" ? skillInputs.roster : [...role?.roster ?? []].map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
+  const purpose = managedSessionPurpose({
+    purpose: input.purpose,
+    subKey: input.subKey
+  });
+  const agentId = input.agentId?.trim() || (input.assigneeKind === "agentProfile" ? input.assigneeLabel : input.assigneeLabel);
+  const profileLaunchDigest = input.profile ? profileLaunchCompatibilityDigestFromConfig(input.profile) : profileLaunchCompatibilityDigest({
+    profileId: input.profileId,
+    adapterId: input.adapterId,
+    capabilityFlags: input.capabilityFlags
+  });
+  const contextGeneration = computeContextGenerationFromStableFacts({
+    workspaceIdentity: input.workspaceIdentity,
+    agentsBody: agents.content,
+    agentsPointerDigest,
+    tentRoleBody: input.assigneeKind === "role" ? tentRoleBody : void 0,
+    tentRoleVersion: input.assigneeKind === "role" ? tentRoleVersion : void 0,
+    tentTaskBody,
+    tentTaskVersion,
+    rolePrompt: input.assigneeKind === "role" ? rolePrompt : void 0,
+    rosterAgentIds: input.assigneeKind === "role" ? rosterAgentIds : void 0,
+    profileId: input.profileId,
+    adapterId: input.adapterId,
+    purpose,
+    agentId,
+    assigneeKind: input.assigneeKind,
+    capabilityFlags: input.capabilityFlags,
+    profileLaunchDigest
+  });
+  const skillSetRows = [
+    {
+      name: BUILTIN_TENT_TASK_SKILL,
+      bodyDigest: tentTaskDigest,
+      version: tentTaskVersion
+    }
+  ];
+  if (input.assigneeKind === "role" && tentRoleDigest) {
+    skillSetRows.push({
+      name: BUILTIN_TENT_ROLE_SKILL,
+      bodyDigest: tentRoleDigest,
+      version: tentRoleVersion
+    });
+  }
+  const skillSetDigest = skillSetCompatibilityDigest(skillSetRows);
+  return {
+    contextGeneration,
+    agentsPointerDigest,
+    tentRoleDigest,
+    tentRoleVersion,
+    tentTaskDigest,
+    tentTaskVersion,
+    rolePrompt,
+    rosterAgentIds,
+    skillsDigest: skillSetDigest,
+    skillSetDigest,
+    purpose,
+    profileId: input.profileId,
+    adapterId: input.adapterId,
+    profileLaunchDigest,
+    agentId,
+    parentRoleId: input.parentRoleId?.trim() || "",
+    assigneeKind: input.assigneeKind
+  };
+}
+function profileLaunchCompatibilityDigestFromConfig(profile) {
+  return profileLaunchCompatibilityDigest({
+    profileId: profile.id,
+    adapterId: profile.adapterId,
+    command: profile.command,
+    args: profile.args,
+    // Profile env: key names only — never values (may hold non-secret config, but
+    // secret-shaped values must never enter the digest).
+    envKeyNames: Object.keys(profile.env ?? {}),
+    acp: profile.acp ? {
+      executable: profile.acp.executable,
+      model: profile.acp.model,
+      envKey: profile.acp.envKey,
+      credentialRef: profile.acp.credentialRef,
+      baseUrlEnvKey: profile.acp.baseUrlEnvKey,
+      baseUrl: profile.acp.baseUrl,
+      permissionPolicy: profile.acp.permissionPolicy,
+      promptTimeoutMs: profile.acp.promptTimeoutMs,
+      permissionTimeoutMs: profile.acp.permissionTimeoutMs
+    } : void 0,
+    fake: profile.fake ? {
+      canResume: profile.fake.canResume,
+      failLaunch: profile.fake.failLaunch,
+      waitForSignal: profile.fake.waitForSignal
+    } : void 0,
+    skills: (profile.skills ?? []).filter((s) => s && s.enabled !== false && s.name?.trim()).map((s) => ({
+      name: s.name,
+      path: s.path
+    })),
+    mcpServers: (profile.mcpServers ?? []).filter((m) => m && m.enabled !== false && m.name?.trim()).map((m) => ({
+      name: m.name,
+      transport: m.transport,
+      command: m.command,
+      args: m.args,
+      url: m.url,
+      // Mapping values are process env *key names* or credentialRef *ids* —
+      // hashed fully (keys + values), never resolved secret plaintext.
+      envKeys: m.envKeys,
+      envCredentialRefs: m.envCredentialRefs,
+      headerEnvKeys: m.headerEnvKeys,
+      headerCredentialRefs: m.headerCredentialRefs
+    }))
+  });
+}
+function buildSessionReuseRequestFacts(input) {
+  return {
+    workspaceId: input.workspaceId,
+    parentRoleId: input.bundle.parentRoleId,
+    agentId: input.bundle.agentId,
+    purpose: input.bundle.purpose,
+    skillsDigest: input.bundle.skillsDigest,
+    profileId: input.bundle.profileId,
+    adapterId: input.bundle.adapterId,
+    contextGeneration: input.contextGeneration,
+    worktree: input.worktree
+  };
+}
+async function assertDurableContextCardRefsResolved(fs23, card) {
+  let tent = null;
+  let tasks = null;
+  let deliveries = null;
+  const ensureTent = async () => {
+    if (!tent) tent = await loadTent(fs23);
+    return tent;
+  };
+  const ensureTasks = async () => {
+    if (!tasks) tasks = await loadTaskEnvelopes(fs23);
+    return tasks;
+  };
+  const ensureDeliveries = async () => {
+    if (!deliveries) deliveries = await loadDeliveries(fs23);
+    return deliveries;
+  };
+  const nodeOk = /* @__PURE__ */ new Map();
+  for (const ref of card.refs.nodes) {
+    const id = ref.id.trim();
+    if (!id) {
+      nodeOk.set(ref.id, false);
+      continue;
+    }
+    try {
+      const t = await ensureTent();
+      nodeOk.set(ref.id, t.byId.has(id));
+    } catch {
+      nodeOk.set(ref.id, false);
+    }
+  }
+  const taskOk = /* @__PURE__ */ new Map();
+  for (const ref of card.refs.tasks) {
+    const id = ref.id.trim();
+    if (!id || !isTaskId(id)) {
+      taskOk.set(ref.id, false);
+      continue;
+    }
+    try {
+      const all2 = await ensureTasks();
+      const hit = all2.some((t) => t.id === id);
+      if (hit) {
+        taskOk.set(ref.id, true);
+        continue;
+      }
+      if (ref.path?.trim()) {
+        try {
+          const loaded = await loadTaskEnvelope(fs23, ref.path.trim());
+          taskOk.set(ref.id, loaded.id === id);
+          continue;
+        } catch {
+        }
+      }
+      taskOk.set(ref.id, false);
+    } catch {
+      taskOk.set(ref.id, false);
+    }
+  }
+  const deliveryOk = /* @__PURE__ */ new Map();
+  for (const ref of card.refs.deliveries) {
+    const id = ref.id.trim();
+    if (!id || !isDeliveryId(id)) {
+      deliveryOk.set(ref.id, false);
+      continue;
+    }
+    try {
+      const all2 = await ensureDeliveries();
+      deliveryOk.set(ref.id, all2.some((d) => d.id === id));
+    } catch {
+      deliveryOk.set(ref.id, false);
+    }
+  }
+  try {
+    assertRefsResolved(card, (bucket, ref) => {
+      if (bucket === "git") return Boolean(ref.id?.trim());
+      if (bucket === "nodes") return nodeOk.get(ref.id) === true;
+      if (bucket === "tasks") return taskOk.get(ref.id) === true;
+      if (bucket === "deliveries") return deliveryOk.get(ref.id) === true;
+      return false;
+    });
+  } catch (err) {
+    if (err instanceof TaskContextCardError) throw err;
+    throw err;
+  }
+}
+var UNRESOLVED_DELIVERY_STATUSES = /* @__PURE__ */ new Set(["ready", "draft"]);
+function evaluateTaskBlockingDelivery(input) {
+  const taskId = input.task.id?.trim() || "";
+  const taskPath = input.task.path?.trim() || "";
+  const belongsToTask = (d) => {
+    const dt = d.taskId?.trim() || "";
+    if (!dt) return false;
+    if (taskId && dt === taskId) return true;
+    if (taskPath && dt === taskPath) return true;
+    return false;
+  };
+  if (input.task.state === "delivered") {
+    return { blocking: true, reason: "task_state_delivered" };
+  }
+  const activeId = input.task.activeDeliveryId?.trim() || "";
+  if (activeId) {
+    const pointed = input.deliveries.find((d) => d.id === activeId);
+    if (!pointed) {
+      throw new Error(
+        `Task activeDeliveryId ${activeId} does not resolve to a persisted Delivery (missing/foreign); cannot prove noPendingDelivery`
+      );
+    }
+    if (!belongsToTask(pointed)) {
+      throw new Error(
+        `Task activeDeliveryId ${activeId} is foreign (delivery.taskId=${pointed.taskId}, taskId=${taskId || taskPath || "?"}); cannot prove noPendingDelivery`
+      );
+    }
+    if (UNRESOLVED_DELIVERY_STATUSES.has(pointed.status)) {
+      return { blocking: true, reason: "active_delivery_unresolved" };
+    }
+  }
+  if (taskId || taskPath) {
+    const unresolved = input.deliveries.some(
+      (d) => belongsToTask(d) && UNRESOLVED_DELIVERY_STATUSES.has(d.status)
+    );
+    if (unresolved) {
+      return { blocking: true, reason: "task_has_unresolved_delivery" };
+    }
+  }
+  return { blocking: false };
+}
+function findTasksBoundToSession(allTasks, candidate) {
+  const sessionId = candidate.id?.trim() || "";
+  const last = candidate.lastTaskId?.trim() || "";
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const t of allTasks) {
+    const key2 = t.path || t.id || "";
+    if (!key2 || seen.has(key2)) continue;
+    const boundBySession = !!sessionId && typeof t.sessionId === "string" && t.sessionId.trim() === sessionId;
+    const boundByLast = !!last && (t.id === last || t.path === last || t.path.endsWith(last));
+    if (boundBySession || boundByLast) {
+      seen.add(key2);
+      out.push(t);
+    }
+  }
+  return out;
+}
+function isSameTaskRef(task, requestTaskPath, requestTaskId) {
+  if (task.path === requestTaskPath) return true;
+  if (requestTaskId && task.id === requestTaskId) return true;
+  return false;
+}
+function isTaskLifecycleSafelySettledForReuse(task) {
+  return task.state === "accepted";
+}
+async function evaluateCandidateSessionLeaseGates(input) {
+  const reasons = [];
+  const boundTasks = findTasksBoundToSession(input.allTasks, input.candidate);
+  const others = boundTasks.filter(
+    (t) => !isSameTaskRef(t, input.requestTaskPath, input.requestTaskId)
+  );
+  const sessionStopped = input.candidate.state === "stopped";
+  if (!sessionStopped) reasons.push("session_not_stopped");
+  const otherActive = others.filter((t) => envelopeIsActiveOccupation(t));
+  if (otherActive.length > 0) {
+    reasons.push("other_active_task_owns_session");
+  }
+  const activeWithSession = input.allTasks.filter(
+    (t) => envelopeIsActiveOccupation(t) && typeof t.sessionId === "string" && t.sessionId.trim() === input.candidate.id
+  );
+  const dualBind = activeWithSession.some(
+    (t) => !isSameTaskRef(t, input.requestTaskPath, input.requestTaskId)
+  );
+  if (dualBind) reasons.push("dual_session_binding");
+  let othersSettled = true;
+  for (const prior of others) {
+    if (!isTaskLifecycleSafelySettledForReuse(prior)) {
+      othersSettled = false;
+      if (!reasons.includes("prior_task_not_settled")) {
+        reasons.push("prior_task_not_settled");
+      }
+    }
+  }
+  const exclusiveLease = sessionStopped && otherActive.length === 0 && !dualBind && othersSettled;
+  const previousTurnSettled = input.turnBusy !== true;
+  if (!previousTurnSettled) reasons.push("previous_turn_not_settled");
+  let noPendingInput = true;
+  let noPendingDelivery = true;
+  for (const prior of others) {
+    const pending = await input.listPendingInputs(input.workspaceId, prior.path);
+    const ask = await input.hasPendingUserAsk(input.workspaceId, prior.path);
+    if (pending.length > 0 || ask) {
+      noPendingInput = false;
+      reasons.push("prior_pending_input");
+    }
+    const blockingDelivery = input.hasBlockingDelivery != null ? await input.hasBlockingDelivery(prior) : prior.state === "delivered";
+    if (blockingDelivery) {
+      noPendingDelivery = false;
+      reasons.push("prior_pending_delivery");
+    }
+  }
+  const reqPending = await input.listPendingInputs(
+    input.workspaceId,
+    input.requestTaskPath
+  );
+  const reqAsk = await input.hasPendingUserAsk(
+    input.workspaceId,
+    input.requestTaskPath
+  );
+  if (reqPending.length > 0 || reqAsk) {
+    noPendingInput = false;
+    reasons.push("request_pending_input");
+  }
+  const requestTask = input.allTasks.find(
+    (t) => isSameTaskRef(t, input.requestTaskPath, input.requestTaskId)
+  );
+  if (requestTask) {
+    const reqDel = input.hasBlockingDelivery != null ? await input.hasBlockingDelivery(requestTask) : requestTask.state === "delivered";
+    if (reqDel) {
+      noPendingDelivery = false;
+      reasons.push("request_pending_delivery");
+    }
+  }
+  return {
+    previousTurnSettled,
+    exclusiveLease,
+    noPendingInput,
+    noPendingDelivery,
+    reasons,
+    boundTasks
+  };
+}
+function evaluateManagedSessionReuse(input) {
+  return evaluateSessionReuseCompatibility({
+    request: input.request,
+    candidate: sessionRecordToReuseCompatibilityFacts(input.candidate),
+    runtime: input.runtime
+  });
+}
+function taskPurposeFromEnvelope(task) {
+  return managedSessionPurpose({ purpose: task.purpose });
+}
+function readTaskPurpose(task) {
+  return taskPurposeFromEnvelope(task);
+}
+function appendCallerBootstrapSection(officialManagedBootstrap, callerAppend) {
+  const base = officialManagedBootstrap.trimEnd();
+  const append = typeof callerAppend === "string" ? callerAppend.trim() : "";
+  if (!append) return base ? `${base}
+` : "";
+  return `${base}
+
+--- Caller bootstrap append ---
+${append}
+`;
 }
 
 // src/markdown/attachments.ts
@@ -13389,154 +14532,46 @@ function normalizeRole(role) {
   return normalized;
 }
 
-// src/core/managed-skill-compose.ts
-import * as fs from "node:fs";
-import * as path from "node:path";
-var BUILTIN_TENT_TASK_SKILL = "tent-task";
-var BUILTIN_TENT_ROLE_SKILL = "tent-role";
-function builtinSkillNamesForExecutor(assigneeKind) {
-  const kind = assigneeKind === "agentProfile" ? "agentProfile" : "role";
-  if (kind === "role") {
-    return [BUILTIN_TENT_ROLE_SKILL, BUILTIN_TENT_TASK_SKILL];
-  }
-  return [BUILTIN_TENT_TASK_SKILL];
-}
-function bundledSkillDir(packageRoot, skillName) {
-  return path.join(packageRoot, "skills", skillName);
-}
-function bundledSkillMdPath(packageRoot, skillName) {
-  return path.join(bundledSkillDir(packageRoot, skillName), "SKILL.md");
-}
-function readBundledSkillBody(packageRoot, skillName) {
-  const file = bundledSkillMdPath(packageRoot, skillName);
-  if (!fs.existsSync(file)) {
-    throw new Error(`Built-in skill missing: ${skillName} (${file})`);
-  }
-  const raw = fs.readFileSync(file, "utf8");
-  return stripYamlFrontmatter(raw).trim();
-}
-function stripYamlFrontmatter(raw) {
-  const text3 = raw.replace(/^\uFEFF/, "");
-  if (!text3.startsWith("---")) return text3;
-  const end = text3.indexOf("\n---", 3);
-  if (end === -1) return text3;
-  const after = text3.slice(end + 4);
-  return after.replace(/^\r?\n/, "");
-}
-function formatStableRosterDigest(roster) {
-  const ids = [...roster ?? []].map((s) => s.trim()).filter(Boolean);
-  ids.sort((a, b) => a.localeCompare(b));
-  if (ids.length === 0) return "(empty roster)";
-  return ids.map((id) => `- ${id}`).join("\n");
-}
-var STABLE_SKILL_CONTRACTS_END_MARKER = "--- End of stable Tent skill contracts ---";
-var MANAGED_SESSION_BOOTSTRAP_BANNER = "--- Tent managed session bootstrap ---";
-function composeManagedSkillBootstrapPrefix(input) {
-  const names = builtinSkillNamesForExecutor(input.assigneeKind);
-  const sections = [];
-  if (names.includes(BUILTIN_TENT_ROLE_SKILL)) {
-    const body = readBundledSkillBody(input.packageRoot, BUILTIN_TENT_ROLE_SKILL);
-    sections.push(`## Built-in skill: ${BUILTIN_TENT_ROLE_SKILL}
-
-${body}`);
-    const role = input.role;
-    const rolePrompt = role?.prompt?.trim() || "(no persistent role prompt)";
-    const roster = formatStableRosterDigest(role?.roster);
-    sections.push(
-      `## Role prompt
-
-${rolePrompt}
-
-## Role roster (authorized agentIds)
-
-${roster}`
-    );
-  }
-  if (names.includes(BUILTIN_TENT_TASK_SKILL)) {
-    const body = readBundledSkillBody(input.packageRoot, BUILTIN_TENT_TASK_SKILL);
-    sections.push(`## Built-in skill: ${BUILTIN_TENT_TASK_SKILL}
-
-${body}`);
-  }
-  sections.push(STABLE_SKILL_CONTRACTS_END_MARKER);
-  return sections.join("\n\n");
-}
-function assembleManagedSessionBootstrap(input) {
-  const stable = input.stableSkillPrefix.trimEnd();
-  const card = input.contextCardPrompt.trim();
-  const tail = input.dynamicTaskTail.trim();
-  return `${MANAGED_SESSION_BOOTSTRAP_BANNER}
-` + (stable ? `${stable}
-
-` : "") + `${card}
-
-${tail}
-`;
-}
-function composeManagedSkillRefs(input) {
-  void input.packageRoot;
-  const reserved = /* @__PURE__ */ new Set([
-    BUILTIN_TENT_ROLE_SKILL.toLowerCase(),
-    BUILTIN_TENT_TASK_SKILL.toLowerCase()
-  ]);
-  const out = [];
-  const seen = new Set(reserved);
-  for (const ref of input.profileSkills ?? []) {
-    if (!ref || ref.enabled === false) continue;
-    const name = typeof ref.name === "string" ? ref.name.trim() : "";
-    if (!name) continue;
-    const key2 = name.toLowerCase();
-    if (seen.has(key2)) continue;
-    seen.add(key2);
-    out.push({
-      name,
-      ...ref.path !== void 0 ? { path: ref.path } : {},
-      enabled: true
-    });
-  }
-  return out;
-}
-
 // src/service/agent-definitions.ts
-import * as fs4 from "node:fs/promises";
-import * as path4 from "node:path";
+import * as fs5 from "node:fs/promises";
+import * as path5 from "node:path";
 
 // src/machine-state.ts
-import * as fs2 from "node:fs/promises";
-import * as path2 from "node:path";
+import * as fs3 from "node:fs/promises";
+import * as path3 from "node:path";
 function isNotFoundError(err) {
   return !!err && typeof err === "object" && "code" in err && err.code === "ENOENT";
 }
-function isRetryableRenameError(err) {
+function isRetryableRenameError2(err) {
   if (!err || typeof err !== "object" || !("code" in err)) return false;
   const code = err.code;
   return code === "EPERM" || code === "EBUSY" || code === "EACCES" || code === "EEXIST";
 }
 async function writeJsonAtomic(filePath, value) {
-  await fs2.mkdir(path2.dirname(filePath), { recursive: true });
+  await fs3.mkdir(path3.dirname(filePath), { recursive: true });
   const body = JSON.stringify(value, null, 2) + "\n";
   const tmp = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
   try {
-    await fs2.writeFile(tmp, body, "utf8");
-    await renameReplace(tmp, filePath);
+    await fs3.writeFile(tmp, body, "utf8");
+    await renameReplace2(tmp, filePath);
   } catch (err) {
     try {
-      await fs2.unlink(tmp);
+      await fs3.unlink(tmp);
     } catch {
     }
     throw err;
   }
 }
-async function renameReplace(tmp, filePath) {
+async function renameReplace2(tmp, filePath) {
   const attempts = process.platform === "win32" ? 8 : 1;
   let lastErr;
   for (let i = 0; i < attempts; i++) {
     try {
-      await fs2.rename(tmp, filePath);
+      await fs3.rename(tmp, filePath);
       return;
     } catch (err) {
       lastErr = err;
-      if (!isRetryableRenameError(err) || i === attempts - 1) break;
+      if (!isRetryableRenameError2(err) || i === attempts - 1) break;
       await new Promise((r) => setTimeout(r, 5 + i * 5));
     }
   }
@@ -13545,12 +14580,12 @@ async function renameReplace(tmp, filePath) {
 async function backupCorruptMachineFile(filePath) {
   const backupPath = `${filePath}.corrupt-${corruptTimestamp()}`;
   try {
-    await fs2.rename(filePath, backupPath);
+    await fs3.rename(filePath, backupPath);
     return backupPath;
   } catch {
-    await fs2.copyFile(filePath, backupPath);
+    await fs3.copyFile(filePath, backupPath);
     try {
-      await fs2.unlink(filePath);
+      await fs3.unlink(filePath);
     } catch {
     }
     return backupPath;
@@ -13566,8 +14601,8 @@ function corruptTimestamp() {
 }
 
 // src/service/credential-store.ts
-import * as fs3 from "node:fs/promises";
-import * as path3 from "node:path";
+import * as fs4 from "node:fs/promises";
+import * as path4 from "node:path";
 
 // src/service/credential-protector.ts
 import { spawn } from "node:child_process";
@@ -13664,7 +14699,7 @@ var CREDENTIAL_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
 var MAX_SECRET_BYTES = 64 * 1024;
 var MAX_LABEL_LEN = 200;
 function credentialsPath(dataDir) {
-  return path3.join(dataDir, "credentials.json");
+  return path4.join(dataDir, "credentials.json");
 }
 function assertCredentialId(id) {
   if (typeof id !== "string" || !id.trim()) {
@@ -13811,7 +14846,7 @@ var CredentialStore = class {
   }
   async loadFromDisk() {
     try {
-      const raw = await fs3.readFile(this.file, "utf8");
+      const raw = await fs4.readFile(this.file, "utf8");
       let parsed;
       try {
         parsed = JSON.parse(raw);
@@ -14090,7 +15125,7 @@ function parseCredentialRefValue(raw) {
 // src/service/agent-definitions.ts
 var AGENT_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
 function agentDefinitionsPath(dataDir) {
-  return path4.join(dataDir, "agent-definitions.json");
+  return path5.join(dataDir, "agent-definitions.json");
 }
 function parseAgentIdValue(raw, field = "id") {
   if (typeof raw !== "string" || !raw.trim()) {
@@ -14134,7 +15169,7 @@ function projectAgentDefinition(agent, opts) {
 async function loadAgentDefinitions(dataDir) {
   const file = agentDefinitionsPath(dataDir);
   try {
-    const raw = await fs4.readFile(file, "utf8");
+    const raw = await fs5.readFile(file, "utf8");
     let parsed;
     try {
       parsed = JSON.parse(raw);
@@ -14330,6 +15365,664 @@ var queue = new MutationBus();
 var key = (ws, path24) => `${ws}\0${path24}`;
 function runTaskLifecycle(workspaceId, taskPath, action) {
   return queue.run(key(workspaceId, taskPath), action);
+}
+
+// src/core/workspace.ts
+import * as nodePath3 from "node:path";
+import * as nodeFs from "node:fs/promises";
+import { spawn as spawn2 } from "node:child_process";
+async function findIntegratedCommit(workspace, sourceRef, targetBranch) {
+  const root = nodePath3.resolve(workspace);
+  await assertGitWorkspace(root);
+  const full = await fullRef(root, sourceRef);
+  const ancestor = await findAncestorIntegration(root, full, targetBranch);
+  if (ancestor) return { integratedRef: full, reason: "ancestor" };
+  const prior = await findCherryPick(root, full, targetBranch);
+  if (prior) return { integratedRef: prior, reason: "cherry-pick" };
+  return void 0;
+}
+async function readRoleBranchTip(workspace, branch) {
+  const root = nodePath3.resolve(workspace);
+  await assertGitWorkspace(root);
+  const name = branch.trim();
+  if (!name) throw new Error("Role branch name is required.");
+  const ref = (await git(root, ["rev-parse", `refs/heads/${name}`])).trim();
+  if (!ref) throw new Error(`Cannot read role branch tip: ${name}.`);
+  return ref;
+}
+async function isGitWorkspace(workspace) {
+  try {
+    await assertGitWorkspace(nodePath3.resolve(workspace));
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function ensureRoleWorkspaceIfGit(workspace, role) {
+  if (!await isGitWorkspace(workspace)) return void 0;
+  return ensureRoleWorkspace(workspace, role);
+}
+async function ensureRoleWorkspace(workspace, role) {
+  const root = nodePath3.resolve(workspace);
+  await assertGitWorkspace(root);
+  const targetBranch = await resolveTargetBranch(root);
+  const roleSlug = safeComponent(role);
+  const branch = `tent-role/${roleSlug}`;
+  const worktree = nodePath3.join(
+    nodePath3.dirname(root),
+    `${nodePath3.basename(root)}-worktrees`,
+    roleSlug
+  );
+  const existing = await worktreeForBranch(root, branch);
+  if (existing) {
+    const wt = await nodeFs.realpath(nodePath3.resolve(existing));
+    const baseCommit2 = await readRoleBranchTip(root, branch);
+    return { workspace: root, worktree: wt, branch, targetBranch, baseCommit: baseCommit2 };
+  }
+  if (await pathExists(worktree)) {
+    throw new Error(`Role worktree path exists but is not registered to ${branch}: ${worktree}.`);
+  }
+  const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  if (branchExists) {
+    await git(root, ["worktree", "add", worktree, branch]);
+  } else {
+    await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
+  }
+  const baseCommit = await readRoleBranchTip(root, branch);
+  return {
+    workspace: root,
+    worktree: await nodeFs.realpath(worktree),
+    branch,
+    targetBranch,
+    baseCommit
+  };
+}
+async function ensureTaskWorkspaceIfGit(workspace, taskId, options = {}) {
+  if (!await isGitWorkspace(workspace)) return void 0;
+  return ensureTaskWorkspace(workspace, taskId, options);
+}
+function taskWorktreeBranchName(taskId) {
+  const id = taskId.trim();
+  if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
+  return `tent-task/${safeComponent(id)}`;
+}
+function taskWorktreeDirectoryName(taskId) {
+  const id = taskId.trim();
+  if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
+  return `task-${safeComponent(id)}`;
+}
+function expectedTaskWorktreePath(workspaceRoot, taskId) {
+  const root = nodePath3.resolve(workspaceRoot);
+  return nodePath3.join(
+    nodePath3.dirname(root),
+    `${nodePath3.basename(root)}-worktrees`,
+    taskWorktreeDirectoryName(taskId)
+  );
+}
+async function ensureTaskWorkspace(workspace, taskId, options = {}) {
+  const root = nodePath3.resolve(workspace);
+  await assertGitWorkspace(root);
+  const id = taskId.trim();
+  if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
+  const requestedTarget = options.targetBranch?.trim();
+  const targetBranch = requestedTarget || await resolveTargetBranch(root);
+  if (requestedTarget && !await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${targetBranch}`])) {
+    throw new Error(`Task workspace target branch does not exist: ${targetBranch}.`);
+  }
+  const branch = taskWorktreeBranchName(id);
+  const worktree = expectedTaskWorktreePath(root, id);
+  const existing = await worktreeForBranch(root, branch);
+  if (existing) {
+    const wt = await nodeFs.realpath(nodePath3.resolve(existing));
+    const baseCommit2 = await readRoleBranchTip(root, branch);
+    return {
+      workspace: root,
+      worktree: wt,
+      branch,
+      targetBranch,
+      baseCommit: baseCommit2
+    };
+  }
+  if (await pathExists(worktree)) {
+    throw new Error(`Task worktree path exists but is not registered to ${branch}: ${worktree}.`);
+  }
+  const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  if (branchExists) {
+    await git(root, ["worktree", "add", worktree, branch]);
+  } else {
+    await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
+  }
+  const baseCommit = await readRoleBranchTip(root, branch);
+  return {
+    workspace: root,
+    worktree: await nodeFs.realpath(worktree),
+    branch,
+    targetBranch,
+    baseCommit
+  };
+}
+async function inspectWorktreeDirtiness(worktree) {
+  const cwd = nodePath3.resolve(worktree);
+  const raw = (await git(cwd, ["status", "--porcelain"])).replace(/\r\n/g, "\n").trim();
+  const lines = raw ? raw.split("\n").map((line) => line.trimEnd()).filter(Boolean) : [];
+  let trackedDirty = false;
+  let untrackedDirty = false;
+  for (const line of lines) {
+    if (line.startsWith("??") || line.startsWith("!")) {
+      untrackedDirty = true;
+    } else {
+      trackedDirty = true;
+    }
+  }
+  const sampleLines = lines.slice(0, 8);
+  const sample = sampleLines.join("\n") + (lines.length > sampleLines.length ? `
+\u2026(+${lines.length - sampleLines.length} more)` : "");
+  return {
+    dirty: lines.length > 0,
+    worktree: cwd,
+    trackedDirty,
+    untrackedDirty,
+    sample,
+    changeCount: lines.length
+  };
+}
+async function resolveIntegrationTargetLockIdentity(workspaceOrWorktree, targetBranch) {
+  const cwd = nodePath3.resolve(workspaceOrWorktree);
+  const branch = targetBranch.trim();
+  if (!branch) {
+    throw new Error("resolveIntegrationTargetLockIdentity requires a non-empty targetBranch");
+  }
+  let commonRaw = "";
+  try {
+    commonRaw = (await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
+  } catch {
+    commonRaw = (await git(cwd, ["rev-parse", "--git-common-dir"])).trim();
+  }
+  if (!commonRaw) {
+    throw new Error(`Cannot resolve git-common-dir for integration lock at ${cwd}`);
+  }
+  const commonResolved = nodePath3.isAbsolute(commonRaw) ? commonRaw : nodePath3.resolve(cwd, commonRaw);
+  let gitCommonDir = commonResolved;
+  try {
+    gitCommonDir = await nodeFs.realpath(commonResolved);
+  } catch {
+    gitCommonDir = commonResolved;
+  }
+  const want = branch.startsWith("refs/") ? branch : `refs/heads/${branch}`;
+  let targetRef = "";
+  try {
+    targetRef = (await git(cwd, ["rev-parse", "--verify", "--symbolic-full-name", want])).trim();
+  } catch {
+    targetRef = "";
+  }
+  if (!targetRef) {
+    await git(cwd, ["rev-parse", "--verify", `${want}^{commit}`]);
+    targetRef = want.startsWith("refs/") ? want : `refs/heads/${branch}`;
+  }
+  if (!targetRef.startsWith("refs/")) {
+    throw new Error(
+      `Integration target ref did not fully resolve for lock identity: branch=${branch} got=${targetRef}`
+    );
+  }
+  return { gitCommonDir, targetRef };
+}
+async function integrateWorkspaceCommits(contract, refs) {
+  const commits = [...new Set(refs.map((ref) => ref.trim()).filter(Boolean))];
+  if (commits.length === 0) return [];
+  const root = contract.workspace;
+  const target = contract.targetBranch;
+  const integrationCwd = await resolveIntegrationCwd(root, target);
+  const current = (await git(integrationCwd, ["branch", "--show-current"])).trim();
+  if (current !== target) {
+    throw new Error(
+      `No worktree has ${target} checked out for integration; found current branch ${current || "(detached)"} at ${integrationCwd}. Never auto-switch branches \u2014 ensure the target lane worktree exists and stays on ${target}.`
+    );
+  }
+  const dirty = (await git(integrationCwd, ["status", "--porcelain"])).trim();
+  if (dirty) {
+    throw new Error(
+      `Integration worktree has uncommitted changes; cannot integrate commits (${integrationCwd}).`
+    );
+  }
+  const originalRef = (await git(root, ["rev-parse", `refs/heads/${target}`])).trim();
+  let ownedTip = originalRef;
+  const resolved = [];
+  for (const sourceRef of commits) {
+    await git(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
+    resolved.push({ sourceRef, fullRef: await fullRef(root, sourceRef) });
+  }
+  const fastForwardRef = await completeFastForwardRef(
+    root,
+    originalRef,
+    resolved.map((item) => item.fullRef),
+    contract.branch
+  );
+  if (fastForwardRef) {
+    try {
+      await git(integrationCwd, ["merge", "--ff-only", fastForwardRef]);
+      ownedTip = (await git(integrationCwd, ["rev-parse", "HEAD"])).trim();
+      return resolved.map(({ sourceRef, fullRef: integratedRef }) => ({
+        sourceRef,
+        integratedRef,
+        alreadyIntegrated: false
+      }));
+    } catch (error) {
+      await rollbackIntegration(integrationCwd, originalRef, target, ownedTip, error);
+    }
+  }
+  const results = [];
+  try {
+    for (const { sourceRef } of resolved) {
+      const ancestor = await findAncestorIntegration(root, sourceRef, target);
+      if (ancestor) {
+        results.push({ sourceRef, integratedRef: ancestor, alreadyIntegrated: true });
+        continue;
+      }
+      const prior = await findCherryPick(root, sourceRef, target);
+      if (prior) {
+        results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
+        continue;
+      }
+      await git(integrationCwd, ["cherry-pick", "-x", sourceRef]);
+      const integratedRef = (await git(integrationCwd, ["rev-parse", "HEAD"])).trim();
+      ownedTip = integratedRef;
+      results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
+    }
+  } catch (error) {
+    await rollbackIntegration(integrationCwd, originalRef, target, ownedTip, error);
+  }
+  return results;
+}
+async function resolveIntegrationCwd(root, targetBranch) {
+  const mainCurrent = (await git(root, ["branch", "--show-current"])).trim();
+  if (mainCurrent === targetBranch) {
+    return root;
+  }
+  const existing = await worktreeForBranch(root, targetBranch);
+  if (existing) {
+    const wt = await nodeFs.realpath(nodePath3.resolve(existing));
+    const wtCurrent = (await git(wt, ["branch", "--show-current"])).trim();
+    if (wtCurrent === targetBranch) return wt;
+    throw new Error(
+      `Worktree for ${targetBranch} exists at ${wt} but current branch is ${wtCurrent || "(detached)"}; never auto-switch.`
+    );
+  }
+  throw new Error(
+    `No worktree has ${targetBranch} checked out. Main workspace is on ${mainCurrent || "(detached)"}. For sub tasks ensure the dispatcher role lane (tent-role/<dispatcher>) exists.`
+  );
+}
+async function listRoleCommitsSince(contract, base) {
+  const since = base.trim();
+  if (!since) throw new Error("listRoleCommitsSince requires a non-empty base SHA.");
+  const branchRef = `refs/heads/${contract.branch}`;
+  const fullBase = await fullRef(contract.workspace, since);
+  if (!await gitOk(contract.workspace, ["merge-base", "--is-ancestor", fullBase, branchRef])) {
+    throw new Error(
+      `Role branch ${contract.branch} no longer descends from task baseline ${fullBase}.`
+    );
+  }
+  const output = await git(contract.workspace, [
+    "log",
+    `${fullBase}..${branchRef}`,
+    "--format=%H%x09%h%x09%s"
+  ]);
+  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const [ref = "", shortRef = "", ...subjectParts] = line.split("	");
+    return { ref, shortRef, subject: subjectParts.join("	") };
+  }).filter((item) => item.ref && item.shortRef);
+}
+async function listPendingRoleCommits(contract, base) {
+  const candidates = await listRoleCommitsSince(contract, base);
+  const pending = [];
+  for (const item of candidates) {
+    const integrated = await findIntegratedCommit(
+      contract.workspace,
+      item.ref,
+      contract.targetBranch
+    );
+    if (!integrated) pending.push(item);
+  }
+  return pending.reverse();
+}
+async function listExecutorLaneCommitsWithParents(workspace, baseCommit, tipCommit) {
+  const root = nodePath3.resolve(workspace);
+  await assertGitWorkspace(root);
+  const base = (await fullRef(root, baseCommit.trim())).trim();
+  const tip = (await fullRef(root, tipCommit.trim())).trim();
+  if (base === tip) return [];
+  const output = await git(root, [
+    "rev-list",
+    "--parents",
+    "--reverse",
+    `${base}..${tip}`
+  ]);
+  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const parts = line.split(/\s+/).map((p) => p.trim()).filter(Boolean);
+    const sha = parts[0] || "";
+    const parents = parts.slice(1);
+    return { sha, parents };
+  }).filter((c) => c.sha);
+}
+async function assertOrdinaryExecutorLaneHistoryInGit(input) {
+  const root = nodePath3.resolve(input.workspace);
+  await assertGitWorkspace(root);
+  const base = input.baseCommit?.trim();
+  if (!base) {
+    throw new ExecutorLaneHistoryError(
+      "MISSING_BASE",
+      "Executor lane history gate requires recorded baseCommit (fail-loud; no ready Delivery)."
+    );
+  }
+  let tip = input.tipCommit?.trim() || "";
+  if (!tip) {
+    const branch = input.branch?.trim();
+    if (!branch) {
+      throw new ExecutorLaneHistoryError(
+        "MISSING_TIP",
+        "Executor lane history gate requires tip commit or branch."
+      );
+    }
+    tip = (await git(root, ["rev-parse", `refs/heads/${branch}`])).trim();
+  }
+  const fullBase = await fullRef(root, base);
+  const fullTip = await fullRef(root, tip);
+  const commits = await listExecutorLaneCommitsWithParents(root, fullBase, fullTip);
+  assertOrdinaryExecutorLaneHistory({
+    baseCommit: fullBase,
+    tipCommit: fullTip,
+    commits
+  });
+}
+var DeliverCommitLaneError = class extends Error {
+  constructor(code, message2, details) {
+    super(message2);
+    this.name = "DeliverCommitLaneError";
+    this.code = code;
+    this.details = details;
+  }
+};
+async function assertDeliverCommitsInExecutorLane(input) {
+  const refs = [...new Set(input.commits.map((c) => c.trim()).filter(Boolean))];
+  if (refs.length === 0) return;
+  const root = nodePath3.resolve(input.workspace);
+  await assertGitWorkspace(root);
+  const baseRaw = input.baseCommit?.trim() || "";
+  if (!baseRaw) {
+    throw new DeliverCommitLaneError(
+      "MISSING_BASE",
+      "task.deliver commits[] require recorded baseCommit (fail-loud; no ready Delivery)."
+    );
+  }
+  const branch = input.branch?.trim() || "";
+  if (!branch) {
+    throw new DeliverCommitLaneError(
+      "MISSING_BRANCH",
+      "task.deliver commits[] require recorded executor branch (fail-loud; no ready Delivery)."
+    );
+  }
+  const fullBase = await fullRef(root, baseRaw);
+  const branchRef = `refs/heads/${branch}`;
+  if (!await gitOk(root, ["show-ref", "--verify", "--quiet", branchRef])) {
+    throw new DeliverCommitLaneError(
+      "MISSING_BRANCH",
+      `task.deliver commits[] executor branch missing: ${branch} (no ready Delivery).`,
+      { branch }
+    );
+  }
+  const rangeOutput = await git(root, ["rev-list", "--reverse", `${fullBase}..${branchRef}`]);
+  const laneRange = new Set(
+    rangeOutput.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  );
+  for (const sourceRef of refs) {
+    const isCommit = await gitOk(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
+    if (!isCommit) {
+      const exists = await gitOk(root, ["cat-file", "-e", sourceRef]);
+      throw new DeliverCommitLaneError(
+        exists ? "NOT_A_COMMIT" : "MISSING_COMMIT",
+        exists ? `task.deliver commits[] entry is not a commit object: ${sourceRef} (no ready Delivery; Git untouched).` : `task.deliver commits[] entry does not resolve in workspace Git: ${sourceRef} (no ready Delivery; Git untouched).`,
+        { commit: sourceRef }
+      );
+    }
+    const full = await fullRef(root, sourceRef);
+    if (full === fullBase) {
+      throw new DeliverCommitLaneError(
+        "BASE_COMMIT",
+        `task.deliver commits[] must not list recorded baseCommit ${fullBase} itself (no ready Delivery; Git untouched).`,
+        { commit: full, baseCommit: fullBase, branch }
+      );
+    }
+    if (!laneRange.has(full)) {
+      const reachableFromBranch = await gitOk(root, [
+        "merge-base",
+        "--is-ancestor",
+        full,
+        branchRef
+      ]);
+      if (!reachableFromBranch) {
+        throw new DeliverCommitLaneError(
+          "NOT_REACHABLE_FROM_BRANCH",
+          `task.deliver commits[] entry ${full} is not reachable from executor branch ${branch} (foreign/sibling/unrelated ancestry; no ready Delivery; Git untouched).`,
+          { commit: full, baseCommit: fullBase, branch }
+        );
+      }
+      throw new DeliverCommitLaneError(
+        "NOT_IN_LANE_RANGE",
+        `task.deliver commits[] entry ${full} is not in exact range ${fullBase}..${branch} (target-only, base history, or foreign to this task lane; no ready Delivery; Git untouched).`,
+        { commit: full, baseCommit: fullBase, branch }
+      );
+    }
+    if (!await gitOk(root, ["merge-base", "--is-ancestor", full, branchRef])) {
+      throw new DeliverCommitLaneError(
+        "NOT_REACHABLE_FROM_BRANCH",
+        `task.deliver commits[] entry ${full} failed branch reachability re-check for ${branch}.`,
+        { commit: full, baseCommit: fullBase, branch }
+      );
+    }
+  }
+}
+async function assertGitWorkspace(root) {
+  const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
+  const [realTop, realRoot] = await Promise.all([
+    nodeFs.realpath(nodePath3.resolve(top)),
+    nodeFs.realpath(root)
+  ]);
+  if (!isSameWorkspaceRoot(realTop, realRoot)) {
+    throw new Error(`Workspace must be a Git root: ${root}.`);
+  }
+}
+function isSameWorkspaceRoot(realTop, realRoot, platform = process.platform) {
+  const top = platform === "win32" ? realTop.toLowerCase() : realTop;
+  const root = platform === "win32" ? realRoot.toLowerCase() : realRoot;
+  return top === root;
+}
+async function resolveTargetBranch(root) {
+  for (const name of ["main", "master"]) {
+    if (await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${name}`])) return name;
+  }
+  const current = (await git(root, ["branch", "--show-current"])).trim();
+  if (!current) throw new Error("Cannot identify the workspace main branch.");
+  return current;
+}
+async function worktreeForBranch(root, branch) {
+  const output = await git(root, ["worktree", "list", "--porcelain"]);
+  let currentPath = "";
+  for (const line of output.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) currentPath = line.slice("worktree ".length);
+    if (line === `branch refs/heads/${branch}`) return currentPath;
+  }
+  return void 0;
+}
+async function findCherryPick(root, sourceRef, targetBranch) {
+  const full = await fullRef(root, sourceRef);
+  const needle = `(cherry picked from commit ${full})`;
+  const targetRef = `refs/heads/${targetBranch}`;
+  const output = await git(root, ["log", targetRef, "--format=%H%x00%B%x00", "-n", "5000"]);
+  const parts = output.split("\0");
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const body = parts[i + 1] ?? "";
+    if (body.includes(needle)) return parts[i].trim();
+  }
+  return void 0;
+}
+async function findAncestorIntegration(root, sourceRef, targetBranch) {
+  const targetRef = `refs/heads/${targetBranch}`;
+  const full = await fullRef(root, sourceRef);
+  if (await gitOk(root, ["merge-base", "--is-ancestor", full, targetRef])) {
+    return full;
+  }
+  return void 0;
+}
+async function completeFastForwardRef(root, targetRef, commits, sourceBranch) {
+  const lastRef = commits.at(-1);
+  if (!lastRef || lastRef === targetRef) return void 0;
+  if (!await gitOk(root, ["merge-base", "--is-ancestor", targetRef, lastRef])) return void 0;
+  const sourceRef = `refs/heads/${sourceBranch}`;
+  if (!await gitOk(root, ["merge-base", "--is-ancestor", lastRef, sourceRef])) {
+    return void 0;
+  }
+  if (commits.length === 1) {
+    return lastRef;
+  }
+  const range = (await git(root, ["rev-list", "--reverse", `${targetRef}..${lastRef}`])).split(/\r?\n/).map((ref) => ref.trim()).filter(Boolean);
+  if (range.length !== commits.length) return void 0;
+  const supplied = new Set(commits);
+  return range.every((ref) => supplied.has(ref)) ? lastRef : void 0;
+}
+async function rollbackIntegration(root, originalRef, targetBranch, ownedTip, cause) {
+  return rollbackIntegrationCas({
+    root,
+    originalRef,
+    targetBranch,
+    ownedTip,
+    cause
+  });
+}
+async function rollbackIntegrationCas(input) {
+  const root = nodePath3.resolve(input.root);
+  const target = input.targetBranch.trim();
+  const targetRef = `refs/heads/${target}`;
+  const originalRef = input.originalRef.trim();
+  const ownedTip = input.ownedTip.trim();
+  const cause = input.cause;
+  let currentTip = "";
+  try {
+    currentTip = (await git(root, ["rev-parse", targetRef])).trim();
+  } catch (readError) {
+    throw new Error(
+      `Workspace integration conflicted; rollback could not read target ${target}: ${errorMessage(cause)}; read: ${errorMessage(readError)}`
+    );
+  }
+  if (currentTip !== originalRef && currentTip !== ownedTip) {
+    throw new Error(
+      `Workspace integration conflicted; rollback refused because target ${target} advanced by another writer after this operation's write (owned ${ownedTip}, current ${currentTip}, original ${originalRef}); ref, worktree, and sequencer evidence preserved: ${errorMessage(cause)}`
+    );
+  }
+  await git(root, ["cherry-pick", "--quit"]).catch(() => "");
+  if (currentTip === ownedTip && currentTip !== originalRef) {
+    try {
+      await git(root, ["update-ref", targetRef, originalRef, ownedTip]);
+    } catch (casError) {
+      throw new Error(
+        `Workspace integration conflicted; rollback CAS failed for target ${target} (owned ${ownedTip}, original ${originalRef}): ${errorMessage(cause)}; cas: ${errorMessage(casError)}`
+      );
+    }
+    currentTip = originalRef;
+  }
+  try {
+    await git(root, ["read-tree", "-u", "--reset", currentTip]);
+    await git(root, ["checkout-index", "-a", "-f"]).catch(() => "");
+  } catch (rollbackError) {
+    try {
+      await git(root, ["reset", "--hard", currentTip]);
+    } catch (hardError) {
+      throw new Error(
+        `Workspace integration failed and rollback also failed: ${errorMessage(cause)}; reconcile: ${errorMessage(rollbackError)}; hard: ${errorMessage(hardError)}`
+      );
+    }
+  }
+  throw new Error(`Workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+async function fullRef(root, ref) {
+  return (await git(root, ["rev-parse", ref])).trim();
+}
+async function resolveCommitSha(workspace, commitish) {
+  const root = nodePath3.resolve(workspace);
+  await assertGitWorkspace(root);
+  const raw = commitish.trim();
+  if (!raw) throw new Error("resolveCommitSha requires a non-empty commitish.");
+  const isCommit = await gitOk(root, ["cat-file", "-e", `${raw}^{commit}`]);
+  if (!isCommit) {
+    throw new Error(`Not a commit in workspace Git: ${raw}`);
+  }
+  return (await fullRef(root, raw)).trim();
+}
+async function isCommitAncestor(workspace, ancestor, descendant) {
+  const root = nodePath3.resolve(workspace);
+  await assertGitWorkspace(root);
+  const fullAncestor = await fullRef(root, ancestor.trim());
+  const fullDescendant = await fullRef(root, descendant.trim());
+  if (fullAncestor === fullDescendant) return true;
+  return gitOk(root, ["merge-base", "--is-ancestor", fullAncestor, fullDescendant]);
+}
+function safeComponent(value) {
+  const source = value.trim();
+  const normalized = source.normalize("NFKC");
+  let clean = normalized.replace(/[<>:"/\\|?*\x00-\x1f~^:[\]@{}]+/g, "-").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^[.-]+|[.-]+$/g, "").slice(0, 40);
+  const reserved = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(clean);
+  if (reserved) clean = `role-${clean}`;
+  if (!clean) return `role-${shortHash(source)}`;
+  return clean !== normalized || normalized !== source || reserved ? `${clean}-${shortHash(source)}` : clean;
+}
+function shortHash(value) {
+  let hash = 2166136261;
+  for (const char of value) {
+    hash ^= char.codePointAt(0) || 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36).padStart(6, "0").slice(0, 6);
+}
+async function pathExists(path24) {
+  try {
+    await nodeFs.access(path24);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function gitOk(cwd, args) {
+  try {
+    await git(cwd, args);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function git(cwd, args) {
+  return new Promise((resolve15, reject) => {
+    const child = spawn2("git", args, { cwd, windowsHide: true });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (data) => out += data);
+    child.stderr.on("data", (data) => err += data);
+    child.on("close", (code) => {
+      if (code === 0) resolve15(out);
+      else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
+    });
+    child.on("error", reject);
+  });
+}
+
+// src/service/integration-target-flight.ts
+var queue2 = new MutationBus();
+function targetFlightKey(id) {
+  return `${id.gitCommonDir}\0${id.targetRef}`;
+}
+async function runIntegrationTargetFlight(workspaceRoot, targetBranch, action) {
+  const id = await resolveIntegrationTargetLockIdentity(workspaceRoot, targetBranch);
+  return queue2.run(targetFlightKey(id), action);
 }
 
 // src/core/retention.ts
@@ -14762,462 +16455,6 @@ function resolveNowMs(now) {
 function ageDaysFrom(activityMs, nowMs) {
   const delta = Math.max(0, nowMs - activityMs);
   return Math.floor(delta / MS_PER_DAY);
-}
-
-// src/core/workspace.ts
-import * as nodePath3 from "node:path";
-import * as nodeFs from "node:fs/promises";
-import { spawn as spawn2 } from "node:child_process";
-async function findIntegratedCommit(workspace, sourceRef, targetBranch) {
-  const root = nodePath3.resolve(workspace);
-  await assertGitWorkspace(root);
-  const full = await fullRef(root, sourceRef);
-  const ancestor = await findAncestorIntegration(root, full, targetBranch);
-  if (ancestor) return { integratedRef: full, reason: "ancestor" };
-  const prior = await findCherryPick(root, full, targetBranch);
-  if (prior) return { integratedRef: prior, reason: "cherry-pick" };
-  return void 0;
-}
-async function readRoleBranchTip(workspace, branch) {
-  const root = nodePath3.resolve(workspace);
-  await assertGitWorkspace(root);
-  const name = branch.trim();
-  if (!name) throw new Error("Role branch name is required.");
-  const ref = (await git(root, ["rev-parse", `refs/heads/${name}`])).trim();
-  if (!ref) throw new Error(`Cannot read role branch tip: ${name}.`);
-  return ref;
-}
-async function isGitWorkspace(workspace) {
-  try {
-    await assertGitWorkspace(nodePath3.resolve(workspace));
-    return true;
-  } catch {
-    return false;
-  }
-}
-async function ensureRoleWorkspaceIfGit(workspace, role) {
-  if (!await isGitWorkspace(workspace)) return void 0;
-  return ensureRoleWorkspace(workspace, role);
-}
-async function ensureRoleWorkspace(workspace, role) {
-  const root = nodePath3.resolve(workspace);
-  await assertGitWorkspace(root);
-  const targetBranch = await resolveTargetBranch(root);
-  const roleSlug = safeComponent(role);
-  const branch = `tent-role/${roleSlug}`;
-  const worktree = nodePath3.join(
-    nodePath3.dirname(root),
-    `${nodePath3.basename(root)}-worktrees`,
-    roleSlug
-  );
-  const existing = await worktreeForBranch(root, branch);
-  if (existing) {
-    const wt = await nodeFs.realpath(nodePath3.resolve(existing));
-    const baseCommit2 = await readRoleBranchTip(root, branch);
-    return { workspace: root, worktree: wt, branch, targetBranch, baseCommit: baseCommit2 };
-  }
-  if (await pathExists(worktree)) {
-    throw new Error(`Role worktree path exists but is not registered to ${branch}: ${worktree}.`);
-  }
-  const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
-  if (branchExists) {
-    await git(root, ["worktree", "add", worktree, branch]);
-  } else {
-    await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
-  }
-  const baseCommit = await readRoleBranchTip(root, branch);
-  return {
-    workspace: root,
-    worktree: await nodeFs.realpath(worktree),
-    branch,
-    targetBranch,
-    baseCommit
-  };
-}
-async function ensureTaskWorkspaceIfGit(workspace, taskId, options = {}) {
-  if (!await isGitWorkspace(workspace)) return void 0;
-  return ensureTaskWorkspace(workspace, taskId, options);
-}
-function taskWorktreeBranchName(taskId) {
-  const id = taskId.trim();
-  if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
-  return `tent-task/${safeComponent(id)}`;
-}
-function taskWorktreeDirectoryName(taskId) {
-  const id = taskId.trim();
-  if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
-  return `task-${safeComponent(id)}`;
-}
-function expectedTaskWorktreePath(workspaceRoot, taskId) {
-  const root = nodePath3.resolve(workspaceRoot);
-  return nodePath3.join(
-    nodePath3.dirname(root),
-    `${nodePath3.basename(root)}-worktrees`,
-    taskWorktreeDirectoryName(taskId)
-  );
-}
-async function ensureTaskWorkspace(workspace, taskId, options = {}) {
-  const root = nodePath3.resolve(workspace);
-  await assertGitWorkspace(root);
-  const id = taskId.trim();
-  if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
-  const requestedTarget = options.targetBranch?.trim();
-  const targetBranch = requestedTarget || await resolveTargetBranch(root);
-  if (requestedTarget && !await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${targetBranch}`])) {
-    throw new Error(`Task workspace target branch does not exist: ${targetBranch}.`);
-  }
-  const branch = taskWorktreeBranchName(id);
-  const worktree = expectedTaskWorktreePath(root, id);
-  const existing = await worktreeForBranch(root, branch);
-  if (existing) {
-    const wt = await nodeFs.realpath(nodePath3.resolve(existing));
-    const baseCommit2 = await readRoleBranchTip(root, branch);
-    return {
-      workspace: root,
-      worktree: wt,
-      branch,
-      targetBranch,
-      baseCommit: baseCommit2
-    };
-  }
-  if (await pathExists(worktree)) {
-    throw new Error(`Task worktree path exists but is not registered to ${branch}: ${worktree}.`);
-  }
-  const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
-  if (branchExists) {
-    await git(root, ["worktree", "add", worktree, branch]);
-  } else {
-    await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
-  }
-  const baseCommit = await readRoleBranchTip(root, branch);
-  return {
-    workspace: root,
-    worktree: await nodeFs.realpath(worktree),
-    branch,
-    targetBranch,
-    baseCommit
-  };
-}
-async function inspectWorktreeDirtiness(worktree) {
-  const cwd = nodePath3.resolve(worktree);
-  const raw = (await git(cwd, ["status", "--porcelain"])).replace(/\r\n/g, "\n").trim();
-  const lines = raw ? raw.split("\n").map((line) => line.trimEnd()).filter(Boolean) : [];
-  let trackedDirty = false;
-  let untrackedDirty = false;
-  for (const line of lines) {
-    if (line.startsWith("??") || line.startsWith("!")) {
-      untrackedDirty = true;
-    } else {
-      trackedDirty = true;
-    }
-  }
-  const sampleLines = lines.slice(0, 8);
-  const sample = sampleLines.join("\n") + (lines.length > sampleLines.length ? `
-\u2026(+${lines.length - sampleLines.length} more)` : "");
-  return {
-    dirty: lines.length > 0,
-    worktree: cwd,
-    trackedDirty,
-    untrackedDirty,
-    sample,
-    changeCount: lines.length
-  };
-}
-async function integrateWorkspaceCommits(contract, refs) {
-  const commits = [...new Set(refs.map((ref) => ref.trim()).filter(Boolean))];
-  if (commits.length === 0) return [];
-  const root = contract.workspace;
-  const target = contract.targetBranch;
-  const integrationCwd = await resolveIntegrationCwd(root, target);
-  const current = (await git(integrationCwd, ["branch", "--show-current"])).trim();
-  if (current !== target) {
-    throw new Error(
-      `No worktree has ${target} checked out for integration; found current branch ${current || "(detached)"} at ${integrationCwd}. Never auto-switch branches \u2014 ensure the target lane worktree exists and stays on ${target}.`
-    );
-  }
-  const dirty = (await git(integrationCwd, ["status", "--porcelain"])).trim();
-  if (dirty) {
-    throw new Error(
-      `Integration worktree has uncommitted changes; cannot integrate commits (${integrationCwd}).`
-    );
-  }
-  const originalRef = (await git(root, ["rev-parse", `refs/heads/${target}`])).trim();
-  const resolved = [];
-  for (const sourceRef of commits) {
-    await git(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
-    resolved.push({ sourceRef, fullRef: await fullRef(root, sourceRef) });
-  }
-  const fastForwardRef = await completeFastForwardRef(
-    root,
-    originalRef,
-    resolved.map((item) => item.fullRef),
-    contract.branch
-  );
-  if (fastForwardRef) {
-    try {
-      await git(integrationCwd, ["merge", "--ff-only", fastForwardRef]);
-      return resolved.map(({ sourceRef, fullRef: integratedRef }) => ({
-        sourceRef,
-        integratedRef,
-        alreadyIntegrated: false
-      }));
-    } catch (error) {
-      await rollbackIntegration(integrationCwd, originalRef, error);
-    }
-  }
-  const results = [];
-  try {
-    for (const { sourceRef } of resolved) {
-      const ancestor = await findAncestorIntegration(root, sourceRef, target);
-      if (ancestor) {
-        results.push({ sourceRef, integratedRef: ancestor, alreadyIntegrated: true });
-        continue;
-      }
-      const prior = await findCherryPick(root, sourceRef, target);
-      if (prior) {
-        results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
-        continue;
-      }
-      await git(integrationCwd, ["cherry-pick", "-x", sourceRef]);
-      const integratedRef = (await git(integrationCwd, ["rev-parse", "HEAD"])).trim();
-      results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
-    }
-  } catch (error) {
-    await rollbackIntegration(integrationCwd, originalRef, error);
-  }
-  return results;
-}
-async function resolveIntegrationCwd(root, targetBranch) {
-  const mainCurrent = (await git(root, ["branch", "--show-current"])).trim();
-  if (mainCurrent === targetBranch) {
-    return root;
-  }
-  const existing = await worktreeForBranch(root, targetBranch);
-  if (existing) {
-    const wt = await nodeFs.realpath(nodePath3.resolve(existing));
-    const wtCurrent = (await git(wt, ["branch", "--show-current"])).trim();
-    if (wtCurrent === targetBranch) return wt;
-    throw new Error(
-      `Worktree for ${targetBranch} exists at ${wt} but current branch is ${wtCurrent || "(detached)"}; never auto-switch.`
-    );
-  }
-  throw new Error(
-    `No worktree has ${targetBranch} checked out. Main workspace is on ${mainCurrent || "(detached)"}. For sub tasks ensure the dispatcher role lane (tent-role/<dispatcher>) exists.`
-  );
-}
-async function listRoleCommitsSince(contract, base) {
-  const since = base.trim();
-  if (!since) throw new Error("listRoleCommitsSince requires a non-empty base SHA.");
-  const branchRef = `refs/heads/${contract.branch}`;
-  const fullBase = await fullRef(contract.workspace, since);
-  if (!await gitOk(contract.workspace, ["merge-base", "--is-ancestor", fullBase, branchRef])) {
-    throw new Error(
-      `Role branch ${contract.branch} no longer descends from task baseline ${fullBase}.`
-    );
-  }
-  const output = await git(contract.workspace, [
-    "log",
-    `${fullBase}..${branchRef}`,
-    "--format=%H%x09%h%x09%s"
-  ]);
-  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
-    const [ref = "", shortRef = "", ...subjectParts] = line.split("	");
-    return { ref, shortRef, subject: subjectParts.join("	") };
-  }).filter((item) => item.ref && item.shortRef);
-}
-async function listPendingRoleCommits(contract, base) {
-  const candidates = await listRoleCommitsSince(contract, base);
-  const pending = [];
-  for (const item of candidates) {
-    const integrated = await findIntegratedCommit(
-      contract.workspace,
-      item.ref,
-      contract.targetBranch
-    );
-    if (!integrated) pending.push(item);
-  }
-  return pending.reverse();
-}
-async function listExecutorLaneCommitsWithParents(workspace, baseCommit, tipCommit) {
-  const root = nodePath3.resolve(workspace);
-  await assertGitWorkspace(root);
-  const base = (await fullRef(root, baseCommit.trim())).trim();
-  const tip = (await fullRef(root, tipCommit.trim())).trim();
-  if (base === tip) return [];
-  const output = await git(root, [
-    "rev-list",
-    "--parents",
-    "--reverse",
-    `${base}..${tip}`
-  ]);
-  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
-    const parts = line.split(/\s+/).map((p) => p.trim()).filter(Boolean);
-    const sha = parts[0] || "";
-    const parents = parts.slice(1);
-    return { sha, parents };
-  }).filter((c) => c.sha);
-}
-async function assertOrdinaryExecutorLaneHistoryInGit(input) {
-  const root = nodePath3.resolve(input.workspace);
-  await assertGitWorkspace(root);
-  const base = input.baseCommit?.trim();
-  if (!base) {
-    throw new ExecutorLaneHistoryError(
-      "MISSING_BASE",
-      "Executor lane history gate requires recorded baseCommit (fail-loud; no ready Delivery)."
-    );
-  }
-  let tip = input.tipCommit?.trim() || "";
-  if (!tip) {
-    const branch = input.branch?.trim();
-    if (!branch) {
-      throw new ExecutorLaneHistoryError(
-        "MISSING_TIP",
-        "Executor lane history gate requires tip commit or branch."
-      );
-    }
-    tip = (await git(root, ["rev-parse", `refs/heads/${branch}`])).trim();
-  }
-  const fullBase = await fullRef(root, base);
-  const fullTip = await fullRef(root, tip);
-  const commits = await listExecutorLaneCommitsWithParents(root, fullBase, fullTip);
-  assertOrdinaryExecutorLaneHistory({
-    baseCommit: fullBase,
-    tipCommit: fullTip,
-    commits
-  });
-}
-async function assertGitWorkspace(root) {
-  const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
-  const [realTop, realRoot] = await Promise.all([
-    nodeFs.realpath(nodePath3.resolve(top)),
-    nodeFs.realpath(root)
-  ]);
-  if (!isSameWorkspaceRoot(realTop, realRoot)) {
-    throw new Error(`Workspace must be a Git root: ${root}.`);
-  }
-}
-function isSameWorkspaceRoot(realTop, realRoot, platform = process.platform) {
-  const top = platform === "win32" ? realTop.toLowerCase() : realTop;
-  const root = platform === "win32" ? realRoot.toLowerCase() : realRoot;
-  return top === root;
-}
-async function resolveTargetBranch(root) {
-  for (const name of ["main", "master"]) {
-    if (await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${name}`])) return name;
-  }
-  const current = (await git(root, ["branch", "--show-current"])).trim();
-  if (!current) throw new Error("Cannot identify the workspace main branch.");
-  return current;
-}
-async function worktreeForBranch(root, branch) {
-  const output = await git(root, ["worktree", "list", "--porcelain"]);
-  let currentPath = "";
-  for (const line of output.split(/\r?\n/)) {
-    if (line.startsWith("worktree ")) currentPath = line.slice("worktree ".length);
-    if (line === `branch refs/heads/${branch}`) return currentPath;
-  }
-  return void 0;
-}
-async function findCherryPick(root, sourceRef, targetBranch) {
-  const full = await fullRef(root, sourceRef);
-  const needle = `(cherry picked from commit ${full})`;
-  const targetRef = `refs/heads/${targetBranch}`;
-  const output = await git(root, ["log", targetRef, "--format=%H%x00%B%x00", "-n", "5000"]);
-  const parts = output.split("\0");
-  for (let i = 0; i + 1 < parts.length; i += 2) {
-    const body = parts[i + 1] ?? "";
-    if (body.includes(needle)) return parts[i].trim();
-  }
-  return void 0;
-}
-async function findAncestorIntegration(root, sourceRef, targetBranch) {
-  const targetRef = `refs/heads/${targetBranch}`;
-  const full = await fullRef(root, sourceRef);
-  if (await gitOk(root, ["merge-base", "--is-ancestor", full, targetRef])) {
-    return full;
-  }
-  return void 0;
-}
-async function completeFastForwardRef(root, targetRef, commits, sourceBranch) {
-  const lastRef = commits.at(-1);
-  if (!lastRef || lastRef === targetRef) return void 0;
-  if (!await gitOk(root, ["merge-base", "--is-ancestor", targetRef, lastRef])) return void 0;
-  const sourceRef = `refs/heads/${sourceBranch}`;
-  if (!await gitOk(root, ["merge-base", "--is-ancestor", lastRef, sourceRef])) {
-    return void 0;
-  }
-  if (commits.length === 1) {
-    return lastRef;
-  }
-  const range = (await git(root, ["rev-list", "--reverse", `${targetRef}..${lastRef}`])).split(/\r?\n/).map((ref) => ref.trim()).filter(Boolean);
-  if (range.length !== commits.length) return void 0;
-  const supplied = new Set(commits);
-  return range.every((ref) => supplied.has(ref)) ? lastRef : void 0;
-}
-async function rollbackIntegration(root, originalRef, cause) {
-  await git(root, ["cherry-pick", "--abort"]).catch(() => "");
-  try {
-    await git(root, ["reset", "--hard", originalRef]);
-  } catch (rollbackError) {
-    throw new Error(
-      `Workspace integration failed and rollback also failed: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
-    );
-  }
-  throw new Error(`Workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
-}
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-async function fullRef(root, ref) {
-  return (await git(root, ["rev-parse", ref])).trim();
-}
-function safeComponent(value) {
-  const source = value.trim();
-  const normalized = source.normalize("NFKC");
-  let clean = normalized.replace(/[<>:"/\\|?*\x00-\x1f~^:[\]@{}]+/g, "-").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^[.-]+|[.-]+$/g, "").slice(0, 40);
-  const reserved = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(clean);
-  if (reserved) clean = `role-${clean}`;
-  if (!clean) return `role-${shortHash(source)}`;
-  return clean !== normalized || normalized !== source || reserved ? `${clean}-${shortHash(source)}` : clean;
-}
-function shortHash(value) {
-  let hash = 2166136261;
-  for (const char of value) {
-    hash ^= char.codePointAt(0) || 0;
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36).padStart(6, "0").slice(0, 6);
-}
-async function pathExists(path24) {
-  try {
-    await nodeFs.access(path24);
-    return true;
-  } catch {
-    return false;
-  }
-}
-async function gitOk(cwd, args) {
-  try {
-    await git(cwd, args);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function git(cwd, args) {
-  return new Promise((resolve15, reject) => {
-    const child = spawn2("git", args, { cwd, windowsHide: true });
-    let out = "";
-    let err = "";
-    child.stdout.on("data", (data) => out += data);
-    child.stderr.on("data", (data) => err += data);
-    child.on("close", (code) => {
-      if (code === 0) resolve15(out);
-      else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
-    });
-    child.on("error", reject);
-  });
 }
 
 // src/core/task-worktree-reclaim.ts
@@ -16217,6 +17454,20 @@ var TASK_WORKTREE_RECLAIM_PENDING_PATH = join(
   TEMP_DIR,
   "task-worktree-reclaim-pending.json"
 );
+var queueChains = /* @__PURE__ */ new WeakMap();
+function withQueueCriticalSection(fs23, fn) {
+  const key2 = fs23;
+  const prev = queueChains.get(key2) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  queueChains.set(
+    key2,
+    run.then(
+      () => void 0,
+      () => void 0
+    )
+  );
+  return run;
+}
 function emptyFile() {
   return { version: 1, entries: [] };
 }
@@ -16261,32 +17512,38 @@ async function enqueueTaskWorktreeReclaimPending(fs23, entry) {
   if (!taskId || !taskPath || !workspaceRoot) {
     throw new Error("enqueueTaskWorktreeReclaimPending requires taskId, taskPath, workspaceRoot");
   }
-  const file = await readPending(fs23);
-  const next = {
-    taskId,
-    taskPath,
-    workspaceRoot,
-    enqueuedAt: entry.enqueuedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
-    ...entry.trigger?.trim() ? { trigger: entry.trigger.trim() } : {}
-  };
-  const without = file.entries.filter((e) => e.taskId !== taskId);
-  without.push(next);
-  without.sort((a, b) => a.taskId.localeCompare(b.taskId));
-  await writePending(fs23, { version: 1, entries: without });
-  return next;
+  return withQueueCriticalSection(fs23, async () => {
+    const file = await readPending(fs23);
+    const next = {
+      taskId,
+      taskPath,
+      workspaceRoot,
+      enqueuedAt: entry.enqueuedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
+      ...entry.trigger?.trim() ? { trigger: entry.trigger.trim() } : {}
+    };
+    const without = file.entries.filter((e) => e.taskId !== taskId);
+    without.push(next);
+    without.sort((a, b) => a.taskId.localeCompare(b.taskId));
+    await writePending(fs23, { version: 1, entries: without });
+    return next;
+  });
 }
 async function dequeueTaskWorktreeReclaimPending(fs23, taskId) {
   const id = taskId.trim();
   if (!id) return false;
-  const file = await readPending(fs23);
-  const next = file.entries.filter((e) => e.taskId !== id);
-  if (next.length === file.entries.length) return false;
-  await writePending(fs23, { version: 1, entries: next });
-  return true;
+  return withQueueCriticalSection(fs23, async () => {
+    const file = await readPending(fs23);
+    const next = file.entries.filter((e) => e.taskId !== id);
+    if (next.length === file.entries.length) return false;
+    await writePending(fs23, { version: 1, entries: next });
+    return true;
+  });
 }
 async function listTaskWorktreeReclaimPending(fs23) {
-  const file = await readPending(fs23);
-  return [...file.entries];
+  return withQueueCriticalSection(fs23, async () => {
+    const file = await readPending(fs23);
+    return [...file.entries];
+  });
 }
 async function listTaskWorktreeReclaimPendingForWorkspace(fs23, workspaceRoot, sameRoot) {
   const root = workspaceRoot.trim();
@@ -16402,119 +17659,6 @@ function sortKeysDeep(value) {
 }
 function isRecord5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-// src/core/workspace-agents.ts
-import * as fs5 from "node:fs/promises";
-import * as path5 from "node:path";
-var WORKSPACE_AGENTS_FILENAME = "AGENTS.md";
-function resolveWorkspaceAgentsPath(workspaceRoot) {
-  const root = path5.resolve(workspaceRoot);
-  const agentsPath = path5.resolve(root, WORKSPACE_AGENTS_FILENAME);
-  if (path5.basename(agentsPath) !== WORKSPACE_AGENTS_FILENAME) {
-    throw new WorkspaceAgentsError(
-      "INVALID_PATH",
-      `Workspace agents file must be named ${WORKSPACE_AGENTS_FILENAME}`
-    );
-  }
-  if (path5.dirname(agentsPath) !== root) {
-    throw new WorkspaceAgentsError(
-      "INVALID_PATH",
-      `${WORKSPACE_AGENTS_FILENAME} must be a direct child of the workspace root`
-    );
-  }
-  return agentsPath;
-}
-async function loadWorkspaceAgents(workspaceRoot) {
-  const agentsPath = resolveWorkspaceAgentsPath(workspaceRoot);
-  try {
-    const content3 = await fs5.readFile(agentsPath, "utf8");
-    return {
-      path: WORKSPACE_AGENTS_FILENAME,
-      content: content3,
-      exists: true
-    };
-  } catch (error) {
-    if (isNotFound(error)) {
-      return {
-        path: WORKSPACE_AGENTS_FILENAME,
-        content: "",
-        exists: false
-      };
-    }
-    throw error;
-  }
-}
-async function writeWorkspaceAgents(workspaceRoot, content3) {
-  if (typeof content3 !== "string") {
-    throw new WorkspaceAgentsError("INVALID_CONTENT", "AGENTS.md content must be a string");
-  }
-  const agentsPath = resolveWorkspaceAgentsPath(workspaceRoot);
-  const before = await loadWorkspaceAgents(workspaceRoot);
-  const changed = !before.exists || before.content !== content3;
-  if (!changed) {
-    return {
-      file: {
-        path: WORKSPACE_AGENTS_FILENAME,
-        content: before.content,
-        exists: true
-      },
-      changed: false
-    };
-  }
-  await writeTextAtomic(agentsPath, content3);
-  return {
-    file: {
-      path: WORKSPACE_AGENTS_FILENAME,
-      content: content3,
-      exists: true
-    },
-    changed: true
-  };
-}
-var WorkspaceAgentsError = class extends Error {
-  constructor(code, message2) {
-    super(message2);
-    this.code = code;
-    this.name = "WorkspaceAgentsError";
-  }
-};
-async function writeTextAtomic(filePath, content3) {
-  await fs5.mkdir(path5.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
-  try {
-    await fs5.writeFile(tmp, content3, "utf8");
-    await renameReplace2(tmp, filePath);
-  } catch (err) {
-    try {
-      await fs5.unlink(tmp);
-    } catch {
-    }
-    throw err;
-  }
-}
-async function renameReplace2(tmp, filePath) {
-  const attempts = process.platform === "win32" ? 8 : 1;
-  let lastErr;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      await fs5.rename(tmp, filePath);
-      return;
-    } catch (err) {
-      lastErr = err;
-      if (!isRetryableRenameError2(err) || i === attempts - 1) break;
-      await new Promise((r) => setTimeout(r, 5 + i * 5));
-    }
-  }
-  throw lastErr;
-}
-function isRetryableRenameError2(err) {
-  if (!err || typeof err !== "object") return false;
-  const code = err.code;
-  return code === "EPERM" || code === "EACCES" || code === "EBUSY" || code === "EEXIST";
-}
-function isNotFound(error) {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
 // src/core/annotation.ts
@@ -18841,6 +19985,12 @@ var CLIENT_METHODS = [
   "skill.install",
   "task.dispatch",
   "task.claim",
+  /**
+   * Explicit legacy backfill of workspaceLane.baseCommit for running/waiting Tasks
+   * whose lane exists but base is missing. Authorized by exact parent/reviewer only.
+   * Never infers from roleBranchBase/cwd/current tip. Same SHA is idempotent.
+   */
+  "task.backfillWorkspaceLaneBase",
   "task.wait",
   "task.resume",
   /**
@@ -22867,6 +24017,8 @@ async function dispatchMethod(ctx, method, params) {
         return taskDispatch(ctx, p);
       case "task.claim":
         return taskClaimRpc(ctx, p);
+      case "task.backfillWorkspaceLaneBase":
+        return taskBackfillWorkspaceLaneBaseRpc(ctx, p);
       case "task.wait":
         return taskWaitRpc(ctx, p);
       case "task.resume":
@@ -23421,16 +24573,7 @@ async function docsWrite(ctx, p) {
       const nextParsed = parseFrontmatter(rawInput);
       assertRawDocsWriteReserved(diskParsed.data, nextParsed.data);
       assertRawDocsWriteSemantic(diskParsed.data, nextParsed.data);
-      const tasks = await loadTaskEnvelopes(mount.env.fs);
-      const changed = {};
-      for (const field of PROTECTED_COLLAB_FIELDS) {
-        if (String(nextParsed.data[field] ?? "") !== String(diskParsed.data[field] ?? "")) {
-          changed[field] = nextParsed.data[field];
-        }
-      }
-      if (Object.keys(changed).length > 0) {
-        assertDocsWriteAllowed(tent, concept.id, changed, tasks);
-      }
+      assertRawDocsWriteCollaborationFields(nextParsed.data);
       ctx.host.markSelfWrite(workspaceId);
       await mount.env.fs.writeFile(notePath, rawInput);
       await syncTagRegistryAfterBoxTagsChange(
@@ -23442,7 +24585,7 @@ async function docsWrite(ctx, p) {
       if (frontmatter) {
         assertReservedDocsWriteFields(frontmatter);
         assertSemanticDocsWriteFields(frontmatter);
-        assertDocsWriteAllowed(tent, concept.id, frontmatter, await loadTaskEnvelopes(mount.env.fs));
+        assertDocsWriteCollaborationFields(frontmatter);
       }
       ctx.host.markSelfWrite(workspaceId);
       if (frontmatter && Object.keys(frontmatter).length > 0) {
@@ -24203,14 +25346,15 @@ async function registryRoles(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const { registry } = await ensureRolesRosterMigrated(mount.env.fs);
-  const allAgentIds = registry.roles.flatMap((r) => roleRoster(r));
-  if (allAgentIds.length > 0) {
-    await ensureAgentDefsForRosterIds(ctx, allAgentIds);
-  }
-  const roles = registry.roles.map((role) => projectRoleRegistryEntry(role)).sort((a, b) => a.name.localeCompare(b.name));
+  const agentById = await loadAgentDefinitionIndex(ctx);
+  const roles = registry.roles.map((role) => projectRoleRegistryEntry(role, agentById, ctx)).sort((a, b) => a.name.localeCompare(b.name));
   return { workspaceId, roles };
 }
-function projectRoleRegistryEntry(role) {
+async function loadAgentDefinitionIndex(ctx) {
+  const { agents } = await loadAgentDefinitions(ctx.dataDir);
+  return new Map(agents.map((a) => [a.id, a]));
+}
+function projectRoleRegistryEntry(role, agentById, ctx) {
   const proj = {
     roleId: role.id ?? "",
     name: role.name,
@@ -24223,8 +25367,32 @@ function projectRoleRegistryEntry(role) {
   const roster = roleRoster(role);
   if (roster.length > 0) {
     proj.roster = roster;
+    if (agentById && ctx) {
+      proj.rosterEntries = roster.map(
+        (agentId) => projectRoleRosterEntry(agentId, agentById, ctx)
+      );
+    }
   }
   return proj;
+}
+function projectRoleRosterEntry(agentId, agentById, ctx) {
+  const def = agentById.get(agentId);
+  if (!def) {
+    return { agentId, readiness: "missing-definition" };
+  }
+  const entry = {
+    agentId,
+    profileId: def.profileId,
+    readiness: ctx.profileCatalog.get(def.profileId) ? "ready" : "missing-profile"
+  };
+  if (def.displayName) {
+    entry.displayName = def.displayName;
+  }
+  return entry;
+}
+async function projectRoleRegistryEntryLive(ctx, role) {
+  const agentById = await loadAgentDefinitionIndex(ctx);
+  return projectRoleRegistryEntry(role, agentById, ctx);
 }
 async function registryRoleCreate(ctx, p) {
   requireUserActor(p, "registry.role.create");
@@ -24255,7 +25423,10 @@ async function registryRoleCreate(ctx, p) {
       roleId: role.id || "",
       displayName: role.displayName || role.name
     });
-    return { workspaceId, role: projectRoleRegistryEntry(role) };
+    return {
+      workspaceId,
+      role: await projectRoleRegistryEntryLive(ctx, role)
+    };
   });
 }
 async function registryRoleUpdate(ctx, p) {
@@ -24322,7 +25493,10 @@ async function registryRoleUpdate(ctx, p) {
       roleId: role.id || "",
       displayName: role.displayName || role.name
     });
-    return { workspaceId, role: projectRoleRegistryEntry(role) };
+    return {
+      workspaceId,
+      role: await projectRoleRegistryEntryLive(ctx, role)
+    };
   });
 }
 async function registryRoleDelete(ctx, p) {
@@ -25172,7 +26346,9 @@ function mapDocsMoveError(err) {
 async function taskDispatch(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const boxId = optionalString(p, "boxId") ?? optionalString(p, "id") ?? requireString(p, "claimId");
+  const dispatchSelection = resolveTaskDispatchNodeSelection(p, mount.env.tentName);
+  const boxId = dispatchSelection.primaryId;
+  const nodeIds = dispatchSelection.nodeIds;
   const assigneeKindRaw = optionalString(p, "assigneeKind");
   const assigneeKind = assigneeKindRaw === "agentProfile" ? "agentProfile" : assigneeKindRaw === "role" || !assigneeKindRaw ? "role" : (() => {
     throw new RpcError(-32602, `Invalid assigneeKind: ${assigneeKindRaw}`);
@@ -25229,11 +26405,26 @@ async function taskDispatch(ctx, p) {
       }
       throw new RpcError(-32602, message2);
     }
-    await assertRoleRosterStandingAuth(ctx, mount.env.fs, {
-      dispatcher: resolvedActors.parentActor.kind === "role" ? resolvedActors.parentActor.id : void 0,
-      agentId: resolvedAgentId,
-      profileId
-    });
+    const parentIsRole = resolvedActors.parentActor.kind === "role";
+    const callerIsRole = callerKind === "role";
+    if (callerIsRole !== parentIsRole) {
+      throw new RpcError(
+        -32602,
+        callerIsRole ? "task.dispatch with agentId: callerKind=role requires parentActor kind=role (got user)" : "task.dispatch with agentId: callerKind=user requires parentActor kind=user (got role)",
+        {
+          callerKind,
+          parentActor: resolvedActors.parentActor,
+          reviewer: resolvedActors.reviewer
+        }
+      );
+    }
+    if (parentIsRole) {
+      await assertRoleRosterStandingAuth(ctx, mount.env.fs, {
+        dispatcher: resolvedActors.parentActor.id,
+        agentId: resolvedAgentId,
+        profileId
+      });
+    }
   }
   if (assigneeKind === "agentProfile" && !profileId) {
     throw new RpcError(
@@ -25272,8 +26463,8 @@ async function taskDispatch(ctx, p) {
       const parentRole = resolvedActors.parentActor.id;
       const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, parentRole);
       if (assigneeKind === "role") {
-        const assigneeLane = await ensureRoleWorkspace(mount.workspaceRoot, assigneeLabel);
-        workspaceLane2 = { ...assigneeLane, targetBranch: dispatcherLane.branch };
+        await ensureRoleWorkspace(mount.workspaceRoot, assigneeLabel);
+        workspaceLane2 = void 0;
       } else {
         preallocatedTaskId = makeTaskId();
         workspaceLane2 = await ensureTaskWorkspace(
@@ -25283,7 +26474,8 @@ async function taskDispatch(ctx, p) {
         );
       }
     } else if (assigneeKind === "role") {
-      workspaceLane2 = await ensureRoleWorkspaceIfGit(mount.workspaceRoot, assigneeLabel);
+      await ensureRoleWorkspaceIfGit(mount.workspaceRoot, assigneeLabel);
+      workspaceLane2 = void 0;
     }
     ctx.host.markSelfWrite(workspaceId);
     let deliveryPolicy = explicitDeliveryPolicy;
@@ -25308,18 +26500,125 @@ async function taskDispatch(ctx, p) {
       }
       deliveryPolicy = "review";
     }
+    const purposeParam = typeof p.purpose === "string" && p.purpose.trim() ? p.purpose.trim() : void 0;
+    let dispatchContextGeneration;
+    let dispatchContextFacts;
+    if (assigneeKind === "agentProfile") {
+      const dispatchProfileId = profileId;
+      const dispatchProfile = ctx.profileCatalog.get(dispatchProfileId);
+      if (!dispatchProfile?.adapterId) {
+        throw new RpcError(
+          -32602,
+          `task.dispatch cannot compute contextGeneration: profile ${dispatchProfileId} missing or has no adapterId`,
+          { profileId: dispatchProfileId }
+        );
+      }
+      const parentRoleIdForGen = resolvedActors.parentActor.kind === "role" ? resolvedActors.parentActor.id : void 0;
+      try {
+        const bundle = await collectStableContextGeneration({
+          workspaceRoot: mount.workspaceRoot,
+          workspaceIdentity: workspaceId,
+          packageRoot: ctx.packageRoot,
+          packageVersion: ctx.version,
+          assigneeKind,
+          assigneeLabel,
+          agentId: resolvedAgentId,
+          profileId: dispatchProfileId,
+          adapterId: dispatchProfile.adapterId,
+          parentRoleId: parentRoleIdForGen,
+          purpose: purposeParam,
+          roleFs: mount.env.fs,
+          profile: dispatchProfile
+        });
+        dispatchContextGeneration = bundle.contextGeneration;
+        dispatchContextFacts = {
+          agentsPointerDigest: bundle.agentsPointerDigest,
+          tentRoleDigest: bundle.tentRoleDigest || void 0,
+          tentRoleVersion: bundle.tentRoleVersion || void 0,
+          tentTaskDigest: bundle.tentTaskDigest || void 0,
+          tentTaskVersion: bundle.tentTaskVersion || void 0,
+          rolePrompt: bundle.rolePrompt || void 0,
+          rosterAgentIds: bundle.rosterAgentIds,
+          profileId: bundle.profileId,
+          adapterId: bundle.adapterId,
+          purpose: bundle.purpose || void 0
+        };
+      } catch (err) {
+        const message2 = err instanceof Error ? err.message : String(err);
+        throw new RpcError(
+          -32e3,
+          `task.dispatch contextGeneration collection failed: ${message2}`,
+          { code: "CONTEXT_GENERATION_COLLECT_FAILED" }
+        );
+      }
+    } else if (profileId) {
+      const dispatchProfile = ctx.profileCatalog.get(profileId);
+      if (!dispatchProfile?.adapterId) {
+        throw new RpcError(
+          -32602,
+          `task.dispatch cannot compute contextGeneration: profile ${profileId} missing or has no adapterId`,
+          { profileId }
+        );
+      }
+      const parentRoleIdForGen = resolvedActors.parentActor.kind === "role" ? resolvedActors.parentActor.id : void 0;
+      try {
+        const bundle = await collectStableContextGeneration({
+          workspaceRoot: mount.workspaceRoot,
+          workspaceIdentity: workspaceId,
+          packageRoot: ctx.packageRoot,
+          packageVersion: ctx.version,
+          assigneeKind,
+          assigneeLabel,
+          agentId: resolvedAgentId,
+          profileId,
+          adapterId: dispatchProfile.adapterId,
+          parentRoleId: parentRoleIdForGen,
+          purpose: purposeParam,
+          roleFs: mount.env.fs,
+          profile: dispatchProfile
+        });
+        dispatchContextGeneration = bundle.contextGeneration;
+        dispatchContextFacts = {
+          agentsPointerDigest: bundle.agentsPointerDigest,
+          tentRoleDigest: bundle.tentRoleDigest || void 0,
+          tentRoleVersion: bundle.tentRoleVersion || void 0,
+          tentTaskDigest: bundle.tentTaskDigest || void 0,
+          tentTaskVersion: bundle.tentTaskVersion || void 0,
+          rolePrompt: bundle.rolePrompt || void 0,
+          rosterAgentIds: bundle.rosterAgentIds,
+          profileId: bundle.profileId,
+          adapterId: bundle.adapterId,
+          purpose: bundle.purpose || void 0
+        };
+      } catch (err) {
+        const message2 = err instanceof Error ? err.message : String(err);
+        throw new RpcError(
+          -32e3,
+          `task.dispatch contextGeneration collection failed: ${message2}`,
+          { code: "CONTEXT_GENERATION_COLLECT_FAILED" }
+        );
+      }
+    }
     const dispatched2 = await dispatch(mount.env, boxId, assigneeKind === "role" ? role : void 0, {
       userPrompt: prompt,
       parentActor: resolvedActors.parentActor,
       reviewer: resolvedActors.reviewer,
       asSub,
       deliveryPolicy,
+      // Only profile-asSub (and similar) may bind a Git lane at dispatch.
+      // Role assignee never freezes workspaceLane/baseCommit here.
       workspace: workspaceLane2,
       assigneeKind,
       profileId: assigneeKind === "agentProfile" ? profileId : void 0,
-      // Persist logical agentId only for Role-agent dispatch (not user-direct profile).
+      // Persist logical agentId for agentId dispatch (Role-agent and user-direct).
+      // User-direct profileId one-shot without agentId leaves this undefined.
       agentId: resolvedAgentId,
-      ...preallocatedTaskId ? { taskId: preallocatedTaskId } : {}
+      // Authoritative ordered Node refs (transient). Core writes Context Card only.
+      nodeIds,
+      ...preallocatedTaskId ? { taskId: preallocatedTaskId } : {},
+      ...purposeParam ? { purpose: purposeParam } : {},
+      ...dispatchContextGeneration ? { contextGeneration: dispatchContextGeneration } : {},
+      ...dispatchContextFacts ? { contextGenerationFacts: dispatchContextFacts } : {}
     });
     ctx.events.emit(
       "task.state",
@@ -25330,6 +26629,7 @@ async function taskDispatch(ctx, p) {
         role: dispatched2.assignee,
         assigneeKind: dispatched2.assigneeKind,
         boxId,
+        nodeIds,
         reason: "task.dispatch"
       },
       "self"
@@ -25374,7 +26674,8 @@ async function taskDispatch(ctx, p) {
     // Prefer durable envelope state so success/failure projections stay honest.
     state: taskAfter?.state ?? (startSession ? "running" : "queued"),
     session,
-    // Prefer envelope projection (includes dispatch-time baseCommit + derived authority).
+    // Prefer envelope projection (Role baseCommit only after claim; profile-asSub may
+    // still carry dispatch-time lane). Fall back to in-memory lane only when present.
     workspaceLane: taskAfter ? projectTask(taskAfter).workspaceLane : workspaceLane ? {
       workspace: workspaceLane.workspace,
       worktree: workspaceLane.worktree,
@@ -25465,6 +26766,29 @@ function parseOptionalTaskActor(value, label) {
     );
   }
 }
+function resolveTaskDispatchNodeSelection(p, tentName) {
+  if ("nodeIds" in p && p.nodeIds !== void 0 && p.nodeIds !== null) {
+    if (!Array.isArray(p.nodeIds)) {
+      throw new RpcError(-32602, "Invalid string[] param: nodeIds");
+    }
+    if (!p.nodeIds.every((x) => typeof x === "string")) {
+      throw new RpcError(-32602, "Invalid string[] param: nodeIds");
+    }
+  }
+  const rawNodeIds = optionalStringArray(p, "nodeIds");
+  const legacyPrimary = optionalString(p, "boxId") ?? optionalString(p, "id") ?? optionalString(p, "claimId");
+  try {
+    const nodeIds = resolveDispatchNodeIds({
+      nodeIds: rawNodeIds,
+      legacyClaimId: legacyPrimary,
+      tentName
+    });
+    return { nodeIds, primaryId: nodeIds[0] };
+  } catch (err) {
+    const message2 = err instanceof Error ? err.message : String(err);
+    throw new RpcError(-32602, message2, { field: "nodeIds" });
+  }
+}
 function resolveDispatchActorsFromRpc(input) {
   if (!input.parentActor) {
     throw new RpcError(
@@ -25493,30 +26817,347 @@ async function taskClaimRpc(ctx, p) {
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
   const sessionId = optionalString(p, "sessionId");
-  return ctx.mutations.run(workspaceId, async () => {
-    ctx.host.markSelfWrite(workspaceId);
-    const task = await taskClaim(mount.env, taskPath, { sessionId });
-    emitTaskState(ctx, workspaceId, task, "task.claim");
-    const nodeIds = task.contextCard != null ? taskReferencedNodeIds(task) : [];
-    for (const nodeId of nodeIds) {
-      if (nodeId === "root") continue;
-      ctx.events.emit(
-        "concept.changed",
+  return runTaskLifecycle(
+    workspaceId,
+    taskPath,
+    () => ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      const pre = await loadTaskEnvelope(mount.env.fs, taskPath);
+      let claimWrite;
+      if (!(pre.state === "running" && pre.status === "taken")) {
+        claimWrite = await prepareRoleClaimWrite(ctx, workspaceId, pre);
+        if (beforeTaskClaimCoreForTests) {
+          await beforeTaskClaimCoreForTests({ workspaceId, taskPath, task: pre });
+        }
+      }
+      const task = await taskClaim(mount.env, taskPath, {
+        sessionId,
+        ...claimWrite ? { claimWrite } : {}
+      });
+      emitTaskState(ctx, workspaceId, task, "task.claim");
+      const nodeIds = task.contextCard != null ? taskReferencedNodeIds(task) : [];
+      for (const nodeId of nodeIds) {
+        if (nodeId === "root") continue;
+        ctx.events.emit(
+          "concept.changed",
+          workspaceId,
+          { id: nodeId, reason: "task.claim-projection" },
+          "self"
+        );
+      }
+      return {
         workspaceId,
-        { id: nodeId, reason: "task.claim-projection" },
-        "self"
+        taskPath,
+        task: projectTask(task),
+        state: task.state,
+        role: task.role,
+        referencedNodeIds: nodeIds,
+        sessionId: task.sessionId
+      };
+    })
+  );
+}
+async function taskBackfillWorkspaceLaneBaseRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const baseCommitRaw = requireString(p, "baseCommit");
+  const actor = parseBackfillActor(p.actor);
+  return runTaskLifecycle(
+    workspaceId,
+    taskPath,
+    () => ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      if (beforeTaskBackfillWorkspaceLaneBaseForTests) {
+        await beforeTaskBackfillWorkspaceLaneBaseForTests({
+          workspaceId,
+          taskPath
+        });
+      }
+      const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+      if (current.state !== "running" && current.state !== "waiting") {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          `task.backfillWorkspaceLaneBase requires running|waiting task (state=${current.state})`,
+          { taskPath, state: current.state, code: "BASE_BACKFILL_STATE" }
+        );
+      }
+      if (!current.parentActor || !current.reviewer) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          "task.backfillWorkspaceLaneBase requires exact persisted parentActor/reviewer",
+          { taskPath, code: "BASE_BACKFILL_ACTOR" }
+        );
+      }
+      const authorized = actor.kind === current.parentActor.kind && actor.id === current.parentActor.id || actor.kind === current.reviewer.kind && actor.id === current.reviewer.id;
+      if (!authorized) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          `task.backfillWorkspaceLaneBase unauthorized actor ${actor.kind}:${actor.id}; requires exact parent/reviewer ${current.parentActor.kind}:${current.parentActor.id}`,
+          {
+            taskPath,
+            actor,
+            parentActor: current.parentActor,
+            reviewer: current.reviewer,
+            code: "BASE_BACKFILL_UNAUTHORIZED"
+          }
+        );
+      }
+      const laneComplete = Boolean(
+        current.workspace && current.worktree && current.branch && current.targetBranch
+      );
+      if (!laneComplete) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          "task.backfillWorkspaceLaneBase requires recorded workspace/worktree/branch/targetBranch (legacy lane must already exist; never invent lane facts)",
+          { taskPath, code: "BASE_BACKFILL_LANE_INCOMPLETE" }
+        );
+      }
+      let real;
+      try {
+        real = await resolveIntegrationContract(mount.workspaceRoot, current);
+      } catch (err) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          err instanceof Error ? err.message : "task.backfillWorkspaceLaneBase lane/workspace mismatch",
+          { taskPath, code: "BASE_BACKFILL_LANE_MISMATCH" }
+        );
+      }
+      try {
+        await readRoleBranchTip(real.workspace, real.targetBranch);
+      } catch (err) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          err instanceof Error ? `task.backfillWorkspaceLaneBase targetBranch invalid: ${err.message}` : "task.backfillWorkspaceLaneBase targetBranch invalid",
+          {
+            taskPath,
+            targetBranch: real.targetBranch,
+            code: "BASE_BACKFILL_TARGET"
+          }
+        );
+      }
+      let fullBase;
+      try {
+        fullBase = await resolveCommitSha(real.workspace, baseCommitRaw);
+      } catch (err) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          err instanceof Error ? `task.backfillWorkspaceLaneBase baseCommit rejected: ${err.message}` : "task.backfillWorkspaceLaneBase baseCommit rejected (foreign/unreachable)",
+          {
+            taskPath,
+            baseCommit: baseCommitRaw,
+            code: "BASE_BACKFILL_FOREIGN"
+          }
+        );
+      }
+      const existingBase = current.baseCommit?.trim() || "";
+      if (existingBase) {
+        let existingFull = existingBase;
+        try {
+          existingFull = await resolveCommitSha(real.workspace, existingBase);
+        } catch {
+        }
+        if (existingFull === fullBase || existingBase === fullBase) {
+          return {
+            workspaceId,
+            taskPath,
+            task: projectTask(current),
+            state: current.state,
+            baseCommit: existingFull || existingBase,
+            idempotent: true
+          };
+        }
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          `task.backfillWorkspaceLaneBase conflicts with recorded baseCommit ${existingFull || existingBase}; supplied ${fullBase} (capture-once immutable)`,
+          {
+            taskPath,
+            recorded: existingFull || existingBase,
+            supplied: fullBase,
+            code: "BASE_BACKFILL_CONFLICT"
+          }
+        );
+      }
+      const branchTip = await readRoleBranchTip(real.workspace, real.branch);
+      const isAncestor = await isCommitAncestor(real.workspace, fullBase, branchTip);
+      if (!isAncestor) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          `task.backfillWorkspaceLaneBase baseCommit ${fullBase} is not an ancestor of recorded Task branch ${real.branch} tip ${branchTip}`,
+          {
+            taskPath,
+            baseCommit: fullBase,
+            branch: real.branch,
+            branchTip,
+            code: "BASE_BACKFILL_NOT_ANCESTOR"
+          }
+        );
+      }
+      const targetTip = await readRoleBranchTip(real.workspace, real.targetBranch);
+      const isTargetAncestor = await isCommitAncestor(
+        real.workspace,
+        fullBase,
+        targetTip
+      );
+      if (!isTargetAncestor) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          `task.backfillWorkspaceLaneBase baseCommit ${fullBase} is not an ancestor of recorded targetBranch ${real.targetBranch} tip ${targetTip} (Task-lane-only / foreign to target ancestry)`,
+          {
+            taskPath,
+            baseCommit: fullBase,
+            targetBranch: real.targetBranch,
+            targetTip,
+            branch: real.branch,
+            branchTip,
+            code: "BASE_BACKFILL_NOT_TARGET_ANCESTOR"
+          }
+        );
+      }
+      const now = mount.env.clock.now();
+      const patched = await patchTaskEnvelope(mount.env.fs, current.path, {
+        baseCommit: fullBase,
+        // Keep managed collection baseline once when missing; do not invent from tip.
+        ...current.roleBranchBase?.trim() ? {} : { roleBranchBase: fullBase },
+        baseCommitCapture: {
+          source: "explicit-backfill",
+          baseCommit: fullBase,
+          actor,
+          capturedAt: now
+        },
+        updatedAt: now
+      });
+      emitTaskState(ctx, workspaceId, patched, "task.backfillWorkspaceLaneBase");
+      return {
+        workspaceId,
+        taskPath,
+        task: projectTask(patched),
+        state: patched.state,
+        baseCommit: fullBase,
+        idempotent: false
+      };
+    })
+  );
+}
+function parseBackfillActor(raw) {
+  if (typeof raw === "string") {
+    throw new RpcError(
+      -32602,
+      "task.backfillWorkspaceLaneBase actor must be { kind, id } (bare string rejected; no kind inference)",
+      { code: "BASE_BACKFILL_ACTOR" }
+    );
+  }
+  try {
+    return parseTaskActorRef(raw, "parentActor");
+  } catch (err) {
+    throw new RpcError(
+      -32602,
+      err instanceof Error ? `task.backfillWorkspaceLaneBase actor: ${err.message}` : "task.backfillWorkspaceLaneBase requires actor { kind, id }",
+      { code: "BASE_BACKFILL_ACTOR" }
+    );
+  }
+}
+async function prepareRoleClaimWrite(ctx, workspaceId, task) {
+  if (taskAssigneeKind(task) !== "role") return void 0;
+  const mount = ctx.host.require(workspaceId);
+  if (!await isGitWorkspace(mount.workspaceRoot)) return void 0;
+  if (task.baseCommit?.trim() && task.baseCommitCapture) return void 0;
+  if (!task.parentActor || !task.reviewer) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `task.claim Role capture requires exact persisted parentActor/reviewer (task ${task.id || task.path})`,
+      { taskPath: task.path, code: "BASE_CAPTURE_ACTOR" }
+    );
+  }
+  let real;
+  try {
+    let targetBranchHint;
+    if (taskAsSub(task)) {
+      const dispatcher = taskParentRoleId(task);
+      if (!dispatcher) {
+        throw new Error(
+          `Sub task ${task.id || task.path} is missing a durable parent Role for claim lane bind.`
+        );
+      }
+      const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, dispatcher);
+      targetBranchHint = dispatcherLane.branch;
+      const recordedTarget = task.targetBranch?.trim();
+      if (recordedTarget && recordedTarget !== targetBranchHint) {
+        throw new Error(
+          `Task envelope targetBranch mismatch for role ${task.role}: envelope=${recordedTarget} expected=${targetBranchHint}`
+        );
+      }
+    }
+    const ensured = await ensureRoleWorkspace(mount.workspaceRoot, task.role);
+    const view = {
+      ...task,
+      workspace: task.workspace || ensured.workspace,
+      worktree: task.worktree || ensured.worktree,
+      branch: task.branch || ensured.branch,
+      targetBranch: task.targetBranch || targetBranchHint || ensured.targetBranch
+    };
+    real = await resolveIntegrationContract(mount.workspaceRoot, view);
+  } catch (err) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      err instanceof Error ? `task.claim Role lane prepare failed: ${err.message}` : "task.claim Role lane prepare failed",
+      { taskPath: task.path, code: "BASE_CAPTURE_LANE" }
+    );
+  }
+  const now = mount.env.clock.now();
+  const patch = {
+    workspace: real.workspace,
+    worktree: real.worktree,
+    branch: real.branch,
+    targetBranch: real.targetBranch,
+    updatedAt: now
+  };
+  const existingBase = task.baseCommit?.trim() || "";
+  if (existingBase) {
+    let fullExisting;
+    try {
+      fullExisting = await resolveCommitSha(real.workspace, existingBase);
+    } catch (err) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        err instanceof Error ? `task.claim Role baseCommit unresolvable in lane repo: ${err.message}` : "task.claim Role baseCommit unresolvable in lane repo",
+        {
+          taskPath: task.path,
+          baseCommit: existingBase,
+          code: "BASE_CAPTURE_UNRESOLVED"
+        }
       );
     }
-    return {
-      workspaceId,
-      taskPath,
-      task: projectTask(task),
-      state: task.state,
-      role: task.role,
-      referencedNodeIds: nodeIds,
-      sessionId: task.sessionId
-    };
-  });
+    patch.baseCommit = fullExisting;
+    if (!task.baseCommitCapture) {
+      patch.baseCommitCapture = {
+        source: "first-claim",
+        baseCommit: fullExisting,
+        actor: task.parentActor,
+        capturedAt: now
+      };
+    }
+    return patch;
+  }
+  const tip = typeof real.baseCommit === "string" && real.baseCommit.trim() ? real.baseCommit.trim() : await readRoleBranchTip(real.workspace, real.branch);
+  const fullTip = await resolveCommitSha(real.workspace, tip);
+  patch.baseCommit = fullTip;
+  if (!task.roleBranchBase?.trim()) {
+    patch.roleBranchBase = fullTip;
+  }
+  patch.baseCommitCapture = {
+    source: "first-claim",
+    baseCommit: fullTip,
+    actor: task.parentActor,
+    capturedAt: now
+  };
+  if (!task.integrationAuthority) {
+    patch.integrationAuthority = deriveIntegrationAuthority({
+      parentActor: task.parentActor,
+      reviewer: task.reviewer
+    });
+  }
+  return patch;
 }
 async function taskWaitRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -26232,6 +27873,68 @@ async function assertOrdinaryExecutorLaneHistoryForDeliver(workspaceRoot, task) 
     throw err;
   }
 }
+async function assertDeliverCommitsBelongToExecutorLane(workspaceRoot, task, commits) {
+  const refs = uniqueCommitRefs(commits);
+  if (refs.length === 0) return;
+  const branch = task.branch?.trim() || "";
+  const hasExecutorLane = Boolean(
+    branch || task.worktree?.trim() || task.workspace?.trim()
+  );
+  if (!hasExecutorLane) return;
+  if (!await isGitWorkspace(workspaceRoot)) return;
+  const base = task.baseCommit?.trim() || "";
+  if (!base) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `task.deliver refused: commits[] require exact workspaceLane.baseCommit (task remains ${task.state}, no ready Delivery; lane/audit preserved; Git untouched)`,
+      {
+        code: "DELIVER_COMMIT_LANE",
+        laneCode: "MISSING_BASE",
+        taskPath: task.path,
+        taskId: task.id,
+        branch: branch || void 0
+      }
+    );
+  }
+  if (!branch) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `task.deliver refused: commits[] require recorded executor branch (task remains ${task.state}, no ready Delivery; lane/audit preserved; Git untouched)`,
+      {
+        code: "DELIVER_COMMIT_LANE",
+        laneCode: "MISSING_BRANCH",
+        taskPath: task.path,
+        taskId: task.id,
+        baseCommit: base
+      }
+    );
+  }
+  try {
+    await assertDeliverCommitsInExecutorLane({
+      workspace: workspaceRoot,
+      baseCommit: base,
+      branch,
+      commits: refs
+    });
+  } catch (err) {
+    if (err instanceof DeliverCommitLaneError) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `task.deliver refused: commits[] not in executor lane (${err.code}): ${err.message} (task remains ${task.state}, no ready Delivery; Git untouched)`,
+        {
+          code: "DELIVER_COMMIT_LANE",
+          laneCode: err.code,
+          taskPath: task.path,
+          taskId: task.id,
+          baseCommit: base,
+          branch,
+          ...err.details ?? {}
+        }
+      );
+    }
+    throw err;
+  }
+}
 async function taskDeliverRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -26250,6 +27953,11 @@ async function taskDeliverRpc(ctx, p) {
       await assertNoBlockingTaskInputsForDeliver(ctx, workspaceId, taskForIntegrate);
       await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, taskForIntegrate);
       await assertOrdinaryExecutorLaneHistoryForDeliver(mount.workspaceRoot, taskForIntegrate);
+      await assertDeliverCommitsBelongToExecutorLane(
+        mount.workspaceRoot,
+        taskForIntegrate,
+        commits
+      );
       const pendingCommits2 = uniqueCommitRefs(commits);
       targetHead = pendingCommits2.length > 0 ? await snapshotIntegrationTargetHead(mount.workspaceRoot, taskForIntegrate) : void 0;
       if (targetHead && afterTargetHeadSnapshotForTests) {
@@ -26270,7 +27978,8 @@ async function taskDeliverRpc(ctx, p) {
       const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
       await makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate, {
         expectedTargetHead: targetHead,
-        action: "task.deliver"
+        action: "task.deliver",
+        taskPath
       })(pendingCommits);
     }
     return ctx.mutations.run(workspaceId, async () => {
@@ -26346,7 +28055,8 @@ async function taskAcceptRpc(ctx, p) {
       const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
       await makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate, {
         expectedTargetHead,
-        action: "task.accept"
+        action: "task.accept",
+        taskPath
       })(prepared.commits);
     }
     try {
@@ -26873,11 +28583,63 @@ async function prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, 
     task = await loadTaskEnvelope(mount.env.fs, taskPath);
   }
   const isProfileTask = taskAssigneeKind(task) === "agentProfile";
+  const callerBootstrapAppend = bootstrapPrompt;
+  async function assertAliveSessionLiveGenerationOrFail(activeRec) {
+    const profile = ctx.profileCatalog.get(profileId);
+    if (!profile?.adapterId) {
+      throw new RpcError(
+        -32602,
+        `task.startSession cannot verify live contextGeneration: profile ${profileId} missing or has no adapterId`,
+        { profileId, code: "CONTEXT_GENERATION_COLLECT_FAILED" }
+      );
+    }
+    let live;
+    try {
+      live = await collectStableContextGeneration({
+        workspaceRoot: mount.workspaceRoot,
+        workspaceIdentity: workspaceId,
+        packageRoot: ctx.packageRoot,
+        packageVersion: ctx.version,
+        assigneeKind: taskAssigneeKind(task),
+        assigneeLabel: task.role,
+        agentId: typeof task.agentId === "string" ? task.agentId : void 0,
+        profileId,
+        adapterId: profile.adapterId,
+        parentRoleId: task.parentActor?.kind === "role" ? task.parentActor.id : void 0,
+        purpose: readTaskPurpose(task) || void 0,
+        roleFs: mount.env.fs,
+        profile
+      });
+    } catch (err) {
+      const message2 = err instanceof Error ? err.message : String(err);
+      throw new RpcError(
+        -32e3,
+        `task.startSession live contextGeneration collection failed: ${message2}`,
+        { code: "CONTEXT_GENERATION_COLLECT_FAILED", taskPath, profileId }
+      );
+    }
+    const sessionGen = activeRec.contextGeneration?.trim() || "";
+    if (!sessionGen || sessionGen !== live.contextGeneration) {
+      const emptyOrLegacy = !sessionGen;
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        emptyOrLegacy ? `Active managed session ${activeRec.id} has empty/legacy contextGeneration; cannot prove continuity with live stable facts (live=${live.contextGeneration}). Stop/replace the Session first.` : `Active managed session ${activeRec.id} contextGeneration drifted from live stable facts (session=${sessionGen}, live=${live.contextGeneration}); cannot safely start a fresh Session while the prior turn/session is active. Stop/replace the Session first.`,
+        {
+          code: emptyOrLegacy ? "CONTEXT_GENERATION_EMPTY_ACTIVE" : "CONTEXT_GENERATION_LIVE_DRIFT_ACTIVE",
+          sessionId: activeRec.id,
+          sessionContextGeneration: sessionGen || null,
+          liveContextGeneration: live.contextGeneration,
+          taskPath
+        }
+      );
+    }
+  }
   if (!isProfileTask) {
     const activeForRole = await findActiveManagedSessionForRole(ctx, workspaceId, task.role);
     if (activeForRole) {
       const boundToThisTask = task.sessionId === activeForRole.id || !!task.id && activeForRole.lastTaskId === task.id || activeForRole.lastTaskId === taskPath;
       if (boundToThisTask) {
+        await assertAliveSessionLiveGenerationOrFail(activeForRole);
         const boundTask = task.sessionId === activeForRole.id ? task : await ctx.mutations.run(workspaceId, async () => {
           ctx.host.markSelfWrite(workspaceId);
           return patchTaskEnvelope(mount.env.fs, taskPath, {
@@ -26906,6 +28668,7 @@ async function prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, 
   } else if (task.sessionId) {
     const prior = await ctx.runtime.registry.read(task.sessionId);
     if (prior && SessionRegistry.isNonTerminal(prior.state) && prior.state !== "external") {
+      await assertAliveSessionLiveGenerationOrFail(prior);
       return {
         kind: "reuse",
         result: projectStartSessionResult(workspaceId, taskPath, task, prior, {
@@ -26921,7 +28684,8 @@ async function prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, 
     profileId,
     task,
     isProfileTask,
-    bootstrapPrompt
+    // Caller text is an optional dynamic append only — never the managed bootstrap itself.
+    bootstrapPrompt: callerBootstrapAppend
   };
 }
 async function launchAndBindTaskStartSession(ctx, prepared) {
@@ -26936,48 +28700,196 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
     branch: task.branch || "HEAD",
     targetBranch: task.targetBranch
   } : void 0;
-  let priorContextGeneration;
-  if (task.sessionId?.trim()) {
+  if (task.contextCard) {
     try {
-      const priorRow = await ctx.runtime.registry.read(task.sessionId.trim());
-      priorContextGeneration = priorRow?.contextGeneration;
-    } catch {
+      await assertDurableContextCardRefsResolved(mount.env.fs, task.contextCard);
+    } catch (err) {
+      if (err instanceof TaskContextCardError) {
+        throw new RpcError(-32e3, err.message, {
+          code: err.code,
+          details: err.details,
+          taskPath,
+          taskId: task.id
+        });
+      }
+      throw err;
     }
   }
-  const sessionBootstrap = prepared.bootstrapPrompt?.trim() || await buildSessionBootstrapPrompt(
-    ctx,
-    task,
-    {
+  const profile = ctx.profileCatalog.get(profileId);
+  if (!profile?.adapterId) {
+    throw new RpcError(
+      -32602,
+      `task.startSession cannot compute contextGeneration: profile ${profileId} missing or has no adapterId`,
+      { profileId, code: "CONTEXT_GENERATION_COLLECT_FAILED" }
+    );
+  }
+  const adapterId = profile.adapterId;
+  const parentRoleId = task.parentActor?.kind === "role" ? task.parentActor.id : void 0;
+  const assigneeKind = taskAssigneeKind(task);
+  const taskPurpose = readTaskPurpose(task);
+  let stableBundle;
+  try {
+    stableBundle = await collectStableContextGeneration({
       workspaceRoot: mount.workspaceRoot,
-      systemRoot: mount.systemRoot,
-      sessionContextGeneration: priorContextGeneration
-    },
-    mount.env.fs
-  );
-  const bootstrapImageRefs = await collectTaskBootstrapImageRefs(mount.env.fs, task);
-  const bootstrapImageSystemRoot = bootstrapImageRefs.length > 0 ? mount.systemRoot : void 0;
-  const roleSession = isProfileTask ? void 0 : await findResumableManagedSessionForRole(
-    ctx,
+      workspaceIdentity: workspaceId,
+      packageRoot: ctx.packageRoot,
+      packageVersion: ctx.version,
+      assigneeKind,
+      assigneeLabel: task.role,
+      agentId: typeof task.agentId === "string" ? task.agentId : void 0,
+      profileId,
+      adapterId,
+      parentRoleId,
+      purpose: taskPurpose || void 0,
+      roleFs: mount.env.fs,
+      profile
+    });
+  } catch (err) {
+    const message2 = err instanceof Error ? err.message : String(err);
+    throw new RpcError(
+      -32e3,
+      `task.startSession contextGeneration collection failed: ${message2}`,
+      { code: "CONTEXT_GENERATION_COLLECT_FAILED", taskPath, profileId }
+    );
+  }
+  const liveGeneration = stableBundle.contextGeneration;
+  if (!liveGeneration) {
+    throw new RpcError(
+      -32e3,
+      "task.startSession produced empty contextGeneration (fail closed)",
+      { code: "CONTEXT_GENERATION_EMPTY", taskPath }
+    );
+  }
+  const priorPersistedGeneration = task.contextGeneration?.trim() || task.contextCard?.contextGeneration?.trim() || "";
+  if (priorPersistedGeneration !== liveGeneration) {
+    task = await ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      if (task.contextCard) {
+        const nextCard = {
+          ...task.contextCard,
+          contextGeneration: liveGeneration
+        };
+        return patchTaskEnvelope(mount.env.fs, taskPath, {
+          contextCard: nextCard,
+          contextGeneration: liveGeneration,
+          ...taskPurpose ? { purpose: taskPurpose } : {},
+          updatedAt: mount.env.clock.now()
+        });
+      }
+      return patchTaskEnvelope(mount.env.fs, taskPath, {
+        contextGeneration: liveGeneration,
+        ...taskPurpose ? { purpose: taskPurpose } : {},
+        updatedAt: mount.env.clock.now()
+      });
+    });
+  }
+  const requestFacts = buildSessionReuseRequestFacts({
     workspaceId,
-    task.role,
-    profileId,
-    cwd
-  );
-  const priorSessionId = task.sessionId?.trim() || roleSession?.id || "";
+    bundle: {
+      ...stableBundle,
+      contextGeneration: liveGeneration,
+      purpose: taskPurpose || stableBundle.purpose
+    },
+    contextGeneration: liveGeneration,
+    worktree: cwd
+  });
+  const candidateIds = [];
+  if (task.sessionId?.trim()) candidateIds.push(task.sessionId.trim());
+  if (!isProfileTask) {
+    const roleSession = await findResumableManagedSessionForRole(
+      ctx,
+      workspaceId,
+      task.role,
+      profileId,
+      cwd
+    );
+    if (roleSession?.id && !candidateIds.includes(roleSession.id)) {
+      candidateIds.push(roleSession.id);
+    }
+  } else {
+    const profileCandidates = await findResumableManagedSessionsForProfile(
+      ctx,
+      workspaceId,
+      profileId,
+      cwd
+    );
+    for (const c of profileCandidates) {
+      if (c.id && !candidateIds.includes(c.id)) candidateIds.push(c.id);
+    }
+  }
   let resumePrior = false;
-  if (priorSessionId) {
+  let priorSessionId = "";
+  let continuityProven = false;
+  const allTasks = await loadTaskEnvelopes(mount.env.fs);
+  let deliveriesCache = null;
+  const hasBlockingDelivery = async (t) => {
+    if (!deliveriesCache) {
+      try {
+        deliveriesCache = await loadDeliveries(mount.env.fs);
+      } catch (err) {
+        const message2 = err instanceof Error ? err.message : String(err);
+        throw new RpcError(
+          -32e3,
+          `task.startSession cannot load Deliveries to prove noPendingDelivery: ${message2}`,
+          { code: "DELIVERY_STORE_UNREADABLE", taskPath }
+        );
+      }
+    }
     try {
-      const probe = await ctx.runtime.probe(priorSessionId);
-      if (probe.resumeCapable && !probe.alive) {
-        const prior = await ctx.runtime.registry.read(priorSessionId);
-        const recordedCwd = prior?.runtimeWorkspace?.cwd?.trim() || "";
-        const cwdMatches = !!recordedCwd && isSameWorkspaceRoot(nodePath6.resolve(recordedCwd), nodePath6.resolve(cwd));
-        const profileMatches = !prior?.profileId || prior.profileId === profileId;
-        const workspaceMatches = prior?.workspace === workspaceId;
-        const roleMatches = prior?.roleName === task.role;
-        const assigneeKindMatches = (prior?.assigneeKind ?? "role") === taskAssigneeKind(task);
-        const taskMatches = prior?.lastTaskId === taskPath || !!task.id && prior?.lastTaskId === task.id;
-        resumePrior = cwdMatches && profileMatches && workspaceMatches && roleMatches && assigneeKindMatches && (!isProfileTask || taskMatches);
+      const evaluation = evaluateTaskBlockingDelivery({
+        task: t,
+        deliveries: deliveriesCache
+      });
+      return evaluation.blocking;
+    } catch (err) {
+      const message2 = err instanceof Error ? err.message : String(err);
+      throw new RpcError(
+        -32e3,
+        `task.startSession cannot prove noPendingDelivery: ${message2}`,
+        {
+          code: "DELIVERY_POINTER_UNRESOLVED",
+          taskPath,
+          priorTaskPath: t.path,
+          activeDeliveryId: t.activeDeliveryId
+        }
+      );
+    }
+  };
+  for (const candidateId of candidateIds) {
+    try {
+      const probe = await ctx.runtime.probe(candidateId);
+      const prior = await ctx.runtime.registry.read(candidateId);
+      if (!prior || !probe.resumeCapable || probe.alive) continue;
+      const priorGen = prior.contextGeneration?.trim() || "";
+      if (!priorGen || priorGen !== liveGeneration) {
+        continue;
+      }
+      const lease = await evaluateCandidateSessionLeaseGates({
+        allTasks,
+        candidate: prior,
+        requestTaskPath: taskPath,
+        requestTaskId: task.id,
+        turnBusy: probe.turnBusy === true,
+        workspaceId,
+        listPendingInputs: (ws, tp) => ctx.taskInputs.listPending(ws, tp),
+        hasPendingUserAsk: (ws, tp) => ctx.userAsks.hasPendingForTask(ws, tp),
+        hasBlockingDelivery
+      });
+      const evaluation = evaluateManagedSessionReuse({
+        request: requestFacts,
+        candidate: prior,
+        runtime: {
+          previousTurnSettled: lease.previousTurnSettled,
+          noPendingInput: lease.noPendingInput,
+          noPendingDelivery: lease.noPendingDelivery,
+          exclusiveLease: lease.exclusiveLease
+        }
+      });
+      if (evaluation.allowed) {
+        resumePrior = true;
+        priorSessionId = candidateId;
+        continuityProven = true;
+        break;
       }
     } catch (err) {
       if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) {
@@ -26985,6 +28897,23 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
       }
     }
   }
+  const sessionContextGeneration = continuityProven ? liveGeneration : void 0;
+  let sessionBootstrap = await buildSessionBootstrapPrompt(
+    ctx,
+    task,
+    {
+      workspaceRoot: mount.workspaceRoot,
+      systemRoot: mount.systemRoot,
+      sessionContextGeneration
+    },
+    mount.env.fs
+  );
+  sessionBootstrap = appendCallerBootstrapSection(
+    sessionBootstrap,
+    prepared.bootstrapPrompt
+  );
+  const bootstrapImageRefs = await collectTaskBootstrapImageRefs(mount.env.fs, task);
+  const bootstrapImageSystemRoot = bootstrapImageRefs.length > 0 ? mount.systemRoot : void 0;
   let handle;
   try {
     if (resumePrior) {
@@ -27034,19 +28963,20 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
       sessionId: handle.sessionId,
       updatedAt: mount.env.clock.now()
     });
-    const generation = next.contextGeneration?.trim() || next.contextCard?.contextGeneration?.trim() || "";
-    if (generation) {
-      try {
-        const parentRoleId = next.parentActor?.kind === "role" ? next.parentActor.id : void 0;
-        const agentId = typeof next.agentId === "string" && next.agentId.trim() || next.role;
-        await ctx.runtime.registry.update(handle.sessionId, {
-          contextGeneration: generation,
-          ...next.taskDeltaDigest ? { taskDeltaDigest: next.taskDeltaDigest } : {},
-          agentId,
-          ...parentRoleId ? { parentRoleId } : {}
-        });
-      } catch {
-      }
+    const generation = liveGeneration;
+    try {
+      const parentRoleIdBound = next.parentActor?.kind === "role" ? next.parentActor.id : void 0;
+      const agentId = stableBundle.agentId || typeof next.agentId === "string" && next.agentId.trim() || next.role;
+      const purposeBound = readTaskPurpose(next) || stableBundle.purpose || "";
+      await ctx.runtime.registry.update(handle.sessionId, {
+        contextGeneration: generation,
+        ...next.taskDeltaDigest ? { taskDeltaDigest: next.taskDeltaDigest } : {},
+        agentId,
+        ...parentRoleIdBound ? { parentRoleId: parentRoleIdBound } : {},
+        skillsDigest: stableBundle.skillSetDigest || stableBundle.skillsDigest,
+        purpose: purposeBound
+      });
+    } catch {
     }
     emitTaskState(ctx, workspaceId, next, "task.startSession");
     ctx.events.emit(
@@ -30187,6 +32117,7 @@ async function tryManagedAutoDeliver(ctx, input) {
         if (commits === void 0) {
           commits = await collectManagedDeliveryCommits(mount.workspaceRoot, task);
         }
+        await assertDeliverCommitsBelongToExecutorLane(mount.workspaceRoot, task, commits);
         const pendingCommits = uniqueCommitRefs(commits);
         const targetHead = pendingCommits.length > 0 ? await snapshotIntegrationTargetHead(mount.workspaceRoot, task) : void 0;
         if (targetHead && afterTargetHeadSnapshotForTests) {
@@ -30198,13 +32129,10 @@ async function tryManagedAutoDeliver(ctx, input) {
         const opts = {
           summary,
           decision,
+          lastOutcome: "delivered",
           ...pendingCommits.length > 0 ? { commits: pendingCommits } : {},
           ...targetHead ? { targetHead } : {}
         };
-        await patchTaskEnvelope(mount.env.fs, input.taskPath, {
-          lastOutcome: "delivered",
-          updatedAt: mount.env.clock.now()
-        });
         const prepared = await prepareTaskDeliver(mount.env, input.taskPath, opts);
         if (prepared.kind === "done") {
           return { kind: "done", result: prepared.result };
@@ -30226,7 +32154,8 @@ async function tryManagedAutoDeliver(ctx, input) {
           const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, input.taskPath);
           await makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate, {
             expectedTargetHead: phase.targetHead,
-            action: "task.deliver"
+            action: "task.deliver",
+            taskPath: input.taskPath
           })(phase.commits);
         }
         result = await ctx.mutations.run(input.workspaceId, async () => {
@@ -30369,14 +32298,6 @@ async function handleManagedNonDeliveredOutcome(ctx, input) {
       });
       const after = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
       if (after) emitTaskState(ctx, input.workspaceId, after, "session.prompt_complete");
-    } else if (outcome === "delivered" && input.emptyDeliveredBody) {
-      await ctx.mutations.run(input.workspaceId, async () => {
-        ctx.host.markSelfWrite(input.workspaceId);
-        await patchTaskEnvelope(mount.env.fs, input.taskPath, {
-          lastOutcome: "delivered",
-          updatedAt: mount.env.clock.now()
-        });
-      });
     }
     try {
       await ctx.runtime.registry.update(sessionId, {
@@ -30527,6 +32448,8 @@ async function stopManagedSessionAfterDelivery(ctx, input) {
 var rejectResumePostStartFailureForTests = null;
 var beforeCombinedDispatchCompensateForTests = null;
 var afterTargetHeadSnapshotForTests = null;
+var beforeTaskClaimCoreForTests = null;
+var beforeTaskBackfillWorkspaceLaneBaseForTests = null;
 function clearManagedAutoDeliverDedup(sessionId, taskPath) {
   const key2 = managedDeliverKey(sessionId, taskPath);
   managedAutoDeliverDone.delete(key2);
@@ -31179,22 +33102,54 @@ function makeCommitIntegrator(ctx, workspaceRoot, task, options) {
   return async (commits) => {
     const refs = uniqueCommitRefs(commits);
     if (refs.length === 0) return;
-    await assertIntegrationTargetHeadUnchanged(
-      workspaceRoot,
-      task,
-      options.expectedTargetHead,
-      { action: options.action }
-    );
-    if (ctx.integrateCommits) {
-      await ctx.integrateCommits(workspaceRoot, refs, task.role);
-      return;
-    }
-    await integrateWorkspaceCommitsForTask(workspaceRoot, task, refs);
+    const taskPath = options.taskPath.trim() || task.path;
+    const lockTask = await loadTaskEnvelopeForIntegration(ctx, workspaceRoot, taskPath, task);
+    const lockContract = await resolveIntegrationContract(workspaceRoot, lockTask);
+    await runIntegrationTargetFlight(workspaceRoot, lockContract.targetBranch, async () => {
+      const liveTask = await loadTaskEnvelopeForIntegration(
+        ctx,
+        workspaceRoot,
+        taskPath,
+        lockTask
+      );
+      const contract = await resolveIntegrationContract(workspaceRoot, liveTask);
+      if (contract.targetBranch !== lockContract.targetBranch) {
+        throw new Error(
+          `Integration targetBranch changed under flight key (lock=${lockContract.targetBranch} live=${contract.targetBranch}); refuse Git write`
+        );
+      }
+      let expected = options.expectedTargetHead;
+      if (options.action === "task.accept") {
+        const mount = requireMountByWorkspaceRoot(ctx, workspaceRoot);
+        expected = await loadReadyDeliveryTargetHead(mount.env.fs, liveTask);
+      }
+      await assertIntegrationTargetHeadUnchanged(workspaceRoot, liveTask, expected, {
+        action: options.action
+      });
+      if (ctx.integrateCommits) {
+        await ctx.integrateCommits(workspaceRoot, refs, liveTask.role);
+        return;
+      }
+      const writeContract = await resolveIntegrationContract(workspaceRoot, liveTask);
+      await integrateWorkspaceCommits(writeContract, refs);
+    });
   };
 }
-async function integrateWorkspaceCommitsForTask(workspaceRoot, task, commits) {
-  const contract = await resolveIntegrationContract(workspaceRoot, task);
-  await integrateWorkspaceCommits(contract, commits);
+function requireMountByWorkspaceRoot(ctx, workspaceRoot) {
+  const mounted = nodePath6.resolve(workspaceRoot);
+  for (const info of ctx.host.list()) {
+    const m = ctx.host.require(info.workspaceId);
+    if (isSameWorkspaceRoot(m.workspaceRoot, mounted)) return m;
+  }
+  throw new Error(`No mounted workspace for integration re-read: ${workspaceRoot}`);
+}
+async function loadTaskEnvelopeForIntegration(ctx, workspaceRoot, taskPath, fallback) {
+  const path24 = taskPath.trim() || fallback.path;
+  if (!path24) {
+    throw new Error("Integration re-read requires taskPath");
+  }
+  const mount = requireMountByWorkspaceRoot(ctx, workspaceRoot);
+  return loadTaskEnvelope(mount.env.fs, path24);
 }
 function uniqueCommitRefs(commits) {
   return [...new Set((commits ?? []).map((c) => c.trim()).filter(Boolean))];
@@ -31368,7 +33323,7 @@ async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
       patch.branch = lane.branch;
       patch.targetBranch = targetBranch;
     }
-    if (!currentHasBase) {
+    if (!currentHasBase && !currentLaneComplete) {
       const fromEnsure = typeof lane.baseCommit === "string" ? lane.baseCommit.trim() : "";
       const tip = fromEnsure || await readRoleBranchTip(lane.workspace, lane.branch);
       patch.baseCommit = tip;
@@ -31411,6 +33366,21 @@ async function findResumableManagedSessionForRole(ctx, workspaceId, roleName, pr
     if (!probe.alive && probe.resumeCapable) return candidate;
   }
   return void 0;
+}
+async function findResumableManagedSessionsForProfile(ctx, workspaceId, profileId, cwd) {
+  if (!profileId) return [];
+  const candidates = (await ctx.runtime.registry.list()).filter(
+    (rec) => rec.workspace === workspaceId && rec.profileId === profileId && rec.assigneeKind === "agentProfile" && rec.state === "stopped" && !!rec.resumeToken && !!rec.runtimeWorkspace?.cwd && isSameWorkspaceRoot(
+      nodePath6.resolve(rec.runtimeWorkspace.cwd),
+      nodePath6.resolve(cwd)
+    )
+  ).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const out = [];
+  for (const candidate of candidates) {
+    const probe = await ctx.runtime.probe(candidate.id);
+    if (!probe.alive && probe.resumeCapable) out.push(candidate);
+  }
+  return out;
 }
 function resolveA2AAuthorityRole(task, callerKind) {
   if (callerKind === "user") return task.role;
@@ -31620,6 +33590,18 @@ function projectTask(task) {
     activeDeliveryId: task.activeDeliveryId,
     lastOutcome: task.lastOutcome,
     workspaceLane: lane,
+    // Compact baseCommit capture audit (first-claim | explicit-backfill).
+    ...task.baseCommitCapture ? {
+      baseCommitCapture: {
+        source: task.baseCommitCapture.source,
+        baseCommit: task.baseCommitCapture.baseCommit,
+        actor: {
+          kind: task.baseCommitCapture.actor.kind,
+          id: task.baseCommitCapture.actor.id
+        },
+        capturedAt: task.baseCommitCapture.capturedAt
+      }
+    } : {},
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     prompt: task.prompt,
@@ -31650,17 +33632,22 @@ function projectDelivery(d) {
     updatedAt: d.updatedAt
   };
 }
-function assertDocsWriteAllowed(tent, conceptId, frontmatter, tasks) {
+function assertDocsWriteCollaborationFields(frontmatter) {
   const protectedHit = PROTECTED_COLLAB_FIELDS.filter((k) => k in frontmatter);
   if (protectedHit.length === 0) return;
-  const concept = tent.byId.get(conceptId);
-  if (!concept) return;
-  const active = hasActiveTaskForConcept(tent, conceptId, concept.path, tasks);
-  if (!active) return;
   throw new RpcError(
     -32010,
-    `docs.write cannot change collaboration projection fields while box has an active task: ${protectedHit.join(", ")}. Use task.* transitions.`,
-    { fields: protectedHit, conceptId }
+    `docs.write cannot set retired collaboration fields: ${protectedHit.join(", ")}. Collaboration truth lives on Task/Delivery projections.`,
+    { fields: protectedHit }
+  );
+}
+function assertRawDocsWriteCollaborationFields(next) {
+  const protectedHit = PROTECTED_COLLAB_FIELDS.filter((field) => field in next);
+  if (protectedHit.length === 0) return;
+  throw new RpcError(
+    -32010,
+    `docs.write raw cannot contain retired collaboration fields: ${protectedHit.join(", ")}. Collaboration truth lives on Task/Delivery projections.`,
+    { fields: protectedHit }
   );
 }
 function assertDocsModeMutable(concept, op) {
@@ -31749,11 +33736,6 @@ function normalizeRelationsForCompare(value) {
 function tagsFromFrontmatterData(data) {
   if (!Array.isArray(data.tags)) return [];
   return data.tags.filter((item) => typeof item === "string");
-}
-function hasActiveTaskForConcept(tent, conceptId, conceptPath, tasks) {
-  void tent;
-  void conceptPath;
-  return listDirectActiveTasksForNode(conceptId, tasks).length > 0;
 }
 
 // src/service/auth.ts
@@ -32190,7 +34172,7 @@ function handleSse(req, res, events, closeSseConnections) {
   let closed = false;
   let blocked = false;
   let queuedBytes = 0;
-  const queue2 = [];
+  const queue3 = [];
   let unsubscribe = () => {
   };
   const cleanup = () => {
@@ -32198,7 +34180,7 @@ function handleSse(req, res, events, closeSseConnections) {
     closed = true;
     clearInterval(heartbeat);
     unsubscribe();
-    queue2.length = 0;
+    queue3.length = 0;
     queuedBytes = 0;
     closeSseConnections.delete(close);
     req.off("close", cleanup);
@@ -32218,7 +34200,7 @@ function handleSse(req, res, events, closeSseConnections) {
       return;
     }
     if (blocked) {
-      queue2.push({ payload, bytes });
+      queue3.push({ payload, bytes });
       queuedBytes += bytes;
       return;
     }
@@ -32231,8 +34213,8 @@ function handleSse(req, res, events, closeSseConnections) {
   function flush() {
     if (closed) return;
     blocked = false;
-    while (queue2.length > 0) {
-      const next = queue2.shift();
+    while (queue3.length > 0) {
+      const next = queue3.shift();
       queuedBytes -= next.bytes;
       try {
         if (!res.write(next.payload)) {

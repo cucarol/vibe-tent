@@ -450,27 +450,33 @@ function codexHooksPath(home) {
 function managedSessionStartCommand(agent, tentCommand) {
   const base = (tentCommand ?? "tent").trim() || "tent";
   const tent = base === "tent" ? "tent" : quoteIfNeeded(base);
-  return `${tent} agent session-start --host ${agent}`;
+  return `${tent} session session-start --host ${agent}`;
 }
 function managedSessionEndCommand(agent, tentCommand) {
   const base = (tentCommand ?? "tent").trim() || "tent";
   const tent = base === "tent" ? "tent" : quoteIfNeeded(base);
-  return `${tent} agent session-end --host ${agent}`;
+  return `${tent} session session-end --host ${agent}`;
 }
 function isManagedHookCommand(command) {
   if (!command || typeof command !== "string") return false;
   const c = command.trim();
   if (managedCommandHost(c) === null) return false;
   if (!/tent/i.test(c)) return false;
-  return /\bagent\s+session-start\b/i.test(c) || /\bagent\s+session-end\b/i.test(c);
+  return isManagedStartStem(c) || isManagedEndStem(c);
 }
 function isManagedEnterCommand(command) {
   if (!isManagedHookCommand(command)) return false;
-  return /\bagent\s+session-start\b/i.test(String(command));
+  return isManagedStartStem(String(command));
 }
 function isManagedLeaveCommand(command) {
   if (!isManagedHookCommand(command)) return false;
-  return /\bagent\s+session-end\b/i.test(String(command));
+  return isManagedEndStem(String(command));
+}
+function isManagedStartStem(command) {
+  return /\bsession\s+session-start\b/i.test(command) || /\bagent\s+session-start\b/i.test(command);
+}
+function isManagedEndStem(command) {
+  return /\bsession\s+session-end\b/i.test(command) || /\bagent\s+session-end\b/i.test(command);
 }
 function managedCommandHost(command) {
   if (!command || typeof command !== "string") return null;
@@ -704,13 +710,25 @@ async function projectClaudeLike(options) {
       missing: ["SessionStart", "Stop"]
     };
   }
+  const upgradedEnter = upgradeManagedCommandForHost(
+    hooks,
+    "SessionStart",
+    matchEnter,
+    enterCmd
+  );
+  const upgradedLeave = upgradeManagedCommandForHost(
+    hooks,
+    "Stop",
+    matchLeave,
+    leaveCmd
+  );
   const enterHandler = buildCommandHandler(enterCmd, codexCommandShape === true);
   const leaveHandler = buildCommandHandler(leaveCmd, codexCommandShape === true);
   const addedEnter = ensureManagedEvent(hooks, "SessionStart", enterHandler, matchEnter);
   const addedLeave = ensureManagedEvent(hooks, "Stop", leaveHandler, matchLeave);
   const normalizedCodexHandlers = codexCommandShape ? normalizeCodexManagedHandlers(hooks, agent) : false;
   const presentAfter = detectManagedEvents(hooks, agent);
-  if (!addedEnter && !addedLeave && !normalizedCodexHandlers && presentAfter.length === 2 && legacyCodexEvents.length === 0) {
+  if (!addedEnter && !addedLeave && !upgradedEnter && !upgradedLeave && !normalizedCodexHandlers && presentAfter.length === 2 && legacyCodexEvents.length === 0) {
     return {
       agent,
       support: "lifecycle",
@@ -885,6 +903,28 @@ function eventHasManaged(hooks, event, match) {
     }
   }
   return false;
+}
+function upgradeManagedCommandForHost(hooks, event, match, desiredCommand) {
+  const groups = hooks[event];
+  if (!Array.isArray(groups)) return false;
+  let changed = false;
+  hooks[event] = groups.map((group) => {
+    if (!group || typeof group !== "object" || Array.isArray(group)) return group;
+    const nextGroup = { ...group };
+    if (!Array.isArray(nextGroup.hooks)) return nextGroup;
+    nextGroup.hooks = nextGroup.hooks.map((handler) => {
+      if (!handler || typeof handler !== "object" || Array.isArray(handler)) return handler;
+      const nextHandler = { ...handler };
+      const command = typeof nextHandler.command === "string" ? nextHandler.command : null;
+      if (!match(command)) return handler;
+      if (command === desiredCommand) return handler;
+      nextHandler.command = desiredCommand;
+      changed = true;
+      return nextHandler;
+    });
+    return nextGroup;
+  });
+  return changed;
 }
 function ensureManagedEvent(hooks, event, handler, match) {
   if (eventHasManaged(hooks, event, match)) return false;
@@ -1974,6 +2014,9 @@ function deterministicRoleIdFromName(name, existing = /* @__PURE__ */ new Set())
   );
   return ROLE_ID_PREFIX + encodeAlphabetBytes(fallback, 12);
 }
+function isConceptId(id) {
+  return id.startsWith(CONCEPT_ID_PREFIX) && id.length > CONCEPT_ID_PREFIX.length;
+}
 function isRoleId(id) {
   return id.startsWith(ROLE_ID_PREFIX) && id.length > ROLE_ID_PREFIX.length;
 }
@@ -2431,6 +2474,54 @@ async function collectTaskFiles(fs10, taskDir, tasks) {
     }
   }
 }
+function assertIsoTimestamp(value, label) {
+  const raw = value.trim();
+  if (!raw) {
+    throw new Error(`${label} must be a non-empty ISO-8601 timestamp.`);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(raw)) {
+    throw new Error(
+      `${label} must be a real ISO-8601 timestamp with timezone; got ${raw}.`
+    );
+  }
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) {
+    throw new Error(`${label} is not a parseable ISO-8601 instant: ${raw}.`);
+  }
+  return raw;
+}
+function parseBaseCommitCapture(value) {
+  if (value === void 0 || value === null) return void 0;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(
+      "Task baseCommitCapture must be an object { source, baseCommit, actor, capturedAt }."
+    );
+  }
+  const raw = value;
+  const source = raw.source;
+  if (source !== "first-claim" && source !== "explicit-backfill") {
+    throw new Error(
+      `Task baseCommitCapture.source must be first-claim|explicit-backfill; got ${String(source)}.`
+    );
+  }
+  const baseCommit = typeof raw.baseCommit === "string" ? raw.baseCommit.trim() : "";
+  if (!baseCommit) {
+    throw new Error("Task baseCommitCapture.baseCommit must be a non-empty SHA.");
+  }
+  const capturedAtRaw = typeof raw.capturedAt === "string" ? raw.capturedAt.trim() : "";
+  const capturedAt = assertIsoTimestamp(
+    capturedAtRaw,
+    "Task baseCommitCapture.capturedAt"
+  );
+  let actor;
+  try {
+    actor = parseTaskActorRef(raw.actor, "parentActor");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(msg.replace(/Task parentActor/g, "Task baseCommitCapture.actor"));
+  }
+  return { source, baseCommit, actor, capturedAt };
+}
 async function loadTaskEnvelope(fs10, path10) {
   if (!await fs10.exists(path10)) throw new Error(`Task envelope not found: ${path10}.`);
   const { data, body } = parseFrontmatter(await fs10.readFile(path10));
@@ -2469,6 +2560,21 @@ async function loadTaskEnvelope(fs10, path10) {
   if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
     task.baseCommit = data.baseCommit.trim();
   }
+  const baseCommitCapture = parseBaseCommitCapture(data.baseCommitCapture);
+  if (baseCommitCapture) {
+    const recordedBase = task.baseCommit?.trim() || "";
+    if (!recordedBase) {
+      throw new Error(
+        `Invalid task envelope format: ${path10} (baseCommitCapture present but baseCommit missing).`
+      );
+    }
+    if (recordedBase !== baseCommitCapture.baseCommit) {
+      throw new Error(
+        `Invalid task envelope format: ${path10} (baseCommit ${recordedBase} !== baseCommitCapture.baseCommit ${baseCommitCapture.baseCommit}).`
+      );
+    }
+    task.baseCommitCapture = baseCommitCapture;
+  }
   if (data.integrationAuthority !== void 0 && data.integrationAuthority !== null && task.parentActor && task.reviewer) {
     task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
       data.integrationAuthority,
@@ -2495,6 +2601,9 @@ async function loadTaskEnvelope(fs10, path10) {
     task.agentId = data.agentId.trim();
   }
   if (typeof data.sessionId === "string") task.sessionId = data.sessionId;
+  if (typeof data.purpose === "string" && data.purpose.trim()) {
+    task.purpose = data.purpose.trim();
+  }
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
   if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
     task.lastOutcome = data.lastOutcome;
@@ -2928,6 +3037,11 @@ async function exists(target) {
 }
 
 // src/core/scaffold.ts
+var RECOGNIZED_REGISTRY_PATHS = [
+  TYPE_REGISTRY_PATH,
+  ROLES_REGISTRY_PATH,
+  TAGS_REGISTRY_PATH
+];
 async function scaffoldInWorkspace(workspaceFs, options) {
   const systemRelative = TENT_SYSTEM_DIR;
   if (await workspaceFs.exists(systemRelative)) {
@@ -2970,6 +3084,135 @@ ${box.body ?? `# ${boxName}
   await workspaceFs.writeFile(nested(INDEX_PATH), tentIndexMarker());
   await ensureWorkspaceGitignore(workspaceFs);
   return { systemRootRelative: systemRelative };
+}
+async function reAdoptOrphanTent(workspaceFs) {
+  const systemRelative = TENT_SYSTEM_DIR;
+  const nested = (p) => `${systemRelative}/${p}`.replace(/\\/g, "/");
+  if (!await workspaceFs.exists(systemRelative)) {
+    throw new Error(
+      `Cannot re-adopt: workspace has no ${TENT_SYSTEM_DIR}/ system directory.`
+    );
+  }
+  const indexRel = nested(INDEX_PATH);
+  if (await workspaceFs.exists(indexRel)) {
+    const raw = await workspaceFs.readFile(indexRel);
+    if (isValidTentIndexMarker(raw)) {
+      throw new Error(
+        `Cannot re-adopt: ${TENT_SYSTEM_DIR}/${INDEX_PATH} already marks a valid Tent.`
+      );
+    }
+    throw new Error(
+      `Cannot re-adopt: ${TENT_SYSTEM_DIR}/${INDEX_PATH} exists but is not a valid Tent index marker; refusing to overwrite ambiguous content.`
+    );
+  }
+  const hasEvidence = await hasOrphanTentEvidence(workspaceFs, nested);
+  if (!hasEvidence) {
+    throw new Error(
+      `Cannot re-adopt: ${TENT_SYSTEM_DIR}/ has no recognized Tent evidence (expected a registry file or a Markdown Node with durable cx- id).`
+    );
+  }
+  const createdDirs = [];
+  for (const dir of [TEMP_DIR, ATTACHMENTS_DIR]) {
+    const rel = nested(dir);
+    if (!await workspaceFs.exists(rel)) createdDirs.push(dir);
+  }
+  const createdRegistries = [];
+  const registryBodies = /* @__PURE__ */ new Map();
+  for (const reg of RECOGNIZED_REGISTRY_PATHS) {
+    const rel = nested(reg);
+    if (await workspaceFs.exists(rel)) continue;
+    createdRegistries.push(reg);
+    registryBodies.set(reg, defaultRegistryBody(reg));
+  }
+  const gitignoreWillUpdate = await workspaceGitignoreNeedsTentEntry(workspaceFs);
+  for (const dir of createdDirs) {
+    await workspaceFs.mkdir(nested(dir));
+  }
+  for (const reg of createdRegistries) {
+    await workspaceFs.writeFile(nested(reg), registryBodies.get(reg));
+  }
+  await workspaceFs.writeFile(indexRel, tentIndexMarker());
+  if (gitignoreWillUpdate) {
+    await ensureWorkspaceGitignore(workspaceFs);
+  }
+  return {
+    systemRootRelative: systemRelative,
+    createdIndex: true,
+    createdDirs,
+    createdRegistries,
+    gitignoreUpdated: gitignoreWillUpdate
+  };
+}
+function isValidTentIndexMarker(raw) {
+  try {
+    const { data } = parseFrontmatter(raw);
+    return data.type === "index";
+  } catch {
+    return false;
+  }
+}
+async function hasOrphanTentEvidence(workspaceFs, nested) {
+  for (const reg of RECOGNIZED_REGISTRY_PATHS) {
+    if (await workspaceFs.exists(nested(reg))) return true;
+  }
+  return hasDurableConceptNode(workspaceFs, "");
+}
+async function hasDurableConceptNode(workspaceFs, systemRelDir) {
+  if (systemRelDir && isOperationalPath(systemRelDir)) return false;
+  const workspaceDir = systemRelDir ? `${TENT_SYSTEM_DIR}/${systemRelDir}`.replace(/\\/g, "/") : TENT_SYSTEM_DIR;
+  let entries;
+  try {
+    entries = await workspaceFs.listDir(workspaceDir);
+  } catch {
+    return false;
+  }
+  for (const entry2 of entries) {
+    const childSystemRel = systemRelDir ? `${systemRelDir}/${entry2.name}`.replace(/\\/g, "/") : entry2.name;
+    if (entry2.isDir) {
+      if (isOperationalPath(childSystemRel)) continue;
+      if (await hasDurableConceptNode(workspaceFs, childSystemRel)) return true;
+      continue;
+    }
+    if (!entry2.name.endsWith(".md")) continue;
+    if (isSystemNoteName(entry2.name)) continue;
+    const workspaceFile = `${workspaceDir}/${entry2.name}`.replace(/\\/g, "/");
+    let raw;
+    try {
+      raw = await workspaceFs.readFile(workspaceFile);
+    } catch {
+      continue;
+    }
+    try {
+      const { data } = parseFrontmatter(raw);
+      const id = typeof data.id === "string" ? data.id.trim() : "";
+      if (id && isConceptId(id)) return true;
+    } catch {
+    }
+  }
+  return false;
+}
+function defaultRegistryBody(reg) {
+  if (reg === TYPE_REGISTRY_PATH) {
+    return JSON.stringify(DEFAULT_TYPE_REGISTRY, null, 2) + "\n";
+  }
+  if (reg === ROLES_REGISTRY_PATH) {
+    return JSON.stringify({ roles: [] }, null, 2) + "\n";
+  }
+  if (reg === TAGS_REGISTRY_PATH) {
+    return JSON.stringify(DEFAULT_TAG_REGISTRY, null, 2) + "\n";
+  }
+  throw new Error(`Unknown registry path for re-adopt defaults: ${reg}`);
+}
+async function workspaceGitignoreNeedsTentEntry(workspaceFs) {
+  const path10 = ".gitignore";
+  const entry2 = `${TENT_SYSTEM_DIR}/`;
+  if (!await workspaceFs.exists(path10)) return true;
+  const text = await workspaceFs.readFile(path10);
+  const lines = text.split(/\r?\n/);
+  return !lines.some((line) => {
+    const t = line.trim();
+    return t === entry2 || t === TENT_SYSTEM_DIR || t === `/${entry2}` || t === `/${TENT_SYSTEM_DIR}`;
+  });
 }
 async function ensureWorkspaceGitignore(workspaceFs) {
   const path10 = ".gitignore";
@@ -3420,6 +3663,11 @@ var ServiceClient = class {
       actor: args.actor ?? "user"
     });
   }
+  /**
+   * Read-only role registry projection (name-sorted).
+   * Each role may include roster agentIds plus rosterEntries readiness
+   * (`ready` | `missing-definition` | `missing-profile`). Never secrets.
+   */
   registryRoles(workspaceId) {
     return this.call("registry.roles", { workspaceId });
   }
@@ -3527,6 +3775,17 @@ var ServiceClient = class {
   }
   taskClaim(workspaceId, taskPath, sessionId) {
     return this.call("task.claim", { workspaceId, taskPath, sessionId });
+  }
+  /**
+   * Explicit legacy baseCommit backfill for running/waiting Tasks missing base.
+   * Actor must equal exact persisted parent/reviewer. Same SHA is idempotent.
+   */
+  taskBackfillWorkspaceLaneBase(workspaceId, taskPath, args) {
+    return this.call("task.backfillWorkspaceLaneBase", {
+      workspaceId,
+      taskPath,
+      ...args
+    });
   }
   taskWait(workspaceId, taskPath, reason, summary) {
     return this.call("task.wait", { workspaceId, taskPath, reason, summary });
@@ -4074,7 +4333,7 @@ async function resolveWorkspacePaths(options) {
 // src/cli/task-rpc.ts
 async function runTaskCommand(sub, args, globals = {}) {
   try {
-    const { positionals, flags } = parseTaskFlags(args);
+    const { positionals, flags, repeatable } = parseTaskFlags(args);
     const json = globals.json === true || flags.json === "true";
     const workspaceFlag = flags.workspace || globals.workspace;
     const attachOpts = {
@@ -4162,95 +4421,91 @@ state: ${row.state ?? "delivered"}
         });
       }
       case "dispatch": {
-        const usageRole = "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]";
-        const usageProfile = "Usage: tent task dispatch <boxId> --profile <profileId> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]";
-        const usageAgent = "Usage: tent task dispatch <boxId> --agent <agentId> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]";
-        const usageBoth = `${usageRole}
-   or: ${usageProfile.replace(/^Usage: /, "")}
-   or: ${usageAgent.replace(/^Usage: /, "")}`;
-        if (Object.prototype.hasOwnProperty.call(flags, "assignee-kind") || Object.prototype.hasOwnProperty.call(flags, "assigneeKind")) {
+        const usage2 = "Usage: tent task dispatch --target role:<roleIdOrName>|agent:<agentId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]";
+        const retiredPublic = detectRetiredDispatchFlags(flags);
+        if (retiredPublic) {
           return failUsage(
-            "Do not pass --assignee-kind; use <role> for durable role dispatch, --profile <profileId> for user one-shot, or --agent <agentId> for Role roster dispatch"
+            `Public ordinary dispatch no longer accepts ${retiredPublic}; use --target role:<roleIdOrName>|agent:<agentId> with --node and --prompt.
+` + usage2
           );
         }
-        if (Object.prototype.hasOwnProperty.call(flags, "start-session") || Object.prototype.hasOwnProperty.call(flags, "startSession")) {
+        if (positionals.length > 0) {
           return failUsage(
-            "Do not pass --start-session; managed --profile / --agent dispatch always starts a session"
+            "Public ordinary dispatch no longer accepts positional <boxId> <role> grammar; use --target and --node.\n" + usage2
           );
         }
-        const boxId = positionals[0];
-        if (!boxId) {
-          return failUsage(usageBoth);
+        const targetRaw = String(flags.target ?? "").trim();
+        if (!targetRaw) {
+          return failUsage(`--target is required
+${usage2}`);
         }
-        const hasProfileFlag = Object.prototype.hasOwnProperty.call(flags, "profile");
-        const hasAgentFlag = Object.prototype.hasOwnProperty.call(flags, "agent");
-        const profileIdRaw = hasProfileFlag ? String(flags.profile ?? "").trim() : "";
-        const agentIdRaw = hasAgentFlag ? String(flags.agent ?? "").trim() : "";
-        if (hasProfileFlag && !profileIdRaw) {
-          return failUsage(`--profile requires <profileId>
-${usageProfile}`);
-        }
-        if (hasAgentFlag && !agentIdRaw) {
-          return failUsage(`--agent requires <agentId>
-${usageAgent}`);
-        }
-        if (hasProfileFlag && hasAgentFlag) {
+        const targetMatch = /^(role|agent):(.+)$/i.exec(targetRaw);
+        if (!targetMatch) {
           return failUsage(
-            "Pass either --profile <profileId> or --agent <agentId>, not both\n" + usageBoth
+            `--target must be role:<roleIdOrName> or agent:<agentId> (got ${JSON.stringify(targetRaw)})
+` + usage2
           );
         }
-        const isManagedOneShotForm = hasProfileFlag || hasAgentFlag;
-        const role = isManagedOneShotForm ? void 0 : positionals[1];
-        const promptParts = isManagedOneShotForm ? positionals.slice(1) : positionals.slice(2);
-        if (!isManagedOneShotForm && !role) {
-          return failUsage(usageBoth);
-        }
-        if (Object.prototype.hasOwnProperty.call(flags, "prompt") && promptParts.length > 0) {
+        const targetKind = targetMatch[1].toLowerCase();
+        const targetId = targetMatch[2].trim();
+        if (!targetId) {
           return failUsage(
-            "Pass prompt either as positionals or via --prompt <text>|- , not both\n" + usageBoth
+            `--target ${targetKind}: requires a non-empty id
+${usage2}`
           );
         }
-        let prompt = typeof flags.prompt === "string" ? flags.prompt : promptParts.join(" ");
-        if (prompt === "-") prompt = await readStdinText();
-        const asSub = flags["as-sub"] === "true";
-        const explicitBy = (flags.by || flags.from || flags["dispatched-by"] || "").trim();
-        if (explicitBy && explicitBy === "user") {
-          return failUsage(
-            "--by/--from/--dispatched-by must name a dispatching role, not user; omit the flag for plain user-originated dispatch"
-          );
-        }
-        const tentRole = (process.env.TENT_ROLE || "").trim();
-        const parentRole = explicitBy || (tentRole && tentRole !== "user" ? tentRole : "");
-        if (asSub && !parentRole) {
-          return failUsage("--as-sub requires --by <parent-role> or TENT_ROLE");
-        }
-        const roleAttributed = asSub || Boolean(explicitBy) || Boolean(tentRole && tentRole !== "user");
-        const callerKind = roleAttributed ? "role" : "user";
-        const parentActor = parentRole ? { kind: "role", id: parentRole } : { kind: "user", id: "user" };
-        const result = await client.taskDispatch(
-          workspaceId,
-          isManagedOneShotForm ? {
-            boxId,
-            assigneeKind: "agentProfile",
-            ...hasAgentFlag ? { agentId: agentIdRaw } : { profileId: profileIdRaw },
-            prompt,
-            parentActor,
-            reviewer: parentActor,
-            asSub: asSub || void 0,
-            deliveryPolicy: flags["delivery-policy"] || flags.deliveryPolicy,
-            startSession: true,
-            callerKind
-          } : {
-            boxId,
-            role,
-            prompt,
-            parentActor,
-            reviewer: parentActor,
-            asSub: asSub || void 0,
-            deliveryPolicy: flags["delivery-policy"] || flags.deliveryPolicy,
-            callerKind
+        const rawNodes = repeatable.node ?? [];
+        for (const value of rawNodes) {
+          if (!String(value ?? "").trim()) {
+            return failUsage(
+              `Every --node value must be a non-empty nodeId (got empty/whitespace)
+${usage2}`
+            );
           }
-        );
+        }
+        const nodeIds = collectDispatchNodeIds(rawNodes);
+        if (nodeIds.length === 0) {
+          return failUsage(
+            `At least one --node <nodeId> is required in this batch
+${usage2}`
+          );
+        }
+        if (!Object.prototype.hasOwnProperty.call(flags, "prompt")) {
+          return failUsage(`--prompt is required (<text> or -)
+${usage2}`);
+        }
+        let prompt = flags.prompt ?? "";
+        if (prompt === "-") prompt = await readStdinText();
+        if (!prompt.trim()) {
+          return failUsage("tent task dispatch: --prompt must be non-empty");
+        }
+        const envRole = String(
+          globals.env?.TENT_ROLE ?? process.env.TENT_ROLE ?? ""
+        ).trim();
+        const roleCaller = Boolean(envRole && envRole !== "user");
+        const parentActor = roleCaller ? { kind: "role", id: envRole } : { kind: "user", id: "user" };
+        const callerKind = roleCaller ? "role" : "user";
+        const asSub = roleCaller ? true : void 0;
+        const primaryNodeId = nodeIds[0];
+        const common = {
+          boxId: primaryNodeId,
+          nodeIds,
+          prompt,
+          parentActor,
+          reviewer: parentActor,
+          callerKind,
+          ...asSub ? { asSub: true } : {}
+        };
+        const dispatchArgs = targetKind === "role" ? {
+          ...common,
+          role: targetId
+        } : {
+          ...common,
+          assigneeKind: "agentProfile",
+          agentId: targetId,
+          startSession: true
+        };
+        const result = await client.taskDispatch(workspaceId, dispatchArgs);
         return okPrint(result, json, (r) => formatTaskDispatch(r));
       }
       case "accept": {
@@ -4706,15 +4961,53 @@ var BOOLEAN_FLAGS = /* @__PURE__ */ new Set([
   "yes",
   "as-sub"
 ]);
+var REPEATABLE_FLAGS = /* @__PURE__ */ new Set(["node"]);
+var RETIRED_PUBLIC_DISPATCH_FLAGS = [
+  { flag: "--profile", aliases: ["profile"] },
+  { flag: "--agent", aliases: ["agent"] },
+  { flag: "--delivery-policy", aliases: ["delivery-policy", "deliveryPolicy"] },
+  { flag: "--as-sub", aliases: ["as-sub", "asSub"] },
+  { flag: "--by", aliases: ["by", "from", "dispatched-by", "dispatchedBy"] },
+  { flag: "--caller-kind", aliases: ["caller-kind", "callerKind"] },
+  { flag: "--assignee-kind", aliases: ["assignee-kind", "assigneeKind"] }
+];
+function detectRetiredDispatchFlags(flags) {
+  for (const entry2 of RETIRED_PUBLIC_DISPATCH_FLAGS) {
+    for (const alias of entry2.aliases) {
+      if (Object.prototype.hasOwnProperty.call(flags, alias)) {
+        return entry2.flag;
+      }
+    }
+  }
+  return null;
+}
+function collectDispatchNodeIds(raw) {
+  const nodes = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const value of raw ?? []) {
+    const id = String(value ?? "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    nodes.push(id);
+  }
+  return nodes;
+}
 function parseTaskFlags(args) {
   const positionals = [];
   const flags = {};
+  const repeatable = {};
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a.startsWith("--")) {
       const name = a.slice(2);
       if (BOOLEAN_FLAGS.has(name)) {
         flags[name] = "true";
+      } else if (REPEATABLE_FLAGS.has(name)) {
+        const value = args[i + 1] ?? "";
+        i++;
+        if (!repeatable[name]) repeatable[name] = [];
+        repeatable[name].push(value);
+        flags[name] = value;
       } else {
         flags[name] = args[i + 1] ?? "";
         i++;
@@ -4723,7 +5016,7 @@ function parseTaskFlags(args) {
       positionals.push(a);
     }
   }
-  return { positionals, flags };
+  return { positionals, flags, repeatable };
 }
 function readStdinText() {
   return new Promise((resolve10, reject) => {
@@ -4745,14 +5038,14 @@ Commands:
   tent task get <taskPath> [--workspace <path>] [--json]
   tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]
   tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
-  tent task dispatch <boxId> <role> [prompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]
-  tent task dispatch <boxId> --profile <profileId> [prompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]
-  tent task dispatch <boxId> --agent <agentId> [prompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]
-      # --profile: user-direct one-shot agentProfile + startSession (does not register a role)
-      # --agent: Role roster logical agentId \u2192 resolves machine-local profileId + startSession
-      # role form: durable role assignee (queued; no auto session)
-      # --profile form: one-shot agentProfile + startSession (prints sessionId/sessionState); does not register a role
-      # Do not pass --assignee-kind; a bare role-like string is never inferred as a profile
+  tent task dispatch --target role:<roleIdOrName>|agent:<agentId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]
+      # --target role:*  durable Role handoff (queued; never starts managed ACP at dispatch)
+      # --target agent:* logical AgentDefinition id \u2192 machine-local LaunchProfile + startSession
+      # --node           repeatable Node refs (at least one); sole source for contextCard.refs.nodes
+      # parentActor/reviewer from TENT_ROLE (role caller) or user-direct; no public --by
+      # Role caller also derives internal asSub (parent Role Git lane); not a public flag
+      # Rejected (no alias): --profile, --agent, --delivery-policy, --as-sub, --by, --caller-kind,
+      #   --assignee-kind, and old positional <boxId> <role> grammar
   tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--workspace <path>] [--json]
   tent task reject <taskPath> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]
@@ -4773,18 +5066,18 @@ Derived role-init remains available because it regenerates bootstrap context onl
 `;
 }
 
-// src/cli/agent-rpc.ts
-async function runAgentCommand(sub, args, globals = {}) {
-  const normalized = normalizeAgentSub(sub);
+// src/cli/session-rpc.ts
+async function runSessionCommand(sub, args, globals = {}) {
+  const normalized = normalizeSessionSub(sub);
   if (!normalized) {
     return failUsage2(
-      `Unknown agent subcommand: ${sub || "(empty)"}
-` + agentHelpText()
+      `Unknown session subcommand: ${sub || "(empty)"}
+` + sessionHelpText()
     );
   }
   const hookAlias = isHookAlias(sub);
   try {
-    const { positionals, flags } = parseAgentFlags(args);
+    const { positionals, flags } = parseSessionFlags(args);
     const json = globals.json === true || flags.json === "true";
     const silent = globals.silentOutsideTent === true || flags.silent === "true" || flags["silent-outside"] === "true";
     const hookMeta = hookAlias ? await loadHookMeta(flags, globals) : { stdin: null, host: void 0 };
@@ -4839,7 +5132,7 @@ async function runAgentCommand(sub, args, globals = {}) {
       case "enter": {
         if (positionals.length > 0) {
           return failUsage2(
-            "Usage: tent agent enter [--session <ss-\u2026>] [--role <name>] [--profile <id>] [--key <externalKey>] [--host <agent>] [--task <taskId>] [--json]"
+            "Usage: tent session enter [--session <ss-\u2026>] [--role <name>] [--profile <id>] [--key <externalKey>] [--host <agent>] [--task <taskId>] [--json]"
           );
         }
         if (hookAlias && !externalKey) {
@@ -4871,7 +5164,7 @@ async function runAgentCommand(sub, args, globals = {}) {
       case "status": {
         if (positionals.length > 1) {
           return failUsage2(
-            "Usage: tent agent status [sessionId] [--key <externalKey>] [--host <agent>] [--workspace <path>] [--json]"
+            "Usage: tent session status [sessionId] [--key <externalKey>] [--host <agent>] [--workspace <path>] [--json]"
           );
         }
         const sessionIdPos = positionals[0] || flags.session || flags["session-id"] || flags.sessionId;
@@ -4898,7 +5191,7 @@ async function runAgentCommand(sub, args, globals = {}) {
             };
           }
           return failUsage2(
-            "Usage: tent agent leave [<sessionId>] [--key <externalKey>] [--host <agent>] [--workspace <path>] [--json]"
+            "Usage: tent session leave [<sessionId>] [--key <externalKey>] [--host <agent>] [--workspace <path>] [--json]"
           );
         }
         const result = await client.sessionLeave({
@@ -4909,7 +5202,7 @@ async function runAgentCommand(sub, args, globals = {}) {
         return okPrint2(result, json, (r) => formatLeave(r));
       }
       default:
-        return failUsage2(agentHelpText());
+        return failUsage2(sessionHelpText());
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -4919,14 +5212,14 @@ async function runAgentCommand(sub, args, globals = {}) {
     return { exitCode: 1, stdout: "", stderr: message + "\n" };
   }
 }
-function agentHelpText() {
-  return `tent agent \u2014 external / pull-host session lifecycle (Local Service RPC)
+function sessionHelpText() {
+  return `tent session \u2014 external / pull-host session lifecycle (Local Service RPC)
 
 Usage:
-  tent agent enter   [--session <ss-\u2026>] [--role <name>] [--profile <id>]
-                     [--key <externalKey>] [--host <agent>] [--task <taskId>] [--json]
-  tent agent status  [sessionId|externalKey] [--key <externalKey>] [--json]
-  tent agent leave   [sessionId|externalKey] [--key <externalKey>] [--json]
+  tent session enter   [--session <ss-\u2026>] [--role <name>] [--profile <id>]
+                       [--key <externalKey>] [--host <agent>] [--task <taskId>] [--json]
+  tent session status  [sessionId|externalKey] [--key <externalKey>] [--json]
+  tent session leave   [sessionId|externalKey] [--key <externalKey>] [--json]
 
 Semantics:
   enter   Register or reuse a SessionRegistry row with state=external.
@@ -4936,9 +5229,9 @@ Semantics:
           Reports incompleteTasks still open for the caller to handle.
 
 Hook aliases (projection contract with Agent Hook task):
-  tent agent session-start --host <agent>   \u2192 enter via stable externalKey
-  tent agent session-end   --host <agent>   \u2192 leave via same externalKey
-  tent agent session-status --host <agent>  \u2192 status via same externalKey
+  tent session session-start --host <agent>   \u2192 enter via stable externalKey
+  tent session session-end   --host <agent>   \u2192 leave via same externalKey
+  tent session session-status --host <agent>  \u2192 status via same externalKey
 
   Reads native hook stdin JSON when present (session_id / sessionId / cwd /
   workspace). externalKey = host + ":" + nativeSessionId, or host + ":ws:" +
@@ -4954,7 +5247,7 @@ Common flags:
   --json               Machine-readable result
 `;
 }
-function normalizeAgentSub(sub) {
+function normalizeSessionSub(sub) {
   const s = (sub || "").trim().toLowerCase();
   if (s === "enter" || s === "session-start" || s === "sessionstart" || s === "start") {
     return "enter";
@@ -5182,7 +5475,7 @@ function pathResolve(cwd) {
   if (!cwd) return void 0;
   return cwd;
 }
-function parseAgentFlags(args) {
+function parseSessionFlags(args) {
   const positionals = [];
   const flags = {};
   for (let i = 0; i < args.length; i++) {
@@ -5460,6 +5753,444 @@ async function readStdin() {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
   return Buffer.concat(chunks).toString("utf8");
+}
+
+// src/cli/agent-definition-rpc.ts
+var BANNED = /* @__PURE__ */ new Set([
+  "secret",
+  "secrets",
+  "token",
+  "api-key",
+  "api_key",
+  "apikey",
+  "password",
+  "credential",
+  "credentials",
+  "env",
+  "model",
+  "provider",
+  "executable",
+  "base-url",
+  "base_url",
+  "baseurl",
+  "command",
+  "args",
+  "url",
+  "key"
+]);
+async function runAgentDefinitionCommand(sub, args, globals = {}) {
+  const cmd = (sub || "").trim().toLowerCase();
+  if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
+    return { exitCode: 0, stdout: agentDefinitionHelpText() + "\n", stderr: "" };
+  }
+  if (cmd !== "list" && cmd !== "get" && cmd !== "config") {
+    return fail(`Unknown agent-definition subcommand: ${sub || "(empty)"}
+` + agentDefinitionHelpText());
+  }
+  try {
+    const { positionals, flags } = parseFlags2(args, ["json", "attach-only", "delete"]);
+    const json = globals.json === true || flags.json === "true";
+    for (const k of Object.keys(flags)) {
+      if (BANNED.has(k.toLowerCase())) {
+        return fail(`tent agent does not accept --${k}; AgentDefinition stores id/profileId only, never launch secrets`);
+      }
+    }
+    const attach = {
+      dataDir: flags["data-dir"] || globals.dataDir,
+      attachOnly: globals.attachOnly === true || flags["attach-only"] === "true",
+      serviceEntry: flags["service-entry"] || globals.serviceEntry,
+      packageRoot: globals.packageRoot,
+      env: globals.env
+    };
+    const client = globals.client ?? (await attachOrBootstrapService(attach)).client;
+    if (cmd === "list") {
+      if (positionals.length > 0) return fail("Usage: tent agent list [--json]");
+      const result = await client.agentList();
+      const agents = (result.agents ?? []).map(whitelistAgent);
+      return print2(
+        { agents },
+        json,
+        () => agents.length === 0 ? "(no agents)\n" : agents.map((a) => {
+          const pe = a.profileExists === void 0 ? "" : a.profileExists ? " profile=ready" : " profile=missing";
+          const label = a.displayName && a.displayName !== a.id ? ` "${a.displayName}"` : "";
+          return `${a.id}${label}  profileId=${a.profileId}${pe}`;
+        }).join("\n") + "\n"
+      );
+    }
+    if (cmd === "get") {
+      const id = positionals[0]?.trim();
+      if (!id || positionals.length > 1) return fail("Usage: tent agent get <agentId> [--json]");
+      const result = await client.agentGet(id);
+      const agent = whitelistAgent(result.agent);
+      return print2({ agent }, json, () => formatAgent(agent));
+    }
+    return await configAgent(client, positionals, flags, json);
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
+}
+function agentDefinitionHelpText() {
+  return `tent agent \u2014 logical AgentDefinition management (machine-local)
+
+Usage:
+  tent agent list   [--json]
+  tent agent get    <agentId> [--json]
+  tent agent config <agentId> --profile <profileId> [--display-name <label>] [--description|--capabilities <text>] [--json]
+  tent agent config <agentId> --delete --confirm <agentId> [--json]
+
+list/get read-only. config upserts non-secret id\u2192profileId (actor=user). --delete needs matching --confirm.
+Never accepts secrets or launches a Session. Session lifecycle stays in baseline agent-rpc until rename integrates.
+`;
+}
+async function configAgent(client, positionals, flags, json) {
+  const agentId = positionals[0]?.trim();
+  if (!agentId || positionals.length > 1) {
+    return fail("Usage: tent agent config <agentId> --profile <profileId> [\u2026]  |  --delete --confirm <agentId>");
+  }
+  const isDelete = flags.delete === "true";
+  const profileId = flags.profile || flags["profile-id"] || flags.profileId;
+  const hasDisplay = "display-name" in flags || "displayName" in flags;
+  const hasDesc = "description" in flags || "capabilities" in flags;
+  if (isDelete) {
+    if (profileId || hasDisplay || hasDesc) {
+      return fail("tent agent config --delete cannot combine with --profile / --display-name / --description / --capabilities");
+    }
+    const confirm = flags.confirm || flags.confirmation || flags["confirm-id"] || "";
+    if (!confirm) return fail(`tent agent config --delete requires --confirm ${agentId}`);
+    if (confirm !== agentId) return fail(`Confirmation mismatch; --confirm must equal agentId ${agentId}`);
+    return print2(await client.agentDelete(agentId, confirm, "user"), json, () => `Deleted AgentDefinition ${agentId}
+`);
+  }
+  if ("description" in flags && "capabilities" in flags) {
+    return fail("tent agent config: pass only one of --description or --capabilities");
+  }
+  const displayNameRaw = "display-name" in flags ? flags["display-name"] : "displayName" in flags ? flags.displayName : void 0;
+  const descriptionRaw = "description" in flags ? flags.description : "capabilities" in flags ? flags.capabilities : void 0;
+  let existing = null;
+  try {
+    existing = (await client.agentGet(agentId)).agent;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!/not found/i.test(message)) throw err;
+  }
+  if (!existing) {
+    if (!profileId) return fail("tent agent config create requires --profile <profileId> for a new agentId");
+    const created = await client.agentCreate({
+      id: agentId,
+      profileId,
+      ...displayNameRaw ? { displayName: displayNameRaw } : {},
+      ...descriptionRaw ? { description: descriptionRaw } : {},
+      actor: "user"
+    });
+    const agent2 = whitelistAgent(created.agent);
+    return print2({ agent: agent2 }, json, () => `Created ${formatAgent(agent2)}`);
+  }
+  if (!profileId && displayNameRaw === void 0 && descriptionRaw === void 0) {
+    return fail("tent agent config update requires --profile and/or --display-name and/or --description|--capabilities (or --delete --confirm)");
+  }
+  const patch = { actor: "user" };
+  if (profileId) patch.profileId = profileId;
+  if (displayNameRaw !== void 0) patch.displayName = displayNameRaw === "" ? null : displayNameRaw;
+  if (descriptionRaw !== void 0) patch.description = descriptionRaw === "" ? null : descriptionRaw;
+  const updated = await client.agentUpdate(agentId, patch);
+  const agent = whitelistAgent(updated.agent);
+  return print2({ agent }, json, () => `Updated ${formatAgent(agent)}`);
+}
+function whitelistAgent(raw) {
+  const src = raw;
+  const id = typeof src.id === "string" ? src.id : "";
+  const profileId = typeof src.profileId === "string" ? src.profileId : "";
+  if (!id || !profileId) throw new Error("AgentDefinition projection missing id or profileId");
+  const out = {
+    id,
+    displayName: typeof src.displayName === "string" && src.displayName.trim() ? src.displayName : id,
+    profileId
+  };
+  if (typeof src.description === "string" && src.description.trim()) out.description = src.description;
+  if (typeof src.profileExists === "boolean") out.profileExists = src.profileExists;
+  return out;
+}
+function formatAgent(a) {
+  const lines = [`id: ${a.id}`, `displayName: ${a.displayName}`, `profileId: ${a.profileId}`];
+  if (a.description) lines.push(`description: ${a.description}`);
+  if (a.profileExists !== void 0) lines.push(`profileExists: ${a.profileExists}`);
+  return lines.join("\n") + "\n";
+}
+function parseFlags2(args, booleans) {
+  const positionals = [];
+  const flags = {};
+  const bool = new Set(booleans);
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--") {
+      positionals.push(...args.slice(i + 1));
+      break;
+    }
+    if (!a.startsWith("--")) {
+      positionals.push(a);
+      continue;
+    }
+    const eq = a.indexOf("=");
+    if (eq > 2) {
+      flags[a.slice(2, eq)] = a.slice(eq + 1);
+      continue;
+    }
+    const key = a.slice(2);
+    if (bool.has(key)) {
+      flags[key] = "true";
+      continue;
+    }
+    const next = args[i + 1];
+    if (next !== void 0 && !next.startsWith("--")) {
+      flags[key] = next;
+      i++;
+    } else flags[key] = "true";
+  }
+  return { positionals, flags };
+}
+function print2(result, json, human) {
+  return { exitCode: 0, stdout: json ? JSON.stringify(result, null, 2) + "\n" : human(), stderr: "" };
+}
+function fail(msg) {
+  return { exitCode: 1, stdout: "", stderr: msg.trimEnd() + "\n" };
+}
+
+// src/service/types.ts
+var ROLE_ROSTER_READINESS = [
+  "ready",
+  "missing-definition",
+  "missing-profile"
+];
+var PROTECTED_COLLAB_FIELDS = ["status", "owner", "assignee"];
+var RESERVED_DOCS_WRITE_FIELDS = [
+  "id",
+  "mode",
+  "archived",
+  /** Output provenance — only formal task.accept bind path may write. */
+  "deliveryId",
+  ...PROTECTED_COLLAB_FIELDS
+];
+
+// src/cli/role-rpc.ts
+var READINESS = new Set(ROLE_ROSTER_READINESS);
+async function runRoleCommand(sub, args, globals = {}) {
+  const cmd = (sub || "").trim().toLowerCase();
+  if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
+    return { exitCode: 0, stdout: roleHelpText() + "\n", stderr: "" };
+  }
+  if (cmd !== "list" && cmd !== "show" && cmd !== "config") {
+    return fail2(`Unknown role subcommand: ${sub || "(empty)"}
+` + roleHelpText());
+  }
+  try {
+    const { positionals, flags } = parseFlags3(args, ["json", "attach-only"]);
+    const json = globals.json === true || flags.json === "true";
+    const attach = {
+      dataDir: flags["data-dir"] || globals.dataDir,
+      attachOnly: globals.attachOnly === true || flags["attach-only"] === "true",
+      serviceEntry: flags["service-entry"] || globals.serviceEntry,
+      packageRoot: globals.packageRoot,
+      env: globals.env
+    };
+    const client = globals.client ?? (await attachOrBootstrapService(attach)).client;
+    const { workspaceId } = await ensureMountedWorkspace(client, {
+      cwd: globals.cwd,
+      workspace: flags.workspace || globals.workspace
+    });
+    if (cmd === "list") {
+      if (positionals.length > 0) return fail2("Usage: tent role list [--workspace <path>] [--json]");
+      const result = await client.registryRoles(workspaceId);
+      const roles = (result.roles ?? []).map(whitelistRole);
+      return print3({ workspaceId, roles }, json, () => roles.length ? roles.map(formatRole).join("") : "(no roles)\n");
+    }
+    if (cmd === "show") {
+      const ref = positionals[0]?.trim();
+      if (!ref || positionals.length > 1) return fail2("Usage: tent role show <name|roleId> [--workspace <path>] [--json]");
+      const result = await client.registryRoles(workspaceId);
+      const found = (result.roles ?? []).find((r) => r.name === ref || r.roleId === ref);
+      if (!found) return fail2(`Role not found: ${ref}`);
+      const role = whitelistRole(found);
+      return print3({ workspaceId, role }, json, () => formatRole(role));
+    }
+    return await configRole(client, workspaceId, positionals, flags, json);
+  } catch (error) {
+    return fail2(error instanceof Error ? error.message : String(error));
+  }
+}
+function roleHelpText() {
+  return `tent role \u2014 Service-backed Role discovery and roster configuration
+
+Usage:
+  tent role list   [--workspace <path>] [--json]
+  tent role show   <name|roleId> [--workspace <path>] [--json]
+  tent role config <name|roleId> (--roster-add <agentId> | --roster-remove <agentId> | --roster <id,id>)
+                   [--display-name <label>] [--prompt <text>] [--description <text>] [--a2a-policy allow|ask|deny] [--json]
+
+list/show project rosterEntries in roster order with readiness ready|missing-definition|missing-profile (no secrets).
+config patches roster by agentId via registry.role.update (actor=user); never invents AgentDefinitions.
+`;
+}
+async function configRole(client, workspaceId, positionals, flags, json) {
+  const ref = positionals[0]?.trim();
+  if (!ref || positionals.length > 1) {
+    return fail2("Usage: tent role config <name|roleId> (--roster-add|--roster-remove|--roster) \u2026");
+  }
+  const hasAdd = "roster-add" in flags;
+  const hasRemove = "roster-remove" in flags;
+  const hasSet = "roster" in flags;
+  if (hasSet && (hasAdd || hasRemove)) {
+    return fail2("tent role config: --roster cannot combine with --roster-add / --roster-remove");
+  }
+  if (hasAdd && hasRemove) {
+    const addId = (flags["roster-add"] || "").trim();
+    const removeId = (flags["roster-remove"] || "").trim();
+    if (addId && removeId && addId === removeId) {
+      return fail2(`tent role config: conflicting --roster-add and --roster-remove for same agentId ${addId}`);
+    }
+  }
+  const hasMeta = "display-name" in flags || "displayName" in flags || "prompt" in flags || "description" in flags || "a2a-policy" in flags || "a2aPolicy" in flags || "color" in flags;
+  if (!hasAdd && !hasRemove && !hasSet && !hasMeta) {
+    return fail2("tent role config requires --roster-add / --roster-remove / --roster and/or metadata flags");
+  }
+  const listed = await client.registryRoles(workspaceId);
+  const current = (listed.roles ?? []).find((r) => r.name === ref || r.roleId === ref);
+  if (!current) return fail2(`Role not found: ${ref}`);
+  const patch = { actor: "user" };
+  if (current.roleId) patch.roleId = current.roleId;
+  if (hasSet) {
+    patch.roster = [...new Set((flags.roster || "").split(",").map((s) => s.trim()).filter(Boolean))];
+  } else if (hasAdd || hasRemove) {
+    let roster = [...current.roster ?? []];
+    if (hasRemove) {
+      const removeId = (flags["roster-remove"] || "").trim();
+      if (!removeId) return fail2("tent role config --roster-remove requires <agentId>");
+      roster = roster.filter((id) => id !== removeId);
+    }
+    if (hasAdd) {
+      const addId = (flags["roster-add"] || "").trim();
+      if (!addId) return fail2("tent role config --roster-add requires <agentId>");
+      if (!roster.includes(addId)) roster.push(addId);
+    }
+    patch.roster = roster;
+  }
+  if ("display-name" in flags) patch.displayName = flags["display-name"] === "" ? null : flags["display-name"];
+  else if ("displayName" in flags) patch.displayName = flags.displayName === "" ? null : flags.displayName;
+  if ("prompt" in flags) patch.prompt = flags.prompt === "" ? null : flags.prompt;
+  if ("description" in flags) patch.description = flags.description === "" ? null : flags.description;
+  if ("color" in flags) patch.color = flags.color === "" ? null : flags.color;
+  if ("a2a-policy" in flags || "a2aPolicy" in flags) {
+    const raw = flags["a2a-policy"] ?? flags.a2aPolicy ?? "";
+    if (raw === "" || raw === "null") patch.a2aPolicy = null;
+    else if (raw === "allow" || raw === "ask" || raw === "deny") patch.a2aPolicy = raw;
+    else return fail2(`tent role config --a2a-policy must be allow|ask|deny (got ${raw})`);
+  }
+  const result = await client.registryRoleUpdate(workspaceId, current.name, patch);
+  const role = whitelistRole(result.role);
+  return print3({ workspaceId, role }, json, () => `Updated role ${role.name}
+` + formatRole(role));
+}
+function whitelistRole(raw) {
+  const src = raw;
+  const name = typeof src.name === "string" ? src.name : "";
+  if (!name) throw new Error("Role projection missing name");
+  const role = {
+    roleId: typeof src.roleId === "string" ? src.roleId : "",
+    name,
+    displayName: typeof src.displayName === "string" && src.displayName.trim() ? src.displayName : name
+  };
+  if (typeof src.description === "string") role.description = src.description;
+  if (typeof src.color === "string") role.color = src.color;
+  if (typeof src.prompt === "string") role.prompt = src.prompt;
+  if (src.a2aPolicy === "allow" || src.a2aPolicy === "ask" || src.a2aPolicy === "deny") role.a2aPolicy = src.a2aPolicy;
+  if (Array.isArray(src.roster)) role.roster = src.roster.filter((id) => typeof id === "string");
+  if (Array.isArray(src.rosterEntries)) {
+    const entries = src.rosterEntries.map((e, i) => whitelistRosterEntry(e, i));
+    if (role.roster?.length) {
+      const byId = new Map(entries.map((e) => [e.agentId, e]));
+      role.rosterEntries = role.roster.map(
+        (id) => byId.get(id) ?? { agentId: id, readiness: "missing-definition" }
+      );
+    } else {
+      role.rosterEntries = entries;
+    }
+  }
+  return role;
+}
+function whitelistRosterEntry(raw, index) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`Invalid rosterEntries[${index}] from Service`);
+  }
+  const src = raw;
+  const agentId = typeof src.agentId === "string" ? src.agentId : "";
+  if (!agentId) throw new Error(`rosterEntries[${index}] missing agentId`);
+  if (typeof src.readiness !== "string" || !READINESS.has(src.readiness)) {
+    throw new Error(
+      `Invalid readiness for agentId ${agentId}: ${String(src.readiness)} (expected ${ROLE_ROSTER_READINESS.join("|")})`
+    );
+  }
+  const entry2 = { agentId, readiness: src.readiness };
+  if (typeof src.displayName === "string" && src.displayName.trim()) entry2.displayName = src.displayName;
+  if (typeof src.profileId === "string" && src.profileId.trim()) entry2.profileId = src.profileId;
+  return entry2;
+}
+function formatRole(role) {
+  const label = role.displayName && role.displayName !== role.name ? ` "${role.displayName}"` : "";
+  const lines = [
+    `${role.name}${label}${role.roleId ? ` ${role.roleId}` : ""}`,
+    ...role.description ? [`description: ${role.description}`] : [],
+    ...role.a2aPolicy ? [`a2aPolicy: ${role.a2aPolicy}`] : [],
+    `roster: ${(role.roster ?? []).length}`
+  ];
+  if (role.rosterEntries?.length) {
+    for (const e of role.rosterEntries) {
+      const el = e.displayName && e.displayName !== e.agentId ? ` "${e.displayName}"` : "";
+      const pf = e.profileId ? ` profileId=${e.profileId}` : "";
+      lines.push(`  - ${e.agentId}${el}  readiness=${e.readiness}${pf}`);
+    }
+  } else if (role.roster?.length) {
+    for (const id of role.roster) lines.push(`  - ${id}`);
+  } else {
+    lines.push("  (empty roster)");
+  }
+  return lines.join("\n") + "\n";
+}
+function parseFlags3(args, booleans) {
+  const positionals = [];
+  const flags = {};
+  const bool = new Set(booleans);
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--") {
+      positionals.push(...args.slice(i + 1));
+      break;
+    }
+    if (!a.startsWith("--")) {
+      positionals.push(a);
+      continue;
+    }
+    const eq = a.indexOf("=");
+    if (eq > 2) {
+      flags[a.slice(2, eq)] = a.slice(eq + 1);
+      continue;
+    }
+    const key = a.slice(2);
+    if (bool.has(key)) {
+      flags[key] = "true";
+      continue;
+    }
+    const next = args[i + 1];
+    if (next !== void 0 && !next.startsWith("--")) {
+      flags[key] = next;
+      i++;
+    } else flags[key] = "true";
+  }
+  return { positionals, flags };
+}
+function print3(result, json, human) {
+  return { exitCode: 0, stdout: json ? JSON.stringify(result, null, 2) + "\n" : human(), stderr: "" };
+}
+function fail2(msg) {
+  return { exitCode: 1, stdout: "", stderr: msg.trimEnd() + "\n" };
 }
 
 // src/cli/role-checkpoint-rpc.ts
@@ -5967,17 +6698,36 @@ async function main() {
     return;
   }
   if (cmd === "new") {
-    const { positionals } = parseFlags2(args);
+    const { positionals, flags } = parseFlags4(args);
     if (!positionals[0]) {
-      return fail("Usage: tent new <workspace-path>");
+      return fail3(
+        "Usage: tent new <workspace-path>\n       tent new <workspace-path> --repair-existing"
+      );
     }
-    if (positionals.length > 1) return fail("Usage: tent new <workspace-path>");
-    await newTent(positionals[0]);
+    if (positionals.length > 1) {
+      return fail3(
+        "Usage: tent new <workspace-path>\n       tent new <workspace-path> --repair-existing"
+      );
+    }
+    const repairExisting = flags["repair-existing"] === "true";
+    const unknown = Object.keys(flags).filter((k) => k !== "repair-existing");
+    if (unknown.length > 0) {
+      return fail3(
+        `Unknown flag for tent new: --${unknown[0]}
+Usage: tent new <workspace-path>
+       tent new <workspace-path> --repair-existing`
+      );
+    }
+    if (repairExisting) {
+      await repairExistingTent(positionals[0]);
+    } else {
+      await newTent(positionals[0]);
+    }
     return;
   }
   if (cmd === "skill-install") {
-    const { positionals, flags } = parseFlags2(args);
-    if (positionals.length > 0) return fail("Usage: tent skill-install [--target all|claude|shared-agents] [--force]");
+    const { positionals, flags } = parseFlags4(args);
+    if (positionals.length > 0) return fail3("Usage: tent skill-install [--target all|claude|shared-agents] [--force]");
     const target = flags.target || "all";
     const force = flags.force === "true";
     const defaultDirs = resolveCliSkillInstallDirs(target);
@@ -5997,14 +6747,14 @@ async function main() {
       return;
     }
     if (sub !== "install" && sub !== "doctor" && sub !== "remove") {
-      return fail(
+      return fail3(
         `Unknown agent-hooks subcommand: ${sub}
 Usage: tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copilot] [--json]`
       );
     }
-    const { positionals, flags } = parseFlags2(rest);
+    const { positionals, flags } = parseFlags4(rest);
     if (positionals.length > 0) {
-      return fail(
+      return fail3(
         `Usage: tent agent-hooks ${sub} [--agent all|claude|codex|agy|copilot] [--json]`
       );
     }
@@ -6013,7 +6763,7 @@ Usage: tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copi
       agents = flags.agent ? resolveAgentHookSelection([flags.agent]) : void 0;
       if (flags.agent && flags.agent !== "all") parseAgentHookId(flags.agent);
     } catch (error) {
-      return fail(error instanceof Error ? error.message : String(error));
+      return fail3(error instanceof Error ? error.message : String(error));
     }
     const asJson = flags.json === "true";
     const home = flags.home || void 0;
@@ -6039,13 +6789,37 @@ Usage: tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copi
     if (result.exitCode !== 0) process.exitCode = result.exitCode;
     return;
   }
+  if (cmd === "session") {
+    const [sub, ...rest] = args;
+    if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
+      console.log(sessionHelpText());
+      return;
+    }
+    const result = await runSessionCommand(sub, rest, { packageRoot: packageRoot() });
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    if (result.exitCode !== 0) process.exitCode = result.exitCode;
+    return;
+  }
   if (cmd === "agent") {
     const [sub, ...rest] = args;
     if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
-      console.log(agentHelpText());
+      console.log(agentDefinitionHelpText());
       return;
     }
-    const result = await runAgentCommand(sub, rest, { packageRoot: packageRoot() });
+    const result = await runAgentDefinitionCommand(sub, rest, { packageRoot: packageRoot() });
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    if (result.exitCode !== 0) process.exitCode = result.exitCode;
+    return;
+  }
+  if (cmd === "role") {
+    const [sub, ...rest] = args;
+    if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
+      console.log(roleHelpText());
+      return;
+    }
+    const result = await runRoleCommand(sub, rest, { packageRoot: packageRoot() });
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     if (result.exitCode !== 0) process.exitCode = result.exitCode;
@@ -6078,18 +6852,18 @@ Usage: tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copi
     return;
   }
   if (cmd === "propose") {
-    const { positionals } = parseFlags2(args);
+    const { positionals } = parseFlags4(args);
     const [nodeId, bodySource] = positionals;
     if (!nodeId || !bodySource || positionals.length > 2) {
-      return fail("Usage: tent propose <nodeId> <bodyFile|->");
+      return fail3("Usage: tent propose <nodeId> <bodyFile|->");
     }
     const role = process.env.TENT_ROLE;
-    if (!role) return fail("tent propose requires TENT_ROLE to identify the submitting role");
+    if (!role) return fail3("tent propose requires TENT_ROLE to identify the submitting role");
     const body = bodySource === "-" ? await readStdin2() : await readBodyFile(bodySource);
     const systemRoot = await findTentSystemRoot(process.cwd());
-    if (!systemRoot) return fail(NOT_INSIDE_TENT_MESSAGE);
+    if (!systemRoot) return fail3(NOT_INSIDE_TENT_MESSAGE);
     const workspace = workspaceRootFromSystemRoot(systemRoot);
-    if (!workspace) return fail("tent propose requires an in-workspace <workspace>/.tent layout");
+    if (!workspace) return fail3("tent propose requires an in-workspace <workspace>/.tent layout");
     const result = await runProposalSubmit(
       { boxId: nodeId, role, body },
       { cwd: workspace, workspace, packageRoot: packageRoot() }
@@ -6099,19 +6873,19 @@ Usage: tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copi
     if (result.exitCode !== 0) process.exitCode = result.exitCode;
     return;
   }
-  const tentCommands = /* @__PURE__ */ new Set(["role-init", "roles", "status", "tags", "find", "tree"]);
+  const tentCommands = /* @__PURE__ */ new Set(["role-init", "status", "tags", "find", "tree"]);
   if (!tentCommands.has(cmd)) {
-    return fail(
+    return fail3(
       `Unknown command: ${cmd || "(empty)"}
-Commands: new node task agent propose role-init role-checkpoint roles status tags find tree skill-install agent-hooks`
+Commands: new node task session agent role propose role-init role-checkpoint status tags find tree skill-install agent-hooks`
     );
   }
   const env = await makeEnv();
   switch (cmd) {
     case "role-init": {
       const roleName = args[0];
-      if (!roleName) return fail("Usage: tent role-init <role>");
-      if (args.length > 1) return fail("Usage: tent role-init <role>");
+      if (!roleName) return fail3("Usage: tent role-init <role>");
+      if (args.length > 1) return fail3("Usage: tent role-init <role>");
       const roles = await loadRolesRegistry(env.fs);
       const role = roles.roles.find((item) => item.name === roleName) ?? { name: roleName };
       const initPath = await withTentMutation(
@@ -6121,59 +6895,53 @@ Commands: new node task agent propose role-init role-checkpoint roles status tag
       console.log(`Read ${initPath} to complete role initialization.`);
       break;
     }
-    case "roles": {
-      if (args.length > 0) return fail("Usage: tent roles");
-      const registry = await loadRolesRegistry(env.fs);
-      console.log(JSON.stringify(registry, null, 2));
-      break;
-    }
     case "status": {
-      if (args.length > 0) return fail("Usage: tent status");
+      if (args.length > 0) return fail3("Usage: tent status");
       try {
         process.stdout.write(
           await renderTentStatus(process.cwd(), process.env.TENT_ROLE, (root) => new NodeFs(root))
         );
       } catch (error) {
-        if (error instanceof Error && error.message === NOT_INSIDE_TENT_MESSAGE) return fail(error.message);
+        if (error instanceof Error && error.message === NOT_INSIDE_TENT_MESSAGE) return fail3(error.message);
         throw error;
       }
       break;
     }
     case "tags": {
-      if (args.length > 0) return fail("Usage: tent tags");
+      if (args.length > 0) return fail3("Usage: tent tags");
       const registry = await loadTagRegistry(env.fs);
       if (registry.tags.length === 0) console.log("(no tags)");
       else for (const tag of registry.tags) console.log(tag);
       break;
     }
     case "find": {
-      if (!args[0]) return fail("Usage: tent find <name>");
-      if (args.length > 1) return fail("Usage: tent find <name>");
+      if (!args[0]) return fail3("Usage: tent find <name>");
+      if (args.length > 1) return fail3("Usage: tent find <name>");
       try {
         normalizeTagName(args[0]);
       } catch (error) {
-        return fail(error instanceof Error ? error.message : String(error));
+        return fail3(error instanceof Error ? error.message : String(error));
       }
       const tent = await loadTent(env.fs);
-      const boxes = findBoxesByTag(tent, args[0]);
-      if (boxes.length === 0) {
+      const nodes = findBoxesByTag(tent, args[0]);
+      if (nodes.length === 0) {
         console.log("(no matches)");
         break;
       }
-      for (const box of boxes) {
-        const pointer = outputPointer(box.fm, box.body);
-        console.log(`${box.id}	${box.path}	${box.type}${pointer ? `	${pointer}` : ""}`);
+      for (const node of nodes) {
+        const pointer = outputPointer(node.fm, node.body);
+        console.log(`${node.id}	${node.path}	${node.type}${pointer ? `	${pointer}` : ""}`);
       }
       break;
     }
     case "tree": {
-      if (args.length > 0) return fail("Usage: tent tree");
+      if (args.length > 0) return fail3("Usage: tent tree");
       const tent = await loadTent(env.fs);
       for (const r of tent.roots) printBox(r, 0);
       break;
     }
     default:
-      return fail(`Unknown command: ${cmd || "(empty)"}`);
+      return fail3(`Unknown command: ${cmd || "(empty)"}`);
   }
 }
 function readStdin2() {
@@ -6203,14 +6971,14 @@ function outputPointer(fm, body) {
   const { workspace, ref } = parseOutputPointer(fm, body);
   return [workspace ? `workspace=${workspace}` : "", ref ? `ref=${ref}` : ""].filter(Boolean).join(" ");
 }
-function fail(msg) {
+function fail3(msg) {
   console.error(msg);
   process.exitCode = 1;
 }
-function parseFlags2(args) {
+function parseFlags4(args) {
   const positionals = [];
   const flags = {};
-  const booleanFlags = /* @__PURE__ */ new Set(["force", "json"]);
+  const booleanFlags = /* @__PURE__ */ new Set(["force", "json", "repair-existing"]);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a.startsWith("--")) {
@@ -6236,12 +7004,14 @@ Usage:
   tent agent-hooks remove  [--agent all|claude|codex|agy|copilot] [--json]
 
 Behavior:
-  - SessionStart \u2192 tent agent session-start --host <agent>
-  - Stop         \u2192 tent agent session-end --host <agent>
+  - SessionStart \u2192 tent session session-start --host <agent>
+  - Stop         \u2192 tent session session-end --host <agent>
   - CLI hook aliases parse session identity/cwd from native hook stdin and
     silently skip non-Tent workspaces (leave never needs a sessionId positional).
   - Merges into existing agent configs; never rewrites permissions or MCP.
   - install / doctor / remove are idempotent; remove only Tent-managed handlers.
+  - Legacy tent agent session-* entries may be replaced/removed on install only;
+    they are not generated or advertised as callable aliases.
   - Antigravity (agy) and Copilot report unsupported when no verified lifecycle hook surface exists.
   - Projection only writes under --home (tests) or os.homedir(); never smoke real user configs.
 
@@ -6296,21 +7066,30 @@ Usage:
 
 Run commands from a workspace with <workspace>/.tent/ unless noted.
 
+Logical Agent, durable Role, Session, and Task (distinct surfaces):
+  tent agent list|get|config          Logical AgentDefinition (id\u2192profileId; no secrets/Session)
+  tent agent --help                   AgentDefinition subcommand help
+  tent role list|show|config          Durable Role discovery + roster config (Service-backed)
+  tent role --help                    Role subcommand help
+  tent session enter|status|leave     External session lifecycle (no ACP spawn)
+  tent session --help                 Pull-host enter/status/leave + hook aliases
+  tent task list|get|claim|deliver|\u2026  Attach Local Service \u2192 mount \u2192 task.* RPC
+  tent task --help                    Full task subcommand help
+
 Service-backed workspace operations:
   tent node list|get|create|write|\u2026 Agent-facing Node operations through Local Service
   tent node --help                   Full Node subcommand help
-  tent task list|get|claim|deliver|\u2026  Attach Local Service \u2192 mount \u2192 task.* RPC
-  tent task --help                    Full task subcommand help
-  tent agent enter|status|leave       External session lifecycle (no ACP spawn)
-  tent agent --help                   Pull-host enter/status/leave + hook aliases
   tent role-checkpoint set|show|clear Optional cooperative Role continuation note
   tent role-checkpoint --help         set/clear \u2192 Service; show read-only; --actor
-  propose <boxId> <file|->            Submit a proposal (in-workspace \u2192 proposal.submit RPC)
+  propose <nodeId> <file|->           Submit a Node proposal (in-workspace \u2192 proposal.submit RPC)
   CLI exit does not stop Local Service. Token stays in machine-local service.json.
 
 Initialization and machine config:
   new <workspace-path>               Create <workspace>/.tent without touching project files.
                                      Use "tent new ." to adopt an existing project.
+  new <workspace-path> --repair-existing
+                                     One-shot re-adopt of an orphan <workspace>/.tent
+                                     (missing index + Tent evidence). Never runs genesis.
   skill-install [--target all|claude|shared-agents] [--force]
                                      Install bundled skills to selected machine roots.
   agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copilot]
@@ -6322,9 +7101,8 @@ Initialization and machine config:
 
 Read-only:
   status                             Print a read-only Tent status summary.
-  roles                              Print the role registry.
   tags                               List registered tags.
-  find <tag>                         Find boxes by tag.
+  find <tag>                         Find Nodes by tag.
   tree                               Print the Node tree.
 
 Options:
@@ -6336,7 +7114,7 @@ async function newTent(target) {
   const fsmod = await import("node:fs/promises");
   const workspaceRoot = path9.resolve(target);
   const fsa = new NodeFs(workspaceRoot);
-  if (await fsa.exists(".tent")) return fail(`Target is already a Tent: ${workspaceRoot}`);
+  if (await fsa.exists(".tent")) return fail3(`Target is already a Tent: ${workspaceRoot}`);
   await fsmod.mkdir(workspaceRoot, { recursive: true });
   const name = path9.basename(workspaceRoot);
   await scaffoldInWorkspace(fsa, { name });
@@ -6344,6 +7122,27 @@ async function newTent(target) {
     `\u2713 Created Tent: ${path9.join(workspaceRoot, ".tent")}
 In-workspace layout: collaboration facts live under <workspace>/.tent/.
 The Node tree starts empty; use tent-init to propose and approve its initial structure.`
+  );
+}
+async function repairExistingTent(target) {
+  const workspaceRoot = path9.resolve(target);
+  const fsa = new NodeFs(workspaceRoot);
+  let result;
+  try {
+    result = await reAdoptOrphanTent(fsa);
+  } catch (error) {
+    return fail3(error instanceof Error ? error.message : String(error));
+  }
+  const created = [];
+  if (result.createdIndex) created.push("index.md");
+  for (const dir of result.createdDirs) created.push(`${dir}/`);
+  for (const reg of result.createdRegistries) created.push(reg);
+  if (result.gitignoreUpdated) created.push(".gitignore (.tent/ entry)");
+  const createdLine = created.length > 0 ? `Created structural pieces: ${created.join(", ")}` : "Created structural pieces: (none beyond index)";
+  console.log(
+    `\u2713 Re-adopted orphan Tent: ${path9.join(workspaceRoot, ".tent")}
+${createdLine}
+Existing Node/registry/temp bytes were preserved; no genesis scaffold ran.`
   );
 }
 var entry = process.argv[1] ? path9.resolve(process.argv[1]) : "";

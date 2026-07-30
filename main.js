@@ -971,7 +971,7 @@ function resolveSubtree(box, registry, inheritedInvalid, inheritedArchived = fal
 }
 function invalidTypeReference(box, registry) {
   if (!box.id) {
-    return { rootId: box.path, reason: "Missing id: likely a manually created orphan box; use tent new-box or repair." };
+    return { rootId: box.path, reason: "Missing id: likely a manually created orphan Node; use tent node create or repair." };
   }
   if (!typeExists(box.type, registry)) {
     return { rootId: box.id, reason: `Unknown type: ${box.type}.` };
@@ -1654,8 +1654,7 @@ function allowedTransitions(from) {
       return [
         { event: "accept", to: "accepted" },
         { event: "reject-resume", to: "running" },
-        { event: "reject-terminal", to: "rejected" },
-        { event: "interrupt", to: "interrupted" }
+        { event: "reject-terminal", to: "rejected" }
       ];
     case "rejected":
       return [];
@@ -1757,6 +1756,62 @@ function taskAssigneeKind(task) {
 function serializeTaskActorRef(actor) {
   return { kind: actor.kind, id: actor.id };
 }
+function serializeBaseCommitCapture(capture) {
+  return {
+    source: capture.source,
+    baseCommit: capture.baseCommit,
+    actor: serializeTaskActorRef(capture.actor),
+    capturedAt: capture.capturedAt
+  };
+}
+function assertIsoTimestamp(value, label) {
+  const raw = value.trim();
+  if (!raw) {
+    throw new Error(`${label} must be a non-empty ISO-8601 timestamp.`);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(raw)) {
+    throw new Error(
+      `${label} must be a real ISO-8601 timestamp with timezone; got ${raw}.`
+    );
+  }
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) {
+    throw new Error(`${label} is not a parseable ISO-8601 instant: ${raw}.`);
+  }
+  return raw;
+}
+function parseBaseCommitCapture(value) {
+  if (value === void 0 || value === null) return void 0;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(
+      "Task baseCommitCapture must be an object { source, baseCommit, actor, capturedAt }."
+    );
+  }
+  const raw = value;
+  const source = raw.source;
+  if (source !== "first-claim" && source !== "explicit-backfill") {
+    throw new Error(
+      `Task baseCommitCapture.source must be first-claim|explicit-backfill; got ${String(source)}.`
+    );
+  }
+  const baseCommit = typeof raw.baseCommit === "string" ? raw.baseCommit.trim() : "";
+  if (!baseCommit) {
+    throw new Error("Task baseCommitCapture.baseCommit must be a non-empty SHA.");
+  }
+  const capturedAtRaw = typeof raw.capturedAt === "string" ? raw.capturedAt.trim() : "";
+  const capturedAt = assertIsoTimestamp(
+    capturedAtRaw,
+    "Task baseCommitCapture.capturedAt"
+  );
+  let actor;
+  try {
+    actor = parseTaskActorRef(raw.actor, "parentActor");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(msg.replace(/Task parentActor/g, "Task baseCommitCapture.actor"));
+  }
+  return { source, baseCommit, actor, capturedAt };
+}
 function resolveDispatchActors(input) {
   if (!input.parentActor) {
     throw new Error(
@@ -1806,6 +1861,21 @@ async function loadTaskEnvelope(fs2, path) {
   if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
     task.baseCommit = data.baseCommit.trim();
   }
+  const baseCommitCapture = parseBaseCommitCapture(data.baseCommitCapture);
+  if (baseCommitCapture) {
+    const recordedBase = task.baseCommit?.trim() || "";
+    if (!recordedBase) {
+      throw new Error(
+        `Invalid task envelope format: ${path} (baseCommitCapture present but baseCommit missing).`
+      );
+    }
+    if (recordedBase !== baseCommitCapture.baseCommit) {
+      throw new Error(
+        `Invalid task envelope format: ${path} (baseCommit ${recordedBase} !== baseCommitCapture.baseCommit ${baseCommitCapture.baseCommit}).`
+      );
+    }
+    task.baseCommitCapture = baseCommitCapture;
+  }
   if (data.integrationAuthority !== void 0 && data.integrationAuthority !== null && task.parentActor && task.reviewer) {
     task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
       data.integrationAuthority,
@@ -1832,6 +1902,9 @@ async function loadTaskEnvelope(fs2, path) {
     task.agentId = data.agentId.trim();
   }
   if (typeof data.sessionId === "string") task.sessionId = data.sessionId;
+  if (typeof data.purpose === "string" && data.purpose.trim()) {
+    task.purpose = data.purpose.trim();
+  }
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
   if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
     task.lastOutcome = data.lastOutcome;
@@ -1933,7 +2006,7 @@ function relayPromptForTask(task, roots) {
   return assigneeLine + `${formatExternalPathBlock(task, resolved)}
 ${formatTaskPointers(task)}
 1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).
-2. Inspect with \`tent task get ${task.path}\` (or read the envelope file), then open the claimed boxes; the box notes contain the task definition.
+2. Read the Task Context Card (\`tent task get ${task.path}\` or the envelope file), then resolve each id in \`contextCard.refs.nodes\` with \`tent node get <nodeId>\`.
 3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).
 ` + initStep;
 }
@@ -1990,13 +2063,27 @@ async function writeTaskEnvelope(fs2, clock, input) {
   if (acceptance.length === 0) {
     throw new Error("Dispatch requires non-empty acceptance (or objective).");
   }
+  const facts = input.contextGenerationFacts;
   const contextGeneration = input.contextGeneration?.trim() || computeContextGeneration({
     workspaceIdentity: input.workspace?.workspace || "local-workspace",
-    agentsPointerDigest: "dispatch-default-agents",
+    agentsPointerDigest: facts?.agentsPointerDigest?.trim() || agentsBodyCompatibilityDigest(facts?.agentsBody ?? ""),
+    tentRoleDigest: facts?.tentRoleDigest,
+    tentRoleVersion: facts?.tentRoleVersion,
+    rolePrompt: facts?.rolePrompt,
+    rosterAgentIds: facts?.rosterAgentIds,
+    tentTaskDigest: facts?.tentTaskDigest,
+    tentTaskVersion: facts?.tentTaskVersion,
+    profileAdapterCompatibility: profileAdapterCompatibilityDigest({
+      profileId: facts?.profileId || input.role,
+      adapterId: facts?.adapterId || "unknown-adapter",
+      capabilityFlags: facts?.capabilityFlags
+    }),
+    purpose: facts?.purpose,
     extraStable: {
       assigneeKind,
       assignee: input.role,
-      taskId: id
+      ...input.agentId?.trim() ? { agentId: input.agentId.trim() } : {},
+      ...facts?.extraStable
     }
   });
   const assignee = projectAssigneeFromTask({
@@ -2040,6 +2127,8 @@ async function writeTaskEnvelope(fs2, clock, input) {
   if (input.asSub === true) data.asSub = true;
   if (input.agentId?.trim()) data.agentId = input.agentId.trim();
   if (input.sessionId) data.sessionId = input.sessionId;
+  if (input.purpose?.trim()) data.purpose = input.purpose.trim();
+  else if (facts?.purpose?.trim()) data.purpose = facts.purpose.trim();
   if (input.workspace) {
     data.workspace = input.workspace.workspace;
     data.worktree = input.workspace.worktree;
@@ -2156,6 +2245,10 @@ async function patchTaskEnvelope(fs2, path, patch) {
   else if (typeof patch.baseCommit === "string" && patch.baseCommit.trim()) {
     data.baseCommit = patch.baseCommit.trim();
   }
+  if (patch.baseCommitCapture === null) delete data.baseCommitCapture;
+  else if (patch.baseCommitCapture) {
+    data.baseCommitCapture = serializeBaseCommitCapture(patch.baseCommitCapture);
+  }
   if (patch.integrationAuthority === null) delete data.integrationAuthority;
   else if (patch.integrationAuthority) {
     if (data.parentActor === void 0 || data.parentActor === null) {
@@ -2191,6 +2284,10 @@ async function patchTaskEnvelope(fs2, path, patch) {
   if (patch.taskDeltaDigest === null) delete data.taskDeltaDigest;
   else if (typeof patch.taskDeltaDigest === "string" && patch.taskDeltaDigest.trim()) {
     data.taskDeltaDigest = patch.taskDeltaDigest.trim();
+  }
+  if (patch.purpose === null) delete data.purpose;
+  else if (typeof patch.purpose === "string" && patch.purpose.trim()) {
+    data.purpose = patch.purpose.trim();
   }
   await fs2.writeFile(path, serializeFrontmatter(data, body, keyOrder));
   return loadTaskEnvelope(fs2, path);
@@ -2263,18 +2360,39 @@ function isContextGenerationId(value) {
 }
 function computeContextGeneration(inputs) {
   const roster = [...inputs.rosterAgentIds ?? []].map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
+  const extraStable = sanitizeContextGenerationExtraStable(inputs.extraStable);
   const payload = {
     v: CONTEXT_GENERATION_VERSION,
     workspaceIdentity: inputs.workspaceIdentity.trim(),
     agentsPointerDigest: inputs.agentsPointerDigest.trim(),
     tentRoleDigest: inputs.tentRoleDigest?.trim() || "",
+    tentRoleVersion: inputs.tentRoleVersion?.trim() || "",
     rolePrompt: inputs.rolePrompt?.trim() || "",
     roster,
     tentTaskDigest: inputs.tentTaskDigest?.trim() || "",
+    tentTaskVersion: inputs.tentTaskVersion?.trim() || "",
     profileAdapterCompatibility: inputs.profileAdapterCompatibility?.trim() || "",
-    extraStable: inputs.extraStable ?? {}
+    purpose: inputs.purpose?.trim() || "",
+    extraStable
   };
   return formatContextGeneration(canonicalJson(payload));
+}
+function sanitizeContextGenerationExtraStable(extra) {
+  const out = {};
+  if (!extra) return out;
+  const forbidden = new Set(
+    CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS.map((k) => k.toLowerCase())
+  );
+  for (const key of Object.keys(extra).sort((a, b) => a.localeCompare(b))) {
+    if (forbidden.has(key.toLowerCase())) continue;
+    const v = extra[key];
+    if (v === void 0) continue;
+    out[key] = v;
+  }
+  return out;
+}
+function agentsBodyCompatibilityDigest(agentsBody) {
+  return sha256Hex(typeof agentsBody === "string" ? agentsBody : "");
 }
 function computeTaskDeltaDigest(inputs) {
   const { card, taskInputDelta, checkpoint, userPrompt } = inputs;
@@ -2539,6 +2657,17 @@ function projectAssigneeFromTask(task) {
   }
   return { kind: "role", id: task.role };
 }
+function profileAdapterCompatibilityDigest(input) {
+  const flags = [...input.capabilityFlags ?? []].map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
+  return sha256Hex(
+    canonicalJson({
+      profileId: input.profileId.trim(),
+      adapterId: input.adapterId.trim(),
+      flags,
+      launchDigest: input.launchDigest?.trim() || ""
+    })
+  );
+}
 function deriveIntegrationAuthority(input) {
   try {
     const pair = resolveParentReviewerPair({
@@ -2594,7 +2723,7 @@ function assertIntegrationAuthorityMatchesParent(authority, parentActor, reviewe
   }
   return derived;
 }
-var import_node_crypto2, TASK_CONTEXT_CARD_SCHEMA_VERSION, CONTEXT_GENERATION_VERSION, INTEGRATION_MUTATOR_SERVICE, TaskContextCardError;
+var import_node_crypto2, TASK_CONTEXT_CARD_SCHEMA_VERSION, CONTEXT_GENERATION_VERSION, INTEGRATION_MUTATOR_SERVICE, CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS, TaskContextCardError;
 var init_task_context_card = __esm({
   "src/core/task-context-card.ts"() {
     "use strict";
@@ -2604,6 +2733,16 @@ var init_task_context_card = __esm({
     TASK_CONTEXT_CARD_SCHEMA_VERSION = "v1";
     CONTEXT_GENERATION_VERSION = "v1";
     INTEGRATION_MUTATOR_SERVICE = "service";
+    CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS = [
+      "taskId",
+      "taskPath",
+      "objective",
+      "acceptance",
+      "taskDeltaDigest",
+      "userPrompt",
+      "taskInputDelta",
+      "checkpoint"
+    ];
     TaskContextCardError = class extends Error {
       constructor(code, message, details) {
         super(message);
@@ -2809,6 +2948,12 @@ async function collectDeliveryFiles(fs2, dir, filter, out) {
 }
 async function removeNonAcceptedDeliveriesForBox(fs2, boxId) {
   for (const delivery of await loadDeliveries(fs2, { boxId })) {
+    if (delivery.status === "accepted") continue;
+    if (await fs2.exists(delivery.path)) await fs2.remove(delivery.path);
+  }
+}
+async function removeNonAcceptedDeliveriesForTask(fs2, taskId) {
+  for (const delivery of await loadDeliveries(fs2, { taskId })) {
     if (delivery.status === "accepted") continue;
     if (await fs2.exists(delivery.path)) await fs2.remove(delivery.path);
   }
@@ -3158,11 +3303,21 @@ async function taskClaim(env, taskPath, options = {}) {
       const claimable = canClaim(box);
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
     }
+    const now = env.clock.now();
+    if (options.claimWrite) {
+      return patchTaskEnvelope(env.fs, taskPath, {
+        ...options.claimWrite,
+        status: "taken",
+        state: "running",
+        ...options.sessionId ? { sessionId: options.sessionId } : {},
+        updatedAt: options.claimWrite.updatedAt ?? now
+      });
+    }
     await ackTaskEnvelope(env.fs, taskPath);
     if (options.sessionId) {
       return patchTaskEnvelope(env.fs, taskPath, {
         sessionId: options.sessionId,
-        updatedAt: env.clock.now()
+        updatedAt: now
       });
     }
     return loadTaskEnvelope(env.fs, taskPath);
@@ -3321,6 +3476,17 @@ async function taskReject(env, taskPath, options) {
 async function taskInterrupt(env, taskPath) {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
+    if (task.state === "interrupted") {
+      await releaseOccupationForTask(env, task);
+      if (!task.activeDeliveryId && task.lastOutcome !== "delivered") {
+        return task;
+      }
+      return patchTaskEnvelope(env.fs, taskPath, {
+        activeDeliveryId: null,
+        ...task.lastOutcome === "delivered" ? { lastOutcome: null } : {},
+        updatedAt: env.clock.now()
+      });
+    }
     if (task.state === "queued") {
       assertTransition(task.state, "interrupt", "interrupted");
       await env.fs.remove(taskPath);
@@ -3331,6 +3497,8 @@ async function taskInterrupt(env, taskPath) {
     return patchTaskEnvelope(env.fs, taskPath, {
       state: "interrupted",
       wait: null,
+      activeDeliveryId: null,
+      ...task.lastOutcome === "delivered" ? { lastOutcome: null } : {},
       updatedAt: env.clock.now()
     });
   });
@@ -3353,11 +3521,7 @@ async function taskFail(env, taskPath, options = {}) {
   });
 }
 async function releaseOccupationForTask(env, task) {
-  if (task.contextCard == null) return;
-  for (const nodeId2 of taskReferencedNodeIds(task)) {
-    if (nodeId2 === "root") continue;
-    await removeNonAcceptedDeliveriesForBox(env.fs, nodeId2);
-  }
+  await removeNonAcceptedDeliveriesForTask(env.fs, task.id || task.path);
 }
 async function requireActiveReadyDelivery(fs2, task) {
   if (task.activeDeliveryId) {
@@ -4366,6 +4530,7 @@ __export(ops_exports, {
   patchBox: () => patchBox,
   placeBox: () => placeBox,
   renameNode: () => renameNode,
+  resolveDispatchNodeIds: () => resolveDispatchNodeIds,
   restoreBox: () => restoreBox,
   setNodeMode: () => setNodeMode,
   stamp: () => stamp,
@@ -4373,6 +4538,66 @@ __export(ops_exports, {
   taskAck: () => taskAck,
   untagBox: () => untagBox
 });
+function resolveDispatchNodeIds(input) {
+  const tentName = input.tentName.trim();
+  const legacyRaw = typeof input.legacyClaimId === "string" ? input.legacyClaimId.trim() : "";
+  const legacy = legacyRaw || void 0;
+  if (input.nodeIds !== void 0 && input.nodeIds !== null) {
+    if (!Array.isArray(input.nodeIds)) {
+      throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
+    }
+    if (input.nodeIds.length === 0) {
+      throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
+    }
+    const out = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (let i = 0; i < input.nodeIds.length; i++) {
+      const raw = input.nodeIds[i];
+      if (typeof raw !== "string" || !raw.trim()) {
+        throw new Error(
+          `Dispatch nodeIds[${i}] must be a non-empty durable Node ID string.`
+        );
+      }
+      const id = raw.trim();
+      if (isForbiddenRootDispatchToken(id, tentName)) {
+        throw new Error(
+          "Cannot dispatch the whole Tent directly; dispatch specific Nodes (nodeIds cannot include ., root, or the Tent name)."
+        );
+      }
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    if (out.length === 0) {
+      throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
+    }
+    if (legacy) {
+      if (isForbiddenRootDispatchToken(legacy, tentName)) {
+        throw new Error(
+          "Cannot dispatch the whole Tent directly; dispatch a specific Node (legacy primary cannot be ., root, or the Tent name)."
+        );
+      }
+      if (legacy !== out[0]) {
+        throw new Error(
+          `Dispatch legacy primary '${legacy}' conflicts with authoritative nodeIds primary '${out[0]}'; when both are present they must agree (prefer nodeIds).`
+        );
+      }
+    }
+    return out;
+  }
+  if (!legacy) {
+    throw new Error("Dispatch requires nodeIds or a legacy single boxId/id/claimId.");
+  }
+  if (isForbiddenRootDispatchToken(legacy, tentName)) {
+    throw new Error(
+      "Cannot dispatch the whole Tent directly; dispatch a specific Node (legacy primary cannot be ., root, or the Tent name)."
+    );
+  }
+  return [legacy];
+}
+function isForbiddenRootDispatchToken(id, tentName) {
+  return id === "." || id === "root" || tentName !== "" && id === tentName;
+}
 async function dispatch(env, claimId, role, promptOrOptions) {
   return withMutation2(env.fs, async () => dispatchUnlocked(env, claimId, role, promptOrOptions));
 }
@@ -4399,7 +4624,11 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     if (!roleName) throw new Error("Dispatch with assigneeKind=role requires role.");
     assigneeLabel = assertRoleName(roleName);
   }
-  const claim = resolveDispatchClaim(tent, claimId, env.tentName);
+  const nodeIds = resolveDispatchNodeIds({
+    nodeIds: options.nodeIds,
+    legacyClaimId: claimId,
+    tentName: env.tentName
+  });
   const tasks = await loadTaskEnvelopes(env.fs);
   const createdRoot = assigneeKind === "agentProfile" ? agentProfileTempRoot(assigneeLabel) : join2("temp", assigneeLabel);
   const createdRootExisted = await env.fs.exists(createdRoot);
@@ -4409,21 +4638,26 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     );
   }
   void options.asSub;
-  void tasks;
-  if (claim.root) {
-  } else {
-    const structural = structuralClaimGate(claim.box);
+  const selectedNodes = [];
+  for (const id of nodeIds) {
+    const node = requireBoxById2(tent, id);
+    const structural = structuralClaimGate(node);
     if (!structural.ok) {
-      throw new Error(`Cannot dispatch: ${structural.reason || "box cannot be claimed"}`);
+      throw new Error(`Cannot dispatch: ${structural.reason || "Node cannot be claimed"}`);
     }
-    const claimable = canClaim(claim.box, { tent, tasks });
+    const claimable = canClaim(node, { tent, tasks });
     if (!claimable.ok) {
-      throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
+      throw new Error(`Cannot dispatch: ${claimable.reason || "Node cannot be claimed"}`);
     }
+    selectedNodes.push(node);
   }
   try {
-    const roleSelection = claim.root ? [] : assigneeKind === "role" ? roleManifestSelection(tent, assigneeLabel, claim.box, tasks) : [claim.box];
-    const input = claim.root ? { tentName: env.tentName, role: assigneeLabel, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: assigneeLabel, claimBoxes: roleSelection, ...options.workspace };
+    const input = {
+      tentName: env.tentName,
+      role: assigneeLabel,
+      claimBoxes: selectedNodes,
+      ...options.workspace
+    };
     const manifest = buildManifest(tent, input);
     const yaml = manifestToYaml(manifest);
     const taskId = options.taskId && options.taskId.trim() ? options.taskId.trim() : makeTaskId();
@@ -4441,7 +4675,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       const roleDefinition = registry.roles.find((item) => item.name === assigneeLabel) ?? { name: assigneeLabel };
       initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
     }
-    const taskClaims = claim.root ? [{ id: "root", path: "./" }] : [{ id: claim.box.id, path: claim.box.path }];
+    const taskClaims = selectedNodes.map((node) => ({ id: node.id, path: node.path }));
     const agentId = options.agentId?.trim() || void 0;
     const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
       role: assigneeLabel,
@@ -4456,7 +4690,10 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       assigneeKind,
       agentId,
       id: taskId,
-      tasksDir: assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : void 0
+      tasksDir: assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : void 0,
+      ...options.contextGeneration ? { contextGeneration: options.contextGeneration } : {},
+      ...options.contextGenerationFacts ? { contextGenerationFacts: options.contextGenerationFacts } : {},
+      ...options.purpose?.trim() ? { purpose: options.purpose.trim() } : {}
     });
     const written = await loadTaskEnvelope(env.fs, taskPath).catch(() => null);
     const parentActor = options.parentActor;
@@ -4506,14 +4743,6 @@ async function taskAck(env, taskPath) {
 }
 async function cancelPendingTask(env, taskPath) {
   await withMutation2(env.fs, () => cancelTaskEnvelope(env.fs, taskPath));
-}
-function resolveDispatchClaim(tent, claimId, tentName) {
-  const id = claimId.trim();
-  if (id === "." || id === "root" || id === tentName) {
-    throw new Error("Cannot dispatch the whole Tent directly; dispatch a specific box (boxId cannot be ., root, or the Tent name).");
-  }
-  const box = requireBoxById2(tent, id);
-  return { root: false, id: box.id, name: box.name, box };
 }
 async function stamp(_env, _boxId, _acceptedBy = "user") {
   void _env;
@@ -4581,6 +4810,9 @@ async function forceRelease(env, boxId) {
       }
     }
   }
+  await withMutation2(env.fs, async () => {
+    await removeNonAcceptedDeliveriesForBox(env.fs, boxId);
+  });
 }
 async function tagBox(env, boxId, name) {
   await addTag(env.fs, boxId, normalizeTagName(name));
@@ -4693,6 +4925,7 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
   const reserved = [
     "id",
     "owner",
+    "assignee",
     "mode",
     "archived",
     "readable",
@@ -4886,21 +5119,6 @@ function assertRoleName(role) {
   if (/[\/\\\r\n]/.test(name)) throw new Error("Role name cannot contain path separators or newlines.");
   assertRoleNameAvailable(name);
   return name;
-}
-function roleManifestSelection(tent, role, current, tasks) {
-  const selected = /* @__PURE__ */ new Map();
-  for (const task of tasks) {
-    if (taskAssigneeKind(task) !== "role") continue;
-    if (task.role !== role) continue;
-    if (!envelopeIsActiveOccupation(task)) continue;
-    if (task.contextCard == null) continue;
-    for (const nodeId2 of taskReferencedNodeIds(task)) {
-      const box = tent.byId.get(nodeId2);
-      if (box) selected.set(box.id, box);
-    }
-  }
-  selected.set(current.id, current);
-  return [...selected.values()];
 }
 function requireBoxById2(tent, boxId) {
   if (tent.duplicateIds.has(boxId)) {
@@ -5542,6 +5760,7 @@ async function integrateWorkspaceCommits(contract, refs) {
     );
   }
   const originalRef = (await git(root, ["rev-parse", `refs/heads/${target}`])).trim();
+  let ownedTip = originalRef;
   const resolved = [];
   for (const sourceRef of commits) {
     await git(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
@@ -5556,13 +5775,14 @@ async function integrateWorkspaceCommits(contract, refs) {
   if (fastForwardRef) {
     try {
       await git(integrationCwd, ["merge", "--ff-only", fastForwardRef]);
+      ownedTip = (await git(integrationCwd, ["rev-parse", "HEAD"])).trim();
       return resolved.map(({ sourceRef, fullRef: integratedRef }) => ({
         sourceRef,
         integratedRef,
         alreadyIntegrated: false
       }));
     } catch (error) {
-      await rollbackIntegration(integrationCwd, originalRef, error);
+      await rollbackIntegration(integrationCwd, originalRef, target, ownedTip, error);
     }
   }
   const results = [];
@@ -5580,10 +5800,11 @@ async function integrateWorkspaceCommits(contract, refs) {
       }
       await git(integrationCwd, ["cherry-pick", "-x", sourceRef]);
       const integratedRef = (await git(integrationCwd, ["rev-parse", "HEAD"])).trim();
+      ownedTip = integratedRef;
       results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
     }
   } catch (error) {
-    await rollbackIntegration(integrationCwd, originalRef, error);
+    await rollbackIntegration(integrationCwd, originalRef, target, ownedTip, error);
   }
   return results;
 }
@@ -5704,14 +5925,57 @@ async function completeFastForwardRef(root, targetRef, commits, sourceBranch) {
   const supplied = new Set(commits);
   return range.every((ref) => supplied.has(ref)) ? lastRef : void 0;
 }
-async function rollbackIntegration(root, originalRef, cause) {
-  await git(root, ["cherry-pick", "--abort"]).catch(() => "");
+async function rollbackIntegration(root, originalRef, targetBranch, ownedTip, cause) {
+  return rollbackIntegrationCas({
+    root,
+    originalRef,
+    targetBranch,
+    ownedTip,
+    cause
+  });
+}
+async function rollbackIntegrationCas(input) {
+  const root = nodePath2.resolve(input.root);
+  const target = input.targetBranch.trim();
+  const targetRef = `refs/heads/${target}`;
+  const originalRef = input.originalRef.trim();
+  const ownedTip = input.ownedTip.trim();
+  const cause = input.cause;
+  let currentTip = "";
   try {
-    await git(root, ["reset", "--hard", originalRef]);
-  } catch (rollbackError) {
+    currentTip = (await git(root, ["rev-parse", targetRef])).trim();
+  } catch (readError) {
     throw new Error(
-      `Workspace integration failed and rollback also failed: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
+      `Workspace integration conflicted; rollback could not read target ${target}: ${errorMessage(cause)}; read: ${errorMessage(readError)}`
     );
+  }
+  if (currentTip !== originalRef && currentTip !== ownedTip) {
+    throw new Error(
+      `Workspace integration conflicted; rollback refused because target ${target} advanced by another writer after this operation's write (owned ${ownedTip}, current ${currentTip}, original ${originalRef}); ref, worktree, and sequencer evidence preserved: ${errorMessage(cause)}`
+    );
+  }
+  await git(root, ["cherry-pick", "--quit"]).catch(() => "");
+  if (currentTip === ownedTip && currentTip !== originalRef) {
+    try {
+      await git(root, ["update-ref", targetRef, originalRef, ownedTip]);
+    } catch (casError) {
+      throw new Error(
+        `Workspace integration conflicted; rollback CAS failed for target ${target} (owned ${ownedTip}, original ${originalRef}): ${errorMessage(cause)}; cas: ${errorMessage(casError)}`
+      );
+    }
+    currentTip = originalRef;
+  }
+  try {
+    await git(root, ["read-tree", "-u", "--reset", currentTip]);
+    await git(root, ["checkout-index", "-a", "-f"]).catch(() => "");
+  } catch (rollbackError) {
+    try {
+      await git(root, ["reset", "--hard", currentTip]);
+    } catch (hardError) {
+      throw new Error(
+        `Workspace integration failed and rollback also failed: ${errorMessage(cause)}; reconcile: ${errorMessage(rollbackError)}; hard: ${errorMessage(hardError)}`
+      );
+    }
   }
   throw new Error(`Workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
 }
