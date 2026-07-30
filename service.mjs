@@ -17587,6 +17587,7 @@ var TASK_WORKTREE_RECLAIM_PENDING_PATH = join(
   TEMP_DIR,
   "task-worktree-reclaim-pending.json"
 );
+var TASK_WORKTREE_RECLAIM_HISTORICAL_BATCH_SIZE = 8;
 var queueChains = /* @__PURE__ */ new WeakMap();
 function withQueueCriticalSection(fs23, fn) {
   const key2 = fs23;
@@ -17604,39 +17605,175 @@ function withQueueCriticalSection(fs23, fn) {
 function emptyFile() {
   return { version: 1, entries: [] };
 }
+function parseLastDiagnostic(raw) {
+  if (raw === void 0 || raw === null) return void 0;
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Invalid Task worktree reclaim diagnostic");
+  }
+  const d = raw;
+  if (typeof d.code !== "string" || !d.code.trim() || typeof d.reason !== "string" || typeof d.attemptedAt !== "string" || !d.attemptedAt.trim()) {
+    throw new Error("Invalid Task worktree reclaim diagnostic");
+  }
+  return {
+    code: d.code.trim(),
+    reason: d.reason,
+    attemptedAt: d.attemptedAt.trim()
+  };
+}
+function parseScanDecision(raw) {
+  if (raw === void 0 || raw === null) return void 0;
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Invalid Task worktree reclaim scan decision");
+  }
+  const d = raw;
+  if (typeof d.taskPath !== "string" || !d.taskPath.trim() || typeof d.code !== "string" || !d.code.trim() || typeof d.reason !== "string" || typeof d.attemptedAt !== "string" || !d.attemptedAt.trim()) {
+    throw new Error("Invalid Task worktree reclaim scan decision");
+  }
+  return {
+    taskPath: d.taskPath.trim(),
+    code: d.code.trim(),
+    reason: d.reason,
+    attemptedAt: d.attemptedAt.trim()
+  };
+}
+function parseEntry(raw) {
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Invalid Task worktree reclaim pending entry");
+  }
+  const e = raw;
+  if (typeof e.taskId !== "string" || !e.taskId.trim() || typeof e.taskPath !== "string" || !e.taskPath.trim() || typeof e.workspaceRoot !== "string" || !e.workspaceRoot.trim() || typeof e.enqueuedAt !== "string") {
+    throw new Error("Invalid Task worktree reclaim pending entry");
+  }
+  const statusRaw = e.status;
+  if (statusRaw !== void 0 && statusRaw !== "needs-attention" && statusRaw !== "pending") {
+    throw new Error("Invalid Task worktree reclaim pending status");
+  }
+  const status = statusRaw === "needs-attention" || statusRaw === "pending" ? statusRaw : void 0;
+  const lastDiagnostic = parseLastDiagnostic(e.lastDiagnostic);
+  return {
+    taskId: e.taskId.trim(),
+    taskPath: e.taskPath.trim(),
+    workspaceRoot: e.workspaceRoot.trim(),
+    enqueuedAt: e.enqueuedAt,
+    ...typeof e.trigger === "string" && e.trigger.trim() ? { trigger: e.trigger.trim() } : {},
+    ...status ? { status } : {},
+    ...lastDiagnostic ? { lastDiagnostic } : {}
+  };
+}
+function parseHistoricalScan(raw) {
+  if (raw === void 0 || raw === null) return void 0;
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Invalid Task worktree reclaim historical scan");
+  }
+  const s = raw;
+  if (typeof s.complete !== "boolean") {
+    throw new Error("Invalid Task worktree reclaim historical completion");
+  }
+  const lastDecision = parseScanDecision(s.lastDecision);
+  if (s.workspaceRoot !== void 0 && (typeof s.workspaceRoot !== "string" || !s.workspaceRoot.trim())) {
+    throw new Error("Invalid Task worktree reclaim historical workspace");
+  }
+  if (s.nextTaskPath !== void 0 && (typeof s.nextTaskPath !== "string" || !s.nextTaskPath.trim())) {
+    throw new Error("Invalid Task worktree reclaim historical cursor");
+  }
+  if (s.complete === true) {
+    return {
+      complete: true,
+      ...typeof s.workspaceRoot === "string" && s.workspaceRoot.trim() ? { workspaceRoot: s.workspaceRoot.trim() } : {},
+      ...lastDecision ? { lastDecision } : {}
+    };
+  }
+  const next = typeof s.nextTaskPath === "string" && s.nextTaskPath.trim() ? s.nextTaskPath.trim() : void 0;
+  return {
+    complete: false,
+    ...next ? { nextTaskPath: next } : {},
+    ...typeof s.workspaceRoot === "string" && s.workspaceRoot.trim() ? { workspaceRoot: s.workspaceRoot.trim() } : {},
+    ...lastDecision ? { lastDecision } : {}
+  };
+}
 async function readPending(fs23) {
   if (!await fs23.exists(TASK_WORKTREE_RECLAIM_PENDING_PATH)) {
     return emptyFile();
   }
+  const raw = await fs23.readFile(TASK_WORKTREE_RECLAIM_PENDING_PATH);
+  let parsed;
   try {
-    const raw = await fs23.readFile(TASK_WORKTREE_RECLAIM_PENDING_PATH);
-    const parsed = JSON.parse(raw);
-    if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.entries)) {
-      return emptyFile();
-    }
-    const entries = [];
-    for (const e of parsed.entries) {
-      if (e && typeof e.taskId === "string" && e.taskId.trim() && typeof e.taskPath === "string" && e.taskPath.trim() && typeof e.workspaceRoot === "string" && e.workspaceRoot.trim() && typeof e.enqueuedAt === "string") {
-        entries.push({
-          taskId: e.taskId.trim(),
-          taskPath: e.taskPath.trim(),
-          workspaceRoot: e.workspaceRoot.trim(),
-          enqueuedAt: e.enqueuedAt,
-          ...typeof e.trigger === "string" && e.trigger.trim() ? { trigger: e.trigger.trim() } : {}
-        });
-      }
-    }
-    return { version: 1, entries };
+    parsed = JSON.parse(raw);
   } catch {
-    return emptyFile();
+    throw new Error("Invalid Task worktree reclaim queue JSON");
   }
+  if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.entries)) {
+    throw new Error("Invalid Task worktree reclaim queue schema");
+  }
+  const entries = parsed.entries.map(parseEntry);
+  const seenTaskIds = /* @__PURE__ */ new Set();
+  for (const entry of entries) {
+    if (seenTaskIds.has(entry.taskId)) {
+      throw new Error(
+        `Duplicate Task worktree reclaim pending entry ${entry.taskId}`
+      );
+    }
+    seenTaskIds.add(entry.taskId);
+  }
+  const historicalScan = parseHistoricalScan(parsed.historicalScan);
+  return {
+    version: 1,
+    entries,
+    ...historicalScan ? { historicalScan } : {}
+  };
 }
 async function writePending(fs23, file) {
-  const body = JSON.stringify({ version: 1, entries: file.entries }, null, 2) + "\n";
+  const bodyObj = {
+    version: 1,
+    entries: file.entries
+  };
+  if (file.historicalScan) {
+    bodyObj.historicalScan = {
+      complete: file.historicalScan.complete === true,
+      ...file.historicalScan.nextTaskPath ? { nextTaskPath: file.historicalScan.nextTaskPath } : {},
+      ...file.historicalScan.workspaceRoot ? { workspaceRoot: file.historicalScan.workspaceRoot } : {},
+      ...file.historicalScan.lastDecision ? { lastDecision: file.historicalScan.lastDecision } : {}
+    };
+  }
+  const body = JSON.stringify(bodyObj, null, 2) + "\n";
   if (!await fs23.exists(TEMP_DIR)) {
     await fs23.writeFile(join(TEMP_DIR, ".keep"), "");
   }
   await fs23.writeFile(TASK_WORKTREE_RECLAIM_PENDING_PATH, body);
+}
+async function listTaskEnvelopePathsForReclaimScan(fs23) {
+  const paths = [];
+  if (!await fs23.exists(TEMP_DIR)) return paths;
+  for (const entry of await fs23.listDir(TEMP_DIR)) {
+    if (!entry.isDir) continue;
+    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
+      const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
+      if (!await fs23.exists(profilesRoot)) continue;
+      for (const profileEntry of await fs23.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        const taskDir2 = join(profilesRoot, profileEntry.name, "tasks");
+        if (!await fs23.exists(taskDir2)) continue;
+        for (const f of await fs23.listDir(taskDir2)) {
+          if (!f.isDir && f.name.endsWith(".md")) {
+            paths.push(join(taskDir2, f.name));
+          }
+        }
+      }
+      continue;
+    }
+    const taskDir = join(TEMP_DIR, entry.name, "tasks");
+    if (!await fs23.exists(taskDir)) continue;
+    for (const f of await fs23.listDir(taskDir)) {
+      if (!f.isDir && f.name.endsWith(".md")) {
+        paths.push(join(taskDir, f.name));
+      }
+    }
+  }
+  return paths.sort((a, b) => a.localeCompare(b));
+}
+function taskPathsAfterHistoricalCursor(allPaths, nextTaskPath) {
+  if (!nextTaskPath) return [...allPaths];
+  return allPaths.filter((p) => p.localeCompare(nextTaskPath) > 0);
 }
 async function enqueueTaskWorktreeReclaimPending(fs23, entry) {
   const taskId = entry.taskId.trim();
@@ -17652,12 +17789,17 @@ async function enqueueTaskWorktreeReclaimPending(fs23, entry) {
       taskPath,
       workspaceRoot,
       enqueuedAt: entry.enqueuedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
-      ...entry.trigger?.trim() ? { trigger: entry.trigger.trim() } : {}
+      ...entry.trigger?.trim() ? { trigger: entry.trigger.trim() } : {},
+      status: "pending"
     };
     const without = file.entries.filter((e) => e.taskId !== taskId);
     without.push(next);
     without.sort((a, b) => a.taskId.localeCompare(b.taskId));
-    await writePending(fs23, { version: 1, entries: without });
+    await writePending(fs23, {
+      version: 1,
+      entries: without,
+      ...file.historicalScan ? { historicalScan: file.historicalScan } : {}
+    });
     return next;
   });
 }
@@ -17668,8 +17810,47 @@ async function dequeueTaskWorktreeReclaimPending(fs23, taskId) {
     const file = await readPending(fs23);
     const next = file.entries.filter((e) => e.taskId !== id);
     if (next.length === file.entries.length) return false;
-    await writePending(fs23, { version: 1, entries: next });
+    await writePending(fs23, {
+      version: 1,
+      entries: next,
+      ...file.historicalScan ? { historicalScan: file.historicalScan } : {}
+    });
     return true;
+  });
+}
+async function recordTaskWorktreeReclaimNeedsAttention(fs23, input) {
+  const taskId = input.taskId.trim();
+  const taskPath = input.taskPath.trim();
+  const workspaceRoot = input.workspaceRoot.trim();
+  const code = input.code.trim();
+  if (!taskId || !taskPath || !workspaceRoot || !code) return void 0;
+  const attemptedAt = input.attemptedAt ?? (/* @__PURE__ */ new Date()).toISOString();
+  const lastDiagnostic = {
+    code,
+    reason: input.reason,
+    attemptedAt
+  };
+  return withQueueCriticalSection(fs23, async () => {
+    const file = await readPending(fs23);
+    const existing = file.entries.find((e) => e.taskId === taskId);
+    const next = {
+      taskId,
+      taskPath: existing?.taskPath ?? taskPath,
+      workspaceRoot: existing?.workspaceRoot ?? workspaceRoot,
+      enqueuedAt: existing?.enqueuedAt ?? attemptedAt,
+      ...existing?.trigger || input.trigger?.trim() ? { trigger: input.trigger?.trim() || existing?.trigger } : {},
+      status: "needs-attention",
+      lastDiagnostic
+    };
+    const without = file.entries.filter((e) => e.taskId !== taskId);
+    without.push(next);
+    without.sort((a, b) => a.taskId.localeCompare(b.taskId));
+    await writePending(fs23, {
+      version: 1,
+      entries: without,
+      ...file.historicalScan ? { historicalScan: file.historicalScan } : {}
+    });
+    return next;
   });
 }
 async function listTaskWorktreeReclaimPending(fs23) {
@@ -17682,6 +17863,167 @@ async function listTaskWorktreeReclaimPendingForWorkspace(fs23, workspaceRoot, s
   const root = workspaceRoot.trim();
   const all2 = await listTaskWorktreeReclaimPending(fs23);
   return all2.filter((e) => sameRoot(e.workspaceRoot, root));
+}
+async function readTaskWorktreeReclaimHistoricalScan(fs23) {
+  return withQueueCriticalSection(fs23, async () => {
+    const file = await readPending(fs23);
+    return file.historicalScan ? { ...file.historicalScan } : void 0;
+  });
+}
+async function persistHistoricalReclaimScanBatch(fs23, input) {
+  const workspaceRoot = input.workspaceRoot.trim();
+  if (!workspaceRoot) {
+    throw new Error("persistHistoricalReclaimScanBatch requires workspaceRoot");
+  }
+  return withQueueCriticalSection(fs23, async () => {
+    const file = await readPending(fs23);
+    if (file.historicalScan?.complete === true) {
+      return {
+        historicalScan: { ...file.historicalScan },
+        enqueued: [],
+        entries: [...file.entries]
+      };
+    }
+    const byId = /* @__PURE__ */ new Map();
+    for (const e of file.entries) {
+      byId.set(e.taskId, e);
+    }
+    const enqueued = [];
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const candidatesByPath = /* @__PURE__ */ new Map();
+    const candidateTaskIds = /* @__PURE__ */ new Set();
+    for (const c of input.newCandidates) {
+      const taskId = c.taskId.trim();
+      const taskPath = c.taskPath.trim();
+      const root = (c.workspaceRoot || workspaceRoot).trim();
+      if (!taskId || !taskPath || !root) {
+        throw new Error("Invalid historical reclaim candidate");
+      }
+      if (candidatesByPath.has(taskPath) || candidateTaskIds.has(taskId)) {
+        throw new Error("Duplicate historical reclaim candidate");
+      }
+      candidatesByPath.set(taskPath, c);
+      candidateTaskIds.add(taskId);
+      const existing = byId.get(taskId);
+      if (existing) {
+        if (existing.taskPath !== taskPath) {
+          throw new Error(
+            `Historical reclaim candidate path mismatch for ${taskId}`
+          );
+        }
+        continue;
+      }
+      const next = {
+        taskId,
+        taskPath,
+        workspaceRoot: root,
+        enqueuedAt: c.enqueuedAt ?? now,
+        ...c.trigger?.trim() ? { trigger: c.trigger.trim() } : { trigger: "historical.scan" },
+        status: "pending"
+      };
+      byId.set(taskId, next);
+      enqueued.push(next);
+    }
+    const entries = [...byId.values()].sort(
+      (a, b) => a.taskId.localeCompare(b.taskId)
+    );
+    const examined = input.examinedTaskPaths.map((p) => p.trim()).filter(Boolean);
+    if (examined.length > TASK_WORKTREE_RECLAIM_HISTORICAL_BATCH_SIZE) {
+      throw new Error("Historical reclaim batch exceeds configured bound");
+    }
+    for (let i = 0; i < examined.length; i += 1) {
+      if (!examined[i] || i > 0 && examined[i - 1].localeCompare(examined[i]) >= 0) {
+        throw new Error("Historical reclaim examined paths must be unique and sorted");
+      }
+    }
+    const decisions = (input.decisions ?? []).map((decision) => {
+      const parsed = parseScanDecision(decision);
+      if (!parsed) throw new Error("Invalid historical reclaim scan decision");
+      return parsed;
+    });
+    const decisionsByPath = new Map(decisions.map((d) => [d.taskPath, d]));
+    if (decisionsByPath.size !== decisions.length) {
+      throw new Error("Duplicate historical reclaim scan decision");
+    }
+    const examinedSet = new Set(examined);
+    for (const candidatePath of candidatesByPath.keys()) {
+      if (!examinedSet.has(candidatePath)) {
+        throw new Error(
+          `Historical reclaim candidate was not examined: ${candidatePath}`
+        );
+      }
+    }
+    for (const decision of decisions) {
+      if (decision.code !== "NOT_APPLICABLE") {
+        throw new Error(
+          `Historical reclaim cursor decision must be NOT_APPLICABLE: ${decision.taskPath}`
+        );
+      }
+      if (!examinedSet.has(decision.taskPath)) {
+        throw new Error(
+          `Historical reclaim decision was not examined: ${decision.taskPath}`
+        );
+      }
+    }
+    for (const taskPath of examined) {
+      const candidate = candidatesByPath.get(taskPath);
+      const hasExistingCandidate = candidate !== void 0 && byId.has(candidate.taskId.trim());
+      const hasDecision = decisionsByPath.has(taskPath);
+      if (hasExistingCandidate === hasDecision) {
+        throw new Error(
+          `Historical reclaim cursor proof missing or ambiguous for ${taskPath}`
+        );
+      }
+    }
+    const latestDecision = decisions.at(-1) ?? file.historicalScan?.lastDecision;
+    let historicalScan;
+    if (input.scanComplete) {
+      historicalScan = {
+        complete: true,
+        workspaceRoot,
+        ...latestDecision ? { lastDecision: latestDecision } : {}
+      };
+    } else if (examined.length > 0) {
+      historicalScan = {
+        complete: false,
+        nextTaskPath: examined[examined.length - 1],
+        workspaceRoot,
+        ...latestDecision ? { lastDecision: latestDecision } : {}
+      };
+    } else {
+      historicalScan = file.historicalScan ? { ...file.historicalScan, workspaceRoot } : { complete: false, workspaceRoot };
+    }
+    await writePending(fs23, { version: 1, entries, historicalScan });
+    return { historicalScan, enqueued, entries };
+  });
+}
+async function recordHistoricalReclaimScanDiagnostic(fs23, input) {
+  const workspaceRoot = input.workspaceRoot.trim();
+  const taskPath = input.taskPath.trim();
+  const code = input.code.trim();
+  if (!workspaceRoot || !taskPath || !code) {
+    throw new Error("Invalid historical reclaim scan diagnostic");
+  }
+  return withQueueCriticalSection(fs23, async () => {
+    const file = await readPending(fs23);
+    const historicalScan = {
+      complete: false,
+      ...file.historicalScan?.nextTaskPath ? { nextTaskPath: file.historicalScan.nextTaskPath } : {},
+      workspaceRoot,
+      lastDecision: {
+        taskPath,
+        code,
+        reason: input.reason,
+        attemptedAt: input.attemptedAt ?? (/* @__PURE__ */ new Date()).toISOString()
+      }
+    };
+    await writePending(fs23, {
+      version: 1,
+      entries: file.entries,
+      historicalScan
+    });
+    return historicalScan;
+  });
 }
 
 // src/core/workspace-settings.ts
@@ -24514,7 +24856,7 @@ async function workspaceMount(ctx, p) {
   await migrateSessionWorkspaceIdsOnMount(ctx, info.workspaceId);
   await migrateParentReviewerOnMount(ctx, info.workspaceId);
   await reconcileTaskSessionsOnMount(ctx, info.workspaceId);
-  await recoverTerminalTaskWorktreesOnMount(ctx, info.workspaceId);
+  scheduleHistoricalTaskWorktreeReclaimAfterMount(ctx, info.workspaceId);
   return info;
 }
 async function migrateParentReviewerOnMount(ctx, workspaceId) {
@@ -24690,6 +25032,7 @@ async function reconcileTaskSessionsOnMount(ctx, workspaceId) {
 }
 async function workspaceUnmount(ctx, p) {
   const workspaceId = requireString(p, "workspaceId");
+  await cancelAndDrainHistoricalTaskWorktreeReclaim(workspaceId);
   await ctx.host.unmount(workspaceId);
   return { ok: true };
 }
@@ -31448,6 +31791,7 @@ async function retryPendingWorktreeReclaimAfterSessionSettle(ctx, workspaceId, i
   }
 }
 var beforeTaskWorktreeReclaimRemoveForTests;
+var beforeTaskWorktreeReclaimReloadForTests;
 async function maybeAutoReclaimTaskWorktree(ctx, workspaceId, task, reason) {
   const mount = ctx.host.get(workspaceId);
   if (!mount) return void 0;
@@ -31469,11 +31813,57 @@ async function maybeAutoReclaimTaskWorktree(ctx, workspaceId, task, reason) {
   }
   try {
     return await runTaskLifecycle(workspaceId, taskPath, async () => {
-      let liveTask = task;
+      let liveTask;
       try {
+        await beforeTaskWorktreeReclaimReloadForTests?.();
         liveTask = await loadTaskEnvelope(mount.env.fs, taskPath);
-      } catch {
-        liveTask = task;
+      } catch (error) {
+        const blocked = {
+          eligible: false,
+          code: "REMOVE_FAILED",
+          reason: `Exact Task envelope is unreadable under reclaim critical section; refuse remove: ${error instanceof Error ? error.message : String(error)}`,
+          taskId,
+          taskPath,
+          taskState: task.state,
+          workspace: task.workspace,
+          worktree: task.worktree,
+          branch: task.branch,
+          targetBranch: task.targetBranch,
+          details: { stage: "reload-task-envelope" },
+          reclaimed: false,
+          alreadyGone: false
+        };
+        try {
+          await recordTaskWorktreeReclaimNeedsAttention(mount.env.fs, {
+            taskId,
+            taskPath,
+            workspaceRoot: mount.workspaceRoot,
+            code: "UNREADABLE_TASK",
+            reason: blocked.reason,
+            attemptedAt: mount.env.clock.now(),
+            trigger: reason
+          });
+        } catch {
+        }
+        ctx.events.emit(
+          "task.worktreeReclaim",
+          workspaceId,
+          {
+            taskId,
+            taskPath,
+            taskState: task.state,
+            code: "UNREADABLE_TASK",
+            eligible: false,
+            reclaimed: false,
+            alreadyGone: false,
+            reason: blocked.reason,
+            worktree: task.worktree,
+            branch: task.branch,
+            trigger: reason
+          },
+          "self"
+        );
+        return blocked;
       }
       if (!isTaskWorktreeReclaimTerminalState(liveTask.state)) {
         const blocked = {
@@ -31576,6 +31966,19 @@ async function maybeAutoReclaimTaskWorktree(ctx, workspaceId, task, reason) {
           await dequeueTaskWorktreeReclaimPending(mount.env.fs, taskId);
         } catch {
         }
+      } else if (!result.eligible) {
+        try {
+          await recordTaskWorktreeReclaimNeedsAttention(mount.env.fs, {
+            taskId,
+            taskPath: liveTask.path,
+            workspaceRoot: mount.workspaceRoot,
+            code: result.code,
+            reason: result.reason,
+            attemptedAt: mount.env.clock.now(),
+            trigger: reason
+          });
+        } catch {
+        }
       }
       if (result.reclaimed || !result.eligible) {
         ctx.events.emit(
@@ -31620,47 +32023,337 @@ async function maybeAutoReclaimTaskWorktree(ctx, workspaceId, task, reason) {
     return void 0;
   }
 }
-async function recoverTerminalTaskWorktreesOnMount(ctx, workspaceId) {
+async function recoverTerminalTaskWorktreeBatch(ctx, workspaceId, attemptedTaskIds, shouldStop) {
   const mount = ctx.host.get(workspaceId);
-  if (!mount) return { attempted: 0, reclaimed: 0, refused: 0 };
-  if (!await isGitWorkspace(mount.workspaceRoot)) {
-    return { attempted: 0, reclaimed: 0, refused: 0 };
-  }
-  let attempted = 0;
-  let reclaimed = 0;
-  let refused = 0;
+  if (!mount || shouldStop()) return false;
+  if (!await isGitWorkspace(mount.workspaceRoot)) return false;
   const pending = await listTaskWorktreeReclaimPendingForWorkspace(
     mount.env.fs,
     mount.workspaceRoot,
     (a, b) => isSameWorkspaceRoot(nodePath6.resolve(a), nodePath6.resolve(b))
   );
-  for (const entry of pending) {
-    attempted += 1;
+  const remaining = pending.filter((entry) => !attemptedTaskIds.has(entry.taskId)).sort((a, b) => a.taskId.localeCompare(b.taskId));
+  const batch = remaining.slice(
+    0,
+    TASK_WORKTREE_RECLAIM_HISTORICAL_BATCH_SIZE
+  );
+  for (const entry of batch) {
+    if (shouldStop()) return false;
+    attemptedTaskIds.add(entry.taskId);
     let task;
     try {
       task = await loadTaskEnvelope(mount.env.fs, entry.taskPath);
-    } catch {
-      try {
-        await dequeueTaskWorktreeReclaimPending(mount.env.fs, entry.taskId);
-      } catch {
-      }
-      refused += 1;
+    } catch (error) {
+      const exists = await mount.env.fs.exists(entry.taskPath).catch(() => true);
+      await recordTaskWorktreeReclaimNeedsAttention(mount.env.fs, {
+        taskId: entry.taskId,
+        taskPath: entry.taskPath,
+        workspaceRoot: mount.workspaceRoot,
+        code: exists ? "UNREADABLE_TASK" : "TASK_MISSING",
+        reason: exists ? `Pending reclaim Task envelope is unreadable: ${error instanceof Error ? error.message : String(error)}` : "Pending reclaim Task envelope is missing; exact lane ownership cannot be proven",
+        attemptedAt: mount.env.clock.now(),
+        trigger: entry.trigger ?? "workspace.mount"
+      });
       continue;
     }
-    if (task.id && task.id !== entry.taskId) {
-      refused += 1;
+    if (task.id !== entry.taskId) {
+      await recordTaskWorktreeReclaimNeedsAttention(mount.env.fs, {
+        taskId: entry.taskId,
+        taskPath: entry.taskPath,
+        workspaceRoot: mount.workspaceRoot,
+        code: "TASK_ID_MISMATCH",
+        reason: `Pending reclaim identity ${entry.taskId} does not match ${task.id ?? "missing"}`,
+        attemptedAt: mount.env.clock.now(),
+        trigger: entry.trigger ?? "workspace.mount"
+      });
       continue;
     }
-    const result = await maybeAutoReclaimTaskWorktree(
+    await maybeAutoReclaimTaskWorktree(
       ctx,
       workspaceId,
       task,
       entry.trigger ? `workspace.mount:${entry.trigger}` : "workspace.mount"
     );
-    if (result?.reclaimed) reclaimed += 1;
-    else if (result && !result.eligible) refused += 1;
   }
-  return { attempted, reclaimed, refused };
+  return remaining.length > batch.length;
+}
+var historicalReclaimJobs = /* @__PURE__ */ new Map();
+var historicalReclaimJobsByFs = /* @__PURE__ */ new WeakMap();
+var historicalReclaimAccepting = true;
+function deleteHistoricalReclaimJob(job) {
+  if (historicalReclaimJobs.get(job.workspaceId) === job) {
+    historicalReclaimJobs.delete(job.workspaceId);
+  }
+  if (historicalReclaimJobsByFs.get(job.fsKey) === job) {
+    historicalReclaimJobsByFs.delete(job.fsKey);
+  }
+}
+var historicalReclaimBatchHoldForTests;
+function enableHistoricalTaskWorktreeReclaimAccept() {
+  historicalReclaimAccepting = true;
+}
+function stopHistoricalTaskWorktreeReclaimAccept() {
+  historicalReclaimAccepting = false;
+  for (const job of historicalReclaimJobs.values()) {
+    job.cancelled = true;
+    if (job.timer !== null) {
+      clearTimeout(job.timer);
+      clearImmediate(job.timer);
+      job.timer = null;
+    }
+  }
+}
+async function cancelAndDrainHistoricalTaskWorktreeReclaim(workspaceId, timeoutMs = 5e3) {
+  const job = historicalReclaimJobs.get(workspaceId);
+  if (!job) return;
+  job.cancelled = true;
+  if (job.timer !== null) {
+    clearTimeout(job.timer);
+    clearImmediate(job.timer);
+    job.timer = null;
+  }
+  const inflight = job.inflight;
+  if (!inflight) {
+    deleteHistoricalReclaimJob(job);
+    return;
+  }
+  const bound = typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs >= 0 ? timeoutMs : 5e3;
+  if (bound === 0) {
+    await inflight;
+    return;
+  }
+  let timer;
+  try {
+    await Promise.race([
+      inflight,
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(
+            new Error(
+              `Historical Task worktree reclaim drain timed out for ${workspaceId}`
+            )
+          ),
+          bound
+        );
+      })
+    ]);
+  } finally {
+    if (timer !== void 0) clearTimeout(timer);
+  }
+  deleteHistoricalReclaimJob(job);
+}
+async function drainHistoricalTaskWorktreeReclaimForShutdown(timeoutMs = 5e3) {
+  stopHistoricalTaskWorktreeReclaimAccept();
+  const ids = [...historicalReclaimJobs.keys()];
+  const results = await Promise.allSettled(
+    ids.map((id) => cancelAndDrainHistoricalTaskWorktreeReclaim(id, timeoutMs))
+  );
+  const rejected = results.find(
+    (result) => result.status === "rejected"
+  );
+  if (rejected) throw rejected.reason;
+}
+function scheduleHistoricalTaskWorktreeReclaimAfterMount(ctx, workspaceId) {
+  if (!historicalReclaimAccepting) return;
+  const mount = ctx.host.get(workspaceId);
+  if (!mount) return;
+  const fsKey = mount.env.fs;
+  const byFs = historicalReclaimJobsByFs.get(fsKey);
+  if (byFs) return;
+  const byWorkspace = historicalReclaimJobs.get(workspaceId);
+  if (byWorkspace) return;
+  const job = {
+    workspaceId,
+    fsKey,
+    cancelled: false,
+    phase: "pending",
+    pendingAttemptedTaskIds: /* @__PURE__ */ new Set(),
+    inflight: null,
+    timer: null
+  };
+  historicalReclaimJobs.set(workspaceId, job);
+  historicalReclaimJobsByFs.set(fsKey, job);
+  enqueueHistoricalReclaimBatchTick(ctx, job);
+}
+function enqueueHistoricalReclaimBatchTick(ctx, job) {
+  if (job.cancelled || !historicalReclaimAccepting) return;
+  if (job.timer !== null) return;
+  job.timer = setImmediate(() => {
+    job.timer = null;
+    if (job.cancelled || !historicalReclaimAccepting) return;
+    const run = runOneHistoricalReclaimJobBatch(ctx, job).then((cont) => {
+      if (job.cancelled || !historicalReclaimAccepting) return;
+      if (cont) enqueueHistoricalReclaimBatchTick(ctx, job);
+      else deleteHistoricalReclaimJob(job);
+    }).catch(() => {
+      deleteHistoricalReclaimJob(job);
+    }).finally(() => {
+      if (job.inflight === run) job.inflight = null;
+      if (job.cancelled) deleteHistoricalReclaimJob(job);
+    });
+    job.inflight = run;
+  });
+}
+async function runOneHistoricalReclaimJobBatch(ctx, job) {
+  if (job.cancelled || !historicalReclaimAccepting) return false;
+  if (job.phase === "pending") {
+    const morePending = await recoverTerminalTaskWorktreeBatch(
+      ctx,
+      job.workspaceId,
+      job.pendingAttemptedTaskIds,
+      () => job.cancelled || !historicalReclaimAccepting
+    );
+    if (morePending) return true;
+    job.phase = "historical";
+    return true;
+  }
+  return runOneHistoricalTaskWorktreeReclaimBatch(
+    ctx,
+    job.workspaceId,
+    () => job.cancelled || !historicalReclaimAccepting
+  );
+}
+async function runOneHistoricalTaskWorktreeReclaimBatch(ctx, workspaceId, shouldStop = () => false) {
+  if (historicalReclaimBatchHoldForTests) {
+    await historicalReclaimBatchHoldForTests.promise;
+  }
+  if (shouldStop()) return false;
+  const mount = ctx.host.get(workspaceId);
+  if (!mount) return false;
+  if (!await isGitWorkspace(mount.workspaceRoot)) {
+    try {
+      await persistHistoricalReclaimScanBatch(mount.env.fs, {
+        workspaceRoot: mount.workspaceRoot,
+        examinedTaskPaths: [],
+        newCandidates: [],
+        scanComplete: true
+      });
+    } catch {
+    }
+    return false;
+  }
+  const scan = await readTaskWorktreeReclaimHistoricalScan(mount.env.fs);
+  if (scan?.complete === true) return false;
+  const allPaths = await listTaskEnvelopePathsForReclaimScan(mount.env.fs);
+  if (shouldStop()) return false;
+  const remaining = taskPathsAfterHistoricalCursor(allPaths, scan?.nextTaskPath);
+  if (remaining.length === 0) {
+    await persistHistoricalReclaimScanBatch(mount.env.fs, {
+      workspaceRoot: mount.workspaceRoot,
+      examinedTaskPaths: [],
+      newCandidates: [],
+      scanComplete: true
+    });
+    return false;
+  }
+  const batchSize = TASK_WORKTREE_RECLAIM_HISTORICAL_BATCH_SIZE;
+  const examined = remaining.slice(0, batchSize);
+  const newCandidates = [];
+  const decisions = [];
+  let blocked = false;
+  let blockedDiagnostic;
+  for (const taskPath of examined) {
+    if (shouldStop()) return false;
+    let task;
+    try {
+      task = await loadTaskEnvelope(mount.env.fs, taskPath);
+    } catch (error) {
+      blockedDiagnostic = {
+        taskPath,
+        reason: `Historical scan could not read Task envelope: ${error instanceof Error ? error.message : String(error)}`,
+        attemptedAt: mount.env.clock.now()
+      };
+      blocked = true;
+      break;
+    }
+    if (!isHistoricalReclaimScanCandidate(task, mount.workspaceRoot)) {
+      decisions.push({
+        taskPath,
+        code: "NOT_APPLICABLE",
+        reason: "Task is not a terminal agentProfile lane with exact recorded worktree ownership",
+        attemptedAt: mount.env.clock.now()
+      });
+      continue;
+    }
+    const taskId = task.id.trim();
+    newCandidates.push({
+      taskId,
+      taskPath: task.path,
+      workspaceRoot: mount.workspaceRoot,
+      enqueuedAt: mount.env.clock.now(),
+      trigger: "historical.scan"
+    });
+  }
+  const persistExamined = blocked ? examined.slice(0, newCandidates.length + decisions.length) : examined;
+  if (persistExamined.length === 0 && blocked) {
+    await recordHistoricalReclaimScanDiagnostic(mount.env.fs, {
+      workspaceRoot: mount.workspaceRoot,
+      taskPath: blockedDiagnostic.taskPath,
+      code: "UNREADABLE_TASK",
+      reason: blockedDiagnostic.reason,
+      attemptedAt: blockedDiagnostic.attemptedAt
+    });
+    return false;
+  }
+  const scanComplete = !blocked && examined.length >= remaining.length;
+  const persisted = await persistHistoricalReclaimScanBatch(mount.env.fs, {
+    workspaceRoot: mount.workspaceRoot,
+    examinedTaskPaths: persistExamined,
+    newCandidates,
+    decisions,
+    scanComplete
+  });
+  if (blockedDiagnostic) {
+    await recordHistoricalReclaimScanDiagnostic(mount.env.fs, {
+      workspaceRoot: mount.workspaceRoot,
+      taskPath: blockedDiagnostic.taskPath,
+      code: "UNREADABLE_TASK",
+      reason: blockedDiagnostic.reason,
+      attemptedAt: blockedDiagnostic.attemptedAt
+    });
+  }
+  for (const c of persisted.enqueued) {
+    if (!historicalReclaimAccepting || shouldStop()) break;
+    if (!ctx.host.get(workspaceId)) break;
+    let task;
+    try {
+      task = await loadTaskEnvelope(mount.env.fs, c.taskPath);
+    } catch {
+      continue;
+    }
+    await maybeAutoReclaimTaskWorktree(
+      ctx,
+      workspaceId,
+      task,
+      "historical.scan"
+    );
+  }
+  if (blocked) return false;
+  return !persisted.historicalScan.complete;
+}
+function isHistoricalReclaimScanCandidate(task, workspaceRoot) {
+  if (!isTaskScopedWorktreeLane(task)) return false;
+  if (!isTaskWorktreeReclaimTerminalState(task.state)) return false;
+  const taskId = task.id?.trim();
+  if (!taskId) return false;
+  if (!task.path?.trim()) return false;
+  const worktree = task.worktree?.trim();
+  const branch = task.branch?.trim();
+  if (!worktree || !branch) return false;
+  if (branch.startsWith("tent-role/")) return false;
+  if (task.workspace?.trim()) {
+    try {
+      if (!isSameWorkspaceRoot(
+        nodePath6.resolve(task.workspace),
+        nodePath6.resolve(workspaceRoot)
+      )) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+  return true;
 }
 async function operationalRetentionPurgeRpc(ctx, p) {
   requireUserActor(p, "operationalRetention.purge");
@@ -37812,6 +38505,7 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
   const managedDeliveryReportDrafts = new ManagedDeliveryReportDraftStore(dataDir);
   await managedDeliveryReportDrafts.ensureLoaded();
   enableManagedTaskInputBackgroundAccept();
+  enableHistoricalTaskWorktreeReclaimAccept();
   const credentials = new CredentialStore(dataDir, {
     protector: options.credentialProtector
   });
@@ -38011,6 +38705,7 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
       let firstError;
+      let historicalReclaimDrainSafe = true;
       const attempt = async (action, bestEffort = false) => {
         try {
           await action();
@@ -38024,21 +38719,36 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
         await attempt(() => toolApprovals.shutdown(), true);
         await attempt(() => userAsks.shutdown(), true);
         stopManagedTaskInputBackgroundAccept();
+        stopHistoricalTaskWorktreeReclaimAccept();
         await attempt(() => runtime.shutdown(), true);
         await attempt(
           () => drainManagedTaskInputBackgroundForShutdown(5e3),
           true
         );
+        try {
+          await drainHistoricalTaskWorktreeReclaimForShutdown(
+            options.historicalReclaimDrainTimeoutMs ?? 5e3
+          );
+        } catch (error) {
+          historicalReclaimDrainSafe = false;
+          if (firstError === void 0) firstError = error;
+        }
         await attempt(() => taskInputs.shutdown(), true);
         await attempt(() => managedDeliveryReportDrafts.shutdown(), true);
         await attempt(() => drainRuntimeProjections());
         unsubscribeRuntimeEvents();
-        await attempt(() => workspaceHost.dispose());
-      } finally {
-        if (options.writeEndpoint !== false) {
-          await attempt(() => removeServiceEndpoint(dataDir, serviceLease.instanceId));
+        if (historicalReclaimDrainSafe) {
+          await attempt(() => workspaceHost.dispose());
         }
-        await attempt(() => serviceLease.release());
+      } finally {
+        if (historicalReclaimDrainSafe) {
+          if (options.writeEndpoint !== false) {
+            await attempt(
+              () => removeServiceEndpoint(dataDir, serviceLease.instanceId)
+            );
+          }
+          await attempt(() => serviceLease.release());
+        }
       }
       if (firstError !== void 0) throw firstError;
     })();
