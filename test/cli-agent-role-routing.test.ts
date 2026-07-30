@@ -52,6 +52,9 @@ test("top-level help distinguishes logical Agent, durable Role, Session, Task", 
   assert.match(text, /Durable Role/);
   assert.match(text, /tent session enter\|status\|leave/);
   assert.match(text, /tent task list\|get\|claim\|deliver/);
+  assert.match(text, /propose <nodeId> <file\|->/);
+  assert.match(text, /Find Nodes by tag/);
+  assert.doesNotMatch(text, /\bboxId\b|\bboxes\b/i);
 
   // Old plural registry-list alias removed; no compatibility line.
   assert.doesNotMatch(text, /^\s*roles\s/m);

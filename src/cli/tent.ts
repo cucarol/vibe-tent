@@ -331,14 +331,14 @@ async function main() {
         return fail(error instanceof Error ? error.message : String(error));
       }
       const tent = await loadTent(env.fs);
-      const boxes = findBoxesByTag(tent, args[0]);
-      if (boxes.length === 0) {
+      const nodes = findBoxesByTag(tent, args[0]);
+      if (nodes.length === 0) {
         console.log("(no matches)");
         break;
       }
-      for (const box of boxes) {
-        const pointer = outputPointer(box.fm, box.body);
-        console.log(`${box.id}\t${box.path}\t${box.type}${pointer ? `\t${pointer}` : ""}`);
+      for (const node of nodes) {
+        const pointer = outputPointer(node.fm, node.body);
+        console.log(`${node.id}\t${node.path}\t${node.type}${pointer ? `\t${pointer}` : ""}`);
       }
       break;
     }
@@ -504,7 +504,7 @@ Service-backed workspace operations:
   tent node --help                   Full Node subcommand help
   tent role-checkpoint set|show|clear Optional cooperative Role continuation note
   tent role-checkpoint --help         set/clear → Service; show read-only; --actor
-  propose <boxId> <file|->            Submit a proposal (in-workspace → proposal.submit RPC)
+  propose <nodeId> <file|->           Submit a Node proposal (in-workspace → proposal.submit RPC)
   CLI exit does not stop Local Service. Token stays in machine-local service.json.
 
 Initialization and machine config:
@@ -525,7 +525,7 @@ Initialization and machine config:
 Read-only:
   status                             Print a read-only Tent status summary.
   tags                               List registered tags.
-  find <tag>                         Find boxes by tag.
+  find <tag>                         Find Nodes by tag.
   tree                               Print the Node tree.
 
 Options:
