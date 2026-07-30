@@ -9460,11 +9460,16 @@ async function taskInputAckRpc(ctx: HandlerContext, p: Record<string, unknown>) 
   if (existing.status === "uncertain") {
     const sessionId = existing.sessionId ?? authority.task.sessionId;
     if (sessionId) {
-      await requestManagedAutoDeliverRetryFromDraft(ctx, {
-        workspaceId,
-        taskPath,
-        sessionId,
-      });
+      // Ack is already durable and must return immediately. Git/integration or
+      // Service latency in the draft-only retry cannot turn a successful ack
+      // into a client timeout followed by "already consumed" on retry.
+      trackManagedTaskInputBackground(
+        requestManagedAutoDeliverRetryFromDraft(ctx, {
+          workspaceId,
+          taskPath,
+          sessionId,
+        })
+      );
     }
   }
   return { input: projectTaskInput(item) };

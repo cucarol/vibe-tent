@@ -601,6 +601,59 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
     )) as { input: { status: string; resolvedBy?: string } };
     assert.equal(sessionAck.input.status, "consumed");
     assert.equal(sessionAck.input.resolvedBy, sessionId);
+
+    // A failed operational draft lookup remains background-only: the durable
+    // uncertain ack succeeds once and stays consumed.
+    const failedDraftInputId = "ti-failed-draft-user-ack";
+    await svc.ctx.taskInputs.add({
+      id: failedDraftInputId,
+      workspaceId,
+      taskPath: dispatched.taskPath,
+      sessionId,
+      role: "executor",
+      kind: "user-input",
+      text: "ack survives draft retry failure",
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await svc.ctx.taskInputs.markUncertain(
+      failedDraftInputId,
+      "provider boundary ambiguous"
+    );
+    const originalDraftGet = svc.ctx.managedDeliveryReportDrafts.get.bind(
+      svc.ctx.managedDeliveryReportDrafts
+    );
+    let failedDraftAttempts = 0;
+    svc.ctx.managedDeliveryReportDrafts.get = async () => {
+      failedDraftAttempts += 1;
+      throw new Error("injected draft lookup failure");
+    };
+    try {
+      const failedDraftAck = (await client.taskInputAck(
+        workspaceId,
+        dispatched.taskPath,
+        failedDraftInputId
+      )) as { input: { status: string; resolvedBy?: string } };
+      assert.equal(failedDraftAck.input.status, "consumed");
+      assert.equal(failedDraftAck.input.resolvedBy, "user");
+      await pollUntil(
+        async () => (failedDraftAttempts === 1 ? true : null),
+        2_000,
+        "draft-only retry attempted once after durable uncertain ack"
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(failedDraftAttempts, 1);
+      const persisted = (await client.taskInputGet(
+        workspaceId,
+        dispatched.taskPath,
+        failedDraftInputId
+      )) as { input: { status: string; resolvedBy?: string } };
+      assert.equal(persisted.input.status, "consumed");
+      assert.equal(persisted.input.resolvedBy, "user");
+    } finally {
+      svc.ctx.managedDeliveryReportDrafts.get = originalDraftGet;
+    }
   });
 });
 
@@ -1563,11 +1616,34 @@ test("reject-resume: background completion projects processing → delivered", a
     assert.ok(spoofedUserAck.error);
     assert.equal(spoofedUserAck.error!.code, -32001);
 
-    const acked = (await client.taskInputAck(
+    // Ack must return after its own durable mutation, without waiting for the
+    // report-draft retry (which may include slow Git/Service work).
+    const originalDraftGet = svc.ctx.managedDeliveryReportDrafts.get.bind(
+      svc.ctx.managedDeliveryReportDrafts
+    );
+    let releaseDraftRetry!: () => void;
+    const draftRetryHold = new Promise<void>((resolve) => {
+      releaseDraftRetry = resolve;
+    });
+    let enteredDraftRetry!: () => void;
+    const draftRetryEntered = new Promise<void>((resolve) => {
+      enteredDraftRetry = resolve;
+    });
+    let holdDraftRetry = true;
+    svc.ctx.managedDeliveryReportDrafts.get = async (...args) => {
+      if (holdDraftRetry && args[0] === workspaceId && args[1] === taskPath) {
+        holdDraftRetry = false;
+        enteredDraftRetry();
+        await draftRetryHold;
+      }
+      return originalDraftGet(...args);
+    };
+
+    const ackPromise = client.taskInputAck(
       workspaceId,
       taskPath,
       uncertainRejected.input.id
-    )) as {
+    ) as Promise<{
       input: {
         status: string;
         uncertainAt?: string;
@@ -1575,7 +1651,29 @@ test("reject-resume: background completion projects processing → delivered", a
         consumedAt?: string;
         resolvedBy?: string;
       };
-    };
+    }>;
+    let ackBeforeRetry:
+      | { kind: "ack"; value: Awaited<typeof ackPromise> }
+      | { kind: "timeout" } = { kind: "timeout" };
+    try {
+      await draftRetryEntered;
+      ackBeforeRetry = await Promise.race([
+        ackPromise.then((value) => ({ kind: "ack" as const, value })),
+        new Promise<{ kind: "timeout" }>((resolve) =>
+          setTimeout(() => resolve({ kind: "timeout" }), 1_000)
+        ),
+      ]);
+      assert.equal(
+        ackBeforeRetry.kind,
+        "ack",
+        "durable ack must return while draft-only retry is still held"
+      );
+    } finally {
+      releaseDraftRetry();
+      svc.ctx.managedDeliveryReportDrafts.get = originalDraftGet;
+    }
+    const acked =
+      ackBeforeRetry.kind === "ack" ? ackBeforeRetry.value : await ackPromise;
     assert.equal(acked.input.status, "consumed");
     assert.ok(acked.input.uncertainAt, "ack preserves ambiguity timestamp");
     assert.match(acked.input.lastError ?? "", /markDelivered/);
