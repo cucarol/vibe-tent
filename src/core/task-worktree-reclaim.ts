@@ -92,6 +92,15 @@ export type ReclaimTaskWorktreeInput = EvaluateTaskWorktreeReclaimInput & {
    */
   rmLaneDirectoryForTests?: (lanePath: string) => void | Promise<void>;
   /**
+   * Test-only: replace exact-path `git worktree remove --force` metadata drop.
+   * Production never sets this. Used to prove metadata failure leaves registration
+   * (and external targets / sibling lanes) for a later dir-absent retry.
+   */
+  removeWorktreeMetadataForTests?: (
+    workspaceRoot: string,
+    worktreePath: string
+  ) => void | Promise<void>;
+  /**
    * Service settle re-probe: called immediately before any git worktree remove
    * (and before force metadata drop). Fail-closed → map to SESSION_ACTIVE so a
    * late turnBusy/alive/open Session after evaluate still defers remove.
@@ -762,7 +771,11 @@ export async function reclaimTaskWorktree(
         );
         if (preForceSession) return preForceSession;
         try {
-          await git(workspaceRoot, ["worktree", "remove", "--force", worktree]);
+          if (input.removeWorktreeMetadataForTests) {
+            await input.removeWorktreeMetadataForTests(workspaceRoot, worktree);
+          } else {
+            await git(workspaceRoot, ["worktree", "remove", "--force", worktree]);
+          }
         } catch (err) {
           return {
             ...diagnostic,
@@ -837,6 +850,7 @@ export async function reclaimTaskWorktreeForEnvelope(
     preview?: boolean;
     beforeRemoveForTests?: () => void | Promise<void>;
     rmLaneDirectoryForTests?: ReclaimTaskWorktreeInput["rmLaneDirectoryForTests"];
+    removeWorktreeMetadataForTests?: ReclaimTaskWorktreeInput["removeWorktreeMetadataForTests"];
     assertSessionSettledBeforeRemove?: ReclaimTaskWorktreeInput["assertSessionSettledBeforeRemove"];
   } = {}
 ): Promise<TaskWorktreeReclaimResult> {
@@ -849,6 +863,7 @@ export async function reclaimTaskWorktreeForEnvelope(
     preview: options.preview,
     beforeRemoveForTests: options.beforeRemoveForTests,
     rmLaneDirectoryForTests: options.rmLaneDirectoryForTests,
+    removeWorktreeMetadataForTests: options.removeWorktreeMetadataForTests,
     assertSessionSettledBeforeRemove: options.assertSessionSettledBeforeRemove,
   });
 }

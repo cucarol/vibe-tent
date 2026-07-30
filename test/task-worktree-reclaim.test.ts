@@ -562,10 +562,19 @@ test("P0: reclaim Node-rm lane with outbound junction; external sentinel survive
   const tipBefore = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
 
   // Isolated external target (not the real Tent root node_modules).
+  // Package-like nested layout: sentinel + package.json + .bin/tool.cmd.
   const externalRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-ext-"));
   const sentinelPath = path.join(externalRoot, "sentinel.txt");
   const sentinelBody = `survive-${taskId}-${Date.now()}\n`;
   await fs.writeFile(sentinelPath, sentinelBody);
+  const packageJsonPath = path.join(externalRoot, "package.json");
+  const packageJsonBody = '{\n  "name": "shared-deps-standin",\n  "version": "0.0.0"\n}\n';
+  await fs.writeFile(packageJsonPath, packageJsonBody);
+  const binDir = path.join(externalRoot, ".bin");
+  await fs.mkdir(binDir);
+  const toolCmdPath = path.join(binDir, "tool.cmd");
+  const toolCmdBody = "@echo off\r\necho shared-tool\r\n";
+  await fs.writeFile(toolCmdPath, toolCmdBody);
 
   const linkPath = path.join(lane.worktree, "node_modules");
   let linkKind: "junction" | "dir" | "unsupported" = "unsupported";
@@ -636,6 +645,8 @@ test("P0: reclaim Node-rm lane with outbound junction; external sentinel survive
   assert.equal(await pathExists(externalRoot), true, "external target dir must survive");
   assert.equal(await pathExists(sentinelPath), true, "external sentinel must survive");
   assert.equal(await fs.readFile(sentinelPath, "utf8"), sentinelBody);
+  assert.equal(await fs.readFile(packageJsonPath, "utf8"), packageJsonBody);
+  assert.equal(await fs.readFile(toolCmdPath, "utf8"), toolCmdBody);
 });
 
 test("P0: portable file symlink outbound survives Node-rm reclaim", async () => {
@@ -804,6 +815,97 @@ test("P0: Node lane rm failure fails closed (registration untouched)", async () 
   assert.equal(await pathExists(linkPath), true, "junction left in place when rm fails");
   assert.equal(await fs.readFile(sentinelPath, "utf8"), "must-keep\n");
   assert.match(await worktreeList(workspace), /tk-reclaim-rm-fail|task-tk-reclaim-rm-fail/);
+});
+
+/**
+ * After Node-safe lane rm succeeds, exact metadata force can still fail.
+ * Registration/branch/external target/sibling must remain; a later dir-absent
+ * retry clears only this registration (no global prune).
+ */
+test("P0: metadata force failure then dir-absent retry clears only exact registration", async () => {
+  const workspace = await makeGitWorkspace("tent-reclaim-meta-retry-");
+  await fs.writeFile(path.join(workspace, ".gitignore"), "node_modules/\n");
+  await git(workspace, "add", ".gitignore");
+  await git(workspace, "commit", "-q", "-m", "ignore node_modules");
+  const taskId = "tk-reclaim-meta-retry";
+  const lane = await ensureTaskWorkspace(workspace, taskId);
+  const siblingId = "tk-reclaim-meta-sib";
+  const sibling = await ensureTaskWorkspace(workspace, siblingId);
+  const tipBefore = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
+
+  const externalRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-meta-ext-"));
+  const sentinelPath = path.join(externalRoot, "sentinel.txt");
+  const sentinelBody = "meta-retry-sentinel\n";
+  await fs.writeFile(sentinelPath, sentinelBody);
+  const pkgPath = path.join(externalRoot, "package.json");
+  await fs.writeFile(pkgPath, '{"name":"meta-retry"}\n');
+
+  const linkPath = path.join(lane.worktree, "node_modules");
+  try {
+    if (process.platform === "win32") {
+      await fs.symlink(externalRoot, linkPath, "junction");
+    } else {
+      await fs.symlink(externalRoot, linkPath, "dir");
+    }
+  } catch {
+    return;
+  }
+
+  const task = profileTask({
+    id: taskId,
+    path: "temp/agent-profiles/fake-default/tasks/t.md",
+    state: "failed",
+    workspace: lane.workspace,
+    worktree: lane.worktree,
+    branch: lane.branch,
+    targetBranch: lane.targetBranch,
+  });
+
+  const first = await reclaimTaskWorktree({
+    workspaceRoot: workspace,
+    task,
+    deliveries: [],
+    removeWorktreeMetadataForTests: async () => {
+      throw new Error("simulated git worktree remove --force EPERM");
+    },
+  });
+  assert.equal(first.reclaimed, false);
+  assert.equal(first.code, "REMOVE_FAILED");
+  assert.match(first.reason, /stale registration|simulated git worktree remove/i);
+  // Lane dir gone (Node rm ran); registration still present for retry.
+  assert.equal(await pathExists(lane.worktree), false, "lane dir removed by Node rm");
+  assert.match(
+    await worktreeList(workspace),
+    new RegExp(taskId),
+    "exact registration must remain after metadata failure"
+  );
+  assert.equal(
+    (await git(workspace, "rev-parse", `refs/heads/${lane.branch}`)).trim(),
+    tipBefore,
+    "branch tip preserved"
+  );
+  assert.equal(await pathExists(sibling.worktree), true, "sibling worktree must remain");
+  assert.match(await worktreeList(workspace), new RegExp(siblingId));
+  assert.equal(await fs.readFile(sentinelPath, "utf8"), sentinelBody);
+  assert.equal(await fs.readFile(pkgPath, "utf8"), '{"name":"meta-retry"}\n');
+
+  // Second call: dir already absent → metadata-only path succeeds (real git).
+  const second = await reclaimTaskWorktree({
+    workspaceRoot: workspace,
+    task,
+    deliveries: [],
+  });
+  assert.equal(second.reclaimed, true, `retry got ${second.code}: ${second.reason}`);
+  assert.ok(second.code === "RECLAIMED" || second.code === "ALREADY_GONE");
+  assert.equal(await pathExists(lane.worktree), false);
+  assert.doesNotMatch(await worktreeList(workspace), new RegExp(taskId));
+  assert.equal(await pathExists(sibling.worktree), true, "sibling still present after retry");
+  assert.match(await worktreeList(workspace), new RegExp(siblingId));
+  assert.equal(
+    (await git(workspace, "rev-parse", `refs/heads/${lane.branch}`)).trim(),
+    tipBefore
+  );
+  assert.equal(await fs.readFile(sentinelPath, "utf8"), sentinelBody);
 });
 
 test("P0: pending reclaim queue is explicit opt-in only", async () => {
