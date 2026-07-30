@@ -1062,7 +1062,7 @@ test("malformed box frontmatter is marked invalid with parse detail", async () =
   const tent = await loadTent(new NodeFs(dir));
   const box = tent.byPath.get("prompt/表达式任务书")!;
   assert.equal(box.invalid, true);
-  assert.match(box.invalidReason || "", /Invalid frontmatter: Invalid frontmatter YAML: unterminated flow array\./);
+  assert.match(box.invalidReason || "", /Invalid frontmatter: Invalid frontmatter YAML: unterminated multiline flow collection\./);
   assert.equal(tent.byId.has("bx-p1"), false);
 });
 
