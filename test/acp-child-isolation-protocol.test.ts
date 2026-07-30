@@ -567,6 +567,82 @@ test("AcpClient: stderr + RPC error redact resolved credential value", async () 
   assert.match(client.lastStderrTail, /mock bridge|envSecret|\[redacted\]/i);
 });
 
+test("AcpClient: secret-shaped coreEnv is redacted from stderr, RPC errors, and events", async () => {
+  const cwd = await tempDir("tent-acp-core-env-redact-");
+  const secret = "core-service-token-ABC12345";
+  const events: RuntimeEvent[] = [];
+  const client = new AcpClient({
+    command: process.execPath,
+    args: [MOCK_ACP],
+    cwd,
+    env: {
+      MOCK_ACP_FAIL_NEW: "1",
+      MOCK_ACP_KEEP_ALIVE: "0",
+      MOCK_ACP_STDERR_ENV_KEY: "TENT_SERVICE_TOKEN",
+      MOCK_ACP_ERROR_ENV_KEY: "TENT_SERVICE_TOKEN",
+    },
+    coreEnv: {
+      TENT_SERVICE_TOKEN: secret,
+    },
+    sessionId: "ss-core-env-redact",
+    permissionPolicy: "deny",
+    label: "MockACP",
+    emit: (ev) => events.push(ev),
+  });
+  try {
+    await assert.rejects(() => client.connect(), (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      assert.doesNotMatch(message, new RegExp(secret));
+      assert.match(message, /\[redacted\]|provider detail/i);
+      return true;
+    });
+  } finally {
+    await client.stop("shutdown");
+  }
+  for (const ev of events) {
+    assert.doesNotMatch(JSON.stringify(ev), new RegExp(secret));
+  }
+  assert.doesNotMatch(client.lastStderrTail, new RegExp(secret));
+  assert.match(client.lastStderrTail, /\[redacted\]/);
+});
+
+test("ProcessSupervisor: secret-shaped coreEnv is redacted from output ring and callback", async () => {
+  const cwd = await tempDir("tent-supervisor-core-env-redact-");
+  const secret = "core-session-token-XYZ98765";
+  const script = path.join(cwd, "print-core-secret.mjs");
+  await fs.writeFile(
+    script,
+    `const secret = process.env.TENT_SESSION_TOKEN || "";
+process.stderr.write("core-secret " + secret + "\\n");
+process.stdout.write("core-output " + secret + "\\n");
+`,
+    "utf8"
+  );
+  const observed: string[] = [];
+  const supervisor = new ProcessSupervisor({
+    stdoutRingBytes: 4096,
+    onStdout: (_sessionId, text) => observed.push(text),
+  });
+  await supervisor.start("ss-supervisor-core-redact", {
+    command: process.execPath,
+    args: [script],
+    cwd,
+    env: {},
+    coreEnv: {
+      TENT_SESSION_TOKEN: secret,
+    },
+  });
+  const deadline = Date.now() + 8_000;
+  while (Date.now() < deadline) {
+    if (supervisor.get("ss-supervisor-core-redact")?.exited) break;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  }
+  const output = observed.join("") + supervisor.getStdoutTail("ss-supervisor-core-redact");
+  assert.doesNotMatch(output, new RegExp(secret));
+  assert.match(output, /\[redacted\]/);
+  await supervisor.stop("ss-supervisor-core-redact");
+});
+
 test("runtime + ProcessSupervisor: child that prints secret fails clean on events/registry", async () => {
   const dataDir = await tempDir("tent-child-redact-");
   const cwd = await tempDir("tent-child-redact-cwd-");

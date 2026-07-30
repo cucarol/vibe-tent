@@ -99,13 +99,13 @@ export class ProcessSupervisor {
       launchEnv: launch.env,
       reserved: launch.coreEnv,
     });
-    const secretValues = collectSecretValues(
-      launch.env,
-      launch.diagnosticSecrets
-    );
+    const coreSecrets = collectSecretValues(launch.coreEnv);
+    const secretValues = collectSecretValues(launch.env, [
+      ...(launch.diagnosticSecrets ?? []),
+      ...coreSecrets,
+    ]);
     const redactChunk = (text: string): string =>
       redactDiagnosticText(text, {
-        env: launch.env,
         secrets: secretValues,
       });
 

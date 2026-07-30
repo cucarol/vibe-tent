@@ -696,15 +696,18 @@ export class AcpClient {
     });
   }
 
-  /** Secret values from launch env + explicit resolver outputs — diagnostics only. */
+  /** Secret values from launch/core env + explicit resolver outputs — diagnostics only. */
   private secretValues(): string[] {
-    return collectSecretValues(this.options.env, this.options.diagnosticSecrets);
+    const coreSecrets = collectSecretValues(this.options.coreEnv);
+    return collectSecretValues(this.options.env, [
+      ...(this.options.diagnosticSecrets ?? []),
+      ...coreSecrets,
+    ]);
   }
 
   private redactText(text: string): string {
     return redactDiagnosticText(text, {
-      env: this.options.env,
-      secrets: this.options.diagnosticSecrets,
+      secrets: this.secretValues(),
     });
   }
 
