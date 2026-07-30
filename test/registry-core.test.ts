@@ -210,6 +210,20 @@ state: queued
   }
 });
 
+test("frontmatter parse: malformed multiline flow recovery cannot consume the next top-level key", () => {
+  assert.throws(
+    () =>
+      parseFrontmatter(`---
+type: task
+contextCard: {schemaVersion: v1, objective: 没有闭合
+state: queued
+---
+# Task
+`),
+    /unterminated multiline flow collection/
+  );
+});
+
 test("frontmatter round-trip:Obsidian block sequences are preserved as arrays", () => {
   const raw = String.raw`---
 id: bx-paths

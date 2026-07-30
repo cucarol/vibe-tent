@@ -121,18 +121,25 @@ function readLegacyMultilineFlowCollection(
 ): { value: string; nextIndex: number } {
   let value = initialValue;
   let state = scanFlowCollection(initialValue);
-  if (state.invalid) return { value, nextIndex: startIndex };
+  if (state.invalid) {
+    throw new Error("Invalid frontmatter YAML: malformed multiline flow collection.");
+  }
 
   for (let i = startIndex + 1; i < lines.length; i++) {
+    if (/^[A-Za-z_][\w-]*\s*:/.test(lines[i])) {
+      throw new Error("Invalid frontmatter YAML: unterminated multiline flow collection.");
+    }
     const continuation = `\n${lines[i]}`;
     value += continuation;
     state = scanFlowCollection(continuation, state);
-    if (state.invalid) return { value, nextIndex: i };
+    if (state.invalid) {
+      throw new Error("Invalid frontmatter YAML: malformed multiline flow collection.");
+    }
     if (state.quote === null && state.stack.length === 0) {
       return { value, nextIndex: i };
     }
   }
-  return { value, nextIndex: lines.length - 1 };
+  throw new Error("Invalid frontmatter YAML: unterminated multiline flow collection.");
 }
 
 function coerce(v: string): unknown {
