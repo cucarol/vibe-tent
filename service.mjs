@@ -31505,11 +31505,13 @@ async function taskInputAckRpc(ctx, p) {
   if (existing.status === "uncertain") {
     const sessionId = existing.sessionId ?? authority.task.sessionId;
     if (sessionId) {
-      await requestManagedAutoDeliverRetryFromDraft(ctx, {
-        workspaceId,
-        taskPath,
-        sessionId
-      });
+      trackManagedTaskInputBackground(
+        requestManagedAutoDeliverRetryFromDraft(ctx, {
+          workspaceId,
+          taskPath,
+          sessionId
+        })
+      );
     }
   }
   return { input: projectTaskInput(item) };
