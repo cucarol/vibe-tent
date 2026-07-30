@@ -86,10 +86,11 @@ export type ReclaimTaskWorktreeInput = EvaluateTaskWorktreeReclaimInput & {
    */
   beforeRemoveForTests?: () => void | Promise<void>;
   /**
-   * Test-only: replace the link-unlink step used by pre-remove reparse detach.
-   * Production never sets this. Used to prove fail-closed when unlink is refused.
+   * Test-only: replace Node directory removal used for junction-safe lane delete.
+   * Production never sets this. Used to prove fail-closed when fs.rm is refused
+   * (registration must remain untouched).
    */
-  unlinkLinkForTests?: (linkPath: string) => void | Promise<void>;
+  rmLaneDirectoryForTests?: (lanePath: string) => void | Promise<void>;
   /**
    * Service settle re-probe: called immediately before any git worktree remove
    * (and before force metadata drop). Fail-closed → map to SESSION_ACTIVE so a
@@ -476,8 +477,14 @@ export async function evaluateTaskWorktreeReclaim(
  * - Immediately before any remove, revalidate fresh registration matches the
  *   expected exact path, branch, and branch-tip ownership (dirtiness alone is
  *   insufficient).
- * - When the directory is already absent, mutate only that exact verified
- *   registration (path force only after dir-absent + branch/HEAD ownership match).
+ * - Existing clean directory: Node `fs.rm(lane, { recursive: true, force: false })`
+ *   deletes the lane tree without following junction/symlink reparse targets
+ *   (link entries are unlinked only). On any rm failure, leave registration
+ *   untouched and fail closed — do not call Git remove.
+ * - When the directory is confirmed absent, mutate only that exact verified
+ *   registration (`git worktree remove --force` on the exact path after
+ *   branch/HEAD ownership match). Never non-force Git remove on a present tree
+ *   that may contain outbound junctions (Git recursive delete can follow them).
  * - Never repository-global `git worktree prune` in auto-GC.
  */
 export async function reclaimTaskWorktree(
@@ -593,8 +600,9 @@ export async function reclaimTaskWorktree(
       };
     }
 
-    // Directory still present → only non-force remove after ownership + clean check.
-    // Never --force on an existing tree (fail-closed; retry from settle/recovery).
+    // Directory still present → final gates, then Node-safe lane delete (does not
+    // follow junction/symlink targets). Never git worktree remove while the tree
+    // still exists — Git recursive delete can follow outbound reparse points.
     if (stillExists) {
       let dirty;
       try {
@@ -614,7 +622,7 @@ export async function reclaimTaskWorktree(
           ...diagnostic,
           eligible: false,
           code: "DIRTY",
-          reason: `Refusing remove: worktree became dirty before git worktree remove (${dirty.changeCount} change(s)).`,
+          reason: `Refusing remove: worktree became dirty before lane delete (${dirty.changeCount} change(s)).`,
           reclaimed: false,
           alreadyGone: false,
           details: {
@@ -639,7 +647,7 @@ export async function reclaimTaskWorktree(
           ...diagnostic,
           eligible: false,
           code: preRegCompare.code,
-          reason: `Refusing remove: registration mismatch immediately before git worktree remove — ${preRegCompare.reason}`,
+          reason: `Refusing remove: registration mismatch immediately before lane delete — ${preRegCompare.reason}`,
           reclaimed: false,
           alreadyGone: false,
           details: {
@@ -659,7 +667,7 @@ export async function reclaimTaskWorktree(
           ...diagnostic,
           eligible: false,
           code: preRemove.code,
-          reason: `Refusing remove: ownership revalidation failed immediately before git worktree remove — ${preRemove.reason}`,
+          reason: `Refusing remove: ownership revalidation failed immediately before lane delete — ${preRemove.reason}`,
           reclaimed: false,
           alreadyGone: false,
           details: {
@@ -674,104 +682,108 @@ export async function reclaimTaskWorktree(
         diagnostic
       );
       if (preRemoveSession) return preRemoveSession;
-      // P0 junction/reparse safety: walk the lane without following links, detach
-      // only the link entries that could let recursive delete escape the lane.
-      // Never mutate link targets. Fail closed → do not call git worktree remove.
-      const detach = await detachOutboundLinksInTaskLane(worktree, {
-        unlinkLinkForTests: input.unlinkLinkForTests,
+
+      // Junction-safe directory delete: Node unlinks reparse/symlink entries as
+      // links only and does not delete external targets (cx-80g9p5).
+      const laneRm = await removeTaskLaneDirectorySafe(worktree, {
+        rmLaneDirectoryForTests: input.rmLaneDirectoryForTests,
       });
-      if (!detach.ok) {
-        return {
-          ...diagnostic,
-          eligible: false,
-          code: detach.code,
-          reason: `Refusing git worktree remove: ${detach.reason}`,
-          reclaimed: false,
-          alreadyGone: false,
-          details: {
-            ...(diagnostic.details ?? {}),
-            ...(detach.details ?? {}),
-            linkSafety: "pre-remove-detach",
-          },
-        };
-      }
-      try {
-        await git(workspaceRoot, ["worktree", "remove", worktree]);
-      } catch (err) {
+      if (!laneRm.ok) {
         return {
           ...diagnostic,
           eligible: false,
           code: "REMOVE_FAILED",
-          reason: `git worktree remove failed without force (directory still present): ${err instanceof Error ? err.message : String(err)}; retry later.`,
+          reason: laneRm.reason,
           reclaimed: false,
           alreadyGone: false,
           details: {
             ...(diagnostic.details ?? {}),
-            detachedLinks: detach.detached,
+            ...(laneRm.details ?? {}),
+            linkSafety: "node-fs-rm-lane",
           },
         };
       }
-    } else if (registration.registered) {
-      // Directory already gone: clean ONLY this verified exact-path registration.
-      // Force is allowed solely after dir-absent + branch/HEAD ownership match.
-      // Never repository-global prune; never force while a directory exists.
       if (await pathExists(worktree)) {
         return {
           ...diagnostic,
           eligible: false,
           code: "REMOVE_FAILED",
-          reason: `Refusing metadata force cleanup: directory reappeared at ${worktree}; retry with non-force path.`,
-          reclaimed: false,
-          alreadyGone: false,
-        };
-      }
-      const preForce = await revalidateExactWorktreeOwnership({
-        workspaceRoot,
-        expectedPath: worktree,
-        expectedBranch,
-        requireOnDiskHead: false,
-      });
-      if (!preForce.ok) {
-        return {
-          ...diagnostic,
-          eligible: false,
-          code: preForce.code,
-          reason: `Refusing exact-path force metadata drop — ${preForce.reason}`,
+          reason: `Task lane directory still present after Node-safe remove at ${worktree}; leaving Git registration untouched.`,
           reclaimed: false,
           alreadyGone: false,
           details: {
             ...(diagnostic.details ?? {}),
-            ...(preForce.details ?? {}),
+            linkSafety: "node-fs-rm-lane",
           },
         };
       }
-      const preForceSession = await probeSessionSettledBeforeRemove(
-        input,
-        diagnostic
-      );
-      if (preForceSession) return preForceSession;
-      try {
-        await git(workspaceRoot, ["worktree", "remove", "--force", worktree]);
-      } catch (err) {
-        return {
-          ...diagnostic,
-          eligible: false,
-          code: "REMOVE_FAILED",
-          reason: `Failed to drop exact stale registration at ${worktree} (dir already absent): ${err instanceof Error ? err.message : String(err)}`,
-          reclaimed: false,
-          alreadyGone: false,
-        };
-      }
-      const afterMeta = await inspectWorktreeRegistration(workspaceRoot, worktree);
-      if (afterMeta.registered || (await pathExists(worktree))) {
-        return {
-          ...diagnostic,
-          eligible: false,
-          code: "REMOVE_FAILED",
-          reason: `Exact stale registration for ${worktree} remained after targeted metadata remove; refusing broader cleanup.`,
-          reclaimed: false,
-          alreadyGone: false,
-        };
+    }
+
+    // Directory absent (pre-existing or after Node-safe rm): clean ONLY this
+    // verified exact-path registration. Force is allowed solely after dir-absent
+    // + branch ownership match. Never repository-global prune; never force while
+    // a directory exists.
+    {
+      const liveReg = await inspectWorktreeRegistration(workspaceRoot, worktree);
+      if (liveReg.registered) {
+        if (await pathExists(worktree)) {
+          return {
+            ...diagnostic,
+            eligible: false,
+            code: "REMOVE_FAILED",
+            reason: `Refusing metadata force cleanup: directory present at ${worktree}; Node-safe lane remove must clear it first.`,
+            reclaimed: false,
+            alreadyGone: false,
+          };
+        }
+        const preForce = await revalidateExactWorktreeOwnership({
+          workspaceRoot,
+          expectedPath: worktree,
+          expectedBranch,
+          requireOnDiskHead: false,
+        });
+        if (!preForce.ok) {
+          return {
+            ...diagnostic,
+            eligible: false,
+            code: preForce.code,
+            reason: `Refusing exact-path force metadata drop — ${preForce.reason}`,
+            reclaimed: false,
+            alreadyGone: false,
+            details: {
+              ...(diagnostic.details ?? {}),
+              ...(preForce.details ?? {}),
+            },
+          };
+        }
+        const preForceSession = await probeSessionSettledBeforeRemove(
+          input,
+          diagnostic
+        );
+        if (preForceSession) return preForceSession;
+        try {
+          await git(workspaceRoot, ["worktree", "remove", "--force", worktree]);
+        } catch (err) {
+          return {
+            ...diagnostic,
+            eligible: false,
+            code: "REMOVE_FAILED",
+            reason: `Failed to drop exact stale registration at ${worktree} (dir already absent): ${err instanceof Error ? err.message : String(err)}`,
+            reclaimed: false,
+            alreadyGone: false,
+          };
+        }
+        const afterMeta = await inspectWorktreeRegistration(workspaceRoot, worktree);
+        if (afterMeta.registered || (await pathExists(worktree))) {
+          return {
+            ...diagnostic,
+            eligible: false,
+            code: "REMOVE_FAILED",
+            reason: `Exact stale registration for ${worktree} remained after targeted metadata remove; refusing broader cleanup.`,
+            reclaimed: false,
+            alreadyGone: false,
+          };
+        }
       }
     }
 
@@ -824,7 +836,7 @@ export async function reclaimTaskWorktreeForEnvelope(
   options: {
     preview?: boolean;
     beforeRemoveForTests?: () => void | Promise<void>;
-    unlinkLinkForTests?: ReclaimTaskWorktreeInput["unlinkLinkForTests"];
+    rmLaneDirectoryForTests?: ReclaimTaskWorktreeInput["rmLaneDirectoryForTests"];
     assertSessionSettledBeforeRemove?: ReclaimTaskWorktreeInput["assertSessionSettledBeforeRemove"];
   } = {}
 ): Promise<TaskWorktreeReclaimResult> {
@@ -836,7 +848,7 @@ export async function reclaimTaskWorktreeForEnvelope(
     deliveries,
     preview: options.preview,
     beforeRemoveForTests: options.beforeRemoveForTests,
-    unlinkLinkForTests: options.unlinkLinkForTests,
+    rmLaneDirectoryForTests: options.rmLaneDirectoryForTests,
     assertSessionSettledBeforeRemove: options.assertSessionSettledBeforeRemove,
   });
 }
@@ -876,340 +888,68 @@ export async function evaluateTaskWorktreeReclaimForEnvelope(
 
 // ---- internals ----
 
-export type DetachedLaneLink = {
-  /** Absolute path of the link entry inside the Task lane (not the target). */
-  linkPath: string;
-  /** raw readlink() text before resolve (diagnostic only). */
-  rawTarget: string;
-  /** Resolved target path when classification succeeded. */
-  resolvedTarget?: string;
-  /** True when resolved target lies outside the Task lane root. */
-  outbound: boolean;
-};
-
-export type DetachOutboundLinksResult =
-  | { ok: true; detached: DetachedLaneLink[] }
-  | {
-      ok: false;
-      code: TaskWorktreeReclaimCode;
-      reason: string;
-      details?: Record<string, unknown>;
-    };
-
 /**
- * Walk a Task lane without following symlinks/junctions/reparse points.
- * Any link that could let recursive deletion reach outside the lane is detached
- * as the link entry only (`unlink` / directory-link `rmdir`) — never the target.
+ * Delete one Task lane directory with Node `fs.rm` only (no shell/PowerShell).
+ * On Windows/POSIX, recursive rm unlinks junction/symlink entries without
+ * deleting their targets — unlike `git worktree remove` on a present tree,
+ * which can follow reparse points into shared deps (cx-80g9p5 / scheme A).
  *
- * Fail-closed: ambiguous classification, path escape during walk, or unlink
- * failure preserves the lane and refuses subsequent `git worktree remove`.
- *
- * Exported for focused unit tests; production reclaim calls this immediately
- * before non-force `git worktree remove` on an existing directory.
+ * Fail-closed: lane-root reparse, any rm error, or path still present → leave
+ * Git registration untouched (no force metadata, no prune, no rollback).
+ * Exported for focused unit tests; production reclaim calls this after final
+ * clean/ownership/session gates and only then metadata-only force remove.
  */
-export async function detachOutboundLinksInTaskLane(
-  laneRoot: string,
+export async function removeTaskLaneDirectorySafe(
+  lanePath: string,
   options: {
-    unlinkLinkForTests?: (linkPath: string) => void | Promise<void>;
+    rmLaneDirectoryForTests?: (lanePath: string) => void | Promise<void>;
   } = {}
-): Promise<DetachOutboundLinksResult> {
-  const root = nodePath.resolve(laneRoot);
-  if (!(await pathExists(root))) {
-    return {
-      ok: false,
-      code: "AMBIGUOUS_OWNERSHIP",
-      reason: `Task lane path missing during reparse-point safety walk: ${root}`,
-      details: { laneRoot: root },
-    };
-  }
-
-  // Lane root itself must be a real directory, not a link masquerading as the lane.
+): Promise<
+  | { ok: true }
+  | { ok: false; reason: string; details?: Record<string, unknown> }
+> {
+  const resolved = nodePath.resolve(lanePath);
   let rootStat: Awaited<ReturnType<typeof nodeFs.lstat>>;
   try {
-    rootStat = await nodeFs.lstat(root);
+    rootStat = await nodeFs.lstat(resolved);
   } catch (err) {
     return {
       ok: false,
-      code: "AMBIGUOUS_OWNERSHIP",
-      reason: `Cannot lstat Task lane root for reparse safety: ${err instanceof Error ? err.message : String(err)}`,
-      details: { laneRoot: root },
+      reason: `Cannot lstat Task lane root before Node-safe remove at ${resolved}: ${err instanceof Error ? err.message : String(err)}`,
+      details: { lanePath: resolved },
     };
   }
+  // Worktree root itself must be a real directory — never rm through a
+  // symlink/junction masquerading as the Task lane path.
   if (rootStat.isSymbolicLink()) {
     return {
       ok: false,
-      code: "AMBIGUOUS_OWNERSHIP",
-      reason: `Task lane root is a symlink/junction/reparse point; refusing reclaim rather than follow or detach the lane itself.`,
-      details: { laneRoot: root },
+      reason: `Task lane root is a symlink/junction/reparse point at ${resolved}; refusing Node-safe remove (fail-closed, registration untouched).`,
+      details: { lanePath: resolved, linkSafety: "lane-root-reparse" },
     };
   }
   if (!rootStat.isDirectory()) {
     return {
       ok: false,
-      code: "AMBIGUOUS_OWNERSHIP",
-      reason: `Task lane root is not a directory during reparse safety walk: ${root}`,
-      details: { laneRoot: root },
+      reason: `Task lane root is not a directory at ${resolved}; refusing Node-safe remove.`,
+      details: { lanePath: resolved },
     };
   }
-
-  const links: string[] = [];
-  const walkFail = await walkLaneCollectingLinks(root, root, links);
-  if (walkFail) return walkFail;
-
-  const detached: DetachedLaneLink[] = [];
-  // Deepest paths first so nested link entries (under real dirs) unlink cleanly.
-  links.sort((a, b) => b.length - a.length);
-
-  for (const linkPath of links) {
-    const classified = await classifyLaneLink(root, linkPath);
-    if (!classified.ok) return classified;
-
-    // Detach every classified link under the lane. Outbound links are mandatory
-    // (production junction→shared node_modules case). In-lane links are also
-    // detached so git/fs recursive remove cannot follow any reparse point.
-    try {
-      if (options.unlinkLinkForTests) {
-        await options.unlinkLinkForTests(linkPath);
-      } else {
-        await unlinkLinkOnly(linkPath);
-      }
-    } catch (err) {
-      return {
-        ok: false,
-        code: "REMOVE_FAILED",
-        reason: `Failed to detach link-only entry at ${linkPath} (target left untouched): ${err instanceof Error ? err.message : String(err)}`,
-        details: {
-          laneRoot: root,
-          linkPath,
-          rawTarget: classified.link.rawTarget,
-          resolvedTarget: classified.link.resolvedTarget,
-          outbound: classified.link.outbound,
-        },
-      };
-    }
-
-    // Link entry must be gone. Target survival is asserted by production regressions
-    // with an external sentinel (we never call recursive delete on the target).
-    if (await pathExists(linkPath)) {
-      return {
-        ok: false,
-        code: "REMOVE_FAILED",
-        reason: `Link entry still present after detach attempt at ${linkPath}; refusing git worktree remove.`,
-        details: {
-          laneRoot: root,
-          linkPath,
-          outbound: classified.link.outbound,
-        },
-      };
-    }
-
-    detached.push(classified.link);
-  }
-
-  return { ok: true, detached };
-}
-
-/**
- * Depth-first walk that never descends through symlink/junction/reparse entries.
- * Only real directories are entered; every isSymbolicLink() path is collected.
- */
-async function walkLaneCollectingLinks(
-  laneRoot: string,
-  dir: string,
-  out: string[]
-): Promise<DetachOutboundLinksResult | undefined> {
-  if (!isPathInsideRoot(dir, laneRoot)) {
-    return {
-      ok: false,
-      code: "AMBIGUOUS_OWNERSHIP",
-      reason: `Reparse safety walk escaped Task lane root (dir=${dir}, lane=${laneRoot}).`,
-      details: { laneRoot, dir },
-    };
-  }
-
-  let names: string[];
   try {
-    names = await nodeFs.readdir(dir);
+    if (options.rmLaneDirectoryForTests) {
+      await options.rmLaneDirectoryForTests(resolved);
+    } else {
+      // force:false — do not ignore errors; partial failure must fail closed.
+      await nodeFs.rm(resolved, { recursive: true, force: false });
+    }
   } catch (err) {
     return {
       ok: false,
-      code: "AMBIGUOUS_OWNERSHIP",
-      reason: `Cannot readdir during reparse safety walk at ${dir}: ${err instanceof Error ? err.message : String(err)}`,
-      details: { laneRoot, dir },
+      reason: `Node-safe Task lane directory remove failed at ${resolved} (possible partial lane; Git registration left untouched; no prune/rollback): ${err instanceof Error ? err.message : String(err)}`,
+      details: { lanePath: resolved, linkSafety: "node-fs-rm-lane" },
     };
   }
-
-  for (const name of names) {
-    // Defend against path pieces that could normalize outside the lane.
-    if (name === ".." || name === ".") {
-      return {
-        ok: false,
-        code: "AMBIGUOUS_OWNERSHIP",
-        reason: `Unexpected path segment ${JSON.stringify(name)} during reparse safety walk at ${dir}.`,
-        details: { laneRoot, dir },
-      };
-    }
-    const full = nodePath.resolve(dir, name);
-    if (!isPathInsideRoot(full, laneRoot)) {
-      return {
-        ok: false,
-        code: "AMBIGUOUS_OWNERSHIP",
-        reason: `Child path escapes Task lane during reparse safety walk: ${full}`,
-        details: { laneRoot, dir, name },
-      };
-    }
-
-    let st: Awaited<ReturnType<typeof nodeFs.lstat>>;
-    try {
-      // lstat: never follow symlink/junction/reparse.
-      st = await nodeFs.lstat(full);
-    } catch (err) {
-      return {
-        ok: false,
-        code: "AMBIGUOUS_OWNERSHIP",
-        reason: `Cannot lstat ${full} during reparse safety walk: ${err instanceof Error ? err.message : String(err)}`,
-        details: { laneRoot, path: full },
-      };
-    }
-
-    if (st.isSymbolicLink()) {
-      // Junction + symlink both report isSymbolicLink under Node on Windows.
-      out.push(full);
-      continue;
-    }
-    if (st.isDirectory()) {
-      const nested = await walkLaneCollectingLinks(laneRoot, full, out);
-      if (nested) return nested;
-    }
-    // Regular files and other non-link types: leave for git worktree remove.
-  }
-  return undefined;
-}
-
-async function classifyLaneLink(
-  laneRoot: string,
-  linkPath: string
-): Promise<
-  | { ok: true; link: DetachedLaneLink }
-  | {
-      ok: false;
-      code: TaskWorktreeReclaimCode;
-      reason: string;
-      details?: Record<string, unknown>;
-    }
-> {
-  if (!isPathInsideRoot(linkPath, laneRoot)) {
-    return {
-      ok: false,
-      code: "AMBIGUOUS_OWNERSHIP",
-      reason: `Refusing to operate on link outside Task lane: ${linkPath}`,
-      details: { laneRoot, linkPath },
-    };
-  }
-
-  let st: Awaited<ReturnType<typeof nodeFs.lstat>>;
-  try {
-    st = await nodeFs.lstat(linkPath);
-  } catch (err) {
-    return {
-      ok: false,
-      code: "AMBIGUOUS_OWNERSHIP",
-      reason: `Cannot re-lstat link before detach at ${linkPath}: ${err instanceof Error ? err.message : String(err)}`,
-      details: { laneRoot, linkPath },
-    };
-  }
-  if (!st.isSymbolicLink()) {
-    return {
-      ok: false,
-      code: "AMBIGUOUS_OWNERSHIP",
-      reason: `Path was collected as a link but is no longer a symlink/junction at detach time: ${linkPath}`,
-      details: { laneRoot, linkPath },
-    };
-  }
-
-  let rawTarget: string;
-  try {
-    rawTarget = await nodeFs.readlink(linkPath);
-  } catch (err) {
-    return {
-      ok: false,
-      code: "AMBIGUOUS_OWNERSHIP",
-      reason: `Cannot readlink to classify reparse target at ${linkPath}: ${err instanceof Error ? err.message : String(err)}`,
-      details: { laneRoot, linkPath },
-    };
-  }
-  if (typeof rawTarget !== "string" || rawTarget.length === 0) {
-    return {
-      ok: false,
-      code: "AMBIGUOUS_OWNERSHIP",
-      reason: `Empty or non-string readlink result at ${linkPath}; refusing to classify.`,
-      details: { laneRoot, linkPath, rawTarget },
-    };
-  }
-
-  // Windows junctions often return an absolute path; POSIX may be relative.
-  // Strip the Win32 kernel prefix when present so path resolution is stable.
-  const normalizedRaw = stripWin32NtPrefix(rawTarget);
-  let resolvedTarget: string;
-  try {
-    resolvedTarget = nodePath.isAbsolute(normalizedRaw)
-      ? nodePath.resolve(normalizedRaw)
-      : nodePath.resolve(nodePath.dirname(linkPath), normalizedRaw);
-  } catch (err) {
-    return {
-      ok: false,
-      code: "AMBIGUOUS_OWNERSHIP",
-      reason: `Cannot resolve link target for classification at ${linkPath}: ${err instanceof Error ? err.message : String(err)}`,
-      details: { laneRoot, linkPath, rawTarget },
-    };
-  }
-
-  const outbound = !isPathInsideRoot(resolvedTarget, laneRoot);
-  return {
-    ok: true,
-    link: {
-      linkPath,
-      rawTarget,
-      resolvedTarget,
-      outbound,
-    },
-  };
-}
-
-/**
- * Remove only the link entry. Never `fs.rm(..., { recursive: true })` on a link
- * path in a way that could follow the target — use unlink, with rmdir fallback
- * for directory junctions/symlinks on some Windows Node builds.
- */
-async function unlinkLinkOnly(linkPath: string): Promise<void> {
-  try {
-    await nodeFs.unlink(linkPath);
-    return;
-  } catch (unlinkErr) {
-    // Directory symlink / junction: some Windows paths need rmdir (RemoveDirectory).
-    try {
-      await nodeFs.rmdir(linkPath);
-      return;
-    } catch {
-      throw unlinkErr;
-    }
-  }
-}
-
-/** True when `candidate` is `root` or a path strictly under `root` (after resolve). */
-function isPathInsideRoot(candidate: string, root: string): boolean {
-  const resolvedRoot = nodePath.resolve(root);
-  const resolvedCandidate = nodePath.resolve(candidate);
-  if (isSameWorkspaceRoot(resolvedCandidate, resolvedRoot)) return true;
-  const rel = nodePath.relative(resolvedRoot, resolvedCandidate);
-  return Boolean(rel) && !rel.startsWith("..") && !nodePath.isAbsolute(rel);
-}
-
-/** Strip \\?\ / \??\ prefixes from Windows reparse readlink text. */
-function stripWin32NtPrefix(target: string): string {
-  if (target.startsWith("\\??\\")) return target.slice(4);
-  if (target.startsWith("\\\\?\\")) return target.slice(4);
-  return target;
+  return { ok: true };
 }
 
 async function evaluateAcceptedSettle(input: {

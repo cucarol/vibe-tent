@@ -15,9 +15,9 @@ import {
   taskWorktreeBranchName,
 } from "../src/core/workspace.js";
 import {
-  detachOutboundLinksInTaskLane,
   evaluateTaskWorktreeReclaim,
   reclaimTaskWorktree,
+  removeTaskLaneDirectorySafe,
 } from "../src/core/task-worktree-reclaim.js";
 import type { TaskEnvelope } from "../src/core/task.js";
 import type { DeliveryRecord } from "../src/core/delivery.js";
@@ -545,20 +545,23 @@ test("P0: remove never force-deletes when dirtiness re-check fails", async () =>
 
 /**
  * Production regression (cx-80g9p5): Task lane node_modules was a Windows junction
- * into the main repo's shared deps. git worktree remove followed the reparse point
- * and deleted the target. Reclaim must detach the link only; external sentinel lives.
+ * into shared deps. git worktree remove followed the reparse point and deleted the
+ * target. Reclaim must Node-fs.rm the lane (link-only for junctions) then drop only
+ * exact Git registration; external sentinel must survive. Never use the real
+ * workspace root node_modules as the destructive target — isolated external only.
  */
-test("P0: reclaim detaches outbound junction/symlink; external sentinel survives", async () => {
+test("P0: reclaim Node-rm lane with outbound junction; external sentinel survives", async () => {
   const workspace = await makeGitWorkspace("tent-reclaim-junc-");
   // Production Task lanes share a committed .gitignore so node_modules junctions
-  // are not untracked dirtiness; reclaim still walks them via lstat.
+  // are not untracked dirtiness before the final clean gate.
   await fs.writeFile(path.join(workspace, ".gitignore"), "node_modules/\n");
   await git(workspace, "add", ".gitignore");
   await git(workspace, "commit", "-q", "-m", "ignore node_modules");
   const taskId = "tk-reclaim-junc";
   const lane = await ensureTaskWorkspace(workspace, taskId);
+  const tipBefore = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
 
-  // External target outside both workspace and Task lane (shared deps stand-in).
+  // Isolated external target (not the real Tent root node_modules).
   const externalRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-ext-"));
   const sentinelPath = path.join(externalRoot, "sentinel.txt");
   const sentinelBody = `survive-${taskId}-${Date.now()}\n`;
@@ -587,16 +590,14 @@ test("P0: reclaim detaches outbound junction/symlink; external sentinel survives
     }
   }
   if (linkKind === "unsupported") {
-    // Host cannot create the production link shape; still prove unit detach API
-    // is exported and fail-closed on missing lane rather than silently skipping.
-    const missing = await detachOutboundLinksInTaskLane(
-      path.join(lane.worktree, "no-such-lane-dir")
+    // Host cannot create the production link shape; still prove the small helper.
+    const missing = await removeTaskLaneDirectorySafe(
+      path.join(lane.worktree, "no-such-lane-dir-xyz")
     );
     assert.equal(missing.ok, false);
     return;
   }
 
-  // Link must look like a reparse/symlink entry (not a real directory copy).
   const linkStat = await fs.lstat(linkPath);
   assert.equal(linkStat.isSymbolicLink(), true, `expected ${linkKind} to report isSymbolicLink`);
 
@@ -618,7 +619,7 @@ test("P0: reclaim detaches outbound junction/symlink; external sentinel survives
   assert.equal(
     r.reclaimed,
     true,
-    `expected RECLAIMED after ${linkKind} detach, got ${r.code}: ${r.reason}`
+    `expected RECLAIMED after ${linkKind} Node-rm, got ${r.code}: ${r.reason}`
   );
   assert.equal(r.code, "RECLAIMED");
   assert.equal(await pathExists(lane.worktree), false, "Task worktree directory must be gone");
@@ -627,14 +628,17 @@ test("P0: reclaim detaches outbound junction/symlink; external sentinel survives
     new RegExp(taskId),
     "Git worktree registration must be gone"
   );
+  // Branch + commits preserved (metadata-only force after dir absent).
+  const branchTip = (await git(workspace, "rev-parse", `refs/heads/${lane.branch}`)).trim();
+  assert.equal(branchTip, tipBefore);
+  assert.equal((await git(workspace, "cat-file", "-t", tipBefore)).trim(), "commit");
 
-  // External target + sentinel must be byte-identical (never followed/deleted).
   assert.equal(await pathExists(externalRoot), true, "external target dir must survive");
   assert.equal(await pathExists(sentinelPath), true, "external sentinel must survive");
   assert.equal(await fs.readFile(sentinelPath, "utf8"), sentinelBody);
 });
 
-test("P0: portable file symlink outbound is detached; target file survives", async () => {
+test("P0: portable file symlink outbound survives Node-rm reclaim", async () => {
   const workspace = await makeGitWorkspace("tent-reclaim-slink-");
   await fs.writeFile(path.join(workspace, ".gitignore"), "shared-bin\n");
   await git(workspace, "add", ".gitignore");
@@ -679,15 +683,88 @@ test("P0: portable file symlink outbound is detached; target file survives", asy
   assert.equal(await fs.readFile(targetFile, "utf8"), body);
 });
 
-test("P0: unlink failure on outbound link fails closed (no git worktree remove)", async () => {
-  const workspace = await makeGitWorkspace("tent-reclaim-unlink-fail-");
+/**
+ * Tracked symlink must not break reclaim the way pre-unlink-then-git-remove did
+ * (that left a dirty tracked deletion). Node-rm of the whole lane + metadata force
+ * clears registration without requiring a clean porcelain after partial unlink.
+ */
+test("P0: tracked symlink in lane reclaims; external target survives", async () => {
+  const workspace = await makeGitWorkspace("tent-reclaim-tracked-sl-");
+  const taskId = "tk-reclaim-tracked-sl";
+  const lane = await ensureTaskWorkspace(workspace, taskId);
+
+  const externalRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-tsl-ext-"));
+  const targetFile = path.join(externalRoot, "tracked-target.txt");
+  const body = "tracked-symlink-sentinel\n";
+  await fs.writeFile(targetFile, body);
+
+  const linkPath = path.join(lane.worktree, "tracked-link");
+  try {
+    await fs.symlink(
+      targetFile,
+      linkPath,
+      process.platform === "win32" ? "file" : undefined
+    );
+  } catch {
+    return;
+  }
+  await git(lane.worktree, "add", "tracked-link");
+  await git(lane.worktree, "commit", "-q", "-m", "add tracked symlink");
+  const tip = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
+
+  const task = profileTask({
+    id: taskId,
+    path: "temp/agent-profiles/fake-default/tasks/t.md",
+    state: "failed",
+    workspace: lane.workspace,
+    worktree: lane.worktree,
+    branch: lane.branch,
+    targetBranch: lane.targetBranch,
+  });
+  const r = await reclaimTaskWorktree({
+    workspaceRoot: workspace,
+    task,
+    deliveries: [],
+  });
+  assert.equal(r.reclaimed, true, `got ${r.code}: ${r.reason}`);
+  assert.equal(await pathExists(lane.worktree), false);
+  assert.doesNotMatch(await worktreeList(workspace), new RegExp(taskId));
+  assert.equal((await git(workspace, "rev-parse", `refs/heads/${lane.branch}`)).trim(), tip);
+  assert.equal(await fs.readFile(targetFile, "utf8"), body);
+});
+
+test("P0: lane root reparse/junction fails closed before Node rm", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-rootlink-"));
+  const realDir = path.join(parent, "real-lane");
+  const linkLane = path.join(parent, "link-lane");
+  await fs.mkdir(realDir);
+  try {
+    if (process.platform === "win32") {
+      await fs.symlink(realDir, linkLane, "junction");
+    } else {
+      await fs.symlink(realDir, linkLane, "dir");
+    }
+  } catch {
+    return;
+  }
+  const result = await removeTaskLaneDirectorySafe(linkLane);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.match(result.reason, /lane root is a symlink|junction|reparse/i);
+  }
+  assert.equal(await pathExists(linkLane), true, "link-as-root must remain");
+  assert.equal(await pathExists(realDir), true, "real target dir must remain");
+});
+
+test("P0: Node lane rm failure fails closed (registration untouched)", async () => {
+  const workspace = await makeGitWorkspace("tent-reclaim-rm-fail-");
   await fs.writeFile(path.join(workspace, ".gitignore"), "node_modules/\n");
   await git(workspace, "add", ".gitignore");
   await git(workspace, "commit", "-q", "-m", "ignore node_modules");
-  const taskId = "tk-reclaim-unlink-fail";
+  const taskId = "tk-reclaim-rm-fail";
   const lane = await ensureTaskWorkspace(workspace, taskId);
 
-  const externalRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-uf-ext-"));
+  const externalRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-rmf-ext-"));
   const sentinelPath = path.join(externalRoot, "keep.txt");
   await fs.writeFile(sentinelPath, "must-keep\n");
 
@@ -716,39 +793,17 @@ test("P0: unlink failure on outbound link fails closed (no git worktree remove)"
     workspaceRoot: workspace,
     task,
     deliveries: [],
-    unlinkLinkForTests: async () => {
-      throw new Error("simulated unlink EPERM");
+    rmLaneDirectoryForTests: async () => {
+      throw new Error("simulated fs.rm EPERM");
     },
   });
   assert.equal(r.reclaimed, false);
   assert.equal(r.code, "REMOVE_FAILED");
-  assert.match(r.reason, /detach|unlink|simulated unlink/i);
-  assert.equal(await pathExists(lane.worktree), true, "lane preserved on unlink failure");
-  assert.equal(await pathExists(linkPath), true, "link entry left in place when detach fails");
+  assert.match(r.reason, /Node-safe|fs\.rm|simulated fs\.rm/i);
+  assert.equal(await pathExists(lane.worktree), true, "lane preserved on rm failure");
+  assert.equal(await pathExists(linkPath), true, "junction left in place when rm fails");
   assert.equal(await fs.readFile(sentinelPath, "utf8"), "must-keep\n");
-  assert.match(await worktreeList(workspace), /tk-reclaim-unlink-fail|task-tk-reclaim-unlink-fail/);
-});
-
-test("P0: detachOutboundLinksInTaskLane refuses when lane root is itself a link", async () => {
-  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-rootlink-"));
-  const realDir = path.join(parent, "real-lane");
-  const linkLane = path.join(parent, "link-lane");
-  await fs.mkdir(realDir);
-  try {
-    if (process.platform === "win32") {
-      await fs.symlink(realDir, linkLane, "junction");
-    } else {
-      await fs.symlink(realDir, linkLane, "dir");
-    }
-  } catch {
-    return;
-  }
-  const result = await detachOutboundLinksInTaskLane(linkLane);
-  assert.equal(result.ok, false);
-  if (!result.ok) {
-    assert.equal(result.code, "AMBIGUOUS_OWNERSHIP");
-    assert.match(result.reason, /lane root is a symlink|junction|reparse/i);
-  }
+  assert.match(await worktreeList(workspace), /tk-reclaim-rm-fail|task-tk-reclaim-rm-fail/);
 });
 
 test("P0: pending reclaim queue is explicit opt-in only", async () => {
