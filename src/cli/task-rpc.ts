@@ -536,12 +536,7 @@ export async function runTaskCommand(
             flags.task || flags["task-path"] || flags.taskPath;
           if (!inputId || !taskPathFilter) {
             return failUsage(
-              "Usage: tent task task-input ack <inputId> --task <taskPath> --actor <role|sessionId> [--workspace <path>] [--json]"
-            );
-          }
-          if (!flags.actor) {
-            return failUsage(
-              "tent task task-input ack requires --actor matching the task role or verified session id"
+              "Usage: tent task task-input ack <inputId> --task <taskPath> [--actor <role|sessionId>] [--workspace <path>] [--json]"
             );
           }
           const result = await client.taskInputAck(
@@ -808,6 +803,8 @@ function formatTaskInputList(result: unknown): string {
       status?: string;
       text?: string;
       contextRefs?: string[];
+      lastError?: string;
+      uncertainAt?: string;
     }>;
   };
   const inputs = row.inputs ?? [];
@@ -821,6 +818,8 @@ function formatTaskInputList(result: unknown): string {
       `- ${i.id ?? "?"}` +
         `\ttask=${i.taskPath ?? "?"}` +
         `\tstatus=${i.status ?? "?"}` +
+        (i.uncertainAt ? `\tuncertainAt=${i.uncertainAt}` : "") +
+        (i.lastError ? `\terror=${i.lastError.slice(0, 80)}` : "") +
         (preview ? `\t${preview}` : "")
     );
   }
@@ -975,7 +974,7 @@ Commands:
   tent task ask-user <taskPath> --question <text>|- [--choices id=label,…] [--workspace <path>] [--json]
   tent task user-ask list|get <askId>|reply <askId>|deny <askId> […] [--workspace <path>] [--json]
   tent task send-input <taskPath> [--text <text>|-] [--refs id,id] [--workspace <path>] [--json]
-  tent task task-input list <taskPath>|get <inputId>|ack <inputId> --task <taskPath> --actor <role|sessionId> [--workspace <path>] [--json]
+  tent task task-input list <taskPath>|get <inputId>|ack <inputId> --task <taskPath> [--actor <role|sessionId>] [--workspace <path>] [--json]
 
 Service options:
   --data-dir <path>       Machine-local service data area (default: %APPDATA%/Tent)

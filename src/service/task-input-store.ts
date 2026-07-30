@@ -105,7 +105,7 @@ const TASK_INPUT_STATUSES = new Set<TaskInputStatus>([
 ]);
 
 /**
- * Open rows: still eligible for managed inject / external poll (not terminal).
+ * Retry/inject rows: still eligible for managed inject / retry poll.
  * `uncertain` is intentionally excluded — at-most-once; no automatic re-inject.
  */
 export function isTaskInputOpenStatus(status: TaskInputStatus): boolean {
@@ -118,13 +118,13 @@ export function isTaskInputOpenStatus(status: TaskInputStatus): boolean {
  * Delivery-blocking rows for a task: must be consumed (managed inject/ack or
  * legitimate terminal) before a ready Delivery may publish.
  * - pending / processing / failed (retryable) → block
- * - uncertain → does **not** block (at-most-once; store safety, no re-inject)
+ * - uncertain → blocks until explicit ack (at-most-once; never re-inject)
  * - delivered / consumed / cancelled → do not block
  */
 export function isTaskInputDeliveryBlockingStatus(
   status: TaskInputStatus
 ): boolean {
-  return isTaskInputOpenStatus(status);
+  return isTaskInputOpenStatus(status) || status === "uncertain";
 }
 
 /**
@@ -398,17 +398,16 @@ export class TaskInputStore {
   }
 
   /**
-   * Open inputs for external poll (pending + failed; not mid-inject processing).
+   * Retry/inject source (pending + failed; never processing or uncertain).
    * Always scoped by workspaceId + taskPath — no machine-global inbox.
-   * `failed` remains visible so agents can ack/retry and nothing is dropped.
    */
-  async listPending(
+  async listRetryableForTask(
     workspaceId: string,
     taskPath: string
   ): Promise<TaskInputRecord[]> {
     if (!workspaceId?.trim() || !taskPath?.trim()) {
       throw new Error(
-        "TaskInput.listPending requires workspaceId and taskPath (no global inbox)"
+        "TaskInput.listRetryableForTask requires workspaceId and taskPath (no global inbox)"
       );
     }
     await this.ensureLoaded();
@@ -420,6 +419,23 @@ export class TaskInputStore {
           i.taskPath === taskPath
       )
       .map(cloneInput);
+  }
+
+  /**
+   * Exact-task attention rows for humans/parents: retryable pending|failed plus
+   * at-most-once uncertain. Never use this as a provider inject source.
+   */
+  async listAttentionForTask(
+    workspaceId: string,
+    taskPath: string
+  ): Promise<TaskInputRecord[]> {
+    const all = await this.listForTask(workspaceId, taskPath);
+    return all.filter(
+      (item) =>
+        item.status === "pending" ||
+        item.status === "failed" ||
+        item.status === "uncertain"
+    );
   }
 
   /**
@@ -445,8 +461,8 @@ export class TaskInputStore {
   }
 
   /**
-   * Rows that must block a ready Delivery for this task (pending/processing/failed).
-   * Uncertain and terminal statuses are excluded.
+   * Rows that must block a ready Delivery for this task
+   * (pending/processing/failed/uncertain).
    */
   async listBlockingForDeliver(
     workspaceId: string,
@@ -704,7 +720,8 @@ export class TaskInputStore {
 
   /**
    * At-most-once uncertain delivery: provider inject already succeeded, but durable
-   * markDelivered failed. Terminal for re-inject — not listPending, not cancel-eligible,
+   * markDelivered failed. Terminal for re-inject — not listRetryableForTask,
+   * not cancel-eligible,
    * not markPendingForRetry. Survives restart as uncertain (never reloads as pending).
    */
   async markUncertain(

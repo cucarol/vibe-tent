@@ -4539,7 +4539,7 @@ test("reject-resume restores live managed session for agentProfile tasks", async
       `unexpected review-feedback status: ${settled.status}`
     );
     if (settled.status === "failed") {
-      const retryable = await svc.ctx.taskInputs.listPending(workspaceId, taskPath);
+      const retryable = await svc.ctx.taskInputs.listRetryableForTask(workspaceId, taskPath);
       assert.ok(
         retryable.some((row) => row.id === settled.id),
         "failed review-feedback must remain visible for retry/poll"
@@ -5097,7 +5097,7 @@ test("late session.failed after managed Delivery is diagnostic only", async () =
 
     // listPending emptiness after a clean managed turn is normal consumption
     // (delivered/consumed rows are not listed) — not evidence of task.fail cancel.
-    const pending = await svc.ctx.taskInputs.listPending(workspaceId, taskPath);
+    const pending = await svc.ctx.taskInputs.listRetryableForTask(workspaceId, taskPath);
     assert.equal(pending.length, 0);
   });
 });
@@ -6279,7 +6279,7 @@ test("reject-resume post-start context failure stops orphan Session and parks oc
     assert.notEqual(task.state, "interrupted");
     assert.notEqual(task.state, "cancelled");
 
-    const pending = await svc.ctx.taskInputs.listPending(workspaceId, taskPath);
+    const pending = await svc.ctx.taskInputs.listRetryableForTask(workspaceId, taskPath);
     assert.ok(
       pending.some(
         (row) =>
@@ -6354,7 +6354,7 @@ test("reject-resume fails loud and parks waiting when session cannot be restored
     );
 
     // Review note retained even when restore never ran (input created before restore).
-    const pending = await svc.ctx.taskInputs.listPending(workspaceId, taskPath);
+    const pending = await svc.ctx.taskInputs.listRetryableForTask(workspaceId, taskPath);
     assert.ok(
       pending.some(
         (row) => row.kind === "review-feedback" && row.text === "should fail loud"

@@ -409,6 +409,62 @@ test("task list/get human output for agents", async () => {
   });
 });
 
+test("task-input ack CLI omits actor for persisted user reviewer path", async () => {
+  const ws = await makeWorkspace("cli-task-input-user-ack");
+  await withService(async (svc, dataDir) => {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mount = (await client.mount(ws)) as { workspaceId: string };
+    const created = (await client.call("docs.createNote", {
+      workspaceId: mount.workspaceId,
+      name: "uncertain-cli",
+      type: "prompt",
+    })) as { id: string };
+    const dispatched = (await client.taskDispatch(mount.workspaceId, {
+      boxId: created.id,
+      role: "executor",
+      prompt: "cli user ack",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+    })) as { taskPath: string };
+    await client.taskClaim(mount.workspaceId, dispatched.taskPath);
+    const now = new Date().toISOString();
+    await svc.ctx.taskInputs.add({
+      id: "ti-cli-user-ack",
+      workspaceId: mount.workspaceId,
+      taskPath: dispatched.taskPath,
+      role: "executor",
+      kind: "user-input",
+      text: "ambiguous",
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await svc.ctx.taskInputs.markUncertain(
+      "ti-cli-user-ack",
+      "confirmation failed"
+    );
+
+    const ack = await runTaskCommand(
+      "task-input",
+      [
+        "ack",
+        "ti-cli-user-ack",
+        "--task",
+        dispatched.taskPath,
+        "--json",
+      ],
+      { client, cwd: ws, dataDir }
+    );
+    assert.equal(ack.exitCode, 0, ack.stderr);
+    const parsed = JSON.parse(ack.stdout) as {
+      input: { status: string; resolvedBy?: string; uncertainAt?: string };
+    };
+    assert.equal(parsed.input.status, "consumed");
+    assert.equal(parsed.input.resolvedBy, "user");
+    assert.ok(parsed.input.uncertainAt);
+  });
+});
+
 test("writeServiceEndpoint never targets workspace; token only in dataDir", async () => {
   const ws = await makeWorkspace();
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-cli-ep-"));

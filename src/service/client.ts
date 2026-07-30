@@ -1228,7 +1228,8 @@ export class ServiceClient {
   }
 
   /**
-   * U2A pending one-shot inputs for external poll.
+   * U2A attention rows for external/parent review (pending|failed|uncertain).
+   * This projection is never a provider inject source.
    * Always requires workspaceId + taskPath — no machine-global inbox.
    */
   taskInputListPending(workspaceId: string, taskPath: string) {
@@ -1241,8 +1242,8 @@ export class ServiceClient {
     return this.call("taskInput.get", { workspaceId, taskPath, inputId });
   }
   /**
-   * External agent formal ack after observing one-shot input (poll+ack).
-   * Actor must match stored task role / session binding; scope is workspaceId+taskPath.
+   * Formal ack after observing one-shot input. Omit actor for the user path;
+   * Role/session callers pass their exact bound identity.
    */
   taskInputAck(
     workspaceId: string,

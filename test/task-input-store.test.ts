@@ -37,17 +37,17 @@ function pending(
   };
 }
 
-test("task input store: delivery-blocking status helper matches open/retryable only", () => {
+test("task input store: delivery-blocking includes uncertain but retryability does not", () => {
   assert.equal(isTaskInputDeliveryBlockingStatus("pending"), true);
   assert.equal(isTaskInputDeliveryBlockingStatus("processing"), true);
   assert.equal(isTaskInputDeliveryBlockingStatus("failed"), true);
-  assert.equal(isTaskInputDeliveryBlockingStatus("uncertain"), false);
+  assert.equal(isTaskInputDeliveryBlockingStatus("uncertain"), true);
   assert.equal(isTaskInputDeliveryBlockingStatus("delivered"), false);
   assert.equal(isTaskInputDeliveryBlockingStatus("consumed"), false);
   assert.equal(isTaskInputDeliveryBlockingStatus("cancelled"), false);
 });
 
-test("task input store: listBlockingForDeliver excludes terminal and uncertain", async () => {
+test("task input store: listBlockingForDeliver includes uncertain and excludes terminal", async () => {
   const dataDir = await tempDir("tent-ti-block-");
   const store = new TaskInputStore(dataDir);
   const workspaceId = "ws-block";
@@ -133,12 +133,14 @@ test("task input store: listBlockingForDeliver excludes terminal and uncertain",
 
   const blockers = await store.listBlockingForDeliver(workspaceId, taskPath);
   const ids = blockers.map((b) => b.id).sort();
-  assert.deepEqual(ids, ["ti-failed", "ti-pending", "ti-processing"].sort());
+  assert.deepEqual(
+    ids,
+    ["ti-failed", "ti-pending", "ti-processing", "ti-uncertain"].sort()
+  );
   assert.ok(blockers.every((b) => isTaskInputDeliveryBlockingStatus(b.status)));
   assert.equal(
     blockers.some(
       (b) =>
-        b.status === "uncertain" ||
         b.status === "delivered" ||
         b.status === "cancelled"
     ),
@@ -379,8 +381,16 @@ test("task input store: uncertain is at-most-once (no listPending, no cancel, no
   assert.equal(uncertain.sessionId, sessionId);
   assert.equal(uncertain.failedAt, undefined);
 
-  const open = await store.listPending(workspaceId, taskPath);
+  const open = await store.listRetryableForTask(workspaceId, taskPath);
   assert.equal(open.length, 0, "uncertain must not appear as retryable open");
+  const retryable = await store.listRetryableForTask(workspaceId, taskPath);
+  assert.equal(retryable.length, 0, "uncertain must never enter retry source");
+  const attention = await store.listAttentionForTask(workspaceId, taskPath);
+  assert.equal(attention.length, 1);
+  assert.equal(attention[0]!.id, id);
+  assert.equal(attention[0]!.status, "uncertain");
+  assert.ok(attention[0]!.uncertainAt);
+  assert.match(attention[0]!.lastError ?? "", /markDelivered failed/);
 
   const cancelled = await store.cancelTask(workspaceId, taskPath, "interrupt");
   assert.equal(cancelled.length, 0, "uncertain is not cancel-eligible");
@@ -429,7 +439,7 @@ test("task input store: processing reloads uncertain; true inject failure stays 
   const processing = await store.markProcessing(id);
   assert.equal(processing.status, "processing");
 
-  const pendingList = await store.listPending(workspaceId, taskPath);
+  const pendingList = await store.listRetryableForTask(workspaceId, taskPath);
   assert.equal(
     pendingList.length,
     0,
@@ -470,7 +480,7 @@ test("task input store: processing reloads uncertain; true inject failure stays 
   assert.equal(failed.lastError, "inject blew up");
   assert.ok(failed.failedAt);
 
-  const open = await reloaded.listPending(workspaceId, taskPath);
+  const open = await reloaded.listRetryableForTask(workspaceId, taskPath);
   assert.equal(open.length, 1);
   assert.equal(open[0]!.status, "failed");
 

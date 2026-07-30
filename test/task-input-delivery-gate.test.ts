@@ -136,7 +136,11 @@ async function mountWorkItem(
 async function runningTask(
   svc: Awaited<ReturnType<typeof startLocalTentService>>,
   ws: string,
-  opts?: { startSession?: boolean; profileId?: string }
+  opts?: {
+    startSession?: boolean;
+    profileId?: string;
+    deliveryPolicy?: "review" | "bypass";
+  }
 ): Promise<{ workspaceId: string; taskPath: string; sessionId?: string }> {
   const { workspaceId, boxId } = await mountWorkItem(svc, ws);
   const d = await rpc(svc, "task.dispatch", {
@@ -146,7 +150,7 @@ async function runningTask(
     boxId,
     role: "executor",
     prompt: "delivery gate fixture",
-    deliveryPolicy: "review",
+    deliveryPolicy: opts?.deliveryPolicy ?? "review",
   });
   assert.ok(!d.error, JSON.stringify(d.error));
   const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -348,23 +352,17 @@ test("P0: retryable failed TaskInput blocks public deliver", async () => {
   });
 });
 
-test("P0: terminal TaskInput (delivered/acked/cancelled) and uncertain do not block", async () => {
+test("P0: terminal TaskInput (delivered/acked/cancelled) do not block", async () => {
   const ws = await makeWorkspace("tent-ti-gate-terminal-");
   await withService(async (svc) => {
     const { workspaceId, taskPath } = await runningTask(svc, ws);
 
-    // Seed terminal / at-most-once rows that must NOT block.
+    // Seed terminal rows that must NOT block.
     await seedTaskInput(svc, {
       workspaceId,
       taskPath,
       status: "delivered",
       text: "already injected",
-    });
-    await seedTaskInput(svc, {
-      workspaceId,
-      taskPath,
-      status: "uncertain",
-      text: "at-most-once",
     });
     // cancelled via dedicated add+cancel
     {
@@ -409,6 +407,106 @@ test("P0: terminal TaskInput (delivered/acked/cancelled) and uncertain do not bl
     assert.equal(deliveries.length, 1);
     assert.equal(deliveries[0].status, "ready");
     assert.equal(deliveries[0].summary, "TERMINAL_INPUTS_OK");
+  });
+});
+
+test("P0: uncertain blocks manual and bypass Delivery and is attention-visible", async () => {
+  for (const deliveryPolicy of ["review", "bypass"] as const) {
+    const ws = await makeWorkspace(`tent-ti-gate-uncertain-${deliveryPolicy}-`);
+    await withService(async (svc) => {
+      const { workspaceId, taskPath } = await runningTask(svc, ws, {
+        deliveryPolicy,
+      });
+      const { id } = await seedTaskInput(svc, {
+        workspaceId,
+        taskPath,
+        status: "uncertain",
+        text: "provider may have seen this",
+      });
+
+      const manual = await rpc(svc, "task.deliver", {
+        workspaceId,
+        taskPath,
+        summary: `MUST_NOT_${deliveryPolicy.toUpperCase()}`,
+      });
+      assert.ok(manual.error);
+      assertPendingTaskInputError(manual.error!);
+      const data = manual.error!.data as {
+        firstStatus?: string;
+        firstInputId?: string;
+      };
+      assert.equal(data.firstStatus, "uncertain");
+      assert.equal(data.firstInputId, id);
+
+      const attention = await rpc(svc, "taskInput.listPending", {
+        workspaceId,
+        taskPath,
+      });
+      assert.ok(!attention.error, JSON.stringify(attention.error));
+      const row = (
+        attention.result as {
+          inputs: Array<{
+            id: string;
+            status: string;
+            lastError?: string;
+            uncertainAt?: string;
+          }>;
+        }
+      ).inputs.find((input) => input.id === id);
+      assert.equal(row?.status, "uncertain");
+      assert.match(row?.lastError ?? "", /seeded uncertain/);
+      assert.ok(row?.uncertainAt);
+
+      const deliveries = await rpc(svc, "delivery.list", { workspaceId });
+      assert.equal(
+        (deliveries.result as { deliveries: unknown[] }).deliveries.length,
+        0,
+        `${deliveryPolicy} must not publish/auto-accept around uncertain`
+      );
+    });
+  }
+});
+
+test("P0: explicit retry is new-row first; ack old uncertain leaves new blocker", async () => {
+  const ws = await makeWorkspace("tent-ti-gate-uncertain-retry-");
+  await withService(async (svc) => {
+    const { workspaceId, taskPath } = await runningTask(svc, ws);
+    const { id: uncertainId } = await seedTaskInput(svc, {
+      workspaceId,
+      taskPath,
+      status: "uncertain",
+    });
+
+    const resent = await rpc(svc, "task.sendInput", {
+      workspaceId,
+      taskPath,
+      text: "new row retries the ambiguous requirement",
+    });
+    assert.ok(!resent.error, JSON.stringify(resent.error));
+    const newId = (resent.result as { input: { id: string } }).input.id;
+    assert.notEqual(newId, uncertainId);
+
+    const acked = await rpc(svc, "taskInput.ack", {
+      workspaceId,
+      taskPath,
+      inputId: uncertainId,
+    });
+    assert.ok(!acked.error, JSON.stringify(acked.error));
+    assert.equal(
+      (acked.result as { input: { status: string } }).input.status,
+      "consumed"
+    );
+
+    const blocked = await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "NEW_ROW_STILL_BLOCKS",
+    });
+    assert.ok(blocked.error);
+    assertPendingTaskInputError(blocked.error!);
+    const data = blocked.error!.data as { inputIds?: string[]; statuses?: string[] };
+    assert.deepEqual(data.inputIds, [newId]);
+    assert.deepEqual(data.statuses, ["pending"]);
   });
 });
 
@@ -705,7 +803,7 @@ test("P0 race: input before deliver blocks; deliver first makes sendInput refuse
       list.result as { deliveries: Array<{ summary: string }> }
     ).deliveries.filter((x) => x.summary === "DELIVER_BEFORE_INPUT");
     assert.equal(deliveries.length, 1);
-    const pending = await svc.ctx.taskInputs.listPending(
+    const pending = await svc.ctx.taskInputs.listRetryableForTask(
       a.workspaceId,
       taskPath
     );
@@ -765,7 +863,7 @@ test("P0 race: concurrent sendInput and public deliver — honest either-way und
         1
       );
       assert.equal(
-        (await svc.ctx.taskInputs.listPending(workspaceId, taskPath)).length,
+        (await svc.ctx.taskInputs.listRetryableForTask(workspaceId, taskPath)).length,
         0
       );
     } else {
@@ -822,7 +920,7 @@ test("P0 race: sendInput cannot slip between final publish gate and taskDeliver 
     });
     await new Promise((r) => setTimeout(r, 20));
     assert.equal(
-      (await svc.ctx.taskInputs.listPending(workspaceId, taskPath)).length,
+      (await svc.ctx.taskInputs.listRetryableForTask(workspaceId, taskPath)).length,
       0,
       "no TaskInput row while publish path still holds/queues the bus"
     );
@@ -843,7 +941,7 @@ test("P0 race: sendInput cannot slip between final publish gate and taskDeliver 
       /running or waiting|state=delivered/i
     );
     assert.equal(
-      (await svc.ctx.taskInputs.listPending(workspaceId, taskPath)).length,
+      (await svc.ctx.taskInputs.listRetryableForTask(workspaceId, taskPath)).length,
       0
     );
     const list = await rpc(svc, "delivery.list", { workspaceId });

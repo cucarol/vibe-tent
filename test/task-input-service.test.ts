@@ -282,31 +282,45 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
     assert.ok(badActor.error);
     assert.equal(badActor.error!.code, -32001);
 
-    // Missing actor fails
-    const noActor = await rpcCall(
+    // Caller-controlled "user" text is not proof of user authority.
+    const spoofedUser = await rpcCall(
       svc.url,
       "taskInput.ack",
       {
         workspaceId,
         taskPath,
         inputId: sent.input.id,
+        actor: "user",
       },
       { token: svc.token }
     );
-    assert.ok(noActor.error);
-    assert.equal(noActor.error!.code, -32602);
+    assert.ok(spoofedUser.error);
+    assert.equal(spoofedUser.error!.code, -32001);
 
-    // Role-bound ack succeeds
-    const acked = (await client.taskInputAck(
+    // Omitted actor is the Local Service user path; persisted parent/reviewer
+    // is user:user, so it succeeds.
+    const userAcked = (await client.taskInputAck(
       workspaceId,
       taskPath,
-      sent.input.id,
-      "executor"
+      sent.input.id
     )) as {
       input: { status: string; consumedAt?: string };
     };
-    assert.equal(acked.input.status, "consumed");
-    assert.ok(acked.input.consumedAt);
+    assert.equal(userAcked.input.status, "consumed");
+    assert.ok(userAcked.input.consumedAt);
+
+    // Exact Task role remains authorized on a separate row.
+    const roleRow = (await client.taskSendInput(workspaceId, taskPath, {
+      text: "role will ack",
+    })) as { input: { id: string } };
+    const roleAcked = (await client.taskInputAck(
+      workspaceId,
+      taskPath,
+      roleRow.input.id,
+      "executor"
+    )) as { input: { status: string; consumedAt?: string } };
+    assert.equal(roleAcked.input.status, "consumed");
+    assert.ok(roleAcked.input.consumedAt);
 
     // Double-ack fails loud
     const doubleAck = await rpcCall(
@@ -315,7 +329,7 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
       {
         workspaceId,
         taskPath,
-        inputId: sent.input.id,
+        inputId: roleRow.input.id,
         actor: "executor",
       },
       { token: svc.token }
@@ -481,6 +495,112 @@ test("taskInput list/get/ack are isolated across workspaces (no cross get/ack)",
         }),
       /running or waiting|state=/
     );
+  });
+});
+
+test("taskInput ack authority includes persisted parent Role and verified bound Session", async () => {
+  const ws = await makeWorkspace();
+  await withService([], async (svc) => {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+    const note = (await client.docsCreateNote(workspaceId, {
+      name: "ack-authority",
+      type: "prompt",
+    })) as { id: string };
+    const now = new Date().toISOString();
+
+    // Persisted parent/reviewer Role may acknowledge ambiguity for its child.
+    const parentTaskPath = "temp/executor/tasks/task-parent-ack.md";
+    const parentTaskAbs = path.join(ws, ".tent", ...parentTaskPath.split("/"));
+    await fs.mkdir(path.dirname(parentTaskAbs), { recursive: true });
+    await fs.writeFile(
+      parentTaskAbs,
+      "---\n" +
+        "type: task\n" +
+        "id: tk-parent-ack\n" +
+        "status: taken\n" +
+        "state: running\n" +
+        "role: executor\n" +
+        "assigneeKind: role\n" +
+        "parentActor: {kind: role, id: dispatcher}\n" +
+        "reviewer: {kind: role, id: dispatcher}\n" +
+        `claims: [${note.id}]\n` +
+        "manifest: temp/executor/manifest.yml\n" +
+        "deliveryPolicy: review\n" +
+        `createdAt: "${now}"\n` +
+        `updatedAt: "${now}"\n` +
+        "---\n# Task\n",
+      "utf8"
+    );
+    await svc.ctx.taskInputs.add({
+      id: "ti-parent-role-ack",
+      workspaceId,
+      taskPath: parentTaskPath,
+      taskId: "tk-parent-ack",
+      role: "executor",
+      kind: "user-input",
+      text: "parent decides",
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    });
+    const parentAck = await rpcCall(
+      svc.url,
+      "taskInput.ack",
+      {
+        workspaceId,
+        taskPath: parentTaskPath,
+        inputId: "ti-parent-role-ack",
+        actor: "dispatcher",
+      },
+      { token: svc.token }
+    );
+    assert.ok(!parentAck.error, JSON.stringify(parentAck.error));
+    assert.equal(
+      (parentAck.result as { input: { resolvedBy: string } }).input.resolvedBy,
+      "dispatcher"
+    );
+
+    // A Session id is authority only when Service registry + Task binding agree.
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      boxId: note.id,
+      role: "executor",
+      prompt: "session-bound ack",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      deliveryPolicy: "review",
+    })) as { taskPath: string };
+    const entered = (await client.sessionEnter({
+      workspaceId,
+      roleName: "executor",
+      externalKey: "task-input-ack-session",
+      lastTaskId: dispatched.taskPath,
+      cwd: ws,
+    })) as { session: { sessionId: string } };
+    const sessionId = entered.session.sessionId;
+    await client.taskClaim(workspaceId, dispatched.taskPath, sessionId);
+    const sessionInputId = "ti-session-bound-ack";
+    await svc.ctx.taskInputs.add({
+      id: sessionInputId,
+      workspaceId,
+      taskPath: dispatched.taskPath,
+      sessionId,
+      role: "executor",
+      kind: "user-input",
+      text: "session observes this",
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    });
+    const sessionAck = (await client.taskInputAck(
+      workspaceId,
+      dispatched.taskPath,
+      sessionInputId,
+      sessionId
+    )) as { input: { status: string; resolvedBy?: string } };
+    assert.equal(sessionAck.input.status, "consumed");
+    assert.equal(sessionAck.input.resolvedBy, sessionId);
   });
 });
 
@@ -1389,6 +1509,79 @@ test("reject-resume: background completion projects processing → delivered", a
       svc.ctx.taskInputs.markDelivered = originalUncertainMarkDelivered;
     }
 
+    const blockedTask = (await client.taskGet(workspaceId, taskPath)) as {
+      task: { state: string; activeDeliveryId?: string };
+    };
+    assert.equal(
+      blockedTask.task.state,
+      "running",
+      "uncertain must keep rework Task non-terminal until ack"
+    );
+    assert.equal(blockedTask.task.activeDeliveryId, priorDeliveryId);
+
+    const attention = (await client.taskInputListPending(
+      workspaceId,
+      taskPath
+    )) as {
+      inputs: Array<{
+        id: string;
+        status: string;
+        lastError?: string;
+        uncertainAt?: string;
+      }>;
+    };
+    const uncertainAttention = attention.inputs.find(
+      (input) => input.id === uncertainRejected.input.id
+    );
+    assert.equal(uncertainAttention?.status, "uncertain");
+    assert.ok(uncertainAttention?.uncertainAt);
+    assert.match(uncertainAttention?.lastError ?? "", /markDelivered/);
+
+    const beforeAckDeliveries = (await client.deliveryList(workspaceId)) as {
+      deliveries: Array<{ summary: string; status: string }>;
+    };
+    assert.equal(
+      beforeAckDeliveries.deliveries.filter(
+        (delivery) =>
+          delivery.status === "ready" && delivery.summary === "BG_REWORK_OK"
+      ).length,
+      0,
+      "uncertain blocker must suppress draft auto-delivery"
+    );
+
+    const spoofedUserAck = await rpcCall(
+      svc.url,
+      "taskInput.ack",
+      {
+        workspaceId,
+        taskPath,
+        inputId: uncertainRejected.input.id,
+        actor: "user",
+      },
+      { token: svc.token }
+    );
+    assert.ok(spoofedUserAck.error);
+    assert.equal(spoofedUserAck.error!.code, -32001);
+
+    const acked = (await client.taskInputAck(
+      workspaceId,
+      taskPath,
+      uncertainRejected.input.id
+    )) as {
+      input: {
+        status: string;
+        uncertainAt?: string;
+        lastError?: string;
+        consumedAt?: string;
+        resolvedBy?: string;
+      };
+    };
+    assert.equal(acked.input.status, "consumed");
+    assert.ok(acked.input.uncertainAt, "ack preserves ambiguity timestamp");
+    assert.match(acked.input.lastError ?? "", /markDelivered/);
+    assert.ok(acked.input.consumedAt);
+    assert.equal(acked.input.resolvedBy, "user");
+
     await pollUntil(async () => {
       const got = (await client.taskGet(workspaceId, taskPath)) as {
         task: { state: string; activeDeliveryId?: string };
@@ -1398,7 +1591,7 @@ test("reject-resume: background completion projects processing → delivered", a
         got.task.activeDeliveryId !== priorDeliveryId
         ? got.task
         : null;
-    }, 20_000, "uncertain TaskInput still closes rework Delivery");
+    }, 20_000, "ack triggers durable draft-only Delivery retry");
 
     const logRaw = await fs.readFile(logPath, "utf8");
     const log = JSON.parse(logRaw) as { prompts?: string[] };
@@ -1454,7 +1647,7 @@ test("reject-resume: failed inject stays retryable; uncertain is at-most-once", 
   );
   assert.equal(failed.status, "failed");
   assert.ok(failed.lastError);
-  const openFailed = await store.listPending(workspaceId, taskPath);
+  const openFailed = await store.listRetryableForTask(workspaceId, taskPath);
   assert.ok(
     openFailed.some((r) => r.id === failedId),
     "failed review-feedback must remain poll-visible for retry"
@@ -1488,7 +1681,7 @@ test("reject-resume: failed inject stays retryable; uncertain is at-most-once", 
     "service"
   );
   assert.equal(uncertain.status, "uncertain");
-  const openUnc = await store.listPending(workspaceId, taskPath);
+  const openUnc = await store.listRetryableForTask(workspaceId, taskPath);
   assert.equal(
     openUnc.filter((r) => r.id === uncertainId).length,
     0,
@@ -2459,7 +2652,7 @@ test("task.sendInput: inject-ok + markDelivered failure → uncertain (no re-inj
   assert.equal(u.status, "uncertain");
 
   // listPending must not surface for ordinary retry / recovery inject.
-  const open = await store.listPending(workspaceId, taskPath);
+  const open = await store.listRetryableForTask(workspaceId, taskPath);
   assert.equal(open.length, 0);
 
   // Second "retry" claim must fail — at-most-once.
