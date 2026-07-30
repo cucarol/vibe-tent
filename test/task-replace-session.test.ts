@@ -492,12 +492,6 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
   await fs.writeFile(path.join(ws, "README.md"), "# repo\n");
   await git(ws, "add", ".gitignore", "README.md");
   await git(ws, "commit", "-q", "-m", "init");
-  const contract = await ensureRoleWorkspace(ws, "executor");
-  await fs.writeFile(path.join(contract.worktree, "life-replace.txt"), "r\n");
-  await git(contract.worktree, "add", "life-replace.txt");
-  await git(contract.worktree, "commit", "-q", "-m", "life replace");
-  const sourceRef = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
-
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-replace-life-"));
   let releaseIntegrate!: () => void;
   const integrateHold = new Promise<void>((resolve) => {
@@ -524,6 +518,11 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
       boxId
     );
     assert.ok(priorSessionId);
+    const contract = await ensureRoleWorkspace(ws, "executor");
+    await fs.writeFile(path.join(contract.worktree, "life-replace.txt"), "r\n");
+    await git(contract.worktree, "add", "life-replace.txt");
+    await git(contract.worktree, "commit", "-q", "-m", "life replace");
+    const sourceRef = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
 
     // Unrelated Task B on orchestrator role (own session lane).
     const otherNote = await rpc(svc, "docs.createNote", {

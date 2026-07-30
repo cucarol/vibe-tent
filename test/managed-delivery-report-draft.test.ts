@@ -430,12 +430,9 @@ test("P0: integrate failure preserves draft; second attempt with clean commits s
   const ws = await makeWorkspace("mrd-integrate-fail");
   await initGitOnWorkspace(ws);
 
-  // Divergent role/main so cherry-pick conflicts on first deliver.
+  // Create the long-lived Role lane before main diverges. The Task claim captures
+  // this clean base; its conflicting Role commit must be created after claim.
   const contract = await ensureRoleWorkspace(ws, "executor");
-  await fs.writeFile(path.join(contract.worktree, "mrd-conflict.txt"), "role\n");
-  await git(contract.worktree, "add", "mrd-conflict.txt");
-  await git(contract.worktree, "commit", "-q", "-m", "role mrd conflict");
-  const sourceRef = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
   await fs.writeFile(path.join(ws, "mrd-conflict.txt"), "main\n");
   await git(ws, "add", "mrd-conflict.txt");
   await git(ws, "commit", "-q", "-m", "main mrd conflict");
@@ -453,6 +450,10 @@ test("P0: integrate failure preserves draft; second attempt with clean commits s
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
+    await fs.writeFile(path.join(contract.worktree, "mrd-conflict.txt"), "role\n");
+    await git(contract.worktree, "add", "mrd-conflict.txt");
+    await git(contract.worktree, "commit", "-q", "-m", "role mrd conflict");
+    const sourceRef = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
     const started = await rpc(svc, "task.startSession", {
       workspaceId,
       taskPath,

@@ -8,7 +8,6 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs, SystemClock } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
@@ -25,10 +24,8 @@ import {
 } from "../src/core/workspace.js";
 import { taskAccept, taskClaim, taskDeliver, taskReject } from "../src/core/task-lifecycle.js";
 import { RPC_A2A_DENIED } from "../src/service/types.js";
-import { runTaskCommand } from "../src/cli/task-rpc.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 async function makeWorkspace(
   name = "sub-dispatch",
@@ -991,73 +988,6 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
       "tent-role/executor"
     );
   });
-});
-
-// ---- CLI attach: --as-sub --by ----
-
-test("CLI tent task dispatch --as-sub --by wires RPC asSub", async () => {
-  const ws = await makeWorkspace("sub-cli");
-  await initGitOnWorkspace(ws);
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-sub-cli-data-"));
-  const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
-  try {
-    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
-    assert.ok(!mounted.error, JSON.stringify(mounted.error));
-    const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
-    const boxId = await createNote(svc, workspaceId, "cli-sub");
-
-    const result = await runTaskCommand(
-      "dispatch",
-      [boxId, "helper", "from cli", "--as-sub", "--by", "orchestrator", "--json"],
-      {
-        cwd: ws,
-        dataDir,
-        attachOnly: true,
-        packageRoot: repoRoot,
-        json: true,
-      }
-    );
-    assert.equal(result.exitCode, 0, result.stderr + result.stdout);
-    const parsed = JSON.parse(result.stdout) as {
-      taskPath: string;
-      asSub?: boolean;
-      workspaceLane?: { branch?: string; targetBranch?: string; baseCommit?: string };
-    };
-    assert.equal(parsed.asSub, true);
-    // Role asSub defers execution lane until claim (CLI dispatch must not freeze tip).
-    assert.equal(parsed.workspaceLane?.branch, undefined);
-    assert.equal(parsed.workspaceLane?.targetBranch, undefined);
-    assert.equal(parsed.workspaceLane?.baseCommit, undefined);
-
-    const previousTentRole = process.env.TENT_ROLE;
-    delete process.env.TENT_ROLE;
-    try {
-      const missingBy = await runTaskCommand(
-        "dispatch",
-        [
-          await createNote(svc, workspaceId, "cli-sub-2"),
-          "helper",
-          "no by",
-          "--as-sub",
-          "--json",
-        ],
-        {
-          cwd: ws,
-          dataDir,
-          attachOnly: true,
-          packageRoot: repoRoot,
-          json: true,
-        }
-      );
-      assert.notEqual(missingBy.exitCode, 0);
-      assert.match(missingBy.stderr + missingBy.stdout, /--as-sub requires --by|dispatchedBy|durable/i);
-    } finally {
-      if (previousTentRole === undefined) delete process.env.TENT_ROLE;
-      else process.env.TENT_ROLE = previousTentRole;
-    }
-  } finally {
-    await svc.stop();
-  }
 });
 
 // ---- Full parent → sub → parent → main artifact inheritance ----

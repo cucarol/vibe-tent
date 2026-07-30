@@ -129,9 +129,9 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(roleSkill, /also apply `tent-task`/i);
   assert.match(roleSkill, /Role prompt/);
   assert.match(roleSkill, /downstream/i);
-  assert.match(roleSkill, /tent agent enter/);
-  assert.match(roleSkill, /tent agent status/);
-  assert.match(roleSkill, /tent agent leave/);
+  assert.match(roleSkill, /tent session enter/);
+  assert.match(roleSkill, /tent session status/);
+  assert.match(roleSkill, /tent session leave/);
   assert.ok(roleSkill.length < 6000, "tent-role SKILL.md should stay compact");
 
   assert.match(taskSkill, /name: tent-task/);
@@ -162,8 +162,8 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(taskCli, /self-`send-input`|same.*task you are currently executing/i);
   assert.match(taskCli, /dispatcher/i);
   assert.doesNotMatch(taskCli, /Agents never call|There is \*\*no\*\* `tent agent/i);
-  assert.match(taskSession, /tent agent enter/i);
-  assert.match(taskSession, /tent agent leave/i);
+  assert.match(taskSession, /tent session enter/i);
+  assert.match(taskSession, /tent session leave/i);
   assert.match(taskSession, /never delivers|never deliver/i);
   assert.match(taskSession, /Context Card|manifest is only an auxiliary/i);
   assert.doesNotMatch(`${roleSkill}\n${taskSkill}`, /name: tent-agent|tent handoff/i);

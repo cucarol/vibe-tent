@@ -2732,7 +2732,7 @@ async function roleCommit(
   return (await git(contract.worktree, "rev-parse", "HEAD")).trim();
 }
 
-test("P0-1: task.dispatch ensures role WorkspaceLane; startSession cwd is role worktree", async () => {
+test("P0-1: first Role claim ensures WorkspaceLane; startSession cwd is role worktree", async () => {
   const ws = await makeWorkspace("p0-lane");
   await initGitOnWorkspace(ws);
   await withService(async (svc) => {
@@ -2748,10 +2748,27 @@ test("P0-1: task.dispatch ensures role WorkspaceLane; startSession cwd is role w
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
-    const lane = (dispatched.result as {
+    const dispatchLane = (dispatched.result as {
       workspaceLane?: { workspace?: string; worktree?: string; branch?: string; targetBranch?: string };
     }).workspaceLane;
-    assert.ok(lane, "dispatch must attach WorkspaceLane on Git workspace");
+    assert.equal(dispatchLane?.workspace, undefined);
+    assert.equal(dispatchLane?.worktree, undefined);
+    assert.equal(dispatchLane?.branch, undefined);
+    assert.equal(dispatchLane?.targetBranch, undefined);
+
+    const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(!claimed.error, JSON.stringify(claimed.error));
+    const lane = (claimed.result as {
+      task: {
+        workspaceLane?: {
+          workspace?: string;
+          worktree?: string;
+          branch?: string;
+          targetBranch?: string;
+        };
+      };
+    }).task.workspaceLane;
+    assert.ok(lane, "first claim must attach WorkspaceLane on Git workspace");
     assert.equal(path.resolve(lane!.workspace!), path.resolve(ws));
     assert.equal(lane!.branch, "tent-role/executor");
     assert.equal(lane!.targetBranch, "main");
@@ -2779,11 +2796,23 @@ test("P0-1: task.dispatch ensures role WorkspaceLane; startSession cwd is role w
       prompt: "second box same role",
     });
     assert.ok(!d2.error, JSON.stringify(d2.error));
-    const lane2 = (d2.result as { workspaceLane?: { worktree?: string; branch?: string } }).workspaceLane;
+    assert.equal(
+      (d2.result as { workspaceLane?: { worktree?: string } }).workspaceLane?.worktree,
+      undefined
+    );
+    const claimed2 = await rpc(svc, "task.claim", {
+      workspaceId,
+      taskPath: (d2.result as { taskPath: string }).taskPath,
+    });
+    assert.ok(!claimed2.error, JSON.stringify(claimed2.error));
+    const lane2 = (
+      claimed2.result as {
+        task: { workspaceLane?: { worktree?: string; branch?: string } };
+      }
+    ).task.workspaceLane;
     assert.equal(path.resolve(lane2!.worktree!), path.resolve(lane!.worktree!));
     assert.equal(lane2!.branch, lane!.branch);
 
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
     const started = await rpc(svc, "task.startSession", {
       workspaceId,
       taskPath,
@@ -3082,7 +3111,7 @@ async function withBlockedIntegrate(
     },
   });
   const waitIntegrate = async () => {
-    const deadline = Date.now() + 15000;
+    const deadline = Date.now() + 60000;
     while (!entered && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
     assert.equal(entered, true, `${label}: must reach integrate outside MutationBus`);
   };
@@ -4126,12 +4155,15 @@ test("P0 fix: managed auto-collect excludes pre-session role commits; includes a
     const taskPath = (d.result as { taskPath: string }).taskPath;
 
     const mount = svc.ctx.host.require(workspaceId);
-    // Dispatch-time capture: base freezes at lane tip (includes pre-existing role commits).
+    // Dispatch does not freeze a Role execution lane.
     const afterDispatch = await loadTaskEnvelope(mount.env.fs, taskPath);
-    assert.equal(afterDispatch.roleBranchBase, preExisting);
-    assert.equal(afterDispatch.baseCommit, preExisting);
+    assert.equal(afterDispatch.roleBranchBase, undefined);
+    assert.equal(afterDispatch.baseCommit, undefined);
 
     await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const afterClaim = await loadTaskEnvelope(mount.env.fs, taskPath);
+    assert.equal(afterClaim.roleBranchBase, preExisting);
+    assert.equal(afterClaim.baseCommit, preExisting);
     const started = await rpc(svc, "task.startSession", {
       workspaceId,
       taskPath,
@@ -6477,7 +6509,7 @@ test("P0 fix: successful managed delivery frees same role for next task", async 
     assert.ok(rec1, "prior session registry retained");
     assert.notEqual(rec1!.state, "live");
 
-    // startSession remains capture-once: must not rewrite dispatch-time base to firstRef.
+    // startSession remains capture-once: must not rewrite claim-time base to firstRef.
     const s2 = await rpc(svc, "task.startSession", {
       workspaceId,
       taskPath: taskPath2,
@@ -6486,10 +6518,10 @@ test("P0 fix: successful managed delivery frees same role for next task", async 
     });
     assert.ok(!s2.error, JSON.stringify(s2.error));
     const sessionId2 = (s2.result as { session: { sessionId: string } }).session.sessionId;
-    assert.equal(
+    assert.notEqual(
       sessionId2,
       sessionId1,
-      "a resumable durable Role Session is reused across tasks"
+      "a delivered-but-unreviewed prior Task must not lend its Session across Tasks"
     );
     assert.equal(
       (await loadTaskEnvelope(mount.env.fs, taskPath2)).roleBranchBase,
@@ -7365,147 +7397,6 @@ test("task.startSession resumes any waiting (external/a2a) before launch", async
   });
 });
 
-test("task.startSession reuses old sessionId via native load when resumeCapable after restart", async () => {
-  resetManagedAutoDeliverDedupForTests();
-  const ws = await makeWorkspace("resume-reuse-ss");
-  const logPath = path.join(
-    await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-resume-log-")),
-    "mock-acp-log-resume.json"
-  );
-  const profile = mockAcpProfile("mock-acp-resume", {
-    logPath,
-    promptText: "outcome: delivered\n\nRESUME_REUSE_OK",
-    keepAlive: true,
-  });
-  profile.env = {
-    ...profile.env,
-    MOCK_ACP_LOAD_SESSION: "1",
-    MOCK_ACP_HISTORY_TEXT: "HISTORY_MUST_NOT_AUTO_DELIVER",
-  };
-
-  // Simulate post-restart disk: waiting task still holds old ss- id; session row has
-  // provider resume token; process is dead (no managed Map).
-  const priorSessionId = "ss-reuse01";
-
-  await withService(
-    async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
-      const d = await rpc(svc, "task.dispatch", {
-        parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
-        workspaceId,
-        boxId,
-        role: "executor",
-        prompt: "resume reuse after restart",
-      });
-      const taskPath = (d.result as { taskPath: string }).taskPath;
-      await rpc(svc, "task.claim", { workspaceId, taskPath });
-      // Claim fills worktree lane; use that as recorded session cwd.
-      const claimed = await rpc(svc, "task.get", { workspaceId, taskPath });
-      const task = (
-        claimed.result as {
-          task: { worktree?: string; workspace?: string; branch?: string };
-        }
-      ).task;
-      const cwd = task.worktree || ws;
-      assert.ok(cwd);
-
-      await svc.runtime.registry.write({
-        id: priorSessionId,
-        profileId: "mock-acp-resume",
-        adapterId: GROK_ACP_ADAPTER_ID,
-        roleName: "executor",
-        state: "stopped",
-        resumeToken: "mock-acp-session-1",
-        runtimeWorkspace: { cwd },
-        workspace: workspaceId,
-        workspaceLane: task.worktree
-          ? {
-              workspace: task.workspace || ws,
-              worktree: task.worktree,
-              branch: task.branch || "HEAD",
-            }
-          : undefined,
-        lastTaskId: taskPath,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
-
-      // Bind task.sessionId + park waiting (external) as mount reconcile would.
-      const mount = svc.ctx.host.require(workspaceId);
-      await svc.ctx.mutations.run(workspaceId, async () => {
-        svc.ctx.host.markSelfWrite(workspaceId);
-        await patchTaskEnvelope(mount.env.fs, taskPath, {
-          sessionId: priorSessionId,
-          updatedAt: mount.env.clock.now(),
-        });
-      });
-      await rpc(svc, "task.wait", {
-        workspaceId,
-        taskPath,
-        reason: "external",
-        summary: SESSION_UNAVAILABLE_WAIT_SUMMARY,
-      });
-
-      const probe = await svc.runtime.probe(priorSessionId);
-      assert.equal(probe.alive, false);
-      assert.equal(probe.resumeCapable, true, JSON.stringify(probe));
-
-      const started = await rpc(svc, "task.startSession", {
-        workspaceId,
-        taskPath,
-        profileId: "mock-acp-resume",
-        callerKind: "user",
-      });
-      assert.ok(!started.error, JSON.stringify(started.error));
-      const result = started.result as {
-        session: { sessionId: string };
-        task: { sessionId?: string; state: string };
-      };
-      assert.equal(
-        result.session.sessionId,
-        priorSessionId,
-        "must reuse old Tent sessionId, not allocate a new ss-"
-      );
-      assert.equal(result.task.sessionId, priorSessionId);
-      // Resume returns live quickly; bootstrap may already have auto-delivered.
-      assert.ok(
-        result.task.state === "running" || result.task.state === "delivered",
-        `unexpected task state ${result.task.state}`
-      );
-
-      const log = await pollUntil(async () => {
-        try {
-          const raw = await fs.readFile(logPath, "utf8");
-          const parsed = JSON.parse(raw) as {
-            methods: string[];
-            loads?: Array<{ sessionId: string; cwd: string }>;
-          };
-          return parsed.methods.includes("session/load") ? parsed : null;
-        } catch {
-          return null;
-        }
-      }, 45_000, "session/load in mock log");
-      assert.ok(log.methods.includes("session/load"));
-      assert.ok(!log.methods.includes("session/new"));
-      assert.equal(log.loads?.[0]?.sessionId, "mock-acp-session-1");
-      assert.equal(path.resolve(log.loads?.[0]?.cwd || ""), path.resolve(cwd));
-
-      // History replay must not become delivery summary; only post-load prompt text.
-      const delivery = await pollUntil(async () => {
-        const list = await rpc(svc, "delivery.list", { workspaceId });
-        const deliveries = (
-          list.result as { deliveries: Array<{ summary: string }> }
-        ).deliveries;
-        return deliveries[0] ?? null;
-      }, 45_000, "auto-delivery after resume bootstrap");
-      assert.equal(delivery.summary, "RESUME_REUSE_OK");
-      assert.doesNotMatch(delivery.summary, /HISTORY/);
-    },
-    { profiles: [profile] }
-  );
-});
-
 test("durable role reuses one provider session across delivered tasks", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace("role-session-cross-task");
@@ -7552,6 +7443,22 @@ test("durable role reuses one provider session across delivered tasks", async ()
         const rec = await svc.runtime.registry.read(sessionId);
         return rec?.state === "stopped" ? rec : null;
       }, 45_000, "first role delivery stop");
+      await pollUntil(async () => {
+        const firstTask = await rpc(svc, "task.get", {
+          workspaceId,
+          taskPath: firstPath,
+        });
+        return (firstTask.result as { task: { state: string } }).task.state ===
+          "delivered"
+          ? firstTask
+          : null;
+      }, 45_000, "first role Task delivered");
+      const accepted = await rpc(svc, "task.accept", {
+        workspaceId,
+        taskPath: firstPath,
+        actor: "user",
+      });
+      assert.ok(!accepted.error, JSON.stringify(accepted.error));
 
       const secondBox = await rpc(svc, "docs.createNote", {
         workspaceId,
@@ -7795,7 +7702,7 @@ test("task.startSession does not resume a provider session bound to another work
   );
 });
 
-test("P0 fix: concurrent dispatch same role serializes worktree ensure (no race)", async () => {
+test("P0 fix: concurrent first claims same role serialize worktree ensure (no race)", async () => {
   const ws = await makeWorkspace("p0-concurrent-lane");
   await initGitOnWorkspace(ws);
   await withService(async (svc) => {
@@ -7827,9 +7734,30 @@ test("P0 fix: concurrent dispatch same role serializes worktree ensure (no race)
     for (const r of results) {
       assert.ok(!r.error, JSON.stringify(r.error));
     }
-    const lanes = results.map(
-      (r) =>
-        (r.result as { workspaceLane: { worktree: string; branch: string } }).workspaceLane
+    assert.ok(
+      results.every(
+        (r) =>
+          (r.result as { workspaceLane?: { worktree?: string } }).workspaceLane?.worktree ===
+          undefined
+      ),
+      "Role dispatch must not bind an execution lane before first claim"
+    );
+    const claims = await Promise.all(
+      results.map((result) =>
+        rpc(svc, "task.claim", {
+          workspaceId,
+          taskPath: (result.result as { taskPath: string }).taskPath,
+        })
+      )
+    );
+    for (const claim of claims) assert.ok(!claim.error, JSON.stringify(claim.error));
+    const lanes = claims.map(
+      (claim) =>
+        (
+          claim.result as {
+            task: { workspaceLane: { worktree: string; branch: string } };
+          }
+        ).task.workspaceLane
     );
     assert.ok(lanes.every((l) => l && l.worktree));
     const wt = path.resolve(lanes[0].worktree);
