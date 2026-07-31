@@ -1,4 +1,3 @@
-import { redactSecrets } from "./redact.js";
 import { StringDecoder } from "node:string_decoder";
 
 export const ACP_OUTPUT_LIMIT_CODE = "ACP_OUTPUT_LIMIT";
@@ -138,6 +137,39 @@ function activeDiagnosticSecrets(secrets: readonly string[]): string[] {
   );
 }
 
+/** Redact the union of every known-secret occurrence, including overlaps. */
+function redactDiagnosticSecrets(
+  raw: string,
+  secrets: readonly string[]
+): string {
+  const intervals: Array<{ start: number; end: number }> = [];
+  for (const secret of secrets) {
+    let found = raw.indexOf(secret);
+    while (found >= 0) {
+      intervals.push({ start: found, end: found + secret.length });
+      found = raw.indexOf(secret, found + 1);
+    }
+  }
+  if (intervals.length === 0) return raw;
+  intervals.sort((left, right) => left.start - right.start || left.end - right.end);
+
+  let output = "";
+  let cursor = 0;
+  let start = intervals[0]!.start;
+  let end = intervals[0]!.end;
+  for (const interval of intervals.slice(1)) {
+    if (interval.start <= end) {
+      end = Math.max(end, interval.end);
+      continue;
+    }
+    output += raw.slice(cursor, start) + REDACTED_MARKER;
+    cursor = end;
+    start = interval.start;
+    end = interval.end;
+  }
+  return output + raw.slice(cursor, start) + REDACTED_MARKER + raw.slice(end);
+}
+
 /**
  * Retain only the longest raw suffix that may become a secret after the next
  * chunk. A suffix already covered by a complete secret occurrence is emitted
@@ -195,9 +227,12 @@ function redactFinalDiagnosticTail(
       }
     }
   }
-  if (partialChars === 0) return redactSecrets(raw, secrets);
+  if (partialChars === 0) return redactDiagnosticSecrets(raw, secrets);
   return (
-    redactSecrets(raw.slice(0, raw.length - partialChars), secrets) +
+    redactDiagnosticSecrets(
+      raw.slice(0, raw.length - partialChars),
+      secrets
+    ) +
     REDACTED_MARKER
   );
 }
@@ -304,7 +339,7 @@ export class BoundedDiagnosticRedactor {
     if (input.truncated) this.discardUntilFlush = true;
     if (this.maxSecretChars < 0) {
       this.carry = "";
-      return REDACTED_MARKER;
+      return truncateUtf8Text(REDACTED_MARKER, this.maxBytes);
     }
 
     const raw = this.carry + input.text;
@@ -323,7 +358,7 @@ export class BoundedDiagnosticRedactor {
 
     let redacted = input.truncated
       ? redactFinalDiagnosticTail(safeRaw, this.secrets)
-      : redactSecrets(safeRaw, this.secrets);
+      : redactDiagnosticSecrets(safeRaw, this.secrets);
     if (redacted !== safeRaw) {
       // Keep the redaction fact visible even when the original occurrence sat
       // at the eventual byte cut and the final truncation marker consumes tail room.

@@ -678,6 +678,16 @@ test("self-overlapping credentials keep redactor carry bounded", () => {
   assert.match(output, /\[redacted\]/);
 });
 
+test("overlapping credential occurrences cannot leak across diagnostic events", () => {
+  const redactor = new BoundedDiagnosticRedactor(["abab"], 64);
+  const output =
+    redactor.pushText("ababab") +
+    redactor.pushText("abX") +
+    redactor.flush();
+  assert.doesNotMatch(output, /abab/);
+  assert.match(output, /\[redacted\]/);
+});
+
 test("diagnostic joins remain byte-bounded below the truncation marker size", () => {
   const redactor = new BoundedDiagnosticRedactor(["secret-value"], 4);
   const output = redactor.pushText("secret-value") + redactor.flush();
