@@ -88,6 +88,8 @@ function mockAcpProfile(
      */
     postResponseTailMs?: number;
     postResponseTailPath?: string;
+    /** Generate an exact-size ASCII assistant report without a giant env value. */
+    outputBytes?: number;
   }
 ): import("../src/runtime/types.js").AgentProfileConfig {
   return {
@@ -125,6 +127,9 @@ function mockAcpProfile(
             MOCK_ACP_POST_RESPONSE_TAIL_MS: String(opts.postResponseTailMs),
             MOCK_ACP_POST_RESPONSE_TAIL_PATH: opts.postResponseTailPath,
           }
+        : {}),
+      ...(opts.outputBytes != null
+        ? { MOCK_ACP_OUTPUT_BYTES: String(opts.outputBytes) }
         : {}),
       CPA_GROK_API_KEY: "test-key-not-real",
     },
@@ -1613,6 +1618,173 @@ test("B5 managed ACP: empty / error / non-end_turn do not deliver", async () => 
       }
     );
   }
+});
+
+test("P0: ACP assistant output limit parks Task, stops child, and keeps Service healthy", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace();
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-output-limit-"));
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  await withService(
+    async (svc) => {
+      const runtimeEvents: import("../src/runtime/types.js").RuntimeEvent[] = [];
+      const serviceEvents: Array<{ type?: string; payload?: unknown }> = [];
+      const unsubRuntime = svc.runtime.subscribeAll((event) => runtimeEvents.push(event));
+      const unsubService = svc.events.subscribe((event) => serviceEvents.push(event));
+      try {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const dispatched = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "bounded managed output",
+      });
+      assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
+      const taskPath = (dispatched.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        callerKind: "user",
+        profileId: "mock-acp-output-limit",
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
+      const startedSession = (
+        started.result as { session: { sessionId: string } }
+      ).session;
+      const sessionId = startedSession.sessionId;
+      const liveEvent = runtimeEvents.find(
+        (event): event is Extract<
+          import("../src/runtime/types.js").RuntimeEvent,
+          { type: "session.live" }
+        > => event.type === "session.live" && event.sessionId === sessionId
+      );
+      assert.ok(liveEvent?.pid && liveEvent.pid > 0);
+      const childPid = liveEvent.pid!;
+
+      const parked = await pollUntil(async () => {
+        const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+        const task = (
+          got.result as {
+            task: {
+              state: string;
+              wait?: { reason?: string; summary?: string; code?: string } | null;
+              activeDeliveryId?: string;
+              lastOutcome?: string;
+            };
+          }
+        ).task;
+        return task.state === "waiting" ? task : null;
+      }, 20_000, "output-limited Task parked");
+      assert.equal(parked.wait?.reason, "external");
+      assert.equal(parked.wait?.code, SESSION_UNAVAILABLE_WAIT_CODE);
+      assert.equal(parked.activeDeliveryId, undefined);
+      assert.notEqual(parked.lastOutcome, "delivered");
+
+      const session = await pollUntil(async () => {
+        const record = await svc.runtime.registry.read(sessionId);
+        return record?.state === "failed" ? record : null;
+      }, 10_000, "output-limited Session failed");
+      assert.match(session.lastError ?? "", /ACP_OUTPUT_LIMIT/);
+      const probe = await svc.runtime.probe(sessionId);
+      assert.equal(probe.alive, false, "output-limited child must be stopped");
+      assert.equal(probe.state, "failed");
+      await pollUntil(() => {
+        try {
+          process.kill(childPid, 0);
+          return Promise.resolve(null);
+        } catch {
+          return Promise.resolve(true);
+        }
+      }, 8_000, "output-limited OS child exit");
+
+      const failedEvents = runtimeEvents.filter(
+        (event) => event.type === "session.failed" && event.sessionId === sessionId
+      );
+      assert.equal(failedEvents.length, 1, "limit must emit one managed terminal failure");
+      assert.match(
+        (failedEvents[0] as Extract<
+          import("../src/runtime/types.js").RuntimeEvent,
+          { type: "session.failed" }
+        >).error,
+        /^ACP_OUTPUT_LIMIT:/
+      );
+      assert.ok(
+        !runtimeEvents.some(
+          (event) =>
+            event.type === "session.prompt_complete" && event.sessionId === sessionId
+        ),
+        "limit must never emit prompt_complete"
+      );
+      assert.ok(
+        !serviceEvents.some((event) => event.type === "delivery.updated"),
+        "limit must never publish a delivery event"
+      );
+
+      const deliveries = (
+        (await rpc(svc, "delivery.list", { workspaceId })).result as {
+          deliveries: unknown[];
+        }
+      ).deliveries;
+      assert.equal(deliveries.length, 0, "limit failure must not publish Delivery");
+
+      const health = await rpc(svc, "service.health");
+      assert.ok(!health.error, JSON.stringify(health.error));
+      assert.equal((health.result as { status?: string }).status, "ok");
+      const workspaces = await rpc(svc, "workspace.list");
+      assert.ok(!workspaces.error, JSON.stringify(workspaces.error));
+
+      const envelope = await loadTaskEnvelope(
+        svc.ctx.host.require(workspaceId).env.fs,
+        taskPath
+      );
+      assert.equal(envelope.state, "waiting");
+      assert.equal(envelope.wait?.code, SESSION_UNAVAILABLE_WAIT_CODE);
+
+      const replaced = await rpc(svc, "task.replaceSession", {
+        workspaceId,
+        taskPath,
+        profileId: "mock-acp-output-recovery",
+        callerKind: "user",
+      });
+      assert.ok(!replaced.error, JSON.stringify(replaced.error));
+      const replacement = (
+        replaced.result as {
+          task: { state: string; sessionId?: string };
+          session: { sessionId: string };
+        }
+      );
+      assert.equal(replacement.task.state, "running");
+      assert.equal(replacement.task.sessionId, replacement.session.sessionId);
+      assert.notEqual(replacement.session.sessionId, sessionId);
+      assert.equal(
+        (await svc.runtime.probe(replacement.session.sessionId)).alive,
+        true,
+        "explicit replacement must restore a live recoverable Task"
+      );
+      assertOccupationHeld(await boxCollabProjection(svc, workspaceId, boxId), {
+        label: "output-limit replacement",
+      });
+      } finally {
+        unsubRuntime();
+        unsubService();
+      }
+    },
+    {
+      profiles: [
+        mockAcpProfile("mock-acp-output-limit", {
+          logPath,
+          outputBytes: 4 * 1024 * 1024 + 1,
+        }),
+        mockAcpProfile("mock-acp-output-recovery", {
+          logPath: path.join(dataDir, "mock-acp-recovery-log.json"),
+          promptMode: "interrupt",
+        }),
+      ],
+    }
+  );
 });
 
 test("B5 managed ACP: interrupt / stop does not deliver", async () => {

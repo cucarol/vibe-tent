@@ -7,6 +7,7 @@
  *
  * Env:
  *   MOCK_ACP_PROMPT_TEXT — final assistant message text (default "MOCK_ACP_OK")
+ *   MOCK_ACP_OUTPUT_BYTES — generate an exact-size ASCII assistant message (tests output limits)
  *   MOCK_ACP_INTERMEDIATE_TEXT — optional pre-tool assistant narration; when set,
  *     stream this agent_message_chunk before tool_call, then PROMPT_TEXT after tools
  *     (regression: Delivery.summary must keep only the final segment)
@@ -44,6 +45,15 @@ for (const arg of process.argv) {
 }
 
 const promptText = process.env.MOCK_ACP_PROMPT_TEXT || "MOCK_ACP_OK";
+const outputBytes = Math.max(
+  0,
+  Number(process.env.MOCK_ACP_OUTPUT_BYTES || "0") || 0
+);
+const deliveredPrefix = "outcome: delivered\n\n";
+const generatedPromptText =
+  outputBytes > 0
+    ? (deliveredPrefix + "x".repeat(outputBytes)).slice(0, outputBytes)
+    : promptText;
 /** Pre-tool assistant narration (empty = single final message only, legacy path). */
 const intermediateText = process.env.MOCK_ACP_INTERMEDIATE_TEXT || "";
 const followupText =
@@ -548,7 +558,7 @@ rl.on("line", (line) => {
       textParts.includes("## Review Feedback");
     // Follow-up continuation uses a distinct report so delivery is exercised
     // even when the bootstrap prompt was empty / non-delivering.
-    const activePromptText = isUserFollowUp ? followupText : promptText;
+    const activePromptText = isUserFollowUp ? followupText : generatedPromptText;
 
     const finishPrompt = () => {
       if (promptMode === "error" && !isUserFollowUp) {

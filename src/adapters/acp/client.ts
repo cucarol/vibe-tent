@@ -2,7 +2,6 @@
 // No provider argv/auth/env/model knowledge; adapters supply launch + auth hooks.
 
 import { spawn, type ChildProcess } from "node:child_process";
-import * as readline from "node:readline";
 import type { RuntimeEvent } from "../../runtime/types.js";
 import { buildManagedChildEnv } from "../../runtime/child-env.js";
 import type {
@@ -33,6 +32,19 @@ import {
   redactDiagnosticText,
   redactSecrets,
 } from "./redact.js";
+import {
+  ACP_DIAGNOSTIC_EVENT_BYTES,
+  ACP_OUTPUT_LIMIT_CODE,
+  ACP_REQUEST_LIMIT_CODE,
+  AcpLimitError,
+  appendUtf8Tail,
+  isAcpLimitError,
+  resolveAcpResourceLimits,
+  truncateUtf8Buffer,
+  truncateUtf8Text,
+  utf8Bytes,
+  type AcpResourceLimits,
+} from "./limits.js";
 
 const LOAD_REPLAY_QUIET_MS = 100;
 const LOAD_REPLAY_MAX_WAIT_MS = 2_000;
@@ -54,7 +66,13 @@ function formatRpcError(
   error: NonNullable<AcpJsonRpcResponse["error"]>,
   secrets: readonly string[] = []
 ): string {
-  const message = redactSecrets(error.message || "ACP JSON-RPC error", secrets);
+  const message = redactSecrets(
+    truncateUtf8Text(
+      error.message || "ACP JSON-RPC error",
+      ACP_DIAGNOSTIC_EVENT_BYTES
+    ),
+    secrets
+  );
   const code = Number.isFinite(error.code) ? ` [JSON-RPC ${error.code}]` : "";
   const data = summarizeRpcErrorData(error.data, secrets);
   return `${message}${code}${data ? ` (${data})` : ""}`;
@@ -75,7 +93,12 @@ function summarizeRpcErrorData(
     typeof data === "boolean"
   ) {
     const raw =
-      typeof data === "string" ? redactSecrets(data, secrets) : String(data);
+      typeof data === "string"
+        ? redactSecrets(
+            truncateUtf8Text(data, RPC_ERROR_DATA_MAX_CHARS),
+            secrets
+          )
+        : String(data);
     return `data=${raw.slice(0, RPC_ERROR_DATA_MAX_CHARS)}`;
   }
   if (typeof data !== "object" || Array.isArray(data)) {
@@ -95,7 +118,10 @@ function summarizeRpcErrorData(
         value == null
           ? null
           : typeof value === "string"
-          ? redactSecrets(value, secrets).slice(0, RPC_ERROR_DATA_MAX_CHARS)
+          ? redactSecrets(
+              truncateUtf8Text(value, RPC_ERROR_DATA_MAX_CHARS),
+              secrets
+            ).slice(0, RPC_ERROR_DATA_MAX_CHARS)
           : value;
     }
   }
@@ -180,6 +206,8 @@ export type AcpClientOptions = {
     toolCallId?: string;
     options: AcpPermissionOption[];
   }) => Promise<"allow" | "deny">;
+  /** Internal/test seam. Product adapters use the frozen defaults. */
+  resourceLimits?: Partial<AcpResourceLimits>;
 };
 
 export type AcpStartResult = {
@@ -244,7 +272,6 @@ type Pending = {
 
 export class AcpClient {
   private proc: ChildProcess | null = null;
-  private lines: readline.Interface | null = null;
   private nextId = 1;
   private pending = new Map<number, Pending>();
   /**
@@ -254,8 +281,14 @@ export class AcpClient {
    * is the last non-empty segment (see selectFinalAssistantReport).
    */
   private assistantMessageSegments: string[] = [];
-  /** Open (unsealed) agent_message_chunk buffer for the current segment. */
-  private assistantMessageCurrent = "";
+  /** Open message chunks stay chunked so many small updates do not cause repeated copies. */
+  private assistantMessageCurrentChunks: string[] = [];
+  private assistantReportBytes = 0;
+  private assistantUpdateCount = 0;
+  private stdoutFrameBuffer: Buffer | undefined;
+  private stdoutFrameBytes = 0;
+  private limitError: AcpLimitError | undefined;
+  private stopPromise: Promise<void> | undefined;
   private stderrTail = "";
   private closed = false;
   private stopRequested = false;
@@ -296,12 +329,14 @@ export class AcpClient {
   private permissionAsksInFlight = 0;
   /** Stop/exit cancellation for in-flight onPermissionAsk waiters. */
   private readonly permissionWaitCancels = new Set<() => void>();
+  private readonly resourceLimits: AcpResourceLimits;
 
   constructor(private readonly options: AcpClientOptions) {
     this.label =
       typeof options.label === "string" && options.label.trim()
         ? options.label.trim()
         : "ACP";
+    this.resourceLimits = resolveAcpResourceLimits(options.resourceLimits);
   }
 
   /**
@@ -372,21 +407,16 @@ export class AcpClient {
    * last non-empty assistant message segment (not intermediate narrations).
    */
   private finalizeAssistantReport(): string {
-    if (this.assistantMessageCurrent) {
-      const sealed = sealAssistantMessageSegment(
-        this.assistantMessageSegments,
-        this.assistantMessageCurrent
-      );
-      this.assistantMessageSegments = sealed.segments;
-      this.assistantMessageCurrent = sealed.current;
-    }
+    this.sealOpenAssistantSegment();
     return selectFinalAssistantReport(this.assistantMessageSegments);
   }
 
   /** Reset per-prompt accumulation (never mix reconnect/retry chunks). */
   private resetAssistantReport(): void {
     this.assistantMessageSegments = [];
-    this.assistantMessageCurrent = "";
+    this.assistantMessageCurrentChunks = [];
+    this.assistantReportBytes = 0;
+    this.assistantUpdateCount = 0;
   }
 
   /**
@@ -394,13 +424,22 @@ export class AcpClient {
    * message chunks become a new final-report candidate.
    */
   private sealOpenAssistantSegment(): void {
-    if (!this.assistantMessageCurrent) return;
+    if (this.assistantMessageCurrentChunks.length === 0) return;
+    const current = this.assistantMessageCurrentChunks.join("");
+    this.assistantMessageCurrentChunks = [];
+    if (!current.trim()) return;
+    if (this.assistantMessageSegments.length >= this.resourceLimits.assistantSegments) {
+      this.triggerLimit(
+        ACP_OUTPUT_LIMIT_CODE,
+        `assistant segment count exceeds ${this.resourceLimits.assistantSegments}`
+      );
+      return;
+    }
     const sealed = sealAssistantMessageSegment(
       this.assistantMessageSegments,
-      this.assistantMessageCurrent
+      current
     );
     this.assistantMessageSegments = sealed.segments;
-    this.assistantMessageCurrent = sealed.current;
   }
 
   /**
@@ -543,11 +582,13 @@ export class AcpClient {
         resumeSessionSupported: this.resumeSessionSupported,
       };
     } catch (err) {
+      if (isAcpLimitError(err)) throw err;
+      if (this.limitError) throw this.limitError;
       const message = err instanceof Error ? err.message : String(err);
       const detail = this.stderrTail
         ? `${message} (stderr: ${this.stderrTail.slice(-500)})`
         : message;
-      throw new Error(detail);
+      throw new Error(truncateUtf8Text(detail, ACP_DIAGNOSTIC_EVENT_BYTES));
     }
   }
 
@@ -571,6 +612,13 @@ export class AcpClient {
     this.resetAssistantReport();
     this.collectingPromptResponse = true;
     try {
+      const bootstrapBytes = utf8Bytes(bootstrapPrompt);
+      if (bootstrapBytes > this.resourceLimits.bootstrapTextBytes) {
+        throw this.triggerLimit(
+          ACP_REQUEST_LIMIT_CODE,
+          `bootstrap text ${bootstrapBytes} bytes exceeds ${this.resourceLimits.bootstrapTextBytes}`
+        );
+      }
       const promptTimeout =
         this.options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS;
       // Keep the ordinary text-only path synchronous. Besides avoiding needless
@@ -591,17 +639,22 @@ export class AcpClient {
         promptTimeout
       )) as { stopReason?: string };
 
+      if (this.limitError) throw this.limitError;
       if (this.stopRequested) {
         throw new Error("session interrupted before prompt completed");
       }
 
+      const assistantText = this.finalizeAssistantReport();
+      if (this.limitError) throw this.limitError;
       return {
         pid,
         providerSessionId: this.providerSessionId,
         stopReason: result.stopReason,
-        assistantText: this.finalizeAssistantReport(),
+        assistantText,
       };
     } catch (err) {
+      if (isAcpLimitError(err)) throw err;
+      if (this.limitError) throw this.limitError;
       if (this.stopRequested) {
         throw new Error("session interrupted before prompt completed");
       }
@@ -611,7 +664,7 @@ export class AcpClient {
       const detail = this.stderrTail
         ? `${message} (stderr: ${this.stderrTail.slice(-500)})`
         : message;
-      throw new Error(detail);
+      throw new Error(truncateUtf8Text(detail, ACP_DIAGNOSTIC_EVENT_BYTES));
     } finally {
       this.collectingPromptResponse = false;
     }
@@ -644,7 +697,16 @@ export class AcpClient {
   }
 
   /** Keep process alive after bootstrap for probe/stop (caller owns lifecycle). */
-  async stop(reason: "user" | "interrupt" | "shutdown"): Promise<void> {
+  stop(reason: "user" | "interrupt" | "shutdown"): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
+    const operation = this.stopExclusive(reason);
+    this.stopPromise = operation;
+    return operation;
+  }
+
+  private async stopExclusive(
+    reason: "user" | "interrupt" | "shutdown"
+  ): Promise<void> {
     void reason;
     if (this.closed && this.stopRequested) return;
     this.stopRequested = true;
@@ -678,7 +740,7 @@ export class AcpClient {
     this.options.emit({
       type: "session.failed",
       sessionId: this.options.sessionId,
-      error: this.redactText(error),
+      error: this.boundedRedactedDiagnostic(error),
     });
   }
 
@@ -711,6 +773,24 @@ export class AcpClient {
     });
   }
 
+  private boundedRedactedDiagnostic(text: string): string {
+    const bounded = truncateUtf8Text(text, ACP_DIAGNOSTIC_EVENT_BYTES);
+    return truncateUtf8Text(
+      this.redactText(bounded),
+      ACP_DIAGNOSTIC_EVENT_BYTES
+    );
+  }
+
+  private formatDiagnostic(prefix: string, text: string): string {
+    const remaining = Math.max(
+      1,
+      ACP_DIAGNOSTIC_EVENT_BYTES - utf8Bytes(prefix)
+    );
+    return this.boundedRedactedDiagnostic(
+      prefix + truncateUtf8Text(text, remaining)
+    );
+  }
+
   private spawnProcess(): void {
     // Minimal host allowlist + validated adapter/plan env.
     // Reserved Tent keys only from explicit coreEnv (never smuggled via env alone).
@@ -733,7 +813,6 @@ export class AcpClient {
     }
 
     this.proc = child;
-    this.lines = readline.createInterface({ input: child.stdout! });
 
     child.stdin?.on("error", (err) => {
       this.rejectAllPending(
@@ -742,8 +821,12 @@ export class AcpClient {
     });
 
     child.stderr?.on("data", (chunk: Buffer) => {
-      const text = this.redactText(chunk.toString("utf8"));
-      this.stderrTail = (this.stderrTail + text).slice(-4000);
+      const raw = truncateUtf8Buffer(chunk, ACP_DIAGNOSTIC_EVENT_BYTES);
+      const text = truncateUtf8Text(
+        this.redactText(raw),
+        ACP_DIAGNOSTIC_EVENT_BYTES
+      );
+      this.stderrTail = appendUtf8Tail(this.stderrTail, text, 4000);
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
@@ -751,7 +834,8 @@ export class AcpClient {
       });
     });
 
-    this.lines.on("line", (line) => this.onLine(line));
+    child.stdout?.on("data", (chunk: Buffer) => this.onStdoutData(chunk));
+    child.stdout?.on("end", () => this.resetStdoutFrame());
 
     child.on("exit", (code, signal) => {
       this.exitCode = code;
@@ -876,15 +960,35 @@ export class AcpClient {
     // Tent is not a transcript router. Updates outside a prompt initiated by
     // this client are neither delivery text nor user-facing diagnostics.
     if (!this.collectingPromptResponse) return;
+    this.assistantUpdateCount += 1;
+    if (this.assistantUpdateCount > this.resourceLimits.sessionUpdates) {
+      this.triggerLimit(
+        ACP_OUTPUT_LIMIT_CODE,
+        `session/update count exceeds ${this.resourceLimits.sessionUpdates}`
+      );
+      return;
+    }
     const kind = update.sessionUpdate ?? "";
     if (isAssistantMessageChunkKind(kind) && update.content?.text) {
       // Contiguous message chunks form one segment; other updates seal it.
       // Delivery summary uses only the last non-empty segment at prompt end.
-      this.assistantMessageCurrent += update.content.text;
+      const chunkBytes = utf8Bytes(update.content.text);
+      if (
+        chunkBytes >
+        this.resourceLimits.assistantReportBytes - this.assistantReportBytes
+      ) {
+        this.triggerLimit(
+          ACP_OUTPUT_LIMIT_CODE,
+          `assistant report exceeds ${this.resourceLimits.assistantReportBytes} UTF-8 bytes`
+        );
+        return;
+      }
+      this.assistantReportBytes += chunkBytes;
+      this.assistantMessageCurrentChunks.push(update.content.text);
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
-        text: this.redactText(`[${kind}] ${update.content.text}`),
+        text: this.formatDiagnostic(`[${kind}] `, update.content.text),
       });
       return;
     }
@@ -896,7 +1000,7 @@ export class AcpClient {
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
-        text: this.redactText(`[${kind}] ${update.content.text}`),
+        text: this.formatDiagnostic(`[${kind}] `, update.content.text),
       });
       return;
     }
@@ -909,8 +1013,11 @@ export class AcpClient {
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
-        text: this.redactText(
-          `[${kind}] ${title}${status ? ` (${status})` : ""}\n`
+        text: this.formatDiagnostic(
+          `[${kind}] `,
+          `${truncateUtf8Text(title, 8192)}${
+            status ? ` (${truncateUtf8Text(status, 4096)})` : ""
+          }\n`
         ),
       });
       return;
@@ -919,7 +1026,7 @@ export class AcpClient {
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
-        text: this.redactText(`[session/update] ${kind}\n`),
+        text: this.formatDiagnostic("[session/update] ", kind),
       });
     }
   }
@@ -946,11 +1053,13 @@ export class AcpClient {
     }
   ): Promise<void> {
     const options = params.options ?? [];
-    const toolTitle =
-      params.toolCall?.title || params.toolCall?.toolCallId || "tool";
+    const toolTitle = truncateUtf8Text(
+      params.toolCall?.title || params.toolCall?.toolCallId || "tool",
+      4096
+    );
     const toolCallId =
       typeof params.toolCall?.toolCallId === "string"
-        ? params.toolCall.toolCallId
+        ? truncateUtf8Text(params.toolCall.toolCallId, 4096)
         : undefined;
     const policy = this.options.permissionPolicy;
     const tracksAsk = policy === "ask";
@@ -998,7 +1107,10 @@ export class AcpClient {
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
-        text: `[permission] ${toolTitle} → ${decision === "allow" ? "allow_once" : "deny/cancelled"}\n`,
+        text: this.formatDiagnostic(
+          "[permission] ",
+          `${toolTitle} → ${decision === "allow" ? "allow_once" : "deny/cancelled"}\n`
+        ),
       });
     } finally {
       if (tracksAsk) {
@@ -1097,7 +1209,17 @@ export class AcpClient {
       return;
     }
     try {
-      stdin.write(JSON.stringify(payload) + "\n", (err) => {
+      const serialized = JSON.stringify(payload);
+      const frameBytes = utf8Bytes(serialized);
+      if (frameBytes > this.resourceLimits.requestFrameBytes) {
+        const error = this.triggerLimit(
+          ACP_REQUEST_LIMIT_CODE,
+          `outbound JSON-RPC frame ${frameBytes} bytes exceeds ${this.resourceLimits.requestFrameBytes}`
+        );
+        onError?.(error);
+        return;
+      }
+      stdin.write(serialized + "\n", (err) => {
         if (!err) return;
         onError?.(err instanceof Error ? err : new Error(String(err)));
       });
@@ -1174,12 +1296,84 @@ export class AcpClient {
   }
 
   private cleanupStreams(): void {
-    try {
-      this.lines?.close();
-    } catch {
-      // ignore
+    this.proc?.stdout?.removeAllListeners("data");
+    this.proc?.stdout?.removeAllListeners("end");
+    this.resetStdoutFrame();
+  }
+
+  private onStdoutData(chunk: Buffer): void {
+    if (this.limitError) return;
+    let offset = 0;
+    while (offset < chunk.byteLength) {
+      const newline = chunk.indexOf(0x0a, offset);
+      const end = newline === -1 ? chunk.byteLength : newline;
+      const partBytes = end - offset;
+      if (
+        partBytes >
+        this.resourceLimits.stdoutFrameBytes - this.stdoutFrameBytes
+      ) {
+        this.triggerLimit(
+          ACP_OUTPUT_LIMIT_CODE,
+          `stdout JSON-RPC frame exceeds ${this.resourceLimits.stdoutFrameBytes} bytes before parse`
+        );
+        return;
+      }
+      if (partBytes > 0) {
+        this.ensureStdoutFrameCapacity(this.stdoutFrameBytes + partBytes);
+        chunk.copy(
+          this.stdoutFrameBuffer!,
+          this.stdoutFrameBytes,
+          offset,
+          end
+        );
+        this.stdoutFrameBytes += partBytes;
+      }
+      if (newline === -1) return;
+
+      const frame = this.stdoutFrameBuffer
+        ? this.stdoutFrameBuffer.subarray(0, this.stdoutFrameBytes)
+        : Buffer.alloc(0);
+      const withoutCr =
+        frame.byteLength > 0 && frame[frame.byteLength - 1] === 0x0d
+          ? frame.subarray(0, frame.byteLength - 1)
+          : frame;
+      if (withoutCr.byteLength > 0) {
+        this.onLine(withoutCr.toString("utf8"));
+      }
+      this.resetStdoutFrame();
+      if (this.limitError) return;
+      offset = end + 1;
     }
-    this.lines = null;
+  }
+
+  private ensureStdoutFrameCapacity(requiredBytes: number): void {
+    const current = this.stdoutFrameBuffer;
+    if (current && current.byteLength >= requiredBytes) return;
+    const nextCapacity = Math.min(
+      this.resourceLimits.stdoutFrameBytes,
+      Math.max(4096, requiredBytes, (current?.byteLength ?? 0) * 2)
+    );
+    const next = Buffer.allocUnsafe(nextCapacity);
+    if (current && this.stdoutFrameBytes > 0) {
+      current.copy(next, 0, 0, this.stdoutFrameBytes);
+    }
+    this.stdoutFrameBuffer = next;
+  }
+
+  private resetStdoutFrame(): void {
+    this.stdoutFrameBuffer = undefined;
+    this.stdoutFrameBytes = 0;
+  }
+
+  private triggerLimit(code: typeof ACP_OUTPUT_LIMIT_CODE | typeof ACP_REQUEST_LIMIT_CODE, detail: string): AcpLimitError {
+    if (this.limitError) return this.limitError;
+    const error = new AcpLimitError(code, detail);
+    this.limitError = error;
+    this.rejectAllPending(error);
+    this.reportFailed(error.message);
+    (error as AcpLimitError & { terminalAlreadyEmitted: true }).terminalAlreadyEmitted = true;
+    void this.stop("interrupt").catch(() => undefined);
+    return error;
   }
 }
 

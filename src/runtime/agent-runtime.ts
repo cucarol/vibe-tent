@@ -42,6 +42,10 @@ import { stripReservedTentChildEnv } from "./child-env.js";
 import { ProcessSupervisor } from "./process-supervisor.js";
 import { SessionRegistry } from "./session-registry.js";
 import { redactDiagnosticText } from "../adapters/acp/redact.js";
+import {
+  ACP_DIAGNOSTIC_EVENT_BYTES,
+  truncateUtf8Text,
+} from "../adapters/acp/limits.js";
 import type {
   AgentProfileConfig,
   AgentRuntimePort,
@@ -108,6 +112,46 @@ function handleFrom(record: SessionRecord): SessionHandle {
       : {}),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+  };
+}
+
+/** Bound diagnostics before either SessionRegistry persistence or event fan-out. */
+function boundRuntimeDiagnosticEvent(ev: RuntimeEvent): RuntimeEvent {
+  if (ev.type === "session.stdout_tail") {
+    return {
+      ...ev,
+      text: truncateUtf8Text(ev.text, ACP_DIAGNOSTIC_EVENT_BYTES),
+    };
+  }
+  if (ev.type === "session.failed") {
+    return {
+      ...ev,
+      error: truncateUtf8Text(ev.error, ACP_DIAGNOSTIC_EVENT_BYTES),
+    };
+  }
+  if (ev.type === "session.waiting_user") {
+    return {
+      ...ev,
+      summary: truncateUtf8Text(ev.summary, ACP_DIAGNOSTIC_EVENT_BYTES),
+    };
+  }
+  return ev;
+}
+
+function copyRuntimeErrorMetadata(error: unknown): {
+  code?: string;
+  terminalAlreadyEmitted?: true;
+} {
+  if (!error || typeof error !== "object") return {};
+  const source = error as {
+    code?: unknown;
+    terminalAlreadyEmitted?: unknown;
+  };
+  return {
+    ...(typeof source.code === "string" ? { code: source.code } : {}),
+    ...(source.terminalAlreadyEmitted === true
+      ? { terminalAlreadyEmitted: true as const }
+      : {}),
   };
 }
 
@@ -540,7 +584,8 @@ export class AgentRuntime implements AgentRuntimePort {
 
       if (typeof adapter.startManagedSession === "function") {
         // ACP / structured transports own stdio — not ProcessSupervisor.
-        const managed = await adapter.startManagedSession(plan, (ev) => {
+        const managed = await adapter.startManagedSession(plan, (rawEvent) => {
+          const ev = boundRuntimeDiagnosticEvent(rawEvent);
           // Managed failure: mark terminal + drop handle so probe never claims live orphan.
           // Service maps task failed separately (idempotent). Process stop is adapter-owned.
           if (ev.type === "session.failed") {
@@ -671,7 +716,10 @@ export class AgentRuntime implements AgentRuntimePort {
         this.emit({ type: "session.failed", sessionId: req.sessionId, error: message });
       }
       // Surface failure to caller; record remains for probe/list honesty.
-      throw Object.assign(new Error(message), { session: handleFrom(failed) });
+      throw Object.assign(new Error(message), {
+        session: handleFrom(failed),
+        ...copyRuntimeErrorMetadata(err),
+      });
     }
   }
 
@@ -838,7 +886,8 @@ export class AgentRuntime implements AgentRuntimePort {
       const managed = await resumeManagedSession(
         plan,
         resumeToken,
-        (ev) => {
+        (rawEvent) => {
+          const ev = boundRuntimeDiagnosticEvent(rawEvent);
           if (ev.type === "session.failed") {
             terminalDuringManagedStart = { state: "failed", error: ev.error };
             terminalProjection = this.trackManagedTerminal(
@@ -948,7 +997,10 @@ export class AgentRuntime implements AgentRuntimePort {
       if (!(err as { terminalAlreadyEmitted?: boolean })?.terminalAlreadyEmitted) {
         this.emit({ type: "session.failed", sessionId: req.sessionId, error: message });
       }
-      throw Object.assign(new Error(message), { session: handleFrom(failed) });
+      throw Object.assign(new Error(message), {
+        session: handleFrom(failed),
+        ...copyRuntimeErrorMetadata(err),
+      });
     }
   }
 
@@ -1364,6 +1416,7 @@ export class AgentRuntime implements AgentRuntimePort {
   }
 
   private emit(ev: RuntimeEvent): void {
+    ev = boundRuntimeDiagnosticEvent(ev);
     for (const sink of this.globalSinks) {
       try {
         sink(ev);

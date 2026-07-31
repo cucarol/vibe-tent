@@ -326,8 +326,7 @@ export async function resumeManagedAcpSession(
   } catch (err) {
     // Honest failure: never fall back to session/new. Kill orphan bridge process.
     await stopAcpClientQuiet(client);
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(message);
+    throw err;
   }
 
   const bootstrap = input.bootstrapPrompt?.trim() || plan.bootstrapPrompt?.trim() || "";

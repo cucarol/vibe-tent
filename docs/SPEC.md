@@ -166,6 +166,14 @@ Agent's native tooling. Tent does not become a general CLI configuration
 manager. Skill and MCP availability may be reported, but Tent does not silently
 rewrite every Agent's native configuration.
 
+ACP stdio is a bounded adapter boundary. Tent rejects an oversized JSON-RPC
+frame before parsing it, bounds per-turn assistant report bytes and update /
+segment counts, and bounds outbound bootstrap/request frames. A deliverable
+assistant report that crosses the limit fails loud with `ACP_OUTPUT_LIMIT`,
+stops the provider, and cannot emit `prompt_complete`, a ready Delivery, or a
+delivered outcome. Diagnostic tails are independently truncated and redacted;
+diagnostic truncation is never used to turn an oversized report into a Delivery.
+
 ## 7. Delivery And Review
 
 A Delivery is an executor's formal result for one Task. It is separate from the

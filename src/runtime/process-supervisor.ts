@@ -8,6 +8,12 @@ import {
   redactDiagnosticText,
 } from "../adapters/acp/redact.js";
 import { buildManagedChildEnv } from "./child-env.js";
+import {
+  ACP_DIAGNOSTIC_EVENT_BYTES,
+  appendUtf8Tail,
+  truncateUtf8Buffer,
+  truncateUtf8Text,
+} from "../adapters/acp/limits.js";
 
 export interface SupervisedProcess {
   sessionId: string;
@@ -133,16 +139,26 @@ export class ProcessSupervisor {
 
     const appendRing = (text: string) => {
       if (this.stdoutRingBytes <= 0) return;
-      live.stdoutBuf = (live.stdoutBuf + text).slice(-this.stdoutRingBytes);
+      live.stdoutBuf = appendUtf8Tail(
+        live.stdoutBuf,
+        text,
+        this.stdoutRingBytes
+      );
     };
 
     child.stdout?.on("data", (chunk: Buffer) => {
-      const text = redactChunk(chunk.toString("utf8"));
+      const text = truncateUtf8Text(
+        redactChunk(truncateUtf8Buffer(chunk, ACP_DIAGNOSTIC_EVENT_BYTES)),
+        ACP_DIAGNOSTIC_EVENT_BYTES
+      );
       appendRing(text);
       this.onStdout?.(sessionId, text);
     });
     child.stderr?.on("data", (chunk: Buffer) => {
-      const text = redactChunk(chunk.toString("utf8"));
+      const text = truncateUtf8Text(
+        redactChunk(truncateUtf8Buffer(chunk, ACP_DIAGNOSTIC_EVENT_BYTES)),
+        ACP_DIAGNOSTIC_EVENT_BYTES
+      );
       appendRing(text);
       this.onStdout?.(sessionId, text);
     });
