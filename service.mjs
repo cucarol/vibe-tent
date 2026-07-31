@@ -21501,6 +21501,7 @@ function isAssistantMessageChunkKind(kind) {
 }
 
 // src/adapters/acp/limits.ts
+import { StringDecoder } from "node:string_decoder";
 var ACP_OUTPUT_LIMIT_CODE = "ACP_OUTPUT_LIMIT";
 var ACP_REQUEST_LIMIT_CODE = "ACP_REQUEST_LIMIT";
 var DEFAULT_ACP_ASSISTANT_REPORT_BYTES = 4 * 1024 * 1024;
@@ -21543,20 +21544,21 @@ function utf8Bytes(text3) {
   return Buffer.byteLength(text3, "utf8");
 }
 var TRUNCATED_MARKER = "\n\u2026[truncated]";
+var REDACTED_MARKER = "[redacted]";
+var MAX_DIAGNOSTIC_SECRET_LOOKAHEAD_BYTES = 4096;
 function truncateUtf8Text(text3, maxBytes = ACP_DIAGNOSTIC_EVENT_BYTES) {
+  if (maxBytes <= 0) return "";
   if (utf8Bytes(text3) <= maxBytes) return text3;
   const markerBytes = utf8Bytes(TRUNCATED_MARKER);
+  if (markerBytes >= maxBytes) {
+    const marker = Buffer.allocUnsafe(maxBytes);
+    const markerWritten = marker.write(TRUNCATED_MARKER, 0, maxBytes, "utf8");
+    return marker.subarray(0, markerWritten).toString("utf8");
+  }
   const payloadBytes = Math.max(0, maxBytes - markerBytes);
   const buffer = Buffer.allocUnsafe(payloadBytes);
   const written = buffer.write(text3, 0, payloadBytes, "utf8");
   return buffer.subarray(0, written).toString("utf8") + TRUNCATED_MARKER;
-}
-function truncateUtf8Buffer(value, maxBytes = ACP_DIAGNOSTIC_EVENT_BYTES) {
-  if (value.byteLength <= maxBytes) return value.toString("utf8");
-  const markerBytes = utf8Bytes(TRUNCATED_MARKER);
-  const payloadBytes = Math.max(0, maxBytes - markerBytes);
-  const prefix = value.subarray(0, payloadBytes).toString("utf8");
-  return truncateUtf8Text(prefix + TRUNCATED_MARKER, maxBytes);
 }
 function appendUtf8Tail(current, next, maxBytes) {
   const combined = current + next;
@@ -21566,6 +21568,169 @@ function appendUtf8Tail(current, next, maxBytes) {
     encoded.subarray(Math.max(0, encoded.byteLength - maxBytes)).toString("utf8"),
     maxBytes
   );
+}
+function utf8Prefix(text3, maxBytes) {
+  if (utf8Bytes(text3) <= maxBytes) return { text: text3, truncated: false };
+  const buffer = Buffer.allocUnsafe(maxBytes);
+  const written = buffer.write(text3, 0, maxBytes, "utf8");
+  return {
+    text: buffer.subarray(0, written).toString("utf8"),
+    truncated: true
+  };
+}
+function activeDiagnosticSecrets(secrets) {
+  return [...new Set(secrets.filter((secret) => secret.length >= 4))].sort(
+    (a, b) => b.length - a.length
+  );
+}
+function diagnosticCarryChars(raw, secrets) {
+  let lastCompleteSecretEnd = 0;
+  for (const secret of secrets) {
+    let found = raw.indexOf(secret);
+    while (found >= 0) {
+      lastCompleteSecretEnd = Math.max(
+        lastCompleteSecretEnd,
+        found + secret.length
+      );
+      found = raw.indexOf(secret, found + 1);
+    }
+  }
+  let carryChars = 0;
+  for (const secret of secrets) {
+    const max = Math.min(secret.length - 1, raw.length);
+    for (let length = max; length > carryChars; length -= 1) {
+      const start = raw.length - length;
+      if (start >= lastCompleteSecretEnd && raw.endsWith(secret.slice(0, length))) {
+        carryChars = length;
+        break;
+      }
+    }
+  }
+  return carryChars;
+}
+function redactFinalDiagnosticTail(raw, secrets) {
+  let partialChars = 0;
+  for (const secret of secrets) {
+    const max = Math.min(secret.length - 1, raw.length);
+    for (let length = max; length >= 1; length -= 1) {
+      if (raw.endsWith(secret.slice(0, length))) {
+        partialChars = Math.max(partialChars, length);
+        break;
+      }
+    }
+  }
+  if (partialChars === 0) return redactSecrets(raw, secrets);
+  return redactSecrets(raw.slice(0, raw.length - partialChars), secrets) + REDACTED_MARKER;
+}
+var BoundedDiagnosticRedactor = class {
+  constructor(secrets, maxBytes = ACP_DIAGNOSTIC_EVENT_BYTES) {
+    this.maxBytes = maxBytes;
+    this.carry = "";
+    this.bufferDecoder = new StringDecoder("utf8");
+    this.discardUntilFlush = false;
+    this.secrets = activeDiagnosticSecrets(secrets);
+    const oversizedSecret = this.secrets.find(
+      (secret) => utf8Bytes(secret) > MAX_DIAGNOSTIC_SECRET_LOOKAHEAD_BYTES
+    );
+    if (oversizedSecret) {
+      this.maxSecretChars = -1;
+      this.lookaheadBytes = 0;
+      return;
+    }
+    this.maxSecretChars = Math.max(
+      1,
+      ...this.secrets.map((secret) => secret.length)
+    );
+    this.lookaheadBytes = Math.max(
+      0,
+      ...this.secrets.map((secret) => utf8Bytes(secret))
+    );
+  }
+  pushText(text3) {
+    if (this.discardUntilFlush) return "";
+    return this.project(utf8Prefix(text3, this.inputWindowBytes()));
+  }
+  pushBuffer(value) {
+    if (this.discardUntilFlush) return "";
+    const windowBytes = this.inputWindowBytes();
+    const truncated = value.byteLength > windowBytes;
+    let text3 = this.bufferDecoder.write(
+      truncated ? value.subarray(0, windowBytes) : value
+    );
+    if (truncated) {
+      text3 += this.bufferDecoder.end();
+      this.bufferDecoder = new StringDecoder("utf8");
+    }
+    return this.project({ text: text3, truncated });
+  }
+  flush() {
+    if (this.discardUntilFlush) {
+      this.bufferDecoder.end();
+      this.bufferDecoder = new StringDecoder("utf8");
+      this.carry = "";
+      this.discardUntilFlush = false;
+      return "";
+    }
+    const decodedTail = this.bufferDecoder.end();
+    this.bufferDecoder = new StringDecoder("utf8");
+    const decodedHead = decodedTail ? this.project({ text: decodedTail, truncated: false }) : "";
+    if (!this.carry) return truncateUtf8Text(decodedHead, this.maxBytes);
+    if (this.maxSecretChars < 0) {
+      this.carry = "";
+      return joinBoundedDiagnosticParts(
+        decodedHead,
+        REDACTED_MARKER,
+        this.maxBytes
+      );
+    }
+    const raw = this.carry;
+    this.carry = "";
+    return joinBoundedDiagnosticParts(
+      decodedHead,
+      redactFinalDiagnosticTail(raw, this.secrets),
+      this.maxBytes
+    );
+  }
+  inputWindowBytes() {
+    return this.maxBytes + this.lookaheadBytes * 2;
+  }
+  project(input) {
+    if (input.truncated) this.discardUntilFlush = true;
+    if (this.maxSecretChars < 0) {
+      this.carry = "";
+      return REDACTED_MARKER;
+    }
+    const raw = this.carry + input.text;
+    this.carry = "";
+    let safeRaw;
+    if (input.truncated) {
+      safeRaw = raw;
+    } else {
+      const retainedChars = diagnosticCarryChars(raw, this.secrets);
+      const boundary = raw.length - retainedChars;
+      safeRaw = raw.slice(0, boundary);
+      this.carry = raw.slice(boundary);
+    }
+    let redacted = input.truncated ? redactFinalDiagnosticTail(safeRaw, this.secrets) : redactSecrets(safeRaw, this.secrets);
+    if (redacted !== safeRaw) {
+      redacted = `${REDACTED_MARKER}
+${redacted}`;
+    }
+    if (input.truncated) redacted += TRUNCATED_MARKER;
+    return truncateUtf8Text(redacted, this.maxBytes);
+  }
+};
+function joinBoundedDiagnosticParts(head, tail, maxBytes) {
+  if (!tail) return truncateUtf8Text(head, maxBytes);
+  const boundedTail = truncateUtf8Text(tail, maxBytes);
+  const headBudget = Math.max(0, maxBytes - utf8Bytes(boundedTail));
+  return truncateUtf8Text(head, headBudget) + boundedTail;
+}
+function redactBoundedDiagnosticText(text3, secrets, maxBytes = ACP_DIAGNOSTIC_EVENT_BYTES) {
+  const redactor = new BoundedDiagnosticRedactor(secrets, maxBytes);
+  const head = redactor.pushText(text3);
+  const tail = redactor.flush();
+  return joinBoundedDiagnosticParts(head, tail, maxBytes);
 }
 
 // src/adapters/acp/client.ts
@@ -21585,13 +21750,7 @@ var RPC_ERROR_SAFE_KEYS = /* @__PURE__ */ new Set([
   "errorKind"
 ]);
 function formatRpcError(error, secrets = []) {
-  const message2 = redactSecrets(
-    truncateUtf8Text(
-      error.message || "ACP JSON-RPC error",
-      ACP_DIAGNOSTIC_EVENT_BYTES
-    ),
-    secrets
-  );
+  const message2 = error.message || "ACP JSON-RPC error";
   const code = Number.isFinite(error.code) ? ` [JSON-RPC ${error.code}]` : "";
   const data = summarizeRpcErrorData(error.data, secrets);
   return `${message2}${code}${data ? ` (${data})` : ""}`;
@@ -21599,10 +21758,7 @@ function formatRpcError(error, secrets = []) {
 function summarizeRpcErrorData(data, secrets = []) {
   if (data == null) return void 0;
   if (typeof data === "string" || typeof data === "number" || typeof data === "boolean") {
-    const raw = typeof data === "string" ? redactSecrets(
-      truncateUtf8Text(data, RPC_ERROR_DATA_MAX_CHARS),
-      secrets
-    ) : String(data);
+    const raw = typeof data === "string" ? redactBoundedDiagnosticText(data, secrets, RPC_ERROR_DATA_MAX_CHARS) : String(data);
     return `data=${raw.slice(0, RPC_ERROR_DATA_MAX_CHARS)}`;
   }
   if (typeof data !== "object" || Array.isArray(data)) {
@@ -21612,9 +21768,10 @@ function summarizeRpcErrorData(data, secrets = []) {
   for (const [key2, value] of Object.entries(data)) {
     if (!RPC_ERROR_SAFE_KEYS.has(key2)) continue;
     if (value == null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-      safe[key2] = value == null ? null : typeof value === "string" ? redactSecrets(
-        truncateUtf8Text(value, RPC_ERROR_DATA_MAX_CHARS),
-        secrets
+      safe[key2] = value == null ? null : typeof value === "string" ? redactBoundedDiagnosticText(
+        value,
+        secrets,
+        RPC_ERROR_DATA_MAX_CHARS
       ).slice(0, RPC_ERROR_DATA_MAX_CHARS) : value;
     }
   }
@@ -21686,6 +21843,15 @@ var AcpClient = class {
     this.permissionWaitCancels = /* @__PURE__ */ new Set();
     this.label = typeof options.label === "string" && options.label.trim() ? options.label.trim() : "ACP";
     this.resourceLimits = resolveAcpResourceLimits(options.resourceLimits);
+    const diagnosticSecrets = this.secretValues();
+    this.stderrDiagnosticRedactor = new BoundedDiagnosticRedactor(
+      diagnosticSecrets,
+      ACP_DIAGNOSTIC_EVENT_BYTES
+    );
+    this.updateDiagnosticRedactor = new BoundedDiagnosticRedactor(
+      diagnosticSecrets,
+      ACP_DIAGNOSTIC_EVENT_BYTES
+    );
   }
   /**
    * Build session/new or session/load params from the start/resume snapshot.
@@ -21890,7 +22056,7 @@ var AcpClient = class {
       if (this.limitError) throw this.limitError;
       const message2 = err instanceof Error ? err.message : String(err);
       const detail = this.stderrTail ? `${message2} (stderr: ${this.stderrTail.slice(-500)})` : message2;
-      throw new Error(truncateUtf8Text(detail, ACP_DIAGNOSTIC_EVENT_BYTES));
+      throw new Error(this.boundedRedactedDiagnostic(detail));
     }
   }
   /**
@@ -21947,13 +22113,19 @@ var AcpClient = class {
       if (this.stopRequested) {
         throw new Error("session interrupted before prompt completed");
       }
-      const message2 = this.redactText(
-        err instanceof Error ? err.message : String(err)
-      );
+      const message2 = err instanceof Error ? err.message : String(err);
       const detail = this.stderrTail ? `${message2} (stderr: ${this.stderrTail.slice(-500)})` : message2;
-      throw new Error(truncateUtf8Text(detail, ACP_DIAGNOSTIC_EVENT_BYTES));
+      throw new Error(this.boundedRedactedDiagnostic(detail));
     } finally {
       this.collectingPromptResponse = false;
+      const tail = this.updateDiagnosticRedactor.flush();
+      if (tail) {
+        this.options.emit({
+          type: "session.stdout_tail",
+          sessionId: this.options.sessionId,
+          text: tail
+        });
+      }
     }
   }
   /**
@@ -22037,25 +22209,19 @@ var AcpClient = class {
       ...coreSecrets
     ]);
   }
-  redactText(text3) {
-    return redactDiagnosticText(text3, {
-      secrets: this.secretValues()
-    });
-  }
-  boundedRedactedDiagnostic(text3) {
-    const bounded = truncateUtf8Text(text3, ACP_DIAGNOSTIC_EVENT_BYTES);
-    return truncateUtf8Text(
-      this.redactText(bounded),
-      ACP_DIAGNOSTIC_EVENT_BYTES
+  boundedRedactedDiagnostic(text3, maxBytes = ACP_DIAGNOSTIC_EVENT_BYTES) {
+    return redactBoundedDiagnosticText(
+      text3,
+      this.secretValues(),
+      maxBytes
     );
   }
   formatDiagnostic(prefix, text3) {
-    const remaining = Math.max(
-      1,
-      ACP_DIAGNOSTIC_EVENT_BYTES - utf8Bytes(prefix)
-    );
-    return this.boundedRedactedDiagnostic(
-      prefix + truncateUtf8Text(text3, remaining)
+    const safe = this.updateDiagnosticRedactor.pushText(text3);
+    if (!safe) return "";
+    return truncateUtf8Text(
+      prefix + safe,
+      ACP_DIAGNOSTIC_EVENT_BYTES
     );
   }
   spawnProcess() {
@@ -22082,11 +22248,18 @@ var AcpClient = class {
       );
     });
     child.stderr?.on("data", (chunk) => {
-      const raw = truncateUtf8Buffer(chunk, ACP_DIAGNOSTIC_EVENT_BYTES);
-      const text3 = truncateUtf8Text(
-        this.redactText(raw),
-        ACP_DIAGNOSTIC_EVENT_BYTES
-      );
+      const text3 = this.stderrDiagnosticRedactor.pushBuffer(chunk);
+      if (!text3) return;
+      this.stderrTail = appendUtf8Tail(this.stderrTail, text3, 4e3);
+      this.options.emit({
+        type: "session.stdout_tail",
+        sessionId: this.options.sessionId,
+        text: text3
+      });
+    });
+    child.stderr?.on("end", () => {
+      const text3 = this.stderrDiagnosticRedactor.flush();
+      if (!text3) return;
       this.stderrTail = appendUtf8Tail(this.stderrTail, text3, 4e3);
       this.options.emit({
         type: "session.stdout_tail",
@@ -22232,12 +22405,14 @@ var AcpClient = class {
     if (kind === "tool_call" || kind === "tool_call_update") {
       const title = typeof update.title === "string" && update.title || update.toolCallId || "tool";
       const status = typeof update.status === "string" ? update.status : "";
+      const safeTitle = this.boundedRedactedDiagnostic(title, 8192);
+      const safeStatus = status ? this.boundedRedactedDiagnostic(status, 4096) : "";
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
         text: this.formatDiagnostic(
           `[${kind}] `,
-          `${truncateUtf8Text(title, 8192)}${status ? ` (${truncateUtf8Text(status, 4096)})` : ""}
+          `${safeTitle}${safeStatus ? ` (${safeStatus})` : ""}
 `
         )
       });
@@ -22457,6 +22632,8 @@ var AcpClient = class {
   cleanupStreams() {
     this.proc?.stdout?.removeAllListeners("data");
     this.proc?.stdout?.removeAllListeners("end");
+    this.proc?.stderr?.removeAllListeners("data");
+    this.proc?.stderr?.removeAllListeners("end");
     this.resetStdoutFrame();
   }
   onStdoutData(chunk) {
@@ -37047,9 +37224,14 @@ var ProcessSupervisor = class {
       ...launch.diagnosticSecrets ?? [],
       ...coreSecrets
     ]);
-    const redactChunk = (text3) => redactDiagnosticText(text3, {
-      secrets: secretValues
-    });
+    const stdoutDiagnostic = new BoundedDiagnosticRedactor(
+      secretValues,
+      ACP_DIAGNOSTIC_EVENT_BYTES
+    );
+    const stderrDiagnostic = new BoundedDiagnosticRedactor(
+      secretValues,
+      ACP_DIAGNOSTIC_EVENT_BYTES
+    );
     const child = spawn5(launch.command, launch.args, {
       cwd: launch.cwd,
       env,
@@ -37078,22 +37260,19 @@ var ProcessSupervisor = class {
         this.stdoutRingBytes
       );
     };
-    child.stdout?.on("data", (chunk) => {
-      const text3 = truncateUtf8Text(
-        redactChunk(truncateUtf8Buffer(chunk, ACP_DIAGNOSTIC_EVENT_BYTES)),
-        ACP_DIAGNOSTIC_EVENT_BYTES
-      );
+    const emitDiagnostic = (text3) => {
+      if (!text3) return;
       appendRing(text3);
       this.onStdout?.(sessionId, text3);
+    };
+    child.stdout?.on("data", (chunk) => {
+      emitDiagnostic(stdoutDiagnostic.pushBuffer(chunk));
     });
     child.stderr?.on("data", (chunk) => {
-      const text3 = truncateUtf8Text(
-        redactChunk(truncateUtf8Buffer(chunk, ACP_DIAGNOSTIC_EVENT_BYTES)),
-        ACP_DIAGNOSTIC_EVENT_BYTES
-      );
-      appendRing(text3);
-      this.onStdout?.(sessionId, text3);
+      emitDiagnostic(stderrDiagnostic.pushBuffer(chunk));
     });
+    child.stdout?.on("end", () => emitDiagnostic(stdoutDiagnostic.flush()));
+    child.stderr?.on("end", () => emitDiagnostic(stderrDiagnostic.flush()));
     const notifyExit = () => {
       if (!spawned || exitNotified) return;
       exitNotified = true;
