@@ -21583,6 +21583,33 @@ function activeDiagnosticSecrets(secrets) {
     (a, b) => b.length - a.length
   );
 }
+function redactDiagnosticSecrets(raw, secrets) {
+  const intervals = [];
+  for (const secret of secrets) {
+    let found = raw.indexOf(secret);
+    while (found >= 0) {
+      intervals.push({ start: found, end: found + secret.length });
+      found = raw.indexOf(secret, found + 1);
+    }
+  }
+  if (intervals.length === 0) return raw;
+  intervals.sort((left, right) => left.start - right.start || left.end - right.end);
+  let output = "";
+  let cursor = 0;
+  let start = intervals[0].start;
+  let end = intervals[0].end;
+  for (const interval of intervals.slice(1)) {
+    if (interval.start <= end) {
+      end = Math.max(end, interval.end);
+      continue;
+    }
+    output += raw.slice(cursor, start) + REDACTED_MARKER;
+    cursor = end;
+    start = interval.start;
+    end = interval.end;
+  }
+  return output + raw.slice(cursor, start) + REDACTED_MARKER + raw.slice(end);
+}
 function diagnosticCarryChars(raw, secrets) {
   let lastCompleteSecretEnd = 0;
   for (const secret of secrets) {
@@ -21619,8 +21646,11 @@ function redactFinalDiagnosticTail(raw, secrets) {
       }
     }
   }
-  if (partialChars === 0) return redactSecrets(raw, secrets);
-  return redactSecrets(raw.slice(0, raw.length - partialChars), secrets) + REDACTED_MARKER;
+  if (partialChars === 0) return redactDiagnosticSecrets(raw, secrets);
+  return redactDiagnosticSecrets(
+    raw.slice(0, raw.length - partialChars),
+    secrets
+  ) + REDACTED_MARKER;
 }
 var BoundedDiagnosticRedactor = class {
   constructor(secrets, maxBytes = ACP_DIAGNOSTIC_EVENT_BYTES) {
@@ -21698,7 +21728,7 @@ var BoundedDiagnosticRedactor = class {
     if (input.truncated) this.discardUntilFlush = true;
     if (this.maxSecretChars < 0) {
       this.carry = "";
-      return REDACTED_MARKER;
+      return truncateUtf8Text(REDACTED_MARKER, this.maxBytes);
     }
     const raw = this.carry + input.text;
     this.carry = "";
@@ -21711,7 +21741,7 @@ var BoundedDiagnosticRedactor = class {
       safeRaw = raw.slice(0, boundary);
       this.carry = raw.slice(boundary);
     }
-    let redacted = input.truncated ? redactFinalDiagnosticTail(safeRaw, this.secrets) : redactSecrets(safeRaw, this.secrets);
+    let redacted = input.truncated ? redactFinalDiagnosticTail(safeRaw, this.secrets) : redactDiagnosticSecrets(safeRaw, this.secrets);
     if (redacted !== safeRaw) {
       redacted = `${REDACTED_MARKER}
 ${redacted}`;
