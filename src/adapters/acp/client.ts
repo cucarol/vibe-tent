@@ -29,18 +29,17 @@ import {
 } from "./assistant-report.js";
 import {
   collectSecretValues,
-  redactDiagnosticText,
-  redactSecrets,
 } from "./redact.js";
 import {
   ACP_DIAGNOSTIC_EVENT_BYTES,
   ACP_OUTPUT_LIMIT_CODE,
   ACP_REQUEST_LIMIT_CODE,
   AcpLimitError,
+  BoundedDiagnosticRedactor,
   appendUtf8Tail,
   isAcpLimitError,
+  redactBoundedDiagnosticText,
   resolveAcpResourceLimits,
-  truncateUtf8Buffer,
   truncateUtf8Text,
   utf8Bytes,
   type AcpResourceLimits,
@@ -66,13 +65,11 @@ function formatRpcError(
   error: NonNullable<AcpJsonRpcResponse["error"]>,
   secrets: readonly string[] = []
 ): string {
-  const message = redactSecrets(
-    truncateUtf8Text(
-      error.message || "ACP JSON-RPC error",
-      ACP_DIAGNOSTIC_EVENT_BYTES
-    ),
-    secrets
-  );
+  // The enclosing connect/sendPrompt boundary applies the shared bounded
+  // redactor to the complete diagnostic. Bounding the message here as well
+  // can move a redaction marker to the cut and then discard it on the second
+  // pass, obscuring that a credential crossed the boundary.
+  const message = error.message || "ACP JSON-RPC error";
   const code = Number.isFinite(error.code) ? ` [JSON-RPC ${error.code}]` : "";
   const data = summarizeRpcErrorData(error.data, secrets);
   return `${message}${code}${data ? ` (${data})` : ""}`;
@@ -94,10 +91,7 @@ function summarizeRpcErrorData(
   ) {
     const raw =
       typeof data === "string"
-        ? redactSecrets(
-            truncateUtf8Text(data, RPC_ERROR_DATA_MAX_CHARS),
-            secrets
-          )
+        ? redactBoundedDiagnosticText(data, secrets, RPC_ERROR_DATA_MAX_CHARS)
         : String(data);
     return `data=${raw.slice(0, RPC_ERROR_DATA_MAX_CHARS)}`;
   }
@@ -118,9 +112,10 @@ function summarizeRpcErrorData(
         value == null
           ? null
           : typeof value === "string"
-          ? redactSecrets(
-              truncateUtf8Text(value, RPC_ERROR_DATA_MAX_CHARS),
-              secrets
+          ? redactBoundedDiagnosticText(
+              value,
+              secrets,
+              RPC_ERROR_DATA_MAX_CHARS
             ).slice(0, RPC_ERROR_DATA_MAX_CHARS)
           : value;
     }
@@ -330,6 +325,8 @@ export class AcpClient {
   /** Stop/exit cancellation for in-flight onPermissionAsk waiters. */
   private readonly permissionWaitCancels = new Set<() => void>();
   private readonly resourceLimits: AcpResourceLimits;
+  private readonly stderrDiagnosticRedactor: BoundedDiagnosticRedactor;
+  private readonly updateDiagnosticRedactor: BoundedDiagnosticRedactor;
 
   constructor(private readonly options: AcpClientOptions) {
     this.label =
@@ -337,6 +334,15 @@ export class AcpClient {
         ? options.label.trim()
         : "ACP";
     this.resourceLimits = resolveAcpResourceLimits(options.resourceLimits);
+    const diagnosticSecrets = this.secretValues();
+    this.stderrDiagnosticRedactor = new BoundedDiagnosticRedactor(
+      diagnosticSecrets,
+      ACP_DIAGNOSTIC_EVENT_BYTES
+    );
+    this.updateDiagnosticRedactor = new BoundedDiagnosticRedactor(
+      diagnosticSecrets,
+      ACP_DIAGNOSTIC_EVENT_BYTES
+    );
   }
 
   /**
@@ -588,7 +594,7 @@ export class AcpClient {
       const detail = this.stderrTail
         ? `${message} (stderr: ${this.stderrTail.slice(-500)})`
         : message;
-      throw new Error(truncateUtf8Text(detail, ACP_DIAGNOSTIC_EVENT_BYTES));
+      throw new Error(this.boundedRedactedDiagnostic(detail));
     }
   }
 
@@ -658,15 +664,21 @@ export class AcpClient {
       if (this.stopRequested) {
         throw new Error("session interrupted before prompt completed");
       }
-      const message = this.redactText(
-        err instanceof Error ? err.message : String(err)
-      );
+      const message = err instanceof Error ? err.message : String(err);
       const detail = this.stderrTail
         ? `${message} (stderr: ${this.stderrTail.slice(-500)})`
         : message;
-      throw new Error(truncateUtf8Text(detail, ACP_DIAGNOSTIC_EVENT_BYTES));
+      throw new Error(this.boundedRedactedDiagnostic(detail));
     } finally {
       this.collectingPromptResponse = false;
+      const tail = this.updateDiagnosticRedactor.flush();
+      if (tail) {
+        this.options.emit({
+          type: "session.stdout_tail",
+          sessionId: this.options.sessionId,
+          text: tail,
+        });
+      }
     }
   }
 
@@ -767,27 +779,23 @@ export class AcpClient {
     ]);
   }
 
-  private redactText(text: string): string {
-    return redactDiagnosticText(text, {
-      secrets: this.secretValues(),
-    });
-  }
-
-  private boundedRedactedDiagnostic(text: string): string {
-    const bounded = truncateUtf8Text(text, ACP_DIAGNOSTIC_EVENT_BYTES);
-    return truncateUtf8Text(
-      this.redactText(bounded),
-      ACP_DIAGNOSTIC_EVENT_BYTES
+  private boundedRedactedDiagnostic(
+    text: string,
+    maxBytes = ACP_DIAGNOSTIC_EVENT_BYTES
+  ): string {
+    return redactBoundedDiagnosticText(
+      text,
+      this.secretValues(),
+      maxBytes
     );
   }
 
   private formatDiagnostic(prefix: string, text: string): string {
-    const remaining = Math.max(
-      1,
-      ACP_DIAGNOSTIC_EVENT_BYTES - utf8Bytes(prefix)
-    );
-    return this.boundedRedactedDiagnostic(
-      prefix + truncateUtf8Text(text, remaining)
+    const safe = this.updateDiagnosticRedactor.pushText(text);
+    if (!safe) return "";
+    return truncateUtf8Text(
+      prefix + safe,
+      ACP_DIAGNOSTIC_EVENT_BYTES
     );
   }
 
@@ -821,11 +829,18 @@ export class AcpClient {
     });
 
     child.stderr?.on("data", (chunk: Buffer) => {
-      const raw = truncateUtf8Buffer(chunk, ACP_DIAGNOSTIC_EVENT_BYTES);
-      const text = truncateUtf8Text(
-        this.redactText(raw),
-        ACP_DIAGNOSTIC_EVENT_BYTES
-      );
+      const text = this.stderrDiagnosticRedactor.pushBuffer(chunk);
+      if (!text) return;
+      this.stderrTail = appendUtf8Tail(this.stderrTail, text, 4000);
+      this.options.emit({
+        type: "session.stdout_tail",
+        sessionId: this.options.sessionId,
+        text,
+      });
+    });
+    child.stderr?.on("end", () => {
+      const text = this.stderrDiagnosticRedactor.flush();
+      if (!text) return;
       this.stderrTail = appendUtf8Tail(this.stderrTail, text, 4000);
       this.options.emit({
         type: "session.stdout_tail",
@@ -1010,14 +1025,16 @@ export class AcpClient {
         update.toolCallId ||
         "tool";
       const status = typeof update.status === "string" ? update.status : "";
+      const safeTitle = this.boundedRedactedDiagnostic(title, 8192);
+      const safeStatus = status
+        ? this.boundedRedactedDiagnostic(status, 4096)
+        : "";
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
         text: this.formatDiagnostic(
           `[${kind}] `,
-          `${truncateUtf8Text(title, 8192)}${
-            status ? ` (${truncateUtf8Text(status, 4096)})` : ""
-          }\n`
+          `${safeTitle}${safeStatus ? ` (${safeStatus})` : ""}\n`
         ),
       });
       return;
@@ -1298,6 +1315,8 @@ export class AcpClient {
   private cleanupStreams(): void {
     this.proc?.stdout?.removeAllListeners("data");
     this.proc?.stdout?.removeAllListeners("end");
+    this.proc?.stderr?.removeAllListeners("data");
+    this.proc?.stderr?.removeAllListeners("end");
     this.resetStdoutFrame();
   }
 

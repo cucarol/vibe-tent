@@ -17,6 +17,8 @@ import {
   ACP_OUTPUT_LIMIT_CODE,
   ACP_REQUEST_LIMIT_CODE,
   AcpLimitError,
+  BoundedDiagnosticRedactor,
+  redactBoundedDiagnosticText,
 } from "../src/adapters/acp/limits.js";
 import { MAX_ACP_IMAGES_TOTAL_BYTES } from "../src/adapters/acp/image-prompt.js";
 import { startManagedAcpSession } from "../src/adapters/acp/managed-session.js";
@@ -53,6 +55,15 @@ if (process.argv[2] === "diagnostic-burst") {
   const filler = Number(process.env.MOCK_FILLER || "0");
   process.stdout.write("p".repeat(filler) + secret + "ZZ" + "q".repeat(2048));
   setTimeout(() => process.exit(0), 20);
+} else if (process.argv[2] === "diagnostic-split") {
+  const secret = process.env.MOCK_SECRET || "missing-secret";
+  const filler = Number(process.env.MOCK_FILLER || "0");
+  const split = Math.max(1, Math.floor(secret.length / 2));
+  process.stdout.write("p".repeat(filler) + secret.slice(0, split));
+  setTimeout(() => {
+    process.stdout.write(secret.slice(split) + "ZZ" + "q".repeat(2048));
+    setTimeout(() => process.exit(0), 20);
+  }, 20);
 } else {
   const rl = readline.createInterface({ input: process.stdin });
   rl.on("line", (line) => {
@@ -82,6 +93,53 @@ if (process.argv[2] === "diagnostic-burst") {
       for (let i = 0; i < count; i += 1) {
         update({ sessionUpdate: "status", status: "tick" });
       }
+      finish(request.id);
+      return;
+    }
+    if (mode === "rpc-error-boundary") {
+      const secret = process.env.MOCK_SECRET || "missing-secret";
+      const filler = Number(process.env.MOCK_FILLER || "0");
+      send({
+        jsonrpc: "2.0",
+        id: request.id,
+        error: {
+          code: -32000,
+          message: "e".repeat(filler) + secret + "tail",
+        },
+      });
+      return;
+    }
+    if (mode === "update-diagnostic-split") {
+      const secret = process.env.MOCK_SECRET || "missing-secret";
+      const filler = Number(process.env.MOCK_FILLER || "0");
+      const split = Math.max(1, Math.floor(secret.length / 2));
+      update({
+        sessionUpdate: "agent_thought_chunk",
+        content: { type: "text", text: "u".repeat(filler) + secret.slice(0, split) },
+      });
+      update({
+        sessionUpdate: "agent_thought_chunk",
+        content: { type: "text", text: secret.slice(split) + "tail" },
+      });
+      update({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "ok" },
+      });
+      finish(request.id);
+      return;
+    }
+    if (mode === "tool-diagnostic-boundary") {
+      const secret = process.env.MOCK_SECRET || "missing-secret";
+      const filler = Number(process.env.MOCK_FILLER || "0");
+      update({
+        sessionUpdate: "tool_call",
+        toolCallId: "boundary-tool",
+        title: "v".repeat(filler) + secret + "tail",
+      });
+      update({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "ok" },
+      });
       finish(request.id);
       return;
     }
@@ -133,6 +191,14 @@ if (process.argv[2] === "diagnostic-burst") {
       const secret = process.env.MOCK_SECRET || "missing-secret";
       const filler = Number(process.env.MOCK_FILLER || "0");
       process.stderr.write("s".repeat(filler) + secret + "ZZ" + "t".repeat(2048));
+    } else if (mode === "stderr-split") {
+      const secret = process.env.MOCK_SECRET || "missing-secret";
+      const filler = Number(process.env.MOCK_FILLER || "0");
+      const split = Math.max(1, Math.floor(secret.length / 2));
+      process.stderr.write("s".repeat(filler) + secret.slice(0, split));
+      setTimeout(() => {
+        process.stderr.write(secret.slice(split) + "ZZ" + "t".repeat(2048));
+      }, 20);
     }
     const chunks = JSON.parse(process.env.MOCK_CHUNKS || "[\"ok\"]");
     for (const text of chunks) {
@@ -207,6 +273,18 @@ function assertLimit(error: unknown, code: string): boolean {
   assert.equal((error as Error & { code?: string }).code, code);
   assert.match(error.message, new RegExp(`^${code}:`));
   return true;
+}
+
+function assertNoSecretFragments(text: string, secret: string): void {
+  assert.doesNotMatch(text, new RegExp(secret));
+  assert.ok(
+    !text.includes(secret.slice(0, Math.min(8, secret.length))),
+    "diagnostic must not expose a nontrivial credential prefix"
+  );
+  assert.ok(
+    !text.includes(secret.slice(-Math.min(8, secret.length))),
+    "diagnostic must not expose a nontrivial credential suffix"
+  );
 }
 
 async function assertStopped(client: AcpClient): Promise<void> {
@@ -452,7 +530,7 @@ test("default outbound frame ceiling retains the 25 MiB image/base64 contract", 
 
 test("ACP diagnostic chunk is <=16 KiB and redacts a secret near the truncation boundary", async () => {
   const secret = "near-boundary-secret-7d09b4c2";
-  const filler = ACP_DIAGNOSTIC_EVENT_BYTES - Buffer.byteLength(secret, "utf8") - 32;
+  const filler = ACP_DIAGNOSTIC_EVENT_BYTES - 5;
   const events: RuntimeEvent[] = [];
   const client = await makeClient({
     sessionId: "ss-diagnostic-boundary",
@@ -478,14 +556,231 @@ test("ACP diagnostic chunk is <=16 KiB and redacts a secret near the truncation 
     assert.ok(tails.length > 0);
     for (const event of tails) {
       assert.ok(Buffer.byteLength(event.text, "utf8") <= ACP_DIAGNOSTIC_EVENT_BYTES);
-      assert.doesNotMatch(event.text, new RegExp(secret));
+      assertNoSecretFragments(event.text, secret);
     }
     assert.ok(tails.some((event) => event.text.includes("[redacted]")));
     assert.ok(Buffer.byteLength(client.lastStderrTail, "utf8") <= 4000);
-    assert.doesNotMatch(client.lastStderrTail, new RegExp(secret));
+    assertNoSecretFragments(client.lastStderrTail, secret);
   } finally {
     await client.stop("shutdown");
   }
+});
+
+test("redaction-aware bound hides a credential crossing the one-shot RPC cut", () => {
+  const secret = "RPC_SECRET_TOKEN_0123456789";
+  const raw = "r".repeat(ACP_DIAGNOSTIC_EVENT_BYTES - 5) + secret + "tail";
+  const bounded = redactBoundedDiagnosticText(
+    raw,
+    [secret],
+    ACP_DIAGNOSTIC_EVENT_BYTES
+  );
+  assert.ok(Buffer.byteLength(bounded, "utf8") <= ACP_DIAGNOSTIC_EVENT_BYTES);
+  assertNoSecretFragments(bounded, secret);
+  assert.match(bounded, /\[redacted\]/);
+});
+
+test("AcpClient RPC error path redacts a credential crossing its diagnostic cut", async () => {
+  const secret = "RPC_PATH_SECRET_TOKEN_abcdef";
+  const client = await makeClient({
+    sessionId: "ss-rpc-error-boundary",
+    events: [],
+    env: {
+      MOCK_MODE: "rpc-error-boundary",
+      MOCK_SECRET: secret,
+      MOCK_FILLER: String(ACP_DIAGNOSTIC_EVENT_BYTES - 5),
+    },
+    diagnosticSecrets: [secret],
+  });
+  try {
+    await client.connect();
+    await assert.rejects(() => client.sendPrompt("go"), (error) => {
+      assert.ok(error instanceof Error);
+      assertNoSecretFragments(error.message, secret);
+      assert.match(error.message, /\[redacted\]/);
+      return true;
+    });
+  } finally {
+    await client.stop("shutdown");
+  }
+});
+
+test("AcpClient tool diagnostic redacts a credential crossing its title cut", async () => {
+  const secret = "TOOL_TITLE_SECRET_TOKEN_abcdef";
+  const events: RuntimeEvent[] = [];
+  const client = await makeClient({
+    sessionId: "ss-tool-diagnostic-boundary",
+    events,
+    env: {
+      MOCK_MODE: "tool-diagnostic-boundary",
+      MOCK_SECRET: secret,
+      MOCK_FILLER: String(8192 - 5),
+    },
+    diagnosticSecrets: [secret],
+  });
+  try {
+    await client.connect();
+    await client.sendPrompt("go");
+    const diagnostics = events.filter(
+      (event): event is Extract<RuntimeEvent, { type: "session.stdout_tail" }> =>
+        event.type === "session.stdout_tail"
+    );
+    assert.ok(diagnostics.length > 0);
+    for (const event of diagnostics) {
+      assertNoSecretFragments(event.text, secret);
+    }
+    assert.ok(diagnostics.some((event) => event.text.includes("[redacted]")));
+  } finally {
+    await client.stop("shutdown");
+  }
+});
+
+test("raw-buffer redactor preserves UTF-8 while a Unicode secret crosses chunks", () => {
+  const secret = "密钥令牌_αβγ_012345";
+  const redactor = new BoundedDiagnosticRedactor([secret], 256);
+  const raw = Buffer.from(`prefix:${secret}:suffix`, "utf8");
+  const split = Buffer.byteLength("prefix:密", "utf8") - 1;
+  const output =
+    redactor.pushBuffer(raw.subarray(0, split)) +
+    redactor.pushBuffer(raw.subarray(split)) +
+    redactor.flush();
+  assertNoSecretFragments(output, secret);
+  assert.match(output, /\[redacted\]/);
+  assert.doesNotMatch(output, /�/);
+  assert.equal(Buffer.from(output, "utf8").toString("utf8"), output);
+});
+
+test("bounded redactor never resumes at a credential suffix after discarded input", () => {
+  const secret = "DISCARDED_SECRET_TOKEN_0123456789";
+  const split = 20;
+  const redactor = new BoundedDiagnosticRedactor([secret], 64);
+  const first = redactor.pushBuffer(
+    Buffer.from("z".repeat(200) + secret.slice(0, split), "utf8")
+  );
+  const second = redactor.pushBuffer(
+    Buffer.from(secret.slice(split) + ":later diagnostic", "utf8")
+  );
+  const tail = redactor.flush();
+  assert.ok(Buffer.byteLength(first, "utf8") <= 64);
+  assertNoSecretFragments(first + second + tail, secret);
+  assert.equal(second, "");
+  assert.equal(tail, "");
+});
+
+test("self-overlapping credentials keep redactor carry bounded", () => {
+  const redactor = new BoundedDiagnosticRedactor(["aaaaaaaa"], 64);
+  let output = "";
+  for (let index = 0; index < 1_000; index += 1) {
+    output += redactor.pushText("a".repeat(64));
+  }
+  output += redactor.flush();
+  assert.ok(Buffer.byteLength(output, "utf8") <= 64 * 1_001);
+  assert.doesNotMatch(output, /aaaaaaaa/);
+  assert.match(output, /\[redacted\]/);
+});
+
+test("diagnostic joins remain byte-bounded below the truncation marker size", () => {
+  const redactor = new BoundedDiagnosticRedactor(["secret-value"], 4);
+  const output = redactor.pushText("secret-value") + redactor.flush();
+  assert.ok(Buffer.byteLength(output, "utf8") <= 4);
+  assert.doesNotMatch(output, /secr/);
+});
+
+test("AcpClient and ProcessSupervisor redact a secret split across adjacent child chunks", async (t) => {
+  const secret = "SPLIT_SECRET_TOKEN_89abcdef";
+  const filler = ACP_DIAGNOSTIC_EVENT_BYTES - 5;
+
+  await t.test("AcpClient stderr events and tail", async () => {
+    const events: RuntimeEvent[] = [];
+    const client = await makeClient({
+      sessionId: "ss-diagnostic-split",
+      events,
+      env: {
+        MOCK_MODE: "stderr-split",
+        MOCK_SECRET: secret,
+        MOCK_FILLER: String(filler),
+      },
+      diagnosticSecrets: [secret],
+    });
+    try {
+      await client.connect();
+      await client.sendPrompt("go");
+      await waitFor(
+        () =>
+          events.some(
+            (event) =>
+              event.type === "session.stdout_tail" &&
+              event.text.includes("[redacted]")
+          ),
+        "split ACP stderr redaction"
+      );
+      const combined = events
+        .filter(
+          (event): event is Extract<RuntimeEvent, { type: "session.stdout_tail" }> =>
+            event.type === "session.stdout_tail"
+        )
+        .map((event) => event.text)
+        .join("");
+      assertNoSecretFragments(combined, secret);
+      assertNoSecretFragments(client.lastStderrTail, secret);
+    } finally {
+      await client.stop("shutdown");
+    }
+  });
+
+  await t.test("AcpClient formatDiagnostic session/update events", async () => {
+    const events: RuntimeEvent[] = [];
+    const client = await makeClient({
+      sessionId: "ss-update-diagnostic-split",
+      events,
+      env: {
+        MOCK_MODE: "update-diagnostic-split",
+        MOCK_SECRET: secret,
+        MOCK_FILLER: String(filler),
+      },
+      diagnosticSecrets: [secret],
+    });
+    try {
+      await client.connect();
+      assert.equal((await client.sendPrompt("go")).assistantText, "ok");
+      const combined = events
+        .filter(
+          (event): event is Extract<RuntimeEvent, { type: "session.stdout_tail" }> =>
+            event.type === "session.stdout_tail"
+        )
+        .map((event) => event.text)
+        .join("");
+      assertNoSecretFragments(combined, secret);
+      assert.match(combined, /\[redacted\]/);
+    } finally {
+      await client.stop("shutdown");
+    }
+  });
+
+  await t.test("ProcessSupervisor callback and ring", async () => {
+    const events: string[] = [];
+    const supervisor = new ProcessSupervisor({
+      stdoutRingBytes: 4000,
+      gracefulMs: 100,
+      onStdout: (_sessionId, text) => events.push(text),
+    });
+    const sessionId = "ss-supervisor-split";
+    await supervisor.start(sessionId, {
+      command: process.execPath,
+      args: [await mockPath(), "diagnostic-split"],
+      cwd: await tempDir("tent-supervisor-split-"),
+      env: {
+        MOCK_SECRET: secret,
+        MOCK_FILLER: String(filler),
+      },
+      diagnosticSecrets: [secret],
+    });
+    await waitFor(() => !supervisor.isAlive(sessionId), "split diagnostic child exit");
+    const combined = events.join("");
+    assertNoSecretFragments(combined, secret);
+    assertNoSecretFragments(supervisor.getStdoutTail(sessionId), secret);
+    assert.match(combined, /\[redacted\]/);
+    await supervisor.stop(sessionId);
+  });
 });
 
 test("ProcessSupervisor bounds and redacts raw child diagnostics before event/ring copies", async () => {

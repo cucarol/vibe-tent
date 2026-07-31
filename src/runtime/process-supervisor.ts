@@ -5,14 +5,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { ResolvedLaunch } from "../adapters/types.js";
 import {
   collectSecretValues,
-  redactDiagnosticText,
 } from "../adapters/acp/redact.js";
 import { buildManagedChildEnv } from "./child-env.js";
 import {
   ACP_DIAGNOSTIC_EVENT_BYTES,
+  BoundedDiagnosticRedactor,
   appendUtf8Tail,
-  truncateUtf8Buffer,
-  truncateUtf8Text,
 } from "../adapters/acp/limits.js";
 
 export interface SupervisedProcess {
@@ -110,10 +108,14 @@ export class ProcessSupervisor {
       ...(launch.diagnosticSecrets ?? []),
       ...coreSecrets,
     ]);
-    const redactChunk = (text: string): string =>
-      redactDiagnosticText(text, {
-        secrets: secretValues,
-      });
+    const stdoutDiagnostic = new BoundedDiagnosticRedactor(
+      secretValues,
+      ACP_DIAGNOSTIC_EVENT_BYTES
+    );
+    const stderrDiagnostic = new BoundedDiagnosticRedactor(
+      secretValues,
+      ACP_DIAGNOSTIC_EVENT_BYTES
+    );
 
     const child = spawn(launch.command, launch.args, {
       cwd: launch.cwd,
@@ -146,22 +148,20 @@ export class ProcessSupervisor {
       );
     };
 
-    child.stdout?.on("data", (chunk: Buffer) => {
-      const text = truncateUtf8Text(
-        redactChunk(truncateUtf8Buffer(chunk, ACP_DIAGNOSTIC_EVENT_BYTES)),
-        ACP_DIAGNOSTIC_EVENT_BYTES
-      );
+    const emitDiagnostic = (text: string) => {
+      if (!text) return;
       appendRing(text);
       this.onStdout?.(sessionId, text);
+    };
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      emitDiagnostic(stdoutDiagnostic.pushBuffer(chunk));
     });
     child.stderr?.on("data", (chunk: Buffer) => {
-      const text = truncateUtf8Text(
-        redactChunk(truncateUtf8Buffer(chunk, ACP_DIAGNOSTIC_EVENT_BYTES)),
-        ACP_DIAGNOSTIC_EVENT_BYTES
-      );
-      appendRing(text);
-      this.onStdout?.(sessionId, text);
+      emitDiagnostic(stderrDiagnostic.pushBuffer(chunk));
     });
+    child.stdout?.on("end", () => emitDiagnostic(stdoutDiagnostic.flush()));
+    child.stderr?.on("end", () => emitDiagnostic(stderrDiagnostic.flush()));
 
     const notifyExit = () => {
       if (!spawned || exitNotified) return;
