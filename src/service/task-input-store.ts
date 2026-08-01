@@ -21,10 +21,9 @@ import {
  * consumed   — external agent formally acked (poll+ack path)
  * cancelled  — interrupt / fail / session cleanup of still-open inputs only
  *
- * Managed inject race: sendFollowUpPrompt awaits the full turn, so session.prompt_complete
- * can auto-deliver and run cancelSession/cancelTask while the row is still open and
- * markDelivered has not run yet. Inputs in the managed-inject in-flight set (and
- * status=processing) are treated as non-cancelable until markDelivered/endManagedInject.
+ * Managed inject race: `processing` is persisted before provider continuation.
+ * cancelSession/cancelTask only cancel pending|failed rows, so a claimed inject
+ * cannot be rewritten while the provider turn and final durable mark are in flight.
  *
  * Restart: persisted `processing` rows are reloaded as `uncertain`. The process may
  * have died after the provider accepted the prompt but before the delivered mark, so
@@ -307,11 +306,6 @@ export class TaskInputStore {
   private closed = false;
   private shutdownPromise: Promise<void> | null = null;
   private chain: Promise<void> = Promise.resolve();
-  /**
-   * Input ids currently in managed inject → markDelivered. Cancel must not rewrite
-   * these rows to cancelled or markDelivered loses the race with delivery cleanup.
-   */
-  private readonly managedInjectInFlight = new Set<string>();
   /** Test-only: next persistSnapshot fails once, then clears. */
   private nextPersistErrorForTests: Error | null = null;
 
@@ -327,27 +321,6 @@ export class TaskInputStore {
       () => undefined
     );
     return run;
-  }
-
-  /**
-   * Pin a pending input across managed inject + markDelivered so concurrent
-   * cancelTask/cancelSession (delivery/session cleanup) cannot rewrite it.
-   * Process-local only; not persisted.
-   */
-  beginManagedInject(id: string): void {
-    if (!id?.trim()) return;
-    this.managedInjectInFlight.add(id);
-  }
-
-  /** Clear pin after markDelivered succeeds or continue path finishes. */
-  endManagedInject(id: string): void {
-    if (!id?.trim()) return;
-    this.managedInjectInFlight.delete(id);
-  }
-
-  /** Test/diagnostics: whether cancel is currently blocked for this id. */
-  isManagedInjectInFlight(id: string): boolean {
-    return this.managedInjectInFlight.has(id);
   }
 
   async ensureLoaded(): Promise<void> {
@@ -867,7 +840,6 @@ export class TaskInputStore {
   /**
    * Cancel open (pending/failed) inputs for one (workspace, task).
    * Delivered/processing stay: delivered already processed; processing is in-flight.
-   * Rows pinned by beginManagedInject are skipped (inject→markDelivered window).
    */
   async cancelTask(
     workspaceId: string,
@@ -883,8 +855,7 @@ export class TaskInputStore {
         if (
           item.workspaceId !== workspaceId ||
           item.taskPath !== taskPath ||
-          !isTaskInputCancelEligibleStatus(item.status) ||
-          this.managedInjectInFlight.has(item.id)
+          !isTaskInputCancelEligibleStatus(item.status)
         ) {
           continue;
         }
@@ -909,7 +880,6 @@ export class TaskInputStore {
   /**
    * Cancel open (pending/failed) inputs bound to a session.
    * Never rewrites delivered/consumed/processing rows.
-   * Rows pinned by beginManagedInject are skipped (same race as cancelTask).
    */
   async cancelSession(
     sessionId: string,
@@ -923,8 +893,7 @@ export class TaskInputStore {
       for (const item of this.items.values()) {
         if (
           item.sessionId !== sessionId ||
-          !isTaskInputCancelEligibleStatus(item.status) ||
-          this.managedInjectInFlight.has(item.id)
+          !isTaskInputCancelEligibleStatus(item.status)
         ) {
           continue;
         }

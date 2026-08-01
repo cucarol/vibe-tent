@@ -412,23 +412,44 @@ test("replaceSession: session_unavailable + late events + atomic rebind; launch/
         svc, workspaceId, taskPath, priorSessionId, "ti-replace-rebind-seed",
         "please preserve this U2A note across replace"
       );
-      const replaced = await rpc(svc, "task.replaceSession", {
-        workspaceId, taskPath, profileId: "fake-default", callerKind: "user",
-      });
-      assert.ok(!replaced.error, JSON.stringify(replaced.error));
-      const newSessionId = (replaced.result as { session: { sessionId: string } }).session.sessionId;
-      assert.notEqual(newSessionId, priorSessionId);
-      assert.equal((replaced.result as { session: { contextRestored?: boolean } }).session.contextRestored, false);
-      assert.equal((replaced.result as { task: TaskSnap }).task.state, "running");
-      const input = await getInput(svc, workspaceId, taskPath, seeded.id);
-      assert.equal(input.status, "pending");
-      assert.equal(input.sessionId, newSessionId);
-      mapRuntimeEventToService(svc.ctx, { type: "session.failed", sessionId: priorSessionId, error: "late failure after replace" });
-      mapRuntimeEventToService(svc.ctx, { type: "session.exited", sessionId: priorSessionId, exitCode: 1 });
-      await new Promise((r) => setTimeout(r, 120));
-      const task = await getTask(svc, workspaceId, taskPath);
-      assert.equal(task.state, "running");
-      assert.equal(task.sessionId, newSessionId);
+      svc.runtime.clearFollowUpAttemptsForTests();
+      const recoveryHold = holdManagedTaskInputQueueForTests(workspaceId, taskPath);
+      try {
+        const replaced = await rpc(svc, "task.replaceSession", {
+          workspaceId, taskPath, profileId: "fake-default", callerKind: "user",
+        });
+        assert.ok(!replaced.error, JSON.stringify(replaced.error));
+        const newSessionId = (replaced.result as { session: { sessionId: string } }).session.sessionId;
+        assert.notEqual(newSessionId, priorSessionId);
+        assert.equal((replaced.result as { session: { contextRestored?: boolean } }).session.contextRestored, false);
+        assert.equal((replaced.result as { task: TaskSnap }).task.state, "running");
+        await recoveryHold.entered;
+        const input = await getInput(svc, workspaceId, taskPath, seeded.id);
+        assert.equal(input.status, "pending");
+        assert.equal(input.sessionId, newSessionId);
+        assert.deepEqual(svc.runtime.getFollowUpAttemptsForTests(), []);
+        recoveryHold.release();
+        await pollUntil(async () => {
+          const attempts = svc.runtime.getFollowUpAttemptsForTests();
+          return attempts.length === 1 ? attempts[0] : null;
+        }, 5_000, "replacement Session recovery inject attempt");
+        assert.deepEqual(svc.runtime.getFollowUpAttemptsForTests(), [
+          { sessionId: newSessionId },
+        ]);
+        const settledInput = await pollUntil(async () => {
+          const row = await getInput(svc, workspaceId, taskPath, seeded.id);
+          return row.status === "failed" || row.status === "delivered" ? row : null;
+        }, 5_000, "replacement recovery row settled");
+        assert.equal(settledInput.sessionId, newSessionId);
+        mapRuntimeEventToService(svc.ctx, { type: "session.failed", sessionId: priorSessionId, error: "late failure after replace" });
+        mapRuntimeEventToService(svc.ctx, { type: "session.exited", sessionId: priorSessionId, exitCode: 1 });
+        await new Promise((r) => setTimeout(r, 120));
+        const task = await getTask(svc, workspaceId, taskPath);
+        assert.equal(task.state, "running");
+        assert.equal(task.sessionId, newSessionId);
+      } finally {
+        recoveryHold.release();
+      }
     });
   }
   {

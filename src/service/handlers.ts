@@ -4966,6 +4966,49 @@ function enqueueManagedTaskInputBackground(
 }
 
 /**
+ * Explicit Session recovery trigger for durable retryable TaskInputs.
+ *
+ * This is intentionally called only after task.startSession has proven/bound a
+ * usable exact-Task Session, or after task.replaceSession has completed its
+ * authoritative Task + TaskInput rebind. It is not a mount/startup scanner.
+ * Provider work stays on the existing per-Task background FIFO; duplicate
+ * scheduling is harmless because each worker reloads the durable row before
+ * rebinding that exact retryable row and claiming pending|failed -> processing.
+ */
+async function scheduleRetryableTaskInputsAfterSessionBind(
+  ctx: HandlerContext,
+  input: {
+    workspaceId: string;
+    taskPath: string;
+    sessionId: string;
+  }
+): Promise<void> {
+  try {
+    const retryable = await ctx.taskInputs.listRetryableForTask(
+      input.workspaceId,
+      input.taskPath
+    );
+    retryable.sort(
+      (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)
+    );
+    for (const item of retryable) {
+      enqueueManagedTaskInputBackground(ctx, item, {
+        sessionIdOverride: input.sessionId,
+      });
+    }
+  } catch (err) {
+    // Session binding already succeeded and rows remain durable. Recovery
+    // scheduling must not turn a successful explicit start/replace RPC into a
+    // false failure or wait for provider work.
+    console.error(
+      `[taskInput] exact bind recovery scheduling failed for ${input.taskPath}: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+  }
+}
+
+/**
  * Stop accepting new background U2A enqueues (sendInput + reject-resume review
  * feedback; rows stay durable pending/failed). Call before runtime.shutdown so
  * late RPC paths do not schedule new injects.
@@ -5116,20 +5159,53 @@ async function deliverManagedTaskInput(
 
     const forInject: TaskInputRecord = { ...latest, sessionId };
 
-    ctx.taskInputs.beginManagedInject(forInject.id);
     let continueResult: { continued: boolean; error?: string };
     let finalInput = forInject;
-    try {
-      continueResult = await continueManagedAfterTaskInput(ctx, forInject);
-      if (continueResult.continued) {
+    continueResult = await continueManagedAfterTaskInput(ctx, forInject);
+    if (continueResult.continued) {
+      try {
+        finalInput = await ctx.taskInputs.markDelivered(forInject.id, "service", {
+          sessionId,
+        });
+        ctx.events.emit(
+          "taskInput.delivered",
+          forInject.workspaceId,
+          {
+            inputId: finalInput.id,
+            taskPath: finalInput.taskPath,
+            sessionId: finalInput.sessionId,
+            kind: normalizeTaskInputKind(finalInput.kind),
+            status: finalInput.status,
+          },
+          "service"
+        );
+        // prompt_complete is projected asynchronously. It may already have
+        // preserved a report draft and failed its pre-seal gate while this row
+        // was still processing. Retry from that durable draft after the input
+        // is terminal; never prompt the provider a second time.
         try {
-          finalInput = await ctx.taskInputs.markDelivered(
+          await requestManagedAutoDeliverRetryFromDraft(ctx, {
+            workspaceId: forInject.workspaceId,
+            taskPath: forInject.taskPath,
+            sessionId,
+          });
+        } catch {
+          // TaskInput delivery is already authoritative. Auto-delivery keeps
+          // its own durable draft + diagnostics and remains independently retryable.
+        }
+      } catch (err) {
+        // Provider already accepted the inject — never markFailed (that would
+        // re-open the retry source and risk a second inject).
+        const message = err instanceof Error ? err.message : String(err);
+        try {
+          finalInput = await ctx.taskInputs.markUncertain(
             forInject.id,
+            `managed inject ok but markDelivered failed: ${message}`,
             "service",
             { sessionId }
           );
           ctx.events.emit(
-            "taskInput.delivered",
+            "taskInput.uncertain",
             forInject.workspaceId,
             {
               inputId: finalInput.id,
@@ -5137,76 +5213,32 @@ async function deliverManagedTaskInput(
               sessionId: finalInput.sessionId,
               kind: normalizeTaskInputKind(finalInput.kind),
               status: finalInput.status,
+              lastError: finalInput.lastError,
             },
             "service"
           );
-          // prompt_complete is projected asynchronously. It may already have
-          // preserved a report draft and failed its pre-seal gate while this row
-          // was still processing. Retry from that durable draft after the input
-          // is terminal; never prompt the provider a second time.
-          try {
-            await requestManagedAutoDeliverRetryFromDraft(ctx, {
-              workspaceId: forInject.workspaceId,
-              taskPath: forInject.taskPath,
-              sessionId,
-            });
-          } catch {
-            // TaskInput delivery is already authoritative. Auto-delivery keeps
-            // its own durable draft + diagnostics and remains independently retryable.
-          }
-        } catch (err) {
-          // Provider already accepted the inject — never markFailed (that would
-          // re-open the retry source and risk a second inject).
-          const message = err instanceof Error ? err.message : String(err);
-          try {
-            finalInput = await ctx.taskInputs.markUncertain(
-              forInject.id,
-              `managed inject ok but markDelivered failed: ${message}`,
-              "service",
-              { sessionId }
-            );
-            ctx.events.emit(
-              "taskInput.uncertain",
-              forInject.workspaceId,
-              {
-                inputId: finalInput.id,
-                taskPath: finalInput.taskPath,
-                sessionId: finalInput.sessionId,
-                kind: normalizeTaskInputKind(finalInput.kind),
-                status: finalInput.status,
-                lastError: finalInput.lastError,
-              },
-              "service"
-            );
-            // Uncertain is at-most-once but now remains a Delivery blocker.
-            // Keep the durable report draft parked until an authorized
-            // taskInput.ack explicitly acknowledges the ambiguity.
-          } catch {
-            // leave processing if store closed mid-shutdown
-          }
-          return {
-            input: finalInput,
-            continued: true,
-            continueError: `managed inject ok but markDelivered failed: ${message}`,
-          };
-        }
-      } else {
-        // Inject did not complete — retain as failed (not dropped) for retry.
-        const failMsg =
-          continueResult.error ||
-          "managed inject did not continue; external agent may poll taskInput";
-        try {
-          finalInput = await ctx.taskInputs.markFailed(
-            forInject.id,
-            failMsg,
-            "service"
-          );
+          // Uncertain is at-most-once but now remains a Delivery blocker.
+          // Keep the durable report draft parked until an authorized
+          // taskInput.ack explicitly acknowledges the ambiguity.
         } catch {
-          // store closed / already terminal
+          // leave processing if store closed mid-shutdown
         }
+        return {
+          input: finalInput,
+          continued: true,
+          continueError: `managed inject ok but markDelivered failed: ${message}`,
+        };
       }
-    } finally {
-      ctx.taskInputs.endManagedInject(forInject.id);
+    } else {
+      // Inject did not complete — retain as failed (not dropped) for retry.
+      const failMsg =
+        continueResult.error ||
+        "managed inject did not continue; external agent may poll taskInput";
+      try {
+        finalInput = await ctx.taskInputs.markFailed(forInject.id, failMsg, "service");
+      } catch {
+        // store closed / already terminal
+      }
     }
 
     return {
@@ -6283,7 +6315,7 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
     if (existing) {
       return joinOrConflictManagedSessionFlight(existing, profileId, "startSession", taskPath);
     }
-    return runTaskLifecycle(workspaceId, taskPath, async () => {
+    const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
       const mount = ctx.host.require(workspaceId);
       const current = await loadTaskEnvelope(mount.env.fs, taskPath);
       const sessionId = prepared.result.session.sessionId;
@@ -6315,6 +6347,12 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
         cwd: current.worktree || mount.workspaceRoot,
       });
     });
+    await scheduleRetryableTaskInputsAfterSessionBind(ctx, {
+      workspaceId,
+      taskPath,
+      sessionId: result.session.sessionId,
+    });
+    return result;
   }
 
   return runManagedSessionFlight(workspaceId, taskPath, profileId, "startSession", () =>
@@ -7075,6 +7113,12 @@ async function launchAndBindTaskStartSession(
     });
   }
 
+  await scheduleRetryableTaskInputsAfterSessionBind(ctx, {
+    workspaceId,
+    taskPath,
+    sessionId: handle.sessionId,
+  });
+
   return projectStartSessionResult(workspaceId, taskPath, bound, {
     id: handle.sessionId,
     profileId: handle.profileId,
@@ -7389,6 +7433,12 @@ async function executeTaskReplaceSession(
         newSessionId: handle.sessionId,
       });
     }
+
+    await scheduleRetryableTaskInputsAfterSessionBind(ctx, {
+      workspaceId,
+      taskPath,
+      sessionId: handle.sessionId,
+    });
 
     return {
       workspaceId,
@@ -11991,7 +12041,7 @@ async function stopManagedSessionAfterDelivery(
     try {
       // After a successful ready Delivery, open rows should already be terminal
       // (gate refused otherwise). Cancel only still-open pending/failed leftovers;
-      // delivered / processing pin / uncertain stay.
+      // delivered / processing / uncertain stay.
       await cancelTaskInputsForSession(
         ctx,
         input.workspaceId,

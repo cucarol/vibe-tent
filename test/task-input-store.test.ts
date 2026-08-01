@@ -1,6 +1,6 @@
 /**
  * TaskInputStore: machine-local U2A one-shot inputs.
- * Focus: pending-only cancel + managed-inject pin across markDelivered race.
+ * Focus: pending-only cancel + durable processing serialization across inject races.
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -187,60 +187,54 @@ test("task input store: cancel is pending-only; delivered survives cancelTask/Se
   assert.equal(afterSession?.status, "delivered");
 });
 
-test("task input store: managed-inject pin blocks cancel until markDelivered (race)", async () => {
-  const dataDir = await tempDir("tent-ti-pin-");
+test("task input store: markProcessing and cancel serialize on durable status", async () => {
+  const dataDir = await tempDir("tent-ti-processing-cancel-");
   const store = new TaskInputStore(dataDir);
-  const id = makeTaskInputId(() => 0.33);
-  const workspaceId = "ws-pin";
-  const taskPath = "temp/r/tasks/pin.md";
-  const sessionId = "ss-pin";
+  const cancelFirstId = "ti-cancel-first";
+  const processingFirstId = "ti-processing-first";
+  const workspaceId = "ws-processing-cancel";
+  const cancelFirstTaskPath = "temp/r/tasks/cancel-first.md";
+  const processingFirstTaskPath = "temp/r/tasks/processing-first.md";
+  const cancelFirstSessionId = "ss-cancel-first";
+  const processingFirstSessionId = "ss-processing-first";
 
   await store.add(
     pending({
-      id,
+      id: cancelFirstId,
       workspaceId,
-      taskPath,
-      sessionId,
-      text: "Use the tighter plan",
+      taskPath: cancelFirstTaskPath,
+      sessionId: cancelFirstSessionId,
+      text: "cancel wins",
+    })
+  );
+  await store.add(
+    pending({
+      id: processingFirstId,
+      workspaceId,
+      taskPath: processingFirstTaskPath,
+      sessionId: processingFirstSessionId,
+      text: "processing wins",
     })
   );
 
-  // Simulate taskSendInputRpc: pin before inject, cancel races before markDelivered.
-  store.beginManagedInject(id);
-  assert.equal(store.isManagedInjectInFlight(id), true);
-
-  // Delivery/session cleanup must not rewrite pinned pending → cancelled.
-  const raced = await store.cancelSession(sessionId, "session.stop_after_deliver");
+  const cancelWins = store.cancelTask(workspaceId, cancelFirstTaskPath, "cancel-first");
+  const lateProcessing = store.markProcessing(cancelFirstId);
+  const cancelled = await cancelWins;
+  assert.equal(cancelled.some((item) => item.id === cancelFirstId), true);
+  await assert.rejects(lateProcessing, /requires pending or failed/);
   assert.equal(
-    raced.length,
-    0,
-    "cancelSession must skip managed-inject-in-flight pending rows"
+    (await store.get(cancelFirstId, workspaceId, cancelFirstTaskPath))?.status,
+    "cancelled"
   );
-  const racedTask = await store.cancelTask(
-    workspaceId,
-    taskPath,
-    "session.stop_after_deliver"
+
+  const processingWins = store.markProcessing(processingFirstId);
+  const lateCancel = store.cancelSession(processingFirstSessionId, "processing-first");
+  assert.equal((await processingWins).status, "processing");
+  assert.equal((await lateCancel).some((item) => item.id === processingFirstId), false);
+  assert.equal(
+    (await store.get(processingFirstId, workspaceId, processingFirstTaskPath))?.status,
+    "processing"
   );
-  assert.equal(racedTask.length, 0);
-
-  const stillPending = await store.get(id, workspaceId, taskPath);
-  assert.equal(stillPending?.status, "pending");
-
-  const delivered = await store.markDelivered(id, "service");
-  assert.equal(delivered.status, "delivered");
-  store.endManagedInject(id);
-  assert.equal(store.isManagedInjectInFlight(id), false);
-
-  // After pin release, delivered still survives cancel (pending-only).
-  const after = await store.cancelSession(sessionId, "late-cleanup");
-  assert.equal(after.length, 0);
-  const final = await store.get(id, workspaceId, taskPath);
-  assert.equal(final?.status, "delivered");
-  assert.ok(final?.deliveredAt);
-
-  const prompt = formatTaskInputPrompt(final!);
-  assert.match(prompt, /## User Input/);
-  assert.match(prompt, /Use the tighter plan/);
 });
 
 test("task input store: rebindSession updates pending session; cancel old id leaves row; markDelivered can persist inject session", async () => {
@@ -539,7 +533,7 @@ test("task input store: review-feedback preserves exact note and formats ## Revi
   assert.match(formatTaskInputPrompt(empty!), /text: \n|text: $/m);
 });
 
-test("task input store: unpinned pending still cancels (lifecycle interrupt)", async () => {
+test("task input store: pending still cancels (lifecycle interrupt)", async () => {
   const dataDir = await tempDir("tent-ti-cancel-");
   const store = new TaskInputStore(dataDir);
   const id = makeTaskInputId(() => 0.55);

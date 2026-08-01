@@ -16,6 +16,11 @@ import { rpcCall } from "../src/service/http-server.js";
 import { createServiceClient } from "../src/service/client.js";
 import { CLIENT_METHODS, RPC_LIFECYCLE } from "../src/service/types.js";
 import {
+  holdManagedTaskInputQueueForTests,
+  resetManagedTaskInputBackgroundForTests,
+  resetManagedTaskInputQueueForTests,
+} from "../src/service/handlers.js";
+import {
   DEFAULT_GROK_MODEL,
   GROK_ACP_ADAPTER_ID,
 } from "../src/adapters/grok-acp/index.js";
@@ -657,6 +662,159 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
   });
 });
 
+test("explicit startSession bind and live reuse recover durable retryable TaskInputs only", async () => {
+  resetManagedTaskInputBackgroundForTests();
+  resetManagedTaskInputQueueForTests();
+  const ws = await makeWorkspace();
+  const logPath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-start-recovery-log-")),
+    "mock-acp.json"
+  );
+  const profiles = [
+    mockAcpProfile("mock-ti", {
+      logPath,
+      promptText: "outcome: needs-input\n\nBOOTSTRAP_WAITING",
+      followupText: "outcome: needs-input\n\nRECOVERY_INPUT_SETTLED",
+      promptDelayMs: 750,
+      keepAlive: true,
+    }),
+  ];
+
+  await withService(profiles, async (svc) => {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+    const created = (await client.docsCreateNote(workspaceId, {
+      name: "start-session-recovery",
+      type: "prompt",
+    })) as { id: string };
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      nodeIds: [created.id],
+      role: "executor",
+      prompt: "Recover exact durable inputs after explicit Session bind",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      deliveryPolicy: "review",
+    })) as { taskPath: string };
+    const taskPath = dispatched.taskPath;
+    await client.taskClaim(workspaceId, taskPath);
+
+    const base = Date.parse("2026-08-01T00:00:00.000Z");
+    const add = (id: string, text: string, offsetMs: number) => {
+      const at = new Date(base + offsetMs).toISOString();
+      return svc.ctx.taskInputs.add({
+        id,
+        workspaceId,
+        taskPath,
+        status: "pending",
+        text,
+        createdAt: at,
+        updatedAt: at,
+      });
+    };
+    await add("ti-recover-failed", "RECOVER_FAILED_FIRST", 0);
+    await svc.ctx.taskInputs.markFailed(
+      "ti-recover-failed",
+      "simulated process-local queue loss",
+      "service"
+    );
+    await add("ti-recover-pending", "RECOVER_PENDING_SECOND", 1);
+    await add("ti-recover-uncertain", "DO_NOT_RECOVER_UNCERTAIN", 2);
+    await svc.ctx.taskInputs.markProcessing("ti-recover-uncertain");
+    await svc.ctx.taskInputs.markUncertain(
+      "ti-recover-uncertain",
+      "processing outcome is ambiguous"
+    );
+
+    const processingOrder: string[] = [];
+    const originalMarkProcessing = svc.ctx.taskInputs.markProcessing.bind(svc.ctx.taskInputs);
+    svc.ctx.taskInputs.markProcessing = async (id: string) => {
+      processingOrder.push(id);
+      return originalMarkProcessing(id);
+    };
+
+    let firstHold: ReturnType<typeof holdManagedTaskInputQueueForTests> | undefined;
+    let reuseHold: ReturnType<typeof holdManagedTaskInputQueueForTests> | undefined;
+    try {
+      firstHold = holdManagedTaskInputQueueForTests(workspaceId, taskPath);
+      const started = (await client.taskStartSession(workspaceId, {
+        taskPath,
+        profileId: "mock-ti",
+        callerKind: "user",
+      })) as { session: { sessionId: string } };
+      await firstHold.entered;
+
+      await client.taskWait(workspaceId, taskPath, "user-input", "hold recovery task open");
+      await pollUntil(async () => {
+        const probe = await svc.runtime.probe(started.session.sessionId);
+        return probe.alive && probe.turnBusy === false ? true : null;
+      }, 10_000, "bootstrap settled before recovery FIFO release");
+      firstHold.release();
+
+      for (const inputId of ["ti-recover-failed", "ti-recover-pending"]) {
+        await pollUntil(async () => {
+          const row = await svc.ctx.taskInputs.get(inputId, workspaceId, taskPath);
+          return row?.status === "delivered" ? row : null;
+        }, 10_000, `${inputId} delivered after new bind`);
+      }
+      assert.deepEqual(processingOrder.slice(0, 2), [
+        "ti-recover-failed",
+        "ti-recover-pending",
+      ]);
+      assert.equal(
+        (await svc.ctx.taskInputs.get("ti-recover-uncertain", workspaceId, taskPath))?.status,
+        "uncertain"
+      );
+
+      await add("ti-recover-live-reuse", "RECOVER_LIVE_REUSE", 3);
+      reuseHold = holdManagedTaskInputQueueForTests(workspaceId, taskPath);
+      const reused = (await client.taskStartSession(workspaceId, {
+        taskPath,
+        profileId: "mock-ti",
+        callerKind: "user",
+      })) as { session: { sessionId: string } };
+      assert.equal(reused.session.sessionId, started.session.sessionId);
+      await reuseHold.entered;
+      reuseHold.release();
+      await pollUntil(async () => {
+        const row = await svc.ctx.taskInputs.get(
+          "ti-recover-live-reuse",
+          workspaceId,
+          taskPath
+        );
+        return row?.status === "delivered" ? row : null;
+      }, 10_000, "live-reuse input delivered");
+
+      const log = JSON.parse(await fs.readFile(logPath, "utf8")) as { prompts?: string[] };
+      const prompts = log.prompts ?? [];
+      for (const text of [
+        "RECOVER_FAILED_FIRST",
+        "RECOVER_PENDING_SECOND",
+        "RECOVER_LIVE_REUSE",
+      ]) {
+        assert.equal(
+          prompts.filter((prompt) => prompt.includes(text)).length,
+          1,
+          `${text} must be injected exactly once`
+        );
+      }
+      assert.equal(
+        prompts.some((prompt) => prompt.includes("DO_NOT_RECOVER_UNCERTAIN")),
+        false
+      );
+      assert.deepEqual(processingOrder, [
+        "ti-recover-failed",
+        "ti-recover-pending",
+        "ti-recover-live-reuse",
+      ]);
+    } finally {
+      firstHold?.release();
+      reuseHold?.release();
+      svc.ctx.taskInputs.markProcessing = originalMarkProcessing;
+    }
+  });
+});
+
 test("managed ACP: task.sendInput continues same session; delivered survives Delivery cleanup", async () => {
   const ws = await makeWorkspace();
   const logPath = path.join(
@@ -752,7 +910,7 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
       `accept status should be pending|processing, got ${sent.input.status}`
     );
 
-    // Background FIFO inject → delivered (pin keeps race with prompt_complete safe).
+    // Background FIFO inject → delivered (durable processing wins the cleanup race).
     const inputDelivered = await pollUntil(async () => {
       const got = (await client.taskInputGet(
         workspaceId,
