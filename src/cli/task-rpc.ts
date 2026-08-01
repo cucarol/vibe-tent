@@ -137,17 +137,17 @@ export async function runTaskCommand(
       }
       case "dispatch": {
         // Public ordinary dispatch (cx-b9bf58):
-        //   tent task dispatch --target role:<id>|agent:<id> --node <nodeId>… --prompt <text>|-
+        //   tent task dispatch --target role:<id>|route:<routeId> --node <nodeId>… --prompt <text>|-
         // Node refs map to transient RPC nodeIds[] (→ contextCard.refs.nodes sole persist).
-        // LaunchProfile is never a public selector; AgentDefinition is agent:<agentId>.
+        // Settings route ids are the public machine execution selector.
         const usage =
-          "Usage: tent task dispatch --target role:<roleIdOrName>|agent:<agentId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]";
+          "Usage: tent task dispatch --target role:<roleIdOrName>|route:<routeId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]";
 
         const retiredPublic = detectRetiredDispatchFlags(flags);
         if (retiredPublic) {
           return failUsage(
             `Public ordinary dispatch no longer accepts ${retiredPublic}; ` +
-              `use --target role:<roleIdOrName>|agent:<agentId> with --node and --prompt.\n` +
+              `use --target role:<roleIdOrName>|route:<routeId> with --node and --prompt.\n` +
               usage
           );
         }
@@ -163,14 +163,14 @@ export async function runTaskCommand(
         if (!targetRaw) {
           return failUsage(`--target is required\n${usage}`);
         }
-        const targetMatch = /^(role|agent):(.+)$/i.exec(targetRaw);
+        const targetMatch = /^(role|route):(.+)$/i.exec(targetRaw);
         if (!targetMatch) {
           return failUsage(
-            `--target must be role:<roleIdOrName> or agent:<agentId> (got ${JSON.stringify(targetRaw)})\n` +
+            `--target must be role:<roleIdOrName> or route:<routeId> (got ${JSON.stringify(targetRaw)})\n` +
               usage
           );
         }
-        const targetKind = targetMatch[1]!.toLowerCase() as "role" | "agent";
+        const targetKind = targetMatch[1]!.toLowerCase() as "role" | "route";
         const targetId = targetMatch[2]!.trim();
         if (!targetId) {
           return failUsage(
@@ -208,7 +208,7 @@ export async function runTaskCommand(
         // Role caller → parentActor=reviewer=that Role + callerKind=role (downstream review).
         // User-direct → parentActor=reviewer=user + callerKind=user.
         // Git-lane meaning of asSub is derived, not a public knob: Role caller dispatching
-        // role:* or agent:* → asSub:true (Task targets parent Role lane); user-direct omits it.
+        // role:* or route:* → asSub:true (Task targets parent Role lane); user-direct omits it.
         const envRole = String(
           (globals.env?.TENT_ROLE ?? process.env.TENT_ROLE ?? "") as string
         ).trim();
@@ -221,7 +221,8 @@ export async function runTaskCommand(
 
         // Internal RPC fields required by current Service wire only:
         // - role target: durable Role handoff, queued, never startSession
-        // - agent target: agentId + assigneeKind=agentProfile + startSession (managed ACP)
+        // - route target: current Service wire uses profileId + assigneeKind=agentProfile +
+        //   startSession for the selected Settings route.
         // nodeIds is the sole public Node selection and persists only through
         // Context Card refs.nodes. No single-Node compatibility field is emitted.
         const common = {
@@ -241,7 +242,7 @@ export async function runTaskCommand(
             : {
                 ...common,
                 assigneeKind: "agentProfile" as const,
-                agentId: targetId,
+                profileId: targetId,
                 startSession: true as const,
               };
 
@@ -953,9 +954,9 @@ Commands:
   tent task get <taskPath> [--workspace <path>] [--json]
   tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]
   tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
-  tent task dispatch --target role:<roleIdOrName>|agent:<agentId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]
+  tent task dispatch --target role:<roleIdOrName>|route:<routeId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]
       # --target role:*  durable Role handoff (queued; never starts managed ACP at dispatch)
-      # --target agent:* logical AgentDefinition id → machine-local LaunchProfile + startSession
+      # --target route:* machine Settings route + managed Session start
       # --node           repeatable Node refs (at least one); sole source for contextCard.refs.nodes
       # parentActor/reviewer from TENT_ROLE (role caller) or user-direct; no public --by
       # Role caller also derives internal asSub (parent Role Git lane); not a public flag

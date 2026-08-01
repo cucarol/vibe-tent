@@ -1,6 +1,6 @@
 /**
  * Public ordinary Task dispatch grammar (cx-b9bf58 / tk-vnb8vesj):
- *   tent task dispatch --target role:<id>|agent:<id> --node <nodeId>… --prompt <text>|-
+ *   tent task dispatch --target role:<id>|route:<routeId> --node <nodeId>… --prompt <text>|-
  *
  * Fake Service/client only — no paid/live provider, no real Local Service.
  */
@@ -74,11 +74,11 @@ async function withTentRole<T>(
 
 test("CLI help documents --target / --node grammar; rejects retired public knobs", () => {
   const help = taskHelpText();
-  assert.match(help, /tent task dispatch --target role:<roleIdOrName>\|agent:<agentId>/);
+  assert.match(help, /tent task dispatch --target role:<roleIdOrName>\|route:<routeId>/);
   assert.match(help, /--node <nodeId>/);
   assert.match(help, /queued; never starts managed ACP/);
-  assert.match(help, /AgentDefinition/);
-  assert.match(help, /LaunchProfile/);
+  assert.match(help, /Settings route/);
+  assert.doesNotMatch(help, /agent:<|AgentDefinition|LaunchProfile/);
   assert.match(help, /Rejected \(no alias\)/);
   assert.doesNotMatch(help, /tent task dispatch <boxId>/);
   // Usage line must not offer retired selectors as active syntax.
@@ -137,7 +137,6 @@ test("role target: queued durable handoff; multi --node; no startSession", async
     assert.equal(args.startSession, undefined);
     assert.equal(args.agentId, undefined);
     assert.equal(args.profileId, undefined);
-    assert.equal(args.boxId, "cx-one");
     assert.deepEqual(args.nodeIds, ["cx-one", "cx-two"]);
     assert.equal(args.nodes, undefined, "must not send retired nodes[] key");
     assert.equal(args.prompt, "role handoff work");
@@ -158,7 +157,7 @@ test("role target: queued durable handoff; multi --node; no startSession", async
   });
 });
 
-test("agent target: managed ACP startSession via agentId; multi --node", async () => {
+test("route target: managed ACP startSession via profileId wire; multi --node", async () => {
   const cwd = await makeFakeTentCwd();
   const { client, calls } = capturingDispatchClient();
   await withTentRole(undefined, async () => {
@@ -166,7 +165,7 @@ test("agent target: managed ACP startSession via agentId; multi --node", async (
       "dispatch",
       [
         "--target",
-        "agent:worker-a",
+        "route:route-a",
         "--node",
         "cx-alpha",
         "--node",
@@ -181,17 +180,16 @@ test("agent target: managed ACP startSession via agentId; multi --node", async (
     assert.equal(calls.length, 1);
     const args = calls[0]!;
     assert.equal(args.assigneeKind, "agentProfile");
-    assert.equal(args.agentId, "worker-a");
+    assert.equal(args.agentId, undefined);
     assert.equal(args.startSession, true);
     assert.equal(args.role, undefined);
-    assert.equal(args.profileId, undefined);
-    assert.equal(args.boxId, "cx-alpha");
+    assert.equal(args.profileId, "route-a");
     assert.deepEqual(args.nodeIds, ["cx-alpha", "cx-beta"]);
     assert.equal(args.nodes, undefined, "must not send retired nodes[] key");
     assert.deepEqual(args.parentActor, { kind: "user", id: "user" });
     assert.deepEqual(args.reviewer, { kind: "user", id: "user" });
     assert.equal(args.callerKind, "user");
-    assert.equal(args.asSub, undefined, "user-direct agent target must not set asSub");
+    assert.equal(args.asSub, undefined, "user-direct route target must not set asSub");
 
     const parsed = JSON.parse(r.stdout) as {
       state?: string;
@@ -238,13 +236,13 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
     assert.equal(args.role, "executor");
   });
 
-  // Role caller → agent:* : equal parent/reviewer, asSub:true, startSession
+  // Role caller → route:* : equal parent/reviewer, asSub:true, startSession
   await withTentRole("规划", async () => {
     const r = await runTaskCommand(
       "dispatch",
       [
         "--target",
-        "agent:worker-a",
+        "route:route-a",
         "--node",
         "cx-n1b",
         "--prompt",
@@ -263,18 +261,19 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
     assert.deepEqual(args.parentActor, { kind: "role", id: "规划" });
     assert.deepEqual(args.reviewer, { kind: "role", id: "规划" });
     assert.equal(args.callerKind, "role");
-    assert.equal(args.asSub, true, "Role caller agent:* targets parent Role Git lane");
+    assert.equal(args.asSub, true, "Role caller route:* targets parent Role Git lane");
     assert.equal(args.startSession, true);
-    assert.equal(args.agentId, "worker-a");
+    assert.equal(args.agentId, undefined);
+    assert.equal(args.profileId, "route-a");
   });
 
-  // User-direct → agent:* : no asSub
+  // User-direct → route:* : no asSub
   await withTentRole(undefined, async () => {
     const r = await runTaskCommand(
       "dispatch",
       [
         "--target",
-        "agent:worker-b",
+        "route:route-b",
         "--node",
         "cx-n2",
         "--prompt",
@@ -288,9 +287,10 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
     assert.deepEqual(args.parentActor, { kind: "user", id: "user" });
     assert.deepEqual(args.reviewer, { kind: "user", id: "user" });
     assert.equal(args.callerKind, "user");
-    assert.equal(args.asSub, undefined, "user-direct agent:* must not set asSub");
+    assert.equal(args.asSub, undefined, "user-direct route:* must not set asSub");
     assert.equal(args.startSession, true);
-    assert.equal(args.agentId, "worker-b");
+    assert.equal(args.agentId, undefined);
+    assert.equal(args.profileId, "route-b");
   });
 
   // User-direct → role:* : no asSub
@@ -494,7 +494,7 @@ test("missing --target / --node / --prompt and invalid target fail loud", async 
     { client: client as never, cwd }
   );
   assert.notEqual(badTarget.exitCode, 0);
-  assert.match(badTarget.stderr, /role:|agent:/i);
+  assert.match(badTarget.stderr, /role:|route:/i);
 
   const missingNode = await runTaskCommand(
     "dispatch",
@@ -548,6 +548,19 @@ test("missing --target / --node / --prompt and invalid target fail loud", async 
   assert.notEqual(bareEmptyNode.exitCode, 0);
 
   assert.equal(calls.length, 0, "validation failures must not call taskDispatch");
+});
+
+test("legacy agent target is rejected without compatibility", async () => {
+  const cwd = await makeFakeTentCwd();
+  const { client, calls } = capturingDispatchClient();
+  const result = await runTaskCommand(
+    "dispatch",
+    ["--target", "agent:worker-a", "--node", "cx-1", "--prompt", "p"],
+    { client: client as never, cwd }
+  );
+  assert.notEqual(result.exitCode, 0);
+  assert.match(result.stderr, /role:<roleIdOrName> or route:<routeId>/i);
+  assert.equal(calls.length, 0);
 });
 
 test("non-dispatch task commands remain available (help lists claim/get/deliver)", () => {

@@ -634,9 +634,9 @@ test("Task records agentId; multi-agent same profile is unambiguous", async () =
   });
 });
 
-test("CLI help documents --target agent:<agentId>; user-direct real Service flow", async () => {
+test("CLI help documents --target route:<routeId>; user-direct real Service flow", async () => {
   const help = taskHelpText();
-  assert.match(help, /--target role:<roleIdOrName>\|agent:<agentId>/);
+  assert.match(help, /--target role:<roleIdOrName>\|route:<routeId>/);
   assert.match(help, /Rejected \(no alias\)/);
   assert.match(help, /--profile|--agent/);
   // Active usage line must not re-offer retired public selectors.
@@ -660,13 +660,6 @@ test("CLI help documents --target agent:<agentId>; user-direct real Service flow
     const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
 
-    // AgentDefinition → machine-local fake profile (generic fixture; no product names).
-    await client.agentCreate({
-      id: "direct-worker",
-      profileId: FAKE_DEFAULT_PROFILE_ID,
-      displayName: "Direct worker",
-    });
-
     const created = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "job",
@@ -676,12 +669,12 @@ test("CLI help documents --target agent:<agentId>; user-direct real Service flow
     const boxId = (created.result as { id: string }).id;
 
     // User-direct via globals.env TENT_ROLE="" only (no process.env mutation).
-    // Public CLI sends agentId + startSession; Service must not require Role roster.
+    // Public CLI sends the Settings route as the current profileId wire field.
     const result = await runTaskCommand(
       "dispatch",
       [
         "--target",
-        "agent:direct-worker",
+        "route:" + FAKE_DEFAULT_PROFILE_ID,
         "--node",
         boxId,
         "--prompt",
@@ -719,7 +712,7 @@ test("CLI help documents --target agent:<agentId>; user-direct real Service flow
       payload.session?.session?.profileId ?? payload.session?.profileId;
     const sessionId = payload.session?.session?.sessionId;
     assert.equal(sessionProfile, FAKE_DEFAULT_PROFILE_ID);
-    assert.ok(sessionId, "managed ACP session must start for user-direct agent:*");
+    assert.ok(sessionId, "managed ACP session must start for user-direct route:*");
 
     assert.ok(payload.taskPath, "dispatch must return taskPath");
     const got = await rpc(svc, "task.get", {
@@ -738,7 +731,7 @@ test("CLI help documents --target agent:<agentId>; user-direct real Service flow
         };
       }
     ).task;
-    assert.equal(task.agentId, "direct-worker");
+    assert.equal(task.agentId, undefined);
     assert.equal(task.role, FAKE_DEFAULT_PROFILE_ID);
     assert.deepEqual(task.parentActor, { kind: "user", id: "user" });
     assert.deepEqual(task.reviewer, { kind: "user", id: "user" });

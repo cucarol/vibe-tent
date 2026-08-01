@@ -34,10 +34,6 @@ import { workspaceRootFromSystemRoot } from "../core/paths.js";
 import { runTaskCommand, taskHelpText } from "./task-rpc.js";
 import { runSessionCommand, sessionHelpText } from "./session-rpc.js";
 import { runNodeCommand, nodeHelpText } from "./node-rpc.js";
-import {
-  runAgentDefinitionCommand,
-  agentDefinitionHelpText,
-} from "./agent-definition-rpc.js";
 import { runRoleCommand, roleHelpText } from "./role-rpc.js";
 import {
   runRoleCheckpointCommand,
@@ -199,21 +195,7 @@ async function main() {
     return;
   }
 
-  // Logical AgentDefinition management only (list|get|config). Not Session lifecycle.
-  if (cmd === "agent") {
-    const [sub, ...rest] = args;
-    if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
-      console.log(agentDefinitionHelpText());
-      return;
-    }
-    const result = await runAgentDefinitionCommand(sub, rest, { packageRoot: packageRoot() });
-    if (result.stdout) process.stdout.write(result.stdout);
-    if (result.stderr) process.stderr.write(result.stderr);
-    if (result.exitCode !== 0) process.exitCode = result.exitCode;
-    return;
-  }
-
-  // Durable Role discovery + roster config (list|show|config). Not the old registry-list alias.
+  // Durable Role discovery + metadata config (list|show|config). Not the old registry-list alias.
   if (cmd === "role") {
     const [sub, ...rest] = args;
     if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
@@ -283,7 +265,7 @@ async function main() {
   const tentCommands = new Set(["role-init", "status", "tags", "find", "tree"]);
   if (!tentCommands.has(cmd)) {
     return fail(
-      `Unknown command: ${cmd || "(empty)"}\nCommands: new node task session agent role propose role-init role-checkpoint status tags find tree skill-install agent-hooks`
+      `Unknown command: ${cmd || "(empty)"}\nCommands: new node task session role propose role-init role-checkpoint status tags find tree skill-install agent-hooks`
     );
   }
 
@@ -489,10 +471,8 @@ Usage:
 
 Run commands from a workspace with <workspace>/.tent/ unless noted.
 
-Logical Agent, durable Role, Session, and Task (distinct surfaces):
-  tent agent list|get|config          Logical AgentDefinition (id→profileId; no secrets/Session)
-  tent agent --help                   AgentDefinition subcommand help
-  tent role list|show|config          Durable Role discovery + roster config (Service-backed)
+Durable Role, Session, and Task (distinct surfaces):
+  tent role list|show|config          Durable Role discovery + metadata config (Service-backed)
   tent role --help                    Role subcommand help
   tent session enter|status|leave     External session lifecycle (no ACP spawn)
   tent session --help                 Pull-host enter/status/leave + hook aliases
