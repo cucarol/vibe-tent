@@ -1014,6 +1014,7 @@ export const CLIENT_METHODS = [
    * runs without this RPC after terminal transitions / mount recovery.
    */
   "task.worktreeReclaim.preview",
+  "task.worktreeReclaim.reconcile",
   /**
    * Node Markdown underline annotations (划线注释) — first-class workspace records.
    * Independent of body markers, Node attributes, and Task. User-only mutations via MutationBus.

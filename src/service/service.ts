@@ -6,11 +6,8 @@ import { EventBus } from "./events.js";
 import { MutationBus } from "./mutation-bus.js";
 import { WorkspaceHost } from "./workspace-host.js";
 import {
-  drainHistoricalTaskWorktreeReclaimForShutdown,
   drainManagedTaskInputBackgroundForShutdown,
-  enableHistoricalTaskWorktreeReclaimAccept,
   enableManagedTaskInputBackgroundAccept,
-  stopHistoricalTaskWorktreeReclaimAccept,
   stopManagedTaskInputBackgroundAccept,
   mapRuntimeEventToService,
   type HandlerContext,
@@ -92,8 +89,6 @@ export interface LocalTentServiceOptions {
    * Production uses real workspace Git via handlers → integrateWorkspaceCommits.
    */
   integrateCommits?: (workspaceRoot: string, commits: string[], role: string) => Promise<void>;
-  /** Test-only override for the bounded historical reclaim shutdown drain. */
-  historicalReclaimDrainTimeoutMs?: number;
 }
 
 export interface LocalTentService {
@@ -173,10 +168,8 @@ async function startOwnedLocalTentService(
   await taskInputs.ensureLoaded();
   const managedDeliveryReportDrafts = new ManagedDeliveryReportDraftStore(dataDir);
   await managedDeliveryReportDrafts.ensureLoaded();
-  // Process-local: previous in-process stop may have drained background U2A /
-  // historical reclaim accept flags.
+  // Process-local: previous in-process stop may have drained background U2A.
   enableManagedTaskInputBackgroundAccept();
-  enableHistoricalTaskWorktreeReclaimAccept();
 
   const credentials = new CredentialStore(dataDir, {
     protector: options.credentialProtector,
@@ -437,7 +430,6 @@ async function startOwnedLocalTentService(
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
       let firstError: unknown;
-      let historicalReclaimDrainSafe = true;
       const attempt = async (action: () => void | Promise<void>, bestEffort = false) => {
         try {
           await action();
@@ -456,49 +448,31 @@ async function startOwnedLocalTentService(
         // children so service-owned waiters/timers cannot outlive shutdown.
         await attempt(() => toolApprovals.shutdown(), true);
         await attempt(() => userAsks.shutdown(), true);
-        // U2A + historical reclaim shutdown order (bounded, no full promptTimeout wait):
-        // 1) stop accepting new background enqueues (U2A + historical scan batches)
+        // U2A shutdown order (bounded, no full promptTimeout wait):
+        // 1) stop accepting new background enqueues
         // 2) interrupt/stop runtime so hung session/prompt can settle
-        // 3) bounded drain of in-flight managed injects + historical batches
+        // 3) bounded drain of in-flight managed injects
         // 4) close task-input store last so markDelivered|failed|uncertain can land
         stopManagedTaskInputBackgroundAccept();
-        stopHistoricalTaskWorktreeReclaimAccept();
         await attempt(() => runtime.shutdown(), true);
         await attempt(
           () => drainManagedTaskInputBackgroundForShutdown(5_000),
           true
         );
-        try {
-          await drainHistoricalTaskWorktreeReclaimForShutdown(
-            options.historicalReclaimDrainTimeoutMs ?? 5_000
-          );
-        } catch (error) {
-          // A timed-out runner may still be using its mounted FsAdapter. Keep
-          // WorkspaceHost alive and fail stop rather than disposing beneath it.
-          historicalReclaimDrainSafe = false;
-          if (firstError === undefined) firstError = error;
-        }
         await attempt(() => taskInputs.shutdown(), true);
         // Report drafts are durable operational state (not process-bound); close
         // after runtime projections so a late clear() from deliver can still land.
         await attempt(() => managedDeliveryReportDrafts.shutdown(), true);
         await attempt(() => drainRuntimeProjections());
         unsubscribeRuntimeEvents();
-        if (historicalReclaimDrainSafe) {
-          await attempt(() => workspaceHost.dispose());
-        }
+        await attempt(() => workspaceHost.dispose());
       } finally {
-        // A timed-out runner may still write through its mounted FsAdapter.
-        // Keep both ownership records until that runner settles or this process
-        // exits; publishing an unowned dataDir would permit a second writer.
-        if (historicalReclaimDrainSafe) {
-          if (options.writeEndpoint !== false) {
-            await attempt(() =>
-              removeServiceEndpoint(dataDir, serviceLease.instanceId)
-            );
-          }
-          await attempt(() => serviceLease.release());
+        if (options.writeEndpoint !== false) {
+          await attempt(() =>
+            removeServiceEndpoint(dataDir, serviceLease.instanceId)
+          );
         }
+        await attempt(() => serviceLease.release());
       }
       if (firstError !== undefined) throw firstError;
     })();

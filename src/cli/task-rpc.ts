@@ -327,6 +327,31 @@ export async function runTaskCommand(
           );
         });
       }
+      case "worktree-reclaim": {
+        const action = positionals[0];
+        const taskPath = positionals[1];
+        const usage =
+          "Usage: tent task worktree-reclaim <preview|reconcile> <taskPath> [--workspace <path>] [--json]";
+        if (
+          (action !== "preview" && action !== "reconcile") ||
+          !taskPath ||
+          positionals.length > 2
+        ) {
+          return failUsage(usage);
+        }
+        const result =
+          action === "preview"
+            ? await client.taskWorktreeReclaimPreview(workspaceId, taskPath)
+            : await client.taskWorktreeReclaimReconcile(
+                workspaceId,
+                taskPath,
+                String(globals.env?.TENT_ROLE ?? process.env.TENT_ROLE ?? "user").trim() ||
+                  "user"
+              );
+        return okPrint(result, json, (r) =>
+          formatTaskWorktreeReclaim(r, action)
+        );
+      }
       case "ask-user":
       case "askUser": {
         const taskPath = positionals[0];
@@ -679,6 +704,33 @@ function formatTaskGet(result: { task: TaskLike }): string {
   return lines.join("\n") + "\n";
 }
 
+function formatTaskWorktreeReclaim(
+  result: unknown,
+  action: "preview" | "reconcile"
+): string {
+  const row = result as {
+    taskPath?: string;
+    taskId?: string;
+    code?: string;
+    reason?: string;
+    eligible?: boolean;
+    reclaimed?: boolean;
+    alreadyGone?: boolean;
+    worktree?: string;
+  };
+  return (
+    `✓ Task worktree reclaim ${action}\n` +
+    `taskPath: ${row.taskPath ?? "?"}\n` +
+    (row.taskId ? `taskId: ${row.taskId}\n` : "") +
+    `code: ${row.code ?? "?"}\n` +
+    (row.eligible != null ? `eligible: ${row.eligible}\n` : "") +
+    (row.reclaimed != null ? `reclaimed: ${row.reclaimed}\n` : "") +
+    (row.alreadyGone != null ? `alreadyGone: ${row.alreadyGone}\n` : "") +
+    (row.worktree ? `worktree: ${row.worktree}\n` : "") +
+    (row.reason ? `reason: ${row.reason}\n` : "")
+  );
+}
+
 function okPrint(
   result: unknown,
   json: boolean,
@@ -965,6 +1017,8 @@ Commands:
   tent task reject <taskPath> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]
   tent task interrupt <taskPath> [--workspace <path>] [--json]
+  tent task worktree-reclaim preview <taskPath> [--workspace <path>] [--json]
+  tent task worktree-reclaim reconcile <taskPath> [--workspace <path>] [--json]
   tent task ask-user <taskPath> --question <text>|- [--choices id=label,…] [--workspace <path>] [--json]
   tent task user-ask list|get <askId>|reply <askId>|deny <askId> […] [--workspace <path>] [--json]
   tent task send-input <taskPath> [--text <text>|-] [--refs id,id] [--workspace <path>] [--json]

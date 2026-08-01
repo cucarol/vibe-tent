@@ -170,15 +170,8 @@ import {
 import {
   dequeueTaskWorktreeReclaimPending,
   enqueueTaskWorktreeReclaimPending,
-  listTaskEnvelopePathsForReclaimScan,
   listTaskWorktreeReclaimPendingForWorkspace,
-  persistHistoricalReclaimScanBatch,
-  readTaskWorktreeReclaimHistoricalScan,
-  recordHistoricalReclaimScanDiagnostic,
   recordTaskWorktreeReclaimNeedsAttention,
-  type TaskWorktreeReclaimScanDecision,
-  taskPathsAfterHistoricalCursor,
-  TASK_WORKTREE_RECLAIM_HISTORICAL_BATCH_SIZE,
 } from "../core/task-worktree-reclaim-queue.js";
 import {
   loadWorkspaceSettings,
@@ -641,6 +634,8 @@ export async function dispatchMethod(
         return operationalRetentionPurgeRpc(ctx, p);
       case "task.worktreeReclaim.preview":
         return taskWorktreeReclaimPreviewRpc(ctx, p);
+      case "task.worktreeReclaim.reconcile":
+        return taskWorktreeReclaimReconcileRpc(ctx, p);
       case "annotation.list":
         return annotationListRpc(ctx, p);
       case "annotation.create":
@@ -714,9 +709,6 @@ async function workspaceMount(ctx: HandlerContext, p: Record<string, unknown>) {
   await migrateParentReviewerOnMount(ctx, info.workspaceId);
   // After SessionRegistry boot reconcile, each mount must re-bind tasks to live sessions.
   await reconcileTaskSessionsOnMount(ctx, info.workspaceId);
-  // Register one Service-owned runner and return. Pending retries and the
-  // historical pass both run in bounded background batches after mount.
-  scheduleHistoricalTaskWorktreeReclaimAfterMount(ctx, info.workspaceId);
   return info;
 }
 
@@ -1026,9 +1018,6 @@ export async function reconcileTaskSessionsOnMount(
 
 async function workspaceUnmount(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireString(p, "workspaceId");
-  // Drain/cancel Service-owned historical reclaim before dropping the mount so
-  // unmount does not leave uncontrolled background mutations.
-  await cancelAndDrainHistoricalTaskWorktreeReclaim(workspaceId);
   await ctx.host.unmount(workspaceId);
   return { ok: true };
 }
@@ -9444,6 +9433,55 @@ async function taskWorktreeReclaimPreviewRpc(
 }
 
 /**
+ * Exact-task reconcile for local user or the persisted parent/reviewer Role.
+ * This never scans inventory or prunes Git: it reloads one authoritative
+ * envelope and reuses the terminal reclaim gates.
+ */
+async function taskWorktreeReclaimReconcileRpc(
+  ctx: HandlerContext,
+  p: Record<string, unknown>
+) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  requireTaskWorktreeReconcileActor(p, task);
+  const result = await maybeAutoReclaimTaskWorktree(
+    ctx,
+    workspaceId,
+    task,
+    "task.worktreeReclaim.reconcile"
+  );
+  const diagnostic =
+    result ??
+    (await evaluateTaskWorktreeReclaimForEnvelope(
+      mount.env.fs,
+      mount.workspaceRoot,
+      task
+    ));
+  return { workspaceId, taskPath, ...diagnostic };
+}
+
+function requireTaskWorktreeReconcileActor(
+  p: Record<string, unknown>,
+  task: TaskEnvelope
+): string {
+  const actor = requireString(p, "actor");
+  if (actor === "user") return actor;
+  const authorized = [task.parentActor, task.reviewer].some(
+    (candidate) => candidate?.kind === "role" && candidate.id === actor
+  );
+  if (!authorized) {
+    throw new RpcError(
+      -32001,
+      "task.worktreeReclaim.reconcile requires user or the exact Task parent/reviewer Role",
+      { actor, taskId: task.id, taskPath: task.path }
+    );
+  }
+  return actor;
+}
+
+/**
  * Authoritative Service gate: no live/busy/external execution still bound to this Task
  * may hold the Task worktree as cwd. Fail-closed → SESSION_ACTIVE (enqueue + retry later).
  */
@@ -9650,7 +9688,8 @@ async function retryPendingWorktreeReclaimAfterSessionSettle(
       `session.settle:${input.trigger}`
     );
   } catch {
-    // Best-effort settle retry; mount recovery remains the durable backstop.
+    // Best-effort settle retry; the durable exact row remains available for
+    // explicit task.worktreeReclaim.reconcile.
   }
 }
 
@@ -9693,7 +9732,7 @@ export function setBeforeTaskWorktreeReclaimReloadForTests(
  * accept/reject/interrupt/rebind, so restart/rebind cannot race the remove.
  * Bound Session is re-probed immediately before git worktree remove; terminal
  * + turnBusy/alive or a late dirty write fails closed (SESSION_ACTIVE/DIRTY)
- * and retries after session settle / mount recovery.
+ * and retries after session settle / explicit exact-task reconcile.
  */
 async function maybeAutoReclaimTaskWorktree(
   ctx: HandlerContext,
@@ -9935,6 +9974,20 @@ async function maybeAutoReclaimTaskWorktree(
       return result;
     });
   } catch (err) {
+    const blocked: TaskWorktreeReclaimResult = {
+      eligible: false,
+      code: "REMOVE_FAILED",
+      reason: `Auto-reclaim threw: ${err instanceof Error ? err.message : String(err)}`,
+      taskId: task.id,
+      taskPath: task.path,
+      taskState: task.state,
+      workspace: task.workspace,
+      worktree: task.worktree,
+      branch: task.branch,
+      targetBranch: task.targetBranch,
+      reclaimed: false,
+      alreadyGone: false,
+    };
     ctx.events.emit(
       "task.worktreeReclaim",
       workspaceId,
@@ -9946,597 +9999,13 @@ async function maybeAutoReclaimTaskWorktree(
         eligible: false,
         reclaimed: false,
         alreadyGone: false,
-        reason: `Auto-reclaim threw: ${err instanceof Error ? err.message : String(err)}`,
+        reason: blocked.reason,
         trigger: reason,
       },
       "self"
     );
-    return undefined;
+    return blocked;
   }
-}
-
-/**
- * On workspace mount / Service restart: retry reclaim for queue entries for this
- * workspace (pending + needs-attention). One pass per call — dirty lanes cleaned
- * offline can recover on remount. Historical multi-batch loop must not re-spin
- * needs-attention in the same boot; that path only attempts newly discovered
- * candidates once.
- */
-export async function recoverTerminalTaskWorktreesOnMount(
-  ctx: HandlerContext,
-  workspaceId: string
-): Promise<{ attempted: number; reclaimed: number; refused: number }> {
-  const mount = ctx.host.get(workspaceId);
-  if (!mount) return { attempted: 0, reclaimed: 0, refused: 0 };
-  if (!(await isGitWorkspace(mount.workspaceRoot))) {
-    return { attempted: 0, reclaimed: 0, refused: 0 };
-  }
-
-  let attempted = 0;
-  let reclaimed = 0;
-  let refused = 0;
-  const pending = await listTaskWorktreeReclaimPendingForWorkspace(
-    mount.env.fs,
-    mount.workspaceRoot,
-    (a, b) => isSameWorkspaceRoot(nodePath.resolve(a), nodePath.resolve(b))
-  );
-  for (const entry of pending) {
-    attempted += 1;
-    let task: TaskEnvelope;
-    try {
-      task = await loadTaskEnvelope(mount.env.fs, entry.taskPath);
-    } catch (error) {
-      const exists = await mount.env.fs
-        .exists(entry.taskPath)
-        .catch(() => true);
-      try {
-        await recordTaskWorktreeReclaimNeedsAttention(mount.env.fs, {
-          taskId: entry.taskId,
-          taskPath: entry.taskPath,
-          workspaceRoot: mount.workspaceRoot,
-          code: exists ? "UNREADABLE_TASK" : "TASK_MISSING",
-          reason: exists
-            ? `Pending reclaim Task envelope is unreadable: ${
-                error instanceof Error ? error.message : String(error)
-              }`
-            : "Pending reclaim Task envelope is missing; exact lane ownership cannot be proven",
-          attemptedAt: mount.env.clock.now(),
-          trigger: entry.trigger ?? "workspace.mount",
-        });
-      } catch {
-        // Keep the pre-existing row when even diagnostic persistence fails.
-      }
-      refused += 1;
-      continue;
-    }
-    // Identity drift: pending taskId must still match envelope.
-    if (task.id && task.id !== entry.taskId) {
-      refused += 1;
-      continue;
-    }
-    const result = await maybeAutoReclaimTaskWorktree(
-      ctx,
-      workspaceId,
-      task,
-      entry.trigger ? `workspace.mount:${entry.trigger}` : "workspace.mount"
-    );
-    if (result?.reclaimed) reclaimed += 1;
-    else if (result && !result.eligible) refused += 1;
-  }
-  return { attempted, reclaimed, refused };
-}
-
-async function recoverTerminalTaskWorktreeBatch(
-  ctx: HandlerContext,
-  workspaceId: string,
-  attemptedTaskIds: Set<string>,
-  shouldStop: () => boolean
-): Promise<boolean> {
-  const mount = ctx.host.get(workspaceId);
-  if (!mount || shouldStop()) return false;
-  if (!(await isGitWorkspace(mount.workspaceRoot))) return false;
-  const pending = await listTaskWorktreeReclaimPendingForWorkspace(
-    mount.env.fs,
-    mount.workspaceRoot,
-    (a, b) => isSameWorkspaceRoot(nodePath.resolve(a), nodePath.resolve(b))
-  );
-  const remaining = pending
-    .filter((entry) => !attemptedTaskIds.has(entry.taskId))
-    .sort((a, b) => a.taskId.localeCompare(b.taskId));
-  const batch = remaining.slice(
-    0,
-    TASK_WORKTREE_RECLAIM_HISTORICAL_BATCH_SIZE
-  );
-  for (const entry of batch) {
-    if (shouldStop()) return false;
-    attemptedTaskIds.add(entry.taskId);
-    let task: TaskEnvelope;
-    try {
-      task = await loadTaskEnvelope(mount.env.fs, entry.taskPath);
-    } catch (error) {
-      const exists = await mount.env.fs
-        .exists(entry.taskPath)
-        .catch(() => true);
-      await recordTaskWorktreeReclaimNeedsAttention(mount.env.fs, {
-        taskId: entry.taskId,
-        taskPath: entry.taskPath,
-        workspaceRoot: mount.workspaceRoot,
-        code: exists ? "UNREADABLE_TASK" : "TASK_MISSING",
-        reason: exists
-          ? `Pending reclaim Task envelope is unreadable: ${
-              error instanceof Error ? error.message : String(error)
-            }`
-          : "Pending reclaim Task envelope is missing; exact lane ownership cannot be proven",
-        attemptedAt: mount.env.clock.now(),
-        trigger: entry.trigger ?? "workspace.mount",
-      });
-      continue;
-    }
-    if (task.id !== entry.taskId) {
-      await recordTaskWorktreeReclaimNeedsAttention(mount.env.fs, {
-        taskId: entry.taskId,
-        taskPath: entry.taskPath,
-        workspaceRoot: mount.workspaceRoot,
-        code: "TASK_ID_MISMATCH",
-        reason: `Pending reclaim identity ${entry.taskId} does not match ${task.id ?? "missing"}`,
-        attemptedAt: mount.env.clock.now(),
-        trigger: entry.trigger ?? "workspace.mount",
-      });
-      continue;
-    }
-    await maybeAutoReclaimTaskWorktree(
-      ctx,
-      workspaceId,
-      task,
-      entry.trigger ? `workspace.mount:${entry.trigger}` : "workspace.mount"
-    );
-  }
-  return remaining.length > batch.length;
-}
-
-// ---- Historical one-pass Task worktree reclaim (Service-owned, drainable) ----
-
-type HistoricalReclaimJob = {
-  workspaceId: string;
-  fsKey: object;
-  cancelled: boolean;
-  phase: "pending" | "historical";
-  pendingAttemptedTaskIds: Set<string>;
-  /** In-flight batch promise (for drain on unmount/shutdown). */
-  inflight: Promise<void> | null;
-  /** setImmediate / setTimeout handle for the next batch tick. */
-  timer: ReturnType<typeof setImmediate> | ReturnType<typeof setTimeout> | null;
-};
-
-const historicalReclaimJobs = new Map<string, HistoricalReclaimJob>();
-const historicalReclaimJobsByFs = new WeakMap<object, HistoricalReclaimJob>();
-/** Process-wide: refuse new historical work during Service stop. */
-let historicalReclaimAccepting = true;
-
-function deleteHistoricalReclaimJob(job: HistoricalReclaimJob): void {
-  if (historicalReclaimJobs.get(job.workspaceId) === job) {
-    historicalReclaimJobs.delete(job.workspaceId);
-  }
-  if (historicalReclaimJobsByFs.get(job.fsKey) === job) {
-    historicalReclaimJobsByFs.delete(job.fsKey);
-  }
-}
-
-/**
- * Test-only: hold the first historical batch until released so mount can return
- * while background work is still scheduled (proves non-blocking startup).
- */
-let historicalReclaimBatchHoldForTests:
-  | { promise: Promise<void>; release: () => void }
-  | undefined;
-
-/** Install/clear a gate that holds historical batch work (tests only). */
-export function setHistoricalReclaimBatchHoldForTests(
-  enabled: boolean
-): { release: () => void } | undefined {
-  if (!enabled) {
-    historicalReclaimBatchHoldForTests?.release();
-    historicalReclaimBatchHoldForTests = undefined;
-    return undefined;
-  }
-  let release!: () => void;
-  const promise = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  historicalReclaimBatchHoldForTests = { promise, release };
-  return { release };
-}
-
-/** Test helper: re-enable historical accept after in-process stop. */
-export function enableHistoricalTaskWorktreeReclaimAccept(): void {
-  historicalReclaimAccepting = true;
-}
-
-/**
- * Stop scheduling new historical batches (call before runtime teardown).
- * In-flight batches still run until drained or cancelled per workspace.
- */
-export function stopHistoricalTaskWorktreeReclaimAccept(): void {
-  historicalReclaimAccepting = false;
-  for (const job of historicalReclaimJobs.values()) {
-    job.cancelled = true;
-    if (job.timer !== null) {
-      clearTimeout(job.timer as ReturnType<typeof setTimeout>);
-      clearImmediate(job.timer as ReturnType<typeof setImmediate>);
-      job.timer = null;
-    }
-  }
-}
-
-/**
- * Cancel + bounded-drain historical reclaim for one workspace (unmount).
- * Waits for inflight batch to settle (or timeout) before returning.
- * Teardown callers must not dispose fs while inflight is still running.
- */
-export async function cancelAndDrainHistoricalTaskWorktreeReclaim(
-  workspaceId: string,
-  timeoutMs = 5_000
-): Promise<void> {
-  const job = historicalReclaimJobs.get(workspaceId);
-  if (!job) return;
-  job.cancelled = true;
-  if (job.timer !== null) {
-    clearTimeout(job.timer as ReturnType<typeof setTimeout>);
-    clearImmediate(job.timer as ReturnType<typeof setImmediate>);
-    job.timer = null;
-  }
-  const inflight = job.inflight;
-  if (!inflight) {
-    deleteHistoricalReclaimJob(job);
-    return;
-  }
-  const bound =
-    typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs >= 0
-      ? timeoutMs
-      : 5_000;
-  if (bound === 0) {
-    await inflight;
-    return;
-  }
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      inflight,
-      new Promise<void>((_resolve, reject) => {
-        timer = setTimeout(
-          () =>
-            reject(
-              new Error(
-                `Historical Task worktree reclaim drain timed out for ${workspaceId}`
-              )
-            ),
-          bound
-        );
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-  deleteHistoricalReclaimJob(job);
-}
-
-/**
- * Cancel all historical jobs and drain in-flight batches (Service shutdown).
- */
-export async function drainHistoricalTaskWorktreeReclaimForShutdown(
-  timeoutMs = 5_000
-): Promise<void> {
-  stopHistoricalTaskWorktreeReclaimAccept();
-  const ids = [...historicalReclaimJobs.keys()];
-  const results = await Promise.allSettled(
-    ids.map((id) => cancelAndDrainHistoricalTaskWorktreeReclaim(id, timeoutMs))
-  );
-  const rejected = results.find(
-    (result): result is PromiseRejectedResult => result.status === "rejected"
-  );
-  if (rejected) throw rejected.reason;
-}
-
-/**
- * After mount returns: schedule Service-owned bounded historical batches until
- * the one inventory pass completes. Does not block workspace.mount.
- */
-export function scheduleHistoricalTaskWorktreeReclaimAfterMount(
-  ctx: HandlerContext,
-  workspaceId: string
-): void {
-  if (!historicalReclaimAccepting) return;
-  const mount = ctx.host.get(workspaceId);
-  if (!mount) return;
-  const fsKey = mount.env.fs as object;
-  // Duplicate mounts must share the exact mounted FsAdapter runner. Never
-  // replace a live job without draining it first.
-  const byFs = historicalReclaimJobsByFs.get(fsKey);
-  // A cancelled runner still owns this FsAdapter until its in-flight batch
-  // settles and deleteHistoricalReclaimJob releases the lease.
-  if (byFs) return;
-  const byWorkspace = historicalReclaimJobs.get(workspaceId);
-  if (byWorkspace) return;
-  const job: HistoricalReclaimJob = {
-    workspaceId,
-    fsKey,
-    cancelled: false,
-    phase: "pending",
-    pendingAttemptedTaskIds: new Set<string>(),
-    inflight: null,
-    timer: null,
-  };
-  historicalReclaimJobs.set(workspaceId, job);
-  historicalReclaimJobsByFs.set(fsKey, job);
-  enqueueHistoricalReclaimBatchTick(ctx, job);
-}
-
-function enqueueHistoricalReclaimBatchTick(
-  ctx: HandlerContext,
-  job: HistoricalReclaimJob
-): void {
-  if (job.cancelled || !historicalReclaimAccepting) return;
-  if (job.timer !== null) return;
-  job.timer = setImmediate(() => {
-    job.timer = null;
-    if (job.cancelled || !historicalReclaimAccepting) return;
-    const run = runOneHistoricalReclaimJobBatch(ctx, job)
-      .then((cont) => {
-        if (job.cancelled || !historicalReclaimAccepting) return;
-        if (cont) enqueueHistoricalReclaimBatchTick(ctx, job);
-        else deleteHistoricalReclaimJob(job);
-      })
-      .catch(() => {
-        // Fail-closed: drop job; corrupt/incomplete scan stays incomplete on disk.
-        deleteHistoricalReclaimJob(job);
-      })
-      .finally(() => {
-        if (job.inflight === run) job.inflight = null;
-        if (job.cancelled) deleteHistoricalReclaimJob(job);
-      });
-    job.inflight = run;
-  });
-}
-
-async function runOneHistoricalReclaimJobBatch(
-  ctx: HandlerContext,
-  job: HistoricalReclaimJob
-): Promise<boolean> {
-  if (job.cancelled || !historicalReclaimAccepting) return false;
-  if (job.phase === "pending") {
-    const morePending = await recoverTerminalTaskWorktreeBatch(
-      ctx,
-      job.workspaceId,
-      job.pendingAttemptedTaskIds,
-      () => job.cancelled || !historicalReclaimAccepting
-    );
-    if (morePending) return true;
-    job.phase = "historical";
-    return true;
-  }
-  return runOneHistoricalTaskWorktreeReclaimBatch(
-    ctx,
-    job.workspaceId,
-    () => job.cancelled || !historicalReclaimAccepting
-  );
-}
-
-/**
- * One bounded historical scan batch: discover envelope paths after cursor,
- * enqueue eligible terminal agentProfile candidates, advance cursor atomically,
- * attempt maybeAutoReclaim once per newly enqueued candidate (no spin on refuse).
- * @returns true when another batch should be scheduled.
- */
-export async function runOneHistoricalTaskWorktreeReclaimBatch(
-  ctx: HandlerContext,
-  workspaceId: string,
-  shouldStop: () => boolean = () => false
-): Promise<boolean> {
-  if (historicalReclaimBatchHoldForTests) {
-    await historicalReclaimBatchHoldForTests.promise;
-  }
-  if (shouldStop()) return false;
-  const mount = ctx.host.get(workspaceId);
-  if (!mount) return false;
-  if (!(await isGitWorkspace(mount.workspaceRoot))) {
-    // Nothing to reclaim; mark complete so we do not reschedule forever.
-    try {
-      await persistHistoricalReclaimScanBatch(mount.env.fs, {
-        workspaceRoot: mount.workspaceRoot,
-        examinedTaskPaths: [],
-        newCandidates: [],
-        scanComplete: true,
-      });
-    } catch {
-      // ignore
-    }
-    return false;
-  }
-
-  const scan = await readTaskWorktreeReclaimHistoricalScan(mount.env.fs);
-  if (scan?.complete === true) return false;
-
-  const allPaths = await listTaskEnvelopePathsForReclaimScan(mount.env.fs);
-  if (shouldStop()) return false;
-  const remaining = taskPathsAfterHistoricalCursor(allPaths, scan?.nextTaskPath);
-  if (remaining.length === 0) {
-    await persistHistoricalReclaimScanBatch(mount.env.fs, {
-      workspaceRoot: mount.workspaceRoot,
-      examinedTaskPaths: [],
-      newCandidates: [],
-      scanComplete: true,
-    });
-    return false;
-  }
-
-  const batchSize = TASK_WORKTREE_RECLAIM_HISTORICAL_BATCH_SIZE;
-  const examined = remaining.slice(0, batchSize);
-  const newCandidates: Array<{
-    taskId: string;
-    taskPath: string;
-    workspaceRoot: string;
-    enqueuedAt?: string;
-    trigger?: string;
-  }> = [];
-  const decisions: TaskWorktreeReclaimScanDecision[] = [];
-  let blocked = false;
-  let blockedDiagnostic:
-    | { taskPath: string; reason: string; attemptedAt: string }
-    | undefined;
-
-  for (const taskPath of examined) {
-    if (shouldStop()) return false;
-    let task: TaskEnvelope;
-    try {
-      task = await loadTaskEnvelope(mount.env.fs, taskPath);
-    } catch (error) {
-      blockedDiagnostic = {
-        taskPath,
-        reason: `Historical scan could not read Task envelope: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-        attemptedAt: mount.env.clock.now(),
-      };
-      blocked = true;
-      break;
-    }
-    if (!isHistoricalReclaimScanCandidate(task, mount.workspaceRoot)) {
-      decisions.push({
-        taskPath,
-        code: "NOT_APPLICABLE",
-        reason:
-          "Task is not a terminal agentProfile lane with exact recorded worktree ownership",
-        attemptedAt: mount.env.clock.now(),
-      });
-      continue;
-    }
-    const taskId = task.id!.trim();
-    newCandidates.push({
-      taskId,
-      taskPath: task.path,
-      workspaceRoot: mount.workspaceRoot,
-      enqueuedAt: mount.env.clock.now(),
-      trigger: "historical.scan",
-    });
-  }
-
-  const persistExamined = blocked
-    ? examined.slice(0, newCandidates.length + decisions.length)
-    : examined;
-  if (persistExamined.length === 0 && blocked) {
-    await recordHistoricalReclaimScanDiagnostic(mount.env.fs, {
-      workspaceRoot: mount.workspaceRoot,
-      taskPath: blockedDiagnostic!.taskPath,
-      code: "UNREADABLE_TASK",
-      reason: blockedDiagnostic!.reason,
-      attemptedAt: blockedDiagnostic!.attemptedAt,
-    });
-    return false;
-  }
-  const scanComplete = !blocked && examined.length >= remaining.length;
-  const persisted = await persistHistoricalReclaimScanBatch(mount.env.fs, {
-    workspaceRoot: mount.workspaceRoot,
-    examinedTaskPaths: persistExamined,
-    newCandidates,
-    decisions,
-    scanComplete,
-  });
-  if (blockedDiagnostic) {
-    await recordHistoricalReclaimScanDiagnostic(mount.env.fs, {
-      workspaceRoot: mount.workspaceRoot,
-      taskPath: blockedDiagnostic.taskPath,
-      code: "UNREADABLE_TASK",
-      reason: blockedDiagnostic.reason,
-      attemptedAt: blockedDiagnostic.attemptedAt,
-    });
-  }
-
-  // Attempt reclaim once for candidates this batch enqueued (or refreshed pending).
-  // Refused → needs-attention via maybeAutoReclaim; do not re-loop them here.
-  for (const c of persisted.enqueued) {
-    if (!historicalReclaimAccepting || shouldStop()) break;
-    if (!ctx.host.get(workspaceId)) break;
-    let task: TaskEnvelope;
-    try {
-      task = await loadTaskEnvelope(mount.env.fs, c.taskPath);
-    } catch {
-      continue;
-    }
-    await maybeAutoReclaimTaskWorktree(
-      ctx,
-      workspaceId,
-      task,
-      "historical.scan"
-    );
-  }
-
-  if (blocked) return false;
-  return !persisted.historicalScan.complete;
-}
-
-/**
- * True when a loaded envelope is a historical cleanup candidate:
- * terminal agentProfile Task with recorded exact worktree/branch.
- * Role lanes and nonterminal/missing/ambiguous shapes are never enqueued.
- */
-export function isHistoricalReclaimScanCandidate(
-  task: TaskEnvelope,
-  workspaceRoot: string
-): boolean {
-  if (!isTaskScopedWorktreeLane(task)) return false;
-  if (!isTaskWorktreeReclaimTerminalState(task.state)) return false;
-  const taskId = task.id?.trim();
-  if (!taskId) return false;
-  if (!task.path?.trim()) return false;
-  const worktree = task.worktree?.trim();
-  const branch = task.branch?.trim();
-  // Exact recorded lane required — missing either shape is ambiguous / not a candidate.
-  if (!worktree || !branch) return false;
-  if (branch.startsWith("tent-role/")) return false;
-  if (task.workspace?.trim()) {
-    try {
-      if (
-        !isSameWorkspaceRoot(
-          nodePath.resolve(task.workspace),
-          nodePath.resolve(workspaceRoot)
-        )
-      ) {
-        return false;
-      }
-    } catch {
-      return false;
-    }
-  }
-  return true;
-}
-
-/** Test helper: clear process-local historical job bookkeeping. */
-export function resetHistoricalTaskWorktreeReclaimForTests(): void {
-  historicalReclaimAccepting = true;
-  for (const job of [...historicalReclaimJobs.values()]) {
-    job.cancelled = true;
-    if (job.timer !== null) {
-      clearTimeout(job.timer as ReturnType<typeof setTimeout>);
-      clearImmediate(job.timer as ReturnType<typeof setImmediate>);
-      job.timer = null;
-    }
-    deleteHistoricalReclaimJob(job);
-  }
-  historicalReclaimBatchHoldForTests?.release();
-  historicalReclaimBatchHoldForTests = undefined;
-}
-
-/** Test helper: process-local runner count (one per mounted FsAdapter). */
-export function historicalTaskWorktreeReclaimJobCountForTests(): number {
-  return historicalReclaimJobs.size;
-}
-
-/** Test helper: whether a workspace runner currently owns an in-flight batch. */
-export function historicalTaskWorktreeReclaimInFlightForTests(
-  workspaceId: string
-): boolean {
-  return historicalReclaimJobs.get(workspaceId)?.inflight !== null &&
-    historicalReclaimJobs.get(workspaceId)?.inflight !== undefined;
 }
 
 /**
@@ -11916,7 +11385,7 @@ async function tryManagedAutoDeliver(
           }
         }
       } catch {
-        // Best-effort; pending queue + mount recovery retry.
+        // Best-effort; pending queue + explicit exact-task reconcile remain.
       }
     }
   } catch (err) {

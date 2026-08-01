@@ -1,5 +1,5 @@
 /**
- * Service: terminal Task worktree auto-reclaim + mount recovery + preview RPC.
+ * Service: terminal Task worktree auto-reclaim + exact preview/reconcile RPC.
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -9,10 +9,6 @@ import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
-import {
-  acquireServiceDataDirLease,
-  ServiceDataDirBusyError,
-} from "../src/service/service-lease.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { CLIENT_METHODS, isClientMethod } from "../src/service/types.js";
 import { ensureRoleWorkspace, ensureTaskWorkspace } from "../src/core/workspace.js";
@@ -21,35 +17,12 @@ import { createDelivery } from "../src/core/delivery.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
 import { FAKE_DEFAULT_PROFILE_ID, defaultAgentProfiles } from "../src/service/profiles.js";
 import {
-  cancelAndDrainHistoricalTaskWorktreeReclaim,
-  historicalTaskWorktreeReclaimJobCountForTests,
-  historicalTaskWorktreeReclaimInFlightForTests,
-  isHistoricalReclaimScanCandidate,
-  recoverTerminalTaskWorktreesOnMount,
-  resetHistoricalTaskWorktreeReclaimForTests,
-  runOneHistoricalTaskWorktreeReclaimBatch,
-  scheduleHistoricalTaskWorktreeReclaimAfterMount,
   setBeforeTaskWorktreeReclaimRemoveForTests,
-  setBeforeTaskWorktreeReclaimReloadForTests,
-  setHistoricalReclaimBatchHoldForTests,
 } from "../src/service/handlers.js";
 import {
-  TASK_WORKTREE_RECLAIM_HISTORICAL_BATCH_SIZE,
-  readTaskWorktreeReclaimHistoricalScan,
   listTaskWorktreeReclaimPending,
-  replaceTaskWorktreeReclaimQueueForTests,
 } from "../src/core/task-worktree-reclaim-queue.js";
 import type { TaskEnvelope } from "../src/core/task.js";
-
-async function stopHeldAutomaticHistoricalRunner(
-  workspaceId: string,
-  hold: { release: () => void }
-): Promise<void> {
-  const drain = cancelAndDrainHistoricalTaskWorktreeReclaim(workspaceId, 0);
-  hold.release();
-  await drain;
-  setHistoricalReclaimBatchHoldForTests(false);
-}
 
 async function makeGitTentWorkspace(name = "reclaim-svc"): Promise<string> {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-svc-"));
@@ -122,22 +95,11 @@ async function pathExists(target: string): Promise<boolean> {
   }
 }
 
-async function waitForCondition(
-  predicate: () => boolean | Promise<boolean>,
-  timeoutMs = 5_000
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!(await predicate())) {
-    if (Date.now() >= deadline) {
-      throw new Error("Timed out waiting for test condition");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-}
-
-test("CLIENT_METHODS includes task.worktreeReclaim.preview", () => {
+test("CLIENT_METHODS includes exact Task worktree preview and reconcile", () => {
   assert.ok(isClientMethod("task.worktreeReclaim.preview"));
   assert.ok(CLIENT_METHODS.includes("task.worktreeReclaim.preview"));
+  assert.ok(isClientMethod("task.worktreeReclaim.reconcile"));
+  assert.ok(CLIENT_METHODS.includes("task.worktreeReclaim.reconcile"));
 });
 
 test("P0: terminal reject auto-reclaims clean profile Task worktree", async () => {
@@ -244,7 +206,7 @@ test("P0: terminal reject auto-reclaims clean profile Task worktree", async () =
   });
 });
 
-test("P0: dirty terminal lane fails closed; pending queue + mount recovery after clean", async () => {
+test("P0: dirty terminal lane fails closed; exact reconcile reclaims after clean", async () => {
   const ws = await makeGitTentWorkspace();
   const systemRoot = path.join(ws, ".tent");
   const sysFs = new NodeFs(systemRoot);
@@ -299,9 +261,8 @@ test("P0: dirty terminal lane fails closed; pending queue + mount recovery after
     assert.ok(!mounted.error, JSON.stringify(mounted.error));
     const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
 
-    // Historical terminal without pending marker: mount must NOT mass-clean.
-    const beforePending = await recoverTerminalTaskWorktreesOnMount(svc.ctx, workspaceId);
-    assert.equal(beforePending.attempted, 0, "no pending → no historical mass-clean");
+    // Mount never scans historical inventory or mutates this lane.
+    assert.equal((await listTaskWorktreeReclaimPending(sysFs)).length, 0);
     assert.equal(await pathExists(lane.worktree), true);
 
     // Terminal reject enqueues pending even when dirty (fail-closed keep scene).
@@ -322,23 +283,32 @@ test("P0: dirty terminal lane fails closed; pending queue + mount recovery after
     assert.ok(!previewRes.error, JSON.stringify(previewRes.error));
     assert.equal((previewRes.result as { code: string }).code, "DIRTY");
 
-    // Clean outside service, then recovery retries ONLY pending entries.
+    // Clean outside service, then explicitly reconcile this exact Task only.
     await fs.unlink(path.join(lane.worktree, "UNCOMMITTED.txt"));
     assert.equal((await git(lane.worktree, "status", "--porcelain")).trim(), "");
 
-    const stats = await recoverTerminalTaskWorktreesOnMount(svc.ctx, workspaceId);
-    assert.ok(stats.attempted >= 1);
-    assert.ok(stats.reclaimed >= 1);
+    const reconciled = await rpc(svc, "task.worktreeReclaim.reconcile", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+    });
+    assert.ok(!reconciled.error, JSON.stringify(reconciled.error));
+    assert.equal((reconciled.result as { reclaimed: boolean }).reclaimed, true);
     assert.equal(await pathExists(lane.worktree), false);
 
-    // Second recovery: pending cleared → attempted 0 (or already-gone dequeue).
-    const again = await recoverTerminalTaskWorktreesOnMount(svc.ctx, workspaceId);
+    // Exact reconcile is idempotent after the lane is gone.
+    const again = await rpc(svc, "task.worktreeReclaim.reconcile", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+    });
+    assert.ok(!again.error, JSON.stringify(again.error));
+    assert.equal((again.result as { code: string }).code, "ALREADY_GONE");
     assert.equal(await pathExists(lane.worktree), false);
-    assert.ok(again.attempted === 0 || again.reclaimed >= 0);
   });
 });
 
-test("P0: mount recovery ignores historical terminal without pending marker", async () => {
+test("P0: workspace.mount does not discover or reclaim historical terminal lanes", async () => {
   const ws = await makeGitTentWorkspace("reclaim-hist");
   const systemRoot = path.join(ws, ".tent");
   const sysFs = new NodeFs(systemRoot);
@@ -373,9 +343,7 @@ test("P0: mount recovery ignores historical terminal without pending marker", as
     const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
     assert.ok(!mounted.error, JSON.stringify(mounted.error));
     const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
-    const stats = await recoverTerminalTaskWorktreesOnMount(svc.ctx, workspaceId);
-    assert.equal(stats.attempted, 0);
-    assert.equal(stats.reclaimed, 0);
+    assert.equal((await listTaskWorktreeReclaimPending(sysFs)).length, 0);
     assert.equal(await pathExists(lane.worktree), true, "historical inventory untouched");
   });
 });
@@ -450,9 +418,13 @@ test("P0: SESSION_ACTIVE when bound managed session still live", async () => {
       trigger: "test.session-active",
     });
 
-    const stats = await recoverTerminalTaskWorktreesOnMount(svc.ctx, workspaceId);
-    assert.ok(stats.attempted >= 1);
-    assert.ok(stats.refused >= 1);
+    const blocked = await rpc(svc, "task.worktreeReclaim.reconcile", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+    });
+    assert.ok(!blocked.error, JSON.stringify(blocked.error));
+    assert.equal((blocked.result as { code: string }).code, "SESSION_ACTIVE");
     assert.equal(await pathExists(lane.worktree), true, "live session must block reclaim");
 
     // After stop, settle gate passes and reclaim succeeds.
@@ -477,11 +449,16 @@ test("P0: SESSION_ACTIVE when bound managed session still live", async () => {
       workspaceRoot: ws,
       trigger: "test.after-stop",
     });
-    const cleaned = await recoverTerminalTaskWorktreesOnMount(svc.ctx, workspaceId);
+    const cleaned = await rpc(svc, "task.worktreeReclaim.reconcile", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+    });
+    assert.ok(!cleaned.error, JSON.stringify(cleaned.error));
     assert.equal(
       await pathExists(lane.worktree),
       false,
-      `worktree must reclaim after session stop (stats=${JSON.stringify(cleaned)})`
+      `worktree must reclaim after session stop (result=${JSON.stringify(cleaned.result)})`
     );
   });
 });
@@ -574,9 +551,6 @@ test("P0: accepted-while-external queues; session.leave reclaims exact Task only
       await import("../src/core/task-worktree-reclaim-queue.js");
 
     // Simulate terminal accept while external still open → SESSION_ACTIVE queue.
-    const { recoverTerminalTaskWorktreesOnMount: recover } = await import(
-      "../src/service/handlers.js"
-    );
     await enqueueTaskWorktreeReclaimPending(sysFs, {
       taskId: targetId,
       taskPath: targetPath,
@@ -594,8 +568,13 @@ test("P0: accepted-while-external queues; session.leave reclaims exact Task only
     await fs.writeFile(path.join(otherLane.worktree, "KEEP.txt"), "other\n");
 
     // While external is open, target reclaim must refuse and keep the lane.
-    const blocked = await recover(svc.ctx, workspaceId);
-    assert.ok(blocked.attempted >= 1, `expected pending attempts, got ${JSON.stringify(blocked)}`);
+    const blocked = await rpc(svc, "task.worktreeReclaim.reconcile", {
+      workspaceId,
+      taskPath: targetPath,
+      actor: "user",
+    });
+    assert.ok(!blocked.error, JSON.stringify(blocked.error));
+    assert.equal((blocked.result as { code: string }).code, "SESSION_ACTIVE");
     assert.equal(
       await pathExists(targetLane.worktree),
       true,
@@ -659,7 +638,7 @@ test("P0: role worktree never reclaimed on terminal role task", async () => {
     const boxPath = inboxBox?.path ?? "inbox";
 
     const taskPath = await writeTaskEnvelope(sysFs, clock, {
-      parentActor: { kind: "user", id: "user" },
+      parentActor: { kind: "role", id: "规划" },
       role: "executor",
       claims: [{ id: boxId, path: boxPath }],
       manifestPath: "temp/executor/manifests/m.yml",
@@ -689,8 +668,27 @@ test("P0: role worktree never reclaimed on terminal role task", async () => {
     assert.equal(preview.eligible, false);
     assert.equal(await pathExists(roleLane.worktree), true);
 
-    await recoverTerminalTaskWorktreesOnMount(svc.ctx, workspaceId);
-    assert.equal(await pathExists(roleLane.worktree), true, "role lane must survive recovery");
+    const omitted = await rpc(svc, "task.worktreeReclaim.reconcile", {
+      workspaceId,
+      taskPath,
+    });
+    assert.ok(omitted.error, "mutation must not default an omitted actor to user");
+
+    const unauthorized = await rpc(svc, "task.worktreeReclaim.reconcile", {
+      workspaceId,
+      taskPath,
+      actor: "intruder",
+    });
+    assert.ok(unauthorized.error, "non-parent Role must not gain reconcile authority");
+
+    const reconcile = await rpc(svc, "task.worktreeReclaim.reconcile", {
+      workspaceId,
+      taskPath,
+      actor: "规划",
+    });
+    assert.ok(!reconcile.error, JSON.stringify(reconcile.error));
+    assert.equal((reconcile.result as { code: string }).code, "NOT_APPLICABLE");
+    assert.equal(await pathExists(roleLane.worktree), true, "role lane must survive reconcile");
   });
 });
 
@@ -771,9 +769,13 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
       trigger: "test.terminal-busy-late-write",
     });
 
-    const blockedBusy = await recoverTerminalTaskWorktreesOnMount(svc.ctx, workspaceId);
-    assert.ok(blockedBusy.attempted >= 1);
-    assert.ok(blockedBusy.refused >= 1);
+    const blockedBusy = await rpc(svc, "task.worktreeReclaim.reconcile", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+    });
+    assert.ok(!blockedBusy.error, JSON.stringify(blockedBusy.error));
+    assert.equal((blockedBusy.result as { code: string }).code, "SESSION_ACTIVE");
     assert.equal(
       await pathExists(lane.worktree),
       true,
@@ -811,8 +813,12 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
         workspaceRoot: ws,
         trigger: "test.after-session-settle-critical-dirty",
       });
-      const blockedDirty = await recoverTerminalTaskWorktreesOnMount(svc.ctx, workspaceId);
-      assert.ok(blockedDirty.attempted >= 1);
+      const blockedDirty = await rpc(svc, "task.worktreeReclaim.reconcile", {
+        workspaceId,
+        taskPath,
+        actor: "user",
+      });
+      assert.ok(!blockedDirty.error, JSON.stringify(blockedDirty.error));
       assert.equal(
         await pathExists(lane.worktree),
         true,
@@ -840,11 +846,16 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
       workspaceRoot: ws,
       trigger: "test.after-clean-settle",
     });
-    const cleaned = await recoverTerminalTaskWorktreesOnMount(svc.ctx, workspaceId);
+    const cleaned = await rpc(svc, "task.worktreeReclaim.reconcile", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+    });
+    assert.ok(!cleaned.error, JSON.stringify(cleaned.error));
     assert.equal(
       await pathExists(lane.worktree),
       false,
-      `reclaim only after session settle + clean (stats=${JSON.stringify(cleaned)})`
+      `reclaim only after session settle + clean (result=${JSON.stringify(cleaned.result)})`
     );
     // Branch + late commit preserved for audit (exact remove only).
     const branchExists = await git(ws, "show-ref", "--verify", `refs/heads/${lane.branch}`)
@@ -853,717 +864,5 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
     assert.equal(branchExists, true, "Task branch and commits preserved after reclaim");
     const tipMsg = await git(ws, "log", "-1", "--format=%s", lane.branch);
     assert.match(tipMsg, /late post-terminal commit/);
-  });
-});
-
-test("P0: historical candidate filter excludes Role / nonterminal / incomplete lanes", () => {
-  const base = {
-    path: "temp/agent-profiles/fake/tasks/t.md",
-    id: "tk-x",
-    role: "fake",
-    status: "taken" as const,
-    state: "accepted" as const,
-    assigneeKind: "agentProfile" as const,
-    worktree: "C:\\ws-worktrees\\task-tk-x",
-    branch: "tent-task/tk-x",
-    workspace: "C:\\ws",
-  };
-  assert.equal(
-    isHistoricalReclaimScanCandidate(base as TaskEnvelope, "C:\\ws"),
-    true
-  );
-  assert.equal(
-    isHistoricalReclaimScanCandidate(
-      { ...base, assigneeKind: "role", branch: "tent-role/executor" } as TaskEnvelope,
-      "C:\\ws"
-    ),
-    false,
-    "Role lanes never enqueued"
-  );
-  assert.equal(
-    isHistoricalReclaimScanCandidate(
-      { ...base, state: "running" } as TaskEnvelope,
-      "C:\\ws"
-    ),
-    false,
-    "nonterminal never enqueued"
-  );
-  assert.equal(
-    isHistoricalReclaimScanCandidate(
-      { ...base, worktree: undefined } as TaskEnvelope,
-      "C:\\ws"
-    ),
-    false,
-    "missing worktree never enqueued"
-  );
-  assert.equal(
-    isHistoricalReclaimScanCandidate(
-      { ...base, branch: undefined } as TaskEnvelope,
-      "C:\\ws"
-    ),
-    false,
-    "missing branch never enqueued"
-  );
-  assert.equal(
-    isHistoricalReclaimScanCandidate(
-      { ...base, branch: "tent-role/executor" } as TaskEnvelope,
-      "C:\\ws"
-    ),
-    false,
-    "tent-role branch never enqueued"
-  );
-});
-
-test("P0: workspace.mount returns before held historical background batch", async () => {
-  resetHistoricalTaskWorktreeReclaimForTests();
-  const ws = await makeGitTentWorkspace("reclaim-hist-nonblock");
-  const hold = setHistoricalReclaimBatchHoldForTests(true);
-  assert.ok(hold);
-  try {
-    await withService(async (svc) => {
-      const t0 = Date.now();
-      const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
-      const elapsed = Date.now() - t0;
-      assert.ok(!mounted.error, JSON.stringify(mounted.error));
-      // Mount must not await the held background batch (would hang until release).
-      assert.ok(
-        elapsed < 3_000,
-        `mount must return while historical batch is held (elapsed=${elapsed}ms)`
-      );
-      hold!.release();
-      // Allow the scheduled tick to finish so stop() can drain cleanly.
-      await new Promise((r) => setTimeout(r, 50));
-    });
-  } finally {
-    hold?.release();
-    resetHistoricalTaskWorktreeReclaimForTests();
-  }
-});
-
-test("P0: one runner owns an FsAdapter until bounded drain settles", async () => {
-  resetHistoricalTaskWorktreeReclaimForTests();
-  const ws = await makeGitTentWorkspace("reclaim-runner-drain");
-  const hold = setHistoricalReclaimBatchHoldForTests(true);
-  try {
-    await withService(async (svc) => {
-      const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
-      assert.ok(!mounted.error, JSON.stringify(mounted.error));
-      const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
-      assert.equal(historicalTaskWorktreeReclaimJobCountForTests(), 1);
-
-      scheduleHistoricalTaskWorktreeReclaimAfterMount(svc.ctx, workspaceId);
-      assert.equal(
-        historicalTaskWorktreeReclaimJobCountForTests(),
-        1,
-        "duplicate mount scheduling must not create another runner"
-      );
-
-      await assert.rejects(
-        () => cancelAndDrainHistoricalTaskWorktreeReclaim(workspaceId, 10),
-        /drain timed out/
-      );
-      assert.equal(
-        historicalTaskWorktreeReclaimJobCountForTests(),
-        1,
-        "timed-out drain retains the FsAdapter lease"
-      );
-      scheduleHistoricalTaskWorktreeReclaimAfterMount(svc.ctx, workspaceId);
-      assert.equal(
-        historicalTaskWorktreeReclaimJobCountForTests(),
-        1,
-        "cancelled in-flight runner cannot be replaced before settle"
-      );
-
-      hold!.release();
-      await cancelAndDrainHistoricalTaskWorktreeReclaim(workspaceId, 0);
-      setHistoricalReclaimBatchHoldForTests(false);
-      assert.equal(historicalTaskWorktreeReclaimJobCountForTests(), 0);
-    });
-  } finally {
-    hold?.release();
-    resetHistoricalTaskWorktreeReclaimForTests();
-  }
-});
-
-test("P0: Service retains sole-writer lease when historical drain times out", async () => {
-  resetHistoricalTaskWorktreeReclaimForTests();
-  const ws = await makeGitTentWorkspace("reclaim-service-lease");
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-lease-"));
-  const hold = setHistoricalReclaimBatchHoldForTests(true);
-  const svc = await startLocalTentService({
-    dataDir,
-    writeEndpoint: true,
-    profiles: defaultAgentProfiles(),
-    historicalReclaimDrainTimeoutMs: 20,
-  });
-  let workspaceId = "";
-  try {
-    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
-    assert.ok(!mounted.error, JSON.stringify(mounted.error));
-    workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
-    await waitForCondition(() =>
-      historicalTaskWorktreeReclaimInFlightForTests(workspaceId)
-    );
-
-    await assert.rejects(() => svc.stop(), /drain timed out/);
-    await assert.rejects(
-      () => acquireServiceDataDirLease(dataDir),
-      ServiceDataDirBusyError,
-      "a second Service must not acquire the dataDir while the timed-out runner owns FsAdapter"
-    );
-  } finally {
-    hold?.release();
-    if (workspaceId) {
-      await cancelAndDrainHistoricalTaskWorktreeReclaim(workspaceId, 0);
-    }
-    setHistoricalReclaimBatchHoldForTests(false);
-    await svc.hostApi.dispose();
-    resetHistoricalTaskWorktreeReclaimForTests();
-    await fs.rm(dataDir, { recursive: true, force: true });
-  }
-});
-
-test("P1: exact envelope reload failure keeps lane and pending diagnostic", async () => {
-  resetHistoricalTaskWorktreeReclaimForTests();
-  const ws = await makeGitTentWorkspace("reclaim-reload-fail");
-  const systemRoot = path.join(ws, ".tent");
-  const sysFs = new NodeFs(systemRoot);
-  const clock = { now: () => new Date().toISOString() };
-  const tent = await import("../src/core/tree.js").then((m) => m.loadTent(sysFs));
-  const inbox = [...tent.byId.values()][0];
-  const taskId = "tk-reload-unreadable";
-  const lane = await ensureTaskWorkspace(ws, taskId);
-  const taskPath = await writeTaskEnvelope(sysFs, clock, {
-    parentActor: { kind: "user", id: "user" },
-    role: FAKE_DEFAULT_PROFILE_ID,
-    claims: [{ id: inbox?.id ?? "bx-1", path: inbox?.path ?? "inbox" }],
-    manifestPath: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/manifests/${taskId}.yml`,
-    userPrompt: "reload must fail closed",
-    id: taskId,
-    assigneeKind: "agentProfile",
-    tasksDir: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/tasks`,
-    workspace: {
-      workspace: lane.workspace,
-      worktree: lane.worktree,
-      branch: lane.branch,
-      targetBranch: lane.targetBranch,
-    },
-  });
-  await patchTaskEnvelope(sysFs, taskPath, {
-    state: "rejected",
-    status: "taken",
-    updatedAt: clock.now(),
-  });
-
-  await withService(async (svc) => {
-    const hold = setHistoricalReclaimBatchHoldForTests(true);
-    let removeCalls = 0;
-    try {
-      const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
-      assert.ok(!mounted.error, JSON.stringify(mounted.error));
-      const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
-      await stopHeldAutomaticHistoricalRunner(workspaceId, hold!);
-      await replaceTaskWorktreeReclaimQueueForTests(sysFs, {
-        entries: [
-          {
-            taskId,
-            taskPath,
-            workspaceRoot: ws,
-            enqueuedAt: clock.now(),
-            status: "pending",
-          },
-        ],
-        historicalScan: { complete: true, workspaceRoot: ws },
-      });
-      setBeforeTaskWorktreeReclaimRemoveForTests(() => {
-        removeCalls += 1;
-      });
-      setBeforeTaskWorktreeReclaimReloadForTests(async () => {
-        setBeforeTaskWorktreeReclaimReloadForTests(undefined);
-        await sysFs.writeFile(taskPath, "---\nid: [unterminated\n");
-      });
-
-      const stats = await recoverTerminalTaskWorktreesOnMount(
-        svc.ctx,
-        workspaceId
-      );
-      assert.equal(stats.reclaimed, 0);
-      assert.equal(stats.refused, 1);
-      assert.equal(removeCalls, 0, "unreadable exact envelope never reaches remover");
-      assert.equal(await pathExists(lane.worktree), true);
-      const row = (await listTaskWorktreeReclaimPending(sysFs)).find(
-        (entry) => entry.taskId === taskId
-      );
-      assert.equal(row?.status, "needs-attention");
-      assert.equal(row?.lastDiagnostic?.code, "UNREADABLE_TASK");
-    } finally {
-      setBeforeTaskWorktreeReclaimReloadForTests(undefined);
-      setBeforeTaskWorktreeReclaimRemoveForTests(undefined);
-      hold?.release();
-      resetHistoricalTaskWorktreeReclaimForTests();
-    }
-  });
-});
-
-test("P1: pending runner retains missing and unreadable Task diagnostics", async () => {
-  resetHistoricalTaskWorktreeReclaimForTests();
-  const ws = await makeGitTentWorkspace("reclaim-pending-unreadable");
-  const sysFs = new NodeFs(path.join(ws, ".tent"));
-  const unreadablePath = "temp/agent-profiles/broken/tasks/unreadable.md";
-  const missingPath = "temp/agent-profiles/broken/tasks/missing.md";
-  await sysFs.writeFile(unreadablePath, "---\nid: [unterminated\n");
-
-  await withService(async (svc) => {
-    const hold = setHistoricalReclaimBatchHoldForTests(true);
-    try {
-      const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
-      assert.ok(!mounted.error, JSON.stringify(mounted.error));
-      const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
-      await stopHeldAutomaticHistoricalRunner(workspaceId, hold!);
-      await replaceTaskWorktreeReclaimQueueForTests(sysFs, {
-        entries: [
-          {
-            taskId: "tk-missing",
-            taskPath: missingPath,
-            workspaceRoot: ws,
-            enqueuedAt: new Date().toISOString(),
-            status: "pending",
-          },
-          {
-            taskId: "tk-unreadable",
-            taskPath: unreadablePath,
-            workspaceRoot: ws,
-            enqueuedAt: new Date().toISOString(),
-            status: "pending",
-          },
-        ],
-        historicalScan: { complete: true, workspaceRoot: ws },
-      });
-      scheduleHistoricalTaskWorktreeReclaimAfterMount(svc.ctx, workspaceId);
-      await waitForCondition(async () => {
-        const rows = await listTaskWorktreeReclaimPending(sysFs);
-        return rows.length === 2 && rows.every((row) => row.status === "needs-attention");
-      });
-
-      const rows = await listTaskWorktreeReclaimPending(sysFs);
-      assert.equal(
-        rows.find((row) => row.taskId === "tk-missing")?.lastDiagnostic?.code,
-        "TASK_MISSING"
-      );
-      assert.equal(
-        rows.find((row) => row.taskId === "tk-unreadable")?.lastDiagnostic?.code,
-        "UNREADABLE_TASK"
-      );
-      assert.equal(rows.length, 2, "neither diagnostic authority is dequeued");
-    } finally {
-      hold?.release();
-      resetHistoricalTaskWorktreeReclaimForTests();
-    }
-  });
-});
-
-test("P0: unreadable historical envelope records diagnostic without cursor advance", async () => {
-  resetHistoricalTaskWorktreeReclaimForTests();
-  const ws = await makeGitTentWorkspace("reclaim-unreadable");
-  const sysFs = new NodeFs(path.join(ws, ".tent"));
-  const badTaskPath = "temp/agent-profiles/broken/tasks/000-corrupt.md";
-  await sysFs.writeFile(badTaskPath, "---\nid: [unterminated\n");
-
-  await withService(async (svc) => {
-    const hold = setHistoricalReclaimBatchHoldForTests(true);
-    try {
-      const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
-      assert.ok(!mounted.error, JSON.stringify(mounted.error));
-      const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
-      await stopHeldAutomaticHistoricalRunner(workspaceId, hold!);
-      await replaceTaskWorktreeReclaimQueueForTests(sysFs, {
-        entries: [],
-        historicalScan: { complete: false },
-      });
-
-      assert.equal(
-        await runOneHistoricalTaskWorktreeReclaimBatch(svc.ctx, workspaceId),
-        false,
-        "unreadable candidate ends this boot's one-pass runner"
-      );
-      const scan = await readTaskWorktreeReclaimHistoricalScan(sysFs);
-      assert.equal(scan?.complete, false);
-      assert.equal(scan?.nextTaskPath, undefined);
-      assert.equal(scan?.lastDecision?.taskPath, badTaskPath);
-      assert.equal(scan?.lastDecision?.code, "UNREADABLE_TASK");
-      assert.deepEqual(await listTaskWorktreeReclaimPending(sysFs), []);
-    } finally {
-      hold?.release();
-      resetHistoricalTaskWorktreeReclaimForTests();
-    }
-  });
-});
-
-test("P0: historical multi-batch large inventory is deterministic and bounded", async () => {
-  resetHistoricalTaskWorktreeReclaimForTests();
-  const ws = await makeGitTentWorkspace("reclaim-hist-multi");
-  const systemRoot = path.join(ws, ".tent");
-  const sysFs = new NodeFs(systemRoot);
-  const clock = { now: () => new Date().toISOString() };
-  const tent = await import("../src/core/tree.js").then((m) => m.loadTent(sysFs));
-  const inboxBox = [...tent.byId.values()][0];
-  const boxId = inboxBox?.id ?? "bx-1";
-  const boxPath = inboxBox?.path ?? "inbox";
-  const batch = TASK_WORKTREE_RECLAIM_HISTORICAL_BATCH_SIZE;
-  const total = batch * 2 + 3;
-  const taskIds: string[] = [];
-
-  for (let i = 0; i < total; i++) {
-    const taskId = `tk-hist-batch-${String(i).padStart(3, "0")}`;
-    taskIds.push(taskId);
-    const lane = await ensureTaskWorkspace(ws, taskId);
-    // Integrate tip so accepted settle can succeed when reclaim runs.
-    const tip = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
-    await git(ws, "merge", "--ff-only", tip).catch(async () => {
-      // already on same tip
-    });
-    const taskPath = await writeTaskEnvelope(sysFs, clock, {
-      parentActor: { kind: "user", id: "user" },
-      role: FAKE_DEFAULT_PROFILE_ID,
-      claims: [{ id: boxId, path: boxPath }],
-      manifestPath: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/manifests/${taskId}.yml`,
-      userPrompt: `historical batch ${i}`,
-      id: taskId,
-      assigneeKind: "agentProfile",
-      tasksDir: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/tasks`,
-      workspace: {
-        workspace: lane.workspace,
-        worktree: lane.worktree,
-        branch: lane.branch,
-        targetBranch: lane.targetBranch,
-      },
-    });
-    await patchTaskEnvelope(sysFs, taskPath, {
-      state: "accepted",
-      status: "taken",
-      updatedAt: clock.now(),
-    });
-  }
-
-  // Role terminal with lane shape must never be enqueued by historical scan.
-  const roleLane = await ensureRoleWorkspace(ws, "executor");
-  const roleTaskPath = await writeTaskEnvelope(sysFs, clock, {
-    parentActor: { kind: "user", id: "user" },
-    role: "executor",
-    claims: [{ id: boxId, path: boxPath }],
-    manifestPath: "temp/executor/manifests/role-hist.yml",
-    userPrompt: "role durable",
-    id: "tk-role-hist",
-    assigneeKind: "role",
-    tasksDir: "temp/executor/tasks",
-    workspace: {
-      workspace: roleLane.workspace,
-      worktree: roleLane.worktree,
-      branch: roleLane.branch,
-      targetBranch: roleLane.targetBranch,
-    },
-  });
-  await patchTaskEnvelope(sysFs, roleTaskPath, {
-    state: "accepted",
-    status: "taken",
-    updatedAt: clock.now(),
-  });
-
-  await withService(async (svc) => {
-    const hold = setHistoricalReclaimBatchHoldForTests(true);
-    try {
-      const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
-      assert.ok(!mounted.error, JSON.stringify(mounted.error));
-      const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
-      await stopHeldAutomaticHistoricalRunner(workspaceId, hold!);
-      await replaceTaskWorktreeReclaimQueueForTests(sysFs, {
-        entries: [],
-        historicalScan: { complete: false },
-      });
-
-      let batches = 0;
-      let cont = true;
-      const cursors: Array<string | undefined> = [];
-      while (cont) {
-        batches += 1;
-        assert.ok(batches <= Math.ceil(total / batch) + 5, "must bound batch count");
-        cont = await runOneHistoricalTaskWorktreeReclaimBatch(svc.ctx, workspaceId);
-        const scan = await readTaskWorktreeReclaimHistoricalScan(sysFs);
-        cursors.push(scan?.nextTaskPath);
-        if (scan?.complete) break;
-      }
-      const finalScan = await readTaskWorktreeReclaimHistoricalScan(sysFs);
-      assert.equal(finalScan?.complete, true);
-      assert.ok(
-        batches >= Math.ceil(total / batch),
-        `expected multi-batch for ${total} tasks (batches=${batches}, size=${batch})`
-      );
-
-      // Role lane never enqueued.
-      const pending = await listTaskWorktreeReclaimPending(sysFs);
-      assert.ok(
-        !pending.some((e) => e.taskId === "tk-role-hist"),
-        "Role lane must not appear in reclaim queue"
-      );
-      assert.equal(await pathExists(roleLane.worktree), true, "Role worktree preserved");
-
-      // Cursor advances monotonically in path order across incomplete batches.
-      const incompleteCursors = cursors.filter((c) => c !== undefined);
-      for (let i = 1; i < incompleteCursors.length; i++) {
-        assert.ok(
-          incompleteCursors[i]!.localeCompare(incompleteCursors[i - 1]!) > 0,
-          "cursor must advance in stable taskPath order"
-        );
-      }
-
-      // Repeated run after complete: no further work.
-      const again = await runOneHistoricalTaskWorktreeReclaimBatch(svc.ctx, workspaceId);
-      assert.equal(again, false);
-    } finally {
-      hold?.release();
-      resetHistoricalTaskWorktreeReclaimForTests();
-    }
-  });
-});
-
-test("P0: historical scan restart/cursor idempotent; crash between batches does not skip", async () => {
-  resetHistoricalTaskWorktreeReclaimForTests();
-  const ws = await makeGitTentWorkspace("reclaim-hist-crash");
-  const systemRoot = path.join(ws, ".tent");
-  const sysFs = new NodeFs(systemRoot);
-  const clock = { now: () => new Date().toISOString() };
-  const tent = await import("../src/core/tree.js").then((m) => m.loadTent(sysFs));
-  const inboxBox = [...tent.byId.values()][0];
-  const boxId = inboxBox?.id ?? "bx-1";
-  const boxPath = inboxBox?.path ?? "inbox";
-  const batch = TASK_WORKTREE_RECLAIM_HISTORICAL_BATCH_SIZE;
-  const total = batch + 2;
-  const lanes = new Map<string, Awaited<ReturnType<typeof ensureTaskWorkspace>>>();
-  const taskPaths = new Map<string, string>();
-
-  for (let i = 0; i < total; i++) {
-    const taskId = `tk-crash-${String(i).padStart(2, "0")}`;
-    const lane = await ensureTaskWorkspace(ws, taskId);
-    lanes.set(taskId, lane);
-    const tip = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
-    await git(ws, "merge", "--ff-only", tip).catch(() => undefined);
-    const taskPath = await writeTaskEnvelope(sysFs, clock, {
-      parentActor: { kind: "user", id: "user" },
-      role: FAKE_DEFAULT_PROFILE_ID,
-      claims: [{ id: boxId, path: boxPath }],
-      manifestPath: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/manifests/${taskId}.yml`,
-      userPrompt: `crash ${i}`,
-      id: taskId,
-      assigneeKind: "agentProfile",
-      tasksDir: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/tasks`,
-      workspace: {
-        workspace: lane.workspace,
-        worktree: lane.worktree,
-        branch: lane.branch,
-        targetBranch: lane.targetBranch,
-      },
-    });
-    taskPaths.set(taskId, taskPath);
-    await patchTaskEnvelope(sysFs, taskPath, {
-      state: "rejected",
-      status: "taken",
-      updatedAt: clock.now(),
-    });
-  }
-
-  await withService(async (svc) => {
-    const hold = setHistoricalReclaimBatchHoldForTests(true);
-    try {
-      const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
-      assert.ok(!mounted.error, JSON.stringify(mounted.error));
-      const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
-      await stopHeldAutomaticHistoricalRunner(workspaceId, hold!);
-      await replaceTaskWorktreeReclaimQueueForTests(sysFs, {
-        entries: [],
-        historicalScan: { complete: false },
-      });
-
-      // First batch only — simulate crash before further batches.
-      const cont = await runOneHistoricalTaskWorktreeReclaimBatch(svc.ctx, workspaceId);
-      assert.equal(cont, true, "more batches remain after first");
-      const mid = await readTaskWorktreeReclaimHistoricalScan(sysFs);
-      assert.equal(mid?.complete, false);
-      assert.ok(mid?.nextTaskPath, "cursor persisted after batch");
-      const firstProcessed = [...taskPaths]
-        .filter(([, taskPath]) => taskPath.localeCompare(mid!.nextTaskPath!) <= 0)
-        .map(([taskId]) => taskId);
-      assert.ok(firstProcessed.length > 0, "first batch covered persisted Task paths");
-      for (const id of firstProcessed) {
-        assert.equal(
-          await pathExists(lanes.get(id)!.worktree),
-          false,
-          `first-batch candidate ${id} was reclaimed before cursor advanced`
-        );
-      }
-
-      // "Restart": re-run from persisted cursor (idempotent — no skip, no duplicate spin).
-      let guard = 0;
-      let more = true;
-      while (more && guard < 20) {
-        guard += 1;
-        more = await runOneHistoricalTaskWorktreeReclaimBatch(svc.ctx, workspaceId);
-      }
-      const done = await readTaskWorktreeReclaimHistoricalScan(sysFs);
-      assert.equal(done?.complete, true);
-      const finalPending = await listTaskWorktreeReclaimPending(sysFs);
-      assert.equal(finalPending.length, 0, "all clean historical candidates reclaimed");
-      for (const [id, lane] of lanes) {
-        assert.equal(
-          await pathExists(lane.worktree),
-          false,
-          `historical candidate ${id} lane reclaimed`
-        );
-      }
-      assert.equal(done?.complete, true);
-    } finally {
-      hold?.release();
-      resetHistoricalTaskWorktreeReclaimForTests();
-    }
-  });
-});
-
-test("P0: historical refuse persists needs-attention diagnostic; no same-boot spin", async () => {
-  resetHistoricalTaskWorktreeReclaimForTests();
-  const ws = await makeGitTentWorkspace("reclaim-hist-dirty");
-  const systemRoot = path.join(ws, ".tent");
-  const sysFs = new NodeFs(systemRoot);
-  const clock = { now: () => new Date().toISOString() };
-  const tent = await import("../src/core/tree.js").then((m) => m.loadTent(sysFs));
-  const inboxBox = [...tent.byId.values()][0];
-  const taskId = "tk-hist-dirty-diag";
-  const lane = await ensureTaskWorkspace(ws, taskId);
-  await fs.writeFile(path.join(lane.worktree, "DIRTY.txt"), "keep\n");
-  const taskPath = await writeTaskEnvelope(sysFs, clock, {
-    parentActor: { kind: "user", id: "user" },
-    role: FAKE_DEFAULT_PROFILE_ID,
-    claims: [{ id: inboxBox?.id ?? "bx-1", path: inboxBox?.path ?? "inbox" }],
-    manifestPath: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/manifests/${taskId}.yml`,
-    userPrompt: "dirty historical",
-    id: taskId,
-    assigneeKind: "agentProfile",
-    tasksDir: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/tasks`,
-    workspace: {
-      workspace: lane.workspace,
-      worktree: lane.worktree,
-      branch: lane.branch,
-      targetBranch: lane.targetBranch,
-    },
-  });
-  await patchTaskEnvelope(sysFs, taskPath, {
-    state: "failed",
-    status: "taken",
-    updatedAt: clock.now(),
-  });
-
-  await withService(async (svc) => {
-    const hold = setHistoricalReclaimBatchHoldForTests(true);
-    try {
-      const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
-      assert.ok(!mounted.error, JSON.stringify(mounted.error));
-      const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
-      await stopHeldAutomaticHistoricalRunner(workspaceId, hold!);
-      await replaceTaskWorktreeReclaimQueueForTests(sysFs, {
-        entries: [],
-        historicalScan: { complete: false },
-      });
-
-      const cont = await runOneHistoricalTaskWorktreeReclaimBatch(svc.ctx, workspaceId);
-      // May complete in one batch if inventory is small.
-      void cont;
-      const pending = await listTaskWorktreeReclaimPending(sysFs);
-      const row = pending.find((e) => e.taskId === taskId);
-      assert.ok(row, "dirty candidate must stay on queue");
-      assert.equal(row!.status, "needs-attention");
-      assert.equal(row!.lastDiagnostic?.code, "DIRTY");
-      assert.ok(row!.lastDiagnostic?.attemptedAt);
-      assert.equal(await pathExists(lane.worktree), true);
-
-      // Second historical batch after complete must not re-attempt (scan done).
-      // Force complete if not already, then ensure repeated run is idle.
-      let guard = 0;
-      let more = true;
-      while (more && guard < 10) {
-        guard += 1;
-        more = await runOneHistoricalTaskWorktreeReclaimBatch(svc.ctx, workspaceId);
-      }
-      const after = await listTaskWorktreeReclaimPending(sysFs);
-      const row2 = after.find((e) => e.taskId === taskId);
-      assert.equal(row2?.status, "needs-attention");
-      assert.equal(row2?.lastDiagnostic?.code, "DIRTY");
-      // Attempt timestamp unchanged by idle complete re-runs (no spin).
-      assert.equal(row2?.lastDiagnostic?.attemptedAt, row!.lastDiagnostic?.attemptedAt);
-    } finally {
-      hold?.release();
-      resetHistoricalTaskWorktreeReclaimForTests();
-    }
-  });
-});
-
-test("P0: historical path never invokes global git worktree prune", async () => {
-  resetHistoricalTaskWorktreeReclaimForTests();
-  const ws = await makeGitTentWorkspace("reclaim-no-prune");
-  const systemRoot = path.join(ws, ".tent");
-  const sysFs = new NodeFs(systemRoot);
-  const clock = { now: () => new Date().toISOString() };
-  const tent = await import("../src/core/tree.js").then((m) => m.loadTent(sysFs));
-  const inboxBox = [...tent.byId.values()][0];
-  const taskId = "tk-no-prune";
-  const lane = await ensureTaskWorkspace(ws, taskId);
-  const tip = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
-  await git(ws, "merge", "--ff-only", tip).catch(() => undefined);
-  const taskPath = await writeTaskEnvelope(sysFs, clock, {
-    parentActor: { kind: "user", id: "user" },
-    role: FAKE_DEFAULT_PROFILE_ID,
-    claims: [{ id: inboxBox?.id ?? "bx-1", path: inboxBox?.path ?? "inbox" }],
-    manifestPath: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/manifests/${taskId}.yml`,
-    userPrompt: "no prune",
-    id: taskId,
-    assigneeKind: "agentProfile",
-    tasksDir: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/tasks`,
-    workspace: {
-      workspace: lane.workspace,
-      worktree: lane.worktree,
-      branch: lane.branch,
-      targetBranch: lane.targetBranch,
-    },
-  });
-  await patchTaskEnvelope(sysFs, taskPath, {
-    state: "accepted",
-    status: "taken",
-    updatedAt: clock.now(),
-  });
-
-  // Sibling foreign registration that prune would touch — must remain.
-  const foreign = await ensureTaskWorkspace(ws, "tk-foreign-sibling");
-
-  await withService(async (svc) => {
-    const hold = setHistoricalReclaimBatchHoldForTests(true);
-    try {
-      const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
-      assert.ok(!mounted.error, JSON.stringify(mounted.error));
-      const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
-      await stopHeldAutomaticHistoricalRunner(workspaceId, hold!);
-      await replaceTaskWorktreeReclaimQueueForTests(sysFs, {
-        entries: [],
-        historicalScan: { complete: false },
-      });
-      let more = true;
-      let guard = 0;
-      while (more && guard < 10) {
-        guard += 1;
-        more = await runOneHistoricalTaskWorktreeReclaimBatch(svc.ctx, workspaceId);
-      }
-      assert.equal(await pathExists(foreign.worktree), true, "sibling lane untouched (no global prune)");
-      const list = await git(ws, "worktree", "list", "--porcelain");
-      assert.match(list, /tk-foreign-sibling/);
-    } finally {
-      hold?.release();
-      resetHistoricalTaskWorktreeReclaimForTests();
-    }
   });
 });

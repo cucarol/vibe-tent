@@ -1242,6 +1242,22 @@ export class ServiceClient {
   }
 
   /**
+   * User-only exact-task reclaim reconciliation. Reloads one Task and reuses
+   * normal ownership/dirty/session/integration gates; never scans or prunes.
+   */
+  taskWorktreeReclaimReconcile(
+    workspaceId: string,
+    taskPath: string,
+    actor: string
+  ) {
+    return this.call("task.worktreeReclaim.reconcile", {
+      workspaceId,
+      taskPath,
+      actor,
+    });
+  }
+
+  /**
    * List Node Markdown underline annotations for a node (cx- identity).
    * Projection includes live relocate state; does not rewrite stored anchors.
    */
