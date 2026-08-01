@@ -75,17 +75,79 @@ export async function runTaskCommand(
       }
       case "claim": {
         const taskPath = positionals[0];
-        if (!taskPath || positionals.length > 1) {
+        const hasDirectClaimInput =
+          (repeatable.node?.length ?? 0) > 0 ||
+          Object.prototype.hasOwnProperty.call(flags, "prompt") ||
+          Object.prototype.hasOwnProperty.call(flags, "from-task");
+        if (taskPath && hasDirectClaimInput) {
           return failUsage(
-            "Usage: tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]"
+            "tent task claim: <taskPath> cannot be combined with --node, --prompt, or --from-task"
           );
         }
-        const sessionId = flags.session || flags["session-id"];
-        const result = await client.taskClaim(workspaceId, taskPath, sessionId);
+        if (taskPath) {
+          if (positionals.length > 1) {
+            return failUsage(
+              "Usage: tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]"
+            );
+          }
+          const sessionId = flags.session || flags["session-id"];
+          const result = await client.taskClaim(workspaceId, taskPath, sessionId);
+          return okPrint(result, json, (r) => {
+            const row = r as { taskPath: string; state?: string; sessionId?: string };
+            return (
+              `✓ Claimed via service RPC\n` +
+              `taskPath: ${row.taskPath}\n` +
+              `state: ${row.state ?? "running"}\n` +
+              (row.sessionId ? `sessionId: ${row.sessionId}\n` : "")
+            );
+          });
+        }
+        if (!hasDirectClaimInput || positionals.length > 0) {
+          return failUsage(
+            "Usage: tent task claim --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]"
+          );
+        }
+        if (flags.session || flags["session-id"]) {
+          return failUsage(
+            "tent task claim: direct Role claim does not accept --session; Tent uses the verified current Session only as responsibility-chain provenance"
+          );
+        }
+        const rawNodes = repeatable.node ?? [];
+        if (rawNodes.some((value) => !String(value ?? "").trim())) {
+          return failUsage("tent task claim: every --node value must be a non-empty nodeId");
+        }
+        const nodeIds = collectTaskNodeIds(rawNodes);
+        if (nodeIds.length === 0) {
+          return failUsage("tent task claim: direct Role claim requires at least one --node");
+        }
+        if (!Object.prototype.hasOwnProperty.call(flags, "prompt")) {
+          return failUsage("tent task claim: direct Role claim requires --prompt <text> or --prompt -");
+        }
+        let prompt = flags.prompt ?? "";
+        if (prompt === "-") prompt = await readStdinText();
+        if (!prompt.trim()) {
+          return failUsage("tent task claim: --prompt must be non-empty");
+        }
+        const env = globals.env ?? process.env;
+        const role = String(env.TENT_ROLE_NAME ?? env.TENT_ROLE ?? "").trim();
+        if (!role || role === "user") {
+          return failUsage(
+            "tent task claim: direct claim requires a durable Role environment (TENT_ROLE_NAME or TENT_ROLE)"
+          );
+        }
+        const sourceSessionId = String(env.TENT_SESSION_ID ?? "").trim() || undefined;
+        const sourceTaskPath = String(flags["from-task"] ?? "").trim() || undefined;
+        const result = await client.taskClaimDirect(workspaceId, {
+          role,
+          nodeIds,
+          prompt,
+          sourceSessionId,
+          sourceTaskPath,
+        });
         return okPrint(result, json, (r) => {
           const row = r as { taskPath: string; state?: string; sessionId?: string };
           return (
-            `✓ Claimed via service RPC\n` +
+            `✓ Created and claimed via service RPC\n` +
             `taskPath: ${row.taskPath}\n` +
             `state: ${row.state ?? "running"}\n` +
             (row.sessionId ? `sessionId: ${row.sessionId}\n` : "")
@@ -188,7 +250,7 @@ export async function runTaskCommand(
             );
           }
         }
-        const nodeIds = collectDispatchNodeIds(rawNodes);
+        const nodeIds = collectTaskNodeIds(rawNodes);
         if (nodeIds.length === 0) {
           return failUsage(
             `At least one --node <nodeId> is required in this batch\n${usage}`
@@ -939,7 +1001,7 @@ function detectRetiredDispatchFlags(flags: Record<string, string>): string | nul
 }
 
 /** Deduplicate --node values while preserving first-seen order. */
-function collectDispatchNodeIds(raw: string[] | undefined): string[] {
+function collectTaskNodeIds(raw: string[] | undefined): string[] {
   const nodes: string[] = [];
   const seen = new Set<string>();
   for (const value of raw ?? []) {
@@ -1004,6 +1066,9 @@ Commands:
   tent task list [--workspace <path>] [--json]
   tent task get <taskPath> [--workspace <path>] [--json]
   tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]
+  tent task claim --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]
+      # direct Role execution: create + claim atomically; no --target and no downstream dispatch
+      # Role comes from TENT_ROLE_NAME/TENT_ROLE; Service derives parent/reviewer from durable facts
   tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
   tent task dispatch --target role:<roleIdOrName>|route:<routeId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]
       # --target role:*  durable Role handoff (queued; never starts managed ACP at dispatch)

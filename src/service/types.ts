@@ -865,6 +865,12 @@ export const CLIENT_METHODS = [
   "task.dispatch",
   "task.claim",
   /**
+   * Durable Role self-execution: atomically create + claim from exact nodeIds[].
+   * Service derives parent/reviewer from persisted Task/Session responsibility;
+   * callers cannot provide actor, target, asSub, or Delivery authority fields.
+   */
+  "task.claimDirect",
+  /**
    * Explicit legacy backfill of workspaceLane.baseCommit for running/waiting Tasks
    * whose lane exists but base is missing. Authorized by exact parent/reviewer only.
    * Never infers from roleBranchBase/cwd/current tip. Same SHA is idempotent.

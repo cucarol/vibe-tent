@@ -746,6 +746,25 @@ export class ServiceClient {
     return this.call("task.claim", { workspaceId, taskPath, sessionId });
   }
   /**
+   * Create and immediately claim a durable Role's own execution Task.
+   * This is execution ownership, not downstream dispatch: there is no target,
+   * caller-authored parent/reviewer, asSub flag, or managed Session launch.
+   */
+  taskClaimDirect(
+    workspaceId: string,
+    args: {
+      role: string;
+      nodeIds: string[];
+      prompt: string;
+      /** Optional exact current Task used only to inherit persisted responsibility. */
+      sourceTaskPath?: string;
+      /** Optional Service-registry Session provenance; never binds that Session to the new Task. */
+      sourceSessionId?: string;
+    }
+  ) {
+    return this.call("task.claimDirect", { workspaceId, ...args });
+  }
+  /**
    * Explicit legacy baseCommit backfill for running/waiting Tasks missing base.
    * Actor must equal exact persisted parent/reviewer. Same SHA is idempotent.
    */

@@ -532,6 +532,8 @@ export async function dispatchMethod(
         return taskDispatch(ctx, p);
       case "task.claim":
         return taskClaimRpc(ctx, p);
+      case "task.claimDirect":
+        return taskClaimDirectRpc(ctx, p);
       case "task.backfillWorkspaceLaneBase":
         return taskBackfillWorkspaceLaneBaseRpc(ctx, p);
       case "task.wait":
@@ -3258,7 +3260,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   // Authoritative public Node selection is nodeIds[] only.
-  const dispatchSelection = resolveTaskDispatchNodeSelection(p, mount.env.tentName);
+  const dispatchSelection = resolveTaskNodeSelection(p, mount.env.tentName, "task.dispatch");
   const primaryNodeId = dispatchSelection.primaryId;
   const nodeIds = dispatchSelection.nodeIds;
   for (const retired of ["agentId", "profileId"] as const) {
@@ -3751,15 +3753,16 @@ function parseOptionalTaskActor(
  * Fail loud before MutationBus Task/manifest writes for malformed input.
  * Node existence/archive gates run inside Core under the same workspace lock.
  */
-function resolveTaskDispatchNodeSelection(
+function resolveTaskNodeSelection(
   p: Record<string, unknown>,
-  tentName: string
+  tentName: string,
+  method: "task.dispatch" | "task.claimDirect"
 ): { nodeIds: string[]; primaryId: string } {
   for (const retired of ["boxId", "id", "claimId"] as const) {
     if (p[retired] !== undefined && p[retired] !== null) {
       throw new RpcError(
         -32602,
-        `task.dispatch ${retired} is retired; pass non-empty nodeIds[]`,
+        `${method} ${retired} is retired; pass non-empty nodeIds[]`,
         { field: retired }
       );
     }
@@ -3819,6 +3822,302 @@ function resolveDispatchActorsFromRpc(input: {
         parentActor: input.parentActor,
         reviewer: input.reviewer,
       }
+    );
+  }
+}
+
+async function taskClaimDirectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  for (const retired of [
+    "parentActor",
+    "reviewer",
+    "asSub",
+    "target",
+    "assigneeKind",
+    "routeId",
+    "startSession",
+    "deliveryPolicy",
+    "callerKind",
+    "dispatchedBy",
+  ] as const) {
+    if (p[retired] !== undefined && p[retired] !== null) {
+      throw new RpcError(
+        -32602,
+        `task.claimDirect does not accept ${retired}; responsibility and execution ownership are derived by Service`
+      );
+    }
+  }
+  const roleRef = requireString(p, "role");
+  const prompt = requireString(p, "prompt");
+  const sourceTaskPath = optionalString(p, "sourceTaskPath");
+  const sourceSessionId = optionalString(p, "sourceSessionId");
+  const selection = resolveTaskNodeSelection(p, mount.env.tentName, "task.claimDirect");
+
+  return ctx.mutations.run(workspaceId, async () => {
+    const registry = await loadRolesRegistry(mount.env.fs);
+    const roleDefinition = resolveRole(registry.roles, roleRef);
+    if (!roleDefinition) {
+      throw new RpcError(-32004, `Role not found in registry: ${roleRef}`, {
+        code: "DIRECT_CLAIM_ROLE_NOT_FOUND",
+        role: roleRef,
+      });
+    }
+    const role = roleDefinition.name;
+    const actors = await resolveDirectClaimResponsibility(ctx, {
+      workspaceId,
+      role,
+      sourceTaskPath,
+      sourceSessionId,
+    });
+
+    // Direct claim is the Role taking its own execution responsibility. It is
+    // never a downstream/asSub dispatch and therefore never enters the
+    // self-subdispatch cycle guard.
+    await ensureRoleWorkspaceIfGit(mount.workspaceRoot, role);
+    const settings = await loadWorkspaceSettings(mount.env.fs);
+    const deliveryPolicy = mayElevateDeliveryPolicy({
+      parentActor: actors.parentActor,
+      assigneeKind: "role",
+    })
+      ? settings.defaultDeliveryPolicy
+      : "review";
+
+    ctx.host.markSelfWrite(workspaceId);
+    const roleRootPath = nodePath.posix.join(TEMP_DIR, role);
+    const expectedInitPath = nodePath.posix.join(roleRootPath, "init.md");
+    const initExisted = await mount.env.fs.exists(expectedInitPath);
+    const initBefore = initExisted
+      ? await mount.env.fs.readFile(expectedInitPath)
+      : undefined;
+    let created:
+      | Awaited<ReturnType<typeof dispatch>>
+      | undefined;
+    try {
+      created = await dispatch(mount.env, selection.primaryId, role, {
+        userPrompt: prompt,
+        parentActor: actors.parentActor,
+        reviewer: actors.reviewer,
+        deliveryPolicy,
+        assigneeKind: "role",
+        nodeIds: selection.nodeIds,
+      });
+      const pre = await loadTaskEnvelope(mount.env.fs, created.taskPath);
+      const claimWrite = await prepareRoleClaimWrite(ctx, workspaceId, pre);
+      if (beforeTaskClaimCoreForTests) {
+        await beforeTaskClaimCoreForTests({
+          workspaceId,
+          taskPath: created.taskPath,
+          task: pre,
+        });
+      }
+      const task = await taskClaim(mount.env, created.taskPath, {
+        ...(claimWrite ? { claimWrite } : {}),
+      });
+      emitTaskState(ctx, workspaceId, task, "task.claimDirect");
+      const nodeIds = task.contextCard != null ? taskReferencedNodeIds(task) : [];
+      for (const nodeId of nodeIds) {
+        if (nodeId === "root") continue;
+        ctx.events.emit(
+          "concept.changed",
+          workspaceId,
+          { id: nodeId, reason: "task.claim-projection" },
+          "self"
+        );
+      }
+      return {
+        workspaceId,
+        taskPath: created.taskPath,
+        manifestPath: created.manifestPath,
+        initPath: created.initPath,
+        task: projectTask(task),
+        state: task.state,
+        role: task.role,
+        referencedNodeIds: nodeIds,
+      };
+    } catch (err) {
+      if (created) {
+        const cleanupErrors: string[] = [];
+        for (const exactPath of [created.taskPath, created.manifestPath]) {
+          try {
+            if (await mount.env.fs.exists(exactPath)) {
+              await mount.env.fs.remove(exactPath);
+            }
+          } catch (cleanupErr) {
+            cleanupErrors.push(
+              `${exactPath}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`
+            );
+          }
+        }
+        if (created.initPath) {
+          try {
+            if (initExisted && initBefore !== undefined) {
+              await mount.env.fs.writeFile(created.initPath, initBefore);
+            } else if (await mount.env.fs.exists(created.initPath)) {
+              await mount.env.fs.remove(created.initPath);
+            }
+          } catch (cleanupErr) {
+            cleanupErrors.push(
+              `${created.initPath}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`
+            );
+          }
+        }
+        if (cleanupErrors.length > 0) {
+          throw new RpcError(
+            RPC_LIFECYCLE,
+            `task.claimDirect failed and exact artifact cleanup was incomplete: ${cleanupErrors.join("; ")}`,
+            {
+              code: "DIRECT_CLAIM_CLEANUP_FAILED",
+              taskPath: created.taskPath,
+              cause: err instanceof Error ? err.message : String(err),
+            }
+          );
+        }
+      }
+      throw err;
+    }
+  });
+}
+
+async function resolveDirectClaimResponsibility(
+  ctx: HandlerContext,
+  input: {
+    workspaceId: string;
+    role: string;
+    sourceTaskPath?: string;
+    sourceSessionId?: string;
+  }
+): Promise<{ parentActor: TaskActorRef; reviewer: TaskActorRef }> {
+  const mount = ctx.host.require(input.workspaceId);
+  let session: SessionRecord | null = null;
+  if (input.sourceSessionId) {
+    session = await ctx.runtime.registry.read(input.sourceSessionId);
+    if (!session) {
+      throw new RpcError(-32004, `Session not found: ${input.sourceSessionId}`, {
+        code: "DIRECT_CLAIM_SESSION_NOT_FOUND",
+      });
+    }
+    if (
+      session.workspace !== input.workspaceId ||
+      session.assigneeKind === "agentProfile" ||
+      session.roleName !== input.role ||
+      !SessionRegistry.isOpen(session.state)
+    ) {
+      throw new RpcError(
+        -32001,
+        "task.claimDirect source Session is not a live exact-workspace binding for the claiming Role",
+        {
+          code: "DIRECT_CLAIM_SESSION_MISMATCH",
+          sessionId: session.id,
+          role: input.role,
+        }
+      );
+    }
+  }
+
+  const rootResponsibility = (): { parentActor: TaskActorRef; reviewer: TaskActorRef } =>
+    resolveParentReviewerPair({
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+    });
+
+  const explicitSourceTask = Boolean(input.sourceTaskPath);
+  const sourceRef = input.sourceTaskPath || session?.lastTaskId?.trim() || "";
+  if (!sourceRef) {
+    return rootResponsibility();
+  }
+
+  let sourceTask: TaskEnvelope | undefined;
+  if (input.sourceTaskPath) {
+    try {
+      sourceTask = await loadTaskEnvelope(mount.env.fs, input.sourceTaskPath);
+    } catch (err) {
+      throw new RpcError(
+        -32004,
+        `task.claimDirect source Task could not be loaded: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        { code: "DIRECT_CLAIM_SOURCE_TASK_NOT_FOUND", taskPath: input.sourceTaskPath }
+      );
+    }
+  } else {
+    const matches = (await loadTaskEnvelopes(mount.env.fs)).filter(
+      (task) => task.id === sourceRef || task.path === sourceRef
+    );
+    if (matches.length === 0) {
+      // A durable Role Session may outlive retention of its prior Task. The stale
+      // lastTaskId is not authority and must not prevent the Role's next root Task.
+      return rootResponsibility();
+    }
+    if (matches.length !== 1) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `task.claimDirect Session lastTaskId resolved ambiguously (${matches.length} Tasks)`,
+        { code: "DIRECT_CLAIM_SOURCE_TASK_AMBIGUOUS", lastTaskId: sourceRef }
+      );
+    }
+    sourceTask = matches[0]!;
+  }
+
+  const sameRoleTask =
+    sourceTask.role === input.role && taskAssigneeKind(sourceTask) === "role";
+  const activeClaim = sourceTask.state !== "queued" && isActiveTaskState(sourceTask.state);
+  if (explicitSourceTask && (!sameRoleTask || !activeClaim)) {
+    throw new RpcError(
+      -32001,
+      "task.claimDirect source Task is not an active claimed Task owned by the claiming Role",
+      {
+        code: "DIRECT_CLAIM_SOURCE_TASK_MISMATCH",
+        taskPath: sourceTask.path,
+        role: input.role,
+        taskRole: sourceTask.role,
+        state: sourceTask.state,
+      }
+    );
+  }
+  if (!explicitSourceTask && !sameRoleTask) {
+    throw new RpcError(
+      -32001,
+      "task.claimDirect Session lastTaskId belongs to a different Role or assignee kind",
+      {
+        code: "DIRECT_CLAIM_SOURCE_TASK_MISMATCH",
+        taskPath: sourceTask.path,
+        role: input.role,
+        taskRole: sourceTask.role,
+      }
+    );
+  }
+  if (!explicitSourceTask && sourceTask.state === "queued") {
+    return rootResponsibility();
+  }
+  if (
+    !explicitSourceTask &&
+    session &&
+    isActiveTaskState(sourceTask.state) &&
+    sourceTask.sessionId &&
+    sourceTask.sessionId !== session.id
+  ) {
+    // Registry lastTaskId can lag a Task Session replacement. Do not inherit a
+    // stale chain implicitly; the caller can name the active --from-task exactly.
+    return rootResponsibility();
+  }
+  if (!sourceTask.parentActor || !sourceTask.reviewer) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "task.claimDirect source Task is missing persisted parent/reviewer",
+      { code: "DIRECT_CLAIM_SOURCE_AUTHORITY_MISSING", taskPath: sourceTask.path }
+    );
+  }
+  try {
+    return resolveParentReviewerPair({
+      parentActor: sourceTask.parentActor,
+      reviewer: sourceTask.reviewer,
+    });
+  } catch (err) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      err instanceof Error ? err.message : "Invalid source Task responsibility chain",
+      { code: "DIRECT_CLAIM_SOURCE_AUTHORITY_INVALID", taskPath: sourceTask.path }
     );
   }
 }
