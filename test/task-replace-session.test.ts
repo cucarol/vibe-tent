@@ -68,6 +68,12 @@ async function pollUntil<T>(fn: () => Promise<T | undefined | null | false>, tim
   throw new Error(`timeout waiting for ${label}`);
 }
 
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
 async function makeWorkspace(
   name = "replace-session",
   rolePolicies?: Record<string, "allow" | "ask" | "deny">,
@@ -165,6 +171,89 @@ async function seedPending(svc: Svc, workspaceId: string, taskPath: string, sess
 test("CLIENT_METHODS includes task.replaceSession", () => {
   assert.ok((CLIENT_METHODS as readonly string[]).includes("task.replaceSession"));
   assert.equal(REPLACE_SESSION_RESTORE_REASON, "task.replaceSession.fresh");
+});
+
+test("startSession: interrupt wins while provider start is held; late Session is stopped and never bound", async () => {
+  const ws = await makeWorkspace();
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const dispatched = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId, boxId, role: "executor", prompt: "held start race", deliveryPolicy: "review",
+    });
+    assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
+    const taskPath = (dispatched.result as { taskPath: string }).taskPath;
+    const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(!claimed.error, JSON.stringify(claimed.error));
+
+    const entered = deferred();
+    const release = deferred();
+    const originalStart = svc.runtime.startSession.bind(svc.runtime);
+    (svc.runtime as { startSession: typeof svc.runtime.startSession }).startSession = async (input) => {
+      entered.resolve();
+      await release.promise;
+      return originalStart(input);
+    };
+
+    const starting = rpc(svc, "task.startSession", {
+      workspaceId, taskPath, callerKind: "user", profileId: "fake-default",
+    });
+    await entered.promise;
+    const interrupted = await rpc(svc, "task.interrupt", { workspaceId, taskPath });
+    assert.ok(!interrupted.error, JSON.stringify(interrupted.error));
+    release.resolve();
+    const started = await starting;
+    assert.equal(started.error?.code, RPC_LIFECYCLE, JSON.stringify(started));
+    assert.equal(errCode(started), "TASK_SESSION_BIND_CAS_FAILED");
+
+    const task = await getTask(svc, workspaceId, taskPath);
+    assert.equal(task.state, "interrupted");
+    assert.equal(task.sessionId, undefined, "late provider Session must never bind to terminal Task");
+    const orphanSessionId = (started.error?.data as { orphanSessionId?: string }).orphanSessionId;
+    assert.ok(orphanSessionId);
+    assert.equal((await svc.runtime.probe(orphanSessionId!)).alive, false);
+  }, { profiles: [FAKE_KEEPALIVE] });
+});
+
+test("replaceSession: terminal transition wins while replacement start is held", async () => {
+  const ws = await makeWorkspace();
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(
+      svc,
+      workspaceId,
+      boxId
+    );
+
+    const entered = deferred();
+    const release = deferred();
+    const originalStart = svc.runtime.startSession.bind(svc.runtime);
+    (svc.runtime as { startSession: typeof svc.runtime.startSession }).startSession = async (input) => {
+      entered.resolve();
+      await release.promise;
+      return originalStart(input);
+    };
+
+    const replacing = rpc(svc, "task.replaceSession", {
+      workspaceId, taskPath, callerKind: "user", profileId: "fake-default",
+    });
+    await entered.promise;
+    const interrupted = await rpc(svc, "task.interrupt", { workspaceId, taskPath });
+    assert.ok(!interrupted.error, JSON.stringify(interrupted.error));
+    release.resolve();
+    const replaced = await replacing;
+    assert.equal(replaced.error?.code, RPC_LIFECYCLE, JSON.stringify(replaced));
+    assert.equal(errCode(replaced), "TASK_SESSION_BIND_CAS_FAILED");
+
+    const task = await getTask(svc, workspaceId, taskPath);
+    assert.equal(task.state, "interrupted");
+    assert.equal(task.sessionId, priorSessionId, "replacement must not overwrite terminal binding");
+    const orphanSessionId = (replaced.error?.data as { orphanSessionId?: string }).orphanSessionId;
+    assert.ok(orphanSessionId);
+    assert.notEqual(orphanSessionId, priorSessionId);
+    assert.equal((await svc.runtime.probe(orphanSessionId!)).alive, false);
+  }, { profiles: [FAKE_KEEPALIVE] });
 });
 
 test("replaceSession: success preserves Task + contextRestored=false + audit", async () => {
