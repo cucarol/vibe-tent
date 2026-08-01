@@ -899,8 +899,8 @@ export function sessionBootstrapPromptForTask(
     readyLine +
     `${formatTaskPointers(task)}\n` +
     `Service status: this task is already claimed (state=${task.state || "running"}).\n` +
-    `Managed path: Local Service already claimed this task; end with an explicit outcome wire ` +
-    `(\`outcome: delivered|blocked|needs-input\`) then the report body. Only \`delivered\` may become a ready Delivery after turn settle; blocker/question must use needs-input/blocked or ask-user — never self-accept.\n` +
+    `Managed path: Local Service already claimed this task. A non-empty final report is delivered by default after turn settle. ` +
+    `Use \`outcome: blocked\` or \`outcome: needs-input\` only as an explicit control signal when work cannot complete; never self-accept.\n` +
     (kind === "agentProfile"
       ? `One-shot agentProfile task: rely on task/manifest pointers only — no role init.\n`
       : "") +

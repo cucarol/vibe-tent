@@ -482,7 +482,9 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   );
   assert.match(bootstrap, /already claimed/i);
   assert.match(bootstrap, /managed ACP session/i);
-  assert.match(bootstrap, /outcome:\s*delivered\|blocked\|needs-input|explicit outcome/i);
+  assert.match(bootstrap, /non-empty final report is delivered by default/i);
+  assert.match(bootstrap, /outcome:\s*blocked|outcome:\s*needs-input/i);
+  assert.doesNotMatch(bootstrap, /explicit outcome wire|outcome:\s*delivered\|/i);
   assert.match(bootstrap, /Task envelope:/);
   assert.match(bootstrap, /Manifest:/);
   assert.match(bootstrap, /contextCard\.refs\.nodes:/);
@@ -975,7 +977,7 @@ test("CLI public session surface is tent session; old tent agent lifecycle is re
   assert.match(sessionHelpText, /tent session leave/);
   assert.doesNotMatch(sessionHelpText, /tent agent enter/);
 
-  // Session lifecycle stays under tent session only; tent agent is AgentDefinition (list|get|config).
+  // Session lifecycle stays under tent session only; the retired tent agent command is absent.
   for (const sub of [
     "enter",
     "status",
@@ -986,7 +988,7 @@ test("CLI public session surface is tent session; old tent agent lifecycle is re
   ] as const) {
     const result = await cli(dir, "agent", sub);
     assert.notEqual(result.code, 0, `tent agent ${sub} must be rejected`);
-    assert.match(result.stderr, /Unknown agent-definition subcommand/);
+    assert.match(result.stderr, /Unknown command: agent/);
   }
 });
 
