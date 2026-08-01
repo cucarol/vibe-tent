@@ -577,37 +577,6 @@ export type TypeRegistryEntryProjection = {
   tier: "base" | "modifier";
 };
 
-/**
- * Closed readiness enum for one Role roster agentId (registry.roles projection).
- * Derived only — never auto-creates AgentDefinitions or profiles.
- */
-export const ROLE_ROSTER_READINESS = [
-  "ready",
-  "missing-definition",
-  "missing-profile",
-] as const;
-
-export type RoleRosterReadiness = (typeof ROLE_ROSTER_READINESS)[number];
-
-/**
- * One roster agentId readiness row (registry.roles).
- * Never includes credentials, env values, provider secrets, or full profile config.
- */
-export type RoleRosterEntryProjection = {
-  /** Persisted roster agentId (Role standing authorization key). */
-  agentId: string;
-  /** From machine-local AgentDefinition when present. */
-  displayName?: string;
-  /** From machine-local AgentDefinition when present. */
-  profileId?: string;
-  /**
-   * ready = definition exists and bound profile is in the injected catalog;
-   * missing-definition = no machine-local AgentDefinition;
-   * missing-profile = definition exists but bound profile is absent from catalog.
-   */
-  readiness: RoleRosterReadiness;
-};
-
 /** Project role registry row (read-only projection for clients). */
 export type RoleRegistryEntryProjection = {
   /** Stable immutable role handle (`rl-…`). */
@@ -622,35 +591,6 @@ export type RoleRegistryEntryProjection = {
   description?: string;
   color?: string;
   prompt?: string;
-  /** Spawn authority; omitted means deny. Never includes secrets. */
-  a2aPolicy?: "allow" | "ask" | "deny";
-  /**
-   * Authorized AgentDefinition ids (logical workers). Roster membership is
-   * standing Role authorization for agentId dispatch (not per-call a2a ask/deny).
-   * Ids only — never credentials. Omitted / empty = none authorized.
-   * Public surface is roster-only; legacy allowedProfiles is disk-migrated once.
-   */
-  roster?: string[];
-  /**
-   * Per-roster-agentId readiness projection (same order as `roster`).
-   * One derived entry per persisted roster agentId. Read-only: never invents
-   * AgentDefinitions or mutates machine files. Omitted when roster is empty.
-   */
-  rosterEntries?: RoleRosterEntryProjection[];
-};
-
-/**
- * Machine-local AgentDefinition projection (logical worker identity).
- * Never includes provider/model/credential secrets — only profileId binding.
- */
-export type AgentDefinitionProjection = {
-  id: string;
-  displayName: string;
-  description?: string;
-  /** Machine-local AgentProfile id for launch resolution. */
-  profileId: string;
-  /** true when bound profile exists in the local catalog. */
-  profileExists?: boolean;
 };
 
 /**
@@ -894,25 +834,14 @@ export const CLIENT_METHODS = [
   "registry.roles",
   /**
    * User-only role registry mutations (MutationBus).
-   * Persist id/name/displayName/prompt/description/color/a2aPolicy/roster/cli —
+   * Persist id/name/displayName/prompt/description/color/cli —
    * never provider secrets. id is server-assigned and immutable; displayName is
    * mutable; operational name is not renamed in identity batch 1.
-   * Public mutations accept `roster` only (allowedProfiles rejected fail-loud).
    * Success emits exactly one registry.roles.updated.
    */
   "registry.role.create",
   "registry.role.update",
   "registry.role.delete",
-  /**
-   * Machine-local AgentDefinition catalog (logical worker identity).
-   * Binds agentId → profileId only; never provider/model/credential secrets.
-   * Distinct from profile.* (launch config) and registry.roles (roster auth).
-   */
-  "agent.list",
-  "agent.get",
-  "agent.create",
-  "agent.update",
-  "agent.delete",
   "profile.list",
   "profile.get",
   "profile.create",

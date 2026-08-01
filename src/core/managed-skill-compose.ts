@@ -122,17 +122,6 @@ export function stripYamlFrontmatter(raw: string): string {
 }
 
 /**
- * Stable roster digest for prompt cache / compatibility inputs.
- * Sorted agentIds only — never profile secrets.
- */
-export function formatStableRosterDigest(roster: readonly string[] | undefined): string {
-  const ids = [...(roster ?? [])].map((s) => s.trim()).filter(Boolean);
-  ids.sort((a, b) => a.localeCompare(b));
-  if (ids.length === 0) return "(empty roster)";
-  return ids.map((id) => `- ${id}`).join("\n");
-}
-
-/**
  * Marks the end of the cross-Task stable skill/role prefix.
  * Everything after this line is dynamic (Context Card, Task pointer, user prompt, …).
  * Used for prompt-cache identity tests and honest prefix/tail splits.
@@ -151,7 +140,7 @@ export const MANAGED_SESSION_BOOTSTRAP_BANNER =
  * Compose stable managed bootstrap prefix (contracts + role context).
  * Order (frozen, all task-independent when Role/skills are fixed):
  * 1. tent-role body (when durable Role)
- * 2. Role prompt + stable roster digest (when durable Role)
+ * 2. Role prompt (when durable Role)
  * 3. tent-task body
  * 4. {@link STABLE_SKILL_CONTRACTS_END_MARKER}
  *
@@ -171,11 +160,7 @@ export function composeManagedSkillBootstrapPrefix(input: {
     sections.push(`## Built-in skill: ${BUILTIN_TENT_ROLE_SKILL}\n\n${body}`);
     const role = input.role;
     const rolePrompt = role?.prompt?.trim() || "(no persistent role prompt)";
-    const roster = formatStableRosterDigest(role?.roster);
-    sections.push(
-      `## Role prompt\n\n${rolePrompt}\n\n` +
-        `## Role roster (authorized agentIds)\n\n${roster}`
-    );
+    sections.push(`## Role prompt\n\n${rolePrompt}`);
   }
 
   if (names.includes(BUILTIN_TENT_TASK_SKILL)) {
@@ -294,7 +279,6 @@ export function managedSkillCompatibilityInputs(input: {
 }): {
   builtinSkills: BuiltinTentSkillName[];
   rolePrompt: string;
-  roster: string[];
   skillBodyDigests: Record<string, string>;
   skillVersions: Record<string, string>;
   skillBodies: Record<string, string>;
@@ -313,14 +297,9 @@ export function managedSkillCompatibilityInputs(input: {
       input.packageVersion
     );
   }
-  const roster = [...(input.role?.roster ?? [])]
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .sort((a, b) => a.localeCompare(b));
   return {
     builtinSkills,
     rolePrompt: input.role?.prompt?.trim() || "",
-    roster,
     skillBodyDigests,
     skillVersions,
     skillBodies,

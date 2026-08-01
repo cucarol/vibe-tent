@@ -757,7 +757,7 @@ test("node.collaboration: stale sessionId/activeDeliveryId keep task, null summa
   });
 });
 
-test("node.collaboration: agentProfile projects profileId not role", async () => {
+test("node.collaboration: route dispatch projects internal profile assignee", async () => {
   const ws = await makeWorkspace("profile-assignee");
   await withService(async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
@@ -766,8 +766,8 @@ test("node.collaboration: agentProfile projects profileId not role", async () =>
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [note.id],
-      assigneeKind: "agentProfile",
-      profileId: "fake-default",
+      assigneeKind: "route",
+      routeId: "fake-default",
       prompt: "profile work",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },

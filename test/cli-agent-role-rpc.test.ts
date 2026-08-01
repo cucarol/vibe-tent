@@ -1,6 +1,6 @@
 /**
  * Focused fake-client tests for Role metadata CLI RPCs.
- * Roster authorization is service-owned and is not exposed by this CLI slice.
+ * ACP route authorization belongs to machine Settings, not Role metadata.
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -59,8 +59,7 @@ test("role help and list/show expose metadata only", async () => {
   const help = roleHelpText();
   assert.match(help, /tent role list/);
   assert.match(help, /--display-name/);
-  assert.match(help, /--a2a-policy/);
-  assert.doesNotMatch(help, /roster|rosterEntries|readiness|agentId/);
+  assert.doesNotMatch(help, /a2a|roster|rosterEntries|readiness|agentId/);
 
   const state = {
     roles: [
@@ -71,9 +70,9 @@ test("role help and list/show expose metadata only", async () => {
         description: "plans work",
         prompt: "plan",
         color: "blue",
-        a2aPolicy: "ask" as const,
+        a2aPolicy: "ask",
         roster: ["hidden-agent"],
-        rosterEntries: [{ agentId: "hidden-agent", readiness: "ready" as const }],
+        rosterEntries: [{ agentId: "hidden-agent", readiness: "ready" }],
       },
     ],
   };
@@ -115,8 +114,6 @@ test("role config updates metadata without roster fields", async () => {
       "does work",
       "--color",
       "green",
-      "--a2a-policy",
-      "allow",
       "--json",
     ],
     g
@@ -129,21 +126,20 @@ test("role config updates metadata without roster fields", async () => {
     prompt: "ship",
     description: "does work",
     color: "green",
-    a2aPolicy: "allow",
     actor: "user",
   });
   assert.equal("roster" in (update.args[2] as Record<string, unknown>), false);
 });
 
-test("retired roster flags fail without compatibility or mutation", async () => {
+test("retired Role authorization flags fail without compatibility or mutation", async () => {
   const state = { roles: [{ roleId: "rl-y", name: "y", displayName: "Y" }] };
   const { client, calls } = fake(state);
   const g = await roleGlobals(client);
 
-  for (const flag of ["--roster", "--roster-add", "--roster-remove"]) {
+  for (const flag of ["--roster", "--roster-add", "--roster-remove", "--a2a-policy"]) {
     const result = await runRoleCommand("config", ["y", flag, "agent-a"], g);
     assert.notEqual(result.exitCode, 0, flag);
-    assert.match(result.stderr, /roster.*retired|no longer accepts/i, flag);
+    assert.match(result.stderr, /retired|no longer accepts/i, flag);
   }
   assert.equal(calls.length, 0);
 });

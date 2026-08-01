@@ -26,7 +26,6 @@ export type RoleFormDraft = {
   prompt?: string;
   description?: string;
   color?: string;
-  a2aPolicy?: "allow" | "ask" | "deny";
 };
 
 /** Edit draft for registry.role.update — operational name is identity, not patchable. */
@@ -38,9 +37,6 @@ export type RoleUpdateDraft = {
   prompt?: string;
   description?: string;
   color?: string;
-  a2aPolicy?: "allow" | "ask" | "deny";
-  /** Comma/space-separated agentIds (Role roster); empty clears. */
-  rosterText?: string;
 };
 
 export type ProfileFormDraft = {
@@ -121,7 +117,6 @@ export function validateRoleCreate(draft: RoleFormDraft):
   if (draft.prompt?.trim()) payload.prompt = draft.prompt.trim();
   if (draft.description?.trim()) payload.description = draft.description.trim();
   if (draft.color?.trim()) payload.color = draft.color.trim();
-  if (draft.a2aPolicy) payload.a2aPolicy = draft.a2aPolicy;
   return { ok: true, payload };
 }
 
@@ -157,32 +152,7 @@ export function validateRoleUpdate(draft: RoleUpdateDraft):
   const color = (draft.color ?? "").trim();
   payload.color = color || null;
 
-  if (draft.a2aPolicy) payload.a2aPolicy = draft.a2aPolicy;
-
-  if (draft.rosterText !== undefined) {
-    payload.roster = parseRosterText(draft.rosterText);
-  }
-
   return { ok: true, payload };
-}
-
-/** Split agentId roster from free text (comma / whitespace). */
-export function parseRosterText(text: string): string[] {
-  const raw = (text || "").trim();
-  if (!raw) return [];
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const part of raw.split(/[\s,;]+/)) {
-    const id = part.trim();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    out.push(id);
-  }
-  return out;
-}
-
-export function formatRosterText(ids: string[] | undefined | null): string {
-  return (ids || []).join(", ");
 }
 
 export function validateProfileCreate(draft: ProfileFormDraft):

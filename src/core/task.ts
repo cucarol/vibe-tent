@@ -157,7 +157,6 @@ export interface TaskEnvelopeInput {
     tentTaskDigest?: string;
     tentTaskVersion?: string;
     rolePrompt?: string;
-    rosterAgentIds?: readonly string[];
     profileId?: string;
     adapterId?: string;
     purpose?: string;
@@ -990,7 +989,7 @@ export async function writeTaskEnvelope(
 
   // Full Context Card v1 on every new write — sole Node-ref wire is refs.nodes[].
   // contextGeneration is deterministic from stable compatibility facts only
-  // (workspace / AGENTS / skills / Role roster / profile-adapter / purpose).
+  // (workspace / AGENTS / skills / Role prompt / profile-adapter / purpose).
   // Never hashes taskId, objective, acceptance, or current Task delta.
   const facts = input.contextGenerationFacts;
   const contextGeneration =
@@ -1003,7 +1002,6 @@ export async function writeTaskEnvelope(
       tentRoleDigest: facts?.tentRoleDigest,
       tentRoleVersion: facts?.tentRoleVersion,
       rolePrompt: facts?.rolePrompt,
-      rosterAgentIds: facts?.rosterAgentIds,
       tentTaskDigest: facts?.tentTaskDigest,
       tentTaskVersion: facts?.tentTaskVersion,
       profileAdapterCompatibility: profileAdapterCompatibilityDigest({

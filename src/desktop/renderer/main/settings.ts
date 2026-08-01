@@ -16,7 +16,6 @@ import {
   credentialListRow,
   CREDENTIAL_VAULT_TYPE,
   DELIVERY_POLICY_OPTIONS,
-  formatRosterText,
   mapProviderCatalogRows,
   mcpCredentialStatusLine,
   mcpDraftsFromProjection,
@@ -348,14 +347,10 @@ function renderRoles(): string {
       : `<ul class="settings-list">${fullRoles
           .map((r) => {
             const label = r.displayName && r.displayName !== r.name ? `${r.displayName} · ${r.name}` : r.name;
-            const pol = r.a2aPolicy || "deny";
-            const rosterBit =
-              r.roster && r.roster.length ? ` · roster ${r.roster.length}` : "";
             const editing = roleEditName === r.name;
             return `<li class="settings-list-item${editing ? " is-editing" : ""}">
               <div class="settings-list-main">
                 <strong>${escapeHtml(label)}</strong>
-                <span class="muted">a2a ${escapeHtml(pol)}${escapeHtml(rosterBit)}</span>
                 ${r.roleId ? `<span class="faint"><code>${escapeHtml(r.roleId)}</code></span>` : ""}
                 ${r.description ? `<span class="muted">${escapeHtml(r.description)}</span>` : ""}
               </div>
@@ -378,11 +373,6 @@ function renderRoles(): string {
         <input id="role-description" class="field" placeholder="描述（可选）" />
         <textarea id="role-prompt" class="field settings-role-prompt" rows="3" placeholder="prompt（可选）"></textarea>
         <input id="role-color" class="field" placeholder="颜色 token（可选，如 gray）" />
-        <select id="role-a2a" class="field">
-          <option value="deny">a2a: deny</option>
-          <option value="ask">a2a: ask</option>
-          <option value="allow">a2a: allow</option>
-        </select>
         <button type="button" id="btn-role-create" class="btn btn-primary">创建</button>
       </div>
     </div>`;
@@ -390,15 +380,13 @@ function renderRoles(): string {
   return `
     <div class="settings-block">
       <div class="surface-section-head">角色</div>
-      <p class="muted">运营键 name 不可改；显示名 / prompt / a2a / 白名单经 registry.role.update。</p>
+      <p class="muted">运营键 name 不可改；显示名和 prompt 经 registry.role.update。</p>
       ${list}
     </div>
     ${editor}`;
 }
 
 function renderRoleEditor(role: RoleRegistryEntryProjection): string {
-  const pol = role.a2aPolicy || "deny";
-  const rosterText = formatRosterText(role.roster);
   return `
     <div class="settings-block">
       <div class="surface-section-head">编辑角色 · ${escapeHtml(role.name)}
@@ -414,14 +402,6 @@ function renderRoleEditor(role: RoleRegistryEntryProjection): string {
         <textarea id="role-edit-prompt" class="field settings-role-prompt" rows="5">${escapeHtml(role.prompt || "")}</textarea>
         <label class="settings-label" for="role-edit-color">颜色</label>
         <input id="role-edit-color" class="field" value="${escapeHtml(role.color || "")}" placeholder="gray / blue …" />
-        <label class="settings-label" for="role-edit-a2a">a2aPolicy</label>
-        <select id="role-edit-a2a" class="field">
-          <option value="deny"${pol === "deny" ? " selected" : ""}>deny</option>
-          <option value="ask"${pol === "ask" ? " selected" : ""}>ask</option>
-          <option value="allow"${pol === "allow" ? " selected" : ""}>allow</option>
-        </select>
-        <label class="settings-label" for="role-edit-roster">roster（逗号分隔 agentId；空=清空）</label>
-        <input id="role-edit-roster" class="field" value="${escapeHtml(rosterText)}" placeholder="例如 core-worker" />
         <div class="settings-row">
           <button type="button" id="btn-role-save" class="btn btn-primary">保存</button>
         </div>
@@ -922,12 +902,7 @@ async function onRoleCreate(): Promise<void> {
     (document.getElementById("role-prompt") as HTMLTextAreaElement | HTMLInputElement | null)
       ?.value || "";
   const color = (document.getElementById("role-color") as HTMLInputElement | null)?.value || "";
-  const a2aPolicy = (document.getElementById("role-a2a") as HTMLSelectElement | null)?.value as
-    | "allow"
-    | "ask"
-    | "deny"
-    | undefined;
-  const built = validateRoleCreate({ name, displayName, description, prompt, color, a2aPolicy });
+  const built = validateRoleCreate({ name, displayName, description, prompt, color });
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
@@ -960,10 +935,6 @@ async function onRoleSave(): Promise<void> {
   const prompt =
     (document.getElementById("role-edit-prompt") as HTMLTextAreaElement | null)?.value || "";
   const color = (document.getElementById("role-edit-color") as HTMLInputElement | null)?.value || "";
-  const a2aPolicy = (document.getElementById("role-edit-a2a") as HTMLSelectElement | null)
-    ?.value as "allow" | "ask" | "deny" | undefined;
-  const rosterText =
-    (document.getElementById("role-edit-roster") as HTMLInputElement | null)?.value || "";
   const built = validateRoleUpdate({
     name: roleEditName,
     roleId: role?.roleId,
@@ -971,8 +942,6 @@ async function onRoleSave(): Promise<void> {
     description,
     prompt,
     color,
-    a2aPolicy,
-    rosterText,
   });
   if (!built.ok) {
     el.status.textContent = built.reason;

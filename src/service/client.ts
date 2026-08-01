@@ -569,11 +569,7 @@ export class ServiceClient {
       actor: args.actor ?? "user",
     });
   }
-  /**
-   * Read-only role registry projection (name-sorted).
-   * Each role may include roster agentIds plus rosterEntries readiness
-   * (`ready` | `missing-definition` | `missing-profile`). Never secrets.
-   */
+  /** Read-only durable Role registry projection (name-sorted). */
   registryRoles(workspaceId: string) {
     return this.call("registry.roles", { workspaceId });
   }
@@ -589,9 +585,6 @@ export class ServiceClient {
       prompt?: string;
       description?: string;
       color?: string;
-      a2aPolicy?: "allow" | "ask" | "deny";
-      /** Authorized AgentDefinition ids (standing roster). */
-      roster?: string[];
       cli?: { command: string; resume?: string };
       actor?: string;
     }
@@ -617,10 +610,6 @@ export class ServiceClient {
       description?: string | null;
       /** null or an empty string clears the field. */
       color?: string | null;
-      /** null or an empty string clears the field (effective deny). */
-      a2aPolicy?: "allow" | "ask" | "deny" | null;
-      /** Authorized AgentDefinition ids; null or [] clears. */
-      roster?: string[] | null;
       /** null clears the host CLI hint. */
       cli?: { command: string; resume?: string } | null;
       actor?: string;
@@ -629,36 +618,6 @@ export class ServiceClient {
     return this.call("registry.role.update", { workspaceId, name, ...patch });
   }
 
-  // ---- convenience: machine-local AgentDefinition (logical worker identity) ----
-  agentList() {
-    return this.call("agent.list", {});
-  }
-  agentGet(id: string) {
-    return this.call("agent.get", { id });
-  }
-  agentCreate(agent: {
-    id: string;
-    profileId: string;
-    displayName?: string;
-    description?: string;
-    actor?: string;
-  }) {
-    return this.call("agent.create", { ...agent, actor: agent.actor ?? "user" });
-  }
-  agentUpdate(
-    id: string,
-    patch: {
-      profileId?: string;
-      displayName?: string | null;
-      description?: string | null;
-      actor?: string;
-    }
-  ) {
-    return this.call("agent.update", { ...patch, id, actor: patch.actor ?? "user" });
-  }
-  agentDelete(id: string, confirmation: string, actor = "user") {
-    return this.call("agent.delete", { id, confirmation, actor });
-  }
   /**
    * User-only role delete. confirmation must equal operational name or roleId.
    * Refuses when the role has an active task or live managed session.
@@ -752,13 +711,10 @@ export class ServiceClient {
        * This is the only public Node selection input.
        */
       nodeIds: string[];
-      /**
-       * Required for assigneeKind=role (default). Optional/ignored for agentProfile
-       * when equal to profileId; must not differ from profileId.
-       */
+      /** Required for assigneeKind=role (default). */
       role?: string;
-      /** Defaults to role. agentProfile requires profileId or agentId and does not register a role. */
-      assigneeKind?: "role" | "agentProfile";
+      /** Defaults to role. route starts one temporary ACP Session from Settings. */
+      assigneeKind?: "role" | "route";
       prompt: string;
       /**
        * Explicit parent actor (V0.2). Required on every dispatch.
@@ -779,17 +735,8 @@ export class ServiceClient {
       asSub?: boolean;
       deliveryPolicy?: string;
       startSession?: boolean;
-      /**
-       * Required for assigneeKind=agentProfile and whenever startSession is true
-       * (unless agentId is provided and resolves a profile binding).
-       * For profile tasks this is also the stable assignee / delivery label.
-       */
-      profileId?: string;
-      /**
-       * Logical AgentDefinition id. Role-authorized dispatch uses roster membership
-       * on this id; Service resolves machine-local profileId for launch.
-       */
-      agentId?: string;
+      /** Required for assigneeKind=route and whenever startSession is true. */
+      routeId?: string;
       callerKind?: "user" | "role";
     }
   ) {
@@ -903,7 +850,7 @@ export class ServiceClient {
     workspaceId: string,
     args: {
       taskPath: string;
-      /** Required — no fake-default or product-profile fallback. */
+      /** Required machine Settings route key. */
       profileId: string;
       callerKind?: "user" | "role";
       bootstrapPrompt?: string;
@@ -922,7 +869,7 @@ export class ServiceClient {
     workspaceId: string,
     args: {
       taskPath: string;
-      /** Required — must match agentProfile assignee when applicable. */
+      /** Required machine Settings route key. */
       profileId: string;
       callerKind?: "user" | "role";
     }

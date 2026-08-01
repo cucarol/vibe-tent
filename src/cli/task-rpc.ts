@@ -219,10 +219,9 @@ export async function runTaskCommand(
         const callerKind: "user" | "role" = roleCaller ? "role" : "user";
         const asSub = roleCaller ? true : undefined;
 
-        // Internal RPC fields required by current Service wire only:
+        // Service RPC mirrors the public model:
         // - role target: durable Role handoff, queued, never startSession
-        // - route target: current Service wire uses profileId + assigneeKind=agentProfile +
-        //   startSession for the selected Settings route.
+        // - route target: temporary ACP Session from the selected Settings route.
         // nodeIds is the sole public Node selection and persists only through
         // Context Card refs.nodes. No single-Node compatibility field is emitted.
         const common = {
@@ -241,8 +240,8 @@ export async function runTaskCommand(
               }
             : {
                 ...common,
-                assigneeKind: "agentProfile" as const,
-                profileId: targetId,
+                assigneeKind: "route" as const,
+                routeId: targetId,
                 startSession: true as const,
               };
 

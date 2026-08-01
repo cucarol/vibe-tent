@@ -53,7 +53,6 @@ function sampleGeneration(extra?: string): string {
     agentsPointerDigest: "agents-d1",
     tentRoleDigest: "role-skill-d1",
     rolePrompt: "Stay in scope.",
-    rosterAgentIds: ["coder", "reviewer"],
     tentTaskDigest: "task-skill-d1",
     profileAdapterCompatibility: profileAdapterCompatibilityDigest({
       profileId: "grok-core-worker",
@@ -110,11 +109,10 @@ test("contextGeneration is cg-v1-<sha256> and stable for identical inputs", () =
 
 test("contextGeneration changes when stable compatibility inputs change", () => {
   const base = sampleGeneration();
-  const rosterChange = computeContextGeneration({
+  const rolePromptChange = computeContextGeneration({
     workspaceIdentity: "ws-test",
     agentsPointerDigest: "agents-d1",
-    rolePrompt: "Stay in scope.",
-    rosterAgentIds: ["coder", "reviewer", "new-agent"],
+    rolePrompt: "Stay in scope, precisely.",
     tentTaskDigest: "task-skill-d1",
     profileAdapterCompatibility: profileAdapterCompatibilityDigest({
       profileId: "grok-core-worker",
@@ -122,7 +120,7 @@ test("contextGeneration changes when stable compatibility inputs change", () => 
     }),
   });
   const rulesChange = sampleGeneration("rules-bump");
-  assert.notEqual(base, rosterChange);
+  assert.notEqual(base, rolePromptChange);
   assert.notEqual(base, rulesChange);
 });
 
@@ -339,7 +337,7 @@ test("assembleManagedPrompt order: invariant → project → role → task → c
     systemRoot: "C:/ws/.tent",
     agentsPointer: "AGENTS.md#d1",
     tentRoleSection: "## Built-in skill: tent-role\n\nrole contract body",
-    rolePromptRosterSection: "## Role prompt\n\nStay sharp.\n\n## Role roster\n\n- coder",
+    rolePromptSection: "## Role prompt\n\nStay sharp.",
     tentTaskSection: "## Built-in skill: tent-task\n\ntask contract body",
     contextCard: card,
     taskPointers: "Task envelope: temp/x.md",

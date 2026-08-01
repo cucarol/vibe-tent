@@ -4336,8 +4336,8 @@ test("reject-resume restores live managed session for agentProfile tasks", async
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [boxId],
-      assigneeKind: "agentProfile",
-      profileId: "fake-default",
+      assigneeKind: "route",
+      routeId: "fake-default",
       prompt: "profile reject resume",
       deliveryPolicy: "review",
     });

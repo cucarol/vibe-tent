@@ -53,7 +53,6 @@ export type StableContextGenerationBundle = {
   tentTaskDigest: string;
   tentTaskVersion: string;
   rolePrompt: string;
-  rosterAgentIds: string[];
   /**
    * Skill-set compatibility digest (name + body/version).
    * Session row field remains `skillsDigest` for wire compatibility.
@@ -101,7 +100,7 @@ export type CollectStableContextGenerationInput = {
 /**
  * Resolve a required Role from the workspace registry.
  * Fail loud on missing roleFs, registry read/parse failure, or missing named Role —
- * never invent empty prompt/roster fallback facts for a required Role.
+ * never invent an empty Role prompt fallback for a required Role.
  */
 async function requireResolvedRoleFromRegistry(
   roleFs: FsAdapter | undefined,
@@ -225,14 +224,6 @@ export async function collectStableContextGeneration(
 
   const rolePrompt =
     input.assigneeKind === "role" ? skillInputs.rolePrompt : role?.prompt?.trim() || "";
-  const rosterAgentIds =
-    input.assigneeKind === "role"
-      ? skillInputs.roster
-      : [...(role?.roster ?? [])]
-          .map((s) => s.trim())
-          .filter(Boolean)
-          .sort((a, b) => a.localeCompare(b));
-
   const purpose = managedSessionPurpose({
     purpose: input.purpose,
     subKey: input.subKey,
@@ -258,7 +249,6 @@ export async function collectStableContextGeneration(
     tentTaskBody,
     tentTaskVersion,
     rolePrompt: input.assigneeKind === "role" ? rolePrompt : undefined,
-    rosterAgentIds: input.assigneeKind === "role" ? rosterAgentIds : undefined,
     profileId: input.profileId,
     adapterId: input.adapterId,
     purpose,
@@ -293,7 +283,6 @@ export async function collectStableContextGeneration(
     tentTaskDigest,
     tentTaskVersion,
     rolePrompt,
-    rosterAgentIds,
     skillsDigest: skillSetDigest,
     skillSetDigest,
     purpose,

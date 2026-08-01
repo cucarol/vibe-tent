@@ -654,12 +654,13 @@ test("managed bootstrap appends Role Checkpoint as dynamic tail for durable role
         workspaceId,
         nodeIds: [boxId],
         role: "fake-default",
-        assigneeKind: "agentProfile",
+        assigneeKind: "route",
         prompt: "profile one-shot",
         deliveryPolicy: "review",
+        callerKind: "role",
         parentActor: { kind: "role", id: "executor" },
         reviewer: { kind: "role", id: "executor" },
-        profileId: "fake-default",
+        routeId: "fake-default",
       });
       // May fail occupation if still active — cancel first if needed.
       if (profileDispatch.error) {

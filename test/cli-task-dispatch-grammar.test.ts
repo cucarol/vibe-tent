@@ -157,7 +157,7 @@ test("role target: queued durable handoff; multi --node; no startSession", async
   });
 });
 
-test("route target: managed ACP startSession via profileId wire; multi --node", async () => {
+test("route target: managed ACP startSession via routeId wire; multi --node", async () => {
   const cwd = await makeFakeTentCwd();
   const { client, calls } = capturingDispatchClient();
   await withTentRole(undefined, async () => {
@@ -179,11 +179,12 @@ test("route target: managed ACP startSession via profileId wire; multi --node", 
     assert.equal(r.exitCode, 0, r.stderr + r.stdout);
     assert.equal(calls.length, 1);
     const args = calls[0]!;
-    assert.equal(args.assigneeKind, "agentProfile");
+    assert.equal(args.assigneeKind, "route");
     assert.equal(args.agentId, undefined);
     assert.equal(args.startSession, true);
     assert.equal(args.role, undefined);
-    assert.equal(args.profileId, "route-a");
+    assert.equal(args.routeId, "route-a");
+    assert.equal(args.profileId, undefined);
     assert.deepEqual(args.nodeIds, ["cx-alpha", "cx-beta"]);
     assert.equal(args.nodes, undefined, "must not send retired nodes[] key");
     assert.deepEqual(args.parentActor, { kind: "user", id: "user" });
@@ -264,7 +265,7 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
     assert.equal(args.asSub, true, "Role caller route:* targets parent Role Git lane");
     assert.equal(args.startSession, true);
     assert.equal(args.agentId, undefined);
-    assert.equal(args.profileId, "route-a");
+    assert.equal(args.routeId, "route-a");
   });
 
   // User-direct → route:* : no asSub
@@ -290,7 +291,7 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
     assert.equal(args.asSub, undefined, "user-direct route:* must not set asSub");
     assert.equal(args.startSession, true);
     assert.equal(args.agentId, undefined);
-    assert.equal(args.profileId, "route-b");
+    assert.equal(args.routeId, "route-b");
   });
 
   // User-direct → role:* : no asSub

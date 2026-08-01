@@ -19,7 +19,13 @@ export type RoleRpcGlobalOptions = {
 
 export type RoleCommandResult = { exitCode: number; stdout: string; stderr: string };
 
-const RETIRED_ROLE_FLAGS = new Set(["roster", "roster-add", "roster-remove"]);
+const RETIRED_ROLE_FLAGS = new Set([
+  "roster",
+  "roster-add",
+  "roster-remove",
+  "a2a-policy",
+  "a2aPolicy",
+]);
 const COMMON_ROLE_FLAGS = new Set(["json", "attach-only", "data-dir", "service-entry", "workspace"]);
 const METADATA_ROLE_FLAGS = new Set([
   "display-name",
@@ -27,8 +33,6 @@ const METADATA_ROLE_FLAGS = new Set([
   "prompt",
   "description",
   "color",
-  "a2a-policy",
-  "a2aPolicy",
 ]);
 
 export async function runRoleCommand(
@@ -95,7 +99,7 @@ Usage:
   tent role list   [--workspace <path>] [--json]
   tent role show   <name|roleId> [--workspace <path>] [--json]
   tent role config <name|roleId> [--display-name <label>] [--prompt <text>]
-                   [--description <text>] [--color <value>] [--a2a-policy allow|ask|deny] [--json]
+                   [--description <text>] [--color <value>] [--json]
 
 list/show project Role metadata only.
 config patches Role metadata via registry.role.update (actor=user).
@@ -115,7 +119,7 @@ async function configRole(
   }
   const hasMeta =
     "display-name" in flags || "displayName" in flags || "prompt" in flags ||
-    "description" in flags || "a2a-policy" in flags || "a2aPolicy" in flags || "color" in flags;
+    "description" in flags || "color" in flags;
   if (!hasMeta) {
     return fail("tent role config requires Role metadata options");
   }
@@ -130,7 +134,6 @@ async function configRole(
     prompt?: string | null;
     description?: string | null;
     color?: string | null;
-    a2aPolicy?: "allow" | "ask" | "deny" | null;
     actor: string;
   } = { actor: "user" };
   if (current.roleId) patch.roleId = current.roleId;
@@ -140,12 +143,6 @@ async function configRole(
   if ("prompt" in flags) patch.prompt = flags.prompt === "" ? null : flags.prompt;
   if ("description" in flags) patch.description = flags.description === "" ? null : flags.description;
   if ("color" in flags) patch.color = flags.color === "" ? null : flags.color;
-  if ("a2a-policy" in flags || "a2aPolicy" in flags) {
-    const raw = flags["a2a-policy"] ?? flags.a2aPolicy ?? "";
-    if (raw === "" || raw === "null") patch.a2aPolicy = null;
-    else if (raw === "allow" || raw === "ask" || raw === "deny") patch.a2aPolicy = raw;
-    else return fail(`tent role config --a2a-policy must be allow|ask|deny (got ${raw})`);
-  }
 
   const result = (await client.registryRoleUpdate(workspaceId, current.name, patch)) as {
     workspaceId: string;
@@ -155,7 +152,7 @@ async function configRole(
   return print({ workspaceId, role }, json, () => `Updated role ${role.name}\n` + formatRole(role));
 }
 
-/** Whitelist Role metadata; roster authorization is not a CLI projection. */
+/** Whitelist durable Role metadata. */
 function whitelistRole(raw: RoleRegistryEntryProjection | Record<string, unknown>): RoleRegistryEntryProjection {
   const src = raw as Record<string, unknown>;
   const name = typeof src.name === "string" ? src.name : "";
@@ -168,7 +165,6 @@ function whitelistRole(raw: RoleRegistryEntryProjection | Record<string, unknown
   if (typeof src.description === "string") role.description = src.description;
   if (typeof src.color === "string") role.color = src.color;
   if (typeof src.prompt === "string") role.prompt = src.prompt;
-  if (src.a2aPolicy === "allow" || src.a2aPolicy === "ask" || src.a2aPolicy === "deny") role.a2aPolicy = src.a2aPolicy;
   return role;
 }
 
@@ -177,7 +173,6 @@ function formatRole(role: RoleRegistryEntryProjection): string {
   const lines = [
     `${role.name}${label}${role.roleId ? ` ${role.roleId}` : ""}`,
     ...(role.description ? [`description: ${role.description}`] : []),
-    ...(role.a2aPolicy ? [`a2aPolicy: ${role.a2aPolicy}`] : []),
   ];
   return lines.join("\n") + "\n";
 }

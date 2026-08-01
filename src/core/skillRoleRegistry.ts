@@ -10,9 +10,6 @@ import { backupCorruptRegistry, warnRegistryRecovered } from "./registryRecovery
 import { AGENT_PROFILES_TEMP_DIR, ROLES_REGISTRY_PATH } from "./paths.js";
 export { ROLES_REGISTRY_PATH };
 
-/** Machine-readable A2A spawn authority (task-api §4). Default deny when omitted. */
-export type RoleA2APolicy = "allow" | "ask" | "deny";
-
 /**
  * Role registry row.
  *
@@ -44,21 +41,6 @@ export interface RoleDefinition {
   description?: string;
   /** 色板色名(gray/red/.../brown);注册表行左侧强调条 + owner 取色用。 */
   color?: string;
-  /**
-   * Whether this role may start AgentProfile sessions for other roles / itself via service.
-   * Server-enforced; clients cannot override for ordinary role callers. Never store secrets here.
-   * Default: deny.
-   */
-  a2aPolicy?: RoleA2APolicy;
-  /**
-   * Authorized downstream AgentDefinition ids (logical workers).
-   * Roster membership is standing user authorization for Role dispatch — not per-Sub allow/ask/deny.
-   * Store **agentIds only** — never credentials, tokens, provider, or model.
-   * Omitted / empty means no agents authorized.
-   * Legacy on-disk `allowedProfiles` is read only by the one-time disk migrator and
-   * never appears on normalized/current rows or public projections.
-   */
-  roster?: string[];
   /** Optional host-orchestrator hint. Tent records this but never spawns it. */
   cli?: RoleCliConfig;
 }
@@ -91,7 +73,6 @@ const DEFAULT_ROLES_REGISTRY: LoadedRolesRegistry = {
 /**
  * 正常路径只读扁平 roles.json；嵌套 `.tent/roles.json` 由一次性迁移搬迁。
  * 旧行缺 id/displayName 时在**内存**确定性投影；普通 read **不写盘**。
- * 例外：`allowedProfiles` → `roster` 是一次性写前迁移（见 ensureRolesRosterMigrated）。
  * 其他持久化只发生在 create/update/delete 等显式 mutation。
  */
 export async function loadRolesRegistry(fs: FsAdapter): Promise<LoadedRolesRegistry> {
@@ -99,55 +80,26 @@ export async function loadRolesRegistry(fs: FsAdapter): Promise<LoadedRolesRegis
   return registry;
 }
 
-/**
- * One-time write-forward: rewrite roles.json when any row still has legacy
- * `allowedProfiles` (→ `roster`, agentId defaults to former profileId).
- * Idempotent. Does not dual-write both fields. Does not invent roles.
- */
-export async function ensureRolesRosterMigrated(fs: FsAdapter): Promise<{
-  registry: LoadedRolesRegistry;
-  wrote: boolean;
-}> {
-  const state = await readRolesRegistryState(fs);
-  if (!state.rosterMigrated) {
-    return { registry: state.registry, wrote: false };
-  }
-  await withTentMutation(fs, async () => {
-    // Re-read inside lock so concurrent mutations win cleanly.
-    const again = await readRolesRegistryState(fs);
-    if (!again.rosterMigrated) return;
-    await writeJson(fs, ROLES_REGISTRY_PATH, serializeRolesRegistry(again.registry));
-  });
-  const after = await loadRolesRegistry(fs);
-  return { registry: after, wrote: true };
-}
-
-/** Same as loadRolesRegistry — kept for mutation call sites (no silent write beyond roster migrate). */
+/** Same as loadRolesRegistry — kept for mutation call sites. */
 async function loadRolesRegistryForMutation(fs: FsAdapter): Promise<LoadedRolesRegistry> {
   return loadRolesRegistry(fs);
 }
 
 async function readRolesRegistryState(fs: FsAdapter): Promise<{
   registry: LoadedRolesRegistry;
-  migrated: boolean;
-  /** True when disk still carries allowedProfiles that normalized into roster. */
-  rosterMigrated: boolean;
   recovered: boolean;
 }> {
   if (!(await fs.exists(ROLES_REGISTRY_PATH))) {
     return {
       registry: cloneDefaultRoles(),
-      migrated: false,
-      rosterMigrated: false,
       recovered: false,
     };
   }
   try {
     const rawText = await fs.readFile(ROLES_REGISTRY_PATH);
     const parsed = JSON.parse(rawText) as unknown;
-    const { registry, migrated, rosterMigrated } =
-      normalizeRolesRegistryWithMigration(parsed);
-    return { registry, migrated, rosterMigrated, recovered: false };
+    const registry = normalizeRolesRegistry(parsed);
+    return { registry, recovered: false };
   } catch {
     const backupPath = await backupCorruptRegistry(fs, ROLES_REGISTRY_PATH);
     const reset = cloneDefaultRoles();
@@ -160,8 +112,6 @@ async function readRolesRegistryState(fs: FsAdapter): Promise<{
     );
     return {
       registry: reset,
-      migrated: false,
-      rosterMigrated: false,
       recovered: true,
     };
   }
@@ -172,11 +122,6 @@ export async function createRole(
   definition: RoleDefinition,
   rand: RandomSource = Math.random
 ): Promise<void> {
-  if (Object.prototype.hasOwnProperty.call(definition as object, "allowedProfiles")) {
-    throw new Error(
-      "Role mutations no longer accept allowedProfiles; use roster (agentIds). Legacy allowedProfiles is migrated once from disk only."
-    );
-  }
   await withTentMutation(fs, async () => {
     const registry = await loadRolesRegistryForMutation(fs);
     const usedIds = roleIdSet(registry.roles);
@@ -240,19 +185,6 @@ export async function updateRole(
       { usedIds: roleIdSet(registry.roles, current.id), assignMissingId: "keep" }
     );
 
-    // Explicit roster on the patch (including empty) replaces the prior list.
-    // Without this, `{ ...existing, ...patch }` cannot clear the field when normalize drops [].
-    if (Object.prototype.hasOwnProperty.call(patch, "roster")) {
-      const normalized = normalizeAgentIdList(patch.roster);
-      if (normalized) next.roster = normalized;
-      else delete next.roster;
-    }
-    // New mutations must not pass allowedProfiles — disk migrator is the only legacy path.
-    if (Object.prototype.hasOwnProperty.call(patch, "allowedProfiles")) {
-      throw new Error(
-        "Role mutations no longer accept allowedProfiles; use roster (agentIds). Legacy allowedProfiles is migrated once from disk only."
-      );
-    }
     // Explicit displayName clear falls back to operational name (never empty).
     if (Object.prototype.hasOwnProperty.call(patch, "displayName")) {
       const dn =
@@ -310,51 +242,26 @@ export function findRoleIndex(roles: readonly RoleDefinition[], ref: string): nu
   return roles.findIndex((role) => role.name === key);
 }
 
-function normalizeRolesRegistryWithMigration(value: unknown): {
-  registry: LoadedRolesRegistry;
-  migrated: boolean;
-  rosterMigrated: boolean;
-} {
+function normalizeRolesRegistry(value: unknown): LoadedRolesRegistry {
   const root = isRecord(value) ? value : {};
   const roles: LoadedRoleDefinition[] = [];
-  let migrated = false;
-  let rosterMigrated = false;
   const usedIds = new Set<string>();
 
   if (Array.isArray(root.roles)) {
     for (const item of root.roles) {
       if (!isRecord(item)) continue;
-      const hadId = typeof item.id === "string" && isRoleId(item.id.trim());
-      const hadDisplayName =
-        typeof item.displayName === "string" && item.displayName.trim().length > 0;
-      // Any on-disk allowedProfiles key (even empty) must be rewritten away once.
-      const hadLegacyAllowedKey = Object.prototype.hasOwnProperty.call(
-        item,
-        "allowedProfiles"
-      );
       const role = normalizeRoleDefinition(item, {
         usedIds,
         assignMissingId: "deterministic",
       });
       if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
       if (roles.some((existing) => existing.id === role.id)) continue;
-      // One-time: allowedProfiles → roster (agentId defaults to former profileId).
-      // Do not keep dual-read: after normalize, only roster remains on the row.
-      if (hadLegacyAllowedKey) {
-        migrated = true;
-        rosterMigrated = true;
-      }
-      if (!hadId || !hadDisplayName) migrated = true;
       usedIds.add(role.id);
       roles.push(role);
     }
   }
 
-  return { registry: { roles }, migrated, rosterMigrated };
-}
-
-function normalizeRolesRegistry(value: unknown): LoadedRolesRegistry {
-  return normalizeRolesRegistryWithMigration(value).registry;
+  return { roles };
 }
 
 export interface NormalizeRoleOptions {
@@ -404,75 +311,9 @@ export function normalizeRoleDefinition(
     role.description = value.description.trim();
   }
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
-  const a2a = normalizeA2APolicy(value.a2aPolicy);
-  if (a2a) role.a2aPolicy = a2a;
-  // Prefer explicit roster; otherwise one-time project raw allowedProfiles → roster.
-  // Normalized rows never retain allowedProfiles (no dual-read).
-  const rosterFromField = normalizeAgentIdList(value.roster);
-  const rawLegacy = (value as Record<string, unknown>).allowedProfiles;
-  const rosterFromLegacy = normalizeAgentIdList(rawLegacy);
-  const roster = rosterFromField ?? rosterFromLegacy;
-  if (roster) role.roster = roster;
   const cli = normalizeCliConfig(value.cli);
   if (cli) role.cli = cli;
   return role;
-}
-
-/** Resolve effective policy for a role definition (missing → deny). */
-export function roleA2APolicy(role: RoleDefinition | undefined): RoleA2APolicy {
-  return role?.a2aPolicy ?? "deny";
-}
-
-/**
- * Whether agentId is on the role's roster (standing authorization).
- * Missing / empty list → not allowed.
- * Comparison is exact on already-normalized ids (trim; case-sensitive).
- */
-export function roleAllowsAgent(
-  role: RoleDefinition | undefined,
-  agentId: string
-): boolean {
-  const id = typeof agentId === "string" ? agentId.trim() : "";
-  if (!id) return false;
-  const roster = role?.roster;
-  if (!roster || roster.length === 0) return false;
-  return roster.includes(id);
-}
-
-/**
- * Normalize agentId lists: trim, drop empties, de-dupe (first wins).
- * Also used by the one-time disk migrator for legacy allowedProfiles values.
- * Returns undefined when absent or empty so roles.json does not store empty arrays.
- */
-export function normalizeAgentIdList(value: unknown): string[] | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (!Array.isArray(value)) {
-    // Invalid shape ignored on load (same spirit as bad a2aPolicy) so a bad field
-    // cannot wipe the registry. Mutations should validate via parse helpers.
-    return undefined;
-  }
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const item of value) {
-    if (typeof item !== "string") continue;
-    const id = item.trim();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    out.push(id);
-  }
-  return out.length > 0 ? out : undefined;
-}
-
-/** Effective roster for a role (empty when unset). */
-export function roleRoster(role: RoleDefinition | undefined): string[] {
-  return role?.roster && role.roster.length > 0 ? [...role.roster] : [];
-}
-
-function normalizeA2APolicy(value: unknown): RoleA2APolicy | undefined {
-  if (value === undefined || value === null || value === "") return undefined;
-  if (value === "allow" || value === "ask" || value === "deny") return value;
-  // Invalid values are ignored (effective deny) so a bad field cannot wipe the registry.
-  return undefined;
 }
 
 function normalizeCliConfig(value: unknown): RoleCliConfig | undefined {
@@ -499,7 +340,7 @@ function roleIdSet(roles: readonly RoleDefinition[], exceptId?: string): Set<str
   return set;
 }
 
-/** Disk shape: always write id + displayName; omit empty optionals. Never write allowedProfiles. */
+/** Disk shape: always write id + displayName; omit empty optionals. */
 function serializeRolesRegistry(registry: LoadedRolesRegistry): LoadedRolesRegistry {
   return {
     roles: registry.roles.map((role) => {
@@ -511,11 +352,6 @@ function serializeRolesRegistry(registry: LoadedRolesRegistry): LoadedRolesRegis
       if (role.prompt) row.prompt = role.prompt;
       if (role.description) row.description = role.description;
       if (role.color) row.color = role.color;
-      if (role.a2aPolicy) row.a2aPolicy = role.a2aPolicy;
-      if (role.roster && role.roster.length > 0) {
-        row.roster = [...role.roster];
-      }
-      // Intentionally omit allowedProfiles — one-time migration is write-forward only.
       if (role.cli) row.cli = { ...role.cli };
       return row;
     }),

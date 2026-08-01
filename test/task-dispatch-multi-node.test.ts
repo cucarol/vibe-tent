@@ -379,8 +379,8 @@ test("service task.dispatch: nodeIds 2+ refs ordered + deduped in Context Card",
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [idB, idA, idB, idA],
-      assigneeKind: "agentProfile",
-      profileId: "fake-default",
+      assigneeKind: "route",
+      routeId: "fake-default",
       prompt: "service multi-node ordered",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
@@ -398,8 +398,8 @@ test("service task.dispatch: nodeIds 2+ refs ordered + deduped in Context Card",
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [idA],
-      assigneeKind: "agentProfile",
-      profileId: "fake-default",
+      assigneeKind: "route",
+      routeId: "fake-default",
       prompt: "same exact Node must wait",
     });
     assert.ok(blocked.error, "an active Task must occupy each exact referenced Node");
@@ -421,8 +421,8 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [idA, "bx-missing-zz"],
-      assigneeKind: "agentProfile",
-      profileId: "fake-default",
+      assigneeKind: "route",
+      routeId: "fake-default",
       prompt: "missing ref",
     });
     assert.ok(missing.error, "expected missing node fail");
@@ -434,8 +434,8 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [],
-      assigneeKind: "agentProfile",
-      profileId: "fake-default",
+      assigneeKind: "route",
+      routeId: "fake-default",
       prompt: "empty",
     });
     assert.ok(empty.error);
@@ -447,8 +447,8 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [idA, 42],
-      assigneeKind: "agentProfile",
-      profileId: "fake-default",
+      assigneeKind: "route",
+      routeId: "fake-default",
       prompt: "bad type",
     });
     assert.ok(bad.error);
@@ -461,8 +461,8 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
         workspaceId,
         [retiredField]: idA,
         nodeIds: [idB],
-        assigneeKind: "agentProfile",
-        profileId: "fake-default",
+        assigneeKind: "route",
+        routeId: "fake-default",
         prompt: `retired ${retiredField}`,
       });
       assert.ok(retired.error, `${retiredField} must fail loud`);
@@ -505,8 +505,8 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [idB, idFree],
-      assigneeKind: "agentProfile",
-      profileId: "fake-default",
+      assigneeKind: "route",
+      routeId: "fake-default",
       prompt: "archived multi",
     });
     assert.ok(archivedDispatch.error, "archived ref must fail loud");
@@ -564,8 +564,8 @@ test("service task.dispatch: Role and agentProfile Tasks use distinct Node selec
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [idC],
-      assigneeKind: "agentProfile",
-      profileId: "fake-default",
+      assigneeKind: "route",
+      routeId: "fake-default",
       prompt: "profile multi-node",
     });
     assert.ok(!profileD.error, JSON.stringify(profileD.error));

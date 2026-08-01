@@ -104,8 +104,6 @@ export type ContextGenerationInputs = {
   tentRoleVersion?: string;
   /** Role prompt text (durable Role only). */
   rolePrompt?: string;
-  /** Sorted authorized agentIds / profile ids for roster digest. */
-  rosterAgentIds?: readonly string[];
   /** Optional tent-task skill body digest. */
   tentTaskDigest?: string;
   /** tent-task skill version marker. */
@@ -220,10 +218,6 @@ export function isContextGenerationId(value: unknown): value is string {
  * Does not include per-Task objective, TaskInput, acceptance, taskId, or checkpoint.
  */
 export function computeContextGeneration(inputs: ContextGenerationInputs): string {
-  const roster = [...(inputs.rosterAgentIds ?? [])]
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .sort((a, b) => a.localeCompare(b));
   const extraStable = sanitizeContextGenerationExtraStable(inputs.extraStable);
   const payload = {
     v: CONTEXT_GENERATION_VERSION,
@@ -232,7 +226,6 @@ export function computeContextGeneration(inputs: ContextGenerationInputs): strin
     tentRoleDigest: inputs.tentRoleDigest?.trim() || "",
     tentRoleVersion: inputs.tentRoleVersion?.trim() || "",
     rolePrompt: inputs.rolePrompt?.trim() || "",
-    roster,
     tentTaskDigest: inputs.tentTaskDigest?.trim() || "",
     tentTaskVersion: inputs.tentTaskVersion?.trim() || "",
     profileAdapterCompatibility: inputs.profileAdapterCompatibility?.trim() || "",
@@ -304,7 +297,6 @@ export function computeContextGenerationFromStableFacts(input: {
   tentTaskBody?: string;
   tentTaskVersion?: string;
   rolePrompt?: string;
-  rosterAgentIds?: readonly string[];
   profileId: string;
   adapterId: string;
   purpose?: string;
@@ -343,7 +335,6 @@ export function computeContextGenerationFromStableFacts(input: {
     tentRoleDigest: tentRoleDigest || undefined,
     tentRoleVersion: input.tentRoleVersion,
     rolePrompt: input.rolePrompt,
-    rosterAgentIds: input.rosterAgentIds,
     tentTaskDigest: tentTaskDigest || undefined,
     tentTaskVersion: input.tentTaskVersion,
     profileAdapterCompatibility: profileAdapterCompatibilityDigest({
@@ -775,8 +766,8 @@ export type ManagedPromptAssemblyInput = {
    * Supplied by tk-3s598jtn compose; optional here.
    */
   tentRoleSection?: string;
-  /** Role prompt + roster digest block (durable Role). */
-  rolePromptRosterSection?: string;
+  /** Durable Role prompt block. */
+  rolePromptSection?: string;
   /**
    * tent-task skill section.
    * Supplied by tk-3s598jtn compose; optional here.
@@ -948,8 +939,8 @@ export function assembleManagedPrompt(
   if (input.tentRoleSection?.trim()) {
     stableParts.push(input.tentRoleSection.trim());
   }
-  if (input.rolePromptRosterSection?.trim()) {
-    stableParts.push(input.rolePromptRosterSection.trim());
+  if (input.rolePromptSection?.trim()) {
+    stableParts.push(input.rolePromptSection.trim());
   }
   if (input.tentTaskSection?.trim()) {
     stableParts.push(input.tentTaskSection.trim());

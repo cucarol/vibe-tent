@@ -178,6 +178,18 @@ async function mountWorkItem(svc: Svc, ws: string) {
   return { workspaceId, boxId: (created.result as { id: string }).id };
 }
 
+let workItemSequence = 0;
+async function createWorkItemNode(svc: Svc, workspaceId: string): Promise<string> {
+  workItemSequence += 1;
+  const created = await rpc(svc, "docs.createNote", {
+    workspaceId,
+    name: `work-item-${workItemSequence}`,
+    type: "prompt",
+  });
+  assert.ok(!created.error, JSON.stringify(created.error));
+  return (created.result as { id: string }).id;
+}
+
 async function initGit(workspace: string): Promise<void> {
   await git(workspace, "init", "-q", "-b", "main");
   await configureTestGitIdentity(workspace);
@@ -362,8 +374,9 @@ test("task.dispatch persists real contextGeneration without taskId; two tasks sh
         workspaceId,
         nodeIds: [boxId],
         prompt: "Task one implement feature A",
-        assigneeKind: "agentProfile",
-        profileId: "fake-resumable",
+        assigneeKind: "route",
+        routeId: "fake-resumable",
+        callerKind: "role",
         parentActor: { kind: "role", id: "orchestrator" },
         reviewer: { kind: "role", id: "orchestrator" },
       });
@@ -376,10 +389,11 @@ test("task.dispatch persists real contextGeneration without taskId; two tasks sh
 
       const d2 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [await createWorkItemNode(svc, workspaceId)],
         prompt: "Task two completely different objective",
-        assigneeKind: "agentProfile",
-        profileId: "fake-resumable",
+        assigneeKind: "route",
+        routeId: "fake-resumable",
+        callerKind: "role",
         parentActor: { kind: "role", id: "orchestrator" },
         reviewer: { kind: "role", id: "orchestrator" },
       });
@@ -415,8 +429,8 @@ test("startSession persists reuse facts; same-lane resume reuses; lane/profile m
         workspaceId,
         nodeIds: [boxId],
         prompt: "First task",
-        assigneeKind: "agentProfile",
-        profileId: "fake-resumable",
+        assigneeKind: "route",
+        routeId: "fake-resumable",
         parentActor: { kind: "role", id: "orchestrator" },
         reviewer: { kind: "role", id: "orchestrator" },
         startSession: true,
@@ -459,10 +473,10 @@ test("startSession persists reuse facts; same-lane resume reuses; lane/profile m
       // contextGeneration still matches (cache-compatible across Tasks).
       const d2 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [await createWorkItemNode(svc, workspaceId)],
         prompt: "Second task different objective same stable facts",
-        assigneeKind: "agentProfile",
-        profileId: "fake-resumable",
+        assigneeKind: "route",
+        routeId: "fake-resumable",
         parentActor: { kind: "role", id: "orchestrator" },
         reviewer: { kind: "role", id: "orchestrator" },
         startSession: true,
@@ -487,10 +501,10 @@ test("startSession persists reuse facts; same-lane resume reuses; lane/profile m
       // Task C: different profile → different generation + fresh Session.
       const d3 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [await createWorkItemNode(svc, workspaceId)],
         prompt: "Third task different profile",
-        assigneeKind: "agentProfile",
-        profileId: "fake-other",
+        assigneeKind: "route",
+        routeId: "fake-other",
         parentActor: { kind: "role", id: "orchestrator" },
         reviewer: { kind: "role", id: "orchestrator" },
         startSession: true,
@@ -529,7 +543,7 @@ test("Role cross-Task: running+stopped Session blocks; accepted prior reuses", a
         role: "executor",
         prompt: "Role task one",
         assigneeKind: "role",
-        profileId: "fake-resumable",
+        routeId: "fake-resumable",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         startSession: true,
@@ -553,11 +567,11 @@ test("Role cross-Task: running+stopped Session blocks; accepted prior reuses", a
 
       const roleBusy = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [await createWorkItemNode(svc, workspaceId)],
         role: "executor",
         prompt: "while A running",
         assigneeKind: "role",
-        profileId: "fake-resumable",
+        routeId: "fake-resumable",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         startSession: true,
@@ -623,7 +637,7 @@ test("Role cross-Task: running+stopped Session blocks; accepted prior reuses", a
         role: "executor",
         prompt: "after A accepted",
         assigneeKind: "role",
-        profileId: "fake-resumable",
+        routeId: "fake-resumable",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         startSession: true,
@@ -661,8 +675,9 @@ test("startSession fails loud when Context Card declares missing Node ref", asyn
         workspaceId,
         nodeIds: [boxId],
         prompt: "will patch bad ref",
-        assigneeKind: "agentProfile",
-        profileId: "fake-resumable",
+        assigneeKind: "route",
+        routeId: "fake-resumable",
+        callerKind: "role",
         parentActor: { kind: "role", id: "orchestrator" },
         reviewer: { kind: "role", id: "orchestrator" },
       });
@@ -1002,7 +1017,7 @@ test("Role startSession captures real profile/adapter generation; purpose mismat
         role: "executor",
         prompt: "role different purpose",
         assigneeKind: "role",
-        profileId: "fake-resumable",
+        routeId: "fake-resumable",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         purpose: "review",
@@ -1064,7 +1079,7 @@ test("Role profile change at startSession rewrites contextGeneration", async () 
         role: "executor",
         prompt: "start with one profile then compare",
         assigneeKind: "role",
-        profileId: "fake-resumable",
+        routeId: "fake-resumable",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         startSession: true,
@@ -1082,7 +1097,7 @@ test("Role profile change at startSession rewrites contextGeneration", async () 
         role: "executor",
         prompt: "same role different profile",
         assigneeKind: "role",
-        profileId: "fake-other",
+        routeId: "fake-other",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         startSession: true,
@@ -1323,8 +1338,8 @@ test("live generation: AGENTS/Role/Skill/profile mutations force fresh Session a
             workspaceId,
             nodeIds: [boxId],
             prompt: "agents mutate path",
-            assigneeKind: "agentProfile",
-            profileId: "fake-resumable",
+            assigneeKind: "route",
+            routeId: "fake-resumable",
             parentActor: { kind: "role", id: "orchestrator" },
             reviewer: { kind: "role", id: "orchestrator" },
             startSession: false,
@@ -1371,10 +1386,10 @@ test("live generation: AGENTS/Role/Skill/profile mutations force fresh Session a
           // ---- tent-task skill body/version: dispatch → mutate package → start ----
           const dSkill = await rpc(svc, "task.dispatch", {
             workspaceId,
-            nodeIds: [boxId],
+            nodeIds: [await createWorkItemNode(svc, workspaceId)],
             prompt: "skill mutate path",
-            assigneeKind: "agentProfile",
-            profileId: "fake-resumable",
+            assigneeKind: "route",
+            routeId: "fake-resumable",
             parentActor: { kind: "role", id: "orchestrator" },
             reviewer: { kind: "role", id: "orchestrator" },
             startSession: false,
@@ -1423,10 +1438,10 @@ test("live generation: AGENTS/Role/Skill/profile mutations force fresh Session a
           // ---- same-profileId launch config in-place edit ----
           const dProf = await rpc(svc, "task.dispatch", {
             workspaceId,
-            nodeIds: [boxId],
+            nodeIds: [await createWorkItemNode(svc, workspaceId)],
             prompt: "profile mutate path",
-            assigneeKind: "agentProfile",
-            profileId: "fake-resumable",
+            assigneeKind: "route",
+            routeId: "fake-resumable",
             parentActor: { kind: "role", id: "orchestrator" },
             reviewer: { kind: "role", id: "orchestrator" },
             startSession: false,
@@ -1473,14 +1488,14 @@ test("live generation: AGENTS/Role/Skill/profile mutations force fresh Session a
             activeDeliveryId: null,
           });
 
-          // ---- Role prompt+roster: dispatch → mutate roles.json → startSession ----
+          // ---- Role prompt: dispatch → mutate roles.json → startSession ----
           const dRole = await rpc(svc, "task.dispatch", {
             workspaceId,
             nodeIds: [boxId],
             role: "executor",
             prompt: "role mutate path",
             assigneeKind: "role",
-            profileId: "fake-resumable",
+            routeId: "fake-resumable",
             parentActor: { kind: "user", id: "user" },
             reviewer: { kind: "user", id: "user" },
             startSession: false,
@@ -1528,7 +1543,7 @@ test("live generation: AGENTS/Role/Skill/profile mutations force fresh Session a
           assert.notEqual(
             tRole.contextGeneration,
             genRoleDispatch,
-            "Role prompt+roster mutation must refresh live generation"
+            "Role prompt mutation must refresh live generation"
           );
           const bootRole = await findFakeBootstrapPrompt(tRole.sessionId!);
           assert.ok(bootRole);
@@ -1561,8 +1576,8 @@ test("bootstrapPrompt custom append on fresh and resumed same-Task start", async
         workspaceId,
         nodeIds: [boxId],
         prompt: "bootstrap append task",
-        assigneeKind: "agentProfile",
-        profileId: "fake-resumable",
+        assigneeKind: "route",
+        routeId: "fake-resumable",
         parentActor: { kind: "role", id: "orchestrator" },
         reviewer: { kind: "role", id: "orchestrator" },
         startSession: false,
@@ -1648,8 +1663,8 @@ test("active same-Task path fails loud on empty/legacy Session contextGeneration
         workspaceId,
         nodeIds: [boxId],
         prompt: "empty gen active path",
-        assigneeKind: "agentProfile",
-        profileId: "fake-resumable",
+        assigneeKind: "route",
+        routeId: "fake-resumable",
         parentActor: { kind: "role", id: "orchestrator" },
         reviewer: { kind: "role", id: "orchestrator" },
         startSession: true,
@@ -1698,7 +1713,7 @@ test("missing/foreign activeDeliveryId fails loud (cannot prove noPendingDeliver
         role: "executor",
         prompt: "prior with foreign delivery pointer",
         assigneeKind: "role",
-        profileId: "fake-resumable",
+        routeId: "fake-resumable",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         startSession: true,
@@ -1725,7 +1740,7 @@ test("missing/foreign activeDeliveryId fails loud (cannot prove noPendingDeliver
         role: "executor",
         prompt: "next after missing delivery pointer",
         assigneeKind: "role",
-        profileId: "fake-resumable",
+        routeId: "fake-resumable",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         startSession: true,
@@ -1763,7 +1778,7 @@ test("missing/foreign activeDeliveryId fails loud (cannot prove noPendingDeliver
         role: "executor",
         prompt: "next after foreign delivery pointer",
         assigneeKind: "role",
-        profileId: "fake-resumable",
+        routeId: "fake-resumable",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         startSession: true,
@@ -1798,7 +1813,7 @@ test("hasBlockingDelivery fails loud when Delivery store is unreadable", async (
         role: "executor",
         prompt: "prior for delivery store fail",
         assigneeKind: "role",
-        profileId: "fake-resumable",
+        routeId: "fake-resumable",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         startSession: true,
@@ -1844,7 +1859,7 @@ test("hasBlockingDelivery fails loud when Delivery store is unreadable", async (
         role: "executor",
         prompt: "next after corrupt delivery store",
         assigneeKind: "role",
-        profileId: "fake-resumable",
+        routeId: "fake-resumable",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         startSession: true,
@@ -1895,7 +1910,7 @@ test("collector failure at startSession fails loud (no reusable fallback)", asyn
             role: "executor",
             prompt: "role collector fail",
             assigneeKind: "role",
-            profileId: "fake-resumable",
+            routeId: "fake-resumable",
             parentActor: { kind: "user", id: "user" },
             reviewer: { kind: "user", id: "user" },
             startSession: false,
@@ -1964,10 +1979,10 @@ test("collector failure at startSession fails loud (no reusable fallback)", asyn
           // ---- parentRole-bound agentProfile: remove parent Role after dispatch ----
           const dProf = await rpc(svc, "task.dispatch", {
             workspaceId,
-            nodeIds: [boxId],
+            nodeIds: [await createWorkItemNode(svc, workspaceId)],
             prompt: "parent-role collector fail",
-            assigneeKind: "agentProfile",
-            profileId: "fake-resumable",
+            assigneeKind: "route",
+            routeId: "fake-resumable",
             parentActor: { kind: "role", id: "orchestrator" },
             reviewer: { kind: "role", id: "orchestrator" },
             startSession: false,
@@ -2036,10 +2051,10 @@ test("collector failure at startSession fails loud (no reusable fallback)", asyn
 
           const dSkill = await rpc(svc, "task.dispatch", {
             workspaceId,
-            nodeIds: [boxId],
+            nodeIds: [await createWorkItemNode(svc, workspaceId)],
             prompt: "missing skill collector fail",
-            assigneeKind: "agentProfile",
-            profileId: "fake-resumable",
+            assigneeKind: "route",
+            routeId: "fake-resumable",
             parentActor: { kind: "role", id: "orchestrator" },
             reviewer: { kind: "role", id: "orchestrator" },
             startSession: false,
@@ -2101,13 +2116,14 @@ test("Service cross-Task prior blockers force fresh; accepted+settled reuses", a
       const now = new Date().toISOString();
 
       async function dispatchRole(prompt: string) {
+        const taskNodeId = await createWorkItemNode(svc, workspaceId);
         const r = await rpc(svc, "task.dispatch", {
           workspaceId,
-          nodeIds: [boxId],
+          nodeIds: [taskNodeId],
           role: "executor",
           prompt,
           assigneeKind: "role",
-          profileId: "fake-resumable",
+          routeId: "fake-resumable",
           parentActor: { kind: "user", id: "user" },
           reviewer: { kind: "user", id: "user" },
           startSession: true,
@@ -2270,7 +2286,7 @@ test("Service cross-Task prior blockers force fresh; accepted+settled reuses", a
       // ---- ready Delivery on prior (unresolved) ----
       const delivery = await createDelivery(envFs, new SystemClock(), {
         taskId: tBase3.id!,
-        boxId,
+        boxId: tBase3.contextCard!.refs.nodes[0]!.id,
         role: "executor",
         summary: "ready delivery blocks reuse",
         status: "ready",
@@ -2333,7 +2349,7 @@ test("Service cross-Task prior blockers force fresh; accepted+settled reuses", a
         role: "executor",
         prompt: "synthetic dual binder",
         assigneeKind: "role",
-        profileId: "fake-resumable",
+        routeId: "fake-resumable",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         startSession: false,

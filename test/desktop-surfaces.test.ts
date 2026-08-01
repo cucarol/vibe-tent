@@ -28,12 +28,10 @@ import {
   buildSkillsPayload,
   credentialListRow,
   CREDENTIAL_VAULT_TYPE,
-  formatRosterText,
   mapProviderCatalogRows,
   mcpCredentialStatusLine,
   mcpDraftsFromProjection,
   mcpSourceLine,
-  parseRosterText,
   PROFILE_NEXT_SESSION_TIP,
   profileDisplayLabel,
   retentionSummaryLine,
@@ -170,7 +168,7 @@ test("mapProviderCatalogRows preserves authoritative verificationLevel", () => {
 test("settings form validators reject bad ids and accept clean payloads", () => {
   assert.equal(validateRoleCreate({ name: "" }).ok, false);
   assert.equal(validateRoleCreate({ name: "1bad" }).ok, false);
-  const role = validateRoleCreate({ name: "executor", displayName: "执行", a2aPolicy: "ask" });
+  const role = validateRoleCreate({ name: "executor", displayName: "执行" });
   assert.equal(role.ok, true);
   if (role.ok) {
     assert.equal(role.payload.name, "executor");
@@ -184,8 +182,6 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
     displayName: "执行者",
     prompt: "",
     description: "d",
-    a2aPolicy: "allow",
-    rosterText: "grok-acp-default, other",
   });
   assert.equal(roleUp.ok, true);
   if (roleUp.ok) {
@@ -193,12 +189,9 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
     assert.equal(roleUp.payload.roleId, "rl-abc");
     assert.equal(roleUp.payload.displayName, "执行者");
     assert.equal(roleUp.payload.prompt, null);
-    assert.equal(roleUp.payload.a2aPolicy, "allow");
-    assert.deepEqual(roleUp.payload.roster, ["grok-acp-default", "other"]);
+    assert.equal("a2aPolicy" in roleUp.payload, false);
     assert.equal(roleUp.payload.actor, "user");
   }
-  assert.deepEqual(parseRosterText(" a, b  b "), ["a", "b"]);
-  assert.equal(formatRosterText(["x", "y"]), "x, y");
 
   assert.equal(validateProfileCreate({ id: "Bad", adapterId: "grok-acp" }).ok, false);
   const prof = validateProfileCreate({

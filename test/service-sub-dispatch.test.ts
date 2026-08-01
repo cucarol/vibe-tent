@@ -449,10 +449,11 @@ test("task.dispatch asSub profile: tent-task lane at dispatch; peer profile stay
     const sub = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [boxId],
-      assigneeKind: "agentProfile",
-      profileId: "fake-default",
+      assigneeKind: "route",
+      routeId: "fake-default",
       prompt: "profile helper",
       asSub: true,
+      callerKind: "role",
       parentActor: { kind: "role", id: "orchestrator" },
       reviewer: { kind: "role", id: "orchestrator" },
     });
@@ -492,8 +493,8 @@ test("task.dispatch asSub profile: tent-task lane at dispatch; peer profile stay
     const peer = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [peerBox],
-      assigneeKind: "agentProfile",
-      profileId: "fake-default",
+      assigneeKind: "route",
+      routeId: "fake-default",
       prompt: "peer profile",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -903,6 +904,14 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
     });
     assert.ok(!child.error, JSON.stringify(child.error));
     const childId = (child.result as { id: string }).id;
+    const subChild = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "child-sub-prompt",
+      type: "prompt",
+      parentPath,
+    });
+    assert.ok(!subChild.error, JSON.stringify(subChild.error));
+    const subChildId = (subChild.result as { id: string }).id;
 
     const parentDispatch = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
@@ -916,12 +925,12 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
     const parentTaskPath = (parentDispatch.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath: parentTaskPath });
 
-    // Node refs are non-exclusive: peer on descendant under active ancestor is legal.
+    // Parent and child Nodes are independently occupiable.
     const peerOk = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [childId],
+      nodeIds: [subChildId],
       role: "helper",
       prompt: "peer concurrent under ancestor",
     });
@@ -949,7 +958,7 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
     assert.equal(subResult.workspaceLane?.baseCommit, undefined, "Role asSub defers base to claim");
 
     // asSub with a different durable parent Role is still a legal Git sub-lane
-    // (Node refs are not an occupation mutex).
+    // when it uses another exact Node.
     const otherChild = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "child-prompt-2",
@@ -1170,8 +1179,8 @@ test("peer profile dispatch still defers lane; startSession creates tent-task", 
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [boxId],
-      assigneeKind: "agentProfile",
-      profileId: "fake-default",
+      assigneeKind: "route",
+      routeId: "fake-default",
       prompt: "peer profile deferred",
     });
     assert.ok(!peer.error, JSON.stringify(peer.error));

@@ -125,14 +125,9 @@ import { loadTypeRegistry } from "../core/typeRegistry.js";
 import {
   createRole,
   deleteRole,
-  ensureRolesRosterMigrated,
   loadRolesRegistry,
-  normalizeAgentIdList,
   normalizeRoleDefinition,
   resolveRole,
-  roleA2APolicy,
-  roleAllowsAgent,
-  roleRoster,
   updateRole,
   type RoleDefinition,
 } from "../core/skillRoleRegistry.js";
@@ -140,17 +135,6 @@ import {
   assembleManagedSessionBootstrap,
   composeManagedSkillBootstrapPrefix,
 } from "../core/managed-skill-compose.js";
-import {
-  ensureAgentDefinitionsForProfileIds,
-  findAgentDefinition,
-  loadAgentDefinitions,
-  normalizeAgentDefinition,
-  parseAgentDefinitionParams,
-  projectAgentDefinition,
-  resolveProfileIdForAgent,
-  saveAgentDefinitions,
-  type AgentDefinition,
-} from "./agent-definitions.js";
 import {
   boxProjectionOf,
   findActiveTaskForBox,
@@ -228,7 +212,6 @@ import {
 import {
   TaskLifecycleError,
   isActiveTaskState,
-  type A2APolicy,
   type DeliverDecision,
   type DeliveryPolicy,
   type WaitReason,
@@ -294,7 +277,6 @@ import {
   PROTECTED_COLLAB_FIELDS,
   RESERVED_DOCS_WRITE_FIELDS,
   SEMANTIC_DOCS_WRITE_FIELDS,
-  RPC_A2A_DENIED,
   RPC_LIFECYCLE,
   type ArtifactRef,
   type BoxProjection,
@@ -326,7 +308,6 @@ import {
   type ProposalProjection,
   type ProviderCatalogProjection,
   type RoleRegistryEntryProjection,
-  type RoleRosterEntryProjection,
   type SessionProjection,
   type TaskProjection,
   type TypeRegistryEntryProjection,
@@ -532,16 +513,6 @@ export async function dispatchMethod(
         return registryRoleUpdate(ctx, p);
       case "registry.role.delete":
         return registryRoleDelete(ctx, p);
-      case "agent.list":
-        return agentList(ctx);
-      case "agent.get":
-        return agentGet(ctx, p);
-      case "agent.create":
-        return agentCreate(ctx, p);
-      case "agent.update":
-        return agentUpdate(ctx, p);
-      case "agent.delete":
-        return agentDelete(ctx, p);
       case "profile.list":
         return profileList(ctx, p);
       case "profile.get":
@@ -2305,36 +2276,18 @@ function mapDocsSemanticError(err: unknown, surface: string): RpcError {
   return new RpcError(-32000, message);
 }
 
-/** Read-only role registry projection (dispatch target picker + roster readiness). */
+/** Read-only durable Role projection. Route availability belongs to machine Settings. */
 async function registryRoles(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  // One-time allowedProfiles → roster write-forward (idempotent; no dual-write).
-  const { registry } = await ensureRolesRosterMigrated(mount.env.fs);
-  // Read-only projection: never auto-create AgentDefinitions or mutate machine files.
-  const agentById = await loadAgentDefinitionIndex(ctx);
+  const registry = await loadRolesRegistry(mount.env.fs);
   const roles: RoleRegistryEntryProjection[] = registry.roles
-    .map((role) => projectRoleRegistryEntry(role, agentById, ctx))
+    .map((role) => projectRoleRegistryEntry(role))
     .sort((a, b) => a.name.localeCompare(b.name));
   return { workspaceId, roles };
 }
 
-async function loadAgentDefinitionIndex(
-  ctx: HandlerContext
-): Promise<Map<string, AgentDefinition>> {
-  const { agents } = await loadAgentDefinitions(ctx.dataDir);
-  return new Map(agents.map((a) => [a.id, a]));
-}
-
-/**
- * Project one Role row for clients. When agent index is provided, derive
- * per-roster readiness without inventing definitions or reading secrets.
- */
-function projectRoleRegistryEntry(
-  role: RoleDefinition,
-  agentById?: Map<string, AgentDefinition>,
-  ctx?: HandlerContext
-): RoleRegistryEntryProjection {
+function projectRoleRegistryEntry(role: RoleDefinition): RoleRegistryEntryProjection {
   const proj: RoleRegistryEntryProjection = {
     roleId: role.id ?? "",
     name: role.name,
@@ -2342,52 +2295,15 @@ function projectRoleRegistryEntry(
     description: role.description,
     color: role.color,
     prompt: role.prompt,
-    a2aPolicy: roleA2APolicy(role),
   };
-  const roster = roleRoster(role);
-  if (roster.length > 0) {
-    proj.roster = roster;
-    if (agentById && ctx) {
-      proj.rosterEntries = roster.map((agentId) =>
-        projectRoleRosterEntry(agentId, agentById, ctx)
-      );
-    }
-  }
   return proj;
 }
 
-/**
- * Derive readiness for one persisted roster agentId.
- * ready | missing-definition | missing-profile — never credentials or full profile.
- */
-function projectRoleRosterEntry(
-  agentId: string,
-  agentById: Map<string, AgentDefinition>,
-  ctx: HandlerContext
-): RoleRosterEntryProjection {
-  const def = agentById.get(agentId);
-  if (!def) {
-    return { agentId, readiness: "missing-definition" };
-  }
-  const entry: RoleRosterEntryProjection = {
-    agentId,
-    profileId: def.profileId,
-    readiness: ctx.profileCatalog.get(def.profileId)
-      ? "ready"
-      : "missing-profile",
-  };
-  if (def.displayName) {
-    entry.displayName = def.displayName;
-  }
-  return entry;
-}
-
 async function projectRoleRegistryEntryLive(
-  ctx: HandlerContext,
+  _ctx: HandlerContext,
   role: RoleDefinition
 ): Promise<RoleRegistryEntryProjection> {
-  const agentById = await loadAgentDefinitionIndex(ctx);
-  return projectRoleRegistryEntry(role, agentById, ctx);
+  return projectRoleRegistryEntry(role);
 }
 
 /**
@@ -2477,14 +2393,6 @@ async function registryRoleUpdate(ctx: HandlerContext, p: Record<string, unknown
     } else if (typeof p.displayName === "string") {
       updatePatch.displayName = p.displayName;
     }
-  }
-  if ("a2aPolicy" in p && (p.a2aPolicy === null || p.a2aPolicy === "")) {
-    updatePatch.a2aPolicy = undefined;
-  }
-  if ("roster" in p) {
-    updatePatch.roster = normalizeAgentIdList(
-      Array.isArray(p.roster) ? p.roster : []
-    );
   }
   if ("cli" in p && p.cli === null) {
     updatePatch.cli = undefined;
@@ -2693,34 +2601,11 @@ function parseRoleDefinitionParams(
     }
     if (typeof p.color === "string") raw.color = p.color;
   }
-  if ("a2aPolicy" in p) {
-    if (p.a2aPolicy === null || p.a2aPolicy === "") {
-      // explicit clear → omit (effective deny)
-    } else if (p.a2aPolicy === "allow" || p.a2aPolicy === "ask" || p.a2aPolicy === "deny") {
-      raw.a2aPolicy = p.a2aPolicy;
-    } else {
-      throw new RpcError(-32602, `Invalid a2aPolicy: ${String(p.a2aPolicy)}`);
-    }
-  }
-  if ("allowedProfiles" in p) {
+  if ("allowedProfiles" in p || "roster" in p || "a2aPolicy" in p) {
     throw new RpcError(
       -32602,
-      "registry.role.* no longer accepts allowedProfiles; use roster (agentIds). Legacy allowedProfiles is migrated once from disk only."
+      "registry.role.* does not accept a2aPolicy/roster/allowedProfiles; ACP launch routes are configured in machine Settings"
     );
-  }
-  if ("roster" in p) {
-    if (p.roster === null) {
-      raw.roster = [];
-    } else if (!Array.isArray(p.roster)) {
-      throw new RpcError(-32602, "roster must be an array of agentId strings");
-    } else {
-      for (const item of p.roster) {
-        if (typeof item !== "string") {
-          throw new RpcError(-32602, "roster must be an array of agentId strings");
-        }
-      }
-      raw.roster = normalizeAgentIdList(p.roster) ?? [];
-    }
   }
   if ("cli" in p) {
     if (p.cli === null) {
@@ -2736,13 +2621,6 @@ function parseRoleDefinitionParams(
     const role = normalizeRoleDefinition(raw);
     if (opts.requireName && !role.name) {
       throw new RpcError(-32602, "Role name cannot be empty.");
-    }
-    // For update with roster: [] we need to pass empty to clear — core normalize
-    // drops empty, so re-attach when caller explicitly set the field.
-    if ("roster" in p) {
-      const normalized = normalizeAgentIdList(Array.isArray(p.roster) ? p.roster : []);
-      if (normalized) role.roster = normalized;
-      else delete role.roster;
     }
     return role;
   } catch (err) {
@@ -2766,164 +2644,6 @@ function mapRoleRegistryError(err: unknown, surface: string): RpcError {
     return new RpcError(-32602, message);
   }
   return new RpcError(-32000, message);
-}
-
-// ---- agent.* (machine-local AgentDefinition catalog) ----
-
-async function agentList(ctx: HandlerContext) {
-  const { agents } = await loadAgentDefinitions(ctx.dataDir);
-  const profiles = new Set(ctx.profileCatalog.list().map((p) => p.id));
-  return {
-    agents: agents
-      .map((a) =>
-        projectAgentDefinition(a, { profileExists: profiles.has(a.profileId) })
-      )
-      .sort((a, b) => a.id.localeCompare(b.id)),
-  };
-}
-
-async function agentGet(ctx: HandlerContext, p: Record<string, unknown>) {
-  const id = requireString(p, "id");
-  const { agents } = await loadAgentDefinitions(ctx.dataDir);
-  const agent = findAgentDefinition(agents, id);
-  if (!agent) {
-    throw new RpcError(-32004, `AgentDefinition not found: ${id}`);
-  }
-  const profileExists = !!ctx.profileCatalog.get(agent.profileId);
-  return { agent: projectAgentDefinition(agent, { profileExists }) };
-}
-
-async function agentCreate(ctx: HandlerContext, p: Record<string, unknown>) {
-  requireUserActor(p, "agent.create");
-  if ("agent" in p && typeof p.agent === "object" && p.agent !== null) {
-    throw new RpcError(
-      -32602,
-      "agent.create does not accept nested agent; pass fields at the top level"
-    );
-  }
-  let parsed: ReturnType<typeof parseAgentDefinitionParams>;
-  try {
-    parsed = parseAgentDefinitionParams(p, { requireId: true });
-  } catch (err) {
-    throw new RpcError(-32602, err instanceof Error ? err.message : "Invalid agent definition");
-  }
-  if (!parsed.id || !parsed.profileId) {
-    throw new RpcError(-32602, "agent.create requires id and profileId");
-  }
-  if (!ctx.profileCatalog.get(parsed.profileId)) {
-    throw new RpcError(-32004, `Profile not found: ${parsed.profileId}`);
-  }
-  const { agents } = await loadAgentDefinitions(ctx.dataDir);
-  if (findAgentDefinition(agents, parsed.id)) {
-    throw new RpcError(-32602, `AgentDefinition already exists: ${parsed.id}`);
-  }
-  const created = normalizeAgentDefinition({
-    id: parsed.id,
-    profileId: parsed.profileId,
-    displayName: parsed.displayName,
-    description: parsed.description,
-  });
-  const next = [...agents, created].sort((a, b) => a.id.localeCompare(b.id));
-  await saveAgentDefinitions(ctx.dataDir, next);
-  const projection = projectAgentDefinition(created, { profileExists: true });
-  ctx.events.emit(
-    "agent.changed",
-    "",
-    { action: "create", id: created.id, agent: projection },
-    "self"
-  );
-  return { agent: projection };
-}
-
-async function agentUpdate(ctx: HandlerContext, p: Record<string, unknown>) {
-  requireUserActor(p, "agent.update");
-  if ("agent" in p && typeof p.agent === "object" && p.agent !== null) {
-    throw new RpcError(
-      -32602,
-      "agent.update does not accept nested agent; pass { id, ...patch }"
-    );
-  }
-  const id = requireString(p, "id");
-  let parsed: ReturnType<typeof parseAgentDefinitionParams>;
-  try {
-    parsed = parseAgentDefinitionParams({ ...p, id }, { forUpdate: true });
-  } catch (err) {
-    throw new RpcError(-32602, err instanceof Error ? err.message : "Invalid agent definition");
-  }
-  const { agents } = await loadAgentDefinitions(ctx.dataDir);
-  const index = agents.findIndex((a) => a.id === id);
-  if (index === -1) {
-    throw new RpcError(-32004, `AgentDefinition not found: ${id}`);
-  }
-  const current = agents[index]!;
-  if (parsed.profileId && !ctx.profileCatalog.get(parsed.profileId)) {
-    throw new RpcError(-32004, `Profile not found: ${parsed.profileId}`);
-  }
-  const nextRow: AgentDefinition = normalizeAgentDefinition({
-    id: current.id,
-    profileId: parsed.profileId ?? current.profileId,
-    displayName:
-      "displayName" in p
-        ? parsed.displayName
-        : current.displayName,
-    description:
-      "description" in p
-        ? parsed.description
-        : current.description,
-  });
-  // Explicit clear of optional text fields.
-  if ("displayName" in p && (p.displayName === null || p.displayName === "")) {
-    delete nextRow.displayName;
-  }
-  if ("description" in p && (p.description === null || p.description === "")) {
-    delete nextRow.description;
-  }
-  const next = [...agents];
-  next[index] = nextRow;
-  await saveAgentDefinitions(ctx.dataDir, next);
-  const profileExists = !!ctx.profileCatalog.get(nextRow.profileId);
-  const projection = projectAgentDefinition(nextRow, { profileExists });
-  ctx.events.emit(
-    "agent.changed",
-    "",
-    { action: "update", id: nextRow.id, agent: projection },
-    "self"
-  );
-  return { agent: projection };
-}
-
-async function agentDelete(ctx: HandlerContext, p: Record<string, unknown>) {
-  requireUserActor(p, "agent.delete");
-  const id = requireString(p, "id");
-  const confirmation = requireString(p, "confirmation");
-  if (confirmation !== id) {
-    throw new RpcError(-32602, `Confirmation mismatch; enter the agent id ${id}.`);
-  }
-  const { agents } = await loadAgentDefinitions(ctx.dataDir);
-  const index = agents.findIndex((a) => a.id === id);
-  if (index === -1) {
-    throw new RpcError(-32004, `AgentDefinition not found: ${id}`);
-  }
-  const next = agents.filter((a) => a.id !== id);
-  await saveAgentDefinitions(ctx.dataDir, next);
-  ctx.events.emit("agent.changed", "", { action: "delete", id }, "self");
-  return { id, deleted: true };
-}
-
-/**
- * Ensure AgentDefinitions exist for every roster agentId (and legacy profile ids).
- * Deterministic agentId === former profileId when auto-creating.
- */
-async function ensureAgentDefsForRosterIds(
-  ctx: HandlerContext,
-  agentIds: readonly string[]
-): Promise<AgentDefinition[]> {
-  const { agents } = await loadAgentDefinitions(ctx.dataDir);
-  const { agents: next, added } = ensureAgentDefinitionsForProfileIds(agents, agentIds);
-  if (added) {
-    await saveAgentDefinitions(ctx.dataDir, next);
-  }
-  return next;
 }
 
 /**
@@ -3552,16 +3272,21 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   const dispatchSelection = resolveTaskDispatchNodeSelection(p, mount.env.tentName);
   const primaryNodeId = dispatchSelection.primaryId;
   const nodeIds = dispatchSelection.nodeIds;
+  for (const retired of ["agentId", "profileId"] as const) {
+    if (p[retired] !== undefined && p[retired] !== null) {
+      throw new RpcError(-32602, `task.dispatch ${retired} is retired; pass routeId`);
+    }
+  }
   const assigneeKindRaw = optionalString(p, "assigneeKind");
   const assigneeKind =
-    assigneeKindRaw === "agentProfile" ? "agentProfile" : assigneeKindRaw === "role" || !assigneeKindRaw
+    assigneeKindRaw === "route" ? "agentProfile" : assigneeKindRaw === "role" || !assigneeKindRaw
       ? "role"
       : (() => {
           throw new RpcError(-32602, `Invalid assigneeKind: ${assigneeKindRaw}`);
         })();
   const role = optionalString(p, "role");
-  const agentIdParam = optionalString(p, "agentId");
-  let profileId = optionalString(p, "profileId");
+  const routeId = optionalString(p, "routeId");
+  const profileId = routeId;
   const prompt = requireString(p, "prompt");
   const asSub = p.asSub === true;
   // Legacy dispatchedBy is migration-only; refuse permanent new-write support.
@@ -3576,7 +3301,6 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   const explicitReviewer = parseOptionalTaskActor(p.reviewer, "reviewer");
   const explicitDeliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
   const startSession = p.startSession === true;
-  const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
   if ("a2aPolicyOverride" in p) {
     throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
   }
@@ -3590,86 +3314,28 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   if (assigneeKind === "role" && !role) {
     throw new RpcError(-32602, "task.dispatch with assigneeKind=role requires role");
   }
-  // agentId path: always resolve AgentDefinition → machine-local profileId and
-  // verify any explicit profileId matches. Actor authority is strict:
-  // callerKind=role iff parentActor.kind=role (reviewer already equals parent).
-  // Role pair → standing roster auth. User pair → root, no roster; persist
-  // agentId, launch managed ACP, review-to-user. ProfileId one-shot without
-  // agentId remains a separate user-direct path (no logical agentId).
-  let resolvedAgentId: string | undefined;
-  if (agentIdParam) {
-    if (assigneeKind !== "agentProfile") {
-      throw new RpcError(
-        -32602,
-        "task.dispatch with agentId requires assigneeKind=agentProfile (logical agent → profile launch)"
-      );
-    }
-    const { agents } = await loadAgentDefinitions(ctx.dataDir);
-    try {
-      const resolved = resolveProfileIdForAgent(agents, agentIdParam);
-      if (profileId && profileId !== resolved) {
-        throw new RpcError(
-          -32602,
-          `task.dispatch agentId ${agentIdParam} binds profileId ${resolved}; got conflicting profileId ${profileId}`
-        );
-      }
-      profileId = resolved;
-      resolvedAgentId = agentIdParam.trim();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (/not found/i.test(message)) {
-        throw new RpcError(-32004, message);
-      }
-      throw new RpcError(-32602, message);
-    }
-    // Explicit invariant: callerKind and parentActor kind must agree for agentId.
-    // Do not silently pass roster when callerKind=user + parentActor=role (or the reverse).
-    const parentIsRole = resolvedActors.parentActor.kind === "role";
-    const callerIsRole = callerKind === "role";
-    if (callerIsRole !== parentIsRole) {
-      throw new RpcError(
-        -32602,
-        callerIsRole
-          ? "task.dispatch with agentId: callerKind=role requires parentActor kind=role (got user)"
-          : "task.dispatch with agentId: callerKind=user requires parentActor kind=user (got role)",
-        {
-          callerKind,
-          parentActor: resolvedActors.parentActor,
-          reviewer: resolvedActors.reviewer,
-        }
-      );
-    }
-    if (parentIsRole) {
-      // Role/role pair → standing roster gate (out-of-roster fails loud).
-      await assertRoleRosterStandingAuth(ctx, mount.env.fs, {
-        dispatcher: resolvedActors.parentActor.id,
-        agentId: resolvedAgentId,
-        profileId,
-      });
-    }
-    // else: user/user pair — no Role/roster; agentId + managed ACP + review-to-user.
-  }
   if (assigneeKind === "agentProfile" && !profileId) {
     throw new RpcError(
       -32602,
-      "task.dispatch with assigneeKind=agentProfile requires profileId or agentId"
+      "task.dispatch with assigneeKind=route requires routeId"
     );
   }
-  if (assigneeKind === "agentProfile" && role && role !== profileId) {
-    throw new RpcError(
-      -32602,
-      "task.dispatch with assigneeKind=agentProfile must not pass a different role; profileId is the assignee label"
-    );
+  if (assigneeKind === "agentProfile" && role) {
+    throw new RpcError(-32602, "task.dispatch route target must not pass role");
   }
   if (assigneeKind === "agentProfile" && !ctx.profileCatalog.get(profileId!)) {
-    throw new RpcError(-32004, `Profile not found: ${profileId}`);
+    throw new RpcError(-32004, `Settings route not found: ${profileId}`);
   }
   if (startSession && !profileId) {
     throw new RpcError(
       -32602,
-      "task.dispatch with startSession requires explicit profileId or agentId (no fake-default fallback)"
+      "task.dispatch with startSession requires explicit routeId"
     );
   }
+  // parentActor is the persisted authority fact. callerKind is a convenience hint,
+  // not a second authorization source; derive the combined start path from parentActor.
+  const callerKind = resolvedActors.parentActor.kind;
+  const resolvedAgentId: string | undefined = undefined;
 
   // P0-1: role worktree create/reuse + envelope dispatch share the workspace MutationBus
   // critical section so concurrent role worktree add cannot race. Git ops stay inside the
@@ -3801,7 +3467,6 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
           tentTaskDigest: bundle.tentTaskDigest || undefined,
           tentTaskVersion: bundle.tentTaskVersion || undefined,
           rolePrompt: bundle.rolePrompt || undefined,
-          rosterAgentIds: bundle.rosterAgentIds,
           profileId: bundle.profileId,
           adapterId: bundle.adapterId,
           purpose: bundle.purpose || undefined,
@@ -3852,7 +3517,6 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
           tentTaskDigest: bundle.tentTaskDigest || undefined,
           tentTaskVersion: bundle.tentTaskVersion || undefined,
           rolePrompt: bundle.rolePrompt || undefined,
-          rosterAgentIds: bundle.rosterAgentIds,
           profileId: bundle.profileId,
           adapterId: bundle.adapterId,
           purpose: bundle.purpose || undefined,
@@ -6737,7 +6401,7 @@ async function launchAndBindTaskStartSession(
   }
 
   // Live authoritative contextGeneration: always recompute from current AGENTS /
-  // Skill body+version / Role prompt+roster / profile launch snapshot. Persisted
+  // Skill body+version / Role prompt / profile launch snapshot. Persisted
   // Task/card generation never overrides live facts. Collector failure is fail-loud
   // (never yields reusable fallback facts).
   const profile = ctx.profileCatalog.get(profileId);
@@ -13426,12 +13090,6 @@ function parseDeliveryPolicy(raw: string | undefined): DeliveryPolicy | undefine
   throw new RpcError(-32602, `Invalid deliveryPolicy: ${raw}`);
 }
 
-function parseOptionalA2APolicy(raw: string | undefined): A2APolicy | undefined {
-  if (!raw) return undefined;
-  if (raw === "allow" || raw === "ask" || raw === "deny") return raw;
-  throw new RpcError(-32602, `Invalid a2aPolicy: ${raw}`);
-}
-
 function requireProfileId(
   p: Record<string, unknown>,
   verb = "task.startSession"
@@ -13440,87 +13098,10 @@ function requireProfileId(
   if (!profileId) {
     throw new RpcError(
       -32602,
-      `${verb} requires explicit profileId (no fake-default or product-profile fallback)`
+      `${verb} requires explicit profileId (machine Settings route key)`
     );
   }
   return profileId;
-}
-
-/**
- * Standing roster authorization for the legacy Role-agent dispatch path.
- * - Requires durable dispatcher role and explicit agentId (never inferred from profileId).
- * - Out-of-roster → A2A_DENIED (fail loud).
- * - In-roster → proceed (does not consult a2aPolicy ask/deny; does not create approvals).
- * - Optionally verifies AgentDefinition.profileId matches the launch profileId.
- */
-async function assertRoleRosterStandingAuth(
-  ctx: HandlerContext,
-  fs: import("../core/adapter.js").FsAdapter,
-  input: {
-    dispatcher?: string;
-    agentId: string;
-    profileId: string;
-    requireBoundProfileMatch?: boolean;
-  }
-): Promise<void> {
-  const authorityRef = input.dispatcher?.trim();
-  if (!authorityRef || authorityRef === "user") {
-    throw new RpcError(
-      -32602,
-      "Role-agent dispatch requires parentActor kind=role naming a durable role (roster authority)",
-      { parentActor: authorityRef || null }
-    );
-  }
-  const agentId = input.agentId.trim();
-  if (!agentId) {
-    throw new RpcError(-32602, "Role-agent path requires non-empty agentId");
-  }
-  // Ensure disk migration ran so roster is current.
-  await ensureRolesRosterMigrated(fs);
-  const registry = await loadRolesRegistry(fs);
-  const role = resolveRole(registry.roles, authorityRef);
-  if (!role) {
-    throw new RpcError(-32602, `A2A authority role not found in registry: ${authorityRef}`, {
-      role: authorityRef,
-    });
-  }
-  const roster = roleRoster(role);
-  const agents = await ensureAgentDefsForRosterIds(ctx, roster);
-  if (!roleAllowsAgent(role, agentId)) {
-    throw new RpcError(
-      RPC_A2A_DENIED,
-      `Agent ${agentId} is not on role ${role.name} roster (standing authorization)`,
-      {
-        role: role.name,
-        agentId,
-        profileId: input.profileId,
-        roster,
-        reason: "out_of_roster",
-      }
-    );
-  }
-  if (input.requireBoundProfileMatch !== false) {
-    const def = findAgentDefinition(agents, agentId);
-    if (!def) {
-      // ensureAgentDefsForRosterIds only seeds missing ids; explicit create may lag.
-      const { agents: all } = await loadAgentDefinitions(ctx.dataDir);
-      const found = findAgentDefinition(all, agentId);
-      if (!found) {
-        throw new RpcError(-32004, `AgentDefinition not found: ${agentId}`);
-      }
-      if (found.profileId !== input.profileId) {
-        throw new RpcError(
-          -32602,
-          `Agent ${agentId} binds profileId ${found.profileId}; got ${input.profileId}`
-        );
-      }
-    } else if (def.profileId !== input.profileId) {
-      throw new RpcError(
-        -32602,
-        `Agent ${agentId} binds profileId ${def.profileId}; got ${input.profileId}`
-      );
-    }
-  }
 }
 
 function parseCallerKind(raw: string): "user" | "role" {
@@ -14145,8 +13726,8 @@ async function buildSessionBootstrapPrompt(
   const systemRoot = roots.systemRoot || systemRootFromWorkspace(roots.workspaceRoot);
   const kind = taskAssigneeKind(task);
 
-  // Load Role definition for durable Role tasks (prompt + roster digest).
-  // agentProfile one-shot: tent-task only, no Role prompt/roster.
+  // Load Role definition for durable Role tasks (prompt only).
+  // agentProfile one-shot: tent-task only, no Role prompt.
   let roleDef: RoleDefinition | undefined;
   if (kind === "role" && task.role && roleFs) {
     try {
@@ -14224,7 +13805,7 @@ async function appendRoleCheckpointTail(
 
 /**
  * Context Card v1 managed bootstrap (stable prefix + dynamic delta).
- * Skill bodies / roster come from 52a0da2 compose when provided as tentTaskSection.
+ * Skill bodies and Role prompt come from managed compose when provided as tentTaskSection.
  */
 function buildContextCardManagedBootstrap(
   task: TaskEnvelope,
@@ -14234,7 +13815,7 @@ function buildContextCardManagedBootstrap(
     systemRoot: string;
     sessionContextGeneration?: string | null;
     tentRoleSection?: string;
-    rolePromptRosterSection?: string;
+    rolePromptSection?: string;
     tentTaskSection?: string;
     taskInputDelta?: string;
     checkpoint?: string;
@@ -14278,7 +13859,7 @@ function buildContextCardManagedBootstrap(
     systemRoot: roots.systemRoot,
     agentsPointer: "AGENTS.md at workspace root (authoritative workspace agents file)",
     tentRoleSection: roots.tentRoleSection,
-    rolePromptRosterSection: roots.rolePromptRosterSection,
+    rolePromptSection: roots.rolePromptSection,
     tentTaskSection: roots.tentTaskSection,
     contextCard,
     taskPointers: pointers,

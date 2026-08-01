@@ -264,7 +264,6 @@ test("replaceSession: success preserves Task + contextRestored=false + audit", a
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, boxId);
     const before = await getTask(svc, workspaceId, taskPath);
-    await client.registryRoleUpdate(workspaceId, "executor", { roster: [] });
     const rolesPath = path.join(ws, ".tent", "roles.json");
     const rolesBefore = await fs.readFile(rolesPath, "utf8");
     const roleEvents: unknown[] = [];

@@ -15,11 +15,8 @@ import {
   createRole,
   deleteRole,
   loadRolesRegistry,
-  normalizeAgentIdList,
   normalizeRoleDefinition,
   resolveRole,
-  roleA2APolicy,
-  roleAllowsAgent,
   updateRole,
 } from "../src/core/skillRoleRegistry.js";
 import {
@@ -429,130 +426,35 @@ test("role 注册表:可选 cli 宿主配置会校验并保留", async () => {
   );
 });
 
-test("role 注册表: a2aPolicy allow|ask|deny 默认为 deny，不存 secret", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-a2a-"));
+test("role registry drops retired routing authorization fields", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-retired-route-"));
   const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, {
-    name: "demo",
-    rolesRegistry: {
-      roles: [
-        { name: "plain" },
-        { name: "orch", a2aPolicy: "allow" },
-        { name: "gate", a2aPolicy: "ask" },
-        { name: "blocked", a2aPolicy: "deny" },
-      ],
-    },
-  });
-  const roles = await loadRolesRegistry(fsa);
-  assert.equal(roleA2APolicy(roles.roles.find((r) => r.name === "plain")), "deny");
-  assert.equal(roles.roles.find((r) => r.name === "plain")?.a2aPolicy, undefined);
-  assert.equal(roles.roles.find((r) => r.name === "orch")?.a2aPolicy, "allow");
-  assert.equal(roles.roles.find((r) => r.name === "gate")?.a2aPolicy, "ask");
-  assert.equal(roles.roles.find((r) => r.name === "blocked")?.a2aPolicy, "deny");
-
-  await createRole(fsa, { name: "worker", a2aPolicy: "ask" });
-  assert.equal((await loadRolesRegistry(fsa)).roles.find((r) => r.name === "worker")?.a2aPolicy, "ask");
-  await updateRole(fsa, "worker", { a2aPolicy: "allow" });
-  assert.equal((await loadRolesRegistry(fsa)).roles.find((r) => r.name === "worker")?.a2aPolicy, "allow");
-
-  // Invalid policy ignored (effective deny); registry still loads.
   await fsa.writeFile(
     "roles.json",
-    JSON.stringify({ roles: [{ name: "bad", a2aPolicy: "yolo" }] }, null, 2) + "\n"
-  );
-  const bad = await loadRolesRegistry(fsa);
-  assert.equal(bad.roles[0].name, "bad");
-  assert.equal(bad.roles[0].a2aPolicy, undefined);
-  assert.equal(roleA2APolicy(bad.roles[0]), "deny");
-});
-
-test("role 注册表: roster trim 去重，只存 agentId；disk allowedProfiles 只作迁移输入", async () => {
-  assert.deepEqual(
-    normalizeAgentIdList(["  grok-acp-default ", "fake-default", "fake-default", "", "  "]),
-    ["grok-acp-default", "fake-default"]
-  );
-  assert.equal(normalizeAgentIdList([]), undefined);
-  assert.equal(normalizeAgentIdList(undefined), undefined);
-  assert.equal(normalizeAgentIdList("not-array"), undefined);
-  assert.deepEqual(normalizeAgentIdList(["ok", 1, null, "ok"]), ["ok"]);
-
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-profiles-"));
-  const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, {
-    name: "demo",
-    rolesRegistry: {
-      roles: [
-        {
-          name: "orch",
-          a2aPolicy: "allow",
-          // Legacy disk key — normalize projects to roster only.
-          allowedProfiles: ["  grok-acp-default ", "fake-default", "fake-default", ""],
-        } as { name: string; a2aPolicy: "allow"; allowedProfiles: string[] },
-      ],
-    },
-  });
-
-  const loaded = await loadRolesRegistry(fsa);
-  const orch = loaded.roles.find((r) => r.name === "orch");
-  assert.deepEqual(orch?.roster, ["grok-acp-default", "fake-default"]);
-  assert.equal(Object.prototype.hasOwnProperty.call(orch ?? {}, "allowedProfiles"), false);
-  assert.equal(roleAllowsAgent(orch, "fake-default"), true);
-  assert.equal(roleAllowsAgent(orch, "  fake-default  "), true);
-  assert.equal(roleAllowsAgent(orch, "other"), false);
-  assert.equal(roleAllowsAgent(undefined, "fake-default"), false);
-
-  await createRole(fsa, {
-    name: "worker",
-    a2aPolicy: "allow",
-    roster: [" codex-acp ", "codex-acp", " "],
-  });
-  const worker = (await loadRolesRegistry(fsa)).roles.find((r) => r.name === "worker");
-  assert.deepEqual(worker?.roster, ["codex-acp"]);
-
-  await updateRole(fsa, "worker", { roster: ["a", " b ", "a"] });
-  assert.deepEqual(
-    (await loadRolesRegistry(fsa)).roles.find((r) => r.name === "worker")?.roster,
-    ["a", "b"]
+    JSON.stringify({
+      roles: [{
+        name: "orchestrator",
+        prompt: "coordinate",
+        a2aPolicy: "allow",
+        roster: ["worker-a"],
+        allowedProfiles: ["fake-default"],
+      }],
+    }, null, 2) + "\n"
   );
 
-  await updateRole(fsa, "worker", { roster: [] });
-  assert.equal(
-    (await loadRolesRegistry(fsa)).roles.find((r) => r.name === "worker")?.roster,
-    undefined
-  );
+  const role = (await loadRolesRegistry(fsa)).roles[0]!;
+  assert.equal(role.name, "orchestrator");
+  assert.equal(Object.prototype.hasOwnProperty.call(role, "a2aPolicy"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(role, "roster"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(role, "allowedProfiles"), false);
 
-  // Mutations reject allowedProfiles fail-loud.
-  await assert.rejects(
-    () => createRole(fsa, { name: "bad", allowedProfiles: ["x"] } as never),
-    /no longer accept allowedProfiles|use roster/i
-  );
-  await assert.rejects(
-    () => updateRole(fsa, "worker", { allowedProfiles: ["x"] } as never),
-    /no longer accept allowedProfiles|use roster/i
-  );
-
+  await updateRole(fsa, "orchestrator", { description: "durable coordinator" });
   const disk = JSON.parse(await fsa.readFile("roles.json")) as {
     roles: Array<Record<string, unknown>>;
   };
-  for (const role of disk.roles) {
-    assert.equal("secret" in role, false);
-    assert.equal("token" in role, false);
-    assert.equal("apiKey" in role, false);
-    assert.equal("env" in role, false);
-    assert.equal("allowedProfiles" in role, false);
-    if (role.roster !== undefined) {
-      assert.ok(Array.isArray(role.roster));
-      for (const id of role.roster as unknown[]) {
-        assert.equal(typeof id, "string");
-      }
-    }
-  }
-
-  const empty = normalizeRoleDefinition({
-    name: "x",
-    allowedProfiles: ["", "  "],
-  } as never);
-  assert.equal(empty.roster, undefined);
+  assert.equal("a2aPolicy" in disk.roles[0]!, false);
+  assert.equal("roster" in disk.roles[0]!, false);
+  assert.equal("allowedProfiles" in disk.roles[0]!, false);
 });
 
 test("role 注册表: updateRole 可明确清除全部可选字段", async () => {
@@ -563,8 +465,6 @@ test("role 注册表: updateRole 可明确清除全部可选字段", async () =>
     prompt: "prompt",
     description: "description",
     color: "red",
-    a2aPolicy: "allow",
-    roster: ["fake-default"],
     cli: { command: "codex" },
   });
 
@@ -576,8 +476,6 @@ test("role 注册表: updateRole 可明确清除全部可选字段", async () =>
     prompt: undefined,
     description: undefined,
     color: undefined,
-    a2aPolicy: undefined,
-    roster: [],
     cli: undefined,
   });
 
@@ -588,7 +486,6 @@ test("role 注册表: updateRole 可明确清除全部可选字段", async () =>
   assert.equal(cleared[0]!.displayName, "clearable");
   assert.equal(cleared[0]!.prompt, undefined);
   assert.equal(cleared[0]!.cli, undefined);
-  assert.equal(cleared[0]!.roster, undefined);
 });
 
 test("role 注册表: 旧数据无 id 时内存确定性补齐；load 不写盘；displayName 可改；id/name 不可改", async () => {
