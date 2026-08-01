@@ -2781,16 +2781,14 @@ async function readRolesRegistryState(fs10) {
   if (!await fs10.exists(ROLES_REGISTRY_PATH)) {
     return {
       registry: cloneDefaultRoles(),
-      migrated: false,
-      rosterMigrated: false,
       recovered: false
     };
   }
   try {
     const rawText = await fs10.readFile(ROLES_REGISTRY_PATH);
     const parsed = JSON.parse(rawText);
-    const { registry, migrated, rosterMigrated } = normalizeRolesRegistryWithMigration(parsed);
-    return { registry, migrated, rosterMigrated, recovered: false };
+    const registry = normalizeRolesRegistry(parsed);
+    return { registry, recovered: false };
   } catch {
     const backupPath = await backupCorruptRegistry(fs10, ROLES_REGISTRY_PATH);
     const reset = cloneDefaultRoles();
@@ -2803,8 +2801,6 @@ async function readRolesRegistryState(fs10) {
     );
     return {
       registry: reset,
-      migrated: false,
-      rosterMigrated: false,
       recovered: true
     };
   }
@@ -2814,37 +2810,24 @@ function assertRoleNameAvailable(name) {
     throw new Error(`Role name is reserved by Tent: ${AGENT_PROFILES_TEMP_DIR}.`);
   }
 }
-function normalizeRolesRegistryWithMigration(value) {
+function normalizeRolesRegistry(value) {
   const root = isRecord4(value) ? value : {};
   const roles = [];
-  let migrated = false;
-  let rosterMigrated = false;
   const usedIds = /* @__PURE__ */ new Set();
   if (Array.isArray(root.roles)) {
     for (const item of root.roles) {
       if (!isRecord4(item)) continue;
-      const hadId = typeof item.id === "string" && isRoleId(item.id.trim());
-      const hadDisplayName = typeof item.displayName === "string" && item.displayName.trim().length > 0;
-      const hadLegacyAllowedKey = Object.prototype.hasOwnProperty.call(
-        item,
-        "allowedProfiles"
-      );
       const role = normalizeRoleDefinition(item, {
         usedIds,
         assignMissingId: "deterministic"
       });
       if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
       if (roles.some((existing) => existing.id === role.id)) continue;
-      if (hadLegacyAllowedKey) {
-        migrated = true;
-        rosterMigrated = true;
-      }
-      if (!hadId || !hadDisplayName) migrated = true;
       usedIds.add(role.id);
       roles.push(role);
     }
   }
-  return { registry: { roles }, migrated, rosterMigrated };
+  return { roles };
 }
 function normalizeRoleDefinition(value, opts = {}) {
   const name = typeof value.name === "string" ? value.name.trim() : "";
@@ -2874,37 +2857,9 @@ function normalizeRoleDefinition(value, opts = {}) {
     role.description = value.description.trim();
   }
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
-  const a2a = normalizeA2APolicy(value.a2aPolicy);
-  if (a2a) role.a2aPolicy = a2a;
-  const rosterFromField = normalizeAgentIdList(value.roster);
-  const rawLegacy = value.allowedProfiles;
-  const rosterFromLegacy = normalizeAgentIdList(rawLegacy);
-  const roster = rosterFromField ?? rosterFromLegacy;
-  if (roster) role.roster = roster;
   const cli = normalizeCliConfig(value.cli);
   if (cli) role.cli = cli;
   return role;
-}
-function normalizeAgentIdList(value) {
-  if (value === void 0 || value === null) return void 0;
-  if (!Array.isArray(value)) {
-    return void 0;
-  }
-  const seen = /* @__PURE__ */ new Set();
-  const out = [];
-  for (const item of value) {
-    if (typeof item !== "string") continue;
-    const id = item.trim();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    out.push(id);
-  }
-  return out.length > 0 ? out : void 0;
-}
-function normalizeA2APolicy(value) {
-  if (value === void 0 || value === null || value === "") return void 0;
-  if (value === "allow" || value === "ask" || value === "deny") return value;
-  return void 0;
 }
 function normalizeCliConfig(value) {
   if (value === void 0) return void 0;
@@ -2930,10 +2885,6 @@ function serializeRolesRegistry(registry) {
       if (role.prompt) row.prompt = role.prompt;
       if (role.description) row.description = role.description;
       if (role.color) row.color = role.color;
-      if (role.a2aPolicy) row.a2aPolicy = role.a2aPolicy;
-      if (role.roster && role.roster.length > 0) {
-        row.roster = [...role.roster];
-      }
       if (role.cli) row.cli = { ...role.cli };
       return row;
     })
@@ -3725,11 +3676,7 @@ var ServiceClient = class {
       actor: args.actor ?? "user"
     });
   }
-  /**
-   * Read-only role registry projection (name-sorted).
-   * Each role may include roster agentIds plus rosterEntries readiness
-   * (`ready` | `missing-definition` | `missing-profile`). Never secrets.
-   */
+  /** Read-only durable Role registry projection (name-sorted). */
   registryRoles(workspaceId) {
     return this.call("registry.roles", { workspaceId });
   }
@@ -3747,22 +3694,6 @@ var ServiceClient = class {
    */
   registryRoleUpdate(workspaceId, name, patch) {
     return this.call("registry.role.update", { workspaceId, name, ...patch });
-  }
-  // ---- convenience: machine-local AgentDefinition (logical worker identity) ----
-  agentList() {
-    return this.call("agent.list", {});
-  }
-  agentGet(id) {
-    return this.call("agent.get", { id });
-  }
-  agentCreate(agent) {
-    return this.call("agent.create", { ...agent, actor: agent.actor ?? "user" });
-  }
-  agentUpdate(id, patch) {
-    return this.call("agent.update", { ...patch, id, actor: patch.actor ?? "user" });
-  }
-  agentDelete(id, confirmation, actor = "user") {
-    return this.call("agent.delete", { id, confirmation, actor });
   }
   /**
    * User-only role delete. confirmation must equal operational name or roleId.
@@ -3896,7 +3827,8 @@ var ServiceClient = class {
   /**
    * Explicit fresh managed Session on the same Task when the bound provider
    * context is unusable. Not a silent fallback from taskStartSession.
-   * Same A2A params as startSession; refuses turnBusy with TURN_BUSY (no force).
+   * Uses the same machine Settings route as startSession; refuses turnBusy with
+   * TURN_BUSY (no force).
    * Shares the per-Task managed-session execution slot with startSession.
    */
   taskReplaceSession(workspaceId, args) {
@@ -4544,11 +4476,11 @@ state: ${row.state ?? "delivered"}
         });
       }
       case "dispatch": {
-        const usage2 = "Usage: tent task dispatch --target role:<roleIdOrName>|agent:<agentId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]";
+        const usage2 = "Usage: tent task dispatch --target role:<roleIdOrName>|route:<routeId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]";
         const retiredPublic = detectRetiredDispatchFlags(flags);
         if (retiredPublic) {
           return failUsage(
-            `Public ordinary dispatch no longer accepts ${retiredPublic}; use --target role:<roleIdOrName>|agent:<agentId> with --node and --prompt.
+            `Public ordinary dispatch no longer accepts ${retiredPublic}; use --target role:<roleIdOrName>|route:<routeId> with --node and --prompt.
 ` + usage2
           );
         }
@@ -4562,10 +4494,10 @@ state: ${row.state ?? "delivered"}
           return failUsage(`--target is required
 ${usage2}`);
         }
-        const targetMatch = /^(role|agent):(.+)$/i.exec(targetRaw);
+        const targetMatch = /^(role|route):(.+)$/i.exec(targetRaw);
         if (!targetMatch) {
           return failUsage(
-            `--target must be role:<roleIdOrName> or agent:<agentId> (got ${JSON.stringify(targetRaw)})
+            `--target must be role:<roleIdOrName> or route:<routeId> (got ${JSON.stringify(targetRaw)})
 ` + usage2
           );
         }
@@ -4609,9 +4541,7 @@ ${usage2}`);
         const parentActor = roleCaller ? { kind: "role", id: envRole } : { kind: "user", id: "user" };
         const callerKind = roleCaller ? "role" : "user";
         const asSub = roleCaller ? true : void 0;
-        const primaryNodeId = nodeIds[0];
         const common = {
-          boxId: primaryNodeId,
           nodeIds,
           prompt,
           parentActor,
@@ -4624,8 +4554,8 @@ ${usage2}`);
           role: targetId
         } : {
           ...common,
-          assigneeKind: "agentProfile",
-          agentId: targetId,
+          assigneeKind: "route",
+          routeId: targetId,
           startSession: true
         };
         const result = await client.taskDispatch(workspaceId, dispatchArgs);
@@ -5156,9 +5086,9 @@ Commands:
   tent task get <taskPath> [--workspace <path>] [--json]
   tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]
   tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
-  tent task dispatch --target role:<roleIdOrName>|agent:<agentId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]
+  tent task dispatch --target role:<roleIdOrName>|route:<routeId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]
       # --target role:*  durable Role handoff (queued; never starts managed ACP at dispatch)
-      # --target agent:* logical AgentDefinition id \u2192 machine-local LaunchProfile + startSession
+      # --target route:* machine Settings route + managed Session start
       # --node           repeatable Node refs (at least one); sole source for contextCard.refs.nodes
       # parentActor/reviewer from TENT_ROLE (role caller) or user-direct; no public --by
       # Role caller also derives internal asSub (parent Role Git lane); not a public flag
@@ -5873,46 +5803,42 @@ async function readStdin() {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-// src/cli/agent-definition-rpc.ts
-var BANNED = /* @__PURE__ */ new Set([
-  "secret",
-  "secrets",
-  "token",
-  "api-key",
-  "api_key",
-  "apikey",
-  "password",
-  "credential",
-  "credentials",
-  "env",
-  "model",
-  "provider",
-  "executable",
-  "base-url",
-  "base_url",
-  "baseurl",
-  "command",
-  "args",
-  "url",
-  "key"
+// src/cli/role-rpc.ts
+var RETIRED_ROLE_FLAGS = /* @__PURE__ */ new Set([
+  "roster",
+  "roster-add",
+  "roster-remove",
+  "a2a-policy",
+  "a2aPolicy"
 ]);
-async function runAgentDefinitionCommand(sub, args, globals = {}) {
+var COMMON_ROLE_FLAGS = /* @__PURE__ */ new Set(["json", "attach-only", "data-dir", "service-entry", "workspace"]);
+var METADATA_ROLE_FLAGS = /* @__PURE__ */ new Set([
+  "display-name",
+  "displayName",
+  "prompt",
+  "description",
+  "color"
+]);
+async function runRoleCommand(sub, args, globals = {}) {
   const cmd = (sub || "").trim().toLowerCase();
   if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
-    return { exitCode: 0, stdout: agentDefinitionHelpText() + "\n", stderr: "" };
+    return { exitCode: 0, stdout: roleHelpText() + "\n", stderr: "" };
   }
-  if (cmd !== "list" && cmd !== "get" && cmd !== "config") {
-    return fail(`Unknown agent-definition subcommand: ${sub || "(empty)"}
-` + agentDefinitionHelpText());
+  if (cmd !== "list" && cmd !== "show" && cmd !== "config") {
+    return fail(`Unknown role subcommand: ${sub || "(empty)"}
+` + roleHelpText());
   }
   try {
-    const { positionals, flags } = parseFlags2(args, ["json", "attach-only", "delete"]);
-    const json = globals.json === true || flags.json === "true";
-    for (const k of Object.keys(flags)) {
-      if (BANNED.has(k.toLowerCase())) {
-        return fail(`tent agent does not accept --${k}; AgentDefinition stores id/profileId only, never launch secrets`);
+    const { positionals, flags } = parseFlags2(args, ["json", "attach-only"]);
+    for (const key of Object.keys(flags)) {
+      if (RETIRED_ROLE_FLAGS.has(key)) {
+        return fail(`tent role no longer accepts --${key}; roster configuration is retired`);
+      }
+      if (!COMMON_ROLE_FLAGS.has(key) && !METADATA_ROLE_FLAGS.has(key)) {
+        return fail(`Unknown role option: --${key}`);
       }
     }
+    const json = globals.json === true || flags.json === "true";
     const attach = {
       dataDir: flags["data-dir"] || globals.dataDir,
       attachOnly: globals.attachOnly === true || flags["attach-only"] === "true",
@@ -5921,117 +5847,87 @@ async function runAgentDefinitionCommand(sub, args, globals = {}) {
       env: globals.env
     };
     const client = globals.client ?? (await attachOrBootstrapService(attach)).client;
+    const { workspaceId } = await ensureMountedWorkspace(client, {
+      cwd: globals.cwd,
+      workspace: flags.workspace || globals.workspace
+    });
     if (cmd === "list") {
-      if (positionals.length > 0) return fail("Usage: tent agent list [--json]");
-      const result = await client.agentList();
-      const agents = (result.agents ?? []).map(whitelistAgent);
-      return print2(
-        { agents },
-        json,
-        () => agents.length === 0 ? "(no agents)\n" : agents.map((a) => {
-          const pe = a.profileExists === void 0 ? "" : a.profileExists ? " profile=ready" : " profile=missing";
-          const label = a.displayName && a.displayName !== a.id ? ` "${a.displayName}"` : "";
-          return `${a.id}${label}  profileId=${a.profileId}${pe}`;
-        }).join("\n") + "\n"
-      );
+      if (positionals.length > 0) return fail("Usage: tent role list [--workspace <path>] [--json]");
+      const result = await client.registryRoles(workspaceId);
+      const roles = (result.roles ?? []).map(whitelistRole);
+      return print2({ workspaceId, roles }, json, () => roles.length ? roles.map(formatRole).join("") : "(no roles)\n");
     }
-    if (cmd === "get") {
-      const id = positionals[0]?.trim();
-      if (!id || positionals.length > 1) return fail("Usage: tent agent get <agentId> [--json]");
-      const result = await client.agentGet(id);
-      const agent = whitelistAgent(result.agent);
-      return print2({ agent }, json, () => formatAgent(agent));
+    if (cmd === "show") {
+      const ref = positionals[0]?.trim();
+      if (!ref || positionals.length > 1) return fail("Usage: tent role show <name|roleId> [--workspace <path>] [--json]");
+      const result = await client.registryRoles(workspaceId);
+      const found = (result.roles ?? []).find((r) => r.name === ref || r.roleId === ref);
+      if (!found) return fail(`Role not found: ${ref}`);
+      const role = whitelistRole(found);
+      return print2({ workspaceId, role }, json, () => formatRole(role));
     }
-    return await configAgent(client, positionals, flags, json);
+    return await configRole(client, workspaceId, positionals, flags, json);
   } catch (error) {
     return fail(error instanceof Error ? error.message : String(error));
   }
 }
-function agentDefinitionHelpText() {
-  return `tent agent \u2014 logical AgentDefinition management (machine-local)
+function roleHelpText() {
+  return `tent role \u2014 Service-backed Role discovery and metadata configuration
 
 Usage:
-  tent agent list   [--json]
-  tent agent get    <agentId> [--json]
-  tent agent config <agentId> --profile <profileId> [--display-name <label>] [--description|--capabilities <text>] [--json]
-  tent agent config <agentId> --delete --confirm <agentId> [--json]
+  tent role list   [--workspace <path>] [--json]
+  tent role show   <name|roleId> [--workspace <path>] [--json]
+  tent role config <name|roleId> [--display-name <label>] [--prompt <text>]
+                   [--description <text>] [--color <value>] [--json]
 
-list/get read-only. config upserts non-secret id\u2192profileId (actor=user). --delete needs matching --confirm.
-Never accepts secrets or launches a Session. Session lifecycle stays in baseline agent-rpc until rename integrates.
+list/show project Role metadata only.
+config patches Role metadata via registry.role.update (actor=user).
 `;
 }
-async function configAgent(client, positionals, flags, json) {
-  const agentId = positionals[0]?.trim();
-  if (!agentId || positionals.length > 1) {
-    return fail("Usage: tent agent config <agentId> --profile <profileId> [\u2026]  |  --delete --confirm <agentId>");
+async function configRole(client, workspaceId, positionals, flags, json) {
+  const ref = positionals[0]?.trim();
+  if (!ref || positionals.length > 1) {
+    return fail("Usage: tent role config <name|roleId> [metadata options]");
   }
-  const isDelete = flags.delete === "true";
-  const profileId = flags.profile || flags["profile-id"] || flags.profileId;
-  const hasDisplay = "display-name" in flags || "displayName" in flags;
-  const hasDesc = "description" in flags || "capabilities" in flags;
-  if (isDelete) {
-    if (profileId || hasDisplay || hasDesc) {
-      return fail("tent agent config --delete cannot combine with --profile / --display-name / --description / --capabilities");
-    }
-    const confirm = flags.confirm || flags.confirmation || flags["confirm-id"] || "";
-    if (!confirm) return fail(`tent agent config --delete requires --confirm ${agentId}`);
-    if (confirm !== agentId) return fail(`Confirmation mismatch; --confirm must equal agentId ${agentId}`);
-    return print2(await client.agentDelete(agentId, confirm, "user"), json, () => `Deleted AgentDefinition ${agentId}
-`);
+  const hasMeta = "display-name" in flags || "displayName" in flags || "prompt" in flags || "description" in flags || "color" in flags;
+  if (!hasMeta) {
+    return fail("tent role config requires Role metadata options");
   }
-  if ("description" in flags && "capabilities" in flags) {
-    return fail("tent agent config: pass only one of --description or --capabilities");
-  }
-  const displayNameRaw = "display-name" in flags ? flags["display-name"] : "displayName" in flags ? flags.displayName : void 0;
-  const descriptionRaw = "description" in flags ? flags.description : "capabilities" in flags ? flags.capabilities : void 0;
-  let existing = null;
-  try {
-    existing = (await client.agentGet(agentId)).agent;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (!/not found/i.test(message)) throw err;
-  }
-  if (!existing) {
-    if (!profileId) return fail("tent agent config create requires --profile <profileId> for a new agentId");
-    const created = await client.agentCreate({
-      id: agentId,
-      profileId,
-      ...displayNameRaw ? { displayName: displayNameRaw } : {},
-      ...descriptionRaw ? { description: descriptionRaw } : {},
-      actor: "user"
-    });
-    const agent2 = whitelistAgent(created.agent);
-    return print2({ agent: agent2 }, json, () => `Created ${formatAgent(agent2)}`);
-  }
-  if (!profileId && displayNameRaw === void 0 && descriptionRaw === void 0) {
-    return fail("tent agent config update requires --profile and/or --display-name and/or --description|--capabilities (or --delete --confirm)");
-  }
+  const listed = await client.registryRoles(workspaceId);
+  const current = (listed.roles ?? []).find((r) => r.name === ref || r.roleId === ref);
+  if (!current) return fail(`Role not found: ${ref}`);
   const patch = { actor: "user" };
-  if (profileId) patch.profileId = profileId;
-  if (displayNameRaw !== void 0) patch.displayName = displayNameRaw === "" ? null : displayNameRaw;
-  if (descriptionRaw !== void 0) patch.description = descriptionRaw === "" ? null : descriptionRaw;
-  const updated = await client.agentUpdate(agentId, patch);
-  const agent = whitelistAgent(updated.agent);
-  return print2({ agent }, json, () => `Updated ${formatAgent(agent)}`);
+  if (current.roleId) patch.roleId = current.roleId;
+  if ("display-name" in flags) patch.displayName = flags["display-name"] === "" ? null : flags["display-name"];
+  else if ("displayName" in flags) patch.displayName = flags.displayName === "" ? null : flags.displayName;
+  if ("prompt" in flags) patch.prompt = flags.prompt === "" ? null : flags.prompt;
+  if ("description" in flags) patch.description = flags.description === "" ? null : flags.description;
+  if ("color" in flags) patch.color = flags.color === "" ? null : flags.color;
+  const result = await client.registryRoleUpdate(workspaceId, current.name, patch);
+  const role = whitelistRole(result.role);
+  return print2({ workspaceId, role }, json, () => `Updated role ${role.name}
+` + formatRole(role));
 }
-function whitelistAgent(raw) {
+function whitelistRole(raw) {
   const src = raw;
-  const id = typeof src.id === "string" ? src.id : "";
-  const profileId = typeof src.profileId === "string" ? src.profileId : "";
-  if (!id || !profileId) throw new Error("AgentDefinition projection missing id or profileId");
-  const out = {
-    id,
-    displayName: typeof src.displayName === "string" && src.displayName.trim() ? src.displayName : id,
-    profileId
+  const name = typeof src.name === "string" ? src.name : "";
+  if (!name) throw new Error("Role projection missing name");
+  const role = {
+    roleId: typeof src.roleId === "string" ? src.roleId : "",
+    name,
+    displayName: typeof src.displayName === "string" && src.displayName.trim() ? src.displayName : name
   };
-  if (typeof src.description === "string" && src.description.trim()) out.description = src.description;
-  if (typeof src.profileExists === "boolean") out.profileExists = src.profileExists;
-  return out;
+  if (typeof src.description === "string") role.description = src.description;
+  if (typeof src.color === "string") role.color = src.color;
+  if (typeof src.prompt === "string") role.prompt = src.prompt;
+  return role;
 }
-function formatAgent(a) {
-  const lines = [`id: ${a.id}`, `displayName: ${a.displayName}`, `profileId: ${a.profileId}`];
-  if (a.description) lines.push(`description: ${a.description}`);
-  if (a.profileExists !== void 0) lines.push(`profileExists: ${a.profileExists}`);
+function formatRole(role) {
+  const label = role.displayName && role.displayName !== role.name ? ` "${role.displayName}"` : "";
+  const lines = [
+    `${role.name}${label}${role.roleId ? ` ${role.roleId}` : ""}`,
+    ...role.description ? [`description: ${role.description}`] : []
+  ];
   return lines.join("\n") + "\n";
 }
 function parseFlags2(args, booleans) {
@@ -6070,244 +5966,6 @@ function print2(result, json, human) {
   return { exitCode: 0, stdout: json ? JSON.stringify(result, null, 2) + "\n" : human(), stderr: "" };
 }
 function fail(msg) {
-  return { exitCode: 1, stdout: "", stderr: msg.trimEnd() + "\n" };
-}
-
-// src/service/types.ts
-var ROLE_ROSTER_READINESS = [
-  "ready",
-  "missing-definition",
-  "missing-profile"
-];
-var PROTECTED_COLLAB_FIELDS = ["status", "owner", "assignee"];
-var RESERVED_DOCS_WRITE_FIELDS = [
-  "id",
-  "mode",
-  "archived",
-  /** Output provenance — only formal task.accept bind path may write. */
-  "deliveryId",
-  ...PROTECTED_COLLAB_FIELDS
-];
-
-// src/cli/role-rpc.ts
-var READINESS = new Set(ROLE_ROSTER_READINESS);
-async function runRoleCommand(sub, args, globals = {}) {
-  const cmd = (sub || "").trim().toLowerCase();
-  if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
-    return { exitCode: 0, stdout: roleHelpText() + "\n", stderr: "" };
-  }
-  if (cmd !== "list" && cmd !== "show" && cmd !== "config") {
-    return fail2(`Unknown role subcommand: ${sub || "(empty)"}
-` + roleHelpText());
-  }
-  try {
-    const { positionals, flags } = parseFlags3(args, ["json", "attach-only"]);
-    const json = globals.json === true || flags.json === "true";
-    const attach = {
-      dataDir: flags["data-dir"] || globals.dataDir,
-      attachOnly: globals.attachOnly === true || flags["attach-only"] === "true",
-      serviceEntry: flags["service-entry"] || globals.serviceEntry,
-      packageRoot: globals.packageRoot,
-      env: globals.env
-    };
-    const client = globals.client ?? (await attachOrBootstrapService(attach)).client;
-    const { workspaceId } = await ensureMountedWorkspace(client, {
-      cwd: globals.cwd,
-      workspace: flags.workspace || globals.workspace
-    });
-    if (cmd === "list") {
-      if (positionals.length > 0) return fail2("Usage: tent role list [--workspace <path>] [--json]");
-      const result = await client.registryRoles(workspaceId);
-      const roles = (result.roles ?? []).map(whitelistRole);
-      return print3({ workspaceId, roles }, json, () => roles.length ? roles.map(formatRole).join("") : "(no roles)\n");
-    }
-    if (cmd === "show") {
-      const ref = positionals[0]?.trim();
-      if (!ref || positionals.length > 1) return fail2("Usage: tent role show <name|roleId> [--workspace <path>] [--json]");
-      const result = await client.registryRoles(workspaceId);
-      const found = (result.roles ?? []).find((r) => r.name === ref || r.roleId === ref);
-      if (!found) return fail2(`Role not found: ${ref}`);
-      const role = whitelistRole(found);
-      return print3({ workspaceId, role }, json, () => formatRole(role));
-    }
-    return await configRole(client, workspaceId, positionals, flags, json);
-  } catch (error) {
-    return fail2(error instanceof Error ? error.message : String(error));
-  }
-}
-function roleHelpText() {
-  return `tent role \u2014 Service-backed Role discovery and roster configuration
-
-Usage:
-  tent role list   [--workspace <path>] [--json]
-  tent role show   <name|roleId> [--workspace <path>] [--json]
-  tent role config <name|roleId> (--roster-add <agentId> | --roster-remove <agentId> | --roster <id,id>)
-                   [--display-name <label>] [--prompt <text>] [--description <text>] [--a2a-policy allow|ask|deny] [--json]
-
-list/show project rosterEntries in roster order with readiness ready|missing-definition|missing-profile (no secrets).
-config patches roster by agentId via registry.role.update (actor=user); never invents AgentDefinitions.
-`;
-}
-async function configRole(client, workspaceId, positionals, flags, json) {
-  const ref = positionals[0]?.trim();
-  if (!ref || positionals.length > 1) {
-    return fail2("Usage: tent role config <name|roleId> (--roster-add|--roster-remove|--roster) \u2026");
-  }
-  const hasAdd = "roster-add" in flags;
-  const hasRemove = "roster-remove" in flags;
-  const hasSet = "roster" in flags;
-  if (hasSet && (hasAdd || hasRemove)) {
-    return fail2("tent role config: --roster cannot combine with --roster-add / --roster-remove");
-  }
-  if (hasAdd && hasRemove) {
-    const addId = (flags["roster-add"] || "").trim();
-    const removeId = (flags["roster-remove"] || "").trim();
-    if (addId && removeId && addId === removeId) {
-      return fail2(`tent role config: conflicting --roster-add and --roster-remove for same agentId ${addId}`);
-    }
-  }
-  const hasMeta = "display-name" in flags || "displayName" in flags || "prompt" in flags || "description" in flags || "a2a-policy" in flags || "a2aPolicy" in flags || "color" in flags;
-  if (!hasAdd && !hasRemove && !hasSet && !hasMeta) {
-    return fail2("tent role config requires --roster-add / --roster-remove / --roster and/or metadata flags");
-  }
-  const listed = await client.registryRoles(workspaceId);
-  const current = (listed.roles ?? []).find((r) => r.name === ref || r.roleId === ref);
-  if (!current) return fail2(`Role not found: ${ref}`);
-  const patch = { actor: "user" };
-  if (current.roleId) patch.roleId = current.roleId;
-  if (hasSet) {
-    patch.roster = [...new Set((flags.roster || "").split(",").map((s) => s.trim()).filter(Boolean))];
-  } else if (hasAdd || hasRemove) {
-    let roster = [...current.roster ?? []];
-    if (hasRemove) {
-      const removeId = (flags["roster-remove"] || "").trim();
-      if (!removeId) return fail2("tent role config --roster-remove requires <agentId>");
-      roster = roster.filter((id) => id !== removeId);
-    }
-    if (hasAdd) {
-      const addId = (flags["roster-add"] || "").trim();
-      if (!addId) return fail2("tent role config --roster-add requires <agentId>");
-      if (!roster.includes(addId)) roster.push(addId);
-    }
-    patch.roster = roster;
-  }
-  if ("display-name" in flags) patch.displayName = flags["display-name"] === "" ? null : flags["display-name"];
-  else if ("displayName" in flags) patch.displayName = flags.displayName === "" ? null : flags.displayName;
-  if ("prompt" in flags) patch.prompt = flags.prompt === "" ? null : flags.prompt;
-  if ("description" in flags) patch.description = flags.description === "" ? null : flags.description;
-  if ("color" in flags) patch.color = flags.color === "" ? null : flags.color;
-  if ("a2a-policy" in flags || "a2aPolicy" in flags) {
-    const raw = flags["a2a-policy"] ?? flags.a2aPolicy ?? "";
-    if (raw === "" || raw === "null") patch.a2aPolicy = null;
-    else if (raw === "allow" || raw === "ask" || raw === "deny") patch.a2aPolicy = raw;
-    else return fail2(`tent role config --a2a-policy must be allow|ask|deny (got ${raw})`);
-  }
-  const result = await client.registryRoleUpdate(workspaceId, current.name, patch);
-  const role = whitelistRole(result.role);
-  return print3({ workspaceId, role }, json, () => `Updated role ${role.name}
-` + formatRole(role));
-}
-function whitelistRole(raw) {
-  const src = raw;
-  const name = typeof src.name === "string" ? src.name : "";
-  if (!name) throw new Error("Role projection missing name");
-  const role = {
-    roleId: typeof src.roleId === "string" ? src.roleId : "",
-    name,
-    displayName: typeof src.displayName === "string" && src.displayName.trim() ? src.displayName : name
-  };
-  if (typeof src.description === "string") role.description = src.description;
-  if (typeof src.color === "string") role.color = src.color;
-  if (typeof src.prompt === "string") role.prompt = src.prompt;
-  if (src.a2aPolicy === "allow" || src.a2aPolicy === "ask" || src.a2aPolicy === "deny") role.a2aPolicy = src.a2aPolicy;
-  if (Array.isArray(src.roster)) role.roster = src.roster.filter((id) => typeof id === "string");
-  if (Array.isArray(src.rosterEntries)) {
-    const entries = src.rosterEntries.map((e, i) => whitelistRosterEntry(e, i));
-    if (role.roster?.length) {
-      const byId = new Map(entries.map((e) => [e.agentId, e]));
-      role.rosterEntries = role.roster.map(
-        (id) => byId.get(id) ?? { agentId: id, readiness: "missing-definition" }
-      );
-    } else {
-      role.rosterEntries = entries;
-    }
-  }
-  return role;
-}
-function whitelistRosterEntry(raw, index) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error(`Invalid rosterEntries[${index}] from Service`);
-  }
-  const src = raw;
-  const agentId = typeof src.agentId === "string" ? src.agentId : "";
-  if (!agentId) throw new Error(`rosterEntries[${index}] missing agentId`);
-  if (typeof src.readiness !== "string" || !READINESS.has(src.readiness)) {
-    throw new Error(
-      `Invalid readiness for agentId ${agentId}: ${String(src.readiness)} (expected ${ROLE_ROSTER_READINESS.join("|")})`
-    );
-  }
-  const entry2 = { agentId, readiness: src.readiness };
-  if (typeof src.displayName === "string" && src.displayName.trim()) entry2.displayName = src.displayName;
-  if (typeof src.profileId === "string" && src.profileId.trim()) entry2.profileId = src.profileId;
-  return entry2;
-}
-function formatRole(role) {
-  const label = role.displayName && role.displayName !== role.name ? ` "${role.displayName}"` : "";
-  const lines = [
-    `${role.name}${label}${role.roleId ? ` ${role.roleId}` : ""}`,
-    ...role.description ? [`description: ${role.description}`] : [],
-    ...role.a2aPolicy ? [`a2aPolicy: ${role.a2aPolicy}`] : [],
-    `roster: ${(role.roster ?? []).length}`
-  ];
-  if (role.rosterEntries?.length) {
-    for (const e of role.rosterEntries) {
-      const el = e.displayName && e.displayName !== e.agentId ? ` "${e.displayName}"` : "";
-      const pf = e.profileId ? ` profileId=${e.profileId}` : "";
-      lines.push(`  - ${e.agentId}${el}  readiness=${e.readiness}${pf}`);
-    }
-  } else if (role.roster?.length) {
-    for (const id of role.roster) lines.push(`  - ${id}`);
-  } else {
-    lines.push("  (empty roster)");
-  }
-  return lines.join("\n") + "\n";
-}
-function parseFlags3(args, booleans) {
-  const positionals = [];
-  const flags = {};
-  const bool = new Set(booleans);
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === "--") {
-      positionals.push(...args.slice(i + 1));
-      break;
-    }
-    if (!a.startsWith("--")) {
-      positionals.push(a);
-      continue;
-    }
-    const eq = a.indexOf("=");
-    if (eq > 2) {
-      flags[a.slice(2, eq)] = a.slice(eq + 1);
-      continue;
-    }
-    const key = a.slice(2);
-    if (bool.has(key)) {
-      flags[key] = "true";
-      continue;
-    }
-    const next = args[i + 1];
-    if (next !== void 0 && !next.startsWith("--")) {
-      flags[key] = next;
-      i++;
-    } else flags[key] = "true";
-  }
-  return { positionals, flags };
-}
-function print3(result, json, human) {
-  return { exitCode: 0, stdout: json ? JSON.stringify(result, null, 2) + "\n" : human(), stderr: "" };
-}
-function fail2(msg) {
   return { exitCode: 1, stdout: "", stderr: msg.trimEnd() + "\n" };
 }
 
@@ -6816,21 +6474,21 @@ async function main() {
     return;
   }
   if (cmd === "new") {
-    const { positionals, flags } = parseFlags4(args);
+    const { positionals, flags } = parseFlags3(args);
     if (!positionals[0]) {
-      return fail3(
+      return fail2(
         "Usage: tent new <workspace-path>\n       tent new <workspace-path> --repair-existing"
       );
     }
     if (positionals.length > 1) {
-      return fail3(
+      return fail2(
         "Usage: tent new <workspace-path>\n       tent new <workspace-path> --repair-existing"
       );
     }
     const repairExisting = flags["repair-existing"] === "true";
     const unknown = Object.keys(flags).filter((k) => k !== "repair-existing");
     if (unknown.length > 0) {
-      return fail3(
+      return fail2(
         `Unknown flag for tent new: --${unknown[0]}
 Usage: tent new <workspace-path>
        tent new <workspace-path> --repair-existing`
@@ -6844,8 +6502,8 @@ Usage: tent new <workspace-path>
     return;
   }
   if (cmd === "skill-install") {
-    const { positionals, flags } = parseFlags4(args);
-    if (positionals.length > 0) return fail3("Usage: tent skill-install [--target all|claude|shared-agents] [--force]");
+    const { positionals, flags } = parseFlags3(args);
+    if (positionals.length > 0) return fail2("Usage: tent skill-install [--target all|claude|shared-agents] [--force]");
     const target = flags.target || "all";
     const force = flags.force === "true";
     const defaultDirs = resolveCliSkillInstallDirs(target);
@@ -6865,14 +6523,14 @@ Usage: tent new <workspace-path>
       return;
     }
     if (sub !== "install" && sub !== "doctor" && sub !== "remove") {
-      return fail3(
+      return fail2(
         `Unknown agent-hooks subcommand: ${sub}
 Usage: tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copilot] [--json]`
       );
     }
-    const { positionals, flags } = parseFlags4(rest);
+    const { positionals, flags } = parseFlags3(rest);
     if (positionals.length > 0) {
-      return fail3(
+      return fail2(
         `Usage: tent agent-hooks ${sub} [--agent all|claude|codex|agy|copilot] [--json]`
       );
     }
@@ -6881,7 +6539,7 @@ Usage: tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copi
       agents = flags.agent ? resolveAgentHookSelection([flags.agent]) : void 0;
       if (flags.agent && flags.agent !== "all") parseAgentHookId(flags.agent);
     } catch (error) {
-      return fail3(error instanceof Error ? error.message : String(error));
+      return fail2(error instanceof Error ? error.message : String(error));
     }
     const asJson = flags.json === "true";
     const home = flags.home || void 0;
@@ -6914,18 +6572,6 @@ Usage: tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copi
       return;
     }
     const result = await runSessionCommand(sub, rest, { packageRoot: packageRoot() });
-    if (result.stdout) process.stdout.write(result.stdout);
-    if (result.stderr) process.stderr.write(result.stderr);
-    if (result.exitCode !== 0) process.exitCode = result.exitCode;
-    return;
-  }
-  if (cmd === "agent") {
-    const [sub, ...rest] = args;
-    if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
-      console.log(agentDefinitionHelpText());
-      return;
-    }
-    const result = await runAgentDefinitionCommand(sub, rest, { packageRoot: packageRoot() });
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     if (result.exitCode !== 0) process.exitCode = result.exitCode;
@@ -6970,18 +6616,18 @@ Usage: tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copi
     return;
   }
   if (cmd === "propose") {
-    const { positionals } = parseFlags4(args);
+    const { positionals } = parseFlags3(args);
     const [nodeId, bodySource] = positionals;
     if (!nodeId || !bodySource || positionals.length > 2) {
-      return fail3("Usage: tent propose <nodeId> <bodyFile|->");
+      return fail2("Usage: tent propose <nodeId> <bodyFile|->");
     }
     const role = process.env.TENT_ROLE;
-    if (!role) return fail3("tent propose requires TENT_ROLE to identify the submitting role");
+    if (!role) return fail2("tent propose requires TENT_ROLE to identify the submitting role");
     const body = bodySource === "-" ? await readStdin2() : await readBodyFile(bodySource);
     const systemRoot = await findTentSystemRoot(process.cwd());
-    if (!systemRoot) return fail3(NOT_INSIDE_TENT_MESSAGE);
+    if (!systemRoot) return fail2(NOT_INSIDE_TENT_MESSAGE);
     const workspace = workspaceRootFromSystemRoot(systemRoot);
-    if (!workspace) return fail3("tent propose requires an in-workspace <workspace>/.tent layout");
+    if (!workspace) return fail2("tent propose requires an in-workspace <workspace>/.tent layout");
     const result = await runProposalSubmit(
       { boxId: nodeId, role, body },
       { cwd: workspace, workspace, packageRoot: packageRoot() }
@@ -6993,17 +6639,17 @@ Usage: tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copi
   }
   const tentCommands = /* @__PURE__ */ new Set(["role-init", "status", "tags", "find", "tree"]);
   if (!tentCommands.has(cmd)) {
-    return fail3(
+    return fail2(
       `Unknown command: ${cmd || "(empty)"}
-Commands: new node task session agent role propose role-init role-checkpoint status tags find tree skill-install agent-hooks`
+Commands: new node task session role propose role-init role-checkpoint status tags find tree skill-install agent-hooks`
     );
   }
   const env = await makeEnv();
   switch (cmd) {
     case "role-init": {
       const roleName = args[0];
-      if (!roleName) return fail3("Usage: tent role-init <role>");
-      if (args.length > 1) return fail3("Usage: tent role-init <role>");
+      if (!roleName) return fail2("Usage: tent role-init <role>");
+      if (args.length > 1) return fail2("Usage: tent role-init <role>");
       const roles = await loadRolesRegistry(env.fs);
       const role = roles.roles.find((item) => item.name === roleName) ?? { name: roleName };
       const initPath = await withTentMutation(
@@ -7014,31 +6660,31 @@ Commands: new node task session agent role propose role-init role-checkpoint sta
       break;
     }
     case "status": {
-      if (args.length > 0) return fail3("Usage: tent status");
+      if (args.length > 0) return fail2("Usage: tent status");
       try {
         process.stdout.write(
           await renderTentStatus(process.cwd(), process.env.TENT_ROLE, (root) => new NodeFs(root))
         );
       } catch (error) {
-        if (error instanceof Error && error.message === NOT_INSIDE_TENT_MESSAGE) return fail3(error.message);
+        if (error instanceof Error && error.message === NOT_INSIDE_TENT_MESSAGE) return fail2(error.message);
         throw error;
       }
       break;
     }
     case "tags": {
-      if (args.length > 0) return fail3("Usage: tent tags");
+      if (args.length > 0) return fail2("Usage: tent tags");
       const registry = await loadTagRegistry(env.fs);
       if (registry.tags.length === 0) console.log("(no tags)");
       else for (const tag of registry.tags) console.log(tag);
       break;
     }
     case "find": {
-      if (!args[0]) return fail3("Usage: tent find <name>");
-      if (args.length > 1) return fail3("Usage: tent find <name>");
+      if (!args[0]) return fail2("Usage: tent find <name>");
+      if (args.length > 1) return fail2("Usage: tent find <name>");
       try {
         normalizeTagName(args[0]);
       } catch (error) {
-        return fail3(error instanceof Error ? error.message : String(error));
+        return fail2(error instanceof Error ? error.message : String(error));
       }
       const tent = await loadTent(env.fs);
       const nodes = findBoxesByTag(tent, args[0]);
@@ -7053,13 +6699,13 @@ Commands: new node task session agent role propose role-init role-checkpoint sta
       break;
     }
     case "tree": {
-      if (args.length > 0) return fail3("Usage: tent tree");
+      if (args.length > 0) return fail2("Usage: tent tree");
       const tent = await loadTent(env.fs);
       for (const r of tent.roots) printBox(r, 0);
       break;
     }
     default:
-      return fail3(`Unknown command: ${cmd || "(empty)"}`);
+      return fail2(`Unknown command: ${cmd || "(empty)"}`);
   }
 }
 function readStdin2() {
@@ -7089,11 +6735,11 @@ function outputPointer(fm, body) {
   const { workspace, ref } = parseOutputPointer(fm, body);
   return [workspace ? `workspace=${workspace}` : "", ref ? `ref=${ref}` : ""].filter(Boolean).join(" ");
 }
-function fail3(msg) {
+function fail2(msg) {
   console.error(msg);
   process.exitCode = 1;
 }
-function parseFlags4(args) {
+function parseFlags3(args) {
   const positionals = [];
   const flags = {};
   const booleanFlags = /* @__PURE__ */ new Set(["force", "json", "repair-existing"]);
@@ -7184,10 +6830,8 @@ Usage:
 
 Run commands from a workspace with <workspace>/.tent/ unless noted.
 
-Logical Agent, durable Role, Session, and Task (distinct surfaces):
-  tent agent list|get|config          Logical AgentDefinition (id\u2192profileId; no secrets/Session)
-  tent agent --help                   AgentDefinition subcommand help
-  tent role list|show|config          Durable Role discovery + roster config (Service-backed)
+Durable Role, Session, and Task (distinct surfaces):
+  tent role list|show|config          Durable Role discovery + metadata config (Service-backed)
   tent role --help                    Role subcommand help
   tent session enter|status|leave     External session lifecycle (no ACP spawn)
   tent session --help                 Pull-host enter/status/leave + hook aliases
@@ -7232,7 +6876,7 @@ async function newTent(target) {
   const fsmod = await import("node:fs/promises");
   const workspaceRoot = path9.resolve(target);
   const fsa = new NodeFs(workspaceRoot);
-  if (await fsa.exists(".tent")) return fail3(`Target is already a Tent: ${workspaceRoot}`);
+  if (await fsa.exists(".tent")) return fail2(`Target is already a Tent: ${workspaceRoot}`);
   await fsmod.mkdir(workspaceRoot, { recursive: true });
   const name = path9.basename(workspaceRoot);
   await scaffoldInWorkspace(fsa, { name });
@@ -7249,7 +6893,7 @@ async function repairExistingTent(target) {
   try {
     result = await reAdoptOrphanTent(fsa);
   } catch (error) {
-    return fail3(error instanceof Error ? error.message : String(error));
+    return fail2(error instanceof Error ? error.message : String(error));
   }
   const created = [];
   if (result.createdIndex) created.push("index.md");

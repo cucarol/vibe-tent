@@ -7,7 +7,7 @@ var __export = (target, all2) => {
 };
 
 // src/service/cli.ts
-import * as path23 from "node:path";
+import * as path22 from "node:path";
 
 // src/service/http-server.ts
 import * as http from "node:http";
@@ -414,14 +414,14 @@ function emit(v) {
 }
 
 // src/core/registryRecovery.ts
-async function backupCorruptRegistry(fs23, path24) {
-  const backupPath = `${path24}.corrupt-${timestamp()}`;
-  await fs23.writeFile(backupPath, await fs23.readFile(path24));
+async function backupCorruptRegistry(fs22, path23) {
+  const backupPath = `${path23}.corrupt-${timestamp()}`;
+  await fs22.writeFile(backupPath, await fs22.readFile(path23));
   return backupPath;
 }
-function warnRegistryRecovered(path24, backupPath, action, extra = "") {
+function warnRegistryRecovered(path23, backupPath, action, extra = "") {
   console.error(
-    `WARNING: ${path24} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
+    `WARNING: ${path23} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
   );
 }
 function timestamp() {
@@ -464,9 +464,9 @@ function systemRootFromWorkspace(workspaceRoot) {
   return `${root}${sep4}${TENT_SYSTEM_DIR}`;
 }
 function isOperationalPath(relativePath4) {
-  const path24 = relativePath4.replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!path24) return false;
-  const top = path24.split("/")[0] ?? "";
+  const path23 = relativePath4.replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!path23) return false;
+  const top = path23.split("/")[0] ?? "";
   return OPERATIONAL_TOP_LEVEL.has(top);
 }
 function safeOperationalSegment(value, emptyPrefix = "id") {
@@ -507,19 +507,19 @@ function isSystemNoteName(fileName) {
 
 // src/core/order.ts
 var ROOT_KEY = "__root__";
-async function loadOrder(fs23) {
-  if (!await fs23.exists(ORDER_PATH)) return {};
+async function loadOrder(fs22) {
+  if (!await fs22.exists(ORDER_PATH)) return {};
   try {
-    return JSON.parse(await fs23.readFile(ORDER_PATH));
+    return JSON.parse(await fs22.readFile(ORDER_PATH));
   } catch {
-    const backupPath = await backupCorruptRegistry(fs23, ORDER_PATH);
-    await saveOrder(fs23, {});
+    const backupPath = await backupCorruptRegistry(fs22, ORDER_PATH);
+    await saveOrder(fs22, {});
     warnRegistryRecovered(ORDER_PATH, backupPath, "recovered");
     return {};
   }
 }
-async function saveOrder(fs23, map) {
-  await fs23.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
+async function saveOrder(fs22, map) {
+  await fs22.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
 }
 function sortByOrder(items, order, fallback) {
   const sorted = [...items];
@@ -575,10 +575,10 @@ function isValidConceptType(type, registry) {
   const mod = registry[modifier];
   return !!mod && mod.tier === "modifier";
 }
-async function loadTypeRegistry(fs23) {
-  if (!await fs23.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
+async function loadTypeRegistry(fs22) {
+  if (!await fs22.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
   try {
-    const parsed = JSON.parse(await fs23.readFile(TYPE_REGISTRY_PATH));
+    const parsed = JSON.parse(await fs22.readFile(TYPE_REGISTRY_PATH));
     return normalizeRegistry(parsed);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -656,8 +656,8 @@ function isRecord(value) {
 }
 
 // src/core/adapter.ts
-function withTentMutation(fs23, action) {
-  return fs23.withLock ? fs23.withLock(MUTATION_LOCK_PATH, action) : action();
+function withTentMutation(fs22, action) {
+  return fs22.withLock ? fs22.withLock(MUTATION_LOCK_PATH, action) : action();
 }
 
 // src/core/relations.ts
@@ -861,9 +861,9 @@ function assertRawRelationsCanonicalForMutation(value) {
   }
   return out;
 }
-async function loadCanonicalRelationsForMutation(fs23, boxPath) {
+async function loadCanonicalRelationsForMutation(fs22, boxPath) {
   const notePath = boxNotePath(boxPath);
-  const { data } = parseFrontmatter(await fs23.readFile(notePath));
+  const { data } = parseFrontmatter(await fs22.readFile(notePath));
   return assertRawRelationsCanonicalForMutation(data.relations);
 }
 function relationToFrontmatterItem(record) {
@@ -887,13 +887,13 @@ function boxKeyOrder(existing) {
     ...existing.filter((key2) => !BOX_FRONTMATTER_KEY_ORDER.includes(key2))
   ];
 }
-async function writeBoxRelations(fs23, box, relations) {
-  const path24 = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs23.readFile(path24));
+async function writeBoxRelations(fs22, box, relations) {
+  const path23 = boxNotePath(box.path);
+  const { data, body, keyOrder } = parseFrontmatter(await fs22.readFile(path23));
   const value = relationsToFrontmatterValue(relations);
   if (value === void 0) delete data.relations;
   else data.relations = value;
-  await fs23.writeFile(path24, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
+  await fs22.writeFile(path23, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
 }
 function assertSourceMutable(box) {
   if (box.invalid) {
@@ -945,13 +945,13 @@ function listRelationsForNode(tent, nodeId) {
     incoming
   };
 }
-async function createRelation(fs23, sourceId, input, rand = Math.random, loadedTent) {
-  return withTentMutation(fs23, async () => {
-    const tent = loadedTent ?? await loadTent(fs23);
+async function createRelation(fs22, sourceId, input, rand = Math.random, loadedTent) {
+  return withTentMutation(fs22, async () => {
+    const tent = loadedTent ?? await loadTent(fs22);
     const box = tent.byId.get(sourceId);
     if (!box) throw new RelationError("NOT_FOUND", `Concept not found: ${sourceId}`);
     assertSourceMutable(box);
-    const base = await loadCanonicalRelationsForMutation(fs23, box.path);
+    const base = await loadCanonicalRelationsForMutation(fs22, box.path);
     const kind = normalizeRelationKind(input.kind);
     const direction = normalizeRelationDirection(input.direction);
     const label = normalizeRelationLabel(input.label);
@@ -966,19 +966,19 @@ async function createRelation(fs23, sourceId, input, rand = Math.random, loadedT
     const record = { id, kind, direction, target };
     if (label !== void 0) record.label = label;
     const next = [...base.map(cloneRelation), record];
-    await writeBoxRelations(fs23, box, next);
+    await writeBoxRelations(fs22, box, next);
     box.relations = next.map(cloneRelation);
     box.fm.relations = relationsToFrontmatterValue(next);
     return cloneRelation(record);
   });
 }
-async function updateRelation(fs23, sourceId, relationId, patch, loadedTent) {
-  return withTentMutation(fs23, async () => {
-    const tent = loadedTent ?? await loadTent(fs23);
+async function updateRelation(fs22, sourceId, relationId, patch, loadedTent) {
+  return withTentMutation(fs22, async () => {
+    const tent = loadedTent ?? await loadTent(fs22);
     const box = tent.byId.get(sourceId);
     if (!box) throw new RelationError("NOT_FOUND", `Concept not found: ${sourceId}`);
     assertSourceMutable(box);
-    const base = await loadCanonicalRelationsForMutation(fs23, box.path);
+    const base = await loadCanonicalRelationsForMutation(fs22, box.path);
     const idx = base.findIndex((r) => r.id === relationId);
     if (idx < 0) {
       throw new RelationError("NOT_FOUND", `Relation not found: ${relationId}`);
@@ -998,25 +998,25 @@ async function updateRelation(fs23, sourceId, relationId, patch, loadedTent) {
       assertResolvedTargetUsable(tent, current.target);
     }
     const next = base.map((r, i) => i === idx ? current : cloneRelation(r));
-    await writeBoxRelations(fs23, box, next);
+    await writeBoxRelations(fs22, box, next);
     box.relations = next.map(cloneRelation);
     box.fm.relations = relationsToFrontmatterValue(next);
     return cloneRelation(current);
   });
 }
-async function deleteRelation(fs23, sourceId, relationId, loadedTent) {
-  return withTentMutation(fs23, async () => {
-    const tent = loadedTent ?? await loadTent(fs23);
+async function deleteRelation(fs22, sourceId, relationId, loadedTent) {
+  return withTentMutation(fs22, async () => {
+    const tent = loadedTent ?? await loadTent(fs22);
     const box = tent.byId.get(sourceId);
     if (!box) throw new RelationError("NOT_FOUND", `Concept not found: ${sourceId}`);
     assertSourceMutable(box);
-    const base = await loadCanonicalRelationsForMutation(fs23, box.path);
+    const base = await loadCanonicalRelationsForMutation(fs22, box.path);
     const idx = base.findIndex((r) => r.id === relationId);
     if (idx < 0) {
       throw new RelationError("NOT_FOUND", `Relation not found: ${relationId}`);
     }
     const next = base.filter((_, i) => i !== idx).map(cloneRelation);
-    await writeBoxRelations(fs23, box, next);
+    await writeBoxRelations(fs22, box, next);
     box.relations = next.map(cloneRelation);
     const fmValue = relationsToFrontmatterValue(next);
     if (fmValue === void 0) delete box.fm.relations;
@@ -1029,19 +1029,19 @@ async function deleteRelation(fs23, sourceId, relationId, loadedTent) {
 function boxNotePath(boxPath) {
   return join(boxPath, baseName(boxPath) + ".md");
 }
-async function loadTent(fs23) {
+async function loadTent(fs22) {
   const byId = /* @__PURE__ */ new Map();
   const byPath = /* @__PURE__ */ new Map();
   const roots = [];
-  const typeRegistry = await loadTypeRegistry(fs23);
-  const top = await fs23.listDir("");
+  const typeRegistry = await loadTypeRegistry(fs22);
+  const top = await fs22.listDir("");
   for (const entry of top) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
     if (isSystemNoteName(entry.name)) continue;
-    await loadBoxInto(fs23, entry.name, null, typeRegistry, roots);
+    await loadBoxInto(fs22, entry.name, null, typeRegistry, roots);
   }
-  const order = await loadOrder(fs23);
+  const order = await loadOrder(fs22);
   const sortedRoots = sortByOrder(roots, order[ROOT_KEY], (a, b) => a.name.localeCompare(b.name));
   for (const root of sortedRoots) sortChildren(root, order);
   for (const root of sortedRoots) resolveSubtree(root, typeRegistry);
@@ -1073,13 +1073,13 @@ function sortChildren(box, order) {
   box.children = sortByOrder(box.children, order[box.id], (a, b) => a.name.localeCompare(b.name));
   for (const c of box.children) sortChildren(c, order);
 }
-async function loadBox(fs23, path24, parent, registry) {
-  if (isOperationalPath(path24)) return null;
-  const boxFile = boxNotePath(path24);
-  if (!await fs23.exists(boxFile)) {
+async function loadBox(fs22, path23, parent, registry) {
+  if (isOperationalPath(path23)) return null;
+  const boxFile = boxNotePath(path23);
+  if (!await fs22.exists(boxFile)) {
     return null;
   }
-  const raw = await fs23.readFile(boxFile);
+  const raw = await fs22.readFile(boxFile);
   let parsed;
   let parseError;
   try {
@@ -1089,7 +1089,7 @@ async function loadBox(fs23, path24, parent, registry) {
     parsed = { data: {}, body: raw, keyOrder: [] };
   }
   const { data, body } = parsed;
-  const name = baseName(path24);
+  const name = baseName(path23);
   const { fm, tags, relations } = normalizeIdentity(data);
   const box = {
     id: fm.id,
@@ -1099,7 +1099,7 @@ async function loadBox(fs23, path24, parent, registry) {
     mode: "editable",
     archived: false,
     invalid: !!parseError,
-    path: path24,
+    path: path23,
     name,
     fm,
     body,
@@ -1107,14 +1107,14 @@ async function loadBox(fs23, path24, parent, registry) {
     parent
   };
   if (parseError) {
-    box.invalidRootId = path24;
+    box.invalidRootId = path23;
     box.invalidReason = `Invalid frontmatter: ${parseError}`;
   }
-  const sub = await fs23.listDir(path24);
+  const sub = await fs22.listDir(path23);
   for (const entry of sub) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadBoxInto(fs23, join(path24, entry.name), box, registry, box.children);
+    await loadBoxInto(fs22, join(path23, entry.name), box, registry, box.children);
   }
   return box;
 }
@@ -1162,18 +1162,18 @@ function normalizeTags(value) {
   }
   return out;
 }
-async function loadBoxInto(fs23, path24, parent, registry, target) {
-  if (isOperationalPath(path24)) return;
-  const box = await loadBox(fs23, path24, parent, registry);
+async function loadBoxInto(fs22, path23, parent, registry, target) {
+  if (isOperationalPath(path23)) return;
+  const box = await loadBox(fs22, path23, parent, registry);
   if (box) {
     target.push(box);
     return;
   }
-  const sub = await fs23.listDir(path24);
+  const sub = await fs22.listDir(path23);
   for (const entry of sub) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadBoxInto(fs23, join(path24, entry.name), parent, registry, target);
+    await loadBoxInto(fs22, join(path23, entry.name), parent, registry, target);
   }
 }
 function resolveSubtree(box, registry, inheritedInvalid, inheritedArchived = false) {
@@ -1218,13 +1218,13 @@ function indexSubtree(box, byId, byPath, duplicateIds) {
 function join(...parts) {
   return parts.filter((p) => p !== "").join("/");
 }
-function baseName(path24) {
-  const i = path24.lastIndexOf("/");
-  return i === -1 ? path24 : path24.slice(i + 1);
+function baseName(path23) {
+  const i = path23.lastIndexOf("/");
+  return i === -1 ? path23 : path23.slice(i + 1);
 }
-function dirName(path24) {
-  const i = path24.lastIndexOf("/");
-  return i === -1 ? "" : path24.slice(0, i);
+function dirName(path23) {
+  const i = path23.lastIndexOf("/");
+  return i === -1 ? "" : path23.slice(0, i);
 }
 
 // src/core/manifest.ts
@@ -1659,38 +1659,30 @@ function assertReviewAuthority(input) {
     `task.${action} requires actor equal to reviewer role (${reviewer.id}); got ${actor}.`
   );
 }
-function evaluateA2A(input) {
-  if (input.callerKind === "user") return "allow";
-  const policy = input.policy ?? "deny";
-  if (policy === "deny") return "deny";
-  if (policy === "ask") return "ask";
-  if (input.profileAllowed === false) return "deny";
-  return "allow";
-}
 
 // src/core/task-context-card.ts
 import { createHash } from "node:crypto";
 
 // src/core/task.ts
-async function loadTaskEnvelopes(fs23) {
+async function loadTaskEnvelopes(fs22) {
   const tasks = [];
-  if (!await fs23.exists(TEMP_DIR)) return tasks;
-  for (const entry of await fs23.listDir(TEMP_DIR)) {
+  if (!await fs22.exists(TEMP_DIR)) return tasks;
+  for (const entry of await fs22.listDir(TEMP_DIR)) {
     if (!entry.isDir) continue;
     if (entry.name === AGENT_PROFILES_TEMP_DIR) {
       const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
-      if (!await fs23.exists(profilesRoot)) continue;
-      for (const profileEntry of await fs23.listDir(profilesRoot)) {
+      if (!await fs22.exists(profilesRoot)) continue;
+      for (const profileEntry of await fs22.listDir(profilesRoot)) {
         if (!profileEntry.isDir) continue;
-        await collectTaskFiles(fs23, join(profilesRoot, profileEntry.name, "tasks"), tasks);
+        await collectTaskFiles(fs22, join(profilesRoot, profileEntry.name, "tasks"), tasks);
       }
       continue;
     }
-    await collectTaskFiles(fs23, join(TEMP_DIR, entry.name, "tasks"), tasks);
+    await collectTaskFiles(fs22, join(TEMP_DIR, entry.name, "tasks"), tasks);
   }
   return tasks.sort((a, b) => a.path.localeCompare(b.path));
 }
-async function migrateParentReviewerEnvelopes(fs23, clock, options) {
+async function migrateParentReviewerEnvelopes(fs22, clock, options) {
   const dryRun = options?.dryRun === true;
   const report = {
     scanned: 0,
@@ -1698,36 +1690,36 @@ async function migrateParentReviewerEnvelopes(fs23, clock, options) {
     skipped: [],
     warnings: []
   };
-  if (!await fs23.exists(TEMP_DIR)) return report;
+  if (!await fs22.exists(TEMP_DIR)) return report;
   const paths = [];
-  for (const entry of await fs23.listDir(TEMP_DIR)) {
+  for (const entry of await fs22.listDir(TEMP_DIR)) {
     if (!entry.isDir) continue;
     if (entry.name === AGENT_PROFILES_TEMP_DIR) {
       const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
-      if (!await fs23.exists(profilesRoot)) continue;
-      for (const profileEntry of await fs23.listDir(profilesRoot)) {
+      if (!await fs22.exists(profilesRoot)) continue;
+      for (const profileEntry of await fs22.listDir(profilesRoot)) {
         if (!profileEntry.isDir) continue;
         const taskDir2 = join(profilesRoot, profileEntry.name, "tasks");
-        if (!await fs23.exists(taskDir2)) continue;
-        for (const f of await fs23.listDir(taskDir2)) {
+        if (!await fs22.exists(taskDir2)) continue;
+        for (const f of await fs22.listDir(taskDir2)) {
           if (!f.isDir && f.name.endsWith(".md")) paths.push(join(taskDir2, f.name));
         }
       }
       continue;
     }
     const taskDir = join(TEMP_DIR, entry.name, "tasks");
-    if (!await fs23.exists(taskDir)) continue;
-    for (const f of await fs23.listDir(taskDir)) {
+    if (!await fs22.exists(taskDir)) continue;
+    for (const f of await fs22.listDir(taskDir)) {
       if (!f.isDir && f.name.endsWith(".md")) paths.push(join(taskDir, f.name));
     }
   }
-  for (const path24 of paths.sort((a, b) => a.localeCompare(b))) {
+  for (const path23 of paths.sort((a, b) => a.localeCompare(b))) {
     report.scanned += 1;
     try {
-      const raw = await fs23.readFile(path24);
+      const raw = await fs22.readFile(path23);
       const { data, body, keyOrder } = parseFrontmatter(raw);
       if (data.type !== "task") {
-        report.skipped.push(path24);
+        report.skipped.push(path23);
         continue;
       }
       const hasParent = data.parentActor !== void 0 && data.parentActor !== null;
@@ -1739,12 +1731,12 @@ async function migrateParentReviewerEnvelopes(fs23, clock, options) {
             parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
             reviewer: parseTaskActorRef(data.reviewer, "reviewer")
           });
-          report.skipped.push(path24);
+          report.skipped.push(path23);
         } catch (err) {
           report.warnings.push(
-            `${path24}: ${err instanceof Error ? err.message : String(err)}`
+            `${path23}: ${err instanceof Error ? err.message : String(err)}`
           );
-          report.skipped.push(path24);
+          report.skipped.push(path23);
         }
         continue;
       }
@@ -1759,9 +1751,9 @@ async function migrateParentReviewerEnvelopes(fs23, clock, options) {
         reviewer = pair.reviewer;
       } else if (hasParent || hasReviewer) {
         report.warnings.push(
-          `${path24}: partial parentActor/reviewer pair; refusing silent repair`
+          `${path23}: partial parentActor/reviewer pair; refusing silent repair`
         );
-        report.skipped.push(path24);
+        report.skipped.push(path23);
         continue;
       } else {
         const migrated = migrateParentReviewerFromLegacy({
@@ -1777,30 +1769,30 @@ async function migrateParentReviewerEnvelopes(fs23, clock, options) {
       delete next.dispatchedBy;
       const nextRaw = serializeFrontmatter(next, body, keyOrder);
       if (nextRaw === raw) {
-        report.skipped.push(path24);
+        report.skipped.push(path23);
         continue;
       }
       if (!dryRun) {
         next.updatedAt = clock.now();
-        await fs23.writeFile(path24, serializeFrontmatter(next, body, keyOrder));
+        await fs22.writeFile(path23, serializeFrontmatter(next, body, keyOrder));
       }
-      report.rewritten.push(path24);
+      report.rewritten.push(path23);
     } catch (err) {
       report.warnings.push(
-        `${path24}: ${err instanceof Error ? err.message : String(err)}`
+        `${path23}: ${err instanceof Error ? err.message : String(err)}`
       );
-      report.skipped.push(path24);
+      report.skipped.push(path23);
     }
   }
   return report;
 }
-async function collectTaskFiles(fs23, taskDir, tasks) {
-  if (!await fs23.exists(taskDir)) return;
-  for (const entry of await fs23.listDir(taskDir)) {
+async function collectTaskFiles(fs22, taskDir, tasks) {
+  if (!await fs22.exists(taskDir)) return;
+  for (const entry of await fs22.listDir(taskDir)) {
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
-    const path24 = join(taskDir, entry.name);
+    const path23 = join(taskDir, entry.name);
     try {
-      tasks.push(await loadTaskEnvelope(fs23, path24));
+      tasks.push(await loadTaskEnvelope(fs22, path23));
     } catch {
     }
   }
@@ -1810,9 +1802,6 @@ function taskAssigneeKind(task) {
 }
 function taskAsSub(task) {
   return task.asSub === true;
-}
-function taskParentIsRole(task) {
-  return task.parentActor?.kind === "role";
 }
 function taskParentRoleId(task) {
   return task.parentActor?.kind === "role" ? task.parentActor.id : void 0;
@@ -1887,11 +1876,11 @@ function resolveDispatchActors(input) {
     reviewer: input.reviewer
   });
 }
-async function loadTaskEnvelope(fs23, path24) {
-  if (!await fs23.exists(path24)) throw new Error(`Task envelope not found: ${path24}.`);
-  const { data, body } = parseFrontmatter(await fs23.readFile(path24));
+async function loadTaskEnvelope(fs22, path23) {
+  if (!await fs22.exists(path23)) throw new Error(`Task envelope not found: ${path23}.`);
+  const { data, body } = parseFrontmatter(await fs22.readFile(path23));
   if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string") {
-    throw new Error(`Invalid task envelope format: ${path24}.`);
+    throw new Error(`Invalid task envelope format: ${path23}.`);
   }
   const legacyStatus = data.status === "taken" ? "taken" : "pending";
   const state = parseTaskState(data.state, legacyStatus);
@@ -1900,11 +1889,11 @@ async function loadTaskEnvelope(fs23, path24) {
   const hasClaimsKey = Array.isArray(data.claims) && data.claims.every((claim) => typeof claim === "string");
   if (!contextCard && !hasClaimsKey) {
     throw new Error(
-      `Invalid task envelope format: ${path24} (missing Task.contextCard.refs.nodes; run claims\u2192refs migration).`
+      `Invalid task envelope format: ${path23} (missing Task.contextCard.refs.nodes; run claims\u2192refs migration).`
     );
   }
   const task = {
-    path: path24,
+    path: path23,
     role: data.role,
     manifest: data.manifest,
     status: stateToLegacyStatus(state),
@@ -1930,12 +1919,12 @@ async function loadTaskEnvelope(fs23, path24) {
     const recordedBase = task.baseCommit?.trim() || "";
     if (!recordedBase) {
       throw new Error(
-        `Invalid task envelope format: ${path24} (baseCommitCapture present but baseCommit missing).`
+        `Invalid task envelope format: ${path23} (baseCommitCapture present but baseCommit missing).`
       );
     }
     if (recordedBase !== baseCommitCapture.baseCommit) {
       throw new Error(
-        `Invalid task envelope format: ${path24} (baseCommit ${recordedBase} !== baseCommitCapture.baseCommit ${baseCommitCapture.baseCommit}).`
+        `Invalid task envelope format: ${path23} (baseCommit ${recordedBase} !== baseCommitCapture.baseCommit ${baseCommitCapture.baseCommit}).`
       );
     }
     task.baseCommitCapture = baseCommitCapture;
@@ -2089,7 +2078,7 @@ function sessionBootstrapPromptForTask(task, _roots) {
 `;
   return readyLine + `${formatTaskPointers(task)}
 Service status: this task is already claimed (state=${task.state || "running"}).
-Managed path: Local Service already claimed this task; end with an explicit outcome wire (\`outcome: delivered|blocked|needs-input\`) then the report body. Only \`delivered\` may become a ready Delivery after turn settle; blocker/question must use needs-input/blocked or ask-user \u2014 never self-accept.
+Managed path: Local Service already claimed this task. A non-empty final report is delivered by default after turn settle. Use \`outcome: blocked\` or \`outcome: needs-input\` only as an explicit control signal when work cannot complete; never self-accept.
 ` + (kind === "agentProfile" ? `One-shot agentProfile task: rely on task/manifest pointers only \u2014 no role init.
 ` : "") + (userPrompt ? `
 ## User Prompt
@@ -2101,8 +2090,8 @@ ${userPrompt}
 (no user prompt on envelope)
 `);
 }
-async function ensureRoleInit(fs23, role, tentName) {
-  const path24 = join("temp", role.name, "init.md");
+async function ensureRoleInit(fs22, role, tentName) {
+  const path23 = join("temp", role.name, "init.md");
   const body = `# Role Init
 
 - Tent: ${tentName}
@@ -2118,22 +2107,22 @@ ${role.prompt?.trim() || "(no persistent role prompt)"}
 Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
 Task lifecycle uses \`tent task *\` (Local Service). Do not invent paths as <workspace>/temp \u2014 operational files live under .tent/temp.
 `;
-  await fs23.writeFile(path24, serializeFrontmatter({ type: "role-init", role: role.name }, body));
-  return path24;
+  await fs22.writeFile(path23, serializeFrontmatter({ type: "role-init", role: role.name }, body));
+  return path23;
 }
-async function writeTaskEnvelope(fs23, clock, input) {
+async function writeTaskEnvelope(fs22, clock, input) {
   const userPrompt = input.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
   const assigneeKind = input.assigneeKind ?? "role";
   const dir = input.tasksDir?.trim() || (assigneeKind === "agentProfile" ? agentProfileTasksDir(input.role) : join(TEMP_DIR, input.role, "tasks"));
-  await ensureDir(fs23, dir);
+  await ensureDir(fs22, dir);
   const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
   const isRootToken = (id2) => id2.trim() === "root";
   const workspaceOnly = input.claims.length > 0 && input.claims.every((c) => isRootToken(c.id));
   const nodeRefs = input.claims.filter((c) => !isRootToken(c.id)).map((c) => normalizeContextCardNodeRef({ id: c.id, path: c.path }));
   const primaryRef = nodeRefs[0]?.id || (workspaceOnly ? "root" : "node");
   const stem = taskStem(clock.now(), primaryRef);
-  const path24 = await uniqueMarkdownPath(fs23, dir, stem);
+  const path23 = await uniqueMarkdownPath(fs22, dir, stem);
   const now = clock.now();
   const actors = resolveDispatchActors({
     parentActor: input.parentActor,
@@ -2161,7 +2150,6 @@ async function writeTaskEnvelope(fs23, clock, input) {
     tentRoleDigest: facts?.tentRoleDigest,
     tentRoleVersion: facts?.tentRoleVersion,
     rolePrompt: facts?.rolePrompt,
-    rosterAgentIds: facts?.rosterAgentIds,
     tentTaskDigest: facts?.tentTaskDigest,
     tentTaskVersion: facts?.tentTaskVersion,
     profileAdapterCompatibility: profileAdapterCompatibilityDigest({
@@ -2248,20 +2236,20 @@ ${pointers || "(none)"}
 
 ${userPrompt}
 `;
-  await fs23.writeFile(path24, serializeFrontmatter(data, body));
-  return path24;
+  await fs22.writeFile(path23, serializeFrontmatter(data, body));
+  return path23;
 }
-async function ackTaskEnvelope(fs23, path24) {
-  await patchTaskEnvelope(fs23, path24, {
+async function ackTaskEnvelope(fs22, path23) {
+  await patchTaskEnvelope(fs22, path23, {
     status: "taken",
     state: "running"
   });
 }
-async function patchTaskEnvelope(fs23, path24, patch) {
-  if (!await fs23.exists(path24)) throw new Error(`Task envelope not found: ${path24}.`);
-  const raw = await fs23.readFile(path24);
+async function patchTaskEnvelope(fs22, path23, patch) {
+  if (!await fs22.exists(path23)) throw new Error(`Task envelope not found: ${path23}.`);
+  const raw = await fs22.readFile(path23);
   const { data, body, keyOrder } = parseFrontmatter(raw);
-  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path24}.`);
+  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path23}.`);
   if (patch.state) {
     data.state = patch.state;
     data.status = stateToLegacyStatus(patch.state);
@@ -2373,8 +2361,8 @@ async function patchTaskEnvelope(fs23, path24, patch) {
   else if (typeof patch.purpose === "string" && patch.purpose.trim()) {
     data.purpose = patch.purpose.trim();
   }
-  await fs23.writeFile(path24, serializeFrontmatter(data, body, keyOrder));
-  return loadTaskEnvelope(fs23, path24);
+  await fs22.writeFile(path23, serializeFrontmatter(data, body, keyOrder));
+  return loadTaskEnvelope(fs22, path23);
 }
 function primaryBoxId(task) {
   if (task.contextCard == null) return void 0;
@@ -2399,15 +2387,15 @@ function taskStem(now, claimId) {
   const stamp = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
   return `task-${stamp}-${claimId.replace(/[^0-9A-Za-z_-]+/g, "-")}`;
 }
-async function uniqueMarkdownPath(fs23, dir, stem) {
+async function uniqueMarkdownPath(fs22, dir, stem) {
   for (let n = 1; ; n++) {
     const suffix = n === 1 ? "" : `-${n}`;
-    const path24 = join(dir, `${stem}${suffix}.md`);
-    if (!await fs23.exists(path24)) return path24;
+    const path23 = join(dir, `${stem}${suffix}.md`);
+    if (!await fs22.exists(path23)) return path23;
   }
 }
-async function ensureDir(fs23, path24) {
-  if (!await fs23.exists(path24)) await fs23.mkdir(path24);
+async function ensureDir(fs22, path23) {
+  if (!await fs22.exists(path23)) await fs22.mkdir(path23);
 }
 
 // src/core/task-context-card.ts
@@ -2458,7 +2446,6 @@ function isContextGenerationId(value) {
   return typeof value === "string" && /^cg-v1-[a-f0-9]{64}$/.test(value);
 }
 function computeContextGeneration(inputs) {
-  const roster = [...inputs.rosterAgentIds ?? []].map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
   const extraStable = sanitizeContextGenerationExtraStable(inputs.extraStable);
   const payload = {
     v: CONTEXT_GENERATION_VERSION,
@@ -2467,7 +2454,6 @@ function computeContextGeneration(inputs) {
     tentRoleDigest: inputs.tentRoleDigest?.trim() || "",
     tentRoleVersion: inputs.tentRoleVersion?.trim() || "",
     rolePrompt: inputs.rolePrompt?.trim() || "",
-    roster,
     tentTaskDigest: inputs.tentTaskDigest?.trim() || "",
     tentTaskVersion: inputs.tentTaskVersion?.trim() || "",
     profileAdapterCompatibility: inputs.profileAdapterCompatibility?.trim() || "",
@@ -2519,7 +2505,6 @@ function computeContextGenerationFromStableFacts(input) {
     tentRoleDigest: tentRoleDigest || void 0,
     tentRoleVersion: input.tentRoleVersion,
     rolePrompt: input.rolePrompt,
-    rosterAgentIds: input.rosterAgentIds,
     tentTaskDigest: tentTaskDigest || void 0,
     tentTaskVersion: input.tentTaskVersion,
     profileAdapterCompatibility: profileAdapterCompatibilityDigest({
@@ -2936,8 +2921,8 @@ function assembleManagedPrompt(input) {
   if (input.tentRoleSection?.trim()) {
     stableParts.push(input.tentRoleSection.trim());
   }
-  if (input.rolePromptRosterSection?.trim()) {
-    stableParts.push(input.rolePromptRosterSection.trim());
+  if (input.rolePromptSection?.trim()) {
+    stableParts.push(input.rolePromptSection.trim());
   }
   if (input.tentTaskSection?.trim()) {
     stableParts.push(input.tentTaskSection.trim());
@@ -3421,8 +3406,19 @@ function envelopeIsActiveOccupation(task) {
   const state = task.state || (task.status === "pending" || task.status === "taken" ? legacyStatusToState(task.status) : "failed");
   return isActiveTaskState(state);
 }
-function canClaim(box, _options) {
-  return structuralClaimGate(box);
+function canClaim(box, options) {
+  const structural = structuralClaimGate(box);
+  if (!structural.ok) return structural;
+  const occupied = options?.tasks ? listDirectActiveTasksForNode(box.id, options.tasks)[0] : void 0;
+  if (occupied) {
+    return {
+      ok: false,
+      blocker: box,
+      task: occupied,
+      reason: `${box.name} is occupied by active task ${occupied.id || occupied.path} (${occupied.role}).`
+    };
+  }
+  return structural;
 }
 function structuralClaimGate(box) {
   if (box.invalid) {
@@ -3433,90 +3429,87 @@ function structuralClaimGate(box) {
   }
   return { ok: true };
 }
-function boxHasDirectActiveTask(boxId, tasks) {
-  return listDirectActiveTasksForNode(boxId, tasks).length > 0;
-}
 function isFrozen(box) {
   return box.invalid || box.archived;
 }
 
 // src/core/tags.ts
-async function loadTagRegistry(fs23) {
-  if (!await fs23.exists(TAGS_REGISTRY_PATH)) return { tags: [] };
+async function loadTagRegistry(fs22) {
+  if (!await fs22.exists(TAGS_REGISTRY_PATH)) return { tags: [] };
   try {
-    return normalizeRegistry2(JSON.parse(await fs23.readFile(TAGS_REGISTRY_PATH)));
+    return normalizeRegistry2(JSON.parse(await fs22.readFile(TAGS_REGISTRY_PATH)));
   } catch {
-    const backupPath = await backupCorruptRegistry(fs23, TAGS_REGISTRY_PATH);
-    const recovered = await recoverTagRegistryFromBoxes(fs23);
-    await saveTagRegistryUnlocked(fs23, recovered);
+    const backupPath = await backupCorruptRegistry(fs22, TAGS_REGISTRY_PATH);
+    const recovered = await recoverTagRegistryFromBoxes(fs22);
+    await saveTagRegistryUnlocked(fs22, recovered);
     warnRegistryRecovered(TAGS_REGISTRY_PATH, backupPath, "recovered");
     return recovered;
   }
 }
-async function saveTagRegistryUnlocked(fs23, registry) {
-  await fs23.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(normalizeRegistry2(registry), null, 2) + "\n");
+async function saveTagRegistryUnlocked(fs22, registry) {
+  await fs22.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(normalizeRegistry2(registry), null, 2) + "\n");
 }
-async function addRegistryTag(fs23, name) {
-  await withTentMutation(fs23, async () => addRegistryTagUnlocked(fs23, name));
+async function addRegistryTag(fs22, name) {
+  await withTentMutation(fs22, async () => addRegistryTagUnlocked(fs22, name));
 }
-async function addRegistryTagUnlocked(fs23, name) {
+async function addRegistryTagUnlocked(fs22, name) {
   const tag = normalizeTagName(name);
-  const registry = await loadTagRegistry(fs23);
+  const registry = await loadTagRegistry(fs22);
   if (!registry.tags.includes(tag)) {
     registry.tags.push(tag);
-    await saveTagRegistryUnlocked(fs23, registry);
+    await saveTagRegistryUnlocked(fs22, registry);
   }
 }
-async function addTag(fs23, boxId, name) {
-  await withTentMutation(fs23, async () => {
+async function addTag(fs22, boxId, name) {
+  await withTentMutation(fs22, async () => {
     const tag = normalizeTagName(name);
-    const tent = await loadTent(fs23);
+    const tent = await loadTent(fs22);
     if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`Box not found: ${boxId}.`);
     if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
     assertContentMutable(box, "tagged");
-    await addRegistryTagUnlocked(fs23, tag);
+    await addRegistryTagUnlocked(fs22, tag);
     const tags = uniqueSorted([...box.tags, tag]);
-    await writeBoxTags(fs23, box, tags);
+    await writeBoxTags(fs22, box, tags);
   });
 }
-async function removeTag(fs23, boxId, name) {
-  await withTentMutation(fs23, async () => {
+async function removeTag(fs22, boxId, name) {
+  await withTentMutation(fs22, async () => {
     const tag = normalizeTagName(name);
-    const tent = await loadTent(fs23);
+    const tent = await loadTent(fs22);
     if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`Box not found: ${boxId}.`);
     if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
     assertContentMutable(box, "tagged");
-    await writeBoxTags(fs23, box, box.tags.filter((item) => item !== tag));
+    await writeBoxTags(fs22, box, box.tags.filter((item) => item !== tag));
   });
 }
-async function removeRegistryTag(fs23, name) {
-  await withTentMutation(fs23, async () => {
+async function removeRegistryTag(fs22, name) {
+  await withTentMutation(fs22, async () => {
     const tag = normalizeTagName(name);
-    const registry = await loadTagRegistry(fs23);
-    await saveTagRegistryUnlocked(fs23, { tags: registry.tags.filter((item) => item !== tag) });
-    const tent = await loadTent(fs23);
+    const registry = await loadTagRegistry(fs22);
+    await saveTagRegistryUnlocked(fs22, { tags: registry.tags.filter((item) => item !== tag) });
+    const tent = await loadTent(fs22);
     for (const box of tent.byId.values()) {
       if (box.tags.includes(tag)) {
-        await writeBoxTags(fs23, box, box.tags.filter((item) => item !== tag));
+        await writeBoxTags(fs22, box, box.tags.filter((item) => item !== tag));
       }
     }
   });
 }
-async function syncTagRegistryAfterBoxTagsChange(fs23, previousTags, nextTags) {
-  await withTentMutation(fs23, async () => {
-    await syncTagRegistryAfterBoxTagsChangeUnlocked(fs23, previousTags, nextTags);
+async function syncTagRegistryAfterBoxTagsChange(fs22, previousTags, nextTags) {
+  await withTentMutation(fs22, async () => {
+    await syncTagRegistryAfterBoxTagsChangeUnlocked(fs22, previousTags, nextTags);
   });
 }
-async function syncTagRegistryAfterBoxTagsChangeUnlocked(fs23, previousTags, nextTags) {
+async function syncTagRegistryAfterBoxTagsChangeUnlocked(fs22, previousTags, nextTags) {
   const previous2 = new Set(normalizeTagList(previousTags));
   const next = normalizeTagList(nextTags);
   const added = next.filter((tag) => !previous2.has(tag));
   for (const tag of added) {
-    await addRegistryTagUnlocked(fs23, tag);
+    await addRegistryTagUnlocked(fs22, tag);
   }
 }
 function normalizeTagName(name) {
@@ -3525,13 +3518,13 @@ function normalizeTagName(name) {
   if (/[\/\\\r\n]/.test(tag)) throw new Error("Tag name cannot contain path separators or newlines.");
   return tag;
 }
-async function writeBoxTags(fs23, box, tags) {
-  const path24 = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs23.readFile(path24));
+async function writeBoxTags(fs22, box, tags) {
+  const path23 = boxNotePath(box.path);
+  const { data, body, keyOrder } = parseFrontmatter(await fs22.readFile(path23));
   const next = uniqueSorted(tags);
   if (next.length === 0) delete data.tags;
   else data.tags = next;
-  await fs23.writeFile(path24, serializeFrontmatter(data, body, boxKeyOrder2(keyOrder)));
+  await fs22.writeFile(path23, serializeFrontmatter(data, body, boxKeyOrder2(keyOrder)));
 }
 function normalizeRegistry2(value) {
   if (!isRecord3(value) || !Array.isArray(value.tags)) return { tags: [] };
@@ -3545,8 +3538,8 @@ function normalizeRegistry2(value) {
   }
   return { tags: uniqueSorted(tags) };
 }
-async function recoverTagRegistryFromBoxes(fs23) {
-  const tent = await loadTent(fs23);
+async function recoverTagRegistryFromBoxes(fs22) {
+  const tent = await loadTent(fs22);
   const tags = [];
   for (const box of tent.byPath.values()) {
     tags.push(...box.tags);
@@ -3582,44 +3575,29 @@ function isRecord3(value) {
 var DEFAULT_ROLES_REGISTRY = {
   roles: []
 };
-async function loadRolesRegistry(fs23) {
-  const { registry } = await readRolesRegistryState(fs23);
+async function loadRolesRegistry(fs22) {
+  const { registry } = await readRolesRegistryState(fs22);
   return registry;
 }
-async function ensureRolesRosterMigrated(fs23) {
-  const state = await readRolesRegistryState(fs23);
-  if (!state.rosterMigrated) {
-    return { registry: state.registry, wrote: false };
-  }
-  await withTentMutation(fs23, async () => {
-    const again = await readRolesRegistryState(fs23);
-    if (!again.rosterMigrated) return;
-    await writeJson(fs23, ROLES_REGISTRY_PATH, serializeRolesRegistry(again.registry));
-  });
-  const after = await loadRolesRegistry(fs23);
-  return { registry: after, wrote: true };
+async function loadRolesRegistryForMutation(fs22) {
+  return loadRolesRegistry(fs22);
 }
-async function loadRolesRegistryForMutation(fs23) {
-  return loadRolesRegistry(fs23);
-}
-async function readRolesRegistryState(fs23) {
-  if (!await fs23.exists(ROLES_REGISTRY_PATH)) {
+async function readRolesRegistryState(fs22) {
+  if (!await fs22.exists(ROLES_REGISTRY_PATH)) {
     return {
       registry: cloneDefaultRoles(),
-      migrated: false,
-      rosterMigrated: false,
       recovered: false
     };
   }
   try {
-    const rawText = await fs23.readFile(ROLES_REGISTRY_PATH);
+    const rawText = await fs22.readFile(ROLES_REGISTRY_PATH);
     const parsed = JSON.parse(rawText);
-    const { registry, migrated, rosterMigrated } = normalizeRolesRegistryWithMigration(parsed);
-    return { registry, migrated, rosterMigrated, recovered: false };
+    const registry = normalizeRolesRegistry(parsed);
+    return { registry, recovered: false };
   } catch {
-    const backupPath = await backupCorruptRegistry(fs23, ROLES_REGISTRY_PATH);
+    const backupPath = await backupCorruptRegistry(fs22, ROLES_REGISTRY_PATH);
     const reset = cloneDefaultRoles();
-    await writeJson(fs23, ROLES_REGISTRY_PATH, serializeRolesRegistry(reset));
+    await writeJson(fs22, ROLES_REGISTRY_PATH, serializeRolesRegistry(reset));
     warnRegistryRecovered(
       ROLES_REGISTRY_PATH,
       backupPath,
@@ -3628,20 +3606,13 @@ async function readRolesRegistryState(fs23) {
     );
     return {
       registry: reset,
-      migrated: false,
-      rosterMigrated: false,
       recovered: true
     };
   }
 }
-async function createRole(fs23, definition2, rand = Math.random) {
-  if (Object.prototype.hasOwnProperty.call(definition2, "allowedProfiles")) {
-    throw new Error(
-      "Role mutations no longer accept allowedProfiles; use roster (agentIds). Legacy allowedProfiles is migrated once from disk only."
-    );
-  }
-  await withTentMutation(fs23, async () => {
-    const registry = await loadRolesRegistryForMutation(fs23);
+async function createRole(fs22, definition2, rand = Math.random) {
+  await withTentMutation(fs22, async () => {
+    const registry = await loadRolesRegistryForMutation(fs22);
     const usedIds = roleIdSet(registry.roles);
     const role = normalizeRoleDefinition(definition2, {
       usedIds,
@@ -3657,7 +3628,7 @@ async function createRole(fs23, definition2, rand = Math.random) {
       throw new Error(`Role id already exists: ${role.id}.`);
     }
     registry.roles.push(role);
-    await writeJson(fs23, ROLES_REGISTRY_PATH, serializeRolesRegistry(registry));
+    await writeJson(fs22, ROLES_REGISTRY_PATH, serializeRolesRegistry(registry));
   });
 }
 function assertRoleNameAvailable(name) {
@@ -3665,9 +3636,9 @@ function assertRoleNameAvailable(name) {
     throw new Error(`Role name is reserved by Tent: ${AGENT_PROFILES_TEMP_DIR}.`);
   }
 }
-async function updateRole(fs23, ref, patch) {
-  await withTentMutation(fs23, async () => {
-    const registry = await loadRolesRegistryForMutation(fs23);
+async function updateRole(fs22, ref, patch) {
+  await withTentMutation(fs22, async () => {
+    const registry = await loadRolesRegistryForMutation(fs22);
     const index2 = findRoleIndex(registry.roles, ref);
     if (index2 === -1) throw new Error(`Role does not exist: ${ref}.`);
     const current = registry.roles[index2];
@@ -3688,27 +3659,17 @@ async function updateRole(fs23, ref, patch) {
       },
       { usedIds: roleIdSet(registry.roles, current.id), assignMissingId: "keep" }
     );
-    if (Object.prototype.hasOwnProperty.call(patch, "roster")) {
-      const normalized = normalizeAgentIdList(patch.roster);
-      if (normalized) next.roster = normalized;
-      else delete next.roster;
-    }
-    if (Object.prototype.hasOwnProperty.call(patch, "allowedProfiles")) {
-      throw new Error(
-        "Role mutations no longer accept allowedProfiles; use roster (agentIds). Legacy allowedProfiles is migrated once from disk only."
-      );
-    }
     if (Object.prototype.hasOwnProperty.call(patch, "displayName")) {
       const dn = typeof patch.displayName === "string" ? patch.displayName.trim() : "";
       next.displayName = dn || current.name;
     }
     registry.roles[index2] = next;
-    await writeJson(fs23, ROLES_REGISTRY_PATH, serializeRolesRegistry(registry));
+    await writeJson(fs22, ROLES_REGISTRY_PATH, serializeRolesRegistry(registry));
   });
 }
-async function deleteRole(fs23, ref, confirmation) {
-  await withTentMutation(fs23, async () => {
-    const registry = await loadRolesRegistryForMutation(fs23);
+async function deleteRole(fs22, ref, confirmation) {
+  await withTentMutation(fs22, async () => {
+    const registry = await loadRolesRegistryForMutation(fs22);
     const index2 = findRoleIndex(registry.roles, ref);
     if (index2 === -1) throw new Error(`Role does not exist: ${ref}.`);
     const role = registry.roles[index2];
@@ -3718,7 +3679,7 @@ async function deleteRole(fs23, ref, confirmation) {
       );
     }
     registry.roles.splice(index2, 1);
-    await writeJson(fs23, ROLES_REGISTRY_PATH, serializeRolesRegistry({ roles: registry.roles }));
+    await writeJson(fs22, ROLES_REGISTRY_PATH, serializeRolesRegistry({ roles: registry.roles }));
   });
 }
 function resolveRole(roles, ref) {
@@ -3735,37 +3696,24 @@ function findRoleIndex(roles, ref) {
   if (idx !== -1) return idx;
   return roles.findIndex((role) => role.name === key2);
 }
-function normalizeRolesRegistryWithMigration(value) {
+function normalizeRolesRegistry(value) {
   const root = isRecord4(value) ? value : {};
   const roles = [];
-  let migrated = false;
-  let rosterMigrated = false;
   const usedIds = /* @__PURE__ */ new Set();
   if (Array.isArray(root.roles)) {
     for (const item of root.roles) {
       if (!isRecord4(item)) continue;
-      const hadId = typeof item.id === "string" && isRoleId(item.id.trim());
-      const hadDisplayName = typeof item.displayName === "string" && item.displayName.trim().length > 0;
-      const hadLegacyAllowedKey = Object.prototype.hasOwnProperty.call(
-        item,
-        "allowedProfiles"
-      );
       const role = normalizeRoleDefinition(item, {
         usedIds,
         assignMissingId: "deterministic"
       });
       if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
       if (roles.some((existing) => existing.id === role.id)) continue;
-      if (hadLegacyAllowedKey) {
-        migrated = true;
-        rosterMigrated = true;
-      }
-      if (!hadId || !hadDisplayName) migrated = true;
       usedIds.add(role.id);
       roles.push(role);
     }
   }
-  return { registry: { roles }, migrated, rosterMigrated };
+  return { roles };
 }
 function normalizeRoleDefinition(value, opts = {}) {
   const name = typeof value.name === "string" ? value.name.trim() : "";
@@ -3795,50 +3743,9 @@ function normalizeRoleDefinition(value, opts = {}) {
     role.description = value.description.trim();
   }
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
-  const a2a = normalizeA2APolicy(value.a2aPolicy);
-  if (a2a) role.a2aPolicy = a2a;
-  const rosterFromField = normalizeAgentIdList(value.roster);
-  const rawLegacy = value.allowedProfiles;
-  const rosterFromLegacy = normalizeAgentIdList(rawLegacy);
-  const roster = rosterFromField ?? rosterFromLegacy;
-  if (roster) role.roster = roster;
   const cli = normalizeCliConfig(value.cli);
   if (cli) role.cli = cli;
   return role;
-}
-function roleA2APolicy(role) {
-  return role?.a2aPolicy ?? "deny";
-}
-function roleAllowsAgent(role, agentId) {
-  const id = typeof agentId === "string" ? agentId.trim() : "";
-  if (!id) return false;
-  const roster = role?.roster;
-  if (!roster || roster.length === 0) return false;
-  return roster.includes(id);
-}
-function normalizeAgentIdList(value) {
-  if (value === void 0 || value === null) return void 0;
-  if (!Array.isArray(value)) {
-    return void 0;
-  }
-  const seen = /* @__PURE__ */ new Set();
-  const out = [];
-  for (const item of value) {
-    if (typeof item !== "string") continue;
-    const id = item.trim();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    out.push(id);
-  }
-  return out.length > 0 ? out : void 0;
-}
-function roleRoster(role) {
-  return role?.roster && role.roster.length > 0 ? [...role.roster] : [];
-}
-function normalizeA2APolicy(value) {
-  if (value === void 0 || value === null || value === "") return void 0;
-  if (value === "allow" || value === "ask" || value === "deny") return value;
-  return void 0;
 }
 function normalizeCliConfig(value) {
   if (value === void 0) return void 0;
@@ -3873,10 +3780,6 @@ function serializeRolesRegistry(registry) {
       if (role.prompt) row.prompt = role.prompt;
       if (role.description) row.description = role.description;
       if (role.color) row.color = role.color;
-      if (role.a2aPolicy) row.a2aPolicy = role.a2aPolicy;
-      if (role.roster && role.roster.length > 0) {
-        row.roster = [...role.roster];
-      }
       if (role.cli) row.cli = { ...role.cli };
       return row;
     })
@@ -3887,9 +3790,9 @@ function cloneDefaultRoles() {
     roles: DEFAULT_ROLES_REGISTRY.roles.map((role) => ({ ...role }))
   };
 }
-async function writeJson(fs23, path24, value) {
-  if (!await fs23.exists(".tent")) await fs23.mkdir(".tent");
-  await fs23.writeFile(path24, JSON.stringify(value, null, 2) + "\n");
+async function writeJson(fs22, path23, value) {
+  if (!await fs22.exists(".tent")) await fs22.mkdir(".tent");
+  await fs22.writeFile(path23, JSON.stringify(value, null, 2) + "\n");
 }
 function isRecord4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -3914,19 +3817,19 @@ var KEY_ORDER = [
   "createdAt",
   "updatedAt"
 ];
-async function createDeliveryUnlocked(fs23, clock, input) {
+async function createDeliveryUnlocked(fs22, clock, input) {
   const summary = input.summary.trim();
   if (!summary) throw new Error("Delivery summary cannot be empty.");
   const now = clock.now();
   const id = input.id && isDeliveryId(input.id) ? input.id : makeDeliveryId();
   const deliveriesDir = input.deliveriesDir?.trim() || join(TEMP_DIR, input.role, "deliveries");
-  await ensureDir2(fs23, deliveriesDir);
-  const path24 = join(deliveriesDir, `${id}.md`);
-  if (await fs23.exists(path24)) throw new Error(`Delivery already exists: ${path24}.`);
+  await ensureDir2(fs22, deliveriesDir);
+  const path23 = join(deliveriesDir, `${id}.md`);
+  if (await fs22.exists(path23)) throw new Error(`Delivery already exists: ${path23}.`);
   const commits = uniqueCommits(input.commits ?? []);
   const targetHead = normalizeTargetHead(input.targetHead);
   const record = {
-    path: path24,
+    path: path23,
     id,
     taskId: input.taskId,
     boxId: input.boxId,
@@ -3941,18 +3844,18 @@ async function createDeliveryUnlocked(fs23, clock, input) {
     createdAt: now,
     updatedAt: now
   };
-  await writeDelivery(fs23, record);
+  await writeDelivery(fs22, record);
   return record;
 }
-async function loadDelivery(fs23, inputPath) {
-  const path24 = normalizeDeliveryPath(inputPath);
-  if (!await fs23.exists(path24)) throw new Error(`Delivery not found: ${path24}.`);
-  const { data, body } = parseFrontmatter(await fs23.readFile(path24));
+async function loadDelivery(fs22, inputPath) {
+  const path23 = normalizeDeliveryPath(inputPath);
+  if (!await fs22.exists(path23)) throw new Error(`Delivery not found: ${path23}.`);
+  const { data, body } = parseFrontmatter(await fs22.readFile(path23));
   if (data.type !== "delivery" || typeof data.id !== "string" || !isDeliveryId(data.id)) {
-    throw new Error(`Invalid delivery format: ${path24}.`);
+    throw new Error(`Invalid delivery format: ${path23}.`);
   }
   if (typeof data.taskId !== "string" || typeof data.boxId !== "string" || typeof data.role !== "string") {
-    throw new Error(`Invalid delivery format: ${path24}.`);
+    throw new Error(`Invalid delivery format: ${path23}.`);
   }
   const status = parseDeliveryStatus(data.status);
   const reviewBy = typeof data.reviewBy === "string" ? data.reviewBy : void 0;
@@ -3961,7 +3864,7 @@ async function loadDelivery(fs23, inputPath) {
     typeof data.targetHead === "string" ? data.targetHead : void 0
   );
   return {
-    path: path24,
+    path: path23,
     id: data.id,
     taskId: data.taskId,
     boxId: data.boxId,
@@ -3982,18 +3885,18 @@ async function loadDelivery(fs23, inputPath) {
     updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : void 0
   };
 }
-async function loadDeliveries(fs23, filter) {
+async function loadDeliveries(fs22, filter) {
   const out = [];
-  if (!await fs23.exists(TEMP_DIR)) return out;
-  for (const entry of await fs23.listDir(TEMP_DIR)) {
+  if (!await fs22.exists(TEMP_DIR)) return out;
+  for (const entry of await fs22.listDir(TEMP_DIR)) {
     if (!entry.isDir) continue;
     if (entry.name === AGENT_PROFILES_TEMP_DIR) {
       const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
-      if (!await fs23.exists(profilesRoot)) continue;
-      for (const profileEntry of await fs23.listDir(profilesRoot)) {
+      if (!await fs22.exists(profilesRoot)) continue;
+      for (const profileEntry of await fs22.listDir(profilesRoot)) {
         if (!profileEntry.isDir) continue;
         await collectDeliveryFiles(
-          fs23,
+          fs22,
           join(profilesRoot, profileEntry.name, "deliveries"),
           filter,
           out
@@ -4001,16 +3904,16 @@ async function loadDeliveries(fs23, filter) {
       }
       continue;
     }
-    await collectDeliveryFiles(fs23, join(TEMP_DIR, entry.name, "deliveries"), filter, out);
+    await collectDeliveryFiles(fs22, join(TEMP_DIR, entry.name, "deliveries"), filter, out);
   }
   return out.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
 }
-async function collectDeliveryFiles(fs23, dir, filter, out) {
-  if (!await fs23.exists(dir)) return;
-  for (const entry of await fs23.listDir(dir)) {
+async function collectDeliveryFiles(fs22, dir, filter, out) {
+  if (!await fs22.exists(dir)) return;
+  for (const entry of await fs22.listDir(dir)) {
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
     try {
-      const d = await loadDelivery(fs23, join(dir, entry.name));
+      const d = await loadDelivery(fs22, join(dir, entry.name));
       if (filter?.taskId && d.taskId !== filter.taskId) continue;
       if (filter?.boxId && d.boxId !== filter.boxId) continue;
       out.push(d);
@@ -4018,13 +3921,13 @@ async function collectDeliveryFiles(fs23, dir, filter, out) {
     }
   }
 }
-async function removeNonAcceptedDeliveriesForTask(fs23, taskId) {
-  for (const delivery of await loadDeliveries(fs23, { taskId })) {
+async function removeNonAcceptedDeliveriesForTask(fs22, taskId) {
+  for (const delivery of await loadDeliveries(fs22, { taskId })) {
     if (delivery.status === "accepted") continue;
-    if (await fs23.exists(delivery.path)) await fs23.remove(delivery.path);
+    if (await fs22.exists(delivery.path)) await fs22.remove(delivery.path);
   }
 }
-async function writeDelivery(fs23, record) {
+async function writeDelivery(fs22, record) {
   const data = {
     type: "delivery",
     id: record.id,
@@ -4043,16 +3946,16 @@ async function writeDelivery(fs23, record) {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt
   };
-  await fs23.writeFile(record.path, serializeFrontmatter(data, record.summary + "\n", KEY_ORDER));
+  await fs22.writeFile(record.path, serializeFrontmatter(data, record.summary + "\n", KEY_ORDER));
 }
 function normalizeDeliveryPath(input) {
-  const path24 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path24) && !/^temp\/agent-profiles\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path24)) {
+  const path23 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path23) && !/^temp\/agent-profiles\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path23)) {
     throw new Error(
       "Delivery must point to temp/<role>/deliveries/<dl-id>.md or temp/agent-profiles/<profile>/deliveries/<dl-id>.md."
     );
   }
-  return path24;
+  return path23;
 }
 function parseDeliveryStatus(value) {
   if (value === "draft" || value === "ready" || value === "accepted" || value === "rejected") return value;
@@ -4100,8 +4003,8 @@ function parseArtifactRefs(value) {
   }
   return out;
 }
-async function ensureDir2(fs23, path24) {
-  if (!await fs23.exists(path24)) await fs23.mkdir(path24);
+async function ensureDir2(fs22, path23) {
+  if (!await fs22.exists(path23)) await fs22.mkdir(path23);
 }
 function uniqueCommits(commits) {
   return [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
@@ -4233,13 +4136,13 @@ function validateOutputBindingsForAccept(tent, outputNodeIds, deliveryId) {
   }
   return { outputIds, boxes };
 }
-async function restoreOutputBindSnapshots(fs23, snapshots) {
+async function restoreOutputBindSnapshots(fs22, snapshots) {
   if (snapshots.length === 0) return;
   const failures = [];
   for (let i = snapshots.length - 1; i >= 0; i--) {
     const snap = snapshots[i];
     try {
-      await fs23.writeFile(snap.notePath, snap.raw);
+      await fs22.writeFile(snap.notePath, snap.raw);
       const prev = snap.previousDeliveryId;
       if (prev === void 0) {
         delete snap.box.fm[OUTPUT_PROVENANCE_FIELD];
@@ -4262,7 +4165,7 @@ async function restoreOutputBindSnapshots(fs23, snapshots) {
     );
   }
 }
-async function bindOutputsToDeliveryUnlocked(fs23, tent, outputNodeIds, deliveryId) {
+async function bindOutputsToDeliveryUnlocked(fs22, tent, outputNodeIds, deliveryId) {
   const { outputIds, boxes } = validateOutputBindingsForAccept(tent, outputNodeIds, deliveryId);
   const planned = [];
   for (let i = 0; i < boxes.length; i++) {
@@ -4271,7 +4174,7 @@ async function bindOutputsToDeliveryUnlocked(fs23, tent, outputNodeIds, delivery
     const { alreadyBound } = assertOutputBindable(box, deliveryId);
     if (alreadyBound) continue;
     const notePath = boxNotePath(box.path);
-    const raw = await fs23.readFile(notePath);
+    const raw = await fs22.readFile(notePath);
     planned.push({
       box,
       outputId,
@@ -4287,7 +4190,7 @@ async function bindOutputsToDeliveryUnlocked(fs23, tent, outputNodeIds, delivery
       const { data, body, keyOrder } = parseFrontmatter(item.raw);
       data[OUTPUT_PROVENANCE_FIELD] = deliveryId;
       const nextRaw = serializeFrontmatter(data, body, outputKeyOrder(keyOrder));
-      await fs23.writeFile(item.notePath, nextRaw);
+      await fs22.writeFile(item.notePath, nextRaw);
       snapshots.push({
         outputId: item.outputId,
         notePath: item.notePath,
@@ -4300,7 +4203,7 @@ async function bindOutputsToDeliveryUnlocked(fs23, tent, outputNodeIds, delivery
     }
   } catch (err) {
     try {
-      await restoreOutputBindSnapshots(fs23, snapshots);
+      await restoreOutputBindSnapshots(fs22, snapshots);
     } catch (rollbackErr) {
       if (rollbackErr instanceof OutputProvenanceError) throw rollbackErr;
       throw new OutputProvenanceError(
@@ -4395,10 +4298,10 @@ function projectOutputProvenance(box, indexes) {
   }
   return base;
 }
-async function loadProvenanceIndexes(fs23, tent) {
-  const loadedTent = tent ?? await loadTent(fs23);
-  const deliveries = await loadDeliveries(fs23);
-  const tasks = await loadTaskEnvelopes(fs23);
+async function loadProvenanceIndexes(fs22, tent) {
+  const loadedTent = tent ?? await loadTent(fs22);
+  const deliveries = await loadDeliveries(fs22);
+  const tasks = await loadTaskEnvelopes(fs22);
   const deliveriesById = /* @__PURE__ */ new Map();
   for (const d of deliveries) deliveriesById.set(d.id, d);
   const tasksById = /* @__PURE__ */ new Map();
@@ -4407,14 +4310,14 @@ async function loadProvenanceIndexes(fs23, tent) {
   }
   return { tent: loadedTent, deliveriesById, tasksById };
 }
-async function resolveOutputProvenance(fs23, selector, preloaded) {
-  const indexes = preloaded ?? await loadProvenanceIndexes(fs23);
+async function resolveOutputProvenance(fs22, selector, preloaded) {
+  const indexes = preloaded ?? await loadProvenanceIndexes(fs22);
   const box = resolveOutputBox(indexes.tent, selector);
   return projectOutputProvenance(box, indexes);
 }
 function resolveOutputBox(tent, selector) {
   const id = (selector.id ?? selector.outputId)?.trim();
-  const path24 = selector.path?.trim().replace(/\\/g, "/");
+  const path23 = selector.path?.trim().replace(/\\/g, "/");
   if (id) {
     if (tent.duplicateIds.has(id)) {
       throw new OutputProvenanceError(
@@ -4431,11 +4334,11 @@ function resolveOutputBox(tent, selector) {
     }
     return box;
   }
-  if (path24) {
-    const box = tent.byPath.get(path24);
+  if (path23) {
+    const box = tent.byPath.get(path23);
     if (!box) {
-      throw new OutputProvenanceError("OUTPUT_NOT_FOUND", `Output Node not found at path: ${path24}`, {
-        path: path24
+      throw new OutputProvenanceError("OUTPUT_NOT_FOUND", `Output Node not found at path: ${path23}`, {
+        path: path23
       });
     }
     return box;
@@ -4476,8 +4379,11 @@ async function taskClaim(env, taskPath, options = {}) {
     const claimedBoxes = taskReferencedNodeIds(task).map(
       (claimId) => requireBoxById(tent, claimId)
     );
+    const otherTasks = (await loadTaskEnvelopes(env.fs)).filter(
+      (candidate) => candidate.path !== task.path
+    );
     for (const box of claimedBoxes) {
-      const claimable = canClaim(box);
+      const claimable = canClaim(box, { tent, tasks: otherTasks });
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
     }
     const now = env.clock.now();
@@ -4682,24 +4588,24 @@ async function finalizeTaskAccept(env, taskPath, options, prepared) {
     }
   });
 }
-async function compensateAcceptAfterOutputBind(fs23, args) {
+async function compensateAcceptAfterOutputBind(fs22, args) {
   const failures = [];
   try {
-    await fs23.writeFile(args.deliveryPath, args.deliveryRawBefore);
+    await fs22.writeFile(args.deliveryPath, args.deliveryRawBefore);
   } catch (err) {
     failures.push(
       `delivery ${args.deliveryPath}: ${err instanceof Error ? err.message : String(err)}`
     );
   }
   try {
-    await fs23.writeFile(args.taskPath, args.taskRawBefore);
+    await fs22.writeFile(args.taskPath, args.taskRawBefore);
   } catch (err) {
     failures.push(
       `task ${args.taskPath}: ${err instanceof Error ? err.message : String(err)}`
     );
   }
   try {
-    await restoreOutputBindSnapshots(fs23, args.outputSnapshots);
+    await restoreOutputBindSnapshots(fs22, args.outputSnapshots);
   } catch (err) {
     failures.push(
       `outputs: ${err instanceof Error ? err.message : String(err)}`
@@ -4827,22 +4733,22 @@ function assertDeliverPreconditions(task) {
     );
   }
 }
-async function assertNoReadyDelivery(fs23, taskId) {
-  const existing = await loadDeliveries(fs23, { taskId });
+async function assertNoReadyDelivery(fs22, taskId) {
+  const existing = await loadDeliveries(fs22, { taskId });
   if (existing.some((d) => d.status === "ready")) {
     throw new Error("A delivery is already ready for review; accept or reject it first.");
   }
 }
-async function requireActiveReadyDelivery(fs23, task) {
+async function requireActiveReadyDelivery(fs22, task) {
   if (task.activeDeliveryId) {
-    const byId = (await loadDeliveries(fs23, { taskId: task.id || task.path })).find(
+    const byId = (await loadDeliveries(fs22, { taskId: task.id || task.path })).find(
       (d) => d.id === task.activeDeliveryId
     );
     if (byId && byId.status === "ready") return byId;
     if (byId) {
     }
   }
-  const ready = (await loadDeliveries(fs23, { taskId: task.id || task.path })).find((d) => d.status === "ready");
+  const ready = (await loadDeliveries(fs22, { taskId: task.id || task.path })).find((d) => d.status === "ready");
   if (!ready) {
     throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No ready delivery for this task.");
   }
@@ -4856,95 +4762,8 @@ function requireBoxById(tent, boxId) {
   if (!box) throw new Error(`Box not found: ${boxId}.`);
   return box;
 }
-async function withMutation(fs23, action) {
-  return withTentMutation(fs23, action);
-}
-
-// src/core/forkOps.ts
-async function forkNode(env, boxId) {
-  return withTentMutation(env.fs, async () => forkNodeUnlocked(env, boxId));
-}
-async function forkNodeUnlocked(env, boxId) {
-  const tent = await loadTent(env.fs);
-  if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
-  const source = tent.byId.get(boxId);
-  if (!source) throw new Error(`Box not found: ${boxId}.`);
-  if (!isUsableBox(source)) throw new Error("Invalid or archived boxes cannot be forked.");
-  assertContentMutable(source, "forked");
-  const parentPath = dirName(source.path);
-  const forkPath = await uniqueSiblingPath(env.fs, parentPath, `${source.name} (fork)`);
-  await copyTree(env.fs, source.path, forkPath);
-  const sourceBoxes = collectSubtree(source);
-  const usedIds = new Set(tent.byId.keys());
-  const idMap = /* @__PURE__ */ new Map();
-  for (const box of sourceBoxes) {
-    const nextId = makeUniqueConceptId(usedIds, env.rand);
-    usedIds.add(nextId);
-    idMap.set(box.id, nextId);
-  }
-  const forkRootId = idMap.get(source.id);
-  for (const box of sourceBoxes) {
-    const rel = relativePath(source.path, box.path);
-    const nextPath = rel ? join(forkPath, rel) : forkPath;
-    const notePath = boxNotePath(nextPath);
-    await ensureIdentityFileName(env.fs, nextPath, box.path);
-    const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(notePath));
-    data.id = idMap.get(box.id);
-    delete data.owner;
-    delete data.status;
-    delete data.forkOf;
-    delete data.forkBase;
-    await env.fs.writeFile(notePath, serializeFrontmatter(data, body, keyOrder));
-  }
-  const order = await loadOrder(env.fs);
-  const parentKey = source.parent ? source.parent.id : ROOT_KEY;
-  const siblings = (source.parent ? source.parent.children : tent.roots).map((box) => box.id);
-  const idx = siblings.indexOf(source.id);
-  siblings.splice(idx === -1 ? siblings.length : idx + 1, 0, forkRootId);
-  order[parentKey] = siblings;
-  for (const box of sourceBoxes) {
-    const oldChildren = order[box.id];
-    const newId = idMap.get(box.id);
-    if (oldChildren && newId) {
-      order[newId] = oldChildren.map((id) => idMap.get(id)).filter((id) => !!id);
-    }
-  }
-  await saveOrder(env.fs, order);
-  return forkRootId;
-}
-async function uniqueSiblingPath(fs23, parentPath, base) {
-  let n = 1;
-  while (true) {
-    const name = n === 1 ? base : `${base.replace(/\s\(fork\)$/, "")} (fork ${n})`;
-    const candidate = join(parentPath, name);
-    if (!await fs23.exists(candidate)) return candidate;
-    n += 1;
-  }
-}
-async function copyTree(fs23, from, to) {
-  await fs23.mkdir(to);
-  for (const entry of await fs23.listDir(from)) {
-    const src = join(from, entry.name);
-    const dst = join(to, entry.name);
-    if (entry.isDir) await copyTree(fs23, src, dst);
-    else await fs23.writeFile(dst, await fs23.readFile(src));
-  }
-}
-function collectSubtree(box, out = []) {
-  out.push(box);
-  for (const child of box.children) collectSubtree(child, out);
-  return out;
-}
-function relativePath(root, child) {
-  if (child === root) return "";
-  return child.slice(root.length + 1);
-}
-async function ensureIdentityFileName(fs23, newBoxPath, oldBoxPath) {
-  const expected = boxNotePath(newBoxPath);
-  if (await fs23.exists(expected)) return;
-  const oldName = `${baseName(oldBoxPath)}.md`;
-  const copied = join(newBoxPath, oldName);
-  if (await fs23.exists(copied)) await fs23.move(copied, expected);
+async function withMutation(fs22, action) {
+  return withTentMutation(fs22, action);
 }
 
 // src/core/okf.ts
@@ -5042,7 +4861,7 @@ async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
   if (isFrozen(target)) {
     throw new Error("Invalid or archived boxes cannot be renamed.");
   }
-  await assertRenameOccupationAllowed(env, tent, target);
+  await assertNoActiveTaskRefsInSubtree(env, target, "rename");
   const oldPath = target.path;
   const oldName = target.name;
   if (newName === oldName) {
@@ -5066,10 +4885,10 @@ async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
   if (siblings.some((box) => box.id !== target.id && box.name === newName)) {
     throw new Error(`A sibling concept already uses the name: ${newName}.`);
   }
-  const subtree2 = collectSubtree2(target);
+  const subtree2 = collectSubtree(target);
   const pathMap = /* @__PURE__ */ new Map();
   for (const box of subtree2) {
-    const rel = relativePath2(oldPath, box.path);
+    const rel = relativePath(oldPath, box.path);
     const nextBoxPath = rel ? join(newPath, rel) : newPath;
     pathMap.set(box.path, nextBoxPath);
     pathMap.set(
@@ -5111,7 +4930,7 @@ async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
   let identityRenamed = false;
   const completedWrites = [];
   try {
-    identityRenamed = await ensureIdentityFileName2(env.fs, newPath, oldName);
+    identityRenamed = await ensureIdentityFileName(env.fs, newPath, oldName);
     for (const write of plannedWrites) {
       await env.fs.writeFile(write.writePath, write.newContent);
       completedWrites.push(write);
@@ -5137,13 +4956,13 @@ async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
     rewrittenNotes: rewrittenNotes.sort()
   };
 }
-async function rollbackRename(fs23, args) {
+async function rollbackRename(fs22, args) {
   const { oldPath, newPath, oldName, identityRenamed, completedWrites } = args;
   const restoreErrors = [];
   for (let i = completedWrites.length - 1; i >= 0; i--) {
     const write = completedWrites[i];
     try {
-      await fs23.writeFile(write.writePath, write.originalContent);
+      await fs22.writeFile(write.writePath, write.originalContent);
     } catch (err) {
       restoreErrors.push(
         `note ${write.writePath}: ${err instanceof Error ? err.message : String(err)}`
@@ -5153,23 +4972,23 @@ async function rollbackRename(fs23, args) {
   try {
     const expectedNew = boxNotePath(newPath);
     const legacyAfterMove = join(newPath, `${oldName}.md`);
-    if ((identityRenamed || await fs23.exists(expectedNew)) && await fs23.exists(expectedNew) && !await fs23.exists(legacyAfterMove)) {
-      await fs23.move(expectedNew, legacyAfterMove);
+    if ((identityRenamed || await fs22.exists(expectedNew)) && await fs22.exists(expectedNew) && !await fs22.exists(legacyAfterMove)) {
+      await fs22.move(expectedNew, legacyAfterMove);
     }
   } catch (err) {
     restoreErrors.push(`identity: ${err instanceof Error ? err.message : String(err)}`);
   }
   try {
-    if (await fs23.exists(newPath) && !await fs23.exists(oldPath)) {
+    if (await fs22.exists(newPath) && !await fs22.exists(oldPath)) {
       const expectedNew = boxNotePath(newPath);
       const legacyAfterMove = join(newPath, `${oldName}.md`);
-      if (!await fs23.exists(legacyAfterMove) && await fs23.exists(expectedNew)) {
+      if (!await fs22.exists(legacyAfterMove) && await fs22.exists(expectedNew)) {
         try {
-          await fs23.move(expectedNew, legacyAfterMove);
+          await fs22.move(expectedNew, legacyAfterMove);
         } catch {
         }
       }
-      await fs23.move(newPath, oldPath);
+      await fs22.move(newPath, oldPath);
     }
   } catch (err) {
     restoreErrors.push(`tree: ${err instanceof Error ? err.message : String(err)}`);
@@ -5188,38 +5007,50 @@ function resolveRenameTarget(tent, conceptIdOrPath) {
   if (byPath) return byPath;
   throw new Error(`Concept not found: ${conceptIdOrPath}.`);
 }
-async function assertRenameOccupationAllowed(_env, _tent, _concept) {
+async function assertNoActiveTaskRefsInSubtree(env, root, operation) {
+  const subtreeIds = new Set(collectSubtree(root).map((box) => box.id));
+  const blockers = (await loadTaskEnvelopes(env.fs)).filter((task) => {
+    if (!ACTIVE_TASK_STATES.has(task.state) || task.contextCard == null) return false;
+    return task.contextCard.refs.nodes.some((node2) => subtreeIds.has(node2.id));
+  });
+  if (blockers.length === 0) return;
+  const taskLabels = blockers.map((task) => task.id || task.path).sort((a, b) => a.localeCompare(b));
+  throw new Error(
+    `Cannot ${operation} Node subtree ${root.id}: active Task ref(s) ${taskLabels.join(
+      ", "
+    )} must finish first.`
+  );
 }
-function assertNotOperationalPath(path24) {
-  if (isOperationalPath(path24) || path24 === "temp" || path24.startsWith("temp/")) {
+function assertNotOperationalPath(path23) {
+  if (isOperationalPath(path23) || path23 === "temp" || path23.startsWith("temp/")) {
     throw new Error("temp/ and other system pipelines cannot be renamed as concepts.");
   }
-  const top = path24.split("/")[0] ?? "";
+  const top = path23.split("/")[0] ?? "";
   if (top === "attachments" || top === ".tent") {
     throw new Error("System directories cannot be renamed as concepts.");
   }
 }
-function collectSubtree2(box, out = []) {
+function collectSubtree(box, out = []) {
   out.push(box);
-  for (const child of box.children) collectSubtree2(child, out);
+  for (const child of box.children) collectSubtree(child, out);
   return out;
 }
-function relativePath2(root, child) {
+function relativePath(root, child) {
   if (child === root) return "";
   return child.slice(root.length + 1);
 }
-async function ensureIdentityFileName2(fs23, newBoxPath, oldName) {
+async function ensureIdentityFileName(fs22, newBoxPath, oldName) {
   const expected = boxNotePath(newBoxPath);
-  if (await fs23.exists(expected)) return false;
+  if (await fs22.exists(expected)) return false;
   const legacy = join(newBoxPath, `${oldName}.md`);
-  if (await fs23.exists(legacy)) {
-    await fs23.move(legacy, expected);
+  if (await fs22.exists(legacy)) {
+    await fs22.move(legacy, expected);
     return true;
   }
-  const entries = await fs23.listDir(newBoxPath);
+  const entries = await fs22.listDir(newBoxPath);
   const candidates = entries.filter((e) => !e.isDir && e.name.endsWith(".md") && e.name !== "index.md").map((e) => join(newBoxPath, e.name));
   if (candidates.length === 1) {
-    await fs23.move(candidates[0], expected);
+    await fs22.move(candidates[0], expected);
     return true;
   }
   throw new Error(`Identity note missing after rename: expected ${expected}.`);
@@ -5366,6 +5197,93 @@ function relativeMarkdownPath(fromNotePath, toNotePath) {
   return rel.startsWith(".") ? rel : `./${rel}`;
 }
 
+// src/core/forkOps.ts
+async function forkNode(env, boxId) {
+  return withTentMutation(env.fs, async () => forkNodeUnlocked(env, boxId));
+}
+async function forkNodeUnlocked(env, boxId) {
+  const tent = await loadTent(env.fs);
+  if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+  const source = tent.byId.get(boxId);
+  if (!source) throw new Error(`Box not found: ${boxId}.`);
+  if (!isUsableBox(source)) throw new Error("Invalid or archived boxes cannot be forked.");
+  assertContentMutable(source, "forked");
+  const parentPath = dirName(source.path);
+  const forkPath = await uniqueSiblingPath(env.fs, parentPath, `${source.name} (fork)`);
+  await copyTree(env.fs, source.path, forkPath);
+  const sourceBoxes = collectSubtree2(source);
+  const usedIds = new Set(tent.byId.keys());
+  const idMap = /* @__PURE__ */ new Map();
+  for (const box of sourceBoxes) {
+    const nextId = makeUniqueConceptId(usedIds, env.rand);
+    usedIds.add(nextId);
+    idMap.set(box.id, nextId);
+  }
+  const forkRootId = idMap.get(source.id);
+  for (const box of sourceBoxes) {
+    const rel = relativePath2(source.path, box.path);
+    const nextPath = rel ? join(forkPath, rel) : forkPath;
+    const notePath = boxNotePath(nextPath);
+    await ensureIdentityFileName2(env.fs, nextPath, box.path);
+    const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(notePath));
+    data.id = idMap.get(box.id);
+    delete data.owner;
+    delete data.status;
+    delete data.forkOf;
+    delete data.forkBase;
+    await env.fs.writeFile(notePath, serializeFrontmatter(data, body, keyOrder));
+  }
+  const order = await loadOrder(env.fs);
+  const parentKey = source.parent ? source.parent.id : ROOT_KEY;
+  const siblings = (source.parent ? source.parent.children : tent.roots).map((box) => box.id);
+  const idx = siblings.indexOf(source.id);
+  siblings.splice(idx === -1 ? siblings.length : idx + 1, 0, forkRootId);
+  order[parentKey] = siblings;
+  for (const box of sourceBoxes) {
+    const oldChildren = order[box.id];
+    const newId = idMap.get(box.id);
+    if (oldChildren && newId) {
+      order[newId] = oldChildren.map((id) => idMap.get(id)).filter((id) => !!id);
+    }
+  }
+  await saveOrder(env.fs, order);
+  return forkRootId;
+}
+async function uniqueSiblingPath(fs22, parentPath, base) {
+  let n = 1;
+  while (true) {
+    const name = n === 1 ? base : `${base.replace(/\s\(fork\)$/, "")} (fork ${n})`;
+    const candidate = join(parentPath, name);
+    if (!await fs22.exists(candidate)) return candidate;
+    n += 1;
+  }
+}
+async function copyTree(fs22, from, to) {
+  await fs22.mkdir(to);
+  for (const entry of await fs22.listDir(from)) {
+    const src = join(from, entry.name);
+    const dst = join(to, entry.name);
+    if (entry.isDir) await copyTree(fs22, src, dst);
+    else await fs22.writeFile(dst, await fs22.readFile(src));
+  }
+}
+function collectSubtree2(box, out = []) {
+  out.push(box);
+  for (const child of box.children) collectSubtree2(child, out);
+  return out;
+}
+function relativePath2(root, child) {
+  if (child === root) return "";
+  return child.slice(root.length + 1);
+}
+async function ensureIdentityFileName2(fs22, newBoxPath, oldBoxPath) {
+  const expected = boxNotePath(newBoxPath);
+  if (await fs22.exists(expected)) return;
+  const oldName = `${baseName(oldBoxPath)}.md`;
+  const copied = join(newBoxPath, oldName);
+  if (await fs22.exists(copied)) await fs22.move(copied, expected);
+}
+
 // src/core/moveOps.ts
 async function moveNode(env, conceptId, newParentId, position2) {
   return withTentMutation(
@@ -5385,6 +5303,7 @@ async function moveNodeUnlocked(env, conceptId, newParentId, position2) {
     throw new Error("Invalid or archived boxes cannot be moved.");
   }
   assertNotOperationalPath2(moved.path);
+  await assertNoActiveTaskRefsInSubtree(env, moved, "move");
   const parentBox = resolveNewParent(tent, newParentId);
   if (parentBox) {
     if (!isUsableBox(parentBox)) throw new Error("Target parent box is invalid or archived.");
@@ -5526,13 +5445,13 @@ async function moveNodeUnlocked(env, conceptId, newParentId, position2) {
     rewrittenNotes: rewrittenNotes.sort()
   };
 }
-async function rollbackMove(fs23, args) {
+async function rollbackMove(fs22, args) {
   const { oldPath, newPath, completedWrites, orderSnapshot } = args;
   const restoreErrors = [];
   for (let i = completedWrites.length - 1; i >= 0; i--) {
     const write = completedWrites[i];
     try {
-      await fs23.writeFile(write.writePath, write.originalContent);
+      await fs22.writeFile(write.writePath, write.originalContent);
     } catch (err) {
       restoreErrors.push(
         `note ${write.writePath}: ${err instanceof Error ? err.message : String(err)}`
@@ -5540,14 +5459,14 @@ async function rollbackMove(fs23, args) {
     }
   }
   try {
-    if (await fs23.exists(newPath) && !await fs23.exists(oldPath)) {
-      await fs23.move(newPath, oldPath);
+    if (await fs22.exists(newPath) && !await fs22.exists(oldPath)) {
+      await fs22.move(newPath, oldPath);
     }
   } catch (err) {
     restoreErrors.push(`tree: ${err instanceof Error ? err.message : String(err)}`);
   }
   try {
-    await saveOrder(fs23, JSON.parse(orderSnapshot));
+    await saveOrder(fs22, JSON.parse(orderSnapshot));
   } catch (err) {
     restoreErrors.push(`order: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -5565,11 +5484,11 @@ function resolveNewParent(tent, newParentId) {
   if (!parent) throw new Error(`Target parent not found: ${newParentId}.`);
   return parent;
 }
-function assertNotOperationalPath2(path24) {
-  if (isOperationalPath(path24) || path24 === "temp" || path24.startsWith("temp/")) {
+function assertNotOperationalPath2(path23) {
+  if (isOperationalPath(path23) || path23 === "temp" || path23.startsWith("temp/")) {
     throw new Error("temp/ and other system pipelines cannot be moved as concepts.");
   }
-  const top = path24.split("/")[0] ?? "";
+  const top = path23.split("/")[0] ?? "";
   if (top === "attachments" || top === ".tent") {
     throw new Error("System directories cannot be moved as concepts.");
   }
@@ -5587,8 +5506,7 @@ function relativePath3(root, child) {
 // src/core/ops.ts
 function resolveDispatchNodeIds(input) {
   const tentName = input.tentName.trim();
-  const legacyRaw = typeof input.legacyClaimId === "string" ? input.legacyClaimId.trim() : "";
-  const legacy = legacyRaw || void 0;
+  const primaryNodeId = input.primaryNodeId?.trim() ?? "";
   if (input.nodeIds !== void 0 && input.nodeIds !== null) {
     if (!Array.isArray(input.nodeIds)) {
       throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
@@ -5618,37 +5536,40 @@ function resolveDispatchNodeIds(input) {
     if (out.length === 0) {
       throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
     }
-    if (legacy) {
-      if (isForbiddenRootDispatchToken(legacy, tentName)) {
+    if (primaryNodeId) {
+      if (isForbiddenRootDispatchToken(primaryNodeId, tentName)) {
         throw new Error(
-          "Cannot dispatch the whole Tent directly; dispatch a specific Node (legacy primary cannot be ., root, or the Tent name)."
+          "Cannot dispatch the whole Tent directly; dispatch a specific Node (primary Node cannot be ., root, or the Tent name)."
         );
       }
-      if (legacy !== out[0]) {
+      if (primaryNodeId !== out[0]) {
         throw new Error(
-          `Dispatch legacy primary '${legacy}' conflicts with authoritative nodeIds primary '${out[0]}'; when both are present they must agree (prefer nodeIds).`
+          `Dispatch primary Node '${primaryNodeId}' conflicts with nodeIds[0] '${out[0]}'.`
         );
       }
     }
     return out;
   }
-  if (!legacy) {
-    throw new Error("Dispatch requires nodeIds or a legacy single boxId/id/claimId.");
+  if (!primaryNodeId) {
+    throw new Error("Dispatch requires at least one Node.");
   }
-  if (isForbiddenRootDispatchToken(legacy, tentName)) {
+  if (isForbiddenRootDispatchToken(primaryNodeId, tentName)) {
     throw new Error(
-      "Cannot dispatch the whole Tent directly; dispatch a specific Node (legacy primary cannot be ., root, or the Tent name)."
+      "Cannot dispatch the whole Tent directly; dispatch a specific Node (primary Node cannot be ., root, or the Tent name)."
     );
   }
-  return [legacy];
+  return [primaryNodeId];
 }
 function isForbiddenRootDispatchToken(id, tentName) {
   return id === "." || id === "root" || tentName !== "" && id === tentName;
 }
-async function dispatch(env, claimId, role, promptOrOptions) {
-  return withMutation2(env.fs, async () => dispatchUnlocked(env, claimId, role, promptOrOptions));
+async function dispatch(env, primaryNodeId, role, promptOrOptions) {
+  return withMutation2(
+    env.fs,
+    async () => dispatchUnlocked(env, primaryNodeId, role, promptOrOptions)
+  );
 }
-async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
+async function dispatchUnlocked(env, primaryNodeId, role, promptOrOptions) {
   const tent = await loadTent(env.fs);
   const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions, ...userTaskActors() } : promptOrOptions;
   const assigneeKind = options.assigneeKind === "agentProfile" ? "agentProfile" : "role";
@@ -5673,7 +5594,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   }
   const nodeIds = resolveDispatchNodeIds({
     nodeIds: options.nodeIds,
-    legacyClaimId: claimId,
+    primaryNodeId,
     tentName: env.tentName
   });
   const tasks = await loadTaskEnvelopes(env.fs);
@@ -5715,7 +5636,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       await ensureDir3(env.fs, dirName(manifestPath));
       await env.fs.writeFile(manifestPath, yaml);
     } else {
-      manifestPath = join("temp", assigneeLabel, "manifest.yml");
+      manifestPath = join("temp", assigneeLabel, "manifests", `${taskId}.yml`);
       await ensureDir3(env.fs, dirName(manifestPath));
       await env.fs.writeFile(manifestPath, yaml);
       const registry = await loadRolesRegistry(env.fs);
@@ -5800,14 +5721,14 @@ async function createBoxUnlocked(env, input) {
   }
   const existing = new Set(tent.byId.keys());
   const id = makeUniqueConceptId(existing, env.rand);
-  const path24 = join(input.parentPath, name);
-  assertNotTempPath(path24);
-  await ensureDir3(env.fs, path24);
+  const path23 = join(input.parentPath, name);
+  assertNotTempPath(path23);
+  await ensureDir3(env.fs, path23);
   const fm = { id, type: input.type };
   const content3 = serializeFrontmatter(fm, `
 # ${name}
 `, BOX_FRONTMATTER_KEY_ORDER);
-  await env.fs.writeFile(boxNotePath(path24), content3);
+  await env.fs.writeFile(boxNotePath(path23), content3);
   const parent = input.parentPath ? tent.byPath.get(input.parentPath) : void 0;
   const parentKey = parent ? parent.id : ROOT_KEY;
   try {
@@ -5816,7 +5737,7 @@ async function createBoxUnlocked(env, input) {
     order[parentKey] = siblings.includes(id) ? siblings : [...siblings, id];
     await saveOrder(env.fs, order);
   } catch (error) {
-    await env.fs.remove(path24);
+    await env.fs.remove(path23);
     throw error;
   }
   return id;
@@ -5922,9 +5843,9 @@ async function setNodeModeUnlocked(env, boxId, mode) {
   }
   if (next === "archived") {
     const tasks = await loadTaskEnvelopes(env.fs);
-    if (boxHasDirectActiveTask(box.id, tasks)) {
+    if (hasActiveTaskInSubtree(tent, box, tasks)) {
       throw new Error(
-        "Node is directly referenced by an active task and cannot be archived; complete or interrupt the task first."
+        "Node subtree has an active task and cannot be archived; complete or interrupt the task first."
       );
     }
   }
@@ -5934,17 +5855,17 @@ async function setNodeModeUnlocked(env, boxId, mode) {
   }
   await patchFrontmatter(env.fs, box, { mode: void 0, archived: void 0 });
 }
-async function patchFrontmatter(fs23, box, patch) {
+async function patchFrontmatter(fs22, box, patch) {
   const boxFile = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs23.readFile(boxFile));
+  const { data, body, keyOrder } = parseFrontmatter(await fs22.readFile(boxFile));
   for (const [k, v] of Object.entries(patch)) {
     if (v === void 0) delete data[k];
     else data[k] = v;
   }
-  await fs23.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder3(keyOrder)));
+  await fs22.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder3(keyOrder)));
 }
-async function ensureDir3(fs23, path24) {
-  if (path24 && !await fs23.exists(path24)) await fs23.mkdir(path24);
+async function ensureDir3(fs22, path23) {
+  if (path23 && !await fs22.exists(path23)) await fs22.mkdir(path23);
 }
 function normalizeTagPatch(value) {
   if (value === void 0) return void 0;
@@ -5963,10 +5884,27 @@ function boxKeyOrder3(existing) {
     ...existing.filter((key2) => !BOX_FRONTMATTER_KEY_ORDER.includes(key2))
   ];
 }
-function assertNotTempPath(path24) {
-  if (path24 === "temp" || path24.startsWith("temp/")) {
+function assertNotTempPath(path23) {
+  if (path23 === "temp" || path23.startsWith("temp/")) {
     throw new Error("temp/ is a system pipeline; typed boxes cannot be created or moved there.");
   }
+}
+function hasActiveTaskInSubtree(tent, box, tasks) {
+  const ids = collectSubtreeIds(box);
+  for (const task of tasks) {
+    if (!envelopeIsActiveOccupation(task)) continue;
+    if (task.contextCard == null) continue;
+    for (const nodeId of taskReferencedNodeIds(task)) {
+      if (ids.has(nodeId)) return true;
+    }
+  }
+  void tent;
+  return false;
+}
+function collectSubtreeIds(box, ids = /* @__PURE__ */ new Set()) {
+  ids.add(box.id);
+  for (const child of box.children) collectSubtreeIds(child, ids);
+  return ids;
 }
 function assertRoleName(role) {
   const name = role.trim();
@@ -5983,13 +5921,13 @@ function requireBoxById2(tent, boxId) {
   if (!box) throw new Error(`Box not found: ${boxId}.`);
   return box;
 }
-async function withMutation2(fs23, action) {
-  return withTentMutation(fs23, action);
+async function withMutation2(fs22, action) {
+  return withTentMutation(fs22, action);
 }
 
 // src/core/typeManagement.ts
-async function createType(fs23, name, definition2) {
-  await withTentMutation(fs23, async () => {
+async function createType(fs22, name, definition2) {
+  await withTentMutation(fs22, async () => {
     assertTypeName(name);
     if (isCanonicalPrimary(name) || CANONICAL_PRIMARY_TYPES.includes(name)) {
       throw new Error(`Built-in primary types cannot be created: ${name}.`);
@@ -6000,26 +5938,26 @@ async function createType(fs23, name, definition2) {
     if (definition2.tier !== "modifier") {
       throw new Error("V0.2 only allows creating custom secondary (modifier) types; primaries are fixed.");
     }
-    const registry = await loadTypeRegistry(fs23);
+    const registry = await loadTypeRegistry(fs22);
     if (registry[name]) throw new Error(`Type already exists: ${name}.`);
     registry[name] = { tier: "modifier" };
-    await writeTypeRegistryUnlocked(fs23, registry);
+    await writeTypeRegistryUnlocked(fs22, registry);
   });
 }
-async function createSecondaryType(fs23, name, _definition) {
+async function createSecondaryType(fs22, name, _definition) {
   void _definition;
-  await createType(fs23, name, { tier: "modifier" });
+  await createType(fs22, name, { tier: "modifier" });
 }
-async function inspectTypeDeletion(fs23, level, name) {
+async function inspectTypeDeletion(fs22, level, name) {
   void level;
-  const tent = await loadTent(fs23);
+  const tent = await loadTent(fs22);
   const registry = tent.typeRegistry;
   const boxes = [...tent.byId.values()];
   const referenced = boxes.filter((box) => {
     const { base, modifier } = splitType(box.type);
     return box.type === name || base === name || modifier === name;
   });
-  const tasks = await loadTaskEnvelopes(fs23);
+  const tasks = await loadTaskEnvelopes(fs22);
   const ownerMap = /* @__PURE__ */ new Map();
   const relatedIds = /* @__PURE__ */ new Set();
   for (const reference of referenced) {
@@ -6043,14 +5981,14 @@ async function inspectTypeDeletion(fs23, level, name) {
     name,
     builtIn,
     exists: name in registry,
-    references: referenced.map(({ id, path: path24, name: boxName }) => ({ id, path: path24, name: boxName })),
+    references: referenced.map(({ id, path: path23, name: boxName }) => ({ id, path: path23, name: boxName })),
     activeOwners: [...ownerMap.values()]
   };
 }
-async function deleteCustomType(fs23, level, name, confirmation) {
-  return withTentMutation(fs23, async () => {
+async function deleteCustomType(fs22, level, name, confirmation) {
+  return withTentMutation(fs22, async () => {
     if (confirmation !== name) throw new Error(`Confirmation mismatch; enter the type name ${name}.`);
-    const inspection = await inspectTypeDeletion(fs23, level, name);
+    const inspection = await inspectTypeDeletion(fs22, level, name);
     if (!inspection.exists) throw new Error(`Type does not exist: ${name}.`);
     if (inspection.builtIn) throw new Error(`Built-in types cannot be deleted: ${name}.`);
     if (inspection.references.length > 0) {
@@ -6063,18 +6001,18 @@ async function deleteCustomType(fs23, level, name, confirmation) {
         `Referenced range still has an active task; cancel or fail first: ${inspection.activeOwners.map((x) => x.path).join(", ")}.`
       );
     }
-    const registry = await loadTypeRegistry(fs23);
+    const registry = await loadTypeRegistry(fs22);
     delete registry[name];
-    await writeTypeRegistryUnlocked(fs23, registry);
+    await writeTypeRegistryUnlocked(fs22, registry);
     return inspection;
   });
 }
-async function writeTypeRegistryUnlocked(fs23, registry) {
+async function writeTypeRegistryUnlocked(fs22, registry) {
   const slim = {};
   for (const [name, def] of Object.entries(registry)) {
     slim[name] = { tier: def.tier === "modifier" ? "modifier" : "base" };
   }
-  await fs23.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(slim, null, 2) + "\n");
+  await fs22.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(slim, null, 2) + "\n");
 }
 function assertTypeName(name) {
   if (!name.trim()) throw new Error("Type name cannot be empty.");
@@ -6182,21 +6120,21 @@ function normalizeText(text3) {
   }
   return trimmed;
 }
-async function writeRoleCheckpoint(fs23, input) {
+async function writeRoleCheckpoint(fs22, input) {
   const role = assertRoleSegment(input.role);
   const text3 = normalizeText(input.text);
   const pointers = normalizePointers(input.pointers);
   const updatedAt = input.updatedAt?.trim();
   if (!updatedAt) throw new Error("Role Checkpoint updatedAt is required.");
   const sourceSessionId = input.sourceSessionId?.trim() || void 0;
-  const path24 = roleCheckpointPath(role);
+  const path23 = roleCheckpointPath(role);
   const record = {
     role,
     text: text3,
     updatedAt,
     ...sourceSessionId ? { sourceSessionId } : {},
     ...pointers ? { pointers } : {},
-    path: path24
+    path: path23
   };
   formatRoleCheckpointTail(record);
   const data = {
@@ -6218,28 +6156,28 @@ Dynamic tail only \u2014 not Delivery, not Task state, not stable Role init.
 
 ${text3}
 `;
-  await fs23.writeFile(path24, serializeFrontmatter(data, body));
+  await fs22.writeFile(path23, serializeFrontmatter(data, body));
   return record;
 }
-async function readRoleCheckpoint(fs23, role) {
+async function readRoleCheckpoint(fs22, role) {
   const name = assertRoleSegment(role);
-  const path24 = roleCheckpointPath(name);
-  if (!await fs23.exists(path24)) return null;
-  const raw = await fs23.readFile(path24);
+  const path23 = roleCheckpointPath(name);
+  if (!await fs22.exists(path23)) return null;
+  const raw = await fs22.readFile(path23);
   const parsed = parseFrontmatter(raw);
   const type = typeof parsed.data.type === "string" ? parsed.data.type.trim() : "";
   if (type && type !== ROLE_CHECKPOINT_TYPE) {
     throw new Error(
-      `Role Checkpoint at ${path24} has unexpected type ${type}; expected ${ROLE_CHECKPOINT_TYPE}.`
+      `Role Checkpoint at ${path23} has unexpected type ${type}; expected ${ROLE_CHECKPOINT_TYPE}.`
     );
   }
   const fmRole = typeof parsed.data.role === "string" ? parsed.data.role.trim() : name;
   if (fmRole !== name) {
-    throw new Error(`Role Checkpoint role mismatch at ${path24}: file has ${fmRole}, expected ${name}.`);
+    throw new Error(`Role Checkpoint role mismatch at ${path23}: file has ${fmRole}, expected ${name}.`);
   }
   const updatedAt = typeof parsed.data.updatedAt === "string" ? parsed.data.updatedAt.trim() : "";
   if (!updatedAt) {
-    throw new Error(`Role Checkpoint at ${path24} is missing updatedAt.`);
+    throw new Error(`Role Checkpoint at ${path23} is missing updatedAt.`);
   }
   const sourceSessionId = typeof parsed.data.sourceSessionId === "string" ? parsed.data.sourceSessionId.trim() || void 0 : void 0;
   const pointers = normalizePointers({
@@ -6265,15 +6203,15 @@ async function readRoleCheckpoint(fs23, role) {
     updatedAt,
     ...sourceSessionId ? { sourceSessionId } : {},
     ...pointers ? { pointers } : {},
-    path: path24
+    path: path23
   };
   formatRoleCheckpointTail(record);
   return record;
 }
-async function clearRoleCheckpoint(fs23, role) {
-  const path24 = roleCheckpointPath(role);
-  if (!await fs23.exists(path24)) return false;
-  await fs23.remove(path24);
+async function clearRoleCheckpoint(fs22, role) {
+  const path23 = roleCheckpointPath(role);
+  if (!await fs22.exists(path23)) return false;
+  await fs22.remove(path23);
   return true;
 }
 function formatRoleCheckpointTail(record) {
@@ -6429,12 +6367,6 @@ function stripYamlFrontmatter(raw) {
   const after = text3.slice(end + 4);
   return after.replace(/^\r?\n/, "");
 }
-function formatStableRosterDigest(roster) {
-  const ids = [...roster ?? []].map((s) => s.trim()).filter(Boolean);
-  ids.sort((a, b) => a.localeCompare(b));
-  if (ids.length === 0) return "(empty roster)";
-  return ids.map((id) => `- ${id}`).join("\n");
-}
 var STABLE_SKILL_CONTRACTS_END_MARKER = "--- End of stable Tent skill contracts ---";
 var MANAGED_SESSION_BOOTSTRAP_BANNER = "--- Tent managed session bootstrap ---";
 function composeManagedSkillBootstrapPrefix(input) {
@@ -6447,16 +6379,9 @@ function composeManagedSkillBootstrapPrefix(input) {
 ${body}`);
     const role = input.role;
     const rolePrompt = role?.prompt?.trim() || "(no persistent role prompt)";
-    const roster = formatStableRosterDigest(role?.roster);
-    sections.push(
-      `## Role prompt
+    sections.push(`## Role prompt
 
-${rolePrompt}
-
-## Role roster (authorized agentIds)
-
-${roster}`
-    );
+${rolePrompt}`);
   }
   if (names.includes(BUILTIN_TENT_TASK_SKILL)) {
     const body = readBundledSkillBody(input.packageRoot, BUILTIN_TENT_TASK_SKILL);
@@ -6517,11 +6442,9 @@ function managedSkillCompatibilityInputs(input) {
       input.packageVersion
     );
   }
-  const roster = [...input.role?.roster ?? []].map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
   return {
     builtinSkills,
     rolePrompt: input.role?.prompt?.trim() || "",
-    roster,
     skillBodyDigests,
     skillVersions,
     skillBodies
@@ -6734,7 +6657,6 @@ async function collectStableContextGeneration(input) {
     });
   }
   const rolePrompt = input.assigneeKind === "role" ? skillInputs.rolePrompt : role?.prompt?.trim() || "";
-  const rosterAgentIds = input.assigneeKind === "role" ? skillInputs.roster : [...role?.roster ?? []].map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
   const purpose = managedSessionPurpose({
     purpose: input.purpose,
     subKey: input.subKey
@@ -6754,7 +6676,6 @@ async function collectStableContextGeneration(input) {
     tentTaskBody,
     tentTaskVersion,
     rolePrompt: input.assigneeKind === "role" ? rolePrompt : void 0,
-    rosterAgentIds: input.assigneeKind === "role" ? rosterAgentIds : void 0,
     profileId: input.profileId,
     adapterId: input.adapterId,
     purpose,
@@ -6786,7 +6707,6 @@ async function collectStableContextGeneration(input) {
     tentTaskDigest,
     tentTaskVersion,
     rolePrompt,
-    rosterAgentIds,
     skillsDigest: skillSetDigest,
     skillSetDigest,
     purpose,
@@ -6855,20 +6775,20 @@ function buildSessionReuseRequestFacts(input) {
     worktree: input.worktree
   };
 }
-async function assertDurableContextCardRefsResolved(fs23, card) {
+async function assertDurableContextCardRefsResolved(fs22, card) {
   let tent = null;
   let tasks = null;
   let deliveries = null;
   const ensureTent = async () => {
-    if (!tent) tent = await loadTent(fs23);
+    if (!tent) tent = await loadTent(fs22);
     return tent;
   };
   const ensureTasks = async () => {
-    if (!tasks) tasks = await loadTaskEnvelopes(fs23);
+    if (!tasks) tasks = await loadTaskEnvelopes(fs22);
     return tasks;
   };
   const ensureDeliveries = async () => {
-    if (!deliveries) deliveries = await loadDeliveries(fs23);
+    if (!deliveries) deliveries = await loadDeliveries(fs22);
     return deliveries;
   };
   const nodeOk = /* @__PURE__ */ new Map();
@@ -6901,7 +6821,7 @@ async function assertDurableContextCardRefsResolved(fs23, card) {
       }
       if (ref.path?.trim()) {
         try {
-          const loaded = await loadTaskEnvelope(fs23, ref.path.trim());
+          const loaded = await loadTaskEnvelope(fs22, ref.path.trim());
           taskOk.set(ref.id, loaded.id === id);
           continue;
         } catch {
@@ -7178,7 +7098,7 @@ function bytesEqual(a, b) {
   }
   return true;
 }
-async function storeAttachmentBytes(fs23, conceptId, fileName, bytes, sourceNotePath) {
+async function storeAttachmentBytes(fs22, conceptId, fileName, bytes, sourceNotePath) {
   if (!conceptId.trim()) throw new Error("Concept id is required");
   const safe = sanitizeAttachmentFileName(fileName);
   assertAttachmentSize(bytes.byteLength);
@@ -7187,14 +7107,14 @@ async function storeAttachmentBytes(fs23, conceptId, fileName, bytes, sourceNote
   if (!normalized.startsWith(`${ATTACHMENTS_DIR}/${conceptId}/`) || normalized.split("/").some((p) => p === ".." || p === "")) {
     throw new Error(`Attachment path rejected: ${rel}`);
   }
-  if (await fs23.exists(rel)) {
-    const existing = await fs23.readBinary(rel);
+  if (await fs22.exists(rel)) {
+    const existing = await fs22.readBinary(rel);
     if (!bytesEqual(existing, bytes)) {
       throw new Error(`Attachment content-address collision at ${rel}`);
     }
     return attachmentResult(rel, safe, sourceNotePath);
   }
-  await fs23.writeBinary(rel, bytes);
+  await fs22.writeBinary(rel, bytes);
   return attachmentResult(rel, safe, sourceNotePath);
 }
 function markdownAttachmentDestination(destination) {
@@ -14483,61 +14403,61 @@ async function collectBootstrapImageRefsFromTask(input) {
 }
 
 // src/core/proposal.ts
-async function submitProposal(fs23, clock, role, boxId, body) {
-  return withTentMutation(fs23, async () => submitProposalUnlocked(fs23, clock, role, boxId, body));
+async function submitProposal(fs22, clock, role, boxId, body) {
+  return withTentMutation(fs22, async () => submitProposalUnlocked(fs22, clock, role, boxId, body));
 }
-async function submitProposalUnlocked(fs23, clock, roleInput, boxId, body) {
+async function submitProposalUnlocked(fs22, clock, roleInput, boxId, body) {
   const text3 = body.trim();
   if (!text3) throw new Error("Proposal body cannot be empty.");
   const role = normalizeRole(roleInput);
-  const tent = await loadTent(fs23);
+  const tent = await loadTent(fs22);
   if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
   const box = tent.byId.get(boxId);
   if (!box) throw new Error(`Box not found: ${boxId}.`);
-  const path24 = proposalPath(role, box.id);
-  if (await fs23.exists(path24)) {
-    const current = await loadProposal(fs23, path24);
+  const path23 = proposalPath(role, box.id);
+  if (await fs22.exists(path23)) {
+    const current = await loadProposal(fs22, path23);
     if (current.status === "pending") throw new Error("A proposal is already pending triage; the user must confirm or reject it first.");
   }
   const proposal = {
-    path: path24,
+    path: path23,
     boxId: box.id,
     role,
     status: "pending",
     createdAt: clock.now(),
     body: text3
   };
-  await ensureDir4(fs23, join("temp", role, "proposals"));
-  await writeProposal(fs23, proposal);
+  await ensureDir4(fs22, join("temp", role, "proposals"));
+  await writeProposal(fs22, proposal);
   return proposal;
 }
-async function loadProposals(fs23) {
+async function loadProposals(fs22) {
   const proposals = [];
-  if (!await fs23.exists("temp")) return proposals;
-  for (const roleDir of await fs23.listDir("temp")) {
+  if (!await fs22.exists("temp")) return proposals;
+  for (const roleDir of await fs22.listDir("temp")) {
     if (!roleDir.isDir) continue;
     const dir = join("temp", roleDir.name, "proposals");
-    if (!await fs23.exists(dir)) continue;
-    for (const entry of await fs23.listDir(dir)) {
+    if (!await fs22.exists(dir)) continue;
+    for (const entry of await fs22.listDir(dir)) {
       if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path24 = join(dir, entry.name);
+      const path23 = join(dir, entry.name);
       try {
-        proposals.push(await loadProposal(fs23, path24));
+        proposals.push(await loadProposal(fs22, path23));
       } catch {
       }
     }
   }
   return proposals.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
 }
-async function loadProposal(fs23, inputPath) {
-  const path24 = normalizeProposalPath(inputPath);
-  if (!await fs23.exists(path24)) throw new Error(`Proposal not found: ${path24}.`);
-  const { data, body } = parseFrontmatter(await fs23.readFile(path24));
+async function loadProposal(fs22, inputPath) {
+  const path23 = normalizeProposalPath(inputPath);
+  if (!await fs22.exists(path23)) throw new Error(`Proposal not found: ${path23}.`);
+  const { data, body } = parseFrontmatter(await fs22.readFile(path23));
   if (data.type !== "proposal" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "pending" && data.status !== "accepted" && data.status !== "rejected") {
-    throw new Error(`Invalid proposal format: ${path24}.`);
+    throw new Error(`Invalid proposal format: ${path23}.`);
   }
   return {
-    path: path24,
+    path: path23,
     boxId: data.box,
     role: data.role,
     status: data.status,
@@ -14545,33 +14465,33 @@ async function loadProposal(fs23, inputPath) {
     body: body.trim()
   };
 }
-async function acceptProposal(fs23, inputPath) {
-  await withTentMutation(fs23, async () => {
-    const proposal = await loadProposal(fs23, inputPath);
+async function acceptProposal(fs22, inputPath) {
+  await withTentMutation(fs22, async () => {
+    const proposal = await loadProposal(fs22, inputPath);
     if (proposal.status !== "pending") throw new Error("Only pending proposals can be accepted.");
     proposal.status = "accepted";
-    await writeProposal(fs23, proposal);
+    await writeProposal(fs22, proposal);
   });
 }
-async function rejectProposal(fs23, inputPath) {
-  await withTentMutation(fs23, async () => {
-    const proposal = await loadProposal(fs23, inputPath);
+async function rejectProposal(fs22, inputPath) {
+  await withTentMutation(fs22, async () => {
+    const proposal = await loadProposal(fs22, inputPath);
     if (proposal.status !== "pending") throw new Error("Only pending proposals can be rejected.");
     proposal.status = "rejected";
-    await writeProposal(fs23, proposal);
+    await writeProposal(fs22, proposal);
   });
 }
 function proposalPath(role, boxId) {
   return join("temp", role, "proposals", `${boxId}.md`);
 }
 function normalizeProposalPath(input) {
-  const path24 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/proposals\/[bc]x-[^/]+\.md$/.test(path24)) {
+  const path23 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/proposals\/[bc]x-[^/]+\.md$/.test(path23)) {
     throw new Error("Proposal must point to temp/<role>/proposals/<boxId>.md.");
   }
-  return path24;
+  return path23;
 }
-async function writeProposal(fs23, proposal) {
+async function writeProposal(fs22, proposal) {
   const data = {
     type: "proposal",
     box: proposal.boxId,
@@ -14579,822 +14499,19 @@ async function writeProposal(fs23, proposal) {
     status: proposal.status,
     createdAt: proposal.createdAt
   };
-  await fs23.writeFile(
+  await fs22.writeFile(
     proposal.path,
     serializeFrontmatter(data, proposal.body + "\n", ["type", "box", "role", "status", "createdAt"])
   );
 }
-async function ensureDir4(fs23, path24) {
-  if (!await fs23.exists(path24)) await fs23.mkdir(path24);
+async function ensureDir4(fs22, path23) {
+  if (!await fs22.exists(path23)) await fs22.mkdir(path23);
 }
 function normalizeRole(role) {
   const normalized = role.trim();
   if (!normalized) throw new Error("Proposal role cannot be empty; set TENT_ROLE before running tent propose.");
   if (normalized.includes("..") || /[\/\\\r\n]/.test(normalized)) throw new Error(`Invalid proposal role: ${role}`);
   return normalized;
-}
-
-// src/service/agent-definitions.ts
-import * as fs5 from "node:fs/promises";
-import * as path5 from "node:path";
-
-// src/machine-state.ts
-import * as fs3 from "node:fs/promises";
-import * as path3 from "node:path";
-function isNotFoundError(err) {
-  return !!err && typeof err === "object" && "code" in err && err.code === "ENOENT";
-}
-function isRetryableRenameError2(err) {
-  if (!err || typeof err !== "object" || !("code" in err)) return false;
-  const code = err.code;
-  return code === "EPERM" || code === "EBUSY" || code === "EACCES" || code === "EEXIST";
-}
-async function writeJsonAtomic(filePath, value) {
-  await fs3.mkdir(path3.dirname(filePath), { recursive: true });
-  const body = JSON.stringify(value, null, 2) + "\n";
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
-  try {
-    await fs3.writeFile(tmp, body, "utf8");
-    await renameReplace2(tmp, filePath);
-  } catch (err) {
-    try {
-      await fs3.unlink(tmp);
-    } catch {
-    }
-    throw err;
-  }
-}
-async function renameReplace2(tmp, filePath) {
-  const attempts = process.platform === "win32" ? 8 : 1;
-  let lastErr;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      await fs3.rename(tmp, filePath);
-      return;
-    } catch (err) {
-      lastErr = err;
-      if (!isRetryableRenameError2(err) || i === attempts - 1) break;
-      await new Promise((r) => setTimeout(r, 5 + i * 5));
-    }
-  }
-  throw lastErr;
-}
-async function backupCorruptMachineFile(filePath) {
-  const backupPath = `${filePath}.corrupt-${corruptTimestamp()}`;
-  try {
-    await fs3.rename(filePath, backupPath);
-    return backupPath;
-  } catch {
-    await fs3.copyFile(filePath, backupPath);
-    try {
-      await fs3.unlink(filePath);
-    } catch {
-    }
-    return backupPath;
-  }
-}
-function warnCorruptMachineState(filePath, backupPath, action, extra = "") {
-  console.error(
-    `WARNING: ${filePath} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
-  );
-}
-function corruptTimestamp() {
-  return (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-}
-
-// src/service/credential-store.ts
-import * as fs4 from "node:fs/promises";
-import * as path4 from "node:path";
-
-// src/service/credential-protector.ts
-import { spawn } from "node:child_process";
-var NON_WINDOWS_MSG = "CredentialStore requires Windows DPAPI (CurrentUser); non-Windows is not supported in this MVP (no weak-crypto fallback)";
-function createPlatformCredentialProtector(platform = process.platform) {
-  if (platform !== "win32") {
-    return {
-      protect: async () => {
-        throw new Error(NON_WINDOWS_MSG);
-      },
-      unprotect: async () => {
-        throw new Error(NON_WINDOWS_MSG);
-      }
-    };
-  }
-  return createWindowsDpapiProtector();
-}
-function createWindowsDpapiProtector() {
-  return {
-    protect: async (plaintext) => {
-      const b64In = Buffer.from(plaintext, "utf8").toString("base64");
-      const b64Out = await runPowerShellStdin(
-        [
-          "Add-Type -AssemblyName System.Security",
-          "$b64 = [Console]::In.ReadToEnd().Trim()",
-          "$plain = [Convert]::FromBase64String($b64)",
-          "$prot = [System.Security.Cryptography.ProtectedData]::Protect($plain, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)",
-          "[Convert]::ToBase64String($prot)"
-        ].join("; "),
-        b64In,
-        "protect"
-      );
-      return b64Out.trim();
-    },
-    unprotect: async (ciphertext) => {
-      const b64Out = await runPowerShellStdin(
-        [
-          "Add-Type -AssemblyName System.Security",
-          "$b64 = [Console]::In.ReadToEnd().Trim()",
-          "$prot = [Convert]::FromBase64String($b64)",
-          "$plain = [System.Security.Cryptography.ProtectedData]::Unprotect($prot, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)",
-          "[Convert]::ToBase64String($plain)"
-        ].join("; "),
-        ciphertext.trim(),
-        "unprotect"
-      );
-      return Buffer.from(b64Out.trim(), "base64").toString("utf8");
-    }
-  };
-}
-function runPowerShellStdin(command, stdinData, op) {
-  return new Promise((resolve15, reject) => {
-    const child = spawn(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
-      {
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true
-      }
-    );
-    let stdout = "";
-    child.stderr?.on("data", () => {
-    });
-    child.stdout?.on("data", (chunk) => {
-      stdout += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-    });
-    child.on("error", (err) => {
-      reject(
-        new Error(
-          `DPAPI PowerShell ${op} failed to start: ${err instanceof Error ? err.message : "spawn error"}`
-        )
-      );
-    });
-    child.on("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(`DPAPI PowerShell ${op} failed (exit=${code ?? "null"})`));
-        return;
-      }
-      resolve15(stdout.replace(/^\uFEFF/, "").replace(/\r?\n$/, ""));
-    });
-    child.stdin?.on("error", (err) => {
-      reject(
-        new Error(
-          `DPAPI PowerShell ${op} stdin failed: ${err instanceof Error ? err.message : "stdin error"}`
-        )
-      );
-    });
-    child.stdin?.end(stdinData, "utf8");
-  });
-}
-
-// src/service/credential-store.ts
-var CREDENTIAL_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
-var MAX_SECRET_BYTES = 64 * 1024;
-var MAX_LABEL_LEN = 200;
-function credentialsPath(dataDir) {
-  return path4.join(dataDir, "credentials.json");
-}
-function assertCredentialId(id) {
-  if (typeof id !== "string" || !id.trim()) {
-    throw new Error("Missing or invalid credential id");
-  }
-  const trimmed = id.trim();
-  if (!CREDENTIAL_ID_RE.test(trimmed)) {
-    throw new Error(
-      `Invalid credential id: must match ${CREDENTIAL_ID_RE} (lowercase letter, then a-z0-9-, max 63)`
-    );
-  }
-  return trimmed;
-}
-function project(rec) {
-  const out = {
-    id: rec.id,
-    createdAt: rec.createdAt,
-    updatedAt: rec.updatedAt
-  };
-  if (rec.metadata?.label) {
-    out.label = rec.metadata.label;
-    out.metadata = { label: rec.metadata.label };
-  }
-  return out;
-}
-function normalizeSetOpts(opts) {
-  if (opts === void 0) return void 0;
-  if (opts === null) return null;
-  if ("metadata" in opts && opts.metadata !== void 0) {
-    return normalizeMetadata(opts.metadata);
-  }
-  if ("label" in opts) {
-    if (opts.label === null) return null;
-    if (opts.label === void 0) return void 0;
-    return normalizeMetadata({ label: opts.label });
-  }
-  return normalizeMetadata(opts);
-}
-function normalizeMetadata(raw) {
-  if (raw === void 0 || raw === null) return void 0;
-  if (typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error("Invalid credential metadata: must be a plain object when set");
-  }
-  const obj = raw;
-  const out = {};
-  if ("label" in obj) {
-    if (obj.label === void 0 || obj.label === null) {
-    } else if (typeof obj.label !== "string") {
-      throw new Error("Invalid credential metadata.label: must be a string");
-    } else {
-      const t = obj.label.trim();
-      if (!t) throw new Error("Invalid credential metadata.label: must be non-empty when set");
-      if (t.length > MAX_LABEL_LEN) {
-        throw new Error(
-          `Invalid credential metadata.label: exceeds ${MAX_LABEL_LEN} characters`
-        );
-      }
-      out.label = t;
-    }
-  }
-  for (const key2 of Object.keys(obj)) {
-    if (key2 !== "label") {
-      throw new Error(`Unknown credential metadata field: ${key2}`);
-    }
-  }
-  return Object.keys(out).length > 0 ? out : void 0;
-}
-function isValidDate(value) {
-  return Number.isFinite(Date.parse(value));
-}
-function parseCredentialRecord(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  const item = value;
-  if (typeof item.id !== "string") return null;
-  let id;
-  try {
-    id = assertCredentialId(item.id);
-  } catch {
-    return null;
-  }
-  if (typeof item.ciphertext !== "string" || item.ciphertext.length === 0) {
-    return null;
-  }
-  if (typeof item.createdAt !== "string" || item.createdAt.length === 0) {
-    return null;
-  }
-  if (typeof item.updatedAt !== "string" || item.updatedAt.length === 0) {
-    return null;
-  }
-  if (!isValidDate(item.createdAt) || !isValidDate(item.updatedAt)) {
-    return null;
-  }
-  let metaSrc = item.metadata;
-  if ((metaSrc === void 0 || metaSrc === null) && typeof item.label === "string") {
-    metaSrc = { label: item.label };
-  }
-  let metadata;
-  if (metaSrc !== void 0 && metaSrc !== null) {
-    try {
-      metadata = normalizeMetadata(metaSrc);
-    } catch {
-      return null;
-    }
-  }
-  const rec = {
-    id,
-    ciphertext: item.ciphertext,
-    createdAt: item.createdAt,
-    updatedAt: item.updatedAt
-  };
-  if (metadata) rec.metadata = metadata;
-  return rec;
-}
-var CredentialStore = class {
-  constructor(dataDir, options) {
-    this.records = /* @__PURE__ */ new Map();
-    this.loaded = false;
-    this.chain = Promise.resolve();
-    this.file = credentialsPath(dataDir);
-    if (options && typeof options === "object" && "protect" in options && "unprotect" in options) {
-      this.protector = options;
-    } else if (options && typeof options === "object" && "protector" in options) {
-      this.protector = options.protector ?? createPlatformCredentialProtector();
-    } else {
-      this.protector = createPlatformCredentialProtector();
-    }
-  }
-  enqueue(fn) {
-    const run = this.chain.then(fn, fn);
-    this.chain = run.then(
-      () => void 0,
-      () => void 0
-    );
-    return run;
-  }
-  async ensureLoaded() {
-    if (this.loaded) return;
-    return this.enqueue(async () => {
-      if (this.loaded) return;
-      await this.loadFromDisk();
-    });
-  }
-  async loadFromDisk() {
-    try {
-      const raw = await fs4.readFile(this.file, "utf8");
-      let parsed;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        await this.quarantineCorrupt();
-        this.loaded = true;
-        return;
-      }
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        await this.quarantineCorrupt();
-        this.loaded = true;
-        return;
-      }
-      const list2 = parsed.credentials;
-      if (list2 !== void 0 && !Array.isArray(list2)) {
-        await this.quarantineCorrupt();
-        this.loaded = true;
-        return;
-      }
-      const loaded = /* @__PURE__ */ new Map();
-      for (const item of list2 ?? []) {
-        const restored = parseCredentialRecord(item);
-        if (!restored) {
-          await this.quarantineCorrupt();
-          this.loaded = true;
-          return;
-        }
-        loaded.set(restored.id, restored);
-      }
-      this.records = loaded;
-      this.loaded = true;
-    } catch (err) {
-      if (isNotFoundError(err)) {
-        this.loaded = true;
-        return;
-      }
-      throw err;
-    }
-  }
-  async quarantineCorrupt() {
-    const backupPath = await backupCorruptMachineFile(this.file);
-    warnCorruptMachineState(this.file, backupPath, "reset");
-    this.records.clear();
-  }
-  async persist() {
-    const credentials = [...this.records.values()].map((r) => {
-      const row = {
-        id: r.id,
-        ciphertext: r.ciphertext,
-        createdAt: r.createdAt,
-        updatedAt: r.updatedAt
-      };
-      if (r.metadata) row.metadata = { ...r.metadata };
-      return row;
-    }).sort((a, b) => String(a.id).localeCompare(String(b.id)));
-    await writeJsonAtomic(this.file, { credentials });
-  }
-  /**
-   * Sync presence after ensureLoaded (projection helper).
-   * Call ensureLoaded() first from async handlers when needed.
-   */
-  has(idRaw) {
-    try {
-      const id = assertCredentialId(idRaw);
-      return this.records.has(id);
-    } catch {
-      return false;
-    }
-  }
-  async list() {
-    await this.ensureLoaded();
-    return this.enqueue(
-      async () => [...this.records.values()].map(project).sort((a, b) => a.id.localeCompare(b.id))
-    );
-  }
-  /**
-   * Store secret under id. Overwrites ciphertext if id exists.
-   * Response is id/metadata only — never echoes secret or ciphertext.
-   */
-  async set(idRaw, secret, opts) {
-    const id = assertCredentialId(idRaw);
-    if (typeof secret !== "string" || secret.length === 0) {
-      throw new Error("credential secret must be a non-empty string");
-    }
-    if (Buffer.byteLength(secret, "utf8") > MAX_SECRET_BYTES) {
-      throw new Error(`credential secret exceeds ${MAX_SECRET_BYTES} bytes`);
-    }
-    const metaNorm = normalizeSetOpts(opts);
-    await this.ensureLoaded();
-    return this.enqueue(async () => {
-      const ciphertext = await this.protector.protect(secret);
-      if (typeof ciphertext !== "string" || !ciphertext.trim()) {
-        throw new Error("credential protect() returned empty ciphertext");
-      }
-      if (ciphertext === secret) {
-        throw new Error("credential protect() must not return plaintext");
-      }
-      const now = (/* @__PURE__ */ new Date()).toISOString();
-      const prev = this.records.get(id);
-      const record = {
-        id,
-        ciphertext: ciphertext.trim(),
-        createdAt: prev?.createdAt ?? now,
-        updatedAt: now
-      };
-      if (opts !== void 0) {
-        if (metaNorm === null) {
-        } else if (metaNorm !== void 0) {
-          record.metadata = metaNorm;
-        }
-      } else if (prev?.metadata) {
-        record.metadata = { ...prev.metadata };
-      }
-      this.records.set(id, record);
-      try {
-        await this.persist();
-      } catch (err) {
-        if (prev) this.records.set(id, prev);
-        else this.records.delete(id);
-        throw err;
-      }
-      return project(record);
-    });
-  }
-  async delete(idRaw) {
-    const id = assertCredentialId(idRaw);
-    await this.ensureLoaded();
-    return this.enqueue(async () => {
-      if (!this.records.has(id)) {
-        throw new Error(`Credential not found: ${id}`);
-      }
-      const prev = this.records.get(id);
-      this.records.delete(id);
-      try {
-        await this.persist();
-      } catch (err) {
-        this.records.set(id, prev);
-        throw err;
-      }
-      return { deleted: id };
-    });
-  }
-  /**
-   * Service-internal only — returns plaintext for LaunchPlan.env injection.
-   * Never exposed as client RPC. Fail-loud when missing.
-   */
-  async resolve(idRaw) {
-    const id = assertCredentialId(idRaw);
-    await this.ensureLoaded();
-    return this.enqueue(async () => {
-      const rec = this.records.get(id);
-      if (!rec) {
-        throw new Error(`Credential not found: ${id}`);
-      }
-      const plain = await this.protector.unprotect(rec.ciphertext);
-      if (typeof plain !== "string" || !plain) {
-        throw new Error(`Credential unprotect failed for ${id}`);
-      }
-      return plain;
-    });
-  }
-};
-
-// src/service/profile-field-rules.ts
-function fieldOk(value) {
-  return { ok: true, value };
-}
-function fieldErr(message2) {
-  return { ok: false, message: message2 };
-}
-var PROFILE_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
-var ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-var MAX_TIMEOUT_MS = 24 * 60 * 6e4;
-var PERMISSION_POLICIES = /* @__PURE__ */ new Set(["allow", "ask", "deny"]);
-var DANGEROUS_FIELD_HINTS = [
-  "apiKey",
-  "api_key",
-  "token",
-  "secret",
-  "password",
-  "credential",
-  "authorization",
-  "bearer",
-  "env",
-  "fake",
-  "command",
-  "args",
-  "displayNameKey",
-  "grokAcp",
-  "acp"
-];
-function parseProfileIdValue(raw, field = "id") {
-  if (typeof raw !== "string" || !raw.trim()) {
-    return fieldErr(`Missing or invalid string param: ${field}`);
-  }
-  const id = raw.trim();
-  if (!PROFILE_ID_RE.test(id)) {
-    return fieldErr(
-      `Invalid profile id: must match ${PROFILE_ID_RE} (lowercase letter, then a-z0-9-, max 63)`
-    );
-  }
-  return fieldOk(id);
-}
-function parseNonEmptyStringValue(raw, key2) {
-  if (typeof raw !== "string") {
-    return fieldErr(`Invalid string param: ${key2}`);
-  }
-  const v = raw.trim();
-  if (!v) {
-    return fieldErr(`Invalid string param: ${key2} must be non-empty when set`);
-  }
-  return fieldOk(v);
-}
-function parseEnvKeyValue(raw, key2) {
-  const base = parseNonEmptyStringValue(raw, key2);
-  if (!base.ok) return base;
-  if (!ENV_KEY_RE.test(base.value)) {
-    return fieldErr(
-      `Invalid ${key2}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
-    );
-  }
-  return fieldOk(base.value);
-}
-function validateBaseUrlValue(v) {
-  let parsed;
-  try {
-    parsed = new URL(v);
-  } catch {
-    return fieldErr("Invalid baseUrl: must be an absolute http(s) URL");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return fieldErr("Invalid baseUrl: only http: and https: are allowed");
-  }
-  if (parsed.username || parsed.password) {
-    return fieldErr("Invalid baseUrl: username/password in URL are not allowed");
-  }
-  if (parsed.search || parsed.hash) {
-    return fieldErr("Invalid baseUrl: query string and hash fragment are not allowed");
-  }
-  return fieldOk(v);
-}
-function parseBaseUrlValue(raw) {
-  const base = parseNonEmptyStringValue(raw, "baseUrl");
-  if (!base.ok) return base;
-  return validateBaseUrlValue(base.value);
-}
-function parsePermissionPolicyValue(raw) {
-  if (typeof raw !== "string") {
-    return fieldErr("Invalid permissionPolicy: must be allow|ask|deny");
-  }
-  if (!PERMISSION_POLICIES.has(raw)) {
-    return fieldErr("Invalid permissionPolicy: must be allow|ask|deny");
-  }
-  return fieldOk(raw);
-}
-function parsePositiveTimeoutValue(raw, key2) {
-  if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0 || raw > MAX_TIMEOUT_MS) {
-    return fieldErr(
-      `Invalid ${key2}: must be a positive integer no greater than ${MAX_TIMEOUT_MS}`
-    );
-  }
-  return fieldOk(raw);
-}
-function parseCredentialRefValue(raw) {
-  const base = parseNonEmptyStringValue(raw, "credentialRef");
-  if (!base.ok) return base;
-  try {
-    return fieldOk(assertCredentialId(base.value));
-  } catch (err) {
-    return fieldErr(
-      err instanceof Error ? err.message.replace(/^Invalid credential id/, "Invalid credentialRef") : `Invalid credentialRef: must match ${CREDENTIAL_ID_RE}`
-    );
-  }
-}
-
-// src/service/agent-definitions.ts
-var AGENT_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
-function agentDefinitionsPath(dataDir) {
-  return path5.join(dataDir, "agent-definitions.json");
-}
-function parseAgentIdValue(raw, field = "id") {
-  if (typeof raw !== "string" || !raw.trim()) {
-    return fieldErr(`Missing or invalid string param: ${field}`);
-  }
-  const id = raw.trim();
-  if (!AGENT_ID_RE.test(id)) {
-    return fieldErr(
-      `Invalid agent id: must match ${AGENT_ID_RE} (lowercase letter, then a-z0-9-, max 63)`
-    );
-  }
-  return fieldOk(id);
-}
-function normalizeAgentDefinition(value) {
-  const idR = parseAgentIdValue(value.id, "id");
-  if (!idR.ok) throw new Error(idR.message);
-  const profileR = parseProfileIdValue(value.profileId, "profileId");
-  if (!profileR.ok) throw new Error(profileR.message);
-  const agent = {
-    id: idR.value,
-    profileId: profileR.value
-  };
-  if (typeof value.displayName === "string" && value.displayName.trim()) {
-    agent.displayName = value.displayName.trim();
-  }
-  if (typeof value.description === "string" && value.description.trim()) {
-    agent.description = value.description.trim();
-  }
-  return agent;
-}
-function projectAgentDefinition(agent, opts) {
-  const proj = {
-    id: agent.id,
-    displayName: agent.displayName?.trim() || agent.id,
-    profileId: agent.profileId
-  };
-  if (agent.description) proj.description = agent.description;
-  if (opts?.profileExists !== void 0) proj.profileExists = opts.profileExists;
-  return proj;
-}
-async function loadAgentDefinitions(dataDir) {
-  const file = agentDefinitionsPath(dataDir);
-  try {
-    const raw = await fs5.readFile(file, "utf8");
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      const backupPath = await backupCorruptMachineFile(file);
-      warnCorruptMachineState(file, backupPath, "reset", "agent-definitions.json");
-      await writeJsonAtomic(file, { agents: [] });
-      return { agents: [], recovered: true };
-    }
-    const agents = normalizeAgentDefinitionsFile(parsed);
-    return { agents, recovered: false };
-  } catch (err) {
-    if (isNotFoundError(err)) return { agents: [], recovered: false };
-    throw err;
-  }
-}
-async function saveAgentDefinitions(dataDir, agents) {
-  const file = agentDefinitionsPath(dataDir);
-  const normalized = agents.map((a) => normalizeAgentDefinition(a));
-  normalized.sort((a, b) => a.id.localeCompare(b.id));
-  await writeJsonAtomic(file, { agents: normalized });
-}
-function normalizeAgentDefinitionsFile(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("agent-definitions.json must be an object with agents[]");
-  }
-  const root = value;
-  if (!Array.isArray(root.agents)) {
-    throw new Error("agent-definitions.json must contain agents array");
-  }
-  const out = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const item of root.agents) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) {
-      throw new Error("agent-definitions.json agents[] entries must be objects");
-    }
-    const agent = normalizeAgentDefinition(item);
-    if (seen.has(agent.id)) {
-      throw new Error(`Duplicate agent id in agent-definitions.json: ${agent.id}`);
-    }
-    seen.add(agent.id);
-    out.push(agent);
-  }
-  return out;
-}
-function ensureAgentDefinitionsForProfileIds(agents, profileIds) {
-  const byId = new Map(agents.map((a) => [a.id, a]));
-  let added = false;
-  for (const raw of profileIds) {
-    const idR = parseAgentIdValue(raw, "profileId");
-    if (!idR.ok) continue;
-    const id = idR.value;
-    if (byId.has(id)) continue;
-    const next = { id, profileId: id, displayName: id };
-    byId.set(id, next);
-    added = true;
-  }
-  const nextAgents = [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
-  return { agents: nextAgents, added };
-}
-function findAgentDefinition(agents, agentId) {
-  const key2 = typeof agentId === "string" ? agentId.trim() : "";
-  if (!key2) return void 0;
-  return agents.find((a) => a.id === key2);
-}
-function resolveProfileIdForAgent(agents, agentId) {
-  const agent = findAgentDefinition(agents, agentId);
-  if (!agent) {
-    throw new Error(`AgentDefinition not found: ${agentId}`);
-  }
-  const profileId = agent.profileId?.trim();
-  if (!profileId) {
-    throw new Error(`AgentDefinition ${agentId} has no profileId binding`);
-  }
-  return profileId;
-}
-function resolveAgentIdForProfileOnRoster(agents, roster, profileId) {
-  const pid = profileId.trim();
-  if (!pid) throw new Error("profileId cannot be empty");
-  const allowed = new Set((roster ?? []).map((id) => id.trim()).filter(Boolean));
-  if (allowed.size === 0) {
-    throw new Error(`No roster agents authorized for profile ${pid}`);
-  }
-  if (allowed.has(pid) && findAgentDefinition(agents, pid)?.profileId === pid) {
-    return pid;
-  }
-  const matches = [...allowed].filter((agentId) => {
-    const def = findAgentDefinition(agents, agentId);
-    return def?.profileId === pid;
-  });
-  if (matches.length === 1) return matches[0];
-  if (matches.length === 0) {
-    throw new Error(
-      `No AgentDefinition on roster binds profileId ${pid}; dispatch by agentId or bind an agent`
-    );
-  }
-  throw new Error(
-    `Ambiguous roster agents for profileId ${pid}: ${matches.sort().join(", ")}`
-  );
-}
-function parseAgentDefinitionParams(p, opts = {}) {
-  for (const banned of [
-    "secret",
-    "secrets",
-    "token",
-    "apiKey",
-    "api_key",
-    "password",
-    "credential",
-    "credentials",
-    "env",
-    "model",
-    "provider",
-    "executable",
-    "baseUrl",
-    "command",
-    "args"
-  ]) {
-    if (banned in p) {
-      throw new Error(
-        `agent.* does not accept ${banned}; AgentDefinition stores id/profileId only, never launch secrets`
-      );
-    }
-  }
-  const out = {};
-  if (opts.requireId || typeof p.id === "string") {
-    const idR = parseAgentIdValue(p.id, "id");
-    if (!idR.ok) throw new Error(idR.message);
-    out.id = idR.value;
-  } else if (!opts.forUpdate) {
-    throw new Error("Missing string param: id");
-  }
-  if ("profileId" in p || opts.requireId) {
-    if (!("profileId" in p) && opts.requireId) {
-      throw new Error("Missing string param: profileId");
-    }
-    if ("profileId" in p) {
-      const pr = parseProfileIdValue(p.profileId, "profileId");
-      if (!pr.ok) throw new Error(pr.message);
-      out.profileId = pr.value;
-    }
-  }
-  if ("displayName" in p) {
-    if (p.displayName !== void 0 && p.displayName !== null && typeof p.displayName !== "string") {
-      throw new Error("Invalid string param: displayName");
-    }
-    if (typeof p.displayName === "string") {
-      const dn = parseNonEmptyStringValue(p.displayName, "displayName");
-      if (dn.ok) out.displayName = dn.value;
-      else if (p.displayName.trim() === "") out.displayName = void 0;
-      else throw new Error(dn.message);
-    }
-  }
-  if ("description" in p) {
-    if (p.description !== void 0 && p.description !== null && typeof p.description !== "string") {
-      throw new Error("Invalid string param: description");
-    }
-    if (typeof p.description === "string") {
-      const d = p.description.trim();
-      out.description = d || void 0;
-    }
-  }
-  return out;
 }
 
 // src/service/mutation-bus.ts
@@ -15424,7 +14541,7 @@ var MutationBus = class {
 
 // src/service/task-lifecycle-flight.ts
 var queue = new MutationBus();
-var key = (ws, path24) => `${ws}\0${path24}`;
+var key = (ws, path23) => `${ws}\0${path23}`;
 function runTaskLifecycle(workspaceId, taskPath, action) {
   return queue.run(key(workspaceId, taskPath), action);
 }
@@ -15432,7 +14549,7 @@ function runTaskLifecycle(workspaceId, taskPath, action) {
 // src/core/workspace.ts
 import * as nodePath3 from "node:path";
 import * as nodeFs from "node:fs/promises";
-import { spawn as spawn2 } from "node:child_process";
+import { spawn } from "node:child_process";
 async function findIntegratedCommit(workspace, sourceRef, targetBranch) {
   const root = nodePath3.resolve(workspace);
   await assertGitWorkspace(root);
@@ -16046,9 +15163,9 @@ function shortHash(value) {
   }
   return (hash >>> 0).toString(36).padStart(6, "0").slice(0, 6);
 }
-async function pathExists(path24) {
+async function pathExists(path23) {
   try {
-    await nodeFs.access(path24);
+    await nodeFs.access(path23);
     return true;
   } catch {
     return false;
@@ -16064,7 +15181,7 @@ async function gitOk(cwd, args) {
 }
 function git(cwd, args) {
   return new Promise((resolve15, reject) => {
-    const child = spawn2("git", args, { cwd, windowsHide: true });
+    const child = spawn("git", args, { cwd, windowsHide: true });
     let out = "";
     let err = "";
     child.stdout.on("data", (data) => out += data);
@@ -16130,16 +15247,16 @@ function isTerminalTaskState(state) {
 function isPurgeableDeliveryStatus(status) {
   return TERMINAL_DELIVERY_STATUSES.has(status);
 }
-async function previewOperationalRetention(fs23, options = {}) {
+async function previewOperationalRetention(fs22, options = {}) {
   const keepTerminalTasksDays = normalizeKeepTerminalTasksDays(options.keepTerminalTasksDays);
   const nowMs = resolveNowMs(options.now);
   const cutoffMs = nowMs - keepTerminalTasksDays * MS_PER_DAY;
   const cutoff = new Date(cutoffMs).toISOString();
   const skipped = [];
   const warnings = [];
-  const { tasks, skipped: taskSkipped } = await scanTasks(fs23);
+  const { tasks, skipped: taskSkipped } = await scanTasks(fs22);
   skipped.push(...taskSkipped);
-  const { deliveries, skipped: deliverySkipped } = await scanDeliveries(fs23);
+  const { deliveries, skipped: deliverySkipped } = await scanDeliveries(fs22);
   skipped.push(...deliverySkipped);
   for (const s of skipped) {
     warnings.push(`skipped ${s.path}: ${s.reason}`);
@@ -16162,7 +15279,7 @@ async function previewOperationalRetention(fs23, options = {}) {
   const claimedDeliveryPaths = /* @__PURE__ */ new Set();
   let pinnedDeliveryIds;
   try {
-    const tent = await loadTent(fs23);
+    const tent = await loadTent(fs22);
     pinnedDeliveryIds = collectReferencedDeliveryIds(tent);
   } catch (err) {
     throw new RetentionError(
@@ -16285,15 +15402,15 @@ async function previewOperationalRetention(fs23, options = {}) {
     candidateDeliveryCount
   };
 }
-async function purgeOperationalRetention(fs23, options = {}) {
-  return withTentMutation(fs23, async () => {
-    const preview = await previewOperationalRetention(fs23, options);
+async function purgeOperationalRetention(fs22, options = {}) {
+  return withTentMutation(fs22, async () => {
+    const preview = await previewOperationalRetention(fs22, options);
     const purgedTaskPaths = [];
     const purgedDeliveryPaths = [];
     for (const c of preview.candidates) {
       if (c.kind === "task-group" && c.taskPath) {
         try {
-          const live = await loadTaskEnvelope(fs23, c.taskPath);
+          const live = await loadTaskEnvelope(fs22, c.taskPath);
           if (!isTerminalTaskState(live.state) || isActiveTaskState(live.state)) {
             preview.warnings.push(
               `refused purge of ${c.taskPath}: state is ${live.state} (not terminal)`
@@ -16309,7 +15426,7 @@ async function purgeOperationalRetention(fs23, options = {}) {
         let deliveryValidationFailed = false;
         for (const dp of c.deliveryPaths) {
           try {
-            const liveD = await loadDelivery(fs23, dp);
+            const liveD = await loadDelivery(fs22, dp);
             if (!isPurgeableDeliveryStatus(liveD.status)) {
               preview.warnings.push(
                 `refused purge of task group ${c.taskPath}: delivery ${dp} status=${liveD.status}`
@@ -16327,8 +15444,8 @@ async function purgeOperationalRetention(fs23, options = {}) {
         }
         if (deliveryValidationFailed) continue;
         try {
-          if (await fs23.exists(c.taskPath)) {
-            await fs23.remove(c.taskPath);
+          if (await fs22.exists(c.taskPath)) {
+            await fs22.remove(c.taskPath);
             purgedTaskPaths.push(c.taskPath);
           }
         } catch (err) {
@@ -16339,8 +15456,8 @@ async function purgeOperationalRetention(fs23, options = {}) {
         }
         for (const dp of c.deliveryPaths) {
           try {
-            if (await fs23.exists(dp)) {
-              await fs23.remove(dp);
+            if (await fs22.exists(dp)) {
+              await fs22.remove(dp);
               purgedDeliveryPaths.push(dp);
             }
           } catch (err) {
@@ -16354,15 +15471,15 @@ async function purgeOperationalRetention(fs23, options = {}) {
       if (c.kind === "orphan-delivery") {
         for (const dp of c.deliveryPaths) {
           try {
-            const liveD = await loadDelivery(fs23, dp);
+            const liveD = await loadDelivery(fs22, dp);
             if (!isPurgeableDeliveryStatus(liveD.status)) {
               preview.warnings.push(
                 `refused purge of delivery ${dp}: status=${liveD.status}`
               );
               continue;
             }
-            if (await fs23.exists(dp)) {
-              await fs23.remove(dp);
+            if (await fs22.exists(dp)) {
+              await fs22.remove(dp);
               purgedDeliveryPaths.push(dp);
             }
           } catch (err) {
@@ -16384,11 +15501,11 @@ async function purgeOperationalRetention(fs23, options = {}) {
     };
   });
 }
-async function scanTasks(fs23) {
+async function scanTasks(fs22) {
   const tasks = [];
   const skipped = [];
-  if (!await fs23.exists("temp")) return { tasks, skipped };
-  for (const roleEntry of await fs23.listDir("temp")) {
+  if (!await fs22.exists("temp")) return { tasks, skipped };
+  for (const roleEntry of await fs22.listDir("temp")) {
     if (!roleEntry.isDir) continue;
     if (!isSafeRoleSegment(roleEntry.name)) {
       skipped.push({
@@ -16399,7 +15516,7 @@ async function scanTasks(fs23) {
     }
     if (roleEntry.name === "agent-profiles") {
       const profilesRoot = join("temp", "agent-profiles");
-      for (const profileEntry of await fs23.listDir(profilesRoot)) {
+      for (const profileEntry of await fs22.listDir(profilesRoot)) {
         if (!profileEntry.isDir) continue;
         if (!isSafeRoleSegment(profileEntry.name)) {
           skipped.push({
@@ -16408,34 +15525,34 @@ async function scanTasks(fs23) {
           });
           continue;
         }
-        await scanTaskDir(fs23, join(profilesRoot, profileEntry.name, "tasks"), tasks, skipped);
+        await scanTaskDir(fs22, join(profilesRoot, profileEntry.name, "tasks"), tasks, skipped);
       }
       continue;
     }
-    await scanTaskDir(fs23, join("temp", roleEntry.name, "tasks"), tasks, skipped);
+    await scanTaskDir(fs22, join("temp", roleEntry.name, "tasks"), tasks, skipped);
   }
   return { tasks, skipped };
 }
-async function scanTaskDir(fs23, taskDir, tasks, skipped) {
-  if (!await fs23.exists(taskDir)) return;
-  for (const entry of await fs23.listDir(taskDir)) {
+async function scanTaskDir(fs22, taskDir, tasks, skipped) {
+  if (!await fs22.exists(taskDir)) return;
+  for (const entry of await fs22.listDir(taskDir)) {
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
-    const path24 = join(taskDir, entry.name);
+    const path23 = join(taskDir, entry.name);
     try {
-      tasks.push(await loadTaskEnvelope(fs23, path24));
+      tasks.push(await loadTaskEnvelope(fs22, path23));
     } catch (err) {
       skipped.push({
-        path: path24,
+        path: path23,
         reason: err instanceof Error ? err.message : String(err)
       });
     }
   }
 }
-async function scanDeliveries(fs23) {
+async function scanDeliveries(fs22) {
   const deliveries = [];
   const skipped = [];
-  if (!await fs23.exists("temp")) return { deliveries, skipped };
-  for (const roleEntry of await fs23.listDir("temp")) {
+  if (!await fs22.exists("temp")) return { deliveries, skipped };
+  for (const roleEntry of await fs22.listDir("temp")) {
     if (!roleEntry.isDir) continue;
     if (!isSafeRoleSegment(roleEntry.name)) {
       skipped.push({
@@ -16446,7 +15563,7 @@ async function scanDeliveries(fs23) {
     }
     if (roleEntry.name === "agent-profiles") {
       const profilesRoot = join("temp", "agent-profiles");
-      for (const profileEntry of await fs23.listDir(profilesRoot)) {
+      for (const profileEntry of await fs22.listDir(profilesRoot)) {
         if (!profileEntry.isDir) continue;
         if (!isSafeRoleSegment(profileEntry.name)) {
           skipped.push({
@@ -16456,7 +15573,7 @@ async function scanDeliveries(fs23) {
           continue;
         }
         await scanDeliveryDir(
-          fs23,
+          fs22,
           join(profilesRoot, profileEntry.name, "deliveries"),
           deliveries,
           skipped
@@ -16464,20 +15581,20 @@ async function scanDeliveries(fs23) {
       }
       continue;
     }
-    await scanDeliveryDir(fs23, join("temp", roleEntry.name, "deliveries"), deliveries, skipped);
+    await scanDeliveryDir(fs22, join("temp", roleEntry.name, "deliveries"), deliveries, skipped);
   }
   return { deliveries, skipped };
 }
-async function scanDeliveryDir(fs23, dir, deliveries, skipped) {
-  if (!await fs23.exists(dir)) return;
-  for (const entry of await fs23.listDir(dir)) {
+async function scanDeliveryDir(fs22, dir, deliveries, skipped) {
+  if (!await fs22.exists(dir)) return;
+  for (const entry of await fs22.listDir(dir)) {
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
-    const path24 = join(dir, entry.name);
+    const path23 = join(dir, entry.name);
     try {
-      deliveries.push(await loadDelivery(fs23, path24));
+      deliveries.push(await loadDelivery(fs22, path23));
     } catch (err) {
       skipped.push({
-        path: path24,
+        path: path23,
         reason: err instanceof Error ? err.message : String(err)
       });
     }
@@ -16522,7 +15639,7 @@ function ageDaysFrom(activityMs, nowMs) {
 // src/core/task-worktree-reclaim.ts
 import * as nodeFs2 from "node:fs/promises";
 import * as nodePath4 from "node:path";
-import { spawn as spawn3 } from "node:child_process";
+import { spawn as spawn2 } from "node:child_process";
 function isTaskWorktreeReclaimTerminalState(state) {
   return TERMINAL_TASK_STATES.has(state) && !isActiveTaskState(state);
 }
@@ -17134,9 +16251,9 @@ async function reclaimTaskWorktree(input) {
     };
   }
 }
-async function reclaimTaskWorktreeForEnvelope(fs23, workspaceRoot, task, options = {}) {
+async function reclaimTaskWorktreeForEnvelope(fs22, workspaceRoot, task, options = {}) {
   const taskId = task.id?.trim();
-  const deliveries = taskId ? await loadDeliveries(fs23, { taskId }) : [];
+  const deliveries = taskId ? await loadDeliveries(fs22, { taskId }) : [];
   return reclaimTaskWorktree({
     workspaceRoot,
     task,
@@ -17166,9 +16283,9 @@ async function probeSessionSettledBeforeRemove(input, diagnostic) {
     }
   };
 }
-async function evaluateTaskWorktreeReclaimForEnvelope(fs23, workspaceRoot, task) {
+async function evaluateTaskWorktreeReclaimForEnvelope(fs22, workspaceRoot, task) {
   const taskId = task.id?.trim();
-  const deliveries = taskId ? await loadDeliveries(fs23, { taskId }) : [];
+  const deliveries = taskId ? await loadDeliveries(fs22, { taskId }) : [];
   return evaluateTaskWorktreeReclaim({ workspaceRoot, task, deliveries });
 }
 async function removeTaskLaneDirectorySafe(lanePath, options = {}) {
@@ -17551,9 +16668,9 @@ async function worktreePathForBranch(workspaceRoot, branch) {
   }
   return void 0;
 }
-async function pathExists2(path24) {
+async function pathExists2(path23) {
   try {
-    await nodeFs2.access(path24);
+    await nodeFs2.access(path23);
     return true;
   } catch {
     return false;
@@ -17569,7 +16686,7 @@ async function gitOk2(cwd, args) {
 }
 function git2(cwd, args) {
   return new Promise((resolve15, reject) => {
-    const child = spawn3("git", args, { cwd, windowsHide: true });
+    const child = spawn2("git", args, { cwd, windowsHide: true });
     let out = "";
     let err = "";
     child.stdout.on("data", (data) => out += data);
@@ -17589,8 +16706,8 @@ var TASK_WORKTREE_RECLAIM_PENDING_PATH = join(
 );
 var TASK_WORKTREE_RECLAIM_HISTORICAL_BATCH_SIZE = 8;
 var queueChains = /* @__PURE__ */ new WeakMap();
-function withQueueCriticalSection(fs23, fn) {
-  const key2 = fs23;
+function withQueueCriticalSection(fs22, fn) {
+  const key2 = fs22;
   const prev = queueChains.get(key2) ?? Promise.resolve();
   const run = prev.then(fn, fn);
   queueChains.set(
@@ -17691,11 +16808,11 @@ function parseHistoricalScan(raw) {
     ...lastDecision ? { lastDecision } : {}
   };
 }
-async function readPending(fs23) {
-  if (!await fs23.exists(TASK_WORKTREE_RECLAIM_PENDING_PATH)) {
+async function readPending(fs22) {
+  if (!await fs22.exists(TASK_WORKTREE_RECLAIM_PENDING_PATH)) {
     return emptyFile();
   }
-  const raw = await fs23.readFile(TASK_WORKTREE_RECLAIM_PENDING_PATH);
+  const raw = await fs22.readFile(TASK_WORKTREE_RECLAIM_PENDING_PATH);
   let parsed;
   try {
     parsed = JSON.parse(raw);
@@ -17722,7 +16839,7 @@ async function readPending(fs23) {
     ...historicalScan ? { historicalScan } : {}
   };
 }
-async function writePending(fs23, file) {
+async function writePending(fs22, file) {
   const bodyObj = {
     version: 1,
     entries: file.entries
@@ -17736,24 +16853,24 @@ async function writePending(fs23, file) {
     };
   }
   const body = JSON.stringify(bodyObj, null, 2) + "\n";
-  if (!await fs23.exists(TEMP_DIR)) {
-    await fs23.writeFile(join(TEMP_DIR, ".keep"), "");
+  if (!await fs22.exists(TEMP_DIR)) {
+    await fs22.writeFile(join(TEMP_DIR, ".keep"), "");
   }
-  await fs23.writeFile(TASK_WORKTREE_RECLAIM_PENDING_PATH, body);
+  await fs22.writeFile(TASK_WORKTREE_RECLAIM_PENDING_PATH, body);
 }
-async function listTaskEnvelopePathsForReclaimScan(fs23) {
+async function listTaskEnvelopePathsForReclaimScan(fs22) {
   const paths = [];
-  if (!await fs23.exists(TEMP_DIR)) return paths;
-  for (const entry of await fs23.listDir(TEMP_DIR)) {
+  if (!await fs22.exists(TEMP_DIR)) return paths;
+  for (const entry of await fs22.listDir(TEMP_DIR)) {
     if (!entry.isDir) continue;
     if (entry.name === AGENT_PROFILES_TEMP_DIR) {
       const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
-      if (!await fs23.exists(profilesRoot)) continue;
-      for (const profileEntry of await fs23.listDir(profilesRoot)) {
+      if (!await fs22.exists(profilesRoot)) continue;
+      for (const profileEntry of await fs22.listDir(profilesRoot)) {
         if (!profileEntry.isDir) continue;
         const taskDir2 = join(profilesRoot, profileEntry.name, "tasks");
-        if (!await fs23.exists(taskDir2)) continue;
-        for (const f of await fs23.listDir(taskDir2)) {
+        if (!await fs22.exists(taskDir2)) continue;
+        for (const f of await fs22.listDir(taskDir2)) {
           if (!f.isDir && f.name.endsWith(".md")) {
             paths.push(join(taskDir2, f.name));
           }
@@ -17762,8 +16879,8 @@ async function listTaskEnvelopePathsForReclaimScan(fs23) {
       continue;
     }
     const taskDir = join(TEMP_DIR, entry.name, "tasks");
-    if (!await fs23.exists(taskDir)) continue;
-    for (const f of await fs23.listDir(taskDir)) {
+    if (!await fs22.exists(taskDir)) continue;
+    for (const f of await fs22.listDir(taskDir)) {
       if (!f.isDir && f.name.endsWith(".md")) {
         paths.push(join(taskDir, f.name));
       }
@@ -17775,15 +16892,15 @@ function taskPathsAfterHistoricalCursor(allPaths, nextTaskPath) {
   if (!nextTaskPath) return [...allPaths];
   return allPaths.filter((p) => p.localeCompare(nextTaskPath) > 0);
 }
-async function enqueueTaskWorktreeReclaimPending(fs23, entry) {
+async function enqueueTaskWorktreeReclaimPending(fs22, entry) {
   const taskId = entry.taskId.trim();
   const taskPath = entry.taskPath.trim();
   const workspaceRoot = entry.workspaceRoot.trim();
   if (!taskId || !taskPath || !workspaceRoot) {
     throw new Error("enqueueTaskWorktreeReclaimPending requires taskId, taskPath, workspaceRoot");
   }
-  return withQueueCriticalSection(fs23, async () => {
-    const file = await readPending(fs23);
+  return withQueueCriticalSection(fs22, async () => {
+    const file = await readPending(fs22);
     const next = {
       taskId,
       taskPath,
@@ -17795,7 +16912,7 @@ async function enqueueTaskWorktreeReclaimPending(fs23, entry) {
     const without = file.entries.filter((e) => e.taskId !== taskId);
     without.push(next);
     without.sort((a, b) => a.taskId.localeCompare(b.taskId));
-    await writePending(fs23, {
+    await writePending(fs22, {
       version: 1,
       entries: without,
       ...file.historicalScan ? { historicalScan: file.historicalScan } : {}
@@ -17803,14 +16920,14 @@ async function enqueueTaskWorktreeReclaimPending(fs23, entry) {
     return next;
   });
 }
-async function dequeueTaskWorktreeReclaimPending(fs23, taskId) {
+async function dequeueTaskWorktreeReclaimPending(fs22, taskId) {
   const id = taskId.trim();
   if (!id) return false;
-  return withQueueCriticalSection(fs23, async () => {
-    const file = await readPending(fs23);
+  return withQueueCriticalSection(fs22, async () => {
+    const file = await readPending(fs22);
     const next = file.entries.filter((e) => e.taskId !== id);
     if (next.length === file.entries.length) return false;
-    await writePending(fs23, {
+    await writePending(fs22, {
       version: 1,
       entries: next,
       ...file.historicalScan ? { historicalScan: file.historicalScan } : {}
@@ -17818,7 +16935,7 @@ async function dequeueTaskWorktreeReclaimPending(fs23, taskId) {
     return true;
   });
 }
-async function recordTaskWorktreeReclaimNeedsAttention(fs23, input) {
+async function recordTaskWorktreeReclaimNeedsAttention(fs22, input) {
   const taskId = input.taskId.trim();
   const taskPath = input.taskPath.trim();
   const workspaceRoot = input.workspaceRoot.trim();
@@ -17830,8 +16947,8 @@ async function recordTaskWorktreeReclaimNeedsAttention(fs23, input) {
     reason: input.reason,
     attemptedAt
   };
-  return withQueueCriticalSection(fs23, async () => {
-    const file = await readPending(fs23);
+  return withQueueCriticalSection(fs22, async () => {
+    const file = await readPending(fs22);
     const existing = file.entries.find((e) => e.taskId === taskId);
     const next = {
       taskId,
@@ -17845,7 +16962,7 @@ async function recordTaskWorktreeReclaimNeedsAttention(fs23, input) {
     const without = file.entries.filter((e) => e.taskId !== taskId);
     without.push(next);
     without.sort((a, b) => a.taskId.localeCompare(b.taskId));
-    await writePending(fs23, {
+    await writePending(fs22, {
       version: 1,
       entries: without,
       ...file.historicalScan ? { historicalScan: file.historicalScan } : {}
@@ -17853,30 +16970,30 @@ async function recordTaskWorktreeReclaimNeedsAttention(fs23, input) {
     return next;
   });
 }
-async function listTaskWorktreeReclaimPending(fs23) {
-  return withQueueCriticalSection(fs23, async () => {
-    const file = await readPending(fs23);
+async function listTaskWorktreeReclaimPending(fs22) {
+  return withQueueCriticalSection(fs22, async () => {
+    const file = await readPending(fs22);
     return [...file.entries];
   });
 }
-async function listTaskWorktreeReclaimPendingForWorkspace(fs23, workspaceRoot, sameRoot) {
+async function listTaskWorktreeReclaimPendingForWorkspace(fs22, workspaceRoot, sameRoot) {
   const root = workspaceRoot.trim();
-  const all2 = await listTaskWorktreeReclaimPending(fs23);
+  const all2 = await listTaskWorktreeReclaimPending(fs22);
   return all2.filter((e) => sameRoot(e.workspaceRoot, root));
 }
-async function readTaskWorktreeReclaimHistoricalScan(fs23) {
-  return withQueueCriticalSection(fs23, async () => {
-    const file = await readPending(fs23);
+async function readTaskWorktreeReclaimHistoricalScan(fs22) {
+  return withQueueCriticalSection(fs22, async () => {
+    const file = await readPending(fs22);
     return file.historicalScan ? { ...file.historicalScan } : void 0;
   });
 }
-async function persistHistoricalReclaimScanBatch(fs23, input) {
+async function persistHistoricalReclaimScanBatch(fs22, input) {
   const workspaceRoot = input.workspaceRoot.trim();
   if (!workspaceRoot) {
     throw new Error("persistHistoricalReclaimScanBatch requires workspaceRoot");
   }
-  return withQueueCriticalSection(fs23, async () => {
-    const file = await readPending(fs23);
+  return withQueueCriticalSection(fs22, async () => {
+    const file = await readPending(fs22);
     if (file.historicalScan?.complete === true) {
       return {
         historicalScan: { ...file.historicalScan },
@@ -17993,19 +17110,19 @@ async function persistHistoricalReclaimScanBatch(fs23, input) {
     } else {
       historicalScan = file.historicalScan ? { ...file.historicalScan, workspaceRoot } : { complete: false, workspaceRoot };
     }
-    await writePending(fs23, { version: 1, entries, historicalScan });
+    await writePending(fs22, { version: 1, entries, historicalScan });
     return { historicalScan, enqueued, entries };
   });
 }
-async function recordHistoricalReclaimScanDiagnostic(fs23, input) {
+async function recordHistoricalReclaimScanDiagnostic(fs22, input) {
   const workspaceRoot = input.workspaceRoot.trim();
   const taskPath = input.taskPath.trim();
   const code = input.code.trim();
   if (!workspaceRoot || !taskPath || !code) {
     throw new Error("Invalid historical reclaim scan diagnostic");
   }
-  return withQueueCriticalSection(fs23, async () => {
-    const file = await readPending(fs23);
+  return withQueueCriticalSection(fs22, async () => {
+    const file = await readPending(fs22);
     const historicalScan = {
       complete: false,
       ...file.historicalScan?.nextTaskPath ? { nextTaskPath: file.historicalScan.nextTaskPath } : {},
@@ -18017,7 +17134,7 @@ async function recordHistoricalReclaimScanDiagnostic(fs23, input) {
         attemptedAt: input.attemptedAt ?? (/* @__PURE__ */ new Date()).toISOString()
       }
     };
-    await writePending(fs23, {
+    await writePending(fs22, {
       version: 1,
       entries: file.entries,
       historicalScan
@@ -18045,17 +17162,17 @@ function normalizeWorkspaceSettings(value) {
 function defaultWorkspaceSettings() {
   return { ...DEFAULT_SETTINGS };
 }
-async function loadWorkspaceSettings(fs23) {
-  if (!await fs23.exists(WORKSPACE_SETTINGS_PATH)) {
+async function loadWorkspaceSettings(fs22) {
+  if (!await fs22.exists(WORKSPACE_SETTINGS_PATH)) {
     return defaultWorkspaceSettings();
   }
   try {
-    const parsed = JSON.parse(await fs23.readFile(WORKSPACE_SETTINGS_PATH));
+    const parsed = JSON.parse(await fs22.readFile(WORKSPACE_SETTINGS_PATH));
     return normalizeWorkspaceSettings(parsed);
   } catch {
-    const backupPath = await backupCorruptRegistry(fs23, WORKSPACE_SETTINGS_PATH);
+    const backupPath = await backupCorruptRegistry(fs22, WORKSPACE_SETTINGS_PATH);
     const reset = defaultWorkspaceSettings();
-    await writeSettingsUnlocked(fs23, reset);
+    await writeSettingsUnlocked(fs22, reset);
     warnRegistryRecovered(
       WORKSPACE_SETTINGS_PATH,
       backupPath,
@@ -18065,15 +17182,15 @@ async function loadWorkspaceSettings(fs23) {
     return reset;
   }
 }
-async function updateWorkspaceSettings(fs23, patch) {
-  return withTentMutation(fs23, async () => {
+async function updateWorkspaceSettings(fs22, patch) {
+  return withTentMutation(fs22, async () => {
     if (!isRecord5(patch)) {
       throw new WorkspaceSettingsError(
         "INVALID_PATCH",
         "workspace.settings.update patch must be an object"
       );
     }
-    const before = await loadWorkspaceSettings(fs23);
+    const before = await loadWorkspaceSettings(fs22);
     const nextRaw = { ...before };
     for (const [key2, value] of Object.entries(patch)) {
       if (key2 === "defaultDeliveryPolicy") {
@@ -18093,7 +17210,7 @@ async function updateWorkspaceSettings(fs23, patch) {
     const next = normalizeWorkspaceSettings(nextRaw);
     const changed = !settingsEqual(before, next);
     if (changed) {
-      await writeSettingsUnlocked(fs23, next);
+      await writeSettingsUnlocked(fs22, next);
     }
     return { settings: next, changed };
   });
@@ -18105,7 +17222,7 @@ var WorkspaceSettingsError = class extends Error {
     this.name = "WorkspaceSettingsError";
   }
 };
-async function writeSettingsUnlocked(fs23, settings) {
+async function writeSettingsUnlocked(fs22, settings) {
   const known = ["defaultDeliveryPolicy"];
   const ordered = {};
   for (const key2 of known) {
@@ -18115,7 +17232,7 @@ async function writeSettingsUnlocked(fs23, settings) {
   for (const key2 of rest) {
     ordered[key2] = settings[key2];
   }
-  await fs23.writeFile(WORKSPACE_SETTINGS_PATH, JSON.stringify(ordered, null, 2) + "\n");
+  await fs22.writeFile(WORKSPACE_SETTINGS_PATH, JSON.stringify(ordered, null, 2) + "\n");
 }
 function settingsEqual(a, b) {
   return stableStringify(a) === stableStringify(b);
@@ -18156,7 +17273,7 @@ function isRequiredString(value) {
 function isNonNegativeInt(value) {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
-function isValidDate2(value) {
+function isValidDate(value) {
   return Number.isFinite(Date.parse(value));
 }
 function cloneRecord(item) {
@@ -18292,7 +17409,7 @@ function parseAnnotation(value) {
     updatedAt,
     resolvedAt
   } = value;
-  if (!isRequiredString(id) || !isAnnotationId(id) || !isRequiredString(nodeId) || !isRequiredString(quote) || !isNonNegativeInt(start) || !isNonNegativeInt(end) || end < start || !isRequiredString(documentEtag) || typeof body !== "string" || body.length === 0 || author !== "user" || typeof status !== "string" || !ANNOTATION_STATUSES.has(status) || !isRequiredString(createdAt) || !isRequiredString(updatedAt) || !isValidDate2(createdAt) || !isValidDate2(updatedAt) || resolvedAt !== void 0 && (typeof resolvedAt !== "string" || !isValidDate2(resolvedAt))) {
+  if (!isRequiredString(id) || !isAnnotationId(id) || !isRequiredString(nodeId) || !isRequiredString(quote) || !isNonNegativeInt(start) || !isNonNegativeInt(end) || end < start || !isRequiredString(documentEtag) || typeof body !== "string" || body.length === 0 || author !== "user" || typeof status !== "string" || !ANNOTATION_STATUSES.has(status) || !isRequiredString(createdAt) || !isRequiredString(updatedAt) || !isValidDate(createdAt) || !isValidDate(updatedAt) || resolvedAt !== void 0 && (typeof resolvedAt !== "string" || !isValidDate(resolvedAt))) {
     return null;
   }
   return {
@@ -18323,7 +17440,7 @@ function parseAnnotationFile(value) {
 function emptyFile2() {
   return { annotations: [] };
 }
-async function writeFileUnlocked(fs23, file) {
+async function writeFileUnlocked(fs22, file) {
   const ordered = {
     annotations: file.annotations.map((a) => {
       const row = {
@@ -18343,14 +17460,14 @@ async function writeFileUnlocked(fs23, file) {
       return row;
     })
   };
-  await fs23.writeFile(ANNOTATIONS_PATH, JSON.stringify(ordered, null, 2) + "\n");
+  await fs22.writeFile(ANNOTATIONS_PATH, JSON.stringify(ordered, null, 2) + "\n");
 }
-async function loadAnnotations(fs23) {
-  if (!await fs23.exists(ANNOTATIONS_PATH)) {
+async function loadAnnotations(fs22) {
+  if (!await fs22.exists(ANNOTATIONS_PATH)) {
     return emptyFile2();
   }
   try {
-    const parsed = JSON.parse(await fs23.readFile(ANNOTATIONS_PATH));
+    const parsed = JSON.parse(await fs22.readFile(ANNOTATIONS_PATH));
     const file = parseAnnotationFile(parsed);
     if (!file) {
       throw new Error("invalid annotation file shape");
@@ -18359,9 +17476,9 @@ async function loadAnnotations(fs23) {
       annotations: file.annotations.map(cloneRecord)
     };
   } catch {
-    const backupPath = await backupCorruptRegistry(fs23, ANNOTATIONS_PATH);
+    const backupPath = await backupCorruptRegistry(fs22, ANNOTATIONS_PATH);
     const reset = emptyFile2();
-    await writeFileUnlocked(fs23, reset);
+    await writeFileUnlocked(fs22, reset);
     warnRegistryRecovered(
       ANNOTATIONS_PATH,
       backupPath,
@@ -18371,12 +17488,12 @@ async function loadAnnotations(fs23) {
     return reset;
   }
 }
-async function listAnnotationRecords(fs23, nodeId) {
-  const file = await loadAnnotations(fs23);
+async function listAnnotationRecords(fs22, nodeId) {
+  const file = await loadAnnotations(fs22);
   const rows = nodeId ? file.annotations.filter((a) => a.nodeId === nodeId) : file.annotations;
   return rows.map(cloneRecord);
 }
-async function createAnnotation(fs23, input, opts) {
+async function createAnnotation(fs22, input, opts) {
   const clock = opts?.clock ?? defaultClock();
   const rand = opts?.rand ?? Math.random;
   if (!isRequiredString(input.nodeId)) {
@@ -18392,8 +17509,8 @@ async function createAnnotation(fs23, input, opts) {
     throw new AnnotationError("INVALID_INPUT", "quote must be a non-empty string");
   }
   validateAnnotationAnchor(input.documentBody, input.quote, input.start, input.end);
-  return withTentMutation(fs23, async () => {
-    const file = await loadAnnotations(fs23);
+  return withTentMutation(fs22, async () => {
+    const file = await loadAnnotations(fs22);
     const existing = new Set(file.annotations.map((a) => a.id));
     const now = clock.now();
     const record = {
@@ -18410,14 +17527,14 @@ async function createAnnotation(fs23, input, opts) {
       updatedAt: now
     };
     file.annotations.push(record);
-    await writeFileUnlocked(fs23, file);
+    await writeFileUnlocked(fs22, file);
     return cloneRecord(record);
   });
 }
-async function resolveAnnotation(fs23, id, opts) {
+async function resolveAnnotation(fs22, id, opts) {
   const clock = opts?.clock ?? defaultClock();
-  return withTentMutation(fs23, async () => {
-    const file = await loadAnnotations(fs23);
+  return withTentMutation(fs22, async () => {
+    const file = await loadAnnotations(fs22);
     const idx = file.annotations.findIndex((a) => a.id === id);
     if (idx < 0) {
       throw new AnnotationError("NOT_FOUND", `Annotation not found: ${id}`);
@@ -18434,14 +17551,14 @@ async function resolveAnnotation(fs23, id, opts) {
       resolvedAt: now
     };
     file.annotations[idx] = next;
-    await writeFileUnlocked(fs23, file);
+    await writeFileUnlocked(fs22, file);
     return cloneRecord(next);
   });
 }
-async function reopenAnnotation(fs23, id, opts) {
+async function reopenAnnotation(fs22, id, opts) {
   const clock = opts?.clock ?? defaultClock();
-  return withTentMutation(fs23, async () => {
-    const file = await loadAnnotations(fs23);
+  return withTentMutation(fs22, async () => {
+    const file = await loadAnnotations(fs22);
     const idx = file.annotations.findIndex((a) => a.id === id);
     if (idx < 0) {
       throw new AnnotationError("NOT_FOUND", `Annotation not found: ${id}`);
@@ -18463,7 +17580,7 @@ async function reopenAnnotation(fs23, id, opts) {
       };
       if (current.resolvedAt !== void 0) {
         file.annotations[idx] = cleaned;
-        await writeFileUnlocked(fs23, file);
+        await writeFileUnlocked(fs22, file);
       }
       return cloneRecord(file.annotations[idx]);
     }
@@ -18482,17 +17599,17 @@ async function reopenAnnotation(fs23, id, opts) {
       updatedAt: now
     };
     file.annotations[idx] = next;
-    await writeFileUnlocked(fs23, file);
+    await writeFileUnlocked(fs22, file);
     return cloneRecord(next);
   });
 }
-async function deleteAnnotation(fs23, id) {
-  return withTentMutation(fs23, async () => {
-    const file = await loadAnnotations(fs23);
+async function deleteAnnotation(fs22, id) {
+  return withTentMutation(fs22, async () => {
+    const file = await loadAnnotations(fs22);
     const idx = file.annotations.findIndex((a) => a.id === id);
     if (idx < 0) return null;
     const [removed] = file.annotations.splice(idx, 1);
-    await writeFileUnlocked(fs23, file);
+    await writeFileUnlocked(fs22, file);
     return removed ? cloneRecord(removed) : null;
   });
 }
@@ -18518,8 +17635,74 @@ function recordExternalKey(rec) {
 }
 
 // src/runtime/session-registry.ts
-import * as fs6 from "node:fs/promises";
-import * as path6 from "node:path";
+import * as fs4 from "node:fs/promises";
+import * as path4 from "node:path";
+
+// src/machine-state.ts
+import * as fs3 from "node:fs/promises";
+import * as path3 from "node:path";
+function isNotFoundError(err) {
+  return !!err && typeof err === "object" && "code" in err && err.code === "ENOENT";
+}
+function isRetryableRenameError2(err) {
+  if (!err || typeof err !== "object" || !("code" in err)) return false;
+  const code = err.code;
+  return code === "EPERM" || code === "EBUSY" || code === "EACCES" || code === "EEXIST";
+}
+async function writeJsonAtomic(filePath, value) {
+  await fs3.mkdir(path3.dirname(filePath), { recursive: true });
+  const body = JSON.stringify(value, null, 2) + "\n";
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  try {
+    await fs3.writeFile(tmp, body, "utf8");
+    await renameReplace2(tmp, filePath);
+  } catch (err) {
+    try {
+      await fs3.unlink(tmp);
+    } catch {
+    }
+    throw err;
+  }
+}
+async function renameReplace2(tmp, filePath) {
+  const attempts = process.platform === "win32" ? 8 : 1;
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await fs3.rename(tmp, filePath);
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableRenameError2(err) || i === attempts - 1) break;
+      await new Promise((r) => setTimeout(r, 5 + i * 5));
+    }
+  }
+  throw lastErr;
+}
+async function backupCorruptMachineFile(filePath) {
+  const backupPath = `${filePath}.corrupt-${corruptTimestamp()}`;
+  try {
+    await fs3.rename(filePath, backupPath);
+    return backupPath;
+  } catch {
+    await fs3.copyFile(filePath, backupPath);
+    try {
+      await fs3.unlink(filePath);
+    } catch {
+    }
+    return backupPath;
+  }
+}
+function warnCorruptMachineState(filePath, backupPath, action, extra = "") {
+  console.error(
+    `WARNING: ${filePath} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
+  );
+}
+function corruptTimestamp() {
+  return (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+}
+
+// src/runtime/session-registry.ts
 var SESSION_STATES = /* @__PURE__ */ new Set([
   "starting",
   "live",
@@ -18531,10 +17714,10 @@ var SESSION_STATES = /* @__PURE__ */ new Set([
 var STOP_REASONS = /* @__PURE__ */ new Set(["user", "interrupt", "shutdown"]);
 var ASSIGNEE_KINDS = /* @__PURE__ */ new Set(["role", "agentProfile"]);
 function sessionsDir(dataDir) {
-  return path6.join(dataDir, "sessions");
+  return path4.join(dataDir, "sessions");
 }
 function sessionFilePath(dataDir, sessionId) {
-  return path6.join(sessionsDir(dataDir), `${sessionId}.json`);
+  return path4.join(sessionsDir(dataDir), `${sessionId}.json`);
 }
 function assertSessionId(sessionId) {
   if (!isSessionId(sessionId)) {
@@ -18637,7 +17820,7 @@ var SessionRegistry = class _SessionRegistry {
     return this.dataDir;
   }
   async ensureDir() {
-    await fs6.mkdir(sessionsDir(this.dataDir), { recursive: true });
+    await fs4.mkdir(sessionsDir(this.dataDir), { recursive: true });
   }
   enqueue(fn) {
     const run = this.writeChain.then(fn, fn);
@@ -18685,7 +17868,7 @@ var SessionRegistry = class _SessionRegistry {
     const dir = sessionsDir(this.dataDir);
     let names;
     try {
-      names = await fs6.readdir(dir);
+      names = await fs4.readdir(dir);
     } catch (err) {
       if (isNotFoundError(err)) return [];
       throw err;
@@ -18706,7 +17889,7 @@ var SessionRegistry = class _SessionRegistry {
     assertSessionId(sessionId);
     return this.enqueue(async () => {
       try {
-        await fs6.rm(sessionFilePath(this.dataDir, sessionId), { force: true });
+        await fs4.rm(sessionFilePath(this.dataDir, sessionId), { force: true });
       } catch {
       }
     });
@@ -18728,7 +17911,7 @@ var SessionRegistry = class _SessionRegistry {
   async readUnlocked(sessionId) {
     const file = sessionFilePath(this.dataDir, sessionId);
     try {
-      const raw = await fs6.readFile(file, "utf8");
+      const raw = await fs4.readFile(file, "utf8");
       let data;
       try {
         data = JSON.parse(raw);
@@ -19040,196 +18223,9 @@ function contentEtag(content3) {
   return createHash3("sha256").update(content3, "utf8").digest("hex").slice(0, 24);
 }
 
-// src/service/a2a-store.ts
-import * as fs7 from "node:fs/promises";
-import * as path7 from "node:path";
-var A2A_POLICIES = /* @__PURE__ */ new Set(["allow", "ask", "deny"]);
-var A2A_CALLER_KINDS = /* @__PURE__ */ new Set(["user", "role"]);
-var A2A_APPROVAL_STATUSES = /* @__PURE__ */ new Set([
-  "pending",
-  "approved",
-  "denied"
-]);
-function cloneApproval(item) {
-  return { ...item };
-}
-function isRecord7(value) {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-function isRequiredString2(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-function isOptionalString(value) {
-  return value === void 0 || typeof value === "string";
-}
-function isValidDate3(value) {
-  return Number.isFinite(Date.parse(value));
-}
-function parseA2AApproval(value) {
-  if (!isRecord7(value)) return null;
-  const {
-    id,
-    workspaceId,
-    taskPath,
-    taskId,
-    role,
-    profileId,
-    policy,
-    callerKind,
-    bootstrapPrompt,
-    status,
-    createdAt,
-    resolvedAt,
-    resolvedBy
-  } = value;
-  if (!isRequiredString2(id) || !isRequiredString2(workspaceId) || !isRequiredString2(taskPath) || !isRequiredString2(role) || !isRequiredString2(profileId) || !isRequiredString2(createdAt) || !isValidDate3(createdAt) || typeof policy !== "string" || !A2A_POLICIES.has(policy) || typeof callerKind !== "string" || !A2A_CALLER_KINDS.has(callerKind) || typeof status !== "string" || !A2A_APPROVAL_STATUSES.has(status) || !isOptionalString(taskId) || !isOptionalString(bootstrapPrompt) || !isOptionalString(resolvedAt) || !isOptionalString(resolvedBy) || resolvedAt !== void 0 && !isValidDate3(resolvedAt)) {
-    return null;
-  }
-  return {
-    id,
-    workspaceId,
-    taskPath,
-    ...taskId !== void 0 ? { taskId } : {},
-    role,
-    profileId,
-    policy,
-    callerKind,
-    ...bootstrapPrompt !== void 0 ? { bootstrapPrompt } : {},
-    status,
-    createdAt,
-    ...resolvedAt !== void 0 ? { resolvedAt } : {},
-    ...resolvedBy !== void 0 ? { resolvedBy } : {}
-  };
-}
-var A2AApprovalStore = class {
-  constructor(dataDir, options) {
-    this.items = /* @__PURE__ */ new Map();
-    this.loaded = false;
-    /** Serialize load + mutations + persist (same pattern as ToolApprovalStore). */
-    this.chain = Promise.resolve();
-    this.file = path7.join(dataDir, "a2a-approvals.json");
-    this.writeState = options?.writeState ?? writeJsonAtomic;
-  }
-  enqueue(fn) {
-    const run = this.chain.then(fn, fn);
-    this.chain = run.then(
-      () => void 0,
-      () => void 0
-    );
-    return run;
-  }
-  async ensureLoaded() {
-    if (this.loaded) return;
-    return this.enqueue(async () => {
-      if (this.loaded) return;
-      try {
-        const raw = await fs7.readFile(this.file, "utf8");
-        let parsed;
-        try {
-          parsed = JSON.parse(raw);
-        } catch {
-          await this.quarantineCorrupt("reset");
-          this.loaded = true;
-          return;
-        }
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-          await this.quarantineCorrupt("reset");
-          this.loaded = true;
-          return;
-        }
-        const items = parsed.items;
-        if (items !== void 0 && !Array.isArray(items)) {
-          await this.quarantineCorrupt("reset");
-          this.loaded = true;
-          return;
-        }
-        const loaded = /* @__PURE__ */ new Map();
-        for (const item of items ?? []) {
-          const restored = parseA2AApproval(item);
-          if (!restored) {
-            await this.quarantineCorrupt("reset");
-            this.loaded = true;
-            return;
-          }
-          loaded.set(restored.id, restored);
-        }
-        this.items = loaded;
-        this.loaded = true;
-      } catch (err) {
-        if (isNotFoundError(err)) {
-          this.loaded = true;
-          return;
-        }
-        throw err;
-      }
-    });
-  }
-  async listPending(workspaceId) {
-    await this.ensureLoaded();
-    return [...this.items.values()].filter(
-      (i) => i.status === "pending" && (!workspaceId || i.workspaceId === workspaceId)
-    ).map(cloneApproval);
-  }
-  async get(id) {
-    await this.ensureLoaded();
-    const item = this.items.get(id);
-    return item ? cloneApproval(item) : void 0;
-  }
-  async add(item) {
-    await this.ensureLoaded();
-    return this.enqueue(async () => {
-      const stored = cloneApproval(item);
-      const next = new Map(this.items);
-      next.set(stored.id, stored);
-      await this.persistSnapshot(next);
-      this.items = next;
-      return cloneApproval(stored);
-    });
-  }
-  async resolve(id, decision, resolvedBy) {
-    await this.ensureLoaded();
-    return this.enqueue(async () => {
-      const item = this.items.get(id);
-      if (!item) throw new Error(`A2A approval not found: ${id}`);
-      if (item.status !== "pending") {
-        throw new Error(`A2A approval already ${item.status}: ${id}`);
-      }
-      const resolved = {
-        ...item,
-        status: decision,
-        resolvedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        resolvedBy
-      };
-      const next = new Map(this.items);
-      next.set(id, resolved);
-      await this.persistSnapshot(next);
-      this.items = next;
-      return cloneApproval(resolved);
-    });
-  }
-  async quarantineCorrupt(action) {
-    const backupPath = await backupCorruptMachineFile(this.file);
-    warnCorruptMachineState(this.file, backupPath, action);
-    this.items.clear();
-  }
-  /** Persist a candidate snapshot before making it visible in memory. */
-  async persistSnapshot(snapshot) {
-    const items = [...snapshot.values()];
-    const pending = items.filter((i) => i.status === "pending");
-    const terminal = items.filter((i) => i.status !== "pending").sort((a, b) => (b.resolvedAt || "").localeCompare(a.resolvedAt || "")).slice(0, 50);
-    await this.writeState(this.file, { items: [...pending, ...terminal] });
-  }
-};
-function makeApprovalId(rand = Math.random) {
-  const alphabet = "0123456789abcdefghjkmnpqrstvwxyz";
-  let s = "ap-";
-  for (let i = 0; i < 10; i++) s += alphabet[Math.floor(rand() * alphabet.length)];
-  return s;
-}
-
 // src/service/user-ask-store.ts
-import * as fs8 from "node:fs/promises";
-import * as path8 from "node:path";
+import * as fs5 from "node:fs/promises";
+import * as path5 from "node:path";
 function cloneAsk(item) {
   return {
     ...item,
@@ -19242,26 +18238,26 @@ var USER_ASK_STATUSES = /* @__PURE__ */ new Set([
   "denied",
   "cancelled"
 ]);
-function isRecord8(value) {
+function isRecord7(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
-function isRequiredString3(value) {
+function isRequiredString2(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
-function isOptionalString2(value) {
+function isOptionalString(value) {
   return value === void 0 || typeof value === "string";
 }
-function isValidDate4(value) {
+function isValidDate2(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseChoice(value) {
-  if (!isRecord8(value) || !isRequiredString3(value.id) || !isRequiredString3(value.label)) {
+  if (!isRecord7(value) || !isRequiredString2(value.id) || !isRequiredString2(value.label)) {
     return null;
   }
   return { id: value.id, label: value.label };
 }
 function parseAsk(value) {
-  if (!isRecord8(value)) return null;
+  if (!isRecord7(value)) return null;
   const {
     id,
     workspaceId,
@@ -19279,7 +18275,7 @@ function parseAsk(value) {
     resolvedAt,
     resolvedBy
   } = value;
-  if (!isRequiredString3(id) || !isRequiredString3(workspaceId) || !isRequiredString3(taskPath) || !isRequiredString3(question) || !isRequiredString3(createdAt) || !isRequiredString3(updatedAt) || !isValidDate4(createdAt) || !isValidDate4(updatedAt) || typeof status !== "string" || !USER_ASK_STATUSES.has(status) || !isOptionalString2(taskId) || !isOptionalString2(sessionId) || !isOptionalString2(role) || !isOptionalString2(answer) || !isOptionalString2(choiceId) || !isOptionalString2(resolvedAt) || !isOptionalString2(resolvedBy) || resolvedAt !== void 0 && !isValidDate4(resolvedAt)) {
+  if (!isRequiredString2(id) || !isRequiredString2(workspaceId) || !isRequiredString2(taskPath) || !isRequiredString2(question) || !isRequiredString2(createdAt) || !isRequiredString2(updatedAt) || !isValidDate2(createdAt) || !isValidDate2(updatedAt) || typeof status !== "string" || !USER_ASK_STATUSES.has(status) || !isOptionalString(taskId) || !isOptionalString(sessionId) || !isOptionalString(role) || !isOptionalString(answer) || !isOptionalString(choiceId) || !isOptionalString(resolvedAt) || !isOptionalString(resolvedBy) || resolvedAt !== void 0 && !isValidDate2(resolvedAt)) {
     return null;
   }
   let parsedChoices;
@@ -19317,7 +18313,7 @@ var UserAskStore = class {
     this.closed = false;
     this.shutdownPromise = null;
     this.chain = Promise.resolve();
-    this.file = path8.join(dataDir, "user-asks.json");
+    this.file = path5.join(dataDir, "user-asks.json");
     this.writeState = options?.writeState ?? writeJsonAtomic;
   }
   enqueue(fn) {
@@ -19333,7 +18329,7 @@ var UserAskStore = class {
     return this.enqueue(async () => {
       if (this.loaded) return;
       try {
-        const raw = await fs8.readFile(this.file, "utf8");
+        const raw = await fs5.readFile(this.file, "utf8");
         let parsed;
         try {
           parsed = JSON.parse(raw);
@@ -19584,8 +18580,8 @@ function formatUserAskAnswerPrompt(ask) {
 }
 
 // src/service/task-input-store.ts
-import * as fs9 from "node:fs/promises";
-import * as path9 from "node:path";
+import * as fs6 from "node:fs/promises";
+import * as path6 from "node:path";
 function cloneInput(item) {
   return {
     ...item,
@@ -19618,20 +18614,20 @@ function normalizeTaskInputKind(kind) {
   if (kind === "review-feedback") return "review-feedback";
   return "user-input";
 }
-function isRecord9(value) {
+function isRecord8(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
-function isRequiredString4(value) {
+function isRequiredString3(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
-function isOptionalString3(value) {
+function isOptionalString2(value) {
   return value === void 0 || typeof value === "string";
 }
-function isValidDate5(value) {
+function isValidDate3(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseInput(value) {
-  if (!isRecord9(value)) return null;
+  if (!isRecord8(value)) return null;
   const {
     id,
     workspaceId,
@@ -19653,7 +18649,7 @@ function parseInput(value) {
     uncertainAt,
     resolvedBy
   } = value;
-  if (!isRequiredString4(id) || !isRequiredString4(workspaceId) || !isRequiredString4(taskPath) || !isRequiredString4(createdAt) || !isRequiredString4(updatedAt) || !isValidDate5(createdAt) || !isValidDate5(updatedAt) || typeof status !== "string" || !TASK_INPUT_STATUSES.has(status) || !isOptionalString3(taskId) || !isOptionalString3(sessionId) || !isOptionalString3(role) || !isOptionalString3(text3) || !isOptionalString3(deliveredAt) || !isOptionalString3(consumedAt) || !isOptionalString3(cancelledAt) || !isOptionalString3(lastError) || !isOptionalString3(failedAt) || !isOptionalString3(uncertainAt) || !isOptionalString3(resolvedBy) || deliveredAt !== void 0 && !isValidDate5(deliveredAt) || consumedAt !== void 0 && !isValidDate5(consumedAt) || cancelledAt !== void 0 && !isValidDate5(cancelledAt) || failedAt !== void 0 && !isValidDate5(failedAt) || uncertainAt !== void 0 && !isValidDate5(uncertainAt)) {
+  if (!isRequiredString3(id) || !isRequiredString3(workspaceId) || !isRequiredString3(taskPath) || !isRequiredString3(createdAt) || !isRequiredString3(updatedAt) || !isValidDate3(createdAt) || !isValidDate3(updatedAt) || typeof status !== "string" || !TASK_INPUT_STATUSES.has(status) || !isOptionalString2(taskId) || !isOptionalString2(sessionId) || !isOptionalString2(role) || !isOptionalString2(text3) || !isOptionalString2(deliveredAt) || !isOptionalString2(consumedAt) || !isOptionalString2(cancelledAt) || !isOptionalString2(lastError) || !isOptionalString2(failedAt) || !isOptionalString2(uncertainAt) || !isOptionalString2(resolvedBy) || deliveredAt !== void 0 && !isValidDate3(deliveredAt) || consumedAt !== void 0 && !isValidDate3(consumedAt) || cancelledAt !== void 0 && !isValidDate3(cancelledAt) || failedAt !== void 0 && !isValidDate3(failedAt) || uncertainAt !== void 0 && !isValidDate3(uncertainAt)) {
     return null;
   }
   let parsedKind;
@@ -19668,7 +18664,7 @@ function parseInput(value) {
     if (!Array.isArray(contextRefs)) return null;
     parsedRefs = [];
     for (const r of contextRefs) {
-      if (!isRequiredString4(r)) return null;
+      if (!isRequiredString3(r)) return null;
       parsedRefs.push(r.trim());
     }
   }
@@ -19722,7 +18718,7 @@ var TaskInputStore = class {
     this.managedInjectInFlight = /* @__PURE__ */ new Set();
     /** Test-only: next persistSnapshot fails once, then clears. */
     this.nextPersistErrorForTests = null;
-    this.file = path9.join(dataDir, "task-inputs.json");
+    this.file = path6.join(dataDir, "task-inputs.json");
     this.writeState = options?.writeState ?? writeJsonAtomic;
   }
   enqueue(fn) {
@@ -19756,7 +18752,7 @@ var TaskInputStore = class {
     return this.enqueue(async () => {
       if (this.loaded) return;
       try {
-        const raw = await fs9.readFile(this.file, "utf8");
+        const raw = await fs6.readFile(this.file, "utf8");
         let parsed;
         try {
           parsed = JSON.parse(raw);
@@ -20429,25 +19425,14 @@ var CLIENT_METHODS = [
   "registry.roles",
   /**
    * User-only role registry mutations (MutationBus).
-   * Persist id/name/displayName/prompt/description/color/a2aPolicy/roster/cli —
+   * Persist id/name/displayName/prompt/description/color/cli —
    * never provider secrets. id is server-assigned and immutable; displayName is
    * mutable; operational name is not renamed in identity batch 1.
-   * Public mutations accept `roster` only (allowedProfiles rejected fail-loud).
    * Success emits exactly one registry.roles.updated.
    */
   "registry.role.create",
   "registry.role.update",
   "registry.role.delete",
-  /**
-   * Machine-local AgentDefinition catalog (logical worker identity).
-   * Binds agentId → profileId only; never provider/model/credential secrets.
-   * Distinct from profile.* (launch config) and registry.roles (roster auth).
-   */
-  "agent.list",
-  "agent.get",
-  "agent.create",
-  "agent.update",
-  "agent.delete",
   "profile.list",
   "profile.get",
   "profile.create",
@@ -20497,7 +19482,8 @@ var CLIENT_METHODS = [
   "task.startSession",
   /**
    * Explicit fresh managed Session on the same Task (unusable provider context).
-   * Never a silent fallback from task.startSession. Same A2A gate as startSession.
+   * Never a silent fallback from task.startSession. Uses the same machine Settings
+   * route availability gate as startSession.
    * Shares the per-Task managed-session execution slot with startSession.
    * Preserves nodeRefs/worktree/branch/lane/pending TaskInputs/deliveryPolicy;
    * stops the old Session first; new ss- has contextRestored=false + stable restoreReason.
@@ -20645,115 +19631,113 @@ var RESERVED_DOCS_WRITE_FIELDS = [
 ];
 var SEMANTIC_DOCS_WRITE_FIELDS = ["type", "tags", "relations"];
 var RPC_UNAUTHORIZED = -32001;
-var RPC_A2A_DENIED = -32020;
-var RPC_A2A_ASK = -32021;
 var RPC_LIFECYCLE = -32022;
 
 // src/service/profiles.ts
-import * as fs16 from "node:fs/promises";
-import * as path14 from "node:path";
+import * as fs14 from "node:fs/promises";
+import * as path12 from "node:path";
 
 // src/adapters/acp/mcp-skills.ts
-import * as fs10 from "node:fs";
+import * as fs7 from "node:fs";
 import * as os from "node:os";
-import * as path10 from "node:path";
+import * as path7 from "node:path";
 var SAFE_SKILL_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 var MCP_SERVER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-var ENV_KEY_RE2 = /^[A-Za-z_][A-Za-z0-9_]*$/;
-var CREDENTIAL_ID_RE2 = /^[a-z][a-z0-9-]{0,62}$/;
+var ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+var CREDENTIAL_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
 var MAX_PROFILE_SKILLS = 64;
 var MAX_PROFILE_MCP_SERVERS = 32;
 var MAX_MCP_ARGS = 64;
 var MAX_MCP_ENV_ENTRIES = 32;
 var MAX_MCP_HEADER_ENTRIES = 16;
-function fieldOk2(value) {
+function fieldOk(value) {
   return { ok: true, value };
 }
-function fieldErr2(message2) {
+function fieldErr(message2) {
   return { ok: false, message: message2 };
 }
 function defaultAllowedSkillRoots(home) {
   const root = home ?? os.homedir();
   return [
-    path10.join(root, ".agents", "skills"),
-    path10.join(root, ".claude", "skills"),
-    path10.join(root, ".grok", "skills"),
-    path10.join(root, ".cursor", "skills")
+    path7.join(root, ".agents", "skills"),
+    path7.join(root, ".claude", "skills"),
+    path7.join(root, ".grok", "skills"),
+    path7.join(root, ".cursor", "skills")
   ];
 }
 function normalizePathForCompare(p) {
-  const resolved = path10.resolve(p);
+  const resolved = path7.resolve(p);
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 function isPathInsideRoot(candidate, root) {
   const c = normalizePathForCompare(candidate);
   const r = normalizePathForCompare(root);
   if (c === r) return true;
-  const rel = path10.relative(r, c);
-  return rel !== "" && !rel.startsWith("..") && !path10.isAbsolute(rel);
+  const rel = path7.relative(r, c);
+  return rel !== "" && !rel.startsWith("..") && !path7.isAbsolute(rel);
 }
 function isUnderAllowedSkillRoots(absolutePath, allowedRoots) {
-  const abs = path10.resolve(absolutePath);
+  const abs = path7.resolve(absolutePath);
   return allowedRoots.some((root) => isPathInsideRoot(abs, root));
 }
 function parseNonEmptyString(raw, key2) {
   if (typeof raw !== "string") {
-    return fieldErr2(`Invalid string param: ${key2}`);
+    return fieldErr(`Invalid string param: ${key2}`);
   }
   const v = raw.trim();
   if (!v) {
-    return fieldErr2(`Invalid string param: ${key2} must be non-empty when set`);
+    return fieldErr(`Invalid string param: ${key2} must be non-empty when set`);
   }
-  return fieldOk2(v);
+  return fieldOk(v);
 }
 function parseEnvKeyName(raw, key2) {
   const base = parseNonEmptyString(raw, key2);
   if (!base.ok) return base;
-  if (!ENV_KEY_RE2.test(base.value)) {
-    return fieldErr2(
+  if (!ENV_KEY_RE.test(base.value)) {
+    return fieldErr(
       `Invalid ${key2}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
     );
   }
-  return fieldOk2(base.value);
+  return fieldOk(base.value);
 }
 function parseCredentialId(raw, key2) {
   const base = parseNonEmptyString(raw, key2);
   if (!base.ok) return base;
-  if (!CREDENTIAL_ID_RE2.test(base.value)) {
-    return fieldErr2(
-      `Invalid ${key2}: must match ${CREDENTIAL_ID_RE2} (vault id, not secret value)`
+  if (!CREDENTIAL_ID_RE.test(base.value)) {
+    return fieldErr(
+      `Invalid ${key2}: must match ${CREDENTIAL_ID_RE} (vault id, not secret value)`
     );
   }
-  return fieldOk2(base.value);
+  return fieldOk(base.value);
 }
 function assertSafeSkillName(name) {
   const base = parseNonEmptyString(name, "skills[].name");
   if (!base.ok) return base;
   if (!SAFE_SKILL_NAME_RE.test(base.value) || base.value.includes("..")) {
-    return fieldErr2(
+    return fieldErr(
       `Invalid skills[].name: must match ${SAFE_SKILL_NAME_RE} (no path separators)`
     );
   }
-  return fieldOk2(base.value);
+  return fieldOk(base.value);
 }
 function parseStringRecord(raw, field, valueParse, maxEntries) {
-  if (raw === void 0 || raw === null) return fieldOk2(void 0);
+  if (raw === void 0 || raw === null) return fieldOk(void 0);
   if (typeof raw !== "object" || Array.isArray(raw)) {
-    return fieldErr2(`Invalid ${field}: must be an object of string\u2192string`);
+    return fieldErr(`Invalid ${field}: must be an object of string\u2192string`);
   }
   const entries = Object.entries(raw);
   if (entries.length > maxEntries) {
-    return fieldErr2(`Invalid ${field}: at most ${maxEntries} entries`);
+    return fieldErr(`Invalid ${field}: at most ${maxEntries} entries`);
   }
   const out = {};
   for (const [k, v] of entries) {
     const key2 = k.trim();
-    if (!key2) return fieldErr2(`Invalid ${field}: empty key`);
+    if (!key2) return fieldErr(`Invalid ${field}: empty key`);
     const parsed = valueParse(v, `${field}.${key2}`);
     if (!parsed.ok) return parsed;
     out[key2] = parsed.value;
   }
-  return fieldOk2(out);
+  return fieldOk(out);
 }
 function parseEnvKeyMap(raw, field, maxEntries) {
   return parseStringRecord(raw, field, (v, k) => parseEnvKeyName(v, k), maxEntries);
@@ -20765,30 +19749,30 @@ function parseSkillPathValue(raw, allowedRoots) {
   const base = parseNonEmptyString(raw, "skills[].path");
   if (!base.ok) return base;
   const p = base.value;
-  if (!path10.isAbsolute(p)) {
-    return fieldErr2(
+  if (!path7.isAbsolute(p)) {
+    return fieldErr(
       "Invalid skills[].path: must be an absolute path under an allowed skill root"
     );
   }
   if (p.includes("\0")) {
-    return fieldErr2("Invalid skills[].path: contains NUL");
+    return fieldErr("Invalid skills[].path: contains NUL");
   }
-  const resolved = path10.resolve(p);
+  const resolved = path7.resolve(p);
   if (!isUnderAllowedSkillRoots(resolved, allowedRoots)) {
-    return fieldErr2(
+    return fieldErr(
       `Invalid skills[].path: must be under allowed skill roots (${allowedRoots.join(", ")})`
     );
   }
-  return fieldOk2(resolved);
+  return fieldOk(resolved);
 }
 function parseSkillRefValue(raw, allowedRoots) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return fieldErr2("Invalid skills[] entry: must be an object with name");
+    return fieldErr("Invalid skills[] entry: must be an object with name");
   }
   const o = raw;
   for (const key2 of Object.keys(o)) {
     if (key2 !== "name" && key2 !== "path" && key2 !== "enabled") {
-      return fieldErr2(`Unknown skills[] field: ${key2}`);
+      return fieldErr(`Unknown skills[] field: ${key2}`);
     }
   }
   const nameR = assertSafeSkillName(o.name);
@@ -20802,22 +19786,22 @@ function parseSkillRefValue(raw, allowedRoots) {
   let enabled;
   if ("enabled" in o && o.enabled !== void 0 && o.enabled !== null) {
     if (typeof o.enabled !== "boolean") {
-      return fieldErr2("Invalid skills[].enabled: must be boolean");
+      return fieldErr("Invalid skills[].enabled: must be boolean");
     }
     enabled = o.enabled;
   }
   const ref = { name: nameR.value };
   if (pathVal !== void 0) ref.path = pathVal;
   if (enabled !== void 0) ref.enabled = enabled;
-  return fieldOk2(ref);
+  return fieldOk(ref);
 }
 function parseSkillsArrayValue(raw, allowedRoots = defaultAllowedSkillRoots()) {
-  if (raw === void 0 || raw === null) return fieldOk2(void 0);
+  if (raw === void 0 || raw === null) return fieldOk(void 0);
   if (!Array.isArray(raw)) {
-    return fieldErr2("Invalid skills: must be an array");
+    return fieldErr("Invalid skills: must be an array");
   }
   if (raw.length > MAX_PROFILE_SKILLS) {
-    return fieldErr2(`Invalid skills: at most ${MAX_PROFILE_SKILLS} entries`);
+    return fieldErr(`Invalid skills: at most ${MAX_PROFILE_SKILLS} entries`);
   }
   const out = [];
   const seen = /* @__PURE__ */ new Set();
@@ -20826,22 +19810,22 @@ function parseSkillsArrayValue(raw, allowedRoots = defaultAllowedSkillRoots()) {
     if (!r.ok) return r;
     const key2 = r.value.name.toLowerCase();
     if (seen.has(key2)) {
-      return fieldErr2(`Duplicate skill name in skills: ${r.value.name}`);
+      return fieldErr(`Duplicate skill name in skills: ${r.value.name}`);
     }
     seen.add(key2);
     out.push(r.value);
   }
-  return fieldOk2(out);
+  return fieldOk(out);
 }
 function parseMcpName(raw) {
   const base = parseNonEmptyString(raw, "mcpServers[].name");
   if (!base.ok) return base;
   if (!MCP_SERVER_NAME_RE.test(base.value)) {
-    return fieldErr2(
+    return fieldErr(
       `Invalid mcpServers[].name: must match ${MCP_SERVER_NAME_RE}`
     );
   }
-  return fieldOk2(base.value);
+  return fieldOk(base.value);
 }
 function parseHttpUrl(raw) {
   const base = parseNonEmptyString(raw, "mcpServers[].url");
@@ -20850,21 +19834,21 @@ function parseHttpUrl(raw) {
   try {
     parsed = new URL(base.value);
   } catch {
-    return fieldErr2("Invalid mcpServers[].url: must be an absolute http(s) URL");
+    return fieldErr("Invalid mcpServers[].url: must be an absolute http(s) URL");
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return fieldErr2("Invalid mcpServers[].url: only http: and https: are allowed");
+    return fieldErr("Invalid mcpServers[].url: only http: and https: are allowed");
   }
   if (parsed.username || parsed.password) {
-    return fieldErr2(
+    return fieldErr(
       "Invalid mcpServers[].url: username/password in URL are not allowed"
     );
   }
-  return fieldOk2(base.value);
+  return fieldOk(base.value);
 }
 function parseMcpServerValue(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return fieldErr2("Invalid mcpServers[] entry: must be an object");
+    return fieldErr("Invalid mcpServers[] entry: must be an object");
   }
   const o = raw;
   const allowed = /* @__PURE__ */ new Set([
@@ -20883,23 +19867,23 @@ function parseMcpServerValue(raw) {
     if (!allowed.has(key2)) {
       const lower = key2.toLowerCase();
       if (lower === "env" || lower === "headers" || lower.includes("secret") || lower.includes("token") || lower.includes("apikey") || lower.includes("password") || lower.includes("authorization") || lower.includes("bearer")) {
-        return fieldErr2(
+        return fieldErr(
           `Rejected dangerous or unsupported mcpServers[] field: ${key2} (use envKeys/envCredentialRefs/headerEnvKeys/headerCredentialRefs)`
         );
       }
-      return fieldErr2(`Unknown mcpServers[] field: ${key2}`);
+      return fieldErr(`Unknown mcpServers[] field: ${key2}`);
     }
   }
   const nameR = parseMcpName(o.name);
   if (!nameR.ok) return nameR;
   if (typeof o.transport !== "string" || o.transport !== "stdio" && o.transport !== "http") {
-    return fieldErr2("Invalid mcpServers[].transport: must be stdio|http");
+    return fieldErr("Invalid mcpServers[].transport: must be stdio|http");
   }
   const transport = o.transport;
   let enabled;
   if ("enabled" in o && o.enabled !== void 0 && o.enabled !== null) {
     if (typeof o.enabled !== "boolean") {
-      return fieldErr2("Invalid mcpServers[].enabled: must be boolean");
+      return fieldErr("Invalid mcpServers[].enabled: must be boolean");
     }
     enabled = o.enabled;
   }
@@ -20907,13 +19891,13 @@ function parseMcpServerValue(raw) {
   if (enabled !== void 0) server.enabled = enabled;
   if (transport === "stdio") {
     if ("url" in o && o.url !== void 0 && o.url !== null) {
-      return fieldErr2("Invalid mcpServers[]: stdio transport must not set url");
+      return fieldErr("Invalid mcpServers[]: stdio transport must not set url");
     }
     if ("headerEnvKeys" in o && o.headerEnvKeys != null) {
-      return fieldErr2("Invalid mcpServers[]: stdio transport must not set headerEnvKeys");
+      return fieldErr("Invalid mcpServers[]: stdio transport must not set headerEnvKeys");
     }
     if ("headerCredentialRefs" in o && o.headerCredentialRefs != null) {
-      return fieldErr2(
+      return fieldErr(
         "Invalid mcpServers[]: stdio transport must not set headerCredentialRefs"
       );
     }
@@ -20922,10 +19906,10 @@ function parseMcpServerValue(raw) {
     server.command = cmd.value;
     if ("args" in o && o.args !== void 0 && o.args !== null) {
       if (!Array.isArray(o.args) || !o.args.every((a) => typeof a === "string")) {
-        return fieldErr2("Invalid mcpServers[].args: must be an array of strings");
+        return fieldErr("Invalid mcpServers[].args: must be an array of strings");
       }
       if (o.args.length > MAX_MCP_ARGS) {
-        return fieldErr2(`Invalid mcpServers[].args: at most ${MAX_MCP_ARGS} entries`);
+        return fieldErr(`Invalid mcpServers[].args: at most ${MAX_MCP_ARGS} entries`);
       }
       server.args = o.args.map((a) => a);
     }
@@ -20941,16 +19925,16 @@ function parseMcpServerValue(raw) {
     if (envCreds.value) server.envCredentialRefs = envCreds.value;
   } else {
     if ("command" in o && o.command !== void 0 && o.command !== null) {
-      return fieldErr2("Invalid mcpServers[]: http transport must not set command");
+      return fieldErr("Invalid mcpServers[]: http transport must not set command");
     }
     if ("args" in o && o.args !== void 0 && o.args !== null) {
-      return fieldErr2("Invalid mcpServers[]: http transport must not set args");
+      return fieldErr("Invalid mcpServers[]: http transport must not set args");
     }
     if ("envKeys" in o && o.envKeys != null) {
-      return fieldErr2("Invalid mcpServers[]: http transport must not set envKeys");
+      return fieldErr("Invalid mcpServers[]: http transport must not set envKeys");
     }
     if ("envCredentialRefs" in o && o.envCredentialRefs != null) {
-      return fieldErr2(
+      return fieldErr(
         "Invalid mcpServers[]: http transport must not set envCredentialRefs"
       );
     }
@@ -20972,15 +19956,15 @@ function parseMcpServerValue(raw) {
     if (!headerCreds.ok) return headerCreds;
     if (headerCreds.value) server.headerCredentialRefs = headerCreds.value;
   }
-  return fieldOk2(server);
+  return fieldOk(server);
 }
 function parseMcpServersArrayValue(raw) {
-  if (raw === void 0 || raw === null) return fieldOk2(void 0);
+  if (raw === void 0 || raw === null) return fieldOk(void 0);
   if (!Array.isArray(raw)) {
-    return fieldErr2("Invalid mcpServers: must be an array");
+    return fieldErr("Invalid mcpServers: must be an array");
   }
   if (raw.length > MAX_PROFILE_MCP_SERVERS) {
-    return fieldErr2(`Invalid mcpServers: at most ${MAX_PROFILE_MCP_SERVERS} entries`);
+    return fieldErr(`Invalid mcpServers: at most ${MAX_PROFILE_MCP_SERVERS} entries`);
   }
   const out = [];
   const seen = /* @__PURE__ */ new Set();
@@ -20989,12 +19973,12 @@ function parseMcpServersArrayValue(raw) {
     if (!r.ok) return r;
     const key2 = r.value.name.toLowerCase();
     if (seen.has(key2)) {
-      return fieldErr2(`Duplicate mcpServers name: ${r.value.name}`);
+      return fieldErr(`Duplicate mcpServers name: ${r.value.name}`);
     }
     seen.add(key2);
     out.push(r.value);
   }
-  return fieldOk2(out);
+  return fieldOk(out);
 }
 function cloneSkillRefs(skills) {
   if (!skills) return void 0;
@@ -21142,7 +20126,7 @@ function resolveAcpSkillMeta(skills, opts) {
   for (const s of skills) {
     if (s.enabled === false) continue;
     if (s.path && opts?.requirePathExists) {
-      if (!fs10.existsSync(s.path)) {
+      if (!fs7.existsSync(s.path)) {
         throw new Error(`Skill ${s.name}: path does not exist: ${s.path}`);
       }
     }
@@ -21250,9 +20234,9 @@ function cloneAgentProfileConfigForSnapshot(p) {
 }
 
 // src/adapters/fake/index.ts
-import * as fs11 from "node:fs";
+import * as fs8 from "node:fs";
 import * as os2 from "node:os";
-import * as path11 from "node:path";
+import * as path8 from "node:path";
 var FAKE_ADAPTER_ID = "fake-cli";
 function buildInlineScript(opts) {
   return `
@@ -21318,11 +20302,11 @@ var FakeProviderAdapter = class {
     }
     let bootstrapFile;
     if (plan.bootstrapPrompt != null && plan.bootstrapPrompt.length > 0) {
-      bootstrapFile = path11.join(
+      bootstrapFile = path8.join(
         os2.tmpdir(),
         `tent-bootstrap-${plan.sessionId.replace(/[^a-zA-Z0-9_-]/g, "")}.txt`
       );
-      fs11.writeFileSync(bootstrapFile, plan.bootstrapPrompt, "utf8");
+      fs8.writeFileSync(bootstrapFile, plan.bootstrapPrompt, "utf8");
     }
     const script = buildInlineScript(fake);
     const env = {
@@ -21376,12 +20360,12 @@ function createFakeAdapter(options) {
 }
 
 // src/adapters/grok-acp/index.ts
-import * as fs15 from "node:fs";
+import * as fs12 from "node:fs";
 import * as os3 from "node:os";
-import * as path13 from "node:path";
+import * as path10 from "node:path";
 
 // src/adapters/acp/client.ts
-import { spawn as spawn4 } from "node:child_process";
+import { spawn as spawn3 } from "node:child_process";
 
 // src/runtime/child-env.ts
 var RESERVED_TENT_CHILD_ENV_KEYS = [
@@ -22259,7 +21243,7 @@ var AcpClient = class {
       launchEnv: this.options.env,
       reserved: this.options.coreEnv
     });
-    const child = spawn4(this.options.command, this.options.args, {
+    const child = spawn3(this.options.command, this.options.args, {
       cwd: this.options.cwd,
       env,
       stdio: ["pipe", "pipe", "pipe"],
@@ -22644,7 +21628,7 @@ var AcpClient = class {
           if (timer) clearTimeout(timer);
           resolve15();
         };
-        const killer = spawn4("taskkill", ["/pid", String(pid), "/T", "/F"], {
+        const killer = spawn3("taskkill", ["/pid", String(pid), "/T", "/F"], {
           windowsHide: true,
           stdio: "ignore"
         });
@@ -22954,12 +21938,12 @@ function mainstreamAcpCapabilities() {
 }
 
 // src/fs/node-fs.ts
-import * as fs13 from "node:fs/promises";
+import * as fs10 from "node:fs/promises";
 import * as nodePath5 from "node:path";
 
 // src/fs/mutation-lock.ts
 import { randomUUID } from "node:crypto";
-import * as fs12 from "node:fs/promises";
+import * as fs9 from "node:fs/promises";
 var MUTATION_LOCK_STALE_MS = 12e4;
 async function withFileMutationLock(lockPath, action, options) {
   const now = options.now ?? Date.now;
@@ -22972,11 +21956,11 @@ async function withFileMutationLock(lockPath, action, options) {
     pid: process.pid,
     createdAt: new Date(now()).toISOString()
   };
-  await fs12.mkdir(dirnameOf(lockPath), { recursive: true });
+  await fs9.mkdir(dirnameOf(lockPath), { recursive: true });
   let handle;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      handle = await fs12.open(lockPath, "wx");
+      handle = await fs9.open(lockPath, "wx");
       break;
     } catch (error) {
       if (!isAlreadyExists(error)) throw error;
@@ -22986,8 +21970,8 @@ async function withFileMutationLock(lockPath, action, options) {
       }
       const quarantine = `${lockPath}.stale-${randomUUID()}`;
       try {
-        await fs12.rename(lockPath, quarantine);
-        await fs12.rm(quarantine, { force: true }).catch(() => void 0);
+        await fs9.rename(lockPath, quarantine);
+        await fs9.rm(quarantine, { force: true }).catch(() => void 0);
       } catch (renameError) {
         if (isNotFound2(renameError)) continue;
         throw renameError;
@@ -23006,26 +21990,26 @@ async function withFileMutationLock(lockPath, action, options) {
 async function releaseMutationLockIfOwned(lockPath, ownerToken) {
   const quarantine = `${lockPath}.releasing-${ownerToken}`;
   try {
-    await fs12.rename(lockPath, quarantine);
+    await fs9.rename(lockPath, quarantine);
   } catch (error) {
     if (isNotFound2(error)) return false;
     return false;
   }
   const current = await readMutationLockRecord(quarantine);
   if (current?.ownerToken === ownerToken) {
-    await fs12.rm(quarantine, { force: true }).catch(() => void 0);
+    await fs9.rm(quarantine, { force: true }).catch(() => void 0);
     return true;
   }
   try {
-    await fs12.rename(quarantine, lockPath);
+    await fs9.rename(quarantine, lockPath);
   } catch {
-    await fs12.rm(quarantine, { force: true }).catch(() => void 0);
+    await fs9.rm(quarantine, { force: true }).catch(() => void 0);
   }
   return false;
 }
 async function readMutationLockRecord(lockPath) {
   try {
-    const raw = await fs12.readFile(lockPath, "utf8");
+    const raw = await fs9.readFile(lockPath, "utf8");
     const value = JSON.parse(raw);
     if (typeof value.ownerToken !== "string" || !value.ownerToken || typeof value.pid !== "number" || !Number.isInteger(value.pid) || typeof value.createdAt !== "string") {
       return null;
@@ -23039,7 +22023,7 @@ async function readMutationLockRecord(lockPath) {
 async function mayReclaimLock(lockPath, now = Date.now, staleMs = MUTATION_LOCK_STALE_MS, isProcessAliveFn = processIsAlive) {
   let mtimeMs;
   try {
-    const stat2 = await fs12.stat(lockPath);
+    const stat2 = await fs9.stat(lockPath);
     mtimeMs = stat2.mtimeMs;
   } catch (error) {
     if (isNotFound2(error)) return false;
@@ -23056,7 +22040,7 @@ async function mayReclaimLock(lockPath, now = Date.now, staleMs = MUTATION_LOCK_
 }
 async function readRecordedPid(lockPath) {
   try {
-    const raw = await fs12.readFile(lockPath, "utf8");
+    const raw = await fs9.readFile(lockPath, "utf8");
     const value = JSON.parse(raw);
     if (typeof value.pid === "number" && Number.isInteger(value.pid) && value.pid > 0) {
       return value.pid;
@@ -23104,34 +22088,34 @@ var NodeFs = class {
     return resolved;
   }
   async listDir(dir) {
-    const entries = await fs13.readdir(this.abs(dir), { withFileTypes: true });
+    const entries = await fs10.readdir(this.abs(dir), { withFileTypes: true });
     return entries.filter((e) => !e.name.startsWith(".git")).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
   }
-  async readFile(path24) {
-    return fs13.readFile(this.abs(path24), "utf8");
+  async readFile(path23) {
+    return fs10.readFile(this.abs(path23), "utf8");
   }
-  async writeFile(path24, content3) {
-    const abs = this.abs(path24);
-    await fs13.mkdir(nodePath5.dirname(abs), { recursive: true });
+  async writeFile(path23, content3) {
+    const abs = this.abs(path23);
+    await fs10.mkdir(nodePath5.dirname(abs), { recursive: true });
     await this.atomicReplace(abs, content3, "utf8");
   }
-  async readBinary(path24) {
-    const buf = await fs13.readFile(this.abs(path24));
+  async readBinary(path23) {
+    const buf = await fs10.readFile(this.abs(path23));
     return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   }
-  async writeBinary(path24, data) {
-    const abs = this.abs(path24);
-    await fs13.mkdir(nodePath5.dirname(abs), { recursive: true });
+  async writeBinary(path23, data) {
+    const abs = this.abs(path23);
+    await fs10.mkdir(nodePath5.dirname(abs), { recursive: true });
     const payload = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     await this.atomicReplace(abs, payload);
   }
   async atomicReplace(abs, data, encoding) {
     const tmp = `${abs}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     try {
-      await fs13.writeFile(tmp, data, encoding);
+      await fs10.writeFile(tmp, data, encoding);
       await this.renameReplacingWithRetry(tmp, abs);
     } catch (err) {
-      await fs13.rm(tmp, { force: true }).catch(() => void 0);
+      await fs10.rm(tmp, { force: true }).catch(() => void 0);
       throw err;
     }
   }
@@ -23139,7 +22123,7 @@ var NodeFs = class {
     const attempts = process.platform === "win32" ? 10 : 1;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
-        await fs13.rename(from, to);
+        await fs10.rename(from, to);
         return;
       } catch (err) {
         const code = err.code;
@@ -23150,26 +22134,26 @@ var NodeFs = class {
       }
     }
   }
-  async exists(path24) {
+  async exists(path23) {
     try {
-      await fs13.access(this.abs(path24));
+      await fs10.access(this.abs(path23));
       return true;
     } catch {
       return false;
     }
   }
-  async mkdir(path24) {
-    await fs13.mkdir(this.abs(path24), { recursive: true });
+  async mkdir(path23) {
+    await fs10.mkdir(this.abs(path23), { recursive: true });
   }
   async move(from, to) {
-    await fs13.mkdir(nodePath5.dirname(this.abs(to)), { recursive: true });
-    await fs13.rename(this.abs(from), this.abs(to));
+    await fs10.mkdir(nodePath5.dirname(this.abs(to)), { recursive: true });
+    await fs10.rename(this.abs(from), this.abs(to));
   }
-  async remove(path24) {
-    await fs13.rm(this.abs(path24), { recursive: true, force: true });
+  async remove(path23) {
+    await fs10.rm(this.abs(path23), { recursive: true, force: true });
   }
-  async withLock(path24, action) {
-    return withFileMutationLock(this.abs(path24), action, {
+  async withLock(path23, action) {
+    return withFileMutationLock(this.abs(path23), action, {
       busyMessage: "Tent is already running another write operation; try again later.",
       acquireFailedMessage: "Cannot acquire the Tent mutation lock."
     });
@@ -23177,8 +22161,8 @@ var NodeFs = class {
 };
 
 // src/adapters/acp/profile.ts
-import * as fs14 from "node:fs";
-import * as path12 from "node:path";
+import * as fs11 from "node:fs";
+import * as path9 from "node:path";
 function readAcpExtras(extras, legacyKeys = []) {
   if (!extras || typeof extras !== "object") return {};
   if (extras.acp !== void 0) return extras.acp;
@@ -23254,20 +22238,20 @@ function defaultNpxLaunch() {
   if (process.platform !== "win32") return { command: "npx", argsPrefix: [] };
   const candidates = [];
   const npmExecPath = process.env.npm_execpath?.trim();
-  if (npmExecPath) candidates.push(path12.join(path12.dirname(npmExecPath), "npx-cli.js"));
-  for (const dir of (process.env.PATH || "").split(path12.delimiter)) {
+  if (npmExecPath) candidates.push(path9.join(path9.dirname(npmExecPath), "npx-cli.js"));
+  for (const dir of (process.env.PATH || "").split(path9.delimiter)) {
     const root = dir.trim().replace(/^"|"$/g, "");
-    if (root) candidates.push(path12.join(root, "node_modules", "npm", "bin", "npx-cli.js"));
+    if (root) candidates.push(path9.join(root, "node_modules", "npm", "bin", "npx-cli.js"));
   }
-  const npxCli = candidates.find((candidate) => fs14.existsSync(candidate));
+  const npxCli = candidates.find((candidate) => fs11.existsSync(candidate));
   if (!npxCli) {
     throw new Error(
       "Unable to locate npm/bin/npx-cli.js on Windows; install Node.js/npm or configure an explicit ACP executable"
     );
   }
-  const adjacentNode = path12.resolve(npxCli, "..", "..", "..", "..", "node.exe");
+  const adjacentNode = path9.resolve(npxCli, "..", "..", "..", "..", "node.exe");
   return {
-    command: fs14.existsSync(adjacentNode) ? adjacentNode : "node.exe",
+    command: fs11.existsSync(adjacentNode) ? adjacentNode : "node.exe",
     argsPrefix: [npxCli]
   };
 }
@@ -23357,14 +22341,14 @@ var DEFAULT_GROK_BASE_URL_ENV_KEY = "CPA_GROK_BASE_URL";
 function defaultGrokExecutable() {
   if (process.platform === "win32") {
     const home2 = process.env.USERPROFILE || os3.homedir();
-    return path13.join(home2, ".grok", "bin", "grok.exe");
+    return path10.join(home2, ".grok", "bin", "grok.exe");
   }
   const home = process.env.HOME || os3.homedir();
-  return path13.join(home, ".grok", "bin", "grok");
+  return path10.join(home, ".grok", "bin", "grok");
 }
 function defaultGrokIsolatedHome() {
   const home = process.env.USERPROFILE || process.env.HOME || os3.homedir();
-  return path13.join(home, ".grok-acp", "home");
+  return path10.join(home, ".grok-acp", "home");
 }
 function injectFlagBeforeStdio(args, flag, value) {
   if (args.includes(flag)) return;
@@ -23437,13 +22421,13 @@ var GrokAcpProviderAdapter = class {
       );
     }
     if (!plan.command && opts.executable) {
-      if (!fs15.existsSync(opts.executable)) {
+      if (!fs12.existsSync(opts.executable)) {
         throw new Error(
           `Grok \u53EF\u6267\u884C\u6587\u4EF6\u4E0D\u5B58\u5728: ${opts.executable}\u3002\u8BF7\u5728 machine-local AgentProfile.acp.executable \u4E2D\u914D\u7F6E\u6B63\u786E\u8DEF\u5F84\u3002`
         );
       }
     } else if (!plan.command) {
-      if (!fs15.existsSync(command)) {
+      if (!fs12.existsSync(command)) {
         throw new Error(
           `\u672A\u627E\u5230 Grok \u53EF\u6267\u884C\u6587\u4EF6: ${command}\u3002\u8BF7\u5B89\u88C5 grok CLI \u6216\u5728 AgentProfile \u4E2D\u8BBE\u7F6E acp.executable\u3002`
         );
@@ -23493,7 +22477,7 @@ var GrokAcpProviderAdapter = class {
     const isolatedHome = defaultGrokIsolatedHome();
     env.USERPROFILE = isolatedHome;
     env.HOME = isolatedHome;
-    env.GROK_HOME = path13.join(isolatedHome, ".grok");
+    env.GROK_HOME = path10.join(isolatedHome, ".grok");
     for (const key2 of DISABLED_COMPATIBILITY_ENV) {
       env[key2] = "false";
     }
@@ -24214,6 +23198,528 @@ function createPiAcpAdapter(options) {
   return new PiAcpProviderAdapter(options);
 }
 
+// src/service/credential-store.ts
+import * as fs13 from "node:fs/promises";
+import * as path11 from "node:path";
+
+// src/service/credential-protector.ts
+import { spawn as spawn4 } from "node:child_process";
+var NON_WINDOWS_MSG = "CredentialStore requires Windows DPAPI (CurrentUser); non-Windows is not supported in this MVP (no weak-crypto fallback)";
+function createPlatformCredentialProtector(platform = process.platform) {
+  if (platform !== "win32") {
+    return {
+      protect: async () => {
+        throw new Error(NON_WINDOWS_MSG);
+      },
+      unprotect: async () => {
+        throw new Error(NON_WINDOWS_MSG);
+      }
+    };
+  }
+  return createWindowsDpapiProtector();
+}
+function createWindowsDpapiProtector() {
+  return {
+    protect: async (plaintext) => {
+      const b64In = Buffer.from(plaintext, "utf8").toString("base64");
+      const b64Out = await runPowerShellStdin(
+        [
+          "Add-Type -AssemblyName System.Security",
+          "$b64 = [Console]::In.ReadToEnd().Trim()",
+          "$plain = [Convert]::FromBase64String($b64)",
+          "$prot = [System.Security.Cryptography.ProtectedData]::Protect($plain, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)",
+          "[Convert]::ToBase64String($prot)"
+        ].join("; "),
+        b64In,
+        "protect"
+      );
+      return b64Out.trim();
+    },
+    unprotect: async (ciphertext) => {
+      const b64Out = await runPowerShellStdin(
+        [
+          "Add-Type -AssemblyName System.Security",
+          "$b64 = [Console]::In.ReadToEnd().Trim()",
+          "$prot = [Convert]::FromBase64String($b64)",
+          "$plain = [System.Security.Cryptography.ProtectedData]::Unprotect($prot, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)",
+          "[Convert]::ToBase64String($plain)"
+        ].join("; "),
+        ciphertext.trim(),
+        "unprotect"
+      );
+      return Buffer.from(b64Out.trim(), "base64").toString("utf8");
+    }
+  };
+}
+function runPowerShellStdin(command, stdinData, op) {
+  return new Promise((resolve15, reject) => {
+    const child = spawn4(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
+      {
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true
+      }
+    );
+    let stdout = "";
+    child.stderr?.on("data", () => {
+    });
+    child.stdout?.on("data", (chunk) => {
+      stdout += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    });
+    child.on("error", (err) => {
+      reject(
+        new Error(
+          `DPAPI PowerShell ${op} failed to start: ${err instanceof Error ? err.message : "spawn error"}`
+        )
+      );
+    });
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`DPAPI PowerShell ${op} failed (exit=${code ?? "null"})`));
+        return;
+      }
+      resolve15(stdout.replace(/^\uFEFF/, "").replace(/\r?\n$/, ""));
+    });
+    child.stdin?.on("error", (err) => {
+      reject(
+        new Error(
+          `DPAPI PowerShell ${op} stdin failed: ${err instanceof Error ? err.message : "stdin error"}`
+        )
+      );
+    });
+    child.stdin?.end(stdinData, "utf8");
+  });
+}
+
+// src/service/credential-store.ts
+var CREDENTIAL_ID_RE2 = /^[a-z][a-z0-9-]{0,62}$/;
+var MAX_SECRET_BYTES = 64 * 1024;
+var MAX_LABEL_LEN = 200;
+function credentialsPath(dataDir) {
+  return path11.join(dataDir, "credentials.json");
+}
+function assertCredentialId(id) {
+  if (typeof id !== "string" || !id.trim()) {
+    throw new Error("Missing or invalid credential id");
+  }
+  const trimmed = id.trim();
+  if (!CREDENTIAL_ID_RE2.test(trimmed)) {
+    throw new Error(
+      `Invalid credential id: must match ${CREDENTIAL_ID_RE2} (lowercase letter, then a-z0-9-, max 63)`
+    );
+  }
+  return trimmed;
+}
+function project(rec) {
+  const out = {
+    id: rec.id,
+    createdAt: rec.createdAt,
+    updatedAt: rec.updatedAt
+  };
+  if (rec.metadata?.label) {
+    out.label = rec.metadata.label;
+    out.metadata = { label: rec.metadata.label };
+  }
+  return out;
+}
+function normalizeSetOpts(opts) {
+  if (opts === void 0) return void 0;
+  if (opts === null) return null;
+  if ("metadata" in opts && opts.metadata !== void 0) {
+    return normalizeMetadata(opts.metadata);
+  }
+  if ("label" in opts) {
+    if (opts.label === null) return null;
+    if (opts.label === void 0) return void 0;
+    return normalizeMetadata({ label: opts.label });
+  }
+  return normalizeMetadata(opts);
+}
+function normalizeMetadata(raw) {
+  if (raw === void 0 || raw === null) return void 0;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Invalid credential metadata: must be a plain object when set");
+  }
+  const obj = raw;
+  const out = {};
+  if ("label" in obj) {
+    if (obj.label === void 0 || obj.label === null) {
+    } else if (typeof obj.label !== "string") {
+      throw new Error("Invalid credential metadata.label: must be a string");
+    } else {
+      const t = obj.label.trim();
+      if (!t) throw new Error("Invalid credential metadata.label: must be non-empty when set");
+      if (t.length > MAX_LABEL_LEN) {
+        throw new Error(
+          `Invalid credential metadata.label: exceeds ${MAX_LABEL_LEN} characters`
+        );
+      }
+      out.label = t;
+    }
+  }
+  for (const key2 of Object.keys(obj)) {
+    if (key2 !== "label") {
+      throw new Error(`Unknown credential metadata field: ${key2}`);
+    }
+  }
+  return Object.keys(out).length > 0 ? out : void 0;
+}
+function isValidDate4(value) {
+  return Number.isFinite(Date.parse(value));
+}
+function parseCredentialRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const item = value;
+  if (typeof item.id !== "string") return null;
+  let id;
+  try {
+    id = assertCredentialId(item.id);
+  } catch {
+    return null;
+  }
+  if (typeof item.ciphertext !== "string" || item.ciphertext.length === 0) {
+    return null;
+  }
+  if (typeof item.createdAt !== "string" || item.createdAt.length === 0) {
+    return null;
+  }
+  if (typeof item.updatedAt !== "string" || item.updatedAt.length === 0) {
+    return null;
+  }
+  if (!isValidDate4(item.createdAt) || !isValidDate4(item.updatedAt)) {
+    return null;
+  }
+  let metaSrc = item.metadata;
+  if ((metaSrc === void 0 || metaSrc === null) && typeof item.label === "string") {
+    metaSrc = { label: item.label };
+  }
+  let metadata;
+  if (metaSrc !== void 0 && metaSrc !== null) {
+    try {
+      metadata = normalizeMetadata(metaSrc);
+    } catch {
+      return null;
+    }
+  }
+  const rec = {
+    id,
+    ciphertext: item.ciphertext,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt
+  };
+  if (metadata) rec.metadata = metadata;
+  return rec;
+}
+var CredentialStore = class {
+  constructor(dataDir, options) {
+    this.records = /* @__PURE__ */ new Map();
+    this.loaded = false;
+    this.chain = Promise.resolve();
+    this.file = credentialsPath(dataDir);
+    if (options && typeof options === "object" && "protect" in options && "unprotect" in options) {
+      this.protector = options;
+    } else if (options && typeof options === "object" && "protector" in options) {
+      this.protector = options.protector ?? createPlatformCredentialProtector();
+    } else {
+      this.protector = createPlatformCredentialProtector();
+    }
+  }
+  enqueue(fn) {
+    const run = this.chain.then(fn, fn);
+    this.chain = run.then(
+      () => void 0,
+      () => void 0
+    );
+    return run;
+  }
+  async ensureLoaded() {
+    if (this.loaded) return;
+    return this.enqueue(async () => {
+      if (this.loaded) return;
+      await this.loadFromDisk();
+    });
+  }
+  async loadFromDisk() {
+    try {
+      const raw = await fs13.readFile(this.file, "utf8");
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        await this.quarantineCorrupt();
+        this.loaded = true;
+        return;
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        await this.quarantineCorrupt();
+        this.loaded = true;
+        return;
+      }
+      const list2 = parsed.credentials;
+      if (list2 !== void 0 && !Array.isArray(list2)) {
+        await this.quarantineCorrupt();
+        this.loaded = true;
+        return;
+      }
+      const loaded = /* @__PURE__ */ new Map();
+      for (const item of list2 ?? []) {
+        const restored = parseCredentialRecord(item);
+        if (!restored) {
+          await this.quarantineCorrupt();
+          this.loaded = true;
+          return;
+        }
+        loaded.set(restored.id, restored);
+      }
+      this.records = loaded;
+      this.loaded = true;
+    } catch (err) {
+      if (isNotFoundError(err)) {
+        this.loaded = true;
+        return;
+      }
+      throw err;
+    }
+  }
+  async quarantineCorrupt() {
+    const backupPath = await backupCorruptMachineFile(this.file);
+    warnCorruptMachineState(this.file, backupPath, "reset");
+    this.records.clear();
+  }
+  async persist() {
+    const credentials = [...this.records.values()].map((r) => {
+      const row = {
+        id: r.id,
+        ciphertext: r.ciphertext,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt
+      };
+      if (r.metadata) row.metadata = { ...r.metadata };
+      return row;
+    }).sort((a, b) => String(a.id).localeCompare(String(b.id)));
+    await writeJsonAtomic(this.file, { credentials });
+  }
+  /**
+   * Sync presence after ensureLoaded (projection helper).
+   * Call ensureLoaded() first from async handlers when needed.
+   */
+  has(idRaw) {
+    try {
+      const id = assertCredentialId(idRaw);
+      return this.records.has(id);
+    } catch {
+      return false;
+    }
+  }
+  async list() {
+    await this.ensureLoaded();
+    return this.enqueue(
+      async () => [...this.records.values()].map(project).sort((a, b) => a.id.localeCompare(b.id))
+    );
+  }
+  /**
+   * Store secret under id. Overwrites ciphertext if id exists.
+   * Response is id/metadata only — never echoes secret or ciphertext.
+   */
+  async set(idRaw, secret, opts) {
+    const id = assertCredentialId(idRaw);
+    if (typeof secret !== "string" || secret.length === 0) {
+      throw new Error("credential secret must be a non-empty string");
+    }
+    if (Buffer.byteLength(secret, "utf8") > MAX_SECRET_BYTES) {
+      throw new Error(`credential secret exceeds ${MAX_SECRET_BYTES} bytes`);
+    }
+    const metaNorm = normalizeSetOpts(opts);
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      const ciphertext = await this.protector.protect(secret);
+      if (typeof ciphertext !== "string" || !ciphertext.trim()) {
+        throw new Error("credential protect() returned empty ciphertext");
+      }
+      if (ciphertext === secret) {
+        throw new Error("credential protect() must not return plaintext");
+      }
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const prev = this.records.get(id);
+      const record = {
+        id,
+        ciphertext: ciphertext.trim(),
+        createdAt: prev?.createdAt ?? now,
+        updatedAt: now
+      };
+      if (opts !== void 0) {
+        if (metaNorm === null) {
+        } else if (metaNorm !== void 0) {
+          record.metadata = metaNorm;
+        }
+      } else if (prev?.metadata) {
+        record.metadata = { ...prev.metadata };
+      }
+      this.records.set(id, record);
+      try {
+        await this.persist();
+      } catch (err) {
+        if (prev) this.records.set(id, prev);
+        else this.records.delete(id);
+        throw err;
+      }
+      return project(record);
+    });
+  }
+  async delete(idRaw) {
+    const id = assertCredentialId(idRaw);
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      if (!this.records.has(id)) {
+        throw new Error(`Credential not found: ${id}`);
+      }
+      const prev = this.records.get(id);
+      this.records.delete(id);
+      try {
+        await this.persist();
+      } catch (err) {
+        this.records.set(id, prev);
+        throw err;
+      }
+      return { deleted: id };
+    });
+  }
+  /**
+   * Service-internal only — returns plaintext for LaunchPlan.env injection.
+   * Never exposed as client RPC. Fail-loud when missing.
+   */
+  async resolve(idRaw) {
+    const id = assertCredentialId(idRaw);
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      const rec = this.records.get(id);
+      if (!rec) {
+        throw new Error(`Credential not found: ${id}`);
+      }
+      const plain = await this.protector.unprotect(rec.ciphertext);
+      if (typeof plain !== "string" || !plain) {
+        throw new Error(`Credential unprotect failed for ${id}`);
+      }
+      return plain;
+    });
+  }
+};
+
+// src/service/profile-field-rules.ts
+function fieldOk2(value) {
+  return { ok: true, value };
+}
+function fieldErr2(message2) {
+  return { ok: false, message: message2 };
+}
+var PROFILE_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
+var ENV_KEY_RE2 = /^[A-Za-z_][A-Za-z0-9_]*$/;
+var MAX_TIMEOUT_MS = 24 * 60 * 6e4;
+var PERMISSION_POLICIES = /* @__PURE__ */ new Set(["allow", "ask", "deny"]);
+var DANGEROUS_FIELD_HINTS = [
+  "apiKey",
+  "api_key",
+  "token",
+  "secret",
+  "password",
+  "credential",
+  "authorization",
+  "bearer",
+  "env",
+  "fake",
+  "command",
+  "args",
+  "displayNameKey",
+  "grokAcp",
+  "acp"
+];
+function parseProfileIdValue(raw, field = "id") {
+  if (typeof raw !== "string" || !raw.trim()) {
+    return fieldErr2(`Missing or invalid string param: ${field}`);
+  }
+  const id = raw.trim();
+  if (!PROFILE_ID_RE.test(id)) {
+    return fieldErr2(
+      `Invalid profile id: must match ${PROFILE_ID_RE} (lowercase letter, then a-z0-9-, max 63)`
+    );
+  }
+  return fieldOk2(id);
+}
+function parseNonEmptyStringValue(raw, key2) {
+  if (typeof raw !== "string") {
+    return fieldErr2(`Invalid string param: ${key2}`);
+  }
+  const v = raw.trim();
+  if (!v) {
+    return fieldErr2(`Invalid string param: ${key2} must be non-empty when set`);
+  }
+  return fieldOk2(v);
+}
+function parseEnvKeyValue(raw, key2) {
+  const base = parseNonEmptyStringValue(raw, key2);
+  if (!base.ok) return base;
+  if (!ENV_KEY_RE2.test(base.value)) {
+    return fieldErr2(
+      `Invalid ${key2}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
+    );
+  }
+  return fieldOk2(base.value);
+}
+function validateBaseUrlValue(v) {
+  let parsed;
+  try {
+    parsed = new URL(v);
+  } catch {
+    return fieldErr2("Invalid baseUrl: must be an absolute http(s) URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return fieldErr2("Invalid baseUrl: only http: and https: are allowed");
+  }
+  if (parsed.username || parsed.password) {
+    return fieldErr2("Invalid baseUrl: username/password in URL are not allowed");
+  }
+  if (parsed.search || parsed.hash) {
+    return fieldErr2("Invalid baseUrl: query string and hash fragment are not allowed");
+  }
+  return fieldOk2(v);
+}
+function parseBaseUrlValue(raw) {
+  const base = parseNonEmptyStringValue(raw, "baseUrl");
+  if (!base.ok) return base;
+  return validateBaseUrlValue(base.value);
+}
+function parsePermissionPolicyValue(raw) {
+  if (typeof raw !== "string") {
+    return fieldErr2("Invalid permissionPolicy: must be allow|ask|deny");
+  }
+  if (!PERMISSION_POLICIES.has(raw)) {
+    return fieldErr2("Invalid permissionPolicy: must be allow|ask|deny");
+  }
+  return fieldOk2(raw);
+}
+function parsePositiveTimeoutValue(raw, key2) {
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0 || raw > MAX_TIMEOUT_MS) {
+    return fieldErr2(
+      `Invalid ${key2}: must be a positive integer no greater than ${MAX_TIMEOUT_MS}`
+    );
+  }
+  return fieldOk2(raw);
+}
+function parseCredentialRefValue(raw) {
+  const base = parseNonEmptyStringValue(raw, "credentialRef");
+  if (!base.ok) return base;
+  try {
+    return fieldOk2(assertCredentialId(base.value));
+  } catch (err) {
+    return fieldErr2(
+      err instanceof Error ? err.message.replace(/^Invalid credential id/, "Invalid credentialRef") : `Invalid credentialRef: must match ${CREDENTIAL_ID_RE2}`
+    );
+  }
+}
+
 // src/service/profiles.ts
 var FAKE_DEFAULT_PROFILE_ID = "fake-default";
 var GROK_ACP_DEFAULT_PROFILE_ID = "grok-acp-default";
@@ -24313,7 +23819,7 @@ var DISK_FAKE_KEYS = /* @__PURE__ */ new Set([
   "canResume"
 ]);
 function profilesPath(dataDir) {
-  return path14.join(dataDir, "agent-profiles.json");
+  return path12.join(dataDir, "agent-profiles.json");
 }
 async function quarantineAgentProfilesFile(file) {
   const backupPath = await backupCorruptMachineFile(file);
@@ -24533,7 +24039,7 @@ function parseAgentProfileDiskRow(value) {
 async function loadAgentProfilesWithMigration(dataDir) {
   const file = profilesPath(dataDir);
   try {
-    const raw = await fs16.readFile(file, "utf8");
+    const raw = await fs14.readFile(file, "utf8");
     let parsed;
     try {
       parsed = JSON.parse(raw);
@@ -24811,9 +24317,9 @@ var RpcError = class extends Error {
 };
 
 // src/machine/skills.ts
-import * as fs17 from "node:fs/promises";
+import * as fs15 from "node:fs/promises";
 import * as os4 from "node:os";
-import * as path15 from "node:path";
+import * as path13 from "node:path";
 var SKILL_TARGET_IDS = ["shared-agents", "claude"];
 var SAFE_SKILL_NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 function isSkillTargetId(value) {
@@ -24823,9 +24329,9 @@ function skillTargetDir(target, home) {
   const root = home ?? os4.homedir();
   switch (target) {
     case "claude":
-      return path15.join(root, ".claude", "skills");
+      return path13.join(root, ".claude", "skills");
     case "shared-agents":
-      return path15.join(root, ".agents", "skills");
+      return path13.join(root, ".agents", "skills");
     default: {
       const _exhaustive = target;
       throw new Error(`Unknown skill target: ${String(_exhaustive)}`);
@@ -24834,7 +24340,7 @@ function skillTargetDir(target, home) {
 }
 function assertSafeSkillName2(name) {
   const trimmed = name.trim();
-  if (!trimmed || !SAFE_SKILL_NAME.test(trimmed) || trimmed.includes("..") || trimmed.includes("/") || trimmed.includes("\\") || path15.basename(trimmed) !== trimmed) {
+  if (!trimmed || !SAFE_SKILL_NAME.test(trimmed) || trimmed.includes("..") || trimmed.includes("/") || trimmed.includes("\\") || path13.basename(trimmed) !== trimmed) {
     throw new Error(`Invalid skill name: ${name}`);
   }
   return trimmed;
@@ -24849,13 +24355,13 @@ function parseSkillTargetId(value) {
   return trimmed;
 }
 function bundledSkillsDir(packageRoot) {
-  return path15.join(packageRoot, "skills");
+  return path13.join(packageRoot, "skills");
 }
 async function listBundledSkillNames(packageRoot) {
   const sourceDir = bundledSkillsDir(packageRoot);
   let entries;
   try {
-    entries = await fs17.readdir(sourceDir, { withFileTypes: true });
+    entries = await fs15.readdir(sourceDir, { withFileTypes: true });
   } catch (err) {
     const code = err && typeof err === "object" && "code" in err ? err.code : void 0;
     if (code === "ENOENT") {
@@ -24867,7 +24373,7 @@ async function listBundledSkillNames(packageRoot) {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (!SAFE_SKILL_NAME.test(entry.name)) continue;
-    if (await existsPath(path15.join(sourceDir, entry.name, "SKILL.md"))) {
+    if (await existsPath(path13.join(sourceDir, entry.name, "SKILL.md"))) {
       skillNames.push(entry.name);
     }
   }
@@ -24882,7 +24388,7 @@ async function listSkills(options) {
     const targets = [];
     for (const target of SKILL_TARGET_IDS) {
       const dir = skillTargetDir(target, home);
-      const skillPath = path15.join(dir, name);
+      const skillPath = path13.join(dir, name);
       assertChildPath(dir, skillPath);
       targets.push({
         target,
@@ -24909,10 +24415,10 @@ async function installSkills(options) {
   }
   const results = [];
   for (const dest of destinations) {
-    await fs17.mkdir(dest.dir, { recursive: true });
+    await fs15.mkdir(dest.dir, { recursive: true });
     for (const name of selectedNames) {
-      const source = path15.join(sourceDir, name);
-      const target = path15.join(dest.dir, name);
+      const source = path13.join(sourceDir, name);
+      const target = path13.join(dest.dir, name);
       assertChildPath(sourceDir, source);
       assertChildPath(dest.dir, target);
       const exists = await existsPath(target);
@@ -24927,9 +24433,9 @@ async function installSkills(options) {
         continue;
       }
       if (exists && force) {
-        await fs17.rm(target, { recursive: true, force: true });
+        await fs15.rm(target, { recursive: true, force: true });
       }
-      await fs17.cp(source, target, { recursive: true, errorOnExist: true });
+      await fs15.cp(source, target, { recursive: true, errorOnExist: true });
       results.push({
         targetDir: dest.dir,
         ...dest.target ? { target: dest.target } : {},
@@ -24962,7 +24468,7 @@ function resolveInstallDestinations(options, home) {
     if (options.targetDirs.length === 0) {
       throw new Error("skill-install requires at least one target directory");
     }
-    return options.targetDirs.map((dir) => ({ dir: path15.resolve(dir) }));
+    return options.targetDirs.map((dir) => ({ dir: path13.resolve(dir) }));
   }
   const targetIds = options.targets && options.targets.length > 0 ? options.targets.map((t) => parseSkillTargetId(t)) : [...SKILL_TARGET_IDS];
   const seen = /* @__PURE__ */ new Set();
@@ -24975,14 +24481,14 @@ function resolveInstallDestinations(options, home) {
   return out;
 }
 function assertChildPath(parent, child) {
-  const rel = path15.relative(path15.resolve(parent), path15.resolve(child));
-  if (rel.startsWith("..") || path15.isAbsolute(rel)) {
+  const rel = path13.relative(path13.resolve(parent), path13.resolve(child));
+  if (rel.startsWith("..") || path13.isAbsolute(rel)) {
     throw new Error(`Install target escapes the destination directory: ${child}`);
   }
 }
 async function existsPath(target) {
   try {
-    await fs17.access(target);
+    await fs15.access(target);
     return true;
   } catch {
     return false;
@@ -25100,16 +24606,6 @@ async function dispatchMethod(ctx, method, params) {
         return registryRoleUpdate(ctx, p);
       case "registry.role.delete":
         return registryRoleDelete(ctx, p);
-      case "agent.list":
-        return agentList(ctx);
-      case "agent.get":
-        return agentGet(ctx, p);
-      case "agent.create":
-        return agentCreate(ctx, p);
-      case "agent.update":
-        return agentUpdate(ctx, p);
-      case "agent.delete":
-        return agentDelete(ctx, p);
       case "profile.list":
         return profileList(ctx, p);
       case "profile.get":
@@ -26203,7 +25699,7 @@ async function relationCreate(ctx, p) {
   const kind = requireString(p, "kind");
   const direction = requireString(p, "direction");
   const label = optionalString(p, "label");
-  if (!isRecord10(p.target)) {
+  if (!isRecord9(p.target)) {
     throw new RpcError(-32602, "relation.create requires target: { nodeId } | { unresolved }");
   }
   const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
@@ -26272,7 +25768,7 @@ async function relationUpdate(ctx, p) {
     else throw new RpcError(-32602, "relation.update label must be string or null");
   }
   if (Object.prototype.hasOwnProperty.call(p, "target")) {
-    if (!isRecord10(p.target)) {
+    if (!isRecord9(p.target)) {
       throw new RpcError(-32602, "relation.update target must be { nodeId } | { unresolved }");
     }
     patch.target = p.target;
@@ -26386,7 +25882,7 @@ function mapRelationError(err, surface) {
   }
   return new RpcError(-32e3, message2);
 }
-function isRecord10(value) {
+function isRecord9(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function emitRegistryTypesUpdated(ctx, workspaceId, payload) {
@@ -26409,8 +25905,8 @@ function emitRegistryTagsUpdated(ctx, workspaceId, payload) {
     "self"
   );
 }
-async function assertDocsSemanticBaseEtag(fs23, notePath, concept, baseEtag, surface) {
-  const diskRaw = await fs23.readFile(notePath);
+async function assertDocsSemanticBaseEtag(fs22, notePath, concept, baseEtag, surface) {
+  const diskRaw = await fs22.readFile(notePath);
   const currentEtag = contentEtag(diskRaw);
   if (!baseEtag) {
     throw new RpcError(-32008, `${surface} requires baseEtag`, {
@@ -26467,54 +25963,23 @@ function mapDocsSemanticError(err, surface) {
 async function registryRoles(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const { registry } = await ensureRolesRosterMigrated(mount.env.fs);
-  const agentById = await loadAgentDefinitionIndex(ctx);
-  const roles = registry.roles.map((role) => projectRoleRegistryEntry(role, agentById, ctx)).sort((a, b) => a.name.localeCompare(b.name));
+  const registry = await loadRolesRegistry(mount.env.fs);
+  const roles = registry.roles.map((role) => projectRoleRegistryEntry(role)).sort((a, b) => a.name.localeCompare(b.name));
   return { workspaceId, roles };
 }
-async function loadAgentDefinitionIndex(ctx) {
-  const { agents } = await loadAgentDefinitions(ctx.dataDir);
-  return new Map(agents.map((a) => [a.id, a]));
-}
-function projectRoleRegistryEntry(role, agentById, ctx) {
+function projectRoleRegistryEntry(role) {
   const proj = {
     roleId: role.id ?? "",
     name: role.name,
     displayName: role.displayName || role.name,
     description: role.description,
     color: role.color,
-    prompt: role.prompt,
-    a2aPolicy: roleA2APolicy(role)
+    prompt: role.prompt
   };
-  const roster = roleRoster(role);
-  if (roster.length > 0) {
-    proj.roster = roster;
-    if (agentById && ctx) {
-      proj.rosterEntries = roster.map(
-        (agentId) => projectRoleRosterEntry(agentId, agentById, ctx)
-      );
-    }
-  }
   return proj;
 }
-function projectRoleRosterEntry(agentId, agentById, ctx) {
-  const def = agentById.get(agentId);
-  if (!def) {
-    return { agentId, readiness: "missing-definition" };
-  }
-  const entry = {
-    agentId,
-    profileId: def.profileId,
-    readiness: ctx.profileCatalog.get(def.profileId) ? "ready" : "missing-profile"
-  };
-  if (def.displayName) {
-    entry.displayName = def.displayName;
-  }
-  return entry;
-}
-async function projectRoleRegistryEntryLive(ctx, role) {
-  const agentById = await loadAgentDefinitionIndex(ctx);
-  return projectRoleRegistryEntry(role, agentById, ctx);
+async function projectRoleRegistryEntryLive(_ctx, role) {
+  return projectRoleRegistryEntry(role);
 }
 async function registryRoleCreate(ctx, p) {
   requireUserActor(p, "registry.role.create");
@@ -26585,14 +26050,6 @@ async function registryRoleUpdate(ctx, p) {
     } else if (typeof p.displayName === "string") {
       updatePatch.displayName = p.displayName;
     }
-  }
-  if ("a2aPolicy" in p && (p.a2aPolicy === null || p.a2aPolicy === "")) {
-    updatePatch.a2aPolicy = void 0;
-  }
-  if ("roster" in p) {
-    updatePatch.roster = normalizeAgentIdList(
-      Array.isArray(p.roster) ? p.roster : []
-    );
   }
   if ("cli" in p && p.cli === null) {
     updatePatch.cli = void 0;
@@ -26760,33 +26217,11 @@ function parseRoleDefinitionParams(p, opts) {
     }
     if (typeof p.color === "string") raw.color = p.color;
   }
-  if ("a2aPolicy" in p) {
-    if (p.a2aPolicy === null || p.a2aPolicy === "") {
-    } else if (p.a2aPolicy === "allow" || p.a2aPolicy === "ask" || p.a2aPolicy === "deny") {
-      raw.a2aPolicy = p.a2aPolicy;
-    } else {
-      throw new RpcError(-32602, `Invalid a2aPolicy: ${String(p.a2aPolicy)}`);
-    }
-  }
-  if ("allowedProfiles" in p) {
+  if ("allowedProfiles" in p || "roster" in p || "a2aPolicy" in p) {
     throw new RpcError(
       -32602,
-      "registry.role.* no longer accepts allowedProfiles; use roster (agentIds). Legacy allowedProfiles is migrated once from disk only."
+      "registry.role.* does not accept a2aPolicy/roster/allowedProfiles; ACP launch routes are configured in machine Settings"
     );
-  }
-  if ("roster" in p) {
-    if (p.roster === null) {
-      raw.roster = [];
-    } else if (!Array.isArray(p.roster)) {
-      throw new RpcError(-32602, "roster must be an array of agentId strings");
-    } else {
-      for (const item of p.roster) {
-        if (typeof item !== "string") {
-          throw new RpcError(-32602, "roster must be an array of agentId strings");
-        }
-      }
-      raw.roster = normalizeAgentIdList(p.roster) ?? [];
-    }
   }
   if ("cli" in p) {
     if (p.cli === null) {
@@ -26800,11 +26235,6 @@ function parseRoleDefinitionParams(p, opts) {
     const role = normalizeRoleDefinition(raw);
     if (opts.requireName && !role.name) {
       throw new RpcError(-32602, "Role name cannot be empty.");
-    }
-    if ("roster" in p) {
-      const normalized = normalizeAgentIdList(Array.isArray(p.roster) ? p.roster : []);
-      if (normalized) role.roster = normalized;
-      else delete role.roster;
     }
     return role;
   } catch (err) {
@@ -26825,140 +26255,6 @@ function mapRoleRegistryError(err, surface) {
     return new RpcError(-32602, message2);
   }
   return new RpcError(-32e3, message2);
-}
-async function agentList(ctx) {
-  const { agents } = await loadAgentDefinitions(ctx.dataDir);
-  const profiles = new Set(ctx.profileCatalog.list().map((p) => p.id));
-  return {
-    agents: agents.map(
-      (a) => projectAgentDefinition(a, { profileExists: profiles.has(a.profileId) })
-    ).sort((a, b) => a.id.localeCompare(b.id))
-  };
-}
-async function agentGet(ctx, p) {
-  const id = requireString(p, "id");
-  const { agents } = await loadAgentDefinitions(ctx.dataDir);
-  const agent = findAgentDefinition(agents, id);
-  if (!agent) {
-    throw new RpcError(-32004, `AgentDefinition not found: ${id}`);
-  }
-  const profileExists = !!ctx.profileCatalog.get(agent.profileId);
-  return { agent: projectAgentDefinition(agent, { profileExists }) };
-}
-async function agentCreate(ctx, p) {
-  requireUserActor(p, "agent.create");
-  if ("agent" in p && typeof p.agent === "object" && p.agent !== null) {
-    throw new RpcError(
-      -32602,
-      "agent.create does not accept nested agent; pass fields at the top level"
-    );
-  }
-  let parsed;
-  try {
-    parsed = parseAgentDefinitionParams(p, { requireId: true });
-  } catch (err) {
-    throw new RpcError(-32602, err instanceof Error ? err.message : "Invalid agent definition");
-  }
-  if (!parsed.id || !parsed.profileId) {
-    throw new RpcError(-32602, "agent.create requires id and profileId");
-  }
-  if (!ctx.profileCatalog.get(parsed.profileId)) {
-    throw new RpcError(-32004, `Profile not found: ${parsed.profileId}`);
-  }
-  const { agents } = await loadAgentDefinitions(ctx.dataDir);
-  if (findAgentDefinition(agents, parsed.id)) {
-    throw new RpcError(-32602, `AgentDefinition already exists: ${parsed.id}`);
-  }
-  const created = normalizeAgentDefinition({
-    id: parsed.id,
-    profileId: parsed.profileId,
-    displayName: parsed.displayName,
-    description: parsed.description
-  });
-  const next = [...agents, created].sort((a, b) => a.id.localeCompare(b.id));
-  await saveAgentDefinitions(ctx.dataDir, next);
-  const projection = projectAgentDefinition(created, { profileExists: true });
-  ctx.events.emit(
-    "agent.changed",
-    "",
-    { action: "create", id: created.id, agent: projection },
-    "self"
-  );
-  return { agent: projection };
-}
-async function agentUpdate(ctx, p) {
-  requireUserActor(p, "agent.update");
-  if ("agent" in p && typeof p.agent === "object" && p.agent !== null) {
-    throw new RpcError(
-      -32602,
-      "agent.update does not accept nested agent; pass { id, ...patch }"
-    );
-  }
-  const id = requireString(p, "id");
-  let parsed;
-  try {
-    parsed = parseAgentDefinitionParams({ ...p, id }, { forUpdate: true });
-  } catch (err) {
-    throw new RpcError(-32602, err instanceof Error ? err.message : "Invalid agent definition");
-  }
-  const { agents } = await loadAgentDefinitions(ctx.dataDir);
-  const index2 = agents.findIndex((a) => a.id === id);
-  if (index2 === -1) {
-    throw new RpcError(-32004, `AgentDefinition not found: ${id}`);
-  }
-  const current = agents[index2];
-  if (parsed.profileId && !ctx.profileCatalog.get(parsed.profileId)) {
-    throw new RpcError(-32004, `Profile not found: ${parsed.profileId}`);
-  }
-  const nextRow = normalizeAgentDefinition({
-    id: current.id,
-    profileId: parsed.profileId ?? current.profileId,
-    displayName: "displayName" in p ? parsed.displayName : current.displayName,
-    description: "description" in p ? parsed.description : current.description
-  });
-  if ("displayName" in p && (p.displayName === null || p.displayName === "")) {
-    delete nextRow.displayName;
-  }
-  if ("description" in p && (p.description === null || p.description === "")) {
-    delete nextRow.description;
-  }
-  const next = [...agents];
-  next[index2] = nextRow;
-  await saveAgentDefinitions(ctx.dataDir, next);
-  const profileExists = !!ctx.profileCatalog.get(nextRow.profileId);
-  const projection = projectAgentDefinition(nextRow, { profileExists });
-  ctx.events.emit(
-    "agent.changed",
-    "",
-    { action: "update", id: nextRow.id, agent: projection },
-    "self"
-  );
-  return { agent: projection };
-}
-async function agentDelete(ctx, p) {
-  requireUserActor(p, "agent.delete");
-  const id = requireString(p, "id");
-  const confirmation = requireString(p, "confirmation");
-  if (confirmation !== id) {
-    throw new RpcError(-32602, `Confirmation mismatch; enter the agent id ${id}.`);
-  }
-  const { agents } = await loadAgentDefinitions(ctx.dataDir);
-  const index2 = agents.findIndex((a) => a.id === id);
-  if (index2 === -1) {
-    throw new RpcError(-32004, `AgentDefinition not found: ${id}`);
-  }
-  const next = agents.filter((a) => a.id !== id);
-  await saveAgentDefinitions(ctx.dataDir, next);
-  ctx.events.emit("agent.changed", "", { action: "delete", id }, "self");
-  return { id, deleted: true };
-}
-async function ensureAgentDefsForRosterIds(ctx, agentIds) {
-  const { agents } = await loadAgentDefinitions(ctx.dataDir);
-  const { agents: next, added } = ensureAgentDefinitionsForProfileIds(agents, agentIds);
-  if (added) {
-    await saveAgentDefinitions(ctx.dataDir, next);
-  }
-  return next;
 }
 async function profileList(ctx, p) {
   const includeTest = p.includeTest === true;
@@ -27469,15 +26765,20 @@ async function taskDispatch(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const dispatchSelection = resolveTaskDispatchNodeSelection(p, mount.env.tentName);
-  const boxId = dispatchSelection.primaryId;
+  const primaryNodeId = dispatchSelection.primaryId;
   const nodeIds = dispatchSelection.nodeIds;
+  for (const retired of ["agentId", "profileId"]) {
+    if (p[retired] !== void 0 && p[retired] !== null) {
+      throw new RpcError(-32602, `task.dispatch ${retired} is retired; pass routeId`);
+    }
+  }
   const assigneeKindRaw = optionalString(p, "assigneeKind");
-  const assigneeKind = assigneeKindRaw === "agentProfile" ? "agentProfile" : assigneeKindRaw === "role" || !assigneeKindRaw ? "role" : (() => {
+  const assigneeKind = assigneeKindRaw === "route" ? "agentProfile" : assigneeKindRaw === "role" || !assigneeKindRaw ? "role" : (() => {
     throw new RpcError(-32602, `Invalid assigneeKind: ${assigneeKindRaw}`);
   })();
   const role = optionalString(p, "role");
-  const agentIdParam = optionalString(p, "agentId");
-  let profileId = optionalString(p, "profileId");
+  const routeId = optionalString(p, "routeId");
+  const profileId = routeId;
   const prompt = requireString(p, "prompt");
   const asSub = p.asSub === true;
   if ("dispatchedBy" in p && p.dispatchedBy !== void 0 && p.dispatchedBy !== null) {
@@ -27490,7 +26791,6 @@ async function taskDispatch(ctx, p) {
   const explicitReviewer = parseOptionalTaskActor(p.reviewer, "reviewer");
   const explicitDeliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
   const startSession = p.startSession === true;
-  const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
   if ("a2aPolicyOverride" in p) {
     throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
   }
@@ -27501,74 +26801,26 @@ async function taskDispatch(ctx, p) {
   if (assigneeKind === "role" && !role) {
     throw new RpcError(-32602, "task.dispatch with assigneeKind=role requires role");
   }
-  let resolvedAgentId;
-  if (agentIdParam) {
-    if (assigneeKind !== "agentProfile") {
-      throw new RpcError(
-        -32602,
-        "task.dispatch with agentId requires assigneeKind=agentProfile (logical agent \u2192 profile launch)"
-      );
-    }
-    const { agents } = await loadAgentDefinitions(ctx.dataDir);
-    try {
-      const resolved = resolveProfileIdForAgent(agents, agentIdParam);
-      if (profileId && profileId !== resolved) {
-        throw new RpcError(
-          -32602,
-          `task.dispatch agentId ${agentIdParam} binds profileId ${resolved}; got conflicting profileId ${profileId}`
-        );
-      }
-      profileId = resolved;
-      resolvedAgentId = agentIdParam.trim();
-    } catch (err) {
-      const message2 = err instanceof Error ? err.message : String(err);
-      if (/not found/i.test(message2)) {
-        throw new RpcError(-32004, message2);
-      }
-      throw new RpcError(-32602, message2);
-    }
-    const parentIsRole = resolvedActors.parentActor.kind === "role";
-    const callerIsRole = callerKind === "role";
-    if (callerIsRole !== parentIsRole) {
-      throw new RpcError(
-        -32602,
-        callerIsRole ? "task.dispatch with agentId: callerKind=role requires parentActor kind=role (got user)" : "task.dispatch with agentId: callerKind=user requires parentActor kind=user (got role)",
-        {
-          callerKind,
-          parentActor: resolvedActors.parentActor,
-          reviewer: resolvedActors.reviewer
-        }
-      );
-    }
-    if (parentIsRole) {
-      await assertRoleRosterStandingAuth(ctx, mount.env.fs, {
-        dispatcher: resolvedActors.parentActor.id,
-        agentId: resolvedAgentId,
-        profileId
-      });
-    }
-  }
   if (assigneeKind === "agentProfile" && !profileId) {
     throw new RpcError(
       -32602,
-      "task.dispatch with assigneeKind=agentProfile requires profileId or agentId"
+      "task.dispatch with assigneeKind=route requires routeId"
     );
   }
-  if (assigneeKind === "agentProfile" && role && role !== profileId) {
-    throw new RpcError(
-      -32602,
-      "task.dispatch with assigneeKind=agentProfile must not pass a different role; profileId is the assignee label"
-    );
+  if (assigneeKind === "agentProfile" && role) {
+    throw new RpcError(-32602, "task.dispatch route target must not pass role");
   }
   if (assigneeKind === "agentProfile" && !ctx.profileCatalog.get(profileId)) {
-    throw new RpcError(-32004, `Profile not found: ${profileId}`);
+    throw new RpcError(-32004, `Settings route not found: ${profileId}`);
   }
   if (startSession && !profileId) {
     throw new RpcError(
       -32602,
-      "task.dispatch with startSession requires explicit profileId or agentId (no fake-default fallback)"
+      "task.dispatch with startSession requires explicit routeId"
     );
   }
+  const callerKind = resolvedActors.parentActor.kind;
+  const resolvedAgentId = void 0;
   const result = await ctx.mutations.run(workspaceId, async () => {
     const assigneeLabel = assigneeKind === "agentProfile" ? profileId : role;
     if (asSub) {
@@ -27660,7 +26912,6 @@ async function taskDispatch(ctx, p) {
           tentTaskDigest: bundle.tentTaskDigest || void 0,
           tentTaskVersion: bundle.tentTaskVersion || void 0,
           rolePrompt: bundle.rolePrompt || void 0,
-          rosterAgentIds: bundle.rosterAgentIds,
           profileId: bundle.profileId,
           adapterId: bundle.adapterId,
           purpose: bundle.purpose || void 0
@@ -27707,7 +26958,6 @@ async function taskDispatch(ctx, p) {
           tentTaskDigest: bundle.tentTaskDigest || void 0,
           tentTaskVersion: bundle.tentTaskVersion || void 0,
           rolePrompt: bundle.rolePrompt || void 0,
-          rosterAgentIds: bundle.rosterAgentIds,
           profileId: bundle.profileId,
           adapterId: bundle.adapterId,
           purpose: bundle.purpose || void 0
@@ -27721,7 +26971,7 @@ async function taskDispatch(ctx, p) {
         );
       }
     }
-    const dispatched2 = await dispatch(mount.env, boxId, assigneeKind === "role" ? role : void 0, {
+    const dispatched2 = await dispatch(mount.env, primaryNodeId, assigneeKind === "role" ? role : void 0, {
       userPrompt: prompt,
       parentActor: resolvedActors.parentActor,
       reviewer: resolvedActors.reviewer,
@@ -27750,7 +27000,6 @@ async function taskDispatch(ctx, p) {
         state: "queued",
         role: dispatched2.assignee,
         assigneeKind: dispatched2.assigneeKind,
-        boxId,
         nodeIds,
         reason: "task.dispatch"
       },
@@ -27838,7 +27087,7 @@ async function compensateCombinedDispatchStartSessionFailure(ctx, input) {
   } catch {
   }
 }
-async function assertSubDispatchPreconditions(fs23, input) {
+async function assertSubDispatchPreconditions(fs22, input) {
   if (input.parentActor.kind !== "role") {
     throw new RpcError(
       -32602,
@@ -27860,7 +27109,7 @@ async function assertSubDispatchPreconditions(fs23, input) {
       { parentActor: input.parentActor, assignee: input.assigneeLabel }
     );
   }
-  const registry = await loadRolesRegistry(fs23);
+  const registry = await loadRolesRegistry(fs22);
   const role = resolveRole(registry.roles, dispatcher);
   if (!role) {
     throw new RpcError(
@@ -27889,6 +27138,15 @@ function parseOptionalTaskActor(value, label) {
   }
 }
 function resolveTaskDispatchNodeSelection(p, tentName) {
+  for (const retired of ["boxId", "id", "claimId"]) {
+    if (p[retired] !== void 0 && p[retired] !== null) {
+      throw new RpcError(
+        -32602,
+        `task.dispatch ${retired} is retired; pass non-empty nodeIds[]`,
+        { field: retired }
+      );
+    }
+  }
   if ("nodeIds" in p && p.nodeIds !== void 0 && p.nodeIds !== null) {
     if (!Array.isArray(p.nodeIds)) {
       throw new RpcError(-32602, "Invalid string[] param: nodeIds");
@@ -27898,11 +27156,10 @@ function resolveTaskDispatchNodeSelection(p, tentName) {
     }
   }
   const rawNodeIds = optionalStringArray(p, "nodeIds");
-  const legacyPrimary = optionalString(p, "boxId") ?? optionalString(p, "id") ?? optionalString(p, "claimId");
   try {
     const nodeIds = resolveDispatchNodeIds({
       nodeIds: rawNodeIds,
-      legacyClaimId: legacyPrimary,
+      primaryNodeId: rawNodeIds?.[0] ?? "",
       tentName
     });
     return { nodeIds, primaryId: nodeIds[0] };
@@ -29228,12 +28485,12 @@ async function outputProvenanceRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const id = optionalString(p, "id") ?? optionalString(p, "outputId") ?? optionalString(p, "boxId");
-  const path24 = optionalString(p, "path");
-  if (!id && !path24) {
+  const path23 = optionalString(p, "path");
+  if (!id && !path23) {
     throw new RpcError(-32602, "output.provenance requires id, outputId, or path");
   }
   try {
-    const projected = await resolveOutputProvenance(mount.env.fs, { id, path: path24, outputId: id });
+    const projected = await resolveOutputProvenance(mount.env.fs, { id, path: path23, outputId: id });
     return projectOutputProvenanceWire(workspaceId, projected);
   } catch (err) {
     if (err instanceof OutputProvenanceError) throw outputProvenanceErrorToRpc(err);
@@ -29623,117 +28880,20 @@ async function stopUnboundManagedSession(ctx, sessionId, operation, detail) {
 async function prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, profileId, callerKind, opts) {
   const mount = ctx.host.require(workspaceId);
   const bootstrapPrompt = optionalString(p, "bootstrapPrompt");
-  const approvalId = optionalString(p, "approvalId");
-  const operation = opts?.operation ?? "startSession";
-  const verbLabel = operation === "replaceSession" ? "replaceSession" : "startSession";
-  if (approvalId) {
-    const approval = await ctx.a2a.get(approvalId);
-    if (!approval || approval.status !== "approved") {
-      throw new RpcError(RPC_A2A_DENIED, "A2A approval is missing or not approved", {
-        approvalId,
-        status: approval?.status
-      });
+  for (const retiredParam of ["approvalId", "agentId", "a2aPolicy"]) {
+    if (retiredParam in p) {
+      throw new RpcError(
+        -32602,
+        `task.startSession/task.replaceSession no longer accepts ${retiredParam}; machine Settings route availability is authoritative`
+      );
     }
-    if (approval.taskPath !== taskPath) {
-      throw new RpcError(RPC_A2A_DENIED, "A2A approval taskPath mismatch", { approvalId });
-    }
-    if (approval.workspaceId !== workspaceId) {
-      throw new RpcError(RPC_A2A_DENIED, "A2A approval workspace mismatch", { approvalId });
-    }
-    if (approval.profileId !== profileId) {
-      throw new RpcError(RPC_A2A_DENIED, "A2A approval profile mismatch", {
-        approvalId,
-        approvedProfileId: approval.profileId,
-        requestedProfileId: profileId
-      });
-    }
-  } else {
-    const taskForPolicy = await loadTaskEnvelope(mount.env.fs, taskPath);
-    const taskAgentId = typeof taskForPolicy.agentId === "string" ? taskForPolicy.agentId.trim() : "";
-    if (callerKind === "role" && taskAgentId) {
-      const authorityRole = resolveA2AAuthorityRole(taskForPolicy, callerKind);
-      await assertRoleRosterStandingAuth(ctx, mount.env.fs, {
-        dispatcher: authorityRole,
-        agentId: taskAgentId,
-        profileId,
-        requireBoundProfileMatch: true
-      });
-    } else {
-      const authorityRole = resolveA2AAuthorityRole(taskForPolicy, callerKind);
-      const a2aPolicy = await resolveStartSessionA2APolicy(mount.env.fs, {
-        callerKind,
-        taskRole: authorityRole,
-        requireRegisteredRole: callerKind === "role" && (taskParentIsRole(taskForPolicy) || taskAsSub(taskForPolicy) || taskAssigneeKind(taskForPolicy) === "agentProfile")
-      });
-      const profileAllowed = callerKind === "user" ? true : await resolveRoleLaunchAllowed(ctx, mount.env.fs, {
-        taskRole: authorityRole,
-        profileId,
-        agentId: optionalString(p, "agentId"),
-        policy: a2aPolicy
-      });
-      const decision = evaluateA2A({
-        callerKind,
-        policy: a2aPolicy,
-        profileAllowed
-      });
-      if (decision === "deny") {
-        throw new RpcError(RPC_A2A_DENIED, "A2A policy denies starting a new runtime session", {
-          policy: a2aPolicy,
-          callerKind,
-          role: authorityRole,
-          profileId,
-          agentId: optionalString(p, "agentId") || taskForPolicy.agentId,
-          profileAllowed,
-          reason: profileAllowed ? "a2a_policy" : "out_of_roster"
-        });
-      }
-      if (decision === "ask") {
-        const task2 = taskForPolicy;
-        const item = await ctx.a2a.add({
-          id: makeApprovalId(),
-          workspaceId,
-          taskPath,
-          taskId: task2.id,
-          role: authorityRole || task2.role,
-          profileId,
-          policy: "ask",
-          callerKind,
-          bootstrapPrompt,
-          status: "pending",
-          createdAt: (/* @__PURE__ */ new Date()).toISOString()
-        });
-        ctx.events.emit(
-          "a2a.ask",
-          workspaceId,
-          {
-            approvalId: item.id,
-            taskPath,
-            role: authorityRole || task2.role,
-            profileId,
-            summary: `Role ${authorityRole || task2.role} requests ${verbLabel} on profile ${profileId}`
-          },
-          "service"
-        );
-        if (task2.state === "running") {
-          await ctx.mutations.run(workspaceId, async () => {
-            ctx.host.markSelfWrite(workspaceId);
-            const waited = await taskWait(mount.env, taskPath, {
-              reason: "a2a-approval",
-              summary: `Awaiting user A2A approval ${item.id}`
-            });
-            emitTaskState(ctx, workspaceId, waited, "a2a.ask");
-          });
-        }
-        throw new RpcError(
-          RPC_A2A_ASK,
-          `A2A policy requires user approval before ${verbLabel}`,
-          {
-            approvalId: item.id,
-            policy: "ask"
-          }
-        );
-      }
-    }
+  }
+  const routeProfile = ctx.profileCatalog.get(profileId);
+  if (!routeProfile?.adapterId) {
+    throw new RpcError(-32602, `Machine Settings route is unavailable: ${profileId}`, {
+      code: "ROUTE_UNAVAILABLE",
+      profileId
+    });
   }
   let task = await loadTaskEnvelope(mount.env.fs, taskPath);
   if (opts?.skipReuseAndLaunchPrep) {
@@ -29761,7 +28921,7 @@ async function prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, 
   if (task.state !== "running" && task.state !== "waiting") {
     throw new RpcError(
       RPC_LIFECYCLE,
-      `task.startSession requires running (or waiting after approval); got ${task.state}`
+      `task.startSession requires running or waiting; got ${task.state}`
     );
   }
   if (task.state === "waiting") {
@@ -30277,7 +29437,6 @@ async function taskReplaceSessionRpc(ctx, p) {
     });
   }
   await prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, profileId, callerKind, {
-    operation: "replaceSession",
     skipReuseAndLaunchPrep: true
   });
   return runManagedSessionFlight(
@@ -34162,11 +33321,11 @@ async function buildRejectResumeRecoveryOrientation(ctx, task, roots, opts) {
 ${lines.join("\n")}
 `;
 }
-async function loadRejectedDeliveryForRejectResume(fs23, task) {
+async function loadRejectedDeliveryForRejectResume(fs22, task) {
   const taskId = task.id?.trim();
   if (!taskId) return void 0;
   try {
-    const deliveries = await loadDeliveries(fs23, { taskId });
+    const deliveries = await loadDeliveries(fs22, { taskId });
     const rejected = deliveries.find((d) => d.status === "rejected");
     if (!rejected) return void 0;
     return {
@@ -34600,103 +33759,10 @@ function requireProfileId(p, verb = "task.startSession") {
   if (!profileId) {
     throw new RpcError(
       -32602,
-      `${verb} requires explicit profileId (no fake-default or product-profile fallback)`
+      `${verb} requires explicit profileId (machine Settings route key)`
     );
   }
   return profileId;
-}
-async function resolveStartSessionA2APolicy(fs23, input) {
-  if (input.callerKind === "user") return "allow";
-  const registry = await loadRolesRegistry(fs23);
-  const role = resolveRole(registry.roles, input.taskRole);
-  if (input.requireRegisteredRole && !role) {
-    throw new RpcError(
-      -32602,
-      `A2A authority role not found in registry: ${input.taskRole}`,
-      { role: input.taskRole }
-    );
-  }
-  return roleA2APolicy(role);
-}
-async function resolveRoleLaunchAllowed(ctx, fs23, input) {
-  if (input.policy !== "allow") return true;
-  await ensureRolesRosterMigrated(fs23);
-  const registry = await loadRolesRegistry(fs23);
-  const role = resolveRole(registry.roles, input.taskRole);
-  const roster = roleRoster(role);
-  if (roster.length === 0) return false;
-  const agents = await ensureAgentDefsForRosterIds(ctx, roster);
-  const explicit = input.agentId?.trim() || "";
-  if (explicit) {
-    if (!roleAllowsAgent(role, explicit)) return false;
-    const def = findAgentDefinition(agents, explicit);
-    if (def && def.profileId !== input.profileId) return false;
-    return true;
-  }
-  try {
-    const resolved = resolveAgentIdForProfileOnRoster(agents, roster, input.profileId);
-    return roleAllowsAgent(role, resolved);
-  } catch {
-    return false;
-  }
-}
-async function assertRoleRosterStandingAuth(ctx, fs23, input) {
-  const authorityRef = input.dispatcher?.trim();
-  if (!authorityRef || authorityRef === "user") {
-    throw new RpcError(
-      -32602,
-      "Role-agent dispatch requires parentActor kind=role naming a durable role (roster authority)",
-      { parentActor: authorityRef || null }
-    );
-  }
-  const agentId = input.agentId.trim();
-  if (!agentId) {
-    throw new RpcError(-32602, "Role-agent path requires non-empty agentId");
-  }
-  await ensureRolesRosterMigrated(fs23);
-  const registry = await loadRolesRegistry(fs23);
-  const role = resolveRole(registry.roles, authorityRef);
-  if (!role) {
-    throw new RpcError(-32602, `A2A authority role not found in registry: ${authorityRef}`, {
-      role: authorityRef
-    });
-  }
-  const roster = roleRoster(role);
-  const agents = await ensureAgentDefsForRosterIds(ctx, roster);
-  if (!roleAllowsAgent(role, agentId)) {
-    throw new RpcError(
-      RPC_A2A_DENIED,
-      `Agent ${agentId} is not on role ${role.name} roster (standing authorization)`,
-      {
-        role: role.name,
-        agentId,
-        profileId: input.profileId,
-        roster,
-        reason: "out_of_roster"
-      }
-    );
-  }
-  if (input.requireBoundProfileMatch !== false) {
-    const def = findAgentDefinition(agents, agentId);
-    if (!def) {
-      const { agents: all2 } = await loadAgentDefinitions(ctx.dataDir);
-      const found = findAgentDefinition(all2, agentId);
-      if (!found) {
-        throw new RpcError(-32004, `AgentDefinition not found: ${agentId}`);
-      }
-      if (found.profileId !== input.profileId) {
-        throw new RpcError(
-          -32602,
-          `Agent ${agentId} binds profileId ${found.profileId}; got ${input.profileId}`
-        );
-      }
-    } else if (def.profileId !== input.profileId) {
-      throw new RpcError(
-        -32602,
-        `Agent ${agentId} binds profileId ${def.profileId}; got ${input.profileId}`
-      );
-    }
-  }
 }
 function parseCallerKind(raw) {
   if (raw === "user" || raw === "role") return raw;
@@ -34704,16 +33770,16 @@ function parseCallerKind(raw) {
 }
 function resolveConcept2(tent, p) {
   const id = optionalString(p, "id") ?? optionalString(p, "boxId");
-  const path24 = optionalString(p, "path");
+  const path23 = optionalString(p, "path");
   if (id) {
     const byId = tent.byId.get(id);
     if (byId) return byId;
     throw new RpcError(-32004, `Concept not found: ${id}`);
   }
-  if (path24) {
-    const byPath = tent.byPath.get(path24);
+  if (path23) {
+    const byPath = tent.byPath.get(path23);
     if (byPath) return byPath;
-    throw new RpcError(-32004, `Concept not found: ${path24}`);
+    throw new RpcError(-32004, `Concept not found: ${path23}`);
   }
   throw new RpcError(-32602, "Concept lookup requires id, boxId, or path");
 }
@@ -34803,12 +33869,12 @@ function requireMountByWorkspaceRoot(ctx, workspaceRoot) {
   throw new Error(`No mounted workspace for integration re-read: ${workspaceRoot}`);
 }
 async function loadTaskEnvelopeForIntegration(ctx, workspaceRoot, taskPath, fallback) {
-  const path24 = taskPath.trim() || fallback.path;
-  if (!path24) {
+  const path23 = taskPath.trim() || fallback.path;
+  if (!path23) {
     throw new Error("Integration re-read requires taskPath");
   }
   const mount = requireMountByWorkspaceRoot(ctx, workspaceRoot);
-  return loadTaskEnvelope(mount.env.fs, path24);
+  return loadTaskEnvelope(mount.env.fs, path23);
 }
 function uniqueCommitRefs(commits) {
   return [...new Set((commits ?? []).map((c) => c.trim()).filter(Boolean))];
@@ -34853,9 +33919,9 @@ async function assertIntegrationTargetHeadUnchanged(workspaceRoot, task, expecte
     );
   }
 }
-async function loadReadyDeliveryTargetHead(fs23, task) {
+async function loadReadyDeliveryTargetHead(fs22, task) {
   const taskId = task.id || task.path;
-  const deliveries = await loadDeliveries(fs23, { taskId });
+  const deliveries = await loadDeliveries(fs22, { taskId });
   const activeId = task.activeDeliveryId?.trim();
   const ready = (activeId ? deliveries.find((d) => d.id === activeId && d.status === "ready") : void 0) ?? deliveries.find((d) => d.status === "ready");
   return ready?.targetHead?.trim() || void 0;
@@ -35041,32 +34107,6 @@ async function findResumableManagedSessionsForProfile(ctx, workspaceId, profileI
   }
   return out;
 }
-function resolveA2AAuthorityRole(task, callerKind) {
-  if (callerKind === "user") return task.role;
-  if (taskParentIsRole(task) || taskAsSub(task) || taskAssigneeKind(task) === "agentProfile") {
-    const dispatcher = taskParentRoleId(task);
-    if (!dispatcher) {
-      throw new RpcError(
-        -32602,
-        taskAsSub(task) || taskParentIsRole(task) ? "callerKind=role startSession on parent-Role task requires parentActor kind=role" : "callerKind=role startSession on agentProfile task requires parentActor kind=role",
-        {
-          parentActor: task.parentActor,
-          assignee: task.role,
-          asSub: taskAsSub(task)
-        }
-      );
-    }
-    if (dispatcher === task.role) {
-      throw new RpcError(
-        -32602,
-        "callerKind=role startSession must not use the assignee label as parent Role",
-        { parentActor: task.parentActor, assignee: task.role }
-      );
-    }
-    return dispatcher;
-  }
-  return task.role;
-}
 function projectStartSessionResult(workspaceId, taskPath, task, session, extra) {
   const cwd = extra?.cwd ?? session.runtimeWorkspace?.cwd ?? task.worktree ?? void 0;
   return {
@@ -35177,7 +34217,7 @@ function buildContextCardManagedBootstrap(task, contextCard, roots) {
     systemRoot: roots.systemRoot,
     agentsPointer: "AGENTS.md at workspace root (authoritative workspace agents file)",
     tentRoleSection: roots.tentRoleSection,
-    rolePromptRosterSection: roots.rolePromptRosterSection,
+    rolePromptSection: roots.rolePromptSection,
     tentTaskSection: roots.tentTaskSection,
     contextCard,
     taskPointers: pointers,
@@ -35193,11 +34233,11 @@ ${assembly.text}`;
   return `--- Tent managed session delta (contextGeneration=${contextCard.contextGeneration}) ---
 ${assembly.text}`;
 }
-async function collectTaskBootstrapImageRefs(fs23, task) {
+async function collectTaskBootstrapImageRefs(fs22, task) {
   const userPrompt = extractTaskUserPrompt(task);
   const claimBodies = [];
   try {
-    const tent = await loadTent(fs23);
+    const tent = await loadTent(fs22);
     const nodeIds = task.contextCard != null ? taskReferencedNodeIds(task) : [];
     for (const nodeId of nodeIds) {
       if (!nodeId || nodeId === "root") continue;
@@ -35385,7 +34425,7 @@ function normalizeTagsForCompare(value) {
 }
 function normalizeRelationsForCompare(value) {
   if (!Array.isArray(value)) return [];
-  return value.filter((item) => isRecord10(item)).map((item) => {
+  return value.filter((item) => isRecord9(item)).map((item) => {
     const keys = Object.keys(item).sort((a, b) => a.localeCompare(b));
     const ordered = {};
     for (const k of keys) ordered[k] = item[k];
@@ -35432,24 +34472,24 @@ function headerValue(headers, name) {
 }
 
 // src/service/data-dir.ts
-import * as fs18 from "node:fs/promises";
+import * as fs16 from "node:fs/promises";
 import { isIP } from "node:net";
 import * as os5 from "node:os";
-import * as path16 from "node:path";
+import * as path14 from "node:path";
 function defaultServiceDataDir(env = process.env) {
-  if (env.TENT_SERVICE_DATA_DIR) return path16.resolve(env.TENT_SERVICE_DATA_DIR);
+  if (env.TENT_SERVICE_DATA_DIR) return path14.resolve(env.TENT_SERVICE_DATA_DIR);
   if (process.platform === "win32") {
-    const base = env.APPDATA || path16.join(os5.homedir(), "AppData", "Roaming");
-    return path16.join(base, "Tent");
+    const base = env.APPDATA || path14.join(os5.homedir(), "AppData", "Roaming");
+    return path14.join(base, "Tent");
   }
   if (process.platform === "darwin") {
-    return path16.join(os5.homedir(), "Library", "Application Support", "Tent");
+    return path14.join(os5.homedir(), "Library", "Application Support", "Tent");
   }
-  const xdg = env.XDG_STATE_HOME || path16.join(os5.homedir(), ".local", "state");
-  return path16.join(xdg, "tent");
+  const xdg = env.XDG_STATE_HOME || path14.join(os5.homedir(), ".local", "state");
+  return path14.join(xdg, "tent");
 }
 function serviceEndpointPath(dataDir) {
-  return path16.join(dataDir, "service.json");
+  return path14.join(dataDir, "service.json");
 }
 function serviceBaseUrl(host, port) {
   const authorityHost = isIP(host) === 6 ? `[${host}]` : host;
@@ -35472,7 +34512,7 @@ async function writeServiceEndpoint(dataDir, record) {
 async function readServiceEndpoint(dataDir) {
   const file = serviceEndpointPath(dataDir);
   try {
-    const raw = await fs18.readFile(file, "utf8");
+    const raw = await fs16.readFile(file, "utf8");
     let data;
     try {
       data = JSON.parse(raw);
@@ -35494,7 +34534,7 @@ async function removeServiceEndpoint(dataDir, expectedInstanceId) {
       const endpoint = await readServiceEndpoint(dataDir);
       if (endpoint?.instanceId !== expectedInstanceId) return;
     }
-    await fs18.rm(serviceEndpointPath(dataDir), { force: true });
+    await fs16.rm(serviceEndpointPath(dataDir), { force: true });
   } catch {
   }
 }
@@ -35989,8 +35029,8 @@ var EventBus = class {
 // src/service/workspace-host.ts
 import { createHash as createHash4 } from "node:crypto";
 import { watch } from "node:fs";
-import * as fs19 from "node:fs/promises";
-import * as path17 from "node:path";
+import * as fs17 from "node:fs/promises";
+import * as path15 from "node:path";
 var WORKSPACE_ID_DIGEST_LEN = 12;
 var WorkspaceHost = class {
   constructor(options) {
@@ -36024,10 +35064,10 @@ var WorkspaceHost = class {
     return this.foregroundId;
   }
   async mount(workspaceRoot, opts) {
-    const resolved = path17.resolve(workspaceRoot);
+    const resolved = path15.resolve(workspaceRoot);
     let root;
     try {
-      root = await fs19.realpath(resolved);
+      root = await fs17.realpath(resolved);
     } catch (error) {
       const err = error;
       if (err?.code === "ENOENT") {
@@ -36036,9 +35076,9 @@ var WorkspaceHost = class {
       throw error;
     }
     const systemRoot = systemRootFromWorkspace(root);
-    const indexPath = path17.join(systemRoot, INDEX_PATH);
+    const indexPath = path15.join(systemRoot, INDEX_PATH);
     try {
-      await fs19.access(indexPath);
+      await fs17.access(indexPath);
     } catch {
       throw new Error(
         `No in-workspace Tent at ${systemRoot}. Expected ${TENT_SYSTEM_DIR}/${INDEX_PATH}.`
@@ -36053,7 +35093,7 @@ var WorkspaceHost = class {
     if (this.mounts.has(workspaceId)) {
       throw new Error(`workspaceId already mounted: ${workspaceId}`);
     }
-    const tentName = opts?.tentName?.trim() || path17.basename(root) || "tent";
+    const tentName = opts?.tentName?.trim() || path15.basename(root) || "tent";
     const fsa = new NodeFs(systemRoot);
     const env = {
       fs: fsa,
@@ -36278,7 +35318,7 @@ function isTempWatchPath(value) {
   return key2 === "temp" || key2.startsWith("temp/");
 }
 function makeWorkspaceId(workspaceRoot) {
-  const base = path17.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
+  const base = path15.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
   const identity = process.platform === "win32" ? workspaceRoot.toLowerCase() : workspaceRoot;
   const digest = createHash4("sha256").update(identity).digest("base64url").slice(0, WORKSPACE_ID_DIGEST_LEN);
   return `ws-${base}-${digest}`;
@@ -36287,9 +35327,190 @@ function makeWorkspaceId(workspaceRoot) {
 // src/service/protocol.ts
 var TENT_SERVICE_PROTOCOL_VERSION = 1;
 
+// src/service/a2a-store.ts
+import * as fs18 from "node:fs/promises";
+import * as path16 from "node:path";
+var A2A_POLICIES = /* @__PURE__ */ new Set(["allow", "ask", "deny"]);
+var A2A_CALLER_KINDS = /* @__PURE__ */ new Set(["user", "role"]);
+var A2A_APPROVAL_STATUSES = /* @__PURE__ */ new Set([
+  "pending",
+  "approved",
+  "denied"
+]);
+function cloneApproval(item) {
+  return { ...item };
+}
+function isRecord10(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+function isRequiredString4(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function isOptionalString3(value) {
+  return value === void 0 || typeof value === "string";
+}
+function isValidDate5(value) {
+  return Number.isFinite(Date.parse(value));
+}
+function parseA2AApproval(value) {
+  if (!isRecord10(value)) return null;
+  const {
+    id,
+    workspaceId,
+    taskPath,
+    taskId,
+    role,
+    profileId,
+    policy,
+    callerKind,
+    bootstrapPrompt,
+    status,
+    createdAt,
+    resolvedAt,
+    resolvedBy
+  } = value;
+  if (!isRequiredString4(id) || !isRequiredString4(workspaceId) || !isRequiredString4(taskPath) || !isRequiredString4(role) || !isRequiredString4(profileId) || !isRequiredString4(createdAt) || !isValidDate5(createdAt) || typeof policy !== "string" || !A2A_POLICIES.has(policy) || typeof callerKind !== "string" || !A2A_CALLER_KINDS.has(callerKind) || typeof status !== "string" || !A2A_APPROVAL_STATUSES.has(status) || !isOptionalString3(taskId) || !isOptionalString3(bootstrapPrompt) || !isOptionalString3(resolvedAt) || !isOptionalString3(resolvedBy) || resolvedAt !== void 0 && !isValidDate5(resolvedAt)) {
+    return null;
+  }
+  return {
+    id,
+    workspaceId,
+    taskPath,
+    ...taskId !== void 0 ? { taskId } : {},
+    role,
+    profileId,
+    policy,
+    callerKind,
+    ...bootstrapPrompt !== void 0 ? { bootstrapPrompt } : {},
+    status,
+    createdAt,
+    ...resolvedAt !== void 0 ? { resolvedAt } : {},
+    ...resolvedBy !== void 0 ? { resolvedBy } : {}
+  };
+}
+var A2AApprovalStore = class {
+  constructor(dataDir, options) {
+    this.items = /* @__PURE__ */ new Map();
+    this.loaded = false;
+    /** Serialize load + mutations + persist (same pattern as ToolApprovalStore). */
+    this.chain = Promise.resolve();
+    this.file = path16.join(dataDir, "a2a-approvals.json");
+    this.writeState = options?.writeState ?? writeJsonAtomic;
+  }
+  enqueue(fn) {
+    const run = this.chain.then(fn, fn);
+    this.chain = run.then(
+      () => void 0,
+      () => void 0
+    );
+    return run;
+  }
+  async ensureLoaded() {
+    if (this.loaded) return;
+    return this.enqueue(async () => {
+      if (this.loaded) return;
+      try {
+        const raw = await fs18.readFile(this.file, "utf8");
+        let parsed;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          await this.quarantineCorrupt("reset");
+          this.loaded = true;
+          return;
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          await this.quarantineCorrupt("reset");
+          this.loaded = true;
+          return;
+        }
+        const items = parsed.items;
+        if (items !== void 0 && !Array.isArray(items)) {
+          await this.quarantineCorrupt("reset");
+          this.loaded = true;
+          return;
+        }
+        const loaded = /* @__PURE__ */ new Map();
+        for (const item of items ?? []) {
+          const restored = parseA2AApproval(item);
+          if (!restored) {
+            await this.quarantineCorrupt("reset");
+            this.loaded = true;
+            return;
+          }
+          loaded.set(restored.id, restored);
+        }
+        this.items = loaded;
+        this.loaded = true;
+      } catch (err) {
+        if (isNotFoundError(err)) {
+          this.loaded = true;
+          return;
+        }
+        throw err;
+      }
+    });
+  }
+  async listPending(workspaceId) {
+    await this.ensureLoaded();
+    return [...this.items.values()].filter(
+      (i) => i.status === "pending" && (!workspaceId || i.workspaceId === workspaceId)
+    ).map(cloneApproval);
+  }
+  async get(id) {
+    await this.ensureLoaded();
+    const item = this.items.get(id);
+    return item ? cloneApproval(item) : void 0;
+  }
+  async add(item) {
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      const stored = cloneApproval(item);
+      const next = new Map(this.items);
+      next.set(stored.id, stored);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneApproval(stored);
+    });
+  }
+  async resolve(id, decision, resolvedBy) {
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      const item = this.items.get(id);
+      if (!item) throw new Error(`A2A approval not found: ${id}`);
+      if (item.status !== "pending") {
+        throw new Error(`A2A approval already ${item.status}: ${id}`);
+      }
+      const resolved = {
+        ...item,
+        status: decision,
+        resolvedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        resolvedBy
+      };
+      const next = new Map(this.items);
+      next.set(id, resolved);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneApproval(resolved);
+    });
+  }
+  async quarantineCorrupt(action) {
+    const backupPath = await backupCorruptMachineFile(this.file);
+    warnCorruptMachineState(this.file, backupPath, action);
+    this.items.clear();
+  }
+  /** Persist a candidate snapshot before making it visible in memory. */
+  async persistSnapshot(snapshot) {
+    const items = [...snapshot.values()];
+    const pending = items.filter((i) => i.status === "pending");
+    const terminal = items.filter((i) => i.status !== "pending").sort((a, b) => (b.resolvedAt || "").localeCompare(a.resolvedAt || "")).slice(0, 50);
+    await this.writeState(this.file, { items: [...pending, ...terminal] });
+  }
+};
+
 // src/service/tool-approval-store.ts
-import * as fs20 from "node:fs/promises";
-import * as path18 from "node:path";
+import * as fs19 from "node:fs/promises";
+import * as path17 from "node:path";
 function resolveToolApprovalWorkspaceId(sessionWorkspace) {
   if (typeof sessionWorkspace !== "string") return null;
   const workspaceId = sessionWorkspace.trim();
@@ -36377,7 +35598,7 @@ var ToolApprovalStore = class {
     this.shutdownPromise = null;
     /** Serialize mutations + persist (same pattern as SessionRegistry write chain). */
     this.chain = Promise.resolve();
-    this.file = path18.join(dataDir, "tool-approvals.json");
+    this.file = path17.join(dataDir, "tool-approvals.json");
     this.writeState = options?.writeState ?? writeJsonAtomic;
   }
   enqueue(fn) {
@@ -36393,7 +35614,7 @@ var ToolApprovalStore = class {
     return this.enqueue(async () => {
       if (this.loaded) return;
       try {
-        const raw = await fs20.readFile(this.file, "utf8");
+        const raw = await fs19.readFile(this.file, "utf8");
         let parsed;
         try {
           parsed = JSON.parse(raw);
@@ -36719,8 +35940,8 @@ function makeToolApprovalId(rand = Math.random) {
 }
 
 // src/service/managed-delivery-report-draft-store.ts
-import * as fs21 from "node:fs/promises";
-import * as path19 from "node:path";
+import * as fs20 from "node:fs/promises";
+import * as path18 from "node:path";
 function cloneDraft(item) {
   return { ...item };
 }
@@ -36792,7 +36013,7 @@ var ManagedDeliveryReportDraftStore = class {
     this.closed = false;
     this.shutdownPromise = null;
     this.chain = Promise.resolve();
-    this.file = path19.join(dataDir, "managed-delivery-report-drafts.json");
+    this.file = path18.join(dataDir, "managed-delivery-report-drafts.json");
     this.writeState = options?.writeState ?? writeJsonAtomic;
   }
   /** Absolute path of the durable JSON file (tests / diagnostics). */
@@ -36812,7 +36033,7 @@ var ManagedDeliveryReportDraftStore = class {
     return this.enqueue(async () => {
       if (this.loaded) return;
       try {
-        const raw = await fs21.readFile(this.file, "utf8");
+        const raw = await fs20.readFile(this.file, "utf8");
         let parsed;
         try {
           parsed = JSON.parse(raw);
@@ -37363,7 +36584,7 @@ var AgentProfileCatalog = class {
 };
 
 // src/runtime/agent-runtime.ts
-import * as path20 from "node:path";
+import * as path19 from "node:path";
 
 // src/runtime/process-supervisor.ts
 import { spawn as spawn5 } from "node:child_process";
@@ -37671,7 +36892,7 @@ var AgentRuntime = class {
     this.followUpAttemptsForTests = [];
     this.closing = false;
     this.closed = false;
-    this.dataDir = path20.resolve(options.dataDir);
+    this.dataDir = path19.resolve(options.dataDir);
     this.registry = new SessionRegistry(this.dataDir);
     this.resolveProfileEnv = options.resolveProfileEnv;
     this.resolveCredentialRef = options.resolveCredentialRef;
@@ -38801,8 +38022,8 @@ var AgentRuntime = class {
   }
 };
 function sameRuntimeCwd(left, right) {
-  const a = path20.resolve(left);
-  const b = path20.resolve(right);
+  const a = path19.resolve(left);
+  const b = path19.resolve(right);
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 function redactRuntimeValue(message2, value) {
@@ -38817,13 +38038,13 @@ function createAgentRuntime(options) {
 
 // src/service/service.ts
 import * as os6 from "node:os";
-import * as path22 from "node:path";
+import * as path21 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/service/service-lease.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
-import * as fs22 from "node:fs/promises";
-import * as path21 from "node:path";
+import * as fs21 from "node:fs/promises";
+import * as path20 from "node:path";
 var ServiceDataDirBusyError = class extends Error {
   constructor(dataDir, owner) {
     super(
@@ -38834,7 +38055,7 @@ var ServiceDataDirBusyError = class extends Error {
   }
 };
 function serviceLeasePath(dataDir) {
-  return path21.join(dataDir, "service.lock");
+  return path20.join(dataDir, "service.lock");
 }
 async function acquireServiceDataDirLease(dataDir, options = {}) {
   const pid = options.pid ?? process.pid;
@@ -38843,16 +38064,16 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
   const isProcessAlive = options.isProcessAlive ?? processIsAlive2;
   const record = { instanceId, pid, startedAt };
   const lockPath = serviceLeasePath(dataDir);
-  await fs22.mkdir(dataDir, { recursive: true });
+  await fs21.mkdir(dataDir, { recursive: true });
   const candidate = `${lockPath}.candidate-${instanceId}`;
-  await fs22.writeFile(candidate, JSON.stringify(record, null, 2) + "\n", {
+  await fs21.writeFile(candidate, JSON.stringify(record, null, 2) + "\n", {
     encoding: "utf8",
     flag: "wx"
   });
   try {
     for (; ; ) {
       try {
-        await fs22.link(candidate, lockPath);
+        await fs21.link(candidate, lockPath);
         break;
       } catch (error) {
         if (!hasCode2(error, "EEXIST")) throw error;
@@ -38862,9 +38083,9 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
         }
         const stalePath = `${lockPath}.stale-${randomUUID2()}`;
         try {
-          await fs22.rename(lockPath, stalePath);
+          await fs21.rename(lockPath, stalePath);
           try {
-            await fs22.rm(stalePath, { force: true });
+            await fs21.rm(stalePath, { force: true });
           } catch {
           }
         } catch (error2) {
@@ -38875,7 +38096,7 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
     }
   } finally {
     try {
-      await fs22.rm(candidate, { force: true });
+      await fs21.rm(candidate, { force: true });
     } catch {
     }
   }
@@ -38887,7 +38108,7 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
       if (released) return;
       const owner = await readLeaseRecord(lockPath);
       if (owner?.instanceId === instanceId) {
-        await fs22.rm(lockPath, { force: true });
+        await fs21.rm(lockPath, { force: true });
       }
       released = true;
     }
@@ -38895,7 +38116,7 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
 }
 async function readLeaseRecord(file) {
   try {
-    const value = JSON.parse(await fs22.readFile(file, "utf8"));
+    const value = JSON.parse(await fs21.readFile(file, "utf8"));
     if (typeof value.instanceId !== "string" || !value.instanceId || typeof value.pid !== "number" || !Number.isInteger(value.pid) || typeof value.startedAt !== "string") {
       return null;
     }
@@ -39018,20 +38239,20 @@ function walk2(node2, visit) {
   }
 }
 function push2(out, seen, raw, kind, sourcePath) {
-  const path24 = resolveAttachmentPath(raw, sourcePath);
-  if (!path24) return;
-  const key2 = `${kind}:${path24}`;
+  const path23 = resolveAttachmentPath(raw, sourcePath);
+  if (!path23) return;
+  const key2 = `${kind}:${path23}`;
   if (seen.has(key2)) return;
   seen.add(key2);
-  out.push({ path: path24, kind, raw });
+  out.push({ path: path23, kind, raw });
 }
 
 // src/markdown/attachment-gc.ts
 var ATTACHMENT_GC_GRACE_DAYS = 30;
 var ATTACHMENT_GC_STATE_PATH = `${ATTACHMENTS_DIR}/.gc-state.json`;
 var DAY_MS = 24 * 60 * 60 * 1e3;
-async function sweepAttachmentGc(fs23, options = {}) {
-  return withTentMutation(fs23, async () => {
+async function sweepAttachmentGc(fs22, options = {}) {
+  return withTentMutation(fs22, async () => {
     const result = {
       scanned: 0,
       retainedByOwner: 0,
@@ -39040,7 +38261,7 @@ async function sweepAttachmentGc(fs23, options = {}) {
       deleted: [],
       warnings: []
     };
-    if (!await fs23.exists(ATTACHMENTS_DIR)) return result;
+    if (!await fs22.exists(ATTACHMENTS_DIR)) return result;
     const nowMs = resolveNow(options.now);
     const graceDays = options.graceDays ?? ATTACHMENT_GC_GRACE_DAYS;
     if (!Number.isFinite(graceDays) || graceDays < 0) {
@@ -39048,7 +38269,7 @@ async function sweepAttachmentGc(fs23, options = {}) {
     }
     let tent;
     try {
-      tent = await loadTent(fs23);
+      tent = await loadTent(fs22);
     } catch (error) {
       result.warnings.push(`concept scan failed: ${message(error)}`);
       return result;
@@ -39060,16 +38281,16 @@ async function sweepAttachmentGc(fs23, options = {}) {
     let files;
     let references;
     try {
-      files = (await listFiles(fs23, ATTACHMENTS_DIR)).filter(
-        (path24) => path24 !== ATTACHMENT_GC_STATE_PATH
+      files = (await listFiles(fs22, ATTACHMENTS_DIR)).filter(
+        (path23) => path23 !== ATTACHMENT_GC_STATE_PATH
       );
-      references = await collectAttachmentReferences(fs23);
+      references = await collectAttachmentReferences(fs22);
     } catch (error) {
       result.warnings.push(`attachment reference scan failed: ${message(error)}`);
       return result;
     }
     result.scanned = files.length;
-    const loadedState = await readState(fs23);
+    const loadedState = await readState(fs22);
     if (loadedState.warning) result.warnings.push(loadedState.warning);
     const state = loadedState.state;
     const nextCandidates = {};
@@ -39089,7 +38310,7 @@ async function sweepAttachmentGc(fs23, options = {}) {
       const firstSeenMs = firstSeen ? Date.parse(firstSeen) : Number.NaN;
       if (loadedState.valid && Number.isFinite(firstSeenMs) && nowMs - firstSeenMs >= graceDays * DAY_MS) {
         try {
-          await fs23.remove(file);
+          await fs22.remove(file);
           result.deleted.push(file);
         } catch (error) {
           result.warnings.push(`failed to delete ${file}: ${message(error)}`);
@@ -39099,57 +38320,57 @@ async function sweepAttachmentGc(fs23, options = {}) {
         nextCandidates[file] = Number.isFinite(firstSeenMs) ? firstSeen : new Date(nowMs).toISOString();
       }
     }
-    for (const path24 of Object.keys(state.candidates)) {
-      if (!liveFiles.has(path24)) delete nextCandidates[path24];
+    for (const path23 of Object.keys(state.candidates)) {
+      if (!liveFiles.has(path23)) delete nextCandidates[path23];
     }
     result.candidates = Object.keys(nextCandidates).length;
-    await fs23.writeFile(
+    await fs22.writeFile(
       ATTACHMENT_GC_STATE_PATH,
       JSON.stringify({ version: 1, candidates: nextCandidates }, null, 2) + "\n"
     );
-    await removeEmptyOwnerDirs(fs23, result);
+    await removeEmptyOwnerDirs(fs22, result);
     return result;
   });
 }
-async function collectAttachmentReferences(fs23) {
+async function collectAttachmentReferences(fs22) {
   const refs = /* @__PURE__ */ new Set();
-  for (const path24 of await listFiles(fs23, "")) {
-    if (!path24.endsWith(".md") || path24.startsWith(`${ATTACHMENTS_DIR}/`)) continue;
-    const raw = await fs23.readFile(path24);
+  for (const path23 of await listFiles(fs22, "")) {
+    if (!path23.endsWith(".md") || path23.startsWith(`${ATTACHMENTS_DIR}/`)) continue;
+    const raw = await fs22.readFile(path23);
     const parsed = parseFrontmatter(raw);
-    for (const ref of extractAttachmentReferences(parsed.body, path24)) refs.add(ref.path);
-    for (const ref of extractAttachmentArtifactRefs(parsed.data, path24)) refs.add(ref.path);
+    for (const ref of extractAttachmentReferences(parsed.body, path23)) refs.add(ref.path);
+    for (const ref of extractAttachmentArtifactRefs(parsed.data, path23)) refs.add(ref.path);
     for (const match of raw.matchAll(
       /(?:\.tent\/)?(?:\.\.\/|\.\/)*attachments\/[A-Za-z0-9._~!$&+,;=@%()\[\]\-\/]+/g
     )) {
-      const resolved = resolveAttachmentPath(match[0], path24);
+      const resolved = resolveAttachmentPath(match[0], path23);
       if (resolved) refs.add(resolved);
     }
   }
   return refs;
 }
-async function listFiles(fs23, dir) {
-  if (dir && !await fs23.exists(dir)) return [];
+async function listFiles(fs22, dir) {
+  if (dir && !await fs22.exists(dir)) return [];
   const out = [];
-  for (const entry of await fs23.listDir(dir)) {
-    const path24 = dir ? `${dir}/${entry.name}` : entry.name;
-    if (entry.isDir) out.push(...await listFiles(fs23, path24));
-    else out.push(path24);
+  for (const entry of await fs22.listDir(dir)) {
+    const path23 = dir ? `${dir}/${entry.name}` : entry.name;
+    if (entry.isDir) out.push(...await listFiles(fs22, path23));
+    else out.push(path23);
   }
   return out;
 }
-async function readState(fs23) {
+async function readState(fs22) {
   const empty = { version: 1, candidates: {} };
-  if (!await fs23.exists(ATTACHMENT_GC_STATE_PATH)) return { state: empty, valid: true };
+  if (!await fs22.exists(ATTACHMENT_GC_STATE_PATH)) return { state: empty, valid: true };
   try {
-    const parsed = JSON.parse(await fs23.readFile(ATTACHMENT_GC_STATE_PATH));
+    const parsed = JSON.parse(await fs22.readFile(ATTACHMENT_GC_STATE_PATH));
     if (parsed.version !== 1 || !parsed.candidates || typeof parsed.candidates !== "object") {
       throw new Error("unsupported state shape");
     }
     const candidates = {};
-    for (const [path24, firstSeen] of Object.entries(parsed.candidates)) {
-      if (path24.startsWith(`${ATTACHMENTS_DIR}/`) && path24 !== ATTACHMENT_GC_STATE_PATH && typeof firstSeen === "string" && Number.isFinite(Date.parse(firstSeen))) {
-        candidates[path24] = firstSeen;
+    for (const [path23, firstSeen] of Object.entries(parsed.candidates)) {
+      if (path23.startsWith(`${ATTACHMENTS_DIR}/`) && path23 !== ATTACHMENT_GC_STATE_PATH && typeof firstSeen === "string" && Number.isFinite(Date.parse(firstSeen))) {
+        candidates[path23] = firstSeen;
       }
     }
     return { state: { version: 1, candidates }, valid: true };
@@ -39161,12 +38382,12 @@ async function readState(fs23) {
     };
   }
 }
-async function removeEmptyOwnerDirs(fs23, result) {
-  for (const entry of await fs23.listDir(ATTACHMENTS_DIR)) {
+async function removeEmptyOwnerDirs(fs22, result) {
+  for (const entry of await fs22.listDir(ATTACHMENTS_DIR)) {
     if (!entry.isDir) continue;
     const dir = `${ATTACHMENTS_DIR}/${entry.name}`;
     try {
-      if ((await fs23.listDir(dir)).length === 0) await fs23.remove(dir);
+      if ((await fs22.listDir(dir)).length === 0) await fs22.remove(dir);
     } catch (error) {
       result.warnings.push(`failed to remove empty attachment directory ${dir}: ${message(error)}`);
     }
@@ -39500,11 +38721,11 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
   };
 }
 function defaultPackageRoot() {
-  const here = path22.dirname(fileURLToPath(import.meta.url));
-  if (path22.basename(here) === "service" && path22.basename(path22.dirname(here)) === "src") {
-    return path22.resolve(here, "../..");
+  const here = path21.dirname(fileURLToPath(import.meta.url));
+  if (path21.basename(here) === "service" && path21.basename(path21.dirname(here)) === "src") {
+    return path21.resolve(here, "../..");
   }
-  return path22.resolve(here);
+  return path21.resolve(here);
 }
 
 // src/service/cli.ts
@@ -39554,10 +38775,10 @@ async function main() {
   const mountPath = flagValue(args, "--mount");
   const service = await startLocalTentService({
     port: portRaw ? Number(portRaw) : 0,
-    dataDir: dataDir ? path23.resolve(dataDir) : void 0
+    dataDir: dataDir ? path22.resolve(dataDir) : void 0
   });
   if (mountPath) {
-    const info = await service.hostApi.mount(path23.resolve(mountPath));
+    const info = await service.hostApi.mount(path22.resolve(mountPath));
     process.stdout.write(`Mounted ${info.workspaceRoot} as ${info.workspaceId}
 `);
   }

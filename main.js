@@ -1310,16 +1310,14 @@ async function readRolesRegistryState(fs2) {
   if (!await fs2.exists(ROLES_REGISTRY_PATH)) {
     return {
       registry: cloneDefaultRoles(),
-      migrated: false,
-      rosterMigrated: false,
       recovered: false
     };
   }
   try {
     const rawText = await fs2.readFile(ROLES_REGISTRY_PATH);
     const parsed = JSON.parse(rawText);
-    const { registry, migrated, rosterMigrated } = normalizeRolesRegistryWithMigration(parsed);
-    return { registry, migrated, rosterMigrated, recovered: false };
+    const registry = normalizeRolesRegistry(parsed);
+    return { registry, recovered: false };
   } catch {
     const backupPath = await backupCorruptRegistry(fs2, ROLES_REGISTRY_PATH);
     const reset = cloneDefaultRoles();
@@ -1332,18 +1330,11 @@ async function readRolesRegistryState(fs2) {
     );
     return {
       registry: reset,
-      migrated: false,
-      rosterMigrated: false,
       recovered: true
     };
   }
 }
 async function createRole(fs2, definition, rand = Math.random) {
-  if (Object.prototype.hasOwnProperty.call(definition, "allowedProfiles")) {
-    throw new Error(
-      "Role mutations no longer accept allowedProfiles; use roster (agentIds). Legacy allowedProfiles is migrated once from disk only."
-    );
-  }
   await withTentMutation(fs2, async () => {
     const registry = await loadRolesRegistryForMutation(fs2);
     const usedIds = roleIdSet(registry.roles);
@@ -1392,16 +1383,6 @@ async function updateRole(fs2, ref, patch) {
       },
       { usedIds: roleIdSet(registry.roles, current.id), assignMissingId: "keep" }
     );
-    if (Object.prototype.hasOwnProperty.call(patch, "roster")) {
-      const normalized = normalizeAgentIdList(patch.roster);
-      if (normalized) next.roster = normalized;
-      else delete next.roster;
-    }
-    if (Object.prototype.hasOwnProperty.call(patch, "allowedProfiles")) {
-      throw new Error(
-        "Role mutations no longer accept allowedProfiles; use roster (agentIds). Legacy allowedProfiles is migrated once from disk only."
-      );
-    }
     if (Object.prototype.hasOwnProperty.call(patch, "displayName")) {
       const dn = typeof patch.displayName === "string" ? patch.displayName.trim() : "";
       next.displayName = dn || current.name;
@@ -1432,37 +1413,24 @@ function findRoleIndex(roles, ref) {
   if (idx !== -1) return idx;
   return roles.findIndex((role) => role.name === key);
 }
-function normalizeRolesRegistryWithMigration(value) {
+function normalizeRolesRegistry(value) {
   const root = isRecord4(value) ? value : {};
   const roles = [];
-  let migrated = false;
-  let rosterMigrated = false;
   const usedIds = /* @__PURE__ */ new Set();
   if (Array.isArray(root.roles)) {
     for (const item of root.roles) {
       if (!isRecord4(item)) continue;
-      const hadId = typeof item.id === "string" && isRoleId(item.id.trim());
-      const hadDisplayName = typeof item.displayName === "string" && item.displayName.trim().length > 0;
-      const hadLegacyAllowedKey = Object.prototype.hasOwnProperty.call(
-        item,
-        "allowedProfiles"
-      );
       const role = normalizeRoleDefinition(item, {
         usedIds,
         assignMissingId: "deterministic"
       });
       if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
       if (roles.some((existing) => existing.id === role.id)) continue;
-      if (hadLegacyAllowedKey) {
-        migrated = true;
-        rosterMigrated = true;
-      }
-      if (!hadId || !hadDisplayName) migrated = true;
       usedIds.add(role.id);
       roles.push(role);
     }
   }
-  return { registry: { roles }, migrated, rosterMigrated };
+  return { roles };
 }
 function normalizeRoleDefinition(value, opts = {}) {
   const name = typeof value.name === "string" ? value.name.trim() : "";
@@ -1492,37 +1460,9 @@ function normalizeRoleDefinition(value, opts = {}) {
     role.description = value.description.trim();
   }
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
-  const a2a = normalizeA2APolicy(value.a2aPolicy);
-  if (a2a) role.a2aPolicy = a2a;
-  const rosterFromField = normalizeAgentIdList(value.roster);
-  const rawLegacy = value.allowedProfiles;
-  const rosterFromLegacy = normalizeAgentIdList(rawLegacy);
-  const roster = rosterFromField ?? rosterFromLegacy;
-  if (roster) role.roster = roster;
   const cli = normalizeCliConfig(value.cli);
   if (cli) role.cli = cli;
   return role;
-}
-function normalizeAgentIdList(value) {
-  if (value === void 0 || value === null) return void 0;
-  if (!Array.isArray(value)) {
-    return void 0;
-  }
-  const seen = /* @__PURE__ */ new Set();
-  const out = [];
-  for (const item of value) {
-    if (typeof item !== "string") continue;
-    const id = item.trim();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    out.push(id);
-  }
-  return out.length > 0 ? out : void 0;
-}
-function normalizeA2APolicy(value) {
-  if (value === void 0 || value === null || value === "") return void 0;
-  if (value === "allow" || value === "ask" || value === "deny") return value;
-  return void 0;
 }
 function normalizeCliConfig(value) {
   if (value === void 0) return void 0;
@@ -1557,10 +1497,6 @@ function serializeRolesRegistry(registry) {
       if (role.prompt) row.prompt = role.prompt;
       if (role.description) row.description = role.description;
       if (role.color) row.color = role.color;
-      if (role.a2aPolicy) row.a2aPolicy = role.a2aPolicy;
-      if (role.roster && role.roster.length > 0) {
-        row.roster = [...role.roster];
-      }
       if (role.cli) row.cli = { ...role.cli };
       return row;
     })
@@ -2132,7 +2068,6 @@ async function writeTaskEnvelope(fs2, clock, input) {
     tentRoleDigest: facts?.tentRoleDigest,
     tentRoleVersion: facts?.tentRoleVersion,
     rolePrompt: facts?.rolePrompt,
-    rosterAgentIds: facts?.rosterAgentIds,
     tentTaskDigest: facts?.tentTaskDigest,
     tentTaskVersion: facts?.tentTaskVersion,
     profileAdapterCompatibility: profileAdapterCompatibilityDigest({
@@ -2421,7 +2356,6 @@ function isContextGenerationId(value) {
   return typeof value === "string" && /^cg-v1-[a-f0-9]{64}$/.test(value);
 }
 function computeContextGeneration(inputs) {
-  const roster = [...inputs.rosterAgentIds ?? []].map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
   const extraStable = sanitizeContextGenerationExtraStable(inputs.extraStable);
   const payload = {
     v: CONTEXT_GENERATION_VERSION,
@@ -2430,7 +2364,6 @@ function computeContextGeneration(inputs) {
     tentRoleDigest: inputs.tentRoleDigest?.trim() || "",
     tentRoleVersion: inputs.tentRoleVersion?.trim() || "",
     rolePrompt: inputs.rolePrompt?.trim() || "",
-    roster,
     tentTaskDigest: inputs.tentTaskDigest?.trim() || "",
     tentTaskVersion: inputs.tentTaskVersion?.trim() || "",
     profileAdapterCompatibility: inputs.profileAdapterCompatibility?.trim() || "",
@@ -2895,8 +2828,19 @@ function envelopeIsActiveOccupation(task) {
   const state = task.state || (task.status === "pending" || task.status === "taken" ? legacyStatusToState(task.status) : "failed");
   return isActiveTaskState(state);
 }
-function canClaim(box, _options) {
-  return structuralClaimGate(box);
+function canClaim(box, options) {
+  const structural = structuralClaimGate(box);
+  if (!structural.ok) return structural;
+  const occupied = options?.tasks ? listDirectActiveTasksForNode(box.id, options.tasks)[0] : void 0;
+  if (occupied) {
+    return {
+      ok: false,
+      blocker: box,
+      task: occupied,
+      reason: `${box.name} is occupied by active task ${occupied.id || occupied.path} (${occupied.role}).`
+    };
+  }
+  return structural;
 }
 function structuralClaimGate(box) {
   if (box.invalid) {
@@ -2906,9 +2850,6 @@ function structuralClaimGate(box) {
     return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
   }
   return { ok: true };
-}
-function boxHasDirectActiveTask(boxId, tasks) {
-  return listDirectActiveTasksForNode(boxId, tasks).length > 0;
 }
 function occupiedBoxesFromTasks(tent, tasks) {
   const out = /* @__PURE__ */ new Map();
@@ -3361,8 +3302,11 @@ async function taskClaim(env, taskPath, options = {}) {
     const claimedBoxes = taskReferencedNodeIds(task).map(
       (claimId) => requireBoxById(tent, claimId)
     );
+    const otherTasks = (await loadTaskEnvelopes(env.fs)).filter(
+      (candidate) => candidate.path !== task.path
+    );
     for (const box of claimedBoxes) {
-      const claimable = canClaim(box);
+      const claimable = canClaim(box, { tent, tasks: otherTasks });
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
     }
     const now = env.clock.now();
@@ -3745,158 +3689,6 @@ var init_scaffold = __esm({
   }
 });
 
-// src/core/forkOps.ts
-async function forkNode(env, boxId) {
-  return withTentMutation(env.fs, async () => forkNodeUnlocked(env, boxId));
-}
-async function forkNodeUnlocked(env, boxId) {
-  const tent = await loadTent(env.fs);
-  if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
-  const source = tent.byId.get(boxId);
-  if (!source) throw new Error(`Box not found: ${boxId}.`);
-  if (!isUsableBox(source)) throw new Error("Invalid or archived boxes cannot be forked.");
-  assertContentMutable(source, "forked");
-  const parentPath = dirName(source.path);
-  const forkPath = await uniqueSiblingPath(env.fs, parentPath, `${source.name} (fork)`);
-  await copyTree(env.fs, source.path, forkPath);
-  const sourceBoxes = collectSubtree(source);
-  const usedIds = new Set(tent.byId.keys());
-  const idMap = /* @__PURE__ */ new Map();
-  for (const box of sourceBoxes) {
-    const nextId = makeUniqueConceptId(usedIds, env.rand);
-    usedIds.add(nextId);
-    idMap.set(box.id, nextId);
-  }
-  const forkRootId = idMap.get(source.id);
-  for (const box of sourceBoxes) {
-    const rel = relativePath(source.path, box.path);
-    const nextPath = rel ? join2(forkPath, rel) : forkPath;
-    const notePath = boxNotePath(nextPath);
-    await ensureIdentityFileName(env.fs, nextPath, box.path);
-    const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(notePath));
-    data.id = idMap.get(box.id);
-    delete data.owner;
-    delete data.status;
-    delete data.forkOf;
-    delete data.forkBase;
-    await env.fs.writeFile(notePath, serializeFrontmatter(data, body, keyOrder));
-  }
-  const order = await loadOrder(env.fs);
-  const parentKey = source.parent ? source.parent.id : ROOT_KEY;
-  const siblings = (source.parent ? source.parent.children : tent.roots).map((box) => box.id);
-  const idx = siblings.indexOf(source.id);
-  siblings.splice(idx === -1 ? siblings.length : idx + 1, 0, forkRootId);
-  order[parentKey] = siblings;
-  for (const box of sourceBoxes) {
-    const oldChildren = order[box.id];
-    const newId = idMap.get(box.id);
-    if (oldChildren && newId) {
-      order[newId] = oldChildren.map((id) => idMap.get(id)).filter((id) => !!id);
-    }
-  }
-  await saveOrder(env.fs, order);
-  return forkRootId;
-}
-async function adoptCopiedSubtree(env, boxPath) {
-  return withTentMutation(env.fs, async () => {
-    await normalizeCopiedRootIdentity(env.fs, boxPath);
-    const tent = await loadTent(env.fs);
-    const root = tent.byPath.get(boxPath);
-    if (!root) throw new Error(`Copied box not found: ${boxPath}.`);
-    const copied = collectSubtree(root);
-    const copiedPaths = new Set(copied.map((box) => box.path));
-    const outsideIds = new Set(
-      [...tent.byPath.values()].filter((box) => !copiedPaths.has(box.path) && box.id).map((box) => box.id)
-    );
-    const hasDuplicate = copied.some((box) => outsideIds.has(box.id));
-    if (!hasDuplicate) return [];
-    const idMap = /* @__PURE__ */ new Map();
-    for (const box of copied) {
-      const next = makeUniqueConceptId(outsideIds, env.rand);
-      outsideIds.add(next);
-      idMap.set(box.id, next);
-    }
-    for (const box of copied) {
-      const path = boxNotePath(box.path);
-      const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(path));
-      data.id = idMap.get(box.id);
-      delete data.owner;
-      delete data.status;
-      delete data.forkOf;
-      delete data.forkBase;
-      await env.fs.writeFile(path, serializeFrontmatter(data, body, keyOrder));
-    }
-    const order = await loadOrder(env.fs);
-    for (const box of copied) {
-      const children = order[box.id];
-      const nextId = idMap.get(box.id);
-      if (children && nextId) {
-        order[nextId] = children.map((id) => idMap.get(id)).filter((id) => !!id);
-      }
-    }
-    await saveOrder(env.fs, order);
-    return copied.map((box) => idMap.get(box.id));
-  });
-}
-async function normalizeCopiedRootIdentity(fs2, boxPath) {
-  const expected = boxNotePath(boxPath);
-  if (await fs2.exists(expected) || !await fs2.exists(boxPath)) return;
-  const candidates = [];
-  for (const entry of await fs2.listDir(boxPath)) {
-    if (entry.isDir || !entry.name.endsWith(".md") || entry.name === "index.md") continue;
-    const candidate = join2(boxPath, entry.name);
-    const { data } = parseFrontmatter(await fs2.readFile(candidate));
-    if (typeof data.id === "string" && (data.id.startsWith("bx-") || data.id.startsWith("cx-")) && typeof data.type === "string") {
-      candidates.push(candidate);
-    }
-  }
-  if (candidates.length === 1) await fs2.move(candidates[0], expected);
-}
-async function uniqueSiblingPath(fs2, parentPath, base2) {
-  let n = 1;
-  while (true) {
-    const name = n === 1 ? base2 : `${base2.replace(/\s\(fork\)$/, "")} (fork ${n})`;
-    const candidate = join2(parentPath, name);
-    if (!await fs2.exists(candidate)) return candidate;
-    n += 1;
-  }
-}
-async function copyTree(fs2, from, to) {
-  await fs2.mkdir(to);
-  for (const entry of await fs2.listDir(from)) {
-    const src = join2(from, entry.name);
-    const dst = join2(to, entry.name);
-    if (entry.isDir) await copyTree(fs2, src, dst);
-    else await fs2.writeFile(dst, await fs2.readFile(src));
-  }
-}
-function collectSubtree(box, out = []) {
-  out.push(box);
-  for (const child of box.children) collectSubtree(child, out);
-  return out;
-}
-function relativePath(root, child) {
-  if (child === root) return "";
-  return child.slice(root.length + 1);
-}
-async function ensureIdentityFileName(fs2, newBoxPath, oldBoxPath) {
-  const expected = boxNotePath(newBoxPath);
-  if (await fs2.exists(expected)) return;
-  const oldName = `${baseName(oldBoxPath)}.md`;
-  const copied = join2(newBoxPath, oldName);
-  if (await fs2.exists(copied)) await fs2.move(copied, expected);
-}
-var init_forkOps = __esm({
-  "src/core/forkOps.ts"() {
-    "use strict";
-    init_adapter();
-    init_frontmatter();
-    init_id();
-    init_order();
-    init_tree();
-  }
-});
-
 // src/core/okf.ts
 function buildConceptIndex(boxes) {
   const index = /* @__PURE__ */ new Map();
@@ -4005,7 +3797,7 @@ async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
   if (isFrozen(target)) {
     throw new Error("Invalid or archived boxes cannot be renamed.");
   }
-  await assertRenameOccupationAllowed(env, tent, target);
+  await assertNoActiveTaskRefsInSubtree(env, target, "rename");
   const oldPath = target.path;
   const oldName = target.name;
   if (newName === oldName) {
@@ -4029,10 +3821,10 @@ async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
   if (siblings.some((box) => box.id !== target.id && box.name === newName)) {
     throw new Error(`A sibling concept already uses the name: ${newName}.`);
   }
-  const subtree2 = collectSubtree2(target);
+  const subtree2 = collectSubtree(target);
   const pathMap = /* @__PURE__ */ new Map();
   for (const box of subtree2) {
-    const rel = relativePath2(oldPath, box.path);
+    const rel = relativePath(oldPath, box.path);
     const nextBoxPath = rel ? join2(newPath, rel) : newPath;
     pathMap.set(box.path, nextBoxPath);
     pathMap.set(
@@ -4074,7 +3866,7 @@ async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
   let identityRenamed = false;
   const completedWrites = [];
   try {
-    identityRenamed = await ensureIdentityFileName2(env.fs, newPath, oldName);
+    identityRenamed = await ensureIdentityFileName(env.fs, newPath, oldName);
     for (const write of plannedWrites) {
       await env.fs.writeFile(write.writePath, write.newContent);
       completedWrites.push(write);
@@ -4151,7 +3943,19 @@ function resolveRenameTarget(tent, conceptIdOrPath) {
   if (byPath) return byPath;
   throw new Error(`Concept not found: ${conceptIdOrPath}.`);
 }
-async function assertRenameOccupationAllowed(_env, _tent, _concept) {
+async function assertNoActiveTaskRefsInSubtree(env, root, operation) {
+  const subtreeIds = new Set(collectSubtree(root).map((box) => box.id));
+  const blockers = (await loadTaskEnvelopes(env.fs)).filter((task) => {
+    if (!ACTIVE_TASK_STATES.has(task.state) || task.contextCard == null) return false;
+    return task.contextCard.refs.nodes.some((node) => subtreeIds.has(node.id));
+  });
+  if (blockers.length === 0) return;
+  const taskLabels = blockers.map((task) => task.id || task.path).sort((a, b) => a.localeCompare(b));
+  throw new Error(
+    `Cannot ${operation} Node subtree ${root.id}: active Task ref(s) ${taskLabels.join(
+      ", "
+    )} must finish first.`
+  );
 }
 function assertNotOperationalPath(path) {
   if (isOperationalPath(path) || path === "temp" || path.startsWith("temp/")) {
@@ -4162,16 +3966,16 @@ function assertNotOperationalPath(path) {
     throw new Error("System directories cannot be renamed as concepts.");
   }
 }
-function collectSubtree2(box, out = []) {
+function collectSubtree(box, out = []) {
   out.push(box);
-  for (const child of box.children) collectSubtree2(child, out);
+  for (const child of box.children) collectSubtree(child, out);
   return out;
 }
-function relativePath2(root, child) {
+function relativePath(root, child) {
   if (child === root) return "";
   return child.slice(root.length + 1);
 }
-async function ensureIdentityFileName2(fs2, newBoxPath, oldName) {
+async function ensureIdentityFileName(fs2, newBoxPath, oldName) {
   const expected = boxNotePath(newBoxPath);
   if (await fs2.exists(expected)) return false;
   const legacy = join2(newBoxPath, `${oldName}.md`);
@@ -4338,6 +4142,160 @@ var init_renameOps = __esm({
     init_link_target();
     init_paths();
     init_scaffold();
+    init_task_model();
+    init_task();
+    init_tree();
+  }
+});
+
+// src/core/forkOps.ts
+async function forkNode(env, boxId) {
+  return withTentMutation(env.fs, async () => forkNodeUnlocked(env, boxId));
+}
+async function forkNodeUnlocked(env, boxId) {
+  const tent = await loadTent(env.fs);
+  if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+  const source = tent.byId.get(boxId);
+  if (!source) throw new Error(`Box not found: ${boxId}.`);
+  if (!isUsableBox(source)) throw new Error("Invalid or archived boxes cannot be forked.");
+  assertContentMutable(source, "forked");
+  const parentPath = dirName(source.path);
+  const forkPath = await uniqueSiblingPath(env.fs, parentPath, `${source.name} (fork)`);
+  await copyTree(env.fs, source.path, forkPath);
+  const sourceBoxes = collectSubtree2(source);
+  const usedIds = new Set(tent.byId.keys());
+  const idMap = /* @__PURE__ */ new Map();
+  for (const box of sourceBoxes) {
+    const nextId = makeUniqueConceptId(usedIds, env.rand);
+    usedIds.add(nextId);
+    idMap.set(box.id, nextId);
+  }
+  const forkRootId = idMap.get(source.id);
+  for (const box of sourceBoxes) {
+    const rel = relativePath2(source.path, box.path);
+    const nextPath = rel ? join2(forkPath, rel) : forkPath;
+    const notePath = boxNotePath(nextPath);
+    await ensureIdentityFileName2(env.fs, nextPath, box.path);
+    const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(notePath));
+    data.id = idMap.get(box.id);
+    delete data.owner;
+    delete data.status;
+    delete data.forkOf;
+    delete data.forkBase;
+    await env.fs.writeFile(notePath, serializeFrontmatter(data, body, keyOrder));
+  }
+  const order = await loadOrder(env.fs);
+  const parentKey = source.parent ? source.parent.id : ROOT_KEY;
+  const siblings = (source.parent ? source.parent.children : tent.roots).map((box) => box.id);
+  const idx = siblings.indexOf(source.id);
+  siblings.splice(idx === -1 ? siblings.length : idx + 1, 0, forkRootId);
+  order[parentKey] = siblings;
+  for (const box of sourceBoxes) {
+    const oldChildren = order[box.id];
+    const newId = idMap.get(box.id);
+    if (oldChildren && newId) {
+      order[newId] = oldChildren.map((id) => idMap.get(id)).filter((id) => !!id);
+    }
+  }
+  await saveOrder(env.fs, order);
+  return forkRootId;
+}
+async function adoptCopiedSubtree(env, boxPath) {
+  return withTentMutation(env.fs, async () => {
+    await normalizeCopiedRootIdentity(env.fs, boxPath);
+    const tent = await loadTent(env.fs);
+    const root = tent.byPath.get(boxPath);
+    if (!root) throw new Error(`Copied box not found: ${boxPath}.`);
+    const copied = collectSubtree2(root);
+    const copiedPaths = new Set(copied.map((box) => box.path));
+    const outsideIds = new Set(
+      [...tent.byPath.values()].filter((box) => !copiedPaths.has(box.path) && box.id).map((box) => box.id)
+    );
+    const hasDuplicate = copied.some((box) => outsideIds.has(box.id));
+    if (!hasDuplicate) return [];
+    const idMap = /* @__PURE__ */ new Map();
+    for (const box of copied) {
+      const next = makeUniqueConceptId(outsideIds, env.rand);
+      outsideIds.add(next);
+      idMap.set(box.id, next);
+    }
+    for (const box of copied) {
+      const path = boxNotePath(box.path);
+      const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(path));
+      data.id = idMap.get(box.id);
+      delete data.owner;
+      delete data.status;
+      delete data.forkOf;
+      delete data.forkBase;
+      await env.fs.writeFile(path, serializeFrontmatter(data, body, keyOrder));
+    }
+    const order = await loadOrder(env.fs);
+    for (const box of copied) {
+      const children = order[box.id];
+      const nextId = idMap.get(box.id);
+      if (children && nextId) {
+        order[nextId] = children.map((id) => idMap.get(id)).filter((id) => !!id);
+      }
+    }
+    await saveOrder(env.fs, order);
+    return copied.map((box) => idMap.get(box.id));
+  });
+}
+async function normalizeCopiedRootIdentity(fs2, boxPath) {
+  const expected = boxNotePath(boxPath);
+  if (await fs2.exists(expected) || !await fs2.exists(boxPath)) return;
+  const candidates = [];
+  for (const entry of await fs2.listDir(boxPath)) {
+    if (entry.isDir || !entry.name.endsWith(".md") || entry.name === "index.md") continue;
+    const candidate = join2(boxPath, entry.name);
+    const { data } = parseFrontmatter(await fs2.readFile(candidate));
+    if (typeof data.id === "string" && (data.id.startsWith("bx-") || data.id.startsWith("cx-")) && typeof data.type === "string") {
+      candidates.push(candidate);
+    }
+  }
+  if (candidates.length === 1) await fs2.move(candidates[0], expected);
+}
+async function uniqueSiblingPath(fs2, parentPath, base2) {
+  let n = 1;
+  while (true) {
+    const name = n === 1 ? base2 : `${base2.replace(/\s\(fork\)$/, "")} (fork ${n})`;
+    const candidate = join2(parentPath, name);
+    if (!await fs2.exists(candidate)) return candidate;
+    n += 1;
+  }
+}
+async function copyTree(fs2, from, to) {
+  await fs2.mkdir(to);
+  for (const entry of await fs2.listDir(from)) {
+    const src = join2(from, entry.name);
+    const dst = join2(to, entry.name);
+    if (entry.isDir) await copyTree(fs2, src, dst);
+    else await fs2.writeFile(dst, await fs2.readFile(src));
+  }
+}
+function collectSubtree2(box, out = []) {
+  out.push(box);
+  for (const child of box.children) collectSubtree2(child, out);
+  return out;
+}
+function relativePath2(root, child) {
+  if (child === root) return "";
+  return child.slice(root.length + 1);
+}
+async function ensureIdentityFileName2(fs2, newBoxPath, oldBoxPath) {
+  const expected = boxNotePath(newBoxPath);
+  if (await fs2.exists(expected)) return;
+  const oldName = `${baseName(oldBoxPath)}.md`;
+  const copied = join2(newBoxPath, oldName);
+  if (await fs2.exists(copied)) await fs2.move(copied, expected);
+}
+var init_forkOps = __esm({
+  "src/core/forkOps.ts"() {
+    "use strict";
+    init_adapter();
+    init_frontmatter();
+    init_id();
+    init_order();
     init_tree();
   }
 });
@@ -4361,6 +4319,7 @@ async function moveNodeUnlocked(env, conceptId, newParentId, position) {
     throw new Error("Invalid or archived boxes cannot be moved.");
   }
   assertNotOperationalPath2(moved.path);
+  await assertNoActiveTaskRefsInSubtree(env, moved, "move");
   const parentBox = resolveNewParent(tent, newParentId);
   if (parentBox) {
     if (!isUsableBox(parentBox)) throw new Error("Target parent box is invalid or archived.");
@@ -4602,8 +4561,7 @@ __export(ops_exports, {
 });
 function resolveDispatchNodeIds(input) {
   const tentName = input.tentName.trim();
-  const legacyRaw = typeof input.legacyClaimId === "string" ? input.legacyClaimId.trim() : "";
-  const legacy = legacyRaw || void 0;
+  const primaryNodeId = input.primaryNodeId?.trim() ?? "";
   if (input.nodeIds !== void 0 && input.nodeIds !== null) {
     if (!Array.isArray(input.nodeIds)) {
       throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
@@ -4633,37 +4591,40 @@ function resolveDispatchNodeIds(input) {
     if (out.length === 0) {
       throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
     }
-    if (legacy) {
-      if (isForbiddenRootDispatchToken(legacy, tentName)) {
+    if (primaryNodeId) {
+      if (isForbiddenRootDispatchToken(primaryNodeId, tentName)) {
         throw new Error(
-          "Cannot dispatch the whole Tent directly; dispatch a specific Node (legacy primary cannot be ., root, or the Tent name)."
+          "Cannot dispatch the whole Tent directly; dispatch a specific Node (primary Node cannot be ., root, or the Tent name)."
         );
       }
-      if (legacy !== out[0]) {
+      if (primaryNodeId !== out[0]) {
         throw new Error(
-          `Dispatch legacy primary '${legacy}' conflicts with authoritative nodeIds primary '${out[0]}'; when both are present they must agree (prefer nodeIds).`
+          `Dispatch primary Node '${primaryNodeId}' conflicts with nodeIds[0] '${out[0]}'.`
         );
       }
     }
     return out;
   }
-  if (!legacy) {
-    throw new Error("Dispatch requires nodeIds or a legacy single boxId/id/claimId.");
+  if (!primaryNodeId) {
+    throw new Error("Dispatch requires at least one Node.");
   }
-  if (isForbiddenRootDispatchToken(legacy, tentName)) {
+  if (isForbiddenRootDispatchToken(primaryNodeId, tentName)) {
     throw new Error(
-      "Cannot dispatch the whole Tent directly; dispatch a specific Node (legacy primary cannot be ., root, or the Tent name)."
+      "Cannot dispatch the whole Tent directly; dispatch a specific Node (primary Node cannot be ., root, or the Tent name)."
     );
   }
-  return [legacy];
+  return [primaryNodeId];
 }
 function isForbiddenRootDispatchToken(id, tentName) {
   return id === "." || id === "root" || tentName !== "" && id === tentName;
 }
-async function dispatch(env, claimId, role, promptOrOptions) {
-  return withMutation2(env.fs, async () => dispatchUnlocked(env, claimId, role, promptOrOptions));
+async function dispatch(env, primaryNodeId, role, promptOrOptions) {
+  return withMutation2(
+    env.fs,
+    async () => dispatchUnlocked(env, primaryNodeId, role, promptOrOptions)
+  );
 }
-async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
+async function dispatchUnlocked(env, primaryNodeId, role, promptOrOptions) {
   const tent = await loadTent(env.fs);
   const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions, ...userTaskActors() } : promptOrOptions;
   const assigneeKind = options.assigneeKind === "agentProfile" ? "agentProfile" : "role";
@@ -4688,7 +4649,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   }
   const nodeIds = resolveDispatchNodeIds({
     nodeIds: options.nodeIds,
-    legacyClaimId: claimId,
+    primaryNodeId,
     tentName: env.tentName
   });
   const tasks = await loadTaskEnvelopes(env.fs);
@@ -4730,7 +4691,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       await ensureDir2(env.fs, dirName(manifestPath));
       await env.fs.writeFile(manifestPath, yaml);
     } else {
-      manifestPath = join2("temp", assigneeLabel, "manifest.yml");
+      manifestPath = join2("temp", assigneeLabel, "manifests", `${taskId}.yml`);
       await ensureDir2(env.fs, dirName(manifestPath));
       await env.fs.writeFile(manifestPath, yaml);
       const registry = await loadRolesRegistry(env.fs);
@@ -4937,6 +4898,7 @@ async function placeBoxUnlocked(env, fromPath, newParentPath, position) {
   if (moved.invalid || moved.archived) {
     throw new Error("Invalid or archived boxes cannot be moved.");
   }
+  await assertNoActiveTaskRefsInSubtree(env, moved, "move");
   const movedId = moved.id;
   const movedName = fromPath.slice(fromPath.lastIndexOf("/") + 1);
   const parentBox = newParentPath ? before.byPath.get(newParentPath) : null;
@@ -5078,9 +5040,9 @@ async function setNodeModeUnlocked(env, boxId, mode) {
   }
   if (next === "archived") {
     const tasks = await loadTaskEnvelopes(env.fs);
-    if (boxHasDirectActiveTask(box.id, tasks)) {
+    if (hasActiveTaskInSubtree(tent, box, tasks)) {
       throw new Error(
-        "Node is directly referenced by an active task and cannot be archived; complete or interrupt the task first."
+        "Node subtree has an active task and cannot be archived; complete or interrupt the task first."
       );
     }
   }
@@ -5215,6 +5177,7 @@ var init_ops = __esm({
     init_delivery();
     init_scaffold();
     init_task_lifecycle();
+    init_renameOps();
     init_forkOps();
     init_renameOps();
     init_moveOps();
@@ -7492,7 +7455,10 @@ var TentView = class extends import_obsidian4.ItemView {
       );
     }
     if (!box.archived && !box.invalid) {
-      const check = canClaim(box);
+      const check = canClaim(box, {
+        tasks: this.tasks,
+        ...this.tent ? { tent: this.tent } : {}
+      });
       menu.addItem(
         (i) => i.setTitle("\u6D3E\u6D3B").setIcon("send").setDisabled(!check.ok).onClick(() => {
           this.selectedId = box.id;
@@ -8023,7 +7989,10 @@ var TentView = class extends import_obsidian4.ItemView {
       prompt.style.height = `${Math.max(30, prompt.scrollHeight)}px`;
     };
     prompt.oninput = resizePrompt;
-    const claim = canClaim(box);
+    const claim = canClaim(box, {
+      tasks: this.tasks,
+      ...this.tent ? { tent: this.tent } : {}
+    });
     const blockedReason = pendingDispatch ? "\u5DF2\u6709\u6295\u9012\u7B49\u5F85\u63A5\u624B\u3002" : claim.reason || "";
     const run = actSlot.createEl("button", { cls: "tent-bottom-action", text: "\u6D3E\u6D3B\u63A5\u529B" });
     run.setAttr("type", "button");
