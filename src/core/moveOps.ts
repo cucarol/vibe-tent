@@ -1,15 +1,14 @@
 // Atomic concept move / reparent: keep cx- stable, reorder or reparent under DropPosition,
 // rewrite path links only when the folder path changes, roll back on post-move failure.
-// Occupation freeze model matches placeBox (not rename's stricter descendant ban).
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
-// V0.2 cx-tsw53f: move remains legal under concurrent Task Node refs (stable nodeId).
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { buildConceptIndex } from "./okf.js";
 import type { OpsEnv } from "./ops-context.js";
 import { loadOrder, saveOrder, ROOT_KEY } from "./order.js";
 import { isOperationalPath } from "./paths.js";
 import {
+  assertNoActiveTaskRefsInSubtree,
   rewriteConceptLinks,
   type RewriteConceptLinksOptions,
 } from "./renameOps.js";
@@ -51,7 +50,8 @@ type PlannedWrite = {
  * - `cx-` / frontmatter id never change; folder stem (display name) is preserved
  * - reparent: move directory tree, rewrite path-based links, roll back on failure
  * - same-parent reorder: order.json only — no link rewrite
- * - occupation: placeBox freeze (self/ancestor/root blocked; ancestor-of-occupied may move)
+ * - structural occupation: an active ref anywhere in the moved subtree blocks
+ *   the move; destination-parent occupation alone does not
  */
 export async function moveNode(
   env: OpsEnv,
@@ -83,7 +83,8 @@ async function moveNodeUnlocked(
   }
   assertNotOperationalPath(moved.path);
 
-  // Concurrent Task refs do not freeze move; Context re-resolves by durable nodeId.
+  await assertNoActiveTaskRefsInSubtree(env, moved, "move");
+
   const parentBox = resolveNewParent(tent, newParentId);
   if (parentBox) {
     if (!isUsableBox(parentBox)) throw new Error("Target parent box is invalid or archived.");

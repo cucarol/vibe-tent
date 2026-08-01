@@ -9,6 +9,8 @@ import { normalizeTarget } from "./link-target.js";
 import type { OpsEnv } from "./ops-context.js";
 import { isOperationalPath } from "./paths.js";
 import { validateBoxName } from "./scaffold.js";
+import { ACTIVE_TASK_STATES } from "./task-model.js";
+import { loadTaskEnvelopes } from "./task.js";
 
 import type { Box } from "./types.js";
 import {
@@ -74,7 +76,7 @@ async function renameNodeUnlocked(
   if (isFrozen(target)) {
     throw new Error("Invalid or archived boxes cannot be renamed.");
   }
-  await assertRenameOccupationAllowed(env, tent, target);
+  await assertNoActiveTaskRefsInSubtree(env, target, "rename");
 
   const oldPath = target.path;
   const oldName = target.name;
@@ -261,13 +263,31 @@ function resolveRenameTarget(tent: LoadedTent, conceptIdOrPath: string): Box {
   throw new Error(`Concept not found: ${conceptIdOrPath}.`);
 }
 
-async function assertRenameOccupationAllowed(
-  _env: OpsEnv,
-  _tent: LoadedTent,
-  _concept: Box
+/**
+ * Structural mutations cannot invalidate the Node refs of an active Task.
+ * Ancestors outside the affected subtree and destination parents are not
+ * considered, so parent/child work can continue concurrently.
+ */
+export async function assertNoActiveTaskRefsInSubtree(
+  env: OpsEnv,
+  root: Box,
+  operation: "move" | "rename"
 ): Promise<void> {
-  // V0.2 cx-tsw53f: rename with stable nodeId is legal under concurrent Task refs.
-  // Context Card re-resolves by id and refreshes path hints — no occupation freeze.
+  const subtreeIds = new Set(collectSubtree(root).map((box) => box.id));
+  const blockers = (await loadTaskEnvelopes(env.fs)).filter((task) => {
+    if (!ACTIVE_TASK_STATES.has(task.state) || task.contextCard == null) return false;
+    return task.contextCard.refs.nodes.some((node) => subtreeIds.has(node.id));
+  });
+  if (blockers.length === 0) return;
+
+  const taskLabels = blockers
+    .map((task) => task.id || task.path)
+    .sort((a, b) => a.localeCompare(b));
+  throw new Error(
+    `Cannot ${operation} Node subtree ${root.id}: active Task ref(s) ${taskLabels.join(
+      ", "
+    )} must finish first.`
+  );
 }
 
 function assertNotOperationalPath(path: string): void {
