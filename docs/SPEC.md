@@ -27,9 +27,8 @@ The workspace stores real project files and Git history. `.tent/` stores Tent
 facts and does not use its own Git repository. Workspace identity comes from
 the mounted workspace path, never from a Node field or type setting.
 
-Runtime discovery requires `.tent/index.md`. The retired `.tent/RULES.md` is
-not read at runtime. A one-shot importer may recognize and discard it when
-migrating a v0.1 external Tent root.
+Runtime discovery requires `.tent/index.md`. Project instructions live in the
+workspace `AGENTS.md`; `.tent/RULES.md` is not a runtime contract.
 
 ## 2. Nodes
 
@@ -98,28 +97,40 @@ and are not Core type semantics.
 Archived or invalid Nodes reject ordinary content and structure mutations.
 There is no general `read-only` Node mode and no type-based R/W gate.
 
-## 4. Roles And Agents
+## 4. Roles, Routes, And Sessions
 
 A Role is a durable responsibility to the user. Its registry definition has a
-stable Role id, name/display name, optional prompt, user-facing delivery policy,
-and a roster of logical Agent ids.
+stable Role id, name/display name, optional prompt, and user-facing delivery
+policy. A Role is not a provider configuration or an ACL.
 
-An AgentDefinition is a stable logical worker identity. An AgentProfile is
-machine-local launch resolution (provider, model, credentials, command, and
-runtime options). A Role roster authorizes Agent ids, not Profiles.
+Settings owns machine-local routes. A route has a stable `routeId` and resolves
+provider, model, endpoint, credential reference, command, and non-secret launch
+metadata. Credentials remain in the machine-local service data area and never
+enter workspace Nodes, Tasks, or Git.
+
+Dispatch has two public targets:
+
+- `role:<roleId>` creates a queued handoff to a durable Role;
+- `route:<routeId>` creates a formal Task and starts a temporary managed ACP
+  Session through that Settings route.
+
+A temporary route Session is not registered as a persistent worker or second
+Role. Saving a reusable Session bookmark and host-native Advisor support are
+future capabilities, not current entities or authorization paths.
 
 Role and Session are different:
 
 - a Role survives Session replacement;
 - a Session is one execution instance, managed or external;
-- compatible downstream Sessions may be reused by the Role;
+- a managed Session may resume only when the same provider conversation is
+  still recoverable and Core proves compatibility;
 - persisted Nodes, Tasks, Deliveries, checkpoint, and Git are the recovery
   authority when a Session cannot continue.
 
 Two composable Skills define Agent behavior:
 
-- `tent-role`: durable Role responsibility, roster use, downstream review, and
-  user-facing delivery;
+- `tent-role`: durable Role responsibility, Node context, downstream review,
+  and user-facing delivery;
 - `tent-task`: the execution protocol for every concrete Tent Task.
 
 A Role executing a Task uses both. A one-shot or managed downstream executor
@@ -127,13 +138,14 @@ uses `tent-task` only.
 
 ## 5. Task And Context Card
 
-A Task is one work package and one review unit. It is not a Node and does not
-own a Node exclusively. Multiple Tasks may reference the same Node.
+A Task is one work package and one review unit. It is not a Node. Its exact
+`nodeIds[]` are acquired atomically; while the Task is active, another Task
+cannot acquire the same Node. Parent and child Nodes do not imply subtree locks.
 
 Dispatch persists:
 
 - exact `parentActor` and `reviewer` authority;
-- assignee (`role`, logical `agentId`, or direct AgentProfile path);
+- assignee (`role` or machine-local Settings `routeId`);
 - objective, acceptance criteria, prompt delta, and referenced entities in a
   Context Card;
 - optional Git WorkspaceLane;
@@ -157,13 +169,13 @@ The Service owns managed ACP Session launch, binding, replacement, input
 injection, and terminal projection. External Sessions explicitly enter/claim
 and leave through the same persisted Task contract.
 
-A Session may execute more than one compatible Task, but a Task remains the
-delivery boundary. Replacing a Session must preserve the same Task and
-worktree, rehydrate from persisted context, and never require envelope edits.
+A Task remains the Delivery boundary. A temporary route Session belongs to its
+Task; the public workflow does not promise cross-Task reuse. Resume reconnects
+the same recoverable provider conversation, while explicit replacement
+preserves the same Task and worktree without envelope edits.
 
-Provider/model/key configuration belongs to machine-local AgentProfiles or the
-Agent's native tooling. Tent does not become a general CLI configuration
-manager. Skill and MCP availability may be reported, but Tent does not silently
+Provider/model/endpoint/credential configuration belongs to machine-local
+Settings routes or the provider's native tooling. Tent does not silently
 rewrite every Agent's native configuration.
 
 ACP stdio is a bounded adapter boundary. Tent rejects an oversized JSON-RPC
@@ -194,8 +206,11 @@ declared commits and then atomically update Task/Delivery state. Integration is
 fail-loud, never pushes, and does not write generic status back to Nodes.
 
 A managed Delivery is published only after the producing turn and workspace
-lane have settled. An Agent report is not sufficient while the same turn can
-still write or commit.
+lane have settled. A non-empty natural ACP final report defaults to a Delivery;
+an optional valid `blocked` or `needs-input` control outcome parks the Task
+instead. An empty report never invents success, and malformed outcome syntax
+never discards an otherwise valid report. Every non-empty final report is first
+preserved as a durable draft, including a control report that parks the Task.
 
 ## 8. User And Agent Interaction
 
@@ -203,7 +218,6 @@ The Service persists interaction types separately:
 
 - TaskInput for user/parent feedback to a Task executor;
 - UserAsk for an Agent question requiring a user answer;
-- A2A approval for controlled Agent-to-Agent launch;
 - tool approval where a provider requires it;
 - Delivery review.
 
@@ -235,9 +249,9 @@ reclaim only after terminal Task state, Session settle, clean worktree,
 unambiguous ownership, and required integration. Reclaim never deletes commits,
 branches, Task records, or Role lanes and never performs historical mass-prune.
 
-Delivery commit ancestry is checked against the Task's dispatch-time base.
-Ordinary executors may not merge parent history into their lane to bypass
-review.
+Delivery commit ancestry is checked against the Task lane's capture-once base,
+recorded when that execution lane first binds. Ordinary executors may not merge
+parent history into their lane to bypass review.
 
 ## 10. Mutation And Projection
 
@@ -260,32 +274,24 @@ Primary collaboration commands attach to the Local Service:
 ```text
 tent status
 tent tree
-tent roles
+tent role list|show|config
+tent session enter|status|leave
 tent task list|get|dispatch|claim|deliver|accept|reject|cancel|send-input|...
+tent task dispatch --target role:<roleId>|route:<routeId> --node <nodeId> ...
 tent role-init <role>
 tent role-checkpoint set|show|clear
-tent agent status|enter|leave
 tent skill-install [--target ...] [--force]
 ```
 
-One-shot migration and external-root maintenance commands are explicitly
-separate from the normal in-workspace mutation path. Retired public commands
-are removed rather than kept as aliases.
+Retired public commands are removed rather than kept as aliases. Public Task
+dispatch accepts only repeated `--node` references and `role:*|route:*` targets.
 
-## 12. Migration And Conformance
+## 12. Conformance
 
-V0.2 migration is one-shot:
-
-- `bx-` ids become `cx-`;
-- `note` becomes `prompt` and `artifact` becomes `output`;
-- legacy owner/status, type R/W/chrome, coordination, and read-only mode are
-  removed;
-- old external roots are copied into `<workspace>/.tent` without deleting the
-  source;
-- retired `RULES.md` is not copied; project rules live in workspace
-  `AGENTS.md` and `.tent/index.md` becomes the structural marker.
-
-There is no permanent dual-read or dual-write compatibility layer.
+The public contract has one Node model, one Settings-route execution selector,
+and one dispatch grammar. A private workspace that predates this contract must
+be canonicalized explicitly and audibly before use; Tent does not publish a
+permanent migration API, dual-read, or dual-write compatibility layer.
 
 OKF validation:
 

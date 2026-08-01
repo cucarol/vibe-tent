@@ -2,9 +2,9 @@
 
 > *vibe 于帷幄之中*
 
-user 和 coding agent 的协作，本质是把代表你意图的 **goal**，经由 **prompt** 交给 agent，最终得到 **output**。当你同时指挥多个 agent，这个过程很快会失控：谁在做什么、能改哪里、进行到哪一步、交付是否可信——都散落在各处。
+user 和 coding agent 的协作，本质是把代表你意图的 **goal**，经由 **prompt** 交给 agent，最终得到 **output**。当你同时推进多项工作，这个过程很快会失控：长期事实在哪里、谁在承担责任、某次执行能改什么、交付是否可信——都散落在各处。
 
-**Tent（帷幄）承载这套协作**——在 Obsidian 中可视化地管理 **goal**、**prompt** 和 **output**，划定 agent 权限、派活与验收，产出可追踪回真实代码仓。你运筹，agent 执行，决策权始终在你。
+**Tent（帷幄）承载这套协作**——用持久 Node 保存意图与事实，用 Task、Session 和 Delivery 管理一次次执行与验收，并把产出追踪回真实 workspace 和 Git。Desktop、CLI 与可选插件都连接同一个 Local Service；你运筹，Role 承担长期责任，临时 ACP Session 执行具体工作，决策权始终在你。
 
 **示例demo**：
 <img width="1572" height="1076" alt="image" src="https://github.com/user-attachments/assets/2989b6ff-e249-435e-913e-c0267c05ffdf" />
@@ -36,33 +36,30 @@ When done, tell me to enable Tent in Obsidian's community-plugin settings.
 
 <img width="1721" height="834" alt="image" src="https://github.com/user-attachments/assets/b3cd6e0d-8990-464a-ab51-9fd071c16bf4" />
 
-Tent 在你的 Obsidian 中创建一个文件夹存放 markdown 文档；真实产出（代码、文档）所在的 workspace 由你指定。
+Tent 在项目 workspace 的 `.tent/` 中保存协作事实；真实产出（代码、文档）和 Git 历史仍在原 workspace。`.tent/` 不建立第二个仓库，也不是 Agent 的聊天记录。
 
-它由三部分组成：**core**（规则与文件契约）、**agent 侧 skill 层**（agent 如何进入并使用一顶帐）、**Obsidian UI**（可视化操作）。
+它由三部分组成：**Core + Local Service**（领域规则和唯一 mutation 路径）、**Agent Skills**（Role 与 Task 的执行合同）、**Desktop / CLI / 可选插件**（同一事实的客户端）。
 
-OKF 兼容：一顶 Tent（帐） 本质是一个 OKF v0.1 bundle；`tent okf-sync` 生成 OKF 索引/日志并投影 wiki-link，让这批 markdown 同时是一份可被其它工具读取的开放知识库。
-https://github.com/GoogleCloudPlatform/knowledge-catalog
-
-### core
+### Core 与 Local Service
 
 <img width="1938" height="525" alt="image" src="https://github.com/user-attachments/assets/3f9beeae-ac0e-4307-8f62-0c0e43283111" />
 
-core 是 Tent（帐） 的地基：一套纯文件约定，加上操作它的 `tent` CLI。状态、意图、权限、协作管道全部落在带 frontmatter 的 markdown 和 `.tent/` 注册表里——不依赖 Obsidian，也不用 Git 存状态。UI 只是它的可视化外壳，整套流程用 CLI 就能跑完。
+Core 定义 Node、Role、Task、Session 与 Delivery 的领域规则；Local Service 是 mounted workspace 的唯一 mutation authority。客户端只发 RPC 并重新读取权威投影，不直接改 `.tent/temp/`。
 
-- **box（框）** —— 每份带 frontmatter 的 markdown 即一个 box：`bx-` id 随移动保持稳定，父子层级表达归属，正文是任务本体。`tent new-box <name> <type> [parentId]` 建框，`tent fork <boxId>` 复制整棵子树。
-- **type / status / tags / 权限** —— `type`（`goal` / `prompt` / `output`）决定语义与默认读写，`status`（todo / doing / done）表进度，`tags` 做横向检索，每个 box 另有 R/W 权限。type 存在 `.tent/types.json`，可自定义名称、默认 R/W 与描述。
-- **派活与认领** —— Desktop / 外部 agent 优先走 **Local Service RPC**：`tent task list|get|claim|deliver`（attach 当前 workspace 的同一 service；CLI 退出不杀 service）。窗口关掉后仍可 claim/deliver，Desktop 看到同一状态。详见 [`docs/desktop/cli-service.md`](docs/desktop/cli-service.md)。
-- **Legacy CLI** —— `tent dispatch` / `tent task-ack` / `tent complete` 等仍可在 external root 直写 core（迁移窗口 / 离线测试）；**不要**与 Desktop 共置时当第二写路径。正式交付只有 Delivery 单轨（`task.deliver`），无 `tent report`。
-- **执行与隔离** —— dispatch 会从 in-workspace tent 解析并创建 `worktree + branch`，每个 role 一条独立车道。真实代码、commit、branch 都发生在 workspace，Tent 侧只存协作状态。
-- **交付与裁决** —— agent 用 `tent task deliver <taskPath> --summary …`（RPC）提交 Delivery（`summary` 即给 user 读的 report 正文）；你在 Desktop 或 `tent task accept/reject` 裁决。全程你是唯一决策者。
+- **Node** —— 带稳定 `cx-` id 的 Markdown 知识与上下文。父子结构表达归属，正文保存跨 Session 仍成立的事实；`goal`、`prompt`、`output` 是主要语义类型。
+- **Role** —— 对用户长期负责的主体。Role 可跨 Session 恢复，但不能靠聊天历史代替 Node、Task、Delivery 与 Git。
+- **Task** —— 针对一个或多个 exact Node 的一次工作与审阅单位。`nodeIds[]` 是唯一公开 Node 选择；同一 Node 同时只能被一个 active Task 占用。
+- **Session** —— 一次可终止、恢复或重新连接的执行。`--target role:<roleId>` 创建 queued Role handoff；`--target route:<routeId>` 从 Settings 解析机器本地 route 并启动临时 ACP Session。临时 Session 不注册持久 worker，也不创建第二个 Role。
+- **Delivery** —— Task 的正式结果。自然非空 ACP final report 默认形成可审阅 Delivery；`blocked` / `needs-input` 是可选控制信号，不是成功交付。
+- **Git lane** —— 代码 Task 在记录的 Role 或 Task lane 中工作。Service 校验 commits、target head 与 integration CAS；客户端不手动移动协作状态。
 
 ### skill
 
-Agent 侧只有两个可组合行为合同：**`tent-role`** 负责创建、进入或恢复持久 Role，以及下游编排和审查；**`tent-task`** 负责任何 Agent 的 Task claim、A2U/U2A、工作区边界与 Delivery 生命周期。
+Agent 侧只有两个可组合行为合同：**`tent-role`** 负责进入或恢复持久 Role、维护 Node 上下文并审查下游交付；**`tent-task`** 负责任何执行者的 Task、A2U/U2A、工作区边界与 Delivery 生命周期。
 
 ### Obsidian UI
 
-可选的可视化层，把上面这套 core 摊在面板里操作：左侧是整棵 box 树，右侧是选中 box 的详情面板，含三个 tab——**笔记**（box 正文）、**派活**（把框交给某个 role）、**待裁**（逐个确认或驳回 Delivery / proposal）。
+可视化层把同一合同摊在面板里操作：浏览 Node、查看 active Task 与 Session、从 Settings route 派发工作，并确认或驳回 Delivery。关闭窗口不会创建第二份状态，也不会停止 Local Service。
 
 https://github.com/user-attachments/assets/092cec70-e68d-4298-a2fc-c5d58921a14d
 

@@ -1,543 +1,191 @@
-# B0 · AgentRuntime Adapter Contract
+# Managed Agent Runtime Contract
 
-Status: **frozen contract** for Local Service → agent adapter execution boundary.  
-Scope: **service-internal** `AgentRuntimePort`, provider adapters, session registry, process supervision, push/pull host modes, first prototype selection, and per-agent verification discipline.  
-Non-scope: Task/Delivery state machine (`docs/desktop/task-api.md`), service process topology and sole-mutation rules (`docs/desktop/architecture.md`), concept/box document model (`docs/desktop/concept-model.md`). Those contracts own collaboration semantics and stack topology; this document must not invert them.
+This document describes the Local Service execution boundary for managed ACP
+and external Sessions. Collaboration semantics remain in
+[task-api.md](task-api.md); adapters never implement Node occupation, review, or
+Git integration.
 
-This document freezes **who starts processes**, **what events adapters may emit**, and **how provider differences are handled**. Implementation batches B9a+ implement this contract; they do not reopen it without an explicit revision.
+## 1. Runtime responsibilities
 
-**Visibility:** `AgentRuntimePort.*` is **not** a client command surface. Desktop, CLI, and MCP call only `task.*` / `docs.*`. The service maps authorized `task.startSession` (or dispatch with `startSession: true`) onto this port after **A2APolicy** evaluation.
+The runtime may:
 
-Canonical English names are API/schema truth. UI may localize labels via i18n; persisted enums never use localized values.
+- resolve one machine Settings route into a private launch plan;
+- start, resume, prompt, observe, and stop a provider process;
+- normalize ACP updates into Session events;
+- enforce input, output, frame, update, and diagnostic bounds;
+- project safe runtime state to Service.
 
----
+The runtime may not:
 
-## 1. Separation of concerns
+- create or claim a Task on its own;
+- acquire or edit Nodes;
+- select a reviewer or accept a Delivery;
+- turn route availability into collaboration authority;
+- persist provider credentials or conversation tokens in a workspace.
 
-```text
-Task API (external collaboration)        AgentRuntimePort (service-internal execution)
-────────────────────────────────         ────────────────────────────────────────────
-task.dispatch / claim / wait / resume    startSession / resumeSession / stopSession
-task.deliver / accept / reject / interrupt   probe / subscribe(RuntimeEvent)
-docs.fork + box occupation, review       process & session lifecycle only
-A2APolicy allow|ask|deny (policy)        spawn only after service already authorized
-```
+## 2. Settings route and launch plan
 
-### Hard rules
-
-1. **Task API owns collaboration (external).** Adapters never implement box occupancy, claim topology, dispatch, deliver, accept, reject, or proposal review.
-2. **AgentRuntimePort owns execution (internal).** Start, resume, stop, probe, and structured **runtime** events only. No chat message API. **Not** exposed to Desktop/CLI/MCP as a command group.
-3. **Service maps events → task states.** Adapter process events never write concept/box frontmatter. Mapping into `running | waiting | failed` and binding optional **`task.sessionId`** (reference only) is a service responsibility aligned with the Task API contract.
-4. **A2A hard gate lives only in the service** (`A2APolicy` = `allow | ask | deny` per Task API). When the runtime port is invoked, authorization is already decided. Adapters must not re-interpret skill text, workspace `AGENTS.md`, or honor manifests as spawn authority.
-5. **Adapters are injected by Local Service.** They must not open a second mutation path into tent operational files or core lifecycle modules (architecture: sole service mutation entry).
-
-Forbidden reverse edges:
-
-- Adapter / desktop / skill script → direct `spawn` of provider CLIs bypassing the service.
-- Adapter → Task API verbs or box-tree writes.
-- Task API / core → provider SDKs, credentials, or process supervision details.
-- Any product path that routes “agent A’s chat reply” into “agent B’s conversation” (chat router).
-
----
-
-## 2. Identity model: role ≠ session ≠ profile ≠ adapter
-
-| Canonical | Space | Meaning | Durable? |
-| --- | --- | --- | --- |
-| **role** | project registry (under `.tent/`) | Stable collaboration identity: prompt, **A2APolicy**, WorkspaceLane relationship | yes (project) |
-| **AgentProfile** | **machine-local** service config | How to launch a class of agent: binary/app path, default argv templates, auth reference, capability flags | yes on machine; **not** in workspace git |
-| **session** (`ss-`) | **machine-local** session registry | One recoverable runtime instance bound to a profile (+ optional role), process handle, and **RuntimeWorkspace** | replaceable; machine-local |
-| **ProviderAdapter** | `packages/adapters` (or staged `src/adapters`) | Provider-specific launch/resume/stop/probe/event normalization | code artifact |
-| **ProcessSupervisor** | Local Service | Uniform child-process lifecycle; does **not** understand boxes | service component |
-| **task.sessionId** | operational task record only | Optional **reference** of a task attempt to a live/external session—**no** session row fields | operational (id only) |
-
-### WorkspaceLane vs RuntimeWorkspace
-
-| Term | Owner | Meaning |
-| --- | --- | --- |
-| **WorkspaceLane** | Task / collaboration | Git lane on the task: workspace, worktree, branch, targetBranch |
-| **RuntimeWorkspace** | This contract / session registry | Process launch binding: cwd, env handles, absolute path caches for a live session |
-
-Do **not** call either a “workspace pointer.” Lane is prepared by service/core **before** internal `startSession`. RuntimeWorkspace may mirror the lane’s worktree path but is not stored on the task.
-
-### Invariants
-
-1. **role ≠ session, but a durable role keeps one current session.** Changing or replacing a session does not change role identity, queue membership, or box occupation. Across tasks, service reuses the latest stopped, resume-capable session only when workspace, role, profile, assignee kind, and runtime cwd still match. `lastTaskId` is rebound to the current task before prompting; `agentProfile` tasks remain task-scoped.
-2. **AgentProfile ≠ role.** Temporary one-shot agents may use a profile without entering the durable role registry (Task API already allows `assigneeKind: agentProfile`). **AgentProfile** configs never enter workspace git. Each new machine-local Session captures a non-secret launch-profile snapshot (including Skill name/path refs and MCP server descriptions with envKey/credentialRef only); native resume uses that snapshot so later profile edits cannot reinterpret an old provider token or hot-update MCP/skills on a live session. Credential values are resolved again by `credentialRef` at resume / session start for MCP env and headers.
-3. **ProviderAdapter ≠ Generic “supports all CLIs”.** A shared process skeleton is allowed; each shippable provider still needs its own adapter class (or explicit profile + verified capability set) and verification checklist.
-4. **Legacy `role.cli` is input, not runtime.** Existing `RoleCliConfig { command, resume? }` and SPEC “never spawn” hints are **migration sources for AgentProfile drafts**. They are not a second supervisor and must not be invoked by skills as spawn authority.
-5. **WorkspaceLane is orthogonal to session.** Durable role worktree/branch (`ensureRoleWorkspace` → `tent-role/<role>`) is prepared by service/core before internal `startSession`. One-shot agentProfile tasks use a task-scoped lane (`ensureTaskWorkspace` → `tent-task/<taskId>`) acquired at managed execution, not a durable `tent-role/<profile>` lane. Session rows store `assigneeKind` so live-role checks never treat profile sessions as durable role sessions.
-6. **Task stores `sessionId` only.** Several historical tasks may retain the same durable Role Session id; runtime event projection uses the session row's current `lastTaskId`, not an older task's stale reference. Session rows, PIDs, resume tokens, and RuntimeWorkspace absolute paths stay machine-local.
-
----
-
-## 3. Credentials and machine-local data
-
-| Data | Location | Forbidden |
-| --- | --- | --- |
-| Provider API keys, OAuth tokens, CLI auth blobs | OS credential store / machine-local service data area only | Workspace files, box bodies, git history, tent operational envelopes |
-| Session resume tokens, PIDs, absolute worktree caches | Session registry under service data area (e.g. `%APPDATA%/Tent/sessions/`) | Shipping with workspace copy; treating as collaboration facts |
-| **AgentProfile** binary paths | Machine-local config | Assuming identical absolute paths on another machine; writing profiles into `.tent/` / git |
-| RuntimeWorkspace absolute paths | Session registry | Treating as collaboration facts on the task |
-| Capability / support matrix documentation | Repo docs (honest, versioned) | Claiming support without checklist pass |
-
-Rules:
-
-1. Agents and adapters **never** read raw provider credentials from tent files. Service injects auth via OS-backed slots or provider-native login already present on the machine.
-2. `StartSessionRequest.env` must not carry secret plaintext intended for persistence; any env injection is process-scoped and redacted from logs.
-3. Copying a workspace must preserve collaboration semantics **without** requiring old PIDs, credentials, session rows, or absolute session paths (architecture data-placement rule). Task files may retain a stale `sessionId` string that no longer resolves.
-4. Logs and `session.stdout_tail` diagnostics must be treated as potentially sensitive; default UI must not render them as product chat.
-
----
-
-## 4. AgentRuntimePort (logical IDL · **service-internal**)
-
-Transport between **service components** is an architecture concern (B2: loopback / in-proc). This port is **not** part of the external client command surface. Field names below are English canonical.
+A public `routeId` is a stable, non-secret reference stored in machine
+Settings. Service resolves it immediately before launch into an internal plan:
 
 ```ts
-/** Service-internal only — clients use task.startSession / task.* instead. */
-interface AgentRuntimePort {
-  /** Create and start a session. Caller (service) has already passed A2APolicy. */
-  startSession(req: StartSessionRequest): Promise<SessionHandle>;
-
-  /** Resume using machine-local resume token / provider-specific id. */
-  resumeSession(req: ResumeSessionRequest): Promise<SessionHandle>;
-
-  stopSession(
-    sessionId: string,
-    reason: "user" | "interrupt" | "shutdown"
-  ): Promise<void>;
-
-  /** Alive? resume-capable? */
-  probe(sessionId: string): Promise<SessionProbe>;
-
-  /** Subscribe to runtime events (not chat token streams). */
-  subscribe(sessionId: string, sink: (ev: RuntimeEvent) => void): Unsubscribe;
-}
-
-interface StartSessionRequest {
-  sessionId: string; // service-preallocated ss-
-  profileId: string; // machine-local AgentProfile id
-  roleName?: string;
-  /** Collaboration lane already prepared by service/core (from task.workspaceLane). */
-  workspaceLane?: {
-    workspace: string;
-    worktree: string;
-    branch: string;
-  };
-  /**
-   * RuntimeWorkspace for this process — machine-local launch binding.
-   * Usually cwd mirrors workspaceLane.worktree absolute path; not a task field.
-   */
-  runtimeWorkspace?: {
-    cwd: string;
-    // env handles / absolute path caches stay in session registry
-  };
-  /**
-   * Initial text for the agent. Managed ACP: Context Card pointer + user prompt
-   * (not multi-turn chat; not a full box paste). External adapters may still
-   * receive a short pointer. Prefer non-argv channels on Windows.
-   */
-  bootstrapPrompt?: string;
-  cwd?: string; // alias of runtimeWorkspace.cwd when set; worktree absolute path from core
-  env?: Record<string, string>; // no secret plaintext for disk
-}
-
-type RuntimeEvent =
-  | { type: "session.starting"; sessionId: string }
-  | { type: "session.live"; sessionId: string; pid?: number }
-  | { type: "session.waiting_user"; sessionId: string; summary: string }
-  | { type: "session.exited"; sessionId: string; exitCode: number | null }
-  | { type: "session.failed"; sessionId: string; error: string }
-  | { type: "session.stdout_tail"; sessionId: string; text: string } // optional diagnostics only
-  | {
-      type: "session.prompt_complete";
-      sessionId: string;
-      assistantText: string; // final assistant reply only (last non-empty agent_message segment)
-      stopReason?: string;
-    };
+type LaunchPlan = {
+  routeId: string;
+  adapter: string;
+  command: string;
+  args: string[];
+  cwd: string;
+  env: Record<string, string>;
+  model?: string;
+  endpoint?: string;
+};
 ```
 
-Client-visible session projections may be wrapped in the shared **EventEnvelope** (architecture §5.2) as `session.state` events. Adapters emit `RuntimeEvent` only to the service; they do not publish concept or task events.
+The plan is runtime-only. Public Task and Session projections may expose the
+route id and safe compatibility facts, never secret values. A missing or
+invalid route fails before provider launch.
 
-### Explicitly outside the port
+Managed children receive a minimal environment allowlist plus reserved Core
+keys such as workspace, Task, Session, protocol, and owning Service data-dir.
+Route configuration cannot override reserved keys.
 
-- External client RPCs (`task.*` / `docs.*` are the client surface; this port is not)
-- `sendChatMessage` / assistant token streaming / cross-session message routing
-- `dispatch` / `claim` / `deliver` / `accept` / box frontmatter writes
-- Model auto-selection or “pick the best agent” router
-- Git integrate / worktree creation (service calls core before start)
-- **A2APolicy** evaluation (already completed before port entry)
+## 3. Session kinds
 
-### Event → task mapping (service-owned)
+### Managed ACP Session
 
-| RuntimeEvent | Typical task projection (Task API) |
-| --- | --- |
-| `session.live` | keep/ensure `running` when bound; bind **`task.sessionId`** (id reference only) |
-| `session.waiting_user` | `task.wait` with reason + summary (user-input / external) |
-| `session.exited` (expected) | no auto-accept; managed path may already have delivered via `session.prompt_complete` |
-| `session.prompt_complete` | managed ACP only: successful `session/prompt` `end_turn` with non-empty **final** assistant reply (`assistantText` = last non-empty contiguous `agent_message_chunk` segment; intermediate narrations / thoughts / tool status excluded). Local Service **seals the turn first** (stop managed process / cancel pending tool asks; turn busy→idle) then auto-calls core `task.deliver` (summary=assistantText). Delivery must never publish while the same turn can still mutate the worktree. Public `task.deliver` / `task.requestReview` also refuse when `probe.turnBusy` is true. Empty/error/interrupt must **not** emit this event |
-| `session.failed` / `session.exited` (unintentional, pre-Delivery) / dead probe on remount | **Recoverable park (shared helper):** bound Task still `running`/`waiting` before any ready Delivery → `waiting(reason=external)` with durable `waitCode=session_unavailable` and stable English summary `SESSION_UNAVAILABLE_WAIT_SUMMARY`. **Keeps** occupation, worktree, report draft, pending TaskInputs, pending UserAsks, and audit facts. Session registry may be terminal/diagnostic; only Task is parked. Recovery is **explicit** `task.startSession` or **explicit** `task.replaceSession` (fresh ss-, same Task, `contextRestored=false`) — no auto re-prompt / turn replay. Same-session duplicate terminals are idempotent; late events from a prior `sessionId` after rebind must not affect the new occupation. Multi independent Sessions terminating in the same tick each park only their own Task. Live runtime terminal projection and mount reconcile converge on this helper. **Invariant (diagnostic only):** once the bound Task is already `delivered` / `accepted` / `rejected` / collaboration-terminal, or reject-resume has parked `waiting(external)` with its own summary, or the session was intentionally sealed/stopped (`stopReason=user`), Session terminal is **diagnostic only** — update Session row / `lastError`, do **not** demote a published Delivery, do **not** re-park or `task.fail` those occupations, and do **not** cancel durable review-feedback U2A. Explicit `task.interrupt` / cancel remains terminal and releases/cleans per existing contract. Adapter may emit `session.failed` ("interrupted") after seal even when stop was intentional. |
-| `session.stdout_tail` | diagnostics only; **never** product chat transcript |
+Service owns the child process and ACP transport. It binds the Session to one
+Task before prompting and keeps the registry authoritative for state, turn
+busy status, provider resume capability, and Task linkage.
 
-Adapters do not choose these mappings; the service does, consistent with Task API §2. Session row / PID / token updates never land in concept frontmatter or task YAML beyond `sessionId`.
+### External Session
 
----
+An external host enters with `tent session enter`, may bind during Task claim,
+and leaves with `tent session leave`. Enter/leave never spawns or kills the host
+process and never delivers or accepts a Task.
 
-## 5. ProviderAdapter layering
+## 4. Session states and events
 
-```ts
-interface ProviderAdapter {
-  readonly id: string; // e.g. "codex-cli"
-  readonly displayNameKey: string; // i18n key only
-  capabilities(): ProviderCapabilities;
-  resolveLaunch(plan: LaunchPlan): ResolvedLaunch;
-  /** Optional structured ACP transport (spawn + session/new + bootstrap). */
-  startManagedSession?(
-    plan: LaunchPlan,
-    emit: (ev: RuntimeEvent) => void
-  ): Promise<ManagedSession>;
-  /**
-   * Provider-native managed resume (ACP: new process + session/load).
-   * Must not silently fall back to session/new. Only when canResume=true.
-   */
-  resumeManagedSession?(
-    plan: LaunchPlan,
-    token: ResumeToken,
-    emit: (ev: RuntimeEvent) => void
-  ): Promise<ManagedSession>;
-  parseResumeToken?(raw: string): ResumeToken;
-  mapExit(code: number | null, signal?: string): RuntimeEvent;
-  discoverSessions?(): Promise<DiscoveredSession[]>;
-}
-
-interface ProviderCapabilities {
-  canSpawn: boolean; // false → pull-host only
-  /**
-   * True only when provider-native resume is implemented and verified
-   * (e.g. ACP loadSession). Never set true by re-wrapping startSession.
-   */
-  canResume: boolean;
-  canStopGraceful: boolean;
-  needsTty: boolean;
-  supportsWorktreeCwd: boolean;
-  authModel: "none" | "env" | "os-keychain" | "external-app";
-  observeLevel: "process" | "log" | "structured";
-}
-```
-
-### Package layout (target)
+Runtime state is intentionally smaller than provider-specific state:
 
 ```text
-packages/adapters/
-  codex/           # first push prototype
-  claude-code/     # later, after its own checklist
-  generic-cli/     # supervisor skeleton + user templates (not “supports everything”)
-  pull-host/       # cannot spawn: register external session metadata + jump/relay only
+starting -> live <-> waiting-user
+starting|live|waiting-user -> stopping -> stopped
+starting|live|waiting-user|stopping -> failed
 ```
 
-Dependency rule (architecture): `adapters` depend on runtime port types only—**not** core lifecycle modules.
+Session events are invalidations. Consumers re-read the Session registry and
+Task projection; they do not derive authority from event order.
 
-### Generic CLI adapter limits
+Late updates from a retired or replaced Session are ignored when the exact Task
+binding no longer matches.
 
-- Implements spawn skeleton + user-configured command/args/resume templates + exit mapping.
-- Template variables are a **whitelist** (e.g. `{worktree}`, `{branch}`, `{relay_file}`)—no free-form shell expansion of tent secrets.
-- **Must not** auto-detect “this is Codex/Claude” and upgrade capabilities.
-- Without resume support: each start creates a new session; UI must not pretend continuity.
+## 5. Start and bind CAS
 
----
+Provider launch can be slow and therefore runs outside the exact Task lifecycle
+lock:
 
-## 6. SessionRegistry (machine-local)
+1. under the lifecycle boundary, Service reloads the authoritative Task and
+   captures its identity, state, binding, and version snapshot;
+2. runtime starts the provider outside the lock;
+3. Service re-enters the lifecycle and workspace mutation boundary;
+4. it binds only when the Task is still non-terminal and the snapshot still
+   matches;
+5. on CAS failure, it stops the new Session and reports
+   `TASK_SESSION_BIND_CAS_FAILED` without changing Task outcome or Delivery.
 
-Suggested on-disk shape (final path fixed with architecture B2):
+`task.startSession` and `task.replaceSession` share the same exact-Task
+operation flight. Concurrent identical calls may coalesce; conflicting
+operations fail deterministically.
 
-```yaml
-id: ss-…
-profileId: codex-default          # machine-local AgentProfile
-adapterId: codex-cli
-roleName: … # optional
-state: live # starting | live | waiting-user | stopped | failed | external
-pid: 12345 # omit for pull/external
-resumeToken: … # provider-specific; OS-protect if sensitive
-runtimeWorkspace:
-  cwd: …                          # absolute; not stored on task
-workspace: …                      # mounted workspace key
-createdAt / updatedAt: …
-lastTaskId: tk-… # optional projection
-```
+## 6. Resume, reattach, and fresh replacement
 
-Rules:
+Resume means reconnecting to the same provider conversation for the bound Task
+or durable Role. Core must prove route/adapter, workspace, parent Role, purpose,
+Skills, context generation, lane, exclusive idle lease, settled turn,
+TaskInput, and Delivery compatibility. Temporary route Sessions have no public
+cross-Task reuse promise.
 
-1. **Workspace copy does not carry** session files (including RuntimeWorkspace absolute paths).
-2. On service start, `probe` all non-terminal sessions: dead PID and not resume-capable → `failed`/`stopped`; resume-capable → keep metadata until explicit resume.
-3. On service stop, stop managed children first, then drain every runtime→service projection before disposing mounted workspaces or returning. A terminal event must never continue mutating task/session state after `service.stop()` resolves.
-4. Concurrent live sessions must not cross-contaminate cwd/env; stop validates `sessionId` (+ workspace id when multi-mount).
-5. `external` sessions (pull-host) have no supervised PID; state advances primarily via Task API claim/deliver, not process exit.
-6. Tasks that referenced a purged session keep only a dangling `sessionId` string until rebound—never a partial session row in operational task YAML.
-7. **ACP native resume (`session/load` or `session/resume`):** when `canResume` and `resumeManagedSession` are implemented, `AgentRuntime.resumeSession` spawns a **new** bridge process and reuses the machine-local `resumeToken` as provider `sessionId` with the **same** recorded cwd. The adapter selects the wire transport (`session/load` by default; Claude uses `session/resume`). It must **not** call `session/new`. Load history notifications are diagnostics only (no auto-delivery); resume must not replay history. `task.startSession` may reuse an existing Tent `sessionId` after restart only when `probe.resumeCapable` is true **and** task lane cwd still matches the session row.
-8. A newly spawned process/managed bridge is not externally `live` until the
-   corresponding SessionRegistry transition commits. If that commit fails, the
-   runtime must stop the new provider instance, await any child-exit projection,
-   and persist `failed`; it must not leak a process or publish a false `live`.
-9. Managed terminal callbacks are tracked runtime work, not fire-and-forget
-   writes. A transient SessionRegistry failure gets one bounded retry; stop and
-   rollback drain pending terminal projections, and a rejected projection must
-   never surface as an unhandled process-level rejection.
+If the provider conversation is no longer recoverable, it is not silently
+relabeled as the old Session. `task.replaceSession` is an explicit fresh
+execution for the same Task and remains subject to turn-idle, Task-state, CAS,
+and cleanup rules. A different work contract should be a new Task.
 
----
+Reusable Session bookmarks and general consultation/Advisor behavior are not
+part of the current runtime contract.
 
-## 7. ProcessSupervisor boundary
+## 7. Bootstrap and context
 
-### Responsible for
+Service assembles the official bootstrap. Caller text may append a dynamic
+section but cannot replace the stable prefix.
 
-- Creating child processes (Windows: `windowsHide`; ConPTY when `needsTty`)
-- Treating launch as successful only after Node's `spawn` event; executable
-  lookup/permission errors reject the start operation without an unhandled
-  `ChildProcess` error or a residual supervisor entry
-- Recording pid, start time, exit code/signal
-- Graceful stop via adapter-provided signal/command → timeout → force kill (Job Object / taskkill on Windows)
-- Optional stdout/stderr ring buffer for diagnostics (default: not product UI chat)
-- Crash callbacks → `RuntimeEvent` → service
+The stable prefix contains:
 
-### Not responsible for
+- Task protocol and installed Skill contract;
+- workspace identity and project instruction pointers;
+- Role prompt when applicable;
+- live Settings route compatibility snapshot;
+- authoritative context generation.
 
-- Deciding whether the agent “finished the task” (that is deliver/claim/review)
-- Creating git worktrees or integrating commits
-- A2A allow/ask/deny decisions
-- Interpreting box trees or manifests
+The dynamic tail contains the current Context Card, Node refs, Task state,
+TaskInput, review feedback, and optional Role checkpoint. Reuse may omit the
+stable prefix only after the live generation and every compatibility gate
+match. Collector failure fails loud and never creates reusable placeholder
+facts.
 
-### Lifecycle vs Desktop window
+## 8. TaskInput and UserAsk
 
-| Event | Push-mode child processes | Pull/external sessions |
-| --- | --- | --- |
-| Close main window | **Continue** (architecture: window ≠ stop tasks) | unchanged |
-| Stop Local Service | **Default: stop** children this service started | no supervised children; metadata may remain until purge |
-| Detach policy | Optional only for `authModel: external-app` / documented pull-host cases—not default for Codex prototype | N/A |
+Managed input delivery is at-most-once. `pending` and `failed` rows are
+retryable; `processing` is in flight; `uncertain` is durable ambiguity and is
+never automatically retried or injected again.
 
----
+All four open states block Delivery. Successful authorized acknowledgement of
+`uncertain` records that ambiguity is accepted and schedules exactly one retry
+of the existing durable Delivery draft. It never prompts the provider again,
+and background retry failure does not reverse the acknowledgement.
 
-## 8. Push vs Pull host modes
+UserAsk is the separate Agent-to-user question path. It parks the Task until
+the exact answer or denial returns through Service.
 
-| Mode | When | Behavior |
-| --- | --- | --- |
-| **Push (managed ACP)** | `capabilities.canSpawn === true` and **A2APolicy** allows (or user grants `ask`) | Service claims task (user path), builds **managed bootstrap** (Context Card pointer + near-field user prompt — not full box body; **no** claim/get/deliver CLI steps), calls **internal** `AgentRuntimePort.startSession`. On `session.prompt_complete`, service auto-`task.deliver`s the final assistant reply. Tool `permissionPolicy` default remains **deny**. |
-| **Pull (external)** | GUI hosts, no CLI, `deny` A2A, or user-woken existing session | Write task envelope + **relay** prompt (claim → get → deliver); session may be `external`; Tent shows waiting/claim; agent uses `tent task *` RPC |
+## 9. Final report and Delivery
 
-MVP requirement:
+The adapter accumulates the final assistant report separately from diagnostics.
+A natural non-empty final report is deliverable by default. A valid optional
+leading `blocked` or `needs-input` control outcome parks the Task. Missing or
+malformed control text does not discard the report; an empty report never
+creates Delivery.
 
-- **One** push-mode provider prototype (Codex CLI—§10).
-- Pull path remains first-class (current dogfood: user wake + claim).
-- Not every role must be spawnable.
+Before outcome handling or publication, Service preserves every non-empty final
+report in the durable managed report-draft store. A control outcome may park,
+but cannot discard its full body. Publication proceeds only after the turn,
+TaskInputs, Session, worktree, commits, and history settle. Publication and Task
+terminal facts use the Task lifecycle boundary; a pointer is never published
+before its Delivery exists.
 
-`task.dispatch` does **not** start a session by default. Session start is explicit external **`task.startSession`** / `startSession: true` with A2A, which the service maps to this port—clients never call the port themselves.
+## 10. Bounded ACP transport
 
----
+The adapter enforces independent bounds:
 
-## 9. No chat router; no false capability equality
+- inbound JSON-RPC frame bytes before parsing;
+- assistant report bytes, update count, and segment count;
+- bootstrap bytes and serialized outbound request bytes;
+- diagnostic event and ring-buffer bytes.
 
-### Product prohibitions
+Report or frame overflow fails loud as `ACP_OUTPUT_LIMIT`; outbound overflow is
+`ACP_REQUEST_LIMIT`. The provider is stopped, and no truncated content may
+become `prompt_complete`, a ready Delivery, or a delivered outcome.
 
-1. **No unified conversation product** that aggregates or relays multi-agent chat inside Tent.
-2. **No automatic model/agent router** that picks providers based on “who is smarter.”
-3. **No claiming “supports agent X”** in UI, docs, or release notes without that provider’s verification checklist recorded as passed on a real machine.
-4. **No** treating `session.stdout_tail` or log tails as assistant messages for end users.
-5. When dialogue is required, **jump to the official client / terminal**; Tent shows lifecycle and task state.
-
-### Per-agent verification discipline
+Diagnostic bounding is redaction-aware across chunk and UTF-8 boundaries.
+Known secrets are removed before final byte bounding, including overlapping or
+split occurrences.
 
-Every provider ships with:
+## 11. Failure and recovery
 
-1. Filled **general checklist** (G\*) results for the target OS.
-2. Filled **provider-specific checklist** (C\*, L\*, D\*, …).
-3. Recorded binary/app version, sample argv, failure modes, and resume model honesty (`canResume=false` when unproven).
-
-Merging a provider adapter without checklist evidence is a contract violation.
+An unintentional managed process exit before Delivery parks an eligible Task in
+the existing recoverable `session_unavailable` path. It preserves Node
+occupation, TaskInput/UserAsk records, worktree, and report draft. Recovery is
+explicit start/resume or replacement; Service does not re-prompt in the
+background.
 
----
-
-## 10. First prototype: Codex CLI push
-
-### Selection (normative for B9b)
-
-| Decision | Value |
-| --- | --- |
-| First **push** prototype | **Codex CLI** process adapter |
-| Pre-prototype skeleton | **B9a** mock adapter + supervisor + registry (no real Codex required) |
-| Explicit non-prototypes | Claude Desktop (pull), “universal CLI”, multi-provider ACP matrix, chat relay |
-
-Rationale (repo-local, not network research):
-
-1. Existing SPEC / roles examples already describe Codex-shaped `cli.command` + `cli.resume` hints—cheap migration into **AgentProfile**.
-2. Matches current dogfood: role worktree + `tent` CLI claim/deliver from an agent process.
-3. Clear process boundary for supervisor validation without GUI automation.
-4. Parent desktop goal treats Codex as a primary external agent surface.
-
-### Prototype success criteria
-
-1. Service (or B9a harness later attached to service) can `startSession` Codex with cwd = role worktree.
-2. `probe` / `stopSession` satisfy general checklist G3–G5.
-3. Manual path works: dispatch → startSession (A2A allow) → agent claim → file edits + commit → deliver → (user) accept; Tent observes lifecycle only—no chat UI.
-4. After service restart: session metadata listable; if resume unavailable, state is honestly `failed`/`stopped`, not zombie `live`.
-5. A2A `deny` yields **zero** spawn (unit/integration test).
-6. No chat-router code path in adapters or service runtime layer.
-
-### Explicit unknowns for real-machine spike (must resolve in B9b, not invent here)
-
-These are **known unknowns**. Spike results update adapter capabilities and runbooks; they do **not** reopen this boundary contract.
-
-| ID | Unknown | Why it matters | Spike outcome must set |
-| --- | --- | --- | --- |
-| U-C1 | Actual headless/non-interactive argv for installed Codex versions | Launch plan templates | `resolveLaunch` + version probe |
-| U-C2 | Whether a TTY/ConPTY is required | Supervisor path | `needsTty` |
-| U-C3 | Where resume identity lives (file, session id, terminal-only) | ResumeToken design | `canResume` + parseResumeToken |
-| U-C4 | Global single-instance lock across concurrent sessions | Multi-role concurrency | serialize starts or reject second live |
-| U-C5 | Windows cmdline length / escaping for bootstrapPrompt | Delivery channel | stdin vs temp file vs argv |
-| U-C6 | Interaction with co-located `tent` CLI attach-to-service | Agent-side claim/deliver | documented attach requirements |
-| U-C7 | Upgrade breakage surface across Codex major versions | Support matrix honesty | probe error messages + version pin guidance |
-| U-C8 | Job Object / orphan behavior on abnormal service kill | Shutdown hooks | supervisor kill policy verification |
-
-If the spike proves Codex cannot be a reliable push host, the product **falls back to pull** for that profile and documents `canSpawn=false`. It must **not** invent GUI click-automation as a substitute under this contract.
-
----
-
-## 11. Verification checklists (normative templates)
-
-> **Rule:** unchecked items mean “not supported,” not “probably fine.”
-
-### 11.1 General (all providers)
-
-| # | Item | Pass criteria |
-| --- | --- | --- |
-| G1 | Install/version probe | Detect presence and version string |
-| G2 | Working directory | Writes land in role worktree, not wrong cwd |
-| G3 | Start errors | Distinguish missing binary / auth failure / bad argv |
-| G4 | Stop | Graceful exit; timeout force-kill; no zombies |
-| G5 | Crash | Kill process → probe dead; service maps failed/waiting |
-| G6 | Resume | Cross service restart if claimed; else `canResume=false` |
-| G7 | Task binding | `task.sessionId` reference set only; interrupt stops session and releases occupation via Task API |
-| G8 | Credentials | No secrets written into tent/workspace; logs redacted |
-| G9 | Concurrency | Two live sessions do not cross cwd/env; lanes isolated |
-| G10 | Non-router | No product path relays chat between agents |
-| G11 | Windows | Spaces in paths, Unicode role slug via core paths, `windowsHide`, kill APIs |
-| G12 | Observability | Tent shows lifecycle; dialogue in official UI/terminal |
-
-### 11.2 Codex CLI (first prototype)
-
-| # | Item | Notes |
-| --- | --- | --- |
-| C1 | command/resume vs legacy SPEC examples | Record real argv per version |
-| C2 | Headless stability | Sets `needsTty` if required |
-| C3 | Resume token location | Drives ResumeToken |
-| C4 | Multi-session / global lock | Queue or reject |
-| C5 | Coexistence with `tent` CLI | Service attach from agent |
-| C6 | bootstrapPrompt delivery | Prefer non-argv channels on Windows |
-| C7 | Upgrade breakage | Readable probe failures |
-
-### 11.3 Claude Code CLI (later)
-
-| # | Item |
-| --- | --- |
-| L1 | Entry + auth model classification |
-| L2 | cwd / project trust prompts under headless |
-| L3 | resume/continue vs long-lived role lane |
-| L4 | structured vs process/log observeLevel |
-| L5 | Conflict with Claude Desktop backend state |
-
-### 11.4 Claude Desktop / GUI hosts
-
-| # | Item |
-| --- | --- |
-| D1 | Default **pull**; `canSpawn=false` |
-| D2 | Deep-link/activate is best-effort jump only |
-| D3 | Minimal observeLevel; state from task claim/deliver |
-| D4 | contextCard drag is desktop shell concern—not a second adapter payload format |
-
-### 11.5 Other CLIs (Grok, etc.)
-
-| # | Item |
-| --- | --- |
-| X1 | Stable automatable CLI exists? else pull only |
-| X2 | Dogfood file-inbox success ≠ RuntimePort support |
-| X3 | No fake push adapter for schedule pressure |
-
-**Desktop MVP note:** the explicit ACP adapters are `grok-acp`, `codex-acp`, `claude-acp`, `antigravity-acp`, `opencode-acp`, and `copilot-acp`. Setup, machine-local profile, env key rules, and permission policy are documented in `docs/desktop/acp-providers.md`; Grok/CPA specifics remain in `docs/desktop/grok-acp-provider.md`. `fake-cli` remains test/harness only.
-
----
-
-## 12. Implementation batches (B9)
-
-Aligned with architecture delivery order; collaboration B8 supplies task mapping and A2A gate.
-
-| Batch | Name | Depends on | Outcome |
-| --- | --- | --- | --- |
-| **B9-0** | Runtime contract freeze | B0 architecture + Task API | **This document** |
-| **B9a** | Supervisor + Registry + Mock | B2 service skeleton (harness allowed first) | mock adapter tests; disk sessions; shutdown hooks |
-| **B9b** | **Codex CLI prototype** | B9a; A2A deny-default at least | C\* spike record; start/stop/probe |
-| **B9c** | Task binding | B8b/c | claim/startSession/interrupt end-to-end |
-| **B9d** | Pull-host normalization | B9a | external session type; relay unchanged; jump hooks |
-| **B9e** | Claude Code specialty | B9b stable | L\* + adapter |
-| **B9f** | Generic CLI profile | B9a | template whitelist; honest no-resume |
-| **B9g** | Further providers | per agent | new checklist + version matrix |
-| **B9-docs** | SPEC §Runtime | B9-0+ | Replace “never spawn / role≈session” product wording; service is sole spawn authority |
-
-```text
-B2 ── B9a ──┬── B9b ── B9e/g
-            ├── B9d
-            └── B9f
-B8 ─────────── feeds B9c (task binding + A2A)
-```
-
----
-
-## 13. Interface freeze with peer contracts
-
-| Peer contract | This document requires | This document supplies |
-| --- | --- | --- |
-| **architecture.md** | Sole service mutation; adapters under service; close window ≠ stop; machine-local credentials; external cmds = `task.*`/`docs.*` | **Internal** `AgentRuntimePort` shape; RuntimeWorkspace; supervisor/session placement; B9 batching |
-| **task-api.md** | Task states, **A2APolicy**, `task.sessionId` reference only, no adapter accept, WorkspaceLane on task | Runtime events only; start after gate; push/pull modes |
-| **concept-model.md** | No operational `ss-` as OKF concepts; no `box.changed`; active-task docs.write guard | Sessions stay machine-local / operational |
-
-**Conflict rule:** If a proposal reintroduces chat routing, honor-only spawn, dual supervisors, credentials-in-git, client-exposed `AgentRuntimePort`, or “one generic adapter supports all agents,” parent product goal and these B0 contracts win; escalate to the product owner rather than silently forking.
-
----
-
-## 14. Non-goals
-
-- Multi-agent conversation rooms, message buses, or automatic model routers
-- Replacing official agent clients’ full UX
-- MVP claim of “supports all CLIs”
-- GUI accessibility click-driving of Claude Desktop as a push host
-- Merging `FsAdapter` and agent adapters into one type
-- Implementing Task lifecycle inside adapters
-- Network research as a substitute for on-machine checklist evidence
-- Changing peer B0 documents from this workstream
-
----
-
-## 15. Contract checklist (acceptance map)
-
-| Requirement | Section |
-| --- | --- |
-| Task API = external collaboration; AgentRuntimePort = **internal** start/resume/stop + runtime events | §1, §4 |
-| role / session / **AgentProfile** / ProviderAdapter separation | §2 |
-| WorkspaceLane (task) ≠ RuntimeWorkspace (session); no “workspace pointer” | §2 |
-| Task holds `sessionId` only; rows/tokens/PIDs machine-local | §2, §3, §6 |
-| Credentials and resume tokens only on local service / OS store | §3 |
-| No chat router; no false cross-agent capability equality; per-agent checklists | §9, §11 |
-| First push prototype = Codex CLI; B9a mock before B9b; explicit spike unknowns | §10 |
-| Push vs pull; dispatch does not imply spawn; clients use `task.startSession` | §8 |
-| Service stop default kills push children; window close does not | §7 |
-| Adapters never write box occupancy or accept deliveries | §1, §4, §14 |
-
----
-
-## Document control
-
-| Field | Value |
-| --- | --- |
-| Contract id | B0 AgentRuntime Adapter |
-| Tent box (dogfood) | `bx-wbedaf` (migrates to `cx-…`) |
-| Primary owner role | ACP / agent runtime adapters |
-| Depends on | `docs/desktop/architecture.md`, `docs/desktop/task-api.md` (read-only peers) |
-| Supersedes for product intent | “Tent never spawns” as permanent architecture; “role ≈ permanent agent session” wording—replaced by service-gated spawn + role≠session |
-| Next implementation step after acceptance | B9a mock supervisor + SessionRegistry harness, then B9b Codex spike against §10 unknowns |
+Registry and Task disagreement is reconciled from persisted facts at mount.
+Unreadable facts fail loud. The runtime never repairs them by guessing from a
+working directory, process id, or remembered conversation token.

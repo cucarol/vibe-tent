@@ -1,94 +1,120 @@
-# CLI ↔ Local Service（P0-2 / B4）
+# CLI And Local Service Contract
 
-Status: implementation note for Desktop MVP  
-Scope: how the `tent` CLI attaches to Local Service for task lifecycle  
-Non-scope: Desktop UI, Obsidian plugin, provider adapters
+The `tent` CLI is a thin Local Service client. Run it from the workspace root
+that contains `.tent/`. CLI exit never stops the Service, and CLI commands never
+fall back to direct operational-file writes.
 
-## Architecture boundary
+## Attach and protocol
+
+The CLI discovers the machine-local endpoint and token, performs the
+`protocolVersion=1` handshake, mounts the requested workspace, then calls the
+typed RPC. A missing, legacy, or incompatible endpoint fails loud; the CLI does
+not bypass Service or call an ACP adapter directly.
+
+`--workspace <path>` selects a workspace explicitly. Without it, the CLI walks
+from the current directory to the nearest `.tent/index.md` marker.
+
+## Public command groups
 
 ```text
-External agent / terminal
-        │  tent task claim|deliver|…
-        ▼
-CLI (short-lived)  ──attach / bootstrap──►  Local Tent Service
-        │  JSON-RPC task.* / workspace.mount
-        ▼
-tent-core (sole domain rules)
+tent node list|get|create|write|move|archive|restore|...
+tent role list|show|config
+tent session enter|status|leave
+tent task list|get|dispatch|claim|deliver|accept|reject|interrupt|cancel|...
+tent role-checkpoint set|show|clear
+tent status|tree|tags|find
 ```
 
-- **Local Service** is the only mutation entry for collaboration lifecycle in the desktop product path.
-- CLI **attaches** to a healthy machine-local endpoint (`%APPDATA%/Tent/service.json` on Windows, or `TENT_SERVICE_DATA_DIR`).
-- If no healthy service exists, CLI may **bootstrap** `service.mjs` / `tent-service start`, wait for ready, then RPC.
-- **Token** lives only in machine-local `service.json`. Never write token into the workspace or `.tent/`.
-- The HTTP listener accepts literal loopback addresses only (`127.0.0.0/8` or
-  `::1`); hostnames, wildcard binds, LAN, and public addresses fail before bind.
-- Authenticated `/rpc` buffers at most 36 MiB. This includes headroom for the
-  documented 25 MiB attachment after base64 expansion; larger requests return
-  HTTP 413 and do not reach a handler.
-- One process owns each service data directory through `service.lock`. A live
-  owner rejects a second Service; stale crash state is reclaimed. Concurrent CLI
-  bootstraps converge on the healthy winner instead of creating parallel writers.
-- `service.json` carries the owning instance id. Shutdown removes the endpoint
-  only when it still belongs to that instance, so an old process cannot erase a
-  replacement Service's discovery record.
-- Shutdown first stops accepting new HTTP work, terminates long-lived SSE
-  streams, and lets finite RPCs drain before disposing runtime/workspace state
-  or releasing the data-directory lease. Each SSE subscriber has a bounded
-  1 MiB pending queue; stalled subscribers are disconnected on overflow.
-- **CLI exit does not stop the service** (detached child + no stop on process end). Closing Desktop windows likewise leaves the service running so claim/deliver still work.
+The public collaboration nouns are Node, Role, Session, Task, and Delivery.
+Machine Settings routes are execution selectors, not collaboration objects.
 
-## Commands (stable names)
+## Dispatch
 
-| Command | RPC | Notes |
-| --- | --- | --- |
-| `tent task list` | `task.list` | Read-only |
-| `tent task get <taskPath>` | `task.get` | Read-only |
-| `tent task claim <taskPath>` | `task.claim` | Required for external agents |
-| `tent task deliver <taskPath> --summary <text>\|-` | `task.deliver` | Required for external agents |
-| `tent task dispatch <boxId> <role> …` | `task.dispatch` | Durable **role** assignee (queued; no auto session) |
-| `tent task dispatch <boxId> --profile <profileId> …` | `task.dispatch` | One-shot **agentProfile** + `startSession: true`; does **not** register a role. Prints managed `sessionId` / `sessionState` when returned. Positionals after `boxId` are prompt only — never inferred as a profile. |
-| `tent task accept <taskPath> --actor …` | `task.accept` | Optional RPC mapping |
-| `tent task reject <taskPath> --actor …` | `task.reject` | Optional RPC mapping |
-| `tent task cancel <taskPath>` | `task.cancel` | Optional RPC mapping |
-
-Common flags:
-
-- `--workspace <path>` — workspace root (wins over cwd; default: resolve from cwd)
-- `--json` — machine-readable result
-- `--data-dir <path>` — service data area override
-- `--attach-only` — do not bootstrap; fail if service missing
-- `--service-entry <path>` — entry used when bootstrapping
-
-Workspace must be an **in-workspace Tent** (`<workspace>/.tent/index.md`). CLI mounts via `workspace.mount` (idempotent if already mounted).
-
-## CLI boundary
-
-The supported layout is `<workspace>/.tent`. `tent new .` adopts an existing
-project without copying project files. Node, Task, Proposal, Role Checkpoint,
-Session, and Agent mutations route through Local Service; the CLI has no
-direct-core fallback, external-root mode, migration command, or compatibility
-aliases. Read-only `tree`, `status`, `roles`, `find`, and `tags` remain local
-queries.
-
-Machine-local bundled skills are also available through authenticated Local
-Service RPC: `skill.list` and `skill.install`. Installation sources are fixed to
-the package's bundled `skills/` directory, and destinations are restricted to
-`~/.agents/skills` (`shared-agents`) and `~/.claude/skills` (`claude`). The CLI
-uses the same backend via `tent skill-install --target all|shared-agents|claude`.
-There is intentionally no remote marketplace, arbitrary path, uninstall, or
-third-party hook editor in this surface.
-
-Use `tent node *`, `tent task *`, and service-routed `tent propose` whenever
-Desktop or another client shares the same Local Service.
-
-## Agent minimal flow
-
-```bash
-# cwd = workspace root (contains .tent/)
-tent task list
-tent task claim temp/<role>/tasks/<file>.md
-# … work in role worktree …
-tent task deliver temp/<role>/tasks/<file>.md --summary "what changed" --commits <sha>
+```text
+tent task dispatch \
+  --target role:<roleIdOrName>|route:<routeId> \
+  --node <nodeId> [--node <nodeId> ...] \
+  --prompt <text>|-
 ```
 
-After Desktop window close, the same commands still attach to the running service and Desktop sees the same `task.get` / `task.list` state on reopen.
+- `--node` is required and repeatable. It maps to the authoritative ordered
+  `Task.contextCard.refs.nodes[]` set.
+- `role:*` creates a queued durable Role handoff and never starts managed ACP at
+  dispatch.
+- `route:*` resolves the selected machine Settings route and starts a temporary
+  managed ACP Session for the formal Task.
+- caller identity supplies equal persisted `parentActor` and `reviewer`; the
+  executor cannot select or elevate them.
+- prompt is explicit through `--prompt`; there is no positional dispatch form.
+
+Route dispatch does not register a worker, mutate a Role, or create a reusable
+bookmark. Missing route configuration fails before provider launch.
+
+## Role and managed flows
+
+### Durable Role handoff
+
+```text
+task dispatch --target role:planning ... -> queued
+tent task claim <taskPath>                -> running
+tent task deliver <taskPath> --summary ...
+reviewer accept | reject
+```
+
+The Role claim captures its execution lane base once. A pure Tent Task may have
+no Git lane and may deliver with zero commits.
+
+### Temporary managed ACP
+
+```text
+task dispatch --target route:grok-core ...
+  -> Service creates and claims Task
+  -> resolves Settings route
+  -> starts/binds managed Session
+  -> preserves every non-empty final report before outcome handling
+  -> publishes Delivery after settle gates
+```
+
+The managed executor does not run `claim` or `deliver` itself. A valid optional
+`blocked` or `needs-input` control outcome parks; ordinary final prose defaults
+to Delivery.
+
+### External executor
+
+An external process enters through `tent session enter`, claims a queued Task,
+and explicitly calls `tent task deliver`. `session leave` only unbinds the
+external Session; it does not deliver, accept, or kill the host.
+
+## Interaction commands
+
+```text
+tent task send-input <taskPath> ...
+tent task task-input list|get|ack ...
+tent task ask-user <taskPath> ...
+tent task user-ask list|get|reply|deny ...
+```
+
+TaskInput is exact-Task scoped. `uncertain` input is visible attention state,
+blocks Delivery, and is never automatically reinjected. User authority is
+derived from the authenticated local boundary rather than caller-provided text.
+
+## Review and Git
+
+`task deliver` creates a Delivery; it never accepts it. The exact persisted
+reviewer uses `task accept` or `task reject`. Commit-bearing Delivery validates
+every reported SHA against the Task lane and snapshots the target head.
+`TARGET_MOVED` requires reject/resume and a new Delivery; clients never rewrite
+the snapshot.
+
+The CLI never pushes a remote, deletes a worktree, prunes Git registrations, or
+edits Task envelopes to simulate lifecycle.
+
+## Errors and output
+
+Human output is concise; `--json` returns the typed Service projection. A
+non-zero exit is required for attach failure, invalid grammar, authority
+mismatch, stale etag/path, Node occupation conflict, Task lifecycle conflict,
+provider failure, dirty lane, or Git integration conflict.
+
+Tests and automation must check process exit code and the authoritative runner
+summary. Truncated, tailed, or grepped output is not success evidence.

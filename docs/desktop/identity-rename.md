@@ -1,136 +1,118 @@
-# Immutable identity & rename foundations (batch 1)
+# Identity, Rename, And Structural Move
 
-Status: implementation note for Core / Local Service  
-Scope: unify identity/ref conventions; RoleDefinition stable `rl-` id + mutable `displayName`  
-Non-scope: moving `temp/<role>/`, Git branch/worktree renames, bulk historical task rewrites, type/tag id injection
+This document defines stable identity and structural mutations for current
+public objects. It does not define a migration or alternate lookup grammar.
 
-## 1. Entity identity map
+## 1. Identity map
 
-| Entity | Stable id | Mutable label | Path / operational key | Batch 1 action |
-| --- | --- | --- | --- | --- |
-| **Node / concept** | `cx-…` | folder stem / optional `title` | OKF path (`Name/Name.md`) | Immutable id; **native rename via `docs.rename`** (atomic move + link rewrite + rollback) |
-| **AgentProfile** | profile `id` (machine-local) | `displayName` / `displayNameKey` | n/a (not tent-tree) | Already id-based; no change |
-| **Role** | **`rl-…` (new)** | **`displayName` (new)** | `name` → `temp/<name>/`, `task.role`, worktree labels | **Implement**: fill id + displayName; project both; compat resolve |
-| **Type** | registry key string | same string (UI) | `types.json` key; box `type` field | **No id** this batch — keys are semantic R/W vocabulary; rename would rewrite every box type string (separate batch if product needs it) |
-| **Tag** | registry string | same string | `tags.json` + frontmatter arrays | **No id** this batch — tags are lookup facets; rename is a later global string rewrite |
+| Object | Stable identity | Mutable presentation | Path / operational key |
+| --- | --- | --- | --- |
+| Node | `cx-…` | folder stem and optional title | folder + same-named Markdown note |
+| Role | `rl-…` | display name, prompt, description, color | operational Role name |
+| Task | `tk-…` | none | Task envelope path |
+| Session | `ss-…` | safe runtime projection | machine registry row |
+| Delivery | `dl-…` | review note/summary | Delivery record path |
+| Settings route | machine `routeId` | display metadata | machine Settings only |
 
-**Rule:** do not invent ids “for uniformity.” Only entities whose references must survive renames get stable handles.
+Do not invent ids merely for visual uniformity. A Settings route is machine
+configuration, not a collaboration identity or Role.
 
-## 2. Role model (batch 1)
+## 2. Role identity
 
-```ts
-type RoleDefinition = {
-  id: string;           // rl-… immutable after create / migration fill
-  name: string;         // operational key (temp path, task.role) — not renamed this batch
-  displayName: string;  // mutable human label; defaults to name
-  prompt?: string;
-  description?: string;
-  color?: string;
-  a2aPolicy?: "allow" | "ask" | "deny";
-  /** Authorized AgentDefinition ids (standing roster). */
-  roster?: string[];
-  cli?: { command: string; resume?: string };
-};
-```
+A Role has an immutable `roleId`, an operational name used by persisted Task
+and lane references, and mutable display metadata. Public resolution accepts
+the stable id or exact operational name and never resolves by display label.
 
-### Load / migrate
+Changing only display metadata does not rename the Role lane, Task paths, or
+historical records. Renaming the operational name would require a separate
+atomic contract covering `temp/<role>/`, open Task references, branch/worktree
+labels, and cached projections; it is not silently performed by metadata update.
 
-- Missing `id` → **deterministic** `rl-` from `name` via platform-neutral digest of `tent.role.id.v1:` + name, encoded with the shared id alphabet (no `node:crypto`). Same name always gets the same id across loads.
-- Missing `displayName` → `name`.
-- Ordinary **`loadRolesRegistry` projects legacy ids in memory only** — it does **not** write the registry. Persist filled fields only through an explicit mutation (`createRole` / `updateRole` / `deleteRole` / service registry CRUD), which rewrites the full normalized registry.
-- New `createRole` assigns a **random** collision-checked `rl-` (not derived from name).
+Role metadata does not select providers. Managed execution uses a machine
+Settings `routeId` at Task dispatch.
 
-### Resolve (compat)
+## 3. Node rename
 
-`resolveRole(roles, ref)` order:
+`docs.rename` changes one Node's folder stem while preserving its `cx-` id and
+entire subtree.
 
-1. exact `id` (`rl-…`)
-2. exact operational `name` (legacy task/session/envelope refs)
+1. Resolve the source by stable id and require the current path/etag.
+2. Reject an existing destination or invalid name.
+3. Before mutation, scan the exact source subtree for active direct Task refs.
+4. If any active Task directly references a Node inside that subtree, fail with
+   no writes. Occupation outside the changed subtree does not block rename.
+5. Move the folder and same-named identity note together.
+6. Preserve descendant ids, attachments, relations, and id-keyed order facts.
+7. Rewrite only links whose target resolves unambiguously to an affected path.
+8. Emit one `concept.changed` invalidation with stable id, old path, and new
+   path.
+9. On post-move failure, restore touched notes and the tree from the operation's
+   exact snapshot.
 
-**Never resolve by `displayName`.** Display labels are presentation only; duplicates are allowed and must not create ambiguous identity.
+There is no force flag that overwrites active work or a second public event
+stream.
 
-Task envelopes, sessions, and historical refs may still carry **name** strings. Do **not** rewrite historical task files in this batch. New internal service logic should prefer `roleId` when both are available.
+## 4. Node move and reparent
 
-### Projection (`registry.roles` / CRUD results)
+`docs.move` moves one Node subtree or reorders siblings. The moved Node,
+destination parent, and optional sibling are stable ids; `newParentId: null`
+means the Node root.
 
-```ts
-type RoleRegistryEntryProjection = {
-  roleId: string;
-  name: string;
-  displayName: string;
-  // …metadata, a2aPolicy, roster (public roster-only; no allowedProfiles dual-read)
-};
-```
+- same-parent reorder changes id-keyed order only;
+- reparent moves the folder subtree and rewrites unambiguous path-based links;
+- cycles, destination name collisions, archived/invalid targets, system paths,
+  and stale expected paths fail before writes;
+- a failed post-move rewrite rolls back notes, tree, and order.
 
-UI must show **displayName**, not raw `rl-` ids, in primary chrome.
+### Occupation guard
 
-### Mutations
+A Task may reference multiple exact Nodes, but each exact Node may belong to at
+most one active Task. Parent, child, and sibling Nodes remain independently
+usable.
 
-| Op | Identity |
-| --- | --- |
-| create | client supplies `name` (+ optional `displayName`); server assigns `id` |
-| update | resolve by `roleId` or operational `name` only; may change `displayName` / metadata; **cannot** change `id` or operational `name` |
-| delete | resolve by `roleId` or operational `name` only; confirmation = operational `name` **or** `id`; blocks active role task / managed session |
+Move checks only the subtrees that the operation changes:
 
-## 3. Deferred: operational name / temp / git
+- any active direct Task ref inside the moved source subtree blocks the move;
+- any active direct Task ref inside the destination subtree affected by the
+  insertion blocks the move;
+- occupation elsewhere, including an ancestor outside those affected
+  subtrees, does not block;
+- checking parent ancestry is not a substitute for scanning active direct refs
+  in the actual impact set.
 
-Changing `name` would require:
+The same affected-subtree rule applies to rename, archive, restore, and delete.
+Facts come from active Task envelopes; Node files never carry duplicated owner
+or progress fields.
 
-1. rename `temp/<old>/` → `temp/<new>/` (tasks, deliveries, init)
-2. rewrite open task envelopes / manifests `role:` fields
-3. rename role worktree / branch if present (`tent-role/<name>`)
-4. update order / any path caches
+## 5. Archive and delete
 
-**Explicitly out of batch 1.** Callers that need a visible rename use `displayName` only.
+Archive is reversible soft deletion of one Node subtree. Delete is allowed only
+for an already archived subtree. Both operations fail atomically when the exact
+affected subtree contains an active direct Task ref.
 
-## 4. Node rename contract (implemented)
+Ending one Task never deletes or archives its Nodes. Terminal Task state only
+releases occupation.
 
-Native concept rename is available as user-only Service RPC **`docs.rename`** (MutationBus).
+## 6. Concurrency and rollback
 
-1. **Identity:** keep frontmatter `id` (`cx-`) unchanged; never accept client id edits.
-2. **Atomic tree move:** rename folder and same-named identity note together (`Old/Old.md` → `New/New.md`); refuse if target exists.
-3. **Subtree:** move entire directory tree; child relative structure preserved; each child keeps its `cx-`.
-4. **Links:** rewrite internal Markdown / wiki links that targeted the old path within the tent system root. Unqualified wiki/name targets rewrite only when Tent link resolution uniquely targets the renamed node; ambiguous duplicate names are left unchanged. Do not invent a second id.
-5. **Order / attachments:** `order.json` is id-keyed (no path rewrite); attachment store keyed by `cx-` stays put.
-6. **Occupancy:** refuse rename when the box or descendants have active task occupation (same spirit as delete/fork guards), unless a later contract adds force.
-7. **Events:** emit exactly one `concept.changed` (`reason: docs.rename`) with `id`, `path`, `oldPath`; no dual `box.changed` channel.
-8. **Rollback:** snapshot every touched note's original path/content before writes; on any post-move write failure restore completed note writes in reverse order, reverse identity rename, and move the tree back.
-9. **UI:** primary label is path stem / title; `cx-` remains copy/diagnostics only.
+Structural mutations run through Local Service and the workspace MutationBus.
+Each operation re-reads stable identity, expected path/etag, destination, and
+active Task refs at its write boundary.
 
-Core entry: `renameNode` in `src/core/renameOps.ts`. Client: `ServiceRpcClient.docsRename`.
+Rollback restores only bytes and paths written by that operation. It never
+resets unrelated Git state, overwrites a later valid mutation, or converts a
+partial failure into success.
 
-## 4.1 Node move / reparent contract (implemented)
+## 7. Required coverage
 
-Native structural move is available as user-only Service RPC **`docs.move`** (MutationBus). Canonical name only — **no** `docs.reparent` alias.
-
-1. **Identity:** keep frontmatter `id` (`cx-`) unchanged; folder stem (display name) is preserved on reparent.
-2. **Resolve:** moved node, destination parent, and before/after sibling are all stable `cx-` ids. `newParentId: null` = tent root.
-3. **Stale path:** `expectedPath` is required. If `concept.path !== expectedPath` → `-32009` with `{ code: "path_stale", currentPath, expectedPath, id }` (tree identity, not body etag).
-4. **Position:** `{ mode: "inside" }` appends under parent; `{ mode: "before"|"after", siblingId }` inserts among destination siblings (sibling must already live under that parent).
-5. **Same-parent reorder:** updates id-keyed `order.json` only — **no** filesystem move, **no** link rewrite.
-6. **Reparent:** moves the folder tree; builds subtree `pathMap`; rewrites path-based Markdown/wiki links (same engine as rename). Planning resolves link targets against the **pre-move** note path, then restyles `./`/`../` from the **post-move** note path so depth-changing reparents keep relatives valid — including outbound relatives to unmoved peers (targets outside `pathMap`). Absolute/wiki path forms still remap via `pathMap` only. Rolls back notes + tree + order on post-move failure.
-7. **Occupancy (placeBox freeze, not rename):** block when the moved node or target parent is occupied as `self` | `ancestor` | `root`. Ancestors of an occupied descendant **may** still move (claim moves with the subtree). Active Task envelopes only — not retired Node owner/status.
-8. **Safety:** refuse cycle (into own subtree), name collision at destination, invalid/archived moved or parent, operational/system paths.
-9. **Events:** emit exactly one `concept.changed` (`reason: docs.move`) with `id`, `path`, `oldPath`, `pathMap`.
-10. **UI / relations:** no frontmatter edits; no relation CRUD in this RPC; parent hierarchy stays folder+order — never implemented as delete/create link edges.
-
-Core entry: `moveNode` in `src/core/moveOps.ts`. Client: `ServiceRpcClient.docsMove`. Wire result: `{ id, path, oldPath, pathMap, rewrittenNotes }`.
-
-## 5. Tests required (batch 1)
-
-- roles.json round-trip with `id` + `displayName`
-- legacy rows without `id` get deterministic **in-memory** fill; plain load performs **no write**
-- create/update mutation persists filled ids when the registry is explicitly mutated
-- create gets random `rl-`; id immutable on update
-- displayName rename; operational name rename rejected
-- `resolveRole` accepts id / name only — **not** displayName
-- two roles may share the same `displayName` without ambiguous resolution
-- registry projection includes `roleId` + `displayName`
-- task/session authority still resolves historical **name** refs
-
-## 6. Related
-
-- `src/core/id.ts` — `rl-` generators + deterministic fill
-- `src/core/skillRoleRegistry.ts` — RoleDefinition + resolve
-- `docs/desktop/concept-model.md` — concept `cx-` / path dual identity
-- `docs/desktop/task-api.md` — task envelope still stores role name labels
+- rename preserves Node id, children, attachments, order, and valid links;
+- same-parent reorder avoids filesystem movement;
+- reparent across depth preserves outbound relative links;
+- stale path, cycle, collision, invalid/archive, and system-path failures write
+  nothing;
+- multiple exact Node refs are checked as one active Task;
+- parent/child/sibling Tasks can run independently;
+- active refs inside the affected source or destination subtree block;
+- active refs outside the affected subtree do not block;
+- rollback restores the exact pre-operation tree and content;
+- one invalidation event is emitted after successful mutation.

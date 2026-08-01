@@ -26,7 +26,7 @@ tent task accept <taskPath> --actor <user|role> …
 tent task reject <taskPath> --actor <user|role> [--note …] [--resume|--no-resume] …
 tent task interrupt <taskPath> …
 tent task cancel <taskPath> …
-tent task dispatch --target role:<roleIdOrName>|agent:<agentId> \
+tent task dispatch --target role:<roleIdOrName>|route:<routeId> \
   --node <nodeId> [--node <nodeId> …] --prompt <text>|-
 ```
 
@@ -35,11 +35,11 @@ Dispatch forms:
 | Form | Assignee | Session |
 | --- | --- | --- |
 | `--target role:<roleIdOrName>` | Durable Role | Queued only; no managed ACP start at dispatch |
-| `--target agent:<agentId>` | Logical AgentDefinition | Resolves the machine-local LaunchProfile and starts managed ACP |
+| `--target route:<routeId>` | Temporary ACP executor | Resolves the machine Settings route and starts a managed Session |
 
-- `--node` is repeatable and supplies the exact ordered Context Card Node refs; at least one is required. Node refs are non-exclusive.
-- `agentId` is stable logical identity; LaunchProfile is local resolution and never a public dispatch selector. A Role caller may use only its ready roster; user-direct dispatch is authorized by the user actor.
-- Caller identity supplies equal `parentActor` and `reviewer`. A Role caller also derives the parent Role Git lane internally; user-direct dispatch uses user. Do not pass or recreate `--profile`, `--agent`, `--delivery-policy`, `--as-sub`, `--by`, `--caller-kind`, or `--assignee-kind`.
+- `--node` is repeatable and supplies the exact ordered Context Card Node refs; at least one is required. The full set is acquired atomically, and an exact Node cannot be occupied by two active Tasks.
+- `routeId` is a non-secret stable reference to machine Settings. The route resolves provider/model/endpoint/credential metadata; dispatch does not create a persistent worker record.
+- Caller identity supplies equal `parentActor` and `reviewer`. A Role caller also derives the parent Role Git lane internally; user-direct dispatch uses user. Do not pass or recreate internal profile, `--agent`, `--delivery-policy`, `--as-sub`, `--by`, `--caller-kind`, or `--assignee-kind`.
 - Prompt is required through `--prompt <text>|-`; positional Task source or prompt forms are not aliases.
 
 Agents never self-accept. Review authority is the exact persisted `reviewer`, which must equal `parentActor`. Downstream Task Agents always use review-to-parent and cannot elevate `bypass` or `agent-decide`; the three-state policy is only for a durable Role's user-facing Delivery.
@@ -47,22 +47,22 @@ Agents never self-accept. Review authority is the exact persisted `reviewer`, wh
 ## taskPath
 
 - Always relative to **system root** (`.tent`), e.g.  
-  `temp/agent-profiles/grok-core-worker/tasks/task-….md`
+  `temp/agent-profiles/<routeId>/tasks/task-….md`
 - Reading the same file from disk:  
-  `.tent/temp/agent-profiles/grok-core-worker/tasks/task-….md`
+  `.tent/temp/agent-profiles/<routeId>/tasks/task-….md`
 
 ## Claim / get / deliver
 
-1. **claim** — external path only when state is still `queued`. Moves the Task to `running`; Node collaboration remains a projection and Node refs are non-exclusive.
+1. **claim** — external path only when state is still `queued`. Moves the Task to `running`; Node collaboration remains a projection of exact active Task occupation.
    Managed ACP: service already claimed via `startSession` — **do not claim again**.
 2. **get** — re-read machine state after claim or mid-run. The Task envelope and Context Card are the execution contract; referenced Node bodies are context. Delivery is a separate record.
 3. **deliver** — submit Delivery with a human summary and optional commit SHAs.  
    Creates a Delivery; does **not** accept. A downstream executor delivers only for its exact parent reviewer. A durable Role's own user-facing Task may use its configured `review | bypass | agent-decide` policy.
-   Service refuses ready Delivery while this task has attention TaskInput (`pending`, `processing`, `failed`, or `uncertain`) with stable code `PENDING_TASK_INPUT`. `uncertain` means injection may already have happened: never retry or re-inject it. An authorized acknowledgement resolves the blocker and may schedule only a durable report-draft retry.
+   Service refuses ready Delivery while this task has attention TaskInput (`pending`, `processing`, `failed`, or `uncertain`) with stable code `PENDING_TASK_INPUT`. `uncertain` means injection may already have happened: never retry or re-inject it. Successful authorized acknowledgement resolves the blocker and schedules exactly one durable report-draft retry, never a provider prompt.
 
 A commit-bearing ready Delivery records reported commits from the exact lane range plus a target-head snapshot. The commit list may be empty or a relevant subset; every listed SHA must belong to the lane. `TARGET_MOVED` is a review boundary: reject/resume and re-deliver against the current target instead of overriding or rewriting persisted facts.
 
-Managed ACP final reports lead with `outcome: delivered|blocked|needs-input`. Only `delivered` may publish a ready Delivery after the turn and lane settle; `blocked` and `needs-input` remain non-delivery outcomes.
+Managed ACP first preserves every non-empty final report as a durable draft, then publishes natural report content as Delivery after the turn and lane settle. A valid leading `outcome: blocked|needs-input` parks without Delivery but does not discard its preserved body; `outcome: delivered` is accepted but optional. Missing or malformed outcome text never discards the report, and an empty report never invents success.
 
 ```bash
 tent task deliver temp/.../tasks/task-….md --summary "what changed" --commits <sha>
@@ -131,8 +131,7 @@ For external Session entry/status/leave, read [session-boundaries.md](session-bo
 ```bash
 tent status          # proposals, tasks, paths (read-only)
 tent role list       # durable Role registry projection
-tent role show <id>  # roster readiness for one Role
-tent agent list      # logical AgentDefinitions (not Sessions)
+tent role show <id>  # durable Role metadata
 tent tree            # Node tree
 tent task list       # service task list
 tent session status  # managed or external Session orientation
@@ -142,6 +141,6 @@ tent session status  # managed or external Session orientation
 
 | Avoid as primary | Why |
 | --- | --- |
-| Chat-only “done” without deliver | External path must `task.deliver` |
+| Chat-only “done” without deliver | External path must `task.deliver`; managed ACP Delivery is Service-owned |
 | Self `task.accept` | User (or authorized) review only |
 | Self `send-input` on **this** task | Executor consumes via `task-input *`; writers are user/dispatcher |

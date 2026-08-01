@@ -57,6 +57,16 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
     path.join(repoRoot, "skills", "tent-task", "references", "session-boundaries.md"),
     "utf8"
   );
+  const publicDesktopContracts = await Promise.all(
+    [
+      "architecture.md",
+      "agent-runtime.md",
+      "cli-service.md",
+      "concept-model.md",
+      "task-api.md",
+      "grok-acp-provider.md",
+    ].map((name) => fs.readFile(path.join(repoRoot, "docs", "desktop", name), "utf8"))
+  );
   const pluginMain = await fs.readFile(path.join(repoRoot, "src", "plugin", "main.ts"), "utf8");
   const pluginSettings = await fs.readFile(path.join(repoRoot, "src", "plugin", "settings.ts"), "utf8");
   assert.equal(pkg.bin.tent, "./cli.mjs");
@@ -116,12 +126,14 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(spec, /A Task is one work package and one review unit/);
   assert.match(spec, /A Delivery is an executor's formal result for one Task/);
   assert.match(spec, /Task, Session, and any Output Node/);
-  assert.match(spec, /Multiple Tasks may reference the same Node/);
+  assert.match(spec, /another Task\s+cannot acquire the same Node/);
+  assert.match(spec, /role:<roleId>/);
+  assert.match(spec, /route:<routeId>/);
+  assert.match(spec, /natural ACP final report defaults to a Delivery/i);
   assert.match(spec, /Retired public commands\s+are removed rather than kept as aliases/);
-  assert.match(spec, /project rules live in workspace\s+`AGENTS\.md`/);
+  assert.match(spec, /Project instructions live in the\s+workspace `AGENTS\.md`/);
   assert.doesNotMatch(spec, /temp\/<role>\/reports\//);
   assert.doesNotMatch(spec, /## 6\. Proposal, Report, And Fork/);
-  assert.doesNotMatch(spec, /handoff/i);
   // Two composable contracts: every Task executor uses tent-task; durable Roles add tent-role.
   assert.match(roleSkill, /name: tent-role/);
   assert.match(roleSkill, /tent role-init <role>/);
@@ -138,7 +150,11 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(taskSkill, /tent task ask-user/);
   assert.match(taskSkill, /task-input/i);
   assert.match(taskSkill, /Delivery is never acceptance/i);
-  assert.match(taskSkill, /non-exclusive context/i);
+  assert.match(taskSkill, /occupied write context/i);
+  assert.match(taskSkill, /natural, non-empty managed ACP final report is deliverable by default/i);
+  assert.match(taskSkill, /preserves every non-empty final\s+report as a durable draft/i);
+  assert.match(taskSkill, /outcome: blocked/);
+  assert.match(taskSkill, /outcome: needs-input/);
   assert.match(taskSkill, /Context Card/i);
   assert.match(taskSkill, /references\//);
   assert.match(
@@ -161,12 +177,38 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(taskCli, /tent task task-input ack/);
   assert.match(taskCli, /self-`send-input`|same.*task you are currently executing/i);
   assert.match(taskCli, /dispatcher/i);
+  assert.match(taskCli, /--target role:<roleIdOrName>\|route:<routeId>/);
+  assert.match(taskCli, /preserves every non-empty final report as a durable draft/i);
+  assert.match(taskCli, /publishes natural report content as Delivery/i);
+  assert.match(taskCli, /schedules exactly one durable report-draft retry/i);
   assert.doesNotMatch(taskCli, /Agents never call|There is \*\*no\*\* `tent agent/i);
   assert.match(taskSession, /tent session enter/i);
   assert.match(taskSession, /tent session leave/i);
   assert.match(taskSession, /never delivers|never deliver/i);
   assert.match(taskSession, /Context Card|manifest is only an auxiliary/i);
   assert.doesNotMatch(`${roleSkill}\n${taskSkill}`, /name: tent-agent|tent handoff/i);
+
+  const canonicalPublicContracts = [
+    spec,
+    roleSkill,
+    taskSkill,
+    taskCli,
+    taskSession,
+    ...publicDesktopContracts,
+  ].join("\n");
+  for (const retired of [
+    /agent:<agentId>/i,
+    /AgentDefinition/i,
+    /LaunchProfile/i,
+    /standing roster/i,
+    /roster authorization/i,
+    /out-of-roster/i,
+    /authorized Agent roster/i,
+  ]) {
+    assert.doesNotMatch(canonicalPublicContracts, retired);
+  }
+  assert.doesNotMatch(taskSkill, /Finish with one structured outcome/i);
+  assert.doesNotMatch(taskSkill, /Lead the terminal report with exactly one/i);
 });
 
 test("docs/skill drift: in-workspace Node/Task/Delivery model and retired type axes", async () => {
@@ -185,7 +227,7 @@ test("docs/skill drift: in-workspace Node/Task/Delivery model and retired type a
   assert.match(spec, /goal \| prompt \| output/);
   assert.match(spec, /Task, Session, and Delivery/);
   assert.match(spec, /coordination flags are presentation or retired concerns/);
-  assert.match(spec, /`artifact` becomes `output`/);
+  assert.match(spec, /does not publish a\s+permanent migration API/i);
   assert.doesNotMatch(
     spec,
     /Base type definitions may set optional `workspacePointer: true`/

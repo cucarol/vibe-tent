@@ -8,7 +8,7 @@ Desktop / co-located agents use **in-workspace** layout only.
 | --- | --- | --- |
 | **workspace root** | Real project root; run `tent` here | `C:/proj/MyRepo` |
 | **system root** | Tent system root = `workspaceRoot/.tent` | `C:/proj/MyRepo/.tent` |
-| **CLI taskPath** | Relative to **system root** (no `.tent/` prefix) | `temp/<role-or-profile>/tasks/….md` |
+| **CLI taskPath** | Relative to **system root** (no `.tent/` prefix) | `temp/<role-or-route>/tasks/….md` |
 | **direct file read** | Relative to workspace root with `.tent/…`, or absolute under system root | `.tent/temp/…/init.md` |
 
 ## Hard rules
@@ -28,8 +28,8 @@ Desktop / co-located agents use **in-workspace** layout only.
 | Tent structural marker | `.tent/index.md` | `index.md` |
 | Durable role init | `.tent/temp/<role>/init.md` | `temp/<role>/init.md` |
 | Role task envelope | `.tent/temp/<role>/tasks/*.md` | `temp/<role>/tasks/*.md` |
-| AgentProfile task | `.tent/temp/agent-profiles/<profileId>/tasks/*.md` | `temp/agent-profiles/<profileId>/tasks/*.md` |
-| Task-scoped manifest | `.tent/temp/agent-profiles/<profileId>/manifests/<taskId>.yml` | `temp/agent-profiles/…/manifests/….yml` |
+| Route task | `.tent/temp/agent-profiles/<routeId>/tasks/*.md` | `temp/agent-profiles/<routeId>/tasks/*.md` |
+| Task-scoped manifest | `.tent/temp/agent-profiles/<routeId>/manifests/<taskId>.yml` | `temp/agent-profiles/…/manifests/….yml` |
 | Roles registry | `.tent/roles.json` | (file read) |
 | Types registry | `.tent/types.json` | (file read) |
 
@@ -44,6 +44,6 @@ When the envelope includes lane fields:
 - `baseCommit` — exact Task-lane starting commit captured once at the lifecycle stage that establishes this lane; ordinary executor history must be linear from it
 - `integrationAuthority` — derived from exact parent/reviewer with Service as mutator
 
-Lane timing depends on assignee and parent: Role Tasks defer execution lane/base to first claim; peer AgentProfile Tasks defer their Task lane to managed start; subordinate AgentProfile Tasks may allocate the lane at dispatch against the dispatcher Role branch. Re-read the envelope after claim/start and trust only its persisted lane. If a code Task then lacks its required base, fail loud. Legacy running/waiting state may be repaired only by an explicit audited parent/reviewer backfill that proves lane ancestry; an executor never guesses it.
+Lane timing depends on assignee and parent: Role Tasks defer execution lane/base to first claim; route Tasks establish their Task lane through the managed lifecycle against the correct target. Re-read the envelope after claim/start and trust only its persisted lane. If a code Task then lacks its required base, fail loud; an executor never guesses or silently recomputes it.
 
-If lane fields remain absent for a pure Tent Task, that is valid. Do not invent a worktree. Durable Role worktrees persist; a clean, terminal, settled agentProfile Task worktree may be reclaimed automatically by Core. Reclaim and its historical retry queue are Service-owned exact-path operations: never manually remove/prune a Task lane or traverse a junction/reparse-point target.
+If lane fields remain absent for a pure Tent Task, that is valid. Do not invent a worktree. Durable Role worktrees persist; a clean, terminal, settled route Task worktree may be reclaimed automatically by Core. Reclaim and its historical retry queue are Service-owned exact-path operations: never manually remove/prune a Task lane or traverse a junction/reparse-point target.

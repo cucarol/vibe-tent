@@ -1,443 +1,169 @@
-# B0 · Desktop & Local Service Architecture Contract
+# Desktop And Local Service Architecture
 
-Status: **frozen contract** for independent desktop product architecture.  
-Scope: dependency directions among Desktop shell, Local Service, CLI, core, in-workspace tent data, and machine-local service data.  
-Non-scope: Task/Delivery IDL details (`docs/desktop/task-api.md`), concept/box document model (`docs/desktop/concept-model.md`), AgentRuntimePort/adapters (`docs/desktop/agent-runtime.md`). Those contracts must not invert the rules below.
+This document defines the production boundary shared by Desktop, CLI, optional
+plugins, Core, Local Service, and ACP adapters. Task and Delivery details live
+in [task-api.md](task-api.md); Node storage lives in
+[concept-model.md](concept-model.md); provider process behavior lives in
+[agent-runtime.md](agent-runtime.md).
 
-**External vs internal APIs:** clients (Desktop, CLI, MCP) call only `task.*` and `docs.*` (plus Query/Events). `AgentRuntimePort.*` is **service-internal** — never exposed as a client command surface.
+## 1. One workspace, one mutation authority
 
-This document freezes **what depends on what** and **who may mutate**. Implementation batches B1+ implement this contract; they do not reopen it without an explicit revision.
+A mounted project has one workspace root and one `.tent/` system root. The
+Local Service is the sole writer for Tent collaboration state. Desktop, CLI,
+plugins, and managed ACP processes are clients; none may create a second
+direct-write path into `.tent/temp/`.
 
----
+The workspace keeps project files and Git history. `.tent/` keeps Nodes,
+registries, Tasks, Sessions, Deliveries, interaction records, and operational
+indexes. It is ignored by the project repository.
 
-## 1. Product stack (dependency direction)
+## 2. Product objects
 
-```text
-Desktop shell (Electron, Windows v0.1)
-CLI / future thin clients
-        │  attach only (IPC / loopback / named-pipe)
-        │  Query + Command; no direct tent mutation
-        ▼
-Local Tent Service  ←── sole runtime host for mutation, watch, multi-workspace, agent lifecycle
-        │  in-process domain calls
-        ▼
-tent-core  ←── sole business-rule source (FsAdapter + mutation.lock)
-        │
-        ▼
-Workspace-resident tent system dir + machine-local service data area
-```
+- **Node** is durable project context and knowledge.
+- **Role** is a durable responsibility to the user.
+- **Task** is one exact work and review attempt over one or more Nodes.
+- **Session** is an execution binding, managed by ACP or entered by an external
+  host.
+- **Delivery** is the formal result submitted to the persisted reviewer.
+- **Settings route** is a machine-local non-secret selector for provider,
+  model, endpoint, credential reference, command, and launch metadata.
 
-### Hard rules
+Only the first five are collaboration objects. A route is machine
+configuration, not an identity, Role, ACL, or durable worker record.
 
-1. **core** owns domain rules (concept/box tree, types/capabilities, claim topology, task/delivery semantics as data+ops, workspace ports). Core does not own windows, process supervision, or provider credentials.
-2. **Local Service** is the **only mutation entry** for tent operational and concept writes in the desktop product path. Desktop renderer, Electron main (except bootstrap), CLI, MCP tools, and adapters **must not** call core mutation paths that bypass the service when a service is available.
-3. **CLI** remains a first-class client: short-lived process that **attaches** to a running service; if none is reachable it may **bootstrap** a lightweight service and retry. CLI must not maintain a second lifecycle implementation.
-4. **Desktop shell** is a client: main process owns OS windows/tray; renderer shows projections and issues commands (including HTML5 contextCard drag). Closing the main window must not stop the service or in-flight tasks.
-5. **Adapters** (ACP/CLI agents) are execution ports injected by the service. They emit process/session events only; they do not implement box occupancy, dispatch/claim/accept, or chat routing.
-6. **Markdown subsystem** consumes Query/Command APIs; Tent core/service must not import editor implementations.
-
-Forbidden reverse edges:
-
-- Desktop / plugin / adapter → direct filesystem mutation of tent registries, envelopes, or concept frontmatter (outside service).
-- core → Electron, UI frameworks, or provider SDKs.
-- Duplicating dispatch/claim/deliver/accept state machines outside service→core.
-
----
-
-## 2. Process model & lifecycle
-
-| Component | Responsibility | Lifetime |
-| --- | --- | --- |
-| **Electron main** | Windows, tray, floating control, discover/start service | User session; may exit while service continues |
-| **Renderer** | Workbench UI: tree, attributes, dispatch draft, review surface, projections; contextCard HTML5 `text/plain` drag | Restartable; truth is service state |
-| **Local Service** | WorkspaceHost, mutation bus, file watch, event fan-out, Task/Query API, A2A gate, Git/worktree orchestration, session/process supervision | Longer than main window; recoverable from disk + process probe after crash |
-| **CLI** | Agent/automation entry | Short-lived; attach → bootstrap → retry |
-| **Adapter workers** | Provider-specific agent processes | Supervised by service; bound to replaceable sessions |
-
-### Lifecycle invariants
-
-- **Close main window ≠ stop tasks.** Tray/floating control may remain; service keeps mounted workspaces and agent processes per policy.
-- **Stop service** is the control plane for tearing down background orchestration (adapter child policy is refined in the agent-runtime contract).
-- **Foreground workspace** is a UI selection: exactly one workspace is shown in the main workbench at a time.
-- **Background workspaces** stay mounted in the service; switching the foreground does not interrupt other workspaces’ agents or watches.
-- Service may mount **N workspaces** concurrently. There is **no** cross-project dashboard product surface—only optional minimal tray aggregates (running/waiting/failed counts) and jump-back.
-
----
-
-## 3. Data placement
-
-### 3.1 Tent is in-workspace (single location model)
+## 3. Process topology
 
 ```text
-<workspace>/
-  .gitignore                 # ignore tent system dir + operational temp
-  <user project files>       # real work / artifacts
-  .tent/                     # **fixed** tent system directory name; one active tent per workspace
-    … boxes / concepts, RULES, registries, operational pipeline …
+Desktop / CLI / optional plugin
+              |
+              | authenticated local RPC, protocolVersion=1
+              v
+        Local Service process
+          |             |
+          |             +-- machine Settings + credential references
+          |
+          +-- WorkspaceHost per mounted workspace
+          |      +-- Core mutations and projections
+          |      +-- filesystem watcher
+          |      +-- Git lane integration/reclaim
+          |
+          +-- AgentRuntime
+                 +-- ACP adapters
+                 +-- managed child processes
 ```
 
-- A **workspace** is the sole root of real files and (when present) Git history.
-- A **tent** is the collaboration instance **owned by** that workspace, living at `<workspace>/.tent/`. It is **not** an external vault folder that links back to a separate code root.
-- The system directory name is **`.tent`**, fixed in this contract. B1 implements scaffold and migration into `.tent/`; it does **not** reopen naming.
-- Non-git document libraries are still workspaces: skip gitignore/worktree steps; tent semantics unchanged.
-- `.tent/` is **hidden from the workbench tree by default** (diagnostic entry only) and listed in workspace `.gitignore` when the repo uses Git.
+Closing a window does not stop the Service. CLI exit does not stop it either.
+Service data-dir ownership, endpoint publication, protocol handshake, and the
+workspace mutation lease prevent two writers from claiming the same state.
 
-### 3.2 What lives with the workspace (migratable collaboration facts)
+## 4. Layer responsibilities
 
-- Concept/box tree and frontmatter (`cx-` handles, type, tags, status, …)
-- Project-level type / tags / roles registries
-- Workspace collaboration settings (`.tent/settings.json`: e.g. `defaultDeliveryPolicy`; extensible)
-- Operational records required for recovery (task, handoff, delivery, …) subject to retention
-- `ArtifactRef` associations on concepts/deliveries (structured refs; see §5.2)
-- Tent-managed attachment bytes under `.tent/attachments/<cx>/`; owner-first,
-  reference-checked housekeeping is derived from on-disk concepts/operational
-  records and never manages workspace files or external ArtifactRef targets
-- The Local Service runs bounded housekeeping after mount and at most daily:
-  terminal operational retention and attachment GC are automatic hygiene, not
-  a user workflow or an OS-level scheduled task
-- RULES / project conventions
-- Task operational records may store **`sessionId` only** as a reference; never session rows, PIDs, or resume tokens
+### Core
 
-### 3.3 What lives only on the machine (service data area)
+Core owns Node identity and structure, exact Node occupation, Task and Delivery
+state transitions, authority checks, Git lane rules, and pure projections. It
+does not spawn providers or own windows.
 
-Example root: `%APPDATA%/Tent/` (platform-specific).
+### Local Service
 
-- Window / floating-control geometry, recent workspaces
-- Search/index caches, notification read state
-- CLI paths, credentials, PID files, session tokens, full session registry rows
-- **AgentProfile** configs (binary paths, argv templates, auth references)
-- Absolute worktree path caches (rebuildable)
-- **RuntimeWorkspace** bindings used by process supervision (cwd, env handles)—not collaboration facts
+Service mounts workspaces, serializes mutations, resolves Settings routes,
+starts and binds managed Sessions, persists interaction state, supervises Git
+integration/reclaim, and emits invalidation events.
 
-Copying a workspace must preserve collaboration semantics. Reconnecting agents on a new machine must not require shipping old PIDs, credentials, session rows, or absolute paths.
+### Desktop, CLI, and plugins
 
-### 3.4 Real deliverables
+Clients issue RPC, render projections, and ask the user for decisions. They do
+not infer lifecycle state from files or events and do not treat cached views as
+authority.
 
-User-visible workspace trees (code, docs, builds) remain outside Tent’s document browser. Tent associates via **`ArtifactRef`** and “open with original tool”; it does not host a source tree, IDE, or disk file manager.
+### ACP adapters
 
-### 3.5 WorkspaceLane vs RuntimeWorkspace
+Adapters translate the managed Session contract to a provider protocol. They
+may start, resume, prompt, stream, and stop a child process. They never claim
+Nodes, accept Deliveries, edit Node content, or decide Task authority.
 
-| Term | Owner | Meaning |
-| --- | --- | --- |
-| **WorkspaceLane** | Task / collaboration (`task-api.md`) | Role worktree + branch + targetBranch prepared for a task attempt (Git lane) |
-| **RuntimeWorkspace** | AgentRuntime / machine-local | Process cwd and launch binding for a live session; may mirror a lane’s worktree path but is **not** a task field |
+## 5. Dispatch and execution
 
-Do **not** reuse legacy “workspace pointer” product language for either concept. Legacy external-tent → code-root linking is retired by the in-workspace `.tent` model.
-
----
-
-## 4. Service as sole mutation entry
-
-### 4.1 Command path
+Public dispatch accepts repeated exact Node references and one target:
 
 ```text
-Client command
-  → Service authorize / serialize
-  → core ops (withTentMutation / mutation.lock)
-  → FsAdapter write under tent system dir
-  → watch + event fan-out
+tent task dispatch --target role:<roleId>  --node <nodeId> ... --prompt <text>|-
+tent task dispatch --target route:<routeId> --node <nodeId> ... --prompt <text>|-
 ```
 
-### 4.2 Query path
+`role:*` creates a queued durable handoff. The Role claims it in its existing
+lane. `route:*` resolves a machine Settings route, creates the formal Task, and
+starts a temporary managed ACP Session. The temporary Session is not
+registered as a separate durable worker.
+
+Task Node refs are acquired atomically. An exact Node may have at most one
+active Task; parent and child Nodes do not imply subtree occupation. Structural
+mutations check the exact affected source and target subtrees.
+
+## 6. Mutation and events
+
+All workspace mutations run through the WorkspaceHost mutation boundary.
+Task-specific lifecycle operations additionally serialize on the exact Task.
+Git integration serializes by canonical repository/common-dir and fully
+resolved target ref.
+
+Events are invalidation signals:
 
 ```text
-Client query / subscribe
-  → Service projection (in-memory + disk)
-  → read-only views; no client-side “shadow truth”
+concept.changed | concept.removed
+task.state | delivery.updated | session.state
+taskInput.* | userAsk.* | toolApproval.*
+workspace.settings.updated | service.health
 ```
 
-### 4.3 What must go through the service
+An event is never a second fact store. Clients re-query the relevant projection
+after receiving it. Watcher self-write suppression is scoped at ingress so a
+later Service write cannot retroactively drop an external change.
 
-- Concept/box create, patch, place, archive, type/capability changes
-- Task lifecycle commands (dispatch, claim, wait, deliver, review, accept, reject, interrupt, …)
-- Session start/stop/resume (after A2A gate)
-- Git/worktree orchestration used for role lanes and integrate-after-accept
-- Multi-workspace mount/unmount and foreground selection events
-- Workspace collaboration settings mutations
+## 7. Machine Settings and credentials
 
-### 4.4 What may stay local without inventing domain rules
+Settings routes are stored under the Service data directory, not in a
+workspace. Public projections expose only safe route metadata and availability.
+Secrets are supplied to the launch plan at process start and are redacted from
+stderr, RPC errors, events, and diagnostic rings.
 
-- Pure UI draft state (unsaved editor buffer until save command)
-- Ephemeral drag of contextCard payloads (pointer + fixed prompt template) — see **B6** below
-- Machine-local preferences in the service data area
+Reserved Service environment keys override route-provided values. Managed
+children receive a minimal allowlist plus the exact Core overlay. They do not
+inherit the entire Service environment.
 
-Clients must not re-implement claim topology, type resolution, or accept/integrate separation.
+## 8. Session and shutdown safety
 
-### 4.5 Context Card drag (B6 · Windows MVP)
+Provider startup runs outside the exact Task lifecycle lock. Binding the
+returned Session uses an authoritative Task snapshot and CAS; if a terminal
+transition wins, Service stops the unbound Session and preserves a stable
+diagnostic rather than writing an orphan binding.
 
-**Goal:** left-drag a small card from the main window or floating control into an external official agent GUI input, delivering a stable Tent pointer + fixed auxiliary prompt as **plain text**.
+Service stop first prevents new work, then drains tracked background work and
+managed turns. If a bounded drain times out while a workspace runner can still
+write, endpoint and writer lease ownership remain fail-closed until process
+exit.
 
-| Rule | Detail |
-| --- | --- |
-| Payload | Strictly `contextCardToDragText` → Context Card **v1** template (`text/plain` only). No document snapshots, no compatibility bags. |
-| Mechanism | Chromium/Electron **HTML5 drag** (`dataTransfer.setData("text/plain", …)`). On Windows this crosses apps as OLE text. |
-| Not used | `webContents.startDrag` — Electron API is **file-path only** (icon + file(s)); it cannot carry arbitrary text. |
-| Forbidden “completion” | Clipboard-only fallback sold as drag; generating temp `.md` / dragging files to impersonate a text card. |
-| Click | Optional **copy** on click remains an auxiliary path; drag must not depend on prior clipboard write. |
-| Surfaces | Main workbench “最近上下文卡” list and floating control card list. |
+## 9. Generated artifacts
 
-External drop into third-party agent GUIs is validated manually by the user; automated tests cover payload integrity, renderer `dataTransfer` wiring, and IPC surface (no fake native-drag channel).
+Tracked bundles are release artifacts, not source-of-truth contracts. Build
+configuration must produce byte-identical output from the shared repository and
+independent worktree topologies and must not embed absolute or worktree-specific
+paths. Generated files are rebuilt from one accepted shared source head and are
+never hand-edited.
 
----
+## 10. Production vertical slice
 
-## 5. API surface (architectural, not full IDL)
-
-Logical groups shared by Desktop and CLI (transport chosen in B2: loopback HTTP or named pipe + JSON-RPC).
-
-### 5.1 External groups (clients)
-
-| Group | Canonical examples | Notes |
-| --- | --- | --- |
-| **Query** | `docs.list` / `docs.get` / concept reads; `task.get` / `task.list`; `delivery.*`; `session.get` / `session.list` (projections); `a2a.listPending`; `toolApproval.listPending` / `toolApproval.get`; `interaction.listPending` (unified A2U pending aggregation); `subscribeEvents` | Read projections only |
-| **Command** | **`docs.*`** (create, write, promote, fork, place, **importAttachment**, …); **`task.*`** (`dispatch` / `claim` / `wait` / `deliver` / `accept` / `reject` / `interrupt` / …); **`a2a.resolve`**; **`toolApproval.approveOnce` / `toolApproval.deny`** (user-only) | Serialized mutations; **only** external mutation verbs. Attachment import may use base64 on the wire; disk stores original bytes under `.tent/attachments/`. |
-| **Events** | `concept.changed`, `concept.removed`, `task.state`, `delivery.updated`, `session.state`, `a2a.ask`, `toolApproval.pending` / `toolApproval.resolved`, `workspace.switched`, `service.health` | Single fan-out channel; **no** `box.changed` dual stream |
-
-**Forbidden as client commands:** `AgentRuntimePort.startSession` / `stopSession` / `resumeSession` / `probe` / `subscribe`. Session lifecycle for agents is invoked **inside** Local Service after `task.startSession` (or equivalent orchestration) has already passed A2A. Clients may issue `task.startSession` where authorized; they never call the runtime port directly.
-
-Field names follow the canonical vocabulary (`cx-`, `assignee`, `delivery`, `ArtifactRef`, …). Detailed task states and **`A2APolicy`** (`allow` \| `ask` \| `deny`) are owned by the Task API contract; detailed runtime port shapes by the AgentRuntime contract.
-
-CLI keeps familiar verbs where possible, but implementation becomes **attach service → command/query**, not re-open tent files as a second writer.
-
-The current transport is deliberately machine-local: Local Service binds only
-to literal loopback IPs, authenticates `/rpc` and `/events` with the machine-local
-endpoint token, and caps buffered JSON-RPC bodies at 36 MiB. The cap preserves
-the 25 MiB binary-attachment contract after base64 expansion while rejecting
-unbounded request buffering before dispatch.
-
-### 5.2 Shared shapes (cross-contract)
-
-```ts
-/** Structured association to a real deliverable outside concept identity. */
-type ArtifactRef = {
-  kind: "path" | "dir" | "commit" | "url" | "other";
-  /** Workspace-relative path, commit SHA, absolute URL, or other stable locator. */
-  target: string;
-  label?: string;
-};
-
-/** Common wire wrapper for all service fan-out events. */
-type EventEnvelope<TType extends string, TPayload> = {
-  id: string;              // unique event id
-  type: TType;             // e.g. "concept.changed", "task.state"
-  workspaceId: string;     // mounted workspace key
-  ts: string;              // ISO-8601
-  source: "service" | "self"; // self = echo of this client's write (may ignore)
-  payload: TPayload;
-};
-
-/** Role / orchestration spawn authority (evaluated only in service). */
-type A2APolicy = "allow" | "ask" | "deny";
-
-/**
- * Project role registry row (`.tent/roles.json`).
- * `id` (`rl-…`) is immutable; `displayName` is mutable presentation only
- * (never a resolver key); `name` remains the operational path key
- * (`temp/<name>/`, task.role) until a later temp/git migration batch.
- * See `docs/desktop/identity-rename.md`.
- */
-type RoleDefinition = {
-  id: string;
-  name: string;
-  displayName: string;
-  a2aPolicy?: A2APolicy;
-  /** Authorized AgentDefinition ids (standing roster). Not profile ids. */
-  roster?: string[];
-  // prompt, description, color, cli — non-secret only
-};
-
-/**
- * Stable logical worker identity (Role roster key).
- * Machine-local binding to AgentProfile for launch only — never provider secrets.
- */
-type AgentDefinition = {
-  id: string;            // agentId
-  displayName?: string;
-  description?: string;
-  profileId: string;     // machine-local AgentProfile id
-};
-
-/**
- * Machine-local launch profile — binary paths, argv templates, auth refs.
- * Lives only in service data area; never in workspace git / concept bodies.
- * Not Role authorization.
- */
-type AgentProfile = {
-  id: string;
-  adapterId: string;
-  displayNameKey?: string;
-  // binary path, default argv, authModel, capability flags — machine-local
-};
-```
-
-**Managed skill composition (V0.2):** every managed Task executor receives bundled `tent-task`. A durable Role executor additionally receives `tent-role` + Role prompt + stable roster digest. Order: role contract (when applicable) → Role prompt/roster → task contract → current Task pointer/delta. `profile.skills` are optional extras only. No `tent-agent` alias.
-
-### 5.3 Active-task field protection
-
-Collaboration progress (`status` / `assignee`) is projected from Task/Session/Delivery only. Ordinary `docs.write` must not set retired Node keys (`owner`/`status`/`assignee`); service/core reject those writes (see `task-api.md` §2.3 and `concept-model.md`).
-
----
-
-## 6. Repository module boundaries
-
-Target monorepo layout (implementation may stage under `src/` first, then packages):
+The minimum honest flow is:
 
 ```text
-packages/
-  core/              # domain: today’s src/core + node FsAdapter
-  service/           # Local Tent Service
-  cli/               # thin tent CLI client
-  desktop/           # Electron main + renderer shell
-  workbench-model/   # UI-framework-free projections & command DTOs
-  adapters/          # ACP/CLI provider adapters (ACP role)
-  markdown/          # editor & note UX (docs role)
+mount workspace
+  -> read or create Node
+  -> dispatch exact Node Task to Role or Settings route
+  -> execute through Role or managed Session
+  -> publish Delivery
+  -> exact reviewer accepts or rejects
+  -> accepted conclusions are deliberately written back to the relevant Node
 ```
 
-### Dependency arrows (allowed)
-
-| From | To |
-| --- | --- |
-| `service` | `core` |
-| `cli` | service protocol (+ bootstrap helper) |
-| `desktop` | service protocol, `workbench-model` |
-| `workbench-model` | shared types only (no Electron, no fs writes) |
-| `adapters` | runtime port types; **not** core lifecycle modules |
-| `markdown` | service Query/Command; **not** core internals |
-
-### Reuse vs freeze (from current tree)
-
-| Keep / evolve | Freeze (do not drive new architecture) |
-| --- | --- |
-| `src/core/*` domain ops, claim, manifest, task/report→delivery evolution, type registry + capabilities | `src/plugin/view.ts`, registry panes, Obsidian DOM UI as migration source |
-| `src/fs/node-fs.ts` | `src/plugin/obsidian-fs.ts` as a product constraint |
-| CLI thin-shell pattern (`src/cli/tent.ts`) | Expanding Obsidian plugin as primary product surface |
-| Role worktree lane primitives in workspace ports | Second copy of lifecycle in desktop or adapters |
-| Tests under `test/*core*` as regression base | Long-term dual path: vault-external tent **and** in-workspace tent |
-
-**Obsidian plugin:** frozen as a product constraint. It is an optional legacy client at most; it must not dictate service shape, identity model, or UI architecture. No new product capability is designed “for plugin parity.”
-
----
-
-## 7. One-shot migration (no dual-write)
-
-### 7.1 From → to
-
-| From (legacy) | To (desktop model) |
-| --- | --- |
-| External tent under vault/`_tents` + separate code root linkage | Tent **inside** the workspace at **`.tent/`** |
-| `bx-` handles | `cx-` handles (full map in migration report) |
-| `owner` / `status` on Node FM | stripped on migrate; collab chips from `node.collaboration` (V0.2) |
-| temp `report` without id | `delivery` (`dl-`) under task (per Task API contract) |
-| Dual mental model / dual UI | Single location model only |
-| Product term “workspace pointer” | Retired; use **WorkspaceLane** (task) / **RuntimeWorkspace** (runtime) / in-workspace tent |
-
-### 7.2 Process requirements
-
-1. Toolized **dry-run** then migrate; staging copy + validation before atomic switch.
-2. Require idle critical occupancy (or documented `--force` risks).
-3. Single workspace path; refuse dirty multi-pointer tents.
-4. Rewrite rewritable absolute paths; **do not** migrate machine-local runtime facts.
-5. Write workspace `.gitignore` entries when applicable.
-6. Emit a migration report (id map, skips, broken `ArtifactRef`s needing human reconnect).
-7. Mark old external root with `MIGRATED.md`; user deletes—**no** bidirectional sync.
-8. Land tent data under **`<workspace>/.tent/`** only (name fixed; no alternate system-dir product mode).
-
-### 7.3 Explicit non-goals
-
-- Long-term compatibility layer for external tents
-- Dual-write between old and new locations
-- Auto-delete of user workspace deliverables
-- Silent “open old tent read-only forever” as a product mode (any temporary escape hatch needs explicit product decision)
-
----
-
-## 8. Delivery order (B1 / B2 and beyond)
-
-Contract freeze is **B0** (this document + peer B0 contracts). Implementation order that this architecture commits to:
-
-| Batch | Name | Owner focus | Depends on | Outcome |
-| --- | --- | --- | --- | --- |
-| **B0** | Architecture + peer contracts | Desktop / collab / docs / ACP roles | — | Frozen boundaries & vocabulary |
-| **B0-doc** | Concept/box document contract | Docs role | Glossary | `concept-model.md` |
-| **B1** | Core location & identity | Desktop architecture | B0 field tables | In-workspace **`.tent/`** scaffold, `cx-`/capability migration, core tests green |
-| **B2** | Local Service skeleton | Desktop architecture | B1 | Process model, attach protocol, watch, sole mutation entry |
-| **B3** | Electron shell + workbench vertical slice | Desktop architecture | B2 protocol | Main window tree/attrs/dispatch/review; tray |
-| **B4** | CLI attach service | Desktop architecture | B2 | CLI via service; bootstrap if missing （实现见 `docs/desktop/cli-service.md`，`tent task *`） |
-| **B5** | Migration tool | Desktop architecture | B1 | dry-run / migrate / rollback report |
-| **B6** | contextCard HTML5 text/plain drag (Windows MVP) | Desktop architecture | B3 | Cross-app text drag via Chromium; no file/clipboard fake |
-| **B7** | Markdown MVP | Docs role | B2 Query API | Editor/links/search |
-| **B8** | Task API + A2A hard gate | Collab role | B2 | States, delivery, allow\|ask\|deny in service |
-| **B9** | ACP adapters | ACP role | B2 + B8 | Provider/session/supervisor |
-| **B10** | Polish & open-source packaging | Shared | MVP acceptance | Installer, docs, versioning |
-
-Dependency sketch:
-
-```text
-B0 ──┬── B1 ── B2 ──┬── B3 ── B6
-     │              ├── B4
-     │              ├── B5
-     │              ├── B7
-     │              ├── B8 ── feeds B3 UI / B9
-     │              └── B9
-     └── B0-doc ─────────────┘
-```
-
-**B1 before B2:** service must call an in-workspace-capable core, not re-encode the old external-tent layout.  
-**B2 before B3/B4/B7/B8/B9:** all product clients and hard A2A share one host.
-
-### MVP vertical slice (acceptance intent for later implementation)
-
-A Windows user opens a workspace with an in-workspace tent, completes **create box → dispatch → (external agent via CLI claim/deliver) → review accept**, and after **closing the main window** the CLI still reaches the same service state. All writes go service→core. Full Markdown graph, multi-provider ACP, and non-Windows ports are out of MVP scope.
-
----
-
-## 9. Interface freeze points with peer roles
-
-| Peer | This architecture supplies | Peer supplies |
-| --- | --- | --- |
-| **Docs (Markdown)** | Concept query/save commands; hide system dir; event stream for invalidation | Editor, wiki-link, search index consumers |
-| **Collaboration** | Service mount points for authorization hooks & operational storage | Task state machine, delivery fields, A2A policy semantics |
-| **ACP** | Hosts **service-internal** `AgentRuntimePort` (start/stop/resume/events); clients use `task.*` only | Per-provider adapters; no lifecycle reimplementation |
-
-Conflict rule: if a peer proposal violates **sole service mutation**, **in-workspace tent**, **no chat product**, or **one-shot migration**, parent product goal wins; escalate to the product owner rather than silently forking the model.
-
----
-
-## 10. Non-goals (architecture)
-
-- Replacing official agent chat clients or building a multi-agent conversation router
-- Cross-project dashboard / source IDE inside Tent
-- Deriving product UI from Obsidian application source
-- Honor-based A2A spawn (must be service-hard `allow | ask | deny`)
-- Long-term dual location model or dual-write migration
-- Putting provider credentials or session tokens in workspace git history
-
----
-
-## 11. Contract checklist (acceptance map)
-
-| Requirement | Section |
-| --- | --- |
-| Service is the sole mutation entry | §1, §4 |
-| External commands = `task.*` / `docs.*`; `AgentRuntimePort` internal only | §5 |
-| Events = `concept.changed/removed` + task/runtime; no `box.changed` | §5 |
-| System dir fixed as `<workspace>/.tent/` | §3.1 |
-| WorkspaceLane ≠ RuntimeWorkspace; no “workspace pointer” product term | §3.5 |
-| `ArtifactRef`, `EventEnvelope`, `A2APolicy`, machine-local `AgentProfile` | §5.2 |
-| Active-task projections not bypassable via `docs.write` | §5.3 |
-| Existing-node `docs.write` requires `baseEtag` (`-32008` / `-32009`) | concept-model §7.2 |
-| Task stores `sessionId` only; session row/token/PID machine-local | §3.2–3.3 |
-| Foreground single workspace; background multi-workspace | §2 |
-| Closing the window does not stop tasks | §2 |
-| Repo module boundaries | §6 |
-| B1/B2 (and later) delivery order | §8 |
-| Old Obsidian plugin frozen; not a new-architecture constraint | §6 |
-| One-shot migration; no dual-write; no long-term dual model | §7 |
-
----
-
-## Document control
-
-- **Box:** B0 桌面与 Service 架构合同  
-- **Role:** 桌面架构Grok  
-- **Aligned plans:** desktop architecture plan, collaboration protocol plan, Markdown MVP plan, ACP adapter plan (Tent-side plan-only deliveries)  
-- **Next implementation step after acceptance:** B1 core in-workspace location + identity/capability migration (product code), not further speculative redesign of this dependency graph.
+The same flow remains reachable after closing the Desktop window because the
+Local Service, not the renderer, owns collaboration state.

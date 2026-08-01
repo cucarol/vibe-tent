@@ -1,499 +1,169 @@
-# Desktop Contract · Concept & Box Document Model
+# Desktop Contract · Node Document Model
 
-Status: **V0.2 Node/Type domain** (aligned with architecture Judge)  
-Scope: OKF concept space, concept types `goal|prompt|output`, `cx-` handles, physical layout, links, attachments, operational exclusion, external-edit concurrency, Markdown MVP boundaries  
-Non-goals: Task/Delivery state machine (`docs/desktop/task-api.md`), service process topology (`docs/desktop/architecture.md`), AgentRuntime adapters (`docs/desktop/agent-runtime.md`)
+This document defines durable Node content and structure. Task occupation and
+Delivery review are operational projections described in
+[task-api.md](task-api.md); they are not Node frontmatter.
 
-This document freezes the document model for independent desktop Tent. Canonical English names are API/schema truth. UI may localize labels via i18n; persisted enums never use localized values.
+## 1. Node identity and layout
 
-Peer contracts that must not invert these rules:
-
-- Architecture: Local Service is the sole mutation entry; Markdown subsystem is a client of Query/Command.
-- Task API: box occupation, assignee projection, and delivery review live in operational space; documents only supply concept identity and body.
-
----
-
-## 1. Two spaces
+A Node is a folder plus a same-named Markdown identity note:
 
 ```text
-OKF concept space (user-facing Markdown)
-├── concept (always has non-empty type ∈ goal|prompt|output [+ optional secondary])
-└── (non-concept) operational space
-    ├── task          tk-
-    ├── delivery      dl-
-    ├── session       ss-
-    ├── handoff / claim / review records
-    └── pipeline / temp envelopes
+Release plan/
+  Release plan.md
+  Child context/
+    Child context.md
 ```
 
-| Space | What lives there | Indexed as concept? | OKF validator? |
-| --- | --- | --- | --- |
-| **Concept** | User-facing Markdown nodes | yes | yes (subject to generated-file rules) |
-| **Operational** | Task, delivery, session, handoff, claim, review, temp pipeline | **no** | **no** |
+A folder without a same-named note is a transparent group. System folders such
+as `temp/` and `attachments/` are excluded from the Node tree.
 
-**One sentence:** content lives in concepts; collaboration lifecycle is projected from Task/Session/Delivery (every valid concept may be claimed); pipeline state lives in operational space and is cleaned by retention policy.
-
-### 1.1 Hard exclusions from concept space
-
-Never register as concepts:
-
-- `.tent/**` system registries, locks, machine-agnostic collaboration facts that are not user notes
-- `temp/**` and other pipeline envelopes
-- Generated OKF helpers such as root/folder `index.md` / `log.md` as *user edit targets* (they may exist on disk for OKF compliance; they are not ordinary notes)
-- Real workspace trees (source, project docs, builds)—only via **`ArtifactRef`**
-- Machine-local service data (search index, window state, credentials, session rows, **AgentProfile** paths)
-- Session registry / PIDs / resume tokens (task may hold `sessionId` only)
-
-Operational Markdown **may** reuse the same renderer component in lifecycle panels. `DocumentController` / concept index **must not** list them as ordinary documents.
-
----
-
-## 2. Identity model
-
-### 2.1 Dual identity (not dual keys)
-
-| Layer | Field | Role |
-| --- | --- | --- |
-| **OKF identity** | Bundle-relative path of the concept note (canonical path form) | Stable for OKF; changes on controlled rename/move |
-| **Handle** | `cx-` + random collision-checked suffix | Immutable after create; used by task, relations, `contextRef`, migration continuity |
-| **Display name** | Path stem and optional `title` | Human/agent-readable; **not** a third identity |
-
-**Forbidden:**
-
-- A second `boxId` distinct from `cx-`
-- A `key` / semantic-slug identity competing with path
-- Treating `cx-` as OKF concept name or as a second path
-- Long-term dual `bx-` / `cx-` formats after cutover (migration is one-shot; dual-read only during the window)
-
-### 2.2 Invariants
-
-1. Path is the OKF identity. Frontmatter must not invent a parallel semantic key.
-2. Every concept receives a random, stable, immutable `cx-` at creation.
-3. UI does not emphasize `cx-` by default; expose it for copy, drag `contextRef`, diagnostics, and agent tools.
-4. Controlled rename/move **changes** OKF path identity and **must** rewrite internal Markdown links and rebuild/update index entries. `cx-` proves “same concept” across the move.
-5. Type changes keep the same path, body, and `cx-` (no promote / demote product path).
-
-### 2.3 Frontmatter shape (contract)
+Minimal frontmatter:
 
 ```yaml
 ---
-id: cx-a1b2c3          # stable handle; migration may rewrite legacy bx- once
-type: prompt           # goal | prompt | output (+ optional -reference|-asset)
-tags: [ui]             # optional lookup facets; orthogonal to secondary type
-title: Optional title  # optional display override
-mode: archived         # omit for editable default; only archived is persisted
-relations:             # optional first-class semantic edges (source = this Node)
-  - {id: rl-…, kind: depends-on, direction: directed, nodeId: cx-…}
-# owner / status / acceptedBy — stripped by migration; not product fields
-# artifactRefs: optional ArtifactRef[] to real deliverables (architecture §5.2)
+id: cx-7k2f9q
+type: goal
+tags: [release]
 ---
-# Markdown body
 ```
 
-| Field | Rule |
-| --- | --- |
-| `id` | Required; `cx-…` after migration |
-| `type` | Required; primary ∈ `goal\|prompt\|output`; optional secondary ∈ registry modifiers |
-| `tags` | Optional; never replace type or hierarchy |
-| `mode` | Omit = editable; `archived` freezes subtree. No `read-only` |
-| `relations` | Optional outgoing semantic relations; stable `rl-` id, open `kind`, `direction`, exactly one target (`nodeId` or `unresolved`). **Not** Markdown/wiki body links. Mutate via `relation.*` only |
-| `deliveryId` | **Reserved Output provenance** (primary type base `output` only). Authoritative link to a Delivery (`dl-…`). Written only by formal `task.accept` bind (`outputNodeIds`); ordinary `docs.write` / raw / `patchBox` reject. Unbound Output omits the field. No redundant `taskId`/`sourceNodeId` denorm on the Node. |
-| legacy `status` / `owner` | **Stripped on migrate**; not written at runtime; occupation is Task-based |
-| `artifactRefs` | Optional `ArtifactRef[]`; not concept identity |
-| Readable/writable | **Retired** as domain axes; not honor ACL |
+`cx-` identity is stable across rename and move. Paths are display and lookup
+hints; they are never a second identity. Duplicate ids fail loud.
 
-**Occupation authority:** only an **active Task envelope** occupies a box for mutual exclusion. Canvas / UI collab read model is **`node.collaboration` / `node.collaborations`** (direct-claim Task + optional Session/Delivery pointers). See Task API §2.3.
+## 2. Durable fields
 
-**Active-task write guard:** ordinary **`docs.write`** must not set retired collaboration keys (`status`/`owner`/`assignee`). Service rejects those field patches; clients use Task API transitions and read `node.collaboration`. Non-projection body edits remain allowed subject to etag concurrency.
+Node-owned facts are limited to:
 
----
+- stable id, name, parent hierarchy, and Markdown body;
+- primary type and optional secondary type;
+- tags and explicit semantic relations;
+- archive mode;
+- annotations and attachment references;
+- Output provenance fields where applicable.
 
-## 3. Type registry (V0.2)
+Execution progress, assignee, reviewer, Session, Delivery status, and generic
+workflow state do not belong in Node frontmatter. Desktop derives those from
+Task, Session, and Delivery projections.
 
-### 3.1 Semantic types only
+## 3. Types and tags
 
-Type registry entries store **tier** (`base` | `modifier`). Domain R/W, coordination, color, and description are not product fields.
-
-| Class | Values |
-| --- | --- |
-| Fixed primaries | `goal`, `prompt`, `output` |
-| Built-in secondaries | `reference`, `asset` (custom modifiers allowed without chrome) |
-
-One-shot migration: `note`→`prompt`, `artifact`→`output`; strip R/W/chrome; drop retired modifiers `open`/`sealed` from compounds. No permanent alias.
-
-### 3.2 Concept terminology
-
-| Term | Definition |
-| --- | --- |
-| **concept** / **Node** | User-facing Markdown in OKF concept space with non-empty `type` and a `cx-` |
-| **box** | Historical synonym for concept in APIs; not a second file format |
-
-Every valid non-archived concept may enter the task lifecycle. There is no coordination gate and no `docs.promote`.
-
-### 3.3 Fork (copy / variant)
-
-Canonical command: **`docs.fork(boxId | path)`** (CLI alias: `tent fork`).
-
-| Rule | Detail |
-| --- | --- |
-| Effect | Copy concept/box **subtree**; new `cx-` ids; preserve content and descendant names |
-| Does **not** | Start a task, claim, or session |
-| Parallelism | Not required: Task Node refs are non-exclusive; use fork only when a separate copy/variant is desired |
-| Active task | Source Task projections are unchanged |
-
-Fork is a **docs** group command, not a Task API verb, and not an AgentRuntime call.
-
----
-
-## 4. Physical layout (document tree, not workspace tree)
-
-Principles:
-
-- Organization follows Tent logical entities.
-- On disk: ordinary directories + Markdown files under the **fixed** tent system location **`<workspace>/.tent/`** (architecture §3.1; name not reopened in B1).
-- Node layout is always folder + same-named Markdown; there is no note-to-box promotion step.
-
-| Form | Layout | MVP |
-| --- | --- | --- |
-| **Box concept** | `Name/Name.md` (folder + same-named identity note); nested folders express service/organization relations | **required** |
-| **Note concept** | Same `Name/Name.md` isomorphism | **required** |
-| **Transparent group** | Directory without same-named note; organizational only, **not** a concept | retained |
-| **Attachments** | Prefer `.tent/attachments/<cx>/<name>-<contentId>.<ext>` (gitignore-friendly; original bytes on disk) | MVP minimum |
-| **Single-file note** `Name.md` | Compatibility only | **post-MVP** |
-
-Agents creating concepts must choose meaningful path/name segments; path remains OKF identity.
-
----
-
-## 5. Document tree projection (UI)
-
-### 5.1 Shown in the ordinary document tree
-
-- All concepts (notes + boxes)
-- Type color / badge; boxes additionally show `status` badge
-- Hierarchy from folder nesting / parent relations
-
-### 5.2 Not shown as ordinary tree nodes
-
-- Operational entities (task, delivery, session, …)—lifecycle panels only
-- Workspace source / project files (artifact chips + open-external only)
-- Machine-local indexes and window state
-- Tent system dir internals by default (diagnostic entry only; architecture)
-
-### 5.3 Artifact association (`ArtifactRef`)
-
-```ts
-type ArtifactRef = {
-  kind: "path" | "dir" | "commit" | "url" | "other";
-  target: string;
-  label?: string;
-};
-```
-
-| Mechanism | Purpose |
-| --- | --- |
-| **`ArtifactRef`** | Points to file, directory, commit, URL, or other real deliverable **outside** concept identity |
-| Open action | Default: open with original tool / OS handler |
-| Search | Artifact **bodies** are not in default concept search |
-
-**Forbidden in MVP:** workspace file browser, source tree navigator, built-in code editor, LSP, IDE terminal, build panel, in-app commit diff, line-by-line review, full Git client UI.
-
----
-
-## 6. Links, search, and attachments
-
-### 6.0 First-class semantic relations
-
-Source Node frontmatter owns an optional `relations` array. Each record has a stable generated `rl-` id, non-empty open `kind`, `direction: directed|bidirectional`, optional `label`, and exactly one target: `{ nodeId: cx-… }` or `{ unresolved: string }`. Source id is implied by the owning Node.
-
-| Rule | Detail |
-| --- | --- |
-| Storage | Source frontmatter only — **no** global relation database |
-| Mutations | `relation.create` / `update` / `delete` (user-only, MutationBus, source `baseEtag`); `relation.list` is read-only |
-| Validation | Resolved target must exist and be a usable Node; unresolved must be non-empty; archive/invalid source rejected |
-| Graph | `graph.projection.edges.relation` is a **separate** collection from `parent` / `markdown` / `wiki` |
-| Non-goals | Relation-kind registry; path inference; body/wiki mutation; merging body links into semantic relations |
-
-### 6.1 Link model
-
-| Layer | Form | Role |
-| --- | --- | --- |
-| Authoring | `[[Name]]` / `[[path\|label]]` / `[[path#heading]]` / `[[path^block]]` | User input; editor completion |
-| Standard MD | `[label](dest)` and reference links, including `<angle dest>`, balanced/escaped parens, optional titles, query/fragment | Interop / OKF |
-| Resolution keys | path, title/name, `cx-`, legacy `bx-` **during migration only** | Unique hit required to resolve |
-| Backlinks | Inverted from outbound **concept** links in index | Side/bottom panel |
-| artifact links | Structured **`ArtifactRef`** or dedicated scheme (`https:`, `mailto:`, `tent-artifact:`) | External open |
-| Semantic relations | Frontmatter `relations` via `relation.*` | First-class edges; **not** derived from body links |
-
-**Graph extraction (`src/markdown/links.ts`):**
-
-- Uses block/inline scanning (not whole-document regex). Fenced/indented code, inline code, raw HTML/`script`/`style`, and escaped syntax do not contribute edges.
-- Wiki links are taken only from prose text; heading/block suffixes resolve the concept target while `raw` retains the authoring form.
-- Relative destinations normalize against the source concept note path; query/fragment are stripped for concept resolution.
-- **Not** concept backlinks: external schemes, pure anchors (`#…`), attachment paths (`attachments/…` and relative climbs into that tree), ordinary images (`![]()`), and wiki embeds (`![[]]`). Images/embeds only become graph edges if a future contract explicitly resolves them to a concept (current contract: never).
-- Duplicates (same kind + raw + label) are collapsed on outbound extract; reverse index records one hit per distinct outbound edge that resolves.
-
-**Resolve vs project split:**
-
-1. **Resolve API** — read-only, for preview/jump (always available).
-2. **Index build** — writes machine-local cache only; **never** rewrites user body by default.
-3. **Optional OKF project** — explicit command/export may rewrite wiki → relative MD for compliance; **never** auto-run on dirty buffers; refuse destructive project when the tab is dirty (or dry-run only).
-
-Default edit path does **not** perform destructive link projection on every save.
-
-### 6.2 Search (MVP)
-
-- Scope: concept titles + bodies (simple tokens / substring).
-- Results: concept hits + snippet offsets; open tab and select match.
-- Out of scope: semantic embedding search, workspace source search.
-
-### 6.3 Attachments (MVP)
-
-- Store under tent attachment root keyed by `cx-`: **`<workspace>/.tent/attachments/<cx>/…`** (FsAdapter / system-root relative: `attachments/<cx>/…`).
-- **Disk format:** original binary bytes only. No `.b64` companion files or text markers.
-- **Wire format (JSON-RPC):** `docs.importAttachment` carries base64 in `bytesBase64` (optional alias `contentBase64`). Service decodes strictly and writes raw bytes.
-- Path is content-addressed for idempotency: `attachments/<cx>/<safeName>-<sha256-12><ext>`. Re-importing the same concept + file name + bytes returns the same path without rewriting when the file already matches.
-- Filename validation: directory separators and traversal segments are rejected; Windows-invalid characters and reserved device names (`CON`, `NUL`, …) are neutralized.
-- **Size limit:** decoded payload max **25 MiB** (`MAX_ATTACHMENT_BYTES`); larger imports are rejected.
-- Return value includes `relativePath` (system-root relative), a Markdown link relative to the owning concept note, and optional `ArtifactRef` `{ kind: "path", target, label }`.
-- Insert ordinary relative Markdown image/file links (or service-logical URLs resolved in preview).
-- No cloud image host; large-file warnings allowed. No migration layer for legacy `.b64` markers.
-- Attachment ownership is `cx-` based: while the owning concept exists (including
-  `archived` concepts), every file under its attachment directory is durable even
-  when temporarily absent from the body. Rename/move therefore never changes
-  attachment ownership.
-- The Local Service performs conservative, invisible attachment housekeeping.
-  Only files whose owner concept no longer exists **and** which are unreferenced
-  by concept or operational Markdown/ArtifactRefs become candidates. A candidate
-  must remain orphaned for 30 days after first observation before deletion;
-  missing/corrupt GC state and scan ambiguity fail closed.
-- Attachment references are extracted separately from concept links. The same
-  derived edges may feed a future relationship graph, but graph/cache absence is
-  never sufficient proof for deletion: each GC sweep rechecks disk sources.
-
-### 6.4 Editor session state
-
-Open tabs, scroll, selection live in **machine-local** window state. They must not be written into concept files.
-
----
-
-## 7. External modification · minimal optimistic concurrency
-
-### 7.1 Sources of truth
-
-| Fact | Authority |
-| --- | --- |
-| On-disk bytes | Last successful write |
-| Editor buffer | Unflushed tab content |
-| Collaboration facts | core mutations under service + mutation lock |
-| Search/link index | Derived cache; **always rebuildable** |
-
-### 7.2 Version token
-
-`docs.readForEdit` returns at least:
-
-```ts
-{
-  cx: string;
-  path: string;
-  body: string;
-  frontmatter: Record<string, unknown>;
-  etag: string; // content hash and/or mtimeMs+size
-}
-```
-
-`docs.write` / `writeBody` on an **existing Node** **must** supply a non-empty `baseEtag` (from `docs.readForEdit`; legacy param alias `etag` accepted). Create/bootstrap paths (`docs.createNote`, `new` / `migrate` / `role-init`) are separate; external file edits land via watcher as fact change, not via blind `docs.write`.
-
-1. Under mutation serialization, re-read disk and compute `diskEtag` (`sha256` content token).
-2. If `baseEtag` is missing/empty → **`-32008`** (`etag_required`): reject; error `data` includes `currentEtag`, `path`, `id` — **no body**.
-3. If `diskEtag !== baseEtag` → **`-32009`** (`etag_conflict`): reject; error `data` includes `currentEtag`, `baseEtag`, `path`, `id` — **no body**. Clients may re-`readForEdit` for a full disk snapshot when UI needs it.
-4. If the target is a box with an **active task** and the patch attempts to set projected collaboration fields (`status`/`assignee`/legacy `owner` in competition with Task API) → **reject** with a collaboration-field error (not a silent merge). Body text and non-projection frontmatter may still write (still with a valid `baseEtag`).
-5. Else write, publish **`concept.changed`** (via **EventEnvelope** — architecture §5.2), update callers’ etag.
-
-Structured mutations (promote, type change, controlled move, **fork**) continue to use core `withTentMutation` / service command path; they still must not silently clobber a dirty editor buffer (flush or explicit merge of frontmatter-only updates).
-
-**Event channel:** document invalidation uses `concept.changed` / `concept.removed` only. There is **no** `box.changed` dual stream.
-
-### 7.3 Autosave and watch
+Primary type is one of:
 
 ```text
-Editor buffer
-    │ debounce save
-    ▼
-ConflictGate.write(baseEtag, content)
-    │
-    ├─ ok → update baseEtag, clear dirty
-    └─ conflict → keep dirty buffer, show banner:
-         [Load disk] [Keep mine / overwrite] [Side-by-side plain text]
+goal | prompt | output
 ```
 
-Watch rules:
+- `goal` describes a desired result or direction.
+- `prompt` stores instructions, questions, context, decisions, or working
+  material.
+- `output` stores an accepted result or durable pointer to one.
 
-- Clean tab + etag change → silent reload allowed.
-- Dirty tab + etag change → banner; **silent reload forbidden**.
-- Self-echo from this service write may be ignored via generation / `source: self`.
+Secondary type is optional and user-extensible. Tags are independent reusable
+facets. Neither type nor tag grants read/write authority or encodes progress.
 
-### 7.4 Explicit non-goals (concurrency)
+## 4. Body and stable knowledge
 
-- Character-level 3-way merge / CRDT
-- Automatic semantic frontmatter merge
-- Cross-machine sync conflict UI
-- Built-in Git diff as the conflict surface (external tool open is fine)
+The body is durable project knowledge, not a transcript. A Role promotes
+confirmed decisions, facts, open questions, provenance, and accepted outcomes
+from Task/Delivery evidence into the nearest relevant Node.
 
-### 7.5 Index rebuild
+Tent never automatically stores an entire ACP conversation in a Node. Delivery
+acceptance does not by itself rewrite Node content; the accountable Role or user
+performs an explicit etag-checked Node mutation.
 
-- Startup full scan + watch incremental updates.
-- Corruption or version skew → full rebuild from disk.
-- Index never becomes a second source of truth for body text.
+## 5. Tree semantics
 
----
+Parent/child hierarchy expresses context and ownership of knowledge, not lock
+inheritance. A Task occupying a parent does not automatically occupy children,
+and a child Task does not occupy its ancestors.
 
-## 8. Service API surface (document group)
+Relations and links may extend read context. They do not acquire additional
+write occupation unless those Node ids are explicitly included in the Task.
 
-Logical APIs consumed by Desktop Markdown and CLI (transport owned by architecture):
+Rename and move use stable ids plus current-path/etag checks. Moving a subtree
+updates paths while preserving ids and content. The operation fails if its
+source or target impact contains an active Task or if it would create an
+invalid cycle.
 
-| API | Kind | Effect |
-| --- | --- | --- |
-| `docs.list` / `docs.get` | Query | Concept projections |
-| `docs.readForEdit` | Query | Body + etag for editing |
-| `docs.write` | Command | Existing-node write; **required** `baseEtag` (`-32008` missing / `-32009` conflict); **cannot** bypass active-task projections; **cannot** set `type`/`tags`/`relations` (use dedicated commands) |
-| `docs.setType` | Command | User-only set compound Node type (`baseEtag` required); emits `concept.changed` reason `docs.setType` |
-| `docs.tags.set` / `docs.tag.add` / `docs.tag.remove` | Command | User-only Node tag mutations (`baseEtag` required); detach does not prune registry |
-| `relation.list` | Query | Outgoing semantic relations + derived incoming views by stable Node id (not body links) |
-| `relation.create` / `relation.update` / `relation.delete` | Command | User-only source-frontmatter relation CRUD (`baseEtag` required); one `concept.changed` on success; kind is open (no registry) |
-| `graph.projection` | Query | Workspace nodes + partitioned edges `{ parent, markdown, wiki, relation }` — semantic relations never merge into body-link edges |
-| `registry.types` / `registry.type.create` / `registry.type.delete` | Query / Command | Type registry read + custom secondary create/delete (user-only mutations; in-use delete fails loud) |
-| `registry.tags` / `registry.tag.create` / `registry.tag.delete` | Query / Command | Tag vocabulary read + create; global delete cascades off all Nodes. **`registry.tag.delete` emits only `registry.tags.updated`** (no per-Node `concept.changed`); clients must refresh tag candidates **and** graph/node projections that may have lost the deleted tag |
-| `docs.createNote` | Command | New concept (`cx-`, type, path) |
-| `docs.promote` | Command | Note → box in place |
-| `docs.fork` | Command | Copy subtree for parallel occupation (new `cx-`s; clear occupation on fork root) |
-| `docs.search` / `docs.backlinks` / `docs.resolveLink` | Query | Navigation |
-| `docs.importAttachment` | Command | Params: `workspaceId`, concept `id`\|`path`\|`boxId`, `fileName`, `bytesBase64`. Store **original bytes** under `attachments/<cx>/…`; return `{ relativePath, markdown, artifactRef }` |
-| `docs.watch` / events | Events | `concept.changed` \| `concept.removed` \| conflict signals (EventEnvelope) |
-| `annotation.list` | Query | Per-node underline annotations with live relocate projection (`anchored` \| `relocated` \| `orphan`) |
-| `annotation.create` / `resolve` / `reopen` / `delete` | Command | User-only first-class annotation records (MutationBus); never write markers into body |
+## 6. Exact Task occupation
 
-### 8.1 Underline annotations (划线注释)
+`Task.contextCard.refs.nodes[]` is the sole authoritative Node selection for a
+Task. Dispatch acquires the full exact set atomically:
 
-Product boundary: annotations are **first-class workspace records**, independent of Markdown body markers, Node frontmatter attributes, and Task. Default path does **not** inject Agent; UI may later turn a comment into `task.sendInput` explicitly.
+- one active Task may occupy an exact Node;
+- failure on any requested Node creates no Task, manifest, lane, or partial
+  occupation;
+- sibling and parent/child Nodes may be worked independently;
+- `queued`, `running`, `waiting`, and `delivered` Tasks remain active;
+- `accepted`, terminal `rejected`, `interrupted`, and `failed` release
+  occupation.
 
-Persistence (system root, not concept body):
+Occupation is derived from Task envelopes. There is no lock table or duplicated
+Node owner/status field.
 
-| Field | Notes |
-| --- | --- |
-| `id` | Stable `an-…` |
-| `nodeId` | Concept identity (`cx-`); path-independent |
-| `quote` / `start` / `end` | Create-time anchor into **body** (half-open offsets) |
-| `documentEtag` | Same etag family as `docs.readForEdit` (hash of on-disk note raw) |
-| `body` | Plain comment text |
-| `author` | Always `user` in this batch |
-| `status` | `open` \| `resolved` |
-| timestamps | `createdAt` / `updatedAt` / optional `resolvedAt` |
+## 7. Archive and delete
 
-**Create validation:** non-empty quote/body; range in body; `body.slice(start,end) === quote`; required `documentEtag` must match current disk etag or RPC rejects with etag conflict. Does not mutate the Node file.
+`mode: archived` is reversible soft deletion for a Node subtree. Archived Nodes
+reject ordinary content and structure writes. Restore re-enables them after
+the same structural and occupation checks.
 
-**List/read projection (relocate, non-mutating):**
+Permanent delete is allowed only for an archived subtree and remains subject to
+active Task, path, attachment, and provenance guards. Clients never delete a
+Node merely because a Task ended.
 
-1. If Node missing → `anchorState=orphan`, `orphanReason=missing-node`.
-2. Else if stored offsets still match quote → `anchored`.
-3. Else find quote occurrences in current body: unique hit, or unique nearest to original `start` → `relocated` with `currentStart`/`currentEnd`.
-4. No hit → `orphan`/`quote-mismatch`; equal-distance multi-hit → `orphan`/`ambiguous`.
+## 8. Content mutation
 
-Projection **must not** auto-edit the document or silently rewrite persisted anchors.
-
-Document subsystem **does not** implement: `task.dispatch` / claim / deliver / accept, A2A spawn, or adapter process control. It may **render** operational Markdown supplied by collaboration queries. Clients use **`docs.*`**, **`annotation.*`**, and **`task.*`**; **`AgentRuntimePort.*`** is service-internal.
-
----
-
-## 9. Module boundary
-
-| Concern | Document system owns | Hand off |
-| --- | --- | --- |
-| Concept load, type/`coordination`, promote, links, search, attachments, conflict gate for bodies | yes | — |
-| Task state machine, occupation, delivery review | no | Task API / collab |
-| Process/session/adapters | no | AgentRuntime |
-| Window shell, multi-workspace mount | no | Architecture / Desktop |
-| Workspace Git integrate-after-accept | no | Architecture + Task API |
-| Editor implementation (e.g. CodeMirror 6) | Markdown package only | Must not be imported by core |
-
-Dependency direction (architecture):
+Public Node mutations go through Local Service:
 
 ```text
-markdown UI  →  Local Service Query/Command  →  core  →  tent files
+node.list | node.get | node.create | node.write
+node.move | node.archive | node.restore
+node.tags | node.relations | node.annotations
 ```
 
-Core must not import editor frameworks. Clients must not mutate concept frontmatter or bodies outside the service when a service is available.
+Writes use an etag or equivalent current-revision check. Stale writes fail
+loud; Service does not merge two bodies heuristically. Raw document changes
+observed by the watcher are reloaded and projected through the same Node
+validation rules.
 
----
+## 9. Collaboration projection
 
-## 10. Migration notes (document identity only)
+`node.collaboration` and batch projection expose active Tasks and their safe
+Session/Delivery pointers for a Node. They are read models only. UI badges,
+working sets, and pending review counts come from these projections rather than
+being copied into Node files.
 
-Aligned with architecture one-shot migration; document-specific requirements:
+## 10. Events
 
-| From | To |
-| --- | --- |
-| `bx-` handles | `cx-` handles; emit full map in migration report |
-| Box-only tree index | Concept scan of all user-facing notes + boxes |
-| Dual mental model (vault-external tent + separate code-root linkage) | Single in-workspace tent at **`.tent/`** |
-| Product term “workspace pointer” | Retired; WorkspaceLane is a **task** field, not a concept type |
-| Auto OKF project rewriting bodies | Explicit project; default non-destructive resolve |
+Document invalidation uses:
 
-New Node writes use `cx-` identifiers exclusively. Existing `bx-` identifiers are read as stable historical IDs, not generated for new Nodes.
+```text
+concept.changed
+concept.removed
+```
 
----
+The transport names are internal event compatibility, not a second public
+object model. Payloads contain stable Node id and safe path/reason metadata.
+Consumers re-read the Node or collaboration projection after the event.
 
-## 11. Markdown MVP acceptance (product checklist)
+## 11. Attachments and Output provenance
 
-**Must have**
+Attachments live under `.tent/attachments/` and are addressed by safe relative
+references. Imports preserve original bytes and return a Markdown reference;
+they do not execute or trust file content.
 
-- [ ] Create ordinary note concept (non-empty type, `cx-`)
-- [ ] In-place promote to box (same path / body / `cx-`)
-- [ ] Edit + preview + autosave through service
-- [ ] External edit conflict detectable with explicit user choice
-- [ ] Wiki/path/`cx-` resolve, backlinks, title+body search
-- [ ] Image attachment into tent attachment area with Markdown link
-- [ ] Operational docs absent from concept tree / OKF concept index
-- [ ] **`ArtifactRef`** opens externally—not an in-app workspace browser
-- [ ] Active-task projection fields rejected on ordinary `docs.write`
-- [ ] `docs.fork` available for parallel box occupation
+An Output Node may record accepted Delivery provenance and artifact references.
+Provenance points to immutable Task/Delivery/Git evidence. It never substitutes
+for Delivery review or makes a Task operational record part of the Node tree.
 
-**Must not have (MVP)**
+## 12. Non-goals
 
-- [ ] Workspace source tree browser
-- [ ] Code LSP / terminal / build panel
-- [ ] Built-in commit diff / line comments
-- [ ] Automatic destructive OKF body rewrite over dirty buffers
-- [ ] Hardcoded coordination by type **name** instead of registry capability
-- [ ] Semantic `key` field or second box id
+The Node model does not provide:
 
----
-
-## 12. Cross-entity identity (roles / types / tags)
-
-Concept dual identity (`path` + `cx-`) is specified above. Other registries:
-
-| Entity | Immutable id | Mutable label | Notes |
-| --- | --- | --- | --- |
-| Role | `rl-…` | `displayName` (presentation only; never a resolver) | Resolve by `roleId` or operational `name`; see `identity-rename.md` |
-| AgentProfile | profile `id` | `displayName` | Machine-local only |
-| Type / tag | registry string key | same | No separate id in batch 1 — not forced for uniformity |
-
-**Rename rule:** id is never edited; rename changes display label and/or path only. Node native rename is Service `docs.rename` with atomic path+link rewrite and true note/tree rollback (contract in `identity-rename.md` §4).
-
-**Move / reparent rule:** id is never edited; structural placement is Service `docs.move` (canonical; no `docs.reparent` alias). Resolve by `cx-`, require `expectedPath` stale-path conflict, reparent rewrites path links with rollback, same-parent reorder is order-only (contract in `identity-rename.md` §4.1).
-
-## 13. Frozen decisions (B0)
-
-1. **OKF path** = concept identity; **`cx-`** = immutable handle; no semantic key.
-2. Primary type is fixed `goal|prompt|output`; secondary type and tags are orthogonal.
-3. Every valid non-archived Node may be referenced by Tasks; there is no coordination gate or exclusive occupation.
-4. Operational Task/Session/Delivery state is outside concept index and OKF validation.
-5. **Workspace files** enter only through explicit output/provenance references; Tent is not an IDE or disk browser.
-6. **External edits** use minimal etag optimistic concurrency; dirty tabs never silent-reload.
-7. **Index is rebuildable cache** in machine-local service data, not Tent identity truth.
-8. Node layout is folder + same-named Markdown.
-9. **Link project** is explicit; resolve and index are non-destructive by default.
-10. **Events** are `concept.changed` / `concept.removed` only—no `box.changed` dual channel.
-11. **`docs.fork`** is the parallel-occupation command; active-task fields cannot be bypassed via `docs.write`.
-12. Tent system directory name is fixed **`.tent`** under the workspace root.
-13. Implementation batches refine code under this contract; they do not reopen vocabulary without an explicit revision of this file.
+- generic owner or progress fields;
+- type-based read/write permissions;
+- implicit subtree occupation;
+- automatic chat archival;
+- a second workspace repository;
+- a separate workflow object hidden behind another public name.

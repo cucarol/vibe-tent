@@ -29,7 +29,7 @@ tent session leave   → unbind only; delivered=false, accepted=false
 1. Re-query persisted Session and Task state after restart, compaction, handoff, provider change, or replacement.
 2. Never treat an old live handle, process ID, or remembered resume token as current authority.
 3. Use `task.replaceSession` only through Service for the same Task when the bound context is unusable. It requires a turn-idle `running` Task or `waiting(session_unavailable)`; `TURN_BUSY` fails loud and has no force path. Replacement is explicitly fresh (`contextRestored=false`).
-4. Reuse only through Core compatibility checks: workspace, parent Role, logical `agentId`, purpose, Skills, profile/adapter, context generation, lane, exclusive idle lease, settled turn, and no pending input/Delivery must match. A failed check creates a fresh Session generation.
+4. Resume only through Core compatibility checks: workspace, parent Role, Settings route/adapter, purpose, Skills, context generation, lane, exclusive idle lease, settled turn, and no pending input/Delivery must match. Resume must preserve the same recoverable provider conversation; otherwise use an explicit fresh Task/Session path rather than relabeling new context as the old Session.
 5. Do not stop a process merely because its Session projection looks stale; confirm ownership and current runtime state first.
 
 Session startup runs outside the Task lifecycle lock, then final binding uses an authoritative Task snapshot and lifecycle CAS. A terminal transition may win; the unbound new Session is stopped and Service reports `TASK_SESSION_BIND_CAS_FAILED`. Never hand-bind it or overwrite the terminal Task.
@@ -48,4 +48,4 @@ Session startup runs outside the Task lifecycle lock, then final binding uses an
 
 ## Context is not permission
 
-The Context Card supplies Task refs; the manifest is only an auxiliary snapshot. Neither is an ACL. Authority comes from persisted parent/reviewer, Role roster, Task lifecycle, and integration lane.
+The Context Card supplies Task refs; the manifest is only an auxiliary snapshot. Neither is an ACL. Authority comes from persisted parent/reviewer, Task lifecycle, exact Node occupation, and integration lane. A Settings route proves machine availability, not collaboration authority.

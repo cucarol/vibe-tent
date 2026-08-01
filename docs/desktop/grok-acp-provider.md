@@ -1,361 +1,168 @@
-# Grok ACP Provider（Desktop MVP）
+# Grok ACP Provider Contract
 
-The explicit live smoke test is `npm run test:grok-e2e`. It requires
-`CPA_GROK_API_KEY` and `CPA_GROK_BASE_URL`, contacts the configured Grok2API or
-other explicit OpenAI-compatible service,
-and exercises dispatch → managed ACP report → review accept. It is intentionally
-excluded from the default offline `npm test` suite. The same command also stops
-the first bridge process, restores its provider session through `session/load`,
-and verifies that a second prompt can recover a nonce known only to the first turn.
+Grok is one managed ACP adapter behind the Local Service runtime. Users select a
+machine Settings route; Tasks and Skills do not contain provider credentials or
+construct provider command lines.
 
-Status: first **real** push-mode provider for Local Service  
-Scope: machine-local `grok-acp` AgentProfile + ACP stdio adapter  
-Non-scope: chat UI, universal provider router, implementing non-grok ACP bridges, storing secrets in workspace
+## 1. Settings route
 
-## What Tent does (and does not)
+A Grok route may resolve:
 
-| Tent owns | Provider owns |
-| --- | --- |
-| Task envelope / Context Card **pointers** | Model inference via Grok CLI + Grok2API |
-| A2A gate → `task.startSession` | ACP stdio session lifecycle |
-| `sessionId` reference on task only | Process PID, resume tokens (machine-local) |
-| Runtime events (live / waiting / failed / exited) | Official Grok CLI UX for dialogue |
+- provider adapter id;
+- model;
+- API and authentication endpoints;
+- credential reference;
+- command, args, isolated provider home, and safe environment entries;
+- timeout and capability metadata.
 
-Tent is **not** a chat router. The adapter starts/observes/stops an external agent session; task context is driven by envelope + context pointers, not by pasting full box bodies into the session.
+The public selector is `route:<routeId>`. The route id is non-secret and stable
+on one machine. Route contents are machine configuration, not Node content,
+Role membership, or collaboration authorization.
 
-## Prerequisites (machine-local)
+No key, token, OAuth blob, resume token, or full provider config is written to
+the workspace, Task, Delivery, Node, Git history, or public event payload.
 
-1. **Grok CLI** installed (typical Windows path: `%USERPROFILE%\.grok\bin\grok.exe`).
-2. **Grok2API** reachable (local OpenAI-compatible endpoint).
-3. Dedicated Grok config at `~/.grok-acp/home/.grok/config.toml`. The current
-   verified setup keeps the main `grok-4.5` model on `chat_completions` and the
-   `grok-4.5-high` web-search helper on `responses`.
-4. **Environment variables** on the process that starts Local Service / Desktop (machine-local only):
+## 2. Launch isolation
 
-| Env | Purpose | Default profile field |
-| --- | --- | --- |
-| `CPA_GROK_API_KEY` | API bearer for Grok2API | `acp.envKey` |
-| `CPA_GROK_BASE_URL` | OpenAI-compatible base URL (e.g. `http://127.0.0.1:8320/v1`) | `acp.baseUrlEnvKey` |
+Service resolves the route immediately before launch and builds a private
+launch plan. The Grok child receives a minimal inherited environment plus exact
+route values and reserved Core keys. Reserved keys win over route input.
 
-Optional fallbacks (still **not** workspace):
+Provider home/config is isolated from unrelated host state when the route asks
+for it. Working directory is the persisted Task lane, not the Service data
+directory. The owning absolute Service data-dir is forwarded so child resume
+and registry access do not resolve relative paths against a Task worktree.
 
-- `~/.grok-acp/home/.grok/config.toml` `[model."grok-4.5"]`
-  `base_url` / `env_key` — dedicated managed-worker config when env base URL is unset.
-- Machine-local `agent-profiles.json` may set `acp.baseUrl` (literal URL on **this machine only**) when the service cannot inherit a user shell env. Prefer env.
+## 3. ACP protocol
 
-Pre-canonical on-disk field `grokAcp` is still **read** on load and migrated to canonical `acp` (atomic rewrite; no dual-write).
+The adapter communicates over newline-delimited JSON-RPC and requires the
+compatible protocol handshake. Local Service protocol and provider ACP
+protocol are separate boundaries; a legacy Desktop/CLI endpoint is rejected
+before Task mutation.
 
-Tent **does not** store the API key, OAuth token, or CPA base URL in:
+The adapter supports the provider operations exposed by its capabilities:
 
-- workspace git / `.tent/`
-- box / task / concept bodies
-- committed repo files
-
-`agent-profiles.json` lives under the **service data dir** (`%APPDATA%/Tent/`): only env key *names*, optional machine-local paths, and optionally a machine-local `baseUrl` — never commit this file with a workspace.
-
-## Register machine-local profile
-
-Profiles live under the service data dir (Windows default: `%APPDATA%/Tent/agent-profiles.json`).
-
-On first service start, Tent ensures a `grok-acp-default` entry (alongside `fake-default` for tests):
-
-```json
-{
-  "profiles": [
-    {
-      "id": "fake-default",
-      "adapterId": "fake-cli",
-      "displayNameKey": "profile.fake.default",
-      "fake": { "waitForSignal": true, "emitStdout": true, "canResume": true }
-    },
-    {
-      "id": "grok-acp-default",
-      "adapterId": "grok-acp",
-      "displayNameKey": "profile.grokAcp.default",
-      "acp": {
-        "model": "grok-4.5",
-        "envKey": "CPA_GROK_API_KEY",
-        "baseUrlEnvKey": "CPA_GROK_BASE_URL",
-        "permissionPolicy": "deny"
-      }
-    }
-  ]
-}
+```text
+start | resume/reattach | prompt | cancel/stop | runtime probe
 ```
 
-Optional shared `acp` fields (canonical bag for all product `*-acp` profiles):
+Capability projection is factual. Missing resume or tool support is reported as
+degradation rather than silently emulated.
 
-| Field | Default | Notes |
-| --- | --- | --- |
-| `executable` | `%USERPROFILE%\.grok\bin\grok.exe` (or `~/.grok/bin/grok`) | Absolute path on this machine |
-| `model` | `grok-4.5` | Passed as `grok agent --model <model> stdio` |
-| `envKey` | `CPA_GROK_API_KEY` | Read from **service process** env only |
-| `baseUrlEnvKey` | `CPA_GROK_BASE_URL` | Env **name** for CPA base URL; value never written to workspace |
-| `baseUrl` | _(unset)_ | Optional machine-local literal URL if env cannot be set; still not for git |
-| `promptTimeoutMs` | 1800000 (30m) | ACP `session/prompt` wait |
-| `permissionPolicy` | `deny` | `allow` \| `ask` \| `deny` — **never** unconditional yolo / `allow_always` |
-| `permissionTimeoutMs` | 120000 | When `ask`, **store-authoritative** timeout → expire pending + ACP `cancelled`; late approve fails |
+## 4. Managed Task flow
 
-### How Tent absorbs the wrapper launch contract
-
-When a base URL resolves (env or profile `baseUrl`), the adapter:
-
-1. Starts the absolute Grok executable as `grok agent --model <model>
-   --no-leader --cli-chat-proxy-base-url <url> --xai-api-base-url <url> stdio`.
-2. Injects child env: `CPA_GROK_BASE_URL` (or configured key),
-   `XAI_API_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`,
-   `TENT_GROK_BASE_URL`, `GROK_MODELS_BASE_URL`, and
-   `GROK_MODELS_LIST_URL=<url>/models`.
-3. Injects the API key as `CPA_GROK_API_KEY` + `XAI_API_KEY`.
-4. Overrides child `USERPROFILE`, `HOME`, and `GROK_HOME` to
-   `~/.grok-acp/home` / `~/.grok-acp/home/.grok`, after resolving the absolute
-   executable path from the real user home.
-5. Disables Claude/Cursor compatibility discovery for skills, rules, agents,
-   MCPs, hooks, and sessions so a managed worker does not inherit foreign
-   harness state.
-
-Tent does **not** launch `invoke-grok-acp.mjs`: that script is itself a
-one-shot ACP client. Tent already owns initialize/authenticate/session/prompt,
-permission handling, resume, and Delivery capture; nesting the wrapper would
-create ACP-client-over-ACP-client and lose the managed lifecycle.
-
-Never hard-codes `api.x.ai`. Missing API key fails loud (Chinese error); missing
-base URL alone is allowed so the dedicated
-`~/.grok-acp/home/.grok/config.toml` can still own the endpoint.
-
-`fake-default` remains available for **tests only** when harnesses pass `profileId: "fake-default"` explicitly. Product `task.startSession` / `task.dispatch` with `startSession: true` **requires** an explicit `profileId` — there is **no** silent fallback to fake or to a product default.
-
-## Machine-local profile catalog CRUD (service)
-
-Local Service owns a **single-process serial** catalog for `agent-profiles.json` (same path + atomic write as boot). Product CRUD accepts an **explicit ACP adapterId whitelist** only — **not** a universal provider router, no revision/etag, no profile change events in this version. All six listed adapters are registered and receive the same Local Service tool-approval bridge.
-
-| RPC | Notes |
-| --- | --- |
-| `profile.list` | Editor-safe projection from the **injected catalog only** (no runtime/disk fallback); default hides `testOnly` (`includeTest: true` for harness) |
-| `profile.get` | Same single-source projection for one id |
-| `profile.create` | Top-level fields only (`{ id, adapterId?, displayName, … }`); default `adapterId=grok-acp` when omitted; **no** nested `profile` / `acp` / `grokAcp` object |
-| `profile.update` | Top-level `{ id, …patch }` only; **id and adapterId immutable**; `null` clears optional fields; omitted/`undefined` keeps previous |
-| `profile.delete` | Refuse if any **non-terminal** session uses the profile; terminal refs OK; built-in `*-default` ids are never deletable |
-
-Successful profile mutations emit machine-local `profile.changed` events. Create/update
-events carry the same safe profile projection returned by the RPC; delete carries only
-the deleted id. Connected clients use the event as an invalidation signal and may
-re-query `profile.list`; no secret value or raw environment map is included. Existing
-sessions keep their launch-profile snapshot, while later starts use the updated catalog.
-
-Machine-local A2A and tool-approval stores use persist-before-swap snapshots: a failed
-atomic write leaves both the visible in-memory state and the prior disk state unchanged,
-and cannot notify a tool waiter as approved/denied. Tool timeout is fail-closed: if its
-expiry marker cannot be persisted, the live ACP request still resolves as expired rather
-than hanging, while the stored row remains pending until a later successful expiry pass.
-
-**Create `adapterId` whitelist:** `grok-acp` \| `codex-acp` \| `claude-acp` \| `antigravity-acp` \| `opencode-acp` \| `copilot-acp`. Unknown / `fake-cli` / `gemini-acp` → RpcError.
-
-**Create defaults:** only `grok-acp` auto-fills `DEFAULT_GROK_MODEL` / `CPA_GROK_API_KEY` / `CPA_GROK_BASE_URL` env key names; other whitelist adapters default `permissionPolicy=deny` only (no invented model/envKey).
-
-**Whitelist body fields:** `id` (create only), `adapterId` (create only), `displayName`, `model`, `executable`, `envKey`, `baseUrlEnvKey`, `baseUrl`, `permissionPolicy`, `promptTimeoutMs`, `permissionTimeoutMs`.
-
-Unknown fields and dangerous keys (`apiKey` / `token` / `secret` / `env` / `command` / `args` / nested `acp` / `grokAcp` / …) are **rejected with RpcError** — never silently stripped and written. `baseUrl` must be absolute `http(s)` **without** username/password, query, or hash.
-
-| Id | Create | Update | Delete |
-| --- | --- | --- | --- |
-| `fake-default` | no | no | no (tests only) |
-| `*-acp-default` built-ins | n/a (only grok seeded today) | yes if present | **no** (even if not seeded) |
-| other whitelist ACP profiles | yes | yes | yes (if no active session) |
-
-**Mutation transaction:** build `next` from the previous snapshot → **atomic disk save(`next`)** (when persistence is enabled) → only then replace in-memory catalog + full runtime catalog. Write failure leaves disk, catalog, and runtime on the old values.
-
-**When disk is written:** normal service boot (`ensureDefaultProfiles`) enables `persistToDisk`. Explicit `options.profiles` inject (tests / harness) sets `persistToDisk=false` — CRUD stays in-memory and **never** writes `dataDir/agent-profiles.json`.
-
-New `startSession` sees the new config immediately; **live sessions are not hot-reconfigured**. Permission timeout lookup for `permissionPolicy=ask` reads the **current** runtime profile (not a boot-time closed-over array). Clearing a field with `null` removes it so adapter defaults apply again.
-
-Editor projection may include non-secret fields above (including env **key names**, paths, timeouts). It must **not** return env maps or API key / token **values**.
-
-## Role wiring
-
-Roles stay in the **project** registry (`.tent/roles.json`). They do **not** embed provider secrets.
-
-Optional machine-readable spawn authority on the role (default **deny**):
-
-```json
-{
-  "name": "orchestrator",
-  "prompt": "…",
-  "a2aPolicy": "allow",
-  "roster": ["grok-acp-default"]
-}
+```text
+task dispatch --target route:<routeId> --node <nodeId> ...
+  -> Service validates exact Node occupation and Task authority
+  -> claims the Task and prepares its lane
+  -> resolves the Grok route
+  -> starts and CAS-binds one managed Session
+  -> assembles official bootstrap + Context Card tail
+  -> prompts the provider
+  -> preserves every non-empty final report before outcome handling
+  -> publishes Delivery after all settle gates
 ```
 
-| Field | Role caller `task.startSession` |
-| --- | --- |
-| `a2aPolicy: allow` | May start only when resolved `agentId` ∈ `roster` |
-| `a2aPolicy: ask` | Enters user confirmation (`a2a.ask`); user approve may override roster |
-| `a2aPolicy: deny` (default / omitted) | Hard deny |
-| `roster` | **agentIds** only (trim + de-dupe); AgentDefinition binds agentId→profileId; never credentials |
+The provider does not run Tent CLI claim/deliver commands. It cannot accept its
+own Delivery or mutate Nodes directly.
 
-Legacy on-disk `allowedProfiles` migrates one-time to `roster` (agentId defaults to former profileId).
+## 5. Bootstrap and prompt
 
-User callers always allow (root authority; whitelist bypass). Ordinary RPC clients **cannot** elevate policy via an `a2aPolicy` param, and `a2aPolicyOverride` is rejected over RPC; service loads policy from the role registry. Mutate roles via user-only `registry.role.create|update|delete` (not by writing secrets into `roles.json`).
+The official Service bootstrap contains stable project/Skill/Role context and a
+dynamic Task tail. Caller text may append dynamic instructions but cannot
+replace the stable contract.
 
-Example: use a role for collaboration identity; choose the machine profile at startSession:
+The provider receives exact Node refs and the Context Card, not an automatic
+paste of every related Node or prior conversation. Stable facts belong in Nodes;
+incremental TaskInput and review feedback are appended through Service.
 
-```bash
-# After dispatch + claim (or user startSession path)
-# profileId is machine-local — not committed with the role
-```
+## 6. Resume and replacement
 
-RPC sketch:
+Resume or reattach must preserve the same recoverable Grok conversation for the
+bound Task or durable Role. Core checks route/adapter, workspace, parent Role,
+purpose, Skills, context generation, lane, exclusive idle lease, settled turn,
+and pending interaction/Delivery state. Temporary route Sessions have no public
+cross-Task reuse promise.
 
-```json
-{
-  "method": "task.startSession",
-  "params": {
-    "workspaceId": "…",
-    "taskPath": "temp/<role>/tasks/….md",
-    "profileId": "grok-acp-default",
-    "callerKind": "user"
-  }
-}
-```
+If that conversation cannot be recovered, it is not presented as the same
+Session. Explicit `task.replaceSession` may start fresh execution for the same
+eligible Task and uses the common start/bind lifecycle CAS. A new work contract
+requires a new Task.
 
-Optional `bootstrapPrompt` overrides the default **managed** bootstrap. If omitted, service builds:
+## 7. TaskInput and questions
 
-1. Stable **Context Card** pointer (`workspaceRoot` / `systemRoot` / task path / id)
-2. Near-field **user prompt** (envelope `## User Prompt` only — **not** box/manifest bodies)
-3. Explicit managed instructions: **do not** run `tent task claim|get|deliver`; final assistant reply is auto-submitted as delivery
+Managed TaskInput uses the Service FIFO and exact Task-bound Session. Retryable
+rows are injected at most once per attempt. `uncertain` means delivery may have
+happened and is never injected again; it remains a Delivery blocker until an
+authorized acknowledgement.
 
-Clipboard / dispatch **relayPrompt** is separate: external manual agents still `tent task claim` then `tent task deliver`.
+A provider question that requires user authority uses UserAsk and parks the
+Task. The adapter does not turn arbitrary final prose ending in a question into
+an implicit user request.
 
-### Managed final response → delivery
+## 8. Final report semantics
 
-| Step | Owner |
-| --- | --- |
-| Segment `agent_message_chunk` during `session/prompt`; delivery text = last non-empty segment after tool/status/thought seals | Shared `AcpClient` / assistant-report contract (thoughts & tools are diagnostics only) |
-| On successful `end_turn` with non-empty final segment | Adapter emits `session.prompt_complete` |
-| On empty / ACP error / timeout / stop / interrupt / non-`end_turn` | Emit `session.failed` or leave interrupted — **no** delivery |
-| Map `session.prompt_complete` → `task.deliver` | Local Service (`mapRuntimeEventToService`) — same lifecycle as CLI deliver |
-| Dedup | In-process key `sessionId::taskPath` + lifecycle authority (ready delivery / non-running state) |
+The last natural non-empty assistant report is deliverable by default. A valid
+optional leading `outcome: blocked` or `outcome: needs-input` parks the Task.
+`outcome: delivered` remains accepted but is unnecessary. Missing or malformed
+control text is preserved as report content; blank output never creates a
+Delivery.
 
-`deliveryPolicy` wire values: **review** → pending independent accept/reject; **bypass** → auto-integrate; **agent-decide** without an integrate decision → **request-review** (never forge accept). Product terms: Review / Bypass / Agent Decide.
+Service persists every non-empty final report before outcome handling or
+publication. A control outcome may park but does not discard its full body. If
+a later gate fails, retry reuses that draft and never re-prompts Grok merely to
+reconstruct the same answer.
 
-## Permission policy (tools)
+## 9. Bounded transport
 
-ACP may send `session/request_permission`. Mapping:
+The Grok adapter enforces:
 
-| `permissionPolicy` | Behavior |
-| --- | --- |
-| `deny` (default) | Reply `cancelled` — tools not auto-approved; **tool-less managed tasks still complete** via final reply auto-deliver |
-| `allow` | Select **`allow_once` only**; never `allow_always` |
-| `ask` | Emit `session.waiting_user`; Local Service stores a **machine-local tool approval**; user must `approve once` / `deny`; **store** timeout → `expired` + ACP `cancelled` |
+- an inbound JSON-RPC frame limit before `JSON.parse`;
+- assistant report byte, update, and segment limits;
+- bootstrap and serialized outbound request limits;
+- bounded stderr, stdout-tail, runtime-event, RPC-error, and ring diagnostics.
 
-There is **no** “yolo / bypass all tools” mode in Tent’s adapter. Coding tasks that need tools may set machine-local profile `permissionPolicy: allow` (still `allow_once` only) or `ask` with user RPC — not unconditional always-allow.
+Limit failures use stable `ACP_OUTPUT_LIMIT` or `ACP_REQUEST_LIMIT`, stop the
+child, and produce no false `prompt_complete`, Delivery, or delivered outcome.
+Limits are large enough for the supported image request envelope but do not
+permit unbounded text or frame accumulation.
 
-### Tool approval timeout authority
+## 10. Redaction
 
-There is **one** authoritative expiry: the Local Service `ToolApprovalStore` record (`expiresAt` / `waitForDecision` / `expireOne`). Profile `permissionTimeoutMs` is read **live** when the service opens a pending row — not snapshotted by the ACP client at session start.
+Known secret values are harvested from route launch environment, reserved Core
+environment, and explicit diagnostic secret inputs. One redaction-aware bounded
+primitive is used for strings and raw buffers.
 
-| Layer | Role |
-| --- | --- |
-| `ToolApprovalStore` | Sole mutation authority for pending → approved / denied / expired. Mutations + `tool-approvals.json` persistence are **serialized**; persist uses **temp-file + rename**. Concurrent resolve/cancel/expire cannot resurrect a pending row. |
-| `onPermissionAsk` bridge | Adds pending with live-profile `permissionTimeoutMs`, waits on store, maps `approved` → allow else deny. |
-| ACP client (`AcpClient`) | Awaits the bridge callback only. **No** second permission timer / fail-safe deny. Stop / process exit still cancels hung waiters immediately so they do not leak. |
-| Late `toolApproval.approveOnce` | **Fails** after expire/deny/cancel (`already expired` / `already …`). |
+Redaction handles UTF-8 boundaries, adjacent chunks, overlapping secret
+occurrences, and a secret crossing the diagnostic cut. Truncation never converts
+a credential into a visible prefix or suffix.
 
-`pending` is durable only for crash-safe state accounting, not as a resumable tool
-request. The ACP request, waiter, and provider process do not survive a Local Service
-restart. On store recovery, every persisted `pending` row is therefore atomically
-rewritten to `expired` with `resolvedBy: service-restart`; it remains queryable as
-machine-local history but is never listed as pending or accepted by `approveOnce`.
-During an orderly Local Service shutdown, the store first stops accepting new asks,
-rewrites live pending rows to `denied` with `resolvedBy: service-shutdown`, and wakes
-their waiters before ACP children stop. If that final persistence write fails, the
-live waiters are still denied and their timers cleared; restart recovery then expires
-the unchanged disk rows.
+## 11. Failure and recovery
 
-Do **not** invent a second client-side timeout outcome that can disagree with the store (e.g. client denies while store still pending, or client allows after store expired). Mid-session profile timeout changes must not cause an early client deny ahead of the store.
+Provider start, prompt, transport, or unexpected-exit failure is mapped through
+Service to the exact Task and Session. Eligible pre-Delivery failure parks the
+Task at `session_unavailable`, preserving Node occupation, worktree, TaskInput,
+UserAsk, and report draft for explicit recovery.
 
-### A2A spawn approval vs tool permission approval
+Start/replace binding races use the exact Task lifecycle snapshot/CAS. A
+terminal transition may win; Service stops the unbound Session and records
+`TASK_SESSION_BIND_CAS_FAILED` without publishing false Task or Delivery facts.
 
-These are **two different gates**. Do not merge them.
+Service restart reconciles persisted Task/Session bindings. It does not guess
+from a process id, task cwd, or remembered provider token, and it never starts a
+replacement prompt in the background.
 
-| Gate | When | Store (machine-local) | RPC | Effect |
-| --- | --- | --- | --- | --- |
-| **A2A spawn** | Role caller `task.startSession` with `roles.json` `a2aPolicy: ask` | `a2a-approvals.json` under service data dir | `a2a.listPending` / user-only `a2a.resolve` | Whether a **new** managed session may start |
-| **Tool permission** | Live ACP session, profile `permissionPolicy: ask`, agent sends `session/request_permission` | `tool-approvals.json` under service data dir | `toolApproval.listPending` / `get` / `approveOnce` / `deny` | Whether **one tool call** is `allow_once` or `cancelled` |
+## 12. Testing expectations
 
-Rules:
+Provider acceptance evidence should include:
 
-1. Tool approvals are **user-only** (`actor` must be `user`). Agents cannot self-approve.
-2. Pending tool approval projects task → `waiting` (`reason: user-input`) and session → `waiting-user`. Approve once → ACP `allow_once` + resume `running` / `live`. Deny or timeout → ACP `cancelled` + pending cleared (timeout status is **`expired`**).
-3. Concurrent tool requests form a session-level wait barrier: resolving one request does **not** resume the task/session while another request for the same session remains pending.
-4. Neither store is workspace collaboration data: **never** written into `.tent/` or git.
-5. Default remains safe: no user decision never becomes auto-`allow`; missing bridge still denies.
+- isolated data-dir launch and protocol handshake;
+- real managed start/prompt/final report/Delivery flow;
+- resume and explicit replacement races;
+- TaskInput injection and uncertainty behavior;
+- frame/report/request limit boundaries;
+- secret redaction across chunk and byte boundaries;
+- child stop plus continued Service health after failure.
 
-### Tool approval RPC sketch
-
-```json
-{ "method": "toolApproval.listPending", "params": { "workspaceId": "…" } }
-{ "method": "toolApproval.get", "params": { "approvalId": "ta-…" } }
-{ "method": "toolApproval.approveOnce", "params": { "approvalId": "ta-…", "actor": "user" } }
-{ "method": "toolApproval.deny", "params": { "approvalId": "ta-…", "actor": "user" } }
-```
-
-Pending item fields (projection only): `id`, `workspaceId`, `sessionId`, `taskId`/`taskPath`, `role`, `toolTitle`, optional `options`, `createdAt`/`expiresAt`. No stdout tails, tokens, or secrets.
-
-## Fail-loud rules
-
-If executable or `envKey` is missing / empty:
-
-- Error is explicit (Chinese-capable message)
-- **No** fallback to official xAI (`api.x.ai`)
-- **No** fallback to `fake-cli`
-- Session record → `failed`; bound task may project `failed`
-
-Grok2API base URL misconfiguration: set `CPA_GROK_BASE_URL` (or profile
-`baseUrl` / `~/.grok-acp/home/.grok/config.toml`). Tent does not invent
-`api.x.ai`.
-
-## Failure cleanup & recoverable park
-
-Prompt/provider failure paths must leave **task / session / process** consistent:
-
-1. Adapter stops the managed ACP child **before** (or as part of) emitting `session.failed` / `session.exited` so no live orphan remains.
-2. **Pre-Delivery recoverable park (shared helper):** while the bound Task is still pre-delivery active (`running` / non-diagnostic `waiting`), Service maps unintentional `session.failed` / `session.exited` to **`waiting(reason=external)`** with durable envelope `waitCode=session_unavailable` and stable English summary `SESSION_UNAVAILABLE_WAIT_SUMMARY`. **Keeps** box occupation, worktree, managed report draft, pending TaskInputs, and pending UserAsks. Does **not** call `taskFail` and does **not** auto-start a replacement Session or re-prompt the Agent. Recovery is explicit `task.startSession` or explicit `task.replaceSession` (fresh ss-, same Task). Mount reconcile for dead sessions after restart uses the **same** park semantics/summary/code.
-3. **Session terminal is diagnostic only** once Task is already `delivered` / `accepted` / `rejected`, after intentional seal/post-deliver stop (`stopReason=user`, including adapter `session.failed` "interrupted"), or after reject-resume park `waiting(external)` with its own diagnostic summary. Do not demote a published Delivery, re-park those occupations, or cancel durable review-feedback.
-4. Explicit **`task.interrupt` / cancel** remains terminal: releases occupation and cancels pending TaskInputs/UserAsks per existing contract. That path is separate from spontaneous Session death.
-5. Duplicate same-session failure/exit events are **idempotent** (no illegal second transition / double park). Late terminal events from a prior `sessionId` after Task rebind must not affect the new occupation. Prompt-failure and spontaneous child-exit share a single terminal emission (deduped in `GrokAcpClient`).
-6. **Spontaneous Grok child exit** (process dies with no intentional `stop`, even when no JSON-RPC request is pending) still emits a managed terminal runtime event (`session.failed` for non-zero / abnormal signal, or clean `session.exited`). Service maps that to recoverable park when still pre-delivery — probe must not claim a live orphan; Session registry may stay terminal diagnostic.
-7. Launch/start failures that never establish a recoverable managed binding may still use terminal `taskFail` (occupation release). That is distinct from an already-bound Session dying mid-task.
-8. Diagnostics may mention error class; never persist stdout dumps, resume tokens, API keys, or absolute secrets into task/box/approval UI.
-
-## Lifecycle
-
-| Event | Behavior |
-| --- | --- |
-| Desktop UI close | Does **not** stop agent sessions |
-| Local Service stop / shutdown | Denies pending tool asks, clears their waiters/timers, then stops push children this service started |
-| `task` interrupt / session stop | Graceful stop of ACP process; **no** forged delivery; Task terminal `interrupted` + occupation release |
-| `session.waiting_user` (tool ask) | Task `waiting(user-input)`; pending tool approval in service data dir |
-| Tool approve once / deny / timeout | Resume or cancel tool; clear pending (timeout → store `expired`; late approve fails) |
-| `session.prompt_complete` | Service auto-deliver (see above) |
-| Spontaneous child exit | Terminal runtime event even with no pending RPC; deduped vs prompt failure / intentional stop; pre-Delivery → recoverable park |
-| `session.failed` / pre-Delivery `session.exited` | Stop process (idempotent) → **recoverable `waiting(external)` park** for pre-delivery active tasks (preserve occupation/inputs); otherwise Session diagnostic only |
-| PID / provider session id | Machine-local session registry only — **never** written into workspace task YAML beyond `sessionId` |
-
-## Verification (dev)
-
-```bash
-# Offline unit/integration (mock ACP fixture — no CPA):
-npx tsx --test test/grok-acp-adapter.test.ts
-
-# Full suite:
-npm run check
-```
-
-Do not point tests at real CPA or `api.x.ai`.
-
-## Related contracts
-
-- `docs/desktop/agent-runtime.md` — AgentRuntimePort, profiles, credentials
-- `docs/desktop/task-api.md` — `task.startSession`, A2APolicy, `sessionId` reference only
-- `docs/desktop/architecture.md` — sole service mutation, machine-local data placement
+Tests record process exit code and authoritative runner pass/fail counts. Tailed
+or truncated output is not proof.
