@@ -913,7 +913,7 @@ test("tryAttachService: healthy legacy (no protocolVersion) fails before busines
   }
 });
 
-test("tryAttachService: healthy mismatched protocol fails and does not spawn competitor", async () => {
+test("tryAttachService: healthy protocol 1 fails after the route wire bump and does not spawn competitor", async () => {
   const dataDir = await tempDir("tent-proto-mismatch-");
   const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
   let spawnCalled = false;
@@ -924,7 +924,7 @@ test("tryAttachService: healthy mismatched protocol fails and does not spawn com
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : String(input);
       if (url.includes("/health")) {
         const body = (await res.json()) as Record<string, unknown>;
-        body.protocolVersion = 999;
+        body.protocolVersion = 1;
         return new Response(JSON.stringify(body), {
           status: 200,
           headers: { "content-type": "application/json" },

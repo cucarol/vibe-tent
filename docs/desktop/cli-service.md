@@ -7,7 +7,7 @@ fall back to direct operational-file writes.
 ## Attach and protocol
 
 The CLI discovers the machine-local endpoint and token, performs the
-`protocolVersion=1` handshake, mounts the requested workspace, then calls the
+`protocolVersion=2` handshake, mounts the requested workspace, then calls the
 typed RPC. A missing, legacy, or incompatible endpoint fails loud; the CLI does
 not bypass Service or call an ACP adapter directly.
 
