@@ -50,7 +50,6 @@ import {
   sessionBootstrapPromptForTask,
   taskAssigneeKind,
   taskAsSub,
-  taskParentIsRole,
   taskParentRoleId,
   type RoleWorkspaceContract,
   type TaskEnvelope,
@@ -148,7 +147,6 @@ import {
   normalizeAgentDefinition,
   parseAgentDefinitionParams,
   projectAgentDefinition,
-  resolveAgentIdForProfileOnRoster,
   resolveProfileIdForAgent,
   saveAgentDefinitions,
   type AgentDefinition,
@@ -234,7 +232,6 @@ import {
   type DeliverDecision,
   type DeliveryPolicy,
   type WaitReason,
-  evaluateA2A,
 } from "../core/task-model.js";
 import {
   assertDeliverCommitsInExecutorLane,
@@ -275,7 +272,6 @@ import type { EventBus } from "./events.js";
 import { MutationBus } from "./mutation-bus.js";
 import type { WorkspaceHost } from "./workspace-host.js";
 import type { A2AApprovalStore } from "./a2a-store.js";
-import { makeApprovalId } from "./a2a-store.js";
 import type { ToolApprovalStore, ToolPendingApproval } from "./tool-approval-store.js";
 import {
   formatUserAskAnswerPrompt,
@@ -298,7 +294,6 @@ import {
   PROTECTED_COLLAB_FIELDS,
   RESERVED_DOCS_WRITE_FIELDS,
   SEMANTIC_DOCS_WRITE_FIELDS,
-  RPC_A2A_ASK,
   RPC_A2A_DENIED,
   RPC_LIFECYCLE,
   type ArtifactRef,
@@ -6310,7 +6305,7 @@ async function taskCancelRpc(ctx: HandlerContext, p: Record<string, unknown>) {
 }
 
 /**
- * A2A gate → AgentRuntimePort.startSession → bind task.sessionId only.
+ * Machine Settings route gate → AgentRuntimePort.startSession → bind task.sessionId only.
  * Shares authorized per-Task managed-session flight with task.replaceSession.
  * Usable bound Session reuses without launch unless a flight is already held.
  */
@@ -6465,7 +6460,7 @@ type PreparedTaskStartSession =
     };
 
 /**
- * Per-caller authorization + task-state preparation for startSession.
+ * Machine-route availability + task-state preparation for startSession.
  * Must run before any provider-launch flight join/coalesce.
  */
 async function prepareAuthorizedTaskStartSession(
@@ -6476,154 +6471,32 @@ async function prepareAuthorizedTaskStartSession(
   profileId: string,
   callerKind: "user" | "role",
   opts?: {
-    operation?: "startSession" | "replaceSession";
-    /** A2A/approval only — no claim, wait-resume, or session reuse (replaceSession). */
+    /** No claim, wait-resume, or session reuse (replaceSession). */
     skipReuseAndLaunchPrep?: boolean;
   }
 ): Promise<PreparedTaskStartSession> {
   const mount = ctx.host.require(workspaceId);
   const bootstrapPrompt = optionalString(p, "bootstrapPrompt");
-  const approvalId = optionalString(p, "approvalId");
-  const operation = opts?.operation ?? "startSession";
-  const verbLabel = operation === "replaceSession" ? "replaceSession" : "startSession";
-
-  // Resolve prior ask approval.
-  // User approval may override ordinary a2aPolicy gates (task-api §4).
-  // Role-agent standing roster paths never enter this approval branch.
-  if (approvalId) {
-    const approval = await ctx.a2a.get(approvalId);
-    if (!approval || approval.status !== "approved") {
-      throw new RpcError(RPC_A2A_DENIED, "A2A approval is missing or not approved", {
-        approvalId,
-        status: approval?.status,
-      });
+  for (const retiredParam of ["approvalId", "agentId", "a2aPolicy"] as const) {
+    if (retiredParam in p) {
+      throw new RpcError(
+        -32602,
+        `task.startSession/task.replaceSession no longer accepts ${retiredParam}; ` +
+          "machine Settings route availability is authoritative"
+      );
     }
-    if (approval.taskPath !== taskPath) {
-      throw new RpcError(RPC_A2A_DENIED, "A2A approval taskPath mismatch", { approvalId });
-    }
-    if (approval.workspaceId !== workspaceId) {
-      throw new RpcError(RPC_A2A_DENIED, "A2A approval workspace mismatch", { approvalId });
-    }
-    if (approval.profileId !== profileId) {
-      throw new RpcError(RPC_A2A_DENIED, "A2A approval profile mismatch", {
-        approvalId,
-        approvedProfileId: approval.profileId,
-        requestedProfileId: profileId,
-      });
-    }
-  } else {
-    const taskForPolicy = await loadTaskEnvelope(mount.env.fs, taskPath);
-    const taskAgentId =
-      typeof taskForPolicy.agentId === "string" ? taskForPolicy.agentId.trim() : "";
-    // Role-agent Tasks (persisted agentId): roster membership is standing authorization.
-    // Out-of-roster fails loud; in-roster proceeds. Never create A2A ask approvals.
-    // Do not re-infer Role authorization from profileId history.
-    if (callerKind === "role" && taskAgentId) {
-      const authorityRole = resolveA2AAuthorityRole(taskForPolicy, callerKind);
-      await assertRoleRosterStandingAuth(ctx, mount.env.fs, {
-        dispatcher: authorityRole,
-        agentId: taskAgentId,
-        profileId,
-        requireBoundProfileMatch: true,
-      });
-      // Standing auth satisfied — skip a2aPolicy ask/deny for this path.
-    } else {
-      // A2A authority: user is root. Role callers without Task.agentId use parent Role
-      // for sub tasks (role or profile assignee) and for peer agentProfile tasks;
-      // peer role tasks use task.role. Durable Role self-launch and user-direct
-      // profile one-shots still consult a2aPolicy.
-      const authorityRole = resolveA2AAuthorityRole(taskForPolicy, callerKind);
-      const a2aPolicy = await resolveStartSessionA2APolicy(mount.env.fs, {
-        callerKind,
-        taskRole: authorityRole,
-        requireRegisteredRole:
-          callerKind === "role" &&
-          (taskParentIsRole(taskForPolicy) ||
-            taskAsSub(taskForPolicy) ||
-            taskAssigneeKind(taskForPolicy) === "agentProfile"),
-      });
-      // User root bypasses policy + roster.
-      // Role + allow: explicit agentId param or unique roster binding for profileId.
-      // Role + ask: park for user approval (no roster check).
-      // Role + deny: A2A_DENIED.
-      const profileAllowed =
-        callerKind === "user"
-          ? true
-          : await resolveRoleLaunchAllowed(ctx, mount.env.fs, {
-              taskRole: authorityRole,
-              profileId,
-              agentId: optionalString(p, "agentId"),
-              policy: a2aPolicy,
-            });
-      const decision = evaluateA2A({
-        callerKind,
-        policy: a2aPolicy,
-        profileAllowed,
-      });
-      if (decision === "deny") {
-        throw new RpcError(RPC_A2A_DENIED, "A2A policy denies starting a new runtime session", {
-          policy: a2aPolicy,
-          callerKind,
-          role: authorityRole,
-          profileId,
-          agentId: optionalString(p, "agentId") || taskForPolicy.agentId,
-          profileAllowed,
-          reason: profileAllowed ? "a2a_policy" : "out_of_roster",
-        });
-      }
-      if (decision === "ask") {
-        const task = taskForPolicy;
-        const item = await ctx.a2a.add({
-          id: makeApprovalId(),
-          workspaceId,
-          taskPath,
-          taskId: task.id,
-          role: authorityRole || task.role,
-          profileId,
-          policy: "ask",
-          callerKind,
-          bootstrapPrompt,
-          status: "pending",
-          createdAt: new Date().toISOString(),
-        });
-        ctx.events.emit(
-          "a2a.ask",
-          workspaceId,
-          {
-            approvalId: item.id,
-            taskPath,
-            role: authorityRole || task.role,
-            profileId,
-            summary: `Role ${authorityRole || task.role} requests ${verbLabel} on profile ${profileId}`,
-          },
-          "service"
-        );
-        // Park task in waiting(a2a-approval) if running
-        if (task.state === "running") {
-          await ctx.mutations.run(workspaceId, async () => {
-            ctx.host.markSelfWrite(workspaceId);
-            const waited = await taskWait(mount.env, taskPath, {
-              reason: "a2a-approval",
-              summary: `Awaiting user A2A approval ${item.id}`,
-            });
-            emitTaskState(ctx, workspaceId, waited, "a2a.ask");
-          });
-        }
-        throw new RpcError(
-          RPC_A2A_ASK,
-          `A2A policy requires user approval before ${verbLabel}`,
-          {
-            approvalId: item.id,
-            policy: "ask",
-          }
-        );
-      }
-    } // end non-Role-agent A2A path
+  }
+  const routeProfile = ctx.profileCatalog.get(profileId);
+  if (!routeProfile?.adapterId) {
+    throw new RpcError(-32602, `Machine Settings route is unavailable: ${profileId}`, {
+      code: "ROUTE_UNAVAILABLE",
+      profileId,
+    });
   }
 
   let task = await loadTaskEnvelope(mount.env.fs, taskPath);
 
-  // replaceSession: A2A only — eligibility/launch owned by executeTaskReplaceSession.
+  // replaceSession eligibility/launch is owned by executeTaskReplaceSession.
   if (opts?.skipReuseAndLaunchPrep) {
     return {
       kind: "launch",
@@ -6653,7 +6526,7 @@ async function prepareAuthorizedTaskStartSession(
   if (task.state !== "running" && task.state !== "waiting") {
     throw new RpcError(
       RPC_LIFECYCLE,
-      `task.startSession requires running (or waiting after approval); got ${task.state}`
+      `task.startSession requires running or waiting; got ${task.state}`
     );
   }
 
@@ -7279,7 +7152,6 @@ async function taskReplaceSessionRpc(ctx: HandlerContext, p: Record<string, unkn
     });
   }
   await prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, profileId, callerKind, {
-    operation: "replaceSession",
     skipReuseAndLaunchPrep: true,
   });
   // Outer managed-session flight: concurrent same-profile replace/start still join/coalesce.
@@ -13575,74 +13447,7 @@ function requireProfileId(
 }
 
 /**
- * Resolve A2A policy for startSession.
- * - user caller → always allow (root authority; registry unused)
- * - role caller → load role.a2aPolicy from registry (default deny when missing)
- * Ordinary client `a2aPolicy` params are not applied here.
- * agentProfile authority roles are validated separately (must exist in registry).
- */
-async function resolveStartSessionA2APolicy(
-  fs: import("../core/adapter.js").FsAdapter,
-  input: {
-    callerKind: "user" | "role";
-    taskRole: string;
-    /** When true, missing registry role fails loud (profile dispatcher path). */
-    requireRegisteredRole?: boolean;
-  }
-): Promise<A2APolicy> {
-  if (input.callerKind === "user") return "allow";
-  const registry = await loadRolesRegistry(fs);
-  // Compat: taskRole may be operational name or roleId (never displayName).
-  const role = resolveRole(registry.roles, input.taskRole);
-  if (input.requireRegisteredRole && !role) {
-    throw new RpcError(
-      -32602,
-      `A2A authority role not found in registry: ${input.taskRole}`,
-      { role: input.taskRole }
-    );
-  }
-  return roleA2APolicy(role);
-}
-
-/**
- * a2aPolicy=allow gate for role callers that are NOT on the Role-agent standing path
- * (no Task.agentId). Uses roster agentIds; may resolve unique profileId→agentId binding
- * for durable Role self-launch. Never treats bare profileId as authorization history.
- */
-async function resolveRoleLaunchAllowed(
-  ctx: HandlerContext,
-  fs: import("../core/adapter.js").FsAdapter,
-  input: {
-    taskRole: string;
-    profileId: string;
-    agentId?: string;
-    policy: A2APolicy;
-  }
-): Promise<boolean> {
-  if (input.policy !== "allow") return true;
-  await ensureRolesRosterMigrated(fs);
-  const registry = await loadRolesRegistry(fs);
-  const role = resolveRole(registry.roles, input.taskRole);
-  const roster = roleRoster(role);
-  if (roster.length === 0) return false;
-  const agents = await ensureAgentDefsForRosterIds(ctx, roster);
-  const explicit = input.agentId?.trim() || "";
-  if (explicit) {
-    if (!roleAllowsAgent(role, explicit)) return false;
-    const def = findAgentDefinition(agents, explicit);
-    if (def && def.profileId !== input.profileId) return false;
-    return true;
-  }
-  try {
-    const resolved = resolveAgentIdForProfileOnRoster(agents, roster, input.profileId);
-    return roleAllowsAgent(role, resolved);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Standing roster authorization for Role-agent dispatch / startSession.
+ * Standing roster authorization for the legacy Role-agent dispatch path.
  * - Requires durable dispatcher role and explicit agentId (never inferred from profileId).
  * - Out-of-roster → A2A_DENIED (fail loud).
  * - In-roster → proceed (does not consult a2aPolicy ask/deny; does not create approvals).
@@ -14279,46 +14084,6 @@ async function findResumableManagedSessionsForProfile(
     if (!probe.alive && probe.resumeCapable) out.push(candidate);
   }
   return out;
-}
-
-/**
- * Resolve the durable role whose a2aPolicy / roster (agentIds) govern startSession.
- * Role-agent Tasks with Task.agentId use standing roster membership (no a2a ask).
- * - user caller: unused (root authority)
- * - parent Role task (sub or agentProfile under Role) + role caller: authority = parent Role
- * - peer role task (parent=user): authority = task.role
- * - peer agentProfile with parent=user + role caller: fails (needs durable parent Role)
- */
-function resolveA2AAuthorityRole(
-  task: TaskEnvelope,
-  callerKind: "user" | "role"
-): string {
-  if (callerKind === "user") return task.role;
-  if (taskParentIsRole(task) || taskAsSub(task) || taskAssigneeKind(task) === "agentProfile") {
-    const dispatcher = taskParentRoleId(task);
-    if (!dispatcher) {
-      throw new RpcError(
-        -32602,
-        taskAsSub(task) || taskParentIsRole(task)
-          ? "callerKind=role startSession on parent-Role task requires parentActor kind=role"
-          : "callerKind=role startSession on agentProfile task requires parentActor kind=role",
-        {
-          parentActor: task.parentActor,
-          assignee: task.role,
-          asSub: taskAsSub(task),
-        }
-      );
-    }
-    if (dispatcher === task.role) {
-      throw new RpcError(
-        -32602,
-        "callerKind=role startSession must not use the assignee label as parent Role",
-        { parentActor: task.parentActor, assignee: task.role }
-      );
-    }
-    return dispatcher;
-  }
-  return task.role;
 }
 
 function projectStartSessionResult(

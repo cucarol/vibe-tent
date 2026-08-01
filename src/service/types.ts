@@ -962,7 +962,8 @@ export const CLIENT_METHODS = [
   "task.startSession",
   /**
    * Explicit fresh managed Session on the same Task (unusable provider context).
-   * Never a silent fallback from task.startSession. Same A2A gate as startSession.
+   * Never a silent fallback from task.startSession. Uses the same machine Settings
+   * route availability gate as startSession.
    * Shares the per-Task managed-session execution slot with startSession.
    * Preserves nodeRefs/worktree/branch/lane/pending TaskInputs/deliveryPolicy;
    * stops the old Session first; new ss- has contextRestored=false + stable restoreReason.

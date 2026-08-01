@@ -1,6 +1,6 @@
 /**
  * Role authority MVP: registry.role.create/update/delete + roster projection.
- * Layer: CLIENT_METHODS + user-only MutationBus + registry.roles.updated + startSession whitelist.
+ * Layer: CLIENT_METHODS + user-only MutationBus + registry.roles.updated + route availability.
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -16,7 +16,6 @@ import { makeSessionId } from "../src/runtime/types.js";
 import {
   CLIENT_METHODS,
   isClientMethod,
-  RPC_A2A_DENIED,
   RPC_LIFECYCLE,
 } from "../src/service/types.js";
 
@@ -352,7 +351,7 @@ test("registry.role.delete: confirmation, blocks active task, one event on succe
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       role: "executor",
       prompt: "block delete",
     });
@@ -422,7 +421,7 @@ test("registry.role.delete refuses live managed session", async () => {
   });
 });
 
-test("ServiceClient registry role convenience + startSession allow whitelist", async () => {
+test("task.startSession uses machine route availability without roster authorization or writes", async () => {
   const ws = await makeWorkspace("role-client");
   await withService(async (svc) => {
     const workspaceId = await mount(svc, ws);
@@ -443,21 +442,40 @@ test("ServiceClient registry role convenience + startSession allow whitelist", a
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       role: "executor",
       prompt: "whitelist",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
 
-    const denied = await rpc(svc, "task.startSession", {
+    await client.registryRoleUpdate(workspaceId, "executor", { roster: [] });
+    const rolesPath = path.join(ws, ".tent", "roles.json");
+    const rolesBefore = await fs.readFile(rolesPath, "utf8");
+    const roleEvents: unknown[] = [];
+    const unsubscribe = svc.events.subscribe((event) => {
+      if (event.type === "registry.roles.updated") roleEvents.push(event.payload);
+    });
+
+    const retired = await rpc(svc, "task.startSession", {
       workspaceId,
       taskPath,
       callerKind: "role",
-      profileId: "not-listed",
+      profileId: "fake-default",
+      approvalId: "ap-retired",
     });
-    assert.ok(denied.error);
-    assert.equal(denied.error!.code, RPC_A2A_DENIED);
+    assert.equal(retired.error?.code, -32602);
+    assert.match(String(retired.error?.message), /no longer accepts approvalId/i);
+
+    const unavailable = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "role",
+      profileId: "missing-route",
+    });
+    assert.equal(unavailable.error?.code, -32602);
+    assert.equal((unavailable.error?.data as { code?: string } | undefined)?.code, "ROUTE_UNAVAILABLE");
+    assert.match(String(unavailable.error?.message), /Settings route is unavailable.*missing-route/i);
 
     const ok = await rpc(svc, "task.startSession", {
       workspaceId,
@@ -466,5 +484,11 @@ test("ServiceClient registry role convenience + startSession allow whitelist", a
       profileId: "fake-default",
     });
     assert.ok(!ok.error, JSON.stringify(ok.error));
+    assert.equal((ok.result as { session: { profileId: string } }).session.profileId, "fake-default");
+    assert.equal(await fs.readFile(rolesPath, "utf8"), rolesBefore);
+    assert.equal(roleEvents.length, 0);
+    const pending = await rpc(svc, "a2a.listPending", { workspaceId });
+    assert.deepEqual((pending.result as { approvals: unknown[] }).approvals, []);
+    unsubscribe();
   });
 });

@@ -14,7 +14,7 @@ import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { createServiceClient } from "../src/service/client.js";
-import { CLIENT_METHODS, RPC_A2A_DENIED, RPC_LIFECYCLE } from "../src/service/types.js";
+import { CLIENT_METHODS, RPC_LIFECYCLE } from "../src/service/types.js";
 import {
   holdManagedTaskInputQueueForTests,
   isManagedSessionInFlightForTests,
@@ -131,7 +131,7 @@ async function dispatchClaimStart(svc: Svc, workspaceId: string, boxId: string, 
   const d = await rpc(svc, "task.dispatch", {
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
-    workspaceId, boxId, role: "executor", prompt: "replace-session fixture", deliveryPolicy: "review",
+    workspaceId, nodeIds: [boxId], role: "executor", prompt: "replace-session fixture", deliveryPolicy: "review",
   });
   assert.ok(!d.error, JSON.stringify(d.error));
   const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -180,7 +180,7 @@ test("startSession: interrupt wins while provider start is held; late Session is
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      workspaceId, boxId, role: "executor", prompt: "held start race", deliveryPolicy: "review",
+      workspaceId, nodeIds: [boxId], role: "executor", prompt: "held start race", deliveryPolicy: "review",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -264,8 +264,38 @@ test("replaceSession: success preserves Task + contextRestored=false + audit", a
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, boxId);
     const before = await getTask(svc, workspaceId, taskPath);
+    await client.registryRoleUpdate(workspaceId, "executor", { roster: [] });
+    const rolesPath = path.join(ws, ".tent", "roles.json");
+    const rolesBefore = await fs.readFile(rolesPath, "utf8");
+    const roleEvents: unknown[] = [];
+    const unsubscribe = svc.events.subscribe((event) => {
+      if (event.type === "registry.roles.updated") roleEvents.push(event.payload);
+    });
+
+    const retired = await rpc(svc, "task.replaceSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "role",
+      approvalId: "ap-retired",
+    });
+    assert.equal(retired.error?.code, -32602);
+    assert.match(String(retired.error?.message), /no longer accepts approvalId/i);
+    assert.equal((await getTask(svc, workspaceId, taskPath)).sessionId, priorSessionId);
+
+    const unavailable = await rpc(svc, "task.replaceSession", {
+      workspaceId,
+      taskPath,
+      profileId: "missing-route",
+      callerKind: "role",
+    });
+    assert.equal(unavailable.error?.code, -32602);
+    assert.equal((unavailable.error?.data as { code?: string } | undefined)?.code, "ROUTE_UNAVAILABLE");
+    assert.equal((await getTask(svc, workspaceId, taskPath)).sessionId, priorSessionId);
+    assert.equal((await svc.runtime.probe(priorSessionId)).alive, true);
+
     const replaced = (await client.taskReplaceSession(workspaceId, {
-      taskPath, profileId: "fake-default", callerKind: "user",
+      taskPath, profileId: "fake-default", callerKind: "role",
     })) as {
       task: TaskSnap;
       session: { sessionId: string; contextRestored?: boolean; restoreReason?: string; replacedSessionId?: string };
@@ -297,10 +327,13 @@ test("replaceSession: success preserves Task + contextRestored=false + audit", a
     assert.equal(oldRow!.lastTaskId, undefined);
     assert.equal((await svc.runtime.probe(priorSessionId)).alive, false);
     assert.equal((await svc.runtime.probe(replaced.session.sessionId)).alive, true);
+    assert.equal(await fs.readFile(rolesPath, "utf8"), rolesBefore);
+    assert.equal(roleEvents.length, 0);
+    unsubscribe();
   });
 });
 
-test("replaceSession: eligibility - turnBusy, waitCode, A2A deny, force refused", async () => {
+test("replaceSession: eligibility - turnBusy, waitCode, force refused", async () => {
   resetManagedAutoDeliverDedupForTests();
   {
     const ws = await makeWorkspace();
@@ -311,7 +344,7 @@ test("replaceSession: eligibility - turnBusy, waitCode, A2A deny, force refused"
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
-        workspaceId, boxId, role: "executor", prompt: "busy replace must fail-loud", deliveryPolicy: "review",
+        workspaceId, nodeIds: [boxId], role: "executor", prompt: "busy replace must fail-loud", deliveryPolicy: "review",
       });
       assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -357,18 +390,6 @@ test("replaceSession: eligibility - turnBusy, waitCode, A2A deny, force refused"
       const task = await getTask(svc, workspaceId, taskPath);
       assert.equal(task.state, "waiting");
       assert.equal(task.sessionId, priorSessionId);
-    });
-  }
-  {
-    const ws = await makeWorkspace("replace-deny", { executor: "deny" });
-    await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
-      const { taskPath } = await dispatchClaimStart(svc, workspaceId, boxId);
-      const denied = await rpc(svc, "task.replaceSession", {
-        workspaceId, taskPath, profileId: "fake-default", callerKind: "role",
-      });
-      assert.ok(denied.error);
-      assert.equal(denied.error!.code, RPC_A2A_DENIED);
     });
   }
 });
@@ -625,7 +646,7 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId: otherBoxId,
+      nodeIds: [otherBoxId],
       role: "orchestrator",
       prompt: "unrelated concurrent replace",
       deliveryPolicy: "review",
