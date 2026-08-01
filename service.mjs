@@ -29538,7 +29538,35 @@ async function taskStartSessionRpc(ctx, p) {
     if (existing) {
       return joinOrConflictManagedSessionFlight(existing, profileId, "startSession", taskPath);
     }
-    return prepared.result;
+    return runTaskLifecycle(workspaceId, taskPath, async () => {
+      const mount = ctx.host.require(workspaceId);
+      const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+      const sessionId = prepared.result.session.sessionId;
+      if (current.state !== "running" && current.state !== "waiting" || current.sessionId !== sessionId) {
+        throw new RpcError(
+          RPC_LIFECYCLE,
+          "task.startSession: Task changed before same-Task Session reuse could return",
+          {
+            code: "TASK_SESSION_BIND_CAS_FAILED",
+            taskPath,
+            sessionId,
+            state: current.state,
+            currentSessionId: current.sessionId
+          }
+        );
+      }
+      const session = await ctx.runtime.registry.read(sessionId);
+      if (!session) {
+        throw new RpcError(RPC_LIFECYCLE, `task.startSession: bound Session ${sessionId} disappeared`, {
+          code: "BOUND_SESSION_MISSING",
+          taskPath,
+          sessionId
+        });
+      }
+      return projectStartSessionResult(workspaceId, taskPath, current, session, {
+        cwd: current.worktree || mount.workspaceRoot
+      });
+    });
   }
   return runManagedSessionFlight(
     workspaceId,
@@ -29547,6 +29575,50 @@ async function taskStartSessionRpc(ctx, p) {
     "startSession",
     () => launchAndBindTaskStartSession(ctx, prepared)
   );
+}
+function captureTaskSessionBindSnapshot(task) {
+  return {
+    taskId: task.id,
+    state: task.state,
+    sessionId: task.sessionId?.trim() || "",
+    updatedAt: task.updatedAt,
+    role: task.role,
+    assigneeKind: taskAssigneeKind(task)
+  };
+}
+function assertTaskSessionBindSnapshot(operation, taskPath, current, expected) {
+  const actual = captureTaskSessionBindSnapshot(current);
+  const unchanged = actual.taskId === expected.taskId && actual.state === expected.state && actual.sessionId === expected.sessionId && actual.updatedAt === expected.updatedAt && actual.role === expected.role && actual.assigneeKind === expected.assigneeKind;
+  if (unchanged && current.state === "running") return;
+  throw new RpcError(
+    RPC_LIFECYCLE,
+    `${operation}: Task changed while the managed Session was starting; refusing late bind`,
+    {
+      code: "TASK_SESSION_BIND_CAS_FAILED",
+      taskPath,
+      expected,
+      actual
+    }
+  );
+}
+function isTaskSessionBindCasError(err) {
+  return err instanceof RpcError && err.data?.code === "TASK_SESSION_BIND_CAS_FAILED";
+}
+async function stopUnboundManagedSession(ctx, sessionId, operation, detail) {
+  let stopped = true;
+  try {
+    await ctx.runtime.stopSession(sessionId, "interrupt");
+  } catch {
+    stopped = false;
+  }
+  try {
+    await ctx.runtime.registry.update(sessionId, {
+      lastError: `${operation} unbound Session cleanup: ${detail}`,
+      ...stopped ? { state: "stopped", stopReason: "interrupt" } : {}
+    });
+  } catch {
+  }
+  return stopped;
 }
 async function prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, profileId, callerKind, opts) {
   const mount = ctx.host.require(workspaceId);
@@ -29803,9 +29875,29 @@ async function prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, 
   };
 }
 async function launchAndBindTaskStartSession(ctx, prepared) {
-  const { workspaceId, taskPath, profileId, isProfileTask } = prepared;
+  const { workspaceId, taskPath, profileId } = prepared;
+  let isProfileTask = prepared.isProfileTask;
   const mount = ctx.host.require(workspaceId);
-  let task = prepared.task;
+  let task = await runTaskLifecycle(workspaceId, taskPath, async () => {
+    const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+    if (current.state !== "running") {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `task.startSession requires running at provider launch; got ${current.state}`,
+        { code: "INVALID_TASK_STATE", state: current.state, taskPath }
+      );
+    }
+    if (taskAssigneeKind(current) === "agentProfile" && current.role !== profileId) {
+      throw new RpcError(
+        -32602,
+        `task.startSession profileId must match agentProfile task assignee (${current.role}); got ${profileId}`,
+        { taskAssignee: current.role, profileId }
+      );
+    }
+    const withLane = await ensureTaskWorkspaceLane(ctx, workspaceId, current);
+    isProfileTask = taskAssigneeKind(withLane) === "agentProfile";
+    return withLane;
+  });
   task = await ensureTaskWorkspaceLane(ctx, workspaceId, task);
   const cwd = task.worktree || mount.workspaceRoot;
   const workspaceLane = task.workspace || task.worktree || task.branch ? {
@@ -29876,26 +29968,38 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
   }
   const priorPersistedGeneration = task.contextGeneration?.trim() || task.contextCard?.contextGeneration?.trim() || "";
   if (priorPersistedGeneration !== liveGeneration) {
-    task = await ctx.mutations.run(workspaceId, async () => {
-      ctx.host.markSelfWrite(workspaceId);
-      if (task.contextCard) {
-        const nextCard = {
-          ...task.contextCard,
-          contextGeneration: liveGeneration
-        };
+    task = await runTaskLifecycle(
+      workspaceId,
+      taskPath,
+      () => ctx.mutations.run(workspaceId, async () => {
+        const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+        if (current.state !== "running") {
+          throw new RpcError(
+            RPC_LIFECYCLE,
+            `task.startSession cannot refresh context on ${current.state} Task`,
+            { code: "INVALID_TASK_STATE", state: current.state, taskPath }
+          );
+        }
+        ctx.host.markSelfWrite(workspaceId);
+        if (current.contextCard) {
+          const nextCard = {
+            ...current.contextCard,
+            contextGeneration: liveGeneration
+          };
+          return patchTaskEnvelope(mount.env.fs, taskPath, {
+            contextCard: nextCard,
+            contextGeneration: liveGeneration,
+            ...taskPurpose ? { purpose: taskPurpose } : {},
+            updatedAt: mount.env.clock.now()
+          });
+        }
         return patchTaskEnvelope(mount.env.fs, taskPath, {
-          contextCard: nextCard,
           contextGeneration: liveGeneration,
           ...taskPurpose ? { purpose: taskPurpose } : {},
           updatedAt: mount.env.clock.now()
         });
-      }
-      return patchTaskEnvelope(mount.env.fs, taskPath, {
-        contextGeneration: liveGeneration,
-        ...taskPurpose ? { purpose: taskPurpose } : {},
-        updatedAt: mount.env.clock.now()
-      });
-    });
+      })
+    );
   }
   const requestFacts = buildSessionReuseRequestFacts({
     workspaceId,
@@ -30028,6 +30132,17 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
   );
   const bootstrapImageRefs = await collectTaskBootstrapImageRefs(mount.env.fs, task);
   const bootstrapImageSystemRoot = bootstrapImageRefs.length > 0 ? mount.systemRoot : void 0;
+  const bindSnapshot = await runTaskLifecycle(workspaceId, taskPath, async () => {
+    const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+    assertTaskSessionBindSnapshot(
+      "task.startSession",
+      taskPath,
+      current,
+      captureTaskSessionBindSnapshot(task)
+    );
+    task = current;
+    return captureTaskSessionBindSnapshot(current);
+  });
   let handle;
   try {
     if (resumePrior) {
@@ -30071,42 +30186,73 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
     });
     throw new RpcError(-32e3, message2);
   }
-  const bound = await ctx.mutations.run(workspaceId, async () => {
-    ctx.host.markSelfWrite(workspaceId);
-    const next = await patchTaskEnvelope(mount.env.fs, taskPath, {
-      sessionId: handle.sessionId,
-      updatedAt: mount.env.clock.now()
-    });
-    const generation = liveGeneration;
-    try {
-      const parentRoleIdBound = next.parentActor?.kind === "role" ? next.parentActor.id : void 0;
-      const agentId = stableBundle.agentId || typeof next.agentId === "string" && next.agentId.trim() || next.role;
-      const purposeBound = readTaskPurpose(next) || stableBundle.purpose || "";
-      await ctx.runtime.registry.update(handle.sessionId, {
-        contextGeneration: generation,
-        ...next.taskDeltaDigest ? { taskDeltaDigest: next.taskDeltaDigest } : {},
-        agentId,
-        ...parentRoleIdBound ? { parentRoleId: parentRoleIdBound } : {},
-        skillsDigest: stableBundle.skillSetDigest || stableBundle.skillsDigest,
-        purpose: purposeBound
-      });
-    } catch {
-    }
-    emitTaskState(ctx, workspaceId, next, "task.startSession");
-    ctx.events.emit(
-      "session.state",
+  let bound;
+  try {
+    bound = await runTaskLifecycle(
       workspaceId,
-      {
-        sessionId: handle.sessionId,
-        state: handle.state,
-        profileId: handle.profileId,
-        taskPath,
-        reason: resumePrior ? "task.startSession.resume" : "task.startSession"
-      },
-      "self"
+      taskPath,
+      () => ctx.mutations.run(workspaceId, async () => {
+        const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+        assertTaskSessionBindSnapshot("task.startSession", taskPath, current, bindSnapshot);
+        ctx.host.markSelfWrite(workspaceId);
+        const next = await patchTaskEnvelope(mount.env.fs, taskPath, {
+          sessionId: handle.sessionId,
+          updatedAt: mount.env.clock.now()
+        });
+        const generation = liveGeneration;
+        try {
+          const parentRoleIdBound = next.parentActor?.kind === "role" ? next.parentActor.id : void 0;
+          const agentId = stableBundle.agentId || typeof next.agentId === "string" && next.agentId.trim() || next.role;
+          const purposeBound = readTaskPurpose(next) || stableBundle.purpose || "";
+          await ctx.runtime.registry.update(handle.sessionId, {
+            contextGeneration: generation,
+            ...next.taskDeltaDigest ? { taskDeltaDigest: next.taskDeltaDigest } : {},
+            agentId,
+            ...parentRoleIdBound ? { parentRoleId: parentRoleIdBound } : {},
+            skillsDigest: stableBundle.skillSetDigest || stableBundle.skillsDigest,
+            purpose: purposeBound
+          });
+        } catch {
+        }
+        emitTaskState(ctx, workspaceId, next, "task.startSession");
+        ctx.events.emit(
+          "session.state",
+          workspaceId,
+          {
+            sessionId: handle.sessionId,
+            state: handle.state,
+            profileId: handle.profileId,
+            taskPath,
+            reason: resumePrior ? "task.startSession.resume" : "task.startSession"
+          },
+          "self"
+        );
+        return next;
+      })
     );
-    return next;
-  });
+  } catch (err) {
+    const message2 = err instanceof Error ? err.message : String(err);
+    const stopped = await stopUnboundManagedSession(
+      ctx,
+      handle.sessionId,
+      "task.startSession",
+      message2
+    );
+    if (isTaskSessionBindCasError(err)) {
+      const data = err.data;
+      throw new RpcError(RPC_LIFECYCLE, message2, {
+        ...data,
+        orphanSessionId: handle.sessionId,
+        cleanupStopped: stopped
+      });
+    }
+    throw new RpcError(RPC_LIFECYCLE, `task.startSession failed to bind managed Session: ${message2}`, {
+      code: "TASK_SESSION_BIND_FAILED",
+      taskPath,
+      orphanSessionId: handle.sessionId,
+      cleanupStopped: stopped
+    });
+  }
   return projectStartSessionResult(workspaceId, taskPath, bound, {
     id: handle.sessionId,
     profileId: handle.profileId,
@@ -30139,10 +30285,7 @@ async function taskReplaceSessionRpc(ctx, p) {
     taskPath,
     profileId,
     "replaceSession",
-    () => runTaskLifecycle(workspaceId, taskPath, async () => {
-      await assertReplaceSessionEligible(ctx, workspaceId, taskPath, profileId);
-      return executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId);
-    })
+    () => executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId)
   );
 }
 async function assertReplaceSessionEligible(ctx, workspaceId, taskPath, profileId) {
@@ -30195,8 +30338,15 @@ async function assertReplaceSessionEligible(ctx, workspaceId, taskPath, profileI
 }
 async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) {
   const mount = ctx.host.require(workspaceId);
-  await assertReplaceSessionEligible(ctx, workspaceId, taskPath, profileId);
-  let task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  let task = await runTaskLifecycle(workspaceId, taskPath, async () => {
+    await assertReplaceSessionEligible(ctx, workspaceId, taskPath, profileId);
+    let current = await loadTaskEnvelope(mount.env.fs, taskPath);
+    if (current.state === "waiting") {
+      await taskResumeRpc(ctx, { workspaceId, taskPath });
+      current = await loadTaskEnvelope(mount.env.fs, taskPath);
+    }
+    return ensureTaskWorkspaceLane(ctx, workspaceId, current);
+  });
   const priorSessionId = task.sessionId.trim();
   const preserved = {
     taskId: task.id,
@@ -30206,10 +30356,6 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) 
     deliveryPolicy: task.deliveryPolicy,
     role: task.role
   };
-  if (task.state === "waiting") {
-    await taskResumeRpc(ctx, { workspaceId, taskPath });
-    task = await loadTaskEnvelope(mount.env.fs, taskPath);
-  }
   let retirementBegun = false;
   let startedSessionId;
   const parkAfterRetirement = async (detail) => {
@@ -30257,7 +30403,6 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) 
     }
     retirementBegun = true;
     clearManagedAutoDeliverDedup(priorSessionId, taskPath);
-    task = await ensureTaskWorkspaceLane(ctx, workspaceId, task);
     const cwd = task.worktree || mount.workspaceRoot;
     const workspaceLane = task.workspace || task.worktree || task.branch ? {
       workspace: task.workspace || mount.workspaceRoot,
@@ -30266,6 +30411,23 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) 
       targetBranch: task.targetBranch
     } : void 0;
     const bootstrapImageRefs = await collectTaskBootstrapImageRefs(mount.env.fs, task);
+    const bindSnapshot = await runTaskLifecycle(workspaceId, taskPath, async () => {
+      let current = await loadTaskEnvelope(mount.env.fs, taskPath);
+      if (current.state === "waiting" && current.sessionId === priorSessionId && isSessionUnavailableParkedWait(current)) {
+        await taskResumeRpc(ctx, { workspaceId, taskPath });
+        current = await loadTaskEnvelope(mount.env.fs, taskPath);
+      }
+      if (current.state !== "running" || current.id !== preserved.taskId || current.sessionId !== priorSessionId || current.role !== preserved.role || current.deliveryPolicy !== preserved.deliveryPolicy) {
+        assertTaskSessionBindSnapshot(
+          "task.replaceSession",
+          taskPath,
+          current,
+          captureTaskSessionBindSnapshot(task)
+        );
+      }
+      task = current;
+      return captureTaskSessionBindSnapshot(current);
+    });
     const handle = await ctx.runtime.startSession({
       sessionId: makeSessionId(),
       profileId,
@@ -30285,6 +30447,38 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) 
       workspace: workspaceId
     });
     startedSessionId = handle.sessionId;
+    const bound = await runTaskLifecycle(
+      workspaceId,
+      taskPath,
+      () => ctx.mutations.run(workspaceId, async () => {
+        const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+        assertTaskSessionBindSnapshot("task.replaceSession", taskPath, current, bindSnapshot);
+        ctx.host.markSelfWrite(workspaceId);
+        const next = await patchTaskEnvelope(mount.env.fs, taskPath, {
+          sessionId: handle.sessionId,
+          state: "running",
+          wait: null,
+          updatedAt: mount.env.clock.now()
+        });
+        emitTaskState(ctx, workspaceId, next, "task.replaceSession");
+        ctx.events.emit(
+          "session.state",
+          workspaceId,
+          {
+            sessionId: handle.sessionId,
+            state: handle.state,
+            profileId: handle.profileId,
+            taskPath,
+            reason: REPLACE_SESSION_RESTORE_REASON,
+            contextRestored: false,
+            priorSessionId,
+            replacedSessionId: priorSessionId
+          },
+          "self"
+        );
+        return next;
+      })
+    );
     await ctx.runtime.registry.update(handle.sessionId, {
       contextRestored: false,
       restoreReason: REPLACE_SESSION_RESTORE_REASON,
@@ -30304,38 +30498,6 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) 
     } catch {
     }
     clearManagedAutoDeliverDedup(handle.sessionId, taskPath);
-    const bound = await ctx.mutations.run(workspaceId, async () => {
-      ctx.host.markSelfWrite(workspaceId);
-      const current = await loadTaskEnvelope(mount.env.fs, taskPath);
-      if (current.id !== preserved.taskId || current.deliveryPolicy !== preserved.deliveryPolicy) {
-        throw new RpcError(RPC_LIFECYCLE, "task.replaceSession: task identity changed during replace", {
-          code: "TASK_IDENTITY_DRIFT"
-        });
-      }
-      const next = await patchTaskEnvelope(mount.env.fs, taskPath, {
-        sessionId: handle.sessionId,
-        state: "running",
-        wait: null,
-        updatedAt: mount.env.clock.now()
-      });
-      emitTaskState(ctx, workspaceId, next, "task.replaceSession");
-      ctx.events.emit(
-        "session.state",
-        workspaceId,
-        {
-          sessionId: handle.sessionId,
-          state: handle.state,
-          profileId: handle.profileId,
-          taskPath,
-          reason: REPLACE_SESSION_RESTORE_REASON,
-          contextRestored: false,
-          priorSessionId,
-          replacedSessionId: priorSessionId
-        },
-        "self"
-      );
-      return next;
-    });
     const nodeIds = bound.contextCard != null ? taskReferencedNodeIds(bound) : [];
     if (bound.id !== preserved.taskId || bound.role !== preserved.role || bound.deliveryPolicy !== preserved.deliveryPolicy || bound.worktree !== preserved.worktree || bound.branch !== preserved.branch || nodeIds.length !== preserved.nodeIds.length || nodeIds.some((id, i) => id !== preserved.nodeIds[i])) {
       throw new RpcError(RPC_LIFECYCLE, "task.replaceSession mutated task lane/nodeRefs/identity", {
@@ -30371,22 +30533,25 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) 
       replaced: true
     };
   } catch (err) {
+    let cleanupStopped;
     if (startedSessionId) {
-      try {
-        await ctx.runtime.stopSession(startedSessionId, "interrupt");
-      } catch {
-      }
-      try {
-        await ctx.runtime.registry.update(startedSessionId, {
-          lastError: "replace-session orphan stopped after launch/rebind failure",
-          contextRestored: false,
-          restoreReason: REPLACE_SESSION_RESTORE_REASON
-        });
-      } catch {
-      }
+      cleanupStopped = await stopUnboundManagedSession(
+        ctx,
+        startedSessionId,
+        "task.replaceSession",
+        err instanceof Error ? err.message : String(err)
+      );
     }
     const message2 = err instanceof Error ? err.message : String(err);
-    if (retirementBegun) await parkAfterRetirement(message2);
+    if (retirementBegun && !isTaskSessionBindCasError(err)) await parkAfterRetirement(message2);
+    if (isTaskSessionBindCasError(err)) {
+      const data = err.data;
+      throw new RpcError(RPC_LIFECYCLE, message2, {
+        ...data,
+        ...startedSessionId ? { orphanSessionId: startedSessionId } : {},
+        ...cleanupStopped !== void 0 ? { cleanupStopped } : {}
+      });
+    }
     if (err instanceof RpcError) throw err;
     throw new RpcError(RPC_LIFECYCLE, `task.replaceSession failed to start replacement session: ${message2}`, {
       code: "REPLACE_SESSION_LAUNCH_FAILED",
