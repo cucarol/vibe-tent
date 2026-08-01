@@ -119,7 +119,7 @@ async function readyDeliveryTask(
 ): Promise<{ taskPath: string; deliveryId: string }> {
   const dispatched = await rpc(svc, "task.dispatch", {
     workspaceId,
-    boxId,
+    nodeIds: [boxId],
     role,
     prompt: "do the work",
     parentActor: { kind: "user", id: "user" },

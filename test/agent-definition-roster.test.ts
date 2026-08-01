@@ -418,7 +418,7 @@ test("Service agent CRUD + role roster projection; out-of-roster denies", async 
     // In-roster Role-agent dispatch: standing auth (no A2A ask), persists agentId.
     const hit = await rpc(svc, "task.dispatch", {
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       assigneeKind: "agentProfile",
       agentId: "core-worker",
       prompt: "in roster with a2a ask role — must not park",
@@ -444,7 +444,7 @@ test("Service agent CRUD + role roster projection; out-of-roster denies", async 
     await client.registryRoleUpdate(workspaceId, "dispatcher", { roster: [] });
     const out = await rpc(svc, "task.dispatch", {
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       assigneeKind: "agentProfile",
       agentId: "core-worker",
       prompt: "out of roster",
@@ -464,7 +464,7 @@ test("Service agent CRUD + role roster projection; out-of-roster denies", async 
     // Inconsistent actor combinations must fail loud (both directions), even in-roster.
     const userCallerRoleParent = await rpc(svc, "task.dispatch", {
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       assigneeKind: "agentProfile",
       agentId: "core-worker",
       prompt: "callerKind user with parent role",
@@ -482,7 +482,7 @@ test("Service agent CRUD + role roster projection; out-of-roster denies", async 
 
     const roleCallerUserParent = await rpc(svc, "task.dispatch", {
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       assigneeKind: "agentProfile",
       agentId: "core-worker",
       prompt: "callerKind role with parent user",
@@ -607,7 +607,7 @@ test("Task records agentId; multi-agent same profile is unambiguous", async () =
 
     const d = await rpc(svc, "task.dispatch", {
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       assigneeKind: "agentProfile",
       agentId: "worker-b",
       prompt: "choose b among two agents on same profile",

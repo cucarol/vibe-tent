@@ -132,7 +132,7 @@ test("box.projection: active task → doing + assignee + activeTaskId", async ()
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId,
+      nodeIds: [boxId],
       role: "executor",
       prompt: "ship it",
       parentActor: { kind: "user", id: "user" },
@@ -165,7 +165,7 @@ test("box.projection: accepted → done (no assignee, no activeTaskId)", async (
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId,
+      nodeIds: [boxId],
       role: "executor",
       prompt: "finish work",
       parentActor: { kind: "user", id: "user" },
@@ -194,7 +194,7 @@ test("box.projection: interrupt → todo (clears occupation)", async () => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId,
+      nodeIds: [boxId],
       role: "executor",
       prompt: "stop me",
       parentActor: { kind: "user", id: "user" },
@@ -235,7 +235,7 @@ test("box.projection: stale owner/doing without active task → todo, no assigne
 
     // Stale owner must not block a new dispatch (occupation oracle = active task only).
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId,
+      nodeIds: [boxId],
       role: "executor",
       prompt: "reclaim after orphan owner",
       parentActor: { kind: "user", id: "user" },

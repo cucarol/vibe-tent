@@ -624,7 +624,7 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       role: "executor",
       prompt: "implement the thing",
     });
@@ -1027,7 +1027,7 @@ test("mount dead-session reconcile does not suppress an immediate external Node 
     const nodeId = (created.result as { id: string }).id;
     const dispatched = await rpc(svc, "task.dispatch", {
       workspaceId,
-      boxId: nodeId,
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "seed dead session reconciliation",
       parentActor: { kind: "user", id: "user" },

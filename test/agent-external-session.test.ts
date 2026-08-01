@@ -177,7 +177,7 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
     })) as { id: string };
     // Prefer task.dispatch if available via client helper
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: note.id,
+      nodeIds: [note.id],
       role: "executor",
       prompt: "do the thing",
       parentActor: { kind: "user", id: "user" },

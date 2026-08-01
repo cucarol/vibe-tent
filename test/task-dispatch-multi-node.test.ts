@@ -59,7 +59,7 @@ test("resolveDispatchNodeIds: nodeIds are ordered, deduped, and validated", () =
   );
   assert.throws(
     () => resolveDispatchNodeIds({ tentName: "demo" }),
-    /requires nodeIds/
+    /requires at least one Node/
   );
 });
 

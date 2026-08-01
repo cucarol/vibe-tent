@@ -1,8 +1,6 @@
-// Task Node reference helpers + structural dispatch gates (V0.2 cx-tsw53f).
-// Node refs are non-exclusive: multiple active Tasks may reference the same Node,
-// ancestor, descendant, or workspace/root context. Code isolation is worktree/Git,
-// not a Node-tree mutex.
-// Archive/purge still fail only on *direct* active Node refs (see boxHasDirectActiveTask).
+// Task Node occupation helpers + structural dispatch gates.
+// One exact Node may be occupied by only one active Task. Ancestors, descendants,
+// siblings, and workspace context remain independent and may run concurrently.
 
 import type { TaskEnvelope } from "./task.js";
 import { isActiveTaskState, legacyStatusToState, type TaskState } from "./task-model.js";
@@ -30,12 +28,9 @@ export interface CanClaimOptions {
    * occupation exception is removed. Kept as a no-op for call-site compatibility.
    */
   allowAncestorClaimedBy?: string;
-  /**
-   * Active tasks (informational). Occupation mutual exclusion is retired;
-   * only structural gates run.
-   */
+  /** Active Task envelopes used for exact-Node occupation checks. */
   tasks?: readonly TaskEnvelope[];
-  /** Optional tent (unused for occupation; retained for call-site compatibility). */
+  /** Optional Tent projection retained for call-site compatibility. */
   tent?: LoadedTent;
 }
 
@@ -50,11 +45,24 @@ export function envelopeIsActiveOccupation(task: TaskEnvelope): boolean {
 }
 
 /**
- * Structural gate for dispatch/claim: invalid / archived deny new work.
- * Node reference concurrency is legal — no mutual exclusion.
+ * Dispatch/claim gate: invalid / archived Nodes deny new work, and an exact Node
+ * already referenced by an active Task is occupied. Parent/child refs do not block.
  */
-export function canClaim(box: Box, _options?: CanClaimOptions): ClaimCheck {
-  return structuralClaimGate(box);
+export function canClaim(box: Box, options?: CanClaimOptions): ClaimCheck {
+  const structural = structuralClaimGate(box);
+  if (!structural.ok) return structural;
+  const occupied = options?.tasks
+    ? listDirectActiveTasksForNode(box.id, options.tasks)[0]
+    : undefined;
+  if (occupied) {
+    return {
+      ok: false,
+      blocker: box,
+      task: occupied,
+      reason: `${box.name} is occupied by active task ${occupied.id || occupied.path} (${occupied.role}).`,
+    };
+  }
+  return structural;
 }
 
 /** Structural gates shared by claim and dispatch (no occupation). */
@@ -79,8 +87,7 @@ export interface ActiveOccupationHit {
 }
 
 /**
- * @deprecated V0.2 non-exclusive refs: ancestor/descendant/root no longer block.
- * Returns a direct-ref hit only when some active Task references `box` itself.
+ * Returns a direct-ref hit only when an active Task occupies `box` itself.
  * Callers that still need archive/purge direct-ref checks should prefer
  * `boxHasDirectActiveTask` / `listDirectActiveTasksForNode`.
  */
@@ -108,7 +115,7 @@ export function findActiveOccupation(
 }
 
 /**
- * True when any active task *directly* references this box id.
+ * True when any active task occupies this exact box id.
  * Workspace/root context alone does not count as a direct Node ref.
  * Used by archive/purge gates — ancestor/descendant refs do not block.
  */
@@ -158,8 +165,8 @@ export function occupiedBoxesFromTasks(tent: LoadedTent, tasks: readonly TaskEnv
 }
 
 /**
- * Structural freeze only (invalid / archived).
- * Active-task Node refs are non-exclusive — not Node locks.
+ * Content freeze remains invalid / archived only. Task occupation is enforced at
+ * dispatch/claim and structural mutation boundaries, not as Node frontmatter.
  */
 export function isFrozen(box: Box): boolean {
   return box.invalid || box.archived;

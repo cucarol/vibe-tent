@@ -139,7 +139,6 @@ export async function runTaskCommand(
         // Public ordinary dispatch (cx-b9bf58):
         //   tent task dispatch --target role:<id>|agent:<id> --node <nodeId>… --prompt <text>|-
         // Node refs map to transient RPC nodeIds[] (→ contextCard.refs.nodes sole persist).
-        // boxId = primary node for legacy single-claim wire compatibility.
         // LaunchProfile is never a public selector; AgentDefinition is agent:<agentId>.
         const usage =
           "Usage: tent task dispatch --target role:<roleIdOrName>|agent:<agentId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]";
@@ -223,14 +222,9 @@ export async function runTaskCommand(
         // Internal RPC fields required by current Service wire only:
         // - role target: durable Role handoff, queued, never startSession
         // - agent target: agentId + assigneeKind=agentProfile + startSession (managed ACP)
-        // nodeIds is the transient multi-ref seam (tk-g60jy7fj) → Context Card refs.nodes
-        // (sole persisted source). boxId remains the primary node for legacy single-claim
-        // callers; when both are sent they must agree (primary = nodeIds[0]).
-        // Dependency: old Service that only reads boxId ignores extra nodeIds — repeated
-        // refs are not claimed to work end-to-end until that seam lands.
-        const primaryNodeId = nodeIds[0]!;
+        // nodeIds is the sole public Node selection and persists only through
+        // Context Card refs.nodes. No single-Node compatibility field is emitted.
         const common = {
-          boxId: primaryNodeId,
           nodeIds,
           prompt,
           parentActor,

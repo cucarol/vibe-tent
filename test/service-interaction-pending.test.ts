@@ -79,7 +79,7 @@ test("interaction.listPending aggregates four kinds with stable sort and counts"
     const boxId = created.id;
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId,
+      nodeIds: [boxId],
       role: "executor",
       prompt: "Need decisions and review",
       parentActor: { kind: "user", id: "user" },

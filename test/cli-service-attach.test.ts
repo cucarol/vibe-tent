@@ -244,7 +244,7 @@ test("task RPC layer: claim → deliver; ServiceClient observes same state; serv
     const boxId = created.id;
 
     const dispatched = (await observer.taskDispatch(workspaceId, {
-      boxId,
+      nodeIds: [boxId],
       role: "executor",
       prompt: "Ship CLI attach",
       parentActor: { kind: "user", id: "user" },
@@ -308,7 +308,7 @@ test("task claim/deliver via attach (not injected client) sees same ServiceClien
       type: "prompt",
     })) as { id: string };
     const dispatched = (await setup.taskDispatch(mount.workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "agent path",
       parentActor: { kind: "user", id: "user" },
@@ -362,7 +362,7 @@ test("task command errors: missing summary / unknown sub / attach-only miss", as
       type: "prompt",
     })) as { id: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "x",
       parentActor: { kind: "user", id: "user" },
@@ -390,7 +390,7 @@ test("task list/get human output for agents", async () => {
       type: "prompt",
     })) as { id: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "list test",
       parentActor: { kind: "user", id: "user" },
@@ -420,7 +420,7 @@ test("task-input ack CLI omits actor for persisted user reviewer path", async ()
       type: "prompt",
     })) as { id: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "cli user ack",
       parentActor: { kind: "user", id: "user" },

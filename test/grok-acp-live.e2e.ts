@@ -106,7 +106,7 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       role: "e2e",
       prompt: "Reply with a short delivery report containing the marker TENT_GROK_E2E_OK. Do not call tools.",
       deliveryPolicy: "review",

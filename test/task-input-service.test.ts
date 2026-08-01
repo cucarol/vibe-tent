@@ -161,7 +161,7 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
     const boxId = created.id;
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId,
+      nodeIds: [boxId],
       role: "executor",
       prompt: "Work that may get user append",
       parentActor: { kind: "user", id: "user" },
@@ -564,7 +564,7 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
 
     // A Session id is authority only when Service registry + Task binding agree.
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: note.id,
+      nodeIds: [note.id],
       role: "executor",
       prompt: "session-bound ack",
       parentActor: { kind: "user", id: "user" },
@@ -683,7 +683,7 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
     })) as { id: string };
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "Managed sendInput flow",
       parentActor: { kind: "user", id: "user" },
@@ -837,7 +837,7 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
     })) as { id: string };
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "Work that will be rejected with review note",
       parentActor: { kind: "user", id: "user" },
@@ -986,7 +986,7 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
     })) as { id: string };
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "Native reject-resume same session",
       parentActor: { kind: "user", id: "user" },
@@ -1184,7 +1184,7 @@ test("reject-resume external (no session): review feedback stays pending for pol
     })) as { id: string };
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "External role rework",
       parentActor: { kind: "user", id: "user" },
@@ -1270,7 +1270,7 @@ test("reject-resume: slow follow-up returns accepted without headers-timeout wai
     })) as { id: string };
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "Slow reject-resume inject",
       parentActor: { kind: "user", id: "user" },
@@ -1373,7 +1373,7 @@ test("reject-resume: background completion projects processing → delivered", a
     })) as { id: string };
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "Background reject inject",
       parentActor: { kind: "user", id: "user" },
@@ -1831,7 +1831,7 @@ test("reject-resume: second reject while rework running is rejected (no double i
     })) as { id: string };
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "Double reject protection",
       parentActor: { kind: "user", id: "user" },
@@ -1936,7 +1936,7 @@ test("reject --no-resume: terminal reject without review-feedback or session res
     })) as { id: string };
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "Terminal reject path",
       parentActor: { kind: "user", id: "user" },
@@ -1998,7 +1998,7 @@ test("managed U2A: concurrent sends on same task are FIFO and non-overlapping", 
     })) as { id: string };
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "FIFO serialization",
       parentActor: { kind: "user", id: "user" },
@@ -2170,7 +2170,7 @@ test("managed U2A: different tasks remain concurrent (not process-wide serial)",
         type: "prompt",
       })) as { id: string };
       const dispatched = (await client.taskDispatch(workspaceId, {
-        boxId: created.id,
+        nodeIds: [created.id],
         role,
         prompt: `concurrent ${name}`,
         parentActor: { kind: "user", id: "user" },
@@ -2275,7 +2275,7 @@ test("managed U2A: failed inject leaves item failed (not dropped) and does not o
     })) as { id: string };
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "queue failure semantics",
       parentActor: { kind: "user", id: "user" },
@@ -2387,7 +2387,7 @@ test("task.sendInput: RPC returns accepted before managed turn finishes; status 
     })) as { id: string };
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "async accept path",
       parentActor: { kind: "user", id: "user" },
@@ -2518,7 +2518,7 @@ test("task.sendInput: service stop drains background work without unhandled reje
       type: "prompt",
     })) as { id: string };
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "drain semantics",
       parentActor: { kind: "user", id: "user" },
@@ -2618,7 +2618,7 @@ test("task.sendInput: hung follow-up turns stop promptly; durable row retained; 
       type: "prompt",
     })) as { id: string };
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "hang shutdown",
       parentActor: { kind: "user", id: "user" },

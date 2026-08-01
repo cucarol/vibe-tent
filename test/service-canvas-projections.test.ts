@@ -257,7 +257,7 @@ test("box.projections: order stable; item semantics match box.projection", async
 
     // Active task on a → doing
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: a.id,
+      nodeIds: [a.id],
       role: "executor",
       prompt: "work a",
       parentActor: { kind: "user", id: "user" },
@@ -270,7 +270,7 @@ test("box.projections: order stable; item semantics match box.projection", async
 
     // Accept path on c → no active task → todo (Node FM done is not product truth)
     const d2 = (await client.taskDispatch(workspaceId, {
-      boxId: c.id,
+      nodeIds: [c.id],
       role: "executor",
       prompt: "finish c",
       parentActor: { kind: "user", id: "user" },

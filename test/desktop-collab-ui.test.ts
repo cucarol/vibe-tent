@@ -436,7 +436,7 @@ test("service+client: registry → create coordination box → dispatch → deli
     assert.ok(form.payload);
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: form.payload!.boxId,
+      nodeIds: [form.payload!.boxId],
       role: form.payload!.role,
       prompt: form.payload!.prompt,
       parentActor: form.payload!.parentActor ?? { kind: "user", id: "user" },
@@ -476,7 +476,7 @@ test("service+client: registry → create coordination box → dispatch → deli
       type: "prompt",
     })) as { id: string };
     const d2 = (await client.taskDispatch(workspaceId, {
-      boxId: box2.id,
+      nodeIds: [box2.id],
       role: "executor",
       prompt: "will be rejected",
       parentActor: { kind: "user", id: "user" },
@@ -570,7 +570,7 @@ test("service+client: profile.list safe metadata + startSession/interrupt via sh
     })) as { id: string };
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: box.id,
+      nodeIds: [box.id],
       role: "executor",
       prompt: "start via UI model",
       parentActor: { kind: "user", id: "user" },

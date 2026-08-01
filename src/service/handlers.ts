@@ -3553,10 +3553,9 @@ function mapDocsMoveError(err: unknown): RpcError {
 async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  // Authoritative multi-Node source is nodeIds[]; legacy boxId/id/claimId remain
-  // single-primary fallbacks. Prefer nodeIds; when both present they must agree.
+  // Authoritative public Node selection is nodeIds[] only.
   const dispatchSelection = resolveTaskDispatchNodeSelection(p, mount.env.tentName);
-  const boxId = dispatchSelection.primaryId;
+  const primaryNodeId = dispatchSelection.primaryId;
   const nodeIds = dispatchSelection.nodeIds;
   const assigneeKindRaw = optionalString(p, "assigneeKind");
   const assigneeKind =
@@ -3874,7 +3873,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     }
     // else: Role without profile — generation finalized at startSession.
 
-    const dispatched = await dispatch(mount.env, boxId, assigneeKind === "role" ? role : undefined, {
+    const dispatched = await dispatch(mount.env, primaryNodeId, assigneeKind === "role" ? role : undefined, {
       userPrompt: prompt,
       parentActor: resolvedActors.parentActor,
       reviewer: resolvedActors.reviewer,
@@ -3905,7 +3904,6 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
         state: "queued",
         role: dispatched.assignee,
         assigneeKind: dispatched.assigneeKind,
-        boxId,
         nodeIds,
         reason: "task.dispatch",
       },
@@ -4100,8 +4098,8 @@ function parseOptionalTaskActor(
 
 /**
  * Resolve authoritative Node selection for task.dispatch.
- * Prefer transient `nodeIds` (ordered, deduped). Legacy boxId/id/claimId remain
- * single-primary fallbacks. When both are present they must agree on primary.
+ * Accept only transient `nodeIds` (ordered, deduped). The old
+ * boxId/id/claimId dispatch grammar is retired rather than silently translated.
  * Fail loud before MutationBus Task/manifest writes for malformed input.
  * Node existence/archive gates run inside Core under the same workspace lock.
  */
@@ -4109,6 +4107,15 @@ function resolveTaskDispatchNodeSelection(
   p: Record<string, unknown>,
   tentName: string
 ): { nodeIds: string[]; primaryId: string } {
+  for (const retired of ["boxId", "id", "claimId"] as const) {
+    if (p[retired] !== undefined && p[retired] !== null) {
+      throw new RpcError(
+        -32602,
+        `task.dispatch ${retired} is retired; pass non-empty nodeIds[]`,
+        { field: retired }
+      );
+    }
+  }
   // Refuse non-array / non-string-element nodeIds fail-loud (not silent ignore).
   if ("nodeIds" in p && p.nodeIds !== undefined && p.nodeIds !== null) {
     if (!Array.isArray(p.nodeIds)) {
@@ -4119,12 +4126,10 @@ function resolveTaskDispatchNodeSelection(
     }
   }
   const rawNodeIds = optionalStringArray(p, "nodeIds");
-  const legacyPrimary =
-    optionalString(p, "boxId") ?? optionalString(p, "id") ?? optionalString(p, "claimId");
   try {
     const nodeIds = resolveDispatchNodeIds({
       nodeIds: rawNodeIds,
-      legacyClaimId: legacyPrimary,
+      primaryNodeId: rawNodeIds?.[0] ?? "",
       tentName,
     });
     return { nodeIds, primaryId: nodeIds[0]! };

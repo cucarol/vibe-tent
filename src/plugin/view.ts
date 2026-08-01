@@ -908,7 +908,10 @@ export class TentView extends ItemView {
       );
     }
     if (!box.archived && !box.invalid) {
-      const check = canClaim(box);
+      const check = canClaim(box, {
+        tasks: this.tasks,
+        ...(this.tent ? { tent: this.tent } : {}),
+      });
       menu.addItem((i) =>
         i
           .setTitle("派活")
@@ -1517,7 +1520,10 @@ export class TentView extends ItemView {
     };
     prompt.oninput = resizePrompt;
 
-    const claim = canClaim(box);
+    const claim = canClaim(box, {
+      tasks: this.tasks,
+      ...(this.tent ? { tent: this.tent } : {}),
+    });
     const blockedReason = pendingDispatch ? "已有投递等待接手。" : claim.reason || "";
     const run = actSlot.createEl("button", { cls: "tent-bottom-action", text: "派活接力" });
     run.setAttr("type", "button");

@@ -142,7 +142,7 @@ async function claimRunningWithBase(
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     workspaceId,
-    boxId,
+    nodeIds: [boxId],
     role: opts.role,
     prompt: opts.prompt,
     deliveryPolicy: "review",

@@ -388,7 +388,7 @@ test("B5: dispatch → claim → startSession → deliver → accept (manual) vi
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId,
+      nodeIds: [boxId],
       role: "executor",
       prompt: "Ship B5 wiring",
       parentActor: { kind: "user", id: "user" },

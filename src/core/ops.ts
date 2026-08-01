@@ -8,7 +8,6 @@ import { BOX_FRONTMATTER_KEY_ORDER, serializeFrontmatter, parseFrontmatter } fro
 import { loadOrder, saveOrder, ROOT_KEY } from "./order.js";
 import { Box, BoxType, NodeMode } from "./types.js";
 import {
-  boxHasDirectActiveTask,
   canClaim,
   envelopeIsActiveOccupation,
   structuralClaimGate,
@@ -120,26 +119,25 @@ export interface DispatchOptions {
    * Authoritative transient multi-Node dispatch source (durable Node IDs).
    * Non-empty; order-preserving dedupe; each id resolved + structurally gated
    * before any Task/manifest write. Persisted only as Task.contextCard.refs.nodes[]
-   * (never a second claims/nodeIds fact). When omitted, the legacy single claimId
-   * argument is used as a one-element list.
+   * (never a second claims/nodeIds fact). When omitted, the dispatch primary Node
+   * is used as a one-element list.
    */
   nodeIds?: string[];
 }
 
 /**
  * Resolve the authoritative ordered Node id list for dispatch.
- * Prefers `nodeIds` when present; legacy single claimId remains the fallback.
- * When both are present, legacy primary must equal the first deduped nodeId.
+ * Prefers `nodeIds` when present; otherwise uses the required primary Node.
+ * When both are present, the primary must equal the first deduped nodeId.
  * Rejects empty/malformed lists and root/workspace tokens (no fake root Node).
  */
 export function resolveDispatchNodeIds(input: {
   nodeIds?: string[] | null;
-  legacyClaimId?: string | null;
+  primaryNodeId?: string | null;
   tentName: string;
 }): string[] {
   const tentName = input.tentName.trim();
-  const legacyRaw = typeof input.legacyClaimId === "string" ? input.legacyClaimId.trim() : "";
-  const legacy = legacyRaw || undefined;
+  const primaryNodeId = input.primaryNodeId?.trim() ?? "";
 
   if (input.nodeIds !== undefined && input.nodeIds !== null) {
     if (!Array.isArray(input.nodeIds)) {
@@ -171,34 +169,32 @@ export function resolveDispatchNodeIds(input: {
     if (out.length === 0) {
       throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
     }
-    if (legacy) {
-      if (isForbiddenRootDispatchToken(legacy, tentName)) {
+    if (primaryNodeId) {
+      if (isForbiddenRootDispatchToken(primaryNodeId, tentName)) {
         throw new Error(
           "Cannot dispatch the whole Tent directly; dispatch a specific Node " +
-            "(legacy primary cannot be ., root, or the Tent name)."
+            "(primary Node cannot be ., root, or the Tent name)."
         );
       }
-      // Exact compatible primary: legacy single id must equal the first authoritative id.
-      if (legacy !== out[0]) {
+      if (primaryNodeId !== out[0]) {
         throw new Error(
-          `Dispatch legacy primary '${legacy}' conflicts with authoritative nodeIds primary '${out[0]}'; ` +
-            "when both are present they must agree (prefer nodeIds)."
+          `Dispatch primary Node '${primaryNodeId}' conflicts with nodeIds[0] '${out[0]}'.`
         );
       }
     }
     return out;
   }
 
-  if (!legacy) {
-    throw new Error("Dispatch requires nodeIds or a legacy single boxId/id/claimId.");
+  if (!primaryNodeId) {
+    throw new Error("Dispatch requires at least one Node.");
   }
-  if (isForbiddenRootDispatchToken(legacy, tentName)) {
+  if (isForbiddenRootDispatchToken(primaryNodeId, tentName)) {
     throw new Error(
       "Cannot dispatch the whole Tent directly; dispatch a specific Node " +
-        "(legacy primary cannot be ., root, or the Tent name)."
+        "(primary Node cannot be ., root, or the Tent name)."
     );
   }
-  return [legacy];
+  return [primaryNodeId];
 }
 
 function isForbiddenRootDispatchToken(id: string, tentName: string): boolean {
@@ -206,22 +202,23 @@ function isForbiddenRootDispatchToken(id: string, tentName: string): boolean {
 }
 
 /**
- * Dispatch a Task. Prefer `options.nodeIds` for multi-Node selection.
- * `claimId` is the legacy single primary; when `nodeIds` is set it may be omitted
- * (`""`) or must equal the first deduped nodeId.
+ * Dispatch a Task from one or more Nodes. The primary Node is always the first
+ * selected Node; `options.nodeIds` carries an ordered multi-Node selection.
  */
 export async function dispatch(
   env: OpsEnv,
-  claimId: string,
+  primaryNodeId: string,
   role: string | undefined,
   promptOrOptions: string | DispatchOptions
 ): Promise<DispatchResult> {
-  return withMutation(env.fs, async () => dispatchUnlocked(env, claimId, role, promptOrOptions));
+  return withMutation(env.fs, async () =>
+    dispatchUnlocked(env, primaryNodeId, role, promptOrOptions)
+  );
 }
 
 async function dispatchUnlocked(
   env: OpsEnv,
-  claimId: string,
+  primaryNodeId: string,
   role: string | undefined,
   promptOrOptions: string | DispatchOptions
 ): Promise<DispatchResult> {
@@ -254,11 +251,10 @@ async function dispatchUnlocked(
     assigneeLabel = assertRoleName(roleName);
   }
 
-  // Authoritative ordered Node refs (transient). Prefer options.nodeIds; legacy
-  // claimId remains the single-id fallback. Resolve + gate every id before writes.
+  // Resolve and gate every selected Node before writes.
   const nodeIds = resolveDispatchNodeIds({
     nodeIds: options.nodeIds,
-    legacyClaimId: claimId,
+    primaryNodeId,
     tentName: env.tentName,
   });
   const tasks = await loadTaskEnvelopes(env.fs);
@@ -270,11 +266,8 @@ async function dispatchUnlocked(
       : join("temp", assigneeLabel);
   const createdRootExisted = await env.fs.exists(createdRoot);
 
-  // V0.2 cx-tsw53f: Node refs are non-exclusive. Same Node / ancestor / descendant /
-  // workspace context may be referenced by multiple active Tasks. asSub ancestor
-  // occupation exception is removed — authority is parentActor/reviewer/roster only.
-  // Structural gates only: invalid / archived still deny new dispatch.
-  // asSub remains a Git-lane flag only (not an occupation mutex).
+  // Exact Nodes are exclusive across active Tasks. Ancestors, descendants, siblings,
+  // and workspace context remain independent. asSub is a Git-lane flag only.
   if (!options.parentActor) {
     throw new Error(
       "Dispatch requires explicit parentActor (legacy dispatchedBy is migration-only; reviewer may be derived equal)."
@@ -319,14 +312,13 @@ async function dispatchUnlocked(
     let initPath: string | undefined;
 
     if (assigneeKind === "agentProfile") {
-      // Task-scoped immutable manifest; never shared manifest.yml / role init / registry.
       manifestPath = agentProfileManifestPath(assigneeLabel, taskId);
       await ensureDir(env.fs, dirName(manifestPath));
       await env.fs.writeFile(manifestPath, yaml);
     } else {
-      // manifest is the role's dynamic readable/writable context contract (no claims[]).
-      // Task envelope is immutable and owns Node refs via contextCard only.
-      manifestPath = join("temp", assigneeLabel, "manifest.yml");
+      // Every Task owns an immutable manifest snapshot. A shared Role manifest would
+      // let concurrent sibling Tasks overwrite each other's writable Node selection.
+      manifestPath = join("temp", assigneeLabel, "manifests", `${taskId}.yml`);
       await ensureDir(env.fs, dirName(manifestPath));
       await env.fs.writeFile(manifestPath, yaml);
       const registry = await loadRolesRegistry(env.fs);
@@ -822,13 +814,13 @@ async function setNodeModeUnlocked(env: OpsEnv, boxId: string, mode: NodeMode | 
     return;
   }
 
-  // Archive fails only when this exact Node is directly referenced by an active Task.
-  // Ancestor/descendant refs do not block. Restore remains free.
+  // Archive freezes the entire subtree, so any active Task inside that subtree
+  // blocks the structural mutation. Tasks on ancestors or unrelated branches do not.
   if (next === "archived") {
     const tasks = await loadTaskEnvelopes(env.fs);
-    if (boxHasDirectActiveTask(box.id, tasks)) {
+    if (hasActiveTaskInSubtree(tent, box, tasks)) {
       throw new Error(
-        "Node is directly referenced by an active task and cannot be archived; complete or interrupt the task first."
+        "Node subtree has an active task and cannot be archived; complete or interrupt the task first."
       );
     }
   }

@@ -142,10 +142,13 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
       requireBoxById(tent, claimId)
     );
 
-    // V0.2: Node refs are non-exclusive. Structural gates only (invalid/archived).
-    // asSub ancestor occupation exception removed — authority is parentActor/reviewer/roster.
+    // Re-check exact Node occupation at claim. Exclude this queued Task itself;
+    // another active Task on any requested Node blocks the all-or-none claim.
+    const otherTasks = (await loadTaskEnvelopes(env.fs)).filter(
+      (candidate) => candidate.path !== task.path
+    );
     for (const box of claimedBoxes) {
-      const claimable = canClaim(box);
+      const claimable = canClaim(box, { tent, tasks: otherTasks });
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
     }
 

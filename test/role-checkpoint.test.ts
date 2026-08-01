@@ -601,7 +601,7 @@ test("managed bootstrap appends Role Checkpoint as dynamic tail for durable role
 
       const d = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "bootstrap with checkpoint tail",
         deliveryPolicy: "review",
@@ -652,7 +652,7 @@ test("managed bootstrap appends Role Checkpoint as dynamic tail for durable role
       // agentProfile path must never load role checkpoint under profile id.
       const profileDispatch = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "fake-default",
         assigneeKind: "agentProfile",
         prompt: "profile one-shot",
@@ -712,7 +712,7 @@ test("managed bootstrap fails open when Role Checkpoint pointers are invalid", a
       const boxId = (created.result as { id: string }).id;
       const dispatched = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "bootstrap despite invalid checkpoint",
         deliveryPolicy: "review",

@@ -413,7 +413,7 @@ test("delete gates + permission timeout uses runtime after catalog update", asyn
       const box = (await rpc(svc, "docs.createNote", { workspaceId, name, type: "prompt" })).result as { id: string };
       const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" }, workspaceId, boxId: box.id, role: "executor", prompt: name });
+      reviewer: { kind: "user", id: "user" }, workspaceId, nodeIds: [box.id], role: "executor", prompt: name });
       const taskPath = (d.result as { taskPath: string }).taskPath;
       await rpc(svc, "task.claim", { workspaceId, taskPath });
       const started = await rpc(svc, "task.startSession", {

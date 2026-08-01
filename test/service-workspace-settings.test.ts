@@ -205,7 +205,7 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
 
     // Default (no settings file) → review
     const d1 = (await client.taskDispatch(workspaceId, {
-      boxId: box1,
+      nodeIds: [box1],
       role: "executor",
       prompt: "first task uses default review",
       parentActor: { kind: "user", id: "user" },
@@ -219,7 +219,7 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
     });
 
     const d2 = (await client.taskDispatch(workspaceId, {
-      boxId: box2,
+      nodeIds: [box2],
       role: "executor",
       prompt: "second task snapshots bypass",
       parentActor: { kind: "user", id: "user" },
@@ -230,7 +230,7 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
 
     // Explicit override still wins over workspace default.
     const d3 = (await client.taskDispatch(workspaceId, {
-      boxId: box3,
+      nodeIds: [box3],
       role: "executor",
       prompt: "third task explicit agent-decide",
       parentActor: { kind: "user", id: "user" },
@@ -256,7 +256,7 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId: await createBox("work-item-manual-reject"),
+      nodeIds: [await createBox("work-item-manual-reject")],
       role: "executor",
       prompt: "must reject manual wire",
       deliveryPolicy: "manual",
@@ -272,7 +272,7 @@ test("task envelope on-disk manual projects as review; new serialize writes revi
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const d = (await client.taskDispatch(workspaceId, {
-      boxId,
+      nodeIds: [boxId],
       role: "executor",
       prompt: "new wire writes review",
       parentActor: { kind: "user", id: "user" },

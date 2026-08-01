@@ -143,7 +143,7 @@ test("task.askUser parks running task; second ask rejected; reply resumes + pers
     const boxId = created.id;
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId,
+      nodeIds: [boxId],
       role: "executor",
       prompt: "Need a product decision",
       parentActor: { kind: "user", id: "user" },
@@ -241,7 +241,7 @@ test("userAsk.deny resumes task; interrupt cancels pending ask", async () => {
     })) as { id: string };
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "Ask then deny",
       parentActor: { kind: "user", id: "user" },
@@ -309,7 +309,7 @@ test("managed ACP: UserAsk reply continues same session with User Answer prompt 
     })) as { id: string };
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "Managed ask flow",
       parentActor: { kind: "user", id: "user" },
@@ -536,7 +536,7 @@ test("task.askUser rejects non-running task", async () => {
       type: "prompt",
     })) as { id: string };
     const dispatched = (await client.taskDispatch(workspaceId, {
-      boxId: created.id,
+      nodeIds: [created.id],
       role: "executor",
       prompt: "not claimed",
       parentActor: { kind: "user", id: "user" },

@@ -360,7 +360,7 @@ test("task.dispatch persists real contextGeneration without taskId; two tasks sh
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d1 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         prompt: "Task one implement feature A",
         assigneeKind: "agentProfile",
         profileId: "fake-resumable",
@@ -376,7 +376,7 @@ test("task.dispatch persists real contextGeneration without taskId; two tasks sh
 
       const d2 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         prompt: "Task two completely different objective",
         assigneeKind: "agentProfile",
         profileId: "fake-resumable",
@@ -413,7 +413,7 @@ test("startSession persists reuse facts; same-lane resume reuses; lane/profile m
       // Task A (agentProfile): start + stop — same-lane resume candidate.
       const d1 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         prompt: "First task",
         assigneeKind: "agentProfile",
         profileId: "fake-resumable",
@@ -459,7 +459,7 @@ test("startSession persists reuse facts; same-lane resume reuses; lane/profile m
       // contextGeneration still matches (cache-compatible across Tasks).
       const d2 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         prompt: "Second task different objective same stable facts",
         assigneeKind: "agentProfile",
         profileId: "fake-resumable",
@@ -487,7 +487,7 @@ test("startSession persists reuse facts; same-lane resume reuses; lane/profile m
       // Task C: different profile → different generation + fresh Session.
       const d3 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         prompt: "Third task different profile",
         assigneeKind: "agentProfile",
         profileId: "fake-other",
@@ -525,7 +525,7 @@ test("Role cross-Task: running+stopped Session blocks; accepted prior reuses", a
 
       const roleA = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "Role task one",
         assigneeKind: "role",
@@ -553,7 +553,7 @@ test("Role cross-Task: running+stopped Session blocks; accepted prior reuses", a
 
       const roleBusy = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "while A running",
         assigneeKind: "role",
@@ -619,7 +619,7 @@ test("Role cross-Task: running+stopped Session blocks; accepted prior reuses", a
 
       const roleOk = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "after A accepted",
         assigneeKind: "role",
@@ -659,7 +659,7 @@ test("startSession fails loud when Context Card declares missing Node ref", asyn
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         prompt: "will patch bad ref",
         assigneeKind: "agentProfile",
         profileId: "fake-resumable",
@@ -956,7 +956,7 @@ test("Role startSession captures real profile/adapter generation; purpose mismat
       // Role dispatch without profileId: no frozen generation until start.
       const d = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "role without profile at dispatch",
         assigneeKind: "role",
@@ -998,7 +998,7 @@ test("Role startSession captures real profile/adapter generation; purpose mismat
       // Second Role Task with different purpose → fresh Session (purpose mismatch).
       const d2 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "role different purpose",
         assigneeKind: "role",
@@ -1060,7 +1060,7 @@ test("Role profile change at startSession rewrites contextGeneration", async () 
 
       const d = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "start with one profile then compare",
         assigneeKind: "role",
@@ -1078,7 +1078,7 @@ test("Role profile change at startSession rewrites contextGeneration", async () 
 
       const d2 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "same role different profile",
         assigneeKind: "role",
@@ -1321,7 +1321,7 @@ test("live generation: AGENTS/Role/Skill/profile mutations force fresh Session a
           // ---- AGENTS: dispatch without start → mutate → startSession ----
           const dAgents = await rpc(svc, "task.dispatch", {
             workspaceId,
-            boxId,
+            nodeIds: [boxId],
             prompt: "agents mutate path",
             assigneeKind: "agentProfile",
             profileId: "fake-resumable",
@@ -1371,7 +1371,7 @@ test("live generation: AGENTS/Role/Skill/profile mutations force fresh Session a
           // ---- tent-task skill body/version: dispatch → mutate package → start ----
           const dSkill = await rpc(svc, "task.dispatch", {
             workspaceId,
-            boxId,
+            nodeIds: [boxId],
             prompt: "skill mutate path",
             assigneeKind: "agentProfile",
             profileId: "fake-resumable",
@@ -1423,7 +1423,7 @@ test("live generation: AGENTS/Role/Skill/profile mutations force fresh Session a
           // ---- same-profileId launch config in-place edit ----
           const dProf = await rpc(svc, "task.dispatch", {
             workspaceId,
-            boxId,
+            nodeIds: [boxId],
             prompt: "profile mutate path",
             assigneeKind: "agentProfile",
             profileId: "fake-resumable",
@@ -1476,7 +1476,7 @@ test("live generation: AGENTS/Role/Skill/profile mutations force fresh Session a
           // ---- Role prompt+roster: dispatch → mutate roles.json → startSession ----
           const dRole = await rpc(svc, "task.dispatch", {
             workspaceId,
-            boxId,
+            nodeIds: [boxId],
             role: "executor",
             prompt: "role mutate path",
             assigneeKind: "role",
@@ -1559,7 +1559,7 @@ test("bootstrapPrompt custom append on fresh and resumed same-Task start", async
       // dispatch does not forward bootstrapPrompt; startSession is the production append path.
       const d = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         prompt: "bootstrap append task",
         assigneeKind: "agentProfile",
         profileId: "fake-resumable",
@@ -1646,7 +1646,7 @@ test("active same-Task path fails loud on empty/legacy Session contextGeneration
 
       const d = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         prompt: "empty gen active path",
         assigneeKind: "agentProfile",
         profileId: "fake-resumable",
@@ -1694,7 +1694,7 @@ test("missing/foreign activeDeliveryId fails loud (cannot prove noPendingDeliver
 
       const d1 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "prior with foreign delivery pointer",
         assigneeKind: "role",
@@ -1721,7 +1721,7 @@ test("missing/foreign activeDeliveryId fails loud (cannot prove noPendingDeliver
 
       const dMissing = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "next after missing delivery pointer",
         assigneeKind: "role",
@@ -1759,7 +1759,7 @@ test("missing/foreign activeDeliveryId fails loud (cannot prove noPendingDeliver
 
       const dForeign = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "next after foreign delivery pointer",
         assigneeKind: "role",
@@ -1794,7 +1794,7 @@ test("hasBlockingDelivery fails loud when Delivery store is unreadable", async (
 
       const d1 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "prior for delivery store fail",
         assigneeKind: "role",
@@ -1840,7 +1840,7 @@ test("hasBlockingDelivery fails loud when Delivery store is unreadable", async (
 
       const d2 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "next after corrupt delivery store",
         assigneeKind: "role",
@@ -1891,7 +1891,7 @@ test("collector failure at startSession fails loud (no reusable fallback)", asyn
           // ---- durable Role assignee: remove required Role after dispatch ----
           const dRole = await rpc(svc, "task.dispatch", {
             workspaceId,
-            boxId,
+            nodeIds: [boxId],
             role: "executor",
             prompt: "role collector fail",
             assigneeKind: "role",
@@ -1964,7 +1964,7 @@ test("collector failure at startSession fails loud (no reusable fallback)", asyn
           // ---- parentRole-bound agentProfile: remove parent Role after dispatch ----
           const dProf = await rpc(svc, "task.dispatch", {
             workspaceId,
-            boxId,
+            nodeIds: [boxId],
             prompt: "parent-role collector fail",
             assigneeKind: "agentProfile",
             profileId: "fake-resumable",
@@ -2036,7 +2036,7 @@ test("collector failure at startSession fails loud (no reusable fallback)", asyn
 
           const dSkill = await rpc(svc, "task.dispatch", {
             workspaceId,
-            boxId,
+            nodeIds: [boxId],
             prompt: "missing skill collector fail",
             assigneeKind: "agentProfile",
             profileId: "fake-resumable",
@@ -2103,7 +2103,7 @@ test("Service cross-Task prior blockers force fresh; accepted+settled reuses", a
       async function dispatchRole(prompt: string) {
         const r = await rpc(svc, "task.dispatch", {
           workspaceId,
-          boxId,
+          nodeIds: [boxId],
           role: "executor",
           prompt,
           assigneeKind: "role",
@@ -2329,7 +2329,7 @@ test("Service cross-Task prior blockers force fresh; accepted+settled reuses", a
       // Create a second Role task without starting a session, then bind it to sid4.
       const dDualOther = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "synthetic dual binder",
         assigneeKind: "role",

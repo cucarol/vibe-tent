@@ -429,7 +429,7 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       "task.dispatch",
       {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "legacy wire",
         // Even with explicit actors present, dispatchedBy must be rejected.
@@ -448,7 +448,7 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       "task.dispatch",
       {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "missing actors",
       },
@@ -464,7 +464,7 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       "task.dispatch",
       {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "mismatch pair",
         parentActor: { kind: "role", id: "orchestrator" },
@@ -485,7 +485,7 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       "task.dispatch",
       {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "derived reviewer",
         parentActor: { kind: "user", id: "user" },
@@ -526,7 +526,7 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       "task.dispatch",
       {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "explicit actors",
         parentActor: { kind: "user", id: "user" },
