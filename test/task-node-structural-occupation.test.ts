@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { NodeFs } from "../src/fs/node-fs.js";
-import { createBox, moveNode, renameNode } from "../src/core/ops.js";
+import { createBox, moveNode, placeBox, renameNode } from "../src/core/ops.js";
 import { patchTaskEnvelope, writeTaskEnvelope } from "../src/core/task.js";
 import { scaffoldTent } from "../src/core/scaffold.js";
 import type { FsAdapter } from "../src/core/adapter.js";
@@ -84,6 +84,10 @@ test("active descendant ref blocks moving the containing subtree", async () => {
 
   await assert.rejects(
     () => moveNode(env as any, parent, destination, { mode: "inside" }),
+    /active Task ref.*tk-struct-descendant/i
+  );
+  await assert.rejects(
+    () => placeBox(env as any, "parent", "destination", { mode: "inside" }),
     /active Task ref.*tk-struct-descendant/i
   );
 });

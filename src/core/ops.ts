@@ -46,6 +46,7 @@ import { removeNonAcceptedDeliveriesForBox } from "./delivery.js";
 import { validateBoxName } from "./scaffold.js";
 import type { OpsEnv } from "./ops-context.js";
 import { taskClaim, taskFail, taskInterrupt } from "./task-lifecycle.js";
+import { assertNoActiveTaskRefsInSubtree } from "./renameOps.js";
 
 export type { OpsEnv } from "./ops-context.js";
 export { adoptCopiedSubtree, forkNode } from "./forkOps.js";
@@ -622,11 +623,10 @@ async function placeBoxUnlocked(
   if (!moved) throw new Error(`Box not found: ${fromPath}.`);
   if (!isUsableBox(moved)) throw new Error("Invalid or archived boxes cannot be moved.");
   assertContentMutable(moved, "moved");
-  // V0.2: rename/move with stable nodeId remain legal under concurrent Task refs.
-  // Context re-resolves by id; path is a refreshable hint. No occupation freeze.
   if (moved.invalid || moved.archived) {
     throw new Error("Invalid or archived boxes cannot be moved.");
   }
+  await assertNoActiveTaskRefsInSubtree(env, moved, "move");
   const movedId = moved.id;
   const movedName = fromPath.slice(fromPath.lastIndexOf("/") + 1);
 
