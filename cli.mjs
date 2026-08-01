@@ -2213,9 +2213,6 @@ function computeTaskDeltaDigest(inputs) {
     scope: card.scope,
     acceptance: card.acceptance,
     refs: card.refs,
-    parentActor: card.parentActor,
-    reviewer: card.reviewer,
-    assignee: card.assignee,
     taskInputDelta: taskInputDelta?.trim() || "",
     checkpoint: checkpoint?.trim() || "",
     userPrompt: userPrompt?.trim() || ""
@@ -2225,42 +2222,6 @@ function computeTaskDeltaDigest(inputs) {
 function asStringList(value) {
   if (!Array.isArray(value)) return [];
   return value.filter((item) => typeof item === "string").map((s) => s.trim()).filter(Boolean);
-}
-function parseActorRef(value, label) {
-  if (value === void 0 || value === null) {
-    throw new TaskContextCardError(
-      label === "parentActor" ? "MISSING_PARENT_ACTOR" : "MISSING_REVIEWER",
-      `Context Card requires ${label} { kind, id } (canonical TaskActorRef).`,
-      { label, value }
-    );
-  }
-  try {
-    return parseTaskActorRef(value, label);
-  } catch (err) {
-    if (err instanceof TaskLifecycleError) {
-      const code = err.code === "INVALID_ACTOR" ? "INVALID_ACTOR" : label === "parentActor" ? "MISSING_PARENT_ACTOR" : "MISSING_REVIEWER";
-      throw new TaskContextCardError(code, err.message, { label, value });
-    }
-    throw err;
-  }
-}
-function parseAssignee(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TaskContextCardError(
-      "MISSING_ASSIGNEE",
-      "Context Card requires assignee { kind: role|agentId, id }."
-    );
-  }
-  const raw = value;
-  const kind = raw.kind;
-  const id = typeof raw.id === "string" ? raw.id.trim() : "";
-  if (kind !== "role" && kind !== "agentId" || !id) {
-    throw new TaskContextCardError(
-      "MISSING_ASSIGNEE",
-      "Context Card assignee must be { kind: role|agentId, id: non-empty }."
-    );
-  }
-  return { kind, id };
 }
 function parseRefList(value, bucket) {
   if (value === void 0 || value === null) return [];
@@ -2313,33 +2274,7 @@ function parseRefList(value, bucket) {
 }
 function buildTaskContextCard(input) {
   const objective = input.objective?.trim() || "";
-  if (!objective) {
-    throw new TaskContextCardError(
-      "MISSING_OBJECTIVE",
-      "Context Card requires objective (fail-loud to parent; do not invent from chat memory)."
-    );
-  }
   const acceptance = asStringList([...input.acceptance ?? []]);
-  if (acceptance.length === 0) {
-    throw new TaskContextCardError(
-      "MISSING_ACCEPTANCE",
-      "Context Card requires at least one acceptance criterion (fail-loud to parent)."
-    );
-  }
-  const parentActor = parseActorRef(input.parentActor, "parentActor");
-  const reviewer = parseActorRef(input.reviewer, "reviewer");
-  try {
-    assertParentReviewerEqual(parentActor, reviewer);
-  } catch (err) {
-    if (err instanceof TaskLifecycleError) {
-      throw new TaskContextCardError("INVALID_ACTOR", err.message, {
-        parentActor,
-        reviewer
-      });
-    }
-    throw err;
-  }
-  const assignee = parseAssignee(input.assignee);
   if (!isContextGenerationId(input.contextGeneration)) {
     throw new TaskContextCardError(
       "INVALID_GENERATION",
@@ -2360,10 +2295,7 @@ function buildTaskContextCard(input) {
       tasks: parseRefList(input.refs?.tasks ?? [], "tasks"),
       deliveries: parseRefList(input.refs?.deliveries ?? [], "deliveries"),
       git: parseRefList(input.refs?.git ?? [], "git")
-    },
-    parentActor,
-    reviewer,
-    assignee
+    }
   };
   const taskDeltaDigest = input.taskDeltaDigest?.trim() || computeTaskDeltaDigest({
     card: cardBody,
@@ -2401,37 +2333,15 @@ function parseTaskContextCard(data) {
       deliveries: parseRefList(refsRaw.deliveries ?? raw.refsDeliveries, "deliveries"),
       git: parseRefList(refsRaw.git ?? raw.refsGit, "git")
     },
-    parentActor: raw.parentActor,
-    reviewer: raw.reviewer,
-    assignee: raw.assignee,
     contextGeneration: typeof raw.contextGeneration === "string" ? raw.contextGeneration : "",
     taskDeltaDigest: typeof raw.taskDeltaDigest === "string" ? raw.taskDeltaDigest : void 0
   });
-}
-function hasTaskContextCardBodyFields(data) {
-  const keys = [
-    "objective",
-    "frozenDecisions",
-    "acceptance",
-    "scope",
-    "scopeInclude",
-    "scopeExclude",
-    "refs",
-    "refsNodes",
-    "refsTasks",
-    "refsDeliveries",
-    "refsGit",
-    "assignee",
-    "contextCard"
-  ];
-  return keys.some((k) => data[k] !== void 0 && data[k] !== null);
 }
 function loadTaskContextCardFromFrontmatter(data) {
   if (data.contextCard !== void 0 && data.contextCard !== null) {
     return parseTaskContextCard(data.contextCard);
   }
-  if (!hasTaskContextCardBodyFields(data)) return null;
-  return parseTaskContextCard(data);
+  return null;
 }
 function deriveIntegrationAuthority(input) {
   try {
@@ -2648,11 +2558,6 @@ async function loadTaskEnvelope(fs10, path10) {
     task.contextCard = contextCard;
     task.contextGeneration = contextCard.contextGeneration;
     task.taskDeltaDigest = contextCard.taskDeltaDigest;
-  } else if (typeof data.contextGeneration === "string" && data.contextGeneration.trim()) {
-    task.contextGeneration = data.contextGeneration.trim();
-  }
-  if (!task.taskDeltaDigest && typeof data.taskDeltaDigest === "string" && data.taskDeltaDigest.trim()) {
-    task.taskDeltaDigest = data.taskDeltaDigest.trim();
   }
   const deliveryPolicy = normalizeDeliveryPolicyRead(data.deliveryPolicy);
   if (deliveryPolicy) task.deliveryPolicy = deliveryPolicy;
@@ -3770,6 +3675,14 @@ var ServiceClient = class {
     return this.call("task.claim", { workspaceId, taskPath, sessionId });
   }
   /**
+   * Create and immediately claim a durable Role's own execution Task.
+   * This is execution ownership, not downstream dispatch: there is no target,
+   * caller-authored parent/reviewer, asSub flag, or managed Session launch.
+   */
+  taskClaimDirect(workspaceId, args) {
+    return this.call("task.claimDirect", { workspaceId, ...args });
+  }
+  /**
    * Explicit legacy baseCommit backfill for running/waiting Tasks missing base.
    * Actor must equal exact persisted parent/reviewer. Same SHA is idempotent.
    */
@@ -4084,6 +3997,17 @@ var ServiceClient = class {
     return this.call("task.worktreeReclaim.preview", {
       workspaceId,
       taskPath
+    });
+  }
+  /**
+   * User-only exact-task reclaim reconciliation. Reloads one Task and reuses
+   * normal ownership/dirty/session/integration gates; never scans or prunes.
+   */
+  taskWorktreeReclaimReconcile(workspaceId, taskPath, actor) {
+    return this.call("task.worktreeReclaim.reconcile", {
+      workspaceId,
+      taskPath,
+      actor
     });
   }
   /**
@@ -4422,16 +4346,74 @@ async function runTaskCommand(sub, args, globals = {}) {
       }
       case "claim": {
         const taskPath = positionals[0];
-        if (!taskPath || positionals.length > 1) {
+        const hasDirectClaimInput = (repeatable.node?.length ?? 0) > 0 || Object.prototype.hasOwnProperty.call(flags, "prompt") || Object.prototype.hasOwnProperty.call(flags, "from-task");
+        if (taskPath && hasDirectClaimInput) {
           return failUsage(
-            "Usage: tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]"
+            "tent task claim: <taskPath> cannot be combined with --node, --prompt, or --from-task"
           );
         }
-        const sessionId = flags.session || flags["session-id"];
-        const result = await client.taskClaim(workspaceId, taskPath, sessionId);
+        if (taskPath) {
+          if (positionals.length > 1) {
+            return failUsage(
+              "Usage: tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]"
+            );
+          }
+          const sessionId = flags.session || flags["session-id"];
+          const result2 = await client.taskClaim(workspaceId, taskPath, sessionId);
+          return okPrint(result2, json, (r) => {
+            const row = r;
+            return `\u2713 Claimed via service RPC
+taskPath: ${row.taskPath}
+state: ${row.state ?? "running"}
+` + (row.sessionId ? `sessionId: ${row.sessionId}
+` : "");
+          });
+        }
+        if (!hasDirectClaimInput || positionals.length > 0) {
+          return failUsage(
+            "Usage: tent task claim --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]"
+          );
+        }
+        if (flags.session || flags["session-id"]) {
+          return failUsage(
+            "tent task claim: direct Role claim does not accept --session; Tent uses the verified current Session only as responsibility-chain provenance"
+          );
+        }
+        const rawNodes = repeatable.node ?? [];
+        if (rawNodes.some((value) => !String(value ?? "").trim())) {
+          return failUsage("tent task claim: every --node value must be a non-empty nodeId");
+        }
+        const nodeIds = collectTaskNodeIds(rawNodes);
+        if (nodeIds.length === 0) {
+          return failUsage("tent task claim: direct Role claim requires at least one --node");
+        }
+        if (!Object.prototype.hasOwnProperty.call(flags, "prompt")) {
+          return failUsage("tent task claim: direct Role claim requires --prompt <text> or --prompt -");
+        }
+        let prompt = flags.prompt ?? "";
+        if (prompt === "-") prompt = await readStdinText();
+        if (!prompt.trim()) {
+          return failUsage("tent task claim: --prompt must be non-empty");
+        }
+        const env = globals.env ?? process.env;
+        const role = String(env.TENT_ROLE_NAME ?? env.TENT_ROLE ?? "").trim();
+        if (!role || role === "user") {
+          return failUsage(
+            "tent task claim: direct claim requires a durable Role environment (TENT_ROLE_NAME or TENT_ROLE)"
+          );
+        }
+        const sourceSessionId = String(env.TENT_SESSION_ID ?? "").trim() || void 0;
+        const sourceTaskPath = String(flags["from-task"] ?? "").trim() || void 0;
+        const result = await client.taskClaimDirect(workspaceId, {
+          role,
+          nodeIds,
+          prompt,
+          sourceSessionId,
+          sourceTaskPath
+        });
         return okPrint(result, json, (r) => {
           const row = r;
-          return `\u2713 Claimed via service RPC
+          return `\u2713 Created and claimed via service RPC
 taskPath: ${row.taskPath}
 state: ${row.state ?? "running"}
 ` + (row.sessionId ? `sessionId: ${row.sessionId}
@@ -4518,7 +4500,7 @@ ${usage2}`
             );
           }
         }
-        const nodeIds = collectDispatchNodeIds(rawNodes);
+        const nodeIds = collectTaskNodeIds(rawNodes);
         if (nodeIds.length === 0) {
           return failUsage(
             `At least one --node <nodeId> is required in this batch
@@ -4634,6 +4616,24 @@ taskPath: ${row.taskPath}
 state: ${row.task?.state ?? row.state ?? "interrupted"}
 `;
         });
+      }
+      case "worktree-reclaim": {
+        const action = positionals[0];
+        const taskPath = positionals[1];
+        const usage2 = "Usage: tent task worktree-reclaim <preview|reconcile> <taskPath> [--workspace <path>] [--json]";
+        if (action !== "preview" && action !== "reconcile" || !taskPath || positionals.length > 2) {
+          return failUsage(usage2);
+        }
+        const result = action === "preview" ? await client.taskWorktreeReclaimPreview(workspaceId, taskPath) : await client.taskWorktreeReclaimReconcile(
+          workspaceId,
+          taskPath,
+          String(globals.env?.TENT_ROLE ?? process.env.TENT_ROLE ?? "user").trim() || "user"
+        );
+        return okPrint(
+          result,
+          json,
+          (r) => formatTaskWorktreeReclaim(r, action)
+        );
       }
       case "ask-user":
       case "askUser": {
@@ -4900,6 +4900,19 @@ function formatTaskGet(result) {
   }
   return lines.join("\n") + "\n";
 }
+function formatTaskWorktreeReclaim(result, action) {
+  const row = result;
+  return `\u2713 Task worktree reclaim ${action}
+taskPath: ${row.taskPath ?? "?"}
+` + (row.taskId ? `taskId: ${row.taskId}
+` : "") + `code: ${row.code ?? "?"}
+` + (row.eligible != null ? `eligible: ${row.eligible}
+` : "") + (row.reclaimed != null ? `reclaimed: ${row.reclaimed}
+` : "") + (row.alreadyGone != null ? `alreadyGone: ${row.alreadyGone}
+` : "") + (row.worktree ? `worktree: ${row.worktree}
+` : "") + (row.reason ? `reason: ${row.reason}
+` : "");
+}
 function okPrint(result, json, human) {
   const stdout = json ? JSON.stringify(result, null, 2) + "\n" : human(result);
   return { exitCode: 0, stdout, stderr: "" };
@@ -5029,7 +5042,7 @@ function detectRetiredDispatchFlags(flags) {
   }
   return null;
 }
-function collectDispatchNodeIds(raw) {
+function collectTaskNodeIds(raw) {
   const nodes = [];
   const seen = /* @__PURE__ */ new Set();
   for (const value of raw ?? []) {
@@ -5085,6 +5098,9 @@ Commands:
   tent task list [--workspace <path>] [--json]
   tent task get <taskPath> [--workspace <path>] [--json]
   tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]
+  tent task claim --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]
+      # direct Role execution: create + claim atomically; no --target and no downstream dispatch
+      # Role comes from TENT_ROLE_NAME/TENT_ROLE; Service derives parent/reviewer from durable facts
   tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
   tent task dispatch --target role:<roleIdOrName>|route:<routeId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]
       # --target role:*  durable Role handoff (queued; never starts managed ACP at dispatch)
@@ -5098,6 +5114,8 @@ Commands:
   tent task reject <taskPath> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]
   tent task interrupt <taskPath> [--workspace <path>] [--json]
+  tent task worktree-reclaim preview <taskPath> [--workspace <path>] [--json]
+  tent task worktree-reclaim reconcile <taskPath> [--workspace <path>] [--json]
   tent task ask-user <taskPath> --question <text>|- [--choices id=label,\u2026] [--workspace <path>] [--json]
   tent task user-ask list|get <askId>|reply <askId>|deny <askId> [\u2026] [--workspace <path>] [--json]
   tent task send-input <taskPath> [--text <text>|-] [--refs id,id] [--workspace <path>] [--json]

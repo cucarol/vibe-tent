@@ -1662,746 +1662,9 @@ function assertReviewAuthority(input) {
 
 // src/core/task-context-card.ts
 import { createHash } from "node:crypto";
-
-// src/core/task.ts
-async function loadTaskEnvelopes(fs22) {
-  const tasks = [];
-  if (!await fs22.exists(TEMP_DIR)) return tasks;
-  for (const entry of await fs22.listDir(TEMP_DIR)) {
-    if (!entry.isDir) continue;
-    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
-      const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
-      if (!await fs22.exists(profilesRoot)) continue;
-      for (const profileEntry of await fs22.listDir(profilesRoot)) {
-        if (!profileEntry.isDir) continue;
-        await collectTaskFiles(fs22, join(profilesRoot, profileEntry.name, "tasks"), tasks);
-      }
-      continue;
-    }
-    await collectTaskFiles(fs22, join(TEMP_DIR, entry.name, "tasks"), tasks);
-  }
-  return tasks.sort((a, b) => a.path.localeCompare(b.path));
-}
-async function migrateParentReviewerEnvelopes(fs22, clock, options) {
-  const dryRun = options?.dryRun === true;
-  const report = {
-    scanned: 0,
-    rewritten: [],
-    skipped: [],
-    warnings: []
-  };
-  if (!await fs22.exists(TEMP_DIR)) return report;
-  const paths = [];
-  for (const entry of await fs22.listDir(TEMP_DIR)) {
-    if (!entry.isDir) continue;
-    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
-      const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
-      if (!await fs22.exists(profilesRoot)) continue;
-      for (const profileEntry of await fs22.listDir(profilesRoot)) {
-        if (!profileEntry.isDir) continue;
-        const taskDir2 = join(profilesRoot, profileEntry.name, "tasks");
-        if (!await fs22.exists(taskDir2)) continue;
-        for (const f of await fs22.listDir(taskDir2)) {
-          if (!f.isDir && f.name.endsWith(".md")) paths.push(join(taskDir2, f.name));
-        }
-      }
-      continue;
-    }
-    const taskDir = join(TEMP_DIR, entry.name, "tasks");
-    if (!await fs22.exists(taskDir)) continue;
-    for (const f of await fs22.listDir(taskDir)) {
-      if (!f.isDir && f.name.endsWith(".md")) paths.push(join(taskDir, f.name));
-    }
-  }
-  for (const path23 of paths.sort((a, b) => a.localeCompare(b))) {
-    report.scanned += 1;
-    try {
-      const raw = await fs22.readFile(path23);
-      const { data, body, keyOrder } = parseFrontmatter(raw);
-      if (data.type !== "task") {
-        report.skipped.push(path23);
-        continue;
-      }
-      const hasParent = data.parentActor !== void 0 && data.parentActor !== null;
-      const hasReviewer = data.reviewer !== void 0 && data.reviewer !== null;
-      const hasLegacyDispatcher = typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
-      if (hasParent && hasReviewer && !hasLegacyDispatcher) {
-        try {
-          resolveParentReviewerPair({
-            parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
-            reviewer: parseTaskActorRef(data.reviewer, "reviewer")
-          });
-          report.skipped.push(path23);
-        } catch (err) {
-          report.warnings.push(
-            `${path23}: ${err instanceof Error ? err.message : String(err)}`
-          );
-          report.skipped.push(path23);
-        }
-        continue;
-      }
-      let parentActor;
-      let reviewer;
-      if (hasParent && hasReviewer) {
-        const pair = resolveParentReviewerPair({
-          parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
-          reviewer: parseTaskActorRef(data.reviewer, "reviewer")
-        });
-        parentActor = pair.parentActor;
-        reviewer = pair.reviewer;
-      } else if (hasParent || hasReviewer) {
-        report.warnings.push(
-          `${path23}: partial parentActor/reviewer pair; refusing silent repair`
-        );
-        report.skipped.push(path23);
-        continue;
-      } else {
-        const migrated = migrateParentReviewerFromLegacy({
-          asSub: data.asSub === true,
-          dispatchedBy: typeof data.dispatchedBy === "string" ? data.dispatchedBy : void 0
-        });
-        parentActor = migrated.parentActor;
-        reviewer = migrated.reviewer;
-      }
-      const next = { ...data };
-      next.parentActor = serializeTaskActorRef(parentActor);
-      next.reviewer = serializeTaskActorRef(reviewer);
-      delete next.dispatchedBy;
-      const nextRaw = serializeFrontmatter(next, body, keyOrder);
-      if (nextRaw === raw) {
-        report.skipped.push(path23);
-        continue;
-      }
-      if (!dryRun) {
-        next.updatedAt = clock.now();
-        await fs22.writeFile(path23, serializeFrontmatter(next, body, keyOrder));
-      }
-      report.rewritten.push(path23);
-    } catch (err) {
-      report.warnings.push(
-        `${path23}: ${err instanceof Error ? err.message : String(err)}`
-      );
-      report.skipped.push(path23);
-    }
-  }
-  return report;
-}
-async function collectTaskFiles(fs22, taskDir, tasks) {
-  if (!await fs22.exists(taskDir)) return;
-  for (const entry of await fs22.listDir(taskDir)) {
-    if (entry.isDir || !entry.name.endsWith(".md")) continue;
-    const path23 = join(taskDir, entry.name);
-    try {
-      tasks.push(await loadTaskEnvelope(fs22, path23));
-    } catch {
-    }
-  }
-}
-function taskAssigneeKind(task) {
-  return task.assigneeKind === "agentProfile" ? "agentProfile" : "role";
-}
-function taskAsSub(task) {
-  return task.asSub === true;
-}
-function taskParentRoleId(task) {
-  return task.parentActor?.kind === "role" ? task.parentActor.id : void 0;
-}
-function serializeTaskActorRef(actor) {
-  return { kind: actor.kind, id: actor.id };
-}
-function serializeBaseCommitCapture(capture) {
-  return {
-    source: capture.source,
-    baseCommit: capture.baseCommit,
-    actor: serializeTaskActorRef(capture.actor),
-    capturedAt: capture.capturedAt
-  };
-}
-function assertIsoTimestamp(value, label) {
-  const raw = value.trim();
-  if (!raw) {
-    throw new Error(`${label} must be a non-empty ISO-8601 timestamp.`);
-  }
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(raw)) {
-    throw new Error(
-      `${label} must be a real ISO-8601 timestamp with timezone; got ${raw}.`
-    );
-  }
-  const ms = Date.parse(raw);
-  if (!Number.isFinite(ms)) {
-    throw new Error(`${label} is not a parseable ISO-8601 instant: ${raw}.`);
-  }
-  return raw;
-}
-function parseBaseCommitCapture(value) {
-  if (value === void 0 || value === null) return void 0;
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(
-      "Task baseCommitCapture must be an object { source, baseCommit, actor, capturedAt }."
-    );
-  }
-  const raw = value;
-  const source = raw.source;
-  if (source !== "first-claim" && source !== "explicit-backfill") {
-    throw new Error(
-      `Task baseCommitCapture.source must be first-claim|explicit-backfill; got ${String(source)}.`
-    );
-  }
-  const baseCommit = typeof raw.baseCommit === "string" ? raw.baseCommit.trim() : "";
-  if (!baseCommit) {
-    throw new Error("Task baseCommitCapture.baseCommit must be a non-empty SHA.");
-  }
-  const capturedAtRaw = typeof raw.capturedAt === "string" ? raw.capturedAt.trim() : "";
-  const capturedAt = assertIsoTimestamp(
-    capturedAtRaw,
-    "Task baseCommitCapture.capturedAt"
-  );
-  let actor;
-  try {
-    actor = parseTaskActorRef(raw.actor, "parentActor");
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(msg.replace(/Task parentActor/g, "Task baseCommitCapture.actor"));
-  }
-  return { source, baseCommit, actor, capturedAt };
-}
-function resolveDispatchActors(input) {
-  if (!input.parentActor) {
-    throw new Error(
-      "task.dispatch requires explicit parentActor { kind, id } (legacy dispatchedBy is migration-only)."
-    );
-  }
-  return resolveParentReviewerPair({
-    parentActor: input.parentActor,
-    reviewer: input.reviewer
-  });
-}
-async function loadTaskEnvelope(fs22, path23) {
-  if (!await fs22.exists(path23)) throw new Error(`Task envelope not found: ${path23}.`);
-  const { data, body } = parseFrontmatter(await fs22.readFile(path23));
-  if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string") {
-    throw new Error(`Invalid task envelope format: ${path23}.`);
-  }
-  const legacyStatus = data.status === "taken" ? "taken" : "pending";
-  const state = parseTaskState(data.state, legacyStatus);
-  const actors = resolveActorsFromDisk(data);
-  const contextCard = loadTaskContextCardFromFrontmatter(data) ?? void 0;
-  const hasClaimsKey = Array.isArray(data.claims) && data.claims.every((claim) => typeof claim === "string");
-  if (!contextCard && !hasClaimsKey) {
-    throw new Error(
-      `Invalid task envelope format: ${path23} (missing Task.contextCard.refs.nodes; run claims\u2192refs migration).`
-    );
-  }
-  const task = {
-    path: path23,
-    role: data.role,
-    manifest: data.manifest,
-    status: stateToLegacyStatus(state),
-    state,
-    parentActor: actors.parentActor,
-    reviewer: actors.reviewer,
-    prompt: body.trim() || void 0
-  };
-  if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
-  if (data.asSub === true) task.asSub = true;
-  if (typeof data.workspace === "string") task.workspace = data.workspace;
-  if (typeof data.worktree === "string") task.worktree = data.worktree;
-  if (typeof data.branch === "string") task.branch = data.branch;
-  if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
-  if (typeof data.roleBranchBase === "string" && data.roleBranchBase.trim()) {
-    task.roleBranchBase = data.roleBranchBase.trim();
-  }
-  if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
-    task.baseCommit = data.baseCommit.trim();
-  }
-  const baseCommitCapture = parseBaseCommitCapture(data.baseCommitCapture);
-  if (baseCommitCapture) {
-    const recordedBase = task.baseCommit?.trim() || "";
-    if (!recordedBase) {
-      throw new Error(
-        `Invalid task envelope format: ${path23} (baseCommitCapture present but baseCommit missing).`
-      );
-    }
-    if (recordedBase !== baseCommitCapture.baseCommit) {
-      throw new Error(
-        `Invalid task envelope format: ${path23} (baseCommit ${recordedBase} !== baseCommitCapture.baseCommit ${baseCommitCapture.baseCommit}).`
-      );
-    }
-    task.baseCommitCapture = baseCommitCapture;
-  }
-  if (data.integrationAuthority !== void 0 && data.integrationAuthority !== null && task.parentActor && task.reviewer) {
-    task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
-      data.integrationAuthority,
-      task.parentActor,
-      task.reviewer
-    );
-  }
-  if (contextCard) {
-    task.contextCard = contextCard;
-    task.contextGeneration = contextCard.contextGeneration;
-    task.taskDeltaDigest = contextCard.taskDeltaDigest;
-  } else if (typeof data.contextGeneration === "string" && data.contextGeneration.trim()) {
-    task.contextGeneration = data.contextGeneration.trim();
-  }
-  if (!task.taskDeltaDigest && typeof data.taskDeltaDigest === "string" && data.taskDeltaDigest.trim()) {
-    task.taskDeltaDigest = data.taskDeltaDigest.trim();
-  }
-  const deliveryPolicy = normalizeDeliveryPolicyRead(data.deliveryPolicy);
-  if (deliveryPolicy) task.deliveryPolicy = deliveryPolicy;
-  if (data.assigneeKind === "role" || data.assigneeKind === "agentProfile") {
-    task.assigneeKind = data.assigneeKind;
-  }
-  if (typeof data.agentId === "string" && data.agentId.trim()) {
-    task.agentId = data.agentId.trim();
-  }
-  if (typeof data.sessionId === "string") task.sessionId = data.sessionId;
-  if (typeof data.purpose === "string" && data.purpose.trim()) {
-    task.purpose = data.purpose.trim();
-  }
-  if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
-  if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
-    task.lastOutcome = data.lastOutcome;
-  }
-  if (typeof data.createdAt === "string") task.createdAt = data.createdAt;
-  if (typeof data.updatedAt === "string") task.updatedAt = data.updatedAt;
-  const wait = parseWaitFields(data);
-  if (wait) task.wait = wait;
-  return task;
-}
-function resolveActorsFromDisk(data) {
-  const hasParent = data.parentActor !== void 0 && data.parentActor !== null;
-  const hasReviewer = data.reviewer !== void 0 && data.reviewer !== null;
-  if (hasParent || hasReviewer) {
-    if (!hasParent || !hasReviewer) {
-      throw new Error(
-        "Invalid task envelope: parentActor and reviewer must both be present when either is set."
-      );
-    }
-    return resolveParentReviewerPair({
-      parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
-      reviewer: parseTaskActorRef(data.reviewer, "reviewer")
-    });
-  }
-  const hasLegacy = typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
-  throw new Error(
-    hasLegacy ? "Invalid task envelope: legacy dispatchedBy present without parentActor/reviewer; run workspace.mount migration (migrateParentReviewerEnvelopes) before load." : "Invalid task envelope: missing parentActor/reviewer."
-  );
-}
-function resolveTaskPromptRoots(roots) {
-  if (typeof roots !== "string") {
-    return {
-      workspaceRoot: roots.workspaceRoot,
-      systemRoot: roots.systemRoot
-    };
-  }
-  const systemRoot = roots;
-  const normalized = systemRoot.replace(/[\\/]+$/, "");
-  const base = normalized.split(/[\\/]/).pop() ?? "";
-  const workspaceRoot = base === ".tent" ? normalized.replace(/[\\/]+[^\\/]+$/, "") || systemRoot : systemRoot;
-  return { workspaceRoot, systemRoot };
-}
-function formatTaskPointers(task) {
-  const kind = taskAssigneeKind(task);
-  const lines = [
-    `Task envelope: ${task.path}`,
-    `Manifest: ${task.manifest}`
-  ];
-  if (task.contextCard) {
-    const nodeIds = taskReferencedNodeIds(task);
-    if (nodeIds.length) {
-      lines.push(`contextCard.refs.nodes: ${nodeIds.join(", ")}`);
-    } else {
-      lines.push(`workspace context: true (no direct Node refs)`);
-    }
-  }
-  if (task.parentActor) {
-    lines.push(
-      `parentActor: ${task.parentActor.kind}:${task.parentActor.id}`
-    );
-  }
-  if (task.reviewer) {
-    lines.push(`reviewer: ${task.reviewer.kind}:${task.reviewer.id}`);
-  }
-  if (task.deliveryPolicy) {
-    lines.push(`deliveryPolicy: ${task.deliveryPolicy}`);
-  }
-  if (kind === "role") {
-    const initCli = join("temp", task.role, "init.md");
-    const initFile = join(".tent", "temp", task.role, "init.md");
-    lines.push(`role: ${task.role}`);
-    lines.push(`Role init file: ${initFile} (CLI path remains ${initCli}).`);
-  } else {
-    lines.push(`assigneeKind: agentProfile`);
-    lines.push(`profileId: ${task.role}`);
-    lines.push(
-      `Assignee: agentProfile ${task.role} (one-shot; no durable role init / tent-role lane).`
-    );
-  }
-  return lines.join("\n");
-}
-function formatExternalPathBlock(task, roots) {
-  const taskFile = join(".tent", task.path);
-  const systemRoot = roots.systemRoot.replace(/[\\/]+$/, "");
-  return [
-    `workspaceRoot: ${roots.workspaceRoot}`,
-    `systemRoot: ${roots.systemRoot}`,
-    `CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent), e.g. ${task.path}.`,
-    `File reads: use ${taskFile} (workspace-relative) or ${systemRoot}/${task.path} \u2014 never <workspaceRoot>/temp.`
-  ].join("\n");
-}
-function relayPromptForTask(task, roots) {
-  const resolved = resolveTaskPromptRoots(roots);
-  const kind = taskAssigneeKind(task);
-  const assigneeLine = kind === "agentProfile" ? `A Tent task has been dispatched to agentProfile ${task.role}.
-` : `A Tent task has been dispatched to role ${task.role}.
-`;
-  const initStep = kind === "agentProfile" ? `4. Read the task envelope and task-scoped manifest pointers above; do not look for a role init file.` : `4. If this is a new session for this role, complete role init first (read the init file above).`;
-  return assigneeLine + `${formatExternalPathBlock(task, resolved)}
-${formatTaskPointers(task)}
-1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).
-2. Read the Task Context Card (\`tent task get ${task.path}\` or the envelope file), then resolve each id in \`contextCard.refs.nodes\` with \`tent node get <nodeId>\`.
-3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).
-` + initStep;
-}
-function extractTaskUserPrompt(task) {
-  const body = task.prompt?.trim() || "";
-  if (!body) return "";
-  const match = body.match(/##\s*User Prompt\s*\r?\n+([\s\S]*?)\s*$/i);
-  if (match) return match[1].trim();
-  return body;
-}
-function sessionBootstrapPromptForTask(task, _roots) {
-  const userPrompt = extractTaskUserPrompt(task);
-  const kind = taskAssigneeKind(task);
-  const readyLine = kind === "agentProfile" ? `A Tent managed ACP session is ready for agentProfile ${task.role}.
-` : `A Tent managed ACP session is ready for role ${task.role}.
-`;
-  return readyLine + `${formatTaskPointers(task)}
-Service status: this task is already claimed (state=${task.state || "running"}).
-Managed path: Local Service already claimed this task. A non-empty final report is delivered by default after turn settle. Use \`outcome: blocked\` or \`outcome: needs-input\` only as an explicit control signal when work cannot complete; never self-accept.
-` + (kind === "agentProfile" ? `One-shot agentProfile task: rely on task/manifest pointers only \u2014 no role init.
-` : "") + (userPrompt ? `
-## User Prompt
-
-${userPrompt}
-` : `
-## User Prompt
-
-(no user prompt on envelope)
-`);
-}
-async function ensureRoleInit(fs22, role, tentName) {
-  const path23 = join("temp", role.name, "init.md");
-  const body = `# Role Init
-
-- Tent: ${tentName}
-- Agent rules (workspace file read): AGENTS.md at the workspace root
-- Role registry (workspace file read): .tent/roles.json (or run \`tent roles\` from workspace root)
-
-## Role Prompt
-
-${role.prompt?.trim() || "(no persistent role prompt)"}
-
-## Operating Model
-
-Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
-Task lifecycle uses \`tent task *\` (Local Service). Do not invent paths as <workspace>/temp \u2014 operational files live under .tent/temp.
-`;
-  await fs22.writeFile(path23, serializeFrontmatter({ type: "role-init", role: role.name }, body));
-  return path23;
-}
-async function writeTaskEnvelope(fs22, clock, input) {
-  const userPrompt = input.userPrompt?.trim() || "";
-  if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
-  const assigneeKind = input.assigneeKind ?? "role";
-  const dir = input.tasksDir?.trim() || (assigneeKind === "agentProfile" ? agentProfileTasksDir(input.role) : join(TEMP_DIR, input.role, "tasks"));
-  await ensureDir(fs22, dir);
-  const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
-  const isRootToken = (id2) => id2.trim() === "root";
-  const workspaceOnly = input.claims.length > 0 && input.claims.every((c) => isRootToken(c.id));
-  const nodeRefs = input.claims.filter((c) => !isRootToken(c.id)).map((c) => normalizeContextCardNodeRef({ id: c.id, path: c.path }));
-  const primaryRef = nodeRefs[0]?.id || (workspaceOnly ? "root" : "node");
-  const stem = taskStem(clock.now(), primaryRef);
-  const path23 = await uniqueMarkdownPath(fs22, dir, stem);
-  const now = clock.now();
-  const actors = resolveDispatchActors({
-    parentActor: input.parentActor,
-    reviewer: input.reviewer
-  });
-  const deliveryPolicy = input.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY;
-  if (deliveryPolicy !== "review" && !mayElevateDeliveryPolicy({
-    parentActor: actors.parentActor,
-    assigneeKind
-  })) {
-    throw new Error(
-      `deliveryPolicy=${deliveryPolicy} is only legal for a durable Role's user-facing delivery; downstream Task Agent \u2192 parent must use review (parent=${actors.parentActor.kind}:${actors.parentActor.id}).`
-    );
-  }
-  const objective = (input.objective?.trim() || userPrompt).trim();
-  if (!objective) throw new Error("Dispatch requires a non-empty objective (user prompt).");
-  const acceptance = input.acceptance && input.acceptance.length > 0 ? input.acceptance.map((s) => s.trim()).filter(Boolean) : [objective];
-  if (acceptance.length === 0) {
-    throw new Error("Dispatch requires non-empty acceptance (or objective).");
-  }
-  const facts = input.contextGenerationFacts;
-  const contextGeneration = input.contextGeneration?.trim() || computeContextGeneration({
-    workspaceIdentity: input.workspace?.workspace || "local-workspace",
-    agentsPointerDigest: facts?.agentsPointerDigest?.trim() || agentsBodyCompatibilityDigest(facts?.agentsBody ?? ""),
-    tentRoleDigest: facts?.tentRoleDigest,
-    tentRoleVersion: facts?.tentRoleVersion,
-    rolePrompt: facts?.rolePrompt,
-    tentTaskDigest: facts?.tentTaskDigest,
-    tentTaskVersion: facts?.tentTaskVersion,
-    profileAdapterCompatibility: profileAdapterCompatibilityDigest({
-      profileId: facts?.profileId || input.role,
-      adapterId: facts?.adapterId || "unknown-adapter",
-      capabilityFlags: facts?.capabilityFlags
-    }),
-    purpose: facts?.purpose,
-    extraStable: {
-      assigneeKind,
-      assignee: input.role,
-      ...input.agentId?.trim() ? { agentId: input.agentId.trim() } : {},
-      ...facts?.extraStable
-    }
-  });
-  const assignee = projectAssigneeFromTask({
-    role: input.role,
-    assigneeKind,
-    agentId: input.agentId
-  });
-  const contextCard = buildTaskContextCard({
-    objective,
-    acceptance,
-    refs: {
-      nodes: nodeRefs,
-      tasks: [],
-      deliveries: [],
-      git: []
-    },
-    parentActor: actors.parentActor,
-    reviewer: actors.reviewer,
-    assignee,
-    contextGeneration,
-    userPrompt
-  });
-  const data = {
-    type: "task",
-    id,
-    status: "pending",
-    state: "queued",
-    role: input.role,
-    assigneeKind,
-    parentActor: serializeTaskActorRef(actors.parentActor),
-    reviewer: serializeTaskActorRef(actors.reviewer),
-    // Sole new persisted source wire — do not write claims[].
-    contextCard: serializeTaskContextCardForFrontmatter(contextCard),
-    contextGeneration: contextCard.contextGeneration,
-    taskDeltaDigest: contextCard.taskDeltaDigest,
-    manifest: input.manifestPath,
-    deliveryPolicy,
-    createdAt: now,
-    updatedAt: now
-  };
-  if (input.asSub === true) data.asSub = true;
-  if (input.agentId?.trim()) data.agentId = input.agentId.trim();
-  if (input.sessionId) data.sessionId = input.sessionId;
-  if (input.purpose?.trim()) data.purpose = input.purpose.trim();
-  else if (facts?.purpose?.trim()) data.purpose = facts.purpose.trim();
-  if (input.workspace) {
-    data.workspace = input.workspace.workspace;
-    data.worktree = input.workspace.worktree;
-    data.branch = input.workspace.branch;
-    data.targetBranch = input.workspace.targetBranch;
-    const tip = typeof input.workspace.baseCommit === "string" ? input.workspace.baseCommit.trim() : "";
-    if (tip) {
-      data.baseCommit = tip;
-      data.roleBranchBase = tip;
-    }
-  }
-  const pointers = [
-    ...workspaceOnly || nodeRefs.length === 0 ? [`- workspace: ./ (stable workspace context; not a Node ref)`] : [],
-    ...nodeRefs.map((claim) => `- ${claim.id}: ${claim.path || "(path hint pending)"}`)
-  ].join("\n");
-  const body = `# Task
-
-## Context Pointers
-
-${pointers || "(none)"}
-
-- Manifest: ${input.manifestPath}
-` + (input.id || id ? `- Task id: ${id}
-` : "") + `
-## User Prompt
-
-${userPrompt}
-`;
-  await fs22.writeFile(path23, serializeFrontmatter(data, body));
-  return path23;
-}
-async function ackTaskEnvelope(fs22, path23) {
-  await patchTaskEnvelope(fs22, path23, {
-    status: "taken",
-    state: "running"
-  });
-}
-async function patchTaskEnvelope(fs22, path23, patch) {
-  if (!await fs22.exists(path23)) throw new Error(`Task envelope not found: ${path23}.`);
-  const raw = await fs22.readFile(path23);
-  const { data, body, keyOrder } = parseFrontmatter(raw);
-  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path23}.`);
-  if (patch.state) {
-    data.state = patch.state;
-    data.status = stateToLegacyStatus(patch.state);
-  } else if (patch.status) {
-    data.status = patch.status;
-    if (!data.state) data.state = legacyStatusToState(patch.status);
-  }
-  if (patch.sessionId === null) delete data.sessionId;
-  else if (typeof patch.sessionId === "string") data.sessionId = patch.sessionId;
-  if (patch.wait === null) {
-    delete data.waitReason;
-    delete data.waitSummary;
-    delete data.waitCode;
-  } else if (patch.wait) {
-    data.waitReason = patch.wait.reason;
-    data.waitSummary = patch.wait.summary;
-    const code = patch.wait.code?.trim();
-    if (code) data.waitCode = code;
-    else delete data.waitCode;
-  }
-  if (patch.activeDeliveryId === null) delete data.activeDeliveryId;
-  else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
-  if (patch.deliveryPolicy) data.deliveryPolicy = patch.deliveryPolicy;
-  if (patch.parentActor || patch.reviewer) {
-    const nextParent = patch.parentActor ? parseTaskActorRef(patch.parentActor, "parentActor") : data.parentActor !== void 0 && data.parentActor !== null ? parseTaskActorRef(data.parentActor, "parentActor") : void 0;
-    if (!nextParent) {
-      throw new Error(
-        "patchTaskEnvelope parentActor/reviewer requires an existing or explicit parentActor."
-      );
-    }
-    const nextReviewer = patch.reviewer ? parseTaskActorRef(patch.reviewer, "reviewer") : patch.parentActor ? void 0 : data.reviewer !== void 0 && data.reviewer !== null ? parseTaskActorRef(data.reviewer, "reviewer") : void 0;
-    const pair = resolveParentReviewerPair({
-      parentActor: nextParent,
-      reviewer: nextReviewer
-    });
-    data.parentActor = serializeTaskActorRef(pair.parentActor);
-    data.reviewer = serializeTaskActorRef(pair.reviewer);
-    const derived = deriveIntegrationAuthority({
-      parentActor: pair.parentActor,
-      reviewer: pair.reviewer
-    });
-    data.integrationAuthority = {
-      actor: { kind: derived.actor.kind, id: derived.actor.id },
-      mutator: "service"
-    };
-  }
-  if (patch.clearLegacyDispatchedBy) {
-    delete data.dispatchedBy;
-  }
-  if (patch.lastOutcome === null) delete data.lastOutcome;
-  else if (patch.lastOutcome === "delivered" || patch.lastOutcome === "blocked" || patch.lastOutcome === "needs-input") {
-    data.lastOutcome = patch.lastOutcome;
-  }
-  if (patch.updatedAt) data.updatedAt = patch.updatedAt;
-  for (const key2 of ["workspace", "worktree", "branch", "targetBranch"]) {
-    const value = patch[key2];
-    if (value === null) delete data[key2];
-    else if (typeof value === "string") data[key2] = value;
-  }
-  if (patch.roleBranchBase === null) delete data.roleBranchBase;
-  else if (typeof patch.roleBranchBase === "string" && patch.roleBranchBase.trim()) {
-    data.roleBranchBase = patch.roleBranchBase.trim();
-  }
-  if (patch.baseCommit === null) delete data.baseCommit;
-  else if (typeof patch.baseCommit === "string" && patch.baseCommit.trim()) {
-    data.baseCommit = patch.baseCommit.trim();
-  }
-  if (patch.baseCommitCapture === null) delete data.baseCommitCapture;
-  else if (patch.baseCommitCapture) {
-    data.baseCommitCapture = serializeBaseCommitCapture(patch.baseCommitCapture);
-  }
-  if (patch.integrationAuthority === null) delete data.integrationAuthority;
-  else if (patch.integrationAuthority) {
-    if (data.parentActor === void 0 || data.parentActor === null) {
-      throw new Error(
-        "patchTaskEnvelope integrationAuthority requires parentActor/reviewer on the envelope."
-      );
-    }
-    const parentForAuth = parseTaskActorRef(data.parentActor, "parentActor");
-    const reviewerForAuth = data.reviewer !== void 0 && data.reviewer !== null ? parseTaskActorRef(data.reviewer, "reviewer") : parentForAuth;
-    const validated = assertIntegrationAuthorityMatchesParent(
-      patch.integrationAuthority,
-      parentForAuth,
-      reviewerForAuth
-    );
-    data.integrationAuthority = {
-      actor: { kind: validated.actor.kind, id: validated.actor.id },
-      mutator: "service"
-    };
-  }
-  if (patch.contextCard === null) {
-    delete data.contextCard;
-    delete data.contextGeneration;
-    delete data.taskDeltaDigest;
-  } else if (patch.contextCard) {
-    data.contextCard = serializeTaskContextCardForFrontmatter(patch.contextCard);
-    data.contextGeneration = patch.contextCard.contextGeneration;
-    data.taskDeltaDigest = patch.contextCard.taskDeltaDigest;
-  }
-  if (patch.contextGeneration === null) delete data.contextGeneration;
-  else if (typeof patch.contextGeneration === "string" && patch.contextGeneration.trim()) {
-    data.contextGeneration = patch.contextGeneration.trim();
-  }
-  if (patch.taskDeltaDigest === null) delete data.taskDeltaDigest;
-  else if (typeof patch.taskDeltaDigest === "string" && patch.taskDeltaDigest.trim()) {
-    data.taskDeltaDigest = patch.taskDeltaDigest.trim();
-  }
-  if (patch.purpose === null) delete data.purpose;
-  else if (typeof patch.purpose === "string" && patch.purpose.trim()) {
-    data.purpose = patch.purpose.trim();
-  }
-  await fs22.writeFile(path23, serializeFrontmatter(data, body, keyOrder));
-  return loadTaskEnvelope(fs22, path23);
-}
-function primaryBoxId(task) {
-  if (task.contextCard == null) return void 0;
-  return taskReferencedNodeIds(task)[0];
-}
-function parseTaskState(value, legacy) {
-  if (value === "queued" || value === "running" || value === "waiting" || value === "delivered" || value === "accepted" || value === "rejected" || value === "interrupted" || value === "failed") {
-    return value;
-  }
-  return legacyStatusToState(legacy);
-}
-function parseWaitFields(data) {
-  const reason = data.waitReason;
-  const summary = data.waitSummary;
-  if ((reason === "user-input" || reason === "a2a-approval" || reason === "review" || reason === "external") && typeof summary === "string") {
-    const code = typeof data.waitCode === "string" && data.waitCode.trim() ? data.waitCode.trim() : void 0;
-    return { reason, summary, ...code ? { code } : {} };
-  }
-  return void 0;
-}
-function taskStem(now, claimId) {
-  const stamp = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
-  return `task-${stamp}-${claimId.replace(/[^0-9A-Za-z_-]+/g, "-")}`;
-}
-async function uniqueMarkdownPath(fs22, dir, stem) {
-  for (let n = 1; ; n++) {
-    const suffix = n === 1 ? "" : `-${n}`;
-    const path23 = join(dir, `${stem}${suffix}.md`);
-    if (!await fs22.exists(path23)) return path23;
-  }
-}
-async function ensureDir(fs22, path23) {
-  if (!await fs22.exists(path23)) await fs22.mkdir(path23);
-}
-
-// src/core/task-context-card.ts
 var TASK_CONTEXT_CARD_SCHEMA_VERSION = "v1";
 var CONTEXT_GENERATION_VERSION = "v1";
-var MANAGED_BOOTSTRAP_INVARIANT = "Tent managed bootstrap invariant v1: Core is authoritative. Fetch by durable id before answering. Never invent missing Context Card fields, refs, parent/reviewer, or chat-memory continuity. Final report goes through Delivery only.";
+var MANAGED_BOOTSTRAP_INVARIANT = "Tent managed bootstrap invariant v1: Core is authoritative. Fetch by durable id before answering. Never invent missing Context Card fields, Task authority, refs, or chat-memory continuity. Final report goes through Delivery only.";
 var INTEGRATION_MUTATOR_SERVICE = "service";
 var CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS = [
   "taskId",
@@ -2531,9 +1794,6 @@ function computeTaskDeltaDigest(inputs) {
     scope: card.scope,
     acceptance: card.acceptance,
     refs: card.refs,
-    parentActor: card.parentActor,
-    reviewer: card.reviewer,
-    assignee: card.assignee,
     taskInputDelta: taskInputDelta?.trim() || "",
     checkpoint: checkpoint?.trim() || "",
     userPrompt: userPrompt?.trim() || ""
@@ -2543,42 +1803,6 @@ function computeTaskDeltaDigest(inputs) {
 function asStringList(value) {
   if (!Array.isArray(value)) return [];
   return value.filter((item) => typeof item === "string").map((s) => s.trim()).filter(Boolean);
-}
-function parseActorRef(value, label) {
-  if (value === void 0 || value === null) {
-    throw new TaskContextCardError(
-      label === "parentActor" ? "MISSING_PARENT_ACTOR" : "MISSING_REVIEWER",
-      `Context Card requires ${label} { kind, id } (canonical TaskActorRef).`,
-      { label, value }
-    );
-  }
-  try {
-    return parseTaskActorRef(value, label);
-  } catch (err) {
-    if (err instanceof TaskLifecycleError) {
-      const code = err.code === "INVALID_ACTOR" ? "INVALID_ACTOR" : label === "parentActor" ? "MISSING_PARENT_ACTOR" : "MISSING_REVIEWER";
-      throw new TaskContextCardError(code, err.message, { label, value });
-    }
-    throw err;
-  }
-}
-function parseAssignee(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TaskContextCardError(
-      "MISSING_ASSIGNEE",
-      "Context Card requires assignee { kind: role|agentId, id }."
-    );
-  }
-  const raw = value;
-  const kind = raw.kind;
-  const id = typeof raw.id === "string" ? raw.id.trim() : "";
-  if (kind !== "role" && kind !== "agentId" || !id) {
-    throw new TaskContextCardError(
-      "MISSING_ASSIGNEE",
-      "Context Card assignee must be { kind: role|agentId, id: non-empty }."
-    );
-  }
-  return { kind, id };
 }
 function parseRefList(value, bucket) {
   if (value === void 0 || value === null) return [];
@@ -2631,33 +1855,7 @@ function parseRefList(value, bucket) {
 }
 function buildTaskContextCard(input) {
   const objective = input.objective?.trim() || "";
-  if (!objective) {
-    throw new TaskContextCardError(
-      "MISSING_OBJECTIVE",
-      "Context Card requires objective (fail-loud to parent; do not invent from chat memory)."
-    );
-  }
   const acceptance = asStringList([...input.acceptance ?? []]);
-  if (acceptance.length === 0) {
-    throw new TaskContextCardError(
-      "MISSING_ACCEPTANCE",
-      "Context Card requires at least one acceptance criterion (fail-loud to parent)."
-    );
-  }
-  const parentActor = parseActorRef(input.parentActor, "parentActor");
-  const reviewer = parseActorRef(input.reviewer, "reviewer");
-  try {
-    assertParentReviewerEqual(parentActor, reviewer);
-  } catch (err) {
-    if (err instanceof TaskLifecycleError) {
-      throw new TaskContextCardError("INVALID_ACTOR", err.message, {
-        parentActor,
-        reviewer
-      });
-    }
-    throw err;
-  }
-  const assignee = parseAssignee(input.assignee);
   if (!isContextGenerationId(input.contextGeneration)) {
     throw new TaskContextCardError(
       "INVALID_GENERATION",
@@ -2678,10 +1876,7 @@ function buildTaskContextCard(input) {
       tasks: parseRefList(input.refs?.tasks ?? [], "tasks"),
       deliveries: parseRefList(input.refs?.deliveries ?? [], "deliveries"),
       git: parseRefList(input.refs?.git ?? [], "git")
-    },
-    parentActor,
-    reviewer,
-    assignee
+    }
   };
   const taskDeltaDigest = input.taskDeltaDigest?.trim() || computeTaskDeltaDigest({
     card: cardBody,
@@ -2719,37 +1914,15 @@ function parseTaskContextCard(data) {
       deliveries: parseRefList(refsRaw.deliveries ?? raw.refsDeliveries, "deliveries"),
       git: parseRefList(refsRaw.git ?? raw.refsGit, "git")
     },
-    parentActor: raw.parentActor,
-    reviewer: raw.reviewer,
-    assignee: raw.assignee,
     contextGeneration: typeof raw.contextGeneration === "string" ? raw.contextGeneration : "",
     taskDeltaDigest: typeof raw.taskDeltaDigest === "string" ? raw.taskDeltaDigest : void 0
   });
-}
-function hasTaskContextCardBodyFields(data) {
-  const keys = [
-    "objective",
-    "frozenDecisions",
-    "acceptance",
-    "scope",
-    "scopeInclude",
-    "scopeExclude",
-    "refs",
-    "refsNodes",
-    "refsTasks",
-    "refsDeliveries",
-    "refsGit",
-    "assignee",
-    "contextCard"
-  ];
-  return keys.some((k) => data[k] !== void 0 && data[k] !== null);
 }
 function loadTaskContextCardFromFrontmatter(data) {
   if (data.contextCard !== void 0 && data.contextCard !== null) {
     return parseTaskContextCard(data.contextCard);
   }
-  if (!hasTaskContextCardBodyFields(data)) return null;
-  return parseTaskContextCard(data);
+  return null;
 }
 function serializeTaskContextCardForFrontmatter(card) {
   return {
@@ -2767,23 +1940,9 @@ function serializeTaskContextCardForFrontmatter(card) {
       deliveries: card.refs.deliveries.map((r) => ({ ...r })),
       git: card.refs.git.map((r) => ({ ...r }))
     },
-    parentActor: { kind: card.parentActor.kind, id: card.parentActor.id },
-    reviewer: { kind: card.reviewer.kind, id: card.reviewer.id },
-    assignee: { kind: card.assignee.kind, id: card.assignee.id },
     contextGeneration: card.contextGeneration,
     taskDeltaDigest: card.taskDeltaDigest
   };
-}
-function projectAssigneeFromTask(task) {
-  const agentId = typeof task.agentId === "string" ? task.agentId.trim() : "";
-  if (agentId) {
-    return { kind: "agentId", id: agentId };
-  }
-  const kind = taskAssigneeKind(task);
-  if (kind === "agentProfile") {
-    return { kind: "agentId", id: task.role };
-  }
-  return { kind: "role", id: task.role };
 }
 function assertRefsResolved(card, resolve15) {
   const buckets = [
@@ -2809,9 +1968,9 @@ function formatTaskContextCardPrompt(card) {
     "Tent Task Context Card v1",
     `schemaVersion: ${card.schemaVersion}`,
     `contextGeneration: ${card.contextGeneration}`,
-    `taskDeltaDigest: ${card.taskDeltaDigest}`,
-    `objective: ${card.objective}`
+    `taskDeltaDigest: ${card.taskDeltaDigest}`
   ];
+  if (card.objective) lines.push(`objective: ${card.objective}`);
   if (card.frozenDecisions.length) {
     lines.push("frozenDecisions:");
     for (const d of card.frozenDecisions) lines.push(`  - ${d}`);
@@ -2824,13 +1983,10 @@ function formatTaskContextCardPrompt(card) {
   lines.push("scope.exclude:");
   if (card.scope.exclude.length === 0) lines.push("  (none)");
   else for (const s of card.scope.exclude) lines.push(`  - ${s}`);
-  lines.push("acceptance:");
-  for (const a of card.acceptance) lines.push(`  - ${a}`);
-  lines.push(
-    `parentActor: ${card.parentActor.kind}:${card.parentActor.id}`,
-    `reviewer: ${card.reviewer.kind}:${card.reviewer.id}`,
-    `assignee: ${card.assignee.kind}:${card.assignee.id}`
-  );
+  if (card.acceptance.length) {
+    lines.push("acceptance:");
+    for (const a of card.acceptance) lines.push(`  - ${a}`);
+  }
   const fmtRefs = (label, refs) => {
     lines.push(`refs.${label}:`);
     if (refs.length === 0) {
@@ -2893,9 +2049,6 @@ function assembleManagedPrompt(input) {
     scope: input.contextCard.scope,
     acceptance: input.contextCard.acceptance,
     refs: input.contextCard.refs,
-    parentActor: input.contextCard.parentActor,
-    reviewer: input.contextCard.reviewer,
-    assignee: input.contextCard.assignee,
     contextGeneration: input.contextCard.contextGeneration,
     taskDeltaDigest: input.contextCard.taskDeltaDigest,
     taskInputDelta: input.taskInputDelta,
@@ -3796,6 +2949,714 @@ async function writeJson(fs22, path23, value) {
 }
 function isRecord4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// src/core/task.ts
+async function loadTaskEnvelopes(fs22) {
+  const tasks = [];
+  if (!await fs22.exists(TEMP_DIR)) return tasks;
+  for (const entry of await fs22.listDir(TEMP_DIR)) {
+    if (!entry.isDir) continue;
+    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
+      const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
+      if (!await fs22.exists(profilesRoot)) continue;
+      for (const profileEntry of await fs22.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        await collectTaskFiles(fs22, join(profilesRoot, profileEntry.name, "tasks"), tasks);
+      }
+      continue;
+    }
+    await collectTaskFiles(fs22, join(TEMP_DIR, entry.name, "tasks"), tasks);
+  }
+  return tasks.sort((a, b) => a.path.localeCompare(b.path));
+}
+async function migrateParentReviewerEnvelopes(fs22, clock, options) {
+  const dryRun = options?.dryRun === true;
+  const report = {
+    scanned: 0,
+    rewritten: [],
+    skipped: [],
+    warnings: []
+  };
+  if (!await fs22.exists(TEMP_DIR)) return report;
+  const paths = [];
+  for (const entry of await fs22.listDir(TEMP_DIR)) {
+    if (!entry.isDir) continue;
+    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
+      const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
+      if (!await fs22.exists(profilesRoot)) continue;
+      for (const profileEntry of await fs22.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        const taskDir2 = join(profilesRoot, profileEntry.name, "tasks");
+        if (!await fs22.exists(taskDir2)) continue;
+        for (const f of await fs22.listDir(taskDir2)) {
+          if (!f.isDir && f.name.endsWith(".md")) paths.push(join(taskDir2, f.name));
+        }
+      }
+      continue;
+    }
+    const taskDir = join(TEMP_DIR, entry.name, "tasks");
+    if (!await fs22.exists(taskDir)) continue;
+    for (const f of await fs22.listDir(taskDir)) {
+      if (!f.isDir && f.name.endsWith(".md")) paths.push(join(taskDir, f.name));
+    }
+  }
+  for (const path23 of paths.sort((a, b) => a.localeCompare(b))) {
+    report.scanned += 1;
+    try {
+      const raw = await fs22.readFile(path23);
+      const { data, body, keyOrder } = parseFrontmatter(raw);
+      if (data.type !== "task") {
+        report.skipped.push(path23);
+        continue;
+      }
+      const hasParent = data.parentActor !== void 0 && data.parentActor !== null;
+      const hasReviewer = data.reviewer !== void 0 && data.reviewer !== null;
+      const hasLegacyDispatcher = typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
+      if (hasParent && hasReviewer && !hasLegacyDispatcher) {
+        try {
+          resolveParentReviewerPair({
+            parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
+            reviewer: parseTaskActorRef(data.reviewer, "reviewer")
+          });
+          report.skipped.push(path23);
+        } catch (err) {
+          report.warnings.push(
+            `${path23}: ${err instanceof Error ? err.message : String(err)}`
+          );
+          report.skipped.push(path23);
+        }
+        continue;
+      }
+      let parentActor;
+      let reviewer;
+      if (hasParent && hasReviewer) {
+        const pair = resolveParentReviewerPair({
+          parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
+          reviewer: parseTaskActorRef(data.reviewer, "reviewer")
+        });
+        parentActor = pair.parentActor;
+        reviewer = pair.reviewer;
+      } else if (hasParent || hasReviewer) {
+        report.warnings.push(
+          `${path23}: partial parentActor/reviewer pair; refusing silent repair`
+        );
+        report.skipped.push(path23);
+        continue;
+      } else {
+        const migrated = migrateParentReviewerFromLegacy({
+          asSub: data.asSub === true,
+          dispatchedBy: typeof data.dispatchedBy === "string" ? data.dispatchedBy : void 0
+        });
+        parentActor = migrated.parentActor;
+        reviewer = migrated.reviewer;
+      }
+      const next = { ...data };
+      next.parentActor = serializeTaskActorRef(parentActor);
+      next.reviewer = serializeTaskActorRef(reviewer);
+      delete next.dispatchedBy;
+      const nextRaw = serializeFrontmatter(next, body, keyOrder);
+      if (nextRaw === raw) {
+        report.skipped.push(path23);
+        continue;
+      }
+      if (!dryRun) {
+        next.updatedAt = clock.now();
+        await fs22.writeFile(path23, serializeFrontmatter(next, body, keyOrder));
+      }
+      report.rewritten.push(path23);
+    } catch (err) {
+      report.warnings.push(
+        `${path23}: ${err instanceof Error ? err.message : String(err)}`
+      );
+      report.skipped.push(path23);
+    }
+  }
+  return report;
+}
+async function collectTaskFiles(fs22, taskDir, tasks) {
+  if (!await fs22.exists(taskDir)) return;
+  for (const entry of await fs22.listDir(taskDir)) {
+    if (entry.isDir || !entry.name.endsWith(".md")) continue;
+    const path23 = join(taskDir, entry.name);
+    try {
+      tasks.push(await loadTaskEnvelope(fs22, path23));
+    } catch {
+    }
+  }
+}
+function taskAssigneeKind(task) {
+  return task.assigneeKind === "agentProfile" ? "agentProfile" : "role";
+}
+function taskAsSub(task) {
+  return task.asSub === true;
+}
+function taskParentRoleId(task) {
+  return task.parentActor?.kind === "role" ? task.parentActor.id : void 0;
+}
+function serializeTaskActorRef(actor) {
+  return { kind: actor.kind, id: actor.id };
+}
+function serializeBaseCommitCapture(capture) {
+  return {
+    source: capture.source,
+    baseCommit: capture.baseCommit,
+    actor: serializeTaskActorRef(capture.actor),
+    capturedAt: capture.capturedAt
+  };
+}
+function assertIsoTimestamp(value, label) {
+  const raw = value.trim();
+  if (!raw) {
+    throw new Error(`${label} must be a non-empty ISO-8601 timestamp.`);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(raw)) {
+    throw new Error(
+      `${label} must be a real ISO-8601 timestamp with timezone; got ${raw}.`
+    );
+  }
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) {
+    throw new Error(`${label} is not a parseable ISO-8601 instant: ${raw}.`);
+  }
+  return raw;
+}
+function parseBaseCommitCapture(value) {
+  if (value === void 0 || value === null) return void 0;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(
+      "Task baseCommitCapture must be an object { source, baseCommit, actor, capturedAt }."
+    );
+  }
+  const raw = value;
+  const source = raw.source;
+  if (source !== "first-claim" && source !== "explicit-backfill") {
+    throw new Error(
+      `Task baseCommitCapture.source must be first-claim|explicit-backfill; got ${String(source)}.`
+    );
+  }
+  const baseCommit = typeof raw.baseCommit === "string" ? raw.baseCommit.trim() : "";
+  if (!baseCommit) {
+    throw new Error("Task baseCommitCapture.baseCommit must be a non-empty SHA.");
+  }
+  const capturedAtRaw = typeof raw.capturedAt === "string" ? raw.capturedAt.trim() : "";
+  const capturedAt = assertIsoTimestamp(
+    capturedAtRaw,
+    "Task baseCommitCapture.capturedAt"
+  );
+  let actor;
+  try {
+    actor = parseTaskActorRef(raw.actor, "parentActor");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(msg.replace(/Task parentActor/g, "Task baseCommitCapture.actor"));
+  }
+  return { source, baseCommit, actor, capturedAt };
+}
+function resolveDispatchActors(input) {
+  if (!input.parentActor) {
+    throw new Error(
+      "task.dispatch requires explicit parentActor { kind, id } (legacy dispatchedBy is migration-only)."
+    );
+  }
+  return resolveParentReviewerPair({
+    parentActor: input.parentActor,
+    reviewer: input.reviewer
+  });
+}
+async function loadTaskEnvelope(fs22, path23) {
+  if (!await fs22.exists(path23)) throw new Error(`Task envelope not found: ${path23}.`);
+  const { data, body } = parseFrontmatter(await fs22.readFile(path23));
+  if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string") {
+    throw new Error(`Invalid task envelope format: ${path23}.`);
+  }
+  const legacyStatus = data.status === "taken" ? "taken" : "pending";
+  const state = parseTaskState(data.state, legacyStatus);
+  const actors = resolveActorsFromDisk(data);
+  const contextCard = loadTaskContextCardFromFrontmatter(data) ?? void 0;
+  const hasClaimsKey = Array.isArray(data.claims) && data.claims.every((claim) => typeof claim === "string");
+  if (!contextCard && !hasClaimsKey) {
+    throw new Error(
+      `Invalid task envelope format: ${path23} (missing Task.contextCard.refs.nodes; run claims\u2192refs migration).`
+    );
+  }
+  const task = {
+    path: path23,
+    role: data.role,
+    manifest: data.manifest,
+    status: stateToLegacyStatus(state),
+    state,
+    parentActor: actors.parentActor,
+    reviewer: actors.reviewer,
+    prompt: body.trim() || void 0
+  };
+  if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
+  if (data.asSub === true) task.asSub = true;
+  if (typeof data.workspace === "string") task.workspace = data.workspace;
+  if (typeof data.worktree === "string") task.worktree = data.worktree;
+  if (typeof data.branch === "string") task.branch = data.branch;
+  if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
+  if (typeof data.roleBranchBase === "string" && data.roleBranchBase.trim()) {
+    task.roleBranchBase = data.roleBranchBase.trim();
+  }
+  if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
+    task.baseCommit = data.baseCommit.trim();
+  }
+  const baseCommitCapture = parseBaseCommitCapture(data.baseCommitCapture);
+  if (baseCommitCapture) {
+    const recordedBase = task.baseCommit?.trim() || "";
+    if (!recordedBase) {
+      throw new Error(
+        `Invalid task envelope format: ${path23} (baseCommitCapture present but baseCommit missing).`
+      );
+    }
+    if (recordedBase !== baseCommitCapture.baseCommit) {
+      throw new Error(
+        `Invalid task envelope format: ${path23} (baseCommit ${recordedBase} !== baseCommitCapture.baseCommit ${baseCommitCapture.baseCommit}).`
+      );
+    }
+    task.baseCommitCapture = baseCommitCapture;
+  }
+  if (data.integrationAuthority !== void 0 && data.integrationAuthority !== null && task.parentActor && task.reviewer) {
+    task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
+      data.integrationAuthority,
+      task.parentActor,
+      task.reviewer
+    );
+  }
+  if (contextCard) {
+    task.contextCard = contextCard;
+    task.contextGeneration = contextCard.contextGeneration;
+    task.taskDeltaDigest = contextCard.taskDeltaDigest;
+  }
+  const deliveryPolicy = normalizeDeliveryPolicyRead(data.deliveryPolicy);
+  if (deliveryPolicy) task.deliveryPolicy = deliveryPolicy;
+  if (data.assigneeKind === "role" || data.assigneeKind === "agentProfile") {
+    task.assigneeKind = data.assigneeKind;
+  }
+  if (typeof data.agentId === "string" && data.agentId.trim()) {
+    task.agentId = data.agentId.trim();
+  }
+  if (typeof data.sessionId === "string") task.sessionId = data.sessionId;
+  if (typeof data.purpose === "string" && data.purpose.trim()) {
+    task.purpose = data.purpose.trim();
+  }
+  if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
+  if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
+    task.lastOutcome = data.lastOutcome;
+  }
+  if (typeof data.createdAt === "string") task.createdAt = data.createdAt;
+  if (typeof data.updatedAt === "string") task.updatedAt = data.updatedAt;
+  const wait = parseWaitFields(data);
+  if (wait) task.wait = wait;
+  return task;
+}
+function resolveActorsFromDisk(data) {
+  const hasParent = data.parentActor !== void 0 && data.parentActor !== null;
+  const hasReviewer = data.reviewer !== void 0 && data.reviewer !== null;
+  if (hasParent || hasReviewer) {
+    if (!hasParent || !hasReviewer) {
+      throw new Error(
+        "Invalid task envelope: parentActor and reviewer must both be present when either is set."
+      );
+    }
+    return resolveParentReviewerPair({
+      parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
+      reviewer: parseTaskActorRef(data.reviewer, "reviewer")
+    });
+  }
+  const hasLegacy = typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
+  throw new Error(
+    hasLegacy ? "Invalid task envelope: legacy dispatchedBy present without parentActor/reviewer; run workspace.mount migration (migrateParentReviewerEnvelopes) before load." : "Invalid task envelope: missing parentActor/reviewer."
+  );
+}
+function resolveTaskPromptRoots(roots) {
+  if (typeof roots !== "string") {
+    return {
+      workspaceRoot: roots.workspaceRoot,
+      systemRoot: roots.systemRoot
+    };
+  }
+  const systemRoot = roots;
+  const normalized = systemRoot.replace(/[\\/]+$/, "");
+  const base = normalized.split(/[\\/]/).pop() ?? "";
+  const workspaceRoot = base === ".tent" ? normalized.replace(/[\\/]+[^\\/]+$/, "") || systemRoot : systemRoot;
+  return { workspaceRoot, systemRoot };
+}
+function formatTaskPointers(task) {
+  const kind = taskAssigneeKind(task);
+  const lines = [
+    `Task envelope: ${task.path}`,
+    `Manifest: ${task.manifest}`
+  ];
+  if (task.contextCard) {
+    const nodeIds = taskReferencedNodeIds(task);
+    if (nodeIds.length) {
+      lines.push(`contextCard.refs.nodes: ${nodeIds.join(", ")}`);
+    } else {
+      lines.push(`workspace context: true (no direct Node refs)`);
+    }
+  }
+  if (task.parentActor) {
+    lines.push(
+      `parentActor: ${task.parentActor.kind}:${task.parentActor.id}`
+    );
+  }
+  if (task.reviewer) {
+    lines.push(`reviewer: ${task.reviewer.kind}:${task.reviewer.id}`);
+  }
+  if (task.deliveryPolicy) {
+    lines.push(`deliveryPolicy: ${task.deliveryPolicy}`);
+  }
+  if (kind === "role") {
+    const initCli = join("temp", task.role, "init.md");
+    const initFile = join(".tent", "temp", task.role, "init.md");
+    lines.push(`role: ${task.role}`);
+    lines.push(`Role init file: ${initFile} (CLI path remains ${initCli}).`);
+  } else {
+    lines.push(`assigneeKind: agentProfile`);
+    lines.push(`profileId: ${task.role}`);
+    lines.push(
+      `Assignee: agentProfile ${task.role} (one-shot; no durable role init / tent-role lane).`
+    );
+  }
+  return lines.join("\n");
+}
+function formatExternalPathBlock(task, roots) {
+  const taskFile = join(".tent", task.path);
+  const systemRoot = roots.systemRoot.replace(/[\\/]+$/, "");
+  return [
+    `workspaceRoot: ${roots.workspaceRoot}`,
+    `systemRoot: ${roots.systemRoot}`,
+    `CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent), e.g. ${task.path}.`,
+    `File reads: use ${taskFile} (workspace-relative) or ${systemRoot}/${task.path} \u2014 never <workspaceRoot>/temp.`
+  ].join("\n");
+}
+function relayPromptForTask(task, roots) {
+  const resolved = resolveTaskPromptRoots(roots);
+  const kind = taskAssigneeKind(task);
+  const assigneeLine = kind === "agentProfile" ? `A Tent task has been dispatched to agentProfile ${task.role}.
+` : `A Tent task has been dispatched to role ${task.role}.
+`;
+  const initStep = kind === "agentProfile" ? `4. Read the task envelope and task-scoped manifest pointers above; do not look for a role init file.` : `4. If this is a new session for this role, complete role init first (read the init file above).`;
+  return assigneeLine + `${formatExternalPathBlock(task, resolved)}
+${formatTaskPointers(task)}
+1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).
+2. Read the Task Context Card (\`tent task get ${task.path}\` or the envelope file), then resolve each id in \`contextCard.refs.nodes\` with \`tent node get <nodeId>\`.
+3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).
+` + initStep;
+}
+function extractTaskUserPrompt(task) {
+  const body = task.prompt?.trim() || "";
+  if (!body) return "";
+  const match = body.match(/##\s*User Prompt\s*\r?\n+([\s\S]*?)\s*$/i);
+  if (match) return match[1].trim();
+  return body;
+}
+function sessionBootstrapPromptForTask(task, _roots) {
+  const userPrompt = extractTaskUserPrompt(task);
+  const kind = taskAssigneeKind(task);
+  const readyLine = kind === "agentProfile" ? `A Tent managed ACP session is ready for agentProfile ${task.role}.
+` : `A Tent managed ACP session is ready for role ${task.role}.
+`;
+  return readyLine + `${formatTaskPointers(task)}
+Service status: this task is already claimed (state=${task.state || "running"}).
+Managed path: Local Service already claimed this task. A non-empty final report is delivered by default after turn settle. Use \`outcome: blocked\` or \`outcome: needs-input\` only as an explicit control signal when work cannot complete; never self-accept.
+` + (kind === "agentProfile" ? `One-shot agentProfile task: rely on task/manifest pointers only \u2014 no role init.
+` : "") + (userPrompt ? `
+## User Prompt
+
+${userPrompt}
+` : `
+## User Prompt
+
+(no user prompt on envelope)
+`);
+}
+async function ensureRoleInit(fs22, role, tentName) {
+  const path23 = join("temp", role.name, "init.md");
+  const body = `# Role Init
+
+- Tent: ${tentName}
+- Agent rules (workspace file read): AGENTS.md at the workspace root
+- Role registry (workspace file read): .tent/roles.json (or run \`tent roles\` from workspace root)
+
+## Role Prompt
+
+${role.prompt?.trim() || "(no persistent role prompt)"}
+
+## Operating Model
+
+Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
+Task lifecycle uses \`tent task *\` (Local Service). Do not invent paths as <workspace>/temp \u2014 operational files live under .tent/temp.
+`;
+  await fs22.writeFile(path23, serializeFrontmatter({ type: "role-init", role: role.name }, body));
+  return path23;
+}
+async function writeTaskEnvelope(fs22, clock, input) {
+  const userPrompt = input.userPrompt?.trim() || "";
+  if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
+  const assigneeKind = input.assigneeKind ?? "role";
+  const dir = input.tasksDir?.trim() || (assigneeKind === "agentProfile" ? agentProfileTasksDir(input.role) : join(TEMP_DIR, input.role, "tasks"));
+  await ensureDir(fs22, dir);
+  const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
+  const isRootToken = (id2) => id2.trim() === "root";
+  const workspaceOnly = input.claims.length > 0 && input.claims.every((c) => isRootToken(c.id));
+  const nodeRefs = input.claims.filter((c) => !isRootToken(c.id)).map((c) => normalizeContextCardNodeRef({ id: c.id, path: c.path }));
+  const primaryRef = nodeRefs[0]?.id || (workspaceOnly ? "root" : "node");
+  const stem = taskStem(clock.now(), primaryRef);
+  const path23 = await uniqueMarkdownPath(fs22, dir, stem);
+  const now = clock.now();
+  const actors = resolveDispatchActors({
+    parentActor: input.parentActor,
+    reviewer: input.reviewer
+  });
+  const deliveryPolicy = input.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY;
+  if (deliveryPolicy !== "review" && !mayElevateDeliveryPolicy({
+    parentActor: actors.parentActor,
+    assigneeKind
+  })) {
+    throw new Error(
+      `deliveryPolicy=${deliveryPolicy} is only legal for a durable Role's user-facing delivery; downstream Task Agent \u2192 parent must use review (parent=${actors.parentActor.kind}:${actors.parentActor.id}).`
+    );
+  }
+  const objective = input.objective?.trim() || "";
+  const acceptance = input.acceptance && input.acceptance.length > 0 ? input.acceptance.map((s) => s.trim()).filter(Boolean) : [];
+  const facts = input.contextGenerationFacts;
+  const contextGeneration = input.contextGeneration?.trim() || computeContextGeneration({
+    workspaceIdentity: input.workspace?.workspace || "local-workspace",
+    agentsPointerDigest: facts?.agentsPointerDigest?.trim() || agentsBodyCompatibilityDigest(facts?.agentsBody ?? ""),
+    tentRoleDigest: facts?.tentRoleDigest,
+    tentRoleVersion: facts?.tentRoleVersion,
+    rolePrompt: facts?.rolePrompt,
+    tentTaskDigest: facts?.tentTaskDigest,
+    tentTaskVersion: facts?.tentTaskVersion,
+    profileAdapterCompatibility: profileAdapterCompatibilityDigest({
+      profileId: facts?.profileId || input.role,
+      adapterId: facts?.adapterId || "unknown-adapter",
+      capabilityFlags: facts?.capabilityFlags
+    }),
+    purpose: facts?.purpose,
+    extraStable: {
+      assigneeKind,
+      assignee: input.role,
+      ...input.agentId?.trim() ? { agentId: input.agentId.trim() } : {},
+      ...facts?.extraStable
+    }
+  });
+  const contextCard = buildTaskContextCard({
+    objective,
+    acceptance,
+    refs: {
+      nodes: nodeRefs,
+      tasks: [],
+      deliveries: [],
+      git: []
+    },
+    contextGeneration,
+    userPrompt
+  });
+  const data = {
+    type: "task",
+    id,
+    status: "pending",
+    state: "queued",
+    role: input.role,
+    assigneeKind,
+    parentActor: serializeTaskActorRef(actors.parentActor),
+    reviewer: serializeTaskActorRef(actors.reviewer),
+    // Sole new persisted source wire — do not write claims[].
+    contextCard: serializeTaskContextCardForFrontmatter(contextCard),
+    manifest: input.manifestPath,
+    deliveryPolicy,
+    createdAt: now,
+    updatedAt: now
+  };
+  if (input.asSub === true) data.asSub = true;
+  if (input.agentId?.trim()) data.agentId = input.agentId.trim();
+  if (input.sessionId) data.sessionId = input.sessionId;
+  if (input.purpose?.trim()) data.purpose = input.purpose.trim();
+  else if (facts?.purpose?.trim()) data.purpose = facts.purpose.trim();
+  if (input.workspace) {
+    data.workspace = input.workspace.workspace;
+    data.worktree = input.workspace.worktree;
+    data.branch = input.workspace.branch;
+    data.targetBranch = input.workspace.targetBranch;
+    const tip = typeof input.workspace.baseCommit === "string" ? input.workspace.baseCommit.trim() : "";
+    if (tip) {
+      data.baseCommit = tip;
+      data.roleBranchBase = tip;
+    }
+  }
+  const pointers = [
+    ...workspaceOnly || nodeRefs.length === 0 ? [`- workspace: ./ (stable workspace context; not a Node ref)`] : [],
+    ...nodeRefs.map((claim) => `- ${claim.id}: ${claim.path || "(path hint pending)"}`)
+  ].join("\n");
+  const body = `# Task
+
+## Context Pointers
+
+${pointers || "(none)"}
+
+- Manifest: ${input.manifestPath}
+` + (input.id || id ? `- Task id: ${id}
+` : "") + `
+## User Prompt
+
+${userPrompt}
+`;
+  await fs22.writeFile(path23, serializeFrontmatter(data, body));
+  return path23;
+}
+async function ackTaskEnvelope(fs22, path23) {
+  await patchTaskEnvelope(fs22, path23, {
+    status: "taken",
+    state: "running"
+  });
+}
+async function patchTaskEnvelope(fs22, path23, patch) {
+  if (!await fs22.exists(path23)) throw new Error(`Task envelope not found: ${path23}.`);
+  const raw = await fs22.readFile(path23);
+  const { data, body, keyOrder } = parseFrontmatter(raw);
+  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path23}.`);
+  if (patch.state) {
+    data.state = patch.state;
+    data.status = stateToLegacyStatus(patch.state);
+  } else if (patch.status) {
+    data.status = patch.status;
+    if (!data.state) data.state = legacyStatusToState(patch.status);
+  }
+  if (patch.sessionId === null) delete data.sessionId;
+  else if (typeof patch.sessionId === "string") data.sessionId = patch.sessionId;
+  if (patch.wait === null) {
+    delete data.waitReason;
+    delete data.waitSummary;
+    delete data.waitCode;
+  } else if (patch.wait) {
+    data.waitReason = patch.wait.reason;
+    data.waitSummary = patch.wait.summary;
+    const code = patch.wait.code?.trim();
+    if (code) data.waitCode = code;
+    else delete data.waitCode;
+  }
+  if (patch.activeDeliveryId === null) delete data.activeDeliveryId;
+  else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
+  if (patch.deliveryPolicy) data.deliveryPolicy = patch.deliveryPolicy;
+  if (patch.parentActor || patch.reviewer) {
+    const nextParent = patch.parentActor ? parseTaskActorRef(patch.parentActor, "parentActor") : data.parentActor !== void 0 && data.parentActor !== null ? parseTaskActorRef(data.parentActor, "parentActor") : void 0;
+    if (!nextParent) {
+      throw new Error(
+        "patchTaskEnvelope parentActor/reviewer requires an existing or explicit parentActor."
+      );
+    }
+    const nextReviewer = patch.reviewer ? parseTaskActorRef(patch.reviewer, "reviewer") : patch.parentActor ? void 0 : data.reviewer !== void 0 && data.reviewer !== null ? parseTaskActorRef(data.reviewer, "reviewer") : void 0;
+    const pair = resolveParentReviewerPair({
+      parentActor: nextParent,
+      reviewer: nextReviewer
+    });
+    data.parentActor = serializeTaskActorRef(pair.parentActor);
+    data.reviewer = serializeTaskActorRef(pair.reviewer);
+    const derived = deriveIntegrationAuthority({
+      parentActor: pair.parentActor,
+      reviewer: pair.reviewer
+    });
+    data.integrationAuthority = {
+      actor: { kind: derived.actor.kind, id: derived.actor.id },
+      mutator: "service"
+    };
+  }
+  if (patch.clearLegacyDispatchedBy) {
+    delete data.dispatchedBy;
+  }
+  if (patch.lastOutcome === null) delete data.lastOutcome;
+  else if (patch.lastOutcome === "delivered" || patch.lastOutcome === "blocked" || patch.lastOutcome === "needs-input") {
+    data.lastOutcome = patch.lastOutcome;
+  }
+  if (patch.updatedAt) data.updatedAt = patch.updatedAt;
+  for (const key2 of ["workspace", "worktree", "branch", "targetBranch"]) {
+    const value = patch[key2];
+    if (value === null) delete data[key2];
+    else if (typeof value === "string") data[key2] = value;
+  }
+  if (patch.roleBranchBase === null) delete data.roleBranchBase;
+  else if (typeof patch.roleBranchBase === "string" && patch.roleBranchBase.trim()) {
+    data.roleBranchBase = patch.roleBranchBase.trim();
+  }
+  if (patch.baseCommit === null) delete data.baseCommit;
+  else if (typeof patch.baseCommit === "string" && patch.baseCommit.trim()) {
+    data.baseCommit = patch.baseCommit.trim();
+  }
+  if (patch.baseCommitCapture === null) delete data.baseCommitCapture;
+  else if (patch.baseCommitCapture) {
+    data.baseCommitCapture = serializeBaseCommitCapture(patch.baseCommitCapture);
+  }
+  if (patch.integrationAuthority === null) delete data.integrationAuthority;
+  else if (patch.integrationAuthority) {
+    if (data.parentActor === void 0 || data.parentActor === null) {
+      throw new Error(
+        "patchTaskEnvelope integrationAuthority requires parentActor/reviewer on the envelope."
+      );
+    }
+    const parentForAuth = parseTaskActorRef(data.parentActor, "parentActor");
+    const reviewerForAuth = data.reviewer !== void 0 && data.reviewer !== null ? parseTaskActorRef(data.reviewer, "reviewer") : parentForAuth;
+    const validated = assertIntegrationAuthorityMatchesParent(
+      patch.integrationAuthority,
+      parentForAuth,
+      reviewerForAuth
+    );
+    data.integrationAuthority = {
+      actor: { kind: validated.actor.kind, id: validated.actor.id },
+      mutator: "service"
+    };
+  }
+  if (patch.contextCard === null) {
+    delete data.contextCard;
+    delete data.contextGeneration;
+    delete data.taskDeltaDigest;
+  } else if (patch.contextCard) {
+    data.contextCard = serializeTaskContextCardForFrontmatter(patch.contextCard);
+    delete data.contextGeneration;
+    delete data.taskDeltaDigest;
+  }
+  if (patch.purpose === null) delete data.purpose;
+  else if (typeof patch.purpose === "string" && patch.purpose.trim()) {
+    data.purpose = patch.purpose.trim();
+  }
+  await fs22.writeFile(path23, serializeFrontmatter(data, body, keyOrder));
+  return loadTaskEnvelope(fs22, path23);
+}
+function primaryBoxId(task) {
+  if (task.contextCard == null) return void 0;
+  return taskReferencedNodeIds(task)[0];
+}
+function parseTaskState(value, legacy) {
+  if (value === "queued" || value === "running" || value === "waiting" || value === "delivered" || value === "accepted" || value === "rejected" || value === "interrupted" || value === "failed") {
+    return value;
+  }
+  return legacyStatusToState(legacy);
+}
+function parseWaitFields(data) {
+  const reason = data.waitReason;
+  const summary = data.waitSummary;
+  if ((reason === "user-input" || reason === "a2a-approval" || reason === "review" || reason === "external") && typeof summary === "string") {
+    const code = typeof data.waitCode === "string" && data.waitCode.trim() ? data.waitCode.trim() : void 0;
+    return { reason, summary, ...code ? { code } : {} };
+  }
+  return void 0;
+}
+function taskStem(now, claimId) {
+  const stamp = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
+  return `task-${stamp}-${claimId.replace(/[^0-9A-Za-z_-]+/g, "-")}`;
+}
+async function uniqueMarkdownPath(fs22, dir, stem) {
+  for (let n = 1; ; n++) {
+    const suffix = n === 1 ? "" : `-${n}`;
+    const path23 = join(dir, `${stem}${suffix}.md`);
+    if (!await fs22.exists(path23)) return path23;
+  }
+}
+async function ensureDir(fs22, path23) {
+  if (!await fs22.exists(path23)) await fs22.mkdir(path23);
 }
 
 // src/core/delivery.ts
@@ -16704,7 +16565,6 @@ var TASK_WORKTREE_RECLAIM_PENDING_PATH = join(
   TEMP_DIR,
   "task-worktree-reclaim-pending.json"
 );
-var TASK_WORKTREE_RECLAIM_HISTORICAL_BATCH_SIZE = 8;
 var queueChains = /* @__PURE__ */ new WeakMap();
 function withQueueCriticalSection(fs22, fn) {
   const key2 = fs22;
@@ -16737,22 +16597,6 @@ function parseLastDiagnostic(raw) {
     attemptedAt: d.attemptedAt.trim()
   };
 }
-function parseScanDecision(raw) {
-  if (raw === void 0 || raw === null) return void 0;
-  if (!raw || typeof raw !== "object") {
-    throw new Error("Invalid Task worktree reclaim scan decision");
-  }
-  const d = raw;
-  if (typeof d.taskPath !== "string" || !d.taskPath.trim() || typeof d.code !== "string" || !d.code.trim() || typeof d.reason !== "string" || typeof d.attemptedAt !== "string" || !d.attemptedAt.trim()) {
-    throw new Error("Invalid Task worktree reclaim scan decision");
-  }
-  return {
-    taskPath: d.taskPath.trim(),
-    code: d.code.trim(),
-    reason: d.reason,
-    attemptedAt: d.attemptedAt.trim()
-  };
-}
 function parseEntry(raw) {
   if (!raw || typeof raw !== "object") {
     throw new Error("Invalid Task worktree reclaim pending entry");
@@ -16775,37 +16619,6 @@ function parseEntry(raw) {
     ...typeof e.trigger === "string" && e.trigger.trim() ? { trigger: e.trigger.trim() } : {},
     ...status ? { status } : {},
     ...lastDiagnostic ? { lastDiagnostic } : {}
-  };
-}
-function parseHistoricalScan(raw) {
-  if (raw === void 0 || raw === null) return void 0;
-  if (!raw || typeof raw !== "object") {
-    throw new Error("Invalid Task worktree reclaim historical scan");
-  }
-  const s = raw;
-  if (typeof s.complete !== "boolean") {
-    throw new Error("Invalid Task worktree reclaim historical completion");
-  }
-  const lastDecision = parseScanDecision(s.lastDecision);
-  if (s.workspaceRoot !== void 0 && (typeof s.workspaceRoot !== "string" || !s.workspaceRoot.trim())) {
-    throw new Error("Invalid Task worktree reclaim historical workspace");
-  }
-  if (s.nextTaskPath !== void 0 && (typeof s.nextTaskPath !== "string" || !s.nextTaskPath.trim())) {
-    throw new Error("Invalid Task worktree reclaim historical cursor");
-  }
-  if (s.complete === true) {
-    return {
-      complete: true,
-      ...typeof s.workspaceRoot === "string" && s.workspaceRoot.trim() ? { workspaceRoot: s.workspaceRoot.trim() } : {},
-      ...lastDecision ? { lastDecision } : {}
-    };
-  }
-  const next = typeof s.nextTaskPath === "string" && s.nextTaskPath.trim() ? s.nextTaskPath.trim() : void 0;
-  return {
-    complete: false,
-    ...next ? { nextTaskPath: next } : {},
-    ...typeof s.workspaceRoot === "string" && s.workspaceRoot.trim() ? { workspaceRoot: s.workspaceRoot.trim() } : {},
-    ...lastDecision ? { lastDecision } : {}
   };
 }
 async function readPending(fs22) {
@@ -16832,65 +16645,18 @@ async function readPending(fs22) {
     }
     seenTaskIds.add(entry.taskId);
   }
-  const historicalScan = parseHistoricalScan(parsed.historicalScan);
-  return {
-    version: 1,
-    entries,
-    ...historicalScan ? { historicalScan } : {}
-  };
+  return { version: 1, entries };
 }
 async function writePending(fs22, file) {
   const bodyObj = {
     version: 1,
     entries: file.entries
   };
-  if (file.historicalScan) {
-    bodyObj.historicalScan = {
-      complete: file.historicalScan.complete === true,
-      ...file.historicalScan.nextTaskPath ? { nextTaskPath: file.historicalScan.nextTaskPath } : {},
-      ...file.historicalScan.workspaceRoot ? { workspaceRoot: file.historicalScan.workspaceRoot } : {},
-      ...file.historicalScan.lastDecision ? { lastDecision: file.historicalScan.lastDecision } : {}
-    };
-  }
   const body = JSON.stringify(bodyObj, null, 2) + "\n";
   if (!await fs22.exists(TEMP_DIR)) {
     await fs22.writeFile(join(TEMP_DIR, ".keep"), "");
   }
   await fs22.writeFile(TASK_WORKTREE_RECLAIM_PENDING_PATH, body);
-}
-async function listTaskEnvelopePathsForReclaimScan(fs22) {
-  const paths = [];
-  if (!await fs22.exists(TEMP_DIR)) return paths;
-  for (const entry of await fs22.listDir(TEMP_DIR)) {
-    if (!entry.isDir) continue;
-    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
-      const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
-      if (!await fs22.exists(profilesRoot)) continue;
-      for (const profileEntry of await fs22.listDir(profilesRoot)) {
-        if (!profileEntry.isDir) continue;
-        const taskDir2 = join(profilesRoot, profileEntry.name, "tasks");
-        if (!await fs22.exists(taskDir2)) continue;
-        for (const f of await fs22.listDir(taskDir2)) {
-          if (!f.isDir && f.name.endsWith(".md")) {
-            paths.push(join(taskDir2, f.name));
-          }
-        }
-      }
-      continue;
-    }
-    const taskDir = join(TEMP_DIR, entry.name, "tasks");
-    if (!await fs22.exists(taskDir)) continue;
-    for (const f of await fs22.listDir(taskDir)) {
-      if (!f.isDir && f.name.endsWith(".md")) {
-        paths.push(join(taskDir, f.name));
-      }
-    }
-  }
-  return paths.sort((a, b) => a.localeCompare(b));
-}
-function taskPathsAfterHistoricalCursor(allPaths, nextTaskPath) {
-  if (!nextTaskPath) return [...allPaths];
-  return allPaths.filter((p) => p.localeCompare(nextTaskPath) > 0);
 }
 async function enqueueTaskWorktreeReclaimPending(fs22, entry) {
   const taskId = entry.taskId.trim();
@@ -16912,11 +16678,7 @@ async function enqueueTaskWorktreeReclaimPending(fs22, entry) {
     const without = file.entries.filter((e) => e.taskId !== taskId);
     without.push(next);
     without.sort((a, b) => a.taskId.localeCompare(b.taskId));
-    await writePending(fs22, {
-      version: 1,
-      entries: without,
-      ...file.historicalScan ? { historicalScan: file.historicalScan } : {}
-    });
+    await writePending(fs22, { version: 1, entries: without });
     return next;
   });
 }
@@ -16927,11 +16689,7 @@ async function dequeueTaskWorktreeReclaimPending(fs22, taskId) {
     const file = await readPending(fs22);
     const next = file.entries.filter((e) => e.taskId !== id);
     if (next.length === file.entries.length) return false;
-    await writePending(fs22, {
-      version: 1,
-      entries: next,
-      ...file.historicalScan ? { historicalScan: file.historicalScan } : {}
-    });
+    await writePending(fs22, { version: 1, entries: next });
     return true;
   });
 }
@@ -16962,11 +16720,7 @@ async function recordTaskWorktreeReclaimNeedsAttention(fs22, input) {
     const without = file.entries.filter((e) => e.taskId !== taskId);
     without.push(next);
     without.sort((a, b) => a.taskId.localeCompare(b.taskId));
-    await writePending(fs22, {
-      version: 1,
-      entries: without,
-      ...file.historicalScan ? { historicalScan: file.historicalScan } : {}
-    });
+    await writePending(fs22, { version: 1, entries: without });
     return next;
   });
 }
@@ -16980,167 +16734,6 @@ async function listTaskWorktreeReclaimPendingForWorkspace(fs22, workspaceRoot, s
   const root = workspaceRoot.trim();
   const all2 = await listTaskWorktreeReclaimPending(fs22);
   return all2.filter((e) => sameRoot(e.workspaceRoot, root));
-}
-async function readTaskWorktreeReclaimHistoricalScan(fs22) {
-  return withQueueCriticalSection(fs22, async () => {
-    const file = await readPending(fs22);
-    return file.historicalScan ? { ...file.historicalScan } : void 0;
-  });
-}
-async function persistHistoricalReclaimScanBatch(fs22, input) {
-  const workspaceRoot = input.workspaceRoot.trim();
-  if (!workspaceRoot) {
-    throw new Error("persistHistoricalReclaimScanBatch requires workspaceRoot");
-  }
-  return withQueueCriticalSection(fs22, async () => {
-    const file = await readPending(fs22);
-    if (file.historicalScan?.complete === true) {
-      return {
-        historicalScan: { ...file.historicalScan },
-        enqueued: [],
-        entries: [...file.entries]
-      };
-    }
-    const byId = /* @__PURE__ */ new Map();
-    for (const e of file.entries) {
-      byId.set(e.taskId, e);
-    }
-    const enqueued = [];
-    const now = (/* @__PURE__ */ new Date()).toISOString();
-    const candidatesByPath = /* @__PURE__ */ new Map();
-    const candidateTaskIds = /* @__PURE__ */ new Set();
-    for (const c of input.newCandidates) {
-      const taskId = c.taskId.trim();
-      const taskPath = c.taskPath.trim();
-      const root = (c.workspaceRoot || workspaceRoot).trim();
-      if (!taskId || !taskPath || !root) {
-        throw new Error("Invalid historical reclaim candidate");
-      }
-      if (candidatesByPath.has(taskPath) || candidateTaskIds.has(taskId)) {
-        throw new Error("Duplicate historical reclaim candidate");
-      }
-      candidatesByPath.set(taskPath, c);
-      candidateTaskIds.add(taskId);
-      const existing = byId.get(taskId);
-      if (existing) {
-        if (existing.taskPath !== taskPath) {
-          throw new Error(
-            `Historical reclaim candidate path mismatch for ${taskId}`
-          );
-        }
-        continue;
-      }
-      const next = {
-        taskId,
-        taskPath,
-        workspaceRoot: root,
-        enqueuedAt: c.enqueuedAt ?? now,
-        ...c.trigger?.trim() ? { trigger: c.trigger.trim() } : { trigger: "historical.scan" },
-        status: "pending"
-      };
-      byId.set(taskId, next);
-      enqueued.push(next);
-    }
-    const entries = [...byId.values()].sort(
-      (a, b) => a.taskId.localeCompare(b.taskId)
-    );
-    const examined = input.examinedTaskPaths.map((p) => p.trim()).filter(Boolean);
-    if (examined.length > TASK_WORKTREE_RECLAIM_HISTORICAL_BATCH_SIZE) {
-      throw new Error("Historical reclaim batch exceeds configured bound");
-    }
-    for (let i = 0; i < examined.length; i += 1) {
-      if (!examined[i] || i > 0 && examined[i - 1].localeCompare(examined[i]) >= 0) {
-        throw new Error("Historical reclaim examined paths must be unique and sorted");
-      }
-    }
-    const decisions = (input.decisions ?? []).map((decision) => {
-      const parsed = parseScanDecision(decision);
-      if (!parsed) throw new Error("Invalid historical reclaim scan decision");
-      return parsed;
-    });
-    const decisionsByPath = new Map(decisions.map((d) => [d.taskPath, d]));
-    if (decisionsByPath.size !== decisions.length) {
-      throw new Error("Duplicate historical reclaim scan decision");
-    }
-    const examinedSet = new Set(examined);
-    for (const candidatePath of candidatesByPath.keys()) {
-      if (!examinedSet.has(candidatePath)) {
-        throw new Error(
-          `Historical reclaim candidate was not examined: ${candidatePath}`
-        );
-      }
-    }
-    for (const decision of decisions) {
-      if (decision.code !== "NOT_APPLICABLE") {
-        throw new Error(
-          `Historical reclaim cursor decision must be NOT_APPLICABLE: ${decision.taskPath}`
-        );
-      }
-      if (!examinedSet.has(decision.taskPath)) {
-        throw new Error(
-          `Historical reclaim decision was not examined: ${decision.taskPath}`
-        );
-      }
-    }
-    for (const taskPath of examined) {
-      const candidate = candidatesByPath.get(taskPath);
-      const hasExistingCandidate = candidate !== void 0 && byId.has(candidate.taskId.trim());
-      const hasDecision = decisionsByPath.has(taskPath);
-      if (hasExistingCandidate === hasDecision) {
-        throw new Error(
-          `Historical reclaim cursor proof missing or ambiguous for ${taskPath}`
-        );
-      }
-    }
-    const latestDecision = decisions.at(-1) ?? file.historicalScan?.lastDecision;
-    let historicalScan;
-    if (input.scanComplete) {
-      historicalScan = {
-        complete: true,
-        workspaceRoot,
-        ...latestDecision ? { lastDecision: latestDecision } : {}
-      };
-    } else if (examined.length > 0) {
-      historicalScan = {
-        complete: false,
-        nextTaskPath: examined[examined.length - 1],
-        workspaceRoot,
-        ...latestDecision ? { lastDecision: latestDecision } : {}
-      };
-    } else {
-      historicalScan = file.historicalScan ? { ...file.historicalScan, workspaceRoot } : { complete: false, workspaceRoot };
-    }
-    await writePending(fs22, { version: 1, entries, historicalScan });
-    return { historicalScan, enqueued, entries };
-  });
-}
-async function recordHistoricalReclaimScanDiagnostic(fs22, input) {
-  const workspaceRoot = input.workspaceRoot.trim();
-  const taskPath = input.taskPath.trim();
-  const code = input.code.trim();
-  if (!workspaceRoot || !taskPath || !code) {
-    throw new Error("Invalid historical reclaim scan diagnostic");
-  }
-  return withQueueCriticalSection(fs22, async () => {
-    const file = await readPending(fs22);
-    const historicalScan = {
-      complete: false,
-      ...file.historicalScan?.nextTaskPath ? { nextTaskPath: file.historicalScan.nextTaskPath } : {},
-      workspaceRoot,
-      lastDecision: {
-        taskPath,
-        code,
-        reason: input.reason,
-        attemptedAt: input.attemptedAt ?? (/* @__PURE__ */ new Date()).toISOString()
-      }
-    };
-    await writePending(fs22, {
-      version: 1,
-      entries: file.entries,
-      historicalScan
-    });
-    return historicalScan;
-  });
 }
 
 // src/core/workspace-settings.ts
@@ -19456,6 +19049,12 @@ var CLIENT_METHODS = [
   "task.dispatch",
   "task.claim",
   /**
+   * Durable Role self-execution: atomically create + claim from exact nodeIds[].
+   * Service derives parent/reviewer from persisted Task/Session responsibility;
+   * callers cannot provide actor, target, asSub, or Delivery authority fields.
+   */
+  "task.claimDirect",
+  /**
    * Explicit legacy backfill of workspaceLane.baseCommit for running/waiting Tasks
    * whose lane exists but base is missing. Authorized by exact parent/reviewer only.
    * Never infers from roleBranchBase/cwd/current tip. Same SHA is idempotent.
@@ -19605,6 +19204,7 @@ var CLIENT_METHODS = [
    * runs without this RPC after terminal transitions / mount recovery.
    */
   "task.worktreeReclaim.preview",
+  "task.worktreeReclaim.reconcile",
   /**
    * Node Markdown underline annotations (划线注释) — first-class workspace records.
    * Independent of body markers, Node attributes, and Task. User-only mutations via MutationBus.
@@ -24632,6 +24232,8 @@ async function dispatchMethod(ctx, method, params) {
         return taskDispatch(ctx, p);
       case "task.claim":
         return taskClaimRpc(ctx, p);
+      case "task.claimDirect":
+        return taskClaimDirectRpc(ctx, p);
       case "task.backfillWorkspaceLaneBase":
         return taskBackfillWorkspaceLaneBaseRpc(ctx, p);
       case "task.wait":
@@ -24734,6 +24336,8 @@ async function dispatchMethod(ctx, method, params) {
         return operationalRetentionPurgeRpc(ctx, p);
       case "task.worktreeReclaim.preview":
         return taskWorktreeReclaimPreviewRpc(ctx, p);
+      case "task.worktreeReclaim.reconcile":
+        return taskWorktreeReclaimReconcileRpc(ctx, p);
       case "annotation.list":
         return annotationListRpc(ctx, p);
       case "annotation.create":
@@ -24787,7 +24391,6 @@ async function workspaceMount(ctx, p) {
   await migrateSessionWorkspaceIdsOnMount(ctx, info.workspaceId);
   await migrateParentReviewerOnMount(ctx, info.workspaceId);
   await reconcileTaskSessionsOnMount(ctx, info.workspaceId);
-  scheduleHistoricalTaskWorktreeReclaimAfterMount(ctx, info.workspaceId);
   return info;
 }
 async function migrateParentReviewerOnMount(ctx, workspaceId) {
@@ -24963,7 +24566,6 @@ async function reconcileTaskSessionsOnMount(ctx, workspaceId) {
 }
 async function workspaceUnmount(ctx, p) {
   const workspaceId = requireString(p, "workspaceId");
-  await cancelAndDrainHistoricalTaskWorktreeReclaim(workspaceId);
   await ctx.host.unmount(workspaceId);
   return { ok: true };
 }
@@ -26764,7 +26366,7 @@ function mapDocsMoveError(err) {
 async function taskDispatch(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const dispatchSelection = resolveTaskDispatchNodeSelection(p, mount.env.tentName);
+  const dispatchSelection = resolveTaskNodeSelection(p, mount.env.tentName, "task.dispatch");
   const primaryNodeId = dispatchSelection.primaryId;
   const nodeIds = dispatchSelection.nodeIds;
   for (const retired of ["agentId", "profileId"]) {
@@ -27137,12 +26739,12 @@ function parseOptionalTaskActor(value, label) {
     );
   }
 }
-function resolveTaskDispatchNodeSelection(p, tentName) {
+function resolveTaskNodeSelection(p, tentName, method) {
   for (const retired of ["boxId", "id", "claimId"]) {
     if (p[retired] !== void 0 && p[retired] !== null) {
       throw new RpcError(
         -32602,
-        `task.dispatch ${retired} is retired; pass non-empty nodeIds[]`,
+        `${method} ${retired} is retired; pass non-empty nodeIds[]`,
         { field: retired }
       );
     }
@@ -27188,6 +26790,257 @@ function resolveDispatchActorsFromRpc(input) {
         parentActor: input.parentActor,
         reviewer: input.reviewer
       }
+    );
+  }
+}
+async function taskClaimDirectRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  for (const retired of [
+    "parentActor",
+    "reviewer",
+    "asSub",
+    "target",
+    "assigneeKind",
+    "routeId",
+    "startSession",
+    "deliveryPolicy",
+    "callerKind",
+    "dispatchedBy"
+  ]) {
+    if (p[retired] !== void 0 && p[retired] !== null) {
+      throw new RpcError(
+        -32602,
+        `task.claimDirect does not accept ${retired}; responsibility and execution ownership are derived by Service`
+      );
+    }
+  }
+  const roleRef = requireString(p, "role");
+  const prompt = requireString(p, "prompt");
+  const sourceTaskPath = optionalString(p, "sourceTaskPath");
+  const sourceSessionId = optionalString(p, "sourceSessionId");
+  const selection = resolveTaskNodeSelection(p, mount.env.tentName, "task.claimDirect");
+  return ctx.mutations.run(workspaceId, async () => {
+    const registry = await loadRolesRegistry(mount.env.fs);
+    const roleDefinition = resolveRole(registry.roles, roleRef);
+    if (!roleDefinition) {
+      throw new RpcError(-32004, `Role not found in registry: ${roleRef}`, {
+        code: "DIRECT_CLAIM_ROLE_NOT_FOUND",
+        role: roleRef
+      });
+    }
+    const role = roleDefinition.name;
+    const actors = await resolveDirectClaimResponsibility(ctx, {
+      workspaceId,
+      role,
+      sourceTaskPath,
+      sourceSessionId
+    });
+    await ensureRoleWorkspaceIfGit(mount.workspaceRoot, role);
+    const settings = await loadWorkspaceSettings(mount.env.fs);
+    const deliveryPolicy = mayElevateDeliveryPolicy({
+      parentActor: actors.parentActor,
+      assigneeKind: "role"
+    }) ? settings.defaultDeliveryPolicy : "review";
+    ctx.host.markSelfWrite(workspaceId);
+    const roleRootPath = nodePath6.posix.join(TEMP_DIR, role);
+    const expectedInitPath = nodePath6.posix.join(roleRootPath, "init.md");
+    const initExisted = await mount.env.fs.exists(expectedInitPath);
+    const initBefore = initExisted ? await mount.env.fs.readFile(expectedInitPath) : void 0;
+    let created;
+    try {
+      created = await dispatch(mount.env, selection.primaryId, role, {
+        userPrompt: prompt,
+        parentActor: actors.parentActor,
+        reviewer: actors.reviewer,
+        deliveryPolicy,
+        assigneeKind: "role",
+        nodeIds: selection.nodeIds
+      });
+      const pre = await loadTaskEnvelope(mount.env.fs, created.taskPath);
+      const claimWrite = await prepareRoleClaimWrite(ctx, workspaceId, pre);
+      if (beforeTaskClaimCoreForTests) {
+        await beforeTaskClaimCoreForTests({
+          workspaceId,
+          taskPath: created.taskPath,
+          task: pre
+        });
+      }
+      const task = await taskClaim(mount.env, created.taskPath, {
+        ...claimWrite ? { claimWrite } : {}
+      });
+      emitTaskState(ctx, workspaceId, task, "task.claimDirect");
+      const nodeIds = task.contextCard != null ? taskReferencedNodeIds(task) : [];
+      for (const nodeId of nodeIds) {
+        if (nodeId === "root") continue;
+        ctx.events.emit(
+          "concept.changed",
+          workspaceId,
+          { id: nodeId, reason: "task.claim-projection" },
+          "self"
+        );
+      }
+      return {
+        workspaceId,
+        taskPath: created.taskPath,
+        manifestPath: created.manifestPath,
+        initPath: created.initPath,
+        task: projectTask(task),
+        state: task.state,
+        role: task.role,
+        referencedNodeIds: nodeIds
+      };
+    } catch (err) {
+      if (created) {
+        const cleanupErrors = [];
+        for (const exactPath of [created.taskPath, created.manifestPath]) {
+          try {
+            if (await mount.env.fs.exists(exactPath)) {
+              await mount.env.fs.remove(exactPath);
+            }
+          } catch (cleanupErr) {
+            cleanupErrors.push(
+              `${exactPath}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`
+            );
+          }
+        }
+        if (created.initPath) {
+          try {
+            if (initExisted && initBefore !== void 0) {
+              await mount.env.fs.writeFile(created.initPath, initBefore);
+            } else if (await mount.env.fs.exists(created.initPath)) {
+              await mount.env.fs.remove(created.initPath);
+            }
+          } catch (cleanupErr) {
+            cleanupErrors.push(
+              `${created.initPath}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`
+            );
+          }
+        }
+        if (cleanupErrors.length > 0) {
+          throw new RpcError(
+            RPC_LIFECYCLE,
+            `task.claimDirect failed and exact artifact cleanup was incomplete: ${cleanupErrors.join("; ")}`,
+            {
+              code: "DIRECT_CLAIM_CLEANUP_FAILED",
+              taskPath: created.taskPath,
+              cause: err instanceof Error ? err.message : String(err)
+            }
+          );
+        }
+      }
+      throw err;
+    }
+  });
+}
+async function resolveDirectClaimResponsibility(ctx, input) {
+  const mount = ctx.host.require(input.workspaceId);
+  let session = null;
+  if (input.sourceSessionId) {
+    session = await ctx.runtime.registry.read(input.sourceSessionId);
+    if (!session) {
+      throw new RpcError(-32004, `Session not found: ${input.sourceSessionId}`, {
+        code: "DIRECT_CLAIM_SESSION_NOT_FOUND"
+      });
+    }
+    if (session.workspace !== input.workspaceId || session.assigneeKind === "agentProfile" || session.roleName !== input.role || !SessionRegistry.isOpen(session.state)) {
+      throw new RpcError(
+        -32001,
+        "task.claimDirect source Session is not a live exact-workspace binding for the claiming Role",
+        {
+          code: "DIRECT_CLAIM_SESSION_MISMATCH",
+          sessionId: session.id,
+          role: input.role
+        }
+      );
+    }
+  }
+  const rootResponsibility = () => resolveParentReviewerPair({
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" }
+  });
+  const explicitSourceTask = Boolean(input.sourceTaskPath);
+  const sourceRef = input.sourceTaskPath || session?.lastTaskId?.trim() || "";
+  if (!sourceRef) {
+    return rootResponsibility();
+  }
+  let sourceTask;
+  if (input.sourceTaskPath) {
+    try {
+      sourceTask = await loadTaskEnvelope(mount.env.fs, input.sourceTaskPath);
+    } catch (err) {
+      throw new RpcError(
+        -32004,
+        `task.claimDirect source Task could not be loaded: ${err instanceof Error ? err.message : String(err)}`,
+        { code: "DIRECT_CLAIM_SOURCE_TASK_NOT_FOUND", taskPath: input.sourceTaskPath }
+      );
+    }
+  } else {
+    const matches = (await loadTaskEnvelopes(mount.env.fs)).filter(
+      (task) => task.id === sourceRef || task.path === sourceRef
+    );
+    if (matches.length === 0) {
+      return rootResponsibility();
+    }
+    if (matches.length !== 1) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `task.claimDirect Session lastTaskId resolved ambiguously (${matches.length} Tasks)`,
+        { code: "DIRECT_CLAIM_SOURCE_TASK_AMBIGUOUS", lastTaskId: sourceRef }
+      );
+    }
+    sourceTask = matches[0];
+  }
+  const sameRoleTask = sourceTask.role === input.role && taskAssigneeKind(sourceTask) === "role";
+  const activeClaim = sourceTask.state !== "queued" && isActiveTaskState(sourceTask.state);
+  if (explicitSourceTask && (!sameRoleTask || !activeClaim)) {
+    throw new RpcError(
+      -32001,
+      "task.claimDirect source Task is not an active claimed Task owned by the claiming Role",
+      {
+        code: "DIRECT_CLAIM_SOURCE_TASK_MISMATCH",
+        taskPath: sourceTask.path,
+        role: input.role,
+        taskRole: sourceTask.role,
+        state: sourceTask.state
+      }
+    );
+  }
+  if (!explicitSourceTask && !sameRoleTask) {
+    throw new RpcError(
+      -32001,
+      "task.claimDirect Session lastTaskId belongs to a different Role or assignee kind",
+      {
+        code: "DIRECT_CLAIM_SOURCE_TASK_MISMATCH",
+        taskPath: sourceTask.path,
+        role: input.role,
+        taskRole: sourceTask.role
+      }
+    );
+  }
+  if (!explicitSourceTask && sourceTask.state === "queued") {
+    return rootResponsibility();
+  }
+  if (!explicitSourceTask && session && isActiveTaskState(sourceTask.state) && sourceTask.sessionId && sourceTask.sessionId !== session.id) {
+    return rootResponsibility();
+  }
+  if (!sourceTask.parentActor || !sourceTask.reviewer) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "task.claimDirect source Task is missing persisted parent/reviewer",
+      { code: "DIRECT_CLAIM_SOURCE_AUTHORITY_MISSING", taskPath: sourceTask.path }
+    );
+  }
+  try {
+    return resolveParentReviewerPair({
+      parentActor: sourceTask.parentActor,
+      reviewer: sourceTask.reviewer
+    });
+  } catch (err) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      err instanceof Error ? err.message : "Invalid source Task responsibility chain",
+      { code: "DIRECT_CLAIM_SOURCE_AUTHORITY_INVALID", taskPath: sourceTask.path }
     );
   }
 }
@@ -29148,16 +29001,15 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
           };
           return patchTaskEnvelope(mount.env.fs, taskPath, {
             contextCard: nextCard,
-            contextGeneration: liveGeneration,
             ...taskPurpose ? { purpose: taskPurpose } : {},
             updatedAt: mount.env.clock.now()
           });
         }
-        return patchTaskEnvelope(mount.env.fs, taskPath, {
-          contextGeneration: liveGeneration,
-          ...taskPurpose ? { purpose: taskPurpose } : {},
-          updatedAt: mount.env.clock.now()
-        });
+        throw new RpcError(
+          -32e3,
+          "task.startSession requires Task.contextCard before refreshing contextGeneration",
+          { code: "TASK_CONTEXT_CARD_MISSING", taskPath }
+        );
       })
     );
   }
@@ -31421,6 +31273,40 @@ async function taskWorktreeReclaimPreviewRpc(ctx, p) {
     ...diagnostic
   };
 }
+async function taskWorktreeReclaimReconcileRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  requireTaskWorktreeReconcileActor(p, task);
+  const result = await maybeAutoReclaimTaskWorktree(
+    ctx,
+    workspaceId,
+    task,
+    "task.worktreeReclaim.reconcile"
+  );
+  const diagnostic = result ?? await evaluateTaskWorktreeReclaimForEnvelope(
+    mount.env.fs,
+    mount.workspaceRoot,
+    task
+  );
+  return { workspaceId, taskPath, ...diagnostic };
+}
+function requireTaskWorktreeReconcileActor(p, task) {
+  const actor = requireString(p, "actor");
+  if (actor === "user") return actor;
+  const authorized = [task.parentActor, task.reviewer].some(
+    (candidate) => candidate?.kind === "role" && candidate.id === actor
+  );
+  if (!authorized) {
+    throw new RpcError(
+      -32001,
+      "task.worktreeReclaim.reconcile requires user or the exact Task parent/reviewer Role",
+      { actor, taskId: task.id, taskPath: task.path }
+    );
+  }
+  return actor;
+}
 async function assertTaskExecutionSettledForWorktreeReclaim(ctx, workspaceId, task) {
   const sessionId = task.sessionId?.trim();
   if (!sessionId) {
@@ -31789,6 +31675,20 @@ async function maybeAutoReclaimTaskWorktree(ctx, workspaceId, task, reason) {
       return result;
     });
   } catch (err) {
+    const blocked = {
+      eligible: false,
+      code: "REMOVE_FAILED",
+      reason: `Auto-reclaim threw: ${err instanceof Error ? err.message : String(err)}`,
+      taskId: task.id,
+      taskPath: task.path,
+      taskState: task.state,
+      workspace: task.workspace,
+      worktree: task.worktree,
+      branch: task.branch,
+      targetBranch: task.targetBranch,
+      reclaimed: false,
+      alreadyGone: false
+    };
     ctx.events.emit(
       "task.worktreeReclaim",
       workspaceId,
@@ -31800,345 +31700,13 @@ async function maybeAutoReclaimTaskWorktree(ctx, workspaceId, task, reason) {
         eligible: false,
         reclaimed: false,
         alreadyGone: false,
-        reason: `Auto-reclaim threw: ${err instanceof Error ? err.message : String(err)}`,
+        reason: blocked.reason,
         trigger: reason
       },
       "self"
     );
-    return void 0;
+    return blocked;
   }
-}
-async function recoverTerminalTaskWorktreeBatch(ctx, workspaceId, attemptedTaskIds, shouldStop) {
-  const mount = ctx.host.get(workspaceId);
-  if (!mount || shouldStop()) return false;
-  if (!await isGitWorkspace(mount.workspaceRoot)) return false;
-  const pending = await listTaskWorktreeReclaimPendingForWorkspace(
-    mount.env.fs,
-    mount.workspaceRoot,
-    (a, b) => isSameWorkspaceRoot(nodePath6.resolve(a), nodePath6.resolve(b))
-  );
-  const remaining = pending.filter((entry) => !attemptedTaskIds.has(entry.taskId)).sort((a, b) => a.taskId.localeCompare(b.taskId));
-  const batch = remaining.slice(
-    0,
-    TASK_WORKTREE_RECLAIM_HISTORICAL_BATCH_SIZE
-  );
-  for (const entry of batch) {
-    if (shouldStop()) return false;
-    attemptedTaskIds.add(entry.taskId);
-    let task;
-    try {
-      task = await loadTaskEnvelope(mount.env.fs, entry.taskPath);
-    } catch (error) {
-      const exists = await mount.env.fs.exists(entry.taskPath).catch(() => true);
-      await recordTaskWorktreeReclaimNeedsAttention(mount.env.fs, {
-        taskId: entry.taskId,
-        taskPath: entry.taskPath,
-        workspaceRoot: mount.workspaceRoot,
-        code: exists ? "UNREADABLE_TASK" : "TASK_MISSING",
-        reason: exists ? `Pending reclaim Task envelope is unreadable: ${error instanceof Error ? error.message : String(error)}` : "Pending reclaim Task envelope is missing; exact lane ownership cannot be proven",
-        attemptedAt: mount.env.clock.now(),
-        trigger: entry.trigger ?? "workspace.mount"
-      });
-      continue;
-    }
-    if (task.id !== entry.taskId) {
-      await recordTaskWorktreeReclaimNeedsAttention(mount.env.fs, {
-        taskId: entry.taskId,
-        taskPath: entry.taskPath,
-        workspaceRoot: mount.workspaceRoot,
-        code: "TASK_ID_MISMATCH",
-        reason: `Pending reclaim identity ${entry.taskId} does not match ${task.id ?? "missing"}`,
-        attemptedAt: mount.env.clock.now(),
-        trigger: entry.trigger ?? "workspace.mount"
-      });
-      continue;
-    }
-    await maybeAutoReclaimTaskWorktree(
-      ctx,
-      workspaceId,
-      task,
-      entry.trigger ? `workspace.mount:${entry.trigger}` : "workspace.mount"
-    );
-  }
-  return remaining.length > batch.length;
-}
-var historicalReclaimJobs = /* @__PURE__ */ new Map();
-var historicalReclaimJobsByFs = /* @__PURE__ */ new WeakMap();
-var historicalReclaimAccepting = true;
-function deleteHistoricalReclaimJob(job) {
-  if (historicalReclaimJobs.get(job.workspaceId) === job) {
-    historicalReclaimJobs.delete(job.workspaceId);
-  }
-  if (historicalReclaimJobsByFs.get(job.fsKey) === job) {
-    historicalReclaimJobsByFs.delete(job.fsKey);
-  }
-}
-var historicalReclaimBatchHoldForTests;
-function enableHistoricalTaskWorktreeReclaimAccept() {
-  historicalReclaimAccepting = true;
-}
-function stopHistoricalTaskWorktreeReclaimAccept() {
-  historicalReclaimAccepting = false;
-  for (const job of historicalReclaimJobs.values()) {
-    job.cancelled = true;
-    if (job.timer !== null) {
-      clearTimeout(job.timer);
-      clearImmediate(job.timer);
-      job.timer = null;
-    }
-  }
-}
-async function cancelAndDrainHistoricalTaskWorktreeReclaim(workspaceId, timeoutMs = 5e3) {
-  const job = historicalReclaimJobs.get(workspaceId);
-  if (!job) return;
-  job.cancelled = true;
-  if (job.timer !== null) {
-    clearTimeout(job.timer);
-    clearImmediate(job.timer);
-    job.timer = null;
-  }
-  const inflight = job.inflight;
-  if (!inflight) {
-    deleteHistoricalReclaimJob(job);
-    return;
-  }
-  const bound = typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs >= 0 ? timeoutMs : 5e3;
-  if (bound === 0) {
-    await inflight;
-    return;
-  }
-  let timer;
-  try {
-    await Promise.race([
-      inflight,
-      new Promise((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(
-            new Error(
-              `Historical Task worktree reclaim drain timed out for ${workspaceId}`
-            )
-          ),
-          bound
-        );
-      })
-    ]);
-  } finally {
-    if (timer !== void 0) clearTimeout(timer);
-  }
-  deleteHistoricalReclaimJob(job);
-}
-async function drainHistoricalTaskWorktreeReclaimForShutdown(timeoutMs = 5e3) {
-  stopHistoricalTaskWorktreeReclaimAccept();
-  const ids = [...historicalReclaimJobs.keys()];
-  const results = await Promise.allSettled(
-    ids.map((id) => cancelAndDrainHistoricalTaskWorktreeReclaim(id, timeoutMs))
-  );
-  const rejected = results.find(
-    (result) => result.status === "rejected"
-  );
-  if (rejected) throw rejected.reason;
-}
-function scheduleHistoricalTaskWorktreeReclaimAfterMount(ctx, workspaceId) {
-  if (!historicalReclaimAccepting) return;
-  const mount = ctx.host.get(workspaceId);
-  if (!mount) return;
-  const fsKey = mount.env.fs;
-  const byFs = historicalReclaimJobsByFs.get(fsKey);
-  if (byFs) return;
-  const byWorkspace = historicalReclaimJobs.get(workspaceId);
-  if (byWorkspace) return;
-  const job = {
-    workspaceId,
-    fsKey,
-    cancelled: false,
-    phase: "pending",
-    pendingAttemptedTaskIds: /* @__PURE__ */ new Set(),
-    inflight: null,
-    timer: null
-  };
-  historicalReclaimJobs.set(workspaceId, job);
-  historicalReclaimJobsByFs.set(fsKey, job);
-  enqueueHistoricalReclaimBatchTick(ctx, job);
-}
-function enqueueHistoricalReclaimBatchTick(ctx, job) {
-  if (job.cancelled || !historicalReclaimAccepting) return;
-  if (job.timer !== null) return;
-  job.timer = setImmediate(() => {
-    job.timer = null;
-    if (job.cancelled || !historicalReclaimAccepting) return;
-    const run = runOneHistoricalReclaimJobBatch(ctx, job).then((cont) => {
-      if (job.cancelled || !historicalReclaimAccepting) return;
-      if (cont) enqueueHistoricalReclaimBatchTick(ctx, job);
-      else deleteHistoricalReclaimJob(job);
-    }).catch(() => {
-      deleteHistoricalReclaimJob(job);
-    }).finally(() => {
-      if (job.inflight === run) job.inflight = null;
-      if (job.cancelled) deleteHistoricalReclaimJob(job);
-    });
-    job.inflight = run;
-  });
-}
-async function runOneHistoricalReclaimJobBatch(ctx, job) {
-  if (job.cancelled || !historicalReclaimAccepting) return false;
-  if (job.phase === "pending") {
-    const morePending = await recoverTerminalTaskWorktreeBatch(
-      ctx,
-      job.workspaceId,
-      job.pendingAttemptedTaskIds,
-      () => job.cancelled || !historicalReclaimAccepting
-    );
-    if (morePending) return true;
-    job.phase = "historical";
-    return true;
-  }
-  return runOneHistoricalTaskWorktreeReclaimBatch(
-    ctx,
-    job.workspaceId,
-    () => job.cancelled || !historicalReclaimAccepting
-  );
-}
-async function runOneHistoricalTaskWorktreeReclaimBatch(ctx, workspaceId, shouldStop = () => false) {
-  if (historicalReclaimBatchHoldForTests) {
-    await historicalReclaimBatchHoldForTests.promise;
-  }
-  if (shouldStop()) return false;
-  const mount = ctx.host.get(workspaceId);
-  if (!mount) return false;
-  if (!await isGitWorkspace(mount.workspaceRoot)) {
-    try {
-      await persistHistoricalReclaimScanBatch(mount.env.fs, {
-        workspaceRoot: mount.workspaceRoot,
-        examinedTaskPaths: [],
-        newCandidates: [],
-        scanComplete: true
-      });
-    } catch {
-    }
-    return false;
-  }
-  const scan = await readTaskWorktreeReclaimHistoricalScan(mount.env.fs);
-  if (scan?.complete === true) return false;
-  const allPaths = await listTaskEnvelopePathsForReclaimScan(mount.env.fs);
-  if (shouldStop()) return false;
-  const remaining = taskPathsAfterHistoricalCursor(allPaths, scan?.nextTaskPath);
-  if (remaining.length === 0) {
-    await persistHistoricalReclaimScanBatch(mount.env.fs, {
-      workspaceRoot: mount.workspaceRoot,
-      examinedTaskPaths: [],
-      newCandidates: [],
-      scanComplete: true
-    });
-    return false;
-  }
-  const batchSize = TASK_WORKTREE_RECLAIM_HISTORICAL_BATCH_SIZE;
-  const examined = remaining.slice(0, batchSize);
-  const newCandidates = [];
-  const decisions = [];
-  let blocked = false;
-  let blockedDiagnostic;
-  for (const taskPath of examined) {
-    if (shouldStop()) return false;
-    let task;
-    try {
-      task = await loadTaskEnvelope(mount.env.fs, taskPath);
-    } catch (error) {
-      blockedDiagnostic = {
-        taskPath,
-        reason: `Historical scan could not read Task envelope: ${error instanceof Error ? error.message : String(error)}`,
-        attemptedAt: mount.env.clock.now()
-      };
-      blocked = true;
-      break;
-    }
-    if (!isHistoricalReclaimScanCandidate(task, mount.workspaceRoot)) {
-      decisions.push({
-        taskPath,
-        code: "NOT_APPLICABLE",
-        reason: "Task is not a terminal agentProfile lane with exact recorded worktree ownership",
-        attemptedAt: mount.env.clock.now()
-      });
-      continue;
-    }
-    const taskId = task.id.trim();
-    newCandidates.push({
-      taskId,
-      taskPath: task.path,
-      workspaceRoot: mount.workspaceRoot,
-      enqueuedAt: mount.env.clock.now(),
-      trigger: "historical.scan"
-    });
-  }
-  const persistExamined = blocked ? examined.slice(0, newCandidates.length + decisions.length) : examined;
-  if (persistExamined.length === 0 && blocked) {
-    await recordHistoricalReclaimScanDiagnostic(mount.env.fs, {
-      workspaceRoot: mount.workspaceRoot,
-      taskPath: blockedDiagnostic.taskPath,
-      code: "UNREADABLE_TASK",
-      reason: blockedDiagnostic.reason,
-      attemptedAt: blockedDiagnostic.attemptedAt
-    });
-    return false;
-  }
-  const scanComplete = !blocked && examined.length >= remaining.length;
-  const persisted = await persistHistoricalReclaimScanBatch(mount.env.fs, {
-    workspaceRoot: mount.workspaceRoot,
-    examinedTaskPaths: persistExamined,
-    newCandidates,
-    decisions,
-    scanComplete
-  });
-  if (blockedDiagnostic) {
-    await recordHistoricalReclaimScanDiagnostic(mount.env.fs, {
-      workspaceRoot: mount.workspaceRoot,
-      taskPath: blockedDiagnostic.taskPath,
-      code: "UNREADABLE_TASK",
-      reason: blockedDiagnostic.reason,
-      attemptedAt: blockedDiagnostic.attemptedAt
-    });
-  }
-  for (const c of persisted.enqueued) {
-    if (!historicalReclaimAccepting || shouldStop()) break;
-    if (!ctx.host.get(workspaceId)) break;
-    let task;
-    try {
-      task = await loadTaskEnvelope(mount.env.fs, c.taskPath);
-    } catch {
-      continue;
-    }
-    await maybeAutoReclaimTaskWorktree(
-      ctx,
-      workspaceId,
-      task,
-      "historical.scan"
-    );
-  }
-  if (blocked) return false;
-  return !persisted.historicalScan.complete;
-}
-function isHistoricalReclaimScanCandidate(task, workspaceRoot) {
-  if (!isTaskScopedWorktreeLane(task)) return false;
-  if (!isTaskWorktreeReclaimTerminalState(task.state)) return false;
-  const taskId = task.id?.trim();
-  if (!taskId) return false;
-  if (!task.path?.trim()) return false;
-  const worktree = task.worktree?.trim();
-  const branch = task.branch?.trim();
-  if (!worktree || !branch) return false;
-  if (branch.startsWith("tent-role/")) return false;
-  if (task.workspace?.trim()) {
-    try {
-      if (!isSameWorkspaceRoot(
-        nodePath6.resolve(task.workspace),
-        nodePath6.resolve(workspaceRoot)
-      )) {
-        return false;
-      }
-    } catch {
-      return false;
-    }
-  }
-  return true;
 }
 async function operationalRetentionPurgeRpc(ctx, p) {
   requireUserActor(p, "operationalRetention.purge");
@@ -34208,6 +33776,9 @@ function buildContextCardManagedBootstrap(task, contextCard, roots) {
     ...task.id ? [`Task id: ${task.id}`] : [],
     ...bootstrapNodeIds.length ? [`nodes: ${bootstrapNodeIds.join(", ")}`] : [],
     `deliveryPolicy: ${task.deliveryPolicy ?? "review"}`,
+    ...task.parentActor ? [`parentActor: ${task.parentActor.kind}:${task.parentActor.id}`] : [],
+    ...task.reviewer ? [`reviewer: ${task.reviewer.kind}:${task.reviewer.id}`] : [],
+    `assignee: ${taskAssigneeKind(task) === "agentProfile" ? "route" : "role"}:${task.role}`,
     `Service status: this task is already claimed (state=${task.state || "running"}).`,
     "Managed path: Local Service already claimed this task; final assistant reply is the report and will be delivered automatically.",
     ...executionLaneText ? [executionLaneText] : []
@@ -38456,7 +38027,6 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
   const managedDeliveryReportDrafts = new ManagedDeliveryReportDraftStore(dataDir);
   await managedDeliveryReportDrafts.ensureLoaded();
   enableManagedTaskInputBackgroundAccept();
-  enableHistoricalTaskWorktreeReclaimAccept();
   const credentials = new CredentialStore(dataDir, {
     protector: options.credentialProtector
   });
@@ -38656,7 +38226,6 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
       let firstError;
-      let historicalReclaimDrainSafe = true;
       const attempt = async (action, bestEffort = false) => {
         try {
           await action();
@@ -38670,36 +38239,23 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
         await attempt(() => toolApprovals.shutdown(), true);
         await attempt(() => userAsks.shutdown(), true);
         stopManagedTaskInputBackgroundAccept();
-        stopHistoricalTaskWorktreeReclaimAccept();
         await attempt(() => runtime.shutdown(), true);
         await attempt(
           () => drainManagedTaskInputBackgroundForShutdown(5e3),
           true
         );
-        try {
-          await drainHistoricalTaskWorktreeReclaimForShutdown(
-            options.historicalReclaimDrainTimeoutMs ?? 5e3
-          );
-        } catch (error) {
-          historicalReclaimDrainSafe = false;
-          if (firstError === void 0) firstError = error;
-        }
         await attempt(() => taskInputs.shutdown(), true);
         await attempt(() => managedDeliveryReportDrafts.shutdown(), true);
         await attempt(() => drainRuntimeProjections());
         unsubscribeRuntimeEvents();
-        if (historicalReclaimDrainSafe) {
-          await attempt(() => workspaceHost.dispose());
-        }
+        await attempt(() => workspaceHost.dispose());
       } finally {
-        if (historicalReclaimDrainSafe) {
-          if (options.writeEndpoint !== false) {
-            await attempt(
-              () => removeServiceEndpoint(dataDir, serviceLease.instanceId)
-            );
-          }
-          await attempt(() => serviceLease.release());
+        if (options.writeEndpoint !== false) {
+          await attempt(
+            () => removeServiceEndpoint(dataDir, serviceLease.instanceId)
+          );
         }
+        await attempt(() => serviceLease.release());
       }
       if (firstError !== void 0) throw firstError;
     })();

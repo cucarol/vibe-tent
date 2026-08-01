@@ -1718,6 +1718,445 @@ var init_task_model = __esm({
   }
 });
 
+// src/core/task-context-card.ts
+function canonicalJson(value) {
+  return JSON.stringify(sortForCanonical(value));
+}
+function sortForCanonical(value) {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(sortForCanonical);
+  const obj = value;
+  const out = {};
+  for (const key of Object.keys(obj).sort((a, b) => a.localeCompare(b))) {
+    const v = obj[key];
+    if (v === void 0) continue;
+    out[key] = sortForCanonical(v);
+  }
+  return out;
+}
+function sha256Hex(text) {
+  return (0, import_node_crypto2.createHash)("sha256").update(text, "utf8").digest("hex");
+}
+function formatContextGeneration(stableCanonicalBytes) {
+  return `cg-${CONTEXT_GENERATION_VERSION}-${sha256Hex(stableCanonicalBytes)}`;
+}
+function isContextGenerationId(value) {
+  return typeof value === "string" && /^cg-v1-[a-f0-9]{64}$/.test(value);
+}
+function computeContextGeneration(inputs) {
+  const extraStable = sanitizeContextGenerationExtraStable(inputs.extraStable);
+  const payload = {
+    v: CONTEXT_GENERATION_VERSION,
+    workspaceIdentity: inputs.workspaceIdentity.trim(),
+    agentsPointerDigest: inputs.agentsPointerDigest.trim(),
+    tentRoleDigest: inputs.tentRoleDigest?.trim() || "",
+    tentRoleVersion: inputs.tentRoleVersion?.trim() || "",
+    rolePrompt: inputs.rolePrompt?.trim() || "",
+    tentTaskDigest: inputs.tentTaskDigest?.trim() || "",
+    tentTaskVersion: inputs.tentTaskVersion?.trim() || "",
+    profileAdapterCompatibility: inputs.profileAdapterCompatibility?.trim() || "",
+    purpose: inputs.purpose?.trim() || "",
+    extraStable
+  };
+  return formatContextGeneration(canonicalJson(payload));
+}
+function sanitizeContextGenerationExtraStable(extra) {
+  const out = {};
+  if (!extra) return out;
+  const forbidden = new Set(
+    CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS.map((k) => k.toLowerCase())
+  );
+  for (const key of Object.keys(extra).sort((a, b) => a.localeCompare(b))) {
+    if (forbidden.has(key.toLowerCase())) continue;
+    const v = extra[key];
+    if (v === void 0) continue;
+    out[key] = v;
+  }
+  return out;
+}
+function agentsBodyCompatibilityDigest(agentsBody) {
+  return sha256Hex(typeof agentsBody === "string" ? agentsBody : "");
+}
+function computeTaskDeltaDigest(inputs) {
+  const { card, taskInputDelta, checkpoint, userPrompt } = inputs;
+  const payload = {
+    v: TASK_CONTEXT_CARD_SCHEMA_VERSION,
+    objective: card.objective,
+    frozenDecisions: card.frozenDecisions,
+    scope: card.scope,
+    acceptance: card.acceptance,
+    refs: card.refs,
+    taskInputDelta: taskInputDelta?.trim() || "",
+    checkpoint: checkpoint?.trim() || "",
+    userPrompt: userPrompt?.trim() || ""
+  };
+  return sha256Hex(canonicalJson(payload));
+}
+function asStringList(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => typeof item === "string").map((s) => s.trim()).filter(Boolean);
+}
+function parseRefList(value, bucket) {
+  if (value === void 0 || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new TaskContextCardError(
+      "INVALID_CARD",
+      `Context Card refs.${bucket} must be an array of durable pointers.`,
+      { bucket, value }
+    );
+  }
+  const out = [];
+  for (let i = 0; i < value.length; i++) {
+    const item = value[i];
+    if (typeof item === "string") {
+      const id2 = item.trim();
+      if (!id2) {
+        throw new TaskContextCardError(
+          "UNRESOLVED_REF",
+          `Context Card refs.${bucket}[${i}] id is empty.`,
+          { bucket, index: i }
+        );
+      }
+      out.push({ id: id2 });
+      continue;
+    }
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new TaskContextCardError(
+        "UNRESOLVED_REF",
+        `Context Card refs.${bucket}[${i}] is not a durable pointer.`,
+        { bucket, index: i, value: item }
+      );
+    }
+    const raw = item;
+    const id = typeof raw.id === "string" ? raw.id.trim() : "";
+    if (!id) {
+      throw new TaskContextCardError(
+        "UNRESOLVED_REF",
+        `Context Card refs.${bucket}[${i}] missing id.`,
+        { bucket, index: i }
+      );
+    }
+    const ref = { id };
+    if (typeof raw.path === "string" && raw.path.trim()) ref.path = raw.path.trim();
+    if (typeof raw.revision === "string" && raw.revision.trim()) {
+      ref.revision = raw.revision.trim();
+    }
+    out.push(ref);
+  }
+  return out;
+}
+function buildTaskContextCard(input) {
+  const objective = input.objective?.trim() || "";
+  const acceptance = asStringList([...input.acceptance ?? []]);
+  if (!isContextGenerationId(input.contextGeneration)) {
+    throw new TaskContextCardError(
+      "INVALID_GENERATION",
+      `contextGeneration must match cg-v1-<sha256>; got ${String(input.contextGeneration)}`
+    );
+  }
+  const cardBody = {
+    schemaVersion: TASK_CONTEXT_CARD_SCHEMA_VERSION,
+    objective,
+    frozenDecisions: asStringList([...input.frozenDecisions ?? []]),
+    scope: {
+      include: asStringList([...input.scope?.include ?? []]),
+      exclude: asStringList([...input.scope?.exclude ?? []])
+    },
+    acceptance,
+    refs: {
+      nodes: parseRefList(input.refs?.nodes ?? [], "nodes"),
+      tasks: parseRefList(input.refs?.tasks ?? [], "tasks"),
+      deliveries: parseRefList(input.refs?.deliveries ?? [], "deliveries"),
+      git: parseRefList(input.refs?.git ?? [], "git")
+    }
+  };
+  const taskDeltaDigest = input.taskDeltaDigest?.trim() || computeTaskDeltaDigest({
+    card: cardBody,
+    taskInputDelta: input.taskInputDelta,
+    checkpoint: input.checkpoint,
+    userPrompt: input.userPrompt
+  });
+  return {
+    ...cardBody,
+    contextGeneration: input.contextGeneration,
+    taskDeltaDigest
+  };
+}
+function parseTaskContextCard(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new TaskContextCardError(
+      "INVALID_CARD",
+      "Context Card payload must be a plain object."
+    );
+  }
+  const raw = data;
+  const scopeRaw = raw.scope && typeof raw.scope === "object" && !Array.isArray(raw.scope) ? raw.scope : {};
+  const refsRaw = raw.refs && typeof raw.refs === "object" && !Array.isArray(raw.refs) ? raw.refs : {};
+  return buildTaskContextCard({
+    objective: typeof raw.objective === "string" ? raw.objective : "",
+    frozenDecisions: asStringList(raw.frozenDecisions),
+    scope: {
+      include: asStringList(scopeRaw.include ?? raw.scopeInclude),
+      exclude: asStringList(scopeRaw.exclude ?? raw.scopeExclude)
+    },
+    acceptance: asStringList(raw.acceptance),
+    refs: {
+      nodes: parseRefList(refsRaw.nodes ?? raw.refsNodes, "nodes"),
+      tasks: parseRefList(refsRaw.tasks ?? raw.refsTasks, "tasks"),
+      deliveries: parseRefList(refsRaw.deliveries ?? raw.refsDeliveries, "deliveries"),
+      git: parseRefList(refsRaw.git ?? raw.refsGit, "git")
+    },
+    contextGeneration: typeof raw.contextGeneration === "string" ? raw.contextGeneration : "",
+    taskDeltaDigest: typeof raw.taskDeltaDigest === "string" ? raw.taskDeltaDigest : void 0
+  });
+}
+function loadTaskContextCardFromFrontmatter(data) {
+  if (data.contextCard !== void 0 && data.contextCard !== null) {
+    return parseTaskContextCard(data.contextCard);
+  }
+  return null;
+}
+function serializeTaskContextCardForFrontmatter(card) {
+  return {
+    schemaVersion: card.schemaVersion,
+    objective: card.objective,
+    frozenDecisions: [...card.frozenDecisions],
+    scope: {
+      include: [...card.scope.include],
+      exclude: [...card.scope.exclude]
+    },
+    acceptance: [...card.acceptance],
+    refs: {
+      nodes: card.refs.nodes.map((r) => ({ ...r })),
+      tasks: card.refs.tasks.map((r) => ({ ...r })),
+      deliveries: card.refs.deliveries.map((r) => ({ ...r })),
+      git: card.refs.git.map((r) => ({ ...r }))
+    },
+    contextGeneration: card.contextGeneration,
+    taskDeltaDigest: card.taskDeltaDigest
+  };
+}
+function profileAdapterCompatibilityDigest(input) {
+  const flags = [...input.capabilityFlags ?? []].map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
+  return sha256Hex(
+    canonicalJson({
+      profileId: input.profileId.trim(),
+      adapterId: input.adapterId.trim(),
+      flags,
+      launchDigest: input.launchDigest?.trim() || ""
+    })
+  );
+}
+function deriveIntegrationAuthority(input) {
+  try {
+    const pair = resolveParentReviewerPair({
+      parentActor: input.parentActor,
+      reviewer: input.reviewer
+    });
+    return {
+      actor: { kind: pair.parentActor.kind, id: pair.parentActor.id },
+      mutator: INTEGRATION_MUTATOR_SERVICE
+    };
+  } catch (err) {
+    if (err instanceof TaskLifecycleError) {
+      throw new TaskContextCardError("INVALID_ACTOR", err.message, {
+        parentActor: input.parentActor,
+        reviewer: input.reviewer
+      });
+    }
+    throw err;
+  }
+}
+function assertIntegrationAuthorityMatchesParent(authority, parentActor, reviewer) {
+  const derived = deriveIntegrationAuthority({ parentActor, reviewer });
+  if (!authority || typeof authority !== "object" || Array.isArray(authority)) {
+    throw new TaskContextCardError(
+      "INVALID_ACTOR",
+      "integrationAuthority must be { actor, mutator: service } derived from parent/reviewer.",
+      { authority }
+    );
+  }
+  const raw = authority;
+  if (raw.mutator !== INTEGRATION_MUTATOR_SERVICE) {
+    throw new TaskContextCardError(
+      "INVALID_ACTOR",
+      `integrationAuthority.mutator must be "${INTEGRATION_MUTATOR_SERVICE}" (Service only); got ${String(raw.mutator)}.`,
+      { authority }
+    );
+  }
+  let actor;
+  try {
+    actor = parseTaskActorRef(raw.actor, "parentActor");
+  } catch (err) {
+    if (err instanceof TaskLifecycleError) {
+      throw new TaskContextCardError("INVALID_ACTOR", err.message, { authority });
+    }
+    throw err;
+  }
+  if (actor.kind !== derived.actor.kind || actor.id !== derived.actor.id) {
+    throw new TaskContextCardError(
+      "INVALID_ACTOR",
+      `integrationAuthority.actor must equal Task parent/reviewer (${derived.actor.kind}:${derived.actor.id}); got ${actor.kind}:${actor.id}.`,
+      { authority, derived }
+    );
+  }
+  return derived;
+}
+var import_node_crypto2, TASK_CONTEXT_CARD_SCHEMA_VERSION, CONTEXT_GENERATION_VERSION, INTEGRATION_MUTATOR_SERVICE, CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS, TaskContextCardError;
+var init_task_context_card = __esm({
+  "src/core/task-context-card.ts"() {
+    "use strict";
+    import_node_crypto2 = require("node:crypto");
+    init_task_model();
+    TASK_CONTEXT_CARD_SCHEMA_VERSION = "v1";
+    CONTEXT_GENERATION_VERSION = "v1";
+    INTEGRATION_MUTATOR_SERVICE = "service";
+    CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS = [
+      "taskId",
+      "taskPath",
+      "objective",
+      "acceptance",
+      "taskDeltaDigest",
+      "userPrompt",
+      "taskInputDelta",
+      "checkpoint"
+    ];
+    TaskContextCardError = class extends Error {
+      constructor(code, message, details) {
+        super(message);
+        this.name = "TaskContextCardError";
+        this.code = code;
+        this.details = details;
+      }
+    };
+  }
+});
+
+// src/core/task-node-refs.ts
+function normalizeContextCardNodeRef(raw) {
+  const id = raw.id.trim();
+  if (!id) throw new Error("Task node ref id cannot be empty.");
+  if (id === "root") {
+    throw new Error(
+      'Task.contextCard.refs.nodes must not include fake "root" Node ref; workspace context is separate.'
+    );
+  }
+  const out = { id };
+  if (typeof raw.path === "string" && raw.path.trim()) {
+    out.path = raw.path.trim().replace(/\\/g, "/");
+  }
+  if (typeof raw.revision === "string" && raw.revision.trim()) {
+    out.revision = raw.revision.trim();
+  }
+  return out;
+}
+function taskReferencedNodeIds(task) {
+  const label = task.id || task.path || "(unknown)";
+  if (task.contextCard == null) {
+    throw new Error(`${MISSING_CONTEXT_CARD_NODES} task=${label}`);
+  }
+  const nodes = task.contextCard.refs?.nodes;
+  if (nodes === void 0 || nodes === null) {
+    throw new Error(`${MISSING_CONTEXT_CARD_NODES} task=${label}`);
+  }
+  if (!Array.isArray(nodes)) {
+    throw new Error(`${MISSING_CONTEXT_CARD_NODES} task=${label} (nodes must be an array)`);
+  }
+  return nodes.map((n) => n.id).filter((id) => id && id !== "root");
+}
+function taskDirectlyReferencesNode(task, nodeId2) {
+  const id = nodeId2.trim();
+  if (!id || id === "root") return false;
+  return taskReferencedNodeIds(task).includes(id);
+}
+function taskIsActiveOccupation(task) {
+  const state = task.state || (task.status === "pending" || task.status === "taken" ? legacyStatusToState(task.status) : "failed");
+  return isActiveTaskState(state);
+}
+function listDirectActiveTasksForNode(nodeId2, tasks) {
+  const id = nodeId2.trim();
+  const matches = tasks.filter((t) => {
+    if (!taskIsActiveOccupation(t)) return false;
+    if (t.contextCard == null) return false;
+    return taskDirectlyReferencesNode(t, id);
+  });
+  return sortTasksDeterministically(matches);
+}
+function sortTasksDeterministically(tasks) {
+  return [...tasks].sort((a, b) => {
+    const ca = a.createdAt || "";
+    const cb = b.createdAt || "";
+    if (ca !== cb) return ca.localeCompare(cb);
+    const ia = a.id || "";
+    const ib = b.id || "";
+    if (ia !== ib) return ia.localeCompare(ib);
+    return (a.path || "").localeCompare(b.path || "");
+  });
+}
+var MISSING_CONTEXT_CARD_NODES;
+var init_task_node_refs = __esm({
+  "src/core/task-node-refs.ts"() {
+    "use strict";
+    init_frontmatter();
+    init_paths();
+    init_tree();
+    init_task_model();
+    init_task_context_card();
+    MISSING_CONTEXT_CARD_NODES = "MISSING_CONTEXT_CARD: Task.contextCard.refs.nodes is required (run migrateLegacyTaskNodeRefs for legacy claims).";
+  }
+});
+
+// src/core/claim.ts
+function envelopeIsActiveOccupation(task) {
+  const state = task.state || (task.status === "pending" || task.status === "taken" ? legacyStatusToState(task.status) : "failed");
+  return isActiveTaskState(state);
+}
+function canClaim(box, options) {
+  const structural = structuralClaimGate(box);
+  if (!structural.ok) return structural;
+  const occupied = options?.tasks ? listDirectActiveTasksForNode(box.id, options.tasks)[0] : void 0;
+  if (occupied) {
+    return {
+      ok: false,
+      blocker: box,
+      task: occupied,
+      reason: `${box.name} is occupied by active task ${occupied.id || occupied.path} (${occupied.role}).`
+    };
+  }
+  return structural;
+}
+function structuralClaimGate(box) {
+  if (box.invalid) {
+    return { ok: false, blocker: box, reason: `Invalid subtree: ${box.invalidReason || "missing type definition"}` };
+  }
+  if (box.archived) {
+    return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
+  }
+  return { ok: true };
+}
+function occupiedBoxesFromTasks(tent, tasks) {
+  const out = /* @__PURE__ */ new Map();
+  for (const task of tasks) {
+    if (!envelopeIsActiveOccupation(task)) continue;
+    if (task.contextCard == null) continue;
+    for (const nodeId2 of taskReferencedNodeIds(task)) {
+      const box = tent.byId.get(nodeId2);
+      if (box) out.set(box.id, box);
+    }
+  }
+  return [...out.values()];
+}
+function isFrozen(box) {
+  return box.invalid || box.archived;
+}
+var init_claim = __esm({
+  "src/core/claim.ts"() {
+    "use strict";
+    init_task_model();
+    init_task_node_refs();
+  }
+});
+
 // src/core/task.ts
 async function loadTaskEnvelopes(fs2) {
   const tasks = [];
@@ -1885,11 +2324,6 @@ async function loadTaskEnvelope(fs2, path) {
     task.contextCard = contextCard;
     task.contextGeneration = contextCard.contextGeneration;
     task.taskDeltaDigest = contextCard.taskDeltaDigest;
-  } else if (typeof data.contextGeneration === "string" && data.contextGeneration.trim()) {
-    task.contextGeneration = data.contextGeneration.trim();
-  }
-  if (!task.taskDeltaDigest && typeof data.taskDeltaDigest === "string" && data.taskDeltaDigest.trim()) {
-    task.taskDeltaDigest = data.taskDeltaDigest.trim();
   }
   const deliveryPolicy = normalizeDeliveryPolicyRead(data.deliveryPolicy);
   if (deliveryPolicy) task.deliveryPolicy = deliveryPolicy;
@@ -2055,12 +2489,8 @@ async function writeTaskEnvelope(fs2, clock, input) {
       `deliveryPolicy=${deliveryPolicy} is only legal for a durable Role's user-facing delivery; downstream Task Agent \u2192 parent must use review (parent=${actors.parentActor.kind}:${actors.parentActor.id}).`
     );
   }
-  const objective = (input.objective?.trim() || userPrompt).trim();
-  if (!objective) throw new Error("Dispatch requires a non-empty objective (user prompt).");
-  const acceptance = input.acceptance && input.acceptance.length > 0 ? input.acceptance.map((s) => s.trim()).filter(Boolean) : [objective];
-  if (acceptance.length === 0) {
-    throw new Error("Dispatch requires non-empty acceptance (or objective).");
-  }
+  const objective = input.objective?.trim() || "";
+  const acceptance = input.acceptance && input.acceptance.length > 0 ? input.acceptance.map((s) => s.trim()).filter(Boolean) : [];
   const facts = input.contextGenerationFacts;
   const contextGeneration = input.contextGeneration?.trim() || computeContextGeneration({
     workspaceIdentity: input.workspace?.workspace || "local-workspace",
@@ -2083,11 +2513,6 @@ async function writeTaskEnvelope(fs2, clock, input) {
       ...facts?.extraStable
     }
   });
-  const assignee = projectAssigneeFromTask({
-    role: input.role,
-    assigneeKind,
-    agentId: input.agentId
-  });
   const contextCard = buildTaskContextCard({
     objective,
     acceptance,
@@ -2097,9 +2522,6 @@ async function writeTaskEnvelope(fs2, clock, input) {
       deliveries: [],
       git: []
     },
-    parentActor: actors.parentActor,
-    reviewer: actors.reviewer,
-    assignee,
     contextGeneration,
     userPrompt
   });
@@ -2114,8 +2536,6 @@ async function writeTaskEnvelope(fs2, clock, input) {
     reviewer: serializeTaskActorRef(actors.reviewer),
     // Sole new persisted source wire — do not write claims[].
     contextCard: serializeTaskContextCardForFrontmatter(contextCard),
-    contextGeneration: contextCard.contextGeneration,
-    taskDeltaDigest: contextCard.taskDeltaDigest,
     manifest: input.manifestPath,
     deliveryPolicy,
     createdAt: now,
@@ -2271,16 +2691,8 @@ async function patchTaskEnvelope(fs2, path, patch) {
     delete data.taskDeltaDigest;
   } else if (patch.contextCard) {
     data.contextCard = serializeTaskContextCardForFrontmatter(patch.contextCard);
-    data.contextGeneration = patch.contextCard.contextGeneration;
-    data.taskDeltaDigest = patch.contextCard.taskDeltaDigest;
-  }
-  if (patch.contextGeneration === null) delete data.contextGeneration;
-  else if (typeof patch.contextGeneration === "string" && patch.contextGeneration.trim()) {
-    data.contextGeneration = patch.contextGeneration.trim();
-  }
-  if (patch.taskDeltaDigest === null) delete data.taskDeltaDigest;
-  else if (typeof patch.taskDeltaDigest === "string" && patch.taskDeltaDigest.trim()) {
-    data.taskDeltaDigest = patch.taskDeltaDigest.trim();
+    delete data.contextGeneration;
+    delete data.taskDeltaDigest;
   }
   if (patch.purpose === null) delete data.purpose;
   else if (typeof patch.purpose === "string" && patch.purpose.trim()) {
@@ -2326,550 +2738,6 @@ var init_task = __esm({
     init_tree();
     init_task_model();
     init_task_context_card();
-    init_task_node_refs();
-  }
-});
-
-// src/core/task-context-card.ts
-function canonicalJson(value) {
-  return JSON.stringify(sortForCanonical(value));
-}
-function sortForCanonical(value) {
-  if (value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map(sortForCanonical);
-  const obj = value;
-  const out = {};
-  for (const key of Object.keys(obj).sort((a, b) => a.localeCompare(b))) {
-    const v = obj[key];
-    if (v === void 0) continue;
-    out[key] = sortForCanonical(v);
-  }
-  return out;
-}
-function sha256Hex(text) {
-  return (0, import_node_crypto2.createHash)("sha256").update(text, "utf8").digest("hex");
-}
-function formatContextGeneration(stableCanonicalBytes) {
-  return `cg-${CONTEXT_GENERATION_VERSION}-${sha256Hex(stableCanonicalBytes)}`;
-}
-function isContextGenerationId(value) {
-  return typeof value === "string" && /^cg-v1-[a-f0-9]{64}$/.test(value);
-}
-function computeContextGeneration(inputs) {
-  const extraStable = sanitizeContextGenerationExtraStable(inputs.extraStable);
-  const payload = {
-    v: CONTEXT_GENERATION_VERSION,
-    workspaceIdentity: inputs.workspaceIdentity.trim(),
-    agentsPointerDigest: inputs.agentsPointerDigest.trim(),
-    tentRoleDigest: inputs.tentRoleDigest?.trim() || "",
-    tentRoleVersion: inputs.tentRoleVersion?.trim() || "",
-    rolePrompt: inputs.rolePrompt?.trim() || "",
-    tentTaskDigest: inputs.tentTaskDigest?.trim() || "",
-    tentTaskVersion: inputs.tentTaskVersion?.trim() || "",
-    profileAdapterCompatibility: inputs.profileAdapterCompatibility?.trim() || "",
-    purpose: inputs.purpose?.trim() || "",
-    extraStable
-  };
-  return formatContextGeneration(canonicalJson(payload));
-}
-function sanitizeContextGenerationExtraStable(extra) {
-  const out = {};
-  if (!extra) return out;
-  const forbidden = new Set(
-    CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS.map((k) => k.toLowerCase())
-  );
-  for (const key of Object.keys(extra).sort((a, b) => a.localeCompare(b))) {
-    if (forbidden.has(key.toLowerCase())) continue;
-    const v = extra[key];
-    if (v === void 0) continue;
-    out[key] = v;
-  }
-  return out;
-}
-function agentsBodyCompatibilityDigest(agentsBody) {
-  return sha256Hex(typeof agentsBody === "string" ? agentsBody : "");
-}
-function computeTaskDeltaDigest(inputs) {
-  const { card, taskInputDelta, checkpoint, userPrompt } = inputs;
-  const payload = {
-    v: TASK_CONTEXT_CARD_SCHEMA_VERSION,
-    objective: card.objective,
-    frozenDecisions: card.frozenDecisions,
-    scope: card.scope,
-    acceptance: card.acceptance,
-    refs: card.refs,
-    parentActor: card.parentActor,
-    reviewer: card.reviewer,
-    assignee: card.assignee,
-    taskInputDelta: taskInputDelta?.trim() || "",
-    checkpoint: checkpoint?.trim() || "",
-    userPrompt: userPrompt?.trim() || ""
-  };
-  return sha256Hex(canonicalJson(payload));
-}
-function asStringList(value) {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item) => typeof item === "string").map((s) => s.trim()).filter(Boolean);
-}
-function parseActorRef(value, label) {
-  if (value === void 0 || value === null) {
-    throw new TaskContextCardError(
-      label === "parentActor" ? "MISSING_PARENT_ACTOR" : "MISSING_REVIEWER",
-      `Context Card requires ${label} { kind, id } (canonical TaskActorRef).`,
-      { label, value }
-    );
-  }
-  try {
-    return parseTaskActorRef(value, label);
-  } catch (err) {
-    if (err instanceof TaskLifecycleError) {
-      const code = err.code === "INVALID_ACTOR" ? "INVALID_ACTOR" : label === "parentActor" ? "MISSING_PARENT_ACTOR" : "MISSING_REVIEWER";
-      throw new TaskContextCardError(code, err.message, { label, value });
-    }
-    throw err;
-  }
-}
-function parseAssignee(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TaskContextCardError(
-      "MISSING_ASSIGNEE",
-      "Context Card requires assignee { kind: role|agentId, id }."
-    );
-  }
-  const raw = value;
-  const kind = raw.kind;
-  const id = typeof raw.id === "string" ? raw.id.trim() : "";
-  if (kind !== "role" && kind !== "agentId" || !id) {
-    throw new TaskContextCardError(
-      "MISSING_ASSIGNEE",
-      "Context Card assignee must be { kind: role|agentId, id: non-empty }."
-    );
-  }
-  return { kind, id };
-}
-function parseRefList(value, bucket) {
-  if (value === void 0 || value === null) return [];
-  if (!Array.isArray(value)) {
-    throw new TaskContextCardError(
-      "INVALID_CARD",
-      `Context Card refs.${bucket} must be an array of durable pointers.`,
-      { bucket, value }
-    );
-  }
-  const out = [];
-  for (let i = 0; i < value.length; i++) {
-    const item = value[i];
-    if (typeof item === "string") {
-      const id2 = item.trim();
-      if (!id2) {
-        throw new TaskContextCardError(
-          "UNRESOLVED_REF",
-          `Context Card refs.${bucket}[${i}] id is empty.`,
-          { bucket, index: i }
-        );
-      }
-      out.push({ id: id2 });
-      continue;
-    }
-    if (!item || typeof item !== "object" || Array.isArray(item)) {
-      throw new TaskContextCardError(
-        "UNRESOLVED_REF",
-        `Context Card refs.${bucket}[${i}] is not a durable pointer.`,
-        { bucket, index: i, value: item }
-      );
-    }
-    const raw = item;
-    const id = typeof raw.id === "string" ? raw.id.trim() : "";
-    if (!id) {
-      throw new TaskContextCardError(
-        "UNRESOLVED_REF",
-        `Context Card refs.${bucket}[${i}] missing id.`,
-        { bucket, index: i }
-      );
-    }
-    const ref = { id };
-    if (typeof raw.path === "string" && raw.path.trim()) ref.path = raw.path.trim();
-    if (typeof raw.revision === "string" && raw.revision.trim()) {
-      ref.revision = raw.revision.trim();
-    }
-    out.push(ref);
-  }
-  return out;
-}
-function buildTaskContextCard(input) {
-  const objective = input.objective?.trim() || "";
-  if (!objective) {
-    throw new TaskContextCardError(
-      "MISSING_OBJECTIVE",
-      "Context Card requires objective (fail-loud to parent; do not invent from chat memory)."
-    );
-  }
-  const acceptance = asStringList([...input.acceptance ?? []]);
-  if (acceptance.length === 0) {
-    throw new TaskContextCardError(
-      "MISSING_ACCEPTANCE",
-      "Context Card requires at least one acceptance criterion (fail-loud to parent)."
-    );
-  }
-  const parentActor = parseActorRef(input.parentActor, "parentActor");
-  const reviewer = parseActorRef(input.reviewer, "reviewer");
-  try {
-    assertParentReviewerEqual(parentActor, reviewer);
-  } catch (err) {
-    if (err instanceof TaskLifecycleError) {
-      throw new TaskContextCardError("INVALID_ACTOR", err.message, {
-        parentActor,
-        reviewer
-      });
-    }
-    throw err;
-  }
-  const assignee = parseAssignee(input.assignee);
-  if (!isContextGenerationId(input.contextGeneration)) {
-    throw new TaskContextCardError(
-      "INVALID_GENERATION",
-      `contextGeneration must match cg-v1-<sha256>; got ${String(input.contextGeneration)}`
-    );
-  }
-  const cardBody = {
-    schemaVersion: TASK_CONTEXT_CARD_SCHEMA_VERSION,
-    objective,
-    frozenDecisions: asStringList([...input.frozenDecisions ?? []]),
-    scope: {
-      include: asStringList([...input.scope?.include ?? []]),
-      exclude: asStringList([...input.scope?.exclude ?? []])
-    },
-    acceptance,
-    refs: {
-      nodes: parseRefList(input.refs?.nodes ?? [], "nodes"),
-      tasks: parseRefList(input.refs?.tasks ?? [], "tasks"),
-      deliveries: parseRefList(input.refs?.deliveries ?? [], "deliveries"),
-      git: parseRefList(input.refs?.git ?? [], "git")
-    },
-    parentActor,
-    reviewer,
-    assignee
-  };
-  const taskDeltaDigest = input.taskDeltaDigest?.trim() || computeTaskDeltaDigest({
-    card: cardBody,
-    taskInputDelta: input.taskInputDelta,
-    checkpoint: input.checkpoint,
-    userPrompt: input.userPrompt
-  });
-  return {
-    ...cardBody,
-    contextGeneration: input.contextGeneration,
-    taskDeltaDigest
-  };
-}
-function parseTaskContextCard(data) {
-  if (!data || typeof data !== "object" || Array.isArray(data)) {
-    throw new TaskContextCardError(
-      "INVALID_CARD",
-      "Context Card payload must be a plain object."
-    );
-  }
-  const raw = data;
-  const scopeRaw = raw.scope && typeof raw.scope === "object" && !Array.isArray(raw.scope) ? raw.scope : {};
-  const refsRaw = raw.refs && typeof raw.refs === "object" && !Array.isArray(raw.refs) ? raw.refs : {};
-  return buildTaskContextCard({
-    objective: typeof raw.objective === "string" ? raw.objective : "",
-    frozenDecisions: asStringList(raw.frozenDecisions),
-    scope: {
-      include: asStringList(scopeRaw.include ?? raw.scopeInclude),
-      exclude: asStringList(scopeRaw.exclude ?? raw.scopeExclude)
-    },
-    acceptance: asStringList(raw.acceptance),
-    refs: {
-      nodes: parseRefList(refsRaw.nodes ?? raw.refsNodes, "nodes"),
-      tasks: parseRefList(refsRaw.tasks ?? raw.refsTasks, "tasks"),
-      deliveries: parseRefList(refsRaw.deliveries ?? raw.refsDeliveries, "deliveries"),
-      git: parseRefList(refsRaw.git ?? raw.refsGit, "git")
-    },
-    parentActor: raw.parentActor,
-    reviewer: raw.reviewer,
-    assignee: raw.assignee,
-    contextGeneration: typeof raw.contextGeneration === "string" ? raw.contextGeneration : "",
-    taskDeltaDigest: typeof raw.taskDeltaDigest === "string" ? raw.taskDeltaDigest : void 0
-  });
-}
-function hasTaskContextCardBodyFields(data) {
-  const keys = [
-    "objective",
-    "frozenDecisions",
-    "acceptance",
-    "scope",
-    "scopeInclude",
-    "scopeExclude",
-    "refs",
-    "refsNodes",
-    "refsTasks",
-    "refsDeliveries",
-    "refsGit",
-    "assignee",
-    "contextCard"
-  ];
-  return keys.some((k) => data[k] !== void 0 && data[k] !== null);
-}
-function loadTaskContextCardFromFrontmatter(data) {
-  if (data.contextCard !== void 0 && data.contextCard !== null) {
-    return parseTaskContextCard(data.contextCard);
-  }
-  if (!hasTaskContextCardBodyFields(data)) return null;
-  return parseTaskContextCard(data);
-}
-function serializeTaskContextCardForFrontmatter(card) {
-  return {
-    schemaVersion: card.schemaVersion,
-    objective: card.objective,
-    frozenDecisions: [...card.frozenDecisions],
-    scope: {
-      include: [...card.scope.include],
-      exclude: [...card.scope.exclude]
-    },
-    acceptance: [...card.acceptance],
-    refs: {
-      nodes: card.refs.nodes.map((r) => ({ ...r })),
-      tasks: card.refs.tasks.map((r) => ({ ...r })),
-      deliveries: card.refs.deliveries.map((r) => ({ ...r })),
-      git: card.refs.git.map((r) => ({ ...r }))
-    },
-    parentActor: { kind: card.parentActor.kind, id: card.parentActor.id },
-    reviewer: { kind: card.reviewer.kind, id: card.reviewer.id },
-    assignee: { kind: card.assignee.kind, id: card.assignee.id },
-    contextGeneration: card.contextGeneration,
-    taskDeltaDigest: card.taskDeltaDigest
-  };
-}
-function projectAssigneeFromTask(task) {
-  const agentId = typeof task.agentId === "string" ? task.agentId.trim() : "";
-  if (agentId) {
-    return { kind: "agentId", id: agentId };
-  }
-  const kind = taskAssigneeKind(task);
-  if (kind === "agentProfile") {
-    return { kind: "agentId", id: task.role };
-  }
-  return { kind: "role", id: task.role };
-}
-function profileAdapterCompatibilityDigest(input) {
-  const flags = [...input.capabilityFlags ?? []].map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
-  return sha256Hex(
-    canonicalJson({
-      profileId: input.profileId.trim(),
-      adapterId: input.adapterId.trim(),
-      flags,
-      launchDigest: input.launchDigest?.trim() || ""
-    })
-  );
-}
-function deriveIntegrationAuthority(input) {
-  try {
-    const pair = resolveParentReviewerPair({
-      parentActor: input.parentActor,
-      reviewer: input.reviewer
-    });
-    return {
-      actor: { kind: pair.parentActor.kind, id: pair.parentActor.id },
-      mutator: INTEGRATION_MUTATOR_SERVICE
-    };
-  } catch (err) {
-    if (err instanceof TaskLifecycleError) {
-      throw new TaskContextCardError("INVALID_ACTOR", err.message, {
-        parentActor: input.parentActor,
-        reviewer: input.reviewer
-      });
-    }
-    throw err;
-  }
-}
-function assertIntegrationAuthorityMatchesParent(authority, parentActor, reviewer) {
-  const derived = deriveIntegrationAuthority({ parentActor, reviewer });
-  if (!authority || typeof authority !== "object" || Array.isArray(authority)) {
-    throw new TaskContextCardError(
-      "INVALID_ACTOR",
-      "integrationAuthority must be { actor, mutator: service } derived from parent/reviewer.",
-      { authority }
-    );
-  }
-  const raw = authority;
-  if (raw.mutator !== INTEGRATION_MUTATOR_SERVICE) {
-    throw new TaskContextCardError(
-      "INVALID_ACTOR",
-      `integrationAuthority.mutator must be "${INTEGRATION_MUTATOR_SERVICE}" (Service only); got ${String(raw.mutator)}.`,
-      { authority }
-    );
-  }
-  let actor;
-  try {
-    actor = parseTaskActorRef(raw.actor, "parentActor");
-  } catch (err) {
-    if (err instanceof TaskLifecycleError) {
-      throw new TaskContextCardError("INVALID_ACTOR", err.message, { authority });
-    }
-    throw err;
-  }
-  if (actor.kind !== derived.actor.kind || actor.id !== derived.actor.id) {
-    throw new TaskContextCardError(
-      "INVALID_ACTOR",
-      `integrationAuthority.actor must equal Task parent/reviewer (${derived.actor.kind}:${derived.actor.id}); got ${actor.kind}:${actor.id}.`,
-      { authority, derived }
-    );
-  }
-  return derived;
-}
-var import_node_crypto2, TASK_CONTEXT_CARD_SCHEMA_VERSION, CONTEXT_GENERATION_VERSION, INTEGRATION_MUTATOR_SERVICE, CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS, TaskContextCardError;
-var init_task_context_card = __esm({
-  "src/core/task-context-card.ts"() {
-    "use strict";
-    import_node_crypto2 = require("node:crypto");
-    init_task_model();
-    init_task();
-    TASK_CONTEXT_CARD_SCHEMA_VERSION = "v1";
-    CONTEXT_GENERATION_VERSION = "v1";
-    INTEGRATION_MUTATOR_SERVICE = "service";
-    CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS = [
-      "taskId",
-      "taskPath",
-      "objective",
-      "acceptance",
-      "taskDeltaDigest",
-      "userPrompt",
-      "taskInputDelta",
-      "checkpoint"
-    ];
-    TaskContextCardError = class extends Error {
-      constructor(code, message, details) {
-        super(message);
-        this.name = "TaskContextCardError";
-        this.code = code;
-        this.details = details;
-      }
-    };
-  }
-});
-
-// src/core/task-node-refs.ts
-function normalizeContextCardNodeRef(raw) {
-  const id = raw.id.trim();
-  if (!id) throw new Error("Task node ref id cannot be empty.");
-  if (id === "root") {
-    throw new Error(
-      'Task.contextCard.refs.nodes must not include fake "root" Node ref; workspace context is separate.'
-    );
-  }
-  const out = { id };
-  if (typeof raw.path === "string" && raw.path.trim()) {
-    out.path = raw.path.trim().replace(/\\/g, "/");
-  }
-  if (typeof raw.revision === "string" && raw.revision.trim()) {
-    out.revision = raw.revision.trim();
-  }
-  return out;
-}
-function taskReferencedNodeIds(task) {
-  const label = task.id || task.path || "(unknown)";
-  if (task.contextCard == null) {
-    throw new Error(`${MISSING_CONTEXT_CARD_NODES} task=${label}`);
-  }
-  const nodes = task.contextCard.refs?.nodes;
-  if (nodes === void 0 || nodes === null) {
-    throw new Error(`${MISSING_CONTEXT_CARD_NODES} task=${label}`);
-  }
-  if (!Array.isArray(nodes)) {
-    throw new Error(`${MISSING_CONTEXT_CARD_NODES} task=${label} (nodes must be an array)`);
-  }
-  return nodes.map((n) => n.id).filter((id) => id && id !== "root");
-}
-function taskDirectlyReferencesNode(task, nodeId2) {
-  const id = nodeId2.trim();
-  if (!id || id === "root") return false;
-  return taskReferencedNodeIds(task).includes(id);
-}
-function taskIsActiveOccupation(task) {
-  const state = task.state || (task.status === "pending" || task.status === "taken" ? legacyStatusToState(task.status) : "failed");
-  return isActiveTaskState(state);
-}
-function listDirectActiveTasksForNode(nodeId2, tasks) {
-  const id = nodeId2.trim();
-  const matches = tasks.filter((t) => {
-    if (!taskIsActiveOccupation(t)) return false;
-    if (t.contextCard == null) return false;
-    return taskDirectlyReferencesNode(t, id);
-  });
-  return sortTasksDeterministically(matches);
-}
-function sortTasksDeterministically(tasks) {
-  return [...tasks].sort((a, b) => {
-    const ca = a.createdAt || "";
-    const cb = b.createdAt || "";
-    if (ca !== cb) return ca.localeCompare(cb);
-    const ia = a.id || "";
-    const ib = b.id || "";
-    if (ia !== ib) return ia.localeCompare(ib);
-    return (a.path || "").localeCompare(b.path || "");
-  });
-}
-var MISSING_CONTEXT_CARD_NODES;
-var init_task_node_refs = __esm({
-  "src/core/task-node-refs.ts"() {
-    "use strict";
-    init_frontmatter();
-    init_paths();
-    init_tree();
-    init_task_model();
-    init_task_context_card();
-    MISSING_CONTEXT_CARD_NODES = "MISSING_CONTEXT_CARD: Task.contextCard.refs.nodes is required (run migrateLegacyTaskNodeRefs for legacy claims).";
-  }
-});
-
-// src/core/claim.ts
-function envelopeIsActiveOccupation(task) {
-  const state = task.state || (task.status === "pending" || task.status === "taken" ? legacyStatusToState(task.status) : "failed");
-  return isActiveTaskState(state);
-}
-function canClaim(box, options) {
-  const structural = structuralClaimGate(box);
-  if (!structural.ok) return structural;
-  const occupied = options?.tasks ? listDirectActiveTasksForNode(box.id, options.tasks)[0] : void 0;
-  if (occupied) {
-    return {
-      ok: false,
-      blocker: box,
-      task: occupied,
-      reason: `${box.name} is occupied by active task ${occupied.id || occupied.path} (${occupied.role}).`
-    };
-  }
-  return structural;
-}
-function structuralClaimGate(box) {
-  if (box.invalid) {
-    return { ok: false, blocker: box, reason: `Invalid subtree: ${box.invalidReason || "missing type definition"}` };
-  }
-  if (box.archived) {
-    return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
-  }
-  return { ok: true };
-}
-function occupiedBoxesFromTasks(tent, tasks) {
-  const out = /* @__PURE__ */ new Map();
-  for (const task of tasks) {
-    if (!envelopeIsActiveOccupation(task)) continue;
-    if (task.contextCard == null) continue;
-    for (const nodeId2 of taskReferencedNodeIds(task)) {
-      const box = tent.byId.get(nodeId2);
-      if (box) out.set(box.id, box);
-    }
-  }
-  return [...out.values()];
-}
-function isFrozen(box) {
-  return box.invalid || box.archived;
-}
-var init_claim = __esm({
-  "src/core/claim.ts"() {
-    "use strict";
-    init_task_model();
     init_task_node_refs();
   }
 });
