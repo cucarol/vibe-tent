@@ -35325,7 +35325,7 @@ function makeWorkspaceId(workspaceRoot) {
 }
 
 // src/service/protocol.ts
-var TENT_SERVICE_PROTOCOL_VERSION = 1;
+var TENT_SERVICE_PROTOCOL_VERSION = 2;
 
 // src/service/a2a-store.ts
 import * as fs18 from "node:fs/promises";
