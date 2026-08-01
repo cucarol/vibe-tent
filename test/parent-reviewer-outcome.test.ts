@@ -25,7 +25,7 @@ import {
 } from "../src/core/task.js";
 import { parseFrontmatter } from "../src/core/frontmatter.js";
 
-test("parseTaskOutcomeReport: delivered / blocked / needs-input / missing", () => {
+test("parseTaskOutcomeReport: valid control headers parse; missing or malformed return null", () => {
   assert.deepEqual(parseTaskOutcomeReport("outcome: delivered\n\nAll good"), {
     outcome: "delivered",
     report: "All good",

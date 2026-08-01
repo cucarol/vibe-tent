@@ -184,7 +184,7 @@ test("ManagedDeliveryReportDraftStore: empty assistantText refused; id helper", 
 
 // ---- integration: failure preserves draft; retry + restart ----
 
-test("P0: dirty worktree preserves report draft; clean retry publishes and clears", async () => {
+test("P0: natural report without outcome survives dirty refusal and draft-only retry", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace("mrd-dirty-retry");
   await initGitOnWorkspace(ws);
@@ -219,8 +219,8 @@ test("P0: dirty worktree preserves report draft; clean retry publishes and clear
       "untracked dirty\n"
     );
 
-    const reportBody = "DIRTY_PRESERVED_REPORT_BODY";
-    const reportText = `outcome: delivered\n\n${reportBody}`;
+    const reportBody = "DIRTY_PRESERVED_NATURAL_REPORT_BODY";
+    const reportText = reportBody;
     const diag: Array<Record<string, unknown>> = [];
     const unsub = svc.events.subscribe((ev) => {
       if (ev.type === "session.state") diag.push(ev.payload as Record<string, unknown>);
@@ -284,6 +284,54 @@ test("P0: dirty worktree preserves report draft; clean retry publishes and clear
 
     const cleared = await svc.ctx.managedDeliveryReportDrafts.get(workspaceId, taskPath);
     assert.equal(cleared, undefined, "draft cleared after successful Delivery");
+  });
+});
+
+test("malformed outcome text is delivered intact instead of discarding the report", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("mrd-malformed-outcome");
+  await initGitOnWorkspace(ws);
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const dispatched = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "deliver malformed control text intact",
+      deliveryPolicy: "review",
+    });
+    assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
+    const taskPath = (dispatched.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+    const reportText = "outcome: definitely-not-a-state\n\nMALFORMED_REPORT_BODY";
+
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: reportText,
+    });
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal((got.result as { task: { state: string } }).task.state, "delivered");
+    const listed = await rpc(svc, "delivery.list", { workspaceId });
+    const deliveries = (
+      listed.result as { deliveries: Array<{ summary: string; status: string }> }
+    ).deliveries;
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0]?.status, "ready");
+    assert.equal(deliveries[0]?.summary, reportText);
   });
 });
 

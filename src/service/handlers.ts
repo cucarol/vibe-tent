@@ -12094,18 +12094,15 @@ async function tryManagedAutoDeliver(
     return;
   }
 
-  // Explicit outcome gate: only outcome=delivered may publish a ready Delivery.
-  // Missing/invalid outcome → no Delivery (fail loud via session diagnostic).
-  const parsedOutcome = parseTaskOutcomeReport(rawReport);
+  // A non-empty natural final report is deliverable by default. A valid control
+  // header may still select delivered/blocked/needs-input; malformed or absent
+  // control text remains part of the delivered report instead of discarding it.
+  let parsedOutcome = parseTaskOutcomeReport(rawReport);
   if (!parsedOutcome) {
-    await handleManagedNonDeliveredOutcome(ctx, {
-      workspaceId: input.workspaceId,
-      taskPath: input.taskPath,
-      sessionId,
-      outcome: null,
+    parsedOutcome = {
+      outcome: "delivered" as const,
       report: rawReport,
-    });
-    return;
+    };
   }
   if (parsedOutcome.outcome !== "delivered") {
     await handleManagedNonDeliveredOutcome(ctx, {
