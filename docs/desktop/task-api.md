@@ -15,9 +15,10 @@ state machines.
 | TaskInput | `ti-…` | parent/user input scoped to one Task |
 | UserAsk | `ua-…` | executor question requiring a user answer |
 
-The Task envelope and Context Card are execution authority. Node bodies provide
-durable context. Session state is runtime authority. Delivery is review
-evidence. No one object substitutes for another.
+The Task envelope owns the immutable raw prompt, lifecycle authority, assignee,
+and WorkspaceLane. The Context Card owns structured context and durable refs.
+Node bodies provide durable context. Session state is runtime authority.
+Delivery is review evidence. No one object substitutes for another.
 
 Every Task persists exact `parentActor` and `reviewer`. They are equal for
 ordinary dispatch. Downstream executors cannot self-accept, rewrite reviewer,
@@ -66,20 +67,22 @@ Active states are `queued`, `running`, `waiting`, and `delivered`. Terminal
 
 The Context Card persists:
 
-- objective and acceptance criteria;
+- optional objective and acceptance criteria when explicitly supplied;
 - frozen decisions and explicit include/exclude scope;
 - exact Node, Task, Delivery, and Git references;
-- exact parent/reviewer and assignee;
 - context generation and Task delta digest;
-- optional WorkspaceLane facts.
+
+The Task envelope, not the Card, persists the raw prompt, parent/reviewer,
+assignee, and optional WorkspaceLane. Default dispatch never copies the raw
+prompt into objective or acceptance merely to satisfy a schema.
 
 Node id is authoritative; any stored path is a refreshable hint. Required refs
 are resolved before provider launch and fail loud when missing or invalid.
 
 The stable managed prompt contains Task protocol, project instruction pointers,
 Skills, Role prompt where applicable, and live route compatibility facts. The
-dynamic tail contains the current Context Card, Task state, TaskInput/review
-delta, and optional Role checkpoint.
+dynamic tail contains the current Context Card, one raw User Prompt projection,
+Task authority/state, TaskInput/review delta, and optional Role checkpoint.
 
 ## 5. Task states
 

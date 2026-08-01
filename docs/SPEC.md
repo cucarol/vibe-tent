@@ -146,10 +146,11 @@ Dispatch persists:
 
 - exact `parentActor` and `reviewer` authority;
 - assignee (`role` or machine-local Settings `routeId`);
-- objective, acceptance criteria, prompt delta, and referenced entities in a
-  Context Card;
+- the immutable raw prompt in the Task body;
+- optional structured objective, acceptance criteria, scope, decisions, and
+  referenced entities in a Context Card;
 - optional Git WorkspaceLane;
-- context compatibility generation and task delta digest.
+- Context Card-owned compatibility generation and task delta digest.
 
 Node references live authoritatively in `Task.contextCard.refs.nodes[]`; ids are
 authoritative and paths are refreshable hints. Dispatch drafts are UI state and

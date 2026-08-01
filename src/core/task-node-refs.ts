@@ -16,16 +16,12 @@ import { join } from "./tree.js";
 import {
   isActiveTaskState,
   legacyStatusToState,
-  parseTaskActorRef,
-  resolveParentReviewerPair,
-  type TaskActorRef,
   type TaskState,
 } from "./task-model.js";
 import {
   buildTaskContextCard,
   computeContextGeneration,
   loadTaskContextCardFromFrontmatter,
-  projectAssigneeFromTask,
   serializeTaskContextCardForFrontmatter,
   type TaskContextCardRef,
   type TaskContextCardV1,
@@ -455,16 +451,6 @@ function buildMigratedFullContextCard(input: {
         ? existingFull.acceptance
         : [objective];
 
-  const actors = resolveMigrationActors(data, existingFull);
-  const assignee =
-    existingFull?.assignee ??
-    projectAssigneeFromTask({
-      role: typeof data.role === "string" ? data.role : "unknown",
-      assigneeKind:
-        data.assigneeKind === "agentProfile" ? "agentProfile" : "role",
-      agentId: typeof data.agentId === "string" ? data.agentId : undefined,
-    });
-
   const contextGeneration =
     existingFull?.contextGeneration?.trim() ||
     (typeof data.contextGeneration === "string" && data.contextGeneration.trim()
@@ -494,39 +480,8 @@ function buildMigratedFullContextCard(input: {
       deliveries: existingFull?.refs.deliveries ?? [],
       git: existingFull?.refs.git ?? [],
     },
-    parentActor: actors.parentActor,
-    reviewer: actors.reviewer,
-    assignee,
     contextGeneration,
     userPrompt: extractObjectiveFromBody(input.body) ?? objective,
-  });
-}
-
-function resolveMigrationActors(
-  data: Record<string, unknown>,
-  existingFull: TaskContextCardV1 | null
-): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
-  if (existingFull) {
-    return {
-      parentActor: existingFull.parentActor,
-      reviewer: existingFull.reviewer,
-    };
-  }
-  const hasParent = data.parentActor !== undefined && data.parentActor !== null;
-  const hasReviewer = data.reviewer !== undefined && data.reviewer !== null;
-  if (hasParent && hasReviewer) {
-    return resolveParentReviewerPair({
-      parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
-      reviewer: parseTaskActorRef(data.reviewer, "reviewer"),
-    });
-  }
-  if (hasParent) {
-    const parentActor = parseTaskActorRef(data.parentActor, "parentActor");
-    return resolveParentReviewerPair({ parentActor });
-  }
-  // Last resort for pre-actor legacy envelopes: user parent (migrator-only; never invent from chat).
-  return resolveParentReviewerPair({
-    parentActor: { kind: "user", id: "user" },
   });
 }
 

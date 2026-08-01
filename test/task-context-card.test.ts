@@ -23,7 +23,6 @@ import {
   MANAGED_BOOTSTRAP_INVARIANT,
   parseTaskContextCard,
   profileAdapterCompatibilityDigest,
-  projectAssigneeFromTask,
   serializeTaskContextCardForFrontmatter,
   sha256Hex,
   shouldInjectStablePrefix,
@@ -83,9 +82,6 @@ function sampleCard(
       deliveries: [],
       git: [{ id: "HEAD", revision: "abc123" }],
     },
-    parentActor: { kind: "role", id: "规划" },
-    reviewer: { kind: "role", id: "规划" },
-    assignee: { kind: "agentId", id: "grok-core-worker" },
     contextGeneration,
   };
   return buildTaskContextCard({
@@ -204,72 +200,15 @@ test("canonicalJson sorts object keys for stable hashing", () => {
   assert.equal(sha256Hex("x"), formatContextGeneration("x").slice("cg-v1-".length));
 });
 
-test("buildTaskContextCard fail-loud: missing objective / acceptance / parent / reviewer", () => {
+test("buildTaskContextCard keeps objective and acceptance optional", () => {
   const gen = sampleGeneration();
+  const card = buildTaskContextCard({ contextGeneration: gen });
+  assert.equal(card.objective, "");
+  assert.deepEqual(card.acceptance, []);
   assert.throws(
-    () =>
-      buildTaskContextCard({
-        objective: "  ",
-        acceptance: ["ok"],
-        parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
-        assignee: { kind: "role", id: "r" },
-        contextGeneration: gen,
-      }),
+    () => buildTaskContextCard({ contextGeneration: "bad" }),
     (err: unknown) =>
-      err instanceof TaskContextCardError && err.code === "MISSING_OBJECTIVE"
-  );
-  assert.throws(
-    () =>
-      buildTaskContextCard({
-        objective: "x",
-        acceptance: [],
-        parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
-        assignee: { kind: "role", id: "r" },
-        contextGeneration: gen,
-      }),
-    (err: unknown) =>
-      err instanceof TaskContextCardError && err.code === "MISSING_ACCEPTANCE"
-  );
-  assert.throws(
-    () =>
-      buildTaskContextCard({
-        objective: "x",
-        acceptance: ["a"],
-        parentActor: undefined as never,
-        reviewer: { kind: "user", id: "user" },
-        assignee: { kind: "role", id: "r" },
-        contextGeneration: gen,
-      }),
-    (err: unknown) =>
-      err instanceof TaskContextCardError && err.code === "MISSING_PARENT_ACTOR"
-  );
-  assert.throws(
-    () =>
-      buildTaskContextCard({
-        objective: "x",
-        acceptance: ["a"],
-        parentActor: { kind: "user", id: "user" },
-        reviewer: undefined as never,
-        assignee: { kind: "role", id: "r" },
-        contextGeneration: gen,
-      }),
-    (err: unknown) =>
-      err instanceof TaskContextCardError && err.code === "MISSING_REVIEWER"
-  );
-  assert.throws(
-    () =>
-      buildTaskContextCard({
-        objective: "x",
-        acceptance: ["a"],
-        parentActor: { kind: "role", id: "规划" },
-        reviewer: { kind: "role", id: "other-role" },
-        assignee: { kind: "role", id: "r" },
-        contextGeneration: gen,
-      }),
-    (err: unknown) =>
-      err instanceof TaskContextCardError && err.code === "INVALID_ACTOR"
+      err instanceof TaskContextCardError && err.code === "INVALID_GENERATION"
   );
 });
 
@@ -300,11 +239,12 @@ test("parseTaskContextCard round-trips serialize shape", () => {
   assert.equal(parsed.objective, card.objective);
   assert.equal(parsed.contextGeneration, card.contextGeneration);
   assert.deepEqual(parsed.frozenDecisions, card.frozenDecisions);
-  assert.deepEqual(parsed.parentActor, card.parentActor);
-  assert.deepEqual(parsed.assignee, card.assignee);
+  assert.equal("parentActor" in wire, false);
+  assert.equal("reviewer" in wire, false);
+  assert.equal("assignee" in wire, false);
 });
 
-test("loadTaskContextCardFromFrontmatter: legacy null; partial fails; nested ok", () => {
+test("loadTaskContextCardFromFrontmatter reads only the nested card wire", () => {
   assert.equal(loadTaskContextCardFromFrontmatter({ type: "task", role: "r" }), null);
   // generation-only mirrors do not force a full card
   assert.equal(
@@ -314,12 +254,9 @@ test("loadTaskContextCardFromFrontmatter: legacy null; partial fails; nested ok"
     }),
     null
   );
-  assert.throws(
-    () =>
-      loadTaskContextCardFromFrontmatter({
-        objective: "only objective",
-      }),
-    (err: unknown) => err instanceof TaskContextCardError
+  assert.equal(
+    loadTaskContextCardFromFrontmatter({ objective: "flat mirror is ignored" }),
+    null
   );
   const card = sampleCard();
   const loaded = loadTaskContextCardFromFrontmatter({
@@ -439,6 +376,21 @@ test("stable prefix injected once per generation; later Tasks append delta only"
   assert.equal(full.stablePrefix, full2.stablePrefix);
 });
 
+test("prompt-only managed context emits the immutable user prompt once", () => {
+  const marker = "PROMPT_ONLY_MARKER";
+  const card = buildTaskContextCard({ contextGeneration: sampleGeneration() });
+  const assembled = assembleManagedPrompt({
+    workspaceRoot: "/w",
+    systemRoot: "/w/.tent",
+    agentsPointer: "AGENTS.md",
+    contextCard: card,
+    userPrompt: marker,
+  });
+  assert.equal(assembled.text.split(marker).length - 1, 1);
+  assert.doesNotMatch(assembled.dynamicDelta, /^objective:/m);
+  assert.doesNotMatch(assembled.dynamicDelta, /^acceptance:/m);
+});
+
 // ---- Session reuse gate (fail closed) ----
 
 test("evaluateSessionReuseCompatibility allows only when all gates match", () => {
@@ -504,17 +456,6 @@ test("evaluateSessionReuseCompatibility allows only when all gates match", () =>
   assert.ok(omitWt.reasons.includes("worktree_mismatch"));
 });
 
-test("projectAssigneeFromTask maps role vs agentProfile", () => {
-  assert.deepEqual(projectAssigneeFromTask({ role: "规划", assigneeKind: "role" }), {
-    kind: "role",
-    id: "规划",
-  });
-  assert.deepEqual(
-    projectAssigneeFromTask({ role: "grok-core-worker", assigneeKind: "agentProfile" }),
-    { kind: "agentId", id: "grok-core-worker" }
-  );
-});
-
 // ---- envelope persistence ----
 
 test("Task envelope persists and reloads contextCard + digests", async () => {
@@ -530,19 +471,32 @@ test("Task envelope persists and reloads contextCard + digests", async () => {
       userPrompt: "Implement Context Card",
       parentActor: { kind: "role", id: "规划" },
     });
+    const initial = parseFrontmatter(await nfs.readFile(taskPath));
+    const initialCard = initial.data.contextCard as Record<string, unknown>;
+    assert.equal(initial.data.contextGeneration, undefined);
+    assert.equal(initial.data.taskDeltaDigest, undefined);
+    assert.equal(initialCard.parentActor, undefined);
+    assert.equal(initialCard.reviewer, undefined);
+    assert.equal(initialCard.assignee, undefined);
+    assert.equal(initialCard.objective, "");
+    assert.deepEqual(initialCard.acceptance, []);
+    assert.equal(initial.body.split("Implement Context Card").length - 1, 1);
     await patchTaskEnvelope(nfs, taskPath, { contextCard: card });
+    const patched = parseFrontmatter(await nfs.readFile(taskPath));
+    assert.equal(patched.data.contextGeneration, undefined);
+    assert.equal(patched.data.taskDeltaDigest, undefined);
     const loaded = await loadTaskEnvelope(nfs, taskPath);
     assert.ok(loaded.contextCard);
     assert.equal(loaded.contextCard?.objective, card.objective);
     assert.equal(loaded.contextGeneration, card.contextGeneration);
     assert.equal(loaded.taskDeltaDigest, card.taskDeltaDigest);
-    assert.equal(loaded.contextCard?.parentActor.id, "规划");
+    assert.deepEqual(loaded.parentActor, { kind: "role", id: "规划" });
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
 
-test("partial context card body on disk fails loud at load", async () => {
+test("missing nested contextCard fails loud even when flat mirrors exist", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-cc-bad-"));
   try {
     const nfs = new NodeFs(dir);
@@ -553,8 +507,7 @@ test("partial context card body on disk fails loud at load", async () => {
       userPrompt: "x",
       parentActor: { kind: "user", id: "user" },
     });
-    // Corrupt: strip full nested contextCard; leave only flat objective → fail loud.
-    // (New writes always persist a complete Context Card; partial body is the failure mode.)
+    // Corrupt: strip the sole nested wire and leave a retired flat mirror.
     const raw = await nfs.readFile(taskPath);
     const { data, body, keyOrder } = parseFrontmatter(raw);
     delete data.contextCard;
@@ -564,7 +517,7 @@ test("partial context card body on disk fails loud at load", async () => {
     await nfs.writeFile(taskPath, serializeFrontmatter(data, body, keyOrder));
     await assert.rejects(
       () => loadTaskEnvelope(nfs, taskPath),
-      (err: unknown) => err instanceof TaskContextCardError
+      /missing Task\.contextCard\.refs\.nodes/i
     );
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
@@ -755,17 +708,6 @@ test("decideStablePrefixInjection omits only on exact valid generation match", (
       taskContextGeneration: gen,
     }),
     false
-  );
-});
-
-test("projectAssigneeFromTask prefers logical agentId over profile label", () => {
-  assert.deepEqual(
-    projectAssigneeFromTask({
-      role: "grok-core-worker",
-      assigneeKind: "agentProfile",
-      agentId: "coder",
-    }),
-    { kind: "agentId", id: "coder" }
   );
 });
 

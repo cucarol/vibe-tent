@@ -6464,16 +6464,15 @@ async function launchAndBindTaskStartSession(
           };
           return patchTaskEnvelope(mount.env.fs, taskPath, {
             contextCard: nextCard,
-            contextGeneration: liveGeneration,
             ...(taskPurpose ? { purpose: taskPurpose } : {}),
             updatedAt: mount.env.clock.now(),
           });
         }
-        return patchTaskEnvelope(mount.env.fs, taskPath, {
-          contextGeneration: liveGeneration,
-          ...(taskPurpose ? { purpose: taskPurpose } : {}),
-          updatedAt: mount.env.clock.now(),
-        });
+        throw new RpcError(
+          -32000,
+          "task.startSession requires Task.contextCard before refreshing contextGeneration",
+          { code: "TASK_CONTEXT_CARD_MISSING", taskPath }
+        );
       })
     );
   }
@@ -13318,6 +13317,13 @@ function buildContextCardManagedBootstrap(
     ...(task.id ? [`Task id: ${task.id}`] : []),
     ...(bootstrapNodeIds.length ? [`nodes: ${bootstrapNodeIds.join(", ")}`] : []),
     `deliveryPolicy: ${task.deliveryPolicy ?? "review"}`,
+    ...(task.parentActor
+      ? [`parentActor: ${task.parentActor.kind}:${task.parentActor.id}`]
+      : []),
+    ...(task.reviewer
+      ? [`reviewer: ${task.reviewer.kind}:${task.reviewer.id}`]
+      : []),
+    `assignee: ${taskAssigneeKind(task) === "agentProfile" ? "route" : "role"}:${task.role}`,
     `Service status: this task is already claimed (state=${task.state || "running"}).`,
     "Managed path: Local Service already claimed this task; final assistant reply is the report and will be delivered automatically.",
     ...(executionLaneText ? [executionLaneText] : []),

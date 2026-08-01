@@ -165,9 +165,6 @@ function fixtureCard(nodeIds: string[]): NonNullable<TaskEnvelope["contextCard"]
       deliveries: [],
       git: [],
     },
-    parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
-    assignee: { kind: "role", id: "executor" },
     contextGeneration: "cg-v1-fixture",
     taskDeltaDigest: "td-fixture",
   };

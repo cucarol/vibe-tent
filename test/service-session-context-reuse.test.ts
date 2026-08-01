@@ -13,6 +13,7 @@ import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
 import {
+  extractTaskUserPrompt,
   loadTaskEnvelope,
   patchTaskEnvelope,
   writeTaskEnvelope,
@@ -299,9 +300,6 @@ test("assertDurableContextCardRefsResolved fails loud on missing node/task/deliv
       objective: "o",
       acceptance: ["a"],
       refs: { nodes: [], tasks: [], deliveries: [], git: [{ id: "HEAD" }] },
-      parentActor: { kind: "role", id: "orchestrator" },
-      reviewer: { kind: "role", id: "orchestrator" },
-      assignee: { kind: "agentId", id: "fake-resumable" },
       contextGeneration: gen,
     });
     await assertDurableContextCardRefsResolved(fsa, good);
@@ -315,9 +313,6 @@ test("assertDurableContextCardRefsResolved fails loud on missing node/task/deliv
         deliveries: [],
         git: [],
       },
-      parentActor: { kind: "role", id: "orchestrator" },
-      reviewer: { kind: "role", id: "orchestrator" },
-      assignee: { kind: "agentId", id: "fake-resumable" },
       contextGeneration: gen,
     });
     await assert.rejects(
@@ -335,9 +330,6 @@ test("assertDurableContextCardRefsResolved fails loud on missing node/task/deliv
         deliveries: [],
         git: [],
       },
-      parentActor: { kind: "role", id: "orchestrator" },
-      reviewer: { kind: "role", id: "orchestrator" },
-      assignee: { kind: "agentId", id: "fake-resumable" },
       contextGeneration: gen,
     });
     await assert.rejects(() => assertDurableContextCardRefsResolved(fsa, badTask));
@@ -351,9 +343,6 @@ test("assertDurableContextCardRefsResolved fails loud on missing node/task/deliv
         deliveries: [{ id: "dl-zzzzzzzz" }],
         git: [],
       },
-      parentActor: { kind: "role", id: "orchestrator" },
-      reviewer: { kind: "role", id: "orchestrator" },
-      assignee: { kind: "agentId", id: "fake-resumable" },
       contextGeneration: gen,
     });
     await assert.rejects(() => assertDurableContextCardRefsResolved(fsa, badDelivery));
@@ -401,7 +390,9 @@ test("task.dispatch persists real contextGeneration without taskId; two tasks sh
       const path2 = (d2.result as { taskPath: string }).taskPath;
       const t2 = await loadTaskEnvelope(envFs, path2);
       assert.notEqual(t1.id, t2.id);
-      assert.notEqual(t1.contextCard?.objective, t2.contextCard?.objective);
+      assert.equal(t1.contextCard?.objective, "");
+      assert.equal(t2.contextCard?.objective, "");
+      assert.notEqual(extractTaskUserPrompt(t1), extractTaskUserPrompt(t2));
       // Same stable facts → same contextGeneration across Tasks (cache compatible).
       assert.equal(
         t1.contextGeneration,

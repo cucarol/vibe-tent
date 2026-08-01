@@ -43,11 +43,7 @@ async function makeGitWorkspace(prefix: string): Promise<string> {
 function fixtureContextCard(overrides?: {
   nodeId?: string;
   nodePath?: string;
-  parentId?: string;
-  assigneeId?: string;
 }): TaskContextCardV1 {
-  const parent = { kind: "user" as const, id: overrides?.parentId ?? "user" };
-  const assigneeId = overrides?.assigneeId ?? "fake-default";
   const nodeId = overrides?.nodeId ?? "bx-1";
   const nodePath = overrides?.nodePath ?? "inbox";
   const contextGeneration = computeContextGeneration({
@@ -64,9 +60,6 @@ function fixtureContextCard(overrides?: {
       deliveries: [],
       git: [],
     },
-    parentActor: parent,
-    reviewer: parent,
-    assignee: { kind: "agentId", id: assigneeId },
     contextGeneration,
   });
 }
@@ -80,8 +73,8 @@ function profileTask(
     manifest: "temp/agent-profiles/fake-default/manifests/m.yml",
     status: "taken",
     assigneeKind: "agentProfile",
-    parentActor: contextCard.parentActor,
-    reviewer: contextCard.reviewer,
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
     contextCard,
     contextGeneration: contextCard.contextGeneration,
     taskDeltaDigest: contextCard.taskDeltaDigest,

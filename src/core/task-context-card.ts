@@ -4,14 +4,13 @@
 //
 // Canonical types (no parallel wire):
 // - TaskActorRef / parseTaskActorRef from task-model (52a0da2 / tk-a2z8j1y2)
-// - agentId / roster / skill compose from managed-skill-compose (52a0da2 / tk-3s598jtn)
+// - skills / Role prompt compose from managed-skill-compose
 // Stable-prefix omission is reachable only via decideStablePrefixInjection (Core gate).
 // workspaceLane baseCommit/targetBranch/integrationAuthority are Task truth;
 // Context Card executionLane is a derived dynamic projection only.
 
 import { createHash } from "node:crypto";
 import {
-  assertParentReviewerEqual,
   parseTaskActorRef,
   resolveParentReviewerPair,
   TaskLifecycleError,
@@ -19,7 +18,6 @@ import {
   type TaskActorRef,
 } from "./task-model.js";
 import type { TaskEnvelope } from "./task.js";
-import { taskAssigneeKind } from "./task.js";
 
 /** Re-export canonical actor type — single authoritative wire (task-model). */
 export type { TaskActorRef, TaskActorKind } from "./task-model.js";
@@ -34,19 +32,13 @@ export const CONTEXT_GENERATION_VERSION = "v1" as const;
 export const MANAGED_BOOTSTRAP_INVARIANT =
   "Tent managed bootstrap invariant v1: Core is authoritative. " +
   "Fetch by durable id before answering. Never invent missing Context Card fields, " +
-  "refs, parent/reviewer, or chat-memory continuity. Final report goes through Delivery only.";
+  "Task authority, refs, or chat-memory continuity. Final report goes through Delivery only.";
 
 /**
  * Git mutator for ordinary Task lanes. Always Local Service —
  * ordinary executors never hold integration authority.
  */
 export const INTEGRATION_MUTATOR_SERVICE = "service" as const;
-
-/** Assignee projected onto the card (role name or logical agentId). */
-export type TaskContextCardAssignee = {
-  kind: "role" | "agentId";
-  id: string;
-};
 
 /** Durable pointer only — never a long body copy. */
 export type TaskContextCardRef = {
@@ -75,14 +67,12 @@ export type TaskContextCardScope = {
  */
 export type TaskContextCardV1 = {
   schemaVersion: typeof TASK_CONTEXT_CARD_SCHEMA_VERSION;
+  /** Optional structured refinement of the immutable Task prompt. */
   objective: string;
   frozenDecisions: string[];
   scope: TaskContextCardScope;
   acceptance: string[];
   refs: TaskContextCardRefs;
-  parentActor: TaskActorRef;
-  reviewer: TaskActorRef;
-  assignee: TaskContextCardAssignee;
   /** `cg-v1-<sha256>` of canonical stable prefix / compatibility inputs. */
   contextGeneration: string;
   /** Canonical digest of current card context + TaskInput/review delta. */
@@ -150,11 +140,6 @@ export type TaskDeltaInputs = {
 };
 
 export type TaskContextCardErrorCode =
-  | "MISSING_OBJECTIVE"
-  | "MISSING_ACCEPTANCE"
-  | "MISSING_PARENT_ACTOR"
-  | "MISSING_REVIEWER"
-  | "MISSING_ASSIGNEE"
   | "UNRESOLVED_REF"
   | "INVALID_ACTOR"
   | "INVALID_GENERATION"
@@ -368,9 +353,6 @@ export function computeTaskDeltaDigest(inputs: TaskDeltaInputs): string {
     scope: card.scope,
     acceptance: card.acceptance,
     refs: card.refs,
-    parentActor: card.parentActor,
-    reviewer: card.reviewer,
-    assignee: card.assignee,
     taskInputDelta: taskInputDelta?.trim() || "",
     checkpoint: checkpoint?.trim() || "",
     userPrompt: userPrompt?.trim() || "",
@@ -392,50 +374,6 @@ function asStringList(value: unknown): string[] {
     .filter((item): item is string => typeof item === "string")
     .map((s) => s.trim())
     .filter(Boolean);
-}
-
-/** Map canonical TaskLifecycleError into Context Card fail-loud codes. */
-function parseActorRef(value: unknown, label: "parentActor" | "reviewer"): TaskActorRef {
-  if (value === undefined || value === null) {
-    throw new TaskContextCardError(
-      label === "parentActor" ? "MISSING_PARENT_ACTOR" : "MISSING_REVIEWER",
-      `Context Card requires ${label} { kind, id } (canonical TaskActorRef).`,
-      { label, value }
-    );
-  }
-  try {
-    return parseTaskActorRef(value, label);
-  } catch (err) {
-    if (err instanceof TaskLifecycleError) {
-      const code =
-        err.code === "INVALID_ACTOR"
-          ? "INVALID_ACTOR"
-          : label === "parentActor"
-            ? "MISSING_PARENT_ACTOR"
-            : "MISSING_REVIEWER";
-      throw new TaskContextCardError(code, err.message, { label, value });
-    }
-    throw err;
-  }
-}
-
-function parseAssignee(value: unknown): TaskContextCardAssignee {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TaskContextCardError(
-      "MISSING_ASSIGNEE",
-      "Context Card requires assignee { kind: role|agentId, id }."
-    );
-  }
-  const raw = value as Record<string, unknown>;
-  const kind = raw.kind;
-  const id = typeof raw.id === "string" ? raw.id.trim() : "";
-  if ((kind !== "role" && kind !== "agentId") || !id) {
-    throw new TaskContextCardError(
-      "MISSING_ASSIGNEE",
-      "Context Card assignee must be { kind: role|agentId, id: non-empty }."
-    );
-  }
-  return { kind, id };
 }
 
 function parseRefList(value: unknown, bucket: string): TaskContextCardRef[] {
@@ -489,14 +427,11 @@ function parseRefList(value: unknown, bucket: string): TaskContextCardRef[] {
 }
 
 export type BuildTaskContextCardInput = {
-  objective: string;
+  objective?: string;
   frozenDecisions?: readonly string[];
   scope?: { include?: readonly string[]; exclude?: readonly string[] };
-  acceptance: readonly string[];
+  acceptance?: readonly string[];
   refs?: Partial<TaskContextCardRefs>;
-  parentActor: TaskActorRef;
-  reviewer: TaskActorRef;
-  assignee: TaskContextCardAssignee;
   /** Precomputed or from computeContextGeneration. */
   contextGeneration: string;
   /** Optional precomputed delta digest; recomputed when omitted. */
@@ -507,39 +442,13 @@ export type BuildTaskContextCardInput = {
 };
 
 /**
- * Build a complete Context Card v1. Fail-loud on missing required fields.
- * Never invents objective / acceptance / parent / reviewer from chat memory.
+ * Build a complete Context Card v1. The immutable Task body owns the raw prompt;
+ * objective and acceptance are optional structured refinements and are never
+ * synthesized from chat memory.
  */
 export function buildTaskContextCard(input: BuildTaskContextCardInput): TaskContextCardV1 {
   const objective = input.objective?.trim() || "";
-  if (!objective) {
-    throw new TaskContextCardError(
-      "MISSING_OBJECTIVE",
-      "Context Card requires objective (fail-loud to parent; do not invent from chat memory)."
-    );
-  }
   const acceptance = asStringList([...(input.acceptance ?? [])]);
-  if (acceptance.length === 0) {
-    throw new TaskContextCardError(
-      "MISSING_ACCEPTANCE",
-      "Context Card requires at least one acceptance criterion (fail-loud to parent)."
-    );
-  }
-  const parentActor = parseActorRef(input.parentActor, "parentActor");
-  const reviewer = parseActorRef(input.reviewer, "reviewer");
-  // Canonical V0.2: reviewer must equal parentActor (no arbitrary delegation).
-  try {
-    assertParentReviewerEqual(parentActor, reviewer);
-  } catch (err) {
-    if (err instanceof TaskLifecycleError) {
-      throw new TaskContextCardError("INVALID_ACTOR", err.message, {
-        parentActor,
-        reviewer,
-      });
-    }
-    throw err;
-  }
-  const assignee = parseAssignee(input.assignee);
   if (!isContextGenerationId(input.contextGeneration)) {
     throw new TaskContextCardError(
       "INVALID_GENERATION",
@@ -562,9 +471,6 @@ export function buildTaskContextCard(input: BuildTaskContextCardInput): TaskCont
       deliveries: parseRefList(input.refs?.deliveries ?? [], "deliveries"),
       git: parseRefList(input.refs?.git ?? [], "git"),
     },
-    parentActor,
-    reviewer,
-    assignee,
   };
 
   const taskDeltaDigest =
@@ -618,9 +524,6 @@ export function parseTaskContextCard(data: unknown): TaskContextCardV1 {
       deliveries: parseRefList(refsRaw.deliveries ?? raw.refsDeliveries, "deliveries"),
       git: parseRefList(refsRaw.git ?? raw.refsGit, "git"),
     },
-    parentActor: raw.parentActor as TaskActorRef,
-    reviewer: raw.reviewer as TaskActorRef,
-    assignee: raw.assignee as TaskContextCardAssignee,
     contextGeneration:
       typeof raw.contextGeneration === "string" ? raw.contextGeneration : "",
     taskDeltaDigest:
@@ -629,44 +532,9 @@ export function parseTaskContextCard(data: unknown): TaskContextCardV1 {
 }
 
 /**
- * Body fields that imply a full Context Card v1 (not generation-only mirrors).
- * Used to distinguish legacy envelopes from partial cards (must fail loud).
- */
-export function hasTaskContextCardBodyFields(data: Record<string, unknown>): boolean {
-  // parentActor / reviewer are canonical Task wire and do NOT alone imply a Context Card.
-  const keys = [
-    "objective",
-    "frozenDecisions",
-    "acceptance",
-    "scope",
-    "scopeInclude",
-    "scopeExclude",
-    "refs",
-    "refsNodes",
-    "refsTasks",
-    "refsDeliveries",
-    "refsGit",
-    "assignee",
-    "contextCard",
-  ];
-  return keys.some((k) => data[k] !== undefined && data[k] !== null);
-}
-
-/** @deprecated Use hasTaskContextCardBodyFields; generation-only is not a full card. */
-export function hasAnyTaskContextCardField(data: Record<string, unknown>): boolean {
-  return (
-    hasTaskContextCardBodyFields(data) ||
-    (data.contextGeneration !== undefined && data.contextGeneration !== null) ||
-    (data.taskDeltaDigest !== undefined && data.taskDeltaDigest !== null)
-  );
-}
-
-/**
  * Load Context Card from envelope frontmatter data.
- * - Nested `contextCard` → full parse (fail-loud).
- * - Body fields present → full parse from flat keys (fail-loud on incomplete).
- * - Only contextGeneration / taskDeltaDigest mirrors → null (not a full card).
- * - No card fields → null (legacy envelope).
+ * The sole wire is the nested `contextCard` object. Missing cards return null so
+ * the caller can produce a Task-level diagnostic; flat mirrors are not parsed.
  */
 export function loadTaskContextCardFromFrontmatter(
   data: Record<string, unknown>
@@ -674,8 +542,7 @@ export function loadTaskContextCardFromFrontmatter(
   if (data.contextCard !== undefined && data.contextCard !== null) {
     return parseTaskContextCard(data.contextCard);
   }
-  if (!hasTaskContextCardBodyFields(data)) return null;
-  return parseTaskContextCard(data);
+  return null;
 }
 
 /** Serialize card for Task envelope frontmatter (single nested object). */
@@ -697,30 +564,9 @@ export function serializeTaskContextCardForFrontmatter(
       deliveries: card.refs.deliveries.map((r) => ({ ...r })),
       git: card.refs.git.map((r) => ({ ...r })),
     },
-    parentActor: { kind: card.parentActor.kind, id: card.parentActor.id },
-    reviewer: { kind: card.reviewer.kind, id: card.reviewer.id },
-    assignee: { kind: card.assignee.kind, id: card.assignee.id },
     contextGeneration: card.contextGeneration,
     taskDeltaDigest: card.taskDeltaDigest,
   };
-}
-
-/**
- * Project assignee onto the card from Task envelope assigneeKind + role label.
- * Does not invent parent/reviewer (those require explicit wire / tk-a2z8j1y2).
- */
-export function projectAssigneeFromTask(
-  task: Pick<TaskEnvelope, "role" | "assigneeKind" | "agentId">
-): TaskContextCardAssignee {
-  const agentId = typeof task.agentId === "string" ? task.agentId.trim() : "";
-  if (agentId) {
-    return { kind: "agentId", id: agentId };
-  }
-  const kind = taskAssigneeKind(task);
-  if (kind === "agentProfile") {
-    return { kind: "agentId", id: task.role };
-  }
-  return { kind: "role", id: task.role };
 }
 
 /**
@@ -811,8 +657,8 @@ export function formatTaskContextCardPrompt(card: TaskContextCardV1): string {
     `schemaVersion: ${card.schemaVersion}`,
     `contextGeneration: ${card.contextGeneration}`,
     `taskDeltaDigest: ${card.taskDeltaDigest}`,
-    `objective: ${card.objective}`,
   ];
+  if (card.objective) lines.push(`objective: ${card.objective}`);
   if (card.frozenDecisions.length) {
     lines.push("frozenDecisions:");
     for (const d of card.frozenDecisions) lines.push(`  - ${d}`);
@@ -825,13 +671,10 @@ export function formatTaskContextCardPrompt(card: TaskContextCardV1): string {
   lines.push("scope.exclude:");
   if (card.scope.exclude.length === 0) lines.push("  (none)");
   else for (const s of card.scope.exclude) lines.push(`  - ${s}`);
-  lines.push("acceptance:");
-  for (const a of card.acceptance) lines.push(`  - ${a}`);
-  lines.push(
-    `parentActor: ${card.parentActor.kind}:${card.parentActor.id}`,
-    `reviewer: ${card.reviewer.kind}:${card.reviewer.id}`,
-    `assignee: ${card.assignee.kind}:${card.assignee.id}`
-  );
+  if (card.acceptance.length) {
+    lines.push("acceptance:");
+    for (const a of card.acceptance) lines.push(`  - ${a}`);
+  }
   const fmtRefs = (label: string, refs: TaskContextCardRef[]) => {
     lines.push(`refs.${label}:`);
     if (refs.length === 0) {
@@ -908,9 +751,6 @@ export function assembleManagedPrompt(
     scope: input.contextCard.scope,
     acceptance: input.contextCard.acceptance,
     refs: input.contextCard.refs,
-    parentActor: input.contextCard.parentActor,
-    reviewer: input.contextCard.reviewer,
-    assignee: input.contextCard.assignee,
     contextGeneration: input.contextCard.contextGeneration,
     taskDeltaDigest: input.contextCard.taskDeltaDigest,
     taskInputDelta: input.taskInputDelta,
@@ -1388,14 +1228,6 @@ export function managedSessionPurpose(input?: {
   if (purpose && subKey) return `${purpose}:${subKey}`;
   return purpose || subKey || "";
 }
-
-/** Helper: assignee kind → card assignee kind label. */
-export function assigneeKindToCardKind(
-  kind: AssigneeKind | undefined
-): TaskContextCardAssignee["kind"] {
-  return kind === "agentProfile" ? "agentId" : "role";
-}
-
 
 // ---------------------------------------------------------------------------
 // Workspace lane authority + derived executionLane (cx-5q6za6)

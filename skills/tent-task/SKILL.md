@@ -16,8 +16,10 @@ incremental input/review delta.
 2. Resolve the exact Task path/ID from managed binding, Context Card, or
    `tent task list`. Managed ACP is already claimed; external execution claims
    before work and may bind its external Session.
-3. Read objective, frozen decisions, scope, acceptance, refs, `parentActor`,
-   exact `reviewer`, assignee, generation/digest, and WorkspaceLane.
+3. Read the immutable prompt, `parentActor`, exact `reviewer`, assignee, and
+   WorkspaceLane from the Task envelope. Read optional objective, frozen
+   decisions, scope, acceptance, refs, and generation/digest from its Context
+   Card. Do not expect prompt copies in objective or acceptance.
 4. Resolve `refs.nodes[]` by stable id; paths are refreshable hints. Those exact
    refs are occupied write context. Related Nodes are read-only unless included.
 5. Fail loud when required context or a declared ref is missing. Never infer it

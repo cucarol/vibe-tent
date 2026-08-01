@@ -429,30 +429,20 @@ test("Task Node context validation is fail-loud; explicit empty refs mean worksp
   );
 });
 
-test("Context Card requires a real objective and durable Node ref", () => {
+test("Context Card keeps structured objective optional and durable Node refs explicit", () => {
   const generation = computeContextGeneration({
     workspaceIdentity: "workspace",
     agentsPointerDigest: "agents",
   });
-  assert.throws(
-    () =>
-      buildTaskContextCard({
-        objective: "  ",
-        acceptance: ["ok"],
-        parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
-        assignee: { kind: "role", id: "role" },
-        contextGeneration: generation,
-        refs: { nodes: [{ id: "cx-1" }] },
-      }),
-    /objective/i
-  );
+  const promptOnly = buildTaskContextCard({
+    contextGeneration: generation,
+    refs: { nodes: [{ id: "cx-1" }] },
+  });
+  assert.equal(promptOnly.objective, "");
+  assert.deepEqual(promptOnly.acceptance, []);
   const card = buildTaskContextCard({
     objective: "do it",
     acceptance: ["do it"],
-    parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
-    assignee: { kind: "role", id: "role" },
     contextGeneration: generation,
     refs: { nodes: [normalizeContextCardNodeRef({ id: "cx-1", path: "a/b" })] },
   });

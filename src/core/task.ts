@@ -37,7 +37,6 @@ import {
   deriveIntegrationAuthority,
   loadTaskContextCardFromFrontmatter,
   profileAdapterCompatibilityDigest,
-  projectAssigneeFromTask,
   serializeTaskContextCardForFrontmatter,
   type IntegrationAuthority,
   type TaskContextCardRef,
@@ -230,15 +229,10 @@ export interface TaskEnvelope {
   integrationAuthority?: IntegrationAuthority;
   /**
    * Authoritative Task Context Card v1 (cx-5q6za6).
-   * Projected from envelope frontmatter `contextCard` (or flat card fields).
-   * Missing on legacy envelopes; when any card body field is present, load fails loud
-   * on incomplete cards (never invent from chat memory).
+   * Projected only from envelope frontmatter `contextCard`.
    */
   contextCard?: TaskContextCardV1;
-  /**
-   * Convenience projection of contextCard.contextGeneration when present.
-   * Also readable as a top-level frontmatter key for Session compatibility.
-   */
+  /** In-memory projection of contextCard.contextGeneration. */
   contextGeneration?: string;
   /** Convenience projection of contextCard.taskDeltaDigest when present. */
   taskDeltaDigest?: string;
@@ -670,20 +664,11 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
       task.reviewer
     );
   }
-  // Context Card v1 already loaded above (nested or flat). Partial → fail loud.
+  // Context Card v1 already loaded above from its sole nested wire.
   if (contextCard) {
     task.contextCard = contextCard;
     task.contextGeneration = contextCard.contextGeneration;
     task.taskDeltaDigest = contextCard.taskDeltaDigest;
-  } else if (typeof data.contextGeneration === "string" && data.contextGeneration.trim()) {
-    task.contextGeneration = data.contextGeneration.trim();
-  }
-  if (
-    !task.taskDeltaDigest &&
-    typeof data.taskDeltaDigest === "string" &&
-    data.taskDeltaDigest.trim()
-  ) {
-    task.taskDeltaDigest = data.taskDeltaDigest.trim();
   }
   // Narrow read boundary: historical on-disk `manual` projects as `review`.
   const deliveryPolicy = normalizeDeliveryPolicyRead(data.deliveryPolicy);
@@ -977,15 +962,11 @@ export async function writeTaskEnvelope(
     );
   }
 
-  const objective = (input.objective?.trim() || userPrompt).trim();
-  if (!objective) throw new Error("Dispatch requires a non-empty objective (user prompt).");
+  const objective = input.objective?.trim() || "";
   const acceptance =
     input.acceptance && input.acceptance.length > 0
       ? input.acceptance.map((s) => s.trim()).filter(Boolean)
-      : [objective];
-  if (acceptance.length === 0) {
-    throw new Error("Dispatch requires non-empty acceptance (or objective).");
-  }
+      : [];
 
   // Full Context Card v1 on every new write — sole Node-ref wire is refs.nodes[].
   // contextGeneration is deterministic from stable compatibility facts only
@@ -1017,11 +998,6 @@ export async function writeTaskEnvelope(
         ...facts?.extraStable,
       },
     });
-  const assignee = projectAssigneeFromTask({
-    role: input.role,
-    assigneeKind,
-    agentId: input.agentId,
-  });
   const contextCard = buildTaskContextCard({
     objective,
     acceptance,
@@ -1031,9 +1007,6 @@ export async function writeTaskEnvelope(
       deliveries: [],
       git: [],
     },
-    parentActor: actors.parentActor,
-    reviewer: actors.reviewer,
-    assignee,
     contextGeneration,
     userPrompt,
   });
@@ -1049,8 +1022,6 @@ export async function writeTaskEnvelope(
     reviewer: serializeTaskActorRef(actors.reviewer),
     // Sole new persisted source wire — do not write claims[].
     contextCard: serializeTaskContextCardForFrontmatter(contextCard),
-    contextGeneration: contextCard.contextGeneration,
-    taskDeltaDigest: contextCard.taskDeltaDigest,
     manifest: input.manifestPath,
     deliveryPolicy,
     createdAt: now,
@@ -1153,13 +1124,8 @@ export interface TaskEnvelopePatch {
   integrationAuthority?: IntegrationAuthority | null;
   /**
    * Persist authoritative Context Card v1 under frontmatter `contextCard`.
-   * Also mirrors contextGeneration / taskDeltaDigest as top-level keys for
-   * Session compatibility projections. null clears all three.
    */
   contextCard?: TaskContextCardV1 | null;
-  /** Top-level generation only (when full card is not yet written). */
-  contextGeneration?: string | null;
-  taskDeltaDigest?: string | null;
   /** Optional stable purpose/subKey; null clears. */
   purpose?: string | null;
 }
@@ -1302,16 +1268,8 @@ export async function patchTaskEnvelope(
     delete data.taskDeltaDigest;
   } else if (patch.contextCard) {
     data.contextCard = serializeTaskContextCardForFrontmatter(patch.contextCard);
-    data.contextGeneration = patch.contextCard.contextGeneration;
-    data.taskDeltaDigest = patch.contextCard.taskDeltaDigest;
-  }
-  if (patch.contextGeneration === null) delete data.contextGeneration;
-  else if (typeof patch.contextGeneration === "string" && patch.contextGeneration.trim()) {
-    data.contextGeneration = patch.contextGeneration.trim();
-  }
-  if (patch.taskDeltaDigest === null) delete data.taskDeltaDigest;
-  else if (typeof patch.taskDeltaDigest === "string" && patch.taskDeltaDigest.trim()) {
-    data.taskDeltaDigest = patch.taskDeltaDigest.trim();
+    delete data.contextGeneration;
+    delete data.taskDeltaDigest;
   }
   if (patch.purpose === null) delete data.purpose;
   else if (typeof patch.purpose === "string" && patch.purpose.trim()) {
