@@ -108,7 +108,18 @@ provider, model, endpoint, credential reference, command, and non-secret launch
 metadata. Credentials remain in the machine-local service data area and never
 enter workspace Nodes, Tasks, or Git.
 
-Dispatch has two public targets:
+A durable Role takes ownership of its own work directly:
+
+```text
+tent task claim --node <nodeId> [--node <nodeId> ...] --prompt <text>|-
+```
+
+This creates and immediately claims one Role Task. It has no target or `asSub`
+meaning. Tent inherits its persisted parent/reviewer responsibility from the
+explicit current Task or exact open Role Session; a Role root falls back to the
+user.
+
+Dispatch is downstream assignment only and has two public targets:
 
 - `role:<roleId>` creates a queued handoff to a durable Role;
 - `route:<routeId>` creates a formal Task and starts a temporary managed ACP

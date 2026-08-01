@@ -24,9 +24,23 @@ Every Task persists exact `parentActor` and `reviewer`. They are equal for
 ordinary dispatch. Downstream executors cannot self-accept, rewrite reviewer,
 or elevate Role-to-user delivery policy.
 
-## 2. Dispatch contract
+## 2. Direct claim and dispatch contract
 
-The public target grammar is `role:<roleId>|route:<routeId>`. CLI form:
+A durable Role creates and immediately claims its own execution Task:
+
+```text
+tent task claim --node <nodeId> [--node <nodeId> ...] \
+  --prompt <text>|- [--from-task <taskPath>]
+```
+
+This is one create-and-claim Service mutation, not dispatch. It has no target,
+`asSub`, or caller-authored authority fields. An explicit `--from-task` must be
+an active claimed Task for the same Role. Otherwise an exact open Role Session
+may continue the persisted parent/reviewer chain from its last Task, including
+a terminal one; missing history falls back to the Role's user-facing root.
+
+Dispatch is only downstream assignment. Its public target grammar is
+`role:<roleId>|route:<routeId>`. CLI form:
 
 ```text
 tent task dispatch --target role:<roleId>|route:<routeId> \

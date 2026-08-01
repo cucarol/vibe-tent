@@ -82,9 +82,20 @@ Adapters translate the managed Session contract to a provider protocol. They
 may start, resume, prompt, stream, and stop a child process. They never claim
 Nodes, accept Deliveries, edit Node content, or decide Task authority.
 
-## 5. Dispatch and execution
+## 5. Claim, dispatch, and execution
 
-Public dispatch accepts repeated exact Node references and one target:
+A durable Role creates and immediately claims its own execution Task without a
+target:
+
+```text
+tent task claim --node <nodeId> ... --prompt <text>|-
+```
+
+Tent derives the responsibility chain from persisted Task/Session facts. This
+is execution ownership, not delegation, and never creates a sub lane.
+
+Public dispatch is only for assigning work downstream. It accepts repeated
+exact Node references and one target:
 
 ```text
 tent task dispatch --target role:<roleId>  --node <nodeId> ... --prompt <text>|-

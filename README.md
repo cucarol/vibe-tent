@@ -48,7 +48,7 @@ Core 定义 Node、Role、Task、Session 与 Delivery 的领域规则；Local Se
 
 - **Node** —— 带稳定 `cx-` id 的 Markdown 知识与上下文。父子结构表达归属，正文保存跨 Session 仍成立的事实；`goal`、`prompt`、`output` 是主要语义类型。
 - **Role** —— 对用户长期负责的主体。Role 可跨 Session 恢复，但不能靠聊天历史代替 Node、Task、Delivery 与 Git。
-- **Task** —— 针对一个或多个 exact Node 的一次工作与审阅单位。`nodeIds[]` 是唯一公开 Node 选择；同一 Node 同时只能被一个 active Task 占用。
+- **Task** —— 针对一个或多个 exact Node 的一次工作与审阅单位。Role 用 `task claim --node … --prompt …` 直接创建并认领自己的执行 Task；`task dispatch --target …` 只把工作交给另一个 Role 或 Settings route。`nodeIds[]` 是唯一公开 Node 选择；同一 Node 同时只能被一个 active Task 占用。
 - **Session** —— 一次可终止、恢复或重新连接的执行。`--target role:<roleId>` 创建 queued Role handoff；`--target route:<routeId>` 从 Settings 解析机器本地 route 并启动临时 ACP Session。临时 Session 不注册持久 worker，也不创建第二个 Role。
 - **Delivery** —— Task 的正式结果。自然非空 ACP final report 默认形成可审阅 Delivery；`blocked` / `needs-input` 是可选控制信号，不是成功交付。
 - **Git lane** —— 代码 Task 在记录的 Role 或 Task lane 中工作。Service 校验 commits、target head 与 integration CAS；客户端不手动移动协作状态。

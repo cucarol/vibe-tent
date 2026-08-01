@@ -10,6 +10,7 @@ Read only the section needed for the current responsibility. Dispatcher and revi
 tent task list [--workspace <path>] [--json]
 tent task get <taskPath> [--workspace <path>] [--json]
 tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]
+tent task claim --node <nodeId> [--node <nodeId> …] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]
 tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
 tent task ask-user <taskPath> --question <text>|- [--choices id=label,…] [--workspace <path>] [--json]
 tent task task-input list <taskPath> | --task <taskPath> [--workspace <path>] [--json]
@@ -30,7 +31,17 @@ tent task dispatch --target role:<roleIdOrName>|route:<routeId> \
   --node <nodeId> [--node <nodeId> …] --prompt <text>|-
 ```
 
-Dispatch forms:
+Direct Role ownership:
+
+- `task claim --node … --prompt …` atomically creates and claims this durable
+  Role's own execution Task. It has no target, does not set `asSub`, and does
+  not accept caller-authored parent/reviewer fields.
+- `--from-task <taskPath>` is optional and strict: that Task must be active,
+  claimed, and owned by the same Role. Without it, Tent may inherit the exact
+  open Role Session's persisted chain, including a terminal last Task; missing
+  retained history falls back to the Role's user-facing root.
+
+Dispatch forms (downstream assignment only):
 
 | Form | Assignee | Session |
 | --- | --- | --- |
@@ -39,7 +50,7 @@ Dispatch forms:
 
 - `--node` is repeatable and supplies the exact ordered Context Card Node refs; at least one is required. The full set is acquired atomically, and an exact Node cannot be occupied by two active Tasks.
 - `routeId` is a non-secret stable reference to machine Settings. The route resolves provider/model/endpoint/credential metadata; dispatch does not create a persistent worker record.
-- Caller identity supplies equal `parentActor` and `reviewer`. A Role caller also derives the parent Role Git lane internally; user-direct dispatch uses user. Do not pass or recreate internal profile, `--agent`, `--delivery-policy`, `--as-sub`, `--by`, `--caller-kind`, or `--assignee-kind`.
+- Tent derives equal `parentActor` and `reviewer`. A Role downstream dispatch also derives the parent Role Git lane internally; user-direct dispatch uses user. Do not pass or recreate internal profile, `--agent`, `--delivery-policy`, `--as-sub`, `--by`, `--caller-kind`, or `--assignee-kind`.
 - Prompt is required through `--prompt <text>|-`; positional Task source or prompt forms are not aliases.
 
 Agents never self-accept. Review authority is the exact persisted `reviewer`, which must equal `parentActor`. Downstream Task Agents always use review-to-parent and cannot elevate `bypass` or `agent-decide`; the three-state policy is only for a durable Role's user-facing Delivery.

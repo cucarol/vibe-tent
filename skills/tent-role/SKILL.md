@@ -38,12 +38,17 @@ binding, compatibility result, or persisted state.
 - Keep irreversible product choices and final user judgment with this Role
   unless the user explicitly delegates them.
 
-## Dispatch formal work
+## Claim own work and dispatch downstream
 
+- Use `tent task claim --node <nodeId> … --prompt <text>|-` to create and
+  immediately claim this Role's own execution Task. Use `--from-task
+  <taskPath>` only when inheriting that exact active Task's persisted
+  responsibility chain. This form has no target and is not delegation.
 - Use `tent task dispatch --target role:<roleIdOrName> --node <nodeId> …
-  --prompt <text>|-` for a queued durable Role handoff.
+  --prompt <text>|-` only for a queued handoff to another durable Role.
 - Use `tent task dispatch --target route:<routeId> --node <nodeId> …
-  --prompt <text>|-` for temporary managed ACP work through machine Settings.
+  --prompt <text>|-` only for downstream temporary managed ACP work through
+  machine Settings.
 - A route resolves provider/model/endpoint/credential metadata. Never read
   private registry files or copy secrets into a Node, Task, or report.
 - Route dispatch does not register a persistent worker or create another Role.

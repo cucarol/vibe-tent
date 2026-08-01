@@ -28,7 +28,23 @@ tent status|tree|tags|find
 The public collaboration nouns are Node, Role, Session, Task, and Delivery.
 Machine Settings routes are execution selectors, not collaboration objects.
 
-## Dispatch
+## Direct Role ownership and downstream dispatch
+
+A durable Role creates and immediately claims its own Task directly:
+
+```text
+tent task claim \
+  --node <nodeId> [--node <nodeId> ...] \
+  --prompt <text>|-
+```
+
+This form has no `--target`; it is execution ownership, not delegation. An
+optional `--from-task <taskPath>` names the active persisted responsibility to
+inherit. Otherwise Tent uses the exact open Role Session when available and
+keeps its persisted chain, including a terminal last Task.
+
+`task dispatch` is only for assigning work to another durable Role or a machine
+Settings route:
 
 ```text
 tent task dispatch \
@@ -43,7 +59,7 @@ tent task dispatch \
   dispatch.
 - `route:*` resolves the selected machine Settings route and starts a temporary
   managed ACP Session for the formal Task.
-- caller identity supplies equal persisted `parentActor` and `reviewer`; the
+- Tent derives equal persisted `parentActor` and `reviewer`; the
   executor cannot select or elevate them.
 - prompt is explicit through `--prompt`; there is no positional dispatch form.
 

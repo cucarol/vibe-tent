@@ -14,8 +14,11 @@ incremental input/review delta.
 1. Work from the workspace root containing `.tent/`. CLI `taskPath` is relative
    to `.tent` (`temp/...`); direct reads use `.tent/temp/...`.
 2. Resolve the exact Task path/ID from managed binding, Context Card, or
-   `tent task list`. Managed ACP is already claimed; external execution claims
-   before work and may bind its external Session.
+   `tent task list`. A durable Role may create and immediately claim its own
+   Task with `tent task claim --node <nodeId> … --prompt <text>|-`; this has no
+   target and is not downstream dispatch. Managed ACP is already claimed;
+   external execution claims an existing Task before work and may bind its
+   external Session.
 3. Read the immutable prompt, `parentActor`, exact `reviewer`, assignee, and
    WorkspaceLane from the Task envelope. Read optional objective, frozen
    decisions, scope, acceptance, refs, and generation/digest from its Context
