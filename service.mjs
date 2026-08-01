@@ -18304,11 +18304,6 @@ var TaskInputStore = class {
     this.closed = false;
     this.shutdownPromise = null;
     this.chain = Promise.resolve();
-    /**
-     * Input ids currently in managed inject → markDelivered. Cancel must not rewrite
-     * these rows to cancelled or markDelivered loses the race with delivery cleanup.
-     */
-    this.managedInjectInFlight = /* @__PURE__ */ new Set();
     /** Test-only: next persistSnapshot fails once, then clears. */
     this.nextPersistErrorForTests = null;
     this.file = path6.join(dataDir, "task-inputs.json");
@@ -18321,24 +18316,6 @@ var TaskInputStore = class {
       () => void 0
     );
     return run;
-  }
-  /**
-   * Pin a pending input across managed inject + markDelivered so concurrent
-   * cancelTask/cancelSession (delivery/session cleanup) cannot rewrite it.
-   * Process-local only; not persisted.
-   */
-  beginManagedInject(id) {
-    if (!id?.trim()) return;
-    this.managedInjectInFlight.add(id);
-  }
-  /** Clear pin after markDelivered succeeds or continue path finishes. */
-  endManagedInject(id) {
-    if (!id?.trim()) return;
-    this.managedInjectInFlight.delete(id);
-  }
-  /** Test/diagnostics: whether cancel is currently blocked for this id. */
-  isManagedInjectInFlight(id) {
-    return this.managedInjectInFlight.has(id);
   }
   async ensureLoaded() {
     if (this.loaded) return;
@@ -18764,7 +18741,6 @@ var TaskInputStore = class {
   /**
    * Cancel open (pending/failed) inputs for one (workspace, task).
    * Delivered/processing stay: delivered already processed; processing is in-flight.
-   * Rows pinned by beginManagedInject are skipped (inject→markDelivered window).
    */
   async cancelTask(workspaceId, taskPath, resolvedBy = "service") {
     await this.ensureLoaded();
@@ -18773,7 +18749,7 @@ var TaskInputStore = class {
       const cancelled = [];
       const now = (/* @__PURE__ */ new Date()).toISOString();
       for (const item of this.items.values()) {
-        if (item.workspaceId !== workspaceId || item.taskPath !== taskPath || !isTaskInputCancelEligibleStatus(item.status) || this.managedInjectInFlight.has(item.id)) {
+        if (item.workspaceId !== workspaceId || item.taskPath !== taskPath || !isTaskInputCancelEligibleStatus(item.status)) {
           continue;
         }
         const row = {
@@ -18796,7 +18772,6 @@ var TaskInputStore = class {
   /**
    * Cancel open (pending/failed) inputs bound to a session.
    * Never rewrites delivered/consumed/processing rows.
-   * Rows pinned by beginManagedInject are skipped (same race as cancelTask).
    */
   async cancelSession(sessionId, resolvedBy = "service") {
     await this.ensureLoaded();
@@ -18805,7 +18780,7 @@ var TaskInputStore = class {
       const cancelled = [];
       const now = (/* @__PURE__ */ new Date()).toISOString();
       for (const item of this.items.values()) {
-        if (item.sessionId !== sessionId || !isTaskInputCancelEligibleStatus(item.status) || this.managedInjectInFlight.has(item.id)) {
+        if (item.sessionId !== sessionId || !isTaskInputCancelEligibleStatus(item.status)) {
           continue;
         }
         const row = {
@@ -27693,6 +27668,26 @@ function enqueueManagedTaskInputBackground(ctx, item, opts) {
   );
   trackManagedTaskInputBackground(work);
 }
+async function scheduleRetryableTaskInputsAfterSessionBind(ctx, input) {
+  try {
+    const retryable = await ctx.taskInputs.listRetryableForTask(
+      input.workspaceId,
+      input.taskPath
+    );
+    retryable.sort(
+      (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)
+    );
+    for (const item of retryable) {
+      enqueueManagedTaskInputBackground(ctx, item, {
+        sessionIdOverride: input.sessionId
+      });
+    }
+  } catch (err) {
+    console.error(
+      `[taskInput] exact bind recovery scheduling failed for ${input.taskPath}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
 function stopManagedTaskInputBackgroundAccept() {
   managedTaskInputAccepting = false;
 }
@@ -27791,81 +27786,70 @@ async function deliverManagedTaskInput(ctx, item, opts) {
       }
     }
     const forInject = { ...latest, sessionId };
-    ctx.taskInputs.beginManagedInject(forInject.id);
     let continueResult;
     let finalInput = forInject;
-    try {
-      continueResult = await continueManagedAfterTaskInput(ctx, forInject);
-      if (continueResult.continued) {
+    continueResult = await continueManagedAfterTaskInput(ctx, forInject);
+    if (continueResult.continued) {
+      try {
+        finalInput = await ctx.taskInputs.markDelivered(forInject.id, "service", {
+          sessionId
+        });
+        ctx.events.emit(
+          "taskInput.delivered",
+          forInject.workspaceId,
+          {
+            inputId: finalInput.id,
+            taskPath: finalInput.taskPath,
+            sessionId: finalInput.sessionId,
+            kind: normalizeTaskInputKind(finalInput.kind),
+            status: finalInput.status
+          },
+          "service"
+        );
         try {
-          finalInput = await ctx.taskInputs.markDelivered(
+          await requestManagedAutoDeliverRetryFromDraft(ctx, {
+            workspaceId: forInject.workspaceId,
+            taskPath: forInject.taskPath,
+            sessionId
+          });
+        } catch {
+        }
+      } catch (err) {
+        const message2 = err instanceof Error ? err.message : String(err);
+        try {
+          finalInput = await ctx.taskInputs.markUncertain(
             forInject.id,
+            `managed inject ok but markDelivered failed: ${message2}`,
             "service",
             { sessionId }
           );
           ctx.events.emit(
-            "taskInput.delivered",
+            "taskInput.uncertain",
             forInject.workspaceId,
             {
               inputId: finalInput.id,
               taskPath: finalInput.taskPath,
               sessionId: finalInput.sessionId,
               kind: normalizeTaskInputKind(finalInput.kind),
-              status: finalInput.status
+              status: finalInput.status,
+              lastError: finalInput.lastError
             },
-            "service"
-          );
-          try {
-            await requestManagedAutoDeliverRetryFromDraft(ctx, {
-              workspaceId: forInject.workspaceId,
-              taskPath: forInject.taskPath,
-              sessionId
-            });
-          } catch {
-          }
-        } catch (err) {
-          const message2 = err instanceof Error ? err.message : String(err);
-          try {
-            finalInput = await ctx.taskInputs.markUncertain(
-              forInject.id,
-              `managed inject ok but markDelivered failed: ${message2}`,
-              "service",
-              { sessionId }
-            );
-            ctx.events.emit(
-              "taskInput.uncertain",
-              forInject.workspaceId,
-              {
-                inputId: finalInput.id,
-                taskPath: finalInput.taskPath,
-                sessionId: finalInput.sessionId,
-                kind: normalizeTaskInputKind(finalInput.kind),
-                status: finalInput.status,
-                lastError: finalInput.lastError
-              },
-              "service"
-            );
-          } catch {
-          }
-          return {
-            input: finalInput,
-            continued: true,
-            continueError: `managed inject ok but markDelivered failed: ${message2}`
-          };
-        }
-      } else {
-        const failMsg = continueResult.error || "managed inject did not continue; external agent may poll taskInput";
-        try {
-          finalInput = await ctx.taskInputs.markFailed(
-            forInject.id,
-            failMsg,
             "service"
           );
         } catch {
         }
+        return {
+          input: finalInput,
+          continued: true,
+          continueError: `managed inject ok but markDelivered failed: ${message2}`
+        };
       }
-    } finally {
-      ctx.taskInputs.endManagedInject(forInject.id);
+    } else {
+      const failMsg = continueResult.error || "managed inject did not continue; external agent may poll taskInput";
+      try {
+        finalInput = await ctx.taskInputs.markFailed(forInject.id, failMsg, "service");
+      } catch {
+      }
     }
     return {
       input: finalInput,
@@ -28648,7 +28632,7 @@ async function taskStartSessionRpc(ctx, p) {
     if (existing) {
       return joinOrConflictManagedSessionFlight(existing, profileId, "startSession", taskPath);
     }
-    return runTaskLifecycle(workspaceId, taskPath, async () => {
+    const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
       const mount = ctx.host.require(workspaceId);
       const current = await loadTaskEnvelope(mount.env.fs, taskPath);
       const sessionId = prepared.result.session.sessionId;
@@ -28677,6 +28661,12 @@ async function taskStartSessionRpc(ctx, p) {
         cwd: current.worktree || mount.workspaceRoot
       });
     });
+    await scheduleRetryableTaskInputsAfterSessionBind(ctx, {
+      workspaceId,
+      taskPath,
+      sessionId: result.session.sessionId
+    });
+    return result;
   }
   return runManagedSessionFlight(
     workspaceId,
@@ -29265,6 +29255,11 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
       cleanupStopped: stopped
     });
   }
+  await scheduleRetryableTaskInputsAfterSessionBind(ctx, {
+    workspaceId,
+    taskPath,
+    sessionId: handle.sessionId
+  });
   return projectStartSessionResult(workspaceId, taskPath, bound, {
     id: handle.sessionId,
     profileId: handle.profileId,
@@ -29526,6 +29521,11 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) 
         newSessionId: handle.sessionId
       });
     }
+    await scheduleRetryableTaskInputsAfterSessionBind(ctx, {
+      workspaceId,
+      taskPath,
+      sessionId: handle.sessionId
+    });
     return {
       workspaceId,
       taskPath,
