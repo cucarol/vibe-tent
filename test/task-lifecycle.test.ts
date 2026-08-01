@@ -339,7 +339,7 @@ test("lifecycle: residual disk owner/status is stripped on load and does not blo
   assert.equal(active!.role, "reviewer");
 });
 
-test("lifecycle: second active task on same box is legal (non-exclusive refs)", async () => {
+test("lifecycle: exact Node occupation blocks peers but not parent, child, or sibling", async () => {
   const dir = await makeTent();
   const e = env(dir);
   const r1 = await dispatch(e as any, "bx-p1", "executor", {
@@ -348,16 +348,28 @@ test("lifecycle: second active task on same box is legal (non-exclusive refs)", 
     reviewer: { kind: "user", id: "user" },
   });
   assert.equal((await loadTaskEnvelope(e.fs, r1.taskPath)).state, "queued");
-  // Concurrent direct refs on the same Node are legal (cx-tsw53f).
-  const overlap = await dispatch(e as any, "bx-p1", "reviewer", {
-    userPrompt: "overlap",
+  await assert.rejects(
+    () => dispatch(e as any, "bx-p1", "reviewer", {
+      userPrompt: "overlap",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+    }),
+    /occupied by active task/,
+  );
+  const child = await dispatch(e as any, "bx-p2", "reviewer", {
+    userPrompt: "child",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
   });
-  assert.ok(overlap.taskPath);
-  // Peer claim of a different free box still works (bx-o1 is outside p1 subtree).
+  assert.ok(child.taskPath);
+  const parent = await dispatch(e as any, "bx-promptzone", "reviewer", {
+    userPrompt: "parent",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+  });
+  assert.ok(parent.taskPath);
   const r2 = await dispatch(e as any, "bx-o1", "reviewer", {
-    userPrompt: "other box",
+    userPrompt: "sibling",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
   });
@@ -366,7 +378,42 @@ test("lifecycle: second active task on same box is legal (non-exclusive refs)", 
   assert.ok(active);
 });
 
-test("lifecycle: workspace-only context Task does not block box dispatch (non-exclusive)", async () => {
+test("lifecycle: every terminal state releases exact Node occupation", async () => {
+  const dir = await makeTent();
+  const e = env(dir);
+
+  const rejected = await dispatchOnFreeBox(dir);
+  await taskClaim(e as any, rejected.result.taskPath);
+  await taskDeliver(e as any, rejected.result.taskPath, { summary: "reject me" });
+  const rejectedResult = await taskReject(e as any, rejected.result.taskPath, {
+    actor: "user",
+    note: "not accepted",
+    resume: false,
+  });
+  assert.equal(rejectedResult.task.state, "rejected");
+  assert.equal(await findActiveTaskForBox(e.fs, "bx-p1"), undefined);
+
+  const interrupted = await dispatchOnFreeBox(dir);
+  await taskClaim(e as any, interrupted.result.taskPath);
+  const interruptedTask = await taskInterrupt(e as any, interrupted.result.taskPath);
+  assert.equal(interruptedTask.state, "interrupted");
+  assert.equal(await findActiveTaskForBox(e.fs, "bx-p1"), undefined);
+
+  const failed = await dispatchOnFreeBox(dir);
+  await taskClaim(e as any, failed.result.taskPath);
+  const failedTask = await taskFail(e as any, failed.result.taskPath, { summary: "provider failed" });
+  assert.equal(failedTask.state, "failed");
+  assert.equal(await findActiveTaskForBox(e.fs, "bx-p1"), undefined);
+
+  const accepted = await dispatchOnFreeBox(dir);
+  await taskClaim(e as any, accepted.result.taskPath);
+  await taskDeliver(e as any, accepted.result.taskPath, { summary: "accept me", commits: [] });
+  const acceptedResult = await taskAccept(e as any, accepted.result.taskPath, { actor: "user" });
+  assert.equal(acceptedResult.task.state, "accepted");
+  assert.equal(await findActiveTaskForBox(e.fs, "bx-p1"), undefined);
+});
+
+test("lifecycle: workspace-only context Task does not occupy a Node", async () => {
   const dir = await makeTent();
   const e = env(dir);
   // Explicit empty refs.nodes = stable workspace context (not a Tent-wide lock).
@@ -410,7 +457,7 @@ test("lifecycle: workspace-only context Task does not block box dispatch (non-ex
       "    id: executor",
       "  contextGeneration: cg-v1-workspace",
       "  taskDeltaDigest: td-workspace",
-      "manifest: temp/executor/manifest.yml",
+      "manifest: temp/executor/manifests/tk-root1.yml",
       "---",
       "# workspace context",
       "",
@@ -430,7 +477,7 @@ test("lifecycle: workspace-only context Task does not block box dispatch (non-ex
   assert.ok(r2.taskPath);
 });
 
-test("lifecycle: asSub under workspace-context parent is allowed (non-exclusive)", async () => {
+test("lifecycle: asSub under workspace-context parent can claim a Node", async () => {
   const dir = await makeTent();
   const e = env(dir);
   await e.fs.writeFile(
@@ -473,7 +520,7 @@ test("lifecycle: asSub under workspace-context parent is allowed (non-exclusive)
       "    id: architect",
       "  contextGeneration: cg-v1-ws",
       "  taskDeltaDigest: td-ws",
-      "manifest: temp/architect/manifest.yml",
+      "manifest: temp/architect/manifests/tk-rootarch.yml",
       "---",
       "# workspace by architect",
       "",
@@ -502,7 +549,7 @@ test("lifecycle: legacy claims-only envelope loads; occupation requires migrated
       "parentActor: { kind: user, id: user }",
       "reviewer: { kind: user, id: user }",
       "claims: [bx-p1]",
-      "manifest: temp/executor/manifest.yml",
+      "manifest: temp/executor/manifests/tk-legacy1.yml",
       "---",
       "# legacy",
       "",
@@ -514,7 +561,7 @@ test("lifecycle: legacy claims-only envelope loads; occupation requires migrated
   assert.equal(legacy.contextCard, undefined);
   // Without contextCard, unmigrated tasks are not in the occupation set.
   assert.equal(await findActiveTaskForBox(e.fs, "bx-p1"), undefined);
-  // Concurrent dispatch of the same box is legal (and succeeds for unmigrated residual).
+  // The residual envelope is queued, so it does not hold an active occupation.
   const concurrent = await dispatch(e as any, "bx-p1", "reviewer", {
     userPrompt: "ok concurrent",
     parentActor: { kind: "user", id: "user" },
@@ -528,7 +575,7 @@ test("lifecycle: legacy claims-only envelope loads; occupation requires migrated
   assert.ok(proj.activeTaskId);
 });
 
-test("lifecycle: taskFail releases occupation; idempotent; re-dispatch same box", async () => {
+test("lifecycle: taskFail releases exact Node occupation; idempotent re-dispatch", async () => {
   const dir = await makeTent();
   const { e, result } = await dispatchOnFreeBox(dir);
   await taskClaim(e as any, result.taskPath);

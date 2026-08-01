@@ -105,7 +105,7 @@ async function exists(target: string): Promise<boolean> {
   }
 }
 
-test("V0.2 non-exclusive refs: same/ancestor/descendant concurrent; structural freeze only", async () => {
+test("Node occupation: exact Node exclusive; parent, child, and sibling remain independent", async () => {
   const dir = await makeTent();
   await fs.mkdir(path.join(dir, "goal", "挖新alpha", "写表达式", "实现细节"), { recursive: true });
   await fs.writeFile(
@@ -118,7 +118,7 @@ test("V0.2 non-exclusive refs: same/ancestor/descendant concurrent; structural f
   const g2Path = await writeTaskEnvelope(fsa, { now: () => "2026-07-28T12:00:00.000Z" }, {
     role: "executor",
     claims: [{ id: "bx-g2", path: "goal/x" }],
-    manifestPath: "temp/executor/manifest.yml",
+    manifestPath: "temp/executor/manifests/tk-activeg2.yml",
     userPrompt: "hold g2",
     id: "tk-activeg2",
     parentActor: { kind: "user", id: "user" },
@@ -132,17 +132,19 @@ test("V0.2 non-exclusive refs: same/ancestor/descendant concurrent; structural f
   const tasks = await loadTaskEnvelopes(fsa);
 
   const g1 = tent.byId.get("bx-g1")!;
-  // cx-tsw53f: concurrent ancestor/same/descendant refs are legal.
+  // An active Task on a parent does not occupy its descendants.
   assert.equal(canClaim(g1, { tent, tasks }).ok, true);
-  assert.equal(isFrozen(g1), false, "有直接引用子孙的祖先不结构冻结");
-  assert.equal(isFrozen(tent.byId.get("bx-g2")!), false, "valid non-archived is not structurally frozen");
+  assert.equal(isFrozen(g1), false, "valid non-archived is not structurally frozen");
 
   const g2 = tent.byId.get("bx-g2")!;
-  assert.equal(canClaim(g2, { tent, tasks }).ok, true, "同一 Node 可被多 Task 直接引用");
+  const exact = canClaim(g2, { tent, tasks });
+  assert.equal(exact.ok, false, "同一 Node 同时只能被一个 active Task 占用");
+  assert.match(exact.reason || "", /occupied by active task tk-activeg2/);
 
   const g3 = tent.byId.get("bx-g3")!;
-  assert.equal(canClaim(g3, { tent, tasks }).ok, true, "子孙也可并发引用");
+  assert.equal(canClaim(g3, { tent, tasks }).ok, true, "子 Node 可与父 Node 并发");
   assert.equal(isFrozen(g3), false);
+  assert.equal(canClaim(tent.byId.get("bx-o1")!, { tent, tasks }).ok, true, "兄弟 Node 可并发");
 
   // Without active task, claim remains free (no owner lock projection).
   await fsa.remove(g2Path);
@@ -162,7 +164,7 @@ test("workspace context is not a Tent-wide lock; box panel lists direct refs onl
   const rootPath = await writeTaskEnvelope(fsa, { now: () => "2026-07-28T12:00:00.000Z" }, {
     role: "executor",
     claims: [{ id: "root", path: "./" }],
-    manifestPath: "temp/executor/manifest.yml",
+    manifestPath: "temp/executor/manifests/tk-rootocc.yml",
     userPrompt: "workspace",
     id: "tk-rootocc",
     parentActor: { kind: "user", id: "user" },
@@ -194,7 +196,7 @@ test("workspace context is not a Tent-wide lock; box panel lists direct refs onl
   await writeTaskEnvelope(fsa, { now: () => "2026-07-28T12:00:00.000Z" }, {
     role: "reviewer",
     claims: [{ id: "bx-p1", path: "prompt/x" }],
-    manifestPath: "temp/reviewer/manifest.yml",
+    manifestPath: "temp/reviewer/manifests/tk-boxocc.yml",
     userPrompt: "box ref",
     id: "tk-boxocc",
     parentActor: { kind: "user", id: "user" },
@@ -309,7 +311,7 @@ test("manifest:认领即得子树结构权,帐根 claim 可写顶层结构", asy
   assert.ok(rootManifest.writable.some((e) => e.path === "goal/"), "帐根 claim 覆盖全帐结构");
 });
 
-test("dispatch:只写 pending envelope + contextCard.refs.nodes；并发引用合法", async () => {
+test("dispatch:只写 pending envelope + contextCard.refs.nodes；exact Node 占用且 manifest 按 Task 隔离", async () => {
   const dir = await makeTent();
   const env = {
     fs: new NodeFs(dir),
@@ -344,9 +346,17 @@ test("dispatch:只写 pending envelope + contextCard.refs.nodes；并发引用�
   assert.equal(claimed.fm.status, undefined, "dispatch 不写 Node owner/status");
   assert.equal((await loadTaskEnvelope(env.fs, result.taskPath)).status, "pending");
 
-  // cx-tsw53f: concurrent same/ancestor/descendant refs are legal.
-  const same = await dispatch(env as any, "bx-p1", "executor", "同 Node 并发");
-  assert.notEqual(same.taskPath, result.taskPath);
+  // The exact Node is occupied even while the first Task is only queued.
+  await assert.rejects(
+    () => dispatch(env as any, "bx-p1", "executor", "同 Node 并发"),
+    /occupied by active task/,
+  );
+
+  const firstTask = await loadTaskEnvelope(env.fs, result.taskPath);
+  assert.equal(firstTask.manifest, result.manifestPath);
+  assert.match(result.manifestPath, new RegExp(`^temp/analyst/manifests/${firstTask.id}\\.yml$`));
+
+  // Parent and child refs remain independent from the occupied exact Node.
   const onChild = await dispatch(env as any, "bx-p2", "analyst", "子孙并发");
   assert.ok(onChild.taskPath);
   const onAncestor = await dispatch(env as any, "bx-promptzone", "planner", "祖先并发");
@@ -354,6 +364,10 @@ test("dispatch:只写 pending envelope + contextCard.refs.nodes；并发引用�
 
   const second = await dispatch(env as any, "bx-o1", "analyst", "继续处理 output 指针");
   assert.notEqual(second.taskPath, result.taskPath, "task 信封不可变,不覆盖");
+  const secondTask = await loadTaskEnvelope(env.fs, second.taskPath);
+  assert.equal(secondTask.manifest, second.manifestPath);
+  assert.match(second.manifestPath, new RegExp(`^temp/analyst/manifests/${secondTask.id}\\.yml$`));
+  assert.notEqual(firstTask.manifest, secondTask.manifest, "不同 Task 不共享可写 manifest");
   // Manifest snapshots only this Task's exact requested Node (no prior Role aggregation).
   assert.doesNotMatch(second.manifestYaml, /^claims:/m);
   assert.match(second.manifestYaml, /writable:/);
@@ -421,7 +435,8 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
     tasks[0].contextCard?.refs.nodes.map((n) => n.id) ?? [],
     ["bx-p1"]
   );
-  assert.equal(tasks[0].manifest, "temp/analyst/manifest.yml");
+  assert.equal(tasks[0].manifest, first.manifestPath);
+  assert.match(tasks[0].manifest, new RegExp(`^temp/analyst/manifests/${tasks[0].id}\\.yml$`));
   assert.equal(tasks[0].status, "pending");
   assert.equal(tasks[0].state, "queued");
   assert.equal(tasks[0].parentActor?.kind, "user");
@@ -519,7 +534,7 @@ test("dispatch:拒绝整帐 claim,具体框仍可派活", async () => {
   };
   const { dispatch } = await import("../src/core/ops.js");
   const message =
-    /Cannot dispatch the whole Tent directly; dispatch a specific Node \(legacy primary cannot be \., root, or the Tent name\)\./;
+    /Cannot dispatch the whole Tent directly; dispatch a specific Node \(primary Node cannot be \., root, or the Tent name\)\./;
   await assert.rejects(() => dispatch(env as any, ".", "architect", "接管全帐"), message);
   await assert.rejects(() => dispatch(env as any, "root", "architect", "接管全帐"), message);
   await assert.rejects(() => dispatch(env as any, "wqb", "architect", "接管全帐"), message);
@@ -589,15 +604,15 @@ test("placeBox 换序:before/after/inside 重排 order", async () => {
   );
 });
 
-test("placeBox: concurrent Task refs do not freeze move (cx-tsw53f)", async () => {
+test("moveNode: active Task refs freeze the affected Node subtree", async () => {
   const dir = await makeTent();
-  // Active direct ref on g2 must not block placeBox of g2 or into g2.
+  // Active direct ref on g2 blocks moving g2 and its containing subtree.
   await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
   const fsa = new NodeFs(dir);
   const movePath = await writeTaskEnvelope(fsa, { now: () => "t" }, {
     role: "executor",
     claims: [{ id: "bx-g2", path: "goal/x" }],
-    manifestPath: "temp/executor/manifest.yml",
+    manifestPath: "temp/executor/manifests/tk-moveg2.yml",
     userPrompt: "hold",
     id: "tk-moveg2",
     parentActor: { kind: "user", id: "user" },
@@ -613,16 +628,17 @@ test("placeBox: concurrent Task refs do not freeze move (cx-tsw53f)", async () =
     clock: { now: () => "t" },
     tentName: "wqb",
   };
-  const { placeBox } = await import("../src/core/ops.js");
-  // Direct-ref target may move.
-  await placeBox(env as any, "goal/挖新alpha/写表达式", "prompt", { mode: "inside" });
-  // Move into a directly-referenced parent is also legal.
-  await placeBox(env as any, "prompt/旧站资料", "prompt/写表达式", { mode: "inside" });
-
-  await placeBox(env as any, "goal/挖新alpha", "prompt", { mode: "inside" });
-  const tent = await loadTent(new NodeFs(dir));
-  const prompt = tent.byId.get("bx-promptzone")!;
-  assert.ok(prompt.children.some((child) => child.id === "bx-g1"));
+  const { moveNode } = await import("../src/core/ops.js");
+  await assert.rejects(
+    () => moveNode(env as any, "bx-g2", "bx-promptzone", { mode: "inside" }),
+    /active Task ref.*tk-moveg2/i,
+    "移动 active Task 直接引用的 Node 必须拒绝",
+  );
+  await assert.rejects(
+    () => moveNode(env as any, "bx-g1", "bx-promptzone", { mode: "inside" }),
+    /active Task ref.*tk-moveg2/i,
+    "移动包含 active Task 的父 Node 子树必须拒绝",
+  );
 });
 
 test("中断认领:force-release 清理非 accepted delivery（不写 Node owner/status）", async () => {
@@ -659,7 +675,7 @@ test("force-release: migrated no-claims Task (contextCard refs only) ends occupa
   const taskPath = await writeTaskEnvelope(fsa, clock, {
     role: "executor",
     claims: [{ id: "bx-g2", path: "goal/x" }],
-    manifestPath: "temp/executor/manifest.yml",
+    manifestPath: "temp/executor/manifests/tk-fr-card.yml",
     userPrompt: "hold g2 for force-release",
     id: "tk-fr-card",
     parentActor: { kind: "user", id: "user" },
