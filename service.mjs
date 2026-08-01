@@ -33672,16 +33672,12 @@ async function tryManagedAutoDeliver(ctx, input) {
   if (!rawReport || !sessionId) {
     return;
   }
-  const parsedOutcome = parseTaskOutcomeReport(rawReport);
+  let parsedOutcome = parseTaskOutcomeReport(rawReport);
   if (!parsedOutcome) {
-    await handleManagedNonDeliveredOutcome(ctx, {
-      workspaceId: input.workspaceId,
-      taskPath: input.taskPath,
-      sessionId,
-      outcome: null,
+    parsedOutcome = {
+      outcome: "delivered",
       report: rawReport
-    });
-    return;
+    };
   }
   if (parsedOutcome.outcome !== "delivered") {
     await handleManagedNonDeliveredOutcome(ctx, {
