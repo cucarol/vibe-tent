@@ -14,7 +14,7 @@ tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace
 tent task ask-user <taskPath> --question <text>|- [--choices id=label,…] [--workspace <path>] [--json]
 tent task task-input list <taskPath> | --task <taskPath> [--workspace <path>] [--json]
 tent task task-input get <inputId> --task <taskPath> [--workspace <path>] [--json]
-tent task task-input ack <inputId> --task <taskPath> --actor <role|sessionId> [--workspace <path>] [--json]
+tent task task-input ack <inputId> --task <taskPath> [--actor <role|sessionId>] [--workspace <path>] [--json]
 ```
 
 User / dispatcher write path and review (not the executor’s self-inbox):
@@ -24,6 +24,7 @@ tent task send-input <taskPath> [--text <text>|-] [--refs id,id] [--workspace <p
 tent task user-ask list|get <askId>|reply <askId>|deny <askId> […]
 tent task accept <taskPath> --actor <user|role> …
 tent task reject <taskPath> --actor <user|role> [--note …] [--resume|--no-resume] …
+tent task interrupt <taskPath> …
 tent task cancel <taskPath> …
 tent task dispatch --target role:<roleIdOrName>|agent:<agentId> \
   --node <nodeId> [--node <nodeId> …] --prompt <text>|-
@@ -57,7 +58,9 @@ Agents never self-accept. Review authority is the exact persisted `reviewer`, wh
 2. **get** — re-read machine state after claim or mid-run. The Task envelope and Context Card are the execution contract; referenced Node bodies are context. Delivery is a separate record.
 3. **deliver** — submit Delivery with a human summary and optional commit SHAs.  
    Creates a Delivery; does **not** accept. A downstream executor delivers only for its exact parent reviewer. A durable Role's own user-facing Task may use its configured `review | bypass | agent-decide` policy.
-   Service refuses ready Delivery while this task still has open TaskInput (`pending` / `processing` / retryable `failed`) with stable code `PENDING_TASK_INPUT` — consume via managed inject or `task-input ack` first; do not expect seal/cleanup to cancel blockers for you.
+   Service refuses ready Delivery while this task has attention TaskInput (`pending`, `processing`, `failed`, or `uncertain`) with stable code `PENDING_TASK_INPUT`. `uncertain` means injection may already have happened: never retry or re-inject it. An authorized acknowledgement resolves the blocker and may schedule only a durable report-draft retry.
+
+A commit-bearing ready Delivery records reported commits from the exact lane range plus a target-head snapshot. The commit list may be empty or a relevant subset; every listed SHA must belong to the lane. `TARGET_MOVED` is a review boundary: reject/resume and re-deliver against the current target instead of overriding or rewriting persisted facts.
 
 Managed ACP final reports lead with `outcome: delivered|blocked|needs-input`. Only `delivered` may publish a ready Delivery after the turn and lane settle; `blocked` and `needs-input` remain non-delivery outcomes.
 
@@ -78,7 +81,7 @@ tent task send-input <taskPath> [--text "…"] [--refs id,id]
 ```bash
 tent task task-input list <taskPath>
 tent task task-input get <inputId> --task <taskPath>
-tent task task-input ack <inputId> --task <taskPath> --actor <role|sessionId>
+tent task task-input ack <inputId> --task <taskPath> [--actor <role|sessionId>]
 ```
 
 Rules:
@@ -86,8 +89,16 @@ Rules:
 - Do **not** self-`send-input` on the **same** task you are currently executing.
 - A dispatcher **may** `send-input` to another task’s path when acting as U2A writer.
 - `list` / `get` / `ack` always need `taskPath` scope; no global inbox.
-- `ack` `--actor` must match the task role or a service-verified session id for that task.
+- An explicit `--actor` must match the exact Task Role, persisted parent/reviewer Role, or a Service-verified Session bound to that Task. Text such as `--actor user` is not user authority.
+- For the Local Service user path, omit `--actor`; Service derives user authority from its authenticated boundary plus persisted user parent/reviewer. Acknowledging `uncertain` preserves its diagnostic history and never prompts the provider again.
 - Managed ACP injects fixed-format follow-ups (`## User Input` / review feedback); external agents poll + ack.
+
+## Stop an obsolete Task
+
+- `task cancel` is for a Task that is still `queued`.
+- `task interrupt` is for `running` or `waiting`; it preserves audit state and stops the exact managed Session through Service ownership.
+- Once a ready Delivery exists, the reviewer accepts or rejects it. Interrupt does not erase a published Delivery.
+- Never kill a provider PID, edit an envelope, or delete its lane as a lifecycle substitute.
 
 ## A2U — agent asks, user answers
 
@@ -124,7 +135,7 @@ tent role show <id>  # roster readiness for one Role
 tent agent list      # logical AgentDefinitions (not Sessions)
 tent tree            # Node tree
 tent task list       # service task list
-tent session status  # external Session orientation
+tent session status  # managed or external Session orientation
 ```
 
 ## What not to use as the main path

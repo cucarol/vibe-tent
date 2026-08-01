@@ -41,7 +41,9 @@ When the envelope includes lane fields:
 - `worktree` — execution directory for code edits
 - `branch` — Git branch for this role/task (`tent-role/<role>` or `tent-task/<taskId>`)
 - `targetBranch` — integrate target (mainline or dispatcher role branch)
-- `baseCommit` — exact Task-lane starting commit; ordinary executor history must be linear from it
+- `baseCommit` — exact Task-lane starting commit captured once at the lifecycle stage that establishes this lane; ordinary executor history must be linear from it
 - `integrationAuthority` — derived from exact parent/reviewer with Service as mutator
 
-If lane fields are absent, the Task may be pure Tent (no Git lane). That is valid. Do not invent a worktree. Durable Role worktrees persist; a clean, terminal, settled agentProfile Task worktree may be reclaimed automatically by Core.
+Lane timing depends on assignee and parent: Role Tasks defer execution lane/base to first claim; peer AgentProfile Tasks defer their Task lane to managed start; subordinate AgentProfile Tasks may allocate the lane at dispatch against the dispatcher Role branch. Re-read the envelope after claim/start and trust only its persisted lane. If a code Task then lacks its required base, fail loud. Legacy running/waiting state may be repaired only by an explicit audited parent/reviewer backfill that proves lane ancestry; an executor never guesses it.
+
+If lane fields remain absent for a pure Tent Task, that is valid. Do not invent a worktree. Durable Role worktrees persist; a clean, terminal, settled agentProfile Task worktree may be reclaimed automatically by Core. Reclaim and its historical retry queue are Service-owned exact-path operations: never manually remove/prune a Task lane or traverse a junction/reparse-point target.

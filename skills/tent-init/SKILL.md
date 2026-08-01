@@ -50,6 +50,7 @@ For a new project, ask at most one or two lightweight questions about the intend
 - Existing project root: run `tent new .` from that root.
 - Existing orphan `.tent/`: use `tent new <target> --repair-existing` only for the narrow re-adopt case above. It preserves existing bytes and fills structural gaps; it is not a migration or doctor framework.
 - Use only public Tent CLI, Desktop, or Service mutation surfaces. Never hand-write files under `.tent/` or call provider adapters directly.
+- If CLI attach rejects a legacy or incompatible Local Service protocol, stop and report the exact version/endpoint mismatch. Do not initialize through private RPC, direct provider calls, or hand-written `.tent` state.
 - Preserve an existing workspace-root `AGENTS.md`. Tent operational state belongs under `.tent/`, which the initializer adds to Git ignore rules.
 - A non-Git project may use Tent Nodes, but managed worktrees and commit integration require Git. Ask before initializing Git.
 

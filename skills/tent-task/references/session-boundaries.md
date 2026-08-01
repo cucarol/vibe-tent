@@ -28,9 +28,17 @@ tent session leave   → unbind only; delivered=false, accepted=false
 
 1. Re-query persisted Session and Task state after restart, compaction, handoff, provider change, or replacement.
 2. Never treat an old live handle, process ID, or remembered resume token as current authority.
-3. Use `task.replaceSession` only through the Service and only when its current eligibility checks allow it; do not manufacture a replacement by editing registry files.
+3. Use `task.replaceSession` only through Service for the same Task when the bound context is unusable. It requires a turn-idle `running` Task or `waiting(session_unavailable)`; `TURN_BUSY` fails loud and has no force path. Replacement is explicitly fresh (`contextRestored=false`).
 4. Reuse only through Core compatibility checks: workspace, parent Role, logical `agentId`, purpose, Skills, profile/adapter, context generation, lane, exclusive idle lease, settled turn, and no pending input/Delivery must match. A failed check creates a fresh Session generation.
 5. Do not stop a process merely because its Session projection looks stale; confirm ownership and current runtime state first.
+
+Session startup runs outside the Task lifecycle lock, then final binding uses an authoritative Task snapshot and lifecycle CAS. A terminal transition may win; the unbound new Session is stopped and Service reports `TASK_SESSION_BIND_CAS_FAILED`. Never hand-bind it or overwrite the terminal Task.
+
+## Protocol and bounded ACP failure
+
+- Public CLI requires the compatible Local Service protocol. If attach reports a legacy/mismatched endpoint, do not bypass Service or call the provider adapter directly. Stop and report the mismatch; restart or upgrade through the environment's documented Service operator procedure rather than inventing a Skill command.
+- Oversized ACP frame/report/request fails loud as `ACP_OUTPUT_LIMIT` or `ACP_REQUEST_LIMIT`. Service stops the provider turn and must not publish `prompt_complete`, a Delivery, or a delivered outcome from truncated content.
+- Diagnostic tails may be bounded and redacted. They are evidence, not a substitute for the authoritative Session/Task terminal state.
 
 ## Host tools stay with the host
 

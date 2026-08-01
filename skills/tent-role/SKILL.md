@@ -34,10 +34,11 @@ Never invent a Role prompt, roster entry, Task, Delivery, Session, compatibility
 
 ## Dispatch and review Tasks
 
-- Give every downstream Task a complete Context Card: objective, frozen decisions, included and excluded scope, acceptance requirements, durable Node/Task/Delivery/Git refs, and the recorded execution lane. Missing critical context must fail loud to this Role, not be guessed by the executor.
+- Give every downstream Task a complete Context Card: objective, frozen decisions, included and excluded scope, acceptance requirements, and durable Node/Task/Delivery/Git refs. Role execution base is deferred to first claim; a peer Agent lane is deferred to managed start, while a Role-dispatched subordinate Agent lane may already exist at dispatch. Missing critical context must fail loud to this Role, not be guessed by the executor.
 - Use `tent task dispatch --target agent:<agentId> --node <nodeId> … --prompt <text>|-` for managed downstream work. Use `--target role:<roleIdOrName>` for a queued durable Role handoff. Caller authority and the parent Role lane are derived by Tent; never expose or recreate Profile, `asSub`, reviewer, or delivery-policy knobs.
 - Trust persisted `parentActor` and exact `reviewer`. A downstream Task Agent always delivers for review by its parent actor; it has no `bypass`, `agent-decide`, or self-accept path.
-- Inspect the real diff, commit ancestry, tests, TaskInputs, Session settle state, and Delivery evidence. Accept, reject with feedback, replace an eligible failed Session, or dispatch a fresh Task from persisted facts.
+- Inspect the real diff, reported commit lane membership, target-head snapshot, tests, TaskInputs, Session settle state, and Delivery evidence. `TARGET_MOVED` requires reject/resume and a new Delivery against the current target; never bypass the snapshot or hand-edit persisted state.
+- Replace a failed Session only through Service eligibility for the same Task and only while its turn is idle. When the user wants a new Task or context contract, retire the old Task through lifecycle and dispatch fresh instead of replacing it.
 - Keep unrelated downstream diffs and Task lanes separate. Integration authority belongs to the recorded parent/Service, not the executor.
 
 ## Preserve cooperative continuity
