@@ -155,7 +155,7 @@ test("agentProfile dispatch: envelope path, task-scoped manifest, no init/regist
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       assigneeKind: "agentProfile",
       profileId: "fake-default",
       prompt: "one-shot profile work",
@@ -227,7 +227,7 @@ test("agentProfile dispatch: envelope path, task-scoped manifest, no init/regist
   });
 });
 
-test("role dispatch regression: still creates init + shared manifest + role path", async () => {
+test("role dispatch creates init + task-scoped manifest + role path", async () => {
   const ws = await makeWorkspace("ap-role-reg");
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
@@ -235,7 +235,7 @@ test("role dispatch regression: still creates init + shared manifest + role path
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       role: "executor",
       prompt: "role path stays",
     });
@@ -249,7 +249,10 @@ test("role dispatch regression: still creates init + shared manifest + role path
     };
     assert.equal(result.assigneeKind, "role");
     assert.equal(result.initPath, "temp/executor/init.md");
-    assert.equal(result.manifestPath, "temp/executor/manifest.yml");
+    assert.match(
+      result.manifestPath,
+      /^temp\/executor\/manifests\/tk-.+\.yml$/
+    );
     assert.match(result.taskPath, /^temp\/executor\/tasks\//);
     assert.match(result.relayPrompt, /role executor/);
     assert.match(result.relayPrompt, /Role init file/);
@@ -259,7 +262,8 @@ test("role dispatch regression: still creates init + shared manifest + role path
     assert.equal(taskAssigneeKindOrRole(task.assigneeKind), "role");
     assert.equal(task.role, "executor");
     assert.ok(await envFs.exists("temp/executor/init.md"));
-    assert.ok(await envFs.exists("temp/executor/manifest.yml"));
+    assert.ok(await envFs.exists(result.manifestPath));
+    assert.equal(await envFs.exists("temp/executor/manifest.yml"), false);
   });
 });
 
@@ -279,7 +283,7 @@ test("agent-profiles is reserved from durable role registration and dispatch", a
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       role: "agent-profiles",
       prompt: "must not enter the reserved namespace",
     });
@@ -301,7 +305,7 @@ test("Git agentProfile task gets tent-task/<taskId> isolated lane; commits from 
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       assigneeKind: "agentProfile",
       profileId: "fake-default",
       prompt: "git profile lane",
@@ -401,7 +405,7 @@ test("startSession profile match/mismatch; two same-profile tasks concurrent", a
       workspaceId: a.workspaceId,
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      boxId: a.boxId,
+      nodeIds: [a.boxId],
       assigneeKind: "agentProfile",
       profileId: "fake-default",
       prompt: "first",
@@ -410,7 +414,7 @@ test("startSession profile match/mismatch; two same-profile tasks concurrent", a
       workspaceId: a.workspaceId,
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      boxId: boxIdB,
+      nodeIds: [boxIdB],
       assigneeKind: "agentProfile",
       profileId: "fake-default",
       prompt: "second",
@@ -479,7 +483,7 @@ test("A2A: dispatcher role policy governs agentProfile launch; user path works",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       assigneeKind: "agentProfile",
       profileId: "fake-default",
       prompt: "user starts profile",
@@ -504,7 +508,7 @@ test("A2A: dispatcher role policy governs agentProfile launch; user path works",
     const boxId2 = (box2.result as { id: string }).id;
     const noDisp = await rpc(svc, "task.dispatch", {
       workspaceId,
-      boxId: boxId2,
+      nodeIds: [boxId2],
       assigneeKind: "agentProfile",
       profileId: "fake-default",
       prompt: "no dispatcher",
@@ -533,7 +537,7 @@ test("A2A: dispatcher role policy governs agentProfile launch; user path works",
     const boxId3 = (box3.result as { id: string }).id;
     const orch = await rpc(svc, "task.dispatch", {
       workspaceId,
-      boxId: boxId3,
+      nodeIds: [boxId3],
       assigneeKind: "agentProfile",
       profileId: "fake-default",
       prompt: "orch dispatch",
@@ -566,7 +570,7 @@ test("A2A: dispatcher role policy governs agentProfile launch; user path works",
     const boxId3b = (box3b.result as { id: string }).id;
     const orchDenied = await rpc(svc, "task.dispatch", {
       workspaceId,
-      boxId: boxId3b,
+      nodeIds: [boxId3b],
       assigneeKind: "agentProfile",
       profileId: "fake-default",
       prompt: "orch deny whitelist",
@@ -594,7 +598,7 @@ test("A2A: dispatcher role policy governs agentProfile launch; user path works",
     const boxId4 = (box4.result as { id: string }).id;
     const execDisp = await rpc(svc, "task.dispatch", {
       workspaceId,
-      boxId: boxId4,
+      nodeIds: [boxId4],
       assigneeKind: "agentProfile",
       profileId: "fake-default",
       prompt: "executor dispatch",
@@ -639,7 +643,7 @@ test("role deletion not blocked by same-named profile session", async () => {
       workspaceId: wid,
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      boxId,
+      nodeIds: [boxId],
       assigneeKind: "agentProfile",
       profileId: "fake-default",
       prompt: "profile session",
@@ -672,7 +676,7 @@ test("task discovery and retention see nested profile tasks", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       assigneeKind: "agentProfile",
       profileId: "fake-default",
       prompt: "discover me",
@@ -721,7 +725,7 @@ test("claim projects assignee=profileId; delivery submitter is profileId", async
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       assigneeKind: "agentProfile",
       profileId: "fake-default",
       prompt: "claim and deliver",
@@ -777,7 +781,7 @@ test("invalid/missing assignee combinations fail loud", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       prompt: "no role",
     });
     assert.ok(missingRole.error);
@@ -787,7 +791,7 @@ test("invalid/missing assignee combinations fail loud", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       assigneeKind: "agentProfile",
       prompt: "no profile",
     });
@@ -799,7 +803,7 @@ test("invalid/missing assignee combinations fail loud", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       assigneeKind: "agentProfile",
       profileId: "missing-profile",
       prompt: "unknown profile",
@@ -812,7 +816,7 @@ test("invalid/missing assignee combinations fail loud", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       assigneeKind: "agentProfile",
       profileId: "fake-default",
       role: "executor",
@@ -826,7 +830,7 @@ test("invalid/missing assignee combinations fail loud", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       assigneeKind: "wizard",
       role: "executor",
       prompt: "bad kind",
@@ -839,7 +843,7 @@ test("invalid/missing assignee combinations fail loud", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       role: "executor",
       prompt: "role ok",
     });
@@ -867,7 +871,7 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
       const { workspaceId, boxId } = await mountWorkItem(svc, ws, "combo-deny");
       const denied = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         assigneeKind: "agentProfile",
         profileId: "fake-default",
         prompt: "combined deny",
@@ -907,7 +911,7 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         assigneeKind: "agentProfile",
         profileId: "fake-default",
         prompt: "re-dispatch after deny compensate",
@@ -927,7 +931,7 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
       const { workspaceId, boxId } = await mountWorkItem(svc, ws, "combo-ask");
       const ask = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         assigneeKind: "agentProfile",
         profileId: "fake-default",
         prompt: "combined ask",
@@ -976,7 +980,7 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         assigneeKind: "agentProfile",
         profileId: "missing-profile-xyz",
         prompt: "unknown profile combined",
@@ -990,7 +994,7 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         role: "executor",
         prompt: "start without profileId",
         startSession: true,
@@ -1033,7 +1037,7 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         assigneeKind: "agentProfile",
         profileId: "fake-launch-fail",
         prompt: "combined launch fail",
@@ -1074,7 +1078,7 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         assigneeKind: "agentProfile",
         profileId: FAKE_DEFAULT_PROFILE_ID,
         prompt: "combined success",
@@ -1116,7 +1120,7 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
       const { workspaceId, boxId } = await mountWorkItem(svc, ws, "separate-deny");
       const d = await rpc(svc, "task.dispatch", {
         workspaceId,
-        boxId,
+        nodeIds: [boxId],
         assigneeKind: "agentProfile",
         profileId: "fake-default",
         prompt: "separate path deny",
@@ -1180,7 +1184,7 @@ test("combined dispatch compensation skips when Session binds concurrently", asy
 
     const denied = await rpc(svc, "task.dispatch", {
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       assigneeKind: "agentProfile",
       profileId: "fake-default",
       prompt: "combined race bind-before-compensate",
@@ -1235,7 +1239,7 @@ test("missing assigneeKind on historical envelope reads as role", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      boxId,
+      nodeIds: [boxId],
       role: "executor",
       prompt: "legacy strip",
     });
