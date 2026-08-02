@@ -553,7 +553,7 @@ test("ServiceClient.taskAccept passes outputNodeIds", async () => {
     const output = await createNote(svc, workspaceId, { name: "out-cli", type: "output" });
     const { taskPath } = await readyDeliveryTask(svc, workspaceId, source.nodeId);
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
-    const result = (await client.taskAccept(workspaceId, taskPath, "user", undefined, {
+    const result = (await client.taskAccept(workspaceId, taskPath, "user", {
       outputNodeIds: [output.nodeId],
     })) as { state: string; boundOutputIds: string[] };
     assert.equal(result.state, "accepted");

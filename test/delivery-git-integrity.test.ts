@@ -323,6 +323,67 @@ test("concurrent accept same targetHead: one integrates; other TARGET_MOVED rema
   });
 });
 
+test("task.accept rejects caller commit overrides without mutating ready Delivery", async () => {
+  const ws = await makeWorkspace("accept-immutable-commits");
+  await initGitOnWorkspace(ws);
+
+  await withService(async (svc) => {
+    const task = await claimRunningWithBase(svc, ws, {
+      label: "immutable",
+      prompt: "accept immutable Delivery commits",
+    });
+    const commitA = await taskCommitOnLane(
+      task.worktree,
+      "immutable-a.txt",
+      "a\n",
+      "immutable a"
+    );
+    const delivered = await rpc(svc, "task.deliver", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      summary: "ready A",
+      commits: [commitA],
+    });
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    const deliveryPath = (
+      delivered.result as { delivery: { path: string; commits: string[] } }
+    ).delivery.path;
+    assert.deepEqual(
+      (delivered.result as { delivery: { commits: string[] } }).delivery.commits,
+      [commitA]
+    );
+
+    const taskFile = path.join(ws, ".tent", ...task.taskPath.split("/"));
+    const deliveryFile = path.join(ws, ".tent", ...deliveryPath.split("/"));
+    const beforeTask = await fs.readFile(taskFile);
+    const beforeDelivery = await fs.readFile(deliveryFile);
+    const beforeMain = (await git(ws, "rev-parse", "main")).trim();
+
+    for (const commits of [[], ["bbbbbbb"]]) {
+      const rejected = await rpc(svc, "task.accept", {
+        workspaceId: task.workspaceId,
+        taskPath: task.taskPath,
+        actor: "user",
+        commits,
+      });
+      assert.equal(rejected.error?.code, -32602);
+      assert.match(rejected.error?.message ?? "", /commits|unknown parameter/i);
+      assert.deepEqual(await fs.readFile(taskFile), beforeTask);
+      assert.deepEqual(await fs.readFile(deliveryFile), beforeDelivery);
+      assert.equal((await git(ws, "rev-parse", "main")).trim(), beforeMain);
+    }
+
+    const accepted = await rpc(svc, "task.accept", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      actor: "user",
+    });
+    assert.ok(!accepted.error, JSON.stringify(accepted.error));
+    assert.equal((accepted.result as { state: string }).state, "accepted");
+    assert.equal(await pathExists(path.join(ws, "immutable-a.txt")), true);
+  });
+});
+
 /**
  * Production path: two distinct Service workspaceId mounts whose roots are
  * different git worktrees of the same repository (shared git-common-dir) and

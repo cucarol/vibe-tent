@@ -45,6 +45,14 @@ export async function runTaskCommand(
         "tent task claim does not accept --session or --session-id; Session binding is owned by Tent host integration"
       );
     }
+    if (
+      sub === "accept" &&
+      Object.prototype.hasOwnProperty.call(flags, "commits")
+    ) {
+      return failUsage(
+        "tent task accept does not accept --commits; the ready Delivery is the sole commit source"
+      );
+    }
     const workspaceFlag = flags.workspace || globals.workspace;
     const attachOpts: CliAttachOptions = {
       dataDir: flags["data-dir"] || globals.dataDir,
@@ -313,15 +321,14 @@ export async function runTaskCommand(
         const taskPath = positionals[0];
         if (!taskPath || positionals.length > 1) {
           return failUsage(
-            "Usage: tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--outputs id,id] [--workspace <path>] [--json]"
+            "Usage: tent task accept <taskPath> --actor <user|role> [--outputs id,id] [--workspace <path>] [--json]"
           );
         }
         const actor = flags.actor || flags.by || process.env.TENT_ROLE;
         if (!actor) return failUsage("tent task accept requires --actor <user|role>");
-        const commits = parseCommitsFlag(flags.commits);
         const outputNodeIds =
           parseCommitsFlag(flags.outputs) ?? parseCommitsFlag(flags["output-ids"]);
-        const result = await client.taskAccept(workspaceId, taskPath, actor, commits, {
+        const result = await client.taskAccept(workspaceId, taskPath, actor, {
           outputNodeIds,
         });
         return okPrint(result, json, (r) => {
@@ -1068,7 +1075,7 @@ Commands:
       # --node           repeatable Node refs (at least one); sole source for contextCard.refs.nodes
       # parentActor/reviewer derive from the durable Role or local user boundary
       # Any flag outside this command's canonical grammar is rejected
-  tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--workspace <path>] [--json]
+  tent task accept <taskPath> --actor <user|role> [--outputs id,id] [--workspace <path>] [--json]
   tent task reject <taskPath> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]
   tent task interrupt <taskPath> [--workspace <path>] [--json]

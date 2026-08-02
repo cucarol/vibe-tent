@@ -819,14 +819,12 @@ export class ServiceClient {
     workspaceId: string,
     taskPath: string,
     actor: string,
-    commits?: string[],
     opts?: { outputNodeIds?: string[] }
   ) {
     return this.call("task.accept", {
       workspaceId,
       taskPath,
       actor,
-      commits,
       ...(opts?.outputNodeIds ? { outputNodeIds: opts.outputNodeIds } : {}),
     });
   }

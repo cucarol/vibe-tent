@@ -373,6 +373,34 @@ test("unknown flags and positional dispatch input fail before mutation", async (
   assert.equal(calls.length, 0);
 });
 
+test("task accept rejects --commits before workspace or client access", async () => {
+  const accessed: string[] = [];
+  const client = new Proxy(
+    {},
+    {
+      get(_target, property) {
+        accessed.push(String(property));
+        return async () => {
+          throw new Error("client must not be called");
+        };
+      },
+    }
+  );
+  const result = await runTaskCommand(
+    "accept",
+    ["temp/规划/tasks/task-example.md", "--actor", "user", "--commits", "abc1234"],
+    { client: client as never, cwd: "C:\\path-that-must-not-be-read" }
+  );
+  assert.notEqual(result.exitCode, 0);
+  assert.match(result.stderr, /does not accept --commits/);
+  assert.deepEqual(accessed, []);
+  const acceptUsage = taskHelpText()
+    .split("\n")
+    .find((line) => line.includes("tent task accept"));
+  assert.ok(acceptUsage);
+  assert.doesNotMatch(acceptUsage!, /--commits/);
+});
+
 test("missing --target / --node / --prompt and invalid target fail loud", async () => {
   const cwd = await makeFakeTentCwd();
   const { client, calls } = capturingDispatchClient();

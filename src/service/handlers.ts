@@ -5489,14 +5489,18 @@ async function taskRequestReviewRpc(ctx: HandlerContext, p: Record<string, unkno
 }
 
 async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  assertAllowedParams(
+    p,
+    new Set(["workspaceId", "taskPath", "actor", "outputNodeIds"]),
+    "task.accept"
+  );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
   const actor = requireString(p, "actor");
-  const commits = optionalStringArray(p, "commits");
   const outputNodeIds = optionalStringArray(p, "outputNodeIds");
 
-  const acceptOptions = { actor, commits, outputNodeIds };
+  const acceptOptions = { actor, outputNodeIds };
   // Per-Task flight spans prepare → Git → finalize; MutationBus only around prepare/finalize.
   const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
     let prepared: Awaited<ReturnType<typeof prepareTaskAccept>>;

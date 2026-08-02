@@ -56,6 +56,7 @@ export type TransitionErrorCode =
   | "OUTCOME_REQUIRED"
   | "OUTCOME_NOT_DELIVERED"
   | "NO_ACTIVE_DELIVERY"
+  | "DELIVERY_CHANGED"
   | "TASK_NOT_ACTIVE"
   | "DELIVERY_NOT_READY"
   /** Compensating rollback after partial accept (Output bind + Delivery/Task) failed. */

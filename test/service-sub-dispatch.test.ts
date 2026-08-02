@@ -781,7 +781,6 @@ test("sub accept integrates commits into dispatcher worktree; main stays put", a
       workspaceId,
       taskPath,
       actor: "orchestrator",
-      commits: [commit],
     });
     assert.ok(!accepted.error, JSON.stringify(accepted.error));
 
@@ -1105,7 +1104,6 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
       workspaceId,
       taskPath: subTaskPath,
       actor: "orchestrator",
-      commits: [subCommit],
     });
     assert.ok(!subAccepted.error, JSON.stringify(subAccepted.error));
     assert.equal((subAccepted.result as { state: string }).state, "accepted");
@@ -1143,7 +1141,6 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
       workspaceId,
       taskPath: parentTaskPath,
       actor: "user",
-      commits: [parentCommit],
     });
     assert.ok(!parentAccepted.error, JSON.stringify(parentAccepted.error));
     assert.equal((parentAccepted.result as { state: string }).state, "accepted");

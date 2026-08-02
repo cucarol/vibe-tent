@@ -95,7 +95,6 @@ export interface TaskDeliverOptions {
 
 export interface TaskAcceptOptions {
   actor: string;
-  commits?: string[];
   integrate?: (commits: string[]) => Promise<void>;
   /**
    * Optional Output Node ids to bind to the accepted Delivery (`deliveryId` FM).
@@ -374,11 +373,10 @@ export async function prepareTaskAccept(
       const tent = await loadTent(env.fs);
       validateOutputBindingsForAccept(tent, options.outputNodeIds, delivery.id);
     }
-    const commits = options.commits ?? delivery.commits;
     return {
       deliveryId: delivery.id,
       deliveryPath: delivery.path,
-      commits: [...commits],
+      commits: [...delivery.commits],
     };
   });
 }
@@ -401,6 +399,12 @@ export async function finalizeTaskAccept(
       throw new TaskLifecycleError(
         "NO_ACTIVE_DELIVERY",
         "Ready delivery changed during integrate; refusing accept."
+      );
+    }
+    if (!exactStringListEqual(delivery.commits, prepared.commits)) {
+      throw new TaskLifecycleError(
+        "DELIVERY_CHANGED",
+        "Ready delivery commits changed during accept; refusing accept."
       );
     }
     assertReviewAuthority({
@@ -465,6 +469,16 @@ export async function finalizeTaskAccept(
       throw err;
     }
   });
+}
+
+function exactStringListEqual(
+  current: readonly string[],
+  prepared: readonly string[]
+): boolean {
+  return (
+    current.length === prepared.length &&
+    current.every((value, index) => value === prepared[index])
+  );
 }
 
 export async function taskAccept(

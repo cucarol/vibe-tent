@@ -4,9 +4,11 @@ import { NodeFs } from "../src/fs/node-fs.js";
 import { loadTent } from "../src/core/tree.js";
 import { dispatch } from "../src/core/ops.js";
 import { loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
-import { loadDeliveries } from "../src/core/delivery.js";
+import { loadDeliveries, writeDelivery } from "../src/core/delivery.js";
 import {
+  finalizeTaskAccept,
   findActiveTaskForNode,
+  prepareTaskAccept,
   taskAccept,
   taskCancel,
   taskClaim,
@@ -127,6 +129,48 @@ test("lifecycle: dispatch → claim → wait → resume → deliver → accept",
 
   assert.equal(await findActiveTaskForNode(e.fs, "cx-p1"), undefined);
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
+});
+
+test("lifecycle: finalize rejects a ready Delivery commit-list drift without mutation", async () => {
+  const dir = await makeTent();
+  const { e, result } = await dispatchOnFreeBox(dir);
+  await taskClaim(e as any, result.taskPath);
+  await taskDeliver(e as any, result.taskPath, {
+    summary: "ready",
+    commits: ["aaa1111"],
+  });
+
+  const prepared = await prepareTaskAccept(e as any, result.taskPath, { actor: "user" });
+  assert.deepEqual(prepared.commits, ["aaa1111"]);
+  const delivery = (await loadDeliveries(e.fs)).find((row) => row.id === prepared.deliveryId);
+  assert.ok(delivery);
+  delivery.commits = ["bbb2222"];
+  await writeDelivery(e.fs, delivery);
+
+  await assert.rejects(
+    () => finalizeTaskAccept(e as any, result.taskPath, { actor: "user" }, prepared),
+    (err: unknown) => err instanceof TaskLifecycleError && err.code === "DELIVERY_CHANGED"
+  );
+  const task = await loadTaskEnvelope(e.fs, result.taskPath);
+  assert.equal(task.state, "delivered");
+  const current = (await loadDeliveries(e.fs)).find((row) => row.id === prepared.deliveryId);
+  assert.equal(current?.status, "ready");
+  assert.deepEqual(current?.commits, ["bbb2222"]);
+});
+
+test("lifecycle: zero-commit ready Delivery remains legal to accept", async () => {
+  const dir = await makeTent();
+  const { e, result } = await dispatchOnFreeBox(dir);
+  await taskClaim(e as any, result.taskPath);
+  await taskDeliver(e as any, result.taskPath, {
+    summary: "non-code result",
+    commits: [],
+  });
+
+  const accepted = await taskAccept(e as any, result.taskPath, { actor: "user" });
+  assert.equal(accepted.task.state, "accepted");
+  assert.equal(accepted.delivery.status, "accepted");
+  assert.deepEqual(accepted.delivery.commits, []);
 });
 
 test("lifecycle: self-accept is hard-forbidden", async () => {
