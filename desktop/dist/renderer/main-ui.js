@@ -7,9 +7,7 @@ var __export = (target, all2) => {
 // src/desktop/workbench/collaboration-ui.ts
 var ACTIONABLE_TASK_STATES = [
   "queued",
-  "pending",
   "running",
-  "taken",
   "waiting",
   "delivered",
   "failed"
@@ -38,52 +36,37 @@ function listCoordinationTypeOptions(types) {
 function listRoleOptions(roles2) {
   return roles2.map((r) => ({ name: r.name, description: r.description })).sort((a, b) => a.name.localeCompare(b.name));
 }
-function listProfileOptions(profiles2, opts) {
-  const includeTest = opts?.includeTest === true;
-  return profiles2.filter((p) => includeTest || !p.testOnly).map((p) => {
-    const parts = [p.displayName || p.id, p.adapterId, p.model].filter(Boolean);
+function listRouteOptions(routes2) {
+  return routes2.map((route) => {
+    const parts = [route.displayName || route.routeId, route.adapterId, route.model].filter(Boolean);
     return {
-      id: p.id,
-      adapterId: p.adapterId,
-      displayName: p.displayName || p.id,
-      model: p.model,
-      testOnly: p.testOnly,
+      routeId: route.routeId,
+      adapterId: route.adapterId,
+      displayName: route.displayName || route.routeId,
+      model: route.model,
       label: parts.join(" \xB7 ")
     };
-  }).sort((a, b) => {
-    if (a.testOnly !== b.testOnly) return a.testOnly ? 1 : -1;
-    return a.id.localeCompare(b.id);
-  });
+  }).sort((a, b) => a.routeId.localeCompare(b.routeId));
 }
-function pickDefaultProfileId(profiles2) {
-  const product = profiles2.filter((p) => !p.testOnly);
-  if (product.length === 1) return product[0].id;
-  const grok = product.find((p) => p.id === "grok-acp-default");
-  if (grok) return grok.id;
-  if (product.length > 0) return product[0].id;
-  return profiles2[0]?.id ?? null;
+function pickDefaultRouteId(routes2) {
+  return routes2[0]?.routeId ?? null;
 }
-function buildStartSessionPayload(taskPath, profileId) {
+function buildStartSessionPayload(taskPath) {
   const path = taskPath.trim();
   if (!path) {
     return { ok: false, reason: "\u7F3A\u5C11\u4EFB\u52A1\u8DEF\u5F84\u3002" };
-  }
-  const profile = profileId.trim();
-  if (!profile) {
-    return { ok: false, reason: "\u8BF7\u9009\u62E9 machine-local agent profile\u3002" };
   }
   return {
     ok: true,
     payload: {
       taskPath: path,
-      profileId: profile,
       callerKind: "user"
     }
   };
 }
 function validateDispatchForm(form) {
-  if (!form.boxId) {
-    return { ok: false, reason: "\u8BF7\u5148\u9009\u4E2D\u4E00\u4E2A\u534F\u4F5C\u6846\u3002", payload: null };
+  if (!form.nodeId) {
+    return { ok: false, reason: "\u8BF7\u5148\u9009\u4E2D\u4E00\u4E2A\u8282\u70B9\u3002", payload: null };
   }
   if (!form.coordination) {
     return {
@@ -114,8 +97,9 @@ function validateDispatchForm(form) {
     ok: true,
     reason: null,
     payload: {
-      boxId: form.boxId,
-      role,
+      nodeId: form.nodeId,
+      assigneeKind: "role",
+      assigneeId: role,
       prompt,
       // Desktop form is user-direct; Role-dispatched child uses CLI/Service explicit actors.
       parentActor: { kind: "user", id: "user" },
@@ -141,14 +125,12 @@ function buildRejectPayload(taskPath, reason, actor = "user") {
     }
   };
 }
-function taskStateLabel(state2, legacyStatus) {
-  const s = state2 || legacyStatus || "";
+function taskStateLabel(state2) {
+  const s = state2;
   switch (s) {
     case "queued":
-    case "pending":
       return "\u6392\u961F\u4E2D";
     case "running":
-    case "taken":
       return "\u6267\u884C\u4E2D";
     case "waiting":
       return "\u7B49\u5F85\u4E2D";
@@ -229,7 +211,7 @@ function buildTaskReviewItems(tasks, deliveries2 = [], sessions2 = []) {
     if (s.lastTaskId) sessionByTaskId.set(s.lastTaskId, s);
   }
   return tasks.map((task) => {
-    const state2 = task.state || task.status;
+    const state2 = task.state;
     let delivery;
     if (task.activeDeliveryId) {
       delivery = byId.get(task.activeDeliveryId);
@@ -247,20 +229,20 @@ function buildTaskReviewItems(tasks, deliveries2 = [], sessions2 = []) {
     }
     const commits = delivery?.commits ?? [];
     const deliverySummary = delivery?.summary;
-    const label = taskStateLabel(state2, task.status);
+    const label = taskStateLabel(state2);
     const sessLabel = sessionStateLabel(session?.state);
     const promptBit = task.prompt ? truncate(task.prompt, 48) : "";
     const summaryLine = [
       label,
       sessLabel ? `\u4F1A\u8BDD${sessLabel}` : null,
-      task.role,
+      `${task.assigneeKind}:${task.assigneeId}`,
       deliverySummary ? truncate(deliverySummary, 64) : promptBit || null
     ].filter(Boolean).join(" \xB7 ");
     return {
       path: task.path,
       id: task.id,
-      role: task.role,
-      status: task.status,
+      assigneeKind: task.assigneeKind,
+      assigneeId: task.assigneeId,
       state: state2,
       referencedNodeIds: task.referencedNodeIds ?? [],
       prompt: task.prompt,
@@ -268,7 +250,7 @@ function buildTaskReviewItems(tasks, deliveries2 = [], sessions2 = []) {
       sessionId: task.sessionId ?? session?.sessionId,
       sessionState: session?.state,
       sessionAlive: session?.alive,
-      sessionProfileId: session?.profileId,
+      sessionRouteId: session?.routeId,
       deliverySummary,
       commits,
       canAcceptOrReject: state2 === "delivered",
@@ -286,8 +268,8 @@ function truncate(text3, max) {
   if (t.length <= max) return t;
   return t.slice(0, max - 1) + "\u2026";
 }
-function suggestBoxName(typeName, now = Date.now()) {
-  const safe = typeName.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "box";
+function suggestNodeName(typeName, now = Date.now()) {
+  const safe = typeName.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "node";
   return `${safe}-${now.toString(36).slice(-4)}`;
 }
 
@@ -5154,12 +5136,12 @@ function outLinkFromHref(url, rawLabel) {
   if (!href) return null;
   const label = rawLabel.replace(/\s+/g, " ").trim() || void 0;
   if (ARTIFACT_SCHEME_RE.test(href) || isExternalHref(href)) {
-    return { raw: href, kind: "artifact", label, conceptTarget: href };
+    return { raw: href, kind: "artifact", label, targetPath: href };
   }
   if (isPureAnchor(href)) return null;
   const { pathPart, fragment } = splitHref(href);
   if (!pathPart || isAttachmentPath(pathPart)) return null;
-  return { raw: href, kind: "md", label, fragment, conceptTarget: pathPart };
+  return { raw: href, kind: "md", label, fragment, targetPath: pathPart };
 }
 function collectDefinitions(tree2) {
   const definitions = /* @__PURE__ */ new Map();
@@ -5225,7 +5207,7 @@ function tryParseWikiLink(text3, start) {
     return { link: null, next };
   }
   return {
-    link: { raw: rawTarget, kind: "wiki", label, fragment, blockRef, conceptTarget: target },
+    link: { raw: rawTarget, kind: "wiki", label, fragment, blockRef, targetPath: target },
     next
   };
 }
@@ -5241,7 +5223,7 @@ function toPublicOutLink(link) {
     raw: link.raw,
     kind: link.kind,
     label: link.label,
-    targetCx: link.targetCx,
+    targetNodeId: link.targetNodeId,
     targetPath: link.targetPath
   };
 }
@@ -5475,8 +5457,6 @@ function applyLinksFromOriginal(text3, options) {
 
 // src/desktop/workbench/pending-interactions.ts
 var PENDING_INTERACTION_EVENT_TYPES = [
-  "a2a.ask",
-  "a2a.resolved",
   "toolApproval.pending",
   "toolApproval.resolved",
   "userAsk.pending",
@@ -5495,8 +5475,6 @@ function isPendingInteractionEventType(type) {
 var TASK_PROJECTION_EVENT_TYPES = [
   "task.state",
   "delivery.updated",
-  "a2a.ask",
-  "a2a.resolved",
   "userAsk.pending",
   "userAsk.resolved",
   "toolApproval.pending",
@@ -5545,25 +5523,6 @@ function normalizeUserAsk(raw) {
     role: str(raw.role),
     question,
     choices,
-    createdAt: strOrEmpty(raw.createdAt)
-  };
-}
-function normalizeA2AApproval(raw) {
-  if (!isRecord(raw)) return null;
-  const id = str(raw.id);
-  const taskPath = str(raw.taskPath);
-  const role = str(raw.role);
-  const profileId = str(raw.profileId);
-  if (!id || !taskPath || !role || !profileId) return null;
-  return {
-    kind: "a2a",
-    id,
-    taskPath,
-    taskId: str(raw.taskId),
-    role,
-    profileId,
-    policy: str(raw.policy),
-    callerKind: str(raw.callerKind),
     createdAt: strOrEmpty(raw.createdAt)
   };
 }
@@ -5631,7 +5590,7 @@ function normalizeProposal(raw) {
   return {
     kind: "proposal",
     path,
-    boxId: strOrEmpty(raw.boxId),
+    nodeId: strOrEmpty(raw.nodeId),
     role: strOrEmpty(raw.role),
     status,
     body: strOrEmpty(raw.body),
@@ -5641,10 +5600,6 @@ function normalizeProposal(raw) {
 function normalizeUserAskList(result) {
   const list2 = isRecord(result) && Array.isArray(result.asks) ? result.asks : [];
   return list2.map(normalizeUserAsk).filter((x) => !!x);
-}
-function normalizeA2AList(result) {
-  const list2 = isRecord(result) && Array.isArray(result.approvals) ? result.approvals : [];
-  return list2.map(normalizeA2AApproval).filter((x) => !!x);
 }
 function normalizeToolApprovalList(result) {
   const list2 = isRecord(result) && Array.isArray(result.approvals) ? result.approvals : [];
@@ -5659,7 +5614,7 @@ function normalizeProposalList(result) {
   return list2.map(normalizeProposal).filter((x) => !!x);
 }
 function pendingInteractionCount(parts) {
-  return (parts.userAsks?.length ?? 0) + (parts.a2aApprovals?.length ?? 0) + (parts.toolApprovals?.length ?? 0) + (parts.taskInputs?.length ?? 0) + (parts.proposals?.length ?? 0);
+  return (parts.userAsks?.length ?? 0) + (parts.toolApprovals?.length ?? 0) + (parts.taskInputs?.length ?? 0) + (parts.proposals?.length ?? 0);
 }
 function buildUserAskReplyPayload(askId, args) {
   const id = askId.trim();
@@ -5681,9 +5636,6 @@ function buildUserAskReplyPayload(askId, args) {
 }
 function buildUserAskDenyPayload(askId, actor = "user") {
   return { askId, actor };
-}
-function buildA2AResolvePayload(approvalId, decision, actor = "user") {
-  return { approvalId, decision, actor };
 }
 function buildToolApprovalResolvePayload(approvalId, allow, actor = "user") {
   return {
@@ -5865,87 +5817,68 @@ function setError(err) {
   showToast(msg, "error");
 }
 
-// src/desktop/workbench/box-projection.ts
-function isUsableTreeNode(n) {
-  if (n.invalid) return false;
-  if (n.archived || n.mode === "archived") return false;
-  if (typeof n.coordination === "boolean") return n.coordination;
-  return true;
+// src/desktop/workbench/node-collaboration.ts
+function isUsableTreeNode(node2) {
+  return !node2.invalid && !node2.archived && node2.mode !== "archived";
 }
-function boxStatusLabel(status) {
-  switch (status) {
-    case "doing":
-      return "\u8FDB\u884C\u4E2D";
-    case "done":
-      return "\u5B8C\u6210";
-    case "todo":
-      return "\u5F85\u529E";
-    default:
-      return status ? String(status) : "\u2014";
+function normalizeActiveTask(raw) {
+  if (!raw || typeof raw !== "object") throw new Error("Invalid node.collaboration activeTask.");
+  const record = raw;
+  const task = record.task;
+  if (!task || typeof task !== "object" || Array.isArray(task)) {
+    throw new Error("Invalid node.collaboration activeTask.task.");
   }
+  const taskRecord = task;
+  if (typeof taskRecord.id !== "string" || typeof taskRecord.state !== "string") {
+    throw new Error("Invalid node.collaboration active Task identity/state.");
+  }
+  return raw;
 }
-function normalizeBoxProjection(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const r = raw;
-  const workspaceId2 = typeof r.workspaceId === "string" ? r.workspaceId : "";
-  const boxId = typeof r.boxId === "string" && r.boxId || typeof r.id === "string" && r.id || "";
-  const statusRaw = r.status;
-  if (!workspaceId2 || !boxId) return null;
-  if (statusRaw !== "todo" && statusRaw !== "doing" && statusRaw !== "done") {
-    return null;
+function normalizeNodeCollaboration(raw) {
+  if (!raw || typeof raw !== "object") throw new Error("Invalid node.collaboration projection.");
+  const record = raw;
+  if (typeof record.workspaceId !== "string" || !record.workspaceId || typeof record.nodeId !== "string" || !record.nodeId || !(record.activeTask === null || record.activeTask && typeof record.activeTask === "object")) {
+    throw new Error("Invalid node.collaboration projection.");
   }
-  const out = {
-    workspaceId: workspaceId2,
-    boxId,
-    status: statusRaw
+  const activeTask = record.activeTask === null ? null : normalizeActiveTask(record.activeTask);
+  return {
+    workspaceId: record.workspaceId,
+    nodeId: record.nodeId,
+    activeTask
   };
-  if (typeof r.assignee === "string" && r.assignee.trim()) {
-    out.assignee = r.assignee.trim();
-  }
-  if (typeof r.activeTaskId === "string" && r.activeTaskId.trim()) {
-    out.activeTaskId = r.activeTaskId.trim();
-  }
-  return out;
 }
-function collectCoordinationBoxIds(nodes) {
+function collectUsableNodeIds(nodes) {
   const ids = [];
   const walk2 = (list2) => {
-    for (const n of list2) {
-      if (isUsableTreeNode(n) && n.id) ids.push(n.id);
-      if (n.children?.length) walk2(n.children);
+    for (const node2 of list2) {
+      if (isUsableTreeNode(node2) && node2.nodeId) ids.push(node2.nodeId);
+      if (node2.children?.length) walk2(node2.children);
     }
   };
   walk2(nodes);
   return ids;
 }
-function applyBoxProjectionsToTree(nodes, byBoxId) {
-  return nodes.map((n) => applyOne(n, byBoxId));
+function applyNodeCollaborationsToTree(nodes, byNodeId) {
+  return nodes.map((node2) => applyOne(node2, byNodeId));
 }
-function applyOne(node2, byBoxId) {
-  const children = node2.children?.length ? node2.children.map((c) => applyOne(c, byBoxId)) : node2.children;
-  if (!isUsableTreeNode(node2)) {
-    const cleared = { ...node2, children };
-    delete cleared.status;
-    delete cleared.assignee;
-    return cleared;
-  }
-  const proj = byBoxId.get(node2.id);
-  if (!proj) {
-    const cleared = { ...node2, children };
-    delete cleared.status;
-    delete cleared.assignee;
-    return cleared;
-  }
-  const next = { ...node2, children, status: proj.status };
-  if (proj.assignee) next.assignee = proj.assignee;
-  else delete next.assignee;
+function applyOne(node2, byNodeId) {
+  const children = node2.children?.length ? node2.children.map((child) => applyOne(child, byNodeId)) : node2.children;
+  const next = { ...node2, children };
+  delete next.status;
+  delete next.assignee;
+  if (!isUsableTreeNode(node2)) return next;
+  const active = byNodeId.get(node2.nodeId)?.activeTask?.task;
+  if (!active) return next;
+  next.status = "doing";
+  if (active.assigneeId) next.assignee = active.assigneeId;
   return next;
 }
-function boxProjectionSummaryLine(proj) {
-  if (!proj) return null;
-  const parts = [boxStatusLabel(proj.status)];
-  if (proj.assignee) parts.push(proj.assignee);
-  return parts.join(" \xB7 ");
+function nodeCollaborationSummaryLine(projection) {
+  if (!projection) return null;
+  if (!projection.activeTask) return "\u65E0\u6D3B\u52A8\u4EFB\u52A1";
+  const first = projection.activeTask.task;
+  const assignee = first?.assigneeId;
+  return `\u6D3B\u52A8\u4EFB\u52A1${assignee ? ` \xB7 ${assignee}` : ""}`;
 }
 
 // src/desktop/workbench/open-tabs.ts
@@ -6002,7 +5935,7 @@ var activeCx = null;
 var tree = [];
 var state = null;
 var workspaceId = null;
-var boxProjections = /* @__PURE__ */ new Map();
+var nodeCollaborations = /* @__PURE__ */ new Map();
 var activeBacklinks = [];
 var activeBacklinksError = null;
 var coordinationTypes = [];
@@ -6011,12 +5944,11 @@ var taskReview = [];
 var deliveries = [];
 var sessions = [];
 var userAsks = [];
-var a2aApprovals = [];
 var toolApprovals = [];
 var taskInputs = [];
 var proposals = [];
-var profiles = [];
-var selectedProfileId = null;
+var routes = [];
+var selectedRouteId = null;
 var createTypePick = "";
 var dispatchRole = "";
 var dispatchPrompt = "";
@@ -6039,11 +5971,11 @@ function setRoles(list2) {
 function setTaskReview(list2) {
   taskReview = list2;
 }
-function setProfiles(list2) {
-  profiles = list2;
+function setRoutes(list2) {
+  routes = list2;
 }
-function setSelectedProfileId(id) {
-  selectedProfileId = id;
+function setSelectedRouteId(id) {
+  selectedRouteId = id;
 }
 function setCreateTypePick(value) {
   createTypePick = value;
@@ -6054,23 +5986,22 @@ function setDispatchRole(value) {
 function setDispatchPrompt(value) {
   dispatchPrompt = value;
 }
-function findConcept(nodes, id) {
+function findNode(nodes, nodeId) {
   for (const node2 of nodes) {
-    if (node2.id === id) return node2;
-    const child = findConcept(node2.children || [], id);
+    if (node2.nodeId === nodeId) return node2;
+    const child = findNode(node2.children || [], nodeId);
     if (child) return child;
   }
   return void 0;
 }
 function actionableTasks() {
   return taskReview.filter(
-    (task) => isActionableTaskState(String(task.state || task.status || ""))
+    (task) => isActionableTaskState(task.state)
   );
 }
 function pendingInteractionCount2() {
   return pendingInteractionCount({
     userAsks,
-    a2aApprovals,
     toolApprovals,
     taskInputs,
     proposals
@@ -6079,7 +6010,7 @@ function pendingInteractionCount2() {
 function tasksForActiveNode(states) {
   if (!activeCx) return [];
   return actionableTasks().filter((task) => {
-    const st = String(task.state || task.status || "");
+    const st = task.state;
     return task.referencedNodeIds.includes(activeCx) && (!states || states.includes(st));
   });
 }
@@ -6108,7 +6039,7 @@ function clearLocalDocumentSession() {
   localTabs.clear();
   activeCx = null;
   tree = [];
-  boxProjections.clear();
+  nodeCollaborations.clear();
   activeBacklinks = [];
   activeBacklinksError = null;
 }
@@ -6120,15 +6051,15 @@ function setWorkspaceId(id) {
 async function reloadTree() {
   if (!workspaceId) return;
   const result = await window.tentDesktop.rpc("docs.list", { workspaceId });
-  const raw = (result.concepts || []).map(stripListCollabFields);
+  const raw = (result.nodes || []).map(stripListCollabFields);
   tree = raw;
   for (const [id, tab] of localTabs) {
-    const concept = findConcept(tree, id);
-    if (concept?.mode) tab.nodeMode = concept.mode;
-    if (concept?.name) tab.name = concept.name;
-    if (concept?.path) tab.path = concept.path;
+    const node2 = findNode(tree, id);
+    if (node2?.mode) tab.nodeMode = node2.mode;
+    if (node2?.name) tab.name = node2.name;
+    if (node2?.path) tab.path = node2.path;
   }
-  await reloadBoxProjections();
+  await reloadNodeCollaborations();
   host?.renderTree();
 }
 function stripListCollabFields(node2) {
@@ -6145,32 +6076,32 @@ function stripListCollabFields(node2) {
     children: children?.map(stripListCollabFields)
   };
 }
-async function reloadBoxProjections() {
+async function reloadNodeCollaborations() {
   if (!workspaceId) {
-    boxProjections.clear();
+    nodeCollaborations.clear();
     return;
   }
-  const ids = collectCoordinationBoxIds(tree);
+  const ids = collectUsableNodeIds(tree);
   if (ids.length === 0) {
-    boxProjections.clear();
-    tree = applyBoxProjectionsToTree(tree, boxProjections);
+    nodeCollaborations.clear();
+    tree = applyNodeCollaborationsToTree(tree, nodeCollaborations);
     return;
   }
-  const results = await Promise.all(
-    ids.map(
-      (id) => window.tentDesktop.rpc("box.projection", { workspaceId, id }).then((raw) => normalizeBoxProjection(raw)).catch(() => null)
-    )
-  );
-  boxProjections.clear();
+  const batch = await window.tentDesktop.rpc("node.collaborations", {
+    workspaceId,
+    nodeIds: ids
+  });
+  const results = batch.items.map((item) => normalizeNodeCollaboration(item));
+  nodeCollaborations.clear();
   for (const p of results) {
-    if (p) boxProjections.set(p.boxId, p);
+    nodeCollaborations.set(p.nodeId, p);
   }
-  tree = applyBoxProjectionsToTree(tree, boxProjections);
+  tree = applyNodeCollaborationsToTree(tree, nodeCollaborations);
   host?.renderMeta?.();
 }
-function boxProjectionFor(cx) {
+function nodeCollaborationFor(cx) {
   if (!cx) return null;
-  return boxProjections.get(cx) ?? null;
+  return nodeCollaborations.get(cx) ?? null;
 }
 async function reloadActiveBacklinks() {
   if (!workspaceId || !activeCx) {
@@ -6182,16 +6113,16 @@ async function reloadActiveBacklinks() {
   try {
     const result = await window.tentDesktop.rpc("docs.backlinks", {
       workspaceId,
-      id: activeCx
+      nodeId: activeCx
     });
     const hits = [];
     for (const h of result.backlinks || []) {
-      const cx = h.fromCx || h.cx || h.id || "";
+      const cx = h.fromNodeId || "";
       if (!cx) continue;
       const row = {
-        cx,
-        name: h.fromName || h.name || cx,
-        path: h.fromPath || h.path || ""
+        nodeId: cx,
+        name: h.fromName || cx,
+        path: h.fromPath || ""
       };
       if (typeof h.raw === "string" && h.raw) row.context = h.raw;
       hits.push(row);
@@ -6246,9 +6177,8 @@ async function reloadTasks() {
 async function reloadPendingInteractions() {
   if (!workspaceId) return;
   try {
-    const [askResult, a2aResult, toolResult, proposalResult] = await Promise.all([
+    const [askResult, toolResult, proposalResult] = await Promise.all([
       window.tentDesktop.rpc("userAsk.listPending", { workspaceId }),
-      window.tentDesktop.rpc("a2a.listPending", { workspaceId }),
       window.tentDesktop.rpc("toolApproval.listPending", { workspaceId }),
       window.tentDesktop.rpc("proposal.list", {
         workspaceId,
@@ -6256,7 +6186,6 @@ async function reloadPendingInteractions() {
       })
     ]);
     userAsks = normalizeUserAskList(askResult);
-    a2aApprovals = normalizeA2AList(a2aResult);
     toolApprovals = normalizeToolApprovalList(toolResult);
     proposals = normalizeProposalList(proposalResult);
     const paths = collectTaskPathsForInputPoll();
@@ -6289,9 +6218,6 @@ function collectTaskPathsForInputPoll() {
   for (const ask of userAsks) {
     if (ask.taskPath) paths.add(ask.taskPath);
   }
-  for (const a of a2aApprovals) {
-    if (a.taskPath) paths.add(a.taskPath);
-  }
   for (const t of toolApprovals) {
     if (t.taskPath) paths.add(t.taskPath);
   }
@@ -6299,13 +6225,19 @@ function collectTaskPathsForInputPoll() {
 }
 async function onServiceEvent(type) {
   if (!workspaceId) return;
+  const reloadNodeNeeded = type === "node.changed";
   const reloadTasksNeeded = isTaskProjectionEventType(type);
   const reloadPendingNeeded = isPendingInteractionEventType(type);
-  if (!reloadTasksNeeded && !reloadPendingNeeded) return;
+  if (!reloadNodeNeeded && !reloadTasksNeeded && !reloadPendingNeeded) return;
   try {
+    if (reloadNodeNeeded) {
+      await reloadTree();
+      if (activeCx && host?.openNode) await host.openNode(activeCx);
+      await reloadActiveBacklinks();
+    }
     if (reloadTasksNeeded) {
       await reloadTasks();
-      await reloadBoxProjections();
+      await reloadNodeCollaborations();
       host?.renderTree();
     }
     if (reloadPendingNeeded) await reloadPendingInteractions();
@@ -6313,17 +6245,17 @@ async function onServiceEvent(type) {
     setError(err);
   }
 }
-async function reloadProfiles() {
+async function reloadRoutes() {
   try {
-    const result = await window.tentDesktop.rpc("profile.list", {});
-    profiles = listProfileOptions(result.profiles || []);
-    if (!selectedProfileId || !profiles.some((p) => p.id === selectedProfileId)) {
-      selectedProfileId = pickDefaultProfileId(profiles);
+    const result = await window.tentDesktop.rpc("route.list", {});
+    routes = listRouteOptions(result.routes || []);
+    if (!selectedRouteId || !routes.some((route) => route.routeId === selectedRouteId)) {
+      selectedRouteId = pickDefaultRouteId(routes);
     }
     host?.renderTasks();
   } catch (err) {
-    profiles = [];
-    selectedProfileId = null;
+    routes = [];
+    selectedRouteId = null;
     setError(err);
   }
 }
@@ -6374,7 +6306,7 @@ function iconBtnHtml(opts) {
   return `<button type="button" class="${cls}"${id}${title}${aria}${expanded}${disabled}${attrs}>${opts.icon}</button>`;
 }
 function documentTabHtml(opts) {
-  const cx = escapeHtml(opts.cx);
+  const cx = escapeHtml(opts.nodeId);
   const name = escapeHtml(opts.name);
   const dirtyMark = opts.dirty ? " \xB7" : "";
   const closeLabel = `\u5173\u95ED ${opts.name}`;
@@ -6414,14 +6346,14 @@ function renderMeta() {
     return;
   }
   el.meta.classList.remove("muted");
-  const proj = tab.coordination ? boxProjectionFor(tab.cx) : null;
+  const proj = tab.coordination ? nodeCollaborationFor(tab.nodeId) : null;
   const modeLabel = tab.nodeMode === "archived" ? "\u5C01\u5B58" : "\u5F00\u653E";
-  const collabLine = boxProjectionSummaryLine(proj);
+  const collabLine = nodeCollaborationSummaryLine(proj);
   const oneLine = tab.coordination ? collabLine ? `${escapeHtml(tab.type)} \xB7 ${escapeHtml(collabLine)} \xB7 ${modeLabel}` : `${escapeHtml(tab.type)} \xB7 ${modeLabel}` : `${escapeHtml(tab.type)} \xB7 ${modeLabel}`;
   const renameDisabled = tab.nodeMode === "archived";
-  const projDl = tab.coordination && proj ? `<dt>\u72B6\u6001</dt><dd>${escapeHtml(boxStatusLabel(proj.status))}</dd>
-        <dt>\u7ECF\u529E</dt><dd>${proj.assignee ? escapeHtml(proj.assignee) : "\u2014"}</dd>
-        <dt>\u4EFB\u52A1</dt><dd>${proj.activeTaskId ? `<code title="${escapeHtml(proj.activeTaskId)}">${escapeHtml(proj.activeTaskId)}</code>` : "\u2014"}</dd>` : tab.coordination ? `<dt>\u72B6\u6001</dt><dd class="muted">\u6295\u5F71\u672A\u52A0\u8F7D</dd>` : "";
+  const projDl = tab.coordination && proj ? `<dt>\u6D3B\u52A8\u4EFB\u52A1</dt><dd>${proj.activeTask ? "1" : "0"}</dd>
+        <dt>\u7ECF\u529E</dt><dd>${proj.activeTask?.task.assigneeId ?? "\u2014"}</dd>
+        <dt>\u4EFB\u52A1</dt><dd>${proj.activeTask?.task.id ? `<code title="${escapeHtml(proj.activeTask.task.id)}">${escapeHtml(proj.activeTask.task.id)}</code>` : "\u2014"}</dd>` : tab.coordination ? `<dt>\u72B6\u6001</dt><dd class="muted">\u6295\u5F71\u672A\u52A0\u8F7D</dd>` : "";
   el.meta.innerHTML = `
     <div class="meta-name">${escapeHtml(tab.name)}</div>
     <div class="meta-line muted">${oneLine}</div>
@@ -6449,7 +6381,7 @@ function renderMeta() {
       <dl>
         <dt>\u7C7B\u578B</dt><dd>${escapeHtml(tab.type)}</dd>
         <dt>\u8DEF\u5F84</dt><dd title="${escapeHtml(tab.path)}">${escapeHtml(tab.path)}</dd>
-        <dt>\u6807\u8BC6</dt><dd><code title="\u4E0D\u53EF\u53D8 id">${escapeHtml(tab.cx)}</code></dd>
+        <dt>\u6807\u8BC6</dt><dd><code title="\u4E0D\u53EF\u53D8 id">${escapeHtml(tab.nodeId)}</code></dd>
         ${projDl}
       </dl>
     </details>`;
@@ -6473,13 +6405,13 @@ function renderBacklinks() {
     return;
   }
   hostEl.innerHTML = `<ul class="card-list backlink-list" aria-label="\u53CD\u5411\u94FE\u63A5">${activeBacklinks.map(
-    (h) => `<li class="card-item" data-open="${escapeHtml(h.cx)}" role="button" tabindex="0">
+    (h) => `<li class="card-item" data-open="${escapeHtml(h.nodeId)}" role="button" tabindex="0">
           <strong>${escapeHtml(h.name)}</strong>
           ${h.context ? `<div class="muted">${escapeHtml(h.context)}</div>` : h.path ? `<div class="muted">${escapeHtml(h.path)}</div>` : ""}
         </li>`
   ).join("")}</ul>`;
   hostEl.querySelectorAll("[data-open]").forEach((node2) => {
-    const open = () => void host2?.openConcept?.(node2.getAttribute("data-open"));
+    const open = () => void host2?.openNode?.(node2.getAttribute("data-open"));
     node2.addEventListener("click", open);
     node2.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter" || ev.key === " ") {
@@ -6497,7 +6429,7 @@ async function onRenameNode() {
   try {
     const result = await window.tentDesktop.rpc("docs.rename", {
       workspaceId,
-      id: tab.cx,
+      nodeId: tab.nodeId,
       newName,
       actor: "user"
     });
@@ -6521,13 +6453,13 @@ async function onSetNodeMode() {
   }
   if (mode === "archived" && !window.confirm(`\u5C01\u5B58\u300C${tab.name}\u300D\u53CA\u5176\u5B50\u6811\uFF1F`)) return;
   try {
-    await window.tentDesktop.rpc("docs.setMode", { workspaceId, id: tab.cx, mode });
+    await window.tentDesktop.rpc("docs.setMode", { workspaceId, nodeId: tab.nodeId, mode });
     tab.nodeMode = mode;
     el.status.textContent = mode === "archived" ? `\u5DF2\u5C01\u5B58\u300C${tab.name}\u300D` : "\u8BBF\u95EE\u6A21\u5F0F\u5DF2\u66F4\u65B0";
     if (mode === "archived") {
       const order = [...localTabs.keys()];
-      const result = closeOpenTab(order, tab.cx, activeCx);
-      localTabs.delete(tab.cx);
+      const result = closeOpenTab(order, tab.nodeId, activeCx);
+      localTabs.delete(tab.nodeId);
       setActiveCx(result.activeCx);
     }
     await reloadTree();
@@ -6564,15 +6496,6 @@ function renderPendingInteractions() {
       <button type="button" class="btn btn-ghost" data-task-stop="${escapeHtml(ask.taskPath)}">\u4E2D\u65AD\u4EFB\u52A1</button></div>
     </article>`;
   }).join("");
-  const a2a = a2aApprovals.map(
-    (item) => `<article class="interaction-item" data-pending-kind="a2a">
-    <div class="interaction-kicker">A2A \xB7 ${escapeHtml(item.role)}</div>
-    <div class="interaction-title">\u8BF7\u6C42\u542F\u52A8 ${escapeHtml(item.profileId)}</div>
-    <div class="muted interaction-note">${escapeHtml(item.taskPath)}</div>
-    <div class="interaction-actions"><button type="button" class="btn btn-primary" data-a2a-allow="${escapeHtml(item.id)}">\u5141\u8BB8\u4E00\u6B21</button>
-    <button type="button" class="btn btn-ghost" data-a2a-deny="${escapeHtml(item.id)}">\u62D2\u7EDD</button></div>
-  </article>`
-  ).join("");
   const tools = toolApprovals.map((item) => {
     const summary = item.paramsSummary || "";
     return `<article class="interaction-item" data-pending-kind="toolApproval">
@@ -6602,14 +6525,14 @@ function renderPendingInteractions() {
     return `<article class="interaction-item" data-proposal-path="${escapeHtml(p.path)}" data-pending-kind="proposal">
       <div class="interaction-kicker">PROPOSAL \xB7 ${escapeHtml(p.role || "Agent")}</div>
       <div class="interaction-title">${escapeHtml(preview || p.path)}</div>
-      <div class="muted interaction-note">${escapeHtml(p.boxId || "")} \xB7 ${escapeHtml(p.path)}</div>
+      <div class="muted interaction-note">${escapeHtml(p.nodeId || "")} \xB7 ${escapeHtml(p.path)}</div>
       <div class="interaction-actions">
         <button type="button" class="btn btn-primary" data-proposal-accept="${escapeHtml(p.path)}">\u91C7\u7EB3</button>
         <button type="button" class="btn btn-ghost" data-proposal-reject="${escapeHtml(p.path)}">\u9A73\u56DE</button>
       </div>
     </article>`;
   }).join("");
-  el.a2u.innerHTML = asks + a2a + tools + inputs + proposalItems;
+  el.a2u.innerHTML = asks + tools + inputs + proposalItems;
   el.a2u.querySelectorAll("[data-ask-reply]").forEach(
     (button) => button.addEventListener("click", () => void onReplyUserAsk(button.getAttribute("data-ask-reply")))
   );
@@ -6630,15 +6553,6 @@ function renderPendingInteractions() {
       "click",
       () => void onResolveProposal(button.getAttribute("data-proposal-reject"), "reject")
     )
-  );
-  el.a2u.querySelectorAll("[data-a2a-allow]").forEach(
-    (button) => button.addEventListener(
-      "click",
-      () => void onResolveA2A(button.getAttribute("data-a2a-allow"), "approve")
-    )
-  );
-  el.a2u.querySelectorAll("[data-a2a-deny]").forEach(
-    (button) => button.addEventListener("click", () => void onResolveA2A(button.getAttribute("data-a2a-deny"), "deny"))
   );
   el.a2u.querySelectorAll("[data-tool-allow]").forEach(
     (button) => button.addEventListener("click", () => void onResolveTool(button.getAttribute("data-tool-allow"), true))
@@ -6690,15 +6604,6 @@ async function onResolveProposal(path, decision) {
     setError(err);
   }
 }
-async function onResolveA2A(approvalId, decision) {
-  try {
-    await window.tentDesktop.rpc("a2a.resolve", buildA2AResolvePayload(approvalId, decision, "user"));
-    el.status.textContent = decision === "approve" ? "\u5DF2\u5141\u8BB8\u542F\u52A8 Agent\u3002" : "\u5DF2\u62D2\u7EDD\u542F\u52A8 Agent\u3002";
-    await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
-  } catch (err) {
-    setError(err);
-  }
-}
 async function onResolveTool(approvalId, allow) {
   try {
     const built = buildToolApprovalResolvePayload(approvalId, allow, "user");
@@ -6717,7 +6622,7 @@ function renderTaskInput() {
     return;
   }
   const options = candidates.map(
-    (task) => `<option value="${escapeHtml(task.path)}">${escapeHtml(task.role)} \xB7 ${escapeHtml(taskStateLabel(task.state, task.status))}</option>`
+    (task) => `<option value="${escapeHtml(task.path)}">${escapeHtml(task.assigneeId)} \xB7 ${escapeHtml(taskStateLabel(task.state))}</option>`
   ).join("");
   el.u2a.innerHTML = `<article class="interaction-item u2a-item" data-pending-kind="taskSendInput"><div class="interaction-kicker">U2A \xB7 \u8FFD\u52A0\u4EFB\u52A1\u8F93\u5165</div>
     ${candidates.length > 1 ? `<select id="u2a-task" class="field">${options}</select>` : ""}
@@ -6751,7 +6656,7 @@ function renderSessions() {
   el.session.hidden = related.length === 0;
   el.session.innerHTML = related.map(
     (session) => `<div class="session-row"><span class="session-dot ${session.alive ? "is-live" : ""}" aria-hidden="true"></span>
-    <span>${escapeHtml(session.roleName || session.profileId)}</span><span class="muted">${escapeHtml(sessionStateLabel(session.state) || session.state)}</span></div>`
+    <span>${escapeHtml(session.roleName || session.routeId)}</span><span class="muted">${escapeHtml(sessionStateLabel(session.state) || session.state)}</span></div>`
   ).join("");
 }
 function renderTasks() {
@@ -6774,26 +6679,18 @@ function renderTasks() {
     el.tasks.innerHTML = "";
     return;
   }
-  const profileOpts = profiles.length > 0 ? profiles.map(
-    (p) => `<option value="${escapeHtml(p.id)}"${p.id === selectedProfileId ? " selected" : ""}>${escapeHtml(p.label)}</option>`
-  ).join("") : `<option value="">\uFF08\u65E0 profile\uFF09</option>`;
-  const anyStartable = visibleTasks.some((t) => t.canStartAgent);
-  const profileBar = anyStartable ? `<li class="task-profile-bar">
-        <label class="sr-only" for="agent-profile">profile</label>
-        <select id="agent-profile" title="profile"${profiles.length ? "" : " disabled"}>${profileOpts}</select>
-      </li>` : "";
-  el.tasks.innerHTML = profileBar + visibleTasks.map((t) => {
-    const who = escapeHtml(t.role);
+  el.tasks.innerHTML = visibleTasks.map((t) => {
+    const who = escapeHtml(t.assigneeId);
     const nodeIds = (t.referencedNodeIds || []).filter(
       (c) => c !== "root" && !/^(cx|rl|tk|ss|dl|ti)-/i.test(c)
     );
     const claimBit = nodeIds.length ? `<span class="task-claims muted">${nodeIds.map((c) => escapeHtml(c)).join(" \xB7 ")}</span>` : "";
     const blurbRaw = t.deliverySummary || t.prompt || "";
     const blurb = blurbRaw ? `<div class="task-summary">${escapeHtml(blurbRaw.length > 120 ? blurbRaw.slice(0, 117) + "\u2026" : blurbRaw)}</div>` : "";
-    const stateLabel = taskStateLabel(t.state, t.status);
+    const stateLabel = taskStateLabel(t.state);
     const sessLabel = t.sessionState ? sessionStateLabel(t.sessionState) : "";
     const rejectDraft = rejectDrafts.get(t.path) || "";
-    const startBtn = t.canStartAgent ? `<button type="button" class="btn btn-primary" data-start="${escapeHtml(t.path)}"${profiles.length && selectedProfileId ? "" : " disabled"} title="\u542F\u52A8 agent">\u542F\u52A8</button>` : "";
+    const startBtn = t.canStartAgent ? `<button type="button" class="btn btn-primary" data-start="${escapeHtml(t.path)}" title="\u542F\u52A8 agent">\u542F\u52A8</button>` : "";
     const interruptBtn = t.canInterrupt ? `<button type="button" class="btn btn-ghost" data-interrupt="${escapeHtml(t.path)}" title="\u4E2D\u65AD">\u4E2D\u65AD</button>` : "";
     const cancelBtn = t.canCancel ? `<button type="button" class="btn btn-ghost" data-cancel="${escapeHtml(t.path)}" title="\u53D6\u6D88\u4EFB\u52A1">\u53D6\u6D88</button>` : "";
     const reviewActions = t.canAcceptOrReject ? `<div class="task-primary-row">
@@ -6822,11 +6719,6 @@ function renderTasks() {
         </details>
       </li>`;
   }).join("");
-  const profileSel = document.getElementById("agent-profile");
-  profileSel?.addEventListener("change", () => {
-    setSelectedProfileId(profileSel.value || null);
-    renderTasks();
-  });
   el.tasks.querySelectorAll("[data-start]").forEach((btn) => {
     btn.addEventListener("click", () => void onStartAgent(btn.getAttribute("data-start")));
   });
@@ -6866,7 +6758,7 @@ function renderTasks() {
 }
 async function onStartAgent(taskPath) {
   if (!workspaceId) return;
-  const built = buildStartSessionPayload(taskPath, selectedProfileId || "");
+  const built = buildStartSessionPayload(taskPath);
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
@@ -6875,7 +6767,6 @@ async function onStartAgent(taskPath) {
     const result = await window.tentDesktop.rpc("task.startSession", {
       workspaceId,
       taskPath: built.payload.taskPath,
-      profileId: built.payload.profileId,
       callerKind: built.payload.callerKind
     });
     const sid = result.session?.sessionId;
@@ -6983,8 +6874,8 @@ async function onEmitCard() {
     return;
   }
   await window.tentDesktop.pushContextCard({
-    kind: "box",
-    id: tab.cx,
+    kind: "node",
+    id: tab.nodeId,
     path: tab.path,
     label: tab.name
   });
@@ -7103,25 +6994,27 @@ function focusActiveTab() {
   const btn = el.tabs.querySelector(`[data-tab="${safe}"]`);
   btn?.focus({ preventScroll: true });
 }
-async function openConcept(cx) {
+async function openNode(cx) {
   if (!workspaceId) return;
   const edit = await window.tentDesktop.rpc("docs.readForEdit", {
     workspaceId,
-    id: cx
+    nodeId: cx
   });
-  const existing = localTabs.get(edit.id);
+  const existing = localTabs.get(edit.nodeId);
   if (existing?.dirty) {
-    setActiveCx(edit.id);
+    setActiveCx(edit.nodeId);
     host3?.renderAll();
     el.status.textContent = "\u5F53\u524D\u6807\u7B7E\u6709\u672A\u4FDD\u5B58\u66F4\u6539\u3002";
     return;
   }
-  const concept = findConcept(tree, edit.id);
-  const rawMode = edit.mode || concept?.mode || "editable";
-  const nodeMode = rawMode === "archived" ? "archived" : "editable";
-  const usable = concept?.coordination ?? (!concept?.invalid && nodeMode !== "archived");
+  const node2 = findNode(tree, edit.nodeId);
+  if (edit.mode !== "editable" && edit.mode !== "archived") {
+    throw new Error(`Invalid Node mode: ${String(edit.mode)}`);
+  }
+  const nodeMode = edit.mode;
+  const usable = node2?.coordination ?? (!node2?.invalid && nodeMode !== "archived");
   const tab = {
-    cx: edit.id,
+    nodeId: edit.nodeId,
     path: edit.path,
     name: edit.name || edit.path.split("/").pop() || edit.path,
     type: edit.type || String(edit.frontmatter?.type || "prompt"),
@@ -7134,10 +7027,10 @@ async function openConcept(cx) {
     frontmatter: edit.frontmatter || {},
     artifactRefs: edit.artifactRefs
   };
-  localTabs.set(tab.cx, tab);
-  setActiveCx(tab.cx);
+  localTabs.set(tab.nodeId, tab);
+  setActiveCx(tab.nodeId);
   host3?.renderAll();
-  void host3?.onConceptOpened?.(tab.cx);
+  void host3?.onConceptOpened?.(tab.nodeId);
 }
 function renderTabs() {
   const tabs = [...localTabs.values()];
@@ -7145,9 +7038,9 @@ function renderTabs() {
   el.tabs.setAttribute("aria-label", "\u6253\u5F00\u7684\u6587\u6863");
   el.tabs.innerHTML = tabs.map(
     (t) => documentTabHtml({
-      cx: t.cx,
+      nodeId: t.nodeId,
       name: t.name,
-      active: t.cx === activeCx,
+      active: t.nodeId === activeCx,
       dirty: t.dirty,
       closeIcon: ICO.close
     })
@@ -7235,12 +7128,12 @@ async function onToolbar(act) {
     try {
       const result = await window.tentDesktop.rpc("docs.fork", {
         workspaceId,
-        id: tab.cx
+        nodeId: tab.nodeId
       });
-      const newId = result.id || result.cx;
+      const newId = result.nodeId;
       el.status.textContent = newId ? `\u5DF2\u6D3E\u751F\u526F\u672C` : "\u5DF2\u6D3E\u751F\u526F\u672C";
       await reloadTree();
-      if (newId) await openConcept(newId);
+      if (newId) await openNode(newId);
     } catch (err) {
       setError(err);
     }
@@ -7252,8 +7145,8 @@ async function onToolbar(act) {
   }
   if (act === "card") {
     await window.tentDesktop.pushContextCard({
-      kind: "box",
-      id: tab.cx,
+      kind: "node",
+      id: tab.nodeId,
       path: tab.path,
       label: tab.name
     });
@@ -7294,7 +7187,7 @@ async function onImportAttachment(tab) {
     const bytesBase64 = await fileToBase64(file);
     const result = await window.tentDesktop.rpc("docs.importAttachment", {
       workspaceId,
-      id: tab.cx,
+      nodeId: tab.nodeId,
       fileName: file.name,
       bytesBase64
     });
@@ -7331,7 +7224,7 @@ async function saveTab(tab) {
   try {
     const result = await window.tentDesktop.rpc("docs.write", {
       workspaceId,
-      id: tab.cx,
+      nodeId: tab.nodeId,
       baseEtag: tab.etag,
       raw: tab.buffer
     });
@@ -7390,7 +7283,7 @@ function bindDispatchHost(h) {
 function renderDispatchPanel() {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab) {
-    el.dispatch.innerHTML = `<div class="muted dispatch-empty">\u9009\u4E2D\u534F\u4F5C\u6846\u540E\u53EF\u6D3E\u6D3B</div>`;
+    el.dispatch.innerHTML = `<div class="muted dispatch-empty">\u9009\u4E2D\u8282\u70B9\u540E\u53EF\u6D3E\u6D3B</div>`;
     return;
   }
   if (!tab.coordination) {
@@ -7401,7 +7294,7 @@ function renderDispatchPanel() {
     (r) => `<option value="${escapeHtml(r.name)}"${r.name === dispatchRole ? " selected" : ""}>${escapeHtml(r.name)}</option>`
   ).join("") : `<option value="">\uFF08\u65E0 role\uFF09</option>`;
   const validation = validateDispatchForm({
-    boxId: tab.cx,
+    nodeId: tab.nodeId,
     coordination: tab.coordination,
     role: dispatchRole,
     prompt: dispatchPrompt,
@@ -7440,7 +7333,7 @@ function renderDispatchPanel() {
     setDispatchPrompt(nextPrompt);
     if (btn) {
       const v = validateDispatchForm({
-        boxId: tab.cx,
+        nodeId: tab.nodeId,
         coordination: tab.coordination,
         role: roleSel?.value || dispatchRole,
         prompt: nextPrompt,
@@ -7463,7 +7356,7 @@ async function onDispatch() {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab || !workspaceId) return;
   const validation = validateDispatchForm({
-    boxId: tab.cx,
+    nodeId: tab.nodeId,
     coordination: tab.coordination,
     role: dispatchRole,
     prompt: dispatchPrompt,
@@ -7476,8 +7369,9 @@ async function onDispatch() {
   try {
     const result = await window.tentDesktop.rpc("task.dispatch", {
       workspaceId,
-      boxId: validation.payload.boxId,
-      role: validation.payload.role,
+      nodeIds: [validation.payload.nodeId],
+      assigneeKind: validation.payload.assigneeKind,
+      assigneeId: validation.payload.assigneeId,
       prompt: validation.payload.prompt,
       parentActor: validation.payload.parentActor,
       reviewer: validation.payload.reviewer,
@@ -7912,7 +7806,7 @@ function renderCreateTypeSelect() {
   }
   el.createType.disabled = false;
   el.btnNewBox.disabled = false;
-  el.btnNewBox.title = "\u4F7F\u7528\u6240\u9009\u53EF\u534F\u8C03\u7C7B\u578B\u65B0\u5EFA\u534F\u4F5C\u6846";
+  el.btnNewBox.title = "\u4F7F\u7528\u6240\u9009\u7C7B\u578B\u65B0\u5EFA\u8282\u70B9";
   el.createType.innerHTML = coordinationTypes.map(
     (t) => `<option value="${escapeHtml(t.name)}"${t.name === selected ? " selected" : ""}>${escapeHtml(t.name)}</option>`
   ).join("");
@@ -7921,7 +7815,7 @@ function renderTree() {
   el.tree.setAttribute("role", "tree");
   el.tree.innerHTML = tree.length ? renderNodes(tree) : `<li class="muted">\u6682\u65E0\u6982\u5FF5</li>`;
   el.tree.querySelectorAll("[data-open]").forEach((node2) => {
-    const open = () => void host5?.openConcept(node2.getAttribute("data-open"));
+    const open = () => void host5?.openNode(node2.getAttribute("data-open"));
     node2.addEventListener("click", open);
     node2.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter" || ev.key === " ") {
@@ -7932,16 +7826,9 @@ function renderTree() {
   });
 }
 function nodeStatusMark(status, assignee) {
-  if (!status) return "";
-  const s = status.toLowerCase();
-  if (s === "done") return "";
-  const label = boxStatusLabel(s);
-  const title = assignee ? `${label} \xB7 ${assignee}` : label;
-  if (s === "doing") {
+  if (status === "doing") {
+    const title = assignee ? `\u6D3B\u52A8\u4EFB\u52A1 \xB7 ${assignee}` : "\u6D3B\u52A8\u4EFB\u52A1";
     return `<span class="status-mark is-doing" title="${escapeHtml(title)}" aria-hidden="true"></span>`;
-  }
-  if (s === "todo") {
-    return `<span class="status-mark is-todo" title="${escapeHtml(title)}" aria-hidden="true"></span>`;
   }
   return "";
 }
@@ -7949,7 +7836,7 @@ function renderNodes(nodes) {
   return nodes.map((n) => {
     const mark = n.coordination ? nodeStatusMark(n.status, n.assignee) : "";
     const rowClass = treeRowClass({
-      active: n.id === activeCx,
+      active: n.nodeId === activeCx,
       archived: n.mode === "archived"
     });
     const kids = n.children?.length ? `<ul>${renderNodes(n.children)}</ul>` : "";
@@ -7957,12 +7844,12 @@ function renderNodes(nodes) {
       n.name,
       n.type,
       n.mode || "editable",
-      n.coordination && n.status ? boxStatusLabel(n.status) : "",
+      n.coordination && n.status === "doing" ? "doing" : "",
       n.assignee || "",
-      n.id
+      n.nodeId
     ].filter(Boolean);
     return `<li>
-        <div class="${rowClass}" role="treeitem" tabindex="0" data-open="${escapeHtml(n.id)}" title="${escapeHtml(titleParts.join(" \xB7 "))}">
+        <div class="${rowClass}" role="treeitem" tabindex="0" data-open="${escapeHtml(n.nodeId)}" title="${escapeHtml(titleParts.join(" \xB7 "))}">
           <span class="${UI.treeName}">${escapeHtml(n.name)}</span>
           <span class="${UI.treeMeta}">${mark}</span>
         </div>
@@ -7983,12 +7870,12 @@ async function onCreateNote() {
       type: "prompt"
     });
     await reloadTree();
-    await host5?.openConcept(created.id);
+    await host5?.openNode(created.nodeId);
   } catch (err) {
     setError(err);
   }
 }
-async function onCreateCoordBox() {
+async function onCreateNode() {
   if (!workspaceId) {
     el.status.textContent = "\u8BF7\u5148\u6302\u8F7D\u5DE5\u4F5C\u533A\u3002";
     return;
@@ -7998,16 +7885,16 @@ async function onCreateCoordBox() {
     el.status.textContent = "\u5F53\u524D types \u6CE8\u518C\u8868\u6CA1\u6709\u53EF\u534F\u8C03\u7684\u4E00\u7EA7\u7C7B\u578B\u3002";
     return;
   }
-  const name = suggestBoxName(typeName);
+  const name = suggestNodeName(typeName);
   try {
     const created = await window.tentDesktop.rpc("docs.createNote", {
       workspaceId,
       name,
       type: typeName
     });
-    el.status.textContent = `\u5DF2\u65B0\u5EFA\u534F\u4F5C\u6846\u300C${name}\u300D\uFF08${created.type || typeName}\uFF09`;
+    el.status.textContent = `\u5DF2\u65B0\u5EFA\u8282\u70B9\u300C${name}\u300D\uFF08${created.type || typeName}\uFF09`;
     await reloadTree();
-    await host5?.openConcept(created.id);
+    await host5?.openNode(created.nodeId);
   } catch (err) {
     setError(err);
   }
@@ -8026,11 +7913,11 @@ async function onSearch() {
     });
     const hits = result.hits || [];
     el.searchHits.innerHTML = hits.map(
-      (h) => `<li class="card-item" data-open="${escapeHtml(h.cx)}"><strong>${escapeHtml(h.name)}</strong>
+      (h) => `<li class="card-item" data-open="${escapeHtml(h.nodeId)}"><strong>${escapeHtml(h.name)}</strong>
            <div class="muted">${escapeHtml(h.match)} \xB7 ${escapeHtml(h.snippet)}</div></li>`
     ).join("");
     el.searchHits.querySelectorAll("[data-open]").forEach((n) => {
-      n.addEventListener("click", () => void host5?.openConcept(n.getAttribute("data-open")));
+      n.addEventListener("click", () => void host5?.openNode(n.getAttribute("data-open")));
     });
   } catch (err) {
     setError(err);
@@ -8121,7 +8008,7 @@ function flattenGraphNodes(roots, depth = 0) {
   for (const n of roots) {
     const usable = graphNodeUsable(n);
     out.push({
-      id: n.id,
+      nodeId: n.nodeId,
       path: n.path,
       name: n.name,
       type: n.type,
@@ -8135,10 +8022,10 @@ function flattenGraphNodes(roots, depth = 0) {
   }
   return out;
 }
-function findGraphNode(nodes, id) {
+function findGraphNode(nodes, nodeId) {
   for (const n of nodes) {
-    if (n.id === id) return n;
-    const child = findGraphNode(n.children || [], id);
+    if (n.nodeId === nodeId) return n;
+    const child = findGraphNode(n.children || [], nodeId);
     if (child) return child;
   }
   return void 0;
@@ -8199,7 +8086,7 @@ async function reloadGraph() {
   }
   if (!selectedId) {
     const flat = flattenGraphNodes(tree);
-    selectedId = flat[0]?.id ?? null;
+    selectedId = flat[0]?.nodeId ?? null;
   }
   await loadSelection(selectedId);
 }
@@ -8219,7 +8106,7 @@ async function loadSelection(cx) {
   try {
     const bl = await window.tentDesktop.rpc("docs.backlinks", {
       workspaceId,
-      id: cx
+      nodeId: cx
     });
     if (gen !== loadGen) return;
     backlinks = bl.backlinks || [];
@@ -8230,7 +8117,7 @@ async function loadSelection(cx) {
   try {
     const edit = await window.tentDesktop.rpc("docs.readForEdit", {
       workspaceId,
-      id: cx
+      nodeId: cx
     });
     if (gen !== loadGen) return;
     const body = edit.body ?? "";
@@ -8238,7 +8125,7 @@ async function loadSelection(cx) {
       outLinks = extractOutLinks(body).map((l) => ({
         raw: l.raw,
         kind: l.kind,
-        targetCx: l.targetCx,
+        targetNodeId: l.targetNodeId,
         targetPath: l.targetPath,
         label: l.label
       }));
@@ -8278,10 +8165,10 @@ function renderGraph() {
     return;
   }
   const nodesHtml = flat.map((n) => {
-    const active = n.id === selectedId ? " is-active" : "";
+    const active = n.nodeId === selectedId ? " is-active" : "";
     const pad = 8 + n.depth * 14;
     const kind = n.type;
-    return `<button type="button" class="graph-node${active}" data-graph-node="${escapeHtml(n.id)}" style="padding-left:${pad}px" title="${escapeHtml(n.path)}">
+    return `<button type="button" class="graph-node${active}" data-graph-node="${escapeHtml(n.nodeId)}" style="padding-left:${pad}px" title="${escapeHtml(n.path)}">
         <span class="graph-node-name">${escapeHtml(n.name)}</span>
         <span class="muted graph-node-kind">${escapeHtml(kind)}</span>
       </button>`;
@@ -8295,7 +8182,7 @@ function renderGraph() {
     edgesHtml += `<p class="muted">\u65E0\u53CD\u5411\u94FE\u63A5</p>`;
   } else {
     edgesHtml += `<ul class="graph-edge-list" aria-label="\u53CD\u5411\u94FE\u63A5">${sel.backlinks.map(
-      (b) => `<li><button type="button" class="linkish" data-graph-jump="${escapeHtml(b.fromCx)}">${escapeHtml(b.fromName || b.fromPath)}</button>
+      (b) => `<li><button type="button" class="linkish" data-graph-jump="${escapeHtml(b.fromNodeId)}">${escapeHtml(b.fromName || b.fromPath)}</button>
           <span class="faint">${escapeHtml(b.raw)}</span></li>`
     ).join("")}</ul>`;
   }
@@ -8307,9 +8194,9 @@ function renderGraph() {
   } else {
     outHtml = `<ul class="graph-edge-list" aria-label="\u51FA\u94FE">${sel.outLinks.map((l) => {
       const label = l.label || l.targetPath || l.raw;
-      const jump = l.targetCx ? ` data-graph-jump="${escapeHtml(l.targetCx)}"` : "";
-      const tag = l.targetCx ? "button" : "span";
-      const cls = l.targetCx ? ' class="linkish"' : ' class="muted"';
+      const jump = l.targetNodeId ? ` data-graph-jump="${escapeHtml(l.targetNodeId)}"` : "";
+      const tag = l.targetNodeId ? "button" : "span";
+      const cls = l.targetNodeId ? ' class="linkish"' : ' class="muted"';
       return `<li><${tag} type="button"${cls}${jump}>${escapeHtml(label)}</${tag}>
           <span class="faint">${escapeHtml(l.kind)} \xB7 ${escapeHtml(l.raw)}</span></li>`;
     }).join("")}</ul>`;
@@ -8359,7 +8246,7 @@ function renderGraph() {
   });
   document.getElementById("btn-graph-open")?.addEventListener("click", () => {
     if (!selectedId) return;
-    void host7?.openConcept(selectedId).then(() => host7?.goWorkbench());
+    void host7?.openNode(selectedId).then(() => host7?.goWorkbench());
   });
 }
 function onGraphTreeChanged() {
@@ -8409,17 +8296,6 @@ function renderActivity() {
         </div>
       </article>`;
   }).join("");
-  const a2aHtml = a2aApprovals.map(
-    (item) => `<article class="interaction-item" data-pending-kind="a2a">
-      <div class="interaction-kicker">A2A \xB7 ${escapeHtml(item.role)}</div>
-      <div class="interaction-title">\u8BF7\u6C42\u542F\u52A8 ${escapeHtml(item.profileId)}</div>
-      <div class="muted interaction-note">${escapeHtml(item.taskPath)}</div>
-      <div class="interaction-actions">
-        <button type="button" class="btn btn-primary" data-act-a2a-allow="${escapeHtml(item.id)}">\u5141\u8BB8\u4E00\u6B21</button>
-        <button type="button" class="btn btn-ghost" data-act-a2a-deny="${escapeHtml(item.id)}">\u62D2\u7EDD</button>
-      </div>
-    </article>`
-  ).join("");
   const toolsHtml = toolApprovals.map((item) => {
     const summary = item.paramsSummary || "";
     return `<article class="interaction-item" data-pending-kind="toolApproval">
@@ -8448,7 +8324,7 @@ function renderActivity() {
     const draft = rejectDrafts.get(t.path) || "";
     return `<article class="interaction-item" data-pending-kind="deliveryReview">
         <div class="interaction-kicker">DELIVERY REVIEW</div>
-        <div class="interaction-title">${escapeHtml(t.role)}</div>
+        <div class="interaction-title">${escapeHtml(t.assigneeId)}</div>
         <div class="muted interaction-note">${escapeHtml(t.deliverySummary || t.prompt || t.path)}</div>
         <div class="interaction-actions">
           <button type="button" class="btn btn-primary" data-act-accept="${escapeHtml(t.path)}">\u786E\u8BA4</button>
@@ -8467,7 +8343,7 @@ function renderActivity() {
     return `<article class="interaction-item" data-pending-kind="proposal">
         <div class="interaction-kicker">PROPOSAL \xB7 ${escapeHtml(p.role || "Agent")}</div>
         <div class="interaction-title">${escapeHtml(preview || p.path)}</div>
-        <div class="muted interaction-note">${escapeHtml(p.boxId || "")}</div>
+        <div class="muted interaction-note">${escapeHtml(p.nodeId || "")}</div>
         <div class="interaction-actions">
           <button type="button" class="btn btn-primary" data-act-proposal-accept="${escapeHtml(p.path)}">\u91C7\u7EB3</button>
           <button type="button" class="btn btn-ghost" data-act-proposal-reject="${escapeHtml(p.path)}">\u9A73\u56DE</button>
@@ -8475,17 +8351,14 @@ function renderActivity() {
       </article>`;
   }).join("");
   const pendingTotal = pendingN + reviewTasks.length;
-  const pendingBlock = pendingTotal === 0 ? `<p class="muted">\u6682\u65E0\u5F85\u5904\u7406</p>` : asksHtml + a2aHtml + toolsHtml + inputsHtml + proposalHtml + reviewHtml;
-  const profileOpts = profiles.length > 0 ? profiles.map(
-    (p) => `<option value="${escapeHtml(p.id)}"${p.id === selectedProfileId ? " selected" : ""}>${escapeHtml(p.label)}</option>`
-  ).join("") : `<option value="">\uFF08\u65E0 profile\uFF09</option>`;
+  const pendingBlock = pendingTotal === 0 ? `<p class="muted">\u6682\u65E0\u5F85\u5904\u7406</p>` : asksHtml + toolsHtml + inputsHtml + proposalHtml + reviewHtml;
   const taskRows = tasks.map((t) => {
-    const startBtn = t.canStartAgent ? `<button type="button" class="btn btn-primary" data-act-start="${escapeHtml(t.path)}"${profiles.length && selectedProfileId ? "" : " disabled"}>\u542F\u52A8</button>` : "";
+    const startBtn = t.canStartAgent ? `<button type="button" class="btn btn-primary" data-act-start="${escapeHtml(t.path)}">\u542F\u52A8</button>` : "";
     const interruptBtn = t.canInterrupt ? `<button type="button" class="btn btn-ghost" data-act-interrupt="${escapeHtml(t.path)}">\u4E2D\u65AD</button>` : "";
     const cancelBtn = t.canCancel ? `<button type="button" class="btn btn-ghost" data-act-cancel="${escapeHtml(t.path)}">\u53D6\u6D88</button>` : "";
     return `<li class="task-item">
-        <div class="task-head"><strong>${escapeHtml(t.role)}</strong>
-          <span class="muted">${escapeHtml(taskStateLabel(t.state, t.status))}</span></div>
+        <div class="task-head"><strong>${escapeHtml(t.assigneeId)}</strong>
+          <span class="muted">${escapeHtml(taskStateLabel(t.state))}</span></div>
         ${t.prompt ? `<div class="task-summary">${escapeHtml(t.prompt.length > 100 ? t.prompt.slice(0, 97) + "\u2026" : t.prompt)}</div>` : ""}
         <div class="task-actions">${startBtn}${interruptBtn}${cancelBtn}</div>
         <div class="faint" title="${escapeHtml(t.path)}">${escapeHtml(t.path)}</div>
@@ -8494,11 +8367,10 @@ function renderActivity() {
   const sessionRows = liveSessions.length ? liveSessions.map(
     (s) => `<li class="session-row">
           <span class="session-dot ${s.alive ? "is-live" : ""}" aria-hidden="true"></span>
-          <span>${escapeHtml(s.roleName || s.profileId)}</span>
+          <span>${escapeHtml(s.roleName || s.routeId)}</span>
           <span class="muted">${escapeHtml(sessionStateLabel(s.state) || s.state)}</span>
         </li>`
   ).join("") : `<li class="muted">\u65E0\u6D3B\u8DC3\u4F1A\u8BDD</li>`;
-  const anyStartable = tasks.some((t) => t.canStartAgent);
   hostEl.innerHTML = `
     <div class="activity-layout">
       <section class="activity-col">
@@ -8506,9 +8378,7 @@ function renderActivity() {
         <div class="activity-stack">${pendingBlock}</div>
       </section>
       <section class="activity-col">
-        <div class="surface-section-head">\u4EFB\u52A1
-          ${anyStartable ? `<select id="act-profile" class="field field-compact" title="profile"${profiles.length ? "" : " disabled"}>${profileOpts}</select>` : ""}
-        </div>
+        <div class="surface-section-head">\u4EFB\u52A1</div>
         <ul class="task-list activity-task-list">${taskRows || `<li class="muted">\u65E0\u8FDB\u884C\u4E2D\u4EFB\u52A1</li>`}</ul>
         <div class="surface-section-head">\u4F1A\u8BDD</div>
         <ul class="activity-session-list">${sessionRows}</ul>
@@ -8517,22 +8387,11 @@ function renderActivity() {
   wireActivity(hostEl);
 }
 function wireActivity(root) {
-  const profileSel = document.getElementById("act-profile");
-  profileSel?.addEventListener("change", () => {
-    setSelectedProfileId(profileSel.value || null);
-    renderActivity();
-  });
   root.querySelectorAll("[data-act-reply]").forEach((btn) => {
     btn.addEventListener("click", () => void onReply(btn.getAttribute("data-act-reply")));
   });
   root.querySelectorAll("[data-act-ask-deny]").forEach((btn) => {
     btn.addEventListener("click", () => void onDenyAsk(btn.getAttribute("data-act-ask-deny")));
-  });
-  root.querySelectorAll("[data-act-a2a-allow]").forEach((btn) => {
-    btn.addEventListener("click", () => void onA2A(btn.getAttribute("data-act-a2a-allow"), "approve"));
-  });
-  root.querySelectorAll("[data-act-a2a-deny]").forEach((btn) => {
-    btn.addEventListener("click", () => void onA2A(btn.getAttribute("data-act-a2a-deny"), "deny"));
   });
   root.querySelectorAll("[data-act-tool-allow]").forEach((btn) => {
     btn.addEventListener("click", () => void onTool(btn.getAttribute("data-act-tool-allow"), true));
@@ -8628,15 +8487,6 @@ async function onProposal(path, decision) {
     setError(err);
   }
 }
-async function onA2A(id, decision) {
-  try {
-    await window.tentDesktop.rpc("a2a.resolve", buildA2AResolvePayload(id, decision, "user"));
-    el.status.textContent = decision === "approve" ? "\u5DF2\u5141\u8BB8\u542F\u52A8 Agent\u3002" : "\u5DF2\u62D2\u7EDD\u542F\u52A8 Agent\u3002";
-    await refreshAfter();
-  } catch (err) {
-    setError(err);
-  }
-}
 async function onTool(id, allow) {
   try {
     const built = buildToolApprovalResolvePayload(id, allow, "user");
@@ -8687,7 +8537,7 @@ async function onReject2(taskPath) {
 }
 async function onStart(taskPath) {
   if (!workspaceId) return;
-  const built = buildStartSessionPayload(taskPath, selectedProfileId || "");
+  const built = buildStartSessionPayload(taskPath);
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
@@ -8696,7 +8546,6 @@ async function onStart(taskPath) {
     await window.tentDesktop.rpc("task.startSession", {
       workspaceId,
       taskPath: built.payload.taskPath,
-      profileId: built.payload.profileId,
       callerKind: built.payload.callerKind
     });
     el.status.textContent = `\u5DF2\u542F\u52A8 agent \xB7 ${taskPath}`;
@@ -8756,7 +8605,6 @@ function validateRoleCreate(draft) {
   if (draft.prompt?.trim()) payload.prompt = draft.prompt.trim();
   if (draft.description?.trim()) payload.description = draft.description.trim();
   if (draft.color?.trim()) payload.color = draft.color.trim();
-  if (draft.a2aPolicy) payload.a2aPolicy = draft.a2aPolicy;
   return { ok: true, payload };
 }
 function validateRoleUpdate(draft) {
@@ -8778,37 +8626,19 @@ function validateRoleUpdate(draft) {
   payload.description = description || null;
   const color = (draft.color ?? "").trim();
   payload.color = color || null;
-  if (draft.a2aPolicy) payload.a2aPolicy = draft.a2aPolicy;
-  if (draft.rosterText !== void 0) {
-    payload.roster = parseRosterText(draft.rosterText);
-  }
   return { ok: true, payload };
 }
-function parseRosterText(text3) {
-  const raw = (text3 || "").trim();
-  if (!raw) return [];
-  const seen = /* @__PURE__ */ new Set();
-  const out = [];
-  for (const part of raw.split(/[\s,;]+/)) {
-    const id = part.trim();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    out.push(id);
-  }
-  return out;
-}
-function formatRosterText(ids) {
-  return (ids || []).join(", ");
-}
-function validateProfileCreate(draft) {
-  const id = (draft.id || "").trim();
+function validateRouteCreate(draft) {
+  const routeId = (draft.routeId || "").trim();
+  const provider = (draft.provider || "").trim();
   const adapterId = (draft.adapterId || "").trim();
-  if (!id) return { ok: false, reason: "profile id \u4E0D\u80FD\u4E3A\u7A7A" };
-  if (!/^[a-z][a-z0-9-]{0,62}$/.test(id)) {
-    return { ok: false, reason: "profile id \u987B\u5339\u914D a-z \u5F00\u5934\u7684\u5C0F\u5199 id" };
+  if (!routeId) return { ok: false, reason: "routeId \u4E0D\u80FD\u4E3A\u7A7A" };
+  if (!/^[a-z][a-z0-9-]{0,62}$/.test(routeId)) {
+    return { ok: false, reason: "routeId \u987B\u5339\u914D a-z \u5F00\u5934\u7684\u5C0F\u5199 id" };
   }
+  if (!provider) return { ok: false, reason: "provider \u4E0D\u80FD\u4E3A\u7A7A" };
   if (!adapterId) return { ok: false, reason: "adapterId \u4E0D\u80FD\u4E3A\u7A7A" };
-  const payload = { id, adapterId };
+  const payload = { routeId, provider, adapterId };
   if (draft.displayName?.trim()) payload.displayName = draft.displayName.trim();
   if (draft.model?.trim()) payload.model = draft.model.trim();
   if (draft.executable?.trim()) payload.executable = draft.executable.trim();
@@ -8819,13 +8649,13 @@ function validateProfileCreate(draft) {
   if (draft.permissionPolicy) payload.permissionPolicy = draft.permissionPolicy;
   return { ok: true, payload };
 }
-function validateProfileUpdate(draft) {
-  const id = (draft.id || "").trim();
-  if (!id) return { ok: false, reason: "profile id \u4E0D\u80FD\u4E3A\u7A7A" };
-  if (!/^[a-z][a-z0-9-]{0,62}$/.test(id)) {
-    return { ok: false, reason: "profile id \u987B\u5339\u914D a-z \u5F00\u5934\u7684\u5C0F\u5199 id" };
+function validateRouteUpdate(draft) {
+  const routeId = (draft.routeId || "").trim();
+  if (!routeId) return { ok: false, reason: "routeId \u4E0D\u80FD\u4E3A\u7A7A" };
+  if (!/^[a-z][a-z0-9-]{0,62}$/.test(routeId)) {
+    return { ok: false, reason: "routeId \u987B\u5339\u914D a-z \u5F00\u5934\u7684\u5C0F\u5199 id" };
   }
-  const payload = { id };
+  const payload = { routeId };
   const dn = (draft.displayName ?? "").trim();
   payload.displayName = dn || null;
   if (draft.model !== void 0) {
@@ -8849,15 +8679,14 @@ function validateProfileUpdate(draft) {
   if (draft.permissionPolicy) {
     payload.permissionPolicy = draft.permissionPolicy;
   }
-  if ("adapterId" in payload) delete payload.adapterId;
   return { ok: true, payload };
 }
-function profileDisplayLabel(profile) {
-  const dn = (profile.displayName || "").trim();
-  return dn || profile.id;
+function routeDisplayLabel(route) {
+  const dn = (route.displayName || "").trim();
+  return dn || route.routeId;
 }
-var PROFILE_NEXT_SESSION_TIP = "\u672C\u673A\u542F\u52A8\u914D\u7F6E \xB7 Session \u4F7F\u7528\u5FEB\u7167 \xB7 \u6539\u52A8\u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548";
-var PROFILE_SKILLS_METADATA_TIP = "Skill \u4EC5 name/path \u5143\u6570\u636E\uFF08_meta.tent.skills\uFF09\xB7 \u662F\u5426\u751F\u6548\u53D6\u51B3\u4E8E provider \xB7 \u4E0D\u5BA3\u79F0\u5DF2\u6FC0\u6D3B";
+var ROUTE_NEXT_SESSION_TIP = "\u672C\u673A\u542F\u52A8\u914D\u7F6E \xB7 Session \u4F7F\u7528\u5FEB\u7167 \xB7 \u6539\u52A8\u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548";
+var ROUTE_SKILLS_METADATA_TIP = "Skill \u4EC5 name/path \u5143\u6570\u636E\uFF08_meta.tent.skills\uFF09\xB7 \u662F\u5426\u751F\u6548\u53D6\u51B3\u4E8E provider \xB7 \u4E0D\u5BA3\u79F0\u5DF2\u6FC0\u6D3B";
 var CREDENTIAL_VAULT_TYPE = "secret";
 function validateCredentialSet(draft) {
   const id = (draft.id || "").trim();
@@ -9067,9 +8896,9 @@ function retentionSummaryLine(preview) {
 // src/desktop/renderer/main/contract-gaps.ts
 var DESKTOP_CONTRACT_GAPS = [
   {
-    id: "concept.permanent-delete",
+    id: "node.permanent-delete",
     methods: ["docs.delete", "docs.purge"],
-    need: "Permanent delete of a concept (beyond archive mode).",
+    need: "Permanent delete of a Node (beyond archive mode).",
     fallback: "docs.setMode archived only; no permanent delete control."
   },
   {
@@ -9081,8 +8910,8 @@ var DESKTOP_CONTRACT_GAPS = [
   {
     id: "mcp.global-config",
     methods: ["mcp.list", "mcp.install"],
-    need: "Machine-global MCP server catalog independent of AgentProfile.",
-    fallback: "MCP is edited only as profile.mcpServers (next session); skill.list/install covers bundled skills only."
+    need: "Machine-global MCP server catalog independent of Settings routes.",
+    fallback: "MCP is edited only as route.mcpServers (next session); skill.list/install covers bundled skills only."
   },
   {
     id: "session.logs-reload",
@@ -9106,9 +8935,9 @@ var DESKTOP_CONTRACT_GAPS = [
   // registry.tags / registry.tag.create/delete, docs.setType / docs.tags.set /
   // docs.tag.add / docs.tag.remove. Desktop UI wiring is out of this batch.
   {
-    id: "userAsk.agent-profile",
-    methods: ["userAsk.sourceProfile"],
-    need: "Distinct source agent profile id on UserAsk projection (role alone is insufficient).",
+    id: "userAsk.source-route",
+    methods: ["userAsk.sourceRoute"],
+    need: "Distinct source route id on UserAsk projection (role alone is insufficient).",
     fallback: "UI labels source as role when present; sessionId shown only in detail notes."
   }
 ];
@@ -9117,7 +8946,7 @@ var DESKTOP_CONTRACT_GAPS = [
 var SECTIONS = [
   { id: "workspace", label: "\u5DE5\u4F5C\u533A" },
   { id: "roles", label: "\u89D2\u8272" },
-  { id: "profiles", label: "Agent Profiles" },
+  { id: "routes", label: "Routes" },
   { id: "credentials", label: "\u51ED\u8BC1" },
   { id: "skills", label: "Skills / MCP" },
   { id: "maintenance", label: "\u7EF4\u62A4" }
@@ -9127,7 +8956,7 @@ var providers = [];
 var credentials = [];
 var skills = [];
 var fullRoles = [];
-var fullProfiles = [];
+var fullRoutes = [];
 var settingsPolicy = "review";
 var agentsContent = "";
 var agentsEtag = "";
@@ -9135,32 +8964,32 @@ var agentsExists = false;
 var retentionPreview = null;
 var loadError2 = null;
 var loading = false;
-var profileEditId = null;
+var routeEditId = null;
 var skillDrafts = [];
 var mcpDrafts = [];
-var profileFieldDraft = null;
+var routeFieldDraft = null;
 var roleEditName = null;
-function openProfileEditor(id) {
-  profileEditId = id;
-  profileFieldDraft = null;
+function openRouteEditor(id) {
+  routeEditId = id;
+  routeFieldDraft = null;
   if (!id) {
     skillDrafts = [];
     mcpDrafts = [];
     return;
   }
-  const p = fullProfiles.find((x) => x.id === id);
-  skillDrafts = skillDraftsFromProjection(p?.skills);
-  mcpDrafts = mcpDraftsFromProjection(p?.mcpServers);
+  const route = fullRoutes.find((item) => item.routeId === id);
+  skillDrafts = skillDraftsFromProjection(route?.skills);
+  mcpDrafts = mcpDraftsFromProjection(route?.mcpServers);
 }
-function captureProfileFieldDraft() {
-  if (!profileEditId) return;
-  profileFieldDraft = {
-    displayName: document.getElementById("prof-edit-name")?.value ?? "",
-    model: document.getElementById("prof-edit-model")?.value ?? "",
-    executable: document.getElementById("prof-edit-exe")?.value ?? "",
-    envKey: document.getElementById("prof-edit-env")?.value ?? "",
-    credentialRef: document.getElementById("prof-edit-cred")?.value ?? "",
-    baseUrl: document.getElementById("prof-edit-base")?.value ?? ""
+function captureRouteFieldDraft() {
+  if (!routeEditId) return;
+  routeFieldDraft = {
+    displayName: document.getElementById("route-edit-name")?.value ?? "",
+    model: document.getElementById("route-edit-model")?.value ?? "",
+    executable: document.getElementById("route-edit-exe")?.value ?? "",
+    envKey: document.getElementById("route-edit-env")?.value ?? "",
+    credentialRef: document.getElementById("route-edit-cred")?.value ?? "",
+    baseUrl: document.getElementById("route-edit-base")?.value ?? ""
   };
 }
 function configuredCredentialIds() {
@@ -9182,7 +9011,7 @@ async function reloadSettings() {
       loadSkills(),
       workspaceId ? loadWorkspaceSettings() : Promise.resolve(),
       workspaceId ? loadRolesFull() : Promise.resolve(),
-      loadProfilesFull()
+      loadRoutesFull()
     ]);
     loading = false;
     renderSettings();
@@ -9199,12 +9028,12 @@ async function loadSectionData(s) {
       await Promise.all([loadWorkspaceSettings(), loadAgents()]);
     } else if (s === "roles" && workspaceId) {
       await loadRolesFull();
-    } else if (s === "profiles") {
-      await Promise.all([loadProfilesFull(), loadProviders(), loadCredentials()]);
+    } else if (s === "routes") {
+      await Promise.all([loadRoutesFull(), loadProviders(), loadCredentials()]);
     } else if (s === "credentials") {
       await loadCredentials();
     } else if (s === "skills") {
-      await Promise.all([loadSkills(), loadProfilesFull(), loadCredentials()]);
+      await Promise.all([loadSkills(), loadRoutesFull(), loadCredentials()]);
     } else if (s === "maintenance" && workspaceId) {
       await loadRetentionPreview();
     }
@@ -9254,10 +9083,10 @@ async function loadRolesFull() {
     }))
   );
 }
-async function loadProfilesFull() {
-  const result = await window.tentDesktop.rpc("profile.list", {});
-  fullProfiles = result.profiles || [];
-  await reloadProfiles();
+async function loadRoutesFull() {
+  const result = await window.tentDesktop.rpc("route.list", {});
+  fullRoutes = result.routes || [];
+  await reloadRoutes();
 }
 async function loadRetentionPreview() {
   if (!workspaceId) return;
@@ -9274,7 +9103,7 @@ function renderSettings() {
     return `<button type="button" class="settings-nav-item${active}" data-settings-nav="${s.id}">${escapeHtml(s.label)}</button>`;
   }).join("");
   let body = "";
-  if (loading && !providers.length && !fullProfiles.length) {
+  if (loading && !providers.length && !fullRoutes.length) {
     body = `<p class="muted">\u52A0\u8F7D\u4E2D\u2026</p>`;
   } else if (loadError2) {
     body = `<p class="muted">${escapeHtml(loadError2)}</p>`;
@@ -9300,8 +9129,8 @@ function renderSectionBody(s) {
       return renderWorkspace();
     case "roles":
       return renderRoles();
-    case "profiles":
-      return renderProfiles();
+    case "routes":
+      return renderRoutes();
     case "credentials":
       return renderCredentials();
     case "skills":
@@ -9341,13 +9170,10 @@ function renderRoles() {
   }
   const list2 = fullRoles.length === 0 ? `<p class="muted">\u6682\u65E0\u89D2\u8272</p>` : `<ul class="settings-list">${fullRoles.map((r) => {
     const label = r.displayName && r.displayName !== r.name ? `${r.displayName} \xB7 ${r.name}` : r.name;
-    const pol = r.a2aPolicy || "deny";
-    const rosterBit = r.roster && r.roster.length ? ` \xB7 roster ${r.roster.length}` : "";
     const editing2 = roleEditName === r.name;
     return `<li class="settings-list-item${editing2 ? " is-editing" : ""}">
               <div class="settings-list-main">
                 <strong>${escapeHtml(label)}</strong>
-                <span class="muted">a2a ${escapeHtml(pol)}${escapeHtml(rosterBit)}</span>
                 ${r.roleId ? `<span class="faint"><code>${escapeHtml(r.roleId)}</code></span>` : ""}
                 ${r.description ? `<span class="muted">${escapeHtml(r.description)}</span>` : ""}
               </div>
@@ -9366,25 +9192,18 @@ function renderRoles() {
         <input id="role-description" class="field" placeholder="\u63CF\u8FF0\uFF08\u53EF\u9009\uFF09" />
         <textarea id="role-prompt" class="field settings-role-prompt" rows="3" placeholder="prompt\uFF08\u53EF\u9009\uFF09"></textarea>
         <input id="role-color" class="field" placeholder="\u989C\u8272 token\uFF08\u53EF\u9009\uFF0C\u5982 gray\uFF09" />
-        <select id="role-a2a" class="field">
-          <option value="deny">a2a: deny</option>
-          <option value="ask">a2a: ask</option>
-          <option value="allow">a2a: allow</option>
-        </select>
         <button type="button" id="btn-role-create" class="btn btn-primary">\u521B\u5EFA</button>
       </div>
     </div>`;
   return `
     <div class="settings-block">
       <div class="surface-section-head">\u89D2\u8272</div>
-      <p class="muted">\u8FD0\u8425\u952E name \u4E0D\u53EF\u6539\uFF1B\u663E\u793A\u540D / prompt / a2a / \u767D\u540D\u5355\u7ECF registry.role.update\u3002</p>
+      <p class="muted">\u8FD0\u8425\u952E name \u4E0D\u53EF\u6539\uFF1B\u663E\u793A\u540D\u548C prompt \u7ECF registry.role.update\u3002</p>
       ${list2}
     </div>
     ${editor}`;
 }
 function renderRoleEditor(role) {
-  const pol = role.a2aPolicy || "deny";
-  const rosterText = formatRosterText(role.roster);
   return `
     <div class="settings-block">
       <div class="surface-section-head">\u7F16\u8F91\u89D2\u8272 \xB7 ${escapeHtml(role.name)}
@@ -9400,62 +9219,56 @@ function renderRoleEditor(role) {
         <textarea id="role-edit-prompt" class="field settings-role-prompt" rows="5">${escapeHtml(role.prompt || "")}</textarea>
         <label class="settings-label" for="role-edit-color">\u989C\u8272</label>
         <input id="role-edit-color" class="field" value="${escapeHtml(role.color || "")}" placeholder="gray / blue \u2026" />
-        <label class="settings-label" for="role-edit-a2a">a2aPolicy</label>
-        <select id="role-edit-a2a" class="field">
-          <option value="deny"${pol === "deny" ? " selected" : ""}>deny</option>
-          <option value="ask"${pol === "ask" ? " selected" : ""}>ask</option>
-          <option value="allow"${pol === "allow" ? " selected" : ""}>allow</option>
-        </select>
-        <label class="settings-label" for="role-edit-roster">roster\uFF08\u9017\u53F7\u5206\u9694 agentId\uFF1B\u7A7A=\u6E05\u7A7A\uFF09</label>
-        <input id="role-edit-roster" class="field" value="${escapeHtml(rosterText)}" placeholder="\u4F8B\u5982 core-worker" />
         <div class="settings-row">
           <button type="button" id="btn-role-save" class="btn btn-primary">\u4FDD\u5B58</button>
         </div>
       </div>
     </div>`;
 }
-function renderProfiles() {
+function renderRoutes() {
   const providerNote = providers.length === 0 ? `<p class="muted">provider.catalog \u4E0D\u53EF\u7528</p>` : `<ul class="settings-provider-list">${providers.map(
     (p) => `<li><code>${escapeHtml(p.adapterId)}</code>
               <span class="badge-level" data-level="${escapeHtml(String(p.verificationLevel))}">${escapeHtml(p.levelLabel)}</span>
               ${p.canResume ? `<span class="faint">resume</span>` : ""}
               ${p.notes ? `<span class="muted">${escapeHtml(p.notes)}</span>` : ""}</li>`
   ).join("")}</ul>`;
-  const list2 = fullProfiles.length === 0 ? `<p class="muted">\u6682\u65E0 profile</p>` : `<ul class="settings-list">${fullProfiles.map((p) => {
-    const level = providers.find((x) => x.adapterId === p.adapterId);
+  const list2 = fullRoutes.length === 0 ? `<p class="muted">\u6682\u65E0 route</p>` : `<ul class="settings-list">${fullRoutes.map((route) => {
+    const level = providers.find((x) => x.adapterId === route.adapterId);
     const levelBit = level ? `<span class="badge-level" data-level="${escapeHtml(String(level.verificationLevel))}">${escapeHtml(level.levelLabel)}</span>` : `<span class="faint">\u672A\u6536\u5F55 catalog</span>`;
-    const cred = p.credentialRef != null ? p.credentialExists ? `\u51ED\u8BC1\u5DF2\u914D\u7F6E` : `\u51ED\u8BC1\u7F3A\u5931` : "";
-    const label = profileDisplayLabel(p);
+    const cred = route.credentialRef != null ? route.credentialExists ? `\u51ED\u8BC1\u5DF2\u914D\u7F6E` : `\u51ED\u8BC1\u7F3A\u5931` : "";
+    const label = routeDisplayLabel(route);
     return `<li class="settings-list-item">
               <div class="settings-list-main">
                 <strong>${escapeHtml(label)}</strong>
-                <span class="faint"><code>${escapeHtml(p.id)}</code> \xB7 <code>${escapeHtml(p.adapterId)}</code></span>
-                <span class="muted">${p.model ? escapeHtml(p.model) : ""}</span>
+                <span class="faint"><code>${escapeHtml(route.routeId)}</code> \xB7 <code>${escapeHtml(route.adapterId)}</code></span>
+                <span class="muted">${route.model ? escapeHtml(route.model) : ""}</span>
                 ${levelBit}
                 ${cred ? `<span class="faint">${escapeHtml(cred)}</span>` : ""}
               </div>
               <div class="settings-list-actions">
-                <button type="button" class="btn btn-ghost" data-profile-edit="${escapeHtml(p.id)}">\u7F16\u8F91</button>
-                <button type="button" class="btn btn-ghost" data-profile-delete="${escapeHtml(p.id)}">\u5220\u9664</button>
+                <button type="button" class="btn btn-ghost" data-route-edit="${escapeHtml(route.routeId)}">\u7F16\u8F91</button>
+                <button type="button" class="btn btn-ghost" data-route-delete="${escapeHtml(route.routeId)}">\u5220\u9664</button>
               </div>
             </li>`;
   }).join("")}</ul>`;
-  const editing = profileEditId ? fullProfiles.find((p) => p.id === profileEditId) : null;
-  const editor = editing ? renderProfileEditor(editing) : `<div class="settings-block">
-        <div class="surface-section-head">\u65B0\u5EFA profile</div>
-        <p class="muted">${escapeHtml(PROFILE_NEXT_SESSION_TIP)}</p>
+  const editing = routeEditId ? fullRoutes.find((route) => route.routeId === routeEditId) : null;
+  const editor = editing ? renderRouteEditor(editing) : `<div class="settings-block">
+        <div class="surface-section-head">\u65B0\u5EFA route</div>
+        <p class="muted">${escapeHtml(ROUTE_NEXT_SESSION_TIP)}</p>
         <div class="settings-form">
-          <label class="settings-label" for="prof-id">id\uFF08\u521B\u5EFA\u540E\u4E0D\u53EF\u6539\uFF09</label>
-          <input id="prof-id" class="field" placeholder="id" autocomplete="off" />
-          <label class="settings-label" for="prof-adapter">adapterId\uFF08\u521B\u5EFA\u540E\u4E0D\u53EF\u6539\uFF09</label>
-          <input id="prof-adapter" class="field" placeholder="adapterId" list="adapter-list" autocomplete="off" />
+          <label class="settings-label" for="route-id">routeId\uFF08\u521B\u5EFA\u540E\u4E0D\u53EF\u6539\uFF09</label>
+          <input id="route-id" class="field" placeholder="routeId" autocomplete="off" />
+          <label class="settings-label" for="route-provider">provider</label>
+          <input id="route-provider" class="field" placeholder="provider" autocomplete="off" />
+          <label class="settings-label" for="route-adapter">adapterId</label>
+          <input id="route-adapter" class="field" placeholder="adapterId" list="adapter-list" autocomplete="off" />
           <datalist id="adapter-list">${providers.map((p) => `<option value="${escapeHtml(p.adapterId)}">`).join("")}</datalist>
-          <label class="settings-label" for="prof-name">\u663E\u793A\u540D</label>
-          <input id="prof-name" class="field" placeholder="displayName" />
-          <input id="prof-model" class="field" placeholder="model" />
-          <input id="prof-env" class="field" placeholder="envKey\uFF08\u73AF\u5883\u53D8\u91CF\u540D\uFF0C\u975E secret\uFF09" />
-          <input id="prof-cred" class="field" placeholder="credentialRef\uFF08\u51ED\u8BC1 id\uFF0C\u975E secret\uFF09" />
-          <button type="button" id="btn-prof-create" class="btn btn-primary">\u521B\u5EFA</button>
+          <label class="settings-label" for="route-name">\u663E\u793A\u540D</label>
+          <input id="route-name" class="field" placeholder="displayName" />
+          <input id="route-model" class="field" placeholder="model" />
+          <input id="route-env" class="field" placeholder="envKey\uFF08\u73AF\u5883\u53D8\u91CF\u540D\uFF0C\u975E secret\uFF09" />
+          <input id="route-cred" class="field" placeholder="credentialRef\uFF08\u51ED\u8BC1 id\uFF0C\u975E secret\uFF09" />
+          <button type="button" id="btn-route-create" class="btn btn-primary">\u521B\u5EFA</button>
         </div>
       </div>`;
   return `
@@ -9465,21 +9278,21 @@ function renderProfiles() {
       ${providerNote}
     </div>
     <div class="settings-block">
-      <div class="surface-section-head">Profiles</div>
-      <p class="muted">${escapeHtml(PROFILE_NEXT_SESSION_TIP)}</p>
+      <div class="surface-section-head">Routes</div>
+      <p class="muted">${escapeHtml(ROUTE_NEXT_SESSION_TIP)}</p>
       ${list2}
     </div>
     ${editor}`;
 }
-function renderProfileEditor(p) {
-  const label = profileDisplayLabel(p);
-  const fields = profileFieldDraft ?? {
-    displayName: p.displayName || "",
-    model: p.model || "",
-    executable: p.executable || "",
-    envKey: p.envKey || "",
-    credentialRef: p.credentialRef || "",
-    baseUrl: p.baseUrl || ""
+function renderRouteEditor(route) {
+  const label = routeDisplayLabel(route);
+  const fields = routeFieldDraft ?? {
+    displayName: route.displayName || "",
+    model: route.model || "",
+    executable: route.executable || "",
+    envKey: route.envKey || "",
+    credentialRef: route.credentialRef || "",
+    baseUrl: route.baseUrl || ""
   };
   const credIds = configuredCredentialIds();
   const skillList = skillDrafts.length === 0 ? `<p class="muted">\u65E0 skill \u5F15\u7528</p>` : `<ul class="settings-list">${skillDrafts.map((s) => {
@@ -9518,29 +9331,29 @@ function renderProfileEditor(p) {
   return `
     <div class="settings-block">
       <div class="surface-section-head">\u7F16\u8F91 \xB7 ${escapeHtml(label)}
-        <button type="button" class="btn btn-ghost" id="btn-prof-edit-close">\u5173\u95ED</button>
+        <button type="button" class="btn btn-ghost" id="btn-route-edit-close">\u5173\u95ED</button>
       </div>
-      <p class="muted">id <code>${escapeHtml(p.id)}</code> \xB7 adapterId <code>${escapeHtml(p.adapterId)}</code>\uFF08\u5747\u4E0D\u53EF\u6539\uFF09</p>
-      <p class="faint">${escapeHtml(PROFILE_NEXT_SESSION_TIP)} \xB7 \u8FD0\u884C\u4E2D session \u4E0D\u70ED\u66F4\u65B0 \xB7 \u52FF\u5199 secret</p>
+      <p class="muted">routeId <code>${escapeHtml(route.routeId)}</code> \xB7 adapterId <code>${escapeHtml(route.adapterId)}</code></p>
+      <p class="faint">${escapeHtml(ROUTE_NEXT_SESSION_TIP)} \xB7 \u8FD0\u884C\u4E2D session \u4E0D\u70ED\u66F4\u65B0 \xB7 \u52FF\u5199 secret</p>
       <div class="settings-form">
-        <label class="settings-label" for="prof-edit-name">\u663E\u793A\u540D</label>
-        <input id="prof-edit-name" class="field" value="${escapeHtml(fields.displayName)}" placeholder="\u7559\u7A7A\u5219\u56DE\u9000\u5230 id" />
-        <label class="settings-label" for="prof-edit-model">model</label>
-        <input id="prof-edit-model" class="field" value="${escapeHtml(fields.model)}" placeholder="model" />
-        <label class="settings-label" for="prof-edit-exe">executable</label>
-        <input id="prof-edit-exe" class="field" value="${escapeHtml(fields.executable)}" placeholder="executable" />
-        <label class="settings-label" for="prof-edit-env">envKey\uFF08\u73AF\u5883\u53D8\u91CF\u540D\uFF09</label>
-        <input id="prof-edit-env" class="field" value="${escapeHtml(fields.envKey)}" placeholder="envKey" />
-        <label class="settings-label" for="prof-edit-cred">credentialRef\uFF08\u51ED\u8BC1 id\uFF09</label>
-        <input id="prof-edit-cred" class="field" value="${escapeHtml(fields.credentialRef)}" placeholder="credentialRef" list="cred-ref-list" />
+        <label class="settings-label" for="route-edit-name">\u663E\u793A\u540D</label>
+        <input id="route-edit-name" class="field" value="${escapeHtml(fields.displayName)}" placeholder="\u7559\u7A7A\u5219\u56DE\u9000\u5230 routeId" />
+        <label class="settings-label" for="route-edit-model">model</label>
+        <input id="route-edit-model" class="field" value="${escapeHtml(fields.model)}" placeholder="model" />
+        <label class="settings-label" for="route-edit-exe">executable</label>
+        <input id="route-edit-exe" class="field" value="${escapeHtml(fields.executable)}" placeholder="executable" />
+        <label class="settings-label" for="route-edit-env">envKey\uFF08\u73AF\u5883\u53D8\u91CF\u540D\uFF09</label>
+        <input id="route-edit-env" class="field" value="${escapeHtml(fields.envKey)}" placeholder="envKey" />
+        <label class="settings-label" for="route-edit-cred">credentialRef\uFF08\u51ED\u8BC1 id\uFF09</label>
+        <input id="route-edit-cred" class="field" value="${escapeHtml(fields.credentialRef)}" placeholder="credentialRef" list="cred-ref-list" />
         <datalist id="cred-ref-list">${credOptions}</datalist>
-        <label class="settings-label" for="prof-edit-base">baseUrl</label>
-        <input id="prof-edit-base" class="field" value="${escapeHtml(fields.baseUrl)}" placeholder="baseUrl" />
+        <label class="settings-label" for="route-edit-base">baseUrl</label>
+        <input id="route-edit-base" class="field" value="${escapeHtml(fields.baseUrl)}" placeholder="baseUrl" />
       </div>
     </div>
     <div class="settings-block">
       <div class="surface-section-head">Skills</div>
-      <p class="faint">\u53EA\u4FDD\u5B58 name/path/enabled \xB7 \u4E0D\u5B58 displayName \xB7 ${escapeHtml(PROFILE_SKILLS_METADATA_TIP)} \xB7 ${escapeHtml(PROFILE_NEXT_SESSION_TIP)}</p>
+      <p class="faint">\u53EA\u4FDD\u5B58 name/path/enabled \xB7 \u4E0D\u5B58 displayName \xB7 ${escapeHtml(ROUTE_SKILLS_METADATA_TIP)} \xB7 ${escapeHtml(ROUTE_NEXT_SESSION_TIP)}</p>
       ${skillList}
       <div class="settings-form settings-form-inline">
         <input id="skill-add-name" class="field" placeholder="skill name\uFF08id\uFF09" autocomplete="off" list="bundled-skill-list" />
@@ -9551,7 +9364,7 @@ function renderProfileEditor(p) {
     </div>
     <div class="settings-block">
       <div class="surface-section-head">MCP Servers</div>
-      <p class="faint">\u53EA\u4FDD\u5B58 id/ref \xB7 credential \u4EC5\u663E\u793A\u5DF2\u914D\u7F6E \xB7 ${escapeHtml(PROFILE_NEXT_SESSION_TIP)}</p>
+      <p class="faint">\u53EA\u4FDD\u5B58 id/ref \xB7 credential \u4EC5\u663E\u793A\u5DF2\u914D\u7F6E \xB7 ${escapeHtml(ROUTE_NEXT_SESSION_TIP)}</p>
       ${mcpList}
       <div class="settings-form">
         <div class="settings-form-inline">
@@ -9572,7 +9385,7 @@ function renderProfileEditor(p) {
     </div>
     <div class="settings-block">
       <div class="settings-row">
-        <button type="button" id="btn-prof-save" class="btn btn-primary">\u4FDD\u5B58\uFF08\u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548\uFF09</button>
+        <button type="button" id="btn-route-save" class="btn btn-primary">\u4FDD\u5B58\uFF08\u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548\uFF09</button>
       </div>
     </div>`;
 }
@@ -9622,26 +9435,26 @@ function renderSkills() {
   }).join("")}</ul>`;
   const credIds = configuredCredentialIds();
   const mcpNote = `
-    <p class="muted">MCP / Profile Skills \u5728 Agent Profile \u7F16\u8F91\u5668\u4E2D\u7528\u5217\u8868 + \u542F\u7528\u5F00\u5173\u7BA1\u7406\u3002${escapeHtml(PROFILE_NEXT_SESSION_TIP)}\u3002\u8FD0\u884C\u4E2D session \u4E0D\u70ED\u66F4\u65B0\u3002</p>
+    <p class="muted">MCP / Route Skills \u5728 Route \u7F16\u8F91\u5668\u4E2D\u7528\u5217\u8868 + \u542F\u7528\u5F00\u5173\u7BA1\u7406\u3002${escapeHtml(ROUTE_NEXT_SESSION_TIP)}\u3002\u8FD0\u884C\u4E2D session \u4E0D\u70ED\u66F4\u65B0\u3002</p>
     <p class="faint">\u65E0\u5168\u5C40 mcp.* RPC \xB7 \u89C1\u5951\u7EA6\u7F3A\u53E3 mcp.global-config \xB7 \u4E0D\u4F2A\u9020\u5168\u5C40\u76EE\u5F55</p>
-    <ul class="settings-list">${fullProfiles.map((p) => {
-    const skillBits = (p.skills || []).map((s) => `${s.name}${s.enabled === false ? "\xB7\u5173" : "\xB7\u5F00"}`).join(" ");
-    const mcpBits = (p.mcpServers || []).map((m) => {
+    <ul class="settings-list">${fullRoutes.map((route) => {
+    const skillBits = (route.skills || []).map((s) => `${s.name}${s.enabled === false ? "\xB7\u5173" : "\xB7\u5F00"}`).join(" ");
+    const mcpBits = (route.mcpServers || []).map((m) => {
       const cred = mcpCredentialStatusLine(m, credIds);
       return `${m.name}${m.enabled === false ? "\xB7\u5173" : "\xB7\u5F00"}${cred ? `(${cred})` : ""}`;
     }).join(" ");
     return `<li class="settings-list-item">
           <div class="settings-list-main">
-            <strong>${escapeHtml(profileDisplayLabel(p))}</strong>
-            <span class="faint"><code>${escapeHtml(p.id)}</code></span>
+            <strong>${escapeHtml(routeDisplayLabel(route))}</strong>
+            <span class="faint"><code>${escapeHtml(route.routeId)}</code></span>
             <span class="muted">skills ${escapeHtml(skillBits || "\u2014")}</span>
             <span class="muted">mcp ${escapeHtml(mcpBits || "\u2014")}</span>
           </div>
           <div class="settings-list-actions">
-            <button type="button" class="btn btn-ghost" data-profile-edit="${escapeHtml(p.id)}">\u7F16\u8F91 Skills/MCP</button>
+            <button type="button" class="btn btn-ghost" data-route-edit="${escapeHtml(route.routeId)}">\u7F16\u8F91 Skills/MCP</button>
           </div>
         </li>`;
-  }).join("") || `<li class="muted">\u65E0 profile</li>`}</ul>`;
+  }).join("") || `<li class="muted">\u65E0 route</li>`}</ul>`;
   return `
     <div class="settings-block">
       <div class="surface-section-head">Bundled Skills\uFF08skill.list / skill.install\uFF09</div>
@@ -9652,7 +9465,7 @@ function renderSkills() {
       </div>
     </div>
     <div class="settings-block">
-      <div class="surface-section-head">Profile Skills / MCP</div>
+      <div class="surface-section-head">Route Skills / MCP</div>
       ${mcpNote}
     </div>`;
 }
@@ -9705,24 +9518,24 @@ function wireSection(s, root) {
       btn.addEventListener("click", () => void onRoleDelete(btn.getAttribute("data-role-delete")));
     });
   }
-  if (s === "profiles" || s === "skills") {
-    document.getElementById("btn-prof-create")?.addEventListener("click", () => void onProfileCreate());
-    document.getElementById("btn-prof-save")?.addEventListener("click", () => void onProfileSave());
-    document.getElementById("btn-prof-edit-close")?.addEventListener("click", () => {
-      openProfileEditor(null);
+  if (s === "routes" || s === "skills") {
+    document.getElementById("btn-route-create")?.addEventListener("click", () => void onRouteCreate());
+    document.getElementById("btn-route-save")?.addEventListener("click", () => void onRouteSave());
+    document.getElementById("btn-route-edit-close")?.addEventListener("click", () => {
+      openRouteEditor(null);
       renderSettings();
     });
-    root.querySelectorAll("[data-profile-edit]").forEach((btn) => {
+    root.querySelectorAll("[data-route-edit]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const id = btn.getAttribute("data-profile-edit");
-        section = "profiles";
-        openProfileEditor(id);
+        const id = btn.getAttribute("data-route-edit");
+        section = "routes";
+        openRouteEditor(id);
         void loadCredentials().then(() => renderSettings());
         renderSettings();
       });
     });
-    root.querySelectorAll("[data-profile-delete]").forEach((btn) => {
-      btn.addEventListener("click", () => void onProfileDelete(btn.getAttribute("data-profile-delete")));
+    root.querySelectorAll("[data-route-delete]").forEach((btn) => {
+      btn.addEventListener("click", () => void onRouteDelete(btn.getAttribute("data-route-delete")));
     });
     root.querySelectorAll("[data-skill-toggle]").forEach((box) => {
       box.addEventListener("change", () => {
@@ -9735,7 +9548,7 @@ function wireSection(s, root) {
       btn.addEventListener("click", () => {
         const name = btn.getAttribute("data-skill-remove");
         if (!name) return;
-        captureProfileFieldDraft();
+        captureRouteFieldDraft();
         skillDrafts = removeSkillDraft(skillDrafts, name);
         renderSettings();
       });
@@ -9752,7 +9565,7 @@ function wireSection(s, root) {
       btn.addEventListener("click", () => {
         const name = btn.getAttribute("data-mcp-remove");
         if (!name) return;
-        captureProfileFieldDraft();
+        captureRouteFieldDraft();
         mcpDrafts = removeMcpDraft(mcpDrafts, name);
         renderSettings();
       });
@@ -9821,8 +9634,7 @@ async function onRoleCreate() {
   const description = document.getElementById("role-description")?.value || "";
   const prompt = document.getElementById("role-prompt")?.value || "";
   const color = document.getElementById("role-color")?.value || "";
-  const a2aPolicy = document.getElementById("role-a2a")?.value;
-  const built = validateRoleCreate({ name, displayName, description, prompt, color, a2aPolicy });
+  const built = validateRoleCreate({ name, displayName, description, prompt, color });
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
@@ -9851,17 +9663,13 @@ async function onRoleSave() {
   const description = document.getElementById("role-edit-description")?.value || "";
   const prompt = document.getElementById("role-edit-prompt")?.value || "";
   const color = document.getElementById("role-edit-color")?.value || "";
-  const a2aPolicy = document.getElementById("role-edit-a2a")?.value;
-  const rosterText = document.getElementById("role-edit-roster")?.value || "";
   const built = validateRoleUpdate({
     name: roleEditName,
     roleId: role?.roleId,
     displayName,
     description,
     prompt,
-    color,
-    a2aPolicy,
-    rosterText
+    color
   });
   if (!built.ok) {
     el.status.textContent = built.reason;
@@ -9902,26 +9710,27 @@ async function onRoleDelete(name) {
     setError(err);
   }
 }
-async function onProfileCreate() {
+async function onRouteCreate() {
   const draft = {
-    id: document.getElementById("prof-id")?.value || "",
-    adapterId: document.getElementById("prof-adapter")?.value || "",
-    displayName: document.getElementById("prof-name")?.value || "",
-    model: document.getElementById("prof-model")?.value || "",
-    envKey: document.getElementById("prof-env")?.value || "",
-    credentialRef: document.getElementById("prof-cred")?.value || ""
+    routeId: document.getElementById("route-id")?.value || "",
+    provider: document.getElementById("route-provider")?.value || "",
+    adapterId: document.getElementById("route-adapter")?.value || "",
+    displayName: document.getElementById("route-name")?.value || "",
+    model: document.getElementById("route-model")?.value || "",
+    envKey: document.getElementById("route-env")?.value || "",
+    credentialRef: document.getElementById("route-cred")?.value || ""
   };
-  const built = validateProfileCreate(draft);
+  const built = validateRouteCreate(draft);
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
   }
-  const createBtn = document.getElementById("btn-prof-create");
+  const createBtn = document.getElementById("btn-route-create");
   if (createBtn) createBtn.disabled = true;
   try {
-    await window.tentDesktop.rpc("profile.create", built.payload);
-    el.status.textContent = `\u5DF2\u521B\u5EFA profile ${draft.id.trim()}`;
-    await loadProfilesFull();
+    await window.tentDesktop.rpc("route.create", built.payload);
+    el.status.textContent = `\u5DF2\u521B\u5EFA route ${draft.routeId.trim()}`;
+    await loadRoutesFull();
     renderSettings();
   } catch (err) {
     setError(err);
@@ -9940,7 +9749,7 @@ function onSkillAdd() {
     el.status.textContent = `skill ${built.entry.name} \u5DF2\u5728\u5217\u8868\u4E2D`;
     return;
   }
-  captureProfileFieldDraft();
+  captureRouteFieldDraft();
   skillDrafts = [...skillDrafts, built.entry];
   renderSettings();
 }
@@ -9967,20 +9776,20 @@ function onMcpAdd() {
     el.status.textContent = `MCP ${built.entry.name} \u5DF2\u5728\u5217\u8868\u4E2D`;
     return;
   }
-  captureProfileFieldDraft();
+  captureRouteFieldDraft();
   mcpDrafts = [...mcpDrafts, built.entry];
   renderSettings();
 }
-async function onProfileSave() {
-  if (!profileEditId) return;
-  const built = validateProfileUpdate({
-    id: profileEditId,
-    displayName: document.getElementById("prof-edit-name")?.value || "",
-    model: document.getElementById("prof-edit-model")?.value || "",
-    executable: document.getElementById("prof-edit-exe")?.value || "",
-    envKey: document.getElementById("prof-edit-env")?.value || "",
-    credentialRef: document.getElementById("prof-edit-cred")?.value || "",
-    baseUrl: document.getElementById("prof-edit-base")?.value || ""
+async function onRouteSave() {
+  if (!routeEditId) return;
+  const built = validateRouteUpdate({
+    routeId: routeEditId,
+    displayName: document.getElementById("route-edit-name")?.value || "",
+    model: document.getElementById("route-edit-model")?.value || "",
+    executable: document.getElementById("route-edit-exe")?.value || "",
+    envKey: document.getElementById("route-edit-env")?.value || "",
+    credentialRef: document.getElementById("route-edit-cred")?.value || "",
+    baseUrl: document.getElementById("route-edit-base")?.value || ""
   });
   if (!built.ok) {
     el.status.textContent = built.reason;
@@ -9994,26 +9803,26 @@ async function onProfileSave() {
     skills: skillsPayload.length ? skillsPayload : null,
     mcpServers: mcpPayload.length ? mcpPayload : null
   };
-  const saveBtn = document.getElementById("btn-prof-save");
+  const saveBtn = document.getElementById("btn-route-save");
   if (saveBtn) saveBtn.disabled = true;
   try {
-    await window.tentDesktop.rpc("profile.update", patch);
-    el.status.textContent = `Profile \u5DF2\u4FDD\u5B58 \xB7 \u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548\uFF08\u8FD0\u884C\u4E2D session \u4E0D\u70ED\u66F4\u65B0\uFF09`;
-    await loadProfilesFull();
-    openProfileEditor(profileEditId);
+    await window.tentDesktop.rpc("route.update", patch);
+    el.status.textContent = `Route \u5DF2\u4FDD\u5B58 \xB7 \u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548\uFF08\u8FD0\u884C\u4E2D session \u4E0D\u70ED\u66F4\u65B0\uFF09`;
+    await loadRoutesFull();
+    openRouteEditor(routeEditId);
     renderSettings();
   } catch (err) {
     setError(err);
     if (saveBtn) saveBtn.disabled = false;
   }
 }
-async function onProfileDelete(id) {
-  if (!window.confirm(`\u5220\u9664 profile\u300C${id}\u300D\uFF1F`)) return;
+async function onRouteDelete(routeId) {
+  if (!window.confirm(`\u5220\u9664 route\u300C${routeId}\u300D\uFF1F`)) return;
   try {
-    await window.tentDesktop.rpc("profile.delete", { id });
-    if (profileEditId === id) openProfileEditor(null);
-    el.status.textContent = `\u5DF2\u5220\u9664 profile ${id}`;
-    await loadProfilesFull();
+    await window.tentDesktop.rpc("route.delete", { routeId });
+    if (routeEditId === routeId) openRouteEditor(null);
+    el.status.textContent = `\u5DF2\u5220\u9664 route ${routeId}`;
+    await loadRoutesFull();
     renderSettings();
   } catch (err) {
     setError(err);
@@ -10149,9 +9958,10 @@ bindStateHost({
     if (getSurface() === "activity") renderActivity();
   },
   renderMeta,
-  renderBacklinks
+  renderBacklinks,
+  openNode
 });
-bindTreeHost({ openConcept });
+bindTreeHost({ openNode });
 bindDocumentHost({
   renderAll,
   renderTabs,
@@ -10159,13 +9969,13 @@ bindDocumentHost({
   loadCards,
   openWorkspace: () => void onOpenWorkspace(),
   onConceptOpened: async () => {
-    await Promise.all([reloadBoxProjections(), reloadActiveBacklinks()]);
+    await Promise.all([reloadNodeCollaborations(), reloadActiveBacklinks()]);
     renderTree();
     renderMeta();
     renderBacklinks();
   }
 });
-bindInspectorHost({ renderAll, openConcept });
+bindInspectorHost({ renderAll, openNode });
 bindDispatchHost({ renderDispatchPanel });
 bindShellHost({
   onSurfaceChange: (surface) => {
@@ -10173,7 +9983,7 @@ bindShellHost({
   }
 });
 bindGraphHost({
-  openConcept,
+  openNode,
   goWorkbench: () => setSurface("workbench")
 });
 bindActivityHost({
@@ -10195,7 +10005,7 @@ async function boot() {
   document.getElementById("btn-open-ws").addEventListener("click", onOpenWorkspace);
   document.getElementById("btn-refresh").addEventListener("click", () => void refresh());
   document.getElementById("btn-new-note").addEventListener("click", () => void onCreateNote());
-  el.btnNewBox.addEventListener("click", () => void onCreateCoordBox());
+  el.btnNewBox.addEventListener("click", () => void onCreateNode());
   el.createType.addEventListener("change", () => {
     setCreateTypePick(el.createType.value);
   });
@@ -10232,12 +10042,12 @@ async function refresh() {
       reloadTree(),
       reloadRegistry(),
       reloadTasks(),
-      reloadProfiles(),
+      reloadRoutes(),
       reloadPendingInteractions()
     ]);
     onGraphTreeChanged();
   } else {
-    await reloadProfiles();
+    await reloadRoutes();
   }
   updateActivityChrome();
   const surface = getSurface();
@@ -10278,11 +10088,11 @@ function applyShell(s) {
   if (s.roles) {
     setRoles(s.roles);
   }
-  if (s.profiles?.length) {
-    setProfiles(s.profiles);
+  if (s.routes?.length) {
+    setRoutes(s.routes);
   }
-  if (s.selectedProfileId !== void 0) {
-    setSelectedProfileId(s.selectedProfileId);
+  if (s.selectedRouteId !== void 0) {
+    setSelectedRouteId(s.selectedRouteId);
   }
   if (s.taskReview?.length) {
     setTaskReview(s.taskReview);
@@ -10292,14 +10102,15 @@ function applyShell(s) {
         s.tasks.map((t) => ({
           path: t.path,
           id: t.id,
-          role: t.role,
-          referencedNodeIds: t.referencedNodeIds || [],
-          status: t.status === "taken" ? "taken" : "pending",
-          state: t.state || t.status,
+          assigneeKind: t.assigneeKind,
+          assigneeId: t.assigneeId,
+          referencedNodeIds: t.referencedNodeIds,
+          state: t.state,
           prompt: t.prompt,
           activeDeliveryId: t.activeDeliveryId,
           sessionId: t.sessionId,
-          manifest: ""
+          manifest: "",
+          contextCard: t.contextCard
         })),
         deliveries,
         sessions

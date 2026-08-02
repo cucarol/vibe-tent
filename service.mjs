@@ -7,14 +7,14 @@ var __export = (target, all2) => {
 };
 
 // src/service/cli.ts
-import * as path22 from "node:path";
+import * as path21 from "node:path";
 
 // src/service/http-server.ts
 import * as http from "node:http";
 
 // src/core/frontmatter.ts
 var FENCE = "---";
-var BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags", "mode", "relations"];
+var NODE_FRONTMATTER_KEY_ORDER = ["id", "type", "tags", "mode", "relations"];
 function parseFrontmatter(raw) {
   const text3 = raw.replace(/\r\n/g, "\n");
   if (!text3.startsWith(FENCE + "\n")) {
@@ -414,14 +414,14 @@ function emit(v) {
 }
 
 // src/core/registryRecovery.ts
-async function backupCorruptRegistry(fs22, path23) {
-  const backupPath = `${path23}.corrupt-${timestamp()}`;
-  await fs22.writeFile(backupPath, await fs22.readFile(path23));
+async function backupCorruptRegistry(fs21, path22) {
+  const backupPath = `${path22}.corrupt-${timestamp()}`;
+  await fs21.writeFile(backupPath, await fs21.readFile(path22));
   return backupPath;
 }
-function warnRegistryRecovered(path23, backupPath, action, extra = "") {
+function warnRegistryRecovered(path22, backupPath, action, extra = "") {
   console.error(
-    `WARNING: ${path23} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
+    `WARNING: ${path22} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
   );
 }
 function timestamp() {
@@ -440,11 +440,11 @@ var WORKSPACE_SETTINGS_PATH = "settings.json";
 var ANNOTATIONS_PATH = "annotations.json";
 var TEMP_DIR = "temp";
 var ATTACHMENTS_DIR = "attachments";
-var AGENT_PROFILES_TEMP_DIR = "agent-profiles";
+var ROUTES_TEMP_DIR = "routes";
 var OPERATIONAL_TOP_LEVEL = /* @__PURE__ */ new Set([
   TEMP_DIR,
   ATTACHMENTS_DIR,
-  // 历史残留：若仍见嵌套 .tent，视为系统区而非 concept
+  // 若仍见嵌套 .tent，视为系统区而非 Node。
   TENT_SYSTEM_DIR
 ]);
 var SYSTEM_REGISTRY_FILES = /* @__PURE__ */ new Set([
@@ -464,9 +464,9 @@ function systemRootFromWorkspace(workspaceRoot) {
   return `${root}${sep4}${TENT_SYSTEM_DIR}`;
 }
 function isOperationalPath(relativePath4) {
-  const path23 = relativePath4.replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!path23) return false;
-  const top = path23.split("/")[0] ?? "";
+  const path22 = relativePath4.replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!path22) return false;
+  const top = path22.split("/")[0] ?? "";
   return OPERATIONAL_TOP_LEVEL.has(top);
 }
 function safeOperationalSegment(value, emptyPrefix = "id") {
@@ -488,18 +488,18 @@ function safeOperationalSegment(value, emptyPrefix = "id") {
   }
   return clean;
 }
-function agentProfileTempRoot(profileId) {
-  return `${TEMP_DIR}/${AGENT_PROFILES_TEMP_DIR}/${safeOperationalSegment(profileId, "profile")}`;
+function routeTempRoot(routeId) {
+  return `${TEMP_DIR}/${ROUTES_TEMP_DIR}/${safeOperationalSegment(routeId, "route")}`;
 }
-function agentProfileTasksDir(profileId) {
-  return `${agentProfileTempRoot(profileId)}/tasks`;
+function routeTasksDir(routeId) {
+  return `${routeTempRoot(routeId)}/tasks`;
 }
-function agentProfileDeliveriesDir(profileId) {
-  return `${agentProfileTempRoot(profileId)}/deliveries`;
+function routeDeliveriesDir(routeId) {
+  return `${routeTempRoot(routeId)}/deliveries`;
 }
-function agentProfileManifestPath(profileId, taskId) {
+function routeManifestPath(routeId, taskId) {
   const safeTask = safeOperationalSegment(taskId, "task");
-  return `${agentProfileTempRoot(profileId)}/manifests/${safeTask}.yml`;
+  return `${routeTempRoot(routeId)}/manifests/${safeTask}.yml`;
 }
 function isSystemNoteName(fileName) {
   return SYSTEM_REGISTRY_FILES.has(fileName) || fileName === "MIGRATED.md";
@@ -507,19 +507,19 @@ function isSystemNoteName(fileName) {
 
 // src/core/order.ts
 var ROOT_KEY = "__root__";
-async function loadOrder(fs22) {
-  if (!await fs22.exists(ORDER_PATH)) return {};
+async function loadOrder(fs21) {
+  if (!await fs21.exists(ORDER_PATH)) return {};
   try {
-    return JSON.parse(await fs22.readFile(ORDER_PATH));
+    return JSON.parse(await fs21.readFile(ORDER_PATH));
   } catch {
-    const backupPath = await backupCorruptRegistry(fs22, ORDER_PATH);
-    await saveOrder(fs22, {});
+    const backupPath = await backupCorruptRegistry(fs21, ORDER_PATH);
+    await saveOrder(fs21, {});
     warnRegistryRecovered(ORDER_PATH, backupPath, "recovered");
     return {};
   }
 }
-async function saveOrder(fs22, map) {
-  await fs22.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
+async function saveOrder(fs21, map) {
+  await fs21.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
 }
 function sortByOrder(items, order, fallback) {
   const sorted = [...items];
@@ -567,7 +567,7 @@ function typeExists(type, registry) {
   const mod = registry[modifier];
   return !!mod && mod.tier === "modifier";
 }
-function isValidConceptType(type, registry) {
+function isValidNodeType(type, registry) {
   const { base, modifier } = splitType(type);
   if (!isCanonicalPrimary(base)) return false;
   if (!registry[base] || (registry[base].tier ?? "base") === "modifier") return false;
@@ -575,10 +575,10 @@ function isValidConceptType(type, registry) {
   const mod = registry[modifier];
   return !!mod && mod.tier === "modifier";
 }
-async function loadTypeRegistry(fs22) {
-  if (!await fs22.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
+async function loadTypeRegistry(fs21) {
+  if (!await fs21.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
   try {
-    const parsed = JSON.parse(await fs22.readFile(TYPE_REGISTRY_PATH));
+    const parsed = JSON.parse(await fs21.readFile(TYPE_REGISTRY_PATH));
     return normalizeRegistry(parsed);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -656,8 +656,8 @@ function isRecord(value) {
 }
 
 // src/core/adapter.ts
-function withTentMutation(fs22, action) {
-  return fs22.withLock ? fs22.withLock(MUTATION_LOCK_PATH, action) : action();
+function withTentMutation(fs21, action) {
+  return fs21.withLock ? fs21.withLock(MUTATION_LOCK_PATH, action) : action();
 }
 
 // src/core/relations.ts
@@ -861,9 +861,9 @@ function assertRawRelationsCanonicalForMutation(value) {
   }
   return out;
 }
-async function loadCanonicalRelationsForMutation(fs22, boxPath) {
-  const notePath = boxNotePath(boxPath);
-  const { data } = parseFrontmatter(await fs22.readFile(notePath));
+async function loadCanonicalRelationsForMutation(fs21, nodePath8) {
+  const notePath = nodeNotePath(nodePath8);
+  const { data } = parseFrontmatter(await fs21.readFile(notePath));
   return assertRawRelationsCanonicalForMutation(data.relations);
 }
 function relationToFrontmatterItem(record) {
@@ -881,35 +881,35 @@ function relationsToFrontmatterValue(records) {
   if (records.length === 0) return void 0;
   return records.map(relationToFrontmatterItem);
 }
-function boxKeyOrder(existing) {
+function nodeKeyOrder(existing) {
   return [
-    ...BOX_FRONTMATTER_KEY_ORDER,
-    ...existing.filter((key2) => !BOX_FRONTMATTER_KEY_ORDER.includes(key2))
+    ...NODE_FRONTMATTER_KEY_ORDER,
+    ...existing.filter((key2) => !NODE_FRONTMATTER_KEY_ORDER.includes(key2))
   ];
 }
-async function writeBoxRelations(fs22, box, relations) {
-  const path23 = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs22.readFile(path23));
+async function writeNodeRelations(fs21, node2, relations) {
+  const path22 = nodeNotePath(node2.path);
+  const { data, body, keyOrder } = parseFrontmatter(await fs21.readFile(path22));
   const value = relationsToFrontmatterValue(relations);
   if (value === void 0) delete data.relations;
   else data.relations = value;
-  await fs22.writeFile(path23, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
+  await fs21.writeFile(path22, serializeFrontmatter(data, body, nodeKeyOrder(keyOrder)));
 }
-function assertSourceMutable(box) {
-  if (box.invalid) {
-    throw new RelationError("INVALID", `Invalid boxes cannot own relations: ${box.path}`);
+function assertSourceMutable(node2) {
+  if (node2.invalid) {
+    throw new RelationError("INVALID", `Invalid nodes cannot own relations: ${node2.path}`);
   }
-  if (box.archived || box.mode === "archived") {
-    throw new RelationError("ARCHIVED", `Archived boxes cannot own relations: ${box.path}`);
+  if (node2.archived || node2.mode === "archived") {
+    throw new RelationError("ARCHIVED", `Archived nodes cannot own relations: ${node2.path}`);
   }
 }
 function assertResolvedTargetUsable(tent, target) {
   if (!("nodeId" in target)) return;
-  const targetBox = tent.byId.get(target.nodeId);
-  if (!targetBox) {
+  const targetNode = tent.byId.get(target.nodeId);
+  if (!targetNode) {
     throw new RelationError("TARGET", `Relation target node not found: ${target.nodeId}`);
   }
-  if (!isUsableBox(targetBox)) {
+  if (!isUsableNode(targetNode)) {
     throw new RelationError(
       "TARGET",
       `Relation target is not a usable Node: ${target.nodeId}`
@@ -917,9 +917,9 @@ function assertResolvedTargetUsable(tent, target) {
   }
 }
 function listRelationsForNode(tent, nodeId) {
-  const box = tent.byId.get(nodeId);
-  if (!box) throw new RelationError("NOT_FOUND", `Concept not found: ${nodeId}`);
-  const outgoing = box.relations.map(cloneRelation);
+  const node2 = tent.byId.get(nodeId);
+  if (!node2) throw new RelationError("NOT_FOUND", `Node not found: ${nodeId}`);
+  const outgoing = node2.relations.map(cloneRelation);
   const incoming = [];
   for (const other of tent.byId.values()) {
     for (const rel of other.relations) {
@@ -939,19 +939,19 @@ function listRelationsForNode(tent, nodeId) {
     return a.id.localeCompare(b.id);
   });
   return {
-    nodeId: box.id,
-    path: box.path,
+    nodeId: node2.id,
+    path: node2.path,
     outgoing,
     incoming
   };
 }
-async function createRelation(fs22, sourceId, input, rand = Math.random, loadedTent) {
-  return withTentMutation(fs22, async () => {
-    const tent = loadedTent ?? await loadTent(fs22);
-    const box = tent.byId.get(sourceId);
-    if (!box) throw new RelationError("NOT_FOUND", `Concept not found: ${sourceId}`);
-    assertSourceMutable(box);
-    const base = await loadCanonicalRelationsForMutation(fs22, box.path);
+async function createRelation(fs21, sourceId, input, rand = Math.random, loadedTent) {
+  return withTentMutation(fs21, async () => {
+    const tent = loadedTent ?? await loadTent(fs21);
+    const node2 = tent.byId.get(sourceId);
+    if (!node2) throw new RelationError("NOT_FOUND", `Node not found: ${sourceId}`);
+    assertSourceMutable(node2);
+    const base = await loadCanonicalRelationsForMutation(fs21, node2.path);
     const kind = normalizeRelationKind(input.kind);
     const direction = normalizeRelationDirection(input.direction);
     const label = normalizeRelationLabel(input.label);
@@ -966,19 +966,19 @@ async function createRelation(fs22, sourceId, input, rand = Math.random, loadedT
     const record = { id, kind, direction, target };
     if (label !== void 0) record.label = label;
     const next = [...base.map(cloneRelation), record];
-    await writeBoxRelations(fs22, box, next);
-    box.relations = next.map(cloneRelation);
-    box.fm.relations = relationsToFrontmatterValue(next);
+    await writeNodeRelations(fs21, node2, next);
+    node2.relations = next.map(cloneRelation);
+    node2.fm.relations = relationsToFrontmatterValue(next);
     return cloneRelation(record);
   });
 }
-async function updateRelation(fs22, sourceId, relationId, patch, loadedTent) {
-  return withTentMutation(fs22, async () => {
-    const tent = loadedTent ?? await loadTent(fs22);
-    const box = tent.byId.get(sourceId);
-    if (!box) throw new RelationError("NOT_FOUND", `Concept not found: ${sourceId}`);
-    assertSourceMutable(box);
-    const base = await loadCanonicalRelationsForMutation(fs22, box.path);
+async function updateRelation(fs21, sourceId, relationId, patch, loadedTent) {
+  return withTentMutation(fs21, async () => {
+    const tent = loadedTent ?? await loadTent(fs21);
+    const node2 = tent.byId.get(sourceId);
+    if (!node2) throw new RelationError("NOT_FOUND", `Node not found: ${sourceId}`);
+    assertSourceMutable(node2);
+    const base = await loadCanonicalRelationsForMutation(fs21, node2.path);
     const idx = base.findIndex((r) => r.id === relationId);
     if (idx < 0) {
       throw new RelationError("NOT_FOUND", `Relation not found: ${relationId}`);
@@ -998,328 +998,49 @@ async function updateRelation(fs22, sourceId, relationId, patch, loadedTent) {
       assertResolvedTargetUsable(tent, current.target);
     }
     const next = base.map((r, i) => i === idx ? current : cloneRelation(r));
-    await writeBoxRelations(fs22, box, next);
-    box.relations = next.map(cloneRelation);
-    box.fm.relations = relationsToFrontmatterValue(next);
+    await writeNodeRelations(fs21, node2, next);
+    node2.relations = next.map(cloneRelation);
+    node2.fm.relations = relationsToFrontmatterValue(next);
     return cloneRelation(current);
   });
 }
-async function deleteRelation(fs22, sourceId, relationId, loadedTent) {
-  return withTentMutation(fs22, async () => {
-    const tent = loadedTent ?? await loadTent(fs22);
-    const box = tent.byId.get(sourceId);
-    if (!box) throw new RelationError("NOT_FOUND", `Concept not found: ${sourceId}`);
-    assertSourceMutable(box);
-    const base = await loadCanonicalRelationsForMutation(fs22, box.path);
+async function deleteRelation(fs21, sourceId, relationId, loadedTent) {
+  return withTentMutation(fs21, async () => {
+    const tent = loadedTent ?? await loadTent(fs21);
+    const node2 = tent.byId.get(sourceId);
+    if (!node2) throw new RelationError("NOT_FOUND", `Node not found: ${sourceId}`);
+    assertSourceMutable(node2);
+    const base = await loadCanonicalRelationsForMutation(fs21, node2.path);
     const idx = base.findIndex((r) => r.id === relationId);
     if (idx < 0) {
       throw new RelationError("NOT_FOUND", `Relation not found: ${relationId}`);
     }
     const next = base.filter((_, i) => i !== idx).map(cloneRelation);
-    await writeBoxRelations(fs22, box, next);
-    box.relations = next.map(cloneRelation);
+    await writeNodeRelations(fs21, node2, next);
+    node2.relations = next.map(cloneRelation);
     const fmValue = relationsToFrontmatterValue(next);
-    if (fmValue === void 0) delete box.fm.relations;
-    else box.fm.relations = fmValue;
+    if (fmValue === void 0) delete node2.fm.relations;
+    else node2.fm.relations = fmValue;
     return { deleted: relationId };
   });
 }
 
-// src/core/tree.ts
-function boxNotePath(boxPath) {
-  return join(boxPath, baseName(boxPath) + ".md");
-}
-async function loadTent(fs22) {
-  const byId = /* @__PURE__ */ new Map();
-  const byPath = /* @__PURE__ */ new Map();
-  const roots = [];
-  const typeRegistry = await loadTypeRegistry(fs22);
-  const top = await fs22.listDir("");
-  for (const entry of top) {
-    if (!entry.isDir) continue;
-    if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    if (isSystemNoteName(entry.name)) continue;
-    await loadBoxInto(fs22, entry.name, null, typeRegistry, roots);
-  }
-  const order = await loadOrder(fs22);
-  const sortedRoots = sortByOrder(roots, order[ROOT_KEY], (a, b) => a.name.localeCompare(b.name));
-  for (const root of sortedRoots) sortChildren(root, order);
-  for (const root of sortedRoots) resolveSubtree(root, typeRegistry);
-  const duplicateIds = findDuplicateIds(sortedRoots);
-  for (const root of sortedRoots) applyDuplicateInvalid(root, duplicateIds);
-  for (const root of sortedRoots) indexSubtree(root, byId, byPath, duplicateIds);
-  return { roots: sortedRoots, byId, byPath, duplicateIds, typeRegistry };
-}
-function findDuplicateIds(roots) {
-  const counts = /* @__PURE__ */ new Map();
-  const visit = (box) => {
-    if (box.id) counts.set(box.id, (counts.get(box.id) || 0) + 1);
-    for (const child of box.children) visit(child);
-  };
-  for (const root of roots) visit(root);
-  return new Set([...counts].filter(([, count]) => count > 1).map(([id]) => id));
-}
-function applyDuplicateInvalid(box, duplicateIds, inherited) {
-  const direct = duplicateIds.has(box.id) ? { rootId: box.id, reason: `Duplicate id: ${box.id}; native copies must be converted to forks.` } : void 0;
-  const invalid = inherited || direct;
-  if (invalid) {
-    box.invalid = true;
-    box.invalidRootId = invalid.rootId;
-    box.invalidReason = invalid.reason;
-  }
-  for (const child of box.children) applyDuplicateInvalid(child, duplicateIds, invalid);
-}
-function sortChildren(box, order) {
-  box.children = sortByOrder(box.children, order[box.id], (a, b) => a.name.localeCompare(b.name));
-  for (const c of box.children) sortChildren(c, order);
-}
-async function loadBox(fs22, path23, parent, registry) {
-  if (isOperationalPath(path23)) return null;
-  const boxFile = boxNotePath(path23);
-  if (!await fs22.exists(boxFile)) {
-    return null;
-  }
-  const raw = await fs22.readFile(boxFile);
-  let parsed;
-  let parseError;
-  try {
-    parsed = parseFrontmatter(raw);
-  } catch (error) {
-    parseError = error instanceof Error ? error.message : String(error);
-    parsed = { data: {}, body: raw, keyOrder: [] };
-  }
-  const { data, body } = parsed;
-  const name = baseName(path23);
-  const { fm, tags, relations } = normalizeIdentity(data);
-  const box = {
-    id: fm.id,
-    type: fm.type,
-    tags,
-    relations,
-    mode: "editable",
-    archived: false,
-    invalid: !!parseError,
-    path: path23,
-    name,
-    fm,
-    body,
-    children: [],
-    parent
-  };
-  if (parseError) {
-    box.invalidRootId = path23;
-    box.invalidReason = `Invalid frontmatter: ${parseError}`;
-  }
-  const sub = await fs22.listDir(path23);
-  for (const entry of sub) {
-    if (!entry.isDir) continue;
-    if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadBoxInto(fs22, join(path23, entry.name), box, registry, box.children);
-  }
-  return box;
-}
-function normalizeIdentity(data) {
-  const rawType = typeof data.type === "string" && data.type ? data.type : "custom";
-  const fm = {
-    ...data,
-    id: typeof data.id === "string" ? data.id : "",
-    type: rawType
-  };
-  delete fm.archived;
-  delete fm.readable;
-  delete fm.writable;
-  delete fm.owner;
-  delete fm.status;
-  delete fm.acceptedBy;
-  const tags = normalizeTags(data.tags);
-  if (tags.length > 0) fm.tags = tags;
-  else delete fm.tags;
-  const mode = parseNodeMode(data.mode);
-  if (mode && mode !== "editable") fm.mode = mode;
-  else delete fm.mode;
-  const relations = normalizeRelationsList(data.relations);
-  const fmRelations = relationsToFrontmatterValue(relations);
-  if (fmRelations) fm.relations = fmRelations;
-  else delete fm.relations;
-  return { fm, tags, relations };
-}
-function parseNodeMode(value) {
-  if (value === "archived") return "archived";
-  if (value === "editable") return "editable";
-  if (value === "read-only") return "editable";
-  return void 0;
-}
-function isExplicitArchiveRoot(box) {
-  return box.fm.mode === "archived";
-}
-function normalizeTags(value) {
-  if (!Array.isArray(value)) return [];
-  const out = [];
-  for (const item of value) {
-    if (typeof item !== "string") continue;
-    const tag = item.trim();
-    if (tag && !out.includes(tag)) out.push(tag);
-  }
-  return out;
-}
-async function loadBoxInto(fs22, path23, parent, registry, target) {
-  if (isOperationalPath(path23)) return;
-  const box = await loadBox(fs22, path23, parent, registry);
-  if (box) {
-    target.push(box);
-    return;
-  }
-  const sub = await fs22.listDir(path23);
-  for (const entry of sub) {
-    if (!entry.isDir) continue;
-    if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadBoxInto(fs22, join(path23, entry.name), parent, registry, target);
-  }
-}
-function resolveSubtree(box, registry, inheritedInvalid, inheritedArchived = false) {
-  const directInvalid = box.invalid ? { rootId: box.invalidRootId || box.path, reason: box.invalidReason || "Invalid frontmatter." } : invalidTypeReference(box, registry);
-  const invalid = inheritedInvalid || directInvalid;
-  box.invalid = !!invalid;
-  box.invalidRootId = invalid?.rootId;
-  box.invalidReason = invalid?.reason;
-  const localMode = parseNodeMode(box.fm.mode) ?? "editable";
-  box.archived = inheritedArchived || localMode === "archived";
-  box.mode = box.archived ? "archived" : "editable";
-  if (localMode === "archived" && !inheritedArchived) box.fm.mode = "archived";
-  else delete box.fm.mode;
-  for (const c of box.children) resolveSubtree(c, registry, invalid, box.archived);
-}
-function invalidTypeReference(box, registry) {
-  if (!box.id) {
-    return { rootId: box.path, reason: "Missing id: likely a manually created orphan Node; use tent node create or repair." };
-  }
-  if (!typeExists(box.type, registry)) {
-    return { rootId: box.id, reason: `Unknown type: ${box.type}.` };
-  }
-  return void 0;
-}
-function isUsableBox(box) {
-  return !box.invalid && !box.archived;
-}
-function assertContentMutable(box, action = "modified") {
-  if (box.invalid) throw new Error(`Invalid boxes cannot be ${action}.`);
-  if (box.archived || box.mode === "archived") {
-    throw new Error(`Archived boxes cannot be ${action}.`);
-  }
-}
-function isContentMutable(box) {
-  return !box.invalid && box.mode === "editable" && !box.archived;
-}
-function indexSubtree(box, byId, byPath, duplicateIds) {
-  if (box.id && !duplicateIds.has(box.id)) byId.set(box.id, box);
-  byPath.set(box.path, box);
-  for (const c of box.children) indexSubtree(c, byId, byPath, duplicateIds);
-}
-function join(...parts) {
-  return parts.filter((p) => p !== "").join("/");
-}
-function baseName(path23) {
-  const i = path23.lastIndexOf("/");
-  return i === -1 ? path23 : path23.slice(i + 1);
-}
-function dirName(path23) {
-  const i = path23.lastIndexOf("/");
-  return i === -1 ? "" : path23.slice(0, i);
-}
-
-// src/core/manifest.ts
-function buildManifest(tent, input) {
-  const { role } = input;
-  const claimBoxes = input.claimRoot ? tent.roots : requireClaimBoxes(input);
-  const claimScope = input.claimRoot ? allBoxes(tent).filter(isUsableBox) : claimBoxes.flatMap(subtree);
-  const readable = [];
-  const writable = [];
-  for (const box of allBoxes(tent)) {
-    if (isUsableBox(box)) {
-      readable.push({ id: box.id, path: box.path, note: oneLineNote(box) });
-    }
-  }
-  readable.push({ path: "roles.json", note: "System registry: available roles and persistent prompts." });
-  readable.push({ path: "temp/", note: "System pipeline: read all role temp state." });
-  for (const box of claimScope) {
-    if (isUsableBox(box)) {
-      writable.push({ id: box.id, path: box.path });
-    }
-  }
-  if (input.claimRoot) {
-    writable.push({ path: "./", note: "Structural permission: may create/move top-level boxes at the Tent root." });
-  }
-  for (const box of claimScope) {
-    writable.push({ id: box.id, path: `${box.path}/`, note: "Structural permission: may create/move/delete child boxes under this box." });
-  }
-  writable.push({ path: join("temp", role) + "/" });
-  return {
-    tent: input.tentName,
-    role,
-    // No claims[] — writable ids/paths encode selection; Task Node refs are contextCard only.
-    ...input.workspace ? { workspace: input.workspace } : {},
-    ...input.worktree ? { worktree: input.worktree } : {},
-    ...input.branch ? { branch: input.branch } : {},
-    ...input.targetBranch ? { targetBranch: input.targetBranch } : {},
-    readable: dedupe(readable),
-    writable: dedupe(writable)
-  };
-}
-function manifestToYaml(m) {
-  const lines = [];
-  lines.push(`tent: ${m.tent}`);
-  lines.push(`role: ${m.role}`);
-  if (m.workspace) lines.push(`workspace: ${yamlStr(m.workspace)}`);
-  if (m.worktree) lines.push(`worktree: ${yamlStr(m.worktree)}`);
-  if (m.branch) lines.push(`branch: ${yamlStr(m.branch)}`);
-  if (m.targetBranch) lines.push(`targetBranch: ${yamlStr(m.targetBranch)}`);
-  lines.push(`readable:`);
-  for (const e of m.readable) lines.push(`  - ${entryLine(e)}`);
-  lines.push(`writable:`);
-  for (const e of m.writable) lines.push(`  - ${entryLine(e)}`);
-  return lines.join("\n") + "\n";
-}
-function entryLine(e) {
-  const parts = [];
-  if (e.id) parts.push(`id: ${e.id}`);
-  parts.push(`path: ${yamlStr(e.path)}`);
-  if (e.note) parts.push(`note: ${yamlStr(e.note)}`);
-  return `{${parts.join(", ")}}`;
-}
-function yamlStr(s) {
-  return /[:#{}\[\],]/.test(s) ? JSON.stringify(s) : s;
-}
-function oneLineNote(box) {
-  const firstLine = box.body.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#"));
-  return firstLine ? firstLine.slice(0, 40) : box.type;
-}
-function allBoxes(tent) {
-  return [...tent.byPath.values()];
-}
-function subtree(box) {
-  const out = [box];
-  for (const c of box.children) out.push(...subtree(c));
-  return out;
-}
-function requireClaimBoxes(input) {
-  if (!input.claimBoxes || input.claimBoxes.length === 0) throw new Error("Missing claim boxes.");
-  return input.claimBoxes;
-}
-function dedupe(entries) {
-  const seen = /* @__PURE__ */ new Set();
-  const out = [];
-  for (const e of entries) {
-    const key2 = `${e.id ?? ""}|${e.path}`;
-    if (seen.has(key2)) continue;
-    seen.add(key2);
-    out.push(e);
-  }
-  return out;
-}
-
 // src/core/id.ts
 var ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
-var CONCEPT_ID_PREFIX = "cx-";
+var NODE_ID_PREFIX = "cx-";
+var ROUTE_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
+function isRouteId(value) {
+  return typeof value === "string" && ROUTE_ID_RE.test(value);
+}
+function assertRouteId(value) {
+  const routeId = value.trim();
+  if (!isRouteId(routeId)) {
+    throw new Error(
+      `Invalid routeId: must match ${ROUTE_ID_RE} (lowercase letter, then a-z0-9-, max 63).`
+    );
+  }
+  return routeId;
+}
 var ROLE_ID_PREFIX = "rl-";
 function deterministicDigest(input, byteLen = 32) {
   const out = new Uint8Array(byteLen);
@@ -1364,11 +1085,11 @@ function makeUniquePrefixedId(prefix, existing, rand = Math.random) {
   }
   return makePrefixedId(prefix, rand, 10);
 }
-function makeConceptId(rand = Math.random, len = 6) {
-  return makePrefixedId(CONCEPT_ID_PREFIX, rand, len);
+function makeNodeId(rand = Math.random, len = 6) {
+  return makePrefixedId(NODE_ID_PREFIX, rand, len);
 }
-function makeUniqueConceptId(existing, rand = Math.random) {
-  return makeUniquePrefixedId(CONCEPT_ID_PREFIX, existing, rand);
+function makeUniqueNodeId(existing, rand = Math.random) {
+  return makeUniquePrefixedId(NODE_ID_PREFIX, existing, rand);
 }
 function makeUniqueRoleId(existing, rand = Math.random) {
   return makeUniquePrefixedId(ROLE_ID_PREFIX, existing, rand);
@@ -1386,8 +1107,315 @@ function deterministicRoleIdFromName(name, existing = /* @__PURE__ */ new Set())
   );
   return ROLE_ID_PREFIX + encodeAlphabetBytes(fallback, 12);
 }
+function isNodeId(id) {
+  return /^cx-[a-z0-9]+$/i.test(id);
+}
 function isRoleId(id) {
   return id.startsWith(ROLE_ID_PREFIX) && id.length > ROLE_ID_PREFIX.length;
+}
+
+// src/core/tree.ts
+function nodeNotePath(nodePath8) {
+  return join(nodePath8, baseName(nodePath8) + ".md");
+}
+async function loadTent(fs21) {
+  const byId = /* @__PURE__ */ new Map();
+  const byPath = /* @__PURE__ */ new Map();
+  const roots = [];
+  const typeRegistry = await loadTypeRegistry(fs21);
+  const top = await fs21.listDir("");
+  for (const entry of top) {
+    if (!entry.isDir) continue;
+    if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
+    if (isSystemNoteName(entry.name)) continue;
+    await loadNodeInto(fs21, entry.name, null, typeRegistry, roots);
+  }
+  const order = await loadOrder(fs21);
+  const sortedRoots = sortByOrder(roots, order[ROOT_KEY], (a, b) => a.name.localeCompare(b.name));
+  for (const root of sortedRoots) sortChildren(root, order);
+  for (const root of sortedRoots) resolveSubtree(root, typeRegistry);
+  const duplicateIds = findDuplicateIds(sortedRoots);
+  for (const root of sortedRoots) applyDuplicateInvalid(root, duplicateIds);
+  for (const root of sortedRoots) indexSubtree(root, byId, byPath, duplicateIds);
+  return { roots: sortedRoots, byId, byPath, duplicateIds, typeRegistry };
+}
+function findDuplicateIds(roots) {
+  const counts = /* @__PURE__ */ new Map();
+  const visit = (node2) => {
+    if (node2.id) counts.set(node2.id, (counts.get(node2.id) || 0) + 1);
+    for (const child of node2.children) visit(child);
+  };
+  for (const root of roots) visit(root);
+  return new Set([...counts].filter(([, count]) => count > 1).map(([id]) => id));
+}
+function applyDuplicateInvalid(node2, duplicateIds, inherited) {
+  const direct = duplicateIds.has(node2.id) ? { rootId: node2.id, reason: `Duplicate id: ${node2.id}; native copies must be converted to forks.` } : void 0;
+  const invalid = inherited || direct;
+  if (invalid) {
+    node2.invalid = true;
+    node2.invalidRootId = invalid.rootId;
+    node2.invalidReason = invalid.reason;
+  }
+  for (const child of node2.children) applyDuplicateInvalid(child, duplicateIds, invalid);
+}
+function sortChildren(node2, order) {
+  node2.children = sortByOrder(node2.children, order[node2.id], (a, b) => a.name.localeCompare(b.name));
+  for (const c of node2.children) sortChildren(c, order);
+}
+async function loadNode(fs21, path22, parent, registry) {
+  if (isOperationalPath(path22)) return null;
+  const boxFile = nodeNotePath(path22);
+  if (!await fs21.exists(boxFile)) {
+    return null;
+  }
+  const raw = await fs21.readFile(boxFile);
+  let parsed;
+  let parseError;
+  try {
+    parsed = parseFrontmatter(raw);
+  } catch (error) {
+    parseError = error instanceof Error ? error.message : String(error);
+    parsed = { data: {}, body: raw, keyOrder: [] };
+  }
+  const { data, body } = parsed;
+  const name = baseName(path22);
+  const schemaError = canonicalIdentityError(data);
+  const { fm, tags, relations } = normalizeIdentity(data);
+  const node2 = {
+    id: fm.id,
+    type: fm.type,
+    tags,
+    relations,
+    mode: "editable",
+    archived: false,
+    invalid: !!parseError || !!schemaError,
+    path: path22,
+    name,
+    fm,
+    body,
+    children: [],
+    parent
+  };
+  if (parseError || schemaError) {
+    node2.invalidRootId = path22;
+    node2.invalidReason = parseError ? `Invalid frontmatter: ${parseError}` : schemaError;
+  }
+  const sub = await fs21.listDir(path22);
+  for (const entry of sub) {
+    if (!entry.isDir) continue;
+    if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
+    await loadNodeInto(fs21, join(path22, entry.name), node2, registry, node2.children);
+  }
+  return node2;
+}
+function canonicalIdentityError(data) {
+  if (typeof data.id !== "string" || !isNodeId(data.id)) {
+    return `Invalid Node id: ${typeof data.id === "string" && data.id ? data.id : "<missing>"}; canonical Node ids must start with cx-.`;
+  }
+  if (data.mode !== void 0 && parseNodeMode(data.mode) === void 0) {
+    return `Invalid Node mode: ${String(data.mode)}.`;
+  }
+  return void 0;
+}
+function normalizeIdentity(data) {
+  const rawType = typeof data.type === "string" && data.type ? data.type : "custom";
+  const fm = {
+    ...data,
+    id: typeof data.id === "string" ? data.id : "",
+    type: rawType
+  };
+  const tags = normalizeTags(data.tags);
+  if (tags.length > 0) fm.tags = tags;
+  else delete fm.tags;
+  const mode = parseNodeMode(data.mode);
+  if (mode && mode !== "editable") fm.mode = mode;
+  else delete fm.mode;
+  const relations = normalizeRelationsList(data.relations);
+  const fmRelations = relationsToFrontmatterValue(relations);
+  if (fmRelations) fm.relations = fmRelations;
+  else delete fm.relations;
+  return { fm, tags, relations };
+}
+function parseNodeMode(value) {
+  if (value === "archived") return "archived";
+  if (value === "editable") return "editable";
+  return void 0;
+}
+function isExplicitArchiveRoot(node2) {
+  return node2.fm.mode === "archived";
+}
+function normalizeTags(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const tag = item.trim();
+    if (tag && !out.includes(tag)) out.push(tag);
+  }
+  return out;
+}
+async function loadNodeInto(fs21, path22, parent, registry, target) {
+  if (isOperationalPath(path22)) return;
+  const node2 = await loadNode(fs21, path22, parent, registry);
+  if (node2) {
+    target.push(node2);
+    return;
+  }
+  const sub = await fs21.listDir(path22);
+  for (const entry of sub) {
+    if (!entry.isDir) continue;
+    if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
+    await loadNodeInto(fs21, join(path22, entry.name), parent, registry, target);
+  }
+}
+function resolveSubtree(node2, registry, inheritedInvalid, inheritedArchived = false) {
+  const directInvalid = node2.invalid ? { rootId: node2.invalidRootId || node2.path, reason: node2.invalidReason || "Invalid frontmatter." } : invalidTypeReference(node2, registry);
+  const invalid = inheritedInvalid || directInvalid;
+  node2.invalid = !!invalid;
+  node2.invalidRootId = invalid?.rootId;
+  node2.invalidReason = invalid?.reason;
+  const localMode = parseNodeMode(node2.fm.mode) ?? "editable";
+  node2.archived = inheritedArchived || localMode === "archived";
+  node2.mode = node2.archived ? "archived" : "editable";
+  if (localMode === "archived" && !inheritedArchived) node2.fm.mode = "archived";
+  else delete node2.fm.mode;
+  for (const c of node2.children) resolveSubtree(c, registry, invalid, node2.archived);
+}
+function invalidTypeReference(node2, registry) {
+  if (!isNodeId(node2.id)) {
+    return {
+      rootId: node2.path,
+      reason: `Invalid Node id: ${node2.id || "<missing>"}; canonical Node ids must start with cx-.`
+    };
+  }
+  if (node2.fm.mode !== void 0 && parseNodeMode(node2.fm.mode) === void 0) {
+    return { rootId: node2.id, reason: `Invalid Node mode: ${String(node2.fm.mode)}.` };
+  }
+  if (!typeExists(node2.type, registry)) {
+    return { rootId: node2.id, reason: `Unknown type: ${node2.type}.` };
+  }
+  return void 0;
+}
+function isUsableNode(node2) {
+  return !node2.invalid && !node2.archived;
+}
+function assertContentMutable(node2, action = "modified") {
+  if (node2.invalid) throw new Error(`Invalid nodes cannot be ${action}.`);
+  if (node2.archived || node2.mode === "archived") {
+    throw new Error(`Archived nodes cannot be ${action}.`);
+  }
+}
+function isContentMutable(node2) {
+  return !node2.invalid && node2.mode === "editable" && !node2.archived;
+}
+function indexSubtree(node2, byId, byPath, duplicateIds) {
+  if (!node2.invalid && isNodeId(node2.id) && !duplicateIds.has(node2.id)) byId.set(node2.id, node2);
+  byPath.set(node2.path, node2);
+  for (const c of node2.children) indexSubtree(c, byId, byPath, duplicateIds);
+}
+function join(...parts) {
+  return parts.filter((p) => p !== "").join("/");
+}
+function baseName(path22) {
+  const i = path22.lastIndexOf("/");
+  return i === -1 ? path22 : path22.slice(i + 1);
+}
+function dirName(path22) {
+  const i = path22.lastIndexOf("/");
+  return i === -1 ? "" : path22.slice(0, i);
+}
+
+// src/core/manifest.ts
+function buildManifest(tent, input) {
+  const { assigneeKind, assigneeId } = input;
+  const claimNodes = input.claimRoot ? tent.roots : requireClaimNodes(input);
+  const claimScope = input.claimRoot ? allNodes(tent).filter(isUsableNode) : claimNodes.flatMap(subtree);
+  const readable = [];
+  const writable = [];
+  for (const node2 of allNodes(tent)) {
+    if (isUsableNode(node2)) {
+      readable.push({ id: node2.id, path: node2.path, note: oneLineNote(node2) });
+    }
+  }
+  readable.push({ path: "roles.json", note: "System registry: available roles and persistent prompts." });
+  readable.push({ path: "temp/", note: "System pipeline: read all role temp state." });
+  for (const node2 of claimScope) {
+    if (isUsableNode(node2)) {
+      writable.push({ id: node2.id, path: node2.path });
+    }
+  }
+  if (input.claimRoot) {
+    writable.push({ path: "./", note: "Structural permission: may create/move top-level nodes at the Tent root." });
+  }
+  for (const node2 of claimScope) {
+    writable.push({ id: node2.id, path: `${node2.path}/`, note: "Structural permission: may create/move/delete child nodes under this node." });
+  }
+  const executorRoot = assigneeKind === "route" ? join("temp", "routes", assigneeId) : join("temp", assigneeId);
+  writable.push({ path: executorRoot + "/" });
+  return {
+    tent: input.tentName,
+    assigneeKind,
+    assigneeId,
+    // No claims[] — writable ids/paths encode selection; Task Node refs are contextCard only.
+    ...input.workspace ? { workspace: input.workspace } : {},
+    ...input.worktree ? { worktree: input.worktree } : {},
+    ...input.branch ? { branch: input.branch } : {},
+    ...input.targetBranch ? { targetBranch: input.targetBranch } : {},
+    readable: dedupe(readable),
+    writable: dedupe(writable)
+  };
+}
+function manifestToYaml(m) {
+  const lines = [];
+  lines.push(`tent: ${m.tent}`);
+  lines.push(`assigneeKind: ${m.assigneeKind}`);
+  lines.push(`assigneeId: ${m.assigneeId}`);
+  if (m.workspace) lines.push(`workspace: ${yamlStr(m.workspace)}`);
+  if (m.worktree) lines.push(`worktree: ${yamlStr(m.worktree)}`);
+  if (m.branch) lines.push(`branch: ${yamlStr(m.branch)}`);
+  if (m.targetBranch) lines.push(`targetBranch: ${yamlStr(m.targetBranch)}`);
+  lines.push(`readable:`);
+  for (const e of m.readable) lines.push(`  - ${entryLine(e)}`);
+  lines.push(`writable:`);
+  for (const e of m.writable) lines.push(`  - ${entryLine(e)}`);
+  return lines.join("\n") + "\n";
+}
+function entryLine(e) {
+  const parts = [];
+  if (e.id) parts.push(`id: ${e.id}`);
+  parts.push(`path: ${yamlStr(e.path)}`);
+  if (e.note) parts.push(`note: ${yamlStr(e.note)}`);
+  return `{${parts.join(", ")}}`;
+}
+function yamlStr(s) {
+  return /[:#{}\[\],]/.test(s) ? JSON.stringify(s) : s;
+}
+function oneLineNote(node2) {
+  const firstLine = node2.body.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#"));
+  return firstLine ? firstLine.slice(0, 40) : node2.type;
+}
+function allNodes(tent) {
+  return [...tent.byPath.values()];
+}
+function subtree(node2) {
+  const out = [node2];
+  for (const c of node2.children) out.push(...subtree(c));
+  return out;
+}
+function requireClaimNodes(input) {
+  if (!input.claimNodes || input.claimNodes.length === 0) throw new Error("Missing claim nodes.");
+  return input.claimNodes;
+}
+function dedupe(entries) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const e of entries) {
+    const key2 = `${e.id ?? ""}|${e.path}`;
+    if (seen.has(key2)) continue;
+    seen.add(key2);
+    out.push(e);
+  }
+  return out;
 }
 
 // src/core/task-model.ts
@@ -1452,28 +1480,6 @@ function resolveParentReviewerPair(input) {
   assertParentReviewerEqual(parentActor, reviewer);
   return { parentActor, reviewer };
 }
-function userTaskActors() {
-  const parentActor = { kind: "user", id: "user" };
-  return { parentActor, reviewer: { ...parentActor } };
-}
-function roleTaskActors(roleName) {
-  const id = roleName.trim();
-  if (!id || id === "user") {
-    throw new TaskLifecycleError(
-      "INVALID_ACTOR",
-      "Role parent/reviewer requires a durable role name (not user)."
-    );
-  }
-  const parentActor = { kind: "role", id };
-  return { parentActor, reviewer: { ...parentActor } };
-}
-function migrateParentReviewerFromLegacy(input) {
-  const dispatcher = (input.dispatchedBy || "").trim();
-  if (dispatcher && dispatcher !== "user") {
-    return roleTaskActors(dispatcher);
-  }
-  return userTaskActors();
-}
 function mayElevateDeliveryPolicy(input) {
   const parent = input.parentActor;
   if (!parent || parent.kind !== "user") return false;
@@ -1528,18 +1534,12 @@ var TERMINAL_TASK_STATES = /* @__PURE__ */ new Set([
 function isActiveTaskState(state) {
   return ACTIVE_TASK_STATES.has(state);
 }
-function stateToLegacyStatus(state) {
-  return state === "queued" ? "pending" : "taken";
-}
-function legacyStatusToState(status) {
-  return status === "pending" ? "queued" : "running";
-}
 function makeTaskId(rand = Math.random, len = 8) {
-  const stem = makeConceptId(rand, len).slice(3);
+  const stem = makeNodeId(rand, len).slice(3);
   return `tk-${stem}`;
 }
 function makeDeliveryId(rand = Math.random, len = 8) {
-  const stem = makeConceptId(rand, len).slice(3);
+  const stem = makeNodeId(rand, len).slice(3);
   return `dl-${stem}`;
 }
 function isTaskId(id) {
@@ -1549,8 +1549,8 @@ function isDeliveryId(id) {
   return id.startsWith("dl-") && id.length > 3;
 }
 function assertTransition(from, event, to) {
-  const ok = allowedTransitions(from).some((t) => t.event === event && t.to === to);
-  if (!ok) {
+  const ok2 = allowedTransitions(from).some((t) => t.event === event && t.to === to);
+  if (!ok2) {
     throw new TaskLifecycleError(
       "INVALID_TRANSITION",
       `Invalid task transition: ${from} --${event}\u2192 ${to}`
@@ -1589,11 +1589,6 @@ function allowedTransitions(from) {
     default:
       return [];
   }
-}
-function projectBoxFromTask(input) {
-  if (input.active) return { status: "doing", clearAssignee: false };
-  if (input.terminalState === "accepted") return { status: "done", clearAssignee: true };
-  return { status: "todo", clearAssignee: true };
 }
 function resolveDeliverRouting(policy, decision) {
   if (policy === "bypass") {
@@ -1660,6 +1655,488 @@ function assertReviewAuthority(input) {
   );
 }
 
+// src/core/task-node-refs.ts
+function normalizeContextCardNodeRef(raw) {
+  const id = raw.id.trim();
+  if (!isNodeId(id)) {
+    throw new Error(`Task node ref id must be a canonical cx-* Node id; got ${JSON.stringify(id)}.`);
+  }
+  const out = { id };
+  if (typeof raw.path === "string" && raw.path.trim()) {
+    out.path = raw.path.trim().replace(/\\/g, "/");
+  }
+  if (typeof raw.revision === "string" && raw.revision.trim()) {
+    out.revision = raw.revision.trim();
+  }
+  return out;
+}
+function parseContextCardNodeRefs(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error("Task.contextCard.refs.nodes must be an array.");
+  }
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (let i = 0; i < value.length; i++) {
+    const item = value[i];
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`Task.contextCard.refs.nodes[${i}] must be an object with id.`);
+    }
+    const rec = item;
+    if (typeof rec.id !== "string") {
+      throw new Error(`Task.contextCard.refs.nodes[${i}].id must be a canonical cx-* Node id.`);
+    }
+    const ref = normalizeContextCardNodeRef({
+      id: rec.id,
+      path: typeof rec.path === "string" ? rec.path : void 0,
+      revision: typeof rec.revision === "string" ? rec.revision : void 0
+    });
+    if (seen.has(ref.id)) {
+      throw new Error(`Task.contextCard.refs.nodes contains duplicate Node id: ${ref.id}.`);
+    }
+    seen.add(ref.id);
+    out.push(ref);
+  }
+  return out;
+}
+var MISSING_CONTEXT_CARD_NODES = "MISSING_CONTEXT_CARD: Task.contextCard.refs.nodes is required.";
+function taskReferencedNodeIds(task) {
+  const label = task.id || task.path || "(unknown)";
+  if (task.contextCard == null) {
+    throw new Error(`${MISSING_CONTEXT_CARD_NODES} task=${label}`);
+  }
+  const nodes = task.contextCard.refs?.nodes;
+  if (!Array.isArray(nodes)) {
+    throw new Error(`${MISSING_CONTEXT_CARD_NODES} task=${label}`);
+  }
+  const refs = parseContextCardNodeRefs(nodes);
+  if (refs.length === 0) {
+    throw new Error(`${MISSING_CONTEXT_CARD_NODES} task=${label} requires at least one Node.`);
+  }
+  return refs.map((node2) => node2.id);
+}
+function taskDirectlyReferencesNode(task, nodeId) {
+  if (!isNodeId(nodeId)) return false;
+  return taskReferencedNodeIds(task).includes(nodeId);
+}
+function taskIsActiveOccupation(task) {
+  return isActiveTaskState(task.state);
+}
+function listDirectActiveTasksForNode(nodeId, tasks) {
+  const matches = tasks.filter((task) => {
+    if (!taskIsActiveOccupation(task)) return false;
+    return taskDirectlyReferencesNode(task, nodeId);
+  });
+  return sortTasksDeterministically(matches);
+}
+function sortTasksDeterministically(tasks) {
+  return [...tasks].sort((a, b) => {
+    const ca = a.createdAt || "";
+    const cb = b.createdAt || "";
+    if (ca !== cb) return ca.localeCompare(cb);
+    const ia = a.id || "";
+    const ib = b.id || "";
+    if (ia !== ib) return ia.localeCompare(ib);
+    return (a.path || "").localeCompare(b.path || "");
+  });
+}
+
+// src/core/claim.ts
+function envelopeIsActiveOccupation(task) {
+  return isActiveTaskState(task.state);
+}
+function canClaim(node2, options) {
+  const structural = structuralClaimGate(node2);
+  if (!structural.ok) return structural;
+  const occupied = options?.tasks ? listDirectActiveTasksForNode(node2.id, options.tasks)[0] : void 0;
+  if (occupied) {
+    return {
+      ok: false,
+      blocker: node2,
+      task: occupied,
+      reason: `${node2.name} is occupied by active task ${occupied.id || occupied.path} (${occupied.assigneeKind}:${occupied.assigneeId}).`
+    };
+  }
+  return structural;
+}
+function structuralClaimGate(node2) {
+  if (node2.invalid) {
+    return { ok: false, blocker: node2, reason: `Invalid subtree: ${node2.invalidReason || "missing type definition"}` };
+  }
+  if (node2.archived) {
+    return { ok: false, blocker: node2, reason: "Archived subtree cannot be claimed." };
+  }
+  return { ok: true };
+}
+function isFrozen(node2) {
+  return node2.invalid || node2.archived;
+}
+
+// src/core/tags.ts
+async function loadTagRegistry(fs21) {
+  if (!await fs21.exists(TAGS_REGISTRY_PATH)) return { tags: [] };
+  try {
+    return normalizeRegistry2(JSON.parse(await fs21.readFile(TAGS_REGISTRY_PATH)));
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs21, TAGS_REGISTRY_PATH);
+    const recovered = await recoverTagRegistryFromNodes(fs21);
+    await saveTagRegistryUnlocked(fs21, recovered);
+    warnRegistryRecovered(TAGS_REGISTRY_PATH, backupPath, "recovered");
+    return recovered;
+  }
+}
+async function saveTagRegistryUnlocked(fs21, registry) {
+  await fs21.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(normalizeRegistry2(registry), null, 2) + "\n");
+}
+async function addRegistryTag(fs21, name) {
+  await withTentMutation(fs21, async () => addRegistryTagUnlocked(fs21, name));
+}
+async function addRegistryTagUnlocked(fs21, name) {
+  const tag = normalizeTagName(name);
+  const registry = await loadTagRegistry(fs21);
+  if (!registry.tags.includes(tag)) {
+    registry.tags.push(tag);
+    await saveTagRegistryUnlocked(fs21, registry);
+  }
+}
+async function addTag(fs21, nodeId, name) {
+  await withTentMutation(fs21, async () => {
+    const tag = normalizeTagName(name);
+    const tent = await loadTent(fs21);
+    if (tent.duplicateIds.has(nodeId)) throw new Error(`Duplicate node id '${nodeId}' found; repair or fork the duplicate nodes before using this id.`);
+    const node2 = tent.byId.get(nodeId);
+    if (!node2) throw new Error(`Node not found: ${nodeId}.`);
+    if (!isUsableNode(node2)) throw new Error("Invalid or archived nodes cannot be tagged.");
+    assertContentMutable(node2, "tagged");
+    await addRegistryTagUnlocked(fs21, tag);
+    const tags = uniqueSorted([...node2.tags, tag]);
+    await writeNodeTags(fs21, node2, tags);
+  });
+}
+async function removeTag(fs21, nodeId, name) {
+  await withTentMutation(fs21, async () => {
+    const tag = normalizeTagName(name);
+    const tent = await loadTent(fs21);
+    if (tent.duplicateIds.has(nodeId)) throw new Error(`Duplicate node id '${nodeId}' found; repair or fork the duplicate nodes before using this id.`);
+    const node2 = tent.byId.get(nodeId);
+    if (!node2) throw new Error(`Node not found: ${nodeId}.`);
+    if (!isUsableNode(node2)) throw new Error("Invalid or archived nodes cannot be tagged.");
+    assertContentMutable(node2, "tagged");
+    await writeNodeTags(fs21, node2, node2.tags.filter((item) => item !== tag));
+  });
+}
+async function removeRegistryTag(fs21, name) {
+  await withTentMutation(fs21, async () => {
+    const tag = normalizeTagName(name);
+    const registry = await loadTagRegistry(fs21);
+    await saveTagRegistryUnlocked(fs21, { tags: registry.tags.filter((item) => item !== tag) });
+    const tent = await loadTent(fs21);
+    for (const node2 of tent.byId.values()) {
+      if (node2.tags.includes(tag)) {
+        await writeNodeTags(fs21, node2, node2.tags.filter((item) => item !== tag));
+      }
+    }
+  });
+}
+async function syncTagRegistryAfterNodeTagsChange(fs21, previousTags, nextTags) {
+  await withTentMutation(fs21, async () => {
+    await syncTagRegistryAfterNodeTagsChangeUnlocked(fs21, previousTags, nextTags);
+  });
+}
+async function syncTagRegistryAfterNodeTagsChangeUnlocked(fs21, previousTags, nextTags) {
+  const previous2 = new Set(normalizeTagList(previousTags));
+  const next = normalizeTagList(nextTags);
+  const added = next.filter((tag) => !previous2.has(tag));
+  for (const tag of added) {
+    await addRegistryTagUnlocked(fs21, tag);
+  }
+}
+function normalizeTagName(name) {
+  const tag = name.trim();
+  if (!tag) throw new Error("Tag name cannot be empty.");
+  if (/[\/\\\r\n]/.test(tag)) throw new Error("Tag name cannot contain path separators or newlines.");
+  return tag;
+}
+async function writeNodeTags(fs21, node2, tags) {
+  const path22 = nodeNotePath(node2.path);
+  const { data, body, keyOrder } = parseFrontmatter(await fs21.readFile(path22));
+  const next = uniqueSorted(tags);
+  if (next.length === 0) delete data.tags;
+  else data.tags = next;
+  await fs21.writeFile(path22, serializeFrontmatter(data, body, nodeKeyOrder2(keyOrder)));
+}
+function normalizeRegistry2(value) {
+  if (!isRecord3(value) || !Array.isArray(value.tags)) return { tags: [] };
+  const tags = [];
+  for (const valueTag of value.tags) {
+    if (typeof valueTag !== "string") continue;
+    try {
+      tags.push(normalizeTagName(valueTag));
+    } catch {
+    }
+  }
+  return { tags: uniqueSorted(tags) };
+}
+async function recoverTagRegistryFromNodes(fs21) {
+  const tent = await loadTent(fs21);
+  const tags = [];
+  for (const node2 of tent.byPath.values()) {
+    tags.push(...node2.tags);
+  }
+  return { tags: uniqueSorted(tags) };
+}
+function normalizeTagList(values) {
+  const tags = [];
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    try {
+      const tag = normalizeTagName(value);
+      if (!tags.includes(tag)) tags.push(tag);
+    } catch {
+    }
+  }
+  return uniqueSorted(tags);
+}
+function uniqueSorted(values) {
+  return [...new Set(values)].sort((a, b) => a.localeCompare(b));
+}
+function nodeKeyOrder2(existing) {
+  return [
+    ...NODE_FRONTMATTER_KEY_ORDER,
+    ...existing.filter((key2) => !NODE_FRONTMATTER_KEY_ORDER.includes(key2))
+  ];
+}
+function isRecord3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// src/core/skillRoleRegistry.ts
+var DEFAULT_ROLES_REGISTRY = {
+  roles: []
+};
+async function loadRolesRegistry(fs21) {
+  const { registry } = await readRolesRegistryState(fs21);
+  return registry;
+}
+async function loadRolesRegistryForMutation(fs21) {
+  return loadRolesRegistry(fs21);
+}
+async function readRolesRegistryState(fs21) {
+  if (!await fs21.exists(ROLES_REGISTRY_PATH)) {
+    return {
+      registry: cloneDefaultRoles(),
+      recovered: false
+    };
+  }
+  try {
+    const rawText = await fs21.readFile(ROLES_REGISTRY_PATH);
+    const parsed = JSON.parse(rawText);
+    const registry = normalizeRolesRegistry(parsed);
+    return { registry, recovered: false };
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs21, ROLES_REGISTRY_PATH);
+    const reset = cloneDefaultRoles();
+    await writeJson(fs21, ROLES_REGISTRY_PATH, serializeRolesRegistry(reset));
+    warnRegistryRecovered(
+      ROLES_REGISTRY_PATH,
+      backupPath,
+      "reset",
+      "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
+    );
+    return {
+      registry: reset,
+      recovered: true
+    };
+  }
+}
+async function createRole(fs21, definition2, rand = Math.random) {
+  await withTentMutation(fs21, async () => {
+    const registry = await loadRolesRegistryForMutation(fs21);
+    const usedIds = roleIdSet(registry.roles);
+    const role = normalizeRoleDefinition(definition2, {
+      usedIds,
+      assignMissingId: "random",
+      rand
+    });
+    if (!role.name) throw new Error("Role name cannot be empty.");
+    assertRoleNameAvailable(role.name);
+    if (registry.roles.some((item) => item.name === role.name)) {
+      throw new Error(`Role already exists: ${role.name}.`);
+    }
+    if (registry.roles.some((item) => item.id === role.id)) {
+      throw new Error(`Role id already exists: ${role.id}.`);
+    }
+    registry.roles.push(role);
+    await writeJson(fs21, ROLES_REGISTRY_PATH, serializeRolesRegistry(registry));
+  });
+}
+function assertRoleNameAvailable(name) {
+  if (name.trim().toLowerCase() === ROUTES_TEMP_DIR) {
+    throw new Error(`Role name is reserved by Tent: ${ROUTES_TEMP_DIR}.`);
+  }
+}
+async function updateRole(fs21, ref, patch) {
+  await withTentMutation(fs21, async () => {
+    const registry = await loadRolesRegistryForMutation(fs21);
+    const index2 = findRoleIndex(registry.roles, ref);
+    if (index2 === -1) throw new Error(`Role does not exist: ${ref}.`);
+    const current = registry.roles[index2];
+    if (patch.id !== void 0 && patch.id !== current.id) {
+      throw new Error("Role id is immutable.");
+    }
+    if (patch.name !== void 0 && patch.name.trim() !== current.name) {
+      throw new Error(
+        "Role operational name cannot be renamed in this batch (temp/path migration is deferred); change displayName instead."
+      );
+    }
+    const next = normalizeRoleDefinition(
+      {
+        ...current,
+        ...patch,
+        id: current.id,
+        name: current.name
+      },
+      { usedIds: roleIdSet(registry.roles, current.id), assignMissingId: "keep" }
+    );
+    if (Object.prototype.hasOwnProperty.call(patch, "displayName")) {
+      const dn = typeof patch.displayName === "string" ? patch.displayName.trim() : "";
+      next.displayName = dn || current.name;
+    }
+    registry.roles[index2] = next;
+    await writeJson(fs21, ROLES_REGISTRY_PATH, serializeRolesRegistry(registry));
+  });
+}
+async function deleteRole(fs21, ref, confirmation) {
+  await withTentMutation(fs21, async () => {
+    const registry = await loadRolesRegistryForMutation(fs21);
+    const index2 = findRoleIndex(registry.roles, ref);
+    if (index2 === -1) throw new Error(`Role does not exist: ${ref}.`);
+    const role = registry.roles[index2];
+    if (confirmation !== role.name && confirmation !== role.id) {
+      throw new Error(
+        `Confirmation mismatch; enter the role name ${role.name} or id ${role.id}.`
+      );
+    }
+    registry.roles.splice(index2, 1);
+    await writeJson(fs21, ROLES_REGISTRY_PATH, serializeRolesRegistry({ roles: registry.roles }));
+  });
+}
+function resolveRole(roles, ref) {
+  const key2 = typeof ref === "string" ? ref.trim() : "";
+  if (!key2) return void 0;
+  const byId = roles.find((role) => role.id === key2);
+  if (byId) return byId;
+  return roles.find((role) => role.name === key2);
+}
+function findRoleIndex(roles, ref) {
+  const key2 = typeof ref === "string" ? ref.trim() : "";
+  if (!key2) return -1;
+  let idx = roles.findIndex((role) => role.id === key2);
+  if (idx !== -1) return idx;
+  return roles.findIndex((role) => role.name === key2);
+}
+function normalizeRolesRegistry(value) {
+  const root = isRecord4(value) ? value : {};
+  const roles = [];
+  const usedIds = /* @__PURE__ */ new Set();
+  if (Array.isArray(root.roles)) {
+    for (const item of root.roles) {
+      if (!isRecord4(item)) continue;
+      const role = normalizeRoleDefinition(item, {
+        usedIds,
+        assignMissingId: "deterministic"
+      });
+      if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
+      if (roles.some((existing) => existing.id === role.id)) continue;
+      usedIds.add(role.id);
+      roles.push(role);
+    }
+  }
+  return { roles };
+}
+function normalizeRoleDefinition(value, opts = {}) {
+  const name = typeof value.name === "string" ? value.name.trim() : "";
+  const usedIds = opts.usedIds ?? /* @__PURE__ */ new Set();
+  const assign = opts.assignMissingId ?? "deterministic";
+  let id = typeof value.id === "string" ? value.id.trim() : "";
+  if (id && !isRoleId(id)) {
+    id = "";
+  }
+  if (id && usedIds.has(id) && assign !== "keep") {
+    id = "";
+  }
+  if (!id) {
+    if (assign === "random") {
+      id = makeUniqueRoleId(usedIds, opts.rand ?? Math.random);
+    } else if (name) {
+      id = deterministicRoleIdFromName(name, usedIds);
+    } else {
+      id = makeUniqueRoleId(usedIds, opts.rand ?? Math.random);
+    }
+  }
+  const displayRaw = typeof value.displayName === "string" ? value.displayName.trim() : "";
+  const displayName = displayRaw || name;
+  const role = { id, name, displayName };
+  if (typeof value.prompt === "string" && value.prompt.trim()) role.prompt = value.prompt.trim();
+  if (typeof value.description === "string" && value.description.trim()) {
+    role.description = value.description.trim();
+  }
+  if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
+  const cli = normalizeCliConfig(value.cli);
+  if (cli) role.cli = cli;
+  return role;
+}
+function normalizeCliConfig(value) {
+  if (value === void 0) return void 0;
+  if (!isRecord4(value)) throw new Error("role.cli must be an object.");
+  const command = typeof value.command === "string" ? value.command.trim() : "";
+  if (!command) throw new Error("role.cli.command must be a non-empty string.");
+  const cli = { command };
+  if (value.resume !== void 0) {
+    const resume = typeof value.resume === "string" ? value.resume.trim() : "";
+    if (!resume) throw new Error("role.cli.resume must be a non-empty string.");
+    cli.resume = resume;
+  }
+  return cli;
+}
+function roleIdSet(roles, exceptId) {
+  const set = /* @__PURE__ */ new Set();
+  for (const role of roles) {
+    if (!role.id) continue;
+    if (exceptId && role.id === exceptId) continue;
+    set.add(role.id);
+  }
+  return set;
+}
+function serializeRolesRegistry(registry) {
+  return {
+    roles: registry.roles.map((role) => {
+      const row = {
+        id: role.id,
+        name: role.name,
+        displayName: role.displayName || role.name
+      };
+      if (role.prompt) row.prompt = role.prompt;
+      if (role.description) row.description = role.description;
+      if (role.color) row.color = role.color;
+      if (role.cli) row.cli = { ...role.cli };
+      return row;
+    })
+  };
+}
+function cloneDefaultRoles() {
+  return {
+    roles: DEFAULT_ROLES_REGISTRY.roles.map((role) => ({ ...role }))
+  };
+}
+async function writeJson(fs21, path22, value) {
+  if (!await fs21.exists(".tent")) await fs21.mkdir(".tent");
+  await fs21.writeFile(path22, JSON.stringify(value, null, 2) + "\n");
+}
+function isRecord4(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 // src/core/task-context-card.ts
 import { createHash } from "node:crypto";
 var TASK_CONTEXT_CARD_SCHEMA_VERSION = "v1";
@@ -1719,8 +2196,7 @@ function computeContextGeneration(inputs) {
     rolePrompt: inputs.rolePrompt?.trim() || "",
     tentTaskDigest: inputs.tentTaskDigest?.trim() || "",
     tentTaskVersion: inputs.tentTaskVersion?.trim() || "",
-    profileAdapterCompatibility: inputs.profileAdapterCompatibility?.trim() || "",
-    purpose: inputs.purpose?.trim() || "",
+    routeAdapterCompatibility: inputs.routeAdapterCompatibility?.trim() || "",
     extraStable
   };
   return formatContextGeneration(canonicalJson(payload));
@@ -1770,17 +2246,15 @@ function computeContextGenerationFromStableFacts(input) {
     rolePrompt: input.rolePrompt,
     tentTaskDigest: tentTaskDigest || void 0,
     tentTaskVersion: input.tentTaskVersion,
-    profileAdapterCompatibility: profileAdapterCompatibilityDigest({
-      profileId: input.profileId,
+    routeAdapterCompatibility: routeAdapterCompatibilityDigest({
+      routeId: input.routeId,
       adapterId: input.adapterId,
       capabilityFlags: input.capabilityFlags,
-      launchDigest: input.profileLaunchDigest
+      launchDigest: input.routeLaunchDigest
     }),
-    purpose: input.purpose,
     extraStable: {
       ...input.assigneeKind ? { assigneeKind: String(input.assigneeKind) } : {},
-      ...input.agentId?.trim() ? { agentId: input.agentId.trim() } : {},
-      ...input.profileLaunchDigest?.trim() ? { profileLaunchDigest: input.profileLaunchDigest.trim() } : {},
+      ...input.routeLaunchDigest?.trim() ? { routeLaunchDigest: input.routeLaunchDigest.trim() } : {},
       ...input.extraStable
     }
   });
@@ -1817,12 +2291,26 @@ function parseRefList(value, bucket) {
   for (let i = 0; i < value.length; i++) {
     const item = value[i];
     if (typeof item === "string") {
+      if (bucket === "nodes") {
+        throw new TaskContextCardError(
+          "UNRESOLVED_REF",
+          `Context Card refs.nodes[${i}] must be a durable pointer object with id.`,
+          { bucket, index: i }
+        );
+      }
       const id2 = item.trim();
       if (!id2) {
         throw new TaskContextCardError(
           "UNRESOLVED_REF",
           `Context Card refs.${bucket}[${i}] id is empty.`,
           { bucket, index: i }
+        );
+      }
+      if (bucket === "nodes" && !isNodeId(id2)) {
+        throw new TaskContextCardError(
+          "UNRESOLVED_REF",
+          `Context Card refs.nodes[${i}] must use a canonical cx-* Node id.`,
+          { bucket, index: i, id: id2 }
         );
       }
       out.push({ id: id2 });
@@ -1844,6 +2332,13 @@ function parseRefList(value, bucket) {
         { bucket, index: i }
       );
     }
+    if (bucket === "nodes" && !isNodeId(id)) {
+      throw new TaskContextCardError(
+        "UNRESOLVED_REF",
+        `Context Card refs.nodes[${i}] must use a canonical cx-* Node id.`,
+        { bucket, index: i, id }
+      );
+    }
     const ref = { id };
     if (typeof raw.path === "string" && raw.path.trim()) ref.path = raw.path.trim();
     if (typeof raw.revision === "string" && raw.revision.trim()) {
@@ -1856,7 +2351,8 @@ function parseRefList(value, bucket) {
 function buildTaskContextCard(input) {
   const objective = input.objective?.trim() || "";
   const acceptance = asStringList([...input.acceptance ?? []]);
-  if (!isContextGenerationId(input.contextGeneration)) {
+  const contextGeneration = input.contextGeneration?.trim() || void 0;
+  if (contextGeneration && !isContextGenerationId(contextGeneration)) {
     throw new TaskContextCardError(
       "INVALID_GENERATION",
       `contextGeneration must match cg-v1-<sha256>; got ${String(input.contextGeneration)}`
@@ -1886,7 +2382,7 @@ function buildTaskContextCard(input) {
   });
   return {
     ...cardBody,
-    contextGeneration: input.contextGeneration,
+    ...contextGeneration ? { contextGeneration } : {},
     taskDeltaDigest
   };
 }
@@ -1909,12 +2405,12 @@ function parseTaskContextCard(data) {
     },
     acceptance: asStringList(raw.acceptance),
     refs: {
-      nodes: parseRefList(refsRaw.nodes ?? raw.refsNodes, "nodes"),
-      tasks: parseRefList(refsRaw.tasks ?? raw.refsTasks, "tasks"),
-      deliveries: parseRefList(refsRaw.deliveries ?? raw.refsDeliveries, "deliveries"),
-      git: parseRefList(refsRaw.git ?? raw.refsGit, "git")
+      nodes: parseRefList(refsRaw.nodes, "nodes"),
+      tasks: parseRefList(refsRaw.tasks, "tasks"),
+      deliveries: parseRefList(refsRaw.deliveries, "deliveries"),
+      git: parseRefList(refsRaw.git, "git")
     },
-    contextGeneration: typeof raw.contextGeneration === "string" ? raw.contextGeneration : "",
+    contextGeneration: typeof raw.contextGeneration === "string" ? raw.contextGeneration : void 0,
     taskDeltaDigest: typeof raw.taskDeltaDigest === "string" ? raw.taskDeltaDigest : void 0
   });
 }
@@ -1940,7 +2436,7 @@ function serializeTaskContextCardForFrontmatter(card) {
       deliveries: card.refs.deliveries.map((r) => ({ ...r })),
       git: card.refs.git.map((r) => ({ ...r }))
     },
-    contextGeneration: card.contextGeneration,
+    ...card.contextGeneration ? { contextGeneration: card.contextGeneration } : {},
     taskDeltaDigest: card.taskDeltaDigest
   };
 }
@@ -1967,9 +2463,11 @@ function formatTaskContextCardPrompt(card) {
   const lines = [
     "Tent Task Context Card v1",
     `schemaVersion: ${card.schemaVersion}`,
-    `contextGeneration: ${card.contextGeneration}`,
     `taskDeltaDigest: ${card.taskDeltaDigest}`
   ];
+  if (card.contextGeneration) {
+    lines.splice(2, 0, `contextGeneration: ${card.contextGeneration}`);
+  }
   if (card.objective) lines.push(`objective: ${card.objective}`);
   if (card.frozenDecisions.length) {
     lines.push("frozenDecisions:");
@@ -2043,6 +2541,12 @@ function formatDynamicDelta(input) {
   return parts.join("\n");
 }
 function assembleManagedPrompt(input) {
+  if (!isContextGenerationId(input.contextGeneration)) {
+    throw new TaskContextCardError(
+      "INVALID_GENERATION",
+      `contextGeneration must match cg-v1-<sha256>; got ${String(input.contextGeneration)}`
+    );
+  }
   const card = buildTaskContextCard({
     objective: input.contextCard.objective,
     frozenDecisions: input.contextCard.frozenDecisions,
@@ -2060,7 +2564,7 @@ function assembleManagedPrompt(input) {
   if (!includeStablePrefix) {
     return {
       text: dynamicDelta + "\n",
-      contextGeneration: card.contextGeneration,
+      contextGeneration: input.contextGeneration,
       taskDeltaDigest: card.taskDeltaDigest,
       includedStablePrefix: false,
       stablePrefix: "",
@@ -2087,7 +2591,7 @@ ${dynamicDelta}
 `;
   return {
     text: text3,
-    contextGeneration: card.contextGeneration,
+    contextGeneration: input.contextGeneration,
     taskDeltaDigest: card.taskDeltaDigest,
     includedStablePrefix: true,
     stablePrefix,
@@ -2095,11 +2599,11 @@ ${dynamicDelta}
   };
 }
 function decideStablePrefixInjection(input) {
-  const taskGen = input.taskContextGeneration?.trim() || "";
-  if (!isContextGenerationId(taskGen)) {
+  const currentGen = input.currentContextGeneration?.trim() || "";
+  if (!isContextGenerationId(currentGen)) {
     return {
       includeStablePrefix: true,
-      reason: "task_context_generation_invalid_or_missing"
+      reason: "current_context_generation_invalid_or_missing"
     };
   }
   const prior = input.sessionContextGeneration?.trim() || "";
@@ -2112,7 +2616,7 @@ function decideStablePrefixInjection(input) {
       reason: "session_context_generation_invalid"
     };
   }
-  if (prior !== taskGen) {
+  if (prior !== currentGen) {
     return {
       includeStablePrefix: true,
       reason: "context_generation_mismatch"
@@ -2126,162 +2630,16 @@ function decideStablePrefixInjection(input) {
 function shouldInjectStablePrefix(input) {
   return decideStablePrefixInjection(input).includeStablePrefix;
 }
-function norm(value) {
-  return (value ?? "").trim();
-}
-function samePathish(a, b) {
-  if (!a || !b) return a === b;
-  const na = a.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  const nb = b.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  return na === nb;
-}
-function evaluateSessionReuseCompatibility(input) {
-  const reasons = [];
-  const req = input.request;
-  const cand = input.candidate;
-  if (norm(req.workspaceId) !== norm(cand.workspaceId)) {
-    reasons.push("workspace_mismatch");
-  }
-  if (norm(req.parentRoleId) !== norm(cand.parentRoleId)) {
-    reasons.push("parent_role_mismatch");
-  }
-  if (norm(req.agentId) !== norm(cand.agentId)) {
-    reasons.push("agent_mismatch");
-  }
-  if (norm(req.purpose) !== norm(cand.purpose)) {
-    reasons.push("purpose_mismatch");
-  }
-  if (norm(req.skillsDigest) !== norm(cand.skillsDigest)) {
-    reasons.push("skills_mismatch");
-  }
-  if (norm(req.profileId) !== norm(cand.profileId)) {
-    reasons.push("profile_mismatch");
-  }
-  if (norm(req.adapterId) !== norm(cand.adapterId)) {
-    reasons.push("adapter_mismatch");
-  }
-  if (norm(req.contextGeneration) !== norm(cand.contextGeneration)) {
-    reasons.push("context_generation_mismatch");
-  }
-  if (!isContextGenerationId(req.contextGeneration)) {
-    reasons.push("request_context_generation_invalid");
-  }
-  if (!isContextGenerationId(cand.contextGeneration)) {
-    reasons.push("candidate_context_generation_invalid");
-  }
-  const reqWt = norm(req.worktree);
-  const candWt = norm(cand.worktree);
-  if (reqWt || candWt) {
-    if (!samePathish(reqWt, candWt)) reasons.push("worktree_mismatch");
-  }
-  if (!input.runtime.previousTurnSettled) reasons.push("previous_turn_not_settled");
-  if (!input.runtime.noPendingInput) reasons.push("pending_input");
-  if (!input.runtime.noPendingDelivery) reasons.push("pending_delivery");
-  if (!input.runtime.exclusiveLease) reasons.push("lease_not_exclusive");
-  return {
-    allowed: reasons.length === 0,
-    reasons,
-    request: req,
-    candidate: cand
-  };
-}
-function skillSetCompatibilityDigest(skills) {
-  const rows = [...skills].map((s) => ({
-    name: s.name.trim().toLowerCase(),
-    bodyDigest: s.bodyDigest.trim(),
-    version: s.version?.trim() || ""
-  })).filter((s) => s.name && s.bodyDigest).sort((a, b) => a.name.localeCompare(b.name));
-  return sha256Hex(canonicalJson(rows));
-}
-function profileAdapterCompatibilityDigest(input) {
+function routeAdapterCompatibilityDigest(input) {
   const flags = [...input.capabilityFlags ?? []].map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
   return sha256Hex(
     canonicalJson({
-      profileId: input.profileId.trim(),
+      routeId: input.routeId.trim(),
       adapterId: input.adapterId.trim(),
       flags,
       launchDigest: input.launchDigest?.trim() || ""
     })
   );
-}
-function canonicalStringMap(map) {
-  const out = {};
-  if (!map) return out;
-  for (const key2 of Object.keys(map).sort((a, b) => a.localeCompare(b))) {
-    const k = key2.trim();
-    if (!k) continue;
-    const v = typeof map[key2] === "string" ? map[key2].trim() : "";
-    out[k] = v;
-  }
-  return out;
-}
-function profileLaunchCompatibilityDigest(input) {
-  const envKeyNames = [...input.envKeyNames ?? []].map((k) => k.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
-  const args = [...input.args ?? []].map((s) => String(s));
-  const skills = [...input.skills ?? []].map((s) => ({
-    name: s.name.trim().toLowerCase(),
-    path: s.path?.trim() || ""
-  })).filter((s) => s.name).sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path));
-  const mcp = [...input.mcpServers ?? []].map((m) => ({
-    name: m.name.trim(),
-    transport: m.transport?.trim() || "",
-    command: m.command?.trim() || "",
-    args: [...m.args ?? []].map((s) => String(s)),
-    url: m.url?.trim() || "",
-    envKeys: canonicalStringMap(m.envKeys),
-    envCredentialRefs: canonicalStringMap(m.envCredentialRefs),
-    headerEnvKeys: canonicalStringMap(m.headerEnvKeys),
-    headerCredentialRefs: canonicalStringMap(m.headerCredentialRefs)
-  })).filter((m) => m.name).sort((a, b) => a.name.localeCompare(b.name));
-  const flags = [...input.capabilityFlags ?? []].map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
-  const acp = input.acp;
-  return sha256Hex(
-    canonicalJson({
-      profileId: input.profileId.trim(),
-      adapterId: input.adapterId.trim(),
-      command: input.command?.trim() || "",
-      args,
-      envKeyNames,
-      acp: {
-        executable: acp?.executable?.trim() || "",
-        model: acp?.model?.trim() || "",
-        envKey: acp?.envKey?.trim() || "",
-        credentialRef: acp?.credentialRef?.trim() || "",
-        baseUrlEnvKey: acp?.baseUrlEnvKey?.trim() || "",
-        baseUrl: acp?.baseUrl?.trim() || "",
-        permissionPolicy: acp?.permissionPolicy?.trim() || "",
-        promptTimeoutMs: typeof acp?.promptTimeoutMs === "number" && Number.isFinite(acp.promptTimeoutMs) ? acp.promptTimeoutMs : null,
-        permissionTimeoutMs: typeof acp?.permissionTimeoutMs === "number" && Number.isFinite(acp.permissionTimeoutMs) ? acp.permissionTimeoutMs : null
-      },
-      fake: {
-        canResume: input.fake?.canResume === true,
-        failLaunch: Boolean(input.fake?.failLaunch),
-        waitForSignal: input.fake?.waitForSignal !== false
-      },
-      skills,
-      mcp,
-      flags
-    })
-  );
-}
-function sessionRecordToReuseCompatibilityFacts(record) {
-  return {
-    workspaceId: record.workspace?.trim() || "",
-    parentRoleId: record.parentRoleId?.trim() || "",
-    agentId: (record.agentId || record.roleName || "").trim(),
-    purpose: record.purpose?.trim() || "",
-    skillsDigest: record.skillsDigest?.trim() || "",
-    profileId: record.profileId.trim(),
-    adapterId: record.adapterId.trim(),
-    contextGeneration: record.contextGeneration?.trim() || "",
-    worktree: record.workspaceLane?.worktree?.trim() || record.runtimeWorkspace?.cwd?.trim() || void 0
-  };
-}
-function managedSessionPurpose(input) {
-  const purpose = input?.purpose?.trim() || "";
-  const subKey = input?.subKey?.trim() || "";
-  if (purpose && subKey) return `${purpose}:${subKey}`;
-  return purpose || subKey || "";
 }
 function deriveIntegrationAuthority(input) {
   try {
@@ -2491,602 +2849,35 @@ function assertOrdinaryExecutorLaneHistory(input) {
   }
 }
 
-// src/core/task-node-refs.ts
-function normalizeContextCardNodeRef(raw) {
-  const id = raw.id.trim();
-  if (!id) throw new Error("Task node ref id cannot be empty.");
-  if (id === "root") {
-    throw new Error(
-      'Task.contextCard.refs.nodes must not include fake "root" Node ref; workspace context is separate.'
-    );
-  }
-  const out = { id };
-  if (typeof raw.path === "string" && raw.path.trim()) {
-    out.path = raw.path.trim().replace(/\\/g, "/");
-  }
-  if (typeof raw.revision === "string" && raw.revision.trim()) {
-    out.revision = raw.revision.trim();
-  }
-  return out;
-}
-var MISSING_CONTEXT_CARD_NODES = "MISSING_CONTEXT_CARD: Task.contextCard.refs.nodes is required (run migrateLegacyTaskNodeRefs for legacy claims).";
-function taskReferencedNodeIds(task) {
-  const label = task.id || task.path || "(unknown)";
-  if (task.contextCard == null) {
-    throw new Error(`${MISSING_CONTEXT_CARD_NODES} task=${label}`);
-  }
-  const nodes = task.contextCard.refs?.nodes;
-  if (nodes === void 0 || nodes === null) {
-    throw new Error(`${MISSING_CONTEXT_CARD_NODES} task=${label}`);
-  }
-  if (!Array.isArray(nodes)) {
-    throw new Error(`${MISSING_CONTEXT_CARD_NODES} task=${label} (nodes must be an array)`);
-  }
-  return nodes.map((n) => n.id).filter((id) => id && id !== "root");
-}
-function taskDirectlyReferencesNode(task, nodeId) {
-  const id = nodeId.trim();
-  if (!id || id === "root") return false;
-  return taskReferencedNodeIds(task).includes(id);
-}
-function taskIsActiveOccupation(task) {
-  const state = task.state || (task.status === "pending" || task.status === "taken" ? legacyStatusToState(task.status) : "failed");
-  return isActiveTaskState(state);
-}
-function listDirectActiveTasksForNode(nodeId, tasks) {
-  const id = nodeId.trim();
-  const matches = tasks.filter((t) => {
-    if (!taskIsActiveOccupation(t)) return false;
-    if (t.contextCard == null) return false;
-    return taskDirectlyReferencesNode(t, id);
-  });
-  return sortTasksDeterministically(matches);
-}
-function sortTasksDeterministically(tasks) {
-  return [...tasks].sort((a, b) => {
-    const ca = a.createdAt || "";
-    const cb = b.createdAt || "";
-    if (ca !== cb) return ca.localeCompare(cb);
-    const ia = a.id || "";
-    const ib = b.id || "";
-    if (ia !== ib) return ia.localeCompare(ib);
-    return (a.path || "").localeCompare(b.path || "");
-  });
-}
-
-// src/core/claim.ts
-function envelopeIsActiveOccupation(task) {
-  const state = task.state || (task.status === "pending" || task.status === "taken" ? legacyStatusToState(task.status) : "failed");
-  return isActiveTaskState(state);
-}
-function canClaim(box, options) {
-  const structural = structuralClaimGate(box);
-  if (!structural.ok) return structural;
-  const occupied = options?.tasks ? listDirectActiveTasksForNode(box.id, options.tasks)[0] : void 0;
-  if (occupied) {
-    return {
-      ok: false,
-      blocker: box,
-      task: occupied,
-      reason: `${box.name} is occupied by active task ${occupied.id || occupied.path} (${occupied.role}).`
-    };
-  }
-  return structural;
-}
-function structuralClaimGate(box) {
-  if (box.invalid) {
-    return { ok: false, blocker: box, reason: `Invalid subtree: ${box.invalidReason || "missing type definition"}` };
-  }
-  if (box.archived) {
-    return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
-  }
-  return { ok: true };
-}
-function isFrozen(box) {
-  return box.invalid || box.archived;
-}
-
-// src/core/tags.ts
-async function loadTagRegistry(fs22) {
-  if (!await fs22.exists(TAGS_REGISTRY_PATH)) return { tags: [] };
-  try {
-    return normalizeRegistry2(JSON.parse(await fs22.readFile(TAGS_REGISTRY_PATH)));
-  } catch {
-    const backupPath = await backupCorruptRegistry(fs22, TAGS_REGISTRY_PATH);
-    const recovered = await recoverTagRegistryFromBoxes(fs22);
-    await saveTagRegistryUnlocked(fs22, recovered);
-    warnRegistryRecovered(TAGS_REGISTRY_PATH, backupPath, "recovered");
-    return recovered;
-  }
-}
-async function saveTagRegistryUnlocked(fs22, registry) {
-  await fs22.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(normalizeRegistry2(registry), null, 2) + "\n");
-}
-async function addRegistryTag(fs22, name) {
-  await withTentMutation(fs22, async () => addRegistryTagUnlocked(fs22, name));
-}
-async function addRegistryTagUnlocked(fs22, name) {
-  const tag = normalizeTagName(name);
-  const registry = await loadTagRegistry(fs22);
-  if (!registry.tags.includes(tag)) {
-    registry.tags.push(tag);
-    await saveTagRegistryUnlocked(fs22, registry);
-  }
-}
-async function addTag(fs22, boxId, name) {
-  await withTentMutation(fs22, async () => {
-    const tag = normalizeTagName(name);
-    const tent = await loadTent(fs22);
-    if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
-    if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
-    assertContentMutable(box, "tagged");
-    await addRegistryTagUnlocked(fs22, tag);
-    const tags = uniqueSorted([...box.tags, tag]);
-    await writeBoxTags(fs22, box, tags);
-  });
-}
-async function removeTag(fs22, boxId, name) {
-  await withTentMutation(fs22, async () => {
-    const tag = normalizeTagName(name);
-    const tent = await loadTent(fs22);
-    if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
-    if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
-    assertContentMutable(box, "tagged");
-    await writeBoxTags(fs22, box, box.tags.filter((item) => item !== tag));
-  });
-}
-async function removeRegistryTag(fs22, name) {
-  await withTentMutation(fs22, async () => {
-    const tag = normalizeTagName(name);
-    const registry = await loadTagRegistry(fs22);
-    await saveTagRegistryUnlocked(fs22, { tags: registry.tags.filter((item) => item !== tag) });
-    const tent = await loadTent(fs22);
-    for (const box of tent.byId.values()) {
-      if (box.tags.includes(tag)) {
-        await writeBoxTags(fs22, box, box.tags.filter((item) => item !== tag));
-      }
-    }
-  });
-}
-async function syncTagRegistryAfterBoxTagsChange(fs22, previousTags, nextTags) {
-  await withTentMutation(fs22, async () => {
-    await syncTagRegistryAfterBoxTagsChangeUnlocked(fs22, previousTags, nextTags);
-  });
-}
-async function syncTagRegistryAfterBoxTagsChangeUnlocked(fs22, previousTags, nextTags) {
-  const previous2 = new Set(normalizeTagList(previousTags));
-  const next = normalizeTagList(nextTags);
-  const added = next.filter((tag) => !previous2.has(tag));
-  for (const tag of added) {
-    await addRegistryTagUnlocked(fs22, tag);
-  }
-}
-function normalizeTagName(name) {
-  const tag = name.trim();
-  if (!tag) throw new Error("Tag name cannot be empty.");
-  if (/[\/\\\r\n]/.test(tag)) throw new Error("Tag name cannot contain path separators or newlines.");
-  return tag;
-}
-async function writeBoxTags(fs22, box, tags) {
-  const path23 = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs22.readFile(path23));
-  const next = uniqueSorted(tags);
-  if (next.length === 0) delete data.tags;
-  else data.tags = next;
-  await fs22.writeFile(path23, serializeFrontmatter(data, body, boxKeyOrder2(keyOrder)));
-}
-function normalizeRegistry2(value) {
-  if (!isRecord3(value) || !Array.isArray(value.tags)) return { tags: [] };
-  const tags = [];
-  for (const valueTag of value.tags) {
-    if (typeof valueTag !== "string") continue;
-    try {
-      tags.push(normalizeTagName(valueTag));
-    } catch {
-    }
-  }
-  return { tags: uniqueSorted(tags) };
-}
-async function recoverTagRegistryFromBoxes(fs22) {
-  const tent = await loadTent(fs22);
-  const tags = [];
-  for (const box of tent.byPath.values()) {
-    tags.push(...box.tags);
-  }
-  return { tags: uniqueSorted(tags) };
-}
-function normalizeTagList(values) {
-  const tags = [];
-  for (const value of values) {
-    if (typeof value !== "string") continue;
-    try {
-      const tag = normalizeTagName(value);
-      if (!tags.includes(tag)) tags.push(tag);
-    } catch {
-    }
-  }
-  return uniqueSorted(tags);
-}
-function uniqueSorted(values) {
-  return [...new Set(values)].sort((a, b) => a.localeCompare(b));
-}
-function boxKeyOrder2(existing) {
-  return [
-    ...BOX_FRONTMATTER_KEY_ORDER,
-    ...existing.filter((key2) => !BOX_FRONTMATTER_KEY_ORDER.includes(key2))
-  ];
-}
-function isRecord3(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-// src/core/skillRoleRegistry.ts
-var DEFAULT_ROLES_REGISTRY = {
-  roles: []
-};
-async function loadRolesRegistry(fs22) {
-  const { registry } = await readRolesRegistryState(fs22);
-  return registry;
-}
-async function loadRolesRegistryForMutation(fs22) {
-  return loadRolesRegistry(fs22);
-}
-async function readRolesRegistryState(fs22) {
-  if (!await fs22.exists(ROLES_REGISTRY_PATH)) {
-    return {
-      registry: cloneDefaultRoles(),
-      recovered: false
-    };
-  }
-  try {
-    const rawText = await fs22.readFile(ROLES_REGISTRY_PATH);
-    const parsed = JSON.parse(rawText);
-    const registry = normalizeRolesRegistry(parsed);
-    return { registry, recovered: false };
-  } catch {
-    const backupPath = await backupCorruptRegistry(fs22, ROLES_REGISTRY_PATH);
-    const reset = cloneDefaultRoles();
-    await writeJson(fs22, ROLES_REGISTRY_PATH, serializeRolesRegistry(reset));
-    warnRegistryRecovered(
-      ROLES_REGISTRY_PATH,
-      backupPath,
-      "reset",
-      "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
-    );
-    return {
-      registry: reset,
-      recovered: true
-    };
-  }
-}
-async function createRole(fs22, definition2, rand = Math.random) {
-  await withTentMutation(fs22, async () => {
-    const registry = await loadRolesRegistryForMutation(fs22);
-    const usedIds = roleIdSet(registry.roles);
-    const role = normalizeRoleDefinition(definition2, {
-      usedIds,
-      assignMissingId: "random",
-      rand
-    });
-    if (!role.name) throw new Error("Role name cannot be empty.");
-    assertRoleNameAvailable(role.name);
-    if (registry.roles.some((item) => item.name === role.name)) {
-      throw new Error(`Role already exists: ${role.name}.`);
-    }
-    if (registry.roles.some((item) => item.id === role.id)) {
-      throw new Error(`Role id already exists: ${role.id}.`);
-    }
-    registry.roles.push(role);
-    await writeJson(fs22, ROLES_REGISTRY_PATH, serializeRolesRegistry(registry));
-  });
-}
-function assertRoleNameAvailable(name) {
-  if (name.trim().toLowerCase() === AGENT_PROFILES_TEMP_DIR) {
-    throw new Error(`Role name is reserved by Tent: ${AGENT_PROFILES_TEMP_DIR}.`);
-  }
-}
-async function updateRole(fs22, ref, patch) {
-  await withTentMutation(fs22, async () => {
-    const registry = await loadRolesRegistryForMutation(fs22);
-    const index2 = findRoleIndex(registry.roles, ref);
-    if (index2 === -1) throw new Error(`Role does not exist: ${ref}.`);
-    const current = registry.roles[index2];
-    if (patch.id !== void 0 && patch.id !== current.id) {
-      throw new Error("Role id is immutable.");
-    }
-    if (patch.name !== void 0 && patch.name.trim() !== current.name) {
-      throw new Error(
-        "Role operational name cannot be renamed in this batch (temp/path migration is deferred); change displayName instead."
-      );
-    }
-    const next = normalizeRoleDefinition(
-      {
-        ...current,
-        ...patch,
-        id: current.id,
-        name: current.name
-      },
-      { usedIds: roleIdSet(registry.roles, current.id), assignMissingId: "keep" }
-    );
-    if (Object.prototype.hasOwnProperty.call(patch, "displayName")) {
-      const dn = typeof patch.displayName === "string" ? patch.displayName.trim() : "";
-      next.displayName = dn || current.name;
-    }
-    registry.roles[index2] = next;
-    await writeJson(fs22, ROLES_REGISTRY_PATH, serializeRolesRegistry(registry));
-  });
-}
-async function deleteRole(fs22, ref, confirmation) {
-  await withTentMutation(fs22, async () => {
-    const registry = await loadRolesRegistryForMutation(fs22);
-    const index2 = findRoleIndex(registry.roles, ref);
-    if (index2 === -1) throw new Error(`Role does not exist: ${ref}.`);
-    const role = registry.roles[index2];
-    if (confirmation !== role.name && confirmation !== role.id) {
-      throw new Error(
-        `Confirmation mismatch; enter the role name ${role.name} or id ${role.id}.`
-      );
-    }
-    registry.roles.splice(index2, 1);
-    await writeJson(fs22, ROLES_REGISTRY_PATH, serializeRolesRegistry({ roles: registry.roles }));
-  });
-}
-function resolveRole(roles, ref) {
-  const key2 = typeof ref === "string" ? ref.trim() : "";
-  if (!key2) return void 0;
-  const byId = roles.find((role) => role.id === key2);
-  if (byId) return byId;
-  return roles.find((role) => role.name === key2);
-}
-function findRoleIndex(roles, ref) {
-  const key2 = typeof ref === "string" ? ref.trim() : "";
-  if (!key2) return -1;
-  let idx = roles.findIndex((role) => role.id === key2);
-  if (idx !== -1) return idx;
-  return roles.findIndex((role) => role.name === key2);
-}
-function normalizeRolesRegistry(value) {
-  const root = isRecord4(value) ? value : {};
-  const roles = [];
-  const usedIds = /* @__PURE__ */ new Set();
-  if (Array.isArray(root.roles)) {
-    for (const item of root.roles) {
-      if (!isRecord4(item)) continue;
-      const role = normalizeRoleDefinition(item, {
-        usedIds,
-        assignMissingId: "deterministic"
-      });
-      if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
-      if (roles.some((existing) => existing.id === role.id)) continue;
-      usedIds.add(role.id);
-      roles.push(role);
-    }
-  }
-  return { roles };
-}
-function normalizeRoleDefinition(value, opts = {}) {
-  const name = typeof value.name === "string" ? value.name.trim() : "";
-  const usedIds = opts.usedIds ?? /* @__PURE__ */ new Set();
-  const assign = opts.assignMissingId ?? "deterministic";
-  let id = typeof value.id === "string" ? value.id.trim() : "";
-  if (id && !isRoleId(id)) {
-    id = "";
-  }
-  if (id && usedIds.has(id) && assign !== "keep") {
-    id = "";
-  }
-  if (!id) {
-    if (assign === "random") {
-      id = makeUniqueRoleId(usedIds, opts.rand ?? Math.random);
-    } else if (name) {
-      id = deterministicRoleIdFromName(name, usedIds);
-    } else {
-      id = makeUniqueRoleId(usedIds, opts.rand ?? Math.random);
-    }
-  }
-  const displayRaw = typeof value.displayName === "string" ? value.displayName.trim() : "";
-  const displayName = displayRaw || name;
-  const role = { id, name, displayName };
-  if (typeof value.prompt === "string" && value.prompt.trim()) role.prompt = value.prompt.trim();
-  if (typeof value.description === "string" && value.description.trim()) {
-    role.description = value.description.trim();
-  }
-  if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
-  const cli = normalizeCliConfig(value.cli);
-  if (cli) role.cli = cli;
-  return role;
-}
-function normalizeCliConfig(value) {
-  if (value === void 0) return void 0;
-  if (!isRecord4(value)) throw new Error("role.cli must be an object.");
-  const command = typeof value.command === "string" ? value.command.trim() : "";
-  if (!command) throw new Error("role.cli.command must be a non-empty string.");
-  const cli = { command };
-  if (value.resume !== void 0) {
-    const resume = typeof value.resume === "string" ? value.resume.trim() : "";
-    if (!resume) throw new Error("role.cli.resume must be a non-empty string.");
-    cli.resume = resume;
-  }
-  return cli;
-}
-function roleIdSet(roles, exceptId) {
-  const set = /* @__PURE__ */ new Set();
-  for (const role of roles) {
-    if (!role.id) continue;
-    if (exceptId && role.id === exceptId) continue;
-    set.add(role.id);
-  }
-  return set;
-}
-function serializeRolesRegistry(registry) {
-  return {
-    roles: registry.roles.map((role) => {
-      const row = {
-        id: role.id,
-        name: role.name,
-        displayName: role.displayName || role.name
-      };
-      if (role.prompt) row.prompt = role.prompt;
-      if (role.description) row.description = role.description;
-      if (role.color) row.color = role.color;
-      if (role.cli) row.cli = { ...role.cli };
-      return row;
-    })
-  };
-}
-function cloneDefaultRoles() {
-  return {
-    roles: DEFAULT_ROLES_REGISTRY.roles.map((role) => ({ ...role }))
-  };
-}
-async function writeJson(fs22, path23, value) {
-  if (!await fs22.exists(".tent")) await fs22.mkdir(".tent");
-  await fs22.writeFile(path23, JSON.stringify(value, null, 2) + "\n");
-}
-function isRecord4(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 // src/core/task.ts
-async function loadTaskEnvelopes(fs22) {
+async function loadTaskEnvelopes(fs21) {
   const tasks = [];
-  if (!await fs22.exists(TEMP_DIR)) return tasks;
-  for (const entry of await fs22.listDir(TEMP_DIR)) {
+  if (!await fs21.exists(TEMP_DIR)) return tasks;
+  for (const entry of await fs21.listDir(TEMP_DIR)) {
     if (!entry.isDir) continue;
-    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
-      const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
-      if (!await fs22.exists(profilesRoot)) continue;
-      for (const profileEntry of await fs22.listDir(profilesRoot)) {
-        if (!profileEntry.isDir) continue;
-        await collectTaskFiles(fs22, join(profilesRoot, profileEntry.name, "tasks"), tasks);
+    if (entry.name === ROUTES_TEMP_DIR) {
+      const routesRoot = join(TEMP_DIR, ROUTES_TEMP_DIR);
+      if (!await fs21.exists(routesRoot)) continue;
+      for (const routeEntry of await fs21.listDir(routesRoot)) {
+        if (!routeEntry.isDir) continue;
+        await collectTaskFiles(fs21, join(routesRoot, routeEntry.name, "tasks"), tasks);
       }
       continue;
     }
-    await collectTaskFiles(fs22, join(TEMP_DIR, entry.name, "tasks"), tasks);
+    await collectTaskFiles(fs21, join(TEMP_DIR, entry.name, "tasks"), tasks);
   }
   return tasks.sort((a, b) => a.path.localeCompare(b.path));
 }
-async function migrateParentReviewerEnvelopes(fs22, clock, options) {
-  const dryRun = options?.dryRun === true;
-  const report = {
-    scanned: 0,
-    rewritten: [],
-    skipped: [],
-    warnings: []
-  };
-  if (!await fs22.exists(TEMP_DIR)) return report;
-  const paths = [];
-  for (const entry of await fs22.listDir(TEMP_DIR)) {
-    if (!entry.isDir) continue;
-    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
-      const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
-      if (!await fs22.exists(profilesRoot)) continue;
-      for (const profileEntry of await fs22.listDir(profilesRoot)) {
-        if (!profileEntry.isDir) continue;
-        const taskDir2 = join(profilesRoot, profileEntry.name, "tasks");
-        if (!await fs22.exists(taskDir2)) continue;
-        for (const f of await fs22.listDir(taskDir2)) {
-          if (!f.isDir && f.name.endsWith(".md")) paths.push(join(taskDir2, f.name));
-        }
-      }
-      continue;
-    }
-    const taskDir = join(TEMP_DIR, entry.name, "tasks");
-    if (!await fs22.exists(taskDir)) continue;
-    for (const f of await fs22.listDir(taskDir)) {
-      if (!f.isDir && f.name.endsWith(".md")) paths.push(join(taskDir, f.name));
-    }
-  }
-  for (const path23 of paths.sort((a, b) => a.localeCompare(b))) {
-    report.scanned += 1;
-    try {
-      const raw = await fs22.readFile(path23);
-      const { data, body, keyOrder } = parseFrontmatter(raw);
-      if (data.type !== "task") {
-        report.skipped.push(path23);
-        continue;
-      }
-      const hasParent = data.parentActor !== void 0 && data.parentActor !== null;
-      const hasReviewer = data.reviewer !== void 0 && data.reviewer !== null;
-      const hasLegacyDispatcher = typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
-      if (hasParent && hasReviewer && !hasLegacyDispatcher) {
-        try {
-          resolveParentReviewerPair({
-            parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
-            reviewer: parseTaskActorRef(data.reviewer, "reviewer")
-          });
-          report.skipped.push(path23);
-        } catch (err) {
-          report.warnings.push(
-            `${path23}: ${err instanceof Error ? err.message : String(err)}`
-          );
-          report.skipped.push(path23);
-        }
-        continue;
-      }
-      let parentActor;
-      let reviewer;
-      if (hasParent && hasReviewer) {
-        const pair = resolveParentReviewerPair({
-          parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
-          reviewer: parseTaskActorRef(data.reviewer, "reviewer")
-        });
-        parentActor = pair.parentActor;
-        reviewer = pair.reviewer;
-      } else if (hasParent || hasReviewer) {
-        report.warnings.push(
-          `${path23}: partial parentActor/reviewer pair; refusing silent repair`
-        );
-        report.skipped.push(path23);
-        continue;
-      } else {
-        const migrated = migrateParentReviewerFromLegacy({
-          asSub: data.asSub === true,
-          dispatchedBy: typeof data.dispatchedBy === "string" ? data.dispatchedBy : void 0
-        });
-        parentActor = migrated.parentActor;
-        reviewer = migrated.reviewer;
-      }
-      const next = { ...data };
-      next.parentActor = serializeTaskActorRef(parentActor);
-      next.reviewer = serializeTaskActorRef(reviewer);
-      delete next.dispatchedBy;
-      const nextRaw = serializeFrontmatter(next, body, keyOrder);
-      if (nextRaw === raw) {
-        report.skipped.push(path23);
-        continue;
-      }
-      if (!dryRun) {
-        next.updatedAt = clock.now();
-        await fs22.writeFile(path23, serializeFrontmatter(next, body, keyOrder));
-      }
-      report.rewritten.push(path23);
-    } catch (err) {
-      report.warnings.push(
-        `${path23}: ${err instanceof Error ? err.message : String(err)}`
-      );
-      report.skipped.push(path23);
-    }
-  }
-  return report;
-}
-async function collectTaskFiles(fs22, taskDir, tasks) {
-  if (!await fs22.exists(taskDir)) return;
-  for (const entry of await fs22.listDir(taskDir)) {
+async function collectTaskFiles(fs21, taskDir, tasks) {
+  if (!await fs21.exists(taskDir)) return;
+  for (const entry of await fs21.listDir(taskDir)) {
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
-    const path23 = join(taskDir, entry.name);
-    try {
-      tasks.push(await loadTaskEnvelope(fs22, path23));
-    } catch {
-    }
+    const path22 = join(taskDir, entry.name);
+    tasks.push(await loadTaskEnvelope(fs21, path22));
   }
 }
 function taskAssigneeKind(task) {
-  return task.assigneeKind === "agentProfile" ? "agentProfile" : "role";
+  return task.assigneeKind;
 }
 function taskAsSub(task) {
   return task.asSub === true;
@@ -3156,7 +2947,7 @@ function parseBaseCommitCapture(value) {
 function resolveDispatchActors(input) {
   if (!input.parentActor) {
     throw new Error(
-      "task.dispatch requires explicit parentActor { kind, id } (legacy dispatchedBy is migration-only)."
+      "task.dispatch requires explicit parentActor { kind, id }."
     );
   }
   return resolveParentReviewerPair({
@@ -3164,31 +2955,38 @@ function resolveDispatchActors(input) {
     reviewer: input.reviewer
   });
 }
-async function loadTaskEnvelope(fs22, path23) {
-  if (!await fs22.exists(path23)) throw new Error(`Task envelope not found: ${path23}.`);
-  const { data, body } = parseFrontmatter(await fs22.readFile(path23));
-  if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string") {
-    throw new Error(`Invalid task envelope format: ${path23}.`);
+async function loadTaskEnvelope(fs21, path22) {
+  if (!await fs21.exists(path22)) throw new Error(`Task envelope not found: ${path22}.`);
+  const { data, body } = parseFrontmatter(await fs21.readFile(path22));
+  if (data.type !== "task" || data.assigneeKind !== "role" && data.assigneeKind !== "route" || typeof data.assigneeId !== "string" || !data.assigneeId.trim() || typeof data.manifest !== "string") {
+    throw new Error(`Invalid task envelope format: ${path22}.`);
   }
-  const legacyStatus = data.status === "taken" ? "taken" : "pending";
-  const state = parseTaskState(data.state, legacyStatus);
+  if (data.assigneeKind === "route" && !isRouteId(data.assigneeId.trim())) {
+    throw new Error(`Invalid task envelope format: ${path22} (invalid route assigneeId).`);
+  }
+  const state = parseTaskState(data.state);
   const actors = resolveActorsFromDisk(data);
   const contextCard = loadTaskContextCardFromFrontmatter(data) ?? void 0;
-  const hasClaimsKey = Array.isArray(data.claims) && data.claims.every((claim) => typeof claim === "string");
-  if (!contextCard && !hasClaimsKey) {
+  if (!contextCard) {
     throw new Error(
-      `Invalid task envelope format: ${path23} (missing Task.contextCard.refs.nodes; run claims\u2192refs migration).`
+      `Invalid task envelope format: ${path22} (missing Task.contextCard.refs.nodes).`
+    );
+  }
+  if (parseContextCardNodeRefs(contextCard.refs.nodes).length === 0) {
+    throw new Error(
+      `Invalid task envelope format: ${path22} (Task.contextCard.refs.nodes requires at least one Node).`
     );
   }
   const task = {
-    path: path23,
-    role: data.role,
+    path: path22,
+    assigneeKind: data.assigneeKind,
+    assigneeId: data.assigneeId.trim(),
     manifest: data.manifest,
-    status: stateToLegacyStatus(state),
     state,
     parentActor: actors.parentActor,
     reviewer: actors.reviewer,
-    prompt: body.trim() || void 0
+    prompt: body.trim() || void 0,
+    contextCard
   };
   if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
   if (data.asSub === true) task.asSub = true;
@@ -3207,12 +3005,12 @@ async function loadTaskEnvelope(fs22, path23) {
     const recordedBase = task.baseCommit?.trim() || "";
     if (!recordedBase) {
       throw new Error(
-        `Invalid task envelope format: ${path23} (baseCommitCapture present but baseCommit missing).`
+        `Invalid task envelope format: ${path22} (baseCommitCapture present but baseCommit missing).`
       );
     }
     if (recordedBase !== baseCommitCapture.baseCommit) {
       throw new Error(
-        `Invalid task envelope format: ${path23} (baseCommit ${recordedBase} !== baseCommitCapture.baseCommit ${baseCommitCapture.baseCommit}).`
+        `Invalid task envelope format: ${path22} (baseCommit ${recordedBase} !== baseCommitCapture.baseCommit ${baseCommitCapture.baseCommit}).`
       );
     }
     task.baseCommitCapture = baseCommitCapture;
@@ -3224,23 +3022,11 @@ async function loadTaskEnvelope(fs22, path23) {
       task.reviewer
     );
   }
-  if (contextCard) {
-    task.contextCard = contextCard;
-    task.contextGeneration = contextCard.contextGeneration;
-    task.taskDeltaDigest = contextCard.taskDeltaDigest;
-  }
+  task.contextGeneration = contextCard.contextGeneration;
+  task.taskDeltaDigest = contextCard.taskDeltaDigest;
   const deliveryPolicy = normalizeDeliveryPolicyRead(data.deliveryPolicy);
   if (deliveryPolicy) task.deliveryPolicy = deliveryPolicy;
-  if (data.assigneeKind === "role" || data.assigneeKind === "agentProfile") {
-    task.assigneeKind = data.assigneeKind;
-  }
-  if (typeof data.agentId === "string" && data.agentId.trim()) {
-    task.agentId = data.agentId.trim();
-  }
   if (typeof data.sessionId === "string") task.sessionId = data.sessionId;
-  if (typeof data.purpose === "string" && data.purpose.trim()) {
-    task.purpose = data.purpose.trim();
-  }
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
   if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
     task.lastOutcome = data.lastOutcome;
@@ -3265,10 +3051,7 @@ function resolveActorsFromDisk(data) {
       reviewer: parseTaskActorRef(data.reviewer, "reviewer")
     });
   }
-  const hasLegacy = typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
-  throw new Error(
-    hasLegacy ? "Invalid task envelope: legacy dispatchedBy present without parentActor/reviewer; run workspace.mount migration (migrateParentReviewerEnvelopes) before load." : "Invalid task envelope: missing parentActor/reviewer."
-  );
+  throw new Error("Invalid task envelope: missing parentActor/reviewer.");
 }
 function resolveTaskPromptRoots(roots) {
   if (typeof roots !== "string") {
@@ -3291,11 +3074,7 @@ function formatTaskPointers(task) {
   ];
   if (task.contextCard) {
     const nodeIds = taskReferencedNodeIds(task);
-    if (nodeIds.length) {
-      lines.push(`contextCard.refs.nodes: ${nodeIds.join(", ")}`);
-    } else {
-      lines.push(`workspace context: true (no direct Node refs)`);
-    }
+    lines.push(`contextCard.refs.nodes: ${nodeIds.join(", ")}`);
   }
   if (task.parentActor) {
     lines.push(
@@ -3309,16 +3088,13 @@ function formatTaskPointers(task) {
     lines.push(`deliveryPolicy: ${task.deliveryPolicy}`);
   }
   if (kind === "role") {
-    const initCli = join("temp", task.role, "init.md");
-    const initFile = join(".tent", "temp", task.role, "init.md");
-    lines.push(`role: ${task.role}`);
+    const initCli = join("temp", task.assigneeId, "init.md");
+    const initFile = join(".tent", "temp", task.assigneeId, "init.md");
+    lines.push(`assignee: role:${task.assigneeId}`);
     lines.push(`Role init file: ${initFile} (CLI path remains ${initCli}).`);
   } else {
-    lines.push(`assigneeKind: agentProfile`);
-    lines.push(`profileId: ${task.role}`);
-    lines.push(
-      `Assignee: agentProfile ${task.role} (one-shot; no durable role init / tent-role lane).`
-    );
+    lines.push(`assignee: route:${task.assigneeId}`);
+    lines.push(`Temporary route execution (no durable Role init or Role identity).`);
   }
   return lines.join("\n");
 }
@@ -3335,10 +3111,10 @@ function formatExternalPathBlock(task, roots) {
 function relayPromptForTask(task, roots) {
   const resolved = resolveTaskPromptRoots(roots);
   const kind = taskAssigneeKind(task);
-  const assigneeLine = kind === "agentProfile" ? `A Tent task has been dispatched to agentProfile ${task.role}.
-` : `A Tent task has been dispatched to role ${task.role}.
+  const assigneeLine = kind === "route" ? `A Tent task has been dispatched to Settings route ${task.assigneeId}.
+` : `A Tent task has been dispatched to role ${task.assigneeId}.
 `;
-  const initStep = kind === "agentProfile" ? `4. Read the task envelope and task-scoped manifest pointers above; do not look for a role init file.` : `4. If this is a new session for this role, complete role init first (read the init file above).`;
+  const initStep = kind === "route" ? `4. Read the task envelope and task-scoped manifest pointers above; do not look for a role init file.` : `4. If this is a new session for this role, complete role init first (read the init file above).`;
   return assigneeLine + `${formatExternalPathBlock(task, resolved)}
 ${formatTaskPointers(task)}
 1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).
@@ -3353,28 +3129,8 @@ function extractTaskUserPrompt(task) {
   if (match) return match[1].trim();
   return body;
 }
-function sessionBootstrapPromptForTask(task, _roots) {
-  const userPrompt = extractTaskUserPrompt(task);
-  const kind = taskAssigneeKind(task);
-  const readyLine = kind === "agentProfile" ? `A Tent managed ACP session is ready for agentProfile ${task.role}.
-` : `A Tent managed ACP session is ready for role ${task.role}.
-`;
-  return readyLine + `${formatTaskPointers(task)}
-Service status: this task is already claimed (state=${task.state || "running"}).
-Managed path: Local Service already claimed this task. A non-empty final report is delivered by default after turn settle. Use \`outcome: blocked\` or \`outcome: needs-input\` only as an explicit control signal when work cannot complete; never self-accept.
-` + (kind === "agentProfile" ? `One-shot agentProfile task: rely on task/manifest pointers only \u2014 no role init.
-` : "") + (userPrompt ? `
-## User Prompt
-
-${userPrompt}
-` : `
-## User Prompt
-
-(no user prompt on envelope)
-`);
-}
-async function ensureRoleInit(fs22, role, tentName) {
-  const path23 = join("temp", role.name, "init.md");
+async function ensureRoleInit(fs21, role, tentName) {
+  const path22 = join("temp", role.name, "init.md");
   const body = `# Role Init
 
 - Tent: ${tentName}
@@ -3390,22 +3146,30 @@ ${role.prompt?.trim() || "(no persistent role prompt)"}
 Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
 Task lifecycle uses \`tent task *\` (Local Service). Do not invent paths as <workspace>/temp \u2014 operational files live under .tent/temp.
 `;
-  await fs22.writeFile(path23, serializeFrontmatter({ type: "role-init", role: role.name }, body));
-  return path23;
+  await fs21.writeFile(path22, serializeFrontmatter({ type: "role-init", role: role.name }, body));
+  return path22;
 }
-async function writeTaskEnvelope(fs22, clock, input) {
+async function writeTaskEnvelope(fs21, clock, input) {
   const userPrompt = input.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
-  const assigneeKind = input.assigneeKind ?? "role";
-  const dir = input.tasksDir?.trim() || (assigneeKind === "agentProfile" ? agentProfileTasksDir(input.role) : join(TEMP_DIR, input.role, "tasks"));
-  await ensureDir(fs22, dir);
+  const assigneeKind = input.assigneeKind;
+  const assigneeId = input.assigneeId.trim();
+  if (!assigneeId) throw new Error("Task assigneeId cannot be empty.");
+  if (assigneeKind === "route" && !isRouteId(assigneeId)) {
+    throw new Error(`Invalid Task route assigneeId: ${assigneeId}.`);
+  }
+  const dir = input.tasksDir?.trim() || (assigneeKind === "route" ? routeTasksDir(assigneeId) : join(TEMP_DIR, assigneeId, "tasks"));
+  await ensureDir(fs21, dir);
   const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
-  const isRootToken = (id2) => id2.trim() === "root";
-  const workspaceOnly = input.claims.length > 0 && input.claims.every((c) => isRootToken(c.id));
-  const nodeRefs = input.claims.filter((c) => !isRootToken(c.id)).map((c) => normalizeContextCardNodeRef({ id: c.id, path: c.path }));
-  const primaryRef = nodeRefs[0]?.id || (workspaceOnly ? "root" : "node");
+  if (!Array.isArray(input.nodeRefs) || input.nodeRefs.length === 0) {
+    throw new Error("Task requires at least one canonical Node ref.");
+  }
+  const nodeRefs = parseContextCardNodeRefs(
+    input.nodeRefs.map((node2) => ({ id: node2.id, path: node2.path }))
+  );
+  const primaryRef = nodeRefs[0].id;
   const stem = taskStem(clock.now(), primaryRef);
-  const path23 = await uniqueMarkdownPath(fs22, dir, stem);
+  const path22 = await uniqueMarkdownPath(fs21, dir, stem);
   const now = clock.now();
   const actors = resolveDispatchActors({
     parentActor: input.parentActor,
@@ -3422,28 +3186,6 @@ async function writeTaskEnvelope(fs22, clock, input) {
   }
   const objective = input.objective?.trim() || "";
   const acceptance = input.acceptance && input.acceptance.length > 0 ? input.acceptance.map((s) => s.trim()).filter(Boolean) : [];
-  const facts = input.contextGenerationFacts;
-  const contextGeneration = input.contextGeneration?.trim() || computeContextGeneration({
-    workspaceIdentity: input.workspace?.workspace || "local-workspace",
-    agentsPointerDigest: facts?.agentsPointerDigest?.trim() || agentsBodyCompatibilityDigest(facts?.agentsBody ?? ""),
-    tentRoleDigest: facts?.tentRoleDigest,
-    tentRoleVersion: facts?.tentRoleVersion,
-    rolePrompt: facts?.rolePrompt,
-    tentTaskDigest: facts?.tentTaskDigest,
-    tentTaskVersion: facts?.tentTaskVersion,
-    profileAdapterCompatibility: profileAdapterCompatibilityDigest({
-      profileId: facts?.profileId || input.role,
-      adapterId: facts?.adapterId || "unknown-adapter",
-      capabilityFlags: facts?.capabilityFlags
-    }),
-    purpose: facts?.purpose,
-    extraStable: {
-      assigneeKind,
-      assignee: input.role,
-      ...input.agentId?.trim() ? { agentId: input.agentId.trim() } : {},
-      ...facts?.extraStable
-    }
-  });
   const contextCard = buildTaskContextCard({
     objective,
     acceptance,
@@ -3453,19 +3195,17 @@ async function writeTaskEnvelope(fs22, clock, input) {
       deliveries: [],
       git: []
     },
-    contextGeneration,
     userPrompt
   });
   const data = {
     type: "task",
     id,
-    status: "pending",
     state: "queued",
-    role: input.role,
     assigneeKind,
+    assigneeId,
     parentActor: serializeTaskActorRef(actors.parentActor),
     reviewer: serializeTaskActorRef(actors.reviewer),
-    // Sole new persisted source wire — do not write claims[].
+    // Sole persisted Node-ref wire.
     contextCard: serializeTaskContextCardForFrontmatter(contextCard),
     manifest: input.manifestPath,
     deliveryPolicy,
@@ -3473,10 +3213,7 @@ async function writeTaskEnvelope(fs22, clock, input) {
     updatedAt: now
   };
   if (input.asSub === true) data.asSub = true;
-  if (input.agentId?.trim()) data.agentId = input.agentId.trim();
   if (input.sessionId) data.sessionId = input.sessionId;
-  if (input.purpose?.trim()) data.purpose = input.purpose.trim();
-  else if (facts?.purpose?.trim()) data.purpose = facts.purpose.trim();
   if (input.workspace) {
     data.workspace = input.workspace.workspace;
     data.worktree = input.workspace.worktree;
@@ -3488,10 +3225,7 @@ async function writeTaskEnvelope(fs22, clock, input) {
       data.roleBranchBase = tip;
     }
   }
-  const pointers = [
-    ...workspaceOnly || nodeRefs.length === 0 ? [`- workspace: ./ (stable workspace context; not a Node ref)`] : [],
-    ...nodeRefs.map((claim) => `- ${claim.id}: ${claim.path || "(path hint pending)"}`)
-  ].join("\n");
+  const pointers = nodeRefs.map((ref) => `- ${ref.id}: ${ref.path || "(path hint pending)"}`).join("\n");
   const body = `# Task
 
 ## Context Pointers
@@ -3505,26 +3239,21 @@ ${pointers || "(none)"}
 
 ${userPrompt}
 `;
-  await fs22.writeFile(path23, serializeFrontmatter(data, body));
-  return path23;
+  await fs21.writeFile(path22, serializeFrontmatter(data, body));
+  return path22;
 }
-async function ackTaskEnvelope(fs22, path23) {
-  await patchTaskEnvelope(fs22, path23, {
-    status: "taken",
+async function ackTaskEnvelope(fs21, path22) {
+  await patchTaskEnvelope(fs21, path22, {
     state: "running"
   });
 }
-async function patchTaskEnvelope(fs22, path23, patch) {
-  if (!await fs22.exists(path23)) throw new Error(`Task envelope not found: ${path23}.`);
-  const raw = await fs22.readFile(path23);
+async function patchTaskEnvelope(fs21, path22, patch) {
+  if (!await fs21.exists(path22)) throw new Error(`Task envelope not found: ${path22}.`);
+  const raw = await fs21.readFile(path22);
   const { data, body, keyOrder } = parseFrontmatter(raw);
-  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path23}.`);
+  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path22}.`);
   if (patch.state) {
     data.state = patch.state;
-    data.status = stateToLegacyStatus(patch.state);
-  } else if (patch.status) {
-    data.status = patch.status;
-    if (!data.state) data.state = legacyStatusToState(patch.status);
   }
   if (patch.sessionId === null) delete data.sessionId;
   else if (typeof patch.sessionId === "string") data.sessionId = patch.sessionId;
@@ -3564,9 +3293,6 @@ async function patchTaskEnvelope(fs22, path23, patch) {
       actor: { kind: derived.actor.kind, id: derived.actor.id },
       mutator: "service"
     };
-  }
-  if (patch.clearLegacyDispatchedBy) {
-    delete data.dispatchedBy;
   }
   if (patch.lastOutcome === null) delete data.lastOutcome;
   else if (patch.lastOutcome === "delivered" || patch.lastOutcome === "blocked" || patch.lastOutcome === "needs-input") {
@@ -3609,36 +3335,30 @@ async function patchTaskEnvelope(fs22, path23, patch) {
       mutator: "service"
     };
   }
-  if (patch.contextCard === null) {
-    delete data.contextCard;
-    delete data.contextGeneration;
-    delete data.taskDeltaDigest;
-  } else if (patch.contextCard) {
+  if (patch.contextCard) {
+    if (parseContextCardNodeRefs(patch.contextCard.refs.nodes).length === 0) {
+      throw new Error("patchTaskEnvelope contextCard requires at least one canonical Node ref.");
+    }
     data.contextCard = serializeTaskContextCardForFrontmatter(patch.contextCard);
     delete data.contextGeneration;
     delete data.taskDeltaDigest;
   }
-  if (patch.purpose === null) delete data.purpose;
-  else if (typeof patch.purpose === "string" && patch.purpose.trim()) {
-    data.purpose = patch.purpose.trim();
-  }
-  await fs22.writeFile(path23, serializeFrontmatter(data, body, keyOrder));
-  return loadTaskEnvelope(fs22, path23);
+  await fs21.writeFile(path22, serializeFrontmatter(data, body, keyOrder));
+  return loadTaskEnvelope(fs21, path22);
 }
-function primaryBoxId(task) {
-  if (task.contextCard == null) return void 0;
+function primaryNodeId(task) {
   return taskReferencedNodeIds(task)[0];
 }
-function parseTaskState(value, legacy) {
+function parseTaskState(value) {
   if (value === "queued" || value === "running" || value === "waiting" || value === "delivered" || value === "accepted" || value === "rejected" || value === "interrupted" || value === "failed") {
     return value;
   }
-  return legacyStatusToState(legacy);
+  throw new Error(`Invalid task state: ${String(value)}.`);
 }
 function parseWaitFields(data) {
   const reason = data.waitReason;
   const summary = data.waitSummary;
-  if ((reason === "user-input" || reason === "a2a-approval" || reason === "review" || reason === "external") && typeof summary === "string") {
+  if ((reason === "user-input" || reason === "review" || reason === "external") && typeof summary === "string") {
     const code = typeof data.waitCode === "string" && data.waitCode.trim() ? data.waitCode.trim() : void 0;
     return { reason, summary, ...code ? { code } : {} };
   }
@@ -3648,15 +3368,15 @@ function taskStem(now, claimId) {
   const stamp = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
   return `task-${stamp}-${claimId.replace(/[^0-9A-Za-z_-]+/g, "-")}`;
 }
-async function uniqueMarkdownPath(fs22, dir, stem) {
+async function uniqueMarkdownPath(fs21, dir, stem) {
   for (let n = 1; ; n++) {
     const suffix = n === 1 ? "" : `-${n}`;
-    const path23 = join(dir, `${stem}${suffix}.md`);
-    if (!await fs22.exists(path23)) return path23;
+    const path22 = join(dir, `${stem}${suffix}.md`);
+    if (!await fs21.exists(path22)) return path22;
   }
 }
-async function ensureDir(fs22, path23) {
-  if (!await fs22.exists(path23)) await fs22.mkdir(path23);
+async function ensureDir(fs21, path22) {
+  if (!await fs21.exists(path22)) await fs21.mkdir(path22);
 }
 
 // src/core/delivery.ts
@@ -3664,8 +3384,7 @@ var KEY_ORDER = [
   "type",
   "id",
   "taskId",
-  "boxId",
-  "role",
+  "sourceNodeId",
   "status",
   "commits",
   "targetHead",
@@ -3678,23 +3397,23 @@ var KEY_ORDER = [
   "createdAt",
   "updatedAt"
 ];
-async function createDeliveryUnlocked(fs22, clock, input) {
+async function createDeliveryUnlocked(fs21, clock, input) {
   const summary = input.summary.trim();
   if (!summary) throw new Error("Delivery summary cannot be empty.");
   const now = clock.now();
   const id = input.id && isDeliveryId(input.id) ? input.id : makeDeliveryId();
-  const deliveriesDir = input.deliveriesDir?.trim() || join(TEMP_DIR, input.role, "deliveries");
-  await ensureDir2(fs22, deliveriesDir);
-  const path23 = join(deliveriesDir, `${id}.md`);
-  if (await fs22.exists(path23)) throw new Error(`Delivery already exists: ${path23}.`);
+  const deliveriesDir = input.deliveriesDir.trim();
+  if (!deliveriesDir) throw new Error("Delivery deliveriesDir cannot be empty.");
+  await ensureDir2(fs21, deliveriesDir);
+  const path22 = join(deliveriesDir, `${id}.md`);
+  if (await fs21.exists(path22)) throw new Error(`Delivery already exists: ${path22}.`);
   const commits = uniqueCommits(input.commits ?? []);
   const targetHead = normalizeTargetHead(input.targetHead);
   const record = {
-    path: path23,
+    path: path22,
     id,
     taskId: input.taskId,
-    boxId: input.boxId,
-    role: input.role,
+    sourceNodeId: input.sourceNodeId,
     status: input.status ?? "ready",
     summary,
     commits,
@@ -3705,18 +3424,18 @@ async function createDeliveryUnlocked(fs22, clock, input) {
     createdAt: now,
     updatedAt: now
   };
-  await writeDelivery(fs22, record);
+  await writeDelivery(fs21, record);
   return record;
 }
-async function loadDelivery(fs22, inputPath) {
-  const path23 = normalizeDeliveryPath(inputPath);
-  if (!await fs22.exists(path23)) throw new Error(`Delivery not found: ${path23}.`);
-  const { data, body } = parseFrontmatter(await fs22.readFile(path23));
+async function loadDelivery(fs21, inputPath) {
+  const path22 = normalizeDeliveryPath(inputPath);
+  if (!await fs21.exists(path22)) throw new Error(`Delivery not found: ${path22}.`);
+  const { data, body } = parseFrontmatter(await fs21.readFile(path22));
   if (data.type !== "delivery" || typeof data.id !== "string" || !isDeliveryId(data.id)) {
-    throw new Error(`Invalid delivery format: ${path23}.`);
+    throw new Error(`Invalid delivery format: ${path22}.`);
   }
-  if (typeof data.taskId !== "string" || typeof data.boxId !== "string" || typeof data.role !== "string") {
-    throw new Error(`Invalid delivery format: ${path23}.`);
+  if (typeof data.taskId !== "string" || typeof data.sourceNodeId !== "string" || !isNodeId(data.sourceNodeId)) {
+    throw new Error(`Invalid delivery format: ${path22}.`);
   }
   const status = parseDeliveryStatus(data.status);
   const reviewBy = typeof data.reviewBy === "string" ? data.reviewBy : void 0;
@@ -3725,11 +3444,10 @@ async function loadDelivery(fs22, inputPath) {
     typeof data.targetHead === "string" ? data.targetHead : void 0
   );
   return {
-    path: path23,
+    path: path22,
     id: data.id,
     taskId: data.taskId,
-    boxId: data.boxId,
-    role: data.role,
+    sourceNodeId: data.sourceNodeId,
     status,
     summary: body.trim(),
     commits: Array.isArray(data.commits) ? uniqueCommits(data.commits.filter((c) => typeof c === "string")) : [],
@@ -3746,55 +3464,54 @@ async function loadDelivery(fs22, inputPath) {
     updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : void 0
   };
 }
-async function loadDeliveries(fs22, filter) {
+async function loadDeliveries(fs21, filter) {
   const out = [];
-  if (!await fs22.exists(TEMP_DIR)) return out;
-  for (const entry of await fs22.listDir(TEMP_DIR)) {
+  if (!await fs21.exists(TEMP_DIR)) return out;
+  for (const entry of await fs21.listDir(TEMP_DIR)) {
     if (!entry.isDir) continue;
-    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
-      const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
-      if (!await fs22.exists(profilesRoot)) continue;
-      for (const profileEntry of await fs22.listDir(profilesRoot)) {
-        if (!profileEntry.isDir) continue;
+    if (entry.name === ROUTES_TEMP_DIR) {
+      const routesRoot = join(TEMP_DIR, ROUTES_TEMP_DIR);
+      if (!await fs21.exists(routesRoot)) continue;
+      for (const routeEntry of await fs21.listDir(routesRoot)) {
+        if (!routeEntry.isDir) continue;
         await collectDeliveryFiles(
-          fs22,
-          join(profilesRoot, profileEntry.name, "deliveries"),
+          fs21,
+          join(routesRoot, routeEntry.name, "deliveries"),
           filter,
           out
         );
       }
       continue;
     }
-    await collectDeliveryFiles(fs22, join(TEMP_DIR, entry.name, "deliveries"), filter, out);
+    await collectDeliveryFiles(fs21, join(TEMP_DIR, entry.name, "deliveries"), filter, out);
   }
   return out.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
 }
-async function collectDeliveryFiles(fs22, dir, filter, out) {
-  if (!await fs22.exists(dir)) return;
-  for (const entry of await fs22.listDir(dir)) {
+async function collectDeliveryFiles(fs21, dir, filter, out) {
+  if (!await fs21.exists(dir)) return;
+  for (const entry of await fs21.listDir(dir)) {
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
     try {
-      const d = await loadDelivery(fs22, join(dir, entry.name));
+      const d = await loadDelivery(fs21, join(dir, entry.name));
       if (filter?.taskId && d.taskId !== filter.taskId) continue;
-      if (filter?.boxId && d.boxId !== filter.boxId) continue;
+      if (filter?.sourceNodeId && d.sourceNodeId !== filter.sourceNodeId) continue;
       out.push(d);
     } catch {
     }
   }
 }
-async function removeNonAcceptedDeliveriesForTask(fs22, taskId) {
-  for (const delivery of await loadDeliveries(fs22, { taskId })) {
+async function removeNonAcceptedDeliveriesForTask(fs21, taskId) {
+  for (const delivery of await loadDeliveries(fs21, { taskId })) {
     if (delivery.status === "accepted") continue;
-    if (await fs22.exists(delivery.path)) await fs22.remove(delivery.path);
+    if (await fs21.exists(delivery.path)) await fs21.remove(delivery.path);
   }
 }
-async function writeDelivery(fs22, record) {
+async function writeDelivery(fs21, record) {
   const data = {
     type: "delivery",
     id: record.id,
     taskId: record.taskId,
-    boxId: record.boxId,
-    role: record.role,
+    sourceNodeId: record.sourceNodeId,
     status: record.status,
     commits: record.commits,
     targetHead: record.targetHead,
@@ -3807,16 +3524,16 @@ async function writeDelivery(fs22, record) {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt
   };
-  await fs22.writeFile(record.path, serializeFrontmatter(data, record.summary + "\n", KEY_ORDER));
+  await fs21.writeFile(record.path, serializeFrontmatter(data, record.summary + "\n", KEY_ORDER));
 }
 function normalizeDeliveryPath(input) {
-  const path23 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path23) && !/^temp\/agent-profiles\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path23)) {
+  const path22 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path22) && !/^temp\/routes\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path22)) {
     throw new Error(
-      "Delivery must point to temp/<role>/deliveries/<dl-id>.md or temp/agent-profiles/<profile>/deliveries/<dl-id>.md."
+      "Delivery must point to temp/<role>/deliveries/<dl-id>.md or temp/routes/<route>/deliveries/<dl-id>.md."
     );
   }
-  return path23;
+  return path22;
 }
 function parseDeliveryStatus(value) {
   if (value === "draft" || value === "ready" || value === "accepted" || value === "rejected") return value;
@@ -3864,8 +3581,8 @@ function parseArtifactRefs(value) {
   }
   return out;
 }
-async function ensureDir2(fs22, path23) {
-  if (!await fs22.exists(path23)) await fs22.mkdir(path23);
+async function ensureDir2(fs21, path22) {
+  if (!await fs21.exists(path22)) await fs21.mkdir(path22);
 }
 function uniqueCommits(commits) {
   return [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
@@ -3876,13 +3593,13 @@ function normalizeTargetHead(value) {
 }
 
 // src/core/scaffold.ts
-function validateBoxName(value) {
+function validateNodeName(value) {
   const name = value.trim();
-  if (!name) throw new Error("Box name cannot be empty.");
-  if (name.length > 200) throw new Error("Box name cannot be longer than 200 characters.");
-  if (/[\/\\]/.test(name)) throw new Error("Box name cannot contain path separators.");
-  if (/[\r\n]/.test(name)) throw new Error("Box name cannot contain newlines.");
-  if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(name)) throw new Error("Box name cannot contain control characters.");
+  if (!name) throw new Error("Node name cannot be empty.");
+  if (name.length > 200) throw new Error("Node name cannot be longer than 200 characters.");
+  if (/[\/\\]/.test(name)) throw new Error("Node name cannot contain path separators.");
+  if (/[\r\n]/.test(name)) throw new Error("Node name cannot contain newlines.");
+  if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(name)) throw new Error("Node name cannot contain control characters.");
   return name;
 }
 
@@ -3908,35 +3625,35 @@ function readOutputDeliveryId(fm) {
 }
 function collectReferencedDeliveryIds(tent) {
   const out = /* @__PURE__ */ new Set();
-  for (const box of tent.byId.values()) {
-    const deliveryId = readOutputDeliveryId(box.fm);
+  for (const node2 of tent.byId.values()) {
+    const deliveryId = readOutputDeliveryId(node2.fm);
     if (deliveryId && isDeliveryId(deliveryId)) out.add(deliveryId);
   }
   return out;
 }
-function assertOutputBindable(box, deliveryId) {
-  if (!box.id) {
-    throw new OutputProvenanceError("OUTPUT_INVALID", `Output has no id: ${box.path}`);
+function assertOutputBindable(node2, deliveryId) {
+  if (!node2.id) {
+    throw new OutputProvenanceError("OUTPUT_INVALID", `Output has no id: ${node2.path}`);
   }
-  if (box.invalid) {
+  if (node2.invalid) {
     throw new OutputProvenanceError(
       "OUTPUT_INVALID",
-      `Output is invalid: ${box.path}`,
-      { outputId: box.id, detail: box.invalidReason }
+      `Output is invalid: ${node2.path}`,
+      { outputId: node2.id, detail: node2.invalidReason }
     );
   }
-  if (box.archived || box.mode === "archived") {
+  if (node2.archived || node2.mode === "archived") {
     throw new OutputProvenanceError(
       "OUTPUT_ARCHIVED",
-      `Output is archived and cannot bind provenance: ${box.id}`,
-      { outputId: box.id }
+      `Output is archived and cannot bind provenance: ${node2.id}`,
+      { outputId: node2.id }
     );
   }
-  if (!isOutputPrimaryType(box.type)) {
+  if (!isOutputPrimaryType(node2.type)) {
     throw new OutputProvenanceError(
       "OUTPUT_NOT_OUTPUT_TYPE",
-      `Node primary type must be output to bind provenance (got ${box.type}): ${box.id}`,
-      { outputId: box.id, type: box.type }
+      `Node primary type must be output to bind provenance (got ${node2.type}): ${node2.id}`,
+      { outputId: node2.id, type: node2.type }
     );
   }
   if (!isDeliveryId(deliveryId)) {
@@ -3945,19 +3662,19 @@ function assertOutputBindable(box, deliveryId) {
       `Invalid delivery id for provenance bind: ${deliveryId}`
     );
   }
-  const existing = readOutputDeliveryId(box.fm);
+  const existing = readOutputDeliveryId(node2.fm);
   if (existing && existing !== deliveryId) {
     throw new OutputProvenanceError(
       "OUTPUT_ALREADY_BOUND",
-      `Output ${box.id} is already bound to ${existing}; cannot rebind to ${deliveryId}`,
-      { outputId: box.id, existingDeliveryId: existing, deliveryId }
+      `Output ${node2.id} is already bound to ${existing}; cannot rebind to ${deliveryId}`,
+      { outputId: node2.id, existingDeliveryId: existing, deliveryId }
     );
   }
   return { alreadyBound: existing === deliveryId };
 }
 function validateOutputBindingsForAccept(tent, outputNodeIds, deliveryId) {
   if (!outputNodeIds || outputNodeIds.length === 0) {
-    return { outputIds: [], boxes: [] };
+    return { outputIds: [], nodes: [] };
   }
   if (!isDeliveryId(deliveryId)) {
     throw new OutputProvenanceError(
@@ -3967,7 +3684,7 @@ function validateOutputBindingsForAccept(tent, outputNodeIds, deliveryId) {
   }
   const seen = /* @__PURE__ */ new Set();
   const outputIds = [];
-  const boxes = [];
+  const nodes = [];
   for (const raw of outputNodeIds) {
     if (typeof raw !== "string" || !raw.trim()) {
       throw new OutputProvenanceError(
@@ -3981,34 +3698,34 @@ function validateOutputBindingsForAccept(tent, outputNodeIds, deliveryId) {
     if (tent.duplicateIds.has(id)) {
       throw new OutputProvenanceError(
         "OUTPUT_INVALID",
-        `Duplicate box id '${id}' found; repair before binding provenance.`,
+        `Duplicate node id '${id}' found; repair before binding provenance.`,
         { outputId: id }
       );
     }
-    const box = tent.byId.get(id);
-    if (!box) {
+    const node2 = tent.byId.get(id);
+    if (!node2) {
       throw new OutputProvenanceError("OUTPUT_NOT_FOUND", `Output Node not found: ${id}`, {
         outputId: id
       });
     }
-    assertOutputBindable(box, deliveryId);
+    assertOutputBindable(node2, deliveryId);
     outputIds.push(id);
-    boxes.push(box);
+    nodes.push(node2);
   }
-  return { outputIds, boxes };
+  return { outputIds, nodes };
 }
-async function restoreOutputBindSnapshots(fs22, snapshots) {
+async function restoreOutputBindSnapshots(fs21, snapshots) {
   if (snapshots.length === 0) return;
   const failures = [];
   for (let i = snapshots.length - 1; i >= 0; i--) {
     const snap = snapshots[i];
     try {
-      await fs22.writeFile(snap.notePath, snap.raw);
+      await fs21.writeFile(snap.notePath, snap.raw);
       const prev = snap.previousDeliveryId;
       if (prev === void 0) {
-        delete snap.box.fm[OUTPUT_PROVENANCE_FIELD];
+        delete snap.node.fm[OUTPUT_PROVENANCE_FIELD];
       } else {
-        snap.box.fm[OUTPUT_PROVENANCE_FIELD] = prev;
+        snap.node.fm[OUTPUT_PROVENANCE_FIELD] = prev;
       }
     } catch (err) {
       failures.push({
@@ -4026,22 +3743,22 @@ async function restoreOutputBindSnapshots(fs22, snapshots) {
     );
   }
 }
-async function bindOutputsToDeliveryUnlocked(fs22, tent, outputNodeIds, deliveryId) {
-  const { outputIds, boxes } = validateOutputBindingsForAccept(tent, outputNodeIds, deliveryId);
+async function bindOutputsToDeliveryUnlocked(fs21, tent, outputNodeIds, deliveryId) {
+  const { outputIds, nodes } = validateOutputBindingsForAccept(tent, outputNodeIds, deliveryId);
   const planned = [];
-  for (let i = 0; i < boxes.length; i++) {
-    const box = boxes[i];
+  for (let i = 0; i < nodes.length; i++) {
+    const node2 = nodes[i];
     const outputId = outputIds[i];
-    const { alreadyBound } = assertOutputBindable(box, deliveryId);
+    const { alreadyBound } = assertOutputBindable(node2, deliveryId);
     if (alreadyBound) continue;
-    const notePath = boxNotePath(box.path);
-    const raw = await fs22.readFile(notePath);
+    const notePath = nodeNotePath(node2.path);
+    const raw = await fs21.readFile(notePath);
     planned.push({
-      box,
+      node: node2,
       outputId,
       notePath,
       raw,
-      previousDeliveryId: readOutputDeliveryId(box.fm)
+      previousDeliveryId: readOutputDeliveryId(node2.fm)
     });
   }
   const snapshots = [];
@@ -4051,20 +3768,20 @@ async function bindOutputsToDeliveryUnlocked(fs22, tent, outputNodeIds, delivery
       const { data, body, keyOrder } = parseFrontmatter(item.raw);
       data[OUTPUT_PROVENANCE_FIELD] = deliveryId;
       const nextRaw = serializeFrontmatter(data, body, outputKeyOrder(keyOrder));
-      await fs22.writeFile(item.notePath, nextRaw);
+      await fs21.writeFile(item.notePath, nextRaw);
       snapshots.push({
         outputId: item.outputId,
         notePath: item.notePath,
         raw: item.raw,
-        box: item.box,
+        node: item.node,
         previousDeliveryId: item.previousDeliveryId
       });
-      item.box.fm[OUTPUT_PROVENANCE_FIELD] = deliveryId;
+      item.node.fm[OUTPUT_PROVENANCE_FIELD] = deliveryId;
       changedIds.push(item.outputId);
     }
   } catch (err) {
     try {
-      await restoreOutputBindSnapshots(fs22, snapshots);
+      await restoreOutputBindSnapshots(fs21, snapshots);
     } catch (rollbackErr) {
       if (rollbackErr instanceof OutputProvenanceError) throw rollbackErr;
       throw new OutputProvenanceError(
@@ -4079,25 +3796,25 @@ async function bindOutputsToDeliveryUnlocked(fs22, tent, outputNodeIds, delivery
   }
   return { boundIds: outputIds, changedIds, snapshots };
 }
-function projectOutputProvenance(box, indexes) {
-  if (box.invalid) {
+function projectOutputProvenance(node2, indexes) {
+  if (node2.invalid) {
     throw new OutputProvenanceError(
       "OUTPUT_INVALID",
-      `Output is invalid: ${box.path}`,
-      { outputId: box.id, detail: box.invalidReason }
+      `Output is invalid: ${node2.path}`,
+      { outputId: node2.id, detail: node2.invalidReason }
     );
   }
-  if (!isOutputPrimaryType(box.type)) {
+  if (!isOutputPrimaryType(node2.type)) {
     throw new OutputProvenanceError(
       "OUTPUT_NOT_OUTPUT_TYPE",
-      `Node primary type must be output for provenance query (got ${box.type}): ${box.id}`,
-      { outputId: box.id, type: box.type }
+      `Node primary type must be output for provenance query (got ${node2.type}): ${node2.id}`,
+      { outputId: node2.id, type: node2.type }
     );
   }
-  const deliveryId = readOutputDeliveryId(box.fm) ?? null;
+  const deliveryId = readOutputDeliveryId(node2.fm) ?? null;
   const base = {
-    outputId: box.id,
-    path: box.path,
+    outputId: node2.id,
+    path: node2.path,
     bound: false,
     deliveryId: null,
     delivery: null,
@@ -4123,10 +3840,9 @@ function projectOutputProvenance(box, indexes) {
     id: delivery.id,
     status: delivery.status,
     taskId: delivery.taskId,
-    boxId: delivery.boxId
+    sourceNodeId: delivery.sourceNodeId
   };
-  const task = indexes.tasksById.get(delivery.taskId) ?? // Some envelopes use path as fallback id in older fixtures.
-  [...indexes.tasksById.values()].find((t) => t.id === delivery.taskId || t.path === delivery.taskId);
+  const task = indexes.tasksById.get(delivery.taskId);
   if (!task) {
     base.incomplete.push("task_missing");
   } else {
@@ -4139,18 +3855,21 @@ function projectOutputProvenance(box, indexes) {
     if (delivery.taskId && taskKey && delivery.taskId !== taskKey && delivery.taskId !== task.path) {
       if (!base.incomplete.includes("mismatch")) base.incomplete.push("mismatch");
     }
+    if (!taskReferencedNodeIds(task).includes(delivery.sourceNodeId)) {
+      if (!base.incomplete.includes("mismatch")) base.incomplete.push("mismatch");
+    }
   }
-  const sourceId = delivery.boxId?.trim();
+  const sourceId = delivery.sourceNodeId.trim();
   if (!sourceId) {
     base.incomplete.push("source_missing");
   } else {
     const source = indexes.tent.byId.get(sourceId);
     if (!source) {
       base.incomplete.push("source_missing");
-      base.sourceNode = { id: sourceId };
+      base.sourceNode = { nodeId: sourceId };
     } else {
       base.sourceNode = {
-        id: source.id,
+        nodeId: source.id,
         path: source.path,
         type: source.type,
         archived: source.archived || source.mode === "archived"
@@ -4159,10 +3878,10 @@ function projectOutputProvenance(box, indexes) {
   }
   return base;
 }
-async function loadProvenanceIndexes(fs22, tent) {
-  const loadedTent = tent ?? await loadTent(fs22);
-  const deliveries = await loadDeliveries(fs22);
-  const tasks = await loadTaskEnvelopes(fs22);
+async function loadProvenanceIndexes(fs21, tent) {
+  const loadedTent = tent ?? await loadTent(fs21);
+  const deliveries = await loadDeliveries(fs21);
+  const tasks = await loadTaskEnvelopes(fs21);
   const deliveriesById = /* @__PURE__ */ new Map();
   for (const d of deliveries) deliveriesById.set(d.id, d);
   const tasksById = /* @__PURE__ */ new Map();
@@ -4171,46 +3890,33 @@ async function loadProvenanceIndexes(fs22, tent) {
   }
   return { tent: loadedTent, deliveriesById, tasksById };
 }
-async function resolveOutputProvenance(fs22, selector, preloaded) {
-  const indexes = preloaded ?? await loadProvenanceIndexes(fs22);
-  const box = resolveOutputBox(indexes.tent, selector);
-  return projectOutputProvenance(box, indexes);
+async function resolveOutputProvenance(fs21, selector, preloaded) {
+  const indexes = preloaded ?? await loadProvenanceIndexes(fs21);
+  const node2 = resolveOutputNode(indexes.tent, selector);
+  return projectOutputProvenance(node2, indexes);
 }
-function resolveOutputBox(tent, selector) {
-  const id = (selector.id ?? selector.outputId)?.trim();
-  const path23 = selector.path?.trim().replace(/\\/g, "/");
-  if (id) {
-    if (tent.duplicateIds.has(id)) {
-      throw new OutputProvenanceError(
-        "OUTPUT_INVALID",
-        `Duplicate box id '${id}' found; repair before provenance query.`,
-        { outputId: id }
-      );
-    }
-    const box = tent.byId.get(id);
-    if (!box) {
-      throw new OutputProvenanceError("OUTPUT_NOT_FOUND", `Output Node not found: ${id}`, {
-        outputId: id
-      });
-    }
-    return box;
+function resolveOutputNode(tent, selector) {
+  const nodeId = selector.nodeId.trim();
+  if (!nodeId) {
+    throw new OutputProvenanceError("INVALID_SELECTOR", "output.provenance requires nodeId");
   }
-  if (path23) {
-    const box = tent.byPath.get(path23);
-    if (!box) {
-      throw new OutputProvenanceError("OUTPUT_NOT_FOUND", `Output Node not found at path: ${path23}`, {
-        path: path23
-      });
-    }
-    return box;
+  if (tent.duplicateIds.has(nodeId)) {
+    throw new OutputProvenanceError(
+      "OUTPUT_INVALID",
+      `Duplicate Node id '${nodeId}' found; repair before provenance query.`,
+      { nodeId }
+    );
   }
-  throw new OutputProvenanceError(
-    "INVALID_SELECTOR",
-    "output.provenance requires id, outputId, or path"
-  );
+  const node2 = tent.byId.get(nodeId);
+  if (!node2) {
+    throw new OutputProvenanceError("OUTPUT_NOT_FOUND", `Output Node not found: ${nodeId}`, {
+      nodeId
+    });
+  }
+  return node2;
 }
 function outputKeyOrder(existing) {
-  const preferred = [...BOX_FRONTMATTER_KEY_ORDER, OUTPUT_PROVENANCE_FIELD];
+  const preferred = [...NODE_FRONTMATTER_KEY_ORDER, OUTPUT_PROVENANCE_FIELD];
   return [
     ...preferred,
     ...existing.filter((key2) => !preferred.includes(key2))
@@ -4221,7 +3927,7 @@ function outputKeyOrder(existing) {
 async function taskClaim(env, taskPath, options = {}) {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
-    if (task.state === "running" && task.status === "taken") {
+    if (task.state === "running") {
       if (options.sessionId) {
         return patchTaskEnvelope(env.fs, taskPath, {
           sessionId: options.sessionId,
@@ -4234,24 +3940,23 @@ async function taskClaim(env, taskPath, options = {}) {
     const tent = await loadTent(env.fs);
     if (task.contextCard == null) {
       throw new Error(
-        `Cannot claim task: missing Task.contextCard (run migrateLegacyTaskNodeRefs for legacy claims).`
+        `Cannot claim task: missing Task.contextCard.refs.nodes.`
       );
     }
-    const claimedBoxes = taskReferencedNodeIds(task).map(
-      (claimId) => requireBoxById(tent, claimId)
+    const claimedNodes = taskReferencedNodeIds(task).map(
+      (claimId) => requireNodeById(tent, claimId)
     );
     const otherTasks = (await loadTaskEnvelopes(env.fs)).filter(
       (candidate) => candidate.path !== task.path
     );
-    for (const box of claimedBoxes) {
-      const claimable = canClaim(box, { tent, tasks: otherTasks });
-      if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
+    for (const node2 of claimedNodes) {
+      const claimable = canClaim(node2, { tasks: otherTasks });
+      if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "node cannot be claimed"}`);
     }
     const now = env.clock.now();
     if (options.claimWrite) {
       return patchTaskEnvelope(env.fs, taskPath, {
         ...options.claimWrite,
-        status: "taken",
         state: "running",
         ...options.sessionId ? { sessionId: options.sessionId } : {},
         updatedAt: options.claimWrite.updatedAt ?? now
@@ -4301,18 +4006,17 @@ async function prepareTaskDeliver(env, taskPath, options) {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertDeliverPreconditions(task);
-    const boxId = primaryBoxId(task);
-    if (!boxId) throw new Error("task.deliver requires a non-root box claim.");
+    const nodeId = primaryNodeId(task);
+    if (!nodeId) throw new Error("task.deliver requires a non-root node claim.");
     await assertNoReadyDelivery(env.fs, task.id || taskPath);
     const policy = task.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY;
     const routing = resolveDeliverRouting(policy, options.decision);
     if (routing.autoIntegrate) {
-      return { kind: "auto", boxId };
+      return { kind: "auto", sourceNodeId: nodeId };
     }
     const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
       taskId: task.id || taskPath,
-      boxId,
-      role: task.role,
+      sourceNodeId: nodeId,
       summary: options.summary,
       commits: options.commits,
       targetHead: options.targetHead,
@@ -4336,9 +4040,9 @@ async function finalizeTaskDeliverAuto(env, taskPath, options, prepared) {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertDeliverPreconditions(task);
-    const boxId = primaryBoxId(task);
-    if (!boxId || boxId !== prepared.boxId) {
-      throw new Error("task.deliver requires a non-root box claim.");
+    const nodeId = primaryNodeId(task);
+    if (!nodeId || nodeId !== prepared.sourceNodeId) {
+      throw new Error("task.deliver requires a non-root node claim.");
     }
     await assertNoReadyDelivery(env.fs, task.id || taskPath);
     const policy = task.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY;
@@ -4348,8 +4052,7 @@ async function finalizeTaskDeliverAuto(env, taskPath, options, prepared) {
     }
     const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
       taskId: task.id || taskPath,
-      boxId,
-      role: task.role,
+      sourceNodeId: nodeId,
       summary: options.summary,
       commits: options.commits,
       targetHead: options.targetHead,
@@ -4376,7 +4079,7 @@ async function prepareTaskAccept(env, taskPath, options) {
     const delivery = await requireActiveReadyDelivery(env.fs, task);
     assertReviewAuthority({
       actor: options.actor,
-      submitterRole: delivery.role,
+      submitterRole: task.assigneeId,
       reviewer: task.reviewer,
       action: "accept"
     });
@@ -4405,7 +4108,7 @@ async function finalizeTaskAccept(env, taskPath, options, prepared) {
     }
     assertReviewAuthority({
       actor: options.actor,
-      submitterRole: delivery.role,
+      submitterRole: task.assigneeId,
       reviewer: task.reviewer,
       action: "accept"
     });
@@ -4449,24 +4152,24 @@ async function finalizeTaskAccept(env, taskPath, options, prepared) {
     }
   });
 }
-async function compensateAcceptAfterOutputBind(fs22, args) {
+async function compensateAcceptAfterOutputBind(fs21, args) {
   const failures = [];
   try {
-    await fs22.writeFile(args.deliveryPath, args.deliveryRawBefore);
+    await fs21.writeFile(args.deliveryPath, args.deliveryRawBefore);
   } catch (err) {
     failures.push(
       `delivery ${args.deliveryPath}: ${err instanceof Error ? err.message : String(err)}`
     );
   }
   try {
-    await fs22.writeFile(args.taskPath, args.taskRawBefore);
+    await fs21.writeFile(args.taskPath, args.taskRawBefore);
   } catch (err) {
     failures.push(
       `task ${args.taskPath}: ${err instanceof Error ? err.message : String(err)}`
     );
   }
   try {
-    await restoreOutputBindSnapshots(fs22, args.outputSnapshots);
+    await restoreOutputBindSnapshots(fs21, args.outputSnapshots);
   } catch (err) {
     failures.push(
       `outputs: ${err instanceof Error ? err.message : String(err)}`
@@ -4489,7 +4192,7 @@ async function taskReject(env, taskPath, options) {
     const delivery = await requireActiveReadyDelivery(env.fs, task);
     assertReviewAuthority({
       actor: options.actor,
-      submitterRole: delivery.role,
+      submitterRole: task.assigneeId,
       reviewer: task.reviewer,
       action: "reject"
     });
@@ -4526,7 +4229,7 @@ async function taskInterrupt(env, taskPath) {
     if (task.state === "queued") {
       assertTransition(task.state, "interrupt", "interrupted");
       await env.fs.remove(taskPath);
-      return { ...task, state: "interrupted", status: "taken" };
+      return { ...task, state: "interrupted" };
     }
     assertTransition(task.state, "interrupt", "interrupted");
     await releaseOccupationForTask(env, task);
@@ -4566,25 +4269,8 @@ async function taskCancel(env, taskPath) {
     await env.fs.remove(taskPath);
   });
 }
-function boxProjectionOf(task) {
-  if (!task) return { status: "todo" };
-  const active = envelopeIsActiveOccupation(task);
-  const proj = projectBoxFromTask({
-    active,
-    terminalState: active ? void 0 : task.state
-  });
-  return {
-    status: proj.status,
-    // assignee is the stable label (role name or profileId).
-    assignee: proj.clearAssignee ? void 0 : task.role,
-    activeTaskId: active ? task.id || task.path : void 0
-  };
-}
 function deliveryDirForTask(task) {
-  if (taskAssigneeKind(task) === "agentProfile") {
-    return agentProfileDeliveriesDir(task.role);
-  }
-  return void 0;
+  return task.assigneeKind === "route" ? routeDeliveriesDir(task.assigneeId) : join(TEMP_DIR, task.assigneeId, "deliveries");
 }
 function assertDeliverPreconditions(task) {
   if (task.state !== "running") {
@@ -4594,45 +4280,45 @@ function assertDeliverPreconditions(task) {
     );
   }
 }
-async function assertNoReadyDelivery(fs22, taskId) {
-  const existing = await loadDeliveries(fs22, { taskId });
+async function assertNoReadyDelivery(fs21, taskId) {
+  const existing = await loadDeliveries(fs21, { taskId });
   if (existing.some((d) => d.status === "ready")) {
     throw new Error("A delivery is already ready for review; accept or reject it first.");
   }
 }
-async function requireActiveReadyDelivery(fs22, task) {
+async function requireActiveReadyDelivery(fs21, task) {
   if (task.activeDeliveryId) {
-    const byId = (await loadDeliveries(fs22, { taskId: task.id || task.path })).find(
+    const byId = (await loadDeliveries(fs21, { taskId: task.id || task.path })).find(
       (d) => d.id === task.activeDeliveryId
     );
     if (byId && byId.status === "ready") return byId;
     if (byId) {
     }
   }
-  const ready = (await loadDeliveries(fs22, { taskId: task.id || task.path })).find((d) => d.status === "ready");
+  const ready = (await loadDeliveries(fs21, { taskId: task.id || task.path })).find((d) => d.status === "ready");
   if (!ready) {
     throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No ready delivery for this task.");
   }
   return ready;
 }
-function requireBoxById(tent, boxId) {
-  if (tent.duplicateIds.has(boxId)) {
-    throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+function requireNodeById(tent, nodeId) {
+  if (tent.duplicateIds.has(nodeId)) {
+    throw new Error(`Duplicate node id '${nodeId}' found; repair or fork the duplicate nodes before using this id.`);
   }
-  const box = tent.byId.get(boxId);
-  if (!box) throw new Error(`Box not found: ${boxId}.`);
-  return box;
+  const node2 = tent.byId.get(nodeId);
+  if (!node2) throw new Error(`Node not found: ${nodeId}.`);
+  return node2;
 }
-async function withMutation(fs22, action) {
-  return withTentMutation(fs22, action);
+async function withMutation(fs21, action) {
+  return withTentMutation(fs21, action);
 }
 
 // src/core/okf.ts
-function buildConceptIndex(boxes) {
+function buildNodeIndex(nodes) {
   const index2 = /* @__PURE__ */ new Map();
-  for (const box of boxes) {
-    const concept = toConcept(box);
-    addIndex(index2, concept.boxId, concept);
+  for (const node2 of nodes) {
+    const concept = toNode(node2);
+    addIndex(index2, concept.nodeId, concept);
     addIndex(index2, concept.id, concept);
     addIndex(index2, concept.path, concept);
     addIndex(index2, concept.notePath, concept);
@@ -4640,7 +4326,7 @@ function buildConceptIndex(boxes) {
   }
   return index2;
 }
-function resolveConcept(index2, target) {
+function resolveNode(index2, target) {
   const clean = target.trim().replace(/^\.\//, "").replace(/\.md$/i, "");
   const matches = index2.get(clean) ?? index2.get(`${clean}.md`) ?? index2.get(normalizeLookupKey(clean));
   if (matches?.length === 1) return matches[0];
@@ -4652,16 +4338,16 @@ function resolveConcept(index2, target) {
   }
   return matches?.length === 1 ? matches[0] : void 0;
 }
-function toConcept(box) {
-  const notePath = boxNotePath(box.path);
+function toNode(node2) {
+  const notePath = nodeNotePath(node2.path);
   const id = notePath.replace(/\.md$/i, "");
   return {
     id,
-    boxId: box.id,
-    path: box.path,
+    nodeId: node2.id,
+    path: node2.path,
     notePath,
-    name: box.name,
-    type: box.type
+    name: node2.name,
+    type: node2.type
   };
 }
 function addIndex(index2, key2, concept) {
@@ -4708,19 +4394,19 @@ function normalizeTarget(raw, fromNotePath) {
 }
 
 // src/core/renameOps.ts
-async function renameNode(env, conceptIdOrPath, newNameRaw) {
-  return withTentMutation(env.fs, async () => renameNodeUnlocked(env, conceptIdOrPath, newNameRaw));
+async function renameNode(env, nodeIdOrPath, newNameRaw) {
+  return withTentMutation(env.fs, async () => renameNodeUnlocked(env, nodeIdOrPath, newNameRaw));
 }
-async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
-  const newName = validateBoxName(newNameRaw);
+async function renameNodeUnlocked(env, nodeIdOrPath, newNameRaw) {
+  const newName = validateNodeName(newNameRaw);
   const tent = await loadTent(env.fs);
-  const target = resolveRenameTarget(tent, conceptIdOrPath);
-  if (!isUsableBox(target)) {
-    throw new Error("Invalid or archived boxes cannot be renamed.");
+  const target = resolveRenameTarget(tent, nodeIdOrPath);
+  if (!isUsableNode(target)) {
+    throw new Error("Invalid or archived nodes cannot be renamed.");
   }
   assertContentMutable(target, "renamed");
   if (isFrozen(target)) {
-    throw new Error("Invalid or archived boxes cannot be renamed.");
+    throw new Error("Invalid or archived nodes cannot be renamed.");
   }
   await assertNoActiveTaskRefsInSubtree(env, target, "rename");
   const oldPath = target.path;
@@ -4743,38 +4429,38 @@ async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
     throw new Error(`Rename target already exists: ${newPath}.`);
   }
   const siblings = target.parent ? target.parent.children : tent.roots;
-  if (siblings.some((box) => box.id !== target.id && box.name === newName)) {
-    throw new Error(`A sibling concept already uses the name: ${newName}.`);
+  if (siblings.some((node2) => node2.id !== target.id && node2.name === newName)) {
+    throw new Error(`A sibling Node already uses the name: ${newName}.`);
   }
   const subtree2 = collectSubtree(target);
   const pathMap = /* @__PURE__ */ new Map();
-  for (const box of subtree2) {
-    const rel = relativePath(oldPath, box.path);
-    const nextBoxPath = rel ? join(newPath, rel) : newPath;
-    pathMap.set(box.path, nextBoxPath);
+  for (const node2 of subtree2) {
+    const rel = relativePath(oldPath, node2.path);
+    const nextNodePath = rel ? join(newPath, rel) : newPath;
+    pathMap.set(node2.path, nextNodePath);
     pathMap.set(
-      boxNotePath(box.path).replace(/\.md$/i, ""),
-      boxNotePath(nextBoxPath).replace(/\.md$/i, "")
+      nodeNotePath(node2.path).replace(/\.md$/i, ""),
+      nodeNotePath(nextNodePath).replace(/\.md$/i, "")
     );
   }
-  const conceptIndex = buildConceptIndex(tent.byPath.values());
+  const conceptIndex = buildNodeIndex(tent.byPath.values());
   const rewriteOpts = {
-    renameBoxId: target.id,
+    renameNodeId: target.id,
     conceptIndex
   };
   const plannedWrites = [];
   const rewrittenNotes = [];
-  for (const box of tent.byPath.values()) {
-    const notePath = boxNotePath(box.path);
+  for (const node2 of tent.byPath.values()) {
+    const notePath = nodeNotePath(node2.path);
     if (!await env.fs.exists(notePath)) continue;
     const raw = await env.fs.readFile(notePath);
     const { data, body, keyOrder } = parseFrontmatter(raw);
-    if (typeof data.id === "string" && data.id !== box.id) {
-      throw new Error(`Refuse rename: frontmatter id drift on ${box.path}.`);
+    if (typeof data.id === "string" && data.id !== node2.id) {
+      throw new Error(`Refuse rename: frontmatter id drift on ${node2.path}.`);
     }
-    const afterBoxPath = pathMap.get(box.path) ?? box.path;
-    const restyleFromNotePath = boxNotePath(afterBoxPath);
-    const rewritten = rewriteConceptLinks(body, notePath, pathMap, oldName, newName, {
+    const afterNodePath = pathMap.get(node2.path) ?? node2.path;
+    const restyleFromNotePath = nodeNotePath(afterNodePath);
+    const rewritten = rewriteNodeLinks(body, notePath, pathMap, oldName, newName, {
       ...rewriteOpts,
       restyleFromNotePath
     });
@@ -4785,7 +4471,7 @@ async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
       originalContent: raw,
       newContent: serializeFrontmatter(data, rewritten.body, keyOrder)
     });
-    rewrittenNotes.push(afterBoxPath);
+    rewrittenNotes.push(afterNodePath);
   }
   await env.fs.move(oldPath, newPath);
   let identityRenamed = false;
@@ -4817,13 +4503,13 @@ async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
     rewrittenNotes: rewrittenNotes.sort()
   };
 }
-async function rollbackRename(fs22, args) {
+async function rollbackRename(fs21, args) {
   const { oldPath, newPath, oldName, identityRenamed, completedWrites } = args;
   const restoreErrors = [];
   for (let i = completedWrites.length - 1; i >= 0; i--) {
     const write = completedWrites[i];
     try {
-      await fs22.writeFile(write.writePath, write.originalContent);
+      await fs21.writeFile(write.writePath, write.originalContent);
     } catch (err) {
       restoreErrors.push(
         `note ${write.writePath}: ${err instanceof Error ? err.message : String(err)}`
@@ -4831,25 +4517,25 @@ async function rollbackRename(fs22, args) {
     }
   }
   try {
-    const expectedNew = boxNotePath(newPath);
+    const expectedNew = nodeNotePath(newPath);
     const legacyAfterMove = join(newPath, `${oldName}.md`);
-    if ((identityRenamed || await fs22.exists(expectedNew)) && await fs22.exists(expectedNew) && !await fs22.exists(legacyAfterMove)) {
-      await fs22.move(expectedNew, legacyAfterMove);
+    if ((identityRenamed || await fs21.exists(expectedNew)) && await fs21.exists(expectedNew) && !await fs21.exists(legacyAfterMove)) {
+      await fs21.move(expectedNew, legacyAfterMove);
     }
   } catch (err) {
     restoreErrors.push(`identity: ${err instanceof Error ? err.message : String(err)}`);
   }
   try {
-    if (await fs22.exists(newPath) && !await fs22.exists(oldPath)) {
-      const expectedNew = boxNotePath(newPath);
+    if (await fs21.exists(newPath) && !await fs21.exists(oldPath)) {
+      const expectedNew = nodeNotePath(newPath);
       const legacyAfterMove = join(newPath, `${oldName}.md`);
-      if (!await fs22.exists(legacyAfterMove) && await fs22.exists(expectedNew)) {
+      if (!await fs21.exists(legacyAfterMove) && await fs21.exists(expectedNew)) {
         try {
-          await fs22.move(expectedNew, legacyAfterMove);
+          await fs21.move(expectedNew, legacyAfterMove);
         } catch {
         }
       }
-      await fs22.move(newPath, oldPath);
+      await fs21.move(newPath, oldPath);
     }
   } catch (err) {
     restoreErrors.push(`tree: ${err instanceof Error ? err.message : String(err)}`);
@@ -4860,18 +4546,18 @@ async function rollbackRename(fs22, args) {
     );
   }
 }
-function resolveRenameTarget(tent, conceptIdOrPath) {
-  const key2 = conceptIdOrPath.trim().replace(/\\/g, "/");
+function resolveRenameTarget(tent, nodeIdOrPath) {
+  const key2 = nodeIdOrPath.trim().replace(/\\/g, "/");
   const byId = tent.byId.get(key2);
   if (byId) return byId;
   const byPath = tent.byPath.get(key2);
   if (byPath) return byPath;
-  throw new Error(`Concept not found: ${conceptIdOrPath}.`);
+  throw new Error(`Node not found: ${nodeIdOrPath}.`);
 }
 async function assertNoActiveTaskRefsInSubtree(env, root, operation) {
-  const subtreeIds = new Set(collectSubtree(root).map((box) => box.id));
+  const subtreeIds = new Set(collectSubtree(root).map((node2) => node2.id));
   const blockers = (await loadTaskEnvelopes(env.fs)).filter((task) => {
-    if (!ACTIVE_TASK_STATES.has(task.state) || task.contextCard == null) return false;
+    if (!ACTIVE_TASK_STATES.has(task.state)) return false;
     return task.contextCard.refs.nodes.some((node2) => subtreeIds.has(node2.id));
   });
   if (blockers.length === 0) return;
@@ -4882,41 +4568,41 @@ async function assertNoActiveTaskRefsInSubtree(env, root, operation) {
     )} must finish first.`
   );
 }
-function assertNotOperationalPath(path23) {
-  if (isOperationalPath(path23) || path23 === "temp" || path23.startsWith("temp/")) {
-    throw new Error("temp/ and other system pipelines cannot be renamed as concepts.");
+function assertNotOperationalPath(path22) {
+  if (isOperationalPath(path22) || path22 === "temp" || path22.startsWith("temp/")) {
+    throw new Error("temp/ and other system pipelines cannot be renamed as Nodes.");
   }
-  const top = path23.split("/")[0] ?? "";
+  const top = path22.split("/")[0] ?? "";
   if (top === "attachments" || top === ".tent") {
-    throw new Error("System directories cannot be renamed as concepts.");
+    throw new Error("System directories cannot be renamed as Nodes.");
   }
 }
-function collectSubtree(box, out = []) {
-  out.push(box);
-  for (const child of box.children) collectSubtree(child, out);
+function collectSubtree(node2, out = []) {
+  out.push(node2);
+  for (const child of node2.children) collectSubtree(child, out);
   return out;
 }
 function relativePath(root, child) {
   if (child === root) return "";
   return child.slice(root.length + 1);
 }
-async function ensureIdentityFileName(fs22, newBoxPath, oldName) {
-  const expected = boxNotePath(newBoxPath);
-  if (await fs22.exists(expected)) return false;
-  const legacy = join(newBoxPath, `${oldName}.md`);
-  if (await fs22.exists(legacy)) {
-    await fs22.move(legacy, expected);
+async function ensureIdentityFileName(fs21, newNodePath, oldName) {
+  const expected = nodeNotePath(newNodePath);
+  if (await fs21.exists(expected)) return false;
+  const legacy = join(newNodePath, `${oldName}.md`);
+  if (await fs21.exists(legacy)) {
+    await fs21.move(legacy, expected);
     return true;
   }
-  const entries = await fs22.listDir(newBoxPath);
-  const candidates = entries.filter((e) => !e.isDir && e.name.endsWith(".md") && e.name !== "index.md").map((e) => join(newBoxPath, e.name));
+  const entries = await fs21.listDir(newNodePath);
+  const candidates = entries.filter((e) => !e.isDir && e.name.endsWith(".md") && e.name !== "index.md").map((e) => join(newNodePath, e.name));
   if (candidates.length === 1) {
-    await fs22.move(candidates[0], expected);
+    await fs21.move(candidates[0], expected);
     return true;
   }
   throw new Error(`Identity note missing after rename: expected ${expected}.`);
 }
-function rewriteConceptLinks(body, fromNotePath, pathMap, oldName, newName, opts) {
+function rewriteNodeLinks(body, fromNotePath, pathMap, oldName, newName, opts) {
   if (pathMap.size === 0) return { body, changed: false };
   const oldPaths = [...pathMap.keys()].sort((a, b) => b.length - a.length);
   let next = body;
@@ -4972,8 +4658,8 @@ function mapLinkTarget(raw, fromNotePath, pathMap, oldPaths, oldName, newName, o
 function mapUnqualifiedName(pathPart, tail, oldName, newName, opts) {
   if (!opts || oldName === newName) return void 0;
   const bare = pathPart.replace(/\.md$/i, "");
-  const resolved = resolveConcept(opts.conceptIndex, bare);
-  if (!resolved || resolved.boxId !== opts.renameBoxId) return void 0;
+  const resolved = resolveNode(opts.conceptIndex, bare);
+  if (!resolved || resolved.nodeId !== opts.renameNodeId) return void 0;
   const sourceHadMd = /\.md$/i.test(pathPart);
   const nextBare = bare === oldName || normalizeLookupLoose(bare) === normalizeLookupLoose(oldName) ? newName : newName;
   return (sourceHadMd ? `${nextBare}.md` : nextBare) + tail;
@@ -5059,35 +4745,35 @@ function relativeMarkdownPath(fromNotePath, toNotePath) {
 }
 
 // src/core/forkOps.ts
-async function forkNode(env, boxId) {
-  return withTentMutation(env.fs, async () => forkNodeUnlocked(env, boxId));
+async function forkNode(env, nodeId) {
+  return withTentMutation(env.fs, async () => forkNodeUnlocked(env, nodeId));
 }
-async function forkNodeUnlocked(env, boxId) {
+async function forkNodeUnlocked(env, nodeId) {
   const tent = await loadTent(env.fs);
-  if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
-  const source = tent.byId.get(boxId);
-  if (!source) throw new Error(`Box not found: ${boxId}.`);
-  if (!isUsableBox(source)) throw new Error("Invalid or archived boxes cannot be forked.");
+  if (tent.duplicateIds.has(nodeId)) throw new Error(`Duplicate node id '${nodeId}' found; repair or fork the duplicate nodes before using this id.`);
+  const source = tent.byId.get(nodeId);
+  if (!source) throw new Error(`Node not found: ${nodeId}.`);
+  if (!isUsableNode(source)) throw new Error("Invalid or archived nodes cannot be forked.");
   assertContentMutable(source, "forked");
   const parentPath = dirName(source.path);
   const forkPath = await uniqueSiblingPath(env.fs, parentPath, `${source.name} (fork)`);
   await copyTree(env.fs, source.path, forkPath);
-  const sourceBoxes = collectSubtree2(source);
+  const sourceNodes = collectSubtree2(source);
   const usedIds = new Set(tent.byId.keys());
   const idMap = /* @__PURE__ */ new Map();
-  for (const box of sourceBoxes) {
-    const nextId = makeUniqueConceptId(usedIds, env.rand);
+  for (const node2 of sourceNodes) {
+    const nextId = makeUniqueNodeId(usedIds, env.rand);
     usedIds.add(nextId);
-    idMap.set(box.id, nextId);
+    idMap.set(node2.id, nextId);
   }
   const forkRootId = idMap.get(source.id);
-  for (const box of sourceBoxes) {
-    const rel = relativePath2(source.path, box.path);
+  for (const node2 of sourceNodes) {
+    const rel = relativePath2(source.path, node2.path);
     const nextPath = rel ? join(forkPath, rel) : forkPath;
-    const notePath = boxNotePath(nextPath);
-    await ensureIdentityFileName2(env.fs, nextPath, box.path);
+    const notePath = nodeNotePath(nextPath);
+    await ensureIdentityFileName2(env.fs, nextPath, node2.path);
     const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(notePath));
-    data.id = idMap.get(box.id);
+    data.id = idMap.get(node2.id);
     delete data.owner;
     delete data.status;
     delete data.forkOf;
@@ -5096,13 +4782,13 @@ async function forkNodeUnlocked(env, boxId) {
   }
   const order = await loadOrder(env.fs);
   const parentKey = source.parent ? source.parent.id : ROOT_KEY;
-  const siblings = (source.parent ? source.parent.children : tent.roots).map((box) => box.id);
+  const siblings = (source.parent ? source.parent.children : tent.roots).map((node2) => node2.id);
   const idx = siblings.indexOf(source.id);
   siblings.splice(idx === -1 ? siblings.length : idx + 1, 0, forkRootId);
   order[parentKey] = siblings;
-  for (const box of sourceBoxes) {
-    const oldChildren = order[box.id];
-    const newId = idMap.get(box.id);
+  for (const node2 of sourceNodes) {
+    const oldChildren = order[node2.id];
+    const newId = idMap.get(node2.id);
     if (oldChildren && newId) {
       order[newId] = oldChildren.map((id) => idMap.get(id)).filter((id) => !!id);
     }
@@ -5110,81 +4796,81 @@ async function forkNodeUnlocked(env, boxId) {
   await saveOrder(env.fs, order);
   return forkRootId;
 }
-async function uniqueSiblingPath(fs22, parentPath, base) {
+async function uniqueSiblingPath(fs21, parentPath, base) {
   let n = 1;
   while (true) {
     const name = n === 1 ? base : `${base.replace(/\s\(fork\)$/, "")} (fork ${n})`;
     const candidate = join(parentPath, name);
-    if (!await fs22.exists(candidate)) return candidate;
+    if (!await fs21.exists(candidate)) return candidate;
     n += 1;
   }
 }
-async function copyTree(fs22, from, to) {
-  await fs22.mkdir(to);
-  for (const entry of await fs22.listDir(from)) {
+async function copyTree(fs21, from, to) {
+  await fs21.mkdir(to);
+  for (const entry of await fs21.listDir(from)) {
     const src = join(from, entry.name);
     const dst = join(to, entry.name);
-    if (entry.isDir) await copyTree(fs22, src, dst);
-    else await fs22.writeFile(dst, await fs22.readFile(src));
+    if (entry.isDir) await copyTree(fs21, src, dst);
+    else await fs21.writeFile(dst, await fs21.readFile(src));
   }
 }
-function collectSubtree2(box, out = []) {
-  out.push(box);
-  for (const child of box.children) collectSubtree2(child, out);
+function collectSubtree2(node2, out = []) {
+  out.push(node2);
+  for (const child of node2.children) collectSubtree2(child, out);
   return out;
 }
 function relativePath2(root, child) {
   if (child === root) return "";
   return child.slice(root.length + 1);
 }
-async function ensureIdentityFileName2(fs22, newBoxPath, oldBoxPath) {
-  const expected = boxNotePath(newBoxPath);
-  if (await fs22.exists(expected)) return;
-  const oldName = `${baseName(oldBoxPath)}.md`;
-  const copied = join(newBoxPath, oldName);
-  if (await fs22.exists(copied)) await fs22.move(copied, expected);
+async function ensureIdentityFileName2(fs21, newNodePath, oldNodePath) {
+  const expected = nodeNotePath(newNodePath);
+  if (await fs21.exists(expected)) return;
+  const oldName = `${baseName(oldNodePath)}.md`;
+  const copied = join(newNodePath, oldName);
+  if (await fs21.exists(copied)) await fs21.move(copied, expected);
 }
 
 // src/core/moveOps.ts
-async function moveNode(env, conceptId, newParentId, position2) {
+async function moveNode(env, nodeId, newParentId, position2) {
   return withTentMutation(
     env.fs,
-    async () => moveNodeUnlocked(env, conceptId, newParentId, position2)
+    async () => moveNodeUnlocked(env, nodeId, newParentId, position2)
   );
 }
-async function moveNodeUnlocked(env, conceptId, newParentId, position2) {
-  const id = conceptId.trim();
-  if (!id) throw new Error("Concept id is required for move.");
+async function moveNodeUnlocked(env, nodeId, newParentId, position2) {
+  const id = nodeId.trim();
+  if (!id) throw new Error("Node id is required for move.");
   const tent = await loadTent(env.fs);
   const moved = tent.byId.get(id);
-  if (!moved) throw new Error(`Concept not found: ${id}.`);
-  if (!isUsableBox(moved)) throw new Error("Invalid or archived boxes cannot be moved.");
+  if (!moved) throw new Error(`Node not found: ${id}.`);
+  if (!isUsableNode(moved)) throw new Error("Invalid or archived nodes cannot be moved.");
   assertContentMutable(moved, "moved");
   if (moved.invalid || moved.archived) {
-    throw new Error("Invalid or archived boxes cannot be moved.");
+    throw new Error("Invalid or archived nodes cannot be moved.");
   }
   assertNotOperationalPath2(moved.path);
   await assertNoActiveTaskRefsInSubtree(env, moved, "move");
-  const parentBox = resolveNewParent(tent, newParentId);
-  if (parentBox) {
-    if (!isUsableBox(parentBox)) throw new Error("Target parent box is invalid or archived.");
-    assertContentMutable(parentBox, "used as move parent");
-    assertNotOperationalPath2(parentBox.path);
+  const parentNode = resolveNewParent(tent, newParentId);
+  if (parentNode) {
+    if (!isUsableNode(parentNode)) throw new Error("Target parent node is invalid or archived.");
+    assertContentMutable(parentNode, "used as move parent");
+    assertNotOperationalPath2(parentNode.path);
   }
-  const newParentPath = parentBox ? parentBox.path : "";
+  const newParentPath = parentNode ? parentNode.path : "";
   if (newParentPath === moved.path || newParentPath.startsWith(moved.path + "/")) {
-    throw new Error("Cannot move a box into its own subtree.");
+    throw new Error("Cannot move a node into its own subtree.");
   }
   if (position2.mode !== "inside") {
     const sibling = tent.byId.get(position2.siblingId);
     if (!sibling) throw new Error(`Sibling not found: ${position2.siblingId}.`);
     const siblingParentId = sibling.parent ? sibling.parent.id : null;
-    const destParentId = parentBox ? parentBox.id : null;
+    const destParentId = parentNode ? parentNode.id : null;
     if (siblingParentId !== destParentId) {
       throw new Error("before/after sibling must be under the destination parent.");
     }
     if (sibling.id === moved.id) {
-      throw new Error("Cannot position a box relative to itself.");
+      throw new Error("Cannot position a node relative to itself.");
     }
   }
   const oldPath = moved.path;
@@ -5195,14 +4881,14 @@ async function moveNodeUnlocked(env, conceptId, newParentId, position2) {
     if (await env.fs.exists(destination)) {
       throw new Error(`Move target already exists: ${destination}.`);
     }
-    const destSiblings = parentBox ? parentBox.children : tent.roots;
-    if (destSiblings.some((box) => box.id !== moved.id && box.name === movedName)) {
-      throw new Error(`A sibling concept already uses the name: ${movedName}.`);
+    const destSiblings = parentNode ? parentNode.children : tent.roots;
+    if (destSiblings.some((node2) => node2.id !== moved.id && node2.name === movedName)) {
+      throw new Error(`A sibling Node already uses the name: ${movedName}.`);
     }
   }
-  const parentKey = parentBox ? parentBox.id : ROOT_KEY;
+  const parentKey = parentNode ? parentNode.id : ROOT_KEY;
   const oldParentKey = moved.parent ? moved.parent.id : ROOT_KEY;
-  const siblings = (parentBox ? parentBox.children : tent.roots).filter((b) => b.id !== moved.id).map((b) => b.id);
+  const siblings = (parentNode ? parentNode.children : tent.roots).filter((b) => b.id !== moved.id).map((b) => b.id);
   let insertAt;
   if (position2.mode === "inside") {
     insertAt = siblings.length;
@@ -5216,9 +4902,9 @@ async function moveNodeUnlocked(env, conceptId, newParentId, position2) {
     order[parentKey] = siblings;
     await saveOrder(env.fs, order);
     const identityMap = {};
-    for (const box of collectSubtree3(moved)) {
-      identityMap[box.path] = box.path;
-      identityMap[boxNotePath(box.path).replace(/\.md$/i, "")] = boxNotePath(box.path).replace(
+    for (const node2 of collectSubtree3(moved)) {
+      identityMap[node2.path] = node2.path;
+      identityMap[nodeNotePath(node2.path).replace(/\.md$/i, "")] = nodeNotePath(node2.path).replace(
         /\.md$/i,
         ""
       );
@@ -5233,33 +4919,33 @@ async function moveNodeUnlocked(env, conceptId, newParentId, position2) {
   }
   const subtree2 = collectSubtree3(moved);
   const pathMap = /* @__PURE__ */ new Map();
-  for (const box of subtree2) {
-    const rel = relativePath3(oldPath, box.path);
-    const nextBoxPath = rel ? join(destination, rel) : destination;
-    pathMap.set(box.path, nextBoxPath);
+  for (const node2 of subtree2) {
+    const rel = relativePath3(oldPath, node2.path);
+    const nextNodePath = rel ? join(destination, rel) : destination;
+    pathMap.set(node2.path, nextNodePath);
     pathMap.set(
-      boxNotePath(box.path).replace(/\.md$/i, ""),
-      boxNotePath(nextBoxPath).replace(/\.md$/i, "")
+      nodeNotePath(node2.path).replace(/\.md$/i, ""),
+      nodeNotePath(nextNodePath).replace(/\.md$/i, "")
     );
   }
-  const conceptIndex = buildConceptIndex(tent.byPath.values());
+  const conceptIndex = buildNodeIndex(tent.byPath.values());
   const rewriteOpts = {
-    renameBoxId: moved.id,
+    renameNodeId: moved.id,
     conceptIndex
   };
   const plannedWrites = [];
   const rewrittenNotes = [];
-  for (const box of tent.byPath.values()) {
-    const notePath = boxNotePath(box.path);
+  for (const node2 of tent.byPath.values()) {
+    const notePath = nodeNotePath(node2.path);
     if (!await env.fs.exists(notePath)) continue;
     const raw = await env.fs.readFile(notePath);
     const { data, body, keyOrder } = parseFrontmatter(raw);
-    if (typeof data.id === "string" && data.id !== box.id) {
-      throw new Error(`Refuse move: frontmatter id drift on ${box.path}.`);
+    if (typeof data.id === "string" && data.id !== node2.id) {
+      throw new Error(`Refuse move: frontmatter id drift on ${node2.path}.`);
     }
-    const afterBoxPath = pathMap.get(box.path) ?? box.path;
-    const restyleFromNotePath = boxNotePath(afterBoxPath);
-    const rewritten = rewriteConceptLinks(body, notePath, pathMap, movedName, movedName, {
+    const afterNodePath = pathMap.get(node2.path) ?? node2.path;
+    const restyleFromNotePath = nodeNotePath(afterNodePath);
+    const rewritten = rewriteNodeLinks(body, notePath, pathMap, movedName, movedName, {
       ...rewriteOpts,
       restyleFromNotePath
     });
@@ -5270,7 +4956,7 @@ async function moveNodeUnlocked(env, conceptId, newParentId, position2) {
       originalContent: raw,
       newContent: serializeFrontmatter(data, rewritten.body, keyOrder)
     });
-    rewrittenNotes.push(afterBoxPath);
+    rewrittenNotes.push(afterNodePath);
   }
   const orderBefore = await loadOrder(env.fs);
   const orderSnapshot = JSON.stringify(orderBefore);
@@ -5306,13 +4992,13 @@ async function moveNodeUnlocked(env, conceptId, newParentId, position2) {
     rewrittenNotes: rewrittenNotes.sort()
   };
 }
-async function rollbackMove(fs22, args) {
+async function rollbackMove(fs21, args) {
   const { oldPath, newPath, completedWrites, orderSnapshot } = args;
   const restoreErrors = [];
   for (let i = completedWrites.length - 1; i >= 0; i--) {
     const write = completedWrites[i];
     try {
-      await fs22.writeFile(write.writePath, write.originalContent);
+      await fs21.writeFile(write.writePath, write.originalContent);
     } catch (err) {
       restoreErrors.push(
         `note ${write.writePath}: ${err instanceof Error ? err.message : String(err)}`
@@ -5320,14 +5006,14 @@ async function rollbackMove(fs22, args) {
     }
   }
   try {
-    if (await fs22.exists(newPath) && !await fs22.exists(oldPath)) {
-      await fs22.move(newPath, oldPath);
+    if (await fs21.exists(newPath) && !await fs21.exists(oldPath)) {
+      await fs21.move(newPath, oldPath);
     }
   } catch (err) {
     restoreErrors.push(`tree: ${err instanceof Error ? err.message : String(err)}`);
   }
   try {
-    await saveOrder(fs22, JSON.parse(orderSnapshot));
+    await saveOrder(fs21, JSON.parse(orderSnapshot));
   } catch (err) {
     restoreErrors.push(`order: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -5345,18 +5031,18 @@ function resolveNewParent(tent, newParentId) {
   if (!parent) throw new Error(`Target parent not found: ${newParentId}.`);
   return parent;
 }
-function assertNotOperationalPath2(path23) {
-  if (isOperationalPath(path23) || path23 === "temp" || path23.startsWith("temp/")) {
-    throw new Error("temp/ and other system pipelines cannot be moved as concepts.");
+function assertNotOperationalPath2(path22) {
+  if (isOperationalPath(path22) || path22 === "temp" || path22.startsWith("temp/")) {
+    throw new Error("temp/ and other system pipelines cannot be moved as Nodes.");
   }
-  const top = path23.split("/")[0] ?? "";
+  const top = path22.split("/")[0] ?? "";
   if (top === "attachments" || top === ".tent") {
-    throw new Error("System directories cannot be moved as concepts.");
+    throw new Error("System directories cannot be moved as Nodes.");
   }
 }
-function collectSubtree3(box, out = []) {
-  out.push(box);
-  for (const child of box.children) collectSubtree3(child, out);
+function collectSubtree3(node2, out = []) {
+  out.push(node2);
+  for (const child of node2.children) collectSubtree3(child, out);
   return out;
 }
 function relativePath3(root, child) {
@@ -5367,7 +5053,7 @@ function relativePath3(root, child) {
 // src/core/ops.ts
 function resolveDispatchNodeIds(input) {
   const tentName = input.tentName.trim();
-  const primaryNodeId = input.primaryNodeId?.trim() ?? "";
+  const primaryNodeId3 = input.primaryNodeId?.trim() ?? "";
   if (input.nodeIds !== void 0 && input.nodeIds !== null) {
     if (!Array.isArray(input.nodeIds)) {
       throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
@@ -5397,84 +5083,68 @@ function resolveDispatchNodeIds(input) {
     if (out.length === 0) {
       throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
     }
-    if (primaryNodeId) {
-      if (isForbiddenRootDispatchToken(primaryNodeId, tentName)) {
+    if (primaryNodeId3) {
+      if (isForbiddenRootDispatchToken(primaryNodeId3, tentName)) {
         throw new Error(
           "Cannot dispatch the whole Tent directly; dispatch a specific Node (primary Node cannot be ., root, or the Tent name)."
         );
       }
-      if (primaryNodeId !== out[0]) {
+      if (primaryNodeId3 !== out[0]) {
         throw new Error(
-          `Dispatch primary Node '${primaryNodeId}' conflicts with nodeIds[0] '${out[0]}'.`
+          `Dispatch primary Node '${primaryNodeId3}' conflicts with nodeIds[0] '${out[0]}'.`
         );
       }
     }
     return out;
   }
-  if (!primaryNodeId) {
+  if (!primaryNodeId3) {
     throw new Error("Dispatch requires at least one Node.");
   }
-  if (isForbiddenRootDispatchToken(primaryNodeId, tentName)) {
+  if (isForbiddenRootDispatchToken(primaryNodeId3, tentName)) {
     throw new Error(
       "Cannot dispatch the whole Tent directly; dispatch a specific Node (primary Node cannot be ., root, or the Tent name)."
     );
   }
-  return [primaryNodeId];
+  return [primaryNodeId3];
 }
 function isForbiddenRootDispatchToken(id, tentName) {
   return id === "." || id === "root" || tentName !== "" && id === tentName;
 }
-async function dispatch(env, primaryNodeId, role, promptOrOptions) {
+async function dispatch(env, primaryNodeId3, options) {
   return withMutation2(
     env.fs,
-    async () => dispatchUnlocked(env, primaryNodeId, role, promptOrOptions)
+    async () => dispatchUnlocked(env, primaryNodeId3, options)
   );
 }
-async function dispatchUnlocked(env, primaryNodeId, role, promptOrOptions) {
+async function dispatchUnlocked(env, primaryNodeId3, options) {
   const tent = await loadTent(env.fs);
-  const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions, ...userTaskActors() } : promptOrOptions;
-  const assigneeKind = options.assigneeKind === "agentProfile" ? "agentProfile" : "role";
+  const assigneeKind = options.assigneeKind;
   const userPrompt = options.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
-  let assigneeLabel;
-  if (assigneeKind === "agentProfile") {
-    const profileId = options.profileId?.trim() || "";
-    if (!profileId) {
-      throw new Error("Dispatch with assigneeKind=agentProfile requires profileId.");
-    }
-    if (role?.trim() && role.trim() !== profileId) {
-      throw new Error(
-        "Dispatch with assigneeKind=agentProfile must not pass a different role; use profileId as the assignee label."
-      );
-    }
-    assigneeLabel = assertProfileId(profileId);
-  } else {
-    const roleName = role?.trim() || "";
-    if (!roleName) throw new Error("Dispatch with assigneeKind=role requires role.");
-    assigneeLabel = assertRoleName(roleName);
-  }
+  const rawAssigneeId = options.assigneeId.trim();
+  const assigneeId = assigneeKind === "route" ? assertRouteId(rawAssigneeId) : assertRoleName(rawAssigneeId);
   const nodeIds = resolveDispatchNodeIds({
     nodeIds: options.nodeIds,
-    primaryNodeId,
+    primaryNodeId: primaryNodeId3,
     tentName: env.tentName
   });
   const tasks = await loadTaskEnvelopes(env.fs);
-  const createdRoot = assigneeKind === "agentProfile" ? agentProfileTempRoot(assigneeLabel) : join("temp", assigneeLabel);
+  const createdRoot = assigneeKind === "route" ? routeTempRoot(assigneeId) : join("temp", assigneeId);
   const createdRootExisted = await env.fs.exists(createdRoot);
   if (!options.parentActor) {
     throw new Error(
-      "Dispatch requires explicit parentActor (legacy dispatchedBy is migration-only; reviewer may be derived equal)."
+      "Dispatch requires explicit parentActor; reviewer may be derived equal."
     );
   }
   void options.asSub;
   const selectedNodes = [];
   for (const id of nodeIds) {
-    const node2 = requireBoxById2(tent, id);
+    const node2 = requireNodeById2(tent, id);
     const structural = structuralClaimGate(node2);
     if (!structural.ok) {
       throw new Error(`Cannot dispatch: ${structural.reason || "Node cannot be claimed"}`);
     }
-    const claimable = canClaim(node2, { tent, tasks });
+    const claimable = canClaim(node2, { tasks });
     if (!claimable.ok) {
       throw new Error(`Cannot dispatch: ${claimable.reason || "Node cannot be claimed"}`);
     }
@@ -5483,8 +5153,9 @@ async function dispatchUnlocked(env, primaryNodeId, role, promptOrOptions) {
   try {
     const input = {
       tentName: env.tentName,
-      role: assigneeLabel,
-      claimBoxes: selectedNodes,
+      assigneeKind,
+      assigneeId,
+      claimNodes: selectedNodes,
       ...options.workspace
     };
     const manifest = buildManifest(tent, input);
@@ -5492,23 +5163,23 @@ async function dispatchUnlocked(env, primaryNodeId, role, promptOrOptions) {
     const taskId = options.taskId && options.taskId.trim() ? options.taskId.trim() : makeTaskId();
     let manifestPath;
     let initPath;
-    if (assigneeKind === "agentProfile") {
-      manifestPath = agentProfileManifestPath(assigneeLabel, taskId);
+    if (assigneeKind === "route") {
+      manifestPath = routeManifestPath(assigneeId, taskId);
       await ensureDir3(env.fs, dirName(manifestPath));
       await env.fs.writeFile(manifestPath, yaml);
     } else {
-      manifestPath = join("temp", assigneeLabel, "manifests", `${taskId}.yml`);
+      manifestPath = join("temp", assigneeId, "manifests", `${taskId}.yml`);
       await ensureDir3(env.fs, dirName(manifestPath));
       await env.fs.writeFile(manifestPath, yaml);
       const registry = await loadRolesRegistry(env.fs);
-      const roleDefinition = registry.roles.find((item) => item.name === assigneeLabel) ?? { name: assigneeLabel };
+      const roleDefinition = registry.roles.find((item) => item.name === assigneeId) ?? { name: assigneeId };
       initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
     }
-    const taskClaims = selectedNodes.map((node2) => ({ id: node2.id, path: node2.path }));
-    const agentId = options.agentId?.trim() || void 0;
+    const taskNodeRefs = selectedNodes.map((node2) => ({ id: node2.id, path: node2.path }));
     const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
-      role: assigneeLabel,
-      claims: taskClaims,
+      assigneeKind,
+      assigneeId,
+      nodeRefs: taskNodeRefs,
       manifestPath,
       userPrompt,
       workspace: options.workspace,
@@ -5516,33 +5187,11 @@ async function dispatchUnlocked(env, primaryNodeId, role, promptOrOptions) {
       reviewer: options.reviewer,
       asSub: options.asSub === true,
       deliveryPolicy: options.deliveryPolicy,
-      assigneeKind,
-      agentId,
       id: taskId,
-      tasksDir: assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : void 0,
-      ...options.contextGeneration ? { contextGeneration: options.contextGeneration } : {},
-      ...options.contextGenerationFacts ? { contextGenerationFacts: options.contextGenerationFacts } : {},
-      ...options.purpose?.trim() ? { purpose: options.purpose.trim() } : {}
+      tasksDir: assigneeKind === "route" ? routeTasksDir(assigneeId) : void 0
     });
-    const written = await loadTaskEnvelope(env.fs, taskPath).catch(() => null);
-    const parentActor = options.parentActor;
-    const reviewer = options.reviewer ?? { ...parentActor };
-    const relayPrompt = relayPromptForTask(
-      written ?? {
-        path: taskPath,
-        role: assigneeLabel,
-        manifest: manifestPath,
-        status: "pending",
-        state: "queued",
-        assigneeKind,
-        ...agentId ? { agentId } : {},
-        id: taskId,
-        parentActor,
-        reviewer,
-        ...options.asSub === true ? { asSub: true } : {}
-      },
-      env.tentRoot || env.tentName
-    );
+    const written = await loadTaskEnvelope(env.fs, taskPath);
+    const relayPrompt = relayPromptForTask(written, env.tentRoot || env.tentName);
     return {
       manifestPath,
       manifestYaml: yaml,
@@ -5550,7 +5199,7 @@ async function dispatchUnlocked(env, primaryNodeId, role, promptOrOptions) {
       taskPath,
       relayPrompt,
       assigneeKind,
-      assignee: assigneeLabel
+      assigneeId
     };
   } catch (error) {
     if (!createdRootExisted && await env.fs.exists(createdRoot)) {
@@ -5559,37 +5208,29 @@ async function dispatchUnlocked(env, primaryNodeId, role, promptOrOptions) {
     throw error;
   }
 }
-function assertProfileId(profileId) {
-  const id = profileId.trim();
-  if (!id) throw new Error("profileId cannot be empty.");
-  if (/[\/\\\r\n]/.test(id)) {
-    throw new Error("profileId cannot contain path separators or newlines.");
-  }
-  return id;
+async function createNode(env, input) {
+  return withMutation2(env.fs, async () => createNodeUnlocked(env, input));
 }
-async function createBox(env, input) {
-  return withMutation2(env.fs, async () => createBoxUnlocked(env, input));
-}
-async function createBoxUnlocked(env, input) {
+async function createNodeUnlocked(env, input) {
   assertNotTempPath(input.parentPath);
-  const name = validateBoxName(input.name);
+  const name = validateNodeName(input.name);
   const tent = await loadTent(env.fs);
   if (!typeExists(input.type, tent.typeRegistry)) throw new Error(`Unknown type: ${input.type}.`);
   if (input.parentPath) {
     const parent2 = tent.byPath.get(input.parentPath);
-    if (!parent2 || !isUsableBox(parent2)) throw new Error("Target parent box is invalid or archived.");
+    if (!parent2 || !isUsableNode(parent2)) throw new Error("Target parent node is invalid or archived.");
     assertContentMutable(parent2, "used as create parent");
   }
   const existing = new Set(tent.byId.keys());
-  const id = makeUniqueConceptId(existing, env.rand);
-  const path23 = join(input.parentPath, name);
-  assertNotTempPath(path23);
-  await ensureDir3(env.fs, path23);
+  const id = makeUniqueNodeId(existing, env.rand);
+  const path22 = join(input.parentPath, name);
+  assertNotTempPath(path22);
+  await ensureDir3(env.fs, path22);
   const fm = { id, type: input.type };
   const content3 = serializeFrontmatter(fm, `
 # ${name}
-`, BOX_FRONTMATTER_KEY_ORDER);
-  await env.fs.writeFile(boxNotePath(path23), content3);
+`, NODE_FRONTMATTER_KEY_ORDER);
+  await env.fs.writeFile(nodeNotePath(path22), content3);
   const parent = input.parentPath ? tent.byPath.get(input.parentPath) : void 0;
   const parentKey = parent ? parent.id : ROOT_KEY;
   try {
@@ -5598,18 +5239,18 @@ async function createBoxUnlocked(env, input) {
     order[parentKey] = siblings.includes(id) ? siblings : [...siblings, id];
     await saveOrder(env.fs, order);
   } catch (error) {
-    await env.fs.remove(path23);
+    await env.fs.remove(path22);
     throw error;
   }
   return id;
 }
-async function patchBox(env, boxPath, patch, loadedTent) {
-  await withMutation2(env.fs, async () => patchBoxUnlocked(env, boxPath, patch, loadedTent));
+async function patchNode(env, nodePath8, patch, loadedTent) {
+  await withMutation2(env.fs, async () => patchNodeUnlocked(env, nodePath8, patch, loadedTent));
 }
-async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
+async function patchNodeUnlocked(env, nodePath8, patch, loadedTent) {
   const tent = loadedTent ?? await loadTent(env.fs);
-  const box = tent.byPath.get(boxPath);
-  if (!box) throw new Error(`Box not found: ${boxPath}.`);
+  const node2 = tent.byPath.get(nodePath8);
+  if (!node2) throw new Error(`Node not found: ${nodePath8}.`);
   const reserved = [
     "id",
     "owner",
@@ -5628,12 +5269,12 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
       `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection; relations use relation.* RPCs; Output deliveryId binds via task.accept.`
     );
   }
-  if (box.archived || box.mode === "archived") {
-    throw new Error("Archived boxes can only be restored or permanently deleted.");
+  if (node2.archived || node2.mode === "archived") {
+    throw new Error("Archived nodes can only be restored or permanently deleted.");
   }
-  if (box.invalid) {
+  if (node2.invalid) {
     const keys = Object.keys(patch);
-    if (box.id !== box.invalidRootId || keys.some((key2) => key2 !== "type")) {
+    if (node2.id !== node2.invalidRootId || keys.some((key2) => key2 !== "type")) {
       throw new Error("Invalid subtrees can only be repaired by changing the type at the invalid root.");
     }
   }
@@ -5642,39 +5283,39 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
     if (!typeExists(patch.type, tent.typeRegistry)) throw new Error(`Unknown type: ${patch.type}.`);
   }
   const tagsTouched = "tags" in patch;
-  const previousTags = box.tags.slice();
+  const previousTags = node2.tags.slice();
   if (tagsTouched) {
     patch = { ...patch, tags: normalizeTagPatch(patch.tags) };
   }
-  const boxFile = boxNotePath(boxPath);
+  const boxFile = nodeNotePath(nodePath8);
   const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
   for (const [k, v] of Object.entries(patch)) {
     if (v === void 0) delete data[k];
     else data[k] = v;
   }
-  await env.fs.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder3(keyOrder)));
+  await env.fs.writeFile(boxFile, serializeFrontmatter(data, body, nodeKeyOrder3(keyOrder)));
   if (tagsTouched) {
     const nextTags = Array.isArray(patch.tags) ? patch.tags : [];
-    await syncTagRegistryAfterBoxTagsChangeUnlocked(env.fs, previousTags, nextTags);
+    await syncTagRegistryAfterNodeTagsChangeUnlocked(env.fs, previousTags, nextTags);
   }
 }
-async function patchBody(env, boxPath, newBody, loadedTent) {
-  await withMutation2(env.fs, async () => patchBodyUnlocked(env, boxPath, newBody, loadedTent));
+async function patchBody(env, nodePath8, newBody, loadedTent) {
+  await withMutation2(env.fs, async () => patchBodyUnlocked(env, nodePath8, newBody, loadedTent));
 }
-async function patchBodyUnlocked(env, boxPath, newBody, loadedTent) {
+async function patchBodyUnlocked(env, nodePath8, newBody, loadedTent) {
   const tent = loadedTent ?? await loadTent(env.fs);
-  const box = tent.byPath.get(boxPath);
-  if (!box) throw new Error(`Box not found: ${boxPath}.`);
-  if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot have their body edited.");
-  assertContentMutable(box, "body-edited");
-  const boxFile = boxNotePath(boxPath);
+  const node2 = tent.byPath.get(nodePath8);
+  if (!node2) throw new Error(`Node not found: ${nodePath8}.`);
+  if (!isUsableNode(node2)) throw new Error("Invalid or archived nodes cannot have their body edited.");
+  assertContentMutable(node2, "body-edited");
+  const boxFile = nodeNotePath(nodePath8);
   const { data, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
   await env.fs.writeFile(boxFile, serializeFrontmatter(data, newBody, keyOrder));
 }
-async function setNodeMode(env, boxId, mode) {
-  await withMutation2(env.fs, async () => setNodeModeUnlocked(env, boxId, mode));
+async function setNodeMode(env, nodeId, mode) {
+  await withMutation2(env.fs, async () => setNodeModeUnlocked(env, nodeId, mode));
 }
-async function setNodeModeUnlocked(env, boxId, mode) {
+async function setNodeModeUnlocked(env, nodeId, mode) {
   if (mode === "read-only") {
     throw new Error(
       'read-only mode is retired in V0.2; use "editable" or "archived" (archive freezes the subtree).'
@@ -5685,48 +5326,48 @@ async function setNodeModeUnlocked(env, boxId, mode) {
     throw new Error('mode must be "editable" or "archived".');
   }
   const tent = await loadTent(env.fs);
-  const box = requireBoxById2(tent, boxId);
-  if (box.invalid) throw new Error("Invalid boxes cannot change mode.");
-  if (box.archived && !isExplicitArchiveRoot(box)) {
+  const node2 = requireNodeById2(tent, nodeId);
+  if (node2.invalid) throw new Error("Invalid nodes cannot change mode.");
+  if (node2.archived && !isExplicitArchiveRoot(node2)) {
     if (next === "archived") {
-      throw new Error("Invalid or already archived boxes cannot be archived.");
+      throw new Error("Invalid or already archived nodes cannot be archived.");
     }
     throw new Error("Only an explicit archive root can leave archived mode; restore the archive root first.");
   }
-  const current = isExplicitArchiveRoot(box) ? "archived" : "editable";
+  const current = isExplicitArchiveRoot(node2) ? "archived" : "editable";
   if (current === next) {
     if (next === "editable") {
-      await patchFrontmatter(env.fs, box, { mode: void 0, archived: void 0 });
+      await patchFrontmatter(env.fs, node2, { mode: void 0, archived: void 0 });
     } else {
-      await patchFrontmatter(env.fs, box, { mode: "archived", archived: void 0 });
+      await patchFrontmatter(env.fs, node2, { mode: "archived", archived: void 0 });
     }
     return;
   }
   if (next === "archived") {
     const tasks = await loadTaskEnvelopes(env.fs);
-    if (hasActiveTaskInSubtree(tent, box, tasks)) {
+    if (hasActiveTaskInSubtree(tent, node2, tasks)) {
       throw new Error(
         "Node subtree has an active task and cannot be archived; complete or interrupt the task first."
       );
     }
   }
   if (next === "archived") {
-    await patchFrontmatter(env.fs, box, { mode: "archived", archived: void 0 });
+    await patchFrontmatter(env.fs, node2, { mode: "archived", archived: void 0 });
     return;
   }
-  await patchFrontmatter(env.fs, box, { mode: void 0, archived: void 0 });
+  await patchFrontmatter(env.fs, node2, { mode: void 0, archived: void 0 });
 }
-async function patchFrontmatter(fs22, box, patch) {
-  const boxFile = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs22.readFile(boxFile));
+async function patchFrontmatter(fs21, node2, patch) {
+  const boxFile = nodeNotePath(node2.path);
+  const { data, body, keyOrder } = parseFrontmatter(await fs21.readFile(boxFile));
   for (const [k, v] of Object.entries(patch)) {
     if (v === void 0) delete data[k];
     else data[k] = v;
   }
-  await fs22.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder3(keyOrder)));
+  await fs21.writeFile(boxFile, serializeFrontmatter(data, body, nodeKeyOrder3(keyOrder)));
 }
-async function ensureDir3(fs22, path23) {
-  if (path23 && !await fs22.exists(path23)) await fs22.mkdir(path23);
+async function ensureDir3(fs21, path22) {
+  if (path22 && !await fs21.exists(path22)) await fs21.mkdir(path22);
 }
 function normalizeTagPatch(value) {
   if (value === void 0) return void 0;
@@ -5739,19 +5380,19 @@ function normalizeTagPatch(value) {
   }
   return tags.length > 0 ? tags.sort((a, b) => a.localeCompare(b)) : void 0;
 }
-function boxKeyOrder3(existing) {
+function nodeKeyOrder3(existing) {
   return [
-    ...BOX_FRONTMATTER_KEY_ORDER,
-    ...existing.filter((key2) => !BOX_FRONTMATTER_KEY_ORDER.includes(key2))
+    ...NODE_FRONTMATTER_KEY_ORDER,
+    ...existing.filter((key2) => !NODE_FRONTMATTER_KEY_ORDER.includes(key2))
   ];
 }
-function assertNotTempPath(path23) {
-  if (path23 === "temp" || path23.startsWith("temp/")) {
-    throw new Error("temp/ is a system pipeline; typed boxes cannot be created or moved there.");
+function assertNotTempPath(path22) {
+  if (path22 === "temp" || path22.startsWith("temp/")) {
+    throw new Error("temp/ is a system pipeline; typed nodes cannot be created or moved there.");
   }
 }
-function hasActiveTaskInSubtree(tent, box, tasks) {
-  const ids = collectSubtreeIds(box);
+function hasActiveTaskInSubtree(tent, node2, tasks) {
+  const ids = collectSubtreeIds(node2);
   for (const task of tasks) {
     if (!envelopeIsActiveOccupation(task)) continue;
     if (task.contextCard == null) continue;
@@ -5762,9 +5403,9 @@ function hasActiveTaskInSubtree(tent, box, tasks) {
   void tent;
   return false;
 }
-function collectSubtreeIds(box, ids = /* @__PURE__ */ new Set()) {
-  ids.add(box.id);
-  for (const child of box.children) collectSubtreeIds(child, ids);
+function collectSubtreeIds(node2, ids = /* @__PURE__ */ new Set()) {
+  ids.add(node2.id);
+  for (const child of node2.children) collectSubtreeIds(child, ids);
   return ids;
 }
 function assertRoleName(role) {
@@ -5774,21 +5415,21 @@ function assertRoleName(role) {
   assertRoleNameAvailable(name);
   return name;
 }
-function requireBoxById2(tent, boxId) {
-  if (tent.duplicateIds.has(boxId)) {
-    throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+function requireNodeById2(tent, nodeId) {
+  if (tent.duplicateIds.has(nodeId)) {
+    throw new Error(`Duplicate node id '${nodeId}' found; repair or fork the duplicate nodes before using this id.`);
   }
-  const box = tent.byId.get(boxId);
-  if (!box) throw new Error(`Box not found: ${boxId}.`);
-  return box;
+  const node2 = tent.byId.get(nodeId);
+  if (!node2) throw new Error(`Node not found: ${nodeId}.`);
+  return node2;
 }
-async function withMutation2(fs22, action) {
-  return withTentMutation(fs22, action);
+async function withMutation2(fs21, action) {
+  return withTentMutation(fs21, action);
 }
 
 // src/core/typeManagement.ts
-async function createType(fs22, name, definition2) {
-  await withTentMutation(fs22, async () => {
+async function createType(fs21, name, definition2) {
+  await withTentMutation(fs21, async () => {
     assertTypeName(name);
     if (isCanonicalPrimary(name) || CANONICAL_PRIMARY_TYPES.includes(name)) {
       throw new Error(`Built-in primary types cannot be created: ${name}.`);
@@ -5799,31 +5440,31 @@ async function createType(fs22, name, definition2) {
     if (definition2.tier !== "modifier") {
       throw new Error("V0.2 only allows creating custom secondary (modifier) types; primaries are fixed.");
     }
-    const registry = await loadTypeRegistry(fs22);
+    const registry = await loadTypeRegistry(fs21);
     if (registry[name]) throw new Error(`Type already exists: ${name}.`);
     registry[name] = { tier: "modifier" };
-    await writeTypeRegistryUnlocked(fs22, registry);
+    await writeTypeRegistryUnlocked(fs21, registry);
   });
 }
-async function createSecondaryType(fs22, name, _definition) {
+async function createSecondaryType(fs21, name, _definition) {
   void _definition;
-  await createType(fs22, name, { tier: "modifier" });
+  await createType(fs21, name, { tier: "modifier" });
 }
-async function inspectTypeDeletion(fs22, level, name) {
+async function inspectTypeDeletion(fs21, level, name) {
   void level;
-  const tent = await loadTent(fs22);
+  const tent = await loadTent(fs21);
   const registry = tent.typeRegistry;
-  const boxes = [...tent.byId.values()];
-  const referenced = boxes.filter((box) => {
-    const { base, modifier } = splitType(box.type);
-    return box.type === name || base === name || modifier === name;
+  const nodes = [...tent.byId.values()];
+  const referenced = nodes.filter((node2) => {
+    const { base, modifier } = splitType(node2.type);
+    return node2.type === name || base === name || modifier === name;
   });
-  const tasks = await loadTaskEnvelopes(fs22);
+  const tasks = await loadTaskEnvelopes(fs21);
   const ownerMap = /* @__PURE__ */ new Map();
   const relatedIds = /* @__PURE__ */ new Set();
   for (const reference of referenced) {
-    for (const box of relatedBoxes(reference, boxes)) {
-      relatedIds.add(box.id);
+    for (const node2 of relatedNodes(reference, nodes)) {
+      relatedIds.add(node2.id);
     }
   }
   for (const task of tasks) {
@@ -5831,9 +5472,13 @@ async function inspectTypeDeletion(fs22, level, name) {
     if (task.contextCard == null) continue;
     for (const nodeId of taskReferencedNodeIds(task)) {
       if (!relatedIds.has(nodeId)) continue;
-      const box = tent.byId.get(nodeId);
-      if (!box) continue;
-      ownerMap.set(box.id, { id: box.id, path: box.path, owner: task.role });
+      const node2 = tent.byId.get(nodeId);
+      if (!node2) continue;
+      ownerMap.set(node2.id, {
+        id: node2.id,
+        path: node2.path,
+        owner: `${task.assigneeKind}:${task.assigneeId}`
+      });
     }
   }
   const builtIn = name in DEFAULT_TYPE_REGISTRY || isCanonicalPrimary(name) || BUILTIN_SECONDARY_TYPES.includes(name);
@@ -5842,14 +5487,14 @@ async function inspectTypeDeletion(fs22, level, name) {
     name,
     builtIn,
     exists: name in registry,
-    references: referenced.map(({ id, path: path23, name: boxName }) => ({ id, path: path23, name: boxName })),
+    references: referenced.map(({ id, path: path22, name: nodeName }) => ({ id, path: path22, name: nodeName })),
     activeOwners: [...ownerMap.values()]
   };
 }
-async function deleteCustomType(fs22, level, name, confirmation) {
-  return withTentMutation(fs22, async () => {
+async function deleteCustomType(fs21, level, name, confirmation) {
+  return withTentMutation(fs21, async () => {
     if (confirmation !== name) throw new Error(`Confirmation mismatch; enter the type name ${name}.`);
-    const inspection = await inspectTypeDeletion(fs22, level, name);
+    const inspection = await inspectTypeDeletion(fs21, level, name);
     if (!inspection.exists) throw new Error(`Type does not exist: ${name}.`);
     if (inspection.builtIn) throw new Error(`Built-in types cannot be deleted: ${name}.`);
     if (inspection.references.length > 0) {
@@ -5862,27 +5507,27 @@ async function deleteCustomType(fs22, level, name, confirmation) {
         `Referenced range still has an active task; cancel or fail first: ${inspection.activeOwners.map((x) => x.path).join(", ")}.`
       );
     }
-    const registry = await loadTypeRegistry(fs22);
+    const registry = await loadTypeRegistry(fs21);
     delete registry[name];
-    await writeTypeRegistryUnlocked(fs22, registry);
+    await writeTypeRegistryUnlocked(fs21, registry);
     return inspection;
   });
 }
-async function writeTypeRegistryUnlocked(fs22, registry) {
+async function writeTypeRegistryUnlocked(fs21, registry) {
   const slim = {};
   for (const [name, def] of Object.entries(registry)) {
     slim[name] = { tier: def.tier === "modifier" ? "modifier" : "base" };
   }
-  await fs22.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(slim, null, 2) + "\n");
+  await fs21.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(slim, null, 2) + "\n");
 }
 function assertTypeName(name) {
   if (!name.trim()) throw new Error("Type name cannot be empty.");
   if (name === "temp") throw new Error("temp/ is a system pipeline and cannot be used as a type.");
   if (name.includes("-")) throw new Error("Type names cannot contain '-' (compound separator).");
 }
-function relatedBoxes(reference, boxes) {
-  return boxes.filter(
-    (box) => box.path === reference.path || box.path.startsWith(reference.path + "/") || reference.path.startsWith(box.path + "/")
+function relatedNodes(reference, nodes) {
+  return nodes.filter(
+    (node2) => node2.path === reference.path || node2.path.startsWith(reference.path + "/") || reference.path.startsWith(node2.path + "/")
   );
 }
 
@@ -5913,8 +5558,8 @@ function assertRoleCheckpointRoleName(role) {
     throw new Error(`Role name is a reserved Windows path segment: ${name}.`);
   }
   assertRoleNameAvailable(name);
-  if (name.toLowerCase() === AGENT_PROFILES_TEMP_DIR) {
-    throw new Error(`Role name is reserved by Tent: ${AGENT_PROFILES_TEMP_DIR}.`);
+  if (name.toLowerCase() === ROUTES_TEMP_DIR) {
+    throw new Error(`Role name is reserved by Tent: ${ROUTES_TEMP_DIR}.`);
   }
   if (name.toLowerCase() === TEMP_DIR) {
     throw new Error(`Role name is reserved by Tent: ${TEMP_DIR}.`);
@@ -5981,21 +5626,21 @@ function normalizeText(text3) {
   }
   return trimmed;
 }
-async function writeRoleCheckpoint(fs22, input) {
+async function writeRoleCheckpoint(fs21, input) {
   const role = assertRoleSegment(input.role);
   const text3 = normalizeText(input.text);
   const pointers = normalizePointers(input.pointers);
   const updatedAt = input.updatedAt?.trim();
   if (!updatedAt) throw new Error("Role Checkpoint updatedAt is required.");
   const sourceSessionId = input.sourceSessionId?.trim() || void 0;
-  const path23 = roleCheckpointPath(role);
+  const path22 = roleCheckpointPath(role);
   const record = {
     role,
     text: text3,
     updatedAt,
     ...sourceSessionId ? { sourceSessionId } : {},
     ...pointers ? { pointers } : {},
-    path: path23
+    path: path22
   };
   formatRoleCheckpointTail(record);
   const data = {
@@ -6017,28 +5662,28 @@ Dynamic tail only \u2014 not Delivery, not Task state, not stable Role init.
 
 ${text3}
 `;
-  await fs22.writeFile(path23, serializeFrontmatter(data, body));
+  await fs21.writeFile(path22, serializeFrontmatter(data, body));
   return record;
 }
-async function readRoleCheckpoint(fs22, role) {
+async function readRoleCheckpoint(fs21, role) {
   const name = assertRoleSegment(role);
-  const path23 = roleCheckpointPath(name);
-  if (!await fs22.exists(path23)) return null;
-  const raw = await fs22.readFile(path23);
+  const path22 = roleCheckpointPath(name);
+  if (!await fs21.exists(path22)) return null;
+  const raw = await fs21.readFile(path22);
   const parsed = parseFrontmatter(raw);
   const type = typeof parsed.data.type === "string" ? parsed.data.type.trim() : "";
   if (type && type !== ROLE_CHECKPOINT_TYPE) {
     throw new Error(
-      `Role Checkpoint at ${path23} has unexpected type ${type}; expected ${ROLE_CHECKPOINT_TYPE}.`
+      `Role Checkpoint at ${path22} has unexpected type ${type}; expected ${ROLE_CHECKPOINT_TYPE}.`
     );
   }
   const fmRole = typeof parsed.data.role === "string" ? parsed.data.role.trim() : name;
   if (fmRole !== name) {
-    throw new Error(`Role Checkpoint role mismatch at ${path23}: file has ${fmRole}, expected ${name}.`);
+    throw new Error(`Role Checkpoint role mismatch at ${path22}: file has ${fmRole}, expected ${name}.`);
   }
   const updatedAt = typeof parsed.data.updatedAt === "string" ? parsed.data.updatedAt.trim() : "";
   if (!updatedAt) {
-    throw new Error(`Role Checkpoint at ${path23} is missing updatedAt.`);
+    throw new Error(`Role Checkpoint at ${path22} is missing updatedAt.`);
   }
   const sourceSessionId = typeof parsed.data.sourceSessionId === "string" ? parsed.data.sourceSessionId.trim() || void 0 : void 0;
   const pointers = normalizePointers({
@@ -6064,15 +5709,15 @@ async function readRoleCheckpoint(fs22, role) {
     updatedAt,
     ...sourceSessionId ? { sourceSessionId } : {},
     ...pointers ? { pointers } : {},
-    path: path23
+    path: path22
   };
   formatRoleCheckpointTail(record);
   return record;
 }
-async function clearRoleCheckpoint(fs22, role) {
-  const path23 = roleCheckpointPath(role);
-  if (!await fs22.exists(path23)) return false;
-  await fs22.remove(path23);
+async function clearRoleCheckpoint(fs21, role) {
+  const path22 = roleCheckpointPath(role);
+  if (!await fs21.exists(path22)) return false;
+  await fs21.remove(path22);
   return true;
 }
 function formatRoleCheckpointTail(record) {
@@ -6110,66 +5755,13 @@ function formatRoleCheckpointTail(record) {
   return tail;
 }
 
-// src/core/context-card.ts
-var CONTEXT_CARD_TEMPLATE_VERSION = "v1";
-function buildContextCard(ref, options) {
-  const kind = ref.kind;
-  const id = ref.id.trim();
-  if (!id) throw new Error("ContextRef.id cannot be empty.");
-  if (!kind) throw new Error("ContextRef.kind is required.");
-  const label = options?.label?.trim() || (ref.path ? `${kind}:${ref.path}` : `${kind}:${id}`);
-  const prompt = formatContextCardPrompt(ref, options);
-  return {
-    contextRef: {
-      kind,
-      id,
-      path: ref.path,
-      fragment: ref.fragment
-    },
-    prompt,
-    label,
-    templateVersion: CONTEXT_CARD_TEMPLATE_VERSION
-  };
-}
-function formatContextCardPrompt(ref, hints) {
-  const opts = typeof hints === "string" ? { tentRootHint: hints } : hints ?? {};
-  const systemRoot = opts.systemRoot?.trim() || opts.tentRootHint?.trim() || "";
-  const workspaceRoot = opts.workspaceRoot?.trim() || "";
-  const lines = [
-    "Tent contextCard v1",
-    `contextRef: ${ref.kind}/${ref.id}`
-  ];
-  if (ref.path) lines.push(`path: ${ref.path}`);
-  if (ref.fragment) lines.push(`fragment: ${ref.fragment}`);
-  if (workspaceRoot) lines.push(`workspaceRoot: ${workspaceRoot}`);
-  if (systemRoot) {
-    lines.push(`systemRoot: ${systemRoot}`);
-    lines.push(`tentRoot: ${systemRoot}`);
-  }
-  if (ref.path) {
-    const rel = ref.path.replace(/\\/g, "/").replace(/^\.\/+/, "");
-    if (rel && !rel.startsWith(".tent/")) {
-      lines.push(`fileRead: .tent/${rel} (relative to workspaceRoot) or \${systemRoot}/${rel}`);
-    }
-  }
-  lines.push(
-    "CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent)."
-  );
-  lines.push("Do not invent missing content; fetch by id before answering.");
-  lines.push("Do not resolve operational files as <workspaceRoot>/temp \u2014 use .tent/temp.");
-  return lines.join("\n");
-}
-function taskContextCard(taskId, opts) {
-  return buildContextCard({ kind: "task", id: taskId, path: opts?.path }, opts);
-}
-
 // src/core/managed-skill-compose.ts
 import * as fs from "node:fs";
 import * as path from "node:path";
 var BUILTIN_TENT_TASK_SKILL = "tent-task";
 var BUILTIN_TENT_ROLE_SKILL = "tent-role";
 function builtinSkillNamesForExecutor(assigneeKind) {
-  const kind = assigneeKind === "agentProfile" ? "agentProfile" : "role";
+  const kind = assigneeKind === "route" ? "route" : "role";
   if (kind === "role") {
     return [BUILTIN_TENT_ROLE_SKILL, BUILTIN_TENT_TASK_SKILL];
   }
@@ -6229,7 +5821,6 @@ function stripYamlFrontmatter(raw) {
   return after.replace(/^\r?\n/, "");
 }
 var STABLE_SKILL_CONTRACTS_END_MARKER = "--- End of stable Tent skill contracts ---";
-var MANAGED_SESSION_BOOTSTRAP_BANNER = "--- Tent managed session bootstrap ---";
 function composeManagedSkillBootstrapPrefix(input) {
   const names = builtinSkillNamesForExecutor(input.assigneeKind);
   const sections = [];
@@ -6253,18 +5844,6 @@ ${body}`);
   sections.push(STABLE_SKILL_CONTRACTS_END_MARKER);
   return sections.join("\n\n");
 }
-function assembleManagedSessionBootstrap(input) {
-  const stable = input.stableSkillPrefix.trimEnd();
-  const card = input.contextCardPrompt.trim();
-  const tail = input.dynamicTaskTail.trim();
-  return `${MANAGED_SESSION_BOOTSTRAP_BANNER}
-` + (stable ? `${stable}
-
-` : "") + `${card}
-
-${tail}
-`;
-}
 function composeManagedSkillRefs(input) {
   void input.packageRoot;
   const reserved = /* @__PURE__ */ new Set([
@@ -6273,7 +5852,7 @@ function composeManagedSkillRefs(input) {
   ]);
   const out = [];
   const seen = new Set(reserved);
-  for (const ref of input.profileSkills ?? []) {
+  for (const ref of input.routeSkills ?? []) {
     if (!ref || ref.enabled === false) continue;
     const name = typeof ref.name === "string" ? ref.name.trim() : "";
     if (!name) continue;
@@ -6320,20 +5899,738 @@ function simpleDigest(text3) {
   return `d${h.toString(16).padStart(8, "0")}`;
 }
 
-// src/core/workspace-agents.ts
-import * as fs2 from "node:fs/promises";
+// src/adapters/acp/mcp-skills.ts
+import * as fs2 from "node:fs";
+import * as os from "node:os";
 import * as path2 from "node:path";
+var SAFE_SKILL_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
+var MCP_SERVER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+var ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+var CREDENTIAL_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
+var MAX_ROUTE_SKILLS = 64;
+var MAX_ROUTE_MCP_SERVERS = 32;
+var MAX_MCP_ARGS = 64;
+var MAX_MCP_ENV_ENTRIES = 32;
+var MAX_MCP_HEADER_ENTRIES = 16;
+function fieldOk(value) {
+  return { ok: true, value };
+}
+function fieldErr(message2) {
+  return { ok: false, message: message2 };
+}
+function defaultAllowedSkillRoots(home) {
+  const root = home ?? os.homedir();
+  return [
+    path2.join(root, ".agents", "skills"),
+    path2.join(root, ".claude", "skills"),
+    path2.join(root, ".grok", "skills"),
+    path2.join(root, ".cursor", "skills")
+  ];
+}
+function normalizePathForCompare(p) {
+  const resolved = path2.resolve(p);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+function isPathInsideRoot(candidate, root) {
+  const c = normalizePathForCompare(candidate);
+  const r = normalizePathForCompare(root);
+  if (c === r) return true;
+  const rel = path2.relative(r, c);
+  return rel !== "" && !rel.startsWith("..") && !path2.isAbsolute(rel);
+}
+function isUnderAllowedSkillRoots(absolutePath, allowedRoots) {
+  const abs = path2.resolve(absolutePath);
+  return allowedRoots.some((root) => isPathInsideRoot(abs, root));
+}
+function parseNonEmptyString(raw, key2) {
+  if (typeof raw !== "string") {
+    return fieldErr(`Invalid string param: ${key2}`);
+  }
+  const v = raw.trim();
+  if (!v) {
+    return fieldErr(`Invalid string param: ${key2} must be non-empty when set`);
+  }
+  return fieldOk(v);
+}
+function parseEnvKeyName(raw, key2) {
+  const base = parseNonEmptyString(raw, key2);
+  if (!base.ok) return base;
+  if (!ENV_KEY_RE.test(base.value)) {
+    return fieldErr(
+      `Invalid ${key2}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
+    );
+  }
+  return fieldOk(base.value);
+}
+function parseCredentialId(raw, key2) {
+  const base = parseNonEmptyString(raw, key2);
+  if (!base.ok) return base;
+  if (!CREDENTIAL_ID_RE.test(base.value)) {
+    return fieldErr(
+      `Invalid ${key2}: must match ${CREDENTIAL_ID_RE} (vault id, not secret value)`
+    );
+  }
+  return fieldOk(base.value);
+}
+function assertSafeSkillName(name) {
+  const base = parseNonEmptyString(name, "skills[].name");
+  if (!base.ok) return base;
+  if (!SAFE_SKILL_NAME_RE.test(base.value) || base.value.includes("..")) {
+    return fieldErr(
+      `Invalid skills[].name: must match ${SAFE_SKILL_NAME_RE} (no path separators)`
+    );
+  }
+  return fieldOk(base.value);
+}
+function parseStringRecord(raw, field, valueParse, maxEntries) {
+  if (raw === void 0 || raw === null) return fieldOk(void 0);
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return fieldErr(`Invalid ${field}: must be an object of string\u2192string`);
+  }
+  const entries = Object.entries(raw);
+  if (entries.length > maxEntries) {
+    return fieldErr(`Invalid ${field}: at most ${maxEntries} entries`);
+  }
+  const out = {};
+  for (const [k, v] of entries) {
+    const key2 = k.trim();
+    if (!key2) return fieldErr(`Invalid ${field}: empty key`);
+    const parsed = valueParse(v, `${field}.${key2}`);
+    if (!parsed.ok) return parsed;
+    out[key2] = parsed.value;
+  }
+  return fieldOk(out);
+}
+function parseEnvKeyMap(raw, field, maxEntries) {
+  return parseStringRecord(raw, field, (v, k) => parseEnvKeyName(v, k), maxEntries);
+}
+function parseCredentialRefMap(raw, field, maxEntries) {
+  return parseStringRecord(raw, field, (v, k) => parseCredentialId(v, k), maxEntries);
+}
+function parseSkillPathValue(raw, allowedRoots) {
+  const base = parseNonEmptyString(raw, "skills[].path");
+  if (!base.ok) return base;
+  const p = base.value;
+  if (!path2.isAbsolute(p)) {
+    return fieldErr(
+      "Invalid skills[].path: must be an absolute path under an allowed skill root"
+    );
+  }
+  if (p.includes("\0")) {
+    return fieldErr("Invalid skills[].path: contains NUL");
+  }
+  const resolved = path2.resolve(p);
+  if (!isUnderAllowedSkillRoots(resolved, allowedRoots)) {
+    return fieldErr(
+      `Invalid skills[].path: must be under allowed skill roots (${allowedRoots.join(", ")})`
+    );
+  }
+  return fieldOk(resolved);
+}
+function parseSkillRefValue(raw, allowedRoots) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return fieldErr("Invalid skills[] entry: must be an object with name");
+  }
+  const o = raw;
+  for (const key2 of Object.keys(o)) {
+    if (key2 !== "name" && key2 !== "path" && key2 !== "enabled") {
+      return fieldErr(`Unknown skills[] field: ${key2}`);
+    }
+  }
+  const nameR = assertSafeSkillName(o.name);
+  if (!nameR.ok) return nameR;
+  let pathVal;
+  if ("path" in o && o.path !== void 0 && o.path !== null) {
+    const pr = parseSkillPathValue(o.path, allowedRoots);
+    if (!pr.ok) return pr;
+    pathVal = pr.value;
+  }
+  let enabled;
+  if ("enabled" in o && o.enabled !== void 0 && o.enabled !== null) {
+    if (typeof o.enabled !== "boolean") {
+      return fieldErr("Invalid skills[].enabled: must be boolean");
+    }
+    enabled = o.enabled;
+  }
+  const ref = { name: nameR.value };
+  if (pathVal !== void 0) ref.path = pathVal;
+  if (enabled !== void 0) ref.enabled = enabled;
+  return fieldOk(ref);
+}
+function parseSkillsArrayValue(raw, allowedRoots = defaultAllowedSkillRoots()) {
+  if (raw === void 0 || raw === null) return fieldOk(void 0);
+  if (!Array.isArray(raw)) {
+    return fieldErr("Invalid skills: must be an array");
+  }
+  if (raw.length > MAX_ROUTE_SKILLS) {
+    return fieldErr(`Invalid skills: at most ${MAX_ROUTE_SKILLS} entries`);
+  }
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const item of raw) {
+    const r = parseSkillRefValue(item, allowedRoots);
+    if (!r.ok) return r;
+    const key2 = r.value.name.toLowerCase();
+    if (seen.has(key2)) {
+      return fieldErr(`Duplicate skill name in skills: ${r.value.name}`);
+    }
+    seen.add(key2);
+    out.push(r.value);
+  }
+  return fieldOk(out);
+}
+function parseMcpName(raw) {
+  const base = parseNonEmptyString(raw, "mcpServers[].name");
+  if (!base.ok) return base;
+  if (!MCP_SERVER_NAME_RE.test(base.value)) {
+    return fieldErr(
+      `Invalid mcpServers[].name: must match ${MCP_SERVER_NAME_RE}`
+    );
+  }
+  return fieldOk(base.value);
+}
+function parseHttpUrl(raw) {
+  const base = parseNonEmptyString(raw, "mcpServers[].url");
+  if (!base.ok) return base;
+  let parsed;
+  try {
+    parsed = new URL(base.value);
+  } catch {
+    return fieldErr("Invalid mcpServers[].url: must be an absolute http(s) URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return fieldErr("Invalid mcpServers[].url: only http: and https: are allowed");
+  }
+  if (parsed.username || parsed.password) {
+    return fieldErr(
+      "Invalid mcpServers[].url: username/password in URL are not allowed"
+    );
+  }
+  return fieldOk(base.value);
+}
+function parseMcpServerValue(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return fieldErr("Invalid mcpServers[] entry: must be an object");
+  }
+  const o = raw;
+  const allowed = /* @__PURE__ */ new Set([
+    "name",
+    "transport",
+    "enabled",
+    "command",
+    "args",
+    "envKeys",
+    "envCredentialRefs",
+    "url",
+    "headerEnvKeys",
+    "headerCredentialRefs"
+  ]);
+  for (const key2 of Object.keys(o)) {
+    if (!allowed.has(key2)) {
+      const lower = key2.toLowerCase();
+      if (lower === "env" || lower === "headers" || lower.includes("secret") || lower.includes("token") || lower.includes("apikey") || lower.includes("password") || lower.includes("authorization") || lower.includes("bearer")) {
+        return fieldErr(
+          `Rejected dangerous or unsupported mcpServers[] field: ${key2} (use envKeys/envCredentialRefs/headerEnvKeys/headerCredentialRefs)`
+        );
+      }
+      return fieldErr(`Unknown mcpServers[] field: ${key2}`);
+    }
+  }
+  const nameR = parseMcpName(o.name);
+  if (!nameR.ok) return nameR;
+  if (typeof o.transport !== "string" || o.transport !== "stdio" && o.transport !== "http") {
+    return fieldErr("Invalid mcpServers[].transport: must be stdio|http");
+  }
+  const transport = o.transport;
+  let enabled;
+  if ("enabled" in o && o.enabled !== void 0 && o.enabled !== null) {
+    if (typeof o.enabled !== "boolean") {
+      return fieldErr("Invalid mcpServers[].enabled: must be boolean");
+    }
+    enabled = o.enabled;
+  }
+  const server = { name: nameR.value, transport };
+  if (enabled !== void 0) server.enabled = enabled;
+  if (transport === "stdio") {
+    if ("url" in o && o.url !== void 0 && o.url !== null) {
+      return fieldErr("Invalid mcpServers[]: stdio transport must not set url");
+    }
+    if ("headerEnvKeys" in o && o.headerEnvKeys != null) {
+      return fieldErr("Invalid mcpServers[]: stdio transport must not set headerEnvKeys");
+    }
+    if ("headerCredentialRefs" in o && o.headerCredentialRefs != null) {
+      return fieldErr(
+        "Invalid mcpServers[]: stdio transport must not set headerCredentialRefs"
+      );
+    }
+    const cmd = parseNonEmptyString(o.command, "mcpServers[].command");
+    if (!cmd.ok) return cmd;
+    server.command = cmd.value;
+    if ("args" in o && o.args !== void 0 && o.args !== null) {
+      if (!Array.isArray(o.args) || !o.args.every((a) => typeof a === "string")) {
+        return fieldErr("Invalid mcpServers[].args: must be an array of strings");
+      }
+      if (o.args.length > MAX_MCP_ARGS) {
+        return fieldErr(`Invalid mcpServers[].args: at most ${MAX_MCP_ARGS} entries`);
+      }
+      server.args = o.args.map((a) => a);
+    }
+    const envKeys = parseEnvKeyMap(o.envKeys, "mcpServers[].envKeys", MAX_MCP_ENV_ENTRIES);
+    if (!envKeys.ok) return envKeys;
+    if (envKeys.value) server.envKeys = envKeys.value;
+    const envCreds = parseCredentialRefMap(
+      o.envCredentialRefs,
+      "mcpServers[].envCredentialRefs",
+      MAX_MCP_ENV_ENTRIES
+    );
+    if (!envCreds.ok) return envCreds;
+    if (envCreds.value) server.envCredentialRefs = envCreds.value;
+  } else {
+    if ("command" in o && o.command !== void 0 && o.command !== null) {
+      return fieldErr("Invalid mcpServers[]: http transport must not set command");
+    }
+    if ("args" in o && o.args !== void 0 && o.args !== null) {
+      return fieldErr("Invalid mcpServers[]: http transport must not set args");
+    }
+    if ("envKeys" in o && o.envKeys != null) {
+      return fieldErr("Invalid mcpServers[]: http transport must not set envKeys");
+    }
+    if ("envCredentialRefs" in o && o.envCredentialRefs != null) {
+      return fieldErr(
+        "Invalid mcpServers[]: http transport must not set envCredentialRefs"
+      );
+    }
+    const urlR = parseHttpUrl(o.url);
+    if (!urlR.ok) return urlR;
+    server.url = urlR.value;
+    const headerEnv = parseEnvKeyMap(
+      o.headerEnvKeys,
+      "mcpServers[].headerEnvKeys",
+      MAX_MCP_HEADER_ENTRIES
+    );
+    if (!headerEnv.ok) return headerEnv;
+    if (headerEnv.value) server.headerEnvKeys = headerEnv.value;
+    const headerCreds = parseCredentialRefMap(
+      o.headerCredentialRefs,
+      "mcpServers[].headerCredentialRefs",
+      MAX_MCP_HEADER_ENTRIES
+    );
+    if (!headerCreds.ok) return headerCreds;
+    if (headerCreds.value) server.headerCredentialRefs = headerCreds.value;
+  }
+  return fieldOk(server);
+}
+function parseMcpServersArrayValue(raw) {
+  if (raw === void 0 || raw === null) return fieldOk(void 0);
+  if (!Array.isArray(raw)) {
+    return fieldErr("Invalid mcpServers: must be an array");
+  }
+  if (raw.length > MAX_ROUTE_MCP_SERVERS) {
+    return fieldErr(`Invalid mcpServers: at most ${MAX_ROUTE_MCP_SERVERS} entries`);
+  }
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const item of raw) {
+    const r = parseMcpServerValue(item);
+    if (!r.ok) return r;
+    const key2 = r.value.name.toLowerCase();
+    if (seen.has(key2)) {
+      return fieldErr(`Duplicate mcpServers name: ${r.value.name}`);
+    }
+    seen.add(key2);
+    out.push(r.value);
+  }
+  return fieldOk(out);
+}
+function cloneSkillRefs(skills) {
+  if (!skills) return void 0;
+  return skills.map((s) => ({
+    name: s.name,
+    ...s.path !== void 0 ? { path: s.path } : {},
+    ...s.enabled !== void 0 ? { enabled: s.enabled } : {}
+  }));
+}
+function cloneMcpServers(servers) {
+  if (!servers) return void 0;
+  return servers.map((s) => ({
+    name: s.name,
+    transport: s.transport,
+    ...s.enabled !== void 0 ? { enabled: s.enabled } : {},
+    ...s.command !== void 0 ? { command: s.command } : {},
+    ...s.args !== void 0 ? { args: [...s.args] } : {},
+    ...s.envKeys !== void 0 ? { envKeys: { ...s.envKeys } } : {},
+    ...s.envCredentialRefs !== void 0 ? { envCredentialRefs: { ...s.envCredentialRefs } } : {},
+    ...s.url !== void 0 ? { url: s.url } : {},
+    ...s.headerEnvKeys !== void 0 ? { headerEnvKeys: { ...s.headerEnvKeys } } : {},
+    ...s.headerCredentialRefs !== void 0 ? { headerCredentialRefs: { ...s.headerCredentialRefs } } : {}
+  }));
+}
+function projectSkillRefs(skills) {
+  if (!skills || skills.length === 0) return void 0;
+  return skills.map((s) => ({
+    name: s.name,
+    ...s.path !== void 0 ? { path: s.path } : {},
+    enabled: s.enabled !== false
+  }));
+}
+function projectMcpServers(servers) {
+  if (!servers || servers.length === 0) return void 0;
+  return servers.map((s) => ({
+    name: s.name,
+    transport: s.transport,
+    enabled: s.enabled !== false,
+    ...s.command !== void 0 ? { command: s.command } : {},
+    ...s.args !== void 0 ? { args: [...s.args] } : {},
+    ...s.envKeys !== void 0 ? { envKeys: { ...s.envKeys } } : {},
+    ...s.envCredentialRefs !== void 0 ? { envCredentialRefs: { ...s.envCredentialRefs } } : {},
+    ...s.url !== void 0 ? { url: s.url } : {},
+    ...s.headerEnvKeys !== void 0 ? { headerEnvKeys: { ...s.headerEnvKeys } } : {},
+    ...s.headerCredentialRefs !== void 0 ? { headerCredentialRefs: { ...s.headerCredentialRefs } } : {}
+  }));
+}
+function resolveEnvValue(envKey, planEnv) {
+  const fromPlan = planEnv[envKey];
+  if (typeof fromPlan === "string" && fromPlan.length > 0) return fromPlan;
+  const fromProc = process.env[envKey];
+  if (typeof fromProc === "string" && fromProc.length > 0) return fromProc;
+  return void 0;
+}
+function resolveAcpMcpServersWire(servers, opts) {
+  if (!servers || servers.length === 0) return [];
+  const wire = [];
+  for (const s of servers) {
+    if (s.enabled === false) continue;
+    if (s.transport === "stdio") {
+      const command = s.command?.trim();
+      if (!command) {
+        throw new Error(`MCP server ${s.name}: stdio requires command`);
+      }
+      const env = [];
+      if (s.envKeys) {
+        for (const [envName, envKey] of Object.entries(s.envKeys)) {
+          const value = resolveEnvValue(envKey, opts.planEnv);
+          if (value === void 0) {
+            throw new Error(
+              `MCP server ${s.name}: missing process env ${envKey} for env var ${envName}`
+            );
+          }
+          env.push({ name: envName, value });
+        }
+      }
+      if (s.envCredentialRefs) {
+        for (const [envName, credId] of Object.entries(s.envCredentialRefs)) {
+          if (!opts.resolveCredential) {
+            throw new Error(
+              `MCP server ${s.name}: credentialRef ${credId} requires resolveCredential hook`
+            );
+          }
+          const value = opts.resolveCredential(credId);
+          if (typeof value !== "string" || !value) {
+            throw new Error(
+              `MCP server ${s.name}: credential not found or empty for ${credId} (env ${envName})`
+            );
+          }
+          env.push({ name: envName, value });
+        }
+      }
+      wire.push({
+        name: s.name,
+        command,
+        args: s.args ? [...s.args] : [],
+        env
+      });
+    } else {
+      const url = s.url?.trim();
+      if (!url) {
+        throw new Error(`MCP server ${s.name}: http requires url`);
+      }
+      const headers = [];
+      if (s.headerEnvKeys) {
+        for (const [headerName, envKey] of Object.entries(s.headerEnvKeys)) {
+          const value = resolveEnvValue(envKey, opts.planEnv);
+          if (value === void 0) {
+            throw new Error(
+              `MCP server ${s.name}: missing process env ${envKey} for header ${headerName}`
+            );
+          }
+          headers.push({ name: headerName, value });
+        }
+      }
+      if (s.headerCredentialRefs) {
+        for (const [headerName, credId] of Object.entries(s.headerCredentialRefs)) {
+          if (!opts.resolveCredential) {
+            throw new Error(
+              `MCP server ${s.name}: credentialRef ${credId} requires resolveCredential hook`
+            );
+          }
+          const value = opts.resolveCredential(credId);
+          if (typeof value !== "string" || !value) {
+            throw new Error(
+              `MCP server ${s.name}: credential not found or empty for ${credId} (header ${headerName})`
+            );
+          }
+          headers.push({ name: headerName, value });
+        }
+      }
+      wire.push({
+        name: s.name,
+        type: "http",
+        url,
+        ...headers.length > 0 ? { headers } : {}
+      });
+    }
+  }
+  return wire;
+}
+function resolveAcpSkillMeta(skills, opts) {
+  if (!skills || skills.length === 0) return [];
+  const out = [];
+  for (const s of skills) {
+    if (s.enabled === false) continue;
+    if (s.path && opts?.requirePathExists) {
+      if (!fs2.existsSync(s.path)) {
+        throw new Error(`Skill ${s.name}: path does not exist: ${s.path}`);
+      }
+    }
+    out.push({
+      name: s.name,
+      ...s.path !== void 0 ? { path: s.path } : {}
+    });
+  }
+  return out;
+}
+
+// src/runtime/route-config.ts
+import { createHash as createHash2 } from "node:crypto";
+function cloneSettingsRoute(route) {
+  return {
+    ...route,
+    args: route.args?.length ? [...route.args] : void 0,
+    skills: route.skills?.length ? cloneSkillRefs(route.skills) : void 0,
+    mcpServers: route.mcpServers?.length ? cloneMcpServers(route.mcpServers) : void 0,
+    fake: route.fake ? { ...route.fake } : void 0
+  };
+}
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (!value || typeof value !== "object") return JSON.stringify(value);
+  const record = value;
+  return `{${Object.keys(record).sort().map((key2) => `${JSON.stringify(key2)}:${stableJson(record[key2])}`).join(",")}}`;
+}
+function calculateSettingsRouteLaunchDigest(route, effectiveEndpointDigest) {
+  const canonical = cloneSettingsRoute(route);
+  const input = {
+    routeId: canonical.routeId,
+    provider: canonical.provider,
+    adapterId: canonical.adapterId,
+    command: canonical.command,
+    args: canonical.args,
+    executable: canonical.executable,
+    model: canonical.model,
+    envKey: canonical.envKey,
+    credentialRef: canonical.credentialRef,
+    baseUrlEnvKey: canonical.baseUrlEnvKey,
+    baseUrl: canonical.baseUrl,
+    effectiveEndpointDigest,
+    permissionPolicy: canonical.permissionPolicy,
+    promptTimeoutMs: canonical.promptTimeoutMs,
+    permissionTimeoutMs: canonical.permissionTimeoutMs,
+    skills: canonical.skills,
+    mcpServers: canonical.mcpServers,
+    fake: canonical.fake
+  };
+  return `sha256:${createHash2("sha256").update(stableJson(input)).digest("hex")}`;
+}
+function createSettingsRouteSnapshot(route, details) {
+  return {
+    routeId: route.routeId,
+    provider: route.provider,
+    adapterId: route.adapterId,
+    ...route.model ? { model: route.model } : {},
+    ...route.command ? { command: route.command } : {},
+    ...route.args?.length ? { args: [...route.args] } : {},
+    ...route.executable ? { executable: route.executable } : {},
+    ...route.envKey ? { envKey: route.envKey } : {},
+    ...route.credentialRef ? { credentialRef: route.credentialRef } : {},
+    ...route.baseUrlEnvKey ? { baseUrlEnvKey: route.baseUrlEnvKey } : {},
+    ...route.baseUrl ? { baseUrl: route.baseUrl } : {},
+    ...route.permissionPolicy ? { permissionPolicy: route.permissionPolicy } : {},
+    ...route.promptTimeoutMs !== void 0 ? { promptTimeoutMs: route.promptTimeoutMs } : {},
+    ...route.permissionTimeoutMs !== void 0 ? { permissionTimeoutMs: route.permissionTimeoutMs } : {},
+    ...route.skills?.length ? { skills: cloneSkillRefs(route.skills) } : {},
+    ...route.mcpServers?.length ? { mcpServers: cloneMcpServers(route.mcpServers) } : {},
+    ...route.fake ? { fake: { ...route.fake } } : {},
+    ...details.effectiveEndpointDigest ? { effectiveEndpointDigest: details.effectiveEndpointDigest } : {},
+    launchDigest: calculateSettingsRouteLaunchDigest(route, details.effectiveEndpointDigest)
+  };
+}
+function routeConfigFromSnapshot(snapshot) {
+  return {
+    routeId: snapshot.routeId,
+    provider: snapshot.provider,
+    adapterId: snapshot.adapterId,
+    ...snapshot.model ? { model: snapshot.model } : {},
+    ...snapshot.command ? { command: snapshot.command } : {},
+    ...snapshot.args ? { args: [...snapshot.args] } : {},
+    ...snapshot.executable ? { executable: snapshot.executable } : {},
+    ...snapshot.envKey ? { envKey: snapshot.envKey } : {},
+    ...snapshot.credentialRef ? { credentialRef: snapshot.credentialRef } : {},
+    ...snapshot.baseUrlEnvKey ? { baseUrlEnvKey: snapshot.baseUrlEnvKey } : {},
+    ...snapshot.baseUrl ? { baseUrl: snapshot.baseUrl } : {},
+    ...snapshot.permissionPolicy ? { permissionPolicy: snapshot.permissionPolicy } : {},
+    ...snapshot.promptTimeoutMs !== void 0 ? { promptTimeoutMs: snapshot.promptTimeoutMs } : {},
+    ...snapshot.permissionTimeoutMs !== void 0 ? { permissionTimeoutMs: snapshot.permissionTimeoutMs } : {},
+    ...snapshot.skills ? { skills: cloneSkillRefs(snapshot.skills) } : {},
+    ...snapshot.mcpServers ? { mcpServers: cloneMcpServers(snapshot.mcpServers) } : {},
+    ...snapshot.fake ? { fake: { ...snapshot.fake } } : {}
+  };
+}
+var SNAPSHOT_KEYS = /* @__PURE__ */ new Set([
+  "routeId",
+  "provider",
+  "adapterId",
+  "model",
+  "command",
+  "args",
+  "executable",
+  "envKey",
+  "credentialRef",
+  "baseUrlEnvKey",
+  "baseUrl",
+  "permissionPolicy",
+  "promptTimeoutMs",
+  "permissionTimeoutMs",
+  "skills",
+  "mcpServers",
+  "fake",
+  "effectiveEndpointDigest",
+  "launchDigest"
+]);
+var SKILL_KEYS = /* @__PURE__ */ new Set(["name", "path", "enabled"]);
+var MCP_KEYS = /* @__PURE__ */ new Set([
+  "name",
+  "transport",
+  "enabled",
+  "command",
+  "args",
+  "envKeys",
+  "envCredentialRefs",
+  "url",
+  "headerEnvKeys",
+  "headerCredentialRefs"
+]);
+var FAKE_KEYS = /* @__PURE__ */ new Set([
+  "sleepMs",
+  "exitCode",
+  "waitForSignal",
+  "emitStdout",
+  "failLaunch",
+  "canResume"
+]);
+var ENV_KEY_RE2 = /^[A-Za-z_][A-Za-z0-9_]*$/;
+var CREDENTIAL_REF_RE = /^[a-z][a-z0-9-]{0,62}$/;
+var SHA256_RE = /^sha256:[0-9a-f]{64}$/;
+function plainRecord(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+function onlyKeys(value, allowed) {
+  return Object.keys(value).every((key2) => allowed.has(key2));
+}
+function optionalString(value) {
+  return value === void 0 || typeof value === "string" && value.length > 0;
+}
+function optionalPositiveInt(value) {
+  return value === void 0 || typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+function stringMap(value) {
+  return plainRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
+}
+function validSkill(value) {
+  return plainRecord(value) && onlyKeys(value, SKILL_KEYS) && typeof value.name === "string" && value.name.length > 0 && optionalString(value.path) && (value.enabled === void 0 || typeof value.enabled === "boolean");
+}
+function validMcp(value) {
+  if (!plainRecord(value) || !onlyKeys(value, MCP_KEYS)) return false;
+  if (typeof value.name !== "string" || !value.name) return false;
+  if (value.transport !== "stdio" && value.transport !== "http") return false;
+  if (value.enabled !== void 0 && typeof value.enabled !== "boolean") return false;
+  if (!optionalString(value.command) || !optionalString(value.url)) return false;
+  if (value.args !== void 0 && (!Array.isArray(value.args) || !value.args.every((entry) => typeof entry === "string"))) {
+    return false;
+  }
+  for (const key2 of ["envKeys", "envCredentialRefs", "headerEnvKeys", "headerCredentialRefs"]) {
+    if (value[key2] !== void 0 && !stringMap(value[key2])) return false;
+  }
+  return true;
+}
+function validFake(value) {
+  if (!plainRecord(value) || !onlyKeys(value, FAKE_KEYS)) return false;
+  for (const key2 of ["sleepMs", "exitCode"]) {
+    if (value[key2] !== void 0 && (typeof value[key2] !== "number" || !Number.isInteger(value[key2]))) return false;
+  }
+  for (const key2 of ["waitForSignal", "emitStdout", "canResume"]) {
+    if (value[key2] !== void 0 && typeof value[key2] !== "boolean") return false;
+  }
+  return optionalString(value.failLaunch);
+}
+function safeBaseUrl(value) {
+  if (value === void 0) return true;
+  if (typeof value !== "string" || !value) return false;
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password && !url.search && !url.hash;
+  } catch {
+    return false;
+  }
+}
+function parseSettingsRouteSnapshot(value) {
+  if (!plainRecord(value) || !onlyKeys(value, SNAPSHOT_KEYS)) return null;
+  if (!isRouteId(value.routeId)) return null;
+  if (typeof value.provider !== "string" || !value.provider) return null;
+  if (typeof value.adapterId !== "string" || !value.adapterId) return null;
+  for (const key2 of ["model", "command", "executable"]) {
+    if (!optionalString(value[key2])) return null;
+  }
+  if (value.args !== void 0 && (!Array.isArray(value.args) || !value.args.every((entry) => typeof entry === "string"))) {
+    return null;
+  }
+  for (const key2 of ["envKey", "baseUrlEnvKey"]) {
+    if (value[key2] !== void 0 && (typeof value[key2] !== "string" || !ENV_KEY_RE2.test(value[key2]))) return null;
+  }
+  if (value.credentialRef !== void 0 && (typeof value.credentialRef !== "string" || !CREDENTIAL_REF_RE.test(value.credentialRef))) {
+    return null;
+  }
+  if (!safeBaseUrl(value.baseUrl)) return null;
+  if (value.permissionPolicy !== void 0 && value.permissionPolicy !== "allow" && value.permissionPolicy !== "ask" && value.permissionPolicy !== "deny") return null;
+  if (!optionalPositiveInt(value.promptTimeoutMs) || !optionalPositiveInt(value.permissionTimeoutMs)) return null;
+  if (value.skills !== void 0 && (!Array.isArray(value.skills) || !value.skills.every(validSkill))) return null;
+  if (value.mcpServers !== void 0 && (!Array.isArray(value.mcpServers) || !value.mcpServers.every(validMcp))) return null;
+  if (value.fake !== void 0 && !validFake(value.fake)) return null;
+  if (value.effectiveEndpointDigest !== void 0 && (typeof value.effectiveEndpointDigest !== "string" || !SHA256_RE.test(value.effectiveEndpointDigest))) return null;
+  if (typeof value.launchDigest !== "string" || !SHA256_RE.test(value.launchDigest)) return null;
+  const snapshot = value;
+  const route = routeConfigFromSnapshot(snapshot);
+  if (calculateSettingsRouteLaunchDigest(route, snapshot.effectiveEndpointDigest) !== snapshot.launchDigest) {
+    return null;
+  }
+  return createSettingsRouteSnapshot(route, {
+    effectiveEndpointDigest: snapshot.effectiveEndpointDigest
+  });
+}
+
+// src/core/workspace-agents.ts
+import * as fs3 from "node:fs/promises";
+import * as path3 from "node:path";
 var WORKSPACE_AGENTS_FILENAME = "AGENTS.md";
 function resolveWorkspaceAgentsPath(workspaceRoot) {
-  const root = path2.resolve(workspaceRoot);
-  const agentsPath = path2.resolve(root, WORKSPACE_AGENTS_FILENAME);
-  if (path2.basename(agentsPath) !== WORKSPACE_AGENTS_FILENAME) {
+  const root = path3.resolve(workspaceRoot);
+  const agentsPath = path3.resolve(root, WORKSPACE_AGENTS_FILENAME);
+  if (path3.basename(agentsPath) !== WORKSPACE_AGENTS_FILENAME) {
     throw new WorkspaceAgentsError(
       "INVALID_PATH",
       `Workspace agents file must be named ${WORKSPACE_AGENTS_FILENAME}`
     );
   }
-  if (path2.dirname(agentsPath) !== root) {
+  if (path3.dirname(agentsPath) !== root) {
     throw new WorkspaceAgentsError(
       "INVALID_PATH",
       `${WORKSPACE_AGENTS_FILENAME} must be a direct child of the workspace root`
@@ -6344,7 +6641,7 @@ function resolveWorkspaceAgentsPath(workspaceRoot) {
 async function loadWorkspaceAgents(workspaceRoot) {
   const agentsPath = resolveWorkspaceAgentsPath(workspaceRoot);
   try {
-    const content3 = await fs2.readFile(agentsPath, "utf8");
+    const content3 = await fs3.readFile(agentsPath, "utf8");
     return {
       path: WORKSPACE_AGENTS_FILENAME,
       content: content3,
@@ -6396,14 +6693,14 @@ var WorkspaceAgentsError = class extends Error {
   }
 };
 async function writeTextAtomic(filePath, content3) {
-  await fs2.mkdir(path2.dirname(filePath), { recursive: true });
+  await fs3.mkdir(path3.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
   try {
-    await fs2.writeFile(tmp, content3, "utf8");
+    await fs3.writeFile(tmp, content3, "utf8");
     await renameReplace(tmp, filePath);
   } catch (err) {
     try {
-      await fs2.unlink(tmp);
+      await fs3.unlink(tmp);
     } catch {
     }
     throw err;
@@ -6414,7 +6711,7 @@ async function renameReplace(tmp, filePath) {
   let lastErr;
   for (let i = 0; i < attempts; i++) {
     try {
-      await fs2.rename(tmp, filePath);
+      await fs3.rename(tmp, filePath);
       return;
     } catch (err) {
       lastErr = err;
@@ -6466,21 +6763,39 @@ async function requireResolvedRoleFromRegistry(roleFs, roleName, reason) {
 async function collectStableContextGeneration(input) {
   const agents = await loadWorkspaceAgents(input.workspaceRoot);
   const agentsPointerDigest = agentsBodyCompatibilityDigest(agents.content);
+  const assigneeId = input.assigneeId.trim();
+  if (!assigneeId) {
+    throw new Error("contextGeneration requires a non-empty Task assigneeId");
+  }
+  const routeId = input.routeSnapshot.routeId.trim();
+  const provider = input.routeSnapshot.provider.trim();
+  const adapterId = input.routeSnapshot.adapterId.trim();
+  const routeLaunchDigest = routeLaunchDigestFromSnapshot(input.routeSnapshot);
+  if (!routeId || !provider || !adapterId || !routeLaunchDigest) {
+    throw new Error(
+      "contextGeneration requires a complete immutable Settings route snapshot"
+    );
+  }
+  if (input.assigneeKind === "route" && assigneeId !== routeId) {
+    throw new Error(
+      `contextGeneration route assignee ${assigneeId} does not match snapshot route ${routeId}`
+    );
+  }
+  const responsibilityRoleId = input.assigneeKind === "role" ? assigneeId : "";
   let role = input.role;
-  if (input.assigneeKind === "role") {
-    if (!role) {
-      role = await requireResolvedRoleFromRegistry(
-        input.roleFs,
-        input.assigneeLabel,
-        "durable Role assignee"
-      );
-    }
-  } else if (input.assigneeKind === "agentProfile" && input.parentRoleId?.trim()) {
-    if (!role) {
-      role = await requireResolvedRoleFromRegistry(
-        input.roleFs,
-        input.parentRoleId,
-        "parent Role for agentProfile"
+  if (responsibilityRoleId && !role) {
+    role = await requireResolvedRoleFromRegistry(
+      input.roleFs,
+      responsibilityRoleId,
+      "durable Role assignee"
+    );
+  }
+  if (role && responsibilityRoleId) {
+    const resolvedRoleName = role.name.trim();
+    const resolvedRoleId = role.id?.trim() || "";
+    if (resolvedRoleName !== responsibilityRoleId && resolvedRoleId !== responsibilityRoleId) {
+      throw new Error(
+        `contextGeneration Role fact mismatch: expected ${responsibilityRoleId}, got ${resolvedRoleId || resolvedRoleName}`
       );
     }
   }
@@ -6517,17 +6832,7 @@ async function collectStableContextGeneration(input) {
       name: BUILTIN_TENT_ROLE_SKILL
     });
   }
-  const rolePrompt = input.assigneeKind === "role" ? skillInputs.rolePrompt : role?.prompt?.trim() || "";
-  const purpose = managedSessionPurpose({
-    purpose: input.purpose,
-    subKey: input.subKey
-  });
-  const agentId = input.agentId?.trim() || (input.assigneeKind === "agentProfile" ? input.assigneeLabel : input.assigneeLabel);
-  const profileLaunchDigest = input.profile ? profileLaunchCompatibilityDigestFromConfig(input.profile) : profileLaunchCompatibilityDigest({
-    profileId: input.profileId,
-    adapterId: input.adapterId,
-    capabilityFlags: input.capabilityFlags
-  });
+  const rolePrompt = responsibilityRoleId ? role?.prompt?.trim() || "" : "";
   const contextGeneration = computeContextGenerationFromStableFacts({
     workspaceIdentity: input.workspaceIdentity,
     agentsBody: agents.content,
@@ -6536,30 +6841,12 @@ async function collectStableContextGeneration(input) {
     tentRoleVersion: input.assigneeKind === "role" ? tentRoleVersion : void 0,
     tentTaskBody,
     tentTaskVersion,
-    rolePrompt: input.assigneeKind === "role" ? rolePrompt : void 0,
-    profileId: input.profileId,
-    adapterId: input.adapterId,
-    purpose,
-    agentId,
-    assigneeKind: input.assigneeKind,
+    rolePrompt: responsibilityRoleId ? rolePrompt : void 0,
+    routeId,
+    adapterId,
     capabilityFlags: input.capabilityFlags,
-    profileLaunchDigest
+    routeLaunchDigest
   });
-  const skillSetRows = [
-    {
-      name: BUILTIN_TENT_TASK_SKILL,
-      bodyDigest: tentTaskDigest,
-      version: tentTaskVersion
-    }
-  ];
-  if (input.assigneeKind === "role" && tentRoleDigest) {
-    skillSetRows.push({
-      name: BUILTIN_TENT_ROLE_SKILL,
-      bodyDigest: tentRoleDigest,
-      version: tentRoleVersion
-    });
-  }
-  const skillSetDigest = skillSetCompatibilityDigest(skillSetRows);
   return {
     contextGeneration,
     agentsPointerDigest,
@@ -6568,88 +6855,39 @@ async function collectStableContextGeneration(input) {
     tentTaskDigest,
     tentTaskVersion,
     rolePrompt,
-    skillsDigest: skillSetDigest,
-    skillSetDigest,
-    purpose,
-    profileId: input.profileId,
-    adapterId: input.adapterId,
-    profileLaunchDigest,
-    agentId,
-    parentRoleId: input.parentRoleId?.trim() || "",
-    assigneeKind: input.assigneeKind
+    routeLaunchDigest
   };
 }
-function profileLaunchCompatibilityDigestFromConfig(profile) {
-  return profileLaunchCompatibilityDigest({
-    profileId: profile.id,
-    adapterId: profile.adapterId,
-    command: profile.command,
-    args: profile.args,
-    // Profile env: key names only — never values (may hold non-secret config, but
-    // secret-shaped values must never enter the digest).
-    envKeyNames: Object.keys(profile.env ?? {}),
-    acp: profile.acp ? {
-      executable: profile.acp.executable,
-      model: profile.acp.model,
-      envKey: profile.acp.envKey,
-      credentialRef: profile.acp.credentialRef,
-      baseUrlEnvKey: profile.acp.baseUrlEnvKey,
-      baseUrl: profile.acp.baseUrl,
-      permissionPolicy: profile.acp.permissionPolicy,
-      promptTimeoutMs: profile.acp.promptTimeoutMs,
-      permissionTimeoutMs: profile.acp.permissionTimeoutMs
-    } : void 0,
-    fake: profile.fake ? {
-      canResume: profile.fake.canResume,
-      failLaunch: profile.fake.failLaunch,
-      waitForSignal: profile.fake.waitForSignal
-    } : void 0,
-    skills: (profile.skills ?? []).filter((s) => s && s.enabled !== false && s.name?.trim()).map((s) => ({
-      name: s.name,
-      path: s.path
-    })),
-    mcpServers: (profile.mcpServers ?? []).filter((m) => m && m.enabled !== false && m.name?.trim()).map((m) => ({
-      name: m.name,
-      transport: m.transport,
-      command: m.command,
-      args: m.args,
-      url: m.url,
-      // Mapping values are process env *key names* or credentialRef *ids* —
-      // hashed fully (keys + values), never resolved secret plaintext.
-      envKeys: m.envKeys,
-      envCredentialRefs: m.envCredentialRefs,
-      headerEnvKeys: m.headerEnvKeys,
-      headerCredentialRefs: m.headerCredentialRefs
-    }))
-  });
+function routeLaunchDigestFromSnapshot(route) {
+  const digest = route.launchDigest.trim();
+  if (!digest) {
+    throw new Error("Settings route snapshot is missing launchDigest");
+  }
+  const expected = calculateSettingsRouteLaunchDigest(
+    routeConfigFromSnapshot(route),
+    route.effectiveEndpointDigest
+  );
+  if (digest !== expected) {
+    throw new Error(
+      `Settings route snapshot launchDigest mismatch for route ${route.routeId}`
+    );
+  }
+  return digest;
 }
-function buildSessionReuseRequestFacts(input) {
-  return {
-    workspaceId: input.workspaceId,
-    parentRoleId: input.bundle.parentRoleId,
-    agentId: input.bundle.agentId,
-    purpose: input.bundle.purpose,
-    skillsDigest: input.bundle.skillsDigest,
-    profileId: input.bundle.profileId,
-    adapterId: input.bundle.adapterId,
-    contextGeneration: input.contextGeneration,
-    worktree: input.worktree
-  };
-}
-async function assertDurableContextCardRefsResolved(fs22, card) {
+async function assertDurableContextCardRefsResolved(fs21, card) {
   let tent = null;
   let tasks = null;
   let deliveries = null;
   const ensureTent = async () => {
-    if (!tent) tent = await loadTent(fs22);
+    if (!tent) tent = await loadTent(fs21);
     return tent;
   };
   const ensureTasks = async () => {
-    if (!tasks) tasks = await loadTaskEnvelopes(fs22);
+    if (!tasks) tasks = await loadTaskEnvelopes(fs21);
     return tasks;
   };
   const ensureDeliveries = async () => {
-    if (!deliveries) deliveries = await loadDeliveries(fs22);
+    if (!deliveries) deliveries = await loadDeliveries(fs21);
     return deliveries;
   };
   const nodeOk = /* @__PURE__ */ new Map();
@@ -6682,7 +6920,7 @@ async function assertDurableContextCardRefsResolved(fs22, card) {
       }
       if (ref.path?.trim()) {
         try {
-          const loaded = await loadTaskEnvelope(fs22, ref.path.trim());
+          const loaded = await loadTaskEnvelope(fs21, ref.path.trim());
           taskOk.set(ref.id, loaded.id === id);
           continue;
         } catch {
@@ -6720,162 +6958,6 @@ async function assertDurableContextCardRefsResolved(fs22, card) {
     throw err;
   }
 }
-var UNRESOLVED_DELIVERY_STATUSES = /* @__PURE__ */ new Set(["ready", "draft"]);
-function evaluateTaskBlockingDelivery(input) {
-  const taskId = input.task.id?.trim() || "";
-  const taskPath = input.task.path?.trim() || "";
-  const belongsToTask = (d) => {
-    const dt = d.taskId?.trim() || "";
-    if (!dt) return false;
-    if (taskId && dt === taskId) return true;
-    if (taskPath && dt === taskPath) return true;
-    return false;
-  };
-  if (input.task.state === "delivered") {
-    return { blocking: true, reason: "task_state_delivered" };
-  }
-  const activeId = input.task.activeDeliveryId?.trim() || "";
-  if (activeId) {
-    const pointed = input.deliveries.find((d) => d.id === activeId);
-    if (!pointed) {
-      throw new Error(
-        `Task activeDeliveryId ${activeId} does not resolve to a persisted Delivery (missing/foreign); cannot prove noPendingDelivery`
-      );
-    }
-    if (!belongsToTask(pointed)) {
-      throw new Error(
-        `Task activeDeliveryId ${activeId} is foreign (delivery.taskId=${pointed.taskId}, taskId=${taskId || taskPath || "?"}); cannot prove noPendingDelivery`
-      );
-    }
-    if (UNRESOLVED_DELIVERY_STATUSES.has(pointed.status)) {
-      return { blocking: true, reason: "active_delivery_unresolved" };
-    }
-  }
-  if (taskId || taskPath) {
-    const unresolved = input.deliveries.some(
-      (d) => belongsToTask(d) && UNRESOLVED_DELIVERY_STATUSES.has(d.status)
-    );
-    if (unresolved) {
-      return { blocking: true, reason: "task_has_unresolved_delivery" };
-    }
-  }
-  return { blocking: false };
-}
-function findTasksBoundToSession(allTasks, candidate) {
-  const sessionId = candidate.id?.trim() || "";
-  const last = candidate.lastTaskId?.trim() || "";
-  const out = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const t of allTasks) {
-    const key2 = t.path || t.id || "";
-    if (!key2 || seen.has(key2)) continue;
-    const boundBySession = !!sessionId && typeof t.sessionId === "string" && t.sessionId.trim() === sessionId;
-    const boundByLast = !!last && (t.id === last || t.path === last || t.path.endsWith(last));
-    if (boundBySession || boundByLast) {
-      seen.add(key2);
-      out.push(t);
-    }
-  }
-  return out;
-}
-function isSameTaskRef(task, requestTaskPath, requestTaskId) {
-  if (task.path === requestTaskPath) return true;
-  if (requestTaskId && task.id === requestTaskId) return true;
-  return false;
-}
-function isTaskLifecycleSafelySettledForReuse(task) {
-  return task.state === "accepted";
-}
-async function evaluateCandidateSessionLeaseGates(input) {
-  const reasons = [];
-  const boundTasks = findTasksBoundToSession(input.allTasks, input.candidate);
-  const others = boundTasks.filter(
-    (t) => !isSameTaskRef(t, input.requestTaskPath, input.requestTaskId)
-  );
-  const sessionStopped = input.candidate.state === "stopped";
-  if (!sessionStopped) reasons.push("session_not_stopped");
-  const otherActive = others.filter((t) => envelopeIsActiveOccupation(t));
-  if (otherActive.length > 0) {
-    reasons.push("other_active_task_owns_session");
-  }
-  const activeWithSession = input.allTasks.filter(
-    (t) => envelopeIsActiveOccupation(t) && typeof t.sessionId === "string" && t.sessionId.trim() === input.candidate.id
-  );
-  const dualBind = activeWithSession.some(
-    (t) => !isSameTaskRef(t, input.requestTaskPath, input.requestTaskId)
-  );
-  if (dualBind) reasons.push("dual_session_binding");
-  let othersSettled = true;
-  for (const prior of others) {
-    if (!isTaskLifecycleSafelySettledForReuse(prior)) {
-      othersSettled = false;
-      if (!reasons.includes("prior_task_not_settled")) {
-        reasons.push("prior_task_not_settled");
-      }
-    }
-  }
-  const exclusiveLease = sessionStopped && otherActive.length === 0 && !dualBind && othersSettled;
-  const previousTurnSettled = input.turnBusy !== true;
-  if (!previousTurnSettled) reasons.push("previous_turn_not_settled");
-  let noPendingInput = true;
-  let noPendingDelivery = true;
-  for (const prior of others) {
-    const pending = await input.listPendingInputs(input.workspaceId, prior.path);
-    const ask = await input.hasPendingUserAsk(input.workspaceId, prior.path);
-    if (pending.length > 0 || ask) {
-      noPendingInput = false;
-      reasons.push("prior_pending_input");
-    }
-    const blockingDelivery = input.hasBlockingDelivery != null ? await input.hasBlockingDelivery(prior) : prior.state === "delivered";
-    if (blockingDelivery) {
-      noPendingDelivery = false;
-      reasons.push("prior_pending_delivery");
-    }
-  }
-  const reqPending = await input.listPendingInputs(
-    input.workspaceId,
-    input.requestTaskPath
-  );
-  const reqAsk = await input.hasPendingUserAsk(
-    input.workspaceId,
-    input.requestTaskPath
-  );
-  if (reqPending.length > 0 || reqAsk) {
-    noPendingInput = false;
-    reasons.push("request_pending_input");
-  }
-  const requestTask = input.allTasks.find(
-    (t) => isSameTaskRef(t, input.requestTaskPath, input.requestTaskId)
-  );
-  if (requestTask) {
-    const reqDel = input.hasBlockingDelivery != null ? await input.hasBlockingDelivery(requestTask) : requestTask.state === "delivered";
-    if (reqDel) {
-      noPendingDelivery = false;
-      reasons.push("request_pending_delivery");
-    }
-  }
-  return {
-    previousTurnSettled,
-    exclusiveLease,
-    noPendingInput,
-    noPendingDelivery,
-    reasons,
-    boundTasks
-  };
-}
-function evaluateManagedSessionReuse(input) {
-  return evaluateSessionReuseCompatibility({
-    request: input.request,
-    candidate: sessionRecordToReuseCompatibilityFacts(input.candidate),
-    runtime: input.runtime
-  });
-}
-function taskPurposeFromEnvelope(task) {
-  return managedSessionPurpose({ purpose: task.purpose });
-}
-function readTaskPurpose(task) {
-  return taskPurposeFromEnvelope(task);
-}
 function appendCallerBootstrapSection(officialManagedBootstrap, callerAppend) {
   const base = officialManagedBootstrap.trimEnd();
   const append = typeof callerAppend === "string" ? callerAppend.trim() : "";
@@ -6889,7 +6971,7 @@ ${append}
 }
 
 // src/markdown/attachments.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import * as nodePath from "node:path";
 var MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 function sanitizeAttachmentFileName(fileName) {
@@ -6944,13 +7026,13 @@ function assertAttachmentSize(byteLength) {
   }
 }
 function contentId(bytes) {
-  return createHash2("sha256").update(Buffer.from(bytes)).digest("hex").slice(0, 12);
+  return createHash3("sha256").update(Buffer.from(bytes)).digest("hex").slice(0, 12);
 }
-function attachmentRelativePath(conceptId, safeName, bytes) {
+function attachmentRelativePath(nodeId, safeName, bytes) {
   const id = contentId(bytes);
   const ext = nodePath.posix.extname(safeName);
   const base = nodePath.posix.basename(safeName, ext) || "file";
-  return `${ATTACHMENTS_DIR}/${conceptId}/${base}-${id}${ext}`;
+  return `${ATTACHMENTS_DIR}/${nodeId}/${base}-${id}${ext}`;
 }
 function bytesEqual(a, b) {
   if (a.byteLength !== b.byteLength) return false;
@@ -6959,23 +7041,23 @@ function bytesEqual(a, b) {
   }
   return true;
 }
-async function storeAttachmentBytes(fs22, conceptId, fileName, bytes, sourceNotePath) {
-  if (!conceptId.trim()) throw new Error("Concept id is required");
+async function storeAttachmentBytes(fs21, nodeId, fileName, bytes, sourceNotePath) {
+  if (!nodeId.trim()) throw new Error("Node id is required");
   const safe = sanitizeAttachmentFileName(fileName);
   assertAttachmentSize(bytes.byteLength);
-  const rel = attachmentRelativePath(conceptId, safe, bytes);
+  const rel = attachmentRelativePath(nodeId, safe, bytes);
   const normalized = rel.replace(/\\/g, "/");
-  if (!normalized.startsWith(`${ATTACHMENTS_DIR}/${conceptId}/`) || normalized.split("/").some((p) => p === ".." || p === "")) {
+  if (!normalized.startsWith(`${ATTACHMENTS_DIR}/${nodeId}/`) || normalized.split("/").some((p) => p === ".." || p === "")) {
     throw new Error(`Attachment path rejected: ${rel}`);
   }
-  if (await fs22.exists(rel)) {
-    const existing = await fs22.readBinary(rel);
+  if (await fs21.exists(rel)) {
+    const existing = await fs21.readBinary(rel);
     if (!bytesEqual(existing, bytes)) {
       throw new Error(`Attachment content-address collision at ${rel}`);
     }
     return attachmentResult(rel, safe, sourceNotePath);
   }
-  await fs22.writeBinary(rel, bytes);
+  await fs21.writeBinary(rel, bytes);
   return attachmentResult(rel, safe, sourceNotePath);
 }
 function markdownAttachmentDestination(destination) {
@@ -9297,7 +9379,7 @@ function regexCheck(regex) {
 }
 
 // ../../Tent/node_modules/micromark-factory-space/index.js
-function factorySpace(effects, ok, type, max) {
+function factorySpace(effects, ok2, type, max) {
   const limit = max ? max - 1 : Number.POSITIVE_INFINITY;
   let size = 0;
   return start;
@@ -9306,7 +9388,7 @@ function factorySpace(effects, ok, type, max) {
       effects.enter(type);
       return prefix(code);
     }
-    return ok(code);
+    return ok2(code);
   }
   function prefix(code) {
     if (markdownSpace(code) && size++ < limit) {
@@ -9314,7 +9396,7 @@ function factorySpace(effects, ok, type, max) {
       return prefix;
     }
     effects.exit(type);
-    return ok(code);
+    return ok2(code);
   }
 }
 
@@ -9546,8 +9628,8 @@ function initializeDocument(effects) {
     self.containerState._closeFlow = void 0;
   }
 }
-function tokenizeContainer(effects, ok, nok) {
-  return factorySpace(effects, effects.attempt(this.parser.constructs.document, ok, nok), "linePrefix", this.parser.constructs.disable.null.includes("codeIndented") ? void 0 : 4);
+function tokenizeContainer(effects, ok2, nok) {
+  return factorySpace(effects, effects.attempt(this.parser.constructs.document, ok2, nok), "linePrefix", this.parser.constructs.disable.null.includes("codeIndented") ? void 0 : 4);
 }
 
 // ../../Tent/node_modules/micromark-util-classify-character/index.js
@@ -9674,7 +9756,7 @@ function resolveAllAttention(events, context) {
   }
   return events;
 }
-function tokenizeAttention(effects, ok) {
+function tokenizeAttention(effects, ok2) {
   const attentionMarkers2 = this.parser.constructs.attentionMarkers.null;
   const previous2 = this.previous;
   const before = classifyCharacter(previous2);
@@ -9696,7 +9778,7 @@ function tokenizeAttention(effects, ok) {
     const close = !before || before === 2 && after || attentionMarkers2.includes(previous2);
     token._open = Boolean(marker === 42 ? open2 : open2 && (before || !close));
     token._close = Boolean(marker === 42 ? close : close && (after || !open2));
-    return ok(code);
+    return ok2(code);
   }
 }
 function movePoint(point3, offset) {
@@ -9710,7 +9792,7 @@ var autolink = {
   name: "autolink",
   tokenize: tokenizeAutolink
 };
-function tokenizeAutolink(effects, ok, nok) {
+function tokenizeAutolink(effects, ok2, nok) {
   let size = 0;
   return start;
   function start(code) {
@@ -9758,7 +9840,7 @@ function tokenizeAutolink(effects, ok, nok) {
       effects.consume(code);
       effects.exit("autolinkMarker");
       effects.exit("autolink");
-      return ok;
+      return ok2;
     }
     if (code === null || code === 32 || code === 60 || asciiControl(code)) {
       return nok(code);
@@ -9792,7 +9874,7 @@ function tokenizeAutolink(effects, ok, nok) {
       effects.consume(code);
       effects.exit("autolinkMarker");
       effects.exit("autolink");
-      return ok;
+      return ok2;
     }
     return emailValue(code);
   }
@@ -9811,13 +9893,13 @@ var blankLine = {
   partial: true,
   tokenize: tokenizeBlankLine
 };
-function tokenizeBlankLine(effects, ok, nok) {
+function tokenizeBlankLine(effects, ok2, nok) {
   return start;
   function start(code) {
     return markdownSpace(code) ? factorySpace(effects, after, "linePrefix")(code) : after(code);
   }
   function after(code) {
-    return code === null || markdownLineEnding(code) ? ok(code) : nok(code);
+    return code === null || markdownLineEnding(code) ? ok2(code) : nok(code);
   }
 }
 
@@ -9830,7 +9912,7 @@ var blockQuote = {
   name: "blockQuote",
   tokenize: tokenizeBlockQuoteStart
 };
-function tokenizeBlockQuoteStart(effects, ok, nok) {
+function tokenizeBlockQuoteStart(effects, ok2, nok) {
   const self = this;
   return start;
   function start(code) {
@@ -9856,13 +9938,13 @@ function tokenizeBlockQuoteStart(effects, ok, nok) {
       effects.consume(code);
       effects.exit("blockQuotePrefixWhitespace");
       effects.exit("blockQuotePrefix");
-      return ok;
+      return ok2;
     }
     effects.exit("blockQuotePrefix");
-    return ok(code);
+    return ok2(code);
   }
 }
-function tokenizeBlockQuoteContinuation(effects, ok, nok) {
+function tokenizeBlockQuoteContinuation(effects, ok2, nok) {
   const self = this;
   return contStart;
   function contStart(code) {
@@ -9872,7 +9954,7 @@ function tokenizeBlockQuoteContinuation(effects, ok, nok) {
     return contBefore(code);
   }
   function contBefore(code) {
-    return effects.attempt(blockQuote, ok, nok)(code);
+    return effects.attempt(blockQuote, ok2, nok)(code);
   }
 }
 function exit(effects) {
@@ -9884,7 +9966,7 @@ var characterEscape = {
   name: "characterEscape",
   tokenize: tokenizeCharacterEscape
 };
-function tokenizeCharacterEscape(effects, ok, nok) {
+function tokenizeCharacterEscape(effects, ok2, nok) {
   return start;
   function start(code) {
     effects.enter("characterEscape");
@@ -9899,7 +9981,7 @@ function tokenizeCharacterEscape(effects, ok, nok) {
       effects.consume(code);
       effects.exit("characterEscapeValue");
       effects.exit("characterEscape");
-      return ok;
+      return ok2;
     }
     return nok(code);
   }
@@ -9910,7 +9992,7 @@ var characterReference = {
   name: "characterReference",
   tokenize: tokenizeCharacterReference
 };
-function tokenizeCharacterReference(effects, ok, nok) {
+function tokenizeCharacterReference(effects, ok2, nok) {
   const self = this;
   let size = 0;
   let max;
@@ -9960,7 +10042,7 @@ function tokenizeCharacterReference(effects, ok, nok) {
       effects.consume(code);
       effects.exit("characterReferenceMarker");
       effects.exit("characterReference");
-      return ok;
+      return ok2;
     }
     if (test(code) && size++ < max) {
       effects.consume(code);
@@ -9980,7 +10062,7 @@ var codeFenced = {
   name: "codeFenced",
   tokenize: tokenizeCodeFenced
 };
-function tokenizeCodeFenced(effects, ok, nok) {
+function tokenizeCodeFenced(effects, ok2, nok) {
   const self = this;
   const closeStart = {
     partial: true,
@@ -10017,7 +10099,7 @@ function tokenizeCodeFenced(effects, ok, nok) {
   function infoBefore(code) {
     if (code === null || markdownLineEnding(code)) {
       effects.exit("codeFencedFence");
-      return self.interrupt ? ok(code) : effects.check(nonLazyContinuation, atNonLazyBreak, after)(code);
+      return self.interrupt ? ok2(code) : effects.check(nonLazyContinuation, atNonLazyBreak, after)(code);
     }
     effects.enter("codeFencedFenceInfo");
     effects.enter("chunkString", {
@@ -10093,9 +10175,9 @@ function tokenizeCodeFenced(effects, ok, nok) {
   }
   function after(code) {
     effects.exit("codeFenced");
-    return ok(code);
+    return ok2(code);
   }
-  function tokenizeCloseStart(effects2, ok2, nok2) {
+  function tokenizeCloseStart(effects2, ok3, nok2) {
     let size = 0;
     return startBefore;
     function startBefore(code) {
@@ -10130,13 +10212,13 @@ function tokenizeCodeFenced(effects, ok, nok) {
     function sequenceCloseAfter(code) {
       if (code === null || markdownLineEnding(code)) {
         effects2.exit("codeFencedFence");
-        return ok2(code);
+        return ok3(code);
       }
       return nok2(code);
     }
   }
 }
-function tokenizeNonLazyContinuation(effects, ok, nok) {
+function tokenizeNonLazyContinuation(effects, ok2, nok) {
   const self = this;
   return start;
   function start(code) {
@@ -10149,7 +10231,7 @@ function tokenizeNonLazyContinuation(effects, ok, nok) {
     return lineStart;
   }
   function lineStart(code) {
-    return self.parser.lazy[self.now().line] ? nok(code) : ok(code);
+    return self.parser.lazy[self.now().line] ? nok(code) : ok2(code);
   }
 }
 
@@ -10162,7 +10244,7 @@ var furtherStart = {
   partial: true,
   tokenize: tokenizeFurtherStart
 };
-function tokenizeCodeIndented(effects, ok, nok) {
+function tokenizeCodeIndented(effects, ok2, nok) {
   const self = this;
   return start;
   function start(code) {
@@ -10193,10 +10275,10 @@ function tokenizeCodeIndented(effects, ok, nok) {
   }
   function after(code) {
     effects.exit("codeIndented");
-    return ok(code);
+    return ok2(code);
   }
 }
-function tokenizeFurtherStart(effects, ok, nok) {
+function tokenizeFurtherStart(effects, ok2, nok) {
   const self = this;
   return furtherStart2;
   function furtherStart2(code) {
@@ -10213,7 +10295,7 @@ function tokenizeFurtherStart(effects, ok, nok) {
   }
   function afterPrefix(code) {
     const tail = self.events[self.events.length - 1];
-    return tail && tail[1].type === "linePrefix" && tail[2].sliceSerialize(tail[1], true).length >= 4 ? ok(code) : markdownLineEnding(code) ? furtherStart2(code) : nok(code);
+    return tail && tail[1].type === "linePrefix" && tail[2].sliceSerialize(tail[1], true).length >= 4 ? ok2(code) : markdownLineEnding(code) ? furtherStart2(code) : nok(code);
   }
 }
 
@@ -10264,7 +10346,7 @@ function resolveCodeText(events) {
 function previous(code) {
   return code !== 96 || this.events[this.events.length - 1][1].type === "characterEscape";
 }
-function tokenizeCodeText(effects, ok, nok) {
+function tokenizeCodeText(effects, ok2, nok) {
   const self = this;
   let sizeOpen = 0;
   let size;
@@ -10325,7 +10407,7 @@ function tokenizeCodeText(effects, ok, nok) {
     if (size === sizeOpen) {
       effects.exit("codeTextSequence");
       effects.exit("codeText");
-      return ok(code);
+      return ok2(code);
     }
     token.type = "codeTextData";
     return data(code);
@@ -10691,7 +10773,7 @@ function resolveContent(events) {
   subtokenize(events);
   return events;
 }
-function tokenizeContent(effects, ok) {
+function tokenizeContent(effects, ok2) {
   let previous2;
   return chunkStart;
   function chunkStart(code) {
@@ -10714,7 +10796,7 @@ function tokenizeContent(effects, ok) {
   function contentEnd(code) {
     effects.exit("chunkContent");
     effects.exit("content");
-    return ok(code);
+    return ok2(code);
   }
   function contentContinue(code) {
     effects.consume(code);
@@ -10727,7 +10809,7 @@ function tokenizeContent(effects, ok) {
     return chunkInside;
   }
 }
-function tokenizeContinuation(effects, ok, nok) {
+function tokenizeContinuation(effects, ok2, nok) {
   const self = this;
   return startLookahead;
   function startLookahead(code) {
@@ -10743,14 +10825,14 @@ function tokenizeContinuation(effects, ok, nok) {
     }
     const tail = self.events[self.events.length - 1];
     if (!self.parser.constructs.disable.null.includes("codeIndented") && tail && tail[1].type === "linePrefix" && tail[2].sliceSerialize(tail[1], true).length >= 4) {
-      return ok(code);
+      return ok2(code);
     }
-    return effects.interrupt(self.parser.constructs.flow, nok, ok)(code);
+    return effects.interrupt(self.parser.constructs.flow, nok, ok2)(code);
   }
 }
 
 // ../../Tent/node_modules/micromark-factory-destination/index.js
-function factoryDestination(effects, ok, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
+function factoryDestination(effects, ok2, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
   return start;
@@ -10781,7 +10863,7 @@ function factoryDestination(effects, ok, nok, type, literalType, literalMarkerTy
       effects.exit(literalMarkerType);
       effects.exit(literalType);
       effects.exit(type);
-      return ok;
+      return ok2;
     }
     effects.enter(stringType);
     effects.enter("chunkString", {
@@ -10814,7 +10896,7 @@ function factoryDestination(effects, ok, nok, type, literalType, literalMarkerTy
       effects.exit(stringType);
       effects.exit(rawType);
       effects.exit(type);
-      return ok(code);
+      return ok2(code);
     }
     if (balance < limit && code === 40) {
       effects.consume(code);
@@ -10842,7 +10924,7 @@ function factoryDestination(effects, ok, nok, type, literalType, literalMarkerTy
 }
 
 // ../../Tent/node_modules/micromark-factory-label/index.js
-function factoryLabel(effects, ok, nok, type, markerType, stringType) {
+function factoryLabel(effects, ok2, nok, type, markerType, stringType) {
   const self = this;
   let size = 0;
   let seen;
@@ -10870,7 +10952,7 @@ function factoryLabel(effects, ok, nok, type, markerType, stringType) {
       effects.consume(code);
       effects.exit(markerType);
       effects.exit(type);
-      return ok;
+      return ok2;
     }
     if (markdownLineEnding(code)) {
       effects.enter("lineEnding");
@@ -10903,7 +10985,7 @@ function factoryLabel(effects, ok, nok, type, markerType, stringType) {
 }
 
 // ../../Tent/node_modules/micromark-factory-title/index.js
-function factoryTitle(effects, ok, nok, type, markerType, stringType) {
+function factoryTitle(effects, ok2, nok, type, markerType, stringType) {
   let marker;
   return start;
   function start(code) {
@@ -10923,7 +11005,7 @@ function factoryTitle(effects, ok, nok, type, markerType, stringType) {
       effects.consume(code);
       effects.exit(markerType);
       effects.exit(type);
-      return ok;
+      return ok2;
     }
     effects.enter(stringType);
     return atBreak(code);
@@ -10965,7 +11047,7 @@ function factoryTitle(effects, ok, nok, type, markerType, stringType) {
 }
 
 // ../../Tent/node_modules/micromark-factory-whitespace/index.js
-function factoryWhitespace(effects, ok) {
+function factoryWhitespace(effects, ok2) {
   let seen;
   return start;
   function start(code) {
@@ -10979,7 +11061,7 @@ function factoryWhitespace(effects, ok) {
     if (markdownSpace(code)) {
       return factorySpace(effects, start, seen ? "linePrefix" : "lineSuffix")(code);
     }
-    return ok(code);
+    return ok2(code);
   }
 }
 
@@ -10992,7 +11074,7 @@ var titleBefore = {
   partial: true,
   tokenize: tokenizeTitleBefore
 };
-function tokenizeDefinition(effects, ok, nok) {
+function tokenizeDefinition(effects, ok2, nok) {
   const self = this;
   let identifier;
   return start;
@@ -11048,12 +11130,12 @@ function tokenizeDefinition(effects, ok, nok) {
     if (code === null || markdownLineEnding(code)) {
       effects.exit("definition");
       self.parser.defined.push(identifier);
-      return ok(code);
+      return ok2(code);
     }
     return nok(code);
   }
 }
-function tokenizeTitleBefore(effects, ok, nok) {
+function tokenizeTitleBefore(effects, ok2, nok) {
   return titleBefore2;
   function titleBefore2(code) {
     return markdownLineEndingOrSpace(code) ? factoryWhitespace(effects, beforeMarker)(code) : nok(code);
@@ -11065,7 +11147,7 @@ function tokenizeTitleBefore(effects, ok, nok) {
     return markdownSpace(code) ? factorySpace(effects, titleAfterOptionalWhitespace, "whitespace")(code) : titleAfterOptionalWhitespace(code);
   }
   function titleAfterOptionalWhitespace(code) {
-    return code === null || markdownLineEnding(code) ? ok(code) : nok(code);
+    return code === null || markdownLineEnding(code) ? ok2(code) : nok(code);
   }
 }
 
@@ -11074,7 +11156,7 @@ var hardBreakEscape = {
   name: "hardBreakEscape",
   tokenize: tokenizeHardBreakEscape
 };
-function tokenizeHardBreakEscape(effects, ok, nok) {
+function tokenizeHardBreakEscape(effects, ok2, nok) {
   return start;
   function start(code) {
     effects.enter("hardBreakEscape");
@@ -11084,7 +11166,7 @@ function tokenizeHardBreakEscape(effects, ok, nok) {
   function after(code) {
     if (markdownLineEnding(code)) {
       effects.exit("hardBreakEscape");
-      return ok(code);
+      return ok2(code);
     }
     return nok(code);
   }
@@ -11126,7 +11208,7 @@ function resolveHeadingAtx(events, context) {
   }
   return events;
 }
-function tokenizeHeadingAtx(effects, ok, nok) {
+function tokenizeHeadingAtx(effects, ok2, nok) {
   let size = 0;
   return start;
   function start(code) {
@@ -11155,7 +11237,7 @@ function tokenizeHeadingAtx(effects, ok, nok) {
     }
     if (code === null || markdownLineEnding(code)) {
       effects.exit("atxHeading");
-      return ok(code);
+      return ok2(code);
     }
     if (markdownSpace(code)) {
       return factorySpace(effects, atBreak, "whitespace")(code);
@@ -11277,7 +11359,7 @@ function resolveToHtmlFlow(events) {
   }
   return events;
 }
-function tokenizeHtmlFlow(effects, ok, nok) {
+function tokenizeHtmlFlow(effects, ok2, nok) {
   const self = this;
   let marker;
   let closingTag;
@@ -11307,7 +11389,7 @@ function tokenizeHtmlFlow(effects, ok, nok) {
     if (code === 63) {
       effects.consume(code);
       marker = 3;
-      return self.interrupt ? ok : continuationDeclarationInside;
+      return self.interrupt ? ok2 : continuationDeclarationInside;
     }
     if (asciiAlpha(code)) {
       effects.consume(code);
@@ -11331,14 +11413,14 @@ function tokenizeHtmlFlow(effects, ok, nok) {
     if (asciiAlpha(code)) {
       effects.consume(code);
       marker = 4;
-      return self.interrupt ? ok : continuationDeclarationInside;
+      return self.interrupt ? ok2 : continuationDeclarationInside;
     }
     return nok(code);
   }
   function commentOpenInside(code) {
     if (code === 45) {
       effects.consume(code);
-      return self.interrupt ? ok : continuationDeclarationInside;
+      return self.interrupt ? ok2 : continuationDeclarationInside;
     }
     return nok(code);
   }
@@ -11347,7 +11429,7 @@ function tokenizeHtmlFlow(effects, ok, nok) {
     if (code === value.charCodeAt(index2++)) {
       effects.consume(code);
       if (index2 === value.length) {
-        return self.interrupt ? ok : continuation;
+        return self.interrupt ? ok2 : continuation;
       }
       return cdataOpenInside;
     }
@@ -11367,7 +11449,7 @@ function tokenizeHtmlFlow(effects, ok, nok) {
       const name = buffer.toLowerCase();
       if (!slash && !closingTag && htmlRawNames.includes(name)) {
         marker = 1;
-        return self.interrupt ? ok(code) : continuation(code);
+        return self.interrupt ? ok2(code) : continuation(code);
       }
       if (htmlBlockNames.includes(buffer.toLowerCase())) {
         marker = 6;
@@ -11375,7 +11457,7 @@ function tokenizeHtmlFlow(effects, ok, nok) {
           effects.consume(code);
           return basicSelfClosing;
         }
-        return self.interrupt ? ok(code) : continuation(code);
+        return self.interrupt ? ok2(code) : continuation(code);
       }
       marker = 7;
       return self.interrupt && !self.parser.lazy[self.now().line] ? nok(code) : closingTag ? completeClosingTagAfter(code) : completeAttributeNameBefore(code);
@@ -11390,7 +11472,7 @@ function tokenizeHtmlFlow(effects, ok, nok) {
   function basicSelfClosing(code) {
     if (code === 62) {
       effects.consume(code);
-      return self.interrupt ? ok : continuation;
+      return self.interrupt ? ok2 : continuation;
     }
     return nok(code);
   }
@@ -11598,10 +11680,10 @@ function tokenizeHtmlFlow(effects, ok, nok) {
   }
   function continuationAfter(code) {
     effects.exit("htmlFlow");
-    return ok(code);
+    return ok2(code);
   }
 }
-function tokenizeNonLazyContinuationStart(effects, ok, nok) {
+function tokenizeNonLazyContinuationStart(effects, ok2, nok) {
   const self = this;
   return start;
   function start(code) {
@@ -11614,16 +11696,16 @@ function tokenizeNonLazyContinuationStart(effects, ok, nok) {
     return nok(code);
   }
   function after(code) {
-    return self.parser.lazy[self.now().line] ? nok(code) : ok(code);
+    return self.parser.lazy[self.now().line] ? nok(code) : ok2(code);
   }
 }
-function tokenizeBlankLineBefore(effects, ok, nok) {
+function tokenizeBlankLineBefore(effects, ok2, nok) {
   return start;
   function start(code) {
     effects.enter("lineEnding");
     effects.consume(code);
     effects.exit("lineEnding");
-    return effects.attempt(blankLine, ok, nok);
+    return effects.attempt(blankLine, ok2, nok);
   }
 }
 
@@ -11632,7 +11714,7 @@ var htmlText = {
   name: "htmlText",
   tokenize: tokenizeHtmlText
 };
-function tokenizeHtmlText(effects, ok, nok) {
+function tokenizeHtmlText(effects, ok2, nok) {
   const self = this;
   let marker;
   let index2;
@@ -11913,7 +11995,7 @@ function tokenizeHtmlText(effects, ok, nok) {
       effects.consume(code);
       effects.exit("htmlTextData");
       effects.exit("htmlText");
-      return ok;
+      return ok2;
     }
     return nok(code);
   }
@@ -12031,7 +12113,7 @@ function resolveToLabelEnd(events, context) {
   splice(events, open2, events.length, media);
   return events;
 }
-function tokenizeLabelEnd(effects, ok, nok) {
+function tokenizeLabelEnd(effects, ok2, nok) {
   const self = this;
   let index2 = self.events.length;
   let labelStart;
@@ -12074,14 +12156,14 @@ function tokenizeLabelEnd(effects, ok, nok) {
     return effects.attempt(referenceCollapsedConstruct, labelEndOk, labelEndNok)(code);
   }
   function labelEndOk(code) {
-    return ok(code);
+    return ok2(code);
   }
   function labelEndNok(code) {
     labelStart._balanced = true;
     return nok(code);
   }
 }
-function tokenizeResource(effects, ok, nok) {
+function tokenizeResource(effects, ok2, nok) {
   return resourceStart;
   function resourceStart(code) {
     effects.enter("resource");
@@ -12120,25 +12202,25 @@ function tokenizeResource(effects, ok, nok) {
       effects.consume(code);
       effects.exit("resourceMarker");
       effects.exit("resource");
-      return ok;
+      return ok2;
     }
     return nok(code);
   }
 }
-function tokenizeReferenceFull(effects, ok, nok) {
+function tokenizeReferenceFull(effects, ok2, nok) {
   const self = this;
   return referenceFull;
   function referenceFull(code) {
     return factoryLabel.call(self, effects, referenceFullAfter, referenceFullMissing, "reference", "referenceMarker", "referenceString")(code);
   }
   function referenceFullAfter(code) {
-    return self.parser.defined.includes(normalizeIdentifier(self.sliceSerialize(self.events[self.events.length - 1][1]).slice(1, -1))) ? ok(code) : nok(code);
+    return self.parser.defined.includes(normalizeIdentifier(self.sliceSerialize(self.events[self.events.length - 1][1]).slice(1, -1))) ? ok2(code) : nok(code);
   }
   function referenceFullMissing(code) {
     return nok(code);
   }
 }
-function tokenizeReferenceCollapsed(effects, ok, nok) {
+function tokenizeReferenceCollapsed(effects, ok2, nok) {
   return referenceCollapsedStart;
   function referenceCollapsedStart(code) {
     effects.enter("reference");
@@ -12153,7 +12235,7 @@ function tokenizeReferenceCollapsed(effects, ok, nok) {
       effects.consume(code);
       effects.exit("referenceMarker");
       effects.exit("reference");
-      return ok;
+      return ok2;
     }
     return nok(code);
   }
@@ -12165,7 +12247,7 @@ var labelStartImage = {
   resolveAll: labelEnd.resolveAll,
   tokenize: tokenizeLabelStartImage
 };
-function tokenizeLabelStartImage(effects, ok, nok) {
+function tokenizeLabelStartImage(effects, ok2, nok) {
   const self = this;
   return start;
   function start(code) {
@@ -12186,7 +12268,7 @@ function tokenizeLabelStartImage(effects, ok, nok) {
     return nok(code);
   }
   function after(code) {
-    return code === 94 && "_hiddenFootnoteSupport" in self.parser.constructs ? nok(code) : ok(code);
+    return code === 94 && "_hiddenFootnoteSupport" in self.parser.constructs ? nok(code) : ok2(code);
   }
 }
 
@@ -12196,7 +12278,7 @@ var labelStartLink = {
   resolveAll: labelEnd.resolveAll,
   tokenize: tokenizeLabelStartLink
 };
-function tokenizeLabelStartLink(effects, ok, nok) {
+function tokenizeLabelStartLink(effects, ok2, nok) {
   const self = this;
   return start;
   function start(code) {
@@ -12208,7 +12290,7 @@ function tokenizeLabelStartLink(effects, ok, nok) {
     return after;
   }
   function after(code) {
-    return code === 94 && "_hiddenFootnoteSupport" in self.parser.constructs ? nok(code) : ok(code);
+    return code === 94 && "_hiddenFootnoteSupport" in self.parser.constructs ? nok(code) : ok2(code);
   }
 }
 
@@ -12217,13 +12299,13 @@ var lineEnding = {
   name: "lineEnding",
   tokenize: tokenizeLineEnding
 };
-function tokenizeLineEnding(effects, ok) {
+function tokenizeLineEnding(effects, ok2) {
   return start;
   function start(code) {
     effects.enter("lineEnding");
     effects.consume(code);
     effects.exit("lineEnding");
-    return factorySpace(effects, ok, "linePrefix");
+    return factorySpace(effects, ok2, "linePrefix");
   }
 }
 
@@ -12232,7 +12314,7 @@ var thematicBreak = {
   name: "thematicBreak",
   tokenize: tokenizeThematicBreak
 };
-function tokenizeThematicBreak(effects, ok, nok) {
+function tokenizeThematicBreak(effects, ok2, nok) {
   let size = 0;
   let marker;
   return start;
@@ -12251,7 +12333,7 @@ function tokenizeThematicBreak(effects, ok, nok) {
     }
     if (size >= 3 && (code === null || markdownLineEnding(code))) {
       effects.exit("thematicBreak");
-      return ok(code);
+      return ok2(code);
     }
     return nok(code);
   }
@@ -12283,7 +12365,7 @@ var indentConstruct = {
   partial: true,
   tokenize: tokenizeIndent
 };
-function tokenizeListStart(effects, ok, nok) {
+function tokenizeListStart(effects, ok2, nok) {
   const self = this;
   const tail = self.events[self.events.length - 1];
   let initialSize = tail && tail[1].type === "linePrefix" ? tail[2].sliceSerialize(tail[1], true).length : 0;
@@ -12349,16 +12431,16 @@ function tokenizeListStart(effects, ok, nok) {
   }
   function endOfPrefix(code) {
     self.containerState.size = initialSize + self.sliceSerialize(effects.exit("listItemPrefix"), true).length;
-    return ok(code);
+    return ok2(code);
   }
 }
-function tokenizeListContinuation(effects, ok, nok) {
+function tokenizeListContinuation(effects, ok2, nok) {
   const self = this;
   self.containerState._closeFlow = void 0;
   return effects.check(blankLine, onBlank, notBlank);
   function onBlank(code) {
     self.containerState.furtherBlankLines = self.containerState.furtherBlankLines || self.containerState.initialBlankLine;
-    return factorySpace(effects, ok, "listItemIndent", self.containerState.size + 1)(code);
+    return factorySpace(effects, ok2, "listItemIndent", self.containerState.size + 1)(code);
   }
   function notBlank(code) {
     if (self.containerState.furtherBlankLines || !markdownSpace(code)) {
@@ -12368,31 +12450,31 @@ function tokenizeListContinuation(effects, ok, nok) {
     }
     self.containerState.furtherBlankLines = void 0;
     self.containerState.initialBlankLine = void 0;
-    return effects.attempt(indentConstruct, ok, notInCurrentItem)(code);
+    return effects.attempt(indentConstruct, ok2, notInCurrentItem)(code);
   }
   function notInCurrentItem(code) {
     self.containerState._closeFlow = true;
     self.interrupt = void 0;
-    return factorySpace(effects, effects.attempt(list, ok, nok), "linePrefix", self.parser.constructs.disable.null.includes("codeIndented") ? void 0 : 4)(code);
+    return factorySpace(effects, effects.attempt(list, ok2, nok), "linePrefix", self.parser.constructs.disable.null.includes("codeIndented") ? void 0 : 4)(code);
   }
 }
-function tokenizeIndent(effects, ok, nok) {
+function tokenizeIndent(effects, ok2, nok) {
   const self = this;
   return factorySpace(effects, afterPrefix, "listItemIndent", self.containerState.size + 1);
   function afterPrefix(code) {
     const tail = self.events[self.events.length - 1];
-    return tail && tail[1].type === "listItemIndent" && tail[2].sliceSerialize(tail[1], true).length === self.containerState.size ? ok(code) : nok(code);
+    return tail && tail[1].type === "listItemIndent" && tail[2].sliceSerialize(tail[1], true).length === self.containerState.size ? ok2(code) : nok(code);
   }
 }
 function tokenizeListEnd(effects) {
   effects.exit(this.containerState.type);
 }
-function tokenizeListItemPrefixWhitespace(effects, ok, nok) {
+function tokenizeListItemPrefixWhitespace(effects, ok2, nok) {
   const self = this;
   return factorySpace(effects, afterPrefix, "listItemPrefixWhitespace", self.parser.constructs.disable.null.includes("codeIndented") ? void 0 : 4 + 1);
   function afterPrefix(code) {
     const tail = self.events[self.events.length - 1];
-    return !markdownSpace(code) && tail && tail[1].type === "listItemPrefixWhitespace" ? ok(code) : nok(code);
+    return !markdownSpace(code) && tail && tail[1].type === "listItemPrefixWhitespace" ? ok2(code) : nok(code);
   }
 }
 
@@ -12447,7 +12529,7 @@ function resolveToSetextUnderline(events, context) {
   events.push(["exit", heading, context]);
   return events;
 }
-function tokenizeSetextUnderline(effects, ok, nok) {
+function tokenizeSetextUnderline(effects, ok2, nok) {
   const self = this;
   let marker;
   return start;
@@ -12482,7 +12564,7 @@ function tokenizeSetextUnderline(effects, ok, nok) {
   function after(code) {
     if (code === null || markdownLineEnding(code)) {
       effects.exit("setextHeadingLine");
-      return ok(code);
+      return ok2(code);
     }
     return nok(code);
   }
@@ -12941,12 +13023,12 @@ function createTokenizer(parser, initialize, from) {
             // This allows a “live binding”, which is needed for `interrupt`.
             fields ? Object.assign(Object.create(context), fields) : context,
             effects,
-            ok,
+            ok2,
             nok
           )(code);
         }
       }
-      function ok(code) {
+      function ok2(code) {
         consumed = true;
         onreturn(currentConstruct, info);
         return returnState;
@@ -14264,109 +14346,112 @@ async function collectBootstrapImageRefsFromTask(input) {
 }
 
 // src/core/proposal.ts
-async function submitProposal(fs22, clock, role, boxId, body) {
-  return withTentMutation(fs22, async () => submitProposalUnlocked(fs22, clock, role, boxId, body));
+async function submitProposal(fs21, clock, role, nodeId, body) {
+  return withTentMutation(fs21, async () => submitProposalUnlocked(fs21, clock, role, nodeId, body));
 }
-async function submitProposalUnlocked(fs22, clock, roleInput, boxId, body) {
+async function submitProposalUnlocked(fs21, clock, roleInput, nodeId, body) {
   const text3 = body.trim();
   if (!text3) throw new Error("Proposal body cannot be empty.");
   const role = normalizeRole(roleInput);
-  const tent = await loadTent(fs22);
-  if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
-  const box = tent.byId.get(boxId);
-  if (!box) throw new Error(`Box not found: ${boxId}.`);
-  const path23 = proposalPath(role, box.id);
-  if (await fs22.exists(path23)) {
-    const current = await loadProposal(fs22, path23);
+  const tent = await loadTent(fs21);
+  if (tent.duplicateIds.has(nodeId)) {
+    throw new Error(`Duplicate Node id '${nodeId}' found; repair the duplicate Nodes before using this id.`);
+  }
+  const node2 = tent.byId.get(nodeId);
+  if (!node2) throw new Error(`Node not found: ${nodeId}.`);
+  const path22 = proposalPath(role, node2.id);
+  if (await fs21.exists(path22)) {
+    const current = await loadProposal(fs21, path22);
     if (current.status === "pending") throw new Error("A proposal is already pending triage; the user must confirm or reject it first.");
   }
   const proposal = {
-    path: path23,
-    boxId: box.id,
+    path: path22,
+    nodeId: node2.id,
     role,
     status: "pending",
     createdAt: clock.now(),
     body: text3
   };
-  await ensureDir4(fs22, join("temp", role, "proposals"));
-  await writeProposal(fs22, proposal);
+  await ensureDir4(fs21, join("temp", role, "proposals"));
+  await writeProposal(fs21, proposal);
   return proposal;
 }
-async function loadProposals(fs22) {
+async function loadProposals(fs21) {
   const proposals = [];
-  if (!await fs22.exists("temp")) return proposals;
-  for (const roleDir of await fs22.listDir("temp")) {
+  if (!await fs21.exists("temp")) return proposals;
+  for (const roleDir of await fs21.listDir("temp")) {
     if (!roleDir.isDir) continue;
     const dir = join("temp", roleDir.name, "proposals");
-    if (!await fs22.exists(dir)) continue;
-    for (const entry of await fs22.listDir(dir)) {
+    if (!await fs21.exists(dir)) continue;
+    for (const entry of await fs21.listDir(dir)) {
       if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path23 = join(dir, entry.name);
+      const path22 = join(dir, entry.name);
       try {
-        proposals.push(await loadProposal(fs22, path23));
+        proposals.push(await loadProposal(fs21, path22));
       } catch {
       }
     }
   }
   return proposals.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
 }
-async function loadProposal(fs22, inputPath) {
-  const path23 = normalizeProposalPath(inputPath);
-  if (!await fs22.exists(path23)) throw new Error(`Proposal not found: ${path23}.`);
-  const { data, body } = parseFrontmatter(await fs22.readFile(path23));
-  if (data.type !== "proposal" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "pending" && data.status !== "accepted" && data.status !== "rejected") {
-    throw new Error(`Invalid proposal format: ${path23}.`);
+async function loadProposal(fs21, inputPath) {
+  const path22 = normalizeProposalPath(inputPath);
+  if (!await fs21.exists(path22)) throw new Error(`Proposal not found: ${path22}.`);
+  const { data, body } = parseFrontmatter(await fs21.readFile(path22));
+  if (data.type !== "proposal" || typeof data.nodeId !== "string" || !isNodeId(data.nodeId) || typeof data.role !== "string" || data.status !== "pending" && data.status !== "accepted" && data.status !== "rejected") {
+    throw new Error(`Invalid proposal format: ${path22}.`);
   }
   return {
-    path: path23,
-    boxId: data.box,
+    path: path22,
+    nodeId: data.nodeId,
     role: data.role,
     status: data.status,
     createdAt: typeof data.createdAt === "string" ? data.createdAt : void 0,
     body: body.trim()
   };
 }
-async function acceptProposal(fs22, inputPath) {
-  await withTentMutation(fs22, async () => {
-    const proposal = await loadProposal(fs22, inputPath);
+async function acceptProposal(fs21, inputPath) {
+  await withTentMutation(fs21, async () => {
+    const proposal = await loadProposal(fs21, inputPath);
     if (proposal.status !== "pending") throw new Error("Only pending proposals can be accepted.");
     proposal.status = "accepted";
-    await writeProposal(fs22, proposal);
+    await writeProposal(fs21, proposal);
   });
 }
-async function rejectProposal(fs22, inputPath) {
-  await withTentMutation(fs22, async () => {
-    const proposal = await loadProposal(fs22, inputPath);
+async function rejectProposal(fs21, inputPath) {
+  await withTentMutation(fs21, async () => {
+    const proposal = await loadProposal(fs21, inputPath);
     if (proposal.status !== "pending") throw new Error("Only pending proposals can be rejected.");
     proposal.status = "rejected";
-    await writeProposal(fs22, proposal);
+    await writeProposal(fs21, proposal);
   });
 }
-function proposalPath(role, boxId) {
-  return join("temp", role, "proposals", `${boxId}.md`);
+function proposalPath(role, nodeId) {
+  return join("temp", role, "proposals", `${nodeId}.md`);
 }
 function normalizeProposalPath(input) {
-  const path23 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/proposals\/[bc]x-[^/]+\.md$/.test(path23)) {
-    throw new Error("Proposal must point to temp/<role>/proposals/<boxId>.md.");
+  const path22 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  const match = /^temp\/[^/]+\/proposals\/([^/]+)\.md$/.exec(path22);
+  if (!match || !isNodeId(match[1])) {
+    throw new Error("Proposal must point to temp/<role>/proposals/<nodeId>.md.");
   }
-  return path23;
+  return path22;
 }
-async function writeProposal(fs22, proposal) {
+async function writeProposal(fs21, proposal) {
   const data = {
     type: "proposal",
-    box: proposal.boxId,
+    nodeId: proposal.nodeId,
     role: proposal.role,
     status: proposal.status,
     createdAt: proposal.createdAt
   };
-  await fs22.writeFile(
+  await fs21.writeFile(
     proposal.path,
-    serializeFrontmatter(data, proposal.body + "\n", ["type", "box", "role", "status", "createdAt"])
+    serializeFrontmatter(data, proposal.body + "\n", ["type", "nodeId", "role", "status", "createdAt"])
   );
 }
-async function ensureDir4(fs22, path23) {
-  if (!await fs22.exists(path23)) await fs22.mkdir(path23);
+async function ensureDir4(fs21, path22) {
+  if (!await fs21.exists(path22)) await fs21.mkdir(path22);
 }
 function normalizeRole(role) {
   const normalized = role.trim();
@@ -14402,7 +14487,7 @@ var MutationBus = class {
 
 // src/service/task-lifecycle-flight.ts
 var queue = new MutationBus();
-var key = (ws, path23) => `${ws}\0${path23}`;
+var key = (ws, path22) => `${ws}\0${path22}`;
 function runTaskLifecycle(workspaceId, taskPath, action) {
   return queue.run(key(workspaceId, taskPath), action);
 }
@@ -15024,9 +15109,9 @@ function shortHash(value) {
   }
   return (hash >>> 0).toString(36).padStart(6, "0").slice(0, 6);
 }
-async function pathExists(path23) {
+async function pathExists(path22) {
   try {
-    await nodeFs.access(path23);
+    await nodeFs.access(path22);
     return true;
   } catch {
     return false;
@@ -15108,16 +15193,16 @@ function isTerminalTaskState(state) {
 function isPurgeableDeliveryStatus(status) {
   return TERMINAL_DELIVERY_STATUSES.has(status);
 }
-async function previewOperationalRetention(fs22, options = {}) {
+async function previewOperationalRetention(fs21, options = {}) {
   const keepTerminalTasksDays = normalizeKeepTerminalTasksDays(options.keepTerminalTasksDays);
   const nowMs = resolveNowMs(options.now);
   const cutoffMs = nowMs - keepTerminalTasksDays * MS_PER_DAY;
   const cutoff = new Date(cutoffMs).toISOString();
   const skipped = [];
   const warnings = [];
-  const { tasks, skipped: taskSkipped } = await scanTasks(fs22);
+  const { tasks, skipped: taskSkipped } = await scanTasks(fs21);
   skipped.push(...taskSkipped);
-  const { deliveries, skipped: deliverySkipped } = await scanDeliveries(fs22);
+  const { deliveries, skipped: deliverySkipped } = await scanDeliveries(fs21);
   skipped.push(...deliverySkipped);
   for (const s of skipped) {
     warnings.push(`skipped ${s.path}: ${s.reason}`);
@@ -15140,7 +15225,7 @@ async function previewOperationalRetention(fs22, options = {}) {
   const claimedDeliveryPaths = /* @__PURE__ */ new Set();
   let pinnedDeliveryIds;
   try {
-    const tent = await loadTent(fs22);
+    const tent = await loadTent(fs21);
     pinnedDeliveryIds = collectReferencedDeliveryIds(tent);
   } catch (err) {
     throw new RetentionError(
@@ -15263,15 +15348,15 @@ async function previewOperationalRetention(fs22, options = {}) {
     candidateDeliveryCount
   };
 }
-async function purgeOperationalRetention(fs22, options = {}) {
-  return withTentMutation(fs22, async () => {
-    const preview = await previewOperationalRetention(fs22, options);
+async function purgeOperationalRetention(fs21, options = {}) {
+  return withTentMutation(fs21, async () => {
+    const preview = await previewOperationalRetention(fs21, options);
     const purgedTaskPaths = [];
     const purgedDeliveryPaths = [];
     for (const c of preview.candidates) {
       if (c.kind === "task-group" && c.taskPath) {
         try {
-          const live = await loadTaskEnvelope(fs22, c.taskPath);
+          const live = await loadTaskEnvelope(fs21, c.taskPath);
           if (!isTerminalTaskState(live.state) || isActiveTaskState(live.state)) {
             preview.warnings.push(
               `refused purge of ${c.taskPath}: state is ${live.state} (not terminal)`
@@ -15287,7 +15372,7 @@ async function purgeOperationalRetention(fs22, options = {}) {
         let deliveryValidationFailed = false;
         for (const dp of c.deliveryPaths) {
           try {
-            const liveD = await loadDelivery(fs22, dp);
+            const liveD = await loadDelivery(fs21, dp);
             if (!isPurgeableDeliveryStatus(liveD.status)) {
               preview.warnings.push(
                 `refused purge of task group ${c.taskPath}: delivery ${dp} status=${liveD.status}`
@@ -15305,8 +15390,8 @@ async function purgeOperationalRetention(fs22, options = {}) {
         }
         if (deliveryValidationFailed) continue;
         try {
-          if (await fs22.exists(c.taskPath)) {
-            await fs22.remove(c.taskPath);
+          if (await fs21.exists(c.taskPath)) {
+            await fs21.remove(c.taskPath);
             purgedTaskPaths.push(c.taskPath);
           }
         } catch (err) {
@@ -15317,8 +15402,8 @@ async function purgeOperationalRetention(fs22, options = {}) {
         }
         for (const dp of c.deliveryPaths) {
           try {
-            if (await fs22.exists(dp)) {
-              await fs22.remove(dp);
+            if (await fs21.exists(dp)) {
+              await fs21.remove(dp);
               purgedDeliveryPaths.push(dp);
             }
           } catch (err) {
@@ -15332,15 +15417,15 @@ async function purgeOperationalRetention(fs22, options = {}) {
       if (c.kind === "orphan-delivery") {
         for (const dp of c.deliveryPaths) {
           try {
-            const liveD = await loadDelivery(fs22, dp);
+            const liveD = await loadDelivery(fs21, dp);
             if (!isPurgeableDeliveryStatus(liveD.status)) {
               preview.warnings.push(
                 `refused purge of delivery ${dp}: status=${liveD.status}`
               );
               continue;
             }
-            if (await fs22.exists(dp)) {
-              await fs22.remove(dp);
+            if (await fs21.exists(dp)) {
+              await fs21.remove(dp);
               purgedDeliveryPaths.push(dp);
             }
           } catch (err) {
@@ -15362,11 +15447,11 @@ async function purgeOperationalRetention(fs22, options = {}) {
     };
   });
 }
-async function scanTasks(fs22) {
+async function scanTasks(fs21) {
   const tasks = [];
   const skipped = [];
-  if (!await fs22.exists("temp")) return { tasks, skipped };
-  for (const roleEntry of await fs22.listDir("temp")) {
+  if (!await fs21.exists("temp")) return { tasks, skipped };
+  for (const roleEntry of await fs21.listDir("temp")) {
     if (!roleEntry.isDir) continue;
     if (!isSafeRoleSegment(roleEntry.name)) {
       skipped.push({
@@ -15375,45 +15460,45 @@ async function scanTasks(fs22) {
       });
       continue;
     }
-    if (roleEntry.name === "agent-profiles") {
-      const profilesRoot = join("temp", "agent-profiles");
-      for (const profileEntry of await fs22.listDir(profilesRoot)) {
-        if (!profileEntry.isDir) continue;
-        if (!isSafeRoleSegment(profileEntry.name)) {
+    if (roleEntry.name === "routes") {
+      const routesRoot = join("temp", "routes");
+      for (const routeEntry of await fs21.listDir(routesRoot)) {
+        if (!routeEntry.isDir) continue;
+        if (!isSafeRoleSegment(routeEntry.name)) {
           skipped.push({
-            path: join(profilesRoot, profileEntry.name),
-            reason: "unsafe profile directory name"
+            path: join(routesRoot, routeEntry.name),
+            reason: "unsafe route directory name"
           });
           continue;
         }
-        await scanTaskDir(fs22, join(profilesRoot, profileEntry.name, "tasks"), tasks, skipped);
+        await scanTaskDir(fs21, join(routesRoot, routeEntry.name, "tasks"), tasks, skipped);
       }
       continue;
     }
-    await scanTaskDir(fs22, join("temp", roleEntry.name, "tasks"), tasks, skipped);
+    await scanTaskDir(fs21, join("temp", roleEntry.name, "tasks"), tasks, skipped);
   }
   return { tasks, skipped };
 }
-async function scanTaskDir(fs22, taskDir, tasks, skipped) {
-  if (!await fs22.exists(taskDir)) return;
-  for (const entry of await fs22.listDir(taskDir)) {
+async function scanTaskDir(fs21, taskDir, tasks, skipped) {
+  if (!await fs21.exists(taskDir)) return;
+  for (const entry of await fs21.listDir(taskDir)) {
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
-    const path23 = join(taskDir, entry.name);
+    const path22 = join(taskDir, entry.name);
     try {
-      tasks.push(await loadTaskEnvelope(fs22, path23));
+      tasks.push(await loadTaskEnvelope(fs21, path22));
     } catch (err) {
       skipped.push({
-        path: path23,
+        path: path22,
         reason: err instanceof Error ? err.message : String(err)
       });
     }
   }
 }
-async function scanDeliveries(fs22) {
+async function scanDeliveries(fs21) {
   const deliveries = [];
   const skipped = [];
-  if (!await fs22.exists("temp")) return { deliveries, skipped };
-  for (const roleEntry of await fs22.listDir("temp")) {
+  if (!await fs21.exists("temp")) return { deliveries, skipped };
+  for (const roleEntry of await fs21.listDir("temp")) {
     if (!roleEntry.isDir) continue;
     if (!isSafeRoleSegment(roleEntry.name)) {
       skipped.push({
@@ -15422,40 +15507,40 @@ async function scanDeliveries(fs22) {
       });
       continue;
     }
-    if (roleEntry.name === "agent-profiles") {
-      const profilesRoot = join("temp", "agent-profiles");
-      for (const profileEntry of await fs22.listDir(profilesRoot)) {
-        if (!profileEntry.isDir) continue;
-        if (!isSafeRoleSegment(profileEntry.name)) {
+    if (roleEntry.name === "routes") {
+      const routesRoot = join("temp", "routes");
+      for (const routeEntry of await fs21.listDir(routesRoot)) {
+        if (!routeEntry.isDir) continue;
+        if (!isSafeRoleSegment(routeEntry.name)) {
           skipped.push({
-            path: join(profilesRoot, profileEntry.name),
-            reason: "unsafe profile directory name"
+            path: join(routesRoot, routeEntry.name),
+            reason: "unsafe route directory name"
           });
           continue;
         }
         await scanDeliveryDir(
-          fs22,
-          join(profilesRoot, profileEntry.name, "deliveries"),
+          fs21,
+          join(routesRoot, routeEntry.name, "deliveries"),
           deliveries,
           skipped
         );
       }
       continue;
     }
-    await scanDeliveryDir(fs22, join("temp", roleEntry.name, "deliveries"), deliveries, skipped);
+    await scanDeliveryDir(fs21, join("temp", roleEntry.name, "deliveries"), deliveries, skipped);
   }
   return { deliveries, skipped };
 }
-async function scanDeliveryDir(fs22, dir, deliveries, skipped) {
-  if (!await fs22.exists(dir)) return;
-  for (const entry of await fs22.listDir(dir)) {
+async function scanDeliveryDir(fs21, dir, deliveries, skipped) {
+  if (!await fs21.exists(dir)) return;
+  for (const entry of await fs21.listDir(dir)) {
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
-    const path23 = join(dir, entry.name);
+    const path22 = join(dir, entry.name);
     try {
-      deliveries.push(await loadDelivery(fs22, path23));
+      deliveries.push(await loadDelivery(fs21, path22));
     } catch (err) {
       skipped.push({
-        path: path23,
+        path: path22,
         reason: err instanceof Error ? err.message : String(err)
       });
     }
@@ -15505,7 +15590,7 @@ function isTaskWorktreeReclaimTerminalState(state) {
   return TERMINAL_TASK_STATES.has(state) && !isActiveTaskState(state);
 }
 function isTaskScopedWorktreeLane(task) {
-  return taskAssigneeKind(task) === "agentProfile";
+  return task.assigneeKind === "route";
 }
 async function evaluateTaskWorktreeReclaim(input) {
   const task = input.task;
@@ -15523,7 +15608,7 @@ async function evaluateTaskWorktreeReclaim(input) {
       ...base,
       eligible: false,
       code: "NOT_APPLICABLE",
-      reason: "Role worktrees are durable integration lanes; Task worktree reclaim applies only to agentProfile code Task lanes."
+      reason: "Role worktrees are durable integration lanes; Task worktree reclaim applies only to route code Task lanes."
     };
   }
   const hasLane = Boolean(
@@ -16112,9 +16197,9 @@ async function reclaimTaskWorktree(input) {
     };
   }
 }
-async function reclaimTaskWorktreeForEnvelope(fs22, workspaceRoot, task, options = {}) {
+async function reclaimTaskWorktreeForEnvelope(fs21, workspaceRoot, task, options = {}) {
   const taskId = task.id?.trim();
-  const deliveries = taskId ? await loadDeliveries(fs22, { taskId }) : [];
+  const deliveries = taskId ? await loadDeliveries(fs21, { taskId }) : [];
   return reclaimTaskWorktree({
     workspaceRoot,
     task,
@@ -16144,9 +16229,9 @@ async function probeSessionSettledBeforeRemove(input, diagnostic) {
     }
   };
 }
-async function evaluateTaskWorktreeReclaimForEnvelope(fs22, workspaceRoot, task) {
+async function evaluateTaskWorktreeReclaimForEnvelope(fs21, workspaceRoot, task) {
   const taskId = task.id?.trim();
-  const deliveries = taskId ? await loadDeliveries(fs22, { taskId }) : [];
+  const deliveries = taskId ? await loadDeliveries(fs21, { taskId }) : [];
   return evaluateTaskWorktreeReclaim({ workspaceRoot, task, deliveries });
 }
 async function removeTaskLaneDirectorySafe(lanePath, options = {}) {
@@ -16529,9 +16614,9 @@ async function worktreePathForBranch(workspaceRoot, branch) {
   }
   return void 0;
 }
-async function pathExists2(path23) {
+async function pathExists2(path22) {
   try {
-    await nodeFs2.access(path23);
+    await nodeFs2.access(path22);
     return true;
   } catch {
     return false;
@@ -16566,8 +16651,8 @@ var TASK_WORKTREE_RECLAIM_PENDING_PATH = join(
   "task-worktree-reclaim-pending.json"
 );
 var queueChains = /* @__PURE__ */ new WeakMap();
-function withQueueCriticalSection(fs22, fn) {
-  const key2 = fs22;
+function withQueueCriticalSection(fs21, fn) {
+  const key2 = fs21;
   const prev = queueChains.get(key2) ?? Promise.resolve();
   const run = prev.then(fn, fn);
   queueChains.set(
@@ -16621,11 +16706,11 @@ function parseEntry(raw) {
     ...lastDiagnostic ? { lastDiagnostic } : {}
   };
 }
-async function readPending(fs22) {
-  if (!await fs22.exists(TASK_WORKTREE_RECLAIM_PENDING_PATH)) {
+async function readPending(fs21) {
+  if (!await fs21.exists(TASK_WORKTREE_RECLAIM_PENDING_PATH)) {
     return emptyFile();
   }
-  const raw = await fs22.readFile(TASK_WORKTREE_RECLAIM_PENDING_PATH);
+  const raw = await fs21.readFile(TASK_WORKTREE_RECLAIM_PENDING_PATH);
   let parsed;
   try {
     parsed = JSON.parse(raw);
@@ -16647,26 +16732,26 @@ async function readPending(fs22) {
   }
   return { version: 1, entries };
 }
-async function writePending(fs22, file) {
+async function writePending(fs21, file) {
   const bodyObj = {
     version: 1,
     entries: file.entries
   };
   const body = JSON.stringify(bodyObj, null, 2) + "\n";
-  if (!await fs22.exists(TEMP_DIR)) {
-    await fs22.writeFile(join(TEMP_DIR, ".keep"), "");
+  if (!await fs21.exists(TEMP_DIR)) {
+    await fs21.writeFile(join(TEMP_DIR, ".keep"), "");
   }
-  await fs22.writeFile(TASK_WORKTREE_RECLAIM_PENDING_PATH, body);
+  await fs21.writeFile(TASK_WORKTREE_RECLAIM_PENDING_PATH, body);
 }
-async function enqueueTaskWorktreeReclaimPending(fs22, entry) {
+async function enqueueTaskWorktreeReclaimPending(fs21, entry) {
   const taskId = entry.taskId.trim();
   const taskPath = entry.taskPath.trim();
   const workspaceRoot = entry.workspaceRoot.trim();
   if (!taskId || !taskPath || !workspaceRoot) {
     throw new Error("enqueueTaskWorktreeReclaimPending requires taskId, taskPath, workspaceRoot");
   }
-  return withQueueCriticalSection(fs22, async () => {
-    const file = await readPending(fs22);
+  return withQueueCriticalSection(fs21, async () => {
+    const file = await readPending(fs21);
     const next = {
       taskId,
       taskPath,
@@ -16678,22 +16763,22 @@ async function enqueueTaskWorktreeReclaimPending(fs22, entry) {
     const without = file.entries.filter((e) => e.taskId !== taskId);
     without.push(next);
     without.sort((a, b) => a.taskId.localeCompare(b.taskId));
-    await writePending(fs22, { version: 1, entries: without });
+    await writePending(fs21, { version: 1, entries: without });
     return next;
   });
 }
-async function dequeueTaskWorktreeReclaimPending(fs22, taskId) {
+async function dequeueTaskWorktreeReclaimPending(fs21, taskId) {
   const id = taskId.trim();
   if (!id) return false;
-  return withQueueCriticalSection(fs22, async () => {
-    const file = await readPending(fs22);
+  return withQueueCriticalSection(fs21, async () => {
+    const file = await readPending(fs21);
     const next = file.entries.filter((e) => e.taskId !== id);
     if (next.length === file.entries.length) return false;
-    await writePending(fs22, { version: 1, entries: next });
+    await writePending(fs21, { version: 1, entries: next });
     return true;
   });
 }
-async function recordTaskWorktreeReclaimNeedsAttention(fs22, input) {
+async function recordTaskWorktreeReclaimNeedsAttention(fs21, input) {
   const taskId = input.taskId.trim();
   const taskPath = input.taskPath.trim();
   const workspaceRoot = input.workspaceRoot.trim();
@@ -16705,8 +16790,8 @@ async function recordTaskWorktreeReclaimNeedsAttention(fs22, input) {
     reason: input.reason,
     attemptedAt
   };
-  return withQueueCriticalSection(fs22, async () => {
-    const file = await readPending(fs22);
+  return withQueueCriticalSection(fs21, async () => {
+    const file = await readPending(fs21);
     const existing = file.entries.find((e) => e.taskId === taskId);
     const next = {
       taskId,
@@ -16720,19 +16805,19 @@ async function recordTaskWorktreeReclaimNeedsAttention(fs22, input) {
     const without = file.entries.filter((e) => e.taskId !== taskId);
     without.push(next);
     without.sort((a, b) => a.taskId.localeCompare(b.taskId));
-    await writePending(fs22, { version: 1, entries: without });
+    await writePending(fs21, { version: 1, entries: without });
     return next;
   });
 }
-async function listTaskWorktreeReclaimPending(fs22) {
-  return withQueueCriticalSection(fs22, async () => {
-    const file = await readPending(fs22);
+async function listTaskWorktreeReclaimPending(fs21) {
+  return withQueueCriticalSection(fs21, async () => {
+    const file = await readPending(fs21);
     return [...file.entries];
   });
 }
-async function listTaskWorktreeReclaimPendingForWorkspace(fs22, workspaceRoot, sameRoot) {
+async function listTaskWorktreeReclaimPendingForWorkspace(fs21, workspaceRoot, sameRoot) {
   const root = workspaceRoot.trim();
-  const all2 = await listTaskWorktreeReclaimPending(fs22);
+  const all2 = await listTaskWorktreeReclaimPending(fs21);
   return all2.filter((e) => sameRoot(e.workspaceRoot, root));
 }
 
@@ -16755,17 +16840,17 @@ function normalizeWorkspaceSettings(value) {
 function defaultWorkspaceSettings() {
   return { ...DEFAULT_SETTINGS };
 }
-async function loadWorkspaceSettings(fs22) {
-  if (!await fs22.exists(WORKSPACE_SETTINGS_PATH)) {
+async function loadWorkspaceSettings(fs21) {
+  if (!await fs21.exists(WORKSPACE_SETTINGS_PATH)) {
     return defaultWorkspaceSettings();
   }
   try {
-    const parsed = JSON.parse(await fs22.readFile(WORKSPACE_SETTINGS_PATH));
+    const parsed = JSON.parse(await fs21.readFile(WORKSPACE_SETTINGS_PATH));
     return normalizeWorkspaceSettings(parsed);
   } catch {
-    const backupPath = await backupCorruptRegistry(fs22, WORKSPACE_SETTINGS_PATH);
+    const backupPath = await backupCorruptRegistry(fs21, WORKSPACE_SETTINGS_PATH);
     const reset = defaultWorkspaceSettings();
-    await writeSettingsUnlocked(fs22, reset);
+    await writeSettingsUnlocked(fs21, reset);
     warnRegistryRecovered(
       WORKSPACE_SETTINGS_PATH,
       backupPath,
@@ -16775,15 +16860,15 @@ async function loadWorkspaceSettings(fs22) {
     return reset;
   }
 }
-async function updateWorkspaceSettings(fs22, patch) {
-  return withTentMutation(fs22, async () => {
+async function updateWorkspaceSettings(fs21, patch) {
+  return withTentMutation(fs21, async () => {
     if (!isRecord5(patch)) {
       throw new WorkspaceSettingsError(
         "INVALID_PATCH",
         "workspace.settings.update patch must be an object"
       );
     }
-    const before = await loadWorkspaceSettings(fs22);
+    const before = await loadWorkspaceSettings(fs21);
     const nextRaw = { ...before };
     for (const [key2, value] of Object.entries(patch)) {
       if (key2 === "defaultDeliveryPolicy") {
@@ -16803,7 +16888,7 @@ async function updateWorkspaceSettings(fs22, patch) {
     const next = normalizeWorkspaceSettings(nextRaw);
     const changed = !settingsEqual(before, next);
     if (changed) {
-      await writeSettingsUnlocked(fs22, next);
+      await writeSettingsUnlocked(fs21, next);
     }
     return { settings: next, changed };
   });
@@ -16815,7 +16900,7 @@ var WorkspaceSettingsError = class extends Error {
     this.name = "WorkspaceSettingsError";
   }
 };
-async function writeSettingsUnlocked(fs22, settings) {
+async function writeSettingsUnlocked(fs21, settings) {
   const known = ["defaultDeliveryPolicy"];
   const ordered = {};
   for (const key2 of known) {
@@ -16825,7 +16910,7 @@ async function writeSettingsUnlocked(fs22, settings) {
   for (const key2 of rest) {
     ordered[key2] = settings[key2];
   }
-  await fs22.writeFile(WORKSPACE_SETTINGS_PATH, JSON.stringify(ordered, null, 2) + "\n");
+  await fs21.writeFile(WORKSPACE_SETTINGS_PATH, JSON.stringify(ordered, null, 2) + "\n");
 }
 function settingsEqual(a, b) {
   return stableStringify(a) === stableStringify(b);
@@ -17033,7 +17118,7 @@ function parseAnnotationFile(value) {
 function emptyFile2() {
   return { annotations: [] };
 }
-async function writeFileUnlocked(fs22, file) {
+async function writeFileUnlocked(fs21, file) {
   const ordered = {
     annotations: file.annotations.map((a) => {
       const row = {
@@ -17053,14 +17138,14 @@ async function writeFileUnlocked(fs22, file) {
       return row;
     })
   };
-  await fs22.writeFile(ANNOTATIONS_PATH, JSON.stringify(ordered, null, 2) + "\n");
+  await fs21.writeFile(ANNOTATIONS_PATH, JSON.stringify(ordered, null, 2) + "\n");
 }
-async function loadAnnotations(fs22) {
-  if (!await fs22.exists(ANNOTATIONS_PATH)) {
+async function loadAnnotations(fs21) {
+  if (!await fs21.exists(ANNOTATIONS_PATH)) {
     return emptyFile2();
   }
   try {
-    const parsed = JSON.parse(await fs22.readFile(ANNOTATIONS_PATH));
+    const parsed = JSON.parse(await fs21.readFile(ANNOTATIONS_PATH));
     const file = parseAnnotationFile(parsed);
     if (!file) {
       throw new Error("invalid annotation file shape");
@@ -17069,9 +17154,9 @@ async function loadAnnotations(fs22) {
       annotations: file.annotations.map(cloneRecord)
     };
   } catch {
-    const backupPath = await backupCorruptRegistry(fs22, ANNOTATIONS_PATH);
+    const backupPath = await backupCorruptRegistry(fs21, ANNOTATIONS_PATH);
     const reset = emptyFile2();
-    await writeFileUnlocked(fs22, reset);
+    await writeFileUnlocked(fs21, reset);
     warnRegistryRecovered(
       ANNOTATIONS_PATH,
       backupPath,
@@ -17081,12 +17166,12 @@ async function loadAnnotations(fs22) {
     return reset;
   }
 }
-async function listAnnotationRecords(fs22, nodeId) {
-  const file = await loadAnnotations(fs22);
+async function listAnnotationRecords(fs21, nodeId) {
+  const file = await loadAnnotations(fs21);
   const rows = nodeId ? file.annotations.filter((a) => a.nodeId === nodeId) : file.annotations;
   return rows.map(cloneRecord);
 }
-async function createAnnotation(fs22, input, opts) {
+async function createAnnotation(fs21, input, opts) {
   const clock = opts?.clock ?? defaultClock();
   const rand = opts?.rand ?? Math.random;
   if (!isRequiredString(input.nodeId)) {
@@ -17102,8 +17187,8 @@ async function createAnnotation(fs22, input, opts) {
     throw new AnnotationError("INVALID_INPUT", "quote must be a non-empty string");
   }
   validateAnnotationAnchor(input.documentBody, input.quote, input.start, input.end);
-  return withTentMutation(fs22, async () => {
-    const file = await loadAnnotations(fs22);
+  return withTentMutation(fs21, async () => {
+    const file = await loadAnnotations(fs21);
     const existing = new Set(file.annotations.map((a) => a.id));
     const now = clock.now();
     const record = {
@@ -17120,14 +17205,14 @@ async function createAnnotation(fs22, input, opts) {
       updatedAt: now
     };
     file.annotations.push(record);
-    await writeFileUnlocked(fs22, file);
+    await writeFileUnlocked(fs21, file);
     return cloneRecord(record);
   });
 }
-async function resolveAnnotation(fs22, id, opts) {
+async function resolveAnnotation(fs21, id, opts) {
   const clock = opts?.clock ?? defaultClock();
-  return withTentMutation(fs22, async () => {
-    const file = await loadAnnotations(fs22);
+  return withTentMutation(fs21, async () => {
+    const file = await loadAnnotations(fs21);
     const idx = file.annotations.findIndex((a) => a.id === id);
     if (idx < 0) {
       throw new AnnotationError("NOT_FOUND", `Annotation not found: ${id}`);
@@ -17144,14 +17229,14 @@ async function resolveAnnotation(fs22, id, opts) {
       resolvedAt: now
     };
     file.annotations[idx] = next;
-    await writeFileUnlocked(fs22, file);
+    await writeFileUnlocked(fs21, file);
     return cloneRecord(next);
   });
 }
-async function reopenAnnotation(fs22, id, opts) {
+async function reopenAnnotation(fs21, id, opts) {
   const clock = opts?.clock ?? defaultClock();
-  return withTentMutation(fs22, async () => {
-    const file = await loadAnnotations(fs22);
+  return withTentMutation(fs21, async () => {
+    const file = await loadAnnotations(fs21);
     const idx = file.annotations.findIndex((a) => a.id === id);
     if (idx < 0) {
       throw new AnnotationError("NOT_FOUND", `Annotation not found: ${id}`);
@@ -17173,7 +17258,7 @@ async function reopenAnnotation(fs22, id, opts) {
       };
       if (current.resolvedAt !== void 0) {
         file.annotations[idx] = cleaned;
-        await writeFileUnlocked(fs22, file);
+        await writeFileUnlocked(fs21, file);
       }
       return cloneRecord(file.annotations[idx]);
     }
@@ -17192,24 +17277,24 @@ async function reopenAnnotation(fs22, id, opts) {
       updatedAt: now
     };
     file.annotations[idx] = next;
-    await writeFileUnlocked(fs22, file);
+    await writeFileUnlocked(fs21, file);
     return cloneRecord(next);
   });
 }
-async function deleteAnnotation(fs22, id) {
-  return withTentMutation(fs22, async () => {
-    const file = await loadAnnotations(fs22);
+async function deleteAnnotation(fs21, id) {
+  return withTentMutation(fs21, async () => {
+    const file = await loadAnnotations(fs21);
     const idx = file.annotations.findIndex((a) => a.id === id);
     if (idx < 0) return null;
     const [removed] = file.annotations.splice(idx, 1);
-    await writeFileUnlocked(fs22, file);
+    await writeFileUnlocked(fs21, file);
     return removed ? cloneRecord(removed) : null;
   });
 }
 
 // src/runtime/types.ts
 var EXTERNAL_ADAPTER_ID = "external";
-var EXTERNAL_PROFILE_ID = "external";
+var EXTERNAL_ROUTE_ID = "external";
 var SESSION_ID_PREFIX = "ss-";
 var SESSION_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
 function makeSessionId(rand = Math.random, len = 8) {
@@ -17228,12 +17313,12 @@ function recordExternalKey(rec) {
 }
 
 // src/runtime/session-registry.ts
-import * as fs4 from "node:fs/promises";
-import * as path4 from "node:path";
+import * as fs5 from "node:fs/promises";
+import * as path5 from "node:path";
 
 // src/machine-state.ts
-import * as fs3 from "node:fs/promises";
-import * as path3 from "node:path";
+import * as fs4 from "node:fs/promises";
+import * as path4 from "node:path";
 function isNotFoundError(err) {
   return !!err && typeof err === "object" && "code" in err && err.code === "ENOENT";
 }
@@ -17243,15 +17328,15 @@ function isRetryableRenameError2(err) {
   return code === "EPERM" || code === "EBUSY" || code === "EACCES" || code === "EEXIST";
 }
 async function writeJsonAtomic(filePath, value) {
-  await fs3.mkdir(path3.dirname(filePath), { recursive: true });
+  await fs4.mkdir(path4.dirname(filePath), { recursive: true });
   const body = JSON.stringify(value, null, 2) + "\n";
   const tmp = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
   try {
-    await fs3.writeFile(tmp, body, "utf8");
+    await fs4.writeFile(tmp, body, "utf8");
     await renameReplace2(tmp, filePath);
   } catch (err) {
     try {
-      await fs3.unlink(tmp);
+      await fs4.unlink(tmp);
     } catch {
     }
     throw err;
@@ -17262,7 +17347,7 @@ async function renameReplace2(tmp, filePath) {
   let lastErr;
   for (let i = 0; i < attempts; i++) {
     try {
-      await fs3.rename(tmp, filePath);
+      await fs4.rename(tmp, filePath);
       return;
     } catch (err) {
       lastErr = err;
@@ -17275,12 +17360,12 @@ async function renameReplace2(tmp, filePath) {
 async function backupCorruptMachineFile(filePath) {
   const backupPath = `${filePath}.corrupt-${corruptTimestamp()}`;
   try {
-    await fs3.rename(filePath, backupPath);
+    await fs4.rename(filePath, backupPath);
     return backupPath;
   } catch {
-    await fs3.copyFile(filePath, backupPath);
+    await fs4.copyFile(filePath, backupPath);
     try {
-      await fs3.unlink(filePath);
+      await fs4.unlink(filePath);
     } catch {
     }
     return backupPath;
@@ -17305,12 +17390,11 @@ var SESSION_STATES = /* @__PURE__ */ new Set([
   "external"
 ]);
 var STOP_REASONS = /* @__PURE__ */ new Set(["user", "interrupt", "shutdown"]);
-var ASSIGNEE_KINDS = /* @__PURE__ */ new Set(["role", "agentProfile"]);
 function sessionsDir(dataDir) {
-  return path4.join(dataDir, "sessions");
+  return path5.join(dataDir, "sessions");
 }
 function sessionFilePath(dataDir, sessionId) {
-  return path4.join(sessionsDir(dataDir), `${sessionId}.json`);
+  return path5.join(sessionsDir(dataDir), `${sessionId}.json`);
 }
 function assertSessionId(sessionId) {
   if (!isSessionId(sessionId)) {
@@ -17328,12 +17412,42 @@ function isSessionState(value) {
 }
 function parseSessionRecord(data, sessionId) {
   if (!isPlainObject2(data)) return null;
+  const allowedKeys = /* @__PURE__ */ new Set([
+    "id",
+    "routeId",
+    "adapterId",
+    "routeSnapshot",
+    "roleName",
+    "state",
+    "pid",
+    "resumeToken",
+    "runtimeWorkspace",
+    "workspace",
+    "workspaceLane",
+    "createdAt",
+    "updatedAt",
+    "lastTaskId",
+    "exitCode",
+    "lastError",
+    "stopReason",
+    "contextRestored",
+    "restoreReason",
+    "replacedSessionId",
+    "replacedBySessionId",
+    "externalKey",
+    "contextGeneration",
+    "taskDeltaDigest"
+  ]);
+  if (Object.keys(data).some((key2) => !allowedKeys.has(key2))) return null;
   if (!isNonEmptyString(data.id) || data.id !== sessionId) return null;
-  if (!isNonEmptyString(data.profileId)) return null;
+  if (!isRouteId(data.routeId)) return null;
   if (!isNonEmptyString(data.adapterId)) return null;
   if (!isSessionState(data.state)) return null;
   if (!isNonEmptyString(data.createdAt)) return null;
   if (!isNonEmptyString(data.updatedAt)) return null;
+  if (data.roleName !== void 0 && (data.routeId !== EXTERNAL_ROUTE_ID || data.adapterId !== EXTERNAL_ADAPTER_ID)) {
+    return null;
+  }
   if ("pid" in data && data.pid !== void 0) {
     if (typeof data.pid !== "number" || !Number.isInteger(data.pid) || data.pid <= 0) {
       return null;
@@ -17352,18 +17466,9 @@ function parseSessionRecord(data, sessionId) {
     "lastError",
     "externalKey",
     "contextGeneration",
-    "taskDeltaDigest",
-    "skillsDigest",
-    "purpose",
-    "agentId",
-    "parentRoleId"
+    "taskDeltaDigest"
   ]) {
     if (key2 in data && data[key2] !== void 0 && typeof data[key2] !== "string") {
-      return null;
-    }
-  }
-  if ("assigneeKind" in data && data.assigneeKind !== void 0) {
-    if (typeof data.assigneeKind !== "string" || !ASSIGNEE_KINDS.has(data.assigneeKind)) {
       return null;
     }
   }
@@ -17398,10 +17503,13 @@ function parseSessionRecord(data, sessionId) {
       return null;
     }
   }
-  if ("profileSnapshot" in data && data.profileSnapshot !== void 0) {
-    if (!isPlainObject2(data.profileSnapshot)) return null;
-  }
-  return data;
+  const snapshot = parseSettingsRouteSnapshot(data.routeSnapshot);
+  if (!snapshot) return null;
+  if (snapshot.routeId !== data.routeId || !isRouteId(snapshot.routeId)) return null;
+  if (!isNonEmptyString(snapshot.provider)) return null;
+  if (snapshot.adapterId !== data.adapterId || !isNonEmptyString(snapshot.adapterId)) return null;
+  if (!isNonEmptyString(snapshot.launchDigest)) return null;
+  return { ...data, routeSnapshot: snapshot };
 }
 var SessionRegistry = class _SessionRegistry {
   constructor(dataDir) {
@@ -17413,7 +17521,7 @@ var SessionRegistry = class _SessionRegistry {
     return this.dataDir;
   }
   async ensureDir() {
-    await fs4.mkdir(sessionsDir(this.dataDir), { recursive: true });
+    await fs5.mkdir(sessionsDir(this.dataDir), { recursive: true });
   }
   enqueue(fn) {
     const run = this.writeChain.then(fn, fn);
@@ -17440,11 +17548,20 @@ var SessionRegistry = class _SessionRegistry {
     return this.enqueue(async () => {
       const current = await this.readUnlocked(sessionId);
       if (!current) throw new Error(`Session not found: ${sessionId}`);
+      for (const immutable of ["id", "createdAt", "routeId", "adapterId", "routeSnapshot", "roleName"]) {
+        if (Object.prototype.hasOwnProperty.call(patch, immutable)) {
+          throw new Error(`SessionRegistry.update cannot mutate immutable field: ${immutable}`);
+        }
+      }
       const next = {
         ...current,
         ...patch,
         id: current.id,
         createdAt: current.createdAt,
+        routeId: current.routeId,
+        adapterId: current.adapterId,
+        routeSnapshot: current.routeSnapshot,
+        roleName: current.roleName,
         updatedAt: (/* @__PURE__ */ new Date()).toISOString()
       };
       await this.ensureDir();
@@ -17461,7 +17578,7 @@ var SessionRegistry = class _SessionRegistry {
     const dir = sessionsDir(this.dataDir);
     let names;
     try {
-      names = await fs4.readdir(dir);
+      names = await fs5.readdir(dir);
     } catch (err) {
       if (isNotFoundError(err)) return [];
       throw err;
@@ -17482,7 +17599,7 @@ var SessionRegistry = class _SessionRegistry {
     assertSessionId(sessionId);
     return this.enqueue(async () => {
       try {
-        await fs4.rm(sessionFilePath(this.dataDir, sessionId), { force: true });
+        await fs5.rm(sessionFilePath(this.dataDir, sessionId), { force: true });
       } catch {
       }
     });
@@ -17504,7 +17621,7 @@ var SessionRegistry = class _SessionRegistry {
   async readUnlocked(sessionId) {
     const file = sessionFilePath(this.dataDir, sessionId);
     try {
-      const raw = await fs4.readFile(file, "utf8");
+      const raw = await fs5.readFile(file, "utf8");
       let data;
       try {
         data = JSON.parse(raw);
@@ -17533,7 +17650,6 @@ var SessionRegistry = class _SessionRegistry {
 };
 
 // src/service/handlers.ts
-import * as nodeFs3 from "node:fs/promises";
 import * as nodePath6 from "node:path";
 
 // src/markdown/links.ts
@@ -17566,25 +17682,25 @@ function extractOutLinksDetailed(body) {
   });
   return out;
 }
-function indexFromBoxes(boxes) {
-  return buildConceptIndex(boxes);
+function indexFromNodes(nodes) {
+  return buildNodeIndex(nodes);
 }
 function resolveOutLink(index2, link2, fromNotePath) {
   if (link2.kind === "artifact") {
     return { raw: link2.raw, kind: "artifact", label: link2.label };
   }
   const meta = link2;
-  const resolutionRaw = meta.conceptTarget ?? (link2.kind === "wiki" ? stripWikiSuffix(link2.raw).target : splitHref(link2.raw).pathPart);
+  const resolutionRaw = meta.targetPath ?? (link2.kind === "wiki" ? stripWikiSuffix(link2.raw).target : splitHref(link2.raw).pathPart);
   const target = normalizeTarget(resolutionRaw, fromNotePath);
   if (!isConceptCandidate(target) && !isConceptCandidate(resolutionRaw)) {
     return { raw: link2.raw, kind: "unresolved", label: link2.label };
   }
-  const concept = resolveConcept(index2, target) ?? resolveConcept(index2, resolutionRaw);
+  const concept = resolveNode(index2, target) ?? resolveNode(index2, resolutionRaw);
   if (!concept) return { raw: link2.raw, kind: "unresolved", label: link2.label };
   return {
     raw: link2.raw,
     kind: link2.kind,
-    targetCx: concept.id,
+    targetNodeId: concept.id,
     targetPath: concept.path,
     label: link2.label ?? concept.name
   };
@@ -17595,7 +17711,7 @@ function buildBacklinkIndex(concepts) {
   for (const c of list2) {
     const concept = {
       id: c.id,
-      boxId: c.id,
+      nodeId: c.id,
       path: c.path,
       notePath: c.notePath,
       name: c.name,
@@ -17611,16 +17727,16 @@ function buildBacklinkIndex(concepts) {
     for (const link2 of extractOutLinksDetailed(c.body)) {
       if (link2.kind === "artifact") continue;
       const resolved = resolveOutLink(index2, link2, c.notePath);
-      if (!resolved.targetCx) continue;
-      const arr = reverse.get(resolved.targetCx) ?? [];
+      if (!resolved.targetNodeId) continue;
+      const arr = reverse.get(resolved.targetNodeId) ?? [];
       arr.push({
-        fromCx: c.id,
+        fromNodeId: c.id,
         fromPath: c.path,
         fromName: c.name,
         raw: link2.raw,
         kind: link2.kind === "wiki" ? "wiki" : "md"
       });
-      reverse.set(resolved.targetCx, arr);
+      reverse.set(resolved.targetNodeId, arr);
     }
   }
   return reverse;
@@ -17642,12 +17758,12 @@ function outLinkFromHref(url, rawLabel) {
   if (!href) return null;
   const label = rawLabel.replace(/\s+/g, " ").trim() || void 0;
   if (ARTIFACT_SCHEME_RE.test(href) || isExternalHref(href)) {
-    return { raw: href, kind: "artifact", label, conceptTarget: href };
+    return { raw: href, kind: "artifact", label, targetPath: href };
   }
   if (isPureAnchor(href)) return null;
   const { pathPart, fragment } = splitHref(href);
   if (!pathPart || isAttachmentPath(pathPart)) return null;
-  return { raw: href, kind: "md", label, fragment, conceptTarget: pathPart };
+  return { raw: href, kind: "md", label, fragment, targetPath: pathPart };
 }
 function collectDefinitions(tree) {
   const definitions = /* @__PURE__ */ new Map();
@@ -17713,7 +17829,7 @@ function tryParseWikiLink(text3, start) {
     return { link: null, next };
   }
   return {
-    link: { raw: rawTarget, kind: "wiki", label, fragment, blockRef, conceptTarget: target },
+    link: { raw: rawTarget, kind: "wiki", label, fragment, blockRef, targetPath: target },
     next
   };
 }
@@ -17811,14 +17927,14 @@ function add(index2, key2, concept) {
 }
 
 // src/service/etag.ts
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 function contentEtag(content3) {
-  return createHash3("sha256").update(content3, "utf8").digest("hex").slice(0, 24);
+  return createHash4("sha256").update(content3, "utf8").digest("hex").slice(0, 24);
 }
 
 // src/service/user-ask-store.ts
-import * as fs5 from "node:fs/promises";
-import * as path5 from "node:path";
+import * as fs6 from "node:fs/promises";
+import * as path6 from "node:path";
 function cloneAsk(item) {
   return {
     ...item,
@@ -17906,7 +18022,7 @@ var UserAskStore = class {
     this.closed = false;
     this.shutdownPromise = null;
     this.chain = Promise.resolve();
-    this.file = path5.join(dataDir, "user-asks.json");
+    this.file = path6.join(dataDir, "user-asks.json");
     this.writeState = options?.writeState ?? writeJsonAtomic;
   }
   enqueue(fn) {
@@ -17922,7 +18038,7 @@ var UserAskStore = class {
     return this.enqueue(async () => {
       if (this.loaded) return;
       try {
-        const raw = await fs5.readFile(this.file, "utf8");
+        const raw = await fs6.readFile(this.file, "utf8");
         let parsed;
         try {
           parsed = JSON.parse(raw);
@@ -18030,8 +18146,8 @@ var UserAskStore = class {
         throw new Error("UserAsk reply requires answer and/or choiceId");
       }
       if (choiceId && item.choices?.length) {
-        const ok = item.choices.some((c) => c.id === choiceId);
-        if (!ok) {
+        const ok2 = item.choices.some((c) => c.id === choiceId);
+        if (!ok2) {
           throw new Error(`Unknown choiceId for UserAsk ${id}: ${choiceId}`);
         }
       }
@@ -18173,8 +18289,8 @@ function formatUserAskAnswerPrompt(ask) {
 }
 
 // src/service/task-input-store.ts
-import * as fs6 from "node:fs/promises";
-import * as path6 from "node:path";
+import * as fs7 from "node:fs/promises";
+import * as path7 from "node:path";
 function cloneInput(item) {
   return {
     ...item,
@@ -18306,7 +18422,7 @@ var TaskInputStore = class {
     this.chain = Promise.resolve();
     /** Test-only: next persistSnapshot fails once, then clears. */
     this.nextPersistErrorForTests = null;
-    this.file = path6.join(dataDir, "task-inputs.json");
+    this.file = path7.join(dataDir, "task-inputs.json");
     this.writeState = options?.writeState ?? writeJsonAtomic;
   }
   enqueue(fn) {
@@ -18322,7 +18438,7 @@ var TaskInputStore = class {
     return this.enqueue(async () => {
       if (this.loaded) return;
       try {
-        const raw = await fs6.readFile(this.file, "utf8");
+        const raw = await fs7.readFile(this.file, "utf8");
         let parsed;
         try {
           parsed = JSON.parse(raw);
@@ -18908,16 +19024,16 @@ var CLIENT_METHODS = [
   "docs.createNote",
   "docs.fork",
   /**
-   * User-only atomic concept rename (MutationBus).
+   * User-only atomic node rename (MutationBus).
    * Keeps cx- immutable; renames folder + identity note; rewrites path links.
-   * Success emits exactly one concept.changed with oldPath/path.
+   * Success emits exactly one node.changed with oldPath/path.
    */
   "docs.rename",
   /**
    * User-only structural move / reparent (MutationBus).
    * Resolve moved node + destination by cx-; require expectedPath (stale → -32009 path_stale).
    * Reparent rewrites path links; same-parent reorder is order-only.
-   * Success emits exactly one concept.changed (reason docs.move) with oldPath/path/pathMap.
+   * Success emits exactly one node.changed (reason docs.move) with oldPath/path/pathMap.
    * Canonical name is docs.move — no docs.reparent alias.
    */
   "docs.move",
@@ -18929,7 +19045,7 @@ var CLIENT_METHODS = [
   "docs.search",
   "docs.backlinks",
   /**
-   * Import binary attachment for a concept.
+   * Import binary attachment for a node.
    * Wire: base64 string in `bytesBase64` (or legacy `contentBase64`).
    * Disk: original bytes under attachments/<cx>/… — never a .b64 text companion.
    */
@@ -18937,23 +19053,23 @@ var CLIENT_METHODS = [
   /**
    * User-only Node type mutation (MutationBus + baseEtag).
    * Public semantic path for compound type strings; not via free-form docs.write.
-   * Success emits exactly one concept.changed with reason docs.setType.
+   * Success emits exactly one node.changed with reason docs.setType.
    */
   "docs.setType",
   /**
    * User-only Node tags replace (MutationBus + baseEtag).
    * Empty array clears Node tags without pruning the global registry.
-   * Success emits exactly one concept.changed with reason docs.tags.set.
+   * Success emits exactly one node.changed with reason docs.tags.set.
    */
   "docs.tags.set",
   /**
    * User-only attach one tag to a Node (MutationBus + baseEtag; idempotent).
-   * Auto-registers new names into tags.json. Success emits concept.changed reason docs.tag.add.
+   * Auto-registers new names into tags.json. Success emits node.changed reason docs.tag.add.
    */
   "docs.tag.add",
   /**
    * User-only detach one tag from a Node (MutationBus + baseEtag).
-   * Does not prune the global registry. Success emits concept.changed reason docs.tag.remove.
+   * Does not prune the global registry. Success emits node.changed reason docs.tag.remove.
    */
   "docs.tag.remove",
   /**
@@ -18985,7 +19101,7 @@ var CLIENT_METHODS = [
   "registry.tag.create",
   /**
    * User-only global tag delete + cascade off all Nodes (MutationBus).
-   * Success emits exactly one registry.tags.updated (no per-Node concept.changed).
+   * Success emits exactly one registry.tags.updated (no per-Node node.changed).
    * Clients must treat that event as invalidating tag candidates and graph/node
    * projections whose tags may have been rewritten by the cascade.
    */
@@ -19001,17 +19117,17 @@ var CLIENT_METHODS = [
   "registry.role.create",
   "registry.role.update",
   "registry.role.delete",
-  "profile.list",
-  "profile.get",
-  "profile.create",
-  "profile.update",
-  "profile.delete",
+  "route.list",
+  "route.get",
+  "route.create",
+  "route.update",
+  "route.delete",
   /**
    * Read-only product provider verification catalog.
    * Params: none (machine-global product facts; not workspace-scoped).
    * Result: { providers: ProviderCatalogEntry[] } — adapterId + verificationLevel
    * (+ optional canResume/notes). Never secrets, env values, or credentials.
-   * Distinct from profile.* (machine-local launch config).
+   * Distinct from route.* (machine-local launch config).
    */
   "provider.catalog",
   /** Machine-local credential vault (user-only; never returns secret plaintext). */
@@ -19044,7 +19160,7 @@ var CLIENT_METHODS = [
   "task.askUser",
   /**
    * U2A one-shot append: user-only text and/or contextRefs to a running/waiting task.
-   * Not chat; does not answer a pending UserAsk; does not mutate profiles.
+   * Not chat; does not answer a pending UserAsk; does not mutate routes.
    */
   "task.sendInput",
   "task.deliver",
@@ -19062,7 +19178,7 @@ var CLIENT_METHODS = [
    * Preserves nodeRefs/worktree/branch/lane/pending TaskInputs/deliveryPolicy;
    * stops the old Session first; new ss- has contextRestored=false + stable restoreReason.
    * turnBusy → fail-loud TURN_BUSY (retryable); no force flag in this contract.
-   * waiting only when durable waitCode=session_unavailable (not user-input/a2a/tool).
+   * waiting only when durable waitCode=session_unavailable (not user-input/tool).
    */
   "task.replaceSession",
   "task.list",
@@ -19070,36 +19186,21 @@ var CLIENT_METHODS = [
   "delivery.list",
   "delivery.get",
   /**
-   * @deprecated Prefer node.collaboration (V0.2). Migration-only.
-   * Stable box collaboration projection (legacy task-api §2.3).
-   * Params: workspaceId + id|path|boxId (same resolver as docs.get).
-   * Result: { workspaceId, boxId, status, assignee?, activeTaskId? }.
-   */
-  "box.projection",
-  /**
-   * @deprecated Prefer node.collaborations (V0.2). Migration-only.
-   * Batch box collaboration projection (same item semantics as box.projection).
-   * Params: workspaceId + ids: string[] (stable cx- handles).
-   * Result: { workspaceId, projections } with projections ordered as ids.
-   */
-  "box.projections",
-  /**
    * V0.2 Node-keyed collaboration projection (task-api §2.3).
-   * Params: workspaceId + id|path|boxId (same resolver as docs.get).
-   * Result: { workspaceId, nodeId, task, session, delivery } with nulls when idle.
-   * Direct-claim nonterminal Task only; Session/Delivery only via explicit ids.
+   * Params: workspaceId + nodeId.
+   * Result: { workspaceId, nodeId, activeTask }.
    */
   "node.collaboration",
   /**
    * V0.2 Output provenance (Output → Delivery → Task → sourceNode).
-   * Params: workspaceId + id|outputId|path (stable Node id preferred).
+   * Params: workspaceId + canonical nodeId.
    * Unbound output → bound:false + nulls; corrupt refs → incomplete reasons.
    */
   "output.provenance",
   /**
    * V0.2 batch Node collaboration projection (same item semantics as node.collaboration).
-   * Params: workspaceId + ids: string[] (stable cx- handles).
-   * Result: { workspaceId, items } ordered as ids. Empty ids → empty items.
+   * Params: workspaceId + nodeIds: string[] (stable cx- handles).
+   * Result: { workspaceId, items } ordered as nodeIds. Empty nodeIds → empty items.
    * Loads tent/tasks/sessions/deliveries once per batch (no N+1).
    */
   "node.collaborations",
@@ -19136,9 +19237,7 @@ var CLIENT_METHODS = [
   "role.checkpoint.get",
   "role.checkpoint.set",
   "role.checkpoint.clear",
-  "a2a.listPending",
-  "a2a.resolve",
-  /** ACP tool permission approvals (permissionPolicy=ask) — distinct from a2a.* spawn gate. */
+  /** ACP tool permission approvals (permissionPolicy=ask). */
   "toolApproval.listPending",
   "toolApproval.get",
   "toolApproval.approveOnce",
@@ -19153,9 +19252,9 @@ var CLIENT_METHODS = [
   "userAsk.deny",
   /**
    * Unified A2U pending read projection (workspace-scoped).
-   * Aggregates pending UserAsk, A2A spawn approval, ACP tool approval, and
+   * Aggregates pending UserAsk, ACP tool approval, and
    * status=ready Delivery. No new store / state machine; resolve stays on
-   * domain RPCs (userAsk.* / a2a.resolve / toolApproval.* / task.accept|reject).
+   * domain RPCs (userAsk.* / toolApproval.* / task.accept|reject).
    * Fail-loud on any source failure — never a partial authoritative inbox.
    */
   "interaction.listPending",
@@ -19208,605 +19307,9 @@ var SEMANTIC_DOCS_WRITE_FIELDS = ["type", "tags", "relations"];
 var RPC_UNAUTHORIZED = -32001;
 var RPC_LIFECYCLE = -32022;
 
-// src/service/profiles.ts
+// src/service/routes.ts
 import * as fs14 from "node:fs/promises";
 import * as path12 from "node:path";
-
-// src/adapters/acp/mcp-skills.ts
-import * as fs7 from "node:fs";
-import * as os from "node:os";
-import * as path7 from "node:path";
-var SAFE_SKILL_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
-var MCP_SERVER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-var ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-var CREDENTIAL_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
-var MAX_PROFILE_SKILLS = 64;
-var MAX_PROFILE_MCP_SERVERS = 32;
-var MAX_MCP_ARGS = 64;
-var MAX_MCP_ENV_ENTRIES = 32;
-var MAX_MCP_HEADER_ENTRIES = 16;
-function fieldOk(value) {
-  return { ok: true, value };
-}
-function fieldErr(message2) {
-  return { ok: false, message: message2 };
-}
-function defaultAllowedSkillRoots(home) {
-  const root = home ?? os.homedir();
-  return [
-    path7.join(root, ".agents", "skills"),
-    path7.join(root, ".claude", "skills"),
-    path7.join(root, ".grok", "skills"),
-    path7.join(root, ".cursor", "skills")
-  ];
-}
-function normalizePathForCompare(p) {
-  const resolved = path7.resolve(p);
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-}
-function isPathInsideRoot(candidate, root) {
-  const c = normalizePathForCompare(candidate);
-  const r = normalizePathForCompare(root);
-  if (c === r) return true;
-  const rel = path7.relative(r, c);
-  return rel !== "" && !rel.startsWith("..") && !path7.isAbsolute(rel);
-}
-function isUnderAllowedSkillRoots(absolutePath, allowedRoots) {
-  const abs = path7.resolve(absolutePath);
-  return allowedRoots.some((root) => isPathInsideRoot(abs, root));
-}
-function parseNonEmptyString(raw, key2) {
-  if (typeof raw !== "string") {
-    return fieldErr(`Invalid string param: ${key2}`);
-  }
-  const v = raw.trim();
-  if (!v) {
-    return fieldErr(`Invalid string param: ${key2} must be non-empty when set`);
-  }
-  return fieldOk(v);
-}
-function parseEnvKeyName(raw, key2) {
-  const base = parseNonEmptyString(raw, key2);
-  if (!base.ok) return base;
-  if (!ENV_KEY_RE.test(base.value)) {
-    return fieldErr(
-      `Invalid ${key2}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
-    );
-  }
-  return fieldOk(base.value);
-}
-function parseCredentialId(raw, key2) {
-  const base = parseNonEmptyString(raw, key2);
-  if (!base.ok) return base;
-  if (!CREDENTIAL_ID_RE.test(base.value)) {
-    return fieldErr(
-      `Invalid ${key2}: must match ${CREDENTIAL_ID_RE} (vault id, not secret value)`
-    );
-  }
-  return fieldOk(base.value);
-}
-function assertSafeSkillName(name) {
-  const base = parseNonEmptyString(name, "skills[].name");
-  if (!base.ok) return base;
-  if (!SAFE_SKILL_NAME_RE.test(base.value) || base.value.includes("..")) {
-    return fieldErr(
-      `Invalid skills[].name: must match ${SAFE_SKILL_NAME_RE} (no path separators)`
-    );
-  }
-  return fieldOk(base.value);
-}
-function parseStringRecord(raw, field, valueParse, maxEntries) {
-  if (raw === void 0 || raw === null) return fieldOk(void 0);
-  if (typeof raw !== "object" || Array.isArray(raw)) {
-    return fieldErr(`Invalid ${field}: must be an object of string\u2192string`);
-  }
-  const entries = Object.entries(raw);
-  if (entries.length > maxEntries) {
-    return fieldErr(`Invalid ${field}: at most ${maxEntries} entries`);
-  }
-  const out = {};
-  for (const [k, v] of entries) {
-    const key2 = k.trim();
-    if (!key2) return fieldErr(`Invalid ${field}: empty key`);
-    const parsed = valueParse(v, `${field}.${key2}`);
-    if (!parsed.ok) return parsed;
-    out[key2] = parsed.value;
-  }
-  return fieldOk(out);
-}
-function parseEnvKeyMap(raw, field, maxEntries) {
-  return parseStringRecord(raw, field, (v, k) => parseEnvKeyName(v, k), maxEntries);
-}
-function parseCredentialRefMap(raw, field, maxEntries) {
-  return parseStringRecord(raw, field, (v, k) => parseCredentialId(v, k), maxEntries);
-}
-function parseSkillPathValue(raw, allowedRoots) {
-  const base = parseNonEmptyString(raw, "skills[].path");
-  if (!base.ok) return base;
-  const p = base.value;
-  if (!path7.isAbsolute(p)) {
-    return fieldErr(
-      "Invalid skills[].path: must be an absolute path under an allowed skill root"
-    );
-  }
-  if (p.includes("\0")) {
-    return fieldErr("Invalid skills[].path: contains NUL");
-  }
-  const resolved = path7.resolve(p);
-  if (!isUnderAllowedSkillRoots(resolved, allowedRoots)) {
-    return fieldErr(
-      `Invalid skills[].path: must be under allowed skill roots (${allowedRoots.join(", ")})`
-    );
-  }
-  return fieldOk(resolved);
-}
-function parseSkillRefValue(raw, allowedRoots) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return fieldErr("Invalid skills[] entry: must be an object with name");
-  }
-  const o = raw;
-  for (const key2 of Object.keys(o)) {
-    if (key2 !== "name" && key2 !== "path" && key2 !== "enabled") {
-      return fieldErr(`Unknown skills[] field: ${key2}`);
-    }
-  }
-  const nameR = assertSafeSkillName(o.name);
-  if (!nameR.ok) return nameR;
-  let pathVal;
-  if ("path" in o && o.path !== void 0 && o.path !== null) {
-    const pr = parseSkillPathValue(o.path, allowedRoots);
-    if (!pr.ok) return pr;
-    pathVal = pr.value;
-  }
-  let enabled;
-  if ("enabled" in o && o.enabled !== void 0 && o.enabled !== null) {
-    if (typeof o.enabled !== "boolean") {
-      return fieldErr("Invalid skills[].enabled: must be boolean");
-    }
-    enabled = o.enabled;
-  }
-  const ref = { name: nameR.value };
-  if (pathVal !== void 0) ref.path = pathVal;
-  if (enabled !== void 0) ref.enabled = enabled;
-  return fieldOk(ref);
-}
-function parseSkillsArrayValue(raw, allowedRoots = defaultAllowedSkillRoots()) {
-  if (raw === void 0 || raw === null) return fieldOk(void 0);
-  if (!Array.isArray(raw)) {
-    return fieldErr("Invalid skills: must be an array");
-  }
-  if (raw.length > MAX_PROFILE_SKILLS) {
-    return fieldErr(`Invalid skills: at most ${MAX_PROFILE_SKILLS} entries`);
-  }
-  const out = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const item of raw) {
-    const r = parseSkillRefValue(item, allowedRoots);
-    if (!r.ok) return r;
-    const key2 = r.value.name.toLowerCase();
-    if (seen.has(key2)) {
-      return fieldErr(`Duplicate skill name in skills: ${r.value.name}`);
-    }
-    seen.add(key2);
-    out.push(r.value);
-  }
-  return fieldOk(out);
-}
-function parseMcpName(raw) {
-  const base = parseNonEmptyString(raw, "mcpServers[].name");
-  if (!base.ok) return base;
-  if (!MCP_SERVER_NAME_RE.test(base.value)) {
-    return fieldErr(
-      `Invalid mcpServers[].name: must match ${MCP_SERVER_NAME_RE}`
-    );
-  }
-  return fieldOk(base.value);
-}
-function parseHttpUrl(raw) {
-  const base = parseNonEmptyString(raw, "mcpServers[].url");
-  if (!base.ok) return base;
-  let parsed;
-  try {
-    parsed = new URL(base.value);
-  } catch {
-    return fieldErr("Invalid mcpServers[].url: must be an absolute http(s) URL");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return fieldErr("Invalid mcpServers[].url: only http: and https: are allowed");
-  }
-  if (parsed.username || parsed.password) {
-    return fieldErr(
-      "Invalid mcpServers[].url: username/password in URL are not allowed"
-    );
-  }
-  return fieldOk(base.value);
-}
-function parseMcpServerValue(raw) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return fieldErr("Invalid mcpServers[] entry: must be an object");
-  }
-  const o = raw;
-  const allowed = /* @__PURE__ */ new Set([
-    "name",
-    "transport",
-    "enabled",
-    "command",
-    "args",
-    "envKeys",
-    "envCredentialRefs",
-    "url",
-    "headerEnvKeys",
-    "headerCredentialRefs"
-  ]);
-  for (const key2 of Object.keys(o)) {
-    if (!allowed.has(key2)) {
-      const lower = key2.toLowerCase();
-      if (lower === "env" || lower === "headers" || lower.includes("secret") || lower.includes("token") || lower.includes("apikey") || lower.includes("password") || lower.includes("authorization") || lower.includes("bearer")) {
-        return fieldErr(
-          `Rejected dangerous or unsupported mcpServers[] field: ${key2} (use envKeys/envCredentialRefs/headerEnvKeys/headerCredentialRefs)`
-        );
-      }
-      return fieldErr(`Unknown mcpServers[] field: ${key2}`);
-    }
-  }
-  const nameR = parseMcpName(o.name);
-  if (!nameR.ok) return nameR;
-  if (typeof o.transport !== "string" || o.transport !== "stdio" && o.transport !== "http") {
-    return fieldErr("Invalid mcpServers[].transport: must be stdio|http");
-  }
-  const transport = o.transport;
-  let enabled;
-  if ("enabled" in o && o.enabled !== void 0 && o.enabled !== null) {
-    if (typeof o.enabled !== "boolean") {
-      return fieldErr("Invalid mcpServers[].enabled: must be boolean");
-    }
-    enabled = o.enabled;
-  }
-  const server = { name: nameR.value, transport };
-  if (enabled !== void 0) server.enabled = enabled;
-  if (transport === "stdio") {
-    if ("url" in o && o.url !== void 0 && o.url !== null) {
-      return fieldErr("Invalid mcpServers[]: stdio transport must not set url");
-    }
-    if ("headerEnvKeys" in o && o.headerEnvKeys != null) {
-      return fieldErr("Invalid mcpServers[]: stdio transport must not set headerEnvKeys");
-    }
-    if ("headerCredentialRefs" in o && o.headerCredentialRefs != null) {
-      return fieldErr(
-        "Invalid mcpServers[]: stdio transport must not set headerCredentialRefs"
-      );
-    }
-    const cmd = parseNonEmptyString(o.command, "mcpServers[].command");
-    if (!cmd.ok) return cmd;
-    server.command = cmd.value;
-    if ("args" in o && o.args !== void 0 && o.args !== null) {
-      if (!Array.isArray(o.args) || !o.args.every((a) => typeof a === "string")) {
-        return fieldErr("Invalid mcpServers[].args: must be an array of strings");
-      }
-      if (o.args.length > MAX_MCP_ARGS) {
-        return fieldErr(`Invalid mcpServers[].args: at most ${MAX_MCP_ARGS} entries`);
-      }
-      server.args = o.args.map((a) => a);
-    }
-    const envKeys = parseEnvKeyMap(o.envKeys, "mcpServers[].envKeys", MAX_MCP_ENV_ENTRIES);
-    if (!envKeys.ok) return envKeys;
-    if (envKeys.value) server.envKeys = envKeys.value;
-    const envCreds = parseCredentialRefMap(
-      o.envCredentialRefs,
-      "mcpServers[].envCredentialRefs",
-      MAX_MCP_ENV_ENTRIES
-    );
-    if (!envCreds.ok) return envCreds;
-    if (envCreds.value) server.envCredentialRefs = envCreds.value;
-  } else {
-    if ("command" in o && o.command !== void 0 && o.command !== null) {
-      return fieldErr("Invalid mcpServers[]: http transport must not set command");
-    }
-    if ("args" in o && o.args !== void 0 && o.args !== null) {
-      return fieldErr("Invalid mcpServers[]: http transport must not set args");
-    }
-    if ("envKeys" in o && o.envKeys != null) {
-      return fieldErr("Invalid mcpServers[]: http transport must not set envKeys");
-    }
-    if ("envCredentialRefs" in o && o.envCredentialRefs != null) {
-      return fieldErr(
-        "Invalid mcpServers[]: http transport must not set envCredentialRefs"
-      );
-    }
-    const urlR = parseHttpUrl(o.url);
-    if (!urlR.ok) return urlR;
-    server.url = urlR.value;
-    const headerEnv = parseEnvKeyMap(
-      o.headerEnvKeys,
-      "mcpServers[].headerEnvKeys",
-      MAX_MCP_HEADER_ENTRIES
-    );
-    if (!headerEnv.ok) return headerEnv;
-    if (headerEnv.value) server.headerEnvKeys = headerEnv.value;
-    const headerCreds = parseCredentialRefMap(
-      o.headerCredentialRefs,
-      "mcpServers[].headerCredentialRefs",
-      MAX_MCP_HEADER_ENTRIES
-    );
-    if (!headerCreds.ok) return headerCreds;
-    if (headerCreds.value) server.headerCredentialRefs = headerCreds.value;
-  }
-  return fieldOk(server);
-}
-function parseMcpServersArrayValue(raw) {
-  if (raw === void 0 || raw === null) return fieldOk(void 0);
-  if (!Array.isArray(raw)) {
-    return fieldErr("Invalid mcpServers: must be an array");
-  }
-  if (raw.length > MAX_PROFILE_MCP_SERVERS) {
-    return fieldErr(`Invalid mcpServers: at most ${MAX_PROFILE_MCP_SERVERS} entries`);
-  }
-  const out = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const item of raw) {
-    const r = parseMcpServerValue(item);
-    if (!r.ok) return r;
-    const key2 = r.value.name.toLowerCase();
-    if (seen.has(key2)) {
-      return fieldErr(`Duplicate mcpServers name: ${r.value.name}`);
-    }
-    seen.add(key2);
-    out.push(r.value);
-  }
-  return fieldOk(out);
-}
-function cloneSkillRefs(skills) {
-  if (!skills) return void 0;
-  return skills.map((s) => ({
-    name: s.name,
-    ...s.path !== void 0 ? { path: s.path } : {},
-    ...s.enabled !== void 0 ? { enabled: s.enabled } : {}
-  }));
-}
-function cloneMcpServers(servers) {
-  if (!servers) return void 0;
-  return servers.map((s) => ({
-    name: s.name,
-    transport: s.transport,
-    ...s.enabled !== void 0 ? { enabled: s.enabled } : {},
-    ...s.command !== void 0 ? { command: s.command } : {},
-    ...s.args !== void 0 ? { args: [...s.args] } : {},
-    ...s.envKeys !== void 0 ? { envKeys: { ...s.envKeys } } : {},
-    ...s.envCredentialRefs !== void 0 ? { envCredentialRefs: { ...s.envCredentialRefs } } : {},
-    ...s.url !== void 0 ? { url: s.url } : {},
-    ...s.headerEnvKeys !== void 0 ? { headerEnvKeys: { ...s.headerEnvKeys } } : {},
-    ...s.headerCredentialRefs !== void 0 ? { headerCredentialRefs: { ...s.headerCredentialRefs } } : {}
-  }));
-}
-function projectSkillRefs(skills) {
-  if (!skills || skills.length === 0) return void 0;
-  return skills.map((s) => ({
-    name: s.name,
-    ...s.path !== void 0 ? { path: s.path } : {},
-    enabled: s.enabled !== false
-  }));
-}
-function projectMcpServers(servers) {
-  if (!servers || servers.length === 0) return void 0;
-  return servers.map((s) => ({
-    name: s.name,
-    transport: s.transport,
-    enabled: s.enabled !== false,
-    ...s.command !== void 0 ? { command: s.command } : {},
-    ...s.args !== void 0 ? { args: [...s.args] } : {},
-    ...s.envKeys !== void 0 ? { envKeys: { ...s.envKeys } } : {},
-    ...s.envCredentialRefs !== void 0 ? { envCredentialRefs: { ...s.envCredentialRefs } } : {},
-    ...s.url !== void 0 ? { url: s.url } : {},
-    ...s.headerEnvKeys !== void 0 ? { headerEnvKeys: { ...s.headerEnvKeys } } : {},
-    ...s.headerCredentialRefs !== void 0 ? { headerCredentialRefs: { ...s.headerCredentialRefs } } : {}
-  }));
-}
-function resolveEnvValue(envKey, planEnv) {
-  const fromPlan = planEnv[envKey];
-  if (typeof fromPlan === "string" && fromPlan.length > 0) return fromPlan;
-  const fromProc = process.env[envKey];
-  if (typeof fromProc === "string" && fromProc.length > 0) return fromProc;
-  return void 0;
-}
-function resolveAcpMcpServersWire(servers, opts) {
-  if (!servers || servers.length === 0) return [];
-  const wire = [];
-  for (const s of servers) {
-    if (s.enabled === false) continue;
-    if (s.transport === "stdio") {
-      const command = s.command?.trim();
-      if (!command) {
-        throw new Error(`MCP server ${s.name}: stdio requires command`);
-      }
-      const env = [];
-      if (s.envKeys) {
-        for (const [envName, envKey] of Object.entries(s.envKeys)) {
-          const value = resolveEnvValue(envKey, opts.planEnv);
-          if (value === void 0) {
-            throw new Error(
-              `MCP server ${s.name}: missing process env ${envKey} for env var ${envName}`
-            );
-          }
-          env.push({ name: envName, value });
-        }
-      }
-      if (s.envCredentialRefs) {
-        for (const [envName, credId] of Object.entries(s.envCredentialRefs)) {
-          if (!opts.resolveCredential) {
-            throw new Error(
-              `MCP server ${s.name}: credentialRef ${credId} requires resolveCredential hook`
-            );
-          }
-          const value = opts.resolveCredential(credId);
-          if (typeof value !== "string" || !value) {
-            throw new Error(
-              `MCP server ${s.name}: credential not found or empty for ${credId} (env ${envName})`
-            );
-          }
-          env.push({ name: envName, value });
-        }
-      }
-      wire.push({
-        name: s.name,
-        command,
-        args: s.args ? [...s.args] : [],
-        env
-      });
-    } else {
-      const url = s.url?.trim();
-      if (!url) {
-        throw new Error(`MCP server ${s.name}: http requires url`);
-      }
-      const headers = [];
-      if (s.headerEnvKeys) {
-        for (const [headerName, envKey] of Object.entries(s.headerEnvKeys)) {
-          const value = resolveEnvValue(envKey, opts.planEnv);
-          if (value === void 0) {
-            throw new Error(
-              `MCP server ${s.name}: missing process env ${envKey} for header ${headerName}`
-            );
-          }
-          headers.push({ name: headerName, value });
-        }
-      }
-      if (s.headerCredentialRefs) {
-        for (const [headerName, credId] of Object.entries(s.headerCredentialRefs)) {
-          if (!opts.resolveCredential) {
-            throw new Error(
-              `MCP server ${s.name}: credentialRef ${credId} requires resolveCredential hook`
-            );
-          }
-          const value = opts.resolveCredential(credId);
-          if (typeof value !== "string" || !value) {
-            throw new Error(
-              `MCP server ${s.name}: credential not found or empty for ${credId} (header ${headerName})`
-            );
-          }
-          headers.push({ name: headerName, value });
-        }
-      }
-      wire.push({
-        name: s.name,
-        type: "http",
-        url,
-        ...headers.length > 0 ? { headers } : {}
-      });
-    }
-  }
-  return wire;
-}
-function resolveAcpSkillMeta(skills, opts) {
-  if (!skills || skills.length === 0) return [];
-  const out = [];
-  for (const s of skills) {
-    if (s.enabled === false) continue;
-    if (s.path && opts?.requirePathExists) {
-      if (!fs7.existsSync(s.path)) {
-        throw new Error(`Skill ${s.name}: path does not exist: ${s.path}`);
-      }
-    }
-    out.push({
-      name: s.name,
-      ...s.path !== void 0 ? { path: s.path } : {}
-    });
-  }
-  return out;
-}
-
-// src/adapters/acp/redact.ts
-var SECRET_ENV_KEY_RE = /^(.*_)?(API[_-]?KEY|TOKEN|SECRET|PASSWORD|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|AUTH)$/i;
-var DEFAULT_PLACEHOLDER = "[redacted]";
-function isSecretEnvKeyName(key2) {
-  if (SECRET_ENV_KEY_RE.test(key2)) return true;
-  if (/AUTH_REQUEST/i.test(key2)) return true;
-  if (/^TENT_.*_(KEY|TOKEN|SECRET)$/i.test(key2)) return true;
-  return false;
-}
-function collectSecretValues(env, extraSecrets) {
-  const found = /* @__PURE__ */ new Set();
-  if (env) {
-    for (const [key2, value] of Object.entries(env)) {
-      if (typeof value !== "string" || !value) continue;
-      if (isSecretEnvKeyName(key2) || valueLooksLikeHighEntropySecret(value)) {
-        if (isSecretEnvKeyName(key2)) found.add(value);
-      }
-    }
-  }
-  if (extraSecrets) {
-    for (const value of extraSecrets) {
-      if (typeof value === "string" && value.length > 0) found.add(value);
-    }
-  }
-  return [...found].sort((a, b) => b.length - a.length);
-}
-function valueLooksLikeHighEntropySecret(value) {
-  void value;
-  return false;
-}
-function redactSecrets(text3, secrets, placeholder = DEFAULT_PLACEHOLDER) {
-  if (!text3 || secrets.length === 0) return text3;
-  let out = text3;
-  for (const secret of secrets) {
-    if (!secret || secret.length < 4) continue;
-    if (!out.includes(secret)) continue;
-    out = out.split(secret).join(placeholder);
-  }
-  return out;
-}
-function redactDiagnosticText(text3, options) {
-  const secrets = collectSecretValues(options?.env, options?.secrets);
-  return redactSecrets(text3, secrets, options?.placeholder ?? DEFAULT_PLACEHOLDER);
-}
-
-// src/runtime/profile-config.ts
-function normalizeProfileToCanonicalAcp(raw) {
-  const legacy = raw.grokAcp;
-  const hasLegacy = legacy !== void 0 && legacy !== null && typeof legacy === "object";
-  const hasAcp = raw.acp !== void 0 && raw.acp !== null && typeof raw.acp === "object";
-  const { grokAcp: _drop, ...rest } = raw;
-  void _drop;
-  if (hasAcp) {
-    return {
-      profile: { ...rest, acp: { ...raw.acp } },
-      migrated: hasLegacy
-    };
-  }
-  if (hasLegacy) {
-    return {
-      profile: { ...rest, acp: { ...legacy } },
-      migrated: true
-    };
-  }
-  return { profile: { ...rest }, migrated: false };
-}
-function sanitizeProfileEnvForSnapshot(env) {
-  if (!env) return void 0;
-  const out = {};
-  for (const [key2, value] of Object.entries(env)) {
-    if (typeof value !== "string") continue;
-    out[key2] = isSecretEnvKeyName(key2) ? "[redacted]" : value;
-  }
-  return out;
-}
-function cloneAgentProfileConfig(p) {
-  const { profile: canonical } = normalizeProfileToCanonicalAcp(p);
-  return {
-    ...canonical,
-    acp: canonical.acp ? { ...canonical.acp } : void 0,
-    fake: canonical.fake ? { ...canonical.fake } : void 0,
-    env: canonical.env ? { ...canonical.env } : void 0,
-    args: canonical.args ? [...canonical.args] : void 0,
-    skills: cloneSkillRefs(canonical.skills),
-    mcpServers: cloneMcpServers(canonical.mcpServers)
-  };
-}
-function cloneAgentProfileConfigForSnapshot(p) {
-  const cloned = cloneAgentProfileConfig(p);
-  return {
-    ...cloned,
-    env: sanitizeProfileEnvForSnapshot(cloned.env)
-  };
-}
 
 // src/adapters/fake/index.ts
 import * as fs8 from "node:fs";
@@ -19862,7 +19365,7 @@ var FakeProviderAdapter = class {
     return {
       canSpawn: true,
       canResume: false,
-      // default; profile may store resumeToken separately
+      // default; a route session may store a resume token separately
       canStopGraceful: true,
       needsTty: false,
       supportsWorktreeCwd: true,
@@ -19887,10 +19390,9 @@ var FakeProviderAdapter = class {
     const env = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_PROFILE_ID: plan.profileId
+      TENT_ROUTE_ID: plan.routeId
     };
     if (bootstrapFile) env.TENT_BOOTSTRAP_FILE = bootstrapFile;
-    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
     if (plan.command) {
       return {
         command: plan.command,
@@ -20057,6 +19559,51 @@ function sealAssistantMessageSegment(segments, current) {
 }
 function isAssistantMessageChunkKind(kind) {
   return kind === "agent_message_chunk";
+}
+
+// src/adapters/acp/redact.ts
+var SECRET_ENV_KEY_RE = /^(.*_)?(API[_-]?KEY|TOKEN|SECRET|PASSWORD|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|AUTH)$/i;
+var DEFAULT_PLACEHOLDER = "[redacted]";
+function isSecretEnvKeyName(key2) {
+  if (SECRET_ENV_KEY_RE.test(key2)) return true;
+  if (/AUTH_REQUEST/i.test(key2)) return true;
+  if (/^TENT_.*_(KEY|TOKEN|SECRET)$/i.test(key2)) return true;
+  return false;
+}
+function collectSecretValues(env, extraSecrets) {
+  const found = /* @__PURE__ */ new Set();
+  if (env) {
+    for (const [key2, value] of Object.entries(env)) {
+      if (typeof value !== "string" || !value) continue;
+      if (isSecretEnvKeyName(key2) || valueLooksLikeHighEntropySecret(value)) {
+        if (isSecretEnvKeyName(key2)) found.add(value);
+      }
+    }
+  }
+  if (extraSecrets) {
+    for (const value of extraSecrets) {
+      if (typeof value === "string" && value.length > 0) found.add(value);
+    }
+  }
+  return [...found].sort((a, b) => b.length - a.length);
+}
+function valueLooksLikeHighEntropySecret(value) {
+  void value;
+  return false;
+}
+function redactSecrets(text3, secrets, placeholder = DEFAULT_PLACEHOLDER) {
+  if (!text3 || secrets.length === 0) return text3;
+  let out = text3;
+  for (const secret of secrets) {
+    if (!secret || secret.length < 4) continue;
+    if (!out.includes(secret)) continue;
+    out = out.split(secret).join(placeholder);
+  }
+  return out;
+}
+function redactDiagnosticText(text3, options) {
+  const secrets = collectSecretValues(options?.env, options?.secrets);
+  return redactSecrets(text3, secrets, options?.placeholder ?? DEFAULT_PLACEHOLDER);
 }
 
 // src/adapters/acp/limits.ts
@@ -21344,7 +20891,7 @@ var AcpManagedSession = class {
     await this.bootstrapDone;
     const plan = {
       sessionId: this.sessionId,
-      profileId: "",
+      routeId: "",
       cwd: "",
       env: {}
     };
@@ -21666,20 +21213,20 @@ var NodeFs = class {
     const entries = await fs10.readdir(this.abs(dir), { withFileTypes: true });
     return entries.filter((e) => !e.name.startsWith(".git")).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
   }
-  async readFile(path23) {
-    return fs10.readFile(this.abs(path23), "utf8");
+  async readFile(path22) {
+    return fs10.readFile(this.abs(path22), "utf8");
   }
-  async writeFile(path23, content3) {
-    const abs = this.abs(path23);
+  async writeFile(path22, content3) {
+    const abs = this.abs(path22);
     await fs10.mkdir(nodePath5.dirname(abs), { recursive: true });
     await this.atomicReplace(abs, content3, "utf8");
   }
-  async readBinary(path23) {
-    const buf = await fs10.readFile(this.abs(path23));
+  async readBinary(path22) {
+    const buf = await fs10.readFile(this.abs(path22));
     return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   }
-  async writeBinary(path23, data) {
-    const abs = this.abs(path23);
+  async writeBinary(path22, data) {
+    const abs = this.abs(path22);
     await fs10.mkdir(nodePath5.dirname(abs), { recursive: true });
     const payload = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     await this.atomicReplace(abs, payload);
@@ -21709,41 +21256,38 @@ var NodeFs = class {
       }
     }
   }
-  async exists(path23) {
+  async exists(path22) {
     try {
-      await fs10.access(this.abs(path23));
+      await fs10.access(this.abs(path22));
       return true;
     } catch {
       return false;
     }
   }
-  async mkdir(path23) {
-    await fs10.mkdir(this.abs(path23), { recursive: true });
+  async mkdir(path22) {
+    await fs10.mkdir(this.abs(path22), { recursive: true });
   }
   async move(from, to) {
     await fs10.mkdir(nodePath5.dirname(this.abs(to)), { recursive: true });
     await fs10.rename(this.abs(from), this.abs(to));
   }
-  async remove(path23) {
-    await fs10.rm(this.abs(path23), { recursive: true, force: true });
+  async remove(path22) {
+    await fs10.rm(this.abs(path22), { recursive: true, force: true });
   }
-  async withLock(path23, action) {
-    return withFileMutationLock(this.abs(path23), action, {
+  async withLock(path22, action) {
+    return withFileMutationLock(this.abs(path22), action, {
       busyMessage: "Tent is already running another write operation; try again later.",
       acquireFailedMessage: "Cannot acquire the Tent mutation lock."
     });
   }
 };
 
-// src/adapters/acp/profile.ts
+// src/adapters/acp/route.ts
 import * as fs11 from "node:fs";
 import * as path9 from "node:path";
-function readAcpExtras(extras, legacyKeys = []) {
+function readAcpExtras(extras) {
   if (!extras || typeof extras !== "object") return {};
   if (extras.acp !== void 0) return extras.acp;
-  for (const key2 of legacyKeys) {
-    if (extras[key2] !== void 0) return extras[key2];
-  }
   return {};
 }
 function readAcpSessionProjection(extras) {
@@ -21779,8 +21323,8 @@ function readBootstrapImageClientOptions(plan) {
   };
   if (systemRoot) {
     out.bootstrapImageSystemRoot = systemRoot;
-    const nodeFs4 = new NodeFs(systemRoot);
-    out.readBootstrapImageBinary = (relativePath4) => nodeFs4.readBinary(relativePath4);
+    const nodeFs3 = new NodeFs(systemRoot);
+    out.readBootstrapImageBinary = (relativePath4) => nodeFs3.readBinary(relativePath4);
   }
   return out;
 }
@@ -21970,8 +21514,8 @@ var GrokAcpProviderAdapter = class {
     this.id = GROK_ACP_ADAPTER_ID;
     this.displayNameKey = "adapter.grokAcp.displayName";
     this.resolveApiKey = options.resolveApiKey ?? ((envKey, planEnv) => planEnv[envKey] ?? process.env[envKey]);
-    this.resolveBaseUrl = options.resolveBaseUrl ?? ((baseUrlEnvKey, planEnv, profileBaseUrl) => normalizeCpaBaseUrl(
-      planEnv[baseUrlEnvKey] ?? process.env[baseUrlEnvKey] ?? profileBaseUrl
+    this.resolveBaseUrl = options.resolveBaseUrl ?? ((baseUrlEnvKey, planEnv, routeBaseUrl) => normalizeCpaBaseUrl(
+      planEnv[baseUrlEnvKey] ?? process.env[baseUrlEnvKey] ?? routeBaseUrl
     ));
     this.onPermissionAsk = options.onPermissionAsk;
   }
@@ -21983,7 +21527,7 @@ var GrokAcpProviderAdapter = class {
    * AgentRuntime uses startManagedSession instead of ProcessSupervisor.
    */
   resolveLaunch(plan) {
-    const opts = normalizeGrokOpts(readAcpExtras(plan.extras, ["grokAcp"]));
+    const opts = normalizeGrokOpts(readAcpExtras(plan.extras));
     const command = plan.command || opts.executable || defaultGrokExecutable();
     const model = opts.model;
     const envKey = opts.envKey;
@@ -21992,19 +21536,19 @@ var GrokAcpProviderAdapter = class {
     const baseUrl = this.resolveBaseUrl(baseUrlEnvKey, plan.env, opts.baseUrl);
     if (!apiKey || !apiKey.trim()) {
       throw new Error(
-        `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${envKey}\uFF1Agrok-acp \u9700\u8981\u672C\u673A CPA Grok API key\uFF08\u4EC5 service \u8FDB\u7A0B\u73AF\u5883\uFF09\u3002\u4E0D\u4F1A\u56DE\u9000\u5B98\u65B9 xAI\uFF08api.x.ai\uFF09\uFF0C\u4E5F\u4E0D\u4F1A\u56DE\u9000 fake provider\u3002\u8BF7\u5728\u542F\u52A8 Local Service \u524D\u8BBE\u7F6E ${envKey}` + (baseUrlEnvKey ? `\uFF08\u53EF\u9009 ${baseUrlEnvKey}=CPA base URL\uFF09` : "") + `\uFF1B\u5207\u52FF\u628A key/URL \u5199\u5165 workspace/box/task\u3002`
+        `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${envKey}\uFF1Agrok-acp \u9700\u8981\u672C\u673A CPA Grok API key\uFF08\u4EC5 service \u8FDB\u7A0B\u73AF\u5883\uFF09\u3002\u4E0D\u4F1A\u56DE\u9000\u5B98\u65B9 xAI\uFF08api.x.ai\uFF09\uFF0C\u4E5F\u4E0D\u4F1A\u56DE\u9000 fake provider\u3002\u8BF7\u5728\u542F\u52A8 Local Service \u524D\u8BBE\u7F6E ${envKey}` + (baseUrlEnvKey ? `\uFF08\u53EF\u9009 ${baseUrlEnvKey}=CPA base URL\uFF09` : "") + `\uFF1B\u5207\u52FF\u628A key/URL \u5199\u5165 workspace/Node/Task\u3002`
       );
     }
     if (!plan.command && opts.executable) {
       if (!fs12.existsSync(opts.executable)) {
         throw new Error(
-          `Grok \u53EF\u6267\u884C\u6587\u4EF6\u4E0D\u5B58\u5728: ${opts.executable}\u3002\u8BF7\u5728 machine-local AgentProfile.acp.executable \u4E2D\u914D\u7F6E\u6B63\u786E\u8DEF\u5F84\u3002`
+          `Grok \u53EF\u6267\u884C\u6587\u4EF6\u4E0D\u5B58\u5728: ${opts.executable}\u3002\u8BF7\u5728 machine-local route.acp.executable \u4E2D\u914D\u7F6E\u6B63\u786E\u8DEF\u5F84\u3002`
         );
       }
     } else if (!plan.command) {
       if (!fs12.existsSync(command)) {
         throw new Error(
-          `\u672A\u627E\u5230 Grok \u53EF\u6267\u884C\u6587\u4EF6: ${command}\u3002\u8BF7\u5B89\u88C5 grok CLI \u6216\u5728 AgentProfile \u4E2D\u8BBE\u7F6E acp.executable\u3002`
+          `\u672A\u627E\u5230 Grok \u53EF\u6267\u884C\u6587\u4EF6: ${command}\u3002\u8BF7\u5B89\u88C5 grok CLI \u6216\u5728 route \u4E2D\u8BBE\u7F6E acp.executable\u3002`
         );
       }
     }
@@ -22036,10 +21580,9 @@ var GrokAcpProviderAdapter = class {
       // Grok CLI auth method may read XAI_API_KEY; value is the CPA key, not a second secret store.
       XAI_API_KEY: apiKey,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_PROFILE_ID: plan.profileId,
+      TENT_ROUTE_ID: plan.routeId,
       TENT_GROK_MODEL: model
     };
-    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
     if (baseUrl) {
       env[baseUrlEnvKey] = baseUrl;
       env.XAI_API_BASE_URL = baseUrl;
@@ -22087,7 +21630,7 @@ var GrokAcpProviderAdapter = class {
     });
   }
   createClient(plan, emit2) {
-    const opts = normalizeGrokOpts(readAcpExtras(plan.extras, ["grokAcp"]));
+    const opts = normalizeGrokOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
     const imageOpts = readBootstrapImageClientOptions(plan);
@@ -22165,14 +21708,13 @@ var CodexAcpProviderAdapter = class {
     const env = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_PROFILE_ID: plan.profileId
+      TENT_ROUTE_ID: plan.routeId
     };
-    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
     if (opts.envKey) {
       const secret = this.resolveEnvValue(opts.envKey, plan.env);
       if (!secret || !secret.trim()) {
         throw new Error(
-          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Acodex-acp \u5DF2\u5728 AgentProfile.acp.envKey \u4E2D\u660E\u786E\u8981\u6C42\u8BE5\u5BC6\u94A5\uFF08\u4EC5 service \u8FDB\u7A0B / LaunchPlan.env\uFF09\u3002\u8BF7\u8BBE\u7F6E ${opts.envKey} \u540E\u91CD\u8BD5\uFF1B\u5207\u52FF\u628A secret \u5199\u5165 workspace/box/task\u3002`
+          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Acodex-acp \u5DF2\u5728 route.acp.envKey \u4E2D\u660E\u786E\u8981\u6C42\u8BE5\u5BC6\u94A5\uFF08\u4EC5 service \u8FDB\u7A0B / RouteLaunchPlan.env\uFF09\u3002\u8BF7\u8BBE\u7F6E ${opts.envKey} \u540E\u91CD\u8BD5\uFF1B\u5207\u52FF\u628A secret \u5199\u5165 workspace\u3001Node \u6216 Task\u3002`
         );
       }
       env[opts.envKey] = secret;
@@ -22279,14 +21821,13 @@ var ClaudeAcpProviderAdapter = class {
     const env = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_PROFILE_ID: plan.profileId
+      TENT_ROUTE_ID: plan.routeId
     };
-    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
     if (opts.envKey) {
       const secret = this.resolveEnvValue(opts.envKey, plan.env);
       if (!secret || !secret.trim()) {
         throw new Error(
-          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Aclaude-acp \u5DF2\u5728 AgentProfile.acp.envKey \u4E2D\u660E\u786E\u8981\u6C42\u8BE5\u5BC6\u94A5\uFF08\u4EC5 service \u8FDB\u7A0B / LaunchPlan.env\uFF09\u3002\u8BF7\u8BBE\u7F6E ${opts.envKey} \u540E\u91CD\u8BD5\uFF1B\u5207\u52FF\u628A secret \u5199\u5165 workspace/box/task\u3002`
+          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Aclaude-acp \u5DF2\u5728 route.acp.envKey \u4E2D\u660E\u786E\u8981\u6C42\u8BE5\u5BC6\u94A5\uFF08\u4EC5 service \u8FDB\u7A0B / RouteLaunchPlan.env\uFF09\u3002\u8BF7\u8BBE\u7F6E ${opts.envKey} \u540E\u91CD\u8BD5\uFF1B\u5207\u52FF\u628A secret \u5199\u5165 workspace/Node/Task\u3002`
         );
       }
       env[opts.envKey] = secret;
@@ -22388,14 +21929,13 @@ var AntigravityAcpProviderAdapter = class {
     const env = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_PROFILE_ID: plan.profileId
+      TENT_ROUTE_ID: plan.routeId
     };
-    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
     if (opts.envKey) {
       const value = this.resolveEnvValue(opts.envKey, plan.env);
       if (!value?.trim()) {
         throw new Error(
-          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Aantigravity-acp profile \u660E\u786E\u8981\u6C42\u8BE5\u503C\u3002Tent \u901A\u8FC7\u7B2C\u4E09\u65B9 agy-acp bridge \u8FDE\u63A5\u5B98\u65B9 agy CLI\uFF1Bsecret \u53EA\u80FD\u653E\u5728 service \u8FDB\u7A0B\u73AF\u5883\u3002`
+          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Aantigravity-acp route \u660E\u786E\u8981\u6C42\u8BE5\u503C\u3002Tent \u901A\u8FC7\u7B2C\u4E09\u65B9 agy-acp bridge \u8FDE\u63A5\u5B98\u65B9 agy CLI\uFF1Bsecret \u53EA\u80FD\u653E\u5728 service \u8FDB\u7A0B\u73AF\u5883\u3002`
         );
       }
       env[opts.envKey] = value;
@@ -22468,14 +22008,13 @@ var OpenCodeAcpProviderAdapter = class {
     const env = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_PROFILE_ID: plan.profileId
+      TENT_ROUTE_ID: plan.routeId
     };
-    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
     if (opts.envKey) {
       const value = this.resolveEnvValue(opts.envKey, plan.env);
       if (!value?.trim()) {
         throw new Error(
-          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Aopencode-acp profile \u660E\u786E\u8981\u6C42\u8BE5\u503C\uFF08\u4EC5 service \u8FDB\u7A0B / LaunchPlan.env\uFF09\u3002`
+          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Aopencode-acp route \u660E\u786E\u8981\u6C42\u8BE5\u503C\uFF08\u4EC5 service \u8FDB\u7A0B / RouteLaunchPlan.env\uFF09\u3002`
         );
       }
       env[opts.envKey] = value;
@@ -22581,14 +22120,13 @@ var CopilotAcpProviderAdapter = class {
     const env = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_PROFILE_ID: plan.profileId
+      TENT_ROUTE_ID: plan.routeId
     };
-    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
     if (opts.envKey) {
       const value = this.resolveEnvValue(opts.envKey, plan.env);
       if (!value?.trim()) {
         throw new Error(
-          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Acopilot-acp profile \u660E\u786E\u8981\u6C42\u8BE5\u503C\uFF08\u4EC5 service \u8FDB\u7A0B / LaunchPlan.env\uFF09\u3002\u7701\u7565 envKey \u53EF\u590D\u7528\u672C\u673A Copilot \u767B\u5F55\u3002`
+          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Acopilot-acp route \u660E\u786E\u8981\u6C42\u8BE5\u503C\uFF08\u4EC5 service \u8FDB\u7A0B / RouteLaunchPlan.env\uFF09\u3002\u7701\u7565 envKey \u53EF\u590D\u7528\u672C\u673A Copilot \u767B\u5F55\u3002`
         );
       }
       env[opts.envKey] = value;
@@ -22692,14 +22230,13 @@ var PiAcpProviderAdapter = class {
     const env = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_PROFILE_ID: plan.profileId
+      TENT_ROUTE_ID: plan.routeId
     };
-    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
     if (opts.envKey) {
       const secret = this.resolveEnvValue(opts.envKey, plan.env);
       if (!secret || !secret.trim()) {
         throw new Error(
-          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Api-acp profile \u660E\u786E\u8981\u6C42\u8BE5\u503C\uFF08\u4EC5 service \u8FDB\u7A0B / LaunchPlan.env\uFF09\u3002\u7701\u7565 envKey \u53EF\u590D\u7528\u672C\u673A pi \u767B\u5F55/\u914D\u7F6E\u3002`
+          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Api-acp route \u660E\u786E\u8981\u6C42\u8BE5\u503C\uFF08\u4EC5 service \u8FDB\u7A0B / RouteLaunchPlan.env\uFF09\u3002\u7701\u7565 envKey \u53EF\u590D\u7528\u672C\u673A pi \u767B\u5F55/\u914D\u7F6E\u3002`
         );
       }
       env[opts.envKey] = secret;
@@ -23183,127 +22720,277 @@ var CredentialStore = class {
   }
 };
 
-// src/service/profile-field-rules.ts
-function fieldOk2(value) {
-  return { ok: true, value };
-}
-function fieldErr2(message2) {
-  return { ok: false, message: message2 };
-}
-var PROFILE_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
-var ENV_KEY_RE2 = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// src/service/route-field-rules.ts
+var ENV_KEY_RE3 = /^[A-Za-z_][A-Za-z0-9_]*$/;
 var MAX_TIMEOUT_MS = 24 * 60 * 6e4;
 var PERMISSION_POLICIES = /* @__PURE__ */ new Set(["allow", "ask", "deny"]);
-var DANGEROUS_FIELD_HINTS = [
-  "apiKey",
+var SECRET_ROUTE_FIELD_HINTS = [
+  "apikey",
   "api_key",
   "token",
   "secret",
   "password",
-  "credential",
   "authorization",
-  "bearer",
-  "env",
-  "fake",
-  "command",
-  "args",
-  "displayNameKey",
-  "grokAcp",
-  "acp"
+  "bearer"
 ];
-function parseProfileIdValue(raw, field = "id") {
-  if (typeof raw !== "string" || !raw.trim()) {
-    return fieldErr2(`Missing or invalid string param: ${field}`);
-  }
-  const id = raw.trim();
-  if (!PROFILE_ID_RE.test(id)) {
-    return fieldErr2(
-      `Invalid profile id: must match ${PROFILE_ID_RE} (lowercase letter, then a-z0-9-, max 63)`
-    );
-  }
-  return fieldOk2(id);
+var ok = (value) => ({ ok: true, value });
+var fail = (message2) => ({ ok: false, message: message2 });
+function parseRouteIdValue(raw, field = "routeId") {
+  if (typeof raw !== "string" || !raw.trim()) return fail(`Missing or invalid string param: ${field}`);
+  const routeId = raw.trim();
+  return isRouteId(routeId) ? ok(routeId) : fail(`Invalid routeId: must match ${ROUTE_ID_RE} (lowercase letter, then a-z0-9-, max 63)`);
 }
 function parseNonEmptyStringValue(raw, key2) {
-  if (typeof raw !== "string") {
-    return fieldErr2(`Invalid string param: ${key2}`);
-  }
-  const v = raw.trim();
-  if (!v) {
-    return fieldErr2(`Invalid string param: ${key2} must be non-empty when set`);
-  }
-  return fieldOk2(v);
+  if (typeof raw !== "string" || !raw.trim()) return fail(`Invalid string param: ${key2}`);
+  return ok(raw.trim());
 }
 function parseEnvKeyValue(raw, key2) {
-  const base = parseNonEmptyStringValue(raw, key2);
-  if (!base.ok) return base;
-  if (!ENV_KEY_RE2.test(base.value)) {
-    return fieldErr2(
-      `Invalid ${key2}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
-    );
-  }
-  return fieldOk2(base.value);
-}
-function validateBaseUrlValue(v) {
-  let parsed;
-  try {
-    parsed = new URL(v);
-  } catch {
-    return fieldErr2("Invalid baseUrl: must be an absolute http(s) URL");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return fieldErr2("Invalid baseUrl: only http: and https: are allowed");
-  }
-  if (parsed.username || parsed.password) {
-    return fieldErr2("Invalid baseUrl: username/password in URL are not allowed");
-  }
-  if (parsed.search || parsed.hash) {
-    return fieldErr2("Invalid baseUrl: query string and hash fragment are not allowed");
-  }
-  return fieldOk2(v);
+  const value = parseNonEmptyStringValue(raw, key2);
+  if (!value.ok) return value;
+  return ENV_KEY_RE3.test(value.value) ? value : fail(`Invalid ${key2}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`);
 }
 function parseBaseUrlValue(raw) {
-  const base = parseNonEmptyStringValue(raw, "baseUrl");
-  if (!base.ok) return base;
-  return validateBaseUrlValue(base.value);
-}
-function parsePermissionPolicyValue(raw) {
-  if (typeof raw !== "string") {
-    return fieldErr2("Invalid permissionPolicy: must be allow|ask|deny");
+  const value = parseNonEmptyStringValue(raw, "baseUrl");
+  if (!value.ok) return value;
+  try {
+    const url = new URL(value.value);
+    if (url.protocol !== "http:" && url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
+      return fail("Invalid baseUrl: only clean absolute http(s) URLs are allowed");
+    }
+  } catch {
+    return fail("Invalid baseUrl: must be an absolute http(s) URL");
   }
-  if (!PERMISSION_POLICIES.has(raw)) {
-    return fieldErr2("Invalid permissionPolicy: must be allow|ask|deny");
-  }
-  return fieldOk2(raw);
-}
-function parsePositiveTimeoutValue(raw, key2) {
-  if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0 || raw > MAX_TIMEOUT_MS) {
-    return fieldErr2(
-      `Invalid ${key2}: must be a positive integer no greater than ${MAX_TIMEOUT_MS}`
-    );
-  }
-  return fieldOk2(raw);
+  return value;
 }
 function parseCredentialRefValue(raw) {
-  const base = parseNonEmptyStringValue(raw, "credentialRef");
-  if (!base.ok) return base;
+  const value = parseNonEmptyStringValue(raw, "credentialRef");
+  if (!value.ok) return value;
   try {
-    return fieldOk2(assertCredentialId(base.value));
+    return ok(assertCredentialId(value.value));
   } catch (err) {
-    return fieldErr2(
-      err instanceof Error ? err.message.replace(/^Invalid credential id/, "Invalid credentialRef") : `Invalid credentialRef: must match ${CREDENTIAL_ID_RE2}`
-    );
+    return fail(err instanceof Error ? err.message.replace(/^Invalid credential id/, "Invalid credentialRef") : `Invalid credentialRef: must match ${CREDENTIAL_ID_RE2}`);
   }
 }
+function parsePermissionPolicyValue(raw) {
+  return typeof raw === "string" && PERMISSION_POLICIES.has(raw) ? ok(raw) : fail("Invalid permissionPolicy: must be allow|ask|deny");
+}
+function parsePositiveTimeoutValue(raw, key2) {
+  return typeof raw === "number" && Number.isInteger(raw) && raw > 0 && raw <= MAX_TIMEOUT_MS ? ok(raw) : fail(`Invalid ${key2}: must be a positive integer no greater than ${MAX_TIMEOUT_MS}`);
+}
 
-// src/service/profiles.ts
-var FAKE_DEFAULT_PROFILE_ID = "fake-default";
-var GROK_ACP_DEFAULT_PROFILE_ID = "grok-acp-default";
-var CODEX_ACP_DEFAULT_PROFILE_ID = "codex-acp-default";
-var CLAUDE_ACP_DEFAULT_PROFILE_ID = "claude-acp-default";
-var ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID = "antigravity-acp-default";
-var OPENCODE_ACP_DEFAULT_PROFILE_ID = "opencode-acp-default";
-var COPILOT_ACP_DEFAULT_PROFILE_ID = "copilot-acp-default";
-var PI_ACP_DEFAULT_PROFILE_ID = "pi-acp-default";
+// src/service/routes.ts
+var SETTINGS_ROUTE_CREATE_FIELDS = [
+  "routeId",
+  "provider",
+  "adapterId",
+  "displayName",
+  "command",
+  "args",
+  "executable",
+  "model",
+  "envKey",
+  "credentialRef",
+  "baseUrlEnvKey",
+  "baseUrl",
+  "permissionPolicy",
+  "promptTimeoutMs",
+  "permissionTimeoutMs",
+  "skills",
+  "mcpServers"
+];
+var SETTINGS_ROUTE_UPDATE_FIELDS = SETTINGS_ROUTE_CREATE_FIELDS.filter((field) => field !== "routeId");
+var DISK_KEYS = new Set(SETTINGS_ROUTE_CREATE_FIELDS);
+function routesPath(dataDir) {
+  return path12.join(dataDir, "routes.json");
+}
+function diskOptional(value, parse2) {
+  if (value === void 0 || value === null) return void 0;
+  const result = parse2(value);
+  return result.ok ? result.value : null;
+}
+function parseArgsValue(value) {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    return { ok: false, message: "Invalid args: must be an array of strings" };
+  }
+  return { ok: true, value: [...value] };
+}
+function parseRouteRow(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value;
+  if (Object.keys(row).some((key2) => !DISK_KEYS.has(key2))) return null;
+  const routeId = parseRouteIdValue(row.routeId);
+  const provider = parseNonEmptyStringValue(row.provider, "provider");
+  const adapterId = parseNonEmptyStringValue(row.adapterId, "adapterId");
+  if (!routeId.ok || !provider.ok || !adapterId.ok) return null;
+  const route = { routeId: routeId.value, provider: provider.value, adapterId: adapterId.value };
+  const optional2 = (key2, parse2, assign) => {
+    const parsed = diskOptional(row[key2], parse2);
+    if (parsed === null) return false;
+    if (parsed !== void 0) assign(parsed);
+    return true;
+  };
+  if (!optional2("displayName", (v) => parseNonEmptyStringValue(v, "displayName"), (v) => {
+    route.displayName = v;
+  })) return null;
+  if (!optional2("command", (v) => parseNonEmptyStringValue(v, "command"), (v) => {
+    route.command = v;
+  })) return null;
+  if (!optional2("args", parseArgsValue, (v) => {
+    route.args = v;
+  })) return null;
+  if (!optional2("executable", (v) => parseNonEmptyStringValue(v, "executable"), (v) => {
+    route.executable = v;
+  })) return null;
+  if (!optional2("model", (v) => parseNonEmptyStringValue(v, "model"), (v) => {
+    route.model = v;
+  })) return null;
+  if (!optional2("envKey", (v) => parseEnvKeyValue(v, "envKey"), (v) => {
+    route.envKey = v;
+  })) return null;
+  if (!optional2("credentialRef", parseCredentialRefValue, (v) => {
+    route.credentialRef = v;
+  })) return null;
+  if (!optional2("baseUrlEnvKey", (v) => parseEnvKeyValue(v, "baseUrlEnvKey"), (v) => {
+    route.baseUrlEnvKey = v;
+  })) return null;
+  if (!optional2("baseUrl", parseBaseUrlValue, (v) => {
+    route.baseUrl = v;
+  })) return null;
+  if (!optional2("permissionPolicy", parsePermissionPolicyValue, (v) => {
+    route.permissionPolicy = v;
+  })) return null;
+  if (!optional2("promptTimeoutMs", (v) => parsePositiveTimeoutValue(v, "promptTimeoutMs"), (v) => {
+    route.promptTimeoutMs = v;
+  })) return null;
+  if (!optional2("permissionTimeoutMs", (v) => parsePositiveTimeoutValue(v, "permissionTimeoutMs"), (v) => {
+    route.permissionTimeoutMs = v;
+  })) return null;
+  if (row.skills !== void 0 && row.skills !== null) {
+    const skills = parseSkillsArrayValue(row.skills, defaultAllowedSkillRoots());
+    if (!skills.ok) return null;
+    route.skills = skills.value;
+  }
+  if (row.mcpServers !== void 0 && row.mcpServers !== null) {
+    const mcp = parseMcpServersArrayValue(row.mcpServers);
+    if (!mcp.ok) return null;
+    route.mcpServers = mcp.value;
+  }
+  return route;
+}
+async function quarantineRoutes(file) {
+  const backup = await backupCorruptMachineFile(file);
+  warnCorruptMachineState(file, backup, "ignored");
+  throw new Error(
+    `Settings routes are unreadable and were quarantined: ${file}` + (backup ? ` (backup: ${backup})` : "")
+  );
+}
+async function loadSettingsRoutes(dataDir) {
+  const file = routesPath(dataDir);
+  let text3;
+  try {
+    text3 = await fs14.readFile(file, "utf8");
+  } catch (err) {
+    if (isNotFoundError(err)) return [];
+    return quarantineRoutes(file);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text3);
+  } catch {
+    return quarantineRoutes(file);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return quarantineRoutes(file);
+  }
+  const routes = parsed.routes;
+  if (!Array.isArray(routes)) return quarantineRoutes(file);
+  const out = [];
+  for (const value of routes) {
+    const route = parseRouteRow(value);
+    if (!route || out.some((existing) => existing.routeId === route.routeId)) {
+      return quarantineRoutes(file);
+    }
+    out.push(route);
+  }
+  return out;
+}
+async function saveSettingsRoutes(dataDir, routes) {
+  await writeJsonAtomic(routesPath(dataDir), { routes: routes.map(cloneSettingsRoute) });
+}
+function defaultSettingsRoutes() {
+  const route = (routeId, provider, adapterId, extra = {}) => ({
+    routeId,
+    provider,
+    adapterId,
+    permissionPolicy: "deny",
+    ...extra
+  });
+  return [
+    route("grok-acp-default", "grok", GROK_ACP_ADAPTER_ID, { model: DEFAULT_GROK_MODEL, envKey: DEFAULT_GROK_ENV_KEY, baseUrlEnvKey: DEFAULT_GROK_BASE_URL_ENV_KEY }),
+    route("codex-acp-default", "codex", CODEX_ACP_ADAPTER_ID),
+    route("claude-acp-default", "claude", CLAUDE_ACP_ADAPTER_ID),
+    route("antigravity-acp-default", "antigravity", ANTIGRAVITY_ACP_ADAPTER_ID),
+    route("opencode-acp-default", "opencode", OPENCODE_ACP_ADAPTER_ID),
+    route("copilot-acp-default", "copilot", COPILOT_ACP_ADAPTER_ID),
+    route("pi-acp-default", "pi", PI_ACP_ADAPTER_ID)
+  ];
+}
+async function ensureDefaultSettingsRoutes(dataDir) {
+  const file = routesPath(dataDir);
+  try {
+    await fs14.access(file);
+    return loadSettingsRoutes(dataDir);
+  } catch (err) {
+    if (!isNotFoundError(err)) throw err;
+  }
+  const defaults = defaultSettingsRoutes();
+  await saveSettingsRoutes(dataDir, defaults);
+  return defaults;
+}
+function projectSettingsRoute(route, opts) {
+  const credentialRef = route.credentialRef?.trim() || void 0;
+  const skills = projectSkillRefs(route.skills);
+  const mcpServers = projectMcpServers(route.mcpServers);
+  return {
+    routeId: route.routeId,
+    provider: route.provider,
+    adapterId: route.adapterId,
+    displayName: route.displayName?.trim() || route.routeId,
+    ...route.command ? { command: route.command } : {},
+    ...route.args ? { args: [...route.args] } : {},
+    ...route.model ? { model: route.model } : {},
+    ...route.executable ? { executable: route.executable } : {},
+    ...route.envKey ? { envKey: route.envKey } : {},
+    ...credentialRef ? { credentialRef } : {},
+    ...credentialRef && opts?.credentialExists !== void 0 ? { credentialExists: opts.credentialExists } : {},
+    ...route.baseUrlEnvKey ? { baseUrlEnvKey: route.baseUrlEnvKey } : {},
+    ...route.baseUrl ? { baseUrl: route.baseUrl } : {},
+    ...route.permissionPolicy ? { permissionPolicy: route.permissionPolicy } : {},
+    ...route.promptTimeoutMs !== void 0 ? { promptTimeoutMs: route.promptTimeoutMs } : {},
+    ...route.permissionTimeoutMs !== void 0 ? { permissionTimeoutMs: route.permissionTimeoutMs } : {},
+    ...skills ? {
+      skills,
+      skillsProjectionMode: "metadata-provider-dependent",
+      skillsNote: "Skill name/path refs only (_meta.tent.skills). Provider-dependent; not a claim of activation."
+    } : {},
+    ...mcpServers ? { mcpServers } : {}
+  };
+}
+function projectSettingsRoutes(routes, opts) {
+  const lookup = (ref) => {
+    if (!ref || !opts?.credentialExistsById) return void 0;
+    return opts.credentialExistsById instanceof Map ? opts.credentialExistsById.get(ref) : opts.credentialExistsById[ref];
+  };
+  return routes.map((route) => {
+    const exists = lookup(route.credentialRef?.trim());
+    return projectSettingsRoute(
+      route,
+      exists === void 0 ? void 0 : { credentialExists: exists }
+    );
+  }).sort((a, b) => a.routeId.localeCompare(b.routeId));
+}
+
+// src/service/provider-catalog.ts
 var PRODUCT_ACP_ADAPTER_IDS = [
   "grok-acp",
   "codex-acp",
@@ -23313,500 +23000,6 @@ var PRODUCT_ACP_ADAPTER_IDS = [
   "copilot-acp",
   "pi-acp"
 ];
-var PRODUCT_ACP_ADAPTER_SET = new Set(PRODUCT_ACP_ADAPTER_IDS);
-function isProductAcpAdapterId(id) {
-  return PRODUCT_ACP_ADAPTER_SET.has(id);
-}
-var BUILTIN_DEFAULT_PROFILE_IDS = /* @__PURE__ */ new Set([
-  FAKE_DEFAULT_PROFILE_ID,
-  GROK_ACP_DEFAULT_PROFILE_ID,
-  CODEX_ACP_DEFAULT_PROFILE_ID,
-  CLAUDE_ACP_DEFAULT_PROFILE_ID,
-  ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID,
-  OPENCODE_ACP_DEFAULT_PROFILE_ID,
-  COPILOT_ACP_DEFAULT_PROFILE_ID,
-  PI_ACP_DEFAULT_PROFILE_ID
-]);
-function isBuiltinDefaultProfileId(id) {
-  return BUILTIN_DEFAULT_PROFILE_IDS.has(id);
-}
-var PROFILE_CREATE_FIELDS = [
-  "id",
-  "adapterId",
-  "displayName",
-  "model",
-  "executable",
-  "envKey",
-  "credentialRef",
-  "baseUrlEnvKey",
-  "baseUrl",
-  "permissionPolicy",
-  "promptTimeoutMs",
-  "permissionTimeoutMs",
-  "skills",
-  "mcpServers"
-];
-var PROFILE_UPDATE_FIELDS = [
-  "displayName",
-  "model",
-  "executable",
-  "envKey",
-  "credentialRef",
-  "baseUrlEnvKey",
-  "baseUrl",
-  "permissionPolicy",
-  "promptTimeoutMs",
-  "permissionTimeoutMs",
-  "skills",
-  "mcpServers"
-];
-var DISK_PROFILE_TOP_LEVEL_KEYS = /* @__PURE__ */ new Set([
-  "id",
-  "adapterId",
-  "displayName",
-  "displayNameKey",
-  "command",
-  "args",
-  "env",
-  "fake",
-  "acp",
-  "grokAcp",
-  "skills",
-  "mcpServers"
-]);
-var DISK_ACP_KEYS = /* @__PURE__ */ new Set([
-  "executable",
-  "model",
-  "envKey",
-  "credentialRef",
-  "baseUrlEnvKey",
-  "baseUrl",
-  "promptTimeoutMs",
-  "permissionPolicy",
-  "permissionTimeoutMs"
-]);
-var DISK_FAKE_KEYS = /* @__PURE__ */ new Set([
-  "sleepMs",
-  "exitCode",
-  "waitForSignal",
-  "emitStdout",
-  "failLaunch",
-  "canResume"
-]);
-function profilesPath(dataDir) {
-  return path12.join(dataDir, "agent-profiles.json");
-}
-async function quarantineAgentProfilesFile(file) {
-  const backupPath = await backupCorruptMachineFile(file);
-  warnCorruptMachineState(file, backupPath, "reset");
-  return { profiles: [], migrated: false };
-}
-function diskOptional(value, parse2) {
-  if (value === void 0 || value === null) return void 0;
-  const r = parse2(value);
-  return r.ok ? r.value : null;
-}
-function parseDiskAcpBag(value) {
-  if (value === void 0 || value === null) return {};
-  if (typeof value !== "object" || Array.isArray(value)) return null;
-  const raw = value;
-  const acp = {};
-  for (const key2 of Object.keys(raw)) {
-    if (!DISK_ACP_KEYS.has(key2)) return null;
-    const v = raw[key2];
-    switch (key2) {
-      case "executable": {
-        const s = diskOptional(v, (x) => parseNonEmptyStringValue(x, "executable"));
-        if (s === null) return null;
-        if (s !== void 0) acp.executable = s;
-        break;
-      }
-      case "model": {
-        const s = diskOptional(v, (x) => parseNonEmptyStringValue(x, "model"));
-        if (s === null) return null;
-        if (s !== void 0) acp.model = s;
-        break;
-      }
-      case "envKey": {
-        const s = diskOptional(v, (x) => parseEnvKeyValue(x, "envKey"));
-        if (s === null) return null;
-        if (s !== void 0) acp.envKey = s;
-        break;
-      }
-      case "baseUrlEnvKey": {
-        const s = diskOptional(v, (x) => parseEnvKeyValue(x, "baseUrlEnvKey"));
-        if (s === null) return null;
-        if (s !== void 0) acp.baseUrlEnvKey = s;
-        break;
-      }
-      case "credentialRef": {
-        const s = diskOptional(v, parseCredentialRefValue);
-        if (s === null) return null;
-        if (s !== void 0) acp.credentialRef = s;
-        break;
-      }
-      case "baseUrl": {
-        const s = diskOptional(v, parseBaseUrlValue);
-        if (s === null) return null;
-        if (s !== void 0) acp.baseUrl = s;
-        break;
-      }
-      case "permissionPolicy": {
-        const p = diskOptional(v, parsePermissionPolicyValue);
-        if (p === null) return null;
-        if (p !== void 0) acp.permissionPolicy = p;
-        break;
-      }
-      case "promptTimeoutMs": {
-        const n = diskOptional(v, (x) => parsePositiveTimeoutValue(x, "promptTimeoutMs"));
-        if (n === null) return null;
-        if (n !== void 0) acp.promptTimeoutMs = n;
-        break;
-      }
-      case "permissionTimeoutMs": {
-        const n = diskOptional(v, (x) => parsePositiveTimeoutValue(x, "permissionTimeoutMs"));
-        if (n === null) return null;
-        if (n !== void 0) acp.permissionTimeoutMs = n;
-        break;
-      }
-      default:
-        return null;
-    }
-  }
-  return acp;
-}
-function parseDiskFakeBag(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const raw = value;
-  const fake = {};
-  for (const key2 of Object.keys(raw)) {
-    if (!DISK_FAKE_KEYS.has(key2)) return null;
-    const v = raw[key2];
-    switch (key2) {
-      case "sleepMs": {
-        if (v === void 0 || v === null) break;
-        if (typeof v !== "number" || !Number.isFinite(v)) return null;
-        fake.sleepMs = v;
-        break;
-      }
-      case "exitCode": {
-        if (v === void 0 || v === null) break;
-        if (typeof v !== "number" || !Number.isFinite(v)) return null;
-        fake.exitCode = v;
-        break;
-      }
-      case "waitForSignal": {
-        if (v === void 0 || v === null) break;
-        if (typeof v !== "boolean") return null;
-        fake.waitForSignal = v;
-        break;
-      }
-      case "emitStdout": {
-        if (v === void 0 || v === null) break;
-        if (typeof v !== "boolean") return null;
-        fake.emitStdout = v;
-        break;
-      }
-      case "canResume": {
-        if (v === void 0 || v === null) break;
-        if (typeof v !== "boolean") return null;
-        fake.canResume = v;
-        break;
-      }
-      case "failLaunch": {
-        if (v === void 0 || v === null) break;
-        if (typeof v !== "string") return null;
-        fake.failLaunch = v;
-        break;
-      }
-      default:
-        return null;
-    }
-  }
-  return fake;
-}
-function parseDiskEnvMap(value) {
-  if (value === void 0 || value === null) return void 0;
-  if (typeof value !== "object" || Array.isArray(value)) return null;
-  const out = {};
-  for (const [k, v] of Object.entries(value)) {
-    if (typeof v !== "string") return null;
-    out[k] = v;
-  }
-  return out;
-}
-function parseDiskArgs(value) {
-  if (value === void 0 || value === null) return void 0;
-  if (!Array.isArray(value)) return null;
-  const out = [];
-  for (const item of value) {
-    if (typeof item !== "string") return null;
-    out.push(item);
-  }
-  return out;
-}
-function parseAgentProfileDiskRow(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const item = value;
-  for (const key2 of Object.keys(item)) {
-    if (!DISK_PROFILE_TOP_LEVEL_KEYS.has(key2)) return null;
-  }
-  const idResult = parseProfileIdValue(item.id);
-  if (!idResult.ok) return null;
-  const id = idResult.value;
-  if (typeof item.adapterId !== "string" || !item.adapterId.trim()) return null;
-  const adapterId = item.adapterId.trim();
-  const raw = { id, adapterId };
-  if ("displayName" in item && item.displayName !== void 0 && item.displayName !== null) {
-    const displayName = diskOptional(
-      item.displayName,
-      (x) => parseNonEmptyStringValue(x, "displayName")
-    );
-    if (displayName === null) return null;
-    if (displayName !== void 0) raw.displayName = displayName;
-  }
-  if ("displayNameKey" in item && item.displayNameKey !== void 0 && item.displayNameKey !== null) {
-    if (typeof item.displayNameKey !== "string" || !item.displayNameKey.trim()) return null;
-    raw.displayNameKey = item.displayNameKey.trim();
-  }
-  if ("command" in item && item.command !== void 0 && item.command !== null) {
-    const command = diskOptional(item.command, (x) => parseNonEmptyStringValue(x, "command"));
-    if (command === null) return null;
-    if (command !== void 0) raw.command = command;
-  }
-  if ("args" in item) {
-    const args = parseDiskArgs(item.args);
-    if (args === null) return null;
-    if (args !== void 0) raw.args = args;
-  }
-  if ("env" in item) {
-    const env = parseDiskEnvMap(item.env);
-    if (env === null) return null;
-    if (env !== void 0) raw.env = env;
-  }
-  if ("fake" in item && item.fake !== void 0 && item.fake !== null) {
-    const fake = parseDiskFakeBag(item.fake);
-    if (fake === null) return null;
-    raw.fake = fake;
-  }
-  if ("acp" in item && item.acp !== void 0 && item.acp !== null) {
-    const acp = parseDiskAcpBag(item.acp);
-    if (acp === null) return null;
-    raw.acp = acp;
-  }
-  if ("grokAcp" in item && item.grokAcp !== void 0 && item.grokAcp !== null) {
-    const grokAcp = parseDiskAcpBag(item.grokAcp);
-    if (grokAcp === null) return null;
-    raw.grokAcp = grokAcp;
-  }
-  if ("skills" in item && item.skills !== void 0 && item.skills !== null) {
-    const skillsR = parseSkillsArrayValue(item.skills, defaultAllowedSkillRoots());
-    if (!skillsR.ok) return null;
-    if (skillsR.value !== void 0) raw.skills = skillsR.value;
-  }
-  if ("mcpServers" in item && item.mcpServers !== void 0 && item.mcpServers !== null) {
-    const mcpR = parseMcpServersArrayValue(item.mcpServers);
-    if (!mcpR.ok) return null;
-    if (mcpR.value !== void 0) raw.mcpServers = mcpR.value;
-  }
-  return normalizeProfileToCanonicalAcp(raw);
-}
-async function loadAgentProfilesWithMigration(dataDir) {
-  const file = profilesPath(dataDir);
-  try {
-    const raw = await fs14.readFile(file, "utf8");
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return quarantineAgentProfilesFile(file);
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return quarantineAgentProfilesFile(file);
-    }
-    const profiles = parsed.profiles;
-    if (profiles !== void 0 && !Array.isArray(profiles)) {
-      return quarantineAgentProfilesFile(file);
-    }
-    const list2 = Array.isArray(profiles) ? profiles : [];
-    let migrated = false;
-    const out = [];
-    for (const p of list2) {
-      const n = parseAgentProfileDiskRow(p);
-      if (!n) {
-        return quarantineAgentProfilesFile(file);
-      }
-      if (n.migrated) migrated = true;
-      out.push(n.profile);
-    }
-    return { profiles: out, migrated };
-  } catch (err) {
-    if (isNotFoundError(err)) return { profiles: [], migrated: false };
-    throw err;
-  }
-}
-async function saveAgentProfiles(dataDir, profiles) {
-  const canonical = profiles.map((p) => {
-    const { profile } = normalizeProfileToCanonicalAcp(p);
-    return profile;
-  });
-  await writeJsonAtomic(profilesPath(dataDir), { profiles: canonical });
-}
-function defaultAgentProfiles() {
-  return [
-    {
-      id: FAKE_DEFAULT_PROFILE_ID,
-      adapterId: FAKE_ADAPTER_ID,
-      displayNameKey: "profile.fake.default",
-      fake: { waitForSignal: true, emitStdout: true, canResume: true }
-    },
-    {
-      id: GROK_ACP_DEFAULT_PROFILE_ID,
-      adapterId: GROK_ACP_ADAPTER_ID,
-      displayNameKey: "profile.grokAcp.default",
-      acp: {
-        // executable omitted → %USERPROFILE%\.grok\bin\grok.exe (or ~/.grok/bin/grok)
-        model: DEFAULT_GROK_MODEL,
-        envKey: DEFAULT_GROK_ENV_KEY,
-        // CPA base URL from process env (name only here). Optional machine-local baseUrl field.
-        baseUrlEnvKey: DEFAULT_GROK_BASE_URL_ENV_KEY,
-        // Default deny tool permissions — never unconditional yolo.
-        permissionPolicy: "deny"
-      }
-    },
-    {
-      id: CODEX_ACP_DEFAULT_PROFILE_ID,
-      adapterId: CODEX_ACP_ADAPTER_ID,
-      displayNameKey: "profile.codexAcp.default",
-      acp: { permissionPolicy: "deny" }
-    },
-    {
-      id: CLAUDE_ACP_DEFAULT_PROFILE_ID,
-      adapterId: CLAUDE_ACP_ADAPTER_ID,
-      displayNameKey: "profile.claudeAcp.default",
-      acp: { permissionPolicy: "deny" }
-    },
-    {
-      id: ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID,
-      adapterId: ANTIGRAVITY_ACP_ADAPTER_ID,
-      displayNameKey: "profile.antigravityAcp.default",
-      acp: { permissionPolicy: "deny" }
-    },
-    {
-      id: OPENCODE_ACP_DEFAULT_PROFILE_ID,
-      adapterId: OPENCODE_ACP_ADAPTER_ID,
-      displayNameKey: "profile.openCodeAcp.default",
-      acp: { permissionPolicy: "deny" }
-    },
-    {
-      id: COPILOT_ACP_DEFAULT_PROFILE_ID,
-      adapterId: COPILOT_ACP_ADAPTER_ID,
-      displayNameKey: "profile.copilotAcp.default",
-      acp: { permissionPolicy: "deny" }
-    },
-    {
-      id: PI_ACP_DEFAULT_PROFILE_ID,
-      adapterId: PI_ACP_ADAPTER_ID,
-      displayNameKey: "profile.piAcp.default",
-      acp: { permissionPolicy: "deny" }
-    }
-  ];
-}
-async function ensureDefaultProfiles(dataDir) {
-  const loaded = await loadAgentProfilesWithMigration(dataDir);
-  const existing = loaded.profiles;
-  if (existing.length > 0) {
-    let changed = loaded.migrated;
-    let next = existing;
-    for (const builtIn of defaultAgentProfiles()) {
-      if (!next.some((p) => p.id === builtIn.id)) {
-        next = [...next, builtIn];
-        changed = true;
-      }
-    }
-    next = next.map((p) => {
-      if (p.adapterId !== GROK_ACP_ADAPTER_ID) return p;
-      if (p.acp?.baseUrlEnvKey) return p;
-      changed = true;
-      return {
-        ...p,
-        acp: {
-          ...p.acp ?? {},
-          baseUrlEnvKey: p.acp?.baseUrlEnvKey ?? DEFAULT_GROK_BASE_URL_ENV_KEY
-        }
-      };
-    });
-    if (changed) await saveAgentProfiles(dataDir, next);
-    return next;
-  }
-  const defaults = defaultAgentProfiles();
-  await saveAgentProfiles(dataDir, defaults);
-  return defaults;
-}
-function isTestOnlyProfile(profile) {
-  return profile.adapterId === FAKE_ADAPTER_ID || !!profile.fake;
-}
-var DISPLAY_NAME_BY_KEY = {
-  "profile.fake.default": "fake-default\uFF08\u6D4B\u8BD5\uFF09",
-  "profile.grokAcp.default": "Grok ACP",
-  "profile.codexAcp.default": "Codex ACP",
-  "profile.claudeAcp.default": "Claude Agent ACP",
-  "profile.antigravityAcp.default": "Antigravity ACP\uFF08agy-acp bridge\uFF09",
-  "profile.openCodeAcp.default": "OpenCode ACP",
-  "profile.copilotAcp.default": "GitHub Copilot ACP",
-  "profile.piAcp.default": "Pi ACP\uFF08pi-acp bridge\uFF09"
-};
-function projectAgentProfile(profile, opts) {
-  const testOnly = isTestOnlyProfile(profile);
-  const displayName = (typeof profile.displayName === "string" && profile.displayName.trim() ? profile.displayName.trim() : void 0) || profile.displayNameKey && DISPLAY_NAME_BY_KEY[profile.displayNameKey] || profile.id;
-  const canonical = cloneAgentProfileConfig(profile);
-  const g = canonical.acp;
-  const credentialRef = typeof g?.credentialRef === "string" && g.credentialRef.trim() ? g.credentialRef.trim() : void 0;
-  const skills = projectSkillRefs(canonical.skills);
-  const mcpServers = projectMcpServers(canonical.mcpServers);
-  return {
-    id: profile.id,
-    adapterId: profile.adapterId,
-    displayName,
-    displayNameKey: profile.displayNameKey,
-    model: g?.model,
-    executable: g?.executable,
-    envKey: g?.envKey,
-    credentialRef,
-    ...credentialRef !== void 0 && opts?.credentialExists !== void 0 ? { credentialExists: opts.credentialExists } : {},
-    baseUrlEnvKey: g?.baseUrlEnvKey,
-    baseUrl: g?.baseUrl,
-    testOnly,
-    permissionPolicy: g?.permissionPolicy,
-    promptTimeoutMs: g?.promptTimeoutMs,
-    permissionTimeoutMs: g?.permissionTimeoutMs,
-    ...skills !== void 0 ? {
-      skills,
-      // Explicit honesty fields: metadata projection ≠ provider activation.
-      skillsProjectionMode: "metadata-provider-dependent",
-      skillsNote: "Skill name/path refs only (_meta.tent.skills). Provider-dependent; not a claim of activation."
-    } : {},
-    ...mcpServers !== void 0 ? { mcpServers } : {}
-  };
-}
-function projectAgentProfiles(profiles, opts) {
-  const existsMap = opts?.credentialExistsById;
-  const lookup = (ref) => {
-    if (!ref || !existsMap) return void 0;
-    if (existsMap instanceof Map) return existsMap.get(ref);
-    return existsMap[ref];
-  };
-  return profiles.map((p) => {
-    const ref = p.acp?.credentialRef;
-    const exists = typeof ref === "string" ? lookup(ref.trim()) : void 0;
-    return projectAgentProfile(p, exists === void 0 ? void 0 : { credentialExists: exists });
-  }).sort((a, b) => {
-    if (a.testOnly !== b.testOnly) return a.testOnly ? 1 : -1;
-    return a.id.localeCompare(b.id);
-  });
-}
-
-// src/service/provider-catalog.ts
 var PROVIDER_VERIFICATION_LEVELS_BY_ADAPTER = {
   // Checked-in opt-in: npm run test:grok-e2e (+ also in test:foreground-e2e).
   "grok-acp": "opt-in-live-probe",
@@ -24181,16 +23374,16 @@ async function dispatchMethod(ctx, method, params) {
         return registryRoleUpdate(ctx, p);
       case "registry.role.delete":
         return registryRoleDelete(ctx, p);
-      case "profile.list":
-        return profileList(ctx, p);
-      case "profile.get":
-        return profileGet(ctx, p);
-      case "profile.create":
-        return profileCreate(ctx, p);
-      case "profile.update":
-        return profileUpdate(ctx, p);
-      case "profile.delete":
-        return profileDelete(ctx, p);
+      case "route.list":
+        return routeList(ctx, p);
+      case "route.get":
+        return routeGet(ctx, p);
+      case "route.create":
+        return routeCreate(ctx, p);
+      case "route.update":
+        return routeUpdate(ctx, p);
+      case "route.delete":
+        return routeDelete(ctx, p);
       case "provider.catalog":
         return providerCatalogRpc();
       case "credential.list":
@@ -24243,10 +23436,6 @@ async function dispatchMethod(ctx, method, params) {
         return deliveryList(ctx, p);
       case "delivery.get":
         return deliveryGet(ctx, p);
-      case "box.projection":
-        return boxProjectionRpc(ctx, p);
-      case "box.projections":
-        return boxProjectionsRpc(ctx, p);
       case "node.collaboration":
         return nodeCollaborationRpc(ctx, p);
       case "node.collaborations":
@@ -24277,10 +23466,6 @@ async function dispatchMethod(ctx, method, params) {
         return roleCheckpointSetRpc(ctx, p);
       case "role.checkpoint.clear":
         return roleCheckpointClearRpc(ctx, p);
-      case "a2a.listPending":
-        return a2aListPending(ctx, p);
-      case "a2a.resolve":
-        return a2aResolve(ctx, p);
       case "toolApproval.listPending":
         return toolApprovalListPending(ctx, p);
       case "toolApproval.get":
@@ -24360,65 +23545,11 @@ function health(ctx) {
 async function workspaceMount(ctx, p) {
   const workspaceRoot = requireString(p, "workspaceRoot");
   const info = await ctx.host.mount(workspaceRoot, {
-    workspaceId: optionalString(p, "workspaceId"),
-    tentName: optionalString(p, "tentName")
+    workspaceId: optionalString2(p, "workspaceId"),
+    tentName: optionalString2(p, "tentName")
   });
-  await migrateSessionWorkspaceIdsOnMount(ctx, info.workspaceId);
-  await migrateParentReviewerOnMount(ctx, info.workspaceId);
   await reconcileTaskSessionsOnMount(ctx, info.workspaceId);
   return info;
-}
-async function migrateParentReviewerOnMount(ctx, workspaceId) {
-  const mount = ctx.host.get(workspaceId);
-  if (!mount) return;
-  try {
-    await ctx.mutations.run(workspaceId, async () => {
-      ctx.host.markSelfWrite(workspaceId, 200, TEMP_DIR);
-      await migrateParentReviewerEnvelopes(mount.env.fs, mount.env.clock);
-    });
-  } catch (err) {
-    console.error(
-      `[workspace.mount] parent/reviewer migration failed: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-}
-async function migrateSessionWorkspaceIdsOnMount(ctx, workspaceId) {
-  const mount = ctx.host.require(workspaceId);
-  const canonicalPaths = /* @__PURE__ */ new Map();
-  const canonicalize = (value) => {
-    const resolved = nodePath6.resolve(value);
-    let pending = canonicalPaths.get(resolved);
-    if (!pending) {
-      pending = nodeFs3.realpath(resolved).catch(() => resolved);
-      canonicalPaths.set(resolved, pending);
-    }
-    return pending;
-  };
-  const root = await canonicalize(mount.workspaceRoot);
-  const tasks = await loadTaskEnvelopes(mount.env.fs);
-  const boundSessionIds = /* @__PURE__ */ new Set();
-  for (const task of tasks) {
-    const sid = task.sessionId?.trim();
-    if (sid) boundSessionIds.add(sid);
-  }
-  const otherMountedIds = new Set(
-    ctx.host.list().map((info) => info.workspaceId).filter((id) => id !== workspaceId)
-  );
-  const all2 = await ctx.runtime.registry.list();
-  const migrated = [];
-  for (const rec of all2) {
-    if (rec.workspace === workspaceId) continue;
-    if (rec.workspace && otherMountedIds.has(rec.workspace)) continue;
-    const boundByTask = boundSessionIds.has(rec.id);
-    const laneRoot = rec.workspaceLane?.workspace?.trim();
-    const laneMatches = !!laneRoot && isSameWorkspaceRoot(await canonicalize(laneRoot), root);
-    const cwd = rec.runtimeWorkspace?.cwd?.trim();
-    const cwdMatches = !rec.workspaceLane && !!cwd && isSameWorkspaceRoot(await canonicalize(cwd), root);
-    if (!boundByTask && !laneMatches && !cwdMatches) continue;
-    await ctx.runtime.registry.update(rec.id, { workspace: workspaceId });
-    migrated.push(rec.id);
-  }
-  return { migrated };
 }
 var SESSION_UNAVAILABLE_WAIT_SUMMARY = "Bound session unavailable (service restart or session ended). Restart the session or interrupt the task; occupation is held.";
 var SESSION_UNAVAILABLE_WAIT_CODE = "session_unavailable";
@@ -24639,7 +23770,7 @@ async function workspaceAgentsWriteRpc(ctx, p) {
     throw new RpcError(-32602, "workspace.agents.write requires string content");
   }
   const content3 = p.content;
-  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString2(p, "baseEtag");
   return ctx.mutations.run(workspaceId, async () => {
     const before = await loadWorkspaceAgents(mount.workspaceRoot);
     const currentEtag = contentEtag(before.content);
@@ -24697,34 +23828,33 @@ async function docsList(ctx, p) {
   const includeBody = p.includeBody === true;
   return {
     workspaceId,
-    concepts: tent.roots.map((root) => projectConcept(root, includeBody, true))
+    nodes: tent.roots.map((root) => projectNode(root, includeBody, true))
   };
 }
 async function docsGet(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const tent = await loadTent(mount.env.fs);
-  const concept = resolveConcept2(tent, p);
+  const node2 = resolveNode2(tent, p);
   return {
     workspaceId,
-    concept: projectConcept(concept, true, false)
+    node: projectNode(node2, true, false)
   };
 }
 async function docsReadForEdit(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const tent = await loadTent(mount.env.fs);
-  const concept = resolveConcept2(tent, p);
-  const notePath = boxNotePath(concept.path);
+  const node2 = resolveNode2(tent, p);
+  const notePath = nodeNotePath(node2.path);
   const raw = await mount.env.fs.readFile(notePath);
   const { data, body } = parseFrontmatter(raw);
   return {
     workspaceId,
-    id: concept.id,
-    cx: concept.id,
-    path: concept.path,
-    name: concept.name,
-    type: concept.type,
+    nodeId: node2.id,
+    path: node2.path,
+    name: node2.name,
+    type: node2.type,
     body,
     raw,
     etag: contentEtag(raw),
@@ -24735,23 +23865,23 @@ async function docsReadForEdit(ctx, p) {
 async function docsWrite(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString2(p, "baseEtag");
   const rawInput = typeof p.raw === "string" ? p.raw : void 0;
   const body = typeof p.body === "string" ? p.body : void 0;
   const frontmatter = p.frontmatter && typeof p.frontmatter === "object" && !Array.isArray(p.frontmatter) ? p.frontmatter : void 0;
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept2(tent, p);
-    assertDocsModeMutable(concept, "docs.write");
-    const notePath = boxNotePath(concept.path);
+    const node2 = resolveNode2(tent, p);
+    assertDocsModeMutable(node2, "docs.write");
+    const notePath = nodeNotePath(node2.path);
     const diskRaw = await mount.env.fs.readFile(notePath);
     const currentEtag = contentEtag(diskRaw);
     if (!baseEtag) {
       throw new RpcError(-32008, "docs.write requires baseEtag for existing nodes", {
         code: "etag_required",
         currentEtag,
-        path: concept.path,
-        id: concept.id
+        path: node2.path,
+        nodeId: node2.id
       });
     }
     if (baseEtag !== currentEtag) {
@@ -24759,8 +23889,8 @@ async function docsWrite(ctx, p) {
         code: "etag_conflict",
         currentEtag,
         baseEtag,
-        path: concept.path,
-        id: concept.id
+        path: node2.path,
+        nodeId: node2.id
       });
     }
     if (rawInput !== void 0) {
@@ -24771,9 +23901,9 @@ async function docsWrite(ctx, p) {
       assertRawDocsWriteCollaborationFields(nextParsed.data);
       ctx.host.markSelfWrite(workspaceId);
       await mount.env.fs.writeFile(notePath, rawInput);
-      await syncTagRegistryAfterBoxTagsChange(
+      await syncTagRegistryAfterNodeTagsChange(
         mount.env.fs,
-        concept.tags,
+        node2.tags,
         tagsFromFrontmatterData(nextParsed.data)
       );
     } else {
@@ -24784,10 +23914,10 @@ async function docsWrite(ctx, p) {
       }
       ctx.host.markSelfWrite(workspaceId);
       if (frontmatter && Object.keys(frontmatter).length > 0) {
-        await patchBox(mount.env, concept.path, frontmatter, tent);
+        await patchNode(mount.env, node2.path, frontmatter, tent);
       }
       if (body !== void 0) {
-        await patchBody(mount.env, concept.path, body, tent);
+        await patchBody(mount.env, node2.path, body, tent);
       }
       if (body === void 0 && (!frontmatter || Object.keys(frontmatter).length === 0)) {
         throw new RpcError(-32602, "docs.write requires raw, body, and/or frontmatter");
@@ -24795,16 +23925,15 @@ async function docsWrite(ctx, p) {
     }
     const afterRaw = await mount.env.fs.readFile(notePath);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id: concept.id, path: concept.path, reason: "docs.write" },
+      { nodeId: node2.id, path: node2.path, reason: "docs.write" },
       "self"
     );
     return {
       workspaceId,
-      id: concept.id,
-      cx: concept.id,
-      path: concept.path,
+      nodeId: node2.id,
+      path: node2.path,
       etag: contentEtag(afterRaw)
     };
   });
@@ -24825,14 +23954,14 @@ async function docsSetMode(ctx, p) {
   const mode = modeRaw;
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept2(tent, p);
+    const node2 = resolveNode2(tent, p);
     ctx.host.markSelfWrite(workspaceId);
     try {
-      await setNodeMode(mount.env, concept.id, mode);
+      await setNodeMode(mount.env, node2.id, mode);
     } catch (err) {
       const message2 = err instanceof Error ? err.message : "docs.setMode failed";
       if (/not found/i.test(message2)) throw new RpcError(-32004, message2);
-      if (/mode must be|Invalid boxes|archive root|already archived|Claimed ranges|restored to editable/i.test(
+      if (/mode must be|Invalid nodes|archive root|already archived|Claimed ranges|restored to editable/i.test(
         message2
       )) {
         throw new RpcError(-32602, message2);
@@ -24840,67 +23969,66 @@ async function docsSetMode(ctx, p) {
       throw new RpcError(-32e3, message2);
     }
     const after = await loadTent(mount.env.fs);
-    const updated = after.byId.get(concept.id);
-    if (!updated) throw new RpcError(-32004, `Concept not found after setMode: ${concept.id}`);
+    const updated = after.byId.get(node2.id);
+    if (!updated) throw new RpcError(-32004, `Node not found after setMode: ${node2.id}`);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id: updated.id, path: updated.path, reason: "docs.setMode", mode: updated.mode },
+      { nodeId: updated.id, path: updated.path, reason: "docs.setMode", mode: updated.mode },
       "self"
     );
     return {
       workspaceId,
-      id: updated.id,
-      cx: updated.id,
+      nodeId: updated.id,
       path: updated.path,
       mode: updated.mode,
       archived: updated.archived,
-      concept: projectConcept(updated, false, false)
+      node: projectNode(updated, false, false)
     };
   });
 }
 async function docsSearch(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const query = optionalString(p, "query") ?? optionalString(p, "q") ?? "";
+  const query = optionalString2(p, "query") ?? optionalString2(p, "q") ?? "";
   const q = query.trim().toLowerCase();
   if (!q) return { workspaceId, hits: [] };
   const tent = await loadTent(mount.env.fs);
   const hits = [];
-  for (const box of tent.byId.values()) {
-    if (box.archived || box.invalid) continue;
-    const title = typeof box.fm.title === "string" ? box.fm.title : box.name;
-    if (box.name.toLowerCase().includes(q) || title.toLowerCase().includes(q)) {
+  for (const node2 of tent.byId.values()) {
+    if (node2.archived || node2.invalid) continue;
+    const title = typeof node2.fm.title === "string" ? node2.fm.title : node2.name;
+    if (node2.name.toLowerCase().includes(q) || title.toLowerCase().includes(q)) {
       hits.push({
-        cx: box.id,
-        path: box.path,
-        name: box.name,
+        nodeId: node2.id,
+        path: node2.path,
+        name: node2.name,
         title,
         snippet: title,
         match: "title"
       });
       continue;
     }
-    if (box.path.toLowerCase().includes(q)) {
+    if (node2.path.toLowerCase().includes(q)) {
       hits.push({
-        cx: box.id,
-        path: box.path,
-        name: box.name,
+        nodeId: node2.id,
+        path: node2.path,
+        name: node2.name,
         title,
-        snippet: box.path,
+        snippet: node2.path,
         match: "path"
       });
       continue;
     }
-    const body = box.body ?? "";
+    const body = node2.body ?? "";
     const idx = body.toLowerCase().indexOf(q);
     if (idx >= 0) {
       const start = Math.max(0, idx - 40);
       const end = Math.min(body.length, idx + q.length + 40);
       hits.push({
-        cx: box.id,
-        path: box.path,
-        name: box.name,
+        nodeId: node2.id,
+        path: node2.path,
+        name: node2.name,
         title,
         snippet: body.slice(start, end).replace(/\s+/g, " ").trim(),
         match: "body"
@@ -24913,19 +24041,19 @@ async function docsBacklinks(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const tent = await loadTent(mount.env.fs);
-  const concept = resolveConcept2(tent, p);
-  const concepts = [...tent.byId.values()].map((b) => ({
+  const node2 = resolveNode2(tent, p);
+  const nodes = [...tent.byId.values()].map((b) => ({
     id: b.id,
     path: b.path,
     name: b.name,
     body: b.body,
-    notePath: boxNotePath(b.path)
+    notePath: nodeNotePath(b.path)
   }));
-  const reverse = buildBacklinkIndex(concepts);
+  const reverse = buildBacklinkIndex(nodes);
   return {
     workspaceId,
-    cx: concept.id,
-    backlinks: reverse.get(concept.id) ?? []
+    nodeId: node2.id,
+    backlinks: reverse.get(node2.id) ?? []
   };
 }
 async function registryTypes(ctx, p) {
@@ -25072,37 +24200,37 @@ async function docsSetType(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const type = requireString(p, "type");
-  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString2(p, "baseEtag");
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept2(tent, p);
-    assertDocsModeMutable(concept, "docs.setType");
-    const notePath = boxNotePath(concept.path);
-    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "docs.setType");
-    if (!isValidConceptType(type, tent.typeRegistry)) {
+    const node2 = resolveNode2(tent, p);
+    assertDocsModeMutable(node2, "docs.setType");
+    const notePath = nodeNotePath(node2.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, node2, baseEtag, "docs.setType");
+    if (!isValidNodeType(type, tent.typeRegistry)) {
       throw new RpcError(
         -32602,
-        `Invalid concept type: ${type}. Primary must be goal|prompt|output; secondary must be a registered modifier.`,
+        `Invalid node type: ${type}. Primary must be goal|prompt|output; secondary must be a registered modifier.`,
         { type }
       );
     }
     ctx.host.markSelfWrite(workspaceId);
     try {
-      await patchBox(mount.env, concept.path, { type }, tent);
+      await patchNode(mount.env, node2.path, { type }, tent);
     } catch (err) {
       throw mapDocsSemanticError(err, "docs.setType");
     }
     const afterRaw = await mount.env.fs.readFile(notePath);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id: concept.id, path: concept.path, reason: "docs.setType", type },
+      { nodeId: node2.id, path: node2.path, reason: "docs.setType", type },
       "self"
     );
     return {
       workspaceId,
-      id: concept.id,
-      path: concept.path,
+      nodeId: node2.id,
+      path: node2.path,
       etag: contentEtag(afterRaw)
     };
   });
@@ -25128,30 +24256,30 @@ async function docsTagsSet(ctx, p) {
   } catch (err) {
     throw mapDocsSemanticError(err, "docs.tags.set");
   }
-  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString2(p, "baseEtag");
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept2(tent, p);
-    assertDocsModeMutable(concept, "docs.tags.set");
-    const notePath = boxNotePath(concept.path);
-    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "docs.tags.set");
+    const node2 = resolveNode2(tent, p);
+    assertDocsModeMutable(node2, "docs.tags.set");
+    const notePath = nodeNotePath(node2.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, node2, baseEtag, "docs.tags.set");
     ctx.host.markSelfWrite(workspaceId);
     try {
-      await patchBox(mount.env, concept.path, { tags }, tent);
+      await patchNode(mount.env, node2.path, { tags }, tent);
     } catch (err) {
       throw mapDocsSemanticError(err, "docs.tags.set");
     }
     const afterRaw = await mount.env.fs.readFile(notePath);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id: concept.id, path: concept.path, reason: "docs.tags.set" },
+      { nodeId: node2.id, path: node2.path, reason: "docs.tags.set" },
       "self"
     );
     return {
       workspaceId,
-      id: concept.id,
-      path: concept.path,
+      nodeId: node2.id,
+      path: node2.path,
       etag: contentEtag(afterRaw)
     };
   });
@@ -25167,30 +24295,30 @@ async function docsTagAdd(ctx, p) {
   } catch (err) {
     throw mapDocsSemanticError(err, "docs.tag.add");
   }
-  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString2(p, "baseEtag");
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept2(tent, p);
-    assertDocsModeMutable(concept, "docs.tag.add");
-    const notePath = boxNotePath(concept.path);
-    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "docs.tag.add");
+    const node2 = resolveNode2(tent, p);
+    assertDocsModeMutable(node2, "docs.tag.add");
+    const notePath = nodeNotePath(node2.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, node2, baseEtag, "docs.tag.add");
     ctx.host.markSelfWrite(workspaceId);
     try {
-      await addTag(mount.env.fs, concept.id, tag);
+      await addTag(mount.env.fs, node2.id, tag);
     } catch (err) {
       throw mapDocsSemanticError(err, "docs.tag.add");
     }
     const afterRaw = await mount.env.fs.readFile(notePath);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id: concept.id, path: concept.path, reason: "docs.tag.add", tag },
+      { nodeId: node2.id, path: node2.path, reason: "docs.tag.add", tag },
       "self"
     );
     return {
       workspaceId,
-      id: concept.id,
-      path: concept.path,
+      nodeId: node2.id,
+      path: node2.path,
       etag: contentEtag(afterRaw)
     };
   });
@@ -25206,30 +24334,30 @@ async function docsTagRemove(ctx, p) {
   } catch (err) {
     throw mapDocsSemanticError(err, "docs.tag.remove");
   }
-  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString2(p, "baseEtag");
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept2(tent, p);
-    assertDocsModeMutable(concept, "docs.tag.remove");
-    const notePath = boxNotePath(concept.path);
-    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "docs.tag.remove");
+    const node2 = resolveNode2(tent, p);
+    assertDocsModeMutable(node2, "docs.tag.remove");
+    const notePath = nodeNotePath(node2.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, node2, baseEtag, "docs.tag.remove");
     ctx.host.markSelfWrite(workspaceId);
     try {
-      await removeTag(mount.env.fs, concept.id, tag);
+      await removeTag(mount.env.fs, node2.id, tag);
     } catch (err) {
       throw mapDocsSemanticError(err, "docs.tag.remove");
     }
     const afterRaw = await mount.env.fs.readFile(notePath);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id: concept.id, path: concept.path, reason: "docs.tag.remove", tag },
+      { nodeId: node2.id, path: node2.path, reason: "docs.tag.remove", tag },
       "self"
     );
     return {
       workspaceId,
-      id: concept.id,
-      path: concept.path,
+      nodeId: node2.id,
+      path: node2.path,
       etag: contentEtag(afterRaw)
     };
   });
@@ -25247,7 +24375,7 @@ function projectRelationWire(record) {
 function projectIncomingWire(view) {
   return {
     ...projectRelationWire(view),
-    sourceId: view.sourceId,
+    sourceNodeId: view.sourceId,
     sourcePath: view.sourcePath
   };
 }
@@ -25255,9 +24383,9 @@ async function relationList(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const tent = await loadTent(mount.env.fs);
-  const concept = resolveConcept2(tent, p);
+  const node2 = resolveNode2(tent, p);
   try {
-    const listed = listRelationsForNode(tent, concept.id);
+    const listed = listRelationsForNode(tent, node2.id);
     return {
       workspaceId,
       nodeId: listed.nodeId,
@@ -25275,23 +24403,23 @@ async function relationCreate(ctx, p) {
   const mount = ctx.host.require(workspaceId);
   const kind = requireString(p, "kind");
   const direction = requireString(p, "direction");
-  const label = optionalString(p, "label");
+  const label = optionalString2(p, "label");
   if (!isRecord9(p.target)) {
     throw new RpcError(-32602, "relation.create requires target: { nodeId } | { unresolved }");
   }
-  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString2(p, "baseEtag");
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept2(tent, p);
-    assertDocsModeMutable(concept, "relation.create");
-    const notePath = boxNotePath(concept.path);
-    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "relation.create");
+    const node2 = resolveNode2(tent, p);
+    assertDocsModeMutable(node2, "relation.create");
+    const notePath = nodeNotePath(node2.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, node2, baseEtag, "relation.create");
     ctx.host.markSelfWrite(workspaceId);
     let record;
     try {
       record = await createRelation(
         mount.env.fs,
-        concept.id,
+        node2.id,
         {
           kind,
           direction,
@@ -25306,11 +24434,11 @@ async function relationCreate(ctx, p) {
     }
     const afterRaw = await mount.env.fs.readFile(notePath);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
       {
-        id: concept.id,
-        path: concept.path,
+        nodeId: node2.id,
+        path: node2.path,
         reason: "relation.create",
         relationId: record.id
       },
@@ -25318,8 +24446,8 @@ async function relationCreate(ctx, p) {
     );
     return {
       workspaceId,
-      id: concept.id,
-      path: concept.path,
+      nodeId: node2.id,
+      path: node2.path,
       etag: contentEtag(afterRaw),
       relation: projectRelationWire(record)
     };
@@ -25330,7 +24458,7 @@ async function relationUpdate(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const relationId = requireString(p, "relationId");
-  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString2(p, "baseEtag");
   const patch = {};
   if (Object.prototype.hasOwnProperty.call(p, "kind")) {
     patch.kind = requireString(p, "kind");
@@ -25358,24 +24486,24 @@ async function relationUpdate(ctx, p) {
   }
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept2(tent, p);
-    assertDocsModeMutable(concept, "relation.update");
-    const notePath = boxNotePath(concept.path);
-    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "relation.update");
+    const node2 = resolveNode2(tent, p);
+    assertDocsModeMutable(node2, "relation.update");
+    const notePath = nodeNotePath(node2.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, node2, baseEtag, "relation.update");
     ctx.host.markSelfWrite(workspaceId);
     let record;
     try {
-      record = await updateRelation(mount.env.fs, concept.id, relationId, patch, tent);
+      record = await updateRelation(mount.env.fs, node2.id, relationId, patch, tent);
     } catch (err) {
       throw mapRelationError(err, "relation.update");
     }
     const afterRaw = await mount.env.fs.readFile(notePath);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
       {
-        id: concept.id,
-        path: concept.path,
+        nodeId: node2.id,
+        path: node2.path,
         reason: "relation.update",
         relationId: record.id
       },
@@ -25383,8 +24511,8 @@ async function relationUpdate(ctx, p) {
     );
     return {
       workspaceId,
-      id: concept.id,
-      path: concept.path,
+      nodeId: node2.id,
+      path: node2.path,
       etag: contentEtag(afterRaw),
       relation: projectRelationWire(record)
     };
@@ -25395,26 +24523,26 @@ async function relationDelete(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const relationId = requireString(p, "relationId");
-  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString2(p, "baseEtag");
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept2(tent, p);
-    assertDocsModeMutable(concept, "relation.delete");
-    const notePath = boxNotePath(concept.path);
-    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "relation.delete");
+    const node2 = resolveNode2(tent, p);
+    assertDocsModeMutable(node2, "relation.delete");
+    const notePath = nodeNotePath(node2.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, node2, baseEtag, "relation.delete");
     ctx.host.markSelfWrite(workspaceId);
     try {
-      await deleteRelation(mount.env.fs, concept.id, relationId, tent);
+      await deleteRelation(mount.env.fs, node2.id, relationId, tent);
     } catch (err) {
       throw mapRelationError(err, "relation.delete");
     }
     const afterRaw = await mount.env.fs.readFile(notePath);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
       {
-        id: concept.id,
-        path: concept.path,
+        nodeId: node2.id,
+        path: node2.path,
         reason: "relation.delete",
         relationId
       },
@@ -25422,8 +24550,8 @@ async function relationDelete(ctx, p) {
     );
     return {
       workspaceId,
-      id: concept.id,
-      path: concept.path,
+      nodeId: node2.id,
+      path: node2.path,
       etag: contentEtag(afterRaw),
       deleted: relationId
     };
@@ -25448,7 +24576,7 @@ function mapRelationError(err, surface) {
     return new RpcError(-32e3, err.message, { code: err.code });
   }
   const message2 = err instanceof Error ? err.message : `${surface} failed`;
-  if (/not found|Box not found|Concept not found|Relation not found/i.test(message2)) {
+  if (/not found|Node not found|Node not found|Relation not found/i.test(message2)) {
     return new RpcError(-32004, message2);
   }
   if (/archived|invalid/i.test(message2)) {
@@ -25482,15 +24610,15 @@ function emitRegistryTagsUpdated(ctx, workspaceId, payload) {
     "self"
   );
 }
-async function assertDocsSemanticBaseEtag(fs22, notePath, concept, baseEtag, surface) {
-  const diskRaw = await fs22.readFile(notePath);
+async function assertDocsSemanticBaseEtag(fs21, notePath, node2, baseEtag, surface) {
+  const diskRaw = await fs21.readFile(notePath);
   const currentEtag = contentEtag(diskRaw);
   if (!baseEtag) {
     throw new RpcError(-32008, `${surface} requires baseEtag`, {
       code: "etag_required",
       currentEtag,
-      path: concept.path,
-      id: concept.id
+      path: node2.path,
+      nodeId: node2.id
     });
   }
   if (baseEtag !== currentEtag) {
@@ -25498,8 +24626,8 @@ async function assertDocsSemanticBaseEtag(fs22, notePath, concept, baseEtag, sur
       code: "etag_conflict",
       currentEtag,
       baseEtag,
-      path: concept.path,
-      id: concept.id
+      path: node2.path,
+      nodeId: node2.id
     });
   }
 }
@@ -25527,10 +24655,10 @@ function mapTagRegistryError(err, surface) {
 function mapDocsSemanticError(err, surface) {
   if (err instanceof RpcError) return err;
   const message2 = err instanceof Error ? err.message : `${surface} failed`;
-  if (/not found|Box not found/i.test(message2)) {
+  if (/not found|Node not found/i.test(message2)) {
     return new RpcError(-32004, message2);
   }
-  if (/Unknown type|Primary type|Invalid or archived|cannot be tagged|cannot be empty|path separators|newlines|Reserved or retired|Archived boxes|Invalid subtrees/i.test(
+  if (/Unknown type|Primary type|Invalid or archived|cannot be tagged|cannot be empty|path separators|newlines|Reserved or retired|Archived nodes|Invalid subtrees/i.test(
     message2
   )) {
     return new RpcError(-32602, message2);
@@ -25678,7 +24806,7 @@ async function registryRoleDelete(ctx, p) {
     }
     const tasks = await loadTaskEnvelopes(mount.env.fs);
     const activeTask = tasks.find(
-      (t) => taskAssigneeKind(t) === "role" && isActiveTaskState(t.state) && (t.role === existing.name || roleId !== "" && t.role === roleId)
+      (t) => taskAssigneeKind(t) === "role" && isActiveTaskState(t.state) && (t.assigneeId === existing.name || roleId !== "" && t.assigneeId === roleId)
     );
     if (activeTask) {
       throw new RpcError(
@@ -25738,30 +24866,22 @@ function emitRegistryRolesUpdated(ctx, workspaceId, payload) {
   );
 }
 function parseRoleDefinitionParams(p, opts) {
-  for (const banned of [
-    "secret",
-    "secrets",
-    "token",
-    "apiKey",
-    "api_key",
-    "password",
-    "credential",
-    "credentials",
-    "env"
-  ]) {
-    if (banned in p) {
-      throw new RpcError(
-        -32602,
-        `registry.role.* does not accept ${banned}; roles store ids/policy only, never credentials`
-      );
-    }
-  }
-  if ("role" in p && typeof p.role === "object" && p.role !== null) {
-    throw new RpcError(
-      -32602,
-      "registry.role.* does not accept nested role; pass fields at the top level"
-    );
-  }
+  const surface = opts.forUpdate ? "registry.role.update" : "registry.role.create";
+  assertAllowedParams(
+    p,
+    /* @__PURE__ */ new Set([
+      "workspaceId",
+      "actor",
+      "name",
+      ...opts.forUpdate ? ["roleId"] : [],
+      "displayName",
+      "prompt",
+      "description",
+      "color",
+      "cli"
+    ]),
+    surface
+  );
   const raw = {};
   if (opts.requireName || typeof p.name === "string") {
     raw.name = requireString(p, "name");
@@ -25794,12 +24914,6 @@ function parseRoleDefinitionParams(p, opts) {
     }
     if (typeof p.color === "string") raw.color = p.color;
   }
-  if ("allowedProfiles" in p || "roster" in p || "a2aPolicy" in p) {
-    throw new RpcError(
-      -32602,
-      "registry.role.* does not accept a2aPolicy/roster/allowedProfiles; ACP launch routes are configured in machine Settings"
-    );
-  }
   if ("cli" in p) {
     if (p.cli === null) {
     } else if (typeof p.cli !== "object" || Array.isArray(p.cli)) {
@@ -25823,7 +24937,7 @@ function parseRoleDefinitionParams(p, opts) {
 function mapRoleRegistryError(err, surface) {
   if (err instanceof RpcError) return err;
   const message2 = err instanceof Error ? err.message : `${surface} failed`;
-  if (/already exists|does not exist|Confirmation mismatch|cannot be empty|cli\.|immutable|cannot be renamed|no longer accept|allowedProfiles/i.test(
+  if (/already exists|does not exist|Confirmation mismatch|cannot be empty|cli\.|immutable|cannot be renamed/i.test(
     message2
   )) {
     if (/does not exist/i.test(message2)) {
@@ -25833,98 +24947,94 @@ function mapRoleRegistryError(err, surface) {
   }
   return new RpcError(-32e3, message2);
 }
-async function profileList(ctx, p) {
-  const includeTest = p.includeTest === true;
-  const catalog = ctx.profileCatalog.list();
+async function routeList(ctx, p) {
+  void p;
+  const catalog = ctx.routeCatalog.list();
   const existsMap = await credentialExistsLookup(ctx, catalog);
-  let profiles = projectAgentProfiles(catalog, { credentialExistsById: existsMap });
-  if (!includeTest) {
-    profiles = profiles.filter((pr) => !pr.testOnly);
-  }
-  return { profiles };
+  return { routes: projectSettingsRoutes(catalog, { credentialExistsById: existsMap }) };
 }
-async function profileGet(ctx, p) {
-  const id = requireString(p, "id");
-  const profile = ctx.profileCatalog.get(id);
-  if (!profile) {
-    throw new RpcError(-32004, `Profile not found: ${id}`);
+async function routeGet(ctx, p) {
+  const routeId = requireString(p, "routeId");
+  const route = ctx.routeCatalog.get(routeId);
+  if (!route) {
+    throw new RpcError(-32004, `Route not found: ${routeId}`);
   }
   return {
-    profile: projectAgentProfile(
-      profile,
-      await profileCredentialExistsOpts(ctx, profile)
+    route: projectSettingsRoute(
+      route,
+      await routeCredentialExistsOpts(ctx, route)
     )
   };
 }
-async function profileCreate(ctx, p) {
-  if ("profile" in p) {
+async function routeCreate(ctx, p) {
+  if ("route" in p) {
     throw new RpcError(
       -32602,
-      "profile.create does not accept nested profile; pass fields at the top level"
+      "route.create does not accept nested route; pass fields at the top level"
     );
   }
-  const created = await ctx.profileCatalog.create(p);
-  const profile = projectAgentProfile(
+  const created = await ctx.routeCatalog.create(p);
+  const route = projectSettingsRoute(
     created,
-    await profileCredentialExistsOpts(ctx, created)
+    await routeCredentialExistsOpts(ctx, created)
   );
   ctx.events.emit(
-    "profile.changed",
+    "route.changed",
     "",
-    { action: "create", id: created.id, profile },
+    { action: "create", routeId: created.routeId, route },
     "self"
   );
   return {
-    profile
+    route
   };
 }
-async function profileUpdate(ctx, p) {
-  if ("profile" in p) {
+async function routeUpdate(ctx, p) {
+  if ("route" in p) {
     throw new RpcError(
       -32602,
-      "profile.update does not accept nested profile; pass { id, ...patch }"
+      "route.update does not accept nested route; pass { routeId, ...patch }"
     );
   }
-  const id = requireString(p, "id");
-  const { id: _id, ...patch } = p;
-  const updated = await ctx.profileCatalog.update(id, patch);
-  const profile = projectAgentProfile(
+  const routeId = requireString(p, "routeId");
+  const { routeId: _routeId, ...patch } = p;
+  const updated = await ctx.routeCatalog.update(routeId, patch);
+  const route = projectSettingsRoute(
     updated,
-    await profileCredentialExistsOpts(ctx, updated)
+    await routeCredentialExistsOpts(ctx, updated)
   );
   ctx.events.emit(
-    "profile.changed",
+    "route.changed",
     "",
-    { action: "update", id: updated.id, profile },
+    { action: "update", routeId: updated.routeId, route },
     "self"
   );
   return {
-    profile
+    route
   };
 }
-async function profileDelete(ctx, p) {
-  const id = requireString(p, "id");
-  const result = await ctx.profileCatalog.delete(id);
+async function routeDelete(ctx, p) {
+  const routeId = requireString(p, "routeId");
+  const result = await ctx.routeCatalog.delete(routeId);
   ctx.events.emit(
-    "profile.changed",
+    "route.changed",
     "",
-    { action: "delete", id: result.deleted },
+    { action: "delete", routeId: result.deleted },
     "self"
   );
   return result;
 }
-async function credentialExistsLookup(ctx, profiles) {
+async function credentialExistsLookup(ctx, routes) {
   const map = /* @__PURE__ */ new Map();
-  for (const p of profiles) {
-    const ref = typeof p.acp?.credentialRef === "string" ? p.acp.credentialRef.trim() : "";
+  for (const route of routes) {
+    const ref = typeof route.credentialRef === "string" ? route.credentialRef.trim() : "";
     if (ref && !map.has(ref)) {
       map.set(ref, await ctx.credentials.has(ref));
     }
   }
   return map;
 }
-async function profileCredentialExistsOpts(ctx, profile) {
-  const ref = typeof profile.acp?.credentialRef === "string" && profile.acp.credentialRef.trim() ? profile.acp.credentialRef.trim() : void 0;
+async function routeCredentialExistsOpts(ctx, route) {
+  const ref = route.credentialRef?.trim() || void 0;
   if (!ref) return void 0;
   return { credentialExists: await ctx.credentials.has(ref) };
 }
@@ -26087,23 +25197,23 @@ async function docsCreateNote(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const name = requireString(p, "name");
-  const type = optionalString(p, "type") ?? "prompt";
-  const parentPath = optionalString(p, "parentPath") ?? "";
+  const type = optionalString2(p, "type") ?? "prompt";
+  const parentPath = optionalString2(p, "parentPath") ?? "";
   const body = typeof p.body === "string" ? p.body : void 0;
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
-    const id = await createBox(mount.env, { parentPath, name, type });
+    const nodeId = await createNode(mount.env, { parentPath, name, type });
     const notePath = parentPath ? `${parentPath}/${name}` : name;
     if (body !== void 0) {
       await patchBody(mount.env, notePath, body.endsWith("\n") ? body : body + "\n");
     }
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id, path: notePath, reason: "docs.createNote" },
+      { nodeId, path: notePath, reason: "docs.createNote" },
       "self"
     );
-    return { workspaceId, id, path: notePath, type };
+    return { workspaceId, nodeId, path: notePath, type };
   });
 }
 async function docsImportAttachment(ctx, p) {
@@ -26133,21 +25243,20 @@ async function docsImportAttachment(ctx, p) {
   }
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept2(tent, p);
-    assertDocsModeMutable(concept, "docs.importAttachment");
+    const node2 = resolveNode2(tent, p);
+    assertDocsModeMutable(node2, "docs.importAttachment");
     ctx.host.markSelfWrite(workspaceId);
     try {
       const result = await storeAttachmentBytes(
         mount.env.fs,
-        concept.id,
+        node2.id,
         fileName,
         bytes,
-        boxNotePath(concept.path)
+        nodeNotePath(node2.path)
       );
       return {
         workspaceId,
-        id: concept.id,
-        cx: concept.id,
+        nodeId: node2.id,
         relativePath: result.relativePath,
         markdown: result.markdown,
         artifactRef: result.artifactRef
@@ -26164,24 +25273,20 @@ async function docsImportAttachment(ctx, p) {
 async function docsFork(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const boxId = optionalString(p, "id") ?? optionalString(p, "boxId") ?? requireString(p, "path");
+  const nodeId = requireString(p, "nodeId");
   return ctx.mutations.run(workspaceId, async () => {
-    let id = boxId;
-    if (!id.startsWith("cx-") && !id.startsWith("bx-")) {
-      const tent = await loadTent(mount.env.fs);
-      const box = tent.byPath.get(boxId);
-      if (!box) throw new RpcError(-32004, `Concept not found: ${boxId}`);
-      id = box.id;
-    }
+    if (!isNodeId(nodeId)) throw new RpcError(-32602, `Invalid Node id: ${nodeId}`);
+    const tent = await loadTent(mount.env.fs);
+    requireCanonicalNode(tent, nodeId);
     ctx.host.markSelfWrite(workspaceId);
-    const forkRootId = await forkNode(mount.env, id);
+    const forkRootId = await forkNode(mount.env, nodeId);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id: forkRootId, reason: "docs.fork", forkOf: id },
+      { nodeId: forkRootId, reason: "docs.fork", forkOf: nodeId },
       "self"
     );
-    return { workspaceId, id: forkRootId, forkOf: id };
+    return { workspaceId, nodeId: forkRootId, forkOf: nodeId };
   });
 }
 async function docsRename(ctx, p) {
@@ -26189,23 +25294,20 @@ async function docsRename(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const newName = requireString(p, "newName");
-  if ("id" in p && p.id !== void 0 && p.id !== null && typeof p.id !== "string") {
-    throw new RpcError(-32602, "docs.rename id must be a string when set");
-  }
   if ("newId" in p) {
-    throw new RpcError(-32602, "docs.rename cannot change concept id; cx- is immutable");
+    throw new RpcError(-32602, "docs.rename cannot change node id; cx- is immutable");
   }
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept2(tent, p);
+    const node2 = resolveNode2(tent, p);
     ctx.host.markSelfWrite(workspaceId);
     try {
-      const result = await renameNode(mount.env, concept.id, newName);
+      const result = await renameNode(mount.env, node2.id, newName);
       ctx.events.emit(
-        "concept.changed",
+        "node.changed",
         workspaceId,
         {
-          id: result.id,
+          nodeId: result.id,
           path: result.path,
           oldPath: result.oldPath,
           name: result.name,
@@ -26216,8 +25318,7 @@ async function docsRename(ctx, p) {
       );
       return {
         workspaceId,
-        id: result.id,
-        cx: result.id,
+        nodeId: result.id,
         path: result.path,
         oldPath: result.oldPath,
         name: result.name,
@@ -26235,7 +25336,7 @@ function mapDocsRenameError(err) {
   if (/not found/i.test(message2)) {
     return new RpcError(-32004, message2);
   }
-  if (/already exists|cannot be empty|path separators|control characters|newlines|longer than|Invalid or archived|Claimed ranges|Cannot rename|System directories|system pipelines|sibling concept|Identity note missing|id drift|immutable/i.test(
+  if (/already exists|cannot be empty|path separators|control characters|newlines|longer than|Invalid or archived|Claimed ranges|Cannot rename|System directories|system pipelines|sibling node|Identity note missing|id drift|immutable/i.test(
     message2
   )) {
     return new RpcError(-32602, message2);
@@ -26246,10 +25347,10 @@ async function docsMove(ctx, p) {
   requireUserActor(p, "docs.move");
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const id = requireString(p, "id");
+  const nodeId = requireString(p, "nodeId");
   const expectedPath = requireString(p, "expectedPath");
   if ("newId" in p) {
-    throw new RpcError(-32602, "docs.move cannot change concept id; cx- is immutable");
+    throw new RpcError(-32602, "docs.move cannot change node id; cx- is immutable");
   }
   if ("newParentId" in p && p.newParentId !== null && p.newParentId !== void 0 && typeof p.newParentId !== "string") {
     throw new RpcError(-32602, "docs.move newParentId must be a string or null");
@@ -26258,18 +25359,18 @@ async function docsMove(ctx, p) {
   const position2 = parseMovePosition(p.position);
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = tent.byId.get(id);
-    if (!concept) {
-      throw new RpcError(-32004, `Concept not found: ${id}`);
+    const node2 = tent.byId.get(nodeId);
+    if (!node2) {
+      throw new RpcError(-32004, `Node not found: ${nodeId}`);
     }
     const normalizedExpected = expectedPath.replace(/\\/g, "/").replace(/^\.\//, "");
-    const currentPath = concept.path;
+    const currentPath = node2.path;
     if (currentPath !== normalizedExpected) {
       throw new RpcError(-32009, "path stale", {
         code: "path_stale",
         currentPath,
         expectedPath: normalizedExpected,
-        id: concept.id
+        nodeId: node2.id
       });
     }
     if (newParentId !== null) {
@@ -26280,12 +25381,12 @@ async function docsMove(ctx, p) {
     }
     ctx.host.markSelfWrite(workspaceId);
     try {
-      const result = await moveNode(mount.env, concept.id, newParentId, position2);
+      const result = await moveNode(mount.env, node2.id, newParentId, position2);
       ctx.events.emit(
-        "concept.changed",
+        "node.changed",
         workspaceId,
         {
-          id: result.id,
+          nodeId: result.id,
           path: result.path,
           oldPath: result.oldPath,
           reason: "docs.move",
@@ -26295,8 +25396,7 @@ async function docsMove(ctx, p) {
       );
       return {
         workspaceId,
-        id: result.id,
-        cx: result.id,
+        nodeId: result.id,
         path: result.path,
         oldPath: result.oldPath,
         pathMap: result.pathMap,
@@ -26331,7 +25431,7 @@ function mapDocsMoveError(err) {
   if (/not found/i.test(message2)) {
     return new RpcError(-32004, message2);
   }
-  if (/already exists|Invalid or archived|Cannot move|active task|System directories|system pipelines|sibling concept|id drift|immutable|own subtree|relative to itself|destination parent|Concept id is required/i.test(
+  if (/already exists|Invalid or archived|Cannot move|active task|System directories|system pipelines|sibling node|id drift|immutable|own subtree|relative to itself|destination parent|Node id is required/i.test(
     message2
   )) {
     return new RpcError(-32602, message2);
@@ -26339,67 +25439,56 @@ function mapDocsMoveError(err) {
   return new RpcError(-32e3, message2);
 }
 async function taskDispatch(ctx, p) {
+  assertAllowedParams(
+    p,
+    /* @__PURE__ */ new Set([
+      "workspaceId",
+      "nodeIds",
+      "assigneeKind",
+      "assigneeId",
+      "prompt",
+      "parentActor",
+      "reviewer",
+      "asSub",
+      "deliveryPolicy",
+      "startSession",
+      "callerKind"
+    ]),
+    "task.dispatch"
+  );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const dispatchSelection = resolveTaskNodeSelection(p, mount.env.tentName, "task.dispatch");
-  const primaryNodeId = dispatchSelection.primaryId;
+  const primaryNodeId3 = dispatchSelection.primaryId;
   const nodeIds = dispatchSelection.nodeIds;
-  for (const retired of ["agentId", "profileId"]) {
-    if (p[retired] !== void 0 && p[retired] !== null) {
-      throw new RpcError(-32602, `task.dispatch ${retired} is retired; pass routeId`);
-    }
-  }
-  const assigneeKindRaw = optionalString(p, "assigneeKind");
-  const assigneeKind = assigneeKindRaw === "route" ? "agentProfile" : assigneeKindRaw === "role" || !assigneeKindRaw ? "role" : (() => {
+  const assigneeKindRaw = requireString(p, "assigneeKind");
+  if (assigneeKindRaw !== "role" && assigneeKindRaw !== "route") {
     throw new RpcError(-32602, `Invalid assigneeKind: ${assigneeKindRaw}`);
-  })();
-  const role = optionalString(p, "role");
-  const routeId = optionalString(p, "routeId");
-  const profileId = routeId;
+  }
+  const assigneeKind = assigneeKindRaw;
+  const assigneeId = requireString(p, "assigneeId");
   const prompt = requireString(p, "prompt");
   const asSub = p.asSub === true;
-  if ("dispatchedBy" in p && p.dispatchedBy !== void 0 && p.dispatchedBy !== null) {
-    throw new RpcError(
-      -32602,
-      "task.dispatch dispatchedBy is retired; pass explicit parentActor and reviewer ({ kind: user|role, id }). Legacy envelopes migrate once on workspace.mount."
-    );
-  }
   const explicitParentActor = parseOptionalTaskActor(p.parentActor, "parentActor");
   const explicitReviewer = parseOptionalTaskActor(p.reviewer, "reviewer");
-  const explicitDeliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
+  const explicitDeliveryPolicy = parseDeliveryPolicy(optionalString2(p, "deliveryPolicy"));
   const startSession = p.startSession === true;
-  if ("a2aPolicyOverride" in p) {
-    throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
-  }
   const resolvedActors = resolveDispatchActorsFromRpc({
     parentActor: explicitParentActor,
     reviewer: explicitReviewer
   });
-  if (assigneeKind === "role" && !role) {
-    throw new RpcError(-32602, "task.dispatch with assigneeKind=role requires role");
+  if (assigneeKind === "route" && !ctx.routeCatalog.get(assigneeId)) {
+    throw new RpcError(-32004, `Settings route not found: ${assigneeId}`);
   }
-  if (assigneeKind === "agentProfile" && !profileId) {
+  if (startSession && assigneeKind !== "route") {
     throw new RpcError(
       -32602,
-      "task.dispatch with assigneeKind=route requires routeId"
-    );
-  }
-  if (assigneeKind === "agentProfile" && role) {
-    throw new RpcError(-32602, "task.dispatch route target must not pass role");
-  }
-  if (assigneeKind === "agentProfile" && !ctx.profileCatalog.get(profileId)) {
-    throw new RpcError(-32004, `Settings route not found: ${profileId}`);
-  }
-  if (startSession && !profileId) {
-    throw new RpcError(
-      -32602,
-      "task.dispatch with startSession requires explicit routeId"
+      "task.dispatch startSession is available only for a Settings route assignee"
     );
   }
   const callerKind = resolvedActors.parentActor.kind;
-  const resolvedAgentId = void 0;
   const result = await ctx.mutations.run(workspaceId, async () => {
-    const assigneeLabel = assigneeKind === "agentProfile" ? profileId : role;
+    const assigneeLabel = assigneeId;
     if (asSub) {
       await assertSubDispatchPreconditions(mount.env.fs, {
         workspaceRoot: mount.workspaceRoot,
@@ -26451,123 +25540,20 @@ async function taskDispatch(ctx, p) {
       }
       deliveryPolicy = "review";
     }
-    const purposeParam = typeof p.purpose === "string" && p.purpose.trim() ? p.purpose.trim() : void 0;
-    let dispatchContextGeneration;
-    let dispatchContextFacts;
-    if (assigneeKind === "agentProfile") {
-      const dispatchProfileId = profileId;
-      const dispatchProfile = ctx.profileCatalog.get(dispatchProfileId);
-      if (!dispatchProfile?.adapterId) {
-        throw new RpcError(
-          -32602,
-          `task.dispatch cannot compute contextGeneration: profile ${dispatchProfileId} missing or has no adapterId`,
-          { profileId: dispatchProfileId }
-        );
-      }
-      const parentRoleIdForGen = resolvedActors.parentActor.kind === "role" ? resolvedActors.parentActor.id : void 0;
-      try {
-        const bundle = await collectStableContextGeneration({
-          workspaceRoot: mount.workspaceRoot,
-          workspaceIdentity: workspaceId,
-          packageRoot: ctx.packageRoot,
-          packageVersion: ctx.version,
-          assigneeKind,
-          assigneeLabel,
-          agentId: resolvedAgentId,
-          profileId: dispatchProfileId,
-          adapterId: dispatchProfile.adapterId,
-          parentRoleId: parentRoleIdForGen,
-          purpose: purposeParam,
-          roleFs: mount.env.fs,
-          profile: dispatchProfile
-        });
-        dispatchContextGeneration = bundle.contextGeneration;
-        dispatchContextFacts = {
-          agentsPointerDigest: bundle.agentsPointerDigest,
-          tentRoleDigest: bundle.tentRoleDigest || void 0,
-          tentRoleVersion: bundle.tentRoleVersion || void 0,
-          tentTaskDigest: bundle.tentTaskDigest || void 0,
-          tentTaskVersion: bundle.tentTaskVersion || void 0,
-          rolePrompt: bundle.rolePrompt || void 0,
-          profileId: bundle.profileId,
-          adapterId: bundle.adapterId,
-          purpose: bundle.purpose || void 0
-        };
-      } catch (err) {
-        const message2 = err instanceof Error ? err.message : String(err);
-        throw new RpcError(
-          -32e3,
-          `task.dispatch contextGeneration collection failed: ${message2}`,
-          { code: "CONTEXT_GENERATION_COLLECT_FAILED" }
-        );
-      }
-    } else if (profileId) {
-      const dispatchProfile = ctx.profileCatalog.get(profileId);
-      if (!dispatchProfile?.adapterId) {
-        throw new RpcError(
-          -32602,
-          `task.dispatch cannot compute contextGeneration: profile ${profileId} missing or has no adapterId`,
-          { profileId }
-        );
-      }
-      const parentRoleIdForGen = resolvedActors.parentActor.kind === "role" ? resolvedActors.parentActor.id : void 0;
-      try {
-        const bundle = await collectStableContextGeneration({
-          workspaceRoot: mount.workspaceRoot,
-          workspaceIdentity: workspaceId,
-          packageRoot: ctx.packageRoot,
-          packageVersion: ctx.version,
-          assigneeKind,
-          assigneeLabel,
-          agentId: resolvedAgentId,
-          profileId,
-          adapterId: dispatchProfile.adapterId,
-          parentRoleId: parentRoleIdForGen,
-          purpose: purposeParam,
-          roleFs: mount.env.fs,
-          profile: dispatchProfile
-        });
-        dispatchContextGeneration = bundle.contextGeneration;
-        dispatchContextFacts = {
-          agentsPointerDigest: bundle.agentsPointerDigest,
-          tentRoleDigest: bundle.tentRoleDigest || void 0,
-          tentRoleVersion: bundle.tentRoleVersion || void 0,
-          tentTaskDigest: bundle.tentTaskDigest || void 0,
-          tentTaskVersion: bundle.tentTaskVersion || void 0,
-          rolePrompt: bundle.rolePrompt || void 0,
-          profileId: bundle.profileId,
-          adapterId: bundle.adapterId,
-          purpose: bundle.purpose || void 0
-        };
-      } catch (err) {
-        const message2 = err instanceof Error ? err.message : String(err);
-        throw new RpcError(
-          -32e3,
-          `task.dispatch contextGeneration collection failed: ${message2}`,
-          { code: "CONTEXT_GENERATION_COLLECT_FAILED" }
-        );
-      }
-    }
-    const dispatched2 = await dispatch(mount.env, primaryNodeId, assigneeKind === "role" ? role : void 0, {
+    const dispatched2 = await dispatch(mount.env, primaryNodeId3, {
       userPrompt: prompt,
       parentActor: resolvedActors.parentActor,
       reviewer: resolvedActors.reviewer,
       asSub,
       deliveryPolicy,
-      // Only profile-asSub (and similar) may bind a Git lane at dispatch.
+      // Only route-asSub (and similar) may bind a Git lane at dispatch.
       // Role assignee never freezes workspaceLane/baseCommit here.
       workspace: workspaceLane2,
       assigneeKind,
-      profileId: assigneeKind === "agentProfile" ? profileId : void 0,
-      // Persist logical agentId for agentId dispatch (Role-agent and user-direct).
-      // User-direct profileId one-shot without agentId leaves this undefined.
-      agentId: resolvedAgentId,
+      assigneeId,
       // Authoritative ordered Node refs (transient). Core writes Context Card only.
       nodeIds,
-      ...preallocatedTaskId ? { taskId: preallocatedTaskId } : {},
-      ...purposeParam ? { purpose: purposeParam } : {},
-      ...dispatchContextGeneration ? { contextGeneration: dispatchContextGeneration } : {},
-      ...dispatchContextFacts ? { contextGenerationFacts: dispatchContextFacts } : {}
+      ...preallocatedTaskId ? { taskId: preallocatedTaskId } : {}
     });
     ctx.events.emit(
       "task.state",
@@ -26575,7 +25561,7 @@ async function taskDispatch(ctx, p) {
       {
         path: dispatched2.taskPath,
         state: "queued",
-        role: dispatched2.assignee,
+        assigneeId: dispatched2.assigneeId,
         assigneeKind: dispatched2.assigneeKind,
         nodeIds,
         reason: "task.dispatch"
@@ -26596,7 +25582,6 @@ async function taskDispatch(ctx, p) {
       session = await taskStartSessionRpc(ctx, {
         workspaceId,
         taskPath: dispatched.taskPath,
-        profileId,
         callerKind
       });
     } catch (err) {
@@ -26607,7 +25592,7 @@ async function taskDispatch(ctx, p) {
       throw err;
     }
   }
-  const taskAfter = await loadTaskEnvelope(mount.env.fs, dispatched.taskPath).catch(() => null);
+  const taskAfter = await loadTaskEnvelope(mount.env.fs, dispatched.taskPath);
   return {
     workspaceId,
     taskPath: dispatched.taskPath,
@@ -26615,22 +25600,15 @@ async function taskDispatch(ctx, p) {
     initPath: dispatched.initPath,
     relayPrompt: dispatched.relayPrompt,
     assigneeKind: dispatched.assigneeKind,
-    assignee: dispatched.assignee,
-    asSub: taskAfter ? taskAsSub(taskAfter) : asSub,
-    parentActor: taskAfter?.parentActor ?? resolvedActors.parentActor,
-    reviewer: taskAfter?.reviewer ?? resolvedActors.reviewer,
-    // Prefer durable envelope state so success/failure projections stay honest.
-    state: taskAfter?.state ?? (startSession ? "running" : "queued"),
+    assigneeId: dispatched.assigneeId,
+    asSub: taskAsSub(taskAfter),
+    parentActor: taskAfter.parentActor,
+    reviewer: taskAfter.reviewer,
+    state: taskAfter.state,
     session,
-    // Prefer envelope projection (Role baseCommit only after claim; profile-asSub may
+    // Prefer envelope projection (Role baseCommit only after claim; route-asSub may
     // still carry dispatch-time lane). Fall back to in-memory lane only when present.
-    workspaceLane: taskAfter ? projectTask(taskAfter).workspaceLane : workspaceLane ? {
-      workspace: workspaceLane.workspace,
-      worktree: workspaceLane.worktree,
-      branch: workspaceLane.branch,
-      targetBranch: workspaceLane.targetBranch,
-      ...workspaceLane.baseCommit ? { baseCommit: workspaceLane.baseCommit } : {}
-    } : void 0
+    workspaceLane: projectTask(taskAfter).workspaceLane
   };
 }
 async function compensateCombinedDispatchStartSessionFailure(ctx, input) {
@@ -26664,7 +25642,7 @@ async function compensateCombinedDispatchStartSessionFailure(ctx, input) {
   } catch {
   }
 }
-async function assertSubDispatchPreconditions(fs22, input) {
+async function assertSubDispatchPreconditions(fs21, input) {
   if (input.parentActor.kind !== "role") {
     throw new RpcError(
       -32602,
@@ -26686,7 +25664,7 @@ async function assertSubDispatchPreconditions(fs22, input) {
       { parentActor: input.parentActor, assignee: input.assigneeLabel }
     );
   }
-  const registry = await loadRolesRegistry(fs22);
+  const registry = await loadRolesRegistry(fs21);
   const role = resolveRole(registry.roles, dispatcher);
   if (!role) {
     throw new RpcError(
@@ -26715,7 +25693,7 @@ function parseOptionalTaskActor(value, label) {
   }
 }
 function resolveTaskNodeSelection(p, tentName, method) {
-  for (const retired of ["boxId", "id", "claimId"]) {
+  for (const retired of ["nodeId", "id", "claimId"]) {
     if (p[retired] !== void 0 && p[retired] !== null) {
       throw new RpcError(
         -32602,
@@ -26769,31 +25747,24 @@ function resolveDispatchActorsFromRpc(input) {
   }
 }
 async function taskClaimDirectRpc(ctx, p) {
+  assertAllowedParams(
+    p,
+    /* @__PURE__ */ new Set([
+      "workspaceId",
+      "role",
+      "nodeIds",
+      "prompt",
+      "sourceTaskPath",
+      "sourceSessionId"
+    ]),
+    "task.claimDirect"
+  );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  for (const retired of [
-    "parentActor",
-    "reviewer",
-    "asSub",
-    "target",
-    "assigneeKind",
-    "routeId",
-    "startSession",
-    "deliveryPolicy",
-    "callerKind",
-    "dispatchedBy"
-  ]) {
-    if (p[retired] !== void 0 && p[retired] !== null) {
-      throw new RpcError(
-        -32602,
-        `task.claimDirect does not accept ${retired}; responsibility and execution ownership are derived by Service`
-      );
-    }
-  }
   const roleRef = requireString(p, "role");
   const prompt = requireString(p, "prompt");
-  const sourceTaskPath = optionalString(p, "sourceTaskPath");
-  const sourceSessionId = optionalString(p, "sourceSessionId");
+  const sourceTaskPath = optionalString2(p, "sourceTaskPath");
+  const sourceSessionId = optionalString2(p, "sourceSessionId");
   const selection = resolveTaskNodeSelection(p, mount.env.tentName, "task.claimDirect");
   return ctx.mutations.run(workspaceId, async () => {
     const registry = await loadRolesRegistry(mount.env.fs);
@@ -26824,12 +25795,13 @@ async function taskClaimDirectRpc(ctx, p) {
     const initBefore = initExisted ? await mount.env.fs.readFile(expectedInitPath) : void 0;
     let created;
     try {
-      created = await dispatch(mount.env, selection.primaryId, role, {
+      created = await dispatch(mount.env, selection.primaryId, {
         userPrompt: prompt,
         parentActor: actors.parentActor,
         reviewer: actors.reviewer,
         deliveryPolicy,
         assigneeKind: "role",
+        assigneeId: role,
         nodeIds: selection.nodeIds
       });
       const pre = await loadTaskEnvelope(mount.env.fs, created.taskPath);
@@ -26845,13 +25817,13 @@ async function taskClaimDirectRpc(ctx, p) {
         ...claimWrite ? { claimWrite } : {}
       });
       emitTaskState(ctx, workspaceId, task, "task.claimDirect");
-      const nodeIds = task.contextCard != null ? taskReferencedNodeIds(task) : [];
+      const nodeIds = taskReferencedNodeIds(task);
       for (const nodeId of nodeIds) {
         if (nodeId === "root") continue;
         ctx.events.emit(
-          "concept.changed",
+          "node.changed",
           workspaceId,
-          { id: nodeId, reason: "task.claim-projection" },
+          { nodeId, reason: "task.claim-projection" },
           "self"
         );
       }
@@ -26862,7 +25834,7 @@ async function taskClaimDirectRpc(ctx, p) {
         initPath: created.initPath,
         task: projectTask(task),
         state: task.state,
-        role: task.role,
+        role: task.assigneeId,
         referencedNodeIds: nodeIds
       };
     } catch (err) {
@@ -26918,7 +25890,7 @@ async function resolveDirectClaimResponsibility(ctx, input) {
         code: "DIRECT_CLAIM_SESSION_NOT_FOUND"
       });
     }
-    if (session.workspace !== input.workspaceId || session.assigneeKind === "agentProfile" || session.roleName !== input.role || !SessionRegistry.isOpen(session.state)) {
+    if (session.workspace !== input.workspaceId || session.roleName !== input.role || session.state !== "external" || !SessionRegistry.isOpen(session.state)) {
       throw new RpcError(
         -32001,
         "task.claimDirect source Session is not a live exact-workspace binding for the claiming Role",
@@ -26966,7 +25938,7 @@ async function resolveDirectClaimResponsibility(ctx, input) {
     }
     sourceTask = matches[0];
   }
-  const sameRoleTask = sourceTask.role === input.role && taskAssigneeKind(sourceTask) === "role";
+  const sameRoleTask = sourceTask.assigneeId === input.role && taskAssigneeKind(sourceTask) === "role";
   const activeClaim = sourceTask.state !== "queued" && isActiveTaskState(sourceTask.state);
   if (explicitSourceTask && (!sameRoleTask || !activeClaim)) {
     throw new RpcError(
@@ -26976,7 +25948,7 @@ async function resolveDirectClaimResponsibility(ctx, input) {
         code: "DIRECT_CLAIM_SOURCE_TASK_MISMATCH",
         taskPath: sourceTask.path,
         role: input.role,
-        taskRole: sourceTask.role,
+        taskAssignee: `${sourceTask.assigneeKind}:${sourceTask.assigneeId}`,
         state: sourceTask.state
       }
     );
@@ -26989,7 +25961,7 @@ async function resolveDirectClaimResponsibility(ctx, input) {
         code: "DIRECT_CLAIM_SOURCE_TASK_MISMATCH",
         taskPath: sourceTask.path,
         role: input.role,
-        taskRole: sourceTask.role
+        taskAssignee: `${sourceTask.assigneeKind}:${sourceTask.assigneeId}`
       }
     );
   }
@@ -27023,7 +25995,7 @@ async function taskClaimRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
-  const sessionId = optionalString(p, "sessionId");
+  const sessionId = optionalString2(p, "sessionId");
   return runTaskLifecycle(
     workspaceId,
     taskPath,
@@ -27031,7 +26003,7 @@ async function taskClaimRpc(ctx, p) {
       ctx.host.markSelfWrite(workspaceId);
       const pre = await loadTaskEnvelope(mount.env.fs, taskPath);
       let claimWrite;
-      if (!(pre.state === "running" && pre.status === "taken")) {
+      if (pre.state !== "running") {
         claimWrite = await prepareRoleClaimWrite(ctx, workspaceId, pre);
         if (beforeTaskClaimCoreForTests) {
           await beforeTaskClaimCoreForTests({ workspaceId, taskPath, task: pre });
@@ -27042,13 +26014,13 @@ async function taskClaimRpc(ctx, p) {
         ...claimWrite ? { claimWrite } : {}
       });
       emitTaskState(ctx, workspaceId, task, "task.claim");
-      const nodeIds = task.contextCard != null ? taskReferencedNodeIds(task) : [];
+      const nodeIds = taskReferencedNodeIds(task);
       for (const nodeId of nodeIds) {
         if (nodeId === "root") continue;
         ctx.events.emit(
-          "concept.changed",
+          "node.changed",
           workspaceId,
-          { id: nodeId, reason: "task.claim-projection" },
+          { nodeId, reason: "task.claim-projection" },
           "self"
         );
       }
@@ -27057,7 +26029,7 @@ async function taskClaimRpc(ctx, p) {
         taskPath,
         task: projectTask(task),
         state: task.state,
-        role: task.role,
+        role: task.assigneeKind === "role" ? task.assigneeId : void 0,
         referencedNodeIds: nodeIds,
         sessionId: task.sessionId
       };
@@ -27291,11 +26263,11 @@ async function prepareRoleClaimWrite(ctx, workspaceId, task) {
       const recordedTarget = task.targetBranch?.trim();
       if (recordedTarget && recordedTarget !== targetBranchHint) {
         throw new Error(
-          `Task envelope targetBranch mismatch for role ${task.role}: envelope=${recordedTarget} expected=${targetBranchHint}`
+          `Task envelope targetBranch mismatch for role ${task.assigneeId}: envelope=${recordedTarget} expected=${targetBranchHint}`
         );
       }
     }
-    const ensured = await ensureRoleWorkspace(mount.workspaceRoot, task.role);
+    const ensured = await ensureRoleWorkspace(mount.workspaceRoot, task.assigneeId);
     const view = {
       ...task,
       workspace: task.workspace || ensured.workspace,
@@ -27432,7 +26404,7 @@ async function taskAskUserRpc(ctx, p) {
       taskPath,
       taskId: current.id || void 0,
       sessionId: current.sessionId || void 0,
-      role: current.role || void 0,
+      role: taskParentRoleId(current),
       question,
       ...choices ? { choices } : {},
       status: "pending",
@@ -27505,7 +26477,7 @@ async function taskSendInputRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
-  const actorRaw = optionalString(p, "actor") ?? "user";
+  const actorRaw = optionalString2(p, "actor") ?? "user";
   if (actorRaw !== "user") {
     throw new RpcError(
       -32001,
@@ -27513,7 +26485,7 @@ async function taskSendInputRpc(ctx, p) {
       { actor: actorRaw }
     );
   }
-  const textRaw = optionalString(p, "text");
+  const textRaw = optionalString2(p, "text");
   const text3 = textRaw?.trim() ?? "";
   const contextRefs = parseContextRefs(p.contextRefs);
   if (!text3 && contextRefs.length === 0) {
@@ -27546,7 +26518,7 @@ async function taskSendInputRpc(ctx, p) {
       taskPath,
       taskId: current2.id || void 0,
       sessionId: current2.sessionId || void 0,
-      role: current2.role || void 0,
+      role: taskParentRoleId(current2),
       kind: "user-input",
       ...text3 ? { text: text3 } : {},
       ...contextRefs.length > 0 ? { contextRefs } : {},
@@ -27860,22 +26832,7 @@ async function deliverManagedTaskInput(ctx, item, opts) {
 }
 async function continueManagedAfterTaskInput(ctx, item) {
   if (!item.sessionId) return { continued: false };
-  const basePrompt = formatTaskInputPrompt(item);
-  let prompt = basePrompt;
-  try {
-    const recovery = await rebuildRejectResumeRecoveryOrientation(ctx, item);
-    if (recovery && recovery.length > 0) {
-      prompt = `${recovery}
-
-${basePrompt}`;
-    }
-  } catch (rebuildErr) {
-    const message2 = rebuildErr instanceof Error ? rebuildErr.message : String(rebuildErr);
-    return {
-      continued: false,
-      error: message2
-    };
-  }
+  const prompt = formatTaskInputPrompt(item);
   try {
     try {
       await ctx.runtime.sendFollowUpPrompt(item.sessionId, prompt);
@@ -27988,17 +26945,17 @@ async function resolveTaskWorktreeForDirtyCheck(workspaceRoot, task) {
     };
   }
   const mountedRoot = nodePath6.resolve(workspaceRoot);
-  const isProfile = taskAssigneeKind(task) === "agentProfile";
+  const isRoute = taskAssigneeKind(task) === "route";
   let targetBranch = task.targetBranch?.trim();
-  if (isProfile && taskAsSub(task)) {
+  if (isRoute && taskAsSub(task)) {
     const parentRole = taskParentRoleId(task);
     if (parentRole) {
       targetBranch = (await ensureRoleWorkspace(mountedRoot, parentRole)).branch;
     }
   }
-  const lane = isProfile ? await ensureTaskWorkspace(mountedRoot, task.id || task.path, {
+  const lane = isRoute ? await ensureTaskWorkspace(mountedRoot, task.id || task.path, {
     ...targetBranch ? { targetBranch } : {}
-  }) : await ensureRoleWorkspace(mountedRoot, task.role);
+  }) : await ensureRoleWorkspace(mountedRoot, task.assigneeId);
   return { worktree: lane.worktree, branch: lane.branch };
 }
 async function assertTaskWorktreeCleanForDeliver(workspaceRoot, task) {
@@ -28149,7 +27106,7 @@ async function taskDeliverRpc(ctx, p) {
   const taskPath = requireString(p, "taskPath");
   const summary = requireString(p, "summary");
   const commits = optionalStringArray(p, "commits");
-  const decision = optionalString(p, "decision");
+  const decision = optionalString2(p, "decision");
   const checks = Array.isArray(p.checks) ? p.checks : void 0;
   const artifactRefs = Array.isArray(p.artifactRefs) ? p.artifactRefs : void 0;
   const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
@@ -28289,21 +27246,21 @@ async function taskAcceptRpc(ctx, p) {
     },
     "self"
   );
-  const acceptNodeIds = result.task.contextCard != null ? taskReferencedNodeIds(result.task) : [];
+  const acceptNodeIds = taskReferencedNodeIds(result.task);
   for (const nodeId of acceptNodeIds) {
     if (nodeId === "root") continue;
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id: nodeId, reason: "task.accept-projection" },
+      { nodeId, reason: "task.accept-projection" },
       "self"
     );
   }
   for (const outputId of result.changedOutputIds) {
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id: outputId, reason: "output.provenance-bind" },
+      { nodeId: outputId, reason: "output.provenance-bind" },
       "self"
     );
   }
@@ -28321,13 +27278,10 @@ async function taskAcceptRpc(ctx, p) {
 async function outputProvenanceRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const id = optionalString(p, "id") ?? optionalString(p, "outputId") ?? optionalString(p, "boxId");
-  const path23 = optionalString(p, "path");
-  if (!id && !path23) {
-    throw new RpcError(-32602, "output.provenance requires id, outputId, or path");
-  }
+  const nodeId = requireString(p, "nodeId");
+  if (!isNodeId(nodeId)) throw new RpcError(-32602, `Invalid Node id: ${nodeId}`);
   try {
-    const projected = await resolveOutputProvenance(mount.env.fs, { id, path: path23, outputId: id });
+    const projected = await resolveOutputProvenance(mount.env.fs, { nodeId });
     return projectOutputProvenanceWire(workspaceId, projected);
   } catch (err) {
     if (err instanceof OutputProvenanceError) throw outputProvenanceErrorToRpc(err);
@@ -28369,7 +27323,7 @@ async function taskRejectRpc(ctx, p) {
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
   const actor = requireString(p, "actor");
-  const noteForDelivery = optionalString(p, "note");
+  const noteForDelivery = optionalString2(p, "note");
   const noteExact = optionalStringExact(p, "note");
   const resume = p.resume !== false;
   const result = await runTaskLifecycle(workspaceId, taskPath, () => ctx.mutations.run(workspaceId, async () => {
@@ -28426,27 +27380,18 @@ async function taskRejectRpc(ctx, p) {
     };
   }
   clearManagedAutoDeliverDedup(boundSessionId, taskPath);
-  let fallbackOrphanSessionId;
   try {
     const restored = await restoreManagedSessionAfterRejectResume(ctx, {
       workspaceId,
       taskPath
     });
     const restoredSessionId = restored.session.sessionId;
-    if (restored.session.contextRestored === false && restoredSessionId !== boundSessionId) {
-      fallbackOrphanSessionId = restoredSessionId;
-    }
-    let boundReview = reviewInput;
-    if ((reviewInput.sessionId?.trim() || "") !== restoredSessionId) {
-      boundReview = await ctx.taskInputs.rebindSession(
-        reviewInput.id,
-        workspaceId,
-        taskPath,
-        restoredSessionId
+    if (restoredSessionId !== boundSessionId) {
+      throw new Error(
+        `reject-resume must preserve the exact Session id; expected ${boundSessionId}, got ${restoredSessionId}`
       );
     }
-    fallbackOrphanSessionId = void 0;
-    enqueueManagedTaskInputBackground(ctx, boundReview, {
+    enqueueManagedTaskInputBackground(ctx, reviewInput, {
       sessionIdOverride: restoredSessionId
     });
     return {
@@ -28456,7 +27401,7 @@ async function taskRejectRpc(ctx, p) {
       delivery: projectDelivery(result.delivery),
       state: restored.task.state,
       session: restored.session,
-      input: projectTaskInput(boundReview),
+      input: projectTaskInput(reviewInput),
       /** Durable row + restore accepted; does not mean provider turn finished. */
       accepted: true,
       /** Managed session restored and background inject scheduled. */
@@ -28466,13 +27411,10 @@ async function taskRejectRpc(ctx, p) {
     };
   } catch (err) {
     const message2 = err instanceof Error ? err.message : String(err);
-    if (fallbackOrphanSessionId) {
-      await stopOrphanRejectResumeSession(ctx, fallbackOrphanSessionId);
-    }
     await parkTaskAfterRejectResumeFailure(ctx, {
       workspaceId,
       taskPath,
-      sessionId: fallbackOrphanSessionId || boundSessionId,
+      sessionId: boundSessionId,
       message: message2
     });
     throw new RpcError(
@@ -28491,7 +27433,7 @@ async function createRejectResumeReviewFeedback(ctx, input) {
     taskPath: input.taskPath,
     taskId: input.task.id || void 0,
     sessionId: input.task.sessionId || void 0,
-    role: input.task.role || void 0,
+    role: taskParentRoleId(input.task),
     kind: "review-feedback",
     text: text3,
     status: "pending",
@@ -28612,25 +27554,30 @@ async function taskCancelRpc(ctx, p) {
   };
 }
 async function taskStartSessionRpc(ctx, p) {
+  assertAllowedParams(
+    p,
+    /* @__PURE__ */ new Set(["workspaceId", "taskPath", "callerKind", "bootstrapPrompt"]),
+    "task.startSession"
+  );
   const workspaceId = requireWorkspaceId(ctx, p);
   const taskPath = requireString(p, "taskPath");
-  const profileId = requireProfileId(p);
-  const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
-  if ("a2aPolicyOverride" in p) {
-    throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
-  }
+  const callerKind = parseCallerKind(optionalString2(p, "callerKind") ?? "user");
   const prepared = await prepareAuthorizedTaskStartSession(
     ctx,
     p,
     workspaceId,
     taskPath,
-    profileId,
     callerKind
   );
   if (prepared.kind === "reuse") {
     const existing = managedSessionInFlight.get(managedSessionFlightKey(workspaceId, taskPath));
     if (existing) {
-      return joinOrConflictManagedSessionFlight(existing, profileId, "startSession", taskPath);
+      return joinOrConflictManagedSessionFlight(
+        existing,
+        prepared.routeId,
+        "startSession",
+        taskPath
+      );
     }
     const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
       const mount = ctx.host.require(workspaceId);
@@ -28671,7 +27618,7 @@ async function taskStartSessionRpc(ctx, p) {
   return runManagedSessionFlight(
     workspaceId,
     taskPath,
-    profileId,
+    prepared.routeId,
     "startSession",
     () => launchAndBindTaskStartSession(ctx, prepared)
   );
@@ -28682,13 +27629,13 @@ function captureTaskSessionBindSnapshot(task) {
     state: task.state,
     sessionId: task.sessionId?.trim() || "",
     updatedAt: task.updatedAt,
-    role: task.role,
-    assigneeKind: taskAssigneeKind(task)
+    assigneeKind: taskAssigneeKind(task),
+    assigneeId: task.assigneeId
   };
 }
 function assertTaskSessionBindSnapshot(operation, taskPath, current, expected) {
   const actual = captureTaskSessionBindSnapshot(current);
-  const unchanged = actual.taskId === expected.taskId && actual.state === expected.state && actual.sessionId === expected.sessionId && actual.updatedAt === expected.updatedAt && actual.role === expected.role && actual.assigneeKind === expected.assigneeKind;
+  const unchanged = actual.taskId === expected.taskId && actual.state === expected.state && actual.sessionId === expected.sessionId && actual.updatedAt === expected.updatedAt && actual.assigneeKind === expected.assigneeKind && actual.assigneeId === expected.assigneeId;
   if (unchanged && current.state === "running") return;
   throw new RpcError(
     RPC_LIFECYCLE,
@@ -28720,42 +27667,26 @@ async function stopUnboundManagedSession(ctx, sessionId, operation, detail) {
   }
   return stopped;
 }
-async function prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, profileId, callerKind, opts) {
+async function prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, callerKind, opts) {
   const mount = ctx.host.require(workspaceId);
-  const bootstrapPrompt = optionalString(p, "bootstrapPrompt");
-  for (const retiredParam of ["approvalId", "agentId", "a2aPolicy"]) {
-    if (retiredParam in p) {
-      throw new RpcError(
-        -32602,
-        `task.startSession/task.replaceSession no longer accepts ${retiredParam}; machine Settings route availability is authoritative`
-      );
-    }
-  }
-  const routeProfile = ctx.profileCatalog.get(profileId);
-  if (!routeProfile?.adapterId) {
-    throw new RpcError(-32602, `Machine Settings route is unavailable: ${profileId}`, {
-      code: "ROUTE_UNAVAILABLE",
-      profileId
-    });
-  }
+  const bootstrapPrompt = optionalString2(p, "bootstrapPrompt");
   let task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  if (taskAssigneeKind(task) !== "route") {
+    throw new RpcError(
+      -32602,
+      "task.startSession/task.replaceSession requires a Task assigned to a Settings route"
+    );
+  }
+  const routeId = task.assigneeId;
   if (opts?.skipReuseAndLaunchPrep) {
     return {
       kind: "launch",
       workspaceId,
       taskPath,
-      profileId,
+      routeId,
       task,
-      isProfileTask: taskAssigneeKind(task) === "agentProfile",
       bootstrapPrompt
     };
-  }
-  if (taskAssigneeKind(task) === "agentProfile" && task.role !== profileId) {
-    throw new RpcError(
-      -32602,
-      `task.startSession profileId must match agentProfile task assignee (${task.role}); got ${profileId}`,
-      { taskAssignee: task.role, profileId }
-    );
   }
   if (task.state === "queued" && callerKind === "user") {
     await taskClaimRpc(ctx, { workspaceId, taskPath });
@@ -28768,98 +27699,31 @@ async function prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, 
     );
   }
   if (task.state === "waiting") {
+    if (!isSessionUnavailableParkedWait(task)) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        "task.startSession allows waiting only with durable waitCode=session_unavailable; resolve the existing wait first",
+        {
+          code: "INVALID_TASK_WAIT",
+          taskPath,
+          waitReason: task.wait?.reason,
+          waitCode: task.wait?.code
+        }
+      );
+    }
     await taskResumeRpc(ctx, { workspaceId, taskPath });
     task = await loadTaskEnvelope(mount.env.fs, taskPath);
   }
-  const isProfileTask = taskAssigneeKind(task) === "agentProfile";
   const callerBootstrapAppend = bootstrapPrompt;
-  async function assertAliveSessionLiveGenerationOrFail(activeRec) {
-    const profile = ctx.profileCatalog.get(profileId);
-    if (!profile?.adapterId) {
-      throw new RpcError(
-        -32602,
-        `task.startSession cannot verify live contextGeneration: profile ${profileId} missing or has no adapterId`,
-        { profileId, code: "CONTEXT_GENERATION_COLLECT_FAILED" }
-      );
-    }
-    let live;
-    try {
-      live = await collectStableContextGeneration({
-        workspaceRoot: mount.workspaceRoot,
-        workspaceIdentity: workspaceId,
-        packageRoot: ctx.packageRoot,
-        packageVersion: ctx.version,
-        assigneeKind: taskAssigneeKind(task),
-        assigneeLabel: task.role,
-        agentId: typeof task.agentId === "string" ? task.agentId : void 0,
-        profileId,
-        adapterId: profile.adapterId,
-        parentRoleId: task.parentActor?.kind === "role" ? task.parentActor.id : void 0,
-        purpose: readTaskPurpose(task) || void 0,
-        roleFs: mount.env.fs,
-        profile
-      });
-    } catch (err) {
-      const message2 = err instanceof Error ? err.message : String(err);
-      throw new RpcError(
-        -32e3,
-        `task.startSession live contextGeneration collection failed: ${message2}`,
-        { code: "CONTEXT_GENERATION_COLLECT_FAILED", taskPath, profileId }
-      );
-    }
-    const sessionGen = activeRec.contextGeneration?.trim() || "";
-    if (!sessionGen || sessionGen !== live.contextGeneration) {
-      const emptyOrLegacy = !sessionGen;
-      throw new RpcError(
-        RPC_LIFECYCLE,
-        emptyOrLegacy ? `Active managed session ${activeRec.id} has empty/legacy contextGeneration; cannot prove continuity with live stable facts (live=${live.contextGeneration}). Stop/replace the Session first.` : `Active managed session ${activeRec.id} contextGeneration drifted from live stable facts (session=${sessionGen}, live=${live.contextGeneration}); cannot safely start a fresh Session while the prior turn/session is active. Stop/replace the Session first.`,
-        {
-          code: emptyOrLegacy ? "CONTEXT_GENERATION_EMPTY_ACTIVE" : "CONTEXT_GENERATION_LIVE_DRIFT_ACTIVE",
-          sessionId: activeRec.id,
-          sessionContextGeneration: sessionGen || null,
-          liveContextGeneration: live.contextGeneration,
-          taskPath
-        }
-      );
-    }
-  }
-  if (!isProfileTask) {
-    const activeForRole = await findActiveManagedSessionForRole(ctx, workspaceId, task.role);
-    if (activeForRole) {
-      const boundToThisTask = task.sessionId === activeForRole.id || !!task.id && activeForRole.lastTaskId === task.id || activeForRole.lastTaskId === taskPath;
-      if (boundToThisTask) {
-        await assertAliveSessionLiveGenerationOrFail(activeForRole);
-        const boundTask = task.sessionId === activeForRole.id ? task : await ctx.mutations.run(workspaceId, async () => {
-          ctx.host.markSelfWrite(workspaceId);
-          return patchTaskEnvelope(mount.env.fs, taskPath, {
-            sessionId: activeForRole.id,
-            updatedAt: mount.env.clock.now()
-          });
-        });
-        return {
-          kind: "reuse",
-          result: projectStartSessionResult(workspaceId, taskPath, boundTask, activeForRole, {
-            cwd: boundTask.worktree || mount.workspaceRoot
-          })
-        };
-      }
-      throw new RpcError(
-        RPC_LIFECYCLE,
-        `Role "${task.role}" already has an active managed session: ${activeForRole.id}`,
-        {
-          role: task.role,
-          existingSessionId: activeForRole.id,
-          existingState: activeForRole.state,
-          existingTaskId: activeForRole.lastTaskId
-        }
-      );
-    }
-  } else if (task.sessionId) {
+  if (task.sessionId) {
     const prior = await ctx.runtime.registry.read(task.sessionId);
-    if (prior && SessionRegistry.isNonTerminal(prior.state) && prior.state !== "external") {
-      await assertAliveSessionLiveGenerationOrFail(prior);
+    const exactTaskId = task.id || taskPath;
+    const exactBinding = prior?.routeId === routeId && (prior.lastTaskId === exactTaskId || prior.lastTaskId === taskPath);
+    const probe = prior && exactBinding ? await ctx.runtime.probe(prior.id) : void 0;
+    if (prior && exactBinding && probe?.alive && prior.state !== "external") {
       return {
         kind: "reuse",
+        routeId,
         result: projectStartSessionResult(workspaceId, taskPath, task, prior, {
           cwd: task.worktree || mount.workspaceRoot
         })
@@ -28870,16 +27734,14 @@ async function prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, 
     kind: "launch",
     workspaceId,
     taskPath,
-    profileId,
+    routeId,
     task,
-    isProfileTask,
     // Caller text is an optional dynamic append only — never the managed bootstrap itself.
     bootstrapPrompt: callerBootstrapAppend
   };
 }
 async function launchAndBindTaskStartSession(ctx, prepared) {
-  const { workspaceId, taskPath, profileId } = prepared;
-  let isProfileTask = prepared.isProfileTask;
+  const { workspaceId, taskPath, routeId } = prepared;
   const mount = ctx.host.require(workspaceId);
   let task = await runTaskLifecycle(workspaceId, taskPath, async () => {
     const current = await loadTaskEnvelope(mount.env.fs, taskPath);
@@ -28890,15 +27752,14 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
         { code: "INVALID_TASK_STATE", state: current.state, taskPath }
       );
     }
-    if (taskAssigneeKind(current) === "agentProfile" && current.role !== profileId) {
+    if (taskAssigneeKind(current) !== "route" || current.assigneeId !== routeId) {
       throw new RpcError(
         -32602,
-        `task.startSession profileId must match agentProfile task assignee (${current.role}); got ${profileId}`,
-        { taskAssignee: current.role, profileId }
+        `task.startSession Task assignee changed; expected route:${routeId}`,
+        { assigneeKind: current.assigneeKind, assigneeId: current.assigneeId, routeId }
       );
     }
     const withLane = await ensureTaskWorkspaceLane(ctx, workspaceId, current);
-    isProfileTask = taskAssigneeKind(withLane) === "agentProfile";
     return withLane;
   });
   task = await ensureTaskWorkspaceLane(ctx, workspaceId, task);
@@ -28924,18 +27785,77 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
       throw err;
     }
   }
-  const profile = ctx.profileCatalog.get(profileId);
-  if (!profile?.adapterId) {
-    throw new RpcError(
-      -32602,
-      `task.startSession cannot compute contextGeneration: profile ${profileId} missing or has no adapterId`,
-      { profileId, code: "CONTEXT_GENERATION_COLLECT_FAILED" }
-    );
+  const priorSessionId = task.sessionId?.trim() || "";
+  let priorSession;
+  let resumePrior = false;
+  if (priorSessionId) {
+    priorSession = await ctx.runtime.registry.read(priorSessionId) ?? void 0;
+    if (!priorSession) {
+      await parkTaskForUnavailableSession(ctx, {
+        workspaceId,
+        taskPath,
+        sessionId: priorSessionId,
+        reason: "task.startSession.bound-session-missing"
+      });
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Bound Session not found: ${priorSessionId}; use task.replaceSession for an explicit fresh Session`,
+        { code: "BOUND_SESSION_MISSING", taskPath, sessionId: priorSessionId }
+      );
+    }
+    const exactTaskId = task.id || taskPath;
+    if (priorSession.routeId !== routeId || priorSession.lastTaskId !== exactTaskId && priorSession.lastTaskId !== taskPath) {
+      await parkTaskForUnavailableSession(ctx, {
+        workspaceId,
+        taskPath,
+        sessionId: priorSessionId,
+        reason: "task.startSession.bound-session-identity-mismatch",
+        detail: `Session binding mismatch (routeId=${priorSession.routeId}, lastTaskId=${priorSession.lastTaskId ?? "missing"})`
+      });
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Bound Session ${priorSessionId} does not match the exact Task/route; use task.replaceSession for an explicit fresh Session`,
+        {
+          code: "BOUND_SESSION_IDENTITY_MISMATCH",
+          taskPath,
+          sessionId: priorSessionId,
+          routeId
+        }
+      );
+    }
+    const probe = await ctx.runtime.probe(priorSessionId);
+    if (probe.alive || !probe.resumeCapable) {
+      await parkTaskForUnavailableSession(ctx, {
+        workspaceId,
+        taskPath,
+        sessionId: priorSessionId,
+        reason: "task.startSession.native-resume-unavailable"
+      });
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Bound Session ${priorSessionId} cannot be resumed; use task.replaceSession for an explicit fresh Session`,
+        {
+          code: "BOUND_SESSION_NOT_RESUMABLE",
+          taskPath,
+          sessionId: priorSessionId,
+          alive: probe.alive,
+          resumeCapable: probe.resumeCapable
+        }
+      );
+    }
+    resumePrior = true;
   }
-  const adapterId = profile.adapterId;
-  const parentRoleId = task.parentActor?.kind === "role" ? task.parentActor.id : void 0;
+  let routeSnapshot;
+  try {
+    routeSnapshot = priorSession?.routeSnapshot ?? ctx.runtime.snapshotRouteForStart(routeId);
+  } catch (err) {
+    const message2 = err instanceof Error ? err.message : String(err);
+    throw new RpcError(-32602, `Settings route is unavailable: ${message2}`, {
+      code: "ROUTE_UNAVAILABLE",
+      routeId
+    });
+  }
   const assigneeKind = taskAssigneeKind(task);
-  const taskPurpose = readTaskPurpose(task);
   let stableBundle;
   try {
     stableBundle = await collectStableContextGeneration({
@@ -28944,21 +27864,16 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
       packageRoot: ctx.packageRoot,
       packageVersion: ctx.version,
       assigneeKind,
-      assigneeLabel: task.role,
-      agentId: typeof task.agentId === "string" ? task.agentId : void 0,
-      profileId,
-      adapterId,
-      parentRoleId,
-      purpose: taskPurpose || void 0,
-      roleFs: mount.env.fs,
-      profile
+      assigneeId: task.assigneeId,
+      routeSnapshot,
+      roleFs: mount.env.fs
     });
   } catch (err) {
     const message2 = err instanceof Error ? err.message : String(err);
     throw new RpcError(
       -32e3,
       `task.startSession contextGeneration collection failed: ${message2}`,
-      { code: "CONTEXT_GENERATION_COLLECT_FAILED", taskPath, profileId }
+      { code: "CONTEXT_GENERATION_COLLECT_FAILED", taskPath, routeId }
     );
   }
   const liveGeneration = stableBundle.contextGeneration;
@@ -28969,162 +27884,15 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
       { code: "CONTEXT_GENERATION_EMPTY", taskPath }
     );
   }
-  const priorPersistedGeneration = task.contextGeneration?.trim() || task.contextCard?.contextGeneration?.trim() || "";
-  if (priorPersistedGeneration !== liveGeneration) {
-    task = await runTaskLifecycle(
-      workspaceId,
-      taskPath,
-      () => ctx.mutations.run(workspaceId, async () => {
-        const current = await loadTaskEnvelope(mount.env.fs, taskPath);
-        if (current.state !== "running") {
-          throw new RpcError(
-            RPC_LIFECYCLE,
-            `task.startSession cannot refresh context on ${current.state} Task`,
-            { code: "INVALID_TASK_STATE", state: current.state, taskPath }
-          );
-        }
-        ctx.host.markSelfWrite(workspaceId);
-        if (current.contextCard) {
-          const nextCard = {
-            ...current.contextCard,
-            contextGeneration: liveGeneration
-          };
-          return patchTaskEnvelope(mount.env.fs, taskPath, {
-            contextCard: nextCard,
-            ...taskPurpose ? { purpose: taskPurpose } : {},
-            updatedAt: mount.env.clock.now()
-          });
-        }
-        throw new RpcError(
-          -32e3,
-          "task.startSession requires Task.contextCard before refreshing contextGeneration",
-          { code: "TASK_CONTEXT_CARD_MISSING", taskPath }
-        );
-      })
-    );
-  }
-  const requestFacts = buildSessionReuseRequestFacts({
-    workspaceId,
-    bundle: {
-      ...stableBundle,
-      contextGeneration: liveGeneration,
-      purpose: taskPurpose || stableBundle.purpose
-    },
-    contextGeneration: liveGeneration,
-    worktree: cwd
-  });
-  const candidateIds = [];
-  if (task.sessionId?.trim()) candidateIds.push(task.sessionId.trim());
-  if (!isProfileTask) {
-    const roleSession = await findResumableManagedSessionForRole(
-      ctx,
-      workspaceId,
-      task.role,
-      profileId,
-      cwd
-    );
-    if (roleSession?.id && !candidateIds.includes(roleSession.id)) {
-      candidateIds.push(roleSession.id);
-    }
-  } else {
-    const profileCandidates = await findResumableManagedSessionsForProfile(
-      ctx,
-      workspaceId,
-      profileId,
-      cwd
-    );
-    for (const c of profileCandidates) {
-      if (c.id && !candidateIds.includes(c.id)) candidateIds.push(c.id);
-    }
-  }
-  let resumePrior = false;
-  let priorSessionId = "";
-  let continuityProven = false;
-  const allTasks = await loadTaskEnvelopes(mount.env.fs);
-  let deliveriesCache = null;
-  const hasBlockingDelivery = async (t) => {
-    if (!deliveriesCache) {
-      try {
-        deliveriesCache = await loadDeliveries(mount.env.fs);
-      } catch (err) {
-        const message2 = err instanceof Error ? err.message : String(err);
-        throw new RpcError(
-          -32e3,
-          `task.startSession cannot load Deliveries to prove noPendingDelivery: ${message2}`,
-          { code: "DELIVERY_STORE_UNREADABLE", taskPath }
-        );
-      }
-    }
-    try {
-      const evaluation = evaluateTaskBlockingDelivery({
-        task: t,
-        deliveries: deliveriesCache
-      });
-      return evaluation.blocking;
-    } catch (err) {
-      const message2 = err instanceof Error ? err.message : String(err);
-      throw new RpcError(
-        -32e3,
-        `task.startSession cannot prove noPendingDelivery: ${message2}`,
-        {
-          code: "DELIVERY_POINTER_UNRESOLVED",
-          taskPath,
-          priorTaskPath: t.path,
-          activeDeliveryId: t.activeDeliveryId
-        }
-      );
-    }
-  };
-  for (const candidateId of candidateIds) {
-    try {
-      const probe = await ctx.runtime.probe(candidateId);
-      const prior = await ctx.runtime.registry.read(candidateId);
-      if (!prior || !probe.resumeCapable || probe.alive) continue;
-      const priorGen = prior.contextGeneration?.trim() || "";
-      if (!priorGen || priorGen !== liveGeneration) {
-        continue;
-      }
-      const lease = await evaluateCandidateSessionLeaseGates({
-        allTasks,
-        candidate: prior,
-        requestTaskPath: taskPath,
-        requestTaskId: task.id,
-        turnBusy: probe.turnBusy === true,
-        workspaceId,
-        listPendingInputs: (ws, tp) => ctx.taskInputs.listRetryableForTask(ws, tp),
-        hasPendingUserAsk: (ws, tp) => ctx.userAsks.hasPendingForTask(ws, tp),
-        hasBlockingDelivery
-      });
-      const evaluation = evaluateManagedSessionReuse({
-        request: requestFacts,
-        candidate: prior,
-        runtime: {
-          previousTurnSettled: lease.previousTurnSettled,
-          noPendingInput: lease.noPendingInput,
-          noPendingDelivery: lease.noPendingDelivery,
-          exclusiveLease: lease.exclusiveLease
-        }
-      });
-      if (evaluation.allowed) {
-        resumePrior = true;
-        priorSessionId = candidateId;
-        continuityProven = true;
-        break;
-      }
-    } catch (err) {
-      if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) {
-        throw err;
-      }
-    }
-  }
-  const sessionContextGeneration = continuityProven ? liveGeneration : void 0;
+  const sessionContextGeneration = resumePrior && priorSession?.contextGeneration?.trim() === liveGeneration ? liveGeneration : void 0;
   let sessionBootstrap = await buildSessionBootstrapPrompt(
     ctx,
     task,
     {
       workspaceRoot: mount.workspaceRoot,
       systemRoot: mount.systemRoot,
-      sessionContextGeneration
+      sessionContextGeneration,
+      currentContextGeneration: liveGeneration
     },
     mount.env.fs
   );
@@ -29162,9 +27930,8 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
     } else {
       handle = await ctx.runtime.startSession({
         sessionId: makeSessionId(),
-        profileId,
-        roleName: task.role,
-        assigneeKind: taskAssigneeKind(task),
+        routeId,
+        routeSnapshot,
         workspaceLane,
         runtimeWorkspace: { cwd },
         cwd,
@@ -29179,6 +27946,26 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
     }
   } catch (err) {
     const message2 = err instanceof Error ? err.message : String(err);
+    if (resumePrior) {
+      await parkTaskForUnavailableSession(ctx, {
+        workspaceId,
+        taskPath,
+        sessionId: priorSessionId,
+        reason: "task.startSession.native-resume-failed",
+        detail: message2
+      });
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Bound Session ${priorSessionId} could not resume; Task remains waiting for explicit task.replaceSession`,
+        {
+          code: "BOUND_SESSION_RESUME_FAILED",
+          taskPath,
+          sessionId: priorSessionId,
+          detail: message2,
+          recoverable: true
+        }
+      );
+    }
     await failTaskFromRuntime(ctx, {
       workspaceId,
       taskPath,
@@ -29199,20 +27986,17 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
         ctx.host.markSelfWrite(workspaceId);
         const next = await patchTaskEnvelope(mount.env.fs, taskPath, {
           sessionId: handle.sessionId,
+          contextCard: {
+            ...current.contextCard,
+            contextGeneration: liveGeneration
+          },
           updatedAt: mount.env.clock.now()
         });
         const generation = liveGeneration;
         try {
-          const parentRoleIdBound = next.parentActor?.kind === "role" ? next.parentActor.id : void 0;
-          const agentId = stableBundle.agentId || typeof next.agentId === "string" && next.agentId.trim() || next.role;
-          const purposeBound = readTaskPurpose(next) || stableBundle.purpose || "";
           await ctx.runtime.registry.update(handle.sessionId, {
             contextGeneration: generation,
-            ...next.taskDeltaDigest ? { taskDeltaDigest: next.taskDeltaDigest } : {},
-            agentId,
-            ...parentRoleIdBound ? { parentRoleId: parentRoleIdBound } : {},
-            skillsDigest: stableBundle.skillSetDigest || stableBundle.skillsDigest,
-            purpose: purposeBound
+            ...next.taskDeltaDigest ? { taskDeltaDigest: next.taskDeltaDigest } : {}
           });
         } catch {
         }
@@ -29223,7 +28007,7 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
           {
             sessionId: handle.sessionId,
             state: handle.state,
-            profileId: handle.profileId,
+            routeId: handle.routeId,
             taskPath,
             reason: resumePrior ? "task.startSession.resume" : "task.startSession"
           },
@@ -29262,7 +28046,7 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
   });
   return projectStartSessionResult(workspaceId, taskPath, bound, {
     id: handle.sessionId,
-    profileId: handle.profileId,
+    routeId: handle.routeId,
     adapterId: handle.adapterId,
     state: handle.state,
     roleName: handle.roleName,
@@ -29271,37 +28055,42 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
 }
 var REPLACE_SESSION_RESTORE_REASON = "task.replaceSession.fresh";
 async function taskReplaceSessionRpc(ctx, p) {
+  assertAllowedParams(
+    p,
+    /* @__PURE__ */ new Set(["workspaceId", "taskPath", "callerKind", "force"]),
+    "task.replaceSession"
+  );
   const workspaceId = requireWorkspaceId(ctx, p);
   const taskPath = requireString(p, "taskPath");
-  const profileId = requireProfileId(p, "task.replaceSession");
-  const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
-  if ("a2aPolicyOverride" in p) {
-    throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
-  }
+  const callerKind = parseCallerKind(optionalString2(p, "callerKind") ?? "user");
   if ("force" in p && p.force !== void 0 && p.force !== false) {
     throw new RpcError(-32602, "task.replaceSession does not support force; wait for turnBusy=false and retry", {
       code: "FORCE_NOT_SUPPORTED"
     });
   }
-  await prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, profileId, callerKind, {
+  const prepared = await prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, callerKind, {
     skipReuseAndLaunchPrep: true
   });
+  if (prepared.kind !== "launch") {
+    throw new RpcError(RPC_LIFECYCLE, "task.replaceSession could not prepare a fresh route Session");
+  }
+  const routeId = prepared.routeId;
   return runManagedSessionFlight(
     workspaceId,
     taskPath,
-    profileId,
+    routeId,
     "replaceSession",
-    () => executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId)
+    () => executeTaskReplaceSession(ctx, workspaceId, taskPath, routeId)
   );
 }
-async function assertReplaceSessionEligible(ctx, workspaceId, taskPath, profileId) {
+async function assertReplaceSessionEligible(ctx, workspaceId, taskPath, routeId) {
   const mount = ctx.host.require(workspaceId);
   const task = await loadTaskEnvelope(mount.env.fs, taskPath);
-  if (taskAssigneeKind(task) === "agentProfile" && task.role !== profileId) {
+  if (taskAssigneeKind(task) !== "route" || task.assigneeId !== routeId) {
     throw new RpcError(
       -32602,
-      `task.replaceSession profileId must match agentProfile task assignee (${task.role}); got ${profileId}`,
-      { taskAssignee: task.role, profileId }
+      `task.replaceSession Task assignee changed; expected route:${routeId}`,
+      { assigneeKind: task.assigneeKind, assigneeId: task.assigneeId, routeId }
     );
   }
   if (task.state !== "running" && task.state !== "waiting") {
@@ -29313,7 +28102,7 @@ async function assertReplaceSessionEligible(ctx, workspaceId, taskPath, profileI
   if (task.state === "waiting" && !isSessionUnavailableParkedWait(task)) {
     throw new RpcError(
       RPC_LIFECYCLE,
-      "task.replaceSession allows waiting only with durable waitCode=session_unavailable; resolve user-input / a2a / tool waits first",
+      "task.replaceSession allows waiting only with durable waitCode=session_unavailable; resolve user-input or tool waits first",
       {
         code: "REPLACE_SESSION_WAIT_NOT_ELIGIBLE",
         state: task.state,
@@ -29342,10 +28131,10 @@ async function assertReplaceSessionEligible(ctx, workspaceId, taskPath, profileI
     if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) throw err;
   }
 }
-async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) {
+async function executeTaskReplaceSession(ctx, workspaceId, taskPath, routeId) {
   const mount = ctx.host.require(workspaceId);
   let task = await runTaskLifecycle(workspaceId, taskPath, async () => {
-    await assertReplaceSessionEligible(ctx, workspaceId, taskPath, profileId);
+    await assertReplaceSessionEligible(ctx, workspaceId, taskPath, routeId);
     let current = await loadTaskEnvelope(mount.env.fs, taskPath);
     if (current.state === "waiting") {
       await taskResumeRpc(ctx, { workspaceId, taskPath });
@@ -29356,11 +28145,12 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) 
   const priorSessionId = task.sessionId.trim();
   const preserved = {
     taskId: task.id,
-    nodeIds: task.contextCard != null ? [...taskReferencedNodeIds(task)] : [],
+    nodeIds: [...taskReferencedNodeIds(task)],
     worktree: task.worktree,
     branch: task.branch,
     deliveryPolicy: task.deliveryPolicy,
-    role: task.role
+    assigneeKind: task.assigneeKind,
+    assigneeId: task.assigneeId
   };
   let retirementBegun = false;
   let startedSessionId;
@@ -29410,6 +28200,18 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) 
     retirementBegun = true;
     clearManagedAutoDeliverDedup(priorSessionId, taskPath);
     const cwd = task.worktree || mount.workspaceRoot;
+    const routeSnapshot = ctx.runtime.snapshotRouteForStart(routeId);
+    const stableBundle = await collectStableContextGeneration({
+      workspaceRoot: mount.workspaceRoot,
+      workspaceIdentity: workspaceId,
+      packageRoot: ctx.packageRoot,
+      packageVersion: ctx.version,
+      assigneeKind: task.assigneeKind,
+      assigneeId: task.assigneeId,
+      routeSnapshot,
+      roleFs: mount.env.fs
+    });
+    const liveGeneration = stableBundle.contextGeneration;
     const workspaceLane = task.workspace || task.worktree || task.branch ? {
       workspace: task.workspace || mount.workspaceRoot,
       worktree: task.worktree || mount.workspaceRoot,
@@ -29423,7 +28225,7 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) 
         await taskResumeRpc(ctx, { workspaceId, taskPath });
         current = await loadTaskEnvelope(mount.env.fs, taskPath);
       }
-      if (current.state !== "running" || current.id !== preserved.taskId || current.sessionId !== priorSessionId || current.role !== preserved.role || current.deliveryPolicy !== preserved.deliveryPolicy) {
+      if (current.state !== "running" || current.id !== preserved.taskId || current.sessionId !== priorSessionId || current.assigneeKind !== preserved.assigneeKind || current.assigneeId !== preserved.assigneeId || current.deliveryPolicy !== preserved.deliveryPolicy) {
         assertTaskSessionBindSnapshot(
           "task.replaceSession",
           taskPath,
@@ -29436,9 +28238,8 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) 
     });
     const handle = await ctx.runtime.startSession({
       sessionId: makeSessionId(),
-      profileId,
-      roleName: task.role,
-      assigneeKind: taskAssigneeKind(task),
+      routeId,
+      routeSnapshot,
       workspaceLane,
       runtimeWorkspace: { cwd },
       cwd,
@@ -29446,6 +28247,7 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) 
         workspaceRoot: mount.workspaceRoot,
         systemRoot: mount.systemRoot,
         priorSessionId,
+        currentContextGeneration: liveGeneration,
         roleFs: mount.env.fs
       }),
       ...bootstrapImageRefs.length > 0 ? { bootstrapImageRefs, bootstrapImageSystemRoot: mount.systemRoot } : {},
@@ -29464,6 +28266,10 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) 
           sessionId: handle.sessionId,
           state: "running",
           wait: null,
+          contextCard: {
+            ...current.contextCard,
+            contextGeneration: liveGeneration
+          },
           updatedAt: mount.env.clock.now()
         });
         emitTaskState(ctx, workspaceId, next, "task.replaceSession");
@@ -29473,7 +28279,7 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) 
           {
             sessionId: handle.sessionId,
             state: handle.state,
-            profileId: handle.profileId,
+            routeId: handle.routeId,
             taskPath,
             reason: REPLACE_SESSION_RESTORE_REASON,
             contextRestored: false,
@@ -29488,7 +28294,8 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) 
     await ctx.runtime.registry.update(handle.sessionId, {
       contextRestored: false,
       restoreReason: REPLACE_SESSION_RESTORE_REASON,
-      replacedSessionId: priorSessionId
+      replacedSessionId: priorSessionId,
+      contextGeneration: liveGeneration
     });
     try {
       const priorRow = await ctx.runtime.registry.read(priorSessionId);
@@ -29504,8 +28311,8 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) 
     } catch {
     }
     clearManagedAutoDeliverDedup(handle.sessionId, taskPath);
-    const nodeIds = bound.contextCard != null ? taskReferencedNodeIds(bound) : [];
-    if (bound.id !== preserved.taskId || bound.role !== preserved.role || bound.deliveryPolicy !== preserved.deliveryPolicy || bound.worktree !== preserved.worktree || bound.branch !== preserved.branch || nodeIds.length !== preserved.nodeIds.length || nodeIds.some((id, i) => id !== preserved.nodeIds[i])) {
+    const nodeIds = taskReferencedNodeIds(bound);
+    if (bound.id !== preserved.taskId || bound.assigneeKind !== preserved.assigneeKind || bound.assigneeId !== preserved.assigneeId || bound.deliveryPolicy !== preserved.deliveryPolicy || bound.worktree !== preserved.worktree || bound.branch !== preserved.branch || nodeIds.length !== preserved.nodeIds.length || nodeIds.some((id, i) => id !== preserved.nodeIds[i])) {
       throw new RpcError(RPC_LIFECYCLE, "task.replaceSession mutated task lane/nodeRefs/identity", {
         code: "TASK_IDENTITY_DRIFT"
       });
@@ -29532,7 +28339,7 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) 
       task: projectTask(bound),
       session: {
         sessionId: handle.sessionId,
-        profileId: handle.profileId,
+        routeId: handle.routeId,
         adapterId: handle.adapterId,
         state: handle.state,
         cwd,
@@ -29578,7 +28385,8 @@ async function buildFreshReplaceSessionBootstrap(ctx, task, roots) {
     task,
     {
       workspaceRoot: roots.workspaceRoot,
-      systemRoot: roots.systemRoot
+      systemRoot: roots.systemRoot,
+      currentContextGeneration: roots.currentContextGeneration
     },
     roots.roleFs
   );
@@ -29592,7 +28400,7 @@ async function buildFreshReplaceSessionBootstrap(ctx, task, roots) {
     `Task envelope: ${task.path}`,
     ...task.id ? [`Task id: ${task.id}`] : [],
     ...task.manifest ? [`Manifest: ${task.manifest}`] : [],
-    ...task.contextCard != null && taskReferencedNodeIds(task).length ? [`Node refs: ${taskReferencedNodeIds(task).join(", ")}`] : [],
+    `Node refs: ${taskReferencedNodeIds(task).join(", ")}`,
     "Pending TaskInputs and delivery policy are preserved on this Task. Final report still goes through Delivery only."
   ].join("\n");
   return `${base}
@@ -29619,11 +28427,35 @@ async function taskGet(ctx, p) {
 async function deliveryList(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const taskId = optionalString(p, "taskId");
-  const boxId = optionalString(p, "boxId");
-  const role = optionalString(p, "role");
-  let deliveries = await loadDeliveries(mount.env.fs, { taskId, boxId });
-  if (role) deliveries = deliveries.filter((d) => d.role === role);
+  const taskId = optionalString2(p, "taskId");
+  const nodeId = optionalString2(p, "nodeId");
+  const assigneeKind = optionalString2(p, "assigneeKind");
+  const assigneeId = optionalString2(p, "assigneeId");
+  let deliveries = await loadDeliveries(mount.env.fs, { taskId });
+  let tasks;
+  if (nodeId) {
+    const tent = await loadTent(mount.env.fs);
+    requireCanonicalNode(tent, nodeId);
+    tasks = await loadTaskEnvelopes(mount.env.fs);
+    const taskNodeIds = new Map(
+      tasks.map((task) => [task.id || task.path, new Set(taskReferencedNodeIds(task))])
+    );
+    deliveries = deliveries.filter((delivery) => taskNodeIds.get(delivery.taskId)?.has(nodeId));
+  }
+  if (assigneeKind || assigneeId) {
+    if (assigneeKind !== "role" && assigneeKind !== "route") {
+      throw new RpcError(-32602, "delivery.list assigneeKind must be role or route");
+    }
+    if (!assigneeId) {
+      throw new RpcError(-32602, "delivery.list assigneeId is required with assigneeKind");
+    }
+    tasks ??= await loadTaskEnvelopes(mount.env.fs);
+    const taskById = new Map(tasks.map((task) => [task.id || task.path, task]));
+    deliveries = deliveries.filter((delivery) => {
+      const task = taskById.get(delivery.taskId);
+      return task?.assigneeKind === assigneeKind && task.assigneeId === assigneeId;
+    });
+  }
   return { workspaceId, deliveries: deliveries.map(projectDelivery) };
 }
 async function deliveryGet(ctx, p) {
@@ -29635,63 +28467,29 @@ async function deliveryGet(ctx, p) {
   if (!found) throw new RpcError(-32004, `Delivery not found: ${id}`);
   return { workspaceId, delivery: projectDelivery(found) };
 }
-async function boxProjectionRpc(ctx, p) {
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const tent = await loadTent(mount.env.fs);
-  const concept = resolveConcept2(tent, p);
-  const tasks = await loadTaskEnvelopes(mount.env.fs);
-  return projectBoxCollaboration(workspaceId, concept, tasks);
-}
-async function boxProjectionsRpc(ctx, p) {
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const idsRaw = p.ids;
-  if (!Array.isArray(idsRaw)) {
-    throw new RpcError(-32602, "box.projections requires ids: string[]");
-  }
-  const ids = [];
-  for (let i = 0; i < idsRaw.length; i++) {
-    const id = idsRaw[i];
-    if (typeof id !== "string" || !id.trim()) {
-      throw new RpcError(-32602, `box.projections ids[${i}] must be a non-empty string`);
-    }
-    ids.push(id);
-  }
-  const tent = await loadTent(mount.env.fs);
-  const tasks = await loadTaskEnvelopes(mount.env.fs);
-  const projections = [];
-  for (const id of ids) {
-    const concept = tent.byId.get(id);
-    if (!concept) {
-      throw new RpcError(-32004, `Concept not found: ${id}`);
-    }
-    projections.push(projectBoxCollaboration(workspaceId, concept, tasks));
-  }
-  return { workspaceId, projections };
-}
 async function nodeCollaborationRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const tent = await loadTent(mount.env.fs);
-  const concept = resolveConcept2(tent, p);
-  if (concept.invalid) {
+  const nodeId = requireString(p, "nodeId");
+  const node2 = requireCanonicalNode(tent, nodeId);
+  if (node2.invalid) {
     throw new RpcError(
       -32004,
-      `Concept is invalid and has no collaboration projection: ${concept.path}`,
-      { nodeId: concept.id, path: concept.path, detail: concept.invalidReason }
+      `Node is invalid and has no collaboration projection: ${node2.path}`,
+      { nodeId: node2.id, path: node2.path, detail: node2.invalidReason }
     );
   }
   const tasks = await loadTaskEnvelopes(mount.env.fs);
   const deliveries = await loadDeliveries(mount.env.fs);
-  const selected = listDirectActiveTasksForNode(concept.id, tasks);
+  const selected = listDirectActiveTasksForNode(node2.id, tasks);
   const sessionsById = await loadSessionSummariesForCollaboration(
     ctx,
     collectExplicitSessionIds(selected)
   );
-  return projectNodeCollaborationMulti(
+  return projectNodeCollaboration(
     workspaceId,
-    concept.id,
+    node2.id,
     selected,
     deliveries,
     sessionsById
@@ -29700,39 +28498,36 @@ async function nodeCollaborationRpc(ctx, p) {
 async function nodeCollaborationsRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const idsRaw = p.ids;
+  const idsRaw = p.nodeIds;
   if (!Array.isArray(idsRaw)) {
-    throw new RpcError(-32602, "node.collaborations requires ids: string[]");
+    throw new RpcError(-32602, "node.collaborations requires nodeIds: string[]");
   }
-  const ids = [];
+  const nodeIds = [];
   for (let i = 0; i < idsRaw.length; i++) {
     const id = idsRaw[i];
     if (typeof id !== "string" || !id.trim()) {
-      throw new RpcError(-32602, `node.collaborations ids[${i}] must be a non-empty string`);
+      throw new RpcError(-32602, `node.collaborations nodeIds[${i}] must be a non-empty string`);
     }
-    ids.push(id.trim());
+    nodeIds.push(id.trim());
   }
-  if (ids.length === 0) {
+  if (nodeIds.length === 0) {
     return { workspaceId, items: [] };
   }
   const tent = await loadTent(mount.env.fs);
   const tasks = await loadTaskEnvelopes(mount.env.fs);
   const deliveries = await loadDeliveries(mount.env.fs);
   const selectedByNodeId = /* @__PURE__ */ new Map();
-  for (const id of ids) {
-    if (selectedByNodeId.has(id)) continue;
-    const concept = tent.byId.get(id);
-    if (!concept) {
-      throw new RpcError(-32004, `Concept not found: ${id}`);
-    }
-    if (concept.invalid) {
+  for (const nodeId of nodeIds) {
+    if (selectedByNodeId.has(nodeId)) continue;
+    const node2 = requireCanonicalNode(tent, nodeId);
+    if (node2.invalid) {
       throw new RpcError(
         -32004,
-        `Concept is invalid and has no collaboration projection: ${concept.path}`,
-        { nodeId: concept.id, path: concept.path, detail: concept.invalidReason }
+        `Node is invalid and has no collaboration projection: ${node2.path}`,
+        { nodeId: node2.id, path: node2.path, detail: node2.invalidReason }
       );
     }
-    selectedByNodeId.set(id, listDirectActiveTasksForNode(id, tasks));
+    selectedByNodeId.set(nodeId, listDirectActiveTasksForNode(nodeId, tasks));
   }
   const allSelected = [...selectedByNodeId.values()].flat();
   const sessionsById = await loadSessionSummariesForCollaboration(
@@ -29740,12 +28535,12 @@ async function nodeCollaborationsRpc(ctx, p) {
     collectExplicitSessionIds(allSelected)
   );
   const items = [];
-  for (const id of ids) {
+  for (const nodeId of nodeIds) {
     items.push(
-      projectNodeCollaborationMulti(
+      projectNodeCollaboration(
         workspaceId,
-        id,
-        selectedByNodeId.get(id) ?? [],
+        nodeId,
+        selectedByNodeId.get(nodeId) ?? [],
         deliveries,
         sessionsById
       )
@@ -29780,19 +28575,21 @@ function collectExplicitSessionIds(selected) {
   }
   return out;
 }
-function projectNodeCollaborationMulti(workspaceId, nodeId, activeTasks, deliveries, sessionsById) {
-  const entries = activeTasks.map((activeTask) => {
+function projectNodeCollaboration(workspaceId, nodeId, occupations, deliveries, sessionsById) {
+  if (occupations.length > 1) {
+    throw new RpcError(-32010, `Node has multiple active Task occupations: ${nodeId}`, {
+      nodeId,
+      taskIds: occupations.map((task) => task.id || task.path)
+    });
+  }
+  const entries = occupations.map((activeTask) => {
     const assigneeKind = taskAssigneeKind(activeTask);
     const taskSummary = {
       id: activeTask.id || activeTask.path,
       state: activeTask.state,
-      assigneeKind
+      assigneeKind,
+      assigneeId: activeTask.assigneeId
     };
-    if (assigneeKind === "agentProfile") {
-      taskSummary.profileId = activeTask.role;
-    } else {
-      taskSummary.role = activeTask.role;
-    }
     if (activeTask.sessionId) taskSummary.sessionId = activeTask.sessionId;
     if (activeTask.activeDeliveryId) taskSummary.activeDeliveryId = activeTask.activeDeliveryId;
     if (activeTask.createdAt) taskSummary.createdAt = activeTask.createdAt;
@@ -29805,6 +28602,12 @@ function projectNodeCollaborationMulti(workspaceId, nodeId, activeTasks, deliver
     if (activeTask.activeDeliveryId) {
       const found = deliveries.find((d) => d.id === activeTask.activeDeliveryId);
       if (found) {
+        if (!activeTask.id || found.taskId !== activeTask.id) {
+          throw new RpcError(-32010, `Task points at a foreign Delivery: ${activeTask.activeDeliveryId}`, {
+            taskId: activeTask.id ?? null,
+            deliveryTaskId: found.taskId
+          });
+        }
         delivery = { id: found.id, status: found.status };
       }
     }
@@ -29813,8 +28616,7 @@ function projectNodeCollaborationMulti(workspaceId, nodeId, activeTasks, deliver
   return {
     workspaceId,
     nodeId,
-    activeTasks: entries,
-    activeTaskCount: entries.length
+    activeTask: entries[0] ?? null
   };
 }
 async function graphProjectionRpc(ctx, p) {
@@ -29823,96 +28625,59 @@ async function graphProjectionRpc(ctx, p) {
   const tent = await loadTent(mount.env.fs);
   return buildGraphProjection(workspaceId, tent);
 }
-function projectBoxCollaboration(workspaceId, concept, tasks) {
-  if (concept.invalid) {
-    throw new RpcError(
-      -32004,
-      `Concept is invalid and has no collaboration projection: ${concept.path}`,
-      { boxId: concept.id, path: concept.path, detail: concept.invalidReason }
-    );
-  }
-  const activeTask = listDirectActiveTasksForNode(concept.id, tasks)[0];
-  if (activeTask) {
-    const fromTask = boxProjectionOf(activeTask);
-    const out = {
-      workspaceId,
-      boxId: concept.id,
-      status: fromTask.status
-    };
-    if (fromTask.assignee) out.assignee = fromTask.assignee;
-    if (fromTask.activeTaskId) out.activeTaskId = fromTask.activeTaskId;
-    return out;
-  }
-  const acceptedTask = tasks.find(
-    (t) => taskDirectlyReferencesNode(t, concept.id) && t.state === "accepted"
-  );
-  if (acceptedTask) {
-    const fromTask = boxProjectionOf(acceptedTask);
-    return {
-      workspaceId,
-      boxId: concept.id,
-      status: fromTask.status
-    };
-  }
-  return {
-    workspaceId,
-    boxId: concept.id,
-    status: "todo"
-  };
-}
 function buildGraphProjection(workspaceId, tent) {
   const nodes = [];
   const parentEdges = [];
   const markdownEdges = [];
   const wikiEdges = [];
   const relationEdges = [];
-  const visit = (box, parentId) => {
-    nodes.push(projectGraphNodeSummary(box));
-    parentEdges.push({ parentId, childId: box.id });
-    for (const child of box.children) visit(child, box.id);
+  const visit = (node2, parentNodeId) => {
+    nodes.push(projectGraphNodeSummary(node2));
+    parentEdges.push({ parentNodeId, childNodeId: node2.id });
+    for (const child of node2.children) visit(child, node2.id);
   };
   for (const root of tent.roots) visit(root, null);
-  const conceptIndex = indexFromBoxes(tent.byId.values());
-  const emitLinks = (box) => {
-    const notePath = boxNotePath(box.path);
-    for (const link2 of extractOutLinksDetailed(box.body)) {
+  const nodeIndex = indexFromNodes(tent.byId.values());
+  const emitLinks = (node2) => {
+    const notePath = nodeNotePath(node2.path);
+    for (const link2 of extractOutLinksDetailed(node2.body)) {
       if (link2.kind === "artifact") continue;
-      const resolved = resolveOutLink(conceptIndex, link2, notePath);
+      const resolved = resolveOutLink(nodeIndex, link2, notePath);
       const edge = {
-        fromId: box.id,
+        fromNodeId: node2.id,
         raw: link2.raw
       };
       if (link2.label) edge.label = link2.label;
-      const targetBox = (resolved.targetPath ? tent.byPath.get(resolved.targetPath) : void 0) ?? (resolved.targetCx ? tent.byId.get(resolved.targetCx) : void 0);
-      if (resolved.kind === "unresolved" || !targetBox) {
-        const target = link2.conceptTarget ?? resolved.targetPath ?? (resolved.targetCx && resolved.targetCx !== link2.raw ? resolved.targetCx : void 0);
+      const targetNode = (resolved.targetPath ? tent.byPath.get(resolved.targetPath) : void 0) ?? (resolved.targetNodeId ? tent.byId.get(resolved.targetNodeId) : void 0);
+      if (resolved.kind === "unresolved" || !targetNode) {
+        const target = link2.targetPath ?? resolved.targetPath ?? (resolved.targetNodeId && resolved.targetNodeId !== link2.raw ? resolved.targetNodeId : void 0);
         edge.unresolved = target ? { raw: link2.raw, target } : { raw: link2.raw };
       } else {
-        edge.toId = targetBox.id;
+        edge.toNodeId = targetNode.id;
       }
       if (link2.kind === "wiki") wikiEdges.push(edge);
       else markdownEdges.push(edge);
     }
-    for (const child of box.children) emitLinks(child);
+    for (const child of node2.children) emitLinks(child);
   };
   for (const root of tent.roots) emitLinks(root);
-  const emitRelations = (box) => {
-    for (const rel of box.relations) {
+  const emitRelations = (node2) => {
+    for (const rel of node2.relations) {
       const edge = {
         id: rel.id,
-        fromId: box.id,
+        fromNodeId: node2.id,
         kind: rel.kind,
         direction: rel.direction
       };
       if (rel.label !== void 0) edge.label = rel.label;
       if ("nodeId" in rel.target) {
-        edge.toId = rel.target.nodeId;
+        edge.toNodeId = rel.target.nodeId;
       } else {
         edge.unresolved = rel.target.unresolved;
       }
       relationEdges.push(edge);
     }
-    for (const child of box.children) emitRelations(child);
+    for (const child of node2.children) emitRelations(child);
   };
   for (const root of tent.roots) emitRelations(root);
   return {
@@ -29926,17 +28691,17 @@ function buildGraphProjection(workspaceId, tent) {
     }
   };
 }
-function projectGraphNodeSummary(box) {
-  const title = typeof box.fm.title === "string" ? box.fm.title : void 0;
+function projectGraphNodeSummary(source) {
+  const title = typeof source.fm.title === "string" ? source.fm.title : void 0;
   const node2 = {
-    id: box.id,
-    path: box.path,
-    name: box.name,
-    type: box.type,
-    tags: box.tags,
-    mode: box.mode,
-    archived: box.archived,
-    invalid: box.invalid
+    nodeId: source.id,
+    path: source.path,
+    name: source.name,
+    type: source.type,
+    tags: source.tags,
+    mode: source.mode,
+    archived: source.archived,
+    invalid: source.invalid
   };
   if (title) node2.title = title;
   return node2;
@@ -29944,13 +28709,16 @@ function projectGraphNodeSummary(box) {
 async function proposalList(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const boxId = optionalString(p, "boxId");
-  const statusRaw = optionalString(p, "status") ?? "pending";
+  const nodeId = optionalString2(p, "nodeId");
+  const statusRaw = optionalString2(p, "status") ?? "pending";
   if (statusRaw !== "pending" && statusRaw !== "accepted" && statusRaw !== "rejected" && statusRaw !== "all") {
     throw new RpcError(-32602, `Invalid proposal status filter: ${statusRaw}`);
   }
   let proposals = await loadProposals(mount.env.fs);
-  if (boxId) proposals = proposals.filter((item) => item.boxId === boxId);
+  if (nodeId) {
+    requireCanonicalNode(await loadTent(mount.env.fs), nodeId);
+    proposals = proposals.filter((item) => item.nodeId === nodeId);
+  }
   if (statusRaw !== "all") {
     proposals = proposals.filter((item) => item.status === statusRaw);
   }
@@ -29959,12 +28727,13 @@ async function proposalList(ctx, p) {
 async function proposalSubmit(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const boxId = requireString(p, "boxId");
+  const nodeId = requireString(p, "nodeId");
   const role = requireString(p, "role");
   const body = requireString(p, "body");
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
-    const proposal = await submitProposal(mount.env.fs, mount.env.clock, role, boxId, body);
+    requireCanonicalNode(await loadTent(mount.env.fs), nodeId);
+    const proposal = await submitProposal(mount.env.fs, mount.env.clock, role, nodeId, body);
     emitProposalUpdated(ctx, workspaceId, proposal, "proposal.submit");
     return { proposal: projectProposal(proposal) };
   });
@@ -29977,7 +28746,7 @@ async function proposalResolve(ctx, p) {
   if (decision !== "accept" && decision !== "reject") {
     throw new RpcError(-32602, `Invalid proposal decision: ${decision}`);
   }
-  const actorRaw = optionalString(p, "actor") ?? "user";
+  const actorRaw = optionalString2(p, "actor") ?? "user";
   if (actorRaw !== "user") {
     throw new RpcError(
       -32001,
@@ -30005,7 +28774,7 @@ async function proposalResolve(ctx, p) {
 function projectProposal(proposal) {
   return {
     path: proposal.path,
-    boxId: proposal.boxId,
+    nodeId: proposal.nodeId,
     role: proposal.role,
     status: proposal.status,
     createdAt: proposal.createdAt,
@@ -30018,7 +28787,7 @@ function emitProposalUpdated(ctx, workspaceId, proposal, reason) {
     workspaceId,
     {
       path: proposal.path,
-      boxId: proposal.boxId,
+      nodeId: proposal.nodeId,
       role: proposal.role,
       status: proposal.status,
       reason
@@ -30027,7 +28796,7 @@ function emitProposalUpdated(ctx, workspaceId, proposal, reason) {
   );
 }
 async function sessionList(ctx, p) {
-  const workspaceId = optionalString(p, "workspaceId");
+  const workspaceId = optionalString2(p, "workspaceId");
   const all2 = await ctx.runtime.registry.list();
   const projections = [];
   for (const rec of all2) {
@@ -30035,11 +28804,10 @@ async function sessionList(ctx, p) {
     const probe = await ctx.runtime.probe(rec.id);
     projections.push({
       sessionId: rec.id,
-      profileId: rec.profileId,
+      routeId: rec.routeId,
       adapterId: rec.adapterId,
       state: probe.state,
       roleName: rec.roleName,
-      assigneeKind: rec.assigneeKind ?? "role",
       alive: probe.alive,
       resumeCapable: probe.resumeCapable,
       ...rec.contextRestored !== void 0 ? { contextRestored: rec.contextRestored } : {},
@@ -30061,11 +28829,10 @@ async function sessionGet(ctx, p) {
   const probe = await ctx.runtime.probe(sessionId);
   const projection = {
     sessionId: rec.id,
-    profileId: rec.profileId,
+    routeId: rec.routeId,
     adapterId: rec.adapterId,
     state: probe.state,
     roleName: rec.roleName,
-    assigneeKind: rec.assigneeKind ?? "role",
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
     ...rec.contextRestored !== void 0 ? { contextRestored: rec.contextRestored } : {},
@@ -30087,16 +28854,20 @@ function sessionReplaceAuditFields(rec) {
   };
 }
 async function sessionEnter(ctx, p) {
-  const workspaceId = optionalString(p, "workspaceId");
+  const workspaceId = optionalString2(p, "workspaceId");
   if (workspaceId) ctx.host.require(workspaceId);
-  const sessionId = optionalString(p, "sessionId");
-  const profileId = optionalString(p, "profileId");
-  const roleName = optionalString(p, "roleName") || optionalString(p, "role");
-  const externalKey = optionalString(p, "externalKey") || optionalString(p, "key");
-  const lastTaskId = optionalString(p, "lastTaskId") || optionalString(p, "taskId");
-  const cwd = optionalString(p, "cwd");
-  const assigneeKindRaw = optionalString(p, "assigneeKind");
-  const assigneeKind = assigneeKindRaw === "agentProfile" || assigneeKindRaw === "role" ? assigneeKindRaw : void 0;
+  const sessionId = optionalString2(p, "sessionId");
+  const routeId = optionalString2(p, "routeId");
+  const roleName = optionalString2(p, "roleName") || optionalString2(p, "role");
+  const externalKey = optionalString2(p, "externalKey") || optionalString2(p, "key");
+  const lastTaskId = optionalString2(p, "lastTaskId") || optionalString2(p, "taskId");
+  const cwd = optionalString2(p, "cwd");
+  if ("assigneeKind" in p) {
+    throw new RpcError(
+      -32602,
+      "session.enter does not accept assigneeKind; roleName identifies an external durable Role only"
+    );
+  }
   let priorExternalId;
   if (sessionId) {
     const prior = await ctx.runtime.registry.read(sessionId);
@@ -30109,9 +28880,8 @@ async function sessionEnter(ctx, p) {
   try {
     handle = await ctx.runtime.enterExternalSession({
       sessionId: sessionId || void 0,
-      profileId: profileId || void 0,
+      routeId: routeId || void 0,
       roleName: roleName || void 0,
-      assigneeKind,
       workspace: workspaceId || void 0,
       cwd: cwd || void 0,
       lastTaskId: lastTaskId || void 0,
@@ -30128,11 +28898,10 @@ async function sessionEnter(ctx, p) {
   const probe = await ctx.runtime.probe(handle.sessionId);
   const session = {
     sessionId: handle.sessionId,
-    profileId: handle.profileId,
+    routeId: handle.routeId,
     adapterId: handle.adapterId,
     state: probe.state,
     roleName: handle.roleName,
-    assigneeKind: handle.assigneeKind ?? "role",
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
     ...rec?.contextRestored !== void 0 ? { contextRestored: rec.contextRestored } : {},
@@ -30142,14 +28911,14 @@ async function sessionEnter(ctx, p) {
     createdAt: handle.createdAt,
     updatedAt: handle.updatedAt
   };
-  const roleCheckpointTail = handle.roleName && (handle.assigneeKind ?? "role") !== "agentProfile" ? await loadRoleCheckpointTailSafe(ctx, workspaceId, handle.roleName) : "";
+  const roleCheckpointTail = handle.roleName ? await loadRoleCheckpointTailSafe(ctx, workspaceId, handle.roleName) : "";
   return {
     session,
     reused: priorExternalId === handle.sessionId,
     /**
      * Optional cooperative Role Checkpoint tail for the durable Role just entered.
      * Dynamic only — callers append after stable Role init / bootstrap prefix.
-     * Absent when no role, agentProfile, or no note on disk.
+     * Absent when no role, route, or no note on disk.
      */
     ...roleCheckpointTail ? { roleCheckpointTail } : {}
   };
@@ -30191,7 +28960,7 @@ async function resolveDurableCheckpointRole(ctx, workspaceId, roleRef) {
   return { roleName, roleId: found.id };
 }
 function requireRoleCheckpointActor(p, targetRoleName, surface) {
-  const actorRaw = (optionalString(p, "actor") ?? "user").trim();
+  const actorRaw = (optionalString2(p, "actor") ?? "user").trim();
   if (!actorRaw) {
     throw new RpcError(-32001, `${surface} actor cannot be empty`, { code: "ACTOR_FORBIDDEN" });
   }
@@ -30243,7 +29012,7 @@ async function roleCheckpointSetRpc(ctx, p) {
   const { roleName } = await resolveDurableCheckpointRole(ctx, workspaceId, roleRef);
   const actor = requireRoleCheckpointActor(p, roleName, "role.checkpoint.set");
   const text3 = requireString(p, "text");
-  const rawSource = optionalString(p, "sourceSessionId") || optionalString(p, "sessionId") || void 0;
+  const rawSource = optionalString2(p, "sourceSessionId") || optionalString2(p, "sessionId") || void 0;
   const sourceSessionId = await resolveRoleCheckpointSourceSessionId(
     ctx,
     workspaceId,
@@ -30327,9 +29096,9 @@ async function loadRoleCheckpointTailSafe(ctx, workspaceId, roleName) {
   }
 }
 async function sessionStatus(ctx, p) {
-  const sessionIdArg = optionalString(p, "sessionId");
-  const externalKey = optionalString(p, "externalKey") || optionalString(p, "key");
-  const workspaceId = optionalString(p, "workspaceId");
+  const sessionIdArg = optionalString2(p, "sessionId");
+  const externalKey = optionalString2(p, "externalKey") || optionalString2(p, "key");
+  const workspaceId = optionalString2(p, "workspaceId");
   if (workspaceId) ctx.host.require(workspaceId);
   if (!sessionIdArg && !externalKey) {
     const all2 = await ctx.runtime.registry.list();
@@ -30340,11 +29109,10 @@ async function sessionStatus(ctx, p) {
       const probe2 = await ctx.runtime.probe(rec2.id);
       sessions.push({
         sessionId: rec2.id,
-        profileId: rec2.profileId,
+        routeId: rec2.routeId,
         adapterId: rec2.adapterId,
         state: probe2.state,
         roleName: rec2.roleName,
-        assigneeKind: rec2.assigneeKind ?? "role",
         alive: probe2.alive,
         resumeCapable: probe2.resumeCapable,
         ...rec2.contextRestored !== void 0 ? { contextRestored: rec2.contextRestored } : {},
@@ -30375,11 +29143,10 @@ async function sessionStatus(ctx, p) {
   const probe = await ctx.runtime.probe(sessionId);
   const session = {
     sessionId: rec.id,
-    profileId: rec.profileId,
+    routeId: rec.routeId,
     adapterId: rec.adapterId,
     state: probe.state,
     roleName: rec.roleName,
-    assigneeKind: rec.assigneeKind ?? "role",
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
     ...rec.contextRestored !== void 0 ? { contextRestored: rec.contextRestored } : {},
@@ -30402,9 +29169,9 @@ async function sessionStatus(ctx, p) {
   };
 }
 async function sessionLeave(ctx, p) {
-  const sessionIdArg = optionalString(p, "sessionId");
-  const externalKey = optionalString(p, "externalKey") || optionalString(p, "key");
-  const workspaceId = optionalString(p, "workspaceId");
+  const sessionIdArg = optionalString2(p, "sessionId");
+  const externalKey = optionalString2(p, "externalKey") || optionalString2(p, "key");
+  const workspaceId = optionalString2(p, "workspaceId");
   if (workspaceId) ctx.host.require(workspaceId);
   if (!sessionIdArg && !externalKey) {
     throw new RpcError(
@@ -30526,47 +29293,15 @@ async function listIncompleteTasksForSessions(ctx, workspaceId, sessionIds) {
       path: task.path,
       id: task.id,
       state: task.state,
-      role: task.role,
+      assigneeKind: task.assigneeKind,
+      assigneeId: task.assigneeId,
       sessionId: sid
     });
   }
   return out;
 }
-async function a2aListPending(ctx, p) {
-  const workspaceId = optionalString(p, "workspaceId");
-  const pending = await ctx.a2a.listPending(workspaceId);
-  return { approvals: pending };
-}
-async function a2aResolve(ctx, p) {
-  const approvalId = requireString(p, "approvalId");
-  const decisionRaw = requireString(p, "decision");
-  const actor = requireUserActor(p, "a2a.resolve");
-  const decision = decisionRaw === "approve" || decisionRaw === "approved" ? "approved" : decisionRaw === "deny" || decisionRaw === "denied" ? "denied" : null;
-  if (!decision) {
-    throw new RpcError(-32602, "decision must be approve|deny");
-  }
-  const item = await ctx.a2a.resolve(approvalId, decision, actor);
-  ctx.events.emit(
-    "a2a.resolved",
-    item.workspaceId,
-    { approvalId, decision, actor, taskPath: item.taskPath },
-    "self"
-  );
-  if (decision === "approved") {
-    const started = await taskStartSessionRpc(ctx, {
-      workspaceId: item.workspaceId,
-      taskPath: item.taskPath,
-      profileId: item.profileId,
-      callerKind: "user",
-      bootstrapPrompt: item.bootstrapPrompt,
-      approvalId: item.id
-    });
-    return { approval: item, started };
-  }
-  return { approval: item, started: null };
-}
 async function toolApprovalListPending(ctx, p) {
-  const workspaceId = optionalString(p, "workspaceId");
+  const workspaceId = optionalString2(p, "workspaceId");
   const pending = await ctx.toolApprovals.listPending(workspaceId);
   return { approvals: pending.map(projectToolApproval) };
 }
@@ -30578,7 +29313,7 @@ async function toolApprovalGet(ctx, p) {
 }
 async function toolApprovalResolve(ctx, p, decision) {
   const approvalId = requireString(p, "approvalId");
-  const actorRaw = optionalString(p, "actor") ?? "user";
+  const actorRaw = optionalString2(p, "actor") ?? "user";
   if (actorRaw !== "user") {
     throw new RpcError(
       -32001,
@@ -30646,7 +29381,7 @@ function projectToolApproval(item) {
   };
 }
 async function userAskListPending(ctx, p) {
-  const workspaceId = optionalString(p, "workspaceId");
+  const workspaceId = optionalString2(p, "workspaceId");
   const pending = await ctx.userAsks.listPending(workspaceId);
   return { asks: pending.map(projectUserAsk) };
 }
@@ -30654,20 +29389,17 @@ async function interactionListPending(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   let asks;
-  let a2aApprovals;
   let toolApprovals;
   let deliveries;
   try {
     const settled = await Promise.all([
       ctx.userAsks.listPending(workspaceId),
-      ctx.a2a.listPending(workspaceId),
       ctx.toolApprovals.listPending(workspaceId),
       loadDeliveries(mount.env.fs)
     ]);
     asks = settled[0];
-    a2aApprovals = settled[1];
-    toolApprovals = settled[2];
-    deliveries = settled[3];
+    toolApprovals = settled[1];
+    deliveries = settled[2];
   } catch (err) {
     const message2 = err instanceof Error ? err.message : String(err);
     throw new RpcError(
@@ -30695,6 +29427,7 @@ async function interactionListPending(ctx, p) {
   const items = [];
   for (const ask of asks) {
     const task = tasksByPath.get(ask.taskPath) ?? (ask.taskId ? tasksById.get(ask.taskId) : void 0);
+    const responsibleRole = ask.role ?? (task ? taskParentRoleId(task) : void 0);
     const item = {
       kind: "userAsk",
       id: ask.id,
@@ -30702,35 +29435,17 @@ async function interactionListPending(ctx, p) {
       createdAt: ask.createdAt,
       taskPath: ask.taskPath,
       ...ask.taskId ? { taskId: ask.taskId } : task?.id ? { taskId: task.id } : {},
-      ...task && primaryBoxId(task) ? { boxId: primaryBoxId(task) } : {},
-      ...ask.role ?? task?.role ? { role: ask.role ?? task?.role } : {},
+      ...responsibleRole ? { role: responsibleRole } : {},
       ...ask.sessionId ?? task?.sessionId ? { sessionId: ask.sessionId ?? task?.sessionId } : {},
       question: ask.question,
       ...ask.choices?.length ? { choices: ask.choices.map((c) => ({ id: c.id, label: c.label })) } : {}
     };
     items.push(item);
   }
-  for (const approval of a2aApprovals) {
-    const task = tasksByPath.get(approval.taskPath) ?? (approval.taskId ? tasksById.get(approval.taskId) : void 0);
-    const item = {
-      kind: "a2a",
-      id: approval.id,
-      workspaceId: approval.workspaceId,
-      createdAt: approval.createdAt,
-      taskPath: approval.taskPath,
-      ...approval.taskId ? { taskId: approval.taskId } : task?.id ? { taskId: task.id } : {},
-      ...task && primaryBoxId(task) ? { boxId: primaryBoxId(task) } : {},
-      role: approval.role,
-      ...task?.sessionId ? { sessionId: task.sessionId } : {},
-      profileId: approval.profileId,
-      policy: approval.policy,
-      callerKind: approval.callerKind
-    };
-    items.push(item);
-  }
   for (const approval of toolApprovals) {
     const task = approval.taskPath ? tasksByPath.get(approval.taskPath) : approval.taskId ? tasksById.get(approval.taskId) : void 0;
     const projected = projectToolApproval(approval);
+    const responsibleRole = projected.role ?? (task ? taskParentRoleId(task) : void 0);
     const item = {
       kind: "toolApproval",
       id: projected.id,
@@ -30739,8 +29454,7 @@ async function interactionListPending(ctx, p) {
       sessionId: projected.sessionId,
       ...projected.taskPath ? { taskPath: projected.taskPath } : {},
       ...projected.taskId ? { taskId: projected.taskId } : task?.id ? { taskId: task.id } : {},
-      ...task && primaryBoxId(task) ? { boxId: primaryBoxId(task) } : {},
-      ...projected.role ?? task?.role ? { role: projected.role ?? task?.role } : {},
+      ...responsibleRole ? { role: responsibleRole } : {},
       toolTitle: projected.toolTitle,
       options: projected.options.map((o) => ({
         optionId: o.optionId,
@@ -30760,8 +29474,7 @@ async function interactionListPending(ctx, p) {
       workspaceId,
       createdAt: delivery.createdAt ?? delivery.updatedAt ?? "",
       taskId: delivery.taskId,
-      boxId: delivery.boxId,
-      role: delivery.role,
+      sourceNodeId: delivery.sourceNodeId,
       path: delivery.path,
       status: "ready",
       ...task?.path ? { taskPath: task.path } : {},
@@ -30772,7 +29485,6 @@ async function interactionListPending(ctx, p) {
   items.sort(comparePendingInteraction);
   const counts = {
     userAsk: 0,
-    a2a: 0,
     toolApproval: 0,
     delivery: 0,
     total: items.length
@@ -30797,7 +29509,7 @@ async function userAskGet(ctx, p) {
 }
 async function userAskReplyRpc(ctx, p) {
   const askId = requireString(p, "askId");
-  const actorRaw = optionalString(p, "actor") ?? "user";
+  const actorRaw = optionalString2(p, "actor") ?? "user";
   if (actorRaw !== "user") {
     throw new RpcError(
       -32001,
@@ -30805,8 +29517,8 @@ async function userAskReplyRpc(ctx, p) {
       { actor: actorRaw }
     );
   }
-  const answer = optionalString(p, "answer");
-  const choiceId = optionalString(p, "choiceId");
+  const answer = optionalString2(p, "answer");
+  const choiceId = optionalString2(p, "choiceId");
   if (!(answer?.trim() || choiceId?.trim())) {
     throw new RpcError(-32602, "userAsk.reply requires answer and/or choiceId");
   }
@@ -30841,7 +29553,7 @@ async function userAskReplyRpc(ctx, p) {
 }
 async function userAskDenyRpc(ctx, p) {
   const askId = requireString(p, "askId");
-  const actorRaw = optionalString(p, "actor") ?? "user";
+  const actorRaw = optionalString2(p, "actor") ?? "user";
   if (actorRaw !== "user") {
     throw new RpcError(
       -32001,
@@ -31025,7 +29737,7 @@ async function cancelUserAsksForSession(ctx, workspaceId, sessionId, resolvedBy)
   }
 }
 function requireTaskInputScope(p) {
-  const workspaceId = optionalString(p, "workspaceId");
+  const workspaceId = optionalString2(p, "workspaceId");
   if (!workspaceId) {
     throw new RpcError(
       -32602,
@@ -31066,7 +29778,7 @@ async function taskInputGet(ctx, p) {
 async function taskInputAckRpc(ctx, p) {
   const { workspaceId, taskPath } = requireTaskInputScope(p);
   const inputId = requireString(p, "inputId");
-  const actorRaw = optionalString(p, "actor")?.trim();
+  const actorRaw = optionalString2(p, "actor")?.trim();
   ctx.host.require(workspaceId);
   let existing;
   try {
@@ -31147,7 +29859,9 @@ async function resolveTaskInputAckAuthority(ctx, item, actorRaw) {
       { inputId: item.id, workspaceId: item.workspaceId, taskPath: item.taskPath }
     );
   }
-  if (actorRaw === task.role) return { actor: actorRaw, task };
+  if (task.assigneeKind === "role" && actorRaw === task.assigneeId) {
+    return { actor: actorRaw, task };
+  }
   if (task.parentActor?.kind === "role" && task.parentActor.id === actorRaw || task.reviewer?.kind === "role" && task.reviewer.id === actorRaw) {
     return { actor: actorRaw, task };
   }
@@ -31170,7 +29884,7 @@ async function resolveTaskInputAckAuthority(ctx, item, actorRaw) {
     {
       inputId: item.id,
       actor: actorRaw,
-      expectedRole: task.role,
+      expectedRole: task.assigneeKind === "role" ? task.assigneeId : void 0,
       parentActor: task.parentActor,
       reviewer: task.reviewer,
       sessionId: item.sessionId,
@@ -31726,7 +30440,7 @@ async function operationalRetentionPurgeRpc(ctx, p) {
   });
 }
 function requireUserActor(p, surface) {
-  const actorRaw = optionalString(p, "actor") ?? "user";
+  const actorRaw = optionalString2(p, "actor") ?? "user";
   if (actorRaw !== "user") {
     throw new RpcError(
       -32001,
@@ -31752,8 +30466,8 @@ function annotationErrorToRpc(error) {
 function projectAnnotationWire(record, documentBody) {
   return projectAnnotation(record, documentBody);
 }
-async function readConceptBody(mount, concept) {
-  const notePath = boxNotePath(concept.path);
+async function readNodeBody(mount, node2) {
+  const notePath = nodeNotePath(node2.path);
   const raw = await mount.env.fs.readFile(notePath);
   const { body } = parseFrontmatter(raw);
   return { body, raw, etag: contentEtag(raw) };
@@ -31761,17 +30475,11 @@ async function readConceptBody(mount, concept) {
 async function annotationListRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const nodeId = optionalString(p, "nodeId") ?? optionalString(p, "id") ?? optionalString(p, "boxId");
-  if (!nodeId) {
-    throw new RpcError(-32602, "annotation.list requires nodeId (or id / boxId)");
-  }
+  const nodeId = requireString(p, "nodeId");
   const tent = await loadTent(mount.env.fs);
-  const concept = tent.byId.get(nodeId) ?? null;
-  let documentBody = null;
-  if (concept) {
-    const note = await readConceptBody(mount, concept);
-    documentBody = note.body;
-  }
+  const node2 = requireCanonicalNode(tent, nodeId);
+  const note = await readNodeBody(mount, node2);
+  const documentBody = note.body;
   const records = await listAnnotationRecords(mount.env.fs, nodeId);
   const annotations = records.map((r) => projectAnnotationWire(r, documentBody));
   return { workspaceId, nodeId, annotations };
@@ -31780,10 +30488,7 @@ async function annotationCreateRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   requireUserActor(p, "annotation.create");
-  const nodeId = optionalString(p, "nodeId") ?? optionalString(p, "id") ?? optionalString(p, "boxId");
-  if (!nodeId) {
-    throw new RpcError(-32602, "annotation.create requires nodeId (or id / boxId)");
-  }
+  const nodeId = requireString(p, "nodeId");
   const quote = typeof p.quote === "string" ? p.quote : void 0;
   const body = typeof p.body === "string" ? p.body : void 0;
   if (quote === void 0 || quote.length === 0) {
@@ -31800,28 +30505,25 @@ async function annotationCreateRpc(ctx, p) {
   if (typeof end !== "number" || !Number.isInteger(end)) {
     throw new RpcError(-32602, "annotation.create requires integer end");
   }
-  const baseEtag = optionalString(p, "documentEtag") ?? optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString2(p, "documentEtag");
   if (!baseEtag) {
-    throw new RpcError(-32602, "annotation.create requires documentEtag (or baseEtag)");
+    throw new RpcError(-32602, "annotation.create requires documentEtag");
   }
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = tent.byId.get(nodeId);
-    if (!concept) {
-      throw new RpcError(-32004, `Concept not found: ${nodeId}`);
-    }
-    const note = await readConceptBody(mount, concept);
+    const node2 = requireCanonicalNode(tent, nodeId);
+    const note = await readNodeBody(mount, node2);
     if (baseEtag !== note.etag) {
       throw new RpcError(-32009, "etag conflict", {
         currentEtag: note.etag,
         baseEtag,
-        path: concept.path,
+        path: node2.path,
         nodeId
       });
     }
     try {
       const record = await createAnnotation(mount.env.fs, {
-        nodeId: concept.id,
+        nodeId: node2.id,
         quote,
         start,
         end,
@@ -31856,10 +30558,10 @@ async function annotationResolveRpc(ctx, p) {
     try {
       const record = await resolveAnnotation(mount.env.fs, id);
       const tent = await loadTent(mount.env.fs);
-      const concept = tent.byId.get(record.nodeId) ?? null;
+      const node2 = tent.byId.get(record.nodeId) ?? null;
       let documentBody = null;
-      if (concept) {
-        documentBody = (await readConceptBody(mount, concept)).body;
+      if (node2) {
+        documentBody = (await readNodeBody(mount, node2)).body;
       }
       const projection = projectAnnotationWire(record, documentBody);
       ctx.events.emit(
@@ -31888,10 +30590,10 @@ async function annotationReopenRpc(ctx, p) {
     try {
       const record = await reopenAnnotation(mount.env.fs, id);
       const tent = await loadTent(mount.env.fs);
-      const concept = tent.byId.get(record.nodeId) ?? null;
+      const node2 = tent.byId.get(record.nodeId) ?? null;
       let documentBody = null;
-      if (concept) {
-        documentBody = (await readConceptBody(mount, concept)).body;
+      if (node2) {
+        documentBody = (await readNodeBody(mount, node2)).body;
       }
       const projection = projectAnnotationWire(record, documentBody);
       ctx.events.emit(
@@ -31978,23 +30680,23 @@ var MANAGED_SESSION_IN_PROGRESS_MESSAGE = "managed session operation already in 
 function managedSessionFlightKey(workspaceId, taskPath) {
   return `${workspaceId}\0${taskPath}`;
 }
-function joinOrConflictManagedSessionFlight(existing, profileId, operation, taskPath) {
-  if (existing.profileId !== profileId || existing.operation !== operation) {
+function joinOrConflictManagedSessionFlight(existing, routeId, operation, taskPath) {
+  if (existing.routeId !== routeId || existing.operation !== operation) {
     throw new RpcError(RPC_LIFECYCLE, MANAGED_SESSION_IN_PROGRESS_MESSAGE, {
       taskPath,
-      profileId,
+      routeId,
       operation,
-      inFlightProfileId: existing.profileId,
+      inFlightRouteId: existing.routeId,
       inFlightOperation: existing.operation,
       retryable: true
     });
   }
   return existing.promise;
 }
-async function runManagedSessionFlight(workspaceId, taskPath, profileId, operation, run) {
+async function runManagedSessionFlight(workspaceId, taskPath, routeId, operation, run) {
   const flightKey = managedSessionFlightKey(workspaceId, taskPath);
   const existing = managedSessionInFlight.get(flightKey);
-  if (existing) return joinOrConflictManagedSessionFlight(existing, profileId, operation, taskPath);
+  if (existing) return joinOrConflictManagedSessionFlight(existing, routeId, operation, taskPath);
   let settle;
   let rejectFlight;
   const flightPromise = new Promise((resolve15, reject) => {
@@ -32002,7 +30704,7 @@ async function runManagedSessionFlight(workspaceId, taskPath, profileId, operati
     rejectFlight = reject;
   });
   flightPromise.catch(() => void 0);
-  managedSessionInFlight.set(flightKey, { profileId, operation, promise: flightPromise });
+  managedSessionInFlight.set(flightKey, { routeId, operation, promise: flightPromise });
   try {
     const result = await run();
     settle(result);
@@ -32525,7 +31227,7 @@ async function tryManagedAutoDeliver(ctx, input) {
         }
         return {
           kind: "auto",
-          boxId: prepared.boxId,
+          sourceNodeId: prepared.sourceNodeId,
           commits: pendingCommits,
           ...targetHead ? { targetHead } : {},
           opts
@@ -32548,7 +31250,7 @@ async function tryManagedAutoDeliver(ctx, input) {
           ctx.host.markSelfWrite(input.workspaceId);
           return finalizeTaskDeliverAuto(mount.env, input.taskPath, phase.opts, {
             kind: "auto",
-            boxId: phase.boxId
+            sourceNodeId: phase.sourceNodeId
           });
         });
       }
@@ -32831,7 +31533,6 @@ async function stopManagedSessionAfterDelivery(ctx, input) {
     );
   }
 }
-var rejectResumePostStartFailureForTests = null;
 var beforeCombinedDispatchCompensateForTests = null;
 var afterTargetHeadSnapshotForTests = null;
 var beforeTaskClaimCoreForTests = null;
@@ -32842,151 +31543,7 @@ function clearManagedAutoDeliverDedup(sessionId, taskPath) {
   managedAutoDeliverInFlight.delete(key2);
   managedAutoDeliverRetryRequested.delete(key2);
 }
-var REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY = "\u9A73\u56DE\u7EED\u8DD1\u672A\u80FD\u6062\u590D managed session\u3002\u53EF\u91CD\u65B0 startSession\uFF0C\u6216 interrupt \u4EFB\u52A1\uFF1Boccupation \u4FDD\u6301\u3002";
-async function buildRejectResumeRecoveryOrientation(ctx, task, roots, opts) {
-  const base = await buildSessionBootstrapPrompt(ctx, task, roots, roots.roleFs);
-  const lines = [
-    "--- Tent reject-resume recovery ---",
-    "contextRestored: false",
-    "Native provider Session continuity was not restored. This is an independent managed Session on the same task/workspace lane.",
-    "Do not invent prior chat/cache continuity. Use Task/Node refs below; review note appears only under ## Review Feedback."
-  ];
-  if (opts.priorSessionId) {
-    lines.push(`priorSessionId: ${opts.priorSessionId}`);
-  }
-  lines.push(
-    opts.nativeResumeFailed ? "restorePath: native-resume-failed-fallback" : "restorePath: not-resume-capable-new-session"
-  );
-  if (opts.nativeResumeError?.trim()) {
-    lines.push(`nativeResumeError: ${opts.nativeResumeError.trim()}`);
-  }
-  lines.push(`Task envelope: ${task.path}`);
-  if (task.id) lines.push(`Task id: ${task.id}`);
-  if (task.manifest) lines.push(`Manifest: ${task.manifest}`);
-  if (task.contextCard != null) {
-    const nodeIds = taskReferencedNodeIds(task);
-    if (nodeIds.length) lines.push(`Node refs: ${nodeIds.join(", ")}`);
-  }
-  if (opts.workspaceLane) {
-    lines.push("workspace lane:");
-    lines.push(`  workspace: ${opts.workspaceLane.workspace}`);
-    lines.push(`  worktree: ${opts.workspaceLane.worktree}`);
-    lines.push(`  branch: ${opts.workspaceLane.branch}`);
-    if (opts.workspaceLane.targetBranch) {
-      lines.push(`  targetBranch: ${opts.workspaceLane.targetBranch}`);
-    }
-  }
-  if (opts.rejectedDelivery) {
-    lines.push("rejected Delivery:");
-    lines.push(`  id: ${opts.rejectedDelivery.id}`);
-    lines.push(`  summary: ${opts.rejectedDelivery.summary}`);
-  }
-  lines.push(
-    "Final report still goes through Delivery only. Feedback delivery remains exactly once via TaskInput."
-  );
-  return `${base}
-
-${lines.join("\n")}
-`;
-}
-async function loadRejectedDeliveryForRejectResume(fs22, task) {
-  const taskId = task.id?.trim();
-  if (!taskId) return void 0;
-  try {
-    const deliveries = await loadDeliveries(fs22, { taskId });
-    const rejected = deliveries.find((d) => d.status === "rejected");
-    if (!rejected) return void 0;
-    return {
-      id: rejected.id,
-      summary: rejected.summary
-    };
-  } catch {
-    return void 0;
-  }
-}
-async function rebuildRejectResumeRecoveryOrientation(ctx, item) {
-  if (normalizeTaskInputKind(item.kind) !== "review-feedback") return void 0;
-  const sessionId = item.sessionId?.trim();
-  if (!sessionId) return void 0;
-  let rec;
-  try {
-    rec = await ctx.runtime.registry.read(sessionId);
-  } catch (err) {
-    const message2 = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `reject-resume recovery orientation required but session registry read failed for ${sessionId}: ${message2}`
-    );
-  }
-  if (!rec) {
-    throw new Error(
-      `reject-resume recovery orientation required but session registry row missing for ${sessionId}`
-    );
-  }
-  if (rec.contextRestored !== false) return void 0;
-  const mount = ctx.host.get(item.workspaceId);
-  if (!mount) {
-    throw new Error(
-      `reject-resume recovery orientation required (contextRestored=false) but workspace mount missing: ${item.workspaceId}`
-    );
-  }
-  let task;
-  try {
-    task = await loadTaskEnvelope(mount.env.fs, item.taskPath);
-  } catch (err) {
-    const message2 = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `reject-resume recovery orientation required (contextRestored=false) but task load failed for ${item.taskPath}: ${message2}`
-    );
-  }
-  const workspaceLane = {
-    workspace: task.workspace || mount.workspaceRoot,
-    worktree: task.worktree || mount.workspaceRoot,
-    branch: task.branch || "HEAD",
-    targetBranch: task.targetBranch
-  };
-  const rejectedDelivery = await loadRejectedDeliveryForRejectResume(
-    mount.env.fs,
-    task
-  );
-  const lastError = rec.lastError?.trim() || "";
-  const nativeResumeFailed = /native resume failed/i.test(lastError);
-  const nativeResumeError = nativeResumeFailed ? lastError.replace(/^reject-resume restore failed:\s*/i, "").trim() || lastError : void 0;
-  const orientation = await buildRejectResumeRecoveryOrientation(
-    ctx,
-    task,
-    {
-      workspaceRoot: mount.workspaceRoot,
-      systemRoot: mount.systemRoot,
-      roleFs: mount.env.fs
-    },
-    {
-      // No durable priorSessionId field — omit rather than invent.
-      nativeResumeFailed,
-      nativeResumeError,
-      rejectedDelivery,
-      workspaceLane
-    }
-  );
-  if (!orientation.trim()) {
-    throw new Error(
-      `reject-resume recovery orientation required (contextRestored=false) but builder returned empty for ${sessionId}`
-    );
-  }
-  return orientation;
-}
-async function stopOrphanRejectResumeSession(ctx, sessionId) {
-  try {
-    await ctx.runtime.stopSession(sessionId, "interrupt");
-  } catch {
-  }
-  try {
-    await ctx.runtime.registry.update(sessionId, {
-      lastError: "reject-resume fallback orphan stopped after rebind/context failure",
-      contextRestored: false
-    });
-  } catch {
-  }
-}
+var REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY = "\u9A73\u56DE\u7EED\u8DD1\u672A\u80FD\u6062\u590D\u539F managed Session\u3002\u53EF\u663E\u5F0F replaceSession\uFF0C\u6216 interrupt \u4EFB\u52A1\uFF1Boccupation \u4FDD\u6301\u3002";
 async function restoreManagedSessionAfterRejectResume(ctx, input) {
   const mount = ctx.host.require(input.workspaceId);
   let task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
@@ -33001,43 +31558,28 @@ async function restoreManagedSessionAfterRejectResume(ctx, input) {
   }
   task = await ensureTaskWorkspaceLane(ctx, input.workspaceId, task);
   const cwd = task.worktree || mount.workspaceRoot;
-  const workspaceLane = {
-    workspace: task.workspace || mount.workspaceRoot,
-    worktree: task.worktree || mount.workspaceRoot,
-    branch: task.branch || "HEAD",
-    targetBranch: task.targetBranch
-  };
   const prior = await ctx.runtime.registry.read(priorSessionId);
   if (!prior) {
     throw new Error(
       `Managed session registry row missing for ${priorSessionId}; cannot restore after reject-resume`
     );
   }
-  const profileId = prior.profileId?.trim();
-  if (!profileId) {
+  const priorTaskRef = prior.lastTaskId?.trim() || "";
+  if (!priorTaskRef || priorTaskRef !== task.id && priorTaskRef !== input.taskPath) {
     throw new Error(
-      `Managed session ${priorSessionId} has no profileId for reject-resume restore`
+      `Managed Session ${priorSessionId} is not bound to the exact rejected Task (session.lastTaskId=${priorTaskRef || "(missing)"}, taskId=${task.id})`
     );
   }
-  if (taskAssigneeKind(task) === "agentProfile" && task.role !== profileId) {
+  const routeId = prior.routeId?.trim();
+  if (!routeId) {
     throw new Error(
-      `reject-resume profileId must match agentProfile assignee (${task.role}); session has ${profileId}`
+      `Managed session ${priorSessionId} has no routeId for reject-resume restore`
     );
   }
-  if (taskAssigneeKind(task) !== "agentProfile") {
-    const activeForRole = await findActiveManagedSessionForRole(
-      ctx,
-      input.workspaceId,
-      task.role
+  if (taskAssigneeKind(task) !== "route" || task.assigneeId !== routeId) {
+    throw new Error(
+      `reject-resume routeId must match route assignee (${task.assigneeKind}:${task.assigneeId}); session has ${routeId}`
     );
-    if (activeForRole) {
-      const boundToThisTask = !!task.id && activeForRole.lastTaskId === task.id || activeForRole.lastTaskId === input.taskPath;
-      if (!boundToThisTask) {
-        throw new Error(
-          `Role "${task.role}" already has an active managed session: ${activeForRole.id}`
-        );
-      }
-    }
   }
   const emptyBootstrap = "";
   let probe;
@@ -33061,7 +31603,7 @@ async function restoreManagedSessionAfterRejectResume(ctx, input) {
         {
           sessionId: priorSessionId,
           state: probe.state,
-          profileId,
+          routeId,
           taskPath: input.taskPath,
           reason: "task.reject.resume.alive",
           contextRestored: true
@@ -33072,7 +31614,7 @@ async function restoreManagedSessionAfterRejectResume(ctx, input) {
         task: bound,
         session: {
           sessionId: priorSessionId,
-          profileId,
+          routeId,
           adapterId: prior.adapterId,
           state: probe.state,
           cwd,
@@ -33086,83 +31628,25 @@ async function restoreManagedSessionAfterRejectResume(ctx, input) {
       throw err;
     }
   }
-  let nativeResumeError;
-  if (probe?.resumeCapable) {
-    rejectResumeNativeInFlight.add(priorSessionId);
-    try {
-      const handle = await ctx.runtime.resumeSession({
-        sessionId: priorSessionId,
-        runtimeWorkspace: { cwd },
-        cwd,
-        bootstrapPrompt: emptyBootstrap,
-        lastTaskId: task.id || input.taskPath
-      });
-      clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
-      const bound = await ctx.mutations.run(input.workspaceId, async () => {
-        ctx.host.markSelfWrite(input.workspaceId);
-        const next = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
-          sessionId: handle.sessionId,
-          updatedAt: mount.env.clock.now()
-        });
-        emitTaskState(ctx, input.workspaceId, next, "task.reject.resume");
-        ctx.events.emit(
-          "session.state",
-          input.workspaceId,
-          {
-            sessionId: handle.sessionId,
-            state: handle.state,
-            profileId: handle.profileId,
-            taskPath: input.taskPath,
-            reason: "task.reject.resume.native",
-            contextRestored: true
-          },
-          "self"
-        );
-        return next;
-      });
-      rejectResumeNativeInFlight.delete(priorSessionId);
-      return {
-        task: bound,
-        session: {
-          sessionId: handle.sessionId,
-          profileId: handle.profileId,
-          adapterId: handle.adapterId,
-          state: handle.state,
-          cwd,
-          contextRestored: true,
-          restoreReason: "task.reject.resume.native"
-        }
-      };
-    } catch (err) {
-      nativeResumeError = err instanceof Error ? err.message : String(err);
-    }
+  if (!probe?.resumeCapable) {
+    throw new Error(
+      `Managed Session ${priorSessionId} cannot restore its provider conversation; use task.replaceSession explicitly`
+    );
   }
-  const restoreReason = nativeResumeError ? "task.reject.resume.native-fallback" : "task.reject.resume.new-session";
-  let startedSessionId;
+  rejectResumeNativeInFlight.add(priorSessionId);
   try {
-    const handle = await ctx.runtime.startSession({
-      sessionId: makeSessionId(),
-      profileId,
-      roleName: task.role,
-      assigneeKind: taskAssigneeKind(task),
-      workspaceLane,
+    const handle = await ctx.runtime.resumeSession({
+      sessionId: priorSessionId,
       runtimeWorkspace: { cwd },
       cwd,
-      // Empty: go live without first session/prompt (same as native resume path).
       bootstrapPrompt: emptyBootstrap,
-      lastTaskId: task.id || input.taskPath,
-      workspace: input.workspaceId
+      lastTaskId: task.id || input.taskPath
     });
-    startedSessionId = handle.sessionId;
-    if (rejectResumePostStartFailureForTests) {
-      throw rejectResumePostStartFailureForTests();
+    if (handle.sessionId !== priorSessionId) {
+      throw new Error(
+        `Native resume changed Session identity; expected ${priorSessionId}, got ${handle.sessionId}`
+      );
     }
-    await ctx.runtime.registry.update(handle.sessionId, {
-      contextRestored: false,
-      ...nativeResumeError ? {
-        lastError: `native resume failed: ${nativeResumeError}`
-      } : {}
-    });
     clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
     const bound = await ctx.mutations.run(input.workspaceId, async () => {
       ctx.host.markSelfWrite(input.workspaceId);
@@ -33177,12 +31661,10 @@ async function restoreManagedSessionAfterRejectResume(ctx, input) {
         {
           sessionId: handle.sessionId,
           state: handle.state,
-          profileId: handle.profileId,
+          routeId: handle.routeId,
           taskPath: input.taskPath,
-          reason: restoreReason,
-          contextRestored: false,
-          priorSessionId,
-          ...nativeResumeError ? { nativeResumeError } : {}
+          reason: "task.reject.resume.native",
+          contextRestored: true
         },
         "self"
       );
@@ -33193,25 +31675,17 @@ async function restoreManagedSessionAfterRejectResume(ctx, input) {
       task: bound,
       session: {
         sessionId: handle.sessionId,
-        profileId: handle.profileId,
+        routeId: handle.routeId,
         adapterId: handle.adapterId,
         state: handle.state,
         cwd,
-        contextRestored: false,
-        restoreReason
+        contextRestored: true,
+        restoreReason: "task.reject.resume.native"
       }
     };
   } catch (err) {
-    if (startedSessionId) {
-      await stopOrphanRejectResumeSession(ctx, startedSessionId);
-    }
-    if (nativeResumeError) {
-      const message2 = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `native resume failed (${nativeResumeError}); independent recovery session also failed: ${message2}`
-      );
-    }
-    throw err;
+    const message2 = err instanceof Error ? err.message : String(err);
+    throw new Error(`Native resume failed for ${priorSessionId}: ${message2}`);
   }
 }
 async function parkTaskAfterRejectResumeFailure(ctx, input) {
@@ -33274,8 +31748,9 @@ function emitTaskState(ctx, workspaceId, task, reason) {
       path: task.path,
       id: task.id,
       state: task.state,
-      role: task.role,
-      referencedNodeIds: task.contextCard != null ? taskReferencedNodeIds(task) : [],
+      assigneeKind: task.assigneeKind,
+      assigneeId: task.assigneeId,
+      referencedNodeIds: taskReferencedNodeIds(task),
       sessionId: task.sessionId,
       reason
     },
@@ -33283,7 +31758,7 @@ function emitTaskState(ctx, workspaceId, task, reason) {
   );
 }
 function requireWorkspaceId(ctx, p) {
-  const explicit = optionalString(p, "workspaceId");
+  const explicit = optionalString2(p, "workspaceId");
   if (explicit) return explicit;
   const fg = ctx.host.getForegroundId();
   if (fg) return fg;
@@ -33296,7 +31771,16 @@ function requireString(p, key2) {
   }
   return v.trim();
 }
-function optionalString(p, key2) {
+function assertAllowedParams(params, allowed, surface) {
+  const unknown = Object.keys(params).filter((key2) => !allowed.has(key2)).sort();
+  if (unknown.length > 0) {
+    throw new RpcError(
+      -32602,
+      `${surface} received unknown parameter${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}`
+    );
+  }
+}
+function optionalString2(p, key2) {
   const v = p[key2];
   if (v === void 0 || v === null) return void 0;
   if (typeof v !== "string") throw new RpcError(-32602, `Invalid string param: ${key2}`);
@@ -33322,53 +31806,39 @@ function parseDeliveryPolicy(raw) {
   if (raw === "review" || raw === "bypass" || raw === "agent-decide") return raw;
   throw new RpcError(-32602, `Invalid deliveryPolicy: ${raw}`);
 }
-function requireProfileId(p, verb = "task.startSession") {
-  const profileId = optionalString(p, "profileId");
-  if (!profileId) {
-    throw new RpcError(
-      -32602,
-      `${verb} requires explicit profileId (machine Settings route key)`
-    );
-  }
-  return profileId;
-}
 function parseCallerKind(raw) {
   if (raw === "user" || raw === "role") return raw;
   throw new RpcError(-32602, `Invalid callerKind: ${raw}`);
 }
-function resolveConcept2(tent, p) {
-  const id = optionalString(p, "id") ?? optionalString(p, "boxId");
-  const path23 = optionalString(p, "path");
-  if (id) {
-    const byId = tent.byId.get(id);
-    if (byId) return byId;
-    throw new RpcError(-32004, `Concept not found: ${id}`);
-  }
-  if (path23) {
-    const byPath = tent.byPath.get(path23);
-    if (byPath) return byPath;
-    throw new RpcError(-32004, `Concept not found: ${path23}`);
-  }
-  throw new RpcError(-32602, "Concept lookup requires id, boxId, or path");
+function resolveNode2(tent, p) {
+  return requireCanonicalNode(tent, requireString(p, "nodeId"));
 }
-function projectConcept(box, includeBody, withChildren) {
-  const title = typeof box.fm.title === "string" ? box.fm.title : void 0;
+function requireCanonicalNode(tent, nodeId) {
+  if (!isNodeId(nodeId)) {
+    throw new RpcError(-32602, `nodeId must be a canonical cx-* Node id: ${nodeId}`);
+  }
+  const node2 = tent.byId.get(nodeId);
+  if (!node2) throw new RpcError(-32004, `Node not found: ${nodeId}`);
+  return node2;
+}
+function projectNode(node2, includeBody, withChildren) {
+  const title = typeof node2.fm.title === "string" ? node2.fm.title : void 0;
   const proj = {
-    id: box.id,
-    path: box.path,
-    name: box.name,
-    type: box.type,
-    tags: box.tags,
-    mode: box.mode,
-    archived: box.archived,
-    invalid: box.invalid
+    nodeId: node2.id,
+    path: node2.path,
+    name: node2.name,
+    type: node2.type,
+    tags: node2.tags,
+    mode: node2.mode,
+    archived: node2.archived,
+    invalid: node2.invalid
   };
   if (title) proj.title = title;
   if (includeBody) {
-    proj.bodyPreview = box.body.slice(0, 500);
+    proj.bodyPreview = node2.body.slice(0, 500);
   }
   if (withChildren) {
-    proj.children = box.children.map((c) => projectConcept(c, includeBody, true));
+    proj.children = node2.children.map((child) => projectNode(child, includeBody, true));
   }
   return proj;
 }
@@ -33420,7 +31890,7 @@ function makeCommitIntegrator(ctx, workspaceRoot, task, options) {
         action: options.action
       });
       if (ctx.integrateCommits) {
-        await ctx.integrateCommits(workspaceRoot, refs, liveTask.role);
+        await ctx.integrateCommits(workspaceRoot, refs, liveTask.assigneeId);
         return;
       }
       const writeContract = await resolveIntegrationContract(workspaceRoot, liveTask);
@@ -33437,12 +31907,12 @@ function requireMountByWorkspaceRoot(ctx, workspaceRoot) {
   throw new Error(`No mounted workspace for integration re-read: ${workspaceRoot}`);
 }
 async function loadTaskEnvelopeForIntegration(ctx, workspaceRoot, taskPath, fallback) {
-  const path23 = taskPath.trim() || fallback.path;
-  if (!path23) {
+  const path22 = taskPath.trim() || fallback.path;
+  if (!path22) {
     throw new Error("Integration re-read requires taskPath");
   }
   const mount = requireMountByWorkspaceRoot(ctx, workspaceRoot);
-  return loadTaskEnvelope(mount.env.fs, path23);
+  return loadTaskEnvelope(mount.env.fs, path22);
 }
 function uniqueCommitRefs(commits) {
   return [...new Set((commits ?? []).map((c) => c.trim()).filter(Boolean))];
@@ -33487,9 +31957,9 @@ async function assertIntegrationTargetHeadUnchanged(workspaceRoot, task, expecte
     );
   }
 }
-async function loadReadyDeliveryTargetHead(fs22, task) {
+async function loadReadyDeliveryTargetHead(fs21, task) {
   const taskId = task.id || task.path;
-  const deliveries = await loadDeliveries(fs22, { taskId });
+  const deliveries = await loadDeliveries(fs21, { taskId });
   const activeId = task.activeDeliveryId?.trim();
   const ready = (activeId ? deliveries.find((d) => d.id === activeId && d.status === "ready") : void 0) ?? deliveries.find((d) => d.status === "ready");
   return ready?.targetHead?.trim() || void 0;
@@ -33504,11 +31974,11 @@ async function resolveIntegrationContract(workspaceRoot, task) {
       );
     }
   }
-  const isProfile = taskAssigneeKind(task) === "agentProfile";
+  const isRoute = taskAssigneeKind(task) === "route";
   let dispatcherLane;
   if (taskAsSub(task)) {
     const dispatcher = taskParentRoleId(task);
-    const label2 = isProfile ? `task ${task.id || task.path}` : `role ${task.role}`;
+    const label2 = isRoute ? `task ${task.id || task.path}` : `role ${task.assigneeId}`;
     if (!dispatcher) {
       throw new Error(
         `Sub task envelope missing durable parent Role for ${label2}; cannot resolve targetBranch`
@@ -33521,10 +31991,10 @@ async function resolveIntegrationContract(workspaceRoot, task) {
       );
     }
   }
-  const real = isProfile ? await ensureTaskWorkspace(mountedRoot, task.id || task.path, {
+  const real = isRoute ? await ensureTaskWorkspace(mountedRoot, task.id || task.path, {
     ...dispatcherLane ? { targetBranch: dispatcherLane.branch } : {}
-  }) : await ensureRoleWorkspace(mountedRoot, task.role);
-  const label = isProfile ? `task ${task.id || task.path}` : `role ${task.role}`;
+  }) : await ensureRoleWorkspace(mountedRoot, task.assigneeId);
+  const label = isRoute ? `task ${task.id || task.path}` : `role ${task.assigneeId}`;
   if (task.branch && task.branch !== real.branch) {
     throw new Error(
       `Task envelope branch mismatch for ${label}: envelope=${task.branch} expected=${real.branch}`
@@ -33574,9 +32044,9 @@ async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
     if (currentLaneComplete && currentHasBase && currentHasAuthority) {
       return current;
     }
-    const isProfile = taskAssigneeKind(current) === "agentProfile";
+    const isRoute = taskAssigneeKind(current) === "route";
     let taskTargetBranch;
-    if (isProfile && taskAsSub(current)) {
+    if (isRoute && taskAsSub(current)) {
       const dispatcher = taskParentRoleId(current);
       if (!dispatcher) {
         throw new Error(
@@ -33597,11 +32067,11 @@ async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
       worktree: current.worktree,
       branch: current.branch,
       targetBranch: current.targetBranch
-    } : isProfile ? await ensureTaskWorkspaceIfGit(
+    } : isRoute ? await ensureTaskWorkspaceIfGit(
       mount.workspaceRoot,
       current.id || current.path,
       { ...taskTargetBranch ? { targetBranch: taskTargetBranch } : {} }
-    ) : await ensureRoleWorkspaceIfGit(mount.workspaceRoot, current.role);
+    ) : await ensureRoleWorkspaceIfGit(mount.workspaceRoot, current.assigneeId);
     if (!lane) return current;
     let targetBranch = lane.targetBranch;
     if (taskAsSub(current)) {
@@ -33643,37 +32113,8 @@ async function findActiveManagedSessionForRole(ctx, workspaceId, roleName) {
   if (!roleName) return void 0;
   const all2 = await ctx.runtime.registry.list();
   return all2.find(
-    (rec) => rec.workspace === workspaceId && rec.roleName === roleName && (rec.assigneeKind ?? "role") !== "agentProfile" && SessionRegistry.isNonTerminal(rec.state) && rec.state !== "external"
+    (rec) => rec.workspace === workspaceId && rec.roleName === roleName && rec.state === "external"
   );
-}
-async function findResumableManagedSessionForRole(ctx, workspaceId, roleName, profileId, cwd) {
-  if (!roleName) return void 0;
-  const candidates = (await ctx.runtime.registry.list()).filter(
-    (rec) => rec.workspace === workspaceId && rec.roleName === roleName && (rec.assigneeKind ?? "role") !== "agentProfile" && rec.profileId === profileId && rec.state === "stopped" && !!rec.resumeToken && !!rec.runtimeWorkspace?.cwd && isSameWorkspaceRoot(
-      nodePath6.resolve(rec.runtimeWorkspace.cwd),
-      nodePath6.resolve(cwd)
-    )
-  ).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  for (const candidate of candidates) {
-    const probe = await ctx.runtime.probe(candidate.id);
-    if (!probe.alive && probe.resumeCapable) return candidate;
-  }
-  return void 0;
-}
-async function findResumableManagedSessionsForProfile(ctx, workspaceId, profileId, cwd) {
-  if (!profileId) return [];
-  const candidates = (await ctx.runtime.registry.list()).filter(
-    (rec) => rec.workspace === workspaceId && rec.profileId === profileId && rec.assigneeKind === "agentProfile" && rec.state === "stopped" && !!rec.resumeToken && !!rec.runtimeWorkspace?.cwd && isSameWorkspaceRoot(
-      nodePath6.resolve(rec.runtimeWorkspace.cwd),
-      nodePath6.resolve(cwd)
-    )
-  ).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  const out = [];
-  for (const candidate of candidates) {
-    const probe = await ctx.runtime.probe(candidate.id);
-    if (!probe.alive && probe.resumeCapable) out.push(candidate);
-  }
-  return out;
 }
 function projectStartSessionResult(workspaceId, taskPath, task, session, extra) {
   const cwd = extra?.cwd ?? session.runtimeWorkspace?.cwd ?? task.worktree ?? void 0;
@@ -33683,7 +32124,7 @@ function projectStartSessionResult(workspaceId, taskPath, task, session, extra) 
     task: projectTask(task),
     session: {
       sessionId: session.id,
-      profileId: session.profileId,
+      routeId: session.routeId,
       adapterId: session.adapterId,
       state: session.state,
       cwd
@@ -33695,10 +32136,10 @@ async function buildSessionBootstrapPrompt(ctx, task, roots, roleFs) {
   const systemRoot = roots.systemRoot || systemRootFromWorkspace(roots.workspaceRoot);
   const kind = taskAssigneeKind(task);
   let roleDef;
-  if (kind === "role" && task.role && roleFs) {
+  if (kind === "role" && task.assigneeId && roleFs) {
     try {
       const registry = await loadRolesRegistry(roleFs);
-      roleDef = resolveRole(registry.roles, task.role);
+      roleDef = resolveRole(registry.roles, task.assigneeId);
     } catch {
       roleDef = void 0;
     }
@@ -33708,37 +32149,18 @@ async function buildSessionBootstrapPrompt(ctx, task, roots, roleFs) {
     assigneeKind: kind,
     role: roleDef
   });
-  let base;
-  if (task.contextCard) {
-    base = buildContextCardManagedBootstrap(task, task.contextCard, {
-      workspaceRoot: roots.workspaceRoot,
-      systemRoot,
-      sessionContextGeneration: roots.sessionContextGeneration,
-      // 52a0da2 skill compose already freezes tent-role → Role → tent-task order.
-      tentTaskSection: skillPrefix,
-      taskInputDelta: roots.taskInputDelta,
-      // Explicit caller checkpoint only (digest slot). On-disk Role Checkpoint is
-      // appended after full assembly as dynamic tail — never stable prefix.
-      checkpoint: roots.checkpoint
-    });
-  } else {
-    const card = taskContextCard(task.id || task.path, {
-      path: task.path,
-      workspaceRoot: roots.workspaceRoot,
-      systemRoot,
-      label: kind === "agentProfile" ? `task:profile:${task.role}` : `task:${task.role}`
-    });
-    const sessionSteps = sessionBootstrapPromptForTask(task, {
-      workspaceRoot: roots.workspaceRoot,
-      systemRoot
-    });
-    base = assembleManagedSessionBootstrap({
-      stableSkillPrefix: skillPrefix,
-      contextCardPrompt: card.prompt,
-      dynamicTaskTail: sessionSteps
-    });
-  }
-  return appendRoleCheckpointTail(base, kind, task.role, roleFs);
+  const base = buildContextCardManagedBootstrap(task, task.contextCard, {
+    workspaceRoot: roots.workspaceRoot,
+    systemRoot,
+    sessionContextGeneration: roots.sessionContextGeneration,
+    currentContextGeneration: roots.currentContextGeneration,
+    tentTaskSection: skillPrefix,
+    taskInputDelta: roots.taskInputDelta,
+    // Explicit caller checkpoint only (digest slot). On-disk Role Checkpoint is
+    // appended after full assembly as dynamic tail — never stable prefix.
+    checkpoint: roots.checkpoint
+  });
+  return appendRoleCheckpointTail(base, kind, task.assigneeId, roleFs);
 }
 async function appendRoleCheckpointTail(base, kind, roleName, roleFs) {
   if (kind !== "role" || !roleName?.trim() || !roleFs) return base;
@@ -33761,15 +32183,15 @@ function buildContextCardManagedBootstrap(task, contextCard, roots) {
   });
   const includeStablePrefix = shouldInjectStablePrefix({
     sessionContextGeneration: roots.sessionContextGeneration,
-    taskContextGeneration: contextCard.contextGeneration
+    currentContextGeneration: roots.currentContextGeneration
   });
   void decideStablePrefixInjection({
     sessionContextGeneration: roots.sessionContextGeneration,
-    taskContextGeneration: contextCard.contextGeneration
+    currentContextGeneration: roots.currentContextGeneration
   });
   const executionLane = projectExecutionLaneFromTask(task);
   const executionLaneText = formatExecutionLanePrompt(executionLane);
-  const bootstrapNodeIds = task.contextCard != null ? taskReferencedNodeIds(task) : [];
+  const bootstrapNodeIds = taskReferencedNodeIds(task);
   const pointers = [
     `Task envelope: ${task.path}`,
     `Manifest: ${task.manifest}`,
@@ -33778,7 +32200,7 @@ function buildContextCardManagedBootstrap(task, contextCard, roots) {
     `deliveryPolicy: ${task.deliveryPolicy ?? "review"}`,
     ...task.parentActor ? [`parentActor: ${task.parentActor.kind}:${task.parentActor.id}`] : [],
     ...task.reviewer ? [`reviewer: ${task.reviewer.kind}:${task.reviewer.id}`] : [],
-    `assignee: ${taskAssigneeKind(task) === "agentProfile" ? "route" : "role"}:${task.role}`,
+    `assignee: ${task.assigneeKind}:${task.assigneeId}`,
     `Service status: this task is already claimed (state=${task.state || "running"}).`,
     "Managed path: Local Service already claimed this task; final assistant reply is the report and will be delivered automatically.",
     ...executionLaneText ? [executionLaneText] : []
@@ -33791,6 +32213,7 @@ function buildContextCardManagedBootstrap(task, contextCard, roots) {
     rolePromptSection: roots.rolePromptSection,
     tentTaskSection: roots.tentTaskSection,
     contextCard,
+    contextGeneration: roots.currentContextGeneration,
     taskPointers: pointers,
     userPrompt: extractTaskUserPrompt(task),
     taskInputDelta: roots.taskInputDelta,
@@ -33801,22 +32224,21 @@ function buildContextCardManagedBootstrap(task, contextCard, roots) {
     return `--- Tent managed session bootstrap ---
 ${assembly.text}`;
   }
-  return `--- Tent managed session delta (contextGeneration=${contextCard.contextGeneration}) ---
+  return `--- Tent managed session delta (contextGeneration=${roots.currentContextGeneration}) ---
 ${assembly.text}`;
 }
-async function collectTaskBootstrapImageRefs(fs22, task) {
+async function collectTaskBootstrapImageRefs(fs21, task) {
   const userPrompt = extractTaskUserPrompt(task);
   const claimBodies = [];
   try {
-    const tent = await loadTent(fs22);
-    const nodeIds = task.contextCard != null ? taskReferencedNodeIds(task) : [];
+    const tent = await loadTent(fs21);
+    const nodeIds = taskReferencedNodeIds(task);
     for (const nodeId of nodeIds) {
-      if (!nodeId || nodeId === "root") continue;
-      const box = tent.byId.get(nodeId);
-      if (!box || typeof box.body !== "string") continue;
+      const node2 = tent.byId.get(nodeId);
+      if (!node2 || typeof node2.body !== "string") continue;
       claimBodies.push({
-        body: box.body,
-        notePath: boxNotePath(box.path)
+        body: node2.body,
+        notePath: nodeNotePath(node2.path)
       });
     }
   } catch {
@@ -33843,9 +32265,9 @@ function projectTask(task) {
   const proj = {
     path: task.path,
     id: task.id,
-    role: task.role,
-    referencedNodeIds: task.contextCard != null ? taskReferencedNodeIds(task) : [],
-    status: task.status,
+    assigneeKind: task.assigneeKind,
+    assigneeId: task.assigneeId,
+    referencedNodeIds: taskReferencedNodeIds(task),
     state: task.state,
     manifest: task.manifest,
     parentActor: task.parentActor,
@@ -33853,8 +32275,6 @@ function projectTask(task) {
     // Missing asSub on disk reads as false (peer Git lane).
     asSub: taskAsSub(task),
     deliveryPolicy: task.deliveryPolicy,
-    // Missing assigneeKind on disk reads as role (backward compatible).
-    assigneeKind: taskAssigneeKind(task),
     sessionId: task.sessionId,
     wait: task.wait,
     activeDeliveryId: task.activeDeliveryId,
@@ -33875,14 +32295,10 @@ function projectTask(task) {
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     prompt: task.prompt,
-    // Context Card v1 projections (cx-5q6za6) — omit when absent (legacy).
-    ...task.contextCard ? { contextCard: task.contextCard } : {},
+    contextCard: task.contextCard,
     ...task.contextGeneration ? { contextGeneration: task.contextGeneration } : {},
     ...task.taskDeltaDigest ? { taskDeltaDigest: task.taskDeltaDigest } : {}
   };
-  if (typeof task.agentId === "string" && task.agentId.trim()) {
-    proj.agentId = task.agentId.trim();
-  }
   return proj;
 }
 function projectDelivery(d) {
@@ -33890,8 +32306,7 @@ function projectDelivery(d) {
     path: d.path,
     id: d.id,
     taskId: d.taskId,
-    boxId: d.boxId,
-    role: d.role,
+    sourceNodeId: d.sourceNodeId,
     status: d.status,
     summary: d.summary,
     commits: d.commits,
@@ -33920,23 +32335,23 @@ function assertRawDocsWriteCollaborationFields(next) {
     { fields: protectedHit }
   );
 }
-function assertDocsModeMutable(concept, op) {
-  if (isContentMutable(concept)) return;
-  if (concept.invalid) {
-    throw new RpcError(-32010, `${op} rejected: concept is invalid`, {
-      conceptId: concept.id,
-      mode: concept.mode
+function assertDocsModeMutable(node2, op) {
+  if (isContentMutable(node2)) return;
+  if (node2.invalid) {
+    throw new RpcError(-32010, `${op} rejected: node is invalid`, {
+      nodeId: node2.id,
+      mode: node2.mode
     });
   }
-  if (concept.mode === "archived" || concept.archived) {
-    throw new RpcError(-32010, `${op} rejected: concept is archived`, {
-      conceptId: concept.id,
-      mode: concept.mode
+  if (node2.mode === "archived" || node2.archived) {
+    throw new RpcError(-32010, `${op} rejected: node is archived`, {
+      nodeId: node2.id,
+      mode: node2.mode
     });
   }
-  throw new RpcError(-32010, `${op} rejected: concept is not mutable`, {
-    conceptId: concept.id,
-    mode: concept.mode
+  throw new RpcError(-32010, `${op} rejected: node is not mutable`, {
+    nodeId: node2.id,
+    mode: node2.mode
   });
 }
 function assertReservedDocsWriteFields(frontmatter) {
@@ -34598,7 +33013,7 @@ var EventBus = class {
 };
 
 // src/service/workspace-host.ts
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import { watch } from "node:fs";
 import * as fs17 from "node:fs/promises";
 import * as path15 from "node:path";
@@ -34817,7 +33232,7 @@ var WorkspaceHost = class {
         }
         continue;
       }
-      this.events.emit("concept.changed", mount.workspaceId, {
+      this.events.emit("node.changed", mount.workspaceId, {
         reason: "watch",
         path: rel
       });
@@ -34891,26 +33306,33 @@ function isTempWatchPath(value) {
 function makeWorkspaceId(workspaceRoot) {
   const base = path15.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
   const identity = process.platform === "win32" ? workspaceRoot.toLowerCase() : workspaceRoot;
-  const digest = createHash4("sha256").update(identity).digest("base64url").slice(0, WORKSPACE_ID_DIGEST_LEN);
+  const digest = createHash5("sha256").update(identity).digest("base64url").slice(0, WORKSPACE_ID_DIGEST_LEN);
   return `ws-${base}-${digest}`;
 }
 
 // src/service/protocol.ts
-var TENT_SERVICE_PROTOCOL_VERSION = 2;
+var TENT_SERVICE_PROTOCOL_VERSION = 3;
 
-// src/service/a2a-store.ts
+// src/service/tool-approval-store.ts
 import * as fs18 from "node:fs/promises";
 import * as path16 from "node:path";
-var A2A_POLICIES = /* @__PURE__ */ new Set(["allow", "ask", "deny"]);
-var A2A_CALLER_KINDS = /* @__PURE__ */ new Set(["user", "role"]);
-var A2A_APPROVAL_STATUSES = /* @__PURE__ */ new Set([
+function resolveToolApprovalWorkspaceId(sessionWorkspace) {
+  if (typeof sessionWorkspace !== "string") return null;
+  const workspaceId = sessionWorkspace.trim();
+  return workspaceId || null;
+}
+function cloneApproval(item) {
+  return {
+    ...item,
+    options: item.options.map((option) => ({ ...option }))
+  };
+}
+var TOOL_APPROVAL_STATUSES = /* @__PURE__ */ new Set([
   "pending",
   "approved",
-  "denied"
+  "denied",
+  "expired"
 ]);
-function cloneApproval(item) {
-  return { ...item };
-}
 function isRecord10(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -34923,196 +33345,8 @@ function isOptionalString3(value) {
 function isValidDate5(value) {
   return Number.isFinite(Date.parse(value));
 }
-function parseA2AApproval(value) {
-  if (!isRecord10(value)) return null;
-  const {
-    id,
-    workspaceId,
-    taskPath,
-    taskId,
-    role,
-    profileId,
-    policy,
-    callerKind,
-    bootstrapPrompt,
-    status,
-    createdAt,
-    resolvedAt,
-    resolvedBy
-  } = value;
-  if (!isRequiredString4(id) || !isRequiredString4(workspaceId) || !isRequiredString4(taskPath) || !isRequiredString4(role) || !isRequiredString4(profileId) || !isRequiredString4(createdAt) || !isValidDate5(createdAt) || typeof policy !== "string" || !A2A_POLICIES.has(policy) || typeof callerKind !== "string" || !A2A_CALLER_KINDS.has(callerKind) || typeof status !== "string" || !A2A_APPROVAL_STATUSES.has(status) || !isOptionalString3(taskId) || !isOptionalString3(bootstrapPrompt) || !isOptionalString3(resolvedAt) || !isOptionalString3(resolvedBy) || resolvedAt !== void 0 && !isValidDate5(resolvedAt)) {
-    return null;
-  }
-  return {
-    id,
-    workspaceId,
-    taskPath,
-    ...taskId !== void 0 ? { taskId } : {},
-    role,
-    profileId,
-    policy,
-    callerKind,
-    ...bootstrapPrompt !== void 0 ? { bootstrapPrompt } : {},
-    status,
-    createdAt,
-    ...resolvedAt !== void 0 ? { resolvedAt } : {},
-    ...resolvedBy !== void 0 ? { resolvedBy } : {}
-  };
-}
-var A2AApprovalStore = class {
-  constructor(dataDir, options) {
-    this.items = /* @__PURE__ */ new Map();
-    this.loaded = false;
-    /** Serialize load + mutations + persist (same pattern as ToolApprovalStore). */
-    this.chain = Promise.resolve();
-    this.file = path16.join(dataDir, "a2a-approvals.json");
-    this.writeState = options?.writeState ?? writeJsonAtomic;
-  }
-  enqueue(fn) {
-    const run = this.chain.then(fn, fn);
-    this.chain = run.then(
-      () => void 0,
-      () => void 0
-    );
-    return run;
-  }
-  async ensureLoaded() {
-    if (this.loaded) return;
-    return this.enqueue(async () => {
-      if (this.loaded) return;
-      try {
-        const raw = await fs18.readFile(this.file, "utf8");
-        let parsed;
-        try {
-          parsed = JSON.parse(raw);
-        } catch {
-          await this.quarantineCorrupt("reset");
-          this.loaded = true;
-          return;
-        }
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-          await this.quarantineCorrupt("reset");
-          this.loaded = true;
-          return;
-        }
-        const items = parsed.items;
-        if (items !== void 0 && !Array.isArray(items)) {
-          await this.quarantineCorrupt("reset");
-          this.loaded = true;
-          return;
-        }
-        const loaded = /* @__PURE__ */ new Map();
-        for (const item of items ?? []) {
-          const restored = parseA2AApproval(item);
-          if (!restored) {
-            await this.quarantineCorrupt("reset");
-            this.loaded = true;
-            return;
-          }
-          loaded.set(restored.id, restored);
-        }
-        this.items = loaded;
-        this.loaded = true;
-      } catch (err) {
-        if (isNotFoundError(err)) {
-          this.loaded = true;
-          return;
-        }
-        throw err;
-      }
-    });
-  }
-  async listPending(workspaceId) {
-    await this.ensureLoaded();
-    return [...this.items.values()].filter(
-      (i) => i.status === "pending" && (!workspaceId || i.workspaceId === workspaceId)
-    ).map(cloneApproval);
-  }
-  async get(id) {
-    await this.ensureLoaded();
-    const item = this.items.get(id);
-    return item ? cloneApproval(item) : void 0;
-  }
-  async add(item) {
-    await this.ensureLoaded();
-    return this.enqueue(async () => {
-      const stored = cloneApproval(item);
-      const next = new Map(this.items);
-      next.set(stored.id, stored);
-      await this.persistSnapshot(next);
-      this.items = next;
-      return cloneApproval(stored);
-    });
-  }
-  async resolve(id, decision, resolvedBy) {
-    await this.ensureLoaded();
-    return this.enqueue(async () => {
-      const item = this.items.get(id);
-      if (!item) throw new Error(`A2A approval not found: ${id}`);
-      if (item.status !== "pending") {
-        throw new Error(`A2A approval already ${item.status}: ${id}`);
-      }
-      const resolved = {
-        ...item,
-        status: decision,
-        resolvedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        resolvedBy
-      };
-      const next = new Map(this.items);
-      next.set(id, resolved);
-      await this.persistSnapshot(next);
-      this.items = next;
-      return cloneApproval(resolved);
-    });
-  }
-  async quarantineCorrupt(action) {
-    const backupPath = await backupCorruptMachineFile(this.file);
-    warnCorruptMachineState(this.file, backupPath, action);
-    this.items.clear();
-  }
-  /** Persist a candidate snapshot before making it visible in memory. */
-  async persistSnapshot(snapshot) {
-    const items = [...snapshot.values()];
-    const pending = items.filter((i) => i.status === "pending");
-    const terminal = items.filter((i) => i.status !== "pending").sort((a, b) => (b.resolvedAt || "").localeCompare(a.resolvedAt || "")).slice(0, 50);
-    await this.writeState(this.file, { items: [...pending, ...terminal] });
-  }
-};
-
-// src/service/tool-approval-store.ts
-import * as fs19 from "node:fs/promises";
-import * as path17 from "node:path";
-function resolveToolApprovalWorkspaceId(sessionWorkspace) {
-  if (typeof sessionWorkspace !== "string") return null;
-  const workspaceId = sessionWorkspace.trim();
-  return workspaceId || null;
-}
-function cloneApproval2(item) {
-  return {
-    ...item,
-    options: item.options.map((option) => ({ ...option }))
-  };
-}
-var TOOL_APPROVAL_STATUSES = /* @__PURE__ */ new Set([
-  "pending",
-  "approved",
-  "denied",
-  "expired"
-]);
-function isRecord11(value) {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-function isRequiredString5(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-function isOptionalString4(value) {
-  return value === void 0 || typeof value === "string";
-}
-function isValidDate6(value) {
-  return Number.isFinite(Date.parse(value));
-}
 function parseApproval(value) {
-  if (!isRecord11(value)) return null;
+  if (!isRecord10(value)) return null;
   const {
     id,
     workspaceId,
@@ -35129,12 +33363,12 @@ function parseApproval(value) {
     resolvedAt,
     resolvedBy
   } = value;
-  if (!isRequiredString5(id) || !isRequiredString5(workspaceId) || !isRequiredString5(sessionId) || !isRequiredString5(toolTitle) || !isRequiredString5(createdAt) || !isRequiredString5(expiresAt) || !isValidDate6(createdAt) || !isValidDate6(expiresAt) || typeof status !== "string" || !TOOL_APPROVAL_STATUSES.has(status) || !Array.isArray(options) || !isOptionalString4(taskId) || !isOptionalString4(taskPath) || !isOptionalString4(role) || !isOptionalString4(toolCallId) || !isOptionalString4(resolvedAt) || !isOptionalString4(resolvedBy) || resolvedAt !== void 0 && !isValidDate6(resolvedAt)) {
+  if (!isRequiredString4(id) || !isRequiredString4(workspaceId) || !isRequiredString4(sessionId) || !isRequiredString4(toolTitle) || !isRequiredString4(createdAt) || !isRequiredString4(expiresAt) || !isValidDate5(createdAt) || !isValidDate5(expiresAt) || typeof status !== "string" || !TOOL_APPROVAL_STATUSES.has(status) || !Array.isArray(options) || !isOptionalString3(taskId) || !isOptionalString3(taskPath) || !isOptionalString3(role) || !isOptionalString3(toolCallId) || !isOptionalString3(resolvedAt) || !isOptionalString3(resolvedBy) || resolvedAt !== void 0 && !isValidDate5(resolvedAt)) {
     return null;
   }
   const parsedOptions = [];
   for (const option of options) {
-    if (!isRecord11(option) || !isRequiredString5(option.optionId) || !isOptionalString4(option.kind) || !isOptionalString4(option.name)) {
+    if (!isRecord10(option) || !isRequiredString4(option.optionId) || !isOptionalString3(option.kind) || !isOptionalString3(option.name)) {
       return null;
     }
     parsedOptions.push({
@@ -35169,7 +33403,7 @@ var ToolApprovalStore = class {
     this.shutdownPromise = null;
     /** Serialize mutations + persist (same pattern as SessionRegistry write chain). */
     this.chain = Promise.resolve();
-    this.file = path17.join(dataDir, "tool-approvals.json");
+    this.file = path16.join(dataDir, "tool-approvals.json");
     this.writeState = options?.writeState ?? writeJsonAtomic;
   }
   enqueue(fn) {
@@ -35185,7 +33419,7 @@ var ToolApprovalStore = class {
     return this.enqueue(async () => {
       if (this.loaded) return;
       try {
-        const raw = await fs19.readFile(this.file, "utf8");
+        const raw = await fs18.readFile(this.file, "utf8");
         let parsed;
         try {
           parsed = JSON.parse(raw);
@@ -35240,13 +33474,13 @@ var ToolApprovalStore = class {
     await this.expireStale();
     return [...this.items.values()].filter(
       (i) => i.status === "pending" && (!workspaceId || i.workspaceId === workspaceId)
-    ).map(cloneApproval2);
+    ).map(cloneApproval);
   }
   async get(id) {
     await this.ensureLoaded();
     await this.expireStale(id);
     const item = this.items.get(id);
-    return item ? cloneApproval2(item) : void 0;
+    return item ? cloneApproval(item) : void 0;
   }
   /**
    * Session-level wait barrier for concurrent ACP permission requests.
@@ -35267,12 +33501,12 @@ var ToolApprovalStore = class {
     await this.ensureLoaded();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("Tool approval store is closed");
-      const stored = cloneApproval2(item);
+      const stored = cloneApproval(item);
       const next = new Map(this.items);
       next.set(stored.id, stored);
       await this.persistSnapshot(next);
       this.items = next;
-      return cloneApproval2(stored);
+      return cloneApproval(stored);
     });
   }
   /**
@@ -35302,7 +33536,7 @@ var ToolApprovalStore = class {
       await this.persistSnapshot(next);
       this.items = next;
       this.notifyWaiters(id, decision);
-      return cloneApproval2(resolved);
+      return cloneApproval(resolved);
     });
   }
   /**
@@ -35511,28 +33745,28 @@ function makeToolApprovalId(rand = Math.random) {
 }
 
 // src/service/managed-delivery-report-draft-store.ts
-import * as fs20 from "node:fs/promises";
-import * as path18 from "node:path";
+import * as fs19 from "node:fs/promises";
+import * as path17 from "node:path";
 function cloneDraft(item) {
   return { ...item };
 }
-function isRecord12(value) {
+function isRecord11(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
-function isRequiredString6(value) {
+function isRequiredString5(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
-function isOptionalString5(value) {
+function isOptionalString4(value) {
   return value === void 0 || typeof value === "string";
 }
-function isValidDate7(value) {
+function isValidDate6(value) {
   return Number.isFinite(Date.parse(value));
 }
 function draftKey(workspaceId, taskPath) {
   return `${workspaceId}::${taskPath}`;
 }
 function parseDraft(value) {
-  if (!isRecord12(value)) return null;
+  if (!isRecord11(value)) return null;
   const {
     id,
     workspaceId,
@@ -35545,7 +33779,7 @@ function parseDraft(value) {
     lastError,
     attemptCount
   } = value;
-  if (!isRequiredString6(id) || !isRequiredString6(workspaceId) || !isRequiredString6(taskPath) || !isRequiredString6(sessionId) || !isRequiredString6(assistantText) || !isRequiredString6(createdAt) || !isRequiredString6(updatedAt) || !isValidDate7(createdAt) || !isValidDate7(updatedAt) || !isOptionalString5(taskId) || !isOptionalString5(lastError)) {
+  if (!isRequiredString5(id) || !isRequiredString5(workspaceId) || !isRequiredString5(taskPath) || !isRequiredString5(sessionId) || !isRequiredString5(assistantText) || !isRequiredString5(createdAt) || !isRequiredString5(updatedAt) || !isValidDate6(createdAt) || !isValidDate6(updatedAt) || !isOptionalString4(taskId) || !isOptionalString4(lastError)) {
     return null;
   }
   const text3 = assistantText.trim();
@@ -35584,7 +33818,7 @@ var ManagedDeliveryReportDraftStore = class {
     this.closed = false;
     this.shutdownPromise = null;
     this.chain = Promise.resolve();
-    this.file = path18.join(dataDir, "managed-delivery-report-drafts.json");
+    this.file = path17.join(dataDir, "managed-delivery-report-drafts.json");
     this.writeState = options?.writeState ?? writeJsonAtomic;
   }
   /** Absolute path of the durable JSON file (tests / diagnostics). */
@@ -35604,7 +33838,7 @@ var ManagedDeliveryReportDraftStore = class {
     return this.enqueue(async () => {
       if (this.loaded) return;
       try {
-        const raw = await fs20.readFile(this.file, "utf8");
+        const raw = await fs19.readFile(this.file, "utf8");
         let parsed;
         try {
           parsed = JSON.parse(raw);
@@ -35785,377 +34019,150 @@ var ManagedDeliveryReportDraftStore = class {
   }
 };
 
-// src/service/profile-catalog.ts
-function unwrapField(result) {
+// src/service/route-catalog.ts
+var unwrap = (result) => {
   if (!result.ok) throw new RpcError(-32602, result.message);
   return result.value;
-}
-function rejectUnknownAndDangerous(raw, allowed) {
+};
+function rejectUnknownOrSecret(raw, allowed) {
   const allowedSet = new Set(allowed);
   for (const key2 of Object.keys(raw)) {
     if (allowedSet.has(key2)) continue;
     const lower = key2.toLowerCase();
-    const dangerous = DANGEROUS_FIELD_HINTS.some(
-      (d) => lower === d.toLowerCase() || lower.includes(d.toLowerCase())
-    );
-    if (dangerous || lower.includes("secret") || lower.includes("token") || lower.includes("apikey")) {
-      throw new RpcError(
-        -32602,
-        `Rejected dangerous or unsupported profile field: ${key2}`
-      );
+    if (SECRET_ROUTE_FIELD_HINTS.some((hint) => lower.includes(hint))) {
+      throw new RpcError(-32602, `Rejected dangerous or unsupported route field: ${key2}`);
     }
-    throw new RpcError(-32602, `Unknown profile field: ${key2}`);
+    throw new RpcError(-32602, `Unknown route field: ${key2}`);
   }
 }
-function requireProfileId2(raw, field = "id") {
-  return unwrapField(parseProfileIdValue(raw, field));
+var optional = (raw, key2, parse2) => !(key2 in raw) || raw[key2] === void 0 || raw[key2] === null ? void 0 : unwrap(parse2(raw[key2]));
+function parseArgsValue2(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string") ? { ok: true, value: [...value] } : { ok: false, message: "Invalid args: must be an array of strings" };
 }
-function optionalNonEmptyString(raw, key2) {
-  if (!(key2 in raw) || raw[key2] === void 0 || raw[key2] === null) return void 0;
-  return unwrapField(parseNonEmptyStringValue(raw[key2], key2));
-}
-function clearableNonEmptyString(raw, key2) {
-  if (!(key2 in raw) || raw[key2] === void 0) return void 0;
-  if (raw[key2] === null) return null;
-  return unwrapField(parseNonEmptyStringValue(raw[key2], key2));
-}
-function optionalEnvKey(raw, key2) {
-  if (!(key2 in raw) || raw[key2] === void 0 || raw[key2] === null) return void 0;
-  return unwrapField(parseEnvKeyValue(raw[key2], key2));
-}
-function clearableEnvKey(raw, key2) {
-  if (!(key2 in raw) || raw[key2] === void 0) return void 0;
-  if (raw[key2] === null) return null;
-  return unwrapField(parseEnvKeyValue(raw[key2], key2));
-}
-function optionalCredentialRef(raw) {
-  if (!("credentialRef" in raw) || raw.credentialRef === void 0 || raw.credentialRef === null) {
-    return void 0;
-  }
-  return unwrapField(parseCredentialRefValue(raw.credentialRef));
-}
-function clearableCredentialRef(raw) {
-  if (!("credentialRef" in raw) || raw.credentialRef === void 0) return void 0;
-  if (raw.credentialRef === null) return null;
-  return unwrapField(parseCredentialRefValue(raw.credentialRef));
-}
-function optionalBaseUrl(raw) {
-  if (!("baseUrl" in raw) || raw.baseUrl === void 0 || raw.baseUrl === null) return void 0;
-  return unwrapField(parseBaseUrlValue(raw.baseUrl));
-}
-function clearableBaseUrl(raw) {
-  if (!("baseUrl" in raw) || raw.baseUrl === void 0) return void 0;
-  if (raw.baseUrl === null) return null;
-  return unwrapField(parseBaseUrlValue(raw.baseUrl));
-}
-function optionalPermissionPolicy(raw) {
-  if (!("permissionPolicy" in raw) || raw.permissionPolicy === void 0 || raw.permissionPolicy === null) {
-    return void 0;
-  }
-  return unwrapField(parsePermissionPolicyValue(raw.permissionPolicy));
-}
-function clearablePermissionPolicy(raw) {
-  if (!("permissionPolicy" in raw) || raw.permissionPolicy === void 0) return void 0;
-  if (raw.permissionPolicy === null) return null;
-  return unwrapField(parsePermissionPolicyValue(raw.permissionPolicy));
-}
-function optionalPositiveInt(raw, key2) {
-  if (!(key2 in raw) || raw[key2] === void 0 || raw[key2] === null) return void 0;
-  return unwrapField(parsePositiveTimeoutValue(raw[key2], key2));
-}
-function clearablePositiveInt(raw, key2) {
-  if (!(key2 in raw) || raw[key2] === void 0) return void 0;
-  if (raw[key2] === null) return null;
-  return unwrapField(parsePositiveTimeoutValue(raw[key2], key2));
-}
-function parseAcpFieldsCreate(raw) {
-  const displayName = optionalNonEmptyString(raw, "displayName");
-  const acp = {};
-  const model = optionalNonEmptyString(raw, "model");
-  if (model !== void 0) acp.model = model;
-  const executable = optionalNonEmptyString(raw, "executable");
-  if (executable !== void 0) acp.executable = executable;
-  const envKey = optionalEnvKey(raw, "envKey");
-  if (envKey !== void 0) acp.envKey = envKey;
-  const credentialRef = optionalCredentialRef(raw);
-  if (credentialRef !== void 0) acp.credentialRef = credentialRef;
-  const baseUrlEnvKey = optionalEnvKey(raw, "baseUrlEnvKey");
-  if (baseUrlEnvKey !== void 0) acp.baseUrlEnvKey = baseUrlEnvKey;
-  const baseUrl = optionalBaseUrl(raw);
-  if (baseUrl !== void 0) acp.baseUrl = baseUrl;
-  const permissionPolicy = optionalPermissionPolicy(raw);
-  if (permissionPolicy !== void 0) acp.permissionPolicy = permissionPolicy;
-  const promptTimeoutMs = optionalPositiveInt(raw, "promptTimeoutMs");
-  if (promptTimeoutMs !== void 0) acp.promptTimeoutMs = promptTimeoutMs;
-  const permissionTimeoutMs = optionalPositiveInt(raw, "permissionTimeoutMs");
-  if (permissionTimeoutMs !== void 0) acp.permissionTimeoutMs = permissionTimeoutMs;
-  const skills = parseSkillsFieldCreate(raw);
-  const mcpServers = parseMcpServersFieldCreate(raw);
-  return {
-    displayName,
-    acp,
-    ...skills !== void 0 ? { skills } : {},
-    ...mcpServers !== void 0 ? { mcpServers } : {}
-  };
-}
-function parseSkillsFieldCreate(raw) {
-  if (!("skills" in raw) || raw.skills === void 0 || raw.skills === null) {
-    return void 0;
-  }
-  return unwrapField(parseSkillsArrayValue(raw.skills, defaultAllowedSkillRoots()));
-}
-function parseMcpServersFieldCreate(raw) {
-  if (!("mcpServers" in raw) || raw.mcpServers === void 0 || raw.mcpServers === null) {
-    return void 0;
-  }
-  return unwrapField(parseMcpServersArrayValue(raw.mcpServers));
-}
-function clearableSkills(raw) {
-  if (!("skills" in raw) || raw.skills === void 0) return void 0;
-  if (raw.skills === null) return null;
-  return unwrapField(parseSkillsArrayValue(raw.skills, defaultAllowedSkillRoots())) ?? null;
-}
-function clearableMcpServers(raw) {
-  if (!("mcpServers" in raw) || raw.mcpServers === void 0) return void 0;
-  if (raw.mcpServers === null) return null;
-  return unwrapField(parseMcpServersArrayValue(raw.mcpServers)) ?? null;
-}
-function parseAcpFieldsUpdate(raw) {
-  return {
-    displayName: clearableNonEmptyString(raw, "displayName"),
-    model: clearableNonEmptyString(raw, "model"),
-    executable: clearableNonEmptyString(raw, "executable"),
-    envKey: clearableEnvKey(raw, "envKey"),
-    credentialRef: clearableCredentialRef(raw),
-    baseUrlEnvKey: clearableEnvKey(raw, "baseUrlEnvKey"),
-    baseUrl: clearableBaseUrl(raw),
-    permissionPolicy: clearablePermissionPolicy(raw),
-    promptTimeoutMs: clearablePositiveInt(raw, "promptTimeoutMs"),
-    permissionTimeoutMs: clearablePositiveInt(raw, "permissionTimeoutMs"),
-    skills: clearableSkills(raw),
-    mcpServers: clearableMcpServers(raw)
-  };
-}
-function applyClearablePatch(current, patch) {
-  const next = {
-    ...current,
-    acp: current.acp ? { ...current.acp } : {}
-  };
-  const g = next.acp;
-  if (patch.displayName === null) {
-    delete next.displayName;
-  } else if (patch.displayName !== void 0) {
-    next.displayName = patch.displayName;
-  }
+function parseCreate(raw) {
+  rejectUnknownOrSecret(raw, SETTINGS_ROUTE_CREATE_FIELDS);
+  const routeId = unwrap(parseRouteIdValue(raw.routeId));
+  const provider = unwrap(parseNonEmptyStringValue(raw.provider, "provider"));
+  const adapterId = unwrap(parseNonEmptyStringValue(raw.adapterId, "adapterId"));
+  const route = { routeId, provider, adapterId };
   const assign = (key2, value) => {
-    if (value === void 0) return;
-    if (value === null) {
-      delete g[key2];
-      return;
-    }
-    g[key2] = value;
+    if (value !== void 0) route[key2] = value;
   };
-  assign("model", patch.model);
-  assign("executable", patch.executable);
-  assign("envKey", patch.envKey);
-  assign(
-    "credentialRef",
-    patch.credentialRef
-  );
-  assign(
-    "baseUrlEnvKey",
-    patch.baseUrlEnvKey
-  );
-  assign("baseUrl", patch.baseUrl);
-  assign(
-    "permissionPolicy",
-    patch.permissionPolicy
-  );
-  assign(
-    "promptTimeoutMs",
-    patch.promptTimeoutMs
-  );
-  assign(
-    "permissionTimeoutMs",
-    patch.permissionTimeoutMs
-  );
-  if (patch.skills === null) {
-    delete next.skills;
-  } else if (patch.skills !== void 0) {
-    next.skills = cloneSkillRefs(patch.skills);
+  assign("displayName", optional(raw, "displayName", (v) => parseNonEmptyStringValue(v, "displayName")));
+  assign("command", optional(raw, "command", (v) => parseNonEmptyStringValue(v, "command")));
+  assign("args", optional(raw, "args", parseArgsValue2));
+  assign("executable", optional(raw, "executable", (v) => parseNonEmptyStringValue(v, "executable")));
+  assign("model", optional(raw, "model", (v) => parseNonEmptyStringValue(v, "model")));
+  assign("envKey", optional(raw, "envKey", (v) => parseEnvKeyValue(v, "envKey")));
+  assign("credentialRef", optional(raw, "credentialRef", parseCredentialRefValue));
+  assign("baseUrlEnvKey", optional(raw, "baseUrlEnvKey", (v) => parseEnvKeyValue(v, "baseUrlEnvKey")));
+  assign("baseUrl", optional(raw, "baseUrl", parseBaseUrlValue));
+  assign("permissionPolicy", optional(raw, "permissionPolicy", parsePermissionPolicyValue));
+  assign("promptTimeoutMs", optional(raw, "promptTimeoutMs", (v) => parsePositiveTimeoutValue(v, "promptTimeoutMs")));
+  assign("permissionTimeoutMs", optional(raw, "permissionTimeoutMs", (v) => parsePositiveTimeoutValue(v, "permissionTimeoutMs")));
+  if (raw.skills !== void 0 && raw.skills !== null) route.skills = unwrap(parseSkillsArrayValue(raw.skills, defaultAllowedSkillRoots()));
+  if (raw.mcpServers !== void 0 && raw.mcpServers !== null) route.mcpServers = unwrap(parseMcpServersArrayValue(raw.mcpServers));
+  return route;
+}
+function applyPatch(current, raw) {
+  rejectUnknownOrSecret(raw, SETTINGS_ROUTE_UPDATE_FIELDS);
+  if ("routeId" in raw || "provider" in raw || "adapterId" in raw) {
+    throw new RpcError(-32602, "routeId, provider, and adapterId are immutable; create a replacement route instead");
   }
-  if (patch.mcpServers === null) {
-    delete next.mcpServers;
-  } else if (patch.mcpServers !== void 0) {
-    next.mcpServers = cloneMcpServers(patch.mcpServers);
+  const next = cloneSettingsRoute(current);
+  const scalar = [
+    ["displayName", (v) => parseNonEmptyStringValue(v, "displayName")],
+    ["executable", (v) => parseNonEmptyStringValue(v, "executable")],
+    ["model", (v) => parseNonEmptyStringValue(v, "model")],
+    ["envKey", (v) => parseEnvKeyValue(v, "envKey")],
+    ["credentialRef", parseCredentialRefValue],
+    ["baseUrlEnvKey", (v) => parseEnvKeyValue(v, "baseUrlEnvKey")],
+    ["baseUrl", parseBaseUrlValue],
+    ["permissionPolicy", parsePermissionPolicyValue],
+    ["promptTimeoutMs", (v) => parsePositiveTimeoutValue(v, "promptTimeoutMs")],
+    ["permissionTimeoutMs", (v) => parsePositiveTimeoutValue(v, "permissionTimeoutMs")]
+  ];
+  for (const [key2, parse2] of scalar) {
+    if (!(key2 in raw) || raw[key2] === void 0) continue;
+    if (raw[key2] === null) delete next[key2];
+    else next[key2] = unwrap(parse2(raw[key2]));
+  }
+  if ("command" in raw && raw.command !== void 0) {
+    if (raw.command === null) delete next.command;
+    else next.command = unwrap(parseNonEmptyStringValue(raw.command, "command"));
+  }
+  if ("args" in raw && raw.args !== void 0) {
+    if (raw.args === null) delete next.args;
+    else next.args = unwrap(parseArgsValue2(raw.args));
+  }
+  if ("skills" in raw && raw.skills !== void 0) {
+    if (raw.skills === null) delete next.skills;
+    else next.skills = unwrap(parseSkillsArrayValue(raw.skills, defaultAllowedSkillRoots()));
+  }
+  if ("mcpServers" in raw && raw.mcpServers !== void 0) {
+    if (raw.mcpServers === null) delete next.mcpServers;
+    else next.mcpServers = unwrap(parseMcpServersArrayValue(raw.mcpServers));
   }
   return next;
 }
-function applyCreateDefaults(adapterId, acp) {
-  if (!acp.permissionPolicy) acp.permissionPolicy = "deny";
-  if (adapterId === GROK_ACP_ADAPTER_ID) {
-    if (!acp.model) acp.model = DEFAULT_GROK_MODEL;
-    if (!acp.envKey) acp.envKey = DEFAULT_GROK_ENV_KEY;
-    if (!acp.baseUrlEnvKey) acp.baseUrlEnvKey = DEFAULT_GROK_BASE_URL_ENV_KEY;
-  }
-}
-function parseCreateAdapterId(raw) {
-  if (!("adapterId" in raw) || raw.adapterId === void 0 || raw.adapterId === null) {
-    return GROK_ACP_ADAPTER_ID;
-  }
-  if (typeof raw.adapterId !== "string" || !raw.adapterId.trim()) {
-    throw new RpcError(-32602, "Invalid string param: adapterId");
-  }
-  const id = raw.adapterId.trim();
-  if (!isProductAcpAdapterId(id)) {
-    throw new RpcError(
-      -32602,
-      `Unsupported adapterId for product profile CRUD: ${id}. Allowed: ${PRODUCT_ACP_ADAPTER_IDS.join(", ")} (not a universal provider router)`
-    );
-  }
-  return id;
-}
-function assertProductCrudAdapter(adapterId, op) {
-  if (!isProductAcpAdapterId(adapterId)) {
-    throw new RpcError(
-      -32602,
-      `Product profile ${op} only supports adapterIds: ${PRODUCT_ACP_ADAPTER_IDS.join(", ")} (got ${adapterId})`
-    );
-  }
-}
-var AgentProfileCatalog = class {
-  constructor(dataDir, runtime, initial, opts) {
+var SettingsRouteCatalog = class {
+  constructor(dataDir, initial, options) {
     this.dataDir = dataDir;
-    this.runtime = runtime;
     this.chain = Promise.resolve();
-    const source = initial.some((p) => p.id === FAKE_DEFAULT_PROFILE_ID) ? initial : [
-      ...initial,
-      defaultAgentProfiles().find((p) => p.id === FAKE_DEFAULT_PROFILE_ID)
-    ];
-    this.profiles = source.map((p) => cloneAgentProfileConfig(p));
-    this.persistToDisk = opts?.persistToDisk !== false;
-    this.saveProfiles = opts?.saveProfiles ?? saveAgentProfiles;
-    this.runtime.replaceProfileCatalog(this.profiles);
+    this.routes = initial.map(cloneSettingsRoute);
+    this.persistToDisk = options?.persistToDisk !== false;
+    this.saveRoutes = options?.saveRoutes ?? saveSettingsRoutes;
+    this.publishRoutes = options?.publishRoutes;
   }
-  enqueue(fn) {
-    const run = this.chain.then(fn, fn);
-    this.chain = run.then(
-      () => void 0,
-      () => void 0
-    );
+  enqueue(operation) {
+    const run = this.chain.then(operation, operation);
+    this.chain = run.then(() => void 0, () => void 0);
     return run;
   }
   list() {
-    return this.profiles.map((p) => cloneAgentProfileConfig(p));
+    return this.routes.map(cloneSettingsRoute);
   }
-  get(id) {
-    const p = this.profiles.find((x) => x.id === id);
-    if (!p) return void 0;
-    return cloneAgentProfileConfig(p);
+  get(routeId) {
+    const route = this.routes.find((candidate) => candidate.routeId === routeId);
+    return route && cloneSettingsRoute(route);
   }
-  /**
-   * Atomic commit: persist next first (when enabled); only then swap memory + runtime.
-   * Write failure leaves this.profiles and runtime on the previous snapshot.
-   */
   async commit(next) {
-    if (this.persistToDisk) {
-      await this.saveProfiles(this.dataDir, next);
-    }
-    this.profiles = next;
-    this.runtime.replaceProfileCatalog(this.profiles);
+    const canonical = next.map(cloneSettingsRoute);
+    if (this.persistToDisk) await this.saveRoutes(this.dataDir, canonical);
+    await this.publishRoutes?.(canonical.map(cloneSettingsRoute));
+    this.routes = canonical;
   }
   async create(raw) {
     return this.enqueue(async () => {
-      rejectUnknownAndDangerous(raw, PROFILE_CREATE_FIELDS);
-      const id = requireProfileId2(raw.id);
-      if (this.profiles.some((p) => p.id === id)) {
-        throw new RpcError(-32009, `Profile already exists: ${id}`);
-      }
-      if (id === FAKE_DEFAULT_PROFILE_ID) {
-        throw new RpcError(-32602, "Cannot create reserved test profile id: fake-default");
-      }
-      const adapterId = parseCreateAdapterId(raw);
-      const { displayName, acp, skills, mcpServers } = parseAcpFieldsCreate(raw);
-      applyCreateDefaults(adapterId, acp);
-      const profile = {
-        id,
-        adapterId,
-        ...displayName !== void 0 ? { displayName } : {},
-        acp,
-        ...skills !== void 0 ? { skills: cloneSkillRefs(skills) } : {},
-        ...mcpServers !== void 0 ? { mcpServers: cloneMcpServers(mcpServers) } : {}
-      };
-      await this.commit([...this.profiles, profile]);
-      return this.get(id);
+      const route = parseCreate(raw);
+      if (this.routes.some((candidate) => candidate.routeId === route.routeId)) throw new RpcError(-32009, `Route already exists: ${route.routeId}`);
+      await this.commit([...this.routes, route]);
+      return this.get(route.routeId);
     });
   }
-  async update(idRaw, raw) {
+  async update(routeIdRaw, raw) {
     return this.enqueue(async () => {
-      const id = requireProfileId2(idRaw);
-      if ("id" in raw) {
-        throw new RpcError(-32602, "id cannot be updated; omit id from profile body");
-      }
-      if ("adapterId" in raw) {
-        throw new RpcError(-32602, "adapterId cannot be updated; omit adapterId from profile body");
-      }
-      rejectUnknownAndDangerous(raw, PROFILE_UPDATE_FIELDS);
-      const idx = this.profiles.findIndex((p) => p.id === id);
-      if (idx < 0) {
-        throw new RpcError(-32004, `Profile not found: ${id}`);
-      }
-      const current = this.profiles[idx];
-      if (isTestOnlyProfile(current) || current.id === FAKE_DEFAULT_PROFILE_ID) {
-        throw new RpcError(
-          -32602,
-          "Test-only profile fake-default cannot be modified via product CRUD"
-        );
-      }
-      assertProductCrudAdapter(current.adapterId, "update");
-      const nextProfile = applyClearablePatch(current, parseAcpFieldsUpdate(raw));
-      await this.commit(this.profiles.map((p, i) => i === idx ? nextProfile : p));
-      return this.get(id);
+      const routeId = unwrap(parseRouteIdValue(routeIdRaw));
+      const index2 = this.routes.findIndex((route) => route.routeId === routeId);
+      if (index2 < 0) throw new RpcError(-32004, `Route not found: ${routeId}`);
+      const next = applyPatch(this.routes[index2], raw);
+      await this.commit(this.routes.map((route, i) => i === index2 ? next : route));
+      return this.get(routeId);
     });
   }
-  async delete(idRaw) {
+  async delete(routeIdRaw) {
     return this.enqueue(async () => {
-      const id = requireProfileId2(idRaw);
-      const idx = this.profiles.findIndex((p) => p.id === id);
-      if (idx < 0) {
-        throw new RpcError(-32004, `Profile not found: ${id}`);
-      }
-      const current = this.profiles[idx];
-      if (isTestOnlyProfile(current) || current.id === FAKE_DEFAULT_PROFILE_ID) {
-        throw new RpcError(
-          -32602,
-          "Test-only profile fake-default cannot be deleted via product CRUD"
-        );
-      }
-      if (isBuiltinDefaultProfileId(current.id)) {
-        throw new RpcError(
-          -32602,
-          `Built-in profile ${current.id} cannot be deleted`
-        );
-      }
-      assertProductCrudAdapter(current.adapterId, "delete");
-      const sessions = await this.runtime.registry.list();
-      const active = sessions.filter(
-        (s) => s.profileId === id && SessionRegistry.isNonTerminal(s.state)
-      );
-      if (active.length > 0) {
-        throw new RpcError(
-          -32022,
-          `Cannot delete profile ${id}: ${active.length} non-terminal session(s) still use it`,
-          { sessionIds: active.map((s) => s.id) }
-        );
-      }
-      await this.commit(this.profiles.filter((p) => p.id !== id));
-      return { deleted: id };
+      const routeId = unwrap(parseRouteIdValue(routeIdRaw));
+      if (!this.routes.some((route) => route.routeId === routeId)) throw new RpcError(-32004, `Route not found: ${routeId}`);
+      await this.commit(this.routes.filter((route) => route.routeId !== routeId));
+      return { deleted: routeId };
     });
   }
 };
 
 // src/runtime/agent-runtime.ts
-import * as path19 from "node:path";
+import * as path18 from "node:path";
+import { createHash as createHash6 } from "node:crypto";
 
 // src/runtime/process-supervisor.ts
 import { spawn as spawn5 } from "node:child_process";
@@ -36401,12 +34408,11 @@ var ProcessSupervisor = class {
 function handleFrom(record) {
   return {
     sessionId: record.id,
-    profileId: record.profileId,
+    routeId: record.routeId,
     adapterId: record.adapterId,
     state: record.state,
     pid: record.pid,
     roleName: record.roleName,
-    assigneeKind: record.assigneeKind,
     runtimeWorkspace: record.runtimeWorkspace,
     ...record.contextRestored !== void 0 ? { contextRestored: record.contextRestored } : {},
     createdAt: record.createdAt,
@@ -36442,15 +34448,9 @@ function copyRuntimeErrorMetadata(error) {
     ...source.terminalAlreadyEmitted === true ? { terminalAlreadyEmitted: true } : {}
   };
 }
-function cloneProfileConfig(p) {
-  return cloneAgentProfileConfig(p);
-}
-function cloneProfileSnapshot(p) {
-  return cloneAgentProfileConfigForSnapshot(p);
-}
 var AgentRuntime = class {
   constructor(options) {
-    this.profiles = /* @__PURE__ */ new Map();
+    this.routes = /* @__PURE__ */ new Map();
     this.adapters = /* @__PURE__ */ new Map();
     this.managed = /* @__PURE__ */ new Map();
     this.startInFlight = /* @__PURE__ */ new Map();
@@ -36463,21 +34463,13 @@ var AgentRuntime = class {
     this.followUpAttemptsForTests = [];
     this.closing = false;
     this.closed = false;
-    this.dataDir = path19.resolve(options.dataDir);
+    this.dataDir = path18.resolve(options.dataDir);
     this.registry = new SessionRegistry(this.dataDir);
-    this.resolveProfileEnv = options.resolveProfileEnv;
+    this.resolveRouteEnv = options.resolveRouteEnv;
     this.resolveCredentialRef = options.resolveCredentialRef;
     this.packageRoot = options.packageRoot;
-    for (const p of options.profiles ?? []) {
-      this.profiles.set(p.id, cloneProfileConfig(p));
-    }
-    if (!this.profiles.has("fake-default")) {
-      this.profiles.set("fake-default", {
-        id: "fake-default",
-        adapterId: FAKE_ADAPTER_ID,
-        displayNameKey: "profile.fake.default",
-        fake: { waitForSignal: true, emitStdout: true }
-      });
+    for (const p of options.routes ?? []) {
+      this.routes.set(p.routeId, cloneSettingsRoute(p));
     }
     const adapterList = options.adapters ?? [
       createFakeAdapter(),
@@ -36534,39 +34526,38 @@ var AgentRuntime = class {
       }
     });
   }
-  registerProfile(profile) {
-    this.profiles.set(profile.id, cloneProfileConfig(profile));
+  registerRoute(route) {
+    this.routes.set(route.routeId, cloneSettingsRoute(route));
   }
   /**
-   * Full replace of the in-memory profile catalog (machine-local CRUD sync).
+   * Full replace of the in-memory route catalog (machine-local CRUD sync).
    * Does not touch live sessions — only new startSession sees the new map.
-   * Always re-ensures fake-default for harness (same rule as constructor).
-   * Stores shallow clones of profile + acp so callers cannot mutate the map.
+   * Stores clones so callers cannot mutate the map.
    */
-  replaceProfileCatalog(profiles) {
-    this.profiles.clear();
-    for (const p of profiles) {
-      if (p && typeof p.id === "string") {
-        this.profiles.set(p.id, cloneProfileConfig(p));
+  replaceRouteCatalog(routes) {
+    this.routes.clear();
+    for (const p of routes) {
+      if (p && typeof p.routeId === "string") {
+        this.routes.set(p.routeId, cloneSettingsRoute(p));
       }
     }
-    if (!this.profiles.has("fake-default")) {
-      this.profiles.set("fake-default", {
-        id: "fake-default",
-        adapterId: FAKE_ADAPTER_ID,
-        displayNameKey: "profile.fake.default",
-        fake: { waitForSignal: true, emitStdout: true }
-      });
-    }
   }
-  /** Lookup a single machine-local profile (cloned; mutating the return does not corrupt the Map). */
-  getProfile(profileId) {
-    const p = this.profiles.get(profileId);
-    return p ? cloneProfileConfig(p) : void 0;
+  /** Lookup a single machine-local route (cloned; mutating the return does not corrupt the Map). */
+  getRoute(routeId) {
+    const p = this.routes.get(routeId);
+    return p ? cloneSettingsRoute(p) : void 0;
+  }
+  /** Immutable non-secret launch facts for a fresh Session. */
+  snapshotRouteForStart(routeId) {
+    const route = this.routes.get(routeId);
+    if (!route) throw new Error(`Unknown Settings route: ${routeId}`);
+    return createSettingsRouteSnapshot(route, {
+      effectiveEndpointDigest: this.effectiveEndpointDigest(route)
+    });
   }
   /** Machine-local catalog snapshot (cloned entries). */
-  listProfiles() {
-    return [...this.profiles.values()].map(cloneProfileConfig);
+  listRoutes() {
+    return [...this.routes.values()].map(cloneSettingsRoute);
   }
   registerAdapter(adapter) {
     this.adapters.set(adapter.id, adapter);
@@ -36616,9 +34607,8 @@ var AgentRuntime = class {
   async enterExternalSession(req) {
     this.assertOpen();
     const externalKey = req.externalKey?.trim() || void 0;
-    const profileId = (req.profileId?.trim() || EXTERNAL_PROFILE_ID).trim();
+    const routeId = (req.routeId?.trim() || EXTERNAL_ROUTE_ID).trim();
     const roleName = req.roleName?.trim() || void 0;
-    const assigneeKind = req.assigneeKind;
     const workspace = req.workspace?.trim() || void 0;
     const cwd = req.runtimeWorkspace?.cwd ?? req.cwd ?? req.workspaceLane?.worktree ?? void 0;
     if (req.sessionId) {
@@ -36629,9 +34619,10 @@ var AgentRuntime = class {
       if (existing) {
         if (existing.state === "external") {
           const patch = {};
-          if (roleName && existing.roleName !== roleName) patch.roleName = roleName;
-          if (assigneeKind && existing.assigneeKind !== assigneeKind) {
-            patch.assigneeKind = assigneeKind;
+          if (roleName && existing.roleName !== roleName) {
+            throw new Error(
+              `External Session role binding mismatch: existing=${existing.roleName ?? "(none)"} requested=${roleName}`
+            );
           }
           if (workspace && existing.workspace !== workspace) patch.workspace = workspace;
           if (cwd && existing.runtimeWorkspace?.cwd !== cwd) {
@@ -36686,17 +34677,17 @@ var AgentRuntime = class {
     }
     const sessionId = req.sessionId && isSessionId(req.sessionId) ? req.sessionId : makeSessionId();
     const now = (/* @__PURE__ */ new Date()).toISOString();
-    const profileSnapshot = {
-      id: profileId,
+    const routeSnapshot = createSettingsRouteSnapshot({
+      routeId,
+      provider: "external",
       adapterId: EXTERNAL_ADAPTER_ID
-    };
+    }, { effectiveEndpointDigest: void 0 });
     const record = {
       id: sessionId,
-      profileId,
+      routeId,
       adapterId: EXTERNAL_ADAPTER_ID,
-      profileSnapshot,
+      routeSnapshot,
       roleName,
-      assigneeKind,
       state: "external",
       runtimeWorkspace: cwd ? { cwd } : void 0,
       workspace,
@@ -36714,16 +34705,29 @@ var AgentRuntime = class {
     if (existing && SessionRegistry.isNonTerminal(existing.state)) {
       throw new Error(`Session already active: ${req.sessionId}`);
     }
-    const profile = this.profiles.get(req.profileId);
-    if (!profile) {
-      throw new Error(`Unknown AgentProfile: ${req.profileId}`);
+    const route = this.routes.get(req.routeId);
+    if (!route) {
+      throw new Error(`Unknown Settings route: ${req.routeId}`);
     }
-    return this.startSessionWithProfile(req, cloneProfileConfig(profile));
+    if (req.routeSnapshot.routeId !== req.routeId) {
+      throw new Error(
+        `Start route snapshot mismatch: request=${req.routeId} snapshot=${req.routeSnapshot.routeId}`
+      );
+    }
+    const currentSnapshot = createSettingsRouteSnapshot(route, {
+      effectiveEndpointDigest: this.effectiveEndpointDigest(route)
+    });
+    if (currentSnapshot.launchDigest !== req.routeSnapshot.launchDigest || currentSnapshot.effectiveEndpointDigest !== req.routeSnapshot.effectiveEndpointDigest) {
+      throw new Error(
+        `Settings route changed before Session start: ${req.routeId}; retry the explicit start action`
+      );
+    }
+    return this.startSessionWithRoute(req, cloneSettingsRoute(route));
   }
-  async startSessionWithProfile(req, profile) {
-    const adapter = this.adapters.get(profile.adapterId);
+  async startSessionWithRoute(req, route) {
+    const adapter = this.adapters.get(route.adapterId);
     if (!adapter) {
-      throw new Error(`Unknown adapter: ${profile.adapterId}`);
+      throw new Error(`Unknown adapter: ${route.adapterId}`);
     }
     const caps = adapter.capabilities();
     if (!caps.canSpawn) {
@@ -36736,11 +34740,12 @@ var AgentRuntime = class {
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const record = {
       id: req.sessionId,
-      profileId: profile.id,
+      routeId: route.routeId,
       adapterId: adapter.id,
-      profileSnapshot: cloneProfileSnapshot(profile),
-      roleName: req.roleName,
-      assigneeKind: req.assigneeKind,
+      routeSnapshot: createSettingsRouteSnapshot(
+        routeConfigFromSnapshot(req.routeSnapshot),
+        { effectiveEndpointDigest: req.routeSnapshot.effectiveEndpointDigest }
+      ),
       state: "starting",
       runtimeWorkspace: { cwd },
       workspace: req.workspace ?? req.workspaceLane?.workspace,
@@ -36754,7 +34759,7 @@ var AgentRuntime = class {
     let startedManaged;
     let resolvedEnv = {};
     try {
-      resolvedEnv = await this.resolveCredentialEnv(profile);
+      resolvedEnv = await this.resolveCredentialEnv(route);
       const coreEnv = {
         // Reserved routing authority: installed native Tent hooks spawned by an
         // isolated Service must attach back to that Service, never %APPDATA%\Tent.
@@ -36762,8 +34767,7 @@ var AgentRuntime = class {
         TENT_SESSION_ID: req.sessionId
       };
       const planEnv = {
-        ...stripProfileRequestEnv(profile.env),
-        ...stripProfileRequestEnv(req.env),
+        ...stripRouteRequestEnv(req.env),
         ...resolvedEnv,
         ...coreEnv
       };
@@ -36772,8 +34776,7 @@ var AgentRuntime = class {
       );
       const plan = {
         sessionId: req.sessionId,
-        profileId: profile.id,
-        roleName: req.roleName,
+        routeId: route.routeId,
         cwd,
         env: planEnv,
         coreEnv,
@@ -36781,13 +34784,13 @@ var AgentRuntime = class {
         bootstrapPrompt: req.bootstrapPrompt,
         // Ephemeral path refs only — never base64; not written to SessionRecord.
         bootstrapImageRefs: req.bootstrapImageRefs,
-        command: profile.command,
-        args: profile.args,
+        command: route.command,
+        args: route.args,
         extras: {
-          fake: profile.fake,
-          acp: profile.acp,
+          fake: route.fake,
+          acp: this.acpOptionsForRoute(route),
           // Snapshot-time ACP projection (skills + mcp). Running sessions do not hot-reload.
-          ...await this.buildAcpLaunchExtras(profile, planEnv, req.assigneeKind),
+          ...await this.buildAcpLaunchExtras(route, planEnv),
           // System root for safe image byte reads at prompt time (ephemeral; not SessionRecord).
           ...req.bootstrapImageRefs && req.bootstrapImageRefs.length > 0 && typeof req.bootstrapImageSystemRoot === "string" && req.bootstrapImageSystemRoot.trim() ? { bootstrapImageSystemRoot: req.bootstrapImageSystemRoot.trim() } : {}
         }
@@ -36868,7 +34871,7 @@ var AgentRuntime = class {
           ]
         });
         pid = proc.pid;
-        resumeToken = profile.fake?.canResume || adapter.capabilities().canResume ? `fake-resume:${req.sessionId}` : void 0;
+        resumeToken = adapter.capabilities().canResume ? `resume:${req.sessionId}` : void 0;
       }
       const live = await this.registry.update(req.sessionId, {
         state: "live",
@@ -36897,7 +34900,6 @@ var AgentRuntime = class {
       const rawMessage = err instanceof Error ? err.message : String(err);
       const message2 = redactDiagnosticText(rawMessage, {
         env: {
-          ...profile.env ?? {},
           ...req.env ?? {}
         },
         secrets: Object.values(resolvedEnv)
@@ -36936,14 +34938,14 @@ var AgentRuntime = class {
   async resumeSessionExclusive(req) {
     const record = await this.registry.read(req.sessionId);
     if (!record) throw new Error(`Session not found: ${req.sessionId}`);
-    const profile = this.profileForResume(record);
+    const route = this.routeForResume(record);
     const adapter = this.adapters.get(record.adapterId);
     if (!adapter) throw new Error(`Unknown adapter: ${record.adapterId}`);
-    const tokenRaw = req.resumeToken ?? record.resumeToken;
+    const tokenRaw = record.resumeToken;
     if (!tokenRaw) {
       throw new Error(`Session ${req.sessionId} has no resume token`);
     }
-    if (!adapter.capabilities().canResume && !profile.fake?.canResume) {
+    if (!adapter.capabilities().canResume) {
       throw new Error(`Adapter ${adapter.id} cannot resume`);
     }
     const recordedCwd = record.runtimeWorkspace?.cwd;
@@ -36955,26 +34957,6 @@ var AgentRuntime = class {
     }
     const cwd = recordedCwd ?? requestedCwd;
     if (!cwd) throw new Error("resumeSession requires a cwd");
-    if (profile.fake?.canResume && typeof adapter.resumeManagedSession !== "function") {
-      const handle = await this.startSessionWithProfile({
-        sessionId: req.sessionId,
-        profileId: record.profileId,
-        roleName: record.roleName,
-        assigneeKind: record.assigneeKind,
-        workspaceLane: record.workspaceLane,
-        runtimeWorkspace: { cwd },
-        workspace: record.workspace,
-        lastTaskId: req.lastTaskId ?? record.lastTaskId,
-        env: req.env,
-        bootstrapPrompt: req.bootstrapPrompt,
-        bootstrapImageRefs: req.bootstrapImageRefs,
-        bootstrapImageSystemRoot: req.bootstrapImageSystemRoot
-      }, profile);
-      const marked = await this.registry.update(req.sessionId, {
-        contextRestored: true
-      });
-      return handleFrom(marked);
-    }
     if (typeof adapter.resumeManagedSession !== "function") {
       throw new Error(
         `Adapter ${adapter.id} advertises canResume but does not implement resumeManagedSession`
@@ -37003,14 +34985,13 @@ var AgentRuntime = class {
     this.emit({ type: "session.starting", sessionId: req.sessionId });
     let resolvedEnv = {};
     try {
-      resolvedEnv = await this.resolveCredentialEnv(profile);
+      resolvedEnv = await this.resolveCredentialEnv(route);
       const coreEnv = {
         TENT_SERVICE_DATA_DIR: this.dataDir,
         TENT_SESSION_ID: req.sessionId
       };
       const planEnv = {
-        ...stripProfileRequestEnv(profile.env),
-        ...stripProfileRequestEnv(req.env),
+        ...stripRouteRequestEnv(req.env),
         ...resolvedEnv,
         ...coreEnv
       };
@@ -37019,21 +35000,20 @@ var AgentRuntime = class {
       );
       const plan = {
         sessionId: req.sessionId,
-        profileId: profile.id,
-        roleName: record.roleName,
+        routeId: route.routeId,
         cwd,
         env: planEnv,
         coreEnv,
         diagnosticSecrets,
         bootstrapPrompt: req.bootstrapPrompt,
         bootstrapImageRefs: req.bootstrapImageRefs,
-        command: profile.command,
-        args: profile.args,
+        command: route.command,
+        args: route.args,
         extras: {
-          fake: profile.fake,
-          acp: profile.acp,
-          // Resume uses profileSnapshot (not live catalog edits).
-          ...await this.buildAcpLaunchExtras(profile, planEnv, record.assigneeKind),
+          fake: route.fake,
+          acp: this.acpOptionsForRoute(route),
+          // Resume uses routeSnapshot (not live catalog edits).
+          ...await this.buildAcpLaunchExtras(route, planEnv),
           ...req.bootstrapImageRefs && req.bootstrapImageRefs.length > 0 && typeof req.bootstrapImageSystemRoot === "string" && req.bootstrapImageSystemRoot.trim() ? { bootstrapImageSystemRoot: req.bootstrapImageSystemRoot.trim() } : {}
         }
       };
@@ -37127,7 +35107,6 @@ var AgentRuntime = class {
       const tokenRedacted = redactRuntimeValue(rawMessage, tokenRaw);
       const message2 = redactDiagnosticText(tokenRedacted, {
         env: {
-          ...profile.env ?? {},
           ...req.env ?? {}
         },
         secrets: Object.values(resolvedEnv)
@@ -37146,33 +35125,29 @@ var AgentRuntime = class {
       });
     }
   }
-  /**
-   * New rows resume from their immutable launch snapshot. Legacy rows without a
-   * snapshot use the current catalog as a bounded read fallback.
-   */
-  profileForResume(record) {
-    const snapshot = record.profileSnapshot;
-    if (snapshot) {
-      if (snapshot.id !== record.profileId) {
-        throw new Error(
-          `Session profile snapshot id mismatch: row=${record.profileId} snapshot=${snapshot.id}`
-        );
-      }
-      if (snapshot.adapterId !== record.adapterId) {
-        throw new Error(
-          `Session profile snapshot adapter mismatch: row=${record.adapterId} snapshot=${snapshot.adapterId}`
-        );
-      }
-      return cloneProfileConfig(snapshot);
-    }
-    const current = this.profiles.get(record.profileId);
-    if (!current) throw new Error(`Unknown AgentProfile: ${record.profileId}`);
-    if (current.adapterId !== record.adapterId) {
+  /** Resume only from the immutable non-secret route snapshot. */
+  routeForResume(record) {
+    const snapshot = record.routeSnapshot;
+    if (snapshot.routeId !== record.routeId) {
       throw new Error(
-        `Legacy session adapter mismatch: row=${record.adapterId} profile=${current.adapterId}`
+        `Session route snapshot id mismatch: row=${record.routeId} snapshot=${snapshot.routeId}`
       );
     }
-    return cloneProfileConfig(current);
+    if (snapshot.adapterId !== record.adapterId) {
+      throw new Error(
+        `Session route snapshot adapter mismatch: row=${record.adapterId} snapshot=${snapshot.adapterId}`
+      );
+    }
+    const route = routeConfigFromSnapshot(snapshot);
+    const currentEndpointDigest = this.effectiveEndpointDigest(route);
+    if ((snapshot.effectiveEndpointDigest || "") !== (currentEndpointDigest || "")) {
+      throw new Error(`Session route endpoint changed; provider continuity is no longer valid`);
+    }
+    const launchDigest = calculateSettingsRouteLaunchDigest(route, currentEndpointDigest);
+    if (launchDigest !== snapshot.launchDigest) {
+      throw new Error(`Session route snapshot launch digest mismatch`);
+    }
+    return route;
   }
   /**
    * U2A follow-up on a live managed session: send a fixed-format user answer
@@ -37287,10 +35262,9 @@ var AgentRuntime = class {
     const managed = this.managed.get(sessionId);
     const alive = managed ? managed.isAlive() : this.supervisor.isAlive(sessionId);
     const turnBusy = typeof managed?.isTurnBusy === "function" ? managed.isTurnBusy() : false;
-    const profile = this.profiles.get(record.profileId);
     const adapter = this.adapters.get(record.adapterId);
     const resumeCapable = Boolean(
-      record.resumeToken && (adapter?.capabilities().canResume || profile?.fake?.canResume)
+      record.routeSnapshot && record.resumeToken && adapter?.capabilities().canResume
     );
     if (SessionRegistry.isNonTerminal(record.state) && !alive) {
       if (managed) this.managed.delete(sessionId);
@@ -37506,26 +35480,26 @@ var AgentRuntime = class {
     }
   }
   /**
-   * Resolve skill meta + MCP wire from profile snapshot for LaunchPlan.extras.
+   * Resolve skill meta + MCP wire from route snapshot for LaunchPlan.extras.
    * Secret values only live on the plan (in-process) for session/new|load — never SessionRecord.
    * Enabled skill path refs fail loud when missing; credential resolver errors are not swallowed.
    *
    * Built-in tent-role / tent-task contracts are injected only into the managed bootstrap
-   * prompt prefix (cross-provider). ACP `_meta.tent.skills` carries optional profile.skills
+   * prompt prefix (cross-provider). ACP `_meta.tent.skills` carries optional route.skills
    * extras only — never re-advertise built-ins as activatable skill refs.
    */
-  async buildAcpLaunchExtras(profile, planEnv, assigneeKind) {
+  async buildAcpLaunchExtras(route, planEnv) {
     const composedSkills = composeManagedSkillRefs({
       packageRoot: this.packageRoot ?? "",
-      assigneeKind: assigneeKind ?? "role",
-      profileSkills: profile.skills
+      assigneeKind: "route",
+      routeSkills: route.skills
     });
     const hasSkills = Array.isArray(composedSkills) && composedSkills.length > 0;
-    const hasMcp = Array.isArray(profile.mcpServers) && profile.mcpServers.length > 0;
+    const hasMcp = Array.isArray(route.mcpServers) && route.mcpServers.length > 0;
     if (!hasSkills && !hasMcp) return {};
     const credCache = /* @__PURE__ */ new Map();
     if (hasMcp && this.resolveCredentialRef) {
-      for (const s of profile.mcpServers ?? []) {
+      for (const s of route.mcpServers ?? []) {
         if (s.enabled === false) continue;
         const refs = /* @__PURE__ */ new Set();
         if (s.envCredentialRefs) {
@@ -37541,7 +35515,7 @@ var AgentRuntime = class {
             value = await this.resolveCredentialRef(id);
           } catch {
             throw new Error(
-              `MCP server ${s.name}: credential resolve failed for profile ${profile.id} credentialRef=${id}`
+              `MCP server ${s.name}: credential resolve failed for route ${route.routeId} credentialRef=${id}`
             );
           }
           if (typeof value === "string" && value) {
@@ -37551,7 +35525,7 @@ var AgentRuntime = class {
       }
     }
     const acpSkills = hasSkills ? resolveAcpSkillMeta(composedSkills, { requirePathExists: true }) : void 0;
-    const acpMcpServers = hasMcp ? resolveAcpMcpServersWire(profile.mcpServers, {
+    const acpMcpServers = hasMcp ? resolveAcpMcpServersWire(route.mcpServers, {
       planEnv,
       resolveCredential: (id) => credCache.get(id)
     }) : void 0;
@@ -37561,46 +35535,75 @@ var AgentRuntime = class {
     };
   }
   /**
-   * When profile.acp.credentialRef is set, call resolveProfileEnv and require
-   * a non-empty value for profile.acp.envKey. Fail-loud otherwise.
+   * Resolve credential and endpoint env values for one launch only.
    * Never persists secrets onto SessionRecord.
    */
-  async resolveCredentialEnv(profile) {
-    const ref = typeof profile.acp?.credentialRef === "string" ? profile.acp.credentialRef.trim() : "";
-    if (!ref) return {};
-    const envKey = typeof profile.acp?.envKey === "string" ? profile.acp.envKey.trim() : "";
-    if (!envKey) {
+  async resolveCredentialEnv(route) {
+    const out = {};
+    const ref = route.credentialRef?.trim() || "";
+    const envKey = route.envKey?.trim() || "";
+    if (ref && !envKey) {
       throw new Error(
-        `Profile ${profile.id} has credentialRef but no acp.envKey (cannot inject secret into process env)`
+        `Route ${route.routeId} has credentialRef but no envKey`
       );
     }
-    if (!this.resolveProfileEnv) {
+    if (ref && !this.resolveRouteEnv) {
       throw new Error(
-        `Profile ${profile.id} references credential ${ref} but AgentRuntime has no resolveProfileEnv hook`
+        `Route ${route.routeId} references credential ${ref} but AgentRuntime has no resolveRouteEnv hook`
       );
     }
-    const resolved = { ...await this.resolveProfileEnv(profile) };
-    const secret = resolved[envKey];
-    if (typeof secret !== "string" || !secret) {
-      throw new Error(
-        `Credential not found or empty for profile ${profile.id} (credentialRef=${ref})`
-      );
+    if (ref) {
+      const resolved = { ...await this.resolveRouteEnv(route) };
+      const secret = resolved[envKey];
+      if (typeof secret !== "string" || !secret) {
+        throw new Error(
+          `Credential not found or empty for route ${route.routeId} (credentialRef=${ref})`
+        );
+      }
+      out[envKey] = secret;
     }
-    return { [envKey]: secret };
+    const endpointEnvKey = route.baseUrlEnvKey?.trim() || "";
+    if (endpointEnvKey) {
+      const endpoint = process.env[endpointEnvKey];
+      if (typeof endpoint !== "string" || !endpoint.trim()) {
+        throw new Error(`Route ${route.routeId} endpoint env is missing: ${endpointEnvKey}`);
+      }
+      out[endpointEnvKey] = endpoint;
+    }
+    return out;
+  }
+  effectiveEndpointDigest(route) {
+    const raw = route.baseUrlEnvKey ? process.env[route.baseUrlEnvKey] : route.baseUrl;
+    const normalized = raw?.trim();
+    if (!normalized) return void 0;
+    return `sha256:${createHash6("sha256").update(normalized).digest("hex")}`;
+  }
+  acpOptionsForRoute(route) {
+    return {
+      executable: route.executable,
+      model: route.model,
+      envKey: route.envKey,
+      credentialRef: route.credentialRef,
+      baseUrlEnvKey: route.baseUrlEnvKey,
+      baseUrl: route.baseUrl,
+      permissionPolicy: route.permissionPolicy,
+      promptTimeoutMs: route.promptTimeoutMs,
+      permissionTimeoutMs: route.permissionTimeoutMs
+    };
   }
   assertOpen() {
     if (this.closed || this.closing) throw new Error("AgentRuntime is shut down");
   }
 };
 function sameRuntimeCwd(left, right) {
-  const a = path19.resolve(left);
-  const b = path19.resolve(right);
+  const a = path18.resolve(left);
+  const b = path18.resolve(right);
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 function redactRuntimeValue(message2, value) {
   return value ? message2.split(value).join("[provider-session]") : message2;
 }
-function stripProfileRequestEnv(env) {
+function stripRouteRequestEnv(env) {
   return stripReservedTentChildEnv(env);
 }
 function createAgentRuntime(options) {
@@ -37609,13 +35612,13 @@ function createAgentRuntime(options) {
 
 // src/service/service.ts
 import * as os6 from "node:os";
-import * as path21 from "node:path";
+import * as path20 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/service/service-lease.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
-import * as fs21 from "node:fs/promises";
-import * as path20 from "node:path";
+import * as fs20 from "node:fs/promises";
+import * as path19 from "node:path";
 var ServiceDataDirBusyError = class extends Error {
   constructor(dataDir, owner) {
     super(
@@ -37626,7 +35629,7 @@ var ServiceDataDirBusyError = class extends Error {
   }
 };
 function serviceLeasePath(dataDir) {
-  return path20.join(dataDir, "service.lock");
+  return path19.join(dataDir, "service.lock");
 }
 async function acquireServiceDataDirLease(dataDir, options = {}) {
   const pid = options.pid ?? process.pid;
@@ -37635,16 +35638,16 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
   const isProcessAlive = options.isProcessAlive ?? processIsAlive2;
   const record = { instanceId, pid, startedAt };
   const lockPath = serviceLeasePath(dataDir);
-  await fs21.mkdir(dataDir, { recursive: true });
+  await fs20.mkdir(dataDir, { recursive: true });
   const candidate = `${lockPath}.candidate-${instanceId}`;
-  await fs21.writeFile(candidate, JSON.stringify(record, null, 2) + "\n", {
+  await fs20.writeFile(candidate, JSON.stringify(record, null, 2) + "\n", {
     encoding: "utf8",
     flag: "wx"
   });
   try {
     for (; ; ) {
       try {
-        await fs21.link(candidate, lockPath);
+        await fs20.link(candidate, lockPath);
         break;
       } catch (error) {
         if (!hasCode2(error, "EEXIST")) throw error;
@@ -37654,9 +35657,9 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
         }
         const stalePath = `${lockPath}.stale-${randomUUID2()}`;
         try {
-          await fs21.rename(lockPath, stalePath);
+          await fs20.rename(lockPath, stalePath);
           try {
-            await fs21.rm(stalePath, { force: true });
+            await fs20.rm(stalePath, { force: true });
           } catch {
           }
         } catch (error2) {
@@ -37667,7 +35670,7 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
     }
   } finally {
     try {
-      await fs21.rm(candidate, { force: true });
+      await fs20.rm(candidate, { force: true });
     } catch {
     }
   }
@@ -37679,7 +35682,7 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
       if (released) return;
       const owner = await readLeaseRecord(lockPath);
       if (owner?.instanceId === instanceId) {
-        await fs21.rm(lockPath, { force: true });
+        await fs20.rm(lockPath, { force: true });
       }
       released = true;
     }
@@ -37687,7 +35690,7 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
 }
 async function readLeaseRecord(file) {
   try {
-    const value = JSON.parse(await fs21.readFile(file, "utf8"));
+    const value = JSON.parse(await fs20.readFile(file, "utf8"));
     if (typeof value.instanceId !== "string" || !value.instanceId || typeof value.pid !== "number" || !Number.isInteger(value.pid) || typeof value.startedAt !== "string") {
       return null;
     }
@@ -37810,20 +35813,20 @@ function walk2(node2, visit) {
   }
 }
 function push2(out, seen, raw, kind, sourcePath) {
-  const path23 = resolveAttachmentPath(raw, sourcePath);
-  if (!path23) return;
-  const key2 = `${kind}:${path23}`;
+  const path22 = resolveAttachmentPath(raw, sourcePath);
+  if (!path22) return;
+  const key2 = `${kind}:${path22}`;
   if (seen.has(key2)) return;
   seen.add(key2);
-  out.push({ path: path23, kind, raw });
+  out.push({ path: path22, kind, raw });
 }
 
 // src/markdown/attachment-gc.ts
 var ATTACHMENT_GC_GRACE_DAYS = 30;
 var ATTACHMENT_GC_STATE_PATH = `${ATTACHMENTS_DIR}/.gc-state.json`;
 var DAY_MS = 24 * 60 * 60 * 1e3;
-async function sweepAttachmentGc(fs22, options = {}) {
-  return withTentMutation(fs22, async () => {
+async function sweepAttachmentGc(fs21, options = {}) {
+  return withTentMutation(fs21, async () => {
     const result = {
       scanned: 0,
       retainedByOwner: 0,
@@ -37832,7 +35835,7 @@ async function sweepAttachmentGc(fs22, options = {}) {
       deleted: [],
       warnings: []
     };
-    if (!await fs22.exists(ATTACHMENTS_DIR)) return result;
+    if (!await fs21.exists(ATTACHMENTS_DIR)) return result;
     const nowMs = resolveNow(options.now);
     const graceDays = options.graceDays ?? ATTACHMENT_GC_GRACE_DAYS;
     if (!Number.isFinite(graceDays) || graceDays < 0) {
@@ -37840,28 +35843,28 @@ async function sweepAttachmentGc(fs22, options = {}) {
     }
     let tent;
     try {
-      tent = await loadTent(fs22);
+      tent = await loadTent(fs21);
     } catch (error) {
-      result.warnings.push(`concept scan failed: ${message(error)}`);
+      result.warnings.push(`Node scan failed: ${message(error)}`);
       return result;
     }
-    if (tent.duplicateIds.size > 0 || [...tent.byPath.values()].some((box) => box.invalid)) {
-      result.warnings.push("concept index is ambiguous or invalid; attachment deletion skipped");
+    if (tent.duplicateIds.size > 0 || [...tent.byPath.values()].some((node2) => node2.invalid)) {
+      result.warnings.push("Node index is ambiguous or invalid; attachment deletion skipped");
       return result;
     }
     let files;
     let references;
     try {
-      files = (await listFiles(fs22, ATTACHMENTS_DIR)).filter(
-        (path23) => path23 !== ATTACHMENT_GC_STATE_PATH
+      files = (await listFiles(fs21, ATTACHMENTS_DIR)).filter(
+        (path22) => path22 !== ATTACHMENT_GC_STATE_PATH
       );
-      references = await collectAttachmentReferences(fs22);
+      references = await collectAttachmentReferences(fs21);
     } catch (error) {
       result.warnings.push(`attachment reference scan failed: ${message(error)}`);
       return result;
     }
     result.scanned = files.length;
-    const loadedState = await readState(fs22);
+    const loadedState = await readState(fs21);
     if (loadedState.warning) result.warnings.push(loadedState.warning);
     const state = loadedState.state;
     const nextCandidates = {};
@@ -37881,7 +35884,7 @@ async function sweepAttachmentGc(fs22, options = {}) {
       const firstSeenMs = firstSeen ? Date.parse(firstSeen) : Number.NaN;
       if (loadedState.valid && Number.isFinite(firstSeenMs) && nowMs - firstSeenMs >= graceDays * DAY_MS) {
         try {
-          await fs22.remove(file);
+          await fs21.remove(file);
           result.deleted.push(file);
         } catch (error) {
           result.warnings.push(`failed to delete ${file}: ${message(error)}`);
@@ -37891,57 +35894,57 @@ async function sweepAttachmentGc(fs22, options = {}) {
         nextCandidates[file] = Number.isFinite(firstSeenMs) ? firstSeen : new Date(nowMs).toISOString();
       }
     }
-    for (const path23 of Object.keys(state.candidates)) {
-      if (!liveFiles.has(path23)) delete nextCandidates[path23];
+    for (const path22 of Object.keys(state.candidates)) {
+      if (!liveFiles.has(path22)) delete nextCandidates[path22];
     }
     result.candidates = Object.keys(nextCandidates).length;
-    await fs22.writeFile(
+    await fs21.writeFile(
       ATTACHMENT_GC_STATE_PATH,
       JSON.stringify({ version: 1, candidates: nextCandidates }, null, 2) + "\n"
     );
-    await removeEmptyOwnerDirs(fs22, result);
+    await removeEmptyOwnerDirs(fs21, result);
     return result;
   });
 }
-async function collectAttachmentReferences(fs22) {
+async function collectAttachmentReferences(fs21) {
   const refs = /* @__PURE__ */ new Set();
-  for (const path23 of await listFiles(fs22, "")) {
-    if (!path23.endsWith(".md") || path23.startsWith(`${ATTACHMENTS_DIR}/`)) continue;
-    const raw = await fs22.readFile(path23);
+  for (const path22 of await listFiles(fs21, "")) {
+    if (!path22.endsWith(".md") || path22.startsWith(`${ATTACHMENTS_DIR}/`)) continue;
+    const raw = await fs21.readFile(path22);
     const parsed = parseFrontmatter(raw);
-    for (const ref of extractAttachmentReferences(parsed.body, path23)) refs.add(ref.path);
-    for (const ref of extractAttachmentArtifactRefs(parsed.data, path23)) refs.add(ref.path);
+    for (const ref of extractAttachmentReferences(parsed.body, path22)) refs.add(ref.path);
+    for (const ref of extractAttachmentArtifactRefs(parsed.data, path22)) refs.add(ref.path);
     for (const match of raw.matchAll(
       /(?:\.tent\/)?(?:\.\.\/|\.\/)*attachments\/[A-Za-z0-9._~!$&+,;=@%()\[\]\-\/]+/g
     )) {
-      const resolved = resolveAttachmentPath(match[0], path23);
+      const resolved = resolveAttachmentPath(match[0], path22);
       if (resolved) refs.add(resolved);
     }
   }
   return refs;
 }
-async function listFiles(fs22, dir) {
-  if (dir && !await fs22.exists(dir)) return [];
+async function listFiles(fs21, dir) {
+  if (dir && !await fs21.exists(dir)) return [];
   const out = [];
-  for (const entry of await fs22.listDir(dir)) {
-    const path23 = dir ? `${dir}/${entry.name}` : entry.name;
-    if (entry.isDir) out.push(...await listFiles(fs22, path23));
-    else out.push(path23);
+  for (const entry of await fs21.listDir(dir)) {
+    const path22 = dir ? `${dir}/${entry.name}` : entry.name;
+    if (entry.isDir) out.push(...await listFiles(fs21, path22));
+    else out.push(path22);
   }
   return out;
 }
-async function readState(fs22) {
+async function readState(fs21) {
   const empty = { version: 1, candidates: {} };
-  if (!await fs22.exists(ATTACHMENT_GC_STATE_PATH)) return { state: empty, valid: true };
+  if (!await fs21.exists(ATTACHMENT_GC_STATE_PATH)) return { state: empty, valid: true };
   try {
-    const parsed = JSON.parse(await fs22.readFile(ATTACHMENT_GC_STATE_PATH));
+    const parsed = JSON.parse(await fs21.readFile(ATTACHMENT_GC_STATE_PATH));
     if (parsed.version !== 1 || !parsed.candidates || typeof parsed.candidates !== "object") {
       throw new Error("unsupported state shape");
     }
     const candidates = {};
-    for (const [path23, firstSeen] of Object.entries(parsed.candidates)) {
-      if (path23.startsWith(`${ATTACHMENTS_DIR}/`) && path23 !== ATTACHMENT_GC_STATE_PATH && typeof firstSeen === "string" && Number.isFinite(Date.parse(firstSeen))) {
-        candidates[path23] = firstSeen;
+    for (const [path22, firstSeen] of Object.entries(parsed.candidates)) {
+      if (path22.startsWith(`${ATTACHMENTS_DIR}/`) && path22 !== ATTACHMENT_GC_STATE_PATH && typeof firstSeen === "string" && Number.isFinite(Date.parse(firstSeen))) {
+        candidates[path22] = firstSeen;
       }
     }
     return { state: { version: 1, candidates }, valid: true };
@@ -37953,12 +35956,12 @@ async function readState(fs22) {
     };
   }
 }
-async function removeEmptyOwnerDirs(fs22, result) {
-  for (const entry of await fs22.listDir(ATTACHMENTS_DIR)) {
+async function removeEmptyOwnerDirs(fs21, result) {
+  for (const entry of await fs21.listDir(ATTACHMENTS_DIR)) {
     if (!entry.isDir) continue;
     const dir = `${ATTACHMENTS_DIR}/${entry.name}`;
     try {
-      if ((await fs22.listDir(dir)).length === 0) await fs22.remove(dir);
+      if ((await fs21.listDir(dir)).length === 0) await fs21.remove(dir);
     } catch (error) {
       result.warnings.push(`failed to remove empty attachment directory ${dir}: ${message(error)}`);
     }
@@ -38016,8 +36019,6 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
     }
   });
   registerStartupCleanup(30, () => workspaceHost.dispose());
-  const a2a = new A2AApprovalStore(dataDir);
-  await a2a.ensureLoaded();
   const toolApprovals = new ToolApprovalStore(dataDir);
   await toolApprovals.ensureLoaded();
   const userAsks = new UserAskStore(dataDir);
@@ -38031,8 +36032,8 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
     protector: options.credentialProtector
   });
   await credentials.ensureLoaded();
-  const profilesInjected = options.profiles !== void 0;
-  const profiles = profilesInjected ? options.profiles : await ensureDefaultProfiles(dataDir);
+  const routesInjected = options.routes !== void 0;
+  const routes = routesInjected ? options.routes : await ensureDefaultSettingsRoutes(dataDir);
   const runtimeHolder = { current: null };
   const acpPermissionHooks = {
     onPermissionAsk: async (info) => {
@@ -38054,13 +36055,12 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
           if (task) {
             taskPath = task.path;
             taskId = task.id || task.path;
-            role = task.role || role;
+            role = task.parentActor?.kind === "role" ? task.parentActor.id : role;
           }
         }
       } catch {
       }
-      const profile = rec?.profileId ? runtime2.getProfile(rec.profileId) : void 0;
-      const timeoutMs = typeof profile?.acp?.permissionTimeoutMs === "number" && profile.acp.permissionTimeoutMs > 0 ? profile.acp.permissionTimeoutMs : DEFAULT_PERMISSION_TIMEOUT_MS;
+      const timeoutMs = typeof rec?.routeSnapshot.permissionTimeoutMs === "number" && rec.routeSnapshot.permissionTimeoutMs > 0 ? rec.routeSnapshot.permissionTimeoutMs : DEFAULT_PERMISSION_TIMEOUT_MS;
       const createdAt = /* @__PURE__ */ new Date();
       const expiresAt = new Date(createdAt.getTime() + timeoutMs);
       const item = await toolApprovals.add({
@@ -38101,7 +36101,7 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
   const packageRootEarly = options.packageRoot ?? defaultPackageRoot();
   const runtime = createAgentRuntime({
     dataDir,
-    profiles,
+    routes,
     packageRoot: packageRootEarly,
     adapters: [
       createFakeAdapter(),
@@ -38113,19 +36113,19 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
       createCopilotAcpAdapter(acpPermissionHooks),
       createPiAcpAdapter(acpPermissionHooks)
     ],
-    resolveProfileEnv: async (profile) => {
-      const ref = typeof profile.acp?.credentialRef === "string" ? profile.acp.credentialRef.trim() : "";
+    resolveRouteEnv: async (route) => {
+      const ref = route.credentialRef?.trim() || "";
       if (!ref) return {};
-      const envKey = typeof profile.acp?.envKey === "string" ? profile.acp.envKey.trim() : "";
+      const envKey = route.envKey?.trim() || "";
       if (!envKey) {
         throw new Error(
-          `Profile ${profile.id} has credentialRef but no acp.envKey (cannot inject secret into process env)`
+          `Route ${route.routeId} has credentialRef but no envKey`
         );
       }
       const secret = await credentials.resolve(ref);
       if (!secret) {
         throw new Error(
-          `Credential not found or empty for profile ${profile.id} (credentialRef=${ref})`
+          `Credential not found or empty for route ${route.routeId} (credentialRef=${ref})`
         );
       }
       return { [envKey]: secret };
@@ -38144,10 +36144,11 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
     } catch {
     }
   });
-  const profileCatalog = new AgentProfileCatalog(dataDir, runtime, profiles, {
+  const routeCatalog = new SettingsRouteCatalog(dataDir, routes, {
     // Normal boot: persist CRUD to this service dataDir.
-    // options.profiles inject: in-memory only — no agent-profiles.json writes.
-    persistToDisk: !profilesInjected
+    // options.routes inject: in-memory only — no routes.json writes.
+    persistToDisk: !routesInjected,
+    publishRoutes: (next) => runtime.replaceRouteCatalog(next)
   });
   await runtime.reconcileOnBoot();
   const packageRoot = packageRootEarly;
@@ -38161,14 +36162,13 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
     startedAt,
     getPid,
     runtime,
-    a2a,
     toolApprovals,
     userAsks,
     taskInputs,
     managedDeliveryReportDrafts,
     credentials,
     dataDir,
-    profileCatalog,
+    routeCatalog,
     packageRoot,
     home,
     integrateCommits: options.integrateCommits
@@ -38277,11 +36277,11 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
   };
 }
 function defaultPackageRoot() {
-  const here = path21.dirname(fileURLToPath(import.meta.url));
-  if (path21.basename(here) === "service" && path21.basename(path21.dirname(here)) === "src") {
-    return path21.resolve(here, "../..");
+  const here = path20.dirname(fileURLToPath(import.meta.url));
+  if (path20.basename(here) === "service" && path20.basename(path20.dirname(here)) === "src") {
+    return path20.resolve(here, "../..");
   }
-  return path21.resolve(here);
+  return path20.resolve(here);
 }
 
 // src/service/cli.ts
@@ -38331,10 +36331,10 @@ async function main() {
   const mountPath = flagValue(args, "--mount");
   const service = await startLocalTentService({
     port: portRaw ? Number(portRaw) : 0,
-    dataDir: dataDir ? path22.resolve(dataDir) : void 0
+    dataDir: dataDir ? path21.resolve(dataDir) : void 0
   });
   if (mountPath) {
-    const info = await service.hostApi.mount(path22.resolve(mountPath));
+    const info = await service.hostApi.mount(path21.resolve(mountPath));
     process.stdout.write(`Mounted ${info.workspaceRoot} as ${info.workspaceId}
 `);
   }

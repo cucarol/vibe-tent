@@ -92,7 +92,7 @@ async function readServiceEndpoint(dataDir2) {
 }
 
 // src/service/protocol.ts
-var TENT_SERVICE_PROTOCOL_VERSION = 2;
+var TENT_SERVICE_PROTOCOL_VERSION = 3;
 var ServiceProtocolIncompatibleError = class extends Error {
   constructor(kind, options = {}) {
     const servicePackageVersion = typeof options.servicePackageVersion === "string" && options.servicePackageVersion.trim() ? options.servicePackageVersion.trim() : "unknown";
@@ -355,8 +355,6 @@ function sleep(ms) {
 
 // src/desktop/workbench/pending-interactions.ts
 var PENDING_INTERACTION_EVENT_TYPES = [
-  "a2a.ask",
-  "a2a.resolved",
   "toolApproval.pending",
   "toolApproval.resolved",
   "userAsk.pending",
@@ -375,8 +373,6 @@ function isPendingInteractionEventType(type) {
 var TASK_PROJECTION_EVENT_TYPES = [
   "task.state",
   "delivery.updated",
-  "a2a.ask",
-  "a2a.resolved",
   "userAsk.pending",
   "userAsk.resolved",
   "toolApproval.pending",
@@ -448,7 +444,7 @@ var DesktopServiceHost = class {
   handleEnvelope(ev) {
     const type = ev?.type;
     if (typeof type !== "string" || !type) return;
-    if (!isPendingInteractionEventType(type) && !isTaskProjectionEventType(type)) {
+    if (type !== "node.changed" && !isPendingInteractionEventType(type) && !isTaskProjectionEventType(type)) {
       return;
     }
     const workspaceId = typeof ev.workspaceId === "string" ? ev.workspaceId : "";
@@ -683,8 +679,8 @@ function formatContextCardPrompt(ref, hints) {
   lines.push("Do not resolve operational files as <workspaceRoot>/temp \u2014 use .tent/temp.");
   return lines.join("\n");
 }
-function boxContextCard(boxId, path6, opts) {
-  return buildContextCard({ kind: "box", id: boxId, path: path6 }, opts);
+function nodeContextCard(nodeId, path6, opts) {
+  return buildContextCard({ kind: "node", id: nodeId, path: path6 }, opts);
 }
 function taskContextCard(taskId, opts) {
   return buildContextCard({ kind: "task", id: taskId, path: opts?.path }, opts);
@@ -801,34 +797,33 @@ var ServiceDocsClient = class {
       workspaceId: this.workspaceId,
       parentPath
     });
-    const roots = (result.concepts ?? []).map(normalizeProjection);
+    const roots = (result.nodes ?? []).map(normalizeProjection);
     if (!parentPath) return roots;
     const parent = findByPath(roots, parentPath.replace(/\\/g, "/"));
     return parent?.children ?? [];
   }
-  async get(cxOrPath) {
+  async get(nodeId) {
     try {
       const result = await this.rpc.call("docs.get", {
         workspaceId: this.workspaceId,
-        ...idOrPathParams(cxOrPath)
+        nodeId
       });
-      return result.concept ? normalizeProjection(result.concept) : null;
+      return result.node ? normalizeProjection(result.node) : null;
     } catch (err) {
       if (err instanceof ServiceRpcError && err.code === -32004) return null;
       throw err;
     }
   }
-  async readForEdit(cxOrPath) {
+  async readForEdit(nodeId) {
     const result = await this.rpc.call("docs.readForEdit", {
       workspaceId: this.workspaceId,
-      ...idOrPathParams(cxOrPath)
+      nodeId
     });
-    const cx = result.cx ?? result.id;
     const raw = result.raw ?? reconstructRaw(result.frontmatter ?? {}, result.body ?? "");
     const name = result.name ?? (typeof result.frontmatter?.name === "string" ? result.frontmatter.name : result.path.split("/").pop() || result.path);
     const type = result.type ?? (typeof result.frontmatter?.type === "string" ? result.frontmatter.type : "prompt");
     return {
-      cx,
+      nodeId: result.nodeId,
       path: result.path,
       name,
       type,
@@ -843,7 +838,7 @@ var ServiceDocsClient = class {
     try {
       const params = {
         workspaceId: this.workspaceId,
-        id: input.cx,
+        nodeId: input.nodeId,
         baseEtag: input.baseEtag
       };
       if (input.raw !== void 0) params.raw = input.raw;
@@ -853,7 +848,7 @@ var ServiceDocsClient = class {
       return {
         ok: true,
         etag: result.etag,
-        cx: result.cx ?? result.id,
+        nodeId: result.nodeId,
         path: result.path
       };
     } catch (err) {
@@ -868,7 +863,7 @@ var ServiceDocsClient = class {
         if (err.code === -32009) {
           let disk;
           try {
-            disk = await this.readForEdit(input.cx);
+            disk = await this.readForEdit(input.nodeId);
           } catch {
           }
           return {
@@ -901,32 +896,32 @@ var ServiceDocsClient = class {
       parentPath: input.parentPath ?? "",
       body: input.body
     });
-    return { cx: result.id, path: result.path };
+    return { nodeId: result.nodeId, path: result.path };
   }
-  async fork(cxOrPath) {
+  async fork(nodeId) {
     const result = await this.rpc.call("docs.fork", {
       workspaceId: this.workspaceId,
-      ...idOrPathParams(cxOrPath)
+      nodeId
     });
-    return { cx: result.id };
+    return { nodeId: result.nodeId };
   }
   /**
    * User-only rename of display name / folder (cx- immutable).
    * Pass newName only — never attempt to edit id.
    */
-  async rename(cxOrPath, newName, actor = "user") {
+  async rename(nodeId, newName, actor = "user") {
     const result = await this.rpc.call("docs.rename", {
       workspaceId: this.workspaceId,
-      ...idOrPathParams(cxOrPath),
+      nodeId,
       newName,
       actor
     });
-    return { id: result.id, name: result.name, path: result.path };
+    return { nodeId: result.nodeId, name: result.name, path: result.path };
   }
-  async setMode(cxOrPath, mode) {
+  async setMode(nodeId, mode) {
     return this.rpc.call("docs.setMode", {
       workspaceId: this.workspaceId,
-      ...idOrPathParams(cxOrPath),
+      nodeId,
       mode
     });
   }
@@ -937,27 +932,27 @@ var ServiceDocsClient = class {
     });
     return result.hits ?? [];
   }
-  async backlinks(cxOrPath) {
+  async backlinks(nodeId) {
     const result = await this.rpc.call("docs.backlinks", {
       workspaceId: this.workspaceId,
-      ...idOrPathParams(cxOrPath)
+      nodeId
     });
     return result.backlinks ?? [];
   }
-  async resolveLink(_fromCxOrPath, raw) {
+  async resolveLink(_fromNodeIdOrPath, raw) {
     const hits = await this.search(raw);
     const exact = hits.find((h) => h.name === raw || h.path.endsWith(raw));
     if (exact) {
-      return { raw, kind: "wiki", targetCx: exact.cx, targetPath: exact.path, label: exact.name };
+      return { raw, kind: "wiki", targetNodeId: exact.nodeId, targetPath: exact.path, label: exact.name };
     }
     return { raw, kind: "unresolved" };
   }
-  async importAttachment(cx, fileName, bytes) {
+  async importAttachment(nodeId, fileName, bytes) {
     const payload = typeof bytes === "string" ? new TextEncoder().encode(bytes) : bytes;
     const bytesBase64 = typeof Buffer !== "undefined" ? Buffer.from(payload).toString("base64") : uint8ToBase64(payload);
     const result = await this.rpc.call("docs.importAttachment", {
       workspaceId: this.workspaceId,
-      ...idOrPathParams(cx),
+      nodeId,
       fileName,
       bytesBase64
     });
@@ -976,15 +971,10 @@ function uint8ToBase64(bytes) {
   }
   return btoa(binary);
 }
-function idOrPathParams(cxOrPath) {
-  const key = cxOrPath.trim().replace(/\\/g, "/");
-  if (key.startsWith("cx-") || key.startsWith("bx-")) return { id: key };
-  return { path: key };
-}
 function normalizeProjection(c) {
-  const mode = c.mode === "archived" || c.mode === "editable" ? c.mode : c.mode === "read-only" ? "editable" : c.archived ? "archived" : "editable";
+  const mode = c.mode === "archived" ? "archived" : "editable";
   return {
-    id: c.id,
+    nodeId: c.nodeId,
     path: c.path,
     name: c.name,
     type: c.type,
@@ -1231,17 +1221,17 @@ var WorkspaceController = class {
     this.tree = await this.docs.list();
     this.emit();
   }
-  async openConcept(cxOrPath) {
+  async openNode(cxOrPath) {
     const snap = await this.docs.readForEdit(cxOrPath);
-    const existing = this.tabs.get(snap.cx);
+    const existing = this.tabs.get(snap.nodeId);
     if (existing && existing.dirty) {
-      this.activeCx = snap.cx;
+      this.activeCx = snap.nodeId;
       this.statusMessage = "Tab already open with unsaved changes.";
       this.emit();
       return existing;
     }
     const tab = {
-      cx: snap.cx,
+      nodeId: snap.nodeId,
       path: snap.path,
       name: snap.name,
       type: snap.type,
@@ -1254,10 +1244,10 @@ var WorkspaceController = class {
       artifactRefs: snap.artifactRefs,
       frontmatter: snap.frontmatter
     };
-    if (!this.tabs.has(snap.cx)) this.tabOrder.push(snap.cx);
-    this.tabs.set(snap.cx, tab);
-    this.activeCx = snap.cx;
-    this.backlinks = await this.docs.backlinks(snap.cx);
+    if (!this.tabs.has(snap.nodeId)) this.tabOrder.push(snap.nodeId);
+    this.tabs.set(snap.nodeId, tab);
+    this.activeCx = snap.nodeId;
+    this.backlinks = await this.docs.backlinks(snap.nodeId);
     this.statusMessage = null;
     this.emit();
     return tab;
@@ -1314,7 +1304,7 @@ var WorkspaceController = class {
     const tab = this.tabs.get(cx);
     if (!tab) return false;
     const result = await this.docs.write({
-      cx: tab.cx,
+      nodeId: tab.nodeId,
       baseEtag: tab.etag,
       raw: tab.buffer
     });
@@ -1381,13 +1371,13 @@ var WorkspaceController = class {
   async createNote(name, parentPath) {
     const created = await this.docs.createNote({ name, parentPath, type: "prompt" });
     await this.refreshTree();
-    await this.openConcept(created.cx);
+    await this.openNode(created.nodeId);
     this.statusMessage = `Created note ${created.path}`;
     this.emit();
-    return created.cx;
+    return created.nodeId;
   }
-  /** Apply external concept.changed: reload clean tabs only. */
-  async onConceptChanged(cx) {
+  /** Apply external node.changed: reload clean tabs only. */
+  async onNodeChanged(cx) {
     const tab = this.tabs.get(cx);
     if (!tab) {
       await this.refreshTree();
@@ -1408,7 +1398,7 @@ var WorkspaceController = class {
       }
       return;
     }
-    await this.openConcept(cx);
+    await this.openNode(cx);
   }
   emit() {
     for (const listener of this.listeners) listener();
@@ -1458,8 +1448,8 @@ var ContextCardStore = class {
     this.emit();
     return entry;
   }
-  pushBox(boxId, path6, label, tentRootHint) {
-    return this.pushFromCard(boxContextCard(boxId, path6, { label, tentRootHint }));
+  pushNode(nodeId, path6, label, tentRootHint) {
+    return this.pushFromCard(nodeContextCard(nodeId, path6, { label, tentRootHint }));
   }
   pushTask(taskId, path6, label) {
     return this.pushFromCard(taskContextCard(taskId, { path: path6, label }));
@@ -1472,68 +1462,60 @@ var ContextCardStore = class {
   }
 };
 
-// src/desktop/workbench/box-projection.ts
-function isUsableTreeNode(n) {
-  if (n.invalid) return false;
-  if (n.archived || n.mode === "archived") return false;
-  if (typeof n.coordination === "boolean") return n.coordination;
-  return true;
+// src/desktop/workbench/node-collaboration.ts
+function isUsableTreeNode(node) {
+  return !node.invalid && !node.archived && node.mode !== "archived";
 }
-function normalizeBoxProjection(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const r = raw;
-  const workspaceId = typeof r.workspaceId === "string" ? r.workspaceId : "";
-  const boxId = typeof r.boxId === "string" && r.boxId || typeof r.id === "string" && r.id || "";
-  const statusRaw = r.status;
-  if (!workspaceId || !boxId) return null;
-  if (statusRaw !== "todo" && statusRaw !== "doing" && statusRaw !== "done") {
-    return null;
+function normalizeActiveTask(raw) {
+  if (!raw || typeof raw !== "object") throw new Error("Invalid node.collaboration activeTask.");
+  const record = raw;
+  const task = record.task;
+  if (!task || typeof task !== "object" || Array.isArray(task)) {
+    throw new Error("Invalid node.collaboration activeTask.task.");
   }
-  const out = {
-    workspaceId,
-    boxId,
-    status: statusRaw
+  const taskRecord = task;
+  if (typeof taskRecord.id !== "string" || typeof taskRecord.state !== "string") {
+    throw new Error("Invalid node.collaboration active Task identity/state.");
+  }
+  return raw;
+}
+function normalizeNodeCollaboration(raw) {
+  if (!raw || typeof raw !== "object") throw new Error("Invalid node.collaboration projection.");
+  const record = raw;
+  if (typeof record.workspaceId !== "string" || !record.workspaceId || typeof record.nodeId !== "string" || !record.nodeId || !(record.activeTask === null || record.activeTask && typeof record.activeTask === "object")) {
+    throw new Error("Invalid node.collaboration projection.");
+  }
+  const activeTask = record.activeTask === null ? null : normalizeActiveTask(record.activeTask);
+  return {
+    workspaceId: record.workspaceId,
+    nodeId: record.nodeId,
+    activeTask
   };
-  if (typeof r.assignee === "string" && r.assignee.trim()) {
-    out.assignee = r.assignee.trim();
-  }
-  if (typeof r.activeTaskId === "string" && r.activeTaskId.trim()) {
-    out.activeTaskId = r.activeTaskId.trim();
-  }
-  return out;
 }
-function collectCoordinationBoxIds(nodes) {
+function collectUsableNodeIds(nodes) {
   const ids = [];
   const walk = (list) => {
-    for (const n of list) {
-      if (isUsableTreeNode(n) && n.id) ids.push(n.id);
-      if (n.children?.length) walk(n.children);
+    for (const node of list) {
+      if (isUsableTreeNode(node) && node.nodeId) ids.push(node.nodeId);
+      if (node.children?.length) walk(node.children);
     }
   };
   walk(nodes);
   return ids;
 }
-function applyBoxProjectionsToTree(nodes, byBoxId) {
-  return nodes.map((n) => applyOne(n, byBoxId));
+function applyNodeCollaborationsToTree(nodes, byNodeId) {
+  return nodes.map((node) => applyOne(node, byNodeId));
 }
-function applyOne(node, byBoxId) {
-  const children = node.children?.length ? node.children.map((c) => applyOne(c, byBoxId)) : node.children;
-  if (!isUsableTreeNode(node)) {
-    const cleared = { ...node, children };
-    delete cleared.status;
-    delete cleared.assignee;
-    return cleared;
-  }
-  const proj = byBoxId.get(node.id);
-  if (!proj) {
-    const cleared = { ...node, children };
-    delete cleared.status;
-    delete cleared.assignee;
-    return cleared;
-  }
-  const next = { ...node, children, status: proj.status };
-  if (proj.assignee) next.assignee = proj.assignee;
-  else delete next.assignee;
+function applyOne(node, byNodeId) {
+  const children = node.children?.length ? node.children.map((child) => applyOne(child, byNodeId)) : node.children;
+  const next = { ...node, children };
+  delete next.status;
+  delete next.assignee;
+  if (!isUsableTreeNode(node)) return next;
+  const active = byNodeId.get(node.nodeId)?.activeTask?.task;
+  if (!active) return next;
+  next.status = "doing";
+  if (active.assigneeId) next.assignee = active.assigneeId;
   return next;
 }
 
@@ -1554,57 +1536,40 @@ function listCoordinationTypeOptions(types) {
 function listRoleOptions(roles) {
   return roles.map((r) => ({ name: r.name, description: r.description })).sort((a, b) => a.name.localeCompare(b.name));
 }
-function listProfileOptions(profiles, opts) {
-  const includeTest = opts?.includeTest === true;
-  return profiles.filter((p) => includeTest || !p.testOnly).map((p) => {
-    const parts = [p.displayName || p.id, p.adapterId, p.model].filter(Boolean);
+function listRouteOptions(routes) {
+  return routes.map((route) => {
+    const parts = [route.displayName || route.routeId, route.adapterId, route.model].filter(Boolean);
     return {
-      id: p.id,
-      adapterId: p.adapterId,
-      displayName: p.displayName || p.id,
-      model: p.model,
-      testOnly: p.testOnly,
+      routeId: route.routeId,
+      adapterId: route.adapterId,
+      displayName: route.displayName || route.routeId,
+      model: route.model,
       label: parts.join(" \xB7 ")
     };
-  }).sort((a, b) => {
-    if (a.testOnly !== b.testOnly) return a.testOnly ? 1 : -1;
-    return a.id.localeCompare(b.id);
-  });
+  }).sort((a, b) => a.routeId.localeCompare(b.routeId));
 }
-function pickDefaultProfileId(profiles) {
-  const product = profiles.filter((p) => !p.testOnly);
-  if (product.length === 1) return product[0].id;
-  const grok = product.find((p) => p.id === "grok-acp-default");
-  if (grok) return grok.id;
-  if (product.length > 0) return product[0].id;
-  return profiles[0]?.id ?? null;
+function pickDefaultRouteId(routes) {
+  return routes[0]?.routeId ?? null;
 }
-function buildStartSessionPayload(taskPath, profileId) {
+function buildStartSessionPayload(taskPath) {
   const path6 = taskPath.trim();
   if (!path6) {
     return { ok: false, reason: "\u7F3A\u5C11\u4EFB\u52A1\u8DEF\u5F84\u3002" };
-  }
-  const profile = profileId.trim();
-  if (!profile) {
-    return { ok: false, reason: "\u8BF7\u9009\u62E9 machine-local agent profile\u3002" };
   }
   return {
     ok: true,
     payload: {
       taskPath: path6,
-      profileId: profile,
       callerKind: "user"
     }
   };
 }
-function taskStateLabel(state, legacyStatus) {
-  const s = state || legacyStatus || "";
+function taskStateLabel(state) {
+  const s = state;
   switch (s) {
     case "queued":
-    case "pending":
       return "\u6392\u961F\u4E2D";
     case "running":
-    case "taken":
       return "\u6267\u884C\u4E2D";
     case "waiting":
       return "\u7B49\u5F85\u4E2D";
@@ -1685,7 +1650,7 @@ function buildTaskReviewItems(tasks, deliveries = [], sessions = []) {
     if (s.lastTaskId) sessionByTaskId.set(s.lastTaskId, s);
   }
   return tasks.map((task) => {
-    const state = task.state || task.status;
+    const state = task.state;
     let delivery;
     if (task.activeDeliveryId) {
       delivery = byId.get(task.activeDeliveryId);
@@ -1703,20 +1668,20 @@ function buildTaskReviewItems(tasks, deliveries = [], sessions = []) {
     }
     const commits = delivery?.commits ?? [];
     const deliverySummary = delivery?.summary;
-    const label = taskStateLabel(state, task.status);
+    const label = taskStateLabel(state);
     const sessLabel = sessionStateLabel(session?.state);
     const promptBit = task.prompt ? truncate(task.prompt, 48) : "";
     const summaryLine = [
       label,
       sessLabel ? `\u4F1A\u8BDD${sessLabel}` : null,
-      task.role,
+      `${task.assigneeKind}:${task.assigneeId}`,
       deliverySummary ? truncate(deliverySummary, 64) : promptBit || null
     ].filter(Boolean).join(" \xB7 ");
     return {
       path: task.path,
       id: task.id,
-      role: task.role,
-      status: task.status,
+      assigneeKind: task.assigneeKind,
+      assigneeId: task.assigneeId,
       state,
       referencedNodeIds: task.referencedNodeIds ?? [],
       prompt: task.prompt,
@@ -1724,7 +1689,7 @@ function buildTaskReviewItems(tasks, deliveries = [], sessions = []) {
       sessionId: task.sessionId ?? session?.sessionId,
       sessionState: session?.state,
       sessionAlive: session?.alive,
-      sessionProfileId: session?.profileId,
+      sessionRouteId: session?.routeId,
       deliverySummary,
       commits,
       canAcceptOrReject: state === "delivered",
@@ -1757,10 +1722,10 @@ var DesktopShellModel = class {
     this.sessions = [];
     this.roles = [];
     this.coordinationTypes = [];
-    this.profiles = [];
-    this.selectedProfileId = null;
+    this.routes = [];
+    this.selectedRouteId = null;
     this.statusMessage = null;
-    this.boxProjections = /* @__PURE__ */ new Map();
+    this.nodeCollaborations = /* @__PURE__ */ new Map();
     this.listeners = /* @__PURE__ */ new Set();
     this.cards = new ContextCardStore();
   }
@@ -1776,7 +1741,7 @@ var DesktopShellModel = class {
     let workspace = raw;
     if (raw) {
       const stripped = stripTreeCollab(raw.tree);
-      const overlaid = applyBoxProjectionsToTree(stripped, this.boxProjections);
+      const overlaid = applyNodeCollaborationsToTree(stripped, this.nodeCollaborations);
       workspace = {
         ...raw,
         tree: overlaid
@@ -1792,31 +1757,32 @@ var DesktopShellModel = class {
         this.tasks.map((t) => ({
           path: t.path,
           id: t.id,
-          role: t.role,
+          assigneeKind: t.assigneeKind,
+          assigneeId: t.assigneeId,
           referencedNodeIds: t.referencedNodeIds,
-          status: t.status === "taken" ? "taken" : "pending",
-          state: t.state || t.status,
+          state: t.state,
           prompt: t.prompt,
           activeDeliveryId: t.activeDeliveryId,
           sessionId: t.sessionId,
-          manifest: ""
+          manifest: "",
+          contextCard: t.contextCard
         })),
         this.deliveries,
         this.sessions
       ),
       roles: this.roles,
       coordinationTypes: this.coordinationTypes,
-      profiles: this.profiles,
-      selectedProfileId: this.selectedProfileId,
+      routes: this.routes,
+      selectedRouteId: this.selectedRouteId,
       statusMessage: this.statusMessage,
-      boxProjections: [...this.boxProjections.values()]
+      nodeCollaborations: [...this.nodeCollaborations.values()]
     };
   }
   getController() {
     return this.controller;
   }
-  setSelectedProfileId(profileId) {
-    this.selectedProfileId = profileId;
+  setSelectedRouteId(routeId) {
+    this.selectedRouteId = routeId;
     this.emit();
   }
   async refreshHealth() {
@@ -1883,40 +1849,37 @@ var DesktopShellModel = class {
   async bindForeground(workspaceId) {
     if (!this.rpc) return;
     this.foregroundWorkspaceId = workspaceId;
-    this.boxProjections.clear();
+    this.nodeCollaborations.clear();
     this.docs = new ServiceDocsClient({ rpc: this.rpc, workspaceId });
     this.controller = new WorkspaceController(this.docs);
     this.controller.subscribe(() => this.emit());
     await this.controller.refreshTree();
-    await Promise.all([this.refreshTasks(), this.refreshRegistry(), this.refreshProfiles()]);
+    await Promise.all([this.refreshTasks(), this.refreshRegistry(), this.refreshRoutes()]);
     this.emit();
   }
-  /**
-   * box.projection fan-out for coordination nodes in the current tree.
-   * Sole authority for status/assignee/activeTaskId on the shell snapshot tree.
-   */
-  async refreshBoxProjections() {
+  /** Refresh canonical Node collaboration in one batch. */
+  async refreshNodeCollaborations() {
     if (!this.rpc || !this.foregroundWorkspaceId || !this.controller) {
-      this.boxProjections.clear();
+      this.nodeCollaborations.clear();
       this.emit();
       return;
     }
     const snap = this.controller.getSnapshot();
-    const ids = collectCoordinationBoxIds(snap.tree ?? []);
+    const ids = collectUsableNodeIds(snap.tree ?? []);
     if (ids.length === 0) {
-      this.boxProjections.clear();
+      this.nodeCollaborations.clear();
       this.emit();
       return;
     }
     const ws = this.foregroundWorkspaceId;
-    const results = await Promise.all(
-      ids.map(
-        (id) => this.rpc.call("box.projection", { workspaceId: ws, id }).then((raw) => normalizeBoxProjection(raw)).catch(() => null)
-      )
-    );
-    this.boxProjections.clear();
+    const batch = await this.rpc.call("node.collaborations", {
+      workspaceId: ws,
+      nodeIds: ids
+    });
+    const results = batch.items.map((item) => normalizeNodeCollaboration(item));
+    this.nodeCollaborations.clear();
     for (const p of results) {
-      if (p) this.boxProjections.set(p.boxId, p);
+      if (p) this.nodeCollaborations.set(p.nodeId, p);
     }
     this.emit();
   }
@@ -1942,18 +1905,19 @@ var DesktopShellModel = class {
       ]);
       this.tasks = (taskResult.tasks ?? []).map((t) => ({
         path: t.path,
-        role: t.role,
-        status: t.status,
+        assigneeKind: t.assigneeKind,
+        assigneeId: t.assigneeId,
         referencedNodeIds: t.referencedNodeIds ?? [],
         state: t.state,
         id: t.id,
         prompt: t.prompt,
         activeDeliveryId: t.activeDeliveryId,
-        sessionId: t.sessionId
+        sessionId: t.sessionId,
+        contextCard: t.contextCard
       }));
       this.deliveries = deliveryResult.deliveries ?? [];
       this.sessions = sessionResult.sessions ?? [];
-      await this.refreshBoxProjections();
+      await this.refreshNodeCollaborations();
     } catch {
       this.tasks = [];
       this.deliveries = [];
@@ -1986,46 +1950,44 @@ var DesktopShellModel = class {
     this.emit();
   }
   /**
-   * Load machine-local profiles (product list: testOnly hidden).
+   * Load machine-local routes.
    * Does not start sessions; selection only.
    */
-  async refreshProfiles() {
+  async refreshRoutes() {
     if (!this.rpc) {
-      this.profiles = [];
-      this.selectedProfileId = null;
+      this.routes = [];
+      this.selectedRouteId = null;
       this.emit();
-      return this.profiles;
+      return this.routes;
     }
     try {
-      const result = await this.rpc.call("profile.list", {});
-      this.profiles = listProfileOptions(result.profiles ?? []);
-      if (!this.selectedProfileId || !this.profiles.some((p) => p.id === this.selectedProfileId)) {
-        this.selectedProfileId = pickDefaultProfileId(this.profiles);
+      const result = await this.rpc.call("route.list", {});
+      this.routes = listRouteOptions(result.routes ?? []);
+      if (!this.selectedRouteId || !this.routes.some((route) => route.routeId === this.selectedRouteId)) {
+        this.selectedRouteId = pickDefaultRouteId(this.routes);
       }
     } catch {
-      this.profiles = [];
-      if (!this.profiles.length) this.selectedProfileId = null;
+      this.routes = [];
+      if (!this.routes.length) this.selectedRouteId = null;
     }
     this.emit();
-    return this.profiles;
+    return this.routes;
   }
   /**
    * User-clicked start agent. Builds task.startSession with callerKind=user.
    * Does not auto-run; service may claim queued tasks for user callers.
    */
-  async startAgentSession(taskPath, profileId) {
+  async startAgentSession(taskPath) {
     if (!this.rpc || !this.foregroundWorkspaceId) {
       throw new Error("\u670D\u52A1\u672A\u8FDE\u63A5\u6216\u672A\u9009\u62E9\u5DE5\u4F5C\u533A\u3002");
     }
-    const pid = (profileId ?? this.selectedProfileId ?? "").trim();
-    const built = buildStartSessionPayload(taskPath, pid);
+    const built = buildStartSessionPayload(taskPath);
     if (!built.ok) {
       throw new Error(built.reason);
     }
     const result = await this.rpc.call("task.startSession", {
       workspaceId: this.foregroundWorkspaceId,
       taskPath: built.payload.taskPath,
-      profileId: built.payload.profileId,
       callerKind: built.payload.callerKind
     });
     await this.refreshTasks();
@@ -2046,17 +2008,17 @@ var DesktopShellModel = class {
     const tab = this.controller?.getActiveTab();
     if (!tab) return;
     const fg = this.workspaces.find((w) => w.workspaceId === this.foregroundWorkspaceId);
-    this.cards.pushBox(tab.cx, tab.path, tab.name, fg?.workspaceRoot);
+    this.cards.pushNode(tab.nodeId, tab.path, tab.name, fg?.workspaceRoot);
   }
   floatingStatus() {
     const fg = this.workspaces.find((w) => w.workspaceId === this.foregroundWorkspaceId);
     return {
       health: this.health,
       pendingTasks: this.tasks.filter(
-        (t) => t.status === "pending" || t.state === "queued" || t.state === "pending"
+        (t) => t.state === "queued"
       ).length,
       takenTasks: this.tasks.filter(
-        (t) => t.status === "taken" || t.state === "running" || t.state === "taken" || t.state === "waiting" || t.state === "delivered"
+        (t) => t.state === "running" || t.state === "waiting" || t.state === "delivered"
       ).length,
       recentCards: this.cards.list(),
       foregroundRoot: fg?.workspaceRoot ?? null
