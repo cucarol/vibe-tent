@@ -106,14 +106,39 @@ test("existing taskPath claim remains the queued downstream execution path", asy
   const capture = capturingClient();
   const result = await runTaskCommand(
     "claim",
-    ["temp/executor/tasks/existing.md", "--session", "ss-existing", "--json"],
+    ["temp/executor/tasks/existing.md", "--json"],
     { client: capture.client as never, cwd, json: true }
   );
   assert.equal(result.exitCode, 0, result.stderr);
   assert.deepEqual(capture.queuedCalls, [
-    { taskPath: "temp/executor/tasks/existing.md", sessionId: "ss-existing" },
+    { taskPath: "temp/executor/tasks/existing.md", sessionId: undefined },
   ]);
   assert.equal(capture.directCalls.length, 0);
+});
+
+test("task claim rejects caller-selected Session flags before client access", async () => {
+  const cwd = await makeTentCwd();
+  let clientAccesses = 0;
+  const client = new Proxy(
+    {},
+    {
+      get() {
+        clientAccesses += 1;
+        throw new Error("client must not be accessed");
+      },
+    }
+  );
+
+  for (const flag of ["--session", "--session-id"]) {
+    const result = await runTaskCommand(
+      "claim",
+      ["temp/executor/tasks/existing.md", flag, "ss-caller-selected", "--json"],
+      { client: client as never, cwd, json: true }
+    );
+    assert.equal(result.exitCode, 1);
+    assert.match(result.stderr, /does not accept --session or --session-id/);
+  }
+  assert.equal(clientAccesses, 0);
 });
 
 test("task help separates direct Role claim from downstream dispatch", () => {

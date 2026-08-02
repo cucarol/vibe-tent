@@ -36,6 +36,15 @@ export async function runTaskCommand(
   try {
     const { positionals, flags, repeatable } = parseTaskFlags(args);
     const json = globals.json === true || flags.json === "true";
+    if (
+      sub === "claim" &&
+      (Object.prototype.hasOwnProperty.call(flags, "session") ||
+        Object.prototype.hasOwnProperty.call(flags, "session-id"))
+    ) {
+      return failUsage(
+        "tent task claim does not accept --session or --session-id; Session binding is owned by Tent host integration"
+      );
+    }
     const workspaceFlag = flags.workspace || globals.workspace;
     const attachOpts: CliAttachOptions = {
       dataDir: flags["data-dir"] || globals.dataDir,
@@ -87,11 +96,10 @@ export async function runTaskCommand(
         if (taskPath) {
           if (positionals.length > 1) {
             return failUsage(
-              "Usage: tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]"
+              "Usage: tent task claim <taskPath> [--workspace <path>] [--json]"
             );
           }
-          const sessionId = flags.session || flags["session-id"];
-          const result = await client.taskClaim(workspaceId, taskPath, sessionId);
+          const result = await client.taskClaim(workspaceId, taskPath);
           return okPrint(result, json, (r) => {
             const row = r as { taskPath: string; state?: string; sessionId?: string };
             return (
@@ -105,11 +113,6 @@ export async function runTaskCommand(
         if (!hasDirectClaimInput || positionals.length > 0) {
           return failUsage(
             "Usage: tent task claim --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]"
-          );
-        }
-        if (flags.session || flags["session-id"]) {
-          return failUsage(
-            "tent task claim: direct Role claim does not accept --session; Tent uses the verified current Session only as responsibility-chain provenance"
           );
         }
         const rawNodes = repeatable.node ?? [];
