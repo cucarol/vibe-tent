@@ -7,6 +7,11 @@ export type DecisionRequestOption = {
   label: string;
 };
 
+export type DecisionRequester = {
+  kind: "session";
+  id: string;
+};
+
 export type DecisionResponse =
   | { kind: "option"; optionId: string }
   | { kind: "custom"; text: string }
@@ -15,7 +20,7 @@ export type DecisionResponse =
 export type PendingDecisionRequest = {
   id: string;
   taskId: string;
-  requester: TaskActorRef;
+  requester: DecisionRequester;
   target: TaskActorRef;
   question: string;
   options: DecisionRequestOption[];
@@ -27,13 +32,14 @@ export type PendingDecisionRequest = {
 export type AnsweredDecisionRequest = {
   id: string;
   taskId: string;
-  requester: TaskActorRef;
+  requester: DecisionRequester;
   target: TaskActorRef;
   question: string;
   options: DecisionRequestOption[];
   blocking: boolean;
   status: "answered";
   response: DecisionResponse;
+  resolvedBy: TaskActorRef;
 };
 
 export type DecisionRequest =
@@ -74,7 +80,17 @@ function requiredText(value: unknown, label: string): string {
   return value;
 }
 
-function parseActor(value: unknown, label: string): TaskActorRef {
+function parseRequester(value: unknown): DecisionRequester {
+  const label = "Decision request.requester";
+  if (!isRecord(value)) throw new Error(`${label} must be a session actor object.`);
+  assertExactFields(value, ["kind", "id"], label);
+  if (value.kind !== "session") {
+    throw new Error(`${label}.kind must be session.`);
+  }
+  return { kind: "session", id: requiredText(value.id, `${label}.id`).trim() };
+}
+
+function parseAuthorityActor(value: unknown, label: string): TaskActorRef {
   if (!isRecord(value)) throw new Error(`${label} must be an actor object.`);
   assertExactFields(value, ["kind", "id"], label);
   const kind = value.kind;
@@ -89,6 +105,15 @@ function parseActor(value: unknown, label: string): TaskActorRef {
     throw new Error(`${label}.id must name a role, not user.`);
   }
   return { kind, id };
+}
+
+function assertSameAuthority(actual: TaskActorRef, expected: TaskActorRef, label: string): void {
+  if (actual.kind !== expected.kind || actual.id !== expected.id) {
+    throw new Error(
+      `${label} must exactly match target ${expected.kind}:${expected.id}; ` +
+        `got ${actual.kind}:${actual.id}.`
+    );
+  }
 }
 
 function parseOption(value: unknown, index: number): DecisionRequestOption {
@@ -129,7 +154,9 @@ export function validateDecisionResponse(
 export function validateDecisionRequest(value: unknown): DecisionRequest {
   if (!isRecord(value)) throw new Error("Decision request must be an object.");
   const status = value.status;
-  const fields = status === "answered" ? [...REQUEST_FIELDS, "response"] : REQUEST_FIELDS;
+  const fields = status === "answered"
+    ? [...REQUEST_FIELDS, "response", "resolvedBy"]
+    : REQUEST_FIELDS;
   assertExactFields(value, fields, "Decision request");
   if (status !== "pending" && status !== "answered") {
     throw new Error("Decision request.status must be pending or answered.");
@@ -148,11 +175,12 @@ export function validateDecisionRequest(value: unknown): DecisionRequest {
   if (typeof blocking !== "boolean") {
     throw new Error("Decision request.blocking must be a boolean.");
   }
+  const target = parseAuthorityActor(value.target, "Decision request.target");
   const base = {
     id: requiredText(value.id, "Decision request.id").trim(),
     taskId: requiredText(value.taskId, "Decision request.taskId").trim(),
-    requester: parseActor(value.requester, "Decision request.requester"),
-    target: parseActor(value.target, "Decision request.target"),
+    requester: parseRequester(value.requester),
+    target,
     question: requiredText(value.question, "Decision request.question"),
     options,
     blocking,
@@ -160,32 +188,42 @@ export function validateDecisionRequest(value: unknown): DecisionRequest {
   if (status === "pending") {
     return { ...base, status };
   }
+  const resolvedBy = parseAuthorityActor(value.resolvedBy, "Decision request.resolvedBy");
+  assertSameAuthority(resolvedBy, target, "Decision request.resolvedBy");
   return {
     ...base,
     status,
     response: validateDecisionResponse(value.response, options),
+    resolvedBy,
   };
 }
 
 /** Answer once; deny is a response and has no Task interruption semantics. */
 export function answerDecisionRequest(
   request: DecisionRequest,
+  responder: unknown,
   response: unknown
 ): AnsweredDecisionRequest {
   const current = validateDecisionRequest(request);
   if (current.status !== "pending") {
     throw new Error(`Decision request already answered: ${current.id}.`);
   }
+  const resolvedBy = parseAuthorityActor(responder, "Decision responder");
+  assertSameAuthority(resolvedBy, current.target, "Decision responder");
   return {
     ...current,
     status: "answered",
     response: validateDecisionResponse(response, current.options),
+    resolvedBy,
   };
 }
 
 /** Escalate the same request from a role target to the canonical user target. */
-export function escalateDecisionRequest(request: DecisionRequest): DecisionRequest {
+export function escalateDecisionRequest(request: DecisionRequest): PendingDecisionRequest {
   const current = validateDecisionRequest(request);
+  if (current.status !== "pending") {
+    throw new Error("Only a pending decision request can be escalated.");
+  }
   if (current.target.kind !== "role") {
     throw new Error("Only a role-targeted decision request can be escalated.");
   }
