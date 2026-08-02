@@ -10,7 +10,8 @@ import { isUsableNode, LoadedTent, join } from "./tree.js";
 
 export interface DispatchInput {
   tentName: string;
-  role: string;
+  assigneeKind: "role" | "route";
+  assigneeId: string;
   /** Ephemeral dispatch selection (nodes in writable scope). Not persisted as claims. */
   claimNodes?: Node[];
   /** Ephemeral root/workspace selection. Not persisted as claims. */
@@ -22,7 +23,7 @@ export interface DispatchInput {
 }
 
 export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest {
-  const { role } = input;
+  const { assigneeKind, assigneeId } = input;
   const claimNodes = input.claimRoot ? tent.roots : requireClaimNodes(input);
   const claimScope = input.claimRoot
     ? allNodes(tent).filter(isUsableNode)
@@ -52,12 +53,16 @@ export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest 
   for (const node of claimScope) {
     writable.push({ id: node.id, path: `${node.path}/`, note: "Structural permission: may create/move/delete child nodes under this node." });
   }
-  // 角色 temp 格(总是可写)
-  writable.push({ path: join("temp", role) + "/" });
+  const executorRoot =
+    assigneeKind === "route"
+      ? join("temp", "routes", assigneeId)
+      : join("temp", assigneeId);
+  writable.push({ path: executorRoot + "/" });
 
   return {
     tent: input.tentName,
-    role,
+    assigneeKind,
+    assigneeId,
     // No claims[] — writable ids/paths encode selection; Task Node refs are contextCard only.
     ...(input.workspace ? { workspace: input.workspace } : {}),
     ...(input.worktree ? { worktree: input.worktree } : {}),
@@ -72,7 +77,8 @@ export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest 
 export function manifestToYaml(m: Manifest): string {
   const lines: string[] = [];
   lines.push(`tent: ${m.tent}`);
-  lines.push(`role: ${m.role}`);
+  lines.push(`assigneeKind: ${m.assigneeKind}`);
+  lines.push(`assigneeId: ${m.assigneeId}`);
   if (m.workspace) lines.push(`workspace: ${yamlStr(m.workspace)}`);
   if (m.worktree) lines.push(`worktree: ${yamlStr(m.worktree)}`);
   if (m.branch) lines.push(`branch: ${yamlStr(m.branch)}`);

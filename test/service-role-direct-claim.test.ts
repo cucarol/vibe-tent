@@ -99,7 +99,8 @@ test("Role direct claim creates one running Task with ordered Nodes and root use
     const task = await loadTaskEnvelope(tentFs, result.taskPath);
     assert.equal(result.state, "running");
     assert.equal(task.state, "running");
-    assert.equal(task.role, "planner");
+    assert.equal(task.assigneeKind, "role");
+    assert.equal(task.assigneeId, "planner");
     assert.equal(taskAsSub(task), false);
     assert.deepEqual(task.parentActor, { kind: "user", id: "user" });
     assert.deepEqual(task.reviewer, { kind: "user", id: "user" });
@@ -130,7 +131,8 @@ test("Role direct claim inherits persisted parent/reviewer while real self-subdi
     const sourceDispatch = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [parentNode],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "parent responsibility",
       parentActor: { kind: "role", id: "orchestrator" },
       reviewer: { kind: "role", id: "orchestrator" },
@@ -160,7 +162,6 @@ test("Role direct claim inherits persisted parent/reviewer while real self-subdi
     const entered = await rpc(svc, "session.enter", {
       workspaceId,
       roleName: "executor",
-      assigneeKind: "role",
       lastTaskId: source.id,
       cwd: workspace,
     });
@@ -184,7 +185,8 @@ test("Role direct claim inherits persisted parent/reviewer while real self-subdi
     const selfDispatch = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [downstreamNode],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "not a direct claim",
       parentActor: { kind: "role", id: "executor" },
       reviewer: { kind: "role", id: "executor" },
@@ -261,7 +263,8 @@ test("open Role Session inherits terminal lastTask responsibility and tolerates 
     const dispatched = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [priorNode],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "prior delegated work",
       parentActor: { kind: "role", id: "orchestrator" },
       reviewer: { kind: "role", id: "orchestrator" },
@@ -276,7 +279,6 @@ test("open Role Session inherits terminal lastTask responsibility and tolerates 
     const entered = await rpc(svc, "session.enter", {
       workspaceId,
       roleName: "executor",
-      assigneeKind: "role",
       lastTaskId: prior.id,
       cwd: workspace,
     });
@@ -300,7 +302,6 @@ test("open Role Session inherits terminal lastTask responsibility and tolerates 
     const missingSession = await rpc(svc, "session.enter", {
       workspaceId,
       roleName: "planner",
-      assigneeKind: "role",
       lastTaskId: "tk-missing-history",
       cwd: workspace,
     });

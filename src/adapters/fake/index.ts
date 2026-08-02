@@ -4,13 +4,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type {
-  LaunchPlan,
+  RouteLaunchPlan,
   ProviderAdapter,
   ProviderCapabilities,
   ResolvedLaunch,
   ResumeToken,
 } from "../types.js";
-import type { FakeProfileOptions, RuntimeEvent } from "../../runtime/types.js";
+import type { FakeRouteOptions, RuntimeEvent } from "../../runtime/types.js";
 
 export const FAKE_ADAPTER_ID = "fake-cli";
 
@@ -24,7 +24,7 @@ export interface FakeAdapterOptions {
  * Delivered as an inline `node -e` script so tests need no extra fixtures on disk
  * (bootstrap prompt may still land in a temp file when provided).
  */
-function buildInlineScript(opts: Required<Pick<FakeProfileOptions, "sleepMs" | "exitCode" | "waitForSignal" | "emitStdout">>): string {
+function buildInlineScript(opts: Required<Pick<FakeRouteOptions, "sleepMs" | "exitCode" | "waitForSignal" | "emitStdout">>): string {
   // Keep this as a single expression string for `node -e`.
   // Intentionally has no network / no provider SDKs.
   return `
@@ -56,10 +56,10 @@ if (waitForSignal) {
 }
 
 function normalizeFakeOpts(raw: unknown): Required<
-  Pick<FakeProfileOptions, "sleepMs" | "exitCode" | "waitForSignal" | "emitStdout">
+  Pick<FakeRouteOptions, "sleepMs" | "exitCode" | "waitForSignal" | "emitStdout">
 > &
-  FakeProfileOptions {
-  const o = (raw && typeof raw === "object" ? raw : {}) as FakeProfileOptions;
+  FakeRouteOptions {
+  const o = (raw && typeof raw === "object" ? raw : {}) as FakeRouteOptions;
   return {
     sleepMs: typeof o.sleepMs === "number" ? o.sleepMs : 30_000,
     exitCode: typeof o.exitCode === "number" ? o.exitCode : 0,
@@ -82,7 +82,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
   capabilities(): ProviderCapabilities {
     return {
       canSpawn: true,
-      canResume: false, // default; profile may store resumeToken separately
+      canResume: false, // default; a route session may store a resume token separately
       canStopGraceful: true,
       needsTty: false,
       supportsWorktreeCwd: true,
@@ -91,7 +91,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
     };
   }
 
-  resolveLaunch(plan: LaunchPlan): ResolvedLaunch {
+  resolveLaunch(plan: RouteLaunchPlan): ResolvedLaunch {
     const fake = normalizeFakeOpts(plan.extras?.fake ?? plan.extras);
     if (fake.failLaunch) {
       throw new Error(fake.failLaunch);
@@ -110,12 +110,11 @@ export class FakeProviderAdapter implements ProviderAdapter {
     const env: Record<string, string> = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_PROFILE_ID: plan.profileId,
+      TENT_ROUTE_ID: plan.routeId,
     };
     if (bootstrapFile) env.TENT_BOOTSTRAP_FILE = bootstrapFile;
-    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
 
-    // Allow profile command override only as an explicit test escape hatch.
+    // Allow route command override only as an explicit test escape hatch.
     if (plan.command) {
       return {
         command: plan.command,

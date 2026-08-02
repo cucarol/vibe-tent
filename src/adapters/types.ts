@@ -13,10 +13,10 @@ export interface ProviderCapabilities {
   observeLevel: "process" | "log" | "structured";
 }
 
-export interface LaunchPlan {
+/** Ephemeral execution inputs resolved from one machine Settings route. */
+export interface RouteLaunchPlan {
   sessionId: string;
-  profileId: string;
-  roleName?: string;
+  routeId: string;
   cwd: string;
   env: Record<string, string>;
   /**
@@ -41,10 +41,10 @@ export interface LaunchPlan {
    * Adapters project these at session/prompt time; never persist on SessionRecord.
    */
   bootstrapImageRefs?: import("./acp/image-prompt.js").BootstrapImageRef[];
-  /** Profile-level command/args overrides. */
+  /** Route-level command/args overrides. */
   command?: string;
   args?: string[];
-  /** Opaque profile extras (e.g. fake options). Adapters interpret their own keys. */
+  /** Opaque route extras (e.g. fake options). Adapters interpret their own keys. */
   extras?: Record<string, unknown>;
 }
 
@@ -116,13 +116,13 @@ export interface ProviderAdapter {
   readonly id: string;
   readonly displayNameKey: string;
   capabilities(): ProviderCapabilities;
-  resolveLaunch(plan: LaunchPlan): ResolvedLaunch | Promise<ResolvedLaunch>;
+  resolveLaunch(plan: RouteLaunchPlan): ResolvedLaunch | Promise<ResolvedLaunch>;
   /**
    * Optional structured transport (ACP stdio). When implemented, runtime uses this
    * instead of ProcessSupervisor spawn with stdio:ignore.
    */
   startManagedSession?(
-    plan: LaunchPlan,
+    plan: RouteLaunchPlan,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession>;
   /**
@@ -131,7 +131,7 @@ export interface ProviderAdapter {
    * Only adapters with `capabilities().canResume === true` implement this.
    */
   resumeManagedSession?(
-    plan: LaunchPlan,
+    plan: RouteLaunchPlan,
     token: ResumeToken,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession>;

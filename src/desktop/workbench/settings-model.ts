@@ -4,8 +4,8 @@
  */
 
 import type {
-  AgentProfileMcpServerProjection,
-  AgentProfileSkillProjection,
+  RouteMcpServerProjection,
+  RouteSkillProjection,
 } from "../../adapters/acp/mcp-skills.js";
 import type { CredentialProjection } from "../../service/credential-store.js";
 import type { ProviderCatalogEntry, ProviderVerificationLevel } from "../../service/types.js";
@@ -39,8 +39,9 @@ export type RoleUpdateDraft = {
   color?: string;
 };
 
-export type ProfileFormDraft = {
-  id: string;
+export type RouteFormDraft = {
+  routeId: string;
+  provider: string;
   adapterId: string;
   displayName?: string;
   model?: string;
@@ -53,12 +54,12 @@ export type ProfileFormDraft = {
 };
 
 /**
- * Edit draft for profile.update — id is required key; adapterId is never patchable.
+ * Edit draft for route.update — routeId is the required key.
  * Empty optional strings clear the field (null) so Service can wipe prior values.
  */
-export type ProfileUpdateDraft = {
-  /** Immutable profile id (RPC key only; not renamed). */
-  id: string;
+export type RouteUpdateDraft = {
+  /** Immutable route id (RPC key only; not renamed). */
+  routeId: string;
   displayName?: string;
   model?: string;
   executable?: string;
@@ -155,17 +156,19 @@ export function validateRoleUpdate(draft: RoleUpdateDraft):
   return { ok: true, payload };
 }
 
-export function validateProfileCreate(draft: ProfileFormDraft):
+export function validateRouteCreate(draft: RouteFormDraft):
   | { ok: true; payload: Record<string, unknown> }
   | { ok: false; reason: string } {
-  const id = (draft.id || "").trim();
+  const routeId = (draft.routeId || "").trim();
+  const provider = (draft.provider || "").trim();
   const adapterId = (draft.adapterId || "").trim();
-  if (!id) return { ok: false, reason: "profile id 不能为空" };
-  if (!/^[a-z][a-z0-9-]{0,62}$/.test(id)) {
-    return { ok: false, reason: "profile id 须匹配 a-z 开头的小写 id" };
+  if (!routeId) return { ok: false, reason: "routeId 不能为空" };
+  if (!/^[a-z][a-z0-9-]{0,62}$/.test(routeId)) {
+    return { ok: false, reason: "routeId 须匹配 a-z 开头的小写 id" };
   }
+  if (!provider) return { ok: false, reason: "provider 不能为空" };
   if (!adapterId) return { ok: false, reason: "adapterId 不能为空" };
-  const payload: Record<string, unknown> = { id, adapterId };
+  const payload: Record<string, unknown> = { routeId, provider, adapterId };
   if (draft.displayName?.trim()) payload.displayName = draft.displayName.trim();
   if (draft.model?.trim()) payload.model = draft.model.trim();
   if (draft.executable?.trim()) payload.executable = draft.executable.trim();
@@ -178,21 +181,21 @@ export function validateProfileCreate(draft: ProfileFormDraft):
 }
 
 /**
- * Build profile.update payload (top-level fields only).
- * Never includes adapterId — id and adapterId are immutable after create.
+ * Build route.update payload (top-level fields only).
+ * routeId selects the machine route being updated.
  * Empty optional strings clear the field (null); omitted fields stay untouched only when
  * the draft key is undefined (callers that always collect form values should pass strings).
- * Never secrets / env maps / nested profile bags.
+ * Never secrets / env maps / nested route bags.
  */
-export function validateProfileUpdate(draft: ProfileUpdateDraft):
+export function validateRouteUpdate(draft: RouteUpdateDraft):
   | { ok: true; payload: Record<string, unknown> }
   | { ok: false; reason: string } {
-  const id = (draft.id || "").trim();
-  if (!id) return { ok: false, reason: "profile id 不能为空" };
-  if (!/^[a-z][a-z0-9-]{0,62}$/.test(id)) {
-    return { ok: false, reason: "profile id 须匹配 a-z 开头的小写 id" };
+  const routeId = (draft.routeId || "").trim();
+  if (!routeId) return { ok: false, reason: "routeId 不能为空" };
+  if (!/^[a-z][a-z0-9-]{0,62}$/.test(routeId)) {
+    return { ok: false, reason: "routeId 须匹配 a-z 开头的小写 id" };
   }
-  const payload: Record<string, unknown> = { id };
+  const payload: Record<string, unknown> = { routeId };
 
   // Always send displayName so UI can clear custom labels (null → server falls back to id/key).
   const dn = (draft.displayName ?? "").trim();
@@ -220,32 +223,30 @@ export function validateProfileUpdate(draft: ProfileUpdateDraft):
     payload.permissionPolicy = draft.permissionPolicy;
   }
 
-  // Defensive: never allow adapterId / secret-shaped keys on the wire from this helper.
-  if ("adapterId" in payload) delete payload.adapterId;
   return { ok: true, payload };
 }
 
-/** Primary list label: mutable displayName first; immutable id is shown separately. */
-export function profileDisplayLabel(profile: {
-  id: string;
+/** Primary list label: mutable displayName first; immutable routeId is shown separately. */
+export function routeDisplayLabel(route: {
+  routeId: string;
   displayName?: string | null;
 }): string {
-  const dn = (profile.displayName || "").trim();
-  return dn || profile.id;
+  const dn = (route.displayName || "").trim();
+  return dn || route.routeId;
 }
 
 /**
- * Session snapshot tip for profile editors (machine-local launch config).
+ * Session snapshot tip for route editors (machine-local launch config).
  * Live sessions keep boot snapshot; catalog edits apply on next session start.
  */
-export const PROFILE_NEXT_SESSION_TIP =
+export const ROUTE_NEXT_SESSION_TIP =
   "本机启动配置 · Session 使用快照 · 改动下次会话生效";
 
 /**
- * Honesty copy for profile skill refs: metadata projection only,
+ * Honesty copy for route skill refs: metadata projection only,
  * provider-dependent — never claim skills are activated.
  */
-export const PROFILE_SKILLS_METADATA_TIP =
+export const ROUTE_SKILLS_METADATA_TIP =
   "Skill 仅 name/path 元数据（_meta.tent.skills）· 是否生效取决于 provider · 不宣称已激活";
 
 /** Vault entry type shown in credentials UI (store has no multi-provider field). */
@@ -297,7 +298,7 @@ export function credentialListRow(c: CredentialProjection): {
 }
 
 // ---------------------------------------------------------------------------
-// Profile Skills / MCP drafts (id/ref + enabled only; no displayName, no secrets)
+// Route Skills / MCP drafts (id/ref + enabled only; no displayName, no secrets)
 // ---------------------------------------------------------------------------
 
 export type SkillRefDraft = {
@@ -321,7 +322,7 @@ export type McpServerDraft = {
 
 /** Map projection → editor drafts (name/path/enabled only). */
 export function skillDraftsFromProjection(
-  skills?: AgentProfileSkillProjection[] | null
+  skills?: RouteSkillProjection[] | null
 ): SkillRefDraft[] {
   if (!skills?.length) return [];
   return skills.map((s) => ({
@@ -333,7 +334,7 @@ export function skillDraftsFromProjection(
 
 /** Map projection → editor drafts (refs only; projection already has no secrets). */
 export function mcpDraftsFromProjection(
-  servers?: AgentProfileMcpServerProjection[] | null
+  servers?: RouteMcpServerProjection[] | null
 ): McpServerDraft[] {
   if (!servers?.length) return [];
   return servers.map((s) => ({
@@ -379,7 +380,7 @@ export function removeMcpDraft(drafts: McpServerDraft[], name: string): McpServe
 }
 
 /**
- * Wire skills for profile.update — name / optional path / enabled only.
+ * Wire skills for route.update — name / optional path / enabled only.
  * Never displayName, body, or secret-shaped keys.
  */
 export function buildSkillsPayload(
@@ -398,7 +399,7 @@ export function buildSkillsPayload(
 }
 
 /**
- * Wire mcpServers for profile.update — envKey/credentialRef *names* only.
+ * Wire mcpServers for route.update — envKey/credentialRef *names* only.
  * Strips accidental secret-shaped keys; never plaintext env/headers.
  */
 export function buildMcpServersPayload(drafts: McpServerDraft[]): Array<Record<string, unknown>> {
@@ -509,7 +510,7 @@ export function mcpCredentialStatusLine(
 
 /**
  * Minimal skill add draft (name + optional path). Not a skill editor —
- * only identity refs for profile.skills.
+ * only identity refs for route.skills.
  */
 export function validateSkillAddDraft(draft: {
   name: string;

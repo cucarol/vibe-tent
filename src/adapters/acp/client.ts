@@ -162,7 +162,7 @@ export type AcpClientOptions = {
   /**
    * Skill name/path refs for session `_meta.tent.skills` (no SKILL.md bodies).
    * Tent metadata only — not a claim of universal provider-side skill activation.
-   * Optional; omitted when profile has no enabled skills.
+   * Optional; omitted when the route has no enabled skills.
    */
   skills?: AcpSkillMetaRef[];
   /**

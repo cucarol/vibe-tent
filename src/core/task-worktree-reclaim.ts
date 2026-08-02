@@ -12,10 +12,7 @@ import {
   TERMINAL_TASK_STATES,
   type TaskState,
 } from "./task-model.js";
-import {
-  taskAssigneeKind,
-  type TaskEnvelope,
-} from "./task.js";
+import { type TaskEnvelope } from "./task.js";
 import {
   expectedTaskWorktreePath,
   findIntegratedCommit,
@@ -125,10 +122,10 @@ export function isTaskWorktreeReclaimTerminalState(state: TaskState): boolean {
 
 /**
  * Role lanes are durable and never enter Task worktree GC.
- * Only agentProfile code Task lanes use temporary tent-task/* worktrees.
+ * Only route-executed code Task lanes use temporary tent-task/* worktrees.
  */
 export function isTaskScopedWorktreeLane(task: TaskEnvelope): boolean {
-  return taskAssigneeKind(task) === "agentProfile";
+  return task.assigneeKind === "route";
 }
 
 /**
@@ -156,7 +153,7 @@ export async function evaluateTaskWorktreeReclaim(
       eligible: false,
       code: "NOT_APPLICABLE",
       reason:
-        "Role worktrees are durable integration lanes; Task worktree reclaim applies only to agentProfile code Task lanes.",
+        "Role worktrees are durable integration lanes; Task worktree reclaim applies only to route code Task lanes.",
     };
   }
 

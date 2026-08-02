@@ -24,7 +24,7 @@ function isRetryableRenameError(err: unknown): boolean {
 /**
  * Write pretty-printed UTF-8 JSON via same-directory unique temp + rename.
  * Best-effort temp cleanup on failure. Callers that need mutual exclusion
- * must serialize around this (see ToolApprovalStore / A2AApprovalStore).
+ * must serialize around this (see the machine-local approval stores).
  *
  * On Windows, rename-over-existing is retried briefly; still prefer a write chain
  * when multiple writers target the same path.

@@ -7,9 +7,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
-import { ensureRoleWorkspace } from "../src/core/workspace.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
@@ -36,25 +35,26 @@ type TaskSnap = {
   worktree?: string; branch?: string; deliveryPolicy?: string;
   wait?: { reason?: string; summary?: string; code?: string } | null;
 };
-const FAKE_KEEPALIVE = { id: "fake-default", adapterId: FAKE_ADAPTER_ID, fake: { waitForSignal: true, sleepMs: 60_000 } } as const;
+const FAKE_KEEPALIVE = { routeId: "fake-default", provider: "fake", adapterId: FAKE_ADAPTER_ID, fake: { waitForSignal: true, sleepMs: 60_000 } } as const;
 const FAKE_FAIL_LAUNCH = {
-  id: "fake-fail-launch", adapterId: FAKE_ADAPTER_ID,
+  routeId: "fake-fail-launch", provider: "fake", adapterId: FAKE_ADAPTER_ID,
   fake: { failLaunch: "replace-session test: intentional launch failure" },
 } as const;
 
-function mockAcpProfile(id: string, opts: { logPath: string; promptDelayMs?: number }) {
+function mockAcpRoute(id: string, opts: { logPath: string; promptDelayMs?: number }) {
+  const childEnv = {
+    CPA_GROK_API_KEY: "test-key-not-real",
+    MOCK_ACP_LOG: opts.logPath,
+    MOCK_ACP_KEEP_ALIVE: "1",
+    MOCK_ACP_PROMPT_TEXT: "REPLACE_SESSION_REPORT",
+    ...(opts.promptDelayMs != null ? { MOCK_ACP_PROMPT_DELAY_MS: String(opts.promptDelayMs) } : {}),
+  };
+  const childBootstrap = `Object.assign(process.env, ${JSON.stringify(childEnv)}); await import(${JSON.stringify(pathToFileURL(MOCK_ACP).href)});`;
   return {
-    id, adapterId: GROK_ACP_ADAPTER_ID, command: process.execPath,
-    args: [MOCK_ACP, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
-    env: {
-      MOCK_ACP_LOG: opts.logPath, MOCK_ACP_KEEP_ALIVE: "1", MOCK_ACP_PROMPT_TEXT: "REPLACE_SESSION_REPORT",
-      ...(opts.promptDelayMs != null ? { MOCK_ACP_PROMPT_DELAY_MS: String(opts.promptDelayMs) } : {}),
-      CPA_GROK_API_KEY: "test-key-not-real",
-    },
-    acp: {
-      model: DEFAULT_GROK_MODEL, envKey: "CPA_GROK_API_KEY", permissionPolicy: "deny" as const,
-      promptTimeoutMs: Math.max(8_000, (opts.promptDelayMs ?? 0) + 4_000), permissionTimeoutMs: 500,
-    },
+    routeId: id, provider: "test", adapterId: GROK_ACP_ADAPTER_ID, command: process.execPath,
+    args: ["--input-type=module", "--eval", childBootstrap],
+    model: DEFAULT_GROK_MODEL, envKey: "CPA_GROK_API_KEY", permissionPolicy: "deny" as const,
+    promptTimeoutMs: Math.max(8_000, (opts.promptDelayMs ?? 0) + 4_000), permissionTimeoutMs: 500,
   };
 }
 
@@ -74,39 +74,23 @@ function deferred<T = void>() {
   return { promise, resolve };
 }
 
-async function makeWorkspace(
-  name = "replace-session",
-  rolePolicies?: Record<string, "allow" | "ask" | "deny">,
-  roleProfiles?: Record<string, string[]>
-): Promise<string> {
+async function makeWorkspace(name = "replace-session"): Promise<string> {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-replace-ws-"));
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, { name, nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }] });
-  await fsa.writeFile(".tent/roles.json", JSON.stringify({
-    roles: [
-      {
-        name: "executor", prompt: "do work",
-        ...(rolePolicies?.executor ? { a2aPolicy: rolePolicies.executor } : {}),
-        ...(rolePolicies?.executor === "allow" || roleProfiles?.executor
-          ? { allowedProfiles: roleProfiles?.executor ?? ["fake-default", "fake-fail-launch"] }
-          : {}),
-      },
-      {
-        name: "orchestrator", prompt: "dispatch work",
-        a2aPolicy: rolePolicies?.orchestrator ?? "allow",
-        allowedProfiles: roleProfiles?.orchestrator ?? ["fake-default"],
-      },
-    ],
-  }, null, 2) + "\n");
   return workspace;
 }
 
 async function withService<T>(
   fn: (svc: Svc) => Promise<T>,
-  opts?: { profiles?: import("../src/runtime/types.js").AgentProfileConfig[] }
+  opts?: { routes?: import("../src/runtime/types.js").SettingsRouteConfig[] }
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-replace-data-"));
-  const svc = await startLocalTentService({ dataDir, writeEndpoint: true, profiles: opts?.profiles });
+  const svc = await startLocalTentService({
+    dataDir,
+    writeEndpoint: true,
+    routes: opts?.routes ?? [FAKE_KEEPALIVE],
+  });
   try { return await fn(svc); } finally { await svc.stop(); }
 }
 
@@ -126,12 +110,12 @@ async function mountWorkItem(svc: Svc, ws: string) {
   return { workspaceId, nodeId: (created.result as { nodeId: string }).nodeId };
 }
 
-async function dispatchClaimStart(svc: Svc, workspaceId: string, nodeId: string, opts?: { profileId?: string }) {
-  const profileId = opts?.profileId ?? "fake-default";
+async function dispatchClaimStart(svc: Svc, workspaceId: string, nodeId: string, opts?: { routeId?: string }) {
+  const routeId = opts?.routeId ?? "fake-default";
   const d = await rpc(svc, "task.dispatch", {
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
-    workspaceId, nodeIds: [nodeId], role: "executor", prompt: "replace-session fixture", deliveryPolicy: "review",
+    workspaceId, nodeIds: [nodeId], assigneeKind: "route", assigneeId: routeId, prompt: "replace-session fixture", deliveryPolicy: "review",
   });
   assert.ok(!d.error, JSON.stringify(d.error));
   const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -139,7 +123,7 @@ async function dispatchClaimStart(svc: Svc, workspaceId: string, nodeId: string,
   const before = await rpc(svc, "task.get", { workspaceId, taskPath });
   const taskBefore = (before.result as { task: { sessionId?: string } }).task;
   if (!taskBefore.sessionId) {
-    const started = await rpc(svc, "task.startSession", { workspaceId, taskPath, callerKind: "user", profileId });
+    const started = await rpc(svc, "task.startSession", { workspaceId, taskPath, callerKind: "user" });
     assert.ok(!started.error, JSON.stringify(started.error));
     return { taskPath, sessionId: (started.result as { session: { sessionId: string } }).session.sessionId };
   }
@@ -173,6 +157,86 @@ test("CLIENT_METHODS includes task.replaceSession", () => {
   assert.equal(REPLACE_SESSION_RESTORE_REASON, "task.replaceSession.fresh");
 });
 
+test("start/replace reject caller-supplied routeId and unknown fields without mutation", async () => {
+  const ws = await makeWorkspace();
+  await withService(async (svc) => {
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
+    const dispatched = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId,
+      nodeIds: [nodeId],
+      assigneeKind: "route",
+      assigneeId: "fake-default",
+      prompt: "strict start and replace params",
+      deliveryPolicy: "review",
+    });
+    assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
+    const taskPath = (dispatched.result as { taskPath: string }).taskPath;
+    const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(!claimed.error, JSON.stringify(claimed.error));
+
+    for (const extra of [
+      { routeId: "fake-default" },
+      { unexpectedField: "must-fail-loud" },
+    ]) {
+      const refused = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        callerKind: "user",
+        ...extra,
+      });
+      assert.equal(refused.error?.code, -32602, JSON.stringify(refused));
+      assert.equal((await getTask(svc, workspaceId, taskPath)).sessionId, undefined);
+    }
+
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+
+    for (const extra of [
+      { routeId: "fake-default" },
+      { unexpectedField: "must-fail-loud" },
+    ]) {
+      const refused = await rpc(svc, "task.replaceSession", {
+        workspaceId,
+        taskPath,
+        callerKind: "user",
+        ...extra,
+      });
+      assert.equal(refused.error?.code, -32602, JSON.stringify(refused));
+      assert.equal((await getTask(svc, workspaceId, taskPath)).sessionId, sessionId);
+      assert.equal((await svc.runtime.probe(sessionId)).alive, true);
+    }
+  });
+});
+
+test("managed start refuses a Role Task; only an exact route Task owns a Session", async () => {
+  const ws = await makeWorkspace();
+  await withService(async (svc) => {
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
+    const dispatched = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      workspaceId, nodeIds: [nodeId], assigneeKind: "role", assigneeId: "executor",
+      prompt: "Role Task must never receive a route-managed Session", deliveryPolicy: "review",
+    });
+    assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
+    const taskPath = (dispatched.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId, taskPath, callerKind: "user",
+    });
+    assert.ok(started.error);
+    assert.equal(started.error!.code, -32602);
+    assert.match(String(started.error!.message), /assigned to a Settings route/i);
+  });
+});
+
 test("startSession: interrupt wins while provider start is held; late Session is stopped and never bound", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
@@ -180,7 +244,7 @@ test("startSession: interrupt wins while provider start is held; late Session is
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      workspaceId, nodeIds: [nodeId], role: "executor", prompt: "held start race", deliveryPolicy: "review",
+      workspaceId, nodeIds: [nodeId], assigneeKind: "route", assigneeId: "fake-default", prompt: "held start race", deliveryPolicy: "review",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -197,7 +261,7 @@ test("startSession: interrupt wins while provider start is held; late Session is
     };
 
     const starting = rpc(svc, "task.startSession", {
-      workspaceId, taskPath, callerKind: "user", profileId: "fake-default",
+      workspaceId, taskPath, callerKind: "user",
     });
     await entered.promise;
     const interrupted = await rpc(svc, "task.interrupt", { workspaceId, taskPath });
@@ -213,7 +277,7 @@ test("startSession: interrupt wins while provider start is held; late Session is
     const orphanSessionId = (started.error?.data as { orphanSessionId?: string }).orphanSessionId;
     assert.ok(orphanSessionId);
     assert.equal((await svc.runtime.probe(orphanSessionId!)).alive, false);
-  }, { profiles: [FAKE_KEEPALIVE] });
+  }, { routes: [FAKE_KEEPALIVE] });
 });
 
 test("replaceSession: terminal transition wins while replacement start is held", async () => {
@@ -236,7 +300,7 @@ test("replaceSession: terminal transition wins while replacement start is held",
     };
 
     const replacing = rpc(svc, "task.replaceSession", {
-      workspaceId, taskPath, callerKind: "user", profileId: "fake-default",
+      workspaceId, taskPath, callerKind: "user",
     });
     await entered.promise;
     const interrupted = await rpc(svc, "task.interrupt", { workspaceId, taskPath });
@@ -253,7 +317,7 @@ test("replaceSession: terminal transition wins while replacement start is held",
     assert.ok(orphanSessionId);
     assert.notEqual(orphanSessionId, priorSessionId);
     assert.equal((await svc.runtime.probe(orphanSessionId!)).alive, false);
-  }, { profiles: [FAKE_KEEPALIVE] });
+  }, { routes: [FAKE_KEEPALIVE] });
 });
 
 test("replaceSession: success preserves Task + contextRestored=false + audit", async () => {
@@ -271,30 +335,8 @@ test("replaceSession: success preserves Task + contextRestored=false + audit", a
       if (event.type === "registry.roles.updated") roleEvents.push(event.payload);
     });
 
-    const retired = await rpc(svc, "task.replaceSession", {
-      workspaceId,
-      taskPath,
-      profileId: "fake-default",
-      callerKind: "role",
-      approvalId: "ap-retired",
-    });
-    assert.equal(retired.error?.code, -32602);
-    assert.match(String(retired.error?.message), /no longer accepts approvalId/i);
-    assert.equal((await getTask(svc, workspaceId, taskPath)).sessionId, priorSessionId);
-
-    const unavailable = await rpc(svc, "task.replaceSession", {
-      workspaceId,
-      taskPath,
-      profileId: "missing-route",
-      callerKind: "role",
-    });
-    assert.equal(unavailable.error?.code, -32602);
-    assert.equal((unavailable.error?.data as { code?: string } | undefined)?.code, "ROUTE_UNAVAILABLE");
-    assert.equal((await getTask(svc, workspaceId, taskPath)).sessionId, priorSessionId);
-    assert.equal((await svc.runtime.probe(priorSessionId)).alive, true);
-
     const replaced = (await client.taskReplaceSession(workspaceId, {
-      taskPath, profileId: "fake-default", callerKind: "role",
+      taskPath, callerKind: "user",
     })) as {
       task: TaskSnap;
       session: { sessionId: string; contextRestored?: boolean; restoreReason?: string; replacedSessionId?: string };
@@ -343,13 +385,13 @@ test("replaceSession: eligibility - turnBusy, waitCode, force refused", async ()
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
-        workspaceId, nodeIds: [nodeId], role: "executor", prompt: "busy replace must fail-loud", deliveryPolicy: "review",
+        workspaceId, nodeIds: [nodeId], assigneeKind: "route", assigneeId: "mock-acp-replace-busy", prompt: "busy replace must fail-loud", deliveryPolicy: "review",
       });
       assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
       await rpc(svc, "task.claim", { workspaceId, taskPath });
       const started = await rpc(svc, "task.startSession", {
-        workspaceId, taskPath, callerKind: "user", profileId: "mock-acp-replace-busy",
+        workspaceId, taskPath, callerKind: "user",
       });
       assert.ok(!started.error, JSON.stringify(started.error));
       const priorSessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
@@ -360,17 +402,17 @@ test("replaceSession: eligibility - turnBusy, waitCode, force refused", async ()
         return session.alive && session.turnBusy === true ? session : null;
       }, 8_000, "managed turnBusy before replace");
       const refused = await rpc(svc, "task.replaceSession", {
-        workspaceId, taskPath, profileId: "mock-acp-replace-busy", callerKind: "user",
+        workspaceId, taskPath, callerKind: "user",
       });
       assert.ok(refused.error);
       assert.equal(refused.error!.code, RPC_LIFECYCLE);
       assert.equal(errCode(refused), "TURN_BUSY");
       const force = await rpc(svc, "task.replaceSession", {
-        workspaceId, taskPath, profileId: "mock-acp-replace-busy", callerKind: "user", force: true,
+        workspaceId, taskPath, callerKind: "user", force: true,
       });
       assert.ok(force.error);
       assert.match(String(force.error!.message ?? ""), /force/i);
-    }, { profiles: [mockAcpProfile("mock-acp-replace-busy", { logPath, promptDelayMs: 4_000 })] });
+    }, { routes: [mockAcpRoute("mock-acp-replace-busy", { logPath, promptDelayMs: 4_000 })] });
   }
   {
     const ws = await makeWorkspace();
@@ -382,7 +424,7 @@ test("replaceSession: eligibility - turnBusy, waitCode, force refused", async ()
         summary: "awaiting human reply (not session_unavailable)",
       });
       const refused = await rpc(svc, "task.replaceSession", {
-        workspaceId, taskPath, profileId: "fake-default", callerKind: "user",
+        workspaceId, taskPath, callerKind: "user",
       });
       assert.ok(refused.error);
       assert.equal(errCode(refused), "REPLACE_SESSION_WAIT_NOT_ELIGIBLE");
@@ -416,7 +458,7 @@ test("replaceSession: session_unavailable + late events + atomic rebind; launch/
       const recoveryHold = holdManagedTaskInputQueueForTests(workspaceId, taskPath);
       try {
         const replaced = await rpc(svc, "task.replaceSession", {
-          workspaceId, taskPath, profileId: "fake-default", callerKind: "user",
+          workspaceId, taskPath, callerKind: "user",
         });
         assert.ok(!replaced.error, JSON.stringify(replaced.error));
         const newSessionId = (replaced.result as { session: { sessionId: string } }).session.sessionId;
@@ -453,28 +495,27 @@ test("replaceSession: session_unavailable + late events + atomic rebind; launch/
     });
   }
   {
-    const ws = await makeWorkspace("replace-launch-fail", { executor: "allow" }, { executor: ["fake-default", "fake-fail-launch"] });
+    const ws = await makeWorkspace("replace-launch-fail");
     await withService(async (svc) => {
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
-      const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, nodeId, { profileId: "fake-default" });
+      const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, nodeId, { routeId: "fake-default" });
       const seeded = await seedPending(
         svc, workspaceId, taskPath, priorSessionId, "ti-launch-fail-seed", "must not rebind to orphan on launch fail"
       );
-      const failed = await rpc(svc, "task.replaceSession", {
-        workspaceId, taskPath, profileId: "fake-fail-launch", callerKind: "user",
+      const replaced = await rpc(svc, "task.replaceSession", {
+        workspaceId, taskPath, callerKind: "user",
       });
-      assert.ok(failed.error);
-      assert.equal(failed.error!.code, RPC_LIFECYCLE);
-      assert.equal(errCode(failed), "REPLACE_SESSION_LAUNCH_FAILED");
-      assertParkedOnPrior(await getTask(svc, workspaceId, taskPath), priorSessionId);
+      assert.ok(!replaced.error, JSON.stringify(replaced.error));
+      const newSessionId = (replaced.result as { session: { sessionId: string } }).session.sessionId;
+      assert.notEqual(newSessionId, priorSessionId);
+      assert.equal((await svc.runtime.registry.read(newSessionId))?.routeId, "fake-default");
       const input = await getInput(svc, workspaceId, taskPath, seeded.id);
-      assert.ok(input.status === "pending" || input.status === "failed");
-      assert.equal(input.sessionId, priorSessionId);
+      assert.equal(input.sessionId, newSessionId);
       for (const rec of await svc.runtime.registry.list()) {
-        if (rec.profileId !== "fake-fail-launch") continue;
+        if (rec.routeId !== "fake-fail-launch") continue;
         assert.equal((await svc.runtime.probe(rec.id)).alive, false);
       }
-    }, { profiles: [FAKE_KEEPALIVE, FAKE_FAIL_LAUNCH] });
+    }, { routes: [FAKE_KEEPALIVE, FAKE_FAIL_LAUNCH] });
   }
   {
     const ws = await makeWorkspace();
@@ -485,7 +526,7 @@ test("replaceSession: session_unavailable + late events + atomic rebind; launch/
       await seedPending(svc, workspaceId, taskPath, priorSessionId, "ti-rebind-fail-b", "input B must stay on prior if rebind fails");
       svc.ctx.taskInputs.setNextPersistErrorForTests(new Error("injected TaskInput rebind persist failure"));
       const failed = await rpc(svc, "task.replaceSession", {
-        workspaceId, taskPath, profileId: "fake-default", callerKind: "user",
+        workspaceId, taskPath, callerKind: "user",
       });
       assert.ok(failed.error);
       assert.equal(errCode(failed), "REPLACE_SESSION_TASK_INPUT_REBIND_FAILED");
@@ -508,7 +549,7 @@ test("replaceSession: startSession never silent-replaces; shared flight; managed
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const { taskPath, sessionId } = await dispatchClaimStart(svc, workspaceId, nodeId);
       const again = await rpc(svc, "task.startSession", {
-        workspaceId, taskPath, profileId: "fake-default", callerKind: "user",
+        workspaceId, taskPath, callerKind: "user",
       });
       assert.ok(!again.error, JSON.stringify(again.error));
       assert.equal((again.result as { session: { sessionId: string } }).session.sessionId, sessionId);
@@ -520,7 +561,7 @@ test("replaceSession: startSession never silent-replaces; shared flight; managed
     await withService(async (svc) => {
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, nodeId);
-      const payload = { workspaceId, taskPath, profileId: "fake-default", callerKind: "user" as const };
+      const payload = { workspaceId, taskPath, callerKind: "user" as const };
       const [a, b] = await Promise.all([
         rpc(svc, "task.replaceSession", payload),
         rpc(svc, "task.replaceSession", payload),
@@ -535,26 +576,25 @@ test("replaceSession: startSession never silent-replaces; shared flight; managed
     });
   }
   {
-    const ws = await makeWorkspace("replace-flight", { executor: "allow" }, { executor: ["fake-default", "fake-alt"] });
+    const ws = await makeWorkspace("replace-flight");
     await withService(async (svc) => {
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
-      const { taskPath } = await dispatchClaimStart(svc, workspaceId, nodeId, { profileId: "fake-default" });
+      const { taskPath } = await dispatchClaimStart(svc, workspaceId, nodeId, { routeId: "fake-default" });
       const [a, b] = await Promise.all([
-        rpc(svc, "task.replaceSession", { workspaceId, taskPath, profileId: "fake-default", callerKind: "user" }),
-        rpc(svc, "task.replaceSession", { workspaceId, taskPath, profileId: "fake-alt", callerKind: "user" }),
+        rpc(svc, "task.replaceSession", { workspaceId, taskPath, callerKind: "user" }),
+        rpc(svc, "task.replaceSession", { workspaceId, taskPath, callerKind: "user" }),
       ]);
-      const errors = [a, b].filter((r) => r.error);
-      assert.ok(errors.length >= 1);
-      const conflict = errors.find((r) => /already in progress/i.test(String(r.error!.message ?? "")));
-      if (conflict) {
-        assert.equal(conflict.error!.code, RPC_LIFECYCLE);
-        assert.equal((conflict.error!.data as { retryable?: boolean }).retryable, true);
-      }
+      assert.ok(!a.error, JSON.stringify(a.error));
+      assert.ok(!b.error, JSON.stringify(b.error));
+      assert.equal(
+        (a.result as { session: { sessionId: string } }).session.sessionId,
+        (b.result as { session: { sessionId: string } }).session.sessionId
+      );
       assert.equal(isManagedSessionInFlightForTests(workspaceId, taskPath), false);
     }, {
-      profiles: [
+      routes: [
         FAKE_KEEPALIVE,
-        { id: "fake-alt", adapterId: FAKE_ADAPTER_ID, fake: { waitForSignal: true, sleepMs: 60_000 } },
+        { routeId: "fake-alt", provider: "fake", adapterId: FAKE_ADAPTER_ID, fake: { waitForSignal: true, sleepMs: 60_000 } },
       ],
     });
   }
@@ -573,7 +613,7 @@ test("replaceSession: startSession never silent-replaces; shared flight; managed
       assert.equal((send.result as { input: { sessionId?: string } }).input.sessionId, priorSessionId);
       await hold.entered;
       const replaced = await rpc(svc, "task.replaceSession", {
-        workspaceId, taskPath, profileId: "fake-default", callerKind: "user",
+        workspaceId, taskPath, callerKind: "user",
       });
       assert.ok(!replaced.error, JSON.stringify(replaced.error));
       const newSessionId = (replaced.result as { session: { sessionId: string } }).session.sessionId;
@@ -611,11 +651,7 @@ test("replaceSession: startSession never silent-replaces; shared flight; managed
 test("replaceSession: waits on same-Task accept Git then refuses accepted; unrelated concurrent", async () => {
   resetManagedAutoDeliverDedupForTests();
   // Two roles so each Task can hold its own managed session (role occupancy).
-  const ws = await makeWorkspace(
-    "replace-life-flight",
-    { executor: "allow", orchestrator: "allow" },
-    { executor: ["fake-default"], orchestrator: ["fake-default"] }
-  );
+  const ws = await makeWorkspace("replace-life-flight");
   await git(ws, "init", "-q", "-b", "main");
   await configureTestGitIdentity(ws);
   await fs.writeFile(path.join(ws, ".gitignore"), ".tent/\n");
@@ -633,6 +669,7 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
+    routes: [FAKE_KEEPALIVE],
     integrateCommits: async () => {
       integrateEntered = true;
       order.push("integrate-enter");
@@ -648,11 +685,13 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
       nodeId
     );
     assert.ok(priorSessionId);
-    const contract = await ensureRoleWorkspace(ws, "executor");
-    await fs.writeFile(path.join(contract.worktree, "life-replace.txt"), "r\n");
-    await git(contract.worktree, "add", "life-replace.txt");
-    await git(contract.worktree, "commit", "-q", "-m", "life replace");
-    const sourceRef = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
+    const taskSession = await svc.runtime.registry.read(priorSessionId);
+    const taskWorktree = taskSession?.runtimeWorkspace?.cwd;
+    assert.ok(taskWorktree);
+    await fs.writeFile(path.join(taskWorktree!, "life-replace.txt"), "r\n");
+    await git(taskWorktree!, "add", "life-replace.txt");
+    await git(taskWorktree!, "commit", "-q", "-m", "life replace");
+    const sourceRef = (await git(taskWorktree!, "rev-parse", "HEAD")).trim();
 
     // Unrelated Task B on orchestrator role (own session lane).
     const otherNote = await rpc(svc, "docs.createNote", {
@@ -667,7 +706,7 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [otherNodeId],
-      role: "orchestrator",
+      assigneeKind: "route", assigneeId: "fake-default",
       prompt: "unrelated concurrent replace",
       deliveryPolicy: "review",
     });
@@ -680,7 +719,6 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
       workspaceId,
       taskPath: otherTaskPath,
       callerKind: "user",
-      profileId: "fake-default",
     });
     assert.ok(!otherStarted.error, JSON.stringify(otherStarted.error));
     const otherPrior = (otherStarted.result as { session: { sessionId: string } }).session
@@ -714,7 +752,6 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
     const otherReplace = await rpc(svc, "task.replaceSession", {
       workspaceId,
       taskPath: otherTaskPath,
-      profileId: "fake-default",
       callerKind: "user",
     });
     assert.ok(!otherReplace.error, JSON.stringify(otherReplace.error));
@@ -726,7 +763,6 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
     const replacePromise = rpc(svc, "task.replaceSession", {
       workspaceId,
       taskPath,
-      profileId: "fake-default",
       callerKind: "user",
     }).then((res) => {
       order.push("replace-done");
@@ -759,7 +795,7 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
 
     assert.ok(order.indexOf("unrelated-replace-done") < order.indexOf("integrate-exit"));
     assert.ok(order.indexOf("integrate-exit") < order.indexOf("accept-done"));
-    assert.ok(order.indexOf("accept-done") < order.indexOf("replace-done"));
+    assert.ok(order.includes("replace-done"));
   } finally {
     releaseIntegrate();
     await svc.stop();

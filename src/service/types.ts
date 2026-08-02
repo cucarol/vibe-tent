@@ -18,19 +18,6 @@ export type EventEnvelope<TType extends string = string, TPayload = unknown> = {
   payload: TPayload;
 };
 
-/** Role / orchestration spawn authority (evaluated only in service). */
-export type A2APolicy = "allow" | "ask" | "deny";
-
-/**
- * Machine-local launch profile — binary paths, argv templates, auth refs.
- * Lives only in service data area; never in workspace git / node bodies.
- */
-export type AgentProfile = {
-  id: string;
-  adapterId: string;
-  displayNameKey?: string;
-};
-
 export type ServiceHealth = {
   status: "ok" | "stopping";
   pid: number;
@@ -78,11 +65,8 @@ export type NodeCollaborationTaskSummary = {
   id: string;
   /** Raw Task lifecycle state (queued|running|waiting|delivered|…). */
   state: string;
-  /** Role assignee label when assigneeKind is role (or missing). */
-  role?: string;
-  /** Profile assignee id when assigneeKind is agentProfile. */
-  profileId?: string;
-  assigneeKind?: "role" | "agentProfile";
+  assigneeKind: "role" | "route";
+  assigneeId: string;
   sessionId?: string;
   activeDeliveryId?: string;
   /** Optional createdAt for clients that re-sort (server already orders). */
@@ -303,7 +287,8 @@ export type TaskActorRefWire = {
 export type TaskProjection = {
   path: string;
   id?: string;
-  role: string;
+  assigneeKind: "role" | "route";
+  assigneeId: string;
   /**
    * Node ids from Task.contextCard.refs.nodes (via taskReferencedNodeIds).
    * Replaces the removed claims[] projection — occupation truth is Context Card only.
@@ -319,12 +304,6 @@ export type TaskProjection = {
   /** Peer vs sub Git lane; missing/false = peer. */
   asSub?: boolean;
   deliveryPolicy?: string;
-  assigneeKind?: string;
-  /**
-   * Logical AgentDefinition id when this Task was Role-agent dispatched.
-   * Authoritative for startSession roster auth; omitted on user-direct profile Tasks.
-   */
-  agentId?: string;
   sessionId?: string;
   wait?: { reason: string; summary: string; code?: string };
   activeDeliveryId?: string;
@@ -369,7 +348,6 @@ export type DeliveryProjection = {
   id: string;
   taskId: string;
   sourceNodeId: string;
-  role: string;
   status: string;
   summary: string;
   commits: string[];
@@ -391,7 +369,6 @@ export type DeliveryProjection = {
  */
 export type PendingInteractionKind =
   | "userAsk"
-  | "a2a"
   | "toolApproval"
   | "delivery";
 
@@ -415,16 +392,6 @@ export type PendingUserAskInteraction = PendingInteractionBase & {
   choices?: Array<{ id: string; label: string }>;
 };
 
-/** A2A spawn approval — profile gate; not tool permission. */
-export type PendingA2AInteraction = PendingInteractionBase & {
-  kind: "a2a";
-  taskPath: string;
-  role: string;
-  profileId: string;
-  policy?: string;
-  callerKind?: string;
-};
-
 /**
  * ACP tool permission — safe title/options only.
  * Never projects tool raw args, secrets, or stdout.
@@ -445,20 +412,17 @@ export type PendingDeliveryInteraction = PendingInteractionBase & {
   kind: "delivery";
   taskId: string;
   sourceNodeId: string;
-  role: string;
   path: string;
   status: "ready";
 };
 
 export type PendingInteractionItem =
   | PendingUserAskInteraction
-  | PendingA2AInteraction
   | PendingToolApprovalInteraction
   | PendingDeliveryInteraction;
 
 export type PendingInteractionCounts = {
   userAsk: number;
-  a2a: number;
   toolApproval: number;
   delivery: number;
   total: number;
@@ -489,12 +453,10 @@ export type ProposalProjection = {
 
 export type SessionProjection = {
   sessionId: string;
-  profileId: string;
+  routeId: string;
   adapterId: string;
   state: string;
   roleName?: string;
-  /** Missing/undefined reads as role for older session rows. */
-  assigneeKind?: "role" | "agentProfile";
   /** PID is machine-local diagnostic; clients may show status only. */
   alive: boolean;
   resumeCapable: boolean;
@@ -541,7 +503,7 @@ export type RoleRegistryEntryProjection = {
   /** Stable immutable role handle (`rl-…`). */
   roleId: string;
   /**
-   * Operational key (temp/<name>/, task.role). Immutable in identity batch 1;
+   * Operational key for durable Role paths. Immutable in identity batch 1;
    * kept for path/compat. Prefer roleId for new internal refs.
    */
   name: string;
@@ -553,16 +515,18 @@ export type RoleRegistryEntryProjection = {
 };
 
 /**
- * Machine-local AgentProfile projection for clients / editors.
+ * Machine-local SettingsRoute projection for clients / editors.
  * Non-secret fields only — never env maps, API keys, tokens, or secret values.
  * Env *key names* and machine-local paths/URLs are allowed (not secret values).
  */
-export type AgentProfileProjection = {
-  id: string;
+export type SettingsRouteProjection = {
+  routeId: string;
+  provider: string;
   adapterId: string;
   /** Human label for pickers (displayName, else displayNameKey map, else id). */
   displayName: string;
-  displayNameKey?: string;
+  command?: string;
+  args?: string[];
   /** Model id when known (e.g. grok-4.5); never credentials. */
   model?: string;
   /** Absolute path to provider executable on this machine (optional). */
@@ -570,7 +534,7 @@ export type AgentProfileProjection = {
   /** Process env *name* for API token — never the value. */
   envKey?: string;
   /**
-   * Machine-local CredentialStore id referenced by this profile (not a secret).
+   * Machine-local CredentialStore id referenced by this route (not a secret).
    * Presence of the vault entry may be reported via credentialExists.
    */
   credentialRef?: string;
@@ -580,10 +544,6 @@ export type AgentProfileProjection = {
   baseUrlEnvKey?: string;
   /** Optional machine-local literal base URL (not a workspace secret). */
   baseUrl?: string;
-  /**
-   * true = harness/test profile (fake-cli). Product UI should not default to these.
-   */
-  testOnly: boolean;
   /** Non-secret permission policy name for real providers. */
   permissionPolicy?: string;
   promptTimeoutMs?: number;
@@ -593,9 +553,9 @@ export type AgentProfileProjection = {
    * Presence means Tent will project metadata to ACP (`_meta.tent.skills`);
    * it does **not** mean the provider activated the skill.
    */
-  skills?: import("../adapters/acp/mcp-skills.js").AgentProfileSkillProjection[];
+  skills?: import("../adapters/acp/mcp-skills.js").RouteSkillProjection[];
   /**
-   * How profile skills are applied at ACP session start.
+   * How route skills are applied at ACP session start.
    * Always metadata / provider-dependent when skills are present — never "activated".
    */
   skillsProjectionMode?: "metadata-provider-dependent";
@@ -606,7 +566,7 @@ export type AgentProfileProjection = {
   /**
    * MCP server descriptions with envKey/credentialRef *names* only — never secret values.
    */
-  mcpServers?: import("../adapters/acp/mcp-skills.js").AgentProfileMcpServerProjection[];
+  mcpServers?: import("../adapters/acp/mcp-skills.js").RouteMcpServerProjection[];
 };
 
 /**
@@ -644,7 +604,7 @@ export type NativeForegroundLevel =
 
 /**
  * One product provider verification fact (provider.catalog).
- * Never includes secrets, env values, credentials, or profile config.
+ * Never includes secrets, env values, credentials, or route config.
  */
 export type ProviderCatalogEntry = {
   adapterId: string;
@@ -664,16 +624,16 @@ export type ProviderCatalogEntry = {
   notes?: string;
 };
 
-/** Result of provider.catalog — static product facts, not machine-local profiles. */
+/** Result of provider.catalog — static product facts, not machine-local routes. */
 export type ProviderCatalogProjection = {
   providers: ProviderCatalogEntry[];
 };
 
 /**
  * Methods clients may call. AgentRuntimePort.* is intentionally absent.
- * B5 adds full task lifecycle + session projections + a2a resolve.
+ * Adds full task lifecycle + session projections.
  * Desktop P0-1 adds read-only registry.* for type + role pickers.
- * Desktop ACP launch surface adds profile.list/get + machine-local grok-acp CRUD.
+ * Desktop ACP launch surface adds route.list/get + machine-local grok-acp CRUD.
  * Provider verification: provider.catalog (read-only product facts; no secrets).
  * Credential vault: credential.list/set/delete (no get plaintext).
  * Machine-local skills: skill.list/install (bundled only; no workspaceId).
@@ -801,17 +761,17 @@ export const CLIENT_METHODS = [
   "registry.role.create",
   "registry.role.update",
   "registry.role.delete",
-  "profile.list",
-  "profile.get",
-  "profile.create",
-  "profile.update",
-  "profile.delete",
+  "route.list",
+  "route.get",
+  "route.create",
+  "route.update",
+  "route.delete",
   /**
    * Read-only product provider verification catalog.
    * Params: none (machine-global product facts; not workspace-scoped).
    * Result: { providers: ProviderCatalogEntry[] } — adapterId + verificationLevel
    * (+ optional canResume/notes). Never secrets, env values, or credentials.
-   * Distinct from profile.* (machine-local launch config).
+   * Distinct from route.* (machine-local launch config).
    */
   "provider.catalog",
   /** Machine-local credential vault (user-only; never returns secret plaintext). */
@@ -844,7 +804,7 @@ export const CLIENT_METHODS = [
   "task.askUser",
   /**
    * U2A one-shot append: user-only text and/or contextRefs to a running/waiting task.
-   * Not chat; does not answer a pending UserAsk; does not mutate profiles.
+   * Not chat; does not answer a pending UserAsk; does not mutate routes.
    */
   "task.sendInput",
   "task.deliver",
@@ -862,7 +822,7 @@ export const CLIENT_METHODS = [
    * Preserves nodeRefs/worktree/branch/lane/pending TaskInputs/deliveryPolicy;
    * stops the old Session first; new ss- has contextRestored=false + stable restoreReason.
    * turnBusy → fail-loud TURN_BUSY (retryable); no force flag in this contract.
-   * waiting only when durable waitCode=session_unavailable (not user-input/a2a/tool).
+   * waiting only when durable waitCode=session_unavailable (not user-input/tool).
    */
   "task.replaceSession",
   "task.list",
@@ -921,9 +881,7 @@ export const CLIENT_METHODS = [
   "role.checkpoint.get",
   "role.checkpoint.set",
   "role.checkpoint.clear",
-  "a2a.listPending",
-  "a2a.resolve",
-  /** ACP tool permission approvals (permissionPolicy=ask) — distinct from a2a.* spawn gate. */
+  /** ACP tool permission approvals (permissionPolicy=ask). */
   "toolApproval.listPending",
   "toolApproval.get",
   "toolApproval.approveOnce",
@@ -938,9 +896,9 @@ export const CLIENT_METHODS = [
   "userAsk.deny",
   /**
    * Unified A2U pending read projection (workspace-scoped).
-   * Aggregates pending UserAsk, A2A spawn approval, ACP tool approval, and
+   * Aggregates pending UserAsk, ACP tool approval, and
    * status=ready Delivery. No new store / state machine; resolve stays on
-   * domain RPCs (userAsk.* / a2a.resolve / toolApproval.* / task.accept|reject).
+   * domain RPCs (userAsk.* / toolApproval.* / task.accept|reject).
    * Fail-loud on any source failure — never a partial authoritative inbox.
    */
   "interaction.listPending",
@@ -1006,6 +964,4 @@ export const SEMANTIC_DOCS_WRITE_FIELDS = ["type", "tags", "relations"] as const
 
 /** JSON-RPC auth failure. */
 export const RPC_UNAUTHORIZED = -32001;
-export const RPC_A2A_DENIED = -32020;
-export const RPC_A2A_ASK = -32021;
 export const RPC_LIFECYCLE = -32022;

@@ -1,4 +1,4 @@
-// Central RPC adapters for Desktop A2U / A2A / tool / U2A pending closed-loop.
+// Central RPC adapters for Desktop A2U / tool / U2A pending closed-loop.
 // Pure: normalizes service projections into view models + builds resolve payloads.
 // Renderer templates must not re-implement field compatibility here.
 
@@ -7,8 +7,6 @@
  * On any of these, Desktop re-fetches listPending / task.list — never invents state.
  */
 export const PENDING_INTERACTION_EVENT_TYPES = [
-  "a2a.ask",
-  "a2a.resolved",
   "toolApproval.pending",
   "toolApproval.resolved",
   "userAsk.pending",
@@ -32,8 +30,6 @@ export function isPendingInteractionEventType(type: string): boolean {
 export const TASK_PROJECTION_EVENT_TYPES = [
   "task.state",
   "delivery.updated",
-  "a2a.ask",
-  "a2a.resolved",
   "userAsk.pending",
   "userAsk.resolved",
   "toolApproval.pending",
@@ -56,24 +52,10 @@ export type UserAskItem = {
   taskPath: string;
   taskId?: string;
   sessionId?: string;
-  /** Source role when projected; agent profile id is not on the wire today. */
+  /** Source role when projected. */
   role?: string;
   question: string;
   choices: Array<{ id: string; label: string }>;
-  createdAt: string;
-};
-
-export type A2AApprovalItem = {
-  kind: "a2a";
-  id: string;
-  taskPath: string;
-  taskId?: string;
-  /** Requester role (spawn gate). */
-  role: string;
-  /** Target agent profile id. */
-  profileId: string;
-  policy?: string;
-  callerKind?: string;
   createdAt: string;
 };
 
@@ -123,7 +105,8 @@ export type ProposalItem = {
 export type DeliveryReviewItem = {
   kind: "deliveryReview";
   taskPath: string;
-  role: string;
+  assigneeKind: "role" | "route";
+  assigneeId: string;
   summary: string;
   state: string;
   canAcceptOrReject: boolean;
@@ -178,26 +161,6 @@ export function normalizeUserAsk(raw: unknown): UserAskItem | null {
     role: str(raw.role),
     question,
     choices,
-    createdAt: strOrEmpty(raw.createdAt),
-  };
-}
-
-export function normalizeA2AApproval(raw: unknown): A2AApprovalItem | null {
-  if (!isRecord(raw)) return null;
-  const id = str(raw.id);
-  const taskPath = str(raw.taskPath);
-  const role = str(raw.role);
-  const profileId = str(raw.profileId);
-  if (!id || !taskPath || !role || !profileId) return null;
-  return {
-    kind: "a2a",
-    id,
-    taskPath,
-    taskId: str(raw.taskId),
-    role,
-    profileId,
-    policy: str(raw.policy),
-    callerKind: str(raw.callerKind),
     createdAt: strOrEmpty(raw.createdAt),
   };
 }
@@ -284,11 +247,6 @@ export function normalizeUserAskList(result: unknown): UserAskItem[] {
   return list.map(normalizeUserAsk).filter((x): x is UserAskItem => !!x);
 }
 
-export function normalizeA2AList(result: unknown): A2AApprovalItem[] {
-  const list = isRecord(result) && Array.isArray(result.approvals) ? result.approvals : [];
-  return list.map(normalizeA2AApproval).filter((x): x is A2AApprovalItem => !!x);
-}
-
 export function normalizeToolApprovalList(result: unknown): ToolApprovalItem[] {
   const list = isRecord(result) && Array.isArray(result.approvals) ? result.approvals : [];
   return list.map(normalizeToolApproval).filter((x): x is ToolApprovalItem => !!x);
@@ -310,14 +268,12 @@ export function normalizeProposalList(result: unknown): ProposalItem[] {
  */
 export function pendingInteractionCount(parts: {
   userAsks?: unknown[] | null;
-  a2aApprovals?: unknown[] | null;
   toolApprovals?: unknown[] | null;
   taskInputs?: unknown[] | null;
   proposals?: unknown[] | null;
 }): number {
   return (
     (parts.userAsks?.length ?? 0) +
-    (parts.a2aApprovals?.length ?? 0) +
     (parts.toolApprovals?.length ?? 0) +
     (parts.taskInputs?.length ?? 0) +
     (parts.proposals?.length ?? 0)
@@ -352,14 +308,6 @@ export function buildUserAskReplyPayload(
 
 export function buildUserAskDenyPayload(askId: string, actor = "user") {
   return { askId, actor };
-}
-
-export function buildA2AResolvePayload(
-  approvalId: string,
-  decision: "approve" | "deny",
-  actor = "user"
-) {
-  return { approvalId, decision, actor };
 }
 
 export function buildToolApprovalResolvePayload(
@@ -424,11 +372,6 @@ export const PENDING_INTERACTION_GAPS = [
     id: "toolApproval.params",
     need: "Tool call argument / params summary on toolApproval projection",
     have: "options[] (optionId/kind/name) + toolTitle only; UI summarizes options, never invents args",
-  },
-  {
-    id: "userAsk.agentProfile",
-    need: "Distinct source agent profile id on userAsk projection",
-    have: "role (+ optional sessionId); UI shows role as source, not a forged profile",
   },
   {
     id: "taskInput.globalList",

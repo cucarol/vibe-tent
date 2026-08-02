@@ -3,7 +3,7 @@
 // Contract: OS/process launch necessities only — not convenience network/Node tooling.
 
 /**
- * Core-owned keys: profile / request / adapter / arbitrary launchEnv cannot set these.
+ * Core-owned keys: route / request / adapter / arbitrary launchEnv cannot set these.
  * Only an explicit `reserved` / `coreEnv` overlay from AgentRuntime (or equivalent) may.
  */
 export const RESERVED_TENT_CHILD_ENV_KEYS = [
@@ -62,7 +62,7 @@ export function isReservedTentChildEnvKey(key: string): boolean {
 }
 
 /**
- * Strip reserved Tent keys from an arbitrary env bag (profile / request / launch overlay).
+ * Strip reserved Tent keys from an arbitrary env bag (route / request / launch overlay).
  * Core re-applies authoritative values only via the explicit `reserved` argument.
  */
 export function stripReservedTentChildEnv(
@@ -106,7 +106,7 @@ export function pickMinimalHostEnv(
 }
 
 export type BuildManagedChildEnvOptions = {
-  /** Validated LaunchProfile / adapter env. Reserved keys are always stripped. */
+  /** Validated Settings route / adapter env. Reserved keys are always stripped. */
   launchEnv?: Record<string, string> | NodeJS.ProcessEnv;
   /** Host process env to sample allowlist from (tests inject). */
   hostEnv?: NodeJS.ProcessEnv;

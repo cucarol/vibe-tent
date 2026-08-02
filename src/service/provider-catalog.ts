@@ -8,7 +8,7 @@
  * drift-tested against the current product adapter set.
  *
  * Never secrets, env values, credentials, command lines, or machine-local
- * profile configuration. Profiles (`profile.*`) stay separate launch config.
+ * route configuration. Settings routes stay separate launch config.
  *
  * Honesty: "has a checked-in script" is at most opt-in-live-probe — never
  * live-verified and never a claim of full CI certification on every host.
@@ -29,10 +29,16 @@ import type {
   ProviderVerificationLevel,
 } from "./types.js";
 import { PROVIDER_VERIFICATION_LEVELS } from "./types.js";
-import {
-  PRODUCT_ACP_ADAPTER_IDS,
-  type ProductAcpAdapterId,
-} from "./profiles.js";
+export const PRODUCT_ACP_ADAPTER_IDS = [
+  "grok-acp",
+  "codex-acp",
+  "claude-acp",
+  "antigravity-acp",
+  "opencode-acp",
+  "copilot-acp",
+  "pi-acp",
+] as const;
+export type ProductAcpAdapterId = (typeof PRODUCT_ACP_ADAPTER_IDS)[number];
 
 /**
  * Repository verification level per product adapterId.

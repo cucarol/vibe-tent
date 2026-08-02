@@ -1,8 +1,9 @@
 import { Clock, FsAdapter } from "./adapter.js";
+import { isRouteId } from "./id.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import {
-  AGENT_PROFILES_TEMP_DIR,
-  agentProfileTasksDir,
+  ROUTES_TEMP_DIR,
+  routeTasksDir,
   TEMP_DIR,
 } from "./paths.js";
 import { join } from "./tree.js";
@@ -27,13 +28,10 @@ import {
   type WorkspaceLane,
 } from "./task-model.js";
 import {
-  agentsBodyCompatibilityDigest,
   assertIntegrationAuthorityMatchesParent,
   buildTaskContextCard,
-  computeContextGeneration,
   deriveIntegrationAuthority,
   loadTaskContextCardFromFrontmatter,
-  profileAdapterCompatibilityDigest,
   serializeTaskContextCardForFrontmatter,
   type IntegrationAuthority,
   type TaskContextCardRef,
@@ -53,7 +51,7 @@ export interface RoleWorkspaceContract {
   /**
    * Exact branch tip (full SHA) at ensure/create time.
    * Written as Task baseCommit + roleBranchBase when the execution lane is first bound
-   * (first claim for Role assignee; startSession / asSub dispatch for agentProfile).
+   * (first claim for Role assignee; startSession / asSub dispatch for route).
    */
   baseCommit?: string;
 }
@@ -76,11 +74,9 @@ export type BaseCommitCapture = {
 };
 
 export interface TaskEnvelopeInput {
-  /**
-   * Stable assignee label.
-   * Role tasks: durable role name. Profile tasks: profileId (legacy field name kept).
-   */
-  role: string;
+  /** Canonical executor selector. Responsibility remains parentActor/reviewer. */
+  assigneeKind: AssigneeKind;
+  assigneeId: string;
   /**
    * Node refs for this Task (durable id + optional path hint).
    * Persisted only as Task.contextCard.refs.nodes[]. Formal Tasks require at
@@ -90,9 +86,7 @@ export interface TaskEnvelopeInput {
   manifestPath: string;
   userPrompt: string;
   workspace?: RoleWorkspaceContract;
-  /**
-   * Explicit parent actor (V0.2). Required on new writes — no dispatchedBy fallback.
-   */
+  /** Explicit parent actor. Required on every canonical write. */
   parentActor: TaskActorRef;
   /**
    * Explicit Delivery reviewer (V0.2). Optional: when omitted, derived equal to
@@ -109,16 +103,10 @@ export interface TaskEnvelopeInput {
   /** Full operational id (tk-…). Generated if omitted. */
   id?: string;
   deliveryPolicy?: DeliveryPolicy;
-  assigneeKind?: AssigneeKind;
-  /**
-   * Logical AgentDefinition id for Role-agent dispatch (persisted on envelope).
-   * User-direct profile Tasks omit this.
-   */
-  agentId?: string;
   sessionId?: string;
   /**
    * Override task directory (relative system root).
-   * Profile tasks use temp/agent-profiles/<safe-id>/tasks; roles use temp/<role>/tasks.
+   * Route tasks use temp/routes/<safe-id>/tasks; roles use temp/<role>/tasks.
    */
   tasksDir?: string;
   /**
@@ -127,43 +115,13 @@ export interface TaskEnvelopeInput {
    */
   objective?: string;
   acceptance?: string[];
-  /**
-   * Optional precomputed contextGeneration for new writes.
-   * When omitted, a deterministic dispatch-time generation is derived from
-   * stable workspace/assignee/profile facts (never taskId / objective / delta).
-   * Production Service should pass a real generation from
-   * computeContextGenerationFromStableFacts.
-   */
-  contextGeneration?: string;
-  /**
-   * Optional stable purpose/subKey for Session reuse identity (not a new entity).
-   * Included in contextGeneration extraStable via facts.purpose when provided.
-   */
-  purpose?: string;
-  /**
-   * Optional stable compatibility inputs used only when contextGeneration is
-   * omitted. Never includes taskId/objective/acceptance/Task delta.
-   */
-  contextGenerationFacts?: {
-    agentsPointerDigest?: string;
-    agentsBody?: string;
-    tentRoleDigest?: string;
-    tentRoleVersion?: string;
-    tentTaskDigest?: string;
-    tentTaskVersion?: string;
-    rolePrompt?: string;
-    profileId?: string;
-    adapterId?: string;
-    purpose?: string;
-    capabilityFlags?: readonly string[];
-    extraStable?: Record<string, string | number | boolean | null | undefined>;
-  };
 }
 
 /** Operational task record. */
 export interface TaskEnvelope {
   path: string;
-  role: string;
+  assigneeKind: AssigneeKind;
+  assigneeId: string;
   /**
    * Node refs are sole-sourced from `contextCard.refs.nodes` via
    * `taskReferencedNodeIds(task)` / `primaryNodeId(task)`.
@@ -225,19 +183,7 @@ export interface TaskEnvelope {
   /** Convenience projection of contextCard.taskDeltaDigest when present. */
   taskDeltaDigest?: string;
   deliveryPolicy?: DeliveryPolicy;
-  assigneeKind?: AssigneeKind;
-  /**
-   * Logical AgentDefinition id chosen at Role-agent dispatch.
-   * Authoritative for startSession / bootstrap roster auth — not re-inferred from profileId.
-   * Omitted on user-direct one-shot profile Tasks.
-   */
-  agentId?: string;
   sessionId?: string;
-  /**
-   * Optional stable purpose/subKey for Session reuse identity (cx-5q6za6).
-   * Not a new lifecycle entity — Task frontmatter + Session row projection only.
-   */
-  purpose?: string;
   wait?: TaskWait;
   activeDeliveryId?: string;
   /**
@@ -252,9 +198,9 @@ export interface TaskEnvelope {
 }
 
 /**
- * Discover task envelopes under role lanes and nested agent-profile lanes.
+ * Discover task envelopes under role lanes and nested route lanes.
  * - Role: temp/<role>/tasks/*.md
- * - Profile: temp/agent-profiles/<safe-profile-id>/tasks/*.md
+ * - Route: temp/routes/<safe-route-id>/tasks/*.md
  */
 export async function loadTaskEnvelopes(fs: FsAdapter): Promise<TaskEnvelope[]> {
   const tasks: TaskEnvelope[] = [];
@@ -262,12 +208,12 @@ export async function loadTaskEnvelopes(fs: FsAdapter): Promise<TaskEnvelope[]> 
 
   for (const entry of await fs.listDir(TEMP_DIR)) {
     if (!entry.isDir) continue;
-    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
-      const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
-      if (!(await fs.exists(profilesRoot))) continue;
-      for (const profileEntry of await fs.listDir(profilesRoot)) {
-        if (!profileEntry.isDir) continue;
-        await collectTaskFiles(fs, join(profilesRoot, profileEntry.name, "tasks"), tasks);
+    if (entry.name === ROUTES_TEMP_DIR) {
+      const routesRoot = join(TEMP_DIR, ROUTES_TEMP_DIR);
+      if (!(await fs.exists(routesRoot))) continue;
+      for (const routeEntry of await fs.listDir(routesRoot)) {
+        if (!routeEntry.isDir) continue;
+        await collectTaskFiles(fs, join(routesRoot, routeEntry.name, "tasks"), tasks);
       }
       continue;
     }
@@ -289,9 +235,9 @@ async function collectTaskFiles(
   }
 }
 
-/** Effective assignee kind; missing field reads as role (backward compatible). */
+/** Canonical Task assignee kind. */
 export function taskAssigneeKind(task: Pick<TaskEnvelope, "assigneeKind">): AssigneeKind {
-  return task.assigneeKind === "agentProfile" ? "agentProfile" : "role";
+  return task.assigneeKind;
 }
 
 /** Effective sub-dispatch Git-lane flag; missing field reads as false (peer). */
@@ -315,7 +261,7 @@ export function taskParentRoleId(
 
 /**
  * Serialize actor ref for frontmatter (inline map).
- * Kept small and explicit — no dual-write of dispatchedBy.
+ * Kept small and explicit.
  */
 export function serializeTaskActorRef(actor: TaskActorRef): { kind: string; id: string } {
   return { kind: actor.kind, id: actor.id };
@@ -403,7 +349,6 @@ export function parseBaseCommitCapture(value: unknown): BaseCommitCapture | unde
  * Requires explicit parentActor. Reviewer may be omitted and is then derived
  * equal to parentActor; when present it must match exactly (no Role A → Role B).
  * Equality is enforced only via resolveParentReviewerPair (shared with load/RPC).
- * Legacy dispatchedBy is not accepted on create.
  */
 export function resolveDispatchActors(input: {
   parentActor?: TaskActorRef;
@@ -411,7 +356,7 @@ export function resolveDispatchActors(input: {
 }): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
   if (!input.parentActor) {
     throw new Error(
-      "task.dispatch requires explicit parentActor { kind, id } (legacy dispatchedBy is migration-only)."
+      "task.dispatch requires explicit parentActor { kind, id }."
     );
   }
   return resolveParentReviewerPair({
@@ -423,15 +368,23 @@ export function resolveDispatchActors(input: {
 export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<TaskEnvelope> {
   if (!(await fs.exists(path))) throw new Error(`Task envelope not found: ${path}.`);
   const { data, body } = parseFrontmatter(await fs.readFile(path));
-  if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string") {
+  if (
+    data.type !== "task" ||
+    (data.assigneeKind !== "role" && data.assigneeKind !== "route") ||
+    typeof data.assigneeId !== "string" ||
+    !data.assigneeId.trim() ||
+    typeof data.manifest !== "string"
+  ) {
     throw new Error(`Invalid task envelope format: ${path}.`);
+  }
+  if (data.assigneeKind === "route" && !isRouteId(data.assigneeId.trim())) {
+    throw new Error(`Invalid task envelope format: ${path} (invalid route assigneeId).`);
   }
 
   const state = parseTaskState(data.state);
 
-  // V0.2 parent/reviewer: explicit wire required after disk migration.
-  // Resolve actors before Context Card so mismatch / unmigrated dispatchedBy fail with
-  // their own messages (not masked by missing-card errors).
+  // Resolve actors before Context Card so actor mismatch errors are not masked
+  // by missing-card errors.
   const actors = resolveActorsFromDisk(data);
 
   // Complete Context Card v1 is the sole Node-ref source. Incomplete/partial → fail loud.
@@ -449,7 +402,8 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
 
   const task: TaskEnvelope = {
     path,
-    role: data.role,
+    assigneeKind: data.assigneeKind,
+    assigneeId: data.assigneeId.trim(),
     manifest: data.manifest,
     state,
     parentActor: actors.parentActor,
@@ -513,16 +467,7 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   // Narrow read boundary: historical on-disk `manual` projects as `review`.
   const deliveryPolicy = normalizeDeliveryPolicyRead(data.deliveryPolicy);
   if (deliveryPolicy) task.deliveryPolicy = deliveryPolicy;
-  if (data.assigneeKind === "role" || data.assigneeKind === "agentProfile") {
-    task.assigneeKind = data.assigneeKind;
-  }
-  if (typeof data.agentId === "string" && data.agentId.trim()) {
-    task.agentId = data.agentId.trim();
-  }
   if (typeof data.sessionId === "string") task.sessionId = data.sessionId;
-  if (typeof data.purpose === "string" && data.purpose.trim()) {
-    task.purpose = data.purpose.trim();
-  }
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
   if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
     task.lastOutcome = data.lastOutcome;
@@ -536,7 +481,7 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
 
 /**
  * Resolve parentActor/reviewer from on-disk frontmatter.
- * Explicit fields are required. Retired `dispatchedBy` is never read.
+ * Explicit fields are required.
  */
 function resolveActorsFromDisk(data: Record<string, unknown>): {
   parentActor: TaskActorRef;
@@ -618,16 +563,13 @@ function formatTaskPointers(task: TaskEnvelope): string {
     lines.push(`deliveryPolicy: ${task.deliveryPolicy}`);
   }
   if (kind === "role") {
-    const initCli = join("temp", task.role, "init.md");
-    const initFile = join(".tent", "temp", task.role, "init.md");
-    lines.push(`role: ${task.role}`);
+    const initCli = join("temp", task.assigneeId, "init.md");
+    const initFile = join(".tent", "temp", task.assigneeId, "init.md");
+    lines.push(`assignee: role:${task.assigneeId}`);
     lines.push(`Role init file: ${initFile} (CLI path remains ${initCli}).`);
   } else {
-    lines.push(`assigneeKind: agentProfile`);
-    lines.push(`profileId: ${task.role}`);
-    lines.push(
-      `Assignee: agentProfile ${task.role} (one-shot; no durable role init / tent-role lane).`
-    );
+    lines.push(`assignee: route:${task.assigneeId}`);
+    lines.push(`Temporary route execution (no durable Role init or Role identity).`);
   }
   return lines.join("\n");
 }
@@ -657,11 +599,11 @@ export function relayPromptForTask(
   const resolved = resolveTaskPromptRoots(roots);
   const kind = taskAssigneeKind(task);
   const assigneeLine =
-    kind === "agentProfile"
-      ? `A Tent task has been dispatched to agentProfile ${task.role}.\n`
-      : `A Tent task has been dispatched to role ${task.role}.\n`;
+    kind === "route"
+      ? `A Tent task has been dispatched to Settings route ${task.assigneeId}.\n`
+      : `A Tent task has been dispatched to role ${task.assigneeId}.\n`;
   const initStep =
-    kind === "agentProfile"
+    kind === "route"
       ? `4. Read the task envelope and task-scoped manifest pointers above; do not look for a role init file.`
       : `4. If this is a new session for this role, complete role init first (read the init file above).`;
   return (
@@ -704,17 +646,17 @@ export function sessionBootstrapPromptForTask(
   const userPrompt = extractTaskUserPrompt(task);
   const kind = taskAssigneeKind(task);
   const readyLine =
-    kind === "agentProfile"
-      ? `A Tent managed ACP session is ready for agentProfile ${task.role}.\n`
-      : `A Tent managed ACP session is ready for role ${task.role}.\n`;
+    kind === "route"
+      ? `A Tent managed ACP session is ready through Settings route ${task.assigneeId}.\n`
+      : `A Tent managed ACP session is ready for role ${task.assigneeId}.\n`;
   return (
     readyLine +
     `${formatTaskPointers(task)}\n` +
     `Service status: this task is already claimed (state=${task.state || "running"}).\n` +
     `Managed path: Local Service already claimed this task. A non-empty final report is delivered by default after turn settle. ` +
     `Use \`outcome: blocked\` or \`outcome: needs-input\` only as an explicit control signal when work cannot complete; never self-accept.\n` +
-    (kind === "agentProfile"
-      ? `One-shot agentProfile task: rely on task/manifest pointers only — no role init.\n`
+    (kind === "route"
+      ? `Temporary route task: rely on Task/Node pointers only — no Role init or Role identity.\n`
       : "") +
     (userPrompt
       ? `\n## User Prompt\n\n${userPrompt}\n`
@@ -749,12 +691,17 @@ export async function writeTaskEnvelope(
   const userPrompt = input.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
 
-  const assigneeKind: AssigneeKind = input.assigneeKind ?? "role";
+  const assigneeKind = input.assigneeKind;
+  const assigneeId = input.assigneeId.trim();
+  if (!assigneeId) throw new Error("Task assigneeId cannot be empty.");
+  if (assigneeKind === "route" && !isRouteId(assigneeId)) {
+    throw new Error(`Invalid Task route assigneeId: ${assigneeId}.`);
+  }
   const dir =
     input.tasksDir?.trim() ||
-    (assigneeKind === "agentProfile"
-      ? agentProfileTasksDir(input.role)
-      : join(TEMP_DIR, input.role, "tasks"));
+    (assigneeKind === "route"
+      ? routeTasksDir(assigneeId)
+      : join(TEMP_DIR, assigneeId, "tasks"));
   await ensureDir(fs, dir);
   const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
 
@@ -795,35 +742,7 @@ export async function writeTaskEnvelope(
       : [];
 
   // Full Context Card v1 on every new write — sole Node-ref wire is refs.nodes[].
-  // contextGeneration is deterministic from stable compatibility facts only
-  // (workspace / AGENTS / skills / Role prompt / profile-adapter / purpose).
-  // Never hashes taskId, objective, acceptance, or current Task delta.
-  const facts = input.contextGenerationFacts;
-  const contextGeneration =
-    input.contextGeneration?.trim() ||
-    computeContextGeneration({
-      workspaceIdentity: input.workspace?.workspace || "local-workspace",
-      agentsPointerDigest:
-        facts?.agentsPointerDigest?.trim() ||
-        agentsBodyCompatibilityDigest(facts?.agentsBody ?? ""),
-      tentRoleDigest: facts?.tentRoleDigest,
-      tentRoleVersion: facts?.tentRoleVersion,
-      rolePrompt: facts?.rolePrompt,
-      tentTaskDigest: facts?.tentTaskDigest,
-      tentTaskVersion: facts?.tentTaskVersion,
-      profileAdapterCompatibility: profileAdapterCompatibilityDigest({
-        profileId: facts?.profileId || input.role,
-        adapterId: facts?.adapterId || "unknown-adapter",
-        capabilityFlags: facts?.capabilityFlags,
-      }),
-      purpose: facts?.purpose,
-      extraStable: {
-        assigneeKind,
-        assignee: input.role,
-        ...(input.agentId?.trim() ? { agentId: input.agentId.trim() } : {}),
-        ...facts?.extraStable,
-      },
-    });
+  // contextGeneration is absent until a managed Session computes and uses it.
   const contextCard = buildTaskContextCard({
     objective,
     acceptance,
@@ -833,7 +752,6 @@ export async function writeTaskEnvelope(
       deliveries: [],
       git: [],
     },
-    contextGeneration,
     userPrompt,
   });
 
@@ -841,8 +759,8 @@ export async function writeTaskEnvelope(
     type: "task",
     id,
     state: "queued",
-    role: input.role,
     assigneeKind,
+    assigneeId,
     parentActor: serializeTaskActorRef(actors.parentActor),
     reviewer: serializeTaskActorRef(actors.reviewer),
     // Sole persisted Node-ref wire.
@@ -854,10 +772,7 @@ export async function writeTaskEnvelope(
   };
   // Persist only when true; missing means peer (false). Git-lane sub marker only.
   if (input.asSub === true) data.asSub = true;
-  if (input.agentId?.trim()) data.agentId = input.agentId.trim();
   if (input.sessionId) data.sessionId = input.sessionId;
-  if (input.purpose?.trim()) data.purpose = input.purpose.trim();
-  else if (facts?.purpose?.trim()) data.purpose = facts.purpose.trim();
   if (input.workspace) {
     data.workspace = input.workspace.workspace;
     data.worktree = input.workspace.worktree;
@@ -865,8 +780,8 @@ export async function writeTaskEnvelope(
     data.targetBranch = input.workspace.targetBranch;
     // Lane exists: persist exact tip as Delivery baseCommit + legacy collection baseline.
     // Role assignee dispatch omits workspace entirely (base captured at first claim).
-    // Peer agentProfile / non-Git also omit workspace (no fake base).
-    // Profile-asSub may still bind tent-task lane + tip at dispatch.
+    // Peer route / non-Git also omit workspace (no fake base).
+    // Route-asSub may still bind tent-task lane + tip at dispatch.
     const tip =
       typeof input.workspace.baseCommit === "string"
         ? input.workspace.baseCommit.trim()
@@ -941,8 +856,6 @@ export interface TaskEnvelopePatch {
    * Persist authoritative Context Card v1 under frontmatter `contextCard`.
    */
   contextCard?: TaskContextCardV1;
-  /** Optional stable purpose/subKey; null clears. */
-  purpose?: string | null;
 }
 
 /** Low-level patch of task operational frontmatter (body stays immutable). */
@@ -1078,10 +991,6 @@ export async function patchTaskEnvelope(
     delete data.contextGeneration;
     delete data.taskDeltaDigest;
   }
-  if (patch.purpose === null) delete data.purpose;
-  else if (typeof patch.purpose === "string" && patch.purpose.trim()) {
-    data.purpose = patch.purpose.trim();
-  }
 
   await fs.writeFile(path, serializeFrontmatter(data, body, keyOrder));
   return loadTaskEnvelope(fs, path);
@@ -1144,7 +1053,6 @@ function parseWaitFields(data: Record<string, unknown>): TaskWait | undefined {
   const summary = data.waitSummary;
   if (
     (reason === "user-input" ||
-      reason === "a2a-approval" ||
       reason === "review" ||
       reason === "external") &&
     typeof summary === "string"

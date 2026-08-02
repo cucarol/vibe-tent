@@ -44,17 +44,16 @@ function waitForRuntimeEvent(
   );
 }
 
-function liveProfile() {
+function liveRoute() {
   return {
-    id: "grok-live-e2e",
+    routeId: "grok-live-e2e",
+    provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
-    acp: {
-      model: process.env.CPA_GROK_MODEL || "grok-4.5",
-      envKey: DEFAULT_GROK_ENV_KEY,
-      baseUrlEnvKey: DEFAULT_GROK_BASE_URL_ENV_KEY,
-      permissionPolicy: "deny" as const,
-      promptTimeoutMs: 180_000,
-    },
+    model: process.env.CPA_GROK_MODEL || "grok-4.5",
+    envKey: DEFAULT_GROK_ENV_KEY,
+    baseUrlEnvKey: DEFAULT_GROK_BASE_URL_ENV_KEY,
+    permissionPolicy: "deny" as const,
+    promptTimeoutMs: 180_000,
   };
 }
 
@@ -86,7 +85,7 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: false,
-    profiles: [liveProfile()],
+    routes: [liveRoute()],
   });
   const rpc = (method: string, params?: Record<string, unknown>) =>
     rpcCall(svc.url, method, params, { token: svc.token });
@@ -107,7 +106,8 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      role: "e2e",
+      assigneeKind: "route",
+      assigneeId: "grok-live-e2e",
       prompt: "Reply with a short delivery report containing the marker TENT_GROK_E2E_OK. Do not call tools.",
       deliveryPolicy: "review",
     });
@@ -119,7 +119,6 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
       workspaceId,
       taskPath,
       callerKind: "user",
-      profileId: "grok-live-e2e",
     });
     assert.ok(!started.error, JSON.stringify(started.error));
 
@@ -154,14 +153,15 @@ test("real Grok ACP: stop bridge → native session/load → recover prior conte
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "tent-grok-resume-cwd-"));
   const sessionId = "ss-groklive1";
   const nonce = `TENT_RSM_${Date.now().toString(36).toUpperCase()}`;
-  let firstRuntime = createAgentRuntime({ dataDir, profiles: [liveProfile()] });
+  let firstRuntime = createAgentRuntime({ dataDir, routes: [liveRoute()] });
   const firstEvents: RuntimeEvent[] = [];
   firstRuntime.subscribeAll((event) => firstEvents.push(event));
 
   try {
     await firstRuntime.startSession({
       sessionId,
-      profileId: "grok-live-e2e",
+      routeId: "grok-live-e2e",
+      routeSnapshot: firstRuntime.snapshotRouteForStart("grok-live-e2e"),
       cwd,
       bootstrapPrompt:
         `Remember the secret nonce ${nonce} for our next turn. ` +
@@ -178,7 +178,7 @@ test("real Grok ACP: stop bridge → native session/load → recover prior conte
     await firstRuntime.stopSession(sessionId, "user");
     await firstRuntime.shutdown();
 
-    const secondRuntime = createAgentRuntime({ dataDir, profiles: [liveProfile()] });
+    const secondRuntime = createAgentRuntime({ dataDir, routes: [liveRoute()] });
     firstRuntime = secondRuntime;
     const secondEvents: RuntimeEvent[] = [];
     secondRuntime.subscribeAll((event) => secondEvents.push(event));

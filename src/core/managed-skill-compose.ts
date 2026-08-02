@@ -1,7 +1,6 @@
 // Built-in Tent skill composition for managed Task executors (V0.2).
 // tent-task is automatic for every managed Task; durable Role tasks also get tent-role.
-// Profile.skills remain optional extras — not the mechanism for these contracts.
-// No tent-agent alias.
+// Route skills remain optional extras — not the mechanism for these contracts.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -10,7 +9,7 @@ import type { AssigneeKind } from "./task-model.js";
 
 /**
  * Narrow skill-ref shape owned by Core for managed compose.
- * Structural match to adapter AgentProfileSkillRef (name/path/enabled) —
+ * Structural match to an adapter route skill reference (name/path/enabled) —
  * Core must not import adapters (build:core rootDir=src/core).
  */
 export type ManagedSkillRef = {
@@ -31,12 +30,12 @@ export type BuiltinTentSkillName =
  * Which built-in contracts apply for a managed executor.
  * - every managed Task → tent-task
  * - durable Role assignee → tent-role as well
- * - agentProfile one-shot → tent-task only
+ * - temporary route execution → tent-task only
  */
 export function builtinSkillNamesForExecutor(
   assigneeKind: AssigneeKind | undefined
 ): BuiltinTentSkillName[] {
-  const kind = assigneeKind === "agentProfile" ? "agentProfile" : "role";
+  const kind = assigneeKind === "route" ? "route" : "role";
   if (kind === "role") {
     return [BUILTIN_TENT_ROLE_SKILL, BUILTIN_TENT_TASK_SKILL];
   }
@@ -224,7 +223,7 @@ export function splitManagedBootstrapStableAndDynamic(full: string): {
 }
 
 /**
- * ACP `_meta.tent.skills` refs for optional profile extras only.
+ * ACP `_meta.tent.skills` refs for optional route extras only.
  *
  * Built-in tent-role / tent-task contracts are model-visible solely via the
  * stable bootstrap prefix (`composeManagedSkillBootstrapPrefix`) — the
@@ -232,16 +231,16 @@ export function splitManagedBootstrapStableAndDynamic(full: string): {
  * activatable skill path refs (avoids provider-dependent double-load when an
  * adapter honors skill metadata).
  *
- * Profile.skills that collide with built-in names are dropped. Remaining
+ * Route skills that collide with built-in names are dropped. Remaining
  * extras are deduped by name (case-insensitive; first wins).
  */
 export function composeManagedSkillRefs(input: {
   packageRoot: string;
   assigneeKind?: AssigneeKind;
-  profileSkills?: ManagedSkillRef[];
+  routeSkills?: ManagedSkillRef[];
 }): ManagedSkillRef[] {
   void input.packageRoot; // reserved for future path resolution of extras
-  // Always reserve both built-in names so profile cannot re-inject them as meta.
+  // Always reserve both built-in names so a route cannot re-inject them as meta.
   const reserved = new Set<string>([
     BUILTIN_TENT_ROLE_SKILL.toLowerCase(),
     BUILTIN_TENT_TASK_SKILL.toLowerCase(),
@@ -249,7 +248,7 @@ export function composeManagedSkillRefs(input: {
   const out: ManagedSkillRef[] = [];
   const seen = new Set<string>(reserved);
 
-  for (const ref of input.profileSkills ?? []) {
+  for (const ref of input.routeSkills ?? []) {
     if (!ref || ref.enabled === false) continue;
     const name = typeof ref.name === "string" ? ref.name.trim() : "";
     if (!name) continue;

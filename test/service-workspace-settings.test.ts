@@ -206,7 +206,8 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
     // Default (no settings file) → review
     const d1 = (await client.taskDispatch(workspaceId, {
       nodeIds: [box1],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "first task uses default review",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -220,7 +221,8 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
 
     const d2 = (await client.taskDispatch(workspaceId, {
       nodeIds: [box2],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "second task snapshots bypass",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -231,7 +233,8 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
     // Explicit override still wins over workspace default.
     const d3 = (await client.taskDispatch(workspaceId, {
       nodeIds: [box3],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "third task explicit agent-decide",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -257,7 +260,8 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [await createNode("work-item-manual-reject")],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "must reject manual wire",
       deliveryPolicy: "manual",
     });
@@ -273,7 +277,8 @@ test("task envelope on-disk manual projects as review; new serialize writes revi
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const d = (await client.taskDispatch(workspaceId, {
       nodeIds: [nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "new wire writes review",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },

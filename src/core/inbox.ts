@@ -34,7 +34,7 @@ export async function buildInbox(
     if (!task) continue;
     items.push({
       state: "stale",
-      role: task.role,
+      role: `${task.assigneeKind}:${task.assigneeId}`,
       nodePath: node.path,
       nodeId: node.id,
       taskId: task.id || task.path,

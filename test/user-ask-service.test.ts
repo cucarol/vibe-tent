@@ -6,7 +6,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
@@ -17,13 +17,14 @@ import {
   DEFAULT_GROK_MODEL,
   GROK_ACP_ADAPTER_ID,
 } from "../src/adapters/grok-acp/index.js";
+import type { SettingsRouteConfig } from "../src/runtime/route-config.js";
 const MOCK_ACP = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   "fixtures",
   "mock-acp-server.mjs"
 );
 
-function mockAcpProfile(
+function mockAcpRoute(
   id: string,
   opts: {
     logPath: string;
@@ -32,35 +33,26 @@ function mockAcpProfile(
     promptDelayMs?: number;
     keepAlive?: boolean;
   }
-): import("../src/runtime/types.js").AgentProfileConfig {
+): SettingsRouteConfig {
+  const childEnv = {
+    CPA_GROK_API_KEY: "test-key-not-real",
+    MOCK_ACP_LOG: opts.logPath,
+    MOCK_ACP_KEEP_ALIVE: opts.keepAlive === false ? "0" : "1",
+    MOCK_ACP_PROMPT_TEXT: opts.promptText ?? "outcome: delivered\n\nMANAGED_FINAL_REPORT",
+    MOCK_ACP_PROMPT_MODE: "ok",
+    ...(opts.followupText ? { MOCK_ACP_FOLLOWUP_TEXT: opts.followupText } : {}),
+    ...(opts.promptDelayMs != null ? { MOCK_ACP_PROMPT_DELAY_MS: String(opts.promptDelayMs) } : {}),
+  };
+  const childBootstrap = `Object.assign(process.env, ${JSON.stringify(childEnv)}); await import(${JSON.stringify(pathToFileURL(MOCK_ACP).href)});`;
   return {
-    id,
-    adapterId: GROK_ACP_ADAPTER_ID,
+    routeId: id, provider: "test", adapterId: GROK_ACP_ADAPTER_ID,
     command: process.execPath,
-    args: [MOCK_ACP, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
-    env: {
-      MOCK_ACP_LOG: opts.logPath,
-      MOCK_ACP_KEEP_ALIVE: opts.keepAlive === false ? "0" : "1",
-      // Managed finals must lead with structured outcome: delivered|blocked|needs-input.
-      MOCK_ACP_PROMPT_TEXT:
-        opts.promptText ?? "outcome: delivered\n\nMANAGED_FINAL_REPORT",
-      ...(opts.followupText
-        ? { MOCK_ACP_FOLLOWUP_TEXT: opts.followupText }
-        : {}),
-      ...(opts.promptDelayMs != null
-        ? { MOCK_ACP_PROMPT_DELAY_MS: String(opts.promptDelayMs) }
-        : {}),
-      // Keep session open after first bootstrap so follow-up can land.
-      MOCK_ACP_PROMPT_MODE: "ok",
-      CPA_GROK_API_KEY: "test-key-not-real",
-    },
-    acp: {
-      model: DEFAULT_GROK_MODEL,
-      envKey: "CPA_GROK_API_KEY",
-      permissionPolicy: "deny",
-      promptTimeoutMs: 15_000,
-      permissionTimeoutMs: 500,
-    },
+    args: ["--input-type=module", "--eval", childBootstrap],
+    model: DEFAULT_GROK_MODEL,
+    envKey: "CPA_GROK_API_KEY",
+    permissionPolicy: "deny",
+    promptTimeoutMs: 15_000,
+    permissionTimeoutMs: 500,
   };
 }
 
@@ -85,35 +77,18 @@ async function makeWorkspace(): Promise<string> {
     name: "user-ask",
     nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
-  await fsa.writeFile(
-    ".tent/roles.json",
-    JSON.stringify(
-      {
-        roles: [
-          {
-            name: "executor",
-            prompt: "do work",
-            a2aPolicy: "allow",
-            allowedProfiles: ["mock-ua"],
-          },
-        ],
-      },
-      null,
-      2
-    ) + "\n"
-  );
   return workspace;
 }
 
 async function withService<T>(
-  profiles: import("../src/runtime/types.js").AgentProfileConfig[],
+  routes: import("../src/runtime/types.js").SettingsRouteConfig[],
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ua-data-"));
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
-    profiles,
+    routes,
   });
   try {
     return await fn(svc);
@@ -144,7 +119,7 @@ test("task.askUser parks running task; second ask rejected; reply resumes + pers
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [nodeId],
-      role: "executor",
+      assigneeKind: "role", assigneeId: "executor",
       prompt: "Need a product decision",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -242,7 +217,7 @@ test("userAsk.deny resumes task; interrupt cancels pending ask", async () => {
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      role: "executor",
+      assigneeKind: "role", assigneeId: "executor",
       prompt: "Ask then deny",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -287,8 +262,8 @@ test("managed ACP: UserAsk reply continues same session with User Answer prompt 
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-ua-log-")),
     "mock-acp.json"
   );
-  const profiles = [
-    mockAcpProfile("mock-ua", {
+  const routes = [
+    mockAcpRoute("mock-ua", {
       logPath,
       // Slow bootstrap so askUser can park the task before auto-delivery races.
       // Follow-up User Answer prompt returns the real deliverable report.
@@ -299,7 +274,7 @@ test("managed ACP: UserAsk reply continues same session with User Answer prompt 
     }),
   ];
 
-  await withService(profiles, async (svc) => {
+  await withService(routes, async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const mounted = (await client.mount(ws)) as { workspaceId: string };
     const workspaceId = mounted.workspaceId;
@@ -310,7 +285,7 @@ test("managed ACP: UserAsk reply continues same session with User Answer prompt 
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      role: "executor",
+      assigneeKind: "route", assigneeId: "mock-ua",
       prompt: "Managed ask flow",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -321,7 +296,6 @@ test("managed ACP: UserAsk reply continues same session with User Answer prompt 
     // startSession auto-claims on user path
     const started = (await client.taskStartSession(workspaceId, {
       taskPath,
-      profileId: "mock-ua",
       callerKind: "user",
     })) as { session: { sessionId: string }; task: { state: string } };
     assert.equal(started.task.state, "running");
@@ -417,50 +391,6 @@ test("two workspaces sharing relative taskPath keep independent UserAsk pending"
   const wsA = await makeWorkspace();
   const wsB = await makeWorkspace();
   // Same relative path under both system roots — the cross-workspace collision case.
-  const sharedTaskPath = "temp/executor/tasks/task-shared-cross-ws.md";
-
-  async function plantRunningTask(
-    workspaceRoot: string,
-    nodeId: string
-  ): Promise<void> {
-    const abs = path.join(workspaceRoot, ".tent", ...sharedTaskPath.split("/"));
-    await fs.mkdir(path.dirname(abs), { recursive: true });
-    const now = new Date().toISOString();
-    const body =
-      "---\n" +
-      "type: task\n" +
-      "id: tk-sharedpath\n" +
-      "status: taken\n" +
-      "state: running\n" +
-      "role: executor\n" +
-      "assigneeKind: role\n" +
-      // Flow maps only — frontmatter parser does not read nested block maps.
-      "parentActor: {kind: user, id: user}\n" +
-      "reviewer: {kind: user, id: user}\n" +
-      `claims: [${nodeId}]\n` +
-      "manifest: temp/executor/manifest.yml\n" +
-      "deliveryPolicy: review\n" +
-      `createdAt: "${now}"\n` +
-      `updatedAt: "${now}"\n` +
-      "---\n" +
-      "# Task\n\n## User Prompt\n\nPlanted for cross-workspace UserAsk isolation.\n";
-    await fs.writeFile(abs, body, "utf8");
-    // Minimal role lane so claim/lifecycle can resolve manifest if needed later.
-    const manifestAbs = path.join(
-      workspaceRoot,
-      ".tent",
-      "temp",
-      "executor",
-      "manifest.yml"
-    );
-    await fs.mkdir(path.dirname(manifestAbs), { recursive: true });
-    await fs.writeFile(
-      manifestAbs,
-      `role: executor\nclaims: [${nodeId}]\nreadable: []\nwritable: []\n`,
-      "utf8"
-    );
-  }
-
   await withService([], async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const mountedA = (await client.mount(wsA)) as { workspaceId: string };
@@ -477,20 +407,30 @@ test("two workspaces sharing relative taskPath keep independent UserAsk pending"
       type: "prompt",
     }));
 
-    await plantRunningTask(wsA, noteA.nodeId);
-    await plantRunningTask(wsB, noteB.nodeId);
+    async function dispatchRunningTask(workspaceId: string, nodeId: string) {
+      const dispatched = (await client.taskDispatch(workspaceId, {
+        nodeIds: [nodeId], assigneeKind: "role", assigneeId: "executor",
+        prompt: "Canonical cross-workspace UserAsk isolation fixture",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" }, deliveryPolicy: "review",
+      })) as { taskPath: string };
+      await client.taskClaim(workspaceId, dispatched.taskPath);
+      return dispatched.taskPath;
+    }
+    const taskPathA = await dispatchRunningTask(workspaceA, noteA.nodeId);
+    const taskPathB = await dispatchRunningTask(workspaceB, noteB.nodeId);
 
-    const askedA = (await client.taskAskUser(workspaceA, sharedTaskPath, {
+    const askedA = (await client.taskAskUser(workspaceA, taskPathA, {
       question: "Alpha only?",
     })) as { ask: { id: string; workspaceId: string; taskPath: string }; state: string };
-    const askedB = (await client.taskAskUser(workspaceB, sharedTaskPath, {
+    const askedB = (await client.taskAskUser(workspaceB, taskPathB, {
       question: "Beta only?",
     })) as { ask: { id: string; workspaceId: string; taskPath: string }; state: string };
 
     assert.equal(askedA.state, "waiting");
     assert.equal(askedB.state, "waiting");
-    assert.equal(askedA.ask.taskPath, sharedTaskPath);
-    assert.equal(askedB.ask.taskPath, sharedTaskPath);
+    assert.equal(askedA.ask.taskPath, taskPathA);
+    assert.equal(askedB.ask.taskPath, taskPathB);
     assert.notEqual(askedA.ask.id, askedB.ask.id);
     assert.equal(askedA.ask.workspaceId, workspaceA);
     assert.equal(askedB.ask.workspaceId, workspaceB);
@@ -507,7 +447,7 @@ test("two workspaces sharing relative taskPath keep independent UserAsk pending"
     assert.equal(pendingB.asks[0]!.id, askedB.ask.id);
 
     // Interrupt A must not cancel B's pending ask (same relative taskPath).
-    await client.taskInterrupt(workspaceA, sharedTaskPath);
+    await client.taskInterrupt(workspaceA, taskPathA);
     const afterA = (await client.userAskGet(askedA.ask.id)) as {
       ask: { status: string };
     };
@@ -537,7 +477,7 @@ test("task.askUser rejects non-running task", async () => {
     }));
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      role: "executor",
+      assigneeKind: "role", assigneeId: "executor",
       prompt: "not claimed",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },

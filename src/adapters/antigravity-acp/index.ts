@@ -2,7 +2,7 @@
 // Tent does not own the bridge's conversation database and never starts `agy` directly.
 
 import type {
-  LaunchPlan,
+  RouteLaunchPlan,
   ManagedSession,
   ProviderAdapter,
   ProviderCapabilities,
@@ -29,14 +29,14 @@ import {
   ANTIGRAVITY_ACP_ADAPTER_ID,
   ANTIGRAVITY_ACP_BRIDGE,
   type AntigravityAcpPermissionPolicy,
-  type AntigravityAcpProfileOptions,
+  type AntigravityAcpRouteOptions,
 } from "./types.js";
 
 export {
   ANTIGRAVITY_ACP_ADAPTER_ID,
   ANTIGRAVITY_ACP_BRIDGE,
   type AntigravityAcpPermissionPolicy,
-  type AntigravityAcpProfileOptions,
+  type AntigravityAcpRouteOptions,
 } from "./types.js";
 
 export interface AntigravityAcpAdapterOptions extends AcpPermissionAskHooks {
@@ -70,19 +70,18 @@ export class AntigravityAcpProviderAdapter implements ProviderAdapter {
     return mainstreamAcpCapabilities();
   }
 
-  resolveLaunch(plan: LaunchPlan): ResolvedLaunch {
+  resolveLaunch(plan: RouteLaunchPlan): ResolvedLaunch {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const env: Record<string, string> = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_PROFILE_ID: plan.profileId,
+      TENT_ROUTE_ID: plan.routeId,
     };
-    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
     if (opts.envKey) {
       const value = this.resolveEnvValue(opts.envKey, plan.env);
       if (!value?.trim()) {
         throw new Error(
-          `未配置环境变量 ${opts.envKey}：antigravity-acp profile 明确要求该值。` +
+          `未配置环境变量 ${opts.envKey}：antigravity-acp route 明确要求该值。` +
             `Tent 通过第三方 agy-acp bridge 连接官方 agy CLI；secret 只能放在 service 进程环境。`
         );
       }
@@ -99,7 +98,7 @@ export class AntigravityAcpProviderAdapter implements ProviderAdapter {
   }
 
   async startManagedSession(
-    plan: LaunchPlan,
+    plan: RouteLaunchPlan,
     emit: (event: RuntimeEvent) => void
   ): Promise<ManagedSession> {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
@@ -142,27 +141,4 @@ export function createAntigravityAcpAdapter(
   options?: AntigravityAcpAdapterOptions
 ): AntigravityAcpProviderAdapter {
   return new AntigravityAcpProviderAdapter(options);
-}
-
-export function antigravityAcpProfileTemplate(overrides?: {
-  id?: string;
-  executable?: string;
-  envKey?: string;
-  permissionPolicy?: AntigravityAcpPermissionPolicy;
-}): {
-  id: string;
-  adapterId: string;
-  displayNameKey: string;
-  acp: AntigravityAcpProfileOptions;
-} {
-  return {
-    id: overrides?.id ?? "antigravity-acp-default",
-    adapterId: ANTIGRAVITY_ACP_ADAPTER_ID,
-    displayNameKey: "profile.antigravityAcp.default",
-    acp: {
-      executable: overrides?.executable,
-      envKey: overrides?.envKey,
-      permissionPolicy: overrides?.permissionPolicy ?? "deny",
-    },
-  };
 }

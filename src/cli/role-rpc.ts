@@ -19,13 +19,6 @@ export type RoleRpcGlobalOptions = {
 
 export type RoleCommandResult = { exitCode: number; stdout: string; stderr: string };
 
-const RETIRED_ROLE_FLAGS = new Set([
-  "roster",
-  "roster-add",
-  "roster-remove",
-  "a2a-policy",
-  "a2aPolicy",
-]);
 const COMMON_ROLE_FLAGS = new Set(["json", "attach-only", "data-dir", "service-entry", "workspace"]);
 const METADATA_ROLE_FLAGS = new Set([
   "display-name",
@@ -50,9 +43,6 @@ export async function runRoleCommand(
   try {
     const { positionals, flags } = parseFlags(args, ["json", "attach-only"]);
     for (const key of Object.keys(flags)) {
-      if (RETIRED_ROLE_FLAGS.has(key)) {
-        return fail(`tent role no longer accepts --${key}; roster configuration is retired`);
-      }
       if (!COMMON_ROLE_FLAGS.has(key) && !METADATA_ROLE_FLAGS.has(key)) {
         return fail(`Unknown role option: --${key}`);
       }

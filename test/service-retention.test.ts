@@ -61,7 +61,9 @@ async function seedOldTerminal(
   const taskPath = await writeTaskEnvelope(fsa, clock, {
 
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },role: "executor",
+    reviewer: { kind: "user", id: "user" },
+    assigneeKind: "role",
+    assigneeId: "executor",
     nodeRefs: [{ id: "cx-seed", path: "inbox" }],
     manifestPath: "temp/executor/manifests/m.md",
     userPrompt: "old terminal work",
@@ -83,7 +85,7 @@ async function seedOldTerminal(
     const d = await createDelivery(fsa, clock, {
       taskId: opts.taskId,
       sourceNodeId: "cx-seed",
-      role: "executor",
+      deliveriesDir: "temp/executor/deliveries",
       summary: "old delivery body",
       status: "accepted",
     });
@@ -222,7 +224,9 @@ test("operationalRetention.purge never deletes active task or ready delivery", a
     const activePath = await writeTaskEnvelope(fsa, clock, {
 
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },role: "executor",
+      reviewer: { kind: "user", id: "user" },
+      assigneeKind: "role",
+      assigneeId: "executor",
       nodeRefs: [{ id: "cx-live", path: "inbox" }],
       manifestPath: "temp/executor/manifests/m.md",
       userPrompt: "active",
@@ -238,7 +242,7 @@ test("operationalRetention.purge never deletes active task or ready delivery", a
     const ready = await createDelivery(fsa, clock, {
       taskId: "tk-orphan-ready",
       sourceNodeId: "cx-live",
-      role: "executor",
+      deliveriesDir: "temp/executor/deliveries",
       summary: "ready review",
       status: "ready",
     });

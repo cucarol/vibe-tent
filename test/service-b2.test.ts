@@ -103,7 +103,18 @@ async function withService<T>(
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>, dataDir: string) => Promise<T>
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b2-data-"));
-  const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+  const svc = await startLocalTentService({
+    dataDir,
+    writeEndpoint: true,
+    routes: [
+      {
+        routeId: "fake-default",
+        provider: "fake",
+        adapterId: FAKE_ADAPTER_ID,
+        fake: { waitForSignal: true, canResume: true },
+      },
+    ],
+  });
   try {
     return await fn(svc, dataDir);
   } finally {
@@ -625,7 +636,8 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "implement the thing",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
@@ -661,9 +673,10 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
     const collaboration = await rpc(svc, "node.collaboration", { workspaceId, nodeId });
     assert.ok(!collaboration.error, JSON.stringify(collaboration.error));
     const projection = collaboration.result as {
-      activeTask: null | { task: { role?: string } };
+      activeTask: null | { task: { assigneeKind: string; assigneeId: string } };
     };
-    assert.equal(projection.activeTask?.task.role, "executor");
+    assert.equal(projection.activeTask?.task.assigneeKind, "role");
+    assert.equal(projection.activeTask?.task.assigneeId, "executor");
 
     const editOwner = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     assert.ok(!editOwner.error, JSON.stringify(editOwner.error));
@@ -1029,7 +1042,8 @@ test("mount dead-session reconcile does not suppress an immediate external Node 
     const dispatched = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [nodeId],
-      role: "executor",
+      assigneeKind: "route",
+      assigneeId: "fake-default",
       prompt: "seed dead session reconciliation",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -1043,9 +1057,9 @@ test("mount dead-session reconcile does not suppress an immediate external Node 
     const now = new Date().toISOString();
     await svc.runtime.registry.write({
       id: sessionId,
-      profileId: "fake-default",
+      routeId: "fake-default",
       adapterId: FAKE_ADAPTER_ID,
-      roleName: "executor",
+      routeSnapshot: svc.runtime.snapshotRouteForStart("fake-default"),
       state: "stopped",
       workspace: workspaceId,
       lastTaskId: taskPath,

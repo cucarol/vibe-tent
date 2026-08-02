@@ -10,7 +10,6 @@ import {
   taskStateLabel,
 } from "../../workbench/collaboration-ui.js";
 import {
-  buildA2AResolvePayload,
   buildToolApprovalResolvePayload,
   buildUserAskDenyPayload,
   buildUserAskReplyPayload,
@@ -18,18 +17,14 @@ import {
 } from "../../workbench/pending-interactions.js";
 import { el, setError } from "./elements.js";
 import {
-  a2aApprovals,
   actionableTasks,
   pendingInteractionCount,
-  profiles,
   proposals,
   rejectDrafts,
   reloadPendingInteractions,
   reloadTasks,
   reloadTree,
-  selectedProfileId,
   sessions,
-  setSelectedProfileId,
   taskInputs,
   toolApprovals,
   userAsks,
@@ -81,20 +76,6 @@ export function renderActivity(): void {
     })
     .join("");
 
-  const a2aHtml = a2aApprovals
-    .map(
-      (item) => `<article class="interaction-item" data-pending-kind="a2a">
-      <div class="interaction-kicker">A2A · ${escapeHtml(item.role)}</div>
-      <div class="interaction-title">请求启动 ${escapeHtml(item.profileId)}</div>
-      <div class="muted interaction-note">${escapeHtml(item.taskPath)}</div>
-      <div class="interaction-actions">
-        <button type="button" class="btn btn-primary" data-act-a2a-allow="${escapeHtml(item.id)}">允许一次</button>
-        <button type="button" class="btn btn-ghost" data-act-a2a-deny="${escapeHtml(item.id)}">拒绝</button>
-      </div>
-    </article>`
-    )
-    .join("");
-
   const toolsHtml = toolApprovals
     .map((item) => {
       const summary = item.paramsSummary || "";
@@ -130,7 +111,7 @@ export function renderActivity(): void {
       const draft = rejectDrafts.get(t.path) || "";
       return `<article class="interaction-item" data-pending-kind="deliveryReview">
         <div class="interaction-kicker">DELIVERY REVIEW</div>
-        <div class="interaction-title">${escapeHtml(t.role)}</div>
+        <div class="interaction-title">${escapeHtml(t.assigneeId)}</div>
         <div class="muted interaction-note">${escapeHtml(t.deliverySummary || t.prompt || t.path)}</div>
         <div class="interaction-actions">
           <button type="button" class="btn btn-primary" data-act-accept="${escapeHtml(t.path)}">确认</button>
@@ -169,24 +150,12 @@ export function renderActivity(): void {
   const pendingBlock =
     pendingTotal === 0
       ? `<p class="muted">暂无待处理</p>`
-      : asksHtml + a2aHtml + toolsHtml + inputsHtml + proposalHtml + reviewHtml;
-
-  const profileOpts =
-    profiles.length > 0
-      ? profiles
-          .map(
-            (p) =>
-              `<option value="${escapeHtml(p.id)}"${p.id === selectedProfileId ? " selected" : ""}>${escapeHtml(p.label)}</option>`
-          )
-          .join("")
-      : `<option value="">（无 profile）</option>`;
+      : asksHtml + toolsHtml + inputsHtml + proposalHtml + reviewHtml;
 
   const taskRows = tasks
     .map((t) => {
       const startBtn = t.canStartAgent
-        ? `<button type="button" class="btn btn-primary" data-act-start="${escapeHtml(t.path)}"${
-            profiles.length && selectedProfileId ? "" : " disabled"
-          }>启动</button>`
+        ? `<button type="button" class="btn btn-primary" data-act-start="${escapeHtml(t.path)}">启动</button>`
         : "";
       const interruptBtn = t.canInterrupt
         ? `<button type="button" class="btn btn-ghost" data-act-interrupt="${escapeHtml(t.path)}">中断</button>`
@@ -195,7 +164,7 @@ export function renderActivity(): void {
         ? `<button type="button" class="btn btn-ghost" data-act-cancel="${escapeHtml(t.path)}">取消</button>`
         : "";
       return `<li class="task-item">
-        <div class="task-head"><strong>${escapeHtml(t.role)}</strong>
+        <div class="task-head"><strong>${escapeHtml(t.assigneeId)}</strong>
           <span class="muted">${escapeHtml(taskStateLabel(t.state))}</span></div>
         ${t.prompt ? `<div class="task-summary">${escapeHtml(t.prompt.length > 100 ? t.prompt.slice(0, 97) + "…" : t.prompt)}</div>` : ""}
         <div class="task-actions">${startBtn}${interruptBtn}${cancelBtn}</div>
@@ -209,14 +178,12 @@ export function renderActivity(): void {
         .map(
           (s) => `<li class="session-row">
           <span class="session-dot ${s.alive ? "is-live" : ""}" aria-hidden="true"></span>
-          <span>${escapeHtml(s.roleName || s.profileId)}</span>
+          <span>${escapeHtml(s.roleName || s.routeId)}</span>
           <span class="muted">${escapeHtml(sessionStateLabel(s.state) || s.state)}</span>
         </li>`
         )
         .join("")
     : `<li class="muted">无活跃会话</li>`;
-
-  const anyStartable = tasks.some((t) => t.canStartAgent);
 
   hostEl.innerHTML = `
     <div class="activity-layout">
@@ -225,13 +192,7 @@ export function renderActivity(): void {
         <div class="activity-stack">${pendingBlock}</div>
       </section>
       <section class="activity-col">
-        <div class="surface-section-head">任务
-          ${
-            anyStartable
-              ? `<select id="act-profile" class="field field-compact" title="profile"${profiles.length ? "" : " disabled"}>${profileOpts}</select>`
-              : ""
-          }
-        </div>
+        <div class="surface-section-head">任务</div>
         <ul class="task-list activity-task-list">${taskRows || `<li class="muted">无进行中任务</li>`}</ul>
         <div class="surface-section-head">会话</div>
         <ul class="activity-session-list">${sessionRows}</ul>
@@ -242,23 +203,11 @@ export function renderActivity(): void {
 }
 
 function wireActivity(root: HTMLElement): void {
-  const profileSel = document.getElementById("act-profile") as HTMLSelectElement | null;
-  profileSel?.addEventListener("change", () => {
-    setSelectedProfileId(profileSel.value || null);
-    renderActivity();
-  });
-
   root.querySelectorAll<HTMLElement>("[data-act-reply]").forEach((btn) => {
     btn.addEventListener("click", () => void onReply(btn.getAttribute("data-act-reply")!));
   });
   root.querySelectorAll<HTMLElement>("[data-act-ask-deny]").forEach((btn) => {
     btn.addEventListener("click", () => void onDenyAsk(btn.getAttribute("data-act-ask-deny")!));
-  });
-  root.querySelectorAll<HTMLElement>("[data-act-a2a-allow]").forEach((btn) => {
-    btn.addEventListener("click", () => void onA2A(btn.getAttribute("data-act-a2a-allow")!, "approve"));
-  });
-  root.querySelectorAll<HTMLElement>("[data-act-a2a-deny]").forEach((btn) => {
-    btn.addEventListener("click", () => void onA2A(btn.getAttribute("data-act-a2a-deny")!, "deny"));
   });
   root.querySelectorAll<HTMLElement>("[data-act-tool-allow]").forEach((btn) => {
     btn.addEventListener("click", () => void onTool(btn.getAttribute("data-act-tool-allow")!, true));
@@ -359,16 +308,6 @@ async function onProposal(path: string, decision: "accept" | "reject"): Promise<
   }
 }
 
-async function onA2A(id: string, decision: "approve" | "deny"): Promise<void> {
-  try {
-    await window.tentDesktop.rpc("a2a.resolve", buildA2AResolvePayload(id, decision, "user"));
-    el.status.textContent = decision === "approve" ? "已允许启动 Agent。" : "已拒绝启动 Agent。";
-    await refreshAfter();
-  } catch (err) {
-    setError(err);
-  }
-}
-
 async function onTool(id: string, allow: boolean): Promise<void> {
   try {
     const built = buildToolApprovalResolvePayload(id, allow, "user");
@@ -422,7 +361,7 @@ async function onReject(taskPath: string): Promise<void> {
 
 async function onStart(taskPath: string): Promise<void> {
   if (!workspaceId) return;
-  const built = buildStartSessionPayload(taskPath, selectedProfileId || "");
+  const built = buildStartSessionPayload(taskPath);
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
@@ -431,7 +370,6 @@ async function onStart(taskPath: string): Promise<void> {
     await window.tentDesktop.rpc("task.startSession", {
       workspaceId,
       taskPath: built.payload.taskPath,
-      profileId: built.payload.profileId,
       callerKind: built.payload.callerKind,
     });
     el.status.textContent = `已启动 agent · ${taskPath}`;

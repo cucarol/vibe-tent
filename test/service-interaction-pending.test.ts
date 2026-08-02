@@ -1,6 +1,6 @@
 /**
  * Unified A2U pending projection: interaction.listPending.
- * Aggregates UserAsk / A2A / toolApproval / ready Delivery — no new store.
+ * Aggregates UserAsk / toolApproval / ready Delivery — no new store.
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -17,7 +17,6 @@ import {
   isClientMethod,
   type PendingInteractionListResult,
 } from "../src/service/types.js";
-import { makeApprovalId } from "../src/service/a2a-store.js";
 import { makeToolApprovalId } from "../src/service/tool-approval-store.js";
 
 async function makeWorkspace(): Promise<string> {
@@ -35,8 +34,6 @@ async function makeWorkspace(): Promise<string> {
           {
             name: "executor",
             prompt: "do work",
-            a2aPolicy: "allow",
-            allowedProfiles: ["mock-ix"],
           },
         ],
       },
@@ -65,7 +62,7 @@ test("CLIENT_METHODS includes interaction.listPending", () => {
   assert.equal(isClientMethod("interaction.resolve"), false);
 });
 
-test("interaction.listPending aggregates four kinds with stable sort and counts", async () => {
+test("interaction.listPending aggregates three kinds with stable sort and counts", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
@@ -80,7 +77,8 @@ test("interaction.listPending aggregates four kinds with stable sort and counts"
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "Need decisions and review",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -90,7 +88,7 @@ test("interaction.listPending aggregates four kinds with stable sort and counts"
     await client.taskClaim(workspaceId, taskPath);
 
     const taskGot = (await client.taskGet(workspaceId, taskPath)) as {
-      task: { id?: string; sessionId?: string; role: string };
+      task: { id?: string; sessionId?: string; assigneeId: string };
     };
     const taskId = taskGot.task.id;
     assert.ok(taskId, "task id required for delivery + pointers");
@@ -104,22 +102,7 @@ test("interaction.listPending aggregates four kinds with stable sort and counts"
       ],
     })) as { ask: { id: string; createdAt: string } };
 
-    // 2) A2A spawn approval (inject into machine store)
-    const a2aId = makeApprovalId();
-    await svc.ctx.a2a.add({
-      id: a2aId,
-      workspaceId,
-      taskPath,
-      taskId,
-      role: "executor",
-      profileId: "mock-ix",
-      policy: "ask",
-      callerKind: "role",
-      status: "pending",
-      createdAt: "2020-01-01T00:00:00.000Z",
-    });
-
-    // 3) Tool approval pending (safe options only; no raw args in store row)
+    // 2) Tool approval pending (safe options only; no raw args in store row)
     const toolId = makeToolApprovalId();
     await svc.ctx.toolApprovals.add({
       id: toolId,
@@ -139,13 +122,13 @@ test("interaction.listPending aggregates four kinds with stable sort and counts"
       expiresAt: "2099-01-01T00:00:00.000Z",
     });
 
-    // 4) Ready Delivery via core writer under the mounted system root
+    // 3) Ready Delivery via core writer under the mounted system root
     const fsa = new NodeFs(path.join(ws, ".tent"));
     const clock = { now: () => "2022-01-01T00:00:00.000Z" };
     const delivery = await createDelivery(fsa, clock, {
       taskId,
       sourceNodeId: nodeId,
-      role: "executor",
+      deliveriesDir: "temp/executor/deliveries",
       summary: "Ready for human review — must not appear in interaction projection",
       status: "ready",
     });
@@ -154,7 +137,7 @@ test("interaction.listPending aggregates four kinds with stable sort and counts"
     await createDelivery(fsa, clock, {
       taskId,
       sourceNodeId: nodeId,
-      role: "executor",
+      deliveriesDir: "temp/executor/deliveries",
       summary: "Already accepted history",
       status: "accepted",
     });
@@ -164,41 +147,29 @@ test("interaction.listPending aggregates four kinds with stable sort and counts"
     )) as PendingInteractionListResult;
 
     assert.equal(result.workspaceId, workspaceId);
-    assert.equal(result.counts.total, 4);
+    assert.equal(result.counts.total, 3);
     assert.equal(result.counts.userAsk, 1);
-    assert.equal(result.counts.a2a, 1);
     assert.equal(result.counts.toolApproval, 1);
     assert.equal(result.counts.delivery, 1);
-    assert.equal(result.items.length, 4);
+    assert.equal(result.items.length, 3);
 
     // Stable sort: createdAt ASC, then kind, then id
     const times = result.items.map((i) => i.createdAt);
     assert.deepEqual(times, [...times].sort((a, b) => a.localeCompare(b)));
-    assert.equal(result.items[0]!.kind, "a2a");
-    assert.equal(result.items[0]!.id, a2aId);
-    assert.equal(result.items[1]!.kind, "toolApproval");
-    assert.equal(result.items[1]!.id, toolId);
-    assert.equal(result.items[2]!.kind, "delivery");
-    assert.equal(result.items[2]!.id, delivery.id);
-    assert.equal(result.items[3]!.kind, "userAsk");
-    assert.equal(result.items[3]!.id, asked.ask.id);
+    assert.equal(result.items[0]!.kind, "toolApproval");
+    assert.equal(result.items[0]!.id, toolId);
+    assert.equal(result.items[1]!.kind, "delivery");
+    assert.equal(result.items[1]!.id, delivery.id);
+    assert.equal(result.items[2]!.kind, "userAsk");
+    assert.equal(result.items[2]!.id, asked.ask.id);
 
     const userAsk = result.items.find((i) => i.kind === "userAsk");
     assert.ok(userAsk && userAsk.kind === "userAsk");
     assert.equal(userAsk.taskPath, taskPath);
     assert.equal(userAsk.taskId, taskId);
     assert.equal("nodeId" in userAsk, false);
-    assert.equal(userAsk.role, "executor");
     assert.equal(userAsk.question, "Ship v1 or v2?");
     assert.equal(userAsk.choices?.length, 2);
-
-    const a2a = result.items.find((i) => i.kind === "a2a");
-    assert.ok(a2a && a2a.kind === "a2a");
-    assert.equal(a2a.profileId, "mock-ix");
-    assert.equal(a2a.taskPath, taskPath);
-    assert.equal("nodeId" in a2a, false);
-    // bootstrapPrompt / secrets must not leak
-    assert.equal((a2a as { bootstrapPrompt?: string }).bootstrapPrompt, undefined);
 
     const tool = result.items.find((i) => i.kind === "toolApproval");
     assert.ok(tool && tool.kind === "toolApproval");
@@ -249,7 +220,6 @@ test("interaction.listPending empty workspace returns zero counts", async () => 
     assert.equal(result.counts.total, 0);
     assert.deepEqual(result.items, []);
     assert.equal(result.counts.userAsk, 0);
-    assert.equal(result.counts.a2a, 0);
     assert.equal(result.counts.toolApproval, 0);
     assert.equal(result.counts.delivery, 0);
   });

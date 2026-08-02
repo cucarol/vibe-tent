@@ -1,9 +1,9 @@
 // Codex ACP ProviderAdapter — npx @agentclientprotocol/codex-acp bridge.
 // No ACP authenticate RPC; auth via injected DEFAULT_AUTH_REQUEST env when envKey set.
-// Never starts real npx/network in tests — LaunchPlan command/args override to mock.
+// Never starts real npx/network in tests — RouteLaunchPlan command/args override to mock.
 
 import type {
-  LaunchPlan,
+  RouteLaunchPlan,
   ManagedSession,
   ProviderAdapter,
   ProviderCapabilities,
@@ -33,7 +33,7 @@ import {
   CODEX_ACP_NPX_PACKAGE,
   CODEX_DEFAULT_AUTH_REQUEST_ENV,
   type CodexAcpPermissionPolicy,
-  type CodexAcpProfileOptions,
+  type CodexAcpRouteOptions,
 } from "./types.js";
 
 export {
@@ -42,7 +42,7 @@ export {
   CODEX_DEFAULT_AUTH_REQUEST_ENV,
   DEFAULT_PROMPT_TIMEOUT_MS,
   DEFAULT_PERMISSION_TIMEOUT_MS,
-  type CodexAcpProfileOptions,
+  type CodexAcpRouteOptions,
   type CodexAcpPermissionPolicy,
 } from "./types.js";
 
@@ -100,7 +100,7 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
    * Real ACP needs bidirectional stdio — AgentRuntime uses startManagedSession.
    * Does not call ACP authenticate; injects DEFAULT_AUTH_REQUEST when envKey is set.
    */
-  resolveLaunch(plan: LaunchPlan): ResolvedLaunch {
+  resolveLaunch(plan: RouteLaunchPlan): ResolvedLaunch {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const { command, args } = resolveNpxAcpLaunch({
       planCommand: plan.command,
@@ -112,16 +112,15 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
     const env: Record<string, string> = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_PROFILE_ID: plan.profileId,
+      TENT_ROUTE_ID: plan.routeId,
     };
-    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
     // Explicit envKey only: missing value fails loud; never invent a default key name.
     if (opts.envKey) {
       const secret = this.resolveEnvValue(opts.envKey, plan.env);
       if (!secret || !secret.trim()) {
         throw new Error(
-          `未配置环境变量 ${opts.envKey}：codex-acp 已在 AgentProfile.acp.envKey 中明确要求该密钥` +
-            `（仅 service 进程 / LaunchPlan.env）。请设置 ${opts.envKey} 后重试；切勿把 secret 写入 workspace、Node 或 Task。`
+          `未配置环境变量 ${opts.envKey}：codex-acp 已在 route.acp.envKey 中明确要求该密钥` +
+          `（仅 service 进程 / RouteLaunchPlan.env）。请设置 ${opts.envKey} 后重试；切勿把 secret 写入 workspace、Node 或 Task。`
         );
       }
       env[opts.envKey] = secret;
@@ -139,7 +138,7 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
   }
 
   async startManagedSession(
-    plan: LaunchPlan,
+    plan: RouteLaunchPlan,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession> {
     const client = this.createClient(plan, emit);
@@ -151,7 +150,7 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
    * Requires agentCapabilities.loadSession on the live initialize handshake.
    */
   async resumeManagedSession(
-    plan: LaunchPlan,
+    plan: RouteLaunchPlan,
     token: ResumeToken,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession> {
@@ -174,7 +173,7 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
   }
 
   private createClient(
-    plan: LaunchPlan,
+    plan: RouteLaunchPlan,
     emit: (ev: RuntimeEvent) => void
   ): AcpClient {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
@@ -219,32 +218,4 @@ export function createCodexAcpAdapter(
   options?: CodexAcpAdapterOptions
 ): CodexAcpProviderAdapter {
   return new CodexAcpProviderAdapter(options);
-}
-
-/** Machine-local profile template — no default envKey/model invented. */
-export function codexAcpProfileTemplate(overrides?: {
-  id?: string;
-  executable?: string;
-  model?: string;
-  envKey?: string;
-  permissionPolicy?: CodexAcpPermissionPolicy;
-  promptTimeoutMs?: number;
-}): {
-  id: string;
-  adapterId: string;
-  displayNameKey: string;
-  acp: CodexAcpProfileOptions;
-} {
-  return {
-    id: overrides?.id ?? "codex-acp-default",
-    adapterId: CODEX_ACP_ADAPTER_ID,
-    displayNameKey: "profile.codexAcp.default",
-    acp: {
-      executable: overrides?.executable,
-      model: overrides?.model,
-      envKey: overrides?.envKey,
-      permissionPolicy: overrides?.permissionPolicy ?? "deny",
-      promptTimeoutMs: overrides?.promptTimeoutMs,
-    },
-  };
 }

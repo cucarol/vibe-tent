@@ -245,7 +245,8 @@ test("task RPC layer: claim → deliver; ServiceClient observes same state; serv
 
     const dispatched = (await observer.taskDispatch(workspaceId, {
       nodeIds: [nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "Ship CLI attach",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -309,7 +310,8 @@ test("task claim/deliver via attach (not injected client) sees same ServiceClien
     })) as { nodeId: string };
     const dispatched = (await setup.taskDispatch(mount.workspaceId, {
       nodeIds: [created.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "agent path",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -363,7 +365,8 @@ test("task command errors: missing summary / unknown sub / attach-only miss", as
     })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
       nodeIds: [created.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "x",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -391,7 +394,8 @@ test("task list/get human output for agents", async () => {
     })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
       nodeIds: [created.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "list test",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -421,7 +425,8 @@ test("task-input ack CLI omits actor for persisted user reviewer path", async ()
     })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
       nodeIds: [created.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "cli user ack",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },

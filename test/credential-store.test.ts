@@ -8,15 +8,16 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { ProviderAdapter, LaunchPlan } from "../src/adapters/types.js";
+import type { ProviderAdapter, RouteLaunchPlan } from "../src/adapters/types.js";
 import { FAKE_ADAPTER_ID, createFakeAdapter } from "../src/adapters/fake/index.js";
 import { GROK_ACP_ADAPTER_ID } from "../src/adapters/grok-acp/index.js";
 import {
   createAgentRuntime,
+  createSettingsRouteSnapshot,
   makeSessionId,
   type RuntimeEvent,
+  type SettingsRouteConfig,
 } from "../src/runtime/index.js";
-import type { AgentProfileConfig } from "../src/runtime/types.js";
 import { createTestCredentialProtector } from "../src/service/credential-protector.js";
 import {
   CredentialStore,
@@ -26,7 +27,6 @@ import { CLIENT_METHODS, isClientMethod } from "../src/service/types.js";
 import { createServiceClient } from "../src/service/client.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
-import { FAKE_DEFAULT_PROFILE_ID } from "../src/service/profiles.js";
 
 const SECRET = "sk-test-super-secret-value-NOT-FOR-DISK";
 const MOCK = path.join(
@@ -261,9 +261,10 @@ test("RPC credential.*: set/list/delete never echo secret; no get method", async
     dataDir,
     writeEndpoint: false,
     credentialProtector: mockProtector(),
-    profiles: [
+    routes: [
       {
-        id: FAKE_DEFAULT_PROFILE_ID,
+        routeId: "fake-default",
+        provider: "fake",
         adapterId: FAKE_ADAPTER_ID,
         fake: { waitForSignal: true, emitStdout: true },
       },
@@ -299,28 +300,30 @@ test("RPC credential.*: set/list/delete never echo secret; no get method", async
     const rawDisk = await fs.readFile(credentialsPath(dataDir), "utf8");
     assert.equal(rawDisk.includes(SECRET), false);
 
-    // profile projection can show ref presence after update
-    const created = (await client.profileCreate({
-      id: "with-ref",
+    // Route projection can show credential-reference presence.
+    const created = (await client.routeCreate({
+      routeId: "with-ref",
+      provider: "grok",
       adapterId: "grok-acp",
       envKey: "CPA_GROK_API_KEY",
       credentialRef: "cpa-key",
     })) as {
-      profile: {
+      route: {
         credentialRef?: string;
         credentialExists?: boolean;
         envKey?: string;
       };
     };
-    assert.equal(created.profile.credentialRef, "cpa-key");
-    assert.equal(created.profile.credentialExists, true);
+    assert.equal(created.route.credentialRef, "cpa-key");
+    assert.equal(created.route.credentialExists, true);
     assert.equal(JSON.stringify(created).includes(SECRET), false);
 
-    // Reject secret-like profile fields
+    // Reject secret-like route fields.
     await assert.rejects(
       () =>
-        client.profileCreate({
-          id: "bad-secret",
+        client.routeCreate({
+          routeId: "bad-secret",
+          provider: "grok",
           adapterId: "grok-acp",
           apiKey: SECRET,
         }),
@@ -331,16 +334,16 @@ test("RPC credential.*: set/list/delete never echo secret; no get method", async
     const after = (await client.credentialList()) as { credentials: unknown[] };
     assert.equal(after.credentials.length, 0);
 
-    const gone = (await client.profileGet("with-ref")) as {
-      profile: { credentialExists?: boolean };
+    const gone = (await client.routeGet("with-ref")) as {
+      route: { credentialExists?: boolean };
     };
-    assert.equal(gone.profile.credentialExists, false);
+    assert.equal(gone.route.credentialExists, false);
   } finally {
     await svc.stop();
   }
 });
 
-test("AgentRuntime: resolveProfileEnv injects env; missing ref fails; no secret on SessionRecord", async () => {
+test("AgentRuntime: resolveRouteEnv injects env; missing ref fails; no secret on SessionRecord", async () => {
   const dataDir = await tempDir("tent-cred-rt-");
   const cwd = await tempDir("tent-cred-cwd-");
   const store = new CredentialStore(dataDir, { protector: mockProtector() });
@@ -367,7 +370,7 @@ test("AgentRuntime: resolveProfileEnv injects env; missing ref fails; no secret 
       sessionId: "",
       exitCode: code,
     }),
-    startManagedSession: async (plan: LaunchPlan, emit) => {
+    startManagedSession: async (plan: RouteLaunchPlan, emit) => {
       capturedEnv = { ...(plan.env ?? {}) };
       emit({ type: "session.live", sessionId: plan.sessionId, pid: 1 });
       return {
@@ -379,25 +382,23 @@ test("AgentRuntime: resolveProfileEnv injects env; missing ref fails; no secret 
     },
   };
 
-  const profile: AgentProfileConfig = {
-    id: "prof-with-cred",
+  const route: SettingsRouteConfig = {
+    routeId: "route-with-cred",
+    provider: "mock",
     adapterId: "mock-env-capture",
-    env: { TENT_SERVICE_DATA_DIR: "C:\\profile-must-not-win" },
-    acp: {
-      envKey: "CPA_GROK_API_KEY",
-      credentialRef: "vault-1",
-      permissionPolicy: "deny",
-    },
+    envKey: "CPA_GROK_API_KEY",
+    credentialRef: "vault-1",
+    permissionPolicy: "deny",
   };
 
   const runtime = createAgentRuntime({
     // Relative input must still become an absolute child routing authority.
     dataDir: path.relative(process.cwd(), dataDir),
-    profiles: [profile],
+    routes: [route],
     adapters: [mockAdapter, createFakeAdapter()],
-    resolveProfileEnv: async (p) => {
-      const ref = p.acp?.credentialRef?.trim();
-      const envKey = p.acp?.envKey?.trim();
+    resolveRouteEnv: async (candidate) => {
+      const ref = candidate.credentialRef?.trim();
+      const envKey = candidate.envKey?.trim();
       if (!ref || !envKey) return {};
       const secret = await store.resolve(ref);
       return { [envKey]: secret };
@@ -410,7 +411,8 @@ test("AgentRuntime: resolveProfileEnv injects env; missing ref fails; no secret 
 
   const handle = await runtime.startSession({
     sessionId,
-    profileId: "prof-with-cred",
+    routeId: route.routeId,
+    routeSnapshot: createSettingsRouteSnapshot(route, { effectiveEndpointDigest: undefined }),
     cwd,
     env: { TENT_SERVICE_DATA_DIR: "C:\\must-not-win" },
   });
@@ -435,20 +437,19 @@ test("AgentRuntime: resolveProfileEnv injects env; missing ref fails; no secret 
   const dataDir2 = await tempDir("tent-cred-rt2-");
   const runtime2 = createAgentRuntime({
     dataDir: dataDir2,
-    profiles: [
+    routes: [
       {
-        id: "missing-ref",
+        routeId: "missing-ref",
+        provider: "mock",
         adapterId: "mock-env-capture",
-        acp: {
-          envKey: "CPA_GROK_API_KEY",
-          credentialRef: "does-not-exist",
-        },
+        envKey: "CPA_GROK_API_KEY",
+        credentialRef: "does-not-exist",
       },
     ],
     adapters: [mockAdapter, createFakeAdapter()],
-    resolveProfileEnv: async (p) => {
-      const ref = p.acp?.credentialRef?.trim();
-      const envKey = p.acp?.envKey?.trim();
+    resolveRouteEnv: async (candidate) => {
+      const ref = candidate.credentialRef?.trim();
+      const envKey = candidate.envKey?.trim();
       if (!ref || !envKey) return {};
       try {
         const secret = await store.resolve(ref);
@@ -463,7 +464,11 @@ test("AgentRuntime: resolveProfileEnv injects env; missing ref fails; no secret 
     () =>
       runtime2.startSession({
         sessionId: missingSessionId,
-        profileId: "missing-ref",
+        routeId: "missing-ref",
+        routeSnapshot: createSettingsRouteSnapshot({
+          routeId: "missing-ref", provider: "mock", adapterId: "mock-env-capture",
+          envKey: "CPA_GROK_API_KEY", credentialRef: "does-not-exist",
+        }, { effectiveEndpointDigest: undefined }),
         cwd,
       }),
     /Credential not found|empty/i
@@ -477,23 +482,28 @@ test("AgentRuntime: resolveProfileEnv injects env; missing ref fails; no secret 
   const dataDir3 = await tempDir("tent-cred-rt3-");
   const runtime3 = createAgentRuntime({
     dataDir: dataDir3,
-    profiles: [
+    routes: [
       {
-        id: "no-envkey",
+        routeId: "no-envkey",
+        provider: "fake",
         adapterId: FAKE_ADAPTER_ID,
-        acp: { credentialRef: "vault-1" },
+        credentialRef: "vault-1",
       },
     ],
-    resolveProfileEnv: async () => ({ X: "y" }),
+    resolveRouteEnv: async () => ({ X: "y" }),
   });
   await assert.rejects(
     () =>
       runtime3.startSession({
         sessionId: makeSessionId(() => 0.33),
-        profileId: "no-envkey",
+        routeId: "no-envkey",
+        routeSnapshot: createSettingsRouteSnapshot({
+          routeId: "no-envkey", provider: "fake", adapterId: FAKE_ADAPTER_ID,
+          credentialRef: "vault-1",
+        }, { effectiveEndpointDigest: undefined }),
         cwd,
       }),
-    /no acp\.envKey/i
+    /no envKey/i
   );
   await runtime3.shutdown();
 });
@@ -501,36 +511,31 @@ test("AgentRuntime: resolveProfileEnv injects env; missing ref fails; no secret 
 test("startLocalTentService: credentialRef reaches mock ACP env via vault", async () => {
   const dataDir = await tempDir("tent-cred-svc-");
   const logPath = path.join(dataDir, "mock-acp.log");
-  const profiles: AgentProfileConfig[] = [
+  const routes: SettingsRouteConfig[] = [
     {
-      id: FAKE_DEFAULT_PROFILE_ID,
+      routeId: "fake-default",
+      provider: "fake",
       adapterId: FAKE_ADAPTER_ID,
       fake: { waitForSignal: true, emitStdout: true },
     },
     {
-      id: "grok-with-vault",
+      routeId: "grok-with-vault",
+      provider: "grok",
       adapterId: GROK_ACP_ADAPTER_ID,
       command: process.execPath,
       args: [MOCK, "agent", "--model", "test-model", "stdio"],
-      env: {
-        MOCK_ACP_LOG: logPath,
-        MOCK_ACP_KEEP_ALIVE: "1",
-        MOCK_ACP_PROMPT_TEXT: "CRED_OK",
-      },
-      acp: {
-        model: "test-model",
-        envKey: "CPA_GROK_API_KEY",
-        credentialRef: "svc-vault",
-        permissionPolicy: "deny",
-        promptTimeoutMs: 8_000,
-      },
+      model: "test-model",
+      envKey: "CPA_GROK_API_KEY",
+      credentialRef: "svc-vault",
+      permissionPolicy: "deny",
+      promptTimeoutMs: 8_000,
     },
   ];
 
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: false,
-    profiles,
+    routes,
     credentialProtector: mockProtector(),
   });
   try {
@@ -539,9 +544,15 @@ test("startLocalTentService: credentialRef reaches mock ACP env via vault", asyn
     const sessionId = makeSessionId(() => 0.44);
     const handle = await svc.runtime.startSession({
       sessionId,
-      profileId: "grok-with-vault",
+      routeId: "grok-with-vault",
+      routeSnapshot: createSettingsRouteSnapshot(routes[1]!, { effectiveEndpointDigest: undefined }),
       cwd,
       bootstrapPrompt: "ping",
+      env: {
+        MOCK_ACP_LOG: logPath,
+        MOCK_ACP_KEEP_ALIVE: "1",
+        MOCK_ACP_PROMPT_TEXT: "CRED_OK",
+      },
     });
     assert.ok(handle.state === "live" || handle.state === "starting");
 
@@ -560,14 +571,20 @@ test("startLocalTentService: credentialRef reaches mock ACP env via vault", asyn
     const vaultRaw = await fs.readFile(credentialsPath(dataDir), "utf8");
     assert.equal(vaultRaw.includes(SECRET), false);
 
-    // Remove vault entry — profile still references it → fail-loud before live
+    // Remove vault entry — route still references it → fail-loud before live.
     await svc.credentials.delete("svc-vault");
     await assert.rejects(
       () =>
         svc.runtime.startSession({
           sessionId: makeSessionId(() => 0.55),
-          profileId: "grok-with-vault",
+          routeId: "grok-with-vault",
+          routeSnapshot: createSettingsRouteSnapshot(routes[1]!, { effectiveEndpointDigest: undefined }),
           cwd,
+          env: {
+            MOCK_ACP_LOG: logPath,
+            MOCK_ACP_KEEP_ALIVE: "1",
+            MOCK_ACP_PROMPT_TEXT: "CRED_OK",
+          },
         }),
       /Credential not found|empty|credentialRef/i
     );

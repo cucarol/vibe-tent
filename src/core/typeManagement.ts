@@ -32,7 +32,7 @@ export interface TypeDeletionInspection {
   references: TypeReference[];
   /**
    * Active task roles occupying referenced nodes (or related ancestor/descendant range).
-   * Field name kept for API stability; values are task.role labels, not Node fm.owner.
+   * Values are canonical Task assignee labels, not Node frontmatter ownership.
    */
   activeOwners: { id: string; path: string; owner: string }[];
 }
@@ -112,7 +112,11 @@ export async function inspectTypeDeletion(
       if (!relatedIds.has(nodeId)) continue;
       const node = tent.byId.get(nodeId);
       if (!node) continue;
-      ownerMap.set(node.id, { id: node.id, path: node.path, owner: task.role });
+      ownerMap.set(node.id, {
+        id: node.id,
+        path: node.path,
+        owner: `${task.assigneeKind}:${task.assigneeId}`,
+      });
     }
   }
 

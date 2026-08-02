@@ -32,15 +32,15 @@ import {
   reloadActiveBacklinks,
   reloadNodeCollaborations,
   reloadPendingInteractions,
-  reloadProfiles,
+  reloadRoutes,
   reloadRegistry,
   reloadTasks,
   reloadTree,
   sessions,
   setCoordinationTypes,
-  setProfiles,
+  setRoutes,
   setRoles,
-  setSelectedProfileId,
+  setSelectedRouteId,
   setState,
   setTaskReview,
   setTree,
@@ -200,12 +200,12 @@ async function refresh(): Promise<void> {
       reloadTree(),
       reloadRegistry(),
       reloadTasks(),
-      reloadProfiles(),
+      reloadRoutes(),
       reloadPendingInteractions(),
     ]);
     onGraphTreeChanged();
   } else {
-    await reloadProfiles();
+    await reloadRoutes();
   }
   updateActivityChrome();
   const surface = getSurface();
@@ -255,11 +255,11 @@ function applyShell(s: ShellState): void {
   if (s.roles) {
     setRoles(s.roles);
   }
-  if (s.profiles?.length) {
-    setProfiles(s.profiles);
+  if (s.routes?.length) {
+    setRoutes(s.routes);
   }
-  if (s.selectedProfileId !== undefined) {
-    setSelectedProfileId(s.selectedProfileId);
+  if (s.selectedRouteId !== undefined) {
+    setSelectedRouteId(s.selectedRouteId);
   }
   if (s.taskReview?.length) {
     setTaskReview(s.taskReview);
@@ -269,7 +269,8 @@ function applyShell(s: ShellState): void {
         s.tasks.map((t) => ({
           path: t.path,
           id: t.id,
-          role: t.role,
+          assigneeKind: t.assigneeKind,
+          assigneeId: t.assigneeId,
           referencedNodeIds: t.referencedNodeIds,
           state: t.state,
           prompt: t.prompt,

@@ -20,13 +20,7 @@ import {
 } from "../src/adapters/acp/image-prompt.js";
 import { createGrokAcpAdapter } from "../src/adapters/grok-acp/index.js";
 import { createAgentRuntime } from "../src/runtime/index.js";
-import type { AgentProfileConfig } from "../src/runtime/types.js";
-import {
-  loadAgentProfiles,
-  projectAgentProfile,
-  profilesPath,
-  saveAgentProfiles,
-} from "../src/service/profiles.js";
+import type { StartSessionRequest } from "../src/runtime/types.js";
 import {
   DEFAULT_GROK_MODEL,
   GROK_ACP_ADAPTER_ID,
@@ -43,6 +37,16 @@ const PNG_1X1 = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
   "base64"
 );
+
+function startRoute(
+  runtime: ReturnType<typeof createAgentRuntime>,
+  request: Omit<StartSessionRequest, "routeSnapshot">
+) {
+  return runtime.startSession({
+    ...request,
+    routeSnapshot: runtime.snapshotRouteForStart(request.routeId),
+  });
+}
 
 /** Subscribe before startSession so early prompt_complete is not missed. */
 function waitSessionEvent(
@@ -286,63 +290,6 @@ test("collectBootstrapImageRefsFromTask: user prompt + claims only (not arbitrar
   // Non-claim body is never passed in — collection API does not scan workspace.
 });
 
-test("profile disk/projection: no supportsImageInput residue", async () => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-img-prof-"));
-  const profiles: AgentProfileConfig[] = [
-    {
-      id: "plain",
-      adapterId: GROK_ACP_ADAPTER_ID,
-      displayName: "Plain",
-      acp: { model: DEFAULT_GROK_MODEL, permissionPolicy: "deny" },
-    },
-  ];
-  await saveAgentProfiles(dataDir, profiles);
-  const loaded = await loadAgentProfiles(dataDir);
-  const plain = loaded.find((p) => p.id === "plain");
-  assert.ok(plain);
-  assert.equal(
-    "supportsImageInput" in (plain as object),
-    false,
-    "in-memory profile must not carry supportsImageInput"
-  );
-  const projected = projectAgentProfile(plain!);
-  assert.equal(
-    "supportsImageInput" in (projected as object),
-    false,
-    "projection must not expose supportsImageInput"
-  );
-
-  const raw = await fs.readFile(profilesPath(dataDir), "utf8");
-  assert.ok(!raw.includes("supportsImageInput"));
-  assert.ok(!raw.includes("base64"));
-  // Unknown top-level supportsImageInput on disk is malformed (quarantine), not silently kept.
-  const badPath = profilesPath(dataDir);
-  await fs.writeFile(
-    badPath,
-    JSON.stringify(
-      {
-        version: 1,
-        profiles: [
-          {
-            id: "bad",
-            adapterId: GROK_ACP_ADAPTER_ID,
-            supportsImageInput: true,
-            acp: { model: DEFAULT_GROK_MODEL, permissionPolicy: "deny" },
-          },
-        ],
-      },
-      null,
-      2
-    ),
-    "utf8"
-  );
-  // Loader quarantines unknown keys — must not rehydrate the flag.
-  const afterBad = await loadAgentProfiles(dataDir);
-  for (const p of afterBad) {
-    assert.equal("supportsImageInput" in (p as object), false);
-  }
-});
-
 test("managed ACP: image block sent when MOCK_ACP_PROMPT_IMAGE (no profile flag)", async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-img-acp-"));
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-img-acp-data-"));
@@ -352,29 +299,19 @@ test("managed ACP: image block sent when MOCK_ACP_PROMPT_IMAGE (no profile flag)
   await fs.writeFile(path.join(systemRoot, rel), PNG_1X1);
 
   const logPath = path.join(workspace, "mock-log.json");
-  const profile: AgentProfileConfig = {
-    id: "mock-img",
+  const route = {
+    routeId: "mock-img",
+    provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
     command: process.execPath,
     args: [MOCK, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
-    env: {
-      MOCK_ACP_LOG: logPath,
-      MOCK_ACP_KEEP_ALIVE: "1",
-      MOCK_ACP_PROMPT_IMAGE: "1",
-      MOCK_ACP_PROMPT_TEXT: "IMG_OK",
-      CPA_GROK_API_KEY: "test-key-not-real",
-    },
-    acp: {
-      model: DEFAULT_GROK_MODEL,
-      envKey: "CPA_GROK_API_KEY",
-      permissionPolicy: "deny",
-      promptTimeoutMs: 8_000,
-    },
+    model: DEFAULT_GROK_MODEL, envKey: "CPA_GROK_API_KEY",
+    permissionPolicy: "deny" as const, promptTimeoutMs: 8_000,
   };
 
   const runtime = createAgentRuntime({
     dataDir,
-    profiles: [profile],
+    routes: [route],
     adapters: [
       createGrokAcpAdapter({
         resolveApiKey: (_k, planEnv) => planEnv.CPA_GROK_API_KEY ?? "test-key",
@@ -383,10 +320,11 @@ test("managed ACP: image block sent when MOCK_ACP_PROMPT_IMAGE (no profile flag)
   });
 
   const done = waitSessionEvent(runtime, "ss-img-1", "session.prompt_complete", 10_000);
-  const handle = await runtime.startSession({
+  const handle = await startRoute(runtime, {
     sessionId: "ss-img-1",
-    profileId: "mock-img",
+    routeId: "mock-img",
     cwd: workspace,
+    env: { MOCK_ACP_LOG: logPath, MOCK_ACP_KEEP_ALIVE: "1", MOCK_ACP_PROMPT_IMAGE: "1", MOCK_ACP_PROMPT_TEXT: "IMG_OK", CPA_GROK_API_KEY: "test-key-not-real" },
     bootstrapPrompt: "bootstrap with image",
     bootstrapImageRefs: [{ relativePath: rel, markdownPointer: `![](${rel})` }],
     bootstrapImageSystemRoot: systemRoot,
@@ -408,7 +346,7 @@ test("managed ACP: image block sent when MOCK_ACP_PROMPT_IMAGE (no profile flag)
   assert.equal(img!.mimeType, "image/png");
   assert.ok((img!.dataChars ?? 0) > 0);
 
-  // Session registry / profile snapshot must not persist base64 image payloads.
+  // Session registry / route snapshot must not persist base64 image payloads.
   const sessionRaw = await fs
     .readFile(path.join(dataDir, "sessions", "ss-img-1.json"), "utf8")
     .catch(() => "");
@@ -416,8 +354,6 @@ test("managed ACP: image block sent when MOCK_ACP_PROMPT_IMAGE (no profile flag)
     assert.ok(!sessionRaw.includes(PNG_1X1.toString("base64")));
     assert.ok(!/"type"\s*:\s*"image"/.test(sessionRaw));
   }
-  const profilesRaw = await fs.readFile(profilesPath(dataDir), "utf8").catch(() => "");
-  assert.ok(!profilesRaw.includes(PNG_1X1.toString("base64")));
 });
 
 test("managed ACP: fallback text-only when transport lacks promptCapabilities.image", async () => {
@@ -429,29 +365,19 @@ test("managed ACP: fallback text-only when transport lacks promptCapabilities.im
   await fs.writeFile(path.join(systemRoot, rel), PNG_1X1);
 
   const logPath = path.join(workspace, "mock-log.json");
-  const profile: AgentProfileConfig = {
-    id: "mock-img-fb",
+  const route = {
+    routeId: "mock-img-fb",
+    provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
     command: process.execPath,
     args: [MOCK, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
-    env: {
-      MOCK_ACP_LOG: logPath,
-      MOCK_ACP_KEEP_ALIVE: "1",
-      // MOCK_ACP_PROMPT_IMAGE unset → transport unsupported
-      MOCK_ACP_PROMPT_TEXT: "FB_OK",
-      CPA_GROK_API_KEY: "test-key-not-real",
-    },
-    acp: {
-      model: DEFAULT_GROK_MODEL,
-      envKey: "CPA_GROK_API_KEY",
-      permissionPolicy: "deny",
-      promptTimeoutMs: 8_000,
-    },
+    model: DEFAULT_GROK_MODEL, envKey: "CPA_GROK_API_KEY",
+    permissionPolicy: "deny" as const, promptTimeoutMs: 8_000,
   };
 
   const runtime = createAgentRuntime({
     dataDir,
-    profiles: [profile],
+    routes: [route],
     adapters: [
       createGrokAcpAdapter({
         resolveApiKey: (_k, planEnv) => planEnv.CPA_GROK_API_KEY ?? "test-key",
@@ -460,10 +386,11 @@ test("managed ACP: fallback text-only when transport lacks promptCapabilities.im
   });
 
   const done = waitSessionEvent(runtime, "ss-img-fb", "session.prompt_complete", 10_000);
-  const handle = await runtime.startSession({
+  const handle = await startRoute(runtime, {
     sessionId: "ss-img-fb",
-    profileId: "mock-img-fb",
+    routeId: "mock-img-fb",
     cwd: workspace,
+    env: { MOCK_ACP_LOG: logPath, MOCK_ACP_KEEP_ALIVE: "1", MOCK_ACP_PROMPT_TEXT: "FB_OK", CPA_GROK_API_KEY: "test-key-not-real" },
     bootstrapPrompt: "bootstrap pointer only",
     bootstrapImageRefs: [{ relativePath: rel, markdownPointer: `![](${rel})` }],
     bootstrapImageSystemRoot: systemRoot,
@@ -484,28 +411,19 @@ test("managed ACP: text-only bootstrap still works without image refs", async ()
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-img-txt-"));
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-img-txt-data-"));
   const logPath = path.join(workspace, "mock-log.json");
-  const profile: AgentProfileConfig = {
-    id: "mock-txt",
+  const route = {
+    routeId: "mock-txt",
+    provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
     command: process.execPath,
     args: [MOCK, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
-    env: {
-      MOCK_ACP_LOG: logPath,
-      MOCK_ACP_KEEP_ALIVE: "1",
-      MOCK_ACP_PROMPT_TEXT: "TEXT_OK",
-      CPA_GROK_API_KEY: "test-key-not-real",
-    },
-    acp: {
-      model: DEFAULT_GROK_MODEL,
-      envKey: "CPA_GROK_API_KEY",
-      permissionPolicy: "deny",
-      promptTimeoutMs: 8_000,
-    },
+    model: DEFAULT_GROK_MODEL, envKey: "CPA_GROK_API_KEY",
+    permissionPolicy: "deny" as const, promptTimeoutMs: 8_000,
   };
 
   const runtime = createAgentRuntime({
     dataDir,
-    profiles: [profile],
+    routes: [route],
     adapters: [
       createGrokAcpAdapter({
         resolveApiKey: (_k, planEnv) => planEnv.CPA_GROK_API_KEY ?? "test-key",
@@ -514,10 +432,11 @@ test("managed ACP: text-only bootstrap still works without image refs", async ()
   });
 
   const done = waitSessionEvent(runtime, "ss-txt-1", "session.prompt_complete", 10_000);
-  const handle = await runtime.startSession({
+  const handle = await startRoute(runtime, {
     sessionId: "ss-txt-1",
-    profileId: "mock-txt",
+    routeId: "mock-txt",
     cwd: workspace,
+    env: { MOCK_ACP_LOG: logPath, MOCK_ACP_KEEP_ALIVE: "1", MOCK_ACP_PROMPT_TEXT: "TEXT_OK", CPA_GROK_API_KEY: "test-key-not-real" },
     bootstrapPrompt: "plain text bootstrap only",
   });
   await done;

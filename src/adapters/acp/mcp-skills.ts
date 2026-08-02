@@ -1,4 +1,4 @@
-// AgentProfile Skill refs + MCP server config → ACP session/new|load projection.
+// Settings-route skill refs + MCP server config → ACP session/new|load projection.
 // Tent does not proxy MCP, does not mirror SKILL.md bodies, and does not rewrite agent config.toml.
 // Adapter-safe module: no service/ imports (architecture: adapters ↛ service).
 
@@ -15,8 +15,8 @@ export const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** Same vault id shape as CredentialStore (reference only). */
 export const CREDENTIAL_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
 
-export const MAX_PROFILE_SKILLS = 64;
-export const MAX_PROFILE_MCP_SERVERS = 32;
+export const MAX_ROUTE_SKILLS = 64;
+export const MAX_ROUTE_MCP_SERVERS = 32;
 export const MAX_MCP_ARGS = 64;
 export const MAX_MCP_ENV_ENTRIES = 32;
 export const MAX_MCP_HEADER_ENTRIES = 16;
@@ -37,7 +37,7 @@ function fieldErr(message: string): FieldResult<never> {
  * Machine-local skill reference only — never SKILL.md body.
  * `name` is the stable identity; `path` is optional absolute path under allowed roots.
  */
-export interface AgentProfileSkillRef {
+export interface RouteSkillRef {
   name: string;
   /** Absolute path to skill directory or SKILL.md under an allowed skill root. */
   path?: string;
@@ -45,15 +45,15 @@ export interface AgentProfileSkillRef {
   enabled?: boolean;
 }
 
-export type AgentProfileMcpTransport = "stdio" | "http";
+export type RouteMcpTransport = "stdio" | "http";
 
 /**
  * Machine-local MCP server description for ACP mcpServers projection.
  * Secrets only as envKey / credentialRef — never plaintext values on disk or projection.
  */
-export interface AgentProfileMcpServer {
+export interface RouteMcpServer {
   name: string;
-  transport: AgentProfileMcpTransport;
+  transport: RouteMcpTransport;
   /** Default true. */
   enabled?: boolean;
   // ---- stdio ----
@@ -80,15 +80,15 @@ export interface AgentProfileMcpServer {
  * Safe client projection (no secret values).
  * Name/path refs only — not a claim that the provider activated the skill.
  */
-export type AgentProfileSkillProjection = {
+export type RouteSkillProjection = {
   name: string;
   path?: string;
   enabled: boolean;
 };
 
-export type AgentProfileMcpServerProjection = {
+export type RouteMcpServerProjection = {
   name: string;
-  transport: AgentProfileMcpTransport;
+  transport: RouteMcpTransport;
   enabled: boolean;
   command?: string;
   args?: string[];
@@ -102,7 +102,7 @@ export type AgentProfileMcpServerProjection = {
 /**
  * ACP wire shape for session/new and session/load `mcpServers`.
  * Secret *values* may appear here only in the in-process JSON-RPC request —
- * never on SessionRecord, profile disk, projection, events, or logs.
+ * never on SessionRecord, route disk, projection, events, or logs.
  */
 export type AcpMcpServerWire =
   | {
@@ -285,7 +285,7 @@ export function parseSkillPathValue(
 export function parseSkillRefValue(
   raw: unknown,
   allowedRoots: readonly string[]
-): FieldResult<AgentProfileSkillRef> {
+): FieldResult<RouteSkillRef> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return fieldErr("Invalid skills[] entry: must be an object with name");
   }
@@ -313,7 +313,7 @@ export function parseSkillRefValue(
     enabled = o.enabled;
   }
 
-  const ref: AgentProfileSkillRef = { name: nameR.value };
+  const ref: RouteSkillRef = { name: nameR.value };
   if (pathVal !== undefined) ref.path = pathVal;
   if (enabled !== undefined) ref.enabled = enabled;
   return fieldOk(ref);
@@ -322,15 +322,15 @@ export function parseSkillRefValue(
 export function parseSkillsArrayValue(
   raw: unknown,
   allowedRoots: readonly string[] = defaultAllowedSkillRoots()
-): FieldResult<AgentProfileSkillRef[] | undefined> {
+): FieldResult<RouteSkillRef[] | undefined> {
   if (raw === undefined || raw === null) return fieldOk(undefined);
   if (!Array.isArray(raw)) {
     return fieldErr("Invalid skills: must be an array");
   }
-  if (raw.length > MAX_PROFILE_SKILLS) {
-    return fieldErr(`Invalid skills: at most ${MAX_PROFILE_SKILLS} entries`);
+  if (raw.length > MAX_ROUTE_SKILLS) {
+    return fieldErr(`Invalid skills: at most ${MAX_ROUTE_SKILLS} entries`);
   }
-  const out: AgentProfileSkillRef[] = [];
+  const out: RouteSkillRef[] = [];
   const seen = new Set<string>();
   for (const item of raw) {
     const r = parseSkillRefValue(item, allowedRoots);
@@ -376,7 +376,7 @@ function parseHttpUrl(raw: unknown): FieldResult<string> {
   return fieldOk(base.value);
 }
 
-export function parseMcpServerValue(raw: unknown): FieldResult<AgentProfileMcpServer> {
+export function parseMcpServerValue(raw: unknown): FieldResult<RouteMcpServer> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return fieldErr("Invalid mcpServers[] entry: must be an object");
   }
@@ -420,7 +420,7 @@ export function parseMcpServerValue(raw: unknown): FieldResult<AgentProfileMcpSe
   if (typeof o.transport !== "string" || (o.transport !== "stdio" && o.transport !== "http")) {
     return fieldErr("Invalid mcpServers[].transport: must be stdio|http");
   }
-  const transport = o.transport as AgentProfileMcpTransport;
+  const transport = o.transport as RouteMcpTransport;
 
   let enabled: boolean | undefined;
   if ("enabled" in o && o.enabled !== undefined && o.enabled !== null) {
@@ -430,7 +430,7 @@ export function parseMcpServerValue(raw: unknown): FieldResult<AgentProfileMcpSe
     enabled = o.enabled;
   }
 
-  const server: AgentProfileMcpServer = { name: nameR.value, transport };
+  const server: RouteMcpServer = { name: nameR.value, transport };
   if (enabled !== undefined) server.enabled = enabled;
 
   if (transport === "stdio") {
@@ -511,15 +511,15 @@ export function parseMcpServerValue(raw: unknown): FieldResult<AgentProfileMcpSe
 
 export function parseMcpServersArrayValue(
   raw: unknown
-): FieldResult<AgentProfileMcpServer[] | undefined> {
+): FieldResult<RouteMcpServer[] | undefined> {
   if (raw === undefined || raw === null) return fieldOk(undefined);
   if (!Array.isArray(raw)) {
     return fieldErr("Invalid mcpServers: must be an array");
   }
-  if (raw.length > MAX_PROFILE_MCP_SERVERS) {
-    return fieldErr(`Invalid mcpServers: at most ${MAX_PROFILE_MCP_SERVERS} entries`);
+  if (raw.length > MAX_ROUTE_MCP_SERVERS) {
+    return fieldErr(`Invalid mcpServers: at most ${MAX_ROUTE_MCP_SERVERS} entries`);
   }
-  const out: AgentProfileMcpServer[] = [];
+  const out: RouteMcpServer[] = [];
   const seen = new Set<string>();
   for (const item of raw) {
     const r = parseMcpServerValue(item);
@@ -539,8 +539,8 @@ export function parseMcpServersArrayValue(
 // ---------------------------------------------------------------------------
 
 export function cloneSkillRefs(
-  skills: AgentProfileSkillRef[] | undefined
-): AgentProfileSkillRef[] | undefined {
+  skills: RouteSkillRef[] | undefined
+): RouteSkillRef[] | undefined {
   if (!skills) return undefined;
   return skills.map((s) => ({
     name: s.name,
@@ -550,8 +550,8 @@ export function cloneSkillRefs(
 }
 
 export function cloneMcpServers(
-  servers: AgentProfileMcpServer[] | undefined
-): AgentProfileMcpServer[] | undefined {
+  servers: RouteMcpServer[] | undefined
+): RouteMcpServer[] | undefined {
   if (!servers) return undefined;
   return servers.map((s) => ({
     name: s.name,
@@ -572,8 +572,8 @@ export function cloneMcpServers(
 }
 
 export function projectSkillRefs(
-  skills: AgentProfileSkillRef[] | undefined
-): AgentProfileSkillProjection[] | undefined {
+  skills: RouteSkillRef[] | undefined
+): RouteSkillProjection[] | undefined {
   if (!skills || skills.length === 0) return undefined;
   return skills.map((s) => ({
     name: s.name,
@@ -583,8 +583,8 @@ export function projectSkillRefs(
 }
 
 export function projectMcpServers(
-  servers: AgentProfileMcpServer[] | undefined
-): AgentProfileMcpServerProjection[] | undefined {
+  servers: RouteMcpServer[] | undefined
+): RouteMcpServerProjection[] | undefined {
   if (!servers || servers.length === 0) return undefined;
   return servers.map((s) => ({
     name: s.name,
@@ -616,13 +616,13 @@ function resolveEnvValue(
 }
 
 /**
- * Build ACP mcpServers wire array from profile config.
+ * Build ACP mcpServers wire array from route config.
  * Enabled servers only. Fail-loud when a required secret cannot be resolved.
  * Returned values may contain secrets — caller must only use them for in-process
  * session/new|load and must not log, persist, or emit them.
  */
 export function resolveAcpMcpServersWire(
-  servers: AgentProfileMcpServer[] | undefined,
+  servers: RouteMcpServer[] | undefined,
   opts: {
     planEnv: Record<string, string>;
     resolveCredential?: ResolveMcpSecret;
@@ -722,7 +722,7 @@ export function resolveAcpMcpServersWire(
  * name-only refs remain allowed.
  */
 export function resolveAcpSkillMeta(
-  skills: AgentProfileSkillRef[] | undefined,
+  skills: RouteSkillRef[] | undefined,
   opts?: { requirePathExists?: boolean }
 ): AcpSkillMetaRef[] {
   if (!skills || skills.length === 0) return [];

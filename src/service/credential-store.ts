@@ -15,7 +15,7 @@ import {
   type CredentialProtector,
 } from "./credential-protector.js";
 
-/** Shared id shape for vault entries and profile.credentialRef. */
+/** Shared id shape for vault entries and route credentialRef values. */
 export const CREDENTIAL_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
 
 /** Non-secret metadata bag stored alongside ciphertext. */

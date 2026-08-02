@@ -1,13 +1,13 @@
 // Delivery operational entity (dl-) — task-api §1.3.
-// Stored under temp/<role>/deliveries/<dl-id>.md or
-// temp/agent-profiles/<safe-profile-id>/deliveries/<dl-id>.md (not OKF Nodes).
+// Stored under the exact Task assignee lane (not OKF Nodes). Executor identity
+// is joined from immutable Task.assigneeKind + Task.assigneeId, never duplicated.
 
 import { withTentMutation, type Clock, type FsAdapter } from "./adapter.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { isNodeId } from "./id.js";
 import {
-  AGENT_PROFILES_TEMP_DIR,
-  agentProfileDeliveriesDir,
+  ROUTES_TEMP_DIR,
+  routeDeliveriesDir,
   TEMP_DIR,
 } from "./paths.js";
 import { join } from "./tree.js";
@@ -27,7 +27,6 @@ export interface DeliveryRecord {
   taskId: string;
   /** Source Node selected from the Task's ordered Node refs when delivered. */
   sourceNodeId: string;
-  role: string;
   status: DeliveryStatus;
   summary: string;
   commits: string[];
@@ -48,8 +47,6 @@ export interface DeliveryRecord {
 export interface CreateDeliveryInput {
   taskId: string;
   sourceNodeId: string;
-  /** Submitter label (role name or profileId). */
-  role: string;
   summary: string;
   commits?: string[];
   /**
@@ -64,9 +61,9 @@ export interface CreateDeliveryInput {
   id?: string;
   /**
    * When set, write under this deliveries directory (relative system root).
-   * Profile tasks pass agent-profiles deliveries dir; roles default to temp/<role>/deliveries.
+   * Route tasks pass their Task-scoped deliveries dir; Roles use temp/<role>/deliveries.
    */
-  deliveriesDir?: string;
+  deliveriesDir: string;
 }
 
 const KEY_ORDER = [
@@ -74,7 +71,6 @@ const KEY_ORDER = [
   "id",
   "taskId",
   "sourceNodeId",
-  "role",
   "status",
   "commits",
   "targetHead",
@@ -105,8 +101,8 @@ export async function createDeliveryUnlocked(
   if (!summary) throw new Error("Delivery summary cannot be empty.");
   const now = clock.now();
   const id = input.id && isDeliveryId(input.id) ? input.id : makeDeliveryId();
-  const deliveriesDir =
-    input.deliveriesDir?.trim() || join(TEMP_DIR, input.role, "deliveries");
+  const deliveriesDir = input.deliveriesDir.trim();
+  if (!deliveriesDir) throw new Error("Delivery deliveriesDir cannot be empty.");
   await ensureDir(fs, deliveriesDir);
   const path = join(deliveriesDir, `${id}.md`);
   if (await fs.exists(path)) throw new Error(`Delivery already exists: ${path}.`);
@@ -118,7 +114,6 @@ export async function createDeliveryUnlocked(
     id,
     taskId: input.taskId,
     sourceNodeId: input.sourceNodeId,
-    role: input.role,
     status: input.status ?? "ready",
     summary,
     commits,
@@ -143,8 +138,7 @@ export async function loadDelivery(fs: FsAdapter, inputPath: string): Promise<De
   if (
     typeof data.taskId !== "string" ||
     typeof data.sourceNodeId !== "string" ||
-    !isNodeId(data.sourceNodeId) ||
-    typeof data.role !== "string"
+    !isNodeId(data.sourceNodeId)
   ) {
     throw new Error(`Invalid delivery format: ${path}.`);
   }
@@ -162,7 +156,6 @@ export async function loadDelivery(fs: FsAdapter, inputPath: string): Promise<De
     id: data.id,
     taskId: data.taskId,
     sourceNodeId: data.sourceNodeId,
-    role: data.role,
     status,
     summary: body.trim(),
     commits: Array.isArray(data.commits)
@@ -193,14 +186,14 @@ export async function loadDeliveries(
   if (!(await fs.exists(TEMP_DIR))) return out;
   for (const entry of await fs.listDir(TEMP_DIR)) {
     if (!entry.isDir) continue;
-    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
-      const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
-      if (!(await fs.exists(profilesRoot))) continue;
-      for (const profileEntry of await fs.listDir(profilesRoot)) {
-        if (!profileEntry.isDir) continue;
+    if (entry.name === ROUTES_TEMP_DIR) {
+      const routesRoot = join(TEMP_DIR, ROUTES_TEMP_DIR);
+      if (!(await fs.exists(routesRoot))) continue;
+      for (const routeEntry of await fs.listDir(routesRoot)) {
+        if (!routeEntry.isDir) continue;
         await collectDeliveryFiles(
           fs,
-          join(profilesRoot, profileEntry.name, "deliveries"),
+          join(routesRoot, routeEntry.name, "deliveries"),
           filter,
           out
         );
@@ -303,7 +296,6 @@ export async function writeDelivery(fs: FsAdapter, record: DeliveryRecord): Prom
     id: record.id,
     taskId: record.taskId,
     sourceNodeId: record.sourceNodeId,
-    role: record.role,
     status: record.status,
     commits: record.commits,
     targetHead: record.targetHead,
@@ -323,21 +315,21 @@ export function deliveryPath(role: string, id: string): string {
   return join(TEMP_DIR, role, "deliveries", `${id}.md`);
 }
 
-/** Profile-task delivery path under the dedicated agent-profiles namespace. */
-export function agentProfileDeliveryPath(profileId: string, id: string): string {
-  return join(agentProfileDeliveriesDir(profileId), `${id}.md`);
+/** Route-task delivery path under the dedicated routes namespace. */
+export function routeDeliveryPath(routeId: string, id: string): string {
+  return join(routeDeliveriesDir(routeId), `${id}.md`);
 }
 
 function normalizeDeliveryPath(input: string): string {
   const path = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
   // Role: temp/<role>/deliveries/dl-….md
-  // Profile: temp/agent-profiles/<safe>/deliveries/dl-….md
+  // Route: temp/routes/<safe>/deliveries/dl-….md
   if (
     !/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path) &&
-    !/^temp\/agent-profiles\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path)
+    !/^temp\/routes\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path)
   ) {
     throw new Error(
-      "Delivery must point to temp/<role>/deliveries/<dl-id>.md or temp/agent-profiles/<profile>/deliveries/<dl-id>.md."
+      "Delivery must point to temp/<role>/deliveries/<dl-id>.md or temp/routes/<route>/deliveries/<dl-id>.md."
     );
   }
   return path;

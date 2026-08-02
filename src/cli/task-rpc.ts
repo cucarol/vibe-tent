@@ -294,12 +294,13 @@ export async function runTaskCommand(
           targetKind === "role"
             ? {
                 ...common,
-                role: targetId,
+                assigneeKind: "role" as const,
+                assigneeId: targetId,
               }
             : {
                 ...common,
                 assigneeKind: "route" as const,
-                routeId: targetId,
+                assigneeId: targetId,
                 startSession: true as const,
               };
 
@@ -656,7 +657,8 @@ export async function runTaskCommand(
 type TaskLike = {
   path?: string;
   id?: string;
-  role?: string;
+  assigneeKind?: "role" | "route";
+  assigneeId?: string;
   state?: string;
   status?: string;
   /** Node ids from TaskProjection.referencedNodeIds (Context Card refs). */
@@ -675,18 +677,18 @@ function formatTaskDispatch(result: unknown): string {
     parentActor?: { kind?: string; id?: string };
     reviewer?: { kind?: string; id?: string };
     assigneeKind?: string;
-    assignee?: string;
+    assigneeId?: string;
     session?:
       | {
           sessionId?: string;
           id?: string;
           state?: string;
-          profileId?: string;
+          routeId?: string;
           session?: {
             sessionId?: string;
             id?: string;
             state?: string;
-            profileId?: string;
+            routeId?: string;
           };
         }
       | null;
@@ -700,7 +702,7 @@ function formatTaskDispatch(result: unknown): string {
       ? String(sessionView.sessionId || sessionView.id)
       : undefined;
   const sessionState = sessionView?.state ? String(sessionView.state) : undefined;
-  const sessionProfileId = sessionView?.profileId ? String(sessionView.profileId) : undefined;
+  const sessionRouteId = sessionView?.routeId ? String(sessionView.routeId) : undefined;
   const parentLabel =
     row.parentActor?.kind && row.parentActor?.id
       ? `${row.parentActor.kind}:${row.parentActor.id}`
@@ -715,13 +717,13 @@ function formatTaskDispatch(result: unknown): string {
     `taskPath: ${row.taskPath}\n` +
     `state: ${row.state ?? "queued"}\n` +
     (row.assigneeKind ? `assigneeKind: ${row.assigneeKind}\n` : "") +
-    (row.assignee ? `assignee: ${row.assignee}\n` : "") +
+    (row.assigneeId ? `assigneeId: ${row.assigneeId}\n` : "") +
     (parentLabel ? `parentActor: ${parentLabel}\n` : "") +
     (reviewerLabel ? `reviewer: ${reviewerLabel}\n` : "") +
     (row.asSub ? `asSub: true\n` : "") +
     (sessionId ? `sessionId: ${sessionId}\n` : "") +
     (sessionState ? `sessionState: ${sessionState}\n` : "") +
-    (sessionProfileId ? `sessionProfileId: ${sessionProfileId}\n` : "") +
+    (sessionRouteId ? `sessionRouteId: ${sessionRouteId}\n` : "") +
     (row.relayPrompt ? `\n--- Relay prompt ---\n${row.relayPrompt}` : "")
   );
 }
@@ -737,7 +739,7 @@ function formatTaskList(result: unknown): string {
     lines.push(
       `- ${t.path ?? t.id ?? "?"}` +
         `\tstate=${t.state ?? t.status ?? "?"}` +
-        `\trole=${t.role ?? "?"}` +
+        `\tassignee=${t.assigneeKind ?? "?"}:${t.assigneeId ?? "?"}` +
         `\tnodes=${(t.referencedNodeIds ?? []).join(",") || "-"}` +
         (t.sessionId ? `\tsession=${t.sessionId}` : "")
     );
@@ -750,7 +752,8 @@ function formatTaskGet(result: { task: TaskLike }): string {
   const lines = [
     `path: ${t.path ?? "?"}`,
     `id: ${t.id ?? "?"}`,
-    `role: ${t.role ?? "?"}`,
+    `assigneeKind: ${t.assigneeKind ?? "?"}`,
+    `assigneeId: ${t.assigneeId ?? "?"}`,
     `state: ${t.state ?? t.status ?? "?"}`,
     `status: ${t.status ?? "?"}`,
     `nodes: ${(t.referencedNodeIds ?? []).join(", ") || "-"}`,

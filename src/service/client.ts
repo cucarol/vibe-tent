@@ -620,28 +620,28 @@ export class ServiceClient {
     });
   }
 
-  // ---- convenience: machine-local profiles (safe metadata / editor projection) ----
-  profileList(opts?: { includeTest?: boolean }) {
-    return this.call("profile.list", opts ?? {});
+  // ---- convenience: machine-local routes (safe metadata / editor projection) ----
+  routeList(opts?: { includeTest?: boolean }) {
+    return this.call("route.list", opts ?? {});
   }
-  profileGet(id: string) {
-    return this.call("profile.get", { id });
+  routeGet(routeId: string) {
+    return this.call("route.get", { routeId });
   }
-  profileCreate(profile: Record<string, unknown>) {
-    return this.call("profile.create", profile);
+  routeCreate(route: Record<string, unknown>) {
+    return this.call("route.create", route);
   }
-  /** Method `id` always wins over any `id` inside patch (spread cannot override). */
-  profileUpdate(id: string, patch: Record<string, unknown>) {
-    return this.call("profile.update", { ...patch, id });
+  /** Method routeId always wins over patch data. */
+  routeUpdate(routeId: string, patch: Record<string, unknown>) {
+    return this.call("route.update", { ...patch, routeId });
   }
-  profileDelete(id: string) {
-    return this.call("profile.delete", { id });
+  routeDelete(routeId: string) {
+    return this.call("route.delete", { routeId });
   }
 
   /**
    * Read-only product provider verification catalog.
    * Returns adapterId + verificationLevel (+ optional canResume/notes).
-   * Distinct from profile.list (machine-local launch config). Never secrets.
+   * Distinct from route.list (machine-local launch config). Never secrets.
    */
   providerCatalog() {
     return this.call<ProviderCatalogProjection>("provider.catalog", {});
@@ -695,15 +695,12 @@ export class ServiceClient {
        * This is the only public Node selection input.
        */
       nodeIds: string[];
-      /** Required for assigneeKind=role (default). */
-      role?: string;
-      /** Defaults to role. route starts one temporary ACP Session from Settings. */
-      assigneeKind?: "role" | "route";
+      assigneeKind: "role" | "route";
+      assigneeId: string;
       prompt: string;
       /**
        * Explicit parent actor (V0.2). Required on every dispatch.
        * Role-dispatched Task Agent → { kind:"role", id:<role> }; user-direct → { kind:"user", id:"user" }.
-       * Do not send legacy `dispatchedBy` (Service rejects it fail-loud).
        */
       parentActor: { kind: "user" | "role"; id: string };
       /**
@@ -719,8 +716,6 @@ export class ServiceClient {
       asSub?: boolean;
       deliveryPolicy?: string;
       startSession?: boolean;
-      /** Required for assigneeKind=route and whenever startSession is true. */
-      routeId?: string;
       callerKind?: "user" | "role";
     }
   ) {
@@ -853,8 +848,6 @@ export class ServiceClient {
     workspaceId: string,
     args: {
       taskPath: string;
-      /** Required machine Settings route key. */
-      profileId: string;
       callerKind?: "user" | "role";
       bootstrapPrompt?: string;
     }
@@ -872,8 +865,6 @@ export class ServiceClient {
     workspaceId: string,
     args: {
       taskPath: string;
-      /** Required machine Settings route key. */
-      profileId: string;
       callerKind?: "user" | "role";
     }
   ) {
@@ -887,12 +878,12 @@ export class ServiceClient {
   }
 
   /**
-   * List deliveries for a workspace (optional taskId / nodeId / role filters).
+   * List deliveries for a workspace (optional Task / Node / assignee filters).
    * Read projection only — review still uses task.accept / task.reject.
    */
   deliveryList(
     workspaceId: string,
-    opts?: { taskId?: string; nodeId?: string; role?: string }
+    opts?: { taskId?: string; nodeId?: string; assigneeKind?: "role" | "route"; assigneeId?: string }
   ) {
     return this.call<{ workspaceId: string; deliveries: DeliveryProjection[] }>(
       "delivery.list",
@@ -988,13 +979,11 @@ export class ServiceClient {
     args: {
       workspaceId?: string;
       sessionId?: string;
-      profileId?: string;
       roleName?: string;
       role?: string;
       externalKey?: string;
       lastTaskId?: string;
       cwd?: string;
-      assigneeKind?: "role" | "agentProfile";
     } = {}
   ) {
     return this.call("session.enter", { ...args });
@@ -1079,14 +1068,7 @@ export class ServiceClient {
     return this.call("session.leave", { ...sessionIdOrArgs });
   }
 
-  a2aListPending(workspaceId?: string) {
-    return this.call("a2a.listPending", workspaceId ? { workspaceId } : {});
-  }
-  a2aResolve(approvalId: string, decision: "approve" | "deny", actor = "user") {
-    return this.call("a2a.resolve", { approvalId, decision, actor });
-  }
-
-  /** ACP tool permission pending list (permissionPolicy=ask). Not A2A spawn. */
+  /** ACP tool permission pending list (permissionPolicy=ask). */
   toolApprovalListPending(workspaceId?: string) {
     return this.call("toolApproval.listPending", workspaceId ? { workspaceId } : {});
   }
@@ -1128,7 +1110,7 @@ export class ServiceClient {
 
   /**
    * Unified A2U pending read projection for one workspace.
-   * Aggregates UserAsk / A2A / toolApproval / ready Delivery.
+   * Aggregates UserAsk / toolApproval / ready Delivery.
    * Resolve actions stay on domain RPCs — no interaction.resolve.
    */
   interactionListPending(workspaceId: string) {

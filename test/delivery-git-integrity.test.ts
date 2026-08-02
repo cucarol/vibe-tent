@@ -16,7 +16,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
-import { ensureRoleWorkspace } from "../src/core/workspace.js";
+import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
@@ -30,32 +30,6 @@ async function makeWorkspace(name = "git-integrity"): Promise<string> {
     name,
     nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
-  await fsa.writeFile(
-    ".tent/roles.json",
-    JSON.stringify(
-      {
-        roles: [
-          {
-            name: "executor-a",
-            prompt: "do work a",
-            allowedProfiles: ["fake-default"],
-          },
-          {
-            name: "executor-b",
-            prompt: "do work b",
-            allowedProfiles: ["fake-default"],
-          },
-          {
-            name: "executor",
-            prompt: "do work",
-            allowedProfiles: ["fake-default"],
-          },
-        ],
-      },
-      null,
-      2
-    ) + "\n"
-  );
   return workspace;
 }
 
@@ -72,7 +46,17 @@ async function withService<T>(
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-gi-svc-"));
-  const svc = await startLocalTentService({ dataDir });
+  const svc = await startLocalTentService({
+    dataDir,
+    routes: [
+      {
+        routeId: "fake-default",
+        provider: "fake",
+        adapterId: FAKE_ADAPTER_ID,
+        fake: { waitForSignal: true },
+      },
+    ],
+  });
   try {
     return await fn(svc);
   } finally {
@@ -110,7 +94,7 @@ async function claimRunningWithBase(
   svc: Awaited<ReturnType<typeof startLocalTentService>>,
   ws: string,
   opts: {
-    role: string;
+    label: string;
     prompt: string;
     noteName?: string;
     workspaceId?: string;
@@ -127,13 +111,13 @@ async function claimRunningWithBase(
   if (workspaceId) {
     const created = await rpc(svc, "docs.createNote", {
       workspaceId,
-      name: opts.noteName ?? `item-${opts.role}`,
+      name: opts.noteName ?? `item-${opts.label}`,
       type: "prompt",
     });
     assert.ok(!created.error, JSON.stringify(created.error));
     nodeId = (created.result as { nodeId: string }).nodeId;
   } else {
-    const mounted = await mountWorkItem(svc, ws, opts.noteName ?? `item-${opts.role}`);
+    const mounted = await mountWorkItem(svc, ws, opts.noteName ?? `item-${opts.label}`);
     workspaceId = mounted.workspaceId;
     nodeId = mounted.nodeId;
   }
@@ -143,7 +127,8 @@ async function claimRunningWithBase(
     reviewer: { kind: "user", id: "user" },
     workspaceId,
     nodeIds: [nodeId],
-    role: opts.role,
+    assigneeKind: "route",
+    assigneeId: "fake-default",
     prompt: opts.prompt,
     deliveryPolicy: "review",
   });
@@ -153,7 +138,6 @@ async function claimRunningWithBase(
   const started = await rpc(svc, "task.startSession", {
     workspaceId,
     taskPath,
-    profileId: "fake-default",
     callerKind: "user",
   });
   assert.ok(!started.error, JSON.stringify(started.error));
@@ -222,9 +206,7 @@ async function pathExists(p: string): Promise<boolean> {
 test("concurrent accept same targetHead: one integrates; other TARGET_MOVED remains ready", async () => {
   const ws = await makeWorkspace("concurrent-accept");
   await initGitOnWorkspace(ws);
-  // Two independent role lanes → main (same targetBranch).
-  await ensureRoleWorkspace(ws, "executor-a");
-  await ensureRoleWorkspace(ws, "executor-b");
+  // Two independent exact Task lanes → main (same targetBranch).
   const mainAtDeliver = (await git(ws, "rev-parse", "main")).trim();
 
   await withService(async (svc) => {
@@ -233,13 +215,13 @@ test("concurrent accept same targetHead: one integrates; other TARGET_MOVED rema
     const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
 
     const taskA = await claimRunningWithBase(svc, ws, {
-      role: "executor-a",
+      label: "executor-a",
       prompt: "concurrent A",
       workspaceId,
       noteName: "item-a",
     });
     const taskB = await claimRunningWithBase(svc, ws, {
-      role: "executor-b",
+      label: "executor-b",
       prompt: "concurrent B",
       workspaceId,
       noteName: "item-b",
@@ -368,27 +350,6 @@ test("Service dual workspaceId projections same common-dir+target: concurrent ac
       name: path.basename(root),
       nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
     });
-    await fsa.writeFile(
-      ".tent/roles.json",
-      JSON.stringify(
-        {
-          roles: [
-            {
-              name: "executor-a",
-              prompt: "a",
-              allowedProfiles: ["fake-default"],
-            },
-            {
-              name: "executor-b",
-              prompt: "b",
-              allowedProfiles: ["fake-default"],
-            },
-          ],
-        },
-        null,
-        2
-      ) + "\n"
-    );
   }
 
   const { resolveIntegrationTargetLockIdentity } = await import(
@@ -401,8 +362,6 @@ test("Service dual workspaceId projections same common-dir+target: concurrent ac
   assert.equal(idB.targetRef, "refs/heads/main");
 
   // Role lanes live in the shared object store (created from either projection).
-  await ensureRoleWorkspace(projA, "executor-a");
-  await ensureRoleWorkspace(projA, "executor-b");
   const mainAtDeliver = (await git(projA, "rev-parse", "main")).trim();
 
   await withService(async (svc) => {
@@ -419,13 +378,13 @@ test("Service dual workspaceId projections same common-dir+target: concurrent ac
     );
 
     const taskA = await claimRunningWithBase(svc, projA, {
-      role: "executor-a",
+      label: "executor-a",
       prompt: "dual A",
       workspaceId: workspaceIdA,
       noteName: "item-a",
     });
     const taskB = await claimRunningWithBase(svc, projB, {
-      role: "executor-b",
+      label: "executor-b",
       prompt: "dual B",
       workspaceId: workspaceIdB,
       noteName: "item-b",
@@ -529,30 +488,7 @@ test("Service dual workspaceId: blocked integrate critical section is exclusive"
       name: path.basename(root),
       nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
     });
-    await fsa.writeFile(
-      ".tent/roles.json",
-      JSON.stringify(
-        {
-          roles: [
-            {
-              name: "executor-a",
-              prompt: "a",
-              allowedProfiles: ["fake-default"],
-            },
-            {
-              name: "executor-b",
-              prompt: "b",
-              allowedProfiles: ["fake-default"],
-            },
-          ],
-        },
-        null,
-        2
-      ) + "\n"
-    );
   }
-  await ensureRoleWorkspace(projA, "executor-a");
-  await ensureRoleWorkspace(projA, "executor-b");
 
   let active = 0;
   let maxActive = 0;
@@ -565,6 +501,14 @@ test("Service dual workspaceId: blocked integrate critical section is exclusive"
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-gi-dual-hold-svc-"));
   const svc = await startLocalTentService({
     dataDir,
+    routes: [
+      {
+        routeId: "fake-default",
+        provider: "fake",
+        adapterId: FAKE_ADAPTER_ID,
+        fake: { waitForSignal: true },
+      },
+    ],
     integrateCommits: async () => {
       entered += 1;
       active += 1;
@@ -581,13 +525,13 @@ test("Service dual workspaceId: blocked integrate critical section is exclusive"
     assert.notEqual(workspaceIdA, workspaceIdB);
 
     const taskA = await claimRunningWithBase(svc, projA, {
-      role: "executor-a",
+      label: "executor-a",
       prompt: "hold A",
       workspaceId: workspaceIdA,
       noteName: "hold-a",
     });
     const taskB = await claimRunningWithBase(svc, projB, {
-      role: "executor-b",
+      label: "executor-b",
       prompt: "hold B",
       workspaceId: workspaceIdB,
       noteName: "hold-b",
@@ -641,7 +585,6 @@ test("Service dual workspaceId: blocked integrate critical section is exclusive"
 test("task.deliver foreign SHA: no ready Delivery; Git unchanged", async () => {
   const ws = await makeWorkspace("foreign-sha");
   await initGitOnWorkspace(ws);
-  await ensureRoleWorkspace(ws, "executor");
   const mainBefore = (await git(ws, "rev-parse", "main")).trim();
 
   await withService(async (svc) => {
@@ -649,7 +592,7 @@ test("task.deliver foreign SHA: no ready Delivery; Git unchanged", async () => {
       svc,
       ws,
       {
-        role: "executor",
+        label: "executor",
         prompt: "foreign sha",
       }
     );
@@ -703,12 +646,11 @@ test("task.deliver foreign SHA: no ready Delivery; Git unchanged", async () => {
 test("task.deliver missing SHA: no ready Delivery; Git unchanged", async () => {
   const ws = await makeWorkspace("missing-sha");
   await initGitOnWorkspace(ws);
-  await ensureRoleWorkspace(ws, "executor");
   const mainBefore = (await git(ws, "rev-parse", "main")).trim();
 
   await withService(async (svc) => {
     const { workspaceId, taskPath, worktree } = await claimRunningWithBase(svc, ws, {
-      role: "executor",
+      label: "executor",
       prompt: "missing sha",
     });
     await taskCommitOnLane(worktree, "ok.txt", "ok\n", "ok work");
@@ -735,7 +677,6 @@ test("task.deliver missing SHA: no ready Delivery; Git unchanged", async () => {
 test("task.deliver baseCommit itself: no ready Delivery; Git unchanged", async () => {
   const ws = await makeWorkspace("base-as-commit");
   await initGitOnWorkspace(ws);
-  await ensureRoleWorkspace(ws, "executor");
   const mainBefore = (await git(ws, "rev-parse", "main")).trim();
 
   await withService(async (svc) => {
@@ -743,7 +684,7 @@ test("task.deliver baseCommit itself: no ready Delivery; Git unchanged", async (
       svc,
       ws,
       {
-        role: "executor",
+        label: "executor",
         prompt: "base as commit",
       }
     );

@@ -2,6 +2,7 @@
 // Maps ProcessSupervisor + SessionRegistry + ProviderAdapter; no Task/Node writes.
 
 import * as path from "node:path";
+import { createHash } from "node:crypto";
 import type { ManagedSession, ProviderAdapter } from "../adapters/types.js";
 import { FAKE_ADAPTER_ID, createFakeAdapter } from "../adapters/fake/index.js";
 import { GROK_ACP_ADAPTER_ID, createGrokAcpAdapter } from "../adapters/grok-acp/index.js";
@@ -35,9 +36,11 @@ import {
 } from "../adapters/acp/mcp-skills.js";
 import { composeManagedSkillRefs } from "../core/managed-skill-compose.js";
 import {
-  cloneAgentProfileConfig,
-  cloneAgentProfileConfigForSnapshot,
-} from "./profile-config.js";
+  cloneSettingsRoute,
+  calculateSettingsRouteLaunchDigest,
+  createSettingsRouteSnapshot,
+  routeConfigFromSnapshot,
+} from "./route-config.js";
 import { stripReservedTentChildEnv } from "./child-env.js";
 import { ProcessSupervisor } from "./process-supervisor.js";
 import { SessionRegistry } from "./session-registry.js";
@@ -47,11 +50,12 @@ import {
   truncateUtf8Text,
 } from "../adapters/acp/limits.js";
 import type {
-  AgentProfileConfig,
+  SettingsRouteConfig,
+  SettingsRouteSnapshot,
   AgentRuntimePort,
   EnterExternalSessionRequest,
   ResolveCredentialRef,
-  ResolveProfileEnv,
+  ResolveRouteEnv,
   ResumeSessionRequest,
   RuntimeEvent,
   SessionHandle,
@@ -63,7 +67,7 @@ import type {
 } from "./types.js";
 import {
   EXTERNAL_ADAPTER_ID,
-  EXTERNAL_PROFILE_ID,
+  EXTERNAL_ROUTE_ID,
   isSessionId,
   makeSessionId,
   recordExternalKey,
@@ -71,8 +75,8 @@ import {
 
 export interface AgentRuntimeOptions {
   dataDir: string;
-  /** Profile catalog (machine-local). */
-  profiles?: AgentProfileConfig[];
+  /** Route catalog (machine-local). */
+  routes?: SettingsRouteConfig[];
   /** Adapter registry; defaults include fake-cli and the explicit product ACP adapters. */
   adapters?: ProviderAdapter[];
   /** Graceful stop timeout for supervised children. */
@@ -80,10 +84,10 @@ export interface AgentRuntimeOptions {
   /** When true (default), capture short stdout tails as diagnostic events. */
   captureStdout?: boolean;
   /**
-   * Optional async hook to resolve profile credentialRef → env values before LaunchPlan.
+   * Optional async hook to resolve route credentialRef → env values before LaunchPlan.
    * Service wires CredentialStore.resolve here. Secrets never enter SessionRecord.
    */
-  resolveProfileEnv?: ResolveProfileEnv;
+  resolveRouteEnv?: ResolveRouteEnv;
   /**
    * Optional hook to resolve arbitrary credential ids for MCP env/header injection.
    * Process-scoped only; never persisted on SessionRecord.
@@ -92,7 +96,7 @@ export interface AgentRuntimeOptions {
   /**
    * Package root for bundled tent-role / tent-task skill paths.
    * When set, managed sessions automatically compose built-in skill refs
-   * (profile.skills remain optional extras).
+   * (route.skills remain optional extras).
    */
   packageRoot?: string;
 }
@@ -100,12 +104,11 @@ export interface AgentRuntimeOptions {
 function handleFrom(record: SessionRecord): SessionHandle {
   return {
     sessionId: record.id,
-    profileId: record.profileId,
+    routeId: record.routeId,
     adapterId: record.adapterId,
     state: record.state,
     pid: record.pid,
     roleName: record.roleName,
-    assigneeKind: record.assigneeKind,
     runtimeWorkspace: record.runtimeWorkspace,
     ...(record.contextRestored !== undefined
       ? { contextRestored: record.contextRestored }
@@ -155,22 +158,13 @@ function copyRuntimeErrorMetadata(error: unknown): {
   };
 }
 
-/** Shallow clone profile + one level of acp / fake (callers must not mutate the Map). */
-function cloneProfileConfig(p: AgentProfileConfig): AgentProfileConfig {
-  return cloneAgentProfileConfig(p);
-}
-
-/** Snapshot written to SessionRegistry — secret-named env values redacted. */
-function cloneProfileSnapshot(p: AgentProfileConfig): AgentProfileConfig {
-  return cloneAgentProfileConfigForSnapshot(p);
-}
-
+/** Shallow clone route + one level of acp / fake (callers must not mutate the Map). */
 export class AgentRuntime implements AgentRuntimePort {
   readonly registry: SessionRegistry;
   readonly supervisor: ProcessSupervisor;
   /** Owning Service data directory; inherited by managed children for native Tent hooks. */
   private readonly dataDir: string;
-  private readonly profiles = new Map<string, AgentProfileConfig>();
+  private readonly routes = new Map<string, SettingsRouteConfig>();
   private readonly adapters = new Map<string, ProviderAdapter>();
   private readonly managed = new Map<string, ManagedSession>();
   private readonly startInFlight = new Map<string, Promise<SessionHandle>>();
@@ -179,7 +173,7 @@ export class AgentRuntime implements AgentRuntimePort {
   private readonly managedTerminalInFlight = new Map<string, Set<Promise<void>>>();
   private readonly sinks = new Map<string, Set<(ev: RuntimeEvent) => void>>();
   private readonly globalSinks = new Set<(ev: RuntimeEvent) => void>();
-  private readonly resolveProfileEnv?: ResolveProfileEnv;
+  private readonly resolveRouteEnv?: ResolveRouteEnv;
   private readonly resolveCredentialRef?: ResolveCredentialRef;
   private readonly packageRoot?: string;
   /** Test-only: every sendFollowUpPrompt attempt (including not-alive / unsupported). */
@@ -193,23 +187,13 @@ export class AgentRuntime implements AgentRuntimePort {
     // different registry there. Normalize once at the runtime ownership boundary.
     this.dataDir = path.resolve(options.dataDir);
     this.registry = new SessionRegistry(this.dataDir);
-    this.resolveProfileEnv = options.resolveProfileEnv;
+    this.resolveRouteEnv = options.resolveRouteEnv;
     this.resolveCredentialRef = options.resolveCredentialRef;
     this.packageRoot = options.packageRoot;
 
-    for (const p of options.profiles ?? []) {
-      this.profiles.set(p.id, cloneProfileConfig(p));
+    for (const p of options.routes ?? []) {
+      this.routes.set(p.routeId, cloneSettingsRoute(p));
     }
-    // Always ensure a default fake profile for harness tests (tests only; not product default spawn).
-    if (!this.profiles.has("fake-default")) {
-      this.profiles.set("fake-default", {
-        id: "fake-default",
-        adapterId: FAKE_ADAPTER_ID,
-        displayNameKey: "profile.fake.default",
-        fake: { waitForSignal: true, emitStdout: true },
-      });
-    }
-
     const adapterList = options.adapters ?? [
       createFakeAdapter(),
       createGrokAcpAdapter(),
@@ -269,42 +253,42 @@ export class AgentRuntime implements AgentRuntimePort {
     });
   }
 
-  registerProfile(profile: AgentProfileConfig): void {
-    this.profiles.set(profile.id, cloneProfileConfig(profile));
+  registerRoute(route: SettingsRouteConfig): void {
+    this.routes.set(route.routeId, cloneSettingsRoute(route));
   }
 
   /**
-   * Full replace of the in-memory profile catalog (machine-local CRUD sync).
+   * Full replace of the in-memory route catalog (machine-local CRUD sync).
    * Does not touch live sessions — only new startSession sees the new map.
-   * Always re-ensures fake-default for harness (same rule as constructor).
-   * Stores shallow clones of profile + acp so callers cannot mutate the map.
+   * Stores clones so callers cannot mutate the map.
    */
-  replaceProfileCatalog(profiles: AgentProfileConfig[]): void {
-    this.profiles.clear();
-    for (const p of profiles) {
-      if (p && typeof p.id === "string") {
-        this.profiles.set(p.id, cloneProfileConfig(p));
+  replaceRouteCatalog(routes: SettingsRouteConfig[]): void {
+    this.routes.clear();
+    for (const p of routes) {
+      if (p && typeof p.routeId === "string") {
+        this.routes.set(p.routeId, cloneSettingsRoute(p));
       }
-    }
-    if (!this.profiles.has("fake-default")) {
-      this.profiles.set("fake-default", {
-        id: "fake-default",
-        adapterId: FAKE_ADAPTER_ID,
-        displayNameKey: "profile.fake.default",
-        fake: { waitForSignal: true, emitStdout: true },
-      });
     }
   }
 
-  /** Lookup a single machine-local profile (cloned; mutating the return does not corrupt the Map). */
-  getProfile(profileId: string): AgentProfileConfig | undefined {
-    const p = this.profiles.get(profileId);
-    return p ? cloneProfileConfig(p) : undefined;
+  /** Lookup a single machine-local route (cloned; mutating the return does not corrupt the Map). */
+  getRoute(routeId: string): SettingsRouteConfig | undefined {
+    const p = this.routes.get(routeId);
+    return p ? cloneSettingsRoute(p) : undefined;
+  }
+
+  /** Immutable non-secret launch facts for a fresh Session. */
+  snapshotRouteForStart(routeId: string): SettingsRouteSnapshot {
+    const route = this.routes.get(routeId);
+    if (!route) throw new Error(`Unknown Settings route: ${routeId}`);
+    return createSettingsRouteSnapshot(route, {
+      effectiveEndpointDigest: this.effectiveEndpointDigest(route),
+    });
   }
 
   /** Machine-local catalog snapshot (cloned entries). */
-  listProfiles(): AgentProfileConfig[] {
-    return [...this.profiles.values()].map(cloneProfileConfig);
+  listRoutes(): SettingsRouteConfig[] {
+    return [...this.routes.values()].map(cloneSettingsRoute);
   }
 
   registerAdapter(adapter: ProviderAdapter): void {
@@ -361,9 +345,8 @@ export class AgentRuntime implements AgentRuntimePort {
     this.assertOpen();
 
     const externalKey = req.externalKey?.trim() || undefined;
-    const profileId = (req.profileId?.trim() || EXTERNAL_PROFILE_ID).trim();
+    const routeId = (req.routeId?.trim() || EXTERNAL_ROUTE_ID).trim();
     const roleName = req.roleName?.trim() || undefined;
-    const assigneeKind = req.assigneeKind;
     const workspace = req.workspace?.trim() || undefined;
     const cwd =
       req.runtimeWorkspace?.cwd ?? req.cwd ?? req.workspaceLane?.worktree ?? undefined;
@@ -377,9 +360,10 @@ export class AgentRuntime implements AgentRuntimePort {
       if (existing) {
         if (existing.state === "external") {
           const patch: Partial<SessionRecord> = {};
-          if (roleName && existing.roleName !== roleName) patch.roleName = roleName;
-          if (assigneeKind && existing.assigneeKind !== assigneeKind) {
-            patch.assigneeKind = assigneeKind;
+          if (roleName && existing.roleName !== roleName) {
+            throw new Error(
+              `External Session role binding mismatch: existing=${existing.roleName ?? "(none)"} requested=${roleName}`
+            );
           }
           if (workspace && existing.workspace !== workspace) patch.workspace = workspace;
           if (cwd && existing.runtimeWorkspace?.cwd !== cwd) {
@@ -439,17 +423,17 @@ export class AgentRuntime implements AgentRuntimePort {
 
     const sessionId = req.sessionId && isSessionId(req.sessionId) ? req.sessionId : makeSessionId();
     const now = new Date().toISOString();
-    const profileSnapshot: AgentProfileConfig = {
-      id: profileId,
+    const routeSnapshot = createSettingsRouteSnapshot({
+      routeId,
+      provider: "external",
       adapterId: EXTERNAL_ADAPTER_ID,
-    };
+    }, { effectiveEndpointDigest: undefined });
     const record: SessionRecord = {
       id: sessionId,
-      profileId,
+      routeId,
       adapterId: EXTERNAL_ADAPTER_ID,
-      profileSnapshot,
+      routeSnapshot,
       roleName,
-      assigneeKind,
       state: "external",
       runtimeWorkspace: cwd ? { cwd } : undefined,
       workspace,
@@ -470,20 +454,36 @@ export class AgentRuntime implements AgentRuntimePort {
       throw new Error(`Session already active: ${req.sessionId}`);
     }
 
-    const profile = this.profiles.get(req.profileId);
-    if (!profile) {
-      throw new Error(`Unknown AgentProfile: ${req.profileId}`);
+    const route = this.routes.get(req.routeId);
+    if (!route) {
+      throw new Error(`Unknown Settings route: ${req.routeId}`);
     }
-    return this.startSessionWithProfile(req, cloneProfileConfig(profile));
+    if (req.routeSnapshot.routeId !== req.routeId) {
+      throw new Error(
+        `Start route snapshot mismatch: request=${req.routeId} snapshot=${req.routeSnapshot.routeId}`
+      );
+    }
+    const currentSnapshot = createSettingsRouteSnapshot(route, {
+      effectiveEndpointDigest: this.effectiveEndpointDigest(route),
+    });
+    if (
+      currentSnapshot.launchDigest !== req.routeSnapshot.launchDigest ||
+      currentSnapshot.effectiveEndpointDigest !== req.routeSnapshot.effectiveEndpointDigest
+    ) {
+      throw new Error(
+        `Settings route changed before Session start: ${req.routeId}; retry the explicit start action`
+      );
+    }
+    return this.startSessionWithRoute(req, cloneSettingsRoute(route));
   }
 
-  private async startSessionWithProfile(
+  private async startSessionWithRoute(
     req: StartSessionRequest,
-    profile: AgentProfileConfig
+    route: SettingsRouteConfig
   ): Promise<SessionHandle> {
-    const adapter = this.adapters.get(profile.adapterId);
+    const adapter = this.adapters.get(route.adapterId);
     if (!adapter) {
-      throw new Error(`Unknown adapter: ${profile.adapterId}`);
+      throw new Error(`Unknown adapter: ${route.adapterId}`);
     }
 
     const caps = adapter.capabilities();
@@ -502,11 +502,12 @@ export class AgentRuntime implements AgentRuntimePort {
     const now = new Date().toISOString();
     const record: SessionRecord = {
       id: req.sessionId,
-      profileId: profile.id,
+      routeId: route.routeId,
       adapterId: adapter.id,
-      profileSnapshot: cloneProfileSnapshot(profile),
-      roleName: req.roleName,
-      assigneeKind: req.assigneeKind,
+      routeSnapshot: createSettingsRouteSnapshot(
+        routeConfigFromSnapshot(req.routeSnapshot),
+        { effectiveEndpointDigest: req.routeSnapshot.effectiveEndpointDigest }
+      ),
       state: "starting",
       runtimeWorkspace: { cwd },
       workspace: req.workspace ?? req.workspaceLane?.workspace,
@@ -523,11 +524,11 @@ export class AgentRuntime implements AgentRuntimePort {
     try {
       // Resolve after the diagnostic row exists, so a missing/stale vault reference
       // becomes an ordinary failed session without ever persisting the plaintext.
-      resolvedEnv = await this.resolveCredentialEnv(profile);
-      // Vault injection wins for envKey; profile.env / req.env supply non-secret knobs.
+      resolvedEnv = await this.resolveCredentialEnv(route);
+      // Vault injection wins for envKey; route.env / req.env supply non-secret knobs.
       // Reserved Tent Service/data-dir/session keys are Core-owned and cannot be
-      // overridden by arbitrary profile or request env.
-      // Profile/request cannot set reserved keys (stripped). Core mirrors reserved
+      // overridden by arbitrary route or request env.
+      // Route/request cannot set reserved keys (stripped). Core mirrors reserved
       // into plan.env for adapter/hook visibility; spawn authority is coreEnv only.
       const coreEnv = {
         // Reserved routing authority: installed native Tent hooks spawned by an
@@ -536,8 +537,7 @@ export class AgentRuntime implements AgentRuntimePort {
         TENT_SESSION_ID: req.sessionId,
       };
       const planEnv = {
-        ...stripProfileRequestEnv(profile.env),
-        ...stripProfileRequestEnv(req.env),
+        ...stripRouteRequestEnv(req.env),
         ...resolvedEnv,
         ...coreEnv,
       };
@@ -546,8 +546,7 @@ export class AgentRuntime implements AgentRuntimePort {
       );
       const plan = {
         sessionId: req.sessionId,
-        profileId: profile.id,
-        roleName: req.roleName,
+        routeId: route.routeId,
         cwd,
         env: planEnv,
         coreEnv,
@@ -555,13 +554,13 @@ export class AgentRuntime implements AgentRuntimePort {
         bootstrapPrompt: req.bootstrapPrompt,
         // Ephemeral path refs only — never base64; not written to SessionRecord.
         bootstrapImageRefs: req.bootstrapImageRefs,
-        command: profile.command,
-        args: profile.args,
+        command: route.command,
+        args: route.args,
         extras: {
-          fake: profile.fake,
-          acp: profile.acp,
+          fake: route.fake,
+          acp: this.acpOptionsForRoute(route),
           // Snapshot-time ACP projection (skills + mcp). Running sessions do not hot-reload.
-          ...(await this.buildAcpLaunchExtras(profile, planEnv, req.assigneeKind)),
+          ...(await this.buildAcpLaunchExtras(route, planEnv)),
           // System root for safe image byte reads at prompt time (ephemeral; not SessionRecord).
           ...(req.bootstrapImageRefs &&
           req.bootstrapImageRefs.length > 0 &&
@@ -668,10 +667,9 @@ export class AgentRuntime implements AgentRuntimePort {
           ],
         });
         pid = proc.pid;
-        resumeToken =
-          profile.fake?.canResume || adapter.capabilities().canResume
-            ? `fake-resume:${req.sessionId}`
-            : undefined;
+        resumeToken = adapter.capabilities().canResume
+          ? `resume:${req.sessionId}`
+          : undefined;
       }
 
       const live = await this.registry.update(req.sessionId, {
@@ -702,7 +700,6 @@ export class AgentRuntime implements AgentRuntimePort {
       // Never persist raw credential values into SessionRegistry / Service errors.
       const message = redactDiagnosticText(rawMessage, {
         env: {
-          ...(profile.env ?? {}),
           ...(req.env ?? {}),
         },
         secrets: Object.values(resolvedEnv),
@@ -746,15 +743,15 @@ export class AgentRuntime implements AgentRuntimePort {
     const record = await this.registry.read(req.sessionId);
     if (!record) throw new Error(`Session not found: ${req.sessionId}`);
 
-    const profile = this.profileForResume(record);
+    const route = this.routeForResume(record);
     const adapter = this.adapters.get(record.adapterId);
     if (!adapter) throw new Error(`Unknown adapter: ${record.adapterId}`);
 
-    const tokenRaw = req.resumeToken ?? record.resumeToken;
+    const tokenRaw = record.resumeToken;
     if (!tokenRaw) {
       throw new Error(`Session ${req.sessionId} has no resume token`);
     }
-    if (!adapter.capabilities().canResume && !profile.fake?.canResume) {
+    if (!adapter.capabilities().canResume) {
       throw new Error(`Adapter ${adapter.id} cannot resume`);
     }
 
@@ -768,31 +765,6 @@ export class AgentRuntime implements AgentRuntimePort {
     }
     const cwd = recordedCwd ?? requestedCwd;
     if (!cwd) throw new Error("resumeSession requires a cwd");
-
-    // Fake-only path: re-spawn via startSession (no provider-native load).
-    // Real ACP adapters with canResume must implement resumeManagedSession.
-    // Preserve bootstrapPrompt so reject-resume rework / post-load prompts reach the child.
-    if (profile.fake?.canResume && typeof adapter.resumeManagedSession !== "function") {
-      const handle = await this.startSessionWithProfile({
-        sessionId: req.sessionId,
-        profileId: record.profileId,
-        roleName: record.roleName,
-        assigneeKind: record.assigneeKind,
-        workspaceLane: record.workspaceLane,
-        runtimeWorkspace: { cwd },
-        workspace: record.workspace,
-        lastTaskId: req.lastTaskId ?? record.lastTaskId,
-        env: req.env,
-        bootstrapPrompt: req.bootstrapPrompt,
-        bootstrapImageRefs: req.bootstrapImageRefs,
-        bootstrapImageSystemRoot: req.bootstrapImageSystemRoot,
-      }, profile);
-      // Fake resume reuses the same Tent session id — mark continuity restored.
-      const marked = await this.registry.update(req.sessionId, {
-        contextRestored: true,
-      });
-      return handleFrom(marked);
-    }
 
     if (typeof adapter.resumeManagedSession !== "function") {
       throw new Error(
@@ -829,16 +801,15 @@ export class AgentRuntime implements AgentRuntimePort {
 
     let resolvedEnv: Record<string, string> = {};
     try {
-      resolvedEnv = await this.resolveCredentialEnv(profile);
+      resolvedEnv = await this.resolveCredentialEnv(route);
       // Preserve the owning Service boundary across provider-native resume.
-      // Reserved keys remain Core-owned (profile/request cannot override).
+      // Reserved keys remain Core-owned (route/request cannot override).
       const coreEnv = {
         TENT_SERVICE_DATA_DIR: this.dataDir,
         TENT_SESSION_ID: req.sessionId,
       };
       const planEnv = {
-        ...stripProfileRequestEnv(profile.env),
-        ...stripProfileRequestEnv(req.env),
+        ...stripRouteRequestEnv(req.env),
         ...resolvedEnv,
         ...coreEnv,
       };
@@ -847,21 +818,20 @@ export class AgentRuntime implements AgentRuntimePort {
       );
       const plan = {
         sessionId: req.sessionId,
-        profileId: profile.id,
-        roleName: record.roleName,
+        routeId: route.routeId,
         cwd,
         env: planEnv,
         coreEnv,
         diagnosticSecrets,
         bootstrapPrompt: req.bootstrapPrompt,
         bootstrapImageRefs: req.bootstrapImageRefs,
-        command: profile.command,
-        args: profile.args,
+        command: route.command,
+        args: route.args,
         extras: {
-          fake: profile.fake,
-          acp: profile.acp,
-          // Resume uses profileSnapshot (not live catalog edits).
-          ...(await this.buildAcpLaunchExtras(profile, planEnv, record.assigneeKind)),
+          fake: route.fake,
+          acp: this.acpOptionsForRoute(route),
+          // Resume uses routeSnapshot (not live catalog edits).
+          ...(await this.buildAcpLaunchExtras(route, planEnv)),
           ...(req.bootstrapImageRefs &&
           req.bootstrapImageRefs.length > 0 &&
           typeof req.bootstrapImageSystemRoot === "string" &&
@@ -984,7 +954,6 @@ export class AgentRuntime implements AgentRuntimePort {
       const tokenRedacted = redactRuntimeValue(rawMessage, tokenRaw);
       const message = redactDiagnosticText(tokenRedacted, {
         env: {
-          ...(profile.env ?? {}),
           ...(req.env ?? {}),
         },
         secrets: Object.values(resolvedEnv),
@@ -1004,34 +973,29 @@ export class AgentRuntime implements AgentRuntimePort {
     }
   }
 
-  /**
-   * New rows resume from their immutable launch snapshot. Legacy rows without a
-   * snapshot use the current catalog as a bounded read fallback.
-   */
-  private profileForResume(record: SessionRecord): AgentProfileConfig {
-    const snapshot = record.profileSnapshot;
-    if (snapshot) {
-      if (snapshot.id !== record.profileId) {
-        throw new Error(
-          `Session profile snapshot id mismatch: row=${record.profileId} snapshot=${snapshot.id}`
-        );
-      }
-      if (snapshot.adapterId !== record.adapterId) {
-        throw new Error(
-          `Session profile snapshot adapter mismatch: row=${record.adapterId} snapshot=${snapshot.adapterId}`
-        );
-      }
-      return cloneProfileConfig(snapshot);
-    }
-
-    const current = this.profiles.get(record.profileId);
-    if (!current) throw new Error(`Unknown AgentProfile: ${record.profileId}`);
-    if (current.adapterId !== record.adapterId) {
+  /** Resume only from the immutable non-secret route snapshot. */
+  private routeForResume(record: SessionRecord): SettingsRouteConfig {
+    const snapshot = record.routeSnapshot;
+    if (snapshot.routeId !== record.routeId) {
       throw new Error(
-        `Legacy session adapter mismatch: row=${record.adapterId} profile=${current.adapterId}`
+        `Session route snapshot id mismatch: row=${record.routeId} snapshot=${snapshot.routeId}`
       );
     }
-    return cloneProfileConfig(current);
+    if (snapshot.adapterId !== record.adapterId) {
+      throw new Error(
+        `Session route snapshot adapter mismatch: row=${record.adapterId} snapshot=${snapshot.adapterId}`
+      );
+    }
+    const route = routeConfigFromSnapshot(snapshot);
+    const currentEndpointDigest = this.effectiveEndpointDigest(route);
+    if ((snapshot.effectiveEndpointDigest || "") !== (currentEndpointDigest || "")) {
+      throw new Error(`Session route endpoint changed; provider continuity is no longer valid`);
+    }
+    const launchDigest = calculateSettingsRouteLaunchDigest(route, currentEndpointDigest);
+    if (launchDigest !== snapshot.launchDigest) {
+      throw new Error(`Session route snapshot launch digest mismatch`);
+    }
+    return route;
   }
 
   /**
@@ -1167,11 +1131,9 @@ export class AgentRuntime implements AgentRuntimePort {
     const alive = managed ? managed.isAlive() : this.supervisor.isAlive(sessionId);
     const turnBusy =
       typeof managed?.isTurnBusy === "function" ? managed.isTurnBusy() : false;
-    const profile = this.profiles.get(record.profileId);
     const adapter = this.adapters.get(record.adapterId);
     const resumeCapable = Boolean(
-      record.resumeToken &&
-        (adapter?.capabilities().canResume || profile?.fake?.canResume)
+      record.routeSnapshot && record.resumeToken && adapter?.capabilities().canResume
     );
 
     // Reconcile disk state with process reality (service restart / crash).
@@ -1436,36 +1398,35 @@ export class AgentRuntime implements AgentRuntimePort {
   }
 
   /**
-   * Resolve skill meta + MCP wire from profile snapshot for LaunchPlan.extras.
+   * Resolve skill meta + MCP wire from route snapshot for LaunchPlan.extras.
    * Secret values only live on the plan (in-process) for session/new|load — never SessionRecord.
    * Enabled skill path refs fail loud when missing; credential resolver errors are not swallowed.
    *
    * Built-in tent-role / tent-task contracts are injected only into the managed bootstrap
-   * prompt prefix (cross-provider). ACP `_meta.tent.skills` carries optional profile.skills
+   * prompt prefix (cross-provider). ACP `_meta.tent.skills` carries optional route.skills
    * extras only — never re-advertise built-ins as activatable skill refs.
    */
   private async buildAcpLaunchExtras(
-    profile: AgentProfileConfig,
-    planEnv: Record<string, string>,
-    assigneeKind?: "role" | "agentProfile"
+    route: SettingsRouteConfig,
+    planEnv: Record<string, string>
   ): Promise<{
     acpSkills?: ReturnType<typeof resolveAcpSkillMeta>;
     acpMcpServers?: ReturnType<typeof resolveAcpMcpServersWire>;
   }> {
-    // Strip built-in names even without packageRoot so profile cannot double-load contracts.
+    // Strip built-in names even without packageRoot so route cannot double-load contracts.
     const composedSkills = composeManagedSkillRefs({
       packageRoot: this.packageRoot ?? "",
-      assigneeKind: assigneeKind ?? "role",
-      profileSkills: profile.skills,
+      assigneeKind: "route",
+      routeSkills: route.skills,
     });
     const hasSkills = Array.isArray(composedSkills) && composedSkills.length > 0;
-    const hasMcp = Array.isArray(profile.mcpServers) && profile.mcpServers.length > 0;
+    const hasMcp = Array.isArray(route.mcpServers) && route.mcpServers.length > 0;
     if (!hasSkills && !hasMcp) return {};
 
-    // Pre-resolve credential refs per server so failures name profile/server/ref only (never secrets).
+    // Pre-resolve credential refs per server so failures name route/server/ref only (never secrets).
     const credCache = new Map<string, string>();
     if (hasMcp && this.resolveCredentialRef) {
-      for (const s of profile.mcpServers ?? []) {
+      for (const s of route.mcpServers ?? []) {
         if (s.enabled === false) continue;
         const refs = new Set<string>();
         if (s.envCredentialRefs) {
@@ -1481,9 +1442,9 @@ export class AgentRuntime implements AgentRuntimePort {
             value = await this.resolveCredentialRef(id);
           } catch {
             // Fail loud; do not convert resolver throws into "not found".
-            // Name only profile / server / ref — never secret material.
+            // Name only route / server / ref — never secret material.
             throw new Error(
-              `MCP server ${s.name}: credential resolve failed for profile ${profile.id} credentialRef=${id}`
+              `MCP server ${s.name}: credential resolve failed for route ${route.routeId} credentialRef=${id}`
             );
           }
           if (typeof value === "string" && value) {
@@ -1493,12 +1454,12 @@ export class AgentRuntime implements AgentRuntimePort {
       }
     }
 
-    // Profile extras only: enabled path refs must exist; name-only refs remain allowed.
+    // Route extras only: enabled path refs must exist; name-only refs remain allowed.
     const acpSkills = hasSkills
       ? resolveAcpSkillMeta(composedSkills, { requirePathExists: true })
       : undefined;
     const acpMcpServers = hasMcp
-      ? resolveAcpMcpServersWire(profile.mcpServers, {
+      ? resolveAcpMcpServersWire(route.mcpServers, {
           planEnv,
           resolveCredential: (id) => credCache.get(id),
         })
@@ -1511,40 +1472,67 @@ export class AgentRuntime implements AgentRuntimePort {
   }
 
   /**
-   * When profile.acp.credentialRef is set, call resolveProfileEnv and require
-   * a non-empty value for profile.acp.envKey. Fail-loud otherwise.
+   * Resolve credential and endpoint env values for one launch only.
    * Never persists secrets onto SessionRecord.
    */
   private async resolveCredentialEnv(
-    profile: AgentProfileConfig
+    route: SettingsRouteConfig
   ): Promise<Record<string, string>> {
-    const ref =
-      typeof profile.acp?.credentialRef === "string"
-        ? profile.acp.credentialRef.trim()
-        : "";
-    if (!ref) return {};
+    const out: Record<string, string> = {};
+    const ref = route.credentialRef?.trim() || "";
+    const envKey = route.envKey?.trim() || "";
+    if (ref && !envKey) {
+      throw new Error(
+        `Route ${route.routeId} has credentialRef but no envKey`
+      );
+    }
+    if (ref && !this.resolveRouteEnv) {
+      throw new Error(
+        `Route ${route.routeId} references credential ${ref} but AgentRuntime has no resolveRouteEnv hook`
+      );
+    }
+    if (ref) {
+      const resolved = { ...(await this.resolveRouteEnv!(route)) };
+      const secret = resolved[envKey];
+      if (typeof secret !== "string" || !secret) {
+        throw new Error(
+          `Credential not found or empty for route ${route.routeId} (credentialRef=${ref})`
+        );
+      }
+      out[envKey] = secret;
+    }
+    const endpointEnvKey = route.baseUrlEnvKey?.trim() || "";
+    if (endpointEnvKey) {
+      const endpoint = process.env[endpointEnvKey];
+      if (typeof endpoint !== "string" || !endpoint.trim()) {
+        throw new Error(`Route ${route.routeId} endpoint env is missing: ${endpointEnvKey}`);
+      }
+      out[endpointEnvKey] = endpoint;
+    }
+    return out;
+  }
 
-    const envKey =
-      typeof profile.acp?.envKey === "string" ? profile.acp.envKey.trim() : "";
-    if (!envKey) {
-      throw new Error(
-        `Profile ${profile.id} has credentialRef but no acp.envKey (cannot inject secret into process env)`
-      );
-    }
-    if (!this.resolveProfileEnv) {
-      throw new Error(
-        `Profile ${profile.id} references credential ${ref} but AgentRuntime has no resolveProfileEnv hook`
-      );
-    }
-    const resolved = { ...(await this.resolveProfileEnv(profile)) };
-    const secret = resolved[envKey];
-    if (typeof secret !== "string" || !secret) {
-      throw new Error(
-        `Credential not found or empty for profile ${profile.id} (credentialRef=${ref})`
-      );
-    }
-    // Only expose the configured envKey mapping (drop accidental extra keys from hooks).
-    return { [envKey]: secret };
+  private effectiveEndpointDigest(route: SettingsRouteConfig): string | undefined {
+    const raw = route.baseUrlEnvKey
+      ? process.env[route.baseUrlEnvKey]
+      : route.baseUrl;
+    const normalized = raw?.trim();
+    if (!normalized) return undefined;
+    return `sha256:${createHash("sha256").update(normalized).digest("hex")}`;
+  }
+
+  private acpOptionsForRoute(route: SettingsRouteConfig) {
+    return {
+      executable: route.executable,
+      model: route.model,
+      envKey: route.envKey,
+      credentialRef: route.credentialRef,
+      baseUrlEnvKey: route.baseUrlEnvKey,
+      baseUrl: route.baseUrl,
+      permissionPolicy: route.permissionPolicy,
+      promptTimeoutMs: route.promptTimeoutMs,
+      permissionTimeoutMs: route.permissionTimeoutMs,
+    };
   }
 
   private assertOpen(): void {
@@ -1564,8 +1552,8 @@ function redactRuntimeValue(message: string, value: string): string {
   return value ? message.split(value).join("[provider-session]") : message;
 }
 
-/** Profile / request env may not override Core-owned Tent Service / session keys. */
-function stripProfileRequestEnv(
+/** Route / request env may not override Core-owned Tent Service / session keys. */
+function stripRouteRequestEnv(
   env: Record<string, string> | undefined
 ): Record<string, string> {
   return stripReservedTentChildEnv(env);

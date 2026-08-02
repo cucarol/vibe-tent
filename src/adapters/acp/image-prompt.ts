@@ -1,8 +1,8 @@
 // Pure ACP image prompt projection: Markdown image pointers → content blocks.
 // Path/MIME/size safety only. No OCR, no workspace scan, no base64 persistence.
-// Bytes are process-scoped for one session/prompt — never task/node/session/profile disk.
+// Bytes are process-scoped for one session/prompt — never Task/Node/Session/route disk.
 // Gate: live ACP initialize agentCapabilities.promptCapabilities.image === true only.
-// User does not configure image capability on AgentProfile.
+// Image capability is provider-negotiated, not a Settings route toggle.
 
 import * as nodePath from "node:path";
 import { pathToFileURL } from "node:url";
@@ -71,7 +71,7 @@ export type ProjectBootstrapImagesInput = {
   /**
    * Live initialize agentCapabilities.promptCapabilities.image === true.
    * Missing/false/undefined → treat as unsupported (do not guess).
-   * Sole pre-send gate — no profile boolean.
+   * Sole pre-send gate — no route-level capability override.
    */
   transportSupportsImage?: boolean;
   /**

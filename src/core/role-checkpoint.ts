@@ -11,7 +11,7 @@
 
 import type { FsAdapter } from "./adapter.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
-import { AGENT_PROFILES_TEMP_DIR, TEMP_DIR } from "./paths.js";
+import { ROUTES_TEMP_DIR, TEMP_DIR } from "./paths.js";
 import { assertRoleNameAvailable } from "./skillRoleRegistry.js";
 import { join } from "./tree.js";
 
@@ -94,11 +94,11 @@ export function assertRoleCheckpointRoleName(role: string): string {
   if (WINDOWS_RESERVED_DEVICE.test(name)) {
     throw new Error(`Role name is a reserved Windows path segment: ${name}.`);
   }
-  // Collisions with Tent-owned operational directories (e.g. agent-profiles).
+  // Collisions with Tent-owned operational directories (for example routes).
   assertRoleNameAvailable(name);
   // Defense in depth if assertRoleNameAvailable only covers known reserved set.
-  if (name.toLowerCase() === AGENT_PROFILES_TEMP_DIR) {
-    throw new Error(`Role name is reserved by Tent: ${AGENT_PROFILES_TEMP_DIR}.`);
+  if (name.toLowerCase() === ROUTES_TEMP_DIR) {
+    throw new Error(`Role name is reserved by Tent: ${ROUTES_TEMP_DIR}.`);
   }
   if (name.toLowerCase() === TEMP_DIR) {
     throw new Error(`Role name is reserved by Tent: ${TEMP_DIR}.`);

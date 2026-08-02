@@ -1,6 +1,13 @@
 // Service-internal AgentRuntimePort IDL (B0 agent-runtime.md §4).
 // Not a client command surface — Desktop/CLI/MCP use task.* only.
 
+import type {
+  SettingsRouteConfig,
+  SettingsRouteSnapshot,
+} from "./route-config.js";
+
+export type { FakeRouteOptions, SettingsRouteConfig, SettingsRouteSnapshot } from "./route-config.js";
+
 export type SessionState =
   | "starting"
   | "live"
@@ -49,15 +56,10 @@ export interface RuntimeWorkspace {
 export interface StartSessionRequest {
   /** Service-preallocated ss- id. */
   sessionId: string;
-  /** Machine-local AgentProfile id. */
-  profileId: string;
-  roleName?: string;
-  /**
-   * Collaboration assignee kind. Durable role sessions use "role" (default when omitted).
-   * One-shot agentProfile tasks must set "agentProfile" so live-role checks do not
-   * treat the profile assignee label as a durable role.
-   */
-  assigneeKind?: "role" | "agentProfile";
+  /** Machine-local Settings route id. */
+  routeId: string;
+  /** Exact immutable non-secret launch facts selected before prompt assembly. */
+  routeSnapshot: SettingsRouteSnapshot;
   /** Collaboration lane already prepared by service/core. */
   workspaceLane?: WorkspaceLaneRef;
   /**
@@ -69,7 +71,7 @@ export interface StartSessionRequest {
   bootstrapPrompt?: string;
   /**
    * Ephemeral local image path refs for managed ACP bootstrap projection.
-   * Paths only — never base64. Not written to SessionRecord / task / profile disk.
+   * Paths only — never base64. Not written to SessionRecord / task / route disk.
    * Projected to ACP image blocks only when live initialize
    * agentCapabilities.promptCapabilities.image === true.
    */
@@ -91,7 +93,6 @@ export interface StartSessionRequest {
 
 export interface ResumeSessionRequest {
   sessionId: string;
-  resumeToken?: string;
   runtimeWorkspace?: RuntimeWorkspace;
   cwd?: string;
   env?: Record<string, string>;
@@ -113,12 +114,11 @@ export interface ResumeSessionRequest {
 
 export interface SessionHandle {
   sessionId: string;
-  profileId: string;
+  routeId: string;
   adapterId: string;
   state: SessionState;
   pid?: number;
   roleName?: string;
-  assigneeKind?: "role" | "agentProfile";
   runtimeWorkspace?: RuntimeWorkspace;
   /**
    * True when this handle reuses provider-native same-context continuity.
@@ -149,21 +149,16 @@ export interface SessionProbe {
 /** Durable machine-local session row (architecture §3.3 / agent-runtime §6). */
 export interface SessionRecord {
   id: string;
-  profileId: string;
+  routeId: string;
   adapterId: string;
   /**
    * Immutable non-secret launch configuration captured when the session starts.
-   * Resume uses this snapshot so later profile edits cannot reinterpret an old
+   * Resume uses this snapshot so later route edits cannot reinterpret an old
    * provider token. credentialRef is resolved again at resume time; secret values
-   * are never stored here. Missing on legacy rows falls back to the live catalog.
+   * are never stored here. Missing snapshot is unrecoverable and fails loud.
    */
-  profileSnapshot?: AgentProfileConfig;
+  routeSnapshot: SettingsRouteSnapshot;
   roleName?: string;
-  /**
-   * When "agentProfile", roleName holds the profileId label for attribution only —
-   * not a durable role registry entry. Missing reads as role for older rows.
-   */
-  assigneeKind?: "role" | "agentProfile";
   state: SessionState;
   pid?: number;
   resumeToken?: string;
@@ -200,7 +195,7 @@ export interface SessionRecord {
   replacedBySessionId?: string;
   /**
    * Stable pull-host / external-GUI idempotency key within a workspace.
-   * First-class field on the session row — not profile env.
+   * First-class field on the external Session row.
    */
   externalKey?: string;
   /**
@@ -209,105 +204,31 @@ export interface SessionRecord {
    * Not a new lifecycle entity — machine-local Session projection (cx-5q6za6).
    */
   contextGeneration?: string;
-  /**
-   * Last taskDeltaDigest observed on this Session (audit / compatibility only).
-   */
+  /** Last Task delta digest observed on this Session (diagnostic only). */
   taskDeltaDigest?: string;
-  /**
-   * Non-secret skills compatibility digest captured at bind time
-   * (for Session reuse gate; never skill bodies or secrets).
-   */
-  skillsDigest?: string;
-  /**
-   * purpose / subKey for Session reuse identity (empty when unused).
-   */
-  purpose?: string;
-  /**
-   * Logical agentId for reuse identity (roster agent or profile assignee label).
-   */
-  agentId?: string;
-  /**
-   * Parent Role operational id for reuse identity (omit for user-parent).
-   */
-  parentRoleId?: string;
 }
 
 /**
- * Machine-local launch profile — binary paths, argv templates, auth refs.
+ * Machine-local Settings route — binary paths, argv templates, auth refs.
  * Lives only in the Service data area; never in workspace Git or Node bodies.
  */
-export interface AgentProfileConfig {
-  id: string;
-  adapterId: string;
-  /** Optional human label (machine-local editor); preferred over displayNameKey for projection. */
-  displayName?: string;
-  displayNameKey?: string;
-  /** Optional default command override (generic / fake / mock-acp profiles). */
-  command?: string;
-  args?: string[];
-  /**
-   * Non-secret process env for launch. Never store API keys / tokens here —
-   * real providers read secrets from the service process environment via envKey.
-   */
-  env?: Record<string, string>;
-  /**
-   * Fake-provider only knobs. Real providers must not use this bag.
-   * Kept on profile so tests never hit paid networks.
-   */
-  fake?: FakeProfileOptions;
-  /**
-   * Canonical shared ACP machine-local options (executable path, model, envKey name,
-   * credentialRef id, timeouts). Used by whitelist ACP adapterIds (grok-acp, codex-acp, …).
-   * Secret values stay in CredentialStore / process env; only env key *names* and
-   * credential *refs* are stored here (never plaintext).
-   *
-   * On load, legacy disk field `grokAcp` is migrated into `acp` (canonical save writes only `acp`).
-   */
-  acp?: import("../adapters/acp/types.js").AcpProfileOptions;
-  /**
-   * Enabled machine-local Skill references (name + optional absolute path under allowed roots).
-   * Never stores SKILL.md body. Captured into session profileSnapshot at start.
-   */
-  skills?: import("../adapters/acp/mcp-skills.js").AgentProfileSkillRef[];
-  /**
-   * MCP server descriptions projected into ACP session/new|load mcpServers.
-   * Secrets only as envKey/credentialRef names — never plaintext. Not hot-updated mid-session.
-   */
-  mcpServers?: import("../adapters/acp/mcp-skills.js").AgentProfileMcpServer[];
-}
-
 /**
  * Optional service hook: resolve machine-local secrets into process env for one start.
  * Called by AgentRuntime before LaunchPlan construction. Must not persist secrets.
  * Returns a partial env map merged last into LaunchPlan.env, so the vault value cannot
- * be shadowed by non-secret profile/request configuration.
+ * be shadowed by non-secret route/request configuration.
  */
-export type ResolveProfileEnv = (
-  profile: AgentProfileConfig
+export type ResolveRouteEnv = (
+  route: SettingsRouteConfig
 ) => Promise<Record<string, string>> | Record<string, string>;
 
 /**
  * Optional service hook: resolve one CredentialStore id → plaintext for MCP env/header injection.
- * Process-scoped only — never written to SessionRecord / profile disk / events / logs.
+ * Process-scoped only — never written to SessionRecord / route disk / events / logs.
  */
 export type ResolveCredentialRef = (
   credentialRef: string
 ) => Promise<string | undefined> | string | undefined;
-
-export interface FakeProfileOptions {
-  /** Sleep before clean exit when not waiting for stop (default 30_000). */
-  sleepMs?: number;
-  /** Exit code on natural completion (default 0). */
-  exitCode?: number;
-  /** When true, child loops until SIGTERM / force-kill (default true for supervisor tests). */
-  waitForSignal?: boolean;
-  /** Emit a short stdout line for diagnostics (default true). */
-  emitStdout?: boolean;
-  /** Fail resolveLaunch with this message (simulates missing binary / bad config). */
-  failLaunch?: string;
-  /** When true, canResume=true and resumeToken is stored. */
-  canResume?: boolean;
-}
 
 /**
  * Pull-host / external GUI session registration (no ACP spawn).
@@ -317,12 +238,11 @@ export interface EnterExternalSessionRequest {
   /** Service-preallocated or client-supplied ss- id. When omitted, runtime allocates. */
   sessionId?: string;
   /**
-   * Machine-local profile label for attribution only.
-   * Defaults to EXTERNAL_PROFILE_ID — not used to launch ACP.
+   * Machine-local external route label for transport attribution only.
+   * Defaults to EXTERNAL_ROUTE_ID — not used to launch ACP.
    */
-  profileId?: string;
+  routeId?: string;
   roleName?: string;
-  assigneeKind?: "role" | "agentProfile";
   /** Mounted workspace key for multi-mount filtering. */
   workspace?: string;
   runtimeWorkspace?: RuntimeWorkspace;
@@ -350,9 +270,9 @@ export interface AgentRuntimePort {
   subscribe(sessionId: string, sink: (ev: RuntimeEvent) => void): Unsubscribe;
 }
 
-/** Synthetic adapter/profile ids for pull-host external GUI sessions (no spawn). */
+/** Synthetic route/adapter ids for pull-host external GUI sessions (no spawn). */
 export const EXTERNAL_ADAPTER_ID = "external";
-export const EXTERNAL_PROFILE_ID = "external";
+export const EXTERNAL_ROUTE_ID = "external";
 
 export const SESSION_ID_PREFIX = "ss-";
 
@@ -372,7 +292,7 @@ export function isSessionId(id: string): boolean {
 
 /**
  * Resolve the stable externalKey for a session row.
- * First-class `externalKey` only — no profile-env fallback.
+ * First-class `externalKey` only.
  */
 export function recordExternalKey(rec: {
   externalKey?: string;

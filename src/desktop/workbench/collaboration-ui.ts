@@ -2,10 +2,10 @@
 // No Electron, no FS — builds RPC payloads and view models from projections.
 
 import type {
-  AgentProfileProjection,
   DeliveryProjection,
   RoleRegistryEntryProjection,
   SessionProjection,
+  SettingsRouteProjection,
   TaskProjection,
   TypeRegistryEntryProjection,
 } from "../../service/types.js";
@@ -34,13 +34,12 @@ export type RoleOption = {
   description?: string;
 };
 
-/** Product-facing profile option for the launch picker (safe metadata only). */
-export type ProfileOption = {
-  id: string;
+/** Product-facing machine route metadata (safe fields only). */
+export type RouteOption = {
+  routeId: string;
   adapterId: string;
   displayName: string;
   model?: string;
-  testOnly: boolean;
   /** Compact label: displayName · adapter · model */
   label: string;
 };
@@ -48,7 +47,8 @@ export type ProfileOption = {
 export type TaskReviewItem = {
   path: string;
   id?: string;
-  role: string;
+  assigneeKind: "role" | "route";
+  assigneeId: string;
   state: string;
   /** Node ids from TaskProjection.referencedNodeIds (Context Card refs). */
   referencedNodeIds: string[];
@@ -58,7 +58,7 @@ export type TaskReviewItem = {
   /** Bound runtime session projection when known (not chat). */
   sessionState?: string;
   sessionAlive?: boolean;
-  sessionProfileId?: string;
+  sessionRouteId?: string;
   deliverySummary?: string;
   commits: string[];
   canAcceptOrReject: boolean;
@@ -88,7 +88,8 @@ export type DispatchValidation = {
   reason: string | null;
   payload: {
     nodeId: string;
-    role: string;
+    assigneeKind: "role";
+    assigneeId: string;
     prompt: string;
     parentActor: { kind: "user" | "role"; id: string };
     reviewer: { kind: "user" | "role"; id: string };
@@ -150,75 +151,49 @@ export function listRoleOptions(roles: RoleRegistryEntryProjection[]): RoleOptio
 }
 
 /**
- * Build profile picker options from safe profile.list projections.
- * By default hides testOnly (fake) so product default is never harness.
+ * Build route picker options from safe route.list projections.
  */
-export function listProfileOptions(
-  profiles: AgentProfileProjection[],
-  opts?: { includeTest?: boolean }
-): ProfileOption[] {
-  const includeTest = opts?.includeTest === true;
-  return profiles
-    .filter((p) => includeTest || !p.testOnly)
-    .map((p) => {
-      const parts = [p.displayName || p.id, p.adapterId, p.model].filter(Boolean);
+export function listRouteOptions(routes: SettingsRouteProjection[]): RouteOption[] {
+  return routes
+    .map((route) => {
+      const parts = [route.displayName || route.routeId, route.adapterId, route.model].filter(Boolean);
       return {
-        id: p.id,
-        adapterId: p.adapterId,
-        displayName: p.displayName || p.id,
-        model: p.model,
-        testOnly: p.testOnly,
+        routeId: route.routeId,
+        adapterId: route.adapterId,
+        displayName: route.displayName || route.routeId,
+        model: route.model,
         label: parts.join(" · "),
       };
     })
-    .sort((a, b) => {
-      if (a.testOnly !== b.testOnly) return a.testOnly ? 1 : -1;
-      return a.id.localeCompare(b.id);
-    });
+    .sort((a, b) => a.routeId.localeCompare(b.routeId));
 }
 
-/**
- * Default product profile: sole non-test profile, else grok-acp-default when present,
- * else first product option. Never auto-picks fake when a product profile exists.
- */
-export function pickDefaultProfileId(profiles: ProfileOption[]): string | null {
-  const product = profiles.filter((p) => !p.testOnly);
-  if (product.length === 1) return product[0].id;
-  const grok = product.find((p) => p.id === "grok-acp-default");
-  if (grok) return grok.id;
-  if (product.length > 0) return product[0].id;
-  // Only if nothing else is available (tests with includeTest / empty catalog).
-  return profiles[0]?.id ?? null;
+/** Default machine route: sole route, else first sorted route. */
+export function pickDefaultRouteId(routes: RouteOption[]): string | null {
+  return routes[0]?.routeId ?? null;
 }
 
 export type StartSessionPayload = {
   taskPath: string;
-  profileId: string;
   callerKind: "user";
 };
 
 /**
  * Build task.startSession payload for the user launch button.
  * Does not claim or start automatically — caller must invoke RPC on click.
- * Never invents profileId; never sets startSession on dispatch.
+ * The Task's persisted route assignee is the sole launch source.
  */
 export function buildStartSessionPayload(
-  taskPath: string,
-  profileId: string
+  taskPath: string
 ): { ok: true; payload: StartSessionPayload } | { ok: false; reason: string } {
   const path = taskPath.trim();
   if (!path) {
     return { ok: false, reason: "缺少任务路径。" };
   }
-  const profile = profileId.trim();
-  if (!profile) {
-    return { ok: false, reason: "请选择 machine-local agent profile。" };
-  }
   return {
     ok: true,
     payload: {
       taskPath: path,
-      profileId: profile,
       callerKind: "user",
     },
   };
@@ -262,7 +237,8 @@ export function validateDispatchForm(form: DispatchFormState): DispatchValidatio
     reason: null,
     payload: {
       nodeId: form.nodeId,
-      role,
+      assigneeKind: "role",
+      assigneeId: role,
       prompt,
       // Desktop form is user-direct; Role-dispatched child uses CLI/Service explicit actors.
       parentActor: { kind: "user", id: "user" },
@@ -480,7 +456,7 @@ export function buildTaskReviewItems(
     const summaryLine = [
       label,
       sessLabel ? `会话${sessLabel}` : null,
-      task.role,
+      `${task.assigneeKind}:${task.assigneeId}`,
       deliverySummary ? truncate(deliverySummary, 64) : promptBit || null,
     ]
       .filter(Boolean)
@@ -489,7 +465,8 @@ export function buildTaskReviewItems(
     return {
       path: task.path,
       id: task.id,
-      role: task.role,
+      assigneeKind: task.assigneeKind,
+      assigneeId: task.assigneeId,
       state,
       referencedNodeIds: task.referencedNodeIds ?? [],
       prompt: task.prompt,
@@ -497,7 +474,7 @@ export function buildTaskReviewItems(
       sessionId: task.sessionId ?? session?.sessionId,
       sessionState: session?.state,
       sessionAlive: session?.alive,
-      sessionProfileId: session?.profileId,
+      sessionRouteId: session?.routeId,
       deliverySummary,
       commits,
       canAcceptOrReject: state === "delivered",

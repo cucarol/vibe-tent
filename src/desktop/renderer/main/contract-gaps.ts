@@ -35,8 +35,8 @@ export const DESKTOP_CONTRACT_GAPS: readonly ContractGap[] = [
   {
     id: "mcp.global-config",
     methods: ["mcp.list", "mcp.install"],
-    need: "Machine-global MCP server catalog independent of AgentProfile.",
-    fallback: "MCP is edited only as profile.mcpServers (next session); skill.list/install covers bundled skills only.",
+    need: "Machine-global MCP server catalog independent of Settings routes.",
+    fallback: "MCP is edited only as route.mcpServers (next session); skill.list/install covers bundled skills only.",
   },
   {
     id: "session.logs-reload",
@@ -60,9 +60,9 @@ export const DESKTOP_CONTRACT_GAPS: readonly ContractGap[] = [
   // registry.tags / registry.tag.create/delete, docs.setType / docs.tags.set /
   // docs.tag.add / docs.tag.remove. Desktop UI wiring is out of this batch.
   {
-    id: "userAsk.agent-profile",
-    methods: ["userAsk.sourceProfile"],
-    need: "Distinct source agent profile id on UserAsk projection (role alone is insufficient).",
+    id: "userAsk.source-route",
+    methods: ["userAsk.sourceRoute"],
+    need: "Distinct source route id on UserAsk projection (role alone is insufficient).",
     fallback: "UI labels source as role when present; sessionId shown only in detail notes.",
   },
 ] as const;

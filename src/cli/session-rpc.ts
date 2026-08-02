@@ -174,7 +174,7 @@ export async function runSessionCommand(
       case "enter": {
         if (positionals.length > 0) {
           return failUsage(
-            "Usage: tent session enter [--session <ss-…>] [--role <name>] [--profile <id>] [--key <externalKey>] [--host <agent>] [--task <taskId>] [--json]"
+            "Usage: tent session enter [--session <ss-…>] [--role <name>] [--route <routeId>] [--key <externalKey>] [--host <agent>] [--task <taskId>] [--json]"
           );
         }
         if (hookAlias && !externalKey) {
@@ -195,28 +195,20 @@ export async function runSessionCommand(
           flags["role-name"] ||
           flags.roleName ||
           process.env.TENT_ROLE;
-        const profileId =
-          flags.profile || flags["profile-id"] || flags.profileId;
+        const routeId = flags.route || flags["route-id"] || flags.routeId;
         const lastTaskId =
           flags.task ||
           flags["task-id"] ||
           flags.taskId ||
           flags["last-task-id"];
-        const assigneeKindRaw = flags["assignee-kind"] || flags.assigneeKind;
-        const assigneeKind =
-          assigneeKindRaw === "agentProfile" || assigneeKindRaw === "role"
-            ? assigneeKindRaw
-            : undefined;
-
-        const result = await client.sessionEnter({
+        const result = await client.call("session.enter", {
           workspaceId,
           sessionId: tentSessionId,
-          profileId,
+          routeId,
           roleName,
           externalKey,
           lastTaskId,
           cwd: ctx.workspaceRoot,
-          assigneeKind,
         });
         return okPrint(result, json, (r) => formatEnter(r));
       }
@@ -299,7 +291,7 @@ export function sessionHelpText(): string {
   return `tent session — external / pull-host session lifecycle (Local Service RPC)
 
 Usage:
-  tent session enter   [--session <ss-…>] [--role <name>] [--profile <id>]
+  tent session enter   [--session <ss-…>] [--role <name>] [--route <routeId>]
                        [--key <externalKey>] [--host <agent>] [--task <taskId>] [--json]
   tent session status  [sessionId|externalKey] [--key <externalKey>] [--json]
   tent session leave   [sessionId|externalKey] [--key <externalKey>] [--json]
@@ -565,7 +557,7 @@ function formatEnter(result: unknown): string {
     session?: {
       sessionId?: string;
       state?: string;
-      profileId?: string;
+      routeId?: string;
       roleName?: string;
       alive?: boolean;
       externalKey?: string;
@@ -579,7 +571,7 @@ function formatEnter(result: unknown): string {
     `state: ${s.state ?? "external"}\n` +
     (s.externalKey ? `externalKey: ${s.externalKey}\n` : "") +
     (s.roleName ? `role: ${s.roleName}\n` : "") +
-    (s.profileId ? `profileId: ${s.profileId}\n` : "") +
+    (s.routeId ? `routeId: ${s.routeId}\n` : "") +
     (row.reused != null ? `reused: ${row.reused}\n` : "")
   );
 }
@@ -590,6 +582,7 @@ function formatStatus(result: unknown): string {
       sessionId?: string;
       state?: string;
       alive?: boolean;
+      routeId?: string;
       roleName?: string;
       lastTaskId?: string;
       externalKey?: string;
@@ -597,13 +590,15 @@ function formatStatus(result: unknown): string {
     sessions?: Array<{
       sessionId?: string;
       state?: string;
+      routeId?: string;
       roleName?: string;
       externalKey?: string;
     }>;
     incompleteTasks?: Array<{
       path?: string;
       state?: string;
-      role?: string;
+      assigneeKind?: "role" | "route";
+      assigneeId?: string;
       id?: string;
     }>;
     open?: boolean;
@@ -616,6 +611,7 @@ function formatStatus(result: unknown): string {
       `state: ${s.state ?? "?"}`,
       `alive: ${s.alive ?? false}`,
       ...(s.externalKey ? [`externalKey: ${s.externalKey}`] : []),
+      ...(s.routeId ? [`routeId: ${s.routeId}`] : []),
       ...(s.roleName ? [`role: ${s.roleName}`] : []),
       ...(s.lastTaskId ? [`lastTaskId: ${s.lastTaskId}`] : []),
       ...(row.open != null ? [`open: ${row.open}`] : [])
@@ -626,6 +622,7 @@ function formatStatus(result: unknown): string {
       lines.push(
         `- ${s.sessionId ?? "?"} state=${s.state ?? "?"}` +
           (s.externalKey ? ` key=${s.externalKey}` : "") +
+          (s.routeId ? ` route=${s.routeId}` : "") +
           (s.roleName ? ` role=${s.roleName}` : "")
       );
     }
@@ -634,7 +631,7 @@ function formatStatus(result: unknown): string {
   lines.push("", `incompleteTasks: ${tasks.length}`);
   for (const t of tasks) {
     lines.push(
-      `- ${t.path ?? t.id ?? "?"} state=${t.state ?? "?"} role=${t.role ?? "?"}`
+      `- ${t.path ?? t.id ?? "?"} state=${t.state ?? "?"} assignee=${t.assigneeKind ?? "?"}:${t.assigneeId ?? "?"}`
     );
   }
   return lines.join("\n") + "\n";
@@ -647,7 +644,12 @@ function formatLeave(result: unknown): string {
     state?: string;
     left?: boolean;
     alreadyLeft?: boolean;
-    incompleteTasks?: Array<{ path?: string; state?: string; role?: string }>;
+    incompleteTasks?: Array<{
+      path?: string;
+      state?: string;
+      assigneeKind?: "role" | "route";
+      assigneeId?: string;
+    }>;
     delivered?: boolean;
     accepted?: boolean;
   };
@@ -666,7 +668,7 @@ function formatLeave(result: unknown): string {
   ];
   for (const t of tasks) {
     lines.push(
-      `- ${t.path ?? "?"} state=${t.state ?? "?"} role=${t.role ?? "?"}`
+      `- ${t.path ?? "?"} state=${t.state ?? "?"} assignee=${t.assigneeKind ?? "?"}:${t.assigneeId ?? "?"}`
     );
   }
   if (tasks.length > 0) {

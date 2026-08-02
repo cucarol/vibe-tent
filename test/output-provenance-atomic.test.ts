@@ -51,7 +51,9 @@ async function createOutputBox(
 
 async function readyAcceptFixture(dir: string) {
   const e = env(dir);
-  const result = await dispatch(e as any, "cx-p1", "executor", {
+  const result = await dispatch(e as any, "cx-p1", {
+    assigneeKind: "role",
+    assigneeId: "executor",
     userPrompt: "atomic provenance fixture",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -382,7 +384,9 @@ test("retention pin scan fails closed: preview and purge refuse when loadTent br
   const taskPath = await writeTaskEnvelope(base, clock, {
 
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },role: "executor",
+    reviewer: { kind: "user", id: "user" },
+    assigneeKind: "role",
+    assigneeId: "executor",
     nodeRefs: [{ id: "cx-p1", path: "prompt/表达式任务书" }],
     manifestPath: "temp/executor/manifests/m.md",
     userPrompt: "old terminal",

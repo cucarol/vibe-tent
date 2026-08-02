@@ -1,6 +1,6 @@
-import type { AcpPermissionPolicy, AcpProfileOptions } from "../acp/types.js";
+import type { AcpPermissionPolicy, AcpRouteOptions } from "../acp/types.js";
 
 export type OpenCodeAcpPermissionPolicy = AcpPermissionPolicy;
-export interface OpenCodeAcpProfileOptions extends AcpProfileOptions {}
+export interface OpenCodeAcpRouteOptions extends AcpRouteOptions {}
 
 export const OPENCODE_ACP_ADAPTER_ID = "opencode-acp";

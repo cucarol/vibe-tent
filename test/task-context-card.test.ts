@@ -15,19 +15,17 @@ import {
   canonicalJson,
   computeContextGeneration,
   computeTaskDeltaDigest,
-  evaluateSessionReuseCompatibility,
   formatContextGeneration,
   formatTaskContextCardPrompt,
   isContextGenerationId,
   loadTaskContextCardFromFrontmatter,
   MANAGED_BOOTSTRAP_INVARIANT,
   parseTaskContextCard,
-  profileAdapterCompatibilityDigest,
+  routeAdapterCompatibilityDigest,
   serializeTaskContextCardForFrontmatter,
   sha256Hex,
   shouldInjectStablePrefix,
   decideStablePrefixInjection,
-  skillsCompatibilityDigest,
   TaskContextCardError,
   assertOrdinaryExecutorLaneHistory,
   ExecutorLaneHistoryError,
@@ -53,8 +51,8 @@ function sampleGeneration(extra?: string): string {
     tentRoleDigest: "role-skill-d1",
     rolePrompt: "Stay in scope.",
     tentTaskDigest: "task-skill-d1",
-    profileAdapterCompatibility: profileAdapterCompatibilityDigest({
-      profileId: "grok-core-worker",
+    routeAdapterCompatibility: routeAdapterCompatibilityDigest({
+      routeId: "grok-core-worker",
       adapterId: "grok-acp",
     }),
     extraStable: extra ? { note: extra } : undefined,
@@ -110,8 +108,8 @@ test("contextGeneration changes when stable compatibility inputs change", () => 
     agentsPointerDigest: "agents-d1",
     rolePrompt: "Stay in scope, precisely.",
     tentTaskDigest: "task-skill-d1",
-    profileAdapterCompatibility: profileAdapterCompatibilityDigest({
-      profileId: "grok-core-worker",
+    routeAdapterCompatibility: routeAdapterCompatibilityDigest({
+      routeId: "grok-core-worker",
       adapterId: "grok-acp",
     }),
   });
@@ -125,22 +123,22 @@ test("contextGeneration excludes taskId/objective and strips forbidden extraStab
     workspaceIdentity: "ws-test",
     agentsPointerDigest: "agents-d1",
     tentTaskDigest: "task-skill-d1",
-    profileAdapterCompatibility: profileAdapterCompatibilityDigest({
-      profileId: "p",
+    routeAdapterCompatibility: routeAdapterCompatibilityDigest({
+      routeId: "p",
       adapterId: "a",
     }),
-    extraStable: { assigneeKind: "agentProfile", note: "stable" },
+    extraStable: { assigneeKind: "route", note: "stable" },
   });
   const b = computeContextGeneration({
     workspaceIdentity: "ws-test",
     agentsPointerDigest: "agents-d1",
     tentTaskDigest: "task-skill-d1",
-    profileAdapterCompatibility: profileAdapterCompatibilityDigest({
-      profileId: "p",
+    routeAdapterCompatibility: routeAdapterCompatibilityDigest({
+      routeId: "p",
       adapterId: "a",
     }),
     extraStable: {
-      assigneeKind: "agentProfile",
+      assigneeKind: "route",
       note: "stable",
       taskId: "tk-different",
       objective: "should not matter",
@@ -151,30 +149,20 @@ test("contextGeneration excludes taskId/objective and strips forbidden extraStab
   assert.equal(a, b, "taskId/objective must not affect contextGeneration");
 });
 
-test("contextGeneration changes when skill version or purpose changes", () => {
+test("contextGeneration changes when a skill version changes", () => {
   const base = computeContextGeneration({
     workspaceIdentity: "ws",
     agentsPointerDigest: "ag",
     tentTaskDigest: "body",
     tentTaskVersion: "0.1.0",
-    purpose: "",
   });
   const versionBump = computeContextGeneration({
     workspaceIdentity: "ws",
     agentsPointerDigest: "ag",
     tentTaskDigest: "body",
     tentTaskVersion: "0.2.0",
-    purpose: "",
-  });
-  const purposeChange = computeContextGeneration({
-    workspaceIdentity: "ws",
-    agentsPointerDigest: "ag",
-    tentTaskDigest: "body",
-    tentTaskVersion: "0.1.0",
-    purpose: "review",
   });
   assert.notEqual(base, versionBump);
-  assert.notEqual(base, purposeChange);
 });
 
 test("taskDeltaDigest is independent of contextGeneration and tracks card+delta", () => {
@@ -277,6 +265,7 @@ test("assembleManagedPrompt order: invariant → project → role → task → c
     rolePromptSection: "## Role prompt\n\nStay sharp.",
     tentTaskSection: "## Built-in skill: tent-task\n\ntask contract body",
     contextCard: card,
+    contextGeneration: sampleGeneration(),
     taskPointers: "Task envelope: temp/x.md",
     userPrompt: "Implement the seam",
     taskInputDelta: "## Review Feedback\ntext: tighten tests",
@@ -313,26 +302,26 @@ test("assembleManagedPrompt order: invariant → project → role → task → c
 });
 
 test("stable prefix injected once per generation; later Tasks append delta only", () => {
-  const card = sampleCard();
-  const gen = card.contextGeneration;
+  const gen = sampleGeneration();
+  const card = sampleCard({ contextGeneration: gen });
   assert.equal(
     shouldInjectStablePrefix({
       sessionContextGeneration: null,
-      taskContextGeneration: gen,
+      currentContextGeneration: gen,
     }),
     true
   );
   assert.equal(
     shouldInjectStablePrefix({
       sessionContextGeneration: gen,
-      taskContextGeneration: gen,
+      currentContextGeneration: gen,
     }),
     false
   );
   assert.equal(
     shouldInjectStablePrefix({
       sessionContextGeneration: gen,
-      taskContextGeneration: sampleGeneration("other"),
+      currentContextGeneration: sampleGeneration("other"),
     }),
     true
   );
@@ -343,6 +332,7 @@ test("stable prefix injected once per generation; later Tasks append delta only"
     agentsPointer: "a",
     tentTaskSection: "## Built-in skill: tent-task\n\nbody",
     contextCard: card,
+    contextGeneration: gen,
     userPrompt: "first",
     includeStablePrefix: true,
   });
@@ -352,6 +342,7 @@ test("stable prefix injected once per generation; later Tasks append delta only"
     agentsPointer: "a",
     tentTaskSection: "## Built-in skill: tent-task\n\nbody",
     contextCard: card,
+    contextGeneration: gen,
     userPrompt: "second task",
     includeStablePrefix: false,
   });
@@ -370,6 +361,7 @@ test("stable prefix injected once per generation; later Tasks append delta only"
     agentsPointer: "a",
     tentTaskSection: "## Built-in skill: tent-task\n\nbody",
     contextCard: card,
+    contextGeneration: gen,
     userPrompt: "other user text",
     includeStablePrefix: true,
   });
@@ -384,76 +376,12 @@ test("prompt-only managed context emits the immutable user prompt once", () => {
     systemRoot: "/w/.tent",
     agentsPointer: "AGENTS.md",
     contextCard: card,
+    contextGeneration: sampleGeneration(),
     userPrompt: marker,
   });
   assert.equal(assembled.text.split(marker).length - 1, 1);
   assert.doesNotMatch(assembled.dynamicDelta, /^objective:/m);
   assert.doesNotMatch(assembled.dynamicDelta, /^acceptance:/m);
-});
-
-// ---- Session reuse gate (fail closed) ----
-
-test("evaluateSessionReuseCompatibility allows only when all gates match", () => {
-  const gen = sampleGeneration();
-  const skills = skillsCompatibilityDigest(["tent-task", "tent-role"]);
-  const base = {
-    workspaceId: "ws-1",
-    parentRoleId: "规划",
-    agentId: "grok-core-worker",
-    purpose: "implement",
-    skillsDigest: skills,
-    profileId: "grok-core-worker",
-    adapterId: "grok-acp",
-    contextGeneration: gen,
-    worktree: "C:/wt/task-a",
-  };
-  const runtimeOk = {
-    previousTurnSettled: true,
-    noPendingInput: true,
-    noPendingDelivery: true,
-    exclusiveLease: true,
-  };
-  const ok = evaluateSessionReuseCompatibility({
-    request: base,
-    candidate: { ...base },
-    runtime: runtimeOk,
-  });
-  assert.equal(ok.allowed, true);
-  assert.deepEqual(ok.reasons, []);
-
-  const genMismatch = evaluateSessionReuseCompatibility({
-    request: base,
-    candidate: { ...base, contextGeneration: sampleGeneration("x") },
-    runtime: runtimeOk,
-  });
-  assert.equal(genMismatch.allowed, false);
-  assert.ok(genMismatch.reasons.includes("context_generation_mismatch"));
-
-  const busy = evaluateSessionReuseCompatibility({
-    request: base,
-    candidate: { ...base },
-    runtime: { ...runtimeOk, previousTurnSettled: false, noPendingInput: false },
-  });
-  assert.equal(busy.allowed, false);
-  assert.ok(busy.reasons.includes("previous_turn_not_settled"));
-  assert.ok(busy.reasons.includes("pending_input"));
-
-  const worktree = evaluateSessionReuseCompatibility({
-    request: base,
-    candidate: { ...base, worktree: "C:/wt/other" },
-    runtime: runtimeOk,
-  });
-  assert.equal(worktree.allowed, false);
-  assert.ok(worktree.reasons.includes("worktree_mismatch"));
-
-  // One-sided worktree still fails closed (lane required when either side has it).
-  const omitWt = evaluateSessionReuseCompatibility({
-    request: { ...base, worktree: undefined },
-    candidate: { ...base, worktree: "C:/wt/task-b" },
-    runtime: runtimeOk,
-  });
-  assert.equal(omitWt.allowed, false);
-  assert.ok(omitWt.reasons.includes("worktree_mismatch"));
 });
 
 // ---- envelope persistence ----
@@ -464,10 +392,10 @@ test("Task envelope persists and reloads contextCard + digests", async () => {
     const nfs = new NodeFs(dir);
     const card = sampleCard();
     const taskPath = await writeTaskEnvelope(nfs, new SystemClock(), {
-      role: "grok-core-worker",
-      assigneeKind: "agentProfile",
+      assigneeKind: "route",
+      assigneeId: "grok-core-worker",
       nodeRefs: [{ id: "cx-5q6za6", path: "n" }],
-      manifestPath: "temp/agent-profiles/grok-core-worker/manifests/tk-x.yml",
+      manifestPath: "temp/routes/grok-core-worker/manifests/tk-x.yml",
       userPrompt: "Implement Context Card",
       parentActor: { kind: "role", id: "规划" },
     });
@@ -488,9 +416,46 @@ test("Task envelope persists and reloads contextCard + digests", async () => {
     const loaded = await loadTaskEnvelope(nfs, taskPath);
     assert.ok(loaded.contextCard);
     assert.equal(loaded.contextCard?.objective, card.objective);
-    assert.equal(loaded.contextGeneration, card.contextGeneration);
     assert.equal(loaded.taskDeltaDigest, card.taskDeltaDigest);
     assert.deepEqual(loaded.parentActor, { kind: "role", id: "规划" });
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("route Task assigneeId is canonical at write and load boundaries", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-route-assignee-"));
+  try {
+    const nfs = new NodeFs(dir);
+    await assert.rejects(
+      () =>
+        writeTaskEnvelope(nfs, new SystemClock(), {
+          assigneeKind: "route",
+          assigneeId: "Bad Route",
+          nodeRefs: [{ id: "cx-5q6za6", path: "n" }],
+          manifestPath: "temp/routes/bad/manifests/tk-x.yml",
+          userPrompt: "invalid route assignee",
+          parentActor: { kind: "user", id: "user" },
+        }),
+      /route assigneeId/i
+    );
+
+    const taskPath = await writeTaskEnvelope(nfs, new SystemClock(), {
+      assigneeKind: "route",
+      assigneeId: "grok-core-worker",
+      nodeRefs: [{ id: "cx-5q6za6", path: "n" }],
+      manifestPath: "temp/routes/grok-core-worker/manifests/tk-x.yml",
+      userPrompt: "tamper route assignee",
+      parentActor: { kind: "user", id: "user" },
+    });
+    const raw = await nfs.readFile(taskPath);
+    const { data, body, keyOrder } = parseFrontmatter(raw);
+    data.assigneeId = "bad/route";
+    await nfs.writeFile(taskPath, serializeFrontmatter(data, body, keyOrder));
+    await assert.rejects(
+      () => loadTaskEnvelope(nfs, taskPath),
+      /route assigneeId/i
+    );
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
@@ -501,7 +466,8 @@ test("missing nested contextCard fails loud even when flat mirrors exist", async
   try {
     const nfs = new NodeFs(dir);
     const taskPath = await writeTaskEnvelope(nfs, new SystemClock(), {
-      role: "analyst",
+      assigneeKind: "role",
+      assigneeId: "analyst",
       nodeRefs: [{ id: "cx-1", path: "p" }],
       manifestPath: "temp/analyst/manifest.yml",
       userPrompt: "x",
@@ -536,13 +502,13 @@ test("lane authority: no phantom on load; persist/reload/tamper/backfill", async
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-lane-auth-"));
   try {
     const nfs = new NodeFs(dir);
-    await nfs.mkdir("temp/agent-profiles/grok-core-worker/tasks");
+    await nfs.mkdir("temp/routes/grok-core-worker/tasks");
     const parent = { kind: "role" as const, id: "规划" };
     const taskPath = await writeTaskEnvelope(nfs, new SystemClock(), {
-      role: "grok-core-worker",
-      assigneeKind: "agentProfile",
+      assigneeKind: "route",
+      assigneeId: "grok-core-worker",
       nodeRefs: [{ id: "cx-5q6za6", path: "n" }],
-      manifestPath: "temp/agent-profiles/grok-core-worker/manifests/tk-x.yml",
+      manifestPath: "temp/routes/grok-core-worker/manifests/tk-x.yml",
       userPrompt: "lane authority",
       parentActor: parent,
       reviewer: parent,
@@ -685,27 +651,27 @@ test("lane authority: no phantom on load; persist/reload/tamper/backfill", async
 test("decideStablePrefixInjection omits only on exact valid generation match", () => {
   const gen = sampleGeneration();
   assert.equal(
-    decideStablePrefixInjection({ taskContextGeneration: gen }).includeStablePrefix,
+    decideStablePrefixInjection({ currentContextGeneration: gen }).includeStablePrefix,
     true
   );
   assert.equal(
     decideStablePrefixInjection({
       sessionContextGeneration: gen,
-      taskContextGeneration: gen,
+      currentContextGeneration: gen,
     }).includeStablePrefix,
     false
   );
   assert.equal(
     decideStablePrefixInjection({
       sessionContextGeneration: "not-a-generation",
-      taskContextGeneration: gen,
+      currentContextGeneration: gen,
     }).includeStablePrefix,
     true
   );
   assert.equal(
     shouldInjectStablePrefix({
       sessionContextGeneration: gen,
-      taskContextGeneration: gen,
+      currentContextGeneration: gen,
     }),
     false
   );

@@ -90,8 +90,7 @@ function applyOne<T extends TreeNodeLike>(
   const active = byNodeId.get(node.nodeId)?.activeTask?.task;
   if (!active) return next;
   (next as TreeNodeLike).status = "doing";
-  const assignee = active.assigneeKind === "agentProfile" ? active.profileId : active.role;
-  if (assignee) (next as TreeNodeLike).assignee = assignee;
+  if (active.assigneeId) (next as TreeNodeLike).assignee = active.assigneeId;
   return next;
 }
 
@@ -101,6 +100,6 @@ export function nodeCollaborationSummaryLine(
   if (!projection) return null;
   if (!projection.activeTask) return "无活动任务";
   const first = projection.activeTask.task;
-  const assignee = first?.assigneeKind === "agentProfile" ? first.profileId : first?.role;
+  const assignee = first?.assigneeId;
   return `活动任务${assignee ? ` · ${assignee}` : ""}`;
 }

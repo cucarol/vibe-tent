@@ -63,7 +63,7 @@ test("task worktree-reclaim exposes exact preview and reconcile only", async () 
       return { taskPath, code: "RECLAIMED", eligible: true, reclaimed: true };
     },
   } as unknown as ServiceClient;
-  const taskPath = "temp/agent-profiles/route/tasks/task.md";
+  const taskPath = "temp/routes/example/tasks/task.md";
 
   const preview = await runTaskCommand(
     "worktree-reclaim",

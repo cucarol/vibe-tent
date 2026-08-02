@@ -59,7 +59,6 @@ export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
     };
   }
   if (
-    type.startsWith("a2a.") ||
     type.startsWith("toolApproval.") ||
     type.startsWith("userAsk.") ||
     type.startsWith("taskInput.")

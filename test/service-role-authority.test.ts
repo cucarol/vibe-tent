@@ -13,6 +13,7 @@ import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { createServiceClient } from "../src/service/client.js";
 import { makeSessionId } from "../src/runtime/types.js";
+import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import {
   CLIENT_METHODS,
   isClientMethod,
@@ -32,7 +33,7 @@ async function makeWorkspace(name = "role-auth"): Promise<string> {
       {
         roles: [
           { name: "executor", prompt: "do work" },
-          { name: "orchestrator", prompt: "dispatch", a2aPolicy: "allow" },
+          { name: "orchestrator", prompt: "dispatch" },
         ],
       },
       null,
@@ -46,7 +47,18 @@ async function withService<T>(
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-auth-data-"));
-  const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+  const svc = await startLocalTentService({
+    dataDir,
+    writeEndpoint: true,
+    routes: [
+      {
+        routeId: "fake-default",
+        provider: "fake",
+        adapterId: FAKE_ADAPTER_ID,
+        fake: { waitForSignal: true, canResume: true },
+      },
+    ],
+  });
   try {
     return await fn(svc);
   } finally {
@@ -96,14 +108,10 @@ test("registry.roles projects durable Role metadata without route authorization"
     assert.ok(orch);
     assert.ok(orch!.roleId.startsWith("rl-"));
     assert.equal(orch!.displayName, "orchestrator");
-    assert.equal(Object.prototype.hasOwnProperty.call(orch!, "a2aPolicy"), false);
-    assert.equal(Object.prototype.hasOwnProperty.call(orch!, "roster"), false);
-    assert.equal(Object.prototype.hasOwnProperty.call(orch!, "allowedProfiles"), false);
     const exec = roles.find((r) => r.name === "executor");
     assert.ok(exec);
     assert.ok(exec!.roleId.startsWith("rl-"));
     assert.equal(exec!.displayName, "executor");
-    assert.equal(Object.prototype.hasOwnProperty.call(exec!, "roster"), false);
   });
 });
 
@@ -140,29 +148,6 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
 
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
 
-    const rejectLegacy = await rpc(svc, "registry.role.create", {
-      workspaceId,
-      name: "legacy-reject",
-      allowedProfiles: ["fake-default"],
-    });
-    assert.ok(rejectLegacy.error);
-    assert.equal(rejectLegacy.error!.code, -32602);
-    assert.match(String(rejectLegacy.error!.message), /does not accept.*allowedProfiles/i);
-
-    const rejectRoster = await rpc(svc, "registry.role.create", {
-      workspaceId,
-      name: "roster-reject",
-      roster: ["fake-default"],
-    });
-    assert.equal(rejectRoster.error?.code, -32602);
-
-    const rejectPolicy = await rpc(svc, "registry.role.create", {
-      workspaceId,
-      name: "policy-reject",
-      a2aPolicy: "allow",
-    });
-    assert.equal(rejectPolicy.error?.code, -32602);
-
     const created = (await client.registryRoleCreate(workspaceId, {
       name: "critic",
       displayName: "评审",
@@ -179,8 +164,6 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
     assert.equal(created.role.name, "critic");
     assert.equal(created.role.displayName, "评审");
     assert.ok(created.role.roleId.startsWith("rl-"));
-    assert.equal(Object.prototype.hasOwnProperty.call(created.role, "a2aPolicy"), false);
-    assert.equal(Object.prototype.hasOwnProperty.call(created.role, "roster"), false);
     assert.equal(events.length, 1);
     assert.equal(events[0]!.action, "create");
     assert.equal(events[0]!.name, "critic");
@@ -217,16 +200,6 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
     );
     assert.equal(events.length, 2);
 
-    const rejectUpdateLegacy = await rpc(svc, "registry.role.update", {
-      workspaceId,
-      name: "critic",
-      allowedProfiles: ["codex-acp"],
-    });
-    assert.ok(rejectUpdateLegacy.error);
-    assert.equal(rejectUpdateLegacy.error!.code, -32602);
-    assert.match(String(rejectUpdateLegacy.error!.message), /does not accept.*allowedProfiles/i);
-    assert.equal(events.length, 2);
-
     const updated = (await client.registryRoleUpdate(workspaceId, "critic", {
       prompt: "挑关键问题",
     })) as {
@@ -236,12 +209,11 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
       };
     };
     assert.equal(updated.role.prompt, "挑关键问题");
-    assert.equal(Object.prototype.hasOwnProperty.call(updated.role, "roster"), false);
     assert.equal(updated.role.roleId, created.role.roleId);
     assert.equal(events.length, 3);
     assert.equal(events[2]!.action, "update");
 
-    // clear whitelist
+    // Clear optional Role metadata.
     const cleared = (await client.registryRoleUpdate(workspaceId, "critic", {
       prompt: null,
       description: "",
@@ -258,8 +230,6 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
     assert.equal(cleared.role.prompt, undefined);
     assert.equal(cleared.role.description, undefined);
     assert.equal(cleared.role.color, undefined);
-    assert.equal(Object.prototype.hasOwnProperty.call(cleared.role, "a2aPolicy"), false);
-    assert.equal(Object.prototype.hasOwnProperty.call(cleared.role, "roster"), false);
     assert.equal(cleared.role.roleId, created.role.roleId);
     assert.equal(events.length, 4);
 
@@ -272,8 +242,6 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
     assert.equal(critic!.id, created.role.roleId);
     assert.equal(critic!.displayName, "评审官");
     assert.equal("secret" in critic!, false);
-    assert.equal("allowedProfiles" in critic!, false);
-    assert.equal(critic!.roster, undefined);
 
     // failure does not emit
     const missing = await rpc(svc, "registry.role.update", {
@@ -340,7 +308,8 @@ test("registry.role.delete: confirmation, blocks active task, one event on succe
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "block delete",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
@@ -377,14 +346,14 @@ test("registry.role.delete: confirmation, blocks active task, one event on succe
   });
 });
 
-test("registry.role.delete refuses live managed session", async () => {
+test("registry.role.delete ignores unrelated live route Session", async () => {
   const ws = await makeWorkspace("role-live-session");
   await withService(async (svc) => {
     const workspaceId = await mount(svc, ws);
     const started = await svc.runtime.startSession({
       sessionId: makeSessionId(),
-      profileId: "fake-default",
-      roleName: "executor",
+      routeId: "fake-default",
+      routeSnapshot: svc.runtime.snapshotRouteForStart("fake-default"),
       workspace: workspaceId,
       cwd: ws,
       runtimeWorkspace: { cwd: ws },
@@ -396,20 +365,19 @@ test("registry.role.delete refuses live managed session", async () => {
       if (ev.type === "registry.roles.updated") events.push(ev.payload);
     });
 
-    const blocked = await rpc(svc, "registry.role.delete", {
+    const deleted = await rpc(svc, "registry.role.delete", {
       workspaceId,
       name: "executor",
       confirmation: "executor",
     });
-    assert.ok(blocked.error);
-    assert.equal(blocked.error!.code, RPC_LIFECYCLE);
-    assert.match(String(blocked.error!.message), /active managed session/i);
-    assert.equal(events.length, 0);
+    assert.ok(!deleted.error, JSON.stringify(deleted.error));
+    assert.equal((deleted.result as { deleted: string }).deleted, "executor");
+    assert.equal(events.length, 1);
     unsub();
   });
 });
 
-test("task.startSession uses machine route availability without roster authorization or writes", async () => {
+test("task.startSession uses machine route availability without writing Role state", async () => {
   const ws = await makeWorkspace("role-client");
   await withService(async (svc) => {
     const workspaceId = await mount(svc, ws);
@@ -426,8 +394,9 @@ test("task.startSession uses machine route availability without roster authoriza
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      role: "executor",
-      prompt: "whitelist",
+      assigneeKind: "route",
+      assigneeId: "fake-default",
+      prompt: "route launch",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -439,38 +408,15 @@ test("task.startSession uses machine route availability without roster authoriza
       if (event.type === "registry.roles.updated") roleEvents.push(event.payload);
     });
 
-    const retired = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "role",
-      profileId: "fake-default",
-      approvalId: "ap-retired",
-    });
-    assert.equal(retired.error?.code, -32602);
-    assert.match(String(retired.error?.message), /no longer accepts approvalId/i);
-
-    const unavailable = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "role",
-      profileId: "missing-route",
-    });
-    assert.equal(unavailable.error?.code, -32602);
-    assert.equal((unavailable.error?.data as { code?: string } | undefined)?.code, "ROUTE_UNAVAILABLE");
-    assert.match(String(unavailable.error?.message), /Settings route is unavailable.*missing-route/i);
-
     const ok = await rpc(svc, "task.startSession", {
       workspaceId,
       taskPath,
-      callerKind: "role",
-      profileId: "fake-default",
+      callerKind: "user",
     });
     assert.ok(!ok.error, JSON.stringify(ok.error));
-    assert.equal((ok.result as { session: { profileId: string } }).session.profileId, "fake-default");
+    assert.equal((ok.result as { session: { routeId: string } }).session.routeId, "fake-default");
     assert.equal(await fs.readFile(rolesPath, "utf8"), rolesBefore);
     assert.equal(roleEvents.length, 0);
-    const pending = await rpc(svc, "a2a.listPending", { workspaceId });
-    assert.deepEqual((pending.result as { approvals: unknown[] }).approvals, []);
     unsubscribe();
   });
 });

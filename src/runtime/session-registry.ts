@@ -10,7 +10,16 @@ import {
   writeJsonAtomic,
 } from "../machine-state.js";
 import type { SessionRecord, SessionState, StopReason } from "./types.js";
-import { isSessionId } from "./types.js";
+import { EXTERNAL_ADAPTER_ID, EXTERNAL_ROUTE_ID, isSessionId } from "./types.js";
+import { isRouteId } from "../core/id.js";
+import { parseSettingsRouteSnapshot } from "./route-config.js";
+
+type SessionRecordMutablePatch = Partial<
+  Omit<
+    SessionRecord,
+    "id" | "createdAt" | "routeId" | "adapterId" | "routeSnapshot" | "roleName"
+  >
+>;
 
 const SESSION_STATES = new Set<SessionState>([
   "starting",
@@ -22,7 +31,6 @@ const SESSION_STATES = new Set<SessionState>([
 ]);
 
 const STOP_REASONS = new Set<StopReason>(["user", "interrupt", "shutdown"]);
-const ASSIGNEE_KINDS = new Set(["role", "agentProfile"]);
 
 export function sessionsDir(dataDir: string): string {
   return path.join(dataDir, "sessions");
@@ -53,19 +61,51 @@ function isSessionState(value: unknown): value is SessionState {
 /**
  * Validate a parsed session JSON row. Returns the record when shape is safe for
  * runtime consumers (list sort, probe, stop). Identity consistency of
- * profileSnapshot vs live catalog is checked by AgentRuntime, not here.
- * Unknown keys are allowed for forward compatibility.
+ * routeSnapshot is immutable continuity authority. Unknown fields are rejected.
  */
 function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | null {
   if (!isPlainObject(data)) return null;
+  const allowedKeys = new Set([
+    "id",
+    "routeId",
+    "adapterId",
+    "routeSnapshot",
+    "roleName",
+    "state",
+    "pid",
+    "resumeToken",
+    "runtimeWorkspace",
+    "workspace",
+    "workspaceLane",
+    "createdAt",
+    "updatedAt",
+    "lastTaskId",
+    "exitCode",
+    "lastError",
+    "stopReason",
+    "contextRestored",
+    "restoreReason",
+    "replacedSessionId",
+    "replacedBySessionId",
+    "externalKey",
+    "contextGeneration",
+    "taskDeltaDigest",
+  ]);
+  if (Object.keys(data).some((key) => !allowedKeys.has(key))) return null;
 
   // Required non-empty strings + formal state enum.
   if (!isNonEmptyString(data.id) || data.id !== sessionId) return null;
-  if (!isNonEmptyString(data.profileId)) return null;
+  if (!isRouteId(data.routeId)) return null;
   if (!isNonEmptyString(data.adapterId)) return null;
   if (!isSessionState(data.state)) return null;
   if (!isNonEmptyString(data.createdAt)) return null;
   if (!isNonEmptyString(data.updatedAt)) return null;
+  if (
+    data.roleName !== undefined &&
+    (data.routeId !== EXTERNAL_ROUTE_ID || data.adapterId !== EXTERNAL_ADAPTER_ID)
+  ) {
+    return null;
+  }
 
   // Optional fields that runtime code reads directly — type-check when present.
   if ("pid" in data && data.pid !== undefined) {
@@ -90,17 +130,8 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
     "externalKey",
     "contextGeneration",
     "taskDeltaDigest",
-    "skillsDigest",
-    "purpose",
-    "agentId",
-    "parentRoleId",
   ] as const) {
     if (key in data && data[key] !== undefined && typeof data[key] !== "string") {
-      return null;
-    }
-  }
-  if ("assigneeKind" in data && data.assigneeKind !== undefined) {
-    if (typeof data.assigneeKind !== "string" || !ASSIGNEE_KINDS.has(data.assigneeKind)) {
       return null;
     }
   }
@@ -139,12 +170,14 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
       return null;
     }
   }
-  // profileSnapshot: plain object only; field identity left to AgentRuntime.
-  if ("profileSnapshot" in data && data.profileSnapshot !== undefined) {
-    if (!isPlainObject(data.profileSnapshot)) return null;
-  }
+  const snapshot = parseSettingsRouteSnapshot(data.routeSnapshot);
+  if (!snapshot) return null;
+  if (snapshot.routeId !== data.routeId || !isRouteId(snapshot.routeId)) return null;
+  if (!isNonEmptyString(snapshot.provider)) return null;
+  if (snapshot.adapterId !== data.adapterId || !isNonEmptyString(snapshot.adapterId)) return null;
+  if (!isNonEmptyString(snapshot.launchDigest)) return null;
 
-  return data as unknown as SessionRecord;
+  return { ...data, routeSnapshot: snapshot } as unknown as SessionRecord;
 }
 
 export class SessionRegistry {
@@ -190,16 +223,25 @@ export class SessionRegistry {
 
   async update(
     sessionId: string,
-    patch: Partial<Omit<SessionRecord, "id" | "createdAt">>
+    patch: SessionRecordMutablePatch
   ): Promise<SessionRecord> {
     return this.enqueue(async () => {
       const current = await this.readUnlocked(sessionId);
       if (!current) throw new Error(`Session not found: ${sessionId}`);
+      for (const immutable of ["id", "createdAt", "routeId", "adapterId", "routeSnapshot", "roleName"] as const) {
+        if (Object.prototype.hasOwnProperty.call(patch, immutable)) {
+          throw new Error(`SessionRegistry.update cannot mutate immutable field: ${immutable}`);
+        }
+      }
       const next: SessionRecord = {
         ...current,
         ...patch,
         id: current.id,
         createdAt: current.createdAt,
+        routeId: current.routeId,
+        adapterId: current.adapterId,
+        routeSnapshot: current.routeSnapshot,
+        roleName: current.roleName,
         updatedAt: new Date().toISOString(),
       };
       await this.ensureDir();
@@ -212,7 +254,7 @@ export class SessionRegistry {
   async setState(
     sessionId: string,
     state: SessionState,
-    extra: Partial<SessionRecord> = {}
+    extra: SessionRecordMutablePatch = {}
   ): Promise<SessionRecord> {
     return this.update(sessionId, { ...extra, state });
   }

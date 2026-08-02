@@ -21,7 +21,6 @@ import { CLIENT_METHODS, isClientMethod } from "../src/service/types.js";
 import { createServiceClient } from "../src/service/client.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
-import { FAKE_DEFAULT_PROFILE_ID } from "../src/service/profiles.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -199,9 +198,10 @@ test("RPC skill.list / skill.install: offline dual-target + validation", async (
     writeEndpoint: false,
     home,
     packageRoot: repoRoot,
-    profiles: [
+    routes: [
       {
-        id: FAKE_DEFAULT_PROFILE_ID,
+        routeId: "fake-default",
+        provider: "test",
         adapterId: FAKE_ADAPTER_ID,
         fake: { waitForSignal: true },
       },

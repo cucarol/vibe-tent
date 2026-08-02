@@ -64,10 +64,10 @@ async function makeWorkspace(name = "role-cp"): Promise<string> {
 
 async function withService<T>(
   fn: (svc: Svc) => Promise<T>,
-  opts?: { profiles?: import("../src/runtime/types.js").AgentProfileConfig[] }
+  opts?: { routes?: import("../src/runtime/types.js").SettingsRouteConfig[] }
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-cp-data-"));
-  const svc = await startLocalTentService({ dataDir, writeEndpoint: true, profiles: opts?.profiles });
+  const svc = await startLocalTentService({ dataDir, writeEndpoint: true, routes: opts?.routes });
   try {
     return await fn(svc);
   } finally {
@@ -148,7 +148,7 @@ test("core: write / read / overwrite / clear Role Checkpoint", async () => {
   assert.equal(await clearRoleCheckpoint(fsa, "planner"), false);
 });
 
-test("core: rejects empty text, oversized text, bad role, reserved agent-profiles", async () => {
+test("core: rejects empty text, oversized text, bad role, and reserved routes", async () => {
   const ws = await makeWorkspace();
   const fsa = new NodeFs(path.join(ws, ".tent"));
 
@@ -182,7 +182,7 @@ test("core: rejects empty text, oversized text, bad role, reserved agent-profile
   await assert.rejects(
     () =>
       writeRoleCheckpoint(fsa, {
-        role: "agent-profiles",
+        role: "routes",
         text: "ok",
         updatedAt: "t",
       }),
@@ -279,7 +279,7 @@ test("core: path gate rejects dot segments and traversal before any delete", asy
   assert.throws(() => assertRoleCheckpointRoleName("a\u0000b"), /control/);
   assert.throws(() => assertRoleCheckpointRoleName("a\\b"), /path/);
   assert.throws(() => assertRoleCheckpointRoleName("temp"), /reserved/);
-  assert.throws(() => assertRoleCheckpointRoleName("agent-profiles"), /reserved/);
+  assert.throws(() => assertRoleCheckpointRoleName("routes"), /reserved/);
   for (const win of ["CON", "prn", "AUX", "nul", "COM1", "lpt9"]) {
     assert.throws(
       () => assertRoleCheckpointRoleName(win),
@@ -577,7 +577,7 @@ test("Service RPC P0: path gate, unknown Role, actor authority, sourceSessionId"
   });
 });
 
-test("managed bootstrap appends Role Checkpoint as dynamic tail for durable role only", async () => {
+test("route Task bootstrap never assumes a durable Role checkpoint", async () => {
   const ws = await makeWorkspace();
   await withService(
     async (svc) => {
@@ -603,7 +603,8 @@ test("managed bootstrap appends Role Checkpoint as dynamic tail for durable role
       const d = await rpc(svc, "task.dispatch", {
         workspaceId,
         nodeIds: [nodeId],
-        role: "executor",
+        assigneeKind: "route",
+        assigneeId: "fake-default",
         prompt: "bootstrap with checkpoint tail",
         deliveryPolicy: "review",
         parentActor: { kind: "user", id: "user" },
@@ -619,7 +620,6 @@ test("managed bootstrap appends Role Checkpoint as dynamic tail for durable role
         workspaceId,
         taskPath,
         callerKind: "user",
-        profileId: "fake-default",
       });
       assert.ok(!started.error, JSON.stringify(started.error));
 
@@ -632,7 +632,8 @@ test("managed bootstrap appends Role Checkpoint as dynamic tail for durable role
       const body = sessionBootstrapPromptForTask(
         {
           path: taskPath,
-          role: "executor",
+          assigneeKind: "route",
+          assigneeId: "fake-default",
           // Node refs live on Task.contextCard.refs.nodes only (no claims[]).
           manifest: "temp/executor/manifest.yml",
           state: "running",
@@ -647,35 +648,13 @@ test("managed bootstrap appends Role Checkpoint as dynamic tail for durable role
       );
       // sessionBootstrapPromptForTask stays free of checkpoint (stable dynamic task body only).
       assert.doesNotMatch(body, /Role Checkpoint/);
-      // Service builder appends tail after bootstrap — unit-check composition order.
-      const composed = `${body}\n${tail}\n`;
-      const idxBootstrap = composed.indexOf("Tent managed ACP session is ready");
-      const idxTail = composed.indexOf("Tent Role Checkpoint (dynamic tail; optional)");
-      assert.ok(idxBootstrap >= 0 && idxTail > idxBootstrap);
-
-      // agentProfile path must never load role checkpoint under profile id.
-      const profileDispatch = await rpc(svc, "task.dispatch", {
-        workspaceId,
-        nodeIds: [nodeId],
-        role: "fake-default",
-        assigneeKind: "route",
-        prompt: "profile one-shot",
-        deliveryPolicy: "review",
-        callerKind: "role",
-        parentActor: { kind: "role", id: "executor" },
-        reviewer: { kind: "role", id: "executor" },
-        routeId: "fake-default",
-      });
-      // May fail occupation if still active — cancel first if needed.
-      if (profileDispatch.error) {
-        await rpc(svc, "task.interrupt", { workspaceId, taskPath }).catch(() => undefined);
-        await rpc(svc, "task.cancel", { workspaceId, taskPath }).catch(() => undefined);
-      }
+      assert.match(tail, /Tent Role Checkpoint/);
     },
     {
-      profiles: [
+      routes: [
         {
-          id: "fake-default",
+          routeId: "fake-default",
+          provider: "test",
           adapterId: FAKE_ADAPTER_ID,
           fake: { waitForSignal: true, sleepMs: 60_000 },
         },
@@ -718,7 +697,8 @@ test("managed bootstrap fails open when Role Checkpoint pointers are invalid", a
       const dispatched = await rpc(svc, "task.dispatch", {
         workspaceId,
         nodeIds: [nodeId],
-        role: "executor",
+        assigneeKind: "route",
+        assigneeId: "fake-default",
         prompt: "bootstrap despite invalid checkpoint",
         deliveryPolicy: "review",
         parentActor: { kind: "user", id: "user" },
@@ -735,14 +715,14 @@ test("managed bootstrap fails open when Role Checkpoint pointers are invalid", a
         workspaceId,
         taskPath,
         callerKind: "user",
-        profileId: "fake-default",
       });
       assert.ok(!started.error, JSON.stringify(started.error));
     },
     {
-      profiles: [
+      routes: [
         {
-          id: "fake-default",
+          routeId: "fake-default",
+          provider: "test",
           adapterId: FAKE_ADAPTER_ID,
           fake: { waitForSignal: true, sleepMs: 60_000 },
         },

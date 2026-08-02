@@ -31,7 +31,7 @@ export {
   type AcpJsonRpcResponse,
   type AcpPermissionOption,
   type AcpPermissionPolicy,
-  type AcpProfileOptions,
+  type AcpRouteOptions,
   type AcpSessionUpdate,
 } from "./types.js";
 export {
@@ -61,7 +61,7 @@ export {
   readCoreChildEnvClientOptions,
   resolveNpxAcpLaunch,
   resolvePlanOrProcessEnv,
-} from "./profile.js";
+} from "./route.js";
 export {
   cloneMcpServers,
   cloneSkillRefs,
@@ -76,10 +76,10 @@ export {
   summarizeMcpServersWire,
   type AcpMcpServerWire,
   type AcpSkillMetaRef,
-  type AgentProfileMcpServer,
-  type AgentProfileMcpServerProjection,
-  type AgentProfileSkillProjection,
-  type AgentProfileSkillRef,
+  type RouteMcpServer,
+  type RouteMcpServerProjection,
+  type RouteSkillProjection,
+  type RouteSkillRef,
 } from "./mcp-skills.js";
 export {
   ACP_IMAGE_MIME_BY_EXT,

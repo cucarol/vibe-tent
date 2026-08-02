@@ -2,11 +2,11 @@
 // Components render from this module; they do not own backend state machines.
 
 import type {
-  AgentProfileProjection,
   DeliveryProjection,
   NodeCollaborationsResult,
   RoleRegistryEntryProjection,
   SessionProjection,
+  SettingsRouteProjection,
   TaskProjection,
   TypeRegistryEntryProjection,
 } from "../../../service/types.js";
@@ -20,25 +20,23 @@ import {
   buildTaskReviewItems,
   isActionableTaskState,
   listCoordinationTypeOptions,
-  listProfileOptions,
+  listRouteOptions,
   listRoleOptions,
   pickDefaultCoordinationType,
-  pickDefaultProfileId,
+  pickDefaultRouteId,
   type CoordinationTypeOption,
-  type ProfileOption,
+  type RouteOption,
   type RoleOption,
   type TaskReviewItem,
 } from "../../workbench/collaboration-ui.js";
 import {
   isPendingInteractionEventType,
   isTaskProjectionEventType,
-  normalizeA2AList,
   normalizeProposalList,
   normalizeTaskInputList,
   normalizeToolApprovalList,
   normalizeUserAskList,
   pendingInteractionCount as countPendingParts,
-  type A2AApprovalItem,
   type ProposalItem,
   type TaskInputItem,
   type ToolApprovalItem,
@@ -70,16 +68,15 @@ export let taskReview: TaskReviewItem[] = [];
 export let deliveries: DeliveryProjection[] = [];
 export let sessions: SessionProjection[] = [];
 export let userAsks: UserAskItem[] = [];
-export let a2aApprovals: A2AApprovalItem[] = [];
 export let toolApprovals: ToolApprovalItem[] = [];
 /** U2A one-shot pending inputs — independent type, never folded into UserAsk. */
 export let taskInputs: TaskInputItem[] = [];
 /** Pending proposal triage (separate from delivery review). */
 export let proposals: ProposalItem[] = [];
-/** Product profiles from profile.list (safe metadata; no secrets). */
-export let profiles: ProfileOption[] = [];
-/** Selected machine-local profile for「启动 agent」— never auto-starts. */
-export let selectedProfileId: string | null = null;
+/** Machine-local routes from route.list (safe metadata; no secrets). */
+export let routes: RouteOption[] = [];
+/** Selected machine-local route metadata in the shared renderer state. */
+export let selectedRouteId: string | null = null;
 
 /** Draft form state (pure UI). */
 export let createTypePick = "";
@@ -128,10 +125,6 @@ export function setProposals(list: ProposalItem[]): void {
   proposals = list;
 }
 
-export function setA2aApprovals(list: A2AApprovalItem[]): void {
-  a2aApprovals = list;
-}
-
 export function setToolApprovals(list: ToolApprovalItem[]): void {
   toolApprovals = list;
 }
@@ -140,12 +133,12 @@ export function setTaskInputs(list: TaskInputItem[]): void {
   taskInputs = list;
 }
 
-export function setProfiles(list: ProfileOption[]): void {
-  profiles = list;
+export function setRoutes(list: RouteOption[]): void {
+  routes = list;
 }
 
-export function setSelectedProfileId(id: string | null): void {
-  selectedProfileId = id;
+export function setSelectedRouteId(id: string | null): void {
+  selectedRouteId = id;
 }
 
 export function setCreateTypePick(value: string): void {
@@ -179,7 +172,6 @@ export function actionableTasks(): TaskReviewItem[] {
 export function pendingInteractionCount(): number {
   return countPendingParts({
     userAsks,
-    a2aApprovals,
     toolApprovals,
     taskInputs,
     proposals,
@@ -427,9 +419,8 @@ export async function reloadTasks(): Promise<void> {
 export async function reloadPendingInteractions(): Promise<void> {
   if (!workspaceId) return;
   try {
-    const [askResult, a2aResult, toolResult, proposalResult] = await Promise.all([
+    const [askResult, toolResult, proposalResult] = await Promise.all([
       window.tentDesktop.rpc("userAsk.listPending", { workspaceId }),
-      window.tentDesktop.rpc("a2a.listPending", { workspaceId }),
       window.tentDesktop.rpc("toolApproval.listPending", { workspaceId }),
       window.tentDesktop.rpc("proposal.list", {
         workspaceId,
@@ -437,7 +428,6 @@ export async function reloadPendingInteractions(): Promise<void> {
       }),
     ]);
     userAsks = normalizeUserAskList(askResult);
-    a2aApprovals = normalizeA2AList(a2aResult);
     toolApprovals = normalizeToolApprovalList(toolResult);
     proposals = normalizeProposalList(proposalResult);
 
@@ -477,9 +467,6 @@ function collectTaskPathsForInputPoll(): string[] {
   for (const ask of userAsks) {
     if (ask.taskPath) paths.add(ask.taskPath);
   }
-  for (const a of a2aApprovals) {
-    if (a.taskPath) paths.add(a.taskPath);
-  }
   for (const t of toolApprovals) {
     if (t.taskPath) paths.add(t.taskPath);
   }
@@ -515,21 +502,20 @@ export async function onServiceEvent(type: string): Promise<void> {
   }
 }
 
-/** Load product profiles (testOnly hidden by service default). */
-export async function reloadProfiles(): Promise<void> {
+/** Load machine-local routes. */
+export async function reloadRoutes(): Promise<void> {
   try {
-    const result = (await window.tentDesktop.rpc("profile.list", {})) as {
-      profiles: AgentProfileProjection[];
+    const result = (await window.tentDesktop.rpc("route.list", {})) as {
+      routes: SettingsRouteProjection[];
     };
-    profiles = listProfileOptions(result.profiles || []);
-    if (!selectedProfileId || !profiles.some((p) => p.id === selectedProfileId)) {
-      selectedProfileId = pickDefaultProfileId(profiles);
+    routes = listRouteOptions(result.routes || []);
+    if (!selectedRouteId || !routes.some((route) => route.routeId === selectedRouteId)) {
+      selectedRouteId = pickDefaultRouteId(routes);
     }
     host?.renderTasks();
   } catch (err) {
-    // Profiles are machine-local; show Chinese error when launch is attempted.
-    profiles = [];
-    selectedProfileId = null;
+    routes = [];
+    selectedRouteId = null;
     setError(err);
   }
 }

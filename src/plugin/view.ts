@@ -1051,9 +1051,11 @@ export class TentView extends ItemView {
   private async dispatchNode(box: Node, roleName: string, userPrompt: string) {
     const workspacePath = this.tent ? resolveTentWorkspace(this.tent) : undefined;
     const workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, roleName) : undefined;
-    return dispatch(this.env(), box.id, roleName, {
+    return dispatch(this.env(), box.id, {
       userPrompt,
       workspace,
+      assigneeKind: "role",
+      assigneeId: roleName,
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     });
@@ -1339,6 +1341,8 @@ export class TentView extends ItemView {
     }
 
     if (delivery) {
+      const deliveryTask = this.taskForDelivery(delivery);
+      const deliveryAssignee = deliveryTask?.assigneeId ?? "?";
       body.createDiv({ cls: "tent-triage-sec", text: "待确认交付" });
       const item = body.createDiv({ cls: "tent-triage-item" });
       const main = item.createDiv({ cls: "tent-triage-main" });
@@ -1347,7 +1351,7 @@ export class TentView extends ItemView {
       main.createDiv({ cls: "tent-triage-name", text: first });
       main.createDiv({
         cls: "tent-triage-meta",
-        text: `${delivery.role} · ${delivery.commits.length === 0 ? "无代码提交" : `${delivery.commits.length} 个代码提交`}`,
+        text: `${deliveryAssignee} · ${delivery.commits.length === 0 ? "无代码提交" : `${delivery.commits.length} 个代码提交`}`,
       });
       const acts = item.createDiv({ cls: "tent-triage-acts" });
       const open = acts.createEl("button", { text: "打开" });
@@ -1370,7 +1374,10 @@ export class TentView extends ItemView {
       if (delivery.commits.length > 0) {
         const pick = body.createDiv({ cls: "tent-commit-pick" });
         pick.createDiv({ cls: "tent-commit-note", text: "读取 delivery commits…" });
-        this.loadRoleCommits(delivery.role).then((commits) => {
+        const commitsPromise = deliveryTask?.assigneeKind === "role"
+          ? this.loadRoleCommits(deliveryTask.assigneeId)
+          : Promise.resolve(null);
+        commitsPromise.then((commits) => {
           pick.empty();
           pick.createDiv({ cls: "tent-commit-head", text: "确认后将全部合入:" });
           const byRef = new Map((commits || []).map((commit) => [commit.ref, commit]));
@@ -1397,7 +1404,10 @@ export class TentView extends ItemView {
             integrate: async (refs) => {
               const wp = this.tent ? resolveTentWorkspace(this.tent) : undefined;
               if (!wp) throw new Error("无法从 in-workspace .tent 解析 workspace root");
-              const contract = await ensureRoleWorkspace(wp, delivery.role);
+              if (deliveryTask?.assigneeKind !== "role") {
+                throw new Error("Route delivery commit integration is unavailable in the offline plugin; use Desktop Service or CLI.");
+              }
+              const contract = await ensureRoleWorkspace(wp, deliveryTask.assigneeId);
               await integrateWorkspaceCommits(contract, refs);
             },
           });
@@ -1414,10 +1424,11 @@ export class TentView extends ItemView {
         }
       };
     } else if (rejectedDelivery) {
+      const rejectedTask = this.taskForDelivery(rejectedDelivery);
       body.createDiv({ cls: "tent-triage-sec", text: "处理中" });
       const item = body.createDiv({ cls: "tent-triage-item" });
       const main = item.createDiv({ cls: "tent-triage-main" });
-      main.createDiv({ cls: "tent-triage-name", text: `${rejectedDelivery.role} · 交付已驳回` });
+      main.createDiv({ cls: "tent-triage-name", text: `${rejectedTask?.assigneeId ?? "?"} · 交付已驳回` });
       main.createDiv({
         cls: "tent-triage-meta",
         text: "等待重新交付",
@@ -1562,7 +1573,7 @@ export class TentView extends ItemView {
       const main = item.createDiv({ cls: "tent-triage-main" });
       main.createDiv({
         cls: "tent-triage-name",
-        text: `等待投递给 ${pendingDispatch.task.role}`,
+        text: `等待投递给 ${pendingDispatch.task.assigneeId}`,
       });
       main.createDiv({
         cls: "tent-triage-meta",
@@ -1576,7 +1587,7 @@ export class TentView extends ItemView {
           const tentRoot = this.tentRootAbsolutePath();
           if (!tentRoot) throw new Error("无法解析帐根绝对路径");
           await navigator.clipboard.writeText(relayPromptForTask(pendingDispatch.task, tentRoot));
-          new Notice(`已复制，去 ${pendingDispatch.task.role} 的 agent 会话粘贴即可。`);
+          new Notice(`已复制，去 ${pendingDispatch.task.assigneeId} 的 agent 会话粘贴即可。`);
         } catch (e) {
           new Notice("复制失败:" + (e instanceof Error ? e.message : e));
         }
@@ -1610,7 +1621,7 @@ export class TentView extends ItemView {
         const state = body.createDiv({ cls: "tent-content-intro tent-dispatch-status-item is-stacked" });
         state.createDiv({
           cls: "tent-content-title",
-          text: `${activeTask.role} 正在处理此节点`,
+          text: `${activeTask.assigneeId} 正在处理此节点`,
         });
         state.createDiv({ cls: "tent-content-meta", text: "可在「待裁」中查看交付或中断任务" });
       }

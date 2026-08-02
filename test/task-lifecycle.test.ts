@@ -6,9 +6,7 @@ import { dispatch } from "../src/core/ops.js";
 import { loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
 import { loadDeliveries } from "../src/core/delivery.js";
 import {
-  assertA2AAllow,
   findActiveTaskForNode,
-  gateStartSession,
   taskAccept,
   taskCancel,
   taskClaim,
@@ -44,10 +42,20 @@ function env(dir: string) {
   };
 }
 
+function dispatchToRole(env: any, nodeId: string, assigneeId: string, input: string | Record<string, unknown>) {
+  return dispatch(env, nodeId, {
+    assigneeKind: "role",
+    assigneeId,
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+    ...(typeof input === "string" ? { userPrompt: input } : input),
+  });
+}
+
 async function dispatchOnFreeBox(dir: string, role = "executor") {
   const e = env(dir);
   // cx-p1 is free (no owner) in makeTent fixture
-  const result = await dispatch(e as any, "cx-p1", role, {
+  const result = await dispatchToRole(e as any, "cx-p1", role, {
     userPrompt: "Implement the lifecycle slice",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -121,7 +129,7 @@ test("lifecycle: self-accept is hard-forbidden", async () => {
 test("lifecycle: agent-decide integrate auto-integrates without review.by=submitter", async () => {
   const dir = await makeTent();
   const e = env(dir);
-  const result = await dispatch(e as any, "cx-p1", "executor", {
+  const result = await dispatchToRole(e as any, "cx-p1", "executor", {
     userPrompt: "auto path",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -147,7 +155,7 @@ test("lifecycle: agent-decide integrate auto-integrates without review.by=submit
 test("lifecycle: auto-integrate failure keeps running, no delivery, occupation held", async () => {
   const dir = await makeTent();
   const e = env(dir);
-  const result = await dispatch(e as any, "cx-p1", "executor", {
+  const result = await dispatchToRole(e as any, "cx-p1", "executor", {
     userPrompt: "bypass fail",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -201,7 +209,7 @@ test("lifecycle: manual accept integrate failure keeps delivered + occupation", 
 test("lifecycle: agent-decide without decision fails; review forbids integrate", async () => {
   const dir = await makeTent();
   const e = env(dir);
-  const r1 = await dispatch(e as any, "cx-p1", "executor", {
+  const r1 = await dispatchToRole(e as any, "cx-p1", "executor", {
     userPrompt: "need decision",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -214,7 +222,7 @@ test("lifecycle: agent-decide without decision fails; review forbids integrate",
   );
   await taskInterrupt(e as any, r1.taskPath);
 
-  const r2 = await dispatch(e as any, "cx-p1", "executor", {
+  const r2 = await dispatchToRole(e as any, "cx-p1", "executor", {
     userPrompt: "review only",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -259,7 +267,7 @@ test("lifecycle: cancel queued; interrupt running clears occupation", async () =
   await taskCancel(e as any, result.taskPath);
   assert.equal(await e.fs.exists(result.taskPath), false);
 
-  const r2 = await dispatch(e as any, "cx-p1", "executor", {
+  const r2 = await dispatchToRole(e as any, "cx-p1", "executor", {
     userPrompt: "again",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -318,33 +326,33 @@ test("lifecycle: repeated interrupt repairs dangling Delivery projection", async
 test("lifecycle: exact Node occupation blocks peers but not parent, child, or sibling", async () => {
   const dir = await makeTent();
   const e = env(dir);
-  const r1 = await dispatch(e as any, "cx-p1", "executor", {
+  const r1 = await dispatchToRole(e as any, "cx-p1", "executor", {
     userPrompt: "first",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
   });
   assert.equal((await loadTaskEnvelope(e.fs, r1.taskPath)).state, "queued");
   await assert.rejects(
-    () => dispatch(e as any, "cx-p1", "reviewer", {
+    () => dispatchToRole(e as any, "cx-p1", "reviewer", {
       userPrompt: "overlap",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     }),
     /occupied by active task/,
   );
-  const child = await dispatch(e as any, "cx-p2", "reviewer", {
+  const child = await dispatchToRole(e as any, "cx-p2", "reviewer", {
     userPrompt: "child",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
   });
   assert.ok(child.taskPath);
-  const parent = await dispatch(e as any, "cx-promptzone", "reviewer", {
+  const parent = await dispatchToRole(e as any, "cx-promptzone", "reviewer", {
     userPrompt: "parent",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
   });
   assert.ok(parent.taskPath);
-  const r2 = await dispatch(e as any, "cx-o1", "reviewer", {
+  const r2 = await dispatchToRole(e as any, "cx-o1", "reviewer", {
     userPrompt: "sibling",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -408,7 +416,7 @@ test("lifecycle: taskFail releases exact Node occupation; idempotent re-dispatch
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
 
   // Same box can be re-dispatched without fork / manual frontmatter edit.
-  const r2 = await dispatch(e as any, "cx-p1", "executor", {
+  const r2 = await dispatchToRole(e as any, "cx-p1", "executor", {
     userPrompt: "retry after fail",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -431,24 +439,6 @@ test("lifecycle: taskFail from waiting also clears occupation", async () => {
   assert.ok(failed.wait == null, "wait must be cleared");
   assert.equal(await findActiveTaskForNode(e.fs, "cx-p1"), undefined);
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
-});
-
-test("lifecycle: A2A gate deny/ask/allow", () => {
-  assert.equal(gateStartSession({ callerKind: "user" }), "allow");
-  assert.equal(gateStartSession({ callerKind: "role", policy: "deny" }), "deny");
-  assert.equal(gateStartSession({ callerKind: "role", policy: "ask" }), "ask");
-  assert.equal(
-    gateStartSession({ callerKind: "role", policy: "allow", profileAllowed: true }),
-    "allow"
-  );
-  assert.equal(
-    gateStartSession({ callerKind: "role", policy: "allow", profileAllowed: false }),
-    "deny"
-  );
-  assert.throws(
-    () => assertA2AAllow({ callerKind: "role", policy: "deny" }),
-    (err: unknown) => err instanceof TaskLifecycleError && err.code === "A2A_DENIED"
-  );
 });
 
 test("contextCard: stable prompt template + parse round-trip", () => {

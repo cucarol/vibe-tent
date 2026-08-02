@@ -1,6 +1,6 @@
 /**
  * Service-native peer vs sub dispatch (task-api §4.5 / SPEC).
- * Covers role/profile Git lanes, invalid/no-Git, review + A2A authority,
+ * Covers role/route Git lanes, invalid/no-Git, review authority,
  * CLI attach, target mismatch, and peer regressions.
  */
 import assert from "node:assert/strict";
@@ -12,6 +12,8 @@ import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs, SystemClock } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
+import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
+import type { SettingsRouteConfig } from "../src/runtime/types.js";
 import { loadTaskEnvelope, taskAsSub, writeTaskEnvelope } from "../src/core/task.js";
 import {
   assertReviewAuthority,
@@ -25,12 +27,14 @@ import {
 import { taskAccept, taskClaim, taskDeliver, taskReject } from "../src/core/task-lifecycle.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
 
+const FAKE_ROUTE: SettingsRouteConfig = {
+  routeId: "fake-default",
+  provider: "fake",
+  adapterId: FAKE_ADAPTER_ID,
+  fake: { waitForSignal: true, sleepMs: 60_000 },
+};
 
-async function makeWorkspace(
-  name = "sub-dispatch",
-  rolePolicies?: Record<string, "allow" | "ask" | "deny">,
-  roleProfiles?: Record<string, string[]>
-): Promise<string> {
+async function makeWorkspace(name = "sub-dispatch"): Promise<string> {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-sub-ws-"));
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
@@ -45,30 +49,14 @@ async function makeWorkspace(
           {
             name: "executor",
             prompt: "do work",
-            ...(rolePolicies?.executor ? { a2aPolicy: rolePolicies.executor } : {}),
-            ...(rolePolicies?.executor === "allow"
-              ? { allowedProfiles: roleProfiles?.executor ?? ["fake-default"] }
-              : roleProfiles?.executor
-                ? { allowedProfiles: roleProfiles.executor }
-                : {}),
           },
           {
             name: "orchestrator",
             prompt: "dispatch work",
-            ...(rolePolicies?.orchestrator
-              ? { a2aPolicy: rolePolicies.orchestrator }
-              : { a2aPolicy: "allow" }),
-            ...(rolePolicies?.orchestrator === "deny"
-              ? {}
-              : {
-                  allowedProfiles:
-                    roleProfiles?.orchestrator ?? ["fake-default"],
-                }),
           },
           {
             name: "helper",
             prompt: "sub helper",
-            ...(rolePolicies?.helper ? { a2aPolicy: rolePolicies.helper } : {}),
           },
         ],
       },
@@ -83,7 +71,7 @@ async function withService<T>(
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-sub-data-"));
-  const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+  const svc = await startLocalTentService({ dataDir, writeEndpoint: true, routes: [FAKE_ROUTE] });
   try {
     return await fn(svc);
   } finally {
@@ -225,7 +213,8 @@ test("writeTaskEnvelope: asSub true persists; missing/false omitted (reads as pe
   await fsa.mkdir("temp/helper/tasks");
   const clock = new SystemClock();
   const peerPath = await writeTaskEnvelope(fsa, clock, {
-    role: "helper",
+    assigneeKind: "role",
+    assigneeId: "helper",
     nodeRefs: [{ id: "cx-1", path: "a.md" }],
     manifestPath: "temp/helper/manifest.yml",
     userPrompt: "peer",
@@ -243,7 +232,8 @@ test("writeTaskEnvelope: asSub true persists; missing/false omitted (reads as pe
   assert.match(peerRaw, /parentActor:/);
 
   const subPath = await writeTaskEnvelope(fsa, clock, {
-    role: "helper",
+    assigneeKind: "role",
+    assigneeId: "helper",
     nodeRefs: [{ id: "cx-2", path: "b.md" }],
     manifestPath: "temp/helper/manifest.yml",
     userPrompt: "sub",
@@ -335,7 +325,8 @@ test("task.dispatch asSub role: tent-role assignee lane + dispatcher targetBranc
     const sub = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [nodeId],
-      role: "helper",
+      assigneeKind: "role",
+      assigneeId: "helper",
       prompt: "help orchestrator",
       asSub: true,
       parentActor: { kind: "role", id: "orchestrator" },
@@ -389,7 +380,8 @@ test("task.dispatch asSub role: tent-role assignee lane + dispatcher targetBranc
     const peer = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [peerBox],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "peer work",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -428,10 +420,10 @@ test("task.dispatch asSub role: tent-role assignee lane + dispatcher targetBranc
   });
 });
 
-// ---- Service: profile sub allocates tent-task lane at dispatch; peer deferred ----
+// ---- Service: route sub allocates tent-task lane at dispatch; peer deferred ----
 
-test("task.dispatch asSub profile: tent-task lane at dispatch; peer profile stays deferred", async () => {
-  const ws = await makeWorkspace("sub-profile-git");
+test("task.dispatch asSub route: tent-task lane at dispatch; peer route stays deferred", async () => {
+  const ws = await makeWorkspace("sub-route-git");
   await initGitOnWorkspace(ws);
 
   // Make the dispatcher tip observably different from main. The task lane must
@@ -444,14 +436,14 @@ test("task.dispatch asSub profile: tent-task lane at dispatch; peer profile stay
   assert.notEqual(dispatcherHead, (await git(ws, "rev-parse", "main")).trim());
 
   await withService(async (svc) => {
-    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "profile-sub");
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "route-sub");
 
     const sub = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [nodeId],
       assigneeKind: "route",
-      routeId: "fake-default",
-      prompt: "profile helper",
+      assigneeId: "fake-default",
+      prompt: "route helper",
       asSub: true,
       callerKind: "role",
       parentActor: { kind: "role", id: "orchestrator" },
@@ -483,19 +475,20 @@ test("task.dispatch asSub profile: tent-task lane at dispatch; peer profile stay
 
     const envFs = new NodeFs(path.join(ws, ".tent"));
     const task = await loadTaskEnvelope(envFs, subResult.taskPath);
-    assert.equal(task.assigneeKind, "agentProfile");
+    assert.equal(task.assigneeKind, "route");
+    assert.match(subResult.taskPath, /^temp\/routes\/fake-default\/tasks\//);
     assert.equal(task.id, subResult.workspaceLane?.branch?.replace(/^tent-task\//, ""));
     assert.equal(task.branch, `tent-task/${task.id}`);
     assert.equal(task.targetBranch, "tent-role/orchestrator");
     assert.ok(task.worktree);
 
-    const peerBox = await createNote(svc, workspaceId, "profile-peer");
+    const peerBox = await createNote(svc, workspaceId, "route-peer");
     const peer = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [peerBox],
       assigneeKind: "route",
-      routeId: "fake-default",
-      prompt: "peer profile",
+      assigneeId: "fake-default",
+      prompt: "peer route",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     });
@@ -506,7 +499,7 @@ test("task.dispatch asSub profile: tent-task lane at dispatch; peer profile stay
       workspaceLane?: unknown;
     };
     assert.equal(peerResult.asSub, false);
-    // Peer profile defers Git lane; authority-only projection is mandatory without base/branch.
+    // Peer route defers Git lane; authority-only projection is mandatory without base/branch.
     const peerLane = peerResult.workspaceLane as
       | {
           branch?: string;
@@ -515,7 +508,7 @@ test("task.dispatch asSub profile: tent-task lane at dispatch; peer profile stay
           integrationAuthority?: { mutator: string; actor: { kind: string; id: string } };
         }
       | undefined;
-    assert.ok(peerLane, "peer profile still projects authority-only workspaceLane");
+    assert.ok(peerLane, "peer route still projects authority-only workspaceLane");
     assert.equal(peerLane!.branch, undefined);
     assert.equal(peerLane!.worktree, undefined);
     assert.equal(peerLane!.baseCommit, undefined);
@@ -546,7 +539,8 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
     const asUser = await rpc(svc, "task.dispatch", {
       workspaceId: gitMount.workspaceId,
       nodeIds: [gitMount.nodeId],
-      role: "helper",
+      assigneeKind: "role",
+      assigneeId: "helper",
       prompt: "nope",
       asSub: true,
       parentActor: { kind: "user", id: "user" },
@@ -559,7 +553,8 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
     const asSelf = await rpc(svc, "task.dispatch", {
       workspaceId: gitMount.workspaceId,
       nodeIds: [gitMount.nodeId],
-      role: "helper",
+      assigneeKind: "role",
+      assigneeId: "helper",
       prompt: "nope",
       asSub: true,
       parentActor: { kind: "role", id: "helper" },
@@ -571,7 +566,8 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
     const unknown = await rpc(svc, "task.dispatch", {
       workspaceId: gitMount.workspaceId,
       nodeIds: [gitMount.nodeId],
-      role: "helper",
+      assigneeKind: "role",
+      assigneeId: "helper",
       prompt: "nope",
       asSub: true,
       parentActor: { kind: "role", id: "ghost-role" },
@@ -586,7 +582,8 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
     const noGit = await rpc(svc, "task.dispatch", {
       workspaceId: noGitMount.workspaceId,
       nodeIds: [noGitMount.nodeId],
-      role: "helper",
+      assigneeKind: "role",
+      assigneeId: "helper",
       prompt: "nope",
       asSub: true,
       parentActor: { kind: "role", id: "orchestrator" },
@@ -602,7 +599,8 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       nodeIds: [noGitMount.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "pure tent peer",
     });
     assert.ok(!peer.error, JSON.stringify(peer.error));
@@ -647,7 +645,8 @@ test("sub task accept/reject: exact parent Role only; user cannot ordinary-bypas
     const dispatched = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [nodeId],
-      role: "helper",
+      assigneeKind: "role",
+      assigneeId: "helper",
       prompt: "sub review",
       asSub: true,
       parentActor: { kind: "role", id: "orchestrator" },
@@ -690,60 +689,49 @@ test("sub task accept/reject: exact parent Role only; user cannot ordinary-bypas
   });
 });
 
-// ---- Sub and peer Tasks use machine Settings route availability ----
+// ---- Managed Sessions belong only to machine Settings route Tasks ----
 
-test("startSession route availability is independent of parent or assignee role policy", async () => {
-  const ws = await makeWorkspace(
-    "sub-a2a",
-    { orchestrator: "allow", helper: "deny" },
-    { orchestrator: ["fake-default"] }
-  );
+test("managed sessions are route-only; Role Tasks never start a route", async () => {
+  const ws = await makeWorkspace("sub-route-only");
   await initGitOnWorkspace(ws);
 
   await withService(async (svc) => {
-    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "a2a-sub");
-    const sub = await rpc(svc, "task.dispatch", {
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "role-task");
+    const roleTask = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [nodeId],
-      role: "helper",
-      prompt: "spawn via dispatcher authority",
+      assigneeKind: "role",
+      assigneeId: "helper",
+      prompt: "durable handoff only",
       asSub: true,
       parentActor: { kind: "role", id: "orchestrator" },
       reviewer: { kind: "role", id: "orchestrator" },
     });
-    assert.ok(!sub.error, JSON.stringify(sub.error));
-    const taskPath = (sub.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-
-    const ok = await rpc(svc, "task.startSession", {
+    assert.ok(!roleTask.error, JSON.stringify(roleTask.error));
+    const roleTaskPath = (roleTask.result as { taskPath: string }).taskPath;
+    const roleStart = await rpc(svc, "task.startSession", {
       workspaceId,
-      taskPath,
-      profileId: "fake-default",
+      taskPath: roleTaskPath,
       callerKind: "role",
     });
-    assert.ok(!ok.error, JSON.stringify(ok.error));
-    await rpc(svc, "task.interrupt", { workspaceId, taskPath });
+    assert.ok(roleStart.error, "Role Task must reject managed session start");
+    assert.match(String(roleStart.error!.message), /requires a Task assigned to a Settings route/i);
 
-    // Peer role helper uses the same available machine route despite deny policy.
-    const peerBox = await createNote(svc, workspaceId, "a2a-peer");
-    const peer = await rpc(svc, "task.dispatch", {
+    const routeBox = await createNote(svc, workspaceId, "route-task");
+    const routeTask = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [peerBox],
-      role: "helper",
-      prompt: "peer helper",
+      nodeIds: [routeBox],
+      assigneeKind: "route",
+      assigneeId: "fake-default",
+      prompt: "managed route task",
+      startSession: true,
     });
-    assert.ok(!peer.error, JSON.stringify(peer.error));
-    const peerPath = (peer.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath: peerPath });
-    const peerStarted = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath: peerPath,
-      profileId: "fake-default",
-      callerKind: "role",
-    });
-    assert.ok(!peerStarted.error, JSON.stringify(peerStarted.error));
+    assert.ok(!routeTask.error, JSON.stringify(routeTask.error));
+    const routeTaskPath = (routeTask.result as { taskPath: string }).taskPath;
+    assert.match(routeTaskPath, /^temp\/routes\/fake-default\/tasks\//);
+    await rpc(svc, "task.interrupt", { workspaceId, taskPath: routeTaskPath });
   });
 });
 
@@ -759,7 +747,8 @@ test("sub accept integrates commits into dispatcher worktree; main stays put", a
     const sub = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [nodeId],
-      role: "helper",
+      assigneeKind: "role",
+      assigneeId: "helper",
       prompt: "integrate to dispatcher",
       asSub: true,
       parentActor: { kind: "role", id: "orchestrator" },
@@ -821,7 +810,8 @@ test("resolveIntegrationContract: sub targetBranch mismatch fails loud", async (
     const sub = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [nodeId],
-      role: "helper",
+      assigneeKind: "role",
+      assigneeId: "helper",
       prompt: "corrupt me",
       asSub: true,
       parentActor: { kind: "role", id: "orchestrator" },
@@ -918,7 +908,8 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [parentId],
-      role: "orchestrator",
+      assigneeKind: "role",
+      assigneeId: "orchestrator",
       prompt: "own the goal",
     });
     assert.ok(!parentDispatch.error, JSON.stringify(parentDispatch.error));
@@ -931,7 +922,8 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [subChildId],
-      role: "helper",
+      assigneeKind: "role",
+      assigneeId: "helper",
       prompt: "peer concurrent under ancestor",
     });
     assert.ok(!peerOk.error, JSON.stringify(peerOk.error));
@@ -940,7 +932,8 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
     const subOk = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [childId],
-      role: "helper",
+      assigneeKind: "role",
+      assigneeId: "helper",
       prompt: "sub under dispatcher claim",
       asSub: true,
       parentActor: { kind: "role", id: "orchestrator" },
@@ -969,7 +962,8 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
     const otherParent = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [(otherChild.result as { nodeId: string }).nodeId],
-      role: "helper",
+      assigneeKind: "role",
+      assigneeId: "helper",
       prompt: "sub with executor parent",
       asSub: true,
       parentActor: { kind: "role", id: "executor" },
@@ -1033,7 +1027,8 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [parentId],
-      role: "orchestrator",
+      assigneeKind: "role",
+      assigneeId: "orchestrator",
       prompt: "own the goal; delegate child",
       deliveryPolicy: "review",
     });
@@ -1062,7 +1057,8 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
     const subDispatch = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [childId],
-      role: "helper",
+      assigneeKind: "role",
+      assigneeId: "helper",
       prompt: "produce sub artifact for parent",
       asSub: true,
       parentActor: { kind: "role", id: "orchestrator" },
@@ -1167,21 +1163,21 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
   });
 });
 
-// ---- Peer profile regression: deferred lane still holds after asSub feature ----
+// ---- Peer route regression: deferred lane still holds after asSub feature ----
 
-test("peer profile dispatch still defers lane; startSession creates tent-task", async () => {
-  const ws = await makeWorkspace("peer-profile-reg");
+test("peer route dispatch still defers lane; startSession creates tent-task", async () => {
+  const ws = await makeWorkspace("peer-route-reg");
   await initGitOnWorkspace(ws);
   await withService(async (svc) => {
-    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "peer-prof");
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "peer-route");
     const peer = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
       assigneeKind: "route",
-      routeId: "fake-default",
-      prompt: "peer profile deferred",
+      assigneeId: "fake-default",
+      prompt: "peer route deferred",
     });
     assert.ok(!peer.error, JSON.stringify(peer.error));
     const taskPath = (peer.result as { taskPath: string }).taskPath;
@@ -1195,7 +1191,7 @@ test("peer profile dispatch still defers lane; startSession creates tent-task", 
         };
       }
     ).workspaceLane;
-    assert.ok(peerLane, "peer profile still projects authority-only workspaceLane at dispatch");
+    assert.ok(peerLane, "peer route still projects authority-only workspaceLane at dispatch");
     assert.equal(peerLane!.branch, undefined);
     assert.equal(peerLane!.worktree, undefined);
     assert.equal(peerLane!.baseCommit, undefined);
@@ -1208,7 +1204,6 @@ test("peer profile dispatch still defers lane; startSession creates tent-task", 
     const started = await rpc(svc, "task.startSession", {
       workspaceId,
       taskPath,
-      profileId: "fake-default",
       callerKind: "user",
     });
     assert.ok(!started.error, JSON.stringify(started.error));

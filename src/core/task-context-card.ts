@@ -1,4 +1,4 @@
-// Task Context Card v1 + managed prompt assembly + Session reuse compatibility gate.
+// Task Context Card v1 + managed prompt assembly + exact-Session context generation.
 // Frozen by Node cx-5q6za6. No new lifecycle entity — projected via Task envelope /
 // Session registry / manifest only.
 //
@@ -74,8 +74,8 @@ export type TaskContextCardV1 = {
   scope: TaskContextCardScope;
   acceptance: string[];
   refs: TaskContextCardRefs;
-  /** `cg-v1-<sha256>` of canonical stable prefix / compatibility inputs. */
-  contextGeneration: string;
+  /** Optional audit of the stable Session context actually used for execution. */
+  contextGeneration?: string;
   /** Canonical digest of current card context + TaskInput/review delta. */
   taskDeltaDigest: string;
 };
@@ -99,15 +99,10 @@ export type ContextGenerationInputs = {
   tentTaskDigest?: string;
   /** tent-task skill version marker. */
   tentTaskVersion?: string;
-  /** Profile/adapter compatibility fingerprint (ids only — no secrets). */
-  profileAdapterCompatibility?: string;
+  /** Route/adapter compatibility fingerprint (ids only — no secrets). */
+  routeAdapterCompatibility?: string;
   /**
-   * purpose / subKey for Session reuse identity (empty when unused).
-   * Never taskId / objective / acceptance / Task delta.
-   */
-  purpose?: string;
-  /**
-   * Extra stable compatibility bytes (agent/profile purpose flags, …).
+   * Extra stable compatibility bytes needed by the actual prompt builder.
    * Must never include taskId, objective, acceptance, or current Task delta.
    */
   extraStable?: Record<string, string | number | boolean | null | undefined>;
@@ -131,7 +126,7 @@ export const CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS = [
 
 /** Dynamic delta inputs (per Task / turn). */
 export type TaskDeltaInputs = {
-  card: Omit<TaskContextCardV1, "contextGeneration" | "taskDeltaDigest">;
+  card: Omit<TaskContextCardV1, "taskDeltaDigest">;
   /** Formatted TaskInput / review-feedback blocks, if any. */
   taskInputDelta?: string;
   /** Optional Role Checkpoint tail. */
@@ -214,8 +209,7 @@ export function computeContextGeneration(inputs: ContextGenerationInputs): strin
     rolePrompt: inputs.rolePrompt?.trim() || "",
     tentTaskDigest: inputs.tentTaskDigest?.trim() || "",
     tentTaskVersion: inputs.tentTaskVersion?.trim() || "",
-    profileAdapterCompatibility: inputs.profileAdapterCompatibility?.trim() || "",
-    purpose: inputs.purpose?.trim() || "",
+    routeAdapterCompatibility: inputs.routeAdapterCompatibility?.trim() || "",
     extraStable,
   };
   return formatContextGeneration(canonicalJson(payload));
@@ -223,7 +217,7 @@ export function computeContextGeneration(inputs: ContextGenerationInputs): strin
 
 /**
  * Strip Task-dynamic keys from extraStable so contextGeneration stays cache-stable
- * across Tasks that share workspace/Role/Skills/profile facts.
+ * across an exact Task Session that preserves workspace/Role/Skills/route facts.
  */
 export function sanitizeContextGenerationExtraStable(
   extra?: Record<string, string | number | boolean | null | undefined>
@@ -269,7 +263,7 @@ export function skillBodyCompatibilityDigest(input: {
 }
 
 /**
- * Build real stable contextGeneration from collected workspace/Skill/Role/profile facts.
+ * Build real stable contextGeneration from collected workspace/Skill/Role/route facts.
  * Callers supply already-loaded bodies — no I/O here. Never accepts taskId/objective.
  */
 export function computeContextGenerationFromStableFacts(input: {
@@ -283,18 +277,15 @@ export function computeContextGenerationFromStableFacts(input: {
   tentTaskBody?: string;
   tentTaskVersion?: string;
   rolePrompt?: string;
-  profileId: string;
+  routeId: string;
   adapterId: string;
-  purpose?: string;
-  /** Logical agentId or profile assignee label for extraStable only. */
-  agentId?: string;
   assigneeKind?: AssigneeKind | string;
   capabilityFlags?: readonly string[];
   /**
-   * Non-secret launch snapshot digest (same profileId edited in place).
-   * When set, folds into profileAdapterCompatibility.
+   * Non-secret launch snapshot digest (same routeId edited in place).
+   * When set, folds into routeAdapterCompatibility.
    */
-  profileLaunchDigest?: string;
+  routeLaunchDigest?: string;
   extraStable?: Record<string, string | number | boolean | null | undefined>;
 }): string {
   const tentRoleDigest =
@@ -323,18 +314,16 @@ export function computeContextGenerationFromStableFacts(input: {
     rolePrompt: input.rolePrompt,
     tentTaskDigest: tentTaskDigest || undefined,
     tentTaskVersion: input.tentTaskVersion,
-    profileAdapterCompatibility: profileAdapterCompatibilityDigest({
-      profileId: input.profileId,
+    routeAdapterCompatibility: routeAdapterCompatibilityDigest({
+      routeId: input.routeId,
       adapterId: input.adapterId,
       capabilityFlags: input.capabilityFlags,
-      launchDigest: input.profileLaunchDigest,
+      launchDigest: input.routeLaunchDigest,
     }),
-    purpose: input.purpose,
     extraStable: {
       ...(input.assigneeKind ? { assigneeKind: String(input.assigneeKind) } : {}),
-      ...(input.agentId?.trim() ? { agentId: input.agentId.trim() } : {}),
-      ...(input.profileLaunchDigest?.trim()
-        ? { profileLaunchDigest: input.profileLaunchDigest.trim() }
+      ...(input.routeLaunchDigest?.trim()
+        ? { routeLaunchDigest: input.routeLaunchDigest.trim() }
         : {}),
       ...input.extraStable,
     },
@@ -454,8 +443,8 @@ export type BuildTaskContextCardInput = {
   scope?: { include?: readonly string[]; exclude?: readonly string[] };
   acceptance?: readonly string[];
   refs?: Partial<TaskContextCardRefs>;
-  /** Precomputed or from computeContextGeneration. */
-  contextGeneration: string;
+  /** Optional execution provenance; absent before the first managed start. */
+  contextGeneration?: string;
   /** Optional precomputed delta digest; recomputed when omitted. */
   taskDeltaDigest?: string;
   taskInputDelta?: string;
@@ -471,14 +460,14 @@ export type BuildTaskContextCardInput = {
 export function buildTaskContextCard(input: BuildTaskContextCardInput): TaskContextCardV1 {
   const objective = input.objective?.trim() || "";
   const acceptance = asStringList([...(input.acceptance ?? [])]);
-  if (!isContextGenerationId(input.contextGeneration)) {
+  const contextGeneration = input.contextGeneration?.trim() || undefined;
+  if (contextGeneration && !isContextGenerationId(contextGeneration)) {
     throw new TaskContextCardError(
       "INVALID_GENERATION",
       `contextGeneration must match cg-v1-<sha256>; got ${String(input.contextGeneration)}`
     );
   }
-
-  const cardBody: Omit<TaskContextCardV1, "contextGeneration" | "taskDeltaDigest"> = {
+  const cardBody: Omit<TaskContextCardV1, "taskDeltaDigest"> = {
     schemaVersion: TASK_CONTEXT_CARD_SCHEMA_VERSION,
     objective,
     frozenDecisions: asStringList([...(input.frozenDecisions ?? [])]),
@@ -506,7 +495,7 @@ export function buildTaskContextCard(input: BuildTaskContextCardInput): TaskCont
 
   return {
     ...cardBody,
-    contextGeneration: input.contextGeneration,
+    ...(contextGeneration ? { contextGeneration } : {}),
     taskDeltaDigest,
   };
 }
@@ -547,7 +536,7 @@ export function parseTaskContextCard(data: unknown): TaskContextCardV1 {
       git: parseRefList(refsRaw.git, "git"),
     },
     contextGeneration:
-      typeof raw.contextGeneration === "string" ? raw.contextGeneration : "",
+      typeof raw.contextGeneration === "string" ? raw.contextGeneration : undefined,
     taskDeltaDigest:
       typeof raw.taskDeltaDigest === "string" ? raw.taskDeltaDigest : undefined,
   });
@@ -586,7 +575,7 @@ export function serializeTaskContextCardForFrontmatter(
       deliveries: card.refs.deliveries.map((r) => ({ ...r })),
       git: card.refs.git.map((r) => ({ ...r })),
     },
-    contextGeneration: card.contextGeneration,
+    ...(card.contextGeneration ? { contextGeneration: card.contextGeneration } : {}),
     taskDeltaDigest: card.taskDeltaDigest,
   };
 }
@@ -643,6 +632,8 @@ export type ManagedPromptAssemblyInput = {
   tentTaskSection?: string;
   /** Authoritative Context Card v1. */
   contextCard: TaskContextCardV1;
+  /** Live Session generation used to assemble this prompt. */
+  contextGeneration: string;
   /** Task envelope path / id pointers for the dynamic section. */
   taskPointers?: string;
   /** Near-field user prompt. */
@@ -677,9 +668,11 @@ export function formatTaskContextCardPrompt(card: TaskContextCardV1): string {
   const lines: string[] = [
     "Tent Task Context Card v1",
     `schemaVersion: ${card.schemaVersion}`,
-    `contextGeneration: ${card.contextGeneration}`,
     `taskDeltaDigest: ${card.taskDeltaDigest}`,
   ];
+  if (card.contextGeneration) {
+    lines.splice(2, 0, `contextGeneration: ${card.contextGeneration}`);
+  }
   if (card.objective) lines.push(`objective: ${card.objective}`);
   if (card.frozenDecisions.length) {
     lines.push("frozenDecisions:");
@@ -757,7 +750,7 @@ function formatDynamicDelta(input: ManagedPromptAssemblyInput): string {
 
 /**
  * Assemble managed Agent prompt in the frozen order:
- * invariant → stable project context → tent-role? → Role prompt/roster →
+ * invariant → stable project context → tent-role? → Role prompt →
  * tent-task → dynamic Context Card → TaskInput/review delta → checkpoint?
  *
  * When `includeStablePrefix` is false (same contextGeneration already injected
@@ -766,6 +759,12 @@ function formatDynamicDelta(input: ManagedPromptAssemblyInput): string {
 export function assembleManagedPrompt(
   input: ManagedPromptAssemblyInput
 ): ManagedPromptAssembly {
+  if (!isContextGenerationId(input.contextGeneration)) {
+    throw new TaskContextCardError(
+      "INVALID_GENERATION",
+      `contextGeneration must match cg-v1-<sha256>; got ${String(input.contextGeneration)}`
+    );
+  }
   // Re-validate card (fail loud).
   const card = buildTaskContextCard({
     objective: input.contextCard.objective,
@@ -786,7 +785,7 @@ export function assembleManagedPrompt(
   if (!includeStablePrefix) {
     return {
       text: dynamicDelta + "\n",
-      contextGeneration: card.contextGeneration,
+      contextGeneration: input.contextGeneration,
       taskDeltaDigest: card.taskDeltaDigest,
       includedStablePrefix: false,
       stablePrefix: "",
@@ -811,7 +810,7 @@ export function assembleManagedPrompt(
   const text = `${stablePrefix}\n\n${dynamicDelta}\n`;
   return {
     text,
-    contextGeneration: card.contextGeneration,
+    contextGeneration: input.contextGeneration,
     taskDeltaDigest: card.taskDeltaDigest,
     includedStablePrefix: true,
     stablePrefix,
@@ -826,13 +825,13 @@ export function assembleManagedPrompt(
  */
 export function decideStablePrefixInjection(input: {
   sessionContextGeneration?: string | null;
-  taskContextGeneration: string;
+  currentContextGeneration: string;
 }): { includeStablePrefix: boolean; reason: string } {
-  const taskGen = input.taskContextGeneration?.trim() || "";
-  if (!isContextGenerationId(taskGen)) {
+  const currentGen = input.currentContextGeneration?.trim() || "";
+  if (!isContextGenerationId(currentGen)) {
     return {
       includeStablePrefix: true,
-      reason: "task_context_generation_invalid_or_missing",
+      reason: "current_context_generation_invalid_or_missing",
     };
   }
   const prior = input.sessionContextGeneration?.trim() || "";
@@ -845,7 +844,7 @@ export function decideStablePrefixInjection(input: {
       reason: "session_context_generation_invalid",
     };
   }
-  if (prior !== taskGen) {
+  if (prior !== currentGen) {
     return {
       includeStablePrefix: true,
       reason: "context_generation_mismatch",
@@ -863,133 +862,9 @@ export function decideStablePrefixInjection(input: {
  */
 export function shouldInjectStablePrefix(input: {
   sessionContextGeneration?: string | null;
-  taskContextGeneration: string;
+  currentContextGeneration: string;
 }): boolean {
   return decideStablePrefixInjection(input).includeStablePrefix;
-}
-
-// ---------------------------------------------------------------------------
-// Session reuse compatibility gate (fail closed)
-// ---------------------------------------------------------------------------
-
-/**
- * Compatibility identity for Session reuse decisions.
- * Full live reuse still requires runtime probe / exclusive lease checks in Service;
- * this gate is the pure Core projection — fail closed when anything mismatches.
- */
-export type SessionReuseCompatibilityFacts = {
-  workspaceId: string;
-  /** Parent Role operational id; omit / empty for user-parent one-shots. */
-  parentRoleId?: string;
-  /** Logical agentId (roster) or profile assignee id. */
-  agentId: string;
-  /** purpose / subKey — empty string when not used. */
-  purpose?: string;
-  /** Non-secret skills set digest. */
-  skillsDigest: string;
-  profileId: string;
-  adapterId: string;
-  contextGeneration: string;
-  /** Absolute worktree / runtime cwd. */
-  worktree?: string;
-};
-
-export type SessionReuseRuntimeGates = {
-  /** Previous managed turn settled (not turnBusy). */
-  previousTurnSettled: boolean;
-  /** No open TaskInput / review-feedback on the binding. */
-  noPendingInput: boolean;
-  /** No ready/unresolved Delivery blocking reuse. */
-  noPendingDelivery: boolean;
-  /** Session has exclusive Task lease (not dual-bound). */
-  exclusiveLease: boolean;
-};
-
-export type SessionReuseEvaluation = {
-  /** True only when every compatibility + runtime gate passes. */
-  allowed: boolean;
-  reasons: string[];
-  request: SessionReuseCompatibilityFacts;
-  candidate: SessionReuseCompatibilityFacts;
-};
-
-function norm(value: string | undefined | null): string {
-  return (value ?? "").trim();
-}
-
-function samePathish(a: string, b: string): boolean {
-  if (!a || !b) return a === b;
-  const na = a.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  const nb = b.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  return na === nb;
-}
-
-/**
- * Pure Session reuse compatibility gate.
- * Fail closed: any mismatch or unmet runtime gate → allowed=false with reasons.
- * Does **not** invent prompt-memory reuse; Service must still start fresh Session
- * when allowed=false. When a full reuse operation is absent, callers use this
- * seam and must not bypass it with chat-history heuristics.
- */
-export function evaluateSessionReuseCompatibility(input: {
-  request: SessionReuseCompatibilityFacts;
-  candidate: SessionReuseCompatibilityFacts;
-  runtime: SessionReuseRuntimeGates;
-}): SessionReuseEvaluation {
-  const reasons: string[] = [];
-  const req = input.request;
-  const cand = input.candidate;
-
-  if (norm(req.workspaceId) !== norm(cand.workspaceId)) {
-    reasons.push("workspace_mismatch");
-  }
-  if (norm(req.parentRoleId) !== norm(cand.parentRoleId)) {
-    reasons.push("parent_role_mismatch");
-  }
-  if (norm(req.agentId) !== norm(cand.agentId)) {
-    reasons.push("agent_mismatch");
-  }
-  if (norm(req.purpose) !== norm(cand.purpose)) {
-    reasons.push("purpose_mismatch");
-  }
-  if (norm(req.skillsDigest) !== norm(cand.skillsDigest)) {
-    reasons.push("skills_mismatch");
-  }
-  if (norm(req.profileId) !== norm(cand.profileId)) {
-    reasons.push("profile_mismatch");
-  }
-  if (norm(req.adapterId) !== norm(cand.adapterId)) {
-    reasons.push("adapter_mismatch");
-  }
-  if (norm(req.contextGeneration) !== norm(cand.contextGeneration)) {
-    reasons.push("context_generation_mismatch");
-  }
-  if (!isContextGenerationId(req.contextGeneration)) {
-    reasons.push("request_context_generation_invalid");
-  }
-  if (!isContextGenerationId(cand.contextGeneration)) {
-    reasons.push("candidate_context_generation_invalid");
-  }
-  // Lane/worktree must match when either side declares one (acceptance: same lane).
-  // Durable Role Tasks share tent-role/<role> across Tasks → cross-Task Session reuse.
-  // agentProfile Tasks use tent-task/<taskId> → different Tasks fail closed to fresh.
-  const reqWt = norm(req.worktree);
-  const candWt = norm(cand.worktree);
-  if (reqWt || candWt) {
-    if (!samePathish(reqWt, candWt)) reasons.push("worktree_mismatch");
-  }
-
-  if (!input.runtime.previousTurnSettled) reasons.push("previous_turn_not_settled");
-  if (!input.runtime.noPendingInput) reasons.push("pending_input");
-  if (!input.runtime.noPendingDelivery) reasons.push("pending_delivery");
-  if (!input.runtime.exclusiveLease) reasons.push("lease_not_exclusive");
-
-  return {
-    allowed: reasons.length === 0,
-    reasons,
-    request: req,
-    candidate: cand,
-  };
 }
 
 /**
@@ -1029,11 +904,11 @@ export function skillSetCompatibilityDigest(
 }
 
 /**
- * Profile/adapter compatibility string (ids + optional non-secret flags).
- * For full launch identity prefer {@link profileLaunchCompatibilityDigest}.
+ * Route/adapter compatibility string (ids + optional non-secret flags).
+ * For full launch identity prefer {@link routeLaunchCompatibilityDigest}.
  */
-export function profileAdapterCompatibilityDigest(input: {
-  profileId: string;
+export function routeAdapterCompatibilityDigest(input: {
+  routeId: string;
   adapterId: string;
   /** Optional non-secret capability flags. */
   capabilityFlags?: readonly string[];
@@ -1046,7 +921,7 @@ export function profileAdapterCompatibilityDigest(input: {
     .sort((a, b) => a.localeCompare(b));
   return sha256Hex(
     canonicalJson({
-      profileId: input.profileId.trim(),
+      routeId: input.routeId.trim(),
       adapterId: input.adapterId.trim(),
       flags,
       launchDigest: input.launchDigest?.trim() || "",
@@ -1074,24 +949,24 @@ export function canonicalStringMap(
 }
 
 /**
- * Non-secret profile/launch compatibility snapshot for same-profileId in-place edits.
+ * Non-secret route/launch compatibility snapshot for same-routeId in-place edits.
  *
  * Hashes the exact canonical launch configuration that can change provider/MCP/Skill
  * context — never resolved secret values:
  * - ACP: executable, model, envKey, credentialRef, baseUrlEnvKey, baseUrl,
  *   permissionPolicy, promptTimeoutMs, permissionTimeoutMs
- * - generic: command, args, profile env *key names* only
+ * - generic: command, args, route env *key names* only
  * - enabled Skills: name + path identity
  * - enabled MCP: name, transport, command, args, url, and every env/header
  *   process-key name or credentialRef id (mapping keys *and* values)
  */
-export function profileLaunchCompatibilityDigest(input: {
-  profileId: string;
+export function routeLaunchCompatibilityDigest(input: {
+  routeId: string;
   adapterId: string;
   command?: string;
   args?: readonly string[];
   /**
-   * Profile process env: only *key names* are hashed (values may be non-secret
+   * Route process env: only *key names* are hashed (values may be non-secret
    * but are still omitted so secret-shaped values never enter the digest).
    */
   envKeyNames?: readonly string[];
@@ -1167,7 +1042,7 @@ export function profileLaunchCompatibilityDigest(input: {
   const acp = input.acp;
   return sha256Hex(
     canonicalJson({
-      profileId: input.profileId.trim(),
+      routeId: input.routeId.trim(),
       adapterId: input.adapterId.trim(),
       command: input.command?.trim() || "",
       args,
@@ -1200,55 +1075,6 @@ export function profileLaunchCompatibilityDigest(input: {
       flags,
     })
   );
-}
-
-/**
- * Project SessionRecord compatibility fields into the pure reuse gate request shape.
- * Missing optional fields normalize to empty strings (fail closed on mismatch).
- */
-export function sessionRecordToReuseCompatibilityFacts(
-  record: {
-    workspace?: string;
-    parentRoleId?: string;
-    agentId?: string;
-    roleName?: string;
-    purpose?: string;
-    skillsDigest?: string;
-    profileId: string;
-    adapterId: string;
-    contextGeneration?: string;
-    runtimeWorkspace?: { cwd?: string };
-    workspaceLane?: { worktree?: string };
-  }
-): SessionReuseCompatibilityFacts {
-  return {
-    workspaceId: record.workspace?.trim() || "",
-    parentRoleId: record.parentRoleId?.trim() || "",
-    agentId: (record.agentId || record.roleName || "").trim(),
-    purpose: record.purpose?.trim() || "",
-    skillsDigest: record.skillsDigest?.trim() || "",
-    profileId: record.profileId.trim(),
-    adapterId: record.adapterId.trim(),
-    contextGeneration: record.contextGeneration?.trim() || "",
-    worktree:
-      record.workspaceLane?.worktree?.trim() ||
-      record.runtimeWorkspace?.cwd?.trim() ||
-      undefined,
-  };
-}
-
-/**
- * Default managed purpose/subKey when none is declared on the Task.
- * Empty string keeps purpose optional in the gate (both sides must match).
- */
-export function managedSessionPurpose(input?: {
-  purpose?: string | null;
-  subKey?: string | null;
-}): string {
-  const purpose = input?.purpose?.trim() || "";
-  const subKey = input?.subKey?.trim() || "";
-  if (purpose && subKey) return `${purpose}:${subKey}`;
-  return purpose || subKey || "";
 }
 
 // ---------------------------------------------------------------------------

@@ -174,14 +174,16 @@ test("plugin pending dispatch: only queued Tasks remain pending", () => {
   const tasks: TaskEnvelope[] = [
     {
       path: "temp/executor/tasks/task-20260703T08000-cx-one.md",
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       contextCard: fixtureCard(["cx-one"]),
       manifest: "temp/executor/manifest.yml",
       state: "queued",
     },
     {
       path: "temp/executor/tasks/task-20260703T08100-cx-one.md",
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       // "root" is not a Node ref; fixtureCard drops it (workspace context separate).
       contextCard: fixtureCard(["cx-one", "cx-two", "root"]),
       manifest: "temp/executor/manifest.yml",
@@ -189,21 +191,24 @@ test("plugin pending dispatch: only queued Tasks remain pending", () => {
     },
     {
       path: "temp/planner/tasks/task-20260703T08200-cx-three.md",
-      role: "planner",
+      assigneeKind: "role",
+      assigneeId: "planner",
       contextCard: fixtureCard(["cx-three"]),
       manifest: "temp/planner/manifest.yml",
       state: "queued",
     },
     {
       path: "temp/zeta/tasks/task-20260703T07000-cx-four.md",
-      role: "zeta",
+      assigneeKind: "role",
+      assigneeId: "zeta",
       contextCard: fixtureCard(["cx-four"]),
       manifest: "temp/zeta/manifest.yml",
       state: "queued",
     },
     {
       path: "temp/alpha/tasks/task-20260703T09000-cx-four.md",
-      role: "alpha",
+      assigneeKind: "role",
+      assigneeId: "alpha",
       contextCard: fixtureCard(["cx-four"]),
       manifest: "temp/alpha/manifest.yml",
       state: "queued",

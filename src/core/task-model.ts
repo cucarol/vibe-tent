@@ -26,9 +26,8 @@ export type DeliveryPolicy = "review" | "bypass" | "agent-decide";
 export const DEFAULT_DELIVERY_POLICY: DeliveryPolicy = "review";
 
 export type DeliverDecision = "integrate" | "request-review";
-export type WaitReason = "user-input" | "a2a-approval" | "review" | "external";
-export type AssigneeKind = "role" | "agentProfile";
-export type A2APolicy = "allow" | "ask" | "deny";
+export type WaitReason = "user-input" | "review" | "external";
+export type AssigneeKind = "role" | "route";
 
 /**
  * Explicit Task execution terminal outcome (V0.2).
@@ -36,7 +35,7 @@ export type A2APolicy = "allow" | "ask" | "deny";
  */
 export type TaskOutcome = "delivered" | "blocked" | "needs-input";
 
-/** Parent / reviewer actor on a Task (V0.2 explicit wire; replaces asSub+dispatchedBy inference). */
+/** Parent / reviewer actor on a Task. */
 export type TaskActorKind = "user" | "role";
 export type TaskActorRef = {
   kind: TaskActorKind;
@@ -56,7 +55,6 @@ export type TransitionErrorCode =
   | "INVALID_ACTOR"
   | "OUTCOME_REQUIRED"
   | "OUTCOME_NOT_DELIVERED"
-  | "A2A_DENIED"
   | "NO_ACTIVE_DELIVERY"
   | "TASK_NOT_ACTIVE"
   | "DELIVERY_NOT_READY"
@@ -88,7 +86,7 @@ export function isTaskActorKind(value: unknown): value is TaskActorKind {
 
 /**
  * Fail-loud parse of parentActor / reviewer wire objects.
- * Accepts `{ kind, id }` only — no dual-read of legacy dispatchedBy here.
+ * Accepts `{ kind, id }` only.
  */
 export function parseTaskActorRef(
   value: unknown,
@@ -218,7 +216,8 @@ export function mayElevateDeliveryPolicy(input: {
  * Parse explicit outcome from a managed final assistant report.
  * Accepts a leading `outcome: delivered|blocked|needs-input` line, optionally
  * inside a leading `---` / `---` fence. Returns remainder as report body.
- * Missing/invalid outcome → null (caller must not publish ready Delivery).
+ * Missing/invalid outcome → null; Service preserves any non-empty natural report
+ * and defaults it to delivered after the normal publication gates.
  */
 export function parseTaskOutcomeReport(text: string): {
   outcome: TaskOutcome;
@@ -464,7 +463,7 @@ export function assertNotSelfAccept(actor: string, submitterRole: string): void 
  * - Soft policy only — not cryptographic auth on the shared service token.
  *
  * Callers pass the explicit envelope `reviewer` (after migration). This function
- * never reads `asSub` or legacy `dispatchedBy`.
+ * never infers responsibility from the Git-lane `asSub` flag.
  */
 export function assertReviewAuthority(input: {
   actor: string;
@@ -508,18 +507,4 @@ export function assertReviewAuthority(input: {
     "REVIEW_FORBIDDEN",
     `task.${action} requires actor equal to reviewer role (${reviewer.id}); got ${actor}.`
   );
-}
-
-/** A2A hard gate pure evaluation (task-api §4). User is root authority. */
-export function evaluateA2A(input: {
-  callerKind: "user" | "role";
-  policy?: A2APolicy;
-  profileAllowed?: boolean;
-}): "allow" | "ask" | "deny" {
-  if (input.callerKind === "user") return "allow";
-  const policy = input.policy ?? "deny";
-  if (policy === "deny") return "deny";
-  if (policy === "ask") return "ask";
-  if (input.profileAllowed === false) return "deny";
-  return "allow";
 }

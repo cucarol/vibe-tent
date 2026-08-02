@@ -23,7 +23,7 @@ import {
   type OutputBindSnapshot,
 } from "./output.js";
 import type { OpsEnv } from "./ops-context.js";
-import { loadTent, type LoadedTent } from "./tree.js";
+import { join, loadTent, type LoadedTent } from "./tree.js";
 import type { Node } from "./types.js";
 import {
   ackTaskEnvelope,
@@ -31,18 +31,15 @@ import {
   loadTaskEnvelopes,
   patchTaskEnvelope,
   primaryNodeId,
-  taskAssigneeKind,
   type TaskEnvelope,
 } from "./task.js";
-import { agentProfileDeliveriesDir } from "./paths.js";
+import { routeDeliveriesDir, TEMP_DIR } from "./paths.js";
 import {
   assertReviewAuthority,
   assertTransition,
   DEFAULT_DELIVERY_POLICY,
-  evaluateA2A,
   resolveDeliverRouting,
   TaskLifecycleError,
-  type A2APolicy,
   type ArtifactRef,
   type DeliverDecision,
   type DeliveryCheck,
@@ -108,12 +105,6 @@ export interface TaskRejectOptions {
   note?: string;
   /** Default true — rework path delivered → running. */
   resume?: boolean;
-}
-
-export interface TaskStartSessionGateInput {
-  callerKind: "user" | "role";
-  policy?: A2APolicy;
-  profileAllowed?: boolean;
 }
 
 export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClaimOptions = {}): Promise<TaskEnvelope> {
@@ -265,7 +256,6 @@ export async function prepareTaskDeliver(
     const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
       taskId: task.id || taskPath,
       sourceNodeId: nodeId,
-      role: task.role,
       summary: options.summary,
       commits: options.commits,
       targetHead: options.targetHead,
@@ -315,7 +305,6 @@ export async function finalizeTaskDeliverAuto(
     const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
       taskId: task.id || taskPath,
       sourceNodeId: nodeId,
-      role: task.role,
       summary: options.summary,
       commits: options.commits,
       targetHead: options.targetHead,
@@ -379,7 +368,7 @@ export async function prepareTaskAccept(
     const delivery = await requireActiveReadyDelivery(env.fs, task);
     assertReviewAuthority({
       actor: options.actor,
-      submitterRole: delivery.role,
+      submitterRole: task.assigneeId,
       reviewer: task.reviewer,
       action: "accept",
     });
@@ -419,7 +408,7 @@ export async function finalizeTaskAccept(
     }
     assertReviewAuthority({
       actor: options.actor,
-      submitterRole: delivery.role,
+      submitterRole: task.assigneeId,
       reviewer: task.reviewer,
       action: "accept",
     });
@@ -560,7 +549,7 @@ export async function taskReject(
     // Exact Task.reviewer only (no user bypass on Role-reviewed); never self.
     assertReviewAuthority({
       actor: options.actor,
-      submitterRole: delivery.role,
+      submitterRole: task.assigneeId,
       reviewer: task.reviewer,
       action: "reject",
     });
@@ -667,36 +656,17 @@ export async function taskCancel(env: OpsEnv, taskPath: string): Promise<void> {
   });
 }
 
-/** Pure A2A gate used by service before startSession (B8c hardens storage). */
-export function gateStartSession(input: TaskStartSessionGateInput): "allow" | "ask" | "deny" {
-  return evaluateA2A(input);
-}
-
-export function assertA2AAllow(input: TaskStartSessionGateInput): void {
-  const decision = evaluateA2A(input);
-  if (decision === "deny") {
-    throw new TaskLifecycleError("A2A_DENIED", "A2A policy denies starting a new runtime session.");
-  }
-  if (decision === "ask") {
-    throw new TaskLifecycleError(
-      "A2A_DENIED",
-      "A2A policy requires user approval before starting a new runtime session (ask)."
-    );
-  }
-}
-
 /** Find active operational task for a node (envelope oracle; not frontmatter owner). */
 export async function findActiveTaskForNode(fs: FsAdapter, nodeId: string): Promise<TaskEnvelope | undefined> {
   const tasks = await loadTaskEnvelopes(fs);
   return listDirectActiveTasksForNode(nodeId, tasks)[0];
 }
 
-/** Delivery storage dir for a task (role lane or agent-profiles namespace). */
-function deliveryDirForTask(task: TaskEnvelope): string | undefined {
-  if (taskAssigneeKind(task) === "agentProfile") {
-    return agentProfileDeliveriesDir(task.role);
-  }
-  return undefined;
+/** Delivery storage dir is derived from immutable Task assignee facts. */
+function deliveryDirForTask(task: TaskEnvelope): string {
+  return task.assigneeKind === "route"
+    ? routeDeliveriesDir(task.assigneeId)
+    : join(TEMP_DIR, task.assigneeId, "deliveries");
 }
 
 // ---- internals ----

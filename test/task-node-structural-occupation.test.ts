@@ -33,7 +33,8 @@ async function writeTask(
   const taskPath = await writeTaskEnvelope(fsAdapter, {
     now: () => "2026-08-01T00:00:00.000Z",
   }, {
-    role: `role-${id}`,
+    assigneeKind: "role",
+    assigneeId: `role-${id}`,
     nodeRefs: nodeIds.map((nodeId) => ({ id: nodeId, path: "prompt/node" })),
     manifestPath: `temp/role-${id}/manifest.yml`,
     userPrompt: "hold this Node",
@@ -142,7 +143,8 @@ test("structural mutation fails loud when canonical Task inventory is unreadable
       "---",
       "type: task",
       "id: tk-struct-no-card",
-      "role: executor",
+      "assigneeKind: role",
+      "assigneeId: executor",
       "parentActor: { kind: user, id: user }",
       "reviewer: { kind: user, id: user }",
       "state: running",

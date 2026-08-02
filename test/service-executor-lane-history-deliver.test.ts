@@ -11,7 +11,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
-import { ensureRoleWorkspace } from "../src/core/workspace.js";
+import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import {
   invokeManagedAutoDeliverForTests,
@@ -29,22 +29,6 @@ async function makeWorkspace(name = "lane-hist"): Promise<string> {
     name,
     nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
-  await fsa.writeFile(
-    ".tent/roles.json",
-    JSON.stringify(
-      {
-        roles: [
-          {
-            name: "executor",
-            prompt: "do work",
-            allowedProfiles: ["fake-default"],
-          },
-        ],
-      },
-      null,
-      2
-    ) + "\n"
-  );
   return workspace;
 }
 
@@ -62,7 +46,18 @@ async function withService<T>(
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-lane-hist-svc-"));
-  const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+  const svc = await startLocalTentService({
+    dataDir,
+    writeEndpoint: true,
+    routes: [
+      {
+        routeId: "fake-default",
+        provider: "fake",
+        adapterId: FAKE_ADAPTER_ID,
+        fake: { waitForSignal: true },
+      },
+    ],
+  });
   try {
     return await fn(svc);
   } finally {
@@ -116,7 +111,8 @@ async function runningTaskWithBase(
     reviewer: { kind: "user", id: "user" },
     workspaceId,
     nodeIds: [nodeId],
-    role: "executor",
+    assigneeKind: "route",
+    assigneeId: "fake-default",
     prompt: "executor lane history fixture",
     deliveryPolicy: "review",
   });
@@ -126,7 +122,6 @@ async function runningTaskWithBase(
   const started = await rpc(svc, "task.startSession", {
     workspaceId,
     taskPath,
-    profileId: "fake-default",
     callerKind: "user",
   });
   assert.ok(!started.error, JSON.stringify(started.error));

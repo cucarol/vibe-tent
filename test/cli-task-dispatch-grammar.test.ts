@@ -30,15 +30,14 @@ function capturingDispatchClient() {
     }),
     taskDispatch: async (_workspaceId: string, args: Record<string, unknown>) => {
       calls.push({ ...args });
-      const isAgent =
-        args.assigneeKind === "agentProfile" || Boolean(args.agentId) || args.startSession === true;
+      const isRoute = args.assigneeKind === "route";
       return {
-        taskPath: isAgent
-          ? "temp/agent-profiles/capture/tasks/task-capture.md"
-          : `temp/${String(args.role ?? "role")}/tasks/task-capture.md`,
+        taskPath: isRoute
+          ? `temp/routes/${String(args.assigneeId)}/tasks/task-capture.md`
+          : `temp/${String(args.assigneeId)}/tasks/task-capture.md`,
         state: args.startSession === true ? "running" : "queued",
-        assigneeKind: isAgent ? "agentProfile" : "role",
-        assignee: isAgent ? args.agentId ?? args.profileId : args.role,
+        assigneeKind: args.assigneeKind,
+        assigneeId: args.assigneeId,
         parentActor: args.parentActor,
         reviewer: args.reviewer,
         session:
@@ -47,7 +46,7 @@ function capturingDispatchClient() {
                 session: {
                   sessionId: "ss-capture",
                   state: "live",
-                  profileId: "resolved-local-profile",
+                  routeId: String(args.assigneeId),
                 },
               }
             : undefined,
@@ -132,11 +131,13 @@ test("role target: queued durable handoff; multi --node; no startSession", async
     assert.equal(r.exitCode, 0, r.stderr + r.stdout);
     assert.equal(calls.length, 1);
     const args = calls[0]!;
-    assert.equal(args.role, "executor");
-    assert.equal(args.assigneeKind, undefined);
+    assert.equal(args.assigneeKind, "role");
+    assert.equal(args.assigneeId, "executor");
+    assert.equal(args.role, undefined);
     assert.equal(args.startSession, undefined);
     assert.equal(args.agentId, undefined);
     assert.equal(args.profileId, undefined);
+    assert.equal(args.routeId, undefined);
     assert.deepEqual(args.nodeIds, ["cx-one", "cx-two"]);
     assert.equal(args.nodes, undefined, "must not send retired nodes[] key");
     assert.equal(args.prompt, "role handoff work");
@@ -157,7 +158,7 @@ test("role target: queued durable handoff; multi --node; no startSession", async
   });
 });
 
-test("route target: managed ACP startSession via routeId wire; multi --node", async () => {
+test("route target: managed ACP startSession via canonical assignee wire; multi --node", async () => {
   const cwd = await makeFakeTentCwd();
   const { client, calls } = capturingDispatchClient();
   await withTentRole(undefined, async () => {
@@ -180,10 +181,11 @@ test("route target: managed ACP startSession via routeId wire; multi --node", as
     assert.equal(calls.length, 1);
     const args = calls[0]!;
     assert.equal(args.assigneeKind, "route");
+    assert.equal(args.assigneeId, "route-a");
     assert.equal(args.agentId, undefined);
     assert.equal(args.startSession, true);
     assert.equal(args.role, undefined);
-    assert.equal(args.routeId, "route-a");
+    assert.equal(args.routeId, undefined);
     assert.equal(args.profileId, undefined);
     assert.deepEqual(args.nodeIds, ["cx-alpha", "cx-beta"]);
     assert.equal(args.nodes, undefined, "must not send retired nodes[] key");
@@ -198,7 +200,7 @@ test("route target: managed ACP startSession via routeId wire; multi --node", as
       session?: { session?: { sessionId?: string } };
     };
     assert.equal(parsed.state, "running");
-    assert.equal(parsed.assigneeKind, "agentProfile");
+    assert.equal(parsed.assigneeKind, "route");
     assert.ok(parsed.session?.session?.sessionId || parsed.session);
   });
 });
@@ -234,7 +236,9 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
     assert.equal(args.callerKind, "role");
     assert.equal(args.asSub, true, "Role caller role:* targets parent Role Git lane");
     assert.equal(args.startSession, undefined);
-    assert.equal(args.role, "executor");
+    assert.equal(args.assigneeKind, "role");
+    assert.equal(args.assigneeId, "executor");
+    assert.equal(args.role, undefined);
   });
 
   // Role caller → route:* : equal parent/reviewer, asSub:true, startSession
@@ -264,8 +268,10 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
     assert.equal(args.callerKind, "role");
     assert.equal(args.asSub, true, "Role caller route:* targets parent Role Git lane");
     assert.equal(args.startSession, true);
+    assert.equal(args.assigneeKind, "route");
+    assert.equal(args.assigneeId, "route-a");
     assert.equal(args.agentId, undefined);
-    assert.equal(args.routeId, "route-a");
+    assert.equal(args.routeId, undefined);
   });
 
   // User-direct → route:* : no asSub
@@ -290,8 +296,10 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
     assert.equal(args.callerKind, "user");
     assert.equal(args.asSub, undefined, "user-direct route:* must not set asSub");
     assert.equal(args.startSession, true);
+    assert.equal(args.assigneeKind, "route");
+    assert.equal(args.assigneeId, "route-b");
     assert.equal(args.agentId, undefined);
-    assert.equal(args.routeId, "route-b");
+    assert.equal(args.routeId, undefined);
   });
 
   // User-direct → role:* : no asSub

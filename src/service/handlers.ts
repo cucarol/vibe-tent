@@ -81,18 +81,12 @@ import {
   projectExecutionLaneFromTask,
   shouldInjectStablePrefix,
   TaskContextCardError,
-  type SessionReuseCompatibilityFacts,
   type TaskContextCardV1,
 } from "../core/task-context-card.js";
 import {
   assertDurableContextCardRefsResolved,
-  buildSessionReuseRequestFacts,
   collectStableContextGeneration,
-  evaluateCandidateSessionLeaseGates,
-  evaluateTaskBlockingDelivery,
   appendCallerBootstrapSection,
-  evaluateManagedSessionReuse,
-  readTaskPurpose,
   type StableContextGenerationBundle,
 } from "./session-context-generation.js";
 import { systemRootFromWorkspace, TEMP_DIR } from "../core/paths.js";
@@ -242,7 +236,6 @@ import { contentEtag } from "./etag.js";
 import type { EventBus } from "./events.js";
 import { MutationBus } from "./mutation-bus.js";
 import type { WorkspaceHost } from "./workspace-host.js";
-import type { A2AApprovalStore } from "./a2a-store.js";
 import type { ToolApprovalStore, ToolPendingApproval } from "./tool-approval-store.js";
 import {
   formatUserAskAnswerPrompt,
@@ -285,7 +278,6 @@ import {
   type RelationListResult,
   type RelationMutationResult,
   type RelationRecordWire,
-  type PendingA2AInteraction,
   type PendingDeliveryInteraction,
   type PendingInteractionItem,
   type PendingInteractionListResult,
@@ -299,11 +291,11 @@ import {
   type TypeRegistryEntryProjection,
 } from "./types.js";
 import {
-  projectAgentProfile,
-  projectAgentProfiles,
-} from "./profiles.js";
+  projectSettingsRoute,
+  projectSettingsRoutes,
+} from "./routes.js";
 import { projectProviderCatalog } from "./provider-catalog.js";
-import type { AgentProfileCatalog } from "./profile-catalog.js";
+import type { SettingsRouteCatalog } from "./route-catalog.js";
 import { RpcError, type JsonRpcError } from "./rpc-error.js";
 import {
   installSkills,
@@ -329,7 +321,6 @@ export interface HandlerContext {
   getPid: () => number;
   /** Service-internal runtime (never exposed as client methods). */
   runtime: AgentRuntime;
-  a2a: A2AApprovalStore;
   /** Machine-local ACP tool permission approvals (permissionPolicy=ask). */
   toolApprovals: ToolApprovalStore;
   /** Machine-local A2U business UserAsk rows (not chat; not tool permission). */
@@ -351,8 +342,8 @@ export interface HandlerContext {
    */
   credentials: CredentialStore;
   dataDir: string;
-  /** Machine-local AgentProfile catalog (serial CRUD + runtime sync). */
-  profileCatalog: AgentProfileCatalog;
+  /** Machine-local SettingsRoute catalog (serial CRUD + runtime sync). */
+  routeCatalog: SettingsRouteCatalog;
   /**
    * Package root for bundled skills (tests may inject).
    * Production: resolved once at service start.
@@ -365,13 +356,13 @@ export interface HandlerContext {
   home: string;
   /**
    * Optional integrate hook for tests.
-   * Production path uses real workspace Git via ensureRoleWorkspace + integrateWorkspaceCommits.
-   * Signature keeps role so role lane targetBranch/worktree can be resolved correctly.
+   * Production path uses real workspace Git via the Task's canonical lane contract.
+   * The assignee id is retained only for test hooks and diagnostics.
    */
   integrateCommits?: (
     workspaceRoot: string,
     commits: string[],
-    role: string
+    assigneeId: string
   ) => Promise<void>;
 }
 
@@ -499,16 +490,16 @@ export async function dispatchMethod(
         return registryRoleUpdate(ctx, p);
       case "registry.role.delete":
         return registryRoleDelete(ctx, p);
-      case "profile.list":
-        return profileList(ctx, p);
-      case "profile.get":
-        return profileGet(ctx, p);
-      case "profile.create":
-        return profileCreate(ctx, p);
-      case "profile.update":
-        return profileUpdate(ctx, p);
-      case "profile.delete":
-        return profileDelete(ctx, p);
+      case "route.list":
+        return routeList(ctx, p);
+      case "route.get":
+        return routeGet(ctx, p);
+      case "route.create":
+        return routeCreate(ctx, p);
+      case "route.update":
+        return routeUpdate(ctx, p);
+      case "route.delete":
+        return routeDelete(ctx, p);
       case "provider.catalog":
         return providerCatalogRpc();
       case "credential.list":
@@ -591,10 +582,6 @@ export async function dispatchMethod(
         return roleCheckpointSetRpc(ctx, p);
       case "role.checkpoint.clear":
         return roleCheckpointClearRpc(ctx, p);
-      case "a2a.listPending":
-        return a2aListPending(ctx, p);
-      case "a2a.resolve":
-        return a2aResolve(ctx, p);
       case "toolApproval.listPending":
         return toolApprovalListPending(ctx, p);
       case "toolApproval.get":
@@ -750,7 +737,7 @@ async function applySessionUnavailablePark(
       code: wait.code,
     });
   } else {
-    // waiting with another reason (user-input / a2a-approval / …): overwrite wait.
+    // Waiting with another reason: replace the current wait diagnostic.
     // taskWait only allows running→waiting; MutationBus already serializes this path.
     next = await patchTaskEnvelope(mount.env.fs, taskPath, {
       state: "waiting",
@@ -2327,13 +2314,12 @@ async function registryRoleDelete(ctx: HandlerContext, p: Record<string, unknown
     }
 
     const tasks = await loadTaskEnvelopes(mount.env.fs);
-    // Only durable role tasks block role delete — profile tasks may reuse the same label.
-    // Match operational name (task.role) and future roleId if present on envelope.
+    // Only durable Role tasks block Role deletion.
     const activeTask = tasks.find(
       (t) =>
         taskAssigneeKind(t) === "role" &&
         isActiveTaskState(t.state) &&
-        (t.role === existing.name || (roleId !== "" && t.role === roleId))
+        (t.assigneeId === existing.name || (roleId !== "" && t.assigneeId === roleId))
     );
     if (activeTask) {
       throw new RpcError(
@@ -2413,30 +2399,22 @@ function parseRoleDefinitionParams(
   p: Record<string, unknown>,
   opts: { requireName: boolean; forUpdate?: boolean }
 ): RoleDefinition {
-  for (const banned of [
-    "secret",
-    "secrets",
-    "token",
-    "apiKey",
-    "api_key",
-    "password",
-    "credential",
-    "credentials",
-    "env",
-  ]) {
-    if (banned in p) {
-      throw new RpcError(
-        -32602,
-        `registry.role.* does not accept ${banned}; roles store ids/policy only, never credentials`
-      );
-    }
-  }
-  if ("role" in p && typeof p.role === "object" && p.role !== null) {
-    throw new RpcError(
-      -32602,
-      "registry.role.* does not accept nested role; pass fields at the top level"
-    );
-  }
+  const surface = opts.forUpdate ? "registry.role.update" : "registry.role.create";
+  assertAllowedParams(
+    p,
+    new Set([
+      "workspaceId",
+      "actor",
+      "name",
+      ...(opts.forUpdate ? ["roleId"] : []),
+      "displayName",
+      "prompt",
+      "description",
+      "color",
+      "cli",
+    ]),
+    surface
+  );
 
   const raw: Record<string, unknown> = {};
   if (opts.requireName || typeof p.name === "string") {
@@ -2472,12 +2450,6 @@ function parseRoleDefinitionParams(
     }
     if (typeof p.color === "string") raw.color = p.color;
   }
-  if ("allowedProfiles" in p || "roster" in p || "a2aPolicy" in p) {
-    throw new RpcError(
-      -32602,
-      "registry.role.* does not accept a2aPolicy/roster/allowedProfiles; ACP launch routes are configured in machine Settings"
-    );
-  }
   if ("cli" in p) {
     if (p.cli === null) {
       // Explicit clear is re-attached to the update patch after normalization.
@@ -2505,7 +2477,7 @@ function mapRoleRegistryError(err: unknown, surface: string): RpcError {
   if (err instanceof RpcError) return err;
   const message = err instanceof Error ? err.message : `${surface} failed`;
   if (
-    /already exists|does not exist|Confirmation mismatch|cannot be empty|cli\.|immutable|cannot be renamed|no longer accept|allowedProfiles/i.test(
+    /already exists|does not exist|Confirmation mismatch|cannot be empty|cli\.|immutable|cannot be renamed/i.test(
       message
     )
   ) {
@@ -2518,94 +2490,87 @@ function mapRoleRegistryError(err: unknown, surface: string): RpcError {
 }
 
 /**
- * Machine-local AgentProfile catalog for desktop launch picker / editor.
+ * Machine-local SettingsRoute catalog for desktop launch picker / editor.
  * Safe projection only — no env maps, API keys, tokens, or secret values.
- * Optional includeTest: when true, also return fake/harness profiles (tests/dev).
- * Default product list hides testOnly profiles so fake is not a product default.
  */
-async function profileList(ctx: HandlerContext, p: Record<string, unknown>) {
-  const includeTest = p.includeTest === true;
-  const catalog = ctx.profileCatalog.list();
+async function routeList(ctx: HandlerContext, p: Record<string, unknown>) {
+  void p;
+  const catalog = ctx.routeCatalog.list();
   const existsMap = await credentialExistsLookup(ctx, catalog);
-  // Single source of truth: injected catalog only (no runtime/disk fallback).
-  let profiles = projectAgentProfiles(catalog, { credentialExistsById: existsMap });
-  if (!includeTest) {
-    profiles = profiles.filter((pr) => !pr.testOnly);
-  }
-  return { profiles };
+  return { routes: projectSettingsRoutes(catalog, { credentialExistsById: existsMap }) };
 }
 
-async function profileGet(ctx: HandlerContext, p: Record<string, unknown>) {
-  const id = requireString(p, "id");
-  const profile = ctx.profileCatalog.get(id);
-  if (!profile) {
-    throw new RpcError(-32004, `Profile not found: ${id}`);
+async function routeGet(ctx: HandlerContext, p: Record<string, unknown>) {
+  const routeId = requireString(p, "routeId");
+  const route = ctx.routeCatalog.get(routeId);
+  if (!route) {
+    throw new RpcError(-32004, `Route not found: ${routeId}`);
   }
   return {
-    profile: projectAgentProfile(
-      profile,
-      await profileCredentialExistsOpts(ctx, profile)
+    route: projectSettingsRoute(
+      route,
+      await routeCredentialExistsOpts(ctx, route)
     ),
   };
 }
 
-async function profileCreate(ctx: HandlerContext, p: Record<string, unknown>) {
-  // Single top-level shape: create fields directly on params (no nested profile).
-  if ("profile" in p) {
+async function routeCreate(ctx: HandlerContext, p: Record<string, unknown>) {
+  // Single top-level shape: create fields directly on params (no nested route).
+  if ("route" in p) {
     throw new RpcError(
       -32602,
-      "profile.create does not accept nested profile; pass fields at the top level"
+      "route.create does not accept nested route; pass fields at the top level"
     );
   }
-  const created = await ctx.profileCatalog.create(p);
-  const profile = projectAgentProfile(
+  const created = await ctx.routeCatalog.create(p);
+  const route = projectSettingsRoute(
     created,
-    await profileCredentialExistsOpts(ctx, created)
+    await routeCredentialExistsOpts(ctx, created)
   );
   ctx.events.emit(
-    "profile.changed",
+    "route.changed",
     "",
-    { action: "create", id: created.id, profile },
+    { action: "create", routeId: created.routeId, route },
     "self"
   );
   return {
-    profile,
+    route,
   };
 }
 
-async function profileUpdate(ctx: HandlerContext, p: Record<string, unknown>) {
-  // Single top-level shape: { id, ...patch } (no nested profile).
-  if ("profile" in p) {
+async function routeUpdate(ctx: HandlerContext, p: Record<string, unknown>) {
+  // Single top-level shape: { routeId, ...patch } (no nested route).
+  if ("route" in p) {
     throw new RpcError(
       -32602,
-      "profile.update does not accept nested profile; pass { id, ...patch }"
+      "route.update does not accept nested route; pass { routeId, ...patch }"
     );
   }
-  const id = requireString(p, "id");
-  const { id: _id, ...patch } = p;
-  const updated = await ctx.profileCatalog.update(id, patch);
-  const profile = projectAgentProfile(
+  const routeId = requireString(p, "routeId");
+  const { routeId: _routeId, ...patch } = p;
+  const updated = await ctx.routeCatalog.update(routeId, patch);
+  const route = projectSettingsRoute(
     updated,
-    await profileCredentialExistsOpts(ctx, updated)
+    await routeCredentialExistsOpts(ctx, updated)
   );
   ctx.events.emit(
-    "profile.changed",
+    "route.changed",
     "",
-    { action: "update", id: updated.id, profile },
+    { action: "update", routeId: updated.routeId, route },
     "self"
   );
   return {
-    profile,
+    route,
   };
 }
 
-async function profileDelete(ctx: HandlerContext, p: Record<string, unknown>) {
-  const id = requireString(p, "id");
-  const result = await ctx.profileCatalog.delete(id);
+async function routeDelete(ctx: HandlerContext, p: Record<string, unknown>) {
+  const routeId = requireString(p, "routeId");
+  const result = await ctx.routeCatalog.delete(routeId);
   ctx.events.emit(
-    "profile.changed",
+    "route.changed",
     "",
-    { action: "delete", id: result.deleted },
+    { action: "delete", routeId: result.deleted },
     "self"
   );
   return result;
@@ -2613,12 +2578,11 @@ async function profileDelete(ctx: HandlerContext, p: Record<string, unknown>) {
 
 async function credentialExistsLookup(
   ctx: HandlerContext,
-  profiles: Array<{ acp?: { credentialRef?: string } }>
+  routes: Array<{ credentialRef?: string }>
 ): Promise<Map<string, boolean>> {
   const map = new Map<string, boolean>();
-  for (const p of profiles) {
-    const ref =
-      typeof p.acp?.credentialRef === "string" ? p.acp.credentialRef.trim() : "";
+  for (const route of routes) {
+    const ref = typeof route.credentialRef === "string" ? route.credentialRef.trim() : "";
     if (ref && !map.has(ref)) {
       map.set(ref, await ctx.credentials.has(ref));
     }
@@ -2626,21 +2590,18 @@ async function credentialExistsLookup(
   return map;
 }
 
-async function profileCredentialExistsOpts(
+async function routeCredentialExistsOpts(
   ctx: HandlerContext,
-  profile: { acp?: { credentialRef?: string } }
+  route: { credentialRef?: string }
 ): Promise<{ credentialExists: boolean } | undefined> {
-  const ref =
-    typeof profile.acp?.credentialRef === "string" && profile.acp.credentialRef.trim()
-      ? profile.acp.credentialRef.trim()
-      : undefined;
+  const ref = route.credentialRef?.trim() || undefined;
   if (!ref) return undefined;
   return { credentialExists: await ctx.credentials.has(ref) };
 }
 
 /**
  * Read-only product provider verification catalog (provider.catalog).
- * Machine-global product facts — no workspaceId, no secrets, no profile config.
+ * Machine-global product facts — no workspaceId, no secrets, no route config.
  */
 function providerCatalogRpc(): ProviderCatalogProjection {
   return projectProviderCatalog();
@@ -3127,89 +3088,72 @@ function mapDocsMoveError(err: unknown): RpcError {
 // ---- task.* ----
 
 async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
+  assertAllowedParams(
+    p,
+    new Set([
+      "workspaceId",
+      "nodeIds",
+      "assigneeKind",
+      "assigneeId",
+      "prompt",
+      "parentActor",
+      "reviewer",
+      "asSub",
+      "deliveryPolicy",
+      "startSession",
+      "callerKind",
+    ]),
+    "task.dispatch"
+  );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   // Authoritative public Node selection is nodeIds[] only.
   const dispatchSelection = resolveTaskNodeSelection(p, mount.env.tentName, "task.dispatch");
   const primaryNodeId = dispatchSelection.primaryId;
   const nodeIds = dispatchSelection.nodeIds;
-  for (const retired of ["agentId", "profileId"] as const) {
-    if (p[retired] !== undefined && p[retired] !== null) {
-      throw new RpcError(-32602, `task.dispatch ${retired} is retired; pass routeId`);
-    }
+  const assigneeKindRaw = requireString(p, "assigneeKind");
+  if (assigneeKindRaw !== "role" && assigneeKindRaw !== "route") {
+    throw new RpcError(-32602, `Invalid assigneeKind: ${assigneeKindRaw}`);
   }
-  const assigneeKindRaw = optionalString(p, "assigneeKind");
-  const assigneeKind =
-    assigneeKindRaw === "route" ? "agentProfile" : assigneeKindRaw === "role" || !assigneeKindRaw
-      ? "role"
-      : (() => {
-          throw new RpcError(-32602, `Invalid assigneeKind: ${assigneeKindRaw}`);
-        })();
-  const role = optionalString(p, "role");
-  const routeId = optionalString(p, "routeId");
-  const profileId = routeId;
+  const assigneeKind = assigneeKindRaw;
+  const assigneeId = requireString(p, "assigneeId");
   const prompt = requireString(p, "prompt");
   const asSub = p.asSub === true;
-  // Legacy dispatchedBy is migration-only; refuse permanent new-write support.
-  if ("dispatchedBy" in p && p.dispatchedBy !== undefined && p.dispatchedBy !== null) {
-    throw new RpcError(
-      -32602,
-      "task.dispatch dispatchedBy is retired; pass explicit parentActor and reviewer " +
-        "({ kind: user|role, id }). Legacy envelopes migrate once on workspace.mount."
-    );
-  }
+  // Protocol 3 has one explicit responsibility pair.
   const explicitParentActor = parseOptionalTaskActor(p.parentActor, "parentActor");
   const explicitReviewer = parseOptionalTaskActor(p.reviewer, "reviewer");
   const explicitDeliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
   const startSession = p.startSession === true;
-  if ("a2aPolicyOverride" in p) {
-    throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
-  }
-
-  // New create requires explicit parentActor + reviewer (no dispatchedBy fallback).
+  // New create requires explicit parentActor + reviewer.
   const resolvedActors = resolveDispatchActorsFromRpc({
     parentActor: explicitParentActor,
     reviewer: explicitReviewer,
   });
 
-  if (assigneeKind === "role" && !role) {
-    throw new RpcError(-32602, "task.dispatch with assigneeKind=role requires role");
+  if (assigneeKind === "route" && !ctx.routeCatalog.get(assigneeId)) {
+    throw new RpcError(-32004, `Settings route not found: ${assigneeId}`);
   }
-  if (assigneeKind === "agentProfile" && !profileId) {
+  if (startSession && assigneeKind !== "route") {
     throw new RpcError(
       -32602,
-      "task.dispatch with assigneeKind=route requires routeId"
-    );
-  }
-  if (assigneeKind === "agentProfile" && role) {
-    throw new RpcError(-32602, "task.dispatch route target must not pass role");
-  }
-  if (assigneeKind === "agentProfile" && !ctx.profileCatalog.get(profileId!)) {
-    throw new RpcError(-32004, `Settings route not found: ${profileId}`);
-  }
-  if (startSession && !profileId) {
-    throw new RpcError(
-      -32602,
-      "task.dispatch with startSession requires explicit routeId"
+      "task.dispatch startSession is available only for a Settings route assignee"
     );
   }
   // parentActor is the persisted authority fact. callerKind is a convenience hint,
   // not a second authorization source; derive the combined start path from parentActor.
   const callerKind = resolvedActors.parentActor.kind;
-  const resolvedAgentId: string | undefined = undefined;
-
   // P0-1: role worktree create/reuse + envelope dispatch share the workspace MutationBus
   // critical section so concurrent role worktree add cannot race. Git ops stay inside the
   // bus action (never nested mutations.run).
-  // Peer profile tasks: lane deferred until startSession (tent-task/<taskId>).
-  // Sub profile tasks: allocate taskId + create task lane at dispatch (target = dispatcher).
+  // Peer route tasks: lane deferred until startSession (tent-task/<taskId>).
+  // Sub route tasks: allocate taskId + create task lane at dispatch (target = dispatcher).
   // Role assignee (peer + asSub): ensure durable Role/parent worktrees for validation only;
   // do NOT persist execution workspaceLane/baseCommit/roleBranchBase at queue — first claim
   // captures the real Role tip in the same lifecycle + workspace mutation boundary.
   // When deliveryPolicy is omitted, snapshot current workspace default into the task
   // envelope at dispatch time (settings changes never rewrite existing tasks).
   const result = await ctx.mutations.run(workspaceId, async () => {
-    const assigneeLabel = assigneeKind === "agentProfile" ? profileId! : role!;
+    const assigneeLabel = assigneeId;
     // Keep registry/Git validation in the same workspace mutation section as lane
     // creation and envelope persistence. Otherwise a concurrent role update could
     // invalidate a check made just before entering the bus.
@@ -3234,7 +3178,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
         // Delay entire Role execution lane until first claim (do not freeze Git tip).
         workspaceLane = undefined;
       } else {
-        // Profile sub: allocate taskId before lane creation; peer profile stays deferred.
+        // Route sub: allocate taskId before lane creation; peer route stays deferred.
         preallocatedTaskId = makeTaskId();
         workspaceLane = await ensureTaskWorkspace(
           mount.workspaceRoot,
@@ -3248,7 +3192,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       await ensureRoleWorkspaceIfGit(mount.workspaceRoot, assigneeLabel);
       workspaceLane = undefined;
     }
-    // Peer profile: no lane at dispatch (deferred to startSession).
+    // Peer route: no lane at dispatch (deferred to startSession).
 
     ctx.host.markSelfWrite(workspaceId);
     let deliveryPolicy = explicitDeliveryPolicy;
@@ -3280,141 +3224,20 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       // Workspace default elevated while dispatching a downstream Task Agent → clamp to review.
       deliveryPolicy = "review";
     }
-    // Real stable contextGeneration at dispatch when launch profile is known.
-    // agentProfile: profile/adapter known → compute immediately (fail loud).
-    // Role without profileId: defer generation until startSession chooses the profile
-    // (do not freeze role-name/unknown-adapter placeholders).
-    const purposeParam =
-      typeof p.purpose === "string" && p.purpose.trim() ? p.purpose.trim() : undefined;
-    let dispatchContextGeneration: string | undefined;
-    let dispatchContextFacts:
-      | import("../core/task.js").TaskEnvelopeInput["contextGenerationFacts"]
-      | undefined;
-    if (assigneeKind === "agentProfile") {
-      const dispatchProfileId = profileId!;
-      const dispatchProfile = ctx.profileCatalog.get(dispatchProfileId);
-      if (!dispatchProfile?.adapterId) {
-        throw new RpcError(
-          -32602,
-          `task.dispatch cannot compute contextGeneration: profile ${dispatchProfileId} missing or has no adapterId`,
-          { profileId: dispatchProfileId }
-        );
-      }
-      const parentRoleIdForGen =
-        resolvedActors.parentActor.kind === "role"
-          ? resolvedActors.parentActor.id
-          : undefined;
-      try {
-        const bundle = await collectStableContextGeneration({
-          workspaceRoot: mount.workspaceRoot,
-          workspaceIdentity: workspaceId,
-          packageRoot: ctx.packageRoot,
-          packageVersion: ctx.version,
-          assigneeKind,
-          assigneeLabel,
-          agentId: resolvedAgentId,
-          profileId: dispatchProfileId,
-          adapterId: dispatchProfile.adapterId,
-          parentRoleId: parentRoleIdForGen,
-          purpose: purposeParam,
-          roleFs: mount.env.fs,
-        profile: dispatchProfile,
-        });
-        dispatchContextGeneration = bundle.contextGeneration;
-        dispatchContextFacts = {
-          agentsPointerDigest: bundle.agentsPointerDigest,
-          tentRoleDigest: bundle.tentRoleDigest || undefined,
-          tentRoleVersion: bundle.tentRoleVersion || undefined,
-          tentTaskDigest: bundle.tentTaskDigest || undefined,
-          tentTaskVersion: bundle.tentTaskVersion || undefined,
-          rolePrompt: bundle.rolePrompt || undefined,
-          profileId: bundle.profileId,
-          adapterId: bundle.adapterId,
-          purpose: bundle.purpose || undefined,
-        };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        throw new RpcError(
-          -32000,
-          `task.dispatch contextGeneration collection failed: ${message}`,
-          { code: "CONTEXT_GENERATION_COLLECT_FAILED" }
-        );
-      }
-    } else if (profileId) {
-      // Role dispatch with explicit launch profile: compute real generation now.
-      const dispatchProfile = ctx.profileCatalog.get(profileId);
-      if (!dispatchProfile?.adapterId) {
-        throw new RpcError(
-          -32602,
-          `task.dispatch cannot compute contextGeneration: profile ${profileId} missing or has no adapterId`,
-          { profileId }
-        );
-      }
-      const parentRoleIdForGen =
-        resolvedActors.parentActor.kind === "role"
-          ? resolvedActors.parentActor.id
-          : undefined;
-      try {
-        const bundle = await collectStableContextGeneration({
-          workspaceRoot: mount.workspaceRoot,
-          workspaceIdentity: workspaceId,
-          packageRoot: ctx.packageRoot,
-          packageVersion: ctx.version,
-          assigneeKind,
-          assigneeLabel,
-          agentId: resolvedAgentId,
-          profileId,
-          adapterId: dispatchProfile.adapterId,
-          parentRoleId: parentRoleIdForGen,
-          purpose: purposeParam,
-          roleFs: mount.env.fs,
-        profile: dispatchProfile,
-        });
-        dispatchContextGeneration = bundle.contextGeneration;
-        dispatchContextFacts = {
-          agentsPointerDigest: bundle.agentsPointerDigest,
-          tentRoleDigest: bundle.tentRoleDigest || undefined,
-          tentRoleVersion: bundle.tentRoleVersion || undefined,
-          tentTaskDigest: bundle.tentTaskDigest || undefined,
-          tentTaskVersion: bundle.tentTaskVersion || undefined,
-          rolePrompt: bundle.rolePrompt || undefined,
-          profileId: bundle.profileId,
-          adapterId: bundle.adapterId,
-          purpose: bundle.purpose || undefined,
-        };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        throw new RpcError(
-          -32000,
-          `task.dispatch contextGeneration collection failed: ${message}`,
-          { code: "CONTEXT_GENERATION_COLLECT_FAILED" }
-        );
-      }
-    }
-    // else: Role without profile — generation finalized at startSession.
-
-    const dispatched = await dispatch(mount.env, primaryNodeId, assigneeKind === "role" ? role : undefined, {
+    const dispatched = await dispatch(mount.env, primaryNodeId, {
       userPrompt: prompt,
       parentActor: resolvedActors.parentActor,
       reviewer: resolvedActors.reviewer,
       asSub,
       deliveryPolicy,
-      // Only profile-asSub (and similar) may bind a Git lane at dispatch.
+      // Only route-asSub (and similar) may bind a Git lane at dispatch.
       // Role assignee never freezes workspaceLane/baseCommit here.
       workspace: workspaceLane,
       assigneeKind,
-      profileId: assigneeKind === "agentProfile" ? profileId : undefined,
-      // Persist logical agentId for agentId dispatch (Role-agent and user-direct).
-      // User-direct profileId one-shot without agentId leaves this undefined.
-      agentId: resolvedAgentId,
+      assigneeId,
       // Authoritative ordered Node refs (transient). Core writes Context Card only.
       nodeIds,
       ...(preallocatedTaskId ? { taskId: preallocatedTaskId } : {}),
-      ...(purposeParam ? { purpose: purposeParam } : {}),
-      ...(dispatchContextGeneration
-        ? { contextGeneration: dispatchContextGeneration }
-        : {}),
-      ...(dispatchContextFacts ? { contextGenerationFacts: dispatchContextFacts } : {}),
     });
     ctx.events.emit(
       "task.state",
@@ -3422,7 +3245,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       {
         path: dispatched.taskPath,
         state: "queued",
-        role: dispatched.assignee,
+        assigneeId: dispatched.assigneeId,
         assigneeKind: dispatched.assigneeKind,
         nodeIds,
         reason: "task.dispatch",
@@ -3442,7 +3265,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     // Combined convenience only: if startSession fails before any Session bind while the
     // Task is still running without sessionId, release via the existing interrupt path
     // (preserve audit; no deletion of non-queued Tasks). Separate claim/startSession APIs
-    // are unchanged. Do not overwrite honest waiting/failed from A2A ask or provider launch.
+    // are unchanged. Do not overwrite honest waiting/failed from provider launch.
     // Role first claim also captures execution lane + baseCommit in that same claim boundary.
     await taskClaimRpc(ctx, {
       workspaceId,
@@ -3452,7 +3275,6 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       session = await taskStartSessionRpc(ctx, {
         workspaceId,
         taskPath: dispatched.taskPath,
-        profileId,
         callerKind,
       });
     } catch (err) {
@@ -3472,13 +3294,13 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     initPath: dispatched.initPath,
     relayPrompt: dispatched.relayPrompt,
     assigneeKind: dispatched.assigneeKind,
-    assignee: dispatched.assignee,
+    assigneeId: dispatched.assigneeId,
     asSub: taskAsSub(taskAfter),
     parentActor: taskAfter.parentActor,
     reviewer: taskAfter.reviewer,
     state: taskAfter.state,
     session,
-    // Prefer envelope projection (Role baseCommit only after claim; profile-asSub may
+    // Prefer envelope projection (Role baseCommit only after claim; route-asSub may
     // still carry dispatch-time lane). Fall back to in-memory lane only when present.
     workspaceLane: projectTask(taskAfter).workspaceLane,
   };
@@ -3488,8 +3310,8 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
  * Combined task.dispatch(startSession=true) compensation only.
  * When startSession rejects before binding a Session and the Task is still
  * running without sessionId, transition through task.interrupt (preserve Task
- * audit; no deletion of claimed Tasks). Leaves waiting(a2a-approval) and failed
- * (provider launch/recovery) alone.
+ * audit; no deletion of claimed Tasks). Leaves waiting and failed provider
+ * launch/recovery states alone.
  *
  * Atomicity: running/no-session precondition and interrupt share one workspace
  * MutationBus section so a concurrent Session bind cannot be interrupted or stopped.
@@ -3545,7 +3367,7 @@ async function assertSubDispatchPreconditions(
   input: {
     workspaceRoot: string;
     parentActor: TaskActorRef;
-    assigneeKind: "role" | "agentProfile";
+    assigneeKind: "role" | "route";
     assigneeLabel: string;
   }
 ): Promise<void> {
@@ -3652,7 +3474,6 @@ function resolveTaskNodeSelection(
  * Requires explicit parentActor. Reviewer may be omitted (derived equal to
  * parent); when present must match exactly — no Role A → reviewer Role B.
  * Equality is enforced only via resolveParentReviewerPair (same as Core write/load).
- * Legacy dispatchedBy is rejected at the RPC boundary (migration/load only).
  */
 function resolveDispatchActorsFromRpc(input: {
   parentActor?: TaskActorRef;
@@ -3684,27 +3505,20 @@ function resolveDispatchActorsFromRpc(input: {
 }
 
 async function taskClaimDirectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  assertAllowedParams(
+    p,
+    new Set([
+      "workspaceId",
+      "role",
+      "nodeIds",
+      "prompt",
+      "sourceTaskPath",
+      "sourceSessionId",
+    ]),
+    "task.claimDirect"
+  );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  for (const retired of [
-    "parentActor",
-    "reviewer",
-    "asSub",
-    "target",
-    "assigneeKind",
-    "routeId",
-    "startSession",
-    "deliveryPolicy",
-    "callerKind",
-    "dispatchedBy",
-  ] as const) {
-    if (p[retired] !== undefined && p[retired] !== null) {
-      throw new RpcError(
-        -32602,
-        `task.claimDirect does not accept ${retired}; responsibility and execution ownership are derived by Service`
-      );
-    }
-  }
   const roleRef = requireString(p, "role");
   const prompt = requireString(p, "prompt");
   const sourceTaskPath = optionalString(p, "sourceTaskPath");
@@ -3751,12 +3565,13 @@ async function taskClaimDirectRpc(ctx: HandlerContext, p: Record<string, unknown
       | Awaited<ReturnType<typeof dispatch>>
       | undefined;
     try {
-      created = await dispatch(mount.env, selection.primaryId, role, {
+      created = await dispatch(mount.env, selection.primaryId, {
         userPrompt: prompt,
         parentActor: actors.parentActor,
         reviewer: actors.reviewer,
         deliveryPolicy,
         assigneeKind: "role",
+        assigneeId: role,
         nodeIds: selection.nodeIds,
       });
       const pre = await loadTaskEnvelope(mount.env.fs, created.taskPath);
@@ -3789,7 +3604,7 @@ async function taskClaimDirectRpc(ctx: HandlerContext, p: Record<string, unknown
         initPath: created.initPath,
         task: projectTask(task),
         state: task.state,
-        role: task.role,
+        role: task.assigneeId,
         referencedNodeIds: nodeIds,
       };
     } catch (err) {
@@ -3856,8 +3671,8 @@ async function resolveDirectClaimResponsibility(
     }
     if (
       session.workspace !== input.workspaceId ||
-      session.assigneeKind === "agentProfile" ||
       session.roleName !== input.role ||
+      session.state !== "external" ||
       !SessionRegistry.isOpen(session.state)
     ) {
       throw new RpcError(
@@ -3917,7 +3732,7 @@ async function resolveDirectClaimResponsibility(
   }
 
   const sameRoleTask =
-    sourceTask.role === input.role && taskAssigneeKind(sourceTask) === "role";
+    sourceTask.assigneeId === input.role && taskAssigneeKind(sourceTask) === "role";
   const activeClaim = sourceTask.state !== "queued" && isActiveTaskState(sourceTask.state);
   if (explicitSourceTask && (!sameRoleTask || !activeClaim)) {
     throw new RpcError(
@@ -3927,7 +3742,7 @@ async function resolveDirectClaimResponsibility(
         code: "DIRECT_CLAIM_SOURCE_TASK_MISMATCH",
         taskPath: sourceTask.path,
         role: input.role,
-        taskRole: sourceTask.role,
+        taskAssignee: `${sourceTask.assigneeKind}:${sourceTask.assigneeId}`,
         state: sourceTask.state,
       }
     );
@@ -3940,7 +3755,7 @@ async function resolveDirectClaimResponsibility(
         code: "DIRECT_CLAIM_SOURCE_TASK_MISMATCH",
         taskPath: sourceTask.path,
         role: input.role,
-        taskRole: sourceTask.role,
+        taskAssignee: `${sourceTask.assigneeKind}:${sourceTask.assigneeId}`,
       }
     );
   }
@@ -4021,7 +3836,7 @@ async function taskClaimRpc(ctx: HandlerContext, p: Record<string, unknown>) {
         taskPath,
         task: projectTask(task),
         state: task.state,
-        role: task.role,
+        role: task.assigneeKind === "role" ? task.assigneeId : undefined,
         referencedNodeIds: nodeIds,
         sessionId: task.sessionId,
       };
@@ -4286,7 +4101,7 @@ function parseBackfillActor(raw: unknown): TaskActorRef {
 
 /**
  * Prepare Role-assignee claim write payload without mutating the envelope.
- * Returns undefined when no lane/base fields need to be written (non-Git / profile /
+ * Returns undefined when no lane/base fields need to be written (non-Git / route /
  * already complete). Throws before Core claim so the Task stays queued on failure.
  * Never writes intermediate lane-only patches.
  */
@@ -4328,13 +4143,13 @@ async function prepareRoleClaimWrite(
       const recordedTarget = task.targetBranch?.trim();
       if (recordedTarget && recordedTarget !== targetBranchHint) {
         throw new Error(
-          `Task envelope targetBranch mismatch for role ${task.role}: ` +
+          `Task envelope targetBranch mismatch for role ${task.assigneeId}: ` +
             `envelope=${recordedTarget} expected=${targetBranchHint}`
         );
       }
     }
     // Ensure durable Role worktree/branch exists; do not patch envelope yet.
-    const ensured = await ensureRoleWorkspace(mount.workspaceRoot, task.role);
+    const ensured = await ensureRoleWorkspace(mount.workspaceRoot, task.assigneeId);
     // Build a transient view for integration contract validation (no disk write).
     const view: TaskEnvelope = {
       ...task,
@@ -4497,7 +4312,7 @@ async function taskAskUserRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       taskPath,
       taskId: current.id || undefined,
       sessionId: current.sessionId || undefined,
-      role: current.role || undefined,
+      role: taskParentRoleId(current),
       question,
       ...(choices ? { choices } : {}),
       status: "pending",
@@ -4572,7 +4387,7 @@ function parseUserAskChoices(raw: unknown): UserAskChoice[] | undefined {
 
 /**
  * U2A: user-only one-shot text and/or contextRefs to a running/waiting task.
- * Does not answer pending UserAsk; does not write chat history or mutate profiles.
+ * Does not answer pending UserAsk; does not write chat history or mutate routes.
  * RPC returns after durable accept (status=pending, accepted=true) — never waits
  * for the provider Agent turn. Managed inject runs on a per-task FIFO background
  * worker (status processing → delivered|failed). External: poll taskInput.* .
@@ -4640,7 +4455,7 @@ async function taskSendInputRpc(ctx: HandlerContext, p: Record<string, unknown>)
       taskPath,
       taskId: current.id || undefined,
       sessionId: current.sessionId || undefined,
-      role: current.role || undefined,
+      role: taskParentRoleId(current),
       kind: "user-input",
       ...(text ? { text } : {}),
       ...(contextRefs.length > 0 ? { contextRefs } : {}),
@@ -5117,28 +4932,7 @@ async function continueManagedAfterTaskInput(
   item: TaskInputRecord
 ): Promise<{ continued: boolean; error?: string }> {
   if (!item.sessionId) return { continued: false };
-  const basePrompt = formatTaskInputPrompt(item);
-  // Independent recovery Sessions (contextRestored=false): rebuild orientation
-  // from durable task/session/delivery facts at inject time so restart/retry
-  // does not depend on in-memory enqueue options. Review note stays only in
-  // ## Review Feedback (basePrompt) — never duplicated in recovery text.
-  // When the target Session row says contextRestored=false, orientation is
-  // mandatory (empty process bootstrap). Rebuild failures fail this inject so
-  // TaskInput stays failed/retryable — never send bare ## Review Feedback alone.
-  let prompt = basePrompt;
-  try {
-    const recovery = await rebuildRejectResumeRecoveryOrientation(ctx, item);
-    if (recovery && recovery.length > 0) {
-      prompt = `${recovery}\n\n${basePrompt}`;
-    }
-  } catch (rebuildErr) {
-    const message =
-      rebuildErr instanceof Error ? rebuildErr.message : String(rebuildErr);
-    return {
-      continued: false,
-      error: message,
-    };
-  }
+  const prompt = formatTaskInputPrompt(item);
   try {
     try {
       await ctx.runtime.sendFollowUpPrompt(item.sessionId, prompt);
@@ -5330,19 +5124,19 @@ async function resolveTaskWorktreeForDirtyCheck(
 
   // Lane recorded without worktree path: recreate via the same ensure* helpers.
   const mountedRoot = nodePath.resolve(workspaceRoot);
-  const isProfile = taskAssigneeKind(task) === "agentProfile";
+  const isRoute = taskAssigneeKind(task) === "route";
   let targetBranch = task.targetBranch?.trim();
-  if (isProfile && taskAsSub(task)) {
+  if (isRoute && taskAsSub(task)) {
     const parentRole = taskParentRoleId(task);
     if (parentRole) {
       targetBranch = (await ensureRoleWorkspace(mountedRoot, parentRole)).branch;
     }
   }
-  const lane = isProfile
+  const lane = isRoute
     ? await ensureTaskWorkspace(mountedRoot, task.id || task.path, {
         ...(targetBranch ? { targetBranch } : {}),
       })
-    : await ensureRoleWorkspace(mountedRoot, task.role);
+    : await ensureRoleWorkspace(mountedRoot, task.assigneeId);
   return { worktree: lane.worktree, branch: lane.branch };
 }
 
@@ -5820,7 +5614,7 @@ function outputProvenanceErrorToRpc(err: OutputProvenanceError): RpcError {
  *      alive rebind or native resume first (contextRestored=true); when native
  *      resume explicitly fails or prior is not resumeCapable, start an honest
  *      independent new Session with recovery bootstrap (contextRestored=false).
- *      Registry/profile identity failures still park waiting(external) and fail
+ *      Registry/route identity failures still park waiting(external) and fail
  *      the RPC — never leave running with a dead managed process.
  *   4) return accepted/processing quickly — do **not** await the full Agent turn
  *   5) background per-task FIFO inject (## Review Feedback) exactly once;
@@ -5828,7 +5622,7 @@ function outputProvenanceErrorToRpc(err: OutputProvenanceError): RpcError {
  *      is at-most-once; already processing/delivered/uncertain skips re-inject
  *
  * External / no sessionId: core rework + pending review-feedback for poll+ack.
- * Role/profile restore semantics and Delivery authority are unchanged.
+ * Role/route restore semantics and Delivery authority are unchanged.
  */
 async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -5910,42 +5704,23 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   // successful rework prompt_complete can deliver again.
   clearManagedAutoDeliverDedup(boundSessionId, taskPath);
 
-  // Tracks a freshly started independent Session so catch can stop orphans when
-  // post-start rebind fails after startSession already succeeded.
-  let fallbackOrphanSessionId: string | undefined;
   try {
     const restored = await restoreManagedSessionAfterRejectResume(ctx, {
       workspaceId,
       taskPath,
     });
-    // review-feedback was created with the pre-restore sessionId (often stopped).
-    // Rebind to the live restore target before enqueue so cancelSession(old) and
-    // projections cannot strand feedback on a dead ss- while the task runs on new.
     const restoredSessionId = restored.session.sessionId;
-    if (
-      restored.session.contextRestored === false &&
-      restoredSessionId !== boundSessionId
-    ) {
-      fallbackOrphanSessionId = restoredSessionId;
-    }
-    let boundReview = reviewInput;
-    if ((reviewInput.sessionId?.trim() || "") !== restoredSessionId) {
-      boundReview = await ctx.taskInputs.rebindSession(
-        reviewInput.id,
-        workspaceId,
-        taskPath,
-        restoredSessionId
+    if (restoredSessionId !== boundSessionId) {
+      throw new Error(
+        `reject-resume must preserve the exact Session id; expected ${boundSessionId}, got ${restoredSessionId}`
       );
     }
-    // Rebind + restore both succeeded — no longer an orphan candidate.
-    fallbackOrphanSessionId = undefined;
     // Fast accept: durable pending + live session bind are the RPC contract.
     // Managed inject of ## Review Feedback runs on the per-task FIFO in the
-    // background — same as task.sendInput. Recovery orientation (if any) is
-    // rebuilt at inject time from durable task/session/delivery facts.
+    // background — same as task.sendInput.
     // Do not await the full Agent turn (CLI/fetch headers timeout would otherwise
     // false-fail a still-running turn).
-    enqueueManagedTaskInputBackground(ctx, boundReview, {
+    enqueueManagedTaskInputBackground(ctx, reviewInput, {
       sessionIdOverride: restoredSessionId,
     });
     return {
@@ -5955,7 +5730,7 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       delivery: projectDelivery(result.delivery),
       state: restored.task.state,
       session: restored.session,
-      input: projectTaskInput(boundReview),
+      input: projectTaskInput(reviewInput),
       /** Durable row + restore accepted; does not mean provider turn finished. */
       accepted: true,
       /** Managed session restored and background inject scheduled. */
@@ -5965,17 +5740,12 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // Close orphan window: fallback startSession may have succeeded while
-    // context flag / task rebind failed — stop the new Session before parking.
-    if (fallbackOrphanSessionId) {
-      await stopOrphanRejectResumeSession(ctx, fallbackOrphanSessionId);
-    }
     // Fail-loud: must not remain running while the managed process is dead.
     // Review TaskInput stays pending (not cancelled) for later poll / retry.
     await parkTaskAfterRejectResumeFailure(ctx, {
       workspaceId,
       taskPath,
-      sessionId: fallbackOrphanSessionId || boundSessionId,
+      sessionId: boundSessionId,
       message,
     });
     throw new RpcError(
@@ -6008,7 +5778,7 @@ async function createRejectResumeReviewFeedback(
     taskPath: input.taskPath,
     taskId: input.task.id || undefined,
     sessionId: input.task.sessionId || undefined,
-    role: input.task.role || undefined,
+    role: taskParentRoleId(input.task),
     kind: "review-feedback",
     text,
     status: "pending",
@@ -6147,26 +5917,31 @@ async function taskCancelRpc(ctx: HandlerContext, p: Record<string, unknown>) {
  * Usable bound Session reuses without launch unless a flight is already held.
  */
 async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  assertAllowedParams(
+    p,
+    new Set(["workspaceId", "taskPath", "callerKind", "bootstrapPrompt"]),
+    "task.startSession"
+  );
   const workspaceId = requireWorkspaceId(ctx, p);
   const taskPath = requireString(p, "taskPath");
-  const profileId = requireProfileId(p);
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
-  if ("a2aPolicyOverride" in p) {
-    throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
-  }
 
   const prepared = await prepareAuthorizedTaskStartSession(
     ctx,
     p,
     workspaceId,
     taskPath,
-    profileId,
     callerKind
   );
   if (prepared.kind === "reuse") {
     const existing = managedSessionInFlight.get(managedSessionFlightKey(workspaceId, taskPath));
     if (existing) {
-      return joinOrConflictManagedSessionFlight(existing, profileId, "startSession", taskPath);
+      return joinOrConflictManagedSessionFlight(
+        existing,
+        prepared.routeId,
+        "startSession",
+        taskPath
+      );
     }
     const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
       const mount = ctx.host.require(workspaceId);
@@ -6208,7 +5983,7 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
     return result;
   }
 
-  return runManagedSessionFlight(workspaceId, taskPath, profileId, "startSession", () =>
+  return runManagedSessionFlight(workspaceId, taskPath, prepared.routeId, "startSession", () =>
     launchAndBindTaskStartSession(ctx, prepared)
   );
 }
@@ -6218,8 +5993,8 @@ type TaskSessionBindSnapshot = {
   state: TaskEnvelope["state"];
   sessionId: string;
   updatedAt: string | undefined;
-  role: string;
   assigneeKind: ReturnType<typeof taskAssigneeKind>;
+  assigneeId: string;
 };
 
 function captureTaskSessionBindSnapshot(task: TaskEnvelope): TaskSessionBindSnapshot {
@@ -6228,8 +6003,8 @@ function captureTaskSessionBindSnapshot(task: TaskEnvelope): TaskSessionBindSnap
     state: task.state,
     sessionId: task.sessionId?.trim() || "",
     updatedAt: task.updatedAt,
-    role: task.role,
     assigneeKind: taskAssigneeKind(task),
+    assigneeId: task.assigneeId,
   };
 }
 
@@ -6245,8 +6020,8 @@ function assertTaskSessionBindSnapshot(
     actual.state === expected.state &&
     actual.sessionId === expected.sessionId &&
     actual.updatedAt === expected.updatedAt &&
-    actual.role === expected.role &&
-    actual.assigneeKind === expected.assigneeKind;
+    actual.assigneeKind === expected.assigneeKind &&
+    actual.assigneeId === expected.assigneeId;
   if (unchanged && current.state === "running") return;
   throw new RpcError(
     RPC_LIFECYCLE,
@@ -6291,14 +6066,17 @@ async function stopUnboundManagedSession(
 }
 
 type PreparedTaskStartSession =
-  | { kind: "reuse"; result: ReturnType<typeof projectStartSessionResult> }
+  | {
+      kind: "reuse";
+      routeId: string;
+      result: ReturnType<typeof projectStartSessionResult>;
+    }
   | {
       kind: "launch";
       workspaceId: string;
       taskPath: string;
-      profileId: string;
+      routeId: string;
       task: TaskEnvelope;
-      isProfileTask: boolean;
       bootstrapPrompt?: string;
     };
 
@@ -6311,7 +6089,6 @@ async function prepareAuthorizedTaskStartSession(
   p: Record<string, unknown>,
   workspaceId: string,
   taskPath: string,
-  profileId: string,
   callerKind: "user" | "role",
   opts?: {
     /** No claim, wait-resume, or session reuse (replaceSession). */
@@ -6320,24 +6097,14 @@ async function prepareAuthorizedTaskStartSession(
 ): Promise<PreparedTaskStartSession> {
   const mount = ctx.host.require(workspaceId);
   const bootstrapPrompt = optionalString(p, "bootstrapPrompt");
-  for (const retiredParam of ["approvalId", "agentId", "a2aPolicy"] as const) {
-    if (retiredParam in p) {
-      throw new RpcError(
-        -32602,
-        `task.startSession/task.replaceSession no longer accepts ${retiredParam}; ` +
-          "machine Settings route availability is authoritative"
-      );
-    }
-  }
-  const routeProfile = ctx.profileCatalog.get(profileId);
-  if (!routeProfile?.adapterId) {
-    throw new RpcError(-32602, `Machine Settings route is unavailable: ${profileId}`, {
-      code: "ROUTE_UNAVAILABLE",
-      profileId,
-    });
-  }
-
   let task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  if (taskAssigneeKind(task) !== "route") {
+    throw new RpcError(
+      -32602,
+      "task.startSession/task.replaceSession requires a Task assigned to a Settings route"
+    );
+  }
+  const routeId = task.assigneeId;
 
   // replaceSession eligibility/launch is owned by executeTaskReplaceSession.
   if (opts?.skipReuseAndLaunchPrep) {
@@ -6345,20 +6112,10 @@ async function prepareAuthorizedTaskStartSession(
       kind: "launch",
       workspaceId,
       taskPath,
-      profileId,
+      routeId,
       task,
-      isProfileTask: taskAssigneeKind(task) === "agentProfile",
       bootstrapPrompt,
     };
-  }
-
-  // Managed startSession for agentProfile tasks must use exactly the envelope profileId.
-  if (taskAssigneeKind(task) === "agentProfile" && task.role !== profileId) {
-    throw new RpcError(
-      -32602,
-      `task.startSession profileId must match agentProfile task assignee (${task.role}); got ${profileId}`,
-      { taskAssignee: task.role, profileId }
-    );
   }
 
   if (task.state === "queued" && callerKind === "user") {
@@ -6373,128 +6130,39 @@ async function prepareAuthorizedTaskStartSession(
     );
   }
 
-  // Any waiting (a2a-approval, external after restart, user-input, …) must resume to
-  // running and clear wait *before* launching a new session. A2A ask path still parks
-  // running→waiting earlier in this function when policy requires approval.
+  // startSession is a recovery entry only for a previously bound unavailable
+  // Session. It must not bypass user-input / tool / product-control waits.
   if (task.state === "waiting") {
+    if (!isSessionUnavailableParkedWait(task)) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        "task.startSession allows waiting only with durable waitCode=session_unavailable; resolve the existing wait first",
+        {
+          code: "INVALID_TASK_WAIT",
+          taskPath,
+          waitReason: task.wait?.reason,
+          waitCode: task.wait?.code,
+        }
+      );
+    }
     await taskResumeRpc(ctx, { workspaceId, taskPath });
     task = await loadTaskEnvelope(mount.env.fs, taskPath);
   }
 
-  // Same-Task alive idempotency only — NOT cross-Task continuity.
-  // When an active Session is already bound to this Task, return it only if live
-  // contextGeneration still matches; otherwise fail loud (cannot safely start fresh
-  // while the turn/session is active).
-  const isProfileTask = taskAssigneeKind(task) === "agentProfile";
+  // Same-Task alive idempotency only. Context-generation drift controls stable
+  // prefix injection, not provider-conversation identity.
   const callerBootstrapAppend = bootstrapPrompt; // never replaces managed bootstrap
-
-  async function assertAliveSessionLiveGenerationOrFail(
-    activeRec: import("../runtime/types.js").SessionRecord
-  ): Promise<void> {
-    const profile = ctx.profileCatalog.get(profileId);
-    if (!profile?.adapterId) {
-      throw new RpcError(
-        -32602,
-        `task.startSession cannot verify live contextGeneration: profile ${profileId} missing or has no adapterId`,
-        { profileId, code: "CONTEXT_GENERATION_COLLECT_FAILED" }
-      );
-    }
-    let live: StableContextGenerationBundle;
-    try {
-      live = await collectStableContextGeneration({
-        workspaceRoot: mount.workspaceRoot,
-        workspaceIdentity: workspaceId,
-        packageRoot: ctx.packageRoot,
-        packageVersion: ctx.version,
-        assigneeKind: taskAssigneeKind(task),
-        assigneeLabel: task.role,
-        agentId: typeof task.agentId === "string" ? task.agentId : undefined,
-        profileId,
-        adapterId: profile.adapterId,
-        parentRoleId:
-          task.parentActor?.kind === "role" ? task.parentActor.id : undefined,
-        purpose: readTaskPurpose(task) || undefined,
-        roleFs: mount.env.fs,
-        profile,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new RpcError(
-        -32000,
-        `task.startSession live contextGeneration collection failed: ${message}`,
-        { code: "CONTEXT_GENERATION_COLLECT_FAILED", taskPath, profileId }
-      );
-    }
-    // Empty/legacy generation does not prove continuity — only non-empty exact match.
-    const sessionGen = activeRec.contextGeneration?.trim() || "";
-    if (!sessionGen || sessionGen !== live.contextGeneration) {
-      const emptyOrLegacy = !sessionGen;
-      throw new RpcError(
-        RPC_LIFECYCLE,
-        emptyOrLegacy
-          ? `Active managed session ${activeRec.id} has empty/legacy contextGeneration; ` +
-              `cannot prove continuity with live stable facts (live=${live.contextGeneration}). ` +
-              `Stop/replace the Session first.`
-          : `Active managed session ${activeRec.id} contextGeneration drifted from live stable facts ` +
-              `(session=${sessionGen}, live=${live.contextGeneration}); cannot safely start a fresh ` +
-              `Session while the prior turn/session is active. Stop/replace the Session first.`,
-        {
-          code: emptyOrLegacy
-            ? "CONTEXT_GENERATION_EMPTY_ACTIVE"
-            : "CONTEXT_GENERATION_LIVE_DRIFT_ACTIVE",
-          sessionId: activeRec.id,
-          sessionContextGeneration: sessionGen || null,
-          liveContextGeneration: live.contextGeneration,
-          taskPath,
-        }
-      );
-    }
-  }
-
-  if (!isProfileTask) {
-    const activeForRole = await findActiveManagedSessionForRole(ctx, workspaceId, task.role);
-    if (activeForRole) {
-      const boundToThisTask =
-        task.sessionId === activeForRole.id ||
-        (!!task.id && activeForRole.lastTaskId === task.id) ||
-        activeForRole.lastTaskId === taskPath;
-      if (boundToThisTask) {
-        await assertAliveSessionLiveGenerationOrFail(activeForRole);
-        const boundTask =
-          task.sessionId === activeForRole.id
-            ? task
-            : await ctx.mutations.run(workspaceId, async () => {
-                ctx.host.markSelfWrite(workspaceId);
-                return patchTaskEnvelope(mount.env.fs, taskPath, {
-                  sessionId: activeForRole.id,
-                  updatedAt: mount.env.clock.now(),
-                });
-              });
-        return {
-          kind: "reuse",
-          result: projectStartSessionResult(workspaceId, taskPath, boundTask, activeForRole, {
-            cwd: boundTask.worktree || mount.workspaceRoot,
-          }),
-        };
-      }
-      throw new RpcError(
-        RPC_LIFECYCLE,
-        `Role "${task.role}" already has an active managed session: ${activeForRole.id}`,
-        {
-          role: task.role,
-          existingSessionId: activeForRole.id,
-          existingState: activeForRole.state,
-          existingTaskId: activeForRole.lastTaskId,
-        }
-      );
-    }
-  } else if (task.sessionId) {
-    // Profile task same-Task alive idempotency only.
+  if (task.sessionId) {
     const prior = await ctx.runtime.registry.read(task.sessionId);
-    if (prior && SessionRegistry.isNonTerminal(prior.state) && prior.state !== "external") {
-      await assertAliveSessionLiveGenerationOrFail(prior);
+    const exactTaskId = task.id || taskPath;
+    const exactBinding =
+      prior?.routeId === routeId &&
+      (prior.lastTaskId === exactTaskId || prior.lastTaskId === taskPath);
+    const probe = prior && exactBinding ? await ctx.runtime.probe(prior.id) : undefined;
+    if (prior && exactBinding && probe?.alive && prior.state !== "external") {
       return {
         kind: "reuse",
+        routeId,
         result: projectStartSessionResult(workspaceId, taskPath, task, prior, {
           cwd: task.worktree || mount.workspaceRoot,
         }),
@@ -6506,9 +6174,8 @@ async function prepareAuthorizedTaskStartSession(
     kind: "launch",
     workspaceId,
     taskPath,
-    profileId,
+    routeId,
     task,
-    isProfileTask,
     // Caller text is an optional dynamic append only — never the managed bootstrap itself.
     bootstrapPrompt: callerBootstrapAppend,
   };
@@ -6522,8 +6189,7 @@ async function launchAndBindTaskStartSession(
   ctx: HandlerContext,
   prepared: Extract<PreparedTaskStartSession, { kind: "launch" }>
 ) {
-  const { workspaceId, taskPath, profileId } = prepared;
-  let isProfileTask = prepared.isProfileTask;
+  const { workspaceId, taskPath, routeId } = prepared;
   const mount = ctx.host.require(workspaceId);
   let task = await runTaskLifecycle(workspaceId, taskPath, async () => {
     const current = await loadTaskEnvelope(mount.env.fs, taskPath);
@@ -6534,20 +6200,19 @@ async function launchAndBindTaskStartSession(
         { code: "INVALID_TASK_STATE", state: current.state, taskPath }
       );
     }
-    if (taskAssigneeKind(current) === "agentProfile" && current.role !== profileId) {
+    if (taskAssigneeKind(current) !== "route" || current.assigneeId !== routeId) {
       throw new RpcError(
         -32602,
-        `task.startSession profileId must match agentProfile task assignee (${current.role}); got ${profileId}`,
-        { taskAssignee: current.role, profileId }
+        `task.startSession Task assignee changed; expected route:${routeId}`,
+        { assigneeKind: current.assigneeKind, assigneeId: current.assigneeId, routeId }
       );
     }
     const withLane = await ensureTaskWorkspaceLane(ctx, workspaceId, current);
-    isProfileTask = taskAssigneeKind(withLane) === "agentProfile";
     return withLane;
   });
 
   // Capture lane + roleBranchBase only after the execution slot is acquired.
-  // Role: durable tent-role lane. Profile: task-scoped tent-task/<taskId> lane.
+  // Role: durable tent-role lane. Route: task-scoped tent-task/<taskId> lane.
   task = await ensureTaskWorkspaceLane(ctx, workspaceId, task);
 
   const cwd = task.worktree || mount.workspaceRoot;
@@ -6580,22 +6245,84 @@ async function launchAndBindTaskStartSession(
   }
 
   // Live authoritative contextGeneration: always recompute from current AGENTS /
-  // Skill body+version / Role prompt / profile launch snapshot. Persisted
+  // Skill body+version / Role prompt / route launch snapshot. Persisted
   // Task/card generation never overrides live facts. Collector failure is fail-loud
   // (never yields reusable fallback facts).
-  const profile = ctx.profileCatalog.get(profileId);
-  if (!profile?.adapterId) {
-    throw new RpcError(
-      -32602,
-      `task.startSession cannot compute contextGeneration: profile ${profileId} missing or has no adapterId`,
-      { profileId, code: "CONTEXT_GENERATION_COLLECT_FAILED" }
-    );
+  const priorSessionId = task.sessionId?.trim() || "";
+  let priorSession: SessionRecord | undefined;
+  let resumePrior = false;
+  if (priorSessionId) {
+    priorSession = (await ctx.runtime.registry.read(priorSessionId)) ?? undefined;
+    if (!priorSession) {
+      await parkTaskForUnavailableSession(ctx, {
+        workspaceId,
+        taskPath,
+        sessionId: priorSessionId,
+        reason: "task.startSession.bound-session-missing",
+      });
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Bound Session not found: ${priorSessionId}; use task.replaceSession for an explicit fresh Session`,
+        { code: "BOUND_SESSION_MISSING", taskPath, sessionId: priorSessionId }
+      );
+    }
+    const exactTaskId = task.id || taskPath;
+    if (
+      priorSession.routeId !== routeId ||
+      (priorSession.lastTaskId !== exactTaskId && priorSession.lastTaskId !== taskPath)
+    ) {
+      await parkTaskForUnavailableSession(ctx, {
+        workspaceId,
+        taskPath,
+        sessionId: priorSessionId,
+        reason: "task.startSession.bound-session-identity-mismatch",
+        detail: `Session binding mismatch (routeId=${priorSession.routeId}, lastTaskId=${priorSession.lastTaskId ?? "missing"})`,
+      });
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Bound Session ${priorSessionId} does not match the exact Task/route; use task.replaceSession for an explicit fresh Session`,
+        {
+          code: "BOUND_SESSION_IDENTITY_MISMATCH",
+          taskPath,
+          sessionId: priorSessionId,
+          routeId,
+        }
+      );
+    }
+    const probe = await ctx.runtime.probe(priorSessionId);
+    if (probe.alive || !probe.resumeCapable) {
+      await parkTaskForUnavailableSession(ctx, {
+        workspaceId,
+        taskPath,
+        sessionId: priorSessionId,
+        reason: "task.startSession.native-resume-unavailable",
+      });
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Bound Session ${priorSessionId} cannot be resumed; use task.replaceSession for an explicit fresh Session`,
+        {
+          code: "BOUND_SESSION_NOT_RESUMABLE",
+          taskPath,
+          sessionId: priorSessionId,
+          alive: probe.alive,
+          resumeCapable: probe.resumeCapable,
+        }
+      );
+    }
+    resumePrior = true;
   }
-  const adapterId = profile.adapterId;
-  const parentRoleId =
-    task.parentActor?.kind === "role" ? task.parentActor.id : undefined;
+
+  let routeSnapshot;
+  try {
+    routeSnapshot = priorSession?.routeSnapshot ?? ctx.runtime.snapshotRouteForStart(routeId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new RpcError(-32602, `Settings route is unavailable: ${message}`, {
+      code: "ROUTE_UNAVAILABLE",
+      routeId,
+    });
+  }
   const assigneeKind = taskAssigneeKind(task);
-  const taskPurpose = readTaskPurpose(task);
   let stableBundle: StableContextGenerationBundle;
   try {
     stableBundle = await collectStableContextGeneration({
@@ -6604,21 +6331,16 @@ async function launchAndBindTaskStartSession(
       packageRoot: ctx.packageRoot,
       packageVersion: ctx.version,
       assigneeKind,
-      assigneeLabel: task.role,
-      agentId: typeof task.agentId === "string" ? task.agentId : undefined,
-      profileId,
-      adapterId,
-      parentRoleId,
-      purpose: taskPurpose || undefined,
+      assigneeId: task.assigneeId,
+      routeSnapshot,
       roleFs: mount.env.fs,
-      profile,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new RpcError(
       -32000,
       `task.startSession contextGeneration collection failed: ${message}`,
-      { code: "CONTEXT_GENERATION_COLLECT_FAILED", taskPath, profileId }
+      { code: "CONTEXT_GENERATION_COLLECT_FAILED", taskPath, routeId }
     );
   }
 
@@ -6630,184 +6352,14 @@ async function launchAndBindTaskStartSession(
       { code: "CONTEXT_GENERATION_EMPTY", taskPath }
     );
   }
-  const priorPersistedGeneration =
-    task.contextGeneration?.trim() ||
-    task.contextCard?.contextGeneration?.trim() ||
-    "";
-  // Live id is always authoritative for this prompt. Refresh Task/card when drifted.
-  if (priorPersistedGeneration !== liveGeneration) {
-    task = await runTaskLifecycle(workspaceId, taskPath, () =>
-      ctx.mutations.run(workspaceId, async () => {
-        const current = await loadTaskEnvelope(mount.env.fs, taskPath);
-        if (current.state !== "running") {
-          throw new RpcError(
-            RPC_LIFECYCLE,
-            `task.startSession cannot refresh context on ${current.state} Task`,
-            { code: "INVALID_TASK_STATE", state: current.state, taskPath }
-          );
-        }
-        ctx.host.markSelfWrite(workspaceId);
-        if (current.contextCard) {
-          const nextCard = {
-            ...current.contextCard,
-            contextGeneration: liveGeneration,
-          };
-          return patchTaskEnvelope(mount.env.fs, taskPath, {
-            contextCard: nextCard,
-            ...(taskPurpose ? { purpose: taskPurpose } : {}),
-            updatedAt: mount.env.clock.now(),
-          });
-        }
-        throw new RpcError(
-          -32000,
-          "task.startSession requires Task.contextCard before refreshing contextGeneration",
-          { code: "TASK_CONTEXT_CARD_MISSING", taskPath }
-        );
-      })
-    );
-  }
-
-  const requestFacts = buildSessionReuseRequestFacts({
-    workspaceId,
-    bundle: {
-      ...stableBundle,
-      contextGeneration: liveGeneration,
-      purpose: taskPurpose || stableBundle.purpose,
-    },
-    contextGeneration: liveGeneration,
-    worktree: cwd,
-  });
-
-  // Candidate selection: task binding first, then Role/profile stopped sessions.
-  // Reuse only after Core gate + prior-Task lease + live generation match on candidate.
-  const candidateIds: string[] = [];
-  if (task.sessionId?.trim()) candidateIds.push(task.sessionId.trim());
-  if (!isProfileTask) {
-    const roleSession = await findResumableManagedSessionForRole(
-      ctx,
-      workspaceId,
-      task.role,
-      profileId,
-      cwd
-    );
-    if (roleSession?.id && !candidateIds.includes(roleSession.id)) {
-      candidateIds.push(roleSession.id);
-    }
-  } else {
-    const profileCandidates = await findResumableManagedSessionsForProfile(
-      ctx,
-      workspaceId,
-      profileId,
-      cwd
-    );
-    for (const c of profileCandidates) {
-      if (c.id && !candidateIds.includes(c.id)) candidateIds.push(c.id);
-    }
-  }
-
-  let resumePrior = false;
-  let priorSessionId = "";
-  let continuityProven = false;
-
-  const allTasks = await loadTaskEnvelopes(mount.env.fs);
-  let deliveriesCache: Awaited<ReturnType<typeof loadDeliveries>> | null = null;
-  // Delivery truth: accepted/rejected activeDeliveryId is historical and does not
-  // block. ready/draft, task.state delivered, missing/foreign pointer, or unreadable
-  // store fail closed (never prove noPendingDelivery).
-  const hasBlockingDelivery = async (
-    t: import("../core/task.js").TaskEnvelope
-  ): Promise<boolean> => {
-    if (!deliveriesCache) {
-      try {
-        deliveriesCache = await loadDeliveries(mount.env.fs);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        throw new RpcError(
-          -32000,
-          `task.startSession cannot load Deliveries to prove noPendingDelivery: ${message}`,
-          { code: "DELIVERY_STORE_UNREADABLE", taskPath }
-        );
-      }
-    }
-    try {
-      const evaluation = evaluateTaskBlockingDelivery({
-        task: t,
-        deliveries: deliveriesCache,
-      });
-      return evaluation.blocking;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new RpcError(
-        -32000,
-        `task.startSession cannot prove noPendingDelivery: ${message}`,
-        {
-          code: "DELIVERY_POINTER_UNRESOLVED",
-          taskPath,
-          priorTaskPath: t.path,
-          activeDeliveryId: t.activeDeliveryId,
-        }
-      );
-    }
-  };
-
-  for (const candidateId of candidateIds) {
-    try {
-      const probe = await ctx.runtime.probe(candidateId);
-      const prior = await ctx.runtime.registry.read(candidateId);
-      if (!prior || !probe.resumeCapable || probe.alive) continue;
-
-      // Live generation must match Session-recorded generation — never label a live
-      // prompt with an old id. Drift forces fresh Session + full stable prefix.
-      const priorGen = prior.contextGeneration?.trim() || "";
-      if (!priorGen || priorGen !== liveGeneration) {
-        continue;
-      }
-
-      const lease = await evaluateCandidateSessionLeaseGates({
-        allTasks,
-        candidate: prior,
-        requestTaskPath: taskPath,
-        requestTaskId: task.id,
-        turnBusy: probe.turnBusy === true,
-        workspaceId,
-        listPendingInputs: (ws, tp) =>
-          ctx.taskInputs.listRetryableForTask(ws, tp),
-        hasPendingUserAsk: (ws, tp) => ctx.userAsks.hasPendingForTask(ws, tp),
-        hasBlockingDelivery,
-      });
-
-      const evaluation = evaluateManagedSessionReuse({
-        request: requestFacts,
-        candidate: prior,
-        runtime: {
-          previousTurnSettled: lease.previousTurnSettled,
-          noPendingInput: lease.noPendingInput,
-          noPendingDelivery: lease.noPendingDelivery,
-          exclusiveLease: lease.exclusiveLease,
-        },
-      });
-
-      if (evaluation.allowed) {
-        resumePrior = true;
-        priorSessionId = candidateId;
-        continuityProven = true;
-        break;
-      }
-    } catch (err) {
-      if (
-        !/Session not found/i.test(err instanceof Error ? err.message : String(err))
-      ) {
-        throw err;
-      }
-    }
-  }
-  // No allowed candidate → fail closed to fresh Session generation.
-
   // Official managed bootstrap is always Service-owned (stable + delta).
   // Public bootstrapPrompt is an appended dynamic section only — never a replacement.
-  // Stable prefix omitted only when Core proved continuity (live gen === session gen
-  // and full reuse gate passed).
-  const sessionContextGeneration = continuityProven ? liveGeneration : undefined;
+  // Context drift sends the full current stable prefix into the same provider
+  // conversation; it never changes resume identity.
+  const sessionContextGeneration =
+    resumePrior && priorSession?.contextGeneration?.trim() === liveGeneration
+      ? liveGeneration
+      : undefined;
   let sessionBootstrap = await buildSessionBootstrapPrompt(
     ctx,
     task,
@@ -6815,6 +6367,7 @@ async function launchAndBindTaskStartSession(
       workspaceRoot: mount.workspaceRoot,
       systemRoot: mount.systemRoot,
       sessionContextGeneration,
+      currentContextGeneration: liveGeneration,
     },
     mount.env.fs
   );
@@ -6824,7 +6377,7 @@ async function launchAndBindTaskStartSession(
   );
 
   // Ephemeral image path refs from task user prompt + claimed node bodies only.
-  // Paths only — never base64; never written to task/session/profile disk.
+  // Paths only — never base64; never written to task/session/route disk.
   // ACP image blocks still require live initialize promptCapabilities.image === true.
   const bootstrapImageRefs = await collectTaskBootstrapImageRefs(mount.env.fs, task);
   const bootstrapImageSystemRoot =
@@ -6861,9 +6414,8 @@ async function launchAndBindTaskStartSession(
     } else {
       handle = await ctx.runtime.startSession({
         sessionId: makeSessionId(),
-        profileId,
-        roleName: task.role,
-        assigneeKind: taskAssigneeKind(task),
+        routeId,
+        routeSnapshot,
         workspaceLane,
         runtimeWorkspace: { cwd },
         cwd,
@@ -6880,7 +6432,27 @@ async function launchAndBindTaskStartSession(
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // Launch/process failure → taskFail (releases occupation) + no live session.
+    if (resumePrior) {
+      await parkTaskForUnavailableSession(ctx, {
+        workspaceId,
+        taskPath,
+        sessionId: priorSessionId,
+        reason: "task.startSession.native-resume-failed",
+        detail: message,
+      });
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Bound Session ${priorSessionId} could not resume; Task remains waiting for explicit task.replaceSession`,
+        {
+          code: "BOUND_SESSION_RESUME_FAILED",
+          taskPath,
+          sessionId: priorSessionId,
+          detail: message,
+          recoverable: true,
+        }
+      );
+    }
+    // First-launch process failure has no provider conversation to preserve.
     await failTaskFromRuntime(ctx, {
       workspaceId,
       taskPath,
@@ -6892,7 +6464,7 @@ async function launchAndBindTaskStartSession(
   }
 
   // Bind sessionId reference only on task (never PID/token).
-  // Persist full compatibility facts needed for later evaluateSessionReuseCompatibility.
+  // Persist only Task binding plus non-secret context metadata.
   let bound: TaskEnvelope;
   try {
     bound = await runTaskLifecycle(workspaceId, taskPath, () =>
@@ -6902,26 +6474,19 @@ async function launchAndBindTaskStartSession(
         ctx.host.markSelfWrite(workspaceId);
         const next = await patchTaskEnvelope(mount.env.fs, taskPath, {
           sessionId: handle.sessionId,
+          contextCard: {
+            ...current.contextCard,
+            contextGeneration: liveGeneration,
+          },
           updatedAt: mount.env.clock.now(),
         });
         const generation = liveGeneration;
         try {
-          const parentRoleIdBound =
-            next.parentActor?.kind === "role" ? next.parentActor.id : undefined;
-          const agentId =
-            stableBundle.agentId ||
-            (typeof next.agentId === "string" && next.agentId.trim()) ||
-            next.role;
-          const purposeBound = readTaskPurpose(next) || stableBundle.purpose || "";
           await ctx.runtime.registry.update(handle.sessionId, {
             contextGeneration: generation,
             ...(next.taskDeltaDigest
               ? { taskDeltaDigest: next.taskDeltaDigest }
               : {}),
-            agentId,
-            ...(parentRoleIdBound ? { parentRoleId: parentRoleIdBound } : {}),
-            skillsDigest: stableBundle.skillSetDigest || stableBundle.skillsDigest,
-            purpose: purposeBound,
           });
         } catch {
           // Session row projection is best-effort; Task remains authoritative.
@@ -6933,7 +6498,7 @@ async function launchAndBindTaskStartSession(
           {
             sessionId: handle.sessionId,
             state: handle.state,
-            profileId: handle.profileId,
+            routeId: handle.routeId,
             taskPath,
             reason: resumePrior ? "task.startSession.resume" : "task.startSession",
           },
@@ -6974,7 +6539,7 @@ async function launchAndBindTaskStartSession(
 
   return projectStartSessionResult(workspaceId, taskPath, bound, {
     id: handle.sessionId,
-    profileId: handle.profileId,
+    routeId: handle.routeId,
     adapterId: handle.adapterId,
     state: handle.state,
     roleName: handle.roleName,
@@ -6987,26 +6552,31 @@ export const REPLACE_SESSION_RESTORE_REASON = "task.replaceSession.fresh" as con
 
 /** Explicit fresh managed Session on the same Task (unusable provider context). */
 async function taskReplaceSessionRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  assertAllowedParams(
+    p,
+    new Set(["workspaceId", "taskPath", "callerKind", "force"]),
+    "task.replaceSession"
+  );
   const workspaceId = requireWorkspaceId(ctx, p);
   const taskPath = requireString(p, "taskPath");
-  const profileId = requireProfileId(p, "task.replaceSession");
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
-  if ("a2aPolicyOverride" in p) {
-    throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
-  }
   if ("force" in p && p.force !== undefined && p.force !== false) {
     throw new RpcError(-32602, "task.replaceSession does not support force; wait for turnBusy=false and retry", {
       code: "FORCE_NOT_SUPPORTED",
     });
   }
-  await prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, profileId, callerKind, {
+  const prepared = await prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, callerKind, {
     skipReuseAndLaunchPrep: true,
   });
-  // Outer managed-session flight: concurrent same-profile replace/start still join/coalesce.
+  if (prepared.kind !== "launch") {
+    throw new RpcError(RPC_LIFECYCLE, "task.replaceSession could not prepare a fresh route Session");
+  }
+  const routeId = prepared.routeId;
+  // Outer managed-session flight: concurrent same-route replace/start still join/coalesce.
   // Exact-Task lifecycle stages are acquired only for authoritative prepare/CAS bind;
   // provider startup stays outside the coordinator so terminal transitions can win.
-  return runManagedSessionFlight(workspaceId, taskPath, profileId, "replaceSession", () =>
-    executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId)
+  return runManagedSessionFlight(workspaceId, taskPath, routeId, "replaceSession", () =>
+    executeTaskReplaceSession(ctx, workspaceId, taskPath, routeId)
   );
 }
 
@@ -7014,15 +6584,15 @@ async function assertReplaceSessionEligible(
   ctx: HandlerContext,
   workspaceId: string,
   taskPath: string,
-  profileId: string
+  routeId: string
 ): Promise<void> {
   const mount = ctx.host.require(workspaceId);
   const task = await loadTaskEnvelope(mount.env.fs, taskPath);
-  if (taskAssigneeKind(task) === "agentProfile" && task.role !== profileId) {
+  if (taskAssigneeKind(task) !== "route" || task.assigneeId !== routeId) {
     throw new RpcError(
       -32602,
-      `task.replaceSession profileId must match agentProfile task assignee (${task.role}); got ${profileId}`,
-      { taskAssignee: task.role, profileId }
+      `task.replaceSession Task assignee changed; expected route:${routeId}`,
+      { assigneeKind: task.assigneeKind, assigneeId: task.assigneeId, routeId }
     );
   }
   if (task.state !== "running" && task.state !== "waiting") {
@@ -7034,7 +6604,7 @@ async function assertReplaceSessionEligible(
   if (task.state === "waiting" && !isSessionUnavailableParkedWait(task)) {
     throw new RpcError(
       RPC_LIFECYCLE,
-      "task.replaceSession allows waiting only with durable waitCode=session_unavailable; resolve user-input / a2a / tool waits first",
+      "task.replaceSession allows waiting only with durable waitCode=session_unavailable; resolve user-input or tool waits first",
       {
         code: "REPLACE_SESSION_WAIT_NOT_ELIGIBLE",
         state: task.state,
@@ -7068,11 +6638,11 @@ async function executeTaskReplaceSession(
   ctx: HandlerContext,
   workspaceId: string,
   taskPath: string,
-  profileId: string
+  routeId: string
 ) {
   const mount = ctx.host.require(workspaceId);
   let task = await runTaskLifecycle(workspaceId, taskPath, async () => {
-    await assertReplaceSessionEligible(ctx, workspaceId, taskPath, profileId);
+    await assertReplaceSessionEligible(ctx, workspaceId, taskPath, routeId);
     let current = await loadTaskEnvelope(mount.env.fs, taskPath);
     if (current.state === "waiting") {
       await taskResumeRpc(ctx, { workspaceId, taskPath });
@@ -7087,7 +6657,8 @@ async function executeTaskReplaceSession(
     worktree: task.worktree,
     branch: task.branch,
     deliveryPolicy: task.deliveryPolicy,
-    role: task.role,
+    assigneeKind: task.assigneeKind,
+    assigneeId: task.assigneeId,
   };
   let retirementBegun = false;
   let startedSessionId: string | undefined;
@@ -7145,6 +6716,18 @@ async function executeTaskReplaceSession(
     clearManagedAutoDeliverDedup(priorSessionId, taskPath);
 
     const cwd = task.worktree || mount.workspaceRoot;
+    const routeSnapshot = ctx.runtime.snapshotRouteForStart(routeId);
+    const stableBundle = await collectStableContextGeneration({
+      workspaceRoot: mount.workspaceRoot,
+      workspaceIdentity: workspaceId,
+      packageRoot: ctx.packageRoot,
+      packageVersion: ctx.version,
+      assigneeKind: task.assigneeKind,
+      assigneeId: task.assigneeId,
+      routeSnapshot,
+      roleFs: mount.env.fs,
+    });
+    const liveGeneration = stableBundle.contextGeneration;
     const workspaceLane =
       task.workspace || task.worktree || task.branch
         ? {
@@ -7172,7 +6755,8 @@ async function executeTaskReplaceSession(
         current.state !== "running" ||
         current.id !== preserved.taskId ||
         current.sessionId !== priorSessionId ||
-        current.role !== preserved.role ||
+        current.assigneeKind !== preserved.assigneeKind ||
+        current.assigneeId !== preserved.assigneeId ||
         current.deliveryPolicy !== preserved.deliveryPolicy
       ) {
         assertTaskSessionBindSnapshot(
@@ -7187,9 +6771,8 @@ async function executeTaskReplaceSession(
     });
     const handle = await ctx.runtime.startSession({
       sessionId: makeSessionId(),
-      profileId,
-      roleName: task.role,
-      assigneeKind: taskAssigneeKind(task),
+      routeId,
+      routeSnapshot,
       workspaceLane,
       runtimeWorkspace: { cwd },
       cwd,
@@ -7197,6 +6780,7 @@ async function executeTaskReplaceSession(
         workspaceRoot: mount.workspaceRoot,
         systemRoot: mount.systemRoot,
         priorSessionId,
+        currentContextGeneration: liveGeneration,
         roleFs: mount.env.fs,
       }),
       ...(bootstrapImageRefs.length > 0
@@ -7216,6 +6800,10 @@ async function executeTaskReplaceSession(
           sessionId: handle.sessionId,
           state: "running",
           wait: null,
+          contextCard: {
+            ...current.contextCard,
+            contextGeneration: liveGeneration,
+          },
           updatedAt: mount.env.clock.now(),
         });
         emitTaskState(ctx, workspaceId, next, "task.replaceSession");
@@ -7225,7 +6813,7 @@ async function executeTaskReplaceSession(
           {
             sessionId: handle.sessionId,
             state: handle.state,
-            profileId: handle.profileId,
+            routeId: handle.routeId,
             taskPath,
             reason: REPLACE_SESSION_RESTORE_REASON,
             contextRestored: false,
@@ -7242,6 +6830,7 @@ async function executeTaskReplaceSession(
       contextRestored: false,
       restoreReason: REPLACE_SESSION_RESTORE_REASON,
       replacedSessionId: priorSessionId,
+      contextGeneration: liveGeneration,
     });
     try {
       const priorRow = await ctx.runtime.registry.read(priorSessionId);
@@ -7262,7 +6851,8 @@ async function executeTaskReplaceSession(
     const nodeIds = taskReferencedNodeIds(bound);
     if (
       bound.id !== preserved.taskId ||
-      bound.role !== preserved.role ||
+      bound.assigneeKind !== preserved.assigneeKind ||
+      bound.assigneeId !== preserved.assigneeId ||
       bound.deliveryPolicy !== preserved.deliveryPolicy ||
       bound.worktree !== preserved.worktree ||
       bound.branch !== preserved.branch ||
@@ -7298,7 +6888,7 @@ async function executeTaskReplaceSession(
       task: projectTask(bound),
       session: {
         sessionId: handle.sessionId,
-        profileId: handle.profileId,
+        routeId: handle.routeId,
         adapterId: handle.adapterId,
         state: handle.state,
         cwd,
@@ -7346,6 +6936,7 @@ async function buildFreshReplaceSessionBootstrap(
     workspaceRoot: string;
     systemRoot: string;
     priorSessionId: string;
+    currentContextGeneration: string;
     roleFs?: import("../core/adapter.js").FsAdapter;
   }
 ): Promise<string> {
@@ -7355,6 +6946,7 @@ async function buildFreshReplaceSessionBootstrap(
     {
       workspaceRoot: roots.workspaceRoot,
       systemRoot: roots.systemRoot,
+      currentContextGeneration: roots.currentContextGeneration,
     },
     roots.roleFs
   );
@@ -7397,18 +6989,33 @@ async function deliveryList(ctx: HandlerContext, p: Record<string, unknown>) {
   const mount = ctx.host.require(workspaceId);
   const taskId = optionalString(p, "taskId");
   const nodeId = optionalString(p, "nodeId");
-  const role = optionalString(p, "role");
+  const assigneeKind = optionalString(p, "assigneeKind");
+  const assigneeId = optionalString(p, "assigneeId");
   let deliveries = await loadDeliveries(mount.env.fs, { taskId });
+  let tasks: TaskEnvelope[] | undefined;
   if (nodeId) {
     const tent = await loadTent(mount.env.fs);
     requireCanonicalNode(tent, nodeId);
-    const tasks = await loadTaskEnvelopes(mount.env.fs);
+    tasks = await loadTaskEnvelopes(mount.env.fs);
     const taskNodeIds = new Map(
       tasks.map((task) => [task.id || task.path, new Set(taskReferencedNodeIds(task))])
     );
     deliveries = deliveries.filter((delivery) => taskNodeIds.get(delivery.taskId)?.has(nodeId));
   }
-  if (role) deliveries = deliveries.filter((d) => d.role === role);
+  if (assigneeKind || assigneeId) {
+    if (assigneeKind !== "role" && assigneeKind !== "route") {
+      throw new RpcError(-32602, "delivery.list assigneeKind must be role or route");
+    }
+    if (!assigneeId) {
+      throw new RpcError(-32602, "delivery.list assigneeId is required with assigneeKind");
+    }
+    tasks ??= await loadTaskEnvelopes(mount.env.fs);
+    const taskById = new Map(tasks.map((task) => [task.id || task.path, task]));
+    deliveries = deliveries.filter((delivery) => {
+      const task = taskById.get(delivery.taskId);
+      return task?.assigneeKind === assigneeKind && task.assigneeId === assigneeId;
+    });
+  }
   return { workspaceId, deliveries: deliveries.map(projectDelivery) };
 }
 
@@ -7587,12 +7194,8 @@ function projectNodeCollaboration(
       id: activeTask.id || activeTask.path,
       state: activeTask.state,
       assigneeKind,
+      assigneeId: activeTask.assigneeId,
     };
-    if (assigneeKind === "agentProfile") {
-      taskSummary.profileId = activeTask.role;
-    } else {
-      taskSummary.role = activeTask.role;
-    }
     if (activeTask.sessionId) taskSummary.sessionId = activeTask.sessionId;
     if (activeTask.activeDeliveryId) taskSummary.activeDeliveryId = activeTask.activeDeliveryId;
     if (activeTask.createdAt) taskSummary.createdAt = activeTask.createdAt;
@@ -7879,11 +7482,10 @@ async function sessionList(ctx: HandlerContext, p: Record<string, unknown>) {
     const probe = await ctx.runtime.probe(rec.id);
     projections.push({
       sessionId: rec.id,
-      profileId: rec.profileId,
+      routeId: rec.routeId,
       adapterId: rec.adapterId,
       state: probe.state,
       roleName: rec.roleName,
-      assigneeKind: rec.assigneeKind ?? "role",
       alive: probe.alive,
       resumeCapable: probe.resumeCapable,
       ...(rec.contextRestored !== undefined ? { contextRestored: rec.contextRestored } : {}),
@@ -7906,11 +7508,10 @@ async function sessionGet(ctx: HandlerContext, p: Record<string, unknown>) {
   const probe = await ctx.runtime.probe(sessionId);
   const projection: SessionProjection = {
     sessionId: rec.id,
-    profileId: rec.profileId,
+    routeId: rec.routeId,
     adapterId: rec.adapterId,
     state: probe.state,
     roleName: rec.roleName,
-    assigneeKind: rec.assigneeKind ?? "role",
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
     ...(rec.contextRestored !== undefined ? { contextRestored: rec.contextRestored } : {}),
@@ -7947,16 +7548,17 @@ async function sessionEnter(ctx: HandlerContext, p: Record<string, unknown>) {
   if (workspaceId) ctx.host.require(workspaceId);
 
   const sessionId = optionalString(p, "sessionId");
-  const profileId = optionalString(p, "profileId");
+  const routeId = optionalString(p, "routeId");
   const roleName = optionalString(p, "roleName") || optionalString(p, "role");
   const externalKey = optionalString(p, "externalKey") || optionalString(p, "key");
   const lastTaskId = optionalString(p, "lastTaskId") || optionalString(p, "taskId");
   const cwd = optionalString(p, "cwd");
-  const assigneeKindRaw = optionalString(p, "assigneeKind");
-  const assigneeKind =
-    assigneeKindRaw === "agentProfile" || assigneeKindRaw === "role"
-      ? assigneeKindRaw
-      : undefined;
+  if ("assigneeKind" in p) {
+    throw new RpcError(
+      -32602,
+      "session.enter does not accept assigneeKind; roleName identifies an external durable Role only"
+    );
+  }
 
   // Snapshot for idempotent "reused" reporting (same open external row).
   let priorExternalId: string | undefined;
@@ -7972,9 +7574,8 @@ async function sessionEnter(ctx: HandlerContext, p: Record<string, unknown>) {
   try {
     handle = await ctx.runtime.enterExternalSession({
       sessionId: sessionId || undefined,
-      profileId: profileId || undefined,
+      routeId: routeId || undefined,
       roleName: roleName || undefined,
-      assigneeKind,
       workspace: workspaceId || undefined,
       cwd: cwd || undefined,
       lastTaskId: lastTaskId || undefined,
@@ -7992,11 +7593,10 @@ async function sessionEnter(ctx: HandlerContext, p: Record<string, unknown>) {
   const probe = await ctx.runtime.probe(handle.sessionId);
   const session: SessionProjection = {
     sessionId: handle.sessionId,
-    profileId: handle.profileId,
+    routeId: handle.routeId,
     adapterId: handle.adapterId,
     state: probe.state,
     roleName: handle.roleName,
-    assigneeKind: handle.assigneeKind ?? "role",
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
     ...(rec?.contextRestored !== undefined
@@ -8009,10 +7609,9 @@ async function sessionEnter(ctx: HandlerContext, p: Record<string, unknown>) {
     updatedAt: handle.updatedAt,
   };
 
-  const roleCheckpointTail =
-    handle.roleName && (handle.assigneeKind ?? "role") !== "agentProfile"
-      ? await loadRoleCheckpointTailSafe(ctx, workspaceId, handle.roleName)
-      : "";
+  const roleCheckpointTail = handle.roleName
+    ? await loadRoleCheckpointTailSafe(ctx, workspaceId, handle.roleName)
+    : "";
 
   return {
     session,
@@ -8020,7 +7619,7 @@ async function sessionEnter(ctx: HandlerContext, p: Record<string, unknown>) {
     /**
      * Optional cooperative Role Checkpoint tail for the durable Role just entered.
      * Dynamic only — callers append after stable Role init / bootstrap prefix.
-     * Absent when no role, agentProfile, or no note on disk.
+     * Absent when no role, route, or no note on disk.
      */
     ...(roleCheckpointTail ? { roleCheckpointTail } : {}),
   };
@@ -8278,11 +7877,10 @@ async function sessionStatus(ctx: HandlerContext, p: Record<string, unknown>) {
       const probe = await ctx.runtime.probe(rec.id);
       sessions.push({
         sessionId: rec.id,
-        profileId: rec.profileId,
+        routeId: rec.routeId,
         adapterId: rec.adapterId,
         state: probe.state,
         roleName: rec.roleName,
-        assigneeKind: rec.assigneeKind ?? "role",
         alive: probe.alive,
         resumeCapable: probe.resumeCapable,
         ...(rec.contextRestored !== undefined
@@ -8318,11 +7916,10 @@ async function sessionStatus(ctx: HandlerContext, p: Record<string, unknown>) {
   const probe = await ctx.runtime.probe(sessionId);
   const session: SessionProjection = {
     sessionId: rec.id,
-    profileId: rec.profileId,
+    routeId: rec.routeId,
     adapterId: rec.adapterId,
     state: probe.state,
     roleName: rec.roleName,
-    assigneeKind: rec.assigneeKind ?? "role",
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
     ...(rec.contextRestored !== undefined
@@ -8509,7 +8106,16 @@ async function listIncompleteTasksBoundToSession(
   ctx: HandlerContext,
   workspaceId: string | undefined,
   sessionId: string
-): Promise<Array<{ path: string; id?: string; state: string; role: string; sessionId?: string }>> {
+): Promise<
+  Array<{
+    path: string;
+    id?: string;
+    state: string;
+    assigneeKind: "role" | "route";
+    assigneeId: string;
+    sessionId?: string;
+  }>
+> {
   if (!workspaceId) return [];
   try {
     ctx.host.require(workspaceId);
@@ -8523,13 +8129,28 @@ async function listIncompleteTasksForSessions(
   ctx: HandlerContext,
   workspaceId: string,
   sessionIds: string[]
-): Promise<Array<{ path: string; id?: string; state: string; role: string; sessionId?: string }>> {
+): Promise<
+  Array<{
+    path: string;
+    id?: string;
+    state: string;
+    assigneeKind: "role" | "route";
+    assigneeId: string;
+    sessionId?: string;
+  }>
+> {
   if (sessionIds.length === 0) return [];
   const idSet = new Set(sessionIds);
   const mount = ctx.host.require(workspaceId);
   const tasks = await loadTaskEnvelopes(mount.env.fs);
-  const out: Array<{ path: string; id?: string; state: string; role: string; sessionId?: string }> =
-    [];
+  const out: Array<{
+    path: string;
+    id?: string;
+    state: string;
+    assigneeKind: "role" | "route";
+    assigneeId: string;
+    sessionId?: string;
+  }> = [];
   for (const task of tasks) {
     const sid = task.sessionId?.trim();
     if (!sid || !idSet.has(sid)) continue;
@@ -8538,58 +8159,15 @@ async function listIncompleteTasksForSessions(
       path: task.path,
       id: task.id,
       state: task.state,
-      role: task.role,
+      assigneeKind: task.assigneeKind,
+      assigneeId: task.assigneeId,
       sessionId: sid,
     });
   }
   return out;
 }
 
-async function a2aListPending(ctx: HandlerContext, p: Record<string, unknown>) {
-  const workspaceId = optionalString(p, "workspaceId");
-  const pending = await ctx.a2a.listPending(workspaceId);
-  return { approvals: pending };
-}
-
-async function a2aResolve(ctx: HandlerContext, p: Record<string, unknown>) {
-  const approvalId = requireString(p, "approvalId");
-  const decisionRaw = requireString(p, "decision");
-  const actor = requireUserActor(p, "a2a.resolve");
-  const decision =
-    decisionRaw === "approve" || decisionRaw === "approved"
-      ? "approved"
-      : decisionRaw === "deny" || decisionRaw === "denied"
-        ? "denied"
-        : null;
-  if (!decision) {
-    throw new RpcError(-32602, "decision must be approve|deny");
-  }
-
-  const item = await ctx.a2a.resolve(approvalId, decision, actor);
-  ctx.events.emit(
-    "a2a.resolved",
-    item.workspaceId,
-    { approvalId, decision, actor, taskPath: item.taskPath },
-    "self"
-  );
-
-  if (decision === "approved") {
-    // Start session now with user authority (approval already recorded).
-    const started = await taskStartSessionRpc(ctx, {
-      workspaceId: item.workspaceId,
-      taskPath: item.taskPath,
-      profileId: item.profileId,
-      callerKind: "user",
-      bootstrapPrompt: item.bootstrapPrompt,
-      approvalId: item.id,
-    });
-    return { approval: item, started };
-  }
-
-  return { approval: item, started: null };
-}
-
-// ---- ACP tool permission approvals (permissionPolicy=ask; not A2A spawn) ----
+// ---- ACP tool permission approvals (permissionPolicy=ask) ----
 
 async function toolApprovalListPending(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = optionalString(p, "workspaceId");
@@ -8706,7 +8284,7 @@ async function userAskListPending(ctx: HandlerContext, p: Record<string, unknown
 
 /**
  * Workspace-scoped unified A2U pending projection.
- * Aggregates four domain sources only — no new store, no resolve verbs, no
+ * Aggregates three domain sources only — no new store, no resolve verbs, no
  * copied state events. Any source failure fails the whole RPC (fail-loud).
  */
 async function interactionListPending(
@@ -8719,21 +8297,18 @@ async function interactionListPending(
   const mount = ctx.host.require(workspaceId);
 
   let asks: Awaited<ReturnType<typeof ctx.userAsks.listPending>>;
-  let a2aApprovals: Awaited<ReturnType<typeof ctx.a2a.listPending>>;
   let toolApprovals: Awaited<ReturnType<typeof ctx.toolApprovals.listPending>>;
   let deliveries: Awaited<ReturnType<typeof loadDeliveries>>;
   try {
     // Parallel reads are independent; reject if any source fails.
     const settled = await Promise.all([
       ctx.userAsks.listPending(workspaceId),
-      ctx.a2a.listPending(workspaceId),
       ctx.toolApprovals.listPending(workspaceId),
       loadDeliveries(mount.env.fs),
     ]);
     asks = settled[0];
-    a2aApprovals = settled[1];
-    toolApprovals = settled[2];
-    deliveries = settled[3];
+    toolApprovals = settled[1];
+    deliveries = settled[2];
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new RpcError(
@@ -8766,6 +8341,7 @@ async function interactionListPending(
 
   for (const ask of asks) {
     const task = tasksByPath.get(ask.taskPath) ?? (ask.taskId ? tasksById.get(ask.taskId) : undefined);
+    const responsibleRole = ask.role ?? (task ? taskParentRoleId(task) : undefined);
     const item: PendingUserAskInteraction = {
       kind: "userAsk",
       id: ask.id,
@@ -8773,32 +8349,12 @@ async function interactionListPending(
       createdAt: ask.createdAt,
       taskPath: ask.taskPath,
       ...(ask.taskId ? { taskId: ask.taskId } : task?.id ? { taskId: task.id } : {}),
-      ...(ask.role ?? task?.role ? { role: ask.role ?? task?.role } : {}),
+      ...(responsibleRole ? { role: responsibleRole } : {}),
       ...(ask.sessionId ?? task?.sessionId
         ? { sessionId: ask.sessionId ?? task?.sessionId }
         : {}),
       question: ask.question,
       ...(ask.choices?.length ? { choices: ask.choices.map((c) => ({ id: c.id, label: c.label })) } : {}),
-    };
-    items.push(item);
-  }
-
-  for (const approval of a2aApprovals) {
-    const task =
-      tasksByPath.get(approval.taskPath) ??
-      (approval.taskId ? tasksById.get(approval.taskId) : undefined);
-    const item: PendingA2AInteraction = {
-      kind: "a2a",
-      id: approval.id,
-      workspaceId: approval.workspaceId,
-      createdAt: approval.createdAt,
-      taskPath: approval.taskPath,
-      ...(approval.taskId ? { taskId: approval.taskId } : task?.id ? { taskId: task.id } : {}),
-      role: approval.role,
-      ...(task?.sessionId ? { sessionId: task.sessionId } : {}),
-      profileId: approval.profileId,
-      policy: approval.policy,
-      callerKind: approval.callerKind,
     };
     items.push(item);
   }
@@ -8811,6 +8367,7 @@ async function interactionListPending(
         : undefined;
     // Safe fields only — projectToolApproval already omits raw tool args/secrets.
     const projected = projectToolApproval(approval);
+    const responsibleRole = projected.role ?? (task ? taskParentRoleId(task) : undefined);
     const item: PendingToolApprovalInteraction = {
       kind: "toolApproval",
       id: projected.id,
@@ -8823,7 +8380,7 @@ async function interactionListPending(
         : task?.id
           ? { taskId: task.id }
           : {}),
-      ...(projected.role ?? task?.role ? { role: projected.role ?? task?.role } : {}),
+      ...(responsibleRole ? { role: responsibleRole } : {}),
       toolTitle: projected.toolTitle,
       options: projected.options.map((o) => ({
         optionId: o.optionId,
@@ -8845,7 +8402,6 @@ async function interactionListPending(
       createdAt: delivery.createdAt ?? delivery.updatedAt ?? "",
       taskId: delivery.taskId,
       sourceNodeId: delivery.sourceNodeId,
-      role: delivery.role,
       path: delivery.path,
       status: "ready",
       ...(task?.path ? { taskPath: task.path } : {}),
@@ -8858,7 +8414,6 @@ async function interactionListPending(
 
   const counts = {
     userAsk: 0,
-    a2a: 0,
     toolApproval: 0,
     delivery: 0,
     total: items.length,
@@ -9362,7 +8917,9 @@ async function resolveTaskInputAckAuthority(
     );
   }
 
-  if (actorRaw === task.role) return { actor: actorRaw, task };
+  if (task.assigneeKind === "role" && actorRaw === task.assigneeId) {
+    return { actor: actorRaw, task };
+  }
   if (
     (task.parentActor?.kind === "role" && task.parentActor.id === actorRaw) ||
     (task.reviewer?.kind === "role" && task.reviewer.id === actorRaw)
@@ -9397,7 +8954,7 @@ async function resolveTaskInputAckAuthority(
     {
       inputId: item.id,
       actor: actorRaw,
-      expectedRole: task.role,
+      expectedRole: task.assigneeKind === "role" ? task.assigneeId : undefined,
       parentActor: task.parentActor,
       reviewer: task.reviewer,
       sessionId: item.sessionId,
@@ -9824,7 +9381,7 @@ export function setBeforeTaskWorktreeReclaimReloadForTests(
 }
 
 /**
- * Best-effort auto-reclaim of a terminal agentProfile Task worktree.
+ * Best-effort auto-reclaim of a terminal route Task worktree.
  * Never throws into the lifecycle RPC: fail-closed diagnostics are events only.
  * Does not touch Role worktrees, commits, branches, or operational records.
  *
@@ -9847,7 +9404,7 @@ async function maybeAutoReclaimTaskWorktree(
   const mount = ctx.host.get(workspaceId);
   if (!mount) return undefined;
 
-  // Only agentProfile lanes with a recorded Git path participate.
+  // Only route lanes with a recorded Git path participate.
   if (!isTaskScopedWorktreeLane(task)) return undefined;
   if (!isTaskWorktreeReclaimTerminalState(task.state)) return undefined;
   if (!task.worktree && !task.branch) return undefined;
@@ -10439,7 +9996,7 @@ const rejectResumeNativeInFlight = new Set<string>();
 /** Per-task flight for startSession/replaceSession (authorize first, then join). */
 type ManagedSessionFlightOperation = "startSession" | "replaceSession";
 type ManagedSessionInFlight = {
-  profileId: string;
+  routeId: string;
   operation: ManagedSessionFlightOperation;
   promise: Promise<unknown>;
 };
@@ -10458,16 +10015,16 @@ export const isManagedSessionInFlightForTests = isTaskStartSessionInFlightForTes
 
 function joinOrConflictManagedSessionFlight(
   existing: ManagedSessionInFlight,
-  profileId: string,
+  routeId: string,
   operation: ManagedSessionFlightOperation,
   taskPath: string
 ): Promise<unknown> {
-  if (existing.profileId !== profileId || existing.operation !== operation) {
+  if (existing.routeId !== routeId || existing.operation !== operation) {
     throw new RpcError(RPC_LIFECYCLE, MANAGED_SESSION_IN_PROGRESS_MESSAGE, {
       taskPath,
-      profileId,
+      routeId,
       operation,
-      inFlightProfileId: existing.profileId,
+      inFlightRouteId: existing.routeId,
       inFlightOperation: existing.operation,
       retryable: true,
     });
@@ -10478,13 +10035,13 @@ function joinOrConflictManagedSessionFlight(
 async function runManagedSessionFlight(
   workspaceId: string,
   taskPath: string,
-  profileId: string,
+  routeId: string,
   operation: ManagedSessionFlightOperation,
   run: () => Promise<unknown>
 ): Promise<unknown> {
   const flightKey = managedSessionFlightKey(workspaceId, taskPath);
   const existing = managedSessionInFlight.get(flightKey);
-  if (existing) return joinOrConflictManagedSessionFlight(existing, profileId, operation, taskPath);
+  if (existing) return joinOrConflictManagedSessionFlight(existing, routeId, operation, taskPath);
 
   let settle!: (value: unknown) => void;
   let rejectFlight!: (reason: unknown) => void;
@@ -10493,7 +10050,7 @@ async function runManagedSessionFlight(
     rejectFlight = reject;
   });
   flightPromise.catch(() => undefined);
-  managedSessionInFlight.set(flightKey, { profileId, operation, promise: flightPromise });
+  managedSessionInFlight.set(flightKey, { routeId, operation, promise: flightPromise });
   try {
     const result = await run();
     settle(result);
@@ -11815,19 +11372,6 @@ async function stopManagedSessionAfterDelivery(
 }
 
 /**
- * Test-only: throw after fallback startSession succeeds, before context flag /
- * task rebind completes. Exercises orphan stop + park without losing occupation.
- * Production never sets this.
- */
-let rejectResumePostStartFailureForTests: (() => Error) | null = null;
-
-export function setRejectResumePostStartFailureForTests(
-  fn: (() => Error) | null
-): void {
-  rejectResumePostStartFailureForTests = fn;
-}
-
-/**
  * Test-only: pause combined-dispatch compensation before the atomic
  * running/no-session interrupt section. Lets tests bind a Session concurrently
  * and prove compensation skips. Production never sets this.
@@ -11902,7 +11446,6 @@ export function resetManagedAutoDeliverDedupForTests(): void {
   managedAutoDeliverRetryRequested.clear();
   rejectResumeNativeInFlight.clear();
   managedSessionInFlight.clear();
-  rejectResumePostStartFailureForTests = null;
   beforeCombinedDispatchCompensateForTests = null;
   beforeTaskClaimCoreForTests = null;
   beforeTaskBackfillWorkspaceLaneBaseForTests = null;
@@ -11937,253 +11480,36 @@ function clearManagedAutoDeliverDedup(sessionId: string, taskPath: string): void
 /**
  * Chinese summary when reject-resume could not restore a live managed session.
  * Task stays occupied (waiting) so the user can retry startSession or interrupt.
- * Used when registry/profile identity is missing or independent new-session start fails.
+ * Used when registry/route identity is missing or independent new-session start fails.
  */
 export const REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY =
-  "驳回续跑未能恢复 managed session。可重新 startSession，或 interrupt 任务；occupation 保持。";
+  "驳回续跑未能恢复原 managed Session。可显式 replaceSession，或 interrupt 任务；occupation 保持。";
 
 /** Restore provenance for reject-resume managed session recovery. */
 export type RejectResumeRestoreReason =
   | "task.reject.resume.alive"
-  | "task.reject.resume.native"
-  | "task.reject.resume.new-session"
-  | "task.reject.resume.native-fallback";
+  | "task.reject.resume.native";
 
 type RejectResumeRestoredSession = {
   sessionId: string;
-  profileId: string;
+  routeId: string;
   adapterId: string;
   state: string;
   cwd?: string;
   /**
-   * true = provider-native same-context path; false = independent recovery Session.
-   * Never omit on reject-resume projections — callers must not invent continuity.
+   * Reject-resume always preserves the provider conversation.
    */
   contextRestored: boolean;
-  /** Why this session was chosen (alive / native / new / native-fallback). */
+  /** Why the exact Session was usable (alive or native resume). */
   restoreReason: RejectResumeRestoreReason;
 };
 
 /**
- * Compact recovery orientation for independent reject-resume Sessions.
- * Built from durable Task / Delivery / session facts only.
- * Review note is NEVER included here — it appears solely under ## Review Feedback.
- */
-async function buildRejectResumeRecoveryOrientation(
-  ctx: HandlerContext,
-  task: TaskEnvelope,
-  roots: {
-    workspaceRoot: string;
-    systemRoot: string;
-    roleFs?: import("../core/adapter.js").FsAdapter;
-  },
-  opts: {
-    priorSessionId?: string;
-    nativeResumeFailed: boolean;
-    nativeResumeError?: string;
-    rejectedDelivery?: { id: string; summary: string };
-    workspaceLane?: {
-      workspace: string;
-      worktree: string;
-      branch: string;
-      targetBranch?: string;
-    };
-  }
-): Promise<string> {
-  const base = await buildSessionBootstrapPrompt(ctx, task, roots, roots.roleFs);
-  const lines: string[] = [
-    "--- Tent reject-resume recovery ---",
-    "contextRestored: false",
-    "Native provider Session continuity was not restored. This is an independent managed Session on the same task/workspace lane.",
-    "Do not invent prior chat/cache continuity. Use Task/Node refs below; review note appears only under ## Review Feedback.",
-  ];
-  if (opts.priorSessionId) {
-    lines.push(`priorSessionId: ${opts.priorSessionId}`);
-  }
-  lines.push(
-    opts.nativeResumeFailed
-      ? "restorePath: native-resume-failed-fallback"
-      : "restorePath: not-resume-capable-new-session"
-  );
-  if (opts.nativeResumeError?.trim()) {
-    lines.push(`nativeResumeError: ${opts.nativeResumeError.trim()}`);
-  }
-  lines.push(`Task envelope: ${task.path}`);
-  if (task.id) lines.push(`Task id: ${task.id}`);
-  if (task.manifest) lines.push(`Manifest: ${task.manifest}`);
-  lines.push(`Node refs: ${taskReferencedNodeIds(task).join(", ")}`);
-  if (opts.workspaceLane) {
-    lines.push("workspace lane:");
-    lines.push(`  workspace: ${opts.workspaceLane.workspace}`);
-    lines.push(`  worktree: ${opts.workspaceLane.worktree}`);
-    lines.push(`  branch: ${opts.workspaceLane.branch}`);
-    if (opts.workspaceLane.targetBranch) {
-      lines.push(`  targetBranch: ${opts.workspaceLane.targetBranch}`);
-    }
-  }
-  if (opts.rejectedDelivery) {
-    // Delivery summary only — never re-copy review note (solely under ## Review Feedback).
-    lines.push("rejected Delivery:");
-    lines.push(`  id: ${opts.rejectedDelivery.id}`);
-    lines.push(`  summary: ${opts.rejectedDelivery.summary}`);
-  }
-  lines.push(
-    "Final report still goes through Delivery only. Feedback delivery remains exactly once via TaskInput."
-  );
-  return `${base}\n\n${lines.join("\n")}\n`;
-}
-
-async function loadRejectedDeliveryForRejectResume(
-  fs: import("../core/adapter.js").FsAdapter,
-  task: TaskEnvelope
-): Promise<{ id: string; summary: string } | undefined> {
-  const taskId = task.id?.trim();
-  if (!taskId) return undefined;
-  try {
-    const deliveries = await loadDeliveries(fs, { taskId });
-    const rejected = deliveries.find((d) => d.status === "rejected");
-    if (!rejected) return undefined;
-    return {
-      id: rejected.id,
-      summary: rejected.summary,
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Rebuild recovery orientation at inject time from durable facts so restart/retry
- * does not depend on in-memory enqueue options.
- *
- * - Same-context / ordinary Sessions (contextRestored !== false): return undefined
- *   (no recovery prefix).
- * - Independent recovery Sessions (contextRestored === false): orientation is
- *   **mandatory** because the process was started with an empty bootstrap.
- *   Registry / mount / task-load failures throw so managed inject fails and
- *   TaskInput stays failed/retryable — never silently send bare ## Review Feedback.
- */
-async function rebuildRejectResumeRecoveryOrientation(
-  ctx: HandlerContext,
-  item: TaskInputRecord
-): Promise<string | undefined> {
-  if (normalizeTaskInputKind(item.kind) !== "review-feedback") return undefined;
-  const sessionId = item.sessionId?.trim();
-  if (!sessionId) return undefined;
-
-  let rec: SessionRecord | null;
-  try {
-    rec = await ctx.runtime.registry.read(sessionId);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `reject-resume recovery orientation required but session registry read failed for ${sessionId}: ${message}`
-    );
-  }
-  if (!rec) {
-    throw new Error(
-      `reject-resume recovery orientation required but session registry row missing for ${sessionId}`
-    );
-  }
-  // Only independent recovery Sessions claim contextRestored=false.
-  // Missing/undefined/true → same-context or ordinary start; no recovery prefix.
-  if (rec.contextRestored !== false) return undefined;
-
-  const mount = ctx.host.get(item.workspaceId);
-  if (!mount) {
-    throw new Error(
-      `reject-resume recovery orientation required (contextRestored=false) but workspace mount missing: ${item.workspaceId}`
-    );
-  }
-
-  let task: TaskEnvelope;
-  try {
-    task = await loadTaskEnvelope(mount.env.fs, item.taskPath);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `reject-resume recovery orientation required (contextRestored=false) but task load failed for ${item.taskPath}: ${message}`
-    );
-  }
-
-  const workspaceLane = {
-    workspace: task.workspace || mount.workspaceRoot,
-    worktree: task.worktree || mount.workspaceRoot,
-    branch: task.branch || "HEAD",
-    targetBranch: task.targetBranch,
-  };
-  // Delivery lookup is best-effort content — missing rejected delivery still
-  // yields orientation with task/lane facts (does not invent review note).
-  const rejectedDelivery = await loadRejectedDeliveryForRejectResume(
-    mount.env.fs,
-    task
-  );
-  // lastError may retain "native resume failed: …" from fallback start.
-  // Prefer restorePath from contextRestored=false; treat lastError as native-fail
-  // provenance when present (best-effort, no new domain fields).
-  const lastError = rec.lastError?.trim() || "";
-  const nativeResumeFailed = /native resume failed/i.test(lastError);
-  const nativeResumeError = nativeResumeFailed
-    ? lastError.replace(/^reject-resume restore failed:\s*/i, "").trim() ||
-      lastError
-    : undefined;
-
-  const orientation = await buildRejectResumeRecoveryOrientation(
-    ctx,
-    task,
-    {
-      workspaceRoot: mount.workspaceRoot,
-      systemRoot: mount.systemRoot,
-      roleFs: mount.env.fs,
-    },
-    {
-      // No durable priorSessionId field — omit rather than invent.
-      nativeResumeFailed,
-      nativeResumeError,
-      rejectedDelivery,
-      workspaceLane,
-    }
-  );
-  if (!orientation.trim()) {
-    throw new Error(
-      `reject-resume recovery orientation required (contextRestored=false) but builder returned empty for ${sessionId}`
-    );
-  }
-  return orientation;
-}
-
-/** Best-effort stop of an orphan managed Session (fallback start succeeded mid-failure). */
-async function stopOrphanRejectResumeSession(
-  ctx: HandlerContext,
-  sessionId: string
-): Promise<void> {
-  try {
-    await ctx.runtime.stopSession(sessionId, "interrupt");
-  } catch {
-    // already dead / unknown
-  }
-  try {
-    await ctx.runtime.registry.update(sessionId, {
-      lastError: "reject-resume fallback orphan stopped after rebind/context failure",
-      contextRestored: false,
-    });
-  } catch {
-    // registry row may be gone
-  }
-}
-
-/**
  * After core reject(resume) for a managed task:
- * - alive → rebind the same Tent sessionId (contextRestored=true)
- * - stopped + resumeCapable → native runtime.resumeSession first (contextRestored=true)
- * - native resume **explicitly fails** → honest new ss- (contextRestored=false);
- *   never silently claim cache continuity
- * - not resumeCapable → trackable new ss- (contextRestored=false)
- * Registry/profile identity failures still park waiting(external).
- * If fallback startSession succeeds but context flag / task rebind fails, best-effort
- * stop the new Session before parking (no orphan live process).
- * Review feedback is injected once after restore; recovery orientation is rebuilt
- * at inject time from durable task/session/delivery facts.
+ * - alive → rebind the exact Tent Session id
+ * - stopped + resumeCapable → native runtime.resumeSession on that exact id
+ * - missing/corrupt/native failure → park for explicit task.replaceSession
+ * Review feedback is injected once only after provider continuity is restored.
  */
 async function restoreManagedSessionAfterRejectResume(
   ctx: HandlerContext,
@@ -12211,52 +11537,30 @@ async function restoreManagedSessionAfterRejectResume(
   // Lane + baseline must already exist for managed tasks that delivered once.
   task = await ensureTaskWorkspaceLane(ctx, input.workspaceId, task);
   const cwd = task.worktree || mount.workspaceRoot;
-  // Always project a workspace lane for recovery honesty (even when Git lane
-  // fields are sparse — fall back to mount roots so the agent sees the cwd).
-  const workspaceLane = {
-    workspace: task.workspace || mount.workspaceRoot,
-    worktree: task.worktree || mount.workspaceRoot,
-    branch: task.branch || "HEAD",
-    targetBranch: task.targetBranch,
-  };
-
   const prior = await ctx.runtime.registry.read(priorSessionId);
   if (!prior) {
     throw new Error(
       `Managed session registry row missing for ${priorSessionId}; cannot restore after reject-resume`
     );
   }
-
-  const profileId = prior.profileId?.trim();
-  if (!profileId) {
+  const priorTaskRef = prior.lastTaskId?.trim() || "";
+  if (!priorTaskRef || (priorTaskRef !== task.id && priorTaskRef !== input.taskPath)) {
     throw new Error(
-      `Managed session ${priorSessionId} has no profileId for reject-resume restore`
-    );
-  }
-  if (taskAssigneeKind(task) === "agentProfile" && task.role !== profileId) {
-    throw new Error(
-      `reject-resume profileId must match agentProfile assignee (${task.role}); session has ${profileId}`
+      `Managed Session ${priorSessionId} is not bound to the exact rejected Task ` +
+        `(session.lastTaskId=${priorTaskRef || "(missing)"}, taskId=${task.id})`
     );
   }
 
-  // Durable role: another live managed session for the same role blocks restore
-  // (same rule as startSession) unless it is already this task's binding.
-  if (taskAssigneeKind(task) !== "agentProfile") {
-    const activeForRole = await findActiveManagedSessionForRole(
-      ctx,
-      input.workspaceId,
-      task.role
+  const routeId = prior.routeId?.trim();
+  if (!routeId) {
+    throw new Error(
+      `Managed session ${priorSessionId} has no routeId for reject-resume restore`
     );
-    if (activeForRole) {
-      const boundToThisTask =
-        (!!task.id && activeForRole.lastTaskId === task.id) ||
-        activeForRole.lastTaskId === input.taskPath;
-      if (!boundToThisTask) {
-        throw new Error(
-          `Role "${task.role}" already has an active managed session: ${activeForRole.id}`
-        );
-      }
-    }
+  }
+  if (taskAssigneeKind(task) !== "route" || task.assigneeId !== routeId) {
+    throw new Error(
+      `reject-resume routeId must match route assignee (${task.assigneeKind}:${task.assigneeId}); session has ${routeId}`
+    );
   }
 
   // Empty bootstrap: go live without first session/prompt so auto-deliver cannot
@@ -12285,7 +11589,7 @@ async function restoreManagedSessionAfterRejectResume(
         {
           sessionId: priorSessionId,
           state: probe.state,
-          profileId,
+          routeId,
           taskPath: input.taskPath,
           reason: "task.reject.resume.alive",
           contextRestored: true,
@@ -12296,7 +11600,7 @@ async function restoreManagedSessionAfterRejectResume(
         task: bound,
         session: {
           sessionId: priorSessionId,
-          profileId,
+          routeId,
           adapterId: prior.adapterId,
           state: probe.state,
           cwd,
@@ -12311,108 +11615,26 @@ async function restoreManagedSessionAfterRejectResume(
     }
   }
 
-  // Stopped / not live: prefer native resume when the prior row is resume-capable.
-  // Explicit native failure → honest independent new Session (contextRestored=false).
-  // Never claim cache continuity on the fallback path.
-  let nativeResumeError: string | undefined;
-  if (probe?.resumeCapable) {
-    // Hold until native success return or fallback new-session so a racing
-    // session.failed cannot terminally fail the rework task mid-restore.
-    rejectResumeNativeInFlight.add(priorSessionId);
-    try {
-      const handle = await ctx.runtime.resumeSession({
-        sessionId: priorSessionId,
-        runtimeWorkspace: { cwd },
-        cwd,
-        bootstrapPrompt: emptyBootstrap,
-        lastTaskId: task.id || input.taskPath,
-      });
-      // Same ss- after rework: clear deliver dedup so the next prompt_complete can deliver.
-      clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
-
-      const bound = await ctx.mutations.run(input.workspaceId, async () => {
-        ctx.host.markSelfWrite(input.workspaceId);
-        const next = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
-          sessionId: handle.sessionId,
-          updatedAt: mount.env.clock.now(),
-        });
-        emitTaskState(ctx, input.workspaceId, next, "task.reject.resume");
-        ctx.events.emit(
-          "session.state",
-          input.workspaceId,
-          {
-            sessionId: handle.sessionId,
-            state: handle.state,
-            profileId: handle.profileId,
-            taskPath: input.taskPath,
-            reason: "task.reject.resume.native",
-            contextRestored: true,
-          },
-          "self"
-        );
-        return next;
-      });
-
-      rejectResumeNativeInFlight.delete(priorSessionId);
-      return {
-        task: bound,
-        session: {
-          sessionId: handle.sessionId,
-          profileId: handle.profileId,
-          adapterId: handle.adapterId,
-          state: handle.state,
-          cwd,
-          contextRestored: true,
-          restoreReason: "task.reject.resume.native",
-        },
-      };
-    } catch (err) {
-      nativeResumeError = err instanceof Error ? err.message : String(err);
-      // Fall through to honest new-session recovery (not silent cache claim).
-      // Keep rejectResumeNativeInFlight until fallback start settles or parks.
-    }
+  if (!probe?.resumeCapable) {
+    throw new Error(
+      `Managed Session ${priorSessionId} cannot restore its provider conversation; use task.replaceSession explicitly`
+    );
   }
 
-  // Independent new Session: not resumeCapable, or native resume explicitly failed.
-  // Process start uses empty bootstrap; recovery orientation is rebuilt at inject
-  // time from durable facts (not passed as in-memory enqueue options).
-  const restoreReason: RejectResumeRestoreReason = nativeResumeError
-    ? "task.reject.resume.native-fallback"
-    : "task.reject.resume.new-session";
-
-  let startedSessionId: string | undefined;
+  rejectResumeNativeInFlight.add(priorSessionId);
   try {
-    const handle = await ctx.runtime.startSession({
-      sessionId: makeSessionId(),
-      profileId,
-      roleName: task.role,
-      assigneeKind: taskAssigneeKind(task),
-      workspaceLane,
+    const handle = await ctx.runtime.resumeSession({
+      sessionId: priorSessionId,
       runtimeWorkspace: { cwd },
       cwd,
-      // Empty: go live without first session/prompt (same as native resume path).
       bootstrapPrompt: emptyBootstrap,
       lastTaskId: task.id || input.taskPath,
-      workspace: input.workspaceId,
     });
-    startedSessionId = handle.sessionId;
-    // Test-only: simulate post-start context-update / rebind failure after the
-    // new Session already exists — production never sets this hook.
-    if (rejectResumePostStartFailureForTests) {
-      throw rejectResumePostStartFailureForTests();
+    if (handle.sessionId !== priorSessionId) {
+      throw new Error(
+        `Native resume changed Session identity; expected ${priorSessionId}, got ${handle.sessionId}`
+      );
     }
-    // Honest independent context — never claim native continuity on new ss-.
-    // Persist native-fail diagnostic on the new row so inject-time rebuild can
-    // distinguish native-fallback vs not-resume-capable without new domain fields.
-    await ctx.runtime.registry.update(handle.sessionId, {
-      contextRestored: false,
-      ...(nativeResumeError
-        ? {
-            lastError: `native resume failed: ${nativeResumeError}`,
-          }
-        : {}),
-    });
-    // New ss- must also clear deliver dedup under the new key.
     clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
 
     const bound = await ctx.mutations.run(input.workspaceId, async () => {
@@ -12428,12 +11650,10 @@ async function restoreManagedSessionAfterRejectResume(
         {
           sessionId: handle.sessionId,
           state: handle.state,
-          profileId: handle.profileId,
+          routeId: handle.routeId,
           taskPath: input.taskPath,
-          reason: restoreReason,
-          contextRestored: false,
-          priorSessionId,
-          ...(nativeResumeError ? { nativeResumeError } : {}),
+          reason: "task.reject.resume.native",
+          contextRestored: true,
         },
         "self"
       );
@@ -12445,28 +11665,17 @@ async function restoreManagedSessionAfterRejectResume(
       task: bound,
       session: {
         sessionId: handle.sessionId,
-        profileId: handle.profileId,
+        routeId: handle.routeId,
         adapterId: handle.adapterId,
         state: handle.state,
         cwd,
-        contextRestored: false,
-        restoreReason,
+        contextRestored: true,
+        restoreReason: "task.reject.resume.native",
       },
     };
   } catch (err) {
-    // Close orphan window: startSession may have succeeded while context flag
-    // or task rebind failed — best-effort stop the new Session before parking.
-    if (startedSessionId) {
-      await stopOrphanRejectResumeSession(ctx, startedSessionId);
-    }
-    // Leave rejectResumeNativeInFlight set; parkTaskAfterRejectResumeFailure clears it.
-    if (nativeResumeError) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `native resume failed (${nativeResumeError}); independent recovery session also failed: ${message}`
-      );
-    }
-    throw err;
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Native resume failed for ${priorSessionId}: ${message}`);
   }
 }
 
@@ -12577,7 +11786,8 @@ function emitTaskState(
       path: task.path,
       id: task.id,
       state: task.state,
-      role: task.role,
+      assigneeKind: task.assigneeKind,
+      assigneeId: task.assigneeId,
       referencedNodeIds:
         taskReferencedNodeIds(task),
       sessionId: task.sessionId,
@@ -12601,6 +11811,20 @@ function requireString(p: Record<string, unknown>, key: string): string {
     throw new RpcError(-32602, `Missing or invalid string param: ${key}`);
   }
   return v.trim();
+}
+
+function assertAllowedParams(
+  params: Record<string, unknown>,
+  allowed: ReadonlySet<string>,
+  surface: string
+): void {
+  const unknown = Object.keys(params).filter((key) => !allowed.has(key)).sort();
+  if (unknown.length > 0) {
+    throw new RpcError(
+      -32602,
+      `${surface} received unknown parameter${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}`
+    );
+  }
 }
 
 function optionalString(p: Record<string, unknown>, key: string): string | undefined {
@@ -12636,20 +11860,6 @@ function parseDeliveryPolicy(raw: string | undefined): DeliveryPolicy | undefine
   // New RPC writes reject historical `manual`; canonical value is `review`.
   if (raw === "review" || raw === "bypass" || raw === "agent-decide") return raw;
   throw new RpcError(-32602, `Invalid deliveryPolicy: ${raw}`);
-}
-
-function requireProfileId(
-  p: Record<string, unknown>,
-  verb = "task.startSession"
-): string {
-  const profileId = optionalString(p, "profileId");
-  if (!profileId) {
-    throw new RpcError(
-      -32602,
-      `${verb} requires explicit profileId (machine Settings route key)`
-    );
-  }
-  return profileId;
 }
 
 function parseCallerKind(raw: string): "user" | "role" {
@@ -12789,7 +11999,7 @@ function makeCommitIntegrator(
       });
 
       if (ctx.integrateCommits) {
-        await ctx.integrateCommits(workspaceRoot, refs, liveTask.role);
+        await ctx.integrateCommits(workspaceRoot, refs, liveTask.assigneeId);
         return;
       }
       // Re-resolve contract immediately before Git write (lane facts at boundary).
@@ -12914,7 +12124,7 @@ async function loadReadyDeliveryTargetHead(
 /**
  * Resolve the lane contract for integration.
  * Role tasks re-validate against ensureRoleWorkspace(role).
- * Profile tasks re-validate against ensureTaskWorkspace(taskId) (tent-task/<id>).
+ * Route tasks re-validate against ensureTaskWorkspace(taskId) (tent-task/<id>).
  * Sub tasks keep envelope targetBranch (dispatcher role branch) as first-class —
  * do not overwrite with peer mainline from ensure*Workspace.
  */
@@ -12932,11 +12142,11 @@ async function resolveIntegrationContract(
     }
   }
 
-  const isProfile = taskAssigneeKind(task) === "agentProfile";
+  const isRoute = taskAssigneeKind(task) === "route";
   let dispatcherLane: RoleWorkspaceContract | undefined;
   if (taskAsSub(task)) {
     const dispatcher = taskParentRoleId(task);
-    const label = isProfile ? `task ${task.id || task.path}` : `role ${task.role}`;
+    const label = isRoute ? `task ${task.id || task.path}` : `role ${task.assigneeId}`;
     if (!dispatcher) {
       throw new Error(
         `Sub task envelope missing durable parent Role for ${label}; cannot resolve targetBranch`
@@ -12950,13 +12160,13 @@ async function resolveIntegrationContract(
     }
   }
 
-  const real = isProfile
+  const real = isRoute
     ? await ensureTaskWorkspace(mountedRoot, task.id || task.path, {
         ...(dispatcherLane ? { targetBranch: dispatcherLane.branch } : {}),
       })
-    : await ensureRoleWorkspace(mountedRoot, task.role);
+    : await ensureRoleWorkspace(mountedRoot, task.assigneeId);
 
-  const label = isProfile ? `task ${task.id || task.path}` : `role ${task.role}`;
+  const label = isRoute ? `task ${task.id || task.path}` : `role ${task.assigneeId}`;
   if (task.branch && task.branch !== real.branch) {
     throw new Error(
       `Task envelope branch mismatch for ${label}: envelope=${task.branch} expected=${real.branch}`
@@ -12997,13 +12207,13 @@ async function resolveIntegrationContract(
  * Ensure task envelope carries WorkspaceLane before managed startSession.
  * - Role / asSub: lane + baseCommit are normally captured at task.dispatch; this
  *   path is capture-once backfill only and must never overwrite an existing base.
- * - Peer agentProfile: first create tent-task/<taskId> here (never tent-role/<profile>).
+ * - Peer route: first create tent-task/<taskId> here (never tent-role/<route>).
  * Persists exact workspaceLane.baseCommit at first bind (capture-once).
  * Also backfills roleBranchBase for managed collection once when missing.
  * integrationAuthority: only the on-disk bag counts as recorded truth; absence
  * triggers explicit persist of parent/reviewer + service mutator.
  * Non-Git / pure docs → no fake Git fields (cwd falls back to workspace root);
- * authority remains a derived projection from parent/reviewer, not a Profile permission.
+ * authority remains a derived projection from parent/reviewer, not a Route permission.
  */
 async function ensureTaskWorkspaceLane(
   ctx: HandlerContext,
@@ -13032,9 +12242,9 @@ async function ensureTaskWorkspaceLane(
       return current;
     }
 
-    const isProfile = taskAssigneeKind(current) === "agentProfile";
+    const isRoute = taskAssigneeKind(current) === "route";
     let taskTargetBranch: string | undefined;
-    if (isProfile && taskAsSub(current)) {
+    if (isRoute && taskAsSub(current)) {
       const dispatcher = taskParentRoleId(current);
       if (!dispatcher) {
         throw new Error(
@@ -13058,17 +12268,17 @@ async function ensureTaskWorkspaceLane(
             branch: current.branch!,
             targetBranch: current.targetBranch!,
           }
-        : isProfile
+        : isRoute
           ? await ensureTaskWorkspaceIfGit(
               mount.workspaceRoot,
               current.id || current.path,
               { ...(taskTargetBranch ? { targetBranch: taskTargetBranch } : {}) }
             )
-          : await ensureRoleWorkspaceIfGit(mount.workspaceRoot, current.role);
+          : await ensureRoleWorkspaceIfGit(mount.workspaceRoot, current.assigneeId);
     if (!lane) return current;
 
     // Sub tasks keep dispatcher tent-role/* as targetBranch; never rewrite to mainline
-    // when backfilling an incomplete lane (peer profile still defers lane creation).
+    // when backfilling an incomplete lane (peer route still defers lane creation).
     let targetBranch = lane.targetBranch;
     if (taskAsSub(current)) {
       targetBranch = taskTargetBranch || (current.targetBranch || "").trim() || lane.targetBranch;
@@ -13084,7 +12294,7 @@ async function ensureTaskWorkspaceLane(
       patch.targetBranch = targetBranch;
     }
     // Capture-once exact baseCommit only when first binding an incomplete lane
-    // (e.g. peer agentProfile at startSession). Never rewrite an existing base.
+    // (e.g. peer route at startSession). Never rewrite an existing base.
     // Complete-lane legacy Tasks missing baseCommit must use explicit
     // task.backfillWorkspaceLaneBase — never infer from tip/roleBranchBase/cwd.
     // Role-assignee first-claim capture happens in task.claim (captureRoleBaseCommitOnClaim).
@@ -13118,9 +12328,8 @@ async function ensureTaskWorkspaceLane(
 }
 
 /**
- * Active managed ACP session for a durable role (starting/live/waiting-user).
- * External sessions and agentProfile sessions are excluded — profile sessions
- * must not block role delete or one-live-session-per-role rules.
+ * Active external Session for a durable Role. Managed ACP Sessions belong to
+ * Settings routes and never carry roleName.
  */
 async function findActiveManagedSessionForRole(
   ctx: HandlerContext,
@@ -13133,83 +12342,8 @@ async function findActiveManagedSessionForRole(
     (rec) =>
       rec.workspace === workspaceId &&
       rec.roleName === roleName &&
-      (rec.assigneeKind ?? "role") !== "agentProfile" &&
-      SessionRegistry.isNonTerminal(rec.state) &&
-      rec.state !== "external"
+      rec.state === "external"
   );
-}
-
-/**
- * Latest stopped provider session that belongs to this durable role lane.
- * Provider capability is confirmed through probe; no session/new fallback is
- * hidden behind this lookup.
- */
-async function findResumableManagedSessionForRole(
-  ctx: HandlerContext,
-  workspaceId: string,
-  roleName: string,
-  profileId: string,
-  cwd: string
-): Promise<SessionRecord | undefined> {
-  if (!roleName) return undefined;
-  const candidates = (await ctx.runtime.registry.list())
-    .filter(
-      (rec) =>
-        rec.workspace === workspaceId &&
-        rec.roleName === roleName &&
-        (rec.assigneeKind ?? "role") !== "agentProfile" &&
-        rec.profileId === profileId &&
-        rec.state === "stopped" &&
-        !!rec.resumeToken &&
-        !!rec.runtimeWorkspace?.cwd &&
-        isSameWorkspaceRoot(
-          nodePath.resolve(rec.runtimeWorkspace.cwd),
-          nodePath.resolve(cwd)
-        )
-    )
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-
-  for (const candidate of candidates) {
-    const probe = await ctx.runtime.probe(candidate.id);
-    if (!probe.alive && probe.resumeCapable) return candidate;
-  }
-  return undefined;
-}
-
-/**
- * Stopped resume-capable agentProfile sessions for the same profile + workspace cwd.
- * Same-lane only (tent-task worktree): cross-Task profile lanes differ and fail the
- * Core gate. Used as candidates; launch path still runs evaluateSessionReuseCompatibility.
- */
-async function findResumableManagedSessionsForProfile(
-  ctx: HandlerContext,
-  workspaceId: string,
-  profileId: string,
-  cwd: string
-): Promise<SessionRecord[]> {
-  if (!profileId) return [];
-  const candidates = (await ctx.runtime.registry.list())
-    .filter(
-      (rec) =>
-        rec.workspace === workspaceId &&
-        rec.profileId === profileId &&
-        rec.assigneeKind === "agentProfile" &&
-        rec.state === "stopped" &&
-        !!rec.resumeToken &&
-        !!rec.runtimeWorkspace?.cwd &&
-        isSameWorkspaceRoot(
-          nodePath.resolve(rec.runtimeWorkspace.cwd),
-          nodePath.resolve(cwd)
-        )
-    )
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-
-  const out: SessionRecord[] = [];
-  for (const candidate of candidates) {
-    const probe = await ctx.runtime.probe(candidate.id);
-    if (!probe.alive && probe.resumeCapable) out.push(candidate);
-  }
-  return out;
 }
 
 function projectStartSessionResult(
@@ -13218,7 +12352,7 @@ function projectStartSessionResult(
   task: TaskEnvelope,
   session: Pick<
     SessionRecord,
-    "id" | "profileId" | "adapterId" | "state" | "roleName" | "runtimeWorkspace"
+    "id" | "routeId" | "adapterId" | "state" | "roleName" | "runtimeWorkspace"
   >,
   extra?: { cwd?: string }
 ) {
@@ -13233,7 +12367,7 @@ function projectStartSessionResult(
     task: projectTask(task),
     session: {
       sessionId: session.id,
-      profileId: session.profileId,
+      routeId: session.routeId,
       adapterId: session.adapterId,
       state: session.state,
       cwd,
@@ -13259,6 +12393,8 @@ async function buildSessionBootstrapPrompt(
     systemRoot: string;
     /** Prior Session contextGeneration when reusing the same managed Session. */
     sessionContextGeneration?: string | null;
+    /** Live generation computed from the actual immutable route snapshot. */
+    currentContextGeneration: string;
     taskInputDelta?: string;
     checkpoint?: string;
   },
@@ -13268,12 +12404,12 @@ async function buildSessionBootstrapPrompt(
   const kind = taskAssigneeKind(task);
 
   // Load Role definition for durable Role tasks (prompt only).
-  // agentProfile one-shot: tent-task only, no Role prompt.
+  // route one-shot: tent-task only, no Role prompt.
   let roleDef: RoleDefinition | undefined;
-  if (kind === "role" && task.role && roleFs) {
+  if (kind === "role" && task.assigneeId && roleFs) {
     try {
       const registry = await loadRolesRegistry(roleFs);
-      roleDef = resolveRole(registry.roles, task.role);
+      roleDef = resolveRole(registry.roles, task.assigneeId);
     } catch {
       roleDef = undefined;
     }
@@ -13290,6 +12426,7 @@ async function buildSessionBootstrapPrompt(
     workspaceRoot: roots.workspaceRoot,
     systemRoot,
     sessionContextGeneration: roots.sessionContextGeneration,
+    currentContextGeneration: roots.currentContextGeneration,
     tentTaskSection: skillPrefix,
     taskInputDelta: roots.taskInputDelta,
     // Explicit caller checkpoint only (digest slot). On-disk Role Checkpoint is
@@ -13298,8 +12435,8 @@ async function buildSessionBootstrapPrompt(
   });
 
   // Optional Role Checkpoint: last dynamic tail only. Missing/corrupt fail-open.
-  // agentProfile one-shots never inject Role continuation notes.
-  return appendRoleCheckpointTail(base, kind, task.role, roleFs);
+  // route one-shots never inject Role continuation notes.
+  return appendRoleCheckpointTail(base, kind, task.assigneeId, roleFs);
 }
 
 /**
@@ -13334,6 +12471,7 @@ function buildContextCardManagedBootstrap(
     workspaceRoot: string;
     systemRoot: string;
     sessionContextGeneration?: string | null;
+    currentContextGeneration: string;
     tentRoleSection?: string;
     rolePromptSection?: string;
     tentTaskSection?: string;
@@ -13351,12 +12489,12 @@ function buildContextCardManagedBootstrap(
 
   const includeStablePrefix = shouldInjectStablePrefix({
     sessionContextGeneration: roots.sessionContextGeneration,
-    taskContextGeneration: contextCard.contextGeneration,
+    currentContextGeneration: roots.currentContextGeneration,
   });
   // Structured reason available for audit (no prompt-memory inference).
   void decideStablePrefixInjection({
     sessionContextGeneration: roots.sessionContextGeneration,
-    taskContextGeneration: contextCard.contextGeneration,
+    currentContextGeneration: roots.currentContextGeneration,
   });
 
   const executionLane = projectExecutionLaneFromTask(task);
@@ -13375,7 +12513,7 @@ function buildContextCardManagedBootstrap(
     ...(task.reviewer
       ? [`reviewer: ${task.reviewer.kind}:${task.reviewer.id}`]
       : []),
-    `assignee: ${taskAssigneeKind(task) === "agentProfile" ? "route" : "role"}:${task.role}`,
+    `assignee: ${task.assigneeKind}:${task.assigneeId}`,
     `Service status: this task is already claimed (state=${task.state || "running"}).`,
     "Managed path: Local Service already claimed this task; final assistant reply is the report and will be delivered automatically.",
     ...(executionLaneText ? [executionLaneText] : []),
@@ -13389,6 +12527,7 @@ function buildContextCardManagedBootstrap(
     rolePromptSection: roots.rolePromptSection,
     tentTaskSection: roots.tentTaskSection,
     contextCard,
+    contextGeneration: roots.currentContextGeneration,
     taskPointers: pointers,
     userPrompt: extractTaskUserPrompt(task),
     taskInputDelta: roots.taskInputDelta,
@@ -13403,7 +12542,7 @@ function buildContextCardManagedBootstrap(
     return `--- Tent managed session bootstrap ---\n${assembly.text}`;
   }
   return (
-    `--- Tent managed session delta (contextGeneration=${contextCard.contextGeneration}) ---\n` +
+    `--- Tent managed session delta (contextGeneration=${roots.currentContextGeneration}) ---\n` +
     `${assembly.text}`
   );
 }
@@ -13467,7 +12606,8 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
   const proj: TaskProjection = {
     path: task.path,
     id: task.id,
-    role: task.role,
+    assigneeKind: task.assigneeKind,
+    assigneeId: task.assigneeId,
     referencedNodeIds: taskReferencedNodeIds(task),
     state: task.state,
     manifest: task.manifest,
@@ -13476,8 +12616,6 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
     // Missing asSub on disk reads as false (peer Git lane).
     asSub: taskAsSub(task),
     deliveryPolicy: task.deliveryPolicy,
-    // Missing assigneeKind on disk reads as role (backward compatible).
-    assigneeKind: taskAssigneeKind(task),
     sessionId: task.sessionId,
     wait: task.wait,
     activeDeliveryId: task.activeDeliveryId,
@@ -13500,13 +12638,10 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     prompt: task.prompt,
-    contextCard: task.contextCard!,
+    contextCard: task.contextCard,
     ...(task.contextGeneration ? { contextGeneration: task.contextGeneration } : {}),
     ...(task.taskDeltaDigest ? { taskDeltaDigest: task.taskDeltaDigest } : {}),
   };
-  if (typeof task.agentId === "string" && task.agentId.trim()) {
-    proj.agentId = task.agentId.trim();
-  }
   return proj;
 }
 
@@ -13516,7 +12651,6 @@ function projectDelivery(d: import("../core/delivery.js").DeliveryRecord): Deliv
     id: d.id,
     taskId: d.taskId,
     sourceNodeId: d.sourceNodeId,
-    role: d.role,
     status: d.status,
     summary: d.summary,
     commits: d.commits,

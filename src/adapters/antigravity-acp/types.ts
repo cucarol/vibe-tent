@@ -1,7 +1,7 @@
-import type { AcpPermissionPolicy, AcpProfileOptions } from "../acp/types.js";
+import type { AcpPermissionPolicy, AcpRouteOptions } from "../acp/types.js";
 
 export type AntigravityAcpPermissionPolicy = AcpPermissionPolicy;
-export interface AntigravityAcpProfileOptions extends AcpProfileOptions {}
+export interface AntigravityAcpRouteOptions extends AcpRouteOptions {}
 
 export const ANTIGRAVITY_ACP_ADAPTER_ID = "antigravity-acp";
 

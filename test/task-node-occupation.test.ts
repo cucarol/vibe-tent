@@ -34,7 +34,7 @@ import {
   taskReferencedNodeIds,
   type ContextCardNodeRefSource,
 } from "../src/core/task-node-refs.js";
-import { buildTaskContextCard, computeContextGeneration } from "../src/core/task-context-card.js";
+import { buildTaskContextCard } from "../src/core/task-context-card.js";
 import { parseFrontmatter } from "../src/core/frontmatter.js";
 import { makeTent } from "./helpers.js";
 
@@ -49,12 +49,23 @@ function envFor(dir: string) {
   };
 }
 
+function dispatchToRole(env: any, nodeId: string, assigneeId: string, input: Record<string, unknown>) {
+  return dispatch(env, nodeId, {
+    assigneeKind: "role",
+    assigneeId,
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+    ...input,
+  });
+}
+
 test("writeTaskEnvelope rejects duplicate canonical Node refs", async () => {
   const dir = await makeTent();
   const fsAdapter = new NodeFs(dir);
   await assert.rejects(
     writeTaskEnvelope(fsAdapter, clock, {
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       nodeRefs: [
         { id: "cx-p1", path: "prompt/x" },
         { id: "cx-p1", path: "prompt/x" },
@@ -75,7 +86,8 @@ async function writeNodeTask(
   state: "queued" | "running" | "waiting" | "delivered" | "accepted" | "rejected" | "interrupted" | "failed" = "queued"
 ): Promise<string> {
   const taskPath = await writeTaskEnvelope(fsAdapter, clock, {
-    role: `role-${id}`,
+    assigneeKind: "role",
+    assigneeId: `role-${id}`,
     nodeRefs: nodeIds.map((nodeId) => ({ id: nodeId, path: `node/${nodeId}` })),
     manifestPath: `temp/role-${id}/manifests/${id}.yml`,
     userPrompt: `hold ${id}`,
@@ -127,27 +139,27 @@ test("Task can reference multiple Nodes; parent, child, and sibling Tasks run co
     type: "goal",
   });
 
-  const multi = await dispatch(env as any, "cx-p1", "analyst", {
+  const multi = await dispatchToRole(env as any, "cx-p1", "analyst", {
     userPrompt: "work across two Nodes",
     parentActor: { kind: "user", id: "user" },
     nodeIds: ["cx-p1", "cx-p2"],
   });
-  const parent = await dispatch(env as any, "cx-g1", "planner", {
+  const parent = await dispatchToRole(env as any, "cx-g1", "planner", {
     userPrompt: "work on the parent Node",
     parentActor: { kind: "user", id: "user" },
     nodeIds: ["cx-g1"],
   });
-  const child = await dispatch(env as any, "cx-g2", "executor", {
+  const child = await dispatchToRole(env as any, "cx-g2", "executor", {
     userPrompt: "work on the child Node",
     parentActor: { kind: "user", id: "user" },
     nodeIds: ["cx-g2"],
   });
-  const firstSibling = await dispatch(env as any, siblingA, "reviewer", {
+  const firstSibling = await dispatchToRole(env as any, siblingA, "reviewer", {
     userPrompt: "work on sibling A",
     parentActor: { kind: "user", id: "user" },
     nodeIds: [siblingA],
   });
-  const secondSibling = await dispatch(env as any, siblingB, "writer", {
+  const secondSibling = await dispatchToRole(env as any, siblingB, "writer", {
     userPrompt: "work on sibling B",
     parentActor: { kind: "user", id: "user" },
     nodeIds: [siblingB],
@@ -168,7 +180,7 @@ test("Task can reference multiple Nodes; parent, child, and sibling Tasks run co
 test("same exact Node rejects a second active Task and releases on terminal state", async () => {
   const dir = await makeTent();
   const env = envFor(dir);
-  const first = await dispatch(env as any, "cx-p1", "analyst", {
+  const first = await dispatchToRole(env as any, "cx-p1", "analyst", {
     userPrompt: "first exact Node task",
     parentActor: { kind: "user", id: "user" },
     nodeIds: ["cx-p1"],
@@ -176,7 +188,7 @@ test("same exact Node rejects a second active Task and releases on terminal stat
 
   await assert.rejects(
     () =>
-      dispatch(env as any, "cx-p1", "executor", {
+      dispatchToRole(env as any, "cx-p1", "executor", {
         userPrompt: "second exact Node task",
         parentActor: { kind: "user", id: "user" },
         nodeIds: ["cx-p1"],
@@ -187,7 +199,7 @@ test("same exact Node rejects a second active Task and releases on terminal stat
 
   for (const state of ["accepted", "rejected", "interrupted", "failed"] as const) {
     await patchTaskEnvelope(env.fs, first.taskPath, { state });
-    const released = await dispatch(env as any, "cx-p1", `released-${state}`, {
+    const released = await dispatchToRole(env as any, "cx-p1", `released-${state}`, {
       userPrompt: `reuse after ${state}`,
       parentActor: { kind: "user", id: "user" },
       nodeIds: ["cx-p1"],
@@ -274,7 +286,8 @@ test("claims-only Task envelopes are rejected without byte rewrite", async () =>
       "id: tk-legacy1",
       "status: taken",
       "state: running",
-      "role: executor",
+      "assigneeKind: role",
+      "assigneeId: executor",
       "parentActor: { kind: user, id: user }",
       "reviewer: { kind: user, id: user }",
       "claims: [cx-p1, root]",
@@ -347,12 +360,7 @@ test("Task Node context validation requires non-empty canonical refs", () => {
 });
 
 test("Context Card keeps structured objective optional and durable Node refs explicit", () => {
-  const generation = computeContextGeneration({
-    workspaceIdentity: "workspace",
-    agentsPointerDigest: "agents",
-  });
   const promptOnly = buildTaskContextCard({
-    contextGeneration: generation,
     refs: { nodes: [{ id: "cx-1" }] },
   });
   assert.equal(promptOnly.objective, "");
@@ -360,11 +368,10 @@ test("Context Card keeps structured objective optional and durable Node refs exp
   const card = buildTaskContextCard({
     objective: "do it",
     acceptance: ["do it"],
-    contextGeneration: generation,
     refs: { nodes: [normalizeContextCardNodeRef({ id: "cx-1", path: "a/b" })] },
   });
   assert.deepEqual(card.acceptance, ["do it"]);
   assert.equal(card.refs.nodes[0]!.path, "a/b");
-  assert.ok(card.contextGeneration.startsWith("cg-v1-"));
+  assert.equal("contextGeneration" in card, false);
   assert.ok(card.taskDeltaDigest);
 });

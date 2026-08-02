@@ -135,7 +135,8 @@ async function onDispatch(): Promise<void> {
     const result = (await window.tentDesktop.rpc("task.dispatch", {
       workspaceId,
       nodeIds: [validation.payload.nodeId],
-      role: validation.payload.role,
+      assigneeKind: validation.payload.assigneeKind,
+      assigneeId: validation.payload.assigneeId,
       prompt: validation.payload.prompt,
       parentActor: validation.payload.parentActor,
       reviewer: validation.payload.reviewer,

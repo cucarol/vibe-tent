@@ -51,7 +51,7 @@ export async function renderTentStatus(
   const allTasks = await loadTaskEnvelopes(fsAdapter);
   const pendingTasks = allTasks
     .filter((task) => task.state === "queued")
-    .filter((task) => !role || task.role === role);
+    .filter((task) => !role || (task.assigneeKind === "role" && task.assigneeId === role));
   lines.push("");
   if (pendingTasks.length === 0) {
     lines.push("Pending tasks: none");
@@ -60,7 +60,7 @@ export async function renderTentStatus(
     for (const task of pendingTasks) {
       const nodeIds = taskReferencedNodeIds(task);
       lines.push(
-        `- ${task.role}/${path.posix.basename(task.path)} -> ${nodeIds.join(", ") || "-"}`
+        `- ${task.assigneeKind}:${task.assigneeId}/${path.posix.basename(task.path)} -> ${nodeIds.join(", ") || "-"}`
       );
     }
   }
@@ -69,7 +69,7 @@ export async function renderTentStatus(
   const activeTasks = allTasks
     .filter((task) => envelopeIsActiveOccupation(task))
     .filter((task) => task.state !== "queued")
-    .filter((task) => !role || task.role === role);
+    .filter((task) => !role || (task.assigneeKind === "role" && task.assigneeId === role));
   lines.push("");
   if (activeTasks.length === 0) {
     lines.push("Active tasks: none");
@@ -79,7 +79,7 @@ export async function renderTentStatus(
       const state = task.state;
       const nodeIds = taskReferencedNodeIds(task);
       lines.push(
-        `- ${task.id || path.posix.basename(task.path)}: ${task.role} [${state}] nodes=${nodeIds.join(",") || "-"}`
+        `- ${task.id || path.posix.basename(task.path)}: ${task.assigneeKind}:${task.assigneeId} [${state}] nodes=${nodeIds.join(",") || "-"}`
       );
     }
   }

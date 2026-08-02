@@ -4,11 +4,10 @@ import type { TaskReviewItem } from "../../workbench/collaboration-ui.js";
 import type { TaskContextCardV1 } from "../../../core/task-context-card.js";
 import type {
   CoordinationTypeOption,
-  ProfileOption,
+  RouteOption,
   RoleOption,
 } from "../../workbench/collaboration-ui.js";
 import type {
-  A2AApprovalItem,
   ProposalItem,
   TaskInputItem,
   ToolApprovalItem,
@@ -65,7 +64,6 @@ export type BacklinkView = {
 
 /** Normalized pending rows — see workbench/pending-interactions.ts. */
 export type UserAskView = UserAskItem;
-export type A2AApprovalView = A2AApprovalItem;
 export type ToolApprovalView = ToolApprovalItem;
 export type TaskInputView = TaskInputItem;
 export type ProposalView = ProposalItem;
@@ -94,7 +92,8 @@ export type ShellState = {
   } | null;
   tasks: Array<{
     path: string;
-    role: string;
+    assigneeKind: "role" | "route";
+    assigneeId: string;
     referencedNodeIds: string[];
     state: string;
     id?: string;
@@ -106,14 +105,14 @@ export type ShellState = {
   taskReview?: TaskReviewItem[];
   roles?: RoleOption[];
   coordinationTypes?: CoordinationTypeOption[];
-  profiles?: ProfileOption[];
-  selectedProfileId?: string | null;
+  routes?: RouteOption[];
+  selectedRouteId?: string | null;
   statusMessage: string | null;
 };
 
 export type {
   CoordinationTypeOption,
-  ProfileOption,
+  RouteOption,
   RoleOption,
   TaskReviewItem,
 };

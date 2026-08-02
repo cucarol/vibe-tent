@@ -4,12 +4,12 @@ import type { ServiceRpcClient } from "../client/rpc-client.js";
 import { ServiceDocsClient } from "../client/service-docs-client.js";
 import { WorkspaceController, type WorkspaceSnapshot } from "../../markdown/workspace-controller.js";
 import type {
-  AgentProfileProjection,
   NodeCollaboration,
   NodeCollaborationsResult,
   DeliveryProjection,
   RoleRegistryEntryProjection,
   SessionProjection,
+  SettingsRouteProjection,
   TaskProjection,
   TypeRegistryEntryProjection,
 } from "../../service/types.js";
@@ -29,18 +29,19 @@ import {
   buildStartSessionPayload,
   buildTaskReviewItems,
   listCoordinationTypeOptions,
-  listProfileOptions,
+  listRouteOptions,
   listRoleOptions,
-  pickDefaultProfileId,
+  pickDefaultRouteId,
   type CoordinationTypeOption,
-  type ProfileOption,
+  type RouteOption,
   type RoleOption,
   type TaskReviewItem,
 } from "./collaboration-ui.js";
 
 export type ShellTaskRow = {
   path: string;
-  role: string;
+  assigneeKind: "role" | "route";
+  assigneeId: string;
   /** Node ids from TaskProjection.referencedNodeIds (Context Card refs). */
   referencedNodeIds: string[];
   /** Canonical lifecycle state (task-api). */
@@ -62,10 +63,10 @@ export type ShellSnapshot = {
   taskReview: TaskReviewItem[];
   roles: RoleOption[];
   coordinationTypes: CoordinationTypeOption[];
-  /** Product profile picker options (testOnly hidden unless includeTest). */
-  profiles: ProfileOption[];
-  /** Selected machine-local profile id for start agent. */
-  selectedProfileId: string | null;
+  /** Machine-local route picker options. */
+  routes: RouteOption[];
+  /** Selected machine-local route id in the shell snapshot. */
+  selectedRouteId: string | null;
   statusMessage: string | null;
   /** Canonical Node collaboration projections keyed by nodeId. */
   nodeCollaborations: NodeCollaborationView[];
@@ -82,8 +83,8 @@ export class DesktopShellModel {
   private sessions: SessionProjection[] = [];
   private roles: RoleOption[] = [];
   private coordinationTypes: CoordinationTypeOption[] = [];
-  private profiles: ProfileOption[] = [];
-  private selectedProfileId: string | null = null;
+  private routes: RouteOption[] = [];
+  private selectedRouteId: string | null = null;
   private statusMessage: string | null = null;
   private nodeCollaborations = new Map<string, NodeCollaborationView>();
   private listeners = new Set<() => void>();
@@ -121,7 +122,8 @@ export class DesktopShellModel {
         this.tasks.map((t) => ({
           path: t.path,
           id: t.id,
-          role: t.role,
+          assigneeKind: t.assigneeKind,
+          assigneeId: t.assigneeId,
           referencedNodeIds: t.referencedNodeIds,
           state: t.state,
           prompt: t.prompt,
@@ -135,8 +137,8 @@ export class DesktopShellModel {
       ),
       roles: this.roles,
       coordinationTypes: this.coordinationTypes,
-      profiles: this.profiles,
-      selectedProfileId: this.selectedProfileId,
+      routes: this.routes,
+      selectedRouteId: this.selectedRouteId,
       statusMessage: this.statusMessage,
       nodeCollaborations: [...this.nodeCollaborations.values()],
     };
@@ -146,8 +148,8 @@ export class DesktopShellModel {
     return this.controller;
   }
 
-  setSelectedProfileId(profileId: string | null): void {
-    this.selectedProfileId = profileId;
+  setSelectedRouteId(routeId: string | null): void {
+    this.selectedRouteId = routeId;
     this.emit();
   }
 
@@ -237,7 +239,7 @@ export class DesktopShellModel {
     this.controller.subscribe(() => this.emit());
     await this.controller.refreshTree();
     // Task/delivery/session changes invalidate Node collaboration projections.
-    await Promise.all([this.refreshTasks(), this.refreshRegistry(), this.refreshProfiles()]);
+    await Promise.all([this.refreshTasks(), this.refreshRegistry(), this.refreshRoutes()]);
     this.emit();
   }
 
@@ -290,7 +292,8 @@ export class DesktopShellModel {
       ]);
       this.tasks = (taskResult.tasks ?? []).map((t) => ({
         path: t.path,
-        role: t.role,
+        assigneeKind: t.assigneeKind,
+        assigneeId: t.assigneeId,
         referencedNodeIds: t.referencedNodeIds ?? [],
         state: t.state,
         id: t.id,
@@ -337,51 +340,49 @@ export class DesktopShellModel {
   }
 
   /**
-   * Load machine-local profiles (product list: testOnly hidden).
+   * Load machine-local routes.
    * Does not start sessions; selection only.
    */
-  async refreshProfiles(): Promise<ProfileOption[]> {
+  async refreshRoutes(): Promise<RouteOption[]> {
     if (!this.rpc) {
-      this.profiles = [];
-      this.selectedProfileId = null;
+      this.routes = [];
+      this.selectedRouteId = null;
       this.emit();
-      return this.profiles;
+      return this.routes;
     }
     try {
-      const result = await this.rpc.call<{ profiles: AgentProfileProjection[] }>("profile.list", {});
-      this.profiles = listProfileOptions(result.profiles ?? []);
+      const result = await this.rpc.call<{ routes: SettingsRouteProjection[] }>("route.list", {});
+      this.routes = listRouteOptions(result.routes ?? []);
       if (
-        !this.selectedProfileId ||
-        !this.profiles.some((p) => p.id === this.selectedProfileId)
+        !this.selectedRouteId ||
+        !this.routes.some((route) => route.routeId === this.selectedRouteId)
       ) {
-        this.selectedProfileId = pickDefaultProfileId(this.profiles);
+        this.selectedRouteId = pickDefaultRouteId(this.routes);
       }
     } catch {
-      this.profiles = [];
+      this.routes = [];
       // Keep previous selection only if still meaningful; otherwise clear.
-      if (!this.profiles.length) this.selectedProfileId = null;
+      if (!this.routes.length) this.selectedRouteId = null;
     }
     this.emit();
-    return this.profiles;
+    return this.routes;
   }
 
   /**
    * User-clicked start agent. Builds task.startSession with callerKind=user.
    * Does not auto-run; service may claim queued tasks for user callers.
    */
-  async startAgentSession(taskPath: string, profileId?: string): Promise<unknown> {
+  async startAgentSession(taskPath: string): Promise<unknown> {
     if (!this.rpc || !this.foregroundWorkspaceId) {
       throw new Error("服务未连接或未选择工作区。");
     }
-    const pid = (profileId ?? this.selectedProfileId ?? "").trim();
-    const built = buildStartSessionPayload(taskPath, pid);
+    const built = buildStartSessionPayload(taskPath);
     if (!built.ok) {
       throw new Error(built.reason);
     }
     const result = await this.rpc.call("task.startSession", {
       workspaceId: this.foregroundWorkspaceId,
       taskPath: built.payload.taskPath,
-      profileId: built.payload.profileId,
       callerKind: built.payload.callerKind,
     });
     await this.refreshTasks();

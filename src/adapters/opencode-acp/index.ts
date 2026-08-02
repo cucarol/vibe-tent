@@ -1,7 +1,7 @@
 // OpenCode ACP adapter: native `opencode acp` stdio transport.
 
 import type {
-  LaunchPlan,
+  RouteLaunchPlan,
   ManagedSession,
   ProviderAdapter,
   ProviderCapabilities,
@@ -28,13 +28,13 @@ import {
 import {
   OPENCODE_ACP_ADAPTER_ID,
   type OpenCodeAcpPermissionPolicy,
-  type OpenCodeAcpProfileOptions,
+  type OpenCodeAcpRouteOptions,
 } from "./types.js";
 
 export {
   OPENCODE_ACP_ADAPTER_ID,
   type OpenCodeAcpPermissionPolicy,
-  type OpenCodeAcpProfileOptions,
+  type OpenCodeAcpRouteOptions,
 } from "./types.js";
 
 export interface OpenCodeAcpAdapterOptions extends AcpPermissionAskHooks {
@@ -69,20 +69,19 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
     return loadSessionAcpCapabilities("external-app");
   }
 
-  resolveLaunch(plan: LaunchPlan): ResolvedLaunch {
+  resolveLaunch(plan: RouteLaunchPlan): ResolvedLaunch {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const env: Record<string, string> = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_PROFILE_ID: plan.profileId,
+      TENT_ROUTE_ID: plan.routeId,
     };
-    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
     if (opts.envKey) {
       const value = this.resolveEnvValue(opts.envKey, plan.env);
       if (!value?.trim()) {
         throw new Error(
-          `未配置环境变量 ${opts.envKey}：opencode-acp profile 明确要求该值` +
-            `（仅 service 进程 / LaunchPlan.env）。`
+          `未配置环境变量 ${opts.envKey}：opencode-acp route 明确要求该值` +
+          `（仅 service 进程 / RouteLaunchPlan.env）。`
         );
       }
       env[opts.envKey] = value;
@@ -98,7 +97,7 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
   }
 
   async startManagedSession(
-    plan: LaunchPlan,
+    plan: RouteLaunchPlan,
     emit: (event: RuntimeEvent) => void
   ): Promise<ManagedSession> {
     const client = this.createClient(plan, emit);
@@ -110,7 +109,7 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
    * Requires agentCapabilities.loadSession on the live initialize handshake.
    */
   async resumeManagedSession(
-    plan: LaunchPlan,
+    plan: RouteLaunchPlan,
     token: ResumeToken,
     emit: (event: RuntimeEvent) => void
   ): Promise<ManagedSession> {
@@ -133,7 +132,7 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
   }
 
   private createClient(
-    plan: LaunchPlan,
+    plan: RouteLaunchPlan,
     emit: (event: RuntimeEvent) => void
   ): AcpClient {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
@@ -175,27 +174,4 @@ export function createOpenCodeAcpAdapter(
   options?: OpenCodeAcpAdapterOptions
 ): OpenCodeAcpProviderAdapter {
   return new OpenCodeAcpProviderAdapter(options);
-}
-
-export function openCodeAcpProfileTemplate(overrides?: {
-  id?: string;
-  executable?: string;
-  envKey?: string;
-  permissionPolicy?: OpenCodeAcpPermissionPolicy;
-}): {
-  id: string;
-  adapterId: string;
-  displayNameKey: string;
-  acp: OpenCodeAcpProfileOptions;
-} {
-  return {
-    id: overrides?.id ?? "opencode-acp-default",
-    adapterId: OPENCODE_ACP_ADAPTER_ID,
-    displayNameKey: "profile.openCodeAcp.default",
-    acp: {
-      executable: overrides?.executable,
-      envKey: overrides?.envKey,
-      permissionPolicy: overrides?.permissionPolicy ?? "deny",
-    },
-  };
 }

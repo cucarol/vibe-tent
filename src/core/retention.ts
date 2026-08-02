@@ -454,19 +454,19 @@ async function scanTasks(
       });
       continue;
     }
-    // Nested one-shot profile tasks: temp/agent-profiles/<safe>/tasks/
-    if (roleEntry.name === "agent-profiles") {
-      const profilesRoot = join("temp", "agent-profiles");
-      for (const profileEntry of await fs.listDir(profilesRoot)) {
-        if (!profileEntry.isDir) continue;
-        if (!isSafeRoleSegment(profileEntry.name)) {
+    // Nested one-shot route tasks: temp/routes/<safe>/tasks/
+    if (roleEntry.name === "routes") {
+      const routesRoot = join("temp", "routes");
+      for (const routeEntry of await fs.listDir(routesRoot)) {
+        if (!routeEntry.isDir) continue;
+        if (!isSafeRoleSegment(routeEntry.name)) {
           skipped.push({
-            path: join(profilesRoot, profileEntry.name),
-            reason: "unsafe profile directory name",
+            path: join(routesRoot, routeEntry.name),
+            reason: "unsafe route directory name",
           });
           continue;
         }
-        await scanTaskDir(fs, join(profilesRoot, profileEntry.name, "tasks"), tasks, skipped);
+        await scanTaskDir(fs, join(routesRoot, routeEntry.name, "tasks"), tasks, skipped);
       }
       continue;
     }
@@ -512,20 +512,20 @@ async function scanDeliveries(
       });
       continue;
     }
-    if (roleEntry.name === "agent-profiles") {
-      const profilesRoot = join("temp", "agent-profiles");
-      for (const profileEntry of await fs.listDir(profilesRoot)) {
-        if (!profileEntry.isDir) continue;
-        if (!isSafeRoleSegment(profileEntry.name)) {
+    if (roleEntry.name === "routes") {
+      const routesRoot = join("temp", "routes");
+      for (const routeEntry of await fs.listDir(routesRoot)) {
+        if (!routeEntry.isDir) continue;
+        if (!isSafeRoleSegment(routeEntry.name)) {
           skipped.push({
-            path: join(profilesRoot, profileEntry.name),
-            reason: "unsafe profile directory name",
+            path: join(routesRoot, routeEntry.name),
+            reason: "unsafe route directory name",
           });
           continue;
         }
         await scanDeliveryDir(
           fs,
-          join(profilesRoot, profileEntry.name, "deliveries"),
+          join(routesRoot, routeEntry.name, "deliveries"),
           deliveries,
           skipped
         );

@@ -1,12 +1,12 @@
 // Settings secondary surface: one primary entry, secondary nav for
-// Workspace · Roles · Agent Profiles · Credentials · Skills/MCP · Maintenance.
+// Workspace · Roles · Routes · Credentials · Skills/MCP · Maintenance.
 // All mutations via Service RPC. Credentials never echo secrets.
 
 import { escapeHtml } from "../../../markdown/render.js";
 import type {
-  AgentProfileProjection,
   ProviderCatalogEntry,
   RoleRegistryEntryProjection,
+  SettingsRouteProjection,
 } from "../../../service/types.js";
 import type { CredentialProjection } from "../../../service/credential-store.js";
 import type { BundledSkillListEntry } from "../../../machine/skills.js";
@@ -20,9 +20,9 @@ import {
   mcpCredentialStatusLine,
   mcpDraftsFromProjection,
   mcpSourceLine,
-  PROFILE_NEXT_SESSION_TIP,
-  PROFILE_SKILLS_METADATA_TIP,
-  profileDisplayLabel,
+  ROUTE_NEXT_SESSION_TIP,
+  ROUTE_SKILLS_METADATA_TIP,
+  routeDisplayLabel,
   removeMcpDraft,
   removeSkillDraft,
   retentionSummaryLine,
@@ -32,8 +32,8 @@ import {
   skillSourceLine,
   validateCredentialSet,
   validateMcpAddDraft,
-  validateProfileCreate,
-  validateProfileUpdate,
+  validateRouteCreate,
+  validateRouteUpdate,
   validateRoleCreate,
   validateRoleUpdate,
   validateSkillAddDraft,
@@ -45,7 +45,7 @@ import {
 import { DESKTOP_CONTRACT_GAPS } from "./contract-gaps.js";
 import { el, setError } from "./elements.js";
 import {
-  reloadProfiles,
+  reloadRoutes,
   reloadRegistry,
   setRoles,
   workspaceId,
@@ -54,7 +54,7 @@ import {
 export type SettingsSection =
   | "workspace"
   | "roles"
-  | "profiles"
+  | "routes"
   | "credentials"
   | "skills"
   | "maintenance";
@@ -62,7 +62,7 @@ export type SettingsSection =
 const SECTIONS: Array<{ id: SettingsSection; label: string }> = [
   { id: "workspace", label: "工作区" },
   { id: "roles", label: "角色" },
-  { id: "profiles", label: "Agent Profiles" },
+  { id: "routes", label: "Routes" },
   { id: "credentials", label: "凭证" },
   { id: "skills", label: "Skills / MCP" },
   { id: "maintenance", label: "维护" },
@@ -73,7 +73,7 @@ let providers: ProviderRow[] = [];
 let credentials: CredentialProjection[] = [];
 let skills: BundledSkillListEntry[] = [];
 let fullRoles: RoleRegistryEntryProjection[] = [];
-let fullProfiles: AgentProfileProjection[] = [];
+let fullRoutes: SettingsRouteProjection[] = [];
 let settingsPolicy: DeliveryPolicy = "review";
 let agentsContent = "";
 let agentsEtag = "";
@@ -87,13 +87,13 @@ let retentionPreview: {
 } | null = null;
 let loadError: string | null = null;
 let loading = false;
-/** Profile editor: skills/mcp drafts (next session; id/ref only). */
-let profileEditId: string | null = null;
-/** Working copies while a profile is open for edit — never secrets. */
+/** Route editor: skills/mcp drafts (next session; id/ref only). */
+let routeEditId: string | null = null;
+/** Working copies while a route is open for edit — never secrets. */
 let skillDrafts: SkillRefDraft[] = [];
 let mcpDrafts: McpServerDraft[] = [];
 /** Unsaved basic fields while skills/mcp list re-renders. */
-let profileFieldDraft: {
+let routeFieldDraft: {
   displayName: string;
   model: string;
   executable: string;
@@ -104,32 +104,32 @@ let profileFieldDraft: {
 /** Role editor: operational name of the role being edited. */
 let roleEditName: string | null = null;
 
-function openProfileEditor(id: string | null): void {
-  profileEditId = id;
-  profileFieldDraft = null;
+function openRouteEditor(id: string | null): void {
+  routeEditId = id;
+  routeFieldDraft = null;
   if (!id) {
     skillDrafts = [];
     mcpDrafts = [];
     return;
   }
-  const p = fullProfiles.find((x) => x.id === id);
-  skillDrafts = skillDraftsFromProjection(p?.skills);
-  mcpDrafts = mcpDraftsFromProjection(p?.mcpServers);
+  const route = fullRoutes.find((item) => item.routeId === id);
+  skillDrafts = skillDraftsFromProjection(route?.skills);
+  mcpDrafts = mcpDraftsFromProjection(route?.mcpServers);
 }
 
 /** Preserve basic form inputs across skill/mcp list re-renders. */
-function captureProfileFieldDraft(): void {
-  if (!profileEditId) return;
-  profileFieldDraft = {
+function captureRouteFieldDraft(): void {
+  if (!routeEditId) return;
+  routeFieldDraft = {
     displayName:
-      (document.getElementById("prof-edit-name") as HTMLInputElement | null)?.value ?? "",
-    model: (document.getElementById("prof-edit-model") as HTMLInputElement | null)?.value ?? "",
+      (document.getElementById("route-edit-name") as HTMLInputElement | null)?.value ?? "",
+    model: (document.getElementById("route-edit-model") as HTMLInputElement | null)?.value ?? "",
     executable:
-      (document.getElementById("prof-edit-exe") as HTMLInputElement | null)?.value ?? "",
-    envKey: (document.getElementById("prof-edit-env") as HTMLInputElement | null)?.value ?? "",
+      (document.getElementById("route-edit-exe") as HTMLInputElement | null)?.value ?? "",
+    envKey: (document.getElementById("route-edit-env") as HTMLInputElement | null)?.value ?? "",
     credentialRef:
-      (document.getElementById("prof-edit-cred") as HTMLInputElement | null)?.value ?? "",
-    baseUrl: (document.getElementById("prof-edit-base") as HTMLInputElement | null)?.value ?? "",
+      (document.getElementById("route-edit-cred") as HTMLInputElement | null)?.value ?? "",
+    baseUrl: (document.getElementById("route-edit-base") as HTMLInputElement | null)?.value ?? "",
   };
 }
 
@@ -158,7 +158,7 @@ export async function reloadSettings(): Promise<void> {
       loadSkills(),
       workspaceId ? loadWorkspaceSettings() : Promise.resolve(),
       workspaceId ? loadRolesFull() : Promise.resolve(),
-      loadProfilesFull(),
+      loadRoutesFull(),
     ]);
     loading = false;
     renderSettings();
@@ -176,12 +176,12 @@ async function loadSectionData(s: SettingsSection): Promise<void> {
       await Promise.all([loadWorkspaceSettings(), loadAgents()]);
     } else if (s === "roles" && workspaceId) {
       await loadRolesFull();
-    } else if (s === "profiles") {
-      await Promise.all([loadProfilesFull(), loadProviders(), loadCredentials()]);
+    } else if (s === "routes") {
+      await Promise.all([loadRoutesFull(), loadProviders(), loadCredentials()]);
     } else if (s === "credentials") {
       await loadCredentials();
     } else if (s === "skills") {
-      await Promise.all([loadSkills(), loadProfilesFull(), loadCredentials()]);
+      await Promise.all([loadSkills(), loadRoutesFull(), loadCredentials()]);
     } else if (s === "maintenance" && workspaceId) {
       await loadRetentionPreview();
     }
@@ -244,12 +244,12 @@ async function loadRolesFull(): Promise<void> {
   );
 }
 
-async function loadProfilesFull(): Promise<void> {
-  const result = (await window.tentDesktop.rpc("profile.list", {})) as {
-    profiles: AgentProfileProjection[];
+async function loadRoutesFull(): Promise<void> {
+  const result = (await window.tentDesktop.rpc("route.list", {})) as {
+    routes: SettingsRouteProjection[];
   };
-  fullProfiles = result.profiles || [];
-  await reloadProfiles();
+  fullRoutes = result.routes || [];
+  await reloadRoutes();
 }
 
 async function loadRetentionPreview(): Promise<void> {
@@ -270,7 +270,7 @@ export function renderSettings(): void {
   }).join("");
 
   let body = "";
-  if (loading && !providers.length && !fullProfiles.length) {
+  if (loading && !providers.length && !fullRoutes.length) {
     body = `<p class="muted">加载中…</p>`;
   } else if (loadError) {
     body = `<p class="muted">${escapeHtml(loadError)}</p>`;
@@ -299,8 +299,8 @@ function renderSectionBody(s: SettingsSection): string {
       return renderWorkspace();
     case "roles":
       return renderRoles();
-    case "profiles":
-      return renderProfiles();
+    case "routes":
+      return renderRoutes();
     case "credentials":
       return renderCredentials();
     case "skills":
@@ -409,7 +409,7 @@ function renderRoleEditor(role: RoleRegistryEntryProjection): string {
     </div>`;
 }
 
-function renderProfiles(): string {
+function renderRoutes(): string {
   const providerNote =
     providers.length === 0
       ? `<p class="muted">provider.catalog 不可用</p>`
@@ -424,57 +424,59 @@ function renderProfiles(): string {
           .join("")}</ul>`;
 
   const list =
-    fullProfiles.length === 0
-      ? `<p class="muted">暂无 profile</p>`
-      : `<ul class="settings-list">${fullProfiles
-          .map((p) => {
-            const level = providers.find((x) => x.adapterId === p.adapterId);
+    fullRoutes.length === 0
+      ? `<p class="muted">暂无 route</p>`
+      : `<ul class="settings-list">${fullRoutes
+          .map((route) => {
+            const level = providers.find((x) => x.adapterId === route.adapterId);
             const levelBit = level
               ? `<span class="badge-level" data-level="${escapeHtml(String(level.verificationLevel))}">${escapeHtml(level.levelLabel)}</span>`
               : `<span class="faint">未收录 catalog</span>`;
             const cred =
-              p.credentialRef != null
-                ? p.credentialExists
+              route.credentialRef != null
+                ? route.credentialExists
                   ? `凭证已配置`
                   : `凭证缺失`
                 : "";
-            const label = profileDisplayLabel(p);
+            const label = routeDisplayLabel(route);
             return `<li class="settings-list-item">
               <div class="settings-list-main">
                 <strong>${escapeHtml(label)}</strong>
-                <span class="faint"><code>${escapeHtml(p.id)}</code> · <code>${escapeHtml(p.adapterId)}</code></span>
-                <span class="muted">${p.model ? escapeHtml(p.model) : ""}</span>
+                <span class="faint"><code>${escapeHtml(route.routeId)}</code> · <code>${escapeHtml(route.adapterId)}</code></span>
+                <span class="muted">${route.model ? escapeHtml(route.model) : ""}</span>
                 ${levelBit}
                 ${cred ? `<span class="faint">${escapeHtml(cred)}</span>` : ""}
               </div>
               <div class="settings-list-actions">
-                <button type="button" class="btn btn-ghost" data-profile-edit="${escapeHtml(p.id)}">编辑</button>
-                <button type="button" class="btn btn-ghost" data-profile-delete="${escapeHtml(p.id)}">删除</button>
+                <button type="button" class="btn btn-ghost" data-route-edit="${escapeHtml(route.routeId)}">编辑</button>
+                <button type="button" class="btn btn-ghost" data-route-delete="${escapeHtml(route.routeId)}">删除</button>
               </div>
             </li>`;
           })
           .join("")}</ul>`;
 
-  const editing = profileEditId
-    ? fullProfiles.find((p) => p.id === profileEditId)
+  const editing = routeEditId
+    ? fullRoutes.find((route) => route.routeId === routeEditId)
     : null;
   const editor = editing
-    ? renderProfileEditor(editing)
+    ? renderRouteEditor(editing)
     : `<div class="settings-block">
-        <div class="surface-section-head">新建 profile</div>
-        <p class="muted">${escapeHtml(PROFILE_NEXT_SESSION_TIP)}</p>
+        <div class="surface-section-head">新建 route</div>
+        <p class="muted">${escapeHtml(ROUTE_NEXT_SESSION_TIP)}</p>
         <div class="settings-form">
-          <label class="settings-label" for="prof-id">id（创建后不可改）</label>
-          <input id="prof-id" class="field" placeholder="id" autocomplete="off" />
-          <label class="settings-label" for="prof-adapter">adapterId（创建后不可改）</label>
-          <input id="prof-adapter" class="field" placeholder="adapterId" list="adapter-list" autocomplete="off" />
+          <label class="settings-label" for="route-id">routeId（创建后不可改）</label>
+          <input id="route-id" class="field" placeholder="routeId" autocomplete="off" />
+          <label class="settings-label" for="route-provider">provider</label>
+          <input id="route-provider" class="field" placeholder="provider" autocomplete="off" />
+          <label class="settings-label" for="route-adapter">adapterId</label>
+          <input id="route-adapter" class="field" placeholder="adapterId" list="adapter-list" autocomplete="off" />
           <datalist id="adapter-list">${providers.map((p) => `<option value="${escapeHtml(p.adapterId)}">`).join("")}</datalist>
-          <label class="settings-label" for="prof-name">显示名</label>
-          <input id="prof-name" class="field" placeholder="displayName" />
-          <input id="prof-model" class="field" placeholder="model" />
-          <input id="prof-env" class="field" placeholder="envKey（环境变量名，非 secret）" />
-          <input id="prof-cred" class="field" placeholder="credentialRef（凭证 id，非 secret）" />
-          <button type="button" id="btn-prof-create" class="btn btn-primary">创建</button>
+          <label class="settings-label" for="route-name">显示名</label>
+          <input id="route-name" class="field" placeholder="displayName" />
+          <input id="route-model" class="field" placeholder="model" />
+          <input id="route-env" class="field" placeholder="envKey（环境变量名，非 secret）" />
+          <input id="route-cred" class="field" placeholder="credentialRef（凭证 id，非 secret）" />
+          <button type="button" id="btn-route-create" class="btn btn-primary">创建</button>
         </div>
       </div>`;
 
@@ -485,22 +487,22 @@ function renderProfiles(): string {
       ${providerNote}
     </div>
     <div class="settings-block">
-      <div class="surface-section-head">Profiles</div>
-      <p class="muted">${escapeHtml(PROFILE_NEXT_SESSION_TIP)}</p>
+      <div class="surface-section-head">Routes</div>
+      <p class="muted">${escapeHtml(ROUTE_NEXT_SESSION_TIP)}</p>
       ${list}
     </div>
     ${editor}`;
 }
 
-function renderProfileEditor(p: AgentProfileProjection): string {
-  const label = profileDisplayLabel(p);
-  const fields = profileFieldDraft ?? {
-    displayName: p.displayName || "",
-    model: p.model || "",
-    executable: p.executable || "",
-    envKey: p.envKey || "",
-    credentialRef: p.credentialRef || "",
-    baseUrl: p.baseUrl || "",
+function renderRouteEditor(route: SettingsRouteProjection): string {
+  const label = routeDisplayLabel(route);
+  const fields = routeFieldDraft ?? {
+    displayName: route.displayName || "",
+    model: route.model || "",
+    executable: route.executable || "",
+    envKey: route.envKey || "",
+    credentialRef: route.credentialRef || "",
+    baseUrl: route.baseUrl || "",
   };
   const credIds = configuredCredentialIds();
   const skillList =
@@ -558,29 +560,29 @@ function renderProfileEditor(p: AgentProfileProjection): string {
   return `
     <div class="settings-block">
       <div class="surface-section-head">编辑 · ${escapeHtml(label)}
-        <button type="button" class="btn btn-ghost" id="btn-prof-edit-close">关闭</button>
+        <button type="button" class="btn btn-ghost" id="btn-route-edit-close">关闭</button>
       </div>
-      <p class="muted">id <code>${escapeHtml(p.id)}</code> · adapterId <code>${escapeHtml(p.adapterId)}</code>（均不可改）</p>
-      <p class="faint">${escapeHtml(PROFILE_NEXT_SESSION_TIP)} · 运行中 session 不热更新 · 勿写 secret</p>
+      <p class="muted">routeId <code>${escapeHtml(route.routeId)}</code> · adapterId <code>${escapeHtml(route.adapterId)}</code></p>
+      <p class="faint">${escapeHtml(ROUTE_NEXT_SESSION_TIP)} · 运行中 session 不热更新 · 勿写 secret</p>
       <div class="settings-form">
-        <label class="settings-label" for="prof-edit-name">显示名</label>
-        <input id="prof-edit-name" class="field" value="${escapeHtml(fields.displayName)}" placeholder="留空则回退到 id" />
-        <label class="settings-label" for="prof-edit-model">model</label>
-        <input id="prof-edit-model" class="field" value="${escapeHtml(fields.model)}" placeholder="model" />
-        <label class="settings-label" for="prof-edit-exe">executable</label>
-        <input id="prof-edit-exe" class="field" value="${escapeHtml(fields.executable)}" placeholder="executable" />
-        <label class="settings-label" for="prof-edit-env">envKey（环境变量名）</label>
-        <input id="prof-edit-env" class="field" value="${escapeHtml(fields.envKey)}" placeholder="envKey" />
-        <label class="settings-label" for="prof-edit-cred">credentialRef（凭证 id）</label>
-        <input id="prof-edit-cred" class="field" value="${escapeHtml(fields.credentialRef)}" placeholder="credentialRef" list="cred-ref-list" />
+        <label class="settings-label" for="route-edit-name">显示名</label>
+        <input id="route-edit-name" class="field" value="${escapeHtml(fields.displayName)}" placeholder="留空则回退到 routeId" />
+        <label class="settings-label" for="route-edit-model">model</label>
+        <input id="route-edit-model" class="field" value="${escapeHtml(fields.model)}" placeholder="model" />
+        <label class="settings-label" for="route-edit-exe">executable</label>
+        <input id="route-edit-exe" class="field" value="${escapeHtml(fields.executable)}" placeholder="executable" />
+        <label class="settings-label" for="route-edit-env">envKey（环境变量名）</label>
+        <input id="route-edit-env" class="field" value="${escapeHtml(fields.envKey)}" placeholder="envKey" />
+        <label class="settings-label" for="route-edit-cred">credentialRef（凭证 id）</label>
+        <input id="route-edit-cred" class="field" value="${escapeHtml(fields.credentialRef)}" placeholder="credentialRef" list="cred-ref-list" />
         <datalist id="cred-ref-list">${credOptions}</datalist>
-        <label class="settings-label" for="prof-edit-base">baseUrl</label>
-        <input id="prof-edit-base" class="field" value="${escapeHtml(fields.baseUrl)}" placeholder="baseUrl" />
+        <label class="settings-label" for="route-edit-base">baseUrl</label>
+        <input id="route-edit-base" class="field" value="${escapeHtml(fields.baseUrl)}" placeholder="baseUrl" />
       </div>
     </div>
     <div class="settings-block">
       <div class="surface-section-head">Skills</div>
-      <p class="faint">只保存 name/path/enabled · 不存 displayName · ${escapeHtml(PROFILE_SKILLS_METADATA_TIP)} · ${escapeHtml(PROFILE_NEXT_SESSION_TIP)}</p>
+      <p class="faint">只保存 name/path/enabled · 不存 displayName · ${escapeHtml(ROUTE_SKILLS_METADATA_TIP)} · ${escapeHtml(ROUTE_NEXT_SESSION_TIP)}</p>
       ${skillList}
       <div class="settings-form settings-form-inline">
         <input id="skill-add-name" class="field" placeholder="skill name（id）" autocomplete="off" list="bundled-skill-list" />
@@ -591,7 +593,7 @@ function renderProfileEditor(p: AgentProfileProjection): string {
     </div>
     <div class="settings-block">
       <div class="surface-section-head">MCP Servers</div>
-      <p class="faint">只保存 id/ref · credential 仅显示已配置 · ${escapeHtml(PROFILE_NEXT_SESSION_TIP)}</p>
+      <p class="faint">只保存 id/ref · credential 仅显示已配置 · ${escapeHtml(ROUTE_NEXT_SESSION_TIP)}</p>
       ${mcpList}
       <div class="settings-form">
         <div class="settings-form-inline">
@@ -612,7 +614,7 @@ function renderProfileEditor(p: AgentProfileProjection): string {
     </div>
     <div class="settings-block">
       <div class="settings-row">
-        <button type="button" id="btn-prof-save" class="btn btn-primary">保存（下次会话生效）</button>
+        <button type="button" id="btn-route-save" class="btn btn-primary">保存（下次会话生效）</button>
       </div>
     </div>`;
 }
@@ -678,14 +680,14 @@ function renderSkills(): string {
 
   const credIds = configuredCredentialIds();
   const mcpNote = `
-    <p class="muted">MCP / Profile Skills 在 Agent Profile 编辑器中用列表 + 启用开关管理。${escapeHtml(PROFILE_NEXT_SESSION_TIP)}。运行中 session 不热更新。</p>
+    <p class="muted">MCP / Route Skills 在 Route 编辑器中用列表 + 启用开关管理。${escapeHtml(ROUTE_NEXT_SESSION_TIP)}。运行中 session 不热更新。</p>
     <p class="faint">无全局 mcp.* RPC · 见契约缺口 mcp.global-config · 不伪造全局目录</p>
-    <ul class="settings-list">${fullProfiles
-      .map((p) => {
-        const skillBits = (p.skills || [])
+    <ul class="settings-list">${fullRoutes
+      .map((route) => {
+        const skillBits = (route.skills || [])
           .map((s) => `${s.name}${s.enabled === false ? "·关" : "·开"}`)
           .join(" ");
-        const mcpBits = (p.mcpServers || [])
+        const mcpBits = (route.mcpServers || [])
           .map((m) => {
             const cred = mcpCredentialStatusLine(m, credIds);
             return `${m.name}${m.enabled === false ? "·关" : "·开"}${cred ? `(${cred})` : ""}`;
@@ -693,17 +695,17 @@ function renderSkills(): string {
           .join(" ");
         return `<li class="settings-list-item">
           <div class="settings-list-main">
-            <strong>${escapeHtml(profileDisplayLabel(p))}</strong>
-            <span class="faint"><code>${escapeHtml(p.id)}</code></span>
+            <strong>${escapeHtml(routeDisplayLabel(route))}</strong>
+            <span class="faint"><code>${escapeHtml(route.routeId)}</code></span>
             <span class="muted">skills ${escapeHtml(skillBits || "—")}</span>
             <span class="muted">mcp ${escapeHtml(mcpBits || "—")}</span>
           </div>
           <div class="settings-list-actions">
-            <button type="button" class="btn btn-ghost" data-profile-edit="${escapeHtml(p.id)}">编辑 Skills/MCP</button>
+            <button type="button" class="btn btn-ghost" data-route-edit="${escapeHtml(route.routeId)}">编辑 Skills/MCP</button>
           </div>
         </li>`;
       })
-      .join("") || `<li class="muted">无 profile</li>`}</ul>`;
+      .join("") || `<li class="muted">无 route</li>`}</ul>`;
 
   return `
     <div class="settings-block">
@@ -715,7 +717,7 @@ function renderSkills(): string {
       </div>
     </div>
     <div class="settings-block">
-      <div class="surface-section-head">Profile Skills / MCP</div>
+      <div class="surface-section-head">Route Skills / MCP</div>
       ${mcpNote}
     </div>`;
 }
@@ -774,27 +776,27 @@ function wireSection(s: SettingsSection, root: HTMLElement): void {
       btn.addEventListener("click", () => void onRoleDelete(btn.getAttribute("data-role-delete")!));
     });
   }
-  if (s === "profiles" || s === "skills") {
-    document.getElementById("btn-prof-create")?.addEventListener("click", () => void onProfileCreate());
-    document.getElementById("btn-prof-save")?.addEventListener("click", () => void onProfileSave());
-    document.getElementById("btn-prof-edit-close")?.addEventListener("click", () => {
-      openProfileEditor(null);
+  if (s === "routes" || s === "skills") {
+    document.getElementById("btn-route-create")?.addEventListener("click", () => void onRouteCreate());
+    document.getElementById("btn-route-save")?.addEventListener("click", () => void onRouteSave());
+    document.getElementById("btn-route-edit-close")?.addEventListener("click", () => {
+      openRouteEditor(null);
       renderSettings();
     });
-    root.querySelectorAll<HTMLElement>("[data-profile-edit]").forEach((btn) => {
+    root.querySelectorAll<HTMLElement>("[data-route-edit]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const id = btn.getAttribute("data-profile-edit");
-        section = "profiles";
-        openProfileEditor(id);
+        const id = btn.getAttribute("data-route-edit");
+        section = "routes";
+        openRouteEditor(id);
         // Ensure credentials loaded for MCP "已配置" status.
         void loadCredentials().then(() => renderSettings());
         renderSettings();
       });
     });
-    root.querySelectorAll<HTMLElement>("[data-profile-delete]").forEach((btn) => {
-      btn.addEventListener("click", () => void onProfileDelete(btn.getAttribute("data-profile-delete")!));
+    root.querySelectorAll<HTMLElement>("[data-route-delete]").forEach((btn) => {
+      btn.addEventListener("click", () => void onRouteDelete(btn.getAttribute("data-route-delete")!));
     });
-    // Profile Skills / MCP list controls (draft-only until Save).
+    // Route Skills / MCP list controls (draft-only until Save).
     root.querySelectorAll<HTMLInputElement>("[data-skill-toggle]").forEach((box) => {
       box.addEventListener("change", () => {
         const name = box.getAttribute("data-skill-toggle");
@@ -806,7 +808,7 @@ function wireSection(s: SettingsSection, root: HTMLElement): void {
       btn.addEventListener("click", () => {
         const name = btn.getAttribute("data-skill-remove");
         if (!name) return;
-        captureProfileFieldDraft();
+        captureRouteFieldDraft();
         skillDrafts = removeSkillDraft(skillDrafts, name);
         renderSettings();
       });
@@ -823,7 +825,7 @@ function wireSection(s: SettingsSection, root: HTMLElement): void {
       btn.addEventListener("click", () => {
         const name = btn.getAttribute("data-mcp-remove");
         if (!name) return;
-        captureProfileFieldDraft();
+        captureRouteFieldDraft();
         mcpDrafts = removeMcpDraft(mcpDrafts, name);
         renderSettings();
       });
@@ -984,26 +986,27 @@ async function onRoleDelete(name: string): Promise<void> {
   }
 }
 
-async function onProfileCreate(): Promise<void> {
+async function onRouteCreate(): Promise<void> {
   const draft = {
-    id: (document.getElementById("prof-id") as HTMLInputElement | null)?.value || "",
-    adapterId: (document.getElementById("prof-adapter") as HTMLInputElement | null)?.value || "",
-    displayName: (document.getElementById("prof-name") as HTMLInputElement | null)?.value || "",
-    model: (document.getElementById("prof-model") as HTMLInputElement | null)?.value || "",
-    envKey: (document.getElementById("prof-env") as HTMLInputElement | null)?.value || "",
-    credentialRef: (document.getElementById("prof-cred") as HTMLInputElement | null)?.value || "",
+    routeId: (document.getElementById("route-id") as HTMLInputElement | null)?.value || "",
+    provider: (document.getElementById("route-provider") as HTMLInputElement | null)?.value || "",
+    adapterId: (document.getElementById("route-adapter") as HTMLInputElement | null)?.value || "",
+    displayName: (document.getElementById("route-name") as HTMLInputElement | null)?.value || "",
+    model: (document.getElementById("route-model") as HTMLInputElement | null)?.value || "",
+    envKey: (document.getElementById("route-env") as HTMLInputElement | null)?.value || "",
+    credentialRef: (document.getElementById("route-cred") as HTMLInputElement | null)?.value || "",
   };
-  const built = validateProfileCreate(draft);
+  const built = validateRouteCreate(draft);
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
   }
-  const createBtn = document.getElementById("btn-prof-create") as HTMLButtonElement | null;
+  const createBtn = document.getElementById("btn-route-create") as HTMLButtonElement | null;
   if (createBtn) createBtn.disabled = true;
   try {
-    await window.tentDesktop.rpc("profile.create", built.payload);
-    el.status.textContent = `已创建 profile ${draft.id.trim()}`;
-    await loadProfilesFull();
+    await window.tentDesktop.rpc("route.create", built.payload);
+    el.status.textContent = `已创建 route ${draft.routeId.trim()}`;
+    await loadRoutesFull();
     renderSettings();
   } catch (err) {
     setError(err);
@@ -1023,7 +1026,7 @@ function onSkillAdd(): void {
     el.status.textContent = `skill ${built.entry.name} 已在列表中`;
     return;
   }
-  captureProfileFieldDraft();
+  captureRouteFieldDraft();
   skillDrafts = [...skillDrafts, built.entry];
   renderSettings();
 }
@@ -1055,24 +1058,24 @@ function onMcpAdd(): void {
     el.status.textContent = `MCP ${built.entry.name} 已在列表中`;
     return;
   }
-  captureProfileFieldDraft();
+  captureRouteFieldDraft();
   mcpDrafts = [...mcpDrafts, built.entry];
   renderSettings();
 }
 
-async function onProfileSave(): Promise<void> {
-  if (!profileEditId) return;
-  const built = validateProfileUpdate({
-    id: profileEditId,
+async function onRouteSave(): Promise<void> {
+  if (!routeEditId) return;
+  const built = validateRouteUpdate({
+    routeId: routeEditId,
     displayName:
-      (document.getElementById("prof-edit-name") as HTMLInputElement | null)?.value || "",
-    model: (document.getElementById("prof-edit-model") as HTMLInputElement | null)?.value || "",
+      (document.getElementById("route-edit-name") as HTMLInputElement | null)?.value || "",
+    model: (document.getElementById("route-edit-model") as HTMLInputElement | null)?.value || "",
     executable:
-      (document.getElementById("prof-edit-exe") as HTMLInputElement | null)?.value || "",
-    envKey: (document.getElementById("prof-edit-env") as HTMLInputElement | null)?.value || "",
+      (document.getElementById("route-edit-exe") as HTMLInputElement | null)?.value || "",
+    envKey: (document.getElementById("route-edit-env") as HTMLInputElement | null)?.value || "",
     credentialRef:
-      (document.getElementById("prof-edit-cred") as HTMLInputElement | null)?.value || "",
-    baseUrl: (document.getElementById("prof-edit-base") as HTMLInputElement | null)?.value || "",
+      (document.getElementById("route-edit-cred") as HTMLInputElement | null)?.value || "",
+    baseUrl: (document.getElementById("route-edit-base") as HTMLInputElement | null)?.value || "",
   });
   if (!built.ok) {
     el.status.textContent = built.reason;
@@ -1087,14 +1090,14 @@ async function onProfileSave(): Promise<void> {
     skills: skillsPayload.length ? skillsPayload : null,
     mcpServers: mcpPayload.length ? mcpPayload : null,
   };
-  const saveBtn = document.getElementById("btn-prof-save") as HTMLButtonElement | null;
+  const saveBtn = document.getElementById("btn-route-save") as HTMLButtonElement | null;
   if (saveBtn) saveBtn.disabled = true;
   try {
-    await window.tentDesktop.rpc("profile.update", patch);
-    el.status.textContent = `Profile 已保存 · 下次会话生效（运行中 session 不热更新）`;
-    await loadProfilesFull();
+    await window.tentDesktop.rpc("route.update", patch);
+    el.status.textContent = `Route 已保存 · 下次会话生效（运行中 session 不热更新）`;
+    await loadRoutesFull();
     // Refresh drafts from server projection after save.
-    openProfileEditor(profileEditId);
+    openRouteEditor(routeEditId);
     renderSettings();
   } catch (err) {
     setError(err);
@@ -1102,13 +1105,13 @@ async function onProfileSave(): Promise<void> {
   }
 }
 
-async function onProfileDelete(id: string): Promise<void> {
-  if (!window.confirm(`删除 profile「${id}」？`)) return;
+async function onRouteDelete(routeId: string): Promise<void> {
+  if (!window.confirm(`删除 route「${routeId}」？`)) return;
   try {
-    await window.tentDesktop.rpc("profile.delete", { id });
-    if (profileEditId === id) openProfileEditor(null);
-    el.status.textContent = `已删除 profile ${id}`;
-    await loadProfilesFull();
+    await window.tentDesktop.rpc("route.delete", { routeId });
+    if (routeEditId === routeId) openRouteEditor(null);
+    el.status.textContent = `已删除 route ${routeId}`;
+    await loadRoutesFull();
     renderSettings();
   } catch (err) {
     setError(err);

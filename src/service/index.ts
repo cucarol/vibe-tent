@@ -1,4 +1,4 @@
-// Local Tent Service public surface (B2 + B5 task/A2A/runtime wiring).
+// Local Tent Service public surface.
 
 export * from "./types.js";
 export * from "./auth.js";
@@ -11,11 +11,10 @@ export * from "./handlers.js";
 export * from "./http-server.js";
 export * from "./service.js";
 export * from "./client.js";
-export * from "./a2a-store.js";
 export * from "./tool-approval-store.js";
 export * from "./user-ask-store.js";
-export * from "./profiles.js";
-export * from "./profile-catalog.js";
+export * from "./routes.js";
+export * from "./route-catalog.js";
 export * from "./provider-catalog.js";
 export * from "./credential-protector.js";
 export * from "./credential-store.js";

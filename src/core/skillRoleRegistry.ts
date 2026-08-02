@@ -7,7 +7,7 @@ import {
 } from "./id.js";
 import { backupCorruptRegistry, warnRegistryRecovered } from "./registryRecovery.js";
 
-import { AGENT_PROFILES_TEMP_DIR, ROLES_REGISTRY_PATH } from "./paths.js";
+import { ROUTES_TEMP_DIR, ROLES_REGISTRY_PATH } from "./paths.js";
 export { ROLES_REGISTRY_PATH };
 
 /**
@@ -16,7 +16,7 @@ export { ROLES_REGISTRY_PATH };
  * Identity model (batch 1):
  * - `id` (`rl-…`) is immutable after create / migration fill.
  * - `displayName` is mutable **presentation only** — never used as a resolver key.
- * - `name` remains the operational path / envelope key (temp/<name>/, task.role,
+ * - `name` remains the operational path / Role assignee key (temp/<name>/,
  *   git lane labels). This batch does **not** rename name or move temp/worktrees;
  *   resolveRole accepts id | operational name only (legacy compat).
  */
@@ -145,8 +145,8 @@ export async function createRole(
 
 /** Names that would collide with Tent-owned operational directories. */
 export function assertRoleNameAvailable(name: string): void {
-  if (name.trim().toLowerCase() === AGENT_PROFILES_TEMP_DIR) {
-    throw new Error(`Role name is reserved by Tent: ${AGENT_PROFILES_TEMP_DIR}.`);
+  if (name.trim().toLowerCase() === ROUTES_TEMP_DIR) {
+    throw new Error(`Role name is reserved by Tent: ${ROUTES_TEMP_DIR}.`);
   }
 }
 

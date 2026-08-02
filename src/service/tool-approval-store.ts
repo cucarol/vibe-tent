@@ -1,5 +1,5 @@
 // Machine-local pending ACP *tool* permission approvals (permissionPolicy=ask).
-// Distinct from A2A spawn approvals (a2a-store.ts). Never written into workspace Git / .tent.
+// Machine-local only; never written into workspace Git / .tent.
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";

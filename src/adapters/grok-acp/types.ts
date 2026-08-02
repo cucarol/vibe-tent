@@ -1,6 +1,6 @@
 // Grok ACP provider types — machine-local config only; never workspace secrets.
 
-import type { AcpPermissionPolicy, AcpProfileOptions } from "../acp/types.js";
+import type { AcpPermissionPolicy, AcpRouteOptions } from "../acp/types.js";
 
 export type {
   AcpJsonRpcNotification,
@@ -19,15 +19,16 @@ export {
 export type GrokAcpPermissionPolicy = AcpPermissionPolicy;
 
 /**
- * Profile extras for adapterId "grok-acp".
- * Extends shared {@link AcpProfileOptions}; Grok-specific knobs can be added here later.
- * Lives only on machine-local AgentProfile; never in workspace git / task bodies.
+ * Route extras for adapterId "grok-acp".
+ * Extends shared {@link AcpRouteOptions}; Grok-specific knobs can be added here later.
+ * Lives only on a machine Settings route; never in workspace git / task bodies.
  *
- * Canonical storage is `AgentProfileConfig.acp` (not a separate grokAcp bag).
+ * Canonical storage is the flat machine Settings route. The runtime projects
+ * these fields into the provider-neutral in-memory ACP launch bag.
  */
-export interface GrokAcpProfileOptions extends AcpProfileOptions {
+export interface GrokAcpRouteOptions extends AcpRouteOptions {
   // Shared fields (executable / model / envKey / baseUrl* / timeouts / permissionPolicy)
-  // are defined on AcpProfileOptions. Grok defaults (model/env keys) live in constants below
+  // are defined on AcpRouteOptions. Grok defaults (model/env keys) live in constants below
   // and are applied by the Grok adapter + product create path — not invented for other adapters.
 }
 

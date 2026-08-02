@@ -22,10 +22,10 @@ export const ANNOTATIONS_PATH = "annotations.json";
 export const TEMP_DIR = "temp";
 export const ATTACHMENTS_DIR = "attachments";
 /**
- * One-shot AgentProfile operational namespace under temp/.
- * Role lanes remain `temp/<role>/…`; profile tasks never use `tent-role/<profile>`.
+ * One-shot Settings route operational namespace under temp/.
+ * Role lanes remain `temp/<role>/…`; route Tasks never use a durable Role lane.
  */
-export const AGENT_PROFILES_TEMP_DIR = "agent-profiles";
+export const ROUTES_TEMP_DIR = "routes";
 
 /** 不进入 Node 索引的顶层/路径前缀（相对 system root）。 */
 export const OPERATIONAL_TOP_LEVEL = new Set([
@@ -76,7 +76,7 @@ export function isOperationalPath(relativePath: string): boolean {
 }
 
 /**
- * Sanitize profile id / task id segments for operational directory names.
+ * Sanitize route id / Task id segments for operational directory names.
  * Deterministic, path-safe; not a security boundary.
  */
 export function safeOperationalSegment(value: string, emptyPrefix = "id"): string {
@@ -105,23 +105,23 @@ export function safeOperationalSegment(value: string, emptyPrefix = "id"): strin
   return clean;
 }
 
-/** `temp/agent-profiles/<safe-profile-id>` root for one-shot profile operational records. */
-export function agentProfileTempRoot(profileId: string): string {
-  return `${TEMP_DIR}/${AGENT_PROFILES_TEMP_DIR}/${safeOperationalSegment(profileId, "profile")}`;
+/** `temp/routes/<safe-route-id>` root for temporary route operational records. */
+export function routeTempRoot(routeId: string): string {
+  return `${TEMP_DIR}/${ROUTES_TEMP_DIR}/${safeOperationalSegment(routeId, "route")}`;
 }
 
-export function agentProfileTasksDir(profileId: string): string {
-  return `${agentProfileTempRoot(profileId)}/tasks`;
+export function routeTasksDir(routeId: string): string {
+  return `${routeTempRoot(routeId)}/tasks`;
 }
 
-export function agentProfileDeliveriesDir(profileId: string): string {
-  return `${agentProfileTempRoot(profileId)}/deliveries`;
+export function routeDeliveriesDir(routeId: string): string {
+  return `${routeTempRoot(routeId)}/deliveries`;
 }
 
 /** Task-scoped immutable manifest path (never shared `manifest.yml`). */
-export function agentProfileManifestPath(profileId: string, taskId: string): string {
+export function routeManifestPath(routeId: string, taskId: string): string {
   const safeTask = safeOperationalSegment(taskId, "task");
-  return `${agentProfileTempRoot(profileId)}/manifests/${safeTask}.yml`;
+  return `${routeTempRoot(routeId)}/manifests/${safeTask}.yml`;
 }
 
 /** 是否为应排除在 Node 索引外的生成/系统文件名。 */

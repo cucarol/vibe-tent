@@ -32,8 +32,8 @@ import {
   mcpCredentialStatusLine,
   mcpDraftsFromProjection,
   mcpSourceLine,
-  PROFILE_NEXT_SESSION_TIP,
-  profileDisplayLabel,
+  ROUTE_NEXT_SESSION_TIP,
+  routeDisplayLabel,
   retentionSummaryLine,
   setMcpEnabled,
   setSkillEnabled,
@@ -41,8 +41,8 @@ import {
   skillSourceLine,
   validateCredentialSet,
   validateMcpAddDraft,
-  validateProfileCreate,
-  validateProfileUpdate,
+  validateRouteCreate,
+  validateRouteUpdate,
   validateRoleCreate,
   validateRoleUpdate,
   validateSkillAddDraft,
@@ -61,7 +61,7 @@ test("contract gaps list missing desktop methods without inventing RPCs", () => 
   assert.ok(ids.includes("mcp.global-config"));
   // A2U pending batch: field-level holes (not missing listPending RPCs).
   assert.ok(ids.includes("toolApproval.params"));
-  assert.ok(ids.includes("userAsk.agent-profile"));
+  assert.ok(ids.includes("userAsk.source-route"));
   assert.ok(ids.includes("taskInput.global-list"));
 
   for (const gap of DESKTOP_CONTRACT_GAPS) {
@@ -193,24 +193,25 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
     assert.equal(roleUp.payload.actor, "user");
   }
 
-  assert.equal(validateProfileCreate({ id: "Bad", adapterId: "grok-acp" }).ok, false);
-  const prof = validateProfileCreate({
-    id: "my-agent",
+  assert.equal(validateRouteCreate({ routeId: "Bad", provider: "grok", adapterId: "grok-acp" }).ok, false);
+  const prof = validateRouteCreate({
+    routeId: "my-agent",
+    provider: "grok",
     adapterId: "grok-acp",
     model: "grok-4.5",
   });
   assert.equal(prof.ok, true);
   if (prof.ok) {
-    assert.equal(prof.payload.id, "my-agent");
+    assert.equal(prof.payload.routeId, "my-agent");
     assert.equal(prof.payload.adapterId, "grok-acp");
     assert.equal(prof.payload.model, "grok-4.5");
   }
 
-  // profile.update: id key only; adapterId never on payload; empty clears.
-  assert.equal(validateProfileUpdate({ id: "" }).ok, false);
-  assert.equal(validateProfileUpdate({ id: "BadId" }).ok, false);
-  const profUp = validateProfileUpdate({
-    id: "my-agent",
+  // route.update: id key only; adapterId never on payload; empty clears.
+  assert.equal(validateRouteUpdate({ routeId: "" }).ok, false);
+  assert.equal(validateRouteUpdate({ routeId: "BadId" }).ok, false);
+  const profUp = validateRouteUpdate({
+    routeId: "my-agent",
     displayName: "本地 Grok",
     model: "",
     envKey: "CPA_GROK_API_KEY",
@@ -218,7 +219,7 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
   });
   assert.equal(profUp.ok, true);
   if (profUp.ok) {
-    assert.equal(profUp.payload.id, "my-agent");
+    assert.equal(profUp.payload.routeId, "my-agent");
     assert.equal(profUp.payload.displayName, "本地 Grok");
     assert.equal(profUp.payload.model, null);
     assert.equal(profUp.payload.envKey, "CPA_GROK_API_KEY");
@@ -228,13 +229,13 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
     assert.ok(!("apiKey" in profUp.payload));
     assert.ok(!("env" in profUp.payload));
   }
-  const clearName = validateProfileUpdate({ id: "my-agent", displayName: "  " });
+  const clearName = validateRouteUpdate({ routeId: "my-agent", displayName: "  " });
   assert.equal(clearName.ok, true);
   if (clearName.ok) assert.equal(clearName.payload.displayName, null);
 
-  assert.equal(profileDisplayLabel({ id: "p1", displayName: "Label" }), "Label");
-  assert.equal(profileDisplayLabel({ id: "p1", displayName: "" }), "p1");
-  assert.match(PROFILE_NEXT_SESSION_TIP, /下次会话生效/);
+  assert.equal(routeDisplayLabel({ routeId: "p1", displayName: "Label" }), "Label");
+  assert.equal(routeDisplayLabel({ routeId: "p1", displayName: "" }), "p1");
+  assert.match(ROUTE_NEXT_SESSION_TIP, /下次会话生效/);
 
   assert.equal(validateCredentialSet({ id: "k", secret: "" }).ok, false);
   const cred = validateCredentialSet({ id: "api-key", secret: "s3cret", label: "main" });
@@ -259,7 +260,7 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
   assert.ok(!("ciphertext" in crow));
 });
 
-test("profile skills/mcp drafts: toggle, id/ref only, no displayName/secrets", () => {
+test("route skills/mcp drafts: toggle, id/ref only, no displayName/secrets", () => {
   const skills = skillDraftsFromProjection([
     { name: "tent-task", path: "/home/u/.agents/skills/tent-task", enabled: true },
     { name: "review-helper", enabled: false },
@@ -367,11 +368,11 @@ test("desktop settings RPCs used by UI are on CLIENT_METHODS", () => {
     "registry.role.create",
     "registry.role.update",
     "registry.role.delete",
-    "profile.list",
-    "profile.get",
-    "profile.create",
-    "profile.update",
-    "profile.delete",
+    "route.list",
+    "route.get",
+    "route.create",
+    "route.update",
+    "route.delete",
     "provider.catalog",
     "credential.list",
     "credential.set",
@@ -386,10 +387,7 @@ test("desktop settings RPCs used by UI are on CLIENT_METHODS", () => {
     "proposal.resolve",
     "userAsk.deny",
     "userAsk.listPending",
-    "userAsk.reply",
-    "a2a.listPending",
-    "a2a.resolve",
-    "toolApproval.listPending",
+    "userAsk.reply",    "toolApproval.listPending",
     "toolApproval.approveOnce",
     "toolApproval.deny",
     "taskInput.listPending",
@@ -474,28 +472,28 @@ test("service smoke: docs.backlinks + provider.catalog for graph/settings", asyn
       );
     }
 
-    // profile.list / profile.get — safe metadata; id + displayName projection for settings CRUD.
-    const listed = (await client.profileList()) as {
-      profiles: Array<{
-        id: string;
+    // route.list / route.get — safe metadata; id + displayName projection for settings CRUD.
+    const listed = (await client.routeList()) as {
+      routes: Array<{
+        routeId: string;
         adapterId: string;
         displayName: string;
         testOnly?: boolean;
       }>;
     };
-    assert.ok(Array.isArray(listed.profiles));
-    assert.ok(listed.profiles.some((p) => p.id === "grok-acp-default"));
+    assert.ok(Array.isArray(listed.routes));
+    assert.ok(listed.routes.some((p) => p.routeId === "grok-acp-default"));
     const listJson = JSON.stringify(listed);
     assert.ok(!/"env"\s*:/.test(listJson));
     assert.ok(!/sk-[a-zA-Z0-9]{8,}/.test(listJson));
 
-    const got = (await client.profileGet("grok-acp-default")) as {
-      profile: { id: string; adapterId: string; displayName: string };
+    const got = (await client.routeGet("grok-acp-default")) as {
+      route: { routeId: string; adapterId: string; displayName: string };
     };
-    assert.equal(got.profile.id, "grok-acp-default");
-    assert.equal(got.profile.adapterId, "grok-acp");
-    assert.ok(typeof got.profile.displayName === "string");
-    assert.equal(profileDisplayLabel(got.profile), got.profile.displayName || got.profile.id);
+    assert.equal(got.route.routeId, "grok-acp-default");
+    assert.equal(got.route.adapterId, "grok-acp");
+    assert.ok(typeof got.route.displayName === "string");
+    assert.equal(routeDisplayLabel(got.route), got.route.displayName || got.route.routeId);
 
     const settings = await client.workspaceSettings(mounted.workspaceId) as {
       settings: { defaultDeliveryPolicy?: string };

@@ -1,7 +1,7 @@
-import type { AcpPermissionPolicy, AcpProfileOptions } from "../acp/types.js";
+import type { AcpPermissionPolicy, AcpRouteOptions } from "../acp/types.js";
 
 export type PiAcpPermissionPolicy = AcpPermissionPolicy;
-export interface PiAcpProfileOptions extends AcpProfileOptions {}
+export interface PiAcpRouteOptions extends AcpRouteOptions {}
 
 /** Product adapter id — third-party `pi-acp` bridge over `pi --mode rpc`. */
 export const PI_ACP_ADAPTER_ID = "pi-acp";

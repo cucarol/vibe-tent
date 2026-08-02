@@ -196,7 +196,9 @@ test("mutation lock: stale dead-pid lock reclaimed via NodeFs then exclusive aga
 test("lifecycle: auto-integrate runs outside mutation.lock and failure leaves no delivery", async () => {
   const dir = await makeTent();
   const e = env(dir);
-  const result = await dispatch(e as any, "cx-p1", "executor", {
+  const result = await dispatch(e as any, "cx-p1", {
+    assigneeKind: "role",
+    assigneeId: "executor",
     userPrompt: "bypass integrate outside lock",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -234,7 +236,9 @@ test("lifecycle: auto-integrate runs outside mutation.lock and failure leaves no
 test("lifecycle: accept integrate runs outside mutation.lock; failure keeps delivered", async () => {
   const dir = await makeTent();
   const e = env(dir);
-  const result = await dispatch(e as any, "cx-p1", "executor", {
+  const result = await dispatch(e as any, "cx-p1", {
+    assigneeKind: "role",
+    assigneeId: "executor",
     userPrompt: "manual accept outside lock",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -275,7 +279,9 @@ test("lifecycle: accept integrate runs outside mutation.lock; failure keeps deli
 test("lifecycle: successful auto-integrate still accepts atomically after unlock", async () => {
   const dir = await makeTent();
   const e = env(dir);
-  const result = await dispatch(e as any, "cx-p1", "executor", {
+  const result = await dispatch(e as any, "cx-p1", {
+    assigneeKind: "role",
+    assigneeId: "executor",
     userPrompt: "agent decide",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },

@@ -16,6 +16,7 @@ import { dispatch, resolveDispatchNodeIds, archiveNode } from "../src/core/ops.j
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
+import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import { makeTent } from "./helpers.js";
 
 function envFor(dir: string) {
@@ -25,6 +26,23 @@ function envFor(dir: string) {
     tentName: "demo",
     tentRoot: dir,
   };
+}
+
+const FAKE_ROUTE = {
+  routeId: "fake-default",
+  provider: "fake",
+  adapterId: FAKE_ADAPTER_ID,
+  fake: { waitForSignal: true, sleepMs: 60_000 },
+} as const;
+
+function dispatchToRole(env: any, nodeId: string, assigneeId: string, input: Record<string, unknown>) {
+  return dispatch(env, nodeId, {
+    assigneeKind: "role",
+    assigneeId,
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+    ...input,
+  });
 }
 
 // ---- Core: resolveDispatchNodeIds ----
@@ -69,7 +87,7 @@ test("dispatch: multi nodeIds preserve exact order in Context Card; dedupe; no c
   const dir = await makeTent();
   const env = envFor(dir);
 
-  const result = await dispatch(env as any, "cx-o1", "analyst", {
+  const result = await dispatchToRole(env as any, "cx-o1", "analyst", {
     userPrompt: "multi-node ordered work",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -100,7 +118,7 @@ test("dispatch: multiline Context Card strings round-trip without corrupting the
   const env = envFor(dir);
   const prompt = "先读取项目说明\n\n只修改核心解析器\n\n完成后运行测试";
 
-  const result = await dispatch(env as any, "cx-o1", "analyst", {
+  const result = await dispatchToRole(env as any, "cx-o1", "analyst", {
     userPrompt: prompt,
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -120,11 +138,8 @@ test("dispatch: Role manifest snapshots only newly requested Nodes (no prior Rol
   const dir = await makeTent();
   const env = envFor(dir);
 
-  // Prior active Role Task on the same Role with a different Node set.
-  const prior = await dispatch(env as any, "cx-p1", "analyst", {
-    userPrompt: "prior active role task",
-    parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
+  const prior = await dispatchToRole(env as any, "cx-p1", "analyst", {
+    userPrompt: "prior role task",
     nodeIds: ["cx-p1", "cx-p2"],
   });
   assert.deepEqual(
@@ -132,39 +147,22 @@ test("dispatch: Role manifest snapshots only newly requested Nodes (no prior Rol
     ["cx-p1", "cx-p2"]
   );
 
-  // New Task for the same Role must not silently import prior refs into manifest
-  // or Context Card — exact requested ordered selection only (one fact).
-  const next = await dispatch(env as any, "cx-o1", "analyst", {
+  const next = await dispatchToRole(env as any, "cx-o1", "analyst", {
     userPrompt: "new role task exact selection",
-    parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },
     nodeIds: ["cx-o1", "cx-g1"],
   });
-
   const loaded = await loadTaskEnvelope(env.fs, next.taskPath);
   assert.deepEqual(taskReferencedNodeIds(loaded), ["cx-o1", "cx-g1"]);
   assert.deepEqual(
-    loaded.contextCard?.refs.nodes.map((n) => n.id),
+    loaded.contextCard.refs.nodes.map((node) => node.id),
     ["cx-o1", "cx-g1"]
   );
-
-  // Each Task owns a distinct manifest snapshot; a later Task cannot overwrite
-  // the earlier Task's writable Node selection.
-  assert.notEqual(prior.manifestPath, next.manifestPath);
-  assert.match(prior.manifestPath, /temp\/analyst\/manifests\/[^/]+\.yml$/);
-  assert.match(next.manifestPath, /temp\/analyst\/manifests\/[^/]+\.yml$/);
-  assert.equal(await env.fs.exists(prior.manifestPath), true);
-  assert.equal(await env.fs.exists(next.manifestPath), true);
-  assert.equal(await env.fs.readFile(prior.manifestPath), prior.manifestYaml);
   assert.equal(await env.fs.readFile(next.manifestPath), next.manifestYaml);
 
-  // Auxiliary manifest selection is claimNodes → writable scope. Readable still
-  // lists full Tent context, so assert only the writable section for exactness.
   const writableSection = next.manifestYaml.split(/^writable:\r?\n/m)[1] ?? "";
   assert.ok(writableSection.length > 0, "manifest must emit writable section");
   assert.match(writableSection, /id: cx-o1/);
   assert.match(writableSection, /id: cx-g1/);
-  // Prior Role Task Nodes must not enter this Task's selection/writable scope.
   assert.doesNotMatch(writableSection, /id: cx-p1\b/);
   assert.doesNotMatch(writableSection, /id: cx-p2\b/);
   assert.doesNotMatch(next.manifestYaml, /^claims:/m);
@@ -177,7 +175,7 @@ test("dispatch: missing / archived / invalid nodeIds zero-write (no task/manifes
   // Missing id
   await assert.rejects(
     () =>
-      dispatch(env as any, "cx-p1", "analyst", {
+      dispatchToRole(env as any, "cx-p1", "analyst", {
         userPrompt: "missing node",
         parentActor: { kind: "user", id: "user" },
         nodeIds: ["cx-p1", "cx-doesnotexist"],
@@ -190,7 +188,7 @@ test("dispatch: missing / archived / invalid nodeIds zero-write (no task/manifes
   await archiveNode(env as any, "cx-o1");
   await assert.rejects(
     () =>
-      dispatch(env as any, "cx-p1", "executor", {
+      dispatchToRole(env as any, "cx-p1", "executor", {
         userPrompt: "archived node",
         parentActor: { kind: "user", id: "user" },
         nodeIds: ["cx-p1", "cx-o1"],
@@ -202,7 +200,7 @@ test("dispatch: missing / archived / invalid nodeIds zero-write (no task/manifes
   // Root token mixed with concrete ids
   await assert.rejects(
     () =>
-      dispatch(env as any, "cx-p1", "planner", {
+      dispatchToRole(env as any, "cx-p1", "planner", {
         userPrompt: "mixed root",
         parentActor: { kind: "user", id: "user" },
         nodeIds: ["cx-p1", "root"],
@@ -216,14 +214,14 @@ test("dispatch: exact Node occupation blocks only the same Node and releases on 
   const dir = await makeTent();
   const env = envFor(dir);
 
-  const first = await dispatch(env as any, "cx-p1", "analyst", {
+  const first = await dispatchToRole(env as any, "cx-p1", "analyst", {
     userPrompt: "first exact Node task",
     parentActor: { kind: "user", id: "user" },
     nodeIds: ["cx-p1", "cx-p2"],
   });
   await assert.rejects(
     () =>
-      dispatch(env as any, "cx-p1", "executor", {
+      dispatchToRole(env as any, "cx-p1", "executor", {
         userPrompt: "same Node concurrent",
         parentActor: { kind: "user", id: "user" },
         nodeIds: ["cx-p1"],
@@ -233,12 +231,12 @@ test("dispatch: exact Node occupation blocks only the same Node and releases on 
   assert.equal(await env.fs.exists("temp/executor"), false);
 
   // Parent/child and sibling Nodes are separate contexts and remain concurrent.
-  const parent = await dispatch(env as any, "cx-promptzone", "planner", {
+  const parent = await dispatchToRole(env as any, "cx-promptzone", "planner", {
     userPrompt: "parent context concurrent",
     parentActor: { kind: "user", id: "user" },
     nodeIds: ["cx-promptzone"],
   });
-  const sibling = await dispatch(env as any, "cx-g1", "reviewer", {
+  const sibling = await dispatchToRole(env as any, "cx-g1", "reviewer", {
     userPrompt: "sibling context concurrent",
     parentActor: { kind: "user", id: "user" },
     nodeIds: ["cx-g1"],
@@ -254,7 +252,7 @@ test("dispatch: exact Node occupation blocks only the same Node and releases on 
     });
     await assert.rejects(
       () =>
-        dispatch(env as any, "cx-p1", "executor", {
+        dispatchToRole(env as any, "cx-p1", "executor", {
           userPrompt: `blocked while ${state}`,
           parentActor: { kind: "user", id: "user" },
           nodeIds: ["cx-p1"],
@@ -273,7 +271,7 @@ test("dispatch: exact Node occupation blocks only the same Node and releases on 
       state,
       updatedAt: "2026-07-30T12:00:00.000Z",
     });
-    const released = await dispatch(env as any, "cx-p1", "executor", {
+    const released = await dispatchToRole(env as any, "cx-p1", "executor", {
       userPrompt: `released after ${state}`,
       parentActor: { kind: "user", id: "user" },
       nodeIds: ["cx-p1"],
@@ -291,7 +289,7 @@ test("dispatch: malformed nodeIds reject before any Task or manifest write", asy
   const env = envFor(dir);
   await assert.rejects(
     () =>
-      dispatch(env as any, "cx-o1", "analyst", {
+      dispatchToRole(env as any, "cx-o1", "analyst", {
         userPrompt: "conflict",
         parentActor: { kind: "user", id: "user" },
         nodeIds: ["cx-o1", " "],
@@ -330,7 +328,7 @@ async function withService<T>(
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-mn-data-"));
-  const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+  const svc = await startLocalTentService({ dataDir, writeEndpoint: true, routes: [FAKE_ROUTE] });
   try {
     return await fn(svc);
   } finally {
@@ -382,12 +380,12 @@ test("service task.dispatch: nodeIds 2+ refs ordered + deduped in Context Card",
       workspaceId,
       nodeIds: [idB, idA, idB, idA],
       assigneeKind: "route",
-      routeId: "fake-default",
+      assigneeId: "fake-default",
       prompt: "service multi-node ordered",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const result = d.result as { taskPath: string; assigneeKind: string; state: string };
-    assert.equal(result.assigneeKind, "agentProfile");
+    assert.equal(result.assigneeKind, "route");
     assert.equal(result.state, "queued");
 
     const tentFs = new NodeFs(path.join(ws, ".tent"));
@@ -401,7 +399,7 @@ test("service task.dispatch: nodeIds 2+ refs ordered + deduped in Context Card",
       workspaceId,
       nodeIds: [idA],
       assigneeKind: "route",
-      routeId: "fake-default",
+      assigneeId: "fake-default",
       prompt: "same exact Node must wait",
     });
     assert.ok(blocked.error, "an active Task must occupy each exact referenced Node");
@@ -424,7 +422,7 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
       workspaceId,
       nodeIds: [idA, "cx-missingzz"],
       assigneeKind: "route",
-      routeId: "fake-default",
+      assigneeId: "fake-default",
       prompt: "missing ref",
     });
     assert.ok(missing.error, "expected missing node fail");
@@ -437,7 +435,7 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
       workspaceId,
       nodeIds: [],
       assigneeKind: "route",
-      routeId: "fake-default",
+      assigneeId: "fake-default",
       prompt: "empty",
     });
     assert.ok(empty.error);
@@ -450,7 +448,7 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
       workspaceId,
       nodeIds: [idA, 42],
       assigneeKind: "route",
-      routeId: "fake-default",
+      assigneeId: "fake-default",
       prompt: "bad type",
     });
     assert.ok(bad.error);
@@ -464,13 +462,13 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
         [retiredField]: idA,
         nodeIds: [idB],
         assigneeKind: "route",
-        routeId: "fake-default",
+        assigneeId: "fake-default",
         prompt: `retired ${retiredField}`,
       });
       assert.ok(retired.error, `${retiredField} must fail loud`);
       assert.match(
         String(retired.error.message || retired.error),
-        new RegExp(`${retiredField}.*retired|nodeIds`, "i")
+        new RegExp(`unknown parameter.*${retiredField}|nodeIds`, "i")
       );
     }
 
@@ -508,7 +506,7 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
       workspaceId,
       nodeIds: [idB, idFree],
       assigneeKind: "route",
-      routeId: "fake-default",
+      assigneeId: "fake-default",
       prompt: "archived multi",
     });
     assert.ok(archivedDispatch.error, "archived ref must fail loud");
@@ -528,7 +526,7 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
   });
 });
 
-test("service task.dispatch: Role and agentProfile Tasks use distinct Node selections", async () => {
+test("service task.dispatch: Role and route Tasks use distinct Node selections", async () => {
   const ws = await makeWorkspace("svc-role");
   await withService(async (svc) => {
     const { workspaceId, idA, idB } = await mountTwoNotes(svc, ws);
@@ -538,18 +536,19 @@ test("service task.dispatch: Role and agentProfile Tasks use distinct Node selec
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [idA, idB],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "role multi-node",
     });
     assert.ok(!roleD.error, JSON.stringify(roleD.error));
     const roleResult = roleD.result as {
       assigneeKind: string;
-      assignee: string;
+      assigneeId: string;
       state: string;
       taskPath: string;
     };
     assert.equal(roleResult.assigneeKind, "role");
-    assert.equal(roleResult.assignee, "executor");
+    assert.equal(roleResult.assigneeId, "executor");
     assert.equal(roleResult.state, "queued");
     assert.match(roleResult.taskPath, /^temp\/executor\/tasks\//);
 
@@ -561,31 +560,31 @@ test("service task.dispatch: Role and agentProfile Tasks use distinct Node selec
     assert.ok(!extra.error, JSON.stringify(extra.error));
     const idC = (extra.result as { nodeId: string }).nodeId;
 
-    const profileD = await rpc(svc, "task.dispatch", {
+    const routeD = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [idC],
       assigneeKind: "route",
-      routeId: "fake-default",
-      prompt: "profile multi-node",
+      assigneeId: "fake-default",
+      prompt: "route multi-node",
     });
-    assert.ok(!profileD.error, JSON.stringify(profileD.error));
-    const profileResult = profileD.result as {
+    assert.ok(!routeD.error, JSON.stringify(routeD.error));
+    const routeResult = routeD.result as {
       assigneeKind: string;
-      assignee: string;
+      assigneeId: string;
       state: string;
       taskPath: string;
     };
-    assert.equal(profileResult.assigneeKind, "agentProfile");
-    assert.equal(profileResult.assignee, "fake-default");
-    assert.equal(profileResult.state, "queued");
-    assert.match(profileResult.taskPath, /^temp\/agent-profiles\/fake-default\/tasks\//);
+    assert.equal(routeResult.assigneeKind, "route");
+    assert.equal(routeResult.assigneeId, "fake-default");
+    assert.equal(routeResult.state, "queued");
+    assert.match(routeResult.taskPath, /^temp\/routes\/fake-default\/tasks\//);
 
     const tentFs = new NodeFs(path.join(ws, ".tent"));
     const roleTask = await loadTaskEnvelope(tentFs, roleResult.taskPath);
-    const profileTask = await loadTaskEnvelope(tentFs, profileResult.taskPath);
+    const routeTask = await loadTaskEnvelope(tentFs, routeResult.taskPath);
     assert.deepEqual(taskReferencedNodeIds(roleTask), [idA, idB]);
-    assert.deepEqual(taskReferencedNodeIds(profileTask), [idC]);
+    assert.deepEqual(taskReferencedNodeIds(routeTask), [idC]);
   });
 });

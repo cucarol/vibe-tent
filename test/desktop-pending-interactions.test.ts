@@ -8,15 +8,12 @@ import { CLIENT_METHODS } from "../src/service/types.js";
 import {
   PENDING_INTERACTION_EVENT_TYPES,
   PENDING_INTERACTION_GAPS,
-  buildA2AResolvePayload,
   buildTaskSendInputPayload,
   buildToolApprovalResolvePayload,
   buildUserAskDenyPayload,
   buildUserAskReplyPayload,
   isPendingInteractionEventType,
   isTaskProjectionEventType,
-  normalizeA2AApproval,
-  normalizeA2AList,
   normalizeProposalList,
   normalizeTaskInput,
   normalizeTaskInputList,
@@ -36,8 +33,6 @@ import {
 
 test("CLIENT_METHODS covers all pending closed-loop RPCs used by Desktop", () => {
   for (const m of [
-    "a2a.listPending",
-    "a2a.resolve",
     "toolApproval.listPending",
     "toolApproval.get",
     "toolApproval.approveOnce",
@@ -66,7 +61,7 @@ test("CLIENT_METHODS covers all pending closed-loop RPCs used by Desktop", () =>
   }
 });
 
-test("normalizeUserAsk keeps role/task/choices and never invents profile", () => {
+test("normalizeUserAsk keeps role/task/choices and never invents route", () => {
   const item = normalizeUserAsk({
     id: "ua-1",
     taskPath: "temp/executor/tasks/t1.md",
@@ -85,7 +80,7 @@ test("normalizeUserAsk keeps role/task/choices and never invents profile", () =>
   assert.equal(item!.role, "executor");
   assert.equal(item!.choices.length, 2);
   assert.equal(item!.sessionId, "ss-1");
-  assert.equal((item as { profileId?: string }).profileId, undefined);
+  assert.equal((item as { routeId?: string }).routeId, undefined);
 
   assert.equal(normalizeUserAsk({ id: "x" }), null);
   assert.deepEqual(
@@ -101,24 +96,6 @@ test("normalizeUserAsk keeps role/task/choices and never invents profile", () =>
     }).map((a) => a.id),
     ["ua-2"]
   );
-});
-
-test("normalizeA2AApproval requires requester role + target profile + task", () => {
-  const item = normalizeA2AApproval({
-    id: "ap-1",
-    taskPath: "temp/orch/tasks/t.md",
-    role: "orchestrator",
-    profileId: "grok-acp-default",
-    policy: "ask",
-    callerKind: "role",
-    createdAt: "t",
-  });
-  assert.ok(item);
-  assert.equal(item!.kind, "a2a");
-  assert.equal(item!.role, "orchestrator");
-  assert.equal(item!.profileId, "grok-acp-default");
-  assert.equal(normalizeA2AApproval({ id: "ap-1", role: "x" }), null);
-  assert.equal(normalizeA2AList({ approvals: [item!] }).length, 1);
 });
 
 test("toolApproval paramsSummary uses options only — never invents args", () => {
@@ -209,12 +186,11 @@ test("pendingInteractionCount sums independent types without double-count delive
   assert.equal(
     pendingInteractionCount({
       userAsks: [{}, {}],
-      a2aApprovals: [{}],
       toolApprovals: [{}, {}],
       taskInputs: [{}],
       proposals: [{}],
     }),
-    7
+    6
   );
   assert.equal(pendingInteractionCount({}), 0);
 });
@@ -232,12 +208,6 @@ test("resolve payload builders are user-actor and fail-loud on empty reply", () 
   }
 
   assert.deepEqual(buildUserAskDenyPayload("ua-1"), { askId: "ua-1", actor: "user" });
-  assert.deepEqual(buildA2AResolvePayload("ap-1", "approve"), {
-    approvalId: "ap-1",
-    decision: "approve",
-    actor: "user",
-  });
-
   const allow = buildToolApprovalResolvePayload("ta-1", true);
   assert.equal(allow.method, "toolApproval.approveOnce");
   assert.deepEqual(allow.params, { approvalId: "ta-1", actor: "user" });
@@ -253,10 +223,8 @@ test("resolve payload builders are user-actor and fail-loud on empty reply", () 
   assert.equal(buildTaskSendInputPayload("ws", "t", "  ").ok, false);
 });
 
-test("pending interaction event types include a2a/tool/userAsk/taskInput/delivery", () => {
+test("pending interaction event types include tool/userAsk/taskInput/delivery", () => {
   for (const t of [
-    "a2a.ask",
-    "a2a.resolved",
     "toolApproval.pending",
     "toolApproval.resolved",
     "userAsk.pending",
@@ -280,13 +248,13 @@ test("pending interaction event types include a2a/tool/userAsk/taskInput/deliver
 test("contract gaps record field holes without claiming missing RPCs that exist", () => {
   const ids = contractGapIds();
   assert.ok(ids.includes("toolApproval.params"));
-  assert.ok(ids.includes("userAsk.agent-profile"));
+  assert.ok(ids.includes("userAsk.source-route"));
   assert.ok(ids.includes("taskInput.global-list"));
   // Real methods stay in CLIENT_METHODS; gap ids use placeholder method names.
   for (const gap of DESKTOP_CONTRACT_GAPS) {
     if (
       gap.id === "toolApproval.params" ||
-      gap.id === "userAsk.agent-profile" ||
+      gap.id === "userAsk.source-route" ||
       gap.id === "taskInput.global-list"
     ) {
       for (const m of gap.methods) {

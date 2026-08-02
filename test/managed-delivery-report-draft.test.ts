@@ -21,8 +21,15 @@ import {
   ManagedDeliveryReportDraftStore,
   makeManagedDeliveryReportDraftId,
 } from "../src/service/managed-delivery-report-draft-store.js";
-import { ensureRoleWorkspace } from "../src/core/workspace.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
+import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
+
+const FAKE_ROUTE = {
+  routeId: "fake-default",
+  provider: "fake",
+  adapterId: FAKE_ADAPTER_ID,
+  fake: { waitForSignal: true, sleepMs: 60_000 },
+} as const;
 
 async function makeWorkspace(name = "mrd"): Promise<string> {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-mrd-ws-"));
@@ -39,7 +46,6 @@ async function makeWorkspace(name = "mrd"): Promise<string> {
           {
             name: "executor",
             prompt: "do work",
-            allowedProfiles: ["fake-default"],
           },
         ],
       },
@@ -52,20 +58,34 @@ async function makeWorkspace(name = "mrd"): Promise<string> {
 
 async function withService<T>(
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>, dataDir: string) => Promise<T>,
-  opts?: { dataDir?: string; profiles?: import("../src/runtime/types.js").AgentProfileConfig[] }
+  opts?: { dataDir?: string; routes?: import("../src/runtime/types.js").SettingsRouteConfig[] }
 ): Promise<T> {
   const dataDir =
     opts?.dataDir ?? (await fs.mkdtemp(path.join(os.tmpdir(), "tent-mrd-data-")));
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
-    profiles: opts?.profiles,
+    routes: opts?.routes ?? [FAKE_ROUTE],
   });
   try {
     return await fn(svc, dataDir);
   } finally {
     await svc.stop();
   }
+}
+
+async function taskWorktree(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>,
+  workspaceId: string,
+  taskPath: string
+): Promise<string> {
+  const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+  assert.ok(!got.error, JSON.stringify(got.error));
+  const worktree = (
+    got.result as { task: { workspaceLane?: { worktree?: string } } }
+  ).task.workspaceLane?.worktree;
+  assert.ok(worktree, "route Task must have an exact worktree");
+  return worktree;
 }
 
 function rpc(
@@ -196,7 +216,7 @@ test("P0: natural report without outcome survives dirty refusal and draft-only r
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      role: "executor",
+      assigneeKind: "route", assigneeId: "fake-default",
       prompt: "preserve draft on dirty refuse",
       deliveryPolicy: "review",
     });
@@ -206,16 +226,15 @@ test("P0: natural report without outcome survives dirty refusal and draft-only r
     const started = await rpc(svc, "task.startSession", {
       workspaceId,
       taskPath,
-      profileId: "fake-default",
       callerKind: "user",
     });
     assert.ok(!started.error, JSON.stringify(started.error));
     const sessionId = (started.result as { session: { sessionId: string } }).session
       .sessionId;
 
-    const contract = await ensureRoleWorkspace(ws, "executor");
+    const worktree = await taskWorktree(svc, workspaceId, taskPath);
     await fs.writeFile(
-      path.join(contract.worktree, "UNTRACKED_DIRTY.txt"),
+      path.join(worktree, "UNTRACKED_DIRTY.txt"),
       "untracked dirty\n"
     );
 
@@ -260,9 +279,9 @@ test("P0: natural report without outcome survives dirty refusal and draft-only r
     assert.equal(failEv!.reportDraftPreserved, true);
 
     // Clean worktree, then idempotent retry from durable draft (empty assistantText).
-    await git(contract.worktree, "add", "UNTRACKED_DIRTY.txt");
-    await git(contract.worktree, "commit", "-q", "-m", "commit dirty");
-    assert.equal((await git(contract.worktree, "status", "--porcelain")).trim(), "");
+    await git(worktree, "add", "UNTRACKED_DIRTY.txt");
+    await git(worktree, "commit", "-q", "-m", "commit dirty");
+    assert.equal((await git(worktree, "status", "--porcelain")).trim(), "");
 
     resetManagedAutoDeliverDedupForTests();
     await invokeManagedAutoDeliverForTests(svc.ctx, {
@@ -299,7 +318,7 @@ test("malformed outcome text is delivered intact instead of discarding the repor
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      role: "executor",
+      assigneeKind: "route", assigneeId: "fake-default",
       prompt: "deliver malformed control text intact",
       deliveryPolicy: "review",
     });
@@ -309,7 +328,6 @@ test("malformed outcome text is delivered intact instead of discarding the repor
     const started = await rpc(svc, "task.startSession", {
       workspaceId,
       taskPath,
-      profileId: "fake-default",
       callerKind: "user",
     });
     assert.ok(!started.error, JSON.stringify(started.error));
@@ -357,7 +375,7 @@ test("P0: report draft survives service restart; retry publishes without re-prom
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [mounted.nodeId],
-        role: "executor",
+        assigneeKind: "route", assigneeId: "fake-default",
         prompt: "restart must keep draft",
         deliveryPolicy: "review",
       });
@@ -367,14 +385,13 @@ test("P0: report draft survives service restart; retry publishes without re-prom
       const started = await rpc(svc, "task.startSession", {
         workspaceId,
         taskPath,
-        profileId: "fake-default",
         callerKind: "user",
       });
       assert.ok(!started.error, JSON.stringify(started.error));
       sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
 
-      const contract = await ensureRoleWorkspace(ws, "executor");
-      await fs.writeFile(path.join(contract.worktree, "DIRTY.txt"), "x\n");
+      const worktree = await taskWorktree(svc, workspaceId, taskPath);
+      await fs.writeFile(path.join(worktree, "DIRTY.txt"), "x\n");
 
       await invokeManagedAutoDeliverForTests(svc.ctx, {
         workspaceId,
@@ -401,9 +418,13 @@ test("P0: report draft survives service restart; retry publishes without re-prom
   assert.equal(onDisk!.assistantText, reportText);
 
   // Clean worktree outside service.
-  const contract = await ensureRoleWorkspace(ws, "executor");
-  await git(contract.worktree, "add", "DIRTY.txt");
-  await git(contract.worktree, "commit", "-q", "-m", "clean for retry");
+  const taskFs = new NodeFs(path.join(ws, ".tent"));
+  const persisted = await import("../src/core/task.js").then(({ loadTaskEnvelope }) =>
+    loadTaskEnvelope(taskFs, taskPath)
+  );
+  assert.ok(persisted.worktree, "route Task worktree must persist across Service restart");
+  await git(persisted.worktree, "add", "DIRTY.txt");
+  await git(persisted.worktree, "commit", "-q", "-m", "clean for retry");
 
   // Phase 2: new service process on same dataDir + remount workspace.
   // workspaceId is path-stable (hash of root); draft key survives restart.
@@ -473,17 +494,10 @@ test("P0: report draft survives service restart; retry publishes without re-prom
   );
 });
 
-test("P0: integrate failure preserves draft; second attempt with clean commits succeeds", async () => {
+test("P0: publish preparation failure preserves draft; retry publishes without re-prompt", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace("mrd-integrate-fail");
   await initGitOnWorkspace(ws);
-
-  // Create the long-lived Role lane before main diverges. The Task claim captures
-  // this clean base; its conflicting Role commit must be created after claim.
-  const contract = await ensureRoleWorkspace(ws, "executor");
-  await fs.writeFile(path.join(ws, "mrd-conflict.txt"), "main\n");
-  await git(ws, "add", "mrd-conflict.txt");
-  await git(ws, "commit", "-q", "-m", "main mrd conflict");
 
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -492,20 +506,16 @@ test("P0: integrate failure preserves draft; second attempt with clean commits s
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      role: "executor",
+      assigneeKind: "route", assigneeId: "fake-default",
       prompt: "integrate fail keeps draft",
-      deliveryPolicy: "bypass",
+      deliveryPolicy: "review",
     });
+    assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
-    await fs.writeFile(path.join(contract.worktree, "mrd-conflict.txt"), "role\n");
-    await git(contract.worktree, "add", "mrd-conflict.txt");
-    await git(contract.worktree, "commit", "-q", "-m", "role mrd conflict");
-    const sourceRef = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
     const started = await rpc(svc, "task.startSession", {
       workspaceId,
       taskPath,
-      profileId: "fake-default",
       callerKind: "user",
     });
     assert.ok(!started.error, JSON.stringify(started.error));
@@ -519,7 +529,7 @@ test("P0: integrate failure preserves draft; second attempt with clean commits s
       taskPath,
       sessionId,
       assistantText: reportText,
-      commits: [sourceRef],
+      commits: ["not-a-commit"],
     });
 
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
@@ -528,16 +538,16 @@ test("P0: integrate failure preserves draft; second attempt with clean commits s
     assert.equal(
       (list1.result as { deliveries: unknown[] }).deliveries.length,
       0,
-      "integrate failure must not leave a Delivery"
+      "failed publish preparation must not leave a Delivery"
     );
 
     const draft = await svc.ctx.managedDeliveryReportDrafts.get(workspaceId, taskPath);
     assert.ok(draft);
     assert.equal(draft!.assistantText, reportText);
-    assert.match(String(draft!.lastError ?? ""), /conflict|integrat|roll/i);
+    assert.match(String(draft!.lastError ?? ""), /commit|revision|unknown|invalid/i);
 
-    // Retry without the conflicting SHA: empty commits + bypass still auto-accepts
-    // a zero-commit delivery from the preserved report (no Agent re-answer).
+    // Retry without the invalid SHA: a zero-commit review Delivery is published
+    // from the preserved report without asking the provider to answer again.
     resetManagedAutoDeliverDedupForTests();
     await invokeManagedAutoDeliverForTests(svc.ctx, {
       workspaceId,
@@ -548,12 +558,8 @@ test("P0: integrate failure preserves draft; second attempt with clean commits s
     });
 
     const after = await rpc(svc, "task.get", { workspaceId, taskPath });
-    // bypass + successful deliver → accepted (auto-integrate of empty set).
     const state = (after.result as { task: { state: string } }).task.state;
-    assert.ok(
-      state === "accepted" || state === "delivered",
-      `expected accepted/delivered after draft retry, got ${state}`
-    );
+    assert.equal(state, "delivered");
     const list2 = await rpc(svc, "delivery.list", { workspaceId });
     const deliveries = (
       list2.result as { deliveries: Array<{ summary: string }> }

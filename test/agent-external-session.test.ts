@@ -178,7 +178,8 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
     // Prefer task.dispatch if available via client helper
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [note.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "do the thing",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -387,9 +388,9 @@ test("runtime stores first-class externalKey only", async () => {
     const rec = await runtime.registry.read(h.sessionId);
     assert.equal(rec?.externalKey, "explicit-key-1");
     assert.equal(recordExternalKey(rec!), "explicit-key-1");
-    // Key lives only on the first-class field — not profile env.
-    assert.equal(rec?.profileSnapshot?.env, undefined);
-    // Env-only / missing first-class field → no key (no legacy fallback).
+    // Key lives only on the first-class field; the route snapshot has no raw env.
+    assert.equal((rec?.routeSnapshot as { env?: unknown } | undefined)?.env, undefined);
+    // Missing first-class field → no key.
     assert.equal(recordExternalKey({}), undefined);
     assert.equal(recordExternalKey({ externalKey: "  " }), undefined);
   } finally {

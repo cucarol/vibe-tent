@@ -22,10 +22,10 @@ import {
 import {
   defaultProductAcpAdapters,
   isProviderVerificationLevel,
+  PRODUCT_ACP_ADAPTER_IDS,
   projectProviderCatalog,
   providerCatalogEntry,
 } from "../src/service/provider-catalog.js";
-import { PRODUCT_ACP_ADAPTER_IDS } from "../src/service/profiles.js";
 
 const LEVEL_SET = new Set<string>(PROVIDER_VERIFICATION_LEVELS);
 

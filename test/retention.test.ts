@@ -49,9 +49,10 @@ async function writeTerminalTask(
 ) {
   const role = opts.role ?? "executor";
   const path = await writeTaskEnvelope(fs, clock(opts.createdAt ?? OLD), {
-
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },role,
+    reviewer: { kind: "user", id: "user" },
+    assigneeKind: "role",
+    assigneeId: role,
     nodeRefs: [{ id: opts.claimId ?? "cx-p1", path: "prompt/表达式任务书" }],
     manifestPath: "temp/executor/manifests/m.md",
     userPrompt: "retention fixture",
@@ -98,9 +99,10 @@ test("preview: never selects active tasks or ready deliveries", async () => {
   const fs = new NodeFs(dir);
 
   const activePath = await writeTaskEnvelope(fs, clock(OLD), {
-
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },role: "executor",
+    reviewer: { kind: "user", id: "user" },
+    assigneeKind: "role",
+    assigneeId: "executor",
     nodeRefs: [{ id: "cx-p1", path: "prompt/表达式任务书" }],
     manifestPath: "temp/executor/manifests/m.md",
     userPrompt: "still running work",
@@ -119,7 +121,7 @@ test("preview: never selects active tasks or ready deliveries", async () => {
   const ready = await createDelivery(fs, clock(OLD), {
     taskId: "tk-missing",
     sourceNodeId: "cx-p1",
-    role: "executor",
+    deliveriesDir: "temp/executor/deliveries",
     summary: "awaiting review",
     status: "ready",
   });
@@ -149,7 +151,7 @@ test("preview: terminal task past retention is a task-group candidate", async ()
   const delivery = await createDelivery(fs, clock(OLD), {
     taskId: "tk-failold",
     sourceNodeId: "cx-p1",
-    role: "executor",
+    deliveriesDir: "temp/executor/deliveries",
     summary: "historical delivery",
     status: "rejected",
   });
@@ -196,7 +198,7 @@ test("preview: recent related delivery keeps the whole terminal task group hot",
   await createDelivery(fs, clock(RECENT), {
     taskId: "tk-hotgroup",
     sourceNodeId: "cx-p1",
-    role: "executor",
+    deliveriesDir: "temp/executor/deliveries",
     summary: "recent accepted delivery",
     status: "accepted",
   });
@@ -265,7 +267,7 @@ test("purge: deletes task + deliveries as a group; leaves active work", async ()
   const oldDelivery = await createDelivery(fs, clock(OLD), {
     taskId: "tk-group1",
     sourceNodeId: "cx-p1",
-    role: "executor",
+    deliveriesDir: "temp/executor/deliveries",
     summary: "old accepted summary",
     status: "accepted",
   });
@@ -277,9 +279,10 @@ test("purge: deletes task + deliveries as a group; leaves active work", async ()
   );
 
   const activePath = await writeTaskEnvelope(fs, clock(NOW), {
-
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },role: "executor",
+    reviewer: { kind: "user", id: "user" },
+    assigneeKind: "role",
+    assigneeId: "executor",
     nodeRefs: [{ id: "cx-p2", path: "prompt/表达式任务书/草稿" }],
     manifestPath: "temp/executor/manifests/m2.md",
     userPrompt: "do not purge me",
@@ -307,7 +310,7 @@ test("purge: task removal failure preserves all related deliveries", async () =>
   const delivery = await createDelivery(seedFs, clock(OLD), {
     taskId: "tk-failrm1",
     sourceNodeId: "cx-p1",
-    role: "executor",
+    deliveriesDir: "temp/executor/deliveries",
     summary: "must survive parent delete failure",
     status: "accepted",
   });
@@ -331,7 +334,7 @@ test("purge: orphan terminal delivery is cleaned independently", async () => {
   const orphan = await createDelivery(fs, clock(OLD), {
     taskId: "tk-gonegone",
     sourceNodeId: "cx-p1",
-    role: "executor",
+    deliveriesDir: "temp/executor/deliveries",
     summary: "orphan rejected",
     status: "rejected",
   });
@@ -389,7 +392,7 @@ test("preview: refuses task-group when a related delivery is draft or ready", as
   const ready = await createDelivery(fs, clock(OLD), {
     taskId: "tk-readyblk",
     sourceNodeId: "cx-p1",
-    role: "executor",
+    deliveriesDir: "temp/executor/deliveries",
     summary: "still ready",
     status: "ready",
   });
@@ -412,7 +415,7 @@ test("preview: refuses task-group when a related delivery is draft or ready", as
   const draft = await createDelivery(fs, clock(OLD), {
     taskId: "tk-orphan-draft",
     sourceNodeId: "cx-p1",
-    role: "executor",
+    deliveriesDir: "temp/executor/deliveries",
     summary: "unfinished draft",
     status: "draft",
   });

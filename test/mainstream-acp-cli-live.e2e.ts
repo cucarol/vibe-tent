@@ -14,7 +14,11 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { createAgentRuntime, type AgentProfileConfig, type RuntimeEvent } from "../src/runtime/index.js";
+import {
+  createAgentRuntime,
+  type RuntimeEvent,
+  type SettingsRouteConfig,
+} from "../src/runtime/index.js";
 import { GROK_ACP_ADAPTER_ID } from "../src/adapters/grok-acp/index.js";
 import { CODEX_ACP_ADAPTER_ID } from "../src/adapters/codex-acp/types.js";
 import { CLAUDE_ACP_ADAPTER_ID } from "../src/adapters/claude-acp/types.js";
@@ -32,7 +36,7 @@ type ProviderName = "grok" | "codex" | "claude" | "opencode" | "copilot";
 
 type ProviderCase = {
   name: ProviderName;
-  profile: AgentProfileConfig;
+  route: SettingsRouteConfig;
   nativeResume: (
     sessionId: string,
     prompt: string,
@@ -52,22 +56,21 @@ const nativePaths = {
 };
 const codexModel = process.env.TENT_LIVE_CODEX_MODEL || "gpt-5.4";
 
-function profile(
-  id: string,
+function route(
+  routeId: string,
   adapterId: string,
   command?: string,
   args?: string[]
-): AgentProfileConfig {
+): SettingsRouteConfig {
   return {
-    id,
+    routeId,
+    provider: routeId,
     adapterId,
     ...(command ? { command } : {}),
     ...(args ? { args } : {}),
-    acp: {
-      permissionPolicy: "deny",
-      promptTimeoutMs: 300_000,
-      permissionTimeoutMs: 30_000,
-    },
+    permissionPolicy: "deny",
+    promptTimeoutMs: 300_000,
+    permissionTimeoutMs: 30_000,
   };
 }
 
@@ -100,15 +103,13 @@ async function runNative(
 const providers: ProviderCase[] = [
   {
     name: "grok",
-    profile: {
-      ...profile("foreground-grok", GROK_ACP_ADAPTER_ID, nativePaths.grok),
-      acp: {
-        model: process.env.CPA_GROK_MODEL || "grok-4.5",
-        envKey: "CPA_GROK_API_KEY",
-        baseUrlEnvKey: "CPA_GROK_BASE_URL",
-        permissionPolicy: "deny",
-        promptTimeoutMs: 300_000,
-      },
+    route: {
+      ...route("foreground-grok", GROK_ACP_ADAPTER_ID, nativePaths.grok),
+      model: process.env.CPA_GROK_MODEL || "grok-4.5",
+      envKey: "CPA_GROK_API_KEY",
+      baseUrlEnvKey: "CPA_GROK_BASE_URL",
+      permissionPolicy: "deny",
+      promptTimeoutMs: 300_000,
     },
     nativeResume: (sessionId, prompt, cwd, dataDir) =>
       runNative(nativePaths.grok, ["--resume", sessionId, "--single", prompt], cwd, {
@@ -117,12 +118,9 @@ const providers: ProviderCase[] = [
   },
   {
     name: "codex",
-    profile: {
-      ...profile("foreground-codex", CODEX_ACP_ADAPTER_ID),
-      acp: {
-        ...profile("foreground-codex", CODEX_ACP_ADAPTER_ID).acp,
-        model: codexModel,
-      },
+    route: {
+      ...route("foreground-codex", CODEX_ACP_ADAPTER_ID),
+      model: codexModel,
     },
     nativeResume: async (sessionId, prompt, cwd, dataDir) => {
       const outputFile = path.join(cwd, "codex-last-message.txt");
@@ -147,7 +145,7 @@ const providers: ProviderCase[] = [
   },
   {
     name: "claude",
-    profile: profile("foreground-claude", CLAUDE_ACP_ADAPTER_ID),
+    route: route("foreground-claude", CLAUDE_ACP_ADAPTER_ID),
     nativeResume: (sessionId, prompt, cwd, dataDir) =>
       runNative(
         nativePaths.claude,
@@ -158,7 +156,7 @@ const providers: ProviderCase[] = [
   },
   {
     name: "opencode",
-    profile: profile("foreground-opencode", OPENCODE_ACP_ADAPTER_ID, nativePaths.opencode, ["acp"]),
+    route: route("foreground-opencode", OPENCODE_ACP_ADAPTER_ID, nativePaths.opencode, ["acp"]),
     nativeResume: (sessionId, prompt, cwd, dataDir) =>
       runNative(nativePaths.opencode, ["run", "--session", sessionId, prompt], cwd, {
         TENT_SERVICE_DATA_DIR: dataDir,
@@ -166,7 +164,7 @@ const providers: ProviderCase[] = [
   },
   {
     name: "copilot",
-    profile: profile(
+    route: route(
       "foreground-copilot",
       COPILOT_ACP_ADAPTER_ID,
       nativePaths.copilot,
@@ -240,14 +238,15 @@ for (const provider of providers) {
       const sessionId = `ss-${provider.name.slice(0, 6)}fg1`;
       const nonceA = `A_${provider.name}_${Date.now().toString(36).toUpperCase()}`;
       const nonceB = `B_${provider.name}_${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
-      let runtime = createAgentRuntime({ dataDir, profiles: [provider.profile] });
+      let runtime = createAgentRuntime({ dataDir, routes: [provider.route] });
       let events: RuntimeEvent[] = [];
       runtime.subscribeAll((event) => events.push(event));
 
       try {
         await runtime.startSession({
           sessionId,
-          profileId: provider.profile.id,
+          routeId: provider.route.routeId,
+          routeSnapshot: runtime.snapshotRouteForStart(provider.route.routeId),
           cwd,
           bootstrapPrompt:
             `Remember ${nonceA}. Reply only FIRST_READY ${nonceA}. Do not use tools.`,
@@ -269,7 +268,7 @@ for (const provider of providers) {
         assert.match(native, new RegExp(nonceA));
         assert.match(native, new RegExp(nonceB));
 
-        runtime = createAgentRuntime({ dataDir, profiles: [provider.profile] });
+        runtime = createAgentRuntime({ dataDir, routes: [provider.route] });
         events = [];
         runtime.subscribeAll((event) => events.push(event));
         await runtime.resumeSession({

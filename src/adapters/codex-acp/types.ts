@@ -1,6 +1,6 @@
 // Codex ACP provider types — machine-local config only; never workspace secrets.
 
-import type { AcpPermissionPolicy, AcpProfileOptions } from "../acp/types.js";
+import type { AcpPermissionPolicy, AcpRouteOptions } from "../acp/types.js";
 
 export type {
   AcpJsonRpcNotification,
@@ -18,11 +18,11 @@ export {
 export type CodexAcpPermissionPolicy = AcpPermissionPolicy;
 
 /**
- * Profile extras for adapterId "codex-acp".
- * Extends shared {@link AcpProfileOptions}; no invented default model/envKey.
- * Canonical storage is `AgentProfileConfig.acp`.
+ * Route extras for adapterId "codex-acp".
+ * Extends shared {@link AcpRouteOptions}; no invented default model/envKey.
+ * Canonical storage is `RouteConfig.acp`.
  */
-export interface CodexAcpProfileOptions extends AcpProfileOptions {}
+export interface CodexAcpRouteOptions extends AcpRouteOptions {}
 
 export const CODEX_ACP_ADAPTER_ID = "codex-acp";
 

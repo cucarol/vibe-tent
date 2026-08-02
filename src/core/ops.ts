@@ -3,7 +3,7 @@
 import { FsAdapter, withTentMutation } from "./adapter.js";
 import { loadTent, join, dirName, nodeNotePath, LoadedTent } from "./tree.js";
 import { buildManifest, manifestToYaml, DispatchInput } from "./manifest.js";
-import { makeUniqueNodeId } from "./id.js";
+import { assertRouteId, makeUniqueNodeId } from "./id.js";
 import { NODE_FRONTMATTER_KEY_ORDER, serializeFrontmatter, parseFrontmatter } from "./frontmatter.js";
 import { loadOrder, saveOrder, ROOT_KEY } from "./order.js";
 import { Node, NodeType, NodeMode } from "./types.js";
@@ -35,12 +35,12 @@ import {
   TaskEnvelope,
   writeTaskEnvelope,
 } from "./task.js";
-import { makeTaskId, userTaskActors } from "./task-model.js";
+import { makeTaskId } from "./task-model.js";
 import type { AssigneeKind, DeliveryPolicy } from "./task-model.js";
 import {
-  agentProfileManifestPath,
-  agentProfileTasksDir,
-  agentProfileTempRoot,
+  routeManifestPath,
+  routeTasksDir,
+  routeTempRoot,
 } from "./paths.js";
 import { removeNonAcceptedDeliveriesForNode } from "./delivery.js";
 import { validateNodeName } from "./scaffold.js";
@@ -62,13 +62,12 @@ export {
 export interface DispatchResult {
   manifestPath: string;
   manifestYaml: string;
-  /** Present for role tasks; omitted for one-shot agentProfile tasks. */
+  /** Present for Role tasks; omitted for temporary route tasks. */
   initPath?: string;
   taskPath: string;
   relayPrompt: string;
   assigneeKind: AssigneeKind;
-  /** Stable assignee label (role name or profileId). */
-  assignee: string;
+  assigneeId: string;
 }
 
 export interface DispatchOptions {
@@ -92,30 +91,16 @@ export interface DispatchOptions {
   /** Delivery policy for this task (default review). */
   deliveryPolicy?: DeliveryPolicy;
   /**
-   * Defaults to role. agentProfile requires profileId and must not register a role.
+   * Canonical executor kind. Responsibility remains parentActor/reviewer.
    */
-  assigneeKind?: AssigneeKind;
-  /** Required when assigneeKind=agentProfile; stable assignee / delivery label. */
-  profileId?: string;
+  assigneeKind: AssigneeKind;
+  /** Stable Role name or Settings route id, selected by assigneeKind. */
+  assigneeId: string;
   /**
-   * Logical AgentDefinition id for Role-agent dispatch.
-   * Persisted on the Task envelope; omitted for user-direct profile one-shots.
-   */
-  agentId?: string;
-  /**
-   * Optional preallocated task id (tk-…). Used by asSub profile dispatch so the
+   * Optional preallocated task id (tk-…). Used by asSub route dispatch so the
    * tent-task/<taskId> lane can be created before the envelope is written.
    */
   taskId?: string;
-  /**
-   * Optional precomputed contextGeneration (cg-v1-…) from Service stable facts.
-   * When omitted, writeTaskEnvelope derives a stable (non-taskId) fallback.
-   */
-  contextGeneration?: string;
-  /** Optional stable fact bag for writeTaskEnvelope when generation is omitted. */
-  contextGenerationFacts?: import("./task.js").TaskEnvelopeInput["contextGenerationFacts"];
-  /** Optional stable purpose/subKey for Session reuse identity. */
-  purpose?: string;
   /**
    * Authoritative transient multi-Node dispatch source (durable Node IDs).
    * Non-empty; order-preserving dedupe; each id resolved + structurally gated
@@ -209,48 +194,26 @@ function isForbiddenRootDispatchToken(id: string, tentName: string): boolean {
 export async function dispatch(
   env: OpsEnv,
   primaryNodeId: string,
-  role: string | undefined,
-  promptOrOptions: string | DispatchOptions
+  options: DispatchOptions
 ): Promise<DispatchResult> {
   return withMutation(env.fs, async () =>
-    dispatchUnlocked(env, primaryNodeId, role, promptOrOptions)
+    dispatchUnlocked(env, primaryNodeId, options)
   );
 }
 
 async function dispatchUnlocked(
   env: OpsEnv,
   primaryNodeId: string,
-  role: string | undefined,
-  promptOrOptions: string | DispatchOptions
+  options: DispatchOptions
 ): Promise<DispatchResult> {
   const tent = await loadTent(env.fs);
-  // String shorthand = user-direct Task; translate locally to explicit actors
-  // (no dispatchedBy). Object form must already carry parentActor+reviewer.
-  const options: DispatchOptions = typeof promptOrOptions === "string"
-    ? { userPrompt: promptOrOptions, ...userTaskActors() }
-    : promptOrOptions;
-  const assigneeKind: AssigneeKind =
-    options.assigneeKind === "agentProfile" ? "agentProfile" : "role";
+  const assigneeKind = options.assigneeKind;
   const userPrompt = options.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
 
-  let assigneeLabel: string;
-  if (assigneeKind === "agentProfile") {
-    const profileId = options.profileId?.trim() || "";
-    if (!profileId) {
-      throw new Error("Dispatch with assigneeKind=agentProfile requires profileId.");
-    }
-    if (role?.trim() && role.trim() !== profileId) {
-      throw new Error(
-        "Dispatch with assigneeKind=agentProfile must not pass a different role; use profileId as the assignee label."
-      );
-    }
-    assigneeLabel = assertProfileId(profileId);
-  } else {
-    const roleName = role?.trim() || "";
-    if (!roleName) throw new Error("Dispatch with assigneeKind=role requires role.");
-    assigneeLabel = assertRoleName(roleName);
-  }
+  const rawAssigneeId = options.assigneeId.trim();
+  const assigneeId =
+    assigneeKind === "route" ? assertRouteId(rawAssigneeId) : assertRoleName(rawAssigneeId);
 
   // Resolve and gate every selected Node before writes.
   const nodeIds = resolveDispatchNodeIds({
@@ -260,18 +223,16 @@ async function dispatchUnlocked(
   });
   const tasks = await loadTaskEnvelopes(env.fs);
   // Cleanup only removes what this dispatch creates. Role: temp/<role>/ when new.
-  // Profile: temp/agent-profiles/<safe>/ when new (never tent-role/*).
+  // Route: temp/routes/<safe>/ when new (never tent-role/*).
   const createdRoot =
-    assigneeKind === "agentProfile"
-      ? agentProfileTempRoot(assigneeLabel)
-      : join("temp", assigneeLabel);
+    assigneeKind === "route" ? routeTempRoot(assigneeId) : join("temp", assigneeId);
   const createdRootExisted = await env.fs.exists(createdRoot);
 
   // Exact Nodes are exclusive across active Tasks. Ancestors, descendants, siblings,
   // and workspace context remain independent. asSub is a Git-lane flag only.
   if (!options.parentActor) {
     throw new Error(
-      "Dispatch requires explicit parentActor (legacy dispatchedBy is migration-only; reviewer may be derived equal)."
+      "Dispatch requires explicit parentActor; reviewer may be derived equal."
     );
   }
   void options.asSub;
@@ -298,7 +259,8 @@ async function dispatchUnlocked(
     // (one fact with Context Card). Do not pull in other active Role Task refs.
     const input: DispatchInput = {
       tentName: env.tentName,
-      role: assigneeLabel,
+      assigneeKind,
+      assigneeId,
       claimNodes: selectedNodes,
       ...options.workspace,
     };
@@ -312,28 +274,28 @@ async function dispatchUnlocked(
     let manifestPath: string;
     let initPath: string | undefined;
 
-    if (assigneeKind === "agentProfile") {
-      manifestPath = agentProfileManifestPath(assigneeLabel, taskId);
+    if (assigneeKind === "route") {
+      manifestPath = routeManifestPath(assigneeId, taskId);
       await ensureDir(env.fs, dirName(manifestPath));
       await env.fs.writeFile(manifestPath, yaml);
     } else {
       // Every Task owns an immutable manifest snapshot. A shared Role manifest would
       // let concurrent sibling Tasks overwrite each other's writable Node selection.
-      manifestPath = join("temp", assigneeLabel, "manifests", `${taskId}.yml`);
+      manifestPath = join("temp", assigneeId, "manifests", `${taskId}.yml`);
       await ensureDir(env.fs, dirName(manifestPath));
       await env.fs.writeFile(manifestPath, yaml);
       const registry = await loadRolesRegistry(env.fs);
       const roleDefinition =
-        registry.roles.find((item) => item.name === assigneeLabel) ?? { name: assigneeLabel };
+        registry.roles.find((item) => item.name === assigneeId) ?? { name: assigneeId };
       initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
     }
 
     // Sole persisted Node-ref source is contextCard.refs.nodes via writeTaskEnvelope.
     // Pass exact ordered selection only.
     const taskNodeRefs = selectedNodes.map((node) => ({ id: node.id, path: node.path }));
-    const agentId = options.agentId?.trim() || undefined;
     const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
-      role: assigneeLabel,
+      assigneeKind,
+      assigneeId,
       nodeRefs: taskNodeRefs,
       manifestPath,
       userPrompt,
@@ -342,18 +304,9 @@ async function dispatchUnlocked(
       reviewer: options.reviewer,
       asSub: options.asSub === true,
       deliveryPolicy: options.deliveryPolicy,
-      assigneeKind,
-      agentId,
       id: taskId,
       tasksDir:
-        assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : undefined,
-      ...(options.contextGeneration
-        ? { contextGeneration: options.contextGeneration }
-        : {}),
-      ...(options.contextGenerationFacts
-        ? { contextGenerationFacts: options.contextGenerationFacts }
-        : {}),
-      ...(options.purpose?.trim() ? { purpose: options.purpose.trim() } : {}),
+        assigneeKind === "route" ? routeTasksDir(assigneeId) : undefined,
     });
 
     // Load the just-written envelope for an honest relay projection (parent/reviewer included).
@@ -366,7 +319,7 @@ async function dispatchUnlocked(
       taskPath,
       relayPrompt,
       assigneeKind,
-      assignee: assigneeLabel,
+      assigneeId,
     };
   } catch (error) {
     if (!createdRootExisted && (await env.fs.exists(createdRoot))) {
@@ -374,15 +327,6 @@ async function dispatchUnlocked(
     }
     throw error;
   }
-}
-
-function assertProfileId(profileId: string): string {
-  const id = profileId.trim();
-  if (!id) throw new Error("profileId cannot be empty.");
-  if (/[\/\\\r\n]/.test(id)) {
-    throw new Error("profileId cannot contain path separators or newlines.");
-  }
-  return id;
 }
 
 // ---- task ack / cancel ----

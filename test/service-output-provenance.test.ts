@@ -120,7 +120,8 @@ async function readyDeliveryTask(
   const dispatched = await rpc(svc, "task.dispatch", {
     workspaceId,
     nodeIds: [nodeId],
-    role,
+    assigneeKind: "role",
+    assigneeId: role,
     prompt: "do the work",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -464,7 +465,9 @@ test("retention pins Delivery+Task referenced by Output.deliveryId (including ar
   const taskPath = await writeTaskEnvelope(fsa, clock, {
 
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },role: "executor",
+    reviewer: { kind: "user", id: "user" },
+    assigneeKind: "role",
+    assigneeId: "executor",
     nodeRefs: [{ id: "cx-src", path: "inbox" }],
     manifestPath: "temp/executor/manifests/m.md",
     userPrompt: "old accepted",
@@ -480,7 +483,7 @@ test("retention pins Delivery+Task referenced by Output.deliveryId (including ar
   const delivery = await createDelivery(fsa, clock, {
     taskId: "tk-pinned01",
     sourceNodeId: "cx-src",
-    role: "executor",
+    deliveriesDir: "temp/executor/deliveries",
     summary: "accepted product",
     status: "accepted",
     id: "dl-pinned01",
@@ -518,7 +521,9 @@ test("retention pins Delivery+Task referenced by Output.deliveryId (including ar
   const otherPath = await writeTaskEnvelope(fsa, clock, {
 
     parentActor: { kind: "user", id: "user" },
-    reviewer: { kind: "user", id: "user" },role: "executor",
+    reviewer: { kind: "user", id: "user" },
+    assigneeKind: "role",
+    assigneeId: "executor",
     nodeRefs: [{ id: "cx-other", path: "inbox" }],
     manifestPath: "temp/executor/manifests/m2.md",
     userPrompt: "unrelated",

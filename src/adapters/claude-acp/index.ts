@@ -1,9 +1,9 @@
 // Claude ACP ProviderAdapter — pinned official claude-agent-acp bridge via npx.
 // No ACP authenticate RPC; relies on local Claude login and/or injected env when envKey set.
-// Never starts real npx/network in tests — LaunchPlan command/args override to mock.
+// Never starts real npx/network in tests — RouteLaunchPlan command/args override to mock.
 
 import type {
-  LaunchPlan,
+  RouteLaunchPlan,
   ManagedSession,
   ProviderAdapter,
   ProviderCapabilities,
@@ -32,7 +32,7 @@ import {
   CLAUDE_ACP_ADAPTER_ID,
   CLAUDE_ACP_NPX_PACKAGE,
   type ClaudeAcpPermissionPolicy,
-  type ClaudeAcpProfileOptions,
+  type ClaudeAcpRouteOptions,
 } from "./types.js";
 
 export {
@@ -40,7 +40,7 @@ export {
   CLAUDE_ACP_NPX_PACKAGE,
   DEFAULT_PROMPT_TIMEOUT_MS,
   DEFAULT_PERMISSION_TIMEOUT_MS,
-  type ClaudeAcpProfileOptions,
+  type ClaudeAcpRouteOptions,
   type ClaudeAcpPermissionPolicy,
 } from "./types.js";
 
@@ -83,7 +83,7 @@ export class ClaudeAcpProviderAdapter implements ProviderAdapter {
    * Real ACP needs bidirectional stdio — AgentRuntime uses startManagedSession.
    * Does not call ACP authenticate; depends on local Claude login or injected env.
    */
-  resolveLaunch(plan: LaunchPlan): ResolvedLaunch {
+  resolveLaunch(plan: RouteLaunchPlan): ResolvedLaunch {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const { command, args } = resolveNpxAcpLaunch({
       planCommand: plan.command,
@@ -95,16 +95,15 @@ export class ClaudeAcpProviderAdapter implements ProviderAdapter {
     const env: Record<string, string> = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_PROFILE_ID: plan.profileId,
+      TENT_ROUTE_ID: plan.routeId,
     };
-    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
     // Optional explicit envKey: missing value fails loud; omit envKey to rely on local login.
     if (opts.envKey) {
       const secret = this.resolveEnvValue(opts.envKey, plan.env);
       if (!secret || !secret.trim()) {
         throw new Error(
-          `未配置环境变量 ${opts.envKey}：claude-acp 已在 AgentProfile.acp.envKey 中明确要求该密钥` +
-            `（仅 service 进程 / LaunchPlan.env）。请设置 ${opts.envKey} 后重试；切勿把 secret 写入 workspace/Node/Task。`
+          `未配置环境变量 ${opts.envKey}：claude-acp 已在 route.acp.envKey 中明确要求该密钥` +
+            `（仅 service 进程 / RouteLaunchPlan.env）。请设置 ${opts.envKey} 后重试；切勿把 secret 写入 workspace/Node/Task。`
         );
       }
       env[opts.envKey] = secret;
@@ -120,7 +119,7 @@ export class ClaudeAcpProviderAdapter implements ProviderAdapter {
   }
 
   async startManagedSession(
-    plan: LaunchPlan,
+    plan: RouteLaunchPlan,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession> {
     const client = this.createClient(plan, emit);
@@ -136,7 +135,7 @@ export class ClaudeAcpProviderAdapter implements ProviderAdapter {
    * sessionCapabilities.resume or this fails loud — no session/new fallback.
    */
   async resumeManagedSession(
-    plan: LaunchPlan,
+    plan: RouteLaunchPlan,
     token: ResumeToken,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession> {
@@ -160,7 +159,7 @@ export class ClaudeAcpProviderAdapter implements ProviderAdapter {
   }
 
   private createClient(
-    plan: LaunchPlan,
+    plan: RouteLaunchPlan,
     emit: (ev: RuntimeEvent) => void
   ): AcpClient {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
@@ -205,32 +204,4 @@ export function createClaudeAcpAdapter(
   options?: ClaudeAcpAdapterOptions
 ): ClaudeAcpProviderAdapter {
   return new ClaudeAcpProviderAdapter(options);
-}
-
-/** Machine-local profile template — no default envKey/model invented. */
-export function claudeAcpProfileTemplate(overrides?: {
-  id?: string;
-  executable?: string;
-  model?: string;
-  envKey?: string;
-  permissionPolicy?: ClaudeAcpPermissionPolicy;
-  promptTimeoutMs?: number;
-}): {
-  id: string;
-  adapterId: string;
-  displayNameKey: string;
-  acp: ClaudeAcpProfileOptions;
-} {
-  return {
-    id: overrides?.id ?? "claude-acp-default",
-    adapterId: CLAUDE_ACP_ADAPTER_ID,
-    displayNameKey: "profile.claudeAcp.default",
-    acp: {
-      executable: overrides?.executable,
-      model: overrides?.model,
-      envKey: overrides?.envKey,
-      permissionPolicy: overrides?.permissionPolicy ?? "deny",
-      promptTimeoutMs: overrides?.promptTimeoutMs,
-    },
-  };
 }

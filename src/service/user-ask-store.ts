@@ -1,5 +1,5 @@
 // Machine-local agent→user business asks (A2U UserAsk).
-// Distinct from toolApproval (ACP tool permission) and a2a (spawn gate).
+// Distinct from ACP tool-permission approval.
 // Never written into workspace Git / .tent. Not a chat bus.
 
 import * as fs from "node:fs/promises";

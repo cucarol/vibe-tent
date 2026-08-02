@@ -46,7 +46,7 @@ export function canClaim(node: Node, options?: CanClaimOptions): ClaimCheck {
       ok: false,
       blocker: node,
       task: occupied,
-      reason: `${node.name} is occupied by active task ${occupied.id || occupied.path} (${occupied.role}).`,
+      reason: `${node.name} is occupied by active task ${occupied.id || occupied.path} (${occupied.assigneeKind}:${occupied.assigneeId}).`,
     };
   }
   return structural;
@@ -89,7 +89,7 @@ export function findActiveOccupation(
         blocker: node,
         task,
         relation: "self",
-        reason: `${node.name} is directly referenced by active task ${task.id || task.path} (${task.role}).`,
+        reason: `${node.name} is directly referenced by active task ${task.id || task.path} (${task.assigneeKind}:${task.assigneeId}).`,
       };
     }
   }

@@ -32,7 +32,7 @@ import {
 } from "../src/runtime/child-env.js";
 import { createAgentRuntime } from "../src/runtime/agent-runtime.js";
 import { ProcessSupervisor } from "../src/runtime/process-supervisor.js";
-import type { RuntimeEvent } from "../src/runtime/types.js";
+import type { RuntimeEvent, StartSessionRequest } from "../src/runtime/types.js";
 import { startLocalTentService } from "../src/service/service.js";
 import {
   assertServiceProtocolCompatible,
@@ -51,6 +51,16 @@ const PNG_1X1 = Buffer.from(
 
 async function tempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+}
+
+function startRoute(
+  runtime: ReturnType<typeof createAgentRuntime>,
+  request: Omit<StartSessionRequest, "routeSnapshot">
+) {
+  return runtime.startSession({
+    ...request,
+    routeSnapshot: runtime.snapshotRouteForStart(request.routeId),
+  });
 }
 
 // ── 1) Minimal host env allowlist ──────────────────────────────────────────
@@ -328,22 +338,20 @@ test("AgentRuntime: profile/request cannot override reserved; coreEnv + diagnost
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    profiles: [
+    routes: [
       {
-        id: "p-reserved",
+        routeId: "p-reserved",
+        provider: "test",
         adapterId: "env-capture",
-        env: { TENT_SERVICE_DATA_DIR: "C:\\profile-must-not-win" },
-        acp: {
-          envKey: "PROVIDER_RUNTIME_BLOB",
-          credentialRef: "cred-1",
-        },
+        envKey: "PROVIDER_RUNTIME_BLOB",
+        credentialRef: "cred-1",
       },
     ],
-    resolveProfileEnv: async () => ({ PROVIDER_RUNTIME_BLOB: secret }),
+    resolveRouteEnv: async () => ({ PROVIDER_RUNTIME_BLOB: secret }),
   });
-  await runtime.startSession({
+  await startRoute(runtime, {
     sessionId: "ss-reserved",
-    profileId: "p-reserved",
+    routeId: "p-reserved",
     cwd,
     env: { TENT_SERVICE_DATA_DIR: "C:\\request-must-not-win" },
   });
@@ -369,34 +377,31 @@ test("managed ACP child process sees Core TENT_SERVICE_DATA_DIR; profile spoof l
     const runtime = createAgentRuntime({
       dataDir,
       adapters: [createGrokAcpAdapter({ resolveApiKey: () => "test-key" })],
-      profiles: [
+      routes: [
         {
-          id: "grok-core-env",
+          routeId: "grok-core-env",
+          provider: "grok",
           adapterId: GROK_ACP_ADAPTER_ID,
           command: process.execPath,
           args: [MOCK_ACP, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
-          env: {
-            MOCK_ACP_LOG: logPath,
-            MOCK_ACP_KEEP_ALIVE: "0",
-            MOCK_ACP_PROMPT_TEXT: "CORE_ENV_OK",
-            // Profile spoof must not become child authority without coreEnv.
-            TENT_SERVICE_DATA_DIR: "C:\\profile-spoof-must-lose",
-            CPA_GROK_API_KEY: "test-key",
-          },
-          acp: {
-            model: DEFAULT_GROK_MODEL,
-            envKey: DEFAULT_GROK_ENV_KEY,
-            permissionPolicy: "deny",
-            promptTimeoutMs: 8_000,
-          },
+          model: DEFAULT_GROK_MODEL,
+          envKey: DEFAULT_GROK_ENV_KEY,
+          permissionPolicy: "deny",
+          promptTimeoutMs: 8_000,
         },
       ],
     });
-    const handle = await runtime.startSession({
+    const handle = await startRoute(runtime, {
       sessionId: "ss-core-env-child",
-      profileId: "grok-core-env",
+      routeId: "grok-core-env",
       cwd,
-      env: { TENT_SERVICE_DATA_DIR: "C:\\request-spoof-must-lose" },
+      env: {
+        MOCK_ACP_LOG: logPath,
+        MOCK_ACP_KEEP_ALIVE: "0",
+        MOCK_ACP_PROMPT_TEXT: "CORE_ENV_OK",
+        TENT_SERVICE_DATA_DIR: "C:\\request-spoof-must-lose",
+        CPA_GROK_API_KEY: "test-key",
+      },
       bootstrapPrompt: "prove core env",
     });
     const managed = runtime as unknown as {
@@ -452,35 +457,32 @@ test("resolved secret under non-secret-looking key redacted via diagnosticSecret
         resolveApiKey: (_k, planEnv) => planEnv.PROVIDER_RUNTIME_BLOB ?? "",
       }),
     ],
-    profiles: [
+    routes: [
       {
-        id: "grok-plain-key",
+        routeId: "grok-plain-key",
+        provider: "grok",
         adapterId: GROK_ACP_ADAPTER_ID,
         command: process.execPath,
         args: [MOCK_ACP],
-        env: {
-          MOCK_ACP_FAIL_NEW: "1",
-          MOCK_ACP_KEEP_ALIVE: "0",
-          MOCK_ACP_STDERR_ENV_KEY: "PROVIDER_RUNTIME_BLOB",
-          MOCK_ACP_ERROR_ENV_KEY: "PROVIDER_RUNTIME_BLOB",
-        },
-        acp: {
-          model: DEFAULT_GROK_MODEL,
-          // Non-secret-looking env key — redaction must use diagnosticSecrets, not key name.
-          envKey: "PROVIDER_RUNTIME_BLOB",
-          credentialRef: "cred-plain",
-          permissionPolicy: "deny",
-        },
+        model: DEFAULT_GROK_MODEL,
+        envKey: "PROVIDER_RUNTIME_BLOB",
+        credentialRef: "cred-plain",
+        permissionPolicy: "deny",
       },
     ],
-    resolveProfileEnv: async () => ({ PROVIDER_RUNTIME_BLOB: secret }),
+    resolveRouteEnv: async () => ({ PROVIDER_RUNTIME_BLOB: secret }),
   });
   await assert.rejects(
     () =>
-      runtime.startSession({
+      startRoute(runtime, {
         sessionId: "ss-plain-key-secret",
-        profileId: "grok-plain-key",
+        routeId: "grok-plain-key",
         cwd,
+        env: {
+          MOCK_ACP_FAIL_NEW: "1", MOCK_ACP_KEEP_ALIVE: "0",
+          MOCK_ACP_STDERR_ENV_KEY: "PROVIDER_RUNTIME_BLOB",
+          MOCK_ACP_ERROR_ENV_KEY: "PROVIDER_RUNTIME_BLOB",
+        },
       }),
     (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -690,24 +692,23 @@ process.exit(1);
               },
       },
     ],
-    profiles: [
+    routes: [
       {
-        id: "p-secret-print",
+        routeId: "p-secret-print",
+        provider: "test",
         adapterId: "secret-print",
-        acp: {
-          envKey: "CPA_GROK_API_KEY",
-          credentialRef: "cred-1",
-        },
+        envKey: "CPA_GROK_API_KEY",
+        credentialRef: "cred-1",
       },
     ],
-    resolveProfileEnv: async () => ({ CPA_GROK_API_KEY: secret }),
+    resolveRouteEnv: async () => ({ CPA_GROK_API_KEY: secret }),
   });
   const off = runtime.subscribeAll((ev) => events.push(ev));
 
   // startSession returns after spawn; process then exits non-zero.
-  await runtime.startSession({
+  await startRoute(runtime, {
     sessionId: "ss-secret-print",
-    profileId: "p-secret-print",
+    routeId: "p-secret-print",
     cwd,
   });
   const deadline = Date.now() + 8_000;
@@ -747,34 +748,32 @@ test("AcpClient/runtime: resolved credential appears in fixture error and is red
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [createGrokAcpAdapter({ resolveApiKey: () => secret })],
-    profiles: [
+    routes: [
       {
-        id: "grok-redact-start",
+        routeId: "grok-redact-start",
+        provider: "grok",
         adapterId: GROK_ACP_ADAPTER_ID,
         command: process.execPath,
         args: [MOCK_ACP],
-        env: {
-          MOCK_ACP_FAIL_NEW: "1",
-          MOCK_ACP_KEEP_ALIVE: "0",
-          MOCK_ACP_STDERR_ENV_KEY: DEFAULT_GROK_ENV_KEY,
-          MOCK_ACP_ERROR_ENV_KEY: DEFAULT_GROK_ENV_KEY,
-        },
-        acp: {
-          model: DEFAULT_GROK_MODEL,
-          envKey: DEFAULT_GROK_ENV_KEY,
-          credentialRef: "cred-vault-1",
-          permissionPolicy: "deny",
-        },
+        model: DEFAULT_GROK_MODEL,
+        envKey: DEFAULT_GROK_ENV_KEY,
+        credentialRef: "cred-vault-1",
+        permissionPolicy: "deny",
       },
     ],
-    resolveProfileEnv: async () => ({ [DEFAULT_GROK_ENV_KEY]: secret }),
+    resolveRouteEnv: async () => ({ [DEFAULT_GROK_ENV_KEY]: secret }),
   });
   await assert.rejects(
     () =>
-      runtime.startSession({
+      startRoute(runtime, {
         sessionId: "ss-reg-redact",
-        profileId: "grok-redact-start",
+        routeId: "grok-redact-start",
         cwd,
+        env: {
+          MOCK_ACP_FAIL_NEW: "1", MOCK_ACP_KEEP_ALIVE: "0",
+          MOCK_ACP_STDERR_ENV_KEY: DEFAULT_GROK_ENV_KEY,
+          MOCK_ACP_ERROR_ENV_KEY: DEFAULT_GROK_ENV_KEY,
+        },
       }),
     (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -988,7 +987,7 @@ test("load replay (incl. late) never becomes prompt_complete / delivery text", a
   const session = await adapter.resumeManagedSession!(
     {
       sessionId: "ss-late-replay",
-      profileId: "grok-late",
+      routeId: "grok-late",
       cwd,
       env: {
         MOCK_ACP_LOG: logPath,
@@ -1051,7 +1050,7 @@ test("bootstrap images project once on first managed prompt; not on follow-up", 
   const session = await adapter.startManagedSession(
     {
       sessionId: "ss-img-once",
-      profileId: "mock-img-once",
+      routeId: "mock-img-once",
       cwd: workspace,
       env: {
         MOCK_ACP_LOG: logPath,

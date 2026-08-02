@@ -52,35 +52,35 @@ export type AcpAuthenticateParams = {
 };
 
 /**
- * Shared machine-local ACP profile bag (canonical `AgentProfileConfig.acp`).
+ * Shared machine-local ACP route bag (canonical `RouteConfig.acp`).
  * Provider-neutral field names; each *-acp adapter interprets values for its CLI.
  * Secret values stay in OS/process env — only env key *names* and non-secret paths live here.
- * Provider adapters may extend (e.g. GrokAcpProfileOptions) for provider-only knobs.
+ * Provider adapters may extend (e.g. GrokAcpRouteOptions) for provider-only knobs.
  */
-export interface AcpProfileOptions {
+export interface AcpRouteOptions {
   /** Absolute path to the provider CLI / ACP bridge executable on this machine. */
   executable?: string;
   /** Explicit model id passed to the provider CLI when supported. */
   model?: string;
   /**
    * Process env key for API token (read from service process env only).
-   * Value is never written to workspace, Node, Task, or agent-profiles.json.
+   * Value is never written to workspace, Node, Task, or routes.json.
    * When credentialRef is set, AgentRuntime resolves the vault secret into this env key
-   * at startSession (process-scoped LaunchPlan.env only — never SessionRecord / disk).
+   * at startSession (process-scoped RouteLaunchPlan.env only — never SessionRecord / disk).
    */
   envKey?: string;
   /**
    * Machine-local CredentialStore id (reference only — never the secret value).
-   * Service resolves via OS-backed vault before launch; profile JSON stores only this id.
+   * Service resolves via OS-backed vault before launch; route JSON stores only this id.
    */
   credentialRef?: string;
   /**
    * Process env key whose **value** is an OpenAI-compatible / provider base URL.
-   * Only the env key *name* is stored on the machine-local profile.
+   * Only the env key *name* is stored on the machine-local route.
    */
   baseUrlEnvKey?: string;
   /**
-   * Optional literal base URL on the **machine-local** profile only.
+   * Optional literal base URL on the **machine-local** route only.
    * Prefer baseUrlEnvKey + process env. Never copy this field into workspace / git.
    */
   baseUrl?: string;

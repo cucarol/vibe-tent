@@ -9,6 +9,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { SystemClock } from "../src/fs/node-fs.js";
 import { NodeFs } from "../src/fs/node-fs.js";
+import { parseFrontmatter, serializeFrontmatter } from "../src/core/frontmatter.js";
 import {
   assertReviewAuthority,
   mayElevateDeliveryPolicy,
@@ -51,14 +52,14 @@ test("mayElevateDeliveryPolicy: only durable Role user-facing", () => {
   assert.equal(
     mayElevateDeliveryPolicy({
       parentActor: { kind: "user", id: "user" },
-      assigneeKind: "agentProfile",
+      assigneeKind: "route",
     }),
     false
   );
   assert.equal(
     mayElevateDeliveryPolicy({
       parentActor: { kind: "role", id: "规划" },
-      assigneeKind: "agentProfile",
+      assigneeKind: "route",
     }),
     false
   );
@@ -83,13 +84,14 @@ test("assertReviewAuthority: missing reviewer fails loud", () => {
   );
 });
 
-test("writeTaskEnvelope persists parentActor/reviewer; strips dispatchedBy", async () => {
+test("writeTaskEnvelope persists canonical parentActor/reviewer", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-parent-wire-"));
   const fsa = new NodeFs(dir);
   await fsa.mkdir("temp/helper/tasks");
   const clock = new SystemClock();
   const p = await writeTaskEnvelope(fsa, clock, {
-    role: "helper",
+    assigneeKind: "role",
+    assigneeId: "helper",
     nodeRefs: [{ id: "cx-1", path: "a.md" }],
     manifestPath: "temp/helper/manifest.yml",
     userPrompt: "do it",
@@ -100,7 +102,6 @@ test("writeTaskEnvelope persists parentActor/reviewer; strips dispatchedBy", asy
   const raw = await fsa.readFile(p);
   assert.match(raw, /parentActor:/);
   assert.match(raw, /reviewer:/);
-  assert.doesNotMatch(raw, /^dispatchedBy:/m);
   const task = await loadTaskEnvelope(fsa, p);
   assert.equal(task.parentActor?.id, "orchestrator");
   assert.equal(task.reviewer?.kind, "role");
@@ -115,7 +116,8 @@ test("writeTaskEnvelope refuses elevated policy for downstream Task Agent", asyn
   await assert.rejects(
     () =>
       writeTaskEnvelope(fsa, clock, {
-        role: "helper",
+        assigneeKind: "role",
+        assigneeId: "helper",
         nodeRefs: [{ id: "cx-1", path: "a.md" }],
         manifestPath: "temp/helper/manifest.yml",
         userPrompt: "do it",
@@ -155,7 +157,8 @@ test("resolveDispatchActors / writeTaskEnvelope refuse missing actors and dispat
   await assert.rejects(
     () =>
       writeTaskEnvelope(fsa, clock, {
-        role: "helper",
+        assigneeKind: "role",
+        assigneeId: "helper",
         nodeRefs: [{ id: "cx-1", path: "a.md" }],
         manifestPath: "temp/helper/manifest.yml",
         userPrompt: "missing actors",
@@ -222,7 +225,8 @@ test("Core+Service: parentActor/reviewer mismatch rejected at write, load, and R
   await assert.rejects(
     () =>
       writeTaskEnvelope(fsa, clock, {
-        role: "helper",
+        assigneeKind: "role",
+        assigneeId: "helper",
         nodeRefs: [{ id: "cx-1", path: "a.md" }],
         manifestPath: "temp/helper/manifest.yml",
         userPrompt: "mismatch",
@@ -233,37 +237,28 @@ test("Core+Service: parentActor/reviewer mismatch rejected at write, load, and R
   );
 
   // Persisted mismatched pair fails loud on load (resolveActorsFromDisk).
-  // Use inline maps — Tent frontmatter does not nest block maps under keys.
+  const mismatchPath = await writeTaskEnvelope(fsa, clock, {
+    assigneeKind: "role",
+    assigneeId: "helper",
+    nodeRefs: [{ id: "cx-1", path: "a.md" }],
+    manifestPath: "temp/helper/manifest.yml",
+    userPrompt: "bad pair",
+    parentActor: { kind: "role", id: "orchestrator" },
+    reviewer: { kind: "role", id: "orchestrator" },
+  });
+  const persisted = parseFrontmatter(await fsa.readFile(mismatchPath));
+  persisted.data.reviewer = { kind: "role", id: "planner" };
   await fsa.writeFile(
-    "temp/helper/tasks/task-mismatch.md",
-    [
-      "---",
-      "type: task",
-      "id: tk-mis0001",
-      "status: pending",
-      "state: queued",
-      "role: helper",
-      "parentActor: { kind: role, id: orchestrator }",
-      "reviewer: { kind: role, id: planner }",
-      "claims: [cx-1]",
-      "manifest: temp/helper/manifest.yml",
-      "deliveryPolicy: review",
-      "---",
-      "# Task",
-      "",
-      "## User Prompt",
-      "",
-      "bad pair",
-      "",
-    ].join("\n")
+    mismatchPath,
+    serializeFrontmatter(persisted.data, persisted.body, persisted.keyOrder)
   );
   await assert.rejects(
-    () => loadTaskEnvelope(fsa, "temp/helper/tasks/task-mismatch.md"),
+    () => loadTaskEnvelope(fsa, mismatchPath),
     /must equal parentActor|no arbitrary delegation/i
   );
 
   // Invalid persisted data remains untouched; runtime does not ship a migrator.
-  const raw = await fsa.readFile("temp/helper/tasks/task-mismatch.md");
+  const raw = await fsa.readFile(mismatchPath);
   assert.match(raw, /id:\s*planner/);
 });
 
@@ -361,7 +356,8 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       {
         workspaceId,
         nodeIds: [nodeId],
-        role: "executor",
+        assigneeKind: "role",
+        assigneeId: "executor",
         prompt: "legacy wire",
         // Even with explicit actors present, dispatchedBy must be rejected.
         parentActor: { kind: "user", id: "user" },
@@ -372,7 +368,7 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
     );
     assert.ok(legacy.error);
     assert.equal(legacy.error!.code, -32602);
-    assert.match(String(legacy.error!.message), /dispatchedBy is retired/i);
+    assert.match(String(legacy.error!.message), /unknown parameter.*dispatchedBy/i);
 
     const missing = await rpcCall(
       svc.url,
@@ -380,7 +376,8 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       {
         workspaceId,
         nodeIds: [nodeId],
-        role: "executor",
+        assigneeKind: "role",
+        assigneeId: "executor",
         prompt: "missing actors",
       },
       { token: svc.token }
@@ -396,7 +393,8 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       {
         workspaceId,
         nodeIds: [nodeId],
-        role: "executor",
+        assigneeKind: "role",
+        assigneeId: "executor",
         prompt: "mismatch pair",
         parentActor: { kind: "role", id: "orchestrator" },
         reviewer: { kind: "role", id: "planner" },
@@ -417,7 +415,8 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       {
         workspaceId,
         nodeIds: [nodeId],
-        role: "executor",
+        assigneeKind: "role",
+        assigneeId: "executor",
         prompt: "derived reviewer",
         parentActor: { kind: "user", id: "user" },
       },
@@ -458,7 +457,8 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       {
         workspaceId,
         nodeIds: [nodeId],
-        role: "executor",
+        assigneeKind: "role",
+        assigneeId: "executor",
         prompt: "explicit actors",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
@@ -478,36 +478,28 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
   }
 });
 
-test("loadTaskEnvelope: refuses retired dispatchedBy without rewriting", async () => {
+test("loadTaskEnvelope ignores unknown dispatchedBy without rewriting or using it", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-parent-load-"));
   const fsa = new NodeFs(dir);
-  await fsa.mkdir("temp/helper/tasks");
+  const taskPath = await writeTaskEnvelope(fsa, new SystemClock(), {
+    assigneeKind: "role",
+    assigneeId: "helper",
+    nodeRefs: [{ id: "cx-2", path: "b.md" }],
+    manifestPath: "temp/helper/manifest.yml",
+    userPrompt: "x",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+  });
+  const persisted = parseFrontmatter(await fsa.readFile(taskPath));
+  persisted.data.dispatchedBy = "user";
   await fsa.writeFile(
-    "temp/helper/tasks/task-mem.md",
-    [
-      "---",
-      "type: task",
-      "id: tk-mem0001",
-      "status: taken",
-      "state: running",
-      "role: helper",
-      "dispatchedBy: user",
-      "claims: [cx-2]",
-      "manifest: temp/helper/manifest.yml",
-      "---",
-      "# Task",
-      "",
-      "## User Prompt",
-      "",
-      "x",
-      "",
-    ].join("\n")
+    taskPath,
+    serializeFrontmatter(persisted.data, persisted.body, persisted.keyOrder)
   );
-  // Load must not dual-read or rewrite retired responsibility fields.
-  await assert.rejects(
-    () => loadTaskEnvelope(fsa, "temp/helper/tasks/task-mem.md"),
-    /missing parentActor/i
-  );
-  const raw = await fsa.readFile("temp/helper/tasks/task-mem.md");
+  // Load must not dual-read or rewrite the unknown responsibility field.
+  const loaded = await loadTaskEnvelope(fsa, taskPath);
+  assert.deepEqual(loaded.parentActor, { kind: "user", id: "user" });
+  assert.deepEqual(loaded.reviewer, { kind: "user", id: "user" });
+  const raw = await fsa.readFile(taskPath);
   assert.match(raw, /dispatchedBy:\s*user/);
 });

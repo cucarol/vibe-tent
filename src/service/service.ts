@@ -1,5 +1,5 @@
 // Local Tent Service process host — sole mutation runtime for desktop product path.
-// B5: wires AgentRuntime + A2A store + tool-approval store + loopback token into the B2 skeleton.
+// Wires AgentRuntime + tool-approval store + loopback token into the Local Service.
 
 import { createServiceHttpServer, type ServiceHttpServer } from "./http-server.js";
 import { EventBus } from "./events.js";
@@ -20,7 +20,6 @@ import {
   type ServiceEndpointRecord,
 } from "./data-dir.js";
 import { generateServiceToken } from "./auth.js";
-import { A2AApprovalStore } from "./a2a-store.js";
 import {
   makeToolApprovalId,
   resolveToolApprovalWorkspaceId,
@@ -29,12 +28,12 @@ import {
 import { UserAskStore } from "./user-ask-store.js";
 import { TaskInputStore } from "./task-input-store.js";
 import { ManagedDeliveryReportDraftStore } from "./managed-delivery-report-draft-store.js";
-import { ensureDefaultProfiles } from "./profiles.js";
-import { AgentProfileCatalog } from "./profile-catalog.js";
+import { ensureDefaultSettingsRoutes } from "./routes.js";
+import { SettingsRouteCatalog } from "./route-catalog.js";
 import type { CredentialProtector } from "./credential-protector.js";
 import { CredentialStore } from "./credential-store.js";
 import { createAgentRuntime, type AgentRuntime } from "../runtime/agent-runtime.js";
-import type { AgentProfileConfig } from "../runtime/types.js";
+import type { SettingsRouteConfig } from "../runtime/types.js";
 import {
   createGrokAcpAdapter,
   DEFAULT_PERMISSION_TIMEOUT_MS,
@@ -68,8 +67,8 @@ export interface LocalTentServiceOptions {
   getPid?: () => number;
   /** Override token (tests); otherwise generated and stored in endpoint. */
   token?: string;
-  /** Explicit in-memory AgentProfiles for tests/harness; skips catalog persistence. */
-  profiles?: AgentProfileConfig[];
+  /** Explicit in-memory Settings routes for tests/harness; skips disk persistence. */
+  routes?: SettingsRouteConfig[];
   /**
    * Inject CredentialStore protector (offline tests). Production uses Windows DPAPI.
    * When omitted, CredentialStore uses createPlatformCredentialProtector (fail-loud off Windows).
@@ -158,8 +157,6 @@ async function startOwnedLocalTentService(
     },
   });
   registerStartupCleanup(30, () => workspaceHost.dispose());
-  const a2a = new A2AApprovalStore(dataDir);
-  await a2a.ensureLoaded();
   const toolApprovals = new ToolApprovalStore(dataDir);
   await toolApprovals.ensureLoaded();
   const userAsks = new UserAskStore(dataDir);
@@ -176,19 +173,19 @@ async function startOwnedLocalTentService(
   });
   await credentials.ensureLoaded();
 
-  // options.profiles: in-memory inject for tests (skip ensureDefaultProfiles disk seed).
-  // Injected catalogs never persist CRUD to dataDir/agent-profiles.json.
-  const profilesInjected = options.profiles !== undefined;
-  const profiles = profilesInjected
-    ? options.profiles!
-    : await ensureDefaultProfiles(dataDir);
+  // options.routes: in-memory inject for tests (skip ensureDefaultRoutes disk seed).
+  // Injected catalogs never persist CRUD to dataDir/routes.json.
+  const routesInjected = options.routes !== undefined;
+  const routes = routesInjected
+    ? options.routes!
+    : await ensureDefaultSettingsRoutes(dataDir);
 
   // Mutable holder so onPermissionAsk can read runtime after it is created.
   const runtimeHolder: { current: AgentRuntime | null } = { current: null };
 
   /**
    * Bridge ACP permissionPolicy=ask → machine-local tool approval store.
-   * Distinct from A2A spawn approval. Never agent self-approve.
+   * This is ACP tool permission only; it is not Task dispatch authority.
    * ToolApprovalStore waitForDecision / expiresAt is the sole timeout authority;
    * late approve after expire fails. ACP client has no second permission timer.
    */
@@ -219,21 +216,17 @@ async function startOwnedLocalTentService(
           if (task) {
             taskPath = task.path;
             taskId = task.id || task.path;
-            role = task.role || role;
+            role = task.parentActor?.kind === "role" ? task.parentActor.id : role;
           }
         }
       } catch {
         // binding is best-effort; still record pending for session
       }
 
-      // Always read the current runtime profile — never close over boot profiles array.
-      const profile = rec?.profileId
-        ? runtime.getProfile(rec.profileId)
-        : undefined;
       const timeoutMs =
-        typeof profile?.acp?.permissionTimeoutMs === "number" &&
-        profile.acp.permissionTimeoutMs > 0
-          ? profile.acp.permissionTimeoutMs
+        typeof rec?.routeSnapshot.permissionTimeoutMs === "number" &&
+        rec.routeSnapshot.permissionTimeoutMs > 0
+          ? rec.routeSnapshot.permissionTimeoutMs
           : DEFAULT_PERMISSION_TIMEOUT_MS;
 
       const createdAt = new Date();
@@ -280,7 +273,7 @@ async function startOwnedLocalTentService(
   const packageRootEarly = options.packageRoot ?? defaultPackageRoot();
   const runtime = createAgentRuntime({
     dataDir,
-    profiles,
+    routes,
     packageRoot: packageRootEarly,
     adapters: [
       createFakeAdapter(),
@@ -292,24 +285,20 @@ async function startOwnedLocalTentService(
       createCopilotAcpAdapter(acpPermissionHooks),
       createPiAcpAdapter(acpPermissionHooks),
     ],
-    resolveProfileEnv: async (profile) => {
-      const ref =
-        typeof profile.acp?.credentialRef === "string"
-          ? profile.acp.credentialRef.trim()
-          : "";
+    resolveRouteEnv: async (route) => {
+      const ref = route.credentialRef?.trim() || "";
       if (!ref) return {};
-      const envKey =
-        typeof profile.acp?.envKey === "string" ? profile.acp.envKey.trim() : "";
+      const envKey = route.envKey?.trim() || "";
       if (!envKey) {
         throw new Error(
-          `Profile ${profile.id} has credentialRef but no acp.envKey (cannot inject secret into process env)`
+          `Route ${route.routeId} has credentialRef but no envKey`
         );
       }
       // resolve() fail-loud when missing; map message without secret material.
       const secret = await credentials.resolve(ref);
       if (!secret) {
         throw new Error(
-          `Credential not found or empty for profile ${profile.id} (credentialRef=${ref})`
+          `Credential not found or empty for route ${route.routeId} (credentialRef=${ref})`
         );
       }
       return { [envKey]: secret };
@@ -317,7 +306,7 @@ async function startOwnedLocalTentService(
     resolveCredentialRef: async (credentialRef) => {
       const id = typeof credentialRef === "string" ? credentialRef.trim() : "";
       if (!id) return undefined;
-      // Fail-loud: do not swallow vault/resolver errors (AgentRuntime redacts to profile/server/ref).
+      // Fail-loud: do not swallow vault/resolver errors (AgentRuntime redacts to route/server/ref).
       const secret = await credentials.resolve(id);
       return typeof secret === "string" && secret ? secret : undefined;
     },
@@ -331,10 +320,11 @@ async function startOwnedLocalTentService(
     }
   });
 
-  const profileCatalog = new AgentProfileCatalog(dataDir, runtime, profiles, {
+  const routeCatalog = new SettingsRouteCatalog(dataDir, routes, {
     // Normal boot: persist CRUD to this service dataDir.
-    // options.profiles inject: in-memory only — no agent-profiles.json writes.
-    persistToDisk: !profilesInjected,
+    // options.routes inject: in-memory only — no routes.json writes.
+    persistToDisk: !routesInjected,
+    publishRoutes: (next) => runtime.replaceRouteCatalog(next),
   });
 
   // Reconcile orphan sessions after crash / restart.
@@ -352,14 +342,13 @@ async function startOwnedLocalTentService(
     startedAt,
     getPid,
     runtime,
-    a2a,
     toolApprovals,
     userAsks,
     taskInputs,
     managedDeliveryReportDrafts,
     credentials,
     dataDir,
-    profileCatalog,
+    routeCatalog,
     packageRoot,
     home,
     integrateCommits: options.integrateCommits,

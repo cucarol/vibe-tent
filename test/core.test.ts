@@ -25,6 +25,18 @@ import {
 import { cli, makeTent } from "./helpers.js";
 // loadTaskEnvelopes used by occupation tests
 
+function dispatchToRole(env: any, nodeId: string, assigneeId: string, input: string | Record<string, unknown>) {
+  return import("../src/core/ops.js").then(({ dispatch }) =>
+    dispatch(env, nodeId, {
+      assigneeKind: "role",
+      assigneeId,
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      ...(typeof input === "string" ? { userPrompt: input } : input),
+    })
+  );
+}
+
 test("NodeFs:rejects paths that resolve outside the Tent root", async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-nodefs-"));
   const root = path.join(parent, "tent");
@@ -115,7 +127,8 @@ test("Node occupation: exact Node exclusive; parent, child, and sibling remain i
   await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
   const fsa = new NodeFs(dir);
   const g2Path = await writeTaskEnvelope(fsa, { now: () => "2026-07-28T12:00:00.000Z" }, {
-    role: "executor",
+    assigneeKind: "role",
+    assigneeId: "executor",
     nodeRefs: [{ id: "cx-g2", path: "goal/x" }],
     manifestPath: "temp/executor/manifests/tk-activeg2.yml",
     userPrompt: "hold g2",
@@ -159,7 +172,8 @@ test("active Task occupation projects only its exact Node refs", async () => {
   const tent = await loadTent(fsa);
 
   await writeTaskEnvelope(fsa, { now: () => "2026-07-28T12:00:00.000Z" }, {
-    role: "reviewer",
+    assigneeKind: "role",
+    assigneeId: "reviewer",
     nodeRefs: [{ id: "cx-p1", path: "prompt/x" }],
     manifestPath: "temp/reviewer/manifests/tk-boxocc.yml",
     userPrompt: "Node ref",
@@ -169,7 +183,8 @@ test("active Task occupation projects only its exact Node refs", async () => {
   const tasks = await loadTaskEnvelopes(fsa);
   const anyBox = findAnyActiveTask(tasks);
   assert.ok(anyBox);
-  assert.equal(anyBox!.role, "reviewer");
+  assert.equal(anyBox!.assigneeKind, "role");
+  assert.equal(anyBox!.assigneeId, "reviewer");
   assert.ok(anyBox!.contextCard?.refs.nodes.some((n) => n.id === "cx-p1"));
   assert.equal(occupiedNodesFromTasks(tent, tasks).map((node) => node.id).join(","), "cx-p1");
 });
@@ -213,7 +228,8 @@ test("manifest:可读集=全帐 usable context,可写集=认领子树 + temp 格
   const claim = tent.byId.get("cx-p1")!; // prompt/表达式任务书
   const m = buildManifest(tent, {
     tentName: "wqb",
-    role: "executor",
+    assigneeKind: "role",
+    assigneeId: "executor",
     claimNodes: [claim],
   });
 
@@ -236,7 +252,8 @@ test("manifest:可读集=全帐 usable context,可写集=认领子树 + temp 格
 
   const yaml = manifestToYaml(m);
   assert.ok(yaml.includes("tent: wqb"));
-  assert.ok(yaml.includes("role: executor"));
+  assert.ok(yaml.includes("assigneeKind: role"));
+  assert.ok(yaml.includes("assigneeId: executor"));
   assert.ok(yaml.includes("readable:"));
   assert.ok(yaml.includes("writable:"));
   assert.equal(yaml.includes("preloaded:"), false, "preloaded 字段已删除");
@@ -244,7 +261,7 @@ test("manifest:可读集=全帐 usable context,可写集=认领子树 + temp 格
   assert.ok(!("claims" in m), "Manifest object has no claims field");
   assert.deepEqual(
     Object.keys(m).sort(),
-    ["readable", "role", "tent", "writable"].sort(),
+    ["assigneeId", "assigneeKind", "readable", "tent", "writable"].sort(),
     "manifest 仅保留 readable/writable 与身份字段（无 claims）",
   );
   // Writable pointer list encodes dispatch selection (id present for claimed nodes).
@@ -258,7 +275,7 @@ test("manifest:认领即得子树结构权,帐根 claim 可写顶层结构", asy
   const dir = await makeTent();
   const tent = await loadTent(new NodeFs(dir));
   const claim = tent.byId.get("cx-p1")!;
-  const leafManifest = buildManifest(tent, { tentName: "wqb", role: "executor", claimNodes: [claim] });
+  const leafManifest = buildManifest(tent, { tentName: "wqb", assigneeKind: "role", assigneeId: "executor", claimNodes: [claim] });
   assert.ok(
     leafManifest.writable.some((e) => e.path === "prompt/表达式任务书/" && /Structural permission/.test(e.note || "")),
     "认领框本身有创建/移动/删除子框的结构权",
@@ -268,7 +285,7 @@ test("manifest:认领即得子树结构权,帐根 claim 可写顶层结构", asy
     "认领子树里的子框也有结构权",
   );
 
-  const rootManifest = buildManifest(tent, { tentName: "wqb", role: "architect", claimRoot: true });
+  const rootManifest = buildManifest(tent, { tentName: "wqb", assigneeKind: "role", assigneeId: "architect", claimRoot: true });
   assert.ok(!("claims" in rootManifest), "root selection is not a persisted claims field");
   assert.doesNotMatch(manifestToYaml(rootManifest), /^claims:/m);
   assert.ok(rootManifest.writable.some((e) => e.path === "./"), "帐根 claim 有顶层结构权");
@@ -284,7 +301,7 @@ test("dispatch:只写 pending envelope + contextCard.refs.nodes；exact Node 占
     rand: () => 0.5,
   };
   const { dispatch } = await import("../src/core/ops.js");
-  const result = await dispatch(
+  const result = await dispatchToRole(
     env as any,
     "cx-p1",
     "analyst",
@@ -312,7 +329,7 @@ test("dispatch:只写 pending envelope + contextCard.refs.nodes；exact Node 占
 
   // The exact Node is occupied even while the first Task is only queued.
   await assert.rejects(
-    () => dispatch(env as any, "cx-p1", "executor", "同 Node 并发"),
+    () => dispatchToRole(env as any, "cx-p1", "executor", "同 Node 并发"),
     /occupied by active task/,
   );
 
@@ -321,12 +338,12 @@ test("dispatch:只写 pending envelope + contextCard.refs.nodes；exact Node 占
   assert.match(result.manifestPath, new RegExp(`^temp/analyst/manifests/${firstTask.id}\\.yml$`));
 
   // Parent and child refs remain independent from the occupied exact Node.
-  const onChild = await dispatch(env as any, "cx-p2", "analyst", "子孙并发");
+  const onChild = await dispatchToRole(env as any, "cx-p2", "analyst", "子孙并发");
   assert.ok(onChild.taskPath);
-  const onAncestor = await dispatch(env as any, "cx-promptzone", "planner", "祖先并发");
+  const onAncestor = await dispatchToRole(env as any, "cx-promptzone", "planner", "祖先并发");
   assert.ok(onAncestor.taskPath);
 
-  const second = await dispatch(env as any, "cx-o1", "analyst", "继续处理 output 指针");
+  const second = await dispatchToRole(env as any, "cx-o1", "analyst", "继续处理 output 指针");
   assert.notEqual(second.taskPath, result.taskPath, "task 信封不可变,不覆盖");
   const secondTask = await loadTaskEnvelope(env.fs, second.taskPath);
   assert.equal(secondTask.manifest, second.manifestPath);
@@ -362,7 +379,7 @@ test("dispatch:corrupt roles registry is backed up, reset, and dispatch continue
   };
   const { dispatch } = await import("../src/core/ops.js");
 
-  await dispatch(env as any, "cx-p1", "analyst", "请只处理表达式任务书。");
+  await dispatchToRole(env as any, "cx-p1", "analyst", "请只处理表达式任务书。");
 
   const box = parseFrontmatter(await fs.readFile(path.join(dir, "prompt", "表达式任务书", "表达式任务书.md"), "utf8")).data;
   assert.equal(box.owner, undefined);
@@ -381,13 +398,14 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
     rand: () => 0.5,
   };
   const { dispatch } = await import("../src/core/ops.js");
-  const first = await dispatch(env as any, "cx-p1", "analyst", "分析任务");
+  const first = await dispatchToRole(env as any, "cx-p1", "analyst", "分析任务");
   env.clock.now = () => "2026-07-03T08:11:00.000Z";
-  const second = await dispatch(env as any, "cx-o1", "reviewer", "审阅产出");
+  const second = await dispatchToRole(env as any, "cx-o1", "reviewer", "审阅产出");
   const tasks = await loadTaskEnvelopes(env.fs);
   assert.deepEqual(tasks.map((task) => task.path), [first.taskPath, second.taskPath]);
   assert.equal(tasks[0].path, first.taskPath);
-  assert.equal(tasks[0].role, "analyst");
+  assert.equal(tasks[0].assigneeKind, "role");
+  assert.equal(tasks[0].assigneeId, "analyst");
   assert.deepEqual(
     tasks[0].contextCard?.refs.nodes.map((n) => n.id) ?? [],
     ["cx-p1"]
@@ -483,9 +501,9 @@ test("dispatch:必须提供 user prompt", async () => {
     rand: () => 0.5,
   };
   const { dispatch } = await import("../src/core/ops.js");
-  await dispatch(env as any, "cx-p1", "analyst", "旧意图");
+  await dispatchToRole(env as any, "cx-p1", "analyst", "旧意图");
   await assert.rejects(
-    () => dispatch(env as any, "cx-o1", "analyst", ""),
+    () => dispatchToRole(env as any, "cx-o1", "analyst", ""),
     /Dispatch requires a user prompt\./,
   );
 });
@@ -500,11 +518,11 @@ test("dispatch:拒绝整帐 claim,具体框仍可派活", async () => {
   const { dispatch } = await import("../src/core/ops.js");
   const message =
     /Cannot dispatch the whole Tent directly; dispatch a specific Node \(primary Node cannot be \., root, or the Tent name\)\./;
-  await assert.rejects(() => dispatch(env as any, ".", "architect", "接管全帐"), message);
-  await assert.rejects(() => dispatch(env as any, "root", "architect", "接管全帐"), message);
-  await assert.rejects(() => dispatch(env as any, "wqb", "architect", "接管全帐"), message);
+  await assert.rejects(() => dispatchToRole(env as any, ".", "architect", "接管全帐"), message);
+  await assert.rejects(() => dispatchToRole(env as any, "root", "architect", "接管全帐"), message);
+  await assert.rejects(() => dispatchToRole(env as any, "wqb", "architect", "接管全帐"), message);
 
-  const result = await dispatch(env as any, "cx-p1", "architect", "处理具体框");
+  const result = await dispatchToRole(env as any, "cx-p1", "architect", "处理具体框");
   assert.doesNotMatch(result.manifestYaml, /^claims:/m);
   assert.match(result.manifestYaml, /id: cx-p1/);
   assert.match(result.manifestYaml, /writable:/);
@@ -518,7 +536,7 @@ test("Tent 动作不初始化 Tent Git", async () => {
     tentName: "wqb",
   };
   const { dispatch } = await import("../src/core/ops.js");
-  await dispatch(env as any, "cx-p1", "analyst", "处理任务书");
+  await dispatchToRole(env as any, "cx-p1", "analyst", "处理任务书");
   assert.equal(await new NodeFs(dir).exists(".git"), false);
 });
 
@@ -575,7 +593,8 @@ test("moveNode: active Task refs freeze the affected Node subtree", async () => 
   await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
   const fsa = new NodeFs(dir);
   const movePath = await writeTaskEnvelope(fsa, { now: () => "t" }, {
-    role: "executor",
+    assigneeKind: "role",
+    assigneeId: "executor",
     nodeRefs: [{ id: "cx-g2", path: "goal/x" }],
     manifestPath: "temp/executor/manifests/tk-moveg2.yml",
     userPrompt: "hold",
@@ -617,7 +636,7 @@ test("中断认领:force-release 清理非 accepted delivery（不写 Node owner
   const delivery = await createDelivery(fsa, env.clock, {
     taskId: "tk-force-release",
     sourceNodeId: "cx-g2",
-    role: "executor",
+    deliveriesDir: "temp/executor/deliveries",
     summary: "未完成的交付",
     commits: [],
     status: "ready",
@@ -638,7 +657,8 @@ test("force-release: migrated no-claims Task (contextCard refs only) ends occupa
   const env = { fs: fsa, clock, tentName: "wqb", tentRoot: dir };
   await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
   const taskPath = await writeTaskEnvelope(fsa, clock, {
-    role: "executor",
+    assigneeKind: "role",
+    assigneeId: "executor",
     nodeRefs: [{ id: "cx-g2", path: "goal/x" }],
     manifestPath: "temp/executor/manifests/tk-fr-card.yml",
     userPrompt: "hold g2 for force-release",
@@ -656,7 +676,7 @@ test("force-release: migrated no-claims Task (contextCard refs only) ends occupa
   const delivery = await createDelivery(fsa, clock, {
     taskId: "tk-fr-card",
     sourceNodeId: "cx-g2",
-    role: "executor",
+    deliveriesDir: "temp/executor/deliveries",
     summary: "stray ready",
     status: "ready",
   });
@@ -867,7 +887,8 @@ test("归档:整棵子树 wire-compat R/W 投影关闭且退出正常流程,恢�
   assert.equal(canClaim(root).ok, false);
   const manifest = buildManifest(tent, {
     tentName: "x",
-    role: "executor",
+    assigneeKind: "role",
+    assigneeId: "executor",
     claimNodes: [tent.byId.get("cx-a1")!],
   });
   // Manifest readable is context-pointer set of usable nodes — archived subtree excluded
@@ -1028,7 +1049,7 @@ test("duplicate Node id direct operations report duplicate id", async () => {
   };
   const { dispatch } = await import("../src/core/ops.js");
   await assert.rejects(
-    () => dispatch(env as any, "cx-p1", "analyst", "work"),
+    () => dispatchToRole(env as any, "cx-p1", "analyst", "work"),
     /Duplicate node id 'cx-p1'/i,
   );
   // Domain R/W grant is retired; call rejects before any id resolution

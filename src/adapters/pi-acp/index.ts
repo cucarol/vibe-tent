@@ -2,10 +2,10 @@
 // Bridge package: npm `pi-acp` → spawns `pi --mode rpc` (@earendil-works/pi-coding-agent).
 // Evidence (this host, 2026-07-23): initialize advertises loadSession=true;
 // session/new returns a provider sessionId when `pi` is on PATH.
-// Never starts real npx/network in default tests — LaunchPlan command/args override to mock.
+// Never starts real npx/network in default tests — RouteLaunchPlan command/args override to mock.
 
 import type {
-  LaunchPlan,
+  RouteLaunchPlan,
   ManagedSession,
   ProviderAdapter,
   ProviderCapabilities,
@@ -34,14 +34,14 @@ import {
   PI_ACP_ADAPTER_ID,
   PI_ACP_NPX_PACKAGE,
   type PiAcpPermissionPolicy,
-  type PiAcpProfileOptions,
+  type PiAcpRouteOptions,
 } from "./types.js";
 
 export {
   PI_ACP_ADAPTER_ID,
   PI_ACP_NPX_PACKAGE,
   type PiAcpPermissionPolicy,
-  type PiAcpProfileOptions,
+  type PiAcpRouteOptions,
 } from "./types.js";
 
 export interface PiAcpAdapterOptions extends AcpPermissionAskHooks {
@@ -83,7 +83,7 @@ export class PiAcpProviderAdapter implements ProviderAdapter {
    * Launch plan validation / env injection only.
    * Real ACP needs bidirectional stdio — AgentRuntime uses startManagedSession.
    */
-  resolveLaunch(plan: LaunchPlan): ResolvedLaunch {
+  resolveLaunch(plan: RouteLaunchPlan): ResolvedLaunch {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const { command, args } = resolveNpxAcpLaunch({
       planCommand: plan.command,
@@ -95,16 +95,15 @@ export class PiAcpProviderAdapter implements ProviderAdapter {
     const env: Record<string, string> = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_PROFILE_ID: plan.profileId,
+      TENT_ROUTE_ID: plan.routeId,
     };
-    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
     // Explicit envKey only: missing value fails loud; never invent a default key name.
     if (opts.envKey) {
       const secret = this.resolveEnvValue(opts.envKey, plan.env);
       if (!secret || !secret.trim()) {
         throw new Error(
-          `未配置环境变量 ${opts.envKey}：pi-acp profile 明确要求该值` +
-            `（仅 service 进程 / LaunchPlan.env）。省略 envKey 可复用本机 pi 登录/配置。`
+          `未配置环境变量 ${opts.envKey}：pi-acp route 明确要求该值` +
+          `（仅 service 进程 / RouteLaunchPlan.env）。省略 envKey 可复用本机 pi 登录/配置。`
         );
       }
       env[opts.envKey] = secret;
@@ -120,7 +119,7 @@ export class PiAcpProviderAdapter implements ProviderAdapter {
   }
 
   async startManagedSession(
-    plan: LaunchPlan,
+    plan: RouteLaunchPlan,
     emit: (event: RuntimeEvent) => void
   ): Promise<ManagedSession> {
     const client = this.createClient(plan, emit);
@@ -132,7 +131,7 @@ export class PiAcpProviderAdapter implements ProviderAdapter {
    * Requires agentCapabilities.loadSession on the live initialize handshake.
    */
   async resumeManagedSession(
-    plan: LaunchPlan,
+    plan: RouteLaunchPlan,
     token: ResumeToken,
     emit: (event: RuntimeEvent) => void
   ): Promise<ManagedSession> {
@@ -155,7 +154,7 @@ export class PiAcpProviderAdapter implements ProviderAdapter {
   }
 
   private createClient(
-    plan: LaunchPlan,
+    plan: RouteLaunchPlan,
     emit: (event: RuntimeEvent) => void
   ): AcpClient {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
@@ -197,29 +196,4 @@ export function createPiAcpAdapter(
   options?: PiAcpAdapterOptions
 ): PiAcpProviderAdapter {
   return new PiAcpProviderAdapter(options);
-}
-
-export function piAcpProfileTemplate(overrides?: {
-  id?: string;
-  executable?: string;
-  model?: string;
-  envKey?: string;
-  permissionPolicy?: PiAcpPermissionPolicy;
-}): {
-  id: string;
-  adapterId: string;
-  displayNameKey: string;
-  acp: PiAcpProfileOptions;
-} {
-  return {
-    id: overrides?.id ?? "pi-acp-default",
-    adapterId: PI_ACP_ADAPTER_ID,
-    displayNameKey: "profile.piAcp.default",
-    acp: {
-      executable: overrides?.executable,
-      model: overrides?.model,
-      envKey: overrides?.envKey,
-      permissionPolicy: overrides?.permissionPolicy ?? "deny",
-    },
-  };
 }

@@ -169,8 +169,8 @@ export async function ensureRoleWorkspace(
 }
 
 /**
- * One-shot AgentProfile task lane: branch/worktree scoped to task id.
- * Distinct from durable tent-role/<role> lanes; concurrent same-profile tasks
+ * One-shot Settings route task lane: branch/worktree scoped to task id.
+ * Distinct from durable tent-role/<role> lanes; concurrent route Tasks
  * each get their own tent-task/<taskId> worktree.
  * Non-Git workspaces return undefined without throwing.
  */

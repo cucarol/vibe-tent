@@ -1,7 +1,7 @@
 // GitHub Copilot CLI ACP adapter — official `copilot --acp --stdio` transport.
 
 import type {
-  LaunchPlan,
+  RouteLaunchPlan,
   ManagedSession,
   ProviderAdapter,
   ProviderCapabilities,
@@ -30,14 +30,14 @@ import {
   COPILOT_ACP_ADAPTER_ID,
   COPILOT_ACP_NPX_PACKAGE,
   type CopilotAcpPermissionPolicy,
-  type CopilotAcpProfileOptions,
+  type CopilotAcpRouteOptions,
 } from "./types.js";
 
 export {
   COPILOT_ACP_ADAPTER_ID,
   COPILOT_ACP_NPX_PACKAGE,
   type CopilotAcpPermissionPolicy,
-  type CopilotAcpProfileOptions,
+  type CopilotAcpRouteOptions,
 } from "./types.js";
 
 export interface CopilotAcpAdapterOptions extends AcpPermissionAskHooks {
@@ -69,7 +69,7 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
     return loadSessionAcpCapabilities("external-app");
   }
 
-  resolveLaunch(plan: LaunchPlan): ResolvedLaunch {
+  resolveLaunch(plan: RouteLaunchPlan): ResolvedLaunch {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const hasCommandOverride = !!plan.command?.trim();
     const base = resolveNpxAcpLaunch({
@@ -87,15 +87,14 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
     const env: Record<string, string> = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_PROFILE_ID: plan.profileId,
+      TENT_ROUTE_ID: plan.routeId,
     };
-    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
     if (opts.envKey) {
       const value = this.resolveEnvValue(opts.envKey, plan.env);
       if (!value?.trim()) {
         throw new Error(
-          `未配置环境变量 ${opts.envKey}：copilot-acp profile 明确要求该值` +
-            `（仅 service 进程 / LaunchPlan.env）。省略 envKey 可复用本机 Copilot 登录。`
+          `未配置环境变量 ${opts.envKey}：copilot-acp route 明确要求该值` +
+          `（仅 service 进程 / RouteLaunchPlan.env）。省略 envKey 可复用本机 Copilot 登录。`
         );
       }
       env[opts.envKey] = value;
@@ -111,7 +110,7 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
   }
 
   async startManagedSession(
-    plan: LaunchPlan,
+    plan: RouteLaunchPlan,
     emit: (event: RuntimeEvent) => void
   ): Promise<ManagedSession> {
     const client = this.createClient(plan, emit);
@@ -123,7 +122,7 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
    * Requires agentCapabilities.loadSession on the live initialize handshake.
    */
   async resumeManagedSession(
-    plan: LaunchPlan,
+    plan: RouteLaunchPlan,
     token: ResumeToken,
     emit: (event: RuntimeEvent) => void
   ): Promise<ManagedSession> {
@@ -146,7 +145,7 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
   }
 
   private createClient(
-    plan: LaunchPlan,
+    plan: RouteLaunchPlan,
     emit: (event: RuntimeEvent) => void
   ): AcpClient {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
@@ -188,29 +187,4 @@ export function createCopilotAcpAdapter(
   options?: CopilotAcpAdapterOptions
 ): CopilotAcpProviderAdapter {
   return new CopilotAcpProviderAdapter(options);
-}
-
-export function copilotAcpProfileTemplate(overrides?: {
-  id?: string;
-  executable?: string;
-  model?: string;
-  envKey?: string;
-  permissionPolicy?: CopilotAcpPermissionPolicy;
-}): {
-  id: string;
-  adapterId: string;
-  displayNameKey: string;
-  acp: CopilotAcpProfileOptions;
-} {
-  return {
-    id: overrides?.id ?? "copilot-acp-default",
-    adapterId: COPILOT_ACP_ADAPTER_ID,
-    displayNameKey: "profile.copilotAcp.default",
-    acp: {
-      executable: overrides?.executable,
-      model: overrides?.model,
-      envKey: overrides?.envKey,
-      permissionPolicy: overrides?.permissionPolicy ?? "deny",
-    },
-  };
 }

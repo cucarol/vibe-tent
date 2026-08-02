@@ -1,37 +1,30 @@
-// Provider-neutral ACP profile bag helpers (extras.acp + shared field normalization).
+// Provider-neutral ACP route bag helpers (extras.acp + shared field normalization).
 
 import {
   DEFAULT_PERMISSION_TIMEOUT_MS,
   DEFAULT_PROMPT_TIMEOUT_MS,
   type AcpPermissionPolicy,
-  type AcpProfileOptions,
+  type AcpRouteOptions,
 } from "./types.js";
 import type { AcpMcpServerWire, AcpSkillMetaRef } from "./mcp-skills.js";
 import type { BootstrapImageRef } from "./image-prompt.js";
-import type { LaunchPlan } from "../types.js";
+import type { RouteLaunchPlan } from "../types.js";
 import { NodeFs } from "../../fs/node-fs.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 /**
- * Read ACP profile bag from LaunchPlan.extras.
- * Canonical: extras.acp. Optional legacyKeys (e.g. "grokAcp") for pre-canonical plans.
+ * Read the canonical ACP route bag from RouteLaunchPlan.extras.
  */
-export function readAcpExtras(
-  extras: Record<string, unknown> | undefined,
-  legacyKeys: string[] = []
-): unknown {
+export function readAcpExtras(extras: Record<string, unknown> | undefined): unknown {
   if (!extras || typeof extras !== "object") return {};
   if (extras.acp !== undefined) return extras.acp;
-  for (const key of legacyKeys) {
-    if (extras[key] !== undefined) return extras[key];
-  }
   return {};
 }
 
 /**
- * Read snapshot-time ACP session projection from LaunchPlan.extras.
- * Built by AgentRuntime at start/resume from profileSnapshot — not hot-reloaded.
+ * Read snapshot-time ACP session projection from RouteLaunchPlan.extras.
+ * Built by AgentRuntime at start/resume from route snapshot — not hot-reloaded.
  * Wire values may contain secrets; never log the returned mcpServers array.
  */
 export function readAcpSessionProjection(extras: Record<string, unknown> | undefined): {
@@ -49,21 +42,21 @@ export function readAcpSessionProjection(extras: Record<string, unknown> | undef
 }
 
 /**
- * Ephemeral image projection fields for AcpClient from a LaunchPlan.
+ * Ephemeral image projection fields for AcpClient from a RouteLaunchPlan.
  * Paths only on the plan; bytes are read at session/prompt under system root.
  * Image blocks still require live initialize promptCapabilities.image === true.
  * Never log or persist resolved bytes.
  */
 /**
- * Core-owned spawn overlay + diagnostic secrets from LaunchPlan.
+ * Core-owned spawn overlay + diagnostic secrets from RouteLaunchPlan.
  * Passed through to AcpClient so reserved keys and resolver outputs are not lost.
  */
-export function readCoreChildEnvClientOptions(plan: LaunchPlan): {
-  coreEnv?: LaunchPlan["coreEnv"];
+export function readCoreChildEnvClientOptions(plan: RouteLaunchPlan): {
+  coreEnv?: RouteLaunchPlan["coreEnv"];
   diagnosticSecrets?: string[];
 } {
   const out: {
-    coreEnv?: LaunchPlan["coreEnv"];
+    coreEnv?: RouteLaunchPlan["coreEnv"];
     diagnosticSecrets?: string[];
   } = {};
   if (plan.coreEnv && Object.keys(plan.coreEnv).length > 0) {
@@ -77,7 +70,7 @@ export function readCoreChildEnvClientOptions(plan: LaunchPlan): {
   return out;
 }
 
-export function readBootstrapImageClientOptions(plan: LaunchPlan): {
+export function readBootstrapImageClientOptions(plan: RouteLaunchPlan): {
   bootstrapImageRefs?: BootstrapImageRef[];
   bootstrapImageSystemRoot?: string;
   readBootstrapImageBinary?: (relativePath: string) => Promise<Uint8Array>;
@@ -126,7 +119,7 @@ export function normalizeSharedAcpOpts(raw: unknown): {
   permissionPolicy: AcpPermissionPolicy;
   permissionTimeoutMs: number;
 } {
-  const o = (raw && typeof raw === "object" ? raw : {}) as AcpProfileOptions;
+  const o = (raw && typeof raw === "object" ? raw : {}) as AcpRouteOptions;
   return {
     executable:
       typeof o.executable === "string" && o.executable.trim()
@@ -208,7 +201,7 @@ export function defaultNpxLaunch(): { command: string; argsPrefix: string[] } {
 
 /**
  * Resolve command/args for npx-based ACP bridges.
- * Precedence: plan.command/args → profile executable → package defaults.
+ * Precedence: plan.command/args → route executable → package defaults.
  */
 export function resolveNpxAcpLaunch(input: {
   planCommand?: string;

@@ -15,6 +15,7 @@ import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { createServiceClient } from "../src/service/client.js";
+import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import {
   CLIENT_METHODS,
   isClientMethod,
@@ -24,6 +25,13 @@ import type {
   NodeCollaborationsResult,
 } from "../src/service/types.js";
 import { patchTaskEnvelope } from "../src/core/task.js";
+
+const FAKE_ROUTE = {
+  routeId: "fake-default",
+  provider: "fake",
+  adapterId: FAKE_ADAPTER_ID,
+  fake: { waitForSignal: true, sleepMs: 60_000 },
+} as const;
 
 async function makeWorkspace(name = "node-collab"): Promise<string> {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-node-collab-ws-"));
@@ -52,7 +60,7 @@ async function withService<T>(
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-node-collab-data-"));
-  const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+  const svc = await startLocalTentService({ dataDir, writeEndpoint: true, routes: [FAKE_ROUTE] });
   try {
     return await fn(svc);
   } finally {
@@ -154,7 +162,7 @@ test("node.collaboration: idle Node has null activeTask", async () => {
   });
 });
 
-test("node.collaboration: running Task projects raw state + role; no session/delivery", async () => {
+test("node.collaboration: running Task projects raw state + assignee; no session/delivery", async () => {
   const ws = await makeWorkspace("running");
   await withService(async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
@@ -163,7 +171,8 @@ test("node.collaboration: running Task projects raw state + role; no session/del
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [note.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "do running work",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -175,9 +184,8 @@ test("node.collaboration: running Task projects raw state + role; no session/del
     assert.equal(item.nodeId, note.nodeId);
     const entry = primaryEntry(item);
     assert.equal(entry.task.state, "running");
-    assert.equal(entry.task.role, "executor");
+    assert.equal(entry.task.assigneeId, "executor");
     assert.equal(entry.task.assigneeKind, "role");
-    assert.equal(entry.task.profileId, undefined);
     assert.ok(entry.task.id);
     assert.equal(entry.task.sessionId, undefined);
     assert.equal(entry.task.activeDeliveryId, undefined);
@@ -203,7 +211,8 @@ test("node.collaboration: waiting Task projects raw waiting state", async () => 
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [note.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "need input",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -214,7 +223,7 @@ test("node.collaboration: waiting Task projects raw waiting state", async () => 
     const item = (await client.nodeCollaboration(workspaceId, note.nodeId)) as NodeCollaboration;
     const entry = primaryEntry(item);
     assert.equal(entry.task.state, "waiting");
-    assert.equal(entry.task.role, "executor");
+    assert.equal(entry.task.assigneeId, "executor");
     assert.equal(entry.session, null);
     assert.equal(entry.delivery, null);
   });
@@ -229,7 +238,8 @@ test("node.collaboration: delivered Task attaches Delivery summary via activeDel
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [note.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "ship for review",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -270,7 +280,8 @@ test("node.collaboration: accepted Task clears occupation (empty activeTasks)", 
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [note.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "finish",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -297,7 +308,8 @@ test("node.collaborations: order preserved; empty ids → empty items", async ()
 
     await client.taskDispatch(workspaceId, {
       nodeIds: [a.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "work a",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -408,14 +420,16 @@ test("node.collaboration: parent and child Nodes are independently occupied", as
 
     await client.taskDispatch(workspaceId, {
       nodeIds: [parent.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "occupy parent",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     });
     await client.taskDispatch(workspaceId, {
       nodeIds: [child.nodeId],
-      role: "planner",
+      assigneeKind: "role",
+      assigneeId: "planner",
       prompt: "occupy child",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -424,12 +438,12 @@ test("node.collaboration: parent and child Nodes are independently occupied", as
     const parentItem = (await client.nodeCollaboration(workspaceId, parent.nodeId)) as NodeCollaboration;
     const parentEntry = primaryEntry(parentItem);
     assert.equal(parentEntry.task.state, "queued");
-    assert.equal(parentEntry.task.role, "executor");
+    assert.equal(parentEntry.task.assigneeId, "executor");
 
     const childItem = (await client.nodeCollaboration(workspaceId, child.nodeId)) as NodeCollaboration;
     const childEntry = primaryEntry(childItem);
     assert.equal(childEntry.task.state, "queued");
-    assert.equal(childEntry.task.role, "planner");
+    assert.equal(childEntry.task.assigneeId, "planner");
 
     const batch = (await client.nodeCollaborations(workspaceId, [
       child.nodeId,
@@ -460,7 +474,8 @@ test("node.collaboration: session linkage only through explicit task.sessionId",
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [note.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "bind session",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -488,7 +503,8 @@ test("node.collaboration: session linkage only through explicit task.sessionId",
     const note2 = await createNote(svc, workspaceId, { name: "no-session-item" });
     await client.taskDispatch(workspaceId, {
       nodeIds: [note2.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "no bind",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -511,7 +527,8 @@ test("node.collaboration: exact Node occupation and multi-Node projection", asyn
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [first.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "occupy one exact Node",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -520,7 +537,8 @@ test("node.collaboration: exact Node occupation and multi-Node projection", asyn
     const blocked = await client.tryCall("task.dispatch", {
       workspaceId,
       nodeIds: [first.nodeId],
-      role: "planner",
+      assigneeKind: "role",
+      assigneeId: "planner",
       prompt: "second exact Node task",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -540,7 +558,8 @@ test("node.collaboration: exact Node occupation and multi-Node projection", asyn
 
     const multi = (await client.taskDispatch(workspaceId, {
       nodeIds: [second.nodeId, third.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "reference two Nodes",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -568,7 +587,8 @@ test("node.collaborations: duplicate ids preserve order and project same item", 
     const note = await createNote(svc, workspaceId, { name: "dup-item" });
     await client.taskDispatch(workspaceId, {
       nodeIds: [note.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "dup",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -605,7 +625,8 @@ test("node.collaboration: descendant claim does not paint parent", async () => {
 
     await client.taskDispatch(workspaceId, {
       nodeIds: [child.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "occupy child only",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -630,7 +651,8 @@ test("node.collaboration: terminal rejected/interrupted/failed clear occupation"
     const n1 = await createNote(svc, workspaceId, { name: "term-int" });
     const d1 = (await client.taskDispatch(workspaceId, {
       nodeIds: [n1.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "interrupt me",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -647,7 +669,8 @@ test("node.collaboration: terminal rejected/interrupted/failed clear occupation"
     const n2 = await createNote(svc, workspaceId, { name: "term-rej" });
     const d2 = (await client.taskDispatch(workspaceId, {
       nodeIds: [n2.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "reject me",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -669,7 +692,8 @@ test("node.collaboration: terminal rejected/interrupted/failed clear occupation"
     const n3 = await createNote(svc, workspaceId, { name: "term-fail" });
     const d3 = (await client.taskDispatch(workspaceId, {
       nodeIds: [n3.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "fail me",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -694,7 +718,8 @@ test("node.collaboration: stale sessionId/activeDeliveryId keep task, null summa
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [note.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "stale pointers",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -717,18 +742,18 @@ test("node.collaboration: stale sessionId/activeDeliveryId keep task, null summa
   });
 });
 
-test("node.collaboration: route dispatch projects internal profile assignee", async () => {
-  const ws = await makeWorkspace("profile-assignee");
+test("node.collaboration: route dispatch projects route assignee", async () => {
+  const ws = await makeWorkspace("route-assignee");
   await withService(async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const workspaceId = await mountWorkspace(svc, ws);
-    const note = await createNote(svc, workspaceId, { name: "profile-item" });
+    const note = await createNote(svc, workspaceId, { name: "route-item" });
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [note.nodeId],
       assigneeKind: "route",
-      routeId: "fake-default",
-      prompt: "profile work",
+      assigneeId: "fake-default",
+      prompt: "route work",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
@@ -736,10 +761,9 @@ test("node.collaboration: route dispatch projects internal profile assignee", as
     const item = (await client.nodeCollaboration(workspaceId, note.nodeId)) as NodeCollaboration;
     const entry = primaryEntry(item);
     assert.equal(entry.task.state, "queued");
-    assert.equal(entry.task.assigneeKind, "agentProfile");
-    assert.equal(entry.task.profileId, "fake-default");
-    assert.equal(entry.task.role, undefined);
-    assert.ok(dispatched.taskPath.includes("agent-profiles"));
+    assert.equal(entry.task.assigneeKind, "route");
+    assert.equal(entry.task.assigneeId, "fake-default");
+    assert.ok(dispatched.taskPath.includes("routes"));
   });
 });
 
@@ -752,7 +776,8 @@ test("node.collaboration: idle / no sessionId incurs no session probe", async ()
     const active = await createNote(svc, workspaceId, { name: "active-no-session" });
     await client.taskDispatch(workspaceId, {
       nodeIds: [active.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "no session bind",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -836,14 +861,16 @@ test("node.collaborations: duplicate sessionId probes once", async () => {
     const b = await createNote(svc, workspaceId, { name: "share-b" });
     const dA = (await client.taskDispatch(workspaceId, {
       nodeIds: [a.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "a",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const dB = (await client.taskDispatch(workspaceId, {
       nodeIds: [b.nodeId],
-      role: "executor",
+      assigneeKind: "role",
+      assigneeId: "executor",
       prompt: "b",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },

@@ -341,7 +341,7 @@ test("managed ACP rejects an oversized stdout JSON-RPC frame before parse and ne
     limits: { stdoutFrameBytes: 256 },
   });
   const session = await startManagedAcpSession({
-    plan: { sessionId, profileId: "limit", cwd: process.cwd(), env: {}, bootstrapPrompt: "go" },
+    plan: { sessionId, routeId: "limit", cwd: process.cwd(), env: {}, bootstrapPrompt: "go" },
     emit: (event) => events.push(event),
     client,
   });
@@ -401,7 +401,7 @@ test("final open segment cannot bypass segment limit into prompt_complete", asyn
   const session = await startManagedAcpSession({
     plan: {
       sessionId,
-      profileId: "limit",
+      routeId: "limit",
       cwd: process.cwd(),
       env: {},
       bootstrapPrompt: "go",
@@ -427,7 +427,7 @@ test("normal multi-segment response emits only the final managed report", async 
     env: { MOCK_MODE: "multi" },
   });
   const session = await startManagedAcpSession({
-    plan: { sessionId, profileId: "limit", cwd: process.cwd(), env: {}, bootstrapPrompt: "go" },
+    plan: { sessionId, routeId: "limit", cwd: process.cwd(), env: {}, bootstrapPrompt: "go" },
     emit: (event) => events.push(event),
     client,
   });
@@ -859,7 +859,7 @@ test("AgentRuntime re-bounds oversized managed diagnostics at its event boundary
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    profiles: [{ id: "runtime-limit-profile", adapterId: adapter.id }],
+    routes: [{ routeId: "runtime-limit-route", provider: "test", adapterId: adapter.id }],
   });
   const events: RuntimeEvent[] = [];
   runtime.subscribeAll((event) => events.push(event));
@@ -867,7 +867,8 @@ test("AgentRuntime re-bounds oversized managed diagnostics at its event boundary
   try {
     await runtime.startSession({
       sessionId,
-      profileId: "runtime-limit-profile",
+      routeId: "runtime-limit-route",
+      routeSnapshot: runtime.snapshotRouteForStart("runtime-limit-route"),
       cwd: await tempDir("tent-runtime-limit-cwd-"),
       bootstrapPrompt: "",
     });
@@ -918,7 +919,7 @@ test("AgentRuntime preserves limit code and does not duplicate an already-emitte
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    profiles: [{ id: "runtime-limit-startup-profile", adapterId: adapter.id }],
+    routes: [{ routeId: "runtime-limit-startup-route", provider: "test", adapterId: adapter.id }],
   });
   const events: RuntimeEvent[] = [];
   runtime.subscribeAll((event) => events.push(event));
@@ -928,7 +929,8 @@ test("AgentRuntime preserves limit code and does not duplicate an already-emitte
       () =>
         runtime.startSession({
           sessionId,
-          profileId: "runtime-limit-startup-profile",
+          routeId: "runtime-limit-startup-route",
+          routeSnapshot: runtime.snapshotRouteForStart("runtime-limit-startup-route"),
           cwd: process.cwd(),
         }),
       (error) => assertLimit(error, ACP_OUTPUT_LIMIT_CODE)

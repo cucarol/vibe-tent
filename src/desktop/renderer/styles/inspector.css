@@ -404,7 +404,7 @@
   word-break: break-all;
 }
 
-.task-profile-bar {
+.task-route-bar {
   border: none;
   background: transparent;
   padding: 0 0 var(--space-3);
@@ -417,7 +417,7 @@
   list-style: none;
 }
 
-.task-profile-bar select {
+.task-route-bar select {
   width: 100%;
   height: var(--size-control);
   padding: 0 var(--space-2);

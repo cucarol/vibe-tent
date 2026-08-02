@@ -10,6 +10,22 @@ const ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"; // 去掉易混字符 i l o
 
 /** User-visible Node handle prefix. */
 export const NODE_ID_PREFIX = "cx-";
+export const ROUTE_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
+
+/** Canonical machine Settings route id shared by Core, Service, and Session disk. */
+export function isRouteId(value: unknown): value is string {
+  return typeof value === "string" && ROUTE_ID_RE.test(value);
+}
+
+export function assertRouteId(value: string): string {
+  const routeId = value.trim();
+  if (!isRouteId(routeId)) {
+    throw new Error(
+      `Invalid routeId: must match ${ROUTE_ID_RE} (lowercase letter, then a-z0-9-, max 63).`
+    );
+  }
+  return routeId;
+}
 
 /** Role 稳定身份前缀（合同冻结）。 */
 export const ROLE_ID_PREFIX = "rl-";
