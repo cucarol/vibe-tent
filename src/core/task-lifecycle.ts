@@ -32,6 +32,7 @@ import {
   patchTaskEnvelope,
   primaryNodeId,
   type TaskEnvelope,
+  type TaskEnvelopePatch,
 } from "./task.js";
 import { routeDeliveriesDir, TEMP_DIR } from "./paths.js";
 import {
@@ -48,16 +49,20 @@ import {
   type WaitReason,
 } from "./task-model.js";
 
+export type TaskClaimWrite = Omit<TaskEnvelopePatch, "sessionId"> & {
+  sessionId?: never;
+};
+
 export interface TaskClaimOptions {
-  sessionId?: string;
   /**
    * Optional single-write claim payload after structural checks.
-   * When set on first claim (queued→running), status/state + session/lane/base/audit
+   * When set on first claim (queued→running), state + lane/base/audit
    * are persisted in **one** envelope patch. Callers must prepare lane/base before
    * invoking claim so a failed prepare leaves the Task queued.
-   * Keys that would change lifecycle state are forced to running/taken by claim.
+   * Session binding is not a claim concern; task.startSession/task.replaceSession
+   * own that exact-Task CAS. Lifecycle state is forced to running by claim.
    */
-  claimWrite?: import("./task.js").TaskEnvelopePatch;
+  claimWrite?: TaskClaimWrite;
 }
 
 export interface TaskWaitOptions {
@@ -111,13 +116,7 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     if (task.state === "running") {
-      // Idempotent re-ack (legacy taskAck behavior).
-      if (options.sessionId) {
-        return patchTaskEnvelope(env.fs, taskPath, {
-          sessionId: options.sessionId,
-          updatedAt: env.clock.now(),
-        });
-      }
+      // Idempotent re-ack. Claim never changes the Task's Session binding.
       return task;
     }
     assertTransition(task.state, "claim", "running");
@@ -142,26 +141,24 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "node cannot be claimed"}`);
     }
 
-    // Single envelope write: running + optional session/lane/base/audit together.
+    // Single envelope write: running + optional lane/base/audit together.
     // No intermediate lane-only patch; failed prepare must not reach this path.
     const now = env.clock.now();
     if (options.claimWrite) {
+      if (Object.prototype.hasOwnProperty.call(options.claimWrite, "sessionId")) {
+        throw new Error(
+          "task.claim claimWrite cannot bind sessionId; use task.startSession or task.replaceSession"
+        );
+      }
       return patchTaskEnvelope(env.fs, taskPath, {
         ...options.claimWrite,
         state: "running",
-        ...(options.sessionId ? { sessionId: options.sessionId } : {}),
         updatedAt: options.claimWrite.updatedAt ?? now,
       });
     }
 
     // Claim only acks the envelope — no Node frontmatter owner/status dual-write.
     await ackTaskEnvelope(env.fs, taskPath);
-    if (options.sessionId) {
-      return patchTaskEnvelope(env.fs, taskPath, {
-        sessionId: options.sessionId,
-        updatedAt: now,
-      });
-    }
     return loadTaskEnvelope(env.fs, taskPath);
   });
 }

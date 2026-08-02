@@ -610,7 +610,7 @@ export class TaskInputStore {
   /**
    * Mark managed inject success: pending|processing → delivered.
    * Optional sessionId persists the session that actually received the inject
-   * (e.g. reject-resume new ss- after sessionIdOverride).
+   * after an exact Task Session replacement/rebind.
    */
   async markDelivered(
     id: string,

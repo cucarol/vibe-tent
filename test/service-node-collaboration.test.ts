@@ -456,21 +456,12 @@ test("node.collaboration: parent and child Nodes are independently occupied", as
   });
 });
 
-test("node.collaboration: session linkage only through explicit task.sessionId", async () => {
+test("task.claim rejects Session selectors and leaves collaboration unbound", async () => {
   const ws = await makeWorkspace("session-link");
   await withService(async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const workspaceId = await mountWorkspace(svc, ws);
     const note = await createNote(svc, workspaceId, { name: "session-item" });
-
-    const entered = (await client.sessionEnter({
-      workspaceId,
-      roleName: "executor",
-      externalKey: "node-collab-session-key",
-      cwd: ws,
-    })) as { session: { sessionId: string; state: string; alive: boolean } };
-    const sessionId = entered.session.sessionId;
-    assert.ok(sessionId);
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [note.nodeId],
@@ -480,39 +471,33 @@ test("node.collaboration: session linkage only through explicit task.sessionId",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
-    await client.taskClaim(workspaceId, dispatched.taskPath, sessionId);
 
-    const task = (await client.taskGet(workspaceId, dispatched.taskPath)) as {
+    const rejected = await rpc(svc, "task.claim", {
+      workspaceId,
+      taskPath: dispatched.taskPath,
+      sessionId: "ss-cross-task-selector",
+    });
+    assert.equal(rejected.error?.code, -32602);
+    assert.match(rejected.error?.message ?? "", /unknown parameter: sessionId/);
+
+    let task = (await client.taskGet(workspaceId, dispatched.taskPath)) as {
       task: { sessionId?: string; state: string };
     };
-    assert.equal(task.task.sessionId, sessionId);
+    assert.equal(task.task.state, "queued", "rejected selector must not claim the Task");
+    assert.equal(task.task.sessionId, undefined);
+
+    await client.taskClaim(workspaceId, dispatched.taskPath);
+    task = (await client.taskGet(workspaceId, dispatched.taskPath)) as {
+      task: { sessionId?: string; state: string };
+    };
     assert.equal(task.task.state, "running");
+    assert.equal(task.task.sessionId, undefined);
 
     const item = (await client.nodeCollaboration(workspaceId, note.nodeId)) as NodeCollaboration;
     const entry = primaryEntry(item);
-    assert.equal(entry.task.sessionId, sessionId);
-    assert.ok(entry.session);
-    assert.equal(entry.session!.id, sessionId);
-    assert.equal(typeof entry.session!.state, "string");
-    assert.equal(typeof entry.session!.alive, "boolean");
-    assert.equal(typeof entry.session!.turnBusy, "boolean");
-    // Delivery not attached without activeDeliveryId.
+    assert.equal(entry.task.sessionId, undefined);
+    assert.equal(entry.session, null);
     assert.equal(entry.delivery, null);
-
-    // Without sessionId on task, session stays null even if sessions exist.
-    const note2 = await createNote(svc, workspaceId, { name: "no-session-item" });
-    await client.taskDispatch(workspaceId, {
-      nodeIds: [note2.nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
-      prompt: "no bind",
-      parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
-    });
-    const bare = (await client.nodeCollaboration(workspaceId, note2.nodeId)) as NodeCollaboration;
-    const bareEntry = primaryEntry(bare);
-    assert.equal(bareEntry.task.sessionId, undefined);
-    assert.equal(bareEntry.session, null);
   });
 });
 
@@ -829,54 +814,39 @@ test("node.collaboration: idle / no sessionId incurs no session probe", async ()
   });
 });
 
-test("node.collaborations: duplicate sessionId probes once", async () => {
+test("node.collaborations: duplicate Node requests probe each exact Task Session once", async () => {
   const ws = await makeWorkspace("probe-once");
   await withService(async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const workspaceId = await mountWorkspace(svc, ws);
 
-    const entered = (await client.sessionEnter({
-      workspaceId,
-      roleName: "executor",
-      externalKey: "shared-session-probe",
-      cwd: ws,
-    })) as { session: { sessionId: string } };
-    const sessionId = entered.session.sessionId;
-
-    // Unrelated sessions that must not be probed.
-    await client.sessionEnter({
-      workspaceId,
-      roleName: "planner",
-      externalKey: "noise-session-1",
-      cwd: ws,
-    });
-    await client.sessionEnter({
-      workspaceId,
-      roleName: "planner",
-      externalKey: "noise-session-2",
-      cwd: ws,
-    });
-
     const a = await createNote(svc, workspaceId, { name: "share-a" });
     const b = await createNote(svc, workspaceId, { name: "share-b" });
     const dA = (await client.taskDispatch(workspaceId, {
       nodeIds: [a.nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      assigneeKind: "route",
+      assigneeId: "fake-default",
       prompt: "a",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const dB = (await client.taskDispatch(workspaceId, {
       nodeIds: [b.nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      assigneeKind: "route",
+      assigneeId: "fake-default",
       prompt: "b",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
-    await client.taskClaim(workspaceId, dA.taskPath, sessionId);
-    await client.taskClaim(workspaceId, dB.taskPath, sessionId);
+    const startedA = (await client.taskStartSession(workspaceId, {
+      taskPath: dA.taskPath,
+      callerKind: "user",
+    })) as { session: { sessionId: string } };
+    const startedB = (await client.taskStartSession(workspaceId, {
+      taskPath: dB.taskPath,
+      callerKind: "user",
+    })) as { session: { sessionId: string } };
+    assert.notEqual(startedA.session.sessionId, startedB.session.sessionId);
 
     const probed: string[] = [];
     const origProbe = svc.runtime.probe.bind(svc.runtime);
@@ -894,15 +864,22 @@ test("node.collaborations: duplicate sessionId probes once", async () => {
       assert.equal(batch.items.length, 3);
       for (const item of batch.items) {
         assert.ok(item.activeTask);
-        assert.equal(item.activeTask!.task.sessionId, sessionId);
+        const expectedSessionId = item.nodeId === a.nodeId
+          ? startedA.session.sessionId
+          : startedB.session.sessionId;
+        assert.equal(item.activeTask!.task.sessionId, expectedSessionId);
         assert.ok(item.activeTask?.session);
-        assert.equal(item.activeTask?.session!.id, sessionId);
+        assert.equal(item.activeTask?.session!.id, expectedSessionId);
       }
-      assert.deepEqual(
-        probed,
-        [sessionId],
-        `expected single probe of shared sessionId, got ${JSON.stringify(probed)}`
+      assert.equal(
+        probed.filter((id) => id === startedA.session.sessionId).length,
+        1
       );
+      assert.equal(
+        probed.filter((id) => id === startedB.session.sessionId).length,
+        1
+      );
+      assert.equal(probed.length, 2, JSON.stringify(probed));
     } finally {
       svc.runtime.probe = origProbe;
     }

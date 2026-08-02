@@ -721,8 +721,8 @@ export class ServiceClient {
   ) {
     return this.call("task.dispatch", { workspaceId, ...args });
   }
-  taskClaim(workspaceId: string, taskPath: string, sessionId?: string) {
-    return this.call("task.claim", { workspaceId, taskPath, sessionId });
+  taskClaim(workspaceId: string, taskPath: string) {
+    return this.call("task.claim", { workspaceId, taskPath });
   }
   /**
    * Create and immediately claim a durable Role's own execution Task.

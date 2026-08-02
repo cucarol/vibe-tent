@@ -63,6 +63,21 @@ async function dispatchOnFreeBox(dir: string, role = "executor") {
   return { e, result };
 }
 
+test("lifecycle: claimWrite rejects Session binding before claiming", async () => {
+  const dir = await makeTent();
+  const { e, result } = await dispatchOnFreeBox(dir);
+  await assert.rejects(
+    () =>
+      taskClaim(e as any, result.taskPath, {
+        claimWrite: { sessionId: "ss-forbidden" } as never,
+      }),
+    /cannot bind sessionId/
+  );
+  const task = await loadTaskEnvelope(e.fs, result.taskPath);
+  assert.equal(task.state, "queued");
+  assert.equal(task.sessionId, undefined);
+});
+
 test("lifecycle: dispatch → claim → wait → resume → deliver → accept", async () => {
   const dir = await makeTent();
   const { e, result } = await dispatchOnFreeBox(dir);
@@ -71,9 +86,9 @@ test("lifecycle: dispatch → claim → wait → resume → deliver → accept",
   assert.ok(task.id?.startsWith("tk-"));
   assert.equal(task.deliveryPolicy, "review");
 
-  task = await taskClaim(e as any, result.taskPath, { sessionId: "ss-test1" });
+  task = await taskClaim(e as any, result.taskPath);
   assert.equal(task.state, "running");
-  assert.equal(task.sessionId, "ss-test1");
+  assert.equal(task.sessionId, undefined, "claim must not bind a Session");
   assert.ok(await findActiveTaskForNode(e.fs, "cx-p1"));
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
 

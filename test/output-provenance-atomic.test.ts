@@ -58,7 +58,7 @@ async function readyAcceptFixture(dir: string) {
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
   });
-  await taskClaim(e as any, result.taskPath, { sessionId: "ss-atomic1" });
+  await taskClaim(e as any, result.taskPath);
   const delivered = await taskDeliver(e as any, result.taskPath, {
     summary: "ready for accept bind",
   });

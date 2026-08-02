@@ -139,6 +139,7 @@ import {
   taskReject,
   taskResume,
   taskWait,
+  type TaskClaimWrite,
   type TaskDeliverResult,
 } from "../core/task-lifecycle.js";
 import { runTaskLifecycle } from "./task-lifecycle-flight.js";
@@ -3795,10 +3796,14 @@ async function resolveDirectClaimResponsibility(
 }
 
 async function taskClaimRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  assertAllowedParams(
+    p,
+    new Set(["workspaceId", "taskPath"]),
+    "task.claim"
+  );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
-  const sessionId = optionalString(p, "sessionId");
 
   // Per-Task lifecycle flight + workspace mutation: claim must not race deliver/backfill.
   return runTaskLifecycle(workspaceId, taskPath, () =>
@@ -3807,7 +3812,7 @@ async function taskClaimRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       // Prepare Role lane/base BEFORE Core claim transition so a failed prepare
       // leaves the Task queued (no intermediate running without base).
       const pre = await loadTaskEnvelope(mount.env.fs, taskPath);
-      let claimWrite: TaskEnvelopePatch | undefined;
+      let claimWrite: TaskClaimWrite | undefined;
       if (pre.state !== "running") {
         // First claim only: prepare lane/base (no disk write) then single-patch claim.
         claimWrite = await prepareRoleClaimWrite(ctx, workspaceId, pre);
@@ -3816,7 +3821,6 @@ async function taskClaimRpc(ctx: HandlerContext, p: Record<string, unknown>) {
         }
       }
       const task = await taskClaim(mount.env, taskPath, {
-        sessionId,
         ...(claimWrite ? { claimWrite } : {}),
       });
       emitTaskState(ctx, workspaceId, task, "task.claim");
@@ -4109,7 +4113,7 @@ async function prepareRoleClaimWrite(
   ctx: HandlerContext,
   workspaceId: string,
   task: TaskEnvelope
-): Promise<TaskEnvelopePatch | undefined> {
+): Promise<TaskClaimWrite | undefined> {
   if (taskAssigneeKind(task) !== "role") return undefined;
 
   const mount = ctx.host.require(workspaceId);
@@ -4170,7 +4174,7 @@ async function prepareRoleClaimWrite(
   }
 
   const now = mount.env.clock.now();
-  const patch: TaskEnvelopePatch = {
+  const patch: TaskClaimWrite = {
     workspace: real.workspace,
     worktree: real.worktree,
     branch: real.branch,
@@ -4488,9 +4492,7 @@ async function taskSendInputRpc(ctx: HandlerContext, p: Record<string, unknown>)
   // RPC must not await the full Agent turn (CLI false timeouts).
   const hasManagedSession = !!(current.sessionId?.trim());
   if (hasManagedSession) {
-    enqueueManagedTaskInputBackground(ctx, input, {
-      sessionIdOverride: current.sessionId,
-    });
+    enqueueManagedTaskInputBackground(ctx, input);
   }
 
   return {
@@ -4555,20 +4557,45 @@ const managedTaskInputQueueHoldForTests = new Map<
   { wait: Promise<void>; notifyEntered: () => void }
 >();
 
-/** Prefer Task binding, then row, then override — never a stale pre-replace capture. */
+/**
+ * Resolve the sole managed inject identity from the exact durable Task binding.
+ * TaskInput rows are retry/audit facts, never authority for choosing a Session.
+ */
 async function resolveManagedInjectSessionId(
   ctx: HandlerContext,
-  latest: TaskInputRecord,
-  opts?: { sessionIdOverride?: string }
+  latest: TaskInputRecord
 ): Promise<string | undefined> {
-  try {
-    const mount = ctx.host.get(latest.workspaceId);
-    if (mount) {
-      const bound = (await loadTaskEnvelope(mount.env.fs, latest.taskPath)).sessionId?.trim();
-      if (bound) return bound;
-    }
-  } catch { /* fall through */ }
-  return latest.sessionId?.trim() || opts?.sessionIdOverride?.trim() || undefined;
+  const mount = ctx.host.get(latest.workspaceId);
+  if (!mount) {
+    throw new Error(`TaskInput workspace is not mounted: ${latest.workspaceId}`);
+  }
+  const task = await loadTaskEnvelope(mount.env.fs, latest.taskPath);
+  if (!task.id) {
+    throw new Error(`TaskInput exact Task is missing canonical id: ${latest.taskPath}`);
+  }
+  if (latest.taskId && task.id !== latest.taskId) {
+    throw new Error(
+      `TaskInput Task identity mismatch: expected ${latest.taskId}, got ${task.id}`
+    );
+  }
+  const sessionId = task.sessionId?.trim();
+  if (!sessionId) return undefined;
+
+  const session = await ctx.runtime.registry.read(sessionId);
+  if (!session) {
+    throw new Error(`TaskInput bound Session is missing from registry: ${sessionId}`);
+  }
+  if (session.workspace !== latest.workspaceId) {
+    throw new Error(
+      `TaskInput bound Session workspace mismatch: expected ${latest.workspaceId}, got ${session.workspace || "missing"}`
+    );
+  }
+  if (session.lastTaskId !== task.id) {
+    throw new Error(
+      `TaskInput bound Session Task mismatch: expected ${task.id}, got ${session.lastTaskId || "missing"}`
+    );
+  }
+  return sessionId;
 }
 
 export type ManagedTaskInputDelivery = {
@@ -4603,14 +4630,13 @@ function trackManagedTaskInputBackground(work: Promise<unknown>): void {
  */
 function enqueueManagedTaskInputBackground(
   ctx: HandlerContext,
-  item: TaskInputRecord,
-  opts?: { sessionIdOverride?: string }
+  item: TaskInputRecord
 ): void {
   if (!managedTaskInputAccepting) {
     // Shutdown in progress: leave durable pending/failed for next process.
     return;
   }
-  const work = deliverManagedTaskInput(ctx, item, opts).then(
+  const work = deliverManagedTaskInput(ctx, item).then(
     () => undefined,
     async (err) => {
       const message = err instanceof Error ? err.message : String(err);
@@ -4652,7 +4678,6 @@ async function scheduleRetryableTaskInputsAfterSessionBind(
   input: {
     workspaceId: string;
     taskPath: string;
-    sessionId: string;
   }
 ): Promise<void> {
   try {
@@ -4664,9 +4689,7 @@ async function scheduleRetryableTaskInputsAfterSessionBind(
       (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)
     );
     for (const item of retryable) {
-      enqueueManagedTaskInputBackground(ctx, item, {
-        sessionIdOverride: input.sessionId,
-      });
+      enqueueManagedTaskInputBackground(ctx, item);
     }
   } catch (err) {
     // Session binding already succeeded and rows remain durable. Recovery
@@ -4747,8 +4770,7 @@ export function resetManagedTaskInputBackgroundForTests(): void {
  */
 async function deliverManagedTaskInput(
   ctx: HandlerContext,
-  item: TaskInputRecord,
-  opts?: { sessionIdOverride?: string }
+  item: TaskInputRecord
 ): Promise<ManagedTaskInputDelivery> {
   const queueKey = managedTaskInputQueueKey(item.workspaceId, item.taskPath);
   return managedTaskInputQueue.run(queueKey, async () => {
@@ -4774,9 +4796,6 @@ async function deliverManagedTaskInput(
       };
     }
 
-    let sessionId = await resolveManagedInjectSessionId(ctx, latest, opts);
-    if (!sessionId) return { input: latest, continued: false };
-
     const failRebind = async (prefix: string, err: unknown): Promise<ManagedTaskInputDelivery> => {
       const message = err instanceof Error ? err.message : String(err);
       try {
@@ -4786,6 +4805,14 @@ async function deliverManagedTaskInput(
       }
       return { input: latest!, continued: false, continueError: `${prefix}: ${message}` };
     };
+
+    let sessionId: string | undefined;
+    try {
+      sessionId = await resolveManagedInjectSessionId(ctx, latest);
+    } catch (err) {
+      return failRebind("TaskInput exact Session guard failed", err);
+    }
+    if (!sessionId) return { input: latest, continued: false };
 
     if ((latest.sessionId?.trim() || "") !== sessionId) {
       try {
@@ -4814,7 +4841,17 @@ async function deliverManagedTaskInput(
     // Re-derive after claim: replace may have rebound Task+row while we waited.
     latest =
       (await ctx.taskInputs.get(latest.id, latest.workspaceId, latest.taskPath)) ?? latest;
-    sessionId = (await resolveManagedInjectSessionId(ctx, latest, opts)) || sessionId;
+    try {
+      sessionId = await resolveManagedInjectSessionId(ctx, latest);
+    } catch (err) {
+      return failRebind("TaskInput exact Session guard failed after processing", err);
+    }
+    if (!sessionId) {
+      return failRebind(
+        "TaskInput exact Session guard failed after processing",
+        new Error("Task no longer has a managed Session binding")
+      );
+    }
     if ((latest.sessionId?.trim() || "") && latest.sessionId!.trim() !== sessionId) {
       try {
         const rows = await ctx.taskInputs.rebindOpenSessions(
@@ -5720,9 +5757,7 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     // background — same as task.sendInput.
     // Do not await the full Agent turn (CLI/fetch headers timeout would otherwise
     // false-fail a still-running turn).
-    enqueueManagedTaskInputBackground(ctx, reviewInput, {
-      sessionIdOverride: restoredSessionId,
-    });
+    enqueueManagedTaskInputBackground(ctx, reviewInput);
     return {
       workspaceId,
       taskPath,
@@ -5978,7 +6013,6 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
     await scheduleRetryableTaskInputsAfterSessionBind(ctx, {
       workspaceId,
       taskPath,
-      sessionId: result.session.sessionId,
     });
     return result;
   }
@@ -6534,7 +6568,6 @@ async function launchAndBindTaskStartSession(
   await scheduleRetryableTaskInputsAfterSessionBind(ctx, {
     workspaceId,
     taskPath,
-    sessionId: handle.sessionId,
   });
 
   return projectStartSessionResult(workspaceId, taskPath, bound, {
@@ -6879,7 +6912,6 @@ async function executeTaskReplaceSession(
     await scheduleRetryableTaskInputsAfterSessionBind(ctx, {
       workspaceId,
       taskPath,
-      sessionId: handle.sessionId,
     });
 
     return {
@@ -11463,10 +11495,9 @@ export function resetTaskStartSessionInFlightForTests(): void {
  */
 export async function invokeDeliverManagedTaskInputForTests(
   ctx: HandlerContext,
-  item: TaskInputRecord,
-  opts?: { sessionIdOverride?: string }
+  item: TaskInputRecord
 ): Promise<ManagedTaskInputDelivery> {
-  return deliverManagedTaskInput(ctx, item, opts);
+  return deliverManagedTaskInput(ctx, item);
 }
 
 /** Drop managed auto-deliver success/in-flight markers for one session+task pair. */

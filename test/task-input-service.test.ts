@@ -755,6 +755,79 @@ test("explicit startSession bind and live reuse recover durable retryable TaskIn
   });
 });
 
+test("managed TaskInput fails loud when the bound Session is foreign to workspace or exact Task", async () => {
+  const ws = await makeWorkspace();
+  await withService([], async (svc) => {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+    const created = await client.docsCreateNote(workspaceId, {
+      name: "exact-session-guard",
+      type: "prompt",
+    });
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      nodeIds: [created.nodeId],
+      assigneeKind: "route",
+      assigneeId: "mock-ti",
+      prompt: "Guard TaskInput injection by exact Task Session binding",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+      deliveryPolicy: "review",
+    })) as { taskPath: string };
+    const started = (await client.taskStartSession(workspaceId, {
+      taskPath: dispatched.taskPath,
+      callerKind: "user",
+    })) as { session: { sessionId: string } };
+    const sessionId = started.session.sessionId;
+    const projected = (await client.taskGet(
+      workspaceId,
+      dispatched.taskPath
+    )) as { task: { id: string } };
+
+    await svc.runtime.registry.update(sessionId, {
+      workspace: "ws-foreign",
+    });
+    const workspaceMismatch = (await client.taskSendInput(
+      workspaceId,
+      dispatched.taskPath,
+      { text: "MUST_NOT_REACH_FOREIGN_WORKSPACE_SESSION" }
+    )) as { input: { id: string }; accepted: boolean; enqueued: boolean };
+    assert.equal(workspaceMismatch.accepted, true);
+    assert.equal(workspaceMismatch.enqueued, true);
+    const workspaceFailed = await pollUntil(async () => {
+      const row = await svc.ctx.taskInputs.get(
+        workspaceMismatch.input.id,
+        workspaceId,
+        dispatched.taskPath
+      );
+      return row?.status === "failed" ? row : null;
+    }, 5_000, "workspace-mismatched TaskInput failure");
+    assert.match(workspaceFailed.lastError ?? "", /Session workspace mismatch/);
+
+    await svc.runtime.registry.update(sessionId, {
+      workspace: workspaceId,
+      lastTaskId: "tk-foreign",
+    });
+    const taskMismatch = (await client.taskSendInput(
+      workspaceId,
+      dispatched.taskPath,
+      { text: "MUST_NOT_REACH_FOREIGN_TASK_SESSION" }
+    )) as { input: { id: string }; accepted: boolean; enqueued: boolean };
+    assert.equal(taskMismatch.accepted, true);
+    assert.equal(taskMismatch.enqueued, true);
+    const taskFailed = await pollUntil(async () => {
+      const row = await svc.ctx.taskInputs.get(
+        taskMismatch.input.id,
+        workspaceId,
+        dispatched.taskPath
+      );
+      return row?.status === "failed" ? row : null;
+    }, 5_000, "Task-mismatched TaskInput failure");
+    assert.match(taskFailed.lastError ?? "", /Session Task mismatch/);
+    assert.match(taskFailed.lastError ?? "", new RegExp(projected.task.id));
+  });
+});
+
 test("managed ACP: task.sendInput continues same session; delivered survives Delivery cleanup", async () => {
   const ws = await makeWorkspace();
   const logPath = path.join(

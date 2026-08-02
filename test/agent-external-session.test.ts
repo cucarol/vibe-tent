@@ -168,7 +168,8 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
     assert.equal(again.session.sessionId, sessionId);
     assert.equal(again.reused, true);
 
-    // Dispatch + claim with this session so leave can report incomplete
+    // Dispatch + claim does not bind this external Session. Session identity is
+    // established only by the explicit start/replace lifecycle surfaces.
     const note = (await client.call("docs.createNote", {
       workspaceId,
       name: "work-item",
@@ -184,7 +185,7 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
-    await client.taskClaim(workspaceId, dispatched.taskPath, sessionId);
+    await client.taskClaim(workspaceId, dispatched.taskPath);
 
     const status = (await client.sessionStatus({
       workspaceId,
@@ -196,8 +197,7 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
     };
     assert.equal(status.session.state, "external");
     assert.equal(status.open, true);
-    assert.ok(status.incompleteTasks.length >= 1);
-    assert.equal(status.incompleteTasks[0]!.state, "running");
+    assert.deepEqual(status.incompleteTasks, []);
 
     const left = (await client.sessionLeave(sessionId, workspaceId)) as {
       sessionId: string;
@@ -211,13 +211,13 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
     assert.equal(left.state, "stopped");
     assert.equal(left.delivered, false);
     assert.equal(left.accepted, false);
-    assert.ok(left.incompleteTasks.length >= 1);
+    assert.deepEqual(left.incompleteTasks, []);
     // Task still running — leave must not complete it
     const task = (await client.taskGet(workspaceId, dispatched.taskPath)) as {
       task: { state: string; sessionId?: string };
     };
     assert.equal(task.task.state, "running");
-    assert.equal(task.task.sessionId, sessionId);
+    assert.equal(task.task.sessionId, undefined);
 
     // Idempotent leave
     const left2 = (await client.sessionLeave(sessionId, workspaceId)) as {
