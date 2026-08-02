@@ -382,7 +382,7 @@ test("task command errors: missing summary / unknown sub / attach-only miss", as
   });
 });
 
-test("task list/get human output for agents", async () => {
+test("task list/get human output uses canonical assignee fields", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc, dataDir) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
@@ -409,7 +409,8 @@ test("task list/get human output for agents", async () => {
     const get = await runTaskCommand("get", [dispatched.taskPath], { client, cwd: ws, dataDir });
     assert.equal(get.exitCode, 0, get.stderr);
     assert.match(get.stdout, /state: queued/);
-    assert.match(get.stdout, /role: executor/);
+    assert.match(get.stdout, /assigneeKind: role/);
+    assert.match(get.stdout, /assigneeId: executor/);
   });
 });
 
