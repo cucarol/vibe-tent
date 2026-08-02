@@ -25,7 +25,7 @@ import { configureTestGitIdentity, git } from "./helpers.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 
 const FAKE_ROUTE = {
-  routeId: "fake-default",
+  connectionId: "fake-default",
   provider: "fake",
   adapterId: FAKE_ADAPTER_ID,
   fake: { waitForSignal: true, sleepMs: 60_000 },
@@ -58,14 +58,14 @@ async function makeWorkspace(name = "mrd"): Promise<string> {
 
 async function withService<T>(
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>, dataDir: string) => Promise<T>,
-  opts?: { dataDir?: string; routes?: import("../src/runtime/types.js").SettingsRouteConfig[] }
+  opts?: { dataDir?: string; connections?: import("../src/runtime/types.js").AgentConnectionConfig[] }
 ): Promise<T> {
   const dataDir =
     opts?.dataDir ?? (await fs.mkdtemp(path.join(os.tmpdir(), "tent-mrd-data-")));
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
-    routes: opts?.routes ?? [FAKE_ROUTE],
+    connections: opts?.connections ?? [FAKE_ROUTE],
   });
   try {
     return await fn(svc, dataDir);
@@ -216,7 +216,7 @@ test("P0: natural report without outcome survives dirty refusal and draft-only r
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route", assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "preserve draft on dirty refuse",
       deliveryPolicy: "review",
     });
@@ -318,7 +318,7 @@ test("malformed outcome text is delivered intact instead of discarding the repor
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route", assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "deliver malformed control text intact",
       deliveryPolicy: "review",
     });
@@ -375,7 +375,7 @@ test("P0: report draft survives service restart; retry publishes without re-prom
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [mounted.nodeId],
-        assigneeKind: "route", assigneeId: "fake-default",
+        connectionId: "fake-default",
         prompt: "restart must keep draft",
         deliveryPolicy: "review",
       });
@@ -506,7 +506,7 @@ test("P0: publish preparation failure preserves draft; retry publishes without r
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route", assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "integrate fail keeps draft",
       deliveryPolicy: "review",
     });

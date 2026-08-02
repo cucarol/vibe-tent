@@ -1,12 +1,12 @@
 // Settings secondary surface: one primary entry, secondary nav for
-// Workspace · Roles · Routes · Credentials · Skills/MCP · Maintenance.
+// Workspace · Roles · Agent Connections · Credentials · Skills/MCP · Maintenance.
 // All mutations via Service RPC. Credentials never echo secrets.
 
 import { escapeHtml } from "../../../markdown/render.js";
 import type {
   ProviderCatalogEntry,
   RoleRegistryEntryProjection,
-  SettingsRouteProjection,
+  AgentConnectionProjection,
 } from "../../../service/types.js";
 import type { CredentialProjection } from "../../../service/credential-store.js";
 import type { BundledSkillListEntry } from "../../../machine/skills.js";
@@ -20,9 +20,9 @@ import {
   mcpCredentialStatusLine,
   mcpDraftsFromProjection,
   mcpSourceLine,
-  ROUTE_NEXT_SESSION_TIP,
-  ROUTE_SKILLS_METADATA_TIP,
-  routeDisplayLabel,
+  CONNECTION_NEXT_SESSION_TIP,
+  CONNECTION_SKILLS_METADATA_TIP,
+  connectionDisplayLabel,
   removeMcpDraft,
   removeSkillDraft,
   retentionSummaryLine,
@@ -32,8 +32,8 @@ import {
   skillSourceLine,
   validateCredentialSet,
   validateMcpAddDraft,
-  validateRouteCreate,
-  validateRouteUpdate,
+  validateConnectionCreate,
+  validateConnectionUpdate,
   validateRoleCreate,
   validateRoleUpdate,
   validateSkillAddDraft,
@@ -45,7 +45,7 @@ import {
 import { DESKTOP_CONTRACT_GAPS } from "./contract-gaps.js";
 import { el, setError } from "./elements.js";
 import {
-  reloadRoutes,
+  reloadConnections,
   reloadRegistry,
   setRoles,
   workspaceId,
@@ -62,7 +62,7 @@ export type SettingsSection =
 const SECTIONS: Array<{ id: SettingsSection; label: string }> = [
   { id: "workspace", label: "工作区" },
   { id: "roles", label: "角色" },
-  { id: "routes", label: "Routes" },
+  { id: "routes", label: "Connections" },
   { id: "credentials", label: "凭证" },
   { id: "skills", label: "Skills / MCP" },
   { id: "maintenance", label: "维护" },
@@ -73,7 +73,7 @@ let providers: ProviderRow[] = [];
 let credentials: CredentialProjection[] = [];
 let skills: BundledSkillListEntry[] = [];
 let fullRoles: RoleRegistryEntryProjection[] = [];
-let fullRoutes: SettingsRouteProjection[] = [];
+let fullRoutes: AgentConnectionProjection[] = [];
 let settingsPolicy: DeliveryPolicy = "review";
 let agentsContent = "";
 let agentsEtag = "";
@@ -87,9 +87,9 @@ let retentionPreview: {
 } | null = null;
 let loadError: string | null = null;
 let loading = false;
-/** Route editor: skills/mcp drafts (next session; id/ref only). */
+/** Connection editor: skills/mcp drafts (next session; id/ref only). */
 let routeEditId: string | null = null;
-/** Working copies while a route is open for edit — never secrets. */
+/** Working copies while a Connection is open for edit — never secrets. */
 let skillDrafts: SkillRefDraft[] = [];
 let mcpDrafts: McpServerDraft[] = [];
 /** Unsaved basic fields while skills/mcp list re-renders. */
@@ -112,7 +112,7 @@ function openRouteEditor(id: string | null): void {
     mcpDrafts = [];
     return;
   }
-  const route = fullRoutes.find((item) => item.routeId === id);
+  const route = fullRoutes.find((item) => item.connectionId === id);
   skillDrafts = skillDraftsFromProjection(route?.skills);
   mcpDrafts = mcpDraftsFromProjection(route?.mcpServers);
 }
@@ -238,6 +238,7 @@ async function loadRolesFull(): Promise<void> {
   fullRoles = result.roles || [];
   setRoles(
     fullRoles.map((r) => ({
+      roleId: r.roleId,
       name: r.name,
       description: r.displayName || r.description,
     }))
@@ -245,11 +246,11 @@ async function loadRolesFull(): Promise<void> {
 }
 
 async function loadRoutesFull(): Promise<void> {
-  const result = (await window.tentDesktop.rpc("route.list", {})) as {
-    routes: SettingsRouteProjection[];
+  const result = (await window.tentDesktop.rpc("connection.list", {})) as {
+    connections: AgentConnectionProjection[];
   };
-  fullRoutes = result.routes || [];
-  await reloadRoutes();
+  fullRoutes = result.connections || [];
+  await reloadConnections();
 }
 
 async function loadRetentionPreview(): Promise<void> {
@@ -425,7 +426,7 @@ function renderRoutes(): string {
 
   const list =
     fullRoutes.length === 0
-      ? `<p class="muted">暂无 route</p>`
+      ? `<p class="muted">暂无 Connection</p>`
       : `<ul class="settings-list">${fullRoutes
           .map((route) => {
             const level = providers.find((x) => x.adapterId === route.adapterId);
@@ -438,34 +439,34 @@ function renderRoutes(): string {
                   ? `凭证已配置`
                   : `凭证缺失`
                 : "";
-            const label = routeDisplayLabel(route);
+            const label = connectionDisplayLabel(route);
             return `<li class="settings-list-item">
               <div class="settings-list-main">
                 <strong>${escapeHtml(label)}</strong>
-                <span class="faint"><code>${escapeHtml(route.routeId)}</code> · <code>${escapeHtml(route.adapterId)}</code></span>
+                <span class="faint"><code>${escapeHtml(route.connectionId)}</code> · <code>${escapeHtml(route.adapterId)}</code></span>
                 <span class="muted">${route.model ? escapeHtml(route.model) : ""}</span>
                 ${levelBit}
                 ${cred ? `<span class="faint">${escapeHtml(cred)}</span>` : ""}
               </div>
               <div class="settings-list-actions">
-                <button type="button" class="btn btn-ghost" data-route-edit="${escapeHtml(route.routeId)}">编辑</button>
-                <button type="button" class="btn btn-ghost" data-route-delete="${escapeHtml(route.routeId)}">删除</button>
+                <button type="button" class="btn btn-ghost" data-route-edit="${escapeHtml(route.connectionId)}">编辑</button>
+                <button type="button" class="btn btn-ghost" data-route-delete="${escapeHtml(route.connectionId)}">删除</button>
               </div>
             </li>`;
           })
           .join("")}</ul>`;
 
   const editing = routeEditId
-    ? fullRoutes.find((route) => route.routeId === routeEditId)
+    ? fullRoutes.find((route) => route.connectionId === routeEditId)
     : null;
   const editor = editing
     ? renderRouteEditor(editing)
     : `<div class="settings-block">
-        <div class="surface-section-head">新建 route</div>
-        <p class="muted">${escapeHtml(ROUTE_NEXT_SESSION_TIP)}</p>
+        <div class="surface-section-head">新建 Connection</div>
+        <p class="muted">${escapeHtml(CONNECTION_NEXT_SESSION_TIP)}</p>
         <div class="settings-form">
-          <label class="settings-label" for="route-id">routeId（创建后不可改）</label>
-          <input id="route-id" class="field" placeholder="routeId" autocomplete="off" />
+          <label class="settings-label" for="route-id">connectionId（创建后不可改）</label>
+          <input id="route-id" class="field" placeholder="connectionId" autocomplete="off" />
           <label class="settings-label" for="route-provider">provider</label>
           <input id="route-provider" class="field" placeholder="provider" autocomplete="off" />
           <label class="settings-label" for="route-adapter">adapterId</label>
@@ -487,15 +488,15 @@ function renderRoutes(): string {
       ${providerNote}
     </div>
     <div class="settings-block">
-      <div class="surface-section-head">Routes</div>
-      <p class="muted">${escapeHtml(ROUTE_NEXT_SESSION_TIP)}</p>
+      <div class="surface-section-head">Agent Connections</div>
+      <p class="muted">${escapeHtml(CONNECTION_NEXT_SESSION_TIP)}</p>
       ${list}
     </div>
     ${editor}`;
 }
 
-function renderRouteEditor(route: SettingsRouteProjection): string {
-  const label = routeDisplayLabel(route);
+function renderRouteEditor(route: AgentConnectionProjection): string {
+  const label = connectionDisplayLabel(route);
   const fields = routeFieldDraft ?? {
     displayName: route.displayName || "",
     model: route.model || "",
@@ -562,11 +563,11 @@ function renderRouteEditor(route: SettingsRouteProjection): string {
       <div class="surface-section-head">编辑 · ${escapeHtml(label)}
         <button type="button" class="btn btn-ghost" id="btn-route-edit-close">关闭</button>
       </div>
-      <p class="muted">routeId <code>${escapeHtml(route.routeId)}</code> · adapterId <code>${escapeHtml(route.adapterId)}</code></p>
-      <p class="faint">${escapeHtml(ROUTE_NEXT_SESSION_TIP)} · 运行中 session 不热更新 · 勿写 secret</p>
+      <p class="muted">connectionId <code>${escapeHtml(route.connectionId)}</code> · adapterId <code>${escapeHtml(route.adapterId)}</code></p>
+      <p class="faint">${escapeHtml(CONNECTION_NEXT_SESSION_TIP)} · 运行中 session 不热更新 · 勿写 secret</p>
       <div class="settings-form">
         <label class="settings-label" for="route-edit-name">显示名</label>
-        <input id="route-edit-name" class="field" value="${escapeHtml(fields.displayName)}" placeholder="留空则回退到 routeId" />
+        <input id="route-edit-name" class="field" value="${escapeHtml(fields.displayName)}" placeholder="留空则回退到 connectionId" />
         <label class="settings-label" for="route-edit-model">model</label>
         <input id="route-edit-model" class="field" value="${escapeHtml(fields.model)}" placeholder="model" />
         <label class="settings-label" for="route-edit-exe">executable</label>
@@ -582,7 +583,7 @@ function renderRouteEditor(route: SettingsRouteProjection): string {
     </div>
     <div class="settings-block">
       <div class="surface-section-head">Skills</div>
-      <p class="faint">只保存 name/path/enabled · 不存 displayName · ${escapeHtml(ROUTE_SKILLS_METADATA_TIP)} · ${escapeHtml(ROUTE_NEXT_SESSION_TIP)}</p>
+      <p class="faint">只保存 name/path/enabled · 不存 displayName · ${escapeHtml(CONNECTION_SKILLS_METADATA_TIP)} · ${escapeHtml(CONNECTION_NEXT_SESSION_TIP)}</p>
       ${skillList}
       <div class="settings-form settings-form-inline">
         <input id="skill-add-name" class="field" placeholder="skill name（id）" autocomplete="off" list="bundled-skill-list" />
@@ -593,7 +594,7 @@ function renderRouteEditor(route: SettingsRouteProjection): string {
     </div>
     <div class="settings-block">
       <div class="surface-section-head">MCP Servers</div>
-      <p class="faint">只保存 id/ref · credential 仅显示已配置 · ${escapeHtml(ROUTE_NEXT_SESSION_TIP)}</p>
+      <p class="faint">只保存 id/ref · credential 仅显示已配置 · ${escapeHtml(CONNECTION_NEXT_SESSION_TIP)}</p>
       ${mcpList}
       <div class="settings-form">
         <div class="settings-form-inline">
@@ -680,7 +681,7 @@ function renderSkills(): string {
 
   const credIds = configuredCredentialIds();
   const mcpNote = `
-    <p class="muted">MCP / Route Skills 在 Route 编辑器中用列表 + 启用开关管理。${escapeHtml(ROUTE_NEXT_SESSION_TIP)}。运行中 session 不热更新。</p>
+    <p class="muted">MCP / Connection Skills 在 Connection 编辑器中用列表 + 启用开关管理。${escapeHtml(CONNECTION_NEXT_SESSION_TIP)}。运行中 session 不热更新。</p>
     <p class="faint">无全局 mcp.* RPC · 见契约缺口 mcp.global-config · 不伪造全局目录</p>
     <ul class="settings-list">${fullRoutes
       .map((route) => {
@@ -695,17 +696,17 @@ function renderSkills(): string {
           .join(" ");
         return `<li class="settings-list-item">
           <div class="settings-list-main">
-            <strong>${escapeHtml(routeDisplayLabel(route))}</strong>
-            <span class="faint"><code>${escapeHtml(route.routeId)}</code></span>
+            <strong>${escapeHtml(connectionDisplayLabel(route))}</strong>
+            <span class="faint"><code>${escapeHtml(route.connectionId)}</code></span>
             <span class="muted">skills ${escapeHtml(skillBits || "—")}</span>
             <span class="muted">mcp ${escapeHtml(mcpBits || "—")}</span>
           </div>
           <div class="settings-list-actions">
-            <button type="button" class="btn btn-ghost" data-route-edit="${escapeHtml(route.routeId)}">编辑 Skills/MCP</button>
+            <button type="button" class="btn btn-ghost" data-route-edit="${escapeHtml(route.connectionId)}">编辑 Skills/MCP</button>
           </div>
         </li>`;
       })
-      .join("") || `<li class="muted">无 route</li>`}</ul>`;
+      .join("") || `<li class="muted">无 Connection</li>`}</ul>`;
 
   return `
     <div class="settings-block">
@@ -717,7 +718,7 @@ function renderSkills(): string {
       </div>
     </div>
     <div class="settings-block">
-      <div class="surface-section-head">Route Skills / MCP</div>
+      <div class="surface-section-head">Connection Skills / MCP</div>
       ${mcpNote}
     </div>`;
 }
@@ -796,7 +797,7 @@ function wireSection(s: SettingsSection, root: HTMLElement): void {
     root.querySelectorAll<HTMLElement>("[data-route-delete]").forEach((btn) => {
       btn.addEventListener("click", () => void onRouteDelete(btn.getAttribute("data-route-delete")!));
     });
-    // Route Skills / MCP list controls (draft-only until Save).
+    // Connection Skills / MCP list controls (draft-only until Save).
     root.querySelectorAll<HTMLInputElement>("[data-skill-toggle]").forEach((box) => {
       box.addEventListener("change", () => {
         const name = box.getAttribute("data-skill-toggle");
@@ -988,7 +989,7 @@ async function onRoleDelete(name: string): Promise<void> {
 
 async function onRouteCreate(): Promise<void> {
   const draft = {
-    routeId: (document.getElementById("route-id") as HTMLInputElement | null)?.value || "",
+    connectionId: (document.getElementById("route-id") as HTMLInputElement | null)?.value || "",
     provider: (document.getElementById("route-provider") as HTMLInputElement | null)?.value || "",
     adapterId: (document.getElementById("route-adapter") as HTMLInputElement | null)?.value || "",
     displayName: (document.getElementById("route-name") as HTMLInputElement | null)?.value || "",
@@ -996,7 +997,7 @@ async function onRouteCreate(): Promise<void> {
     envKey: (document.getElementById("route-env") as HTMLInputElement | null)?.value || "",
     credentialRef: (document.getElementById("route-cred") as HTMLInputElement | null)?.value || "",
   };
-  const built = validateRouteCreate(draft);
+  const built = validateConnectionCreate(draft);
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
@@ -1004,8 +1005,8 @@ async function onRouteCreate(): Promise<void> {
   const createBtn = document.getElementById("btn-route-create") as HTMLButtonElement | null;
   if (createBtn) createBtn.disabled = true;
   try {
-    await window.tentDesktop.rpc("route.create", built.payload);
-    el.status.textContent = `已创建 route ${draft.routeId.trim()}`;
+    await window.tentDesktop.rpc("connection.create", built.payload);
+    el.status.textContent = `已创建 Connection ${draft.connectionId.trim()}`;
     await loadRoutesFull();
     renderSettings();
   } catch (err) {
@@ -1065,8 +1066,8 @@ function onMcpAdd(): void {
 
 async function onRouteSave(): Promise<void> {
   if (!routeEditId) return;
-  const built = validateRouteUpdate({
-    routeId: routeEditId,
+  const built = validateConnectionUpdate({
+    connectionId: routeEditId,
     displayName:
       (document.getElementById("route-edit-name") as HTMLInputElement | null)?.value || "",
     model: (document.getElementById("route-edit-model") as HTMLInputElement | null)?.value || "",
@@ -1093,8 +1094,8 @@ async function onRouteSave(): Promise<void> {
   const saveBtn = document.getElementById("btn-route-save") as HTMLButtonElement | null;
   if (saveBtn) saveBtn.disabled = true;
   try {
-    await window.tentDesktop.rpc("route.update", patch);
-    el.status.textContent = `Route 已保存 · 下次会话生效（运行中 session 不热更新）`;
+    await window.tentDesktop.rpc("connection.update", patch);
+    el.status.textContent = `Connection 已保存 · 下次会话生效（运行中 session 不热更新）`;
     await loadRoutesFull();
     // Refresh drafts from server projection after save.
     openRouteEditor(routeEditId);
@@ -1105,12 +1106,12 @@ async function onRouteSave(): Promise<void> {
   }
 }
 
-async function onRouteDelete(routeId: string): Promise<void> {
-  if (!window.confirm(`删除 route「${routeId}」？`)) return;
+async function onRouteDelete(connectionId: string): Promise<void> {
+  if (!window.confirm(`删除 Connection「${connectionId}」？`)) return;
   try {
-    await window.tentDesktop.rpc("route.delete", { routeId });
-    if (routeEditId === routeId) openRouteEditor(null);
-    el.status.textContent = `已删除 route ${routeId}`;
+    await window.tentDesktop.rpc("connection.delete", { connectionId });
+    if (routeEditId === connectionId) openRouteEditor(null);
+    el.status.textContent = `已删除 Connection ${connectionId}`;
     await loadRoutesFull();
     renderSettings();
   } catch (err) {

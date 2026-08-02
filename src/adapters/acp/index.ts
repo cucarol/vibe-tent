@@ -61,7 +61,7 @@ export {
   readCoreChildEnvClientOptions,
   resolveNpxAcpLaunch,
   resolvePlanOrProcessEnv,
-} from "./route.js";
+} from "./connection.js";
 export {
   cloneMcpServers,
   cloneSkillRefs,
@@ -76,10 +76,10 @@ export {
   summarizeMcpServersWire,
   type AcpMcpServerWire,
   type AcpSkillMetaRef,
-  type RouteMcpServer,
-  type RouteMcpServerProjection,
+  type ConnectionMcpServer,
+  type ConnectionMcpServerProjection,
   type RouteSkillProjection,
-  type RouteSkillRef,
+  type ConnectionSkillRef,
 } from "./mcp-skills.js";
 export {
   ACP_IMAGE_MIME_BY_EXT,

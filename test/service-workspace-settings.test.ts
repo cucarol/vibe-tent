@@ -24,7 +24,7 @@ async function makeWorkspace(name = "ws-settings"): Promise<string> {
   });
   await fsa.writeFile(
     ".tent/roles.json",
-    JSON.stringify({ roles: [{ name: "executor", prompt: "do work" }] }, null, 2) + "\n"
+    JSON.stringify({ roles: [{ id: "rl-executor", name: "executor", prompt: "do work" }] }, null, 2) + "\n"
   );
   return workspace;
 }
@@ -206,8 +206,7 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
     // Default (no settings file) → review
     const d1 = (await client.taskDispatch(workspaceId, {
       nodeIds: [box1],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "first task uses default review",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -221,8 +220,7 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
 
     const d2 = (await client.taskDispatch(workspaceId, {
       nodeIds: [box2],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "second task snapshots bypass",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -233,8 +231,7 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
     // Explicit override still wins over workspace default.
     const d3 = (await client.taskDispatch(workspaceId, {
       nodeIds: [box3],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "third task explicit agent-decide",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -260,8 +257,7 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [await createNode("work-item-manual-reject")],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "must reject manual wire",
       deliveryPolicy: "manual",
     });
@@ -277,8 +273,7 @@ test("task envelope on-disk manual projects as review; new serialize writes revi
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const d = (await client.taskDispatch(workspaceId, {
       nodeIds: [nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "new wire writes review",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },

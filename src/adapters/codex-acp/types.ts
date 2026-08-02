@@ -20,7 +20,7 @@ export type CodexAcpPermissionPolicy = AcpPermissionPolicy;
 /**
  * Route extras for adapterId "codex-acp".
  * Extends shared {@link AcpRouteOptions}; no invented default model/envKey.
- * Canonical storage is `RouteConfig.acp`.
+ * Canonical storage is `ConnectionConfig.acp`.
  */
 export interface CodexAcpRouteOptions extends AcpRouteOptions {}
 

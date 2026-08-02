@@ -53,14 +53,23 @@ async function tempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
-function startRoute(
+function startConnection(
   runtime: ReturnType<typeof createAgentRuntime>,
-  request: Omit<StartSessionRequest, "routeSnapshot">
+  request: StartSessionRequest & { connectionId: string }
 ) {
-  return runtime.startSession({
-    ...request,
-    routeSnapshot: runtime.snapshotRouteForStart(request.routeId),
-  });
+  const { connectionId, ...start } = request;
+  const workspace = start.workspace ?? start.workspaceLane?.workspace ?? start.runtimeWorkspace?.cwd ?? start.cwd;
+  if (!workspace) throw new Error("test start requires a workspace");
+  const lastTaskId = start.lastTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
+  return runtime.reserveSession({
+    sessionId: start.sessionId,
+    connectionId,
+    lastTaskId,
+    workspace,
+    workspaceLane: start.workspaceLane,
+    runtimeWorkspace: start.runtimeWorkspace,
+    cwd: start.cwd,
+  }).then(() => runtime.startSession({ ...start, lastTaskId, workspace }));
 }
 
 // ── 1) Minimal host env allowlist ──────────────────────────────────────────
@@ -139,7 +148,7 @@ test("buildManagedChildEnv: launchEnv opt-in non-reserved; reserved only via cor
     hostEnv: host,
     platform: "linux",
     launchEnv: {
-      CPA_GROK_API_KEY: "profile-secret-ok",
+      CPA_GROK_API_KEY: "connection-secret-ok",
       CUSTOM_FLAG: "1",
       TENT_SERVICE_DATA_DIR: "C:\\launch-must-not-smuggle",
       TENT_SESSION_ID: "ss-from-launch",
@@ -148,7 +157,7 @@ test("buildManagedChildEnv: launchEnv opt-in non-reserved; reserved only via cor
     },
   });
   assert.equal(bare.PATH, "/bin");
-  assert.equal(bare.CPA_GROK_API_KEY, "profile-secret-ok");
+  assert.equal(bare.CPA_GROK_API_KEY, "connection-secret-ok");
   assert.equal(bare.CUSTOM_FLAG, "1");
   assert.equal(bare.NODE_OPTIONS, "--max-old-space-size=128", "explicit launchEnv may opt in");
   assert.equal(bare.HTTPS_PROXY, "http://explicit-proxy", "explicit launchEnv may opt in");
@@ -160,7 +169,7 @@ test("buildManagedChildEnv: launchEnv opt-in non-reserved; reserved only via cor
     hostEnv: host,
     platform: "linux",
     launchEnv: {
-      CPA_GROK_API_KEY: "profile-secret-ok",
+      CPA_GROK_API_KEY: "connection-secret-ok",
       TENT_SERVICE_DATA_DIR: "C:\\launch-must-not-win",
     },
     reserved: {
@@ -289,7 +298,7 @@ fs.writeFileSync(out, JSON.stringify(process.env), "utf8");
   }
 });
 
-test("AgentRuntime: profile/request cannot override reserved; coreEnv + diagnosticSecrets written", async () => {
+test("AgentRuntime: Connection/request cannot override reserved; coreEnv + diagnosticSecrets written", async () => {
   const dataDir = await tempDir("tent-reserved-");
   const cwd = await tempDir("tent-reserved-cwd-");
   const secret = "resolver-output-under-any-key-4411";
@@ -338,20 +347,20 @@ test("AgentRuntime: profile/request cannot override reserved; coreEnv + diagnost
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [
+    connections: [
       {
-        routeId: "p-reserved",
+        connectionId: "p-reserved",
         provider: "test",
         adapterId: "env-capture",
         envKey: "PROVIDER_RUNTIME_BLOB",
         credentialRef: "cred-1",
       },
     ],
-    resolveRouteEnv: async () => ({ PROVIDER_RUNTIME_BLOB: secret }),
+    resolveConnectionEnv: async () => ({ PROVIDER_RUNTIME_BLOB: secret }),
   });
-  await startRoute(runtime, {
+  await startConnection(runtime, {
     sessionId: "ss-reserved",
-    routeId: "p-reserved",
+    connectionId: "p-reserved",
     cwd,
     env: { TENT_SERVICE_DATA_DIR: "C:\\request-must-not-win" },
   });
@@ -363,7 +372,7 @@ test("AgentRuntime: profile/request cannot override reserved; coreEnv + diagnost
   await runtime.shutdown();
 });
 
-test("managed ACP child process sees Core TENT_SERVICE_DATA_DIR; profile spoof loses", async () => {
+test("managed ACP child process sees Core TENT_SERVICE_DATA_DIR; Connection spoof loses", async () => {
   const dataDir = await tempDir("tent-acp-core-env-");
   const cwd = await tempDir("tent-acp-core-cwd-");
   const logPath = path.join(cwd, "mock-log.json");
@@ -377,9 +386,9 @@ test("managed ACP child process sees Core TENT_SERVICE_DATA_DIR; profile spoof l
     const runtime = createAgentRuntime({
       dataDir,
       adapters: [createGrokAcpAdapter({ resolveApiKey: () => "test-key" })],
-      routes: [
+      connections: [
         {
-          routeId: "grok-core-env",
+          connectionId: "grok-core-env",
           provider: "grok",
           adapterId: GROK_ACP_ADAPTER_ID,
           command: process.execPath,
@@ -391,9 +400,9 @@ test("managed ACP child process sees Core TENT_SERVICE_DATA_DIR; profile spoof l
         },
       ],
     });
-    const handle = await startRoute(runtime, {
+    const handle = await startConnection(runtime, {
       sessionId: "ss-core-env-child",
-      routeId: "grok-core-env",
+      connectionId: "grok-core-env",
       cwd,
       env: {
         MOCK_ACP_LOG: logPath,
@@ -457,9 +466,9 @@ test("resolved secret under non-secret-looking key redacted via diagnosticSecret
         resolveApiKey: (_k, planEnv) => planEnv.PROVIDER_RUNTIME_BLOB ?? "",
       }),
     ],
-    routes: [
+    connections: [
       {
-        routeId: "grok-plain-key",
+        connectionId: "grok-plain-key",
         provider: "grok",
         adapterId: GROK_ACP_ADAPTER_ID,
         command: process.execPath,
@@ -470,13 +479,13 @@ test("resolved secret under non-secret-looking key redacted via diagnosticSecret
         permissionPolicy: "deny",
       },
     ],
-    resolveRouteEnv: async () => ({ PROVIDER_RUNTIME_BLOB: secret }),
+    resolveConnectionEnv: async () => ({ PROVIDER_RUNTIME_BLOB: secret }),
   });
   await assert.rejects(
     () =>
-      startRoute(runtime, {
+      startConnection(runtime, {
         sessionId: "ss-plain-key-secret",
-        routeId: "grok-plain-key",
+        connectionId: "grok-plain-key",
         cwd,
         env: {
           MOCK_ACP_FAIL_NEW: "1", MOCK_ACP_KEEP_ALIVE: "0",
@@ -692,23 +701,23 @@ process.exit(1);
               },
       },
     ],
-    routes: [
+    connections: [
       {
-        routeId: "p-secret-print",
+        connectionId: "p-secret-print",
         provider: "test",
         adapterId: "secret-print",
         envKey: "CPA_GROK_API_KEY",
         credentialRef: "cred-1",
       },
     ],
-    resolveRouteEnv: async () => ({ CPA_GROK_API_KEY: secret }),
+    resolveConnectionEnv: async () => ({ CPA_GROK_API_KEY: secret }),
   });
   const off = runtime.subscribeAll((ev) => events.push(ev));
 
   // startSession returns after spawn; process then exits non-zero.
-  await startRoute(runtime, {
+  await startConnection(runtime, {
     sessionId: "ss-secret-print",
-    routeId: "p-secret-print",
+    connectionId: "p-secret-print",
     cwd,
   });
   const deadline = Date.now() + 8_000;
@@ -748,9 +757,9 @@ test("AcpClient/runtime: resolved credential appears in fixture error and is red
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [createGrokAcpAdapter({ resolveApiKey: () => secret })],
-    routes: [
+    connections: [
       {
-        routeId: "grok-redact-start",
+        connectionId: "grok-redact-start",
         provider: "grok",
         adapterId: GROK_ACP_ADAPTER_ID,
         command: process.execPath,
@@ -761,13 +770,13 @@ test("AcpClient/runtime: resolved credential appears in fixture error and is red
         permissionPolicy: "deny",
       },
     ],
-    resolveRouteEnv: async () => ({ [DEFAULT_GROK_ENV_KEY]: secret }),
+    resolveConnectionEnv: async () => ({ [DEFAULT_GROK_ENV_KEY]: secret }),
   });
   await assert.rejects(
     () =>
-      startRoute(runtime, {
+      startConnection(runtime, {
         sessionId: "ss-reg-redact",
-        routeId: "grok-redact-start",
+        connectionId: "grok-redact-start",
         cwd,
         env: {
           MOCK_ACP_FAIL_NEW: "1", MOCK_ACP_KEEP_ALIVE: "0",
@@ -912,7 +921,7 @@ test("tryAttachService: healthy legacy (no protocolVersion) fails before busines
   }
 });
 
-test("tryAttachService: healthy protocol 1 fails after the route wire bump and does not spawn competitor", async () => {
+test("tryAttachService: healthy protocol 1 fails after the Connection wire bump and does not spawn competitor", async () => {
   const dataDir = await tempDir("tent-proto-mismatch-");
   const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
   let spawnCalled = false;
@@ -987,7 +996,7 @@ test("load replay (incl. late) never becomes prompt_complete / delivery text", a
   const session = await adapter.resumeManagedSession!(
     {
       sessionId: "ss-late-replay",
-      routeId: "grok-late",
+      connectionId: "grok-late",
       cwd,
       env: {
         MOCK_ACP_LOG: logPath,
@@ -1050,7 +1059,7 @@ test("bootstrap images project once on first managed prompt; not on follow-up", 
   const session = await adapter.startManagedSession(
     {
       sessionId: "ss-img-once",
-      routeId: "mock-img-once",
+      connectionId: "mock-img-once",
       cwd: workspace,
       env: {
         MOCK_ACP_LOG: logPath,

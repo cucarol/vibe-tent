@@ -30,6 +30,13 @@ function env(dir: string) {
   };
 }
 
+async function seedExecutorRole(e: ReturnType<typeof env>): Promise<void> {
+  await e.fs.writeFile(
+    "roles.json",
+    JSON.stringify({ roles: [{ id: "rl-executor", name: "executor", displayName: "executor" }] }, null, 2) + "\n"
+  );
+}
+
 test("mutation lock: release is ownership-safe after stale reclaim", async () => {
   const dir = await tempRoot("tent-mlock-own-");
   const lockPath = path.join(dir, "mutation.lock");
@@ -196,9 +203,9 @@ test("mutation lock: stale dead-pid lock reclaimed via NodeFs then exclusive aga
 test("lifecycle: auto-integrate runs outside mutation.lock and failure leaves no delivery", async () => {
   const dir = await makeTent();
   const e = env(dir);
+  await seedExecutorRole(e);
   const result = await dispatch(e as any, "cx-p1", {
-    assigneeKind: "role",
-    assigneeId: "executor",
+    roleId: "rl-executor",
     userPrompt: "bypass integrate outside lock",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -236,9 +243,9 @@ test("lifecycle: auto-integrate runs outside mutation.lock and failure leaves no
 test("lifecycle: accept integrate runs outside mutation.lock; failure keeps delivered", async () => {
   const dir = await makeTent();
   const e = env(dir);
+  await seedExecutorRole(e);
   const result = await dispatch(e as any, "cx-p1", {
-    assigneeKind: "role",
-    assigneeId: "executor",
+    roleId: "rl-executor",
     userPrompt: "manual accept outside lock",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -279,9 +286,9 @@ test("lifecycle: accept integrate runs outside mutation.lock; failure keeps deli
 test("lifecycle: successful auto-integrate still accepts atomically after unlock", async () => {
   const dir = await makeTent();
   const e = env(dir);
+  await seedExecutorRole(e);
   const result = await dispatch(e as any, "cx-p1", {
-    assigneeKind: "role",
-    assigneeId: "executor",
+    roleId: "rl-executor",
     userPrompt: "agent decide",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },

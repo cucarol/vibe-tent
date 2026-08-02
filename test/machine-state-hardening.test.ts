@@ -9,9 +9,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import {
-  createSettingsRouteSnapshot,
-  type SettingsRouteConfig,
-} from "../src/runtime/route-config.js";
+  createAgentConnectionSnapshot,
+  type AgentConnectionConfig,
+} from "../src/runtime/agent-connection.js";
 import { SessionRegistry } from "../src/runtime/session-registry.js";
 import type { SessionRecord } from "../src/runtime/types.js";
 import {
@@ -21,11 +21,11 @@ import {
   writeServiceEndpoint,
 } from "../src/service/data-dir.js";
 import {
-  ensureDefaultSettingsRoutes,
-  loadSettingsRoutes,
-  routesPath,
-  saveSettingsRoutes,
-} from "../src/service/routes.js";
+  connectionsPath,
+  ensureDefaultAgentConnections,
+  loadAgentConnections,
+  saveAgentConnections,
+} from "../src/service/connections.js";
 import {
   acquireServiceDataDirLease,
   ServiceDataDirBusyError,
@@ -74,9 +74,9 @@ function toolPending(
   };
 }
 
-function fakeRoute(routeId = "fake-default"): SettingsRouteConfig {
+function fakeConnection(connectionId = "fake-default"): AgentConnectionConfig {
   return {
-    routeId,
+    connectionId,
     provider: "fake",
     adapterId: "fake",
     permissionPolicy: "deny",
@@ -88,13 +88,13 @@ function sessionRecord(
   id: string,
   state: SessionRecord["state"] = "live"
 ): SessionRecord {
-  const route = fakeRoute();
+  const connection = fakeConnection();
   const now = "2026-01-01T00:00:00.000Z";
   return {
     id,
-    routeId: route.routeId,
-    adapterId: route.adapterId,
-    routeSnapshot: createSettingsRouteSnapshot(route, {
+    connectionId: connection.connectionId,
+    adapterId: connection.adapterId,
+    connectionSnapshot: createAgentConnectionSnapshot(connection, {
       effectiveEndpointDigest: undefined,
     }),
     state,
@@ -224,92 +224,92 @@ test("ToolApprovalStore retries loading after a transient non-ENOENT read error"
   assert.equal((await store.get(item.id))?.status, "expired");
 });
 
-test("routes: malformed catalog is quarantined once and fails loud without defaults", async () => {
-  const dataDir = await tempDir("tent-routes-corrupt-");
-  const file = routesPath(dataDir);
+test("connections: malformed catalog is quarantined once and fails loud without defaults", async () => {
+  const dataDir = await tempDir("tent-connections-corrupt-");
+  const file = connectionsPath(dataDir);
   const secret = "https://user:secret@example.invalid/?token=hidden";
   await fs.mkdir(dataDir, { recursive: true });
-  await fs.writeFile(file, `{ "routes": [{"routeId":"x","baseUrl":"${secret}"`, "utf8");
+  await fs.writeFile(file, `{ "connections": [{"connectionId":"x","baseUrl":"${secret}"`, "utf8");
 
   const capture = captureConsoleError();
   try {
     await assert.rejects(
-      () => ensureDefaultSettingsRoutes(dataDir),
-      /Settings routes are unreadable and were quarantined/
+      () => ensureDefaultAgentConnections(dataDir),
+      /Agent Connections are unreadable and were quarantined/
     );
     await assert.rejects(() => fs.access(file));
     const names = await fs.readdir(dataDir);
-    const backups = names.filter((name) => name.startsWith("routes.json.corrupt-"));
+    const backups = names.filter((name) => name.startsWith("connections.json.corrupt-"));
     assert.equal(backups.length, 1);
     assert.ok((await fs.readFile(path.join(dataDir, backups[0]!), "utf8")).includes(secret));
-    assert.ok(capture.lines.some((line) => /routes\.json was corrupt/.test(line)));
+    assert.ok(capture.lines.some((line) => /connections\.json was corrupt/.test(line)));
     assert.ok(capture.lines.every((line) => !line.includes(secret)));
-    assert.equal(names.includes("routes.json"), false, "corruption must not install defaults");
+    assert.equal(names.includes("connections.json"), false, "corruption must not install defaults");
   } finally {
     capture.restore();
   }
 });
 
-test("routes: valid explicit empty catalog remains empty", async () => {
-  const dataDir = await tempDir("tent-routes-empty-");
-  await saveSettingsRoutes(dataDir, []);
-  assert.deepEqual(await ensureDefaultSettingsRoutes(dataDir), []);
-  assert.deepEqual(await loadSettingsRoutes(dataDir), []);
-  assert.deepEqual(JSON.parse(await fs.readFile(routesPath(dataDir), "utf8")), {
-    routes: [],
+test("connections: valid explicit empty catalog remains empty", async () => {
+  const dataDir = await tempDir("tent-connections-empty-");
+  await saveAgentConnections(dataDir, []);
+  assert.deepEqual(await ensureDefaultAgentConnections(dataDir), []);
+  assert.deepEqual(await loadAgentConnections(dataDir), []);
+  assert.deepEqual(JSON.parse(await fs.readFile(connectionsPath(dataDir), "utf8")), {
+    connections: [],
   });
 });
 
-test("routes: invalid or unknown row quarantines the full file", async () => {
+test("connections: invalid or unknown row quarantines the full file", async () => {
   const cases: Array<{ label: string; row: Record<string, unknown> }> = [
     {
       label: "unknown-field",
-      row: { routeId: "bad-route", provider: "grok", adapterId: "grok-acp", apiKey: "do-not-strip" },
+      row: { connectionId: "bad-route", provider: "grok", adapterId: "grok-acp", apiKey: "do-not-strip" },
     },
     {
       label: "invalid-policy",
-      row: { routeId: "bad-route", provider: "grok", adapterId: "grok-acp", permissionPolicy: "yolo" },
+      row: { connectionId: "bad-route", provider: "grok", adapterId: "grok-acp", permissionPolicy: "yolo" },
     },
     {
       label: "invalid-id",
-      row: { routeId: "Bad Route", provider: "grok", adapterId: "grok-acp" },
+      row: { connectionId: "Bad Route", provider: "grok", adapterId: "grok-acp" },
     },
   ];
 
   for (const { label, row } of cases) {
-    const dataDir = await tempDir(`tent-routes-${label}-`);
-    const file = routesPath(dataDir);
+    const dataDir = await tempDir(`tent-connections-${label}-`);
+    const file = connectionsPath(dataDir);
     await fs.writeFile(
       file,
-      JSON.stringify({ routes: [fakeRoute("valid-route"), row] }) + "\n",
+      JSON.stringify({ connections: [fakeConnection("valid-route"), row] }) + "\n",
       "utf8"
     );
     const capture = captureConsoleError();
     try {
-      await assert.rejects(() => loadSettingsRoutes(dataDir), /quarantined/);
+      await assert.rejects(() => loadAgentConnections(dataDir), /quarantined/);
       await assert.rejects(() => fs.access(file));
       const names = await fs.readdir(dataDir);
-      const backups = names.filter((name) => name.startsWith("routes.json.corrupt-"));
+      const backups = names.filter((name) => name.startsWith("connections.json.corrupt-"));
       assert.equal(backups.length, 1, `${label}: one backup`);
       const backup = JSON.parse(
         await fs.readFile(path.join(dataDir, backups[0]!), "utf8")
-      ) as { routes: unknown[] };
-      assert.equal(backup.routes.length, 2, `${label}: full input retained`);
-      assert.ok(capture.lines.some((line) => /routes\.json was corrupt/.test(line)));
+      ) as { connections: unknown[] };
+      assert.equal(backup.connections.length, 2, `${label}: full input retained`);
+      assert.ok(capture.lines.some((line) => /connections\.json was corrupt/.test(line)));
     } finally {
       capture.restore();
     }
   }
 });
 
-test("saveSettingsRoutes uses atomic pretty JSON", async () => {
-  const dataDir = await tempDir("tent-routes-atomic-");
-  await saveSettingsRoutes(dataDir, [fakeRoute("route-one")]);
-  const raw = await fs.readFile(routesPath(dataDir), "utf8");
+test("saveAgentConnections uses atomic pretty JSON", async () => {
+  const dataDir = await tempDir("tent-connections-atomic-");
+  await saveAgentConnections(dataDir, [fakeConnection("route-one")]);
+  const raw = await fs.readFile(connectionsPath(dataDir), "utf8");
   assert.equal(raw.endsWith("\n"), true);
   assert.ok(raw.includes("\n  "));
-  const parsed = JSON.parse(raw) as { routes: Array<{ routeId: string }> };
-  assert.equal(parsed.routes[0]?.routeId, "route-one");
+  const parsed = JSON.parse(raw) as { connections: Array<{ connectionId: string }> };
+  assert.equal(parsed.connections[0]?.connectionId, "route-one");
   assert.equal((await fs.readdir(dataDir)).filter((name) => name.endsWith(".tmp")).length, 0);
 });
 
@@ -382,8 +382,8 @@ test("SessionRegistry: missing createdAt is quarantined so list remains safe", a
   }
 });
 
-test("SessionRegistry: illegal state, route snapshot, or managed Role identity is quarantined", async () => {
-  for (const variant of ["state", "snapshot", "snapshot-unknown", "roleName"] as const) {
+test("SessionRegistry: illegal state, Connection snapshot, or managed Role identity is quarantined", async () => {
+  for (const variant of ["state", "snapshot", "snapshot-unknown", "roleId"] as const) {
     const dataDir = await tempDir(`tent-sess-bad-${variant}-`);
     const registry = new SessionRegistry(dataDir);
     await registry.write(sessionRecord("ss-good03", "stopped"));
@@ -391,22 +391,22 @@ test("SessionRegistry: illegal state, route snapshot, or managed Role identity i
       state: "ss-badstat",
       snapshot: "ss-badsnap",
       "snapshot-unknown": "ss-badextra",
-      roleName: "ss-badrole",
+      roleId: "ss-badrole",
     }[variant];
     const bad = sessionRecord(badId) as unknown as Record<string, unknown>;
     if (variant === "state") bad.state = "running";
     else if (variant === "snapshot") {
-      bad.routeSnapshot = {
-        ...(bad.routeSnapshot as Record<string, unknown>),
-        routeId: "foreign-route",
+      bad.connectionSnapshot = {
+        ...(bad.connectionSnapshot as Record<string, unknown>),
+        connectionId: "foreign-route",
       };
     } else if (variant === "snapshot-unknown") {
-      bad.routeSnapshot = {
-        ...(bad.routeSnapshot as Record<string, unknown>),
+      bad.connectionSnapshot = {
+        ...(bad.connectionSnapshot as Record<string, unknown>),
         rawSecret: "sk-must-not-survive",
       };
     } else {
-      bad.roleName = "executor";
+      bad.roleId = "rl-executor";
     }
     await fs.writeFile(
       path.join(dataDir, "sessions", `${badId}.json`),
@@ -420,7 +420,7 @@ test("SessionRegistry: illegal state, route snapshot, or managed Role identity i
   }
 });
 
-test("SessionRegistry: update preserves immutable route identity and snapshot", async () => {
+test("SessionRegistry: update preserves immutable Connection identity and snapshot", async () => {
   const dataDir = await tempDir("tent-sess-immutable-");
   const registry = new SessionRegistry(dataDir);
   const original = sessionRecord("ss-immutable");
@@ -431,22 +431,22 @@ test("SessionRegistry: update preserves immutable route identity and snapshot", 
   });
   assert.equal(updated.state, "waiting-user");
   assert.equal(updated.resumeToken, "provider-token");
-  assert.equal(updated.routeId, original.routeId);
-  assert.deepEqual(updated.routeSnapshot, original.routeSnapshot);
+  assert.equal(updated.connectionId, original.connectionId);
+  assert.deepEqual(updated.connectionSnapshot, original.connectionSnapshot);
 
   const unsafeUpdate = registry.update.bind(registry) as (
     sessionId: string,
     patch: Record<string, unknown>
   ) => Promise<SessionRecord>;
-  for (const field of ["routeId", "adapterId", "routeSnapshot", "roleName"] as const) {
+  for (const field of ["connectionId", "adapterId", "connectionSnapshot", "roleId"] as const) {
     await assert.rejects(
       () => unsafeUpdate(original.id, { [field]: "changed" }),
       new RegExp(`cannot mutate immutable field: ${field}`)
     );
   }
   const reloaded = await registry.read(original.id);
-  assert.equal(reloaded?.routeId, original.routeId);
-  assert.deepEqual(reloaded?.routeSnapshot, original.routeSnapshot);
+  assert.equal(reloaded?.connectionId, original.connectionId);
+  assert.deepEqual(reloaded?.connectionSnapshot, original.connectionSnapshot);
 });
 
 test("service endpoint write is atomic pretty JSON; malformed read is null", async () => {

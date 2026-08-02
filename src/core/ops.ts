@@ -3,7 +3,7 @@
 import { FsAdapter, withTentMutation } from "./adapter.js";
 import { loadTent, join, dirName, nodeNotePath, LoadedTent } from "./tree.js";
 import { buildManifest, manifestToYaml, DispatchInput } from "./manifest.js";
-import { assertRouteId, makeUniqueNodeId } from "./id.js";
+import { isRoleId, isSessionId, makeUniqueNodeId } from "./id.js";
 import { NODE_FRONTMATTER_KEY_ORDER, serializeFrontmatter, parseFrontmatter } from "./frontmatter.js";
 import { loadOrder, saveOrder, ROOT_KEY } from "./order.js";
 import { Node, NodeType, NodeMode } from "./types.js";
@@ -35,12 +35,12 @@ import {
   TaskEnvelope,
   writeTaskEnvelope,
 } from "./task.js";
-import { makeTaskId } from "./task-model.js";
-import type { AssigneeKind, DeliveryPolicy } from "./task-model.js";
+import { isTaskId, makeTaskId } from "./task-model.js";
+import type { DeliveryPolicy } from "./task-model.js";
 import {
-  routeManifestPath,
-  routeTasksDir,
-  routeTempRoot,
+  roleTempRoot,
+  sessionTempRoot,
+  taskManifestPath,
 } from "./paths.js";
 import { removeNonAcceptedDeliveriesForNode } from "./delivery.js";
 import { validateNodeName } from "./scaffold.js";
@@ -62,12 +62,12 @@ export {
 export interface DispatchResult {
   manifestPath: string;
   manifestYaml: string;
-  /** Present for Role tasks; omitted for temporary route tasks. */
+  /** Present for Role tasks; omitted for Session-only tasks. */
   initPath?: string;
   taskPath: string;
   relayPrompt: string;
-  assigneeKind: AssigneeKind;
-  assigneeId: string;
+  roleId?: string;
+  sessionId?: string;
 }
 
 export interface DispatchOptions {
@@ -90,14 +90,12 @@ export interface DispatchOptions {
   asSub?: boolean;
   /** Delivery policy for this task (default review). */
   deliveryPolicy?: DeliveryPolicy;
+  /** Durable Role responsibility/handoff. */
+  roleId?: string;
+  /** Exact executing Session; required for Session-only ACP work. */
+  sessionId?: string;
   /**
-   * Canonical executor kind. Responsibility remains parentActor/reviewer.
-   */
-  assigneeKind: AssigneeKind;
-  /** Stable Role name or Settings route id, selected by assigneeKind. */
-  assigneeId: string;
-  /**
-   * Optional preallocated task id (tk-…). Used by asSub route dispatch so the
+   * Optional preallocated task id (tk-…). Used by Session dispatch so the
    * tent-task/<taskId> lane can be created before the envelope is written.
    */
   taskId?: string;
@@ -207,13 +205,13 @@ async function dispatchUnlocked(
   options: DispatchOptions
 ): Promise<DispatchResult> {
   const tent = await loadTent(env.fs);
-  const assigneeKind = options.assigneeKind;
   const userPrompt = options.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
-
-  const rawAssigneeId = options.assigneeId.trim();
-  const assigneeId =
-    assigneeKind === "route" ? assertRouteId(rawAssigneeId) : assertRoleName(rawAssigneeId);
+  const roleId = options.roleId?.trim() || "";
+  const sessionId = options.sessionId?.trim() || "";
+  if (!roleId && !sessionId) throw new Error("Dispatch requires roleId or sessionId.");
+  if (roleId && !isRoleId(roleId)) throw new Error(`Invalid Role id: ${roleId}.`);
+  if (sessionId && !isSessionId(sessionId)) throw new Error(`Invalid Session id: ${sessionId}.`);
 
   // Resolve and gate every selected Node before writes.
   const nodeIds = resolveDispatchNodeIds({
@@ -222,11 +220,26 @@ async function dispatchUnlocked(
     tentName: env.tentName,
   });
   const tasks = await loadTaskEnvelopes(env.fs);
-  // Cleanup only removes what this dispatch creates. Role: temp/<role>/ when new.
-  // Route: temp/routes/<safe>/ when new (never tent-role/*).
-  const createdRoot =
-    assigneeKind === "route" ? routeTempRoot(assigneeId) : join("temp", assigneeId);
+  // Cleanup only removes the exact Role/Session operational root created here.
+  const createdRoot = roleId ? roleTempRoot(roleId) : sessionTempRoot(sessionId);
   const createdRootExisted = await env.fs.exists(createdRoot);
+  const requestedTaskId = options.taskId?.trim() || "";
+  if (requestedTaskId && !isTaskId(requestedTaskId)) {
+    throw new Error(`Invalid Task id: ${requestedTaskId}.`);
+  }
+  const taskId = requestedTaskId || makeTaskId();
+  if (tasks.some((task) => task.id === taskId)) {
+    throw new Error(`Task id already exists: ${taskId}.`);
+  }
+  const manifestPath = taskManifestPath(createdRoot, taskId);
+  const initExpectedPath = roleId ? join(createdRoot, "init.md") : undefined;
+  const manifestExisted = await env.fs.exists(manifestPath);
+  const manifestBefore = manifestExisted ? await env.fs.readFile(manifestPath) : undefined;
+  const initExisted = initExpectedPath ? await env.fs.exists(initExpectedPath) : false;
+  const initBefore = initExisted && initExpectedPath
+    ? await env.fs.readFile(initExpectedPath)
+    : undefined;
+  let allocatedTaskPath: string | undefined;
 
   // Exact Nodes are exclusive across active Tasks. Ancestors, descendants, siblings,
   // and workspace context remain independent. asSub is a Git-lane flag only.
@@ -259,34 +272,22 @@ async function dispatchUnlocked(
     // (one fact with Context Card). Do not pull in other active Role Task refs.
     const input: DispatchInput = {
       tentName: env.tentName,
-      assigneeKind,
-      assigneeId,
+      ...(roleId ? { roleId } : {}),
+      ...(sessionId ? { sessionId } : {}),
       claimNodes: selectedNodes,
       ...options.workspace,
     };
     const manifest = buildManifest(tent, input);
     const yaml = manifestToYaml(manifest);
 
-    const taskId =
-      options.taskId && options.taskId.trim()
-        ? options.taskId.trim()
-        : makeTaskId();
-    let manifestPath: string;
     let initPath: string | undefined;
+    await ensureDir(env.fs, dirName(manifestPath));
+    await env.fs.writeFile(manifestPath, yaml);
 
-    if (assigneeKind === "route") {
-      manifestPath = routeManifestPath(assigneeId, taskId);
-      await ensureDir(env.fs, dirName(manifestPath));
-      await env.fs.writeFile(manifestPath, yaml);
-    } else {
-      // Every Task owns an immutable manifest snapshot. A shared Role manifest would
-      // let concurrent sibling Tasks overwrite each other's writable Node selection.
-      manifestPath = join("temp", assigneeId, "manifests", `${taskId}.yml`);
-      await ensureDir(env.fs, dirName(manifestPath));
-      await env.fs.writeFile(manifestPath, yaml);
+    if (roleId) {
       const registry = await loadRolesRegistry(env.fs);
-      const roleDefinition =
-        registry.roles.find((item) => item.name === assigneeId) ?? { name: assigneeId };
+      const roleDefinition = registry.roles.find((item) => item.id === roleId);
+      if (!roleDefinition) throw new Error(`Role not found in registry: ${roleId}.`);
       initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
     }
 
@@ -294,8 +295,8 @@ async function dispatchUnlocked(
     // Pass exact ordered selection only.
     const taskNodeRefs = selectedNodes.map((node) => ({ id: node.id, path: node.path }));
     const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
-      assigneeKind,
-      assigneeId,
+      ...(roleId ? { roleId } : {}),
+      ...(sessionId ? { sessionId } : {}),
       nodeRefs: taskNodeRefs,
       manifestPath,
       userPrompt,
@@ -305,8 +306,9 @@ async function dispatchUnlocked(
       asSub: options.asSub === true,
       deliveryPolicy: options.deliveryPolicy,
       id: taskId,
-      tasksDir:
-        assigneeKind === "route" ? routeTasksDir(assigneeId) : undefined,
+      onPathAllocated: (path) => {
+        allocatedTaskPath = path;
+      },
     });
 
     // Load the just-written envelope for an honest relay projection (parent/reviewer included).
@@ -318,12 +320,28 @@ async function dispatchUnlocked(
       initPath,
       taskPath,
       relayPrompt,
-      assigneeKind,
-      assigneeId,
+      ...(roleId ? { roleId } : {}),
+      ...(sessionId ? { sessionId } : {}),
     };
   } catch (error) {
+    if (allocatedTaskPath && (await env.fs.exists(allocatedTaskPath))) {
+      await env.fs.remove(allocatedTaskPath);
+    }
+    if (manifestExisted && manifestBefore !== undefined) {
+      await env.fs.writeFile(manifestPath, manifestBefore);
+    } else if (await env.fs.exists(manifestPath)) {
+      await env.fs.remove(manifestPath);
+    }
+    if (initExpectedPath) {
+      if (initExisted && initBefore !== undefined) {
+        await env.fs.writeFile(initExpectedPath, initBefore);
+      } else if (await env.fs.exists(initExpectedPath)) {
+        await env.fs.remove(initExpectedPath);
+      }
+    }
     if (!createdRootExisted && (await env.fs.exists(createdRoot))) {
-      await env.fs.remove(createdRoot);
+      const remaining = await env.fs.listDir(createdRoot);
+      if (remaining.length === 0) await env.fs.remove(createdRoot);
     }
     throw error;
   }

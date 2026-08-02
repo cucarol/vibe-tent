@@ -9,7 +9,7 @@ import type {
   DeliveryProjection,
   RoleRegistryEntryProjection,
   SessionProjection,
-  SettingsRouteProjection,
+  AgentConnectionProjection,
   TaskProjection,
   TypeRegistryEntryProjection,
 } from "../../service/types.js";
@@ -29,19 +29,18 @@ import {
   buildStartSessionPayload,
   buildTaskReviewItems,
   listCoordinationTypeOptions,
-  listRouteOptions,
+  listConnectionOptions,
   listRoleOptions,
-  pickDefaultRouteId,
+  pickDefaultConnectionId,
   type CoordinationTypeOption,
-  type RouteOption,
+  type ConnectionOption,
   type RoleOption,
   type TaskReviewItem,
 } from "./collaboration-ui.js";
 
 export type ShellTaskRow = {
   path: string;
-  assigneeKind: "role" | "route";
-  assigneeId: string;
+  roleId?: string;
   /** Node ids from TaskProjection.referencedNodeIds (Context Card refs). */
   referencedNodeIds: string[];
   /** Canonical lifecycle state (task-api). */
@@ -63,10 +62,10 @@ export type ShellSnapshot = {
   taskReview: TaskReviewItem[];
   roles: RoleOption[];
   coordinationTypes: CoordinationTypeOption[];
-  /** Machine-local route picker options. */
-  routes: RouteOption[];
-  /** Selected machine-local route id in the shell snapshot. */
-  selectedRouteId: string | null;
+  /** Machine-local Agent Connection picker options. */
+  connections: ConnectionOption[];
+  /** Selected machine-local Agent Connection id in the shell snapshot. */
+  selectedConnectionId: string | null;
   statusMessage: string | null;
   /** Canonical Node collaboration projections keyed by nodeId. */
   nodeCollaborations: NodeCollaborationView[];
@@ -83,8 +82,8 @@ export class DesktopShellModel {
   private sessions: SessionProjection[] = [];
   private roles: RoleOption[] = [];
   private coordinationTypes: CoordinationTypeOption[] = [];
-  private routes: RouteOption[] = [];
-  private selectedRouteId: string | null = null;
+  private connections: ConnectionOption[] = [];
+  private selectedConnectionId: string | null = null;
   private statusMessage: string | null = null;
   private nodeCollaborations = new Map<string, NodeCollaborationView>();
   private listeners = new Set<() => void>();
@@ -122,8 +121,7 @@ export class DesktopShellModel {
         this.tasks.map((t) => ({
           path: t.path,
           id: t.id,
-          assigneeKind: t.assigneeKind,
-          assigneeId: t.assigneeId,
+          roleId: t.roleId,
           referencedNodeIds: t.referencedNodeIds,
           state: t.state,
           prompt: t.prompt,
@@ -137,8 +135,8 @@ export class DesktopShellModel {
       ),
       roles: this.roles,
       coordinationTypes: this.coordinationTypes,
-      routes: this.routes,
-      selectedRouteId: this.selectedRouteId,
+      connections: this.connections,
+      selectedConnectionId: this.selectedConnectionId,
       statusMessage: this.statusMessage,
       nodeCollaborations: [...this.nodeCollaborations.values()],
     };
@@ -148,8 +146,8 @@ export class DesktopShellModel {
     return this.controller;
   }
 
-  setSelectedRouteId(routeId: string | null): void {
-    this.selectedRouteId = routeId;
+  setSelectedConnectionId(connectionId: string | null): void {
+    this.selectedConnectionId = connectionId;
     this.emit();
   }
 
@@ -239,7 +237,7 @@ export class DesktopShellModel {
     this.controller.subscribe(() => this.emit());
     await this.controller.refreshTree();
     // Task/delivery/session changes invalidate Node collaboration projections.
-    await Promise.all([this.refreshTasks(), this.refreshRegistry(), this.refreshRoutes()]);
+    await Promise.all([this.refreshTasks(), this.refreshRegistry(), this.refreshConnections()]);
     this.emit();
   }
 
@@ -292,8 +290,7 @@ export class DesktopShellModel {
       ]);
       this.tasks = (taskResult.tasks ?? []).map((t) => ({
         path: t.path,
-        assigneeKind: t.assigneeKind,
-        assigneeId: t.assigneeId,
+        roleId: t.roleId,
         referencedNodeIds: t.referencedNodeIds ?? [],
         state: t.state,
         id: t.id,
@@ -340,32 +337,32 @@ export class DesktopShellModel {
   }
 
   /**
-   * Load machine-local routes.
+   * Load machine-local Agent Connections.
    * Does not start sessions; selection only.
    */
-  async refreshRoutes(): Promise<RouteOption[]> {
+  async refreshConnections(): Promise<ConnectionOption[]> {
     if (!this.rpc) {
-      this.routes = [];
-      this.selectedRouteId = null;
+      this.connections = [];
+      this.selectedConnectionId = null;
       this.emit();
-      return this.routes;
+      return this.connections;
     }
     try {
-      const result = await this.rpc.call<{ routes: SettingsRouteProjection[] }>("route.list", {});
-      this.routes = listRouteOptions(result.routes ?? []);
+      const result = await this.rpc.call<{ connections: AgentConnectionProjection[] }>("connection.list", {});
+      this.connections = listConnectionOptions(result.connections ?? []);
       if (
-        !this.selectedRouteId ||
-        !this.routes.some((route) => route.routeId === this.selectedRouteId)
+        !this.selectedConnectionId ||
+        !this.connections.some((connection) => connection.connectionId === this.selectedConnectionId)
       ) {
-        this.selectedRouteId = pickDefaultRouteId(this.routes);
+        this.selectedConnectionId = pickDefaultConnectionId(this.connections);
       }
     } catch {
-      this.routes = [];
+      this.connections = [];
       // Keep previous selection only if still meaningful; otherwise clear.
-      if (!this.routes.length) this.selectedRouteId = null;
+      if (!this.connections.length) this.selectedConnectionId = null;
     }
     this.emit();
-    return this.routes;
+    return this.connections;
   }
 
   /**

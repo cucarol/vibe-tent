@@ -6,7 +6,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
-import { patchTaskEnvelope } from "../src/core/task.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import { contentEtag } from "../src/service/etag.js";
@@ -94,7 +93,7 @@ async function makeWorkspace(name = "demo"): Promise<string> {
   // Register a role so dispatch manifest preloads cleanly
   await fsa.writeFile(
     ".tent/roles.json",
-    JSON.stringify({ roles: [{ name: "executor", prompt: "do work" }] }, null, 2) + "\n"
+    JSON.stringify({ roles: [{ id: "rl-executor", name: "executor", prompt: "do work" }] }, null, 2) + "\n"
   );
   return workspace;
 }
@@ -106,9 +105,9 @@ async function withService<T>(
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
-    routes: [
+    connections: [
       {
-        routeId: "fake-default",
+        connectionId: "fake-default",
         provider: "fake",
         adapterId: FAKE_ADAPTER_ID,
         fake: { waitForSignal: true, canResume: true },
@@ -636,8 +635,7 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "implement the thing",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
@@ -673,10 +671,9 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
     const collaboration = await rpc(svc, "node.collaboration", { workspaceId, nodeId });
     assert.ok(!collaboration.error, JSON.stringify(collaboration.error));
     const projection = collaboration.result as {
-      activeTask: null | { task: { assigneeKind: string; assigneeId: string } };
+      activeTask: null | { task: { roleId?: string; sessionId?: string } };
     };
-    assert.equal(projection.activeTask?.task.assigneeKind, "role");
-    assert.equal(projection.activeTask?.task.assigneeId, "executor");
+    assert.equal(projection.activeTask?.task.roleId, "rl-executor");
 
     const editOwner = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     assert.ok(!editOwner.error, JSON.stringify(editOwner.error));
@@ -1042,35 +1039,20 @@ test("mount dead-session reconcile does not suppress an immediate external Node 
     const dispatched = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "seed dead session reconciliation",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
-    const taskPath = (dispatched.result as { taskPath: string }).taskPath;
-    const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
-    assert.ok(!claimed.error, JSON.stringify(claimed.error));
-
-    const sessionId = "ss-watchdead1";
-    const now = new Date().toISOString();
-    await svc.runtime.registry.write({
-      id: sessionId,
-      routeId: "fake-default",
-      adapterId: FAKE_ADAPTER_ID,
-      routeSnapshot: svc.runtime.snapshotRouteForStart("fake-default"),
-      state: "stopped",
-      workspace: workspaceId,
-      lastTaskId: taskPath,
-      createdAt: now,
-      updatedAt: now,
-    });
-    const mounted = svc.ctx.host.require(workspaceId);
-    await patchTaskEnvelope(mounted.env.fs, taskPath, {
-      sessionId,
-      updatedAt: mounted.env.clock.now(),
-    });
+    const dispatchedResult = dispatched.result as {
+      taskPath: string;
+      session: { sessionId: string; connectionId: string };
+    };
+    const taskPath = dispatchedResult.taskPath;
+    const sessionId = dispatchedResult.session.sessionId;
+    assert.equal(dispatchedResult.session.connectionId, "fake-default");
+    await svc.runtime.stopSession(sessionId, "interrupt");
     const unmounted = await rpc(svc, "workspace.unmount", { workspaceId });
     assert.ok(!unmounted.error, JSON.stringify(unmounted.error));
 

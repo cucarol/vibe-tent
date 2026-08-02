@@ -8,6 +8,7 @@ import { loadTaskEnvelope, loadTaskEnvelopes, taskAsSub } from "../src/core/task
 import { taskReferencedNodeIds } from "../src/core/task-node-refs.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { rpcCall } from "../src/service/http-server.js";
+import { createServiceClient, type ServiceClient } from "../src/service/client.js";
 import {
   setBeforeTaskClaimCoreForTests,
 } from "../src/service/handlers.js";
@@ -25,9 +26,9 @@ async function makeWorkspace(): Promise<string> {
     JSON.stringify(
       {
         roles: [
-          { name: "planner", prompt: "plan" },
-          { name: "executor", prompt: "execute" },
-          { name: "orchestrator", prompt: "review" },
+          { id: "rl-planner", name: "planner", prompt: "plan" },
+          { id: "rl-executor", name: "executor", prompt: "execute" },
+          { id: "rl-orchestrator", name: "orchestrator", prompt: "review" },
         ],
       },
       null,
@@ -81,6 +82,37 @@ async function createNode(
   return (result.result as { nodeId: string }).nodeId;
 }
 
+async function enterRoleSession(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>,
+  workspaceId: string,
+  workspace: string,
+  roleId: string,
+  lastTaskId?: string,
+  externalKey?: string
+): Promise<{ sessionId: string; client: ServiceClient }> {
+  const entered = await rpc(svc, "session.enter", {
+    workspaceId,
+    roleId,
+    cwd: workspace,
+    ...(lastTaskId ? { lastTaskId } : {}),
+    ...(externalKey ? { externalKey } : {}),
+  });
+  assert.ok(!entered.error, JSON.stringify(entered.error));
+  const result = entered.result as {
+    session: { sessionId: string };
+    sessionToken: string;
+  };
+  return {
+    sessionId: result.session.sessionId,
+    client: createServiceClient({
+      baseUrl: svc.url,
+      token: svc.token,
+      currentSessionId: result.session.sessionId,
+      currentSessionToken: result.sessionToken,
+    }),
+  };
+}
+
 test("Role direct claim creates one running Task with ordered Nodes and root user responsibility", async () => {
   const workspace = await makeWorkspace();
   await withService(async (svc) => {
@@ -88,9 +120,10 @@ test("Role direct claim creates one running Task with ordered Nodes and root use
     const workspaceId = await mount(svc, workspace);
     const first = await createNode(svc, workspaceId, "first");
     const second = await createNode(svc, workspaceId, "second");
-    const claimed = await rpc(svc, "task.claimDirect", {
+    const plannerSession = await enterRoleSession(svc, workspaceId, workspace, "rl-planner");
+    const claimed = await plannerSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
-      role: "planner",
+      roleId: "rl-planner",
       nodeIds: [first, second, first],
       prompt: "own both Nodes",
     });
@@ -99,19 +132,19 @@ test("Role direct claim creates one running Task with ordered Nodes and root use
     const task = await loadTaskEnvelope(tentFs, result.taskPath);
     assert.equal(result.state, "running");
     assert.equal(task.state, "running");
-    assert.equal(task.assigneeKind, "role");
-    assert.equal(task.assigneeId, "planner");
+    assert.equal(task.roleId, "rl-planner");
+    assert.equal(task.sessionId, plannerSession.sessionId);
     assert.equal(taskAsSub(task), false);
     assert.deepEqual(task.parentActor, { kind: "user", id: "user" });
     assert.deepEqual(task.reviewer, { kind: "user", id: "user" });
     assert.deepEqual(taskReferencedNodeIds(task), [first, second]);
 
-    const forbidden = await rpc(svc, "task.claimDirect", {
+    const forbidden = await plannerSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
-      role: "planner",
+      roleId: "rl-planner",
       nodeIds: [second],
       prompt: "bad authority",
-      parentActor: { kind: "role", id: "planner" },
+      parentActor: { kind: "role", id: "rl-planner" },
     });
     assert.equal(forbidden.error?.code, -32602);
     assert.equal((await loadTaskEnvelopes(tentFs)).length, 1);
@@ -131,21 +164,23 @@ test("Role direct claim inherits persisted parent/reviewer while real self-subdi
     const sourceDispatch = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [parentNode],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "parent responsibility",
-      parentActor: { kind: "role", id: "orchestrator" },
-      reviewer: { kind: "role", id: "orchestrator" },
+      parentActor: { kind: "role", id: "rl-orchestrator" },
+      reviewer: { kind: "role", id: "rl-orchestrator" },
     });
     assert.ok(!sourceDispatch.error, JSON.stringify(sourceDispatch.error));
     const sourcePath = (sourceDispatch.result as { taskPath: string }).taskPath;
-    const sourceClaim = await rpc(svc, "task.claim", { workspaceId, taskPath: sourcePath });
-    assert.ok(!sourceClaim.error, JSON.stringify(sourceClaim.error));
-    const source = await loadTaskEnvelope(tentFs, sourcePath);
-
-    const direct = await rpc(svc, "task.claimDirect", {
+    const executorSession = await enterRoleSession(
+      svc,
       workspaceId,
-      role: "executor",
+      workspace,
+      "rl-executor"
+    );
+    await executorSession.client.taskClaim(workspaceId, sourcePath);
+    const direct = await executorSession.client.rpcRaw("task.claimDirect", {
+      workspaceId,
+      roleId: "rl-executor",
       nodeIds: [ownNode],
       prompt: "executor owns this attempt",
       sourceTaskPath: sourcePath,
@@ -155,45 +190,153 @@ test("Role direct claim inherits persisted parent/reviewer while real self-subdi
       tentFs,
       (direct.result as { taskPath: string }).taskPath
     );
-    assert.deepEqual(directTask.parentActor, { kind: "role", id: "orchestrator" });
-    assert.deepEqual(directTask.reviewer, { kind: "role", id: "orchestrator" });
+    assert.deepEqual(directTask.parentActor, { kind: "role", id: "rl-orchestrator" });
+    assert.deepEqual(directTask.reviewer, { kind: "role", id: "rl-orchestrator" });
     assert.equal(taskAsSub(directTask), false);
 
-    const entered = await rpc(svc, "session.enter", {
+    const viaSession = await executorSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
-      roleName: "executor",
-      lastTaskId: source.id,
-      cwd: workspace,
-    });
-    assert.ok(!entered.error, JSON.stringify(entered.error));
-    const sessionId = (entered.result as { session: { sessionId: string } }).session.sessionId;
-    const viaSession = await rpc(svc, "task.claimDirect", {
-      workspaceId,
-      role: "executor",
+      roleId: "rl-executor",
       nodeIds: [sessionNode],
       prompt: "inherit via exact Session binding",
-      sourceSessionId: sessionId,
     });
     assert.ok(!viaSession.error, JSON.stringify(viaSession.error));
     const sessionTask = await loadTaskEnvelope(
       tentFs,
       (viaSession.result as { taskPath: string }).taskPath
     );
-    assert.deepEqual(sessionTask.parentActor, { kind: "role", id: "orchestrator" });
-    assert.deepEqual(sessionTask.reviewer, { kind: "role", id: "orchestrator" });
+    assert.deepEqual(sessionTask.parentActor, { kind: "role", id: "rl-orchestrator" });
+    assert.deepEqual(sessionTask.reviewer, { kind: "role", id: "rl-orchestrator" });
 
     const selfDispatch = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [downstreamNode],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "not a direct claim",
-      parentActor: { kind: "role", id: "executor" },
-      reviewer: { kind: "role", id: "executor" },
+      parentActor: { kind: "role", id: "rl-executor" },
+      reviewer: { kind: "role", id: "rl-executor" },
       asSub: true,
     });
     assert.ok(selfDispatch.error);
     assert.match(selfDispatch.error!.message, /must not equal the assignee/i);
+  });
+});
+
+test("Role task.claim trusts only exact live transport Session binding", async () => {
+  const workspace = await makeWorkspace();
+  const otherWorkspace = await makeWorkspace();
+  await withService(async (svc) => {
+    const tentFs = new NodeFs(path.join(workspace, ".tent"));
+    const workspaceId = await mount(svc, workspace);
+    const otherWorkspaceId = await mount(svc, otherWorkspace);
+    const firstNode = await createNode(svc, workspaceId, "transport-first");
+    const secondNode = await createNode(svc, workspaceId, "transport-second");
+    const dispatchTask = async (nodeId: string) => {
+      const dispatched = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        nodeIds: [nodeId],
+        roleId: "rl-executor",
+        prompt: `execute ${nodeId}`,
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+      });
+      assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
+      return (dispatched.result as { taskPath: string }).taskPath;
+    };
+    const firstPath = await dispatchTask(firstNode);
+    const secondPath = await dispatchTask(secondNode);
+
+    const unauthenticated = await rpc(svc, "task.claim", {
+      workspaceId,
+      taskPath: firstPath,
+    });
+    assert.equal(unauthenticated.error?.code, -32001);
+    assert.equal((await loadTaskEnvelope(tentFs, firstPath)).state, "queued");
+
+    const executor = await enterRoleSession(
+      svc,
+      workspaceId,
+      workspace,
+      "rl-executor",
+      undefined,
+      "transport-executor-a"
+    );
+    await executor.client.taskClaim(workspaceId, firstPath);
+    const claimed = await loadTaskEnvelope(tentFs, firstPath);
+    assert.equal(claimed.roleId, "rl-executor");
+    assert.equal(claimed.sessionId, executor.sessionId);
+    assert.equal((await svc.ctx.runtime.registry.read(executor.sessionId))?.lastTaskId, claimed.id);
+
+    // The same trusted Session is idempotent; a different Session cannot steal it.
+    await executor.client.taskClaim(workspaceId, firstPath);
+    const otherExecutor = await enterRoleSession(
+      svc,
+      workspaceId,
+      workspace,
+      "rl-executor",
+      undefined,
+      "transport-executor-b"
+    );
+    const stolen = await otherExecutor.client.tryCall("task.claim", {
+      workspaceId,
+      taskPath: firstPath,
+    });
+    assert.equal(stolen.ok, false);
+    if (!stolen.ok) assert.match(stolen.error.message, /different Session|already bound|replace the exact Session/i);
+
+    const planner = await enterRoleSession(
+      svc,
+      workspaceId,
+      workspace,
+      "rl-planner"
+    );
+    const wrongRole = await planner.client.tryCall("task.claim", {
+      workspaceId,
+      taskPath: secondPath,
+    });
+    assert.equal(wrongRole.ok, false);
+    if (!wrongRole.ok) assert.equal(wrongRole.error.code, -32001);
+
+    const foreignExecutor = await enterRoleSession(
+      svc,
+      otherWorkspaceId,
+      otherWorkspace,
+      "rl-executor"
+    );
+    const wrongWorkspace = await foreignExecutor.client.tryCall("task.claim", {
+      workspaceId,
+      taskPath: secondPath,
+    });
+    assert.equal(wrongWorkspace.ok, false);
+    if (!wrongWorkspace.ok) assert.equal(wrongWorkspace.error.code, -32001);
+
+    const nativeEntered = await rpc(svc, "session.enter", {
+      workspaceId,
+      roleId: "rl-executor",
+      externalKey: "native-claim-key",
+      cwd: workspace,
+    });
+    assert.ok(!nativeEntered.error, JSON.stringify(nativeEntered.error));
+    const nativeClient = createServiceClient({
+      baseUrl: svc.url,
+      token: svc.token,
+      currentExternalKey: "native-claim-key",
+    });
+    await nativeClient.taskClaim(workspaceId, secondPath);
+    const second = await loadTaskEnvelope(tentFs, secondPath);
+    assert.equal(second.sessionId, (nativeEntered.result as { session: { sessionId: string } }).session.sessionId);
+
+    const missingNative = createServiceClient({
+      baseUrl: svc.url,
+      token: svc.token,
+      currentExternalKey: "missing-native-key",
+    });
+    const missing = await missingNative.tryCall("task.claim", {
+      workspaceId,
+      taskPath: secondPath,
+    });
+    assert.equal(missing.ok, false);
+    if (!missing.ok) assert.equal(missing.error.code, -32001);
   });
 });
 
@@ -204,19 +347,21 @@ test("direct create+claim failure removes only its exact Task and manifest artif
     const workspaceId = await mount(svc, workspace);
     const nodeId = await createNode(svc, workspaceId, "rollback-work");
     const secondNodeId = await createNode(svc, workspaceId, "rollback-existing-init");
+    const plannerSession = await enterRoleSession(svc, workspaceId, workspace, "rl-planner");
+    const executorSession = await enterRoleSession(svc, workspaceId, workspace, "rl-executor");
     setBeforeTaskClaimCoreForTests(async () => {
       throw new Error("forced direct claim failure");
     });
-    const failed = await rpc(svc, "task.claimDirect", {
+    const failed = await plannerSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
-      role: "planner",
+      roleId: "rl-planner",
       nodeIds: [nodeId],
       prompt: "must not strand queued state",
     });
     assert.ok(failed.error);
     assert.match(failed.error!.message, /forced direct claim failure/i);
     assert.deepEqual(await loadTaskEnvelopes(tentFs), []);
-    const plannerRoot = path.join(workspace, ".tent", "temp", "planner");
+    const plannerRoot = path.join(workspace, ".tent", "temp", "roles", "rl-planner");
     assert.equal(
       await fs.stat(path.join(plannerRoot, "init.md")).then(() => true, () => false),
       false
@@ -230,14 +375,14 @@ test("direct create+claim failure removes only its exact Task and manifest artif
       []
     );
 
-    const executorRoot = path.join(workspace, ".tent", "temp", "executor");
+    const executorRoot = path.join(workspace, ".tent", "temp", "roles", "rl-executor");
     await fs.mkdir(executorRoot, { recursive: true });
     const executorInit = path.join(executorRoot, "init.md");
     const originalInit = "# pre-existing exact init\n";
     await fs.writeFile(executorInit, originalInit, "utf8");
-    const secondFailure = await rpc(svc, "task.claimDirect", {
+    const secondFailure = await executorSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
-      role: "executor",
+      roleId: "rl-executor",
       nodeIds: [secondNodeId],
       prompt: "restore existing init on failure",
     });
@@ -263,57 +408,58 @@ test("open Role Session inherits terminal lastTask responsibility and tolerates 
     const dispatched = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [priorNode],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "prior delegated work",
-      parentActor: { kind: "role", id: "orchestrator" },
-      reviewer: { kind: "role", id: "orchestrator" },
+      parentActor: { kind: "role", id: "rl-orchestrator" },
+      reviewer: { kind: "role", id: "rl-orchestrator" },
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const priorPath = (dispatched.result as { taskPath: string }).taskPath;
-    assert.ok(!(await rpc(svc, "task.claim", { workspaceId, taskPath: priorPath })).error);
+    const executorSession = await enterRoleSession(
+      svc,
+      workspaceId,
+      workspace,
+      "rl-executor"
+    );
+    await executorSession.client.taskClaim(workspaceId, priorPath);
     assert.ok(!(await rpc(svc, "task.interrupt", { workspaceId, taskPath: priorPath })).error);
     const prior = await loadTaskEnvelope(tentFs, priorPath);
     assert.equal(prior.state, "interrupted");
 
-    const entered = await rpc(svc, "session.enter", {
+    const nextExecutorSession = await enterRoleSession(
+      svc,
       workspaceId,
-      roleName: "executor",
-      lastTaskId: prior.id,
-      cwd: workspace,
-    });
-    assert.ok(!entered.error, JSON.stringify(entered.error));
-    const sessionId = (entered.result as { session: { sessionId: string } }).session.sessionId;
-    const next = await rpc(svc, "task.claimDirect", {
+      workspace,
+      "rl-executor",
+      prior.id
+    );
+
+    const next = await nextExecutorSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
-      role: "executor",
+      roleId: "rl-executor",
       nodeIds: [nextNode],
       prompt: "new root responsibility after terminal Task",
-      sourceSessionId: sessionId,
     });
     assert.ok(!next.error, JSON.stringify(next.error));
     const nextTask = await loadTaskEnvelope(
       tentFs,
       (next.result as { taskPath: string }).taskPath
     );
-    assert.deepEqual(nextTask.parentActor, { kind: "role", id: "orchestrator" });
-    assert.deepEqual(nextTask.reviewer, { kind: "role", id: "orchestrator" });
+    assert.deepEqual(nextTask.parentActor, { kind: "role", id: "rl-orchestrator" });
+    assert.deepEqual(nextTask.reviewer, { kind: "role", id: "rl-orchestrator" });
 
-    const missingSession = await rpc(svc, "session.enter", {
+    const missingSession = await enterRoleSession(
+      svc,
       workspaceId,
-      roleName: "planner",
-      lastTaskId: "tk-missing-history",
-      cwd: workspace,
-    });
-    assert.ok(!missingSession.error, JSON.stringify(missingSession.error));
-    const missingSessionId = (missingSession.result as { session: { sessionId: string } }).session
-      .sessionId;
-    const afterMissing = await rpc(svc, "task.claimDirect", {
+      workspace,
+      "rl-planner",
+      "tk-missing-history"
+    );
+    const afterMissing = await missingSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
-      role: "planner",
+      roleId: "rl-planner",
       nodeIds: [missingNode],
       prompt: "new root responsibility after retained pointer was purged",
-      sourceSessionId: missingSessionId,
     });
     assert.ok(!afterMissing.error, JSON.stringify(afterMissing.error));
     const missingTask = await loadTaskEnvelope(

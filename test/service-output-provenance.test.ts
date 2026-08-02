@@ -45,8 +45,8 @@ async function makeWorkspace(name = "output-prov"): Promise<string> {
     JSON.stringify(
       {
         roles: [
-          { name: "planner", prompt: "plan" },
-          { name: "executor", prompt: "do work" },
+          { id: "rl-planner", name: "planner", prompt: "plan" },
+          { id: "rl-executor", name: "executor", prompt: "do work" },
         ],
       },
       null,
@@ -114,14 +114,14 @@ async function readForEdit(
 async function readyDeliveryTask(
   svc: Awaited<ReturnType<typeof startLocalTentService>>,
   workspaceId: string,
+  workspace: string,
   nodeId: string,
   role = "executor"
 ): Promise<{ taskPath: string; deliveryId: string }> {
   const dispatched = await rpc(svc, "task.dispatch", {
     workspaceId,
     nodeIds: [nodeId],
-    assigneeKind: "role",
-    assigneeId: role,
+    roleId: `rl-${role}`,
     prompt: "do the work",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -129,16 +129,25 @@ async function readyDeliveryTask(
   assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
   const taskPath = (dispatched.result as { taskPath: string }).taskPath;
 
-  const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
-  assert.ok(!claimed.error, JSON.stringify(claimed.error));
-
-  const delivered = await rpc(svc, "task.deliver", {
+  const entered = await rpc(svc, "session.enter", {
     workspaceId,
-    taskPath,
+    roleId: `rl-${role}`,
+    cwd: workspace,
+  });
+  assert.ok(!entered.error, JSON.stringify(entered.error));
+  const session = entered.result as { session: { sessionId: string }; sessionToken: string };
+  const client = createServiceClient({
+    baseUrl: svc.url,
+    token: svc.token,
+    currentSessionId: session.session.sessionId,
+    currentSessionToken: session.sessionToken,
+  });
+  await client.taskClaim(workspaceId, taskPath);
+
+  const delivered = await client.taskDeliver(workspaceId, taskPath, {
     summary: "work product for provenance",
   });
-  assert.ok(!delivered.error, JSON.stringify(delivered.error));
-  const deliveryId = (delivered.result as { delivery: { id: string } }).delivery.id;
+  const deliveryId = (delivered as { delivery: { id: string } }).delivery.id;
   return { taskPath, deliveryId };
 }
 
@@ -157,7 +166,7 @@ test("accept binds output deliveryId atomically; unbound query; same-delivery id
     const workspaceId = await mountWorkspace(svc, ws);
     const source = await createNote(svc, workspaceId, { name: "job", type: "prompt" });
     const output = await createNote(svc, workspaceId, { name: "result", type: "output" });
-    const { taskPath, deliveryId } = await readyDeliveryTask(svc, workspaceId, source.nodeId);
+    const { taskPath, deliveryId } = await readyDeliveryTask(svc, workspaceId, ws, source.nodeId);
 
     // Unbound before accept
     const unbound = await rpc(svc, "output.provenance", { workspaceId, nodeId: output.nodeId });
@@ -238,7 +247,7 @@ test("accept all-or-nothing: bad Output leaves Task/Delivery/Output unbound", as
     const source = await createNote(svc, workspaceId, { name: "job2", type: "prompt" });
     const good = await createNote(svc, workspaceId, { name: "good-out", type: "output" });
     const notOutput = await createNote(svc, workspaceId, { name: "note-like", type: "prompt" });
-    const { taskPath, deliveryId } = await readyDeliveryTask(svc, workspaceId, source.nodeId);
+    const { taskPath, deliveryId } = await readyDeliveryTask(svc, workspaceId, ws, source.nodeId);
 
     const failed = await rpc(svc, "task.accept", {
       workspaceId,
@@ -274,7 +283,7 @@ test("cross-delivery bind fails; archived/missing/non-output rejected", async ()
     const archivedOut = await createNote(svc, workspaceId, { name: "arch-out", type: "output" });
 
     // Bind first delivery
-    const first = await readyDeliveryTask(svc, workspaceId, source.nodeId);
+    const first = await readyDeliveryTask(svc, workspaceId, ws, source.nodeId);
     const ok = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath: first.taskPath,
@@ -284,7 +293,7 @@ test("cross-delivery bind fails; archived/missing/non-output rejected", async ()
     assert.ok(!ok.error, JSON.stringify(ok.error));
 
     // Second task/delivery tries to rebind same Output
-    const second = await readyDeliveryTask(svc, workspaceId, source.nodeId);
+    const second = await readyDeliveryTask(svc, workspaceId, ws, source.nodeId);
     const conflict = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath: second.taskPath,
@@ -341,7 +350,7 @@ test("same-delivery multi-output idempotent re-bind on accept of shared ids", as
     const source = await createNote(svc, workspaceId, { name: "job4", type: "prompt" });
     const a = await createNote(svc, workspaceId, { name: "out-a", type: "output" });
     const b = await createNote(svc, workspaceId, { name: "out-b", type: "output" });
-    const { taskPath, deliveryId } = await readyDeliveryTask(svc, workspaceId, source.nodeId);
+    const { taskPath, deliveryId } = await readyDeliveryTask(svc, workspaceId, ws, source.nodeId);
 
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
@@ -401,7 +410,7 @@ test("output.provenance incomplete when delivery missing; archived output still 
     const workspaceId = await mountWorkspace(svc, ws);
     const source = await createNote(svc, workspaceId, { name: "job5", type: "prompt" });
     const output = await createNote(svc, workspaceId, { name: "out5", type: "output" });
-    const { taskPath, deliveryId } = await readyDeliveryTask(svc, workspaceId, source.nodeId);
+    const { taskPath, deliveryId } = await readyDeliveryTask(svc, workspaceId, ws, source.nodeId);
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
@@ -466,10 +475,9 @@ test("retention pins Delivery+Task referenced by Output.deliveryId (including ar
 
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
-    assigneeKind: "role",
-    assigneeId: "executor",
+    roleId: "rl-executor",
     nodeRefs: [{ id: "cx-src", path: "inbox" }],
-    manifestPath: "temp/executor/manifests/m.md",
+    manifestPath: "temp/roles/rl-executor/manifests/m.md",
     userPrompt: "old accepted",
     id: "tk-pinned01",
   });
@@ -483,7 +491,7 @@ test("retention pins Delivery+Task referenced by Output.deliveryId (including ar
   const delivery = await createDelivery(fsa, clock, {
     taskId: "tk-pinned01",
     sourceNodeId: "cx-src",
-    deliveriesDir: "temp/executor/deliveries",
+    deliveriesDir: "temp/roles/rl-executor/deliveries",
     summary: "accepted product",
     status: "accepted",
     id: "dl-pinned01",
@@ -522,10 +530,9 @@ test("retention pins Delivery+Task referenced by Output.deliveryId (including ar
 
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
-    assigneeKind: "role",
-    assigneeId: "executor",
+    roleId: "rl-executor",
     nodeRefs: [{ id: "cx-other", path: "inbox" }],
-    manifestPath: "temp/executor/manifests/m2.md",
+    manifestPath: "temp/roles/rl-executor/manifests/m2.md",
     userPrompt: "unrelated",
     id: "tk-other01",
   });
@@ -551,7 +558,7 @@ test("ServiceClient.taskAccept passes outputNodeIds", async () => {
     const workspaceId = await mountWorkspace(svc, ws);
     const source = await createNote(svc, workspaceId, { name: "job-cli", type: "prompt" });
     const output = await createNote(svc, workspaceId, { name: "out-cli", type: "output" });
-    const { taskPath } = await readyDeliveryTask(svc, workspaceId, source.nodeId);
+    const { taskPath } = await readyDeliveryTask(svc, workspaceId, ws, source.nodeId);
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const result = (await client.taskAccept(workspaceId, taskPath, "user", {
       outputNodeIds: [output.nodeId],

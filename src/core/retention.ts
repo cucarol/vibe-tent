@@ -445,32 +445,20 @@ async function scanTasks(
   const skipped: RetentionSkipped[] = [];
   if (!(await fs.exists("temp"))) return { tasks, skipped };
 
-  for (const roleEntry of await fs.listDir("temp")) {
-    if (!roleEntry.isDir) continue;
-    if (!isSafeRoleSegment(roleEntry.name)) {
+  for (const namespace of await fs.listDir("temp")) {
+    if (!namespace.isDir || (namespace.name !== "roles" && namespace.name !== "sessions")) continue;
+    const namespaceRoot = join("temp", namespace.name);
+    for (const ownerEntry of await fs.listDir(namespaceRoot)) {
+      if (!ownerEntry.isDir) continue;
+      if (!isSafeRoleSegment(ownerEntry.name)) {
       skipped.push({
-        path: join("temp", roleEntry.name),
-        reason: "unsafe role directory name",
+          path: join(namespaceRoot, ownerEntry.name),
+          reason: `unsafe ${namespace.name} directory name`,
       });
       continue;
     }
-    // Nested one-shot route tasks: temp/routes/<safe>/tasks/
-    if (roleEntry.name === "routes") {
-      const routesRoot = join("temp", "routes");
-      for (const routeEntry of await fs.listDir(routesRoot)) {
-        if (!routeEntry.isDir) continue;
-        if (!isSafeRoleSegment(routeEntry.name)) {
-          skipped.push({
-            path: join(routesRoot, routeEntry.name),
-            reason: "unsafe route directory name",
-          });
-          continue;
-        }
-        await scanTaskDir(fs, join(routesRoot, routeEntry.name, "tasks"), tasks, skipped);
-      }
-      continue;
+      await scanTaskDir(fs, join(namespaceRoot, ownerEntry.name, "tasks"), tasks, skipped);
     }
-    await scanTaskDir(fs, join("temp", roleEntry.name, "tasks"), tasks, skipped);
   }
   return { tasks, skipped };
 }
@@ -503,36 +491,25 @@ async function scanDeliveries(
   const skipped: RetentionSkipped[] = [];
   if (!(await fs.exists("temp"))) return { deliveries, skipped };
 
-  for (const roleEntry of await fs.listDir("temp")) {
-    if (!roleEntry.isDir) continue;
-    if (!isSafeRoleSegment(roleEntry.name)) {
+  for (const namespace of await fs.listDir("temp")) {
+    if (!namespace.isDir || (namespace.name !== "roles" && namespace.name !== "sessions")) continue;
+    const namespaceRoot = join("temp", namespace.name);
+    for (const ownerEntry of await fs.listDir(namespaceRoot)) {
+      if (!ownerEntry.isDir) continue;
+      if (!isSafeRoleSegment(ownerEntry.name)) {
       skipped.push({
-        path: join("temp", roleEntry.name),
-        reason: "unsafe role directory name",
+          path: join(namespaceRoot, ownerEntry.name),
+          reason: `unsafe ${namespace.name} directory name`,
       });
       continue;
     }
-    if (roleEntry.name === "routes") {
-      const routesRoot = join("temp", "routes");
-      for (const routeEntry of await fs.listDir(routesRoot)) {
-        if (!routeEntry.isDir) continue;
-        if (!isSafeRoleSegment(routeEntry.name)) {
-          skipped.push({
-            path: join(routesRoot, routeEntry.name),
-            reason: "unsafe route directory name",
-          });
-          continue;
-        }
-        await scanDeliveryDir(
-          fs,
-          join(routesRoot, routeEntry.name, "deliveries"),
-          deliveries,
-          skipped
-        );
-      }
-      continue;
+      await scanDeliveryDir(
+        fs,
+        join(namespaceRoot, ownerEntry.name, "deliveries"),
+        deliveries,
+        skipped
+      );
     }
-    await scanDeliveryDir(fs, join("temp", roleEntry.name, "deliveries"), deliveries, skipped);
   }
   return { deliveries, skipped };
 }

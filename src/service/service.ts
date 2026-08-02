@@ -28,12 +28,12 @@ import {
 import { UserAskStore } from "./user-ask-store.js";
 import { TaskInputStore } from "./task-input-store.js";
 import { ManagedDeliveryReportDraftStore } from "./managed-delivery-report-draft-store.js";
-import { ensureDefaultSettingsRoutes } from "./routes.js";
-import { SettingsRouteCatalog } from "./route-catalog.js";
+import { ensureDefaultAgentConnections } from "./connections.js";
+import { AgentConnectionCatalog } from "./connection-catalog.js";
 import type { CredentialProtector } from "./credential-protector.js";
 import { CredentialStore } from "./credential-store.js";
 import { createAgentRuntime, type AgentRuntime } from "../runtime/agent-runtime.js";
-import type { SettingsRouteConfig } from "../runtime/types.js";
+import type { AgentConnectionConfig } from "../runtime/types.js";
 import {
   createGrokAcpAdapter,
   DEFAULT_PERMISSION_TIMEOUT_MS,
@@ -67,8 +67,8 @@ export interface LocalTentServiceOptions {
   getPid?: () => number;
   /** Override token (tests); otherwise generated and stored in endpoint. */
   token?: string;
-  /** Explicit in-memory Settings routes for tests/harness; skips disk persistence. */
-  routes?: SettingsRouteConfig[];
+  /** Explicit in-memory Agent Connections for tests/harness; skips disk persistence. */
+  connections?: AgentConnectionConfig[];
   /**
    * Inject CredentialStore protector (offline tests). Production uses Windows DPAPI.
    * When omitted, CredentialStore uses createPlatformCredentialProtector (fail-loud off Windows).
@@ -173,12 +173,12 @@ async function startOwnedLocalTentService(
   });
   await credentials.ensureLoaded();
 
-  // options.routes: in-memory inject for tests (skip ensureDefaultRoutes disk seed).
-  // Injected catalogs never persist CRUD to dataDir/routes.json.
-  const routesInjected = options.routes !== undefined;
-  const routes = routesInjected
-    ? options.routes!
-    : await ensureDefaultSettingsRoutes(dataDir);
+  // options.connections: in-memory inject for tests (skip the default disk seed).
+  // Injected catalogs never persist CRUD to dataDir/connections.json.
+  const connectionsInjected = options.connections !== undefined;
+  const connections = connectionsInjected
+    ? options.connections!
+    : await ensureDefaultAgentConnections(dataDir);
 
   // Mutable holder so onPermissionAsk can read runtime after it is created.
   const runtimeHolder: { current: AgentRuntime | null } = { current: null };
@@ -202,7 +202,7 @@ async function startOwnedLocalTentService(
 
       let taskPath: string | undefined;
       let taskId: string | undefined;
-      let role: string | undefined = rec?.roleName;
+      let role: string | undefined = rec?.roleId;
       try {
         const mount = workspaceHost.get(workspaceId);
         if (mount) {
@@ -224,9 +224,9 @@ async function startOwnedLocalTentService(
       }
 
       const timeoutMs =
-        typeof rec?.routeSnapshot.permissionTimeoutMs === "number" &&
-        rec.routeSnapshot.permissionTimeoutMs > 0
-          ? rec.routeSnapshot.permissionTimeoutMs
+        typeof rec?.connectionSnapshot?.permissionTimeoutMs === "number" &&
+        rec.connectionSnapshot.permissionTimeoutMs > 0
+          ? rec.connectionSnapshot.permissionTimeoutMs
           : DEFAULT_PERMISSION_TIMEOUT_MS;
 
       const createdAt = new Date();
@@ -273,7 +273,8 @@ async function startOwnedLocalTentService(
   const packageRootEarly = options.packageRoot ?? defaultPackageRoot();
   const runtime = createAgentRuntime({
     dataDir,
-    routes,
+    sessionTokenKey: token,
+    connections,
     packageRoot: packageRootEarly,
     adapters: [
       createFakeAdapter(),
@@ -285,20 +286,20 @@ async function startOwnedLocalTentService(
       createCopilotAcpAdapter(acpPermissionHooks),
       createPiAcpAdapter(acpPermissionHooks),
     ],
-    resolveRouteEnv: async (route) => {
-      const ref = route.credentialRef?.trim() || "";
+    resolveConnectionEnv: async (connection) => {
+      const ref = connection.credentialRef?.trim() || "";
       if (!ref) return {};
-      const envKey = route.envKey?.trim() || "";
+      const envKey = connection.envKey?.trim() || "";
       if (!envKey) {
         throw new Error(
-          `Route ${route.routeId} has credentialRef but no envKey`
+          `Agent Connection ${connection.connectionId} has credentialRef but no envKey`
         );
       }
       // resolve() fail-loud when missing; map message without secret material.
       const secret = await credentials.resolve(ref);
       if (!secret) {
         throw new Error(
-          `Credential not found or empty for route ${route.routeId} (credentialRef=${ref})`
+          `Credential not found or empty for Agent Connection ${connection.connectionId} (credentialRef=${ref})`
         );
       }
       return { [envKey]: secret };
@@ -320,11 +321,11 @@ async function startOwnedLocalTentService(
     }
   });
 
-  const routeCatalog = new SettingsRouteCatalog(dataDir, routes, {
+  const connectionCatalog = new AgentConnectionCatalog(dataDir, connections, {
     // Normal boot: persist CRUD to this service dataDir.
-    // options.routes inject: in-memory only — no routes.json writes.
-    persistToDisk: !routesInjected,
-    publishRoutes: (next) => runtime.replaceRouteCatalog(next),
+    // Injected Connections are in-memory only — no connections.json writes.
+    persistToDisk: !connectionsInjected,
+    publishConnections: (next) => runtime.replaceConnectionCatalog(next),
   });
 
   // Reconcile orphan sessions after crash / restart.
@@ -348,7 +349,7 @@ async function startOwnedLocalTentService(
     managedDeliveryReportDrafts,
     credentials,
     dataDir,
-    routeCatalog,
+    connectionCatalog,
     packageRoot,
     home,
     integrateCommits: options.integrateCommits,

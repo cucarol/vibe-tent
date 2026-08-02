@@ -21,9 +21,9 @@ export type GrokAcpPermissionPolicy = AcpPermissionPolicy;
 /**
  * Route extras for adapterId "grok-acp".
  * Extends shared {@link AcpRouteOptions}; Grok-specific knobs can be added here later.
- * Lives only on a machine Settings route; never in workspace git / task bodies.
+ * Lives only on a machine Agent Connection; never in workspace git / task bodies.
  *
- * Canonical storage is the flat machine Settings route. The runtime projects
+ * Canonical storage is the flat machine Agent Connection. The runtime projects
  * these fields into the provider-neutral in-memory ACP launch bag.
  */
 export interface GrokAcpRouteOptions extends AcpRouteOptions {

@@ -15,12 +15,22 @@ import type {
   RelationMutationResult,
   RelationTargetWire,
 } from "./types.js";
-import { AUTH_TOKEN_HEADER } from "./auth.js";
+import {
+  AUTH_TOKEN_HEADER,
+  CALLER_SESSION_ID_HEADER,
+  CALLER_SESSION_TOKEN_HEADER,
+  CALLER_EXTERNAL_KEY_HEADER,
+} from "./auth.js";
 
 export interface ServiceClientOptions {
   baseUrl: string;
   /** Loopback token from machine-local service.json (required for RPC/SSE). */
   token: string;
+  /** Host execution capability; sent as transport metadata, never RPC params. */
+  currentSessionId?: string;
+  currentSessionToken?: string;
+  /** Verified host-native external Session key fallback for user-started Role Sessions. */
+  currentExternalKey?: string;
   /** Optional fetch implementation (tests). */
   fetchImpl?: typeof fetch;
 }
@@ -48,12 +58,18 @@ function parseRpcErrorBody(value: unknown): RpcErrorBody | null {
 export class ServiceClient {
   readonly baseUrl: string;
   readonly token: string;
+  readonly currentSessionId?: string;
+  private readonly currentSessionToken?: string;
+  private readonly currentExternalKey?: string;
   private readonly fetchImpl: typeof fetch;
   private idSeq = 1;
 
   constructor(options: ServiceClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.token = options.token;
+    this.currentSessionId = options.currentSessionId?.trim() || undefined;
+    this.currentSessionToken = options.currentSessionToken?.trim() || undefined;
+    this.currentExternalKey = options.currentExternalKey?.trim() || undefined;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -98,6 +114,15 @@ export class ServiceClient {
       headers: {
         "content-type": "application/json",
         [AUTH_TOKEN_HEADER]: this.token,
+        ...(this.currentSessionId && this.currentSessionToken
+          ? {
+              [CALLER_SESSION_ID_HEADER]: this.currentSessionId,
+              [CALLER_SESSION_TOKEN_HEADER]: this.currentSessionToken,
+            }
+          : {}),
+        ...(this.currentExternalKey
+          ? { [CALLER_EXTERNAL_KEY_HEADER]: this.currentExternalKey }
+          : {}),
       },
       body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
     });
@@ -620,28 +645,28 @@ export class ServiceClient {
     });
   }
 
-  // ---- convenience: machine-local routes (safe metadata / editor projection) ----
-  routeList(opts?: { includeTest?: boolean }) {
-    return this.call("route.list", opts ?? {});
+  // ---- convenience: machine-local Agent Connections (safe metadata / editor projection) ----
+  connectionList(opts?: { includeTest?: boolean }) {
+    return this.call("connection.list", opts ?? {});
   }
-  routeGet(routeId: string) {
-    return this.call("route.get", { routeId });
+  connectionGet(connectionId: string) {
+    return this.call("connection.get", { connectionId });
   }
-  routeCreate(route: Record<string, unknown>) {
-    return this.call("route.create", route);
+  connectionCreate(connection: Record<string, unknown>) {
+    return this.call("connection.create", connection);
   }
-  /** Method routeId always wins over patch data. */
-  routeUpdate(routeId: string, patch: Record<string, unknown>) {
-    return this.call("route.update", { ...patch, routeId });
+  /** Method connectionId always wins over patch data. */
+  connectionUpdate(connectionId: string, patch: Record<string, unknown>) {
+    return this.call("connection.update", { ...patch, connectionId });
   }
-  routeDelete(routeId: string) {
-    return this.call("route.delete", { routeId });
+  connectionDelete(connectionId: string) {
+    return this.call("connection.delete", { connectionId });
   }
 
   /**
    * Read-only product provider verification catalog.
    * Returns adapterId + verificationLevel (+ optional canResume/notes).
-   * Distinct from route.list (machine-local launch config). Never secrets.
+   * Distinct from connection.list (machine-local launch config). Never secrets.
    */
   providerCatalog() {
     return this.call<ProviderCatalogProjection>("provider.catalog", {});
@@ -695,8 +720,6 @@ export class ServiceClient {
        * This is the only public Node selection input.
        */
       nodeIds: string[];
-      assigneeKind: "role" | "route";
-      assigneeId: string;
       prompt: string;
       /**
        * Explicit parent actor (V0.2). Required on every dispatch.
@@ -715,9 +738,11 @@ export class ServiceClient {
        */
       asSub?: boolean;
       deliveryPolicy?: string;
-      startSession?: boolean;
       callerKind?: "user" | "role";
-    }
+    } & (
+      | { roleId: string; connectionId?: never }
+      | { connectionId: string; roleId?: never }
+    )
   ) {
     return this.call("task.dispatch", { workspaceId, ...args });
   }
@@ -732,13 +757,11 @@ export class ServiceClient {
   taskClaimDirect(
     workspaceId: string,
     args: {
-      role: string;
+      roleId: string;
       nodeIds: string[];
       prompt: string;
       /** Optional exact current Task used only to inherit persisted responsibility. */
       sourceTaskPath?: string;
-      /** Optional Service-registry Session provenance; never binds that Session to the new Task. */
-      sourceSessionId?: string;
     }
   ) {
     return this.call("task.claimDirect", { workspaceId, ...args });
@@ -855,7 +878,7 @@ export class ServiceClient {
   /**
    * Explicit fresh managed Session on the same Task when the bound provider
    * context is unusable. Not a silent fallback from taskStartSession.
-   * Uses the same machine Settings route as startSession; refuses turnBusy with
+   * Uses the Session's immutable Agent Connection snapshot; refuses turnBusy with
    * TURN_BUSY (no force).
    * Shares the per-Task managed-session execution slot with startSession.
    */
@@ -876,12 +899,12 @@ export class ServiceClient {
   }
 
   /**
-   * List deliveries for a workspace (optional Task / Node / assignee filters).
+   * List deliveries for a workspace (optional Task / Node / responsibility filters).
    * Read projection only — review still uses task.accept / task.reject.
    */
   deliveryList(
     workspaceId: string,
-    opts?: { taskId?: string; nodeId?: string; assigneeKind?: "role" | "route"; assigneeId?: string }
+    opts?: { taskId?: string; nodeId?: string; roleId?: string; sessionId?: string }
   ) {
     return this.call<{ workspaceId: string; deliveries: DeliveryProjection[] }>(
       "delivery.list",
@@ -977,8 +1000,7 @@ export class ServiceClient {
     args: {
       workspaceId?: string;
       sessionId?: string;
-      roleName?: string;
-      role?: string;
+      roleId?: string;
       externalKey?: string;
       lastTaskId?: string;
       cwd?: string;

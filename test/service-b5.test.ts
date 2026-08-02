@@ -48,8 +48,8 @@ import {
   ToolApprovalStore,
   makeToolApprovalId,
 } from "../src/service/tool-approval-store.js";
-import { createSettingsRouteSnapshot } from "../src/runtime/route-config.js";
-import type { SettingsRouteConfig } from "../src/runtime/types.js";
+import { createAgentConnectionSnapshot } from "../src/runtime/agent-connection.js";
+import type { AgentConnectionConfig } from "../src/runtime/types.js";
 
 const MOCK_ACP = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -57,14 +57,14 @@ const MOCK_ACP = path.join(
   "mock-acp-server.mjs"
 );
 
-const FAKE_DEFAULT_ROUTE: SettingsRouteConfig = {
-  routeId: "fake-default",
+const FAKE_DEFAULT_ROUTE: AgentConnectionConfig = {
+  connectionId: "fake-default",
   provider: "fake",
   adapterId: FAKE_ADAPTER_ID,
   fake: { waitForSignal: true, sleepMs: 60_000 },
 };
 
-type MockAcpRoute = SettingsRouteConfig;
+type MockAcpRoute = AgentConnectionConfig;
 
 function mockAcpRoute(
   id: string,
@@ -134,7 +134,7 @@ function mockAcpRoute(
     `Object.assign(process.env, ${JSON.stringify(childEnv)}); ` +
     `await import(${JSON.stringify(pathToFileURL(MOCK_ACP).href)});`;
   return {
-    routeId: id,
+    connectionId: id,
     provider: "test",
     adapterId: GROK_ACP_ADAPTER_ID,
     command: process.execPath,
@@ -148,8 +148,8 @@ function mockAcpRoute(
   };
 }
 
-function testRouteSnapshot(routeId: string, adapterId: string) {
-  return createSettingsRouteSnapshot({ routeId, provider: "test", adapterId }, {});
+function testRouteSnapshot(connectionId: string, adapterId: string) {
+  return createAgentConnectionSnapshot({ connectionId, provider: "test", adapterId }, {});
 }
 
 async function pollUntil<T>(
@@ -209,14 +209,17 @@ async function makeWorkspace(
       {
         roles: [
           {
+            id: "rl-executor",
             name: "executor",
             prompt: "do work",
           },
           {
+            id: "rl-orchestrator",
             name: "orchestrator",
             prompt: "dispatch work",
           },
           {
+            id: "rl-reviewer",
             name: "reviewer",
             prompt: "review work",
           },
@@ -231,13 +234,13 @@ async function makeWorkspace(
 
 async function withService<T>(
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>, dataDir: string) => Promise<T>,
-  opts?: { routes?: import("../src/runtime/types.js").SettingsRouteConfig[] }
+  opts?: { connections?: import("../src/runtime/types.js").AgentConnectionConfig[] }
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-data-"));
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
-    routes: [FAKE_DEFAULT_ROUTE, ...(opts?.routes ?? [])],
+    connections: [FAKE_DEFAULT_ROUTE, ...(opts?.connections ?? [])],
   });
   try {
     return await fn(svc, dataDir);
@@ -258,7 +261,7 @@ function rpc(
 type NodeCollabProjection = {
   workspaceId: string;
   nodeId: string;
-  activeTask: null | { task: { id: string; assigneeKind: string; assigneeId: string } };
+  activeTask: null | { task: { id: string; roleId?: string; sessionId?: string } };
 };
 
 async function nodeCollabProjection(
@@ -283,16 +286,14 @@ function assertOccupationReleased(
 /** Occupation held by an active task (doing + assignee + activeTaskId). */
 function assertOccupationHeld(
   proj: NodeCollabProjection,
-  opts?: { assignee?: string; label?: string }
+  opts?: { roleId?: string; sessionId?: string; label?: string }
 ): void {
   const label = opts?.label ?? "occupation";
   assert.ok(proj.activeTask, `${label}: expected active Task`);
-  const assignee = proj.activeTask?.task.assigneeId;
-  if (opts?.assignee !== undefined) {
-    assert.equal(assignee, opts.assignee, `${label}: assignee`);
-  } else {
-    assert.ok(assignee, `${label}: assignee must remain`);
-  }
+  const task = proj.activeTask!.task;
+  assert.ok(task.roleId || task.sessionId, `${label}: Task responsibility/execution must remain`);
+  if (opts?.roleId !== undefined) assert.equal(task.roleId, opts.roleId, `${label}: roleId`);
+  if (opts?.sessionId !== undefined) assert.equal(task.sessionId, opts.sessionId, `${label}: sessionId`);
   assert.ok(proj.activeTask?.task.id, `${label}: active Task id must remain`);
 }
 
@@ -366,8 +367,7 @@ test("B5: dispatch → claim → startSession → deliver → accept (manual) vi
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "Ship B5 wiring",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -386,11 +386,11 @@ test("B5: dispatch → claim → startSession → deliver → accept (manual) vi
     assert.equal(started.task.sessionId, started.session.sessionId);
     assert.equal(started.task.state, "running");
     const managedRecord = await svc.runtime.registry.read(started.session.sessionId);
-    assert.equal(managedRecord?.routeId, "fake-default");
+    assert.equal(managedRecord?.connectionId, "fake-default");
     assert.equal(
-      managedRecord?.roleName,
-      undefined,
-      "managed route Session must not claim a durable Role identity"
+      "roleName" in (managedRecord ?? {}),
+      false,
+      "managed Connection Session must not claim a durable Role identity"
     );
 
     // Session projection does not require AgentRuntimePort client call
@@ -450,7 +450,7 @@ test("B5: dispatch → claim → startSession → deliver → accept (manual) vi
       sessionId: started.session.sessionId,
     });
     assert.equal(
-      JSON.stringify(projectedSession).includes("routeSnapshot"),
+      JSON.stringify(projectedSession).includes("connectionSnapshot"),
       false,
       "session RPC projection must not expose the machine-local launch snapshot"
     );
@@ -468,8 +468,7 @@ test("B5: deliveryPolicy=bypass auto-integrates without review", async () => {
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "auto path",
       deliveryPolicy: "bypass",
     });
@@ -498,8 +497,7 @@ test("B5: agent-decide integrate vs request-review", async () => {
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "agent decide",
       deliveryPolicy: "agent-decide",
     });
@@ -533,8 +531,7 @@ test("B5: agent-decide integrate vs request-review", async () => {
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "review me",
       deliveryPolicy: "agent-decide",
     });
@@ -573,8 +570,7 @@ test("B5: explicit fake-default route runs its assigned Task", async () => {
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "explicit fake",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -586,7 +582,7 @@ test("B5: explicit fake-default route runs its assigned Task", async () => {
     });
     assert.ok(!started.error, JSON.stringify(started.error));
     assert.equal(
-      (started.result as { session: { routeId: string } }).session.routeId,
+      (started.result as { session: { connectionId: string } }).session.connectionId,
       "fake-default"
     );
   });
@@ -601,8 +597,7 @@ test("B5: machine route availability permits role startSession without registry 
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "machine route path",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -629,8 +624,7 @@ test("B5: user callerKind starts the available machine route", async () => {
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "user root",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -657,8 +651,7 @@ test("B5: dispatch relayPrompt uses task claim/deliver (not task-ack)", async ()
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "relay text",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
@@ -681,8 +674,7 @@ test("B5: startSession bootstrap is managed (Context Card + user prompt); relay 
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "bootstrap path semantics",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
@@ -769,8 +761,7 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual deli
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "mock-acp-managed",
+        connectionId: "mock-acp-managed",
         prompt: userPrompt,
         deliveryPolicy: "review",
       });
@@ -852,7 +843,7 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual deli
       assert.equal((g2.result as { task: { state: string } }).task.state, "delivered");
     },
     {
-      routes: [
+      connections: [
         mockAcpRoute("mock-acp-managed", {
           logPath,
           promptText: reportText,
@@ -879,8 +870,7 @@ test("P0: Delivery only after turn seal — post-response tail write cannot land
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "mock-acp-seal",
+        connectionId: "mock-acp-seal",
         prompt: "prove post-response worktree mutation cannot race Delivery",
         deliveryPolicy: "review",
       });
@@ -949,7 +939,7 @@ test("P0: Delivery only after turn seal — post-response tail write cannot land
       assert.equal(deliveries[0].status, "ready");
     },
     {
-      routes: [
+      connections: [
         mockAcpRoute("mock-acp-seal", {
           logPath,
           promptText: reportText,
@@ -984,8 +974,7 @@ test("P0: public task.deliver/requestReview refuse while managed turnBusy; idle 
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "mock-acp-busy-deliver",
+        connectionId: "mock-acp-busy-deliver",
         prompt: "manual deliver must not publish during busy managed turn",
         deliveryPolicy: "review",
       });
@@ -1129,7 +1118,7 @@ test("P0: public task.deliver/requestReview refuse while managed turnBusy; idle 
       assert.equal(deliveries[0].summary, reportBody);
     },
     {
-      routes: [
+      connections: [
         mockAcpRoute("mock-acp-busy-deliver", {
           logPath,
           promptText: reportText,
@@ -1153,8 +1142,7 @@ test("P0: public task.deliver/requestReview refuse while managed turnBusy; idle 
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "mock-acp-busy-deliver",
+      connectionId: "mock-acp-busy-deliver",
       prompt: "idle manual deliver still ok",
       deliveryPolicy: "review",
     });
@@ -1214,8 +1202,7 @@ test("B5 managed ACP: empty / error / non-end_turn do not deliver", async () => 
           reviewer: { kind: "user", id: "user" },
           workspaceId,
           nodeIds: [nodeId],
-          assigneeKind: "route",
-          assigneeId: `mock-acp-${mode}`,
+          connectionId: `mock-acp-${mode}`,
           prompt: `mode ${mode}`,
         });
         const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -1247,7 +1234,7 @@ test("B5 managed ACP: empty / error / non-end_turn do not deliver", async () => 
         assert.equal(deliveries.length, 0, `mode=${mode} must not create delivery`);
       },
       {
-        routes: [
+        connections: [
           mockAcpRoute(`mock-acp-${mode}`, {
             logPath,
             promptMode: mode,
@@ -1276,8 +1263,7 @@ test("P0: ACP assistant output limit parks Task, stops child, and keeps Service 
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "mock-acp-output-limit",
+        connectionId: "mock-acp-output-limit",
         prompt: "bounded managed output",
       });
       assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
@@ -1410,7 +1396,7 @@ test("P0: ACP assistant output limit parks Task, stops child, and keeps Service 
       }
     },
     {
-      routes: [
+      connections: [
         mockAcpRoute("mock-acp-output-limit", {
           logPath,
           outputBytes: 4 * 1024 * 1024 + 1,
@@ -1437,8 +1423,7 @@ test("B5 managed ACP: interrupt / stop does not deliver", async () => {
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "mock-acp-interrupt",
+        connectionId: "mock-acp-interrupt",
         prompt: "will interrupt",
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -1468,7 +1453,7 @@ test("B5 managed ACP: interrupt / stop does not deliver", async () => {
       assert.equal(deliveries.length, 0);
     },
     {
-      routes: [
+      connections: [
         mockAcpRoute("mock-acp-interrupt", {
           logPath,
           promptMode: "interrupt",
@@ -1498,8 +1483,7 @@ test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review 
           reviewer: { kind: "user", id: "user" },
           workspaceId,
           nodeIds: [nodeId],
-          assigneeKind: "route",
-          assigneeId: "mock-acp-bypass",
+          connectionId: "mock-acp-bypass",
           prompt: "bypass policy path",
           deliveryPolicy: "bypass",
         });
@@ -1538,7 +1522,7 @@ test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review 
         assert.equal(deliveries[0].review, undefined);
       },
       {
-        routes: [mockAcpRoute("mock-acp-bypass", { logPath, promptText: "outcome: delivered\n\nBYPASS_OK" })],
+        connections: [mockAcpRoute("mock-acp-bypass", { logPath, promptText: "outcome: delivered\n\nBYPASS_OK" })],
       }
     );
   }
@@ -1561,8 +1545,7 @@ test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review 
           reviewer: { kind: "user", id: "user" },
           workspaceId,
           nodeIds: [nodeId],
-          assigneeKind: "route",
-          assigneeId: "mock-acp-ad",
+          connectionId: "mock-acp-ad",
           prompt: "agent-decide path",
           deliveryPolicy: "agent-decide",
         });
@@ -1600,7 +1583,7 @@ test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review 
         assert.equal(deliveries[0].status, "ready");
       },
       {
-        routes: [mockAcpRoute("mock-acp-ad", { logPath, promptText: "outcome: delivered\n\nAD_OK" })],
+        connections: [mockAcpRoute("mock-acp-ad", { logPath, promptText: "outcome: delivered\n\nAD_OK" })],
       }
     );
   }
@@ -1644,8 +1627,7 @@ test("B5: task.interrupt stops bound session", async () => {
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "interrupt me",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -1680,8 +1662,7 @@ test("B5: repeated interrupt repairs a late-bound Session projection", async () 
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "late bind repair",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -1731,8 +1712,7 @@ test("B5: task.cancel removes queued envelope", async () => {
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "cancel me",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -1858,8 +1838,7 @@ test("B5 tool approval: ask → pending → approve once → running → deliver
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "mock-acp-tool-ask",
+        connectionId: "mock-acp-tool-ask",
         prompt: "need tool then finish",
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -1952,7 +1931,7 @@ test("B5 tool approval: ask → pending → approve once → running → deliver
       assert.ok(!tentListing.includes("tool-approvals.json"));
     },
     {
-      routes: [
+      connections: [
         mockAcpRoute("mock-acp-tool-ask", {
           logPath,
           promptText: "outcome: delivered\n\nTOOL_APPROVED_REPORT",
@@ -1974,8 +1953,7 @@ test("B5 tool approval: concurrent asks keep task waiting until the final decisi
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "two concurrent tool requests",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -2000,8 +1978,7 @@ test("B5 tool approval: concurrent asks keep task waiting until the final decisi
       sessionId,
       taskId: taskPath,
       taskPath,
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       options: [{ optionId: "allow_once", kind: "allow_once" }],
       status: "pending" as const,
       createdAt: new Date(now).toISOString(),
@@ -2066,8 +2043,7 @@ test("B5 tool approval: user deny cancels tool (ACP cancelled)", async () => {
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "mock-acp-tool-deny",
+        connectionId: "mock-acp-tool-deny",
         prompt: "will deny tool",
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -2109,7 +2085,7 @@ test("B5 tool approval: user deny cancels tool (ACP cancelled)", async () => {
       assert.equal(outcome.outcome, "cancelled");
     },
     {
-      routes: [
+      connections: [
         mockAcpRoute("mock-acp-tool-deny", {
           logPath,
           promptText: "outcome: delivered\n\nAFTER_DENY",
@@ -2137,8 +2113,7 @@ test("B5 tool approval: ask timeout expires pending; late approve fails", async 
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "mock-acp-tool-timeout",
+        connectionId: "mock-acp-tool-timeout",
         prompt: "will timeout tool ask",
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -2195,7 +2170,7 @@ test("B5 tool approval: ask timeout expires pending; late approve fails", async 
       assert.equal((list.result as { approvals: unknown[] }).approvals.length, 0);
     },
     {
-      routes: [
+      connections: [
         mockAcpRoute("mock-acp-tool-timeout", {
           logPath,
           promptText: "outcome: delivered\n\nAFTER_TIMEOUT",
@@ -2221,8 +2196,7 @@ test("B5 failure cleanup: prompt error stops process, parks waiting(external), k
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "mock-acp-fail-clean",
+        connectionId: "mock-acp-fail-clean",
         prompt: "will fail",
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -2278,8 +2252,7 @@ test("B5 failure cleanup: prompt error stops process, parks waiting(external), k
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "mock-acp-fail-clean",
+        connectionId: "mock-acp-fail-clean",
         prompt: "must be blocked by waiting occupation",
       });
       assert.ok(d2.error, "same exact Node must remain occupied by the waiting Task");
@@ -2309,7 +2282,7 @@ test("B5 failure cleanup: prompt error stops process, parks waiting(external), k
       assert.equal(afterDup.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
     },
     {
-      routes: [
+      connections: [
         mockAcpRoute("mock-acp-fail-clean", {
           logPath,
           promptMode: "error",
@@ -2333,8 +2306,7 @@ for (const exitCode of [7, 0]) test(`B5 spontaneous managed child exit code=${ex
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "mock-acp-spontaneous-die",
+        connectionId: "mock-acp-spontaneous-die",
         prompt: "child will die spontaneously",
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -2389,8 +2361,7 @@ for (const exitCode of [7, 0]) test(`B5 spontaneous managed child exit code=${ex
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "fake-default",
+        connectionId: "fake-default",
         prompt: "must be blocked by parked occupation",
       });
       assert.ok(d2.error, "parked Task must block a second dispatch on the same Node");
@@ -2402,7 +2373,7 @@ for (const exitCode of [7, 0]) test(`B5 spontaneous managed child exit code=${ex
       );
     },
     {
-      routes: [
+      connections: [
         mockAcpRoute("mock-acp-spontaneous-die", {
           logPath,
           dieAfterSessionMs: 120,
@@ -2440,8 +2411,7 @@ test("B5: crash restart + mount parks running task bound to dead session (task-s
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "fake-default",
+        connectionId: "fake-default",
         prompt: "crash mid-session",
       });
       taskPath = (d.result as { taskPath: string }).taskPath;
@@ -2598,8 +2568,7 @@ test("P0-1: route Task start creates an isolated WorkspaceLane and uses its task
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "work in route task lane",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
@@ -2642,8 +2611,7 @@ test("P0-1: route Task start creates an isolated WorkspaceLane and uses its task
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId2],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "second route task",
     });
     assert.ok(!d2.error, JSON.stringify(d2.error));
@@ -2707,8 +2675,7 @@ test("P0-1: non-Git workspace dispatch has no lane; startSession cwd falls back 
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "docs only",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
@@ -2781,8 +2748,7 @@ test("P0-2: manual accept integrates real commits into main; re-deliver of integ
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "integrate me",
       deliveryPolicy: "review",
     });
@@ -2832,8 +2798,7 @@ test("P0-2: manual accept integrates real commits into main; re-deliver of integ
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId2],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "already on main",
     });
     const taskPath2 = (d2.result as { taskPath: string }).taskPath;
@@ -2884,8 +2849,7 @@ test("P0-2: bypass with commits integrates into main and accepts", async () => {
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "bypass with git",
       deliveryPolicy: "bypass",
     });
@@ -2934,8 +2898,7 @@ test("P0-2: agent-decide integrate with commits merges into main", async () => {
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "agent decide integrate",
       deliveryPolicy: "agent-decide",
     });
@@ -2979,7 +2942,7 @@ async function withBlockedIntegrate(
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
-    routes: [FAKE_DEFAULT_ROUTE],
+    connections: [FAKE_DEFAULT_ROUTE],
     integrateCommits: async () => {
       entered = true;
       order.push("integrate-enter");
@@ -3012,8 +2975,7 @@ async function claimDeliveredReviewTask(
     reviewer: { kind: "user", id: "user" },
     workspaceId,
     nodeIds: [nodeId],
-    assigneeKind: "route",
-    assigneeId: "fake-default",
+    connectionId: "fake-default",
     prompt,
     deliveryPolicy: "review",
   });
@@ -3084,8 +3046,7 @@ test("P0-2: bypass deliver releases MutationBus during blocked Git integrate", a
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "block bus during bypass integrate",
       deliveryPolicy: "bypass",
     });
@@ -3194,8 +3155,7 @@ test("P0-2: same-Task sendInput waits for auto-deliver Git then refuses accepted
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "same-task sendInput serializes with bypass deliver",
       deliveryPolicy: "bypass",
     });
@@ -3264,8 +3224,7 @@ test("P0-2: accept integration conflict keeps delivered + occupation; no done", 
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "will conflict",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -3310,7 +3269,6 @@ test("P0-2: accept integration conflict keeps delivered + occupation; no done", 
 
     // Integrate failed: delivery stays ready, occupation held (task still active).
     assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, nodeId), {
-      assignee: "fake-default",
       label: "accept integrate conflict",
     });
     const list = await rpc(svc, "delivery.list", { workspaceId });
@@ -3335,8 +3293,7 @@ test("P0-2: bypass integrate failure keeps running + occupation; no accepted/don
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "bypass conflict",
       deliveryPolicy: "bypass",
     });
@@ -3372,7 +3329,7 @@ test("P0-2: bypass integrate failure keeps running + occupation; no accepted/don
     assert.equal((got.result as { task: { state: string } }).task.state, "running");
 
     assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, nodeId), {
-      assignee: "fake-default",
+      roleId: "rl-executor",
       label: "bypass integrate failure",
     });
 
@@ -3396,8 +3353,7 @@ test("P0 fix: managed auto-deliver integrate failure keeps running; session diag
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "managed integrate will fail",
       deliveryPolicy: "bypass",
     });
@@ -3457,7 +3413,6 @@ test("P0 fix: managed auto-deliver integrate failure keeps running; session diag
     );
 
     assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, nodeId), {
-      assignee: "executor",
       label: "managed auto-deliver integrate failure",
     });
 
@@ -3502,8 +3457,7 @@ test("terminal consistency: managed finalization and interrupt have one winner",
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "race finalization and interrupt",
       deliveryPolicy: "review",
     });
@@ -3593,8 +3547,7 @@ test("terminal consistency: interrupt first suppresses managed finalization", as
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "interrupt first",
       deliveryPolicy: "review",
     });
@@ -3644,8 +3597,7 @@ test("P0 fix: managed auto-deliver collects role-lane commit; manual accept inte
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "auto-collect then review",
       deliveryPolicy: "review",
     });
@@ -3723,8 +3675,7 @@ test("P0 fix: managed auto-deliver bypass integrates auto-collected commit", asy
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "auto-collect bypass",
       deliveryPolicy: "bypass",
     });
@@ -3788,8 +3739,7 @@ test("P0 fix: managed auto-deliver zero-commit / non-Git remains legal", async (
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "docs only managed",
       deliveryPolicy: "review",
     });
@@ -3832,8 +3782,7 @@ test("P0 fix: managed auto-deliver zero-commit / non-Git remains legal", async (
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "report only",
       deliveryPolicy: "bypass",
     });
@@ -3875,8 +3824,7 @@ test("P0: dirty task worktree refuses managed auto-deliver and public task.deliv
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "must not deliver with dirty role worktree",
       deliveryPolicy: "review",
     });
@@ -4033,8 +3981,7 @@ test("P0 fix: managed auto-collect excludes pre-session role commits; includes a
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "only my commits",
       deliveryPolicy: "review",
     });
@@ -4104,8 +4051,7 @@ test("P0 fix: roleBranchBase is stable across startSession and reject-resume", a
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "stable baseline",
       deliveryPolicy: "review",
     });
@@ -4198,8 +4144,7 @@ test("reject-resume restores live managed session for durable role (no false-run
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "reject resume must wake session",
       deliveryPolicy: "review",
     });
@@ -4292,8 +4237,7 @@ test("reject-resume restores live managed session for route tasks", async () => 
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "profile reject resume",
       deliveryPolicy: "review",
     });
@@ -4455,8 +4399,7 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "mock-reject-resume",
+        connectionId: "mock-reject-resume",
         prompt: "native reject-resume continuity",
         deliveryPolicy: "review",
       });
@@ -4580,7 +4523,7 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
       );
       assert.ok(reviewPrompts[0]!.includes("text:   keep provider context  "));
     },
-    { routes: [profile] }
+    { connections: [profile] }
   );
 });
 
@@ -4590,7 +4533,7 @@ test("reject-resume unavailable restore parks; task.replaceSession creates the e
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" }, reviewer: { kind: "user", id: "user" },
-      workspaceId, nodeIds: [nodeId], assigneeKind: "route", assigneeId: "fake-default",
+      workspaceId, nodeIds: [nodeId], connectionId: "fake-default",
       prompt: "explicit replacement after unavailable resume", deliveryPolicy: "review",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -4633,7 +4576,7 @@ test("late session.failed on a replaced prior Session keeps the exact Task runni
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" }, reviewer: { kind: "user", id: "user" },
-      workspaceId, nodeIds: [nodeId], assigneeKind: "route", assigneeId: "fake-default",
+      workspaceId, nodeIds: [nodeId], connectionId: "fake-default",
       prompt: "late prior terminal must not demote replacement",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -4674,8 +4617,7 @@ test("late session.failed after managed Delivery is diagnostic only", async () =
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "delivery then late session.failed",
       deliveryPolicy: "review",
     });
@@ -4748,8 +4690,7 @@ test("P0 pre-Delivery session.failed parks waiting(external) and preserves TaskI
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "recoverable failure path",
       deliveryPolicy: "review",
     });
@@ -4846,8 +4787,7 @@ test("P0 pre-Delivery session.exited parks waiting(external) with stable summary
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "clean exit before delivery",
       deliveryPolicy: "review",
     });
@@ -4898,8 +4838,7 @@ test("P0 duplicate session.failed/exited on same session is idempotent park", as
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "duplicate terminals",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -4953,8 +4892,7 @@ test("P0 late terminal from old session after rebind does not affect new occupat
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "rebind then late old exit",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -5059,8 +4997,7 @@ test("P0 three independent same-tick session terminals each park only their own 
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "fake-default",
+        connectionId: "fake-default",
         prompt: `independent ${name}`,
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -5131,8 +5068,7 @@ test("P0 explicit interrupt remains terminal and releases occupation after park"
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "park then interrupt",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -5191,8 +5127,7 @@ test("P0 explicit replacement session resume after recoverable park", async () =
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "recover with new session",
       deliveryPolicy: "review",
     });
@@ -5325,8 +5260,7 @@ test("P0 UserAsk reply after park targets replacement Session, not dead origin",
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "mock-ua-park-reply",
+        connectionId: "mock-ua-park-reply",
         prompt: "park ask then reply on replacement",
         deliveryPolicy: "review",
       });
@@ -5471,7 +5405,7 @@ test("P0 UserAsk reply after park targets replacement Session, not dead origin",
       assert.equal((await svc.runtime.probe(newSessionId)).alive, true);
     },
     {
-      routes: [
+      connections: [
         mockAcpRoute("mock-ua-park-reply", {
           logPath,
           promptText: "BOOTSTRAP_PLACEHOLDER",
@@ -5490,7 +5424,7 @@ test("reject-resume non-resume-capable binding parks; fresh Session is explicit 
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" }, reviewer: { kind: "user", id: "user" },
-      workspaceId, nodeIds: [nodeId], assigneeKind: "route", assigneeId: "fake-default",
+      workspaceId, nodeIds: [nodeId], connectionId: "fake-default",
       prompt: "non-resume-capable binding", deliveryPolicy: "review",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -5530,7 +5464,7 @@ test("explicit replaceSession preserves durable TaskInput after an unavailable r
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" }, reviewer: { kind: "user", id: "user" },
-      workspaceId, nodeIds: [nodeId], assigneeKind: "route", assigneeId: "fake-default",
+      workspaceId, nodeIds: [nodeId], connectionId: "fake-default",
       prompt: "preserve durable input across explicit replacement", deliveryPolicy: "review",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -5566,8 +5500,7 @@ test("reject-resume fails loud and parks waiting when session cannot be restored
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "force restore failure",
       deliveryPolicy: "review",
     });
@@ -5638,8 +5571,7 @@ test("P0 fix: recorded workspace lane collection errors stay retryable", async (
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "do not downgrade a broken lane",
       deliveryPolicy: "review",
     });
@@ -5697,8 +5629,7 @@ test("P0 fix: successful managed delivery frees same role for next task", async 
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "first managed task",
       deliveryPolicy: "review",
     });
@@ -5727,8 +5658,7 @@ test("P0 fix: successful managed delivery frees same role for next task", async 
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId2],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "second managed task",
     });
     const taskPath2 = (d2.result as { taskPath: string }).taskPath;
@@ -5827,8 +5757,7 @@ test("P0: concurrent task.startSession same tick coalesces to one Session", asyn
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "single-flight concurrent start",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -5857,7 +5786,7 @@ test("P0: concurrent task.startSession same tick coalesces to one Session", asyn
     const managed = (await svc.runtime.registry.list()).filter(
       (rec) =>
         rec.workspace === workspaceId &&
-        rec.routeId === "fake-default" &&
+        rec.connectionId === "fake-default" &&
         rec.state !== "external"
     );
     assert.equal(
@@ -5879,8 +5808,7 @@ test("P0: repeated task.startSession after success reuses bound Session", async 
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "idempotent restart reuse",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -5910,7 +5838,7 @@ test("P0: repeated task.startSession after success reuses bound Session", async 
     const liveManaged = (await svc.runtime.registry.list()).filter(
       (rec) =>
         rec.workspace === workspaceId &&
-        rec.routeId === "fake-default" &&
+        rec.connectionId === "fake-default" &&
         rec.state !== "external" &&
         rec.state !== "stopped" &&
         rec.state !== "failed"
@@ -5936,8 +5864,7 @@ test("P0: failed launch clears same-task flight slot (lifecycle failed)", async 
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "fake-fail-launch",
+        connectionId: "fake-fail-launch",
         prompt: "fail launch clears exact flight key",
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -5992,9 +5919,9 @@ test("P0: failed launch clears same-task flight slot (lifecycle failed)", async 
       );
     },
     {
-      routes: [
+      connections: [
         {
-          routeId: "fake-fail-launch",
+          connectionId: "fake-fail-launch",
           provider: "fake",
           adapterId: FAKE_ADAPTER_ID,
           fake: { failLaunch: "simulated launch failure", waitForSignal: true },
@@ -6014,8 +5941,7 @@ test("P0: user and role concurrent starts share one machine-route launch", async
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "auth gate before coalesce",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -6045,13 +5971,14 @@ test("P0: user and role concurrent starts share one machine-route launch", async
       sessionId
     );
     const mount = svc.ctx.host.require(workspaceId);
-    assert.equal((await loadTaskEnvelope(mount.env.fs, taskPath)).sessionId, sessionId);
+    const exactTask = await loadTaskEnvelope(mount.env.fs, taskPath);
+    assert.equal(exactTask.sessionId, sessionId);
 
     const managed = (await svc.runtime.registry.list()).filter(
       (rec) =>
         rec.workspace === workspaceId &&
-        rec.roleName === "executor" &&
-        rec.routeId === "fake-default" &&
+        rec.connectionId === "fake-default" &&
+        rec.lastTaskId === exactTask.id &&
         rec.state !== "external"
     );
     assert.equal(
@@ -6101,8 +6028,7 @@ test("mount reconcile: dead/missing/stale-live session → waiting(external); tr
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "fake-default",
+        connectionId: "fake-default",
         prompt: `seed ${name}`,
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -6135,9 +6061,9 @@ test("mount reconcile: dead/missing/stale-live session → waiting(external); tr
           const now = new Date().toISOString();
           await svc.runtime.registry.write({
             id: sid,
-            routeId: "fake-default",
+            connectionId: "fake-default",
             adapterId: FAKE_ADAPTER_ID,
-      routeSnapshot: testRouteSnapshot("fake-default", FAKE_ADAPTER_ID),
+      connectionSnapshot: testRouteSnapshot("fake-default", FAKE_ADAPTER_ID),
             state: opts.bindSession.state,
             workspace: workspaceId,
             lastTaskId: taskPath,
@@ -6308,8 +6234,7 @@ test("task.startSession resumes any waiting (external) before launch", async () 
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "resume external wait",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -6351,8 +6276,7 @@ test("task.startSession parks an unavailable bound session; replaceSession creat
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "explicit recovery only",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -6430,8 +6354,7 @@ test("task.startSession parks a stale missing binding; replaceSession recovers e
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "stale session binding",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -6495,8 +6418,7 @@ test("task.startSession parks a foreign binding; replaceSession explicitly creat
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "mock-acp-boundary",
+        connectionId: "mock-acp-boundary",
         prompt: "workspace-bound resume",
       });
       const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -6508,9 +6430,9 @@ test("task.startSession parks a foreign binding; replaceSession explicitly creat
       const now = new Date().toISOString();
       await svc.runtime.registry.write({
         id: priorSessionId,
-        routeId: "mock-acp-boundary",
+        connectionId: "mock-acp-boundary",
         adapterId: GROK_ACP_ADAPTER_ID,
-      routeSnapshot: testRouteSnapshot("mock-acp-boundary", GROK_ACP_ADAPTER_ID),
+      connectionSnapshot: testRouteSnapshot("mock-acp-boundary", GROK_ACP_ADAPTER_ID),
         state: "stopped",
         resumeToken: "mock-acp-session-1",
         runtimeWorkspace: { cwd },
@@ -6568,11 +6490,11 @@ test("task.startSession parks a foreign binding; replaceSession explicitly creat
       const replacementRecord = await svc.runtime.registry.read(newSessionId);
       assert.equal(replacementRecord?.contextRestored, false);
       assert.equal(replacementRecord?.replacedSessionId, priorSessionId);
-      assert.equal(replacementRecord?.roleName, undefined);
+      assert.equal("roleName" in (replacementRecord ?? {}), false);
       const retiredRecord = await svc.runtime.registry.read(priorSessionId);
       assert.equal(retiredRecord?.replacedBySessionId, newSessionId);
     },
-    { routes: [profile] }
+    { connections: [profile] }
   );
 });
 
@@ -6600,8 +6522,7 @@ test("P0 fix: concurrent first claims same role serialize worktree ensure (no ra
           reviewer: { kind: "user", id: "user" },
           workspaceId,
           nodeIds: [nodeId],
-          assigneeKind: "route",
-          assigneeId: "fake-default",
+          connectionId: "fake-default",
           prompt: `concurrent ${i}`,
         })
       )
@@ -6672,8 +6593,7 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "stale envelope",
       deliveryPolicy: "review",
     });
@@ -6711,8 +6631,7 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "wrong workspace",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -6757,8 +6676,7 @@ test("P0 fix: bypass with zero commits is legal (pure docs / no auto-collect)", 
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "docs only delivery",
       deliveryPolicy: "bypass",
     });
@@ -6788,9 +6706,9 @@ test("runtime projection: same-session waiting_user → live preserves order und
     const now = new Date().toISOString();
     await svc.runtime.registry.write({
       id: sessionId,
-      routeId: "fake-default",
+      connectionId: "fake-default",
       adapterId: FAKE_ADAPTER_ID,
-      routeSnapshot: testRouteSnapshot("fake-default", FAKE_ADAPTER_ID),
+      connectionSnapshot: testRouteSnapshot("fake-default", FAKE_ADAPTER_ID),
       state: "live",
       createdAt: now,
       updatedAt: now,
@@ -6851,9 +6769,9 @@ test("runtime projection: transient failure retries once and emits one session.s
     const now = new Date().toISOString();
     await svc.runtime.registry.write({
       id: sessionId,
-      routeId: "fake-default",
+      connectionId: "fake-default",
       adapterId: FAKE_ADAPTER_ID,
-      routeSnapshot: testRouteSnapshot("fake-default", FAKE_ADAPTER_ID),
+      connectionSnapshot: testRouteSnapshot("fake-default", FAKE_ADAPTER_ID),
       state: "live",
       createdAt: now,
       updatedAt: now,
@@ -6910,9 +6828,9 @@ test("runtime projection: permanent failure emits diagnostic, no unhandled rejec
     const now = new Date().toISOString();
     await svc.runtime.registry.write({
       id: sessionId,
-      routeId: "fake-default",
+      connectionId: "fake-default",
       adapterId: FAKE_ADAPTER_ID,
-      routeSnapshot: testRouteSnapshot("fake-default", FAKE_ADAPTER_ID),
+      connectionSnapshot: testRouteSnapshot("fake-default", FAKE_ADAPTER_ID),
       state: "live",
       createdAt: now,
       updatedAt: now,
@@ -6985,9 +6903,9 @@ test("runtime projection: different sessions are not process-wide serialized", a
     for (const id of ["ss-proj-a", "ss-proj-b"] as const) {
       await svc.runtime.registry.write({
         id,
-        routeId: "fake-default",
+        connectionId: "fake-default",
         adapterId: FAKE_ADAPTER_ID,
-        routeSnapshot: testRouteSnapshot("fake-default", FAKE_ADAPTER_ID),
+        connectionSnapshot: testRouteSnapshot("fake-default", FAKE_ADAPTER_ID),
         state: "starting",
         createdAt: now,
         updatedAt: now,
@@ -7049,10 +6967,15 @@ test("service stop waits for terminal runtime projections before disposing", asy
   });
 
   try {
+    await svc.runtime.reserveSession({
+      sessionId,
+      connectionId: "fake-default",
+      lastTaskId: "tk-stopdrain1",
+      workspace: "ws-stopdrain1",
+      runtimeWorkspace: { cwd: dataDir },
+    });
     await svc.runtime.startSession({
       sessionId,
-      routeId: "fake-default",
-      routeSnapshot: testRouteSnapshot("fake-default", FAKE_ADAPTER_ID),
       runtimeWorkspace: { cwd: dataDir },
     });
 

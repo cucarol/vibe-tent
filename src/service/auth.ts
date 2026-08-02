@@ -1,9 +1,13 @@
 // Loopback client token — machine-local only; never written into workspace / tent files.
 
 import * as crypto from "node:crypto";
+export { deriveSessionToken } from "../runtime/session-token.js";
 
 export const AUTH_HEADER = "authorization";
 export const AUTH_TOKEN_HEADER = "x-tent-token";
+export const CALLER_SESSION_ID_HEADER = "x-tent-session-id";
+export const CALLER_SESSION_TOKEN_HEADER = "x-tent-session-token";
+export const CALLER_EXTERNAL_KEY_HEADER = "x-tent-external-key";
 
 /** Opaque bearer token for loopback attach (RPC + SSE). */
 export function generateServiceToken(): string {
@@ -36,6 +40,17 @@ export function tokensEqual(expected: string, provided: string | undefined): boo
   const b = Buffer.from(provided, "utf8");
   if (a.length !== b.length) return false;
   return crypto.timingSafeEqual(a, b);
+}
+
+export function extractCallerSessionContext(
+  headers: Record<string, string | string[] | undefined> | {
+    [key: string]: string | string[] | undefined;
+  }
+): { sessionId?: string; sessionToken?: string; externalKey?: string } {
+  const sessionId = headerValue(headers, CALLER_SESSION_ID_HEADER)?.trim() || undefined;
+  const sessionToken = headerValue(headers, CALLER_SESSION_TOKEN_HEADER)?.trim() || undefined;
+  const externalKey = headerValue(headers, CALLER_EXTERNAL_KEY_HEADER)?.trim() || undefined;
+  return { sessionId, sessionToken, externalKey };
 }
 
 function headerValue(

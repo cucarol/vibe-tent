@@ -1,5 +1,5 @@
 /**
- * Settings route Skill refs + MCP server projection (CRUD, snapshot, ACP wire).
+ * Agent Connection Skill refs + MCP server projection (CRUD, snapshot, ACP wire).
  * Secrets must never appear in projection / disk / mock logs.
  */
 import assert from "node:assert/strict";
@@ -11,10 +11,10 @@ import { fileURLToPath } from "node:url";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
 import {
-  loadSettingsRoutes,
-  projectSettingsRoute,
-  routesPath,
-} from "../src/service/routes.js";
+  loadAgentConnections,
+  projectAgentConnection,
+  connectionsPath,
+} from "../src/service/connections.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import {
   DEFAULT_GROK_MODEL,
@@ -28,10 +28,7 @@ import {
   resolveAcpSkillMeta,
 } from "../src/adapters/acp/mcp-skills.js";
 import { createAgentRuntime } from "../src/runtime/index.js";
-import {
-  createSettingsRouteSnapshot,
-  type SettingsRouteConfig,
-} from "../src/runtime/route-config.js";
+import type { AgentConnectionConfig } from "../src/runtime/agent-connection.js";
 import { makeSessionId } from "../src/runtime/types.js";
 
 const MOCK = path.join(
@@ -42,15 +39,27 @@ const MOCK = path.join(
 
 type Svc = Awaited<ReturnType<typeof startLocalTentService>>;
 
-const seed = (): SettingsRouteConfig[] => [
+async function startConnection(
+  runtime: ReturnType<typeof createAgentRuntime>,
+  request: Parameters<ReturnType<typeof createAgentRuntime>["startSession"]>[0] & { connectionId: string }
+) {
+  const { connectionId, ...start } = request;
+  const workspace = start.workspace ?? start.workspaceLane?.workspace ?? start.runtimeWorkspace?.cwd ?? start.cwd;
+  if (!workspace) throw new Error("test start requires a workspace");
+  const lastTaskId = start.lastTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
+  await runtime.reserveSession({ sessionId: start.sessionId, connectionId, lastTaskId, workspace, workspaceLane: start.workspaceLane, runtimeWorkspace: start.runtimeWorkspace, cwd: start.cwd });
+  return runtime.startSession({ ...start, lastTaskId, workspace });
+}
+
+const seed = (): AgentConnectionConfig[] => [
   {
-    routeId: "fake-default",
+    connectionId: "fake-default",
     provider: "fake",
     adapterId: FAKE_ADAPTER_ID,
     fake: { waitForSignal: true, emitStdout: true, canResume: true },
   },
   {
-    routeId: "grok-acp-default",
+    connectionId: "grok-acp-default",
     provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
     model: DEFAULT_GROK_MODEL,
@@ -65,14 +74,14 @@ const rpc = (svc: Svc, method: string, params?: Record<string, unknown>) =>
 
 async function withService(
   fn: (svc: Svc, dataDir: string) => Promise<void>,
-  opts?: { routes?: SettingsRouteConfig[]; inject?: boolean }
+  opts?: { connections?: AgentConnectionConfig[]; inject?: boolean }
 ): Promise<void> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-data-"));
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: false,
-    // inject=false seeds defaults to disk so CRUD persists routes.json.
-    ...(opts?.inject === false ? {} : { routes: opts?.routes ?? seed() }),
+    // inject=false seeds defaults to disk so CRUD persists connections.json.
+    ...(opts?.inject === false ? {} : { connections: opts?.connections ?? seed() }),
   });
   try {
     await fn(svc, dataDir);
@@ -182,15 +191,15 @@ test("resolveAcpMcpServersWire fails loud on missing env / credential", () => {
   }
 });
 
-test("route.create/update/list/get skill+mcp whitelist + projection without secrets", async () => {
+test("connection.create/update/list/get skill+mcp whitelist + projection without secrets", async () => {
   const skillRoot = path.join(os.homedir(), ".agents", "skills", "tent-task");
-  // Disk-backed catalog so create/update round-trips routes.json.
+  // Disk-backed catalog so create/update round-trips connections.json.
   await withService(async (svc, dataDir) => {
-    const created = await rpc(svc, "route.create", {
-      routeId: "grok-acp-skmcp",
+    const created = await rpc(svc, "connection.create", {
+      connectionId: "grok-acp-skmcp",
       provider: "grok",
       adapterId: "grok-acp",
-      displayName: "Skill MCP route",
+      displayName: "Skill MCP Connection",
       skills: [
         { name: "tent-task", path: skillRoot, enabled: true },
         { name: "review-helper", enabled: false },
@@ -212,15 +221,15 @@ test("route.create/update/list/get skill+mcp whitelist + projection without secr
       ],
     });
     assert.ok(!created.error, JSON.stringify(created.error));
-    const route = (created.result as { route: Record<string, unknown> }).route;
-    assert.equal((route.skills as unknown[])?.length, 2);
-    assert.equal((route.mcpServers as unknown[])?.length, 2);
-    assert.equal(JSON.stringify(route).includes("sk-"), false);
+    const connection = (created.result as { connection: Record<string, unknown> }).connection;
+    assert.equal((connection.skills as unknown[])?.length, 2);
+    assert.equal((connection.mcpServers as unknown[])?.length, 2);
+    assert.equal(JSON.stringify(connection).includes("sk-"), false);
 
-    const listed = await rpc(svc, "route.list", {});
+    const listed = await rpc(svc, "connection.list", {});
     assert.ok(!listed.error);
-    const proj = (listed.result as { routes: Array<Record<string, unknown>> }).routes.find(
-      (p) => p.routeId === "grok-acp-skmcp"
+    const proj = (listed.result as { connections: Array<Record<string, unknown>> }).connections.find(
+      (p) => p.connectionId === "grok-acp-skmcp"
     );
     assert.ok(proj);
     assert.ok(Array.isArray(proj.skills));
@@ -235,16 +244,16 @@ test("route.create/update/list/get skill+mcp whitelist + projection without secr
     // envKeys present as key names only
     assert.match(projJson, /MCP_API_KEY/);
 
-    const got = await rpc(svc, "route.get", { routeId: "grok-acp-skmcp" });
+    const got = await rpc(svc, "connection.get", { connectionId: "grok-acp-skmcp" });
     assert.ok(!got.error);
     assert.equal(
-      ((got.result as { route: { skills?: unknown[] } }).route.skills)?.length,
+      ((got.result as { connection: { skills?: unknown[] } }).connection.skills)?.length,
       2
     );
 
     // Reject plaintext env on update
-    const bad = await rpc(svc, "route.update", {
-      routeId: "grok-acp-skmcp",
+    const bad = await rpc(svc, "connection.update", {
+      connectionId: "grok-acp-skmcp",
       mcpServers: [
         {
           name: "fs",
@@ -258,31 +267,31 @@ test("route.create/update/list/get skill+mcp whitelist + projection without secr
     assert.match(String(bad.error.message), /envKeys|dangerous|unsupported|Unknown/i);
 
     // Clear skills
-    const cleared = await rpc(svc, "route.update", {
-      routeId: "grok-acp-skmcp",
+    const cleared = await rpc(svc, "connection.update", {
+      connectionId: "grok-acp-skmcp",
       skills: null,
     });
     assert.ok(!cleared.error, JSON.stringify(cleared.error));
-    const after = await rpc(svc, "route.get", { routeId: "grok-acp-skmcp" });
+    const after = await rpc(svc, "connection.get", { connectionId: "grok-acp-skmcp" });
     assert.ok(!after.error);
     assert.equal(
-      (after.result as { route: { skills?: unknown } }).route.skills,
+      (after.result as { connection: { skills?: unknown } }).connection.skills,
       undefined
     );
 
     // Disk round-trip
-    const disk = await loadSettingsRoutes(dataDir);
-    const row = disk.find((p) => p.routeId === "grok-acp-skmcp");
-    assert.ok(row, `expected grok-acp-skmcp on disk; got ${disk.map((p) => p.routeId).join(",")}`);
+    const disk = await loadAgentConnections(dataDir);
+    const row = disk.find((p) => p.connectionId === "grok-acp-skmcp");
+    assert.ok(row, `expected grok-acp-skmcp on disk; got ${disk.map((p) => p.connectionId).join(",")}`);
     assert.equal(row!.skills, undefined);
     assert.equal(row!.mcpServers?.length, 2);
   }, { inject: false });
 });
 
-test("route.create rejects skill path outside allowed roots", async () => {
+test("connection.create rejects skill path outside allowed roots", async () => {
   await withService(async (svc) => {
-    const res = await rpc(svc, "route.create", {
-      routeId: "grok-acp-badskill",
+    const res = await rpc(svc, "connection.create", {
+      connectionId: "grok-acp-badskill",
       provider: "grok",
       adapterId: GROK_ACP_ADAPTER_ID,
       skills: [{ name: "evil", path: path.join(os.tmpdir(), "not-a-skill-root", "evil") }],
@@ -311,7 +320,7 @@ async function waitForMockLog(
   return logRaw;
 }
 
-test("session/new projects mcpServers + skill meta from route snapshot; live edits do not hot-update", async () => {
+test("session/new projects mcpServers + skill meta from Connection snapshot; live edits do not hot-update", async () => {
   const logPath = path.join(
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-log-")),
     "mock.json"
@@ -335,8 +344,8 @@ test("session/new projects mcpServers + skill meta from route snapshot; live edi
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-rt-"));
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-cwd-"));
 
-  const route: SettingsRouteConfig = {
-    routeId: "grok-acp-mcp-proj",
+  const route: AgentConnectionConfig = {
+    connectionId: "grok-acp-mcp-proj",
     provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
     command: process.execPath,
@@ -365,15 +374,14 @@ test("session/new projects mcpServers + skill meta from route snapshot; live edi
 
   const runtime = createAgentRuntime({
     dataDir,
-    routes: [route],
+    connections: [route],
   });
 
   try {
     const sessionId = makeSessionId();
-    await runtime.startSession({
+    await startConnection(runtime, {
       sessionId,
-      routeId: route.routeId,
-      routeSnapshot: createSettingsRouteSnapshot(route, { effectiveEndpointDigest: undefined }),
+      connectionId: route.connectionId,
       runtimeWorkspace: { cwd },
       bootstrapPrompt: "report ok",
       env: {
@@ -402,15 +410,15 @@ test("session/new projects mcpServers + skill meta from route snapshot; live edi
     assert.equal(logRaw.includes("mcp-secret-should-not-log"), false);
 
     // Snapshot isolation: mutate live catalog after start — already-started session snapshot unchanged
-    runtime.registerRoute({
+    runtime.registerConnection({
       ...route,
       skills: [{ name: "other-skill" }],
       mcpServers: [],
     });
     const record = await runtime.registry.read(sessionId);
-    assert.ok(record?.routeSnapshot);
-    assert.equal(record!.routeSnapshot.skills?.[0]?.name, "extra-skill-fixture");
-    assert.equal(record!.routeSnapshot.mcpServers?.length, 2);
+    assert.ok(record?.connectionSnapshot);
+    assert.equal(record!.connectionSnapshot.skills?.[0]?.name, "extra-skill-fixture");
+    assert.equal(record!.connectionSnapshot.mcpServers?.length, 2);
 
     await runtime.stopSession(sessionId, "user");
   } finally {
@@ -420,7 +428,69 @@ test("session/new projects mcpServers + skill meta from route snapshot; live edi
   }
 });
 
-test("session/load sends original snapshot mcpServers/skills after live route mutation", async () => {
+test("MCP credentialRef plaintext is ephemeral and redacted from ACP failure diagnostics", async () => {
+  const secret = "mcp-vault-secret-never-persist";
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-redact-rt-"));
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-redact-cwd-"));
+  const connection: AgentConnectionConfig = {
+    connectionId: "grok-acp-mcp-redact",
+    provider: "grok",
+    adapterId: GROK_ACP_ADAPTER_ID,
+    command: process.execPath,
+    args: [MOCK, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
+    model: DEFAULT_GROK_MODEL,
+    permissionPolicy: "deny",
+    promptTimeoutMs: 8_000,
+    mcpServers: [
+      {
+        name: "vault-mcp",
+        transport: "stdio",
+        command: "npx",
+        envCredentialRefs: { API_KEY: "mcp-vault" },
+      },
+    ],
+  };
+  const runtime = createAgentRuntime({
+    dataDir,
+    connections: [connection],
+    resolveCredentialRef: async (credentialRef) =>
+      credentialRef === "mcp-vault" ? secret : undefined,
+  });
+  const sessionId = makeSessionId();
+  const events: unknown[] = [];
+  runtime.subscribe(sessionId, (event) => events.push(event));
+
+  try {
+    await assert.rejects(
+      () =>
+        startConnection(runtime, {
+          sessionId,
+          connectionId: connection.connectionId,
+          runtimeWorkspace: { cwd },
+          bootstrapPrompt: "must fail before prompt",
+          env: {
+            MOCK_ACP_FAIL_NEW: "1",
+            MOCK_ACP_ECHO_MCP_SECRET: "1",
+          },
+        }),
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        assert.doesNotMatch(message, new RegExp(secret));
+        assert.match(message, /\[redacted\]/);
+        return true;
+      }
+    );
+
+    const record = await runtime.registry.read(sessionId);
+    assert.equal(JSON.stringify(record).includes(secret), false);
+    assert.equal(JSON.stringify(events).includes(secret), false);
+    assert.match(JSON.stringify(events), /\[redacted\]/);
+  } finally {
+    await runtime.shutdown();
+  }
+});
+
+test("session/load sends original snapshot mcpServers/skills after live Connection mutation", async () => {
   // Separate logs: resume spawns a new bridge process that overwrites MOCK_ACP_LOG.
   const logDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-load-log-"));
   const startLogPath = path.join(logDir, "start.json");
@@ -446,8 +516,8 @@ test("session/load sends original snapshot mcpServers/skills after live route mu
     MCP_API_KEY: "mcp-secret-should-not-log",
   };
 
-  const route: SettingsRouteConfig = {
-    routeId: "grok-acp-mcp-load",
+  const route: AgentConnectionConfig = {
+    connectionId: "grok-acp-mcp-load",
     provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
     command: process.execPath,
@@ -470,15 +540,14 @@ test("session/load sends original snapshot mcpServers/skills after live route mu
 
   const runtime = createAgentRuntime({
     dataDir,
-    routes: [route],
+    connections: [route],
   });
 
   try {
     const sessionId = makeSessionId();
-    await runtime.startSession({
+    await startConnection(runtime, {
       sessionId,
-      routeId: route.routeId,
-      routeSnapshot: createSettingsRouteSnapshot(route, { effectiveEndpointDigest: undefined }),
+      connectionId: route.connectionId,
       runtimeWorkspace: { cwd },
       bootstrapPrompt: "start ok",
       env: { ...baseEnv, MOCK_ACP_LOG: startLogPath },
@@ -512,7 +581,7 @@ test("session/load sends original snapshot mcpServers/skills after live route mu
 
     // Live catalog mutation after start must not affect resume projection.
     // Also point resume bridge log at a separate file (snapshot env still has start path).
-    runtime.registerRoute({
+    runtime.registerConnection({
       ...route,
       skills: [{ name: "mutated-skill-only" }],
       mcpServers: [
@@ -526,7 +595,7 @@ test("session/load sends original snapshot mcpServers/skills after live route mu
 
     await runtime.stopSession(sessionId, "user");
 
-    // Resume uses routeSnapshot (original skills/mcp) + session/load, not live catalog.
+    // Resume uses connectionSnapshot (original skills/mcp) + session/load, not live catalog.
     await runtime.resumeSession({
       sessionId,
       cwd,
@@ -561,7 +630,7 @@ test("session/load sends original snapshot mcpServers/skills after live route mu
     assert.ok(!loadLog.methods.includes("session/new"));
     assert.ok(Array.isArray(loadLog.loads) && loadLog.loads.length >= 1);
     const load = loadLog.loads[0]!;
-    // Original snapshot wire — not the mutated live route.
+    // Original snapshot wire — not the mutated live Connection.
     assert.equal(load.mcpServersLen, 1);
     assert.deepEqual(load.mcpServerNames, ["fs"]);
     assert.deepEqual(load.skillNames, ["extra-skill-fixture"]);
@@ -570,8 +639,8 @@ test("session/load sends original snapshot mcpServers/skills after live route mu
     assert.equal(loadRaw.includes("mutated-skill-only"), false);
 
     const record = await runtime.registry.read(sessionId);
-    assert.equal(record?.routeSnapshot.skills?.[0]?.name, "extra-skill-fixture");
-    assert.equal(record?.routeSnapshot.mcpServers?.[0]?.name, "fs");
+    assert.equal(record?.connectionSnapshot?.skills?.[0]?.name, "extra-skill-fixture");
+    assert.equal(record?.connectionSnapshot?.mcpServers?.[0]?.name, "fs");
 
     await runtime.stopSession(sessionId, "user");
   } finally {
@@ -589,8 +658,8 @@ test("startSession fails loud when enabled skill path is missing", async () => {
     "skills",
     "tent-role-skmcp-missing-" + Date.now()
   );
-  const route: SettingsRouteConfig = {
-    routeId: "grok-acp-skill-missing",
+  const route: AgentConnectionConfig = {
+    connectionId: "grok-acp-skill-missing",
     provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
     command: process.execPath,
@@ -601,14 +670,13 @@ test("startSession fails loud when enabled skill path is missing", async () => {
     promptTimeoutMs: 4_000,
     skills: [{ name: "missing-skill", path: missing, enabled: true }],
   };
-  const runtime = createAgentRuntime({ dataDir, routes: [route] });
+  const runtime = createAgentRuntime({ dataDir, connections: [route] });
   try {
     await assert.rejects(
       () =>
-        runtime.startSession({
+        startConnection(runtime, {
           sessionId: makeSessionId(),
-          routeId: route.routeId,
-          routeSnapshot: createSettingsRouteSnapshot(route, { effectiveEndpointDigest: undefined }),
+          connectionId: route.connectionId,
           runtimeWorkspace: { cwd },
           bootstrapPrompt: "should fail",
           env: { CPA_GROK_API_KEY: "test-key-not-real" },
@@ -633,8 +701,8 @@ test("resumeSession fails loud when snapshot skill path is missing", async () =>
   await fs.writeFile(path.join(skillDir, "SKILL.md"), "# fixture\n", "utf8");
 
   const logPath = path.join(dataDir, "mock.json");
-  const route: SettingsRouteConfig = {
-    routeId: "grok-acp-skill-resmiss",
+  const route: AgentConnectionConfig = {
+    connectionId: "grok-acp-skill-resmiss",
     provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
     command: process.execPath,
@@ -645,13 +713,12 @@ test("resumeSession fails loud when snapshot skill path is missing", async () =>
     promptTimeoutMs: 8_000,
     skills: [{ name: "will-vanish", path: skillDir, enabled: true }],
   };
-  const runtime = createAgentRuntime({ dataDir, routes: [route] });
+  const runtime = createAgentRuntime({ dataDir, connections: [route] });
   try {
     const sessionId = makeSessionId();
-    await runtime.startSession({
+    await startConnection(runtime, {
       sessionId,
-      routeId: route.routeId,
-      routeSnapshot: createSettingsRouteSnapshot(route, { effectiveEndpointDigest: undefined }),
+      connectionId: route.connectionId,
       runtimeWorkspace: { cwd },
       bootstrapPrompt: "start ok",
       env: {
@@ -693,8 +760,8 @@ test("resumeSession fails loud when snapshot skill path is missing", async () =>
 test("buildAcpLaunchExtras / startSession does not swallow credential resolver errors", async () => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-cred-"));
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-cred-cwd-"));
-  const route: SettingsRouteConfig = {
-    routeId: "grok-acp-cred-throw",
+  const route: AgentConnectionConfig = {
+    connectionId: "grok-acp-cred-throw",
     provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
     command: process.execPath,
@@ -714,7 +781,7 @@ test("buildAcpLaunchExtras / startSession does not swallow credential resolver e
   };
   const runtime = createAgentRuntime({
     dataDir,
-    routes: [route],
+    connections: [route],
     resolveCredentialRef: async () => {
       throw new Error("vault backend exploded with secret=sk-should-not-leak");
     },
@@ -722,10 +789,9 @@ test("buildAcpLaunchExtras / startSession does not swallow credential resolver e
   try {
     await assert.rejects(
       () =>
-        runtime.startSession({
+        startConnection(runtime, {
           sessionId: makeSessionId(),
-          routeId: route.routeId,
-          routeSnapshot: createSettingsRouteSnapshot(route, { effectiveEndpointDigest: undefined }),
+          connectionId: route.connectionId,
           runtimeWorkspace: { cwd },
           bootstrapPrompt: "should fail loud",
           env: { CPA_GROK_API_KEY: "test-key-not-real" },
@@ -746,10 +812,10 @@ test("buildAcpLaunchExtras / startSession does not swallow credential resolver e
   }
 });
 
-test("projectSettingsRoute never embeds SKILL.md body", () => {
+test("projectAgentConnection never embeds SKILL.md body", () => {
   const body = "# Super secret skill body\nDo not leak\n";
-  const p = projectSettingsRoute({
-    routeId: "grok-acp-x",
+  const p = projectAgentConnection({
+    connectionId: "grok-acp-x",
     provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
     skills: [{ name: "tent-role", path: path.join(os.homedir(), ".agents", "skills", "tent-role") }],
@@ -795,11 +861,11 @@ test("resolveAcpSkillMeta requirePathExists fails loud for missing path; name-on
 test("disk quarantine on unknown mcpServers field with secret shape", async () => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-q-"));
   await fs.writeFile(
-    routesPath(dataDir),
+    connectionsPath(dataDir),
     JSON.stringify({
-      routes: [
+      connections: [
         {
-          routeId: "grok-acp-q",
+          connectionId: "grok-acp-q",
           provider: "grok",
           adapterId: "grok-acp",
           permissionPolicy: "deny",
@@ -816,7 +882,7 @@ test("disk quarantine on unknown mcpServers field with secret shape", async () =
     }) + "\n",
     "utf8"
   );
-  await assert.rejects(() => loadSettingsRoutes(dataDir), /quarantined/i);
-  const backups = (await fs.readdir(dataDir)).filter((name) => name.startsWith("routes.json.corrupt-"));
+  await assert.rejects(() => loadAgentConnections(dataDir), /quarantined/i);
+  const backups = (await fs.readdir(dataDir)).filter((name) => name.startsWith("connections.json.corrupt-"));
   assert.equal(backups.length, 1);
 });

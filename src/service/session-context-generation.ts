@@ -1,6 +1,6 @@
 /**
  * Production collector for Session contextGeneration.
- * Service loads workspace/Skill/Role/immutable-route facts here.
+ * Service loads workspace/Node/Skill/Role/immutable-Connection facts here.
  */
 import type { FsAdapter } from "../core/adapter.js";
 import {
@@ -13,18 +13,20 @@ import {
 import {
   agentsBodyCompatibilityDigest,
   assertRefsResolved,
+  canonicalJson,
   computeContextGenerationFromStableFacts,
+  sha256Hex,
   skillBodyCompatibilityDigest,
   TaskContextCardError,
   type TaskContextCardV1,
 } from "../core/task-context-card.js";
-import type { SettingsRouteSnapshot } from "../runtime/types.js";
+import type { AgentConnectionSnapshot, SessionRecord } from "../runtime/types.js";
 import {
-  calculateSettingsRouteLaunchDigest,
-  routeConfigFromSnapshot,
-} from "../runtime/route-config.js";
+  calculateAgentConnectionLaunchDigest,
+  connectionConfigFromSnapshot,
+} from "../runtime/agent-connection.js";
 import { loadDeliveries } from "../core/delivery.js";
-import { isDeliveryId, isTaskId, type AssigneeKind } from "../core/task-model.js";
+import { isDeliveryId, isTaskId } from "../core/task-model.js";
 // isDeliveryId / isTaskId: durable id shape checks before workspace lookup.
 import {
   loadTaskEnvelope,
@@ -35,7 +37,6 @@ import { loadTent } from "../core/tree.js";
 import { loadWorkspaceAgents } from "../core/workspace-agents.js";
 import {
   loadRolesRegistry,
-  resolveRole,
   type RoleDefinition,
 } from "../core/skillRoleRegistry.js";
 
@@ -47,8 +48,10 @@ export type StableContextGenerationBundle = {
   tentTaskDigest: string;
   tentTaskVersion: string;
   rolePrompt: string;
+  /** Current exact referenced-Node facts, ordered as persisted on the Task. */
+  nodeContextDigest: string;
   /** Immutable, non-secret launch snapshot digest. */
-  routeLaunchDigest: string;
+  connectionLaunchDigest: string;
 };
 
 export type CollectStableContextGenerationInput = {
@@ -57,48 +60,44 @@ export type CollectStableContextGenerationInput = {
   workspaceIdentity: string;
   packageRoot: string;
   packageVersion?: string;
-  assigneeKind: AssigneeKind;
-  /** Exact persisted Task assignee id (Role name or Settings route id). */
-  assigneeId: string;
-  /** Immutable non-secret launch facts used by this managed Session. */
-  routeSnapshot: SettingsRouteSnapshot;
-  roleFs?: FsAdapter;
-  /** Optional preloaded Role definition (avoids double load). */
-  role?: RoleDefinition;
+  /** Exact durable Task facts. Managed collection requires its bound Session. */
+  task: Pick<TaskEnvelope, "roleId" | "sessionId" | "contextCard">;
+  /**
+   * Exact machine-local Session row. Connection facts are read only from this
+   * row's immutable non-secret snapshot; live Settings never reinterpret it.
+   */
+  session: Pick<SessionRecord, "id" | "connectionSnapshot">;
+  /** Mounted Tent system filesystem for exact Role and referenced-Node facts. */
+  fs: FsAdapter;
   capabilityFlags?: readonly string[];
 };
 
 /**
  * Resolve a required Role from the workspace registry.
- * Fail loud on missing roleFs, registry read/parse failure, or missing named Role —
+ * Fail loud on registry read/parse failure or missing exact Role id —
  * never invent an empty Role prompt fallback for a required Role.
  */
 async function requireResolvedRoleFromRegistry(
-  roleFs: FsAdapter | undefined,
-  roleName: string,
+  fs: FsAdapter,
+  roleId: string,
   reason: string
 ): Promise<RoleDefinition> {
-  const key = roleName.trim();
+  const key = roleId.trim();
   if (!key) {
     throw new Error(
-      `contextGeneration requires a non-empty Role name (${reason})`
-    );
-  }
-  if (!roleFs) {
-    throw new Error(
-      `contextGeneration requires Role "${key}" (${reason}) but roleFs was not provided`
+      `contextGeneration requires a non-empty Role id (${reason})`
     );
   }
   let registry: Awaited<ReturnType<typeof loadRolesRegistry>>;
   try {
-    registry = await loadRolesRegistry(roleFs);
+    registry = await loadRolesRegistry(fs);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(
       `contextGeneration cannot load roles registry for Role "${key}" (${reason}): ${message}`
     );
   }
-  const role = resolveRole(registry.roles, key);
+  const role = registry.roles.find((candidate) => candidate.id === key);
   if (!role) {
     throw new Error(
       `contextGeneration required Role not found: "${key}" (${reason})`
@@ -107,13 +106,43 @@ async function requireResolvedRoleFromRegistry(
   return role;
 }
 
+async function collectReferencedNodeDigest(
+  fs: FsAdapter,
+  task: Pick<TaskEnvelope, "contextCard">
+): Promise<string> {
+  const tent = await loadTent(fs);
+  const rows = task.contextCard.refs.nodes.map((ref) => {
+    const node = tent.byId.get(ref.id);
+    if (!node) {
+      throw new Error(
+        `contextGeneration referenced Node not found: ${ref.id}`
+      );
+    }
+    return {
+      id: node.id,
+      path: node.path,
+      type: node.type,
+      tags: node.tags,
+      mode: node.mode,
+      relations: node.relations,
+      frontmatter: node.fm,
+      body: node.body,
+      pointer: {
+        path: ref.path?.trim() || "",
+        revision: ref.revision?.trim() || "",
+      },
+    };
+  });
+  return sha256Hex(canonicalJson(rows));
+}
+
 /**
  * Collect real stable compatibility facts and compute contextGeneration.
  * Excludes taskId / objective / acceptance / Task delta.
  *
- * Collector failures (missing required Role, unreadable registry, missing built-in
- * Skill body) throw — never yield reusable empty/fallback facts.
- * User-direct route Tasks with no parent Role do not invent Role facts.
+ * Collector failures (binding mismatch, missing required Role/Node, unreadable
+ * registry, missing built-in Skill body) throw — never yield reusable fallback
+ * facts. A temporary Session Task with no roleId does not invent Role facts.
  */
 export async function collectStableContextGeneration(
   input: CollectStableContextGenerationInput
@@ -121,61 +150,53 @@ export async function collectStableContextGeneration(
   const agents = await loadWorkspaceAgents(input.workspaceRoot);
   const agentsPointerDigest = agentsBodyCompatibilityDigest(agents.content);
 
-  const assigneeId = input.assigneeId.trim();
-  if (!assigneeId) {
-    throw new Error("contextGeneration requires a non-empty Task assigneeId");
-  }
-  const routeId = input.routeSnapshot.routeId.trim();
-  const provider = input.routeSnapshot.provider.trim();
-  const adapterId = input.routeSnapshot.adapterId.trim();
-  const routeLaunchDigest = routeLaunchDigestFromSnapshot(input.routeSnapshot);
-  if (!routeId || !provider || !adapterId || !routeLaunchDigest) {
+  const taskSessionId = input.task.sessionId?.trim() || "";
+  const sessionId = input.session.id.trim();
+  if (!taskSessionId || taskSessionId !== sessionId) {
     throw new Error(
-      "contextGeneration requires a complete immutable Settings route snapshot"
+      `contextGeneration requires exact Task/Session binding: Task ${taskSessionId || "<none>"}, Session ${sessionId || "<none>"}`
     );
   }
-  if (input.assigneeKind === "route" && assigneeId !== routeId) {
+  const connectionSnapshot = input.session.connectionSnapshot;
+  if (!connectionSnapshot) {
     throw new Error(
-      `contextGeneration route assignee ${assigneeId} does not match snapshot route ${routeId}`
+      `contextGeneration requires immutable Connection snapshot on Session ${sessionId}`
+    );
+  }
+  const connectionId = connectionSnapshot.connectionId.trim();
+  const provider = connectionSnapshot.provider.trim();
+  const adapterId = connectionSnapshot.adapterId.trim();
+  const connectionLaunchDigest = connectionLaunchDigestFromSnapshot(connectionSnapshot);
+  if (!connectionId || !provider || !adapterId || !connectionLaunchDigest) {
+    throw new Error(
+      "contextGeneration requires a complete immutable Agent Connection snapshot"
     );
   }
 
-  // Role facts belong only to a durable Role assignee. A route executor receives
-  // Task/Node context, never the parent Role's private operating prompt.
-  const responsibilityRoleId =
-    input.assigneeKind === "role"
-      ? assigneeId
-      : "";
-  let role = input.role;
-  if (responsibilityRoleId && !role) {
-    role = await requireResolvedRoleFromRegistry(
-      input.roleFs,
-      responsibilityRoleId,
-      "durable Role assignee"
-    );
-  }
-  if (role && responsibilityRoleId) {
-    const resolvedRoleName = role.name.trim();
-    const resolvedRoleId = role.id?.trim() || "";
-    if (
-      resolvedRoleName !== responsibilityRoleId &&
-      resolvedRoleId !== responsibilityRoleId
-    ) {
-      throw new Error(
-        `contextGeneration Role fact mismatch: expected ${responsibilityRoleId}, got ${resolvedRoleId || resolvedRoleName}`
-      );
-    }
-  }
+  // Role facts belong only to an exact durable Task.roleId. A temporary Session
+  // receives Task/Node context, never a parent/reviewer Role's private prompt.
+  const roleId = input.task.roleId?.trim() || "";
+  const role = roleId
+    ? await requireResolvedRoleFromRegistry(
+        input.fs,
+        roleId,
+        "durable Role responsibility"
+      )
+    : undefined;
+  const nodeContextDigest = await collectReferencedNodeDigest(
+    input.fs,
+    input.task
+  );
 
   // Skill body/version reads fail loud when required built-in SKILL.md is missing.
   const skillInputs = managedSkillCompatibilityInputs({
     packageRoot: input.packageRoot,
-    assigneeKind: input.assigneeKind,
-    role: input.assigneeKind === "role" ? role : undefined,
+    roleId: roleId || undefined,
+    role,
     packageVersion: input.packageVersion,
   });
 
-  // Every managed Task receives tent-task. A route executor is not a second Role,
+  // Every managed Task receives tent-task. A temporary Session is not a second Role,
   // so tent-role is included only for an actual Role assignee.
   const tentTaskBody =
     skillInputs.skillBodies[BUILTIN_TENT_TASK_SKILL] ??
@@ -196,7 +217,7 @@ export async function collectStableContextGeneration(
   let tentRoleBody = "";
   let tentRoleVersion = "";
   let tentRoleDigest = "";
-  if (input.assigneeKind === "role") {
+  if (roleId) {
     tentRoleBody =
       skillInputs.skillBodies[BUILTIN_TENT_ROLE_SKILL] ??
       readBundledSkillBody(input.packageRoot, BUILTIN_TENT_ROLE_SKILL);
@@ -214,20 +235,22 @@ export async function collectStableContextGeneration(
     });
   }
 
-  const rolePrompt = responsibilityRoleId ? role?.prompt?.trim() || "" : "";
+  const rolePrompt = roleId ? role?.prompt?.trim() || "" : "";
   const contextGeneration = computeContextGenerationFromStableFacts({
     workspaceIdentity: input.workspaceIdentity,
     agentsBody: agents.content,
     agentsPointerDigest,
-    tentRoleBody: input.assigneeKind === "role" ? tentRoleBody : undefined,
-    tentRoleVersion: input.assigneeKind === "role" ? tentRoleVersion : undefined,
+    tentRoleBody: roleId ? tentRoleBody : undefined,
+    tentRoleVersion: roleId ? tentRoleVersion : undefined,
     tentTaskBody,
     tentTaskVersion,
-    rolePrompt: responsibilityRoleId ? rolePrompt : undefined,
-    routeId,
+    rolePrompt: roleId ? rolePrompt : undefined,
+    connectionId,
     adapterId,
+    roleId: roleId || undefined,
     capabilityFlags: input.capabilityFlags,
-    routeLaunchDigest,
+    connectionLaunchDigest,
+    extraStable: { nodeContextDigest },
   });
 
   return {
@@ -238,7 +261,8 @@ export async function collectStableContextGeneration(
     tentTaskDigest,
     tentTaskVersion,
     rolePrompt,
-    routeLaunchDigest,
+    nodeContextDigest,
+    connectionLaunchDigest,
   };
 }
 
@@ -247,20 +271,20 @@ export async function collectStableContextGeneration(
  * The runtime digest covers provider, adapter, launch topology, credential references,
  * and the hashed effective endpoint without exposing secret or raw environment values.
  */
-export function routeLaunchDigestFromSnapshot(
-  route: SettingsRouteSnapshot
+export function connectionLaunchDigestFromSnapshot(
+  connection: AgentConnectionSnapshot
 ): string {
-  const digest = route.launchDigest.trim();
+  const digest = connection.launchDigest.trim();
   if (!digest) {
-    throw new Error("Settings route snapshot is missing launchDigest");
+    throw new Error("Agent Connection snapshot is missing launchDigest");
   }
-  const expected = calculateSettingsRouteLaunchDigest(
-    routeConfigFromSnapshot(route),
-    route.effectiveEndpointDigest
+  const expected = calculateAgentConnectionLaunchDigest(
+    connectionConfigFromSnapshot(connection),
+    connection.effectiveEndpointDigest
   );
   if (digest !== expected) {
     throw new Error(
-      `Settings route snapshot launchDigest mismatch for route ${route.routeId}`
+      `Agent Connection snapshot launchDigest mismatch for ${connection.connectionId}`
     );
   }
   return digest;

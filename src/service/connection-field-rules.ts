@@ -1,30 +1,30 @@
-// Pure validation rules for machine Settings routes.
-// A route is a launch target, never an executor identity and never a secret store.
+// Pure validation rules for machine Agent Connections.
+// A Connection is launch configuration, never executor identity or a secret store.
 
 import type { AcpPermissionPolicy } from "../adapters/acp/types.js";
-import { ROUTE_ID_RE, isRouteId } from "../core/id.js";
+import { CONNECTION_ID_RE, isConnectionId } from "../core/id.js";
 import { CREDENTIAL_ID_RE, assertCredentialId } from "./credential-store.js";
 
 export type FieldResult<T> = { ok: true; value: T } | { ok: false; message: string };
 
-export { ROUTE_ID_RE };
+export { CONNECTION_ID_RE };
 export const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export const MAX_TIMEOUT_MS = 24 * 60 * 60_000;
 export const PERMISSION_POLICIES = new Set<AcpPermissionPolicy>(["allow", "ask", "deny"]);
 
-export const SECRET_ROUTE_FIELD_HINTS = [
+export const SECRET_CONNECTION_FIELD_HINTS = [
   "apikey", "api_key", "token", "secret", "password", "authorization", "bearer",
 ] as const;
 
 const ok = <T>(value: T): FieldResult<T> => ({ ok: true, value });
 const fail = (message: string): FieldResult<never> => ({ ok: false, message });
 
-export function parseRouteIdValue(raw: unknown, field = "routeId"): FieldResult<string> {
+export function parseConnectionIdValue(raw: unknown, field = "connectionId"): FieldResult<string> {
   if (typeof raw !== "string" || !raw.trim()) return fail(`Missing or invalid string param: ${field}`);
-  const routeId = raw.trim();
-  return isRouteId(routeId)
-    ? ok(routeId)
-    : fail(`Invalid routeId: must match ${ROUTE_ID_RE} (lowercase letter, then a-z0-9-, max 63)`);
+  const connectionId = raw.trim();
+  return isConnectionId(connectionId)
+    ? ok(connectionId)
+    : fail(`Invalid connectionId: must match ${CONNECTION_ID_RE} (lowercase letter, then a-z0-9-, max 63)`);
 }
 
 export function parseNonEmptyStringValue(raw: unknown, key: string): FieldResult<string> {

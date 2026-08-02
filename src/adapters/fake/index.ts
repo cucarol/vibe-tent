@@ -4,13 +4,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type {
-  RouteLaunchPlan,
+  ConnectionLaunchPlan,
   ProviderAdapter,
   ProviderCapabilities,
   ResolvedLaunch,
   ResumeToken,
 } from "../types.js";
-import type { FakeRouteOptions, RuntimeEvent } from "../../runtime/types.js";
+import type { FakeConnectionOptions, RuntimeEvent } from "../../runtime/types.js";
 
 export const FAKE_ADAPTER_ID = "fake-cli";
 
@@ -24,7 +24,7 @@ export interface FakeAdapterOptions {
  * Delivered as an inline `node -e` script so tests need no extra fixtures on disk
  * (bootstrap prompt may still land in a temp file when provided).
  */
-function buildInlineScript(opts: Required<Pick<FakeRouteOptions, "sleepMs" | "exitCode" | "waitForSignal" | "emitStdout">>): string {
+function buildInlineScript(opts: Required<Pick<FakeConnectionOptions, "sleepMs" | "exitCode" | "waitForSignal" | "emitStdout">>): string {
   // Keep this as a single expression string for `node -e`.
   // Intentionally has no network / no provider SDKs.
   return `
@@ -56,10 +56,10 @@ if (waitForSignal) {
 }
 
 function normalizeFakeOpts(raw: unknown): Required<
-  Pick<FakeRouteOptions, "sleepMs" | "exitCode" | "waitForSignal" | "emitStdout">
+  Pick<FakeConnectionOptions, "sleepMs" | "exitCode" | "waitForSignal" | "emitStdout">
 > &
-  FakeRouteOptions {
-  const o = (raw && typeof raw === "object" ? raw : {}) as FakeRouteOptions;
+  FakeConnectionOptions {
+  const o = (raw && typeof raw === "object" ? raw : {}) as FakeConnectionOptions;
   return {
     sleepMs: typeof o.sleepMs === "number" ? o.sleepMs : 30_000,
     exitCode: typeof o.exitCode === "number" ? o.exitCode : 0,
@@ -91,7 +91,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
     };
   }
 
-  resolveLaunch(plan: RouteLaunchPlan): ResolvedLaunch {
+  resolveLaunch(plan: ConnectionLaunchPlan): ResolvedLaunch {
     const fake = normalizeFakeOpts(plan.extras?.fake ?? plan.extras);
     if (fake.failLaunch) {
       throw new Error(fake.failLaunch);
@@ -110,7 +110,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
     const env: Record<string, string> = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_ROUTE_ID: plan.routeId,
+      TENT_CONNECTION_ID: plan.connectionId,
     };
     if (bootstrapFile) env.TENT_BOOTSTRAP_FILE = bootstrapFile;
 

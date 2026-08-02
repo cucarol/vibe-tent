@@ -24,9 +24,9 @@ import {
   isActionableTaskState,
   listCoordinationTypeNames,
   listCoordinationTypeOptions,
-  listRouteOptions,
+  listConnectionOptions,
   pickDefaultCoordinationType,
-  pickDefaultRouteId,
+  pickDefaultConnectionId,
   sessionStateLabel,
   suggestNodeName,
   taskStateLabel,
@@ -35,10 +35,10 @@ import {
 import { DesktopShellModel } from "../src/desktop/workbench/shell-model.js";
 import { ServiceRpcClient } from "../src/desktop/client/rpc-client.js";
 import {
-  defaultSettingsRoutes,
-  projectSettingsRoute,
-  projectSettingsRoutes,
-} from "../src/service/routes.js";
+  defaultAgentConnections,
+  projectAgentConnection,
+  projectAgentConnections,
+} from "../src/service/connections.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import { GROK_ACP_ADAPTER_ID } from "../src/adapters/grok-acp/index.js";
 import { buildTaskContextCard } from "../src/core/task-context-card.js";
@@ -68,7 +68,10 @@ test("listCoordinationTypeNames uses base tier types", () => {
 });
 
 test("validateDispatchForm builds task.dispatch payload and blocks invalid cases", () => {
-  const roles = [{ name: "executor" }, { name: "reviewer" }];
+  const roles = [
+    { roleId: "rl-executor", name: "executor" },
+    { roleId: "rl-reviewer", name: "reviewer" },
+  ];
   const ok = validateDispatchForm({
     nodeId: "cx-1",
     coordination: true,
@@ -78,9 +81,8 @@ test("validateDispatchForm builds task.dispatch payload and blocks invalid cases
   });
   assert.equal(ok.ok, true);
   assert.deepEqual(ok.payload, {
-    nodeId: "cx-1",
-    assigneeKind: "role",
-    assigneeId: "executor",
+    nodeIds: ["cx-1"],
+    roleId: "rl-executor",
     prompt: "implement feature",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -170,8 +172,7 @@ test("accept/reject payload builders and task review model", () => {
       {
         path: "temp/executor/tasks/a.md",
         id: "tk-a",
-        assigneeKind: "role",
-        assigneeId: "executor",
+        roleId: "rl-executor",
         referencedNodeIds: ["cx-box"],
         state: "delivered",
         manifest: "m",
@@ -182,8 +183,8 @@ test("accept/reject payload builders and task review model", () => {
       {
         path: "temp/executor/tasks/b.md",
         id: "tk-b",
-        assigneeKind: "role",
-        assigneeId: "executor",
+        roleId: "rl-executor",
+        sessionId: "ss-b",
         referencedNodeIds: ["cx-box"],
         state: "queued",
         manifest: "m",
@@ -223,21 +224,21 @@ test("suggestNodeName embeds type without hardcoding goal", () => {
   assert.match(suggestNodeName("mission", 1_700_000_000_000), /^mission-/);
 });
 
-test("CLIENT_METHODS includes registry.types/roles, role CRUD, and route CRUD", () => {
+test("CLIENT_METHODS includes registry.types/roles, role CRUD, and Connection CRUD", () => {
   assert.ok(CLIENT_METHODS.includes("registry.types"));
   assert.ok(CLIENT_METHODS.includes("registry.roles"));
   assert.ok(CLIENT_METHODS.includes("registry.role.create"));
   assert.ok(CLIENT_METHODS.includes("registry.role.update"));
   assert.ok(CLIENT_METHODS.includes("registry.role.delete"));
-  assert.ok(CLIENT_METHODS.includes("route.list"));
-  assert.ok(CLIENT_METHODS.includes("route.get"));
-  assert.ok(CLIENT_METHODS.includes("route.create"));
-  assert.ok(CLIENT_METHODS.includes("route.update"));
-  assert.ok(CLIENT_METHODS.includes("route.delete"));
+  assert.ok(CLIENT_METHODS.includes("connection.list"));
+  assert.ok(CLIENT_METHODS.includes("connection.get"));
+  assert.ok(CLIENT_METHODS.includes("connection.create"));
+  assert.ok(CLIENT_METHODS.includes("connection.update"));
+  assert.ok(CLIENT_METHODS.includes("connection.delete"));
 });
 
-test("projectSettingsRoutes strips secrets and projects Settings route metadata", () => {
-  const raw = defaultSettingsRoutes();
+test("projectAgentConnections strips secrets and projects Agent Connection metadata", () => {
+  const raw = defaultAgentConnections();
   // Inject a secret-looking env bag — must never appear in projection.
   (raw[0] as unknown as { env: Record<string, string> }).env = { CPA_GROK_API_KEY: "sk-secret-value", PATH: "/tmp" };
   (raw[1] as unknown as { env: Record<string, string> }).env = { TOKEN: "should-not-leak" };
@@ -246,7 +247,7 @@ test("projectSettingsRoutes strips secrets and projects Settings route metadata"
     envKey: "CPA_GROK_API_KEY",
   };
 
-  const projected = projectSettingsRoutes(raw);
+  const projected = projectAgentConnections(raw);
   const json = JSON.stringify(projected);
   assert.ok(!json.includes("sk-secret-value"));
   assert.ok(!json.includes("should-not-leak"));
@@ -255,33 +256,33 @@ test("projectSettingsRoutes strips secrets and projects Settings route metadata"
   // No raw env map object in projection payload.
   assert.ok(!/"env"\s*:/.test(json));
 
-  const grok = projected.find((p) => p.routeId === "grok-acp-default")!;
+  const grok = projected.find((p) => p.connectionId === "grok-acp-default")!;
   assert.equal(grok.adapterId, GROK_ACP_ADAPTER_ID);
   assert.equal(grok.model, "grok-4.5");
   assert.equal(grok.envKey, "CPA_GROK_API_KEY");
-  assert.equal(grok.executable, undefined, "unsupported nested ACP fields never leak into route projection");
-  assert.ok(projected.every((route) => route.routeId.length > 0));
+  assert.equal(grok.executable, undefined, "unsupported nested ACP fields never leak into Connection projection");
+  assert.ok(projected.every((connection) => connection.connectionId.length > 0));
 
-  const single = projectSettingsRoute(raw[1]);
-  assert.equal(single.routeId, raw[1]!.routeId);
+  const single = projectAgentConnection(raw[1]);
+  assert.equal(single.connectionId, raw[1]!.connectionId);
   assert.ok(!("env" in single));
   assert.ok(!("fake" in single));
   assert.ok(!("grokAcp" in single) && !("acp" in single));
 });
 
-test("listRouteOptions + pickDefaultRouteId use Settings route ids", () => {
-  const opts = listRouteOptions(projectSettingsRoutes(defaultSettingsRoutes()));
-  assert.ok(opts.some((p) => p.routeId === "grok-acp-default"));
-  assert.equal(pickDefaultRouteId(opts), opts[0]!.routeId);
+test("listConnectionOptions + pickDefaultConnectionId use Agent Connection ids", () => {
+  const opts = listConnectionOptions(projectAgentConnections(defaultAgentConnections()));
+  assert.ok(opts.some((p) => p.connectionId === "grok-acp-default"));
+  assert.equal(pickDefaultConnectionId(opts), opts[0]!.connectionId);
 
   // Sole product route wins.
   assert.equal(
-    pickDefaultRouteId([{ routeId: "only", adapterId: "x", displayName: "only", label: "only" }]),
+    pickDefaultConnectionId([{ connectionId: "only", adapterId: "x", displayName: "only", label: "only" }]),
     "only"
   );
 });
 
-test("buildStartSessionPayload is user callerKind and uses the Task's persisted route", () => {
+test("buildStartSessionPayload is user callerKind and uses the Task's persisted Session", () => {
   const ok = buildStartSessionPayload("temp/executor/tasks/t1.md");
   assert.equal(ok.ok, true);
   if (ok.ok) {
@@ -298,7 +299,7 @@ test("actionable task states include failed for retry/cancel lists", () => {
   assert.equal(isActionableTaskState("failed"), true);
   assert.equal(isActionableTaskState("accepted"), false);
   assert.equal(isActionableTaskState("interrupted"), false);
-  assert.equal(canStartAgentOnTask("failed"), true);
+  assert.equal(canStartAgentOnTask("failed", undefined, { hasSessionId: true }), true);
   assert.equal(canCancelTask("failed"), true);
   assert.equal(canCancelTask("delivered"), false);
 });
@@ -312,8 +313,8 @@ test("task/session state labels and start/interrupt gates", () => {
   assert.equal(sessionStateLabel("stopped"), "已停止");
   assert.equal(sessionStateLabel("failed"), "会话失败");
 
-  assert.equal(canStartAgentOnTask("queued"), true);
-  assert.equal(canStartAgentOnTask("running"), true);
+  assert.equal(canStartAgentOnTask("queued", undefined, { hasSessionId: true }), true);
+  assert.equal(canStartAgentOnTask("running", undefined, { hasSessionId: true }), true);
   assert.equal(canStartAgentOnTask("delivered"), false);
   assert.equal(
     canStartAgentOnTask("running", { state: "live", alive: true }),
@@ -331,8 +332,7 @@ test("task/session state labels and start/interrupt gates", () => {
       {
         path: "temp/executor/tasks/live.md",
         id: "tk-live",
-        assigneeKind: "role",
-        assigneeId: "executor",
+        roleId: "rl-executor",
         referencedNodeIds: ["cx-1"],
         state: "running",
         manifest: "m",
@@ -345,7 +345,7 @@ test("task/session state labels and start/interrupt gates", () => {
     [
       {
         sessionId: "ss-live1",
-        routeId: "fake-default",
+        connectionId: "fake-default",
         adapterId: FAKE_ADAPTER_ID,
         state: "live",
         alive: true,
@@ -374,8 +374,8 @@ async function makeCollabWorkspace(): Promise<string> {
     JSON.stringify(
       {
         roles: [
-          { name: "executor", prompt: "do work" },
-          { name: "orchestrator", prompt: "orchestrate" },
+          { id: "rl-executor", name: "executor", prompt: "do work" },
+          { id: "rl-orchestrator", name: "orchestrator", prompt: "orchestrate" },
         ],
       },
       null,
@@ -404,7 +404,7 @@ test("service+client: registry → create coordination box → dispatch → deli
     assert.ok(!coordNames.includes("open")); // modifier
 
     const roles = (await client.registryRoles(workspaceId)) as {
-      roles: Array<{ name: string }>;
+      roles: Array<{ roleId: string; name: string }>;
     };
     assert.ok(roles.roles.some((r) => r.name === "executor"));
 
@@ -421,15 +421,14 @@ test("service+client: registry → create coordination box → dispatch → deli
       coordination: true,
       role: "executor",
       prompt: "Ship collab closed loop",
-      roles: roles.roles.map((r) => ({ name: r.name })),
+      roles: roles.roles.map((r) => ({ roleId: r.roleId, name: r.name })),
     });
     assert.equal(form.ok, true);
     assert.ok(form.payload);
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [form.payload!.nodeId],
-      assigneeKind: form.payload!.assigneeKind,
-      assigneeId: form.payload!.assigneeId,
+      nodeIds: form.payload!.nodeIds,
+      roleId: form.payload!.roleId,
       prompt: form.payload!.prompt,
       parentActor: form.payload!.parentActor ?? { kind: "user", id: "user" },
       reviewer:
@@ -439,7 +438,18 @@ test("service+client: registry → create coordination box → dispatch → deli
     })) as { taskPath: string; state: string };
     assert.equal(dispatched.state, "queued");
 
-    await client.taskClaim(workspaceId, dispatched.taskPath);
+    const entered = (await client.sessionEnter({
+      workspaceId,
+      roleId: "rl-executor",
+      cwd: ws,
+    })) as { session: { sessionId: string }; sessionToken: string };
+    const roleClient = createServiceClient({
+      baseUrl: svc.url,
+      token: svc.token,
+      currentSessionId: entered.session.sessionId,
+      currentSessionToken: entered.sessionToken,
+    });
+    await roleClient.taskClaim(workspaceId, dispatched.taskPath);
     // No commits: pure Tent accept path (Git integrate covered by service P0 tests).
     const delivered = (await client.taskDeliver(workspaceId, dispatched.taskPath, {
       summary: "Implemented closed loop",
@@ -469,14 +479,13 @@ test("service+client: registry → create coordination box → dispatch → deli
     }));
     const d2 = (await client.taskDispatch(workspaceId, {
       nodeIds: [box2.nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "will be rejected",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       deliveryPolicy: "review",
     })) as { taskPath: string };
-    await client.taskClaim(workspaceId, d2.taskPath);
+    await roleClient.taskClaim(workspaceId, d2.taskPath);
     await client.taskDeliver(workspaceId, d2.taskPath, {
       summary: "not good enough",
     });
@@ -487,7 +496,7 @@ test("service+client: registry → create coordination box → dispatch → deli
         workspaceId,
         rejectPayload.payload.taskPath,
         rejectPayload.payload.actor,
-        { note: rejectPayload.payload.note, resume: rejectPayload.payload.resume }
+        { note: rejectPayload.payload.note, resume: false }
       )) as { state: string; delivery: { status: string } };
       // resume default → rework path leaves task active (running/waiting), delivery rejected
       assert.equal(rejected.delivery.status, "rejected");
@@ -509,22 +518,22 @@ test("service+client: registry → create coordination box → dispatch → deli
   }
 });
 
-test("service+client: route.list safe metadata + startSession/interrupt via shell model", async () => {
+test("service+client: connection.list safe metadata + managed Session/interrupt via shell model", async () => {
   const ws = await makeCollabWorkspace();
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-collab-acp-"));
   // Inject only fake for offline start (no CPA / no real grok binary).
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
-    routes: [
+    connections: [
       {
-        routeId: "fake-default",
+        connectionId: "fake-default",
         provider: "fake",
         adapterId: FAKE_ADAPTER_ID,
         fake: { waitForSignal: true, emitStdout: true, canResume: true },
       },
       {
-        routeId: "grok-acp-default",
+        connectionId: "grok-acp-default",
         provider: "grok",
         adapterId: GROK_ACP_ADAPTER_ID,
         model: "grok-4.5",
@@ -537,14 +546,14 @@ test("service+client: route.list safe metadata + startSession/interrupt via shel
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
 
     // Product list: no testOnly, no secret values / env maps.
-    const productList = (await client.routeList()) as {
-      routes: Array<Record<string, unknown>>;
+    const productList = (await client.connectionList()) as {
+      connections: Array<Record<string, unknown>>;
     };
     const productJson = JSON.stringify(productList);
     assert.ok(!/"env"\s*:/.test(productJson));
     assert.ok(!productJson.includes("sk-"));
-    assert.ok(productList.routes.some((p) => p.routeId === "grok-acp-default"));
-    assert.ok(productList.routes.some((p) => p.routeId === "fake-default"));
+    assert.ok(productList.connections.some((p) => p.connectionId === "grok-acp-default"));
+    assert.ok(productList.connections.some((p) => p.connectionId === "fake-default"));
 
     const mounted = (await client.mount(ws)) as { workspaceId: string };
     const workspaceId = mounted.workspaceId;
@@ -555,16 +564,21 @@ test("service+client: route.list safe metadata + startSession/interrupt via shel
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [box.nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "start via UI model",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       deliveryPolicy: "review",
-      // Explicit: dispatch must not auto-start session.
-      startSession: false,
-    })) as { taskPath: string; state: string };
-    assert.equal(dispatched.state, "queued");
+    })) as {
+      taskPath: string;
+      state: string;
+      session?: { sessionId: string; connectionId: string };
+    };
+    assert.ok(dispatched.state === "running" || dispatched.state === "waiting");
+    assert.equal(
+      (dispatched.session as unknown as { session: { connectionId: string } }).session.connectionId,
+      "fake-default"
+    );
 
     const rpc = new ServiceRpcClient({ baseUrl: svc.url, token: svc.token });
     const model = new DesktopShellModel(rpc);
@@ -573,26 +587,12 @@ test("service+client: route.list safe metadata + startSession/interrupt via shel
     await model.bindForeground(workspaceId);
 
     let snap = model.getSnapshot();
-    // Product routes only in shell default refresh.
-    assert.equal(snap.selectedRouteId, "fake-default");
+    // Product Connections only in shell default refresh.
+    assert.equal(snap.selectedConnectionId, "fake-default");
 
     const review = snap.taskReview.find((t) => t.path === dispatched.taskPath);
     assert.ok(review);
-    assert.equal(review!.canStartAgent, true);
-    assert.equal(review!.canInterrupt, false);
-
-    // startSession payload path: user click; the Task's route assignee is authoritative.
-    const started = (await model.startAgentSession(dispatched.taskPath)) as {
-      session: { sessionId: string; state: string; routeId: string };
-      task: { state: string; sessionId?: string };
-    };
-    assert.match(started.session.sessionId, /^ss-/);
-    assert.equal(started.session.routeId, "fake-default");
-    assert.ok(started.task.state === "running" || started.task.sessionId);
-
-    snap = model.getSnapshot();
-    const afterStart = snap.taskReview.find((t) => t.path === dispatched.taskPath);
-    assert.ok(afterStart);
+    const afterStart = review!;
     // Live session → interrupt available; start gated off while alive.
     assert.equal(afterStart!.canInterrupt, true);
     assert.equal(afterStart!.canStartAgent, false);

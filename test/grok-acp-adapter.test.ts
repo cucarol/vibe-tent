@@ -23,7 +23,7 @@ import { startManagedAcpSession } from "../src/adapters/acp/managed-session.js";
 import {
   createAgentRuntime,
   type RuntimeEvent,
-  type SettingsRouteConfig,
+  type AgentConnectionConfig,
   type StartSessionRequest,
 } from "../src/runtime/index.js";
 import { taskContextCard } from "../src/core/context-card.js";
@@ -58,7 +58,7 @@ test("managed ACP start cleans bridge process when handshake fails", async () =>
       startManagedAcpSession({
         plan: {
           sessionId: "ss-handfail1",
-          routeId: "grok-handshake-fail",
+          connectionId: "grok-handshake-fail",
           cwd,
           env: {},
         },
@@ -295,22 +295,35 @@ function waitFor(
   });
 }
 
-const mockLaunchEnvByRoute = new Map<string, Record<string, string>>();
+const mockLaunchEnvByConnection = new Map<string, Record<string, string>>();
 
-function startRoute(
+function startConnection(
   runtime: ReturnType<typeof createAgentRuntime>,
-  request: Omit<StartSessionRequest, "routeSnapshot">
+  request: StartSessionRequest & { connectionId: string }
 ) {
-  return runtime.startSession({
-    ...request,
-    env: { ...mockLaunchEnvByRoute.get(request.routeId), ...request.env },
-    routeSnapshot: runtime.snapshotRouteForStart(request.routeId),
-  });
+  const { connectionId, ...start } = request;
+  const workspace = start.workspace ?? start.workspaceLane?.workspace ?? start.runtimeWorkspace?.cwd ?? start.cwd;
+  if (!workspace) throw new Error("test start requires a workspace");
+  const lastTaskId = start.lastTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
+  return runtime.reserveSession({
+    sessionId: start.sessionId,
+    connectionId,
+    lastTaskId,
+    workspace,
+    workspaceLane: start.workspaceLane,
+    runtimeWorkspace: start.runtimeWorkspace,
+    cwd: start.cwd,
+  }).then(() => runtime.startSession({
+    ...start,
+    lastTaskId,
+    workspace,
+    env: { ...mockLaunchEnvByConnection.get(connectionId), ...start.env },
+  }));
 }
 
-function withMockEnv(route: SettingsRouteConfig, patch: Record<string, string>): SettingsRouteConfig {
-  mockLaunchEnvByRoute.set(route.routeId, { ...mockLaunchEnvByRoute.get(route.routeId), ...patch });
-  return route;
+function withMockEnv(connection: AgentConnectionConfig, patch: Record<string, string>): AgentConnectionConfig {
+  mockLaunchEnvByConnection.set(connection.connectionId, { ...mockLaunchEnvByConnection.get(connection.connectionId), ...patch });
+  return connection;
 }
 
 async function resumeRoute(
@@ -320,11 +333,11 @@ async function resumeRoute(
   const record = await runtime.registry.read(request.sessionId);
   return runtime.resumeSession({
     ...request,
-    env: { ...mockLaunchEnvByRoute.get(record?.routeId ?? ""), ...request.env },
+    env: { ...mockLaunchEnvByConnection.get(record?.connectionId ?? ""), ...request.env },
   });
 }
 
-function mockRoute(
+function mockConnection(
   id: string,
   opts: {
     logPath: string;
@@ -339,7 +352,7 @@ function mockRoute(
     promptMode?: string;
     permissionTimeoutMs?: number;
   }
-) : SettingsRouteConfig {
+) : AgentConnectionConfig {
   const env = {
     MOCK_ACP_LOG: opts.logPath,
     MOCK_ACP_KEEP_ALIVE: opts.keepAlive === false ? "0" : "1",
@@ -357,9 +370,9 @@ function mockRoute(
       : {}),
     ...(opts.apiKey ? { [opts.envKey ?? DEFAULT_GROK_ENV_KEY]: opts.apiKey } : {}),
   };
-  mockLaunchEnvByRoute.set(id, env);
+  mockLaunchEnvByConnection.set(id, env);
   return {
-    routeId: id,
+    connectionId: id,
     provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
     command: process.execPath,
@@ -380,7 +393,7 @@ test("resolveLaunch fails loud without API key (Chinese, no fake/xAI fallback)",
     () =>
       adapter.resolveLaunch({
         sessionId: "ss-nokey01",
-        routeId: "grok-acp-default",
+        connectionId: "grok-acp-default",
         cwd: process.cwd(),
         env: {},
         extras: { acp: { model: "grok-4.5", envKey: "CPA_GROK_API_KEY" } },
@@ -405,7 +418,7 @@ test("resolveLaunch puts explicit model on argv and never targets api.x.ai", asy
   });
   const launch = adapter.resolveLaunch({
     sessionId: "ss-model01",
-    routeId: "grok-acp-default",
+    connectionId: "grok-acp-default",
     cwd: process.cwd(),
     env: {},
     command: process.execPath,
@@ -424,7 +437,7 @@ test("resolveLaunch puts explicit model on argv and never targets api.x.ai", asy
   const joined = [launch.command, ...launch.args].join(" ");
   assert.doesNotMatch(joined, /api\.x\.ai/);
   assert.equal(launch.env.CPA_GROK_API_KEY, "test-key-not-real");
-  // Secret values must not appear in profile serialization surfaces — only env injection.
+  // Secret values must not appear in Connection serialization surfaces — only env injection.
 });
 
 test("resolveLaunch absorbs the Grok2API wrapper launch contract", () => {
@@ -434,7 +447,7 @@ test("resolveLaunch absorbs the Grok2API wrapper launch contract", () => {
   });
   const launch = adapter.resolveLaunch({
     sessionId: "ss-base01",
-    routeId: "grok-acp-default",
+    connectionId: "grok-acp-default",
     cwd: process.cwd(),
     env: {
       [DEFAULT_GROK_BASE_URL_ENV_KEY]: "http://127.0.0.1:8320/v1/",
@@ -475,15 +488,15 @@ test("resolveLaunch absorbs the Grok2API wrapper launch contract", () => {
   assert.doesNotMatch(launch.args.join(" "), /api\.x\.ai/);
 });
 
-test("resolveLaunch accepts machine-local profile baseUrl when env unset", () => {
+test("resolveLaunch accepts machine-local Connection baseUrl when env unset", () => {
   const adapter = createGrokAcpAdapter({
     resolveApiKey: () => "k",
-    resolveBaseUrl: (_key, planEnv, profileBaseUrl) =>
-      planEnv.CPA_GROK_BASE_URL ?? profileBaseUrl,
+    resolveBaseUrl: (_key, planEnv, connectionBaseUrl) =>
+      planEnv.CPA_GROK_BASE_URL ?? connectionBaseUrl,
   });
   const launch = adapter.resolveLaunch({
     sessionId: "ss-base02",
-    routeId: "grok-acp-default",
+    connectionId: "grok-acp-default",
     cwd: process.cwd(),
     env: {},
     command: process.execPath,
@@ -501,7 +514,7 @@ test("resolveLaunch accepts machine-local profile baseUrl when env unset", () =>
   assert.ok(launch.args.includes("--cli-chat-proxy-base-url"));
 });
 
-test("grokAcpRouteTemplate includes baseUrlEnvKey name only", () => {
+test("Grok Agent Connection template includes baseUrlEnvKey name only", () => {
   const t = grokAcpRouteTemplate({ model: "grok-4.5" });
   assert.equal(t.baseUrlEnvKey, DEFAULT_GROK_BASE_URL_ENV_KEY);
   assert.equal(t.baseUrl, undefined);
@@ -521,7 +534,7 @@ test("mock ACP: handshake, prompt, events, stop (no network)", async () => {
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [mockRoute("grok-mock", { logPath, apiKey: "test-key-local" })],
+    connections: [mockConnection("grok-mock", { logPath, apiKey: "test-key-local" })],
   });
   const events: RuntimeEvent[] = [];
   runtime.subscribeAll((e) => events.push(e));
@@ -532,9 +545,9 @@ test("mock ACP: handshake, prompt, events, stop (no network)", async () => {
     tentRootHint: cwd,
   }).prompt;
 
-  const handle = await startRoute(runtime, {
+  const handle = await startConnection(runtime, {
     sessionId,
-    routeId: "grok-mock",
+    connectionId: "grok-mock",
     runtimeWorkspace: { cwd },
     bootstrapPrompt: pointerPrompt + "\n\nrelay: claim via tent task API",
   });
@@ -611,8 +624,8 @@ test("permission policy deny cancels tool permission (no yolo)", async () => {
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [
-      mockRoute("grok-deny", {
+    connections: [
+      mockConnection("grok-deny", {
         logPath,
         apiKey: "test-key",
         permissionPolicy: "deny",
@@ -624,9 +637,9 @@ test("permission policy deny cancels tool permission (no yolo)", async () => {
   runtime.subscribeAll((e) => events.push(e));
 
   const sessionId = "ss-acpdeny1";
-  await startRoute(runtime, {
+  await startConnection(runtime, {
     sessionId,
-    routeId: "grok-deny",
+    connectionId: "grok-deny",
     cwd,
     bootstrapPrompt: "pointer only",
   });
@@ -671,8 +684,8 @@ test("permission policy allow selects allow_once only (never allow_always)", asy
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [
-      mockRoute("grok-allow", {
+    connections: [
+      mockConnection("grok-allow", {
         logPath,
         apiKey: "test-key",
         permissionPolicy: "allow",
@@ -682,9 +695,9 @@ test("permission policy allow selects allow_once only (never allow_always)", asy
   });
 
   const sessionId = "ss-acpallo1";
-  await startRoute(runtime, {
+  await startConnection(runtime, {
     sessionId,
-    routeId: "grok-allow",
+    connectionId: "grok-allow",
     cwd,
     bootstrapPrompt: "pointer",
   });
@@ -726,8 +739,8 @@ test("permission policy ask emits waiting_user then denies without handler", asy
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [
-      mockRoute("grok-ask", {
+    connections: [
+      mockConnection("grok-ask", {
         logPath,
         apiKey: "test-key",
         permissionPolicy: "ask",
@@ -739,9 +752,9 @@ test("permission policy ask emits waiting_user then denies without handler", asy
   runtime.subscribeAll((e) => events.push(e));
 
   const sessionId = "ss-acpask01";
-  await startRoute(runtime, {
+  await startConnection(runtime, {
     sessionId,
-    routeId: "grok-ask",
+    connectionId: "grok-ask",
     cwd,
     bootstrapPrompt: "pointer",
   });
@@ -785,8 +798,8 @@ test("permission policy ask → onPermissionAsk allow selects allow_once", async
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [
-      mockRoute("grok-ask-allow", {
+    connections: [
+      mockConnection("grok-ask-allow", {
         logPath,
         apiKey: "test-key",
         permissionPolicy: "ask",
@@ -798,9 +811,9 @@ test("permission policy ask → onPermissionAsk allow selects allow_once", async
   runtime.subscribeAll((e) => events.push(e));
 
   const sessionId = "ss-acpaskal";
-  await startRoute(runtime, {
+  await startConnection(runtime, {
     sessionId,
-    routeId: "grok-ask-allow",
+    connectionId: "grok-ask-allow",
     cwd,
     bootstrapPrompt: "pointer",
   });
@@ -852,8 +865,8 @@ test("concurrent permission asks emit live only after the final decision", async
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [
-      mockRoute("grok-ask-concurrent", {
+    connections: [
+      mockConnection("grok-ask-concurrent", {
         logPath,
         apiKey: "test-key",
         permissionPolicy: "ask",
@@ -865,9 +878,9 @@ test("concurrent permission asks emit live only after the final decision", async
   const events: RuntimeEvent[] = [];
   runtime.subscribeAll((event) => events.push(event));
   const sessionId = "ss-acpaskco";
-  await startRoute(runtime, {
+  await startConnection(runtime, {
     sessionId,
-    routeId: "grok-ask-concurrent",
+    connectionId: "grok-ask-concurrent",
     cwd,
     bootstrapPrompt: "pointer",
   });
@@ -954,8 +967,8 @@ test("permission ask is not denied by a short startup permissionTimeoutMs snapsh
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [
-      mockRoute("grok-ask-live-timeout", {
+    connections: [
+      mockConnection("grok-ask-live-timeout", {
         logPath,
         apiKey: "test-key",
         permissionPolicy: "ask",
@@ -969,9 +982,9 @@ test("permission ask is not denied by a short startup permissionTimeoutMs snapsh
   runtime.subscribeAll((event) => events.push(event));
   const sessionId = "ss-acpasklt";
 
-  await startRoute(runtime, {
+  await startConnection(runtime, {
     sessionId,
-    routeId: "grok-ask-live-timeout",
+    connectionId: "grok-ask-live-timeout",
     cwd,
     bootstrapPrompt: "pointer",
   });
@@ -1015,8 +1028,8 @@ test("stopping a hung permission ask cancels waiters without timer leak", async 
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [
-      mockRoute("grok-ask-stop", {
+    connections: [
+      mockConnection("grok-ask-stop", {
         logPath,
         apiKey: "test-key",
         permissionPolicy: "ask",
@@ -1033,9 +1046,9 @@ test("stopping a hung permission ask cancels waiters without timer leak", async 
   const baselineTimeouts = timeoutCount();
   const sessionId = "ss-acpaskst";
 
-  await startRoute(runtime, {
+  await startConnection(runtime, {
     sessionId,
-    routeId: "grok-ask-stop",
+    connectionId: "grok-ask-stop",
     cwd,
     bootstrapPrompt: "pointer",
   });
@@ -1078,8 +1091,8 @@ test("permission policy ask → onPermissionAsk deny cancels", async () => {
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [
-      mockRoute("grok-ask-deny", {
+    connections: [
+      mockConnection("grok-ask-deny", {
         logPath,
         apiKey: "test-key",
         permissionPolicy: "ask",
@@ -1091,9 +1104,9 @@ test("permission policy ask → onPermissionAsk deny cancels", async () => {
   runtime.subscribeAll((e) => events.push(e));
 
   const sessionId = "ss-acpaskdn";
-  await startRoute(runtime, {
+  await startConnection(runtime, {
     sessionId,
-    routeId: "grok-ask-deny",
+    connectionId: "grok-ask-deny",
     cwd,
     bootstrapPrompt: "pointer",
   });
@@ -1129,8 +1142,8 @@ test("spontaneous child exit emits session.failed once (deduped)", async () => {
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [
-      mockRoute("grok-spontaneous", {
+    connections: [
+      mockConnection("grok-spontaneous", {
         logPath,
         apiKey: "test-key",
         dieAfterSessionMs: 80,
@@ -1143,9 +1156,9 @@ test("spontaneous child exit emits session.failed once (deduped)", async () => {
   runtime.subscribeAll((e) => events.push(e));
 
   const sessionId = "ss-acpspawn";
-  await startRoute(runtime, {
+  await startConnection(runtime, {
     sessionId,
-    routeId: "grok-spontaneous",
+    connectionId: "grok-spontaneous",
     cwd,
     bootstrapPrompt: "pointer",
   });
@@ -1179,9 +1192,9 @@ test("startSession with missing key fails without spawning mock as fake fallback
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [
+    connections: [
       {
-        routeId: "grok-nokey",
+        connectionId: "grok-nokey",
         provider: "grok",
         adapterId: GROK_ACP_ADAPTER_ID,
         command: process.execPath,
@@ -1196,9 +1209,9 @@ test("startSession with missing key fails without spawning mock as fake fallback
 
   await assert.rejects(
     () =>
-      startRoute(runtime, {
+      startConnection(runtime, {
         sessionId: "ss-acpnokey",
-        routeId: "grok-nokey",
+        connectionId: "grok-nokey",
         cwd,
       }),
     /未配置环境变量 CPA_GROK_API_KEY/
@@ -1209,7 +1222,7 @@ test("startSession with missing key fails without spawning mock as fake fallback
   await runtime.shutdown();
 });
 
-test("grokAcpRouteTemplate never embeds secret values", () => {
+test("Grok Agent Connection template never embeds secret values", () => {
   const t = grokAcpRouteTemplate({ model: "grok-4.5" });
   assert.equal(t.adapterId, GROK_ACP_ADAPTER_ID);
   assert.equal(t.envKey, DEFAULT_GROK_ENV_KEY);
@@ -1229,7 +1242,7 @@ test("mock ACP: prompt_complete emits assistant_message only (not thoughts)", as
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [withMockEnv(mockRoute("grok-pc", { logPath, apiKey: "test-key" }), {
+    connections: [withMockEnv(mockConnection("grok-pc", { logPath, apiKey: "test-key" }), {
       MOCK_ACP_PROMPT_TEXT: "FINAL_REPORT_BODY", MOCK_ACP_KEEP_ALIVE: "1",
     })],
   });
@@ -1237,9 +1250,9 @@ test("mock ACP: prompt_complete emits assistant_message only (not thoughts)", as
   runtime.subscribeAll((e) => events.push(e));
 
   const sessionId = "ss-acpprom1";
-  await startRoute(runtime, {
+  await startConnection(runtime, {
     sessionId,
-    routeId: "grok-pc",
+    connectionId: "grok-pc",
     cwd,
     bootstrapPrompt: "user near-field: do the thing",
   });
@@ -1269,7 +1282,7 @@ test("mock ACP: multi-segment turn keeps only final assistant reply in prompt_co
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [withMockEnv(mockRoute("grok-pc-seg", { logPath, apiKey: "test-key" }), {
+    connections: [withMockEnv(mockConnection("grok-pc-seg", { logPath, apiKey: "test-key" }), {
       MOCK_ACP_INTERMEDIATE_TEXT: "I'll inspect the codebase and draft a plan first…",
       MOCK_ACP_PROMPT_TEXT: "FINAL_DELIVERY_REPORT_ONLY", MOCK_ACP_KEEP_ALIVE: "1",
     })],
@@ -1278,9 +1291,9 @@ test("mock ACP: multi-segment turn keeps only final assistant reply in prompt_co
   runtime.subscribeAll((e) => events.push(e));
 
   const sessionId = "ss-acpseg1";
-  await startRoute(runtime, {
+  await startConnection(runtime, {
     sessionId,
-    routeId: "grok-pc-seg",
+    connectionId: "grok-pc-seg",
     cwd,
     bootstrapPrompt: "user near-field: multi-burst turn",
   });
@@ -1318,7 +1331,7 @@ test("mock ACP: empty assistant does not emit prompt_complete", async () => {
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [withMockEnv(mockRoute("grok-empty", { logPath, apiKey: "test-key" }), {
+    connections: [withMockEnv(mockConnection("grok-empty", { logPath, apiKey: "test-key" }), {
       MOCK_ACP_PROMPT_MODE: "empty",
     })],
   });
@@ -1326,9 +1339,9 @@ test("mock ACP: empty assistant does not emit prompt_complete", async () => {
   runtime.subscribeAll((e) => events.push(e));
 
   const sessionId = "ss-acpempty";
-  await startRoute(runtime, {
+  await startConnection(runtime, {
     sessionId,
-    routeId: "grok-empty",
+    connectionId: "grok-empty",
     cwd,
     bootstrapPrompt: "pointer",
   });
@@ -1346,7 +1359,7 @@ test("mock ACP: prompt error does not emit prompt_complete", async () => {
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [withMockEnv(mockRoute("grok-err", { logPath, apiKey: "test-key" }), {
+    connections: [withMockEnv(mockConnection("grok-err", { logPath, apiKey: "test-key" }), {
       MOCK_ACP_PROMPT_MODE: "error",
     })],
   });
@@ -1354,9 +1367,9 @@ test("mock ACP: prompt error does not emit prompt_complete", async () => {
   runtime.subscribeAll((e) => events.push(e));
 
   const sessionId = "ss-acperror";
-  await startRoute(runtime, {
+  await startConnection(runtime, {
     sessionId,
-    routeId: "grok-err",
+    connectionId: "grok-err",
     cwd,
     bootstrapPrompt: "pointer",
   });
@@ -1380,7 +1393,7 @@ test("mock ACP load: method order initialize → authenticate → session/load �
   const session = await adapter.resumeManagedSession!(
     {
       sessionId: "ss-acpload1",
-      routeId: "grok-load",
+      connectionId: "grok-load",
       cwd,
       env: {
         MOCK_ACP_LOG: logPath,
@@ -1462,7 +1475,7 @@ test("mock ACP load: unsupported loadSession fails loud without session/new", as
       adapter.resumeManagedSession!(
         {
           sessionId: "ss-acpnoload",
-          routeId: "grok-noload",
+          connectionId: "grok-noload",
           cwd,
           env: {
             MOCK_ACP_LOG: logPath,
@@ -1501,9 +1514,9 @@ test("mock ACP load: load failure cleans process and does not emit prompt_comple
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [
+    connections: [
       withMockEnv({
-        routeId: "grok-loadfail", provider: "grok",
+        connectionId: "grok-loadfail", provider: "grok",
         adapterId: GROK_ACP_ADAPTER_ID,
         command: process.execPath,
         args: [MOCK_ACP, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
@@ -1519,9 +1532,9 @@ test("mock ACP load: load failure cleans process and does not emit prompt_comple
   // Seed a stopped resume-capable session row (post-restart shape).
   await runtime.registry.write({
     id: sessionId,
-    routeId: "grok-loadfail",
+    connectionId: "grok-loadfail",
     adapterId: GROK_ACP_ADAPTER_ID,
-    routeSnapshot: runtime.snapshotRouteForStart("grok-loadfail"),
+    connectionSnapshot: runtime.snapshotConnectionForStart("grok-loadfail"),
     state: "stopped",
     resumeToken: "mock-acp-session-1",
     runtimeWorkspace: { cwd },
@@ -1554,9 +1567,9 @@ test("runtime resumeSession: reuses provider token + load (not session/new)", as
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [
+    connections: [
       withMockEnv({
-        routeId: "grok-resume-rt", provider: "grok",
+        connectionId: "grok-resume-rt", provider: "grok",
         adapterId: GROK_ACP_ADAPTER_ID,
         command: process.execPath,
         args: [MOCK_ACP, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
@@ -1571,9 +1584,9 @@ test("runtime resumeSession: reuses provider token + load (not session/new)", as
   const sessionId = "ss-acprsum1";
   await runtime.registry.write({
     id: sessionId,
-    routeId: "grok-resume-rt",
+    connectionId: "grok-resume-rt",
     adapterId: GROK_ACP_ADAPTER_ID,
-    routeSnapshot: runtime.snapshotRouteForStart("grok-resume-rt"),
+    connectionSnapshot: runtime.snapshotConnectionForStart("grok-resume-rt"),
     state: "stopped",
     resumeToken: "mock-acp-session-1",
     runtimeWorkspace: { cwd },
@@ -1616,9 +1629,9 @@ test("runtime resumeSession rejects a cwd different from the recorded provider s
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [
+    connections: [
       {
-        routeId: "grok-resume-cwd",
+        connectionId: "grok-resume-cwd",
         provider: "grok",
         adapterId: GROK_ACP_ADAPTER_ID,
         model: DEFAULT_GROK_MODEL,
@@ -1630,9 +1643,9 @@ test("runtime resumeSession rejects a cwd different from the recorded provider s
   const sessionId = "ss-acpcwd01";
   await runtime.registry.write({
     id: sessionId,
-    routeId: "grok-resume-cwd",
+    connectionId: "grok-resume-cwd",
     adapterId: GROK_ACP_ADAPTER_ID,
-    routeSnapshot: runtime.snapshotRouteForStart("grok-resume-cwd"),
+    connectionSnapshot: runtime.snapshotConnectionForStart("grok-resume-cwd"),
     state: "stopped",
     resumeToken: "mock-acp-session-1",
     runtimeWorkspace: { cwd: recordedCwd },
@@ -1658,9 +1671,9 @@ test("runtime resume failure redacts provider session token from errors and proj
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [
+    connections: [
       withMockEnv({
-        routeId: "grok-resume-redact",
+        connectionId: "grok-resume-redact",
         provider: "grok",
         adapterId: GROK_ACP_ADAPTER_ID,
         command: process.execPath,
@@ -1675,9 +1688,9 @@ test("runtime resume failure redacts provider session token from errors and proj
   const now = new Date().toISOString();
   await runtime.registry.write({
     id: sessionId,
-    routeId: "grok-resume-redact",
+    connectionId: "grok-resume-redact",
     adapterId: GROK_ACP_ADAPTER_ID,
-    routeSnapshot: runtime.snapshotRouteForStart("grok-resume-redact"),
+    connectionSnapshot: runtime.snapshotConnectionForStart("grok-resume-redact"),
     state: "stopped",
     resumeToken: privateToken,
     runtimeWorkspace: { cwd },

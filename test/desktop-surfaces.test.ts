@@ -32,8 +32,8 @@ import {
   mcpCredentialStatusLine,
   mcpDraftsFromProjection,
   mcpSourceLine,
-  ROUTE_NEXT_SESSION_TIP,
-  routeDisplayLabel,
+  CONNECTION_NEXT_SESSION_TIP,
+  connectionDisplayLabel,
   retentionSummaryLine,
   setMcpEnabled,
   setSkillEnabled,
@@ -41,8 +41,8 @@ import {
   skillSourceLine,
   validateCredentialSet,
   validateMcpAddDraft,
-  validateRouteCreate,
-  validateRouteUpdate,
+  validateConnectionCreate,
+  validateConnectionUpdate,
   validateRoleCreate,
   validateRoleUpdate,
   validateSkillAddDraft,
@@ -193,25 +193,25 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
     assert.equal(roleUp.payload.actor, "user");
   }
 
-  assert.equal(validateRouteCreate({ routeId: "Bad", provider: "grok", adapterId: "grok-acp" }).ok, false);
-  const prof = validateRouteCreate({
-    routeId: "my-agent",
+  assert.equal(validateConnectionCreate({ connectionId: "Bad", provider: "grok", adapterId: "grok-acp" }).ok, false);
+  const prof = validateConnectionCreate({
+    connectionId: "my-agent",
     provider: "grok",
     adapterId: "grok-acp",
     model: "grok-4.5",
   });
   assert.equal(prof.ok, true);
   if (prof.ok) {
-    assert.equal(prof.payload.routeId, "my-agent");
+    assert.equal(prof.payload.connectionId, "my-agent");
     assert.equal(prof.payload.adapterId, "grok-acp");
     assert.equal(prof.payload.model, "grok-4.5");
   }
 
-  // route.update: id key only; adapterId never on payload; empty clears.
-  assert.equal(validateRouteUpdate({ routeId: "" }).ok, false);
-  assert.equal(validateRouteUpdate({ routeId: "BadId" }).ok, false);
-  const profUp = validateRouteUpdate({
-    routeId: "my-agent",
+  // connection.update: id key only; adapterId never on payload; empty clears.
+  assert.equal(validateConnectionUpdate({ connectionId: "" }).ok, false);
+  assert.equal(validateConnectionUpdate({ connectionId: "BadId" }).ok, false);
+  const profUp = validateConnectionUpdate({
+    connectionId: "my-agent",
     displayName: "本地 Grok",
     model: "",
     envKey: "CPA_GROK_API_KEY",
@@ -219,7 +219,7 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
   });
   assert.equal(profUp.ok, true);
   if (profUp.ok) {
-    assert.equal(profUp.payload.routeId, "my-agent");
+    assert.equal(profUp.payload.connectionId, "my-agent");
     assert.equal(profUp.payload.displayName, "本地 Grok");
     assert.equal(profUp.payload.model, null);
     assert.equal(profUp.payload.envKey, "CPA_GROK_API_KEY");
@@ -229,13 +229,13 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
     assert.ok(!("apiKey" in profUp.payload));
     assert.ok(!("env" in profUp.payload));
   }
-  const clearName = validateRouteUpdate({ routeId: "my-agent", displayName: "  " });
+  const clearName = validateConnectionUpdate({ connectionId: "my-agent", displayName: "  " });
   assert.equal(clearName.ok, true);
   if (clearName.ok) assert.equal(clearName.payload.displayName, null);
 
-  assert.equal(routeDisplayLabel({ routeId: "p1", displayName: "Label" }), "Label");
-  assert.equal(routeDisplayLabel({ routeId: "p1", displayName: "" }), "p1");
-  assert.match(ROUTE_NEXT_SESSION_TIP, /下次会话生效/);
+  assert.equal(connectionDisplayLabel({ connectionId: "p1", displayName: "Label" }), "Label");
+  assert.equal(connectionDisplayLabel({ connectionId: "p1", displayName: "" }), "p1");
+  assert.match(CONNECTION_NEXT_SESSION_TIP, /下次会话生效/);
 
   assert.equal(validateCredentialSet({ id: "k", secret: "" }).ok, false);
   const cred = validateCredentialSet({ id: "api-key", secret: "s3cret", label: "main" });
@@ -260,7 +260,7 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
   assert.ok(!("ciphertext" in crow));
 });
 
-test("route skills/mcp drafts: toggle, id/ref only, no displayName/secrets", () => {
+test("Connection skills/mcp drafts: toggle, id/ref only, no displayName/secrets", () => {
   const skills = skillDraftsFromProjection([
     { name: "tent-task", path: "/home/u/.agents/skills/tent-task", enabled: true },
     { name: "review-helper", enabled: false },
@@ -368,11 +368,11 @@ test("desktop settings RPCs used by UI are on CLIENT_METHODS", () => {
     "registry.role.create",
     "registry.role.update",
     "registry.role.delete",
-    "route.list",
-    "route.get",
-    "route.create",
-    "route.update",
-    "route.delete",
+    "connection.list",
+    "connection.get",
+    "connection.create",
+    "connection.update",
+    "connection.delete",
     "provider.catalog",
     "credential.list",
     "credential.set",
@@ -472,28 +472,31 @@ test("service smoke: docs.backlinks + provider.catalog for graph/settings", asyn
       );
     }
 
-    // route.list / route.get — safe metadata; id + displayName projection for settings CRUD.
-    const listed = (await client.routeList()) as {
-      routes: Array<{
-        routeId: string;
+    // connection.list / connection.get — safe metadata; id + displayName projection for settings CRUD.
+    const listed = (await client.connectionList()) as {
+      connections: Array<{
+        connectionId: string;
         adapterId: string;
         displayName: string;
         testOnly?: boolean;
       }>;
     };
-    assert.ok(Array.isArray(listed.routes));
-    assert.ok(listed.routes.some((p) => p.routeId === "grok-acp-default"));
+    assert.ok(Array.isArray(listed.connections));
+    assert.ok(listed.connections.some((p) => p.connectionId === "grok-acp-default"));
     const listJson = JSON.stringify(listed);
     assert.ok(!/"env"\s*:/.test(listJson));
     assert.ok(!/sk-[a-zA-Z0-9]{8,}/.test(listJson));
 
-    const got = (await client.routeGet("grok-acp-default")) as {
-      route: { routeId: string; adapterId: string; displayName: string };
+    const got = (await client.connectionGet("grok-acp-default")) as {
+      connection: { connectionId: string; adapterId: string; displayName: string };
     };
-    assert.equal(got.route.routeId, "grok-acp-default");
-    assert.equal(got.route.adapterId, "grok-acp");
-    assert.ok(typeof got.route.displayName === "string");
-    assert.equal(routeDisplayLabel(got.route), got.route.displayName || got.route.routeId);
+    assert.equal(got.connection.connectionId, "grok-acp-default");
+    assert.equal(got.connection.adapterId, "grok-acp");
+    assert.ok(typeof got.connection.displayName === "string");
+    assert.equal(
+      connectionDisplayLabel(got.connection),
+      got.connection.displayName || got.connection.connectionId
+    );
 
     const settings = await client.workspaceSettings(mounted.workspaceId) as {
       settings: { defaultDeliveryPolicy?: string };

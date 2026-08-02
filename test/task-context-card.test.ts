@@ -21,7 +21,7 @@ import {
   loadTaskContextCardFromFrontmatter,
   MANAGED_BOOTSTRAP_INVARIANT,
   parseTaskContextCard,
-  routeAdapterCompatibilityDigest,
+  connectionAdapterCompatibilityDigest,
   serializeTaskContextCardForFrontmatter,
   sha256Hex,
   shouldInjectStablePrefix,
@@ -51,8 +51,8 @@ function sampleGeneration(extra?: string): string {
     tentRoleDigest: "role-skill-d1",
     rolePrompt: "Stay in scope.",
     tentTaskDigest: "task-skill-d1",
-    routeAdapterCompatibility: routeAdapterCompatibilityDigest({
-      routeId: "grok-core-worker",
+    connectionAdapterCompatibility: connectionAdapterCompatibilityDigest({
+      connectionId: "grok-core-worker",
       adapterId: "grok-acp",
     }),
     extraStable: extra ? { note: extra } : undefined,
@@ -108,8 +108,8 @@ test("contextGeneration changes when stable compatibility inputs change", () => 
     agentsPointerDigest: "agents-d1",
     rolePrompt: "Stay in scope, precisely.",
     tentTaskDigest: "task-skill-d1",
-    routeAdapterCompatibility: routeAdapterCompatibilityDigest({
-      routeId: "grok-core-worker",
+    connectionAdapterCompatibility: connectionAdapterCompatibilityDigest({
+      connectionId: "grok-core-worker",
       adapterId: "grok-acp",
     }),
   });
@@ -123,22 +123,22 @@ test("contextGeneration excludes taskId/objective and strips forbidden extraStab
     workspaceIdentity: "ws-test",
     agentsPointerDigest: "agents-d1",
     tentTaskDigest: "task-skill-d1",
-    routeAdapterCompatibility: routeAdapterCompatibilityDigest({
-      routeId: "p",
+    connectionAdapterCompatibility: connectionAdapterCompatibilityDigest({
+      connectionId: "p",
       adapterId: "a",
     }),
-    extraStable: { assigneeKind: "route", note: "stable" },
+    extraStable: { executionKind: "session", note: "stable" },
   });
   const b = computeContextGeneration({
     workspaceIdentity: "ws-test",
     agentsPointerDigest: "agents-d1",
     tentTaskDigest: "task-skill-d1",
-    routeAdapterCompatibility: routeAdapterCompatibilityDigest({
-      routeId: "p",
+    connectionAdapterCompatibility: connectionAdapterCompatibilityDigest({
+      connectionId: "p",
       adapterId: "a",
     }),
     extraStable: {
-      assigneeKind: "route",
+      executionKind: "session",
       note: "stable",
       taskId: "tk-different",
       objective: "should not matter",
@@ -392,10 +392,9 @@ test("Task envelope persists and reloads contextCard + digests", async () => {
     const nfs = new NodeFs(dir);
     const card = sampleCard();
     const taskPath = await writeTaskEnvelope(nfs, new SystemClock(), {
-      assigneeKind: "route",
-      assigneeId: "grok-core-worker",
+      sessionId: "ss-grokcoreworker",
       nodeRefs: [{ id: "cx-5q6za6", path: "n" }],
-      manifestPath: "temp/routes/grok-core-worker/manifests/tk-x.yml",
+      manifestPath: "temp/sessions/ss-grokcoreworker/manifests/tk-x.yml",
       userPrompt: "Implement Context Card",
       parentActor: { kind: "role", id: "规划" },
     });
@@ -423,38 +422,36 @@ test("Task envelope persists and reloads contextCard + digests", async () => {
   }
 });
 
-test("route Task assigneeId is canonical at write and load boundaries", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-route-assignee-"));
+test("Task sessionId is canonical at write and load boundaries", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-session-binding-"));
   try {
     const nfs = new NodeFs(dir);
     await assert.rejects(
       () =>
         writeTaskEnvelope(nfs, new SystemClock(), {
-          assigneeKind: "route",
-          assigneeId: "Bad Route",
+          sessionId: "Bad Session",
           nodeRefs: [{ id: "cx-5q6za6", path: "n" }],
-          manifestPath: "temp/routes/bad/manifests/tk-x.yml",
-          userPrompt: "invalid route assignee",
+          manifestPath: "temp/sessions/bad/manifests/tk-x.yml",
+          userPrompt: "invalid Session binding",
           parentActor: { kind: "user", id: "user" },
         }),
-      /route assigneeId/i
+      /sessionId/i
     );
 
     const taskPath = await writeTaskEnvelope(nfs, new SystemClock(), {
-      assigneeKind: "route",
-      assigneeId: "grok-core-worker",
+      sessionId: "ss-grokcoreworker",
       nodeRefs: [{ id: "cx-5q6za6", path: "n" }],
-      manifestPath: "temp/routes/grok-core-worker/manifests/tk-x.yml",
-      userPrompt: "tamper route assignee",
+      manifestPath: "temp/sessions/ss-grokcoreworker/manifests/tk-x.yml",
+      userPrompt: "tamper Session binding",
       parentActor: { kind: "user", id: "user" },
     });
     const raw = await nfs.readFile(taskPath);
     const { data, body, keyOrder } = parseFrontmatter(raw);
-    data.assigneeId = "bad/route";
+    data.sessionId = "bad/session";
     await nfs.writeFile(taskPath, serializeFrontmatter(data, body, keyOrder));
     await assert.rejects(
       () => loadTaskEnvelope(nfs, taskPath),
-      /route assigneeId/i
+      /sessionId/i
     );
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
@@ -466,10 +463,9 @@ test("missing nested contextCard fails loud even when flat mirrors exist", async
   try {
     const nfs = new NodeFs(dir);
     const taskPath = await writeTaskEnvelope(nfs, new SystemClock(), {
-      assigneeKind: "role",
-      assigneeId: "analyst",
+      roleId: "rl-analyst",
       nodeRefs: [{ id: "cx-1", path: "p" }],
-      manifestPath: "temp/analyst/manifest.yml",
+      manifestPath: "temp/roles/rl-analyst/manifest.yml",
       userPrompt: "x",
       parentActor: { kind: "user", id: "user" },
     });
@@ -502,13 +498,12 @@ test("lane authority: no phantom on load; persist/reload/tamper/backfill", async
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-lane-auth-"));
   try {
     const nfs = new NodeFs(dir);
-    await nfs.mkdir("temp/routes/grok-core-worker/tasks");
+    await nfs.mkdir("temp/sessions/ss-grokcoreworker/tasks");
     const parent = { kind: "role" as const, id: "规划" };
     const taskPath = await writeTaskEnvelope(nfs, new SystemClock(), {
-      assigneeKind: "route",
-      assigneeId: "grok-core-worker",
+      sessionId: "ss-grokcoreworker",
       nodeRefs: [{ id: "cx-5q6za6", path: "n" }],
-      manifestPath: "temp/routes/grok-core-worker/manifests/tk-x.yml",
+      manifestPath: "temp/sessions/ss-grokcoreworker/manifests/tk-x.yml",
       userPrompt: "lane authority",
       parentActor: parent,
       reviewer: parent,

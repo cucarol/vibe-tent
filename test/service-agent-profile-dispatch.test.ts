@@ -1,5 +1,5 @@
 /**
- * Temporary Settings route task dispatch: paths, lanes, concurrency, discovery.
+ * Temporary Agent Connection Task dispatch: paths, lanes, concurrency, discovery.
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -10,7 +10,6 @@ import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
-import { makeSessionId } from "../src/runtime/types.js";
 import { loadTaskEnvelope } from "../src/core/task.js";
 import { loadDeliveries } from "../src/core/delivery.js";
 import { loadRolesRegistry } from "../src/core/skillRoleRegistry.js";
@@ -19,26 +18,25 @@ import { ensureTaskWorkspace } from "../src/core/workspace.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import {
   resetManagedAutoDeliverDedupForTests,
-  setBeforeCombinedDispatchCompensateForTests,
+  setBeforeTaskClaimCoreForTests,
 } from "../src/service/handlers.js";
-import type { SettingsRouteConfig } from "../src/runtime/types.js";
-import { createSettingsRouteSnapshot } from "../src/runtime/route-config.js";
+import type { AgentConnectionConfig } from "../src/runtime/agent-connection.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
 
-const FAKE_DEFAULT_ROUTE_ID = "fake-default";
-const FAKE_ROUTE: SettingsRouteConfig = {
-  routeId: FAKE_DEFAULT_ROUTE_ID,
+const FAKE_DEFAULT_CONNECTION_ID = "fake-default";
+const FAKE_CONNECTION: AgentConnectionConfig = {
+  connectionId: FAKE_DEFAULT_CONNECTION_ID,
   provider: "fake",
   adapterId: FAKE_ADAPTER_ID,
   fake: { waitForSignal: true, sleepMs: 60_000 },
 };
 
-/** Catalog with fake-default plus a deterministic launch-fail route. */
-function routesWithLaunchFail(): SettingsRouteConfig[] {
+/** Catalog with fake-default plus a deterministic launch-fail Connection. */
+function connectionsWithLaunchFail(): AgentConnectionConfig[] {
   return [
-    FAKE_ROUTE,
+    FAKE_CONNECTION,
     {
-      routeId: "fake-launch-fail",
+      connectionId: "fake-launch-fail",
       provider: "fake",
       adapterId: FAKE_ADAPTER_ID,
       fake: { failLaunch: "deterministic launch failure for combined dispatch" },
@@ -61,10 +59,12 @@ async function makeWorkspace(
       {
         roles: [
           {
+            id: "rl-executor",
             name: "executor",
             prompt: "do work",
           },
           {
+            id: "rl-orchestrator",
             name: "orchestrator",
             prompt: "dispatch work",
           },
@@ -81,7 +81,7 @@ async function withService<T>(
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ap-data-"));
-  const svc = await startLocalTentService({ dataDir, writeEndpoint: true, routes: [FAKE_ROUTE] });
+  const svc = await startLocalTentService({ dataDir, writeEndpoint: true, connections: [FAKE_CONNECTION] });
   try {
     return await fn(svc);
   } finally {
@@ -126,7 +126,125 @@ async function initGitOnWorkspace(workspace: string): Promise<void> {
   await git(workspace, "commit", "-q", "-m", "init");
 }
 
-test("route dispatch: envelope path, task-scoped manifest, no init/registry/tent-role", async () => {
+test("Connection dispatch removes its exact reservation when Task creation fails", async () => {
+  const ws = await makeWorkspace("connection-reservation-cleanup");
+  await withService(async (svc) => {
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "occupied-node");
+    const occupied = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      nodeIds: [nodeId],
+      roleId: "rl-executor",
+      prompt: "occupy exact Node",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+    });
+    assert.ok(!occupied.error, JSON.stringify(occupied.error));
+    const tasksBefore = await rpc(svc, "task.list", { workspaceId });
+    const sessionsBefore = await rpc(svc, "session.list", { workspaceId });
+
+    const failed = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      nodeIds: [nodeId],
+      connectionId: FAKE_DEFAULT_CONNECTION_ID,
+      prompt: "must fail after exact Session reservation",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+    });
+    assert.ok(failed.error);
+    assert.match(failed.error!.message, /occupied|active Task/i);
+
+    const tasksAfter = await rpc(svc, "task.list", { workspaceId });
+    const sessionsAfter = await rpc(svc, "session.list", { workspaceId });
+    assert.deepEqual(tasksAfter.result, tasksBefore.result, "failed create must not add a Task");
+    assert.deepEqual(
+      sessionsAfter.result,
+      sessionsBefore.result,
+      "failed create must remove the exact reserved Session"
+    );
+  });
+});
+
+test("concurrent Connection dispatch atomically claims one exact-Node Task and leaves no queued orphan", async () => {
+  const ws = await makeWorkspace("connection-atomic-claim");
+  await withService(async (svc) => {
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "atomic-node");
+    const payload = (prompt: string) => ({
+      workspaceId,
+      nodeIds: [nodeId],
+      connectionId: FAKE_DEFAULT_CONNECTION_ID,
+      prompt,
+      parentActor: { kind: "user" as const, id: "user" },
+      reviewer: { kind: "user" as const, id: "user" },
+    });
+
+    const [first, second] = await Promise.all([
+      rpc(svc, "task.dispatch", payload("atomic contender one")),
+      rpc(svc, "task.dispatch", payload("atomic contender two")),
+    ]);
+    const successes = [first, second].filter((result) => !result.error);
+    const failures = [first, second].filter((result) => result.error);
+    assert.equal(successes.length, 1, JSON.stringify([first, second]));
+    assert.equal(failures.length, 1, JSON.stringify([first, second]));
+    assert.match(failures[0]!.error!.message, /occupied|active Task/i);
+
+    const listed = await rpc(svc, "task.list", { workspaceId });
+    assert.ok(!listed.error, JSON.stringify(listed.error));
+    const tasks = (listed.result as {
+      tasks: Array<{ state: string; sessionId?: string; referencedNodeIds: string[] }>;
+    }).tasks.filter((task) => task.referencedNodeIds.includes(nodeId));
+    assert.equal(tasks.length, 1, JSON.stringify(tasks));
+    assert.notEqual(tasks[0]!.state, "queued");
+    assert.match(tasks[0]!.sessionId ?? "", /^ss-/);
+
+    const sessions = await rpc(svc, "session.list", { workspaceId });
+    assert.ok(!sessions.error, JSON.stringify(sessions.error));
+    const rows = (sessions.result as {
+      sessions: Array<{ sessionId: string; state: string; lastTaskId?: string }>;
+    }).sessions;
+    assert.equal(rows.some((row) => row.state === "reserved"), false, JSON.stringify(rows));
+    assert.equal(rows.length, 1, JSON.stringify(rows));
+  });
+});
+
+test("Connection dispatch claim persistence failure leaves an interrupted Task and failed Session audit", async () => {
+  const ws = await makeWorkspace("connection-claim-failure");
+  await withService(async (svc) => {
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "claim-failure-node");
+    setBeforeTaskClaimCoreForTests(async ({ task }) => {
+      if (task.sessionId) throw new Error("injected atomic Connection claim failure");
+    });
+    try {
+      const failed = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        nodeIds: [nodeId],
+        connectionId: FAKE_DEFAULT_CONNECTION_ID,
+        prompt: "claim must fail with a durable audit",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+      });
+      assert.ok(failed.error);
+      assert.match(failed.error!.message, /injected atomic Connection claim failure/);
+
+      const listed = await rpc(svc, "task.list", { workspaceId });
+      assert.ok(!listed.error, JSON.stringify(listed.error));
+      const tasks = (listed.result as {
+        tasks: Array<{ state: string; sessionId?: string; referencedNodeIds: string[] }>;
+      }).tasks.filter((task) => task.referencedNodeIds.includes(nodeId));
+      assert.equal(tasks.length, 1, JSON.stringify(listed.result));
+      assert.equal(tasks[0]!.state, "interrupted");
+      assert.match(tasks[0]!.sessionId ?? "", /^ss-/);
+
+      const exact = await svc.runtime.registry.read(tasks[0]!.sessionId!);
+      assert.ok(exact);
+      assert.equal(exact!.state, "failed");
+      assert.match(exact!.lastError ?? "", /injected atomic Connection claim failure/);
+    } finally {
+      setBeforeTaskClaimCoreForTests(null);
+    }
+  });
+});
+
+test("Connection dispatch: Session path, task-scoped manifest, no Role identity", async () => {
   const ws = await makeWorkspace("ap-basic");
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -138,29 +256,28 @@ test("route dispatch: envelope path, task-scoped manifest, no init/registry/tent
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
-      prompt: "one-shot route work",
+      connectionId: "fake-default",
+      prompt: "one-shot Connection work",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const result = d.result as {
       taskPath: string;
       manifestPath: string;
       initPath?: string;
-      assigneeKind: string;
-      assigneeId: string;
+      roleId?: string;
+      sessionId: string;
       relayPrompt: string;
       workspaceLane?: unknown;
     };
-    assert.equal(result.assigneeKind, "route");
-    assert.equal(result.assigneeId, "fake-default");
+    assert.equal(result.roleId, undefined);
+    assert.match(result.sessionId, /^ss-/);
     assert.equal(result.initPath, undefined);
-    assert.match(result.taskPath, /^temp\/routes\/fake-default\/tasks\//);
+    assert.match(result.taskPath, /^temp\/sessions\/ss-[a-z0-9]+\/tasks\//);
     assert.match(
       result.manifestPath,
-      /^temp\/routes\/fake-default\/manifests\/tk-.+\.yml$/
+      /^temp\/sessions\/ss-[a-z0-9]+\/manifests\/tk-.+\.yml$/
     );
-    // Non-Git peer profile: no Git lane fields; authority-only projection is mandatory.
+    // Non-Git Connection work has no Git lane fields; authority projection remains explicit.
     const lane = result.workspaceLane as
       | {
           workspace?: string;
@@ -181,21 +298,19 @@ test("route dispatch: envelope path, task-scoped manifest, no init/registry/tent
       actor: { kind: "user", id: "user" },
       mutator: "service",
     });
-    assert.match(result.relayPrompt, /route fake-default/);
+    assert.match(result.relayPrompt, /session/i);
     assert.doesNotMatch(result.relayPrompt, /Role init file/);
-    assert.match(result.relayPrompt, /do not look for a role init/i);
+    assert.match(result.relayPrompt, /no Role init applies/i);
 
     const envFs = new NodeFs(path.join(ws, ".tent"));
     const task = await loadTaskEnvelope(envFs, result.taskPath);
-    assert.equal(task.assigneeKind, "route");
-    assert.equal(task.assigneeId, "fake-default");
+    assert.equal(task.roleId, undefined);
+    assert.equal(task.sessionId, result.sessionId);
     assert.equal(task.manifest, result.manifestPath);
     assert.ok(task.id?.startsWith("tk-"));
 
     // No durable role init, no shared manifest.yml, no tent-role lane.
-    assert.equal(await envFs.exists("temp/fake-default/init.md"), false);
-    assert.equal(await envFs.exists("temp/fake-default/manifest.yml"), false);
-    assert.equal(await envFs.exists("temp/fake-default"), false);
+    assert.equal(await envFs.exists(`temp/sessions/${result.sessionId}/init.md`), false);
     assert.ok(await envFs.exists(result.manifestPath));
     assert.ok(await envFs.exists(result.taskPath));
 
@@ -218,8 +333,7 @@ test("role dispatch creates init + task-scoped manifest + role path", async () =
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "role path stays",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
@@ -227,60 +341,29 @@ test("role dispatch creates init + task-scoped manifest + role path", async () =
       taskPath: string;
       manifestPath: string;
       initPath?: string;
-      assigneeKind?: string;
+      roleId?: string;
       relayPrompt: string;
     };
-    assert.equal(result.assigneeKind, "role");
-    assert.equal(result.initPath, "temp/executor/init.md");
+    assert.equal(result.roleId, "rl-executor");
+    assert.equal(result.initPath, "temp/roles/rl-executor/init.md");
     assert.match(
       result.manifestPath,
-      /^temp\/executor\/manifests\/tk-.+\.yml$/
+      /^temp\/roles\/rl-executor\/manifests\/tk-.+\.yml$/
     );
-    assert.match(result.taskPath, /^temp\/executor\/tasks\//);
-    assert.match(result.relayPrompt, /role executor/);
+    assert.match(result.taskPath, /^temp\/roles\/rl-executor\/tasks\//);
+    assert.match(result.relayPrompt, /Role rl-executor/);
     assert.match(result.relayPrompt, /Role init file/);
 
     const envFs = new NodeFs(path.join(ws, ".tent"));
     const task = await loadTaskEnvelope(envFs, result.taskPath);
-    assert.equal(taskAssigneeKindOrRole(task.assigneeKind), "role");
-    assert.equal(task.assigneeId, "executor");
-    assert.ok(await envFs.exists("temp/executor/init.md"));
+    assert.equal(task.roleId, "rl-executor");
+    assert.ok(await envFs.exists("temp/roles/rl-executor/init.md"));
     assert.ok(await envFs.exists(result.manifestPath));
-    assert.equal(await envFs.exists("temp/executor/manifest.yml"), false);
+    assert.equal(await envFs.exists("temp/roles/rl-executor/manifest.yml"), false);
   });
 });
 
-test("routes is reserved from durable role registration and dispatch", async () => {
-  const ws = await makeWorkspace("ap-reserved-role");
-  await withService(async (svc) => {
-    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
-    const created = await rpc(svc, "registry.role.create", {
-      workspaceId,
-      name: "routes",
-      prompt: "must not shadow the profile namespace",
-    });
-    assert.ok(created.error);
-    assert.match(String(created.error!.message), /reserved/i);
-
-    const dispatched = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
-      workspaceId,
-      nodeIds: [nodeId],
-      assigneeKind: "role",
-      assigneeId: "routes",
-      prompt: "must not enter the reserved namespace",
-    });
-    assert.ok(dispatched.error);
-    assert.match(String(dispatched.error!.message), /reserved/i);
-  });
-});
-
-function taskAssigneeKindOrRole(kind: string | undefined): string {
-  return kind === "route" ? "route" : "role";
-}
-
-test("Git route task gets tent-task/<taskId> isolated lane; commits from that lane only", async () => {
+test("Git Connection Task gets tent-task/<taskId> isolated lane before provider start", async () => {
   const ws = await makeWorkspace("ap-git-lane");
   await initGitOnWorkspace(ws);
   await withService(async (svc) => {
@@ -290,13 +373,12 @@ test("Git route task gets tent-task/<taskId> isolated lane; commits from that la
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
-      prompt: "git route lane",
+      connectionId: "fake-default",
+      prompt: "git Connection lane",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
-    // Peer profile: no Git lane at dispatch; authority-only projection is mandatory.
+    // Connection work receives its exact Git lane before the durable Task is written.
     const dispatchLane = (
       d.result as {
         workspaceLane?: {
@@ -307,31 +389,27 @@ test("Git route task gets tent-task/<taskId> isolated lane; commits from that la
         };
       }
     ).workspaceLane;
-    assert.ok(dispatchLane, "peer profile still projects authority-only workspaceLane at dispatch");
-    assert.equal(dispatchLane!.branch, undefined);
-    assert.equal(dispatchLane!.worktree, undefined);
-    assert.equal(dispatchLane!.baseCommit, undefined);
+    assert.ok(dispatchLane, "Connection Task projects its exact workspaceLane at dispatch");
+    assert.match(dispatchLane!.branch || "", /^tent-task\//);
+    assert.ok(dispatchLane!.worktree);
+    assert.match(dispatchLane!.baseCommit || "", /^[0-9a-f]{40}$/);
     assert.deepEqual(dispatchLane!.integrationAuthority, {
       actor: { kind: "user", id: "user" },
       mutator: "service",
     });
 
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
-    const task = (started.result as {
-      task: {
-        id?: string;
-        workspaceLane?: { branch?: string; worktree?: string };
-        roleBranchBase?: string;
+    const started = d.result as {
+      session: {
+        task: {
+          id?: string;
+          workspaceLane?: { branch?: string; worktree?: string };
+          roleBranchBase?: string;
+        };
+        session: { cwd?: string; connectionId?: string };
       };
-      session: { cwd?: string };
-    }).task;
-    const session = (started.result as { session: { cwd?: string } }).session;
+    };
+    const task = started.session.task;
+    const session = started.session.session;
     assert.ok(task.id);
     assert.equal(task.workspaceLane?.branch, `tent-task/${task.id}`);
     assert.ok(task.workspaceLane?.worktree);
@@ -353,7 +431,7 @@ test("Git route task gets tent-task/<taskId> isolated lane; commits from that la
     await git(contract.worktree, "commit", "-q", "-m", "task lane commit");
     const taskSha = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
 
-    // Role lane must not exist for the route id.
+    // Role lane must not exist for the Connection id.
     const roleBranchExists = await git(ws, "show-ref", "--verify", "--quiet", "refs/heads/tent-role/fake-default")
       .then(() => true)
       .catch(() => false);
@@ -373,7 +451,7 @@ test("Git route task gets tent-task/<taskId> isolated lane; commits from that la
   });
 });
 
-test("startSession uses the exact Task route; two same-route tasks concurrent", async () => {
+test("Connection dispatch binds two same-Connection Tasks to independent Sessions", async () => {
   const ws = await makeWorkspace("ap-concurrent");
   await withService(async (svc) => {
     const a = await mountWorkItem(svc, ws, "box-a");
@@ -389,8 +467,7 @@ test("startSession uses the exact Task route; two same-route tasks concurrent", 
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       nodeIds: [a.nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "first",
     });
     const d2 = await rpc(svc, "task.dispatch", {
@@ -398,31 +475,15 @@ test("startSession uses the exact Task route; two same-route tasks concurrent", 
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       nodeIds: [nodeIdB],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "second",
     });
     assert.ok(!d1.error && !d2.error);
     const t1 = (d1.result as { taskPath: string }).taskPath;
     const t2 = (d2.result as { taskPath: string }).taskPath;
 
-    await rpc(svc, "task.claim", { workspaceId: a.workspaceId, taskPath: t1 });
-    await rpc(svc, "task.claim", { workspaceId: a.workspaceId, taskPath: t2 });
-
-    const s1 = await rpc(svc, "task.startSession", {
-      workspaceId: a.workspaceId,
-      taskPath: t1,
-      callerKind: "user",
-    });
-    const s2 = await rpc(svc, "task.startSession", {
-      workspaceId: a.workspaceId,
-      taskPath: t2,
-      callerKind: "user",
-    });
-    assert.ok(!s1.error, JSON.stringify(s1.error));
-    assert.ok(!s2.error, JSON.stringify(s2.error));
-    const id1 = (s1.result as { session: { sessionId: string } }).session.sessionId;
-    const id2 = (s2.result as { session: { sessionId: string } }).session.sessionId;
+    const id1 = (d1.result as { sessionId: string }).sessionId;
+    const id2 = (d2.result as { sessionId: string }).sessionId;
     assert.notEqual(id1, id2);
 
     // Idempotent re-start of same task returns same session.
@@ -439,8 +500,8 @@ test("startSession uses the exact Task route; two same-route tasks concurrent", 
   });
 });
 
-test("Settings routes work for user and Role callers without roster authorization", async () => {
-  const ws = await makeWorkspace("route-authority");
+test("Agent Connections work for user and Role callers without identity pre-registration", async () => {
+  const ws = await makeWorkspace("connection-authority");
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
 
@@ -450,18 +511,11 @@ test("Settings routes work for user and Role callers without roster authorizatio
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
-      prompt: "user starts profile",
+      connectionId: "fake-default",
+      prompt: "user starts Connection",
     });
     const userPath = (userDispatch.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath: userPath });
-    const userStart = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath: userPath,
-      callerKind: "user",
-    });
-    assert.ok(!userStart.error, JSON.stringify(userStart.error));
+    assert.ok(!userDispatch.error, JSON.stringify(userDispatch.error));
     await rpc(svc, "task.interrupt", { workspaceId, taskPath: userPath });
 
     // callerKind is launch context only; persisted Task actors remain authoritative.
@@ -474,23 +528,16 @@ test("Settings routes work for user and Role callers without roster authorizatio
     const noDisp = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [nodeId2],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "no dispatcher",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     });
     const noDispPath = (noDisp.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath: noDispPath });
-    const crossCaller = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath: noDispPath,
-      callerKind: "role",
-    });
-    assert.ok(!crossCaller.error, JSON.stringify(crossCaller.error));
+    assert.ok(!noDisp.error, JSON.stringify(noDisp.error));
     await rpc(svc, "task.interrupt", { workspaceId, taskPath: noDispPath });
 
-    // A durable Role may use any available machine Settings route.
+    // A durable Role may delegate to any available machine Agent Connection.
     const box3 = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "box-3",
@@ -500,57 +547,17 @@ test("Settings routes work for user and Role callers without roster authorizatio
     const orch = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [nodeId3],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "orch dispatch",
       callerKind: "role",
-      parentActor: { kind: "role", id: "orchestrator" },
-      reviewer: { kind: "role", id: "orchestrator" },
+      parentActor: { kind: "role", id: "rl-orchestrator" },
+      reviewer: { kind: "role", id: "rl-orchestrator" },
     });
     const orchPath = (orch.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath: orchPath });
-    const ok = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath: orchPath,
-      callerKind: "role",
-    });
-    assert.ok(!ok.error, JSON.stringify(ok.error));
+    assert.ok(!orch.error, JSON.stringify(orch.error));
     await rpc(svc, "task.interrupt", { workspaceId, taskPath: orchPath });
 
-    // Retired roster mutation fails loud and does not affect route availability.
-    const retiredRoster = await rpc(svc, "registry.role.update", {
-      workspaceId,
-      name: "orchestrator",
-      roster: [],
-    });
-    assert.equal(retiredRoster.error?.code, -32602);
-    const box3b = await rpc(svc, "docs.createNote", {
-      workspaceId,
-      name: "box-3b",
-      type: "prompt",
-    });
-    const nodeId3b = (box3b.result as { nodeId: string }).nodeId;
-    const orchDenied = await rpc(svc, "task.dispatch", {
-      workspaceId,
-      nodeIds: [nodeId3b],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
-      prompt: "orch deny whitelist",
-      callerKind: "role",
-      parentActor: { kind: "role", id: "orchestrator" },
-      reviewer: { kind: "role", id: "orchestrator" },
-    });
-    const orchDeniedPath = (orchDenied.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath: orchDeniedPath });
-    const afterRetiredRoster = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath: orchDeniedPath,
-      callerKind: "role",
-    });
-    assert.ok(!afterRetiredRoster.error, JSON.stringify(afterRetiredRoster.error));
-    await rpc(svc, "task.interrupt", { workspaceId, taskPath: orchDeniedPath });
-
-    // Role policy is unrelated to machine route launch.
+    // Role identity remains separate from machine Connection launch.
     const box4 = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "box-4",
@@ -560,26 +567,19 @@ test("Settings routes work for user and Role callers without roster authorizatio
     const execDisp = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [nodeId4],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "executor dispatch",
       callerKind: "role",
-      parentActor: { kind: "role", id: "executor" },
-      reviewer: { kind: "role", id: "executor" },
+      parentActor: { kind: "role", id: "rl-executor" },
+      reviewer: { kind: "role", id: "rl-executor" },
     });
     const execPath = (execDisp.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath: execPath });
-    const roleRoute = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath: execPath,
-      callerKind: "role",
-    });
-    assert.ok(!roleRoute.error, JSON.stringify(roleRoute.error));
+    assert.ok(!execDisp.error, JSON.stringify(execDisp.error));
     await rpc(svc, "task.interrupt", { workspaceId, taskPath: execPath });
   });
 });
 
-test("role deletion not blocked by same-named route session", async () => {
+test("Role deletion is not blocked by a same-named Agent Connection Session", async () => {
   const ws = await makeWorkspace("ap-role-del");
   await withService(async (svc) => {
     const workspaceId = (
@@ -587,7 +587,7 @@ test("role deletion not blocked by same-named route session", async () => {
     ).result as { workspaceId: string };
     const wid = workspaceId.workspaceId;
 
-    // Create a durable role with the same name as a route id we will use.
+    // Create a durable Role with the same display name as a Connection id.
     await rpc(svc, "registry.role.create", {
       workspaceId: wid,
       name: "fake-default",
@@ -596,7 +596,7 @@ test("role deletion not blocked by same-named route session", async () => {
 
     const note = await rpc(svc, "docs.createNote", {
       workspaceId: wid,
-      name: "profile-work",
+      name: "connection-work",
       type: "prompt",
     });
     const nodeId = (note.result as { nodeId: string }).nodeId;
@@ -605,20 +605,12 @@ test("role deletion not blocked by same-named route session", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
-      prompt: "route session",
+      connectionId: "fake-default",
+      prompt: "Connection Session",
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId: wid, taskPath });
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId: wid,
-      taskPath,
-      callerKind: "user",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
+    assert.ok(!d.error, JSON.stringify(d.error));
 
-    // Profile session must not block role delete.
+    // Connection Session must not block Role deletion.
     const del = await rpc(svc, "registry.role.delete", {
       workspaceId: wid,
       name: "fake-default",
@@ -628,7 +620,7 @@ test("role deletion not blocked by same-named route session", async () => {
   });
 });
 
-test("task discovery and retention see nested route tasks", async () => {
+test("task discovery and retention see nested Session Tasks", async () => {
   const ws = await makeWorkspace("ap-discover");
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -637,22 +629,20 @@ test("task discovery and retention see nested route tasks", async () => {
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "discover me",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
 
     const listed = await rpc(svc, "task.list", { workspaceId });
     assert.ok(!listed.error);
-    const tasks = (listed.result as { tasks: { path: string; assigneeKind?: string }[] })
+    const tasks = (listed.result as { tasks: { path: string; sessionId?: string }[] })
       .tasks;
     assert.ok(tasks.some((t) => t.path === taskPath));
     const found = tasks.find((t) => t.path === taskPath)!;
-    assert.equal(found.assigneeKind, "route");
+    assert.match(found.sessionId || "", /^ss-/);
 
     // Accept so retention can see terminal candidate under nested path.
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
     await rpc(svc, "task.deliver", {
       workspaceId,
       taskPath,
@@ -677,7 +667,7 @@ test("task discovery and retention see nested route tasks", async () => {
   });
 });
 
-test("claim projects assignee=routeId; delivery submitter is routeId", async () => {
+test("Connection Task projects exact Session and Delivery remains Task-scoped", async () => {
   const ws = await makeWorkspace("ap-claim-deliv");
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -686,42 +676,38 @@ test("claim projects assignee=routeId; delivery submitter is routeId", async () 
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
+      connectionId: "fake-default",
       prompt: "claim and deliver",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-
     const proj = await rpc(svc, "node.collaboration", { workspaceId, nodeId });
     assert.ok(!proj.error, JSON.stringify(proj.error));
     const projection = proj.result as {
-      activeTask: null | { task: { assigneeId?: string } };
+      activeTask: null | { task: { roleId?: string; sessionId?: string } };
     };
     assert.ok(projection.activeTask);
-    assert.equal(projection.activeTask?.task.assigneeId, "fake-default");
+    assert.equal(projection.activeTask?.task.roleId, undefined);
+    assert.match(projection.activeTask?.task.sessionId || "", /^ss-/);
 
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
       taskPath,
-      summary: "profile delivery",
+      summary: "Connection Task delivery",
     });
     assert.ok(!delivered.error, JSON.stringify(delivered.error));
     const delivery = (delivered.result as { delivery: { path: string } })
       .delivery;
     assert.match(
       delivery.path,
-      /^temp\/routes\/fake-default\/deliveries\/dl-/
+      /^temp\/sessions\/ss-[a-z0-9]+\/deliveries\/dl-/
     );
 
-    // Self-accept still forbidden when actor equals submitter routeId.
-    const selfAccept = await rpc(svc, "task.accept", {
+    const accepted = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
-      actor: "fake-default",
+      actor: "user",
     });
-    assert.ok(selfAccept.error);
-    assert.match(String(selfAccept.error!.message), /self|submitter/i);
+    assert.ok(!accepted.error, JSON.stringify(accepted.error));
 
     const envFs = new NodeFs(path.join(ws, ".tent"));
     const deliveries = await loadDeliveries(envFs);
@@ -729,137 +715,81 @@ test("claim projects assignee=routeId; delivery submitter is routeId", async () 
   });
 });
 
-test("invalid/missing assignee combinations fail loud", async () => {
+test("invalid/missing Role-or-Connection assignment combinations fail loud", async () => {
   const ws = await makeWorkspace("ap-invalid");
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
 
-    const missingRole = await rpc(svc, "task.dispatch", {
+    const missingAssignment = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      prompt: "no role",
+      prompt: "no durable Role or Session allocator",
     });
-    assert.ok(missingRole.error);
-    assert.equal(missingRole.error!.code, -32602);
+    assert.ok(missingAssignment.error);
+    assert.equal(missingAssignment.error!.code, -32602);
 
-    const missingProfile = await rpc(svc, "task.dispatch", {
+    const unknownConnection = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      prompt: "no profile",
+      connectionId: "missing-connection",
+      prompt: "unknown Connection",
     });
-    assert.ok(missingProfile.error);
-    assert.equal(missingProfile.error!.code, -32602);
-    assert.match(String(missingProfile.error!.message), /assigneeId/i);
+    assert.ok(unknownConnection.error);
+    assert.equal(unknownConnection.error!.code, -32004);
+    assert.match(String(unknownConnection.error!.message), /Agent Connection not found/i);
 
-    const unknownProfile = await rpc(svc, "task.dispatch", {
+    const both = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "missing-profile",
-      prompt: "unknown profile",
+      roleId: "rl-executor",
+      connectionId: "fake-default",
+      prompt: "ambiguous assignment",
     });
-    assert.ok(unknownProfile.error);
-    assert.equal(unknownProfile.error!.code, -32004);
-    assert.match(String(unknownProfile.error!.message), /Settings route not found/i);
+    assert.ok(both.error);
+    assert.equal(both.error!.code, -32602);
+    assert.match(String(both.error!.message), /exactly one of roleId or connectionId/i);
 
-    const conflict = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
-      workspaceId,
-      nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
-      routeId: "fake-default",
-      prompt: "conflict",
-    });
-    assert.ok(conflict.error);
-    assert.equal(conflict.error!.code, -32602);
-    assert.match(String(conflict.error!.message), /unknown parameter: routeId/i);
-
-    const badKind = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
-      workspaceId,
-      nodeIds: [nodeId],
-      assigneeKind: "wizard",
-      prompt: "bad kind",
-    });
-    assert.ok(badKind.error);
-    assert.equal(badKind.error!.code, -32602);
-
-    for (const retired of [
-      { agentId: "old-worker" },
-      { routeId: "fake-default" },
-    ]) {
-      const oldWire = await rpc(svc, "task.dispatch", {
-        parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
-        workspaceId,
-        nodeIds: [nodeId],
-        assigneeKind: "route",
-        prompt: "retired route wire",
-        ...retired,
-      });
-      assert.equal(oldWire.error?.code, -32602);
-      assert.match(String(oldWire.error?.message), /unknown parameter: (agentId|routeId)/i);
-    }
-
-    const oldAgentKind = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
-      workspaceId,
-      nodeIds: [nodeId],
-      assigneeKind: "agent",
-      assigneeId: "fake-default",
-      prompt: "retired assignee kind",
-    });
-    assert.equal(oldAgentKind.error?.code, -32602);
-
-    // startSession without routeId still fails.
+    // A durable Role Task cannot be reinterpreted as managed ACP work.
     const roleD = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "role ok",
     });
     const taskPath = (roleD.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const noProfile = await rpc(svc, "task.startSession", {
+    const noSession = await rpc(svc, "task.startSession", {
       workspaceId,
       taskPath,
       callerKind: "user",
     });
-    assert.ok(noProfile.error);
-    assert.equal(noProfile.error!.code, -32602);
+    assert.ok(noSession.error);
+    assert.equal(noSession.error!.code, -32602);
   });
 });
 
-test("combined dispatch startSession=true compensates pre-bind start failures", async () => {
-  // Role callers use an available Settings route directly; no A2A/roster gate.
+test("Connection dispatch reserves exact Session and parks provider launch failure", async () => {
+  // Role callers delegate to an available Agent Connection directly.
   {
-    const ws = await makeWorkspace("route-combined-role");
+    const ws = await makeWorkspace("connection-combined-role");
     await withService(async (svc) => {
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "combined-role");
       const started = await rpc(svc, "task.dispatch", {
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "fake-default",
-        prompt: "combined role route",
-        startSession: true,
+        connectionId: "fake-default",
+        prompt: "combined Role Connection",
         callerKind: "role",
-        parentActor: { kind: "role", id: "orchestrator" },
-        reviewer: { kind: "role", id: "orchestrator" },
+        parentActor: { kind: "role", id: "rl-orchestrator" },
+        reviewer: { kind: "role", id: "rl-orchestrator" },
       });
       assert.ok(!started.error, JSON.stringify(started.error));
       const result = started.result as { state: string; session?: unknown };
@@ -868,7 +798,7 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
     });
   }
 
-  // Invalid / missing profile or start precondition: original error; no stale running claim.
+  // Unknown Connection fails before Task/Session creation.
   {
     const ws = await makeWorkspace("ap-combo-invalid");
     await withService(async (svc) => {
@@ -879,35 +809,16 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "missing-profile-xyz",
-        prompt: "unknown profile combined",
-        startSession: true,
+        connectionId: "missing-connection",
+        prompt: "unknown Connection",
       });
       assert.ok(unknown.error);
       assert.equal(unknown.error!.code, -32004);
-      assert.match(String(unknown.error!.message), /Settings route not found/i);
+      assert.match(String(unknown.error!.message), /Agent Connection not found/i);
 
-      const missingProfileId = await rpc(svc, "task.dispatch", {
-        parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
-        workspaceId,
-        nodeIds: [nodeId],
-        assigneeKind: "route",
-        prompt: "start without routeId",
-        startSession: true,
-      });
-      assert.ok(missingProfileId.error);
-      assert.equal(missingProfileId.error!.code, -32602);
-      assert.match(String(missingProfileId.error!.message), /assigneeId/i);
-
-      // Failed combined attempts must not leave a running route occupation.
+      // Failed pre-reservation attempts must not leave a running occupation.
       const listed = await rpc(svc, "task.list", { workspaceId });
       const tasks = (listed.result as { tasks: { path: string; state: string }[] }).tasks;
-      assert.ok(
-        !tasks.some((t) => t.path.includes("routes") && t.state === "running"),
-        JSON.stringify(tasks)
-      );
       assert.ok(
         !tasks.some((t) => t.state === "running"),
         `stale running tasks: ${JSON.stringify(tasks)}`
@@ -919,14 +830,14 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
     });
   }
 
-  // Provider launch failure: honest failed state from startSession path; no interrupt overwrite.
+  // Provider launch failure: exact Task remains waiting on the failed bound Session.
   {
     const ws = await makeWorkspace("ap-combo-launch-fail");
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ap-launch-"));
     const svc = await startLocalTentService({
       dataDir,
       writeEndpoint: true,
-      routes: routesWithLaunchFail(),
+      connections: connectionsWithLaunchFail(),
     });
     try {
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "combo-launch");
@@ -935,10 +846,8 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "fake-launch-fail",
+        connectionId: "fake-launch-fail",
         prompt: "combined launch fail",
-        startSession: true,
         callerKind: "user",
       });
       assert.ok(failed.error);
@@ -947,19 +856,24 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
       const listed = await rpc(svc, "task.list", { workspaceId });
       const tasks = (listed.result as { tasks: { path: string; state: string; sessionId?: string }[] })
         .tasks;
-      const routeTasks = tasks.filter((t) => t.path.includes("fake-launch-fail"));
-      assert.equal(routeTasks.length, 1);
-      assert.equal(routeTasks[0]!.state, "failed");
-      assert.ok(!routeTasks[0]!.sessionId);
+      const connectionTasks = tasks.filter((t) => t.sessionId);
+      assert.equal(connectionTasks.length, 1);
+      assert.equal(connectionTasks[0]!.state, "waiting");
+      assert.match(connectionTasks[0]!.sessionId || "", /^ss-/);
 
       const envFs = new NodeFs(path.join(ws, ".tent"));
-      const task = await loadTaskEnvelope(envFs, routeTasks[0]!.path);
-      assert.equal(task.state, "failed");
-      assert.ok(await envFs.exists(routeTasks[0]!.path));
+      const task = await loadTaskEnvelope(envFs, connectionTasks[0]!.path);
+      assert.equal(task.state, "waiting");
+      assert.equal(task.wait?.code, "session_unavailable");
+      assert.equal(task.sessionId, connectionTasks[0]!.sessionId);
+      const session = await svc.runtime.registry.read(task.sessionId!);
+      assert.equal(session?.state, "failed");
+      assert.equal(session?.lastTaskId, task.id);
+      assert.ok(await envFs.exists(connectionTasks[0]!.path));
 
       const proj = await rpc(svc, "node.collaboration", { workspaceId, nodeId });
       const projection = proj.result as { activeTask: unknown | null };
-      assert.equal(projection.activeTask, null);
+      assert.ok(projection.activeTask);
     } finally {
       await svc.stop();
     }
@@ -975,10 +889,8 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: FAKE_DEFAULT_ROUTE_ID,
+        connectionId: FAKE_DEFAULT_CONNECTION_ID,
         prompt: "combined success",
-        startSession: true,
         callerKind: "user",
       });
       assert.ok(!ok.error, JSON.stringify(ok.error));
@@ -1006,8 +918,8 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
 
 });
 
-test("missing assigneeKind on a historical envelope fails loud", async () => {
-  const ws = await makeWorkspace("ap-legacy");
+test("Task envelope missing both roleId and sessionId fails loud", async () => {
+  const ws = await makeWorkspace("ap-missing-assignment");
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
@@ -1015,36 +927,46 @@ test("missing assigneeKind on a historical envelope fails loud", async () => {
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
-      prompt: "legacy strip",
+      roleId: "rl-executor",
+      prompt: "strip canonical assignment",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     const abs = path.join(ws, ".tent", taskPath);
     let raw = await fs.readFile(abs, "utf8");
-    raw = raw.replace(/\nassigneeKind: role\r?\n/, "\n");
+    raw = raw.replace(/\nroleId: rl-executor\r?\n/, "\n");
     await fs.writeFile(abs, raw);
 
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
     assert.ok(got.error);
     assert.equal(got.error!.code, -32000);
-    assert.match(String(got.error!.message), /assigneeKind|invalid/i);
+    assert.match(String(got.error!.message), /roleId|sessionId|assignment|invalid/i);
   });
 });
 
-test("direct runtime route session does not block role delete", async () => {
+test("managed Connection Session carries no durable Role identity", async () => {
   const ws = await makeWorkspace("ap-rt-del");
   await withService(async (svc) => {
     const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
     const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
-    await svc.runtime.startSession({
-      sessionId: makeSessionId(),
-      routeId: "fake-default",
-      routeSnapshot: createSettingsRouteSnapshot(FAKE_ROUTE, {}),
-      workspace: workspaceId,
-      cwd: ws,
-      runtimeWorkspace: { cwd: ws },
+    const note = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "connection-session",
+      type: "prompt",
     });
+    assert.ok(!note.error, JSON.stringify(note.error));
+    const dispatched = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      nodeIds: [(note.result as { nodeId: string }).nodeId],
+      connectionId: "fake-default",
+      prompt: "managed Session without Role identity",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+    });
+    assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
+    const sessionId = (dispatched.result as { sessionId: string }).sessionId;
+    const session = await svc.runtime.registry.read(sessionId);
+    assert.equal(session?.roleId, undefined);
+    assert.equal(session?.connectionId, "fake-default");
     const del = await rpc(svc, "registry.role.delete", {
       workspaceId,
       name: "executor",

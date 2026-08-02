@@ -11,7 +11,7 @@
 
 import type { FsAdapter } from "./adapter.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
-import { ROUTES_TEMP_DIR, TEMP_DIR } from "./paths.js";
+import { ROLES_TEMP_DIR, SESSIONS_TEMP_DIR, TEMP_DIR } from "./paths.js";
 import { assertRoleNameAvailable } from "./skillRoleRegistry.js";
 import { join } from "./tree.js";
 
@@ -97,8 +97,8 @@ export function assertRoleCheckpointRoleName(role: string): string {
   // Collisions with Tent-owned operational directories (for example routes).
   assertRoleNameAvailable(name);
   // Defense in depth if assertRoleNameAvailable only covers known reserved set.
-  if (name.toLowerCase() === ROUTES_TEMP_DIR) {
-    throw new Error(`Role name is reserved by Tent: ${ROUTES_TEMP_DIR}.`);
+  if ([ROLES_TEMP_DIR, SESSIONS_TEMP_DIR].includes(name.toLowerCase())) {
+    throw new Error(`Role name is reserved by Tent: ${name}.`);
   }
   if (name.toLowerCase() === TEMP_DIR) {
     throw new Error(`Role name is reserved by Tent: ${TEMP_DIR}.`);

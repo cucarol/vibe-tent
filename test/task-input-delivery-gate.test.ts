@@ -26,7 +26,15 @@ import {
   DEFAULT_GROK_MODEL,
   GROK_ACP_ADAPTER_ID,
 } from "../src/adapters/grok-acp/index.js";
-import type { SettingsRouteConfig } from "../src/runtime/route-config.js";
+import type { AgentConnectionConfig } from "../src/runtime/agent-connection.js";
+import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
+
+const DEFAULT_CONNECTION: AgentConnectionConfig = {
+  connectionId: "fake-default",
+  provider: "fake",
+  adapterId: FAKE_ADAPTER_ID,
+  fake: { waitForSignal: true, sleepMs: 60_000 },
+};
 
 const MOCK_ACP = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -42,7 +50,7 @@ function mockAcpRoute(
     keepAlive?: boolean;
     hangBootstrap?: boolean;
   }
-): SettingsRouteConfig {
+): AgentConnectionConfig {
   const childEnv = {
     CPA_GROK_API_KEY: "test-key-not-real",
     MOCK_ACP_LOG: opts.logPath,
@@ -52,7 +60,7 @@ function mockAcpRoute(
   };
   const childBootstrap = `Object.assign(process.env, ${JSON.stringify(childEnv)}); await import(${JSON.stringify(pathToFileURL(MOCK_ACP).href)});`;
   return {
-    routeId: id, provider: "test", adapterId: GROK_ACP_ADAPTER_ID,
+    connectionId: id, provider: "test", adapterId: GROK_ACP_ADAPTER_ID,
     command: process.execPath,
     args: ["--input-type=module", "--eval", childBootstrap],
     model: DEFAULT_GROK_MODEL,
@@ -75,13 +83,13 @@ async function makeWorkspace(prefix = "tent-ti-gate-"): Promise<string> {
 
 async function withService<T>(
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>,
-  opts?: { routes?: import("../src/runtime/types.js").SettingsRouteConfig[] }
+  opts?: { connections?: import("../src/runtime/types.js").AgentConnectionConfig[] }
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-gate-data-"));
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
-    routes: opts?.routes,
+    connections: opts?.connections ?? [DEFAULT_CONNECTION],
   });
   try {
     return await fn(svc);
@@ -120,7 +128,7 @@ async function runningTask(
   ws: string,
   opts?: {
     startSession?: boolean;
-    routeId?: string;
+    connectionId?: string;
     deliveryPolicy?: "review" | "bypass";
   }
 ): Promise<{ workspaceId: string; taskPath: string; sessionId?: string }> {
@@ -130,8 +138,7 @@ async function runningTask(
     reviewer: { kind: "user", id: "user" },
     workspaceId,
     nodeIds: [nodeId],
-    assigneeKind: opts?.startSession ? "route" : "role",
-    assigneeId: opts?.startSession ? (opts.routeId ?? "fake-default") : "executor",
+    connectionId: opts?.connectionId ?? "fake-default",
     prompt: "delivery gate fixture",
     deliveryPolicy: opts?.deliveryPolicy ?? "review",
   });
@@ -661,7 +668,7 @@ test("P0: managed auto-deliver refuses open TaskInput pre-seal; Session stays li
       );
     },
     {
-      routes: [
+      connections: [
         mockAcpRoute("mock-gate", {
           logPath,
           promptText: reportText,
@@ -739,7 +746,7 @@ test("P0 race: input before deliver blocks; deliver first makes sendInput refuse
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       nodeIds: [nodeId],
-      assigneeKind: "role", assigneeId: "executor",
+      roleId: "executor",
       prompt: "deliver first ordering",
       deliveryPolicy: "review",
     });
@@ -991,7 +998,7 @@ test("P0: public and managed paths share PENDING_TASK_INPUT authority payload sh
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         nodeIds: [nodeId2],
-        assigneeKind: "route", assigneeId: "mock-gate",
+        connectionId: "mock-gate",
         prompt: "managed gate shape",
         deliveryPolicy: "review",
       });
@@ -1050,7 +1057,7 @@ test("P0: public and managed paths share PENDING_TASK_INPUT authority payload sh
       assert.equal(stillManaged?.status, "failed");
     },
     {
-      routes: [
+      connections: [
         mockAcpRoute("mock-gate", {
           logPath,
           hangBootstrap: true,

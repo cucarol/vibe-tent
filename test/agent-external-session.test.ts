@@ -45,8 +45,8 @@ async function makeWorkspace(name = "ext-sess"): Promise<string> {
     JSON.stringify(
       {
         roles: [
-          { name: "executor", prompt: "do work" },
-          { name: "orchestrator", prompt: "dispatch" },
+          { id: "rl-executor", name: "executor", prompt: "do work" },
+          { id: "rl-orchestrator", name: "orchestrator", prompt: "dispatch" },
         ],
       },
       null,
@@ -95,7 +95,7 @@ test("runtime enterExternalSession: no process, state=external, idempotent", asy
     const sessionId = makeSessionId(() => 0.42);
     const h1 = await runtime.enterExternalSession({
       sessionId,
-      roleName: "executor",
+      roleId: "rl-executor",
       workspace: "ws-1",
       externalKey: "gui-key-1",
       cwd: dataDir,
@@ -113,7 +113,7 @@ test("runtime enterExternalSession: no process, state=external, idempotent", asy
     // Idempotent re-enter with same id
     const h2 = await runtime.enterExternalSession({
       sessionId,
-      roleName: "executor",
+      roleId: "rl-executor",
       workspace: "ws-1",
       externalKey: "gui-key-1",
     });
@@ -145,11 +145,12 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
 
     const entered = (await client.sessionEnter({
       workspaceId,
-      roleName: "executor",
+      roleId: "rl-executor",
       externalKey: "rpc-key-a",
       cwd: ws,
     })) as {
       session: { sessionId: string; state: string; adapterId: string; alive: boolean };
+      sessionToken: string;
       reused: boolean;
     };
     assert.equal(entered.session.state, "external");
@@ -158,6 +159,12 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
     assert.equal(entered.reused, false);
     const sessionId = entered.session.sessionId;
     assert.ok(sessionId.startsWith("ss-"));
+    const roleClient = createServiceClient({
+      baseUrl: svc.url,
+      token: svc.token,
+      currentSessionId: sessionId,
+      currentSessionToken: entered.sessionToken,
+    });
 
     // Idempotent enter
     const again = (await client.sessionEnter({
@@ -168,8 +175,8 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
     assert.equal(again.session.sessionId, sessionId);
     assert.equal(again.reused, true);
 
-    // Dispatch + claim does not bind this external Session. Session identity is
-    // established only by the explicit start/replace lifecycle surfaces.
+    // A Role claim derives the exact executing Session from trusted transport
+    // context; callers cannot select a Session in task.claim params.
     const note = (await client.call("docs.createNote", {
       workspaceId,
       name: "work-item",
@@ -179,13 +186,12 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
     // Prefer task.dispatch if available via client helper
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [note.nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "do the thing",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
-    await client.taskClaim(workspaceId, dispatched.taskPath);
+    await roleClient.taskClaim(workspaceId, dispatched.taskPath);
 
     const status = (await client.sessionStatus({
       workspaceId,
@@ -197,7 +203,7 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
     };
     assert.equal(status.session.state, "external");
     assert.equal(status.open, true);
-    assert.deepEqual(status.incompleteTasks, []);
+    assert.deepEqual(status.incompleteTasks.map((task) => task.path), [dispatched.taskPath]);
 
     const left = (await client.sessionLeave(sessionId, workspaceId)) as {
       sessionId: string;
@@ -211,13 +217,13 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
     assert.equal(left.state, "stopped");
     assert.equal(left.delivered, false);
     assert.equal(left.accepted, false);
-    assert.deepEqual(left.incompleteTasks, []);
+    assert.deepEqual(left.incompleteTasks.map((task) => task.path), [dispatched.taskPath]);
     // Task still running — leave must not complete it
     const task = (await client.taskGet(workspaceId, dispatched.taskPath)) as {
       task: { state: string; sessionId?: string };
     };
     assert.equal(task.task.state, "running");
-    assert.equal(task.task.sessionId, undefined);
+    assert.equal(task.task.sessionId, sessionId);
 
     // Idempotent leave
     const left2 = (await client.sessionLeave(sessionId, workspaceId)) as {
@@ -383,13 +389,13 @@ test("runtime stores first-class externalKey only", async () => {
     const h = await runtime.enterExternalSession({
       externalKey: "explicit-key-1",
       workspace: "ws-k",
-      roleName: "executor",
+      roleId: "rl-executor",
     });
     const rec = await runtime.registry.read(h.sessionId);
     assert.equal(rec?.externalKey, "explicit-key-1");
     assert.equal(recordExternalKey(rec!), "explicit-key-1");
     // Key lives only on the first-class field; the route snapshot has no raw env.
-    assert.equal((rec?.routeSnapshot as { env?: unknown } | undefined)?.env, undefined);
+    assert.equal((rec?.connectionSnapshot as { env?: unknown } | undefined)?.env, undefined);
     // Missing first-class field → no key.
     assert.equal(recordExternalKey({}), undefined);
     assert.equal(recordExternalKey({ externalKey: "  " }), undefined);
@@ -408,7 +414,7 @@ test("service status/leave resolve by externalKey without sessionId", async () =
     const entered = (await client.sessionEnter({
       workspaceId,
       externalKey: "lookup-key-1",
-      roleName: "executor",
+      roleId: "rl-executor",
       cwd: ws,
     })) as { session: { sessionId: string; externalKey?: string } };
     assert.equal(entered.session.externalKey, "lookup-key-1");

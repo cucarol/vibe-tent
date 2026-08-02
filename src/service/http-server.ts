@@ -5,7 +5,12 @@ import * as http from "node:http";
 import type { EventEnvelope } from "./types.js";
 import type { EventBus } from "./events.js";
 import { dispatchMethod, RpcError, type HandlerContext } from "./handlers.js";
-import { extractRequestToken, tokensEqual } from "./auth.js";
+import {
+  deriveSessionToken,
+  extractCallerSessionContext,
+  extractRequestToken,
+  tokensEqual,
+} from "./auth.js";
 import { RPC_LIFECYCLE, RPC_UNAUTHORIZED } from "./types.js";
 import { isLoopbackServiceHost, serviceBaseUrl } from "./data-dir.js";
 
@@ -306,7 +311,19 @@ async function handleRequest(
             : undefined;
 
     try {
-      const result = await dispatchMethod(ctx, message.method, params);
+      const suppliedCaller = extractCallerSessionContext(req.headers);
+      const callerSessionId =
+        suppliedCaller.sessionId &&
+        tokensEqual(
+          deriveSessionToken(token, suppliedCaller.sessionId),
+          suppliedCaller.sessionToken
+        )
+          ? suppliedCaller.sessionId
+          : undefined;
+      const result = await dispatchMethod(ctx, message.method, params, {
+        callerSessionId,
+        callerExternalKey: suppliedCaller.externalKey,
+      });
       writeJson(res, 200, { jsonrpc: "2.0", id, result });
     } catch (error) {
       // Prefer instanceof; also accept dual-module RpcError (tsx path splits).

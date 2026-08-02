@@ -25,7 +25,7 @@ import {
   GROK_ACP_ADAPTER_ID,
 } from "../src/adapters/grok-acp/index.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
-import type { SettingsRouteConfig } from "../src/runtime/route-config.js";
+import type { AgentConnectionConfig } from "../src/runtime/agent-connection.js";
 
 const MOCK_ACP = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -33,7 +33,7 @@ const MOCK_ACP = path.join(
   "mock-acp-server.mjs"
 );
 const DEFAULT_ROUTE = {
-  routeId: "mock-ti",
+  connectionId: "mock-ti",
   provider: "fake",
   adapterId: FAKE_ADAPTER_ID,
   fake: { waitForSignal: true, sleepMs: 60_000 },
@@ -58,7 +58,7 @@ function mockAcpRoute(
     /** Override route promptTimeoutMs (default 15s). */
     promptTimeoutMs?: number;
   }
-): SettingsRouteConfig {
+): AgentConnectionConfig {
   const childEnv = {
     CPA_GROK_API_KEY: "test-key-not-real",
     MOCK_ACP_LOG: opts.logPath,
@@ -73,7 +73,7 @@ function mockAcpRoute(
   };
   const childBootstrap = `Object.assign(process.env, ${JSON.stringify(childEnv)}); await import(${JSON.stringify(pathToFileURL(MOCK_ACP).href)});`;
   return {
-    routeId: id, provider: "test", adapterId: GROK_ACP_ADAPTER_ID,
+    connectionId: id, provider: "test", adapterId: GROK_ACP_ADAPTER_ID,
     command: process.execPath,
     args: ["--input-type=module", "--eval", childBootstrap],
     model: DEFAULT_GROK_MODEL,
@@ -109,14 +109,14 @@ async function makeWorkspace(): Promise<string> {
 }
 
 async function withService<T>(
-  routes: import("../src/runtime/types.js").SettingsRouteConfig[],
+  connections: import("../src/runtime/types.js").AgentConnectionConfig[],
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-data-"));
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
-    routes: routes.length > 0 ? routes : [DEFAULT_ROUTE],
+    connections: connections.length > 0 ? connections : [DEFAULT_ROUTE],
   });
   try {
     return await fn(svc);
@@ -146,7 +146,7 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [nodeId],
-      assigneeKind: "route", assigneeId: "mock-ti",
+      connectionId: "mock-ti",
       prompt: "Work that may get user append",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -374,7 +374,7 @@ test("taskInput list/get/ack are isolated across workspaces (no cross get/ack)",
     async function dispatchRunningTask(workspaceId: string, nodeId: string) {
       const dispatched = (await client.taskDispatch(workspaceId, {
         nodeIds: [nodeId],
-        assigneeKind: "route", assigneeId: "mock-ti",
+        connectionId: "mock-ti",
         prompt: "Canonical cross-workspace TaskInput isolation fixture",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
@@ -386,12 +386,31 @@ test("taskInput list/get/ack are isolated across workspaces (no cross get/ack)",
     const taskPathA = await dispatchRunningTask(mA.workspaceId, noteA.nodeId);
     const taskPathB = await dispatchRunningTask(mB.workspaceId, noteB.nodeId);
 
-    const sentA = (await client.taskSendInput(mA.workspaceId, taskPathA, {
-      text: "from A",
-    })) as { input: { id: string; workspaceId: string } };
-    const sentB = (await client.taskSendInput(mB.workspaceId, taskPathB, {
-      text: "from B",
-    })) as { input: { id: string; workspaceId: string } };
+    const now = new Date().toISOString();
+    const sentA = {
+      input: await svc.ctx.taskInputs.add({
+        id: "ti-workspace-a",
+        workspaceId: mA.workspaceId,
+        taskPath: taskPathA,
+        kind: "user-input",
+        text: "from A",
+        status: "pending",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    };
+    const sentB = {
+      input: await svc.ctx.taskInputs.add({
+        id: "ti-workspace-b",
+        workspaceId: mB.workspaceId,
+        taskPath: taskPathB,
+        kind: "user-input",
+        text: "from B",
+        status: "pending",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    };
     assert.notEqual(sentA.input.id, sentB.input.id);
     assert.equal(sentA.input.workspaceId, mA.workspaceId);
     assert.equal(sentB.input.workspaceId, mB.workspaceId);
@@ -472,7 +491,7 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
     // Persisted parent/reviewer Role may acknowledge ambiguity for its child.
     const parentDispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [note.nodeId],
-      assigneeKind: "route", assigneeId: "mock-ti",
+      connectionId: "mock-ti",
       prompt: "Canonical parent acknowledgement fixture",
       parentActor: { kind: "role", id: "dispatcher" },
       reviewer: { kind: "role", id: "dispatcher" },
@@ -516,7 +535,7 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
     }));
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [sessionNote.nodeId],
-      assigneeKind: "route", assigneeId: "mock-ti",
+      connectionId: "mock-ti",
       prompt: "session-bound ack",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -611,7 +630,7 @@ test("explicit startSession bind and live reuse recover durable retryable TaskIn
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-start-recovery-log-")),
     "mock-acp.json"
   );
-  const routes = [
+  const connections = [
     mockAcpRoute("mock-ti", {
       logPath,
       promptText: "outcome: needs-input\n\nBOOTSTRAP_WAITING",
@@ -621,7 +640,7 @@ test("explicit startSession bind and live reuse recover durable retryable TaskIn
     }),
   ];
 
-  await withService(routes, async (svc) => {
+  await withService(connections, async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const mounted = (await client.mount(ws)) as { workspaceId: string };
     const workspaceId = mounted.workspaceId;
@@ -631,7 +650,7 @@ test("explicit startSession bind and live reuse recover durable retryable TaskIn
     }));
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "route", assigneeId: "mock-ti",
+      connectionId: "mock-ti",
       prompt: "Recover exact durable inputs after explicit Session bind",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -767,8 +786,7 @@ test("managed TaskInput fails loud when the bound Session is foreign to workspac
     });
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "route",
-      assigneeId: "mock-ti",
+      connectionId: "mock-ti",
       prompt: "Guard TaskInput injection by exact Task Session binding",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -834,7 +852,7 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-log-")),
     "mock-acp.json"
   );
-  const routes = [
+  const connections = [
     mockAcpRoute("mock-ti", {
       logPath,
       promptText: "BOOTSTRAP_PLACEHOLDER",
@@ -844,7 +862,7 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
     }),
   ];
 
-  await withService(routes, async (svc) => {
+  await withService(connections, async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const mounted = (await client.mount(ws)) as { workspaceId: string };
     const workspaceId = mounted.workspaceId;
@@ -855,7 +873,7 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "route", assigneeId: "mock-ti",
+      connectionId: "mock-ti",
       prompt: "Managed sendInput flow",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -984,7 +1002,7 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-reject-log-")),
     "mock-acp.json"
   );
-  const routes = [
+  const connections = [
     mockAcpRoute("mock-ti", {
       logPath,
       promptText: "outcome: delivered\n\nFIRST_DELIVERY_REPORT",
@@ -997,7 +1015,7 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
     }),
   ];
 
-  await withService(routes, async (svc) => {
+  await withService(connections, async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const mounted = (await client.mount(ws)) as { workspaceId: string };
     const workspaceId = mounted.workspaceId;
@@ -1008,7 +1026,7 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "route", assigneeId: "mock-ti",
+      connectionId: "mock-ti",
       prompt: "Work that will be rejected with review note",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -1133,7 +1151,7 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-reject-native-log-")),
     "mock-acp.json"
   );
-  const routes = [
+  const connections = [
     mockAcpRoute("mock-ti", {
       logPath,
       promptText: "outcome: delivered\n\nFIRST_DELIVERY_NATIVE_RESUME",
@@ -1145,7 +1163,7 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
     }),
   ];
 
-  await withService(routes, async (svc) => {
+  await withService(connections, async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const mounted = (await client.mount(ws)) as { workspaceId: string };
     const workspaceId = mounted.workspaceId;
@@ -1156,7 +1174,7 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "route", assigneeId: "mock-ti",
+      connectionId: "mock-ti",
       prompt: "Native reject-resume same session",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -1340,72 +1358,6 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
   });
 });
 
-test("reject-resume external (no session): review feedback stays pending for poll/ack", async () => {
-  const ws = await makeWorkspace();
-  await withService([], async (svc) => {
-    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
-    const mounted = (await client.mount(ws)) as { workspaceId: string };
-    const workspaceId = mounted.workspaceId;
-    const created = (await client.docsCreateNote(workspaceId, {
-      name: "external-reject",
-      type: "prompt",
-    }));
-
-    const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.nodeId],
-      assigneeKind: "route", assigneeId: "mock-ti",
-      prompt: "External role rework",
-      parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
-    })) as { taskPath: string };
-    const taskPath = dispatched.taskPath;
-    await client.taskClaim(workspaceId, taskPath);
-    await client.taskDeliver(workspaceId, taskPath, {
-      summary: "first attempt",
-    });
-
-    const exactNote = "external: tighten summary wording";
-    const rejected = (await client.taskReject(workspaceId, taskPath, "user", {
-      resume: true,
-      note: exactNote,
-    })) as {
-      state: string;
-      input?: { id: string; kind?: string; status: string; text?: string };
-      accepted?: boolean;
-      enqueued?: boolean;
-      continued?: boolean;
-      session?: unknown;
-    };
-
-    assert.equal(rejected.state, "running");
-    assert.equal(rejected.accepted, true);
-    assert.equal(rejected.enqueued, false);
-    assert.equal(rejected.continued, false);
-    assert.ok(!rejected.session, "external path has no managed session restore");
-    assert.ok(rejected.input);
-    assert.equal(rejected.input!.kind, "review-feedback");
-    assert.equal(rejected.input!.status, "pending");
-    assert.equal(rejected.input!.text, exactNote);
-
-    const pending = (await client.taskInputListPending(workspaceId, taskPath)) as {
-      inputs: { id: string; kind?: string; text?: string; status: string }[];
-    };
-    assert.equal(pending.inputs.length, 1);
-    assert.equal(pending.inputs[0]!.id, rejected.input!.id);
-    assert.equal(pending.inputs[0]!.kind, "review-feedback");
-    assert.equal(pending.inputs[0]!.text, exactNote);
-
-    const acked = (await client.taskInputAck(
-      workspaceId,
-      taskPath,
-      rejected.input!.id,
-      undefined
-    )) as { input: { status: string } };
-    assert.equal(acked.input.status, "consumed");
-  });
-});
-
 test("reject-resume: slow follow-up returns accepted without headers-timeout wait", async () => {
   // Provider follow-up is slow (1.5s). Old path awaited the full turn on the
   // reject RPC and could trip CLI/fetch headers timeouts. New path restores +
@@ -1416,7 +1368,7 @@ test("reject-resume: slow follow-up returns accepted without headers-timeout wai
     "mock-acp.json"
   );
   const followupDelayMs = 1_500;
-  const routes = [
+  const connections = [
     mockAcpRoute("mock-ti", {
       logPath,
       promptText: "outcome: delivered\n\nFIRST_SLOW_REJECT",
@@ -1428,7 +1380,7 @@ test("reject-resume: slow follow-up returns accepted without headers-timeout wai
     }),
   ];
 
-  await withService(routes, async (svc) => {
+  await withService(connections, async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const mounted = (await client.mount(ws)) as { workspaceId: string };
     const workspaceId = mounted.workspaceId;
@@ -1439,7 +1391,7 @@ test("reject-resume: slow follow-up returns accepted without headers-timeout wai
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "route", assigneeId: "mock-ti",
+      connectionId: "mock-ti",
       prompt: "Slow reject-resume inject",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -1518,7 +1470,7 @@ test("reject-resume: background completion projects processing → delivered", a
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-reject-bg-")),
     "mock-acp.json"
   );
-  const routes = [
+  const connections = [
     mockAcpRoute("mock-ti", {
       logPath,
       promptText: "outcome: delivered\n\nFIRST_BG_REJECT",
@@ -1530,7 +1482,7 @@ test("reject-resume: background completion projects processing → delivered", a
     }),
   ];
 
-  await withService(routes, async (svc) => {
+  await withService(connections, async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const mounted = (await client.mount(ws)) as { workspaceId: string };
     const workspaceId = mounted.workspaceId;
@@ -1541,7 +1493,7 @@ test("reject-resume: background completion projects processing → delivered", a
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "route", assigneeId: "mock-ti",
+      connectionId: "mock-ti",
       prompt: "Background reject inject",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -1974,7 +1926,7 @@ test("reject-resume: second reject while rework running is rejected (no double i
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-reject-dup-")),
     "mock-acp.json"
   );
-  const routes = [
+  const connections = [
     mockAcpRoute("mock-ti", {
       logPath,
       promptText: "outcome: delivered\n\nFIRST_DUP_REJECT",
@@ -1987,7 +1939,7 @@ test("reject-resume: second reject while rework running is rejected (no double i
     }),
   ];
 
-  await withService(routes, async (svc) => {
+  await withService(connections, async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const mounted = (await client.mount(ws)) as { workspaceId: string };
     const workspaceId = mounted.workspaceId;
@@ -1998,7 +1950,7 @@ test("reject-resume: second reject while rework running is rejected (no double i
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "route", assigneeId: "mock-ti",
+      connectionId: "mock-ti",
       prompt: "Double reject protection",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -2102,7 +2054,7 @@ test("reject --no-resume: terminal reject without review-feedback or session res
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "route", assigneeId: "mock-ti",
+      connectionId: "mock-ti",
       prompt: "Terminal reject path",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -2142,7 +2094,7 @@ test("managed U2A: concurrent sends on same task are FIFO and non-overlapping", 
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-fifo-log-")),
     "mock-acp.json"
   );
-  const routes = [
+  const connections = [
     mockAcpRoute("mock-ti", {
       logPath,
       promptText: "BOOTSTRAP_HOLD",
@@ -2153,7 +2105,7 @@ test("managed U2A: concurrent sends on same task are FIFO and non-overlapping", 
     }),
   ];
 
-  await withService(routes, async (svc) => {
+  await withService(connections, async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const mounted = (await client.mount(ws)) as { workspaceId: string };
     const workspaceId = mounted.workspaceId;
@@ -2164,7 +2116,7 @@ test("managed U2A: concurrent sends on same task are FIFO and non-overlapping", 
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "route", assigneeId: "mock-ti",
+      connectionId: "mock-ti",
       prompt: "FIFO serialization",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -2275,8 +2227,8 @@ test("managed U2A: different tasks remain concurrent (not process-wide serial)",
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-conc-b-")),
     "b.json"
   );
-  // Two routes + two roles so each task has its own managed session (role lane).
-  const routes = [
+  // Two connections + two roles so each task has its own managed session (role lane).
+  const connections = [
     mockAcpRoute("mock-ti-a", {
       logPath: logA,
       promptText: "outcome: delivered\n\nBOOT_A",
@@ -2293,14 +2245,14 @@ test("managed U2A: different tasks remain concurrent (not process-wide serial)",
     }),
   ];
 
-  await withService(routes, async (svc) => {
+  await withService(connections, async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const mounted = (await client.mount(ws)) as { workspaceId: string };
     const workspaceId = mounted.workspaceId;
 
     async function parkTask(
       name: string,
-      routeId: string,
+      connectionId: string,
       logFile: string
     ): Promise<string> {
       const created = (await client.docsCreateNote(workspaceId, {
@@ -2309,8 +2261,7 @@ test("managed U2A: different tasks remain concurrent (not process-wide serial)",
       }));
       const dispatched = (await client.taskDispatch(workspaceId, {
         nodeIds: [created.nodeId],
-        assigneeKind: "route",
-        assigneeId: routeId,
+        connectionId: connectionId,
         prompt: `concurrent ${name}`,
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
@@ -2414,7 +2365,7 @@ test("managed U2A: failed inject leaves item failed (not dropped) and does not o
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "route", assigneeId: "mock-ti",
+      connectionId: "mock-ti",
       prompt: "queue failure semantics",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -2427,7 +2378,7 @@ test("managed U2A: failed inject leaves item failed (not dropped) and does not o
     const mount = svc.ctx.host.require(workspaceId);
     const { patchTaskEnvelope } = await import("../src/core/task.js");
     await patchTaskEnvelope(mount.env.fs, taskPath, {
-      sessionId: "ss-dead-not-in-registry",
+      sessionId: "ss-deadnotinregistry",
       updatedAt: new Date().toISOString(),
     });
 
@@ -2504,7 +2455,7 @@ test("task.sendInput: RPC returns accepted before managed turn finishes; status 
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-async-log-")),
     "mock-acp.json"
   );
-  const routes = [
+  const connections = [
     mockAcpRoute("mock-ti", {
       logPath,
       promptText: "outcome: delivered\n\nBOOTSTRAP_ASYNC",
@@ -2515,7 +2466,7 @@ test("task.sendInput: RPC returns accepted before managed turn finishes; status 
     }),
   ];
 
-  await withService(routes, async (svc) => {
+  await withService(connections, async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const mounted = (await client.mount(ws)) as { workspaceId: string };
     const workspaceId = mounted.workspaceId;
@@ -2526,7 +2477,7 @@ test("task.sendInput: RPC returns accepted before managed turn finishes; status 
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "route", assigneeId: "mock-ti",
+      connectionId: "mock-ti",
       prompt: "async accept path",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -2630,7 +2581,7 @@ test("task.sendInput: service stop drains background work without unhandled reje
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-drain-log-")),
     "mock-acp.json"
   );
-  const routes = [
+  const connections = [
     mockAcpRoute("mock-ti", {
       logPath,
       promptText: "outcome: delivered\n\nBOOT_DRAIN",
@@ -2644,7 +2595,7 @@ test("task.sendInput: service stop drains background work without unhandled reje
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
-    routes,
+    connections,
   });
   try {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
@@ -2656,7 +2607,7 @@ test("task.sendInput: service stop drains background work without unhandled reje
     }));
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "route", assigneeId: "mock-ti",
+      connectionId: "mock-ti",
       prompt: "drain semantics",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -2722,7 +2673,7 @@ test("task.sendInput: hung follow-up turns stop promptly; durable row retained; 
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-hang-log-")),
     "mock-acp.json"
   );
-  const routes = [
+  const connections = [
     mockAcpRoute("mock-ti", {
       logPath,
       promptText: "BOOT_HANG",
@@ -2740,7 +2691,7 @@ test("task.sendInput: hung follow-up turns stop promptly; durable row retained; 
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
-    routes,
+    connections,
   });
   let inputId = "";
   let workspaceId = "";
@@ -2755,7 +2706,7 @@ test("task.sendInput: hung follow-up turns stop promptly; durable row retained; 
     }));
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "route", assigneeId: "mock-ti",
+      connectionId: "mock-ti",
       prompt: "hang shutdown",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },

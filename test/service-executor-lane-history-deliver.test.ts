@@ -49,9 +49,9 @@ async function withService<T>(
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
-    routes: [
+    connections: [
       {
-        routeId: "fake-default",
+        connectionId: "fake-default",
         provider: "fake",
         adapterId: FAKE_ADAPTER_ID,
         fake: { waitForSignal: true },
@@ -111,8 +111,7 @@ async function runningTaskWithBase(
     reviewer: { kind: "user", id: "user" },
     workspaceId,
     nodeIds: [nodeId],
-    assigneeKind: "route",
-    assigneeId: "fake-default",
+    connectionId: "fake-default",
     prompt: "executor lane history fixture",
     deliveryPolicy: "review",
   });

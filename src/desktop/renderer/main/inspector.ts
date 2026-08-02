@@ -72,7 +72,7 @@ export function renderMeta(): void {
   const projDl =
     tab.coordination && proj
       ? `<dt>活动任务</dt><dd>${proj.activeTask ? "1" : "0"}</dd>
-        <dt>经办</dt><dd>${proj.activeTask?.task.assigneeId ?? "—"}</dd>
+        <dt>经办</dt><dd>${proj.activeTask?.task.roleId ?? proj.activeTask?.task.sessionId ?? "—"}</dd>
         <dt>任务</dt><dd>${
           proj.activeTask?.task.id
             ? `<code title="${escapeHtml(proj.activeTask.task.id)}">${escapeHtml(proj.activeTask.task.id)}</code>`

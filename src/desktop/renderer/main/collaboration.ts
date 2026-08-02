@@ -226,7 +226,7 @@ export function renderTaskInput(): void {
   const options = candidates
     .map(
       (task) =>
-        `<option value="${escapeHtml(task.path)}">${escapeHtml(task.assigneeId)} · ${escapeHtml(taskStateLabel(task.state))}</option>`
+        `<option value="${escapeHtml(task.path)}">${escapeHtml(taskExecutionLabel(task))} · ${escapeHtml(taskStateLabel(task.state))}</option>`
     )
     .join("");
   el.u2a.innerHTML = `<article class="interaction-item u2a-item" data-pending-kind="taskSendInput"><div class="interaction-kicker">U2A · 追加任务输入</div>
@@ -265,7 +265,7 @@ export function renderSessions(): void {
   el.session.innerHTML = related
     .map(
       (session) => `<div class="session-row"><span class="session-dot ${session.alive ? "is-live" : ""}" aria-hidden="true"></span>
-    <span>${escapeHtml(session.roleName || session.routeId)}</span><span class="muted">${escapeHtml(sessionStateLabel(session.state) || session.state)}</span></div>`
+    <span>${escapeHtml(session.roleId || session.connectionId || session.sessionId)}</span><span class="muted">${escapeHtml(sessionStateLabel(session.state) || session.state)}</span></div>`
     )
     .join("");
 }
@@ -296,7 +296,7 @@ export function renderTasks(): void {
     visibleTasks
       .map((t) => {
         // 谁 / 在做什么 / 一句摘要 / 动作；id/path/状态字收进详情
-        const who = escapeHtml(t.assigneeId);
+        const who = escapeHtml(taskExecutionLabel(t));
         // 主行不裸露 cx-/rl-/tk- 等技术 id
         const nodeIds = (t.referencedNodeIds || []).filter(
           (c) => c !== "root" && !/^(cx|rl|tk|ss|dl|ti)-/i.test(c)
@@ -395,6 +395,14 @@ export function renderTasks(): void {
   el.tasks.querySelectorAll<HTMLElement>("[data-reject]").forEach((btn) => {
     btn.addEventListener("click", () => void onReject(btn.getAttribute("data-reject")!));
   });
+}
+
+function taskExecutionLabel(task: {
+  roleId?: string;
+  sessionId?: string;
+  sessionConnectionId?: string;
+}): string {
+  return task.roleId || task.sessionConnectionId || task.sessionId || "Session";
 }
 
 /**

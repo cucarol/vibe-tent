@@ -13,10 +13,10 @@ export interface ProviderCapabilities {
   observeLevel: "process" | "log" | "structured";
 }
 
-/** Ephemeral execution inputs resolved from one machine Settings route. */
-export interface RouteLaunchPlan {
+/** Ephemeral execution inputs resolved from one machine Agent Connection. */
+export interface ConnectionLaunchPlan {
   sessionId: string;
-  routeId: string;
+  connectionId: string;
   cwd: string;
   env: Record<string, string>;
   /**
@@ -116,13 +116,13 @@ export interface ProviderAdapter {
   readonly id: string;
   readonly displayNameKey: string;
   capabilities(): ProviderCapabilities;
-  resolveLaunch(plan: RouteLaunchPlan): ResolvedLaunch | Promise<ResolvedLaunch>;
+  resolveLaunch(plan: ConnectionLaunchPlan): ResolvedLaunch | Promise<ResolvedLaunch>;
   /**
    * Optional structured transport (ACP stdio). When implemented, runtime uses this
    * instead of ProcessSupervisor spawn with stdio:ignore.
    */
   startManagedSession?(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession>;
   /**
@@ -131,7 +131,7 @@ export interface ProviderAdapter {
    * Only adapters with `capabilities().canResume === true` implement this.
    */
   resumeManagedSession?(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     token: ResumeToken,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession>;

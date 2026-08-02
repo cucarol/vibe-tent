@@ -174,7 +174,7 @@ export async function runSessionCommand(
       case "enter": {
         if (positionals.length > 0) {
           return failUsage(
-            "Usage: tent session enter [--session <ss-…>] [--role <name>] [--route <routeId>] [--key <externalKey>] [--host <agent>] [--task <taskId>] [--json]"
+            "Usage: tent session enter [--session <ss-…>] [--role-id <rl-…>] [--key <externalKey>] [--host <agent>] [--task <taskId>] [--json]"
           );
         }
         if (hookAlias && !externalKey) {
@@ -190,12 +190,7 @@ export async function runSessionCommand(
         // Only accept Tent ss- ids as sessionId; native provider ids go into externalKey.
         const tentSessionId =
           sessionId && isTentSessionId(sessionId) ? sessionId : undefined;
-        const roleName =
-          flags.role ||
-          flags["role-name"] ||
-          flags.roleName ||
-          process.env.TENT_ROLE;
-        const routeId = flags.route || flags["route-id"] || flags.routeId;
+        const roleId = flags["role-id"] || flags.roleId || process.env.TENT_ROLE_ID;
         const lastTaskId =
           flags.task ||
           flags["task-id"] ||
@@ -204,8 +199,7 @@ export async function runSessionCommand(
         const result = await client.call("session.enter", {
           workspaceId,
           sessionId: tentSessionId,
-          routeId,
-          roleName,
+          roleId,
           externalKey,
           lastTaskId,
           cwd: ctx.workspaceRoot,
@@ -291,8 +285,8 @@ export function sessionHelpText(): string {
   return `tent session — host integration binding (Local Service RPC)
 
 Usage:
-  tent session enter   [--session <ss-…>] [--role <name>] [--route <routeId>]
-                       [--key <externalKey>] [--host <agent>] [--task <taskId>] [--json]
+  tent session enter   [--session <ss-…>] [--role-id <rl-…>] [--key <externalKey>]
+                       [--host <agent>] [--task <taskId>] [--json]
   tent session status  [sessionId|externalKey] [--key <externalKey>] [--json]
   tent session leave   [sessionId|externalKey] [--key <externalKey>] [--json]
 
@@ -557,8 +551,8 @@ function formatEnter(result: unknown): string {
     session?: {
       sessionId?: string;
       state?: string;
-      routeId?: string;
-      roleName?: string;
+      connectionId?: string;
+      roleId?: string;
       alive?: boolean;
       externalKey?: string;
     };
@@ -570,8 +564,8 @@ function formatEnter(result: unknown): string {
     `sessionId: ${s.sessionId ?? "?"}\n` +
     `state: ${s.state ?? "external"}\n` +
     (s.externalKey ? `externalKey: ${s.externalKey}\n` : "") +
-    (s.roleName ? `role: ${s.roleName}\n` : "") +
-    (s.routeId ? `routeId: ${s.routeId}\n` : "") +
+    (s.roleId ? `roleId: ${s.roleId}\n` : "") +
+    (s.connectionId ? `connectionId: ${s.connectionId}\n` : "") +
     (row.reused != null ? `reused: ${row.reused}\n` : "")
   );
 }
@@ -582,23 +576,23 @@ function formatStatus(result: unknown): string {
       sessionId?: string;
       state?: string;
       alive?: boolean;
-      routeId?: string;
-      roleName?: string;
+      connectionId?: string;
+      roleId?: string;
       lastTaskId?: string;
       externalKey?: string;
     };
     sessions?: Array<{
       sessionId?: string;
       state?: string;
-      routeId?: string;
-      roleName?: string;
+      connectionId?: string;
+      roleId?: string;
       externalKey?: string;
     }>;
     incompleteTasks?: Array<{
       path?: string;
       state?: string;
-      assigneeKind?: "role" | "route";
-      assigneeId?: string;
+      roleId?: string;
+      sessionId?: string;
       id?: string;
     }>;
     open?: boolean;
@@ -611,8 +605,8 @@ function formatStatus(result: unknown): string {
       `state: ${s.state ?? "?"}`,
       `alive: ${s.alive ?? false}`,
       ...(s.externalKey ? [`externalKey: ${s.externalKey}`] : []),
-      ...(s.routeId ? [`routeId: ${s.routeId}`] : []),
-      ...(s.roleName ? [`role: ${s.roleName}`] : []),
+      ...(s.connectionId ? [`connectionId: ${s.connectionId}`] : []),
+      ...(s.roleId ? [`roleId: ${s.roleId}`] : []),
       ...(s.lastTaskId ? [`lastTaskId: ${s.lastTaskId}`] : []),
       ...(row.open != null ? [`open: ${row.open}`] : [])
     );
@@ -622,8 +616,8 @@ function formatStatus(result: unknown): string {
       lines.push(
         `- ${s.sessionId ?? "?"} state=${s.state ?? "?"}` +
           (s.externalKey ? ` key=${s.externalKey}` : "") +
-          (s.routeId ? ` route=${s.routeId}` : "") +
-          (s.roleName ? ` role=${s.roleName}` : "")
+          (s.connectionId ? ` connection=${s.connectionId}` : "") +
+          (s.roleId ? ` roleId=${s.roleId}` : "")
       );
     }
   }
@@ -631,7 +625,9 @@ function formatStatus(result: unknown): string {
   lines.push("", `incompleteTasks: ${tasks.length}`);
   for (const t of tasks) {
     lines.push(
-      `- ${t.path ?? t.id ?? "?"} state=${t.state ?? "?"} assignee=${t.assigneeKind ?? "?"}:${t.assigneeId ?? "?"}`
+      `- ${t.path ?? t.id ?? "?"} state=${t.state ?? "?"}` +
+        (t.roleId ? ` role=${t.roleId}` : "") +
+        (t.sessionId ? ` session=${t.sessionId}` : "")
     );
   }
   return lines.join("\n") + "\n";
@@ -647,8 +643,8 @@ function formatLeave(result: unknown): string {
     incompleteTasks?: Array<{
       path?: string;
       state?: string;
-      assigneeKind?: "role" | "route";
-      assigneeId?: string;
+      roleId?: string;
+      sessionId?: string;
     }>;
     delivered?: boolean;
     accepted?: boolean;
@@ -668,7 +664,9 @@ function formatLeave(result: unknown): string {
   ];
   for (const t of tasks) {
     lines.push(
-      `- ${t.path ?? "?"} state=${t.state ?? "?"} assignee=${t.assigneeKind ?? "?"}:${t.assigneeId ?? "?"}`
+      `- ${t.path ?? "?"} state=${t.state ?? "?"}` +
+        (t.roleId ? ` role=${t.roleId}` : "") +
+        (t.sessionId ? ` session=${t.sessionId}` : "")
     );
   }
   if (tasks.length > 0) {

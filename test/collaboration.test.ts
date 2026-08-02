@@ -31,8 +31,7 @@ test("buildInbox: active task occupation 聚合,不计入待裁", async () => {
     tentRoot: dir,
   };
   const result = await dispatch(env as any, "cx-p1", {
-    assigneeKind: "role",
-    assigneeId: "executor",
+    sessionId: "ss-executor",
     userPrompt: "for inbox",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -58,8 +57,7 @@ test("delivery:驳回后 task 仍 running,重新交付后 accept 保留 accepted
   };
 
   const result = await dispatch(env as any, "cx-p1", {
-    assigneeKind: "role",
-    assigneeId: "executor",
+    sessionId: "ss-executor",
     userPrompt: "Implement delivery single-track",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -70,7 +68,7 @@ test("delivery:驳回后 task 仍 running,重新交付后 accept 保留 accepted
     summary: "完成第一版",
     commits: ["aaa", "bbb", "aaa"],
   });
-  assert.match(first.delivery.path, /^temp\/executor\/deliveries\/dl-/);
+  assert.match(first.delivery.path, /^temp\/sessions\/ss-executor\/deliveries\/dl-/);
   assert.deepEqual(first.delivery.commits, ["aaa", "bbb"]);
   assert.equal(first.delivery.status, "ready");
   assert.equal((await loadDeliveries(fsa, { sourceNodeId: "cx-p1" }))[0].status, "ready");
@@ -109,7 +107,7 @@ test("delivery:驳回后 task 仍 running,重新交付后 accept 保留 accepted
   assert.equal((await loadDelivery(fsa, accepted.delivery.path)).status, "accepted");
   // Formal report body is Delivery.summary only — no temp/<role>/reports dual track.
   assert.equal(accepted.delivery.summary, "已补测试");
-  assert.equal(await fsa.exists("temp/executor/reports/cx-p1.md"), false);
+  assert.equal(await fsa.exists("temp/sessions/ss-executor/reports/cx-p1.md"), false);
   assert.match(accepted.delivery.path, /\/deliveries\//);
 });
 
@@ -123,8 +121,7 @@ test("delivery:单轨写入 deliveries，不创建 legacy reports 路径", async
     tentRoot: dir,
   };
   const result = await dispatch(env as any, "cx-p1", {
-    assigneeKind: "role",
-    assigneeId: "executor",
+    sessionId: "ss-executor",
     userPrompt: "Delivery-only formal record",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -140,9 +137,9 @@ test("delivery:单轨写入 deliveries，不创建 legacy reports 路径", async
   assert.deepEqual(delivered.delivery.commits, ["deadbeef"]);
   assert.equal(delivered.delivery.checks[0]?.name, "typecheck");
   assert.equal(delivered.delivery.artifactRefs[0]?.target, "dist/out.js");
-  assert.match(delivered.delivery.path, /^temp\/executor\/deliveries\/dl-/);
-  assert.equal(await fsa.exists("temp/executor/reports"), false);
-  assert.equal(await fsa.exists(`temp/executor/reports/cx-p1.md`), false);
+  assert.match(delivered.delivery.path, /^temp\/sessions\/ss-executor\/deliveries\/dl-/);
+  assert.equal(await fsa.exists("temp/sessions/ss-executor/reports"), false);
+  assert.equal(await fsa.exists(`temp/sessions/ss-executor/reports/cx-p1.md`), false);
   const raw = await fsa.readFile(delivered.delivery.path);
   assert.match(raw, /^---\n/);
   assert.match(raw, /type: delivery/);
@@ -156,14 +153,14 @@ test("delivery:force-release 删除非 accepted，保留 accepted 历史", async
   const ready = await createDelivery(fsa, clock, {
     taskId: "tk-ready",
     sourceNodeId: "cx-g2",
-    deliveriesDir: "temp/executor/deliveries",
+    deliveriesDir: "temp/sessions/ss-executor/deliveries",
     summary: "ready to drop",
     status: "ready",
   });
   const accepted = await createDelivery(fsa, clock, {
     taskId: "tk-accepted",
     sourceNodeId: "cx-g2",
-    deliveriesDir: "temp/executor/deliveries",
+    deliveriesDir: "temp/sessions/ss-executor/deliveries",
     summary: "keep history",
     status: "accepted",
   });
@@ -176,7 +173,7 @@ test("delivery:force-release 删除非 accepted，保留 accepted 历史", async
   const ready2 = await createDelivery(fsa, clock, {
     taskId: "tk-ready-2",
     sourceNodeId: "cx-g2",
-    deliveriesDir: "temp/executor/deliveries",
+    deliveriesDir: "temp/sessions/ss-executor/deliveries",
     summary: "ready again",
     status: "ready",
   });
@@ -198,15 +195,13 @@ test("task interrupt/fail remove only their own non-accepted Delivery", async ()
   const env = { fs: fsa, clock, tentName: "demo", tentRoot: dir };
 
   const first = await dispatch(env as any, "cx-g2", {
-    assigneeKind: "role",
-    assigneeId: "worker-a",
+    sessionId: "ss-workera",
     userPrompt: "first task",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
   });
   const second = await dispatch(env as any, "cx-p1", {
-    assigneeKind: "role",
-    assigneeId: "worker-b",
+    sessionId: "ss-workerb",
     userPrompt: "second task on an independent Node",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -219,14 +214,14 @@ test("task interrupt/fail remove only their own non-accepted Delivery", async ()
   const firstDelivery = await createDelivery(fsa, clock, {
     taskId: firstTask.id!,
     sourceNodeId: "cx-p1",
-    deliveriesDir: "temp/worker-a/deliveries",
+    deliveriesDir: "temp/sessions/ss-workera/deliveries",
     summary: "remove only this task",
     status: "ready",
   });
   const secondDelivery = await createDelivery(fsa, clock, {
     taskId: secondTask.id!,
     sourceNodeId: "cx-g2",
-    deliveriesDir: "temp/worker-b/deliveries",
+    deliveriesDir: "temp/sessions/ss-workerb/deliveries",
     summary: "must remain",
     status: "ready",
   });
@@ -236,8 +231,7 @@ test("task interrupt/fail remove only their own non-accepted Delivery", async ()
   assert.equal(await fsa.exists(secondDelivery.path), true);
 
   const third = await dispatch(env as any, "cx-g2", {
-    assigneeKind: "role",
-    assigneeId: "worker-c",
+    sessionId: "ss-workerc",
     userPrompt: "third task after exact Node release",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -247,7 +241,7 @@ test("task interrupt/fail remove only their own non-accepted Delivery", async ()
   const thirdDelivery = await createDelivery(fsa, clock, {
     taskId: thirdTask.id!,
     sourceNodeId: "cx-g2",
-    deliveriesDir: "temp/worker-c/deliveries",
+    deliveriesDir: "temp/sessions/ss-workerc/deliveries",
     summary: "fail removes only this task",
     status: "rejected",
   });
@@ -270,7 +264,7 @@ test("delivery:纯数字 commit ref 保持字符串", async () => {
   const delivery = await createDelivery(fsa, clock, {
     taskId: "tk-test-numeric",
     sourceNodeId: "cx-g2",
-    deliveriesDir: "temp/executor/deliveries",
+    deliveriesDir: "temp/sessions/ss-executor/deliveries",
     summary: "数字 ref",
     commits: refs,
   });

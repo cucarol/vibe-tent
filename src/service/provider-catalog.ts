@@ -8,7 +8,7 @@
  * drift-tested against the current product adapter set.
  *
  * Never secrets, env values, credentials, command lines, or machine-local
- * route configuration. Settings routes stay separate launch config.
+ * provider metadata. Agent Connections remain separate launch configuration.
  *
  * Honesty: "has a checked-in script" is at most opt-in-live-probe — never
  * live-verified and never a claim of full CI certification on every host.

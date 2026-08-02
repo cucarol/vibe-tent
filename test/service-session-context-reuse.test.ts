@@ -25,10 +25,10 @@ import { loadTent } from "../src/core/tree.js";
 import { writeWorkspaceAgents } from "../src/core/workspace-agents.js";
 import { NodeFs, SystemClock } from "../src/fs/node-fs.js";
 import {
-  calculateSettingsRouteLaunchDigest,
-  createSettingsRouteSnapshot,
-} from "../src/runtime/route-config.js";
-import type { SettingsRouteConfig } from "../src/runtime/types.js";
+  calculateAgentConnectionLaunchDigest,
+  createAgentConnectionSnapshot,
+} from "../src/runtime/agent-connection.js";
+import type { AgentConnectionConfig } from "../src/runtime/types.js";
 import type { ProviderAdapter } from "../src/adapters/types.js";
 import {
   appendCallerBootstrapSection,
@@ -42,15 +42,15 @@ import { configureTestGitIdentity, git } from "./helpers.js";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 type Svc = Awaited<ReturnType<typeof startLocalTentService>>;
 
-const FAKE_RESUMABLE: SettingsRouteConfig = {
-  routeId: "fake-resumable",
+const FAKE_RESUMABLE: AgentConnectionConfig = {
+  connectionId: "fake-resumable",
   provider: "fake",
   adapterId: FAKE_ADAPTER_ID,
   fake: { waitForSignal: true, canResume: true, sleepMs: 60_000, emitStdout: false },
 };
 
-const FAKE_OTHER: SettingsRouteConfig = {
-  routeId: "fake-other",
+const FAKE_OTHER: AgentConnectionConfig = {
+  connectionId: "fake-other",
   provider: "fake",
   adapterId: FAKE_ADAPTER_ID,
   model: "other-model",
@@ -69,8 +69,8 @@ async function makeWorkspace(name = "ctx-continuity"): Promise<string> {
     `${JSON.stringify(
       {
         roles: [
-          { name: "orchestrator", prompt: "dispatch work" },
-          { name: "executor", prompt: "do work" },
+          { id: "rl-orchestrator", name: "orchestrator", prompt: "dispatch work" },
+          { id: "rl-executor", name: "executor", prompt: "do work" },
         ],
       },
       null,
@@ -92,13 +92,13 @@ async function initGit(workspace: string): Promise<void> {
 
 async function withService<T>(
   fn: (svc: Svc) => Promise<T>,
-  opts?: { routes?: SettingsRouteConfig[]; packageRoot?: string }
+  opts?: { connections?: AgentConnectionConfig[]; packageRoot?: string }
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ctx-data-"));
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
-    routes: opts?.routes ?? [FAKE_RESUMABLE, FAKE_OTHER],
+    connections: opts?.connections ?? [FAKE_RESUMABLE, FAKE_OTHER],
     ...(opts?.packageRoot ? { packageRoot: opts.packageRoot } : {}),
   });
   enableFakeNativeResume(svc);
@@ -162,45 +162,24 @@ async function createWorkItemNode(svc: Svc, workspaceId: string): Promise<string
   return (created.result as { nodeId: string }).nodeId;
 }
 
-async function dispatchRouteTask(
+async function dispatchConnectionTask(
   svc: Svc,
   workspaceId: string,
   nodeId: string,
   prompt: string,
-  routeId = "fake-resumable",
-  startSession = false
+  connectionId = "fake-resumable"
 ) {
   const dispatched = await rpc(svc, "task.dispatch", {
     workspaceId,
     nodeIds: [nodeId],
     prompt,
-    assigneeKind: "route",
-    assigneeId: routeId,
-    parentActor: { kind: "role", id: "orchestrator" },
-    reviewer: { kind: "role", id: "orchestrator" },
+    connectionId,
+    parentActor: { kind: "role", id: "rl-orchestrator" },
+    reviewer: { kind: "role", id: "rl-orchestrator" },
     callerKind: "user",
-    startSession,
   });
   assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
   return dispatched.result as { taskPath: string; session?: { sessionId: string } };
-}
-
-async function claimAndStart(
-  svc: Svc,
-  workspaceId: string,
-  taskPath: string,
-  bootstrapPrompt?: string
-) {
-  const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
-  assert.ok(!claimed.error, JSON.stringify(claimed.error));
-  const started = await rpc(svc, "task.startSession", {
-    workspaceId,
-    taskPath,
-    callerKind: "user",
-    ...(bootstrapPrompt ? { bootstrapPrompt } : {}),
-  });
-  assert.ok(!started.error, JSON.stringify(started.error));
-  return started.result as { session: { sessionId: string; contextRestored?: boolean } };
 }
 
 async function findFakeBootstrapPrompt(sessionId: string): Promise<string | null> {
@@ -235,26 +214,38 @@ async function writeMinimalSkillPackage(
   }
 }
 
-test("collectStableContextGeneration digests AGENTS, Skills, and route facts without taskId", async () => {
+test("collectStableContextGeneration digests AGENTS, Skills, and Connection facts without taskId", async () => {
   const workspace = await makeWorkspace("collect");
   try {
-    const routeSnapshot = createSettingsRouteSnapshot(FAKE_RESUMABLE, {});
+    const connectionSnapshot = createAgentConnectionSnapshot(FAKE_RESUMABLE, {});
     const input = {
       workspaceRoot: workspace,
       workspaceIdentity: "ws-collect",
       packageRoot: repoRoot,
       packageVersion: "0.1.0",
-      assigneeKind: "route" as const,
-      assigneeId: "fake-resumable",
-      routeSnapshot,
+      task: {
+        sessionId: "ss-collect",
+        contextCard: buildTaskContextCard({
+          objective: "collect",
+          acceptance: ["stable"],
+          refs: {
+            nodes: [{ id: [...(await loadTent(new NodeFs(path.join(workspace, ".tent")))).byId.keys()][0]! }],
+            tasks: [],
+            deliveries: [],
+            git: [],
+          },
+        }),
+      },
+      session: { id: "ss-collect", connectionSnapshot },
+      fs: new NodeFs(path.join(workspace, ".tent")),
     };
     const first = await collectStableContextGeneration(input);
     const sameFacts = await collectStableContextGeneration(input);
     assert.ok(isContextGenerationId(first.contextGeneration));
     assert.equal(first.contextGeneration, sameFacts.contextGeneration);
     assert.ok(first.tentTaskDigest);
-    assert.equal(first.tentRoleDigest, "", "a route executor is not a durable Role");
-    assert.equal(first.routeLaunchDigest, routeSnapshot.launchDigest);
+    assert.equal(first.tentRoleDigest, "", "a Connection executor is not a durable Role");
+    assert.equal(first.connectionLaunchDigest, connectionSnapshot.launchDigest);
 
     await writeWorkspaceAgents(workspace, "# AGENTS changed\n");
     const changed = await collectStableContextGeneration(input);
@@ -302,33 +293,30 @@ test("assertDurableContextCardRefsResolved fails loud on missing Node, Task, or 
   }
 });
 
-test("dispatch leaves generation absent; first start persists real generation independent of taskId", async () => {
+test("Connection dispatch starts independent exact Sessions and persists each generation", async () => {
   const workspace = await makeWorkspace("dispatch-gen");
   try {
     await initGit(workspace);
     await withService(async (svc) => {
       const { workspaceId, nodeId } = await mountWorkItem(svc, workspace);
       const systemFs = new NodeFs(path.join(workspace, ".tent"));
-      const firstResult = await dispatchRouteTask(svc, workspaceId, nodeId, "Task one");
-      const secondResult = await dispatchRouteTask(
+      const firstResult = await dispatchConnectionTask(svc, workspaceId, nodeId, "Task one");
+      const secondResult = await dispatchConnectionTask(
         svc,
         workspaceId,
         await createWorkItemNode(svc, workspaceId),
         "Task two"
       );
-      const beforeFirst = await loadTaskEnvelope(systemFs, firstResult.taskPath);
-      const beforeSecond = await loadTaskEnvelope(systemFs, secondResult.taskPath);
-      assert.equal(beforeFirst.contextGeneration, undefined);
-      assert.equal(beforeSecond.contextGeneration, undefined);
-      assert.notEqual(extractTaskUserPrompt(beforeFirst), extractTaskUserPrompt(beforeSecond));
-
-      await claimAndStart(svc, workspaceId, firstResult.taskPath);
-      await claimAndStart(svc, workspaceId, secondResult.taskPath);
       const first = await loadTaskEnvelope(systemFs, firstResult.taskPath);
       const second = await loadTaskEnvelope(systemFs, secondResult.taskPath);
+      assert.notEqual(extractTaskUserPrompt(first), extractTaskUserPrompt(second));
       assert.notEqual(first.id, second.id);
       assert.ok(isContextGenerationId(first.contextGeneration!));
-      assert.equal(first.contextGeneration, second.contextGeneration);
+      assert.notEqual(
+        first.contextGeneration,
+        second.contextGeneration,
+        "different Node context must produce a different stable generation"
+      );
       assert.notEqual(first.taskDeltaDigest, second.taskDeltaDigest);
       assert.equal(
         (await svc.runtime.registry.read(first.sessionId!))?.contextGeneration,
@@ -347,13 +335,12 @@ test("same exact Task resumes native Session; replaceSession is the only explici
     await withService(async (svc) => {
       const { workspaceId, nodeId } = await mountWorkItem(svc, workspace);
       const systemFs = new NodeFs(path.join(workspace, ".tent"));
-      const dispatched = await dispatchRouteTask(svc, workspaceId, nodeId, "resume me");
-      await claimAndStart(svc, workspaceId, dispatched.taskPath);
+      const dispatched = await dispatchConnectionTask(svc, workspaceId, nodeId, "resume me");
       const first = await loadTaskEnvelope(systemFs, dispatched.taskPath);
       const firstId = first.sessionId!;
       const firstRow = await svc.runtime.registry.read(firstId);
-      assert.equal(firstRow?.routeId, "fake-resumable");
-      assert.equal(firstRow?.routeSnapshot.routeId, "fake-resumable");
+      assert.equal(firstRow?.connectionId, "fake-resumable");
+      assert.equal(firstRow?.connectionSnapshot?.connectionId, "fake-resumable");
       assert.ok(firstRow?.resumeToken);
 
       await svc.runtime.stopSession(firstId, "user");
@@ -403,15 +390,15 @@ test("startSession fails loud for unresolved durable Node, Task, and Delivery re
       ] as const;
       for (const entry of cases) {
         const taskNodeId = entry.bucket === "nodes" ? nodeId : await createWorkItemNode(svc, workspaceId);
-        const dispatched = await dispatchRouteTask(
+        const dispatched = await dispatchConnectionTask(
           svc,
           workspaceId,
           taskNodeId,
           `missing ${entry.bucket}`
         );
         const task = await loadTaskEnvelope(systemFs, dispatched.taskPath);
-        const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath: task.path });
-        assert.ok(!claimed.error, JSON.stringify(claimed.error));
+        assert.ok(task.sessionId);
+        await svc.runtime.stopSession(task.sessionId!, "user");
         const contextCard = {
           ...task.contextCard,
           refs: { ...task.contextCard.refs, [entry.bucket]: entry.value },
@@ -438,13 +425,11 @@ test("writeTaskEnvelope persists no dispatch-time generation and remains task-sp
     const write = (id: string, nodeId: string, prompt: string) =>
       writeTaskEnvelope(systemFs, new SystemClock(), {
         id,
-        assigneeKind: "route",
-        assigneeId: "fake-resumable",
+        sessionId: id === "tk-aaaaaaa1" ? "ss-contexta" : "ss-contextb",
         nodeRefs: [{ id: nodeId, path: `nodes/${nodeId}` }],
-        tasksDir: "temp/routes/fake-resumable/tasks",
-        manifestPath: `temp/routes/fake-resumable/manifests/${id}.yml`,
+        manifestPath: `temp/sessions/${id === "tk-aaaaaaa1" ? "ss-contexta" : "ss-contextb"}/manifests/${id}.yml`,
         userPrompt: prompt,
-        parentActor: { kind: "role", id: "orchestrator" },
+        parentActor: { kind: "role", id: "rl-orchestrator" },
       });
     const aPath = await write("tk-aaaaaaa1", "cx-contexta", "objective A");
     const bPath = await write("tk-bbbbbbb2", "cx-contextb", "objective B");
@@ -458,24 +443,21 @@ test("writeTaskEnvelope persists no dispatch-time generation and remains task-sp
   }
 });
 
-test("route start captures immutable route and adapter provenance without purpose identity", async () => {
-  const workspace = await makeWorkspace("route-provenance");
+test("Connection dispatch captures immutable Connection and adapter provenance without purpose identity", async () => {
+  const workspace = await makeWorkspace("connection-provenance");
   try {
     await initGit(workspace);
     await withService(async (svc) => {
       const { workspaceId, nodeId } = await mountWorkItem(svc, workspace);
       const systemFs = new NodeFs(path.join(workspace, ".tent"));
-      const dispatched = await dispatchRouteTask(svc, workspaceId, nodeId, "capture route");
-      const before = await loadTaskEnvelope(systemFs, dispatched.taskPath);
-      assert.equal(before.contextGeneration, undefined);
-      await claimAndStart(svc, workspaceId, before.path);
-      const after = await loadTaskEnvelope(systemFs, before.path);
+      const dispatched = await dispatchConnectionTask(svc, workspaceId, nodeId, "capture Connection");
+      const after = await loadTaskEnvelope(systemFs, dispatched.taskPath);
       const row = await svc.runtime.registry.read(after.sessionId!);
       assert.ok(isContextGenerationId(after.contextGeneration!));
       assert.equal(row?.contextGeneration, after.contextGeneration);
-      assert.equal(row?.routeId, "fake-resumable");
+      assert.equal(row?.connectionId, "fake-resumable");
       assert.equal(row?.adapterId, FAKE_ADAPTER_ID);
-      assert.equal(row?.routeSnapshot.launchDigest, calculateSettingsRouteLaunchDigest(FAKE_RESUMABLE));
+      assert.equal(row?.connectionSnapshot?.launchDigest, calculateAgentConnectionLaunchDigest(FAKE_RESUMABLE));
       assert.equal("purpose" in (row ?? {}), false);
     });
   } finally {
@@ -483,28 +465,26 @@ test("route start captures immutable route and adapter provenance without purpos
   }
 });
 
-test("a different Settings route produces an independent Session and generation", async () => {
-  const workspace = await makeWorkspace("route-change");
+test("a different Agent Connection produces an independent Session and generation", async () => {
+  const workspace = await makeWorkspace("connection-change");
   try {
     await initGit(workspace);
     await withService(async (svc) => {
       const { workspaceId, nodeId } = await mountWorkItem(svc, workspace);
       const systemFs = new NodeFs(path.join(workspace, ".tent"));
-      const first = await dispatchRouteTask(svc, workspaceId, nodeId, "route one");
-      const second = await dispatchRouteTask(
+      const first = await dispatchConnectionTask(svc, workspaceId, nodeId, "Connection one");
+      const second = await dispatchConnectionTask(
         svc,
         workspaceId,
         await createWorkItemNode(svc, workspaceId),
-        "route two",
+        "Connection two",
         "fake-other"
       );
-      await claimAndStart(svc, workspaceId, first.taskPath);
-      await claimAndStart(svc, workspaceId, second.taskPath);
       const a = await loadTaskEnvelope(systemFs, first.taskPath);
       const b = await loadTaskEnvelope(systemFs, second.taskPath);
       assert.notEqual(a.sessionId, b.sessionId);
       assert.notEqual(a.contextGeneration, b.contextGeneration);
-      assert.equal((await svc.runtime.registry.read(b.sessionId!))?.routeId, "fake-other");
+      assert.equal((await svc.runtime.registry.read(b.sessionId!))?.connectionId, "fake-other");
     });
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
@@ -523,7 +503,7 @@ test("appendCallerBootstrapSection never replaces official managed bootstrap", (
   assert.notEqual(appended.trim(), "CUSTOM_ONLY_TEXT");
 });
 
-test("Skill body/version and route launch facts participate in compatibility digests", () => {
+test("Skill body/version and Connection launch facts participate in compatibility digests", () => {
   const bodyA = skillSetCompatibilityDigest([
     { name: "tent-task", bodyDigest: "body-a", version: "0.1.0" },
   ]);
@@ -536,14 +516,14 @@ test("Skill body/version and route launch facts participate in compatibility dig
   assert.notEqual(bodyA, bodyB);
   assert.notEqual(bodyA, versionB);
   assert.notEqual(
-    calculateSettingsRouteLaunchDigest({ routeId: "r", provider: "one", adapterId: "a" }),
-    calculateSettingsRouteLaunchDigest({ routeId: "r", provider: "two", adapterId: "a" })
+    calculateAgentConnectionLaunchDigest({ connectionId: "r", provider: "one", adapterId: "a" }),
+    calculateAgentConnectionLaunchDigest({ connectionId: "r", provider: "two", adapterId: "a" })
   );
 });
 
-test("route launch digest covers model, endpoint key, Skill, MCP, and credential references", () => {
-  const base: SettingsRouteConfig = {
-    routeId: "same-route",
+test("Connection launch digest covers model, endpoint key, Skill, MCP, and credential references", () => {
+  const base: AgentConnectionConfig = {
+    connectionId: "same-connection",
     provider: "grok",
     adapterId: "grok-acp",
     command: "node",
@@ -570,8 +550,8 @@ test("route launch digest covers model, endpoint key, Skill, MCP, and credential
       },
     ],
   };
-  const digest = calculateSettingsRouteLaunchDigest(base);
-  const variants: SettingsRouteConfig[] = [
+  const digest = calculateAgentConnectionLaunchDigest(base);
+  const variants: AgentConnectionConfig[] = [
     { ...base, model: "grok-4-fast" },
     { ...base, baseUrlEnvKey: "XAI_BASE_URL_ALT" },
     { ...base, credentialRef: "cred-main-alt" },
@@ -582,9 +562,9 @@ test("route launch digest covers model, endpoint key, Skill, MCP, and credential
     },
   ];
   for (const variant of variants) {
-    assert.notEqual(calculateSettingsRouteLaunchDigest(variant), digest);
+    assert.notEqual(calculateAgentConnectionLaunchDigest(variant), digest);
   }
-  const snapshot = createSettingsRouteSnapshot(base, { effectiveEndpointDigest: "sha256:endpoint" });
+  const snapshot = createAgentConnectionSnapshot(base, { effectiveEndpointDigest: "sha256:endpoint" });
   assert.equal(snapshot.credentialRef, "cred-main");
   assert.equal(snapshot.mcpServers?.[0]?.envCredentialRefs?.API_TOKEN, "cred-docs");
   assert.equal(JSON.stringify(snapshot).includes("actual-secret"), false);
@@ -600,8 +580,7 @@ test("AGENTS and Skill drift resumes the same Session with refreshed full stable
       async (svc) => {
         const { workspaceId, nodeId } = await mountWorkItem(svc, workspace);
         const systemFs = new NodeFs(path.join(workspace, ".tent"));
-        const dispatched = await dispatchRouteTask(svc, workspaceId, nodeId, "drift task");
-        await claimAndStart(svc, workspaceId, dispatched.taskPath);
+        const dispatched = await dispatchConnectionTask(svc, workspaceId, nodeId, "drift task");
         const first = await loadTaskEnvelope(systemFs, dispatched.taskPath);
         const sessionId = first.sessionId!;
         const generation = first.contextGeneration!;
@@ -637,22 +616,20 @@ test("AGENTS and Skill drift resumes the same Session with refreshed full stable
   }
 });
 
-test("bootstrapPrompt appends on fresh and resumed same-Task starts; stable prefix dedupes", async () => {
+test("bootstrapPrompt appends on resumed same-Task start while stable prefix dedupes", async () => {
   const workspace = await makeWorkspace("bootstrap-append");
   try {
     await initGit(workspace);
     await withService(async (svc) => {
       const { workspaceId, nodeId } = await mountWorkItem(svc, workspace);
       const systemFs = new NodeFs(path.join(workspace, ".tent"));
-      const dispatched = await dispatchRouteTask(svc, workspaceId, nodeId, "bootstrap task");
-      await claimAndStart(svc, workspaceId, dispatched.taskPath, "FRESH_CUSTOM_APPEND");
+      const dispatched = await dispatchConnectionTask(svc, workspaceId, nodeId, "bootstrap task");
       const first = await loadTaskEnvelope(systemFs, dispatched.taskPath);
       const sessionId = first.sessionId!;
       const fresh = await findFakeBootstrapPrompt(sessionId);
       assert.ok(fresh);
       assert.match(fresh!, /Tent managed session bootstrap/);
-      assert.match(fresh!, /Caller bootstrap append/);
-      assert.match(fresh!, /FRESH_CUSTOM_APPEND/);
+      assert.doesNotMatch(fresh!, /Caller bootstrap append/);
 
       await svc.runtime.stopSession(sessionId, "user");
       const resumed = await rpc(svc, "task.startSession", {
@@ -675,15 +652,14 @@ test("bootstrapPrompt appends on fresh and resumed same-Task starts; stable pref
   }
 });
 
-test("empty Session contextGeneration is not resume authority when token and route snapshot are valid", async () => {
+test("empty Session contextGeneration is not resume authority when token and Connection snapshot are valid", async () => {
   const workspace = await makeWorkspace("empty-generation");
   try {
     await initGit(workspace);
     await withService(async (svc) => {
       const { workspaceId, nodeId } = await mountWorkItem(svc, workspace);
       const systemFs = new NodeFs(path.join(workspace, ".tent"));
-      const dispatched = await dispatchRouteTask(svc, workspaceId, nodeId, "resume without prior gen");
-      await claimAndStart(svc, workspaceId, dispatched.taskPath);
+      const dispatched = await dispatchConnectionTask(svc, workspaceId, nodeId, "resume without prior gen");
       const task = await loadTaskEnvelope(systemFs, dispatched.taskPath);
       const sessionId = task.sessionId!;
       await svc.runtime.stopSession(sessionId, "user");
@@ -709,7 +685,7 @@ test("empty Session contextGeneration is not resume authority when token and rou
   }
 });
 
-test("collector failure at startSession fails loud without launching or inventing provenance", async () => {
+test("collector failure on exact-Task resume fails loud without launching a fresh Session", async () => {
   const skillRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skills-fail-"));
   const workspace = await makeWorkspace("collector-fail");
   try {
@@ -719,18 +695,16 @@ test("collector failure at startSession fails loud without launching or inventin
       async (svc) => {
         const { workspaceId, nodeId } = await mountWorkItem(svc, workspace);
         const systemFs = new NodeFs(path.join(workspace, ".tent"));
-        const missingSkill = await dispatchRouteTask(
+        const missingSkill = await dispatchConnectionTask(
           svc,
           workspaceId,
           nodeId,
           "missing skill"
         );
+        const beforeFailure = await loadTaskEnvelope(systemFs, missingSkill.taskPath);
+        assert.ok(beforeFailure.sessionId);
+        await svc.runtime.stopSession(beforeFailure.sessionId!, "user");
         await fs.rm(path.join(skillRoot, "skills", "tent-task", "SKILL.md"));
-        const claimedSkill = await rpc(svc, "task.claim", {
-          workspaceId,
-          taskPath: missingSkill.taskPath,
-        });
-        assert.ok(!claimedSkill.error, JSON.stringify(claimedSkill.error));
         const skillFailure = await rpc(svc, "task.startSession", {
           workspaceId,
           taskPath: missingSkill.taskPath,
@@ -742,8 +716,8 @@ test("collector failure at startSession fails loud without launching or inventin
           "CONTEXT_GENERATION_COLLECT_FAILED"
         );
         const afterSkillFailure = await loadTaskEnvelope(systemFs, missingSkill.taskPath);
-        assert.equal(afterSkillFailure.sessionId, undefined);
-        assert.equal(afterSkillFailure.contextGeneration, undefined);
+        assert.equal(afterSkillFailure.sessionId, beforeFailure.sessionId);
+        assert.equal(afterSkillFailure.contextGeneration, beforeFailure.contextGeneration);
       },
       { packageRoot: skillRoot }
     );

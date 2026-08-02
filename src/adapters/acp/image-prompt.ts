@@ -2,7 +2,7 @@
 // Path/MIME/size safety only. No OCR, no workspace scan, no base64 persistence.
 // Bytes are process-scoped for one session/prompt — never Task/Node/Session/route disk.
 // Gate: live ACP initialize agentCapabilities.promptCapabilities.image === true only.
-// Image capability is provider-negotiated, not a Settings route toggle.
+// Image capability is provider-negotiated, not an Agent Connection toggle.
 
 import * as nodePath from "node:path";
 import { pathToFileURL } from "node:url";

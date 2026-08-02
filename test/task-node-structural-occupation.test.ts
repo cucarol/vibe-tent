@@ -33,10 +33,9 @@ async function writeTask(
   const taskPath = await writeTaskEnvelope(fsAdapter, {
     now: () => "2026-08-01T00:00:00.000Z",
   }, {
-    assigneeKind: "role",
-    assigneeId: `role-${id}`,
+    sessionId: `ss-${id.replace(/[^a-z0-9]/gi, "").toLowerCase()}`,
     nodeRefs: nodeIds.map((nodeId) => ({ id: nodeId, path: "prompt/node" })),
-    manifestPath: `temp/role-${id}/manifest.yml`,
+    manifestPath: `temp/sessions/ss-${id.replace(/[^a-z0-9]/gi, "").toLowerCase()}/manifest.yml`,
     userPrompt: "hold this Node",
     id,
     parentActor: { kind: "user", id: "user" },
@@ -136,19 +135,18 @@ test("structural mutation fails loud when canonical Task inventory is unreadable
     name: "context-card-target",
     type: "prompt",
   });
-  await fs.mkdir(path.join(dir, "temp", "legacy", "tasks"), { recursive: true });
+  await fs.mkdir(path.join(dir, "temp", "sessions", "ss-executor", "tasks"), { recursive: true });
   await fsAdapter.writeFile(
-    "temp/legacy/tasks/task-no-context-card.md",
+    "temp/sessions/ss-executor/tasks/task-no-context-card.md",
     [
       "---",
       "type: task",
       "id: tk-struct-no-card",
-      "assigneeKind: role",
-      "assigneeId: executor",
+      "sessionId: ss-executor",
       "parentActor: { kind: user, id: user }",
       "reviewer: { kind: user, id: user }",
       "state: running",
-      "manifest: temp/executor/manifest.yml",
+      "manifest: temp/sessions/ss-executor/manifest.yml",
       "---",
       "",
       "# Task",

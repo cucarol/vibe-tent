@@ -37,7 +37,7 @@ function fieldErr(message: string): FieldResult<never> {
  * Machine-local skill reference only — never SKILL.md body.
  * `name` is the stable identity; `path` is optional absolute path under allowed roots.
  */
-export interface RouteSkillRef {
+export interface ConnectionSkillRef {
   name: string;
   /** Absolute path to skill directory or SKILL.md under an allowed skill root. */
   path?: string;
@@ -51,7 +51,7 @@ export type RouteMcpTransport = "stdio" | "http";
  * Machine-local MCP server description for ACP mcpServers projection.
  * Secrets only as envKey / credentialRef — never plaintext values on disk or projection.
  */
-export interface RouteMcpServer {
+export interface ConnectionMcpServer {
   name: string;
   transport: RouteMcpTransport;
   /** Default true. */
@@ -86,7 +86,7 @@ export type RouteSkillProjection = {
   enabled: boolean;
 };
 
-export type RouteMcpServerProjection = {
+export type ConnectionMcpServerProjection = {
   name: string;
   transport: RouteMcpTransport;
   enabled: boolean;
@@ -285,7 +285,7 @@ export function parseSkillPathValue(
 export function parseSkillRefValue(
   raw: unknown,
   allowedRoots: readonly string[]
-): FieldResult<RouteSkillRef> {
+): FieldResult<ConnectionSkillRef> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return fieldErr("Invalid skills[] entry: must be an object with name");
   }
@@ -313,7 +313,7 @@ export function parseSkillRefValue(
     enabled = o.enabled;
   }
 
-  const ref: RouteSkillRef = { name: nameR.value };
+  const ref: ConnectionSkillRef = { name: nameR.value };
   if (pathVal !== undefined) ref.path = pathVal;
   if (enabled !== undefined) ref.enabled = enabled;
   return fieldOk(ref);
@@ -322,7 +322,7 @@ export function parseSkillRefValue(
 export function parseSkillsArrayValue(
   raw: unknown,
   allowedRoots: readonly string[] = defaultAllowedSkillRoots()
-): FieldResult<RouteSkillRef[] | undefined> {
+): FieldResult<ConnectionSkillRef[] | undefined> {
   if (raw === undefined || raw === null) return fieldOk(undefined);
   if (!Array.isArray(raw)) {
     return fieldErr("Invalid skills: must be an array");
@@ -330,7 +330,7 @@ export function parseSkillsArrayValue(
   if (raw.length > MAX_ROUTE_SKILLS) {
     return fieldErr(`Invalid skills: at most ${MAX_ROUTE_SKILLS} entries`);
   }
-  const out: RouteSkillRef[] = [];
+  const out: ConnectionSkillRef[] = [];
   const seen = new Set<string>();
   for (const item of raw) {
     const r = parseSkillRefValue(item, allowedRoots);
@@ -376,7 +376,7 @@ function parseHttpUrl(raw: unknown): FieldResult<string> {
   return fieldOk(base.value);
 }
 
-export function parseMcpServerValue(raw: unknown): FieldResult<RouteMcpServer> {
+export function parseMcpServerValue(raw: unknown): FieldResult<ConnectionMcpServer> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return fieldErr("Invalid mcpServers[] entry: must be an object");
   }
@@ -430,7 +430,7 @@ export function parseMcpServerValue(raw: unknown): FieldResult<RouteMcpServer> {
     enabled = o.enabled;
   }
 
-  const server: RouteMcpServer = { name: nameR.value, transport };
+  const server: ConnectionMcpServer = { name: nameR.value, transport };
   if (enabled !== undefined) server.enabled = enabled;
 
   if (transport === "stdio") {
@@ -511,7 +511,7 @@ export function parseMcpServerValue(raw: unknown): FieldResult<RouteMcpServer> {
 
 export function parseMcpServersArrayValue(
   raw: unknown
-): FieldResult<RouteMcpServer[] | undefined> {
+): FieldResult<ConnectionMcpServer[] | undefined> {
   if (raw === undefined || raw === null) return fieldOk(undefined);
   if (!Array.isArray(raw)) {
     return fieldErr("Invalid mcpServers: must be an array");
@@ -519,7 +519,7 @@ export function parseMcpServersArrayValue(
   if (raw.length > MAX_ROUTE_MCP_SERVERS) {
     return fieldErr(`Invalid mcpServers: at most ${MAX_ROUTE_MCP_SERVERS} entries`);
   }
-  const out: RouteMcpServer[] = [];
+  const out: ConnectionMcpServer[] = [];
   const seen = new Set<string>();
   for (const item of raw) {
     const r = parseMcpServerValue(item);
@@ -539,8 +539,8 @@ export function parseMcpServersArrayValue(
 // ---------------------------------------------------------------------------
 
 export function cloneSkillRefs(
-  skills: RouteSkillRef[] | undefined
-): RouteSkillRef[] | undefined {
+  skills: ConnectionSkillRef[] | undefined
+): ConnectionSkillRef[] | undefined {
   if (!skills) return undefined;
   return skills.map((s) => ({
     name: s.name,
@@ -550,8 +550,8 @@ export function cloneSkillRefs(
 }
 
 export function cloneMcpServers(
-  servers: RouteMcpServer[] | undefined
-): RouteMcpServer[] | undefined {
+  servers: ConnectionMcpServer[] | undefined
+): ConnectionMcpServer[] | undefined {
   if (!servers) return undefined;
   return servers.map((s) => ({
     name: s.name,
@@ -572,7 +572,7 @@ export function cloneMcpServers(
 }
 
 export function projectSkillRefs(
-  skills: RouteSkillRef[] | undefined
+  skills: ConnectionSkillRef[] | undefined
 ): RouteSkillProjection[] | undefined {
   if (!skills || skills.length === 0) return undefined;
   return skills.map((s) => ({
@@ -583,8 +583,8 @@ export function projectSkillRefs(
 }
 
 export function projectMcpServers(
-  servers: RouteMcpServer[] | undefined
-): RouteMcpServerProjection[] | undefined {
+  servers: ConnectionMcpServer[] | undefined
+): ConnectionMcpServerProjection[] | undefined {
   if (!servers || servers.length === 0) return undefined;
   return servers.map((s) => ({
     name: s.name,
@@ -622,7 +622,7 @@ function resolveEnvValue(
  * session/new|load and must not log, persist, or emit them.
  */
 export function resolveAcpMcpServersWire(
-  servers: RouteMcpServer[] | undefined,
+  servers: ConnectionMcpServer[] | undefined,
   opts: {
     planEnv: Record<string, string>;
     resolveCredential?: ResolveMcpSecret;
@@ -722,7 +722,7 @@ export function resolveAcpMcpServersWire(
  * name-only refs remain allowed.
  */
 export function resolveAcpSkillMeta(
-  skills: RouteSkillRef[] | undefined,
+  skills: ConnectionSkillRef[] | undefined,
   opts?: { requirePathExists?: boolean }
 ): AcpSkillMetaRef[] {
   if (!skills || skills.length === 0) return [];

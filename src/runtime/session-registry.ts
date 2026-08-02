@@ -10,18 +10,19 @@ import {
   writeJsonAtomic,
 } from "../machine-state.js";
 import type { SessionRecord, SessionState, StopReason } from "./types.js";
-import { EXTERNAL_ADAPTER_ID, EXTERNAL_ROUTE_ID, isSessionId } from "./types.js";
-import { isRouteId } from "../core/id.js";
-import { parseSettingsRouteSnapshot } from "./route-config.js";
+import { EXTERNAL_ADAPTER_ID, isSessionId } from "./types.js";
+import { isConnectionId, isRoleId } from "../core/id.js";
+import { parseAgentConnectionSnapshot } from "./agent-connection.js";
 
 type SessionRecordMutablePatch = Partial<
   Omit<
     SessionRecord,
-    "id" | "createdAt" | "routeId" | "adapterId" | "routeSnapshot" | "roleName"
+    "id" | "createdAt" | "connectionId" | "adapterId" | "connectionSnapshot" | "roleId"
   >
 >;
 
 const SESSION_STATES = new Set<SessionState>([
+  "reserved",
   "starting",
   "live",
   "waiting-user",
@@ -61,16 +62,16 @@ function isSessionState(value: unknown): value is SessionState {
 /**
  * Validate a parsed session JSON row. Returns the record when shape is safe for
  * runtime consumers (list sort, probe, stop). Identity consistency of
- * routeSnapshot is immutable continuity authority. Unknown fields are rejected.
+ * connectionSnapshot is immutable continuity authority. Unknown fields are rejected.
  */
 function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | null {
   if (!isPlainObject(data)) return null;
   const allowedKeys = new Set([
     "id",
-    "routeId",
+    "connectionId",
     "adapterId",
-    "routeSnapshot",
-    "roleName",
+    "connectionSnapshot",
+    "roleId",
     "state",
     "pid",
     "resumeToken",
@@ -95,16 +96,17 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
 
   // Required non-empty strings + formal state enum.
   if (!isNonEmptyString(data.id) || data.id !== sessionId) return null;
-  if (!isRouteId(data.routeId)) return null;
-  if (!isNonEmptyString(data.adapterId)) return null;
   if (!isSessionState(data.state)) return null;
   if (!isNonEmptyString(data.createdAt)) return null;
   if (!isNonEmptyString(data.updatedAt)) return null;
-  if (
-    data.roleName !== undefined &&
-    (data.routeId !== EXTERNAL_ROUTE_ID || data.adapterId !== EXTERNAL_ADAPTER_ID)
-  ) {
-    return null;
+  // External Role Sessions remain external history after stop/failure. Their
+  // adapter identity, not the mutable lifecycle state, selects the schema.
+  const external = data.adapterId === EXTERNAL_ADAPTER_ID;
+  if (external) {
+    if (data.connectionId !== undefined || data.connectionSnapshot !== undefined) return null;
+  } else {
+    if (!isConnectionId(data.connectionId) || !isNonEmptyString(data.adapterId)) return null;
+    if (data.roleId !== undefined) return null;
   }
 
   // Optional fields that runtime code reads directly — type-check when present.
@@ -122,7 +124,7 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
     }
   }
   for (const key of [
-    "roleName",
+    "roleId",
     "resumeToken",
     "workspace",
     "lastTaskId",
@@ -134,6 +136,12 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
     if (key in data && data[key] !== undefined && typeof data[key] !== "string") {
       return null;
     }
+  }
+  if (
+    data.roleId !== undefined &&
+    (typeof data.roleId !== "string" || !isRoleId(data.roleId))
+  ) {
+    return null;
   }
   if ("stopReason" in data && data.stopReason !== undefined) {
     if (typeof data.stopReason !== "string" || !STOP_REASONS.has(data.stopReason as StopReason)) {
@@ -170,14 +178,15 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
       return null;
     }
   }
-  const snapshot = parseSettingsRouteSnapshot(data.routeSnapshot);
+  if (external) return data as unknown as SessionRecord;
+  const snapshot = parseAgentConnectionSnapshot(data.connectionSnapshot);
   if (!snapshot) return null;
-  if (snapshot.routeId !== data.routeId || !isRouteId(snapshot.routeId)) return null;
+  if (snapshot.connectionId !== data.connectionId || !isConnectionId(snapshot.connectionId)) return null;
   if (!isNonEmptyString(snapshot.provider)) return null;
   if (snapshot.adapterId !== data.adapterId || !isNonEmptyString(snapshot.adapterId)) return null;
   if (!isNonEmptyString(snapshot.launchDigest)) return null;
 
-  return { ...data, routeSnapshot: snapshot } as unknown as SessionRecord;
+  return { ...data, connectionSnapshot: snapshot } as unknown as SessionRecord;
 }
 
 export class SessionRegistry {
@@ -203,13 +212,24 @@ export class SessionRegistry {
     return run;
   }
 
-  async write(record: SessionRecord): Promise<void> {
+  async create(record: SessionRecord): Promise<void> {
     assertSessionId(record.id);
     return this.enqueue(async () => {
       await this.ensureDir();
       const file = sessionFilePath(this.dataDir, record.id);
+      try {
+        await fs.access(file);
+        throw new Error(`Session already exists: ${record.id}`);
+      } catch (error) {
+        if (!isNotFoundError(error)) throw error;
+      }
       await writeJsonAtomic(file, record);
     });
+  }
+
+  /** Create-only persisted identity. Never overwrites an existing Session row. */
+  async write(record: SessionRecord): Promise<void> {
+    return this.create(record);
   }
 
   async read(sessionId: string): Promise<SessionRecord | null> {
@@ -228,7 +248,7 @@ export class SessionRegistry {
     return this.enqueue(async () => {
       const current = await this.readUnlocked(sessionId);
       if (!current) throw new Error(`Session not found: ${sessionId}`);
-      for (const immutable of ["id", "createdAt", "routeId", "adapterId", "routeSnapshot", "roleName"] as const) {
+      for (const immutable of ["id", "createdAt", "connectionId", "adapterId", "connectionSnapshot", "roleId"] as const) {
         if (Object.prototype.hasOwnProperty.call(patch, immutable)) {
           throw new Error(`SessionRegistry.update cannot mutate immutable field: ${immutable}`);
         }
@@ -238,10 +258,10 @@ export class SessionRegistry {
         ...patch,
         id: current.id,
         createdAt: current.createdAt,
-        routeId: current.routeId,
+        connectionId: current.connectionId,
         adapterId: current.adapterId,
-        routeSnapshot: current.routeSnapshot,
-        roleName: current.roleName,
+        connectionSnapshot: current.connectionSnapshot,
+        roleId: current.roleId,
         updatedAt: new Date().toISOString(),
       };
       await this.ensureDir();
@@ -307,7 +327,7 @@ export class SessionRegistry {
    * Use for list/status/idempotent enter; not for process reconcile (see isNonTerminal).
    */
   static isOpen(state: SessionState): boolean {
-    return SessionRegistry.isNonTerminal(state) || state === "external";
+    return state === "reserved" || SessionRegistry.isNonTerminal(state) || state === "external";
   }
 
   private async readUnlocked(sessionId: string): Promise<SessionRecord | null> {

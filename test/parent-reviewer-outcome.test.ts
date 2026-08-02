@@ -45,28 +45,26 @@ test("mayElevateDeliveryPolicy: only durable Role user-facing", () => {
   assert.equal(
     mayElevateDeliveryPolicy({
       parentActor: { kind: "user", id: "user" },
-      assigneeKind: "role",
+      roleId: "rl-helper",
     }),
     true
   );
   assert.equal(
     mayElevateDeliveryPolicy({
       parentActor: { kind: "user", id: "user" },
-      assigneeKind: "route",
     }),
     false
   );
   assert.equal(
     mayElevateDeliveryPolicy({
-      parentActor: { kind: "role", id: "规划" },
-      assigneeKind: "route",
+      parentActor: { kind: "role", id: "rl-planner" },
     }),
     false
   );
   assert.equal(
     mayElevateDeliveryPolicy({
-      parentActor: { kind: "role", id: "规划" },
-      assigneeKind: "role",
+      parentActor: { kind: "role", id: "rl-planner" },
+      roleId: "rl-helper",
     }),
     false
   );
@@ -77,7 +75,7 @@ test("assertReviewAuthority: missing reviewer fails loud", () => {
     () =>
       assertReviewAuthority({
         actor: "user",
-        submitterRole: "helper",
+        executorRoleId: "rl-helper",
         action: "accept",
       }),
     (err: unknown) => err instanceof TaskLifecycleError && err.code === "REVIEW_FORBIDDEN"
@@ -90,20 +88,19 @@ test("writeTaskEnvelope persists canonical parentActor/reviewer", async () => {
   await fsa.mkdir("temp/helper/tasks");
   const clock = new SystemClock();
   const p = await writeTaskEnvelope(fsa, clock, {
-    assigneeKind: "role",
-    assigneeId: "helper",
+    roleId: "rl-helper",
     nodeRefs: [{ id: "cx-1", path: "a.md" }],
     manifestPath: "temp/helper/manifest.yml",
     userPrompt: "do it",
-    parentActor: { kind: "role", id: "orchestrator" },
-    reviewer: { kind: "role", id: "orchestrator" },
+    parentActor: { kind: "role", id: "rl-orchestrator" },
+    reviewer: { kind: "role", id: "rl-orchestrator" },
     asSub: true,
   });
   const raw = await fsa.readFile(p);
   assert.match(raw, /parentActor:/);
   assert.match(raw, /reviewer:/);
   const task = await loadTaskEnvelope(fsa, p);
-  assert.equal(task.parentActor?.id, "orchestrator");
+  assert.equal(task.parentActor?.id, "rl-orchestrator");
   assert.equal(task.reviewer?.kind, "role");
   assert.equal(task.asSub, true);
 });
@@ -116,13 +113,12 @@ test("writeTaskEnvelope refuses elevated policy for downstream Task Agent", asyn
   await assert.rejects(
     () =>
       writeTaskEnvelope(fsa, clock, {
-        assigneeKind: "role",
-        assigneeId: "helper",
+        roleId: "rl-helper",
         nodeRefs: [{ id: "cx-1", path: "a.md" }],
         manifestPath: "temp/helper/manifest.yml",
         userPrompt: "do it",
-        parentActor: { kind: "role", id: "orchestrator" },
-        reviewer: { kind: "role", id: "orchestrator" },
+        parentActor: { kind: "role", id: "rl-orchestrator" },
+        reviewer: { kind: "role", id: "rl-orchestrator" },
         deliveryPolicy: "bypass",
       }),
     /only legal for a durable Role's user-facing delivery|must use review/i
@@ -144,10 +140,10 @@ test("resolveDispatchActors / writeTaskEnvelope refuse missing actors and dispat
   );
   assert.deepEqual(
     resolveDispatchActors({
-      parentActor: { kind: "role", id: "规划" },
-      reviewer: { kind: "role", id: "规划" },
+      parentActor: { kind: "role", id: "rl-planner" },
+      reviewer: { kind: "role", id: "rl-planner" },
     }),
-    roleTaskActors("规划")
+    roleTaskActors("rl-planner")
   );
 
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-parent-req-"));
@@ -157,8 +153,7 @@ test("resolveDispatchActors / writeTaskEnvelope refuse missing actors and dispat
   await assert.rejects(
     () =>
       writeTaskEnvelope(fsa, clock, {
-        assigneeKind: "role",
-        assigneeId: "helper",
+        roleId: "rl-helper",
         nodeRefs: [{ id: "cx-1", path: "a.md" }],
         manifestPath: "temp/helper/manifest.yml",
         userPrompt: "missing actors",
@@ -225,8 +220,7 @@ test("Core+Service: parentActor/reviewer mismatch rejected at write, load, and R
   await assert.rejects(
     () =>
       writeTaskEnvelope(fsa, clock, {
-        assigneeKind: "role",
-        assigneeId: "helper",
+        roleId: "rl-helper",
         nodeRefs: [{ id: "cx-1", path: "a.md" }],
         manifestPath: "temp/helper/manifest.yml",
         userPrompt: "mismatch",
@@ -238,8 +232,7 @@ test("Core+Service: parentActor/reviewer mismatch rejected at write, load, and R
 
   // Persisted mismatched pair fails loud on load (resolveActorsFromDisk).
   const mismatchPath = await writeTaskEnvelope(fsa, clock, {
-    assigneeKind: "role",
-    assigneeId: "helper",
+    roleId: "rl-helper",
     nodeRefs: [{ id: "cx-1", path: "a.md" }],
     manifestPath: "temp/helper/manifest.yml",
     userPrompt: "bad pair",
@@ -263,34 +256,34 @@ test("Core+Service: parentActor/reviewer mismatch rejected at write, load, and R
 });
 
 test("assertReviewAuthority: exact reviewer only — user cannot accept/reject role:X", () => {
-  const roleReviewer = { kind: "role" as const, id: "规划" };
+  const roleReviewer = { kind: "role" as const, id: "rl-planner" };
   for (const action of ["accept", "reject"] as const) {
     assert.throws(
       () =>
         assertReviewAuthority({
           actor: "user",
-          submitterRole: "helper",
+          executorRoleId: "rl-helper",
           reviewer: roleReviewer,
           action,
         }),
       (err: unknown) =>
         err instanceof TaskLifecycleError &&
         err.code === "REVIEW_FORBIDDEN" &&
-        /reviewer role \(规划\)/i.test(String((err as Error).message))
+        /reviewer role \(rl-planner\)/i.test(String((err as Error).message))
     );
   }
   assert.doesNotThrow(() =>
     assertReviewAuthority({
-      actor: "规划",
-      submitterRole: "helper",
+      actor: "rl-planner",
+      executorRoleId: "rl-helper",
       reviewer: roleReviewer,
       action: "accept",
     })
   );
   assert.doesNotThrow(() =>
     assertReviewAuthority({
-      actor: "规划",
-      submitterRole: "helper",
+      actor: "rl-planner",
+      executorRoleId: "rl-helper",
       reviewer: roleReviewer,
       action: "reject",
     })
@@ -299,8 +292,8 @@ test("assertReviewAuthority: exact reviewer only — user cannot accept/reject r
   assert.throws(
     () =>
       assertReviewAuthority({
-        actor: "规划",
-        submitterRole: "helper",
+        actor: "rl-planner",
+        executorRoleId: "rl-helper",
         reviewer: { kind: "user", id: "user" },
         action: "accept",
       }),
@@ -309,7 +302,7 @@ test("assertReviewAuthority: exact reviewer only — user cannot accept/reject r
   assert.doesNotThrow(() =>
     assertReviewAuthority({
       actor: "user",
-      submitterRole: "helper",
+      executorRoleId: "rl-helper",
       reviewer: { kind: "user", id: "user" },
       action: "accept",
     })
@@ -326,6 +319,10 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
     name: "parent-rpc",
     nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
+  await fsa.writeFile(
+    ".tent/roles.json",
+    JSON.stringify({ roles: [{ id: "rl-executor", name: "executor", prompt: "do work" }] }, null, 2) + "\n"
+  );
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-parent-rpc-data-"));
   const svc = await startLocalTentService({
     dataDir,
@@ -356,8 +353,7 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       {
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "role",
-        assigneeId: "executor",
+        roleId: "rl-executor",
         prompt: "legacy wire",
         // Even with explicit actors present, dispatchedBy must be rejected.
         parentActor: { kind: "user", id: "user" },
@@ -376,8 +372,7 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       {
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "role",
-        assigneeId: "executor",
+        roleId: "rl-executor",
         prompt: "missing actors",
       },
       { token: svc.token }
@@ -393,8 +388,7 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       {
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "role",
-        assigneeId: "executor",
+        roleId: "rl-executor",
         prompt: "mismatch pair",
         parentActor: { kind: "role", id: "orchestrator" },
         reviewer: { kind: "role", id: "planner" },
@@ -415,8 +409,7 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       {
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "role",
-        assigneeId: "executor",
+        roleId: "rl-executor",
         prompt: "derived reviewer",
         parentActor: { kind: "user", id: "user" },
       },
@@ -457,8 +450,7 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       {
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "role",
-        assigneeId: "executor",
+        roleId: "rl-executor",
         prompt: "explicit actors",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
@@ -482,8 +474,7 @@ test("loadTaskEnvelope ignores unknown dispatchedBy without rewriting or using i
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-parent-load-"));
   const fsa = new NodeFs(dir);
   const taskPath = await writeTaskEnvelope(fsa, new SystemClock(), {
-    assigneeKind: "role",
-    assigneeId: "helper",
+    roleId: "rl-helper",
     nodeRefs: [{ id: "cx-2", path: "b.md" }],
     manifestPath: "temp/helper/manifest.yml",
     userPrompt: "x",

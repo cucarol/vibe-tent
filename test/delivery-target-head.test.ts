@@ -31,10 +31,11 @@ async function makeWorkspace(name = "target-head"): Promise<string> {
       {
         roles: [
           {
+            id: "rl-executor",
             name: "executor",
             prompt: "do work",
           },
-          { name: "orchestrator", prompt: "dispatch" },
+          { id: "rl-orchestrator", name: "orchestrator", prompt: "dispatch" },
         ],
       },
       null,
@@ -58,7 +59,7 @@ async function initGitOnWorkspace(workspace: string): Promise<void> {
  * (no Task commits yet). startSession will capture this tip as baseCommit.
  */
 /**
- * Ordinary Task commit on the already-bound route Task lane (after base capture).
+ * Ordinary Task commit on the already-bound Session Task lane (after base capture).
  * Must not run before claimRunningWithBase — otherwise baseCommit == tip and
  * base..tip is empty, bypassing first-parent history.
  */
@@ -102,9 +103,9 @@ async function withService<T>(
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-th-svc-"));
   const svc = await startLocalTentService({
     dataDir,
-    routes: [
+    connections: [
       {
-        routeId: "fake-default",
+        connectionId: "fake-default",
         provider: "fake",
         adapterId: FAKE_ADAPTER_ID,
         fake: { waitForSignal: true, canResume: true },
@@ -171,8 +172,7 @@ async function claimRunningWithBase(
     reviewer: { kind: "user", id: "user" },
     workspaceId,
     nodeIds: [nodeId],
-    assigneeKind: routeTask ? "route" : "role",
-    assigneeId: routeTask ? "fake-default" : "executor",
+    ...(routeTask ? { connectionId: "fake-default" } : { roleId: "rl-executor" }),
     prompt: opts.prompt,
     deliveryPolicy,
   });

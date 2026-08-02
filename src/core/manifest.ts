@@ -10,8 +10,8 @@ import { isUsableNode, LoadedTent, join } from "./tree.js";
 
 export interface DispatchInput {
   tentName: string;
-  assigneeKind: "role" | "route";
-  assigneeId: string;
+  roleId?: string;
+  sessionId?: string;
   /** Ephemeral dispatch selection (nodes in writable scope). Not persisted as claims. */
   claimNodes?: Node[];
   /** Ephemeral root/workspace selection. Not persisted as claims. */
@@ -23,7 +23,9 @@ export interface DispatchInput {
 }
 
 export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest {
-  const { assigneeKind, assigneeId } = input;
+  const roleId = input.roleId?.trim();
+  const sessionId = input.sessionId?.trim();
+  if (!roleId && !sessionId) throw new Error("Manifest requires roleId or sessionId.");
   const claimNodes = input.claimRoot ? tent.roots : requireClaimNodes(input);
   const claimScope = input.claimRoot
     ? allNodes(tent).filter(isUsableNode)
@@ -53,16 +55,15 @@ export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest 
   for (const node of claimScope) {
     writable.push({ id: node.id, path: `${node.path}/`, note: "Structural permission: may create/move/delete child nodes under this node." });
   }
-  const executorRoot =
-    assigneeKind === "route"
-      ? join("temp", "routes", assigneeId)
-      : join("temp", assigneeId);
+  const executorRoot = roleId
+    ? join("temp", "roles", roleId)
+    : join("temp", "sessions", sessionId!);
   writable.push({ path: executorRoot + "/" });
 
   return {
     tent: input.tentName,
-    assigneeKind,
-    assigneeId,
+    ...(roleId ? { roleId } : {}),
+    ...(sessionId ? { sessionId } : {}),
     // No claims[] — writable ids/paths encode selection; Task Node refs are contextCard only.
     ...(input.workspace ? { workspace: input.workspace } : {}),
     ...(input.worktree ? { worktree: input.worktree } : {}),
@@ -77,8 +78,8 @@ export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest 
 export function manifestToYaml(m: Manifest): string {
   const lines: string[] = [];
   lines.push(`tent: ${m.tent}`);
-  lines.push(`assigneeKind: ${m.assigneeKind}`);
-  lines.push(`assigneeId: ${m.assigneeId}`);
+  if (m.roleId) lines.push(`roleId: ${m.roleId}`);
+  if (m.sessionId) lines.push(`sessionId: ${m.sessionId}`);
   if (m.workspace) lines.push(`workspace: ${yamlStr(m.workspace)}`);
   if (m.worktree) lines.push(`worktree: ${yamlStr(m.worktree)}`);
   if (m.branch) lines.push(`branch: ${yamlStr(m.branch)}`);

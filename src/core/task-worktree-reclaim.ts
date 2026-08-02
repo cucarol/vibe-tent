@@ -121,11 +121,12 @@ export function isTaskWorktreeReclaimTerminalState(state: TaskState): boolean {
 }
 
 /**
- * Role lanes are durable and never enter Task worktree GC.
- * Only route-executed code Task lanes use temporary tent-task/* worktrees.
+ * Role lanes are durable and never enter Task worktree GC. Assignment fields
+ * are not lane identity: a Role Task may also have a Session. Only an actual
+ * `tent-task/*` branch is a reclaimable Task-scoped lane.
  */
 export function isTaskScopedWorktreeLane(task: TaskEnvelope): boolean {
-  return task.assigneeKind === "route";
+  return task.branch?.startsWith("tent-task/") === true;
 }
 
 /**
@@ -153,7 +154,7 @@ export async function evaluateTaskWorktreeReclaim(
       eligible: false,
       code: "NOT_APPLICABLE",
       reason:
-        "Role worktrees are durable integration lanes; Task worktree reclaim applies only to route code Task lanes.",
+        "Role worktrees are durable integration lanes; Task worktree reclaim applies only to recorded tent-task/* lanes.",
     };
   }
 

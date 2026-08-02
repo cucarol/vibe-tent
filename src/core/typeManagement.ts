@@ -2,7 +2,7 @@ import { FsAdapter, withTentMutation } from "./adapter.js";
 import { NODE_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { Node } from "./types.js";
 import { loadTent, nodeNotePath } from "./tree.js";
-import { loadTaskEnvelopes } from "./task.js";
+import { loadTaskEnvelopes, taskExecutionLabel } from "./task.js";
 import { envelopeIsActiveOccupation } from "./claim.js";
 import { taskReferencedNodeIds } from "./task-node-refs.js";
 import {
@@ -108,7 +108,7 @@ export async function inspectTypeDeletion(
       ownerMap.set(node.id, {
         id: node.id,
         path: node.path,
-        owner: `${task.assigneeKind}:${task.assigneeId}`,
+        owner: taskExecutionLabel(task),
       });
     }
   }

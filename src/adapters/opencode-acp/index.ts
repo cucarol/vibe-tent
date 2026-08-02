@@ -1,7 +1,7 @@
 // OpenCode ACP adapter: native `opencode acp` stdio transport.
 
 import type {
-  RouteLaunchPlan,
+  ConnectionLaunchPlan,
   ManagedSession,
   ProviderAdapter,
   ProviderCapabilities,
@@ -69,19 +69,19 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
     return loadSessionAcpCapabilities("external-app");
   }
 
-  resolveLaunch(plan: RouteLaunchPlan): ResolvedLaunch {
+  resolveLaunch(plan: ConnectionLaunchPlan): ResolvedLaunch {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const env: Record<string, string> = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_ROUTE_ID: plan.routeId,
+      TENT_CONNECTION_ID: plan.connectionId,
     };
     if (opts.envKey) {
       const value = this.resolveEnvValue(opts.envKey, plan.env);
       if (!value?.trim()) {
         throw new Error(
-          `未配置环境变量 ${opts.envKey}：opencode-acp route 明确要求该值` +
-          `（仅 service 进程 / RouteLaunchPlan.env）。`
+          `未配置环境变量 ${opts.envKey}：opencode-acp Agent Connection 明确要求该值` +
+          `（仅 service 进程 / ConnectionLaunchPlan.env）。`
         );
       }
       env[opts.envKey] = value;
@@ -97,7 +97,7 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
   }
 
   async startManagedSession(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     emit: (event: RuntimeEvent) => void
   ): Promise<ManagedSession> {
     const client = this.createClient(plan, emit);
@@ -109,7 +109,7 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
    * Requires agentCapabilities.loadSession on the live initialize handshake.
    */
   async resumeManagedSession(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     token: ResumeToken,
     emit: (event: RuntimeEvent) => void
   ): Promise<ManagedSession> {
@@ -132,7 +132,7 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
   }
 
   private createClient(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     emit: (event: RuntimeEvent) => void
   ): AcpClient {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));

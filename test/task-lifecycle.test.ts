@@ -44,10 +44,17 @@ function env(dir: string) {
   };
 }
 
-function dispatchToRole(env: any, nodeId: string, assigneeId: string, input: string | Record<string, unknown>) {
+async function dispatchToRole(env: any, nodeId: string, roleName: string, input: string | Record<string, unknown>) {
+  const roleId = `rl-${roleName.replace(/[^a-z0-9]/gi, "").toLowerCase()}`;
+  const registry = await env.fs.exists("roles.json")
+    ? JSON.parse(await env.fs.readFile("roles.json")) as { roles?: Array<Record<string, unknown>> }
+    : { roles: [] as Array<Record<string, unknown>> };
+  if (!(registry.roles ?? []).some((role) => role.id === roleId)) {
+    registry.roles = [...(registry.roles ?? []), { id: roleId, name: roleName, displayName: roleName }];
+    await env.fs.writeFile("roles.json", JSON.stringify(registry, null, 2) + "\n");
+  }
   return dispatch(env, nodeId, {
-    assigneeKind: "role",
-    assigneeId,
+    roleId,
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     ...(typeof input === "string" ? { userPrompt: input } : input),
@@ -65,19 +72,41 @@ async function dispatchOnFreeBox(dir: string, role = "executor") {
   return { e, result };
 }
 
-test("lifecycle: claimWrite rejects Session binding before claiming", async () => {
+test("lifecycle: first Role claim atomically binds the exact caller Session", async () => {
   const dir = await makeTent();
   const { e, result } = await dispatchOnFreeBox(dir);
+  await taskClaim(e as any, result.taskPath, {
+    claimWrite: { sessionId: "ss-caller" },
+  });
+  const task = await loadTaskEnvelope(e.fs, result.taskPath);
+  assert.equal(task.state, "running");
+  assert.equal(task.roleId, "rl-executor");
+  assert.equal(task.sessionId, "ss-caller");
+});
+
+test("lifecycle: queued Task cannot replace an already-bound Session during claim", async () => {
+  const dir = await makeTent();
+  const e = env(dir);
+  const result = await dispatch(e as any, "cx-p1", {
+    sessionId: "ss-bounda",
+    userPrompt: "Keep the exact pre-bound Session",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+  });
+  const before = await e.fs.readFile(result.taskPath);
+
   await assert.rejects(
     () =>
       taskClaim(e as any, result.taskPath, {
-        claimWrite: { sessionId: "ss-forbidden" } as never,
+        claimWrite: { sessionId: "ss-boundb" },
       }),
-    /cannot bind sessionId/
+    /different Session/
   );
+
+  assert.equal(await e.fs.readFile(result.taskPath), before, "failed claim must be zero-mutation");
   const task = await loadTaskEnvelope(e.fs, result.taskPath);
   assert.equal(task.state, "queued");
-  assert.equal(task.sessionId, undefined);
+  assert.equal(task.sessionId, "ss-bounda");
 });
 
 test("lifecycle: dispatch → claim → wait → resume → deliver → accept", async () => {
@@ -180,7 +209,7 @@ test("lifecycle: self-accept is hard-forbidden", async () => {
   await taskDeliver(e as any, result.taskPath, { summary: "ship it", commits: [] });
 
   await assert.rejects(
-    () => taskAccept(e as any, result.taskPath, { actor: "executor" }),
+    () => taskAccept(e as any, result.taskPath, { actor: "rl-executor" }),
     (err: unknown) => err instanceof TaskLifecycleError && err.code === "SELF_ACCEPT_FORBIDDEN"
   );
 });

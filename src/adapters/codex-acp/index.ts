@@ -1,9 +1,9 @@
 // Codex ACP ProviderAdapter — npx @agentclientprotocol/codex-acp bridge.
 // No ACP authenticate RPC; auth via injected DEFAULT_AUTH_REQUEST env when envKey set.
-// Never starts real npx/network in tests — RouteLaunchPlan command/args override to mock.
+// Never starts real npx/network in tests — ConnectionLaunchPlan command/args override to mock.
 
 import type {
-  RouteLaunchPlan,
+  ConnectionLaunchPlan,
   ManagedSession,
   ProviderAdapter,
   ProviderCapabilities,
@@ -100,7 +100,7 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
    * Real ACP needs bidirectional stdio — AgentRuntime uses startManagedSession.
    * Does not call ACP authenticate; injects DEFAULT_AUTH_REQUEST when envKey is set.
    */
-  resolveLaunch(plan: RouteLaunchPlan): ResolvedLaunch {
+  resolveLaunch(plan: ConnectionLaunchPlan): ResolvedLaunch {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const { command, args } = resolveNpxAcpLaunch({
       planCommand: plan.command,
@@ -112,15 +112,15 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
     const env: Record<string, string> = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_ROUTE_ID: plan.routeId,
+      TENT_CONNECTION_ID: plan.connectionId,
     };
     // Explicit envKey only: missing value fails loud; never invent a default key name.
     if (opts.envKey) {
       const secret = this.resolveEnvValue(opts.envKey, plan.env);
       if (!secret || !secret.trim()) {
         throw new Error(
-          `未配置环境变量 ${opts.envKey}：codex-acp 已在 route.acp.envKey 中明确要求该密钥` +
-          `（仅 service 进程 / RouteLaunchPlan.env）。请设置 ${opts.envKey} 后重试；切勿把 secret 写入 workspace、Node 或 Task。`
+          `未配置环境变量 ${opts.envKey}：codex-acp Agent Connection 明确要求该密钥` +
+          `（仅 service 进程 / ConnectionLaunchPlan.env）。请设置 ${opts.envKey} 后重试；切勿把 secret 写入 workspace、Node 或 Task。`
         );
       }
       env[opts.envKey] = secret;
@@ -138,7 +138,7 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
   }
 
   async startManagedSession(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession> {
     const client = this.createClient(plan, emit);
@@ -150,7 +150,7 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
    * Requires agentCapabilities.loadSession on the live initialize handshake.
    */
   async resumeManagedSession(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     token: ResumeToken,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession> {
@@ -173,7 +173,7 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
   }
 
   private createClient(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     emit: (ev: RuntimeEvent) => void
   ): AcpClient {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));

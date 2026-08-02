@@ -5,7 +5,7 @@ import type {
   DeliveryProjection,
   RoleRegistryEntryProjection,
   SessionProjection,
-  SettingsRouteProjection,
+  AgentConnectionProjection,
   TaskProjection,
   TypeRegistryEntryProjection,
 } from "../../service/types.js";
@@ -30,13 +30,14 @@ export type CoordinationTypeOption = {
 };
 
 export type RoleOption = {
+  roleId: string;
   name: string;
   description?: string;
 };
 
-/** Product-facing machine route metadata (safe fields only). */
-export type RouteOption = {
-  routeId: string;
+/** Product-facing machine Agent Connection metadata (safe fields only). */
+export type ConnectionOption = {
+  connectionId: string;
   adapterId: string;
   displayName: string;
   model?: string;
@@ -47,8 +48,7 @@ export type RouteOption = {
 export type TaskReviewItem = {
   path: string;
   id?: string;
-  assigneeKind: "role" | "route";
-  assigneeId: string;
+  roleId?: string;
   state: string;
   /** Node ids from TaskProjection.referencedNodeIds (Context Card refs). */
   referencedNodeIds: string[];
@@ -58,7 +58,7 @@ export type TaskReviewItem = {
   /** Bound runtime session projection when known (not chat). */
   sessionState?: string;
   sessionAlive?: boolean;
-  sessionRouteId?: string;
+  sessionConnectionId?: string;
   deliverySummary?: string;
   commits: string[];
   canAcceptOrReject: boolean;
@@ -87,9 +87,8 @@ export type DispatchValidation = {
   ok: boolean;
   reason: string | null;
   payload: {
-    nodeId: string;
-    assigneeKind: "role";
-    assigneeId: string;
+    nodeIds: string[];
+    roleId: string;
     prompt: string;
     parentActor: { kind: "user" | "role"; id: string };
     reviewer: { kind: "user" | "role"; id: string };
@@ -146,31 +145,31 @@ export function listCoordinationTypeOptions(
 
 export function listRoleOptions(roles: RoleRegistryEntryProjection[]): RoleOption[] {
   return roles
-    .map((r) => ({ name: r.name, description: r.description }))
+    .map((r) => ({ roleId: r.roleId, name: r.name, description: r.description }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**
- * Build route picker options from safe route.list projections.
+ * Build Connection picker options from safe connection.list projections.
  */
-export function listRouteOptions(routes: SettingsRouteProjection[]): RouteOption[] {
-  return routes
-    .map((route) => {
-      const parts = [route.displayName || route.routeId, route.adapterId, route.model].filter(Boolean);
+export function listConnectionOptions(connections: AgentConnectionProjection[]): ConnectionOption[] {
+  return connections
+    .map((connection) => {
+      const parts = [connection.displayName || connection.connectionId, connection.adapterId, connection.model].filter(Boolean);
       return {
-        routeId: route.routeId,
-        adapterId: route.adapterId,
-        displayName: route.displayName || route.routeId,
-        model: route.model,
+        connectionId: connection.connectionId,
+        adapterId: connection.adapterId,
+        displayName: connection.displayName || connection.connectionId,
+        model: connection.model,
         label: parts.join(" · "),
       };
     })
-    .sort((a, b) => a.routeId.localeCompare(b.routeId));
+    .sort((a, b) => a.connectionId.localeCompare(b.connectionId));
 }
 
-/** Default machine route: sole route, else first sorted route. */
-export function pickDefaultRouteId(routes: RouteOption[]): string | null {
-  return routes[0]?.routeId ?? null;
+/** Default machine Connection: first sorted Connection. */
+export function pickDefaultConnectionId(connections: ConnectionOption[]): string | null {
+  return connections[0]?.connectionId ?? null;
 }
 
 export type StartSessionPayload = {
@@ -181,7 +180,7 @@ export type StartSessionPayload = {
 /**
  * Build task.startSession payload for the user launch button.
  * Does not claim or start automatically — caller must invoke RPC on click.
- * The Task's persisted route assignee is the sole launch source.
+ * The Task's exact sessionId is the sole execution binding.
  */
 export function buildStartSessionPayload(
   taskPath: string
@@ -225,7 +224,8 @@ export function validateDispatchForm(form: DispatchFormState): DispatchValidatio
   if (!role) {
     return { ok: false, reason: "请选择目标 role。", payload: null };
   }
-  if (!form.roles.some((r) => r.name === role)) {
+  const selectedRole = form.roles.find((r) => r.roleId === role || r.name === role);
+  if (!selectedRole) {
     return { ok: false, reason: `目标 role「${role}」不在注册表中。`, payload: null };
   }
   const prompt = form.prompt.trim();
@@ -236,9 +236,8 @@ export function validateDispatchForm(form: DispatchFormState): DispatchValidatio
     ok: true,
     reason: null,
     payload: {
-      nodeId: form.nodeId,
-      assigneeKind: "role",
-      assigneeId: role,
+      nodeIds: [form.nodeId],
+      roleId: selectedRole.roleId,
       prompt,
       // Desktop form is user-direct; Role-dispatched child uses CLI/Service explicit actors.
       parentActor: { kind: "user", id: "user" },
@@ -325,7 +324,8 @@ export function sessionStateLabel(state: string | undefined | null): string {
 /** Task states where user may start (or re-start) an agent session. */
 export function canStartAgentOnTask(
   taskState: string,
-  session?: Pick<SessionProjection, "state" | "alive"> | null
+  session?: Pick<SessionProjection, "state" | "alive"> | null,
+  opts?: { hasSessionId?: boolean }
 ): boolean {
   const s = taskState || "";
   // Terminal collaboration outcomes: no start.
@@ -341,6 +341,8 @@ export function canStartAgentOnTask(
   if (session && session.alive && (session.state === "live" || session.state === "starting" || session.state === "waiting-user")) {
     return false;
   }
+  // Managed start/recovery is defined only for an exact Session-bound Task.
+  if (!opts?.hasSessionId) return false;
   // queued (service auto-claims for user), running, waiting, failed (retry after fix).
   return (
     s === "queued" ||
@@ -456,7 +458,7 @@ export function buildTaskReviewItems(
     const summaryLine = [
       label,
       sessLabel ? `会话${sessLabel}` : null,
-      `${task.assigneeKind}:${task.assigneeId}`,
+      task.roleId ? `role:${task.roleId}` : task.sessionId ? `session:${task.sessionId}` : null,
       deliverySummary ? truncate(deliverySummary, 64) : promptBit || null,
     ]
       .filter(Boolean)
@@ -465,8 +467,7 @@ export function buildTaskReviewItems(
     return {
       path: task.path,
       id: task.id,
-      assigneeKind: task.assigneeKind,
-      assigneeId: task.assigneeId,
+      roleId: task.roleId,
       state,
       referencedNodeIds: task.referencedNodeIds ?? [],
       prompt: task.prompt,
@@ -474,11 +475,13 @@ export function buildTaskReviewItems(
       sessionId: task.sessionId ?? session?.sessionId,
       sessionState: session?.state,
       sessionAlive: session?.alive,
-      sessionRouteId: session?.routeId,
+      sessionConnectionId: session?.connectionId,
       deliverySummary,
       commits,
       canAcceptOrReject: state === "delivered",
-      canStartAgent: canStartAgentOnTask(state, session),
+      canStartAgent: canStartAgentOnTask(state, session, {
+        hasSessionId: !!(task.sessionId || session?.sessionId),
+      }),
       canInterrupt: canInterruptTask(state, session, {
         hasSessionId: !!(task.sessionId || session?.sessionId),
       }),

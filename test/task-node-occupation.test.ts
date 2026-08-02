@@ -49,10 +49,9 @@ function envFor(dir: string) {
   };
 }
 
-function dispatchToRole(env: any, nodeId: string, assigneeId: string, input: Record<string, unknown>) {
+function dispatchToRole(env: any, nodeId: string, roleLabel: string, input: Record<string, unknown>) {
   return dispatch(env, nodeId, {
-    assigneeKind: "role",
-    assigneeId,
+    sessionId: `ss-${roleLabel.replace(/[^a-z0-9]/gi, "").toLowerCase()}`,
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     ...input,
@@ -64,13 +63,12 @@ test("writeTaskEnvelope rejects duplicate canonical Node refs", async () => {
   const fsAdapter = new NodeFs(dir);
   await assert.rejects(
     writeTaskEnvelope(fsAdapter, clock, {
-      assigneeKind: "role",
-      assigneeId: "executor",
+      sessionId: "ss-executor",
       nodeRefs: [
         { id: "cx-p1", path: "prompt/x" },
         { id: "cx-p1", path: "prompt/x" },
       ],
-      manifestPath: "temp/executor/manifests/tk-duplicate.yml",
+      manifestPath: "temp/sessions/ss-executor/manifests/tk-duplicate.yml",
       userPrompt: "duplicate refs",
       id: "tk-duplicate",
       parentActor: { kind: "user", id: "user" },
@@ -86,10 +84,9 @@ async function writeNodeTask(
   state: "queued" | "running" | "waiting" | "delivered" | "accepted" | "rejected" | "interrupted" | "failed" = "queued"
 ): Promise<string> {
   const taskPath = await writeTaskEnvelope(fsAdapter, clock, {
-    assigneeKind: "role",
-    assigneeId: `role-${id}`,
+    sessionId: `ss-${id.replace(/[^a-z0-9]/gi, "").toLowerCase()}`,
     nodeRefs: nodeIds.map((nodeId) => ({ id: nodeId, path: `node/${nodeId}` })),
-    manifestPath: `temp/role-${id}/manifests/${id}.yml`,
+    manifestPath: `temp/sessions/ss-${id.replace(/[^a-z0-9]/gi, "").toLowerCase()}/manifests/${id}.yml`,
     userPrompt: `hold ${id}`,
     id,
     parentActor: { kind: "user", id: "user" },
@@ -195,7 +192,7 @@ test("same exact Node rejects a second active Task and releases on terminal stat
       }),
     /occupied by active task/i
   );
-  assert.equal(await env.fs.exists("temp/executor"), false);
+  assert.equal(await env.fs.exists("temp/sessions/ss-executor"), false);
 
   for (const state of ["accepted", "rejected", "interrupted", "failed"] as const) {
     await patchTaskEnvelope(env.fs, first.taskPath, { state });
@@ -278,20 +275,19 @@ test("unrelated sibling and occupied destination parent remain structurally edit
 test("claims-only Task envelopes are rejected without byte rewrite", async () => {
   const dir = await makeTent();
   const fsAdapter = new NodeFs(dir);
-  await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
-  const taskPath = "temp/executor/tasks/task-legacy.md";
+  await fs.mkdir(path.join(dir, "temp", "sessions", "ss-executor", "tasks"), { recursive: true });
+  const taskPath = "temp/sessions/ss-executor/tasks/task-legacy.md";
   const raw = [
       "---",
       "type: task",
       "id: tk-legacy1",
       "status: taken",
       "state: running",
-      "assigneeKind: role",
-      "assigneeId: executor",
+      "sessionId: ss-executor",
       "parentActor: { kind: user, id: user }",
       "reviewer: { kind: user, id: user }",
       "claims: [cx-p1, root]",
-      "manifest: temp/executor/manifests/tk-legacy1.yml",
+      "manifest: temp/sessions/ss-executor/manifests/tk-legacy1.yml",
       "createdAt: 2026-01-01T00:00:00.000Z",
       "---",
       "# Task",

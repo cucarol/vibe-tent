@@ -62,10 +62,9 @@ async function seedOldTerminal(
 
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
-    assigneeKind: "role",
-    assigneeId: "executor",
+    sessionId: "ss-executor",
     nodeRefs: [{ id: "cx-seed", path: "inbox" }],
-    manifestPath: "temp/executor/manifests/m.md",
+    manifestPath: "temp/sessions/ss-executor/manifests/m.md",
     userPrompt: "old terminal work",
     id: opts.taskId,
   });
@@ -85,7 +84,7 @@ async function seedOldTerminal(
     const d = await createDelivery(fsa, clock, {
       taskId: opts.taskId,
       sourceNodeId: "cx-seed",
-      deliveriesDir: "temp/executor/deliveries",
+      deliveriesDir: "temp/sessions/ss-executor/deliveries",
       summary: "old delivery body",
       status: "accepted",
     });
@@ -225,10 +224,9 @@ test("operationalRetention.purge never deletes active task or ready delivery", a
 
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      assigneeKind: "role",
-      assigneeId: "executor",
+      sessionId: "ss-executor",
       nodeRefs: [{ id: "cx-live", path: "inbox" }],
-      manifestPath: "temp/executor/manifests/m.md",
+      manifestPath: "temp/sessions/ss-executor/manifests/m.md",
       userPrompt: "active",
       id: "tk-actlive",
     });
@@ -242,7 +240,7 @@ test("operationalRetention.purge never deletes active task or ready delivery", a
     const ready = await createDelivery(fsa, clock, {
       taskId: "tk-orphan-ready",
       sourceNodeId: "cx-live",
-      deliveriesDir: "temp/executor/deliveries",
+      deliveriesDir: "temp/sessions/ss-executor/deliveries",
       summary: "ready review",
       status: "ready",
     });
@@ -287,8 +285,8 @@ test("operationalRetention.preview reports bad files without deleting them", asy
     const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
     const systemRoot = path.join(ws, ".tent");
     const fsa = new NodeFs(systemRoot);
-    const bad = "temp/executor/tasks/not-a-task.md";
-    await fsa.mkdir("temp/executor/tasks");
+    const bad = "temp/sessions/ss-executor/tasks/not-a-task.md";
+    await fsa.mkdir("temp/sessions/ss-executor/tasks");
     await fsa.writeFile(bad, "---\ntype: garbage\n---\n");
 
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });

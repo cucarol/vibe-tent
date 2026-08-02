@@ -31,6 +31,18 @@ import {
 
 const PROVIDER_SESSION_ID = "provider-limit-session";
 
+async function startConnection(
+  runtime: ReturnType<typeof createAgentRuntime>,
+  request: Parameters<ReturnType<typeof createAgentRuntime>["startSession"]>[0] & { connectionId: string }
+) {
+  const { connectionId, ...start } = request;
+  const workspace = start.workspace ?? start.workspaceLane?.workspace ?? start.runtimeWorkspace?.cwd ?? start.cwd;
+  if (!workspace) throw new Error("test start requires a workspace");
+  const lastTaskId = start.lastTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
+  await runtime.reserveSession({ sessionId: start.sessionId, connectionId, lastTaskId, workspace, workspaceLane: start.workspaceLane, runtimeWorkspace: start.runtimeWorkspace, cwd: start.cwd });
+  return runtime.startSession({ ...start, lastTaskId, workspace });
+}
+
 const MOCK_ACP_SOURCE = String.raw`
 import readline from "node:readline";
 
@@ -341,7 +353,7 @@ test("managed ACP rejects an oversized stdout JSON-RPC frame before parse and ne
     limits: { stdoutFrameBytes: 256 },
   });
   const session = await startManagedAcpSession({
-    plan: { sessionId, routeId: "limit", cwd: process.cwd(), env: {}, bootstrapPrompt: "go" },
+    plan: { sessionId, connectionId: "limit", cwd: process.cwd(), env: {}, bootstrapPrompt: "go" },
     emit: (event) => events.push(event),
     client,
   });
@@ -401,7 +413,7 @@ test("final open segment cannot bypass segment limit into prompt_complete", asyn
   const session = await startManagedAcpSession({
     plan: {
       sessionId,
-      routeId: "limit",
+      connectionId: "limit",
       cwd: process.cwd(),
       env: {},
       bootstrapPrompt: "go",
@@ -427,7 +439,7 @@ test("normal multi-segment response emits only the final managed report", async 
     env: { MOCK_MODE: "multi" },
   });
   const session = await startManagedAcpSession({
-    plan: { sessionId, routeId: "limit", cwd: process.cwd(), env: {}, bootstrapPrompt: "go" },
+    plan: { sessionId, connectionId: "limit", cwd: process.cwd(), env: {}, bootstrapPrompt: "go" },
     emit: (event) => events.push(event),
     client,
   });
@@ -859,16 +871,15 @@ test("AgentRuntime re-bounds oversized managed diagnostics at its event boundary
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [{ routeId: "runtime-limit-route", provider: "test", adapterId: adapter.id }],
+    connections: [{ connectionId: "runtime-limit-connection", provider: "test", adapterId: adapter.id }],
   });
   const events: RuntimeEvent[] = [];
   runtime.subscribeAll((event) => events.push(event));
   const sessionId = "ss-runtime-boundary";
   try {
-    await runtime.startSession({
+    await startConnection(runtime, {
       sessionId,
-      routeId: "runtime-limit-route",
-      routeSnapshot: runtime.snapshotRouteForStart("runtime-limit-route"),
+      connectionId: "runtime-limit-connection",
       cwd: await tempDir("tent-runtime-limit-cwd-"),
       bootstrapPrompt: "",
     });
@@ -919,7 +930,7 @@ test("AgentRuntime preserves limit code and does not duplicate an already-emitte
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [{ routeId: "runtime-limit-startup-route", provider: "test", adapterId: adapter.id }],
+    connections: [{ connectionId: "runtime-limit-startup-connection", provider: "test", adapterId: adapter.id }],
   });
   const events: RuntimeEvent[] = [];
   runtime.subscribeAll((event) => events.push(event));
@@ -927,10 +938,9 @@ test("AgentRuntime preserves limit code and does not duplicate an already-emitte
   try {
     await assert.rejects(
       () =>
-        runtime.startSession({
+        startConnection(runtime, {
           sessionId,
-          routeId: "runtime-limit-startup-route",
-          routeSnapshot: runtime.snapshotRouteForStart("runtime-limit-startup-route"),
+          connectionId: "runtime-limit-startup-connection",
           cwd: process.cwd(),
         }),
       (error) => assertLimit(error, ACP_OUTPUT_LIMIT_CODE)

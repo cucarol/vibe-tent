@@ -32,6 +32,7 @@ async function makeWorkspace(): Promise<string> {
       {
         roles: [
           {
+            id: "rl-executor",
             name: "executor",
             prompt: "do work",
           },
@@ -68,6 +69,17 @@ test("interaction.listPending aggregates three kinds with stable sort and counts
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const mounted = (await client.mount(ws)) as { workspaceId: string };
     const workspaceId = mounted.workspaceId;
+    const entered = (await client.sessionEnter({
+      workspaceId,
+      roleId: "rl-executor",
+      cwd: ws,
+    })) as { session: { sessionId: string }; sessionToken: string };
+    const roleClient = createServiceClient({
+      baseUrl: svc.url,
+      token: svc.token,
+      currentSessionId: entered.session.sessionId,
+      currentSessionToken: entered.sessionToken,
+    });
 
     const created = (await client.docsCreateNote(workspaceId, {
       name: "work-item",
@@ -77,18 +89,17 @@ test("interaction.listPending aggregates three kinds with stable sort and counts
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "Need decisions and review",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       deliveryPolicy: "review",
     })) as { taskPath: string; task?: { id?: string } };
     const taskPath = dispatched.taskPath;
-    await client.taskClaim(workspaceId, taskPath);
+    await roleClient.taskClaim(workspaceId, taskPath);
 
     const taskGot = (await client.taskGet(workspaceId, taskPath)) as {
-      task: { id?: string; sessionId?: string; assigneeId: string };
+      task: { id?: string; sessionId?: string; roleId?: string };
     };
     const taskId = taskGot.task.id;
     assert.ok(taskId, "task id required for delivery + pointers");
@@ -107,7 +118,7 @@ test("interaction.listPending aggregates three kinds with stable sort and counts
     await svc.ctx.toolApprovals.add({
       id: toolId,
       workspaceId,
-      sessionId: "ss-tool-1",
+      sessionId: entered.session.sessionId,
       taskId,
       taskPath,
       role: "executor",
@@ -128,7 +139,7 @@ test("interaction.listPending aggregates three kinds with stable sort and counts
     const delivery = await createDelivery(fsa, clock, {
       taskId,
       sourceNodeId: nodeId,
-      deliveriesDir: "temp/executor/deliveries",
+      deliveriesDir: "temp/roles/rl-executor/deliveries",
       summary: "Ready for human review — must not appear in interaction projection",
       status: "ready",
     });
@@ -137,7 +148,7 @@ test("interaction.listPending aggregates three kinds with stable sort and counts
     await createDelivery(fsa, clock, {
       taskId,
       sourceNodeId: nodeId,
-      deliveriesDir: "temp/executor/deliveries",
+      deliveriesDir: "temp/roles/rl-executor/deliveries",
       summary: "Already accepted history",
       status: "accepted",
     });
@@ -174,7 +185,7 @@ test("interaction.listPending aggregates three kinds with stable sort and counts
     const tool = result.items.find((i) => i.kind === "toolApproval");
     assert.ok(tool && tool.kind === "toolApproval");
     assert.equal(tool.toolTitle, "read_file");
-    assert.equal(tool.sessionId, "ss-tool-1");
+    assert.equal(tool.sessionId, entered.session.sessionId);
     assert.equal(tool.options.length, 2);
     // Never project raw tool args / toolCallId as part of the inbox item
     assert.equal((tool as { toolCallId?: string }).toolCallId, undefined);

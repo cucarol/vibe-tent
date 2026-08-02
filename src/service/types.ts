@@ -65,8 +65,7 @@ export type NodeCollaborationTaskSummary = {
   id: string;
   /** Raw Task lifecycle state (queued|running|waiting|delivered|…). */
   state: string;
-  assigneeKind: "role" | "route";
-  assigneeId: string;
+  roleId?: string;
   sessionId?: string;
   activeDeliveryId?: string;
   /** Optional createdAt for clients that re-sort (server already orders). */
@@ -287,8 +286,8 @@ export type TaskActorRefWire = {
 export type TaskProjection = {
   path: string;
   id?: string;
-  assigneeKind: "role" | "route";
-  assigneeId: string;
+  /** Durable Role responsibility/handoff, when the Task belongs to a Role. */
+  roleId?: string;
   /**
    * Node ids from Task.contextCard.refs.nodes (via taskReferencedNodeIds).
    * Replaces the removed claims[] projection — occupation truth is Context Card only.
@@ -453,10 +452,11 @@ export type ProposalProjection = {
 
 export type SessionProjection = {
   sessionId: string;
-  routeId: string;
-  adapterId: string;
+  /** Present only for managed Sessions launched from an Agent Connection. */
+  connectionId?: string;
+  adapterId?: string;
   state: string;
-  roleName?: string;
+  roleId?: string;
   /** PID is machine-local diagnostic; clients may show status only. */
   alive: boolean;
   resumeCapable: boolean;
@@ -515,12 +515,12 @@ export type RoleRegistryEntryProjection = {
 };
 
 /**
- * Machine-local SettingsRoute projection for clients / editors.
+ * Machine-local AgentConnection projection for clients / editors.
  * Non-secret fields only — never env maps, API keys, tokens, or secret values.
  * Env *key names* and machine-local paths/URLs are allowed (not secret values).
  */
-export type SettingsRouteProjection = {
-  routeId: string;
+export type AgentConnectionProjection = {
+  connectionId: string;
   provider: string;
   adapterId: string;
   /** Human label for pickers (displayName, else displayNameKey map, else id). */
@@ -534,7 +534,7 @@ export type SettingsRouteProjection = {
   /** Process env *name* for API token — never the value. */
   envKey?: string;
   /**
-   * Machine-local CredentialStore id referenced by this route (not a secret).
+   * Machine-local CredentialStore id referenced by this connection (not a secret).
    * Presence of the vault entry may be reported via credentialExists.
    */
   credentialRef?: string;
@@ -555,7 +555,7 @@ export type SettingsRouteProjection = {
    */
   skills?: import("../adapters/acp/mcp-skills.js").RouteSkillProjection[];
   /**
-   * How route skills are applied at ACP session start.
+   * How connection skills are applied at ACP session start.
    * Always metadata / provider-dependent when skills are present — never "activated".
    */
   skillsProjectionMode?: "metadata-provider-dependent";
@@ -566,7 +566,7 @@ export type SettingsRouteProjection = {
   /**
    * MCP server descriptions with envKey/credentialRef *names* only — never secret values.
    */
-  mcpServers?: import("../adapters/acp/mcp-skills.js").RouteMcpServerProjection[];
+  mcpServers?: import("../adapters/acp/mcp-skills.js").ConnectionMcpServerProjection[];
 };
 
 /**
@@ -604,7 +604,7 @@ export type NativeForegroundLevel =
 
 /**
  * One product provider verification fact (provider.catalog).
- * Never includes secrets, env values, credentials, or route config.
+ * Never includes secrets, env values, credentials, or connection config.
  */
 export type ProviderCatalogEntry = {
   adapterId: string;
@@ -624,7 +624,7 @@ export type ProviderCatalogEntry = {
   notes?: string;
 };
 
-/** Result of provider.catalog — static product facts, not machine-local routes. */
+/** Result of provider.catalog — static product facts, not machine-local connections. */
 export type ProviderCatalogProjection = {
   providers: ProviderCatalogEntry[];
 };
@@ -633,7 +633,7 @@ export type ProviderCatalogProjection = {
  * Methods clients may call. AgentRuntimePort.* is intentionally absent.
  * Adds full task lifecycle + session projections.
  * Desktop P0-1 adds read-only registry.* for type + role pickers.
- * Desktop ACP launch surface adds route.list/get + machine-local grok-acp CRUD.
+ * Desktop ACP launch surface adds connection.list/get/create/update/delete.
  * Provider verification: provider.catalog (read-only product facts; no secrets).
  * Credential vault: credential.list/set/delete (no get plaintext).
  * Machine-local skills: skill.list/install (bundled only; no workspaceId).
@@ -761,17 +761,17 @@ export const CLIENT_METHODS = [
   "registry.role.create",
   "registry.role.update",
   "registry.role.delete",
-  "route.list",
-  "route.get",
-  "route.create",
-  "route.update",
-  "route.delete",
+  "connection.list",
+  "connection.get",
+  "connection.create",
+  "connection.update",
+  "connection.delete",
   /**
    * Read-only product provider verification catalog.
    * Params: none (machine-global product facts; not workspace-scoped).
    * Result: { providers: ProviderCatalogEntry[] } — adapterId + verificationLevel
    * (+ optional canResume/notes). Never secrets, env values, or credentials.
-   * Distinct from route.* (machine-local launch config).
+   * Distinct from connection.* (machine-local launch config).
    */
   "provider.catalog",
   /** Machine-local credential vault (user-only; never returns secret plaintext). */
@@ -804,7 +804,7 @@ export const CLIENT_METHODS = [
   "task.askUser",
   /**
    * U2A one-shot append: user-only text and/or contextRefs to a running/waiting task.
-   * Not chat; does not answer a pending UserAsk; does not mutate routes.
+   * Not chat; does not answer a pending UserAsk; does not mutate Agent Connections.
    */
   "task.sendInput",
   "task.deliver",
@@ -817,7 +817,7 @@ export const CLIENT_METHODS = [
   /**
    * Explicit fresh managed Session on the same Task (unusable provider context).
    * Never a silent fallback from task.startSession. Uses the same machine Settings
-   * route availability gate as startSession.
+   * Agent Connection availability gate as startSession.
    * Shares the per-Task managed-session execution slot with startSession.
    * Preserves nodeRefs/worktree/branch/lane/pending TaskInputs/deliveryPolicy;
    * stops the old Session first; new ss- has contextRestored=false + stable restoreReason.

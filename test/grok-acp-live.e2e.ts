@@ -17,6 +17,18 @@ import { startLocalTentService } from "../src/service/service.js";
 const apiKey = process.env[DEFAULT_GROK_ENV_KEY];
 const baseUrl = process.env[DEFAULT_GROK_BASE_URL_ENV_KEY];
 
+async function startConnection(
+  runtime: ReturnType<typeof createAgentRuntime>,
+  request: Parameters<ReturnType<typeof createAgentRuntime>["startSession"]>[0] & { connectionId: string }
+) {
+  const { connectionId, ...start } = request;
+  const workspace = start.workspace ?? start.workspaceLane?.workspace ?? start.runtimeWorkspace?.cwd ?? start.cwd;
+  if (!workspace) throw new Error("live start requires a workspace");
+  const lastTaskId = start.lastTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
+  await runtime.reserveSession({ sessionId: start.sessionId, connectionId, lastTaskId, workspace, workspaceLane: start.workspaceLane, runtimeWorkspace: start.runtimeWorkspace, cwd: start.cwd });
+  return runtime.startSession({ ...start, lastTaskId, workspace });
+}
+
 async function pollUntil<T>(
   fn: () => Promise<T | null>,
   timeoutMs = 180_000
@@ -44,9 +56,9 @@ function waitForRuntimeEvent(
   );
 }
 
-function liveRoute() {
+function liveConnection() {
   return {
-    routeId: "grok-live-e2e",
+    connectionId: "grok-live-e2e",
     provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
     model: process.env.CPA_GROK_MODEL || "grok-4.5",
@@ -85,7 +97,7 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: false,
-    routes: [liveRoute()],
+    connections: [liveConnection()],
   });
   const rpc = (method: string, params?: Record<string, unknown>) =>
     rpcCall(svc.url, method, params, { token: svc.token });
@@ -106,21 +118,12 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "grok-live-e2e",
+      connectionId: "grok-live-e2e",
       prompt: "Reply with a short delivery report containing the marker TENT_GROK_E2E_OK. Do not call tools.",
       deliveryPolicy: "review",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
-    const claimed = await rpc("task.claim", { workspaceId, taskPath });
-    assert.ok(!claimed.error, JSON.stringify(claimed.error));
-    const started = await rpc("task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
 
     const delivered = await pollUntil(async () => {
       const got = await rpc("task.get", { workspaceId, taskPath });
@@ -153,15 +156,14 @@ test("real Grok ACP: stop bridge → native session/load → recover prior conte
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "tent-grok-resume-cwd-"));
   const sessionId = "ss-groklive1";
   const nonce = `TENT_RSM_${Date.now().toString(36).toUpperCase()}`;
-  let firstRuntime = createAgentRuntime({ dataDir, routes: [liveRoute()] });
+  let firstRuntime = createAgentRuntime({ dataDir, connections: [liveConnection()] });
   const firstEvents: RuntimeEvent[] = [];
   firstRuntime.subscribeAll((event) => firstEvents.push(event));
 
   try {
-    await firstRuntime.startSession({
+    await startConnection(firstRuntime, {
       sessionId,
-      routeId: "grok-live-e2e",
-      routeSnapshot: firstRuntime.snapshotRouteForStart("grok-live-e2e"),
+      connectionId: "grok-live-e2e",
       cwd,
       bootstrapPrompt:
         `Remember the secret nonce ${nonce} for our next turn. ` +
@@ -178,7 +180,7 @@ test("real Grok ACP: stop bridge → native session/load → recover prior conte
     await firstRuntime.stopSession(sessionId, "user");
     await firstRuntime.shutdown();
 
-    const secondRuntime = createAgentRuntime({ dataDir, routes: [liveRoute()] });
+    const secondRuntime = createAgentRuntime({ dataDir, connections: [liveConnection()] });
     firstRuntime = secondRuntime;
     const secondEvents: RuntimeEvent[] = [];
     secondRuntime.subscribeAll((event) => secondEvents.push(event));

@@ -1,6 +1,6 @@
 import type { LoadedTent } from "./tree.js";
 import type { FsAdapter } from "./adapter.js";
-import { loadTaskEnvelopes } from "./task.js";
+import { loadTaskEnvelopes, taskExecutionLabel } from "./task.js";
 import { envelopeIsActiveOccupation, occupiedNodesFromTasks } from "./claim.js";
 import { taskDirectlyReferencesNode } from "./task-node-refs.js";
 
@@ -34,7 +34,7 @@ export async function buildInbox(
     if (!task) continue;
     items.push({
       state: "stale",
-      role: `${task.assigneeKind}:${task.assigneeId}`,
+      role: taskExecutionLabel(task),
       nodePath: node.path,
       nodeId: node.id,
       taskId: task.id || task.path,

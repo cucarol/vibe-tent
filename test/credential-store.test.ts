@@ -8,15 +8,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { ProviderAdapter, RouteLaunchPlan } from "../src/adapters/types.js";
+import type { ProviderAdapter, ConnectionLaunchPlan } from "../src/adapters/types.js";
 import { FAKE_ADAPTER_ID, createFakeAdapter } from "../src/adapters/fake/index.js";
 import { GROK_ACP_ADAPTER_ID } from "../src/adapters/grok-acp/index.js";
 import {
   createAgentRuntime,
-  createSettingsRouteSnapshot,
   makeSessionId,
   type RuntimeEvent,
-  type SettingsRouteConfig,
+  type AgentConnectionConfig,
 } from "../src/runtime/index.js";
 import { createTestCredentialProtector } from "../src/service/credential-protector.js";
 import {
@@ -41,6 +40,18 @@ async function tempDir(prefix: string): Promise<string> {
 
 function mockProtector() {
   return createTestCredentialProtector("test-enc:");
+}
+
+async function startConnection(
+  runtime: ReturnType<typeof createAgentRuntime>,
+  request: Parameters<ReturnType<typeof createAgentRuntime>["startSession"]>[0] & { connectionId: string }
+) {
+  const { connectionId, ...start } = request;
+  const workspace = start.workspace ?? start.workspaceLane?.workspace ?? start.runtimeWorkspace?.cwd ?? start.cwd;
+  if (!workspace) throw new Error("test start requires a workspace");
+  const lastTaskId = start.lastTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
+  await runtime.reserveSession({ sessionId: start.sessionId, connectionId, lastTaskId, workspace, workspaceLane: start.workspaceLane, runtimeWorkspace: start.runtimeWorkspace, cwd: start.cwd });
+  return runtime.startSession({ ...start, lastTaskId, workspace });
 }
 
 test("CLIENT_METHODS includes credential.list/set/delete and no get", () => {
@@ -180,54 +191,6 @@ test("CredentialStore: good+bad row quarantines whole file; backup keeps bad cip
   assert.equal(quarantined.credentials.length, 2);
 });
 
-test("CredentialStore: legacy top-level label reloads into metadata", async () => {
-  const dataDir = await tempDir("tent-cred-legacy-label-");
-  const file = credentialsPath(dataDir);
-  await fs.mkdir(dataDir, { recursive: true });
-  const ciphertext = "test-enc:legacy-label-cipher";
-  await fs.writeFile(
-    file,
-    JSON.stringify({
-      credentials: [
-        {
-          id: "legacy-key",
-          ciphertext,
-          createdAt: "2024-03-01T12:00:00.000Z",
-          updatedAt: "2024-03-02T12:00:00.000Z",
-          label: "  Legacy Label  ",
-          unknownField: "must-not-enter-memory",
-        },
-      ],
-    }),
-    "utf8"
-  );
-
-  const store = new CredentialStore(dataDir, { protector: mockProtector() });
-  const listed = await store.list();
-  assert.equal(listed.length, 1);
-  assert.equal(listed[0]!.id, "legacy-key");
-  assert.equal(listed[0]!.label, "Legacy Label");
-  assert.equal(listed[0]!.metadata?.label, "Legacy Label");
-  assert.equal(listed[0]!.createdAt, "2024-03-01T12:00:00.000Z");
-  assert.equal(listed[0]!.updatedAt, "2024-03-02T12:00:00.000Z");
-  assert.equal("unknownField" in listed[0]!, false);
-  assert.equal("ciphertext" in listed[0]!, false);
-
-  // Fresh instance reloads the same valid file without quarantine.
-  const reloaded = await new CredentialStore(dataDir, {
-    protector: mockProtector(),
-  }).list();
-  assert.equal(reloaded.length, 1);
-  assert.equal(reloaded[0]!.label, "Legacy Label");
-  await fs.access(file);
-  const names = await fs.readdir(dataDir);
-  assert.equal(
-    names.filter((n) => n.includes("corrupt")).length,
-    0,
-    "valid legacy label file must not be quarantined"
-  );
-});
-
 test("CredentialStore: invalid metadata row quarantines whole file", async () => {
   const dataDir = await tempDir("tent-cred-bad-meta-");
   const file = credentialsPath(dataDir);
@@ -261,9 +224,9 @@ test("RPC credential.*: set/list/delete never echo secret; no get method", async
     dataDir,
     writeEndpoint: false,
     credentialProtector: mockProtector(),
-    routes: [
+    connections: [
       {
-        routeId: "fake-default",
+        connectionId: "fake-default",
         provider: "fake",
         adapterId: FAKE_ADAPTER_ID,
         fake: { waitForSignal: true, emitStdout: true },
@@ -300,29 +263,29 @@ test("RPC credential.*: set/list/delete never echo secret; no get method", async
     const rawDisk = await fs.readFile(credentialsPath(dataDir), "utf8");
     assert.equal(rawDisk.includes(SECRET), false);
 
-    // Route projection can show credential-reference presence.
-    const created = (await client.routeCreate({
-      routeId: "with-ref",
+    // Connection projection can show credential-reference presence.
+    const created = (await client.connectionCreate({
+      connectionId: "with-ref",
       provider: "grok",
       adapterId: "grok-acp",
       envKey: "CPA_GROK_API_KEY",
       credentialRef: "cpa-key",
     })) as {
-      route: {
+      connection: {
         credentialRef?: string;
         credentialExists?: boolean;
         envKey?: string;
       };
     };
-    assert.equal(created.route.credentialRef, "cpa-key");
-    assert.equal(created.route.credentialExists, true);
+    assert.equal(created.connection.credentialRef, "cpa-key");
+    assert.equal(created.connection.credentialExists, true);
     assert.equal(JSON.stringify(created).includes(SECRET), false);
 
-    // Reject secret-like route fields.
+    // Reject secret-like Connection fields.
     await assert.rejects(
       () =>
-        client.routeCreate({
-          routeId: "bad-secret",
+        client.connectionCreate({
+          connectionId: "bad-secret",
           provider: "grok",
           adapterId: "grok-acp",
           apiKey: SECRET,
@@ -334,16 +297,16 @@ test("RPC credential.*: set/list/delete never echo secret; no get method", async
     const after = (await client.credentialList()) as { credentials: unknown[] };
     assert.equal(after.credentials.length, 0);
 
-    const gone = (await client.routeGet("with-ref")) as {
-      route: { credentialExists?: boolean };
+    const gone = (await client.connectionGet("with-ref")) as {
+      connection: { credentialExists?: boolean };
     };
-    assert.equal(gone.route.credentialExists, false);
+    assert.equal(gone.connection.credentialExists, false);
   } finally {
     await svc.stop();
   }
 });
 
-test("AgentRuntime: resolveRouteEnv injects env; missing ref fails; no secret on SessionRecord", async () => {
+test("AgentRuntime: Connection env resolution injects env; missing ref fails; no secret on SessionRecord", async () => {
   const dataDir = await tempDir("tent-cred-rt-");
   const cwd = await tempDir("tent-cred-cwd-");
   const store = new CredentialStore(dataDir, { protector: mockProtector() });
@@ -370,7 +333,7 @@ test("AgentRuntime: resolveRouteEnv injects env; missing ref fails; no secret on
       sessionId: "",
       exitCode: code,
     }),
-    startManagedSession: async (plan: RouteLaunchPlan, emit) => {
+    startManagedSession: async (plan: ConnectionLaunchPlan, emit) => {
       capturedEnv = { ...(plan.env ?? {}) };
       emit({ type: "session.live", sessionId: plan.sessionId, pid: 1 });
       return {
@@ -382,8 +345,8 @@ test("AgentRuntime: resolveRouteEnv injects env; missing ref fails; no secret on
     },
   };
 
-  const route: SettingsRouteConfig = {
-    routeId: "route-with-cred",
+  const route: AgentConnectionConfig = {
+    connectionId: "route-with-cred",
     provider: "mock",
     adapterId: "mock-env-capture",
     envKey: "CPA_GROK_API_KEY",
@@ -394,9 +357,9 @@ test("AgentRuntime: resolveRouteEnv injects env; missing ref fails; no secret on
   const runtime = createAgentRuntime({
     // Relative input must still become an absolute child routing authority.
     dataDir: path.relative(process.cwd(), dataDir),
-    routes: [route],
+    connections: [route],
     adapters: [mockAdapter, createFakeAdapter()],
-    resolveRouteEnv: async (candidate) => {
+    resolveConnectionEnv: async (candidate) => {
       const ref = candidate.credentialRef?.trim();
       const envKey = candidate.envKey?.trim();
       if (!ref || !envKey) return {};
@@ -409,10 +372,9 @@ test("AgentRuntime: resolveRouteEnv injects env; missing ref fails; no secret on
   const events: RuntimeEvent[] = [];
   runtime.subscribeAll((ev) => events.push(ev));
 
-  const handle = await runtime.startSession({
+  const handle = await startConnection(runtime, {
     sessionId,
-    routeId: route.routeId,
-    routeSnapshot: createSettingsRouteSnapshot(route, { effectiveEndpointDigest: undefined }),
+    connectionId: route.connectionId,
     cwd,
     env: { TENT_SERVICE_DATA_DIR: "C:\\must-not-win" },
   });
@@ -437,9 +399,9 @@ test("AgentRuntime: resolveRouteEnv injects env; missing ref fails; no secret on
   const dataDir2 = await tempDir("tent-cred-rt2-");
   const runtime2 = createAgentRuntime({
     dataDir: dataDir2,
-    routes: [
+    connections: [
       {
-        routeId: "missing-ref",
+        connectionId: "missing-ref",
         provider: "mock",
         adapterId: "mock-env-capture",
         envKey: "CPA_GROK_API_KEY",
@@ -447,7 +409,7 @@ test("AgentRuntime: resolveRouteEnv injects env; missing ref fails; no secret on
       },
     ],
     adapters: [mockAdapter, createFakeAdapter()],
-    resolveRouteEnv: async (candidate) => {
+    resolveConnectionEnv: async (candidate) => {
       const ref = candidate.credentialRef?.trim();
       const envKey = candidate.envKey?.trim();
       if (!ref || !envKey) return {};
@@ -462,13 +424,9 @@ test("AgentRuntime: resolveRouteEnv injects env; missing ref fails; no secret on
   const missingSessionId = makeSessionId(() => 0.22);
   await assert.rejects(
     () =>
-      runtime2.startSession({
+      startConnection(runtime2, {
         sessionId: missingSessionId,
-        routeId: "missing-ref",
-        routeSnapshot: createSettingsRouteSnapshot({
-          routeId: "missing-ref", provider: "mock", adapterId: "mock-env-capture",
-          envKey: "CPA_GROK_API_KEY", credentialRef: "does-not-exist",
-        }, { effectiveEndpointDigest: undefined }),
+        connectionId: "missing-ref",
         cwd,
       }),
     /Credential not found|empty/i
@@ -482,25 +440,21 @@ test("AgentRuntime: resolveRouteEnv injects env; missing ref fails; no secret on
   const dataDir3 = await tempDir("tent-cred-rt3-");
   const runtime3 = createAgentRuntime({
     dataDir: dataDir3,
-    routes: [
+    connections: [
       {
-        routeId: "no-envkey",
+        connectionId: "no-envkey",
         provider: "fake",
         adapterId: FAKE_ADAPTER_ID,
         credentialRef: "vault-1",
       },
     ],
-    resolveRouteEnv: async () => ({ X: "y" }),
+    resolveConnectionEnv: async () => ({ X: "y" }),
   });
   await assert.rejects(
     () =>
-      runtime3.startSession({
+      startConnection(runtime3, {
         sessionId: makeSessionId(() => 0.33),
-        routeId: "no-envkey",
-        routeSnapshot: createSettingsRouteSnapshot({
-          routeId: "no-envkey", provider: "fake", adapterId: FAKE_ADAPTER_ID,
-          credentialRef: "vault-1",
-        }, { effectiveEndpointDigest: undefined }),
+        connectionId: "no-envkey",
         cwd,
       }),
     /no envKey/i
@@ -511,15 +465,15 @@ test("AgentRuntime: resolveRouteEnv injects env; missing ref fails; no secret on
 test("startLocalTentService: credentialRef reaches mock ACP env via vault", async () => {
   const dataDir = await tempDir("tent-cred-svc-");
   const logPath = path.join(dataDir, "mock-acp.log");
-  const routes: SettingsRouteConfig[] = [
+  const connections: AgentConnectionConfig[] = [
     {
-      routeId: "fake-default",
+      connectionId: "fake-default",
       provider: "fake",
       adapterId: FAKE_ADAPTER_ID,
       fake: { waitForSignal: true, emitStdout: true },
     },
     {
-      routeId: "grok-with-vault",
+      connectionId: "grok-with-vault",
       provider: "grok",
       adapterId: GROK_ACP_ADAPTER_ID,
       command: process.execPath,
@@ -535,17 +489,16 @@ test("startLocalTentService: credentialRef reaches mock ACP env via vault", asyn
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: false,
-    routes,
+    connections,
     credentialProtector: mockProtector(),
   });
   try {
     await svc.credentials.set("svc-vault", SECRET, { label: "svc" });
     const cwd = await tempDir("tent-cred-svc-cwd-");
     const sessionId = makeSessionId(() => 0.44);
-    const handle = await svc.runtime.startSession({
+    const handle = await startConnection(svc.runtime, {
       sessionId,
-      routeId: "grok-with-vault",
-      routeSnapshot: createSettingsRouteSnapshot(routes[1]!, { effectiveEndpointDigest: undefined }),
+      connectionId: "grok-with-vault",
       cwd,
       bootstrapPrompt: "ping",
       env: {
@@ -571,14 +524,13 @@ test("startLocalTentService: credentialRef reaches mock ACP env via vault", asyn
     const vaultRaw = await fs.readFile(credentialsPath(dataDir), "utf8");
     assert.equal(vaultRaw.includes(SECRET), false);
 
-    // Remove vault entry — route still references it → fail-loud before live.
+    // Remove vault entry — Connection still references it → fail-loud before live.
     await svc.credentials.delete("svc-vault");
     await assert.rejects(
       () =>
-        svc.runtime.startSession({
+        startConnection(svc.runtime, {
           sessionId: makeSessionId(() => 0.55),
-          routeId: "grok-with-vault",
-          routeSnapshot: createSettingsRouteSnapshot(routes[1]!, { effectiveEndpointDigest: undefined }),
+          connectionId: "grok-with-vault",
           cwd,
           env: {
             MOCK_ACP_LOG: logPath,

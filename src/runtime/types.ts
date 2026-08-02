@@ -2,13 +2,14 @@
 // Not a client command surface — Desktop/CLI/MCP use task.* only.
 
 import type {
-  SettingsRouteConfig,
-  SettingsRouteSnapshot,
-} from "./route-config.js";
+  AgentConnectionConfig,
+  AgentConnectionSnapshot,
+} from "./agent-connection.js";
 
-export type { FakeRouteOptions, SettingsRouteConfig, SettingsRouteSnapshot } from "./route-config.js";
+export type { FakeConnectionOptions, AgentConnectionConfig, AgentConnectionSnapshot } from "./agent-connection.js";
 
 export type SessionState =
+  | "reserved"
   | "starting"
   | "live"
   | "waiting-user"
@@ -56,10 +57,6 @@ export interface RuntimeWorkspace {
 export interface StartSessionRequest {
   /** Service-preallocated ss- id. */
   sessionId: string;
-  /** Machine-local Settings route id. */
-  routeId: string;
-  /** Exact immutable non-secret launch facts selected before prompt assembly. */
-  routeSnapshot: SettingsRouteSnapshot;
   /** Collaboration lane already prepared by service/core. */
   workspaceLane?: WorkspaceLaneRef;
   /**
@@ -91,6 +88,19 @@ export interface StartSessionRequest {
   workspace?: string;
 }
 
+export interface ReserveSessionRequest {
+  /** Exact ss- identity allocated before the Task is written. */
+  sessionId: string;
+  /** Machine-local Settings connection selected for this new Session. */
+  connectionId: string;
+  /** Exact Task identity that will be durably bound to this Session. */
+  lastTaskId: string;
+  workspace: string;
+  workspaceLane?: WorkspaceLaneRef;
+  runtimeWorkspace?: RuntimeWorkspace;
+  cwd?: string;
+}
+
 export interface ResumeSessionRequest {
   sessionId: string;
   runtimeWorkspace?: RuntimeWorkspace;
@@ -114,12 +124,14 @@ export interface ResumeSessionRequest {
 
 export interface SessionHandle {
   sessionId: string;
-  routeId: string;
-  adapterId: string;
+  connectionId?: string;
+  adapterId?: string;
   state: SessionState;
   pid?: number;
-  roleName?: string;
+  roleId?: string;
   runtimeWorkspace?: RuntimeWorkspace;
+  /** One-time caller capability returned only by session.enter; never persisted. */
+  sessionToken?: string;
   /**
    * True when this handle reuses provider-native same-context continuity.
    * False when Tent started an independent Session (honest recovery / no cache claim).
@@ -149,16 +161,17 @@ export interface SessionProbe {
 /** Durable machine-local session row (architecture §3.3 / agent-runtime §6). */
 export interface SessionRecord {
   id: string;
-  routeId: string;
-  adapterId: string;
+  /** Managed Sessions only. External durable Role Sessions have no Connection. */
+  connectionId?: string;
+  adapterId?: string;
   /**
    * Immutable non-secret launch configuration captured when the session starts.
    * Resume uses this snapshot so later route edits cannot reinterpret an old
    * provider token. credentialRef is resolved again at resume time; secret values
    * are never stored here. Missing snapshot is unrecoverable and fails loud.
    */
-  routeSnapshot: SettingsRouteSnapshot;
-  roleName?: string;
+  connectionSnapshot?: AgentConnectionSnapshot;
+  roleId?: string;
   state: SessionState;
   pid?: number;
   resumeToken?: string;
@@ -209,7 +222,7 @@ export interface SessionRecord {
 }
 
 /**
- * Machine-local Settings route — binary paths, argv templates, auth refs.
+ * Machine-local Agent Connection — binary paths, argv templates, auth refs.
  * Lives only in the Service data area; never in workspace Git or Node bodies.
  */
 /**
@@ -218,8 +231,8 @@ export interface SessionRecord {
  * Returns a partial env map merged last into LaunchPlan.env, so the vault value cannot
  * be shadowed by non-secret route/request configuration.
  */
-export type ResolveRouteEnv = (
-  route: SettingsRouteConfig
+export type ResolveConnectionEnv = (
+  route: AgentConnectionConfig
 ) => Promise<Record<string, string>> | Record<string, string>;
 
 /**
@@ -237,12 +250,7 @@ export type ResolveCredentialRef = (
 export interface EnterExternalSessionRequest {
   /** Service-preallocated or client-supplied ss- id. When omitted, runtime allocates. */
   sessionId?: string;
-  /**
-   * Machine-local external route label for transport attribution only.
-   * Defaults to EXTERNAL_ROUTE_ID — not used to launch ACP.
-   */
-  routeId?: string;
-  roleName?: string;
+  roleId?: string;
   /** Mounted workspace key for multi-mount filtering. */
   workspace?: string;
   runtimeWorkspace?: RuntimeWorkspace;
@@ -258,6 +266,7 @@ export interface EnterExternalSessionRequest {
 }
 
 export interface AgentRuntimePort {
+  reserveSession(req: ReserveSessionRequest): Promise<SessionHandle>;
   startSession(req: StartSessionRequest): Promise<SessionHandle>;
   resumeSession(req: ResumeSessionRequest): Promise<SessionHandle>;
   /**
@@ -270,9 +279,8 @@ export interface AgentRuntimePort {
   subscribe(sessionId: string, sink: (ev: RuntimeEvent) => void): Unsubscribe;
 }
 
-/** Synthetic route/adapter ids for pull-host external GUI sessions (no spawn). */
+/** Synthetic adapter id retained only for external transport diagnostics. */
 export const EXTERNAL_ADAPTER_ID = "external";
-export const EXTERNAL_ROUTE_ID = "external";
 
 export const SESSION_ID_PREFIX = "ss-";
 

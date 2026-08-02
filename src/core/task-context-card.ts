@@ -14,7 +14,6 @@ import {
   parseTaskActorRef,
   resolveParentReviewerPair,
   TaskLifecycleError,
-  type AssigneeKind,
   type TaskActorRef,
 } from "./task-model.js";
 import type { TaskEnvelope } from "./task.js";
@@ -99,8 +98,8 @@ export type ContextGenerationInputs = {
   tentTaskDigest?: string;
   /** tent-task skill version marker. */
   tentTaskVersion?: string;
-  /** Route/adapter compatibility fingerprint (ids only — no secrets). */
-  routeAdapterCompatibility?: string;
+  /** Connection/adapter compatibility fingerprint (ids only — no secrets). */
+  connectionAdapterCompatibility?: string;
   /**
    * Extra stable compatibility bytes needed by the actual prompt builder.
    * Must never include taskId, objective, acceptance, or current Task delta.
@@ -209,7 +208,7 @@ export function computeContextGeneration(inputs: ContextGenerationInputs): strin
     rolePrompt: inputs.rolePrompt?.trim() || "",
     tentTaskDigest: inputs.tentTaskDigest?.trim() || "",
     tentTaskVersion: inputs.tentTaskVersion?.trim() || "",
-    routeAdapterCompatibility: inputs.routeAdapterCompatibility?.trim() || "",
+    connectionAdapterCompatibility: inputs.connectionAdapterCompatibility?.trim() || "",
     extraStable,
   };
   return formatContextGeneration(canonicalJson(payload));
@@ -217,7 +216,7 @@ export function computeContextGeneration(inputs: ContextGenerationInputs): strin
 
 /**
  * Strip Task-dynamic keys from extraStable so contextGeneration stays cache-stable
- * across an exact Task Session that preserves workspace/Role/Skills/route facts.
+ * across an exact Task Session that preserves workspace/Role/Skills/Connection facts.
  */
 export function sanitizeContextGenerationExtraStable(
   extra?: Record<string, string | number | boolean | null | undefined>
@@ -263,7 +262,7 @@ export function skillBodyCompatibilityDigest(input: {
 }
 
 /**
- * Build real stable contextGeneration from collected workspace/Skill/Role/route facts.
+ * Build real stable contextGeneration from collected workspace/Skill/Role/Connection facts.
  * Callers supply already-loaded bodies — no I/O here. Never accepts taskId/objective.
  */
 export function computeContextGenerationFromStableFacts(input: {
@@ -277,15 +276,15 @@ export function computeContextGenerationFromStableFacts(input: {
   tentTaskBody?: string;
   tentTaskVersion?: string;
   rolePrompt?: string;
-  routeId: string;
+  connectionId: string;
   adapterId: string;
-  assigneeKind?: AssigneeKind | string;
+  roleId?: string;
   capabilityFlags?: readonly string[];
   /**
-   * Non-secret launch snapshot digest (same routeId edited in place).
-   * When set, folds into routeAdapterCompatibility.
+   * Non-secret launch snapshot digest (same connectionId edited in place).
+   * When set, folds into connectionAdapterCompatibility.
    */
-  routeLaunchDigest?: string;
+  connectionLaunchDigest?: string;
   extraStable?: Record<string, string | number | boolean | null | undefined>;
 }): string {
   const tentRoleDigest =
@@ -314,16 +313,16 @@ export function computeContextGenerationFromStableFacts(input: {
     rolePrompt: input.rolePrompt,
     tentTaskDigest: tentTaskDigest || undefined,
     tentTaskVersion: input.tentTaskVersion,
-    routeAdapterCompatibility: routeAdapterCompatibilityDigest({
-      routeId: input.routeId,
+    connectionAdapterCompatibility: connectionAdapterCompatibilityDigest({
+      connectionId: input.connectionId,
       adapterId: input.adapterId,
       capabilityFlags: input.capabilityFlags,
-      launchDigest: input.routeLaunchDigest,
+      launchDigest: input.connectionLaunchDigest,
     }),
     extraStable: {
-      ...(input.assigneeKind ? { assigneeKind: String(input.assigneeKind) } : {}),
-      ...(input.routeLaunchDigest?.trim()
-        ? { routeLaunchDigest: input.routeLaunchDigest.trim() }
+      ...(input.roleId ? { roleId: input.roleId } : {}),
+      ...(input.connectionLaunchDigest?.trim()
+        ? { connectionLaunchDigest: input.connectionLaunchDigest.trim() }
         : {}),
       ...input.extraStable,
     },
@@ -904,11 +903,11 @@ export function skillSetCompatibilityDigest(
 }
 
 /**
- * Route/adapter compatibility string (ids + optional non-secret flags).
+ * Agent Connection/adapter compatibility string (ids + optional non-secret flags).
  * For full launch identity prefer {@link routeLaunchCompatibilityDigest}.
  */
-export function routeAdapterCompatibilityDigest(input: {
-  routeId: string;
+export function connectionAdapterCompatibilityDigest(input: {
+  connectionId: string;
   adapterId: string;
   /** Optional non-secret capability flags. */
   capabilityFlags?: readonly string[];
@@ -921,7 +920,7 @@ export function routeAdapterCompatibilityDigest(input: {
     .sort((a, b) => a.localeCompare(b));
   return sha256Hex(
     canonicalJson({
-      routeId: input.routeId.trim(),
+      connectionId: input.connectionId.trim(),
       adapterId: input.adapterId.trim(),
       flags,
       launchDigest: input.launchDigest?.trim() || "",
@@ -949,24 +948,24 @@ export function canonicalStringMap(
 }
 
 /**
- * Non-secret route/launch compatibility snapshot for same-routeId in-place edits.
+ * Non-secret Connection launch compatibility snapshot for same-connectionId edits.
  *
  * Hashes the exact canonical launch configuration that can change provider/MCP/Skill
  * context — never resolved secret values:
  * - ACP: executable, model, envKey, credentialRef, baseUrlEnvKey, baseUrl,
  *   permissionPolicy, promptTimeoutMs, permissionTimeoutMs
- * - generic: command, args, route env *key names* only
+ * - generic: command, args, Connection env *key names* only
  * - enabled Skills: name + path identity
  * - enabled MCP: name, transport, command, args, url, and every env/header
  *   process-key name or credentialRef id (mapping keys *and* values)
  */
 export function routeLaunchCompatibilityDigest(input: {
-  routeId: string;
+  connectionId: string;
   adapterId: string;
   command?: string;
   args?: readonly string[];
   /**
-   * Route process env: only *key names* are hashed (values may be non-secret
+   * Connection process env: only *key names* are hashed (values may be non-secret
    * but are still omitted so secret-shaped values never enter the digest).
    */
   envKeyNames?: readonly string[];
@@ -1042,7 +1041,7 @@ export function routeLaunchCompatibilityDigest(input: {
   const acp = input.acp;
   return sha256Hex(
     canonicalJson({
-      routeId: input.routeId.trim(),
+      connectionId: input.connectionId.trim(),
       adapterId: input.adapterId.trim(),
       command: input.command?.trim() || "",
       args,

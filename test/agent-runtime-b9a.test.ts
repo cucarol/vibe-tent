@@ -11,12 +11,12 @@ import { createFakeAdapter, FAKE_ADAPTER_ID } from "../src/adapters/fake/index.j
 import type { ProviderAdapter } from "../src/adapters/types.js";
 import {
   createAgentRuntime,
-  createSettingsRouteSnapshot,
+  createAgentConnectionSnapshot,
   makeSessionId,
   ProcessSupervisor,
   SessionRegistry,
   type RuntimeEvent,
-  type SettingsRouteConfig,
+  type AgentConnectionConfig,
   type StartSessionRequest,
 } from "../src/runtime/index.js";
 
@@ -28,22 +28,31 @@ async function tempCwd(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), "tent-b9a-cwd-"));
 }
 
-function startRoute(
+function startConnection(
   runtime: ReturnType<typeof createAgentRuntime>,
-  request: Omit<StartSessionRequest, "routeSnapshot">
+  request: StartSessionRequest & { connectionId: string }
 ) {
-  return runtime.startSession({
-    ...request,
-    routeSnapshot: runtime.snapshotRouteForStart(request.routeId),
-  });
+  const { connectionId, ...start } = request;
+  const workspace = start.workspace ?? start.workspaceLane?.workspace ?? start.runtimeWorkspace?.cwd ?? start.cwd;
+  if (!workspace) throw new Error("test start requires a workspace");
+  const lastTaskId = start.lastTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
+  return runtime.reserveSession({
+    sessionId: start.sessionId,
+    connectionId,
+    lastTaskId,
+    workspace,
+    workspaceLane: start.workspaceLane,
+    runtimeWorkspace: start.runtimeWorkspace,
+    cwd: start.cwd,
+  }).then(() => runtime.startSession({ ...start, lastTaskId, workspace }));
 }
 
-function testRoute(routeId: string, adapterId: string, extra: Omit<SettingsRouteConfig, "routeId" | "provider" | "adapterId"> = {}): SettingsRouteConfig {
-  return { routeId, provider: "test", adapterId, ...extra };
+function testConnection(connectionId: string, adapterId: string, extra: Omit<AgentConnectionConfig, "connectionId" | "provider" | "adapterId"> = {}): AgentConnectionConfig {
+  return { connectionId, provider: "test", adapterId, ...extra };
 }
 
-function snapshot(routeId: string, adapterId: string) {
-  return createSettingsRouteSnapshot(testRoute(routeId, adapterId), {});
+function snapshot(connectionId: string, adapterId: string) {
+  return createAgentConnectionSnapshot(testConnection(connectionId, adapterId), {});
 }
 
 function waitFor(
@@ -81,9 +90,9 @@ test("SessionRegistry persists and lists machine-local sessions", async () => {
   const now = new Date().toISOString();
   await reg.write({
     id: "ss-test01",
-    routeId: "fake-default",
+    connectionId: "fake-default",
     adapterId: FAKE_ADAPTER_ID,
-    routeSnapshot: snapshot("fake-default", FAKE_ADAPTER_ID),
+    connectionSnapshot: snapshot("fake-default", FAKE_ADAPTER_ID),
     state: "live",
     pid: 42,
     runtimeWorkspace: { cwd: "C:\\work" },
@@ -108,14 +117,14 @@ test("startSession / probe / stopSession with fake provider (no paid requests)",
   const dataDir = await tempDataDir();
   const cwd = await tempCwd();
   const runtime = createAgentRuntime({ dataDir, gracefulMs: 1500 });
-  runtime.registerRoute(testRoute("fake-default", FAKE_ADAPTER_ID));
+  runtime.registerConnection(testConnection("fake-default", FAKE_ADAPTER_ID));
   const events: RuntimeEvent[] = [];
   runtime.subscribeAll((e) => events.push(e));
 
   const sessionId = "ss-live001";
-  const handle = await startRoute(runtime, {
+  const handle = await startConnection(runtime, {
     sessionId,
-    routeId: "fake-default",
+    connectionId: "fake-default",
     runtimeWorkspace: { cwd },
     workspaceLane: {
       workspace: cwd,
@@ -150,7 +159,7 @@ test("launch failure records session.failed without spawning paid provider", asy
   const dataDir = await tempDataDir();
   const cwd = await tempCwd();
   const runtime = createAgentRuntime({ dataDir });
-  runtime.registerRoute(testRoute("fake-broken", FAKE_ADAPTER_ID, {
+  runtime.registerConnection(testConnection("fake-broken", FAKE_ADAPTER_ID, {
     fake: { failLaunch: "missing binary: codex" },
   }));
   const events: RuntimeEvent[] = [];
@@ -159,9 +168,9 @@ test("launch failure records session.failed without spawning paid provider", asy
   const sessionId = "ss-fail001";
   await assert.rejects(
     () =>
-      startRoute(runtime, {
+      startConnection(runtime, {
         sessionId,
-        routeId: "fake-broken",
+        connectionId: "fake-broken",
         cwd,
       }),
     /missing binary/
@@ -225,14 +234,14 @@ test("runtime records missing provider executable as an ordinary failed session"
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [testRoute("missing-process", adapter.id)],
+    connections: [testConnection("missing-process", adapter.id)],
   });
   const events: RuntimeEvent[] = [];
   runtime.subscribeAll((event) => events.push(event));
 
   const sessionId = "ss-missingproc";
   await assert.rejects(
-    () => startRoute(runtime, { sessionId, routeId: "missing-process", cwd }),
+    () => startConnection(runtime, { sessionId, connectionId: "missing-process", cwd }),
     /Failed to spawn process.*ENOENT/i
   );
 
@@ -283,14 +292,14 @@ test("managed terminal during startup cannot be overwritten back to live", async
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [testRoute("managed-start-fail", adapter.id)],
+    connections: [testConnection("managed-start-fail", adapter.id)],
   });
   const events: RuntimeEvent[] = [];
   runtime.subscribeAll((event) => events.push(event));
 
   const sessionId = "ss-fastfail";
   await assert.rejects(
-    () => startRoute(runtime, { sessionId, routeId: "managed-start-fail", cwd }),
+    () => startConnection(runtime, { sessionId, connectionId: "managed-start-fail", cwd }),
     /provider failed during startup/
   );
 
@@ -350,12 +359,12 @@ test("managed terminal retries a transient registry failure without an unhandled
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [testRoute("managed-terminal-retry", adapter.id)],
+    connections: [testConnection("managed-terminal-retry", adapter.id)],
   });
   const events: RuntimeEvent[] = [];
   runtime.subscribeAll((event) => events.push(event));
   const sessionId = "ss-termretry";
-  await startRoute(runtime, { sessionId, routeId: "managed-terminal-retry", cwd });
+  await startConnection(runtime, { sessionId, connectionId: "managed-terminal-retry", cwd });
 
   const originalUpdate = runtime.registry.update.bind(runtime.registry);
   let failedWrites = 0;
@@ -427,7 +436,7 @@ test("managed start stops provider when persisting live state fails", async () =
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [testRoute("managed-persist-fail", adapter.id)],
+    connections: [testConnection("managed-persist-fail", adapter.id)],
   });
   const events: RuntimeEvent[] = [];
   runtime.subscribeAll((event) => events.push(event));
@@ -444,7 +453,7 @@ test("managed start stops provider when persisting live state fails", async () =
 
   const sessionId = "ss-persistfail";
   await assert.rejects(
-    () => startRoute(runtime, { sessionId, routeId: "managed-persist-fail", cwd }),
+    () => startConnection(runtime, { sessionId, connectionId: "managed-persist-fail", cwd }),
     /injected live-state persistence failure/
   );
 
@@ -466,7 +475,7 @@ test("process start is reaped when persisting live state fails", async () => {
   const dataDir = await tempDataDir();
   const cwd = await tempCwd();
   const runtime = createAgentRuntime({ dataDir, gracefulMs: 500 });
-  runtime.registerRoute(testRoute("fake-default", FAKE_ADAPTER_ID));
+  runtime.registerConnection(testConnection("fake-default", FAKE_ADAPTER_ID));
   const events: RuntimeEvent[] = [];
   runtime.subscribeAll((event) => events.push(event));
 
@@ -482,7 +491,7 @@ test("process start is reaped when persisting live state fails", async () => {
 
   const sessionId = "ss-procpersist";
   await assert.rejects(
-    () => startRoute(runtime, { sessionId, routeId: "fake-default", cwd }),
+    () => startConnection(runtime, { sessionId, connectionId: "fake-default", cwd }),
     /injected process live-state persistence failure/
   );
 
@@ -503,14 +512,14 @@ test("natural non-zero exit maps to session.failed", async () => {
   const dataDir = await tempDataDir();
   const cwd = await tempCwd();
   const runtime = createAgentRuntime({ dataDir, gracefulMs: 1000 });
-  runtime.registerRoute(testRoute("fake-exit1", FAKE_ADAPTER_ID, {
+  runtime.registerConnection(testConnection("fake-exit1", FAKE_ADAPTER_ID, {
     fake: { waitForSignal: false, sleepMs: 50, exitCode: 7, emitStdout: false },
   }));
   const events: RuntimeEvent[] = [];
   runtime.subscribeAll((e) => events.push(e));
 
   const sessionId = "ss-exit007";
-  await startRoute(runtime, { sessionId, routeId: "fake-exit1", cwd });
+  await startConnection(runtime, { sessionId, connectionId: "fake-exit1", cwd });
   await waitFor(events, "session.failed", sessionId, 5000);
 
   const probe = await runtime.probe(sessionId);
@@ -528,19 +537,19 @@ test("two live sessions do not cross-contaminate cwd", async () => {
   await fs.writeFile(path.join(cwdB, "marker-b.txt"), "B");
 
   const runtime = createAgentRuntime({ dataDir, gracefulMs: 1500 });
-  runtime.registerRoute(testRoute("fake-default", FAKE_ADAPTER_ID));
+  runtime.registerConnection(testConnection("fake-default", FAKE_ADAPTER_ID));
   const idA = "ss-concura";
   const idB = "ss-concurb";
 
   const [ha, hb] = await Promise.all([
-    startRoute(runtime, {
+    startConnection(runtime, {
       sessionId: idA,
-      routeId: "fake-default",
+      connectionId: "fake-default",
       runtimeWorkspace: { cwd: cwdA },
     }),
-    startRoute(runtime, {
+    startConnection(runtime, {
       sessionId: idB,
-      routeId: "fake-default",
+      connectionId: "fake-default",
       runtimeWorkspace: { cwd: cwdB },
     }),
   ]);
@@ -597,17 +606,26 @@ test("concurrent starts for one session launch exactly one managed provider", as
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [testRoute("single-flight-profile", adapter.id)],
+    connections: [testConnection("single-flight-connection", adapter.id)],
   });
   const request = {
     sessionId: "ss-startonce",
-    routeId: "single-flight-profile",
+    connectionId: "single-flight-connection",
     cwd,
   };
+  const lastTaskId = "tk-startonce";
+  await runtime.reserveSession({
+    sessionId: request.sessionId,
+    connectionId: request.connectionId,
+    lastTaskId,
+    workspace: cwd,
+    cwd,
+  });
+  const start = { sessionId: request.sessionId, lastTaskId, workspace: cwd, cwd };
 
   const results = await Promise.allSettled([
-    startRoute(runtime, request),
-    startRoute(runtime, request),
+    runtime.startSession(start),
+    runtime.startSession(start),
   ]);
 
   assert.equal(startCalls, 1);
@@ -621,16 +639,25 @@ test("concurrent starts cannot tear down the winning CLI process", async () => {
   const dataDir = await tempDataDir();
   const cwd = await tempCwd();
   const runtime = createAgentRuntime({ dataDir, gracefulMs: 1500 });
-  runtime.registerRoute(testRoute("fake-default", FAKE_ADAPTER_ID));
+  runtime.registerConnection(testConnection("fake-default", FAKE_ADAPTER_ID));
   const request = {
     sessionId: "ss-clistart1",
-    routeId: "fake-default",
+    connectionId: "fake-default",
     cwd,
   };
+  const lastTaskId = "tk-clistart1";
+  await runtime.reserveSession({
+    sessionId: request.sessionId,
+    connectionId: request.connectionId,
+    lastTaskId,
+    workspace: cwd,
+    cwd,
+  });
+  const start = { sessionId: request.sessionId, lastTaskId, workspace: cwd, cwd };
 
   const results = await Promise.allSettled([
-    startRoute(runtime, request),
-    startRoute(runtime, request),
+    runtime.startSession(start),
+    runtime.startSession(start),
   ]);
 
   assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
@@ -685,11 +712,11 @@ test("shutdown waits for an in-flight managed start and rejects new work", async
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [testRoute("shutdown-profile", adapter.id)],
+    connections: [testConnection("shutdown-connection", adapter.id)],
   });
-  const start = startRoute(runtime, {
+  const start = startConnection(runtime, {
     sessionId: "ss-shutdownrace",
-    routeId: "shutdown-profile",
+    connectionId: "shutdown-connection",
     cwd,
   });
   await started;
@@ -697,9 +724,9 @@ test("shutdown waits for an in-flight managed start and rejects new work", async
   const shutdown = runtime.shutdown();
   await assert.rejects(
     () =>
-      startRoute(runtime, {
+      startConnection(runtime, {
         sessionId: "ss-afterclose",
-        routeId: "shutdown-profile",
+        connectionId: "shutdown-connection",
         cwd,
       }),
     /shut down/i
@@ -716,9 +743,9 @@ test("shutdown stops push children (service-stop policy)", async () => {
   const dataDir = await tempDataDir();
   const cwd = await tempCwd();
   const runtime = createAgentRuntime({ dataDir, gracefulMs: 1500 });
-  runtime.registerRoute(testRoute("fake-default", FAKE_ADAPTER_ID));
+  runtime.registerConnection(testConnection("fake-default", FAKE_ADAPTER_ID));
   const sessionId = "ss-shut001";
-  await startRoute(runtime, { sessionId, routeId: "fake-default", cwd });
+  await startConnection(runtime, { sessionId, connectionId: "fake-default", cwd });
   assert.equal((await runtime.probe(sessionId)).alive, true);
 
   await runtime.shutdown();
@@ -738,11 +765,21 @@ test("reconcileOnBoot marks dead non-resume sessions failed/stopped", async () =
   const now = new Date().toISOString();
   await reg.write({
     id: "ss-zombie1",
-    routeId: "fake-default",
+    connectionId: "fake-default",
     adapterId: FAKE_ADAPTER_ID,
-    routeSnapshot: snapshot("fake-default", FAKE_ADAPTER_ID),
+    connectionSnapshot: snapshot("fake-default", FAKE_ADAPTER_ID),
     state: "live",
     pid: 999999, // almost certainly dead
+    createdAt: now,
+    updatedAt: now,
+    runtimeWorkspace: { cwd: await tempCwd() },
+  });
+  await reg.write({
+    id: "ss-reservedboot",
+    connectionId: "fake-default",
+    adapterId: FAKE_ADAPTER_ID,
+    connectionSnapshot: snapshot("fake-default", FAKE_ADAPTER_ID),
+    state: "reserved",
     createdAt: now,
     updatedAt: now,
     runtimeWorkspace: { cwd: await tempCwd() },
@@ -750,13 +787,19 @@ test("reconcileOnBoot marks dead non-resume sessions failed/stopped", async () =
 
   const runtime = createAgentRuntime({ dataDir });
   const results = await runtime.reconcileOnBoot();
-  assert.equal(results.length, 1);
-  assert.equal(results[0].alive, false);
-  assert.ok(results[0].state === "failed" || results[0].state === "stopped");
+  assert.equal(results.length, 2);
+  const zombie = results.find((result) => result.sessionId === "ss-zombie1");
+  assert.ok(zombie);
+  assert.equal(zombie!.alive, false);
+  assert.ok(zombie!.state === "failed" || zombie!.state === "stopped");
 
   const rec = await reg.read("ss-zombie1");
   assert.ok(rec);
   assert.ok(rec!.state === "failed" || rec!.state === "stopped");
+  const reserved = await reg.read("ss-reservedboot");
+  assert.ok(reserved);
+  assert.equal(reserved!.state, "failed");
+  assert.match(reserved!.lastError ?? "", /did not reach provider start before Service restart/);
   await runtime.shutdown();
 });
 
@@ -768,7 +811,7 @@ test("subscribe is session-scoped; no chat-router event types", async () => {
     gracefulMs: 1500,
     captureStdout: true,
   });
-  runtime.registerRoute(testRoute("fake-quick", FAKE_ADAPTER_ID, {
+  runtime.registerConnection(testConnection("fake-quick", FAKE_ADAPTER_ID, {
     fake: { waitForSignal: false, sleepMs: 80, exitCode: 0, emitStdout: true },
   }));
 
@@ -778,9 +821,9 @@ test("subscribe is session-scoped; no chat-router event types", async () => {
   runtime.subscribe(id, (e) => scoped.push(e));
   runtime.subscribe("ss-otherxx", (e) => other.push(e));
 
-  await startRoute(runtime, {
+  await startConnection(runtime, {
     sessionId: id,
-    routeId: "fake-quick",
+    connectionId: "fake-quick",
     cwd,
     bootstrapPrompt: "hello-fake",
   });
@@ -862,15 +905,15 @@ test("concurrent native resume calls share one in-flight managed bridge", async 
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [testRoute("resume-profile", adapter.id)],
+    connections: [testConnection("resume-connection", adapter.id)],
   });
   const sessionId = "ss-conresume";
   const now = new Date().toISOString();
   await runtime.registry.write({
     id: sessionId,
-    routeId: "resume-profile",
+    connectionId: "resume-connection",
     adapterId: adapter.id,
-    routeSnapshot: snapshot("resume-profile", adapter.id),
+    connectionSnapshot: snapshot("resume-connection", adapter.id),
     state: "stopped",
     resumeToken: "provider-session-1",
     runtimeWorkspace: { cwd },
@@ -889,7 +932,75 @@ test("concurrent native resume calls share one in-flight managed bridge", async 
   assert.equal(stopCalls, 1);
 });
 
-test("native resume uses immutable route snapshot but resolves rotated credential", async () => {
+test("native resume requires both provider conversation identities and exact equality", async () => {
+  for (const missing of ["expected", "actual"] as const) {
+    const dataDir = await tempDataDir();
+    const cwd = await tempCwd();
+    let stopCalls = 0;
+    const adapter: ProviderAdapter = {
+      id: `resume-identity-${missing}`,
+      displayNameKey: "adapter.resumeIdentity",
+      capabilities: () => ({
+        canSpawn: true,
+        canResume: true,
+        canStopGraceful: true,
+        needsTty: false,
+        supportsWorktreeCwd: true,
+        authModel: "none",
+        observeLevel: "structured",
+      }),
+      resolveLaunch: () => {
+        throw new Error("managed-only test adapter");
+      },
+      resumeManagedSession: async (plan, _token, emit) => {
+        emit({ type: "session.live", sessionId: plan.sessionId, pid: 5150 });
+        return {
+          sessionId: plan.sessionId,
+          pid: 5150,
+          ...(missing === "actual" ? {} : { providerSessionId: "provider-exact" }),
+          isAlive: () => true,
+          stop: async () => {
+            stopCalls += 1;
+          },
+        };
+      },
+      parseResumeToken: (raw) =>
+        missing === "expected" ? { raw } : { raw, providerSessionId: "provider-exact" },
+      mapExit: (code) => ({ type: "session.exited", sessionId: "", exitCode: code }),
+    };
+    const connectionId = `resume-identity-${missing}`;
+    const runtime = createAgentRuntime({
+      dataDir,
+      adapters: [adapter],
+      connections: [testConnection(connectionId, adapter.id)],
+    });
+    const sessionId = `ss-identity${missing}`;
+    const now = new Date().toISOString();
+    await runtime.registry.write({
+      id: sessionId,
+      connectionId,
+      adapterId: adapter.id,
+      connectionSnapshot: snapshot(connectionId, adapter.id),
+      state: "stopped",
+      resumeToken: "provider-exact",
+      runtimeWorkspace: { cwd },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await assert.rejects(
+      () => runtime.resumeSession({ sessionId, cwd }),
+      /did not prove the original conversation identity/
+    );
+    assert.equal(stopCalls, 1);
+    const record = await runtime.registry.read(sessionId);
+    assert.equal(record?.state, "failed");
+    assert.notEqual(record?.contextRestored, true);
+    await runtime.shutdown();
+  }
+});
+
+test("native resume uses immutable Connection snapshot but resolves rotated credential", async () => {
   const dataDir = await tempDataDir();
   const cwd = await tempCwd();
   const resumedPlans: Array<{
@@ -944,8 +1055,8 @@ test("native resume uses immutable route snapshot but resolves rotated credentia
     parseResumeToken: (raw) => ({ raw, providerSessionId: raw }),
     mapExit: (code) => ({ type: "session.exited", sessionId: "", exitCode: code }),
   };
-  const original: SettingsRouteConfig = {
-    routeId: "snapshot-route",
+  const original: AgentConnectionConfig = {
+    connectionId: "snapshot-connection",
     provider: "test",
     adapterId: adapter.id,
     model: "old-model",
@@ -956,8 +1067,8 @@ test("native resume uses immutable route snapshot but resolves rotated credentia
   const runtime = createAgentRuntime({
     dataDir: path.relative(process.cwd(), dataDir),
     adapters: [adapter],
-    routes: [original],
-    resolveRouteEnv: (route) => {
+    connections: [original],
+    resolveConnectionEnv: (route) => {
       const env: Record<string, string> = {};
       if (route.credentialRef === "credential-1") {
         env.SNAPSHOT_KEY = secret;
@@ -966,14 +1077,14 @@ test("native resume uses immutable route snapshot but resolves rotated credentia
     },
   });
   const sessionId = "ss-snapshot1";
-  const handle = await startRoute(runtime, { sessionId, routeId: original.routeId, cwd });
-  assert.equal("routeSnapshot" in handle, false, "public handle must not expose launch snapshot");
+  const handle = await startConnection(runtime, { sessionId, connectionId: original.connectionId, cwd });
+  assert.equal("connectionSnapshot" in handle, false, "public handle must not expose launch snapshot");
   const started = await runtime.registry.read(sessionId);
-  assert.equal(started?.routeSnapshot?.model, "old-model");
+  assert.equal(started?.connectionSnapshot?.model, "old-model");
   assert.equal(JSON.stringify(started).includes(secret), false, "snapshot must not persist secret values");
   await runtime.stopSession(sessionId, "user");
 
-  runtime.replaceRouteCatalog([
+  runtime.replaceConnectionCatalog([
     {
       ...original,
       model: "new-model",
@@ -994,14 +1105,14 @@ test("native resume uses immutable route snapshot but resolves rotated credentia
   });
   await runtime.stopSession(sessionId, "user");
 
-  // A stopped custom route may be removed; its durable session remains resumable.
-  runtime.replaceRouteCatalog([]);
+  // A stopped custom Connection may be removed; its durable session remains resumable.
+  runtime.replaceConnectionCatalog([]);
   await runtime.resumeSession({ sessionId, cwd });
   assert.equal(resumedPlans[1]?.model, "old-model");
   await runtime.shutdown();
 });
 
-test("resume rejects a corrupt route snapshot before provider resume", async () => {
+test("resume rejects a corrupt Connection snapshot before provider resume", async () => {
   const dataDir = await tempDataDir();
   const cwd = await tempCwd();
   const adapter: ProviderAdapter = {
@@ -1027,14 +1138,14 @@ test("resume rejects a corrupt route snapshot before provider resume", async () 
   const runtime = createAgentRuntime({
     dataDir,
     adapters: [adapter],
-    routes: [testRoute("expected-profile", adapter.id)],
+    connections: [testConnection("expected-connection", adapter.id)],
   });
   const now = new Date().toISOString();
   await runtime.registry.write({
     id: "ss-badsnapshot",
-    routeId: "expected-profile",
+    connectionId: "expected-connection",
     adapterId: adapter.id,
-    routeSnapshot: snapshot("other-route", adapter.id),
+    connectionSnapshot: snapshot("other-connection", adapter.id),
     state: "stopped",
     resumeToken: "provider-1",
     runtimeWorkspace: { cwd },

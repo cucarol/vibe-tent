@@ -1,23 +1,23 @@
-// Immutable, non-secret machine Settings route shapes.
+// Immutable, non-secret machine Agent Connection shapes.
 // This module deliberately has no legacy executor-catalog compatibility surface.
 
 import type { AcpPermissionPolicy } from "../adapters/acp/types.js";
-import type { RouteMcpServer, RouteSkillRef } from "../adapters/acp/mcp-skills.js";
+import type { ConnectionMcpServer, ConnectionSkillRef } from "../adapters/acp/mcp-skills.js";
 import { cloneMcpServers, cloneSkillRefs } from "../adapters/acp/mcp-skills.js";
 import { createHash } from "node:crypto";
-import { isRouteId } from "../core/id.js";
+import { isConnectionId } from "../core/id.js";
 
-/** Canonical row in machine-local Settings `routes.json`. */
-export interface SettingsRouteConfig {
-  routeId: string;
+/** Canonical row in machine-local Settings `connections.json`. */
+export interface AgentConnectionConfig {
+  connectionId: string;
   /** Provider family, used for attribution and resume snapshot validation. */
   provider: string;
-  /** Registered local adapter which launches this route. */
+  /** Registered local adapter which launches this Connection. */
   adapterId: string;
   displayName?: string;
-  /** Non-secret executable command for custom/generic local routes. */
+  /** Non-secret executable command for custom/generic local Connections. */
   command?: string;
-  /** Non-secret argv for custom/generic local routes. */
+  /** Non-secret argv for custom/generic local Connections. */
   args?: string[];
   executable?: string;
   model?: string;
@@ -33,13 +33,13 @@ export interface SettingsRouteConfig {
   permissionPolicy?: AcpPermissionPolicy;
   promptTimeoutMs?: number;
   permissionTimeoutMs?: number;
-  skills?: RouteSkillRef[];
-  mcpServers?: RouteMcpServer[];
-  /** Test/in-memory fake adapter knobs. Never serialized by routes.json. */
-  fake?: FakeRouteOptions;
+  skills?: ConnectionSkillRef[];
+  mcpServers?: ConnectionMcpServer[];
+  /** Test/in-memory fake adapter knobs. Never serialized by connections.json. */
+  fake?: FakeConnectionOptions;
 }
 
-export interface FakeRouteOptions {
+export interface FakeConnectionOptions {
   sleepMs?: number;
   exitCode?: number;
   waitForSignal?: boolean;
@@ -53,8 +53,8 @@ export interface FakeRouteOptions {
  * planner from a normalized endpoint; the raw resolved endpoint is never stored.
  * No raw environment map or credential material may be added to this type.
  */
-export interface SettingsRouteSnapshot {
-  routeId: string;
+export interface AgentConnectionSnapshot {
+  connectionId: string;
   provider: string;
   adapterId: string;
   model?: string;
@@ -68,21 +68,21 @@ export interface SettingsRouteSnapshot {
   permissionPolicy?: AcpPermissionPolicy;
   promptTimeoutMs?: number;
   permissionTimeoutMs?: number;
-  skills?: RouteSkillRef[];
-  mcpServers?: RouteMcpServer[];
-  /** Test-only launch facts for in-memory fake routes. */
-  fake?: FakeRouteOptions;
+  skills?: ConnectionSkillRef[];
+  mcpServers?: ConnectionMcpServer[];
+  /** Test-only launch facts for in-memory fake Connections. */
+  fake?: FakeConnectionOptions;
   effectiveEndpointDigest?: string;
   launchDigest: string;
 }
 
-export function cloneSettingsRoute(route: SettingsRouteConfig): SettingsRouteConfig {
+export function cloneAgentConnection(connection: AgentConnectionConfig): AgentConnectionConfig {
   return {
-    ...route,
-    args: route.args?.length ? [...route.args] : undefined,
-    skills: route.skills?.length ? cloneSkillRefs(route.skills) : undefined,
-    mcpServers: route.mcpServers?.length ? cloneMcpServers(route.mcpServers) : undefined,
-    fake: route.fake ? { ...route.fake } : undefined,
+    ...connection,
+    args: connection.args?.length ? [...connection.args] : undefined,
+    skills: connection.skills?.length ? cloneSkillRefs(connection.skills) : undefined,
+    mcpServers: connection.mcpServers?.length ? cloneMcpServers(connection.mcpServers) : undefined,
+    fake: connection.fake ? { ...connection.fake } : undefined,
   };
 }
 
@@ -94,17 +94,17 @@ function stableJson(value: unknown): string {
 }
 
 /**
- * The continuity digest covers every non-secret launch-affecting route fact,
+ * The continuity digest covers every non-secret launch-affecting Connection fact,
  * including custom command/args and skills/MCP topology. It intentionally uses
  * only env key names and credential ids, never their resolved values.
  */
-export function calculateSettingsRouteLaunchDigest(
-  route: SettingsRouteConfig,
+export function calculateAgentConnectionLaunchDigest(
+  connection: AgentConnectionConfig,
   effectiveEndpointDigest?: string
 ): string {
-  const canonical = cloneSettingsRoute(route);
+  const canonical = cloneAgentConnection(connection);
   const input = {
-    routeId: canonical.routeId, provider: canonical.provider, adapterId: canonical.adapterId,
+    connectionId: canonical.connectionId, provider: canonical.provider, adapterId: canonical.adapterId,
     command: canonical.command, args: canonical.args, executable: canonical.executable, model: canonical.model,
     envKey: canonical.envKey, credentialRef: canonical.credentialRef,
     baseUrlEnvKey: canonical.baseUrlEnvKey, baseUrl: canonical.baseUrl,
@@ -116,39 +116,39 @@ export function calculateSettingsRouteLaunchDigest(
   return `sha256:${createHash("sha256").update(stableJson(input)).digest("hex")}`;
 }
 
-export function createSettingsRouteSnapshot(
-  route: SettingsRouteConfig,
-  details: Pick<SettingsRouteSnapshot, "effectiveEndpointDigest">
-): SettingsRouteSnapshot {
+export function createAgentConnectionSnapshot(
+  connection: AgentConnectionConfig,
+  details: Pick<AgentConnectionSnapshot, "effectiveEndpointDigest">
+): AgentConnectionSnapshot {
   return {
-    routeId: route.routeId,
-    provider: route.provider,
-    adapterId: route.adapterId,
-    ...(route.model ? { model: route.model } : {}),
-    ...(route.command ? { command: route.command } : {}),
-    ...(route.args?.length ? { args: [...route.args] } : {}),
-    ...(route.executable ? { executable: route.executable } : {}),
-    ...(route.envKey ? { envKey: route.envKey } : {}),
-    ...(route.credentialRef ? { credentialRef: route.credentialRef } : {}),
-    ...(route.baseUrlEnvKey ? { baseUrlEnvKey: route.baseUrlEnvKey } : {}),
-    ...(route.baseUrl ? { baseUrl: route.baseUrl } : {}),
-    ...(route.permissionPolicy ? { permissionPolicy: route.permissionPolicy } : {}),
-    ...(route.promptTimeoutMs !== undefined ? { promptTimeoutMs: route.promptTimeoutMs } : {}),
-    ...(route.permissionTimeoutMs !== undefined
-      ? { permissionTimeoutMs: route.permissionTimeoutMs }
+    connectionId: connection.connectionId,
+    provider: connection.provider,
+    adapterId: connection.adapterId,
+    ...(connection.model ? { model: connection.model } : {}),
+    ...(connection.command ? { command: connection.command } : {}),
+    ...(connection.args?.length ? { args: [...connection.args] } : {}),
+    ...(connection.executable ? { executable: connection.executable } : {}),
+    ...(connection.envKey ? { envKey: connection.envKey } : {}),
+    ...(connection.credentialRef ? { credentialRef: connection.credentialRef } : {}),
+    ...(connection.baseUrlEnvKey ? { baseUrlEnvKey: connection.baseUrlEnvKey } : {}),
+    ...(connection.baseUrl ? { baseUrl: connection.baseUrl } : {}),
+    ...(connection.permissionPolicy ? { permissionPolicy: connection.permissionPolicy } : {}),
+    ...(connection.promptTimeoutMs !== undefined ? { promptTimeoutMs: connection.promptTimeoutMs } : {}),
+    ...(connection.permissionTimeoutMs !== undefined
+      ? { permissionTimeoutMs: connection.permissionTimeoutMs }
       : {}),
-    ...(route.skills?.length ? { skills: cloneSkillRefs(route.skills) } : {}),
-    ...(route.mcpServers?.length ? { mcpServers: cloneMcpServers(route.mcpServers) } : {}),
-    ...(route.fake ? { fake: { ...route.fake } } : {}),
+    ...(connection.skills?.length ? { skills: cloneSkillRefs(connection.skills) } : {}),
+    ...(connection.mcpServers?.length ? { mcpServers: cloneMcpServers(connection.mcpServers) } : {}),
+    ...(connection.fake ? { fake: { ...connection.fake } } : {}),
     ...(details.effectiveEndpointDigest ? { effectiveEndpointDigest: details.effectiveEndpointDigest } : {}),
-    launchDigest: calculateSettingsRouteLaunchDigest(route, details.effectiveEndpointDigest),
+    launchDigest: calculateAgentConnectionLaunchDigest(connection, details.effectiveEndpointDigest),
   };
 }
 
 /** Reconstruct the immutable non-secret launch subset for provider-native resume. */
-export function routeConfigFromSnapshot(snapshot: SettingsRouteSnapshot): SettingsRouteConfig {
+export function connectionConfigFromSnapshot(snapshot: AgentConnectionSnapshot): AgentConnectionConfig {
   return {
-    routeId: snapshot.routeId,
+    connectionId: snapshot.connectionId,
     provider: snapshot.provider,
     adapterId: snapshot.adapterId,
     ...(snapshot.model ? { model: snapshot.model } : {}),
@@ -173,7 +173,7 @@ export function routeConfigFromSnapshot(snapshot: SettingsRouteSnapshot): Settin
 }
 
 const SNAPSHOT_KEYS = new Set([
-  "routeId", "provider", "adapterId", "model", "command", "args", "executable",
+  "connectionId", "provider", "adapterId", "model", "command", "args", "executable",
   "envKey", "credentialRef", "baseUrlEnvKey", "baseUrl", "permissionPolicy",
   "promptTimeoutMs", "permissionTimeoutMs", "skills", "mcpServers", "fake",
   "effectiveEndpointDigest", "launchDigest",
@@ -211,14 +211,14 @@ function stringMap(value: unknown): boolean {
   return plainRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
 }
 
-function validSkill(value: unknown): value is RouteSkillRef {
+function validSkill(value: unknown): value is ConnectionSkillRef {
   return plainRecord(value) && onlyKeys(value, SKILL_KEYS) &&
     typeof value.name === "string" && value.name.length > 0 &&
     optionalString(value.path) &&
     (value.enabled === undefined || typeof value.enabled === "boolean");
 }
 
-function validMcp(value: unknown): value is RouteMcpServer {
+function validMcp(value: unknown): value is ConnectionMcpServer {
   if (!plainRecord(value) || !onlyKeys(value, MCP_KEYS)) return false;
   if (typeof value.name !== "string" || !value.name) return false;
   if (value.transport !== "stdio" && value.transport !== "http") return false;
@@ -234,7 +234,7 @@ function validMcp(value: unknown): value is RouteMcpServer {
   return true;
 }
 
-function validFake(value: unknown): value is FakeRouteOptions {
+function validFake(value: unknown): value is FakeConnectionOptions {
   if (!plainRecord(value) || !onlyKeys(value, FAKE_KEYS)) return false;
   for (const key of ["sleepMs", "exitCode"] as const) {
     if (value[key] !== undefined &&
@@ -258,10 +258,10 @@ function safeBaseUrl(value: unknown): boolean {
   }
 }
 
-/** Strict fresh-schema parser for persisted immutable Session route facts. */
-export function parseSettingsRouteSnapshot(value: unknown): SettingsRouteSnapshot | null {
+/** Strict parser for persisted immutable Session Connection facts. */
+export function parseAgentConnectionSnapshot(value: unknown): AgentConnectionSnapshot | null {
   if (!plainRecord(value) || !onlyKeys(value, SNAPSHOT_KEYS)) return null;
-  if (!isRouteId(value.routeId)) return null;
+  if (!isConnectionId(value.connectionId)) return null;
   if (typeof value.provider !== "string" || !value.provider) return null;
   if (typeof value.adapterId !== "string" || !value.adapterId) return null;
   for (const key of ["model", "command", "executable"] as const) {
@@ -295,12 +295,12 @@ export function parseSettingsRouteSnapshot(value: unknown): SettingsRouteSnapsho
        !SHA256_RE.test(value.effectiveEndpointDigest))) return null;
   if (typeof value.launchDigest !== "string" || !SHA256_RE.test(value.launchDigest)) return null;
 
-  const snapshot = value as unknown as SettingsRouteSnapshot;
-  const route = routeConfigFromSnapshot(snapshot);
-  if (calculateSettingsRouteLaunchDigest(route, snapshot.effectiveEndpointDigest) !== snapshot.launchDigest) {
+  const snapshot = value as unknown as AgentConnectionSnapshot;
+  const connection = connectionConfigFromSnapshot(snapshot);
+  if (calculateAgentConnectionLaunchDigest(connection, snapshot.effectiveEndpointDigest) !== snapshot.launchDigest) {
     return null;
   }
-  return createSettingsRouteSnapshot(route, {
+  return createAgentConnectionSnapshot(connection, {
     effectiveEndpointDigest: snapshot.effectiveEndpointDigest,
   });
 }

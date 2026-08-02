@@ -1,7 +1,7 @@
 /**
  * Role Checkpoint: optional cooperative continuation note.
  * Core write/read/clear/overwrite, tail formatting, Service RPC, bootstrap tail,
- * agentProfile isolation, CLI direct path.
+ * temporary Session isolation, CLI direct path.
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -33,6 +33,7 @@ import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import { runRoleCheckpointCommand } from "../src/cli/role-checkpoint-rpc.js";
 import { sessionBootstrapPromptForTask } from "../src/core/task.js";
 import { buildTaskContextCard } from "../src/core/task-context-card.js";
+import { configureTestGitIdentity, git } from "./helpers.js";
 
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -51,23 +52,28 @@ async function makeWorkspace(name = "role-cp"): Promise<string> {
     JSON.stringify(
       {
         roles: [
-          { name: "planner", prompt: "plan work" },
-          { name: "executor", prompt: "do work" },
+          { id: "rl-planner", name: "planner", prompt: "plan work" },
+          { id: "rl-executor", name: "executor", prompt: "do work" },
         ],
       },
       null,
       2
     ) + "\n"
   );
+  await git(workspace, "init", "-q", "-b", "main");
+  await configureTestGitIdentity(workspace);
+  await fsa.writeFile(".gitignore", ".tent/\n");
+  await git(workspace, "add", ".gitignore");
+  await git(workspace, "commit", "-q", "-m", "fixture");
   return workspace;
 }
 
 async function withService<T>(
   fn: (svc: Svc) => Promise<T>,
-  opts?: { routes?: import("../src/runtime/types.js").SettingsRouteConfig[] }
+  opts?: { connections?: import("../src/runtime/types.js").AgentConnectionConfig[] }
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-cp-data-"));
-  const svc = await startLocalTentService({ dataDir, writeEndpoint: true, routes: opts?.routes });
+  const svc = await startLocalTentService({ dataDir, writeEndpoint: true, connections: opts?.connections });
   try {
     return await fn(svc);
   } finally {
@@ -148,7 +154,7 @@ test("core: write / read / overwrite / clear Role Checkpoint", async () => {
   assert.equal(await clearRoleCheckpoint(fsa, "planner"), false);
 });
 
-test("core: rejects empty text, oversized text, bad role, and reserved routes", async () => {
+test("core: rejects empty text, oversized text, bad role, and reserved operational names", async () => {
   const ws = await makeWorkspace();
   const fsa = new NodeFs(path.join(ws, ".tent"));
 
@@ -182,7 +188,7 @@ test("core: rejects empty text, oversized text, bad role, and reserved routes", 
   await assert.rejects(
     () =>
       writeRoleCheckpoint(fsa, {
-        role: "routes",
+        role: "sessions",
         text: "ok",
         updatedAt: "t",
       }),
@@ -279,7 +285,7 @@ test("core: path gate rejects dot segments and traversal before any delete", asy
   assert.throws(() => assertRoleCheckpointRoleName("a\u0000b"), /control/);
   assert.throws(() => assertRoleCheckpointRoleName("a\\b"), /path/);
   assert.throws(() => assertRoleCheckpointRoleName("temp"), /reserved/);
-  assert.throws(() => assertRoleCheckpointRoleName("routes"), /reserved/);
+  assert.throws(() => assertRoleCheckpointRoleName("sessions"), /reserved/);
   for (const win of ["CON", "prn", "AUX", "nul", "COM1", "lpt9"]) {
     assert.throws(
       () => assertRoleCheckpointRoleName(win),
@@ -333,10 +339,10 @@ test("Service RPC: set / get / clear + session.enter tail", async () => {
 
     const entered = (await client.sessionEnter({
       workspaceId,
-      roleName: "planner",
+      roleId: "rl-planner",
       externalKey: "test-host:role-cp-1",
-    })) as { roleCheckpointTail?: string; session: { roleName?: string } };
-    assert.equal(entered.session.roleName, "planner");
+    })) as { roleCheckpointTail?: string; session: { roleId?: string } };
+    assert.equal(entered.session.roleId, "rl-planner");
     assert.ok(entered.roleCheckpointTail);
     assert.match(entered.roleCheckpointTail!, /Resume cx-94yh78/);
     // Tail is optional field appended by enter — not a second Session mode.
@@ -358,7 +364,7 @@ test("Service RPC: set / get / clear + session.enter tail", async () => {
 
     const entered2 = (await client.sessionEnter({
       workspaceId,
-      roleName: "planner",
+      roleId: "rl-planner",
       externalKey: "test-host:role-cp-2",
     })) as { roleCheckpointTail?: string };
     assert.equal(entered2.roleCheckpointTail, undefined);
@@ -443,7 +449,7 @@ test("Service RPC P0: path gate, unknown Role, actor authority, sourceSessionId"
     // Matching sourceSessionId kept; mismatched role/workspace omitted.
     const matchEnter = (await client.sessionEnter({
       workspaceId,
-      roleName: "planner",
+      roleId: "rl-planner",
       externalKey: "test-host:cp-match",
     })) as { session: { sessionId: string } };
     const matchId = matchEnter.session.sessionId;
@@ -460,7 +466,7 @@ test("Service RPC P0: path gate, unknown Role, actor authority, sourceSessionId"
 
     const otherRoleEnter = (await client.sessionEnter({
       workspaceId,
-      roleName: "executor",
+      roleId: "rl-executor",
       externalKey: "test-host:cp-other-role",
     })) as { session: { sessionId: string } };
     const mismatchRole = (await client.roleCheckpointSet(workspaceId, {
@@ -477,7 +483,7 @@ test("Service RPC P0: path gate, unknown Role, actor authority, sourceSessionId"
 
     // Session bound to a different workspace id string → omit.
     const foreign = await svc.runtime.enterExternalSession({
-      roleName: "planner",
+      roleId: "rl-planner",
       workspace: "ws-foreign-not-mounted",
       externalKey: "test-host:cp-foreign-ws",
     });
@@ -507,14 +513,14 @@ test("Service RPC P0: path gate, unknown Role, actor authority, sourceSessionId"
     // Unscoped workspace on an otherwise matching Role row → drop attribution
     // (legacy rows must not falsely bind to this workspace).
     const unscopedWs = await svc.runtime.enterExternalSession({
-      roleName: "planner",
+      roleId: "rl-planner",
       externalKey: "test-host:cp-unscoped-ws",
       // intentionally omit workspace
     });
     const unscopedWsRec = await svc.runtime.registry.read(unscopedWs.sessionId);
     assert.ok(unscopedWsRec);
     assert.equal(unscopedWsRec!.workspace, undefined);
-    assert.equal(unscopedWsRec!.roleName, "planner");
+    assert.equal(unscopedWsRec!.roleId, "rl-planner");
     const dropUnscopedWs = (await client.roleCheckpointSet(workspaceId, {
       role: "planner",
       text: "unscoped workspace session",
@@ -526,16 +532,16 @@ test("Service RPC P0: path gate, unknown Role, actor authority, sourceSessionId"
     assert.equal(dropUnscopedWs.sourceSessionIdAccepted, false);
     assert.equal(dropUnscopedWs.checkpoint.sourceSessionId, undefined);
 
-    // Unscoped roleName with matching workspace → drop attribution.
+    // Unscoped roleId with matching workspace → drop attribution.
     const unscopedRole = await svc.runtime.enterExternalSession({
       workspace: workspaceId,
       externalKey: "test-host:cp-unscoped-role",
-      // intentionally omit roleName
+      // intentionally omit roleId
     });
     const unscopedRoleRec = await svc.runtime.registry.read(unscopedRole.sessionId);
     assert.ok(unscopedRoleRec);
     assert.equal(unscopedRoleRec!.workspace, workspaceId);
-    assert.equal(unscopedRoleRec!.roleName, undefined);
+    assert.equal(unscopedRoleRec!.roleId, undefined);
     const dropUnscopedRole = (await client.roleCheckpointSet(workspaceId, {
       role: "planner",
       text: "unscoped role session",
@@ -577,7 +583,7 @@ test("Service RPC P0: path gate, unknown Role, actor authority, sourceSessionId"
   });
 });
 
-test("route Task bootstrap never assumes a durable Role checkpoint", async () => {
+test("temporary Session Task bootstrap never assumes a durable Role checkpoint", async () => {
   const ws = await makeWorkspace();
   await withService(
     async (svc) => {
@@ -603,8 +609,7 @@ test("route Task bootstrap never assumes a durable Role checkpoint", async () =>
       const d = await rpc(svc, "task.dispatch", {
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "fake-default",
+        connectionId: "fake-default",
         prompt: "bootstrap with checkpoint tail",
         deliveryPolicy: "review",
         parentActor: { kind: "user", id: "user" },
@@ -632,10 +637,9 @@ test("route Task bootstrap never assumes a durable Role checkpoint", async () =>
       const body = sessionBootstrapPromptForTask(
         {
           path: taskPath,
-          assigneeKind: "route",
-          assigneeId: "fake-default",
+          sessionId: "ss-fakedefault",
           // Node refs live on Task.contextCard.refs.nodes only (no claims[]).
-          manifest: "temp/executor/manifest.yml",
+          manifest: "temp/sessions/ss-fakedefault/manifest.yml",
           state: "running",
           deliveryPolicy: "review",
           prompt: "## User Prompt\n\nbootstrap with checkpoint tail\n",
@@ -651,9 +655,9 @@ test("route Task bootstrap never assumes a durable Role checkpoint", async () =>
       assert.match(tail, /Tent Role Checkpoint/);
     },
     {
-      routes: [
+      connections: [
         {
-          routeId: "fake-default",
+          connectionId: "fake-default",
           provider: "test",
           adapterId: FAKE_ADAPTER_ID,
           fake: { waitForSignal: true, sleepMs: 60_000 },
@@ -697,8 +701,7 @@ test("managed bootstrap fails open when Role Checkpoint pointers are invalid", a
       const dispatched = await rpc(svc, "task.dispatch", {
         workspaceId,
         nodeIds: [nodeId],
-        assigneeKind: "route",
-        assigneeId: "fake-default",
+        connectionId: "fake-default",
         prompt: "bootstrap despite invalid checkpoint",
         deliveryPolicy: "review",
         parentActor: { kind: "user", id: "user" },
@@ -719,9 +722,9 @@ test("managed bootstrap fails open when Role Checkpoint pointers are invalid", a
       assert.ok(!started.error, JSON.stringify(started.error));
     },
     {
-      routes: [
+      connections: [
         {
-          routeId: "fake-default",
+          connectionId: "fake-default",
           provider: "test",
           adapterId: FAKE_ADAPTER_ID,
           fake: { waitForSignal: true, sleepMs: 60_000 },

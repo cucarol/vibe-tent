@@ -52,7 +52,7 @@ export type AcpAuthenticateParams = {
 };
 
 /**
- * Shared machine-local ACP route bag (canonical `RouteConfig.acp`).
+ * Shared machine-local ACP route bag (canonical `ConnectionConfig.acp`).
  * Provider-neutral field names; each *-acp adapter interprets values for its CLI.
  * Secret values stay in OS/process env — only env key *names* and non-secret paths live here.
  * Provider adapters may extend (e.g. GrokAcpRouteOptions) for provider-only knobs.
@@ -64,9 +64,9 @@ export interface AcpRouteOptions {
   model?: string;
   /**
    * Process env key for API token (read from service process env only).
-   * Value is never written to workspace, Node, Task, or routes.json.
+   * Value is never written to workspace, Node, Task, or connections.json.
    * When credentialRef is set, AgentRuntime resolves the vault secret into this env key
-   * at startSession (process-scoped RouteLaunchPlan.env only — never SessionRecord / disk).
+   * at startSession (process-scoped ConnectionLaunchPlan.env only — never SessionRecord / disk).
    */
   envKey?: string;
   /**

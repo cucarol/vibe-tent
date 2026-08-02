@@ -7,7 +7,7 @@ import {
 } from "./id.js";
 import { backupCorruptRegistry, warnRegistryRecovered } from "./registryRecovery.js";
 
-import { ROUTES_TEMP_DIR, ROLES_REGISTRY_PATH } from "./paths.js";
+import { ROLES_TEMP_DIR, SESSIONS_TEMP_DIR, ROLES_REGISTRY_PATH } from "./paths.js";
 export { ROLES_REGISTRY_PATH };
 
 /**
@@ -145,8 +145,8 @@ export async function createRole(
 
 /** Names that would collide with Tent-owned operational directories. */
 export function assertRoleNameAvailable(name: string): void {
-  if (name.trim().toLowerCase() === ROUTES_TEMP_DIR) {
-    throw new Error(`Role name is reserved by Tent: ${ROUTES_TEMP_DIR}.`);
+  if ([ROLES_TEMP_DIR, SESSIONS_TEMP_DIR].includes(name.trim().toLowerCase())) {
+    throw new Error(`Role name is reserved by Tent: ${name}.`);
   }
 }
 

@@ -27,7 +27,6 @@ export const DEFAULT_DELIVERY_POLICY: DeliveryPolicy = "review";
 
 export type DeliverDecision = "integrate" | "request-review";
 export type WaitReason = "user-input" | "review" | "external";
-export type AssigneeKind = "role" | "route";
 
 /**
  * Explicit Task execution terminal outcome (V0.2).
@@ -201,16 +200,16 @@ export function roleTaskActors(
 
 /**
  * Elevated deliveryPolicy (bypass | agent-decide) is legal only for a durable
- * Role's own user-facing delivery (parent=user, assigneeKind=role).
+ * Role's own user-facing delivery (parent=user + Task.roleId).
  * Downstream Task Agent → parent is always review-to-parent.
  */
 export function mayElevateDeliveryPolicy(input: {
   parentActor?: TaskActorRef;
-  assigneeKind?: AssigneeKind;
+  roleId?: string;
 }): boolean {
   const parent = input.parentActor;
   if (!parent || parent.kind !== "user") return false;
-  return (input.assigneeKind ?? "role") === "role";
+  return typeof input.roleId === "string" && input.roleId.length > 0;
 }
 
 /**
@@ -358,7 +357,7 @@ export function makeDeliveryId(rand: RandomSource = Math.random, len = 8): strin
 }
 
 export function isTaskId(id: string): boolean {
-  return id.startsWith("tk-") && id.length > 3;
+  return /^tk-[a-z0-9]+$/i.test(id);
 }
 
 export function isDeliveryId(id: string): boolean {
@@ -444,11 +443,11 @@ export function resolveDeliverRouting(
   return { autoIntegrate: false, integrationMode: null, enterDelivered: true };
 }
 
-export function assertNotSelfAccept(actor: string, submitterRole: string): void {
-  if (actor.trim() === submitterRole.trim()) {
+export function assertNotSelfAccept(actor: string, executorRoleId?: string): void {
+  if (executorRoleId && actor.trim() === executorRoleId.trim()) {
     throw new TaskLifecycleError(
       "SELF_ACCEPT_FORBIDDEN",
-      `task.accept actor must not equal delivery submitter (${submitterRole}).`
+      `task.accept actor must not equal executing Role (${executorRoleId}).`
     );
   }
 }
@@ -468,12 +467,12 @@ export function assertNotSelfAccept(actor: string, submitterRole: string): void 
  */
 export function assertReviewAuthority(input: {
   actor: string;
-  submitterRole: string;
+  executorRoleId?: string;
   reviewer?: TaskActorRef;
   action?: "accept" | "reject";
 }): void {
   const actor = input.actor.trim();
-  const submitter = input.submitterRole.trim();
+  const executorRoleId = input.executorRoleId?.trim();
   const action = input.action ?? "accept";
   if (!actor) {
     throw new TaskLifecycleError(
@@ -481,10 +480,10 @@ export function assertReviewAuthority(input: {
       `task.${action} requires a non-empty actor.`
     );
   }
-  if (actor === submitter) {
+  if (executorRoleId && actor === executorRoleId) {
     throw new TaskLifecycleError(
       "SELF_ACCEPT_FORBIDDEN",
-      `task.${action} actor must not equal delivery submitter (${submitter}).`
+      `task.${action} actor must not equal executing Role (${executorRoleId}).`
     );
   }
   const reviewer = input.reviewer;

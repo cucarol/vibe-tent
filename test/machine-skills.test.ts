@@ -198,9 +198,9 @@ test("RPC skill.list / skill.install: offline dual-target + validation", async (
     writeEndpoint: false,
     home,
     packageRoot: repoRoot,
-    routes: [
+    connections: [
       {
-        routeId: "fake-default",
+        connectionId: "fake-default",
         provider: "test",
         adapterId: FAKE_ADAPTER_ID,
         fake: { waitForSignal: true },

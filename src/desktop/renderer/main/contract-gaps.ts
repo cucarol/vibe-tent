@@ -35,7 +35,7 @@ export const DESKTOP_CONTRACT_GAPS: readonly ContractGap[] = [
   {
     id: "mcp.global-config",
     methods: ["mcp.list", "mcp.install"],
-    need: "Machine-global MCP server catalog independent of Settings routes.",
+    need: "Machine-global MCP server catalog independent of Agent Connections.",
     fallback: "MCP is edited only as route.mcpServers (next session); skill.list/install covers bundled skills only.",
   },
   {

@@ -1,7 +1,7 @@
 // GitHub Copilot CLI ACP adapter — official `copilot --acp --stdio` transport.
 
 import type {
-  RouteLaunchPlan,
+  ConnectionLaunchPlan,
   ManagedSession,
   ProviderAdapter,
   ProviderCapabilities,
@@ -69,7 +69,7 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
     return loadSessionAcpCapabilities("external-app");
   }
 
-  resolveLaunch(plan: RouteLaunchPlan): ResolvedLaunch {
+  resolveLaunch(plan: ConnectionLaunchPlan): ResolvedLaunch {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const hasCommandOverride = !!plan.command?.trim();
     const base = resolveNpxAcpLaunch({
@@ -87,14 +87,14 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
     const env: Record<string, string> = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_ROUTE_ID: plan.routeId,
+      TENT_CONNECTION_ID: plan.connectionId,
     };
     if (opts.envKey) {
       const value = this.resolveEnvValue(opts.envKey, plan.env);
       if (!value?.trim()) {
         throw new Error(
-          `未配置环境变量 ${opts.envKey}：copilot-acp route 明确要求该值` +
-          `（仅 service 进程 / RouteLaunchPlan.env）。省略 envKey 可复用本机 Copilot 登录。`
+          `未配置环境变量 ${opts.envKey}：copilot-acp Agent Connection 明确要求该值` +
+          `（仅 service 进程 / ConnectionLaunchPlan.env）。省略 envKey 可复用本机 Copilot 登录。`
         );
       }
       env[opts.envKey] = value;
@@ -110,7 +110,7 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
   }
 
   async startManagedSession(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     emit: (event: RuntimeEvent) => void
   ): Promise<ManagedSession> {
     const client = this.createClient(plan, emit);
@@ -122,7 +122,7 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
    * Requires agentCapabilities.loadSession on the live initialize handshake.
    */
   async resumeManagedSession(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     token: ResumeToken,
     emit: (event: RuntimeEvent) => void
   ): Promise<ManagedSession> {
@@ -145,7 +145,7 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
   }
 
   private createClient(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     emit: (event: RuntimeEvent) => void
   ): AcpClient {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));

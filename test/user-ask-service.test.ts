@@ -17,12 +17,19 @@ import {
   DEFAULT_GROK_MODEL,
   GROK_ACP_ADAPTER_ID,
 } from "../src/adapters/grok-acp/index.js";
-import type { SettingsRouteConfig } from "../src/runtime/route-config.js";
+import type { AgentConnectionConfig } from "../src/runtime/agent-connection.js";
+import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 const MOCK_ACP = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   "fixtures",
   "mock-acp-server.mjs"
 );
+const DEFAULT_CONNECTION: AgentConnectionConfig = {
+  connectionId: "fake-default",
+  provider: "fake",
+  adapterId: FAKE_ADAPTER_ID,
+  fake: { waitForSignal: true, sleepMs: 60_000 },
+};
 
 function mockAcpRoute(
   id: string,
@@ -33,7 +40,7 @@ function mockAcpRoute(
     promptDelayMs?: number;
     keepAlive?: boolean;
   }
-): SettingsRouteConfig {
+): AgentConnectionConfig {
   const childEnv = {
     CPA_GROK_API_KEY: "test-key-not-real",
     MOCK_ACP_LOG: opts.logPath,
@@ -45,7 +52,7 @@ function mockAcpRoute(
   };
   const childBootstrap = `Object.assign(process.env, ${JSON.stringify(childEnv)}); await import(${JSON.stringify(pathToFileURL(MOCK_ACP).href)});`;
   return {
-    routeId: id, provider: "test", adapterId: GROK_ACP_ADAPTER_ID,
+    connectionId: id, provider: "test", adapterId: GROK_ACP_ADAPTER_ID,
     command: process.execPath,
     args: ["--input-type=module", "--eval", childBootstrap],
     model: DEFAULT_GROK_MODEL,
@@ -81,14 +88,14 @@ async function makeWorkspace(): Promise<string> {
 }
 
 async function withService<T>(
-  routes: import("../src/runtime/types.js").SettingsRouteConfig[],
+  connections: import("../src/runtime/types.js").AgentConnectionConfig[],
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ua-data-"));
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
-    routes,
+    connections: connections.length > 0 ? connections : [DEFAULT_CONNECTION],
   });
   try {
     return await fn(svc);
@@ -119,7 +126,7 @@ test("task.askUser parks running task; second ask rejected; reply resumes + pers
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [nodeId],
-      assigneeKind: "role", assigneeId: "executor",
+      connectionId: "fake-default",
       prompt: "Need a product decision",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -217,7 +224,7 @@ test("userAsk.deny resumes task; interrupt cancels pending ask", async () => {
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "role", assigneeId: "executor",
+      connectionId: "fake-default",
       prompt: "Ask then deny",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -262,7 +269,7 @@ test("managed ACP: UserAsk reply continues same session with User Answer prompt 
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-ua-log-")),
     "mock-acp.json"
   );
-  const routes = [
+  const connections = [
     mockAcpRoute("mock-ua", {
       logPath,
       // Slow bootstrap so askUser can park the task before auto-delivery races.
@@ -274,7 +281,7 @@ test("managed ACP: UserAsk reply continues same session with User Answer prompt 
     }),
   ];
 
-  await withService(routes, async (svc) => {
+  await withService(connections, async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const mounted = (await client.mount(ws)) as { workspaceId: string };
     const workspaceId = mounted.workspaceId;
@@ -285,7 +292,7 @@ test("managed ACP: UserAsk reply continues same session with User Answer prompt 
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "route", assigneeId: "mock-ua",
+      connectionId: "mock-ua",
       prompt: "Managed ask flow",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -409,7 +416,7 @@ test("two workspaces sharing relative taskPath keep independent UserAsk pending"
 
     async function dispatchRunningTask(workspaceId: string, nodeId: string) {
       const dispatched = (await client.taskDispatch(workspaceId, {
-        nodeIds: [nodeId], assigneeKind: "role", assigneeId: "executor",
+        nodeIds: [nodeId], connectionId: "fake-default",
         prompt: "Canonical cross-workspace UserAsk isolation fixture",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" }, deliveryPolicy: "review",
@@ -477,7 +484,7 @@ test("task.askUser rejects non-running task", async () => {
     }));
     const dispatched = (await client.taskDispatch(workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "role", assigneeId: "executor",
+      connectionId: "fake-default",
       prompt: "not claimed",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },

@@ -23,6 +23,7 @@
  *   MOCK_ACP_STDERR — optional text written to stderr before fail-new (tests redaction)
  *   MOCK_ACP_STDERR_ENV_KEY — if set, append process.env[key] to stderr (resolved secret proof)
  *   MOCK_ACP_ERROR_ENV_KEY — if set, put process.env[key] into JSON-RPC error data.message
+ *   MOCK_ACP_ECHO_MCP_SECRET — "1" echoes the first MCP env/header value in fail-new diagnostics
  *   MOCK_ACP_LOG — optional path to write JSON log of requests
  *   MOCK_ACP_LOAD_SESSION — "1" advertise agentCapabilities.loadSession (default 0)
  *   MOCK_ACP_RESUME_SESSION — "1" advertise agentCapabilities.sessionCapabilities.resume={} (default 0)
@@ -80,6 +81,7 @@ const failNew = process.env.MOCK_ACP_FAIL_NEW === "1";
 const mockStderrExtra = process.env.MOCK_ACP_STDERR || "";
 const mockStderrEnvKey = process.env.MOCK_ACP_STDERR_ENV_KEY || "";
 const mockErrorEnvKey = process.env.MOCK_ACP_ERROR_ENV_KEY || "";
+const echoMcpSecret = process.env.MOCK_ACP_ECHO_MCP_SECRET === "1";
 /** empty | error | interrupt — special prompt outcomes for managed-delivery tests */
 const promptMode = process.env.MOCK_ACP_PROMPT_MODE || "ok";
 const stopReasonEnv = process.env.MOCK_ACP_STOP_REASON || "end_turn";
@@ -198,6 +200,19 @@ function summarizeSessionStartParams(params) {
   };
 }
 
+function firstMcpSecret(params) {
+  const servers = Array.isArray(params?.mcpServers) ? params.mcpServers : [];
+  for (const server of servers) {
+    for (const values of [server?.env, server?.headers]) {
+      if (!Array.isArray(values)) continue;
+      for (const entry of values) {
+        if (entry && typeof entry.value === "string" && entry.value) return entry.value;
+      }
+    }
+  }
+  return "";
+}
+
 function write(msg) {
   process.stdout.write(JSON.stringify(msg) + "\n");
 }
@@ -286,11 +301,13 @@ rl.on("line", (line) => {
     // Never log secret values from mcpServers env/headers — names + counts only.
     log.news.push(summarizeSessionStartParams(params));
     if (failNew) {
+      const mcpSecret = echoMcpSecret ? firstMcpSecret(params) : "";
       let stderrLine = "mock bridge session initialization failed";
       if (mockStderrExtra) stderrLine += ` ${mockStderrExtra}`;
       if (mockStderrEnvKey && process.env[mockStderrEnvKey]) {
         stderrLine += ` envSecret=${process.env[mockStderrEnvKey]}`;
       }
+      if (mcpSecret) stderrLine += ` mcpSecret=${mcpSecret}`;
       process.stderr.write(`${stderrLine}\n`);
       const errorData = {
         reason: "mock provider unavailable",
@@ -300,6 +317,7 @@ rl.on("line", (line) => {
       if (mockErrorEnvKey && process.env[mockErrorEnvKey]) {
         errorData.message = `provider detail with secret ${process.env[mockErrorEnvKey]}`;
       }
+      if (mcpSecret) errorData.message = `provider MCP detail with secret ${mcpSecret}`;
       write({
         jsonrpc: "2.0",
         id: msg.id,

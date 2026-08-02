@@ -1,13 +1,14 @@
 // Delivery operational entity (dl-) — task-api §1.3.
-// Stored under the exact Task assignee lane (not OKF Nodes). Executor identity
-// is joined from immutable Task.assigneeKind + Task.assigneeId, never duplicated.
+// Stored under the exact Task Role/Session operational namespace (not Nodes).
 
 import { withTentMutation, type Clock, type FsAdapter } from "./adapter.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { isNodeId } from "./id.js";
 import {
-  ROUTES_TEMP_DIR,
-  routeDeliveriesDir,
+  ROLES_TEMP_DIR,
+  SESSIONS_TEMP_DIR,
+  roleDeliveriesDir,
+  sessionDeliveriesDir,
   TEMP_DIR,
 } from "./paths.js";
 import { join } from "./tree.js";
@@ -61,7 +62,7 @@ export interface CreateDeliveryInput {
   id?: string;
   /**
    * When set, write under this deliveries directory (relative system root).
-   * Route tasks pass their Task-scoped deliveries dir; Roles use temp/<role>/deliveries.
+   * Derived from the Task's canonical Role/Session namespace.
    */
   deliveriesDir: string;
 }
@@ -185,22 +186,12 @@ export async function loadDeliveries(
   const out: DeliveryRecord[] = [];
   if (!(await fs.exists(TEMP_DIR))) return out;
   for (const entry of await fs.listDir(TEMP_DIR)) {
-    if (!entry.isDir) continue;
-    if (entry.name === ROUTES_TEMP_DIR) {
-      const routesRoot = join(TEMP_DIR, ROUTES_TEMP_DIR);
-      if (!(await fs.exists(routesRoot))) continue;
-      for (const routeEntry of await fs.listDir(routesRoot)) {
-        if (!routeEntry.isDir) continue;
-        await collectDeliveryFiles(
-          fs,
-          join(routesRoot, routeEntry.name, "deliveries"),
-          filter,
-          out
-        );
-      }
-      continue;
+    if (!entry.isDir || (entry.name !== ROLES_TEMP_DIR && entry.name !== SESSIONS_TEMP_DIR)) continue;
+    const ownerRoot = join(TEMP_DIR, entry.name);
+    for (const ownerEntry of await fs.listDir(ownerRoot)) {
+      if (!ownerEntry.isDir) continue;
+      await collectDeliveryFiles(fs, join(ownerRoot, ownerEntry.name, "deliveries"), filter, out);
     }
-    await collectDeliveryFiles(fs, join(TEMP_DIR, entry.name, "deliveries"), filter, out);
   }
   return out.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
 }
@@ -311,25 +302,19 @@ export async function writeDelivery(fs: FsAdapter, record: DeliveryRecord): Prom
   await fs.writeFile(record.path, serializeFrontmatter(data, record.summary + "\n", KEY_ORDER));
 }
 
-export function deliveryPath(role: string, id: string): string {
-  return join(TEMP_DIR, role, "deliveries", `${id}.md`);
+export function roleDeliveryPath(roleId: string, id: string): string {
+  return join(roleDeliveriesDir(roleId), `${id}.md`);
 }
 
-/** Route-task delivery path under the dedicated routes namespace. */
-export function routeDeliveryPath(routeId: string, id: string): string {
-  return join(routeDeliveriesDir(routeId), `${id}.md`);
+export function sessionDeliveryPath(sessionId: string, id: string): string {
+  return join(sessionDeliveriesDir(sessionId), `${id}.md`);
 }
 
 function normalizeDeliveryPath(input: string): string {
   const path = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  // Role: temp/<role>/deliveries/dl-….md
-  // Route: temp/routes/<safe>/deliveries/dl-….md
-  if (
-    !/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path) &&
-    !/^temp\/routes\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path)
-  ) {
+  if (!/^temp\/(roles|sessions)\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path)) {
     throw new Error(
-      "Delivery must point to temp/<role>/deliveries/<dl-id>.md or temp/routes/<route>/deliveries/<dl-id>.md."
+      "Delivery must point to temp/roles/<roleId>/deliveries/<dl-id>.md or temp/sessions/<sessionId>/deliveries/<dl-id>.md."
     );
   }
   return path;

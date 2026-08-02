@@ -28,17 +28,16 @@ function envFor(dir: string) {
   };
 }
 
-const FAKE_ROUTE = {
-  routeId: "fake-default",
+const FAKE_CONNECTION = {
+  connectionId: "fake-default",
   provider: "fake",
   adapterId: FAKE_ADAPTER_ID,
   fake: { waitForSignal: true, sleepMs: 60_000 },
 } as const;
 
-function dispatchToRole(env: any, nodeId: string, assigneeId: string, input: Record<string, unknown>) {
+function dispatchToRole(env: any, nodeId: string, roleId: string, input: Record<string, unknown>) {
   return dispatch(env, nodeId, {
-    assigneeKind: "role",
-    assigneeId,
+    roleId,
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     ...input,
@@ -210,6 +209,46 @@ test("dispatch: missing / archived / invalid nodeIds zero-write (no task/manifes
   assert.equal(await env.fs.exists("temp/planner"), false);
 });
 
+test("dispatch: canonical Task id is fail-loud and cannot alias an existing Task", async () => {
+  const dir = await makeTent();
+  const env = envFor(dir);
+
+  await assert.rejects(
+    () =>
+      dispatch(env as any, "cx-p1", {
+        sessionId: "ss-invalidtask",
+        taskId: "tk-bad/path",
+        userPrompt: "invalid Task id must not allocate paths",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+      }),
+    /Invalid Task id/
+  );
+  assert.equal(await env.fs.exists("temp/sessions/ss-invalidtask"), false);
+
+  const first = await dispatch(env as any, "cx-p1", {
+    sessionId: "ss-firsttask",
+    taskId: "tk-exactcollision",
+    userPrompt: "first exact Task identity",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+  });
+  assert.equal((await loadTaskEnvelope(env.fs, first.taskPath)).id, "tk-exactcollision");
+
+  await assert.rejects(
+    () =>
+      dispatch(env as any, "cx-o1", {
+        sessionId: "ss-secondtask",
+        taskId: "tk-exactcollision",
+        userPrompt: "duplicate Task identity must fail before writes",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+      }),
+    /Task id already exists/
+  );
+  assert.equal(await env.fs.exists("temp/sessions/ss-secondtask"), false);
+});
+
 test("dispatch: exact Node occupation blocks only the same Node and releases on terminal states", async () => {
   const dir = await makeTent();
   const env = envFor(dir);
@@ -328,7 +367,11 @@ async function withService<T>(
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-mn-data-"));
-  const svc = await startLocalTentService({ dataDir, writeEndpoint: true, routes: [FAKE_ROUTE] });
+  const svc = await startLocalTentService({
+    dataDir,
+    writeEndpoint: true,
+    connections: [FAKE_CONNECTION],
+  });
   try {
     return await fn(svc);
   } finally {

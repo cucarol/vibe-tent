@@ -2,10 +2,10 @@
 // Bridge package: npm `pi-acp` → spawns `pi --mode rpc` (@earendil-works/pi-coding-agent).
 // Evidence (this host, 2026-07-23): initialize advertises loadSession=true;
 // session/new returns a provider sessionId when `pi` is on PATH.
-// Never starts real npx/network in default tests — RouteLaunchPlan command/args override to mock.
+// Never starts real npx/network in default tests — ConnectionLaunchPlan command/args override to mock.
 
 import type {
-  RouteLaunchPlan,
+  ConnectionLaunchPlan,
   ManagedSession,
   ProviderAdapter,
   ProviderCapabilities,
@@ -83,7 +83,7 @@ export class PiAcpProviderAdapter implements ProviderAdapter {
    * Launch plan validation / env injection only.
    * Real ACP needs bidirectional stdio — AgentRuntime uses startManagedSession.
    */
-  resolveLaunch(plan: RouteLaunchPlan): ResolvedLaunch {
+  resolveLaunch(plan: ConnectionLaunchPlan): ResolvedLaunch {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const { command, args } = resolveNpxAcpLaunch({
       planCommand: plan.command,
@@ -95,15 +95,15 @@ export class PiAcpProviderAdapter implements ProviderAdapter {
     const env: Record<string, string> = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_ROUTE_ID: plan.routeId,
+      TENT_CONNECTION_ID: plan.connectionId,
     };
     // Explicit envKey only: missing value fails loud; never invent a default key name.
     if (opts.envKey) {
       const secret = this.resolveEnvValue(opts.envKey, plan.env);
       if (!secret || !secret.trim()) {
         throw new Error(
-          `未配置环境变量 ${opts.envKey}：pi-acp route 明确要求该值` +
-          `（仅 service 进程 / RouteLaunchPlan.env）。省略 envKey 可复用本机 pi 登录/配置。`
+          `未配置环境变量 ${opts.envKey}：pi-acp Agent Connection 明确要求该值` +
+          `（仅 service 进程 / ConnectionLaunchPlan.env）。省略 envKey 可复用本机 pi 登录/配置。`
         );
       }
       env[opts.envKey] = secret;
@@ -119,7 +119,7 @@ export class PiAcpProviderAdapter implements ProviderAdapter {
   }
 
   async startManagedSession(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     emit: (event: RuntimeEvent) => void
   ): Promise<ManagedSession> {
     const client = this.createClient(plan, emit);
@@ -131,7 +131,7 @@ export class PiAcpProviderAdapter implements ProviderAdapter {
    * Requires agentCapabilities.loadSession on the live initialize handshake.
    */
   async resumeManagedSession(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     token: ResumeToken,
     emit: (event: RuntimeEvent) => void
   ): Promise<ManagedSession> {
@@ -154,7 +154,7 @@ export class PiAcpProviderAdapter implements ProviderAdapter {
   }
 
   private createClient(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     emit: (event: RuntimeEvent) => void
   ): AcpClient {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));

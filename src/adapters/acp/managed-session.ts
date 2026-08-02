@@ -2,7 +2,7 @@
 // Adapters supply a connected-ready client (AcpClient or thin wrapper); no argv/auth here.
 
 import type {
-  RouteLaunchPlan,
+  ConnectionLaunchPlan,
   ManagedSession,
   ProviderCapabilities,
   ResumeToken,
@@ -90,9 +90,9 @@ export class AcpManagedSession implements ManagedSession {
     // Wait for any in-flight bootstrap/prior prompt before sending the next one.
     await this.bootstrapDone;
     // Only sessionId is read from plan for prompt_complete emission.
-    const plan: RouteLaunchPlan = {
+    const plan: ConnectionLaunchPlan = {
       sessionId: this.sessionId,
-      routeId: "",
+      connectionId: "",
       cwd: "",
       env: {},
     };
@@ -183,7 +183,7 @@ export function bindAcpPermissionHooks(
 }
 
 export type StartManagedAcpSessionInput = {
-  plan: RouteLaunchPlan;
+  plan: ConnectionLaunchPlan;
   emit: (ev: RuntimeEvent) => void;
   client: ManagedAcpClient;
   /** Override default bootstrap text when plan.bootstrapPrompt is empty. */
@@ -198,7 +198,7 @@ export type StartManagedAcpSessionInput = {
 export type AcpResumeTransport = "load" | "resume";
 
 export type ResumeManagedAcpSessionInput = {
-  plan: RouteLaunchPlan;
+  plan: ConnectionLaunchPlan;
   emit: (ev: RuntimeEvent) => void;
   client: ManagedAcpClient;
   /** Provider ACP sessionId (machine-local resume token). */
@@ -223,7 +223,7 @@ export type ResumeManagedAcpSessionInput = {
  * Failure / interrupt / empty → reportFailed + stop; never leaves an orphan live process.
  */
 function runManagedBootstrapPrompt(
-  plan: RouteLaunchPlan,
+  plan: ConnectionLaunchPlan,
   emit: (ev: RuntimeEvent) => void,
   client: ManagedAcpClient,
   bootstrap: string

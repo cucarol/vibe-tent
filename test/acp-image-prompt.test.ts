@@ -1,6 +1,6 @@
 /**
  * ACP image prompt projection — transport-only gate (promptCapabilities.image).
- * No profile.supportsImageInput. Paths only; never base64 on disk/session/profile.
+ * No connection capability flag. Paths only; never base64 on disk/Session/Connection.
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -44,14 +44,23 @@ function completeBinary(bytes: Uint8Array): BoundedBinaryRead {
   return { bytes, truncated: false };
 }
 
-function startRoute(
+function startConnection(
   runtime: ReturnType<typeof createAgentRuntime>,
-  request: Omit<StartSessionRequest, "routeSnapshot">
+  request: StartSessionRequest & { connectionId: string }
 ) {
-  return runtime.startSession({
-    ...request,
-    routeSnapshot: runtime.snapshotRouteForStart(request.routeId),
-  });
+  const { connectionId, ...start } = request;
+  const workspace = start.workspace ?? start.workspaceLane?.workspace ?? start.runtimeWorkspace?.cwd ?? start.cwd;
+  if (!workspace) throw new Error("test start requires a workspace");
+  const lastTaskId = start.lastTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
+  return runtime.reserveSession({
+    sessionId: start.sessionId,
+    connectionId,
+    lastTaskId,
+    workspace,
+    workspaceLane: start.workspaceLane,
+    runtimeWorkspace: start.runtimeWorkspace,
+    cwd: start.cwd,
+  }).then(() => runtime.startSession({ ...start, lastTaskId, workspace }));
 }
 
 /** Subscribe before startSession so early prompt_complete is not missed. */
@@ -328,7 +337,7 @@ test("collectBootstrapImageRefsFromTask: user prompt + claims only (not arbitrar
   // Non-claim body is never passed in — collection API does not scan workspace.
 });
 
-test("managed ACP: image block sent when MOCK_ACP_PROMPT_IMAGE (no profile flag)", async () => {
+test("managed ACP: image block sent when MOCK_ACP_PROMPT_IMAGE (no Connection capability flag)", async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-img-acp-"));
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-img-acp-data-"));
   const systemRoot = path.join(workspace, ".tent");
@@ -338,7 +347,7 @@ test("managed ACP: image block sent when MOCK_ACP_PROMPT_IMAGE (no profile flag)
 
   const logPath = path.join(workspace, "mock-log.json");
   const route = {
-    routeId: "mock-img",
+    connectionId: "mock-img",
     provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
     command: process.execPath,
@@ -349,7 +358,7 @@ test("managed ACP: image block sent when MOCK_ACP_PROMPT_IMAGE (no profile flag)
 
   const runtime = createAgentRuntime({
     dataDir,
-    routes: [route],
+    connections: [route],
     adapters: [
       createGrokAcpAdapter({
         resolveApiKey: (_k, planEnv) => planEnv.CPA_GROK_API_KEY ?? "test-key",
@@ -358,9 +367,9 @@ test("managed ACP: image block sent when MOCK_ACP_PROMPT_IMAGE (no profile flag)
   });
 
   const done = waitSessionEvent(runtime, "ss-img-1", "session.prompt_complete", 10_000);
-  const handle = await startRoute(runtime, {
+  const handle = await startConnection(runtime, {
     sessionId: "ss-img-1",
-    routeId: "mock-img",
+    connectionId: "mock-img",
     cwd: workspace,
     env: { MOCK_ACP_LOG: logPath, MOCK_ACP_KEEP_ALIVE: "1", MOCK_ACP_PROMPT_IMAGE: "1", MOCK_ACP_PROMPT_TEXT: "IMG_OK", CPA_GROK_API_KEY: "test-key-not-real" },
     bootstrapPrompt: "bootstrap with image",
@@ -384,7 +393,7 @@ test("managed ACP: image block sent when MOCK_ACP_PROMPT_IMAGE (no profile flag)
   assert.equal(img!.mimeType, "image/png");
   assert.ok((img!.dataChars ?? 0) > 0);
 
-  // Session registry / route snapshot must not persist base64 image payloads.
+  // Session registry / Connection snapshot must not persist base64 image payloads.
   const sessionRaw = await fs
     .readFile(path.join(dataDir, "sessions", "ss-img-1.json"), "utf8")
     .catch(() => "");
@@ -404,7 +413,7 @@ test("managed ACP: fallback text-only when transport lacks promptCapabilities.im
 
   const logPath = path.join(workspace, "mock-log.json");
   const route = {
-    routeId: "mock-img-fb",
+    connectionId: "mock-img-fb",
     provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
     command: process.execPath,
@@ -415,7 +424,7 @@ test("managed ACP: fallback text-only when transport lacks promptCapabilities.im
 
   const runtime = createAgentRuntime({
     dataDir,
-    routes: [route],
+    connections: [route],
     adapters: [
       createGrokAcpAdapter({
         resolveApiKey: (_k, planEnv) => planEnv.CPA_GROK_API_KEY ?? "test-key",
@@ -424,9 +433,9 @@ test("managed ACP: fallback text-only when transport lacks promptCapabilities.im
   });
 
   const done = waitSessionEvent(runtime, "ss-img-fb", "session.prompt_complete", 10_000);
-  const handle = await startRoute(runtime, {
+  const handle = await startConnection(runtime, {
     sessionId: "ss-img-fb",
-    routeId: "mock-img-fb",
+    connectionId: "mock-img-fb",
     cwd: workspace,
     env: { MOCK_ACP_LOG: logPath, MOCK_ACP_KEEP_ALIVE: "1", MOCK_ACP_PROMPT_TEXT: "FB_OK", CPA_GROK_API_KEY: "test-key-not-real" },
     bootstrapPrompt: "bootstrap pointer only",
@@ -450,7 +459,7 @@ test("managed ACP: text-only bootstrap still works without image refs", async ()
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-img-txt-data-"));
   const logPath = path.join(workspace, "mock-log.json");
   const route = {
-    routeId: "mock-txt",
+    connectionId: "mock-txt",
     provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
     command: process.execPath,
@@ -461,7 +470,7 @@ test("managed ACP: text-only bootstrap still works without image refs", async ()
 
   const runtime = createAgentRuntime({
     dataDir,
-    routes: [route],
+    connections: [route],
     adapters: [
       createGrokAcpAdapter({
         resolveApiKey: (_k, planEnv) => planEnv.CPA_GROK_API_KEY ?? "test-key",
@@ -470,9 +479,9 @@ test("managed ACP: text-only bootstrap still works without image refs", async ()
   });
 
   const done = waitSessionEvent(runtime, "ss-txt-1", "session.prompt_complete", 10_000);
-  const handle = await startRoute(runtime, {
+  const handle = await startConnection(runtime, {
     sessionId: "ss-txt-1",
-    routeId: "mock-txt",
+    connectionId: "mock-txt",
     cwd: workspace,
     env: { MOCK_ACP_LOG: logPath, MOCK_ACP_KEEP_ALIVE: "1", MOCK_ACP_PROMPT_TEXT: "TEXT_OK", CPA_GROK_API_KEY: "test-key-not-real" },
     bootstrapPrompt: "plain text bootstrap only",

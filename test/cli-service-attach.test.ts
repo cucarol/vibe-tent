@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
-import { createServiceClient } from "../src/service/client.js";
+import { createServiceClient, type ServiceClient } from "../src/service/client.js";
 import { readServiceEndpoint, writeServiceEndpoint } from "../src/service/data-dir.js";
 import {
   attachOrBootstrapService,
@@ -37,8 +37,8 @@ async function makeWorkspace(name = "cli-p02"): Promise<string> {
     JSON.stringify(
       {
         roles: [
-          { name: "executor", prompt: "do work" },
-          { name: "orchestrator", prompt: "dispatch" },
+          { id: "rl-executor", name: "executor", prompt: "do work" },
+          { id: "rl-orchestrator", name: "orchestrator", prompt: "dispatch" },
         ],
       },
       null,
@@ -58,6 +58,32 @@ async function withService<T>(
   } finally {
     await svc.stop();
   }
+}
+
+async function enterRoleClient(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>,
+  workspaceId: string,
+  workspace: string
+): Promise<{ client: ServiceClient; env: NodeJS.ProcessEnv }> {
+  const setup = createServiceClient({ baseUrl: svc.url, token: svc.token });
+  const entered = (await setup.sessionEnter({
+    workspaceId,
+    roleId: "rl-executor",
+    cwd: workspace,
+  })) as { session: { sessionId: string }; sessionToken: string };
+  return {
+    client: createServiceClient({
+      baseUrl: svc.url,
+      token: svc.token,
+      currentSessionId: entered.session.sessionId,
+      currentSessionToken: entered.sessionToken,
+    }),
+    env: {
+      ...process.env,
+      TENT_SESSION_ID: entered.session.sessionId,
+      TENT_SESSION_TOKEN: entered.sessionToken,
+    },
+  };
 }
 
 test("tryAttachService: requires endpoint token; health open is not enough", async () => {
@@ -245,8 +271,7 @@ test("task RPC layer: claim → deliver; ServiceClient observes same state; serv
 
     const dispatched = (await observer.taskDispatch(workspaceId, {
       nodeIds: [nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "Ship CLI attach",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -254,10 +279,11 @@ test("task RPC layer: claim → deliver; ServiceClient observes same state; serv
     })) as { taskPath: string; state: string };
     assert.equal(dispatched.state, "queued");
     const taskPath = dispatched.taskPath;
+    const role = await enterRoleClient(svc, workspaceId, ws);
 
     // Claim through CLI command layer (uses same attach + RPC path; inject client for determinism)
     const claim = await runTaskCommand("claim", [taskPath], {
-      client: observer,
+      client: role.client,
       cwd: ws,
       dataDir,
     });
@@ -281,7 +307,7 @@ test("task RPC layer: claim → deliver; ServiceClient observes same state; serv
     const deliver = await runTaskCommand(
       "deliver",
       [taskPath, "--summary", "Done via CLI RPC"],
-      { client: observer, cwd: ws, dataDir }
+      { client: role.client, cwd: ws, dataDir }
     );
     assert.equal(deliver.exitCode, 0, deliver.stderr);
     assert.match(deliver.stdout, /Delivered via service RPC/);
@@ -310,12 +336,12 @@ test("task claim/deliver via attach (not injected client) sees same ServiceClien
     })) as { nodeId: string };
     const dispatched = (await setup.taskDispatch(mount.workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "agent path",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
+    const role = await enterRoleClient(svc, mount.workspaceId, ws);
 
     // Attach from endpoint file (what a real CLI process does)
     const claim = await runTaskCommand("claim", [dispatched.taskPath, "--json"], {
@@ -323,6 +349,7 @@ test("task claim/deliver via attach (not injected client) sees same ServiceClien
       dataDir,
       attachOnly: true,
       packageRoot: repoRoot,
+      env: role.env,
     });
     assert.equal(claim.exitCode, 0, claim.stderr);
     const claimJson = JSON.parse(claim.stdout) as { state: string };
@@ -331,7 +358,7 @@ test("task claim/deliver via attach (not injected client) sees same ServiceClien
     const deliver = await runTaskCommand(
       "deliver",
       [dispatched.taskPath, "--summary", "agent delivery", "--json"],
-      { cwd: ws, dataDir, attachOnly: true, packageRoot: repoRoot }
+      { cwd: ws, dataDir, attachOnly: true, packageRoot: repoRoot, env: role.env }
     );
     assert.equal(deliver.exitCode, 0, deliver.stderr);
     const deliverJson = JSON.parse(deliver.stdout) as { state: string };
@@ -365,13 +392,13 @@ test("task command errors: missing summary / unknown sub / attach-only miss", as
     })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "x",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
-    await client.taskClaim(mount.workspaceId, dispatched.taskPath);
+    const role = await enterRoleClient(svc, mount.workspaceId, ws);
+    await role.client.taskClaim(mount.workspaceId, dispatched.taskPath);
 
     const noSummary = await runTaskCommand("deliver", [dispatched.taskPath], {
       client,
@@ -394,8 +421,7 @@ test("task list/get human output uses canonical assignee fields", async () => {
     })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "list test",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -409,8 +435,7 @@ test("task list/get human output uses canonical assignee fields", async () => {
     const get = await runTaskCommand("get", [dispatched.taskPath], { client, cwd: ws, dataDir });
     assert.equal(get.exitCode, 0, get.stderr);
     assert.match(get.stdout, /state: queued/);
-    assert.match(get.stdout, /assigneeKind: role/);
-    assert.match(get.stdout, /assigneeId: executor/);
+    assert.match(get.stdout, /roleId: rl-executor/);
   });
 });
 
@@ -426,13 +451,13 @@ test("task-input ack CLI omits actor for persisted user reviewer path", async ()
     })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
       nodeIds: [created.nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "cli user ack",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
-    await client.taskClaim(mount.workspaceId, dispatched.taskPath);
+    const role = await enterRoleClient(svc, mount.workspaceId, ws);
+    await role.client.taskClaim(mount.workspaceId, dispatched.taskPath);
     const now = new Date().toISOString();
     await svc.ctx.taskInputs.add({
       id: "ti-cli-user-ack",

@@ -102,17 +102,6 @@ export type ProposalItem = {
   createdAt?: string;
 };
 
-export type DeliveryReviewItem = {
-  kind: "deliveryReview";
-  taskPath: string;
-  assigneeKind: "role" | "route";
-  assigneeId: string;
-  summary: string;
-  state: string;
-  canAcceptOrReject: boolean;
-  canInterrupt: boolean;
-};
-
 // ---- Normalize raw RPC rows (tolerant; never invents domain facts) ----
 
 function isRecord(value: unknown): value is Record<string, unknown> {

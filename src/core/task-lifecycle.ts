@@ -23,7 +23,7 @@ import {
   type OutputBindSnapshot,
 } from "./output.js";
 import type { OpsEnv } from "./ops-context.js";
-import { join, loadTent, type LoadedTent } from "./tree.js";
+import { loadTent, type LoadedTent } from "./tree.js";
 import type { Node } from "./types.js";
 import {
   ackTaskEnvelope,
@@ -34,7 +34,8 @@ import {
   type TaskEnvelope,
   type TaskEnvelopePatch,
 } from "./task.js";
-import { routeDeliveriesDir, TEMP_DIR } from "./paths.js";
+import { roleDeliveriesDir, sessionDeliveriesDir } from "./paths.js";
+import { isSessionId } from "./id.js";
 import {
   assertReviewAuthority,
   assertTransition,
@@ -49,9 +50,7 @@ import {
   type WaitReason,
 } from "./task-model.js";
 
-export type TaskClaimWrite = Omit<TaskEnvelopePatch, "sessionId"> & {
-  sessionId?: never;
-};
+export type TaskClaimWrite = TaskEnvelopePatch;
 
 export interface TaskClaimOptions {
   /**
@@ -59,8 +58,9 @@ export interface TaskClaimOptions {
    * When set on first claim (queued→running), state + lane/base/audit
    * are persisted in **one** envelope patch. Callers must prepare lane/base before
    * invoking claim so a failed prepare leaves the Task queued.
-   * Session binding is not a claim concern; task.startSession/task.replaceSession
-   * own that exact-Task CAS. Lifecycle state is forced to running by claim.
+   * A queued Role handoff binds its trusted caller Session in this same write.
+   * Connection-launched Tasks already carry their reserved Session. Lifecycle
+   * state is forced to running by claim.
    */
   claimWrite?: TaskClaimWrite;
 }
@@ -114,8 +114,18 @@ export interface TaskRejectOptions {
 export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClaimOptions = {}): Promise<TaskEnvelope> {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
+    const requestedSessionId = options.claimWrite?.sessionId;
+    if (task.sessionId && requestedSessionId && requestedSessionId !== task.sessionId) {
+      throw new Error(
+        `Cannot claim task with a different Session: bound=${task.sessionId} requested=${requestedSessionId}`
+      );
+    }
     if (task.state === "running") {
-      // Idempotent re-ack. Claim never changes the Task's Session binding.
+      if (requestedSessionId && requestedSessionId !== task.sessionId) {
+        throw new Error(
+          `Cannot claim task with a different Session: bound=${task.sessionId ?? "missing"} requested=${requestedSessionId}`
+        );
+      }
       return task;
     }
     assertTransition(task.state, "claim", "running");
@@ -144,10 +154,8 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
     // No intermediate lane-only patch; failed prepare must not reach this path.
     const now = env.clock.now();
     if (options.claimWrite) {
-      if (Object.prototype.hasOwnProperty.call(options.claimWrite, "sessionId")) {
-        throw new Error(
-          "task.claim claimWrite cannot bind sessionId; use task.startSession or task.replaceSession"
-        );
+      if (options.claimWrite.sessionId && !isSessionId(options.claimWrite.sessionId)) {
+        throw new Error(`task.claim requires a canonical Session id: ${options.claimWrite.sessionId}`);
       }
       return patchTaskEnvelope(env.fs, taskPath, {
         ...options.claimWrite,
@@ -364,7 +372,7 @@ export async function prepareTaskAccept(
     const delivery = await requireActiveReadyDelivery(env.fs, task);
     assertReviewAuthority({
       actor: options.actor,
-      submitterRole: task.assigneeId,
+      executorRoleId: task.roleId,
       reviewer: task.reviewer,
       action: "accept",
     });
@@ -409,7 +417,7 @@ export async function finalizeTaskAccept(
     }
     assertReviewAuthority({
       actor: options.actor,
-      submitterRole: task.assigneeId,
+      executorRoleId: task.roleId,
       reviewer: task.reviewer,
       action: "accept",
     });
@@ -560,7 +568,7 @@ export async function taskReject(
     // Exact Task.reviewer only (no user bypass on Role-reviewed); never self.
     assertReviewAuthority({
       actor: options.actor,
-      submitterRole: task.assigneeId,
+      executorRoleId: task.roleId,
       reviewer: task.reviewer,
       action: "reject",
     });
@@ -673,11 +681,11 @@ export async function findActiveTaskForNode(fs: FsAdapter, nodeId: string): Prom
   return listDirectActiveTasksForNode(nodeId, tasks)[0];
 }
 
-/** Delivery storage dir is derived from immutable Task assignee facts. */
+/** Delivery storage dir is derived from canonical Task Role/Session facts. */
 function deliveryDirForTask(task: TaskEnvelope): string {
-  return task.assigneeKind === "route"
-    ? routeDeliveriesDir(task.assigneeId)
-    : join(TEMP_DIR, task.assigneeId, "deliveries");
+  if (task.roleId) return roleDeliveriesDir(task.roleId);
+  if (task.sessionId) return sessionDeliveriesDir(task.sessionId);
+  throw new Error(`Task ${task.id || task.path} has no Role or Session delivery namespace.`);
 }
 
 // ---- internals ----

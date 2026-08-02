@@ -1,9 +1,9 @@
 // Claude ACP ProviderAdapter — pinned official claude-agent-acp bridge via npx.
 // No ACP authenticate RPC; relies on local Claude login and/or injected env when envKey set.
-// Never starts real npx/network in tests — RouteLaunchPlan command/args override to mock.
+// Never starts real npx/network in tests — ConnectionLaunchPlan command/args override to mock.
 
 import type {
-  RouteLaunchPlan,
+  ConnectionLaunchPlan,
   ManagedSession,
   ProviderAdapter,
   ProviderCapabilities,
@@ -83,7 +83,7 @@ export class ClaudeAcpProviderAdapter implements ProviderAdapter {
    * Real ACP needs bidirectional stdio — AgentRuntime uses startManagedSession.
    * Does not call ACP authenticate; depends on local Claude login or injected env.
    */
-  resolveLaunch(plan: RouteLaunchPlan): ResolvedLaunch {
+  resolveLaunch(plan: ConnectionLaunchPlan): ResolvedLaunch {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const { command, args } = resolveNpxAcpLaunch({
       planCommand: plan.command,
@@ -95,15 +95,15 @@ export class ClaudeAcpProviderAdapter implements ProviderAdapter {
     const env: Record<string, string> = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_ROUTE_ID: plan.routeId,
+      TENT_CONNECTION_ID: plan.connectionId,
     };
     // Optional explicit envKey: missing value fails loud; omit envKey to rely on local login.
     if (opts.envKey) {
       const secret = this.resolveEnvValue(opts.envKey, plan.env);
       if (!secret || !secret.trim()) {
         throw new Error(
-          `未配置环境变量 ${opts.envKey}：claude-acp 已在 route.acp.envKey 中明确要求该密钥` +
-            `（仅 service 进程 / RouteLaunchPlan.env）。请设置 ${opts.envKey} 后重试；切勿把 secret 写入 workspace/Node/Task。`
+          `未配置环境变量 ${opts.envKey}：claude-acp Agent Connection 明确要求该密钥` +
+            `（仅 service 进程 / ConnectionLaunchPlan.env）。请设置 ${opts.envKey} 后重试；切勿把 secret 写入 workspace/Node/Task。`
         );
       }
       env[opts.envKey] = secret;
@@ -119,7 +119,7 @@ export class ClaudeAcpProviderAdapter implements ProviderAdapter {
   }
 
   async startManagedSession(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession> {
     const client = this.createClient(plan, emit);
@@ -135,7 +135,7 @@ export class ClaudeAcpProviderAdapter implements ProviderAdapter {
    * sessionCapabilities.resume or this fails loud — no session/new fallback.
    */
   async resumeManagedSession(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     token: ResumeToken,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession> {
@@ -159,7 +159,7 @@ export class ClaudeAcpProviderAdapter implements ProviderAdapter {
   }
 
   private createClient(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     emit: (ev: RuntimeEvent) => void
   ): AcpClient {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));

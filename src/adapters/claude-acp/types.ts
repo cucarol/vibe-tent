@@ -20,7 +20,7 @@ export type ClaudeAcpPermissionPolicy = AcpPermissionPolicy;
 /**
  * Route extras for adapterId "claude-acp".
  * Extends shared {@link AcpRouteOptions}; no invented default model/envKey.
- * Canonical storage is `RouteConfig.acp`.
+ * Canonical storage is `ConnectionConfig.acp`.
  */
 export interface ClaudeAcpRouteOptions extends AcpRouteOptions {}
 

@@ -1,6 +1,6 @@
 /**
  * Core: terminal Task worktree reclaim eligibility + remove.
- * Role lanes stay durable; only route tent-task/* lanes reclaim.
+ * Role lanes stay durable; only Session tent-task/* lanes reclaim.
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -57,14 +57,13 @@ function fixtureContextCard(overrides?: {
   });
 }
 
-function routeTask(
+function sessionTask(
   partial: Partial<TaskEnvelope> & Pick<TaskEnvelope, "id" | "state" | "path">
 ): TaskEnvelope {
   const contextCard = partial.contextCard ?? fixtureContextCard();
   return {
-    assigneeKind: "route",
-    assigneeId: "fake-default",
-    manifest: "temp/routes/fake-default/manifests/m.yml",
+    sessionId: "ss-fakedefault",
+    manifest: "temp/sessions/ss-fakedefault/manifests/m.yml",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     contextCard,
@@ -94,26 +93,24 @@ test("naming helpers: tent-task branch + task-* directory are stable", () => {
 test("role task lane is NOT_APPLICABLE (durable)", async () => {
   const workspace = await makeGitWorkspace("tent-reclaim-role-");
   const role = await ensureRoleWorkspace(workspace, "executor");
-  const task = routeTask({
+  const task = sessionTask({
     id: "tk-roleish",
-    path: "temp/executor/tasks/t.md",
+    path: "temp/roles/rl-executor/tasks/t.md",
     state: "accepted",
-    assigneeKind: "role",
-    assigneeId: "executor",
+    roleId: "rl-executor",
+    sessionId: undefined,
     workspace: role.workspace,
     worktree: role.worktree,
     branch: role.branch,
     targetBranch: role.targetBranch,
   });
-  // Force durable Role assignee even though helper defaults to a route.
-  task.assigneeKind = "role";
   const d = await evaluateTaskWorktreeReclaim({ workspaceRoot: workspace, task });
   assert.equal(d.code, "NOT_APPLICABLE");
   assert.equal(d.eligible, false);
   assert.equal(await pathExists(role.worktree), true);
 });
 
-test("accepted clean integrated route lane reclaims; branch+commits preserved; idempotent", async () => {
+test("accepted clean integrated Session lane reclaims; branch+commits preserved; idempotent", async () => {
   const workspace = await makeGitWorkspace("tent-reclaim-ok-");
   const taskId = "tk-reclaim-ok";
   const lane = await ensureTaskWorkspace(workspace, taskId);
@@ -124,9 +121,9 @@ test("accepted clean integrated route lane reclaims; branch+commits preserved; i
   // Integrate into main (peer target).
   await git(workspace, "merge", "--ff-only", tip);
 
-  const task = routeTask({
+  const task = sessionTask({
     id: taskId,
-    path: `temp/routes/fake-default/tasks/${taskId}.md`,
+    path: `temp/sessions/ss-fakedefault/tasks/${taskId}.md`,
     state: "accepted",
     workspace: lane.workspace,
     worktree: lane.worktree,
@@ -135,7 +132,7 @@ test("accepted clean integrated route lane reclaims; branch+commits preserved; i
   });
   const deliveries: DeliveryRecord[] = [
     {
-      path: "temp/routes/fake-default/deliveries/dl-1.md",
+      path: "temp/sessions/ss-fakedefault/deliveries/dl-1.md",
       id: "dl-1",
       taskId,
       sourceNodeId: "cx-1",
@@ -190,9 +187,9 @@ test("dirty worktree refuses reclaim (DIRTY)", async () => {
   const lane = await ensureTaskWorkspace(workspace, taskId);
   await fs.writeFile(path.join(lane.worktree, "DIRTY.txt"), "x\n");
 
-  const task = routeTask({
+  const task = sessionTask({
     id: taskId,
-    path: "temp/routes/fake-default/tasks/t.md",
+    path: "temp/sessions/ss-fakedefault/tasks/t.md",
     state: "rejected",
     workspace: lane.workspace,
     worktree: lane.worktree,
@@ -209,9 +206,9 @@ test("running task refuses reclaim (NOT_TERMINAL)", async () => {
   const workspace = await makeGitWorkspace("tent-reclaim-run-");
   const taskId = "tk-reclaim-run";
   const lane = await ensureTaskWorkspace(workspace, taskId);
-  const task = routeTask({
+  const task = sessionTask({
     id: taskId,
-    path: "temp/routes/fake-default/tasks/t.md",
+    path: "temp/sessions/ss-fakedefault/tasks/t.md",
     state: "running",
     workspace: lane.workspace,
     worktree: lane.worktree,
@@ -232,9 +229,9 @@ test("accepted with unintegrated commits refuses (UNINTEGRATED)", async () => {
   await git(lane.worktree, "commit", "-q", "-m", "hanging");
   const tip = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
 
-  const task = routeTask({
+  const task = sessionTask({
     id: taskId,
-    path: "temp/routes/fake-default/tasks/t.md",
+    path: "temp/sessions/ss-fakedefault/tasks/t.md",
     state: "accepted",
     workspace: lane.workspace,
     worktree: lane.worktree,
@@ -269,9 +266,9 @@ test("rejected clean lane reclaims without delivery commits", async () => {
   const workspace = await makeGitWorkspace("tent-reclaim-rej-");
   const taskId = "tk-reclaim-rej";
   const lane = await ensureTaskWorkspace(workspace, taskId);
-  const task = routeTask({
+  const task = sessionTask({
     id: taskId,
-    path: "temp/routes/fake-default/tasks/t.md",
+    path: "temp/sessions/ss-fakedefault/tasks/t.md",
     state: "rejected",
     workspace: lane.workspace,
     worktree: lane.worktree,
@@ -302,9 +299,9 @@ test("external / unexpected worktree path refuses", async () => {
   const workspace = await makeGitWorkspace("tent-reclaim-ext-");
   const foreign = path.join(path.dirname(workspace), "foreign-wt");
   await fs.mkdir(foreign, { recursive: true });
-  const task = routeTask({
+  const task = sessionTask({
     id: "tk-reclaim-ext",
-    path: "temp/routes/fake-default/tasks/t.md",
+    path: "temp/sessions/ss-fakedefault/tasks/t.md",
     state: "failed",
     workspace,
     worktree: foreign,
@@ -318,9 +315,9 @@ test("external / unexpected worktree path refuses", async () => {
 
 test("no lane recorded → NOT_APPLICABLE", async () => {
   const workspace = await makeGitWorkspace("tent-reclaim-nolan-");
-  const task = routeTask({
+  const task = sessionTask({
     id: "tk-docs",
-    path: "temp/routes/fake-default/tasks/t.md",
+    path: "temp/sessions/ss-fakedefault/tasks/t.md",
     state: "accepted",
   });
   const d = await evaluateTaskWorktreeReclaim({ workspaceRoot: workspace, task });
@@ -343,9 +340,9 @@ test("P0: accepted Delivery omits branch tip → UNINTEGRATED (task-branch settl
   // Integrate only the declared commit into main; leave omitted tip on task branch.
   await git(workspace, "cherry-pick", "-x", declared);
 
-  const task = routeTask({
+  const task = sessionTask({
     id: taskId,
-    path: "temp/routes/fake-default/tasks/t.md",
+    path: "temp/sessions/ss-fakedefault/tasks/t.md",
     state: "accepted",
     workspace: lane.workspace,
     worktree: lane.worktree,
@@ -397,9 +394,9 @@ test("P0: absent dir drops only exact stale registration (no broad prune invento
   // Other lane must survive any cleanup of the first.
   assert.equal(await pathExists(other.worktree), true);
 
-  const task = routeTask({
+  const task = sessionTask({
     id: taskId,
-    path: "temp/routes/fake-default/tasks/t.md",
+    path: "temp/sessions/ss-fakedefault/tasks/t.md",
     state: "interrupted",
     workspace: lane.workspace,
     worktree: lane.worktree,
@@ -422,9 +419,9 @@ test("P0: existing dir remove refuses when registration branch mismatches (owner
   const workspace = await makeGitWorkspace("tent-reclaim-own-");
   const taskId = "tk-reclaim-own";
   const lane = await ensureTaskWorkspace(workspace, taskId);
-  const task = routeTask({
+  const task = sessionTask({
     id: taskId,
-    path: "temp/routes/fake-default/tasks/t.md",
+    path: "temp/sessions/ss-fakedefault/tasks/t.md",
     state: "failed",
     workspace: lane.workspace,
     worktree: lane.worktree,
@@ -450,9 +447,9 @@ test("P0: TOCTOU rebind after evaluate refuses remove (registration vs expected 
   const workspace = await makeGitWorkspace("tent-reclaim-toctou-");
   const taskId = "tk-reclaim-toctou";
   const lane = await ensureTaskWorkspace(workspace, taskId);
-  const task = routeTask({
+  const task = sessionTask({
     id: taskId,
-    path: "temp/routes/fake-default/tasks/t.md",
+    path: "temp/sessions/ss-fakedefault/tasks/t.md",
     state: "failed",
     workspace: lane.workspace,
     worktree: lane.worktree,
@@ -494,9 +491,9 @@ test("P0: remove never force-deletes when dirtiness re-check fails", async () =>
   const workspace = await makeGitWorkspace("tent-reclaim-noforce-");
   const taskId = "tk-reclaim-noforce";
   const lane = await ensureTaskWorkspace(workspace, taskId);
-  const task = routeTask({
+  const task = sessionTask({
     id: taskId,
-    path: "temp/routes/fake-default/tasks/t.md",
+    path: "temp/sessions/ss-fakedefault/tasks/t.md",
     state: "failed",
     workspace: lane.workspace,
     worktree: lane.worktree,
@@ -591,9 +588,9 @@ test("P0: reclaim Node-rm lane with outbound junction; external sentinel survive
   const linkStat = await fs.lstat(linkPath);
   assert.equal(linkStat.isSymbolicLink(), true, `expected ${linkKind} to report isSymbolicLink`);
 
-  const task = routeTask({
+  const task = sessionTask({
     id: taskId,
-    path: "temp/routes/fake-default/tasks/t.md",
+    path: "temp/sessions/ss-fakedefault/tasks/t.md",
     state: "failed",
     workspace: lane.workspace,
     worktree: lane.worktree,
@@ -656,9 +653,9 @@ test("P0: portable file symlink outbound survives Node-rm reclaim", async () => 
   }
   assert.equal((await fs.lstat(linkPath)).isSymbolicLink(), true);
 
-  const task = routeTask({
+  const task = sessionTask({
     id: taskId,
-    path: "temp/routes/fake-default/tasks/t.md",
+    path: "temp/sessions/ss-fakedefault/tasks/t.md",
     state: "interrupted",
     workspace: lane.workspace,
     worktree: lane.worktree,
@@ -704,9 +701,9 @@ test("P0: tracked symlink in lane reclaims; external target survives", async () 
   await git(lane.worktree, "commit", "-q", "-m", "add tracked symlink");
   const tip = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
 
-  const task = routeTask({
+  const task = sessionTask({
     id: taskId,
-    path: "temp/routes/fake-default/tasks/t.md",
+    path: "temp/sessions/ss-fakedefault/tasks/t.md",
     state: "failed",
     workspace: lane.workspace,
     worktree: lane.worktree,
@@ -771,9 +768,9 @@ test("P0: Node lane rm failure fails closed (registration untouched)", async () 
     return;
   }
 
-  const task = routeTask({
+  const task = sessionTask({
     id: taskId,
-    path: "temp/routes/fake-default/tasks/t.md",
+    path: "temp/sessions/ss-fakedefault/tasks/t.md",
     state: "failed",
     workspace: lane.workspace,
     worktree: lane.worktree,
@@ -832,9 +829,9 @@ test("P0: metadata force failure then dir-absent retry clears only exact registr
     return;
   }
 
-  const task = routeTask({
+  const task = sessionTask({
     id: taskId,
-    path: "temp/routes/fake-default/tasks/t.md",
+    path: "temp/sessions/ss-fakedefault/tasks/t.md",
     state: "failed",
     workspace: lane.workspace,
     worktree: lane.worktree,
@@ -903,13 +900,13 @@ test("P0: pending reclaim queue is explicit opt-in only", async () => {
   assert.deepEqual(await listTaskWorktreeReclaimPending(fsa), []);
   await enqueueTaskWorktreeReclaimPending(fsa, {
     taskId: "tk-a",
-    taskPath: "temp/routes/x/tasks/a.md",
+    taskPath: "temp/sessions/ss-x/tasks/a.md",
     workspaceRoot: "/ws/a",
     trigger: "task.reject",
   });
   await enqueueTaskWorktreeReclaimPending(fsa, {
     taskId: "tk-b",
-    taskPath: "temp/routes/x/tasks/b.md",
+    taskPath: "temp/sessions/ss-x/tasks/b.md",
     workspaceRoot: "/ws/b",
     trigger: "task.accept",
   });
@@ -978,7 +975,7 @@ test("P0: concurrent distinct enqueues retain all siblings", async () => {
     ids.map((taskId) =>
       enqueueTaskWorktreeReclaimPending(fsa, {
         taskId,
-        taskPath: `temp/routes/x/tasks/${taskId}.md`,
+        taskPath: `temp/sessions/ss-x/tasks/${taskId}.md`,
         workspaceRoot: "/ws/shared",
         trigger: "task.accept",
       })
@@ -1005,19 +1002,19 @@ test("P0: enqueue/dequeue interleaving cannot resurrect or delete siblings", asy
   // Seed siblings that must remain through concurrent remove/add of other ids.
   await enqueueTaskWorktreeReclaimPending(fsa, {
     taskId: "tk-keep-a",
-    taskPath: "temp/routes/x/tasks/keep-a.md",
+    taskPath: "temp/sessions/ss-x/tasks/keep-a.md",
     workspaceRoot: "/ws/a",
     trigger: "seed",
   });
   await enqueueTaskWorktreeReclaimPending(fsa, {
     taskId: "tk-keep-b",
-    taskPath: "temp/routes/x/tasks/keep-b.md",
+    taskPath: "temp/sessions/ss-x/tasks/keep-b.md",
     workspaceRoot: "/ws/a",
     trigger: "seed",
   });
   await enqueueTaskWorktreeReclaimPending(fsa, {
     taskId: "tk-remove-me",
-    taskPath: "temp/routes/x/tasks/remove-me.md",
+    taskPath: "temp/sessions/ss-x/tasks/remove-me.md",
     workspaceRoot: "/ws/a",
     trigger: "seed",
   });
@@ -1030,7 +1027,7 @@ test("P0: enqueue/dequeue interleaving cannot resurrect or delete siblings", asy
     ops.push(
       enqueueTaskWorktreeReclaimPending(fsa, {
         taskId,
-        taskPath: `temp/routes/x/tasks/${taskId}.md`,
+        taskPath: `temp/sessions/ss-x/tasks/${taskId}.md`,
         workspaceRoot: "/ws/a",
         trigger: "parallel",
       })
@@ -1040,7 +1037,7 @@ test("P0: enqueue/dequeue interleaving cannot resurrect or delete siblings", asy
   ops.push(
     enqueueTaskWorktreeReclaimPending(fsa, {
       taskId: "tk-remove-me",
-      taskPath: "temp/routes/x/tasks/remove-me-again.md",
+      taskPath: "temp/sessions/ss-x/tasks/remove-me-again.md",
       workspaceRoot: "/ws/a",
       trigger: "re-add",
     })
@@ -1064,7 +1061,7 @@ test("P0: enqueue/dequeue interleaving cannot resurrect or delete siblings", asy
   );
   assert.equal(
     all.find((e) => e.taskId === "tk-remove-me")?.taskPath,
-    "temp/routes/x/tasks/remove-me-again.md"
+    "temp/sessions/ss-x/tasks/remove-me-again.md"
   );
 });
 
@@ -1082,7 +1079,7 @@ test("P0: list after mutation observes committed queue state", async () => {
   // (or after it, with the entry visible) — never a torn mid-RMW snapshot.
   const enqueueP = enqueueTaskWorktreeReclaimPending(fsa, {
     taskId: "tk-visible",
-    taskPath: "temp/routes/x/tasks/visible.md",
+    taskPath: "temp/sessions/ss-x/tasks/visible.md",
     workspaceRoot: "/ws/v",
     trigger: "list-observe",
   });

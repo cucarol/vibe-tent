@@ -48,9 +48,9 @@ async function withService<T>(
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-gi-svc-"));
   const svc = await startLocalTentService({
     dataDir,
-    routes: [
+    connections: [
       {
-        routeId: "fake-default",
+        connectionId: "fake-default",
         provider: "fake",
         adapterId: FAKE_ADAPTER_ID,
         fake: { waitForSignal: true },
@@ -127,8 +127,7 @@ async function claimRunningWithBase(
     reviewer: { kind: "user", id: "user" },
     workspaceId,
     nodeIds: [nodeId],
-    assigneeKind: "route",
-    assigneeId: "fake-default",
+    connectionId: "fake-default",
     prompt: opts.prompt,
     deliveryPolicy: "review",
   });
@@ -562,9 +561,9 @@ test("Service dual workspaceId: blocked integrate critical section is exclusive"
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-gi-dual-hold-svc-"));
   const svc = await startLocalTentService({
     dataDir,
-    routes: [
+    connections: [
       {
-        routeId: "fake-default",
+        connectionId: "fake-default",
         provider: "fake",
         adapterId: FAKE_ADAPTER_ID,
         fake: { waitForSignal: true },

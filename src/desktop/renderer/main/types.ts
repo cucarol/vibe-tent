@@ -4,7 +4,7 @@ import type { TaskReviewItem } from "../../workbench/collaboration-ui.js";
 import type { TaskContextCardV1 } from "../../../core/task-context-card.js";
 import type {
   CoordinationTypeOption,
-  RouteOption,
+  ConnectionOption,
   RoleOption,
 } from "../../workbench/collaboration-ui.js";
 import type {
@@ -92,8 +92,7 @@ export type ShellState = {
   } | null;
   tasks: Array<{
     path: string;
-    assigneeKind: "role" | "route";
-    assigneeId: string;
+    roleId?: string;
     referencedNodeIds: string[];
     state: string;
     id?: string;
@@ -105,14 +104,14 @@ export type ShellState = {
   taskReview?: TaskReviewItem[];
   roles?: RoleOption[];
   coordinationTypes?: CoordinationTypeOption[];
-  routes?: RouteOption[];
-  selectedRouteId?: string | null;
+  connections?: ConnectionOption[];
+  selectedConnectionId?: string | null;
   statusMessage: string | null;
 };
 
 export type {
   CoordinationTypeOption,
-  RouteOption,
+  ConnectionOption,
   RoleOption,
   TaskReviewItem,
 };

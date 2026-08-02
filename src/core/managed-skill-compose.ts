@@ -1,15 +1,14 @@
 // Built-in Tent skill composition for managed Task executors (V0.2).
 // tent-task is automatic for every managed Task; durable Role tasks also get tent-role.
-// Route skills remain optional extras — not the mechanism for these contracts.
+// Agent Connection skills remain optional extras — not the mechanism for these contracts.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { RoleDefinition } from "./skillRoleRegistry.js";
-import type { AssigneeKind } from "./task-model.js";
 
 /**
  * Narrow skill-ref shape owned by Core for managed compose.
- * Structural match to an adapter route skill reference (name/path/enabled) —
+ * Structural match to an Agent Connection skill reference (name/path/enabled) —
  * Core must not import adapters (build:core rootDir=src/core).
  */
 export type ManagedSkillRef = {
@@ -30,13 +29,12 @@ export type BuiltinTentSkillName =
  * Which built-in contracts apply for a managed executor.
  * - every managed Task → tent-task
  * - durable Role assignee → tent-role as well
- * - temporary route execution → tent-task only
+ * - temporary Connection execution → tent-task only
  */
 export function builtinSkillNamesForExecutor(
-  assigneeKind: AssigneeKind | undefined
+  roleId: string | undefined
 ): BuiltinTentSkillName[] {
-  const kind = assigneeKind === "route" ? "route" : "role";
-  if (kind === "role") {
+  if (roleId) {
     return [BUILTIN_TENT_ROLE_SKILL, BUILTIN_TENT_TASK_SKILL];
   }
   return [BUILTIN_TENT_TASK_SKILL];
@@ -148,10 +146,10 @@ export const MANAGED_SESSION_BOOTSTRAP_BANNER =
  */
 export function composeManagedSkillBootstrapPrefix(input: {
   packageRoot: string;
-  assigneeKind?: AssigneeKind;
+  roleId?: string;
   role?: RoleDefinition;
 }): string {
-  const names = builtinSkillNamesForExecutor(input.assigneeKind);
+  const names = builtinSkillNamesForExecutor(input.roleId);
   const sections: string[] = [];
 
   if (names.includes(BUILTIN_TENT_ROLE_SKILL)) {
@@ -223,7 +221,7 @@ export function splitManagedBootstrapStableAndDynamic(full: string): {
 }
 
 /**
- * ACP `_meta.tent.skills` refs for optional route extras only.
+ * ACP `_meta.tent.skills` refs for optional Connection extras only.
  *
  * Built-in tent-role / tent-task contracts are model-visible solely via the
  * stable bootstrap prefix (`composeManagedSkillBootstrapPrefix`) — the
@@ -231,16 +229,16 @@ export function splitManagedBootstrapStableAndDynamic(full: string): {
  * activatable skill path refs (avoids provider-dependent double-load when an
  * adapter honors skill metadata).
  *
- * Route skills that collide with built-in names are dropped. Remaining
+ * Connection skills that collide with built-in names are dropped. Remaining
  * extras are deduped by name (case-insensitive; first wins).
  */
 export function composeManagedSkillRefs(input: {
   packageRoot: string;
-  assigneeKind?: AssigneeKind;
-  routeSkills?: ManagedSkillRef[];
+  roleId?: string;
+  connectionSkills?: ManagedSkillRef[];
 }): ManagedSkillRef[] {
   void input.packageRoot; // reserved for future path resolution of extras
-  // Always reserve both built-in names so a route cannot re-inject them as meta.
+  // Always reserve both built-in names so a Connection cannot re-inject them as meta.
   const reserved = new Set<string>([
     BUILTIN_TENT_ROLE_SKILL.toLowerCase(),
     BUILTIN_TENT_TASK_SKILL.toLowerCase(),
@@ -248,7 +246,7 @@ export function composeManagedSkillRefs(input: {
   const out: ManagedSkillRef[] = [];
   const seen = new Set<string>(reserved);
 
-  for (const ref of input.routeSkills ?? []) {
+  for (const ref of input.connectionSkills ?? []) {
     if (!ref || ref.enabled === false) continue;
     const name = typeof ref.name === "string" ? ref.name.trim() : "";
     if (!name) continue;
@@ -271,7 +269,7 @@ export function composeManagedSkillRefs(input: {
  */
 export function managedSkillCompatibilityInputs(input: {
   packageRoot: string;
-  assigneeKind?: AssigneeKind;
+  roleId?: string;
   role?: RoleDefinition;
   /** Package version used when skill frontmatter has no version field. */
   packageVersion?: string;
@@ -282,7 +280,7 @@ export function managedSkillCompatibilityInputs(input: {
   skillVersions: Record<string, string>;
   skillBodies: Record<string, string>;
 } {
-  const builtinSkills = builtinSkillNamesForExecutor(input.assigneeKind);
+  const builtinSkills = builtinSkillNamesForExecutor(input.roleId);
   const skillBodyDigests: Record<string, string> = {};
   const skillVersions: Record<string, string> = {};
   const skillBodies: Record<string, string> = {};

@@ -111,7 +111,7 @@ export function renderActivity(): void {
       const draft = rejectDrafts.get(t.path) || "";
       return `<article class="interaction-item" data-pending-kind="deliveryReview">
         <div class="interaction-kicker">DELIVERY REVIEW</div>
-        <div class="interaction-title">${escapeHtml(t.assigneeId)}</div>
+        <div class="interaction-title">${escapeHtml(t.roleId || t.sessionConnectionId || t.sessionId || "Session")}</div>
         <div class="muted interaction-note">${escapeHtml(t.deliverySummary || t.prompt || t.path)}</div>
         <div class="interaction-actions">
           <button type="button" class="btn btn-primary" data-act-accept="${escapeHtml(t.path)}">确认</button>
@@ -164,7 +164,7 @@ export function renderActivity(): void {
         ? `<button type="button" class="btn btn-ghost" data-act-cancel="${escapeHtml(t.path)}">取消</button>`
         : "";
       return `<li class="task-item">
-        <div class="task-head"><strong>${escapeHtml(t.assigneeId)}</strong>
+        <div class="task-head"><strong>${escapeHtml(t.roleId || t.sessionConnectionId || t.sessionId || "Session")}</strong>
           <span class="muted">${escapeHtml(taskStateLabel(t.state))}</span></div>
         ${t.prompt ? `<div class="task-summary">${escapeHtml(t.prompt.length > 100 ? t.prompt.slice(0, 97) + "…" : t.prompt)}</div>` : ""}
         <div class="task-actions">${startBtn}${interruptBtn}${cancelBtn}</div>
@@ -178,7 +178,7 @@ export function renderActivity(): void {
         .map(
           (s) => `<li class="session-row">
           <span class="session-dot ${s.alive ? "is-live" : ""}" aria-hidden="true"></span>
-          <span>${escapeHtml(s.roleName || s.routeId)}</span>
+          <span>${escapeHtml(s.roleId || s.connectionId || s.sessionId)}</span>
           <span class="muted">${escapeHtml(sessionStateLabel(s.state) || s.state)}</span>
         </li>`
         )

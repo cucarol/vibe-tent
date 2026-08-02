@@ -2,7 +2,7 @@
 // One exact Node may be occupied by only one active Task. Ancestors, descendants,
 // siblings, and workspace context remain independent and may run concurrently.
 
-import type { TaskEnvelope } from "./task.js";
+import { taskExecutionLabel, type TaskEnvelope } from "./task.js";
 import { isActiveTaskState } from "./task-model.js";
 import { Node } from "./types.js";
 import { LoadedTent } from "./tree.js";
@@ -46,7 +46,7 @@ export function canClaim(node: Node, options?: CanClaimOptions): ClaimCheck {
       ok: false,
       blocker: node,
       task: occupied,
-      reason: `${node.name} is occupied by active task ${occupied.id || occupied.path} (${occupied.assigneeKind}:${occupied.assigneeId}).`,
+      reason: `${node.name} is occupied by active task ${occupied.id || occupied.path} (${taskExecutionLabel(occupied)}).`,
     };
   }
   return structural;
@@ -89,7 +89,7 @@ export function findActiveOccupation(
         blocker: node,
         task,
         relation: "self",
-        reason: `${node.name} is directly referenced by active task ${task.id || task.path} (${task.assigneeKind}:${task.assigneeId}).`,
+        reason: `${node.name} is directly referenced by active task ${task.id || task.path} (${taskExecutionLabel(task)}).`,
       };
     }
   }

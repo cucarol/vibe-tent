@@ -17,7 +17,7 @@ import { test } from "node:test";
 import {
   createAgentRuntime,
   type RuntimeEvent,
-  type SettingsRouteConfig,
+  type AgentConnectionConfig,
 } from "../src/runtime/index.js";
 import { GROK_ACP_ADAPTER_ID } from "../src/adapters/grok-acp/index.js";
 import { CODEX_ACP_ADAPTER_ID } from "../src/adapters/codex-acp/types.js";
@@ -36,7 +36,7 @@ type ProviderName = "grok" | "codex" | "claude" | "opencode" | "copilot";
 
 type ProviderCase = {
   name: ProviderName;
-  route: SettingsRouteConfig;
+  connection: AgentConnectionConfig;
   nativeResume: (
     sessionId: string,
     prompt: string,
@@ -44,6 +44,18 @@ type ProviderCase = {
     dataDir: string
   ) => Promise<string>;
 };
+
+async function startConnection(
+  runtime: ReturnType<typeof createAgentRuntime>,
+  request: Parameters<ReturnType<typeof createAgentRuntime>["startSession"]>[0] & { connectionId: string }
+) {
+  const { connectionId, ...start } = request;
+  const workspace = start.workspace ?? start.workspaceLane?.workspace ?? start.runtimeWorkspace?.cwd ?? start.cwd;
+  if (!workspace) throw new Error("live start requires a workspace");
+  const lastTaskId = start.lastTaskId ?? `tk-${start.sessionId.replace(/[^a-z0-9]/gi, "")}`;
+  await runtime.reserveSession({ sessionId: start.sessionId, connectionId, lastTaskId, workspace, workspaceLane: start.workspaceLane, runtimeWorkspace: start.runtimeWorkspace, cwd: start.cwd });
+  return runtime.startSession({ ...start, lastTaskId, workspace });
+}
 
 const home = os.homedir();
 const npmBin = path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "npm");
@@ -56,15 +68,15 @@ const nativePaths = {
 };
 const codexModel = process.env.TENT_LIVE_CODEX_MODEL || "gpt-5.4";
 
-function route(
-  routeId: string,
+function connection(
+  connectionId: string,
   adapterId: string,
   command?: string,
   args?: string[]
-): SettingsRouteConfig {
+): AgentConnectionConfig {
   return {
-    routeId,
-    provider: routeId,
+    connectionId,
+    provider: connectionId,
     adapterId,
     ...(command ? { command } : {}),
     ...(args ? { args } : {}),
@@ -103,8 +115,8 @@ async function runNative(
 const providers: ProviderCase[] = [
   {
     name: "grok",
-    route: {
-      ...route("foreground-grok", GROK_ACP_ADAPTER_ID, nativePaths.grok),
+    connection: {
+      ...connection("foreground-grok", GROK_ACP_ADAPTER_ID, nativePaths.grok),
       model: process.env.CPA_GROK_MODEL || "grok-4.5",
       envKey: "CPA_GROK_API_KEY",
       baseUrlEnvKey: "CPA_GROK_BASE_URL",
@@ -118,8 +130,8 @@ const providers: ProviderCase[] = [
   },
   {
     name: "codex",
-    route: {
-      ...route("foreground-codex", CODEX_ACP_ADAPTER_ID),
+    connection: {
+      ...connection("foreground-codex", CODEX_ACP_ADAPTER_ID),
       model: codexModel,
     },
     nativeResume: async (sessionId, prompt, cwd, dataDir) => {
@@ -145,7 +157,7 @@ const providers: ProviderCase[] = [
   },
   {
     name: "claude",
-    route: route("foreground-claude", CLAUDE_ACP_ADAPTER_ID),
+    connection: connection("foreground-claude", CLAUDE_ACP_ADAPTER_ID),
     nativeResume: (sessionId, prompt, cwd, dataDir) =>
       runNative(
         nativePaths.claude,
@@ -156,7 +168,7 @@ const providers: ProviderCase[] = [
   },
   {
     name: "opencode",
-    route: route("foreground-opencode", OPENCODE_ACP_ADAPTER_ID, nativePaths.opencode, ["acp"]),
+    connection: connection("foreground-opencode", OPENCODE_ACP_ADAPTER_ID, nativePaths.opencode, ["acp"]),
     nativeResume: (sessionId, prompt, cwd, dataDir) =>
       runNative(nativePaths.opencode, ["run", "--session", sessionId, prompt], cwd, {
         TENT_SERVICE_DATA_DIR: dataDir,
@@ -164,7 +176,7 @@ const providers: ProviderCase[] = [
   },
   {
     name: "copilot",
-    route: route(
+    connection: connection(
       "foreground-copilot",
       COPILOT_ACP_ADAPTER_ID,
       nativePaths.copilot,
@@ -238,15 +250,14 @@ for (const provider of providers) {
       const sessionId = `ss-${provider.name.slice(0, 6)}fg1`;
       const nonceA = `A_${provider.name}_${Date.now().toString(36).toUpperCase()}`;
       const nonceB = `B_${provider.name}_${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
-      let runtime = createAgentRuntime({ dataDir, routes: [provider.route] });
+      let runtime = createAgentRuntime({ dataDir, connections: [provider.connection] });
       let events: RuntimeEvent[] = [];
       runtime.subscribeAll((event) => events.push(event));
 
       try {
-        await runtime.startSession({
+        await startConnection(runtime, {
           sessionId,
-          routeId: provider.route.routeId,
-          routeSnapshot: runtime.snapshotRouteForStart(provider.route.routeId),
+          connectionId: provider.connection.connectionId,
           cwd,
           bootstrapPrompt:
             `Remember ${nonceA}. Reply only FIRST_READY ${nonceA}. Do not use tools.`,
@@ -268,7 +279,7 @@ for (const provider of providers) {
         assert.match(native, new RegExp(nonceA));
         assert.match(native, new RegExp(nonceB));
 
-        runtime = createAgentRuntime({ dataDir, routes: [provider.route] });
+        runtime = createAgentRuntime({ dataDir, connections: [provider.connection] });
         events = [];
         runtime.subscribeAll((event) => events.push(event));
         await runtime.resumeSession({

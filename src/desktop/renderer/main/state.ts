@@ -6,7 +6,7 @@ import type {
   NodeCollaborationsResult,
   RoleRegistryEntryProjection,
   SessionProjection,
-  SettingsRouteProjection,
+  AgentConnectionProjection,
   TaskProjection,
   TypeRegistryEntryProjection,
 } from "../../../service/types.js";
@@ -20,12 +20,12 @@ import {
   buildTaskReviewItems,
   isActionableTaskState,
   listCoordinationTypeOptions,
-  listRouteOptions,
+  listConnectionOptions,
   listRoleOptions,
   pickDefaultCoordinationType,
-  pickDefaultRouteId,
+  pickDefaultConnectionId,
   type CoordinationTypeOption,
-  type RouteOption,
+  type ConnectionOption,
   type RoleOption,
   type TaskReviewItem,
 } from "../../workbench/collaboration-ui.js";
@@ -73,10 +73,10 @@ export let toolApprovals: ToolApprovalItem[] = [];
 export let taskInputs: TaskInputItem[] = [];
 /** Pending proposal triage (separate from delivery review). */
 export let proposals: ProposalItem[] = [];
-/** Machine-local routes from route.list (safe metadata; no secrets). */
-export let routes: RouteOption[] = [];
-/** Selected machine-local route metadata in the shared renderer state. */
-export let selectedRouteId: string | null = null;
+/** Machine-local Agent Connections from connection.list (safe metadata; no secrets). */
+export let connections: ConnectionOption[] = [];
+/** Selected machine-local Connection metadata in the shared renderer state. */
+export let selectedConnectionId: string | null = null;
 
 /** Draft form state (pure UI). */
 export let createTypePick = "";
@@ -133,12 +133,12 @@ export function setTaskInputs(list: TaskInputItem[]): void {
   taskInputs = list;
 }
 
-export function setRoutes(list: RouteOption[]): void {
-  routes = list;
+export function setConnections(list: ConnectionOption[]): void {
+  connections = list;
 }
 
-export function setSelectedRouteId(id: string | null): void {
-  selectedRouteId = id;
+export function setSelectedConnectionId(id: string | null): void {
+  selectedConnectionId = id;
 }
 
 export function setCreateTypePick(value: string): void {
@@ -502,20 +502,20 @@ export async function onServiceEvent(type: string): Promise<void> {
   }
 }
 
-/** Load machine-local routes. */
-export async function reloadRoutes(): Promise<void> {
+/** Load machine-local Agent Connections. */
+export async function reloadConnections(): Promise<void> {
   try {
-    const result = (await window.tentDesktop.rpc("route.list", {})) as {
-      routes: SettingsRouteProjection[];
+    const result = (await window.tentDesktop.rpc("connection.list", {})) as {
+      connections: AgentConnectionProjection[];
     };
-    routes = listRouteOptions(result.routes || []);
-    if (!selectedRouteId || !routes.some((route) => route.routeId === selectedRouteId)) {
-      selectedRouteId = pickDefaultRouteId(routes);
+    connections = listConnectionOptions(result.connections || []);
+    if (!selectedConnectionId || !connections.some((connection) => connection.connectionId === selectedConnectionId)) {
+      selectedConnectionId = pickDefaultConnectionId(connections);
     }
     host?.renderTasks();
   } catch (err) {
-    routes = [];
-    selectedRouteId = null;
+    connections = [];
+    selectedConnectionId = null;
     setError(err);
   }
 }

@@ -2,7 +2,8 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { FsAdapter } from "./adapter.js";
 import { loadProposals } from "./proposal.js";
-import { loadTaskEnvelopes } from "./task.js";
+import { loadTaskEnvelopes, taskExecutionLabel } from "./task.js";
+import { loadRolesRegistry, resolveRole } from "./skillRoleRegistry.js";
 import { loadTent, type LoadedTent } from "./tree.js";
 import { envelopeIsActiveOccupation } from "./claim.js";
 import { taskReferencedNodeIds } from "./task-node-refs.js";
@@ -49,9 +50,12 @@ export async function renderTentStatus(
   }
 
   const allTasks = await loadTaskEnvelopes(fsAdapter);
+  const roleId = role
+    ? resolveRole((await loadRolesRegistry(fsAdapter)).roles, role)?.id
+    : undefined;
   const pendingTasks = allTasks
     .filter((task) => task.state === "queued")
-    .filter((task) => !role || (task.assigneeKind === "role" && task.assigneeId === role));
+    .filter((task) => !role || task.roleId === roleId);
   lines.push("");
   if (pendingTasks.length === 0) {
     lines.push("Pending tasks: none");
@@ -60,7 +64,7 @@ export async function renderTentStatus(
     for (const task of pendingTasks) {
       const nodeIds = taskReferencedNodeIds(task);
       lines.push(
-        `- ${task.assigneeKind}:${task.assigneeId}/${path.posix.basename(task.path)} -> ${nodeIds.join(", ") || "-"}`
+        `- ${taskExecutionLabel(task)}/${path.posix.basename(task.path)} -> ${nodeIds.join(", ") || "-"}`
       );
     }
   }
@@ -69,7 +73,7 @@ export async function renderTentStatus(
   const activeTasks = allTasks
     .filter((task) => envelopeIsActiveOccupation(task))
     .filter((task) => task.state !== "queued")
-    .filter((task) => !role || (task.assigneeKind === "role" && task.assigneeId === role));
+    .filter((task) => !role || task.roleId === roleId);
   lines.push("");
   if (activeTasks.length === 0) {
     lines.push("Active tasks: none");
@@ -79,7 +83,7 @@ export async function renderTentStatus(
       const state = task.state;
       const nodeIds = taskReferencedNodeIds(task);
       lines.push(
-        `- ${task.id || path.posix.basename(task.path)}: ${task.assigneeKind}:${task.assigneeId} [${state}] nodes=${nodeIds.join(",") || "-"}`
+        `- ${task.id || path.posix.basename(task.path)}: ${taskExecutionLabel(task)} [${state}] nodes=${nodeIds.join(",") || "-"}`
       );
     }
   }

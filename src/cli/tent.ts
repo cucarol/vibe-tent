@@ -470,7 +470,7 @@ Usage:
 
 Run commands from a workspace with <workspace>/.tent/ unless noted.
 
-Node, Role, Task, Delivery, and Settings route:
+Node, Role, Task, Delivery, and Agent Connection:
   tent role list|show|config          Durable Role discovery + metadata config (Service-backed)
   tent role --help                    Role subcommand help
   tent task list|get|claim|deliver|…  Attach Local Service → mount → task.* RPC

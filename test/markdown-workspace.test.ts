@@ -108,12 +108,11 @@ test("CoreDocsClient: active task protects collab fields on write", async () => 
   // roles registry needed for dispatch
   await fsa.writeFile(
     "roles.json",
-    JSON.stringify({ roles: [{ name: "executor" }] }, null, 2) + "\n"
+    JSON.stringify({ roles: [{ id: "rl-executor", name: "executor" }] }, null, 2) + "\n"
   );
   const nodeId = await createNode(env as any, { parentPath: "", name: "work", type: "goal" });
   const dispatched = await dispatch(env as any, nodeId, {
-    assigneeKind: "role",
-    assigneeId: "executor",
+    roleId: "rl-executor",
     userPrompt: "do the work",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },

@@ -70,7 +70,7 @@ test("Codex ACP resolves the official npx bridge and injects headless API-key au
   });
   const launch = adapter.resolveLaunch({
     sessionId: "ss-codex01",
-    routeId: "codex-acp-default",
+    connectionId: "codex-acp-default",
     cwd: process.cwd(),
     env: {},
     extras: { acp: { envKey: "OPENAI_API_KEY" } },
@@ -94,7 +94,7 @@ test("Codex ACP fails loud when an explicitly configured key is missing", () => 
     () =>
       adapter.resolveLaunch({
         sessionId: "ss-codex02",
-        routeId: "codex-acp-default",
+        connectionId: "codex-acp-default",
         cwd: process.cwd(),
         env: {},
         extras: { acp: { envKey: "OPENAI_API_KEY" } },
@@ -108,7 +108,7 @@ test("Claude ACP resolves the official npx bridge and permits local-login mode",
   const adapter = createClaudeAcpAdapter();
   const launch = adapter.resolveLaunch({
     sessionId: "ss-claude01",
-    routeId: "claude-acp-default",
+    connectionId: "claude-acp-default",
     cwd: process.cwd(),
     env: {},
     extras: { acp: {} },
@@ -127,7 +127,7 @@ test("Claude ACP injects an explicitly configured env key and fails when absent"
   });
   const base = {
     sessionId: "ss-claude02",
-    routeId: "claude-acp-default",
+    connectionId: "claude-acp-default",
     cwd: process.cwd(),
     extras: { acp: { envKey: "ANTHROPIC_API_KEY" } },
   };
@@ -150,7 +150,7 @@ test("Antigravity ACP uses the external agy-acp bridge, never agy directly", () 
   const adapter = createAntigravityAcpAdapter();
   const launch = adapter.resolveLaunch({
     sessionId: "ss-agy01",
-    routeId: "antigravity-acp-default",
+    connectionId: "antigravity-acp-default",
     cwd: process.cwd(),
     env: {},
     extras: { acp: {} },
@@ -166,7 +166,7 @@ test("Antigravity ACP explicit env requirement fails loud and names the bridge",
     () =>
       adapter.resolveLaunch({
         sessionId: "ss-agy02",
-        routeId: "antigravity-acp-default",
+        connectionId: "antigravity-acp-default",
         cwd: process.cwd(),
         env: {},
         extras: { acp: { envKey: "AGY_API_KEY" } },
@@ -179,7 +179,7 @@ test("OpenCode ACP uses its native `opencode acp` entrypoint", () => {
   const adapter = createOpenCodeAcpAdapter();
   const launch = adapter.resolveLaunch({
     sessionId: "ss-opencode01",
-    routeId: "opencode-acp-default",
+    connectionId: "opencode-acp-default",
     cwd: process.cwd(),
     env: {},
     extras: { acp: {} },
@@ -192,7 +192,7 @@ test("OpenCode ACP honors explicit command/args without appending `acp`", () => 
   const adapter = createOpenCodeAcpAdapter();
   const launch = adapter.resolveLaunch({
     sessionId: "ss-opencode02",
-    routeId: "opencode-acp-default",
+    connectionId: "opencode-acp-default",
     cwd: process.cwd(),
     env: {},
     command: process.execPath,
@@ -207,7 +207,7 @@ test("Copilot ACP uses the official npx package in explicit stdio mode", () => {
   const adapter = createCopilotAcpAdapter();
   const launch = adapter.resolveLaunch({
     sessionId: "ss-copilot01",
-    routeId: "copilot-acp-default",
+    connectionId: "copilot-acp-default",
     cwd: process.cwd(),
     env: {},
     extras: { acp: { model: "claude-sonnet-4.5" } },
@@ -229,7 +229,7 @@ test("Copilot ACP executable override still receives ACP stdio arguments", () =>
   const adapter = createCopilotAcpAdapter();
   const launch = adapter.resolveLaunch({
     sessionId: "ss-copilot02",
-    routeId: "copilot-acp-default",
+    connectionId: "copilot-acp-default",
     cwd: process.cwd(),
     env: {},
     extras: { acp: { executable: "C:\\tools\\copilot.exe" } },
@@ -241,7 +241,7 @@ test("Copilot ACP executable override still receives ACP stdio arguments", () =>
 test("Copilot ACP may reuse local login or require an explicit env key", () => {
   const local = createCopilotAcpAdapter().resolveLaunch({
     sessionId: "ss-copilot03",
-    routeId: "copilot-acp-default",
+    connectionId: "copilot-acp-default",
     cwd: process.cwd(),
     env: {},
     extras: { acp: {} },
@@ -253,7 +253,7 @@ test("Copilot ACP may reuse local login or require an explicit env key", () => {
     () =>
       required.resolveLaunch({
         sessionId: "ss-copilot04",
-        routeId: "copilot-acp-default",
+        connectionId: "copilot-acp-default",
         cwd: process.cwd(),
         env: {},
         extras: { acp: { envKey: "GH_TOKEN" } },
@@ -266,7 +266,7 @@ test("Pi ACP resolves the third-party pi-acp npx bridge", () => {
   const adapter = createPiAcpAdapter();
   const launch = adapter.resolveLaunch({
     sessionId: "ss-pi01",
-    routeId: "pi-acp-default",
+    connectionId: "pi-acp-default",
     cwd: process.cwd(),
     env: {},
     extras: { acp: {} },
@@ -280,7 +280,7 @@ test("Pi ACP resolves the third-party pi-acp npx bridge", () => {
 test("Pi ACP may reuse local pi login or require an explicit env key", () => {
   const local = createPiAcpAdapter().resolveLaunch({
     sessionId: "ss-pi02",
-    routeId: "pi-acp-default",
+    connectionId: "pi-acp-default",
     cwd: process.cwd(),
     env: {},
     extras: { acp: {} },
@@ -292,7 +292,7 @@ test("Pi ACP may reuse local pi login or require an explicit env key", () => {
     () =>
       required.resolveLaunch({
         sessionId: "ss-pi03",
-        routeId: "pi-acp-default",
+        connectionId: "pi-acp-default",
         cwd: process.cwd(),
         env: {},
         extras: { acp: { envKey: "OPENAI_API_KEY" } },
@@ -316,7 +316,7 @@ for (const [name, adapter] of [
     const session = await adapter.startManagedSession!(
       {
         sessionId: `ss-${name.toLowerCase()}03`,
-        routeId: `${name.toLowerCase()}-acp-default`,
+        connectionId: `${name.toLowerCase()}-acp-default`,
         cwd,
         env: {
           MOCK_ACP_LOG: logPath,
@@ -388,7 +388,7 @@ for (const [name, create] of LOAD_RESUME_MAINSTREAM) {
     const session = await adapter.resumeManagedSession!(
       {
         sessionId: `ss-${slug}-load`,
-        routeId: `${slug}-acp-default`,
+        connectionId: `${slug}-acp-default`,
         cwd,
         env: {
           MOCK_ACP_LOG: logPath,
@@ -455,7 +455,7 @@ for (const [name, create] of LOAD_RESUME_MAINSTREAM) {
         adapter.resumeManagedSession!(
           {
             sessionId: `ss-${slug}-noload`,
-            routeId: `${slug}-acp-default`,
+            connectionId: `${slug}-acp-default`,
             cwd,
             env: {
               MOCK_ACP_LOG: logPath,
@@ -492,7 +492,7 @@ test("Claude ACP resumeManagedSession uses session/resume (not load/new) without
   const session = await adapter.resumeManagedSession!(
     {
       sessionId: "ss-claude-resume",
-      routeId: "claude-acp-default",
+      connectionId: "claude-acp-default",
       cwd,
       env: {
         MOCK_ACP_LOG: logPath,
@@ -571,7 +571,7 @@ test("Claude ACP resumeManagedSession fails loud when sessionCapabilities.resume
       adapter.resumeManagedSession!(
         {
           sessionId: "ss-claude-noresume",
-          routeId: "claude-acp-default",
+          connectionId: "claude-acp-default",
           cwd,
           env: {
             MOCK_ACP_LOG: logPath,

@@ -2,7 +2,7 @@
 // Tent does not own the bridge's conversation database and never starts `agy` directly.
 
 import type {
-  RouteLaunchPlan,
+  ConnectionLaunchPlan,
   ManagedSession,
   ProviderAdapter,
   ProviderCapabilities,
@@ -70,18 +70,18 @@ export class AntigravityAcpProviderAdapter implements ProviderAdapter {
     return mainstreamAcpCapabilities();
   }
 
-  resolveLaunch(plan: RouteLaunchPlan): ResolvedLaunch {
+  resolveLaunch(plan: ConnectionLaunchPlan): ResolvedLaunch {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const env: Record<string, string> = {
       ...plan.env,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_ROUTE_ID: plan.routeId,
+      TENT_CONNECTION_ID: plan.connectionId,
     };
     if (opts.envKey) {
       const value = this.resolveEnvValue(opts.envKey, plan.env);
       if (!value?.trim()) {
         throw new Error(
-          `未配置环境变量 ${opts.envKey}：antigravity-acp route 明确要求该值。` +
+          `未配置环境变量 ${opts.envKey}：antigravity-acp Agent Connection 明确要求该值。` +
             `Tent 通过第三方 agy-acp bridge 连接官方 agy CLI；secret 只能放在 service 进程环境。`
         );
       }
@@ -98,7 +98,7 @@ export class AntigravityAcpProviderAdapter implements ProviderAdapter {
   }
 
   async startManagedSession(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     emit: (event: RuntimeEvent) => void
   ): Promise<ManagedSession> {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));

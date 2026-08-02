@@ -111,8 +111,8 @@ export interface ManifestEntry {
  */
 export interface Manifest {
   tent: string;
-  assigneeKind: "role" | "route";
-  assigneeId: string;
+  roleId?: string;
+  sessionId?: string;
   workspace?: string;
   worktree?: string;
   branch?: string;

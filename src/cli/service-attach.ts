@@ -61,7 +61,24 @@ export async function attachOrBootstrapService(
 
   // Protocol handshake before business RPC. A healthy-but-incompatible/legacy
   // Service must fail loud — never attach success and never spawn a competitor.
-  const existing = await tryAttachService(dataDir, fetchImpl);
+  const currentSessionId = options.env?.TENT_SESSION_ID ?? process.env.TENT_SESSION_ID;
+  const currentSessionToken =
+    options.env?.TENT_SESSION_TOKEN ?? process.env.TENT_SESSION_TOKEN;
+  const callerEnv = options.env ?? process.env;
+  const currentExternalKey =
+    callerEnv.TENT_EXTERNAL_SESSION_KEY?.trim() ||
+    (callerEnv.CODEX_THREAD_ID?.trim()
+      ? `codex:${callerEnv.CODEX_THREAD_ID.trim()}`
+      : callerEnv.CLAUDE_SESSION_ID?.trim()
+        ? `claude:${callerEnv.CLAUDE_SESSION_ID.trim()}`
+        : undefined);
+  const existing = await tryAttachService(
+    dataDir,
+    fetchImpl,
+    currentSessionId,
+    currentSessionToken,
+    currentExternalKey
+  );
   if (existing) {
     return { ...existing, started: false, child: null, dataDir };
   }
@@ -100,7 +117,13 @@ export async function attachOrBootstrapService(
 
   const deadline = Date.now() + readyTimeoutMs;
   while (Date.now() < deadline) {
-    const attached = await tryAttachService(dataDir, fetchImpl);
+    const attached = await tryAttachService(
+      dataDir,
+      fetchImpl,
+      currentSessionId,
+      currentSessionToken,
+      currentExternalKey
+    );
     if (attached) {
       child.stdout?.destroy();
       child.stderr?.destroy();
@@ -141,7 +164,10 @@ export function cliServiceChildEnv(
  */
 export async function tryAttachService(
   dataDir: string,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
+  currentSessionId?: string,
+  currentSessionToken?: string,
+  currentExternalKey?: string
 ): Promise<{ url: string; endpoint: ServiceEndpointRecord; client: ServiceClient } | null> {
   const endpoint = await readServiceEndpoint(dataDir);
   if (!endpoint) return null;
@@ -149,7 +175,14 @@ export async function tryAttachService(
     return null;
   }
   const url = serviceBaseUrl(endpoint.host, endpoint.port);
-  const client = createServiceClient({ baseUrl: url, token: endpoint.token, fetchImpl });
+  const client = createServiceClient({
+    baseUrl: url,
+    token: endpoint.token,
+    fetchImpl,
+    currentSessionId,
+    currentSessionToken,
+    currentExternalKey,
+  });
   try {
     const health = (await client.health()) as {
       status?: string;

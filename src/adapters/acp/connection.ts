@@ -8,14 +8,14 @@ import {
 } from "./types.js";
 import type { AcpMcpServerWire, AcpSkillMetaRef } from "./mcp-skills.js";
 import type { BootstrapImageRef } from "./image-prompt.js";
-import type { RouteLaunchPlan } from "../types.js";
+import type { ConnectionLaunchPlan } from "../types.js";
 import type { BoundedBinaryRead } from "../../core/adapter.js";
 import { NodeFs } from "../../fs/node-fs.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 /**
- * Read the canonical ACP route bag from RouteLaunchPlan.extras.
+ * Read the canonical ACP route bag from ConnectionLaunchPlan.extras.
  */
 export function readAcpExtras(extras: Record<string, unknown> | undefined): unknown {
   if (!extras || typeof extras !== "object") return {};
@@ -24,7 +24,7 @@ export function readAcpExtras(extras: Record<string, unknown> | undefined): unkn
 }
 
 /**
- * Read snapshot-time ACP session projection from RouteLaunchPlan.extras.
+ * Read snapshot-time ACP session projection from ConnectionLaunchPlan.extras.
  * Built by AgentRuntime at start/resume from route snapshot — not hot-reloaded.
  * Wire values may contain secrets; never log the returned mcpServers array.
  */
@@ -43,21 +43,21 @@ export function readAcpSessionProjection(extras: Record<string, unknown> | undef
 }
 
 /**
- * Ephemeral image projection fields for AcpClient from a RouteLaunchPlan.
+ * Ephemeral image projection fields for AcpClient from a ConnectionLaunchPlan.
  * Paths only on the plan; bytes are read at session/prompt under system root.
  * Image blocks still require live initialize promptCapabilities.image === true.
  * Never log or persist resolved bytes.
  */
 /**
- * Core-owned spawn overlay + diagnostic secrets from RouteLaunchPlan.
+ * Core-owned spawn overlay + diagnostic secrets from ConnectionLaunchPlan.
  * Passed through to AcpClient so reserved keys and resolver outputs are not lost.
  */
-export function readCoreChildEnvClientOptions(plan: RouteLaunchPlan): {
-  coreEnv?: RouteLaunchPlan["coreEnv"];
+export function readCoreChildEnvClientOptions(plan: ConnectionLaunchPlan): {
+  coreEnv?: ConnectionLaunchPlan["coreEnv"];
   diagnosticSecrets?: string[];
 } {
   const out: {
-    coreEnv?: RouteLaunchPlan["coreEnv"];
+    coreEnv?: ConnectionLaunchPlan["coreEnv"];
     diagnosticSecrets?: string[];
   } = {};
   if (plan.coreEnv && Object.keys(plan.coreEnv).length > 0) {
@@ -71,7 +71,7 @@ export function readCoreChildEnvClientOptions(plan: RouteLaunchPlan): {
   return out;
 }
 
-export function readBootstrapImageClientOptions(plan: RouteLaunchPlan): {
+export function readBootstrapImageClientOptions(plan: ConnectionLaunchPlan): {
   bootstrapImageRefs?: BootstrapImageRef[];
   bootstrapImageSystemRoot?: string;
   readBootstrapImageBinary?: (

@@ -47,7 +47,6 @@ import {
   loadTaskEnvelopes,
   patchTaskEnvelope,
   primaryNodeId,
-  taskAssigneeKind,
   taskAsSub,
   taskParentRoleId,
   type RoleWorkspaceContract,
@@ -89,7 +88,7 @@ import {
   appendCallerBootstrapSection,
   type StableContextGenerationBundle,
 } from "./session-context-generation.js";
-import { systemRootFromWorkspace, TEMP_DIR } from "../core/paths.js";
+import { roleTempRoot, systemRootFromWorkspace, TEMP_DIR } from "../core/paths.js";
 import {
   decodeBase64Strict,
   MAX_ATTACHMENT_BYTES,
@@ -292,11 +291,11 @@ import {
   type TypeRegistryEntryProjection,
 } from "./types.js";
 import {
-  projectSettingsRoute,
-  projectSettingsRoutes,
-} from "./routes.js";
+  projectAgentConnection,
+  projectAgentConnections,
+} from "./connections.js";
 import { projectProviderCatalog } from "./provider-catalog.js";
-import type { SettingsRouteCatalog } from "./route-catalog.js";
+import type { AgentConnectionCatalog } from "./connection-catalog.js";
 import { RpcError, type JsonRpcError } from "./rpc-error.js";
 import {
   installSkills,
@@ -343,8 +342,8 @@ export interface HandlerContext {
    */
   credentials: CredentialStore;
   dataDir: string;
-  /** Machine-local SettingsRoute catalog (serial CRUD + runtime sync). */
-  routeCatalog: SettingsRouteCatalog;
+  /** Machine-local AgentConnection catalog (serial CRUD + runtime sync). */
+  connectionCatalog: AgentConnectionCatalog;
   /**
    * Package root for bundled skills (tests may inject).
    * Production: resolved once at service start.
@@ -358,12 +357,12 @@ export interface HandlerContext {
   /**
    * Optional integrate hook for tests.
    * Production path uses real workspace Git via the Task's canonical lane contract.
-   * The assignee id is retained only for test hooks and diagnostics.
+   * The executor id is retained only for test hooks and diagnostics.
    */
   integrateCommits?: (
     workspaceRoot: string,
     commits: string[],
-    assigneeId: string
+    executorId: string
   ) => Promise<void>;
 }
 
@@ -395,7 +394,8 @@ function isTaskLifecycleErrorLike(
 export async function dispatchMethod(
   ctx: HandlerContext,
   method: string,
-  params: Record<string, unknown> | undefined
+  params: Record<string, unknown> | undefined,
+  callContext: { callerSessionId?: string; callerExternalKey?: string } = {}
 ): Promise<unknown> {
   if (method.startsWith("AgentRuntimePort.") || method.startsWith("AgentRuntime.")) {
     throw new RpcError(
@@ -491,16 +491,16 @@ export async function dispatchMethod(
         return registryRoleUpdate(ctx, p);
       case "registry.role.delete":
         return registryRoleDelete(ctx, p);
-      case "route.list":
-        return routeList(ctx, p);
-      case "route.get":
-        return routeGet(ctx, p);
-      case "route.create":
-        return routeCreate(ctx, p);
-      case "route.update":
-        return routeUpdate(ctx, p);
-      case "route.delete":
-        return routeDelete(ctx, p);
+      case "connection.list":
+        return connectionList(ctx, p);
+      case "connection.get":
+        return connectionGet(ctx, p);
+      case "connection.create":
+        return connectionCreate(ctx, p);
+      case "connection.update":
+        return connectionUpdate(ctx, p);
+      case "connection.delete":
+        return connectionDelete(ctx, p);
       case "provider.catalog":
         return providerCatalogRpc();
       case "credential.list":
@@ -516,9 +516,15 @@ export async function dispatchMethod(
       case "task.dispatch":
         return taskDispatch(ctx, p);
       case "task.claim":
-        return taskClaimRpc(ctx, p);
+        return taskClaimRpc(ctx, p, {
+          sessionId: callContext.callerSessionId,
+          externalKey: callContext.callerExternalKey,
+        });
       case "task.claimDirect":
-        return taskClaimDirectRpc(ctx, p);
+        return taskClaimDirectRpc(ctx, p, {
+          sessionId: callContext.callerSessionId,
+          externalKey: callContext.callerExternalKey,
+        });
       case "task.backfillWorkspaceLaneBase":
         return taskBackfillWorkspaceLaneBaseRpc(ctx, p);
       case "task.wait":
@@ -2135,7 +2141,7 @@ function mapDocsSemanticError(err: unknown, surface: string): RpcError {
   return new RpcError(-32000, message);
 }
 
-/** Read-only durable Role projection. Route availability belongs to machine Settings. */
+/** Read-only durable Role projection. Connection availability belongs to machine Settings. */
 async function registryRoles(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -2318,9 +2324,8 @@ async function registryRoleDelete(ctx: HandlerContext, p: Record<string, unknown
     // Only durable Role tasks block Role deletion.
     const activeTask = tasks.find(
       (t) =>
-        taskAssigneeKind(t) === "role" &&
         isActiveTaskState(t.state) &&
-        (t.assigneeId === existing.name || (roleId !== "" && t.assigneeId === roleId))
+        roleId !== "" && t.roleId === roleId
     );
     if (activeTask) {
       throw new RpcError(
@@ -2335,7 +2340,7 @@ async function registryRoleDelete(ctx: HandlerContext, p: Record<string, unknown
       );
     }
 
-    const activeSession = await findActiveManagedSessionForRole(ctx, workspaceId, existing.name);
+    const activeSession = await findActiveExternalSessionForRole(ctx, workspaceId, roleId);
     if (activeSession) {
       throw new RpcError(
         RPC_LIFECYCLE,
@@ -2491,87 +2496,73 @@ function mapRoleRegistryError(err: unknown, surface: string): RpcError {
 }
 
 /**
- * Machine-local SettingsRoute catalog for desktop launch picker / editor.
+ * Machine-local AgentConnection catalog for desktop launch picker / editor.
  * Safe projection only — no env maps, API keys, tokens, or secret values.
  */
-async function routeList(ctx: HandlerContext, p: Record<string, unknown>) {
+async function connectionList(ctx: HandlerContext, p: Record<string, unknown>) {
   void p;
-  const catalog = ctx.routeCatalog.list();
+  const catalog = ctx.connectionCatalog.list();
   const existsMap = await credentialExistsLookup(ctx, catalog);
-  return { routes: projectSettingsRoutes(catalog, { credentialExistsById: existsMap }) };
+  return { connections: projectAgentConnections(catalog, { credentialExistsById: existsMap }) };
 }
 
-async function routeGet(ctx: HandlerContext, p: Record<string, unknown>) {
-  const routeId = requireString(p, "routeId");
-  const route = ctx.routeCatalog.get(routeId);
-  if (!route) {
-    throw new RpcError(-32004, `Route not found: ${routeId}`);
+async function connectionGet(ctx: HandlerContext, p: Record<string, unknown>) {
+  const connectionId = requireString(p, "connectionId");
+  const connection = ctx.connectionCatalog.get(connectionId);
+  if (!connection) {
+    throw new RpcError(-32004, `Agent Connection not found: ${connectionId}`);
   }
   return {
-    route: projectSettingsRoute(
-      route,
-      await routeCredentialExistsOpts(ctx, route)
+    connection: projectAgentConnection(
+      connection,
+      await connectionCredentialExistsOpts(ctx, connection)
     ),
   };
 }
 
-async function routeCreate(ctx: HandlerContext, p: Record<string, unknown>) {
-  // Single top-level shape: create fields directly on params (no nested route).
-  if ("route" in p) {
-    throw new RpcError(
-      -32602,
-      "route.create does not accept nested route; pass fields at the top level"
-    );
-  }
-  const created = await ctx.routeCatalog.create(p);
-  const route = projectSettingsRoute(
+async function connectionCreate(ctx: HandlerContext, p: Record<string, unknown>) {
+  const created = await ctx.connectionCatalog.create(p);
+  const connection = projectAgentConnection(
     created,
-    await routeCredentialExistsOpts(ctx, created)
+    await connectionCredentialExistsOpts(ctx, created)
   );
   ctx.events.emit(
-    "route.changed",
+    "connection.changed",
     "",
-    { action: "create", routeId: created.routeId, route },
+    { action: "create", connectionId: created.connectionId, connection },
     "self"
   );
   return {
-    route,
+    connection,
   };
 }
 
-async function routeUpdate(ctx: HandlerContext, p: Record<string, unknown>) {
-  // Single top-level shape: { routeId, ...patch } (no nested route).
-  if ("route" in p) {
-    throw new RpcError(
-      -32602,
-      "route.update does not accept nested route; pass { routeId, ...patch }"
-    );
-  }
-  const routeId = requireString(p, "routeId");
-  const { routeId: _routeId, ...patch } = p;
-  const updated = await ctx.routeCatalog.update(routeId, patch);
-  const route = projectSettingsRoute(
+async function connectionUpdate(ctx: HandlerContext, p: Record<string, unknown>) {
+  const connectionId = requireString(p, "connectionId");
+  const { connectionId: _connectionId, ...patch } = p;
+  const updated = await ctx.connectionCatalog.update(connectionId, patch);
+  const connection = projectAgentConnection(
     updated,
-    await routeCredentialExistsOpts(ctx, updated)
+    await connectionCredentialExistsOpts(ctx, updated)
   );
   ctx.events.emit(
-    "route.changed",
+    "connection.changed",
     "",
-    { action: "update", routeId: updated.routeId, route },
+    { action: "update", connectionId: updated.connectionId, connection },
     "self"
   );
   return {
-    route,
+    connection,
   };
 }
 
-async function routeDelete(ctx: HandlerContext, p: Record<string, unknown>) {
-  const routeId = requireString(p, "routeId");
-  const result = await ctx.routeCatalog.delete(routeId);
+async function connectionDelete(ctx: HandlerContext, p: Record<string, unknown>) {
+  const connectionId = requireString(p, "connectionId");
+  const result = await ctx.connectionCatalog.delete(connectionId);
   ctx.events.emit(
-    "route.changed",
+    "connection.changed",
     "",
-    { action: "delete", routeId: result.deleted },
+    { action: "delete", connectionId: result.deleted },
     "self"
   );
   return result;
@@ -2591,18 +2582,18 @@ async function credentialExistsLookup(
   return map;
 }
 
-async function routeCredentialExistsOpts(
+async function connectionCredentialExistsOpts(
   ctx: HandlerContext,
-  route: { credentialRef?: string }
+  connection: { credentialRef?: string }
 ): Promise<{ credentialExists: boolean } | undefined> {
-  const ref = route.credentialRef?.trim() || undefined;
+  const ref = connection.credentialRef?.trim() || undefined;
   if (!ref) return undefined;
   return { credentialExists: await ctx.credentials.has(ref) };
 }
 
 /**
  * Read-only product provider verification catalog (provider.catalog).
- * Machine-global product facts — no workspaceId, no secrets, no route config.
+ * Machine-global product facts — no workspaceId, no secrets, no Connection config.
  */
 function providerCatalogRpc(): ProviderCatalogProjection {
   return projectProviderCatalog();
@@ -3094,14 +3085,13 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     new Set([
       "workspaceId",
       "nodeIds",
-      "assigneeKind",
-      "assigneeId",
+      "roleId",
+      "connectionId",
       "prompt",
       "parentActor",
       "reviewer",
       "asSub",
       "deliveryPolicy",
-      "startSession",
       "callerKind",
     ]),
     "task.dispatch"
@@ -3112,33 +3102,41 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   const dispatchSelection = resolveTaskNodeSelection(p, mount.env.tentName, "task.dispatch");
   const primaryNodeId = dispatchSelection.primaryId;
   const nodeIds = dispatchSelection.nodeIds;
-  const assigneeKindRaw = requireString(p, "assigneeKind");
-  if (assigneeKindRaw !== "role" && assigneeKindRaw !== "route") {
-    throw new RpcError(-32602, `Invalid assigneeKind: ${assigneeKindRaw}`);
+  const requestedRoleId = optionalString(p, "roleId");
+  const connectionId = optionalString(p, "connectionId");
+  if (Boolean(requestedRoleId) === Boolean(connectionId)) {
+    throw new RpcError(-32602, "task.dispatch requires exactly one of roleId or connectionId");
   }
-  const assigneeKind = assigneeKindRaw;
-  const assigneeId = requireString(p, "assigneeId");
   const prompt = requireString(p, "prompt");
   const asSub = p.asSub === true;
   // Protocol 3 has one explicit responsibility pair.
   const explicitParentActor = parseOptionalTaskActor(p.parentActor, "parentActor");
   const explicitReviewer = parseOptionalTaskActor(p.reviewer, "reviewer");
   const explicitDeliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
-  const startSession = p.startSession === true;
   // New create requires explicit parentActor + reviewer.
   const resolvedActors = resolveDispatchActorsFromRpc({
     parentActor: explicitParentActor,
     reviewer: explicitReviewer,
   });
 
-  if (assigneeKind === "route" && !ctx.routeCatalog.get(assigneeId)) {
-    throw new RpcError(-32004, `Settings route not found: ${assigneeId}`);
+  const roleRegistry = requestedRoleId || asSub ? await loadRolesRegistry(mount.env.fs) : undefined;
+  const roleDefinition = requestedRoleId
+    ? roleRegistry?.roles.find((role) => role.id === requestedRoleId)
+    : undefined;
+  if (requestedRoleId && !roleDefinition) {
+    throw new RpcError(-32004, `Role not found in registry: ${requestedRoleId}`);
   }
-  if (startSession && assigneeKind !== "route") {
+  const parentRoleDefinition = asSub && resolvedActors.parentActor.kind === "role"
+    ? roleRegistry?.roles.find((role) => role.id === resolvedActors.parentActor.id)
+    : undefined;
+  if (asSub && !parentRoleDefinition) {
     throw new RpcError(
-      -32602,
-      "task.dispatch startSession is available only for a Settings route assignee"
+      -32004,
+      `Parent Role not found in registry: ${resolvedActors.parentActor.id}`
     );
+  }
+  if (connectionId && !ctx.connectionCatalog.get(connectionId)) {
+    throw new RpcError(-32004, `Agent Connection not found: ${connectionId}`);
   }
   // parentActor is the persisted authority fact. callerKind is a convenience hint,
   // not a second authorization source; derive the combined start path from parentActor.
@@ -3146,15 +3144,16 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   // P0-1: role worktree create/reuse + envelope dispatch share the workspace MutationBus
   // critical section so concurrent role worktree add cannot race. Git ops stay inside the
   // bus action (never nested mutations.run).
-  // Peer route tasks: lane deferred until startSession (tent-task/<taskId>).
-  // Sub route tasks: allocate taskId + create task lane at dispatch (target = dispatcher).
-  // Role assignee (peer + asSub): ensure durable Role/parent worktrees for validation only;
+  // Connection-launched Tasks receive their exact Task lane and reserved Session
+  // before the envelope is written. Role handoff captures its Role lane at claim.
+  // Role target (peer + asSub): ensure durable Role/parent worktrees for validation only;
   // do NOT persist execution workspaceLane/baseCommit/roleBranchBase at queue — first claim
   // captures the real Role tip in the same lifecycle + workspace mutation boundary.
   // When deliveryPolicy is omitted, snapshot current workspace default into the task
   // envelope at dispatch time (settings changes never rewrite existing tasks).
+  const preallocatedTaskId = connectionId ? makeTaskId() : undefined;
+  const reservedSessionId = connectionId ? makeSessionId() : undefined;
   const result = await ctx.mutations.run(workspaceId, async () => {
-    const assigneeLabel = assigneeId;
     // Keep registry/Git validation in the same workspace mutation section as lane
     // creation and envelope persistence. Otherwise a concurrent role update could
     // invalidate a check made just before entering the bus.
@@ -3162,38 +3161,42 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       await assertSubDispatchPreconditions(mount.env.fs, {
         workspaceRoot: mount.workspaceRoot,
         parentActor: resolvedActors.parentActor,
-        assigneeKind,
-        assigneeLabel,
+        targetRoleId: requestedRoleId,
       });
     }
     let workspaceLane: RoleWorkspaceContract | undefined;
-    let preallocatedTaskId: string | undefined;
 
     if (asSub) {
       // Parent Role lane must exist so asSub target can be validated / later bound at claim.
-      const parentRole = resolvedActors.parentActor.id;
-      const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, parentRole);
-      if (assigneeKind === "role") {
+      const dispatcherLane = await ensureRoleWorkspace(
+        mount.workspaceRoot,
+        parentRoleDefinition!.name
+      );
+      if (requestedRoleId) {
         // Ensure assignee Role worktree exists; leave envelope without execution lane/base.
-        await ensureRoleWorkspace(mount.workspaceRoot, assigneeLabel);
+        await ensureRoleWorkspace(mount.workspaceRoot, roleDefinition!.name);
         // Delay entire Role execution lane until first claim (do not freeze Git tip).
         workspaceLane = undefined;
       } else {
-        // Route sub: allocate taskId before lane creation; peer route stays deferred.
-        preallocatedTaskId = makeTaskId();
         workspaceLane = await ensureTaskWorkspace(
           mount.workspaceRoot,
-          preallocatedTaskId,
+          preallocatedTaskId!,
           { targetBranch: dispatcherLane.branch }
         );
       }
-    } else if (assigneeKind === "role") {
+    } else if (requestedRoleId) {
       // Peer role: ensure durable tent-role worktree when Git (validation only).
       // Execution lane + baseCommit are captured at first claim, not queue.
-      await ensureRoleWorkspaceIfGit(mount.workspaceRoot, assigneeLabel);
+      await ensureRoleWorkspaceIfGit(mount.workspaceRoot, roleDefinition!.name);
       workspaceLane = undefined;
+    } else {
+      // Non-code / non-Git work remains a formal Task rooted at the mounted
+      // workspace. A Git lane is created only when the workspace is actually Git.
+      workspaceLane = await ensureTaskWorkspaceIfGit(
+        mount.workspaceRoot,
+        preallocatedTaskId!
+      );
     }
-    // Peer route: no lane at dispatch (deferred to startSession).
 
     ctx.host.markSelfWrite(workspaceId);
     let deliveryPolicy = explicitDeliveryPolicy;
@@ -3207,7 +3210,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       deliveryPolicy !== "review" &&
       !mayElevateDeliveryPolicy({
         parentActor: resolvedActors.parentActor,
-        assigneeKind,
+        roleId: requestedRoleId,
       })
     ) {
       if (explicitDeliveryPolicy !== undefined) {
@@ -3218,36 +3221,136 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
           {
             deliveryPolicy,
             parentActor: resolvedActors.parentActor,
-            assigneeKind,
+            roleId: requestedRoleId,
           }
         );
       }
       // Workspace default elevated while dispatching a downstream Task Agent → clamp to review.
       deliveryPolicy = "review";
     }
-    const dispatched = await dispatch(mount.env, primaryNodeId, {
-      userPrompt: prompt,
-      parentActor: resolvedActors.parentActor,
-      reviewer: resolvedActors.reviewer,
-      asSub,
-      deliveryPolicy,
-      // Only route-asSub (and similar) may bind a Git lane at dispatch.
-      // Role assignee never freezes workspaceLane/baseCommit here.
-      workspace: workspaceLane,
-      assigneeKind,
-      assigneeId,
-      // Authoritative ordered Node refs (transient). Core writes Context Card only.
-      nodeIds,
-      ...(preallocatedTaskId ? { taskId: preallocatedTaskId } : {}),
-    });
+    if (connectionId) {
+      await ctx.runtime.reserveSession({
+        sessionId: reservedSessionId!,
+        connectionId,
+        lastTaskId: preallocatedTaskId!,
+        workspace: workspaceId,
+        workspaceLane,
+        runtimeWorkspace: { cwd: workspaceLane?.worktree || mount.workspaceRoot },
+      });
+    }
+    let dispatched;
+    try {
+      dispatched = await dispatch(mount.env, primaryNodeId, {
+        userPrompt: prompt,
+        parentActor: resolvedActors.parentActor,
+        reviewer: resolvedActors.reviewer,
+        asSub,
+        deliveryPolicy,
+        workspace: workspaceLane,
+        ...(requestedRoleId ? { roleId: requestedRoleId } : {}),
+        ...(reservedSessionId ? { sessionId: reservedSessionId } : {}),
+        nodeIds,
+        ...(preallocatedTaskId ? { taskId: preallocatedTaskId } : {}),
+      });
+    } catch (error) {
+      if (reservedSessionId) {
+        try {
+          // Provider launch has not started and no Task exists. Remove the exact
+          // reservation instead of persisting a Session that points at a phantom Task.
+          await ctx.runtime.registry.remove(reservedSessionId);
+        } catch (cleanupError) {
+          throw new RpcError(
+            RPC_LIFECYCLE,
+            "Task creation failed and the exact reserved Session could not be removed",
+            {
+              code: "DISPATCH_RESERVATION_CLEANUP_FAILED",
+              sessionId: reservedSessionId,
+              cause: error instanceof Error ? error.message : String(error),
+              cleanupError:
+                cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+            }
+          );
+        }
+      }
+      throw error;
+    }
+    let dispatchedState: TaskEnvelope["state"] = "queued";
+    if (connectionId) {
+      try {
+        if (beforeTaskClaimCoreForTests) {
+          const pre = await loadTaskEnvelope(mount.env.fs, dispatched.taskPath);
+          await beforeTaskClaimCoreForTests({
+            workspaceId,
+            taskPath: dispatched.taskPath,
+            task: pre,
+          });
+        }
+        const claimed = await taskClaim(mount.env, dispatched.taskPath);
+        dispatchedState = claimed.state;
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        const recoveryErrors: string[] = [];
+        try {
+          // A Connection Task must not remain queued after its atomic claim
+          // boundary fails. The ordinary queued interrupt deletes an unclaimed
+          // handoff, but this Task already owns a reserved Session and therefore
+          // needs a durable terminal audit instead of disappearing.
+          const current = await loadTaskEnvelope(mount.env.fs, dispatched.taskPath);
+          let terminal: TaskEnvelope;
+          if (current.state === "queued") {
+            ctx.host.markSelfWrite(workspaceId);
+            terminal = await patchTaskEnvelope(mount.env.fs, dispatched.taskPath, {
+              state: "interrupted",
+              wait: null,
+              updatedAt: mount.env.clock.now(),
+            });
+          } else if (current.state === "running" || current.state === "waiting") {
+            terminal = await taskFail(mount.env, dispatched.taskPath, {
+              summary: `Connection dispatch could not claim the exact Task: ${detail}`,
+            });
+          } else {
+            terminal = current;
+          }
+          emitTaskState(ctx, workspaceId, terminal, "task.dispatch.claim-failed");
+        } catch (recoveryError) {
+          recoveryErrors.push(
+            `Task failure: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`
+          );
+        }
+        try {
+          await ctx.runtime.registry.update(reservedSessionId!, {
+            state: "failed",
+            lastError: `Connection dispatch could not claim the exact Task: ${detail}`,
+          });
+        } catch (recoveryError) {
+          recoveryErrors.push(
+            `Session failure: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`
+          );
+        }
+        if (recoveryErrors.length > 0) {
+          throw new RpcError(
+            RPC_LIFECYCLE,
+            `Connection dispatch claim failed and durable recovery was incomplete: ${recoveryErrors.join("; ")}`,
+            {
+              code: "DISPATCH_CLAIM_RECOVERY_FAILED",
+              taskPath: dispatched.taskPath,
+              sessionId: reservedSessionId,
+              cause: detail,
+              recoveryErrors,
+            }
+          );
+        }
+        throw error;
+      }
+    }
     ctx.events.emit(
       "task.state",
       workspaceId,
       {
         path: dispatched.taskPath,
-        state: "queued",
-        assigneeId: dispatched.assigneeId,
-        assigneeKind: dispatched.assigneeKind,
+        state: dispatchedState,
+        roleId: dispatched.roleId,
+        sessionId: dispatched.sessionId,
         nodeIds,
         reason: "task.dispatch",
       },
@@ -3259,31 +3362,38 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   const dispatched = result.dispatched;
 
   let session: unknown = undefined;
-  if (startSession) {
-    // Claim then startSession so running+sessionId bind together.
-    // Do not pass relayPrompt as bootstrap — relay still tells external agents to claim+deliver;
-    // startSession builds managed bootstrap (Context Card + user prompt; auto-deliver on end).
-    // Combined convenience only: if startSession fails before any Session bind while the
-    // Task is still running without sessionId, release via the existing interrupt path
-    // (preserve audit; no deletion of non-queued Tasks). Separate claim/startSession APIs
-    // are unchanged. Do not overwrite honest waiting/failed from provider launch.
-    // Role first claim also captures execution lane + baseCommit in that same claim boundary.
-    await taskClaimRpc(ctx, {
-      workspaceId,
-      taskPath: dispatched.taskPath,
-    });
+  if (connectionId) {
+    // Reservation + Task creation/claim completed in one workspace mutation.
+    // Provider startup remains outside so terminal lifecycle transitions can win.
     try {
       session = await taskStartSessionRpc(ctx, {
         workspaceId,
         taskPath: dispatched.taskPath,
         callerKind,
       });
-    } catch (err) {
-      await compensateCombinedDispatchStartSessionFailure(ctx, {
-        workspaceId,
-        taskPath: dispatched.taskPath,
-      });
-      throw err;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      await ctx.runtime.registry
+        .update(reservedSessionId!, {
+          state: "failed",
+          lastError: `Connection dispatch could not start the exact Task Session: ${detail}`,
+        })
+        .catch(() => undefined);
+      const current = await loadTaskEnvelope(mount.env.fs, dispatched.taskPath).catch(() => null);
+      if (
+        current &&
+        current.state === "running" &&
+        current.sessionId === reservedSessionId
+      ) {
+        await parkTaskForUnavailableSession(ctx, {
+          workspaceId,
+          taskPath: dispatched.taskPath,
+          sessionId: reservedSessionId,
+          reason: "task.dispatch.connection-start-failed",
+          detail,
+        });
+      }
+      throw error;
     }
   }
 
@@ -3294,68 +3404,17 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     manifestPath: dispatched.manifestPath,
     initPath: dispatched.initPath,
     relayPrompt: dispatched.relayPrompt,
-    assigneeKind: dispatched.assigneeKind,
-    assigneeId: dispatched.assigneeId,
+    roleId: dispatched.roleId,
+    sessionId: dispatched.sessionId,
     asSub: taskAsSub(taskAfter),
     parentActor: taskAfter.parentActor,
     reviewer: taskAfter.reviewer,
     state: taskAfter.state,
     session,
-    // Prefer envelope projection (Role baseCommit only after claim; route-asSub may
+    // Prefer envelope projection (Role baseCommit only after claim; Connection-asSub may
     // still carry dispatch-time lane). Fall back to in-memory lane only when present.
     workspaceLane: projectTask(taskAfter).workspaceLane,
   };
-}
-
-/**
- * Combined task.dispatch(startSession=true) compensation only.
- * When startSession rejects before binding a Session and the Task is still
- * running without sessionId, transition through task.interrupt (preserve Task
- * audit; no deletion of claimed Tasks). Leaves waiting and failed provider
- * launch/recovery states alone.
- *
- * Atomicity: running/no-session precondition and interrupt share one workspace
- * MutationBus section so a concurrent Session bind cannot be interrupted or stopped.
- * Best-effort: always rethrow the original RPC error from the caller.
- */
-async function compensateCombinedDispatchStartSessionFailure(
-  ctx: HandlerContext,
-  input: { workspaceId: string; taskPath: string }
-): Promise<void> {
-  try {
-    // Test-only pause point: runs before the MutationBus section so a concurrent
-    // Session bind can complete; production never sets this hook.
-    if (beforeCombinedDispatchCompensateForTests) {
-      await beforeCombinedDispatchCompensateForTests(input);
-    }
-    const mount = ctx.host.get(input.workspaceId);
-    if (!mount) return;
-    await ctx.mutations.run(input.workspaceId, async () => {
-      const task = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
-      if (!task) return;
-      if (task.state !== "running") return;
-      // Concurrent startSession bind: never interrupt or stop that Session.
-      if (task.sessionId) return;
-      // No sessionId on this path — same side-effects as task.interrupt without stopSession.
-      ctx.host.markSelfWrite(input.workspaceId);
-      const interrupted = await taskInterrupt(mount.env, input.taskPath);
-      emitTaskState(ctx, input.workspaceId, interrupted, "task.interrupt");
-      await cancelUserAsksForTask(
-        ctx,
-        input.workspaceId,
-        input.taskPath,
-        "task.interrupt"
-      );
-      await cancelTaskInputsForTask(
-        ctx,
-        input.workspaceId,
-        input.taskPath,
-        "task.interrupt"
-      );
-    });
-  } catch {
-    // Best-effort only; the original startSession RpcError is rethrown by the caller.
-  }
 }
 
 /**
@@ -3368,8 +3427,7 @@ async function assertSubDispatchPreconditions(
   input: {
     workspaceRoot: string;
     parentActor: TaskActorRef;
-    assigneeKind: "role" | "route";
-    assigneeLabel: string;
+    targetRoleId?: string;
   }
 ): Promise<void> {
   if (input.parentActor.kind !== "role") {
@@ -3386,15 +3444,15 @@ async function assertSubDispatchPreconditions(
       "task.dispatch asSub requires parentActor naming a real durable registry role (not user)"
     );
   }
-  if (dispatcher === input.assigneeLabel) {
+  if (input.targetRoleId && dispatcher === input.targetRoleId) {
     throw new RpcError(
       -32602,
       "task.dispatch asSub parentActor must not equal the assignee itself",
-      { parentActor: input.parentActor, assignee: input.assigneeLabel }
+      { parentActor: input.parentActor, roleId: input.targetRoleId }
     );
   }
   const registry = await loadRolesRegistry(fs);
-  const role = resolveRole(registry.roles, dispatcher);
+  const role = registry.roles.find((item) => item.id === dispatcher);
   if (!role) {
     throw new RpcError(
       -32602,
@@ -3505,58 +3563,65 @@ function resolveDispatchActorsFromRpc(input: {
   }
 }
 
-async function taskClaimDirectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+async function taskClaimDirectRpc(
+  ctx: HandlerContext,
+  p: Record<string, unknown>,
+  caller: { sessionId?: string; externalKey?: string } = {}
+) {
   assertAllowedParams(
     p,
     new Set([
       "workspaceId",
-      "role",
+      "roleId",
       "nodeIds",
       "prompt",
       "sourceTaskPath",
-      "sourceSessionId",
     ]),
     "task.claimDirect"
   );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const roleRef = requireString(p, "role");
+  const roleId = requireString(p, "roleId");
   const prompt = requireString(p, "prompt");
   const sourceTaskPath = optionalString(p, "sourceTaskPath");
-  const sourceSessionId = optionalString(p, "sourceSessionId");
   const selection = resolveTaskNodeSelection(p, mount.env.tentName, "task.claimDirect");
 
   return ctx.mutations.run(workspaceId, async () => {
     const registry = await loadRolesRegistry(mount.env.fs);
-    const roleDefinition = resolveRole(registry.roles, roleRef);
+    const roleDefinition = registry.roles.find((role) => role.id === roleId);
     if (!roleDefinition) {
-      throw new RpcError(-32004, `Role not found in registry: ${roleRef}`, {
+      throw new RpcError(-32004, `Role not found in registry: ${roleId}`, {
         code: "DIRECT_CLAIM_ROLE_NOT_FOUND",
-        role: roleRef,
+        roleId,
       });
     }
-    const role = roleDefinition.name;
+    const callerSession = await requireRoleClaimCallerSession(
+      ctx,
+      workspaceId,
+      roleId,
+      caller
+    );
     const actors = await resolveDirectClaimResponsibility(ctx, {
       workspaceId,
-      role,
+      roleId,
       sourceTaskPath,
-      sourceSessionId,
+      sourceSessionId: callerSession.id,
     });
 
     // Direct claim is the Role taking its own execution responsibility. It is
     // never a downstream/asSub dispatch and therefore never enters the
     // self-subdispatch cycle guard.
-    await ensureRoleWorkspaceIfGit(mount.workspaceRoot, role);
+    await ensureRoleWorkspaceIfGit(mount.workspaceRoot, roleDefinition.name);
     const settings = await loadWorkspaceSettings(mount.env.fs);
     const deliveryPolicy = mayElevateDeliveryPolicy({
       parentActor: actors.parentActor,
-      assigneeKind: "role",
+      roleId,
     })
       ? settings.defaultDeliveryPolicy
       : "review";
 
     ctx.host.markSelfWrite(workspaceId);
-    const roleRootPath = nodePath.posix.join(TEMP_DIR, role);
+    const roleRootPath = roleTempRoot(roleId);
     const expectedInitPath = nodePath.posix.join(roleRootPath, "init.md");
     const initExisted = await mount.env.fs.exists(expectedInitPath);
     const initBefore = initExisted
@@ -3565,17 +3630,24 @@ async function taskClaimDirectRpc(ctx: HandlerContext, p: Record<string, unknown
     let created:
       | Awaited<ReturnType<typeof dispatch>>
       | undefined;
+    let previousLastTaskId: string | undefined;
+    let callerSessionRebound = false;
     try {
       created = await dispatch(mount.env, selection.primaryId, {
         userPrompt: prompt,
         parentActor: actors.parentActor,
         reviewer: actors.reviewer,
         deliveryPolicy,
-        assigneeKind: "role",
-        assigneeId: role,
+        roleId,
+        sessionId: callerSession.id,
         nodeIds: selection.nodeIds,
       });
       const pre = await loadTaskEnvelope(mount.env.fs, created.taskPath);
+      previousLastTaskId = callerSession.lastTaskId;
+      await ctx.runtime.registry.update(callerSession.id, {
+        lastTaskId: pre.id || pre.path,
+      });
+      callerSessionRebound = true;
       const claimWrite = await prepareRoleClaimWrite(ctx, workspaceId, pre);
       if (beforeTaskClaimCoreForTests) {
         await beforeTaskClaimCoreForTests({
@@ -3605,10 +3677,16 @@ async function taskClaimDirectRpc(ctx: HandlerContext, p: Record<string, unknown
         initPath: created.initPath,
         task: projectTask(task),
         state: task.state,
-        role: task.assigneeId,
+        roleId: task.roleId,
+        sessionId: task.sessionId,
         referencedNodeIds: nodeIds,
       };
     } catch (err) {
+      if (callerSessionRebound) {
+        await ctx.runtime.registry
+          .update(callerSession.id, { lastTaskId: previousLastTaskId })
+          .catch(() => undefined);
+      }
       if (created) {
         const cleanupErrors: string[] = [];
         for (const exactPath of [created.taskPath, created.manifestPath]) {
@@ -3656,7 +3734,7 @@ async function resolveDirectClaimResponsibility(
   ctx: HandlerContext,
   input: {
     workspaceId: string;
-    role: string;
+    roleId: string;
     sourceTaskPath?: string;
     sourceSessionId?: string;
   }
@@ -3672,7 +3750,7 @@ async function resolveDirectClaimResponsibility(
     }
     if (
       session.workspace !== input.workspaceId ||
-      session.roleName !== input.role ||
+      session.roleId !== input.roleId ||
       session.state !== "external" ||
       !SessionRegistry.isOpen(session.state)
     ) {
@@ -3682,7 +3760,7 @@ async function resolveDirectClaimResponsibility(
         {
           code: "DIRECT_CLAIM_SESSION_MISMATCH",
           sessionId: session.id,
-          role: input.role,
+          roleId: input.roleId,
         }
       );
     }
@@ -3732,8 +3810,7 @@ async function resolveDirectClaimResponsibility(
     sourceTask = matches[0]!;
   }
 
-  const sameRoleTask =
-    sourceTask.assigneeId === input.role && taskAssigneeKind(sourceTask) === "role";
+  const sameRoleTask = sourceTask.roleId === input.roleId;
   const activeClaim = sourceTask.state !== "queued" && isActiveTaskState(sourceTask.state);
   if (explicitSourceTask && (!sameRoleTask || !activeClaim)) {
     throw new RpcError(
@@ -3742,8 +3819,9 @@ async function resolveDirectClaimResponsibility(
       {
         code: "DIRECT_CLAIM_SOURCE_TASK_MISMATCH",
         taskPath: sourceTask.path,
-        role: input.role,
-        taskAssignee: `${sourceTask.assigneeKind}:${sourceTask.assigneeId}`,
+        roleId: input.roleId,
+        taskRoleId: sourceTask.roleId,
+        taskSessionId: sourceTask.sessionId,
         state: sourceTask.state,
       }
     );
@@ -3755,8 +3833,9 @@ async function resolveDirectClaimResponsibility(
       {
         code: "DIRECT_CLAIM_SOURCE_TASK_MISMATCH",
         taskPath: sourceTask.path,
-        role: input.role,
-        taskAssignee: `${sourceTask.assigneeKind}:${sourceTask.assigneeId}`,
+        roleId: input.roleId,
+        taskRoleId: sourceTask.roleId,
+        taskSessionId: sourceTask.sessionId,
       }
     );
   }
@@ -3795,7 +3874,11 @@ async function resolveDirectClaimResponsibility(
   }
 }
 
-async function taskClaimRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+async function taskClaimRpc(
+  ctx: HandlerContext,
+  p: Record<string, unknown>,
+  caller: { sessionId?: string; externalKey?: string } = {}
+) {
   assertAllowedParams(
     p,
     new Set(["workspaceId", "taskPath"]),
@@ -3813,16 +3896,58 @@ async function taskClaimRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       // leaves the Task queued (no intermediate running without base).
       const pre = await loadTaskEnvelope(mount.env.fs, taskPath);
       let claimWrite: TaskClaimWrite | undefined;
+      let callerSession: SessionRecord | undefined;
+      let previousLastTaskId: string | undefined;
+      if (pre.roleId) {
+        callerSession = await requireRoleClaimCallerSession(
+          ctx,
+          workspaceId,
+          pre.roleId,
+          caller
+        );
+        if (pre.state === "running" && pre.sessionId !== callerSession.id) {
+          throw new RpcError(
+            RPC_LIFECYCLE,
+            "task.claim cannot replace the exact Session of a running Role Task",
+            {
+              code: "TASK_CLAIM_SESSION_MISMATCH",
+              taskPath,
+              boundSessionId: pre.sessionId,
+              callerSessionId: callerSession.id,
+            }
+          );
+        }
+      }
       if (pre.state !== "running") {
         // First claim only: prepare lane/base (no disk write) then single-patch claim.
-        claimWrite = await prepareRoleClaimWrite(ctx, workspaceId, pre);
+        const preparedRoleWrite = await prepareRoleClaimWrite(ctx, workspaceId, pre);
+        claimWrite = {
+          ...(preparedRoleWrite ?? {}),
+          ...(callerSession ? { sessionId: callerSession.id } : {}),
+        };
         if (beforeTaskClaimCoreForTests) {
           await beforeTaskClaimCoreForTests({ workspaceId, taskPath, task: pre });
         }
       }
-      const task = await taskClaim(mount.env, taskPath, {
-        ...(claimWrite ? { claimWrite } : {}),
-      });
+      if (callerSession && pre.state !== "running") {
+        previousLastTaskId = callerSession.lastTaskId;
+        await ctx.runtime.registry.update(callerSession.id, {
+          lastTaskId: pre.id || pre.path,
+        });
+      }
+      let task: TaskEnvelope;
+      try {
+        task = await taskClaim(mount.env, taskPath, {
+          ...(claimWrite ? { claimWrite } : {}),
+        });
+      } catch (error) {
+        if (callerSession && pre.state !== "running") {
+          await ctx.runtime.registry
+            .update(callerSession.id, { lastTaskId: previousLastTaskId })
+            .catch(() => undefined);
+        }
+        throw error;
+      }
       emitTaskState(ctx, workspaceId, task, "task.claim");
       const nodeIds =
         taskReferencedNodeIds(task);
@@ -3840,12 +3965,62 @@ async function taskClaimRpc(ctx: HandlerContext, p: Record<string, unknown>) {
         taskPath,
         task: projectTask(task),
         state: task.state,
-        role: task.assigneeKind === "role" ? task.assigneeId : undefined,
+        roleId: task.roleId,
         referencedNodeIds: nodeIds,
         sessionId: task.sessionId,
       };
     })
   );
+}
+
+async function requireRoleClaimCallerSession(
+  ctx: HandlerContext,
+  workspaceId: string,
+  roleId: string,
+  caller: { sessionId?: string; externalKey?: string }
+): Promise<SessionRecord> {
+  let callerSessionId = caller.sessionId?.trim() || undefined;
+  if (!callerSessionId && caller.externalKey?.trim()) {
+    const matches = (await ctx.runtime.registry.list()).filter(
+      (record) =>
+        record.state === "external" &&
+        recordExternalKey(record) === caller.externalKey!.trim()
+    );
+    if (matches.length === 1) callerSessionId = matches[0]!.id;
+    else if (matches.length > 1) {
+      throw new RpcError(-32001, "task.claim host-native Session context is ambiguous", {
+        code: "TASK_CLAIM_CALLER_SESSION_AMBIGUOUS",
+        externalKey: caller.externalKey,
+      });
+    }
+  }
+  if (!callerSessionId) {
+    throw new RpcError(
+      -32001,
+      "task.claim requires trusted current Role Session context",
+      { code: "TASK_CLAIM_CALLER_SESSION_REQUIRED", roleId }
+    );
+  }
+  const mount = ctx.host.require(workspaceId);
+  await requireRoleNameById(mount.env.fs, roleId);
+  const session = await ctx.runtime.registry.read(callerSessionId);
+  if (
+    !session ||
+    session.state !== "external" ||
+    session.workspace !== workspaceId ||
+    session.roleId !== roleId
+  ) {
+    throw new RpcError(
+      -32001,
+      "task.claim caller Session is not an exact live workspace/Role binding",
+      {
+        code: "TASK_CLAIM_CALLER_SESSION_MISMATCH",
+        roleId,
+        callerSessionId,
+      }
+    );
+  }
+  return session;
 }
 
 /**
@@ -3927,7 +4102,7 @@ async function taskBackfillWorkspaceLaneBaseRpc(
       // Validate recorded lane against real Role/Task integration contract.
       let real: RoleWorkspaceContract;
       try {
-        real = await resolveIntegrationContract(mount.workspaceRoot, current);
+        real = await resolveIntegrationContract(mount.workspaceRoot, current, mount.env.fs);
       } catch (err) {
         throw new RpcError(
           RPC_LIFECYCLE,
@@ -4104,8 +4279,8 @@ function parseBackfillActor(raw: unknown): TaskActorRef {
 }
 
 /**
- * Prepare Role-assignee claim write payload without mutating the envelope.
- * Returns undefined when no lane/base fields need to be written (non-Git / route /
+ * Prepare Role claim write payload without mutating the envelope.
+ * Returns undefined when no lane/base fields need to be written (non-Git / Session-only /
  * already complete). Throws before Core claim so the Task stays queued on failure.
  * Never writes intermediate lane-only patches.
  */
@@ -4114,7 +4289,7 @@ async function prepareRoleClaimWrite(
   workspaceId: string,
   task: TaskEnvelope
 ): Promise<TaskClaimWrite | undefined> {
-  if (taskAssigneeKind(task) !== "role") return undefined;
+  if (!task.roleId) return undefined;
 
   const mount = ctx.host.require(workspaceId);
   if (!(await isGitWorkspace(mount.workspaceRoot))) return undefined;
@@ -4134,6 +4309,7 @@ async function prepareRoleClaimWrite(
   // Resolve real Role lane (and asSub dispatcher target) without envelope writes.
   let real: RoleWorkspaceContract;
   try {
+    const registry = await loadRolesRegistry(mount.env.fs);
     let targetBranchHint: string | undefined;
     if (taskAsSub(task)) {
       const dispatcher = taskParentRoleId(task);
@@ -4142,18 +4318,25 @@ async function prepareRoleClaimWrite(
           `Sub task ${task.id || task.path} is missing a durable parent Role for claim lane bind.`
         );
       }
-      const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, dispatcher);
+      const dispatcherRole = registry.roles.find((item) => item.id === dispatcher);
+      if (!dispatcherRole) throw new Error(`Parent Role not found in registry: ${dispatcher}`);
+      const dispatcherLane = await ensureRoleWorkspace(
+        mount.workspaceRoot,
+        dispatcherRole.name
+      );
       targetBranchHint = dispatcherLane.branch;
       const recordedTarget = task.targetBranch?.trim();
       if (recordedTarget && recordedTarget !== targetBranchHint) {
         throw new Error(
-          `Task envelope targetBranch mismatch for role ${task.assigneeId}: ` +
+          `Task envelope targetBranch mismatch for Role ${task.roleId}: ` +
             `envelope=${recordedTarget} expected=${targetBranchHint}`
         );
       }
     }
     // Ensure durable Role worktree/branch exists; do not patch envelope yet.
-    const ensured = await ensureRoleWorkspace(mount.workspaceRoot, task.assigneeId);
+    const role = registry.roles.find((item) => item.id === task.roleId);
+    if (!role) throw new Error(`Role not found in registry: ${task.roleId}`);
+    const ensured = await ensureRoleWorkspace(mount.workspaceRoot, role.name);
     // Build a transient view for integration contract validation (no disk write).
     const view: TaskEnvelope = {
       ...task,
@@ -4162,7 +4345,7 @@ async function prepareRoleClaimWrite(
       branch: task.branch || ensured.branch,
       targetBranch: task.targetBranch || targetBranchHint || ensured.targetBranch,
     };
-    real = await resolveIntegrationContract(mount.workspaceRoot, view);
+    real = await resolveIntegrationContract(mount.workspaceRoot, view, mount.env.fs);
   } catch (err) {
     throw new RpcError(
       RPC_LIFECYCLE,
@@ -4391,7 +4574,7 @@ function parseUserAskChoices(raw: unknown): UserAskChoice[] | undefined {
 
 /**
  * U2A: user-only one-shot text and/or contextRefs to a running/waiting task.
- * Does not answer pending UserAsk; does not write chat history or mutate routes.
+ * Does not answer pending UserAsk, write chat history, or mutate Connections.
  * RPC returns after durable accept (status=pending, accepted=true) — never waits
  * for the provider Agent turn. Managed inject runs on a per-task FIFO background
  * worker (status processing → delivered|failed). External: poll taskInput.* .
@@ -5141,9 +5324,20 @@ async function assertNoBlockingTaskInputsForDeliver(
  * targetBranch / branch contract — that stays on accept/integrate so existing
  * mismatch fail-loud paths are unchanged.
  */
+async function requireRoleNameById(
+  fs: import("../core/adapter.js").FsAdapter,
+  roleId: string
+): Promise<string> {
+  const registry = await loadRolesRegistry(fs);
+  const role = registry.roles.find((item) => item.id === roleId);
+  if (!role) throw new Error(`Role not found in registry: ${roleId}`);
+  return role.name;
+}
+
 async function resolveTaskWorktreeForDirtyCheck(
   workspaceRoot: string,
-  task: TaskEnvelope
+  task: TaskEnvelope,
+  fs: import("../core/adapter.js").FsAdapter
 ): Promise<{ worktree: string; branch?: string } | undefined> {
   const hasRecordedLane = Boolean(
     task.workspace || task.worktree || task.branch || task.targetBranch
@@ -5161,19 +5355,22 @@ async function resolveTaskWorktreeForDirtyCheck(
 
   // Lane recorded without worktree path: recreate via the same ensure* helpers.
   const mountedRoot = nodePath.resolve(workspaceRoot);
-  const isRoute = taskAssigneeKind(task) === "route";
+  const isTaskScoped = !task.roleId;
   let targetBranch = task.targetBranch?.trim();
-  if (isRoute && taskAsSub(task)) {
+  if (isTaskScoped && taskAsSub(task)) {
     const parentRole = taskParentRoleId(task);
     if (parentRole) {
-      targetBranch = (await ensureRoleWorkspace(mountedRoot, parentRole)).branch;
+      const registry = await loadRolesRegistry(fs);
+      const role = registry.roles.find((item) => item.id === parentRole);
+      if (!role) throw new Error(`Parent Role not found in registry: ${parentRole}`);
+      targetBranch = (await ensureRoleWorkspace(mountedRoot, role.name)).branch;
     }
   }
-  const lane = isRoute
+  const lane = isTaskScoped
     ? await ensureTaskWorkspace(mountedRoot, task.id || task.path, {
         ...(targetBranch ? { targetBranch } : {}),
       })
-    : await ensureRoleWorkspace(mountedRoot, task.assigneeId);
+    : await ensureRoleWorkspace(mountedRoot, await requireRoleNameById(fs, task.roleId!));
   return { worktree: lane.worktree, branch: lane.branch };
 }
 
@@ -5185,9 +5382,10 @@ async function resolveTaskWorktreeForDirtyCheck(
  */
 async function assertTaskWorktreeCleanForDeliver(
   workspaceRoot: string,
-  task: TaskEnvelope
+  task: TaskEnvelope,
+  fs: import("../core/adapter.js").FsAdapter
 ): Promise<void> {
-  const lane = await resolveTaskWorktreeForDirtyCheck(workspaceRoot, task);
+  const lane = await resolveTaskWorktreeForDirtyCheck(workspaceRoot, task, fs);
   if (!lane) return;
   const status = await inspectWorktreeDirtiness(lane.worktree);
   if (!status.dirty) return;
@@ -5403,7 +5601,7 @@ async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       // Open TaskInput (pending/processing/retryable failed) must be consumed first.
       await assertNoBlockingTaskInputsForDeliver(ctx, workspaceId, taskForIntegrate);
       // Same gate for public deliver: dirty task worktree must not publish stale commits.
-      await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, taskForIntegrate);
+      await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, taskForIntegrate, mount.env.fs);
       // Ordinary executor lane: linear single-parent history from recorded base (cx-5q6za6).
       await assertOrdinaryExecutorLaneHistoryForDeliver(mount.workspaceRoot, taskForIntegrate);
       // Public commits[] must resolve as commit objects in exact base..task-branch range.
@@ -5416,7 +5614,7 @@ async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       // Commit-bearing Deliveries durably snapshot resolved target HEAD at review time.
       targetHead =
         pendingCommits.length > 0
-          ? await snapshotIntegrationTargetHead(mount.workspaceRoot, taskForIntegrate)
+          ? await snapshotIntegrationTargetHead(mount.workspaceRoot, taskForIntegrate, mount.env.fs)
           : undefined;
       if (targetHead && afterTargetHeadSnapshotForTests) {
         await afterTargetHeadSnapshotForTests(mount.workspaceRoot);
@@ -5655,7 +5853,7 @@ function outputProvenanceErrorToRpc(err: OutputProvenanceError): RpcError {
  *      alive rebind or native resume first (contextRestored=true); when native
  *      resume explicitly fails or prior is not resumeCapable, start an honest
  *      independent new Session with recovery bootstrap (contextRestored=false).
- *      Registry/route identity failures still park waiting(external) and fail
+ *      Registry/Connection identity failures still park waiting(external) and fail
  *      the RPC — never leave running with a dead managed process.
  *   4) return accepted/processing quickly — do **not** await the full Agent turn
  *   5) background per-task FIFO inject (## Review Feedback) exactly once;
@@ -5663,7 +5861,7 @@ function outputProvenanceErrorToRpc(err: OutputProvenanceError): RpcError {
  *      is at-most-once; already processing/delivered/uncertain skips re-inject
  *
  * External / no sessionId: core rework + pending review-feedback for poll+ack.
- * Role/route restore semantics and Delivery authority are unchanged.
+ * Role/Connection restore semantics and Delivery authority are unchanged.
  */
 async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -5951,7 +6149,7 @@ async function taskCancelRpc(ctx: HandlerContext, p: Record<string, unknown>) {
 }
 
 /**
- * Machine Settings route gate → AgentRuntimePort.startSession → bind task.sessionId only.
+ * Machine Agent Connection gate → AgentRuntimePort.startSession → exact Task Session only.
  * Shares authorized per-Task managed-session flight with task.replaceSession.
  * Usable bound Session reuses without launch unless a flight is already held.
  */
@@ -5977,7 +6175,7 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
     if (existing) {
       return joinOrConflictManagedSessionFlight(
         existing,
-        prepared.routeId,
+        prepared.connectionId,
         "startSession",
         taskPath
       );
@@ -6021,7 +6219,7 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
     return result;
   }
 
-  return runManagedSessionFlight(workspaceId, taskPath, prepared.routeId, "startSession", () =>
+  return runManagedSessionFlight(workspaceId, taskPath, prepared.connectionId, "startSession", () =>
     launchAndBindTaskStartSession(ctx, prepared)
   );
 }
@@ -6031,8 +6229,16 @@ type TaskSessionBindSnapshot = {
   state: TaskEnvelope["state"];
   sessionId: string;
   updatedAt: string | undefined;
-  assigneeKind: ReturnType<typeof taskAssigneeKind>;
-  assigneeId: string;
+  roleId: string | undefined;
+  nodeIds: string[];
+  workspace: string | undefined;
+  worktree: string | undefined;
+  branch: string | undefined;
+  targetBranch: string | undefined;
+  baseCommit: string | undefined;
+  deliveryPolicy: TaskEnvelope["deliveryPolicy"];
+  parentActor: TaskEnvelope["parentActor"];
+  reviewer: TaskEnvelope["reviewer"];
 };
 
 function captureTaskSessionBindSnapshot(task: TaskEnvelope): TaskSessionBindSnapshot {
@@ -6041,8 +6247,16 @@ function captureTaskSessionBindSnapshot(task: TaskEnvelope): TaskSessionBindSnap
     state: task.state,
     sessionId: task.sessionId?.trim() || "",
     updatedAt: task.updatedAt,
-    assigneeKind: taskAssigneeKind(task),
-    assigneeId: task.assigneeId,
+    roleId: task.roleId,
+    nodeIds: taskReferencedNodeIds(task),
+    workspace: task.workspace,
+    worktree: task.worktree,
+    branch: task.branch,
+    targetBranch: task.targetBranch,
+    baseCommit: task.baseCommit,
+    deliveryPolicy: task.deliveryPolicy,
+    parentActor: task.parentActor,
+    reviewer: task.reviewer,
   };
 }
 
@@ -6058,12 +6272,60 @@ function assertTaskSessionBindSnapshot(
     actual.state === expected.state &&
     actual.sessionId === expected.sessionId &&
     actual.updatedAt === expected.updatedAt &&
-    actual.assigneeKind === expected.assigneeKind &&
-    actual.assigneeId === expected.assigneeId;
+    actual.roleId === expected.roleId &&
+    actual.workspace === expected.workspace &&
+    actual.worktree === expected.worktree &&
+    actual.branch === expected.branch &&
+    actual.targetBranch === expected.targetBranch &&
+    actual.baseCommit === expected.baseCommit &&
+    actual.deliveryPolicy === expected.deliveryPolicy &&
+    JSON.stringify(actual.parentActor) === JSON.stringify(expected.parentActor) &&
+    JSON.stringify(actual.reviewer) === JSON.stringify(expected.reviewer) &&
+    actual.nodeIds.length === expected.nodeIds.length &&
+    actual.nodeIds.every((nodeId, index) => nodeId === expected.nodeIds[index]);
   if (unchanged && current.state === "running") return;
   throw new RpcError(
     RPC_LIFECYCLE,
     `${operation}: Task changed while the managed Session was starting; refusing late bind`,
+    {
+      code: "TASK_SESSION_BIND_CAS_FAILED",
+      taskPath,
+      expected,
+      actual,
+    }
+  );
+}
+
+function assertTaskSessionPostStartOwnership(
+  operation: "task.startSession" | "task.replaceSession",
+  taskPath: string,
+  current: TaskEnvelope,
+  expected: TaskSessionBindSnapshot
+): void {
+  const actual = captureTaskSessionBindSnapshot(current);
+  const immutableIdentityUnchanged =
+    actual.taskId === expected.taskId &&
+    actual.sessionId === expected.sessionId &&
+    actual.roleId === expected.roleId &&
+    actual.workspace === expected.workspace &&
+    actual.worktree === expected.worktree &&
+    actual.branch === expected.branch &&
+    actual.targetBranch === expected.targetBranch &&
+    actual.baseCommit === expected.baseCommit &&
+    actual.deliveryPolicy === expected.deliveryPolicy &&
+    JSON.stringify(actual.parentActor) === JSON.stringify(expected.parentActor) &&
+    JSON.stringify(actual.reviewer) === JSON.stringify(expected.reviewer) &&
+    actual.nodeIds.length === expected.nodeIds.length &&
+    actual.nodeIds.every((nodeId, index) => nodeId === expected.nodeIds[index]);
+  const validSameSessionProgress =
+    current.state === "running" ||
+    current.state === "waiting" ||
+    current.state === "delivered" ||
+    current.state === "accepted";
+  if (immutableIdentityUnchanged && validSameSessionProgress) return;
+  throw new RpcError(
+    RPC_LIFECYCLE,
+    `${operation}: Task no longer owns the managed Session after provider start`,
     {
       code: "TASK_SESSION_BIND_CAS_FAILED",
       taskPath,
@@ -6106,20 +6368,20 @@ async function stopUnboundManagedSession(
 type PreparedTaskStartSession =
   | {
       kind: "reuse";
-      routeId: string;
+      connectionId: string;
       result: ReturnType<typeof projectStartSessionResult>;
     }
   | {
       kind: "launch";
       workspaceId: string;
       taskPath: string;
-      routeId: string;
+      connectionId: string;
       task: TaskEnvelope;
       bootstrapPrompt?: string;
     };
 
 /**
- * Machine-route availability + task-state preparation for startSession.
+ * Exact bound-Session preparation for startSession.
  * Must run before any provider-launch flight join/coalesce.
  */
 async function prepareAuthorizedTaskStartSession(
@@ -6136,13 +6398,33 @@ async function prepareAuthorizedTaskStartSession(
   const mount = ctx.host.require(workspaceId);
   const bootstrapPrompt = optionalString(p, "bootstrapPrompt");
   let task = await loadTaskEnvelope(mount.env.fs, taskPath);
-  if (taskAssigneeKind(task) !== "route") {
+  const boundSessionId = task.sessionId?.trim() || "";
+  if (!boundSessionId) {
     throw new RpcError(
       -32602,
-      "task.startSession/task.replaceSession requires a Task assigned to a Settings route"
+      "task.startSession/task.replaceSession requires an exact bound Session"
     );
   }
-  const routeId = task.assigneeId;
+  const boundSession = await ctx.runtime.registry.read(boundSessionId);
+  if (!boundSession || !boundSession.connectionId) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `Bound managed Session not found: ${boundSessionId}`,
+      { code: "BOUND_SESSION_MISSING", taskPath, sessionId: boundSessionId }
+    );
+  }
+  const exactTaskId = task.id || taskPath;
+  if (
+    boundSession.workspace !== workspaceId ||
+    (boundSession.lastTaskId !== exactTaskId && boundSession.lastTaskId !== taskPath)
+  ) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `Bound Session ${boundSessionId} does not match the exact Task/workspace`,
+      { code: "BOUND_SESSION_IDENTITY_MISMATCH", taskPath, sessionId: boundSessionId }
+    );
+  }
+  const connectionId = boundSession.connectionId;
 
   // replaceSession eligibility/launch is owned by executeTaskReplaceSession.
   if (opts?.skipReuseAndLaunchPrep) {
@@ -6150,7 +6432,7 @@ async function prepareAuthorizedTaskStartSession(
       kind: "launch",
       workspaceId,
       taskPath,
-      routeId,
+      connectionId,
       task,
       bootstrapPrompt,
     };
@@ -6191,17 +6473,12 @@ async function prepareAuthorizedTaskStartSession(
   // prefix injection, not provider-conversation identity.
   const callerBootstrapAppend = bootstrapPrompt; // never replaces managed bootstrap
   if (task.sessionId) {
-    const prior = await ctx.runtime.registry.read(task.sessionId);
-    const exactTaskId = task.id || taskPath;
-    const exactBinding =
-      prior?.routeId === routeId &&
-      (prior.lastTaskId === exactTaskId || prior.lastTaskId === taskPath);
-    const probe = prior && exactBinding ? await ctx.runtime.probe(prior.id) : undefined;
-    if (prior && exactBinding && probe?.alive && prior.state !== "external") {
+    const probe = await ctx.runtime.probe(boundSession.id);
+    if (probe.alive && boundSession.state !== "external") {
       return {
         kind: "reuse",
-        routeId,
-        result: projectStartSessionResult(workspaceId, taskPath, task, prior, {
+        connectionId,
+        result: projectStartSessionResult(workspaceId, taskPath, task, boundSession, {
           cwd: task.worktree || mount.workspaceRoot,
         }),
       };
@@ -6212,7 +6489,7 @@ async function prepareAuthorizedTaskStartSession(
     kind: "launch",
     workspaceId,
     taskPath,
-    routeId,
+    connectionId,
     task,
     // Caller text is an optional dynamic append only — never the managed bootstrap itself.
     bootstrapPrompt: callerBootstrapAppend,
@@ -6227,7 +6504,7 @@ async function launchAndBindTaskStartSession(
   ctx: HandlerContext,
   prepared: Extract<PreparedTaskStartSession, { kind: "launch" }>
 ) {
-  const { workspaceId, taskPath, routeId } = prepared;
+  const { workspaceId, taskPath, connectionId } = prepared;
   const mount = ctx.host.require(workspaceId);
   let task = await runTaskLifecycle(workspaceId, taskPath, async () => {
     const current = await loadTaskEnvelope(mount.env.fs, taskPath);
@@ -6238,11 +6515,11 @@ async function launchAndBindTaskStartSession(
         { code: "INVALID_TASK_STATE", state: current.state, taskPath }
       );
     }
-    if (taskAssigneeKind(current) !== "route" || current.assigneeId !== routeId) {
+    if (!current.sessionId) {
       throw new RpcError(
         -32602,
-        `task.startSession Task assignee changed; expected route:${routeId}`,
-        { assigneeKind: current.assigneeKind, assigneeId: current.assigneeId, routeId }
+        "task.startSession Task lost its exact Session binding",
+        { taskPath, connectionId }
       );
     }
     const withLane = await ensureTaskWorkspaceLane(ctx, workspaceId, current);
@@ -6250,7 +6527,7 @@ async function launchAndBindTaskStartSession(
   });
 
   // Capture lane + roleBranchBase only after the execution slot is acquired.
-  // Role: durable tent-role lane. Route: task-scoped tent-task/<taskId> lane.
+  // Role: durable tent-role lane. Connection execution: task-scoped tent-task/<taskId> lane.
   task = await ensureTaskWorkspaceLane(ctx, workspaceId, task);
 
   const cwd = task.worktree || mount.workspaceRoot;
@@ -6283,15 +6560,15 @@ async function launchAndBindTaskStartSession(
   }
 
   // Live authoritative contextGeneration: always recompute from current AGENTS /
-  // Skill body+version / Role prompt / route launch snapshot. Persisted
+  // Skill body+version / Role prompt / Connection launch snapshot. Persisted
   // Task/card generation never overrides live facts. Collector failure is fail-loud
   // (never yields reusable fallback facts).
-  const priorSessionId = task.sessionId?.trim() || "";
+  const priorSessionId = task.sessionId!.trim();
   let priorSession: SessionRecord | undefined;
   let resumePrior = false;
-  if (priorSessionId) {
-    priorSession = (await ctx.runtime.registry.read(priorSessionId)) ?? undefined;
-    if (!priorSession) {
+  let firstStart = false;
+  priorSession = (await ctx.runtime.registry.read(priorSessionId)) ?? undefined;
+  if (!priorSession) {
       await parkTaskForUnavailableSession(ctx, {
         workspaceId,
         taskPath,
@@ -6303,30 +6580,33 @@ async function launchAndBindTaskStartSession(
         `Bound Session not found: ${priorSessionId}; use task.replaceSession for an explicit fresh Session`,
         { code: "BOUND_SESSION_MISSING", taskPath, sessionId: priorSessionId }
       );
-    }
-    const exactTaskId = task.id || taskPath;
-    if (
-      priorSession.routeId !== routeId ||
-      (priorSession.lastTaskId !== exactTaskId && priorSession.lastTaskId !== taskPath)
-    ) {
+  }
+  const exactTaskId = task.id || taskPath;
+  if (
+    priorSession.workspace !== workspaceId ||
+    priorSession.connectionId !== connectionId ||
+    (priorSession.lastTaskId !== exactTaskId && priorSession.lastTaskId !== taskPath)
+  ) {
       await parkTaskForUnavailableSession(ctx, {
         workspaceId,
         taskPath,
         sessionId: priorSessionId,
         reason: "task.startSession.bound-session-identity-mismatch",
-        detail: `Session binding mismatch (routeId=${priorSession.routeId}, lastTaskId=${priorSession.lastTaskId ?? "missing"})`,
+        detail: `Session binding mismatch (connectionId=${priorSession.connectionId}, lastTaskId=${priorSession.lastTaskId ?? "missing"})`,
       });
       throw new RpcError(
         RPC_LIFECYCLE,
-        `Bound Session ${priorSessionId} does not match the exact Task/route; use task.replaceSession for an explicit fresh Session`,
+        `Bound Session ${priorSessionId} does not match the exact Task/Connection; use task.replaceSession for an explicit fresh Session`,
         {
           code: "BOUND_SESSION_IDENTITY_MISMATCH",
           taskPath,
           sessionId: priorSessionId,
-          routeId,
+          connectionId,
         }
       );
-    }
+  }
+  firstStart = priorSession.state === "reserved";
+  if (!firstStart) {
     const probe = await ctx.runtime.probe(priorSessionId);
     if (probe.alive || !probe.resumeCapable) {
       await parkTaskForUnavailableSession(ctx, {
@@ -6350,17 +6630,14 @@ async function launchAndBindTaskStartSession(
     resumePrior = true;
   }
 
-  let routeSnapshot;
-  try {
-    routeSnapshot = priorSession?.routeSnapshot ?? ctx.runtime.snapshotRouteForStart(routeId);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new RpcError(-32602, `Settings route is unavailable: ${message}`, {
-      code: "ROUTE_UNAVAILABLE",
-      routeId,
-    });
+  const connectionSnapshot = priorSession.connectionSnapshot;
+  if (!connectionSnapshot) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `Bound Session ${priorSessionId} has no immutable Agent Connection snapshot`,
+      { code: "BOUND_SESSION_SNAPSHOT_MISSING", taskPath, sessionId: priorSessionId }
+    );
   }
-  const assigneeKind = taskAssigneeKind(task);
   let stableBundle: StableContextGenerationBundle;
   try {
     stableBundle = await collectStableContextGeneration({
@@ -6368,17 +6645,16 @@ async function launchAndBindTaskStartSession(
       workspaceIdentity: workspaceId,
       packageRoot: ctx.packageRoot,
       packageVersion: ctx.version,
-      assigneeKind,
-      assigneeId: task.assigneeId,
-      routeSnapshot,
-      roleFs: mount.env.fs,
+      task,
+      session: priorSession,
+      fs: mount.env.fs,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new RpcError(
       -32000,
       `task.startSession contextGeneration collection failed: ${message}`,
-      { code: "CONTEXT_GENERATION_COLLECT_FAILED", taskPath, routeId }
+      { code: "CONTEXT_GENERATION_COLLECT_FAILED", taskPath, connectionId }
     );
   }
 
@@ -6415,7 +6691,7 @@ async function launchAndBindTaskStartSession(
   );
 
   // Ephemeral image path refs from task user prompt + claimed node bodies only.
-  // Paths only — never base64; never written to task/session/route disk.
+  // Paths only — never base64; never written to Task/Session/Connection disk.
   // ACP image blocks still require live initialize promptCapabilities.image === true.
   const bootstrapImageRefs = await collectTaskBootstrapImageRefs(mount.env.fs, task);
   const bootstrapImageSystemRoot =
@@ -6449,11 +6725,9 @@ async function launchAndBindTaskStartSession(
           : {}),
         lastTaskId: task.id || taskPath,
       });
-    } else {
+    } else if (firstStart) {
       handle = await ctx.runtime.startSession({
-        sessionId: makeSessionId(),
-        routeId,
-        routeSnapshot,
+        sessionId: priorSessionId,
         workspaceLane,
         runtimeWorkspace: { cwd },
         cwd,
@@ -6464,9 +6738,14 @@ async function launchAndBindTaskStartSession(
               bootstrapImageSystemRoot,
             }
           : {}),
-        lastTaskId: task.id || taskPath,
         workspace: workspaceId,
       });
+    } else {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Bound Session ${priorSessionId} is neither reserved nor resumable`,
+        { code: "BOUND_SESSION_NOT_STARTABLE", taskPath, sessionId: priorSessionId }
+      );
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -6490,15 +6769,19 @@ async function launchAndBindTaskStartSession(
         }
       );
     }
-    // First-launch process failure has no provider conversation to preserve.
-    await failTaskFromRuntime(ctx, {
+    await parkTaskForUnavailableSession(ctx, {
       workspaceId,
       taskPath,
-      sessionId: undefined,
-      reason: "session.failed",
-      summary: message,
+      sessionId: priorSessionId,
+      reason: "task.startSession.first-launch-failed",
+      detail: message,
     });
-    throw new RpcError(-32000, message);
+    throw new RpcError(RPC_LIFECYCLE, message, {
+      code: "SESSION_LAUNCH_FAILED",
+      taskPath,
+      sessionId: priorSessionId,
+      recoverable: true,
+    });
   }
 
   // Bind sessionId reference only on task (never PID/token).
@@ -6536,7 +6819,7 @@ async function launchAndBindTaskStartSession(
           {
             sessionId: handle.sessionId,
             state: handle.state,
-            routeId: handle.routeId,
+            connectionId: handle.connectionId,
             taskPath,
             reason: resumePrior ? "task.startSession.resume" : "task.startSession",
           },
@@ -6576,10 +6859,10 @@ async function launchAndBindTaskStartSession(
 
   return projectStartSessionResult(workspaceId, taskPath, bound, {
     id: handle.sessionId,
-    routeId: handle.routeId,
+    connectionId: handle.connectionId,
     adapterId: handle.adapterId,
     state: handle.state,
-    roleName: handle.roleName,
+    roleId: handle.roleId,
     runtimeWorkspace: handle.runtimeWorkspace,
   }, { cwd });
 }
@@ -6606,32 +6889,24 @@ async function taskReplaceSessionRpc(ctx: HandlerContext, p: Record<string, unkn
     skipReuseAndLaunchPrep: true,
   });
   if (prepared.kind !== "launch") {
-    throw new RpcError(RPC_LIFECYCLE, "task.replaceSession could not prepare a fresh route Session");
+    throw new RpcError(RPC_LIFECYCLE, "task.replaceSession could not prepare a fresh managed Session");
   }
-  const routeId = prepared.routeId;
-  // Outer managed-session flight: concurrent same-route replace/start still join/coalesce.
+  const connectionId = prepared.connectionId;
+  // Outer managed-session flight: concurrent same-Connection replace/start still join/coalesce.
   // Exact-Task lifecycle stages are acquired only for authoritative prepare/CAS bind;
   // provider startup stays outside the coordinator so terminal transitions can win.
-  return runManagedSessionFlight(workspaceId, taskPath, routeId, "replaceSession", () =>
-    executeTaskReplaceSession(ctx, workspaceId, taskPath, routeId)
+  return runManagedSessionFlight(workspaceId, taskPath, connectionId, "replaceSession", () =>
+    executeTaskReplaceSession(ctx, workspaceId, taskPath, connectionId)
   );
 }
 
 async function assertReplaceSessionEligible(
   ctx: HandlerContext,
   workspaceId: string,
-  taskPath: string,
-  routeId: string
+  taskPath: string
 ): Promise<void> {
   const mount = ctx.host.require(workspaceId);
   const task = await loadTaskEnvelope(mount.env.fs, taskPath);
-  if (taskAssigneeKind(task) !== "route" || task.assigneeId !== routeId) {
-    throw new RpcError(
-      -32602,
-      `task.replaceSession Task assignee changed; expected route:${routeId}`,
-      { assigneeKind: task.assigneeKind, assigneeId: task.assigneeId, routeId }
-    );
-  }
   if (task.state !== "running" && task.state !== "waiting") {
     throw new RpcError(RPC_LIFECYCLE, `task.replaceSession requires running or waiting; got ${task.state}`, {
       code: "INVALID_TASK_STATE",
@@ -6657,6 +6932,19 @@ async function assertReplaceSessionEligible(
       taskPath,
     });
   }
+  const prior = await ctx.runtime.registry.read(priorSessionId);
+  if (
+    !prior ||
+    !prior.connectionId ||
+    prior.workspace !== workspaceId ||
+    (prior.lastTaskId !== (task.id || taskPath) && prior.lastTaskId !== taskPath)
+  ) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "task.replaceSession requires an exact managed Session binding",
+      { code: "BOUND_SESSION_IDENTITY_MISMATCH", taskPath, sessionId: priorSessionId }
+    );
+  }
   try {
     if ((await ctx.runtime.probe(priorSessionId)).turnBusy === true) {
       throw new RpcError(
@@ -6675,11 +6963,11 @@ async function executeTaskReplaceSession(
   ctx: HandlerContext,
   workspaceId: string,
   taskPath: string,
-  routeId: string
+  connectionId: string
 ) {
   const mount = ctx.host.require(workspaceId);
   let task = await runTaskLifecycle(workspaceId, taskPath, async () => {
-    await assertReplaceSessionEligible(ctx, workspaceId, taskPath, routeId);
+    await assertReplaceSessionEligible(ctx, workspaceId, taskPath);
     let current = await loadTaskEnvelope(mount.env.fs, taskPath);
     if (current.state === "waiting") {
       await taskResumeRpc(ctx, { workspaceId, taskPath });
@@ -6694,36 +6982,40 @@ async function executeTaskReplaceSession(
     worktree: task.worktree,
     branch: task.branch,
     deliveryPolicy: task.deliveryPolicy,
-    assigneeKind: task.assigneeKind,
-    assigneeId: task.assigneeId,
+    roleId: task.roleId,
   };
-  let retirementBegun = false;
-  let startedSessionId: string | undefined;
+  let replacementSessionId: string | undefined;
   const parkAfterRetirement = async (detail: string): Promise<void> => {
-    try {
-      const current = await loadTaskEnvelope(mount.env.fs, taskPath);
-      if (startedSessionId && current.sessionId === startedSessionId && current.sessionId !== priorSessionId) {
-        await ctx.mutations.run(workspaceId, async () => {
-          ctx.host.markSelfWrite(workspaceId);
-          await patchTaskEnvelope(mount.env.fs, taskPath, {
-            sessionId: priorSessionId,
-            updatedAt: mount.env.clock.now(),
-          });
-        });
-      }
-    } catch {
-      // still park on prior
-    }
     await parkTaskForUnavailableSession(ctx, {
       workspaceId,
       taskPath,
-      sessionId: priorSessionId,
+      sessionId: replacementSessionId ?? priorSessionId,
       reason: "task.replaceSession.failed",
       detail,
     });
   };
 
   try {
+    const cwd = task.worktree || mount.workspaceRoot;
+    const workspaceLane =
+      task.workspace || task.worktree || task.branch
+        ? {
+            workspace: task.workspace || mount.workspaceRoot,
+            worktree: task.worktree || mount.workspaceRoot,
+            branch: task.branch || "HEAD",
+            targetBranch: task.targetBranch,
+          }
+        : undefined;
+    replacementSessionId = makeSessionId();
+    await ctx.runtime.reserveSession({
+      sessionId: replacementSessionId,
+      connectionId,
+      lastTaskId: task.id || taskPath,
+      workspace: workspaceId,
+      workspaceLane,
+      runtimeWorkspace: { cwd },
+    });
+
     try {
       await ctx.toolApprovals.cancelSession(priorSessionId, "denied");
     } catch {
@@ -6749,33 +7041,9 @@ async function executeTaskReplaceSession(
     } catch (err) {
       if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) throw err;
     }
-    retirementBegun = true;
     clearManagedAutoDeliverDedup(priorSessionId, taskPath);
-
-    const cwd = task.worktree || mount.workspaceRoot;
-    const routeSnapshot = ctx.runtime.snapshotRouteForStart(routeId);
-    const stableBundle = await collectStableContextGeneration({
-      workspaceRoot: mount.workspaceRoot,
-      workspaceIdentity: workspaceId,
-      packageRoot: ctx.packageRoot,
-      packageVersion: ctx.version,
-      assigneeKind: task.assigneeKind,
-      assigneeId: task.assigneeId,
-      routeSnapshot,
-      roleFs: mount.env.fs,
-    });
-    const liveGeneration = stableBundle.contextGeneration;
-    const workspaceLane =
-      task.workspace || task.worktree || task.branch
-        ? {
-            workspace: task.workspace || mount.workspaceRoot,
-            worktree: task.worktree || mount.workspaceRoot,
-            branch: task.branch || "HEAD",
-            targetBranch: task.targetBranch,
-          }
-        : undefined;
     const bootstrapImageRefs = await collectTaskBootstrapImageRefs(mount.env.fs, task);
-    const bindSnapshot = await runTaskLifecycle(workspaceId, taskPath, async () => {
+    task = await runTaskLifecycle(workspaceId, taskPath, async () => {
       let current = await loadTaskEnvelope(mount.env.fs, taskPath);
       // Stopping the prior managed Session legitimately projects this exact Task to
       // waiting(session_unavailable). Resume that replace-owned projection before
@@ -6788,28 +7056,153 @@ async function executeTaskReplaceSession(
         await taskResumeRpc(ctx, { workspaceId, taskPath });
         current = await loadTaskEnvelope(mount.env.fs, taskPath);
       }
-      if (
-        current.state !== "running" ||
-        current.id !== preserved.taskId ||
-        current.sessionId !== priorSessionId ||
-        current.assigneeKind !== preserved.assigneeKind ||
-        current.assigneeId !== preserved.assigneeId ||
-        current.deliveryPolicy !== preserved.deliveryPolicy
-      ) {
-        assertTaskSessionBindSnapshot(
-          "task.replaceSession",
-          taskPath,
-          current,
-          captureTaskSessionBindSnapshot(task)
-        );
-      }
-      task = current;
-      return captureTaskSessionBindSnapshot(current);
+      assertTaskSessionBindSnapshot(
+        "task.replaceSession",
+        taskPath,
+        current,
+        captureTaskSessionBindSnapshot(task)
+      );
+      return current;
     });
+    const replacementSession = await ctx.runtime.registry.read(replacementSessionId);
+    if (!replacementSession) {
+      throw new RpcError(RPC_LIFECYCLE, "Reserved replacement Session disappeared", {
+        code: "REPLACE_SESSION_RESERVATION_MISSING",
+        sessionId: replacementSessionId,
+      });
+    }
+    const replacementTask: TaskEnvelope = {
+      ...task,
+      sessionId: replacementSessionId,
+    };
+    const stableBundle = await collectStableContextGeneration({
+      workspaceRoot: mount.workspaceRoot,
+      workspaceIdentity: workspaceId,
+      packageRoot: ctx.packageRoot,
+      packageVersion: ctx.version,
+      task: replacementTask,
+      session: replacementSession,
+      fs: mount.env.fs,
+    });
+    const liveGeneration = stableBundle.contextGeneration;
+    task = await managedTaskInputQueue.run(
+      managedTaskInputQueueKey(workspaceId, taskPath),
+      async () => {
+        const beforePrebind = task;
+        const prebound = await runTaskLifecycle(workspaceId, taskPath, () =>
+          ctx.mutations.run(workspaceId, async () => {
+            const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+            assertTaskSessionBindSnapshot(
+              "task.replaceSession",
+              taskPath,
+              current,
+              captureTaskSessionBindSnapshot(beforePrebind)
+            );
+            ctx.host.markSelfWrite(workspaceId);
+            const next = await patchTaskEnvelope(mount.env.fs, taskPath, {
+              sessionId: replacementSessionId,
+              state: "running",
+              wait: null,
+              contextCard: {
+                ...current.contextCard,
+                contextGeneration: liveGeneration,
+              },
+              updatedAt: mount.env.clock.now(),
+            });
+            emitTaskState(ctx, workspaceId, next, "task.replaceSession.prebind");
+            return next;
+          })
+        );
+        try {
+          // The exact Task FIFO excludes managed inject workers across the
+          // Task+TaskInput rebind boundary. Provider startup cannot observe a
+          // new-bound Task with open rows still pointing at the retired Session.
+          await ctx.taskInputs.rebindOpenSessions(
+            workspaceId,
+            taskPath,
+            replacementSessionId!
+          );
+          return prebound;
+        } catch (rebindError) {
+          const detail = rebindError instanceof Error
+            ? rebindError.message
+            : String(rebindError);
+          try {
+            if (beforeReplaceTaskInputRollbackForTests) {
+              await beforeReplaceTaskInputRollbackForTests({
+                workspaceId,
+                taskPath,
+                priorSessionId,
+                replacementSessionId: replacementSessionId!,
+              });
+            }
+            await runTaskLifecycle(workspaceId, taskPath, () =>
+              ctx.mutations.run(workspaceId, async () => {
+                const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+                if (current.sessionId !== replacementSessionId) {
+                  throw new RpcError(
+                    RPC_LIFECYCLE,
+                    "task.replaceSession Task changed before TaskInput rebind rollback",
+                    {
+                      code: "TASK_SESSION_BIND_CAS_FAILED",
+                      taskPath,
+                      expectedSessionId: replacementSessionId,
+                      actualSessionId: current.sessionId,
+                    }
+                  );
+                }
+                ctx.host.markSelfWrite(workspaceId);
+                const rolledBack = await patchTaskEnvelope(mount.env.fs, taskPath, {
+                  sessionId: priorSessionId,
+                  state: "waiting",
+                  wait: {
+                    reason: "external",
+                    summary: SESSION_UNAVAILABLE_WAIT_SUMMARY,
+                    code: SESSION_UNAVAILABLE_WAIT_CODE,
+                  },
+                  updatedAt: mount.env.clock.now(),
+                });
+                emitTaskState(
+                  ctx,
+                  workspaceId,
+                  rolledBack,
+                  "task.replaceSession.input-rebind-rollback"
+                );
+                return rolledBack;
+              })
+            );
+          } catch (rollbackError) {
+            throw new RpcError(
+              RPC_LIFECYCLE,
+              `task.replaceSession TaskInput rebind failed and Task rollback was incomplete: ${detail}`,
+              {
+                code: "REPLACE_SESSION_TASK_INPUT_REBIND_ROLLBACK_FAILED",
+                taskPath,
+                priorSessionId,
+                newSessionId: replacementSessionId,
+                rebindError: detail,
+                rollbackError:
+                  rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+              }
+            );
+          }
+          throw new RpcError(
+            RPC_LIFECYCLE,
+            `task.replaceSession TaskInput rebind failed before provider start: ${detail}`,
+            {
+              code: "REPLACE_SESSION_TASK_INPUT_REBIND_FAILED",
+              taskPath,
+              priorSessionId,
+              newSessionId: replacementSessionId,
+              rolledBackToSessionId: priorSessionId,
+            }
+          );
+        }
+      }
+    );
+    const prelaunchSnapshot = captureTaskSessionBindSnapshot(task);
     const handle = await ctx.runtime.startSession({
-      sessionId: makeSessionId(),
-      routeId,
-      routeSnapshot,
+      sessionId: replacementSessionId,
       workspaceLane,
       runtimeWorkspace: { cwd },
       cwd,
@@ -6823,34 +7216,28 @@ async function executeTaskReplaceSession(
       ...(bootstrapImageRefs.length > 0
         ? { bootstrapImageRefs, bootstrapImageSystemRoot: mount.systemRoot }
         : {}),
-      lastTaskId: task.id || taskPath,
       workspace: workspaceId,
     });
-    startedSessionId = handle.sessionId;
 
     const bound = await runTaskLifecycle(workspaceId, taskPath, () =>
       ctx.mutations.run(workspaceId, async () => {
         const current = await loadTaskEnvelope(mount.env.fs, taskPath);
-        assertTaskSessionBindSnapshot("task.replaceSession", taskPath, current, bindSnapshot);
-        ctx.host.markSelfWrite(workspaceId);
-        const next = await patchTaskEnvelope(mount.env.fs, taskPath, {
-          sessionId: handle.sessionId,
-          state: "running",
-          wait: null,
-          contextCard: {
-            ...current.contextCard,
-            contextGeneration: liveGeneration,
-          },
-          updatedAt: mount.env.clock.now(),
-        });
-        emitTaskState(ctx, workspaceId, next, "task.replaceSession");
+        // Provider events may validly advance this exact replacement-bound Task
+        // before startSession returns. Verify immutable identity and ownership only;
+        // do not mistake same-Session waiting/delivery progress for a late-bind race.
+        assertTaskSessionPostStartOwnership(
+          "task.replaceSession",
+          taskPath,
+          current,
+          prelaunchSnapshot
+        );
         ctx.events.emit(
           "session.state",
           workspaceId,
           {
             sessionId: handle.sessionId,
             state: handle.state,
-            routeId: handle.routeId,
+            connectionId: handle.connectionId,
             taskPath,
             reason: REPLACE_SESSION_RESTORE_REASON,
             contextRestored: false,
@@ -6859,7 +7246,7 @@ async function executeTaskReplaceSession(
           },
           "self"
         );
-        return next;
+        return current;
       })
     );
 
@@ -6872,12 +7259,9 @@ async function executeTaskReplaceSession(
     try {
       const priorRow = await ctx.runtime.registry.read(priorSessionId);
       if (priorRow) {
-        const { lastTaskId: _detach, ...rest } = priorRow;
-        await ctx.runtime.registry.write({
-          ...rest,
+        await ctx.runtime.registry.update(priorSessionId, {
           replacedBySessionId: handle.sessionId,
           lastError: `replaced by ${handle.sessionId} (${REPLACE_SESSION_RESTORE_REASON})`,
-          updatedAt: new Date().toISOString(),
         });
       }
     } catch {
@@ -6888,8 +7272,7 @@ async function executeTaskReplaceSession(
     const nodeIds = taskReferencedNodeIds(bound);
     if (
       bound.id !== preserved.taskId ||
-      bound.assigneeKind !== preserved.assigneeKind ||
-      bound.assigneeId !== preserved.assigneeId ||
+      bound.roleId !== preserved.roleId ||
       bound.deliveryPolicy !== preserved.deliveryPolicy ||
       bound.worktree !== preserved.worktree ||
       bound.branch !== preserved.branch ||
@@ -6898,18 +7281,6 @@ async function executeTaskReplaceSession(
     ) {
       throw new RpcError(RPC_LIFECYCLE, "task.replaceSession mutated task lane/nodeRefs/identity", {
         code: "TASK_IDENTITY_DRIFT",
-      });
-    }
-
-    try {
-      await ctx.taskInputs.rebindOpenSessions(workspaceId, taskPath, handle.sessionId);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new RpcError(RPC_LIFECYCLE, `task.replaceSession TaskInput rebind failed: ${message}`, {
-        code: "REPLACE_SESSION_TASK_INPUT_REBIND_FAILED",
-        taskPath,
-        priorSessionId,
-        newSessionId: handle.sessionId,
       });
     }
 
@@ -6924,7 +7295,7 @@ async function executeTaskReplaceSession(
       task: projectTask(bound),
       session: {
         sessionId: handle.sessionId,
-        routeId: handle.routeId,
+        connectionId: handle.connectionId,
         adapterId: handle.adapterId,
         state: handle.state,
         cwd,
@@ -6937,30 +7308,77 @@ async function executeTaskReplaceSession(
     };
   } catch (err) {
     let cleanupStopped: boolean | undefined;
-    if (startedSessionId) {
+    if (replacementSessionId) {
       cleanupStopped = await stopUnboundManagedSession(
         ctx,
-        startedSessionId,
+        replacementSessionId,
         "task.replaceSession",
         err instanceof Error ? err.message : String(err)
       );
     }
     const message = err instanceof Error ? err.message : String(err);
-    if (retirementBegun && !isTaskSessionBindCasError(err)) await parkAfterRetirement(message);
+    const replaceErrorCode =
+      err instanceof RpcError
+        ? (err.data as { code?: string } | undefined)?.code
+        : undefined;
+    const alreadyRolledBackAfterInputRebind =
+      replaceErrorCode === "REPLACE_SESSION_TASK_INPUT_REBIND_FAILED";
+    let rollbackRecoveryError: string | undefined;
+    if (
+      replaceErrorCode === "REPLACE_SESSION_TASK_INPUT_REBIND_ROLLBACK_FAILED" &&
+      replacementSessionId
+    ) {
+      const failedReplacementSessionId = replacementSessionId;
+      try {
+        await managedTaskInputQueue.run(
+          managedTaskInputQueueKey(workspaceId, taskPath),
+          async () => {
+            const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+            if (
+              current.sessionId === failedReplacementSessionId &&
+              (current.state === "running" || current.state === "waiting")
+            ) {
+              // The first store failure may be transient. Converge open rows to
+              // the exact current binding before parking that stopped Session.
+              await ctx.taskInputs.rebindOpenSessions(
+                workspaceId,
+                taskPath,
+                failedReplacementSessionId
+              );
+            }
+          }
+        );
+      } catch (recoveryError) {
+        rollbackRecoveryError =
+          recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
+      }
+    }
+    if (!isTaskSessionBindCasError(err) && !alreadyRolledBackAfterInputRebind) {
+      await parkAfterRetirement(message);
+    }
     if (isTaskSessionBindCasError(err)) {
       const data = (err as RpcError).data as Record<string, unknown>;
       throw new RpcError(RPC_LIFECYCLE, message, {
         ...data,
-        ...(startedSessionId ? { orphanSessionId: startedSessionId } : {}),
+        ...(replacementSessionId ? { orphanSessionId: replacementSessionId } : {}),
         ...(cleanupStopped !== undefined ? { cleanupStopped } : {}),
       });
     }
-    if (err instanceof RpcError) throw err;
+    if (err instanceof RpcError) {
+      if (rollbackRecoveryError) {
+        throw new RpcError(RPC_LIFECYCLE, message, {
+          ...((err.data as Record<string, unknown> | undefined) ?? {}),
+          rollbackRecoveryError,
+          ...(cleanupStopped !== undefined ? { cleanupStopped } : {}),
+        });
+      }
+      throw err;
+    }
     throw new RpcError(RPC_LIFECYCLE, `task.replaceSession failed to start replacement session: ${message}`, {
       code: "REPLACE_SESSION_LAUNCH_FAILED",
       taskPath,
       priorSessionId,
-      ...(startedSessionId ? { orphanSessionId: startedSessionId } : {}),
+      ...(replacementSessionId ? { sessionId: replacementSessionId } : {}),
     });
   }
 }
@@ -7021,12 +7439,17 @@ async function taskGet(ctx: HandlerContext, p: Record<string, unknown>) {
 }
 
 async function deliveryList(ctx: HandlerContext, p: Record<string, unknown>) {
+  assertAllowedParams(
+    p,
+    new Set(["workspaceId", "taskId", "nodeId", "roleId", "sessionId"]),
+    "delivery.list"
+  );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskId = optionalString(p, "taskId");
   const nodeId = optionalString(p, "nodeId");
-  const assigneeKind = optionalString(p, "assigneeKind");
-  const assigneeId = optionalString(p, "assigneeId");
+  const roleId = optionalString(p, "roleId");
+  const sessionId = optionalString(p, "sessionId");
   let deliveries = await loadDeliveries(mount.env.fs, { taskId });
   let tasks: TaskEnvelope[] | undefined;
   if (nodeId) {
@@ -7038,18 +7461,13 @@ async function deliveryList(ctx: HandlerContext, p: Record<string, unknown>) {
     );
     deliveries = deliveries.filter((delivery) => taskNodeIds.get(delivery.taskId)?.has(nodeId));
   }
-  if (assigneeKind || assigneeId) {
-    if (assigneeKind !== "role" && assigneeKind !== "route") {
-      throw new RpcError(-32602, "delivery.list assigneeKind must be role or route");
-    }
-    if (!assigneeId) {
-      throw new RpcError(-32602, "delivery.list assigneeId is required with assigneeKind");
-    }
+  if (roleId || sessionId) {
     tasks ??= await loadTaskEnvelopes(mount.env.fs);
     const taskById = new Map(tasks.map((task) => [task.id || task.path, task]));
     deliveries = deliveries.filter((delivery) => {
       const task = taskById.get(delivery.taskId);
-      return task?.assigneeKind === assigneeKind && task.assigneeId === assigneeId;
+      return (!roleId || task?.roleId === roleId) &&
+        (!sessionId || task?.sessionId === sessionId);
     });
   }
   return { workspaceId, deliveries: deliveries.map(projectDelivery) };
@@ -7225,14 +7643,12 @@ function projectNodeCollaboration(
     });
   }
   const entries: NodeCollaborationActiveTask[] = occupations.map((activeTask) => {
-    const assigneeKind = taskAssigneeKind(activeTask);
     const taskSummary: NodeCollaborationTaskSummary = {
       id: activeTask.id || activeTask.path,
       state: activeTask.state,
-      assigneeKind,
-      assigneeId: activeTask.assigneeId,
+      roleId: activeTask.roleId,
+      sessionId: activeTask.sessionId,
     };
-    if (activeTask.sessionId) taskSummary.sessionId = activeTask.sessionId;
     if (activeTask.activeDeliveryId) taskSummary.activeDeliveryId = activeTask.activeDeliveryId;
     if (activeTask.createdAt) taskSummary.createdAt = activeTask.createdAt;
     if (activeTask.path) taskSummary.path = activeTask.path;
@@ -7518,10 +7934,10 @@ async function sessionList(ctx: HandlerContext, p: Record<string, unknown>) {
     const probe = await ctx.runtime.probe(rec.id);
     projections.push({
       sessionId: rec.id,
-      routeId: rec.routeId,
+      connectionId: rec.connectionId,
       adapterId: rec.adapterId,
       state: probe.state,
-      roleName: rec.roleName,
+      roleId: rec.roleId,
       alive: probe.alive,
       resumeCapable: probe.resumeCapable,
       ...(rec.contextRestored !== undefined ? { contextRestored: rec.contextRestored } : {}),
@@ -7544,10 +7960,10 @@ async function sessionGet(ctx: HandlerContext, p: Record<string, unknown>) {
   const probe = await ctx.runtime.probe(sessionId);
   const projection: SessionProjection = {
     sessionId: rec.id,
-    routeId: rec.routeId,
+    connectionId: rec.connectionId,
     adapterId: rec.adapterId,
     state: probe.state,
-    roleName: rec.roleName,
+    roleId: rec.roleId,
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
     ...(rec.contextRestored !== undefined ? { contextRestored: rec.contextRestored } : {}),
@@ -7580,21 +7996,19 @@ function sessionReplaceAuditFields(rec: {
  * Does not start ACP / managed processes. Idempotent for sessionId / externalKey.
  */
 async function sessionEnter(ctx: HandlerContext, p: Record<string, unknown>) {
+  assertAllowedParams(
+    p,
+    new Set(["workspaceId", "sessionId", "roleId", "externalKey", "lastTaskId", "cwd"]),
+    "session.enter"
+  );
   const workspaceId = optionalString(p, "workspaceId");
   if (workspaceId) ctx.host.require(workspaceId);
 
   const sessionId = optionalString(p, "sessionId");
-  const routeId = optionalString(p, "routeId");
-  const roleName = optionalString(p, "roleName") || optionalString(p, "role");
-  const externalKey = optionalString(p, "externalKey") || optionalString(p, "key");
-  const lastTaskId = optionalString(p, "lastTaskId") || optionalString(p, "taskId");
+  const roleId = optionalString(p, "roleId");
+  const externalKey = optionalString(p, "externalKey");
+  const lastTaskId = optionalString(p, "lastTaskId");
   const cwd = optionalString(p, "cwd");
-  if ("assigneeKind" in p) {
-    throw new RpcError(
-      -32602,
-      "session.enter does not accept assigneeKind; roleName identifies an external durable Role only"
-    );
-  }
 
   // Snapshot for idempotent "reused" reporting (same open external row).
   let priorExternalId: string | undefined;
@@ -7610,8 +8024,7 @@ async function sessionEnter(ctx: HandlerContext, p: Record<string, unknown>) {
   try {
     handle = await ctx.runtime.enterExternalSession({
       sessionId: sessionId || undefined,
-      routeId: routeId || undefined,
-      roleName: roleName || undefined,
+      roleId: roleId || undefined,
       workspace: workspaceId || undefined,
       cwd: cwd || undefined,
       lastTaskId: lastTaskId || undefined,
@@ -7629,10 +8042,10 @@ async function sessionEnter(ctx: HandlerContext, p: Record<string, unknown>) {
   const probe = await ctx.runtime.probe(handle.sessionId);
   const session: SessionProjection = {
     sessionId: handle.sessionId,
-    routeId: handle.routeId,
+    connectionId: handle.connectionId,
     adapterId: handle.adapterId,
     state: probe.state,
-    roleName: handle.roleName,
+    roleId: handle.roleId,
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
     ...(rec?.contextRestored !== undefined
@@ -7645,17 +8058,18 @@ async function sessionEnter(ctx: HandlerContext, p: Record<string, unknown>) {
     updatedAt: handle.updatedAt,
   };
 
-  const roleCheckpointTail = handle.roleName
-    ? await loadRoleCheckpointTailSafe(ctx, workspaceId, handle.roleName)
+  const roleCheckpointTail = handle.roleId
+    ? await loadRoleCheckpointTailByIdSafe(ctx, workspaceId, handle.roleId)
     : "";
 
   return {
     session,
+    sessionToken: handle.sessionToken,
     reused: priorExternalId === handle.sessionId,
     /**
      * Optional cooperative Role Checkpoint tail for the durable Role just entered.
      * Dynamic only — callers append after stable Role init / bootstrap prefix.
-     * Absent when no role, route, or no note on disk.
+     * Absent when no Role or no note on disk.
      */
     ...(roleCheckpointTail ? { roleCheckpointTail } : {}),
   };
@@ -7743,14 +8157,14 @@ function requireRoleCheckpointActor(
 
 /**
  * Optional sourceSessionId audit: keep only when the persisted Session row has
- * exact workspace === this workspaceId AND roleName === the checkpoint Role.
+ * exact workspace === this workspaceId AND roleId === the checkpoint Role.
  * Missing or mismatched workspace/role (including unscoped legacy rows) drop
  * attribution — never invent continuity from an unrelated Session.
  */
 async function resolveRoleCheckpointSourceSessionId(
   ctx: HandlerContext,
   workspaceId: string,
-  roleName: string,
+  roleId: string,
   raw?: string
 ): Promise<string | undefined> {
   const sessionId = raw?.trim();
@@ -7761,8 +8175,8 @@ async function resolveRoleCheckpointSourceSessionId(
     // Exact workspace match required (unscoped / missing → drop).
     if (!rec.workspace || rec.workspace !== workspaceId) return undefined;
     // Exact Role match required (unscoped / missing → drop).
-    const recRole = rec.roleName?.trim() || "";
-    if (!recRole || recRole !== roleName) return undefined;
+    const recRole = rec.roleId?.trim() || "";
+    if (!recRole || recRole !== roleId) return undefined;
     return sessionId;
   } catch {
     return undefined;
@@ -7793,7 +8207,8 @@ async function roleCheckpointSetRpc(ctx: HandlerContext, p: Record<string, unkno
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const roleRef = requireString(p, "role");
-  const { roleName } = await resolveDurableCheckpointRole(ctx, workspaceId, roleRef);
+  const { roleName, roleId } = await resolveDurableCheckpointRole(ctx, workspaceId, roleRef);
+  if (!roleId) throw new RpcError(-32602, `Durable Role is missing canonical id: ${roleRef}`);
   const actor = requireRoleCheckpointActor(p, roleName, "role.checkpoint.set");
   const text = requireString(p, "text");
   const rawSource =
@@ -7801,7 +8216,7 @@ async function roleCheckpointSetRpc(ctx: HandlerContext, p: Record<string, unkno
   const sourceSessionId = await resolveRoleCheckpointSourceSessionId(
     ctx,
     workspaceId,
-    roleName,
+    roleId,
     rawSource
   );
   const pointersRaw = p.pointers;
@@ -7892,6 +8307,20 @@ async function loadRoleCheckpointTailSafe(
   }
 }
 
+async function loadRoleCheckpointTailByIdSafe(
+  ctx: HandlerContext,
+  workspaceId: string | undefined,
+  roleId: string
+): Promise<string> {
+  if (!workspaceId || !roleId.trim()) return "";
+  try {
+    const resolved = await resolveDurableCheckpointRole(ctx, workspaceId, roleId);
+    return loadRoleCheckpointTailSafe(ctx, workspaceId, resolved.roleName);
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Probe an external/managed session and list incomplete task bindings (no mutation).
  * Resolves by sessionId **or** workspace-scoped externalKey.
@@ -7913,10 +8342,10 @@ async function sessionStatus(ctx: HandlerContext, p: Record<string, unknown>) {
       const probe = await ctx.runtime.probe(rec.id);
       sessions.push({
         sessionId: rec.id,
-        routeId: rec.routeId,
+        connectionId: rec.connectionId,
         adapterId: rec.adapterId,
         state: probe.state,
-        roleName: rec.roleName,
+        roleId: rec.roleId,
         alive: probe.alive,
         resumeCapable: probe.resumeCapable,
         ...(rec.contextRestored !== undefined
@@ -7952,10 +8381,10 @@ async function sessionStatus(ctx: HandlerContext, p: Record<string, unknown>) {
   const probe = await ctx.runtime.probe(sessionId);
   const session: SessionProjection = {
     sessionId: rec.id,
-    routeId: rec.routeId,
+    connectionId: rec.connectionId,
     adapterId: rec.adapterId,
     state: probe.state,
-    roleName: rec.roleName,
+    roleId: rec.roleId,
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
     ...(rec.contextRestored !== undefined
@@ -8147,8 +8576,7 @@ async function listIncompleteTasksBoundToSession(
     path: string;
     id?: string;
     state: string;
-    assigneeKind: "role" | "route";
-    assigneeId: string;
+    roleId?: string;
     sessionId?: string;
   }>
 > {
@@ -8170,8 +8598,7 @@ async function listIncompleteTasksForSessions(
     path: string;
     id?: string;
     state: string;
-    assigneeKind: "role" | "route";
-    assigneeId: string;
+    roleId?: string;
     sessionId?: string;
   }>
 > {
@@ -8183,8 +8610,7 @@ async function listIncompleteTasksForSessions(
     path: string;
     id?: string;
     state: string;
-    assigneeKind: "role" | "route";
-    assigneeId: string;
+    roleId?: string;
     sessionId?: string;
   }> = [];
   for (const task of tasks) {
@@ -8195,8 +8621,7 @@ async function listIncompleteTasksForSessions(
       path: task.path,
       id: task.id,
       state: task.state,
-      assigneeKind: task.assigneeKind,
-      assigneeId: task.assigneeId,
+      roleId: task.roleId,
       sessionId: sid,
     });
   }
@@ -8953,7 +9378,7 @@ async function resolveTaskInputAckAuthority(
     );
   }
 
-  if (task.assigneeKind === "role" && actorRaw === task.assigneeId) {
+  if (task.roleId && actorRaw === task.roleId) {
     return { actor: actorRaw, task };
   }
   if (
@@ -8969,11 +9394,9 @@ async function resolveTaskInputAckAuthority(
     try {
       const rec = await ctx.runtime.registry.read(item.sessionId);
       if (rec) {
-        const workspaceMatches =
-          !rec.workspace || rec.workspace === item.workspaceId;
+        const workspaceMatches = rec.workspace === item.workspaceId;
         const taskMatches =
-          rec.lastTaskId === item.taskId ||
-          rec.lastTaskId === item.taskPath ||
+          (rec.lastTaskId === task.id || rec.lastTaskId === item.taskPath) &&
           task.sessionId === item.sessionId;
         if (workspaceMatches && taskMatches) {
           return { actor: actorRaw, task };
@@ -8990,7 +9413,7 @@ async function resolveTaskInputAckAuthority(
     {
       inputId: item.id,
       actor: actorRaw,
-      expectedRole: task.assigneeKind === "role" ? task.assigneeId : undefined,
+      expectedRoleId: task.roleId,
       parentActor: task.parentActor,
       reviewer: task.reviewer,
       sessionId: item.sessionId,
@@ -9417,7 +9840,7 @@ export function setBeforeTaskWorktreeReclaimReloadForTests(
 }
 
 /**
- * Best-effort auto-reclaim of a terminal route Task worktree.
+ * Best-effort auto-reclaim of a terminal Connection-executed Task worktree.
  * Never throws into the lifecycle RPC: fail-closed diagnostics are events only.
  * Does not touch Role worktrees, commits, branches, or operational records.
  *
@@ -9440,7 +9863,7 @@ async function maybeAutoReclaimTaskWorktree(
   const mount = ctx.host.get(workspaceId);
   if (!mount) return undefined;
 
-  // Only route lanes with a recorded Git path participate.
+  // Only task-scoped Connection lanes with a recorded Git path participate.
   if (!isTaskScopedWorktreeLane(task)) return undefined;
   if (!isTaskWorktreeReclaimTerminalState(task.state)) return undefined;
   if (!task.worktree && !task.branch) return undefined;
@@ -10032,7 +10455,7 @@ const rejectResumeNativeInFlight = new Set<string>();
 /** Per-task flight for startSession/replaceSession (authorize first, then join). */
 type ManagedSessionFlightOperation = "startSession" | "replaceSession";
 type ManagedSessionInFlight = {
-  routeId: string;
+  connectionId: string;
   operation: ManagedSessionFlightOperation;
   promise: Promise<unknown>;
 };
@@ -10051,16 +10474,16 @@ export const isManagedSessionInFlightForTests = isTaskStartSessionInFlightForTes
 
 function joinOrConflictManagedSessionFlight(
   existing: ManagedSessionInFlight,
-  routeId: string,
+  connectionId: string,
   operation: ManagedSessionFlightOperation,
   taskPath: string
 ): Promise<unknown> {
-  if (existing.routeId !== routeId || existing.operation !== operation) {
+  if (existing.connectionId !== connectionId || existing.operation !== operation) {
     throw new RpcError(RPC_LIFECYCLE, MANAGED_SESSION_IN_PROGRESS_MESSAGE, {
       taskPath,
-      routeId,
+      connectionId,
       operation,
-      inFlightRouteId: existing.routeId,
+      inFlightConnectionId: existing.connectionId,
       inFlightOperation: existing.operation,
       retryable: true,
     });
@@ -10071,13 +10494,13 @@ function joinOrConflictManagedSessionFlight(
 async function runManagedSessionFlight(
   workspaceId: string,
   taskPath: string,
-  routeId: string,
+  connectionId: string,
   operation: ManagedSessionFlightOperation,
   run: () => Promise<unknown>
 ): Promise<unknown> {
   const flightKey = managedSessionFlightKey(workspaceId, taskPath);
   const existing = managedSessionInFlight.get(flightKey);
-  if (existing) return joinOrConflictManagedSessionFlight(existing, routeId, operation, taskPath);
+  if (existing) return joinOrConflictManagedSessionFlight(existing, connectionId, operation, taskPath);
 
   let settle!: (value: unknown) => void;
   let rejectFlight!: (reason: unknown) => void;
@@ -10086,7 +10509,7 @@ async function runManagedSessionFlight(
     rejectFlight = reject;
   });
   flightPromise.catch(() => undefined);
-  managedSessionInFlight.set(flightKey, { routeId, operation, promise: flightPromise });
+  managedSessionInFlight.set(flightKey, { connectionId, operation, promise: flightPromise });
   try {
     const result = await run();
     settle(result);
@@ -10423,15 +10846,13 @@ async function projectRuntimeEventOnce(
       const mount = ctx.host.get(info.workspaceId);
       if (!mount) continue;
       const tasks = await loadTaskEnvelopes(mount.env.fs);
-      // Prefer exact session binding. lastTaskId is a fallback only when the task
-      // is still bound to this session (or has no sessionId yet). After reject-resume
-      // rebinds to a new ss-, a late session.exited from the prior process must not
-      // task.fail the rework occupation or cancel the review-feedback U2A item.
+      // Runtime events require the bidirectional exact binding. Registry lastTaskId
+      // alone is never authority for mutating a Task.
       const currentTask = tasks.find((t) => {
         if (t.id !== rec.lastTaskId && t.path !== rec.lastTaskId) return false;
-        return !t.sessionId || t.sessionId === ev.sessionId;
+        return t.sessionId === ev.sessionId;
       });
-      const task = currentTask ?? tasks.find((t) => t.sessionId === ev.sessionId);
+      const task = currentTask;
       if (!task) continue;
       if (ev.type === "session.waiting_user" && task.state === "running") {
         await ctx.mutations.run(mount.workspaceId, async () => {
@@ -10639,19 +11060,19 @@ async function loadBoundTaskForSessionTerminal(
   rec: { lastTaskId?: string; workspace?: string } | null | undefined,
   sessionId: string
 ): Promise<TaskEnvelope | undefined> {
-  if (!rec?.lastTaskId) return undefined;
+  if (!rec?.lastTaskId || !rec.workspace) return undefined;
   try {
     const mountInfos = ctx.host.list();
     for (const info of mountInfos) {
-      if (rec.workspace && info.workspaceId !== rec.workspace) continue;
+      if (info.workspaceId !== rec.workspace) continue;
       const mount = ctx.host.get(info.workspaceId);
       if (!mount) continue;
       const tasks = await loadTaskEnvelopes(mount.env.fs);
       const currentTask = tasks.find((t) => {
         if (t.id !== rec.lastTaskId && t.path !== rec.lastTaskId) return false;
-        return !t.sessionId || t.sessionId === sessionId;
+        return t.sessionId === sessionId;
       });
-      return currentTask ?? tasks.find((t) => t.sessionId === sessionId);
+      return currentTask;
     }
   } catch {
     // best-effort
@@ -10938,7 +11359,7 @@ async function tryManagedAutoDeliver(
         // Seal-after, publish-before: refuse dirty task worktree so uncommitted
         // agent edits cannot be skipped in favor of stale already-committed SHAs.
         // Fail-loud keeps task running for commit-then-retry (same as public deliver).
-        await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, task);
+        await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, task, mount.env.fs);
         // Ordinary executor lane history gate (cx-5q6za6): no merge/foreign ancestry.
         await assertOrdinaryExecutorLaneHistoryForDeliver(mount.workspaceRoot, task);
 
@@ -10947,14 +11368,14 @@ async function tryManagedAutoDeliver(
         // Collection runs after seal so tail commits after end_turn cannot appear.
         let commits = input.commits;
         if (commits === undefined) {
-          commits = await collectManagedDeliveryCommits(mount.workspaceRoot, task);
+          commits = await collectManagedDeliveryCommits(mount.workspaceRoot, task, mount.env.fs);
         }
         // Explicit or auto-collected commits[] must belong to the recorded executor lane.
         await assertDeliverCommitsBelongToExecutorLane(mount.workspaceRoot, task, commits);
         const pendingCommits = uniqueCommitRefs(commits);
         const targetHead =
           pendingCommits.length > 0
-            ? await snapshotIntegrationTargetHead(mount.workspaceRoot, task)
+            ? await snapshotIntegrationTargetHead(mount.workspaceRoot, task, mount.env.fs)
             : undefined;
         if (targetHead && afterTargetHeadSnapshotForTests) {
           await afterTargetHeadSnapshotForTests(mount.workspaceRoot);
@@ -11244,7 +11665,8 @@ async function handleManagedNonDeliveredOutcome(
  */
 async function collectManagedDeliveryCommits(
   workspaceRoot: string,
-  task: TaskEnvelope
+  task: TaskEnvelope,
+  fs: import("../core/adapter.js").FsAdapter
 ): Promise<string[]> {
   const hasRecordedLane = Boolean(
     task.workspace || task.worktree || task.branch || task.targetBranch
@@ -11260,7 +11682,7 @@ async function collectManagedDeliveryCommits(
         `baseline must be captured at first Git lane bind (never fall back to all role commits).`
     );
   }
-  const contract = await resolveIntegrationContract(workspaceRoot, task);
+  const contract = await resolveIntegrationContract(workspaceRoot, task, fs);
   const pending = await listPendingRoleCommits(contract, base);
   return pending.map((commit) => commit.ref);
 }
@@ -11408,21 +11830,6 @@ async function stopManagedSessionAfterDelivery(
 }
 
 /**
- * Test-only: pause combined-dispatch compensation before the atomic
- * running/no-session interrupt section. Lets tests bind a Session concurrently
- * and prove compensation skips. Production never sets this.
- */
-let beforeCombinedDispatchCompensateForTests:
-  | ((input: { workspaceId: string; taskPath: string }) => Promise<void>)
-  | null = null;
-
-export function setBeforeCombinedDispatchCompensateForTests(
-  fn: ((input: { workspaceId: string; taskPath: string }) => Promise<void>) | null
-): void {
-  beforeCombinedDispatchCompensateForTests = fn;
-}
-
-/**
  * Test-only: after commit-bearing deliver snapshots targetHead and before
  * integrate/assert runs, invoke this hook (e.g. advance target branch).
  * Production never sets this.
@@ -11461,6 +11868,29 @@ export function setBeforeTaskClaimCoreForTests(
   beforeTaskClaimCoreForTests = fn;
 }
 
+/** Test-only: fail between TaskInput rebind failure and exact Task rollback. */
+let beforeReplaceTaskInputRollbackForTests:
+  | ((input: {
+      workspaceId: string;
+      taskPath: string;
+      priorSessionId: string;
+      replacementSessionId: string;
+    }) => Promise<void>)
+  | null = null;
+
+export function setBeforeReplaceTaskInputRollbackForTests(
+  fn:
+    | ((input: {
+        workspaceId: string;
+        taskPath: string;
+        priorSessionId: string;
+        replacementSessionId: string;
+      }) => Promise<void>)
+    | null
+): void {
+  beforeReplaceTaskInputRollbackForTests = fn;
+}
+
 /**
  * Test-only: inside backfill lifecycle flight + mutation, before re-read/write.
  * Production never sets this. Used to prove backfill cannot interleave with deliver.
@@ -11482,8 +11912,8 @@ export function resetManagedAutoDeliverDedupForTests(): void {
   managedAutoDeliverRetryRequested.clear();
   rejectResumeNativeInFlight.clear();
   managedSessionInFlight.clear();
-  beforeCombinedDispatchCompensateForTests = null;
   beforeTaskClaimCoreForTests = null;
+  beforeReplaceTaskInputRollbackForTests = null;
   beforeTaskBackfillWorkspaceLaneBaseForTests = null;
 }
 
@@ -11515,7 +11945,7 @@ function clearManagedAutoDeliverDedup(sessionId: string, taskPath: string): void
 /**
  * Chinese summary when reject-resume could not restore a live managed session.
  * Task stays occupied (waiting) so the user can retry startSession or interrupt.
- * Used when registry/route identity is missing or independent new-session start fails.
+ * Used when registry/Connection identity is missing or independent new-session start fails.
  */
 export const REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY =
   "驳回续跑未能恢复原 managed Session。可显式 replaceSession，或 interrupt 任务；occupation 保持。";
@@ -11527,7 +11957,7 @@ export type RejectResumeRestoreReason =
 
 type RejectResumeRestoredSession = {
   sessionId: string;
-  routeId: string;
+  connectionId: string;
   adapterId: string;
   state: string;
   cwd?: string;
@@ -11586,15 +12016,11 @@ async function restoreManagedSessionAfterRejectResume(
     );
   }
 
-  const routeId = prior.routeId?.trim();
-  if (!routeId) {
+  const connectionId = prior.connectionId?.trim();
+  const adapterId = prior.adapterId?.trim();
+  if (!connectionId || !adapterId) {
     throw new Error(
-      `Managed session ${priorSessionId} has no routeId for reject-resume restore`
-    );
-  }
-  if (taskAssigneeKind(task) !== "route" || task.assigneeId !== routeId) {
-    throw new Error(
-      `reject-resume routeId must match route assignee (${task.assigneeKind}:${task.assigneeId}); session has ${routeId}`
+      `Managed session ${priorSessionId} has no Agent Connection binding for reject-resume restore`
     );
   }
 
@@ -11624,7 +12050,7 @@ async function restoreManagedSessionAfterRejectResume(
         {
           sessionId: priorSessionId,
           state: probe.state,
-          routeId,
+          connectionId,
           taskPath: input.taskPath,
           reason: "task.reject.resume.alive",
           contextRestored: true,
@@ -11635,8 +12061,8 @@ async function restoreManagedSessionAfterRejectResume(
         task: bound,
         session: {
           sessionId: priorSessionId,
-          routeId,
-          adapterId: prior.adapterId,
+          connectionId,
+          adapterId,
           state: probe.state,
           cwd,
           contextRestored: true,
@@ -11670,6 +12096,9 @@ async function restoreManagedSessionAfterRejectResume(
         `Native resume changed Session identity; expected ${priorSessionId}, got ${handle.sessionId}`
       );
     }
+    if (!handle.connectionId || !handle.adapterId) {
+      throw new Error(`Native resume returned an unbound managed Session: ${priorSessionId}`);
+    }
     clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
 
     const bound = await ctx.mutations.run(input.workspaceId, async () => {
@@ -11685,7 +12114,7 @@ async function restoreManagedSessionAfterRejectResume(
         {
           sessionId: handle.sessionId,
           state: handle.state,
-          routeId: handle.routeId,
+          connectionId: handle.connectionId,
           taskPath: input.taskPath,
           reason: "task.reject.resume.native",
           contextRestored: true,
@@ -11700,7 +12129,7 @@ async function restoreManagedSessionAfterRejectResume(
       task: bound,
       session: {
         sessionId: handle.sessionId,
-        routeId: handle.routeId,
+        connectionId: handle.connectionId,
         adapterId: handle.adapterId,
         state: handle.state,
         cwd,
@@ -11821,8 +12250,7 @@ function emitTaskState(
       path: task.path,
       id: task.id,
       state: task.state,
-      assigneeKind: task.assigneeKind,
-      assigneeId: task.assigneeId,
+      roleId: task.roleId,
       referencedNodeIds:
         taskReferencedNodeIds(task),
       sessionId: task.sessionId,
@@ -12003,7 +12431,8 @@ function makeCommitIntegrator(
     const taskPath = options.taskPath.trim() || task.path;
     // Lock key from live Task + resolved lane (not caller-supplied branch/target).
     const lockTask = await loadTaskEnvelopeForIntegration(ctx, workspaceRoot, taskPath, task);
-    const lockContract = await resolveIntegrationContract(workspaceRoot, lockTask);
+    const mount = requireMountByWorkspaceRoot(ctx, workspaceRoot);
+    const lockContract = await resolveIntegrationContract(workspaceRoot, lockTask, mount.env.fs);
 
     await runIntegrationTargetFlight(workspaceRoot, lockContract.targetBranch, async () => {
       // Write boundary: re-read Task/lane; never trust caller branch/target or stale envelope.
@@ -12013,7 +12442,7 @@ function makeCommitIntegrator(
         taskPath,
         lockTask
       );
-      const contract = await resolveIntegrationContract(workspaceRoot, liveTask);
+      const contract = await resolveIntegrationContract(workspaceRoot, liveTask, mount.env.fs);
       if (contract.targetBranch !== lockContract.targetBranch) {
         throw new Error(
           `Integration targetBranch changed under flight key ` +
@@ -12029,16 +12458,20 @@ function makeCommitIntegrator(
         expected = await loadReadyDeliveryTargetHead(mount.env.fs, liveTask);
       }
 
-      await assertIntegrationTargetHeadUnchanged(workspaceRoot, liveTask, expected, {
+      await assertIntegrationTargetHeadUnchanged(workspaceRoot, liveTask, expected, mount.env.fs, {
         action: options.action,
       });
 
       if (ctx.integrateCommits) {
-        await ctx.integrateCommits(workspaceRoot, refs, liveTask.assigneeId);
+        await ctx.integrateCommits(
+          workspaceRoot,
+          refs,
+          liveTask.roleId ?? liveTask.sessionId ?? "unknown-executor"
+        );
         return;
       }
       // Re-resolve contract immediately before Git write (lane facts at boundary).
-      const writeContract = await resolveIntegrationContract(workspaceRoot, liveTask);
+      const writeContract = await resolveIntegrationContract(workspaceRoot, liveTask, mount.env.fs);
       await integrateWorkspaceCommits(writeContract, refs);
     });
   };
@@ -12085,9 +12518,10 @@ function uniqueCommitRefs(commits: string[] | undefined): string[] {
  */
 async function snapshotIntegrationTargetHead(
   workspaceRoot: string,
-  task: TaskEnvelope
+  task: TaskEnvelope,
+  fs: import("../core/adapter.js").FsAdapter
 ): Promise<string> {
-  const contract = await resolveIntegrationContract(workspaceRoot, task);
+  const contract = await resolveIntegrationContract(workspaceRoot, task, fs);
   return readRoleBranchTip(contract.workspace, contract.targetBranch);
 }
 
@@ -12100,9 +12534,10 @@ async function assertIntegrationTargetHeadUnchanged(
   workspaceRoot: string,
   task: TaskEnvelope,
   expectedTargetHead: string | undefined,
+  fs: import("../core/adapter.js").FsAdapter,
   meta: { action: "task.accept" | "task.deliver" }
 ): Promise<void> {
-  const contract = await resolveIntegrationContract(workspaceRoot, task);
+  const contract = await resolveIntegrationContract(workspaceRoot, task, fs);
   const current = await readRoleBranchTip(contract.workspace, contract.targetBranch);
   const expected = expectedTargetHead?.trim() || "";
   if (!expected) {
@@ -12159,13 +12594,14 @@ async function loadReadyDeliveryTargetHead(
 /**
  * Resolve the lane contract for integration.
  * Role tasks re-validate against ensureRoleWorkspace(role).
- * Route tasks re-validate against ensureTaskWorkspace(taskId) (tent-task/<id>).
+ * Session-only tasks re-validate against ensureTaskWorkspace(taskId) (tent-task/<id>).
  * Sub tasks keep envelope targetBranch (dispatcher role branch) as first-class —
  * do not overwrite with peer mainline from ensure*Workspace.
  */
 async function resolveIntegrationContract(
   workspaceRoot: string,
-  task: TaskEnvelope
+  task: TaskEnvelope,
+  fs: import("../core/adapter.js").FsAdapter
 ): Promise<RoleWorkspaceContract> {
   const mountedRoot = nodePath.resolve(workspaceRoot);
   if (task.workspace) {
@@ -12177,17 +12613,20 @@ async function resolveIntegrationContract(
     }
   }
 
-  const isRoute = taskAssigneeKind(task) === "route";
+  const isTaskScoped = !task.roleId;
+  const registry = await loadRolesRegistry(fs);
   let dispatcherLane: RoleWorkspaceContract | undefined;
   if (taskAsSub(task)) {
     const dispatcher = taskParentRoleId(task);
-    const label = isRoute ? `task ${task.id || task.path}` : `role ${task.assigneeId}`;
+    const label = isTaskScoped ? `task ${task.id || task.path}` : `Role ${task.roleId}`;
     if (!dispatcher) {
       throw new Error(
         `Sub task envelope missing durable parent Role for ${label}; cannot resolve targetBranch`
       );
     }
-    dispatcherLane = await ensureRoleWorkspace(mountedRoot, dispatcher);
+    const dispatcherRole = registry.roles.find((role) => role.id === dispatcher);
+    if (!dispatcherRole) throw new Error(`Parent Role not found in registry: ${dispatcher}`);
+    dispatcherLane = await ensureRoleWorkspace(mountedRoot, dispatcherRole.name);
     if (task.targetBranch && task.targetBranch !== dispatcherLane.branch) {
       throw new Error(
         `Task envelope targetBranch mismatch for ${label}: envelope=${task.targetBranch} expected=${dispatcherLane.branch}`
@@ -12195,13 +12634,19 @@ async function resolveIntegrationContract(
     }
   }
 
-  const real = isRoute
+  const executorRole = task.roleId
+    ? registry.roles.find((role) => role.id === task.roleId)
+    : undefined;
+  if (task.roleId && !executorRole) {
+    throw new Error(`Role not found in registry: ${task.roleId}`);
+  }
+  const real = isTaskScoped
     ? await ensureTaskWorkspace(mountedRoot, task.id || task.path, {
         ...(dispatcherLane ? { targetBranch: dispatcherLane.branch } : {}),
       })
-    : await ensureRoleWorkspace(mountedRoot, task.assigneeId);
+    : await ensureRoleWorkspace(mountedRoot, executorRole!.name);
 
-  const label = isRoute ? `task ${task.id || task.path}` : `role ${task.assigneeId}`;
+  const label = isTaskScoped ? `task ${task.id || task.path}` : `Role ${task.roleId}`;
   if (task.branch && task.branch !== real.branch) {
     throw new Error(
       `Task envelope branch mismatch for ${label}: envelope=${task.branch} expected=${real.branch}`
@@ -12242,13 +12687,13 @@ async function resolveIntegrationContract(
  * Ensure task envelope carries WorkspaceLane before managed startSession.
  * - Role / asSub: lane + baseCommit are normally captured at task.dispatch; this
  *   path is capture-once backfill only and must never overwrite an existing base.
- * - Peer route: first create tent-task/<taskId> here (never tent-role/<route>).
+ * - Session-only Task: first create tent-task/<taskId> here (never a Role lane).
  * Persists exact workspaceLane.baseCommit at first bind (capture-once).
  * Also backfills roleBranchBase for managed collection once when missing.
  * integrationAuthority: only the on-disk bag counts as recorded truth; absence
  * triggers explicit persist of parent/reviewer + service mutator.
  * Non-Git / pure docs → no fake Git fields (cwd falls back to workspace root);
- * authority remains a derived projection from parent/reviewer, not a Route permission.
+ * authority remains a derived projection from parent/reviewer, not a Connection permission.
  */
 async function ensureTaskWorkspaceLane(
   ctx: HandlerContext,
@@ -12277,16 +12722,22 @@ async function ensureTaskWorkspaceLane(
       return current;
     }
 
-    const isRoute = taskAssigneeKind(current) === "route";
+    const isTaskScoped = !current.roleId;
     let taskTargetBranch: string | undefined;
-    if (isRoute && taskAsSub(current)) {
+    const registry = await loadRolesRegistry(mount.env.fs);
+    if (isTaskScoped && taskAsSub(current)) {
       const dispatcher = taskParentRoleId(current);
       if (!dispatcher) {
         throw new Error(
           `Sub task ${current.id || current.path} is missing a durable parent Role.`
         );
       }
-      const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, dispatcher);
+      const dispatcherRole = registry.roles.find((role) => role.id === dispatcher);
+      if (!dispatcherRole) throw new Error(`Parent Role not found in registry: ${dispatcher}`);
+      const dispatcherLane = await ensureRoleWorkspace(
+        mount.workspaceRoot,
+        dispatcherRole.name
+      );
       taskTargetBranch = dispatcherLane.branch;
       const recordedTarget = current.targetBranch?.trim();
       if (recordedTarget && recordedTarget !== taskTargetBranch) {
@@ -12303,17 +12754,20 @@ async function ensureTaskWorkspaceLane(
             branch: current.branch!,
             targetBranch: current.targetBranch!,
           }
-        : isRoute
+        : isTaskScoped
           ? await ensureTaskWorkspaceIfGit(
               mount.workspaceRoot,
               current.id || current.path,
               { ...(taskTargetBranch ? { targetBranch: taskTargetBranch } : {}) }
             )
-          : await ensureRoleWorkspaceIfGit(mount.workspaceRoot, current.assigneeId);
+          : await ensureRoleWorkspaceIfGit(
+              mount.workspaceRoot,
+              await requireRoleNameById(mount.env.fs, current.roleId!)
+            );
     if (!lane) return current;
 
     // Sub tasks keep dispatcher tent-role/* as targetBranch; never rewrite to mainline
-    // when backfilling an incomplete lane (peer route still defers lane creation).
+    // when backfilling an incomplete lane (Connection execution still defers lane creation).
     let targetBranch = lane.targetBranch;
     if (taskAsSub(current)) {
       targetBranch = taskTargetBranch || (current.targetBranch || "").trim() || lane.targetBranch;
@@ -12329,7 +12783,7 @@ async function ensureTaskWorkspaceLane(
       patch.targetBranch = targetBranch;
     }
     // Capture-once exact baseCommit only when first binding an incomplete lane
-    // (e.g. peer route at startSession). Never rewrite an existing base.
+    // (e.g. Connection execution at startSession). Never rewrite an existing base.
     // Complete-lane legacy Tasks missing baseCommit must use explicit
     // task.backfillWorkspaceLaneBase — never infer from tip/roleBranchBase/cwd.
     // Role-assignee first-claim capture happens in task.claim (captureRoleBaseCommitOnClaim).
@@ -12363,20 +12817,19 @@ async function ensureTaskWorkspaceLane(
 }
 
 /**
- * Active external Session for a durable Role. Managed ACP Sessions belong to
- * Settings routes and never carry roleName.
+ * Active external Session for a durable Role. Managed ACP Sessions carry no Role id.
  */
-async function findActiveManagedSessionForRole(
+async function findActiveExternalSessionForRole(
   ctx: HandlerContext,
   workspaceId: string,
-  roleName: string
+  roleId: string
 ): Promise<SessionRecord | undefined> {
-  if (!roleName) return undefined;
+  if (!roleId) return undefined;
   const all = await ctx.runtime.registry.list();
   return all.find(
     (rec) =>
       rec.workspace === workspaceId &&
-      rec.roleName === roleName &&
+      rec.roleId === roleId &&
       rec.state === "external"
   );
 }
@@ -12387,7 +12840,7 @@ function projectStartSessionResult(
   task: TaskEnvelope,
   session: Pick<
     SessionRecord,
-    "id" | "routeId" | "adapterId" | "state" | "roleName" | "runtimeWorkspace"
+    "id" | "connectionId" | "adapterId" | "state" | "roleId" | "runtimeWorkspace"
   >,
   extra?: { cwd?: string }
 ) {
@@ -12402,7 +12855,7 @@ function projectStartSessionResult(
     task: projectTask(task),
     session: {
       sessionId: session.id,
-      routeId: session.routeId,
+      connectionId: session.connectionId,
       adapterId: session.adapterId,
       state: session.state,
       cwd,
@@ -12428,7 +12881,7 @@ async function buildSessionBootstrapPrompt(
     systemRoot: string;
     /** Prior Session contextGeneration when reusing the same managed Session. */
     sessionContextGeneration?: string | null;
-    /** Live generation computed from the actual immutable route snapshot. */
+    /** Live generation computed from the actual immutable Connection snapshot. */
     currentContextGeneration: string;
     taskInputDelta?: string;
     checkpoint?: string;
@@ -12436,15 +12889,13 @@ async function buildSessionBootstrapPrompt(
   roleFs?: import("../core/adapter.js").FsAdapter
 ): Promise<string> {
   const systemRoot = roots.systemRoot || systemRootFromWorkspace(roots.workspaceRoot);
-  const kind = taskAssigneeKind(task);
-
   // Load Role definition for durable Role tasks (prompt only).
-  // route one-shot: tent-task only, no Role prompt.
+  // temporary Session: tent-task only, no Role prompt.
   let roleDef: RoleDefinition | undefined;
-  if (kind === "role" && task.assigneeId && roleFs) {
+  if (task.roleId && roleFs) {
     try {
       const registry = await loadRolesRegistry(roleFs);
-      roleDef = resolveRole(registry.roles, task.assigneeId);
+      roleDef = registry.roles.find((role) => role.id === task.roleId);
     } catch {
       roleDef = undefined;
     }
@@ -12453,7 +12904,7 @@ async function buildSessionBootstrapPrompt(
   // Stable block first (byte-identical across Tasks that share Role + skill bodies).
   const skillPrefix = composeManagedSkillBootstrapPrefix({
     packageRoot: ctx.packageRoot,
-    assigneeKind: kind,
+    roleId: task.roleId,
     role: roleDef,
   });
 
@@ -12470,8 +12921,8 @@ async function buildSessionBootstrapPrompt(
   });
 
   // Optional Role Checkpoint: last dynamic tail only. Missing/corrupt fail-open.
-  // route one-shots never inject Role continuation notes.
-  return appendRoleCheckpointTail(base, kind, task.assigneeId, roleFs);
+  // Temporary Sessions never inject Role continuation notes.
+  return appendRoleCheckpointTail(base, roleDef?.name, roleFs);
 }
 
 /**
@@ -12480,11 +12931,10 @@ async function buildSessionBootstrapPrompt(
  */
 async function appendRoleCheckpointTail(
   base: string,
-  kind: ReturnType<typeof taskAssigneeKind>,
   roleName: string | undefined,
   roleFs?: import("../core/adapter.js").FsAdapter
 ): Promise<string> {
-  if (kind !== "role" || !roleName?.trim() || !roleFs) return base;
+  if (!roleName?.trim() || !roleFs) return base;
   try {
     const record = await readRoleCheckpoint(roleFs, roleName);
     const tail = formatRoleCheckpointTail(record);
@@ -12548,7 +12998,8 @@ function buildContextCardManagedBootstrap(
     ...(task.reviewer
       ? [`reviewer: ${task.reviewer.kind}:${task.reviewer.id}`]
       : []),
-    `assignee: ${task.assigneeKind}:${task.assigneeId}`,
+    ...(task.roleId ? [`roleId: ${task.roleId}`] : []),
+    ...(task.sessionId ? [`sessionId: ${task.sessionId}`] : []),
     `Service status: this task is already claimed (state=${task.state || "running"}).`,
     "Managed path: Local Service already claimed this task; final assistant reply is the report and will be delivered automatically.",
     ...(executionLaneText ? [executionLaneText] : []),
@@ -12641,8 +13092,7 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
   const proj: TaskProjection = {
     path: task.path,
     id: task.id,
-    assigneeKind: task.assigneeKind,
-    assigneeId: task.assigneeId,
+    roleId: task.roleId,
     referencedNodeIds: taskReferencedNodeIds(task),
     state: task.state,
     manifest: task.manifest,

@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type {
-  RouteLaunchPlan,
+  ConnectionLaunchPlan,
   ManagedSession,
   ProviderAdapter,
   ProviderCapabilities,
@@ -196,7 +196,7 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
    * Launch plan validation only. Real ACP needs bidirectional stdio —
    * AgentRuntime uses startManagedSession instead of ProcessSupervisor.
    */
-  resolveLaunch(plan: RouteLaunchPlan): ResolvedLaunch {
+  resolveLaunch(plan: ConnectionLaunchPlan): ResolvedLaunch {
     const opts = normalizeGrokOpts(readAcpExtras(plan.extras));
     const command = plan.command || opts.executable || defaultGrokExecutable();
     const model = opts.model;
@@ -218,13 +218,13 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
     if (!plan.command && opts.executable) {
       if (!fs.existsSync(opts.executable)) {
         throw new Error(
-          `Grok 可执行文件不存在: ${opts.executable}。请在 machine-local route.acp.executable 中配置正确路径。`
+          `Grok 可执行文件不存在: ${opts.executable}。请在 machine-local Agent Connection 中配置正确路径。`
         );
       }
     } else if (!plan.command) {
       if (!fs.existsSync(command)) {
         throw new Error(
-          `未找到 Grok 可执行文件: ${command}。请安装 grok CLI 或在 route 中设置 acp.executable。`
+          `未找到 Grok 可执行文件: ${command}。请安装 grok CLI 或在 Agent Connection 中设置 executable。`
         );
       }
     }
@@ -263,7 +263,7 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
       // Grok CLI auth method may read XAI_API_KEY; value is the CPA key, not a second secret store.
       XAI_API_KEY: apiKey,
       TENT_SESSION_ID: plan.sessionId,
-      TENT_ROUTE_ID: plan.routeId,
+      TENT_CONNECTION_ID: plan.connectionId,
       TENT_GROK_MODEL: model,
     };
 
@@ -299,7 +299,7 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
   }
 
   async startManagedSession(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession> {
     const client = this.createClient(plan, emit);
@@ -311,7 +311,7 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
    * Requires agentCapabilities.loadSession on the live initialize handshake.
    */
   async resumeManagedSession(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     token: ResumeToken,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession> {
@@ -332,7 +332,7 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
   }
 
   private createClient(
-    plan: RouteLaunchPlan,
+    plan: ConnectionLaunchPlan,
     emit: (ev: RuntimeEvent) => void
   ): GrokAcpClient {
     const opts = normalizeGrokOpts(readAcpExtras(plan.extras));
@@ -379,9 +379,9 @@ export function createGrokAcpAdapter(
   return new GrokAcpProviderAdapter(options);
 }
 
-/** Machine-local route template — secrets only via env key *names* / optional baseUrl, never workspace. */
+/** Machine-local Connection template — secrets only via env key names/optional baseUrl. */
 export function grokAcpRouteTemplate(overrides?: {
-  routeId?: string;
+  connectionId?: string;
   executable?: string;
   model?: string;
   envKey?: string;
@@ -390,7 +390,7 @@ export function grokAcpRouteTemplate(overrides?: {
   permissionPolicy?: GrokAcpPermissionPolicy;
   promptTimeoutMs?: number;
 }): {
-  routeId: string;
+  connectionId: string;
   provider: string;
   adapterId: string;
   executable?: string;
@@ -402,7 +402,7 @@ export function grokAcpRouteTemplate(overrides?: {
   promptTimeoutMs?: number;
 } {
   return {
-    routeId: overrides?.routeId ?? "grok-acp-default",
+    connectionId: overrides?.connectionId ?? "grok-acp-default",
     provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
     executable: overrides?.executable,

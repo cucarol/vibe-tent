@@ -21,11 +21,9 @@ export const WORKSPACE_SETTINGS_PATH = "settings.json";
 export const ANNOTATIONS_PATH = "annotations.json";
 export const TEMP_DIR = "temp";
 export const ATTACHMENTS_DIR = "attachments";
-/**
- * One-shot Settings route operational namespace under temp/.
- * Role lanes remain `temp/<role>/…`; route Tasks never use a durable Role lane.
- */
-export const ROUTES_TEMP_DIR = "routes";
+/** Canonical operational namespaces. Neither directory is a Node tree. */
+export const ROLES_TEMP_DIR = "roles";
+export const SESSIONS_TEMP_DIR = "sessions";
 
 /** 不进入 Node 索引的顶层/路径前缀（相对 system root）。 */
 export const OPERATIONAL_TOP_LEVEL = new Set([
@@ -76,7 +74,7 @@ export function isOperationalPath(relativePath: string): boolean {
 }
 
 /**
- * Sanitize route id / Task id segments for operational directory names.
+ * Sanitize identity / Task id segments for operational directory names.
  * Deterministic, path-safe; not a security boundary.
  */
 export function safeOperationalSegment(value: string, emptyPrefix = "id"): string {
@@ -105,23 +103,36 @@ export function safeOperationalSegment(value: string, emptyPrefix = "id"): strin
   return clean;
 }
 
-/** `temp/routes/<safe-route-id>` root for temporary route operational records. */
-export function routeTempRoot(routeId: string): string {
-  return `${TEMP_DIR}/${ROUTES_TEMP_DIR}/${safeOperationalSegment(routeId, "route")}`;
+/** `temp/roles/<roleId>` root for durable Role Task records. */
+export function roleTempRoot(roleId: string): string {
+  return `${TEMP_DIR}/${ROLES_TEMP_DIR}/${safeOperationalSegment(roleId, "role")}`;
 }
 
-export function routeTasksDir(routeId: string): string {
-  return `${routeTempRoot(routeId)}/tasks`;
+export function roleTasksDir(roleId: string): string {
+  return `${roleTempRoot(roleId)}/tasks`;
 }
 
-export function routeDeliveriesDir(routeId: string): string {
-  return `${routeTempRoot(routeId)}/deliveries`;
+export function roleDeliveriesDir(roleId: string): string {
+  return `${roleTempRoot(roleId)}/deliveries`;
+}
+
+/** `temp/sessions/<sessionId>` root for Session-only Task records. */
+export function sessionTempRoot(sessionId: string): string {
+  return `${TEMP_DIR}/${SESSIONS_TEMP_DIR}/${safeOperationalSegment(sessionId, "session")}`;
+}
+
+export function sessionTasksDir(sessionId: string): string {
+  return `${sessionTempRoot(sessionId)}/tasks`;
+}
+
+export function sessionDeliveriesDir(sessionId: string): string {
+  return `${sessionTempRoot(sessionId)}/deliveries`;
 }
 
 /** Task-scoped immutable manifest path (never shared `manifest.yml`). */
-export function routeManifestPath(routeId: string, taskId: string): string {
+export function taskManifestPath(ownerRoot: string, taskId: string): string {
   const safeTask = safeOperationalSegment(taskId, "task");
-  return `${routeTempRoot(routeId)}/manifests/${safeTask}.yml`;
+  return `${ownerRoot}/manifests/${safeTask}.yml`;
 }
 
 /** 是否为应排除在 Node 索引外的生成/系统文件名。 */

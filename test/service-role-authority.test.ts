@@ -12,7 +12,6 @@ import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { createServiceClient } from "../src/service/client.js";
-import { makeSessionId } from "../src/runtime/types.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import {
   CLIENT_METHODS,
@@ -32,8 +31,8 @@ async function makeWorkspace(name = "role-auth"): Promise<string> {
     JSON.stringify(
       {
         roles: [
-          { name: "executor", prompt: "do work" },
-          { name: "orchestrator", prompt: "dispatch" },
+          { id: "rl-executor", name: "executor", prompt: "do work" },
+          { id: "rl-orchestrator", name: "orchestrator", prompt: "dispatch" },
         ],
       },
       null,
@@ -50,9 +49,9 @@ async function withService<T>(
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: true,
-    routes: [
+    connections: [
       {
-        routeId: "fake-default",
+        connectionId: "fake-default",
         provider: "fake",
         adapterId: FAKE_ADAPTER_ID,
         fake: { waitForSignal: true, canResume: true },
@@ -308,8 +307,7 @@ test("registry.role.delete: confirmation, blocks active task, one event on succe
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       nodeIds: [nodeId],
-      assigneeKind: "role",
-      assigneeId: "executor",
+      roleId: "rl-executor",
       prompt: "block delete",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
@@ -346,19 +344,25 @@ test("registry.role.delete: confirmation, blocks active task, one event on succe
   });
 });
 
-test("registry.role.delete ignores unrelated live route Session", async () => {
+test("registry.role.delete ignores unrelated live Connection Session", async () => {
   const ws = await makeWorkspace("role-live-session");
   await withService(async (svc) => {
     const workspaceId = await mount(svc, ws);
-    const started = await svc.runtime.startSession({
-      sessionId: makeSessionId(),
-      routeId: "fake-default",
-      routeSnapshot: svc.runtime.snapshotRouteForStart("fake-default"),
-      workspace: workspaceId,
-      cwd: ws,
-      runtimeWorkspace: { cwd: ws },
+    const note = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "connection-work",
+      type: "prompt",
     });
-    assert.ok(started.state === "live" || started.state === "starting");
+    assert.ok(!note.error, JSON.stringify(note.error));
+    const started = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      nodeIds: [(note.result as { nodeId: string }).nodeId],
+      connectionId: "fake-default",
+      prompt: "unrelated Connection work",
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
 
     const events: unknown[] = [];
     const unsub = svc.events.subscribe((ev) => {
@@ -377,7 +381,7 @@ test("registry.role.delete ignores unrelated live route Session", async () => {
   });
 });
 
-test("task.startSession uses machine route availability without writing Role state", async () => {
+test("Connection dispatch starts an exact Session without writing Role state", async () => {
   const ws = await makeWorkspace("role-client");
   await withService(async (svc) => {
     const workspaceId = await mount(svc, ws);
@@ -389,32 +393,26 @@ test("task.startSession uses machine route availability without writing Role sta
       type: "prompt",
     });
     const nodeId = (note.result as { nodeId: string }).nodeId;
-    const d = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
-      workspaceId,
-      nodeIds: [nodeId],
-      assigneeKind: "route",
-      assigneeId: "fake-default",
-      prompt: "route launch",
-    });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-
     const rolesPath = path.join(ws, ".tent", "roles.json");
     const rolesBefore = await fs.readFile(rolesPath, "utf8");
     const roleEvents: unknown[] = [];
     const unsubscribe = svc.events.subscribe((event) => {
       if (event.type === "registry.roles.updated") roleEvents.push(event.payload);
     });
-
-    const ok = await rpc(svc, "task.startSession", {
+    const d = await rpc(svc, "task.dispatch", {
+      parentActor: { kind: "user", id: "user" },
+      reviewer: { kind: "user", id: "user" },
       workspaceId,
-      taskPath,
-      callerKind: "user",
+      nodeIds: [nodeId],
+      connectionId: "fake-default",
+      prompt: "Connection launch",
     });
-    assert.ok(!ok.error, JSON.stringify(ok.error));
-    assert.equal((ok.result as { session: { routeId: string } }).session.routeId, "fake-default");
+
+    assert.ok(!d.error, JSON.stringify(d.error));
+    assert.equal(
+      (d.result as { session: { session: { connectionId: string } } }).session.session.connectionId,
+      "fake-default"
+    );
     assert.equal(await fs.readFile(rolesPath, "utf8"), rolesBefore);
     assert.equal(roleEvents.length, 0);
     unsubscribe();

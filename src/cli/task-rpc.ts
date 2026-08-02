@@ -140,19 +140,28 @@ export async function runTaskCommand(
           return failUsage("tent task claim: --prompt must be non-empty");
         }
         const env = globals.env ?? process.env;
-        const role = String(env.TENT_ROLE_NAME ?? env.TENT_ROLE ?? "").trim();
-        if (!role || role === "user") {
+        const roleId = String(env.TENT_ROLE_ID ?? "").trim();
+        if (!/^rl-[a-z0-9]+$/i.test(roleId)) {
           return failUsage(
-            "tent task claim: direct claim requires a durable Role environment (TENT_ROLE_NAME or TENT_ROLE)"
+            "tent task claim: direct claim requires a canonical durable Role id in TENT_ROLE_ID"
           );
         }
-        const sourceSessionId = String(env.TENT_SESSION_ID ?? "").trim() || undefined;
+        const sourceSessionId = String(env.TENT_SESSION_ID ?? "").trim();
+        const sourceSessionToken = String(env.TENT_SESSION_TOKEN ?? "").trim();
+        const nativeSessionContext =
+          String(env.TENT_EXTERNAL_SESSION_KEY ?? "").trim() ||
+          String(env.CODEX_THREAD_ID ?? "").trim() ||
+          String(env.CLAUDE_SESSION_ID ?? "").trim();
+        if ((!sourceSessionId || !sourceSessionToken) && !nativeSessionContext) {
+          return failUsage(
+            "tent task claim: direct claim requires the current trusted Role Session context"
+          );
+        }
         const sourceTaskPath = String(flags["from-task"] ?? "").trim() || undefined;
         const result = await client.taskClaimDirect(workspaceId, {
-          role,
+          roleId,
           nodeIds,
           prompt,
-          sourceSessionId,
           sourceTaskPath,
         });
         return okPrint(result, json, (r) => {
@@ -210,11 +219,11 @@ export async function runTaskCommand(
       }
       case "dispatch": {
         // Public ordinary dispatch (cx-b9bf58):
-        //   tent task dispatch --target role:<id>|route:<routeId> --node <nodeId>… --prompt <text>|-
+        //   tent task dispatch --target role:<id>|connection:<connectionId> --node <nodeId>… --prompt <text>|-
         // Node refs map to transient RPC nodeIds[] (→ contextCard.refs.nodes sole persist).
-        // Settings route ids are the public machine execution selector.
+        // Agent Connection ids are transient launch selectors and are never Task identity.
         const usage =
-          "Usage: tent task dispatch --target role:<roleIdOrName>|route:<routeId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]";
+          "Usage: tent task dispatch --target role:<roleId>|connection:<connectionId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]";
 
         const unknownFlag = findUnknownFlag(flags, DISPATCH_FLAGS);
         if (unknownFlag) {
@@ -232,14 +241,14 @@ export async function runTaskCommand(
         if (!targetRaw) {
           return failUsage(`--target is required\n${usage}`);
         }
-        const targetMatch = /^(role|route):(.+)$/i.exec(targetRaw);
+        const targetMatch = /^(role|connection):(.+)$/i.exec(targetRaw);
         if (!targetMatch) {
           return failUsage(
-            `--target must be role:<roleIdOrName> or route:<routeId> (got ${JSON.stringify(targetRaw)})\n` +
+            `--target must be role:<roleId> or connection:<connectionId> (got ${JSON.stringify(targetRaw)})\n` +
               usage
           );
         }
-        const targetKind = targetMatch[1]!.toLowerCase() as "role" | "route";
+        const targetKind = targetMatch[1]!.toLowerCase() as "role" | "connection";
         const targetId = targetMatch[2]!.trim();
         if (!targetId) {
           return failUsage(
@@ -278,7 +287,7 @@ export async function runTaskCommand(
         // User-direct → parentActor=reviewer=user + callerKind=user.
         // Role downstream work targets the parent Role lane; user-direct work does not.
         const envRole = String(
-          (globals.env?.TENT_ROLE ?? process.env.TENT_ROLE ?? "") as string
+          (globals.env?.TENT_ROLE_ID ?? globals.env?.TENT_ROLE ?? process.env.TENT_ROLE_ID ?? process.env.TENT_ROLE ?? "") as string
         ).trim();
         const roleCaller = Boolean(envRole && envRole !== "user");
         const parentActor = roleCaller
@@ -289,7 +298,8 @@ export async function runTaskCommand(
 
         // Service RPC mirrors the public model:
         // - role target: durable Role handoff, queued, never startSession
-        // - route target: temporary ACP Session from the selected Settings route.
+        // - connection target: reserve a temporary ACP Session from Settings,
+        //   then create the Task already bound to that exact Session.
         // nodeIds is the sole public Node selection and persists only through
         // Context Card refs.nodes. No single-Node compatibility field is emitted.
         const common = {
@@ -304,14 +314,11 @@ export async function runTaskCommand(
           targetKind === "role"
             ? {
                 ...common,
-                assigneeKind: "role" as const,
-                assigneeId: targetId,
+                roleId: targetId,
               }
             : {
                 ...common,
-                assigneeKind: "route" as const,
-                assigneeId: targetId,
-                startSession: true as const,
+                connectionId: targetId,
               };
 
         const result = await client.taskDispatch(workspaceId, dispatchArgs);
@@ -666,8 +673,7 @@ export async function runTaskCommand(
 type TaskLike = {
   path?: string;
   id?: string;
-  assigneeKind?: "role" | "route";
-  assigneeId?: string;
+  roleId?: string;
   state?: string;
   status?: string;
   /** Node ids from TaskProjection.referencedNodeIds (Context Card refs). */
@@ -684,19 +690,19 @@ function formatTaskDispatch(result: unknown): string {
     relayPrompt?: string;
     parentActor?: { kind?: string; id?: string };
     reviewer?: { kind?: string; id?: string };
-    assigneeKind?: string;
-    assigneeId?: string;
+    roleId?: string;
+    sessionId?: string;
     session?:
       | {
           sessionId?: string;
           id?: string;
           state?: string;
-          routeId?: string;
+          connectionId?: string;
           session?: {
             sessionId?: string;
             id?: string;
             state?: string;
-            routeId?: string;
+            connectionId?: string;
           };
         }
       | null;
@@ -710,7 +716,7 @@ function formatTaskDispatch(result: unknown): string {
       ? String(sessionView.sessionId || sessionView.id)
       : undefined;
   const sessionState = sessionView?.state ? String(sessionView.state) : undefined;
-  const sessionRouteId = sessionView?.routeId ? String(sessionView.routeId) : undefined;
+  const sessionConnectionId = sessionView?.connectionId ? String(sessionView.connectionId) : undefined;
   const parentLabel =
     row.parentActor?.kind && row.parentActor?.id
       ? `${row.parentActor.kind}:${row.parentActor.id}`
@@ -724,13 +730,12 @@ function formatTaskDispatch(result: unknown): string {
     `✓ Dispatched via service RPC\n` +
     `taskPath: ${row.taskPath}\n` +
     `state: ${row.state ?? "queued"}\n` +
-    (row.assigneeKind ? `assigneeKind: ${row.assigneeKind}\n` : "") +
-    (row.assigneeId ? `assigneeId: ${row.assigneeId}\n` : "") +
+    (row.roleId ? `roleId: ${row.roleId}\n` : "") +
     (parentLabel ? `parentActor: ${parentLabel}\n` : "") +
     (reviewerLabel ? `reviewer: ${reviewerLabel}\n` : "") +
     (sessionId ? `sessionId: ${sessionId}\n` : "") +
     (sessionState ? `sessionState: ${sessionState}\n` : "") +
-    (sessionRouteId ? `sessionRouteId: ${sessionRouteId}\n` : "") +
+    (sessionConnectionId ? `sessionConnectionId: ${sessionConnectionId}\n` : "") +
     (row.relayPrompt ? `\n--- Relay prompt ---\n${row.relayPrompt}` : "")
   );
 }
@@ -746,7 +751,7 @@ function formatTaskList(result: unknown): string {
     lines.push(
       `- ${t.path ?? t.id ?? "?"}` +
         `\tstate=${t.state ?? t.status ?? "?"}` +
-        `\tassignee=${t.assigneeKind ?? "?"}:${t.assigneeId ?? "?"}` +
+        (t.roleId ? `\trole=${t.roleId}` : "") +
         `\tnodes=${(t.referencedNodeIds ?? []).join(",") || "-"}` +
         (t.sessionId ? `\tsession=${t.sessionId}` : "")
     );
@@ -759,8 +764,7 @@ function formatTaskGet(result: { task: TaskLike }): string {
   const lines = [
     `path: ${t.path ?? "?"}`,
     `id: ${t.id ?? "?"}`,
-    `assigneeKind: ${t.assigneeKind ?? "?"}`,
-    `assigneeId: ${t.assigneeId ?? "?"}`,
+    `roleId: ${t.roleId ?? "-"}`,
     `state: ${t.state ?? t.status ?? "?"}`,
     `status: ${t.status ?? "?"}`,
     `nodes: ${(t.referencedNodeIds ?? []).join(", ") || "-"}`,
@@ -1069,9 +1073,9 @@ Commands:
       # direct Role execution: create + claim atomically; no --target and no downstream dispatch
       # Role comes from TENT_ROLE_NAME/TENT_ROLE; Service derives parent/reviewer from durable facts
   tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
-  tent task dispatch --target role:<roleIdOrName>|route:<routeId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]
+  tent task dispatch --target role:<roleId>|connection:<connectionId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]
       # --target role:*  durable Role handoff (queued; never starts managed ACP at dispatch)
-      # --target route:* machine Settings route + managed Session start
+      # --target connection:* machine Settings Connection + exact managed Session
       # --node           repeatable Node refs (at least one); sole source for contextCard.refs.nodes
       # parentActor/reviewer derive from the durable Role or local user boundary
       # Any flag outside this command's canonical grammar is rejected
