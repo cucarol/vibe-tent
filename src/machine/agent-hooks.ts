@@ -1,15 +1,9 @@
 // Machine-local Agent native hook/config projection (V0.2).
-// Injects SessionStart → `tent session session-start --host <agent>` and
-// Stop → `tent session session-end --host <agent>` into verified agent config surfaces only.
-// Never touches permissions, MCP, or ACP adapters.
-//
-// Why session-start/session-end (not bare enter/leave):
-// - leave requires a sessionId positional; two independent hook processes cannot close that loop.
-// - bare enter/leave fail-loud outside a Tent workspace.
-// - CLI hook aliases parse session identity/cwd from native hook stdin and silently skip non-Tent.
-//
-// Public projection is Session namespace only. Legacy `tent agent session-*` entries may be
-// recognized solely for safe replace/remove on install — never generated or advertised.
+// Optional host convenience only: injects SessionStart →
+// `tent session session-start --host <agent>` and Stop →
+// `tent session session-end --host <agent>` into verified agent config surfaces.
+// Never touches permissions, MCP, ACP, native sub tracking, transcript persistence,
+// or a host state machine. No legacy command recognition or config migration.
 
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -31,12 +25,10 @@ const AGENT_ALIASES: Record<string, AgentHookId> = {
 };
 
 /**
- * Stable managed command identity for install/doctor/remove (current public form).
+ * Stable managed command identity for install/doctor/remove (current public form only).
  *   tent session session-start --host <agent>
  *   tent session session-end --host <agent>
- * Bare enter/leave (unpublished) are never matched, upgraded, or removed —
- * so user-authored commands with those tokens are left alone.
- * Legacy `agent session-*` stems are recognized only for replace/remove (not exported).
+ * Bare enter/leave and any non-Session stems are never matched, upgraded, or removed.
  */
 export const TENT_HOOK_SESSION_START_STEM = "session session-start";
 export const TENT_HOOK_SESSION_END_STEM = "session session-end";
@@ -170,10 +162,9 @@ export function managedSessionEndCommand(
 }
 
 /**
- * True if a hook command is Tent-managed formal projection (current or legacy):
- * `…tent… session session-start|session-end --host <id>` (current), or
- * `…tent… agent session-start|session-end --host <id>` (legacy, replace/remove only).
- * Does not match bare enter/leave or session-* without --host.
+ * True if a hook command is the current Tent-managed formal projection:
+ * `…tent… session session-start|session-end --host <id>`.
+ * Does not match bare enter/leave, agent session-*, or session-* without --host.
  */
 export function isManagedHookCommand(command: string | undefined | null): boolean {
   if (!command || typeof command !== "string") return false;
@@ -183,30 +174,24 @@ export function isManagedHookCommand(command: string | undefined | null): boolea
   return isManagedStartStem(c) || isManagedEndStem(c);
 }
 
-/** Formal session-start projection (requires --host); current or legacy stem. */
+/** Formal session-start projection (requires --host); current Session stem only. */
 export function isManagedEnterCommand(command: string | undefined | null): boolean {
   if (!isManagedHookCommand(command)) return false;
   return isManagedStartStem(String(command));
 }
 
-/** Formal session-end projection (requires --host); current or legacy stem. */
+/** Formal session-end projection (requires --host); current Session stem only. */
 export function isManagedLeaveCommand(command: string | undefined | null): boolean {
   if (!isManagedHookCommand(command)) return false;
   return isManagedEndStem(String(command));
 }
 
 function isManagedStartStem(command: string): boolean {
-  return (
-    /\bsession\s+session-start\b/i.test(command) ||
-    /\bagent\s+session-start\b/i.test(command)
-  );
+  return /\bsession\s+session-start\b/i.test(command);
 }
 
 function isManagedEndStem(command: string): boolean {
-  return (
-    /\bsession\s+session-end\b/i.test(command) ||
-    /\bagent\s+session-end\b/i.test(command)
-  );
+  return /\bsession\s+session-end\b/i.test(command);
 }
 
 /** Extract `--host <id>` from a command, if present. */
@@ -414,7 +399,7 @@ interface ProjectClaudeLikeOptions {
   tentCommand?: string;
   /** Hooks live under root.hooks. Kept explicit for the shared writer. */
   wrapRoot: boolean;
-  /** Apply Codex hooks.json schema validation and legacy-shape migration. */
+  /** Apply Codex handler shape (statusMessage / no async) for managed entries. */
   codexCommandShape?: boolean;
 }
 
@@ -468,26 +453,12 @@ async function projectClaudeLike(
 
   // Never mutate permissions or non-hooks keys in place until we write a clone.
   const nextRoot: JsonObject = { ...root };
-  const legacyCodexEvents = codexCommandShape
-    ? migrateLegacyCodexEvents(nextRoot)
-    : [];
   const hooksBag = wrapRoot ? asObject(nextRoot.hooks) : nextRoot;
   // Working copy of the hooks bag (event → matcher groups).
   const hooks: JsonObject = wrapRoot ? { ...hooksBag } : { ...hooksBag };
 
   const presentBefore = detectManagedEvents(hooks, agent);
   if (mode === "doctor") {
-    if (legacyCodexEvents.length > 0) {
-      return {
-        agent,
-        support: "lifecycle",
-        status: "error",
-        path: configPath,
-        reason: `Invalid Codex hooks.json: event keys must be nested under \"hooks\" (found ${legacyCodexEvents.join(",")})`,
-        present: [],
-        missing: ["SessionStart", "Stop"],
-      };
-    }
     return doctorFromPresent(agent, configPath, presentBefore, existed);
   }
 
@@ -516,19 +487,6 @@ async function projectClaudeLike(
   }
 
   // install — formal session session-start/end --host only; never rewrite bare enter/leave.
-  // Legacy agent session-* for this host is rewritten in place to the current Session form.
-  const upgradedEnter = upgradeManagedCommandForHost(
-    hooks,
-    "SessionStart",
-    matchEnter,
-    enterCmd
-  );
-  const upgradedLeave = upgradeManagedCommandForHost(
-    hooks,
-    "Stop",
-    matchLeave,
-    leaveCmd
-  );
   const enterHandler = buildCommandHandler(enterCmd, codexCommandShape === true);
   const leaveHandler = buildCommandHandler(leaveCmd, codexCommandShape === true);
   const addedEnter = ensureManagedEvent(hooks, "SessionStart", enterHandler, matchEnter);
@@ -541,11 +499,8 @@ async function projectClaudeLike(
   if (
     !addedEnter &&
     !addedLeave &&
-    !upgradedEnter &&
-    !upgradedLeave &&
     !normalizedCodexHandlers &&
-    presentAfter.length === 2 &&
-    legacyCodexEvents.length === 0
+    presentAfter.length === 2
   ) {
     return {
       agent,
@@ -607,35 +562,6 @@ function normalizeCodexManagedHandlers(hooks: JsonObject, agent: AgentHookId): b
     });
   }
   return changed;
-}
-
-const CODEX_HOOK_EVENTS = [
-  "SessionStart",
-  "PreToolUse",
-  "PermissionRequest",
-  "PostToolUse",
-  "PreCompact",
-  "PostCompact",
-  "UserPromptSubmit",
-  "SubagentStart",
-  "SubagentStop",
-  "Stop",
-] as const;
-
-/** Move the pre-schema Codex shape (`SessionStart` at root) into root.hooks. */
-function migrateLegacyCodexEvents(root: JsonObject): string[] {
-  const found = CODEX_HOOK_EVENTS.filter((event) => Array.isArray(root[event]));
-  if (found.length === 0) return [];
-
-  const hooks = { ...asObject(root.hooks) };
-  for (const event of found) {
-    const legacy = root[event] as unknown[];
-    const current = Array.isArray(hooks[event]) ? (hooks[event] as unknown[]) : [];
-    hooks[event] = [...current, ...legacy];
-    delete root[event];
-  }
-  root.hooks = hooks;
-  return found;
 }
 
 function doctorFromPresent(
@@ -769,39 +695,6 @@ function eventHasManaged(
     }
   }
   return false;
-}
-
-/**
- * Rewrite an existing managed handler for this host to the current projected command.
- * Used to migrate legacy `tent agent session-*` entries without advertising them.
- * Returns true if any command string was changed.
- */
-function upgradeManagedCommandForHost(
-  hooks: JsonObject,
-  event: HookLifecycleEvent,
-  match: (command: string | undefined | null) => boolean,
-  desiredCommand: string
-): boolean {
-  const groups = hooks[event];
-  if (!Array.isArray(groups)) return false;
-  let changed = false;
-  hooks[event] = groups.map((group) => {
-    if (!group || typeof group !== "object" || Array.isArray(group)) return group;
-    const nextGroup = { ...(group as JsonObject) };
-    if (!Array.isArray(nextGroup.hooks)) return nextGroup;
-    nextGroup.hooks = (nextGroup.hooks as unknown[]).map((handler) => {
-      if (!handler || typeof handler !== "object" || Array.isArray(handler)) return handler;
-      const nextHandler = { ...(handler as JsonObject) };
-      const command = typeof nextHandler.command === "string" ? nextHandler.command : null;
-      if (!match(command)) return handler;
-      if (command === desiredCommand) return handler;
-      nextHandler.command = desiredCommand;
-      changed = true;
-      return nextHandler;
-    });
-    return nextGroup;
-  });
-  return changed;
 }
 
 /**
