@@ -4352,6 +4352,11 @@ async function runTaskCommand(sub, args, globals = {}) {
   try {
     const { positionals, flags, repeatable } = parseTaskFlags(args);
     const json = globals.json === true || flags.json === "true";
+    if (sub === "claim" && (Object.prototype.hasOwnProperty.call(flags, "session") || Object.prototype.hasOwnProperty.call(flags, "session-id"))) {
+      return failUsage(
+        "tent task claim does not accept --session or --session-id; Session binding is owned by Tent host integration"
+      );
+    }
     const workspaceFlag = flags.workspace || globals.workspace;
     const attachOpts = {
       dataDir: flags["data-dir"] || globals.dataDir,
@@ -4393,11 +4398,10 @@ async function runTaskCommand(sub, args, globals = {}) {
         if (taskPath) {
           if (positionals.length > 1) {
             return failUsage(
-              "Usage: tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]"
+              "Usage: tent task claim <taskPath> [--workspace <path>] [--json]"
             );
           }
-          const sessionId = flags.session || flags["session-id"];
-          const result2 = await client.taskClaim(workspaceId, taskPath, sessionId);
+          const result2 = await client.taskClaim(workspaceId, taskPath);
           return okPrint(result2, json, (r) => {
             const row = r;
             return `\u2713 Claimed via service RPC
@@ -4410,11 +4414,6 @@ state: ${row.state ?? "running"}
         if (!hasDirectClaimInput || positionals.length > 0) {
           return failUsage(
             "Usage: tent task claim --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]"
-          );
-        }
-        if (flags.session || flags["session-id"]) {
-          return failUsage(
-            "tent task claim: direct Role claim does not accept --session; Tent uses the verified current Session only as responsibility-chain provenance"
           );
         }
         const rawNodes = repeatable.node ?? [];
