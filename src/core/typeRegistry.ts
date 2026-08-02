@@ -58,35 +58,71 @@ export function isBuiltinSecondary(name: string): name is BuiltinSecondaryType {
 }
 
 /**
- * type 是否可被注册表解析(精确命中,或 base[+modifier] 都在册)。
- * Primary bases must be canonical goal|prompt|output (or a residual custom base still in registry during transition tests).
+ * Lifecycle / load path: a Node type string is readable when its primary base is
+ * canonical goal|prompt|output. Optional markers may be unknown historically —
+ * unknown markers must not break lifecycle reads. Bare markers (no primary) are
+ * not Node types.
+ *
+ * Production writes must use {@link isValidNodeType} / {@link assertValidNodeType}.
  */
 export function typeExists(type: string, registry: TypeRegistry): boolean {
-  if (registry[type]) return true;
-  const { base, modifier } = splitType(type);
-  const baseOk = !!registry[base] && (registry[base].tier ?? "base") !== "modifier";
-  if (!baseOk) return false;
+  const trimmed = type.trim();
+  if (!trimmed) return false;
+  const { base, modifier } = splitType(trimmed);
+  if (!isCanonicalPrimary(base)) return false;
+  if (!registry[base] || (registry[base].tier ?? "base") === "modifier") return false;
+  // Empty modifier after trailing "-" is not a well-formed type string.
+  if (modifier !== undefined && modifier.length === 0) return false;
+  return true;
+}
+
+/**
+ * Production write validator (create / patch / scaffold / type management).
+ * primary ∈ goal|prompt|output; optional secondary must be registered as modifier.
+ * Bare markers are never valid Node types.
+ */
+export function isValidNodeType(type: string, registry: TypeRegistry): boolean {
+  const trimmed = type.trim();
+  if (!trimmed) return false;
+  const { base, modifier } = splitType(trimmed);
+  if (!isCanonicalPrimary(base)) return false;
+  if (!registry[base] || (registry[base].tier ?? "base") === "modifier") return false;
   if (modifier === undefined) return true;
+  if (modifier.length === 0) return false;
   const mod = registry[modifier];
   return !!mod && mod.tier === "modifier";
 }
 
 /**
- * Whether a type string is a valid V0.2 node type after cutover:
- * primary ∈ goal|prompt|output, optional secondary present in registry as modifier.
+ * Shared fail-loud gate for every production Node type write boundary.
+ * Rejects bare markers, unknown markers, non-primary bases, and empty types.
  */
-export function isValidNodeType(type: string, registry: TypeRegistry): boolean {
-  const { base, modifier } = splitType(type);
-  if (!isCanonicalPrimary(base)) return false;
-  if (!registry[base] || (registry[base].tier ?? "base") === "modifier") return false;
-  if (modifier === undefined) return true;
-  const mod = registry[modifier];
-  return !!mod && mod.tier === "modifier";
+export function assertValidNodeType(type: string, registry: TypeRegistry): void {
+  const trimmed = typeof type === "string" ? type.trim() : "";
+  if (!trimmed) throw new Error("Primary type cannot be cleared.");
+  if (isValidNodeType(trimmed, registry)) return;
+
+  const { base, modifier } = splitType(trimmed);
+  if (!isCanonicalPrimary(base)) {
+    throw new Error(
+      `Invalid node type: ${trimmed}. Node type must be goal|prompt|output or ` +
+        `goal|prompt|output-<marker>; bare markers are not valid node types.`
+    );
+  }
+  if (modifier !== undefined) {
+    if (modifier.length === 0) {
+      throw new Error(`Invalid node type: ${trimmed}. Empty marker is not allowed.`);
+    }
+    throw new Error(
+      `Unknown type marker: ${modifier} (in ${trimmed}). Register the marker before writing.`
+    );
+  }
+  throw new Error(`Unknown type: ${trimmed}.`);
 }
 
 /**
  * 正常运行路径只读 system root 扁平 `types.json`。
- * 嵌套 `.tent/types.json` 仅由一次性迁移函数搬迁，不做长期 dual-read。
+ * 不做 dual-read / 迁移兼容；损坏则 fail loud。
  */
 export async function loadTypeRegistry(fs: FsAdapter): Promise<TypeRegistry> {
   if (!(await fs.exists(TYPE_REGISTRY_PATH))) return cloneDefaults();
@@ -100,61 +136,35 @@ export async function loadTypeRegistry(fs: FsAdapter): Promise<TypeRegistry> {
 }
 
 /**
- * Normalize disk registry to V0.2 shape:
+ * Normalize disk registry to V0.2 hard-cut shape:
  * - drop R/W, coordination, color, description, workspacePointer
- * - map legacy primary keys note→prompt, artifact→output (definition merge only; node rewrites are migration)
- * - drop retired built-ins open/sealed/note/artifact from defaults (custom modifiers may remain)
- * - flatten legacy { primary, secondary }
+ * - fixed primaries goal|prompt|output only (custom bases dropped, no rename maps)
+ * - modifiers kept; built-in secondaries always present
+ * - flat Record only — dual { primary, secondary } buckets are ignored (no dual semantics)
  */
 export function normalizeRegistry(value: unknown): TypeRegistry {
-  const root = isRecord(value) ? value : {};
-  const registry = cloneDefaults();
-
-  if (isRecord(root.primary) || isRecord(root.secondary)) {
-    mergeDefinitions(registry, mapLegacyBucketKeys(root.primary));
-    mergeDefinitions(registry, mapLegacyBucketKeys(root.secondary), "modifier");
-    finalizeRegistry(registry);
-    return registry;
+  if (!isRecord(value)) {
+    throw new Error("types.json root must be an object.");
   }
-
-  mergeDefinitions(registry, mapLegacyBucketKeys(root));
+  const root = value;
+  if (Object.prototype.hasOwnProperty.call(root, "primary") || Object.prototype.hasOwnProperty.call(root, "secondary")) {
+    throw new Error("Legacy primary/secondary type registry buckets are not supported.");
+  }
+  const registry = cloneDefaults();
+  mergeDefinitions(registry, root);
   finalizeRegistry(registry);
   return registry;
 }
 
-function mapLegacyBucketKeys(source: unknown): Record<string, unknown> {
-  if (!isRecord(source)) return {};
-  const out: Record<string, unknown> = {};
-  for (const [rawName, raw] of Object.entries(source)) {
-    const name = mapLegacyTypeKey(rawName);
-    if (!name) continue;
-    // Prefer first definition if both note and prompt present after map, etc.
-    if (out[name] === undefined) out[name] = raw;
-  }
-  return out;
-}
-
-/** Map legacy registry key names; returns "" to drop the key entirely. */
-function mapLegacyTypeKey(name: string): string {
-  if (name === "note") return "prompt";
-  if (name === "artifact") return "output";
-  if (name === "open" || name === "sealed") return "";
-  return name;
-}
-
-function mergeDefinitions(
-  registry: TypeRegistry,
-  source: unknown,
-  defaultTier?: TypeTier
-): void {
+function mergeDefinitions(registry: TypeRegistry, source: unknown): void {
   if (!isRecord(source)) return;
   for (const [name, raw] of Object.entries(source)) {
     if (!name.trim() || name === "temp" || !isRecord(raw)) continue;
-    const current = registry[name];
+
     const tier: TypeTier =
       raw.tier === "base" || raw.tier === "modifier"
         ? raw.tier
-        : current?.tier ?? defaultTier ?? (isCanonicalPrimary(name) ? "base" : "modifier");
+        : registry[name]?.tier ?? (isCanonicalPrimary(name) ? "base" : "modifier");
 
     // Fixed primaries always base; cannot demote.
     if (isCanonicalPrimary(name)) {
@@ -166,24 +176,20 @@ function mergeDefinitions(
       registry[name] = { tier: "modifier" };
       continue;
     }
-    // Custom: allow base only if not colliding with reserved retired names
-    if (tier === "base") {
-      // V0.2 product: only three primaries. Drop custom bases from registry.
-      continue;
-    }
+    // Hard cut: only three primaries. Drop custom bases; keep custom modifiers only.
+    if (tier === "base") continue;
     registry[name] = { tier: "modifier" };
   }
 }
 
 function finalizeRegistry(registry: TypeRegistry): void {
-  // Ensure fixed primaries + built-in secondaries always present.
   for (const p of CANONICAL_PRIMARY_TYPES) {
     registry[p] = { tier: "base" };
   }
   for (const s of BUILTIN_SECONDARY_TYPES) {
     registry[s] = { tier: "modifier" };
   }
-  // Never keep retired keys
+  // Never keep retired dual-era primary aliases as registry keys.
   delete registry.note;
   delete registry.artifact;
   delete registry.open;

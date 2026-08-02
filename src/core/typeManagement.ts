@@ -1,6 +1,7 @@
 import { FsAdapter, withTentMutation } from "./adapter.js";
+import { NODE_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { Node } from "./types.js";
-import { loadTent } from "./tree.js";
+import { loadTent, nodeNotePath } from "./tree.js";
 import { loadTaskEnvelopes } from "./task.js";
 import { envelopeIsActiveOccupation } from "./claim.js";
 import { taskReferencedNodeIds } from "./task-node-refs.js";
@@ -9,6 +10,7 @@ import {
   CANONICAL_PRIMARY_TYPES,
   DEFAULT_TYPE_REGISTRY,
   isCanonicalPrimary,
+  joinType,
   loadTypeRegistry,
   TYPE_REGISTRY_PATH,
   TypeDefinition,
@@ -37,6 +39,11 @@ export interface TypeDeletionInspection {
   activeOwners: { id: string; path: string; owner: string }[];
 }
 
+/**
+ * Create a user-configured secondary marker (modifier).
+ * Primaries are fixed to goal|prompt|output — never creatable.
+ * Rename is not supported in V0.2 (identifiers are immutable).
+ */
 export async function createType(
   fs: FsAdapter,
   name: string,
@@ -60,18 +67,7 @@ export async function createType(
   });
 }
 
-// Backward-compatible exports for older callers/tests.
-export const createPrimaryType = async (
-  fs: FsAdapter,
-  name: string,
-  _definition?: TypeDefinition
-): Promise<void> => {
-  void _definition;
-  throw new Error(
-    `Primary types are fixed to goal|prompt|output; cannot create primary type: ${name}.`
-  );
-};
-
+/** Create a custom secondary marker. Alias of createType({ tier: "modifier" }). */
 export async function createSecondaryType(
   fs: FsAdapter,
   name: string,
@@ -90,10 +86,7 @@ export async function inspectTypeDeletion(
   const tent = await loadTent(fs);
   const registry = tent.typeRegistry;
   const nodes = [...tent.byId.values()];
-  const referenced = nodes.filter((node) => {
-    const { base, modifier } = splitType(node.type);
-    return node.type === name || base === name || modifier === name;
-  });
+  const referenced = nodes.filter((node) => nodeReferencesTypeName(node, name));
   const tasks = await loadTaskEnvelopes(fs);
   const ownerMap = new Map<string, { id: string; path: string; owner: string }>();
 
@@ -135,6 +128,12 @@ export async function inspectTypeDeletion(
   };
 }
 
+/**
+ * Delete a custom secondary marker.
+ * Nodes that use it as `primary-marker` are rewritten atomically to the primary
+ * type before the registry entry is removed. Bare-marker Node types cannot be
+ * auto-rewritten and fail loud. Rename is not supported.
+ */
 export async function deleteCustomType(
   fs: FsAdapter,
   level: TypeLevel,
@@ -146,29 +145,115 @@ export async function deleteCustomType(
     const inspection = await inspectTypeDeletion(fs, level, name);
     if (!inspection.exists) throw new Error(`Type does not exist: ${name}.`);
     if (inspection.builtIn) throw new Error(`Built-in types cannot be deleted: ${name}.`);
-    // Fail loud while any Node still uses the name as type, primary base, or secondary modifier.
-    // Leaving refs would mark Nodes invalid on next load — not an acceptable silent path.
-    if (inspection.references.length > 0) {
-      throw new Error(
-        `Type still in use by ${inspection.references.length} node(s); retype them first: ${inspection.references
-          .map((x) => x.path)
-          .join(", ")}.`
-      );
-    }
     if (inspection.activeOwners.length > 0) {
       throw new Error(
         `Referenced range still has an active task; cancel or fail first: ${inspection.activeOwners.map((x) => x.path).join(", ")}.`
       );
     }
+
+    // Atomic rewrite: every compound primary-marker → primary before registry drop.
+    const tent = await loadTent(fs);
+    const rewrites: NodeTypeRewrite[] = [];
+    for (const node of tent.byId.values()) {
+      const nextType = retypeAfterMarkerRemoval(node.type, name);
+      if (nextType === null) {
+        throw new Error(
+          `Cannot delete marker ${name}: node ${node.path} uses bare marker as type; ` +
+            `retype to goal|prompt|output[-marker] first.`
+        );
+      }
+      if (nextType === node.type) continue;
+      rewrites.push(await prepareNodeTypeRewrite(fs, node, nextType));
+    }
+
     const registry = await loadTypeRegistry(fs);
+    const registryRaw = await fs.readFile(TYPE_REGISTRY_PATH);
     delete registry[name];
-    await writeTypeRegistryUnlocked(fs, registry);
-    return inspection;
+    const changed: NodeTypeRewrite[] = [];
+    let registryWriteAttempted = false;
+    try {
+      for (const rewrite of rewrites) {
+        await fs.writeFile(rewrite.path, rewrite.nextRaw);
+        changed.push(rewrite);
+      }
+      registryWriteAttempted = true;
+      await writeTypeRegistryUnlocked(fs, registry);
+    } catch (error) {
+      const rollbackErrors: string[] = [];
+      if (registryWriteAttempted) {
+        try {
+          await fs.writeFile(TYPE_REGISTRY_PATH, registryRaw);
+        } catch (rollbackError) {
+          rollbackErrors.push(`registry: ${errorMessage(rollbackError)}`);
+        }
+      }
+      for (const rewrite of changed.reverse()) {
+        try {
+          await fs.writeFile(rewrite.path, rewrite.previousRaw);
+        } catch (rollbackError) {
+          rollbackErrors.push(`${rewrite.path}: ${errorMessage(rollbackError)}`);
+        }
+      }
+      if (rollbackErrors.length > 0) {
+        throw new Error(
+          `Type marker deletion failed (${errorMessage(error)}) and rollback failed: ${rollbackErrors.join("; ")}`
+        );
+      }
+      throw error;
+    }
+
+    return { ...inspection, exists: false, references: [], activeOwners: [] };
   });
 }
 
+/**
+ * Compute the Node type after removing a marker name.
+ * - `primary-marker` → `primary`
+ * - bare `marker` → null (cannot derive primary; caller must fail loud)
+ * - unrelated → unchanged
+ */
+export function retypeAfterMarkerRemoval(type: string, markerName: string): string | null {
+  if (type === markerName) return null;
+  const { base, modifier } = splitType(type);
+  if (modifier === markerName) return joinType(base);
+  if (base === markerName && modifier !== undefined) {
+    // Marker name colliding as primary base of a compound — not a supported shape.
+    return null;
+  }
+  return type;
+}
+
+type NodeTypeRewrite = {
+  path: string;
+  previousRaw: string;
+  nextRaw: string;
+};
+
+async function prepareNodeTypeRewrite(
+  fs: FsAdapter,
+  node: Node,
+  nextType: string
+): Promise<NodeTypeRewrite> {
+  const boxFile = nodeNotePath(node.path);
+  const raw = await fs.readFile(boxFile);
+  const { data, body, keyOrder } = parseFrontmatter(raw);
+  data.type = nextType;
+  return {
+    path: boxFile,
+    previousRaw: raw,
+    nextRaw: serializeFrontmatter(
+      data,
+      body,
+      keyOrder.length ? keyOrder : NODE_FRONTMATTER_KEY_ORDER
+    ),
+  };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function writeTypeRegistryUnlocked(fs: FsAdapter, registry: TypeRegistry): Promise<void> {
-  // Persist slim V0.2 registry only.
   const slim: TypeRegistry = {};
   for (const [name, def] of Object.entries(registry)) {
     slim[name] = { tier: def.tier === "modifier" ? "modifier" : "base" };
@@ -182,10 +267,16 @@ function assertTypeName(name: string): void {
   if (name.includes("-")) throw new Error("Type names cannot contain '-' (compound separator).");
 }
 
+function nodeReferencesTypeName(node: Node, name: string): boolean {
+  const { base, modifier } = splitType(node.type);
+  return node.type === name || base === name || modifier === name;
+}
+
 function relatedNodes(reference: Node, nodes: Node[]): Node[] {
-  return nodes.filter((node) =>
-    node.path === reference.path ||
-    node.path.startsWith(reference.path + "/") ||
-    reference.path.startsWith(node.path + "/")
+  return nodes.filter(
+    (node) =>
+      node.path === reference.path ||
+      node.path.startsWith(reference.path + "/") ||
+      reference.path.startsWith(node.path + "/")
   );
 }

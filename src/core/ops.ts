@@ -22,7 +22,7 @@ import {
   normalizeTagName,
   syncTagRegistryAfterNodeTagsChangeUnlocked,
 } from "./tags.js";
-import { typeExists } from "./typeRegistry.js";
+import { assertValidNodeType } from "./typeRegistry.js";
 import { assertRoleNameAvailable, loadRolesRegistry } from "./skillRoleRegistry.js";
 import {
   cancelTaskEnvelope,
@@ -491,7 +491,7 @@ async function createNodeUnlocked(env: OpsEnv, input: NewNodeInput): Promise<str
   assertNotTempPath(input.parentPath);
   const name = validateNodeName(input.name);
   const tent = await loadTent(env.fs);
-  if (!typeExists(input.type, tent.typeRegistry)) throw new Error(`Unknown type: ${input.type}.`);
+  assertValidNodeType(input.type, tent.typeRegistry);
   if (input.parentPath) {
     const parent = tent.byPath.get(input.parentPath);
     if (!parent || !isUsableNode(parent)) throw new Error("Target parent node is invalid or archived.");
@@ -651,7 +651,7 @@ async function patchNodeUnlocked(
   }
   if ("type" in patch) {
     if (typeof patch.type !== "string" || !patch.type) throw new Error("Primary type cannot be cleared.");
-    if (!typeExists(patch.type, tent.typeRegistry)) throw new Error(`Unknown type: ${patch.type}.`);
+    assertValidNodeType(patch.type, tent.typeRegistry);
   }
   const tagsTouched = "tags" in patch;
   const previousTags = node.tags.slice();
