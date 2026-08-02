@@ -1,23 +1,23 @@
-// Atomic concept rename: keep cx- stable, move folder + identity note, rewrite path links.
+// Atomic Node rename: keep cx- stable, move folder + identity note, rewrite path links.
 // On any post-move failure: restore every completed note write, then restore the tree.
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
 import { isFrozen } from "./claim.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
-import { buildConceptIndex, resolveConcept, type OkfConcept } from "./okf.js";
+import { buildNodeIndex, resolveNode, type OkfNode } from "./okf.js";
 import { normalizeTarget } from "./link-target.js";
 import type { OpsEnv } from "./ops-context.js";
 import { isOperationalPath } from "./paths.js";
-import { validateBoxName } from "./scaffold.js";
+import { validateNodeName } from "./scaffold.js";
 import { ACTIVE_TASK_STATES } from "./task-model.js";
 import { loadTaskEnvelopes } from "./task.js";
 
-import type { Box } from "./types.js";
+import type { Node } from "./types.js";
 import {
-  boxNotePath,
+  nodeNotePath,
   dirName,
   assertContentMutable,
-  isUsableBox,
+  isUsableNode,
   join,
   loadTent,
   type LoadedTent,
@@ -45,7 +45,7 @@ type PlannedWrite = {
 };
 
 /**
- * Rename a concept folder (and its same-named identity note).
+ * Rename a Node folder (and its same-named identity note).
  * - `cx-` / frontmatter id never change
  * - entire directory tree moves; child relative structure preserved
  * - path-based Markdown / wiki links rewritten in the same mutation
@@ -55,26 +55,26 @@ type PlannedWrite = {
  */
 export async function renameNode(
   env: OpsEnv,
-  conceptIdOrPath: string,
+  nodeIdOrPath: string,
   newNameRaw: string
 ): Promise<RenameNodeResult> {
-  return withTentMutation(env.fs, async () => renameNodeUnlocked(env, conceptIdOrPath, newNameRaw));
+  return withTentMutation(env.fs, async () => renameNodeUnlocked(env, nodeIdOrPath, newNameRaw));
 }
 
 async function renameNodeUnlocked(
   env: OpsEnv,
-  conceptIdOrPath: string,
+  nodeIdOrPath: string,
   newNameRaw: string
 ): Promise<RenameNodeResult> {
-  const newName = validateBoxName(newNameRaw);
+  const newName = validateNodeName(newNameRaw);
   const tent = await loadTent(env.fs);
-  const target = resolveRenameTarget(tent, conceptIdOrPath);
-  if (!isUsableBox(target)) {
-    throw new Error("Invalid or archived boxes cannot be renamed.");
+  const target = resolveRenameTarget(tent, nodeIdOrPath);
+  if (!isUsableNode(target)) {
+    throw new Error("Invalid or archived nodes cannot be renamed.");
   }
   assertContentMutable(target, "renamed");
   if (isFrozen(target)) {
-    throw new Error("Invalid or archived boxes cannot be renamed.");
+    throw new Error("Invalid or archived nodes cannot be renamed.");
   }
   await assertNoActiveTaskRefsInSubtree(env, target, "rename");
 
@@ -99,43 +99,43 @@ async function renameNodeUnlocked(
     throw new Error(`Rename target already exists: ${newPath}.`);
   }
   const siblings = target.parent ? target.parent.children : tent.roots;
-  if (siblings.some((box) => box.id !== target.id && box.name === newName)) {
-    throw new Error(`A sibling concept already uses the name: ${newName}.`);
+  if (siblings.some((node) => node.id !== target.id && node.name === newName)) {
+    throw new Error(`A sibling Node already uses the name: ${newName}.`);
   }
 
   const subtree = collectSubtree(target);
   const pathMap = new Map<string, string>();
-  for (const box of subtree) {
-    const rel = relativePath(oldPath, box.path);
-    const nextBoxPath = rel ? join(newPath, rel) : newPath;
-    // Concept path (folder) and identity-note path stem (folder/Name) both appear in links.
-    pathMap.set(box.path, nextBoxPath);
+  for (const node of subtree) {
+    const rel = relativePath(oldPath, node.path);
+    const nextNodePath = rel ? join(newPath, rel) : newPath;
+    // Node path (folder) and identity-note path stem (folder/Name) both appear in links.
+    pathMap.set(node.path, nextNodePath);
     pathMap.set(
-      boxNotePath(box.path).replace(/\.md$/i, ""),
-      boxNotePath(nextBoxPath).replace(/\.md$/i, "")
+      nodeNotePath(node.path).replace(/\.md$/i, ""),
+      nodeNotePath(nextNodePath).replace(/\.md$/i, "")
     );
   }
 
-  const conceptIndex = buildConceptIndex(tent.byPath.values());
-  const rewriteOpts: RewriteConceptLinksOptions = {
-    renameBoxId: target.id,
+  const conceptIndex = buildNodeIndex(tent.byPath.values());
+  const rewriteOpts: RewriteNodeLinksOptions = {
+    renameNodeId: target.id,
     conceptIndex,
   };
 
   // Plan rewrites: resolve from pre-move note path; restyle relatives from post-move path when moved.
   const plannedWrites: PlannedWrite[] = [];
   const rewrittenNotes: string[] = [];
-  for (const box of tent.byPath.values()) {
-    const notePath = boxNotePath(box.path);
+  for (const node of tent.byPath.values()) {
+    const notePath = nodeNotePath(node.path);
     if (!(await env.fs.exists(notePath))) continue;
     const raw = await env.fs.readFile(notePath);
     const { data, body, keyOrder } = parseFrontmatter(raw);
-    if (typeof data.id === "string" && data.id !== box.id) {
-      throw new Error(`Refuse rename: frontmatter id drift on ${box.path}.`);
+    if (typeof data.id === "string" && data.id !== node.id) {
+      throw new Error(`Refuse rename: frontmatter id drift on ${node.path}.`);
     }
-    const afterBoxPath = pathMap.get(box.path) ?? box.path;
-    const restyleFromNotePath = boxNotePath(afterBoxPath);
-    const rewritten = rewriteConceptLinks(body, notePath, pathMap, oldName, newName, {
+    const afterNodePath = pathMap.get(node.path) ?? node.path;
+    const restyleFromNotePath = nodeNotePath(afterNodePath);
+    const rewritten = rewriteNodeLinks(body, notePath, pathMap, oldName, newName, {
       ...rewriteOpts,
       restyleFromNotePath,
     });
@@ -146,7 +146,7 @@ async function renameNodeUnlocked(
       originalContent: raw,
       newContent: serializeFrontmatter(data, rewritten.body, keyOrder),
     });
-    rewrittenNotes.push(afterBoxPath);
+    rewrittenNotes.push(afterNodePath);
   }
 
   await env.fs.move(oldPath, newPath);
@@ -216,7 +216,7 @@ async function rollbackRename(
 
   // 2) Reverse identity-note rename if we renamed Old→New under newPath.
   try {
-    const expectedNew = boxNotePath(newPath);
+    const expectedNew = nodeNotePath(newPath);
     const legacyAfterMove = join(newPath, `${oldName}.md`);
     if (
       (identityRenamed || (await fs.exists(expectedNew))) &&
@@ -232,7 +232,7 @@ async function rollbackRename(
   // 3) Move the tree back.
   try {
     if ((await fs.exists(newPath)) && !(await fs.exists(oldPath))) {
-      const expectedNew = boxNotePath(newPath);
+      const expectedNew = nodeNotePath(newPath);
       const legacyAfterMove = join(newPath, `${oldName}.md`);
       if (!(await fs.exists(legacyAfterMove)) && (await fs.exists(expectedNew))) {
         try {
@@ -254,13 +254,13 @@ async function rollbackRename(
   }
 }
 
-function resolveRenameTarget(tent: LoadedTent, conceptIdOrPath: string): Box {
-  const key = conceptIdOrPath.trim().replace(/\\/g, "/");
+function resolveRenameTarget(tent: LoadedTent, nodeIdOrPath: string): Node {
+  const key = nodeIdOrPath.trim().replace(/\\/g, "/");
   const byId = tent.byId.get(key);
   if (byId) return byId;
   const byPath = tent.byPath.get(key);
   if (byPath) return byPath;
-  throw new Error(`Concept not found: ${conceptIdOrPath}.`);
+  throw new Error(`Node not found: ${nodeIdOrPath}.`);
 }
 
 /**
@@ -270,12 +270,12 @@ function resolveRenameTarget(tent: LoadedTent, conceptIdOrPath: string): Box {
  */
 export async function assertNoActiveTaskRefsInSubtree(
   env: OpsEnv,
-  root: Box,
+  root: Node,
   operation: "move" | "rename"
 ): Promise<void> {
-  const subtreeIds = new Set(collectSubtree(root).map((box) => box.id));
+  const subtreeIds = new Set(collectSubtree(root).map((node) => node.id));
   const blockers = (await loadTaskEnvelopes(env.fs)).filter((task) => {
-    if (!ACTIVE_TASK_STATES.has(task.state) || task.contextCard == null) return false;
+    if (!ACTIVE_TASK_STATES.has(task.state)) return false;
     return task.contextCard.refs.nodes.some((node) => subtreeIds.has(node.id));
   });
   if (blockers.length === 0) return;
@@ -292,17 +292,17 @@ export async function assertNoActiveTaskRefsInSubtree(
 
 function assertNotOperationalPath(path: string): void {
   if (isOperationalPath(path) || path === "temp" || path.startsWith("temp/")) {
-    throw new Error("temp/ and other system pipelines cannot be renamed as concepts.");
+    throw new Error("temp/ and other system pipelines cannot be renamed as Nodes.");
   }
   const top = path.split("/")[0] ?? "";
   if (top === "attachments" || top === ".tent") {
-    throw new Error("System directories cannot be renamed as concepts.");
+    throw new Error("System directories cannot be renamed as Nodes.");
   }
 }
 
-function collectSubtree(box: Box, out: Box[] = []): Box[] {
-  out.push(box);
-  for (const child of box.children) collectSubtree(child, out);
+function collectSubtree(node: Node, out: Node[] = []): Node[] {
+  out.push(node);
+  for (const child of node.children) collectSubtree(child, out);
   return out;
 }
 
@@ -317,20 +317,20 @@ function relativePath(root: string, child: string): string {
  */
 async function ensureIdentityFileName(
   fs: FsAdapter,
-  newBoxPath: string,
+  newNodePath: string,
   oldName: string
 ): Promise<boolean> {
-  const expected = boxNotePath(newBoxPath);
+  const expected = nodeNotePath(newNodePath);
   if (await fs.exists(expected)) return false;
-  const legacy = join(newBoxPath, `${oldName}.md`);
+  const legacy = join(newNodePath, `${oldName}.md`);
   if (await fs.exists(legacy)) {
     await fs.move(legacy, expected);
     return true;
   }
-  const entries = await fs.listDir(newBoxPath);
+  const entries = await fs.listDir(newNodePath);
   const candidates = entries
     .filter((e) => !e.isDir && e.name.endsWith(".md") && e.name !== "index.md")
-    .map((e) => join(newBoxPath, e.name));
+    .map((e) => join(newNodePath, e.name));
   if (candidates.length === 1) {
     await fs.move(candidates[0]!, expected);
     return true;
@@ -338,11 +338,11 @@ async function ensureIdentityFileName(
   throw new Error(`Identity note missing after rename: expected ${expected}.`);
 }
 
-export type RewriteConceptLinksOptions = {
+export type RewriteNodeLinksOptions = {
   /** Immutable cx- of the node being renamed/moved. */
-  renameBoxId: string;
+  renameNodeId: string;
   /** Pre-rename concept index (name resolution uses Tent's unique-match rules). */
-  conceptIndex: Map<string, OkfConcept[]>;
+  conceptIndex: Map<string, OkfNode[]>;
   /**
    * Note path used when restyling `./` and `../` destinations after a tree move.
    * Resolve still uses `fromNotePath` (pre-move disk location). When the note itself
@@ -360,13 +360,13 @@ export type RewriteConceptLinksOptions = {
  * `opts.restyleFromNotePath` (post-move when the source note moves). Outbound relatives to
  * unmoved targets are restyled when source depth/path changes even if the target is outside pathMap.
  */
-export function rewriteConceptLinks(
+export function rewriteNodeLinks(
   body: string,
   fromNotePath: string,
   pathMap: Map<string, string>,
   oldName: string,
   newName: string,
-  opts?: RewriteConceptLinksOptions
+  opts?: RewriteNodeLinksOptions
 ): { body: string; changed: boolean } {
   if (pathMap.size === 0) return { body, changed: false };
   const oldPaths = [...pathMap.keys()].sort((a, b) => b.length - a.length);
@@ -410,7 +410,7 @@ export function rewriteConceptLinks(
  * Map a link destination to its post-move/rename form.
  * - Path-like targets: resolve against pre-move fromNotePath; apply pathMap; restyle from restyleFromNotePath.
  * - Relative links with a moved source: restyle even when the absolute target is outside pathMap.
- * - Unqualified bare names: rewrite only when Tent resolveConcept uniquely hits renameBoxId.
+ * - Unqualified bare names: rewrite only when Tent resolveNode uniquely hits renameNodeId.
  */
 function mapLinkTarget(
   raw: string,
@@ -419,7 +419,7 @@ function mapLinkTarget(
   oldPaths: string[],
   oldName: string,
   newName: string,
-  opts?: RewriteConceptLinksOptions
+  opts?: RewriteNodeLinksOptions
 ): string | undefined {
   const { pathPart, tail } = splitDestTail(raw);
   if (!pathPart) return undefined;
@@ -459,16 +459,16 @@ function mapUnqualifiedName(
   tail: string,
   oldName: string,
   newName: string,
-  opts?: RewriteConceptLinksOptions
+  opts?: RewriteNodeLinksOptions
 ): string | undefined {
   if (!opts || oldName === newName) return undefined;
   const bare = pathPart.replace(/\.md$/i, "");
-  const resolved = resolveConcept(opts.conceptIndex, bare);
-  if (!resolved || resolved.boxId !== opts.renameBoxId) return undefined;
+  const resolved = resolveNode(opts.conceptIndex, bare);
+  if (!resolved || resolved.nodeId !== opts.renameNodeId) return undefined;
 
   const sourceHadMd = /\.md$/i.test(pathPart);
   // Authors used a bare name form; keep bare name form with the new display name.
-  // Only rewrite when the resolved target is uniquely this node (resolveConcept guarantee).
+  // Only rewrite when the resolved target is uniquely this node (resolveNode guarantee).
   const nextBare =
     bare === oldName || normalizeLookupLoose(bare) === normalizeLookupLoose(oldName)
       ? newName

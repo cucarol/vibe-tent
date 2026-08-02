@@ -8,7 +8,7 @@ import {
   CANONICAL_PRIMARY_TYPES,
   DEFAULT_TYPE_REGISTRY,
   isCanonicalPrimary,
-  isValidConceptType,
+  isValidNodeType,
   loadTypeRegistry,
   normalizeRegistry,
   typeExists,
@@ -37,7 +37,7 @@ test("V0.2 defaults: goal|prompt|output + reference|asset only", async () => {
   assert.equal(tent.typeRegistry.note, undefined);
   assert.equal(tent.typeRegistry.artifact, undefined);
 
-  const goal = tent.byId.get("bx-g2")!;
+  const goal = tent.byId.get("cx-g2")!;
   assert.equal(goal.type, "goal");
   assert.equal(goal.invalid, false);
   assert.equal(goal.archived, false);
@@ -46,10 +46,10 @@ test("V0.2 defaults: goal|prompt|output + reference|asset only", async () => {
   assert.equal("readable" in goal, false);
   assert.equal("writable" in goal, false);
 
-  const out = tent.byId.get("bx-o1")!;
+  const out = tent.byId.get("cx-o1")!;
   assert.equal(out.type, "output");
-  assert.ok(isValidConceptType("output", tent.typeRegistry));
-  assert.ok(isValidConceptType("prompt-asset", tent.typeRegistry));
+  assert.ok(isValidNodeType("output", tent.typeRegistry));
+  assert.ok(isValidNodeType("prompt-asset", tent.typeRegistry));
   assert.equal(typeExists("note", tent.typeRegistry), false);
   assert.equal(typeExists("artifact", tent.typeRegistry), false);
 });
@@ -108,7 +108,7 @@ test("deleteCustomType fails loud when nodes still reference the type", async ()
   await createSecondaryType(fsa, "snippet", {});
   // Attach custom secondary via identity note (resolve path by id — fixture names vary by locale).
   const before = await loadTent(fsa);
-  const box = before.byId.get("bx-p1");
+  const box = before.byId.get("cx-p1");
   assert.ok(box);
   const note = path.join(dir, box.path, `${box.name}.md`);
   const raw = await fs.readFile(note, "utf8");
@@ -147,16 +147,16 @@ test("compound type validity", async () => {
   const fsa = new NodeFs(dir);
   // legacy compound under prompt-asset fixture
   const tent = await loadTent(fsa);
-  const assetNode = tent.byId.get("bx-a1")!;
+  const assetNode = tent.byId.get("cx-a1")!;
   assert.equal(assetNode.type, "prompt-asset");
   assert.ok(typeExists("prompt-asset", tent.typeRegistry));
-  assert.ok(isValidConceptType("goal-reference", tent.typeRegistry));
+  assert.ok(isValidNodeType("goal-reference", tent.typeRegistry));
 
   // write unknown secondary → invalid
   const note = path.join(dir, "prompt", "旧站资料", "旧站资料.md");
-  await fs.writeFile(note, "---\nid: bx-a1\ntype: prompt-open\n---\n");
+  await fs.writeFile(note, "---\nid: cx-a1\ntype: prompt-open\n---\n");
   const after = await loadTent(fsa);
-  const bad = after.byId.get("bx-a1")!;
+  const bad = after.byId.get("cx-a1")!;
   assert.equal(bad.invalid, true);
   assert.match(bad.invalidReason || "", /Unknown type/);
 });

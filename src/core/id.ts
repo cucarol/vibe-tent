@@ -1,5 +1,5 @@
-// concept / role handle 生成:前缀 + 短随机串。创建时一次性生成,之后不可变。
-// 注意:核心层不能用 Math.random 直接埋进确定性逻辑,但建 concept/role 是真实副作用动作,
+// Node / role handle 生成：前缀 + 短随机串。创建时一次性生成，之后不可变。
+// 注意：核心层不能用 Math.random 直接埋进确定性逻辑，但创建 Node/role 是真实副作用动作，
 // 这里接受一个随机源参数,默认用平台随机。插件/CLI 传入各自的实现。
 // 旧 roles.json 无 id 时用 name 的确定性哈希补齐,保证同名多次加载得到同一 rl-。
 // 确定性哈希刻意不用 node:crypto，保持 core 可在无 Node crypto 的环境复用。
@@ -8,14 +8,11 @@ export type RandomSource = () => number;
 
 const ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"; // 去掉易混字符 i l o u
 
-/** 用户可见 concept handle 前缀（合同冻结）。 */
-export const CONCEPT_ID_PREFIX = "cx-";
+/** User-visible Node handle prefix. */
+export const NODE_ID_PREFIX = "cx-";
 
 /** Role 稳定身份前缀（合同冻结）。 */
 export const ROLE_ID_PREFIX = "rl-";
-
-/** @deprecated 仅迁移窗口识别旧 handle；新写入只用 cx-。 */
-export const LEGACY_BOX_ID_PREFIX = "bx-";
 
 /**
  * Platform-neutral deterministic digest (FNV-1a lanes + mix).
@@ -74,13 +71,13 @@ function makeUniquePrefixedId(
   return makePrefixedId(prefix, rand, 10);
 }
 
-export function makeConceptId(rand: RandomSource = Math.random, len = 6): string {
-  return makePrefixedId(CONCEPT_ID_PREFIX, rand, len);
+export function makeNodeId(rand: RandomSource = Math.random, len = 6): string {
+  return makePrefixedId(NODE_ID_PREFIX, rand, len);
 }
 
 /** 确保不撞已有 id。 */
-export function makeUniqueConceptId(existing: Set<string>, rand: RandomSource = Math.random): string {
-  return makeUniquePrefixedId(CONCEPT_ID_PREFIX, existing, rand);
+export function makeUniqueNodeId(existing: Set<string>, rand: RandomSource = Math.random): string {
+  return makeUniquePrefixedId(NODE_ID_PREFIX, existing, rand);
 }
 
 /** 新 role 写入用随机 rl- handle。 */
@@ -113,25 +110,10 @@ export function deterministicRoleIdFromName(name: string, existing: Set<string> 
   return ROLE_ID_PREFIX + encodeAlphabetBytes(fallback, 12);
 }
 
-/** @deprecated 使用 makeConceptId；保留别名以免外部调用瞬间断裂。 */
-export const makeBoxId = makeConceptId;
-
-/** @deprecated 使用 makeUniqueConceptId。 */
-export const makeUniqueBoxId = makeUniqueConceptId;
-
-export function isConceptId(id: string): boolean {
-  return id.startsWith(CONCEPT_ID_PREFIX) && id.length > CONCEPT_ID_PREFIX.length;
+export function isNodeId(id: string): boolean {
+  return /^cx-[a-z0-9]+$/i.test(id);
 }
 
 export function isRoleId(id: string): boolean {
   return id.startsWith(ROLE_ID_PREFIX) && id.length > ROLE_ID_PREFIX.length;
-}
-
-export function isLegacyBoxId(id: string): boolean {
-  return id.startsWith(LEGACY_BOX_ID_PREFIX) && id.length > LEGACY_BOX_ID_PREFIX.length;
-}
-
-/** 任意合法 concept handle（新 cx- 或迁移前遗留 bx-）。 */
-export function isHandleId(id: string): boolean {
-  return isConceptId(id) || isLegacyBoxId(id);
 }

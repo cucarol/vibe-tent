@@ -1,11 +1,11 @@
-// DocsClient — Query/Command surface for Markdown workspace (concept-model §8).
+// DocsClient — Query/Command surface for Markdown workspace (node-model §8).
 // Transport (in-process core vs B2 JSON-RPC) is an implementation detail.
 
 import type {
   ArtifactRef,
   BacklinkHit,
-  ConceptEditSnapshot,
-  ConceptProjection,
+  NodeEditSnapshot,
+  NodeProjection,
   CreateNoteInput,
   DocsWriteInput,
   DocsWriteResult,
@@ -14,17 +14,17 @@ import type {
 } from "./types.js";
 
 export interface DocsClient {
-  list(parentPath?: string): Promise<ConceptProjection[]>;
-  get(cxOrPath: string): Promise<ConceptProjection | null>;
-  readForEdit(cxOrPath: string): Promise<ConceptEditSnapshot>;
+  list(parentPath?: string): Promise<NodeProjection[]>;
+  get(nodeId: string): Promise<NodeProjection | null>;
+  readForEdit(nodeId: string): Promise<NodeEditSnapshot>;
   write(input: DocsWriteInput): Promise<DocsWriteResult>;
-  createNote(input: CreateNoteInput): Promise<{ cx: string; path: string }>;
-  fork(cxOrPath: string): Promise<{ cx: string }>;
+  createNote(input: CreateNoteInput): Promise<{ nodeId: string; path: string }>;
+  fork(nodeId: string): Promise<{ nodeId: string }>;
   search(query: string): Promise<SearchHit[]>;
-  backlinks(cxOrPath: string): Promise<BacklinkHit[]>;
-  resolveLink(fromCxOrPath: string, raw: string): Promise<ResolvedLink>;
+  backlinks(nodeId: string): Promise<BacklinkHit[]>;
+  resolveLink(fromNodeId: string, raw: string): Promise<ResolvedLink>;
   importAttachment(
-    cx: string,
+    nodeId: string,
     fileName: string,
     bytes: Uint8Array | string
   ): Promise<{ relativePath: string; markdown: string; artifactRef?: ArtifactRef }>;

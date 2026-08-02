@@ -107,7 +107,7 @@ async function makeWorkspace(): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "task-input",
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -162,11 +162,11 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
     const created = (await client.docsCreateNote(workspaceId, {
       name: "append-item",
       type: "prompt",
-    })) as { id: string };
-    const boxId = created.id;
+    }));
+    const nodeId = created.nodeId;
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "Work that may get user append",
       parentActor: { kind: "user", id: "user" },
@@ -199,7 +199,7 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
 
     const sent = (await client.taskSendInput(workspaceId, taskPath, {
       text: "Also consider cx-abc",
-      contextRefs: [boxId, "cx-dup", "cx-dup"],
+      contextRefs: [nodeId, "cx-dup", "cx-dup"],
     })) as {
       state: string;
       input: {
@@ -216,7 +216,7 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
     assert.equal(sent.state, "running");
     assert.equal(sent.input.status, "pending");
     assert.equal(sent.input.text, "Also consider cx-abc");
-    assert.deepEqual(sent.input.contextRefs, [boxId, "cx-dup"]);
+    assert.deepEqual(sent.input.contextRefs, [nodeId, "cx-dup"]);
     assert.equal(sent.input.workspaceId, workspaceId);
     assert.equal(sent.input.taskPath, taskPath);
     assert.equal(sent.input.role, "executor");
@@ -360,7 +360,7 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
 
     // After ask resolved, sendInput works again; interrupt cancels pending input
     const sent2 = (await client.taskSendInput(workspaceId, taskPath, {
-      contextRefs: [boxId],
+      contextRefs: [nodeId],
     })) as { input: { id: string; status: string } };
     assert.equal(sent2.input.status, "pending");
 
@@ -388,7 +388,7 @@ test("taskInput list/get/ack are isolated across workspaces (no cross get/ack)",
 
   async function plantRunningTask(
     workspaceRoot: string,
-    boxId: string
+    nodeId: string
   ): Promise<void> {
     const abs = path.join(workspaceRoot, ".tent", ...sharedTaskPath.split("/"));
     await fs.mkdir(path.dirname(abs), { recursive: true });
@@ -404,7 +404,7 @@ test("taskInput list/get/ack are isolated across workspaces (no cross get/ack)",
       // Flow maps only — frontmatter parser does not read nested block maps.
       "parentActor: {kind: user, id: user}\n" +
       "reviewer: {kind: user, id: user}\n" +
-      `claims: [${boxId}]\n` +
+      `claims: [${nodeId}]\n` +
       "manifest: temp/executor/manifest.yml\n" +
       "deliveryPolicy: review\n" +
       `createdAt: "${now}"\n` +
@@ -421,13 +421,13 @@ test("taskInput list/get/ack are isolated across workspaces (no cross get/ack)",
     const noteA = (await client.docsCreateNote(mA.workspaceId, {
       name: "a",
       type: "prompt",
-    })) as { id: string };
+    }));
     const noteB = (await client.docsCreateNote(mB.workspaceId, {
       name: "b",
       type: "prompt",
-    })) as { id: string };
-    await plantRunningTask(wsA, noteA.id);
-    await plantRunningTask(wsB, noteB.id);
+    }));
+    await plantRunningTask(wsA, noteA.nodeId);
+    await plantRunningTask(wsB, noteB.nodeId);
 
     const sentA = (await client.taskSendInput(mA.workspaceId, sharedTaskPath, {
       text: "from A",
@@ -512,7 +512,7 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
     const note = (await client.docsCreateNote(workspaceId, {
       name: "ack-authority",
       type: "prompt",
-    })) as { id: string };
+    }));
     const now = new Date().toISOString();
 
     // Persisted parent/reviewer Role may acknowledge ambiguity for its child.
@@ -530,7 +530,7 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
         "assigneeKind: role\n" +
         "parentActor: {kind: role, id: dispatcher}\n" +
         "reviewer: {kind: role, id: dispatcher}\n" +
-        `claims: [${note.id}]\n` +
+        `claims: [${note.nodeId}]\n` +
         "manifest: temp/executor/manifest.yml\n" +
         "deliveryPolicy: review\n" +
         `createdAt: "${now}"\n` +
@@ -569,7 +569,7 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
 
     // A Session id is authority only when Service registry + Task binding agree.
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [note.id],
+      nodeIds: [note.nodeId],
       role: "executor",
       prompt: "session-bound ack",
       parentActor: { kind: "user", id: "user" },
@@ -687,9 +687,9 @@ test("explicit startSession bind and live reuse recover durable retryable TaskIn
     const created = (await client.docsCreateNote(workspaceId, {
       name: "start-session-recovery",
       type: "prompt",
-    })) as { id: string };
+    }));
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "Recover exact durable inputs after explicit Session bind",
       parentActor: { kind: "user", id: "user" },
@@ -838,10 +838,10 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
     const created = (await client.docsCreateNote(workspaceId, {
       name: "managed-input",
       type: "prompt",
-    })) as { id: string };
+    }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "Managed sendInput flow",
       parentActor: { kind: "user", id: "user" },
@@ -893,7 +893,7 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
 
     const sent = (await client.taskSendInput(workspaceId, taskPath, {
       text: "Use the tighter plan",
-      contextRefs: [created.id],
+      contextRefs: [created.nodeId],
     })) as {
       input: { id: string; status: string };
       accepted?: boolean;
@@ -962,7 +962,7 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
     const followUp = log.prompts!.find((p) => p.includes("## User Input"));
     assert.ok(followUp, "follow-up prompt must contain ## User Input");
     assert.match(followUp!, /Use the tighter plan/);
-    assert.match(followUp!, new RegExp(created.id));
+    assert.match(followUp!, new RegExp(created.nodeId));
   });
 });
 
@@ -992,10 +992,10 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
     const created = (await client.docsCreateNote(workspaceId, {
       name: "reject-review-item",
       type: "prompt",
-    })) as { id: string };
+    }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "Work that will be rejected with review note",
       parentActor: { kind: "user", id: "user" },
@@ -1141,10 +1141,10 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
     const created = (await client.docsCreateNote(workspaceId, {
       name: "reject-native-resume",
       type: "prompt",
-    })) as { id: string };
+    }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "Native reject-resume same session",
       parentActor: { kind: "user", id: "user" },
@@ -1339,10 +1339,10 @@ test("reject-resume external (no session): review feedback stays pending for pol
     const created = (await client.docsCreateNote(workspaceId, {
       name: "external-reject",
       type: "prompt",
-    })) as { id: string };
+    }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "External role rework",
       parentActor: { kind: "user", id: "user" },
@@ -1425,10 +1425,10 @@ test("reject-resume: slow follow-up returns accepted without headers-timeout wai
     const created = (await client.docsCreateNote(workspaceId, {
       name: "reject-slow-turn",
       type: "prompt",
-    })) as { id: string };
+    }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "Slow reject-resume inject",
       parentActor: { kind: "user", id: "user" },
@@ -1528,10 +1528,10 @@ test("reject-resume: background completion projects processing → delivered", a
     const created = (await client.docsCreateNote(workspaceId, {
       name: "reject-bg-complete",
       type: "prompt",
-    })) as { id: string };
+    }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "Background reject inject",
       parentActor: { kind: "user", id: "user" },
@@ -1986,10 +1986,10 @@ test("reject-resume: second reject while rework running is rejected (no double i
     const created = (await client.docsCreateNote(workspaceId, {
       name: "reject-dup-protect",
       type: "prompt",
-    })) as { id: string };
+    }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "Double reject protection",
       parentActor: { kind: "user", id: "user" },
@@ -2091,10 +2091,10 @@ test("reject --no-resume: terminal reject without review-feedback or session res
     const created = (await client.docsCreateNote(workspaceId, {
       name: "no-resume-item",
       type: "prompt",
-    })) as { id: string };
+    }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "Terminal reject path",
       parentActor: { kind: "user", id: "user" },
@@ -2153,10 +2153,10 @@ test("managed U2A: concurrent sends on same task are FIFO and non-overlapping", 
     const created = (await client.docsCreateNote(workspaceId, {
       name: "fifo-item",
       type: "prompt",
-    })) as { id: string };
+    }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "FIFO serialization",
       parentActor: { kind: "user", id: "user" },
@@ -2326,9 +2326,9 @@ test("managed U2A: different tasks remain concurrent (not process-wide serial)",
       const created = (await client.docsCreateNote(workspaceId, {
         name,
         type: "prompt",
-      })) as { id: string };
+      }));
       const dispatched = (await client.taskDispatch(workspaceId, {
-        nodeIds: [created.id],
+        nodeIds: [created.nodeId],
         role,
         prompt: `concurrent ${name}`,
         parentActor: { kind: "user", id: "user" },
@@ -2430,10 +2430,10 @@ test("managed U2A: failed inject leaves item failed (not dropped) and does not o
     const created = (await client.docsCreateNote(workspaceId, {
       name: "fail-queue",
       type: "prompt",
-    })) as { id: string };
+    }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "queue failure semantics",
       parentActor: { kind: "user", id: "user" },
@@ -2542,10 +2542,10 @@ test("task.sendInput: RPC returns accepted before managed turn finishes; status 
     const created = (await client.docsCreateNote(workspaceId, {
       name: "async-accept",
       type: "prompt",
-    })) as { id: string };
+    }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "async accept path",
       parentActor: { kind: "user", id: "user" },
@@ -2674,9 +2674,9 @@ test("task.sendInput: service stop drains background work without unhandled reje
     const created = (await client.docsCreateNote(workspaceId, {
       name: "drain-item",
       type: "prompt",
-    })) as { id: string };
+    }));
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "drain semantics",
       parentActor: { kind: "user", id: "user" },
@@ -2774,9 +2774,9 @@ test("task.sendInput: hung follow-up turns stop promptly; durable row retained; 
     const created = (await client.docsCreateNote(workspaceId, {
       name: "hang-item",
       type: "prompt",
-    })) as { id: string };
+    }));
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "hang shutdown",
       parentActor: { kind: "user", id: "user" },

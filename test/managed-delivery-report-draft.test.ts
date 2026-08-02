@@ -29,7 +29,7 @@ async function makeWorkspace(name = "mrd"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -89,8 +89,8 @@ async function mountWorkItem(
     type: "prompt",
   });
   assert.ok(!created.error, JSON.stringify(created.error));
-  const boxId = (created.result as { id: string }).id;
-  return { workspaceId, boxId };
+  const nodeId = (created.result as { nodeId: string }).nodeId;
+  return { workspaceId, nodeId };
 }
 
 async function initGitOnWorkspace(ws: string): Promise<void> {
@@ -190,12 +190,12 @@ test("P0: natural report without outcome survives dirty refusal and draft-only r
   await initGitOnWorkspace(ws);
 
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "preserve draft on dirty refuse",
       deliveryPolicy: "review",
@@ -293,12 +293,12 @@ test("malformed outcome text is delivered intact instead of discarding the repor
   await initGitOnWorkspace(ws);
 
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "deliver malformed control text intact",
       deliveryPolicy: "review",
@@ -356,7 +356,7 @@ test("P0: report draft survives service restart; retry publishes without re-prom
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [mounted.boxId],
+        nodeIds: [mounted.nodeId],
         role: "executor",
         prompt: "restart must keep draft",
         deliveryPolicy: "review",
@@ -486,12 +486,12 @@ test("P0: integrate failure preserves draft; second attempt with clean commits s
   await git(ws, "commit", "-q", "-m", "main mrd conflict");
 
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "integrate fail keeps draft",
       deliveryPolicy: "bypass",

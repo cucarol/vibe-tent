@@ -304,7 +304,7 @@ export class WorkspaceHost {
         }
         continue;
       }
-      this.events.emit("concept.changed", mount.workspaceId, {
+      this.events.emit("node.changed", mount.workspaceId, {
         reason: "watch",
         path: rel,
       });

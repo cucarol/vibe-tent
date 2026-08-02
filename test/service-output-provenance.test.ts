@@ -4,7 +4,7 @@
  * - docs.write rejects deliveryId
  * - output.provenance unbound / bound / incomplete
  * - retention pins Output.deliveryId references
- * - concept.changed on bind; CLIENT_METHODS + ServiceClient surface
+ * - node.changed on bind; CLIENT_METHODS + ServiceClient surface
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -12,7 +12,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
-import { boxNotePath } from "../src/core/tree.js";
+import { nodeNotePath } from "../src/core/tree.js";
 import { parseFrontmatter, serializeFrontmatter } from "../src/core/frontmatter.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
@@ -38,7 +38,7 @@ async function makeWorkspace(name = "output-prov"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -89,7 +89,7 @@ async function createNote(
   svc: Awaited<ReturnType<typeof startLocalTentService>>,
   workspaceId: string,
   opts: { name: string; type?: string; parentPath?: string }
-): Promise<{ id: string; path: string }> {
+): Promise<{ nodeId: string; path: string }> {
   const created = await rpc(svc, "docs.createNote", {
     workspaceId,
     name: opts.name,
@@ -97,7 +97,7 @@ async function createNote(
     ...(opts.parentPath ? { parentPath: opts.parentPath } : {}),
   });
   assert.ok(!created.error, JSON.stringify(created.error));
-  return created.result as { id: string; path: string };
+  return created.result as { nodeId: string; path: string };
 }
 
 async function readForEdit(
@@ -105,7 +105,7 @@ async function readForEdit(
   workspaceId: string,
   id: string
 ): Promise<{ etag: string; raw: string; path: string }> {
-  const res = await rpc(svc, "docs.readForEdit", { workspaceId, id });
+  const res = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId: id });
   assert.ok(!res.error, JSON.stringify(res.error));
   return res.result as { etag: string; raw: string; path: string };
 }
@@ -114,12 +114,12 @@ async function readForEdit(
 async function readyDeliveryTask(
   svc: Awaited<ReturnType<typeof startLocalTentService>>,
   workspaceId: string,
-  boxId: string,
+  nodeId: string,
   role = "executor"
 ): Promise<{ taskPath: string; deliveryId: string }> {
   const dispatched = await rpc(svc, "task.dispatch", {
     workspaceId,
-    nodeIds: [boxId],
+    nodeIds: [nodeId],
     role,
     prompt: "do the work",
     parentActor: { kind: "user", id: "user" },
@@ -156,10 +156,10 @@ test("accept binds output deliveryId atomically; unbound query; same-delivery id
     const workspaceId = await mountWorkspace(svc, ws);
     const source = await createNote(svc, workspaceId, { name: "job", type: "prompt" });
     const output = await createNote(svc, workspaceId, { name: "result", type: "output" });
-    const { taskPath, deliveryId } = await readyDeliveryTask(svc, workspaceId, source.id);
+    const { taskPath, deliveryId } = await readyDeliveryTask(svc, workspaceId, source.nodeId);
 
     // Unbound before accept
-    const unbound = await rpc(svc, "output.provenance", { workspaceId, id: output.id });
+    const unbound = await rpc(svc, "output.provenance", { workspaceId, nodeId: output.nodeId });
     assert.ok(!unbound.error, JSON.stringify(unbound.error));
     const u = unbound.result as OutputProvenance;
     assert.equal(u.bound, false);
@@ -181,7 +181,7 @@ test("accept binds output deliveryId atomically; unbound query; same-delivery id
       workspaceId,
       taskPath,
       actor: "user",
-      outputNodeIds: [output.id],
+      outputNodeIds: [output.nodeId],
     });
     assert.ok(!accepted.error, JSON.stringify(accepted.error));
     const acc = accepted.result as {
@@ -192,19 +192,19 @@ test("accept binds output deliveryId atomically; unbound query; same-delivery id
     };
     assert.equal(acc.state, "accepted");
     assert.equal(acc.delivery.status, "accepted");
-    assert.deepEqual(acc.boundOutputIds, [output.id]);
-    assert.deepEqual(acc.changedOutputIds, [output.id]);
+    assert.deepEqual(acc.boundOutputIds, [output.nodeId]);
+    assert.deepEqual(acc.changedOutputIds, [output.nodeId]);
 
     // Disk FM has deliveryId only (no taskId/sourceNodeId denorm)
     const systemRoot = path.join(ws, ".tent");
     const fsa = new NodeFs(systemRoot);
-    const noteRaw = await fsa.readFile(boxNotePath(output.path));
+    const noteRaw = await fsa.readFile(nodeNotePath(output.path));
     const { data } = parseFrontmatter(noteRaw);
     assert.equal(data.deliveryId, deliveryId);
     assert.equal(data.taskId, undefined);
     assert.equal(data.sourceNodeId, undefined);
 
-    const bound = await rpc(svc, "output.provenance", { workspaceId, id: output.id });
+    const bound = await rpc(svc, "output.provenance", { workspaceId, nodeId: output.nodeId });
     assert.ok(!bound.error, JSON.stringify(bound.error));
     const b = bound.result as OutputProvenance;
     assert.equal(b.bound, true);
@@ -213,14 +213,14 @@ test("accept binds output deliveryId atomically; unbound query; same-delivery id
     assert.equal(b.delivery?.status, "accepted");
     assert.ok(b.task?.id);
     assert.equal(b.task?.state, "accepted");
-    assert.equal(b.sourceNode?.id, source.id);
+    assert.equal(b.sourceNode?.nodeId, source.nodeId);
     assert.deepEqual(b.incomplete, []);
 
     unsub();
     const bindEvents = events.filter(
       (e) =>
-        e.type === "concept.changed" &&
-        e.payload.id === output.id &&
+        e.type === "node.changed" &&
+        e.payload.nodeId === output.nodeId &&
         e.payload.reason === "output.provenance-bind"
     );
     assert.ok(
@@ -237,13 +237,13 @@ test("accept all-or-nothing: bad Output leaves Task/Delivery/Output unbound", as
     const source = await createNote(svc, workspaceId, { name: "job2", type: "prompt" });
     const good = await createNote(svc, workspaceId, { name: "good-out", type: "output" });
     const notOutput = await createNote(svc, workspaceId, { name: "note-like", type: "prompt" });
-    const { taskPath, deliveryId } = await readyDeliveryTask(svc, workspaceId, source.id);
+    const { taskPath, deliveryId } = await readyDeliveryTask(svc, workspaceId, source.nodeId);
 
     const failed = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
       actor: "user",
-      outputNodeIds: [good.id, notOutput.id],
+      outputNodeIds: [good.nodeId, notOutput.nodeId],
     });
     assert.ok(failed.error, "expected accept to fail");
     assert.equal(failed.error?.code, -32010);
@@ -259,7 +259,7 @@ test("accept all-or-nothing: bad Output leaves Task/Delivery/Output unbound", as
 
     const systemRoot = path.join(ws, ".tent");
     const fsa = new NodeFs(systemRoot);
-    const goodRaw = await fsa.readFile(boxNotePath(good.path));
+    const goodRaw = await fsa.readFile(nodeNotePath(good.path));
     assert.equal(parseFrontmatter(goodRaw).data.deliveryId, undefined);
   });
 });
@@ -273,22 +273,22 @@ test("cross-delivery bind fails; archived/missing/non-output rejected", async ()
     const archivedOut = await createNote(svc, workspaceId, { name: "arch-out", type: "output" });
 
     // Bind first delivery
-    const first = await readyDeliveryTask(svc, workspaceId, source.id);
+    const first = await readyDeliveryTask(svc, workspaceId, source.nodeId);
     const ok = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath: first.taskPath,
       actor: "user",
-      outputNodeIds: [output.id],
+      outputNodeIds: [output.nodeId],
     });
     assert.ok(!ok.error, JSON.stringify(ok.error));
 
     // Second task/delivery tries to rebind same Output
-    const second = await readyDeliveryTask(svc, workspaceId, source.id);
+    const second = await readyDeliveryTask(svc, workspaceId, source.nodeId);
     const conflict = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath: second.taskPath,
       actor: "user",
-      outputNodeIds: [output.id],
+      outputNodeIds: [output.nodeId],
     });
     assert.ok(conflict.error);
     assert.equal(conflict.error?.code, -32010);
@@ -296,10 +296,10 @@ test("cross-delivery bind fails; archived/missing/non-output rejected", async ()
     assert.equal((still.result as { task: { state: string } }).task.state, "delivered");
 
     // Archive output then refuse bind
-    const archEdit = await readForEdit(svc, workspaceId, archivedOut.id);
+    const archEdit = await readForEdit(svc, workspaceId, archivedOut.nodeId);
     const setMode = await rpc(svc, "docs.setMode", {
       workspaceId,
-      id: archivedOut.id,
+      nodeId: archivedOut.nodeId,
       mode: "archived",
       baseEtag: archEdit.etag,
     });
@@ -308,7 +308,7 @@ test("cross-delivery bind fails; archived/missing/non-output rejected", async ()
       workspaceId,
       taskPath: second.taskPath,
       actor: "user",
-      outputNodeIds: [archivedOut.id],
+      outputNodeIds: [archivedOut.nodeId],
     });
     assert.ok(archFail.error);
     assert.equal(archFail.error?.code, -32010);
@@ -318,7 +318,7 @@ test("cross-delivery bind fails; archived/missing/non-output rejected", async ()
       workspaceId,
       taskPath: second.taskPath,
       actor: "user",
-      outputNodeIds: ["cx-does-not-exist"],
+      outputNodeIds: ["cx-doesnotexist"],
     });
     assert.ok(missing.error);
     assert.equal(missing.error?.code, -32004);
@@ -340,21 +340,21 @@ test("same-delivery multi-output idempotent re-bind on accept of shared ids", as
     const source = await createNote(svc, workspaceId, { name: "job4", type: "prompt" });
     const a = await createNote(svc, workspaceId, { name: "out-a", type: "output" });
     const b = await createNote(svc, workspaceId, { name: "out-b", type: "output" });
-    const { taskPath, deliveryId } = await readyDeliveryTask(svc, workspaceId, source.id);
+    const { taskPath, deliveryId } = await readyDeliveryTask(svc, workspaceId, source.nodeId);
 
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
       actor: "user",
-      outputNodeIds: [a.id, b.id, a.id], // dedupe
+      outputNodeIds: [a.nodeId, b.nodeId, a.nodeId], // dedupe
     });
     assert.ok(!accepted.error, JSON.stringify(accepted.error));
     const acc = accepted.result as { boundOutputIds: string[]; changedOutputIds: string[] };
-    assert.deepEqual(acc.boundOutputIds, [a.id, b.id]);
-    assert.deepEqual(acc.changedOutputIds, [a.id, b.id]);
+    assert.deepEqual(acc.boundOutputIds, [a.nodeId, b.nodeId]);
+    assert.deepEqual(acc.changedOutputIds, [a.nodeId, b.nodeId]);
 
-    for (const id of [a.id, b.id]) {
-      const p = await rpc(svc, "output.provenance", { workspaceId, id });
+    for (const id of [a.nodeId, b.nodeId]) {
+      const p = await rpc(svc, "output.provenance", { workspaceId, nodeId: id });
       assert.ok(!p.error, JSON.stringify(p.error));
       assert.equal((p.result as OutputProvenance).deliveryId, deliveryId);
       assert.equal((p.result as OutputProvenance).bound, true);
@@ -367,11 +367,11 @@ test("docs.write rejects deliveryId (structured + raw)", async () => {
     const ws = await makeWorkspace();
     const workspaceId = await mountWorkspace(svc, ws);
     const output = await createNote(svc, workspaceId, { name: "out-write", type: "output" });
-    const edit = await readForEdit(svc, workspaceId, output.id);
+    const edit = await readForEdit(svc, workspaceId, output.nodeId);
 
     const structured = await rpc(svc, "docs.write", {
       workspaceId,
-      id: output.id,
+      nodeId: output.nodeId,
       baseEtag: edit.etag,
       frontmatter: { deliveryId: "dl-forged01" },
     });
@@ -379,13 +379,13 @@ test("docs.write rejects deliveryId (structured + raw)", async () => {
     assert.equal(structured.error?.code, -32010);
     assert.match(String(structured.error?.message), /deliveryId/);
 
-    const edit2 = await readForEdit(svc, workspaceId, output.id);
+    const edit2 = await readForEdit(svc, workspaceId, output.nodeId);
     const { data, body, keyOrder } = parseFrontmatter(edit2.raw);
     data.deliveryId = "dl-forged02";
     const raw = serializeFrontmatter(data, body, keyOrder);
     const rawWrite = await rpc(svc, "docs.write", {
       workspaceId,
-      id: output.id,
+      nodeId: output.nodeId,
       baseEtag: edit2.etag,
       raw,
     });
@@ -400,12 +400,12 @@ test("output.provenance incomplete when delivery missing; archived output still 
     const workspaceId = await mountWorkspace(svc, ws);
     const source = await createNote(svc, workspaceId, { name: "job5", type: "prompt" });
     const output = await createNote(svc, workspaceId, { name: "out5", type: "output" });
-    const { taskPath, deliveryId } = await readyDeliveryTask(svc, workspaceId, source.id);
+    const { taskPath, deliveryId } = await readyDeliveryTask(svc, workspaceId, source.nodeId);
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
       actor: "user",
-      outputNodeIds: [output.id],
+      outputNodeIds: [output.nodeId],
     });
     assert.ok(!accepted.error, JSON.stringify(accepted.error));
 
@@ -421,7 +421,7 @@ test("output.provenance incomplete when delivery missing; archived output still 
     assert.ok(row);
     await fsa.remove(row!.path);
 
-    const incomplete = await rpc(svc, "output.provenance", { workspaceId, id: output.id });
+    const incomplete = await rpc(svc, "output.provenance", { workspaceId, nodeId: output.nodeId });
     assert.ok(!incomplete.error, JSON.stringify(incomplete.error));
     const inc = incomplete.result as OutputProvenance;
     assert.equal(inc.bound, true);
@@ -430,15 +430,15 @@ test("output.provenance incomplete when delivery missing; archived output still 
     assert.ok(inc.incomplete.includes("delivery_missing"));
 
     // Archive output — provenance still readable
-    const edit = await readForEdit(svc, workspaceId, output.id);
+    const edit = await readForEdit(svc, workspaceId, output.nodeId);
     const setMode = await rpc(svc, "docs.setMode", {
       workspaceId,
-      id: output.id,
+      nodeId: output.nodeId,
       mode: "archived",
       baseEtag: edit.etag,
     });
     assert.ok(!setMode.error, JSON.stringify(setMode.error));
-    const still = await rpc(svc, "output.provenance", { workspaceId, path: output.path });
+    const still = await rpc(svc, "output.provenance", { workspaceId, nodeId: output.nodeId });
     assert.ok(!still.error, JSON.stringify(still.error));
     assert.equal((still.result as OutputProvenance).bound, true);
     assert.equal((still.result as OutputProvenance).deliveryId, deliveryId);
@@ -465,7 +465,7 @@ test("retention pins Delivery+Task referenced by Output.deliveryId (including ar
 
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },role: "executor",
-    claims: [{ id: "cx-src", path: "inbox" }],
+    nodeRefs: [{ id: "cx-src", path: "inbox" }],
     manifestPath: "temp/executor/manifests/m.md",
     userPrompt: "old accepted",
     id: "tk-pinned01",
@@ -479,7 +479,7 @@ test("retention pins Delivery+Task referenced by Output.deliveryId (including ar
 
   const delivery = await createDelivery(fsa, clock, {
     taskId: "tk-pinned01",
-    boxId: "cx-src",
+    sourceNodeId: "cx-src",
     role: "executor",
     summary: "accepted product",
     status: "accepted",
@@ -519,7 +519,7 @@ test("retention pins Delivery+Task referenced by Output.deliveryId (including ar
 
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },role: "executor",
-    claims: [{ id: "cx-other", path: "inbox" }],
+    nodeRefs: [{ id: "cx-other", path: "inbox" }],
     manifestPath: "temp/executor/manifests/m2.md",
     userPrompt: "unrelated",
     id: "tk-other01",
@@ -546,14 +546,14 @@ test("ServiceClient.taskAccept passes outputNodeIds", async () => {
     const workspaceId = await mountWorkspace(svc, ws);
     const source = await createNote(svc, workspaceId, { name: "job-cli", type: "prompt" });
     const output = await createNote(svc, workspaceId, { name: "out-cli", type: "output" });
-    const { taskPath } = await readyDeliveryTask(svc, workspaceId, source.id);
+    const { taskPath } = await readyDeliveryTask(svc, workspaceId, source.nodeId);
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const result = (await client.taskAccept(workspaceId, taskPath, "user", undefined, {
-      outputNodeIds: [output.id],
+      outputNodeIds: [output.nodeId],
     })) as { state: string; boundOutputIds: string[] };
     assert.equal(result.state, "accepted");
-    assert.deepEqual(result.boundOutputIds, [output.id]);
-    const prov = (await client.outputProvenance(workspaceId, { id: output.id })) as OutputProvenance;
+    assert.deepEqual(result.boundOutputIds, [output.nodeId]);
+    const prov = (await client.outputProvenance(workspaceId, output.nodeId)) as OutputProvenance;
     assert.equal(prov.bound, true);
   });
 });

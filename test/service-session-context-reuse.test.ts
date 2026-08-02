@@ -67,7 +67,7 @@ async function makeWorkspace(name = "ctx-reuse"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -176,7 +176,7 @@ async function mountWorkItem(svc: Svc, ws: string) {
     type: "prompt",
   });
   assert.ok(!created.error, JSON.stringify(created.error));
-  return { workspaceId, boxId: (created.result as { id: string }).id };
+  return { workspaceId, nodeId: (created.result as { nodeId: string }).nodeId };
 }
 
 let workItemSequence = 0;
@@ -188,7 +188,7 @@ async function createWorkItemNode(svc: Svc, workspaceId: string): Promise<string
     type: "prompt",
   });
   assert.ok(!created.error, JSON.stringify(created.error));
-  return (created.result as { id: string }).id;
+  return (created.result as { nodeId: string }).nodeId;
 }
 
 async function initGit(workspace: string): Promise<void> {
@@ -308,7 +308,7 @@ test("assertDurableContextCardRefsResolved fails loud on missing node/task/deliv
       objective: "o",
       acceptance: ["a"],
       refs: {
-        nodes: [{ id: "cx-does-not-exist" }],
+        nodes: [{ id: "cx-doesnotexist" }],
         tasks: [],
         deliveries: [],
         git: [],
@@ -358,10 +358,10 @@ test("task.dispatch persists real contextGeneration without taskId; two tasks sh
   try {
     await initGit(ws);
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const d1 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         prompt: "Task one implement feature A",
         assigneeKind: "route",
         routeId: "fake-resumable",
@@ -412,13 +412,13 @@ test("startSession persists reuse facts; same-lane resume reuses; lane/profile m
   try {
     await initGit(ws);
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const envFs = new NodeFs(path.join(ws, ".tent"));
 
       // Task A (agentProfile): start + stop — same-lane resume candidate.
       const d1 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         prompt: "First task",
         assigneeKind: "route",
         routeId: "fake-resumable",
@@ -525,12 +525,12 @@ test("Role cross-Task: running+stopped Session blocks; accepted prior reuses", a
   try {
     await initGit(ws);
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const envFs = new NodeFs(path.join(ws, ".tent"));
 
       const roleA = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "Role task one",
         assigneeKind: "role",
@@ -624,7 +624,7 @@ test("Role cross-Task: running+stopped Session blocks; accepted prior reuses", a
 
       const roleOk = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "after A accepted",
         assigneeKind: "role",
@@ -661,10 +661,10 @@ test("startSession fails loud when Context Card declares missing Node ref", asyn
   try {
     await initGit(ws);
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         prompt: "will patch bad ref",
         assigneeKind: "route",
         routeId: "fake-resumable",
@@ -682,7 +682,7 @@ test("startSession fails loud when Context Card declares missing Node ref", asyn
         ...task.contextCard!,
         refs: {
           ...task.contextCard!.refs,
-          nodes: [{ id: "cx-missing-foreign-node", path: "nope" }],
+          nodes: [{ id: "cx-missingforeignnode", path: "nope" }],
         },
       };
       await patchTaskEnvelope(fsa, taskPath, { contextCard: badCard });
@@ -696,7 +696,7 @@ test("startSession fails loud when Context Card declares missing Node ref", asyn
       });
       assert.ok(start.error, "missing ref must fail loud");
       const msg = String(start.error.message || JSON.stringify(start.error));
-      assert.match(msg, /could not be resolved|UNRESOLVED_REF|cx-missing-foreign-node/i);
+      assert.match(msg, /could not be resolved|UNRESOLVED_REF|cx-missingforeignnode/i);
     });
   } finally {
     await fs.rm(ws, { recursive: true, force: true });
@@ -710,7 +710,7 @@ test("writeTaskEnvelope fallback generation is stable across task ids", async ()
     const a = await writeTaskEnvelope(nfs, new SystemClock(), {
       role: "fake-resumable",
       assigneeKind: "agentProfile",
-      claims: [{ id: "root", path: "./" }],
+      nodeRefs: [{ id: "cx-contexta", path: "context/a" }],
       manifestPath: "temp/agent-profiles/fake-resumable/manifests/a.yml",
       userPrompt: "objective A",
       parentActor: { kind: "role", id: "orchestrator" },
@@ -719,7 +719,7 @@ test("writeTaskEnvelope fallback generation is stable across task ids", async ()
     const b = await writeTaskEnvelope(nfs, new SystemClock(), {
       role: "fake-resumable",
       assigneeKind: "agentProfile",
-      claims: [{ id: "root", path: "./" }],
+      nodeRefs: [{ id: "cx-contextb", path: "context/b" }],
       manifestPath: "temp/agent-profiles/fake-resumable/manifests/b.yml",
       userPrompt: "objective B totally different",
       parentActor: { kind: "role", id: "orchestrator" },
@@ -739,18 +739,24 @@ test("evaluateCandidateSessionLeaseGates: prior running/delivery/input/dual-bind
     path: "temp/executor/tasks/a.md",
     role: "executor",
     manifest: "m",
-    status: "taken",
     state: "running",
     id: "tk-prior001",
     sessionId: "ss-shared01",
+    contextCard: buildTaskContextCard({
+      contextGeneration: `cg-v1-${"0".repeat(64)}`,
+      refs: { nodes: [{ id: "cx-prior" }] },
+    }),
   };
   const request: TaskEnvelope = {
     path: "temp/executor/tasks/b.md",
     role: "executor",
     manifest: "m",
-    status: "taken",
     state: "running",
     id: "tk-req0002",
+    contextCard: buildTaskContextCard({
+      contextGeneration: `cg-v1-${"1".repeat(64)}`,
+      refs: { nodes: [{ id: "cx-request" }] },
+    }),
   };
   const candidate = {
     id: "ss-shared01",
@@ -916,10 +922,13 @@ test("evaluateCandidateSessionLeaseGates: prior running/delivery/input/dual-bind
     path: "temp/executor/tasks/c.md",
     role: "executor",
     manifest: "m",
-    status: "taken",
     state: "running",
     id: "tk-other03",
     sessionId: "ss-shared01",
+    contextCard: buildTaskContextCard({
+      contextGeneration: `cg-v1-${"2".repeat(64)}`,
+      refs: { nodes: [{ id: "cx-other" }] },
+    }),
   };
   const dual2 = await evaluateCandidateSessionLeaseGates({
     allTasks: [priorAccepted, dual, otherActive],
@@ -956,13 +965,13 @@ test("Role startSession captures real profile/adapter generation; purpose mismat
   try {
     await initGit(ws);
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const envFs = new NodeFs(path.join(ws, ".tent"));
 
       // Role dispatch without profileId: no frozen generation until start.
       const d = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "role without profile at dispatch",
         assigneeKind: "role",
@@ -1004,7 +1013,7 @@ test("Role startSession captures real profile/adapter generation; purpose mismat
       // Second Role Task with different purpose → fresh Session (purpose mismatch).
       const d2 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "role different purpose",
         assigneeKind: "role",
@@ -1035,7 +1044,7 @@ test("Role profile change at startSession rewrites contextGeneration", async () 
   try {
     await initGit(ws);
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const envFs = new NodeFs(path.join(ws, ".tent"));
 
       // Allow fake-other on executor for this test.
@@ -1066,7 +1075,7 @@ test("Role profile change at startSession rewrites contextGeneration", async () 
 
       const d = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "start with one profile then compare",
         assigneeKind: "role",
@@ -1084,7 +1093,7 @@ test("Role profile change at startSession rewrites contextGeneration", async () 
 
       const d2 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "same role different profile",
         assigneeKind: "role",
@@ -1321,13 +1330,13 @@ test("live generation: AGENTS/Role/Skill/profile mutations force fresh Session a
       await initGit(ws);
       await withService(
         async (svc) => {
-          const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+          const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
           const envFs = new NodeFs(path.join(ws, ".tent"));
 
           // ---- AGENTS: dispatch without start → mutate → startSession ----
           const dAgents = await rpc(svc, "task.dispatch", {
             workspaceId,
-            nodeIds: [boxId],
+            nodeIds: [nodeId],
             prompt: "agents mutate path",
             assigneeKind: "route",
             routeId: "fake-resumable",
@@ -1482,7 +1491,7 @@ test("live generation: AGENTS/Role/Skill/profile mutations force fresh Session a
           // ---- Role prompt: dispatch → mutate roles.json → startSession ----
           const dRole = await rpc(svc, "task.dispatch", {
             workspaceId,
-            nodeIds: [boxId],
+            nodeIds: [nodeId],
             role: "executor",
             prompt: "role mutate path",
             assigneeKind: "role",
@@ -1559,13 +1568,13 @@ test("bootstrapPrompt custom append on fresh and resumed same-Task start", async
   try {
     await initGit(ws);
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const envFs = new NodeFs(path.join(ws, ".tent"));
 
       // dispatch does not forward bootstrapPrompt; startSession is the production append path.
       const d = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         prompt: "bootstrap append task",
         assigneeKind: "route",
         routeId: "fake-resumable",
@@ -1647,12 +1656,12 @@ test("active same-Task path fails loud on empty/legacy Session contextGeneration
   try {
     await initGit(ws);
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const envFs = new NodeFs(path.join(ws, ".tent"));
 
       const d = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         prompt: "empty gen active path",
         assigneeKind: "route",
         routeId: "fake-resumable",
@@ -1695,12 +1704,12 @@ test("missing/foreign activeDeliveryId fails loud (cannot prove noPendingDeliver
   try {
     await initGit(ws);
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const envFs = new NodeFs(path.join(ws, ".tent"));
 
       const d1 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "prior with foreign delivery pointer",
         assigneeKind: "role",
@@ -1727,7 +1736,7 @@ test("missing/foreign activeDeliveryId fails loud (cannot prove noPendingDeliver
 
       const dMissing = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "next after missing delivery pointer",
         assigneeKind: "role",
@@ -1751,7 +1760,7 @@ test("missing/foreign activeDeliveryId fails loud (cannot prove noPendingDeliver
       // Foreign pointer: Delivery exists but belongs to another taskId.
       const foreign = await createDelivery(envFs, new SystemClock(), {
         taskId: "tk-someone-else",
-        boxId,
+        sourceNodeId: nodeId,
         role: "executor",
         summary: "foreign delivery",
         status: "accepted",
@@ -1765,7 +1774,7 @@ test("missing/foreign activeDeliveryId fails loud (cannot prove noPendingDeliver
 
       const dForeign = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "next after foreign delivery pointer",
         assigneeKind: "role",
@@ -1795,12 +1804,12 @@ test("hasBlockingDelivery fails loud when Delivery store is unreadable", async (
   try {
     await initGit(ws);
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const envFs = new NodeFs(path.join(ws, ".tent"));
 
       const d1 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "prior for delivery store fail",
         assigneeKind: "role",
@@ -1829,7 +1838,7 @@ test("hasBlockingDelivery fails loud when Delivery store is unreadable", async (
       });
       await fs.writeFile(
         path.join(ws, ".tent", "temp", "executor", "deliveries", "placeholder.md"),
-        "---\ntype: delivery\nid: dl-placeholder1\ntaskId: none\nboxId: none\nrole: executor\nstatus: draft\n---\n",
+        "---\ntype: delivery\nid: dl-placeholder1\ntaskId: none\nsourceNodeId: none\nrole: executor\nstatus: draft\n---\n",
         "utf8"
       );
 
@@ -1846,7 +1855,7 @@ test("hasBlockingDelivery fails loud when Delivery store is unreadable", async (
 
       const d2 = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "next after corrupt delivery store",
         assigneeKind: "role",
@@ -1882,7 +1891,7 @@ test("collector failure at startSession fails loud (no reusable fallback)", asyn
       await initGit(ws);
       await withService(
         async (svc) => {
-          const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+          const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
           const envFs = new NodeFs(path.join(ws, ".tent"));
           const rolesPath = path.join(ws, ".tent", "roles.json");
 
@@ -1897,7 +1906,7 @@ test("collector failure at startSession fails loud (no reusable fallback)", asyn
           // ---- durable Role assignee: remove required Role after dispatch ----
           const dRole = await rpc(svc, "task.dispatch", {
             workspaceId,
-            nodeIds: [boxId],
+            nodeIds: [nodeId],
             role: "executor",
             prompt: "role collector fail",
             assigneeKind: "role",
@@ -2102,7 +2111,7 @@ test("Service cross-Task prior blockers force fresh; accepted+settled reuses", a
   try {
     await initGit(ws);
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const envFs = new NodeFs(path.join(ws, ".tent"));
       const now = new Date().toISOString();
 
@@ -2200,8 +2209,8 @@ test("Service cross-Task prior blockers force fresh; accepted+settled reuses", a
         workspaceId,
         taskPath: tAccept.path,
         taskId: tAccept.id,
-        text: "blocking prior input",
         status: "pending",
+        text: "blocking prior input",
         createdAt: now,
         updatedAt: now,
       });
@@ -2251,8 +2260,8 @@ test("Service cross-Task prior blockers force fresh; accepted+settled reuses", a
         workspaceId,
         taskPath: tBase2.path,
         taskId: tBase2.id,
-        question: "block reuse?",
         status: "pending",
+        question: "block reuse?",
         createdAt: now,
         updatedAt: now,
       });
@@ -2277,7 +2286,7 @@ test("Service cross-Task prior blockers force fresh; accepted+settled reuses", a
       // ---- ready Delivery on prior (unresolved) ----
       const delivery = await createDelivery(envFs, new SystemClock(), {
         taskId: tBase3.id!,
-        boxId: tBase3.contextCard!.refs.nodes[0]!.id,
+        sourceNodeId: tBase3.contextCard!.refs.nodes[0]!.id,
         role: "executor",
         summary: "ready delivery blocks reuse",
         status: "ready",
@@ -2336,7 +2345,7 @@ test("Service cross-Task prior blockers force fresh; accepted+settled reuses", a
       // Create a second Role task without starting a session, then bind it to sid4.
       const dDualOther = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "synthetic dual binder",
         assigneeKind: "role",

@@ -69,7 +69,7 @@ async function makeWorkspace(prefix = "tent-ti-gate-"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "task-input-delivery-gate",
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -129,8 +129,8 @@ async function mountWorkItem(
     type: "prompt",
   });
   assert.ok(!created.error, JSON.stringify(created.error));
-  const boxId = (created.result as { id: string }).id;
-  return { workspaceId, boxId };
+  const nodeId = (created.result as { nodeId: string }).nodeId;
+  return { workspaceId, nodeId };
 }
 
 async function runningTask(
@@ -142,12 +142,12 @@ async function runningTask(
     deliveryPolicy?: "review" | "bypass";
   }
 ): Promise<{ workspaceId: string; taskPath: string; sessionId?: string }> {
-  const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+  const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
   const d = await rpc(svc, "task.dispatch", {
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     workspaceId,
-    nodeIds: [boxId],
+    nodeIds: [nodeId],
     role: "executor",
     prompt: "delivery gate fixture",
     deliveryPolicy: opts?.deliveryPolicy ?? "review",
@@ -752,12 +752,12 @@ test("P0 race: input before deliver blocks; deliver first makes sendInput refuse
       type: "prompt",
     });
     assert.ok(!created.error, JSON.stringify(created.error));
-    const boxId = (created.result as { id: string }).id;
+    const nodeId = (created.result as { nodeId: string }).nodeId;
     const d = await rpc(svc, "task.dispatch", {
       workspaceId: a.workspaceId,
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "deliver first ordering",
       deliveryPolicy: "review",
@@ -1004,12 +1004,12 @@ test("P0: public and managed paths share PENDING_TASK_INPUT authority payload sh
         type: "prompt",
       });
       assert.ok(!created2.error, JSON.stringify(created2.error));
-      const boxId2 = (created2.result as { id: string }).id;
+      const nodeId2 = (created2.result as { nodeId: string }).nodeId;
       const dManaged = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [boxId2],
+        nodeIds: [nodeId2],
         role: "executor",
         prompt: "managed gate shape",
         deliveryPolicy: "review",

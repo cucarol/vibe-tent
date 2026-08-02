@@ -21,9 +21,9 @@ export type ContractGap = {
  */
 export const DESKTOP_CONTRACT_GAPS: readonly ContractGap[] = [
   {
-    id: "concept.permanent-delete",
+    id: "node.permanent-delete",
     methods: ["docs.delete", "docs.purge"],
-    need: "Permanent delete of a concept (beyond archive mode).",
+    need: "Permanent delete of a Node (beyond archive mode).",
     fallback: "docs.setMode archived only; no permanent delete control.",
   },
   {

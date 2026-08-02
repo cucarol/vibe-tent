@@ -23,7 +23,7 @@ import {
 import { loadTent } from "../core/tree.js";
 import type { OpsEnv } from "../core/ops-context.js";
 
-import { findBoxesByTag, loadTagRegistry, normalizeTagName } from "../core/tags.js";
+import { findNodesByTag, loadTagRegistry, normalizeTagName } from "../core/tags.js";
 import { parseOutputPointer } from "../core/output.js";
 import { ensureRoleInit } from "../core/task.js";
 import { loadRolesRegistry } from "../core/skillRoleRegistry.js";
@@ -253,7 +253,7 @@ async function main() {
     const workspace = workspaceRootFromSystemRoot(systemRoot);
     if (!workspace) return fail("tent propose requires an in-workspace <workspace>/.tent layout");
     const result = await runProposalSubmit(
-      { boxId: nodeId, role, body },
+      { nodeId: nodeId, role, body },
       { cwd: workspace, workspace, packageRoot: packageRoot() }
     );
     if (result.stdout) process.stdout.write(result.stdout.endsWith("\n") ? result.stdout : result.stdout + "\n");
@@ -313,7 +313,7 @@ async function main() {
         return fail(error instanceof Error ? error.message : String(error));
       }
       const tent = await loadTent(env.fs);
-      const nodes = findBoxesByTag(tent, args[0]);
+      const nodes = findNodesByTag(tent, args[0]);
       if (nodes.length === 0) {
         console.log("(no matches)");
         break;
@@ -327,7 +327,7 @@ async function main() {
     case "tree": {
       if (args.length > 0) return fail("Usage: tent tree");
       const tent = await loadTent(env.fs);
-      for (const r of tent.roots) printBox(r, 0);
+      for (const root of tent.roots) printNode(root, 0);
       break;
     }
     default:
@@ -352,17 +352,17 @@ async function readBodyFile(bodySource: string): Promise<string> {
   return fs.readFile(resolved, "utf8");
 }
 
-function printBox(box: import("../core/types.js").Box, depth: number) {
+function printNode(node: import("../core/types.js").Node, depth: number) {
   const ind = "  ".repeat(depth);
-  const mode = box.archived ? " archived" : "";
-  const type = box.type;
-  const id = box.id || "missing-id";
-  const invalid = box.invalid ? ` invalid:${box.invalidReason || "invalid"}` : "";
-  console.log(`${ind}${box.name} [${type} ${id}]${mode}${invalid}`);
-  for (const c of box.children) printBox(c, depth + 1);
+  const mode = node.archived ? " archived" : "";
+  const type = node.type;
+  const id = node.id || "missing-id";
+  const invalid = node.invalid ? ` invalid:${node.invalidReason || "invalid"}` : "";
+  console.log(`${ind}${node.name} [${type} ${id}]${mode}${invalid}`);
+  for (const child of node.children) printNode(child, depth + 1);
 }
 
-function outputPointer(fm: import("../core/types.js").BoxFrontmatter, body: string): string {
+function outputPointer(fm: import("../core/types.js").NodeFrontmatter, body: string): string {
   const { workspace, ref } = parseOutputPointer(fm, body);
   return [workspace ? `workspace=${workspace}` : "", ref ? `ref=${ref}` : ""].filter(Boolean).join(" ");
 }

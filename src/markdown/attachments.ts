@@ -98,11 +98,11 @@ function contentId(bytes: Uint8Array): string {
   return createHash("sha256").update(Buffer.from(bytes)).digest("hex").slice(0, 12);
 }
 
-function attachmentRelativePath(conceptId: string, safeName: string, bytes: Uint8Array): string {
+function attachmentRelativePath(nodeId: string, safeName: string, bytes: Uint8Array): string {
   const id = contentId(bytes);
   const ext = nodePath.posix.extname(safeName);
   const base = nodePath.posix.basename(safeName, ext) || "file";
-  return `${ATTACHMENTS_DIR}/${conceptId}/${base}-${id}${ext}`;
+  return `${ATTACHMENTS_DIR}/${nodeId}/${base}-${id}${ext}`;
 }
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -114,27 +114,27 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 /**
- * Store attachment bytes under `attachments/<conceptId>/…` (system-root relative).
+ * Store attachment bytes under `attachments/<nodeId>/…` (system-root relative).
  * Identical content + fileName → same path (idempotent; skips rewrite when bytes match).
  */
 export async function storeAttachmentBytes(
   fs: FsAdapter,
-  conceptId: string,
+  nodeId: string,
   fileName: string,
   bytes: Uint8Array,
   sourceNotePath?: string
 ): Promise<ImportAttachmentResult> {
-  if (!conceptId.trim()) throw new Error("Concept id is required");
+  if (!nodeId.trim()) throw new Error("Node id is required");
   const safe = sanitizeAttachmentFileName(fileName);
   assertAttachmentSize(bytes.byteLength);
 
-  const rel = attachmentRelativePath(conceptId, safe, bytes);
+  const rel = attachmentRelativePath(nodeId, safe, bytes);
 
-  // Path must stay under attachments/<conceptId>/ (defense in depth beyond FsAdapter).
+  // Path must stay under attachments/<nodeId>/ (defense in depth beyond FsAdapter).
   // Segment checks only: do not use includes("..") — it false-rejects draft..final.png.
   const normalized = rel.replace(/\\/g, "/");
   if (
-    !normalized.startsWith(`${ATTACHMENTS_DIR}/${conceptId}/`) ||
+    !normalized.startsWith(`${ATTACHMENTS_DIR}/${nodeId}/`) ||
     normalized.split("/").some((p) => p === ".." || p === "")
   ) {
     throw new Error(`Attachment path rejected: ${rel}`);

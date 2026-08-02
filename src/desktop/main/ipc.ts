@@ -119,8 +119,7 @@ export function registerDesktopIpc(ctx: IpcContext): void {
       const entry = ctx.model.cards.pushRef(
         {
           kind: payload.kind as
-            | "box"
-            | "concept"
+            | "node"
             | "task"
             | "delivery"
             | "handoff"

@@ -1,12 +1,13 @@
 // Service command/query handlers — sole client mutation entry into core + runtime.
 
-import { boxNotePath, loadTent, type LoadedTent } from "../core/tree.js";
+import { nodeNotePath, loadTent, type LoadedTent } from "../core/tree.js";
 import { parseFrontmatter } from "../core/frontmatter.js";
+import { isNodeId } from "../core/id.js";
 import {
-  createBox,
+  createNode,
   dispatch,
   patchBody,
-  patchBox,
+  patchNode,
   resolveDispatchNodeIds,
   setNodeMode,
 } from "../core/ops.js";
@@ -17,7 +18,7 @@ import {
   normalizeTagName,
   removeRegistryTag,
   removeTag,
-  syncTagRegistryAfterBoxTagsChange,
+  syncTagRegistryAfterNodeTagsChange,
 } from "../core/tags.js";
 import {
   createRelation,
@@ -35,7 +36,7 @@ import {
   deleteCustomType,
   inspectTypeDeletion,
 } from "../core/typeManagement.js";
-import { isValidConceptType } from "../core/typeRegistry.js";
+import { isValidNodeType } from "../core/typeRegistry.js";
 
 import { forkNode } from "../core/forkOps.js";
 import { renameNode } from "../core/renameOps.js";
@@ -44,10 +45,8 @@ import {
   extractTaskUserPrompt,
   loadTaskEnvelope,
   loadTaskEnvelopes,
-  migrateParentReviewerEnvelopes,
   patchTaskEnvelope,
-  primaryBoxId,
-  sessionBootstrapPromptForTask,
+  primaryNodeId,
   taskAssigneeKind,
   taskAsSub,
   taskParentRoleId,
@@ -72,7 +71,6 @@ import {
   type RoleCheckpointPointers,
   type RoleCheckpointRecord,
 } from "../core/role-checkpoint.js";
-import { taskContextCard } from "../core/context-card.js";
 import {
   assembleManagedPrompt,
   assertRefsResolved,
@@ -132,12 +130,10 @@ import {
   type RoleDefinition,
 } from "../core/skillRoleRegistry.js";
 import {
-  assembleManagedSessionBootstrap,
   composeManagedSkillBootstrapPrefix,
 } from "../core/managed-skill-compose.js";
 import {
-  boxProjectionOf,
-  findActiveTaskForBox,
+  findActiveTaskForNode,
   finalizeTaskAccept,
   finalizeTaskDeliverAuto,
   prepareTaskAccept,
@@ -235,12 +231,11 @@ import {
   recordExternalKey,
 } from "../runtime/types.js";
 import { SessionRegistry } from "../runtime/session-registry.js";
-import * as nodeFs from "node:fs/promises";
 import * as nodePath from "node:path";
 import {
   buildBacklinkIndex,
   extractOutLinksDetailed,
-  indexFromBoxes,
+  indexFromNodes,
   resolveOutLink,
 } from "../markdown/links.js";
 import { contentEtag } from "./etag.js";
@@ -272,9 +267,7 @@ import {
   SEMANTIC_DOCS_WRITE_FIELDS,
   RPC_LIFECYCLE,
   type ArtifactRef,
-  type BoxProjection,
-  type BoxProjectionsResult,
-  type ConceptProjection,
+  type NodeProjection,
   type DeliveryProjection,
   type GraphLinkEdge,
   type GraphNodeSummary,
@@ -568,10 +561,6 @@ export async function dispatchMethod(
         return deliveryList(ctx, p);
       case "delivery.get":
         return deliveryGet(ctx, p);
-      case "box.projection":
-        return boxProjectionRpc(ctx, p);
-      case "box.projections":
-        return boxProjectionsRpc(ctx, p);
       case "node.collaboration":
         return nodeCollaborationRpc(ctx, p);
       case "node.collaborations":
@@ -702,114 +691,9 @@ async function workspaceMount(ctx: HandlerContext, p: Record<string, unknown>) {
     workspaceId: optionalString(p, "workspaceId"),
     tentName: optionalString(p, "tentName"),
   });
-  // One-shot machine-local SessionRecord.workspace upgrade after makeWorkspaceId
-  // changed (sha256 digest). Must run before task/session reconcile so list,
-  // resume, event routing, and active-role lookup see the current mount id.
-  await migrateSessionWorkspaceIdsOnMount(ctx, info.workspaceId);
-  // One-shot parentActor/reviewer wire rewrite (strip legacy dispatchedBy).
-  // Runs under MutationBus; preserves accepted audit; idempotent.
-  await migrateParentReviewerOnMount(ctx, info.workspaceId);
   // After SessionRegistry boot reconcile, each mount must re-bind tasks to live sessions.
   await reconcileTaskSessionsOnMount(ctx, info.workspaceId);
   return info;
-}
-
-/**
- * Deterministic one-time Task envelope migration on workspace.mount:
- * write parentActor/reviewer, strip dispatchedBy. No permanent dual-read.
- */
-async function migrateParentReviewerOnMount(
-  ctx: HandlerContext,
-  workspaceId: string
-): Promise<void> {
-  const mount = ctx.host.get(workspaceId);
-  if (!mount) return;
-  try {
-    await ctx.mutations.run(workspaceId, async () => {
-      ctx.host.markSelfWrite(workspaceId, 200, TEMP_DIR);
-      await migrateParentReviewerEnvelopes(mount.env.fs, mount.env.clock);
-    });
-  } catch (err) {
-    // Migration failure must not block mount; log and continue. Load path still
-    // derives actors in memory until a successful rewrite.
-    console.error(
-      `[workspace.mount] parent/reviewer migration failed: ${
-        err instanceof Error ? err.message : String(err)
-      }`
-    );
-  }
-}
-
-/**
- * Rebind machine-local SessionRecord.workspace to the current mount id when
- * makeWorkspaceId algorithm changes leave stale keys on disk.
- *
- * Single boundary: workspace.mount only (before reconcileTaskSessionsOnMount).
- * Does not rewrite Tent documents; does not keep dual-id comparison elsewhere.
- *
- * Evidence (any one is enough):
- * - task envelope sessionId in this workspace (authoritative binding)
- * - workspaceLane.workspace matches this mount's canonical root
- * - no lane, but runtimeWorkspace.cwd matches this mount's canonical root
- *
- * Never steals a row whose workspace still names another currently mounted id.
- */
-export async function migrateSessionWorkspaceIdsOnMount(
-  ctx: HandlerContext,
-  workspaceId: string
-): Promise<{ migrated: string[] }> {
-  const mount = ctx.host.require(workspaceId);
-  const canonicalPaths = new Map<string, Promise<string>>();
-  const canonicalize = (value: string): Promise<string> => {
-    const resolved = nodePath.resolve(value);
-    let pending = canonicalPaths.get(resolved);
-    if (!pending) {
-      pending = nodeFs.realpath(resolved).catch(() => resolved);
-      canonicalPaths.set(resolved, pending);
-    }
-    return pending;
-  };
-  const root = await canonicalize(mount.workspaceRoot);
-  const tasks = await loadTaskEnvelopes(mount.env.fs);
-  const boundSessionIds = new Set<string>();
-  for (const task of tasks) {
-    const sid = task.sessionId?.trim();
-    if (sid) boundSessionIds.add(sid);
-  }
-
-  const otherMountedIds = new Set(
-    ctx.host
-      .list()
-      .map((info) => info.workspaceId)
-      .filter((id) => id !== workspaceId)
-  );
-
-  const all = await ctx.runtime.registry.list();
-  const migrated: string[] = [];
-
-  for (const rec of all) {
-    if (rec.workspace === workspaceId) continue;
-    // Still owned by another live mount — do not rebind away from it.
-    if (rec.workspace && otherMountedIds.has(rec.workspace)) continue;
-
-    const boundByTask = boundSessionIds.has(rec.id);
-    const laneRoot = rec.workspaceLane?.workspace?.trim();
-    const laneMatches =
-      !!laneRoot &&
-      isSameWorkspaceRoot(await canonicalize(laneRoot), root);
-    const cwd = rec.runtimeWorkspace?.cwd?.trim();
-    const cwdMatches =
-      !rec.workspaceLane &&
-      !!cwd &&
-      isSameWorkspaceRoot(await canonicalize(cwd), root);
-
-    if (!boundByTask && !laneMatches && !cwdMatches) continue;
-
-    await ctx.runtime.registry.update(rec.id, { workspace: workspaceId });
-    migrated.push(rec.id);
-  }
-
-  return { migrated };
 }
 
 /**
@@ -1170,7 +1054,7 @@ async function workspaceAgentsWriteRpc(ctx: HandlerContext, p: Record<string, un
     throw new RpcError(-32602, "workspace.agents.write requires string content");
   }
   const content = p.content;
-  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString(p, "baseEtag");
 
   return ctx.mutations.run(workspaceId, async () => {
     const before = await loadWorkspaceAgents(mount.workspaceRoot);
@@ -1239,7 +1123,7 @@ async function docsList(ctx: HandlerContext, p: Record<string, unknown>) {
   const includeBody = p.includeBody === true;
   return {
     workspaceId,
-    concepts: tent.roots.map((root) => projectConcept(root, includeBody, true)),
+    nodes: tent.roots.map((root) => projectNode(root, includeBody, true)),
   };
 }
 
@@ -1247,10 +1131,10 @@ async function docsGet(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const tent = await loadTent(mount.env.fs);
-  const concept = resolveConcept(tent, p);
+  const node = resolveNode(tent, p);
   return {
     workspaceId,
-    concept: projectConcept(concept, true, false),
+    node: projectNode(node, true, false),
   };
 }
 
@@ -1258,17 +1142,16 @@ async function docsReadForEdit(ctx: HandlerContext, p: Record<string, unknown>) 
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const tent = await loadTent(mount.env.fs);
-  const concept = resolveConcept(tent, p);
-  const notePath = boxNotePath(concept.path);
+  const node = resolveNode(tent, p);
+  const notePath = nodeNotePath(node.path);
   const raw = await mount.env.fs.readFile(notePath);
   const { data, body } = parseFrontmatter(raw);
   return {
     workspaceId,
-    id: concept.id,
-    cx: concept.id,
-    path: concept.path,
-    name: concept.name,
-    type: concept.type,
+    nodeId: node.id,
+    path: node.path,
+    name: node.name,
+    type: node.type,
     body,
     raw,
     etag: contentEtag(raw),
@@ -1280,8 +1163,7 @@ async function docsReadForEdit(ctx: HandlerContext, p: Record<string, unknown>) 
 async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  // Accept legacy alias `etag` as baseEtag; existing Node body/frontmatter writes require it.
-  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString(p, "baseEtag");
   const rawInput = typeof p.raw === "string" ? p.raw : undefined;
   const body = typeof p.body === "string" ? p.body : undefined;
   const frontmatter =
@@ -1291,9 +1173,9 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
 
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept(tent, p);
-    assertDocsModeMutable(concept, "docs.write");
-    const notePath = boxNotePath(concept.path);
+    const node = resolveNode(tent, p);
+    assertDocsModeMutable(node, "docs.write");
+    const notePath = nodeNotePath(node.path);
     const diskRaw = await mount.env.fs.readFile(notePath);
     const currentEtag = contentEtag(diskRaw);
     // Forced optimistic concurrency for existing nodes (createNote / migrate / role-init are other paths).
@@ -1301,8 +1183,8 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
       throw new RpcError(-32008, "docs.write requires baseEtag for existing nodes", {
         code: "etag_required",
         currentEtag,
-        path: concept.path,
-        id: concept.id,
+        path: node.path,
+        nodeId: node.id,
       });
     }
     if (baseEtag !== currentEtag) {
@@ -1310,8 +1192,8 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
         code: "etag_conflict",
         currentEtag,
         baseEtag,
-        path: concept.path,
-        id: concept.id,
+        path: node.path,
+        nodeId: node.id,
       });
     }
 
@@ -1326,9 +1208,9 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
       ctx.host.markSelfWrite(workspaceId);
       await mount.env.fs.writeFile(notePath, rawInput);
       // Tags cannot change via docs.write (asserted above); keep sync as no-op safety.
-      await syncTagRegistryAfterBoxTagsChange(
+      await syncTagRegistryAfterNodeTagsChange(
         mount.env.fs,
-        concept.tags,
+        node.tags,
         tagsFromFrontmatterData(nextParsed.data)
       );
     } else {
@@ -1340,11 +1222,11 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
 
       ctx.host.markSelfWrite(workspaceId);
       if (frontmatter && Object.keys(frontmatter).length > 0) {
-        // patchBox for non-semantic frontmatter only (type/tags rejected above)
-        await patchBox(mount.env, concept.path, frontmatter, tent);
+        // patchNode for non-semantic frontmatter only (type/tags rejected above)
+        await patchNode(mount.env, node.path, frontmatter, tent);
       }
       if (body !== undefined) {
-        await patchBody(mount.env, concept.path, body, tent);
+        await patchBody(mount.env, node.path, body, tent);
       }
       if (body === undefined && (!frontmatter || Object.keys(frontmatter).length === 0)) {
         throw new RpcError(-32602, "docs.write requires raw, body, and/or frontmatter");
@@ -1353,17 +1235,16 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
 
     const afterRaw = await mount.env.fs.readFile(notePath);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id: concept.id, path: concept.path, reason: "docs.write" },
+      { nodeId: node.id, path: node.path, reason: "docs.write" },
       "self"
     );
     // Success: new etag only — clients already hold the written buffer; errors never include body.
     return {
       workspaceId,
-      id: concept.id,
-      cx: concept.id,
-      path: concept.path,
+      nodeId: node.id,
+      path: node.path,
       etag: contentEtag(afterRaw),
     };
   });
@@ -1390,15 +1271,15 @@ async function docsSetMode(ctx: HandlerContext, p: Record<string, unknown>) {
 
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept(tent, p);
+    const node = resolveNode(tent, p);
     ctx.host.markSelfWrite(workspaceId);
     try {
-      await setNodeMode(mount.env, concept.id, mode);
+      await setNodeMode(mount.env, node.id, mode);
     } catch (err) {
       const message = err instanceof Error ? err.message : "docs.setMode failed";
       if (/not found/i.test(message)) throw new RpcError(-32004, message);
       if (
-        /mode must be|Invalid boxes|archive root|already archived|Claimed ranges|restored to editable/i.test(
+        /mode must be|Invalid nodes|archive root|already archived|Claimed ranges|restored to editable/i.test(
           message
         )
       ) {
@@ -1407,22 +1288,21 @@ async function docsSetMode(ctx: HandlerContext, p: Record<string, unknown>) {
       throw new RpcError(-32000, message);
     }
     const after = await loadTent(mount.env.fs);
-    const updated = after.byId.get(concept.id);
-    if (!updated) throw new RpcError(-32004, `Concept not found after setMode: ${concept.id}`);
+    const updated = after.byId.get(node.id);
+    if (!updated) throw new RpcError(-32004, `Node not found after setMode: ${node.id}`);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id: updated.id, path: updated.path, reason: "docs.setMode", mode: updated.mode },
+      { nodeId: updated.id, path: updated.path, reason: "docs.setMode", mode: updated.mode },
       "self"
     );
     return {
       workspaceId,
-      id: updated.id,
-      cx: updated.id,
+      nodeId: updated.id,
       path: updated.path,
       mode: updated.mode,
       archived: updated.archived,
-      concept: projectConcept(updated, false, false),
+      node: projectNode(updated, false, false),
     };
   });
 }
@@ -1436,7 +1316,7 @@ async function docsSearch(ctx: HandlerContext, p: Record<string, unknown>) {
 
   const tent = await loadTent(mount.env.fs);
   const hits: Array<{
-    cx: string;
+    nodeId: string;
     path: string;
     name: string;
     title?: string;
@@ -1444,40 +1324,40 @@ async function docsSearch(ctx: HandlerContext, p: Record<string, unknown>) {
     match: "title" | "body" | "path";
   }> = [];
 
-  for (const box of tent.byId.values()) {
-    if (box.archived || box.invalid) continue;
-    const title = typeof box.fm.title === "string" ? box.fm.title : box.name;
-    if (box.name.toLowerCase().includes(q) || title.toLowerCase().includes(q)) {
+  for (const node of tent.byId.values()) {
+    if (node.archived || node.invalid) continue;
+    const title = typeof node.fm.title === "string" ? node.fm.title : node.name;
+    if (node.name.toLowerCase().includes(q) || title.toLowerCase().includes(q)) {
       hits.push({
-        cx: box.id,
-        path: box.path,
-        name: box.name,
+        nodeId: node.id,
+        path: node.path,
+        name: node.name,
         title,
         snippet: title,
         match: "title",
       });
       continue;
     }
-    if (box.path.toLowerCase().includes(q)) {
+    if (node.path.toLowerCase().includes(q)) {
       hits.push({
-        cx: box.id,
-        path: box.path,
-        name: box.name,
+        nodeId: node.id,
+        path: node.path,
+        name: node.name,
         title,
-        snippet: box.path,
+        snippet: node.path,
         match: "path",
       });
       continue;
     }
-    const body = box.body ?? "";
+    const body = node.body ?? "";
     const idx = body.toLowerCase().indexOf(q);
     if (idx >= 0) {
       const start = Math.max(0, idx - 40);
       const end = Math.min(body.length, idx + q.length + 40);
       hits.push({
-        cx: box.id,
-        path: box.path,
-        name: box.name,
+        nodeId: node.id,
+        path: node.path,
+        name: node.name,
         title,
         snippet: body.slice(start, end).replace(/\s+/g, " ").trim(),
         match: "body",
@@ -1491,19 +1371,19 @@ async function docsBacklinks(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const tent = await loadTent(mount.env.fs);
-  const concept = resolveConcept(tent, p);
-  const concepts = [...tent.byId.values()].map((b) => ({
+  const node = resolveNode(tent, p);
+  const nodes = [...tent.byId.values()].map((b) => ({
     id: b.id,
     path: b.path,
     name: b.name,
     body: b.body,
-    notePath: boxNotePath(b.path),
+    notePath: nodeNotePath(b.path),
   }));
-  const reverse = buildBacklinkIndex(concepts);
+  const reverse = buildBacklinkIndex(nodes);
   return {
     workspaceId,
-    cx: concept.id,
-    backlinks: reverse.get(concept.id) ?? [],
+    nodeId: node.id,
+    backlinks: reverse.get(node.id) ?? [],
   };
 }
 
@@ -1651,7 +1531,7 @@ async function registryTagCreate(ctx: HandlerContext, p: Record<string, unknown>
 
 /**
  * User-only global tag delete + cascade off all Nodes (MutationBus).
- * Emits registry.tags.updated once on success (no per-Node concept.changed).
+ * Emits registry.tags.updated once on success (no per-Node node.changed).
  * Clients must invalidate tag candidates and graph/node projections after cascade.
  */
 async function registryTagDelete(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -1684,48 +1564,48 @@ async function registryTagDelete(ctx: HandlerContext, p: Record<string, unknown>
 /**
  * User-only Node type mutation (MutationBus + baseEtag).
  * Primary segment must remain canonical; compound type must validate after cutover.
- * Emits exactly one concept.changed with reason docs.setType.
+ * Emits exactly one node.changed with reason docs.setType.
  */
 async function docsSetType(ctx: HandlerContext, p: Record<string, unknown>) {
   requireUserActor(p, "docs.setType");
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const type = requireString(p, "type");
-  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString(p, "baseEtag");
 
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept(tent, p);
-    assertDocsModeMutable(concept, "docs.setType");
-    const notePath = boxNotePath(concept.path);
-    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "docs.setType");
+    const node = resolveNode(tent, p);
+    assertDocsModeMutable(node, "docs.setType");
+    const notePath = nodeNotePath(node.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, node, baseEtag, "docs.setType");
 
-    if (!isValidConceptType(type, tent.typeRegistry)) {
+    if (!isValidNodeType(type, tent.typeRegistry)) {
       throw new RpcError(
         -32602,
-        `Invalid concept type: ${type}. Primary must be goal|prompt|output; secondary must be a registered modifier.`,
+        `Invalid node type: ${type}. Primary must be goal|prompt|output; secondary must be a registered modifier.`,
         { type }
       );
     }
 
     ctx.host.markSelfWrite(workspaceId);
     try {
-      await patchBox(mount.env, concept.path, { type }, tent);
+      await patchNode(mount.env, node.path, { type }, tent);
     } catch (err) {
       throw mapDocsSemanticError(err, "docs.setType");
     }
 
     const afterRaw = await mount.env.fs.readFile(notePath);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id: concept.id, path: concept.path, reason: "docs.setType", type },
+      { nodeId: node.id, path: node.path, reason: "docs.setType", type },
       "self"
     );
     return {
       workspaceId,
-      id: concept.id,
-      path: concept.path,
+      nodeId: node.id,
+      path: node.path,
       etag: contentEtag(afterRaw),
     };
   });
@@ -1733,7 +1613,7 @@ async function docsSetType(ctx: HandlerContext, p: Record<string, unknown>) {
 
 /**
  * User-only replace Node tag list (MutationBus + baseEtag).
- * Empty clears Node tags; does not prune registry. Emits concept.changed reason docs.tags.set.
+ * Empty clears Node tags; does not prune registry. Emits node.changed reason docs.tags.set.
  */
 async function docsTagsSet(ctx: HandlerContext, p: Record<string, unknown>) {
   requireUserActor(p, "docs.tags.set");
@@ -1756,33 +1636,33 @@ async function docsTagsSet(ctx: HandlerContext, p: Record<string, unknown>) {
   } catch (err) {
     throw mapDocsSemanticError(err, "docs.tags.set");
   }
-  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString(p, "baseEtag");
 
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept(tent, p);
-    assertDocsModeMutable(concept, "docs.tags.set");
-    const notePath = boxNotePath(concept.path);
-    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "docs.tags.set");
+    const node = resolveNode(tent, p);
+    assertDocsModeMutable(node, "docs.tags.set");
+    const notePath = nodeNotePath(node.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, node, baseEtag, "docs.tags.set");
 
     ctx.host.markSelfWrite(workspaceId);
     try {
-      await patchBox(mount.env, concept.path, { tags }, tent);
+      await patchNode(mount.env, node.path, { tags }, tent);
     } catch (err) {
       throw mapDocsSemanticError(err, "docs.tags.set");
     }
 
     const afterRaw = await mount.env.fs.readFile(notePath);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id: concept.id, path: concept.path, reason: "docs.tags.set" },
+      { nodeId: node.id, path: node.path, reason: "docs.tags.set" },
       "self"
     );
     return {
       workspaceId,
-      id: concept.id,
-      path: concept.path,
+      nodeId: node.id,
+      path: node.path,
       etag: contentEtag(afterRaw),
     };
   });
@@ -1790,7 +1670,7 @@ async function docsTagsSet(ctx: HandlerContext, p: Record<string, unknown>) {
 
 /**
  * User-only attach one tag (MutationBus + baseEtag; idempotent).
- * Emits concept.changed reason docs.tag.add.
+ * Emits node.changed reason docs.tag.add.
  */
 async function docsTagAdd(ctx: HandlerContext, p: Record<string, unknown>) {
   requireUserActor(p, "docs.tag.add");
@@ -1803,34 +1683,34 @@ async function docsTagAdd(ctx: HandlerContext, p: Record<string, unknown>) {
   } catch (err) {
     throw mapDocsSemanticError(err, "docs.tag.add");
   }
-  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString(p, "baseEtag");
 
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept(tent, p);
-    assertDocsModeMutable(concept, "docs.tag.add");
-    const notePath = boxNotePath(concept.path);
-    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "docs.tag.add");
+    const node = resolveNode(tent, p);
+    assertDocsModeMutable(node, "docs.tag.add");
+    const notePath = nodeNotePath(node.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, node, baseEtag, "docs.tag.add");
 
     ctx.host.markSelfWrite(workspaceId);
     try {
       // Core addTag holds withTentMutation; MutationBus serializes Service mutations only.
-      await addTag(mount.env.fs, concept.id, tag);
+      await addTag(mount.env.fs, node.id, tag);
     } catch (err) {
       throw mapDocsSemanticError(err, "docs.tag.add");
     }
 
     const afterRaw = await mount.env.fs.readFile(notePath);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id: concept.id, path: concept.path, reason: "docs.tag.add", tag },
+      { nodeId: node.id, path: node.path, reason: "docs.tag.add", tag },
       "self"
     );
     return {
       workspaceId,
-      id: concept.id,
-      path: concept.path,
+      nodeId: node.id,
+      path: node.path,
       etag: contentEtag(afterRaw),
     };
   });
@@ -1838,7 +1718,7 @@ async function docsTagAdd(ctx: HandlerContext, p: Record<string, unknown>) {
 
 /**
  * User-only detach one tag from Node (MutationBus + baseEtag).
- * Registry is not pruned. Emits concept.changed reason docs.tag.remove.
+ * Registry is not pruned. Emits node.changed reason docs.tag.remove.
  */
 async function docsTagRemove(ctx: HandlerContext, p: Record<string, unknown>) {
   requireUserActor(p, "docs.tag.remove");
@@ -1851,33 +1731,33 @@ async function docsTagRemove(ctx: HandlerContext, p: Record<string, unknown>) {
   } catch (err) {
     throw mapDocsSemanticError(err, "docs.tag.remove");
   }
-  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString(p, "baseEtag");
 
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept(tent, p);
-    assertDocsModeMutable(concept, "docs.tag.remove");
-    const notePath = boxNotePath(concept.path);
-    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "docs.tag.remove");
+    const node = resolveNode(tent, p);
+    assertDocsModeMutable(node, "docs.tag.remove");
+    const notePath = nodeNotePath(node.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, node, baseEtag, "docs.tag.remove");
 
     ctx.host.markSelfWrite(workspaceId);
     try {
-      await removeTag(mount.env.fs, concept.id, tag);
+      await removeTag(mount.env.fs, node.id, tag);
     } catch (err) {
       throw mapDocsSemanticError(err, "docs.tag.remove");
     }
 
     const afterRaw = await mount.env.fs.readFile(notePath);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id: concept.id, path: concept.path, reason: "docs.tag.remove", tag },
+      { nodeId: node.id, path: node.path, reason: "docs.tag.remove", tag },
       "self"
     );
     return {
       workspaceId,
-      id: concept.id,
-      path: concept.path,
+      nodeId: node.id,
+      path: node.path,
       etag: contentEtag(afterRaw),
     };
   });
@@ -1900,13 +1780,13 @@ function projectRelationWire(record: RelationRecord | RelationOutgoingView): Rel
 function projectIncomingWire(view: RelationIncomingView) {
   return {
     ...projectRelationWire(view),
-    sourceId: view.sourceId,
+    sourceNodeId: view.sourceId,
     sourcePath: view.sourcePath,
   };
 }
 
 /**
- * Read-only relation list by stable Node id (or path/boxId resolver).
+ * Read-only relation list by stable Node id (or path/nodeId resolver).
  * Returns outgoing records owned by the Node plus derived incoming views.
  * Does not merge Markdown/wiki body links.
  */
@@ -1917,9 +1797,9 @@ async function relationList(
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const tent = await loadTent(mount.env.fs);
-  const concept = resolveConcept(tent, p);
+  const node = resolveNode(tent, p);
   try {
-    const listed = listRelationsForNode(tent, concept.id);
+    const listed = listRelationsForNode(tent, node.id);
     return {
       workspaceId,
       nodeId: listed.nodeId,
@@ -1934,7 +1814,7 @@ async function relationList(
 
 /**
  * User-only create semantic relation on source Node (MutationBus + baseEtag).
- * Emits exactly one concept.changed reason relation.create for the source.
+ * Emits exactly one node.changed reason relation.create for the source.
  */
 async function relationCreate(
   ctx: HandlerContext,
@@ -1949,21 +1829,21 @@ async function relationCreate(
   if (!isRecord(p.target)) {
     throw new RpcError(-32602, "relation.create requires target: { nodeId } | { unresolved }");
   }
-  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString(p, "baseEtag");
 
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept(tent, p);
-    assertDocsModeMutable(concept, "relation.create");
-    const notePath = boxNotePath(concept.path);
-    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "relation.create");
+    const node = resolveNode(tent, p);
+    assertDocsModeMutable(node, "relation.create");
+    const notePath = nodeNotePath(node.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, node, baseEtag, "relation.create");
 
     ctx.host.markSelfWrite(workspaceId);
     let record: RelationRecord;
     try {
       record = await createRelation(
         mount.env.fs,
-        concept.id,
+        node.id,
         {
           kind,
           direction: direction as "directed" | "bidirectional",
@@ -1979,11 +1859,11 @@ async function relationCreate(
 
     const afterRaw = await mount.env.fs.readFile(notePath);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
       {
-        id: concept.id,
-        path: concept.path,
+        nodeId: node.id,
+        path: node.path,
         reason: "relation.create",
         relationId: record.id,
       },
@@ -1991,8 +1871,8 @@ async function relationCreate(
     );
     return {
       workspaceId,
-      id: concept.id,
-      path: concept.path,
+      nodeId: node.id,
+      path: node.path,
       etag: contentEtag(afterRaw),
       relation: projectRelationWire(record),
     };
@@ -2001,7 +1881,7 @@ async function relationCreate(
 
 /**
  * User-only update semantic relation on source Node (MutationBus + baseEtag).
- * Cannot change relation id or source. Emits concept.changed reason relation.update.
+ * Cannot change relation id or source. Emits node.changed reason relation.update.
  */
 async function relationUpdate(
   ctx: HandlerContext,
@@ -2011,7 +1891,7 @@ async function relationUpdate(
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const relationId = requireString(p, "relationId");
-  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString(p, "baseEtag");
 
   const patch: {
     kind?: string;
@@ -2046,26 +1926,26 @@ async function relationUpdate(
 
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept(tent, p);
-    assertDocsModeMutable(concept, "relation.update");
-    const notePath = boxNotePath(concept.path);
-    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "relation.update");
+    const node = resolveNode(tent, p);
+    assertDocsModeMutable(node, "relation.update");
+    const notePath = nodeNotePath(node.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, node, baseEtag, "relation.update");
 
     ctx.host.markSelfWrite(workspaceId);
     let record: RelationRecord;
     try {
-      record = await updateRelation(mount.env.fs, concept.id, relationId, patch, tent);
+      record = await updateRelation(mount.env.fs, node.id, relationId, patch, tent);
     } catch (err) {
       throw mapRelationError(err, "relation.update");
     }
 
     const afterRaw = await mount.env.fs.readFile(notePath);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
       {
-        id: concept.id,
-        path: concept.path,
+        nodeId: node.id,
+        path: node.path,
         reason: "relation.update",
         relationId: record.id,
       },
@@ -2073,8 +1953,8 @@ async function relationUpdate(
     );
     return {
       workspaceId,
-      id: concept.id,
-      path: concept.path,
+      nodeId: node.id,
+      path: node.path,
       etag: contentEtag(afterRaw),
       relation: projectRelationWire(record),
     };
@@ -2083,7 +1963,7 @@ async function relationUpdate(
 
 /**
  * User-only delete semantic relation on source Node (MutationBus + baseEtag).
- * Missing relation id fails loudly. Emits concept.changed reason relation.delete.
+ * Missing relation id fails loudly. Emits node.changed reason relation.delete.
  */
 async function relationDelete(
   ctx: HandlerContext,
@@ -2093,29 +1973,29 @@ async function relationDelete(
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const relationId = requireString(p, "relationId");
-  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const baseEtag = optionalString(p, "baseEtag");
 
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept(tent, p);
-    assertDocsModeMutable(concept, "relation.delete");
-    const notePath = boxNotePath(concept.path);
-    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "relation.delete");
+    const node = resolveNode(tent, p);
+    assertDocsModeMutable(node, "relation.delete");
+    const notePath = nodeNotePath(node.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, node, baseEtag, "relation.delete");
 
     ctx.host.markSelfWrite(workspaceId);
     try {
-      await deleteRelation(mount.env.fs, concept.id, relationId, tent);
+      await deleteRelation(mount.env.fs, node.id, relationId, tent);
     } catch (err) {
       throw mapRelationError(err, "relation.delete");
     }
 
     const afterRaw = await mount.env.fs.readFile(notePath);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
       {
-        id: concept.id,
-        path: concept.path,
+        nodeId: node.id,
+        path: node.path,
         reason: "relation.delete",
         relationId,
       },
@@ -2123,8 +2003,8 @@ async function relationDelete(
     );
     return {
       workspaceId,
-      id: concept.id,
-      path: concept.path,
+      nodeId: node.id,
+      path: node.path,
       etag: contentEtag(afterRaw),
       deleted: relationId,
     };
@@ -2151,7 +2031,7 @@ function mapRelationError(err: unknown, surface: string): RpcError {
     return new RpcError(-32000, err.message, { code: err.code });
   }
   const message = err instanceof Error ? err.message : `${surface} failed`;
-  if (/not found|Box not found|Concept not found|Relation not found/i.test(message)) {
+  if (/not found|Node not found|Node not found|Relation not found/i.test(message)) {
     return new RpcError(-32004, message);
   }
   if (/archived|invalid/i.test(message)) {
@@ -2201,7 +2081,7 @@ function emitRegistryTagsUpdated(
 async function assertDocsSemanticBaseEtag(
   fs: import("../core/adapter.js").FsAdapter,
   notePath: string,
-  concept: import("../core/types.js").Box,
+  node: import("../core/types.js").Node,
   baseEtag: string | undefined,
   surface: string
 ): Promise<void> {
@@ -2211,8 +2091,8 @@ async function assertDocsSemanticBaseEtag(
     throw new RpcError(-32008, `${surface} requires baseEtag`, {
       code: "etag_required",
       currentEtag,
-      path: concept.path,
-      id: concept.id,
+      path: node.path,
+      nodeId: node.id,
     });
   }
   if (baseEtag !== currentEtag) {
@@ -2220,8 +2100,8 @@ async function assertDocsSemanticBaseEtag(
       code: "etag_conflict",
       currentEtag,
       baseEtag,
-      path: concept.path,
-      id: concept.id,
+      path: node.path,
+      nodeId: node.id,
     });
   }
 }
@@ -2254,11 +2134,11 @@ function mapTagRegistryError(err: unknown, surface: string): RpcError {
 function mapDocsSemanticError(err: unknown, surface: string): RpcError {
   if (err instanceof RpcError) return err;
   const message = err instanceof Error ? err.message : `${surface} failed`;
-  if (/not found|Box not found/i.test(message)) {
+  if (/not found|Node not found/i.test(message)) {
     return new RpcError(-32004, message);
   }
   if (
-    /Unknown type|Primary type|Invalid or archived|cannot be tagged|cannot be empty|path separators|newlines|Reserved or retired|Archived boxes|Invalid subtrees/i.test(
+    /Unknown type|Primary type|Invalid or archived|cannot be tagged|cannot be empty|path separators|newlines|Reserved or retired|Archived nodes|Invalid subtrees/i.test(
       message
     )
   ) {
@@ -2957,18 +2837,18 @@ async function docsCreateNote(ctx: HandlerContext, p: Record<string, unknown>) {
 
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
-    const id = await createBox(mount.env, { parentPath, name, type });
+    const nodeId = await createNode(mount.env, { parentPath, name, type });
     const notePath = parentPath ? `${parentPath}/${name}` : name;
     if (body !== undefined) {
       await patchBody(mount.env, notePath, body.endsWith("\n") ? body : body + "\n");
     }
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id, path: notePath, reason: "docs.createNote" },
+      { nodeId, path: notePath, reason: "docs.createNote" },
       "self"
     );
-    return { workspaceId, id, path: notePath, type };
+    return { workspaceId, nodeId, path: notePath, type };
   });
 }
 
@@ -3013,21 +2893,20 @@ async function docsImportAttachment(ctx: HandlerContext, p: Record<string, unkno
 
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept(tent, p);
-    assertDocsModeMutable(concept, "docs.importAttachment");
+    const node = resolveNode(tent, p);
+    assertDocsModeMutable(node, "docs.importAttachment");
     ctx.host.markSelfWrite(workspaceId);
     try {
       const result = await storeAttachmentBytes(
         mount.env.fs,
-        concept.id,
+        node.id,
         fileName,
         bytes,
-        boxNotePath(concept.path)
+        nodeNotePath(node.path)
       );
       return {
         workspaceId,
-        id: concept.id,
-        cx: concept.id,
+        nodeId: node.id,
         relativePath: result.relativePath,
         markdown: result.markdown,
         artifactRef: result.artifactRef,
@@ -3045,57 +2924,50 @@ async function docsImportAttachment(ctx: HandlerContext, p: Record<string, unkno
 async function docsFork(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const boxId = optionalString(p, "id") ?? optionalString(p, "boxId") ?? requireString(p, "path");
+  const nodeId = requireString(p, "nodeId");
 
   return ctx.mutations.run(workspaceId, async () => {
-    let id = boxId;
-    if (!id.startsWith("cx-") && !id.startsWith("bx-")) {
-      const tent = await loadTent(mount.env.fs);
-      const box = tent.byPath.get(boxId);
-      if (!box) throw new RpcError(-32004, `Concept not found: ${boxId}`);
-      id = box.id;
-    }
+    if (!isNodeId(nodeId)) throw new RpcError(-32602, `Invalid Node id: ${nodeId}`);
+    const tent = await loadTent(mount.env.fs);
+    requireCanonicalNode(tent, nodeId);
     ctx.host.markSelfWrite(workspaceId);
-    const forkRootId = await forkNode(mount.env, id);
+    const forkRootId = await forkNode(mount.env, nodeId);
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id: forkRootId, reason: "docs.fork", forkOf: id },
+      { nodeId: forkRootId, reason: "docs.fork", forkOf: nodeId },
       "self"
     );
-    return { workspaceId, id: forkRootId, forkOf: id };
+    return { workspaceId, nodeId: forkRootId, forkOf: nodeId };
   });
 }
 
 /**
- * User-only atomic concept rename.
+ * User-only atomic node rename.
  * MutationBus; keeps cx- immutable; moves folder + identity note; rewrites path links.
- * Success emits exactly one concept.changed (reason docs.rename) with oldPath/path.
+ * Success emits exactly one node.changed (reason docs.rename) with oldPath/path.
  */
 async function docsRename(ctx: HandlerContext, p: Record<string, unknown>) {
   requireUserActor(p, "docs.rename");
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const newName = requireString(p, "newName");
-  if ("id" in p && p.id !== undefined && p.id !== null && typeof p.id !== "string") {
-    throw new RpcError(-32602, "docs.rename id must be a string when set");
-  }
   // Client cannot supply a replacement identity — only a new display/path stem.
   if ("newId" in p) {
-    throw new RpcError(-32602, "docs.rename cannot change concept id; cx- is immutable");
+    throw new RpcError(-32602, "docs.rename cannot change node id; cx- is immutable");
   }
 
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept(tent, p);
+    const node = resolveNode(tent, p);
     ctx.host.markSelfWrite(workspaceId);
     try {
-      const result = await renameNode(mount.env, concept.id, newName);
+      const result = await renameNode(mount.env, node.id, newName);
       ctx.events.emit(
-        "concept.changed",
+        "node.changed",
         workspaceId,
         {
-          id: result.id,
+          nodeId: result.id,
           path: result.path,
           oldPath: result.oldPath,
           name: result.name,
@@ -3106,8 +2978,7 @@ async function docsRename(ctx: HandlerContext, p: Record<string, unknown>) {
       );
       return {
         workspaceId,
-        id: result.id,
-        cx: result.id,
+        nodeId: result.id,
         path: result.path,
         oldPath: result.oldPath,
         name: result.name,
@@ -3127,7 +2998,7 @@ function mapDocsRenameError(err: unknown): RpcError {
     return new RpcError(-32004, message);
   }
   if (
-    /already exists|cannot be empty|path separators|control characters|newlines|longer than|Invalid or archived|Claimed ranges|Cannot rename|System directories|system pipelines|sibling concept|Identity note missing|id drift|immutable/i.test(
+    /already exists|cannot be empty|path separators|control characters|newlines|longer than|Invalid or archived|Claimed ranges|Cannot rename|System directories|system pipelines|sibling node|Identity note missing|id drift|immutable/i.test(
       message
     )
   ) {
@@ -3138,17 +3009,17 @@ function mapDocsRenameError(err: unknown): RpcError {
 
 /**
  * User-only structural move / reparent.
- * MutationBus; resolve by cx-; require expectedPath; placeBox occupation; rename-style link rewrite on parent change.
- * Success emits exactly one concept.changed (reason docs.move) with oldPath/path/pathMap.
+ * MutationBus; resolve by cx-; require expectedPath; placeNode occupation; rename-style link rewrite on parent change.
+ * Success emits exactly one node.changed (reason docs.move) with oldPath/path/pathMap.
  */
 async function docsMove(ctx: HandlerContext, p: Record<string, unknown>) {
   requireUserActor(p, "docs.move");
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const id = requireString(p, "id");
+  const nodeId = requireString(p, "nodeId");
   const expectedPath = requireString(p, "expectedPath");
   if ("newId" in p) {
-    throw new RpcError(-32602, "docs.move cannot change concept id; cx- is immutable");
+    throw new RpcError(-32602, "docs.move cannot change node id; cx- is immutable");
   }
   // newParentId: null/undefined/"" = tent root; must be string or null when present.
   if (
@@ -3167,19 +3038,19 @@ async function docsMove(ctx: HandlerContext, p: Record<string, unknown>) {
 
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = tent.byId.get(id);
-    if (!concept) {
-      throw new RpcError(-32004, `Concept not found: ${id}`);
+    const node = tent.byId.get(nodeId);
+    if (!node) {
+      throw new RpcError(-32004, `Node not found: ${nodeId}`);
     }
     // Tree identity concurrency: path must match client's expectedPath (not body etag).
     const normalizedExpected = expectedPath.replace(/\\/g, "/").replace(/^\.\//, "");
-    const currentPath = concept.path;
+    const currentPath = node.path;
     if (currentPath !== normalizedExpected) {
       throw new RpcError(-32009, "path stale", {
         code: "path_stale",
         currentPath,
         expectedPath: normalizedExpected,
-        id: concept.id,
+        nodeId: node.id,
       });
     }
     // Destination parent must resolve by id when non-null (stable cx-, not path).
@@ -3191,12 +3062,12 @@ async function docsMove(ctx: HandlerContext, p: Record<string, unknown>) {
     }
     ctx.host.markSelfWrite(workspaceId);
     try {
-      const result = await moveNode(mount.env, concept.id, newParentId, position);
+      const result = await moveNode(mount.env, node.id, newParentId, position);
       ctx.events.emit(
-        "concept.changed",
+        "node.changed",
         workspaceId,
         {
-          id: result.id,
+          nodeId: result.id,
           path: result.path,
           oldPath: result.oldPath,
           reason: "docs.move",
@@ -3206,8 +3077,7 @@ async function docsMove(ctx: HandlerContext, p: Record<string, unknown>) {
       );
       return {
         workspaceId,
-        id: result.id,
-        cx: result.id,
+        nodeId: result.id,
         path: result.path,
         oldPath: result.oldPath,
         pathMap: result.pathMap,
@@ -3245,7 +3115,7 @@ function mapDocsMoveError(err: unknown): RpcError {
     return new RpcError(-32004, message);
   }
   if (
-    /already exists|Invalid or archived|Cannot move|active task|System directories|system pipelines|sibling concept|id drift|immutable|own subtree|relative to itself|destination parent|Concept id is required/i.test(
+    /already exists|Invalid or archived|Cannot move|active task|System directories|system pipelines|sibling node|id drift|immutable|own subtree|relative to itself|destination parent|Node id is required/i.test(
       message
     )
   ) {
@@ -3594,7 +3464,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     }
   }
 
-  const taskAfter = await loadTaskEnvelope(mount.env.fs, dispatched.taskPath).catch(() => null);
+  const taskAfter = await loadTaskEnvelope(mount.env.fs, dispatched.taskPath);
   return {
     workspaceId,
     taskPath: dispatched.taskPath,
@@ -3603,27 +3473,14 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     relayPrompt: dispatched.relayPrompt,
     assigneeKind: dispatched.assigneeKind,
     assignee: dispatched.assignee,
-    asSub: taskAfter ? taskAsSub(taskAfter) : asSub,
-    parentActor: taskAfter?.parentActor ?? resolvedActors.parentActor,
-    reviewer: taskAfter?.reviewer ?? resolvedActors.reviewer,
-    // Prefer durable envelope state so success/failure projections stay honest.
-    state: taskAfter?.state ?? (startSession ? "running" : "queued"),
+    asSub: taskAsSub(taskAfter),
+    parentActor: taskAfter.parentActor,
+    reviewer: taskAfter.reviewer,
+    state: taskAfter.state,
     session,
     // Prefer envelope projection (Role baseCommit only after claim; profile-asSub may
     // still carry dispatch-time lane). Fall back to in-memory lane only when present.
-    workspaceLane: taskAfter
-      ? projectTask(taskAfter).workspaceLane
-      : workspaceLane
-        ? {
-            workspace: workspaceLane.workspace,
-            worktree: workspaceLane.worktree,
-            branch: workspaceLane.branch,
-            targetBranch: workspaceLane.targetBranch,
-            ...(workspaceLane.baseCommit
-              ? { baseCommit: workspaceLane.baseCommit }
-              : {}),
-          }
-        : undefined,
+    workspaceLane: projectTask(taskAfter).workspaceLane,
   };
 }
 
@@ -3749,7 +3606,7 @@ function parseOptionalTaskActor(
 /**
  * Resolve authoritative Node selection for task.dispatch.
  * Accept only transient `nodeIds` (ordered, deduped). The old
- * boxId/id/claimId dispatch grammar is retired rather than silently translated.
+ * nodeId/id/claimId dispatch grammar is retired rather than silently translated.
  * Fail loud before MutationBus Task/manifest writes for malformed input.
  * Node existence/archive gates run inside Core under the same workspace lock.
  */
@@ -3758,7 +3615,7 @@ function resolveTaskNodeSelection(
   tentName: string,
   method: "task.dispatch" | "task.claimDirect"
 ): { nodeIds: string[]; primaryId: string } {
-  for (const retired of ["boxId", "id", "claimId"] as const) {
+  for (const retired of ["nodeId", "id", "claimId"] as const) {
     if (p[retired] !== undefined && p[retired] !== null) {
       throw new RpcError(
         -32602,
@@ -3915,13 +3772,13 @@ async function taskClaimDirectRpc(ctx: HandlerContext, p: Record<string, unknown
         ...(claimWrite ? { claimWrite } : {}),
       });
       emitTaskState(ctx, workspaceId, task, "task.claimDirect");
-      const nodeIds = task.contextCard != null ? taskReferencedNodeIds(task) : [];
+      const nodeIds = taskReferencedNodeIds(task);
       for (const nodeId of nodeIds) {
         if (nodeId === "root") continue;
         ctx.events.emit(
-          "concept.changed",
+          "node.changed",
           workspaceId,
-          { id: nodeId, reason: "task.claim-projection" },
+          { nodeId, reason: "task.claim-projection" },
           "self"
         );
       }
@@ -4136,7 +3993,7 @@ async function taskClaimRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       // leaves the Task queued (no intermediate running without base).
       const pre = await loadTaskEnvelope(mount.env.fs, taskPath);
       let claimWrite: TaskEnvelopePatch | undefined;
-      if (!(pre.state === "running" && pre.status === "taken")) {
+      if (pre.state !== "running") {
         // First claim only: prepare lane/base (no disk write) then single-patch claim.
         claimWrite = await prepareRoleClaimWrite(ctx, workspaceId, pre);
         if (beforeTaskClaimCoreForTests) {
@@ -4149,13 +4006,13 @@ async function taskClaimRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       });
       emitTaskState(ctx, workspaceId, task, "task.claim");
       const nodeIds =
-        task.contextCard != null ? taskReferencedNodeIds(task) : [];
+        taskReferencedNodeIds(task);
       for (const nodeId of nodeIds) {
         if (nodeId === "root") continue;
         ctx.events.emit(
-          "concept.changed",
+          "node.changed",
           workspaceId,
-          { id: nodeId, reason: "task.claim-projection" },
+          { nodeId, reason: "task.claim-projection" },
           "self"
         );
       }
@@ -5862,22 +5719,22 @@ async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     "self"
   );
   const acceptNodeIds =
-    result.task.contextCard != null ? taskReferencedNodeIds(result.task) : [];
+    taskReferencedNodeIds(result.task);
   for (const nodeId of acceptNodeIds) {
     if (nodeId === "root") continue;
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id: nodeId, reason: "task.accept-projection" },
+      { nodeId, reason: "task.accept-projection" },
       "self"
     );
   }
   // Output provenance bind invalidation: only Outputs that newly wrote deliveryId.
   for (const outputId of result.changedOutputIds) {
     ctx.events.emit(
-      "concept.changed",
+      "node.changed",
       workspaceId,
-      { id: outputId, reason: "output.provenance-bind" },
+      { nodeId: outputId, reason: "output.provenance-bind" },
       "self"
     );
   }
@@ -5904,14 +5761,10 @@ async function outputProvenanceRpc(
 ): Promise<OutputProvenance> {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const id =
-    optionalString(p, "id") ?? optionalString(p, "outputId") ?? optionalString(p, "boxId");
-  const path = optionalString(p, "path");
-  if (!id && !path) {
-    throw new RpcError(-32602, "output.provenance requires id, outputId, or path");
-  }
+  const nodeId = requireString(p, "nodeId");
+  if (!isNodeId(nodeId)) throw new RpcError(-32602, `Invalid Node id: ${nodeId}`);
   try {
-    const projected = await resolveOutputProvenance(mount.env.fs, { id, path, outputId: id });
+    const projected = await resolveOutputProvenance(mount.env.fs, { nodeId });
     return projectOutputProvenanceWire(workspaceId, projected);
   } catch (err) {
     if (err instanceof OutputProvenanceError) throw outputProvenanceErrorToRpc(err);
@@ -7230,7 +7083,7 @@ async function executeTaskReplaceSession(
   const priorSessionId = task.sessionId!.trim();
   const preserved = {
     taskId: task.id,
-    nodeIds: task.contextCard != null ? [...taskReferencedNodeIds(task)] : [],
+    nodeIds: [...taskReferencedNodeIds(task)],
     worktree: task.worktree,
     branch: task.branch,
     deliveryPolicy: task.deliveryPolicy,
@@ -7406,8 +7259,7 @@ async function executeTaskReplaceSession(
     }
     clearManagedAutoDeliverDedup(handle.sessionId, taskPath);
 
-    const nodeIds =
-      bound.contextCard != null ? taskReferencedNodeIds(bound) : [];
+    const nodeIds = taskReferencedNodeIds(bound);
     if (
       bound.id !== preserved.taskId ||
       bound.role !== preserved.role ||
@@ -7516,9 +7368,7 @@ async function buildFreshReplaceSessionBootstrap(
     `Task envelope: ${task.path}`,
     ...(task.id ? [`Task id: ${task.id}`] : []),
     ...(task.manifest ? [`Manifest: ${task.manifest}`] : []),
-    ...(task.contextCard != null && taskReferencedNodeIds(task).length
-      ? [`Node refs: ${taskReferencedNodeIds(task).join(", ")}`]
-      : []),
+    `Node refs: ${taskReferencedNodeIds(task).join(", ")}`,
     "Pending TaskInputs and delivery policy are preserved on this Task. Final report still goes through Delivery only.",
   ].join("\n");
   return `${base}\n\n${tail}\n`;
@@ -7546,9 +7396,18 @@ async function deliveryList(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskId = optionalString(p, "taskId");
-  const boxId = optionalString(p, "boxId");
+  const nodeId = optionalString(p, "nodeId");
   const role = optionalString(p, "role");
-  let deliveries = await loadDeliveries(mount.env.fs, { taskId, boxId });
+  let deliveries = await loadDeliveries(mount.env.fs, { taskId });
+  if (nodeId) {
+    const tent = await loadTent(mount.env.fs);
+    requireCanonicalNode(tent, nodeId);
+    const tasks = await loadTaskEnvelopes(mount.env.fs);
+    const taskNodeIds = new Map(
+      tasks.map((task) => [task.id || task.path, new Set(taskReferencedNodeIds(task))])
+    );
+    deliveries = deliveries.filter((delivery) => taskNodeIds.get(delivery.taskId)?.has(nodeId));
+  }
   if (role) deliveries = deliveries.filter((d) => d.role === role);
   return { workspaceId, deliveries: deliveries.map(projectDelivery) };
 }
@@ -7564,65 +7423,8 @@ async function deliveryGet(ctx: HandlerContext, p: Record<string, unknown>) {
 }
 
 /**
- * @deprecated Prefer node.collaboration (V0.2). Migration-only.
- * Stable box collaboration projection (legacy task-api §2.3).
- * Active task is authoritative (doing + assignee + activeTaskId).
- * With no active task: accepted Task/Delivery history may project done;
- * Node FM owner/status is never consulted.
- */
-async function boxProjectionRpc(ctx: HandlerContext, p: Record<string, unknown>): Promise<BoxProjection> {
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const tent = await loadTent(mount.env.fs);
-  // Same id/path/boxId resolver conventions as docs.get (missing/duplicate → -32004).
-  const concept = resolveConcept(tent, p);
-  const tasks = await loadTaskEnvelopes(mount.env.fs);
-  return projectBoxCollaboration(workspaceId, concept, tasks);
-}
-
-/**
- * @deprecated Prefer node.collaborations (V0.2). Migration-only.
- * Batch box collaboration projection — same item semantics as box.projection.
- * Input `ids` order is preserved in `projections` (stable for UI working-set).
- * Loads tent + task envelopes once to avoid N+1.
- */
-async function boxProjectionsRpc(
-  ctx: HandlerContext,
-  p: Record<string, unknown>
-): Promise<BoxProjectionsResult> {
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const idsRaw = p.ids;
-  if (!Array.isArray(idsRaw)) {
-    throw new RpcError(-32602, "box.projections requires ids: string[]");
-  }
-  const ids: string[] = [];
-  for (let i = 0; i < idsRaw.length; i++) {
-    const id = idsRaw[i];
-    if (typeof id !== "string" || !id.trim()) {
-      throw new RpcError(-32602, `box.projections ids[${i}] must be a non-empty string`);
-    }
-    ids.push(id);
-  }
-
-  const tent = await loadTent(mount.env.fs);
-  const tasks = await loadTaskEnvelopes(mount.env.fs);
-  const projections: BoxProjection[] = [];
-  for (const id of ids) {
-    const concept = tent.byId.get(id);
-    if (!concept) {
-      throw new RpcError(-32004, `Concept not found: ${id}`);
-    }
-    projections.push(projectBoxCollaboration(workspaceId, concept, tasks));
-  }
-  return { workspaceId, projections };
-}
-
-/**
- * V0.2 Node-keyed collaboration projection (task-api §2.3 / cx-tsw53f).
- * Multi-Task: all directly-referencing active Tasks; Session/Delivery via explicit ids.
- * No universal todo/doing/done; idle → activeTasks: [] / activeTaskCount: 0.
- * No singular task/session/delivery wire. Deterministic order: createdAt/id/path.
+ * Node-keyed collaboration projection. Exact-Node occupation is singular; a
+ * multi-Node Task appears as the same active Task on every referenced Node.
  */
 async function nodeCollaborationRpc(
   ctx: HandlerContext,
@@ -7631,24 +7433,25 @@ async function nodeCollaborationRpc(
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const tent = await loadTent(mount.env.fs);
-  const concept = resolveConcept(tent, p);
-  if (concept.invalid) {
+  const nodeId = requireString(p, "nodeId");
+  const node = requireCanonicalNode(tent, nodeId);
+  if (node.invalid) {
     throw new RpcError(
       -32004,
-      `Concept is invalid and has no collaboration projection: ${concept.path}`,
-      { nodeId: concept.id, path: concept.path, detail: concept.invalidReason }
+      `Node is invalid and has no collaboration projection: ${node.path}`,
+      { nodeId: node.id, path: node.path, detail: node.invalidReason }
     );
   }
   const tasks = await loadTaskEnvelopes(mount.env.fs);
   const deliveries = await loadDeliveries(mount.env.fs);
-  const selected = listDirectActiveTasksForNode(concept.id, tasks);
+  const selected = listDirectActiveTasksForNode(node.id, tasks);
   const sessionsById = await loadSessionSummariesForCollaboration(
     ctx,
     collectExplicitSessionIds(selected)
   );
-  return projectNodeCollaborationMulti(
+  return projectNodeCollaboration(
     workspaceId,
-    concept.id,
+    node.id,
     selected,
     deliveries,
     sessionsById
@@ -7657,7 +7460,7 @@ async function nodeCollaborationRpc(
 
 /**
  * V0.2 batch Node collaboration projection — same item semantics as node.collaboration.
- * Input `ids` order is preserved in `items`. Empty ids → empty items.
+ * Input `nodeIds` order is preserved in `items`. Empty nodeIds → empty items.
  * Loads tent + tasks + deliveries once; probes only unique explicit sessionIds (no N+1 by node).
  */
 async function nodeCollaborationsRpc(
@@ -7666,20 +7469,20 @@ async function nodeCollaborationsRpc(
 ): Promise<NodeCollaborationsResult> {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const idsRaw = p.ids;
+  const idsRaw = p.nodeIds;
   if (!Array.isArray(idsRaw)) {
-    throw new RpcError(-32602, "node.collaborations requires ids: string[]");
+    throw new RpcError(-32602, "node.collaborations requires nodeIds: string[]");
   }
-  const ids: string[] = [];
+  const nodeIds: string[] = [];
   for (let i = 0; i < idsRaw.length; i++) {
     const id = idsRaw[i];
     if (typeof id !== "string" || !id.trim()) {
-      throw new RpcError(-32602, `node.collaborations ids[${i}] must be a non-empty string`);
+      throw new RpcError(-32602, `node.collaborations nodeIds[${i}] must be a non-empty string`);
     }
-    ids.push(id.trim());
+    nodeIds.push(id.trim());
   }
 
-  if (ids.length === 0) {
+  if (nodeIds.length === 0) {
     return { workspaceId, items: [] };
   }
 
@@ -7688,20 +7491,17 @@ async function nodeCollaborationsRpc(
   const deliveries = await loadDeliveries(mount.env.fs);
 
   const selectedByNodeId = new Map<string, TaskEnvelope[]>();
-  for (const id of ids) {
-    if (selectedByNodeId.has(id)) continue; // duplicate ids share one resolution
-    const concept = tent.byId.get(id);
-    if (!concept) {
-      throw new RpcError(-32004, `Concept not found: ${id}`);
-    }
-    if (concept.invalid) {
+  for (const nodeId of nodeIds) {
+    if (selectedByNodeId.has(nodeId)) continue; // duplicate Node ids share one resolution
+    const node = requireCanonicalNode(tent, nodeId);
+    if (node.invalid) {
       throw new RpcError(
         -32004,
-        `Concept is invalid and has no collaboration projection: ${concept.path}`,
-        { nodeId: concept.id, path: concept.path, detail: concept.invalidReason }
+        `Node is invalid and has no collaboration projection: ${node.path}`,
+        { nodeId: node.id, path: node.path, detail: node.invalidReason }
       );
     }
-    selectedByNodeId.set(id, listDirectActiveTasksForNode(id, tasks));
+    selectedByNodeId.set(nodeId, listDirectActiveTasksForNode(nodeId, tasks));
   }
 
   const allSelected = [...selectedByNodeId.values()].flat();
@@ -7711,12 +7511,12 @@ async function nodeCollaborationsRpc(
   );
 
   const items: NodeCollaboration[] = [];
-  for (const id of ids) {
+  for (const nodeId of nodeIds) {
     items.push(
-      projectNodeCollaborationMulti(
+      projectNodeCollaboration(
         workspaceId,
-        id,
-        selectedByNodeId.get(id) ?? [],
+        nodeId,
+        selectedByNodeId.get(nodeId) ?? [],
         deliveries,
         sessionsById
       )
@@ -7765,19 +7565,23 @@ function collectExplicitSessionIds(
 }
 
 /**
- * Build multi-Task V0.2 Node collaboration item.
- * Session/Delivery only when Task carries explicit sessionId / activeDeliveryId that resolve.
- * No singular task/session/delivery fields.
- * activeTaskCount is projection-only: always entries.length (unpaginated; no totalCount).
+ * Build one exact-Node collaboration item. More than one active Task is
+ * persisted corruption and fails loudly rather than inventing a list contract.
  */
-function projectNodeCollaborationMulti(
+function projectNodeCollaboration(
   workspaceId: string,
   nodeId: string,
-  activeTasks: readonly TaskEnvelope[],
+  occupations: readonly TaskEnvelope[],
   deliveries: import("../core/delivery.js").DeliveryRecord[],
   sessionsById: ReadonlyMap<string, NodeCollaborationSessionSummary>
 ): NodeCollaboration {
-  const entries: NodeCollaborationActiveTask[] = activeTasks.map((activeTask) => {
+  if (occupations.length > 1) {
+    throw new RpcError(-32010, `Node has multiple active Task occupations: ${nodeId}`, {
+      nodeId,
+      taskIds: occupations.map((task) => task.id || task.path),
+    });
+  }
+  const entries: NodeCollaborationActiveTask[] = occupations.map((activeTask) => {
     const assigneeKind = taskAssigneeKind(activeTask);
     const taskSummary: NodeCollaborationTaskSummary = {
       id: activeTask.id || activeTask.path,
@@ -7803,6 +7607,12 @@ function projectNodeCollaborationMulti(
     if (activeTask.activeDeliveryId) {
       const found = deliveries.find((d) => d.id === activeTask.activeDeliveryId);
       if (found) {
+        if (!activeTask.id || found.taskId !== activeTask.id) {
+          throw new RpcError(-32010, `Task points at a foreign Delivery: ${activeTask.activeDeliveryId}`, {
+            taskId: activeTask.id ?? null,
+            deliveryTaskId: found.taskId,
+          });
+        }
         delivery = { id: found.id, status: found.status };
       }
     }
@@ -7810,19 +7620,17 @@ function projectNodeCollaborationMulti(
     return { task: taskSummary, session, delivery };
   });
 
-  // Projection-only derived count — never a second fact source; never paginated total.
   return {
     workspaceId,
     nodeId,
-    activeTasks: entries,
-    activeTaskCount: entries.length,
+    activeTask: entries[0] ?? null,
   };
 }
 
 /**
  * Workspace-level graph projection for Working-set Canvas.
  * Nodes: stable summaries only (no body). Edges: parent + markdown + wiki + relation.
- * Unresolved concept links / relation targets are retained with explicit unresolved payload.
+ * Unresolved node links / relation targets are retained with explicit unresolved payload.
  * Semantic relations are never merged into parent/markdown/wiki collections.
  */
 async function graphProjectionRpc(
@@ -7836,61 +7644,8 @@ async function graphProjectionRpc(
 }
 
 /**
- * Shared single-item box collaboration projection (box.projection item semantics).
- * `tasks` is the full envelope list so batch callers can reuse one load.
- * Truth sources: Task envelopes (+ Delivery via task state after accept). No Node FM.
- */
-function projectBoxCollaboration(
-  workspaceId: string,
-  concept: import("../core/types.js").Box,
-  tasks: TaskEnvelope[]
-): BoxProjection {
-  if (concept.invalid) {
-    throw new RpcError(
-      -32004,
-      `Concept is invalid and has no collaboration projection: ${concept.path}`,
-      { boxId: concept.id, path: concept.path, detail: concept.invalidReason }
-    );
-  }
-  // Legacy box.projection: first direct active Task (multi-Task truth is node.collaboration).
-  const activeTask = listDirectActiveTasksForNode(concept.id, tasks)[0];
-  if (activeTask) {
-    const fromTask = boxProjectionOf(activeTask);
-    const out: BoxProjection = {
-      workspaceId,
-      boxId: concept.id,
-      status: fromTask.status,
-    };
-    if (fromTask.assignee) out.assignee = fromTask.assignee;
-    if (fromTask.activeTaskId) out.activeTaskId = fromTask.activeTaskId;
-    return out;
-  }
-
-  // Historical accepted work (task.accept / auto-integrate) → done; no assignee/activeTaskId.
-  // Prefer Task state=accepted (Delivery is accepted in the same mutation).
-  const acceptedTask = tasks.find(
-    (t) => taskDirectlyReferencesNode(t, concept.id) && t.state === "accepted"
-  );
-  if (acceptedTask) {
-    const fromTask = boxProjectionOf(acceptedTask);
-    return {
-      workspaceId,
-      boxId: concept.id,
-      status: fromTask.status,
-    };
-  }
-
-  // Interrupted / failed / rejected / never tasked → idle todo. Stale Node FM ignored.
-  return {
-    workspaceId,
-    boxId: concept.id,
-    status: "todo",
-  };
-}
-
-/**
  * Build workspace graph projection from loaded tent.
- * Reuses markdown link parser + concept index (no ad-hoc regex).
+ * Reuses markdown link parser + node index (no ad-hoc regex).
  * Node order: depth-first tree walk (stable). Edge order: DFS source + extract order.
  * Semantic relations are a separate edge collection (source frontmatter only).
  */
@@ -7902,73 +7657,73 @@ function buildGraphProjection(workspaceId: string, tent: LoadedTent): GraphProje
   const relationEdges: GraphRelationEdge[] = [];
 
   // DFS over roots for stable node + parent edge order.
-  const visit = (box: import("../core/types.js").Box, parentId: string | null): void => {
-    nodes.push(projectGraphNodeSummary(box));
-    parentEdges.push({ parentId, childId: box.id });
-    for (const child of box.children) visit(child, box.id);
+  const visit = (node: import("../core/types.js").Node, parentNodeId: string | null): void => {
+    nodes.push(projectGraphNodeSummary(node));
+    parentEdges.push({ parentNodeId, childNodeId: node.id });
+    for (const child of node.children) visit(child, node.id);
   };
   for (const root of tent.roots) visit(root, null);
 
-  // Reuse markdown link parser + concept index (same as docs.backlinks / resolve path).
-  // OkfConcept.id is notePath-stem; OkfConcept.boxId is the stable cx- handle.
-  // Graph nodes are keyed by box.id (cx-), so resolved edges must map via boxId/path.
-  const conceptIndex = indexFromBoxes(tent.byId.values());
-  const emitLinks = (box: import("../core/types.js").Box): void => {
-    const notePath = boxNotePath(box.path);
-    for (const link of extractOutLinksDetailed(box.body)) {
-      // Artifacts / external schemes are not concept graph edges (concept-model §6.1).
+  // Reuse markdown link parser + node index (same as docs.backlinks / resolve path).
+  // OkfNode.id is notePath-stem; OkfNode.nodeId is the stable cx- handle.
+  // Graph nodes are keyed by canonical Node id, so resolved edges map via nodeId/path.
+  const nodeIndex = indexFromNodes(tent.byId.values());
+  const emitLinks = (node: import("../core/types.js").Node): void => {
+    const notePath = nodeNotePath(node.path);
+    for (const link of extractOutLinksDetailed(node.body)) {
+      // Artifacts / external schemes are not node graph edges (node-model §6.1).
       if (link.kind === "artifact") continue;
-      const resolved = resolveOutLink(conceptIndex, link, notePath);
+      const resolved = resolveOutLink(nodeIndex, link, notePath);
       const edge: GraphLinkEdge = {
-        fromId: box.id,
+        fromNodeId: node.id,
         raw: link.raw,
       };
       if (link.label) edge.label = link.label;
 
       // Prefer stable cx- via path/id lookup; never emit path-stem as node id.
-      const targetBox =
+      const targetNode =
         (resolved.targetPath ? tent.byPath.get(resolved.targetPath) : undefined) ??
-        (resolved.targetCx ? tent.byId.get(resolved.targetCx) : undefined);
+        (resolved.targetNodeId ? tent.byId.get(resolved.targetNodeId) : undefined);
 
-      if (resolved.kind === "unresolved" || !targetBox) {
-        // Explicit unresolved — never silent-drop concept-link candidates.
-        // If resolveOutLink thought it resolved but we cannot map to a tent box,
+      if (resolved.kind === "unresolved" || !targetNode) {
+        // Explicit unresolved — never silent-drop node-link candidates.
+        // If resolveOutLink thought it resolved but we cannot map to a Tent Node,
         // still surface unresolved rather than inventing a foreign id.
         const target =
-          (link as { conceptTarget?: string }).conceptTarget ??
+          (link as { targetPath?: string }).targetPath ??
           resolved.targetPath ??
-          (resolved.targetCx && resolved.targetCx !== link.raw ? resolved.targetCx : undefined);
+          (resolved.targetNodeId && resolved.targetNodeId !== link.raw ? resolved.targetNodeId : undefined);
         edge.unresolved = target ? { raw: link.raw, target } : { raw: link.raw };
       } else {
-        edge.toId = targetBox.id;
+        edge.toNodeId = targetNode.id;
       }
       if (link.kind === "wiki") wikiEdges.push(edge);
       else markdownEdges.push(edge);
     }
-    for (const child of box.children) emitLinks(child);
+    for (const child of node.children) emitLinks(child);
   };
   for (const root of tent.roots) emitLinks(root);
 
   // Semantic relations: DFS source order + source frontmatter array order.
   // Never fold into markdown/wiki even when targets look similar.
-  const emitRelations = (box: import("../core/types.js").Box): void => {
-    for (const rel of box.relations) {
+  const emitRelations = (node: import("../core/types.js").Node): void => {
+    for (const rel of node.relations) {
       const edge: GraphRelationEdge = {
         id: rel.id,
-        fromId: box.id,
+        fromNodeId: node.id,
         kind: rel.kind,
         direction: rel.direction,
       };
       if (rel.label !== undefined) edge.label = rel.label;
       if ("nodeId" in rel.target) {
         // Project stored nodeId honestly; do not re-resolve or drop missing targets here.
-        edge.toId = rel.target.nodeId;
+        edge.toNodeId = rel.target.nodeId;
       } else {
         edge.unresolved = rel.target.unresolved;
       }
       relationEdges.push(edge);
     }
-    for (const child of box.children) emitRelations(child);
+    for (const child of node.children) emitRelations(child);
   };
   for (const root of tent.roots) emitRelations(root);
 
@@ -7984,17 +7739,17 @@ function buildGraphProjection(workspaceId: string, tent: LoadedTent): GraphProje
   };
 }
 
-function projectGraphNodeSummary(box: import("../core/types.js").Box): GraphNodeSummary {
-  const title = typeof box.fm.title === "string" ? box.fm.title : undefined;
+function projectGraphNodeSummary(source: import("../core/types.js").Node): GraphNodeSummary {
+  const title = typeof source.fm.title === "string" ? source.fm.title : undefined;
   const node: GraphNodeSummary = {
-    id: box.id,
-    path: box.path,
-    name: box.name,
-    type: box.type,
-    tags: box.tags,
-    mode: box.mode,
-    archived: box.archived,
-    invalid: box.invalid,
+    nodeId: source.id,
+    path: source.path,
+    name: source.name,
+    type: source.type,
+    tags: source.tags,
+    mode: source.mode,
+    archived: source.archived,
+    invalid: source.invalid,
   };
   if (title) node.title = title;
   return node;
@@ -8005,7 +7760,7 @@ function projectGraphNodeSummary(box: import("../core/types.js").Box): GraphNode
 async function proposalList(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const boxId = optionalString(p, "boxId");
+  const nodeId = optionalString(p, "nodeId");
   const statusRaw = optionalString(p, "status") ?? "pending";
   if (
     statusRaw !== "pending" &&
@@ -8017,7 +7772,10 @@ async function proposalList(ctx: HandlerContext, p: Record<string, unknown>) {
   }
 
   let proposals = await loadProposals(mount.env.fs);
-  if (boxId) proposals = proposals.filter((item) => item.boxId === boxId);
+  if (nodeId) {
+    requireCanonicalNode(await loadTent(mount.env.fs), nodeId);
+    proposals = proposals.filter((item) => item.nodeId === nodeId);
+  }
   if (statusRaw !== "all") {
     proposals = proposals.filter((item) => item.status === statusRaw);
   }
@@ -8027,13 +7785,14 @@ async function proposalList(ctx: HandlerContext, p: Record<string, unknown>) {
 async function proposalSubmit(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const boxId = requireString(p, "boxId");
+  const nodeId = requireString(p, "nodeId");
   const role = requireString(p, "role");
   const body = requireString(p, "body");
 
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
-    const proposal = await submitProposal(mount.env.fs, mount.env.clock, role, boxId, body);
+    requireCanonicalNode(await loadTent(mount.env.fs), nodeId);
+    const proposal = await submitProposal(mount.env.fs, mount.env.clock, role, nodeId, body);
     emitProposalUpdated(ctx, workspaceId, proposal, "proposal.submit");
     return { proposal: projectProposal(proposal) };
   });
@@ -8083,7 +7842,7 @@ async function proposalResolve(ctx: HandlerContext, p: Record<string, unknown>) 
 function projectProposal(proposal: Proposal): ProposalProjection {
   return {
     path: proposal.path,
-    boxId: proposal.boxId,
+    nodeId: proposal.nodeId,
     role: proposal.role,
     status: proposal.status,
     createdAt: proposal.createdAt,
@@ -8102,7 +7861,7 @@ function emitProposalUpdated(
     workspaceId,
     {
       path: proposal.path,
-      boxId: proposal.boxId,
+      nodeId: proposal.nodeId,
       role: proposal.role,
       status: proposal.status,
       reason,
@@ -8984,7 +8743,7 @@ async function interactionListPending(
     );
   }
 
-  // Task envelopes supply optional boxId/sessionId pointers for rows that
+  // Task envelopes supply optional nodeId/sessionId pointers for rows that
   // only store taskPath / taskId. Missing envelopes leave pointers undefined.
   let tasksByPath = new Map<string, TaskEnvelope>();
   let tasksById = new Map<string, TaskEnvelope>();
@@ -9014,7 +8773,6 @@ async function interactionListPending(
       createdAt: ask.createdAt,
       taskPath: ask.taskPath,
       ...(ask.taskId ? { taskId: ask.taskId } : task?.id ? { taskId: task.id } : {}),
-      ...(task && primaryBoxId(task) ? { boxId: primaryBoxId(task) } : {}),
       ...(ask.role ?? task?.role ? { role: ask.role ?? task?.role } : {}),
       ...(ask.sessionId ?? task?.sessionId
         ? { sessionId: ask.sessionId ?? task?.sessionId }
@@ -9036,7 +8794,6 @@ async function interactionListPending(
       createdAt: approval.createdAt,
       taskPath: approval.taskPath,
       ...(approval.taskId ? { taskId: approval.taskId } : task?.id ? { taskId: task.id } : {}),
-      ...(task && primaryBoxId(task) ? { boxId: primaryBoxId(task) } : {}),
       role: approval.role,
       ...(task?.sessionId ? { sessionId: task.sessionId } : {}),
       profileId: approval.profileId,
@@ -9066,7 +8823,6 @@ async function interactionListPending(
         : task?.id
           ? { taskId: task.id }
           : {}),
-      ...(task && primaryBoxId(task) ? { boxId: primaryBoxId(task) } : {}),
       ...(projected.role ?? task?.role ? { role: projected.role ?? task?.role } : {}),
       toolTitle: projected.toolTitle,
       options: projected.options.map((o) => ({
@@ -9088,7 +8844,7 @@ async function interactionListPending(
       workspaceId,
       createdAt: delivery.createdAt ?? delivery.updatedAt ?? "",
       taskId: delivery.taskId,
-      boxId: delivery.boxId,
+      sourceNodeId: delivery.sourceNodeId,
       role: delivery.role,
       path: delivery.path,
       status: "ready",
@@ -10417,39 +10173,29 @@ function projectAnnotationWire(
   return projectAnnotation(record, documentBody);
 }
 
-async function readConceptBody(
+async function readNodeBody(
   mount: { env: { fs: import("../core/adapter.js").FsAdapter } },
-  concept: { path: string; body?: string }
+  node: { path: string; body?: string }
 ): Promise<{ body: string; raw: string; etag: string }> {
-  const notePath = boxNotePath(concept.path);
+  const notePath = nodeNotePath(node.path);
   const raw = await mount.env.fs.readFile(notePath);
   const { body } = parseFrontmatter(raw);
   return { body, raw, etag: contentEtag(raw) };
 }
 
 /**
- * List annotations for a Node (required nodeId / id / boxId).
- * Projection relocates by quote against live body; missing Node → orphan/missing-node.
+ * List annotations for one canonical Node.
  * Does not rewrite stored anchors.
  */
 async function annotationListRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const nodeId =
-    optionalString(p, "nodeId") ??
-    optionalString(p, "id") ??
-    optionalString(p, "boxId");
-  if (!nodeId) {
-    throw new RpcError(-32602, "annotation.list requires nodeId (or id / boxId)");
-  }
+  const nodeId = requireString(p, "nodeId");
 
   const tent = await loadTent(mount.env.fs);
-  const concept = tent.byId.get(nodeId) ?? null;
-  let documentBody: string | null = null;
-  if (concept) {
-    const note = await readConceptBody(mount, concept);
-    documentBody = note.body;
-  }
+  const node = requireCanonicalNode(tent, nodeId);
+  const note = await readNodeBody(mount, node);
+  const documentBody = note.body;
 
   const records = await listAnnotationRecords(mount.env.fs, nodeId);
   const annotations = records.map((r) => projectAnnotationWire(r, documentBody));
@@ -10465,13 +10211,7 @@ async function annotationCreateRpc(ctx: HandlerContext, p: Record<string, unknow
   const mount = ctx.host.require(workspaceId);
   requireUserActor(p, "annotation.create");
 
-  const nodeId =
-    optionalString(p, "nodeId") ??
-    optionalString(p, "id") ??
-    optionalString(p, "boxId");
-  if (!nodeId) {
-    throw new RpcError(-32602, "annotation.create requires nodeId (or id / boxId)");
-  }
+  const nodeId = requireString(p, "nodeId");
 
   const quote = typeof p.quote === "string" ? p.quote : undefined;
   const body = typeof p.body === "string" ? p.body : undefined;
@@ -10491,33 +10231,27 @@ async function annotationCreateRpc(ctx: HandlerContext, p: Record<string, unknow
     throw new RpcError(-32602, "annotation.create requires integer end");
   }
 
-  const baseEtag =
-    optionalString(p, "documentEtag") ??
-    optionalString(p, "baseEtag") ??
-    optionalString(p, "etag");
+  const baseEtag = optionalString(p, "documentEtag");
   if (!baseEtag) {
-    throw new RpcError(-32602, "annotation.create requires documentEtag (or baseEtag)");
+    throw new RpcError(-32602, "annotation.create requires documentEtag");
   }
 
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = tent.byId.get(nodeId);
-    if (!concept) {
-      throw new RpcError(-32004, `Concept not found: ${nodeId}`);
-    }
-    const note = await readConceptBody(mount, concept);
+    const node = requireCanonicalNode(tent, nodeId);
+    const note = await readNodeBody(mount, node);
     if (baseEtag !== note.etag) {
       throw new RpcError(-32009, "etag conflict", {
         currentEtag: note.etag,
         baseEtag,
-        path: concept.path,
+        path: node.path,
         nodeId,
       });
     }
 
     try {
       const record = await createAnnotation(mount.env.fs, {
-        nodeId: concept.id,
+        nodeId: node.id,
         quote,
         start,
         end,
@@ -10554,10 +10288,10 @@ async function annotationResolveRpc(ctx: HandlerContext, p: Record<string, unkno
     try {
       const record = await resolveAnnotation(mount.env.fs, id);
       const tent = await loadTent(mount.env.fs);
-      const concept = tent.byId.get(record.nodeId) ?? null;
+      const node = tent.byId.get(record.nodeId) ?? null;
       let documentBody: string | null = null;
-      if (concept) {
-        documentBody = (await readConceptBody(mount, concept)).body;
+      if (node) {
+        documentBody = (await readNodeBody(mount, node)).body;
       }
       const projection = projectAnnotationWire(record, documentBody);
       ctx.events.emit(
@@ -10588,10 +10322,10 @@ async function annotationReopenRpc(ctx: HandlerContext, p: Record<string, unknow
     try {
       const record = await reopenAnnotation(mount.env.fs, id);
       const tent = await loadTent(mount.env.fs);
-      const concept = tent.byId.get(record.nodeId) ?? null;
+      const node = tent.byId.get(record.nodeId) ?? null;
       let documentBody: string | null = null;
-      if (concept) {
-        documentBody = (await readConceptBody(mount, concept)).body;
+      if (node) {
+        documentBody = (await readNodeBody(mount, node)).body;
       }
       const projection = projectAnnotationWire(record, documentBody);
       ctx.events.emit(
@@ -11570,7 +11304,7 @@ async function tryManagedAutoDeliver(
         | { kind: "done"; result: TaskDeliverResult }
         | {
             kind: "auto";
-            boxId: string;
+            sourceNodeId: string;
             commits: string[];
             targetHead?: string;
             opts: {
@@ -11654,7 +11388,7 @@ async function tryManagedAutoDeliver(
         }
         return {
           kind: "auto",
-          boxId: prepared.boxId,
+          sourceNodeId: prepared.sourceNodeId,
           commits: pendingCommits,
           ...(targetHead ? { targetHead } : {}),
           opts,
@@ -11678,7 +11412,7 @@ async function tryManagedAutoDeliver(
           ctx.host.markSelfWrite(input.workspaceId);
           return finalizeTaskDeliverAuto(mount.env, input.taskPath, phase.opts, {
             kind: "auto",
-            boxId: phase.boxId,
+            sourceNodeId: phase.sourceNodeId,
           });
         });
       }
@@ -12277,10 +12011,7 @@ async function buildRejectResumeRecoveryOrientation(
   lines.push(`Task envelope: ${task.path}`);
   if (task.id) lines.push(`Task id: ${task.id}`);
   if (task.manifest) lines.push(`Manifest: ${task.manifest}`);
-  if (task.contextCard != null) {
-    const nodeIds = taskReferencedNodeIds(task);
-    if (nodeIds.length) lines.push(`Node refs: ${nodeIds.join(", ")}`);
-  }
+  lines.push(`Node refs: ${taskReferencedNodeIds(task).join(", ")}`);
   if (opts.workspaceLane) {
     lines.push("workspace lane:");
     lines.push(`  workspace: ${opts.workspaceLane.workspace}`);
@@ -12848,7 +12579,7 @@ function emitTaskState(
       state: task.state,
       role: task.role,
       referencedNodeIds:
-        task.contextCard != null ? taskReferencedNodeIds(task) : [],
+        taskReferencedNodeIds(task),
       sessionId: task.sessionId,
       reason,
     },
@@ -12926,44 +12657,41 @@ function parseCallerKind(raw: string): "user" | "role" {
   throw new RpcError(-32602, `Invalid callerKind: ${raw}`);
 }
 
-function resolveConcept(tent: LoadedTent, p: Record<string, unknown>) {
-  const id = optionalString(p, "id") ?? optionalString(p, "boxId");
-  const path = optionalString(p, "path");
-  if (id) {
-    const byId = tent.byId.get(id);
-    if (byId) return byId;
-    throw new RpcError(-32004, `Concept not found: ${id}`);
-  }
-  if (path) {
-    const byPath = tent.byPath.get(path);
-    if (byPath) return byPath;
-    throw new RpcError(-32004, `Concept not found: ${path}`);
-  }
-  throw new RpcError(-32602, "Concept lookup requires id, boxId, or path");
+function resolveNode(tent: LoadedTent, p: Record<string, unknown>) {
+  return requireCanonicalNode(tent, requireString(p, "nodeId"));
 }
 
-function projectConcept(
-  box: import("../core/types.js").Box,
+function requireCanonicalNode(tent: LoadedTent, nodeId: string) {
+  if (!isNodeId(nodeId)) {
+    throw new RpcError(-32602, `nodeId must be a canonical cx-* Node id: ${nodeId}`);
+  }
+  const node = tent.byId.get(nodeId);
+  if (!node) throw new RpcError(-32004, `Node not found: ${nodeId}`);
+  return node;
+}
+
+function projectNode(
+  node: import("../core/types.js").Node,
   includeBody: boolean,
   withChildren: boolean
-): ConceptProjection {
-  const title = typeof box.fm.title === "string" ? box.fm.title : undefined;
-  const proj: ConceptProjection = {
-    id: box.id,
-    path: box.path,
-    name: box.name,
-    type: box.type,
-    tags: box.tags,
-    mode: box.mode,
-    archived: box.archived,
-    invalid: box.invalid,
+): NodeProjection {
+  const title = typeof node.fm.title === "string" ? node.fm.title : undefined;
+  const proj: NodeProjection = {
+    nodeId: node.id,
+    path: node.path,
+    name: node.name,
+    type: node.type,
+    tags: node.tags,
+    mode: node.mode,
+    archived: node.archived,
+    invalid: node.invalid,
   };
-  if (title) (proj as ConceptProjection & { title?: string }).title = title;
+  if (title) (proj as NodeProjection & { title?: string }).title = title;
   if (includeBody) {
-    proj.bodyPreview = box.body.slice(0, 500);
+    proj.bodyPreview = node.body.slice(0, 500);
   }
   if (withChildren) {
-    proj.children = box.children.map((c) => projectConcept(c, includeBody, true));
+    proj.children = node.children.map((child) => projectNode(child, includeBody, true));
   }
   return proj;
 }
@@ -13517,14 +13245,10 @@ function projectStartSessionResult(
 /**
  * Build managed ACP bootstrap.
  *
- * When Task carries Context Card v1 (cx-5q6za6):
- *   frozen order via assembleManagedPrompt — stable prefix once per
- *   contextGeneration; later Tasks on the same Session append delta only.
- *   Skill/role bodies from 52a0da2 compose fill tent-role / Role / tent-task slots.
- *
- * Legacy envelopes without a card keep the skill-prefix + path Context Card path
- * (migration-compatible until explicit migration).
- * Never copies box/manifest bodies. Never instructs tent task claim/get/deliver.
+ * Frozen order via assembleManagedPrompt — stable prefix once per
+ * contextGeneration; later Tasks on the same Session append delta only.
+ * Skill/role bodies compose fill tent-role / Role / tent-task slots.
+ * Never copies Node/manifest bodies. Never instructs tent task claim/get/deliver.
  * Distinct from relayPromptForTask (external manual path still claim+deliver).
  */
 async function buildSessionBootstrapPrompt(
@@ -13562,37 +13286,16 @@ async function buildSessionBootstrapPrompt(
     role: roleDef,
   });
 
-  let base: string;
-  if (task.contextCard) {
-    base = buildContextCardManagedBootstrap(task, task.contextCard, {
-      workspaceRoot: roots.workspaceRoot,
-      systemRoot,
-      sessionContextGeneration: roots.sessionContextGeneration,
-      // 52a0da2 skill compose already freezes tent-role → Role → tent-task order.
-      tentTaskSection: skillPrefix,
-      taskInputDelta: roots.taskInputDelta,
-      // Explicit caller checkpoint only (digest slot). On-disk Role Checkpoint is
-      // appended after full assembly as dynamic tail — never stable prefix.
-      checkpoint: roots.checkpoint,
-    });
-  } else {
-    // Legacy no-card envelopes: path Context Card + session steps after skill prefix.
-    const card = taskContextCard(task.id || task.path, {
-      path: task.path,
-      workspaceRoot: roots.workspaceRoot,
-      systemRoot,
-      label: kind === "agentProfile" ? `task:profile:${task.role}` : `task:${task.role}`,
-    });
-    const sessionSteps = sessionBootstrapPromptForTask(task, {
-      workspaceRoot: roots.workspaceRoot,
-      systemRoot,
-    });
-    base = assembleManagedSessionBootstrap({
-      stableSkillPrefix: skillPrefix,
-      contextCardPrompt: card.prompt,
-      dynamicTaskTail: sessionSteps,
-    });
-  }
+  const base = buildContextCardManagedBootstrap(task, task.contextCard, {
+    workspaceRoot: roots.workspaceRoot,
+    systemRoot,
+    sessionContextGeneration: roots.sessionContextGeneration,
+    tentTaskSection: skillPrefix,
+    taskInputDelta: roots.taskInputDelta,
+    // Explicit caller checkpoint only (digest slot). On-disk Role Checkpoint is
+    // appended after full assembly as dynamic tail — never stable prefix.
+    checkpoint: roots.checkpoint,
+  });
 
   // Optional Role Checkpoint: last dynamic tail only. Missing/corrupt fail-open.
   // agentProfile one-shots never inject Role continuation notes.
@@ -13659,7 +13362,7 @@ function buildContextCardManagedBootstrap(
   const executionLane = projectExecutionLaneFromTask(task);
   const executionLaneText = formatExecutionLanePrompt(executionLane);
   const bootstrapNodeIds =
-    task.contextCard != null ? taskReferencedNodeIds(task) : [];
+    taskReferencedNodeIds(task);
   const pointers = [
     `Task envelope: ${task.path}`,
     `Manifest: ${task.manifest}`,
@@ -13719,14 +13422,13 @@ async function collectTaskBootstrapImageRefs(
   try {
     const tent = await loadTent(fs);
     const nodeIds =
-      task.contextCard != null ? taskReferencedNodeIds(task) : [];
+      taskReferencedNodeIds(task);
     for (const nodeId of nodeIds) {
-      if (!nodeId || nodeId === "root") continue;
-      const box = tent.byId.get(nodeId);
-      if (!box || typeof box.body !== "string") continue;
+      const node = tent.byId.get(nodeId);
+      if (!node || typeof node.body !== "string") continue;
       claimBodies.push({
-        body: box.body,
-        notePath: boxNotePath(box.path),
+        body: node.body,
+        notePath: nodeNotePath(node.path),
       });
     }
   } catch {
@@ -13766,9 +13468,7 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
     path: task.path,
     id: task.id,
     role: task.role,
-    referencedNodeIds:
-      task.contextCard != null ? taskReferencedNodeIds(task) : [],
-    status: task.status,
+    referencedNodeIds: taskReferencedNodeIds(task),
     state: task.state,
     manifest: task.manifest,
     parentActor: task.parentActor,
@@ -13800,8 +13500,7 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     prompt: task.prompt,
-    // Context Card v1 projections (cx-5q6za6) — omit when absent (legacy).
-    ...(task.contextCard ? { contextCard: task.contextCard } : {}),
+    contextCard: task.contextCard!,
     ...(task.contextGeneration ? { contextGeneration: task.contextGeneration } : {}),
     ...(task.taskDeltaDigest ? { taskDeltaDigest: task.taskDeltaDigest } : {}),
   };
@@ -13816,7 +13515,7 @@ function projectDelivery(d: import("../core/delivery.js").DeliveryRecord): Deliv
     path: d.path,
     id: d.id,
     taskId: d.taskId,
-    boxId: d.boxId,
+    sourceNodeId: d.sourceNodeId,
     role: d.role,
     status: d.status,
     summary: d.summary,
@@ -13854,25 +13553,25 @@ function assertRawDocsWriteCollaborationFields(next: Record<string, unknown>): v
 
 /** Hard gate: only invalid + archived block content writes (V0.2: no read-only mode). */
 function assertDocsModeMutable(
-  concept: import("../core/types.js").Box,
+  node: import("../core/types.js").Node,
   op: string
 ): void {
-  if (isContentMutable(concept)) return;
-  if (concept.invalid) {
-    throw new RpcError(-32010, `${op} rejected: concept is invalid`, {
-      conceptId: concept.id,
-      mode: concept.mode,
+  if (isContentMutable(node)) return;
+  if (node.invalid) {
+    throw new RpcError(-32010, `${op} rejected: node is invalid`, {
+      nodeId: node.id,
+      mode: node.mode,
     });
   }
-  if (concept.mode === "archived" || concept.archived) {
-    throw new RpcError(-32010, `${op} rejected: concept is archived`, {
-      conceptId: concept.id,
-      mode: concept.mode,
+  if (node.mode === "archived" || node.archived) {
+    throw new RpcError(-32010, `${op} rejected: node is archived`, {
+      nodeId: node.id,
+      mode: node.mode,
     });
   }
-  throw new RpcError(-32010, `${op} rejected: concept is not mutable`, {
-    conceptId: concept.id,
-    mode: concept.mode,
+  throw new RpcError(-32010, `${op} rejected: node is not mutable`, {
+    nodeId: node.id,
+    mode: node.mode,
   });
 }
 

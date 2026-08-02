@@ -23,7 +23,7 @@ async function makeWorkspace(name = "retention-rpc"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -62,7 +62,7 @@ async function seedOldTerminal(
 
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },role: "executor",
-    claims: [{ id: "bx-seed", path: "inbox" }],
+    nodeRefs: [{ id: "cx-seed", path: "inbox" }],
     manifestPath: "temp/executor/manifests/m.md",
     userPrompt: "old terminal work",
     id: opts.taskId,
@@ -82,7 +82,7 @@ async function seedOldTerminal(
   if (opts.withDelivery) {
     const d = await createDelivery(fsa, clock, {
       taskId: opts.taskId,
-      boxId: "bx-seed",
+      sourceNodeId: "cx-seed",
       role: "executor",
       summary: "old delivery body",
       status: "accepted",
@@ -223,7 +223,7 @@ test("operationalRetention.purge never deletes active task or ready delivery", a
 
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },role: "executor",
-      claims: [{ id: "bx-live", path: "inbox" }],
+      nodeRefs: [{ id: "cx-live", path: "inbox" }],
       manifestPath: "temp/executor/manifests/m.md",
       userPrompt: "active",
       id: "tk-actlive",
@@ -237,7 +237,7 @@ test("operationalRetention.purge never deletes active task or ready delivery", a
 
     const ready = await createDelivery(fsa, clock, {
       taskId: "tk-orphan-ready",
-      boxId: "bx-live",
+      sourceNodeId: "cx-live",
       role: "executor",
       summary: "ready review",
       status: "ready",

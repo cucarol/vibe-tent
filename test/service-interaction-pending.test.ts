@@ -25,7 +25,7 @@ async function makeWorkspace(): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "interaction-pending",
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -75,11 +75,11 @@ test("interaction.listPending aggregates four kinds with stable sort and counts"
     const created = (await client.docsCreateNote(workspaceId, {
       name: "work-item",
       type: "prompt",
-    })) as { id: string };
-    const boxId = created.id;
+    }));
+    const nodeId = created.nodeId;
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "Need decisions and review",
       parentActor: { kind: "user", id: "user" },
@@ -144,7 +144,7 @@ test("interaction.listPending aggregates four kinds with stable sort and counts"
     const clock = { now: () => "2022-01-01T00:00:00.000Z" };
     const delivery = await createDelivery(fsa, clock, {
       taskId,
-      boxId,
+      sourceNodeId: nodeId,
       role: "executor",
       summary: "Ready for human review — must not appear in interaction projection",
       status: "ready",
@@ -153,7 +153,7 @@ test("interaction.listPending aggregates four kinds with stable sort and counts"
     // Non-ready delivery must not appear
     await createDelivery(fsa, clock, {
       taskId,
-      boxId,
+      sourceNodeId: nodeId,
       role: "executor",
       summary: "Already accepted history",
       status: "accepted",
@@ -187,7 +187,7 @@ test("interaction.listPending aggregates four kinds with stable sort and counts"
     assert.ok(userAsk && userAsk.kind === "userAsk");
     assert.equal(userAsk.taskPath, taskPath);
     assert.equal(userAsk.taskId, taskId);
-    assert.equal(userAsk.boxId, boxId);
+    assert.equal("nodeId" in userAsk, false);
     assert.equal(userAsk.role, "executor");
     assert.equal(userAsk.question, "Ship v1 or v2?");
     assert.equal(userAsk.choices?.length, 2);
@@ -196,7 +196,7 @@ test("interaction.listPending aggregates four kinds with stable sort and counts"
     assert.ok(a2a && a2a.kind === "a2a");
     assert.equal(a2a.profileId, "mock-ix");
     assert.equal(a2a.taskPath, taskPath);
-    assert.equal(a2a.boxId, boxId);
+    assert.equal("nodeId" in a2a, false);
     // bootstrapPrompt / secrets must not leak
     assert.equal((a2a as { bootstrapPrompt?: string }).bootstrapPrompt, undefined);
 
@@ -214,7 +214,7 @@ test("interaction.listPending aggregates four kinds with stable sort and counts"
     assert.ok(del && del.kind === "delivery");
     assert.equal(del.status, "ready");
     assert.equal(del.taskId, taskId);
-    assert.equal(del.boxId, boxId);
+    assert.equal(del.sourceNodeId, nodeId);
     assert.equal(del.taskPath, taskPath);
     // Delivery summary is intentionally not projected on the unified inbox
     assert.equal((del as { summary?: string }).summary, undefined);

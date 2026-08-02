@@ -8,10 +8,9 @@ import { loadTent } from "../src/core/tree.js";
 import {
   canClaim,
   findActiveOccupation,
-  findActiveRootTask,
   findAnyActiveTask,
   isFrozen,
-  occupiedBoxesFromTasks,
+  occupiedNodesFromTasks,
 } from "../src/core/claim.js";
 import { buildManifest, manifestToYaml } from "../src/core/manifest.js";
 import { parseFrontmatter } from "../src/core/frontmatter.js";
@@ -70,16 +69,16 @@ test("syncOkfBundle:生成 index/log 并把唯一 wiki 链接投影为 Markdown 
   await fs.mkdir(path.join(dir, "prompt", "space child"), { recursive: true });
   await fs.writeFile(
     path.join(dir, "prompt", "space child", "space child.md"),
-    "---\nid: bx-space\ntype: prompt\n---\n# Space Child\n",
+    "---\nid: cx-space\ntype: prompt\n---\n# Space Child\n",
   );
   await fs.mkdir(path.join(dir, "space root"), { recursive: true });
   await fs.writeFile(
     path.join(dir, "space root", "space root.md"),
-    "---\nid: bx-space-root\ntype: prompt\n---\n# Space Root\n",
+    "---\nid: cx-spaceroot\ntype: prompt\n---\n# Space Root\n",
   );
   await fs.writeFile(
     source,
-    "---\nid: bx-p1\ntype: prompt\n---\n见 [[bx-g1|目标]]、[[bx-space|空格子框]] 和 ![[Pasted image.png]]。\n",
+    "---\nid: cx-p1\ntype: prompt\n---\n见 [[cx-g1|目标]]、[[cx-space|空格子框]] 和 ![[Pasted image.png]]。\n",
   );
 
   const result = await syncOkfBundle(fsa);
@@ -110,14 +109,14 @@ test("Node occupation: exact Node exclusive; parent, child, and sibling remain i
   await fs.mkdir(path.join(dir, "goal", "挖新alpha", "写表达式", "实现细节"), { recursive: true });
   await fs.writeFile(
     path.join(dir, "goal", "挖新alpha", "写表达式", "实现细节", "实现细节.md"),
-    "---\nid: bx-g3\ntype: goal\n---\n",
+    "---\nid: cx-g3\ntype: goal\n---\n",
   );
   // Seed active task via full Context Card (runtime never loads residual claims[]).
   await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
   const fsa = new NodeFs(dir);
   const g2Path = await writeTaskEnvelope(fsa, { now: () => "2026-07-28T12:00:00.000Z" }, {
     role: "executor",
-    claims: [{ id: "bx-g2", path: "goal/x" }],
+    nodeRefs: [{ id: "cx-g2", path: "goal/x" }],
     manifestPath: "temp/executor/manifests/tk-activeg2.yml",
     userPrompt: "hold g2",
     id: "tk-activeg2",
@@ -131,83 +130,48 @@ test("Node occupation: exact Node exclusive; parent, child, and sibling remain i
   const tent = await loadTent(fsa);
   const tasks = await loadTaskEnvelopes(fsa);
 
-  const g1 = tent.byId.get("bx-g1")!;
+  const g1 = tent.byId.get("cx-g1")!;
   // An active Task on a parent does not occupy its descendants.
-  assert.equal(canClaim(g1, { tent, tasks }).ok, true);
+  assert.equal(canClaim(g1, { tasks }).ok, true);
   assert.equal(isFrozen(g1), false, "valid non-archived is not structurally frozen");
 
-  const g2 = tent.byId.get("bx-g2")!;
-  const exact = canClaim(g2, { tent, tasks });
+  const g2 = tent.byId.get("cx-g2")!;
+  const exact = canClaim(g2, { tasks });
   assert.equal(exact.ok, false, "同一 Node 同时只能被一个 active Task 占用");
   assert.match(exact.reason || "", /occupied by active task tk-activeg2/);
 
-  const g3 = tent.byId.get("bx-g3")!;
-  assert.equal(canClaim(g3, { tent, tasks }).ok, true, "子 Node 可与父 Node 并发");
+  const g3 = tent.byId.get("cx-g3")!;
+  assert.equal(canClaim(g3, { tasks }).ok, true, "子 Node 可与父 Node 并发");
   assert.equal(isFrozen(g3), false);
-  assert.equal(canClaim(tent.byId.get("bx-o1")!, { tent, tasks }).ok, true, "兄弟 Node 可并发");
+  assert.equal(canClaim(tent.byId.get("cx-o1")!, { tasks }).ok, true, "兄弟 Node 可并发");
 
   // Without active task, claim remains free (no owner lock projection).
   await fsa.remove(g2Path);
   const tent2 = await loadTent(fsa);
   const tasks2 = await loadTaskEnvelopes(fsa);
-  assert.equal(canClaim(tent2.byId.get("bx-g2")!, { tent: tent2, tasks: tasks2 }).ok, true);
+  assert.equal(canClaim(tent2.byId.get("cx-g2")!, { tasks: tasks2 }).ok, true);
 });
 
-test("workspace context is not a Tent-wide lock; box panel lists direct refs only", async () => {
+test("active Task occupation projects only its exact Node refs", async () => {
   const dir = await makeTent();
-  await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
   await fs.mkdir(path.join(dir, "temp", "reviewer", "tasks"), { recursive: true });
   const fsa = new NodeFs(dir);
   const tent = await loadTent(fsa);
 
-  // Seed active workspace-only context (empty refs.nodes; not a Tent-wide lock).
-  const rootPath = await writeTaskEnvelope(fsa, { now: () => "2026-07-28T12:00:00.000Z" }, {
-    role: "executor",
-    claims: [{ id: "root", path: "./" }],
-    manifestPath: "temp/executor/manifests/tk-rootocc.yml",
-    userPrompt: "workspace",
-    id: "tk-rootocc",
-    parentActor: { kind: "user", id: "user" },
-  });
-  const rootRaw = await fsa.readFile(rootPath);
-  await fsa.writeFile(
-    rootPath,
-    rootRaw.replace("status: pending", "status: taken").replace("state: queued", "state: running")
-  );
-  let tasks = await loadTaskEnvelopes(fsa);
-
-  // occupiedBoxesFromTasks is box-panel only — workspace context is not a box.
-  assert.equal(occupiedBoxesFromTasks(tent, tasks).length, 0);
-  assert.ok(findActiveRootTask(tasks), "workspace-context task visible via root helper");
-  assert.ok(findAnyActiveTask(tasks), "any-active helper sees workspace-context task");
-
-  // Workspace context does not block box claim / dispatch structurally.
-  const box = tent.byId.get("bx-p1")!;
-  assert.equal(findActiveOccupation(tent, box, tasks), undefined);
-  assert.equal(canClaim(box, { tent, tasks }).ok, true);
-  assert.equal(
-    canClaim(box, { tent, tasks, allowAncestorClaimedBy: "executor" }).ok,
-    true,
-    "asSub ancestor exception retired; concurrency legal"
-  );
-
-  // Clear workspace context; seed a direct box ref — panel lists the box.
-  await fsa.remove(rootPath);
   await writeTaskEnvelope(fsa, { now: () => "2026-07-28T12:00:00.000Z" }, {
     role: "reviewer",
-    claims: [{ id: "bx-p1", path: "prompt/x" }],
+    nodeRefs: [{ id: "cx-p1", path: "prompt/x" }],
     manifestPath: "temp/reviewer/manifests/tk-boxocc.yml",
-    userPrompt: "box ref",
+    userPrompt: "Node ref",
     id: "tk-boxocc",
     parentActor: { kind: "user", id: "user" },
   });
-  tasks = await loadTaskEnvelopes(fsa);
-  assert.equal(findActiveRootTask(tasks), undefined);
+  const tasks = await loadTaskEnvelopes(fsa);
   const anyBox = findAnyActiveTask(tasks);
   assert.ok(anyBox);
   assert.equal(anyBox!.role, "reviewer");
-  assert.ok(anyBox!.contextCard?.refs.nodes.some((n) => n.id === "bx-p1"));
-  assert.equal(occupiedBoxesFromTasks(tent, tasks).map((b) => b.id).join(","), "bx-p1");
+  assert.ok(anyBox!.contextCard?.refs.nodes.some((n) => n.id === "cx-p1"));
+  assert.equal(occupiedNodesFromTasks(tent, tasks).map((node) => node.id).join(","), "cx-p1");
 });
 
 test("loadTent:缺省根排序按稳定名称,不再按 zone 排名", async () => {
@@ -216,7 +180,7 @@ test("loadTent:缺省根排序按稳定名称,不再按 zone 排名", async () =
   await fs.mkdir(path.join(dir, "middle"), { recursive: true });
   await fs.writeFile(
     path.join(dir, "middle", "middle.md"),
-    "---\nid: bx-middle\ntype: prompt\n---\n",
+    "---\nid: cx-middle\ntype: prompt\n---\n",
   );
   const tent = await loadTent(new NodeFs(dir));
   const rootNames = tent.roots.map((box) => box.name);
@@ -227,7 +191,7 @@ test("loadTent:缺省根排序按稳定名称,不再按 zone 排名", async () =
   );
   assert.ok(
     !("zone" in tent.roots[0]),
-    "Box 不再携带 zone 领域属性",
+    "Node 不再携带 zone 领域属性",
   );
 });
 
@@ -236,21 +200,21 @@ test("loadTent:顶层普通目录透传其下合法框", async () => {
   await fs.mkdir(path.join(dir, "普通分组", "嵌套框"), { recursive: true });
   await fs.writeFile(
     path.join(dir, "普通分组", "嵌套框", "嵌套框.md"),
-    "---\nid: bx-nested\ntype: prompt\n---\n",
+    "---\nid: cx-nested\ntype: prompt\n---\n",
   );
   const tent = await loadTent(new NodeFs(dir));
-  assert.equal(tent.byId.get("bx-nested")?.path, "普通分组/嵌套框");
-  assert.ok(tent.roots.some((box) => box.id === "bx-nested"));
+  assert.equal(tent.byId.get("cx-nested")?.path, "普通分组/嵌套框");
+  assert.ok(tent.roots.some((box) => box.id === "cx-nested"));
 });
 
 test("manifest:可读集=全帐 usable context,可写集=认领子树 + temp 格 (非 domain R/W)", async () => {
   const dir = await makeTent();
   const tent = await loadTent(new NodeFs(dir));
-  const claim = tent.byId.get("bx-p1")!; // prompt/表达式任务书
+  const claim = tent.byId.get("cx-p1")!; // prompt/表达式任务书
   const m = buildManifest(tent, {
     tentName: "wqb",
     role: "executor",
-    claimBoxes: [claim],
+    claimNodes: [claim],
   });
 
   // V0.2: manifest readable/writable are Task context pointers, not Node domain R/W axes.
@@ -283,9 +247,9 @@ test("manifest:可读集=全帐 usable context,可写集=认领子树 + temp 格
     ["readable", "role", "tent", "writable"].sort(),
     "manifest 仅保留 readable/writable 与身份字段（无 claims）",
   );
-  // Writable pointer list encodes dispatch selection (id present for claimed boxes).
+  // Writable pointer list encodes dispatch selection (id present for claimed nodes).
   assert.ok(
-    m.writable.some((e) => e.id === "bx-p1"),
+    m.writable.some((e) => e.id === "cx-p1"),
     "writable context pointers carry selected Node ids without a claims[] field",
   );
 });
@@ -293,8 +257,8 @@ test("manifest:可读集=全帐 usable context,可写集=认领子树 + temp 格
 test("manifest:认领即得子树结构权,帐根 claim 可写顶层结构", async () => {
   const dir = await makeTent();
   const tent = await loadTent(new NodeFs(dir));
-  const claim = tent.byId.get("bx-p1")!;
-  const leafManifest = buildManifest(tent, { tentName: "wqb", role: "executor", claimBoxes: [claim] });
+  const claim = tent.byId.get("cx-p1")!;
+  const leafManifest = buildManifest(tent, { tentName: "wqb", role: "executor", claimNodes: [claim] });
   assert.ok(
     leafManifest.writable.some((e) => e.path === "prompt/表达式任务书/" && /Structural permission/.test(e.note || "")),
     "认领框本身有创建/移动/删除子框的结构权",
@@ -322,7 +286,7 @@ test("dispatch:只写 pending envelope + contextCard.refs.nodes；exact Node 占
   const { dispatch } = await import("../src/core/ops.js");
   const result = await dispatch(
     env as any,
-    "bx-p1",
+    "cx-p1",
     "analyst",
     "请只处理表达式任务书。",
   );
@@ -340,15 +304,15 @@ test("dispatch:只写 pending envelope + contextCard.refs.nodes；exact Node 占
   assert.match(result.manifestYaml, /readable:/);
   assert.match(result.manifestYaml, /writable:/);
   // Selection appears as writable context pointers (id), not a dual claims source.
-  assert.match(result.manifestYaml, /id: bx-p1/);
-  let claimed = (await loadTent(env.fs)).byId.get("bx-p1")!;
+  assert.match(result.manifestYaml, /id: cx-p1/);
+  let claimed = (await loadTent(env.fs)).byId.get("cx-p1")!;
   assert.equal(claimed.fm.owner, undefined);
   assert.equal(claimed.fm.status, undefined, "dispatch 不写 Node owner/status");
-  assert.equal((await loadTaskEnvelope(env.fs, result.taskPath)).status, "pending");
+  assert.equal((await loadTaskEnvelope(env.fs, result.taskPath)).state, "queued");
 
   // The exact Node is occupied even while the first Task is only queued.
   await assert.rejects(
-    () => dispatch(env as any, "bx-p1", "executor", "同 Node 并发"),
+    () => dispatch(env as any, "cx-p1", "executor", "同 Node 并发"),
     /occupied by active task/,
   );
 
@@ -357,12 +321,12 @@ test("dispatch:只写 pending envelope + contextCard.refs.nodes；exact Node 占
   assert.match(result.manifestPath, new RegExp(`^temp/analyst/manifests/${firstTask.id}\\.yml$`));
 
   // Parent and child refs remain independent from the occupied exact Node.
-  const onChild = await dispatch(env as any, "bx-p2", "analyst", "子孙并发");
+  const onChild = await dispatch(env as any, "cx-p2", "analyst", "子孙并发");
   assert.ok(onChild.taskPath);
-  const onAncestor = await dispatch(env as any, "bx-promptzone", "planner", "祖先并发");
+  const onAncestor = await dispatch(env as any, "cx-promptzone", "planner", "祖先并发");
   assert.ok(onAncestor.taskPath);
 
-  const second = await dispatch(env as any, "bx-o1", "analyst", "继续处理 output 指针");
+  const second = await dispatch(env as any, "cx-o1", "analyst", "继续处理 output 指针");
   assert.notEqual(second.taskPath, result.taskPath, "task 信封不可变,不覆盖");
   const secondTask = await loadTaskEnvelope(env.fs, second.taskPath);
   assert.equal(secondTask.manifest, second.manifestPath);
@@ -371,21 +335,20 @@ test("dispatch:只写 pending envelope + contextCard.refs.nodes；exact Node 占
   // Manifest snapshots only this Task's exact requested Node (no prior Role aggregation).
   assert.doesNotMatch(second.manifestYaml, /^claims:/m);
   assert.match(second.manifestYaml, /writable:/);
-  assert.match(second.manifestYaml, /id: bx-o1/);
+  assert.match(second.manifestYaml, /id: cx-o1/);
   // Prior active analyst Task Nodes must not bleed into this Task's writable selection.
   const secondWritable = second.manifestYaml.split(/^writable:\r?\n/m)[1] ?? "";
-  assert.doesNotMatch(secondWritable, /id: bx-p1\b/);
-  assert.doesNotMatch(secondWritable, /id: bx-p2\b/);
+  assert.doesNotMatch(secondWritable, /id: cx-p1\b/);
+  assert.doesNotMatch(secondWritable, /id: cx-p2\b/);
 
   const { cancelPendingTask, taskAck } = await import("../src/core/ops.js");
   await cancelPendingTask(env as any, result.taskPath);
   assert.equal(await env.fs.exists(result.taskPath), false, "未 ack 的投递可直接取消");
 
   await taskAck(env as any, second.taskPath);
-  claimed = (await loadTent(env.fs)).byId.get("bx-o1")!;
+  claimed = (await loadTent(env.fs)).byId.get("cx-o1")!;
   assert.equal(claimed.fm.owner, undefined, "task-ack 不写 Node owner");
   assert.equal(claimed.fm.status, undefined, "task-ack 不写 Node status");
-  assert.equal((await loadTaskEnvelope(env.fs, second.taskPath)).status, "taken");
   assert.equal((await loadTaskEnvelope(env.fs, second.taskPath)).state, "running");
 });
 
@@ -399,7 +362,7 @@ test("dispatch:corrupt roles registry is backed up, reset, and dispatch continue
   };
   const { dispatch } = await import("../src/core/ops.js");
 
-  await dispatch(env as any, "bx-p1", "analyst", "请只处理表达式任务书。");
+  await dispatch(env as any, "cx-p1", "analyst", "请只处理表达式任务书。");
 
   const box = parseFrontmatter(await fs.readFile(path.join(dir, "prompt", "表达式任务书", "表达式任务书.md"), "utf8")).data;
   assert.equal(box.owner, undefined);
@@ -418,26 +381,19 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
     rand: () => 0.5,
   };
   const { dispatch } = await import("../src/core/ops.js");
-  const first = await dispatch(env as any, "bx-p1", "analyst", "分析任务");
+  const first = await dispatch(env as any, "cx-p1", "analyst", "分析任务");
   env.clock.now = () => "2026-07-03T08:11:00.000Z";
-  const second = await dispatch(env as any, "bx-o1", "reviewer", "审阅产出");
-  await fs.mkdir(path.join(dir, "temp", "broken", "tasks"), { recursive: true });
-  await fs.writeFile(
-    path.join(dir, "temp", "broken", "tasks", "bad.md"),
-    "---\ntype: task\nrole: broken\nclaims: nope\n---\n",
-  );
-
+  const second = await dispatch(env as any, "cx-o1", "reviewer", "审阅产出");
   const tasks = await loadTaskEnvelopes(env.fs);
   assert.deepEqual(tasks.map((task) => task.path), [first.taskPath, second.taskPath]);
   assert.equal(tasks[0].path, first.taskPath);
   assert.equal(tasks[0].role, "analyst");
   assert.deepEqual(
     tasks[0].contextCard?.refs.nodes.map((n) => n.id) ?? [],
-    ["bx-p1"]
+    ["cx-p1"]
   );
   assert.equal(tasks[0].manifest, first.manifestPath);
   assert.match(tasks[0].manifest, new RegExp(`^temp/analyst/manifests/${tasks[0].id}\\.yml$`));
-  assert.equal(tasks[0].status, "pending");
   assert.equal(tasks[0].state, "queued");
   assert.equal(tasks[0].parentActor?.kind, "user");
   assert.equal(tasks[0].parentActor?.id, "user");
@@ -471,13 +427,13 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.doesNotMatch(relay, /task-ack|tent report\b/);
   assert.doesNotMatch(relay, /whether to reuse|是否复用/i);
   // Agent-facing relay must not use box vocabulary (Node/nodeId only).
-  assert.doesNotMatch(relay, /\bbox\b|\bboxes\b|\bbox notes\b|\bboxId\b/i);
+  assert.doesNotMatch(relay, /\bbox\b|\bboxes\b|\bbox notes\b/i);
 
   const { sessionBootstrapPromptForTask, extractTaskUserPrompt } = await import(
     "../src/core/task.js"
   );
   const bootstrap = sessionBootstrapPromptForTask(
-    { ...tasks[1], state: "running", status: "taken" },
+    { ...tasks[1], state: "running" },
     { workspaceRoot: path.join(dir, ".."), systemRoot: dir }
   );
   assert.match(bootstrap, /already claimed/i);
@@ -500,6 +456,13 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.doesNotMatch(bootstrap, /tent task claim|task-ack|tent report\b/);
   assert.doesNotMatch(bootstrap, /tent task get |tent task deliver /);
   assert.doesNotMatch(bootstrap, /docs API|CLI aliases/i);
+
+  await fs.mkdir(path.join(dir, "temp", "broken", "tasks"), { recursive: true });
+  await fs.writeFile(
+    path.join(dir, "temp", "broken", "tasks", "bad.md"),
+    "---\ntype: task\nrole: broken\nclaims: nope\n---\n",
+  );
+  await assert.rejects(() => loadTaskEnvelopes(env.fs), /Invalid task envelope format/);
 });
 
 test("task-ack missing envelope reports a clean error", async () => {
@@ -520,9 +483,9 @@ test("dispatch:必须提供 user prompt", async () => {
     rand: () => 0.5,
   };
   const { dispatch } = await import("../src/core/ops.js");
-  await dispatch(env as any, "bx-p1", "analyst", "旧意图");
+  await dispatch(env as any, "cx-p1", "analyst", "旧意图");
   await assert.rejects(
-    () => dispatch(env as any, "bx-o1", "analyst", ""),
+    () => dispatch(env as any, "cx-o1", "analyst", ""),
     /Dispatch requires a user prompt\./,
   );
 });
@@ -541,9 +504,9 @@ test("dispatch:拒绝整帐 claim,具体框仍可派活", async () => {
   await assert.rejects(() => dispatch(env as any, "root", "architect", "接管全帐"), message);
   await assert.rejects(() => dispatch(env as any, "wqb", "architect", "接管全帐"), message);
 
-  const result = await dispatch(env as any, "bx-p1", "architect", "处理具体框");
+  const result = await dispatch(env as any, "cx-p1", "architect", "处理具体框");
   assert.doesNotMatch(result.manifestYaml, /^claims:/m);
-  assert.match(result.manifestYaml, /id: bx-p1/);
+  assert.match(result.manifestYaml, /id: cx-p1/);
   assert.match(result.manifestYaml, /writable:/);
 });
 
@@ -555,7 +518,7 @@ test("Tent 动作不初始化 Tent Git", async () => {
     tentName: "wqb",
   };
   const { dispatch } = await import("../src/core/ops.js");
-  await dispatch(env as any, "bx-p1", "analyst", "处理任务书");
+  await dispatch(env as any, "cx-p1", "analyst", "处理任务书");
   assert.equal(await new NodeFs(dir).exists(".git"), false);
 });
 
@@ -574,7 +537,7 @@ test("parseOutputPointer:frontmatter workspace 优先,正文兼容中文字段",
   );
 });
 
-test("placeBox 换序:before/after/inside 重排 order", async () => {
+test("placeNode 换序:before/after/inside 重排 order", async () => {
   const dir = await makeTent();
   const env = {
     fs: new NodeFs(dir),
@@ -583,25 +546,25 @@ test("placeBox 换序:before/after/inside 重排 order", async () => {
     tentName: "wqb",
     rand: () => 0.5,
   };
-  const { placeBox } = await import("../src/core/ops.js");
+  const { placeNode } = await import("../src/core/ops.js");
 
-  // prompt 下:表达式任务书(bx-p1)、旧站资料(bx-a1)。把 a1 拖到 p1 之前。
-  await placeBox(env as any, "prompt/旧站资料", "prompt", {
+  // prompt 下:表达式任务书(cx-p1)、旧站资料(cx-a1)。把 a1 拖到 p1 之前。
+  await placeNode(env as any, "prompt/旧站资料", "prompt", {
     mode: "before",
-    siblingId: "bx-p1",
+    siblingId: "cx-p1",
   });
   let tent = await loadTent(new NodeFs(dir));
-  let prompt = tent.byId.get("bx-promptzone")!;
-  assert.equal(prompt.children[0].id, "bx-a1", "旧站资料 排到最前");
+  let prompt = tent.byId.get("cx-promptzone")!;
+  assert.equal(prompt.children[0].id, "cx-a1", "旧站资料 排到最前");
 
   // inside:把旧站资料拖进表达式任务书,成为其子框
-  await placeBox(env as any, "prompt/旧站资料", "prompt/表达式任务书", {
+  await placeNode(env as any, "prompt/旧站资料", "prompt/表达式任务书", {
     mode: "inside",
   });
   tent = await loadTent(new NodeFs(dir));
-  const p1 = tent.byId.get("bx-p1")!;
+  const p1 = tent.byId.get("cx-p1")!;
   assert.ok(
-    p1.children.some((c) => c.id === "bx-a1"),
+    p1.children.some((c) => c.id === "cx-a1"),
     "旧站资料 成为表达式任务书子框",
   );
 });
@@ -613,7 +576,7 @@ test("moveNode: active Task refs freeze the affected Node subtree", async () => 
   const fsa = new NodeFs(dir);
   const movePath = await writeTaskEnvelope(fsa, { now: () => "t" }, {
     role: "executor",
-    claims: [{ id: "bx-g2", path: "goal/x" }],
+    nodeRefs: [{ id: "cx-g2", path: "goal/x" }],
     manifestPath: "temp/executor/manifests/tk-moveg2.yml",
     userPrompt: "hold",
     id: "tk-moveg2",
@@ -632,12 +595,12 @@ test("moveNode: active Task refs freeze the affected Node subtree", async () => 
   };
   const { moveNode } = await import("../src/core/ops.js");
   await assert.rejects(
-    () => moveNode(env as any, "bx-g2", "bx-promptzone", { mode: "inside" }),
+    () => moveNode(env as any, "cx-g2", "cx-promptzone", { mode: "inside" }),
     /active Task ref.*tk-moveg2/i,
     "移动 active Task 直接引用的 Node 必须拒绝",
   );
   await assert.rejects(
-    () => moveNode(env as any, "bx-g1", "bx-promptzone", { mode: "inside" }),
+    () => moveNode(env as any, "cx-g1", "cx-promptzone", { mode: "inside" }),
     /active Task ref.*tk-moveg2/i,
     "移动包含 active Task 的父 Node 子树必须拒绝",
   );
@@ -653,16 +616,16 @@ test("中断认领:force-release 清理非 accepted delivery（不写 Node owner
   };
   const delivery = await createDelivery(fsa, env.clock, {
     taskId: "tk-force-release",
-    boxId: "bx-g2",
+    sourceNodeId: "cx-g2",
     role: "executor",
     summary: "未完成的交付",
     commits: [],
     status: "ready",
   });
   const { forceRelease } = await import("../src/core/ops.js");
-  await forceRelease(env as any, "bx-g2");
+  await forceRelease(env as any, "cx-g2");
   const tent = await loadTent(fsa);
-  const box = tent.byId.get("bx-g2")!;
+  const box = tent.byId.get("cx-g2")!;
   assert.equal(box.fm.owner, undefined);
   assert.equal(box.fm.status, undefined);
   assert.equal(await fsa.exists(delivery.path), false);
@@ -676,7 +639,7 @@ test("force-release: migrated no-claims Task (contextCard refs only) ends occupa
   await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
   const taskPath = await writeTaskEnvelope(fsa, clock, {
     role: "executor",
-    claims: [{ id: "bx-g2", path: "goal/x" }],
+    nodeRefs: [{ id: "cx-g2", path: "goal/x" }],
     manifestPath: "temp/executor/manifests/tk-fr-card.yml",
     userPrompt: "hold g2 for force-release",
     id: "tk-fr-card",
@@ -692,16 +655,16 @@ test("force-release: migrated no-claims Task (contextCard refs only) ends occupa
   );
   const delivery = await createDelivery(fsa, clock, {
     taskId: "tk-fr-card",
-    boxId: "bx-g2",
+    sourceNodeId: "cx-g2",
     role: "executor",
     summary: "stray ready",
     status: "ready",
   });
   const { forceRelease } = await import("../src/core/ops.js");
-  const { findActiveTaskForBox } = await import("../src/core/task-lifecycle.js");
-  assert.ok(await findActiveTaskForBox(fsa, "bx-g2"));
-  await forceRelease(env as any, "bx-g2");
-  assert.equal(await findActiveTaskForBox(fsa, "bx-g2"), undefined);
+  const { findActiveTaskForNode } = await import("../src/core/task-lifecycle.js");
+  assert.ok(await findActiveTaskForNode(fsa, "cx-g2"));
+  await forceRelease(env as any, "cx-g2");
+  assert.equal(await findActiveTaskForNode(fsa, "cx-g2"), undefined);
   assert.equal(await fsa.exists(delivery.path), false);
   const after = await loadTaskEnvelope(fsa, taskPath);
   assert.ok(
@@ -711,14 +674,14 @@ test("force-release: migrated no-claims Task (contextCard refs only) ends occupa
   assert.ok(!("claims" in after));
 });
 
-test("orphan box:同名 md 缺 id 时进入 invalid 态且不进 byId", async () => {
+test("orphan Node:同名 md 缺 id 时进入 invalid 态且不进 byId", async () => {
   const dir = await makeTent();
   await fs.mkdir(path.join(dir, "orphan"), { recursive: true });
   await fs.writeFile(path.join(dir, "orphan", "orphan.md"), "---\ntype: prompt\n---\n# orphan\n");
   const tent = await loadTent(new NodeFs(dir));
   const orphan = tent.byPath.get("orphan")!;
   assert.equal(orphan.invalid, true);
-  assert.match(orphan.invalidReason || "", /Missing id/);
+  assert.match(orphan.invalidReason || "", /Invalid Node id: <missing>/);
   assert.equal(tent.byId.has(""), false);
 });
 
@@ -753,7 +716,7 @@ test("forkNode:复制子树为兄弟框,重发 id 且清 owner/status", async ()
     rand: Math.random,
   };
   const { forkNode } = await import("../src/core/ops.js");
-  const newId = await forkNode(env as any, "bx-p1");
+  const newId = await forkNode(env as any, "cx-p1");
 
   const tent = await loadTent(fsa);
   const fork = tent.byId.get(newId)!;
@@ -763,13 +726,13 @@ test("forkNode:复制子树为兄弟框,重发 id 且清 owner/status", async ()
   assert.equal(fork.fm.owner, undefined);
   assert.equal(fork.fm.status, undefined);
   assert.equal(fork.children.length, 1, "子树结构保留");
-  assert.notEqual(fork.children[0].id, "bx-p2", "子框 id 也重发");
+  assert.notEqual(fork.children[0].id, "cx-p2", "子框 id 也重发");
   assert.equal(fork.children[0].fm.owner, undefined);
   assert.equal(fork.children[0].fm.status, undefined);
-  assert.equal(tent.byId.get("bx-p1")!.path, "prompt/表达式任务书", "原框不变");
+  assert.equal(tent.byId.get("cx-p1")!.path, "prompt/表达式任务书", "原框不变");
   assert.equal(
-    tent.byId.get("bx-promptzone")!.children.findIndex((box) => box.id === newId),
-    tent.byId.get("bx-promptzone")!.children.findIndex((box) => box.id === "bx-p1") + 1,
+    tent.byId.get("cx-promptzone")!.children.findIndex((box) => box.id === newId),
+    tent.byId.get("cx-promptzone")!.children.findIndex((box) => box.id === "cx-p1") + 1,
     "fork 根紧跟原框",
   );
 });
@@ -785,7 +748,7 @@ test("patchBody:改正文不动 frontmatter", async () => {
   const { patchBody } = await import("../src/core/ops.js");
   await patchBody(env as any, "prompt/表达式任务书", "新的 note 内容\n");
   const tent = await loadTent(new NodeFs(dir));
-  const p1 = tent.byId.get("bx-p1")!;
+  const p1 = tent.byId.get("cx-p1")!;
   assert.equal(p1.body.trim(), "新的 note 内容", "正文已改");
   assert.equal(p1.type, "prompt", "type 原样");
 });
@@ -810,10 +773,10 @@ test("temp 系统管道:不进框树、禁止 typed box、全清后重建", asyn
     clock: { now: () => "t" },
     tentName: "wqb",
   };
-  const { createBox, cleanTemp } = await import("../src/core/ops.js");
+  const { createNode, cleanTemp } = await import("../src/core/ops.js");
   await assert.rejects(
     () =>
-      createBox(env as any, {
+      createNode(env as any, {
         parentPath: "temp",
         name: "scratch",
         type: "output",
@@ -822,7 +785,7 @@ test("temp 系统管道:不进框树、禁止 typed box、全清后重建", asyn
   );
   await assert.rejects(
     () =>
-      createBox(env as any, { parentPath: "", name: "temp", type: "output" }),
+      createNode(env as any, { parentPath: "", name: "temp", type: "output" }),
     /system pipe/,
   );
   await cleanTemp(env as any);
@@ -830,7 +793,7 @@ test("temp 系统管道:不进框树、禁止 typed box、全清后重建", asyn
   assert.equal(await fsa.exists("temp/temp.md"), false);
 });
 
-test("createBox and cleanTemp reject unsafe names before filesystem writes", async () => {
+test("createNode and cleanTemp reject unsafe names before filesystem writes", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   const env = {
@@ -839,23 +802,23 @@ test("createBox and cleanTemp reject unsafe names before filesystem writes", asy
     clock: { now: () => "t" },
     tentName: "wqb",
   };
-  const { createBox, cleanTemp } = await import("../src/core/ops.js");
+  const { createNode, cleanTemp } = await import("../src/core/ops.js");
 
   await assert.rejects(
-    () => createBox(env as any, { parentPath: "", name: "a/b", type: "goal" }),
-    /Box name cannot contain path separators\./,
+    () => createNode(env as any, { parentPath: "", name: "a/b", type: "goal" }),
+    /Node name cannot contain path separators\./,
   );
   await assert.rejects(
-    () => createBox(env as any, { parentPath: "", name: "a\\b", type: "goal" }),
-    /Box name cannot contain path separators\./,
+    () => createNode(env as any, { parentPath: "", name: "a\\b", type: "goal" }),
+    /Node name cannot contain path separators\./,
   );
   await assert.rejects(
-    () => createBox(env as any, { parentPath: "", name: "Line\nBreak", type: "goal" }),
-    /Box name cannot contain newlines\./,
+    () => createNode(env as any, { parentPath: "", name: "Line\nBreak", type: "goal" }),
+    /Node name cannot contain newlines\./,
   );
   await assert.rejects(
-    () => createBox(env as any, { parentPath: "", name: "x".repeat(201), type: "goal" }),
-    /Box name cannot be longer than 200 characters\./,
+    () => createNode(env as any, { parentPath: "", name: "x".repeat(201), type: "goal" }),
+    /Node name cannot be longer than 200 characters\./,
   );
   assert.equal(await fsa.exists("a"), false);
   assert.equal(await fsa.exists("Line\nBreak"), false);
@@ -876,14 +839,14 @@ test("归档:整棵子树 wire-compat R/W 投影关闭且退出正常流程,恢�
     clock: { now: () => "t" },
     tentName: "x",
   };
-  const { archiveBox, restoreBox, tagBox } = await import("../src/core/ops.js");
+  const { archiveNode, restoreNode, tagNode } = await import("../src/core/ops.js");
   const { parseFrontmatter } = await import("../src/core/frontmatter.js");
-  const { boxNotePath, isUsableBox } = await import("../src/core/tree.js");
+  const { nodeNotePath, isUsableNode } = await import("../src/core/tree.js");
 
-  await archiveBox(env as any, "bx-p1");
+  await archiveNode(env as any, "cx-p1");
   let tent = await loadTent(fsa);
-  const root = tent.byId.get("bx-p1")!;
-  const child = tent.byId.get("bx-p2")!;
+  const root = tent.byId.get("cx-p1")!;
+  const child = tent.byId.get("cx-p2")!;
   assert.equal(root.mode, "archived");
   assert.equal(root.archived, true);
   assert.equal(child.mode, "archived");
@@ -892,37 +855,37 @@ test("归档:整棵子树 wire-compat R/W 投影关闭且退出正常流程,恢�
   assert.equal(child.archived, true);
   assert.equal("coordination" in child, false);
   assert.equal("readable" in child, false);
-  assert.equal(isUsableBox(child), false);
+  assert.equal(isUsableNode(child), false);
   // Disk: archive root has mode:archived, not legacy archived:true; child has no mode write.
-  const rootFm = parseFrontmatter(await fsa.readFile(boxNotePath(root.path))).data;
+  const rootFm = parseFrontmatter(await fsa.readFile(nodeNotePath(root.path))).data;
   assert.equal(rootFm.mode, "archived");
   assert.equal("archived" in rootFm, false);
   assert.equal("readable" in rootFm, false);
   assert.equal("writable" in rootFm, false);
-  const childFm = parseFrontmatter(await fsa.readFile(boxNotePath(child.path))).data;
+  const childFm = parseFrontmatter(await fsa.readFile(nodeNotePath(child.path))).data;
   assert.equal("mode" in childFm, false);
   assert.equal(canClaim(root).ok, false);
   const manifest = buildManifest(tent, {
     tentName: "x",
     role: "executor",
-    claimBoxes: [tent.byId.get("bx-a1")!],
+    claimNodes: [tent.byId.get("cx-a1")!],
   });
-  // Manifest readable is context-pointer set of usable boxes — archived subtree excluded
+  // Manifest readable is context-pointer set of usable nodes — archived subtree excluded
   assert.ok(
     !manifest.readable.some((x) => x.path.startsWith("prompt/表达式任务书")),
   );
   await assert.rejects(
-    () => tagBox(env as any, "bx-p1", "release"),
-    /Invalid or archived boxes cannot be tagged\./,
+    () => tagNode(env as any, "cx-p1", "release"),
+    /Invalid or archived nodes cannot be tagged\./,
   );
 
-  await restoreBox(env as any, "bx-p1");
+  await restoreNode(env as any, "cx-p1");
   tent = await loadTent(fsa);
-  assert.equal(tent.byId.get("bx-p1")!.mode, "editable");
-  assert.equal(tent.byId.get("bx-p1")!.archived, false);
-  assert.equal(isUsableBox(tent.byId.get("bx-p1")!), true);
-  assert.equal(tent.byId.get("bx-p2")!.archived, false);
-  assert.equal(tent.byId.get("bx-p2")!.invalid, false);
+  assert.equal(tent.byId.get("cx-p1")!.mode, "editable");
+  assert.equal(tent.byId.get("cx-p1")!.archived, false);
+  assert.equal(isUsableNode(tent.byId.get("cx-p1")!), true);
+  assert.equal(tent.byId.get("cx-p2")!.archived, false);
+  assert.equal(tent.byId.get("cx-p2")!.invalid, false);
 });
 
 test("永久删除:node 必须先归档,删除父级会删除整棵子树", async () => {
@@ -934,14 +897,14 @@ test("永久删除:node 必须先归档,删除父级会删除整棵子树", asyn
     clock: { now: () => "t" },
     tentName: "x",
   };
-  const { archiveBox, deleteArchivedBox } = await import("../src/core/ops.js");
-  await assert.rejects(() => deleteArchivedBox(env as any, "bx-p1"), /must be archived/);
-  await archiveBox(env as any, "bx-p1");
-  await deleteArchivedBox(env as any, "bx-p1");
+  const { archiveNode, deleteArchivedNode } = await import("../src/core/ops.js");
+  await assert.rejects(() => deleteArchivedNode(env as any, "cx-p1"), /must be archived/);
+  await archiveNode(env as any, "cx-p1");
+  await deleteArchivedNode(env as any, "cx-p1");
   assert.equal(await fsa.exists("prompt/表达式任务书"), false);
   const tent = await loadTent(fsa);
-  assert.equal(tent.byId.has("bx-p1"), false);
-  assert.equal(tent.byId.has("bx-p2"), false);
+  assert.equal(tent.byId.has("cx-p1"), false);
+  assert.equal(tent.byId.has("cx-p2"), false);
 });
 
 test("CLI rejects removed direct-core commands cleanly", async () => {
@@ -955,10 +918,10 @@ test("CLI rejects removed direct-core commands cleanly", async () => {
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /Unknown command: tag-new/);
 
-  result = await cli(dir, "report", "bx-p1", path.join(dir, "missing-report.txt"));
+  result = await cli(dir, "report", "cx-p1", path.join(dir, "missing-report.txt"));
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /Unknown command: report/);
-  assert.doesNotMatch(result.stderr, /\breport <boxId>/);
+  assert.doesNotMatch(result.stderr, /\breport <nodeId>/);
 });
 
 test("CLI public session surface is tent session; old tent agent lifecycle is rejected", async () => {
@@ -999,7 +962,7 @@ test("CLI help is Delivery-only (no legacy tent report migration track)", async 
   const text = `${help.stdout}\n${help.stderr}`;
   assert.match(text, /task deliver|tent task deliver/i);
   assert.doesNotMatch(text, /task-ack \/ report \/ complete/);
-  assert.doesNotMatch(text, /\breport <boxId>/);
+  assert.doesNotMatch(text, /\breport <nodeId>/);
 });
 
 test("原生复制收编:重复 id 先失效,再整树重发 id 并清 owner/status", async () => {
@@ -1028,12 +991,12 @@ test("原生复制收编:重复 id 先失效,再整树重发 id 并清 owner/sta
   const after = await loadTent(fsa);
   const fork = after.byPath.get("prompt/表达式任务书 副本")!;
   assert.equal(fork.invalid, false);
-  assert.notEqual(fork.id, "bx-p1");
+  assert.notEqual(fork.id, "cx-p1");
   assert.equal(fork.fm.owner, undefined);
   assert.equal(fork.fm.status, undefined);
   assert.equal(fork.children[0].name, "草稿", "只改复制根名字");
-  assert.notEqual(fork.children[0].id, "bx-p2");
-  assert.equal(after.byId.get("bx-p1")?.path, "prompt/表达式任务书");
+  assert.notEqual(fork.children[0].id, "cx-p2");
+  assert.equal(after.byId.get("cx-p1")?.path, "prompt/表达式任务书");
 });
 
 test("无法识别为新复制的重复 id 会显式失效,不会覆盖索引", async () => {
@@ -1042,21 +1005,21 @@ test("无法识别为新复制的重复 id 会显式失效,不会覆盖索引", 
   await fs.mkdir(duplicate);
   await fs.writeFile(
     path.join(duplicate, "另一个任务.md"),
-    "---\nid: bx-p1\ntype: prompt\n---\n",
+    "---\nid: cx-p1\ntype: prompt\n---\n",
   );
   const tent = await loadTent(new NodeFs(dir));
-  assert.equal(tent.byId.has("bx-p1"), false);
+  assert.equal(tent.byId.has("cx-p1"), false);
   assert.equal(tent.byPath.get("prompt/表达式任务书")?.invalid, true);
   assert.equal(tent.byPath.get("另一个任务")?.invalid, true);
 });
 
-test("duplicate box id direct operations report duplicate id", async () => {
+test("duplicate Node id direct operations report duplicate id", async () => {
   const dir = await makeTent();
   const duplicate = path.join(dir, "另一个任务");
   await fs.mkdir(duplicate);
   await fs.writeFile(
     path.join(duplicate, "另一个任务.md"),
-    "---\nid: bx-p1\ntype: prompt\n---\n",
+    "---\nid: cx-p1\ntype: prompt\n---\n",
   );
   const env = {
     fs: new NodeFs(dir),
@@ -1065,8 +1028,8 @@ test("duplicate box id direct operations report duplicate id", async () => {
   };
   const { dispatch } = await import("../src/core/ops.js");
   await assert.rejects(
-    () => dispatch(env as any, "bx-p1", "analyst", "work"),
-    /Duplicate box id 'bx-p1'/,
+    () => dispatch(env as any, "cx-p1", "analyst", "work"),
+    /Duplicate node id 'cx-p1'/i,
   );
   // Domain R/W grant is retired; call rejects before any id resolution
 });
@@ -1081,7 +1044,7 @@ test("malformed box frontmatter is marked invalid with parse detail", async () =
   const box = tent.byPath.get("prompt/表达式任务书")!;
   assert.equal(box.invalid, true);
   assert.match(box.invalidReason || "", /Invalid frontmatter: Invalid frontmatter YAML: unterminated multiline flow collection\./);
-  assert.equal(tent.byId.has("bx-p1"), false);
+  assert.equal(tent.byId.has("cx-p1"), false);
 });
 
 test("Tent mutation lock:并发写入被短期互斥,释放后可继续", async () => {

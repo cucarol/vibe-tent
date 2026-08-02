@@ -89,7 +89,7 @@ async function makeWorkspace(name = "demo"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   // Register a role so dispatch manifest preloads cleanly
   await fsa.writeFile(
@@ -326,7 +326,7 @@ test("WorkspaceHost: same basename + long shared path prefix still gets distinct
     const fsa = new NodeFs(dir);
     await scaffoldInWorkspace(fsa, {
       name,
-      boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+      nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
     });
     await fsa.writeFile(
       ".tent/roles.json",
@@ -388,7 +388,7 @@ test("docs.createNote / list / get / write with etag; promote retired + fork", a
     assert.ok(!defaulted.error, JSON.stringify(defaulted.error));
     assert.equal((defaulted.result as { type?: string }).type, "prompt");
 
-    // Explicit type: note is not a permanent alias — createBox rejects unknown types
+    // Explicit type: note is not a permanent alias — createNode rejects unknown types
     const badNote = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "legacy-note",
@@ -403,21 +403,21 @@ test("docs.createNote / list / get / write with etag; promote retired + fork", a
       type: "prompt",
     });
     assert.ok(!created.error, JSON.stringify(created.error));
-    const id = (created.result as { id: string }).id;
-    assert.match(id, /^cx-/);
+    const nodeId = (created.result as { nodeId: string }).nodeId;
+    assert.match(nodeId, /^cx-/);
     assert.equal((created.result as { type?: string }).type, "prompt");
 
     const listed = await rpc(svc, "docs.list", { workspaceId });
-    const concepts = (listed.result as { concepts: { id: string; name: string }[] }).concepts;
-    assert.ok(concepts.some((c) => c.id === id));
+    const nodes = (listed.result as { nodes: { nodeId: string; name: string }[] }).nodes;
+    assert.ok(nodes.some((node) => node.nodeId === nodeId));
 
-    const edit = await rpc(svc, "docs.readForEdit", { workspaceId, id });
+    const edit = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     assert.ok(!edit.error, JSON.stringify(edit.error));
     const { etag, body } = edit.result as { etag: string; body: string };
 
     const written = await rpc(svc, "docs.write", {
       workspaceId,
-      id,
+      nodeId,
       body: body + "\nupdated\n",
       baseEtag: etag,
     });
@@ -430,7 +430,7 @@ test("docs.createNote / list / get / write with etag; promote retired + fork", a
     // Missing baseEtag → -32008 (distinct from conflict); data carries currentEtag, not body.
     const missing = await rpc(svc, "docs.write", {
       workspaceId,
-      id,
+      nodeId,
       body: "blind overwrite\n",
     });
     assert.ok(missing.error);
@@ -440,19 +440,19 @@ test("docs.createNote / list / get / write with etag; promote retired + fork", a
       code?: string;
       currentEtag?: string;
       path?: string;
-      id?: string;
+      nodeId?: string;
       body?: string;
       raw?: string;
     };
     assert.equal(missingData.code, "etag_required");
     assert.equal(missingData.currentEtag, writeResult.etag);
-    assert.equal(missingData.id, id);
+    assert.equal(missingData.nodeId, nodeId);
     assert.equal(missingData.body, undefined);
     assert.equal(missingData.raw, undefined);
 
     const conflict = await rpc(svc, "docs.write", {
       workspaceId,
-      id,
+      nodeId,
       body: "stale\n",
       baseEtag: etag,
     });
@@ -474,7 +474,7 @@ test("docs.createNote / list / get / write with etag; promote retired + fork", a
     // docs.promote removed from CLIENT_METHODS in V0.2
     const promoted = await rpc(svc, "docs.promote", {
       workspaceId,
-      id,
+      nodeId,
       toType: "goal",
     });
     assert.ok(promoted.error);
@@ -485,24 +485,24 @@ test("docs.createNote / list / get / write with etag; promote retired + fork", a
     );
 
     // Semantic type changes use the dedicated command, not generic docs.write.
-    const editType = await rpc(svc, "docs.readForEdit", { workspaceId, id });
+    const editType = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     assert.ok(!editType.error, JSON.stringify(editType.error));
     const typeWrite = await rpc(svc, "docs.setType", {
       workspaceId,
-      id,
+      nodeId,
       type: "goal",
       baseEtag: (editType.result as { etag: string }).etag,
       actor: "user",
     });
     assert.ok(!typeWrite.error, JSON.stringify(typeWrite.error));
-    const gotGoal = await rpc(svc, "docs.get", { workspaceId, id });
-    assert.equal((gotGoal.result as { concept: { type: string } }).concept.type, "goal");
+    const gotGoal = await rpc(svc, "docs.get", { workspaceId, nodeId });
+    assert.equal((gotGoal.result as { node: { type: string } }).node.type, "goal");
 
-    const forked = await rpc(svc, "docs.fork", { workspaceId, id });
+    const forked = await rpc(svc, "docs.fork", { workspaceId, nodeId });
     assert.ok(!forked.error, JSON.stringify(forked.error));
-    const forkId = (forked.result as { id: string }).id;
+    const forkId = (forked.result as { nodeId: string }).nodeId;
     assert.match(forkId, /^cx-/);
-    assert.notEqual(forkId, id);
+    assert.notEqual(forkId, nodeId);
   });
 });
 
@@ -518,12 +518,12 @@ test("docs.importAttachment: base64 wire → binary disk; rejects bad base64/siz
       type: "prompt",
     });
     assert.ok(!created.error, JSON.stringify(created.error));
-    const id = (created.result as { id: string }).id;
+    const nodeId = (created.result as { nodeId: string }).nodeId;
 
     const raw = Buffer.from([0x00, 0xff, 0x10, 0x80, 0x00, 0x7f]);
     const imported = await rpc(svc, "docs.importAttachment", {
       workspaceId,
-      id,
+      nodeId,
       fileName: "blob.bin",
       bytesBase64: raw.toString("base64"),
     });
@@ -533,7 +533,7 @@ test("docs.importAttachment: base64 wire → binary disk; rejects bad base64/siz
       markdown: string;
       artifactRef: { kind: string; target: string };
     };
-    assert.match(result.relativePath, new RegExp(`^attachments/${id}/blob-[0-9a-f]{12}\\.bin$`));
+    assert.match(result.relativePath, new RegExp(`^attachments/${nodeId}/blob-[0-9a-f]{12}\\.bin$`));
     assert.equal(result.markdown, `![](../${result.relativePath})`);
     assert.equal(result.artifactRef.target, result.relativePath);
 
@@ -547,7 +547,7 @@ test("docs.importAttachment: base64 wire → binary disk; rejects bad base64/siz
     // Idempotent re-import
     const again = await rpc(svc, "docs.importAttachment", {
       workspaceId,
-      id,
+      nodeId,
       fileName: "blob.bin",
       bytesBase64: raw.toString("base64"),
     });
@@ -556,7 +556,7 @@ test("docs.importAttachment: base64 wire → binary disk; rejects bad base64/siz
 
     const empty = await rpc(svc, "docs.importAttachment", {
       workspaceId,
-      id,
+      nodeId,
       fileName: "empty.bin",
       bytesBase64: "",
     });
@@ -566,7 +566,7 @@ test("docs.importAttachment: base64 wire → binary disk; rejects bad base64/siz
 
     const traversal = await rpc(svc, "docs.importAttachment", {
       workspaceId,
-      id,
+      nodeId,
       fileName: "../escape.bin",
       bytesBase64: raw.toString("base64"),
     });
@@ -575,17 +575,17 @@ test("docs.importAttachment: base64 wire → binary disk; rejects bad base64/siz
     // Invalid base64
     const badB64 = await rpc(svc, "docs.importAttachment", {
       workspaceId,
-      id,
+      nodeId,
       fileName: "x.bin",
       bytesBase64: "!!!not-base64!!!",
     });
     assert.ok(badB64.error);
     assert.equal(badB64.error!.code, -32602);
 
-    // Missing concept
+    // Missing Node
     const missing = await rpc(svc, "docs.importAttachment", {
       workspaceId,
-      id: "cx-does-not-exist",
+      nodeId: "cx-doesnotexist",
       fileName: "x.bin",
       bytesBase64: raw.toString("base64"),
     });
@@ -597,7 +597,7 @@ test("docs.importAttachment: base64 wire → binary disk; rejects bad base64/siz
     const over = Buffer.alloc(25 * 1024 * 1024 + 1, 1);
     const tooBig = await rpc(svc, "docs.importAttachment", {
       workspaceId,
-      id,
+      nodeId,
       fileName: "huge.bin",
       bytesBase64: over.toString("base64"),
     });
@@ -618,13 +618,13 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
       name: "work-item",
       type: "prompt",
     });
-    const boxId = (created.result as { id: string }).id;
+    const nodeId = (created.result as { nodeId: string }).nodeId;
 
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "implement the thing",
     });
@@ -633,12 +633,12 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
     assert.match(taskPath, /^temp\//);
 
     // pending task occupies — cannot patch status via docs.write (still requires baseEtag)
-    const editPending = await rpc(svc, "docs.readForEdit", { workspaceId, id: boxId });
+    const editPending = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     assert.ok(!editPending.error, JSON.stringify(editPending.error));
     const pendingEtag = (editPending.result as { etag: string }).etag;
     const blockedPending = await rpc(svc, "docs.write", {
       workspaceId,
-      id: boxId,
+      nodeId,
       frontmatter: { status: "done" },
       baseEtag: pendingEtag,
     });
@@ -649,27 +649,28 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
     assert.ok(!claimed.error, JSON.stringify(claimed.error));
     assert.equal((claimed.result as { state: string }).state, "running");
 
-    const got = await rpc(svc, "docs.get", { workspaceId, id: boxId });
-    const concept = (got.result as {
-      concept: { status?: string; assignee?: string; invalid?: boolean; archived?: boolean };
-    }).concept;
-    // ConceptProjection no longer exposes Node FM owner/status; collab truth is box.projection.
-    assert.equal("status" in concept ? concept.status : undefined, undefined);
-    assert.equal("assignee" in concept ? concept.assignee : undefined, undefined);
-    assert.equal(concept.invalid, false);
-    assert.equal(concept.archived, false);
-    const boxProj = await rpc(svc, "box.projection", { workspaceId, id: boxId });
-    assert.ok(!boxProj.error, JSON.stringify(boxProj.error));
-    const proj = boxProj.result as { status?: string; assignee?: string };
-    assert.equal(proj.status, "doing");
-    assert.equal(proj.assignee, "executor");
+    const got = await rpc(svc, "docs.get", { workspaceId, nodeId });
+    const node = (got.result as {
+      node: { status?: string; assignee?: string; invalid?: boolean; archived?: boolean };
+    }).node;
+    // NodeProjection never exposes collaboration state; node.collaboration is authoritative.
+    assert.equal("status" in node ? node.status : undefined, undefined);
+    assert.equal("assignee" in node ? node.assignee : undefined, undefined);
+    assert.equal(node.invalid, false);
+    assert.equal(node.archived, false);
+    const collaboration = await rpc(svc, "node.collaboration", { workspaceId, nodeId });
+    assert.ok(!collaboration.error, JSON.stringify(collaboration.error));
+    const projection = collaboration.result as {
+      activeTask: null | { task: { role?: string } };
+    };
+    assert.equal(projection.activeTask?.task.role, "executor");
 
-    const editOwner = await rpc(svc, "docs.readForEdit", { workspaceId, id: boxId });
+    const editOwner = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     assert.ok(!editOwner.error, JSON.stringify(editOwner.error));
     const ownerEtag = (editOwner.result as { etag: string }).etag;
     const blockedOwner = await rpc(svc, "docs.write", {
       workspaceId,
-      id: boxId,
+      nodeId,
       frontmatter: { assignee: "hacker" },
       baseEtag: ownerEtag,
     });
@@ -677,19 +678,19 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
     assert.equal(blockedOwner.error!.code, -32010);
 
     // body-only write still allowed
-    const edit = await rpc(svc, "docs.readForEdit", { workspaceId, id: boxId });
+    const edit = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     const { etag, body } = edit.result as { etag: string; body: string };
     const bodyWrite = await rpc(svc, "docs.write", {
       workspaceId,
-      id: boxId,
+      nodeId,
       body: body + "\nnote\n",
       baseEtag: etag,
     });
     assert.ok(!bodyWrite.error, JSON.stringify(bodyWrite.error));
 
     const listed = await rpc(svc, "task.list", { workspaceId });
-    const tasks = (listed.result as { tasks: { path: string; status: string }[] }).tasks;
-    assert.ok(tasks.some((t) => t.path === taskPath && t.status === "taken"));
+    const tasks = (listed.result as { tasks: { path: string; state: string }[] }).tasks;
+    assert.ok(tasks.some((t) => t.path === taskPath && t.state === "running"));
   });
 });
 
@@ -703,15 +704,15 @@ test("docs.write always rejects retired collaboration fields on an idle Node", a
       name: "idle-collaboration-fields",
       type: "prompt",
     });
-    const id = (created.result as { id: string }).id;
+    const nodeId = (created.result as { nodeId: string }).nodeId;
 
     for (const field of ["owner", "status", "assignee"] as const) {
-      const edit = await rpc(svc, "docs.readForEdit", { workspaceId, id });
+      const edit = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
       const { etag, raw } = edit.result as { etag: string; raw: string };
 
       const structured = await rpc(svc, "docs.write", {
         workspaceId,
-        id,
+        nodeId,
         frontmatter: { [field]: "retired-value" },
         baseEtag: etag,
       });
@@ -724,7 +725,7 @@ test("docs.write always rejects retired collaboration fields on an idle Node", a
       );
       const rawWrite = await rpc(svc, "docs.write", {
         workspaceId,
-        id,
+        nodeId,
         raw: rawWithRetiredField,
         baseEtag: etag,
       });
@@ -732,11 +733,11 @@ test("docs.write always rejects retired collaboration fields on an idle Node", a
       assert.equal(rawWrite.error!.code, -32010);
     }
 
-    const edit = await rpc(svc, "docs.readForEdit", { workspaceId, id });
+    const edit = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     const { etag, body } = edit.result as { etag: string; body: string };
     const bodyWrite = await rpc(svc, "docs.write", {
       workspaceId,
-      id,
+      nodeId,
       body: `${body}\nbody-only remains allowed\n`,
       baseEtag: etag,
     });
@@ -756,30 +757,30 @@ test("docs.setMode + docs.write mode gates; raw cannot set mode/id; no read-only
       type: "prompt",
     });
     assert.ok(!created.error, JSON.stringify(created.error));
-    const id = (created.result as { id: string }).id;
+    const nodeId = (created.result as { nodeId: string }).nodeId;
 
-    const got0 = await rpc(svc, "docs.get", { workspaceId, id });
-    const c0 = (got0.result as { concept: { mode: string; archived: boolean } }).concept;
+    const got0 = await rpc(svc, "docs.get", { workspaceId, nodeId });
+    const c0 = (got0.result as { node: { mode: string; archived: boolean } }).node;
     assert.equal(c0.mode, "editable");
     assert.equal(c0.archived, false);
 
     // Ordinary body write under editable
-    const edit = await rpc(svc, "docs.readForEdit", { workspaceId, id });
+    const edit = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     const { etag, body, raw } = edit.result as { etag: string; body: string; raw: string };
     const okWrite = await rpc(svc, "docs.write", {
       workspaceId,
-      id,
+      nodeId,
       body: body + "\nok\n",
       baseEtag: etag,
     });
     assert.ok(!okWrite.error, JSON.stringify(okWrite.error));
 
     // frontmatter cannot set mode (reserved)
-    const editMode = await rpc(svc, "docs.readForEdit", { workspaceId, id });
+    const editMode = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     assert.ok(!editMode.error, JSON.stringify(editMode.error));
     const badMode = await rpc(svc, "docs.write", {
       workspaceId,
-      id,
+      nodeId,
       frontmatter: { mode: "archived" },
       baseEtag: (editMode.result as { etag: string }).etag,
     });
@@ -788,45 +789,45 @@ test("docs.setMode + docs.write mode gates; raw cannot set mode/id; no read-only
     assert.match(badMode.error!.message, /reserved|mode/i);
 
     // read-only mode is retired
-    const setRo = await rpc(svc, "docs.setMode", { workspaceId, id, mode: "read-only" });
+    const setRo = await rpc(svc, "docs.setMode", { workspaceId, nodeId, mode: "read-only" });
     assert.ok(setRo.error);
     assert.equal(setRo.error!.code, -32602);
     assert.match(setRo.error!.message, /read-only.*retired|retired in V0\.2/i);
 
     // editable still writable after rejected read-only attempt
-    const stillEditable = await rpc(svc, "docs.get", { workspaceId, id });
-    assert.equal((stillEditable.result as { concept: { mode: string } }).concept.mode, "editable");
+    const stillEditable = await rpc(svc, "docs.get", { workspaceId, nodeId });
+    assert.equal((stillEditable.result as { node: { mode: string } }).node.mode, "editable");
 
     // raw cannot inject mode
-    const edit2 = await rpc(svc, "docs.readForEdit", { workspaceId, id });
+    const edit2 = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     const raw2 = (edit2.result as { raw: string }).raw;
     const rawBad = await rpc(svc, "docs.write", {
       workspaceId,
-      id,
+      nodeId,
       raw: raw2.replace(/^---\n/, "---\nmode: archived\n"),
       baseEtag: (edit2.result as { etag: string }).etag,
     });
     assert.ok(rawBad.error);
     assert.equal(rawBad.error!.code, -32010);
 
-    const setArch = await rpc(svc, "docs.setMode", { workspaceId, id, mode: "archived" });
+    const setArch = await rpc(svc, "docs.setMode", { workspaceId, nodeId, mode: "archived" });
     assert.ok(!setArch.error, JSON.stringify(setArch.error));
     assert.equal((setArch.result as { mode: string; archived: boolean }).mode, "archived");
     assert.equal((setArch.result as { archived: boolean }).archived, true);
 
-    const blockedArch = await rpc(svc, "docs.write", { workspaceId, id, body: "x\n" });
+    const blockedArch = await rpc(svc, "docs.write", { workspaceId, nodeId, body: "x\n" });
     assert.ok(blockedArch.error);
     assert.match(blockedArch.error!.message, /archived/i);
 
-    const restored = await rpc(svc, "docs.setMode", { workspaceId, id, mode: "editable" });
+    const restored = await rpc(svc, "docs.setMode", { workspaceId, nodeId, mode: "editable" });
     assert.ok(!restored.error, JSON.stringify(restored.error));
     assert.equal((restored.result as { mode: string }).mode, "editable");
 
     // editable body write works again
-    const edit3 = await rpc(svc, "docs.readForEdit", { workspaceId, id });
+    const edit3 = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     const again = await rpc(svc, "docs.write", {
       workspaceId,
-      id,
+      nodeId,
       body: (edit3.result as { body: string }).body + "\nagain\n",
       baseEtag: (edit3.result as { etag: string }).etag,
     });
@@ -846,7 +847,7 @@ test("AgentRuntimePort.* rejected; not in client method table", async () => {
   });
 });
 
-test("external concept file change fans concept.changed via watch", async () => {
+test("external concept file change fans node.changed via watch", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
@@ -854,7 +855,7 @@ test("external concept file change fans concept.changed via watch", async () => 
 
     const events: string[] = [];
     svc.events.subscribe((ev) => {
-      if (ev.type === "concept.changed" && ev.workspaceId === workspaceId) {
+      if (ev.type === "node.changed" && ev.workspaceId === workspaceId) {
         events.push(ev.type);
       }
     });
@@ -869,7 +870,7 @@ test("external concept file change fans concept.changed via watch", async () => 
     while (Date.now() < deadline && events.length === 0) {
       await new Promise((r) => setTimeout(r, 50));
     }
-    assert.ok(events.length >= 1, "expected concept.changed from watch");
+    assert.ok(events.length >= 1, "expected node.changed from watch");
   });
 });
 
@@ -886,7 +887,7 @@ test("WorkspaceHost preserves concept and task events from one watch co-burst", 
   const taskPaths: string[] = [];
   events.subscribe((event) => {
     const eventPath = String((event.payload as { path?: string }).path ?? "");
-    if (event.type === "concept.changed") conceptPaths.push(eventPath);
+    if (event.type === "node.changed") conceptPaths.push(eventPath);
     if (event.type === "task.state") taskPaths.push(eventPath);
   });
 
@@ -918,7 +919,7 @@ test("WorkspaceHost does not retroactively suppress an admitted external event",
   });
   const conceptPaths: string[] = [];
   events.subscribe((event) => {
-    if (event.type === "concept.changed") {
+    if (event.type === "node.changed") {
       conceptPaths.push(String((event.payload as { path?: string }).path ?? ""));
     }
   });
@@ -951,7 +952,7 @@ test("WorkspaceHost scoped self-write suppresses only matching paths", async () 
   const taskPaths: string[] = [];
   events.subscribe((event) => {
     const eventPath = String((event.payload as { path?: string }).path ?? "");
-    if (event.type === "concept.changed") conceptPaths.push(eventPath);
+    if (event.type === "node.changed") conceptPaths.push(eventPath);
     if (event.type === "task.state") taskPaths.push(eventPath);
   });
 
@@ -988,7 +989,7 @@ test(
     const taskPaths: string[] = [];
     events.subscribe((event) => {
       const eventPath = String((event.payload as { path?: string }).path ?? "");
-      if (event.type === "concept.changed") conceptPaths.push(eventPath);
+      if (event.type === "node.changed") conceptPaths.push(eventPath);
       if (event.type === "task.state") taskPaths.push(eventPath);
     });
 
@@ -1024,7 +1025,7 @@ test("mount dead-session reconcile does not suppress an immediate external Node 
       type: "prompt",
     });
     assert.ok(!created.error, JSON.stringify(created.error));
-    const nodeId = (created.result as { id: string }).id;
+    const nodeId = (created.result as { nodeId: string }).nodeId;
     const dispatched = await rpc(svc, "task.dispatch", {
       workspaceId,
       nodeIds: [nodeId],
@@ -1061,7 +1062,7 @@ test("mount dead-session reconcile does not suppress an immediate external Node 
 
     const conceptPaths: string[] = [];
     const unsubscribe = svc.events.subscribe((event) => {
-      if (event.type === "concept.changed") {
+      if (event.type === "node.changed") {
         conceptPaths.push(String((event.payload as { path?: string }).path ?? ""));
       }
     });
@@ -1082,7 +1083,7 @@ test("mount dead-session reconcile does not suppress an immediate external Node 
       }
       assert.ok(
         conceptPaths.some((value) => value.toLowerCase() === "inbox/inbox.md"),
-        `expected immediate concept.changed after reconcile; got ${JSON.stringify(conceptPaths)}`
+        `expected immediate node.changed after reconcile; got ${JSON.stringify(conceptPaths)}`
       );
 
       const taskResult = await rpc(svc, "task.get", {

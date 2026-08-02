@@ -13,19 +13,19 @@ export function renderWorkspacePage(controller: WorkspaceController): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Tent · Markdown Concept Workspace</title>
+  <title>Tent · Markdown Node Workspace</title>
   <style>${SHELL_CSS}</style>
 </head>
 <body>
   <header class="topbar">
     <strong>Tent Markdown Workspace</strong>
-    <span class="muted">B3 concept tree · docs.* client · no workspace source tree</span>
+    <span class="muted">B3 node tree · docs.* client · no workspace source tree</span>
     ${snap.statusMessage ? `<span class="status">${escapeHtml(snap.statusMessage)}</span>` : ""}
   </header>
   <div class="layout">
     <aside class="panel tree-panel">
       <div class="panel-head">
-        <span>Concepts</span>
+        <span>Nodes</span>
         <form class="inline" method="POST" action="/action">
           <input type="hidden" name="op" value="createNote" />
           <input name="name" placeholder="New note" required />
@@ -37,11 +37,11 @@ export function renderWorkspacePage(controller: WorkspaceController): string {
         <button type="submit">Search</button>
       </form>
       ${renderSearchHits(snap)}
-      <nav class="tree" aria-label="Concept tree">${renderTree(snap.tree, snap.activeCx)}</nav>
+      <nav class="tree" aria-label="Node tree">${renderTree(snap.tree, snap.activeCx)}</nav>
     </aside>
     <main class="panel main-panel">
       ${renderTabs(snap)}
-      ${active ? renderEditor(controller, active.cx) : `<div class="empty">Open a concept from the tree.</div>`}
+      ${active ? renderEditor(controller, active.nodeId) : `<div class="empty">Open a node from the tree.</div>`}
     </main>
     <aside class="panel side-panel">
       <div class="panel-head">Backlinks</div>
@@ -63,17 +63,17 @@ export function renderWorkspacePage(controller: WorkspaceController): string {
 }
 
 function renderTree(nodes: WorkspaceSnapshot["tree"], activeCx: string | null, depth = 0): string {
-  if (!nodes.length) return depth === 0 ? `<p class="muted">No concepts</p>` : "";
+  if (!nodes.length) return depth === 0 ? `<p class="muted">No nodes</p>` : "";
   const items = nodes
     .map((n) => {
       const usable = !n.invalid && !n.archived;
       const badge = usable
-        ? `<span class="badge box">${escapeHtml(n.type)}</span>`
+        ? `<span class="badge node">${escapeHtml(n.type)}</span>`
         : `<span class="badge note">${n.archived ? "archived" : "invalid"}</span>`;
-      const active = n.id === activeCx ? " active" : "";
+      const active = n.nodeId === activeCx ? " active" : "";
       const kids = n.children?.length ? renderTree(n.children, activeCx, depth + 1) : "";
       return `<li class="tree-node${active}">
-        <a href="/?open=${encodeURIComponent(n.id)}" data-open="${escapeHtml(n.id)}">
+        <a href="/?open=${encodeURIComponent(n.nodeId)}" data-open="${escapeHtml(n.nodeId)}">
           <span class="name">${escapeHtml(n.title || n.name)}</span>
           <span class="type">${escapeHtml(n.type)}</span>
           ${badge}
@@ -90,7 +90,7 @@ function renderSearchHits(snap: WorkspaceSnapshot): string {
   const items = snap.searchHits
     .map(
       (h) =>
-        `<li><a href="/?open=${encodeURIComponent(h.cx)}">${escapeHtml(h.name)}</a>
+        `<li><a href="/?open=${encodeURIComponent(h.nodeId)}">${escapeHtml(h.name)}</a>
          <span class="muted">${escapeHtml(h.match)} · ${escapeHtml(h.snippet)}</span></li>`
     )
     .join("");
@@ -101,28 +101,28 @@ function renderTabs(snap: WorkspaceSnapshot): string {
   if (!snap.tabs.length) return "";
   const tabs = snap.tabs
     .map((t) => {
-      const active = t.cx === snap.activeCx ? " active" : "";
+      const active = t.nodeId === snap.activeCx ? " active" : "";
       const dirty = t.dirty ? " ·" : "";
-      return `<a class="tab${active}" href="/?open=${encodeURIComponent(t.cx)}">${escapeHtml(t.name)}${dirty}</a>`;
+      return `<a class="tab${active}" href="/?open=${encodeURIComponent(t.nodeId)}">${escapeHtml(t.name)}${dirty}</a>`;
     })
     .join("");
   return `<div class="tabs">${tabs}</div>`;
 }
 
-function renderEditor(controller: WorkspaceController, cx: string): string {
-  const tab = controller.getSnapshot().tabs.find((t) => t.cx === cx);
+function renderEditor(controller: WorkspaceController, nodeId: string): string {
+  const tab = controller.getSnapshot().tabs.find((t) => t.nodeId === nodeId);
   if (!tab) return "";
   const conflict = tab.conflict
     ? `<div class="conflict">
         <strong>Conflict</strong>: ${escapeHtml(tab.conflict.message)}
         <form method="POST" action="/action" class="inline">
           <input type="hidden" name="op" value="loadDisk" />
-          <input type="hidden" name="cx" value="${escapeHtml(cx)}" />
+          <input type="hidden" name="nodeId" value="${escapeHtml(nodeId)}" />
           <button type="submit">Load disk</button>
         </form>
         <form method="POST" action="/action" class="inline">
           <input type="hidden" name="op" value="overwrite" />
-          <input type="hidden" name="cx" value="${escapeHtml(cx)}" />
+          <input type="hidden" name="nodeId" value="${escapeHtml(nodeId)}" />
           <button type="submit">Keep mine / overwrite</button>
         </form>
       </div>`
@@ -132,19 +132,19 @@ function renderEditor(controller: WorkspaceController, cx: string): string {
     <div class="toolbar">
       <form method="POST" action="/action" class="inline">
         <input type="hidden" name="op" value="setMode" />
-        <input type="hidden" name="cx" value="${escapeHtml(cx)}" />
+        <input type="hidden" name="nodeId" value="${escapeHtml(nodeId)}" />
         <input type="hidden" name="mode" value="source" />
         <button type="submit" class="${tab.mode === "source" ? "active" : ""}">Source</button>
       </form>
       <form method="POST" action="/action" class="inline">
         <input type="hidden" name="op" value="setMode" />
-        <input type="hidden" name="cx" value="${escapeHtml(cx)}" />
+        <input type="hidden" name="nodeId" value="${escapeHtml(nodeId)}" />
         <input type="hidden" name="mode" value="preview" />
         <button type="submit" class="${tab.mode === "preview" ? "active" : ""}">Preview</button>
       </form>
       <form method="POST" action="/action" class="inline">
         <input type="hidden" name="op" value="save" />
-        <input type="hidden" name="cx" value="${escapeHtml(cx)}" />
+        <input type="hidden" name="nodeId" value="${escapeHtml(nodeId)}" />
         <button type="submit">Save</button>
       </form>
       <span class="muted">${tab.dirty ? "dirty" : "clean"} · etag ${escapeHtml(tab.etag.slice(0, 8))}</span>
@@ -152,10 +152,10 @@ function renderEditor(controller: WorkspaceController, cx: string): string {
 
   const body =
     tab.mode === "preview"
-      ? `<div class="preview">${controller.previewHtml(cx)}</div>`
+      ? `<div class="preview">${controller.previewHtml(nodeId)}</div>`
       : `<form method="POST" action="/action" class="editor-form">
           <input type="hidden" name="op" value="updateAndSave" />
-          <input type="hidden" name="cx" value="${escapeHtml(cx)}" />
+          <input type="hidden" name="nodeId" value="${escapeHtml(nodeId)}" />
           <textarea name="buffer" spellcheck="false">${escapeHtml(tab.buffer)}</textarea>
           <div class="toolbar"><button type="submit">Save</button></div>
         </form>`;
@@ -168,7 +168,7 @@ function renderBacklinks(snap: WorkspaceSnapshot): string {
   return `<ul class="backlinks">${snap.backlinks
     .map(
       (b) =>
-        `<li><a href="/?open=${encodeURIComponent(b.fromCx)}">${escapeHtml(b.fromName)}</a>
+        `<li><a href="/?open=${encodeURIComponent(b.fromNodeId)}">${escapeHtml(b.fromName)}</a>
          <span class="muted">${escapeHtml(b.kind)} · ${escapeHtml(b.raw)}</span></li>`
     )
     .join("")}</ul>`;
@@ -188,7 +188,7 @@ function renderMeta(tab: NonNullable<ReturnType<WorkspaceController["getActiveTa
   return `<div class="meta">
     <div class="panel-head">Meta</div>
     <dl>
-      <dt>cx</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
+      <dt>cx</dt><dd><code>${escapeHtml(tab.nodeId)}</code></dd>
       <dt>path</dt><dd>${escapeHtml(tab.path)}</dd>
       <dt>type</dt><dd>${escapeHtml(tab.type)}</dd>
     </dl>
@@ -205,7 +205,7 @@ const SHELL_CSS = `
   --text: #e7eef7;
   --muted: #8b9bb0;
   --accent: #5b9fd4;
-  --badge-box: #3d8b6e;
+  --badge-node: #3d8b6e;
   --badge-note: #6b7280;
   --danger: #c45c5c;
   font-family: "Segoe UI", system-ui, sans-serif;
@@ -232,7 +232,7 @@ body { margin: 0; background: var(--bg); color: var(--text); }
 .tree-node.active > a, .tree-node a:hover { background: #243041; }
 .tree .type { color: var(--muted); font-size: .75rem; }
 .badge { font-size: .65rem; padding: .1rem .35rem; border-radius: 999px; text-transform: uppercase; }
-.badge.box { background: var(--badge-box); }
+.badge.node { background: var(--badge-node); }
 .badge.note { background: var(--badge-note); }
 .search-form, .inline { display: flex; gap: .35rem; margin: 0 .75rem .5rem; }
 input, textarea, button {

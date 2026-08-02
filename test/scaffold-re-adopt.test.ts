@@ -424,7 +424,7 @@ test("reAdoptOrphanTent: fail-closed when already a valid Tent (zero writes)", a
   const { workspace, fsa } = await mkWorkspace();
   await scaffoldInWorkspace(fsa, {
     name: "valid",
-    boxes: [{ name: "root", type: "goal", id: "cx-valid1" }],
+    nodes: [{ name: "root", type: "goal", id: "cx-valid1" }],
   });
 
   const paths = [

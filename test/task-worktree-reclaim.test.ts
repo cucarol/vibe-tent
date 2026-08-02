@@ -44,7 +44,7 @@ function fixtureContextCard(overrides?: {
   nodeId?: string;
   nodePath?: string;
 }): TaskContextCardV1 {
-  const nodeId = overrides?.nodeId ?? "bx-1";
+  const nodeId = overrides?.nodeId ?? "cx-1";
   const nodePath = overrides?.nodePath ?? "inbox";
   const contextGeneration = computeContextGeneration({
     workspaceIdentity: "reclaim-fixture",
@@ -71,7 +71,6 @@ function profileTask(
   return {
     role: "fake-default",
     manifest: "temp/agent-profiles/fake-default/manifests/m.yml",
-    status: "taken",
     assigneeKind: "agentProfile",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -147,7 +146,7 @@ test("accepted clean integrated profile lane reclaims; branch+commits preserved;
       path: "temp/agent-profiles/fake-default/deliveries/dl-1.md",
       id: "dl-1",
       taskId,
-      boxId: "bx-1",
+      sourceNodeId: "cx-1",
       role: "fake-default",
       status: "accepted",
       summary: "done",
@@ -256,7 +255,7 @@ test("accepted with unintegrated commits refuses (UNINTEGRATED)", async () => {
       path: "d.md",
       id: "dl-u",
       taskId,
-      boxId: "bx-1",
+      sourceNodeId: "cx-1",
       role: "fake-default",
       status: "accepted",
       summary: "claimed integrated but was not",
@@ -369,7 +368,7 @@ test("P0: accepted Delivery omits branch tip → UNINTEGRATED (task-branch settl
       path: "d.md",
       id: "dl-omit",
       taskId,
-      boxId: "bx-1",
+      sourceNodeId: "cx-1",
       role: "fake-default",
       status: "accepted",
       summary: "only declared",

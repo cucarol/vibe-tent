@@ -233,7 +233,7 @@ test("docs/skill drift: in-workspace Node/Task/Delivery model and retired type a
     /Base type definitions may set optional `workspacePointer: true`/
   );
   assert.doesNotMatch(spec, /Built-in `output` enables the flag/);
-  assert.doesNotMatch(spec, /multiple workspace pointer boxes/);
+  assert.doesNotMatch(spec, /multiple workspace pointer nodes/);
   assert.doesNotMatch(spec, /workspacePointer/);
 
   // tent-task keeps the automatic lane naming contract in its path reference.

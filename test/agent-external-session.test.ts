@@ -38,7 +38,7 @@ async function makeWorkspace(name = "ext-sess"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -174,10 +174,10 @@ test("service RPC session.enter/status/leave: idempotent, no deliver", async () 
       name: "work-item",
       type: "prompt",
       body: "# work\n",
-    })) as { id: string };
+    })) as { nodeId: string };
     // Prefer task.dispatch if available via client helper
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [note.id],
+      nodeIds: [note.nodeId],
       role: "executor",
       prompt: "do the thing",
       parentActor: { kind: "user", id: "user" },

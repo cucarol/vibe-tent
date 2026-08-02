@@ -1,7 +1,7 @@
-// Markdown workspace wire types — aligned with docs/desktop/concept-model.md §8
+// Markdown workspace wire types — aligned with docs/desktop/node-model.md §8
 // and architecture EventEnvelope shapes (docs client surface only).
 
-/** Structured association to a real deliverable outside concept identity. */
+/** Structured association to a real deliverable outside node identity. */
 export type ArtifactRef = {
   kind: "path" | "dir" | "commit" | "url" | "other";
   target: string;
@@ -10,8 +10,8 @@ export type ArtifactRef = {
 
 export type NodeMode = "editable" | "archived";
 
-export type ConceptProjection = {
-  id: string;
+export type NodeProjection = {
+  nodeId: string;
   path: string;
   name: string;
   type: string;
@@ -21,12 +21,12 @@ export type ConceptProjection = {
   archived: boolean;
   invalid: boolean;
   bodyPreview?: string;
-  children: ConceptProjection[];
+  children: NodeProjection[];
   artifactRefs?: ArtifactRef[];
 };
 
-export type ConceptEditSnapshot = {
-  cx: string;
+export type NodeEditSnapshot = {
+  nodeId: string;
   path: string;
   name: string;
   type: string;
@@ -38,7 +38,7 @@ export type ConceptEditSnapshot = {
 };
 
 export type DocsWriteInput = {
-  cx: string;
+  nodeId: string;
   baseEtag: string;
   /** Full raw file (frontmatter + body), or body-only with frontmatter patch. */
   raw?: string;
@@ -47,7 +47,7 @@ export type DocsWriteInput = {
 };
 
 export type DocsWriteResult =
-  | { ok: true; etag: string; cx: string; path: string }
+  | { ok: true; etag: string; nodeId: string; path: string }
   | {
       ok: false;
       code:
@@ -57,7 +57,7 @@ export type DocsWriteResult =
         | "not_found"
         | "invalid";
       message: string;
-      disk?: ConceptEditSnapshot;
+      disk?: NodeEditSnapshot;
     };
 
 export type CreateNoteInput = {
@@ -68,7 +68,7 @@ export type CreateNoteInput = {
 };
 
 export type SearchHit = {
-  cx: string;
+  nodeId: string;
   path: string;
   name: string;
   title?: string;
@@ -79,13 +79,13 @@ export type SearchHit = {
 export type ResolvedLink = {
   raw: string;
   kind: "wiki" | "md" | "artifact" | "unresolved";
-  targetCx?: string;
+  targetNodeId?: string;
   targetPath?: string;
   label?: string;
 };
 
 export type BacklinkHit = {
-  fromCx: string;
+  fromNodeId: string;
   fromPath: string;
   fromName: string;
   raw: string;
@@ -95,12 +95,12 @@ export type BacklinkHit = {
 export type OutLink = {
   raw: string;
   kind: "wiki" | "md" | "artifact";
-  targetCx?: string;
+  targetNodeId?: string;
   targetPath?: string;
   label?: string;
 };
 
-/** Collaboration projection fields protected while a box has an active task. */
+/** Retired collaboration frontmatter fields that Node writes must not revive. */
 export const PROTECTED_COLLAB_FIELDS = ["status", "owner", "assignee"] as const;
 
 export type ProtectedCollabField = (typeof PROTECTED_COLLAB_FIELDS)[number];

@@ -30,7 +30,7 @@ async function makeWorkspace(name = "cli-p02"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -240,11 +240,11 @@ test("task RPC layer: claim → deliver; ServiceClient observes same state; serv
       workspaceId,
       name: "work-item",
       type: "prompt",
-    })) as { id: string };
-    const boxId = created.id;
+    })) as { nodeId: string };
+    const nodeId = created.nodeId;
 
     const dispatched = (await observer.taskDispatch(workspaceId, {
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "Ship CLI attach",
       parentActor: { kind: "user", id: "user" },
@@ -306,9 +306,9 @@ test("task claim/deliver via attach (not injected client) sees same ServiceClien
       workspaceId: mount.workspaceId,
       name: "agent-job",
       type: "prompt",
-    })) as { id: string };
+    })) as { nodeId: string };
     const dispatched = (await setup.taskDispatch(mount.workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "agent path",
       parentActor: { kind: "user", id: "user" },
@@ -360,9 +360,9 @@ test("task command errors: missing summary / unknown sub / attach-only miss", as
       workspaceId: mount.workspaceId,
       name: "err-box",
       type: "prompt",
-    })) as { id: string };
+    })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "x",
       parentActor: { kind: "user", id: "user" },
@@ -388,9 +388,9 @@ test("task list/get human output for agents", async () => {
       workspaceId: mount.workspaceId,
       name: "list-me",
       type: "prompt",
-    })) as { id: string };
+    })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "list test",
       parentActor: { kind: "user", id: "user" },
@@ -418,9 +418,9 @@ test("task-input ack CLI omits actor for persisted user reviewer path", async ()
       workspaceId: mount.workspaceId,
       name: "uncertain-cli",
       type: "prompt",
-    })) as { id: string };
+    })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "cli user ack",
       parentActor: { kind: "user", id: "user" },

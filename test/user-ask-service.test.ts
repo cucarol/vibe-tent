@@ -83,7 +83,7 @@ async function makeWorkspace(): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "user-ask",
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -139,11 +139,11 @@ test("task.askUser parks running task; second ask rejected; reply resumes + pers
     const created = (await client.docsCreateNote(workspaceId, {
       name: "work-item",
       type: "prompt",
-    })) as { id: string };
-    const boxId = created.id;
+    }));
+    const nodeId = created.nodeId;
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "Need a product decision",
       parentActor: { kind: "user", id: "user" },
@@ -238,10 +238,10 @@ test("userAsk.deny resumes task; interrupt cancels pending ask", async () => {
     const created = (await client.docsCreateNote(workspaceId, {
       name: "deny-item",
       type: "prompt",
-    })) as { id: string };
+    }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "Ask then deny",
       parentActor: { kind: "user", id: "user" },
@@ -306,10 +306,10 @@ test("managed ACP: UserAsk reply continues same session with User Answer prompt 
     const created = (await client.docsCreateNote(workspaceId, {
       name: "managed-ask",
       type: "prompt",
-    })) as { id: string };
+    }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "Managed ask flow",
       parentActor: { kind: "user", id: "user" },
@@ -421,7 +421,7 @@ test("two workspaces sharing relative taskPath keep independent UserAsk pending"
 
   async function plantRunningTask(
     workspaceRoot: string,
-    boxId: string
+    nodeId: string
   ): Promise<void> {
     const abs = path.join(workspaceRoot, ".tent", ...sharedTaskPath.split("/"));
     await fs.mkdir(path.dirname(abs), { recursive: true });
@@ -437,7 +437,7 @@ test("two workspaces sharing relative taskPath keep independent UserAsk pending"
       // Flow maps only — frontmatter parser does not read nested block maps.
       "parentActor: {kind: user, id: user}\n" +
       "reviewer: {kind: user, id: user}\n" +
-      `claims: [${boxId}]\n` +
+      `claims: [${nodeId}]\n` +
       "manifest: temp/executor/manifest.yml\n" +
       "deliveryPolicy: review\n" +
       `createdAt: "${now}"\n` +
@@ -456,7 +456,7 @@ test("two workspaces sharing relative taskPath keep independent UserAsk pending"
     await fs.mkdir(path.dirname(manifestAbs), { recursive: true });
     await fs.writeFile(
       manifestAbs,
-      `role: executor\nclaims: [${boxId}]\nreadable: []\nwritable: []\n`,
+      `role: executor\nclaims: [${nodeId}]\nreadable: []\nwritable: []\n`,
       "utf8"
     );
   }
@@ -471,14 +471,14 @@ test("two workspaces sharing relative taskPath keep independent UserAsk pending"
     const noteA = (await client.docsCreateNote(workspaceA, {
       name: "shared-path-a",
       type: "prompt",
-    })) as { id: string };
+    }));
     const noteB = (await client.docsCreateNote(workspaceB, {
       name: "shared-path-b",
       type: "prompt",
-    })) as { id: string };
+    }));
 
-    await plantRunningTask(wsA, noteA.id);
-    await plantRunningTask(wsB, noteB.id);
+    await plantRunningTask(wsA, noteA.nodeId);
+    await plantRunningTask(wsB, noteB.nodeId);
 
     const askedA = (await client.taskAskUser(workspaceA, sharedTaskPath, {
       question: "Alpha only?",
@@ -534,9 +534,9 @@ test("task.askUser rejects non-running task", async () => {
     const created = (await client.docsCreateNote(workspaceId, {
       name: "queued-only",
       type: "prompt",
-    })) as { id: string };
+    }));
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.id],
+      nodeIds: [created.nodeId],
       role: "executor",
       prompt: "not claimed",
       parentActor: { kind: "user", id: "user" },

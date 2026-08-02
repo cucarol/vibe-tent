@@ -76,7 +76,7 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "grok-e2e",
-    boxes: [],
+    nodes: [],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -101,12 +101,12 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
       type: "prompt",
     });
     assert.ok(!created.error, JSON.stringify(created.error));
-    const boxId = (created.result as { id: string }).id;
+    const nodeId = (created.result as { nodeId: string }).nodeId;
     const dispatched = await rpc("task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "e2e",
       prompt: "Reply with a short delivery report containing the marker TENT_GROK_E2E_OK. Do not call tools.",
       deliveryPolicy: "review",

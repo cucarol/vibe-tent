@@ -88,7 +88,7 @@ async function makeWs(): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "pcat",
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -410,10 +410,10 @@ test("delete gates + permission timeout uses runtime after catalog update", asyn
     };
 
     async function start(name: string, profileId: string) {
-      const box = (await rpc(svc, "docs.createNote", { workspaceId, name, type: "prompt" })).result as { id: string };
+      const box = (await rpc(svc, "docs.createNote", { workspaceId, name, type: "prompt" })).result as { nodeId: string };
       const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" }, workspaceId, nodeIds: [box.id], role: "executor", prompt: name });
+      reviewer: { kind: "user", id: "user" }, workspaceId, nodeIds: [box.nodeId], role: "executor", prompt: name });
       const taskPath = (d.result as { taskPath: string }).taskPath;
       await rpc(svc, "task.claim", { workspaceId, taskPath });
       const started = await rpc(svc, "task.startSession", {

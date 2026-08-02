@@ -19,7 +19,7 @@ import {
   updateRelation,
 } from "../src/core/relations.js";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
-import { boxNotePath, loadTent } from "../src/core/tree.js";
+import { nodeNotePath, loadTent } from "../src/core/tree.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 
 async function makeSystemRoot(): Promise<{ workspace: string; systemFs: NodeFs }> {
@@ -27,7 +27,7 @@ async function makeSystemRoot(): Promise<{ workspace: string; systemFs: NodeFs }
   const workspaceFs = new NodeFs(workspace);
   await scaffoldInWorkspace(workspaceFs, {
     name: "rel-core",
-    boxes: [
+    nodes: [
       { name: "Alpha", type: "prompt", body: "# Alpha\n" },
       { name: "Beta", type: "prompt", body: "# Beta\n" },
     ],
@@ -224,7 +224,7 @@ test("loadTent loads relations; body wiki links stay out of relations array", as
   });
 
   // Body wiki link is independent
-  const notePath = boxNotePath(alpha.path);
+  const notePath = nodeNotePath(alpha.path);
   const raw = await systemFs.readFile(notePath);
   const { data, body, keyOrder } = parseFrontmatter(raw);
   await systemFs.writeFile(
@@ -252,7 +252,7 @@ test("read projection tolerates corrupt rows; mutation refuses and leaves disk u
     target: { nodeId: beta.id },
   });
 
-  const notePath = boxNotePath(alpha.path);
+  const notePath = nodeNotePath(alpha.path);
   const beforeRaw = await systemFs.readFile(notePath);
   const { data, body, keyOrder } = parseFrontmatter(beforeRaw);
   // Plant: (1) future-format extra field (2) truly corrupt id — both must block mutation.

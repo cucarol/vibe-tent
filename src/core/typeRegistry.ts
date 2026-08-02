@@ -72,10 +72,10 @@ export function typeExists(type: string, registry: TypeRegistry): boolean {
 }
 
 /**
- * Whether a type string is a valid V0.2 concept type after cutover:
+ * Whether a type string is a valid V0.2 node type after cutover:
  * primary ∈ goal|prompt|output, optional secondary present in registry as modifier.
  */
-export function isValidConceptType(type: string, registry: TypeRegistry): boolean {
+export function isValidNodeType(type: string, registry: TypeRegistry): boolean {
   const { base, modifier } = splitType(type);
   if (!isCanonicalPrimary(base)) return false;
   if (!registry[base] || (registry[base].tier ?? "base") === "modifier") return false;

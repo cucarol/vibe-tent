@@ -5,12 +5,12 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { NodeFs } from "../src/fs/node-fs.js";
 import type { FsAdapter } from "../src/core/adapter.js";
-import { createBox, moveNode } from "../src/core/ops.js";
+import { createNode, moveNode } from "../src/core/ops.js";
 import { loadTent } from "../src/core/tree.js";
 import { loadOrder, saveOrder, ROOT_KEY } from "../src/core/order.js";
 import { scaffoldInWorkspace, scaffoldTent } from "../src/core/scaffold.js";
-import { buildConceptIndex } from "../src/core/okf.js";
-import { rewriteConceptLinks } from "../src/core/renameOps.js";
+import { buildNodeIndex } from "../src/core/okf.js";
+import { rewriteNodeLinks } from "../src/core/renameOps.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { createServiceClient } from "../src/service/client.js";
@@ -86,10 +86,10 @@ test("moveNode: reparent keeps cx-, moves subtree, rewrites path links", async (
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, { name: "x" });
   const env = envFor(fsa);
-  const parentId = await createBox(env as any, { parentPath: "", name: "parent", type: "prompt" });
-  const childId = await createBox(env as any, { parentPath: "parent", name: "child", type: "prompt" });
-  const destId = await createBox(env as any, { parentPath: "", name: "dest", type: "prompt" });
-  const hubId = await createBox(env as any, { parentPath: "", name: "hub", type: "prompt" });
+  const parentId = await createNode(env as any, { parentPath: "", name: "parent", type: "prompt" });
+  const childId = await createNode(env as any, { parentPath: "parent", name: "child", type: "prompt" });
+  const destId = await createNode(env as any, { parentPath: "", name: "dest", type: "prompt" });
+  const hubId = await createNode(env as any, { parentPath: "", name: "hub", type: "prompt" });
   await fsa.writeFile(
     "hub/hub.md",
     `---\nid: ${hubId}\ntype: prompt\n---\n\nSee [Child](../parent/child/child.md) and [[parent/child]].\n`
@@ -121,20 +121,20 @@ test("moveNode: depth-changing reparent restyles ./ and ../ inside moved subtree
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, { name: "x" });
   const env = envFor(fsa);
-  await createBox(env as any, { parentPath: "", name: "parent", type: "prompt" });
-  const childId = await createBox(env as any, {
+  await createNode(env as any, { parentPath: "", name: "parent", type: "prompt" });
+  const childId = await createNode(env as any, {
     parentPath: "parent",
     name: "child",
     type: "prompt",
   });
-  const grandId = await createBox(env as any, {
+  const grandId = await createNode(env as any, {
     parentPath: "parent/child",
     name: "grand",
     type: "prompt",
   });
-  const peerId = await createBox(env as any, { parentPath: "", name: "peer", type: "prompt" });
-  const destId = await createBox(env as any, { parentPath: "", name: "dest", type: "prompt" });
-  const nestId = await createBox(env as any, {
+  const peerId = await createNode(env as any, { parentPath: "", name: "peer", type: "prompt" });
+  const destId = await createNode(env as any, { parentPath: "", name: "dest", type: "prompt" });
+  const nestId = await createNode(env as any, {
     parentPath: "dest",
     name: "nest",
     type: "prompt",
@@ -181,14 +181,14 @@ test("moveNode: reparent to root restyles outbound relative to unmoved peer", as
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, { name: "x" });
   const env = envFor(fsa);
-  await createBox(env as any, { parentPath: "", name: "parent", type: "prompt" });
-  const childId = await createBox(env as any, {
+  await createNode(env as any, { parentPath: "", name: "parent", type: "prompt" });
+  const childId = await createNode(env as any, {
     parentPath: "parent",
     name: "child",
     type: "prompt",
   });
-  await createBox(env as any, { parentPath: "parent/child", name: "grand", type: "prompt" });
-  await createBox(env as any, { parentPath: "", name: "peer", type: "prompt" });
+  await createNode(env as any, { parentPath: "parent/child", name: "grand", type: "prompt" });
+  await createNode(env as any, { parentPath: "", name: "peer", type: "prompt" });
 
   await fsa.writeFile(
     "parent/child/child.md",
@@ -214,7 +214,7 @@ test("moveNode: reparent to root restyles outbound relative to unmoved peer", as
   assert.match(body, /\[\[child\/grand\]\]/);
 });
 
-test("rewriteConceptLinks: restyleFromNotePath fixes relatives when source moves", () => {
+test("rewriteNodeLinks: restyleFromNotePath fixes relatives when source moves", () => {
   const pathMap = new Map([
     ["parent/child", "dest/nest/child"],
     ["parent/child/child", "dest/nest/child/child"],
@@ -227,15 +227,15 @@ test("rewriteConceptLinks: restyleFromNotePath fixes relatives when source moves
     "[Abs](parent/child/grand/grand.md)",
     "[[parent/child/grand]]",
   ].join("\n");
-  const out = rewriteConceptLinks(
+  const out = rewriteNodeLinks(
     body,
     "parent/child/child.md",
     pathMap,
     "child",
     "child",
     {
-      renameBoxId: "cx-child",
-      conceptIndex: buildConceptIndex([] as any),
+      renameNodeId: "cx-child",
+      conceptIndex: buildNodeIndex([] as any),
       restyleFromNotePath: "dest/nest/child/child.md",
     }
   );
@@ -254,9 +254,9 @@ test("moveNode: same-parent reorder is order-only (no link rewrite)", async () =
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, { name: "x" });
   const env = envFor(fsa);
-  const a = await createBox(env as any, { parentPath: "", name: "alpha", type: "prompt" });
-  const b = await createBox(env as any, { parentPath: "", name: "beta", type: "prompt" });
-  const c = await createBox(env as any, { parentPath: "", name: "gamma", type: "prompt" });
+  const a = await createNode(env as any, { parentPath: "", name: "alpha", type: "prompt" });
+  const b = await createNode(env as any, { parentPath: "", name: "beta", type: "prompt" });
+  const c = await createNode(env as any, { parentPath: "", name: "gamma", type: "prompt" });
   await fsa.writeFile(
     "beta/beta.md",
     `---\nid: ${b}\ntype: prompt\n---\n\nSee [Alpha](../alpha/alpha.md).\n`
@@ -284,10 +284,10 @@ test("moveNode: concurrent Task refs do not freeze move (cx-tsw53f)", async () =
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, { name: "x" });
   const env = envFor(fsa);
-  const root = await createBox(env as any, { parentPath: "", name: "zone", type: "prompt" });
-  const child = await createBox(env as any, { parentPath: "zone", name: "busy", type: "prompt" });
-  const free = await createBox(env as any, { parentPath: "", name: "free", type: "prompt" });
-  const park = await createBox(env as any, { parentPath: "", name: "park", type: "prompt" });
+  const root = await createNode(env as any, { parentPath: "", name: "zone", type: "prompt" });
+  const child = await createNode(env as any, { parentPath: "zone", name: "busy", type: "prompt" });
+  const free = await createNode(env as any, { parentPath: "", name: "free", type: "prompt" });
+  const park = await createNode(env as any, { parentPath: "", name: "park", type: "prompt" });
 
   await fsa.mkdir("temp/executor/tasks");
   await fsa.writeFile(
@@ -347,8 +347,8 @@ test("moveNode: refuses cycle and archived", async () => {
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, { name: "x" });
   const env = envFor(fsa);
-  const parent = await createBox(env as any, { parentPath: "", name: "p", type: "prompt" });
-  const child = await createBox(env as any, { parentPath: "p", name: "c", type: "prompt" });
+  const parent = await createNode(env as any, { parentPath: "", name: "p", type: "prompt" });
+  const child = await createNode(env as any, { parentPath: "p", name: "c", type: "prompt" });
 
   await assert.rejects(
     () => moveNode(env as any, parent, child, { mode: "inside" }),
@@ -371,9 +371,9 @@ test("moveNode: injected write failure restores tree and note bytes", async () =
   const base = new NodeFs(dir);
   await scaffoldTent(base, { name: "x" });
   const setupEnv = envFor(base);
-  const a = await createBox(setupEnv as any, { parentPath: "", name: "alpha", type: "prompt" });
-  const b = await createBox(setupEnv as any, { parentPath: "", name: "beta", type: "prompt" });
-  const dest = await createBox(setupEnv as any, { parentPath: "", name: "dest", type: "prompt" });
+  const a = await createNode(setupEnv as any, { parentPath: "", name: "alpha", type: "prompt" });
+  const b = await createNode(setupEnv as any, { parentPath: "", name: "beta", type: "prompt" });
+  const dest = await createNode(setupEnv as any, { parentPath: "", name: "dest", type: "prompt" });
   void dest;
 
   const betaOriginal = [
@@ -411,7 +411,7 @@ test("docs.move: service user-only, expectedPath stale, event once, client metho
     const fsa = new NodeFs(workspace);
     await scaffoldInWorkspace(fsa, {
       name: "demo",
-      boxes: [
+      nodes: [
         { name: "inbox", type: "prompt", body: "# inbox\n" },
         { name: "shelf", type: "prompt", body: "# shelf\n" },
         { name: "peer", type: "prompt", body: "Link [Inbox](../inbox/inbox.md).\n" },
@@ -424,24 +424,19 @@ test("docs.move: service user-only, expectedPath stale, event once, client metho
 
     const moveEvents: Array<Record<string, unknown>> = [];
     const unsub = svc.events.subscribe((ev) => {
-      if (ev.type !== "concept.changed" || ev.workspaceId !== workspaceId) return;
+      if (ev.type !== "node.changed" || ev.workspaceId !== workspaceId) return;
       const payload = ev.payload as Record<string, unknown>;
       if (payload.reason === "docs.move") moveEvents.push(payload);
     });
 
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
-    const inbox = (await client.docsGet(workspaceId, { path: "inbox" })) as {
-      concept: { id: string; path: string };
-    };
-    const shelf = (await client.docsGet(workspaceId, { path: "shelf" })) as {
-      concept: { id: string; path: string };
-    };
-    const cx = inbox.concept.id;
-    const shelfId = shelf.concept.id;
+    const loaded = await loadTent(new NodeFs(path.join(workspace, ".tent")));
+    const cx = loaded.byPath.get("inbox")!.id;
+    const shelfId = loaded.byPath.get("shelf")!.id;
 
     const denied = await rpc(svc, "docs.move", {
       workspaceId,
-      id: cx,
+      nodeId: cx,
       expectedPath: "inbox",
       newParentId: shelfId,
       position: { mode: "inside" },
@@ -453,7 +448,7 @@ test("docs.move: service user-only, expectedPath stale, event once, client metho
 
     const stale = await rpc(svc, "docs.move", {
       workspaceId,
-      id: cx,
+      nodeId: cx,
       expectedPath: "inbox-stale",
       newParentId: shelfId,
       position: { mode: "inside" },
@@ -466,32 +461,30 @@ test("docs.move: service user-only, expectedPath stale, event once, client metho
     assert.equal(moveEvents.length, 0);
 
     const moved = (await client.docsMove(workspaceId, {
-      id: cx,
+      nodeId: cx,
       expectedPath: "inbox",
       newParentId: shelfId,
       position: { mode: "inside" },
     })) as {
-      id: string;
+      nodeId: string;
       path: string;
       oldPath: string;
       pathMap: Record<string, string>;
     };
-    assert.equal(moved.id, cx);
+    assert.equal(moved.nodeId, cx);
     assert.equal(moved.oldPath, "inbox");
     assert.equal(moved.path, "shelf/inbox");
     assert.equal(moved.pathMap["inbox"], "shelf/inbox");
 
     assert.equal(moveEvents.length, 1);
     assert.equal(moveEvents[0]!.reason, "docs.move");
-    assert.equal(moveEvents[0]!.id, cx);
+    assert.equal(moveEvents[0]!.nodeId, cx);
     assert.equal(moveEvents[0]!.path, "shelf/inbox");
     assert.equal(moveEvents[0]!.oldPath, "inbox");
     assert.ok(moveEvents[0]!.pathMap);
 
-    const byId = (await client.docsGet(workspaceId, { id: cx })) as {
-      concept: { id: string; path: string };
-    };
-    assert.equal(byId.concept.path, "shelf/inbox");
+    const byId = (await client.docsGet(workspaceId, cx)) as { node: { nodeId: string; path: string } };
+    assert.equal(byId.node.path, "shelf/inbox");
 
     // scaffoldInWorkspace places concepts under workspace/.tent/
     const peer = await fsa.readFile(".tent/peer/peer.md");
@@ -503,12 +496,12 @@ test("docs.move: service user-only, expectedPath stale, event once, client metho
       name: "other",
       type: "prompt",
       parentPath: "shelf",
-    })) as { id: string; path?: string };
+    })) as { nodeId: string; path?: string };
     const reordered = (await client.docsMove(workspaceId, {
-      id: cx,
+      nodeId: cx,
       expectedPath: "shelf/inbox",
       newParentId: shelfId,
-      position: { mode: "after", siblingId: otherNote.id },
+      position: { mode: "after", siblingId: otherNote.nodeId },
     })) as { path: string; oldPath: string; rewrittenNotes: string[] };
     assert.equal(reordered.path, "shelf/inbox");
     assert.equal(reordered.oldPath, "shelf/inbox");
@@ -516,7 +509,7 @@ test("docs.move: service user-only, expectedPath stale, event once, client metho
 
     const missing = await rpc(svc, "docs.move", {
       workspaceId,
-      id: "cx-missing-xx",
+      nodeId: "cx-missingxx",
       expectedPath: "x",
       newParentId: null,
       position: { mode: "inside" },

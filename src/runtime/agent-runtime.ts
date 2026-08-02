@@ -1,5 +1,5 @@
 // AgentRuntimePort implementation — service-internal only (B0 §4).
-// Maps ProcessSupervisor + SessionRegistry + ProviderAdapter; no task/box writes.
+// Maps ProcessSupervisor + SessionRegistry + ProviderAdapter; no Task/Node writes.
 
 import * as path from "node:path";
 import type { ManagedSession, ProviderAdapter } from "../adapters/types.js";

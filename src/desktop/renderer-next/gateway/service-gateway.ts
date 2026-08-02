@@ -48,7 +48,7 @@ export type ServiceGatewayHandlers = {
 export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
   const type = event.type;
   // Coarse default mapping — keep open; do not hard-code draft field lists.
-  if (type.startsWith("concept.") || type.startsWith("docs.")) {
+  if (type.startsWith("node.") || type.startsWith("docs.")) {
     return { keys: ["docs.tree", "docs.get"], event, reason: type };
   }
   if (type.startsWith("task.") || type.startsWith("delivery.") || type.startsWith("session.")) {

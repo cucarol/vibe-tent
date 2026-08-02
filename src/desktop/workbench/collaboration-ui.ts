@@ -13,9 +13,7 @@ import type {
 /** Task states still shown in Activity / Inspector action lists (includes failed for retry/cancel). */
 export const ACTIONABLE_TASK_STATES = [
   "queued",
-  "pending",
   "running",
-  "taken",
   "waiting",
   "delivered",
   "failed",
@@ -51,7 +49,6 @@ export type TaskReviewItem = {
   path: string;
   id?: string;
   role: string;
-  status: string;
   state: string;
   /** Node ids from TaskProjection.referencedNodeIds (Context Card refs). */
   referencedNodeIds: string[];
@@ -75,7 +72,7 @@ export type TaskReviewItem = {
 };
 
 export type DispatchFormState = {
-  boxId: string | null;
+  nodeId: string | null;
   /**
    * Whether the selected node may enter the task lifecycle.
    * Legacy field name kept for UI call sites; means usable (!invalid && !archived).
@@ -90,7 +87,7 @@ export type DispatchValidation = {
   ok: boolean;
   reason: string | null;
   payload: {
-    boxId: string;
+    nodeId: string;
     role: string;
     prompt: string;
     parentActor: { kind: "user" | "role"; id: string };
@@ -232,8 +229,8 @@ export function buildStartSessionPayload(
  * UI must not invent domain rules beyond empty-field / usable-node gate.
  */
 export function validateDispatchForm(form: DispatchFormState): DispatchValidation {
-  if (!form.boxId) {
-    return { ok: false, reason: "请先选中一个协作框。", payload: null };
+  if (!form.nodeId) {
+    return { ok: false, reason: "请先选中一个节点。", payload: null };
   }
   if (!form.coordination) {
     return {
@@ -264,7 +261,7 @@ export function validateDispatchForm(form: DispatchFormState): DispatchValidatio
     ok: true,
     reason: null,
     payload: {
-      boxId: form.boxId,
+      nodeId: form.nodeId,
       role,
       prompt,
       // Desktop form is user-direct; Role-dispatched child uses CLI/Service explicit actors.
@@ -299,14 +296,12 @@ export function buildRejectPayload(
 }
 
 /** Map lifecycle state to short Chinese label for list display. */
-export function taskStateLabel(state: string, legacyStatus?: string): string {
-  const s = state || legacyStatus || "";
+export function taskStateLabel(state: string): string {
+  const s = state;
   switch (s) {
     case "queued":
-    case "pending":
       return "排队中";
     case "running":
-    case "taken":
       return "执行中";
     case "waiting":
       return "等待中";
@@ -457,7 +452,7 @@ export function buildTaskReviewItems(
   }
 
   return tasks.map((task) => {
-    const state = task.state || task.status;
+    const state = task.state;
     let delivery: DeliveryProjection | undefined;
     if (task.activeDeliveryId) {
       delivery = byId.get(task.activeDeliveryId);
@@ -479,7 +474,7 @@ export function buildTaskReviewItems(
 
     const commits = delivery?.commits ?? [];
     const deliverySummary = delivery?.summary;
-    const label = taskStateLabel(state, task.status);
+    const label = taskStateLabel(state);
     const sessLabel = sessionStateLabel(session?.state);
     const promptBit = task.prompt ? truncate(task.prompt, 48) : "";
     const summaryLine = [
@@ -495,7 +490,6 @@ export function buildTaskReviewItems(
       path: task.path,
       id: task.id,
       role: task.role,
-      status: task.status,
       state,
       referencedNodeIds: task.referencedNodeIds ?? [],
       prompt: task.prompt,
@@ -523,8 +517,8 @@ function truncate(text: string, max: number): string {
   return t.slice(0, max - 1) + "…";
 }
 
-/** Suggest create-note name for a coordination box of the given type. */
-export function suggestBoxName(typeName: string, now = Date.now()): string {
-  const safe = typeName.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "box";
+/** Suggest a create-note name for a Node of the given type. */
+export function suggestNodeName(typeName: string, now = Date.now()): string {
+  const safe = typeName.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "node";
   return `${safe}-${now.toString(36).slice(-4)}`;
 }

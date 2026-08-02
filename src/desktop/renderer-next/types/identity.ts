@@ -2,11 +2,11 @@
  * Stable identity types for the next renderer foundation.
  *
  * Frozen boundary: entityRef (Service/domain identity) is never the same
- * concept as placementId (local Canvas layout instance). Draft field shapes
- * from exploration boxes must not be hard-coded here.
+ * Node as placementId (local Canvas layout instance). Draft field shapes
+ * from exploration nodes must not be hard-coded here.
  */
 
-/** Opaque Service / domain entity reference (box, task, delivery, …). */
+/** Opaque Service/domain entity reference (Node, Task, Delivery, …). */
 export type EntityRef = string;
 
 /** Local Canvas placement instance id — UI-only; may point at an EntityRef. */

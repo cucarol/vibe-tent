@@ -517,7 +517,7 @@ function walkMdast(node: Nodes, visit: (node: Nodes) => void): void {
 }
 
 /**
- * Collect image refs from task envelope user prompt + claimed concept bodies.
+ * Collect image refs from the Task prompt and referenced Node bodies.
  * Explicit sources only — no workspace scan. Safe read failures are skipped.
  */
 export async function collectBootstrapImageRefsFromTask(input: {

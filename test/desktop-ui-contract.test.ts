@@ -70,7 +70,7 @@ test("btnClass / btnHtml / iconBtnHtml produce stable, escapable markup", () => 
 
 test("documentTabHtml always exposes a clickable close control with data-close-tab", () => {
   const html = documentTabHtml({
-    cx: 'cx-1"x',
+    nodeId: 'cx-1"x',
     name: "笔记 <A>",
     active: true,
     dirty: true,

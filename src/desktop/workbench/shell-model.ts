@@ -5,7 +5,8 @@ import { ServiceDocsClient } from "../client/service-docs-client.js";
 import { WorkspaceController, type WorkspaceSnapshot } from "../../markdown/workspace-controller.js";
 import type {
   AgentProfileProjection,
-  BoxProjection,
+  NodeCollaboration,
+  NodeCollaborationsResult,
   DeliveryProjection,
   RoleRegistryEntryProjection,
   SessionProjection,
@@ -19,11 +20,11 @@ import type {
 } from "../types.js";
 import { ContextCardStore } from "./context-card-store.js";
 import {
-  applyBoxProjectionsToTree,
-  collectCoordinationBoxIds,
-  normalizeBoxProjection,
-  type BoxProjectionView,
-} from "./box-projection.js";
+  applyNodeCollaborationsToTree,
+  collectUsableNodeIds,
+  normalizeNodeCollaboration,
+  type NodeCollaborationView,
+} from "./node-collaboration.js";
 import {
   buildStartSessionPayload,
   buildTaskReviewItems,
@@ -40,15 +41,15 @@ import {
 export type ShellTaskRow = {
   path: string;
   role: string;
-  status: string;
   /** Node ids from TaskProjection.referencedNodeIds (Context Card refs). */
   referencedNodeIds: string[];
-  /** Full lifecycle state when available (task-api). */
-  state?: string;
+  /** Canonical lifecycle state (task-api). */
+  state: string;
   id?: string;
   prompt?: string;
   activeDeliveryId?: string;
   sessionId?: string;
+  contextCard: TaskProjection["contextCard"];
 };
 
 export type ShellSnapshot = {
@@ -66,8 +67,8 @@ export type ShellSnapshot = {
   /** Selected machine-local profile id for start agent. */
   selectedProfileId: string | null;
   statusMessage: string | null;
-  /** box.projection by boxId — collab status truth for workbench consumers. */
-  boxProjections: BoxProjectionView[];
+  /** Canonical Node collaboration projections keyed by nodeId. */
+  nodeCollaborations: NodeCollaborationView[];
 };
 
 export class DesktopShellModel {
@@ -84,7 +85,7 @@ export class DesktopShellModel {
   private profiles: ProfileOption[] = [];
   private selectedProfileId: string | null = null;
   private statusMessage: string | null = null;
-  private boxProjections = new Map<string, BoxProjectionView>();
+  private nodeCollaborations = new Map<string, NodeCollaborationView>();
   private listeners = new Set<() => void>();
   readonly cards = new ContextCardStore();
 
@@ -104,7 +105,7 @@ export class DesktopShellModel {
     let workspace = raw;
     if (raw) {
       const stripped = stripTreeCollab(raw.tree as unknown as TreeNodeShape[]);
-      const overlaid = applyBoxProjectionsToTree(stripped, this.boxProjections);
+      const overlaid = applyNodeCollaborationsToTree(stripped, this.nodeCollaborations);
       workspace = {
         ...raw,
         tree: overlaid as unknown as typeof raw.tree,
@@ -122,12 +123,12 @@ export class DesktopShellModel {
           id: t.id,
           role: t.role,
           referencedNodeIds: t.referencedNodeIds,
-          status: (t.status === "taken" ? "taken" : "pending") as "pending" | "taken",
-          state: t.state || t.status,
+          state: t.state,
           prompt: t.prompt,
           activeDeliveryId: t.activeDeliveryId,
           sessionId: t.sessionId,
           manifest: "",
+          contextCard: t.contextCard,
         })),
         this.deliveries,
         this.sessions
@@ -137,7 +138,7 @@ export class DesktopShellModel {
       profiles: this.profiles,
       selectedProfileId: this.selectedProfileId,
       statusMessage: this.statusMessage,
-      boxProjections: [...this.boxProjections.values()],
+      nodeCollaborations: [...this.nodeCollaborations.values()],
     };
   }
 
@@ -230,45 +231,39 @@ export class DesktopShellModel {
   async bindForeground(workspaceId: string): Promise<void> {
     if (!this.rpc) return;
     this.foregroundWorkspaceId = workspaceId;
-    this.boxProjections.clear();
+    this.nodeCollaborations.clear();
     this.docs = new ServiceDocsClient({ rpc: this.rpc, workspaceId });
     this.controller = new WorkspaceController(this.docs);
     this.controller.subscribe(() => this.emit());
     await this.controller.refreshTree();
-    // refreshTasks also refreshes box.projection (task/delivery/session invalidation).
+    // Task/delivery/session changes invalidate Node collaboration projections.
     await Promise.all([this.refreshTasks(), this.refreshRegistry(), this.refreshProfiles()]);
     this.emit();
   }
 
-  /**
-   * box.projection fan-out for coordination nodes in the current tree.
-   * Sole authority for status/assignee/activeTaskId on the shell snapshot tree.
-   */
-  async refreshBoxProjections(): Promise<void> {
+  /** Refresh canonical Node collaboration in one batch. */
+  async refreshNodeCollaborations(): Promise<void> {
     if (!this.rpc || !this.foregroundWorkspaceId || !this.controller) {
-      this.boxProjections.clear();
+      this.nodeCollaborations.clear();
       this.emit();
       return;
     }
     const snap = this.controller.getSnapshot();
-    const ids = collectCoordinationBoxIds((snap.tree ?? []) as TreeNodeShape[]);
+    const ids = collectUsableNodeIds((snap.tree ?? []) as TreeNodeShape[]);
     if (ids.length === 0) {
-      this.boxProjections.clear();
+      this.nodeCollaborations.clear();
       this.emit();
       return;
     }
     const ws = this.foregroundWorkspaceId;
-    const results = await Promise.all(
-      ids.map((id) =>
-        this.rpc!
-          .call<BoxProjection>("box.projection", { workspaceId: ws, id })
-          .then((raw) => normalizeBoxProjection(raw))
-          .catch(() => null)
-      )
-    );
-    this.boxProjections.clear();
+    const batch = await this.rpc.call<NodeCollaborationsResult>("node.collaborations", {
+      workspaceId: ws,
+      nodeIds: ids,
+    });
+    const results = batch.items.map((item) => normalizeNodeCollaboration(item));
+    this.nodeCollaborations.clear();
     for (const p of results) {
-      if (p) this.boxProjections.set(p.boxId, p);
+      if (p) this.nodeCollaborations.set(p.nodeId, p);
     }
     this.emit();
   }
@@ -296,18 +291,18 @@ export class DesktopShellModel {
       this.tasks = (taskResult.tasks ?? []).map((t) => ({
         path: t.path,
         role: t.role,
-        status: t.status,
         referencedNodeIds: t.referencedNodeIds ?? [],
         state: t.state,
         id: t.id,
         prompt: t.prompt,
         activeDeliveryId: t.activeDeliveryId,
         sessionId: t.sessionId,
+        contextCard: t.contextCard,
       }));
       this.deliveries = deliveryResult.deliveries ?? [];
       this.sessions = sessionResult.sessions ?? [];
-      // Task/delivery/session changes invalidate box collab projection.
-      await this.refreshBoxProjections();
+      // Task/Delivery/Session changes invalidate node.collaboration.
+      await this.refreshNodeCollaborations();
     } catch {
       this.tasks = [];
       this.deliveries = [];
@@ -409,7 +404,7 @@ export class DesktopShellModel {
     const tab = this.controller?.getActiveTab();
     if (!tab) return;
     const fg = this.workspaces.find((w) => w.workspaceId === this.foregroundWorkspaceId);
-    this.cards.pushBox(tab.cx, tab.path, tab.name, fg?.workspaceRoot);
+    this.cards.pushNode(tab.nodeId, tab.path, tab.name, fg?.workspaceRoot);
   }
 
   floatingStatus(): FloatingStatusSnapshot {
@@ -417,13 +412,11 @@ export class DesktopShellModel {
     return {
       health: this.health,
       pendingTasks: this.tasks.filter(
-        (t) => t.status === "pending" || t.state === "queued" || t.state === "pending"
+        (t) => t.state === "queued"
       ).length,
       takenTasks: this.tasks.filter(
         (t) =>
-          t.status === "taken" ||
           t.state === "running" ||
-          t.state === "taken" ||
           t.state === "waiting" ||
           t.state === "delivered"
       ).length,
@@ -438,7 +431,7 @@ export class DesktopShellModel {
 }
 
 type TreeNodeShape = {
-  id: string;
+  nodeId: string;
   coordination?: boolean;
   invalid?: boolean;
   archived?: boolean;
@@ -449,7 +442,7 @@ type TreeNodeShape = {
   [key: string]: unknown;
 };
 
-/** Drop list-side collab fields before box.projection overlay. */
+/** Drop list-side collaboration fields before applying live Node occupation. */
 function stripTreeCollab(nodes: TreeNodeShape[]): TreeNodeShape[] {
   return nodes.map((n) => {
     const { status: _s, assignee: _a, children, ...rest } = n;

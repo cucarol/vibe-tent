@@ -64,11 +64,11 @@ export async function sweepAttachmentGc(
     try {
       tent = await loadTent(fs);
     } catch (error) {
-      result.warnings.push(`concept scan failed: ${message(error)}`);
+      result.warnings.push(`Node scan failed: ${message(error)}`);
       return result;
     }
-    if (tent.duplicateIds.size > 0 || [...tent.byPath.values()].some((box) => box.invalid)) {
-      result.warnings.push("concept index is ambiguous or invalid; attachment deletion skipped");
+    if (tent.duplicateIds.size > 0 || [...tent.byPath.values()].some((node) => node.invalid)) {
+      result.warnings.push("Node index is ambiguous or invalid; attachment deletion skipped");
       return result;
     }
 

@@ -11,7 +11,7 @@ import { backupCorruptRegistry, warnRegistryRecovered } from "./registryRecovery
 /** Stable annotation handle prefix (contract). */
 export const ANNOTATION_ID_PREFIX = "an-";
 
-// Same alphabet as concept/role ids (id.ts) — avoid exporting private helpers.
+// Same alphabet as Node/Role ids (id.ts) — avoid exporting private helpers.
 const AN_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
 
 export type AnnotationStatus = "open" | "resolved";
@@ -106,7 +106,7 @@ function defaultClock(): Clock {
   return { now: () => new Date().toISOString() };
 }
 
-/** Random an- id (same alphabet family as concept/role ids). */
+/** Random an- id (same alphabet family as Node/Role ids). */
 export function makeAnnotationId(rand: RandomSource = Math.random, len = 8): string {
   let s = "";
   for (let i = 0; i < len; i++) {

@@ -1,5 +1,5 @@
 import { setIcon, setTooltip } from "obsidian";
-import type { Box } from "../core/types.js";
+import type { Node } from "../core/types.js";
 import { rwSegmentStates } from "./ui-model.js";
 export { roleColorValue } from "./ui-model.js";
 
@@ -54,7 +54,7 @@ export function drawRwSegment(
  * Legacy name retained for call sites. Node fm.owner is retired — always false.
  * Structural freeze / active-task gates live on Core claim + ops paths.
  */
-export function hasActiveOwnerInScope(_box: Box): boolean {
+export function hasActiveOwnerInScope(_box: Node): boolean {
   void _box;
   return false;
 }

@@ -33,7 +33,7 @@ async function makeGitTentWorkspace(name = "reclaim-svc"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await git(workspace, "add", "-A");
   await git(workspace, "commit", "-q", "-m", "scaffold tent");
@@ -120,13 +120,13 @@ test("P0: terminal reject auto-reclaims clean profile Task worktree", async () =
     const inboxBox =
       [...tent.byId.values()].find((b) => b.path === "inbox" || b.path.endsWith("/inbox")) ??
       [...tent.byId.values()][0];
-    const boxId = inboxBox?.id ?? "bx-inbox";
-    const boxPath = inboxBox?.path ?? "inbox";
+    const nodeId = inboxBox?.id ?? "cx-inbox";
+    const nodePath = inboxBox?.path ?? "inbox";
 
     const taskPath = await writeTaskEnvelope(sysFs, clock, {
       parentActor: { kind: "user", id: "user" },
       role: FAKE_DEFAULT_PROFILE_ID,
-      claims: [{ id: boxId, path: boxPath }],
+      nodeRefs: [{ id: nodeId, path: nodePath }],
       manifestPath: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/manifests/${taskId}.yml`,
       userPrompt: "reclaim after reject",
       id: taskId,
@@ -141,12 +141,11 @@ test("P0: terminal reject auto-reclaims clean profile Task worktree", async () =
     });
     await patchTaskEnvelope(sysFs, taskPath, {
       state: "delivered",
-      status: "taken",
       updatedAt: clock.now(),
     });
     const delivery = await createDelivery(sysFs, clock, {
       taskId,
-      boxId,
+      sourceNodeId: nodeId,
       role: FAKE_DEFAULT_PROFILE_ID,
       summary: "ready for terminal reject",
       status: "ready",
@@ -219,13 +218,13 @@ test("P0: dirty terminal lane fails closed; exact reconcile reclaims after clean
   const inboxBox =
     [...tent.byId.values()].find((b) => b.path === "inbox" || b.path.endsWith("/inbox")) ??
     [...tent.byId.values()][0];
-  const boxId = inboxBox?.id ?? "bx-inbox";
-  const boxPath = inboxBox?.path ?? "inbox";
+  const nodeId = inboxBox?.id ?? "cx-inbox";
+  const nodePath = inboxBox?.path ?? "inbox";
 
   const taskPath = await writeTaskEnvelope(sysFs, clock, {
     parentActor: { kind: "user", id: "user" },
     role: FAKE_DEFAULT_PROFILE_ID,
-    claims: [{ id: boxId, path: boxPath }],
+    nodeRefs: [{ id: nodeId, path: nodePath }],
     manifestPath: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/manifests/${taskId}.yml`,
     userPrompt: "dirty then clean",
     id: taskId,
@@ -240,12 +239,11 @@ test("P0: dirty terminal lane fails closed; exact reconcile reclaims after clean
   });
   await patchTaskEnvelope(sysFs, taskPath, {
     state: "delivered",
-    status: "taken",
     updatedAt: clock.now(),
   });
   const delivery = await createDelivery(sysFs, clock, {
     taskId,
-    boxId,
+    sourceNodeId: nodeId,
     role: FAKE_DEFAULT_PROFILE_ID,
     summary: "terminal via interrupt path",
     status: "ready",
@@ -320,7 +318,7 @@ test("P0: workspace.mount does not discover or reclaim historical terminal lanes
   const taskPath = await writeTaskEnvelope(sysFs, clock, {
     parentActor: { kind: "user", id: "user" },
     role: FAKE_DEFAULT_PROFILE_ID,
-    claims: [{ id: inboxBox?.id ?? "bx-1", path: inboxBox?.path ?? "inbox" }],
+    nodeRefs: [{ id: inboxBox?.id ?? "cx-1", path: inboxBox?.path ?? "inbox" }],
     manifestPath: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/manifests/${taskId}.yml`,
     userPrompt: "old terminal never observed by reclaim feature",
     id: taskId,
@@ -335,7 +333,6 @@ test("P0: workspace.mount does not discover or reclaim historical terminal lanes
   });
   await patchTaskEnvelope(sysFs, taskPath, {
     state: "accepted",
-    status: "taken",
     updatedAt: clock.now(),
   });
 
@@ -361,13 +358,13 @@ test("P0: SESSION_ACTIVE when bound managed session still live", async () => {
     const lane = await ensureTaskWorkspace(ws, taskId);
     const tent = await import("../src/core/tree.js").then((m) => m.loadTent(sysFs));
     const inboxBox = [...tent.byId.values()][0];
-    const boxId = inboxBox?.id ?? "bx-1";
-    const boxPath = inboxBox?.path ?? "inbox";
+    const nodeId = inboxBox?.id ?? "cx-1";
+    const nodePath = inboxBox?.path ?? "inbox";
 
     const taskPath = await writeTaskEnvelope(sysFs, clock, {
       parentActor: { kind: "user", id: "user" },
       role: FAKE_DEFAULT_PROFILE_ID,
-      claims: [{ id: boxId, path: boxPath }],
+      nodeRefs: [{ id: nodeId, path: nodePath }],
       manifestPath: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/manifests/${taskId}.yml`,
       userPrompt: "session still live",
       id: taskId,
@@ -382,7 +379,6 @@ test("P0: SESSION_ACTIVE when bound managed session still live", async () => {
     });
     await patchTaskEnvelope(sysFs, taskPath, {
       state: "running",
-      status: "taken",
       updatedAt: clock.now(),
     });
     const started = await rpc(svc, "task.startSession", {
@@ -399,7 +395,6 @@ test("P0: SESSION_ACTIVE when bound managed session still live", async () => {
     // Force terminal without stopping the live session (simulates race / external leave lag).
     await patchTaskEnvelope(sysFs, taskPath, {
       state: "failed",
-      status: "taken",
       workspace: lane.workspace,
       worktree: lane.worktree,
       branch: lane.branch,
@@ -474,8 +469,8 @@ test("P0: accepted-while-external queues; session.leave reclaims exact Task only
     const clock = { now: () => new Date().toISOString() };
     const tent = await import("../src/core/tree.js").then((m) => m.loadTent(sysFs));
     const inboxBox = [...tent.byId.values()][0];
-    const boxId = inboxBox?.id ?? "bx-1";
-    const boxPath = inboxBox?.path ?? "inbox";
+    const nodeId = inboxBox?.id ?? "cx-1";
+    const nodePath = inboxBox?.path ?? "inbox";
 
     const targetId = "tk-ext-target";
     const otherId = "tk-ext-other";
@@ -485,7 +480,7 @@ test("P0: accepted-while-external queues; session.leave reclaims exact Task only
     const targetPath = await writeTaskEnvelope(sysFs, clock, {
       parentActor: { kind: "user", id: "user" },
       role: FAKE_DEFAULT_PROFILE_ID,
-      claims: [{ id: boxId, path: boxPath }],
+      nodeRefs: [{ id: nodeId, path: nodePath }],
       manifestPath: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/manifests/${targetId}.yml`,
       userPrompt: "accepted under external session",
       id: targetId,
@@ -501,7 +496,7 @@ test("P0: accepted-while-external queues; session.leave reclaims exact Task only
     const otherPath = await writeTaskEnvelope(sysFs, clock, {
       parentActor: { kind: "user", id: "user" },
       role: FAKE_DEFAULT_PROFILE_ID,
-      claims: [{ id: boxId, path: boxPath }],
+      nodeRefs: [{ id: nodeId, path: nodePath }],
       manifestPath: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/manifests/${otherId}.yml`,
       userPrompt: "unrelated pending must stay",
       id: otherId,
@@ -529,7 +524,6 @@ test("P0: accepted-while-external queues; session.leave reclaims exact Task only
 
     await patchTaskEnvelope(sysFs, targetPath, {
       state: "accepted",
-      status: "taken",
       sessionId,
       workspace: targetLane.workspace,
       worktree: targetLane.worktree,
@@ -539,7 +533,6 @@ test("P0: accepted-while-external queues; session.leave reclaims exact Task only
     });
     await patchTaskEnvelope(sysFs, otherPath, {
       state: "failed",
-      status: "taken",
       workspace: otherLane.workspace,
       worktree: otherLane.worktree,
       branch: otherLane.branch,
@@ -634,13 +627,13 @@ test("P0: role worktree never reclaimed on terminal role task", async () => {
     const inboxBox =
       [...tent.byId.values()].find((b) => b.path === "inbox" || b.path.endsWith("/inbox")) ??
       [...tent.byId.values()][0];
-    const boxId = inboxBox?.id ?? "bx-inbox";
-    const boxPath = inboxBox?.path ?? "inbox";
+    const nodeId = inboxBox?.id ?? "cx-inbox";
+    const nodePath = inboxBox?.path ?? "inbox";
 
     const taskPath = await writeTaskEnvelope(sysFs, clock, {
       parentActor: { kind: "role", id: "规划" },
       role: "executor",
-      claims: [{ id: boxId, path: boxPath }],
+      nodeRefs: [{ id: nodeId, path: nodePath }],
       manifestPath: "temp/executor/manifests/m.yml",
       userPrompt: "role terminal",
       id: "tk-role-keep",
@@ -654,7 +647,6 @@ test("P0: role worktree never reclaimed on terminal role task", async () => {
     });
     await patchTaskEnvelope(sysFs, taskPath, {
       state: "accepted",
-      status: "taken",
       updatedAt: clock.now(),
     });
 
@@ -705,13 +697,13 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
     const lane = await ensureTaskWorkspace(ws, taskId);
     const tent = await import("../src/core/tree.js").then((m) => m.loadTent(sysFs));
     const inboxBox = [...tent.byId.values()][0];
-    const boxId = inboxBox?.id ?? "bx-1";
-    const boxPath = inboxBox?.path ?? "inbox";
+    const nodeId = inboxBox?.id ?? "cx-1";
+    const nodePath = inboxBox?.path ?? "inbox";
 
     const taskPath = await writeTaskEnvelope(sysFs, clock, {
       parentActor: { kind: "user", id: "user" },
       role: FAKE_DEFAULT_PROFILE_ID,
-      claims: [{ id: boxId, path: boxPath }],
+      nodeRefs: [{ id: nodeId, path: nodePath }],
       manifestPath: `temp/agent-profiles/${FAKE_DEFAULT_PROFILE_ID}/manifests/${taskId}.yml`,
       userPrompt: "terminal while turn still busy + late write",
       id: taskId,
@@ -726,7 +718,6 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
     });
     await patchTaskEnvelope(sysFs, taskPath, {
       state: "running",
-      status: "taken",
       updatedAt: clock.now(),
     });
 
@@ -744,7 +735,6 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
     // Publish/force collaboration-terminal while the bound Session remains live.
     await patchTaskEnvelope(sysFs, taskPath, {
       state: "failed",
-      status: "taken",
       workspace: lane.workspace,
       worktree: lane.worktree,
       branch: lane.branch,

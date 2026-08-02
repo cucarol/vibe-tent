@@ -197,8 +197,8 @@ test("normalizeTaskInput is independent type and drops non-pending", () => {
 test("proposal normalize keeps only pending triage rows", () => {
   const list = normalizeProposalList({
     proposals: [
-      { path: "p1.md", boxId: "cx", role: "r", status: "pending", body: "hi" },
-      { path: "p2.md", boxId: "cx", role: "r", status: "accepted", body: "no" },
+      { path: "p1.md", nodeId: "cx", role: "r", status: "pending", body: "hi" },
+      { path: "p2.md", nodeId: "cx", role: "r", status: "accepted", body: "no" },
     ],
   });
   assert.equal(list.length, 1);

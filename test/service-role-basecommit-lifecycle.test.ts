@@ -36,7 +36,7 @@ async function makeWorkspace(name = "base-life"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -107,8 +107,8 @@ async function mountWorkItem(
     type: "prompt",
   });
   assert.ok(!created.error, JSON.stringify(created.error));
-  const boxId = (created.result as { id: string }).id;
-  return { workspaceId, boxId };
+  const nodeId = (created.result as { nodeId: string }).nodeId;
+  return { workspaceId, nodeId };
 }
 
 type TaskLaneProjection = {
@@ -208,12 +208,12 @@ test("ordinary Role: dispatch omits lane/base; claim captures advanced tip; recl
   assert.equal(roleLane.baseCommit, initSha);
 
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "fresh role claim base capture",
       deliveryPolicy: "review",
@@ -308,12 +308,12 @@ test("Role asSub: dispatch omits lane/base; claim captures advanced tip + parent
   assert.equal(parentLane.baseCommit, initSha);
 
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "asub-item");
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "asub-item");
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "role", id: "planner" },
       reviewer: { kind: "role", id: "planner" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "role asSub claim base capture",
       asSub: true,
@@ -380,12 +380,12 @@ test("legacy running backfill then deliver; idempotent repeat; conflicts and rej
   const roleLane = await ensureRoleWorkspace(ws, "executor");
 
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "legacy-item");
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "legacy-item");
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "legacy missing base",
       deliveryPolicy: "review",
@@ -532,12 +532,12 @@ test("backfill rejects workspace/target mismatch and non-ancestor base", async (
   await git(ws, "checkout", "-q", "main");
 
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "mm-item");
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "mm-item");
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "mismatch fixture",
       deliveryPolicy: "review",
@@ -603,7 +603,7 @@ test("baseCommitCapture persists across Service restart reload", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [mounted.boxId],
+      nodeIds: [mounted.nodeId],
       role: "executor",
       prompt: "persist audit",
       deliveryPolicy: "review",
@@ -635,12 +635,12 @@ test("non-Git Role claim invents no baseCommit", async () => {
   const ws = await makeWorkspace("nongit-claim");
   // intentionally no git init
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "docs-item");
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "docs-item");
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "docs only",
       deliveryPolicy: "review",
@@ -662,12 +662,12 @@ test("claim fails loud when recorded baseCommit is unresolvable (stays queued)",
   await ensureRoleWorkspace(ws, "executor");
 
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "unresolved-item");
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "unresolved-item");
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "unresolvable base",
       deliveryPolicy: "review",
@@ -696,7 +696,6 @@ test("claim fails loud when recorded baseCommit is unresolvable (stays queued)",
     assert.equal(task.state, "queued");
     const env = await loadTaskEnvelope(fsa, taskPath);
     assert.equal(env.state, "queued");
-    assert.equal(env.status, "pending");
     // Must not write first-claim audit over an unverified raw SHA.
     assert.equal(env.baseCommitCapture, undefined);
   });
@@ -708,12 +707,12 @@ test("backfill rejects Task-lane tip that is foreign to target ancestry", async 
   const roleLane = await ensureRoleWorkspace(ws, "executor");
 
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "tgt-anc-item");
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "tgt-anc-item");
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "target ancestry backfill",
       deliveryPolicy: "review",
@@ -770,12 +769,12 @@ test("backfill rejects bare string actor (no kind inference)", async () => {
   const initSha = await initGitOnWorkspace(ws);
   await ensureRoleWorkspace(ws, "executor");
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "bare-item");
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "bare-item");
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "bare actor",
       deliveryPolicy: "review",
@@ -809,12 +808,12 @@ test("failed claim preparation leaves Task queued (no intermediate running)", as
   });
   try {
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws, "fail-claim-item");
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "fail-claim-item");
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "must stay queued on claim fail",
         deliveryPolicy: "review",
@@ -832,7 +831,6 @@ test("failed claim preparation leaves Task queued (no intermediate running)", as
       const fsa = tentFs(ws);
       const env = await loadTaskEnvelope(fsa, taskPath);
       assert.equal(env.state, "queued");
-      assert.equal(env.status, "pending");
     });
   } finally {
     setBeforeTaskClaimCoreForTests(null);
@@ -872,12 +870,12 @@ test("backfill cannot interleave with deliver (per-Task lifecycle flight)", asyn
 
   try {
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws, "race-item");
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "race-item");
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "race backfill vs deliver",
         deliveryPolicy: "review",
@@ -987,12 +985,12 @@ test("load fails loud on corrupt baseCommitCapture", async () => {
   await ensureRoleWorkspace(ws, "executor");
 
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "corrupt-item");
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "corrupt-item");
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "corrupt capture load",
       deliveryPolicy: "review",

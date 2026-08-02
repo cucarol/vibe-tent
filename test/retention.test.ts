@@ -52,7 +52,7 @@ async function writeTerminalTask(
 
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },role,
-    claims: [{ id: opts.claimId ?? "bx-p1", path: "prompt/表达式任务书" }],
+    nodeRefs: [{ id: opts.claimId ?? "cx-p1", path: "prompt/表达式任务书" }],
     manifestPath: "temp/executor/manifests/m.md",
     userPrompt: "retention fixture",
     id: opts.id,
@@ -101,7 +101,7 @@ test("preview: never selects active tasks or ready deliveries", async () => {
 
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },role: "executor",
-    claims: [{ id: "bx-p1", path: "prompt/表达式任务书" }],
+    nodeRefs: [{ id: "cx-p1", path: "prompt/表达式任务书" }],
     manifestPath: "temp/executor/manifests/m.md",
     userPrompt: "still running work",
     id: "tk-active01",
@@ -118,7 +118,7 @@ test("preview: never selects active tasks or ready deliveries", async () => {
 
   const ready = await createDelivery(fs, clock(OLD), {
     taskId: "tk-missing",
-    boxId: "bx-p1",
+    sourceNodeId: "cx-p1",
     role: "executor",
     summary: "awaiting review",
     status: "ready",
@@ -148,7 +148,7 @@ test("preview: terminal task past retention is a task-group candidate", async ()
   const task = await writeTerminalTask(fs, { state: "failed", id: "tk-failold" });
   const delivery = await createDelivery(fs, clock(OLD), {
     taskId: "tk-failold",
-    boxId: "bx-p1",
+    sourceNodeId: "cx-p1",
     role: "executor",
     summary: "historical delivery",
     status: "rejected",
@@ -195,7 +195,7 @@ test("preview: recent related delivery keeps the whole terminal task group hot",
   const task = await writeTerminalTask(fs, { state: "accepted", id: "tk-hotgroup" });
   await createDelivery(fs, clock(RECENT), {
     taskId: "tk-hotgroup",
-    boxId: "bx-p1",
+    sourceNodeId: "cx-p1",
     role: "executor",
     summary: "recent accepted delivery",
     status: "accepted",
@@ -214,12 +214,12 @@ test("preview: duplicate task ids are reported and never selected", async () => 
   const first = await writeTerminalTask(fs, {
     state: "accepted",
     id: "tk-duplicate",
-    claimId: "bx-p1",
+    claimId: "cx-p1",
   });
   const second = await writeTerminalTask(fs, {
     state: "failed",
     id: "tk-duplicate",
-    claimId: "bx-p2",
+    claimId: "cx-p2",
   });
 
   const preview = await previewOperationalRetention(fs, {
@@ -264,7 +264,7 @@ test("purge: deletes task + deliveries as a group; leaves active work", async ()
   const oldTask = await writeTerminalTask(fs, { state: "accepted", id: "tk-group1" });
   const oldDelivery = await createDelivery(fs, clock(OLD), {
     taskId: "tk-group1",
-    boxId: "bx-p1",
+    sourceNodeId: "cx-p1",
     role: "executor",
     summary: "old accepted summary",
     status: "accepted",
@@ -280,7 +280,7 @@ test("purge: deletes task + deliveries as a group; leaves active work", async ()
 
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },role: "executor",
-    claims: [{ id: "bx-p2", path: "prompt/表达式任务书/草稿" }],
+    nodeRefs: [{ id: "cx-p2", path: "prompt/表达式任务书/草稿" }],
     manifestPath: "temp/executor/manifests/m2.md",
     userPrompt: "do not purge me",
     id: "tk-live01",
@@ -306,7 +306,7 @@ test("purge: task removal failure preserves all related deliveries", async () =>
   const task = await writeTerminalTask(seedFs, { state: "accepted", id: "tk-failrm1" });
   const delivery = await createDelivery(seedFs, clock(OLD), {
     taskId: "tk-failrm1",
-    boxId: "bx-p1",
+    sourceNodeId: "cx-p1",
     role: "executor",
     summary: "must survive parent delete failure",
     status: "accepted",
@@ -330,7 +330,7 @@ test("purge: orphan terminal delivery is cleaned independently", async () => {
   const fs = new NodeFs(dir);
   const orphan = await createDelivery(fs, clock(OLD), {
     taskId: "tk-gonegone",
-    boxId: "bx-p1",
+    sourceNodeId: "cx-p1",
     role: "executor",
     summary: "orphan rejected",
     status: "rejected",
@@ -388,7 +388,7 @@ test("preview: refuses task-group when a related delivery is draft or ready", as
   // Terminal rejected task but still has a ready delivery (inconsistent / review pending)
   const ready = await createDelivery(fs, clock(OLD), {
     taskId: "tk-readyblk",
-    boxId: "bx-p1",
+    sourceNodeId: "cx-p1",
     role: "executor",
     summary: "still ready",
     status: "ready",
@@ -411,7 +411,7 @@ test("preview: refuses task-group when a related delivery is draft or ready", as
 
   const draft = await createDelivery(fs, clock(OLD), {
     taskId: "tk-orphan-draft",
-    boxId: "bx-p1",
+    sourceNodeId: "cx-p1",
     role: "executor",
     summary: "unfinished draft",
     status: "draft",

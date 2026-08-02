@@ -116,7 +116,7 @@ export type ReclaimTaskWorktreeInput = EvaluateTaskWorktreeReclaimInput & {
 };
 
 /**
- * True when Task state is collaboration-terminal and no longer occupies a box.
+ * True when Task state is collaboration-terminal and no longer occupies a node.
  * `delivered` is intentionally excluded (still active occupation / review).
  */
 export function isTaskWorktreeReclaimTerminalState(state: TaskState): boolean {

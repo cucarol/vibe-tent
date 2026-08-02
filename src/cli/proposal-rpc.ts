@@ -29,7 +29,7 @@ export type ProposalCommandResult = {
  */
 export async function runProposalSubmit(
   args: {
-    boxId: string;
+    nodeId: string;
     role: string;
     body: string;
   },
@@ -56,7 +56,7 @@ export async function runProposalSubmit(
     });
 
     const result = (await client.proposalSubmit(ctx.workspaceId, {
-      boxId: args.boxId,
+      nodeId: args.nodeId,
       role: args.role,
       body: args.body,
     })) as { proposal?: { path?: string } };

@@ -1,4 +1,4 @@
-// Runnable local preview for Markdown concept workspace (no Electron).
+// Runnable local preview for Markdown node workspace (no Electron).
 // Usage: npx tsx src/markdown/preview-server.ts <tentSystemRoot> [--port 8765]
 
 import * as http from "node:http";
@@ -96,11 +96,11 @@ async function handleRequest(
     if (q !== null) await controller.search(q);
     if (open) {
       try {
-        await controller.openConcept(open);
+        await controller.openNode(open);
       } catch (err) {
         await controller.search(open);
         const hit = controller.getSnapshot().searchHits[0];
-        if (hit) await controller.openConcept(hit.cx);
+        if (hit) await controller.openNode(hit.nodeId);
         else throw err;
       }
     }
@@ -182,6 +182,6 @@ if (isMain) {
   if (portIdx >= 0 && args[portIdx + 1]) port = Number(args[portIdx + 1]) || 8765;
 
   const handle = await startMarkdownPreviewServer({ systemRoot, port });
-  console.log(`Markdown concept workspace preview: ${handle.url}`);
+  console.log(`Markdown node workspace preview: ${handle.url}`);
   console.log(`System root: ${systemRoot}`);
 }

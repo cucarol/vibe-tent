@@ -205,17 +205,13 @@ export async function runTaskCommand(
         const usage =
           "Usage: tent task dispatch --target role:<roleIdOrName>|route:<routeId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]";
 
-        const retiredPublic = detectRetiredDispatchFlags(flags);
-        if (retiredPublic) {
-          return failUsage(
-            `Public ordinary dispatch no longer accepts ${retiredPublic}; ` +
-              `use --target role:<roleIdOrName>|route:<routeId> with --node and --prompt.\n` +
-              usage
-          );
+        const unknownFlag = findUnknownFlag(flags, DISPATCH_FLAGS);
+        if (unknownFlag) {
+          return failUsage(`Unknown option --${unknownFlag}\n${usage}`);
         }
         if (positionals.length > 0) {
           return failUsage(
-            "Public ordinary dispatch no longer accepts positional <boxId> <role> grammar; " +
+            "Public ordinary dispatch no longer accepts positional <nodeId> <role> grammar; " +
               "use --target and --node.\n" +
               usage
           );
@@ -975,27 +971,20 @@ const BOOLEAN_FLAGS = new Set([
 /** Flags that may appear more than once (values collected in order). */
 const REPEATABLE_FLAGS = new Set(["node"]);
 
-/**
- * Retired public ordinary-dispatch knobs (cx-b9bf58). Detected for fail-loud rejection.
- * No compatibility alias — use --target / --node / --prompt only.
- */
-const RETIRED_PUBLIC_DISPATCH_FLAGS: Array<{ flag: string; aliases: string[] }> = [
-  { flag: "--profile", aliases: ["profile"] },
-  { flag: "--agent", aliases: ["agent"] },
-  { flag: "--delivery-policy", aliases: ["delivery-policy", "deliveryPolicy"] },
-  { flag: "--as-sub", aliases: ["as-sub", "asSub"] },
-  { flag: "--by", aliases: ["by", "from", "dispatched-by", "dispatchedBy"] },
-  { flag: "--caller-kind", aliases: ["caller-kind", "callerKind"] },
-  { flag: "--assignee-kind", aliases: ["assignee-kind", "assigneeKind"] },
-];
+const DISPATCH_FLAGS = new Set([
+  "target",
+  "node",
+  "prompt",
+  "workspace",
+  "json",
+  "data-dir",
+  "attach-only",
+  "service-entry",
+]);
 
-function detectRetiredDispatchFlags(flags: Record<string, string>): string | null {
-  for (const entry of RETIRED_PUBLIC_DISPATCH_FLAGS) {
-    for (const alias of entry.aliases) {
-      if (Object.prototype.hasOwnProperty.call(flags, alias)) {
-        return entry.flag;
-      }
-    }
+function findUnknownFlag(flags: Record<string, string>, allowed: ReadonlySet<string>): string | null {
+  for (const name of Object.keys(flags)) {
+    if (!allowed.has(name)) return name;
   }
   return null;
 }
@@ -1074,10 +1063,9 @@ Commands:
       # --target role:*  durable Role handoff (queued; never starts managed ACP at dispatch)
       # --target route:* machine Settings route + managed Session start
       # --node           repeatable Node refs (at least one); sole source for contextCard.refs.nodes
-      # parentActor/reviewer from TENT_ROLE (role caller) or user-direct; no public --by
+      # parentActor/reviewer derive from the durable Role or local user boundary
       # Role caller also derives internal asSub (parent Role Git lane); not a public flag
-      # Rejected (no alias): --profile, --agent, --delivery-policy, --as-sub, --by, --caller-kind,
-      #   --assignee-kind, and old positional <boxId> <role> grammar
+      # Any flag outside this command's canonical grammar is rejected
   tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--workspace <path>] [--json]
   tent task reject <taskPath> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]

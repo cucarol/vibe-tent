@@ -234,7 +234,7 @@ export interface SessionRecord {
 
 /**
  * Machine-local launch profile — binary paths, argv templates, auth refs.
- * Lives only in service data area; never in workspace git / concept bodies.
+ * Lives only in the Service data area; never in workspace Git or Node bodies.
  */
 export interface AgentProfileConfig {
   id: string;

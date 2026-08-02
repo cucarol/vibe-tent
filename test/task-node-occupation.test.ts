@@ -12,9 +12,9 @@ import { test } from "node:test";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { canClaim, findActiveOccupation } from "../src/core/claim.js";
 import {
-  createBox as createNode,
+  createNode as createNode,
   dispatch,
-  archiveBox as archiveNode,
+  archiveNode as archiveNode,
   moveNode,
   renameNode,
 } from "../src/core/ops.js";
@@ -27,14 +27,12 @@ import {
 } from "../src/core/task.js";
 import {
   listDirectActiveTasksForNode,
-  migrateAllLegacyTaskNodeRefs,
-  migrateLegacyTaskNodeRefs,
   MISSING_CONTEXT_CARD_NODES,
   normalizeContextCardNodeRef,
   sortTasksDeterministically,
   taskDirectlyReferencesNode,
-  taskHasWorkspaceOnlyContext,
   taskReferencedNodeIds,
+  type ContextCardNodeRefSource,
 } from "../src/core/task-node-refs.js";
 import { buildTaskContextCard, computeContextGeneration } from "../src/core/task-context-card.js";
 import { parseFrontmatter } from "../src/core/frontmatter.js";
@@ -51,6 +49,25 @@ function envFor(dir: string) {
   };
 }
 
+test("writeTaskEnvelope rejects duplicate canonical Node refs", async () => {
+  const dir = await makeTent();
+  const fsAdapter = new NodeFs(dir);
+  await assert.rejects(
+    writeTaskEnvelope(fsAdapter, clock, {
+      role: "executor",
+      nodeRefs: [
+        { id: "cx-p1", path: "prompt/x" },
+        { id: "cx-p1", path: "prompt/x" },
+      ],
+      manifestPath: "temp/executor/manifests/tk-duplicate.yml",
+      userPrompt: "duplicate refs",
+      id: "tk-duplicate",
+      parentActor: { kind: "user", id: "user" },
+    }),
+    /duplicate Node id: cx-p1/
+  );
+});
+
 async function writeNodeTask(
   fsAdapter: NodeFs,
   nodeIds: string[],
@@ -59,7 +76,7 @@ async function writeNodeTask(
 ): Promise<string> {
   const taskPath = await writeTaskEnvelope(fsAdapter, clock, {
     role: `role-${id}`,
-    claims: nodeIds.map((nodeId) => ({ id: nodeId, path: `node/${nodeId}` })),
+    nodeRefs: nodeIds.map((nodeId) => ({ id: nodeId, path: `node/${nodeId}` })),
     manifestPath: `temp/role-${id}/manifests/${id}.yml`,
     userPrompt: `hold ${id}`,
     id,
@@ -72,19 +89,19 @@ async function writeNodeTask(
 test("exact Node occupation covers every active Task state", async () => {
   const dir = await makeTent();
   const fsAdapter = new NodeFs(dir);
-  const node = (await loadTent(fsAdapter)).byId.get("bx-p1")!;
+  const node = (await loadTent(fsAdapter)).byId.get("cx-p1")!;
   const taskPath = await writeNodeTask(fsAdapter, [node.id], "tk-occupation");
 
   for (const state of ["queued", "running", "waiting", "delivered"] as const) {
     await patchTaskEnvelope(fsAdapter, taskPath, { state });
     const tasks = await loadTaskEnvelopes(fsAdapter);
     const tent = await loadTent(fsAdapter);
-    const hit = findActiveOccupation(tent, node, tasks);
+    const hit = findActiveOccupation(node, tasks);
 
     assert.equal(hit?.relation, "self");
     assert.equal(hit?.task.id, "tk-occupation");
     assert.equal(listDirectActiveTasksForNode(node.id, tasks).length, 1);
-    assert.equal(canClaim(node, { tent, tasks }).ok, false);
+    assert.equal(canClaim(node, { tasks }).ok, false);
   }
 
   for (const state of ["accepted", "rejected", "interrupted", "failed"] as const) {
@@ -92,7 +109,7 @@ test("exact Node occupation covers every active Task state", async () => {
     const tasks = await loadTaskEnvelopes(fsAdapter);
     const tent = await loadTent(fsAdapter);
     assert.equal(listDirectActiveTasksForNode(node.id, tasks).length, 0);
-    assert.equal(canClaim(node, { tent, tasks }).ok, true);
+    assert.equal(canClaim(node, { tasks }).ok, true);
   }
 });
 
@@ -110,20 +127,20 @@ test("Task can reference multiple Nodes; parent, child, and sibling Tasks run co
     type: "goal",
   });
 
-  const multi = await dispatch(env as any, "bx-p1", "analyst", {
+  const multi = await dispatch(env as any, "cx-p1", "analyst", {
     userPrompt: "work across two Nodes",
     parentActor: { kind: "user", id: "user" },
-    nodeIds: ["bx-p1", "bx-p2"],
+    nodeIds: ["cx-p1", "cx-p2"],
   });
-  const parent = await dispatch(env as any, "bx-g1", "planner", {
+  const parent = await dispatch(env as any, "cx-g1", "planner", {
     userPrompt: "work on the parent Node",
     parentActor: { kind: "user", id: "user" },
-    nodeIds: ["bx-g1"],
+    nodeIds: ["cx-g1"],
   });
-  const child = await dispatch(env as any, "bx-g2", "executor", {
+  const child = await dispatch(env as any, "cx-g2", "executor", {
     userPrompt: "work on the child Node",
     parentActor: { kind: "user", id: "user" },
-    nodeIds: ["bx-g2"],
+    nodeIds: ["cx-g2"],
   });
   const firstSibling = await dispatch(env as any, siblingA, "reviewer", {
     userPrompt: "work on sibling A",
@@ -138,7 +155,7 @@ test("Task can reference multiple Nodes; parent, child, and sibling Tasks run co
 
   assert.deepEqual(
     taskReferencedNodeIds(await loadTaskEnvelope(env.fs, multi.taskPath)),
-    ["bx-p1", "bx-p2"]
+    ["cx-p1", "cx-p2"]
   );
   assert.ok(parent.taskPath && child.taskPath && firstSibling.taskPath && secondSibling.taskPath);
   assert.notEqual(parent.taskPath, child.taskPath);
@@ -151,18 +168,18 @@ test("Task can reference multiple Nodes; parent, child, and sibling Tasks run co
 test("same exact Node rejects a second active Task and releases on terminal state", async () => {
   const dir = await makeTent();
   const env = envFor(dir);
-  const first = await dispatch(env as any, "bx-p1", "analyst", {
+  const first = await dispatch(env as any, "cx-p1", "analyst", {
     userPrompt: "first exact Node task",
     parentActor: { kind: "user", id: "user" },
-    nodeIds: ["bx-p1"],
+    nodeIds: ["cx-p1"],
   });
 
   await assert.rejects(
     () =>
-      dispatch(env as any, "bx-p1", "executor", {
+      dispatch(env as any, "cx-p1", "executor", {
         userPrompt: "second exact Node task",
         parentActor: { kind: "user", id: "user" },
-        nodeIds: ["bx-p1"],
+        nodeIds: ["cx-p1"],
       }),
     /occupied by active task/i
   );
@@ -170,10 +187,10 @@ test("same exact Node rejects a second active Task and releases on terminal stat
 
   for (const state of ["accepted", "rejected", "interrupted", "failed"] as const) {
     await patchTaskEnvelope(env.fs, first.taskPath, { state });
-    const released = await dispatch(env as any, "bx-p1", `released-${state}`, {
+    const released = await dispatch(env as any, "cx-p1", `released-${state}`, {
       userPrompt: `reuse after ${state}`,
       parentActor: { kind: "user", id: "user" },
-      nodeIds: ["bx-p1"],
+      nodeIds: ["cx-p1"],
     });
     assert.ok(released.taskPath);
     await patchTaskEnvelope(env.fs, released.taskPath, { state: "failed" });
@@ -246,14 +263,12 @@ test("unrelated sibling and occupied destination parent remain structurally edit
   await archiveNode(env as any, source);
 });
 
-test("migration: legacy claims become contextCard.refs.nodes once and discard fake root", async () => {
+test("claims-only Task envelopes are rejected without byte rewrite", async () => {
   const dir = await makeTent();
   const fsAdapter = new NodeFs(dir);
   await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
   const taskPath = "temp/executor/tasks/task-legacy.md";
-  await fsAdapter.writeFile(
-    taskPath,
-    [
+  const raw = [
       "---",
       "type: task",
       "id: tk-legacy1",
@@ -262,7 +277,7 @@ test("migration: legacy claims become contextCard.refs.nodes once and discard fa
       "role: executor",
       "parentActor: { kind: user, id: user }",
       "reviewer: { kind: user, id: user }",
-      "claims: [bx-p1, root]",
+      "claims: [cx-p1, root]",
       "manifest: temp/executor/manifests/tk-legacy1.yml",
       "createdAt: 2026-01-01T00:00:00.000Z",
       "---",
@@ -272,160 +287,62 @@ test("migration: legacy claims become contextCard.refs.nodes once and discard fa
       "",
       "legacy objective text",
       "",
-    ].join("\n")
-  );
+    ].join("\n");
+  await fsAdapter.writeFile(taskPath, raw);
 
-  const once = await migrateLegacyTaskNodeRefs(fsAdapter, taskPath);
-  assert.equal(once.migrated, true);
-  assert.deepEqual(once.nodeIds, ["bx-p1"]);
-  assert.equal(once.discardedRootClaim, true);
-
-  const raw = await fsAdapter.readFile(taskPath);
-  const { data } = parseFrontmatter(raw);
-  assert.equal("claims" in data, false);
-  assert.equal("workspaceContext" in data, false);
-  const card = data.contextCard as {
-    objective?: string;
-    acceptance?: string[];
-    refs: { nodes: { id: string }[] };
-  };
-  assert.equal(card.objective, "legacy objective text");
-  assert.deepEqual(card.acceptance, ["legacy objective text"]);
-  assert.deepEqual(card.refs.nodes.map((node) => node.id), ["bx-p1"]);
-  assert.ok(!card.refs.nodes.some((node) => node.id === "root"));
-
-  const twice = await migrateLegacyTaskNodeRefs(fsAdapter, taskPath);
-  assert.equal(twice.skipped, true);
-  assert.deepEqual(taskReferencedNodeIds(await loadTaskEnvelope(fsAdapter, taskPath)), ["bx-p1"]);
-  assert.equal(taskHasWorkspaceOnlyContext(await loadTaskEnvelope(fsAdapter, taskPath)), false);
-  assert.equal(taskDirectlyReferencesNode(await loadTaskEnvelope(fsAdapter, taskPath), "bx-p1"), true);
-});
-
-test("migration: active Task with empty objective fails loud", async () => {
-  const dir = await makeTent();
-  const fsAdapter = new NodeFs(dir);
-  await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
-  const taskPath = "temp/executor/tasks/task-empty-obj.md";
-  await fsAdapter.writeFile(
-    taskPath,
-    [
-      "---",
-      "type: task",
-      "id: tk-emptyobj",
-      "status: taken",
-      "state: running",
-      "role: executor",
-      "parentActor: { kind: user, id: user }",
-      "reviewer: { kind: user, id: user }",
-      "claims: [bx-p1]",
-      "manifest: temp/executor/manifests/tk-emptyobj.yml",
-      "---",
-      "# Task",
-      "",
-      "## Context Pointers",
-      "",
-      "- bx-p1: prompt/x",
-      "",
-    ].join("\n")
-  );
-
-  await assert.rejects(
-    () => migrateLegacyTaskNodeRefs(fsAdapter, taskPath),
-    /empty\/missing objective|missing objective/i
-  );
-});
-
-test("migration: all legacy Task lanes are scanned and idempotent", async () => {
-  const dir = await makeTent();
-  const fsAdapter = new NodeFs(dir);
-  await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
-  await fs.mkdir(path.join(dir, "temp", "agent-profiles", "fake-default", "tasks"), {
-    recursive: true,
-  });
-  for (const [relative, id, role, nodeId] of [
-    ["temp/executor/tasks/t1.md", "tk-scan1", "executor", "bx-p1"],
-    [
-      "temp/agent-profiles/fake-default/tasks/t2.md",
-      "tk-scan2",
-      "fake-default",
-      "bx-o1",
-    ],
-  ] as const) {
-    await fsAdapter.writeFile(
-      relative,
-      [
-        "---",
-        "type: task",
-        `id: ${id}`,
-        "status: pending",
-        "state: queued",
-        `role: ${role}`,
-        ...(role === "fake-default" ? ["assigneeKind: agentProfile"] : []),
-        "parentActor: { kind: user, id: user }",
-        "reviewer: { kind: user, id: user }",
-        `claims: [${nodeId}]`,
-        `manifest: temp/${role}/manifests/${id}.yml`,
-        "---",
-        "# Task",
-        "",
-        "## User Prompt",
-        "",
-        `scan ${id}`,
-        "",
-      ].join("\n")
-    );
-  }
-
-  const results = await migrateAllLegacyTaskNodeRefs(fsAdapter);
-  assert.ok(results.some((result) => result.migrated && result.nodeIds.includes("bx-p1")));
-  assert.ok(results.some((result) => result.migrated && result.nodeIds.includes("bx-o1")));
-  const again = await migrateAllLegacyTaskNodeRefs(fsAdapter);
-  assert.ok(again.every((result) => result.skipped || result.reason));
+  await assert.rejects(() => loadTaskEnvelope(fsAdapter, taskPath), /missing Task\.contextCard\.refs\.nodes/);
+  assert.equal(await fsAdapter.readFile(taskPath), raw);
 });
 
 test("Node ref normalization rejects fake root and preserves deterministic Task ordering", () => {
   assert.throws(
     () => normalizeContextCardNodeRef({ id: "root" }),
-    /fake "root"/
+    /canonical cx-\*/
   );
-  assert.deepEqual(
-    sortTasksDeterministically([
-      { id: "tk-late", path: "temp/b.md", createdAt: "2026-01-02T00:00:00.000Z" },
-      { id: "tk-early", path: "temp/a.md", createdAt: "2026-01-01T00:00:00.000Z" },
-    ]),
-    [
-      { id: "tk-early", path: "temp/a.md", createdAt: "2026-01-01T00:00:00.000Z" },
-      { id: "tk-late", path: "temp/b.md", createdAt: "2026-01-02T00:00:00.000Z" },
-    ]
-  );
+  const late: ContextCardNodeRefSource = {
+    id: "tk-late",
+    path: "temp/b.md",
+    createdAt: "2026-01-02T00:00:00.000Z",
+    state: "queued",
+    contextCard: { refs: { nodes: [{ id: "cx-1" }] } },
+  };
+  const early: ContextCardNodeRefSource = {
+    id: "tk-early",
+    path: "temp/a.md",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    state: "queued",
+    contextCard: { refs: { nodes: [{ id: "cx-1" }] } },
+  };
+  assert.deepEqual(sortTasksDeterministically([late, early]), [early, late]);
 });
 
-test("Task Node context validation is fail-loud; explicit empty refs mean workspace context", () => {
+test("Task Node context validation requires non-empty canonical refs", () => {
   assert.throws(
-    () => taskReferencedNodeIds({ id: "tk-missing", path: "temp/x.md" }),
+    () => taskReferencedNodeIds({ id: "tk-missing", path: "temp/x.md" } as unknown as ContextCardNodeRefSource),
     (err: unknown) =>
       err instanceof Error &&
       err.message.includes(MISSING_CONTEXT_CARD_NODES) &&
       err.message.includes("tk-missing")
   );
   assert.throws(
-    () => taskReferencedNodeIds({ id: "tk-no-nodes", contextCard: { refs: {} } }),
+    () => taskReferencedNodeIds({ id: "tk-no-nodes", state: "queued", contextCard: { refs: {} } } as ContextCardNodeRefSource),
     /MISSING_CONTEXT_CARD/
   );
-  assert.deepEqual(
-    taskReferencedNodeIds({ id: "tk-workspace", contextCard: { refs: { nodes: [] } } }),
-    []
-  );
-  assert.equal(
-    taskHasWorkspaceOnlyContext({ id: "tk-workspace", contextCard: { refs: { nodes: [] } } }),
-    true
+  assert.throws(
+    () => taskReferencedNodeIds({ id: "tk-empty", state: "queued", contextCard: { refs: { nodes: [] } } }),
+    /requires at least one Node/
   );
   assert.deepEqual(
     taskReferencedNodeIds({
       id: "tk-node",
-      contextCard: { refs: { nodes: [{ id: "cx-1" }, { id: "root" }] } },
+      state: "queued",
+      contextCard: { refs: { nodes: [{ id: "cx-1" }, { id: "cx-2" }] } },
     }),
-    ["cx-1"]
+    ["cx-1", "cx-2"]
+  );
+  assert.throws(
+    () => taskReferencedNodeIds({ id: "tk-bx", state: "queued", contextCard: { refs: { nodes: [{ id: "bx-old" }] } } }),
+    /canonical cx-\*/
   );
 });
 

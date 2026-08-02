@@ -5,7 +5,7 @@
  */
 
 export type GraphNode = {
-  id: string;
+  nodeId: string;
   path: string;
   name: string;
   type: string;
@@ -17,7 +17,7 @@ export type GraphNode = {
 };
 
 export type GraphBacklink = {
-  fromCx: string;
+  fromNodeId: string;
   fromPath: string;
   fromName: string;
   raw: string;
@@ -27,7 +27,7 @@ export type GraphBacklink = {
 export type GraphOutLink = {
   raw: string;
   kind: string;
-  targetCx?: string;
+  targetNodeId?: string;
   targetPath?: string;
   label?: string;
 };
@@ -43,7 +43,7 @@ export type GraphSelectionView = {
 };
 
 export type FlatGraphNode = {
-  id: string;
+  nodeId: string;
   path: string;
   name: string;
   type: string;
@@ -67,7 +67,7 @@ export function flattenGraphNodes(roots: GraphNode[], depth = 0): FlatGraphNode[
   for (const n of roots) {
     const usable = graphNodeUsable(n);
     out.push({
-      id: n.id,
+      nodeId: n.nodeId,
       path: n.path,
       name: n.name,
       type: n.type,
@@ -82,10 +82,10 @@ export function flattenGraphNodes(roots: GraphNode[], depth = 0): FlatGraphNode[
   return out;
 }
 
-export function findGraphNode(nodes: GraphNode[], id: string): GraphNode | undefined {
+export function findGraphNode(nodes: GraphNode[], nodeId: string): GraphNode | undefined {
   for (const n of nodes) {
-    if (n.id === id) return n;
-    const child = findGraphNode(n.children || [], id);
+    if (n.nodeId === nodeId) return n;
+    const child = findGraphNode(n.children || [], nodeId);
     if (child) return child;
   }
   return undefined;

@@ -156,7 +156,7 @@ export function renderActivity(): void {
       return `<article class="interaction-item" data-pending-kind="proposal">
         <div class="interaction-kicker">PROPOSAL · ${escapeHtml(p.role || "Agent")}</div>
         <div class="interaction-title">${escapeHtml(preview || p.path)}</div>
-        <div class="muted interaction-note">${escapeHtml(p.boxId || "")}</div>
+        <div class="muted interaction-note">${escapeHtml(p.nodeId || "")}</div>
         <div class="interaction-actions">
           <button type="button" class="btn btn-primary" data-act-proposal-accept="${escapeHtml(p.path)}">采纳</button>
           <button type="button" class="btn btn-ghost" data-act-proposal-reject="${escapeHtml(p.path)}">驳回</button>
@@ -196,7 +196,7 @@ export function renderActivity(): void {
         : "";
       return `<li class="task-item">
         <div class="task-head"><strong>${escapeHtml(t.role)}</strong>
-          <span class="muted">${escapeHtml(taskStateLabel(t.state, t.status))}</span></div>
+          <span class="muted">${escapeHtml(taskStateLabel(t.state))}</span></div>
         ${t.prompt ? `<div class="task-summary">${escapeHtml(t.prompt.length > 100 ? t.prompt.slice(0, 97) + "…" : t.prompt)}</div>` : ""}
         <div class="task-actions">${startBtn}${interruptBtn}${cancelBtn}</div>
         <div class="faint" title="${escapeHtml(t.path)}">${escapeHtml(t.path)}</div>

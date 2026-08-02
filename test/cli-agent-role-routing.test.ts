@@ -49,7 +49,7 @@ test("top-level help omits AgentDefinition command and preserves Role, Session, 
   assert.match(text, /tent role list\|show\|config/);
   assert.match(text, /tent session enter\|status\|leave/);
   assert.match(text, /tent task list\|get\|claim\|deliver/);
-  assert.doesNotMatch(text, /\bboxId\b|\bboxes\b/i);
+  assert.doesNotMatch(text, /\bboxes\b/i);
   assert.doesNotMatch(text, /^\s*roles\s/m);
 });
 

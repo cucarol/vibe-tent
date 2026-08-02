@@ -16,7 +16,7 @@ export const INDEX_PATH = "index.md";
 export const WORKSPACE_SETTINGS_PATH = "settings.json";
 /**
  * First-class Node Markdown underline annotations (划线注释).
- * Independent of concept body / frontmatter / Task envelopes.
+ * Independent of Node body / frontmatter / Task envelopes.
  */
 export const ANNOTATIONS_PATH = "annotations.json";
 export const TEMP_DIR = "temp";
@@ -27,15 +27,15 @@ export const ATTACHMENTS_DIR = "attachments";
  */
 export const AGENT_PROFILES_TEMP_DIR = "agent-profiles";
 
-/** 不进入 concept 索引的顶层/路径前缀（相对 system root）。 */
+/** 不进入 Node 索引的顶层/路径前缀（相对 system root）。 */
 export const OPERATIONAL_TOP_LEVEL = new Set([
   TEMP_DIR,
   ATTACHMENTS_DIR,
-  // 历史残留：若仍见嵌套 .tent，视为系统区而非 concept
+  // 若仍见嵌套 .tent，视为系统区而非 Node。
   TENT_SYSTEM_DIR,
 ]);
 
-/** 系统注册表文件名（非 concept）。 */
+/** 系统注册表文件名（非 Node）。 */
 export const SYSTEM_REGISTRY_FILES = new Set([
   TYPE_REGISTRY_PATH,
   ROLES_REGISTRY_PATH,
@@ -124,7 +124,7 @@ export function agentProfileManifestPath(profileId: string, taskId: string): str
   return `${agentProfileTempRoot(profileId)}/manifests/${safeTask}.yml`;
 }
 
-/** 是否为应排除在 concept 索引外的生成/系统文件名。 */
+/** 是否为应排除在 Node 索引外的生成/系统文件名。 */
 export function isSystemNoteName(fileName: string): boolean {
   return SYSTEM_REGISTRY_FILES.has(fileName) || fileName === "MIGRATED.md";
 }

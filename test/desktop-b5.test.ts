@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import {
-  boxContextCard,
+  nodeContextCard,
   contextCardToDragText,
   parseContextCardText,
 } from "../src/core/context-card.js";
@@ -32,7 +32,7 @@ async function makeWorkspace(): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "desk",
-    boxes: [
+    nodes: [
       { name: "inbox", type: "prompt", body: "# inbox\nhello desktop\n" },
       { name: "goal-a", type: "goal", body: "# goal\n" },
     ],
@@ -52,15 +52,15 @@ test("CLIENT_METHODS includes docs.search/backlinks/importAttachment for desktop
 
 test("ContextCardStore + drag text/plain payload is stable pointer prompt", () => {
   const store = new ContextCardStore(3);
-  const card = boxContextCard("cx-demo", "inbox", { label: "inbox" });
+  const card = nodeContextCard("cx-demo", "inbox", { label: "inbox" });
   const text = contextCardToDragText(card);
   assert.match(text, /Tent contextCard v1/);
-  assert.match(text, /contextRef: box\/cx-demo/);
+  assert.match(text, /contextRef: node\/cx-demo/);
   assert.equal(parseContextCardText(text)?.id, "cx-demo");
 
   store.pushFromCard(card);
-  store.pushBox("cx-2", "other");
-  store.pushBox("cx-demo", "inbox", "inbox again");
+  store.pushNode("cx-2", "other");
+  store.pushNode("cx-demo", "inbox", "inbox again");
   const list = store.list();
   assert.equal(list.length, 2);
   assert.equal(list[0].refId, "cx-demo");
@@ -83,34 +83,34 @@ test("ServiceDocsClient over real Local Service: list/open/write/search", async 
     assert.ok(tree.some((n) => n.name === "inbox" || n.path === "inbox"));
 
     const created = await docs.createNote({ name: "from-desk", type: "prompt", body: "# from desk\n" });
-    assert.match(created.cx, /^cx-/);
+    assert.match(created.nodeId, /^cx-/);
 
-    const edit = await docs.readForEdit(created.cx);
+    const edit = await docs.readForEdit(created.nodeId);
     assert.ok(edit.etag);
     assert.ok(edit.raw.includes("from desk") || edit.body.includes("from desk"));
 
     const written = await docs.write({
-      cx: created.cx,
+      nodeId: created.nodeId,
       baseEtag: edit.etag,
       raw: edit.raw.replace("from desk", "from desk v2"),
     });
     assert.equal(written.ok, true);
 
     const hits = await docs.search("from desk v2");
-    assert.ok(hits.some((h) => h.cx === created.cx));
+    assert.ok(hits.some((h) => h.nodeId === created.nodeId));
 
 
     const bin = new Uint8Array([0x00, 0x01, 0xff, 0xfe]);
-    const att = await docs.importAttachment(created.cx, "desk.bin", bin);
-    assert.match(att.relativePath, new RegExp(`^attachments/${created.cx}/`));
+    const att = await docs.importAttachment(created.nodeId, "desk.bin", bin);
+    assert.match(att.relativePath, new RegExp(`^attachments/${created.nodeId}/`));
     const disk = await fs.readFile(path.join(ws, ".tent", ...att.relativePath.split("/")));
     assert.deepEqual([...disk], [...bin]);
 
     const controller = new WorkspaceController(docs);
     await controller.refreshTree();
-    await controller.openConcept(created.cx);
+    await controller.openNode(created.nodeId);
     const snap = controller.getSnapshot();
-    assert.equal(snap.activeCx, created.cx);
+    assert.equal(snap.activeCx, created.nodeId);
     assert.ok(snap.tree.length > 0);
 
     const model = new DesktopShellModel(rpc);
@@ -120,10 +120,10 @@ test("ServiceDocsClient over real Local Service: list/open/write/search", async 
     await model.bindForeground(mounted.workspaceId);
     const shellController = model.getController();
     assert.ok(shellController);
-    await shellController!.openConcept(created.cx);
+    await shellController!.openNode(created.nodeId);
     model.emitContextCardForActive();
     // Also allow explicit push without active tab
-    model.cards.pushBox(created.cx, created.path, "from-desk");
+    model.cards.pushNode(created.nodeId, created.path, "from-desk");
     const floating = model.floatingStatus();
     assert.equal(floating.health.status, "ok");
     assert.ok(floating.recentCards.length >= 1);
@@ -322,7 +322,7 @@ test("desktop prefs remember workspaces", async () => {
 });
 
 test("drop target receives full text/plain context card payload", async () => {
-  const card = boxContextCard("cx-drop", "path/to/box", { label: "drop-me" });
+  const card = nodeContextCard("cx-drop", "path/to/node", { label: "drop-me" });
   const payload = contextCardToDragText(card);
 
   // Minimal HTTP drop target simulating external app receiving text/plain

@@ -1,9 +1,10 @@
 // Delivery operational entity (dl-) — task-api §1.3.
 // Stored under temp/<role>/deliveries/<dl-id>.md or
-// temp/agent-profiles/<safe-profile-id>/deliveries/<dl-id>.md (not OKF concepts).
+// temp/agent-profiles/<safe-profile-id>/deliveries/<dl-id>.md (not OKF Nodes).
 
 import { withTentMutation, type Clock, type FsAdapter } from "./adapter.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
+import { isNodeId } from "./id.js";
 import {
   AGENT_PROFILES_TEMP_DIR,
   agentProfileDeliveriesDir,
@@ -24,7 +25,8 @@ export interface DeliveryRecord {
   path: string;
   id: string;
   taskId: string;
-  boxId: string;
+  /** Source Node selected from the Task's ordered Node refs when delivered. */
+  sourceNodeId: string;
   role: string;
   status: DeliveryStatus;
   summary: string;
@@ -45,7 +47,7 @@ export interface DeliveryRecord {
 
 export interface CreateDeliveryInput {
   taskId: string;
-  boxId: string;
+  sourceNodeId: string;
   /** Submitter label (role name or profileId). */
   role: string;
   summary: string;
@@ -71,7 +73,7 @@ const KEY_ORDER = [
   "type",
   "id",
   "taskId",
-  "boxId",
+  "sourceNodeId",
   "role",
   "status",
   "commits",
@@ -115,7 +117,7 @@ export async function createDeliveryUnlocked(
     path,
     id,
     taskId: input.taskId,
-    boxId: input.boxId,
+    sourceNodeId: input.sourceNodeId,
     role: input.role,
     status: input.status ?? "ready",
     summary,
@@ -138,7 +140,12 @@ export async function loadDelivery(fs: FsAdapter, inputPath: string): Promise<De
   if (data.type !== "delivery" || typeof data.id !== "string" || !isDeliveryId(data.id)) {
     throw new Error(`Invalid delivery format: ${path}.`);
   }
-  if (typeof data.taskId !== "string" || typeof data.boxId !== "string" || typeof data.role !== "string") {
+  if (
+    typeof data.taskId !== "string" ||
+    typeof data.sourceNodeId !== "string" ||
+    !isNodeId(data.sourceNodeId) ||
+    typeof data.role !== "string"
+  ) {
     throw new Error(`Invalid delivery format: ${path}.`);
   }
   const status = parseDeliveryStatus(data.status);
@@ -154,7 +161,7 @@ export async function loadDelivery(fs: FsAdapter, inputPath: string): Promise<De
     path,
     id: data.id,
     taskId: data.taskId,
-    boxId: data.boxId,
+    sourceNodeId: data.sourceNodeId,
     role: data.role,
     status,
     summary: body.trim(),
@@ -178,7 +185,10 @@ export async function loadDelivery(fs: FsAdapter, inputPath: string): Promise<De
   };
 }
 
-export async function loadDeliveries(fs: FsAdapter, filter?: { taskId?: string; boxId?: string }): Promise<DeliveryRecord[]> {
+export async function loadDeliveries(
+  fs: FsAdapter,
+  filter?: { taskId?: string; sourceNodeId?: string }
+): Promise<DeliveryRecord[]> {
   const out: DeliveryRecord[] = [];
   if (!(await fs.exists(TEMP_DIR))) return out;
   for (const entry of await fs.listDir(TEMP_DIR)) {
@@ -205,7 +215,7 @@ export async function loadDeliveries(fs: FsAdapter, filter?: { taskId?: string; 
 async function collectDeliveryFiles(
   fs: FsAdapter,
   dir: string,
-  filter: { taskId?: string; boxId?: string } | undefined,
+  filter: { taskId?: string; sourceNodeId?: string } | undefined,
   out: DeliveryRecord[]
 ): Promise<void> {
   if (!(await fs.exists(dir))) return;
@@ -214,7 +224,7 @@ async function collectDeliveryFiles(
     try {
       const d = await loadDelivery(fs, join(dir, entry.name));
       if (filter?.taskId && d.taskId !== filter.taskId) continue;
-      if (filter?.boxId && d.boxId !== filter.boxId) continue;
+      if (filter?.sourceNodeId && d.sourceNodeId !== filter.sourceNodeId) continue;
       out.push(d);
     } catch {
       // Invalid operational files stay on disk but are skipped.
@@ -259,14 +269,14 @@ export async function updateDelivery(
 }
 
 /**
- * Drop non-accepted deliveries for a box (ready / rejected / draft).
+ * Drop non-accepted deliveries for a source Node (ready / rejected / draft).
  * Accepted deliveries stay as operational history for retention.
  */
-export async function removeNonAcceptedDeliveriesForBox(
+export async function removeNonAcceptedDeliveriesForNode(
   fs: FsAdapter,
-  boxId: string
+  sourceNodeId: string
 ): Promise<void> {
-  for (const delivery of await loadDeliveries(fs, { boxId })) {
+  for (const delivery of await loadDeliveries(fs, { sourceNodeId })) {
     if (delivery.status === "accepted") continue;
     if (await fs.exists(delivery.path)) await fs.remove(delivery.path);
   }
@@ -292,7 +302,7 @@ export async function writeDelivery(fs: FsAdapter, record: DeliveryRecord): Prom
     type: "delivery",
     id: record.id,
     taskId: record.taskId,
-    boxId: record.boxId,
+    sourceNodeId: record.sourceNodeId,
     role: record.role,
     status: record.status,
     commits: record.commits,

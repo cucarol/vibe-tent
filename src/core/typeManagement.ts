@@ -1,5 +1,5 @@
 import { FsAdapter, withTentMutation } from "./adapter.js";
-import { Box } from "./types.js";
+import { Node } from "./types.js";
 import { loadTent } from "./tree.js";
 import { loadTaskEnvelopes } from "./task.js";
 import { envelopeIsActiveOccupation } from "./claim.js";
@@ -89,18 +89,18 @@ export async function inspectTypeDeletion(
   void level;
   const tent = await loadTent(fs);
   const registry = tent.typeRegistry;
-  const boxes = [...tent.byId.values()];
-  const referenced = boxes.filter((box) => {
-    const { base, modifier } = splitType(box.type);
-    return box.type === name || base === name || modifier === name;
+  const nodes = [...tent.byId.values()];
+  const referenced = nodes.filter((node) => {
+    const { base, modifier } = splitType(node.type);
+    return node.type === name || base === name || modifier === name;
   });
   const tasks = await loadTaskEnvelopes(fs);
   const ownerMap = new Map<string, { id: string; path: string; owner: string }>();
 
   const relatedIds = new Set<string>();
   for (const reference of referenced) {
-    for (const box of relatedBoxes(reference, boxes)) {
-      relatedIds.add(box.id);
+    for (const node of relatedNodes(reference, nodes)) {
+      relatedIds.add(node.id);
     }
   }
 
@@ -110,9 +110,9 @@ export async function inspectTypeDeletion(
     // Direct Node refs only (cx-tsw53f). Workspace context is not a Tent-wide type lock.
     for (const nodeId of taskReferencedNodeIds(task)) {
       if (!relatedIds.has(nodeId)) continue;
-      const box = tent.byId.get(nodeId);
-      if (!box) continue;
-      ownerMap.set(box.id, { id: box.id, path: box.path, owner: task.role });
+      const node = tent.byId.get(nodeId);
+      if (!node) continue;
+      ownerMap.set(node.id, { id: node.id, path: node.path, owner: task.role });
     }
   }
 
@@ -126,7 +126,7 @@ export async function inspectTypeDeletion(
     name,
     builtIn,
     exists: name in registry,
-    references: referenced.map(({ id, path, name: boxName }) => ({ id, path, name: boxName })),
+    references: referenced.map(({ id, path, name: nodeName }) => ({ id, path, name: nodeName })),
     activeOwners: [...ownerMap.values()],
   };
 }
@@ -178,10 +178,10 @@ function assertTypeName(name: string): void {
   if (name.includes("-")) throw new Error("Type names cannot contain '-' (compound separator).");
 }
 
-function relatedBoxes(reference: Box, boxes: Box[]): Box[] {
-  return boxes.filter((box) =>
-    box.path === reference.path ||
-    box.path.startsWith(reference.path + "/") ||
-    reference.path.startsWith(box.path + "/")
+function relatedNodes(reference: Node, nodes: Node[]): Node[] {
+  return nodes.filter((node) =>
+    node.path === reference.path ||
+    node.path.startsWith(reference.path + "/") ||
+    reference.path.startsWith(node.path + "/")
   );
 }

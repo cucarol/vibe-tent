@@ -1,4 +1,4 @@
-// 极简 frontmatter 解析/序列化。零依赖:框身份文件(<box-name>.md)的 frontmatter 是扁平 key: value,
+// 极简 frontmatter 解析/序列化。零依赖：Node 身份文件（<node-name>.md）的 frontmatter 是扁平 key: value，
 // 不需要完整 YAML。认标量(string/number/bool)、流式数组/映射、块序列(含对象项)和行注释。
 
 export interface ParsedFrontmatter {
@@ -9,8 +9,8 @@ export interface ParsedFrontmatter {
 }
 
 const FENCE = "---";
-/** Canonical box identity key order; relations sits with other durable semantic fields. */
-export const BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags", "mode", "relations"];
+/** Canonical node identity key order; relations sits with other durable semantic fields. */
+export const NODE_FRONTMATTER_KEY_ORDER = ["id", "type", "tags", "mode", "relations"];
 
 export function parseFrontmatter(raw: string): ParsedFrontmatter {
   const text = raw.replace(/\r\n/g, "\n");

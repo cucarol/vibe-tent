@@ -1,7 +1,7 @@
 // Ephemeral recent Context Cards for floating control (not durable entities).
 
 import {
-  boxContextCard,
+  nodeContextCard,
   contextCardToDragText,
   taskContextCard,
   type ContextCard,
@@ -51,8 +51,8 @@ export class ContextCardStore {
     return entry;
   }
 
-  pushBox(boxId: string, path?: string, label?: string, tentRootHint?: string): RecentContextCard {
-    return this.pushFromCard(boxContextCard(boxId, path, { label, tentRootHint }));
+  pushNode(nodeId: string, path?: string, label?: string, tentRootHint?: string): RecentContextCard {
+    return this.pushFromCard(nodeContextCard(nodeId, path, { label, tentRootHint }));
   }
 
   pushTask(taskId: string, path?: string, label?: string): RecentContextCard {

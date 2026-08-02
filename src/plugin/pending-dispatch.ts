@@ -2,7 +2,7 @@ import type { TaskEnvelope } from "../core/task.js";
 import { taskReferencedNodeIds } from "../core/task-node-refs.js";
 
 export interface PendingDispatch {
-  boxId: string;
+  nodeId: string;
   task: TaskEnvelope;
 }
 
@@ -10,15 +10,15 @@ export function pendingDispatches(tasks: TaskEnvelope[]): PendingDispatch[] {
   const latestByBox = new Map<string, TaskEnvelope>();
   for (const task of [...tasks].sort(compareTaskOrder)) {
     if (task.contextCard == null) continue;
-    for (const boxId of taskReferencedNodeIds(task)) {
-      if (boxId !== "root") latestByBox.set(boxId, task);
+    for (const nodeId of taskReferencedNodeIds(task)) {
+      if (nodeId !== "root") latestByBox.set(nodeId, task);
     }
   }
 
   const pending: PendingDispatch[] = [];
-  for (const [boxId, task] of latestByBox) {
-    if (task.status === "taken") continue;
-    pending.push({ boxId, task });
+  for (const [nodeId, task] of latestByBox) {
+    if (task.state !== "queued") continue;
+    pending.push({ nodeId, task });
   }
   return pending;
 }

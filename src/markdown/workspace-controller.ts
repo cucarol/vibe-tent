@@ -5,8 +5,8 @@ import type { DocsClient } from "./docs-client.js";
 import { renderMarkdownToHtml } from "./render.js";
 import type {
   BacklinkHit,
-  ConceptEditSnapshot,
-  ConceptProjection,
+  NodeEditSnapshot,
+  NodeProjection,
   SearchHit,
 } from "./types.js";
 
@@ -14,11 +14,11 @@ export type EditorMode = "source" | "preview";
 
 export type ConflictState = {
   message: string;
-  disk: ConceptEditSnapshot;
+  disk: NodeEditSnapshot;
 };
 
 export type TabState = {
-  cx: string;
+  nodeId: string;
   path: string;
   name: string;
   type: string;
@@ -28,12 +28,12 @@ export type TabState = {
   dirty: boolean;
   mode: EditorMode;
   conflict: ConflictState | null;
-  artifactRefs: ConceptEditSnapshot["artifactRefs"];
+  artifactRefs: NodeEditSnapshot["artifactRefs"];
   frontmatter: Record<string, unknown>;
 };
 
 export type WorkspaceSnapshot = {
-  tree: ConceptProjection[];
+  tree: NodeProjection[];
   tabs: TabState[];
   activeCx: string | null;
   searchQuery: string;
@@ -43,7 +43,7 @@ export type WorkspaceSnapshot = {
 };
 
 export class WorkspaceController {
-  private tree: ConceptProjection[] = [];
+  private tree: NodeProjection[] = [];
   private tabs = new Map<string, TabState>();
   private tabOrder: string[] = [];
   private activeCx: string | null = null;
@@ -81,17 +81,17 @@ export class WorkspaceController {
     this.emit();
   }
 
-  async openConcept(cxOrPath: string): Promise<TabState> {
+  async openNode(cxOrPath: string): Promise<TabState> {
     const snap = await this.docs.readForEdit(cxOrPath);
-    const existing = this.tabs.get(snap.cx);
+    const existing = this.tabs.get(snap.nodeId);
     if (existing && existing.dirty) {
-      this.activeCx = snap.cx;
+      this.activeCx = snap.nodeId;
       this.statusMessage = "Tab already open with unsaved changes.";
       this.emit();
       return existing;
     }
     const tab: TabState = {
-      cx: snap.cx,
+      nodeId: snap.nodeId,
       path: snap.path,
       name: snap.name,
       type: snap.type,
@@ -104,10 +104,10 @@ export class WorkspaceController {
       artifactRefs: snap.artifactRefs,
       frontmatter: snap.frontmatter,
     };
-    if (!this.tabs.has(snap.cx)) this.tabOrder.push(snap.cx);
-    this.tabs.set(snap.cx, tab);
-    this.activeCx = snap.cx;
-    this.backlinks = await this.docs.backlinks(snap.cx);
+    if (!this.tabs.has(snap.nodeId)) this.tabOrder.push(snap.nodeId);
+    this.tabs.set(snap.nodeId, tab);
+    this.activeCx = snap.nodeId;
+    this.backlinks = await this.docs.backlinks(snap.nodeId);
     this.statusMessage = null;
     this.emit();
     return tab;
@@ -171,7 +171,7 @@ export class WorkspaceController {
     const tab = this.tabs.get(cx);
     if (!tab) return false;
     const result = await this.docs.write({
-      cx: tab.cx,
+      nodeId: tab.nodeId,
       baseEtag: tab.etag,
       raw: tab.buffer,
     });
@@ -243,14 +243,14 @@ export class WorkspaceController {
   async createNote(name: string, parentPath?: string): Promise<string> {
     const created = await this.docs.createNote({ name, parentPath, type: "prompt" });
     await this.refreshTree();
-    await this.openConcept(created.cx);
+    await this.openNode(created.nodeId);
     this.statusMessage = `Created note ${created.path}`;
     this.emit();
-    return created.cx;
+    return created.nodeId;
   }
 
-  /** Apply external concept.changed: reload clean tabs only. */
-  async onConceptChanged(cx: string): Promise<void> {
+  /** Apply external node.changed: reload clean tabs only. */
+  async onNodeChanged(cx: string): Promise<void> {
     const tab = this.tabs.get(cx);
     if (!tab) {
       await this.refreshTree();
@@ -272,7 +272,7 @@ export class WorkspaceController {
       }
       return;
     }
-    await this.openConcept(cx);
+    await this.openNode(cx);
   }
 
   private emit(): void {

@@ -466,7 +466,7 @@ test("Task envelope persists and reloads contextCard + digests", async () => {
     const taskPath = await writeTaskEnvelope(nfs, new SystemClock(), {
       role: "grok-core-worker",
       assigneeKind: "agentProfile",
-      claims: [{ id: "cx-5q6za6", path: "n" }],
+      nodeRefs: [{ id: "cx-5q6za6", path: "n" }],
       manifestPath: "temp/agent-profiles/grok-core-worker/manifests/tk-x.yml",
       userPrompt: "Implement Context Card",
       parentActor: { kind: "role", id: "规划" },
@@ -502,7 +502,7 @@ test("missing nested contextCard fails loud even when flat mirrors exist", async
     const nfs = new NodeFs(dir);
     const taskPath = await writeTaskEnvelope(nfs, new SystemClock(), {
       role: "analyst",
-      claims: [{ id: "bx-1", path: "p" }],
+      nodeRefs: [{ id: "cx-1", path: "p" }],
       manifestPath: "temp/analyst/manifest.yml",
       userPrompt: "x",
       parentActor: { kind: "user", id: "user" },
@@ -541,7 +541,7 @@ test("lane authority: no phantom on load; persist/reload/tamper/backfill", async
     const taskPath = await writeTaskEnvelope(nfs, new SystemClock(), {
       role: "grok-core-worker",
       assigneeKind: "agentProfile",
-      claims: [{ id: "cx-5q6za6", path: "n" }],
+      nodeRefs: [{ id: "cx-5q6za6", path: "n" }],
       manifestPath: "temp/agent-profiles/grok-core-worker/manifests/tk-x.yml",
       userPrompt: "lane authority",
       parentActor: parent,

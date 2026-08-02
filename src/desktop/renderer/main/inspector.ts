@@ -1,10 +1,9 @@
-// Node inspector: meta, rename, mode, box.projection, backlinks; section open defaults.
+// Node inspector: meta, rename, mode, collaboration, backlinks; section open defaults.
 
 import { escapeHtml } from "../../../markdown/render.js";
 import {
-  boxProjectionSummaryLine,
-  boxStatusLabel,
-} from "../../workbench/box-projection.js";
+  nodeCollaborationSummaryLine,
+} from "../../workbench/node-collaboration.js";
 import { closeOpenTab } from "../../workbench/open-tabs.js";
 import { el, setError } from "./elements.js";
 import {
@@ -12,7 +11,7 @@ import {
   activeBacklinksError,
   activeCx,
   actionableTasks,
-  boxProjectionFor,
+  nodeCollaborationFor,
   localTabs,
   pendingInteractionCount,
   reloadTree,
@@ -24,7 +23,7 @@ import { UI, btnHtml } from "./ui.js";
 
 export type InspectorHost = {
   renderAll: () => void;
-  openConcept?: (cx: string) => Promise<void>;
+  openNode?: (cx: string) => Promise<void>;
 };
 
 let host: InspectorHost | null = null;
@@ -60,10 +59,10 @@ export function renderMeta(): void {
   }
   el.meta.classList.remove("muted");
   // 标题 + 最多一行关键属性；类型/路径/id 收进详情折叠
-  // 协作 status/assignee 只来自 box.projection（不读 frontmatter）
-  const proj = tab.coordination ? boxProjectionFor(tab.cx) : null;
+  // Collaboration comes only from node.collaboration (never Node frontmatter).
+  const proj = tab.coordination ? nodeCollaborationFor(tab.nodeId) : null;
   const modeLabel = tab.nodeMode === "archived" ? "封存" : "开放";
-  const collabLine = boxProjectionSummaryLine(proj);
+  const collabLine = nodeCollaborationSummaryLine(proj);
   const oneLine = tab.coordination
     ? collabLine
       ? `${escapeHtml(tab.type)} · ${escapeHtml(collabLine)} · ${modeLabel}`
@@ -72,11 +71,11 @@ export function renderMeta(): void {
   const renameDisabled = tab.nodeMode === "archived";
   const projDl =
     tab.coordination && proj
-      ? `<dt>状态</dt><dd>${escapeHtml(boxStatusLabel(proj.status))}</dd>
-        <dt>经办</dt><dd>${proj.assignee ? escapeHtml(proj.assignee) : "—"}</dd>
+      ? `<dt>活动任务</dt><dd>${proj.activeTask ? "1" : "0"}</dd>
+        <dt>经办</dt><dd>${proj.activeTask?.task.role ?? proj.activeTask?.task.profileId ?? "—"}</dd>
         <dt>任务</dt><dd>${
-          proj.activeTaskId
-            ? `<code title="${escapeHtml(proj.activeTaskId)}">${escapeHtml(proj.activeTaskId)}</code>`
+          proj.activeTask?.task.id
+            ? `<code title="${escapeHtml(proj.activeTask.task.id)}">${escapeHtml(proj.activeTask.task.id)}</code>`
             : "—"
         }</dd>`
       : tab.coordination
@@ -109,7 +108,7 @@ export function renderMeta(): void {
       <dl>
         <dt>类型</dt><dd>${escapeHtml(tab.type)}</dd>
         <dt>路径</dt><dd title="${escapeHtml(tab.path)}">${escapeHtml(tab.path)}</dd>
-        <dt>标识</dt><dd><code title="不可变 id">${escapeHtml(tab.cx)}</code></dd>
+        <dt>标识</dt><dd><code title="不可变 id">${escapeHtml(tab.nodeId)}</code></dd>
         ${projDl}
       </dl>
     </details>`;
@@ -137,7 +136,7 @@ export function renderBacklinks(): void {
   hostEl.innerHTML = `<ul class="card-list backlink-list" aria-label="反向链接">${activeBacklinks
     .map(
       (h) =>
-        `<li class="card-item" data-open="${escapeHtml(h.cx)}" role="button" tabindex="0">
+        `<li class="card-item" data-open="${escapeHtml(h.nodeId)}" role="button" tabindex="0">
           <strong>${escapeHtml(h.name)}</strong>
           ${
             h.context
@@ -150,7 +149,7 @@ export function renderBacklinks(): void {
     )
     .join("")}</ul>`;
   hostEl.querySelectorAll<HTMLElement>("[data-open]").forEach((node) => {
-    const open = () => void host?.openConcept?.(node.getAttribute("data-open")!);
+    const open = () => void host?.openNode?.(node.getAttribute("data-open")!);
     node.addEventListener("click", open);
     node.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter" || ev.key === " ") {
@@ -169,7 +168,7 @@ async function onRenameNode(): Promise<void> {
   try {
     const result = (await window.tentDesktop.rpc("docs.rename", {
       workspaceId,
-      id: tab.cx,
+      nodeId: tab.nodeId,
       newName,
       actor: "user",
     })) as { name: string; path: string };
@@ -194,14 +193,14 @@ async function onSetNodeMode(): Promise<void> {
   }
   if (mode === "archived" && !window.confirm(`封存「${tab.name}」及其子树？`)) return;
   try {
-    await window.tentDesktop.rpc("docs.setMode", { workspaceId, id: tab.cx, mode });
+    await window.tentDesktop.rpc("docs.setMode", { workspaceId, nodeId: tab.nodeId, mode });
     tab.nodeMode = mode;
     el.status.textContent = mode === "archived" ? `已封存「${tab.name}」` : "访问模式已更新";
     if (mode === "archived") {
       // Same neighbor preference as user tab-close (left, else right).
       const order = [...localTabs.keys()];
-      const result = closeOpenTab(order, tab.cx, activeCx);
-      localTabs.delete(tab.cx);
+      const result = closeOpenTab(order, tab.nodeId, activeCx);
+      localTabs.delete(tab.nodeId);
       setActiveCx(result.activeCx);
     }
     await reloadTree();

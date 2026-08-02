@@ -2,8 +2,7 @@
 // Desktop drag (architecture B6) uses these shapes; core only builds the stable text.
 
 export type ContextRefKind =
-  | "box"
-  | "concept"
+  | "node"
   | "task"
   | "delivery"
   | "handoff"
@@ -130,12 +129,12 @@ export function formatContextCardPrompt(
 }
 
 /** Convenience builders for common entities. */
-export function boxContextCard(
-  boxId: string,
+export function nodeContextCard(
+  nodeId: string,
   path?: string,
   opts?: ContextCardPathHints
 ): ContextCard {
-  return buildContextCard({ kind: "box", id: boxId, path }, opts);
+  return buildContextCard({ kind: "node", id: nodeId, path }, opts);
 }
 
 export function taskContextCard(
@@ -166,7 +165,9 @@ export function parseContextCardText(text: string): ContextRef | null {
   const rest = refLine.slice("contextRef: ".length).trim();
   const slash = rest.indexOf("/");
   if (slash <= 0) return null;
-  const kind = rest.slice(0, slash) as ContextRefKind;
+  const rawKind = rest.slice(0, slash);
+  if (!CONTEXT_REF_KINDS.has(rawKind)) return null;
+  const kind = rawKind as ContextRefKind;
   const id = rest.slice(slash + 1).trim();
   if (!id) return null;
   const pathLine = lines.find((l) => l.startsWith("path: "));
@@ -178,3 +179,12 @@ export function parseContextCardText(text: string): ContextRef | null {
     fragment: fragmentLine ? fragmentLine.slice("fragment: ".length).trim() : undefined,
   };
 }
+
+const CONTEXT_REF_KINDS = new Set<string>([
+  "node",
+  "task",
+  "delivery",
+  "handoff",
+  "selection",
+  "role",
+]);

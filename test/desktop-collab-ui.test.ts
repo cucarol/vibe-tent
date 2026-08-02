@@ -28,7 +28,7 @@ import {
   pickDefaultCoordinationType,
   pickDefaultProfileId,
   sessionStateLabel,
-  suggestBoxName,
+  suggestNodeName,
   taskStateLabel,
   validateDispatchForm,
 } from "../src/desktop/workbench/collaboration-ui.js";
@@ -41,6 +41,13 @@ import {
 } from "../src/service/profiles.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import { GROK_ACP_ADAPTER_ID } from "../src/adapters/grok-acp/index.js";
+import { buildTaskContextCard } from "../src/core/task-context-card.js";
+
+const testTaskContextCard = (nodeId: string) =>
+  buildTaskContextCard({
+    contextGeneration: `cg-v1-${"0".repeat(64)}`,
+    refs: { nodes: [{ id: nodeId }] },
+  });
 
 // ---- pure UI model ----
 
@@ -64,7 +71,7 @@ test("listCoordinationTypeNames uses base tier types", () => {
 test("validateDispatchForm builds task.dispatch payload and blocks invalid cases", () => {
   const roles = [{ name: "executor" }, { name: "reviewer" }];
   const ok = validateDispatchForm({
-    boxId: "cx-1",
+    nodeId: "cx-1",
     coordination: true,
     role: "executor",
     prompt: "  implement feature  ",
@@ -72,7 +79,7 @@ test("validateDispatchForm builds task.dispatch payload and blocks invalid cases
   });
   assert.equal(ok.ok, true);
   assert.deepEqual(ok.payload, {
-    boxId: "cx-1",
+    nodeId: "cx-1",
     role: "executor",
     prompt: "implement feature",
     parentActor: { kind: "user", id: "user" },
@@ -81,7 +88,7 @@ test("validateDispatchForm builds task.dispatch payload and blocks invalid cases
 
   assert.equal(
     validateDispatchForm({
-      boxId: "cx-1",
+      nodeId: "cx-1",
       coordination: false,
       role: "executor",
       prompt: "x",
@@ -91,7 +98,7 @@ test("validateDispatchForm builds task.dispatch payload and blocks invalid cases
   );
   assert.equal(
     validateDispatchForm({
-      boxId: null,
+      nodeId: null,
       coordination: true,
       role: "executor",
       prompt: "x",
@@ -101,7 +108,7 @@ test("validateDispatchForm builds task.dispatch payload and blocks invalid cases
   );
   assert.equal(
     validateDispatchForm({
-      boxId: "cx-1",
+      nodeId: "cx-1",
       coordination: true,
       role: "",
       prompt: "x",
@@ -111,7 +118,7 @@ test("validateDispatchForm builds task.dispatch payload and blocks invalid cases
   );
   assert.equal(
     validateDispatchForm({
-      boxId: "cx-1",
+      nodeId: "cx-1",
       coordination: true,
       role: "executor",
       prompt: "   ",
@@ -121,7 +128,7 @@ test("validateDispatchForm builds task.dispatch payload and blocks invalid cases
   );
   assert.equal(
     validateDispatchForm({
-      boxId: "cx-1",
+      nodeId: "cx-1",
       coordination: true,
       role: "ghost",
       prompt: "x",
@@ -131,7 +138,7 @@ test("validateDispatchForm builds task.dispatch payload and blocks invalid cases
   );
   assert.equal(
     validateDispatchForm({
-      boxId: "cx-1",
+      nodeId: "cx-1",
       coordination: true,
       role: "executor",
       prompt: "x",
@@ -165,21 +172,21 @@ test("accept/reject payload builders and task review model", () => {
         id: "tk-a",
         role: "executor",
         referencedNodeIds: ["cx-box"],
-        status: "taken",
         state: "delivered",
         manifest: "m",
         activeDeliveryId: "dl-1",
         prompt: "ship it",
+        contextCard: testTaskContextCard("cx-box"),
       },
       {
         path: "temp/executor/tasks/b.md",
         id: "tk-b",
         role: "executor",
         referencedNodeIds: ["cx-box"],
-        status: "pending",
         state: "queued",
         manifest: "m",
         prompt: "queued work",
+        contextCard: testTaskContextCard("cx-box"),
       },
     ],
     [
@@ -187,7 +194,7 @@ test("accept/reject payload builders and task review model", () => {
         path: "temp/executor/deliveries/dl-1.md",
         id: "dl-1",
         taskId: "tk-a",
-        boxId: "cx-box",
+        sourceNodeId: "cx-box",
         role: "executor",
         status: "ready",
         summary: "Done with tests",
@@ -210,9 +217,9 @@ test("accept/reject payload builders and task review model", () => {
   assert.match(items[0].summaryLine, /待确认交付/);
 });
 
-test("suggestBoxName embeds type without hardcoding goal", () => {
-  assert.match(suggestBoxName("prompt", 1_700_000_000_000), /^prompt-/);
-  assert.match(suggestBoxName("mission", 1_700_000_000_000), /^mission-/);
+test("suggestNodeName embeds type without hardcoding goal", () => {
+  assert.match(suggestNodeName("prompt", 1_700_000_000_000), /^prompt-/);
+  assert.match(suggestNodeName("mission", 1_700_000_000_000), /^mission-/);
 });
 
 test("CLIENT_METHODS includes registry.types/roles, role CRUD, and profile CRUD", () => {
@@ -343,11 +350,11 @@ test("task/session state labels and start/interrupt gates", () => {
         id: "tk-live",
         role: "executor",
         referencedNodeIds: ["cx-1"],
-        status: "taken",
         state: "running",
         manifest: "m",
         sessionId: "ss-live1",
         prompt: "go",
+        contextCard: testTaskContextCard("cx-1"),
       },
     ],
     [],
@@ -376,7 +383,7 @@ async function makeCollabWorkspace(): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "collab",
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -419,14 +426,14 @@ test("service+client: registry → create coordination box → dispatch → deli
 
     const defaultType = pickDefaultCoordinationType(types.types)!;
     const created = (await client.docsCreateNote(workspaceId, {
-      name: suggestBoxName(defaultType, Date.now()),
+      name: suggestNodeName(defaultType, Date.now()),
       type: defaultType,
-    })) as { id: string; type: string };
-    assert.match(created.id, /^cx-/);
+    }));
+    assert.match(created.nodeId, /^cx-/);
     assert.equal(created.type, defaultType);
 
     const form = validateDispatchForm({
-      boxId: created.id,
+      nodeId: created.nodeId,
       coordination: true,
       role: "executor",
       prompt: "Ship collab closed loop",
@@ -436,7 +443,7 @@ test("service+client: registry → create coordination box → dispatch → deli
     assert.ok(form.payload);
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [form.payload!.boxId],
+      nodeIds: [form.payload!.nodeId],
       role: form.payload!.role,
       prompt: form.payload!.prompt,
       parentActor: form.payload!.parentActor ?? { kind: "user", id: "user" },
@@ -472,11 +479,11 @@ test("service+client: registry → create coordination box → dispatch → deli
 
     // Second box: reject path
     const box2 = (await client.docsCreateNote(workspaceId, {
-      name: suggestBoxName("prompt", Date.now() + 1),
+      name: suggestNodeName("prompt", Date.now() + 1),
       type: "prompt",
-    })) as { id: string };
+    }));
     const d2 = (await client.taskDispatch(workspaceId, {
-      nodeIds: [box2.id],
+      nodeIds: [box2.nodeId],
       role: "executor",
       prompt: "will be rejected",
       parentActor: { kind: "user", id: "user" },
@@ -565,12 +572,12 @@ test("service+client: profile.list safe metadata + startSession/interrupt via sh
     const mounted = (await client.mount(ws)) as { workspaceId: string };
     const workspaceId = mounted.workspaceId;
     const box = (await client.docsCreateNote(workspaceId, {
-      name: suggestBoxName("prompt", Date.now()),
+      name: suggestNodeName("prompt", Date.now()),
       type: "prompt",
-    })) as { id: string };
+    }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [box.id],
+      nodeIds: [box.nodeId],
       role: "executor",
       prompt: "start via UI model",
       parentActor: { kind: "user", id: "user" },

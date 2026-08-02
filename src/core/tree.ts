@@ -1,11 +1,11 @@
-// 加载帐 → concept 树 → 解析 mode / type validity。
+// 加载帐 → Node 树 → 解析 mode / type validity。
 // V0.2: no domain R/W axes, no coordination capability, no read-only mode.
-// operational pipeline（temp/ 等）永不进入 concept 索引。
+// operational pipeline（temp/ 等）永不进入 Node 索引。
 
 import { FsAdapter } from "./adapter.js";
 import {
-  Box,
-  BoxFrontmatter,
+  Node,
+  NodeFrontmatter,
   NodeMode,
   RelationRecord,
 } from "./types.js";
@@ -21,27 +21,28 @@ import {
   normalizeRelationsList,
   relationsToFrontmatterValue,
 } from "./relations.js";
+import { isNodeId } from "./id.js";
 
-/** concept 身份文件路径 = <文件夹名>.md */
-export function boxNotePath(boxPath: string): string {
-  return join(boxPath, baseName(boxPath) + ".md");
+/** Node 身份文件路径 = <文件夹名>.md */
+export function nodeNotePath(nodePath: string): string {
+  return join(nodePath, baseName(nodePath) + ".md");
 }
 
 export interface LoadedTent {
-  /** 顶层 concept，order.json 优先，缺省按稳定名称排序。temp 等 operational 不在树内。 */
-  roots: Box[];
-  /** id → concept 索引（仅 user-facing concepts）。 */
-  byId: Map<string, Box>;
-  /** path → concept 索引。 */
-  byPath: Map<string, Box>;
+  /** 顶层 Node，order.json 优先，缺省按稳定名称排序。temp 等 operational 不在树内。 */
+  roots: Node[];
+  /** id → Node 索引（仅 user-facing Nodes）。 */
+  byId: Map<string, Node>;
+  /** path → Node 索引。 */
+  byPath: Map<string, Node>;
   duplicateIds: Set<string>;
   typeRegistry: TypeRegistry;
 }
 
 export async function loadTent(fs: FsAdapter): Promise<LoadedTent> {
-  const byId = new Map<string, Box>();
-  const byPath = new Map<string, Box>();
-  const roots: Box[] = [];
+  const byId = new Map<string, Node>();
+  const byPath = new Map<string, Node>();
+  const roots: Node[] = [];
   const typeRegistry = await loadTypeRegistry(fs);
 
   const top = await fs.listDir("");
@@ -49,7 +50,7 @@ export async function loadTent(fs: FsAdapter): Promise<LoadedTent> {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
     if (isSystemNoteName(entry.name)) continue;
-    await loadBoxInto(fs, entry.name, null, typeRegistry, roots);
+    await loadNodeInto(fs, entry.name, null, typeRegistry, roots);
   }
 
   // 排序:隐藏 order 表优先;缺省时根与子框均按稳定名称排序
@@ -66,59 +67,61 @@ export async function loadTent(fs: FsAdapter): Promise<LoadedTent> {
   return { roots: sortedRoots, byId, byPath, duplicateIds, typeRegistry };
 }
 
-function findDuplicateIds(roots: Box[]): Set<string> {
+function findDuplicateIds(roots: Node[]): Set<string> {
   const counts = new Map<string, number>();
-  const visit = (box: Box) => {
-    if (box.id) counts.set(box.id, (counts.get(box.id) || 0) + 1);
-    for (const child of box.children) visit(child);
+  const visit = (node: Node) => {
+    if (node.id) counts.set(node.id, (counts.get(node.id) || 0) + 1);
+    for (const child of node.children) visit(child);
   };
   for (const root of roots) visit(root);
   return new Set([...counts].filter(([, count]) => count > 1).map(([id]) => id));
 }
 
 function applyDuplicateInvalid(
-  box: Box,
+  node: Node,
   duplicateIds: Set<string>,
   inherited?: { rootId: string; reason: string }
 ): void {
-  const direct = duplicateIds.has(box.id)
-    ? { rootId: box.id, reason: `Duplicate id: ${box.id}; native copies must be converted to forks.` }
+  const direct = duplicateIds.has(node.id)
+    ? { rootId: node.id, reason: `Duplicate id: ${node.id}; native copies must be converted to forks.` }
     : undefined;
   const invalid = inherited || direct;
   if (invalid) {
-    box.invalid = true;
-    box.invalidRootId = invalid.rootId;
-    box.invalidReason = invalid.reason;
+    node.invalid = true;
+    node.invalidRootId = invalid.rootId;
+    node.invalidReason = invalid.reason;
   }
-  for (const child of box.children) applyDuplicateInvalid(child, duplicateIds, invalid);
+  for (const child of node.children) applyDuplicateInvalid(child, duplicateIds, invalid);
 }
 
 /** 单框内容落盘后的增量重载。结构与 id 不变时避免重扫整顶帐。 */
-export async function reloadLoadedBox(fs: FsAdapter, tent: LoadedTent, path: string): Promise<Box> {
-  const box = tent.byPath.get(path);
-  if (!box) throw new Error(`Box not found: ${path}.`);
-  const { data, body } = parseFrontmatter(await fs.readFile(boxNotePath(path)));
+export async function reloadLoadedNode(fs: FsAdapter, tent: LoadedTent, path: string): Promise<Node> {
+  const node = tent.byPath.get(path);
+  if (!node) throw new Error(`Node not found: ${path}.`);
+  const { data, body } = parseFrontmatter(await fs.readFile(nodeNotePath(path)));
+  const schemaError = canonicalIdentityError(data);
+  if (schemaError) throw new Error(schemaError);
   const identity = normalizeIdentity(data);
-  if (identity.fm.id !== box.id) throw new Error("Incremental reload cannot change box id.");
-  box.type = identity.fm.type;
-  box.tags = identity.tags;
-  box.relations = identity.relations;
-  box.fm = identity.fm;
-  box.body = body;
+  if (identity.fm.id !== node.id) throw new Error("Incremental reload cannot change node id.");
+  node.type = identity.fm.type;
+  node.tags = identity.tags;
+  node.relations = identity.relations;
+  node.fm = identity.fm;
+  node.body = body;
   for (const root of tent.roots) resolveSubtree(root, tent.typeRegistry);
-  return box;
+  return node;
 }
 
-function sortChildren(box: Box, order: OrderMap): void {
-  box.children = sortByOrder(box.children, order[box.id], (a, b) => a.name.localeCompare(b.name));
-  for (const c of box.children) sortChildren(c, order);
+function sortChildren(node: Node, order: OrderMap): void {
+  node.children = sortByOrder(node.children, order[node.id], (a, b) => a.name.localeCompare(b.name));
+  for (const c of node.children) sortChildren(c, order);
 }
 
-async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry: TypeRegistry): Promise<Box | null> {
+async function loadNode(fs: FsAdapter, path: string, parent: Node | null, registry: TypeRegistry): Promise<Node | null> {
   if (isOperationalPath(path)) return null;
-  const boxFile = boxNotePath(path);
+  const boxFile = nodeNotePath(path);
   if (!(await fs.exists(boxFile))) {
-    // 没有同名 .md 的文件夹不是 concept(普通分组)。但其子孙里可能有 —— 透传扫描。
+    // 没有同名 .md 的文件夹不是 Node（普通分组）。但其子孙里可能有 —— 透传扫描。
     return null;
   }
   const raw = await fs.readFile(boxFile);
@@ -132,16 +135,17 @@ async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry
   }
   const { data, body } = parsed;
   const name = baseName(path);
+  const schemaError = canonicalIdentityError(data);
 
   const { fm, tags, relations } = normalizeIdentity(data);
-  const box: Box = {
+  const node: Node = {
     id: fm.id,
     type: fm.type,
     tags,
     relations,
     mode: "editable",
     archived: false,
-    invalid: !!parseError,
+    invalid: !!parseError || !!schemaError,
     path,
     name,
     fm,
@@ -149,38 +153,43 @@ async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry
     children: [],
     parent,
   };
-  if (parseError) {
-    box.invalidRootId = path;
-    box.invalidReason = `Invalid frontmatter: ${parseError}`;
+  if (parseError || schemaError) {
+    node.invalidRootId = path;
+    node.invalidReason = parseError ? `Invalid frontmatter: ${parseError}` : schemaError;
   }
 
   const sub = await fs.listDir(path);
   for (const entry of sub) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadBoxInto(fs, join(path, entry.name), box, registry, box.children);
+    await loadNodeInto(fs, join(path, entry.name), node, registry, node.children);
   }
-  return box;
+  return node;
+}
+
+function canonicalIdentityError(data: Record<string, unknown>): string | undefined {
+  if (typeof data.id !== "string" || !isNodeId(data.id)) {
+    return `Invalid Node id: ${typeof data.id === "string" && data.id ? data.id : "<missing>"}; canonical Node ids must start with cx-.`;
+  }
+  if (data.mode !== undefined && parseNodeMode(data.mode) === undefined) {
+    return `Invalid Node mode: ${String(data.mode)}.`;
+  }
+  return undefined;
 }
 
 function normalizeIdentity(data: Record<string, unknown>): {
-  fm: BoxFrontmatter;
+  fm: NodeFrontmatter;
   tags: string[];
   relations: RelationRecord[];
 } {
   const rawType = typeof data.type === "string" && data.type ? data.type : "custom";
-  const fm: BoxFrontmatter = {
+  const fm: NodeFrontmatter = {
     ...data,
     id: typeof data.id === "string" ? data.id : "",
     type: rawType,
-  } as BoxFrontmatter;
-  // Legacy keys stripped from memory projection (disk may still hold until migrate).
-  delete (fm as Record<string, unknown>).archived;
-  delete (fm as Record<string, unknown>).readable;
-  delete (fm as Record<string, unknown>).writable;
-  delete (fm as Record<string, unknown>).owner;
-  delete (fm as Record<string, unknown>).status;
-  delete (fm as Record<string, unknown>).acceptedBy;
+  } as NodeFrontmatter;
+  // Unknown frontmatter remains opaque user metadata. Runtime never translates
+  // retired collaboration keys into canonical Node or Task state.
   const tags = normalizeTags(data.tags);
   if (tags.length > 0) fm.tags = tags;
   else delete fm.tags;
@@ -196,20 +205,17 @@ function normalizeIdentity(data: Record<string, unknown>): {
 
 /**
  * Parse persisted mode.
- * V0.2: only editable (default) and archived. Legacy "read-only" is treated as editable
- * at load (one-shot migration deletes the key from disk).
+ * Only editable (default) and archived are valid canonical values.
  */
 export function parseNodeMode(value: unknown): NodeMode | undefined {
   if (value === "archived") return "archived";
   if (value === "editable") return "editable";
-  // Legacy read-only → editable default (do not re-persist as a third mode).
-  if (value === "read-only") return "editable";
   return undefined;
 }
 
 /** Explicit archive root on disk (mode: archived only; no legacy dual-read). */
-export function isExplicitArchiveRoot(box: Pick<Box, "fm">): boolean {
-  return box.fm.mode === "archived";
+export function isExplicitArchiveRoot(node: Pick<Node, "fm">): boolean {
+  return node.fm.mode === "archived";
 }
 
 function normalizeTags(value: unknown): string[] {
@@ -224,94 +230,100 @@ function normalizeTags(value: unknown): string[] {
 }
 
 // 普通分组文件夹:自己不是框,但把其下的框作为"虚拟同级"上浮给 parent。
-async function loadBoxInto(
+async function loadNodeInto(
   fs: FsAdapter,
   path: string,
-  parent: Box | null,
+  parent: Node | null,
   registry: TypeRegistry,
-  target: Box[]
+  target: Node[]
 ): Promise<void> {
   if (isOperationalPath(path)) return;
-  const box = await loadBox(fs, path, parent, registry);
-  if (box) {
-    target.push(box);
+  const node = await loadNode(fs, path, parent, registry);
+  if (node) {
+    target.push(node);
     return;
   }
   const sub = await fs.listDir(path);
   for (const entry of sub) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadBoxInto(fs, join(path, entry.name), parent, registry, target);
+    await loadNodeInto(fs, join(path, entry.name), parent, registry, target);
   }
 }
 
 function resolveSubtree(
-  box: Box,
+  node: Node,
   registry: TypeRegistry,
   inheritedInvalid?: { rootId: string; reason: string },
   inheritedArchived = false
 ): void {
-  const directInvalid = box.invalid
-    ? { rootId: box.invalidRootId || box.path, reason: box.invalidReason || "Invalid frontmatter." }
-    : invalidTypeReference(box, registry);
+  const directInvalid = node.invalid
+    ? { rootId: node.invalidRootId || node.path, reason: node.invalidReason || "Invalid frontmatter." }
+    : invalidTypeReference(node, registry);
   const invalid = inheritedInvalid || directInvalid;
-  box.invalid = !!invalid;
-  box.invalidRootId = invalid?.rootId;
-  box.invalidReason = invalid?.reason;
+  node.invalid = !!invalid;
+  node.invalidRootId = invalid?.rootId;
+  node.invalidReason = invalid?.reason;
   // archived cascades; editable is the only other mode.
-  const localMode = parseNodeMode(box.fm.mode) ?? "editable";
-  box.archived = inheritedArchived || localMode === "archived";
-  box.mode = box.archived ? "archived" : "editable";
+  const localMode = parseNodeMode(node.fm.mode) ?? "editable";
+  node.archived = inheritedArchived || localMode === "archived";
+  node.mode = node.archived ? "archived" : "editable";
   // Keep fm.mode only for explicit archive roots.
-  if (localMode === "archived" && !inheritedArchived) box.fm.mode = "archived";
-  else delete box.fm.mode;
+  if (localMode === "archived" && !inheritedArchived) node.fm.mode = "archived";
+  else delete node.fm.mode;
 
-  for (const c of box.children) resolveSubtree(c, registry, invalid, box.archived);
+  for (const c of node.children) resolveSubtree(c, registry, invalid, node.archived);
 }
 
 function invalidTypeReference(
-  box: Box,
+  node: Node,
   registry: TypeRegistry
 ): { rootId: string; reason: string } | undefined {
-  if (!box.id) {
-    return { rootId: box.path, reason: "Missing id: likely a manually created orphan Node; use tent node create or repair." };
+  if (!isNodeId(node.id)) {
+    return {
+      rootId: node.path,
+      reason: `Invalid Node id: ${node.id || "<missing>"}; canonical Node ids must start with cx-.`,
+    };
   }
-  if (!typeExists(box.type, registry)) {
-    return { rootId: box.id, reason: `Unknown type: ${box.type}.` };
+  if (node.fm.mode !== undefined && parseNodeMode(node.fm.mode) === undefined) {
+    return { rootId: node.id, reason: `Invalid Node mode: ${String(node.fm.mode)}.` };
+  }
+  if (!typeExists(node.type, registry)) {
+    return { rootId: node.id, reason: `Unknown type: ${node.type}.` };
   }
   return undefined;
 }
 
 /** Normal collaboration exit: invalid or archived-mode. */
-export function isUsableBox(box: Box): boolean {
-  return !box.invalid && !box.archived;
+export function isUsableNode(node: Node): boolean {
+  return !node.invalid && !node.archived;
 }
 
 /**
  * Core/Service content & structure mutation gate.
  * Hard deny only for invalid or archived — never a third "read-only" mode.
  */
-export function assertContentMutable(box: Box, action = "modified"): void {
-  if (box.invalid) throw new Error(`Invalid boxes cannot be ${action}.`);
-  if (box.archived || box.mode === "archived") {
-    throw new Error(`Archived boxes cannot be ${action}.`);
+export function assertContentMutable(node: Node, action = "modified"): void {
+  if (node.invalid) throw new Error(`Invalid nodes cannot be ${action}.`);
+  if (node.archived || node.mode === "archived") {
+    throw new Error(`Archived nodes cannot be ${action}.`);
   }
 }
 
 /** True when Core/Service may mutate content/structure (mode + invalid only). */
-export function isContentMutable(box: Box): boolean {
-  return !box.invalid && box.mode === "editable" && !box.archived;
+export function isContentMutable(node: Node): boolean {
+  return !node.invalid && node.mode === "editable" && !node.archived;
 }
 
 function indexSubtree(
-  box: Box,
-  byId: Map<string, Box>,
-  byPath: Map<string, Box>,
+  node: Node,
+  byId: Map<string, Node>,
+  byPath: Map<string, Node>,
   duplicateIds: Set<string>
 ): void {
-  if (box.id && !duplicateIds.has(box.id)) byId.set(box.id, box);
-  byPath.set(box.path, box);
-  for (const c of box.children) indexSubtree(c, byId, byPath, duplicateIds);
+  if (!node.invalid && isNodeId(node.id) && !duplicateIds.has(node.id)) byId.set(node.id, node);
+  byPath.set(node.path, node);
+  for (const c of node.children) indexSubtree(c, byId, byPath, duplicateIds);
 }
 
 // ---- 路径工具(纯字符串,不依赖 node:path,核心层保持可移植) ----

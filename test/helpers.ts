@@ -36,26 +36,26 @@ export async function makeTent(): Promise<string> {
       2
     ) + "\n"
   );
-  await box("goal", "id: bx-goalzone\ntype: goal");
-  await box("goal/挖新alpha", "id: bx-g1\ntype: goal");
+  await box("goal", "id: cx-goalzone\ntype: goal");
+  await box("goal/挖新alpha", "id: cx-g1\ntype: goal");
   await box(
     "goal/挖新alpha/写表达式",
-    "id: bx-g2\ntype: goal"
+    "id: cx-g2\ntype: goal"
   );
-  await box("prompt", "id: bx-promptzone\ntype: prompt");
+  await box("prompt", "id: cx-promptzone\ntype: prompt");
   await box(
     "prompt/表达式任务书",
-    "id: bx-p1\ntype: prompt",
+    "id: cx-p1\ntype: prompt",
     "给 executor 的任务"
   );
   await box(
     "prompt/表达式任务书/草稿",
-    "id: bx-p2\ntype: prompt"
+    "id: cx-p2\ntype: prompt"
   );
-  await box("output", "id: bx-outzone\ntype: output");
-  await box("output/alpha仓库指针", "id: bx-o1\ntype: output");
+  await box("output", "id: cx-outzone\ntype: output");
+  await box("output/alpha仓库指针", "id: cx-o1\ntype: output");
   await fs.mkdir(path.join(dir, "temp"), { recursive: true });
-  await box("prompt/旧站资料", "id: bx-a1\ntype: prompt-asset");
+  await box("prompt/旧站资料", "id: cx-a1\ntype: prompt-asset");
   return dir;
 }
 

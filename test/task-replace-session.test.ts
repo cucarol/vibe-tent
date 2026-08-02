@@ -81,7 +81,7 @@ async function makeWorkspace(
 ): Promise<string> {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-replace-ws-"));
   const fsa = new NodeFs(workspace);
-  await scaffoldInWorkspace(fsa, { name, boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }] });
+  await scaffoldInWorkspace(fsa, { name, nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }] });
   await fsa.writeFile(".tent/roles.json", JSON.stringify({
     roles: [
       {
@@ -123,15 +123,15 @@ async function mountWorkItem(svc: Svc, ws: string) {
   const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
   const created = await rpc(svc, "docs.createNote", { workspaceId, name: "work-item", type: "prompt" });
   assert.ok(!created.error, JSON.stringify(created.error));
-  return { workspaceId, boxId: (created.result as { id: string }).id };
+  return { workspaceId, nodeId: (created.result as { nodeId: string }).nodeId };
 }
 
-async function dispatchClaimStart(svc: Svc, workspaceId: string, boxId: string, opts?: { profileId?: string }) {
+async function dispatchClaimStart(svc: Svc, workspaceId: string, nodeId: string, opts?: { profileId?: string }) {
   const profileId = opts?.profileId ?? "fake-default";
   const d = await rpc(svc, "task.dispatch", {
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
-    workspaceId, nodeIds: [boxId], role: "executor", prompt: "replace-session fixture", deliveryPolicy: "review",
+    workspaceId, nodeIds: [nodeId], role: "executor", prompt: "replace-session fixture", deliveryPolicy: "review",
   });
   assert.ok(!d.error, JSON.stringify(d.error));
   const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -176,11 +176,11 @@ test("CLIENT_METHODS includes task.replaceSession", () => {
 test("startSession: interrupt wins while provider start is held; late Session is stopped and never bound", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      workspaceId, nodeIds: [boxId], role: "executor", prompt: "held start race", deliveryPolicy: "review",
+      workspaceId, nodeIds: [nodeId], role: "executor", prompt: "held start race", deliveryPolicy: "review",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -219,11 +219,11 @@ test("startSession: interrupt wins while provider start is held; late Session is
 test("replaceSession: terminal transition wins while replacement start is held", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(
       svc,
       workspaceId,
-      boxId
+      nodeId
     );
 
     const entered = deferred();
@@ -261,8 +261,8 @@ test("replaceSession: success preserves Task + contextRestored=false + audit", a
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
-    const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, boxId);
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
+    const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, nodeId);
     const before = await getTask(svc, workspaceId, taskPath);
     const rolesPath = path.join(ws, ".tent", "roles.json");
     const rolesBefore = await fs.readFile(rolesPath, "utf8");
@@ -339,11 +339,11 @@ test("replaceSession: eligibility - turnBusy, waitCode, force refused", async ()
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-replace-busy-"));
     const logPath = path.join(dataDir, "mock-acp-log.json");
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
-        workspaceId, nodeIds: [boxId], role: "executor", prompt: "busy replace must fail-loud", deliveryPolicy: "review",
+        workspaceId, nodeIds: [nodeId], role: "executor", prompt: "busy replace must fail-loud", deliveryPolicy: "review",
       });
       assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -375,8 +375,8 @@ test("replaceSession: eligibility - turnBusy, waitCode, force refused", async ()
   {
     const ws = await makeWorkspace();
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
-      const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, boxId);
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
+      const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, nodeId);
       await rpc(svc, "task.wait", {
         workspaceId, taskPath, reason: "user-input",
         summary: "awaiting human reply (not session_unavailable)",
@@ -398,8 +398,8 @@ test("replaceSession: session_unavailable + late events + atomic rebind; launch/
   {
     const ws = await makeWorkspace();
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
-      const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, boxId);
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
+      const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, nodeId);
       mapRuntimeEventToService(svc.ctx, {
         type: "session.failed", sessionId: priorSessionId,
         error: "simulated unusable provider context for replace eligibility",
@@ -455,8 +455,8 @@ test("replaceSession: session_unavailable + late events + atomic rebind; launch/
   {
     const ws = await makeWorkspace("replace-launch-fail", { executor: "allow" }, { executor: ["fake-default", "fake-fail-launch"] });
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
-      const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, boxId, { profileId: "fake-default" });
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
+      const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, nodeId, { profileId: "fake-default" });
       const seeded = await seedPending(
         svc, workspaceId, taskPath, priorSessionId, "ti-launch-fail-seed", "must not rebind to orphan on launch fail"
       );
@@ -479,8 +479,8 @@ test("replaceSession: session_unavailable + late events + atomic rebind; launch/
   {
     const ws = await makeWorkspace();
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
-      const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, boxId);
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
+      const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, nodeId);
       await seedPending(svc, workspaceId, taskPath, priorSessionId, "ti-rebind-fail-a", "input A must stay on prior if rebind fails");
       await seedPending(svc, workspaceId, taskPath, priorSessionId, "ti-rebind-fail-b", "input B must stay on prior if rebind fails");
       svc.ctx.taskInputs.setNextPersistErrorForTests(new Error("injected TaskInput rebind persist failure"));
@@ -505,8 +505,8 @@ test("replaceSession: startSession never silent-replaces; shared flight; managed
   {
     const ws = await makeWorkspace();
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
-      const { taskPath, sessionId } = await dispatchClaimStart(svc, workspaceId, boxId);
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
+      const { taskPath, sessionId } = await dispatchClaimStart(svc, workspaceId, nodeId);
       const again = await rpc(svc, "task.startSession", {
         workspaceId, taskPath, profileId: "fake-default", callerKind: "user",
       });
@@ -518,8 +518,8 @@ test("replaceSession: startSession never silent-replaces; shared flight; managed
   {
     const ws = await makeWorkspace();
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
-      const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, boxId);
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
+      const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, nodeId);
       const payload = { workspaceId, taskPath, profileId: "fake-default", callerKind: "user" as const };
       const [a, b] = await Promise.all([
         rpc(svc, "task.replaceSession", payload),
@@ -537,8 +537,8 @@ test("replaceSession: startSession never silent-replaces; shared flight; managed
   {
     const ws = await makeWorkspace("replace-flight", { executor: "allow" }, { executor: ["fake-default", "fake-alt"] });
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
-      const { taskPath } = await dispatchClaimStart(svc, workspaceId, boxId, { profileId: "fake-default" });
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
+      const { taskPath } = await dispatchClaimStart(svc, workspaceId, nodeId, { profileId: "fake-default" });
       const [a, b] = await Promise.all([
         rpc(svc, "task.replaceSession", { workspaceId, taskPath, profileId: "fake-default", callerKind: "user" }),
         rpc(svc, "task.replaceSession", { workspaceId, taskPath, profileId: "fake-alt", callerKind: "user" }),
@@ -561,8 +561,8 @@ test("replaceSession: startSession never silent-replaces; shared flight; managed
   {
     const ws = await makeWorkspace();
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
-      const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, boxId);
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
+      const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, nodeId);
       svc.runtime.clearFollowUpAttemptsForTests();
       const hold = holdManagedTaskInputQueueForTests(workspaceId, taskPath);
       const send = await rpc(svc, "task.sendInput", {
@@ -641,11 +641,11 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
     },
   });
   try {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(
       svc,
       workspaceId,
-      boxId
+      nodeId
     );
     assert.ok(priorSessionId);
     const contract = await ensureRoleWorkspace(ws, "executor");
@@ -661,12 +661,12 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
       type: "prompt",
     });
     assert.ok(!otherNote.error, JSON.stringify(otherNote.error));
-    const otherBoxId = (otherNote.result as { id: string }).id;
+    const otherNodeId = (otherNote.result as { nodeId: string }).nodeId;
     const otherDispatch = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [otherBoxId],
+      nodeIds: [otherNodeId],
       role: "orchestrator",
       prompt: "unrelated concurrent replace",
       deliveryPolicy: "review",

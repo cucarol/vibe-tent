@@ -170,67 +170,62 @@ function fixtureCard(nodeIds: string[]): NonNullable<TaskEnvelope["contextCard"]
   };
 }
 
-test("plugin pending dispatch:only taken status clears the newest task node refs", () => {
+test("plugin pending dispatch: only queued Tasks remain pending", () => {
   const tasks: TaskEnvelope[] = [
     {
-      path: "temp/executor/tasks/task-20260703T08000-bx-one.md",
+      path: "temp/executor/tasks/task-20260703T08000-cx-one.md",
       role: "executor",
-      contextCard: fixtureCard(["bx-one"]),
+      contextCard: fixtureCard(["cx-one"]),
       manifest: "temp/executor/manifest.yml",
-      status: "pending",
       state: "queued",
     },
     {
-      path: "temp/executor/tasks/task-20260703T08100-bx-one.md",
+      path: "temp/executor/tasks/task-20260703T08100-cx-one.md",
       role: "executor",
       // "root" is not a Node ref; fixtureCard drops it (workspace context separate).
-      contextCard: fixtureCard(["bx-one", "bx-two", "root"]),
+      contextCard: fixtureCard(["cx-one", "cx-two", "root"]),
       manifest: "temp/executor/manifest.yml",
-      status: "pending",
       state: "queued",
     },
     {
-      path: "temp/planner/tasks/task-20260703T08200-bx-three.md",
+      path: "temp/planner/tasks/task-20260703T08200-cx-three.md",
       role: "planner",
-      contextCard: fixtureCard(["bx-three"]),
+      contextCard: fixtureCard(["cx-three"]),
       manifest: "temp/planner/manifest.yml",
-      status: "pending",
       state: "queued",
     },
     {
-      path: "temp/zeta/tasks/task-20260703T07000-bx-four.md",
+      path: "temp/zeta/tasks/task-20260703T07000-cx-four.md",
       role: "zeta",
-      contextCard: fixtureCard(["bx-four"]),
+      contextCard: fixtureCard(["cx-four"]),
       manifest: "temp/zeta/manifest.yml",
-      status: "pending",
       state: "queued",
     },
     {
-      path: "temp/alpha/tasks/task-20260703T09000-bx-four.md",
+      path: "temp/alpha/tasks/task-20260703T09000-cx-four.md",
       role: "alpha",
-      contextCard: fixtureCard(["bx-four"]),
+      contextCard: fixtureCard(["cx-four"]),
       manifest: "temp/alpha/manifest.yml",
-      status: "pending",
       state: "queued",
     },
   ];
   const pending = pendingDispatches(tasks);
   assert.deepEqual(
     pending
-      .map((item) => [item.boxId, item.task.path])
+      .map((item) => [item.nodeId, item.task.path])
       .sort(([a], [b]) => a.localeCompare(b)),
     [
-      ["bx-four", tasks[4].path],
-      ["bx-one", tasks[1].path],
-      ["bx-three", tasks[2].path],
-      ["bx-two", tasks[1].path],
+      ["cx-four", tasks[4].path],
+      ["cx-one", tasks[1].path],
+      ["cx-three", tasks[2].path],
+      ["cx-two", tasks[1].path],
     ],
   );
 
-  tasks[1].status = "taken";
+  tasks[1].state = "running";
   assert.deepEqual(
-    pendingDispatches(tasks).map((item) => item.boxId),
-    ["bx-four", "bx-three"],
+    pendingDispatches(tasks).map((item) => item.nodeId),
+    ["cx-four", "cx-three"],
   );
 });
 

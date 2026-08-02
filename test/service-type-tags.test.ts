@@ -44,7 +44,7 @@ async function mountScaffold(
   const workspaceFs = new NodeFs(workspace);
   await scaffoldInWorkspace(workspaceFs, {
     name: "demo",
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   // Core FsAdapter for Tent data is the system root (.tent), not workspace root.
   const systemFs = new NodeFs(path.join(workspace, ".tent"));
@@ -89,7 +89,7 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
       if (ev.type === "registry.tags.updated") {
         tagEvents.push(ev.payload as Record<string, unknown>);
       }
-      if (ev.type === "concept.changed") {
+      if (ev.type === "node.changed") {
         const payload = ev.payload as Record<string, unknown>;
         if (
           typeof payload.reason === "string" &&
@@ -145,17 +145,17 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
 
     const editRpc = await rpc(svc, "docs.readForEdit", {
       workspaceId,
-      path: "inbox",
+      nodeId: (await loadTent(systemFs)).byPath.get("inbox")!.id,
     });
     assert.ok(!editRpc.error, JSON.stringify(editRpc.error));
-    const edit = editRpc.result as { id: string; etag: string };
-    const cx = edit.id;
+    const edit = editRpc.result as { nodeId: string; etag: string };
+    const cx = edit.nodeId;
     let etag = edit.etag;
 
     // Missing baseEtag
     const missingEtag = await rpc(svc, "docs.setType", {
       workspaceId,
-      id: cx,
+      nodeId: cx,
       type: "prompt-snippet",
       actor: "user",
     });
@@ -166,7 +166,7 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
     // Stale baseEtag
     const stale = await rpc(svc, "docs.setType", {
       workspaceId,
-      id: cx,
+      nodeId: cx,
       type: "prompt-snippet",
       baseEtag: "not-the-etag",
       actor: "user",
@@ -176,11 +176,11 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
 
     // setType compound
     const setType = (await client.docsSetType(workspaceId, {
-      id: cx,
+      nodeId: cx,
       type: "prompt-snippet",
       baseEtag: etag,
-    })) as { id: string; etag: string };
-    assert.equal(setType.id, cx);
+    })) as { nodeId: string; etag: string };
+    assert.equal(setType.nodeId, cx);
     assert.ok(setType.etag);
     etag = setType.etag;
     assert.equal(
@@ -188,10 +188,8 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
       1
     );
 
-    const afterType = (await client.docsGet(workspaceId, { id: cx })) as {
-      concept: { type: string };
-    };
-    assert.equal(afterType.concept.type, "prompt-snippet");
+    const afterType = await client.docsGet(workspaceId, cx);
+    assert.equal(afterType.node.type, "prompt-snippet");
 
     // In-use delete fails
     const inUse = await rpc(svc, "registry.type.delete", {
@@ -216,7 +214,7 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
 
     // Retype off custom secondary then delete OK
     const setBack = (await client.docsSetType(workspaceId, {
-      id: cx,
+      nodeId: cx,
       type: "prompt",
       baseEtag: etag,
     })) as { etag: string };
@@ -240,7 +238,7 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
 
     // docs.tag.add
     const add = (await client.docsTagAdd(workspaceId, {
-      id: cx,
+      nodeId: cx,
       tag: "beta",
       baseEtag: etag,
     })) as { etag: string };
@@ -252,7 +250,7 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
 
     // docs.tags.set replace
     const setTags = (await client.docsTagsSet(workspaceId, {
-      id: cx,
+      nodeId: cx,
       tags: ["beta", "gamma"],
       baseEtag: etag,
     })) as { etag: string };
@@ -262,7 +260,7 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
 
     // docs.tag.remove — detach only
     const remove = (await client.docsTagRemove(workspaceId, {
-      id: cx,
+      nodeId: cx,
       tag: "beta",
       baseEtag: etag,
     })) as { etag: string };
@@ -281,14 +279,14 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
     assert.equal((await loadTagRegistry(systemFs)).tags.includes("gamma"), false);
     assert.ok(tagEvents.some((e) => e.action === "delete" && e.name === "gamma"));
 
-    const afterCascade = await rpc(svc, "docs.readForEdit", { workspaceId, id: cx });
+    const afterCascade = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId: cx });
     assert.ok(!afterCascade.error, JSON.stringify(afterCascade.error));
     etag = (afterCascade.result as { etag: string }).etag;
 
     // docs.write structured cannot set type/tags
     const writeDenied = await rpc(svc, "docs.write", {
       workspaceId,
-      id: cx,
+      nodeId: cx,
       baseEtag: etag,
       frontmatter: { type: "prompt-asset", tags: ["sneaky"] },
     });
@@ -297,13 +295,13 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
     assert.match(writeDenied.error!.message, /semantic fields/);
 
     // docs.write raw cannot change type/tags either
-    const editForRaw = await rpc(svc, "docs.readForEdit", { workspaceId, id: cx });
+    const editForRaw = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId: cx });
     assert.ok(!editForRaw.error, JSON.stringify(editForRaw.error));
     const rawSnapshot = editForRaw.result as { etag: string; raw: string };
     etag = rawSnapshot.etag;
     const rawTypeBypass = await rpc(svc, "docs.write", {
       workspaceId,
-      id: cx,
+      nodeId: cx,
       baseEtag: etag,
       raw: rawSnapshot.raw.replace(/type:\s*prompt\b/, "type: prompt-asset"),
     });
@@ -313,7 +311,7 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
 
     const rawTagsBypass = await rpc(svc, "docs.write", {
       workspaceId,
-      id: cx,
+      nodeId: cx,
       baseEtag: etag,
       raw: rawSnapshot.raw.includes("tags:")
         ? rawSnapshot.raw.replace(/tags:\s*\[[^\]]*\]/, "tags: [sneaky]")
@@ -326,7 +324,7 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
     // Body-only docs.write still works
     const bodyOk = await rpc(svc, "docs.write", {
       workspaceId,
-      id: cx,
+      nodeId: cx,
       baseEtag: etag,
       body: "# inbox updated\n",
     });
@@ -344,7 +342,7 @@ test("type/tags hardening: etag on all four commands, idempotent tags, archived 
     const conceptEvents: Array<Record<string, unknown>> = [];
     const unsub = svc.events.subscribe((ev) => {
       if (ev.workspaceId !== workspaceId) return;
-      if (ev.type === "concept.changed") {
+      if (ev.type === "node.changed") {
         const payload = ev.payload as Record<string, unknown>;
         if (
           typeof payload.reason === "string" &&
@@ -359,11 +357,11 @@ test("type/tags hardening: etag on all four commands, idempotent tags, archived 
 
     const editRpc = await rpc(svc, "docs.readForEdit", {
       workspaceId,
-      path: "inbox",
+      nodeId: (await loadTent(systemFs)).byPath.get("inbox")!.id,
     });
     assert.ok(!editRpc.error, JSON.stringify(editRpc.error));
-    const edit = editRpc.result as { id: string; etag: string };
-    const cx = edit.id;
+    const edit = editRpc.result as { nodeId: string; etag: string };
+    const cx = edit.nodeId;
     let etag = edit.etag;
 
     const semanticCommands: Array<{
@@ -379,7 +377,7 @@ test("type/tags hardening: etag on all four commands, idempotent tags, archived 
     for (const { method, params } of semanticCommands) {
       const missing = await rpc(svc, method, {
         workspaceId,
-        id: cx,
+        nodeId: cx,
         actor: "user",
         ...params,
       });
@@ -389,7 +387,7 @@ test("type/tags hardening: etag on all four commands, idempotent tags, archived 
 
       const stale = await rpc(svc, method, {
         workspaceId,
-        id: cx,
+        nodeId: cx,
         actor: "user",
         baseEtag: "not-the-etag",
         ...params,
@@ -400,7 +398,7 @@ test("type/tags hardening: etag on all four commands, idempotent tags, archived 
 
     // Seed one tag for idempotent remove / exact event counts
     const add1 = (await client.docsTagAdd(workspaceId, {
-      id: cx,
+      nodeId: cx,
       tag: "keep",
       baseEtag: etag,
     })) as { etag: string };
@@ -409,7 +407,7 @@ test("type/tags hardening: etag on all four commands, idempotent tags, archived 
 
     // Idempotent add: state unchanged, still one success event (accepted contract L2)
     const addAgain = (await client.docsTagAdd(workspaceId, {
-      id: cx,
+      nodeId: cx,
       tag: "keep",
       baseEtag: etag,
     })) as { etag: string };
@@ -423,7 +421,7 @@ test("type/tags hardening: etag on all four commands, idempotent tags, archived 
 
     // Idempotent remove of absent tag: Node tags unchanged; success event still fires
     const removeAbsent = (await client.docsTagRemove(workspaceId, {
-      id: cx,
+      nodeId: cx,
       tag: "never-attached",
       baseEtag: etag,
     })) as { etag: string };
@@ -432,10 +430,10 @@ test("type/tags hardening: etag on all four commands, idempotent tags, archived 
     assert.deepEqual(tent.byId.get(cx)?.tags, ["keep"]);
     assert.equal(conceptEvents.filter((e) => e.reason === "docs.tag.remove").length, 1);
 
-    // Exact one concept.changed per successful tags.set / tag.remove (mutating path)
+    // Exact one node.changed per successful tags.set / tag.remove (mutating path)
     const setTagsCountBefore = conceptEvents.filter((e) => e.reason === "docs.tags.set").length;
     const setTags = (await client.docsTagsSet(workspaceId, {
-      id: cx,
+      nodeId: cx,
       tags: ["keep", "extra"],
       baseEtag: etag,
     })) as { etag: string };
@@ -447,7 +445,7 @@ test("type/tags hardening: etag on all four commands, idempotent tags, archived 
 
     const removeCountBefore = conceptEvents.filter((e) => e.reason === "docs.tag.remove").length;
     const removeExtra = (await client.docsTagRemove(workspaceId, {
-      id: cx,
+      nodeId: cx,
       tag: "extra",
       baseEtag: etag,
     })) as { etag: string };
@@ -462,13 +460,13 @@ test("type/tags hardening: etag on all four commands, idempotent tags, archived 
     // Archived mode rejects all four Node semantic commands
     const archived = await rpc(svc, "docs.setMode", {
       workspaceId,
-      id: cx,
+      nodeId: cx,
       mode: "archived",
       actor: "user",
     });
     assert.ok(!archived.error, JSON.stringify(archived.error));
 
-    const afterArchEdit = await rpc(svc, "docs.readForEdit", { workspaceId, id: cx });
+    const afterArchEdit = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId: cx });
     // readForEdit may still return etag for archived notes; use disk etag if available
     const archEtag =
       !afterArchEdit.error && (afterArchEdit.result as { etag?: string })?.etag
@@ -483,7 +481,7 @@ test("type/tags hardening: etag on all four commands, idempotent tags, archived 
     ]) {
       const blocked = await rpc(svc, method, {
         workspaceId,
-        id: cx,
+        nodeId: cx,
         actor: "user",
         baseEtag: archEtag,
         ...params,

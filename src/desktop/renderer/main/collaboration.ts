@@ -124,7 +124,7 @@ export function renderPendingInteractions(): void {
       return `<article class="interaction-item" data-proposal-path="${escapeHtml(p.path)}" data-pending-kind="proposal">
       <div class="interaction-kicker">PROPOSAL · ${escapeHtml(p.role || "Agent")}</div>
       <div class="interaction-title">${escapeHtml(preview || p.path)}</div>
-      <div class="muted interaction-note">${escapeHtml(p.boxId || "")} · ${escapeHtml(p.path)}</div>
+      <div class="muted interaction-note">${escapeHtml(p.nodeId || "")} · ${escapeHtml(p.path)}</div>
       <div class="interaction-actions">
         <button type="button" class="btn btn-primary" data-proposal-accept="${escapeHtml(p.path)}">采纳</button>
         <button type="button" class="btn btn-ghost" data-proposal-reject="${escapeHtml(p.path)}">驳回</button>
@@ -264,7 +264,7 @@ export function renderTaskInput(): void {
   const options = candidates
     .map(
       (task) =>
-        `<option value="${escapeHtml(task.path)}">${escapeHtml(task.role)} · ${escapeHtml(taskStateLabel(task.state, task.status))}</option>`
+        `<option value="${escapeHtml(task.path)}">${escapeHtml(task.role)} · ${escapeHtml(taskStateLabel(task.state))}</option>`
     )
     .join("");
   el.u2a.innerHTML = `<article class="interaction-item u2a-item" data-pending-kind="taskSendInput"><div class="interaction-kicker">U2A · 追加任务输入</div>
@@ -365,7 +365,7 @@ export function renderTasks(): void {
         const blurb = blurbRaw
           ? `<div class="task-summary">${escapeHtml(blurbRaw.length > 120 ? blurbRaw.slice(0, 117) + "…" : blurbRaw)}</div>`
           : "";
-        const stateLabel = taskStateLabel(t.state, t.status);
+        const stateLabel = taskStateLabel(t.state);
         const sessLabel = t.sessionState ? sessionStateLabel(t.sessionState) : "";
         const rejectDraft = rejectDrafts.get(t.path) || "";
 
@@ -599,8 +599,8 @@ export async function onEmitCard(): Promise<void> {
     return;
   }
   await window.tentDesktop.pushContextCard({
-    kind: "box",
-    id: tab.cx,
+    kind: "node",
+    id: tab.nodeId,
     path: tab.path,
     label: tab.name,
   });

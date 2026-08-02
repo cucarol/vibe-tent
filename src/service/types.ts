@@ -1,6 +1,6 @@
 // Local Service wire types — B0 architecture §5.2 + attach protocol + B5 task surface.
 
-/** Structured association to a real deliverable outside concept identity. */
+/** Structured association to a real deliverable outside node identity. */
 export type ArtifactRef = {
   kind: "path" | "dir" | "commit" | "url" | "other";
   /** Workspace-relative path, commit SHA, absolute URL, or other stable locator. */
@@ -23,7 +23,7 @@ export type A2APolicy = "allow" | "ask" | "deny";
 
 /**
  * Machine-local launch profile — binary paths, argv templates, auth refs.
- * Lives only in service data area; never in workspace git / concept bodies.
+ * Lives only in service data area; never in workspace git / node bodies.
  */
 export type AgentProfile = {
   id: string;
@@ -54,8 +54,8 @@ export type MountedWorkspaceInfo = {
  */
 export type NodeMode = "editable" | "archived";
 
-export type ConceptProjection = {
-  id: string;
+export type NodeProjection = {
+  nodeId: string;
   path: string;
   name: string;
   type: string;
@@ -66,21 +66,7 @@ export type ConceptProjection = {
   archived: boolean;
   invalid: boolean;
   bodyPreview?: string;
-  children?: ConceptProjection[];
-};
-
-/**
- * @deprecated V0.2 truth is `node.collaboration` / `node.collaborations`.
- * Kept only for migration of older desktop consumers.
- * Stable box collaboration projection (legacy task-api §2.3 / `box.projection`).
- * Active task is authoritative; without one, only persisted `done` is preserved.
- */
-export type BoxProjection = {
-  workspaceId: string;
-  boxId: string;
-  status: "todo" | "doing" | "done";
-  assignee?: string;
-  activeTaskId?: string;
+  children?: NodeProjection[];
 };
 
 /**
@@ -129,27 +115,16 @@ export type NodeCollaborationActiveTask = {
 };
 
 /**
- * V0.2 Node-keyed collaboration projection (`node.collaboration` item).
- * Multiple active Tasks may directly reference the same Node.
- * No singular task/session/delivery or activeTaskId compatibility alias.
- * Idle Node → activeTasks: [] / activeTaskCount: 0.
+ * Protocol-3 Node-keyed collaboration projection (`node.collaboration` item).
+ * Exact Node occupation is singular; one Task may still reference many Nodes.
+ * Idle Node → activeTask: null. Corrupt multiple occupation fails loud.
  * No Node owner/status/coordination fields.
  *
- * `activeTaskCount` is **projection-only derived data** (judge addendum):
- * never persisted on Task/Node, never a second collaboration fact.
- * With the current unpaginated `activeTasks` array it **must always equal
- * `activeTasks.length`**. Do not invent totalCount / pagination / truncation.
  */
 export type NodeCollaboration = {
   workspaceId: string;
   nodeId: string;
-  /** Full unpaginated list of direct active Task entries (deterministic order). */
-  activeTasks: NodeCollaborationActiveTask[];
-  /**
-   * Derived convenience: always `activeTasks.length` under current unpaginated wire.
-   * Not durable; not independently authoritative.
-   */
-  activeTaskCount: number;
+  activeTask: NodeCollaborationActiveTask | null;
 };
 
 /**
@@ -182,7 +157,7 @@ export type OutputProvenance = {
     id: string;
     status: string;
     taskId: string;
-    boxId: string;
+    sourceNodeId: string;
   } | null;
   task: {
     id: string;
@@ -190,7 +165,7 @@ export type OutputProvenance = {
     path?: string;
   } | null;
   sourceNode: {
-    id: string;
+    nodeId: string;
     path?: string;
     type?: string;
     archived?: boolean;
@@ -203,7 +178,7 @@ export type OutputProvenance = {
  * Stable identity + document meta only — never includes body / bodyPreview.
  */
 export type GraphNodeSummary = {
-  id: string;
+  nodeId: string;
   path: string;
   name: string;
   type: string;
@@ -215,25 +190,25 @@ export type GraphNodeSummary = {
   title?: string;
 };
 
-/** Tree parent→child edge (roots use parentId = null). */
+/** Tree parent→child edge (roots use parentNodeId = null). */
 export type GraphParentEdge = {
-  parentId: string | null;
-  childId: string;
+  parentNodeId: string | null;
+  childNodeId: string;
 };
 
 /**
- * Markdown or wiki concept link edge.
- * Resolved edges set `toId`; unresolved edges keep explicit `unresolved` and omit `toId`.
- * Never silently drop unresolvable concept-link candidates.
+ * Markdown or wiki node link edge.
+ * Resolved edges set `toNodeId`; unresolved edges keep explicit `unresolved`.
+ * Never silently drop unresolvable node-link candidates.
  */
 export type GraphLinkEdge = {
-  fromId: string;
-  /** Present only when the link resolves to exactly one concept. */
-  toId?: string;
+  fromNodeId: string;
+  /** Present only when the link resolves to exactly one node. */
+  toNodeId?: string;
   raw: string;
   label?: string;
   /**
-   * Explicit unresolved payload when the outbound concept link cannot be resolved.
+   * Explicit unresolved payload when the outbound node link cannot be resolved.
    * `raw` mirrors authoring form; `target` is the normalized resolution key when available.
    */
   unresolved?: {
@@ -245,16 +220,16 @@ export type GraphLinkEdge = {
 /**
  * First-class semantic relation edge for graph.projection.
  * Separate from parent / markdown / wiki — never merged with body links.
- * Source is the owning Node; target is either resolved `toId` or explicit unresolved.
+ * Source is the owning Node; target is either resolved `toNodeId` or explicit unresolved.
  */
 export type GraphRelationEdge = {
   id: string;
-  fromId: string;
+  fromNodeId: string;
   kind: string;
   direction: "directed" | "bidirectional";
   label?: string;
-  /** Present only when the relation target is a resolved concept handle. */
-  toId?: string;
+  /** Present only when the relation target is a resolved node handle. */
+  toNodeId?: string;
   /** Explicit unresolved target string when not resolved. */
   unresolved?: string;
 };
@@ -287,9 +262,9 @@ export type RelationRecordWire = {
   target: RelationTargetWire;
 };
 
-/** Derived incoming view: stored on sourceId, points at the listed Node. */
+/** Derived incoming view: stored on sourceNodeId, points at the listed Node. */
 export type RelationIncomingWire = RelationRecordWire & {
-  sourceId: string;
+  sourceNodeId: string;
   sourcePath: string;
 };
 
@@ -305,7 +280,7 @@ export type RelationListResult = {
 /** relation.create / relation.update success payload. */
 export type RelationMutationResult = {
   workspaceId: string;
-  id: string;
+  nodeId: string;
   path: string;
   etag: string;
   relation: RelationRecordWire;
@@ -314,20 +289,10 @@ export type RelationMutationResult = {
 /** relation.delete success payload. */
 export type RelationDeleteResult = {
   workspaceId: string;
-  id: string;
+  nodeId: string;
   path: string;
   etag: string;
   deleted: string;
-};
-
-/**
- * @deprecated V0.2 truth is `NodeCollaborationsResult` / `node.collaborations`.
- * Batch box collaboration projection (`box.projections`).
- * `projections` order matches the input `ids` order one-for-one.
- */
-export type BoxProjectionsResult = {
-  workspaceId: string;
-  projections: BoxProjection[];
 };
 
 export type TaskActorRefWire = {
@@ -344,8 +309,6 @@ export type TaskProjection = {
    * Replaces the removed claims[] projection — occupation truth is Context Card only.
    */
   referencedNodeIds: string[];
-  /** Legacy envelope status (pending|taken). */
-  status: "pending" | "taken";
   /** Full lifecycle state (task-api §2). */
   state: string;
   manifest: string;
@@ -393,11 +356,8 @@ export type TaskProjection = {
   createdAt?: string;
   updatedAt?: string;
   prompt?: string;
-  /**
-   * Authoritative Task Context Card v1 when present on the envelope (cx-5q6za6).
-   * Omitted on legacy tasks. Shape matches core TaskContextCardV1.
-   */
-  contextCard?: import("../core/task-context-card.js").TaskContextCardV1;
+  /** Authoritative non-empty Task Context Card v1. */
+  contextCard: import("../core/task-context-card.js").TaskContextCardV1;
   /** `cg-v1-<sha256>` stable-prefix generation when projected. */
   contextGeneration?: string;
   /** Current task context + input delta digest when projected. */
@@ -408,7 +368,7 @@ export type DeliveryProjection = {
   path: string;
   id: string;
   taskId: string;
-  boxId: string;
+  sourceNodeId: string;
   role: string;
   status: string;
   summary: string;
@@ -443,7 +403,6 @@ export type PendingInteractionBase = {
   createdAt: string;
   taskPath?: string;
   taskId?: string;
-  boxId?: string;
   role?: string;
   sessionId?: string;
 };
@@ -485,7 +444,7 @@ export type PendingToolApprovalInteraction = PendingInteractionBase & {
 export type PendingDeliveryInteraction = PendingInteractionBase & {
   kind: "delivery";
   taskId: string;
-  boxId: string;
+  sourceNodeId: string;
   role: string;
   path: string;
   status: "ready";
@@ -521,7 +480,7 @@ export type PendingInteractionListResult = {
  */
 export type ProposalProjection = {
   path: string;
-  boxId: string;
+  nodeId: string;
   role: string;
   status: "pending" | "accepted" | "rejected";
   createdAt?: string;
@@ -749,16 +708,16 @@ export const CLIENT_METHODS = [
   "docs.createNote",
   "docs.fork",
   /**
-   * User-only atomic concept rename (MutationBus).
+   * User-only atomic node rename (MutationBus).
    * Keeps cx- immutable; renames folder + identity note; rewrites path links.
-   * Success emits exactly one concept.changed with oldPath/path.
+   * Success emits exactly one node.changed with oldPath/path.
    */
   "docs.rename",
   /**
    * User-only structural move / reparent (MutationBus).
    * Resolve moved node + destination by cx-; require expectedPath (stale → -32009 path_stale).
    * Reparent rewrites path links; same-parent reorder is order-only.
-   * Success emits exactly one concept.changed (reason docs.move) with oldPath/path/pathMap.
+   * Success emits exactly one node.changed (reason docs.move) with oldPath/path/pathMap.
    * Canonical name is docs.move — no docs.reparent alias.
    */
   "docs.move",
@@ -770,7 +729,7 @@ export const CLIENT_METHODS = [
   "docs.search",
   "docs.backlinks",
   /**
-   * Import binary attachment for a concept.
+   * Import binary attachment for a node.
    * Wire: base64 string in `bytesBase64` (or legacy `contentBase64`).
    * Disk: original bytes under attachments/<cx>/… — never a .b64 text companion.
    */
@@ -778,23 +737,23 @@ export const CLIENT_METHODS = [
   /**
    * User-only Node type mutation (MutationBus + baseEtag).
    * Public semantic path for compound type strings; not via free-form docs.write.
-   * Success emits exactly one concept.changed with reason docs.setType.
+   * Success emits exactly one node.changed with reason docs.setType.
    */
   "docs.setType",
   /**
    * User-only Node tags replace (MutationBus + baseEtag).
    * Empty array clears Node tags without pruning the global registry.
-   * Success emits exactly one concept.changed with reason docs.tags.set.
+   * Success emits exactly one node.changed with reason docs.tags.set.
    */
   "docs.tags.set",
   /**
    * User-only attach one tag to a Node (MutationBus + baseEtag; idempotent).
-   * Auto-registers new names into tags.json. Success emits concept.changed reason docs.tag.add.
+   * Auto-registers new names into tags.json. Success emits node.changed reason docs.tag.add.
    */
   "docs.tag.add",
   /**
    * User-only detach one tag from a Node (MutationBus + baseEtag).
-   * Does not prune the global registry. Success emits concept.changed reason docs.tag.remove.
+   * Does not prune the global registry. Success emits node.changed reason docs.tag.remove.
    */
   "docs.tag.remove",
   /**
@@ -826,7 +785,7 @@ export const CLIENT_METHODS = [
   "registry.tag.create",
   /**
    * User-only global tag delete + cascade off all Nodes (MutationBus).
-   * Success emits exactly one registry.tags.updated (no per-Node concept.changed).
+   * Success emits exactly one registry.tags.updated (no per-Node node.changed).
    * Clients must treat that event as invalidating tag candidates and graph/node
    * projections whose tags may have been rewritten by the cascade.
    */
@@ -911,36 +870,21 @@ export const CLIENT_METHODS = [
   "delivery.list",
   "delivery.get",
   /**
-   * @deprecated Prefer node.collaboration (V0.2). Migration-only.
-   * Stable box collaboration projection (legacy task-api §2.3).
-   * Params: workspaceId + id|path|boxId (same resolver as docs.get).
-   * Result: { workspaceId, boxId, status, assignee?, activeTaskId? }.
-   */
-  "box.projection",
-  /**
-   * @deprecated Prefer node.collaborations (V0.2). Migration-only.
-   * Batch box collaboration projection (same item semantics as box.projection).
-   * Params: workspaceId + ids: string[] (stable cx- handles).
-   * Result: { workspaceId, projections } with projections ordered as ids.
-   */
-  "box.projections",
-  /**
    * V0.2 Node-keyed collaboration projection (task-api §2.3).
-   * Params: workspaceId + id|path|boxId (same resolver as docs.get).
-   * Result: { workspaceId, nodeId, task, session, delivery } with nulls when idle.
-   * Direct-claim nonterminal Task only; Session/Delivery only via explicit ids.
+   * Params: workspaceId + nodeId.
+   * Result: { workspaceId, nodeId, activeTask }.
    */
   "node.collaboration",
   /**
    * V0.2 Output provenance (Output → Delivery → Task → sourceNode).
-   * Params: workspaceId + id|outputId|path (stable Node id preferred).
+   * Params: workspaceId + canonical nodeId.
    * Unbound output → bound:false + nulls; corrupt refs → incomplete reasons.
    */
   "output.provenance",
   /**
    * V0.2 batch Node collaboration projection (same item semantics as node.collaboration).
-   * Params: workspaceId + ids: string[] (stable cx- handles).
-   * Result: { workspaceId, items } ordered as ids. Empty ids → empty items.
+   * Params: workspaceId + nodeIds: string[] (stable cx- handles).
+   * Result: { workspaceId, items } ordered as nodeIds. Empty nodeIds → empty items.
    * Loads tent/tasks/sessions/deliveries once per batch (no N+1).
    */
   "node.collaborations",
@@ -1040,7 +984,7 @@ export function isClientMethod(method: string): method is ClientMethod {
   return (CLIENT_METHODS as readonly string[]).includes(method);
 }
 
-/** Collaboration projection fields protected while a box has an active task. */
+/** Collaboration projection fields protected while a Node has an active Task. */
 export const PROTECTED_COLLAB_FIELDS = ["status", "owner", "assignee"] as const;
 
 /** Fields that raw/docs.write may never set; use dedicated APIs (setMode / task.* / type-tag RPCs). */
@@ -1065,9 +1009,3 @@ export const RPC_UNAUTHORIZED = -32001;
 export const RPC_A2A_DENIED = -32020;
 export const RPC_A2A_ASK = -32021;
 export const RPC_LIFECYCLE = -32022;
-/**
- * @deprecated V0.2 cx-tsw53f: multiple active Tasks may directly reference one Node.
- * `node.collaboration(s)` returns activeTasks[] — no longer fails on multi-active.
- * Kept only so older clients that still special-case this code compile.
- */
-export const RPC_COLLAB_AMBIGUOUS = -32023;

@@ -16,10 +16,10 @@ import type {
   Nodes,
   Root,
 } from "mdast";
-import { buildConceptIndex, resolveConcept, type OkfConcept } from "../core/okf.js";
+import { buildNodeIndex, resolveNode, type OkfNode } from "../core/okf.js";
 import { normalizeTarget } from "../core/link-target.js";
 import { ATTACHMENTS_DIR } from "../core/paths.js";
-import type { Box } from "../core/types.js";
+import type { Node } from "../core/types.js";
 import type { BacklinkHit, OutLink, ResolvedLink } from "./types.js";
 
 export { normalizeTarget } from "../core/link-target.js";
@@ -34,7 +34,7 @@ export type OutLinkMeta = {
   /** Wiki block ref after `^` (without the caret). */
   blockRef?: string;
   /** Destination with query/fragment stripped; still relative/raw form. */
-  conceptTarget?: string;
+  targetPath?: string;
 };
 
 export type ExtractedOutLink = OutLink & OutLinkMeta;
@@ -75,12 +75,12 @@ export function extractOutLinksDetailed(body: string): ExtractedOutLink[] {
   return out;
 }
 
-export function indexFromBoxes(boxes: Iterable<Box>): Map<string, OkfConcept[]> {
-  return buildConceptIndex(boxes);
+export function indexFromNodes(nodes: Iterable<Node>): Map<string, OkfNode[]> {
+  return buildNodeIndex(nodes);
 }
 
 export function resolveOutLink(
-  index: Map<string, OkfConcept[]>,
+  index: Map<string, OkfNode[]>,
   link: OutLink,
   fromNotePath?: string
 ): ResolvedLink {
@@ -90,7 +90,7 @@ export function resolveOutLink(
 
   const meta = link as ExtractedOutLink;
   const resolutionRaw =
-    meta.conceptTarget ??
+    meta.targetPath ??
     (link.kind === "wiki" ? stripWikiSuffix(link.raw).target : splitHref(link.raw).pathPart);
   const target = normalizeTarget(resolutionRaw, fromNotePath);
 
@@ -98,12 +98,12 @@ export function resolveOutLink(
     return { raw: link.raw, kind: "unresolved", label: link.label };
   }
 
-  const concept = resolveConcept(index, target) ?? resolveConcept(index, resolutionRaw);
+  const concept = resolveNode(index, target) ?? resolveNode(index, resolutionRaw);
   if (!concept) return { raw: link.raw, kind: "unresolved", label: link.label };
   return {
     raw: link.raw,
     kind: link.kind,
-    targetCx: concept.id,
+    targetNodeId: concept.id,
     targetPath: concept.path,
     label: link.label ?? concept.name,
   };
@@ -113,11 +113,11 @@ export function buildBacklinkIndex(
   concepts: Iterable<{ id: string; path: string; name: string; body: string; notePath: string }>
 ): Map<string, BacklinkHit[]> {
   const list = [...concepts];
-  const index = new Map<string, OkfConcept[]>();
+  const index = new Map<string, OkfNode[]>();
   for (const c of list) {
-    const concept: OkfConcept = {
+    const concept: OkfNode = {
       id: c.id,
-      boxId: c.id,
+      nodeId: c.id,
       path: c.path,
       notePath: c.notePath,
       name: c.name,
@@ -134,16 +134,16 @@ export function buildBacklinkIndex(
     for (const link of extractOutLinksDetailed(c.body)) {
       if (link.kind === "artifact") continue;
       const resolved = resolveOutLink(index, link, c.notePath);
-      if (!resolved.targetCx) continue;
-      const arr = reverse.get(resolved.targetCx) ?? [];
+      if (!resolved.targetNodeId) continue;
+      const arr = reverse.get(resolved.targetNodeId) ?? [];
       arr.push({
-        fromCx: c.id,
+        fromNodeId: c.id,
         fromPath: c.path,
         fromName: c.name,
         raw: link.raw,
         kind: link.kind === "wiki" ? "wiki" : "md",
       });
-      reverse.set(resolved.targetCx, arr);
+      reverse.set(resolved.targetNodeId, arr);
     }
   }
   return reverse;
@@ -175,13 +175,13 @@ function outLinkFromHref(url: string, rawLabel: string): ExtractedOutLink | null
   const label = rawLabel.replace(/\s+/g, " ").trim() || undefined;
 
   if (ARTIFACT_SCHEME_RE.test(href) || isExternalHref(href)) {
-    return { raw: href, kind: "artifact", label, conceptTarget: href };
+    return { raw: href, kind: "artifact", label, targetPath: href };
   }
   if (isPureAnchor(href)) return null;
 
   const { pathPart, fragment } = splitHref(href);
   if (!pathPart || isAttachmentPath(pathPart)) return null;
-  return { raw: href, kind: "md", label, fragment, conceptTarget: pathPart };
+  return { raw: href, kind: "md", label, fragment, targetPath: pathPart };
 }
 
 function collectDefinitions(tree: Root): Map<string, MdastDefinition> {
@@ -259,7 +259,7 @@ function tryParseWikiLink(
     return { link: null, next };
   }
   return {
-    link: { raw: rawTarget, kind: "wiki", label, fragment, blockRef, conceptTarget: target },
+    link: { raw: rawTarget, kind: "wiki", label, fragment, blockRef, targetPath: target },
     next,
   };
 }
@@ -279,7 +279,7 @@ function toPublicOutLink(link: ExtractedOutLink): OutLink {
     raw: link.raw,
     kind: link.kind,
     label: link.label,
-    targetCx: link.targetCx,
+    targetNodeId: link.targetNodeId,
     targetPath: link.targetPath,
   };
 }
@@ -373,7 +373,7 @@ function findUnescapedChar(text: string, ch: string): number {
   return -1;
 }
 
-function add(index: Map<string, OkfConcept[]>, key: string, concept: OkfConcept): void {
+function add(index: Map<string, OkfNode[]>, key: string, concept: OkfNode): void {
   if (!key) return;
   const list = index.get(key) ?? [];
   if (!list.some((c) => c.id === concept.id)) list.push(concept);

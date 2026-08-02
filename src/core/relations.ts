@@ -4,13 +4,13 @@
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
 import {
-  BOX_FRONTMATTER_KEY_ORDER,
+  NODE_FRONTMATTER_KEY_ORDER,
   parseFrontmatter,
   serializeFrontmatter,
 } from "./frontmatter.js";
 import type { RandomSource } from "./id.js";
-import { boxNotePath, isUsableBox, loadTent, type LoadedTent } from "./tree.js";
-import type { Box, RelationDirection, RelationRecord, RelationTarget } from "./types.js";
+import { nodeNotePath, isUsableNode, loadTent, type LoadedTent } from "./tree.js";
+import type { Node, RelationDirection, RelationRecord, RelationTarget } from "./types.js";
 
 /** Stable relation handle prefix (contract). Distinct domain from role ids despite shared `rl-` form. */
 export const RELATION_ID_PREFIX = "rl-";
@@ -305,9 +305,9 @@ export function assertRawRelationsCanonicalForMutation(value: unknown): Relation
  */
 export async function loadCanonicalRelationsForMutation(
   fs: FsAdapter,
-  boxPath: string
+  nodePath: string
 ): Promise<RelationRecord[]> {
-  const notePath = boxNotePath(boxPath);
+  const notePath = nodeNotePath(nodePath);
   const { data } = parseFrontmatter(await fs.readFile(notePath));
   return assertRawRelationsCanonicalForMutation(data.relations);
 }
@@ -332,32 +332,32 @@ export function relationsToFrontmatterValue(
   return records.map(relationToFrontmatterItem);
 }
 
-function boxKeyOrder(existing: string[]): string[] {
+function nodeKeyOrder(existing: string[]): string[] {
   return [
-    ...BOX_FRONTMATTER_KEY_ORDER,
-    ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key)),
+    ...NODE_FRONTMATTER_KEY_ORDER,
+    ...existing.filter((key) => !NODE_FRONTMATTER_KEY_ORDER.includes(key)),
   ];
 }
 
-async function writeBoxRelations(
+async function writeNodeRelations(
   fs: FsAdapter,
-  box: Box,
+  node: Node,
   relations: readonly RelationRecord[]
 ): Promise<void> {
-  const path = boxNotePath(box.path);
+  const path = nodeNotePath(node.path);
   const { data, body, keyOrder } = parseFrontmatter(await fs.readFile(path));
   const value = relationsToFrontmatterValue(relations);
   if (value === undefined) delete data.relations;
   else data.relations = value;
-  await fs.writeFile(path, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
+  await fs.writeFile(path, serializeFrontmatter(data, body, nodeKeyOrder(keyOrder)));
 }
 
-function assertSourceMutable(box: Box): void {
-  if (box.invalid) {
-    throw new RelationError("INVALID", `Invalid boxes cannot own relations: ${box.path}`);
+function assertSourceMutable(node: Node): void {
+  if (node.invalid) {
+    throw new RelationError("INVALID", `Invalid nodes cannot own relations: ${node.path}`);
   }
-  if (box.archived || box.mode === "archived") {
-    throw new RelationError("ARCHIVED", `Archived boxes cannot own relations: ${box.path}`);
+  if (node.archived || node.mode === "archived") {
+    throw new RelationError("ARCHIVED", `Archived nodes cannot own relations: ${node.path}`);
   }
 }
 
@@ -367,11 +367,11 @@ function assertSourceMutable(box: Box): void {
  */
 export function assertResolvedTargetUsable(tent: LoadedTent, target: RelationTarget): void {
   if (!("nodeId" in target)) return;
-  const targetBox = tent.byId.get(target.nodeId);
-  if (!targetBox) {
+  const targetNode = tent.byId.get(target.nodeId);
+  if (!targetNode) {
     throw new RelationError("TARGET", `Relation target node not found: ${target.nodeId}`);
   }
-  if (!isUsableBox(targetBox)) {
+  if (!isUsableNode(targetNode)) {
     throw new RelationError(
       "TARGET",
       `Relation target is not a usable Node: ${target.nodeId}`
@@ -380,10 +380,10 @@ export function assertResolvedTargetUsable(tent: LoadedTent, target: RelationTar
 }
 
 export function listRelationsForNode(tent: LoadedTent, nodeId: string): RelationListProjection {
-  const box = tent.byId.get(nodeId);
-  if (!box) throw new RelationError("NOT_FOUND", `Concept not found: ${nodeId}`);
+  const node = tent.byId.get(nodeId);
+  if (!node) throw new RelationError("NOT_FOUND", `Node not found: ${nodeId}`);
 
-  const outgoing = box.relations.map(cloneRelation);
+  const outgoing = node.relations.map(cloneRelation);
   const incoming: RelationIncomingView[] = [];
   for (const other of tent.byId.values()) {
     for (const rel of other.relations) {
@@ -406,8 +406,8 @@ export function listRelationsForNode(tent: LoadedTent, nodeId: string): Relation
   });
 
   return {
-    nodeId: box.id,
-    path: box.path,
+    nodeId: node.id,
+    path: node.path,
     outgoing,
     incoming,
   };
@@ -422,12 +422,12 @@ export async function createRelation(
 ): Promise<RelationRecord> {
   return withTentMutation(fs, async () => {
     const tent = loadedTent ?? (await loadTent(fs));
-    const box = tent.byId.get(sourceId);
-    if (!box) throw new RelationError("NOT_FOUND", `Concept not found: ${sourceId}`);
-    assertSourceMutable(box);
+    const node = tent.byId.get(sourceId);
+    if (!node) throw new RelationError("NOT_FOUND", `Node not found: ${sourceId}`);
+    assertSourceMutable(node);
 
     // Durability: refuse mutation if raw FM would lose unrecognized/corrupt rows.
-    const base = await loadCanonicalRelationsForMutation(fs, box.path);
+    const base = await loadCanonicalRelationsForMutation(fs, node.path);
 
     const kind = normalizeRelationKind(input.kind);
     const direction = normalizeRelationDirection(input.direction);
@@ -446,9 +446,9 @@ export async function createRelation(
     if (label !== undefined) record.label = label;
 
     const next = [...base.map(cloneRelation), record];
-    await writeBoxRelations(fs, box, next);
-    box.relations = next.map(cloneRelation);
-    box.fm.relations = relationsToFrontmatterValue(next);
+    await writeNodeRelations(fs, node, next);
+    node.relations = next.map(cloneRelation);
+    node.fm.relations = relationsToFrontmatterValue(next);
     return cloneRelation(record);
   });
 }
@@ -462,11 +462,11 @@ export async function updateRelation(
 ): Promise<RelationRecord> {
   return withTentMutation(fs, async () => {
     const tent = loadedTent ?? (await loadTent(fs));
-    const box = tent.byId.get(sourceId);
-    if (!box) throw new RelationError("NOT_FOUND", `Concept not found: ${sourceId}`);
-    assertSourceMutable(box);
+    const node = tent.byId.get(sourceId);
+    if (!node) throw new RelationError("NOT_FOUND", `Node not found: ${sourceId}`);
+    assertSourceMutable(node);
 
-    const base = await loadCanonicalRelationsForMutation(fs, box.path);
+    const base = await loadCanonicalRelationsForMutation(fs, node.path);
     const idx = base.findIndex((r) => r.id === relationId);
     if (idx < 0) {
       throw new RelationError("NOT_FOUND", `Relation not found: ${relationId}`);
@@ -488,9 +488,9 @@ export async function updateRelation(
     }
 
     const next = base.map((r, i) => (i === idx ? current : cloneRelation(r)));
-    await writeBoxRelations(fs, box, next);
-    box.relations = next.map(cloneRelation);
-    box.fm.relations = relationsToFrontmatterValue(next);
+    await writeNodeRelations(fs, node, next);
+    node.relations = next.map(cloneRelation);
+    node.fm.relations = relationsToFrontmatterValue(next);
     return cloneRelation(current);
   });
 }
@@ -503,21 +503,21 @@ export async function deleteRelation(
 ): Promise<{ deleted: string }> {
   return withTentMutation(fs, async () => {
     const tent = loadedTent ?? (await loadTent(fs));
-    const box = tent.byId.get(sourceId);
-    if (!box) throw new RelationError("NOT_FOUND", `Concept not found: ${sourceId}`);
-    assertSourceMutable(box);
+    const node = tent.byId.get(sourceId);
+    if (!node) throw new RelationError("NOT_FOUND", `Node not found: ${sourceId}`);
+    assertSourceMutable(node);
 
-    const base = await loadCanonicalRelationsForMutation(fs, box.path);
+    const base = await loadCanonicalRelationsForMutation(fs, node.path);
     const idx = base.findIndex((r) => r.id === relationId);
     if (idx < 0) {
       throw new RelationError("NOT_FOUND", `Relation not found: ${relationId}`);
     }
     const next = base.filter((_, i) => i !== idx).map(cloneRelation);
-    await writeBoxRelations(fs, box, next);
-    box.relations = next.map(cloneRelation);
+    await writeNodeRelations(fs, node, next);
+    node.relations = next.map(cloneRelation);
     const fmValue = relationsToFrontmatterValue(next);
-    if (fmValue === undefined) delete box.fm.relations;
-    else box.fm.relations = fmValue;
+    if (fmValue === undefined) delete node.fm.relations;
+    else node.fm.relations = fmValue;
     return { deleted: relationId };
   });
 }

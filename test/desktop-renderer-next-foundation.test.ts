@@ -64,7 +64,7 @@ test("entityRef and placementId stay separate on CanvasDocument", () => {
       {
         placementId: "pl-1",
         entityRef: "cx-abc",
-        kind: "box",
+        kind: "node",
         x: 10,
         y: 20,
       },
@@ -72,7 +72,7 @@ test("entityRef and placementId stay separate on CanvasDocument", () => {
         placementId: "pl-2",
         // same entity may appear as another placement later — ids remain distinct
         entityRef: "cx-abc",
-        kind: "box-alias",
+        kind: "node-alias",
       },
       {
         placementId: "pl-orphan",
@@ -141,7 +141,7 @@ test("ServiceGateway treats events as invalidation only", async () => {
   assert.equal(gateway.isDirty("task.list"), false);
   assert.ok(hints.includes("task.state"));
 
-  const conceptHint = invalidationFromEvent(ev("concept.changed"));
+  const conceptHint = invalidationFromEvent(ev("node.changed"));
   assert.ok(conceptHint.keys.includes("docs.tree"));
 });
 
@@ -170,7 +170,7 @@ test("CanvasEngine placeholder keeps document and separates focus placement", ()
   // mount needs real DOM in browser; unit path only uses setDocument/focus APIs
   engine.setDocument({
     ...doc,
-    placements: [{ placementId: "pl-a", entityRef: "cx-1", kind: "box" }],
+    placements: [{ placementId: "pl-a", entityRef: "cx-1", kind: "node" }],
   });
   engine.focusPlacement("pl-a");
   assert.equal(engine.getDocument().focusedPlacementId, "pl-a");

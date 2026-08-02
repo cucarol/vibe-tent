@@ -20,7 +20,7 @@ async function makeWorkspace(name = "ws-settings"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -58,7 +58,7 @@ async function mount(svc: Awaited<ReturnType<typeof startLocalTentService>>, ws:
 async function mountWorkItem(
   svc: Awaited<ReturnType<typeof startLocalTentService>>,
   ws: string
-): Promise<{ workspaceId: string; boxId: string }> {
+): Promise<{ workspaceId: string; nodeId: string }> {
   const workspaceId = await mount(svc, ws);
   const created = await rpc(svc, "docs.createNote", {
     workspaceId,
@@ -66,7 +66,7 @@ async function mountWorkItem(
     type: "prompt",
   });
   assert.ok(!created.error, JSON.stringify(created.error));
-  return { workspaceId, boxId: (created.result as { id: string }).id };
+  return { workspaceId, nodeId: (created.result as { nodeId: string }).nodeId };
 }
 
 test("CLIENT_METHODS includes workspace.settings and workspace.settings.update", () => {
@@ -188,20 +188,20 @@ test("workspace.settings.update: user-only, MutationBus, one event on actual cha
 test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explicit overrides", async () => {
   const ws = await makeWorkspace("dispatch-snapshot");
   await withService(async (svc) => {
-    const { workspaceId, boxId: box1 } = await mountWorkItem(svc, ws);
+    const { workspaceId, nodeId: box1 } = await mountWorkItem(svc, ws);
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
 
-    const createBox = async (name: string): Promise<string> => {
+    const createNode = async (name: string): Promise<string> => {
       const created = await rpc(svc, "docs.createNote", {
         workspaceId,
         name,
         type: "prompt",
       });
       assert.ok(!created.error, JSON.stringify(created.error));
-      return (created.result as { id: string }).id;
+      return (created.result as { nodeId: string }).nodeId;
     };
-    const box2 = await createBox("work-item-two");
-    const box3 = await createBox("work-item-three");
+    const box2 = await createNode("work-item-two");
+    const box3 = await createNode("work-item-three");
 
     // Default (no settings file) → review
     const d1 = (await client.taskDispatch(workspaceId, {
@@ -256,7 +256,7 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [await createBox("work-item-manual-reject")],
+      nodeIds: [await createNode("work-item-manual-reject")],
       role: "executor",
       prompt: "must reject manual wire",
       deliveryPolicy: "manual",
@@ -269,10 +269,10 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
 test("task envelope on-disk manual projects as review; new serialize writes review", async () => {
   const ws = await makeWorkspace("historical-manual");
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const d = (await client.taskDispatch(workspaceId, {
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "new wire writes review",
       parentActor: { kind: "user", id: "user" },

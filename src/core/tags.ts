@@ -1,8 +1,8 @@
 import { FsAdapter, withTentMutation } from "./adapter.js";
-import { BOX_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
-import { assertContentMutable, boxNotePath, isUsableBox, loadTent } from "./tree.js";
+import { NODE_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
+import { assertContentMutable, nodeNotePath, isUsableNode, loadTent } from "./tree.js";
 import { backupCorruptRegistry, warnRegistryRecovered } from "./registryRecovery.js";
-import type { Box } from "./types.js";
+import type { Node } from "./types.js";
 
 import { TAGS_REGISTRY_PATH } from "./paths.js";
 export { TAGS_REGISTRY_PATH };
@@ -19,7 +19,7 @@ export async function loadTagRegistry(fs: FsAdapter): Promise<TagRegistry> {
     return normalizeRegistry(JSON.parse(await fs.readFile(TAGS_REGISTRY_PATH)));
   } catch {
     const backupPath = await backupCorruptRegistry(fs, TAGS_REGISTRY_PATH);
-    const recovered = await recoverTagRegistryFromBoxes(fs);
+    const recovered = await recoverTagRegistryFromNodes(fs);
     await saveTagRegistryUnlocked(fs, recovered);
     warnRegistryRecovered(TAGS_REGISTRY_PATH, backupPath, "recovered");
     return recovered;
@@ -47,31 +47,31 @@ async function addRegistryTagUnlocked(fs: FsAdapter, name: string): Promise<void
   }
 }
 
-export async function addTag(fs: FsAdapter, boxId: string, name: string): Promise<void> {
+export async function addTag(fs: FsAdapter, nodeId: string, name: string): Promise<void> {
   await withTentMutation(fs, async () => {
     const tag = normalizeTagName(name);
     const tent = await loadTent(fs);
-    if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
-    if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
-    assertContentMutable(box, "tagged");
+    if (tent.duplicateIds.has(nodeId)) throw new Error(`Duplicate node id '${nodeId}' found; repair or fork the duplicate nodes before using this id.`);
+    const node = tent.byId.get(nodeId);
+    if (!node) throw new Error(`Node not found: ${nodeId}.`);
+    if (!isUsableNode(node)) throw new Error("Invalid or archived nodes cannot be tagged.");
+    assertContentMutable(node, "tagged");
     await addRegistryTagUnlocked(fs, tag);
-    const tags = uniqueSorted([...box.tags, tag]);
-    await writeBoxTags(fs, box, tags);
+    const tags = uniqueSorted([...node.tags, tag]);
+    await writeNodeTags(fs, node, tags);
   });
 }
 
-export async function removeTag(fs: FsAdapter, boxId: string, name: string): Promise<void> {
+export async function removeTag(fs: FsAdapter, nodeId: string, name: string): Promise<void> {
   await withTentMutation(fs, async () => {
     const tag = normalizeTagName(name);
     const tent = await loadTent(fs);
-    if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
-    if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
-    assertContentMutable(box, "tagged");
-    await writeBoxTags(fs, box, box.tags.filter((item) => item !== tag));
+    if (tent.duplicateIds.has(nodeId)) throw new Error(`Duplicate node id '${nodeId}' found; repair or fork the duplicate nodes before using this id.`);
+    const node = tent.byId.get(nodeId);
+    if (!node) throw new Error(`Node not found: ${nodeId}.`);
+    if (!isUsableNode(node)) throw new Error("Invalid or archived nodes cannot be tagged.");
+    assertContentMutable(node, "tagged");
+    await writeNodeTags(fs, node, node.tags.filter((item) => item !== tag));
   });
 }
 
@@ -81,16 +81,16 @@ export async function removeRegistryTag(fs: FsAdapter, name: string): Promise<vo
     const registry = await loadTagRegistry(fs);
     await saveTagRegistryUnlocked(fs, { tags: registry.tags.filter((item) => item !== tag) });
     const tent = await loadTent(fs);
-    for (const box of tent.byId.values()) {
-      if (box.tags.includes(tag)) {
-        await writeBoxTags(fs, box, box.tags.filter((item) => item !== tag));
+    for (const node of tent.byId.values()) {
+      if (node.tags.includes(tag)) {
+        await writeNodeTags(fs, node, node.tags.filter((item) => item !== tag));
       }
     }
   });
 }
 
 /**
- * After one box's frontmatter tags change (patchBox / docs.write / raw write),
+ * After one node's frontmatter tags change (patchNode / docs.write / raw write),
  * auto-register any newly used tags into tags.json so the pick-list grows.
  *
  * Does **not** prune the registry when a Node drops a tag — same contract as
@@ -99,18 +99,18 @@ export async function removeRegistryTag(fs: FsAdapter, name: string): Promise<vo
  *
  * Caller that already holds the mutation lock must use the Unlocked form.
  */
-export async function syncTagRegistryAfterBoxTagsChange(
+export async function syncTagRegistryAfterNodeTagsChange(
   fs: FsAdapter,
   previousTags: readonly string[],
   nextTags: readonly string[]
 ): Promise<void> {
   await withTentMutation(fs, async () => {
-    await syncTagRegistryAfterBoxTagsChangeUnlocked(fs, previousTags, nextTags);
+    await syncTagRegistryAfterNodeTagsChangeUnlocked(fs, previousTags, nextTags);
   });
 }
 
-/** Mutation-lock-free form for nested Core writers (patchBoxUnlocked, etc.). */
-export async function syncTagRegistryAfterBoxTagsChangeUnlocked(
+/** Mutation-lock-free form for nested Core writers (patchNodeUnlocked, etc.). */
+export async function syncTagRegistryAfterNodeTagsChangeUnlocked(
   fs: FsAdapter,
   previousTags: readonly string[],
   nextTags: readonly string[]
@@ -123,10 +123,10 @@ export async function syncTagRegistryAfterBoxTagsChangeUnlocked(
   }
 }
 
-export function findBoxesByTag(tent: { byId: Map<string, Box> }, name: string): Box[] {
+export function findNodesByTag(tent: { byId: Map<string, Node> }, name: string): Node[] {
   const tag = normalizeTagName(name);
   return [...tent.byId.values()]
-    .filter((box) => box.tags.includes(tag))
+    .filter((node) => node.tags.includes(tag))
     .sort((a, b) => a.path.localeCompare(b.path));
 }
 
@@ -137,13 +137,13 @@ export function normalizeTagName(name: string): string {
   return tag;
 }
 
-async function writeBoxTags(fs: FsAdapter, box: Box, tags: string[]): Promise<void> {
-  const path = boxNotePath(box.path);
+async function writeNodeTags(fs: FsAdapter, node: Node, tags: string[]): Promise<void> {
+  const path = nodeNotePath(node.path);
   const { data, body, keyOrder } = parseFrontmatter(await fs.readFile(path));
   const next = uniqueSorted(tags);
   if (next.length === 0) delete data.tags;
   else data.tags = next;
-  await fs.writeFile(path, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
+  await fs.writeFile(path, serializeFrontmatter(data, body, nodeKeyOrder(keyOrder)));
 }
 
 function normalizeRegistry(value: unknown): TagRegistry {
@@ -160,11 +160,11 @@ function normalizeRegistry(value: unknown): TagRegistry {
   return { tags: uniqueSorted(tags) };
 }
 
-async function recoverTagRegistryFromBoxes(fs: FsAdapter): Promise<TagRegistry> {
+async function recoverTagRegistryFromNodes(fs: FsAdapter): Promise<TagRegistry> {
   const tent = await loadTent(fs);
   const tags: string[] = [];
-  for (const box of tent.byPath.values()) {
-    tags.push(...box.tags);
+  for (const node of tent.byPath.values()) {
+    tags.push(...node.tags);
   }
   return { tags: uniqueSorted(tags) };
 }
@@ -187,10 +187,10 @@ function uniqueSorted(values: string[]): string[] {
   return [...new Set(values)].sort((a, b) => a.localeCompare(b));
 }
 
-function boxKeyOrder(existing: string[]): string[] {
+function nodeKeyOrder(existing: string[]): string[] {
   return [
-    ...BOX_FRONTMATTER_KEY_ORDER,
-    ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key)),
+    ...NODE_FRONTMATTER_KEY_ORDER,
+    ...existing.filter((key) => !NODE_FRONTMATTER_KEY_ORDER.includes(key)),
   ];
 }
 

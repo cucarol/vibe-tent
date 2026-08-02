@@ -18,7 +18,7 @@ async function makeWorkspace(): Promise<string> {
   const adapter = new NodeFs(workspace);
   await scaffoldInWorkspace(adapter, {
     name: "direct-claim",
-    boxes: [{ name: "seed", type: "prompt", body: "# seed\n" }],
+    nodes: [{ name: "seed", type: "prompt", body: "# seed\n" }],
   });
   await adapter.writeFile(
     ".tent/roles.json",
@@ -78,7 +78,7 @@ async function createNode(
     type: "prompt",
   });
   assert.ok(!result.error, JSON.stringify(result.error));
-  return (result.result as { id: string }).id;
+  return (result.result as { nodeId: string }).nodeId;
 }
 
 test("Role direct claim creates one running Task with ordered Nodes and root user responsibility", async () => {
@@ -99,7 +99,6 @@ test("Role direct claim creates one running Task with ordered Nodes and root use
     const task = await loadTaskEnvelope(tentFs, result.taskPath);
     assert.equal(result.state, "running");
     assert.equal(task.state, "running");
-    assert.equal(task.status, "taken");
     assert.equal(task.role, "planner");
     assert.equal(taskAsSub(task), false);
     assert.deepEqual(task.parentActor, { kind: "user", id: "user" });

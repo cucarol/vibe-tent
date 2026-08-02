@@ -94,7 +94,7 @@ export function iconBtnHtml(opts: IconBtnHtmlOpts): string {
 }
 
 export type DocumentTabHtmlOpts = {
-  cx: string;
+  nodeId: string;
   name: string;
   active: boolean;
   dirty: boolean;
@@ -107,7 +107,7 @@ export type DocumentTabHtmlOpts = {
  * Close uses `data-close-tab`; activation uses `data-tab` on the label.
  */
 export function documentTabHtml(opts: DocumentTabHtmlOpts): string {
-  const cx = escapeHtml(opts.cx);
+  const cx = escapeHtml(opts.nodeId);
   const name = escapeHtml(opts.name);
   const dirtyMark = opts.dirty ? " ·" : "";
   const closeLabel = `关闭 ${opts.name}`;

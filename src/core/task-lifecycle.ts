@@ -24,13 +24,13 @@ import {
 } from "./output.js";
 import type { OpsEnv } from "./ops-context.js";
 import { loadTent, type LoadedTent } from "./tree.js";
-import type { Box } from "./types.js";
+import type { Node } from "./types.js";
 import {
   ackTaskEnvelope,
   loadTaskEnvelope,
   loadTaskEnvelopes,
   patchTaskEnvelope,
-  primaryBoxId,
+  primaryNodeId,
   taskAssigneeKind,
   type TaskEnvelope,
 } from "./task.js";
@@ -40,7 +40,6 @@ import {
   assertTransition,
   DEFAULT_DELIVERY_POLICY,
   evaluateA2A,
-  projectBoxFromTask,
   resolveDeliverRouting,
   TaskLifecycleError,
   type A2APolicy,
@@ -120,7 +119,7 @@ export interface TaskStartSessionGateInput {
 export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClaimOptions = {}): Promise<TaskEnvelope> {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
-    if (task.state === "running" && task.status === "taken") {
+    if (task.state === "running") {
       // Idempotent re-ack (legacy taskAck behavior).
       if (options.sessionId) {
         return patchTaskEnvelope(env.fs, taskPath, {
@@ -135,11 +134,11 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
     const tent = await loadTent(env.fs);
     if (task.contextCard == null) {
       throw new Error(
-        `Cannot claim task: missing Task.contextCard (run migrateLegacyTaskNodeRefs for legacy claims).`
+        `Cannot claim task: missing Task.contextCard.refs.nodes.`
       );
     }
-    const claimedBoxes = taskReferencedNodeIds(task).map((claimId) =>
-      requireBoxById(tent, claimId)
+    const claimedNodes = taskReferencedNodeIds(task).map((claimId) =>
+      requireNodeById(tent, claimId)
     );
 
     // Re-check exact Node occupation at claim. Exclude this queued Task itself;
@@ -147,9 +146,9 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
     const otherTasks = (await loadTaskEnvelopes(env.fs)).filter(
       (candidate) => candidate.path !== task.path
     );
-    for (const box of claimedBoxes) {
-      const claimable = canClaim(box, { tent, tasks: otherTasks });
-      if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
+    for (const node of claimedNodes) {
+      const claimable = canClaim(node, { tasks: otherTasks });
+      if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "node cannot be claimed"}`);
     }
 
     // Single envelope write: running + optional session/lane/base/audit together.
@@ -158,7 +157,6 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
     if (options.claimWrite) {
       return patchTaskEnvelope(env.fs, taskPath, {
         ...options.claimWrite,
-        status: "taken",
         state: "running",
         ...(options.sessionId ? { sessionId: options.sessionId } : {}),
         updatedAt: options.claimWrite.updatedAt ?? now,
@@ -223,7 +221,7 @@ export interface TaskDeliverResult {
  */
 export type TaskDeliverPrepared =
   | { kind: "done"; result: TaskDeliverResult }
-  | { kind: "auto"; boxId: string };
+  | { kind: "auto"; sourceNodeId: string };
 
 export interface TaskAcceptPrepared {
   deliveryId: string;
@@ -236,7 +234,7 @@ export interface TaskAcceptResult {
   delivery: DeliveryRecord;
   /** Output Node ids successfully bound (including same-delivery idempotent). */
   boundOutputIds: string[];
-  /** Subset that newly wrote deliveryId (for concept.changed). */
+  /** Subset that newly wrote deliveryId (for node.changed). */
   changedOutputIds: string[];
 }
 
@@ -253,20 +251,20 @@ export async function prepareTaskDeliver(
   return withMutation(env.fs, async (): Promise<TaskDeliverPrepared> => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertDeliverPreconditions(task);
-    const boxId = primaryBoxId(task);
-    if (!boxId) throw new Error("task.deliver requires a non-root box claim.");
+    const nodeId = primaryNodeId(task);
+    if (!nodeId) throw new Error("task.deliver requires a non-root node claim.");
     await assertNoReadyDelivery(env.fs, task.id || taskPath);
 
     const policy: DeliveryPolicy = task.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY;
     const routing = resolveDeliverRouting(policy, options.decision);
 
     if (routing.autoIntegrate) {
-      return { kind: "auto", boxId };
+      return { kind: "auto", sourceNodeId: nodeId };
     }
 
     const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
       taskId: task.id || taskPath,
-      boxId,
+      sourceNodeId: nodeId,
       role: task.role,
       summary: options.summary,
       commits: options.commits,
@@ -302,9 +300,9 @@ export async function finalizeTaskDeliverAuto(
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertDeliverPreconditions(task);
-    const boxId = primaryBoxId(task);
-    if (!boxId || boxId !== prepared.boxId) {
-      throw new Error("task.deliver requires a non-root box claim.");
+    const nodeId = primaryNodeId(task);
+    if (!nodeId || nodeId !== prepared.sourceNodeId) {
+      throw new Error("task.deliver requires a non-root node claim.");
     }
     await assertNoReadyDelivery(env.fs, task.id || taskPath);
 
@@ -316,7 +314,7 @@ export async function finalizeTaskDeliverAuto(
 
     const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
       taskId: task.id || taskPath,
-      boxId,
+      sourceNodeId: nodeId,
       role: task.role,
       summary: options.summary,
       commits: options.commits,
@@ -606,7 +604,7 @@ export async function taskInterrupt(env: OpsEnv, taskPath: string): Promise<Task
       assertTransition(task.state, "interrupt", "interrupted");
       await env.fs.remove(taskPath);
       // Return synthetic terminal view (file gone).
-      return { ...task, state: "interrupted", status: "taken" };
+      return { ...task, state: "interrupted" };
     }
     assertTransition(task.state, "interrupt", "interrupted");
 
@@ -629,8 +627,8 @@ export interface TaskFailOptions {
 
 /**
  * Unrecoverable failure: running|waiting → failed.
- * Releases box occupation via task terminal state (and non-accepted delivery cleanup)
- * so the same box can be re-dispatched. No Node frontmatter dual-write.
+ * Releases node occupation via task terminal state (and non-accepted delivery cleanup)
+ * so the same node can be re-dispatched. No Node frontmatter dual-write.
  * Idempotent when already failed.
  */
 export async function taskFail(
@@ -687,29 +685,10 @@ export function assertA2AAllow(input: TaskStartSessionGateInput): void {
   }
 }
 
-/** Find active operational task for a box (envelope oracle; not frontmatter owner). */
-export async function findActiveTaskForBox(fs: FsAdapter, boxId: string): Promise<TaskEnvelope | undefined> {
+/** Find active operational task for a node (envelope oracle; not frontmatter owner). */
+export async function findActiveTaskForNode(fs: FsAdapter, nodeId: string): Promise<TaskEnvelope | undefined> {
   const tasks = await loadTaskEnvelopes(fs);
-  return listDirectActiveTasksForNode(boxId, tasks)[0];
-}
-
-export function boxProjectionOf(task: TaskEnvelope | undefined): {
-  status: "todo" | "doing" | "done";
-  assignee?: string;
-  activeTaskId?: string;
-} {
-  if (!task) return { status: "todo" };
-  const active = envelopeIsActiveOccupation(task);
-  const proj = projectBoxFromTask({
-    active,
-    terminalState: active ? undefined : task.state,
-  });
-  return {
-    status: proj.status,
-    // assignee is the stable label (role name or profileId).
-    assignee: proj.clearAssignee ? undefined : task.role,
-    activeTaskId: active ? task.id || task.path : undefined,
-  };
+  return listDirectActiveTasksForNode(nodeId, tasks)[0];
 }
 
 /** Delivery storage dir for a task (role lane or agent-profiles namespace). */
@@ -756,13 +735,13 @@ async function requireActiveReadyDelivery(fs: FsAdapter, task: TaskEnvelope): Pr
   return ready;
 }
 
-function requireBoxById(tent: LoadedTent, boxId: string): Box {
-  if (tent.duplicateIds.has(boxId)) {
-    throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+function requireNodeById(tent: LoadedTent, nodeId: string): Node {
+  if (tent.duplicateIds.has(nodeId)) {
+    throw new Error(`Duplicate node id '${nodeId}' found; repair or fork the duplicate nodes before using this id.`);
   }
-  const box = tent.byId.get(boxId);
-  if (!box) throw new Error(`Box not found: ${boxId}.`);
-  return box;
+  const node = tent.byId.get(nodeId);
+  if (!node) throw new Error(`Node not found: ${nodeId}.`);
+  return node;
 }
 
 async function withMutation<T>(fs: FsAdapter, action: () => Promise<T>): Promise<T> {

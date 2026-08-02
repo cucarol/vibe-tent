@@ -7,13 +7,13 @@ import {
   normalizeTarget,
   resolveOutLink,
 } from "../src/markdown/links.js";
-import type { OkfConcept } from "../src/core/okf.js";
+import type { OkfNode } from "../src/core/okf.js";
 
 function conceptIndex(
-  concepts: Array<Pick<OkfConcept, "id" | "path" | "notePath" | "name">>
-): Map<string, OkfConcept[]> {
-  const index = new Map<string, OkfConcept[]>();
-  const add = (key: string, c: OkfConcept) => {
+  concepts: Array<Pick<OkfNode, "id" | "path" | "notePath" | "name">>
+): Map<string, OkfNode[]> {
+  const index = new Map<string, OkfNode[]>();
+  const add = (key: string, c: OkfNode) => {
     if (!key) return;
     const list = index.get(key) ?? [];
     if (!list.some((x) => x.id === c.id)) list.push(c);
@@ -23,7 +23,7 @@ function conceptIndex(
     index.set("__all__", all);
   };
   for (const c of concepts) {
-    const full: OkfConcept = { ...c, boxId: c.id, type: "prompt" };
+    const full: OkfNode = { ...c, nodeId: c.id, type: "prompt" };
     add(full.id, full);
     add(full.path, full);
     add(full.notePath, full);
@@ -51,10 +51,10 @@ test("extractOutLinks: angle-bracket destinations with spaces and titles", () =>
     ].join("\n")
   );
   assert.ok(links.some((l) => l.kind === "md" && l.raw === "space concept.md"));
-  assert.ok(links.some((l) => l.kind === "md" && l.conceptTarget === "nested/note.md"));
+  assert.ok(links.some((l) => l.kind === "md" && l.targetPath === "nested/note.md"));
   assert.ok(links.some((l) => l.kind === "md" && l.raw.startsWith("./other.md") && l.fragment === "frag"));
   const q = links.find((l) => l.raw.includes("?x=1"));
-  assert.equal(q?.conceptTarget, "./other.md");
+  assert.equal(q?.targetPath, "./other.md");
 });
 
 test("extractOutLinks: resolves full, collapsed, and shortcut reference links", () => {
@@ -77,12 +77,12 @@ test("extractOutLinks: balanced and escaped parentheses in destination", () => {
   assert.ok(links.some((l) => l.raw === "./baz).md" || l.raw.includes("baz")));
 });
 
-test("extractOutLinks: percent-encoded destinations decode for conceptTarget path form", () => {
+test("extractOutLinks: percent-encoded destinations decode for targetPath path form", () => {
   const links = extractOutLinksDetailed(`[P](./my%20note.md)`);
   assert.equal(links[0]?.kind, "md");
   assert.equal(links[0]?.raw, "./my%20note.md");
-  // normalizeTarget decodes when resolving; conceptTarget keeps pathPart of href
-  assert.equal(normalizeTarget(links[0]!.conceptTarget!, "folder/a.md"), "folder/my note");
+  // normalizeTarget decodes when resolving; targetPath keeps pathPart of href
+  assert.equal(normalizeTarget(links[0]!.targetPath!, "folder/a.md"), "folder/my note");
   assert.equal(normalizeTarget("./%E4%B8%AD%E6%96%87.md", "folder/a.md"), "folder/中文");
 });
 
@@ -95,15 +95,15 @@ test("extractOutLinks: wiki labels and heading/block suffixes", () => {
   assert.equal(labeled?.kind, "wiki");
 
   const headed = links.find((l) => l.raw === "Beta#Heading");
-  assert.equal(headed?.conceptTarget, "Beta");
+  assert.equal(headed?.targetPath, "Beta");
   assert.equal(headed?.fragment, "Heading");
 
   const blocked = links.find((l) => l.raw === "Gamma^blockid");
-  assert.equal(blocked?.conceptTarget, "Gamma");
+  assert.equal(blocked?.targetPath, "Gamma");
   assert.equal(blocked?.blockRef, "blockid");
 
   const both = links.find((l) => l.raw === "Delta#H^b");
-  assert.equal(both?.conceptTarget, "Delta");
+  assert.equal(both?.targetPath, "Delta");
   assert.equal(both?.fragment, "H");
   assert.equal(both?.blockRef, "b");
 });
@@ -235,19 +235,19 @@ test("resolveOutLink: relative md and wiki with fragment", () => {
     from
   );
   assert.equal(rel.kind, "md");
-  assert.equal(rel.targetCx, "cx-beta");
+  assert.equal(rel.targetNodeId, "cx-beta");
 
   const wiki = resolveOutLink(
     index,
     {
       raw: "alpha#Heading",
       kind: "wiki",
-      conceptTarget: "alpha",
+      targetPath: "alpha",
       fragment: "Heading",
     } as any,
     from
   );
-  assert.equal(wiki.targetCx, "cx-alpha");
+  assert.equal(wiki.targetNodeId, "cx-alpha");
   assert.equal(wiki.raw, "alpha#Heading");
 
   const missing = resolveOutLink(index, { raw: "nope", kind: "wiki" }, from);
@@ -265,7 +265,7 @@ test("resolveOutLink: attachments and anchors unresolved (no concept edge)", () 
   assert.equal(
     resolveOutLink(
       index,
-      { raw: "../attachments/cx-a/x.png", kind: "md", conceptTarget: "../attachments/cx-a/x.png" } as any,
+      { raw: "../attachments/cx-a/x.png", kind: "md", targetPath: "../attachments/cx-a/x.png" } as any,
       "a/a.md"
     ).kind,
     "unresolved"
@@ -307,16 +307,16 @@ test("buildBacklinkIndex: wiki/md edges, skips images and duplicates resolve onc
   ];
   const reverse = buildBacklinkIndex(concepts);
   const hits = reverse.get("cx-a") ?? [];
-  assert.ok(hits.some((h) => h.fromCx === "cx-b" && h.kind === "wiki"));
-  assert.ok(hits.some((h) => h.fromCx === "cx-b" && h.kind === "md"));
+  assert.ok(hits.some((h) => h.fromNodeId === "cx-b" && h.kind === "wiki"));
+  assert.ok(hits.some((h) => h.fromNodeId === "cx-b" && h.kind === "md"));
   // image/embed/code must not add extra from c
   assert.equal(
-    hits.filter((h) => h.fromCx === "cx-c").length,
+    hits.filter((h) => h.fromNodeId === "cx-c").length,
     0
   );
   // unresolved target has no reverse entry
   assert.equal(reverse.has("zzz"), false);
   // duplicates: wiki [[a]] collapsed to one outbound, md separate
-  assert.equal(hits.filter((h) => h.fromCx === "cx-b" && h.kind === "wiki").length, 1);
-  assert.equal(hits.filter((h) => h.fromCx === "cx-b" && h.kind === "md").length, 1);
+  assert.equal(hits.filter((h) => h.fromNodeId === "cx-b" && h.kind === "wiki").length, 1);
+  assert.equal(hits.filter((h) => h.fromNodeId === "cx-b" && h.kind === "md").length, 1);
 });

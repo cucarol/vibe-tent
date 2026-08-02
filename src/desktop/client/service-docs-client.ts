@@ -4,8 +4,8 @@ import type { DocsClient } from "../../markdown/docs-client.js";
 import type {
   ArtifactRef,
   BacklinkHit,
-  ConceptEditSnapshot,
-  ConceptProjection,
+  NodeEditSnapshot,
+  NodeProjection,
   CreateNoteInput,
   DocsWriteInput,
   DocsWriteResult,
@@ -37,34 +37,33 @@ export class ServiceDocsClient implements DocsClient {
     this.workspaceId = workspaceId;
   }
 
-  async list(parentPath?: string): Promise<ConceptProjection[]> {
-    const result = await this.rpc.call<{ concepts: ConceptProjection[] }>("docs.list", {
+  async list(parentPath?: string): Promise<NodeProjection[]> {
+    const result = await this.rpc.call<{ nodes: NodeProjection[] }>("docs.list", {
       workspaceId: this.workspaceId,
       parentPath,
     });
-    const roots = (result.concepts ?? []).map(normalizeProjection);
+    const roots = (result.nodes ?? []).map(normalizeProjection);
     if (!parentPath) return roots;
     const parent = findByPath(roots, parentPath.replace(/\\/g, "/"));
     return parent?.children ?? [];
   }
 
-  async get(cxOrPath: string): Promise<ConceptProjection | null> {
+  async get(nodeId: string): Promise<NodeProjection | null> {
     try {
-      const result = await this.rpc.call<{ concept: ConceptProjection }>("docs.get", {
+      const result = await this.rpc.call<{ node: NodeProjection }>("docs.get", {
         workspaceId: this.workspaceId,
-        ...idOrPathParams(cxOrPath),
+        nodeId,
       });
-      return result.concept ? normalizeProjection(result.concept) : null;
+      return result.node ? normalizeProjection(result.node) : null;
     } catch (err) {
       if (err instanceof ServiceRpcError && err.code === -32004) return null;
       throw err;
     }
   }
 
-  async readForEdit(cxOrPath: string): Promise<ConceptEditSnapshot> {
+  async readForEdit(nodeId: string): Promise<NodeEditSnapshot> {
     const result = await this.rpc.call<{
-      id: string;
-      cx?: string;
+      nodeId: string;
       path: string;
       name?: string;
       type?: string;
@@ -75,10 +74,9 @@ export class ServiceDocsClient implements DocsClient {
       artifactRefs?: ArtifactRef[];
     }>("docs.readForEdit", {
       workspaceId: this.workspaceId,
-      ...idOrPathParams(cxOrPath),
+      nodeId,
     });
 
-    const cx = result.cx ?? result.id;
     const raw =
       result.raw ??
       reconstructRaw(result.frontmatter ?? {}, result.body ?? "");
@@ -92,7 +90,7 @@ export class ServiceDocsClient implements DocsClient {
       (typeof result.frontmatter?.type === "string" ? result.frontmatter.type : "prompt");
 
     return {
-      cx,
+      nodeId: result.nodeId,
       path: result.path,
       name,
       type,
@@ -108,7 +106,7 @@ export class ServiceDocsClient implements DocsClient {
     try {
       const params: Record<string, unknown> = {
         workspaceId: this.workspaceId,
-        id: input.cx,
+        nodeId: input.nodeId,
         baseEtag: input.baseEtag,
       };
       if (input.raw !== undefined) params.raw = input.raw;
@@ -116,8 +114,7 @@ export class ServiceDocsClient implements DocsClient {
       if (input.frontmatter !== undefined) params.frontmatter = input.frontmatter;
 
       const result = await this.rpc.call<{
-        id: string;
-        cx?: string;
+        nodeId: string;
         path: string;
         etag: string;
       }>("docs.write", params);
@@ -125,7 +122,7 @@ export class ServiceDocsClient implements DocsClient {
       return {
         ok: true,
         etag: result.etag,
-        cx: result.cx ?? result.id,
+        nodeId: result.nodeId,
         path: result.path,
       };
     } catch (err) {
@@ -138,10 +135,10 @@ export class ServiceDocsClient implements DocsClient {
           };
         }
         if (err.code === -32009) {
-          let disk: ConceptEditSnapshot | undefined;
+          let disk: NodeEditSnapshot | undefined;
           try {
             // Optional full snapshot for conflict UI; RPC error itself only carries etag meta.
-            disk = await this.readForEdit(input.cx);
+            disk = await this.readForEdit(input.nodeId);
           } catch {
             /* ignore */
           }
@@ -168,23 +165,23 @@ export class ServiceDocsClient implements DocsClient {
     }
   }
 
-  async createNote(input: CreateNoteInput): Promise<{ cx: string; path: string }> {
-    const result = await this.rpc.call<{ id: string; path: string }>("docs.createNote", {
+  async createNote(input: CreateNoteInput): Promise<{ nodeId: string; path: string }> {
+    const result = await this.rpc.call<{ nodeId: string; path: string }>("docs.createNote", {
       workspaceId: this.workspaceId,
       name: input.name,
       type: input.type ?? "prompt",
       parentPath: input.parentPath ?? "",
       body: input.body,
     });
-    return { cx: result.id, path: result.path };
+    return { nodeId: result.nodeId, path: result.path };
   }
 
-  async fork(cxOrPath: string): Promise<{ cx: string }> {
-    const result = await this.rpc.call<{ id: string }>("docs.fork", {
+  async fork(nodeId: string): Promise<{ nodeId: string }> {
+    const result = await this.rpc.call<{ nodeId: string }>("docs.fork", {
       workspaceId: this.workspaceId,
-      ...idOrPathParams(cxOrPath),
+      nodeId,
     });
-    return { cx: result.id };
+    return { nodeId: result.nodeId };
   }
 
   /**
@@ -192,30 +189,30 @@ export class ServiceDocsClient implements DocsClient {
    * Pass newName only — never attempt to edit id.
    */
   async rename(
-    cxOrPath: string,
+    nodeId: string,
     newName: string,
     actor = "user"
-  ): Promise<{ id: string; name: string; path: string }> {
+  ): Promise<{ nodeId: string; name: string; path: string }> {
     const result = await this.rpc.call<{
-      id: string;
+      nodeId: string;
       name: string;
       path: string;
     }>("docs.rename", {
       workspaceId: this.workspaceId,
-      ...idOrPathParams(cxOrPath),
+      nodeId,
       newName,
       actor,
     });
-    return { id: result.id, name: result.name, path: result.path };
+    return { nodeId: result.nodeId, name: result.name, path: result.path };
   }
 
   async setMode(
-    cxOrPath: string,
+    nodeId: string,
     mode: "editable" | "archived"
   ): Promise<unknown> {
     return this.rpc.call("docs.setMode", {
       workspaceId: this.workspaceId,
-      ...idOrPathParams(cxOrPath),
+      nodeId,
       mode,
     });
   }
@@ -228,26 +225,26 @@ export class ServiceDocsClient implements DocsClient {
     return result.hits ?? [];
   }
 
-  async backlinks(cxOrPath: string): Promise<BacklinkHit[]> {
+  async backlinks(nodeId: string): Promise<BacklinkHit[]> {
     const result = await this.rpc.call<{ backlinks: BacklinkHit[] }>("docs.backlinks", {
       workspaceId: this.workspaceId,
-      ...idOrPathParams(cxOrPath),
+      nodeId,
     });
     return result.backlinks ?? [];
   }
 
-  async resolveLink(_fromCxOrPath: string, raw: string): Promise<ResolvedLink> {
+  async resolveLink(_fromNodeIdOrPath: string, raw: string): Promise<ResolvedLink> {
     // MVP: resolve via search title match; full graph resolve remains markdown package.
     const hits = await this.search(raw);
     const exact = hits.find((h) => h.name === raw || h.path.endsWith(raw));
     if (exact) {
-      return { raw, kind: "wiki", targetCx: exact.cx, targetPath: exact.path, label: exact.name };
+      return { raw, kind: "wiki", targetNodeId: exact.nodeId, targetPath: exact.path, label: exact.name };
     }
     return { raw, kind: "unresolved" };
   }
 
   async importAttachment(
-    cx: string,
+    nodeId: string,
     fileName: string,
     bytes: Uint8Array | string
   ): Promise<{ relativePath: string; markdown: string; artifactRef?: ArtifactRef }> {
@@ -266,7 +263,7 @@ export class ServiceDocsClient implements DocsClient {
       artifactRef?: ArtifactRef;
     }>("docs.importAttachment", {
       workspaceId: this.workspaceId,
-      ...idOrPathParams(cx),
+      nodeId,
       fileName,
       bytesBase64,
     });
@@ -289,23 +286,10 @@ function uint8ToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function idOrPathParams(cxOrPath: string): Record<string, string> {
-  const key = cxOrPath.trim().replace(/\\/g, "/");
-  if (key.startsWith("cx-") || key.startsWith("bx-")) return { id: key };
-  return { path: key };
-}
-
-function normalizeProjection(c: ConceptProjection): ConceptProjection {
-  const mode =
-    c.mode === "archived" || c.mode === "editable"
-      ? c.mode
-      : c.mode === "read-only"
-        ? "editable"
-        : c.archived
-          ? "archived"
-          : "editable";
+function normalizeProjection(c: NodeProjection): NodeProjection {
+  const mode = c.mode === "archived" ? "archived" : "editable";
   return {
-    id: c.id,
+    nodeId: c.nodeId,
     path: c.path,
     name: c.name,
     type: c.type,
@@ -320,7 +304,7 @@ function normalizeProjection(c: ConceptProjection): ConceptProjection {
   };
 }
 
-function findByPath(nodes: ConceptProjection[], path: string): ConceptProjection | null {
+function findByPath(nodes: NodeProjection[], path: string): NodeProjection | null {
   for (const n of nodes) {
     if (n.path === path) return n;
     const child = findByPath(n.children ?? [], path);

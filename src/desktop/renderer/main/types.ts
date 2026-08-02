@@ -1,6 +1,7 @@
 // Shared main-workbench view types (renderer-local; not Service wire types).
 
 import type { TaskReviewItem } from "../../workbench/collaboration-ui.js";
+import type { TaskContextCardV1 } from "../../../core/task-context-card.js";
 import type {
   CoordinationTypeOption,
   ProfileOption,
@@ -15,32 +16,31 @@ import type {
 } from "../../workbench/pending-interactions.js";
 
 /**
- * Tree row model for legacy main UI.
+ * Tree row model for the Node workbench.
  * `coordination` is a local usable alias (!invalid && !archived) — not Core wire.
  */
-export type ConceptNode = {
-  id: string;
+export type NodeView = {
+  nodeId: string;
   path: string;
   name: string;
   type: string;
-  /** Local usable flag for collab UI (legacy name). */
+  /** Local usable flag for collaboration UI. */
   coordination: boolean;
   invalid?: boolean;
   archived?: boolean;
   /**
-   * Collaboration status from box.projection only (todo|doing|done).
-   * Never populated from docs.list frontmatter / owner.
+   * Derived presentation marker while activeTask is present.
    */
   status?: string;
-  /** Assignee from box.projection only when an active task occupies the box. */
+  /** Assignee from node.collaboration while an active Task occupies this Node. */
   assignee?: string;
   mode?: "editable" | "archived";
   tags?: string[];
-  children?: ConceptNode[];
+  children?: NodeView[];
 };
 
 export type TabView = {
-  cx: string;
+  nodeId: string;
   path: string;
   name: string;
   type: string;
@@ -57,7 +57,7 @@ export type TabView = {
 
 /** docs.backlinks hit for inspector (right rail only — not document body). */
 export type BacklinkView = {
-  cx: string;
+  nodeId: string;
   name: string;
   path: string;
   context?: string;
@@ -86,22 +86,22 @@ export type ShellState = {
   }>;
   foregroundWorkspaceId: string | null;
   workspace: {
-    tree: ConceptNode[];
+    tree: NodeView[];
     tabs: TabView[];
     activeCx: string | null;
-    searchHits: Array<{ cx: string; name: string; snippet: string; match: string }>;
+    searchHits: Array<{ nodeId: string; name: string; snippet: string; match: string }>;
     statusMessage: string | null;
   } | null;
   tasks: Array<{
     path: string;
     role: string;
-    status: string;
     referencedNodeIds: string[];
-    state?: string;
+    state: string;
     id?: string;
     prompt?: string;
     activeDeliveryId?: string;
     sessionId?: string;
+    contextCard: TaskContextCardV1;
   }>;
   taskReview?: TaskReviewItem[];
   roles?: RoleOption[];

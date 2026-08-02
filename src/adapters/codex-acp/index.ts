@@ -121,7 +121,7 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
       if (!secret || !secret.trim()) {
         throw new Error(
           `未配置环境变量 ${opts.envKey}：codex-acp 已在 AgentProfile.acp.envKey 中明确要求该密钥` +
-            `（仅 service 进程 / LaunchPlan.env）。请设置 ${opts.envKey} 后重试；切勿把 secret 写入 workspace/box/task。`
+            `（仅 service 进程 / LaunchPlan.env）。请设置 ${opts.envKey} 后重试；切勿把 secret 写入 workspace、Node 或 Task。`
         );
       }
       env[opts.envKey] = secret;

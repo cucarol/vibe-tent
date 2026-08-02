@@ -4,17 +4,18 @@
 import type {
   AgentProfileProjection,
   DeliveryProjection,
+  NodeCollaborationsResult,
   RoleRegistryEntryProjection,
   SessionProjection,
   TaskProjection,
   TypeRegistryEntryProjection,
 } from "../../../service/types.js";
 import {
-  applyBoxProjectionsToTree,
-  collectCoordinationBoxIds,
-  normalizeBoxProjection,
-  type BoxProjectionView,
-} from "../../workbench/box-projection.js";
+  applyNodeCollaborationsToTree,
+  collectUsableNodeIds,
+  normalizeNodeCollaboration,
+  type NodeCollaborationView,
+} from "../../workbench/node-collaboration.js";
 import {
   buildTaskReviewItems,
   isActionableTaskState,
@@ -43,21 +44,21 @@ import {
   type ToolApprovalItem,
   type UserAskItem,
 } from "../../workbench/pending-interactions.js";
-import type { BacklinkView, ConceptNode, ShellState, TabView } from "./types.js";
+import type { BacklinkView, NodeView, ShellState, TabView } from "./types.js";
 import { setError } from "./elements.js";
 
 /** Local editor state mirrors WorkspaceController via service RPC (not core FS). */
 export const localTabs = new Map<string, TabView>();
 export let activeCx: string | null = null;
-export let tree: ConceptNode[] = [];
+export let tree: NodeView[] = [];
 export let state: ShellState | null = null;
 export let workspaceId: string | null = null;
 
 /**
- * box.projection by boxId — sole truth for tree/inspector status/assignee/activeTaskId.
+ * Canonical node.collaboration projection by nodeId.
  * Cleared on workspace switch; never derived from frontmatter.
  */
-export const boxProjections = new Map<string, BoxProjectionView>();
+export const nodeCollaborations = new Map<string, NodeCollaborationView>();
 /** docs.backlinks for the active node (inspector only). */
 export let activeBacklinks: BacklinkView[] = [];
 export let activeBacklinksError: string | null = null;
@@ -91,7 +92,7 @@ export function setActiveCx(cx: string | null): void {
   activeCx = cx;
 }
 
-export function setTree(nodes: ConceptNode[]): void {
+export function setTree(nodes: NodeView[]): void {
   tree = nodes;
 }
 
@@ -159,10 +160,10 @@ export function setDispatchPrompt(value: string): void {
   dispatchPrompt = value;
 }
 
-export function findConcept(nodes: ConceptNode[], id: string): ConceptNode | undefined {
+export function findNode(nodes: NodeView[], nodeId: string): NodeView | undefined {
   for (const node of nodes) {
-    if (node.id === id) return node;
-    const child = findConcept(node.children || [], id);
+    if (node.nodeId === nodeId) return node;
+    const child = findNode(node.children || [], nodeId);
     if (child) return child;
   }
   return undefined;
@@ -171,7 +172,7 @@ export function findConcept(nodes: ConceptNode[], id: string): ConceptNode | und
 /** Non-terminal tasks the user can still act on (start / interrupt / cancel / review). */
 export function actionableTasks(): TaskReviewItem[] {
   return taskReview.filter((task) =>
-    isActionableTaskState(String(task.state || task.status || ""))
+    isActionableTaskState(task.state)
   );
 }
 
@@ -188,7 +189,7 @@ export function pendingInteractionCount(): number {
 export function tasksForActiveNode(states?: string[]): TaskReviewItem[] {
   if (!activeCx) return [];
   return actionableTasks().filter((task) => {
-    const st = String(task.state || task.status || "");
+    const st = task.state;
     return (
       task.referencedNodeIds.includes(activeCx!) &&
       (!states || states.includes(st))
@@ -227,6 +228,8 @@ export type StateHost = {
   /** Re-render inspector meta / backlinks when projection or links change. */
   renderMeta?: () => void;
   renderBacklinks?: () => void;
+  /** Reload the active document through its dirty-buffer guard. */
+  openNode?: (nodeId: string) => Promise<void>;
 };
 
 let host: StateHost | null = null;
@@ -244,7 +247,7 @@ export function clearLocalDocumentSession(): void {
   localTabs.clear();
   activeCx = null;
   tree = [];
-  boxProjections.clear();
+  nodeCollaborations.clear();
   activeBacklinks = [];
   activeBacklinksError = null;
 }
@@ -262,23 +265,23 @@ export function setWorkspaceId(id: string | null): void {
 export async function reloadTree(): Promise<void> {
   if (!workspaceId) return;
   const result = (await window.tentDesktop.rpc("docs.list", { workspaceId })) as {
-    concepts: ConceptNode[];
+    nodes: NodeView[];
   };
   // Strip list-side collab fields before overlay — docs.list is not authority.
-  const raw = (result.concepts || []).map(stripListCollabFields);
+  const raw = (result.nodes || []).map(stripListCollabFields);
   tree = raw;
   for (const [id, tab] of localTabs) {
-    const concept = findConcept(tree, id);
-    if (concept?.mode) tab.nodeMode = concept.mode;
-    if (concept?.name) tab.name = concept.name;
-    if (concept?.path) tab.path = concept.path;
+    const node = findNode(tree, id);
+    if (node?.mode) tab.nodeMode = node.mode;
+    if (node?.name) tab.name = node.name;
+    if (node?.path) tab.path = node.path;
   }
-  await reloadBoxProjections();
+  await reloadNodeCollaborations();
   host?.renderTree();
 }
 
-/** Drop status/assignee that may ride along on ConceptProjection from docs.list. */
-function stripListCollabFields(node: ConceptNode): ConceptNode {
+/** Drop non-authoritative collaboration fields from docs.list Nodes. */
+function stripListCollabFields(node: NodeView): NodeView {
   const { status: _s, assignee: _a, children, ...rest } = node;
   const archived = !!rest.archived || rest.mode === "archived";
   const invalid = !!rest.invalid;
@@ -294,39 +297,35 @@ function stripListCollabFields(node: ConceptNode): ConceptNode {
 }
 
 /**
- * Fan-out box.projection for every coordination node in the tree.
- * Failures for individual boxes leave that node without collab marks (no guess).
+ * Load canonical Node collaboration for every usable Node in one batch.
  */
-export async function reloadBoxProjections(): Promise<void> {
+export async function reloadNodeCollaborations(): Promise<void> {
   if (!workspaceId) {
-    boxProjections.clear();
+    nodeCollaborations.clear();
     return;
   }
-  const ids = collectCoordinationBoxIds(tree);
+  const ids = collectUsableNodeIds(tree);
   if (ids.length === 0) {
-    boxProjections.clear();
-    tree = applyBoxProjectionsToTree(tree, boxProjections);
+    nodeCollaborations.clear();
+    tree = applyNodeCollaborationsToTree(tree, nodeCollaborations);
     return;
   }
-  const results = await Promise.all(
-    ids.map((id) =>
-      window.tentDesktop
-        .rpc("box.projection", { workspaceId, id })
-        .then((raw) => normalizeBoxProjection(raw))
-        .catch(() => null)
-    )
-  );
-  boxProjections.clear();
+  const batch = (await window.tentDesktop.rpc("node.collaborations", {
+    workspaceId,
+    nodeIds: ids,
+  })) as NodeCollaborationsResult;
+  const results = batch.items.map((item) => normalizeNodeCollaboration(item));
+  nodeCollaborations.clear();
   for (const p of results) {
-    if (p) boxProjections.set(p.boxId, p);
+    nodeCollaborations.set(p.nodeId, p);
   }
-  tree = applyBoxProjectionsToTree(tree, boxProjections);
+  tree = applyNodeCollaborationsToTree(tree, nodeCollaborations);
   host?.renderMeta?.();
 }
 
-export function boxProjectionFor(cx: string | null | undefined): BoxProjectionView | null {
+export function nodeCollaborationFor(cx: string | null | undefined): NodeCollaborationView | null {
   if (!cx) return null;
-  return boxProjections.get(cx) ?? null;
+  return nodeCollaborations.get(cx) ?? null;
 }
 
 /** Load docs.backlinks for the active node into inspector state. */
@@ -338,32 +337,27 @@ export async function reloadActiveBacklinks(): Promise<void> {
     return;
   }
   try {
-    // Wire: BacklinkHit { fromCx, fromPath, fromName, raw, kind }
+    // Wire: BacklinkHit { fromNodeId, fromPath, fromName, raw, kind }
     const result = (await window.tentDesktop.rpc("docs.backlinks", {
       workspaceId,
-      id: activeCx,
+      nodeId: activeCx,
     })) as {
       backlinks?: Array<{
-        fromCx?: string;
+        fromNodeId?: string;
         fromPath?: string;
         fromName?: string;
         raw?: string;
         kind?: string;
-        // Tolerate older/alternate shapes if service ever aliases.
-        cx?: string;
-        id?: string;
-        name?: string;
-        path?: string;
       }>;
     };
     const hits: BacklinkView[] = [];
     for (const h of result.backlinks || []) {
-      const cx = h.fromCx || h.cx || h.id || "";
+      const cx = h.fromNodeId || "";
       if (!cx) continue;
       const row: BacklinkView = {
-        cx,
-        name: h.fromName || h.name || cx,
-        path: h.fromPath || h.path || "",
+        nodeId: cx,
+        name: h.fromName || cx,
+        path: h.fromPath || "",
       };
       if (typeof h.raw === "string" && h.raw) row.context = h.raw;
       hits.push(row);
@@ -498,17 +492,21 @@ function collectTaskPathsForInputPoll(): string[] {
  */
 export async function onServiceEvent(type: string): Promise<void> {
   if (!workspaceId) return;
+  const reloadNodeNeeded = type === "node.changed";
   const reloadTasksNeeded = isTaskProjectionEventType(type);
   const reloadPendingNeeded = isPendingInteractionEventType(type);
-  // concept.changed is not currently fan-out by main host; keep for completeness
-  // if the filter widens. Tree refresh is still driven by explicit UI actions.
-  if (!reloadTasksNeeded && !reloadPendingNeeded) return;
+  if (!reloadNodeNeeded && !reloadTasksNeeded && !reloadPendingNeeded) return;
   try {
+    if (reloadNodeNeeded) {
+      await reloadTree();
+      if (activeCx && host?.openNode) await host.openNode(activeCx);
+      await reloadActiveBacklinks();
+    }
     // Tasks first so taskInput fan-out sees current paths (no guessed paths).
     if (reloadTasksNeeded) {
       await reloadTasks();
-      // Active task / delivery / session changes invalidate box.projection.
-      await reloadBoxProjections();
+      // Active Task / Delivery / Session changes invalidate node.collaboration.
+      await reloadNodeCollaborations();
       host?.renderTree();
     }
     if (reloadPendingNeeded) await reloadPendingInteractions();

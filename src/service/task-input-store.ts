@@ -62,7 +62,7 @@ export interface TaskInputRecord {
   kind?: TaskInputKind;
   /** Optional free-text one-shot append, or exact review note for review-feedback. */
   text?: string;
-  /** Optional stable entity ids (concept/box/task pointers) — not free text. */
+  /** Optional stable Node/Task entity ids — not free text. */
   contextRefs?: string[];
   status: TaskInputStatus;
   createdAt: string;

@@ -21,8 +21,8 @@ import {
 } from "./state.js";
 
 export type GraphHost = {
-  /** Open concept in workbench when user drills in. */
-  openConcept: (cx: string) => Promise<void>;
+  /** Open node in workbench when user drills in. */
+  openNode: (cx: string) => Promise<void>;
   /** Switch app surface (e.g. back to workbench after open). */
   goWorkbench: () => void;
 };
@@ -65,7 +65,7 @@ export async function reloadGraph(): Promise<void> {
   }
   if (!selectedId) {
     const flat = flattenGraphNodes(tree as GraphNode[]);
-    selectedId = flat[0]?.id ?? null;
+    selectedId = flat[0]?.nodeId ?? null;
   }
   await loadSelection(selectedId);
 }
@@ -87,7 +87,7 @@ async function loadSelection(cx: string | null): Promise<void> {
   try {
     const bl = (await window.tentDesktop.rpc("docs.backlinks", {
       workspaceId,
-      id: cx,
+      nodeId: cx,
     })) as { backlinks?: GraphBacklink[] };
     if (gen !== loadGen) return;
     backlinks = bl.backlinks || [];
@@ -101,7 +101,7 @@ async function loadSelection(cx: string | null): Promise<void> {
   try {
     const edit = (await window.tentDesktop.rpc("docs.readForEdit", {
       workspaceId,
-      id: cx,
+      nodeId: cx,
     })) as { body?: string };
     if (gen !== loadGen) return;
     const body = edit.body ?? "";
@@ -109,7 +109,7 @@ async function loadSelection(cx: string | null): Promise<void> {
       outLinks = extractOutLinks(body).map((l) => ({
         raw: l.raw,
         kind: l.kind,
-        targetCx: l.targetCx,
+        targetNodeId: l.targetNodeId,
         targetPath: l.targetPath,
         label: l.label,
       }));
@@ -157,10 +157,10 @@ export function renderGraph(): void {
 
   const nodesHtml = flat
     .map((n) => {
-      const active = n.id === selectedId ? " is-active" : "";
+      const active = n.nodeId === selectedId ? " is-active" : "";
       const pad = 8 + n.depth * 14;
       const kind = n.type;
-      return `<button type="button" class="graph-node${active}" data-graph-node="${escapeHtml(n.id)}" style="padding-left:${pad}px" title="${escapeHtml(n.path)}">
+      return `<button type="button" class="graph-node${active}" data-graph-node="${escapeHtml(n.nodeId)}" style="padding-left:${pad}px" title="${escapeHtml(n.path)}">
         <span class="graph-node-name">${escapeHtml(n.name)}</span>
         <span class="muted graph-node-kind">${escapeHtml(kind)}</span>
       </button>`;
@@ -183,7 +183,7 @@ export function renderGraph(): void {
     edgesHtml += `<ul class="graph-edge-list" aria-label="反向链接">${sel.backlinks
       .map(
         (b) =>
-          `<li><button type="button" class="linkish" data-graph-jump="${escapeHtml(b.fromCx)}">${escapeHtml(b.fromName || b.fromPath)}</button>
+          `<li><button type="button" class="linkish" data-graph-jump="${escapeHtml(b.fromNodeId)}">${escapeHtml(b.fromName || b.fromPath)}</button>
           <span class="faint">${escapeHtml(b.raw)}</span></li>`
       )
       .join("")}</ul>`;
@@ -198,11 +198,11 @@ export function renderGraph(): void {
     outHtml = `<ul class="graph-edge-list" aria-label="出链">${sel.outLinks
       .map((l) => {
         const label = l.label || l.targetPath || l.raw;
-        const jump = l.targetCx
-          ? ` data-graph-jump="${escapeHtml(l.targetCx)}"`
+        const jump = l.targetNodeId
+          ? ` data-graph-jump="${escapeHtml(l.targetNodeId)}"`
           : "";
-        const tag = l.targetCx ? "button" : "span";
-        const cls = l.targetCx ? " class=\"linkish\"" : " class=\"muted\"";
+        const tag = l.targetNodeId ? "button" : "span";
+        const cls = l.targetNodeId ? " class=\"linkish\"" : " class=\"muted\"";
         return `<li><${tag} type="button"${cls}${jump}>${escapeHtml(label)}</${tag}>
           <span class="faint">${escapeHtml(l.kind)} · ${escapeHtml(l.raw)}</span></li>`;
       })
@@ -258,7 +258,7 @@ export function renderGraph(): void {
   });
   document.getElementById("btn-graph-open")?.addEventListener("click", () => {
     if (!selectedId) return;
-    void host?.openConcept(selectedId).then(() => host?.goWorkbench());
+    void host?.openNode(selectedId).then(() => host?.goWorkbench());
   });
 }
 

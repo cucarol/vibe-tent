@@ -15,7 +15,7 @@ test("resolveTentWorkspace:仅 in-workspace 布局,不再扫描 concept workspac
 
   await fs.writeFile(
     path.join(dir, "output", "alpha仓库指针", "alpha仓库指针.md"),
-    "---\nid: bx-o1\ntype: artifact\nworkspace: C:/legacy/repo\n---\n",
+    "---\nid: cx-o1\ntype: artifact\nworkspace: C:/legacy/repo\n---\n",
   );
   let tent = await loadTent(fsa);
   assert.equal(
@@ -589,14 +589,14 @@ test("completeClaim: retired — rejects without dual-writing Node owner/status"
   await assert.rejects(
     () => completeClaim(
       { fs: adapter, clock: { now: () => "t" }, tentName: "x" },
-      "bx-g2",
+      "cx-g2",
       async () => {
         throw new Error("conflict");
       }
     ),
     /retired|owner\/status|no longer write/i
   );
-  const box = (await loadTent(adapter)).byId.get("bx-g2")!;
+  const box = (await loadTent(adapter)).byId.get("cx-g2")!;
   assert.equal(box.fm.owner, undefined);
   assert.equal(box.fm.status, undefined);
 });

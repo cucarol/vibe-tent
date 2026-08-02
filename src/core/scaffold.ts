@@ -1,12 +1,12 @@
 import { FsAdapter } from "./adapter.js";
-import { BOX_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
+import { NODE_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { DEFAULT_TYPE_REGISTRY, TYPE_REGISTRY_PATH } from "./typeRegistry.js";
 import type { TypeRegistry } from "./typeRegistry.js";
 import { ROLES_REGISTRY_PATH } from "./skillRoleRegistry.js";
 import type { RolesRegistry } from "./skillRoleRegistry.js";
 import { DEFAULT_TAG_REGISTRY, TAGS_REGISTRY_PATH } from "./tags.js";
-import { boxNotePath } from "./tree.js";
-import { isConceptId, makeUniqueConceptId } from "./id.js";
+import { nodeNotePath } from "./tree.js";
+import { isNodeId, makeUniqueNodeId } from "./id.js";
 import {
   ATTACHMENTS_DIR,
   INDEX_PATH,
@@ -24,8 +24,8 @@ const RECOGNIZED_REGISTRY_PATHS = [
   TAGS_REGISTRY_PATH,
 ] as const;
 
-/** 顶层 concept:genesis grill 出的真名节点(非强制通用顶层文件夹)。 */
-export interface ScaffoldBox {
+/** 顶层 Node: genesis grill 产生的具名节点（非强制通用顶层文件夹）。 */
+export interface ScaffoldNode {
   name: string;   // 文件夹名 = 框身份(真名)
   type: string;   // OKF/Tent 单层 type
   body?: string;  // 身份笔记正文
@@ -35,7 +35,7 @@ export interface ScaffoldBox {
 export interface ScaffoldTentOptions {
   name: string;
   /** 顶层节点;由 genesis grill 决定。缺省 = 空帐(不强制建顶层文件夹)。 */
-  boxes?: ScaffoldBox[];
+  nodes?: ScaffoldNode[];
   typeRegistry?: TypeRegistry;
   rolesRegistry?: RolesRegistry;
 }
@@ -49,14 +49,15 @@ export async function scaffoldTent(fs: FsAdapter, options: ScaffoldTentOptions):
   if (!name) throw new Error("Tent name cannot be empty.");
 
   const usedIds = new Set<string>();
-  for (const box of options.boxes ?? []) {
-    const boxName = validateBoxName(box.name);
-    const type = box.type.trim();
-    if (!type) throw new Error(`Box ${boxName} is missing a primary type.`);
-    const id = box.id?.trim() || makeUniqueConceptId(usedIds);
+  for (const node of options.nodes ?? []) {
+    const nodeName = validateNodeName(node.name);
+    const type = node.type.trim();
+    if (!type) throw new Error(`Node ${nodeName} is missing a primary type.`);
+    const id = node.id?.trim() || makeUniqueNodeId(usedIds);
+    if (!isNodeId(id)) throw new Error(`Scaffold Node id must use canonical cx-* form: ${id}`);
     usedIds.add(id);
     const frontmatter: Record<string, unknown> = { id, type };
-    await writeBox(fs, boxName, frontmatter, box.body ?? `# ${boxName}\n`);
+    await writeNode(fs, nodeName, frontmatter, node.body ?? `# ${nodeName}\n`);
   }
 
   await fs.mkdir(TEMP_DIR);
@@ -86,18 +87,19 @@ export async function scaffoldInWorkspace(
   const nested = (p: string) => `${systemRelative}/${p}`.replace(/\\/g, "/");
 
   const usedIds = new Set<string>();
-  for (const box of options.boxes ?? []) {
-    const boxName = validateBoxName(box.name);
-    const type = box.type.trim();
-    if (!type) throw new Error(`Box ${boxName} is missing a primary type.`);
-    const id = box.id?.trim() || makeUniqueConceptId(usedIds);
+  for (const node of options.nodes ?? []) {
+    const nodeName = validateNodeName(node.name);
+    const type = node.type.trim();
+    if (!type) throw new Error(`Node ${nodeName} is missing a primary type.`);
+    const id = node.id?.trim() || makeUniqueNodeId(usedIds);
+    if (!isNodeId(id)) throw new Error(`Scaffold Node id must use canonical cx-* form: ${id}`);
     usedIds.add(id);
     const frontmatter: Record<string, unknown> = { id, type };
-    const path = nested(boxName);
+    const path = nested(nodeName);
     await workspaceFs.mkdir(path);
     await workspaceFs.writeFile(
-      `${path}/${boxName}.md`,
-      serializeFrontmatter(frontmatter, `\n${box.body ?? `# ${boxName}\n`}\n`, BOX_FRONTMATTER_KEY_ORDER)
+      `${path}/${nodeName}.md`,
+      serializeFrontmatter(frontmatter, `\n${node.body ?? `# ${nodeName}\n`}\n`, NODE_FRONTMATTER_KEY_ORDER)
     );
   }
 
@@ -240,8 +242,8 @@ async function hasOrphanTentEvidence(
   for (const reg of RECOGNIZED_REGISTRY_PATHS) {
     if (await workspaceFs.exists(nested(reg))) return true;
   }
-  // Scan concept content only — never operational/system subtrees under system root.
-  return hasDurableConceptNode(workspaceFs, "");
+  // Scan Node content only — never operational/system subtrees under system root.
+  return hasDurableNodeView(workspaceFs, "");
 }
 
 /**
@@ -251,7 +253,7 @@ async function hasOrphanTentEvidence(
  * and attachment dumps cannot masquerade as Node evidence; arbitrary real
  * content folders remain eligible.
  */
-async function hasDurableConceptNode(
+async function hasDurableNodeView(
   workspaceFs: FsAdapter,
   systemRelDir: string
 ): Promise<boolean> {
@@ -274,7 +276,7 @@ async function hasDurableConceptNode(
     if (entry.isDir) {
       // Exclude temp/, attachments/, nested .tent/ at system-root top (and their descendants).
       if (isOperationalPath(childSystemRel)) continue;
-      if (await hasDurableConceptNode(workspaceFs, childSystemRel)) return true;
+      if (await hasDurableNodeView(workspaceFs, childSystemRel)) return true;
       continue;
     }
     if (!entry.name.endsWith(".md")) continue;
@@ -290,7 +292,7 @@ async function hasDurableConceptNode(
     try {
       const { data } = parseFrontmatter(raw);
       const id = typeof data.id === "string" ? data.id.trim() : "";
-      if (id && isConceptId(id)) return true;
+      if (id && isNodeId(id)) return true;
     } catch {
       // Unreadable / invalid frontmatter is not evidence.
     }
@@ -342,13 +344,13 @@ export async function ensureWorkspaceGitignore(workspaceFs: FsAdapter): Promise<
   await workspaceFs.writeFile(path, next);
 }
 
-export function validateBoxName(value: string): string {
+export function validateNodeName(value: string): string {
   const name = value.trim();
-  if (!name) throw new Error("Box name cannot be empty.");
-  if (name.length > 200) throw new Error("Box name cannot be longer than 200 characters.");
-  if (/[\/\\]/.test(name)) throw new Error("Box name cannot contain path separators.");
-  if (/[\r\n]/.test(name)) throw new Error("Box name cannot contain newlines.");
-  if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(name)) throw new Error("Box name cannot contain control characters.");
+  if (!name) throw new Error("Node name cannot be empty.");
+  if (name.length > 200) throw new Error("Node name cannot be longer than 200 characters.");
+  if (/[\/\\]/.test(name)) throw new Error("Node name cannot contain path separators.");
+  if (/[\r\n]/.test(name)) throw new Error("Node name cannot contain newlines.");
+  if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(name)) throw new Error("Node name cannot contain control characters.");
   return name;
 }
 
@@ -356,14 +358,14 @@ export function tentIndexMarker(): string {
   return `---\ntype: index\nokf_version: "0.1"\n---\n# Index\n`;
 }
 
-async function writeBox(
+async function writeNode(
   fs: FsAdapter,
   path: string,
   frontmatter: Record<string, unknown>,
   body: string
 ): Promise<void> {
   await fs.mkdir(path);
-  await fs.writeFile(boxNotePath(path), serializeFrontmatter(frontmatter, `\n${body}\n`, BOX_FRONTMATTER_KEY_ORDER));
+  await fs.writeFile(nodeNotePath(path), serializeFrontmatter(frontmatter, `\n${body}\n`, NODE_FRONTMATTER_KEY_ORDER));
 }
 
 export { systemRootFromWorkspace };

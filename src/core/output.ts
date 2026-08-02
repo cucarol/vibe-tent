@@ -4,11 +4,12 @@
 
 import type { FsAdapter } from "./adapter.js";
 import { loadDeliveries, type DeliveryRecord } from "./delivery.js";
-import { BOX_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
+import { NODE_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { loadTaskEnvelopes, type TaskEnvelope } from "./task.js";
 import { isDeliveryId } from "./task-model.js";
-import { boxNotePath, loadTent, type LoadedTent } from "./tree.js";
-import type { Box } from "./types.js";
+import { taskReferencedNodeIds } from "./task-node-refs.js";
+import { nodeNotePath, loadTent, type LoadedTent } from "./tree.js";
+import type { Node } from "./types.js";
 import { splitType } from "./typeRegistry.js";
 
 export interface OutputPointer {
@@ -47,9 +48,9 @@ export class OutputProvenanceError extends Error {
 
 /** Live join half of Output → Delivery → Task → sourceNode (ids only; never path inference). */
 export type OutputProvenanceLive = {
-  delivery: { id: string; status: string; taskId: string; boxId: string } | null;
+  delivery: { id: string; status: string; taskId: string; sourceNodeId: string } | null;
   task: { id: string; state: string; path?: string } | null;
-  sourceNode: { id: string; path?: string; type?: string; archived?: boolean } | null;
+  sourceNode: { nodeId: string; path?: string; type?: string; archived?: boolean } | null;
 };
 
 export type OutputProvenanceIncompleteReason =
@@ -113,13 +114,13 @@ export function readOutputDeliveryId(fm: Record<string, unknown>): string | unde
 }
 
 /**
- * Collect every non-empty deliveryId on concept Nodes (including archived).
+ * Collect every non-empty deliveryId on Output Nodes (including archived).
  * Used by operational retention to pin referenced Delivery + Task groups.
  */
 export function collectReferencedDeliveryIds(tent: LoadedTent): Set<string> {
   const out = new Set<string>();
-  for (const box of tent.byId.values()) {
-    const deliveryId = readOutputDeliveryId(box.fm as Record<string, unknown>);
+  for (const node of tent.byId.values()) {
+    const deliveryId = readOutputDeliveryId(node.fm as Record<string, unknown>);
     if (deliveryId && isDeliveryId(deliveryId)) out.add(deliveryId);
   }
   return out;
@@ -131,31 +132,31 @@ export function collectReferencedDeliveryIds(tent: LoadedTent): Set<string> {
  * Bound to a different id → OUTPUT_ALREADY_BOUND.
  */
 export function assertOutputBindable(
-  box: Box,
+  node: Node,
   deliveryId: string
 ): { alreadyBound: boolean } {
-  if (!box.id) {
-    throw new OutputProvenanceError("OUTPUT_INVALID", `Output has no id: ${box.path}`);
+  if (!node.id) {
+    throw new OutputProvenanceError("OUTPUT_INVALID", `Output has no id: ${node.path}`);
   }
-  if (box.invalid) {
+  if (node.invalid) {
     throw new OutputProvenanceError(
       "OUTPUT_INVALID",
-      `Output is invalid: ${box.path}`,
-      { outputId: box.id, detail: box.invalidReason }
+      `Output is invalid: ${node.path}`,
+      { outputId: node.id, detail: node.invalidReason }
     );
   }
-  if (box.archived || box.mode === "archived") {
+  if (node.archived || node.mode === "archived") {
     throw new OutputProvenanceError(
       "OUTPUT_ARCHIVED",
-      `Output is archived and cannot bind provenance: ${box.id}`,
-      { outputId: box.id }
+      `Output is archived and cannot bind provenance: ${node.id}`,
+      { outputId: node.id }
     );
   }
-  if (!isOutputPrimaryType(box.type)) {
+  if (!isOutputPrimaryType(node.type)) {
     throw new OutputProvenanceError(
       "OUTPUT_NOT_OUTPUT_TYPE",
-      `Node primary type must be output to bind provenance (got ${box.type}): ${box.id}`,
-      { outputId: box.id, type: box.type }
+      `Node primary type must be output to bind provenance (got ${node.type}): ${node.id}`,
+      { outputId: node.id, type: node.type }
     );
   }
   if (!isDeliveryId(deliveryId)) {
@@ -164,12 +165,12 @@ export function assertOutputBindable(
       `Invalid delivery id for provenance bind: ${deliveryId}`
     );
   }
-  const existing = readOutputDeliveryId(box.fm as Record<string, unknown>);
+  const existing = readOutputDeliveryId(node.fm as Record<string, unknown>);
   if (existing && existing !== deliveryId) {
     throw new OutputProvenanceError(
       "OUTPUT_ALREADY_BOUND",
-      `Output ${box.id} is already bound to ${existing}; cannot rebind to ${deliveryId}`,
-      { outputId: box.id, existingDeliveryId: existing, deliveryId }
+      `Output ${node.id} is already bound to ${existing}; cannot rebind to ${deliveryId}`,
+      { outputId: node.id, existingDeliveryId: existing, deliveryId }
     );
   }
   return { alreadyBound: existing === deliveryId };
@@ -183,9 +184,9 @@ export function validateOutputBindingsForAccept(
   tent: LoadedTent,
   outputNodeIds: readonly string[] | undefined,
   deliveryId: string
-): { outputIds: string[]; boxes: Box[] } {
+): { outputIds: string[]; nodes: Node[] } {
   if (!outputNodeIds || outputNodeIds.length === 0) {
-    return { outputIds: [], boxes: [] };
+    return { outputIds: [], nodes: [] };
   }
   if (!isDeliveryId(deliveryId)) {
     throw new OutputProvenanceError(
@@ -195,7 +196,7 @@ export function validateOutputBindingsForAccept(
   }
   const seen = new Set<string>();
   const outputIds: string[] = [];
-  const boxes: Box[] = [];
+  const nodes: Node[] = [];
   for (const raw of outputNodeIds) {
     if (typeof raw !== "string" || !raw.trim()) {
       throw new OutputProvenanceError(
@@ -209,21 +210,21 @@ export function validateOutputBindingsForAccept(
     if (tent.duplicateIds.has(id)) {
       throw new OutputProvenanceError(
         "OUTPUT_INVALID",
-        `Duplicate box id '${id}' found; repair before binding provenance.`,
+        `Duplicate node id '${id}' found; repair before binding provenance.`,
         { outputId: id }
       );
     }
-    const box = tent.byId.get(id);
-    if (!box) {
+    const node = tent.byId.get(id);
+    if (!node) {
       throw new OutputProvenanceError("OUTPUT_NOT_FOUND", `Output Node not found: ${id}`, {
         outputId: id,
       });
     }
-    assertOutputBindable(box, deliveryId);
+    assertOutputBindable(node, deliveryId);
     outputIds.push(id);
-    boxes.push(box);
+    nodes.push(node);
   }
-  return { outputIds, boxes };
+  return { outputIds, nodes };
 }
 
 /**
@@ -234,7 +235,7 @@ export type OutputBindSnapshot = {
   outputId: string;
   notePath: string;
   raw: string;
-  box: Box;
+  node: Node;
   previousDeliveryId: string | undefined;
 };
 
@@ -255,9 +256,9 @@ export async function restoreOutputBindSnapshots(
       await fs.writeFile(snap.notePath, snap.raw);
       const prev = snap.previousDeliveryId;
       if (prev === undefined) {
-        delete (snap.box.fm as Record<string, unknown>)[OUTPUT_PROVENANCE_FIELD];
+        delete (snap.node.fm as Record<string, unknown>)[OUTPUT_PROVENANCE_FIELD];
       } else {
-        (snap.box.fm as Record<string, unknown>)[OUTPUT_PROVENANCE_FIELD] = prev;
+        (snap.node.fm as Record<string, unknown>)[OUTPUT_PROVENANCE_FIELD] = prev;
       }
     } catch (err) {
       failures.push({
@@ -298,29 +299,29 @@ export async function bindOutputsToDeliveryUnlocked(
   changedIds: string[];
   snapshots: OutputBindSnapshot[];
 }> {
-  const { outputIds, boxes } = validateOutputBindingsForAccept(tent, outputNodeIds, deliveryId);
+  const { outputIds, nodes } = validateOutputBindingsForAccept(tent, outputNodeIds, deliveryId);
 
   type Planned = {
-    box: Box;
+    node: Node;
     outputId: string;
     notePath: string;
     raw: string;
     previousDeliveryId: string | undefined;
   };
   const planned: Planned[] = [];
-  for (let i = 0; i < boxes.length; i++) {
-    const box = boxes[i];
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
     const outputId = outputIds[i];
-    const { alreadyBound } = assertOutputBindable(box, deliveryId);
+    const { alreadyBound } = assertOutputBindable(node, deliveryId);
     if (alreadyBound) continue;
-    const notePath = boxNotePath(box.path);
+    const notePath = nodeNotePath(node.path);
     const raw = await fs.readFile(notePath);
     planned.push({
-      box,
+      node,
       outputId,
       notePath,
       raw,
-      previousDeliveryId: readOutputDeliveryId(box.fm as Record<string, unknown>),
+      previousDeliveryId: readOutputDeliveryId(node.fm as Record<string, unknown>),
     });
   }
 
@@ -338,10 +339,10 @@ export async function bindOutputsToDeliveryUnlocked(
         outputId: item.outputId,
         notePath: item.notePath,
         raw: item.raw,
-        box: item.box,
+        node: item.node,
         previousDeliveryId: item.previousDeliveryId,
       });
-      (item.box.fm as Record<string, unknown>)[OUTPUT_PROVENANCE_FIELD] = deliveryId;
+      (item.node.fm as Record<string, unknown>)[OUTPUT_PROVENANCE_FIELD] = deliveryId;
       changedIds.push(item.outputId);
     }
   } catch (err) {
@@ -366,36 +367,36 @@ export async function bindOutputsToDeliveryUnlocked(
 }
 
 /**
- * Build Output provenance read model from a resolved Output box + operational indexes.
+ * Build Output provenance read model from a resolved Output node + operational indexes.
  * Never infers by path/name/time; missing heat records → incomplete, not invented joins.
  */
 export function projectOutputProvenance(
-  box: Box,
+  node: Node,
   indexes: {
     deliveriesById: Map<string, DeliveryRecord>;
     tasksById: Map<string, TaskEnvelope>;
     tent: LoadedTent;
   }
 ): OutputProvenance {
-  if (box.invalid) {
+  if (node.invalid) {
     throw new OutputProvenanceError(
       "OUTPUT_INVALID",
-      `Output is invalid: ${box.path}`,
-      { outputId: box.id, detail: box.invalidReason }
+      `Output is invalid: ${node.path}`,
+      { outputId: node.id, detail: node.invalidReason }
     );
   }
-  if (!isOutputPrimaryType(box.type)) {
+  if (!isOutputPrimaryType(node.type)) {
     throw new OutputProvenanceError(
       "OUTPUT_NOT_OUTPUT_TYPE",
-      `Node primary type must be output for provenance query (got ${box.type}): ${box.id}`,
-      { outputId: box.id, type: box.type }
+      `Node primary type must be output for provenance query (got ${node.type}): ${node.id}`,
+      { outputId: node.id, type: node.type }
     );
   }
 
-  const deliveryId = readOutputDeliveryId(box.fm as Record<string, unknown>) ?? null;
+  const deliveryId = readOutputDeliveryId(node.fm as Record<string, unknown>) ?? null;
   const base: OutputProvenance = {
-    outputId: box.id,
-    path: box.path,
+    outputId: node.id,
+    path: node.path,
     bound: false,
     deliveryId: null,
     delivery: null,
@@ -427,13 +428,10 @@ export function projectOutputProvenance(
     id: delivery.id,
     status: delivery.status,
     taskId: delivery.taskId,
-    boxId: delivery.boxId,
+    sourceNodeId: delivery.sourceNodeId,
   };
 
-  const task =
-    indexes.tasksById.get(delivery.taskId) ??
-    // Some envelopes use path as fallback id in older fixtures.
-    [...indexes.tasksById.values()].find((t) => t.id === delivery.taskId || t.path === delivery.taskId);
+  const task = indexes.tasksById.get(delivery.taskId);
 
   if (!task) {
     base.incomplete.push("task_missing");
@@ -448,19 +446,22 @@ export function projectOutputProvenance(
     if (delivery.taskId && taskKey && delivery.taskId !== taskKey && delivery.taskId !== task.path) {
       if (!base.incomplete.includes("mismatch")) base.incomplete.push("mismatch");
     }
+    if (!taskReferencedNodeIds(task).includes(delivery.sourceNodeId)) {
+      if (!base.incomplete.includes("mismatch")) base.incomplete.push("mismatch");
+    }
   }
 
-  const sourceId = delivery.boxId?.trim();
+  const sourceId = delivery.sourceNodeId.trim();
   if (!sourceId) {
     base.incomplete.push("source_missing");
   } else {
     const source = indexes.tent.byId.get(sourceId);
     if (!source) {
       base.incomplete.push("source_missing");
-      base.sourceNode = { id: sourceId };
+      base.sourceNode = { nodeId: sourceId };
     } else {
       base.sourceNode = {
-        id: source.id,
+        nodeId: source.id,
         path: source.path,
         type: source.type,
         archived: source.archived || source.mode === "archived",
@@ -493,12 +494,12 @@ export async function loadProvenanceIndexes(
 }
 
 /**
- * Resolve Output by stable id (preferred) or path, then project provenance.
+ * Resolve Output by its canonical Node id, then project provenance.
  * Archived Outputs remain readable.
  */
 export async function resolveOutputProvenance(
   fs: FsAdapter,
-  selector: { id?: string; path?: string; outputId?: string },
+  selector: { nodeId: string },
   preloaded?: {
     tent: LoadedTent;
     deliveriesById: Map<string, DeliveryRecord>;
@@ -506,49 +507,36 @@ export async function resolveOutputProvenance(
   }
 ): Promise<OutputProvenance> {
   const indexes = preloaded ?? (await loadProvenanceIndexes(fs));
-  const box = resolveOutputBox(indexes.tent, selector);
-  return projectOutputProvenance(box, indexes);
+  const node = resolveOutputNode(indexes.tent, selector);
+  return projectOutputProvenance(node, indexes);
 }
 
-export function resolveOutputBox(
+export function resolveOutputNode(
   tent: LoadedTent,
-  selector: { id?: string; path?: string; outputId?: string }
-): Box {
-  const id = (selector.id ?? selector.outputId)?.trim();
-  const path = selector.path?.trim().replace(/\\/g, "/");
-  if (id) {
-    if (tent.duplicateIds.has(id)) {
-      throw new OutputProvenanceError(
-        "OUTPUT_INVALID",
-        `Duplicate box id '${id}' found; repair before provenance query.`,
-        { outputId: id }
-      );
-    }
-    const box = tent.byId.get(id);
-    if (!box) {
-      throw new OutputProvenanceError("OUTPUT_NOT_FOUND", `Output Node not found: ${id}`, {
-        outputId: id,
-      });
-    }
-    return box;
+  selector: { nodeId: string }
+): Node {
+  const nodeId = selector.nodeId.trim();
+  if (!nodeId) {
+    throw new OutputProvenanceError("INVALID_SELECTOR", "output.provenance requires nodeId");
   }
-  if (path) {
-    const box = tent.byPath.get(path);
-    if (!box) {
-      throw new OutputProvenanceError("OUTPUT_NOT_FOUND", `Output Node not found at path: ${path}`, {
-        path,
-      });
-    }
-    return box;
+  if (tent.duplicateIds.has(nodeId)) {
+    throw new OutputProvenanceError(
+      "OUTPUT_INVALID",
+      `Duplicate Node id '${nodeId}' found; repair before provenance query.`,
+      { nodeId }
+    );
   }
-  throw new OutputProvenanceError(
-    "INVALID_SELECTOR",
-    "output.provenance requires id, outputId, or path"
-  );
+  const node = tent.byId.get(nodeId);
+  if (!node) {
+    throw new OutputProvenanceError("OUTPUT_NOT_FOUND", `Output Node not found: ${nodeId}`, {
+      nodeId,
+    });
+  }
+  return node;
 }
 
 function outputKeyOrder(existing: string[]): string[] {
-  const preferred = [...BOX_FRONTMATTER_KEY_ORDER, OUTPUT_PROVENANCE_FIELD];
+  const preferred = [...NODE_FRONTMATTER_KEY_ORDER, OUTPUT_PROVENANCE_FIELD];
   return [
     ...preferred,
     ...existing.filter((key) => !preferred.includes(key)),

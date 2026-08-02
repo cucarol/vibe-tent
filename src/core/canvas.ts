@@ -2,8 +2,8 @@
 // v1 用嵌套 group 铺开:顶层根框 = 带色 group,容器框 = group,叶子框 = file 节点指向同名 .md。
 // 纯函数、可测;file 路径用 pathPrefix 转成 vault 相对(插件传入)。
 
-import { Box } from "./types.js";
-import { LoadedTent, boxNotePath } from "./tree.js";
+import { Node } from "./types.js";
+import { LoadedTent, nodeNotePath } from "./tree.js";
 import { splitType } from "./typeRegistry.js";
 
 export interface CanvasNode {
@@ -54,70 +54,70 @@ export function buildCanvas(tent: LoadedTent, pathPrefix: string): CanvasData {
   return { nodes, edges: [] };
 }
 
-function sizeOf(box: Box): Size {
-  if (box.children.length === 0) return { w: CARD_W, h: CARD_H };
+function sizeOf(node: Node): Size {
+  if (node.children.length === 0) return { w: CARD_W, h: CARD_H };
   let innerW = 0;
   let innerH = 0;
-  const sizes = box.children.map(sizeOf);
+  const sizes = node.children.map(sizeOf);
   for (const s of sizes) {
     innerW = Math.max(innerW, s.w);
     innerH += s.h;
   }
-  innerH += GAP * (box.children.length - 1);
+  innerH += GAP * (node.children.length - 1);
   return { w: innerW + PAD * 2, h: innerH + HEADER + PAD };
 }
 
-function layout(box: Box, x: number, y: number, out: CanvasNode[], prefix: string, isRoot: boolean): Size {
-  const s = sizeOf(box);
-  if (box.children.length === 0) {
+function layout(node: Node, x: number, y: number, out: CanvasNode[], prefix: string, isRoot: boolean): Size {
+  const s = sizeOf(node);
+  if (node.children.length === 0) {
     out.push({
-      id: nodeId(box),
+      id: nodeId(node),
       type: "file",
       x,
       y,
       width: CARD_W,
       height: CARD_H,
-      file: filePath(box, prefix),
-      color: colorFor(box, isRoot),
+      file: filePath(node, prefix),
+      color: colorFor(node, isRoot),
     });
     return s;
   }
   out.push({
-    id: nodeId(box),
+    id: nodeId(node),
     type: "group",
     x,
     y,
     width: s.w,
     height: s.h,
-    label: labelFor(box, isRoot),
-    color: colorFor(box, isRoot),
+    label: labelFor(node, isRoot),
+    color: colorFor(node, isRoot),
   });
   let cy = y + HEADER;
-  for (const c of box.children) {
+  for (const c of node.children) {
     const cs = layout(c, x + PAD, cy, out, prefix, false);
     cy += cs.h + GAP;
   }
   return s;
 }
 
-function nodeId(box: Box): string {
-  return box.id || box.path.replace(/[^a-z0-9]/gi, "-");
+function nodeId(node: Node): string {
+  return node.id || node.path.replace(/[^a-z0-9]/gi, "-");
 }
-function filePath(box: Box, prefix: string): string {
-  const p = boxNotePath(box.path);
+function filePath(node: Node, prefix: string): string {
+  const p = nodeNotePath(node.path);
   return prefix ? `${prefix}/${p}` : p;
 }
-function labelFor(box: Box, isRoot: boolean): string {
-  const tag = isRoot ? "" : ` · ${box.type}`;
-  return `${box.name}${tag}`;
+function labelFor(node: Node, isRoot: boolean): string {
+  const tag = isRoot ? "" : ` · ${node.type}`;
+  return `${node.name}${tag}`;
 }
-function colorFor(box: Box, isRoot: boolean): string | undefined {
-  if (isRoot) return ROOT_COLOR[box.name] || undefined;
-  const { base, modifier } = splitType(box.type);
+function colorFor(node: Node, isRoot: boolean): string | undefined {
+  if (isRoot) return ROOT_COLOR[node.name] || undefined;
+  const { base, modifier } = splitType(node.type);
   if (base === "goal") return "5";
   if (base === "prompt") return "6";
   if (base === "output") return "4";
-  if (modifier === "asset" || box.type === "asset") return "";
+  if (modifier === "asset" || node.type === "asset") return "";
   return undefined;
 }
 
@@ -144,13 +144,13 @@ export function preservePositions(fresh: CanvasData, old: CanvasData | null, ten
   return fresh;
 }
 
-function collectIds(box: Box): Set<string> {
+function collectIds(node: Node): Set<string> {
   const ids = new Set<string>();
-  const walk = (b: Box) => {
+  const walk = (b: Node) => {
     ids.add(b.id || b.path);
     for (const c of b.children) walk(c);
   };
-  walk(box);
+  walk(node);
   return ids;
 }
 

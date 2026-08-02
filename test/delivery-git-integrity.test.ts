@@ -28,7 +28,7 @@ async function makeWorkspace(name = "git-integrity"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -102,8 +102,8 @@ async function mountWorkItem(
     type: "prompt",
   });
   assert.ok(!created.error, JSON.stringify(created.error));
-  const boxId = (created.result as { id: string }).id;
-  return { workspaceId, boxId };
+  const nodeId = (created.result as { nodeId: string }).nodeId;
+  return { workspaceId, nodeId };
 }
 
 async function claimRunningWithBase(
@@ -123,7 +123,7 @@ async function claimRunningWithBase(
   branch: string;
 }> {
   let workspaceId = opts.workspaceId;
-  let boxId: string;
+  let nodeId: string;
   if (workspaceId) {
     const created = await rpc(svc, "docs.createNote", {
       workspaceId,
@@ -131,18 +131,18 @@ async function claimRunningWithBase(
       type: "prompt",
     });
     assert.ok(!created.error, JSON.stringify(created.error));
-    boxId = (created.result as { id: string }).id;
+    nodeId = (created.result as { nodeId: string }).nodeId;
   } else {
     const mounted = await mountWorkItem(svc, ws, opts.noteName ?? `item-${opts.role}`);
     workspaceId = mounted.workspaceId;
-    boxId = mounted.boxId;
+    nodeId = mounted.nodeId;
   }
 
   const d = await rpc(svc, "task.dispatch", {
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     workspaceId,
-    nodeIds: [boxId],
+    nodeIds: [nodeId],
     role: opts.role,
     prompt: opts.prompt,
     deliveryPolicy: "review",
@@ -366,7 +366,7 @@ test("Service dual workspaceId projections same common-dir+target: concurrent ac
     const fsa = new NodeFs(root);
     await scaffoldInWorkspace(fsa, {
       name: path.basename(root),
-      boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+      nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
     });
     await fsa.writeFile(
       ".tent/roles.json",
@@ -527,7 +527,7 @@ test("Service dual workspaceId: blocked integrate critical section is exclusive"
     const fsa = new NodeFs(root);
     await scaffoldInWorkspace(fsa, {
       name: path.basename(root),
-      boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+      nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
     });
     await fsa.writeFile(
       ".tent/roles.json",

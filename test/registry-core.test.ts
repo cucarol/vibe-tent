@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { loadTent } from "../src/core/tree.js";
 import {
-  BOX_FRONTMATTER_KEY_ORDER,
+  NODE_FRONTMATTER_KEY_ORDER,
   parseFrontmatter,
   serializeFrontmatter,
 } from "../src/core/frontmatter.js";
@@ -26,7 +26,7 @@ import {
 import {
   addRegistryTag,
   addTag,
-  findBoxesByTag,
+  findNodesByTag,
   loadTagRegistry,
   removeRegistryTag,
   removeTag,
@@ -39,7 +39,7 @@ test("scaffoldTent:core 生成自包含帐骨架(index,不进 SPEC/CLAUDE/AGENTS
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, {
     name: "demo",
-    boxes: [
+    nodes: [
       { name: "aim", type: "goal", body: "# demo · aim" },
       { name: "out", type: "asset" },
     ],
@@ -86,13 +86,13 @@ test("tags frontmatter:数组往返且键序在 type 后", async () => {
   const body = "# 节点\n";
   const raw = serializeFrontmatter(
     {
-      id: "bx-tagged",
+      id: "cx-tagged",
       type: "reference",
       tags: ["backend-hardening", "needs,quote"],
       owner: "reviewer",
     },
     body,
-    BOX_FRONTMATTER_KEY_ORDER,
+    NODE_FRONTMATTER_KEY_ORDER,
   );
 
   assert.match(raw, /type: reference\ntags: \[backend-hardening, "needs,quote"\]\nowner: reviewer/);
@@ -104,7 +104,7 @@ test("tags frontmatter:数组往返且键序在 type 后", async () => {
 
 test("frontmatter round-trip:quoted Windows path does not double escape", () => {
   let raw = String.raw`---
-id: bx-path
+id: cx-path
 type: output
 workspace: "C:\\example\\_code\\Tent"
 ---
@@ -223,7 +223,7 @@ state: queued
 
 test("frontmatter round-trip:Obsidian block sequences are preserved as arrays", () => {
   const raw = String.raw`---
-id: bx-paths
+id: cx-paths
 type: output
 paths:
   - test/a.ts
@@ -252,7 +252,7 @@ custom: keep-me
 
 test("frontmatter parse:previously doubled workspace paths are cleaned in memory", () => {
   const parsed = parseFrontmatter(String.raw`---
-id: bx-damaged
+id: cx-damaged
 type: output
 workspace: "C:\\\\example\\\\_code\\\\Tent"
 ---
@@ -271,50 +271,50 @@ test("tags 注册表:自动登记、摘除、级联剥离与检索", async () =>
   assert.deepEqual((await loadTagRegistry(fsa)).tags, ["alpha", "backend-hardening", "zeta"]);
   await assert.rejects(() => addRegistryTag(fsa, "bad/name"), /path separators/);
 
-  await addTag(fsa, "bx-p1", "backend-hardening");
-  await addTag(fsa, "bx-o1", "backend-hardening");
-  await addTag(fsa, "bx-o1", "backend-hardening");
+  await addTag(fsa, "cx-p1", "backend-hardening");
+  await addTag(fsa, "cx-o1", "backend-hardening");
+  await addTag(fsa, "cx-o1", "backend-hardening");
   let tent = await loadTent(fsa);
-  assert.deepEqual(tent.byId.get("bx-o1")?.tags, ["backend-hardening"]);
+  assert.deepEqual(tent.byId.get("cx-o1")?.tags, ["backend-hardening"]);
   assert.deepEqual(
-    findBoxesByTag(tent, "backend-hardening").map((box) => box.id),
-    ["bx-o1", "bx-p1"],
+    findNodesByTag(tent, "backend-hardening").map((box) => box.id),
+    ["cx-o1", "cx-p1"],
   );
 
-  await removeTag(fsa, "bx-p1", "backend-hardening");
+  await removeTag(fsa, "cx-p1", "backend-hardening");
   tent = await loadTent(fsa);
-  assert.deepEqual(findBoxesByTag(tent, "backend-hardening").map((box) => box.id), ["bx-o1"]);
+  assert.deepEqual(findNodesByTag(tent, "backend-hardening").map((box) => box.id), ["cx-o1"]);
   assert.deepEqual((await loadTagRegistry(fsa)).tags, ["alpha", "backend-hardening", "zeta"]);
 
   await removeRegistryTag(fsa, "backend-hardening");
   tent = await loadTent(fsa);
   assert.deepEqual((await loadTagRegistry(fsa)).tags, ["alpha", "zeta"]);
-  assert.deepEqual(findBoxesByTag(tent, "backend-hardening"), []);
-  assert.throws(() => findBoxesByTag(tent, "bad\ntag"), /Tag name cannot contain path separators or newlines\./);
-  assert.equal(tent.byId.get("bx-o1")?.tags.length, 0);
+  assert.deepEqual(findNodesByTag(tent, "backend-hardening"), []);
+  assert.throws(() => findNodesByTag(tent, "bad\ntag"), /Tag name cannot contain path separators or newlines\./);
+  assert.equal(tent.byId.get("cx-o1")?.tags.length, 0);
   const raw = await fs.readFile(path.join(dir, "output", "alpha仓库指针", "alpha仓库指针.md"), "utf8");
   assert.doesNotMatch(raw, /^tags:/m);
 });
 
-test("patchBox tags: auto-registers new tags; node remove keeps registry candidates", async () => {
+test("patchNode tags: auto-registers new tags; node remove keeps registry candidates", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
-  const { patchBox } = await import("../src/core/ops.js");
+  const { patchNode } = await import("../src/core/ops.js");
   const env = { fs: fsa, clock: { now: () => "t" }, tentName: "wqb" } as const;
 
   // New tag via frontmatter patch must appear in tags.json pick-list.
-  await patchBox(env as any, "prompt/表达式任务书", { tags: ["from-patch"] });
+  await patchNode(env as any, "prompt/表达式任务书", { tags: ["from-patch"] });
   assert.deepEqual((await loadTagRegistry(fsa)).tags, ["from-patch"]);
   let tent = await loadTent(fsa);
-  assert.deepEqual(tent.byId.get("bx-p1")?.tags, ["from-patch"]);
+  assert.deepEqual(tent.byId.get("cx-p1")?.tags, ["from-patch"]);
 
   // Shared tag on second node; first node drops tags — registry still keeps both.
-  await patchBox(env as any, "output/alpha仓库指针", { tags: ["from-patch", "shared"] });
+  await patchNode(env as any, "output/alpha仓库指针", { tags: ["from-patch", "shared"] });
   assert.deepEqual((await loadTagRegistry(fsa)).tags, ["from-patch", "shared"]);
-  await patchBox(env as any, "prompt/表达式任务书", { tags: [] });
+  await patchNode(env as any, "prompt/表达式任务书", { tags: [] });
   tent = await loadTent(fsa);
-  assert.deepEqual(tent.byId.get("bx-p1")?.tags, []);
-  assert.deepEqual(tent.byId.get("bx-o1")?.tags, ["from-patch", "shared"]);
+  assert.deepEqual(tent.byId.get("cx-p1")?.tags, []);
+  assert.deepEqual(tent.byId.get("cx-o1")?.tags, ["from-patch", "shared"]);
   assert.deepEqual(
     (await loadTagRegistry(fsa)).tags,
     ["from-patch", "shared"],
@@ -323,9 +323,9 @@ test("patchBox tags: auto-registers new tags; node remove keeps registry candida
 
   // Last node also clears tags — still retain registry candidates for reuse.
   await addRegistryTag(fsa, "registry-only");
-  await patchBox(env as any, "output/alpha仓库指针", { tags: [] });
+  await patchNode(env as any, "output/alpha仓库指针", { tags: [] });
   tent = await loadTent(fsa);
-  assert.deepEqual(tent.byId.get("bx-o1")?.tags, []);
+  assert.deepEqual(tent.byId.get("cx-o1")?.tags, []);
   assert.deepEqual(
     (await loadTagRegistry(fsa)).tags,
     ["from-patch", "registry-only", "shared"],
@@ -653,8 +653,8 @@ test("corrupt order registry is backed up and reset to default order", async () 
   await fs.writeFile(path.join(dir, "order.json"), "{not-json", "utf8");
 
   const warnings = await captureConsoleError(async () => {
-    const { createBox } = await import("../src/core/ops.js");
-    await createBox({
+    const { createNode } = await import("../src/core/ops.js");
+    await createNode({
       fs: fsa,
       clock: { now: () => "t" },
       tentName: "wqb",

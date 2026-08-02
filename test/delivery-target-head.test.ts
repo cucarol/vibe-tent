@@ -23,7 +23,7 @@ async function makeWorkspace(name = "target-head"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -149,8 +149,8 @@ async function mountWorkItem(
     type: "prompt",
   });
   assert.ok(!created.error, JSON.stringify(created.error));
-  const boxId = (created.result as { id: string }).id;
-  return { workspaceId, boxId };
+  const nodeId = (created.result as { nodeId: string }).nodeId;
+  return { workspaceId, nodeId };
 }
 
 /**
@@ -171,12 +171,12 @@ async function claimRunningWithBase(
   baseCommit: string;
   worktree: string;
 }> {
-  const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+  const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
   const d = await rpc(svc, "task.dispatch", {
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     workspaceId,
-    nodeIds: [boxId],
+    nodeIds: [nodeId],
     role: "executor",
     prompt: opts.prompt,
     deliveryPolicy: opts.deliveryPolicy ?? "review",
@@ -236,7 +236,7 @@ test("delivery parser: targetHead round-trip and legacy omit", async () => {
 
   const withHead = await createDelivery(fsa, clock, {
     taskId: "tk-a",
-    boxId: "cx-a",
+    sourceNodeId: "cx-a",
     role: "executor",
     summary: "with head",
     commits: ["abc123"],
@@ -253,7 +253,7 @@ test("delivery parser: targetHead round-trip and legacy omit", async () => {
 type: delivery
 id: dl-legacy01
 taskId: tk-b
-boxId: cx-b
+sourceNodeId: cx-b
 role: executor
 status: ready
 commits:

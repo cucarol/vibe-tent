@@ -1,15 +1,15 @@
 import type { LoadedTent } from "./tree.js";
 import type { FsAdapter } from "./adapter.js";
 import { loadTaskEnvelopes } from "./task.js";
-import { envelopeIsActiveOccupation, occupiedBoxesFromTasks } from "./claim.js";
+import { envelopeIsActiveOccupation, occupiedNodesFromTasks } from "./claim.js";
 import { taskDirectlyReferencesNode } from "./task-node-refs.js";
 
 /**
- * Inbox item: active task occupation on a box.
+ * Inbox item: active task occupation on a node.
  * Legacy owner-based grouping is retired; inbox is task-derived when tasks are provided.
  */
 export type InboxItem =
-  | { state: "stale"; role: string; boxPath: string; boxId: string; taskId?: string };
+  | { state: "stale"; role: string; nodePath: string; nodeId: string; taskId?: string };
 
 /**
  * Aggregate inbox from active Task envelopes.
@@ -24,19 +24,19 @@ export async function buildInbox(
     return [];
   }
   const tasks = await loadTaskEnvelopes(fs);
-  const occupied = occupiedBoxesFromTasks(tent as LoadedTent, tasks);
+  const occupied = occupiedNodesFromTasks(tent as LoadedTent, tasks);
   const items: InboxItem[] = [];
-  for (const box of occupied) {
-    if (box.invalid || box.archived) continue;
+  for (const node of occupied) {
+    if (node.invalid || node.archived) continue;
     const task = tasks.find(
-      (t) => envelopeIsActiveOccupation(t) && taskDirectlyReferencesNode(t, box.id)
+      (t) => envelopeIsActiveOccupation(t) && taskDirectlyReferencesNode(t, node.id)
     );
     if (!task) continue;
     items.push({
       state: "stale",
       role: task.role,
-      boxPath: box.path,
-      boxId: box.id,
+      nodePath: node.path,
+      nodeId: node.id,
       taskId: task.id || task.path,
     });
   }

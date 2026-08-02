@@ -1,4 +1,4 @@
-// Shared path-target normalization for concept links / rename rewrite.
+// Shared path-target normalization for Node links / rename rewrite.
 // Lives in Core so renameOps does not import markdown (keeps build:core rootDir closed).
 
 /** Decode %XX sequences when well-formed; leave raw on failure. */
@@ -12,7 +12,7 @@ function safePercentDecode(value: string): string {
 }
 
 /**
- * Normalize a link destination for concept resolution / path rewrite.
+ * Normalize a link destination for Node resolution / path rewrite.
  * Strips angle brackets, query/fragment, optional `.md`, and resolves `./` `../`
  * against the authoring note path when present.
  */

@@ -113,7 +113,7 @@ export type TaskInputItem = {
 export type ProposalItem = {
   kind: "proposal";
   path: string;
-  boxId: string;
+  nodeId: string;
   role: string;
   status: string;
   body: string;
@@ -271,7 +271,7 @@ export function normalizeProposal(raw: unknown): ProposalItem | null {
   return {
     kind: "proposal",
     path,
-    boxId: strOrEmpty(raw.boxId),
+    nodeId: strOrEmpty(raw.nodeId),
     role: strOrEmpty(raw.role),
     status,
     body: strOrEmpty(raw.body),

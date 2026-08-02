@@ -1,5 +1,5 @@
-// 结构编辑器视图:可拖拽框树 + 属性面板 + 顶栏收件箱下拉。
-// 一切动作落盘 = 文件夹操作 + frontmatter 改写。单框改动增量重载,结构改动全量刷新。
+// 结构编辑器视图:可拖拽 Node 树 + 属性面板 + 顶栏收件箱下拉。
+// 一切动作落盘 = 文件夹操作 + frontmatter 改写。单 Node 改动增量重载,结构改动全量刷新。
 
 import { ItemView, WorkspaceLeaf, Menu, Notice, TFile, normalizePath, setIcon, FileSystemAdapter } from "obsidian";
 import * as nodePath from "node:path";
@@ -7,13 +7,13 @@ import type TentPlugin from "./main.js";
 import { ObsidianFs, SystemClock } from "./obsidian-fs.js";
 import { typeColorValue } from "./colors.js";
 import { loadTagRegistry, addTag, removeTag, removeRegistryTag } from "../core/tags.js";
-import { loadTent, LoadedTent, boxNotePath, reloadLoadedBox } from "../core/tree.js";
-import { Box } from "../core/types.js";
+import { loadTent, LoadedTent, nodeNotePath, reloadLoadedNode } from "../core/tree.js";
+import { Node } from "../core/types.js";
 import { splitType, joinType } from "../core/typeRegistry.js";
 import { loadRolesRegistry } from "../core/skillRoleRegistry.js";
 import type { RoleDefinition } from "../core/skillRoleRegistry.js";
 import { canClaim, isFrozen } from "../core/claim.js";
-import { taskDirectlyReferencesNode } from "../core/task-node-refs.js";
+import { taskDirectlyReferencesNode, taskReferencedNodeIds } from "../core/task-node-refs.js";
 import { buildInbox, InboxItem } from "../core/inbox.js";
 import { loadDeliveries, type DeliveryRecord } from "../core/delivery.js";
 import { acceptProposal, loadProposals, rejectProposal, type Proposal } from "../core/proposal.js";
@@ -57,10 +57,10 @@ import {
   cancelPendingTask,
   dispatch,
   forceRelease,
-  createBox,
-  placeBox,
+  createNode,
+  placeNode,
   DropPosition,
-  patchBox,
+  patchNode,
   patchBody,
   adoptCopiedSubtree,
 } from "../core/ops.js";
@@ -85,7 +85,7 @@ export class TentView extends ItemView {
   private collapsed = new Set<string>();
   private selectedSystem: "temp" | null = null;
   private bottomTab: "note" | "dispatch" | "triage" = "note";
-  // 左树热切换:全部 / 只看有待处理(proposal、owner 或待投递 task)的框
+  // 左树热切换:全部 / 只看有待处理(proposal、owner 或待投递 Task)的 Node
   private treeFilter: "all" | "pending" = "all";
   private registryUi = createRegistryPaneState();
   private colRatio = 0.58;
@@ -100,7 +100,7 @@ export class TentView extends ItemView {
   private pendingDelete: string | null = null;
   private roles: RoleDefinition[] = [];
   private registryTags: string[] = [];
-  // 每个 box 的 pending proposal 数；Delivery / 待投递 task 在 boxTriageCount 合并。
+  // 每个 Node 的 pending proposal 数；Delivery / 待投递 Task 在 triage 计数中合并。
   private pendingByTarget: Map<string, number> = new Map();
   private loadError: string | null = null;
   private refreshTimer: number | null = null;
@@ -251,9 +251,9 @@ export class TentView extends ItemView {
     this.pendingDispatchItems = pendingDispatches(this.tasks);
     const byBox = new Map<string, PendingDispatch[]>();
     for (const item of this.pendingDispatchItems) {
-      const current = byBox.get(item.boxId) ?? [];
+      const current = byBox.get(item.nodeId) ?? [];
       current.push(item);
-      byBox.set(item.boxId, current);
+      byBox.set(item.nodeId, current);
     }
     this.pendingDispatchByBox = byBox;
   }
@@ -275,18 +275,18 @@ export class TentView extends ItemView {
       try {
         await adoptCopiedSubtree(this.env(), path);
       } catch (error) {
-        if (!(error instanceof Error) || !error.message.startsWith("Copied box not found")) throw error;
+        if (!(error instanceof Error) || !error.message.startsWith("Copied node not found")) throw error;
       }
     }
   }
 
-  private async patchBoxIncremental(box: Box, patch: Record<string, unknown>) {
+  private async patchNodeIncremental(box: Node, patch: Record<string, unknown>) {
     if (!this.tent) return;
-    const notePath = normalizePath(`${this.tentRootPath()}/${boxNotePath(box.path)}`);
+    const notePath = normalizePath(`${this.tentRootPath()}/${nodeNotePath(box.path)}`);
     this.ignoredVaultChanges.set(notePath, Date.now() + 2000);
     try {
-      await patchBox(this.env(), box.path, patch, this.tent);
-      await reloadLoadedBox(this.env().fs, this.tent, box.path);
+      await patchNode(this.env(), box.path, patch, this.tent);
+      await reloadLoadedNode(this.env().fs, this.tent, box.path);
       this.draw();
     } catch (error) {
       this.ignoredVaultChanges.delete(notePath);
@@ -294,13 +294,13 @@ export class TentView extends ItemView {
     }
   }
 
-  private async patchBodyIncremental(box: Box, body: string) {
+  private async patchBodyIncremental(box: Node, body: string) {
     if (!this.tent) return;
-    const notePath = normalizePath(`${this.tentRootPath()}/${boxNotePath(box.path)}`);
+    const notePath = normalizePath(`${this.tentRootPath()}/${nodeNotePath(box.path)}`);
     this.ignoredVaultChanges.set(notePath, Date.now() + 2000);
     try {
       await patchBody(this.env(), box.path, body, this.tent);
-      await reloadLoadedBox(this.env().fs, this.tent, box.path);
+      await reloadLoadedNode(this.env().fs, this.tent, box.path);
       this.draw();
     } catch (error) {
       this.ignoredVaultChanges.delete(notePath);
@@ -521,18 +521,18 @@ export class TentView extends ItemView {
       this.drawNode(rows, r, 0);
     }
     if (this.treeFilter !== "pending") {
-      // 底部:新建顶层框(整宽虚线行;展开时为内联表单)
+      // 底部:新建顶层 Node(整宽虚线行;展开时为内联表单)
       if (this.newBoxParentPath === "") {
         this.drawInlineNewBoxForm(rows, "");
       } else {
         const addRow = rows.createDiv({ cls: "tent-add-top" });
         setIcon(addRow.createSpan({ cls: "tent-add-top-ico" }), "plus");
-        addRow.createSpan({ cls: "tent-add-top-label", text: "新建顶层框" });
+        addRow.createSpan({ cls: "tent-add-top-label", text: "新建顶层节点" });
         addRow.onclick = () => this.openNewBoxForm("");
       }
       this.drawTempSystem(rows);
     } else if (!rows.hasChildNodes()) {
-      rows.createDiv({ cls: "tent-prop-empty", text: "没有待处理的框" });
+      rows.createDiv({ cls: "tent-prop-empty", text: "没有待处理的节点" });
     }
     this.wireDragDelegation(rows);
   }
@@ -556,20 +556,20 @@ export class TentView extends ItemView {
     mk("pending", "待处理");
   }
 
-  private boxHasPending(box: Box): boolean {
+  private boxHasPending(box: Node): boolean {
     return hasTreePending({
       pendingProposals: this.pendingByTarget.get(box.id) ?? 0,
       pendingDispatches: this.pendingDispatchByBox.get(box.id)?.length ?? 0,
     });
   }
 
-  private subtreeHasPending(box: Box): boolean {
+  private subtreeHasPending(box: Node): boolean {
     if (this.boxHasPending(box)) return true;
     return box.children.some((c) => this.subtreeHasPending(c));
   }
 
   // 拖拽事件委托到行容器:根除子元素反复触发 dragover/dragleave 的闪烁。
-  // 落点三段:上缘=插到前面(同级换序)/ 中段=成为子框(换爹)/ 下缘=插到后面。
+  // 落点三段:上缘=插到前面(同级换序)/ 中段=成为子 Node(换爹)/ 下缘=插到后面。
   private wireDragDelegation(rows: HTMLElement) {
     const ZONE_CLS = ["tent-drop-before", "tent-drop-inside", "tent-drop-after"];
     const clearHover = () => {
@@ -600,7 +600,7 @@ export class TentView extends ItemView {
           if (invalid(parentOfBox)) return null;
           return { zone: "after", row, parentPath: parentOfBox, position: { mode: "after", siblingId: box.id } };
         }
-        if (invalid(box.path)) return null; // 中段=成为它的子框
+        if (invalid(box.path)) return null; // 中段=成为它的子 Node
         return { zone: "inside", row, parentPath: box.path, position: { mode: "inside" } };
       }
       if (row?.dataset.system === "temp") return null;
@@ -628,7 +628,7 @@ export class TentView extends ItemView {
       this.draggedPath = null;
       if (!intent) return;
       try {
-        await placeBox(this.env(), from, intent.parentPath, intent.position);
+        await placeNode(this.env(), from, intent.parentPath, intent.position);
         await this.refresh();
       } catch (err) {
         new Notice("移动失败:" + (err instanceof Error ? err.message : err));
@@ -645,14 +645,14 @@ export class TentView extends ItemView {
 
   private drawNode(
     parent: HTMLElement,
-    box: Box,
+    box: Node,
     depth: number
   ) {
-    // 待处理过滤:本框及子孙都无待处理则整支不渲染
+    // 待处理过滤:本 Node 及子孙都无待处理则整支不渲染
     if (this.treeFilter === "pending" && !this.subtreeHasPending(box)) return;
     // 嵌套容器:wrapper 包住 row + children。
-    // 顶层 = 框(zone);goal/prompt/output 着各自色,
-    // 其它顶层 = custom。深层有子级的容器框 = 更浅的子框。
+    // 顶层 = Node(zone);goal/prompt/output 着各自色,
+    // 其它顶层 = custom。深层有子级的容器 Node 使用更浅的层级色。
     const wrap = parent.createDiv({ cls: "tent-box" });
     const isTop = depth === 0;
     const hasKids = box.children.length > 0;
@@ -673,10 +673,10 @@ export class TentView extends ItemView {
     if (box.archived) row.addClass("tent-node-archived"); // 归档态划线
     if (box.invalid) {
       row.addClass("tent-node-invalid");
-      tentTooltip(row, box.invalidReason || "失效框");
+      tentTooltip(row, box.invalidReason || "失效节点");
     }
     const frozen = isFrozen(box);
-    // 待处理过滤态强制展开,保证能看到深处待处理框的路径
+    // 待处理过滤态强制展开,保证能看到深处待处理 Node 的路径
     const isCollapsed = this.treeFilter === "pending" ? false : this.collapsed.has(box.id);
 
     // 折叠箭头(有子级才有);无子级占位对齐
@@ -709,7 +709,7 @@ export class TentView extends ItemView {
     // 拖拽手柄去掉(整行仍可拖);锁定不再单独标注 —— 唯一锁定逻辑是 role 占用,已由一级 role 徽章表达
     row.createSpan({ cls: "tent-name", text: box.name });
 
-    // 名字后:type / role 标记。聚焦框显示；树内显隐标记可让匹配项常驻。
+    // 名字后:type / role 标记。聚焦 Node 显示；树内显隐标记可让匹配项常驻。
     const split = splitType(box.type);
     const showType =
       this.registryUi.markedTypes.has(box.type) ||
@@ -752,7 +752,7 @@ export class TentView extends ItemView {
     const slot = row.createSpan({ cls: "tent-slot" });
     const rest = slot.createSpan({ cls: "tent-slot-rest" });
 
-    // 待裁数字角标(指向该 box 的待处理项数)
+    // 待裁数字角标(指向该 Node 的待处理项数)
     const pend = visibleTreeCount(box, isCollapsed, (item) => this.boxTriageCount(item));
     if (pend > 0) {
       const nb = rest.createSpan({ cls: "tent-slot-notif", text: String(pend) });
@@ -764,7 +764,7 @@ export class TentView extends ItemView {
       const pill = rest.createSpan({ cls: "tent-slot-status tent-spill tent-spill-invalid" });
       const ico = pill.createSpan();
       setIcon(ico, "triangle-alert");
-      tentTooltip(pill, box.invalidReason || "失效框");
+      tentTooltip(pill, box.invalidReason || "失效节点");
     }
 
     // 操作键(hover/选中时显示):根据节点状态显示不同操作
@@ -788,8 +788,8 @@ export class TentView extends ItemView {
             }
             const root = this.requireExplicitArchiveRoot(box, "恢复");
             if (!root) return;
-            const { restoreBox } = await import("../core/ops.js");
-            await restoreBox(this.env(), root.id);
+            const { restoreNode } = await import("../core/ops.js");
+            await restoreNode(this.env(), root.id);
             await this.refresh();
             new Notice(`已恢复「${root.name}」`);
           } catch (err) {
@@ -797,7 +797,7 @@ export class TentView extends ItemView {
           }
         });
 
-        const deleteKey = `box:${box.id}`;
+        const deleteKey = `node:${box.id}`;
         const deletePending = this.pendingDelete === deleteKey;
         const deleteBtn = ops.createSpan({ cls: "tent-slot-btn tent-slot-delete" + (deletePending ? " is-confirm" : "") });
         if (deletePending) deleteBtn.setText("确认删除");
@@ -812,10 +812,10 @@ export class TentView extends ItemView {
           }
           const root = this.requireExplicitArchiveRoot(box, "删除");
           if (!root) return;
-          const key = `box:${root.id}`;
+          const key = `node:${root.id}`;
           if (this.pendingDelete === key) {
-            const { deleteArchivedBox } = await import("../core/ops.js");
-            await deleteArchivedBox(this.env(), root.id);
+            const { deleteArchivedNode } = await import("../core/ops.js");
+            await deleteArchivedNode(this.env(), root.id);
             await this.refresh();
             new Notice(`已删除「${root.name}」`);
             return;
@@ -838,8 +838,8 @@ export class TentView extends ItemView {
             return;
           }
           try {
-            const { archiveBox } = await import("../core/ops.js");
-            await archiveBox(this.env(), box.id);
+            const { archiveNode } = await import("../core/ops.js");
+            await archiveNode(this.env(), box.id);
             await this.refresh();
             new Notice(`已归档「${box.name}」`);
           } catch (err) {
@@ -849,7 +849,7 @@ export class TentView extends ItemView {
 
         const plus = ops.createSpan({ cls: "tent-slot-btn tent-slot-plus" });
         setIcon(plus, "plus");
-        tentTooltip(plus, "新建子框");
+        tentTooltip(plus, "新建子节点");
         plus.addEventListener("click", (e) => {
           e.stopPropagation();
           e.preventDefault();
@@ -893,7 +893,7 @@ export class TentView extends ItemView {
     };
   }
 
-  private nodeMenu(e: MouseEvent, box: Box) {
+  private nodeMenu(e: MouseEvent, box: Node) {
     e.preventDefault();
     const menu = new Menu();
 
@@ -952,7 +952,7 @@ export class TentView extends ItemView {
       const structureBlocked = hasActiveOwnerInScope(box);
       menu.addItem((i) =>
         i
-          .setTitle("新建子框")
+          .setTitle("新建子节点")
           .setIcon("folder-plus")
           .setDisabled(structureBlocked)
           .onClick(() => this.openNewBoxForm(box.path))
@@ -964,8 +964,8 @@ export class TentView extends ItemView {
           .setDisabled(structureBlocked)
           .onClick(async () => {
             try {
-              const { archiveBox } = await import("../core/ops.js");
-              await archiveBox(this.env(), box.id);
+              const { archiveNode } = await import("../core/ops.js");
+              await archiveNode(this.env(), box.id);
               await this.refresh();
               new Notice(`已归档「${box.name}」`);
             } catch (err) {
@@ -989,7 +989,7 @@ export class TentView extends ItemView {
     }
     const box = this.selectedId ? this.tent!.byId.get(this.selectedId) : null;
     if (!box) {
-      el.createDiv({ cls: "tent-prop-empty", text: "选一个框查看 / 编辑属性" });
+      el.createDiv({ cls: "tent-prop-empty", text: "选择一个节点以查看或编辑属性" });
       return;
     }
 
@@ -1010,7 +1010,7 @@ export class TentView extends ItemView {
 
     const reg = this.tent!.typeRegistry;
 
-    // 二级编辑区(展开才显):扁平行,无组卡底框
+    // 二级编辑区(展开才显):扁平行,无组卡底边
     if (this.propEditExpanded) {
       const editor = card.createDiv({ cls: "tent-prop-editor" });
 
@@ -1019,7 +1019,7 @@ export class TentView extends ItemView {
       const bases = Object.keys(reg).filter((n) => reg[n].tier !== "modifier");
       const mods = Object.keys(reg).filter((n) => reg[n].tier === "modifier");
       const applyType = async (b: string, m: string) => {
-        await this.patchBoxIncremental(box, { type: joinType(b, m || undefined) });
+        await this.patchNodeIncremental(box, { type: joinType(b, m || undefined) });
       };
       const tItem = editor.createDiv({ cls: "tent-prop-item tent-type-item" });
       tItem.createSpan({ cls: "tent-item-label", text: "type" });
@@ -1048,7 +1048,7 @@ export class TentView extends ItemView {
     this.drawBottom(card, box);
   }
 
-  private async dispatchBox(box: Box, roleName: string, userPrompt: string) {
+  private async dispatchNode(box: Node, roleName: string, userPrompt: string) {
     const workspacePath = this.tent ? resolveTentWorkspace(this.tent) : undefined;
     const workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, roleName) : undefined;
     return dispatch(this.env(), box.id, roleName, {
@@ -1065,7 +1065,7 @@ export class TentView extends ItemView {
     return nodePath.join(adapter.getBasePath(), this.tentRootPath());
   }
 
-  private requireExplicitArchiveRoot(box: Box, action: "恢复" | "删除"): Box | null {
+  private requireExplicitArchiveRoot(box: Node, action: "恢复" | "删除"): Node | null {
     const root = this.findExplicitArchiveRoot(box);
     if (!root) {
       new Notice(`无法${action}:找不到显式归档根`);
@@ -1081,8 +1081,8 @@ export class TentView extends ItemView {
     return root;
   }
 
-  private findExplicitArchiveRoot(box: Box): Box | null {
-    let cur: Box | null = box;
+  private findExplicitArchiveRoot(box: Node): Node | null {
+    let cur: Node | null = box;
     while (cur) {
       if (cur.fm.mode === "archived") return cur;
       cur = cur.parent;
@@ -1090,8 +1090,8 @@ export class TentView extends ItemView {
     return null;
   }
 
-  // tags 行:当前 tag chips(读 box.fm.tags)+ 末尾 ＋,＋ 内联展开挑选区
-  private drawTagsRow(el: HTMLElement, box: Box) {
+  // tags 行:当前 tag chips(读 Node frontmatter tags)+ 末尾 ＋,＋ 内联展开挑选区
+  private drawTagsRow(el: HTMLElement, box: Node) {
     // tags 行(style-a):标签 + 已选 chip(实线,× 删)+ 右侧 +tag/收起 触发器
     const item = el.createDiv({ cls: "tent-prop-item-tags" });
     item.createSpan({ cls: "tent-item-label", text: "tags" });
@@ -1126,8 +1126,8 @@ export class TentView extends ItemView {
     };
   }
 
-  // 展开挑选器(图二):已登记但本框没有的 tag 列成虚线 chip(点即加)+ 新建输入
-  private drawTagPicker(host: HTMLElement, box: Box) {
+  // 展开挑选器(图二):已登记但本 Node 没有的 tag 列成虚线 chip(点即加)+ 新建输入
+  private drawTagPicker(host: HTMLElement, box: Node) {
     const current = box.fm.tags ?? [];
     const candidates = this.registryTags.filter((t) => !current.includes(t));
     const picker = host.createDiv({ cls: "tent-tag-picker" });
@@ -1150,7 +1150,7 @@ export class TentView extends ItemView {
             new Notice("删除失败:" + (err instanceof Error ? err.message : err));
           }
         };
-        // 点 chip 本体 = 加到本框;确认删除态下二次点击执行删除
+        // 点 chip 本体 = 加到本 Node;确认删除态下二次点击执行删除
         chip.onclick = async (e) => {
           e.preventDefault();
           if (pending) {
@@ -1165,7 +1165,7 @@ export class TentView extends ItemView {
           }
         };
         if (!pending) {
-          // x = 从注册表删除(两步:先变确认态,再点确认删除级联剥除所有框)
+          // x = 从注册表删除(两步:先变确认态,再点确认删除级联剥除所有 Node)
           const x = chip.createEl("i", { cls: "tent-tag-chip-del" });
           setIcon(x, "x");
           tentTooltip(x, `从注册表删除 #${tag}`);
@@ -1208,14 +1208,14 @@ export class TentView extends ItemView {
 
   // status 小圆 chip:与左树同套 icon,色随状态。todo 用空心圈(仅面板,左树不显 todo)。
   // 底部:左上 笔记/派活/待裁 tab 切内容,右上对应动作键
-  private drawBottom(el: HTMLElement, box: Box) {
+  private drawBottom(el: HTMLElement, box: Node) {
     const wrap = el.createDiv({ cls: "tent-bottom" });
     const head = wrap.createDiv({ cls: "tent-bottom-head" });
     const tabs = head.createDiv({ cls: "tent-bottom-tabs" });
     const counts = bottomTabCounts({
       pendingDispatches: this.pendingDispatchByBox.get(box.id)?.length ?? 0,
       pendingProposals: this.pendingProposalsForBox(box.id).length,
-      readyReports: this.readyDeliveriesForBox(box.id).length,
+      readyReports: this.readyDeliveriesForNode(box.id).length,
     });
     const mkTab = (key: "note" | "dispatch" | "triage", label: string, count = 0) => {
       const t = tabs.createDiv({ cls: "tent-bottom-tab" + (this.bottomTab === key ? " is-active" : "") });
@@ -1244,9 +1244,9 @@ export class TentView extends ItemView {
     }
   }
 
-  private boxTriageCount(box: Box): number {
+  private boxTriageCount(box: Node): number {
     const proposals = this.pendingProposalsForBox(box.id).length;
-    const deliveries = this.readyDeliveriesForBox(box.id).length;
+    const deliveries = this.readyDeliveriesForNode(box.id).length;
     const dispatches = this.pendingDispatchByBox.get(box.id)?.length ?? 0;
     return proposals + deliveries + dispatches;
   }
@@ -1255,29 +1255,31 @@ export class TentView extends ItemView {
     return this.deliveries.filter((d) => d.status === "ready");
   }
 
-  private readyDeliveriesForBox(boxId: string): DeliveryRecord[] {
-    return this.readyDeliveries().filter((d) => d.boxId === boxId);
+  private readyDeliveriesForNode(nodeId: string): DeliveryRecord[] {
+    return this.readyDeliveries().filter((delivery) => {
+      const task = this.taskForDelivery(delivery);
+      return task ? taskReferencedNodeIds(task).includes(nodeId) : false;
+    });
   }
 
-  private rejectedDeliveryForBox(boxId: string): DeliveryRecord | undefined {
-    return this.deliveries.find((d) => d.boxId === boxId && d.status === "rejected");
+  private rejectedDeliveryForNode(nodeId: string): DeliveryRecord | undefined {
+    return this.deliveries.find((delivery) => {
+      if (delivery.status !== "rejected") return false;
+      const task = this.taskForDelivery(delivery);
+      return task ? taskReferencedNodeIds(task).includes(nodeId) : false;
+    });
   }
 
   private taskForDelivery(delivery: DeliveryRecord): TaskEnvelope | undefined {
-    return this.tasks.find(
-      (t) =>
-        t.id === delivery.taskId ||
-        t.path === delivery.taskId ||
-        t.activeDeliveryId === delivery.id
-    );
+    return this.tasks.find((task) => task.id === delivery.taskId);
   }
 
   // 待裁 tab:pending proposal + Delivery 完成待确认(中断释放 / 确认完成)
-  private drawTriageInline(body: HTMLElement, actSlot: HTMLElement, box: Box) {
+  private drawTriageInline(body: HTMLElement, actSlot: HTMLElement, box: Node) {
     const proposals = this.pendingProposalsForBox(box.id);
-    const delivery = this.readyDeliveriesForBox(box.id)[0];
-    const rejectedDelivery = this.rejectedDeliveryForBox(box.id);
-    // Always offer force-release of active tasks for the box (no FM owner gate).
+    const delivery = this.readyDeliveriesForNode(box.id)[0];
+    const rejectedDelivery = this.rejectedDeliveryForNode(box.id);
+    // Always offer force-release of active Tasks for the Node (no frontmatter owner gate).
     {
       const releasePending = this.pendingDelete === `release:${box.id}`;
       const rel = actSlot.createEl("button", {
@@ -1457,14 +1459,14 @@ export class TentView extends ItemView {
     return this.proposals.filter((proposal) => proposal.status === "pending");
   }
 
-  private pendingProposalsForBox(boxId: string): Proposal[] {
-    return this.pendingProposals().filter((proposal) => proposal.boxId === boxId);
+  private pendingProposalsForBox(nodeId: string): Proposal[] {
+    return this.pendingProposals().filter((proposal) => proposal.nodeId === nodeId);
   }
 
   private countPendingProposalsByBox(): Map<string, number> {
     const counts = new Map<string, number>();
     for (const proposal of this.pendingProposals()) {
-      counts.set(proposal.boxId, (counts.get(proposal.boxId) ?? 0) + 1);
+      counts.set(proposal.nodeId, (counts.get(proposal.nodeId) ?? 0) + 1);
     }
     return counts;
   }
@@ -1487,7 +1489,7 @@ export class TentView extends ItemView {
   }
 
   // 派活内联:表单常驻；下方显示当前投递状态。
-  private drawDispatchInline(body: HTMLElement, actSlot: HTMLElement, box: Box) {
+  private drawDispatchInline(body: HTMLElement, actSlot: HTMLElement, box: Node) {
     const pendingDispatch = this.pendingDispatchByBox.get(box.id)?.[0];
 
     body.createDiv({ cls: "tent-dispatch-sec", text: "派活表单" });
@@ -1541,7 +1543,7 @@ export class TentView extends ItemView {
         return;
       }
       try {
-        const r = await this.dispatchBox(box, roleName, localPrompt);
+        const r = await this.dispatchNode(box, roleName, localPrompt);
         if (this.plugin.settings.dispatchPrefs.copyPromptToClipboard) {
           await navigator.clipboard.writeText(r.relayPrompt);
           new Notice("已派活。已复制接力 prompt,去目标 agent 会话粘贴。", 6000);
@@ -1599,9 +1601,7 @@ export class TentView extends ItemView {
           (t.state === "running" ||
             t.state === "waiting" ||
             t.state === "delivered" ||
-            t.state === "queued" ||
-            t.status === "pending" ||
-            t.status === "taken") &&
+            t.state === "queued") &&
           t.contextCard != null &&
           taskDirectlyReferencesNode(t, box.id)
       );
@@ -1610,7 +1610,7 @@ export class TentView extends ItemView {
         const state = body.createDiv({ cls: "tent-content-intro tent-dispatch-status-item is-stacked" });
         state.createDiv({
           cls: "tent-content-title",
-          text: `${activeTask.role} 正在处理此框`,
+          text: `${activeTask.role} 正在处理此节点`,
         });
         state.createDiv({ cls: "tent-content-meta", text: "可在「待裁」中查看交付或中断任务" });
       }
@@ -1618,13 +1618,13 @@ export class TentView extends ItemView {
   }
 
   // 正文:可编辑 textarea,blur 落盘。支持拖 Obsidian 文件进来转成帐根相对路径。
-  private drawNote(el: HTMLElement, box: Box) {
+  private drawNote(el: HTMLElement, box: Node) {
     const intro = el.createDiv({ cls: "tent-content-intro" });
     intro.createDiv({ cls: "tent-content-title", text: "笔记正文" });
     intro.createDiv({
       cls: "tent-content-meta",
       text: !box.invalid && !box.archived
-        ? "派活时作为此框上下文提供给 agent"
+        ? "派活时作为此节点上下文提供给 Agent"
         : "无效或已封存节点不可进入协作",
     });
     const ta = el.createEl("textarea", { cls: "tent-notebox" });
@@ -1707,14 +1707,14 @@ export class TentView extends ItemView {
     create.setAttr("type", "button");
     create.onclick = async () => {
       if (!state.name) {
-        new Notice("请填写框名");
+        new Notice("请填写节点名称");
         return;
       }
       const type = joinType(state.base, state.modifier || undefined);
-      await createBox(this.env(), { parentPath, name: state.name, type });
+      await createNode(this.env(), { parentPath, name: state.name, type });
       this.newBoxParentPath = null;
       await this.refresh();
-      new Notice(`已建框「${state.name}」`);
+      new Notice(`已创建节点「${state.name}」`);
     };
     const cancel = row.createEl("button", { text: "取消" });
     cancel.setAttr("type", "button");
@@ -1726,7 +1726,7 @@ export class TentView extends ItemView {
     nameInput.focus();
   }
 
-  private async requestForceRelease(box: Box) {
+  private async requestForceRelease(box: Node) {
     const key = `release:${box.id}`;
     if (this.pendingDelete === key) {
       this.pendingDelete = null;
@@ -1770,8 +1770,8 @@ export class TentView extends ItemView {
 
   // ---- 打开文件 ----
 
-  private async openBoxFile(box: Box) {
-    await this.openVaultFile(boxNotePath(box.path));
+  private async openBoxFile(box: Node) {
+    await this.openVaultFile(nodeNotePath(box.path));
   }
   private async openVaultFile(tentRelPath: string, retryMs = 0) {
     const vaultPath = normalizePath(`${this.tentRootPath()}/${tentRelPath}`);

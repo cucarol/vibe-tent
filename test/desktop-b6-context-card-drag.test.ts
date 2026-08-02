@@ -12,7 +12,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { test } from "node:test";
 import {
-  boxContextCard,
+  nodeContextCard,
   contextCardToDragText,
   parseContextCardText,
 } from "../src/core/context-card.js";
@@ -83,7 +83,7 @@ function mockElement() {
 }
 
 test("contextCardToDragText payload is full v1 pointer prompt (no snapshot body)", () => {
-  const card = boxContextCard("cx-b6-1", "inbox/goal", {
+  const card = nodeContextCard("cx-b61", "inbox/goal", {
     label: "goal card",
     tentRootHint: "C:\\\\tents\\\\demo",
   });
@@ -91,7 +91,7 @@ test("contextCardToDragText payload is full v1 pointer prompt (no snapshot body)
 
   assert.equal(text, card.prompt);
   assert.match(text, /^Tent contextCard v1\n/);
-  assert.match(text, /contextRef: box\/cx-b6-1/);
+  assert.match(text, /contextRef: node\/cx-b61/);
   assert.match(text, /path: inbox\/goal/);
   assert.match(text, /systemRoot: C:\\\\tents\\\\demo/);
   assert.match(text, /tentRoot: C:\\\\tents\\\\demo/);
@@ -102,13 +102,13 @@ test("contextCardToDragText payload is full v1 pointer prompt (no snapshot body)
   assert.doesNotMatch(text, /snapshot|full body|BEGIN CONTENT|```/i);
 
   const parsed = parseContextCardText(text);
-  assert.equal(parsed?.kind, "box");
-  assert.equal(parsed?.id, "cx-b6-1");
+  assert.equal(parsed?.kind, "node");
+  assert.equal(parsed?.id, "cx-b61");
   assert.equal(parsed?.path, "inbox/goal");
 });
 
 test("applyContextCardDragStart writes only text/plain with full payload", () => {
-  const card = boxContextCard("cx-drag", "p/a");
+  const card = nodeContextCard("cx-drag", "p/a");
   const text = contextCardToDragText(card);
   const dt = mockDataTransfer();
 
@@ -128,7 +128,7 @@ test("applyContextCardDragStart is a no-op when DataTransfer is missing", () => 
 });
 
 test("bindContextCardDrag: dragstart sets text/plain and never calls clipboard", () => {
-  const text = contextCardToDragText(boxContextCard("cx-bind", "box/path", { label: "L" }));
+  const text = contextCardToDragText(nodeContextCard("cx-bind", "node/path", { label: "L" }));
   const el = mockElement();
   let clipboardCalls = 0;
 
@@ -156,7 +156,7 @@ dataTransfer: dt });
 });
 
 test("bindContextCardDrag: click may copy as auxiliary path only", async () => {
-  const text = contextCardToDragText(boxContextCard("cx-click", "c"));
+  const text = contextCardToDragText(nodeContextCard("cx-click", "c"));
   const el = mockElement();
   const copied: string[] = [];
 

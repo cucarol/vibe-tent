@@ -1,4 +1,4 @@
-// Markdown / Concept desktop workspace (B3) — public surface.
+// Markdown / Node desktop workspace (B3) — public surface.
 
 export type { DocsClient } from "./docs-client.js";
 export { CoreDocsClient } from "./core-docs-client.js";
@@ -28,7 +28,7 @@ export {
   extractOutLinksDetailed,
   buildBacklinkIndex,
   resolveOutLink,
-  indexFromBoxes,
+  indexFromNodes,
   normalizeTarget,
   type ExtractedOutLink,
   type OutLinkMeta,
@@ -49,8 +49,8 @@ export {
 } from "./preview-server.js";
 export type {
   ArtifactRef,
-  ConceptProjection,
-  ConceptEditSnapshot,
+  NodeProjection,
+  NodeEditSnapshot,
   DocsWriteInput,
   DocsWriteResult,
   CreateNoteInput,

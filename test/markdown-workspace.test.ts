@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { scaffoldTent } from "../src/core/scaffold.js";
-import { createBox, dispatch, taskAck } from "../src/core/ops.js";
+import { createNode, dispatch, taskAck } from "../src/core/ops.js";
 import { loadTent } from "../src/core/tree.js";
 import { contentEtag } from "../src/markdown/etag.js";
 import { CoreDocsClient } from "../src/markdown/core-docs-client.js";
@@ -24,7 +24,7 @@ import { fromMarkdown } from "mdast-util-from-markdown";
 import { renderMarkdownToHtml } from "../src/markdown/render.js";
 import { WorkspaceController } from "../src/markdown/workspace-controller.js";
 import { startMarkdownPreviewServer } from "../src/markdown/preview-server.js";
-import { boxNotePath } from "../src/core/tree.js";
+import { nodeNotePath } from "../src/core/tree.js";
 
 async function makeEnv() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-md-"));
@@ -67,22 +67,22 @@ test("CoreDocsClient: list excludes temp; create/read/write/search", async () =>
   const { env, fsa } = await makeEnv();
   const docs = new CoreDocsClient(env as any);
 
-  await fsa.mkdir("temp/role/tasks");
-  await fsa.writeFile("temp/role/tasks/task.md", "---\ntype: task\n---\nsecret\n");
+  await fsa.mkdir("temp/role/notes");
+  await fsa.writeFile("temp/role/notes/private.md", "secret\n");
 
   const note = await docs.createNote({ name: "ideas", type: "prompt", body: "# ideas\nlink [[ideas]]\n" });
-  assert.match(note.cx, /^cx-/);
+  assert.match(note.nodeId, /^cx-/);
 
   const tree = await docs.list();
   assert.equal(tree.some((n) => n.path === "ideas"), true);
   assert.equal(tree.some((n) => n.path.startsWith("temp")), false);
 
-  const edit = await docs.readForEdit(note.cx);
-  assert.equal(edit.cx, note.cx);
+  const edit = await docs.readForEdit(note.nodeId);
+  assert.equal(edit.nodeId, note.nodeId);
   assert.ok(edit.etag);
 
   const bad = await docs.write({
-    cx: note.cx,
+    nodeId: note.nodeId,
     baseEtag: "deadbeefdeadbeefdeadbeef",
     body: "nope",
   });
@@ -90,13 +90,13 @@ test("CoreDocsClient: list excludes temp; create/read/write/search", async () =>
   if (!bad.ok) assert.equal(bad.code, "etag_conflict");
 
   const nextRaw = edit.raw.replace("# ideas", "# ideas v2");
-  const ok = await docs.write({ cx: note.cx, baseEtag: edit.etag, raw: nextRaw });
+  const ok = await docs.write({ nodeId: note.nodeId, baseEtag: edit.etag, raw: nextRaw });
   assert.equal(ok.ok, true);
 
   const hits = await docs.search("ideas v2");
-  assert.ok(hits.some((h) => h.cx === note.cx));
+  assert.ok(hits.some((h) => h.nodeId === note.nodeId));
 
-  const after = await docs.get(note.cx);
+  const after = await docs.get(note.nodeId);
   assert.equal(after?.type, "prompt");
   assert.equal(after?.invalid, false);
   assert.equal(after?.archived, false);
@@ -110,26 +110,26 @@ test("CoreDocsClient: active task protects collab fields on write", async () => 
     "roles.json",
     JSON.stringify({ roles: [{ name: "executor" }] }, null, 2) + "\n"
   );
-  const boxId = await createBox(env as any, { parentPath: "", name: "work", type: "goal" });
-  const dispatched = await dispatch(env as any, boxId, "executor", "do the work");
+  const nodeId = await createNode(env as any, { parentPath: "", name: "work", type: "goal" });
+  const dispatched = await dispatch(env as any, nodeId, "executor", "do the work");
   await taskAck(env as any, dispatched.taskPath);
 
   const docs = new CoreDocsClient(env as any);
-  const edit = await docs.readForEdit(boxId);
-  const { parseFrontmatter, serializeFrontmatter, BOX_FRONTMATTER_KEY_ORDER } = await import(
+  const edit = await docs.readForEdit(nodeId);
+  const { parseFrontmatter, serializeFrontmatter, NODE_FRONTMATTER_KEY_ORDER } = await import(
     "../src/core/frontmatter.js"
   );
   const { data, body, keyOrder } = parseFrontmatter(edit.raw);
   data.status = "done";
-  const raw = serializeFrontmatter(data, body, keyOrder.length ? keyOrder : BOX_FRONTMATTER_KEY_ORDER);
-  const result = await docs.write({ cx: boxId, baseEtag: edit.etag, raw });
+  const raw = serializeFrontmatter(data, body, keyOrder.length ? keyOrder : NODE_FRONTMATTER_KEY_ORDER);
+  const result = await docs.write({ nodeId: nodeId, baseEtag: edit.etag, raw });
   assert.equal(result.ok, false);
   if (!result.ok) assert.equal(result.code, "collab_field_protected");
 
   // body-only write still allowed
-  const edit2 = await docs.readForEdit(boxId);
+  const edit2 = await docs.readForEdit(nodeId);
   const bodyOnly = await docs.write({
-    cx: boxId,
+    nodeId: nodeId,
     baseEtag: edit2.etag,
     body: edit2.body + "\nmore\n",
   });
@@ -142,18 +142,18 @@ test("backlinks index from wiki links", async () => {
   const a = await docs.createNote({ name: "alpha", body: "# A\n" });
   const b = await docs.createNote({ name: "beta", body: "# B\nsee [[alpha]]\n" });
   const tent = await loadTent(env.fs);
-  const concepts = [...tent.byId.values()].map((box) => ({
-    id: box.id,
-    path: box.path,
-    name: box.name,
-    body: box.body,
-    notePath: boxNotePath(box.path),
+  const concepts = [...tent.byId.values()].map((node) => ({
+    id: node.id,
+    path: node.path,
+    name: node.name,
+    body: node.body,
+    notePath: nodeNotePath(node.path),
   }));
   const reverse = buildBacklinkIndex(concepts);
-  const hits = reverse.get(a.cx) ?? [];
-  assert.ok(hits.some((h) => h.fromCx === b.cx));
-  const apiHits = await docs.backlinks(a.cx);
-  assert.ok(apiHits.some((h) => h.fromCx === b.cx));
+  const hits = reverse.get(a.nodeId) ?? [];
+  assert.ok(hits.some((h) => h.fromNodeId === b.nodeId));
+  const apiHits = await docs.backlinks(a.nodeId);
+  assert.ok(apiHits.some((h) => h.fromNodeId === b.nodeId));
 });
 
 test("WorkspaceController: tabs dirty conflict and save", async () => {
@@ -162,23 +162,23 @@ test("WorkspaceController: tabs dirty conflict and save", async () => {
   const created = await docs.createNote({ name: "page", body: "# page\n" });
   const ctl = new WorkspaceController(docs);
   await ctl.refreshTree();
-  await ctl.openConcept(created.cx);
+  await ctl.openNode(created.nodeId);
   const tab = ctl.getActiveTab()!;
   assert.equal(tab.dirty, false);
 
-  ctl.updateBuffer(tab.cx, tab.buffer + "\nedit\n");
+  ctl.updateBuffer(tab.nodeId, tab.buffer + "\nedit\n");
   assert.equal(ctl.getActiveTab()!.dirty, true);
 
   // external change on disk
-  const notePath = boxNotePath("page");
+  const notePath = nodeNotePath("page");
   const disk = await fsa.readFile(notePath);
   await fsa.writeFile(notePath, disk + "\nexternal\n");
 
-  const saved = await ctl.save(tab.cx);
+  const saved = await ctl.save(tab.nodeId);
   assert.equal(saved, false);
   assert.ok(ctl.getActiveTab()!.conflict);
 
-  const overwritten = await ctl.overwriteWithMine(tab.cx);
+  const overwritten = await ctl.overwriteWithMine(tab.nodeId);
   assert.equal(overwritten, true);
   assert.equal(ctl.getActiveTab()!.dirty, false);
   assert.equal(ctl.getActiveTab()!.conflict, null);
@@ -208,10 +208,10 @@ test("preview server: serves tree and opens concept", async () => {
     assert.equal(treeRes.status, 200);
     assert.match(treeRes.body, /hello/);
 
-    const page = await httpGet(`${handle.url}?open=${encodeURIComponent(created.cx)}`);
+    const page = await httpGet(`${handle.url}?open=${encodeURIComponent(created.nodeId)}`);
     assert.equal(page.status, 200);
     assert.match(page.body, /Hello workspace|hello/);
-    assert.match(page.body, /Concept tree|Concepts/);
+    assert.match(page.body, /Nodes/);
     assert.doesNotMatch(page.body, /workspace source tree browser/i);
   } finally {
     await handle.close();
@@ -254,8 +254,8 @@ test("CoreDocsClient.importAttachment: binary roundtrip, no .b64 marker, idempot
   const note = await docs.createNote({ name: "with-pic", type: "prompt", body: "# pic\n" });
 
   const payload = new Uint8Array([0x00, 0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0x01]);
-  const first = await docs.importAttachment(note.cx, "shot.png", payload);
-  assert.match(first.relativePath, new RegExp(`^attachments/${note.cx}/shot-[0-9a-f]{12}\\.png$`));
+  const first = await docs.importAttachment(note.nodeId, "shot.png", payload);
+  assert.match(first.relativePath, new RegExp(`^attachments/${note.nodeId}/shot-[0-9a-f]{12}\\.png$`));
   assert.equal(first.markdown, `![](../${first.relativePath})`);
   assert.equal(first.artifactRef?.kind, "path");
   assert.equal(first.artifactRef?.target, first.relativePath);
@@ -269,31 +269,31 @@ test("CoreDocsClient.importAttachment: binary roundtrip, no .b64 marker, idempot
   assert.deepEqual([...nodeBytes], [...payload]);
 
   // Identical re-import is deterministic and does not create a second file.
-  const second = await docs.importAttachment(note.cx, "shot.png", payload);
+  const second = await docs.importAttachment(note.nodeId, "shot.png", payload);
   assert.equal(second.relativePath, first.relativePath);
-  const listing = await fsa.listDir(`attachments/${note.cx}`);
+  const listing = await fsa.listDir(`attachments/${note.nodeId}`);
   assert.equal(listing.filter((e) => !e.isDir).length, 1);
 
   await assert.rejects(
-    () => docs.importAttachment(note.cx, "../../evil/../../x.bin", payload),
+    () => docs.importAttachment(note.nodeId, "../../evil/../../x.bin", payload),
     /single path segment/
   );
 
   // Empty binary files are valid attachments.
-  const empty = await docs.importAttachment(note.cx, "empty.bin", new Uint8Array());
+  const empty = await docs.importAttachment(note.nodeId, "empty.bin", new Uint8Array());
   assert.equal((await fsa.readBinary(empty.relativePath)).byteLength, 0);
 
   // Size limit
   const huge = new Uint8Array(MAX_ATTACHMENT_BYTES + 1);
   await assert.rejects(
-    () => docs.importAttachment(note.cx, "huge.bin", huge),
+    () => docs.importAttachment(note.nodeId, "huge.bin", huge),
     /exceeds max size/i
   );
 
   // Unknown concept
   await assert.rejects(
     () => docs.importAttachment("cx-missing", "a.png", payload),
-    /Concept not found/
+    /Node not found/
   );
 });
 
@@ -304,17 +304,17 @@ test("storeAttachmentBytes: draft..final.png stores; spaces/parens use angle-bra
   const payload = new Uint8Array([0x01, 0x02, 0x03, 0x04]);
 
   // Filename with embedded ".." must not be false-rejected by path guards.
-  const dotted = await docs.importAttachment(note.cx, "draft..final.png", payload);
-  assert.match(dotted.relativePath, new RegExp(`^attachments/${note.cx}/draft\\.\\.final-[0-9a-f]{12}\\.png$`));
+  const dotted = await docs.importAttachment(note.nodeId, "draft..final.png", payload);
+  assert.match(dotted.relativePath, new RegExp(`^attachments/${note.nodeId}/draft\\.\\.final-[0-9a-f]{12}\\.png$`));
   assert.equal(dotted.markdown, `![](../${dotted.relativePath})`);
   assert.deepEqual([...(await fsa.readBinary(dotted.relativePath))], [...payload]);
 
   // Whitespace / parentheses → CommonMark angle-bracket destinations; plain targets stay bare.
-  const spaced = await docs.importAttachment(note.cx, "my shot.png", payload);
+  const spaced = await docs.importAttachment(note.nodeId, "my shot.png", payload);
   assert.match(spaced.relativePath, /\/my shot-[0-9a-f]{12}\.png$/);
   assert.equal(spaced.markdown, `![](<../${spaced.relativePath}>)`);
 
-  const parens = await docs.importAttachment(note.cx, "file(1).bin", payload);
+  const parens = await docs.importAttachment(note.nodeId, "file(1).bin", payload);
   assert.match(parens.relativePath, /\/file\(1\)-[0-9a-f]{12}\.bin$/);
   assert.equal(parens.markdown, `![](<../${parens.relativePath}>)`);
 
@@ -345,11 +345,11 @@ test("storeAttachmentBytes: draft..final.png stores; spaces/parens use angle-bra
 
   // Traversal / multi-segment names remain rejected.
   await assert.rejects(
-    () => docs.importAttachment(note.cx, "../../evil.png", payload),
+    () => docs.importAttachment(note.nodeId, "../../evil.png", payload),
     /single path segment/
   );
   await assert.rejects(
-    () => docs.importAttachment(note.cx, "a/b.png", payload),
+    () => docs.importAttachment(note.nodeId, "a/b.png", payload),
     /single path segment/
   );
   assert.throws(() => sanitizeAttachmentFileName(".."), /single path segment/);

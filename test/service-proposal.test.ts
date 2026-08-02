@@ -50,7 +50,7 @@ async function makeWorkspace(name = "proposal-rpc"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -102,13 +102,13 @@ async function mountBox(
     type: "prompt",
   });
   assert.ok(!created.error, JSON.stringify(created.error));
-  const boxId = (created.result as { id: string }).id;
-  return { workspaceId, boxId };
+  const nodeId = (created.result as { nodeId: string }).nodeId;
+  return { workspaceId, nodeId };
 }
 
 type ProposalRow = {
   path: string;
-  boxId: string;
+  nodeId: string;
   role: string;
   status: string;
   createdAt?: string;
@@ -127,18 +127,18 @@ test("proposal RPC: submit → list pending → accept → lists + file terminal
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
-    const { workspaceId, boxId } = await mountBox(svc, ws);
+    const { workspaceId, nodeId } = await mountBox(svc, ws);
 
     const submitted = (await client.proposalSubmit(workspaceId, {
-      boxId,
+      nodeId,
       role: "planner",
       body: "建议收窄验收标准",
     })) as { proposal: ProposalRow };
     assert.equal(submitted.proposal.status, "pending");
-    assert.equal(submitted.proposal.boxId, boxId);
+    assert.equal(submitted.proposal.nodeId, nodeId);
     assert.equal(submitted.proposal.role, "planner");
     assert.equal(submitted.proposal.body, "建议收窄验收标准");
-    assert.equal(submitted.proposal.path, `temp/planner/proposals/${boxId}.md`);
+    assert.equal(submitted.proposal.path, `temp/planner/proposals/${nodeId}.md`);
 
     const pending = (await client.proposalList(workspaceId)) as { proposals: ProposalRow[] };
     assert.equal(pending.proposals.length, 1);
@@ -176,10 +176,10 @@ test("proposal RPC: reject then resubmit succeeds; second pending fails", async 
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
-    const { workspaceId, boxId } = await mountBox(svc, ws, "reject-resubmit");
+    const { workspaceId, nodeId } = await mountBox(svc, ws, "reject-resubmit");
 
     const first = (await client.proposalSubmit(workspaceId, {
-      boxId,
+      nodeId,
       role: "planner",
       body: "first proposal",
     })) as { proposal: ProposalRow };
@@ -192,7 +192,7 @@ test("proposal RPC: reject then resubmit succeeds; second pending fails", async 
     assert.equal(rejected.proposal.status, "rejected");
 
     const second = (await client.proposalSubmit(workspaceId, {
-      boxId,
+      nodeId,
       role: "planner",
       body: "revised proposal",
     })) as { proposal: ProposalRow };
@@ -203,7 +203,7 @@ test("proposal RPC: reject then resubmit succeeds; second pending fails", async 
     await assert.rejects(
       () =>
         client.proposalSubmit(workspaceId, {
-          boxId,
+          nodeId,
           role: "planner",
           body: "duplicate pending",
         }),
@@ -221,10 +221,10 @@ test("proposal RPC: reject then resubmit succeeds; second pending fails", async 
 test("proposal RPC: resolve actor != user denied; proposal remains pending", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountBox(svc, ws, "actor-deny");
+    const { workspaceId, nodeId } = await mountBox(svc, ws, "actor-deny");
     const submitted = await rpc(svc, "proposal.submit", {
       workspaceId,
-      boxId,
+      nodeId,
       role: "planner",
       body: "needs user triage",
     });
@@ -256,7 +256,7 @@ test("proposal RPC: resolve actor != user denied; proposal remains pending", asy
 test("proposal RPC: exactly one proposal.updated per success; zero on failed transition", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountBox(svc, ws, "events");
+    const { workspaceId, nodeId } = await mountBox(svc, ws, "events");
     const events: Array<Record<string, unknown>> = [];
     const unsub = svc.events.subscribe((ev) => {
       if (ev.type === "proposal.updated") {
@@ -266,7 +266,7 @@ test("proposal RPC: exactly one proposal.updated per success; zero on failed tra
 
     const submitted = await rpc(svc, "proposal.submit", {
       workspaceId,
-      boxId,
+      nodeId,
       role: "planner",
       body: "event body",
     });
@@ -276,12 +276,12 @@ test("proposal RPC: exactly one proposal.updated per success; zero on failed tra
     assert.equal(events[0]!.path, proposalPath);
     assert.equal(events[0]!.status, "pending");
     assert.equal(events[0]!.reason, "proposal.submit");
-    assert.equal(events[0]!.boxId, boxId);
+    assert.equal(events[0]!.nodeId, nodeId);
     assert.equal(events[0]!.role, "planner");
 
     const failDup = await rpc(svc, "proposal.submit", {
       workspaceId,
-      boxId,
+      nodeId,
       role: "planner",
       body: "should not emit",
     });
@@ -331,16 +331,16 @@ test("in-workspace CLI propose uses Service; ServiceClient sees it (no direct-wr
       workspaceId: mount.workspaceId,
       name: "cli-target",
       type: "prompt",
-    })) as { id: string };
-    const boxId = created.id;
+    })) as { nodeId: string };
+    const nodeId = created.nodeId;
 
     // Injected client path (unit of CLI helper — sole Service write).
     const viaHelper = await runProposalSubmit(
-      { boxId, role: "planner", body: "via service helper" },
+      { nodeId, role: "planner", body: "via service helper" },
       { client: observer, cwd: ws, dataDir }
     );
     assert.equal(viaHelper.exitCode, 0, viaHelper.stderr);
-    assert.match(viaHelper.stdout, new RegExp(`temp/planner/proposals/${boxId}\\.md`));
+    assert.match(viaHelper.stdout, new RegExp(`temp/planner/proposals/${nodeId}\\.md`));
 
     const listed = (await observer.proposalList(mount.workspaceId, { status: "pending" })) as {
       proposals: ProposalRow[];
@@ -354,9 +354,9 @@ test("in-workspace CLI propose uses Service; ServiceClient sees it (no direct-wr
       workspaceId: mount.workspaceId,
       name: "cli-attach-target",
       type: "prompt",
-    })) as { id: string };
+    })) as { nodeId: string };
     const attachResult = await runProposalSubmit(
-      { boxId: created2.id, role: "planner", body: "attach path body" },
+      { nodeId: created2.nodeId, role: "planner", body: "attach path body" },
       {
         cwd: ws,
         dataDir,
@@ -368,7 +368,7 @@ test("in-workspace CLI propose uses Service; ServiceClient sees it (no direct-wr
     assert.match(attachResult.stdout, /Proposal submitted for triage/);
 
     const listed2 = (await observer.proposalList(mount.workspaceId, {
-      boxId: created2.id,
+      nodeId: created2.nodeId,
       status: "pending",
     })) as { proposals: ProposalRow[] };
     assert.equal(listed2.proposals.length, 1);
@@ -379,30 +379,30 @@ test("in-workspace CLI propose uses Service; ServiceClient sees it (no direct-wr
       workspaceId: mount.workspaceId,
       name: "cli-process-target",
       type: "prompt",
-    })) as { id: string };
+    })) as { nodeId: string };
     const bodyFile = path.join(ws, "proposal-body.md");
     await fs.writeFile(bodyFile, "cli process body\n", "utf8");
     const cli = await run(
       process.execPath,
-      ["--import", tsxImport, cliSource, "propose", created3.id, bodyFile],
+      ["--import", tsxImport, cliSource, "propose", created3.nodeId, bodyFile],
       ws,
       {
         TENT_ROLE: "planner",
         TENT_SERVICE_DATA_DIR: dataDir,
       }
     );
-    assert.match(cli.stdout, new RegExp(`temp/planner/proposals/${created3.id}\\.md`));
+    assert.match(cli.stdout, new RegExp(`temp/planner/proposals/${created3.nodeId}\\.md`));
     assert.equal(cli.stderr, "");
 
     const listed3 = (await observer.proposalList(mount.workspaceId, {
-      boxId: created3.id,
+      nodeId: created3.nodeId,
       status: "pending",
     })) as { proposals: ProposalRow[] };
     assert.equal(listed3.proposals.length, 1);
     assert.equal(listed3.proposals[0]!.body, "cli process body");
 
     const fsa = new NodeFs(path.join(ws, ".tent"));
-    const onDisk = await loadProposal(fsa, `temp/planner/proposals/${boxId}.md`);
+    const onDisk = await loadProposal(fsa, `temp/planner/proposals/${nodeId}.md`);
     assert.equal(onDisk.status, "pending");
     assert.equal(onDisk.body, "via service helper");
 

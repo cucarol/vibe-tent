@@ -35,7 +35,7 @@ async function makeWorkspace(
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -115,7 +115,7 @@ async function mountWorkItem(
   assert.ok(!created.error, JSON.stringify(created.error));
   return {
     workspaceId,
-    boxId: (created.result as { id: string }).id,
+    nodeId: (created.result as { nodeId: string }).nodeId,
   };
 }
 
@@ -139,7 +139,7 @@ async function createNote(
     type: "prompt",
   });
   assert.ok(!created.error, JSON.stringify(created.error));
-  return (created.result as { id: string }).id;
+  return (created.result as { nodeId: string }).nodeId;
 }
 
 // ---- pure unit: review authority + envelope asSub ----
@@ -226,7 +226,7 @@ test("writeTaskEnvelope: asSub true persists; missing/false omitted (reads as pe
   const clock = new SystemClock();
   const peerPath = await writeTaskEnvelope(fsa, clock, {
     role: "helper",
-    claims: [{ id: "bx-1", path: "a.md" }],
+    nodeRefs: [{ id: "cx-1", path: "a.md" }],
     manifestPath: "temp/helper/manifest.yml",
     userPrompt: "peer",
     parentActor: { kind: "user", id: "user" },
@@ -244,7 +244,7 @@ test("writeTaskEnvelope: asSub true persists; missing/false omitted (reads as pe
 
   const subPath = await writeTaskEnvelope(fsa, clock, {
     role: "helper",
-    claims: [{ id: "bx-2", path: "b.md" }],
+    nodeRefs: [{ id: "cx-2", path: "b.md" }],
     manifestPath: "temp/helper/manifest.yml",
     userPrompt: "sub",
     parentActor: { kind: "role", id: "orchestrator" },
@@ -330,11 +330,11 @@ test("task.dispatch asSub role: tent-role assignee lane + dispatcher targetBranc
   assert.equal(await isGitWorkspace(ws), true);
 
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "role-sub");
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "role-sub");
 
     const sub = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "helper",
       prompt: "help orchestrator",
       asSub: true,
@@ -444,11 +444,11 @@ test("task.dispatch asSub profile: tent-task lane at dispatch; peer profile stay
   assert.notEqual(dispatcherHead, (await git(ws, "rev-parse", "main")).trim());
 
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "profile-sub");
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "profile-sub");
 
     const sub = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       assigneeKind: "route",
       routeId: "fake-default",
       prompt: "profile helper",
@@ -545,7 +545,7 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
 
     const asUser = await rpc(svc, "task.dispatch", {
       workspaceId: gitMount.workspaceId,
-      nodeIds: [gitMount.boxId],
+      nodeIds: [gitMount.nodeId],
       role: "helper",
       prompt: "nope",
       asSub: true,
@@ -558,7 +558,7 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
 
     const asSelf = await rpc(svc, "task.dispatch", {
       workspaceId: gitMount.workspaceId,
-      nodeIds: [gitMount.boxId],
+      nodeIds: [gitMount.nodeId],
       role: "helper",
       prompt: "nope",
       asSub: true,
@@ -570,7 +570,7 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
 
     const unknown = await rpc(svc, "task.dispatch", {
       workspaceId: gitMount.workspaceId,
-      nodeIds: [gitMount.boxId],
+      nodeIds: [gitMount.nodeId],
       role: "helper",
       prompt: "nope",
       asSub: true,
@@ -585,7 +585,7 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
 
     const noGit = await rpc(svc, "task.dispatch", {
       workspaceId: noGitMount.workspaceId,
-      nodeIds: [noGitMount.boxId],
+      nodeIds: [noGitMount.nodeId],
       role: "helper",
       prompt: "nope",
       asSub: true,
@@ -601,7 +601,7 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
       workspaceId: noGitMount.workspaceId,
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      nodeIds: [noGitMount.boxId],
+      nodeIds: [noGitMount.nodeId],
       role: "executor",
       prompt: "pure tent peer",
     });
@@ -643,10 +643,10 @@ test("sub task accept/reject: exact parent Role only; user cannot ordinary-bypas
   );
   // Use service path for a real sub envelope, then exercise accept/reject actors.
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "review-box");
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "review-box");
     const dispatched = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "helper",
       prompt: "sub review",
       asSub: true,
@@ -701,10 +701,10 @@ test("startSession route availability is independent of parent or assignee role 
   await initGitOnWorkspace(ws);
 
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "a2a-sub");
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "a2a-sub");
     const sub = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "helper",
       prompt: "spawn via dispatcher authority",
       asSub: true,
@@ -755,10 +755,10 @@ test("sub accept integrates commits into dispatcher worktree; main stays put", a
   const mainHead = (await git(ws, "rev-parse", "HEAD")).trim();
 
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "accept-sub");
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "accept-sub");
     const sub = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "helper",
       prompt: "integrate to dispatcher",
       asSub: true,
@@ -817,10 +817,10 @@ test("resolveIntegrationContract: sub targetBranch mismatch fails loud", async (
   const ws = await makeWorkspace("sub-mismatch");
   await initGitOnWorkspace(ws);
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "mismatch");
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "mismatch");
     const sub = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "helper",
       prompt: "corrupt me",
       asSub: true,
@@ -893,7 +893,7 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
       type: "goal",
     });
     assert.ok(!parent.error, JSON.stringify(parent.error));
-    const parentId = (parent.result as { id: string; path: string }).id;
+    const parentId = (parent.result as { nodeId: string; path: string }).nodeId;
     const parentPath = (parent.result as { path: string }).path;
 
     const child = await rpc(svc, "docs.createNote", {
@@ -903,7 +903,7 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
       parentPath,
     });
     assert.ok(!child.error, JSON.stringify(child.error));
-    const childId = (child.result as { id: string }).id;
+    const childId = (child.result as { nodeId: string }).nodeId;
     const subChild = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "child-sub-prompt",
@@ -911,7 +911,7 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
       parentPath,
     });
     assert.ok(!subChild.error, JSON.stringify(subChild.error));
-    const subChildId = (subChild.result as { id: string }).id;
+    const subChildId = (subChild.result as { nodeId: string }).nodeId;
 
     const parentDispatch = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
@@ -968,7 +968,7 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
     assert.ok(!otherChild.error, JSON.stringify(otherChild.error));
     const otherParent = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [(otherChild.result as { id: string }).id],
+      nodeIds: [(otherChild.result as { nodeId: string }).nodeId],
       role: "helper",
       prompt: "sub with executor parent",
       asSub: true,
@@ -1015,7 +1015,7 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
       type: "goal",
     });
     assert.ok(!parent.error, JSON.stringify(parent.error));
-    const parentId = (parent.result as { id: string; path: string }).id;
+    const parentId = (parent.result as { nodeId: string; path: string }).nodeId;
     const parentPath = (parent.result as { path: string }).path;
 
     const child = await rpc(svc, "docs.createNote", {
@@ -1025,7 +1025,7 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
       parentPath,
     });
     assert.ok(!child.error, JSON.stringify(child.error));
-    const childId = (child.result as { id: string }).id;
+    const childId = (child.result as { nodeId: string }).nodeId;
 
     // 2. Orchestrator dispatch + claim parent.
     const parentDispatch = await rpc(svc, "task.dispatch", {
@@ -1173,12 +1173,12 @@ test("peer profile dispatch still defers lane; startSession creates tent-task", 
   const ws = await makeWorkspace("peer-profile-reg");
   await initGitOnWorkspace(ws);
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "peer-prof");
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "peer-prof");
     const peer = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       assigneeKind: "route",
       routeId: "fake-default",
       prompt: "peer profile deferred",

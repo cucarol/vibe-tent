@@ -22,13 +22,13 @@ export type NodeCommandResult = {
   stderr: string;
 };
 
-type ConceptProjection = {
-  id: string;
+type NodeProjection = {
+  nodeId: string;
   name: string;
   path: string;
   type: string;
   mode?: string;
-  children?: ConceptProjection[];
+  children?: NodeProjection[];
 };
 
 export async function runNodeCommand(
@@ -57,80 +57,78 @@ export async function runNodeCommand(
     switch (sub) {
       case "list": {
         if (positionals.length > 0) return usage("tent node list [--json]");
-        const result = (await client.docsList(workspaceId, false)) as {
-          concepts: ConceptProjection[];
-        };
-        return print(result, json, () => formatTree(result.concepts));
+        const result = await client.docsList(workspaceId, false);
+        return print(result, json, () => formatTree(result.nodes));
       }
       case "get": {
-        const target = oneTarget(positionals, "tent node get <id|path> [--json]");
+        const target = oneTarget(positionals, "tent node get <nodeId> [--json]");
         if (typeof target !== "string") return target;
         const result = await client.docsGet(workspaceId, nodeRef(target));
-        return print(result, json, (value) => formatConcept(value));
+        return print(result, json, (value) => formatNode(value));
       }
       case "create": {
         const name = oneTarget(
           positionals,
-          "tent node create <name> [--type goal|prompt|output[-secondary]] [--parent <id|path|root>] [--body <text>|-] [--tags a,b] [--json]"
+          "tent node create <name> [--type goal|prompt|output[-secondary]] [--parent <nodeId|root>] [--body <text>|-] [--tags a,b] [--json]"
         );
         if (typeof name !== "string") return name;
         let body = flagValue(flags, "body");
         if (body === "-") body = await readStdin();
         const parentPath = await resolveParentPath(client, workspaceId, flags.parent);
-        const created = (await client.docsCreateNote(workspaceId, {
+        const created = await client.docsCreateNote(workspaceId, {
           name,
           type: flags.type || "prompt",
           parentPath,
           ...(body !== undefined ? { body } : {}),
-        })) as { id: string };
+        });
         const tags = parseCsv(flags.tags);
         if (tags.length > 0) {
           for (const tag of tags) await client.registryTagCreate(workspaceId, { name: tag });
-          const edit = await client.docsReadForEdit(workspaceId, { id: created.id });
+          const edit = await client.docsReadForEdit(workspaceId, created.nodeId);
           await client.docsTagsSet(workspaceId, {
-            id: created.id,
+            nodeId: created.nodeId,
             tags,
             baseEtag: edit.etag,
           });
         }
-        const result = await client.docsGet(workspaceId, { id: created.id });
-        return print(result, json, (value) => `Created ${formatConcept(value)}`);
+        const result = await client.docsGet(workspaceId, created.nodeId);
+        return print(result, json, (value) => `Created ${formatNode(value)}`);
       }
       case "write": {
-        const target = oneTarget(positionals, "tent node write <id|path> --body <text>|- [--json]");
+        const target = oneTarget(positionals, "tent node write <nodeId> --body <text>|- [--json]");
         if (typeof target !== "string") return target;
         let body = flagValue(flags, "body");
-        if (body === undefined) return usage("tent node write <id|path> --body <text>|- [--json]");
+        if (body === undefined) return usage("tent node write <nodeId> --body <text>|- [--json]");
         if (body === "-") body = await readStdin();
         const ref = nodeRef(target);
         const edit = await client.docsReadForEdit(workspaceId, ref);
         const result = await client.docsWrite(workspaceId, {
-          ...ref,
+          nodeId: ref,
           body,
           baseEtag: edit.etag,
         });
-        return print(result, json, () => `Updated ${edit.id} ${edit.path}`);
+        return print(result, json, () => `Updated ${edit.nodeId} ${edit.path}`);
       }
       case "rename": {
-        if (positionals.length !== 2) return usage("tent node rename <id|path> <new-name> [--json]");
+        if (positionals.length !== 2) return usage("tent node rename <nodeId> <new-name> [--json]");
         const result = await client.docsRename(workspaceId, {
-          ...nodeRef(positionals[0]),
+          nodeId: nodeRef(positionals[0]),
           newName: positionals[1],
         });
-        return print(result, json, (value) => `Renamed ${formatConcept(value)}`);
+        return print(result, json, (value) => `Renamed ${formatNode(value)}`);
       }
       case "move": {
-        const target = oneTarget(positionals, "tent node move <id> --parent <id|root> [--json]");
+        const target = oneTarget(positionals, "tent node move <nodeId> --parent <nodeId|root> [--json]");
         if (typeof target !== "string" || !/^cx-[a-z0-9]+$/i.test(target)) {
           return typeof target === "string"
             ? usage("tent node move requires a stable cx- id")
             : target;
         }
         if (!Object.prototype.hasOwnProperty.call(flags, "parent")) {
-          return usage("tent node move <id> --parent <id|root> [--json]");
+          return usage("tent node move <nodeId> --parent <nodeId|root> [--json]");
         }
-        const current = (await client.docsGet(workspaceId, { id: target })) as {
-          concept: ConceptProjection;
+        const current = (await client.docsGet(workspaceId, target)) as {
+          node: NodeProjection;
         };
         const parent = flags.parent;
         const newParentId = !parent || parent === "root" ? null : parent;
@@ -138,8 +136,8 @@ export async function runNodeCommand(
           return usage("tent node move --parent must be root or a stable cx- id");
         }
         const result = await client.docsMove(workspaceId, {
-          id: target,
-          expectedPath: current.concept.path,
+          nodeId: target,
+          expectedPath: current.node.path,
           newParentId,
           position: { mode: "inside" },
         });
@@ -147,35 +145,35 @@ export async function runNodeCommand(
       }
       case "archive":
       case "restore": {
-        const target = oneTarget(positionals, `tent node ${sub} <id|path> [--json]`);
+        const target = oneTarget(positionals, `tent node ${sub} <nodeId> [--json]`);
         if (typeof target !== "string") return target;
         const mode = sub === "archive" ? "archived" : "editable";
         const result = await client.docsSetMode(workspaceId, {
-          ...nodeRef(target),
+          nodeId: nodeRef(target),
           mode,
         });
         return print(result, json, () => `${sub === "archive" ? "Archived" : "Restored"} ${target}`);
       }
       case "type": {
-        if (positionals.length !== 2) return usage("tent node type <id|path> <type> [--json]");
+        if (positionals.length !== 2) return usage("tent node type <nodeId> <type> [--json]");
         const ref = nodeRef(positionals[0]);
         const edit = await client.docsReadForEdit(workspaceId, ref);
         const result = await client.docsSetType(workspaceId, {
-          ...ref,
+          nodeId: ref,
           type: positionals[1],
           baseEtag: edit.etag,
         });
-        return print(result, json, () => `Updated type for ${edit.id}`);
+        return print(result, json, () => `Updated type for ${edit.nodeId}`);
       }
       case "tags": {
         const action = positionals[0];
         const target = positionals[1];
         if (!action || !target || !["set", "add", "remove"].includes(action)) {
-          return usage("tent node tags set|add|remove <id|path> <tag[,tag...]> [--json]");
+          return usage("tent node tags set|add|remove <nodeId> <tag[,tag...]> [--json]");
         }
         const values = parseCsv(positionals.slice(2).join(","));
         if (values.length === 0 && action !== "set") {
-          return usage("tent node tags set|add|remove <id|path> <tag[,tag...]> [--json]");
+          return usage("tent node tags set|add|remove <nodeId> <tag[,tag...]> [--json]");
         }
         const ref = nodeRef(target);
         let last: unknown;
@@ -183,7 +181,7 @@ export async function runNodeCommand(
           for (const tag of values) await client.registryTagCreate(workspaceId, { name: tag });
           const edit = await client.docsReadForEdit(workspaceId, ref);
           last = await client.docsTagsSet(workspaceId, {
-            ...ref,
+            nodeId: ref,
             tags: values,
             baseEtag: edit.etag,
           });
@@ -192,8 +190,8 @@ export async function runNodeCommand(
             if (action === "add") await client.registryTagCreate(workspaceId, { name: tag });
             const edit = await client.docsReadForEdit(workspaceId, ref);
             last = action === "add"
-              ? await client.docsTagAdd(workspaceId, { ...ref, tag, baseEtag: edit.etag })
-              : await client.docsTagRemove(workspaceId, { ...ref, tag, baseEtag: edit.etag });
+              ? await client.docsTagAdd(workspaceId, { nodeId: ref, tag, baseEtag: edit.etag })
+              : await client.docsTagRemove(workspaceId, { nodeId: ref, tag, baseEtag: edit.etag });
           }
         }
         return print(last ?? { workspaceId }, json, () => `Updated tags for ${target}`);
@@ -212,20 +210,21 @@ export function nodeHelpText(): string {
 
 Usage:
   tent node list [--workspace <path>] [--json]
-  tent node get <id|path> [--workspace <path>] [--json]
-  tent node create <name> [--type <type>] [--parent <id|path|root>] [--body <text>|-] [--tags a,b] [--json]
-  tent node write <id|path> --body <text>|- [--json]
-  tent node rename <id|path> <new-name> [--json]
-  tent node move <id> --parent <id|root> [--json]
-  tent node archive|restore <id|path> [--json]
-  tent node type <id|path> <type> [--json]
-  tent node tags set|add|remove <id|path> <tag[,tag...]> [--json]
+  tent node get <nodeId> [--workspace <path>] [--json]
+  tent node create <name> [--type <type>] [--parent <nodeId|root>] [--body <text>|-] [--tags a,b] [--json]
+  tent node write <nodeId> --body <text>|- [--json]
+  tent node rename <nodeId> <new-name> [--json]
+  tent node move <nodeId> --parent <nodeId|root> [--json]
+  tent node archive|restore <nodeId> [--json]
+  tent node type <nodeId> <type> [--json]
+  tent node tags set|add|remove <nodeId> <tag[,tag...]> [--json]
 
 All mutations go through Local Service. No command writes .tent directly.`;
 }
 
-function nodeRef(value: string): { id?: string; path?: string } {
-  return /^cx-[a-z0-9]+$/i.test(value) ? { id: value } : { path: value };
+function nodeRef(value: string): string {
+  if (!/^cx-[a-z0-9]+$/i.test(value)) throw new Error(`Expected canonical Node id (cx-*): ${value}`);
+  return value;
 }
 
 async function resolveParentPath(
@@ -235,9 +234,9 @@ async function resolveParentPath(
 ): Promise<string> {
   if (!value || value === "root") return "";
   const result = (await client.docsGet(workspaceId, nodeRef(value))) as {
-    concept: ConceptProjection;
+    node: NodeProjection;
   };
-  return result.concept.path;
+  return result.node.path;
 }
 
 function oneTarget(positionals: string[], help: string): string | NodeCommandResult {
@@ -292,19 +291,19 @@ function usage(text: string): NodeCommandResult {
   return { exitCode: 1, stdout: "", stderr: text.trimEnd() + "\n" };
 }
 
-function formatConcept(value: unknown): string {
-  const concept = (value as { concept?: ConceptProjection }).concept;
-  if (!concept) return JSON.stringify(value);
-  return `${concept.id}  ${concept.type}  ${concept.path}`;
+function formatNode(value: unknown): string {
+  const node = (value as { node?: NodeProjection }).node;
+  if (!node) return JSON.stringify(value);
+  return `${node.nodeId}  ${node.type}  ${node.path}`;
 }
 
-function formatTree(concepts: ConceptProjection[]): string {
+function formatTree(nodes: NodeProjection[]): string {
   const lines: string[] = [];
-  const visit = (node: ConceptProjection, depth: number) => {
-    lines.push(`${"  ".repeat(depth)}${node.id}  ${node.type}  ${node.name}`);
+  const visit = (node: NodeProjection, depth: number) => {
+    lines.push(`${"  ".repeat(depth)}${node.nodeId}  ${node.type}  ${node.name}`);
     for (const child of node.children ?? []) visit(child, depth + 1);
   };
-  for (const concept of concepts) visit(concept, 0);
+  for (const node of nodes) visit(node, 0);
   return lines.length > 0 ? lines.join("\n") : "(no nodes)";
 }
 

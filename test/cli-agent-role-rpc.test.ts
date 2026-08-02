@@ -50,7 +50,7 @@ async function roleGlobals(client: ServiceClient) {
   const ws = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-cli-"));
   await scaffoldInWorkspace(new NodeFs(ws), {
     name: "role-cli-fake",
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   return { client, cwd: ws, workspace: ws };
 }

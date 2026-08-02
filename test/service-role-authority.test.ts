@@ -24,7 +24,7 @@ async function makeWorkspace(name = "role-auth"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -334,12 +334,12 @@ test("registry.role.delete: confirmation, blocks active task, one event on succe
       type: "prompt",
     });
     assert.ok(!note.error, JSON.stringify(note.error));
-    const boxId = (note.result as { id: string }).id;
+    const nodeId = (note.result as { nodeId: string }).nodeId;
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "block delete",
     });
@@ -420,12 +420,12 @@ test("task.startSession uses machine route availability without roster authoriza
       name: "allow-box",
       type: "prompt",
     });
-    const boxId = (note.result as { id: string }).id;
+    const nodeId = (note.result as { nodeId: string }).nodeId;
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "whitelist",
     });

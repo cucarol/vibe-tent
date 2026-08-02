@@ -196,7 +196,7 @@ test("mutation lock: stale dead-pid lock reclaimed via NodeFs then exclusive aga
 test("lifecycle: auto-integrate runs outside mutation.lock and failure leaves no delivery", async () => {
   const dir = await makeTent();
   const e = env(dir);
-  const result = await dispatch(e as any, "bx-p1", "executor", {
+  const result = await dispatch(e as any, "cx-p1", "executor", {
     userPrompt: "bypass integrate outside lock",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -226,7 +226,7 @@ test("lifecycle: auto-integrate runs outside mutation.lock and failure leaves no
   const task = await loadTaskEnvelope(e.fs, result.taskPath);
   assert.equal(task.state, "running");
   assert.equal((await loadDeliveries(e.fs)).length, 0);
-  const box = (await loadTent(e.fs)).byId.get("bx-p1")!;
+  const box = (await loadTent(e.fs)).byId.get("cx-p1")!;
   assert.equal(box.fm.owner, undefined);
   assert.equal(box.fm.status, undefined);
 });
@@ -234,7 +234,7 @@ test("lifecycle: auto-integrate runs outside mutation.lock and failure leaves no
 test("lifecycle: accept integrate runs outside mutation.lock; failure keeps delivered", async () => {
   const dir = await makeTent();
   const e = env(dir);
-  const result = await dispatch(e as any, "bx-p1", "executor", {
+  const result = await dispatch(e as any, "cx-p1", "executor", {
     userPrompt: "manual accept outside lock",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -267,7 +267,7 @@ test("lifecycle: accept integrate runs outside mutation.lock; failure keeps deli
   assert.equal(task.state, "delivered");
   const ready = (await loadDeliveries(e.fs)).find((d) => d.status === "ready");
   assert.ok(ready);
-  const box = (await loadTent(e.fs)).byId.get("bx-p1")!;
+  const box = (await loadTent(e.fs)).byId.get("cx-p1")!;
   assert.equal(box.fm.owner, undefined);
   assert.equal(box.fm.status, undefined);
 });
@@ -275,7 +275,7 @@ test("lifecycle: accept integrate runs outside mutation.lock; failure keeps deli
 test("lifecycle: successful auto-integrate still accepts atomically after unlock", async () => {
   const dir = await makeTent();
   const e = env(dir);
-  const result = await dispatch(e as any, "bx-p1", "executor", {
+  const result = await dispatch(e as any, "cx-p1", "executor", {
     userPrompt: "agent decide",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -296,7 +296,7 @@ test("lifecycle: successful auto-integrate still accepts atomically after unlock
   assert.equal(out.autoIntegrated, true);
   assert.equal(out.task.state, "accepted");
   assert.equal(out.delivery.status, "accepted");
-  const box = (await loadTent(e.fs)).byId.get("bx-p1")!;
+  const box = (await loadTent(e.fs)).byId.get("cx-p1")!;
   assert.equal(box.fm.status, undefined);
   assert.equal(box.fm.owner, undefined);
 });

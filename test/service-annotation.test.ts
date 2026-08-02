@@ -19,7 +19,7 @@ async function makeWorkspace(name = "ws-ann"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "doc", type: "prompt", body: "hello world hello\n" }],
+    nodes: [{ name: "doc", type: "prompt", body: "hello world hello\n" }],
   });
   return workspace;
 }
@@ -75,22 +75,22 @@ test("annotation.create validates etag/range; list relocates; resolve/reopen/del
       type: "prompt",
     });
     assert.ok(!createdNote.error, JSON.stringify(createdNote.error));
-    const nodeId = (createdNote.result as { id: string }).id;
+    const nodeId = (createdNote.result as { nodeId: string }).nodeId;
 
     // Write known body via docs.write
-    const read1 = await rpc(svc, "docs.readForEdit", { workspaceId, id: nodeId });
+    const read1 = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     assert.ok(!read1.error, JSON.stringify(read1.error));
     const snap1 = read1.result as { body: string; etag: string; raw: string };
     const bodyText = "alpha beta gamma beta\n";
     const write1 = await rpc(svc, "docs.write", {
       workspaceId,
-      id: nodeId,
+      nodeId,
       body: bodyText,
       baseEtag: snap1.etag,
     });
     assert.ok(!write1.error, JSON.stringify(write1.error));
 
-    const read2 = await rpc(svc, "docs.readForEdit", { workspaceId, id: nodeId });
+    const read2 = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     assert.ok(!read2.error);
     const snap2 = read2.result as { body: string; etag: string };
     assert.equal(snap2.body, bodyText);
@@ -192,12 +192,12 @@ test("annotation.create validates etag/range; list relocates; resolve/reopen/del
     assert.equal(disk.annotations[0]!.nodeId, nodeId);
 
     // Shift body so original offsets miss but quote still unique-nearest → relocated
-    const read3 = await rpc(svc, "docs.readForEdit", { workspaceId, id: nodeId });
+    const read3 = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     const snap3 = read3.result as { etag: string };
     const shifted = "zzz " + bodyText;
     const write2 = await rpc(svc, "docs.write", {
       workspaceId,
-      id: nodeId,
+      nodeId,
       body: shifted,
       baseEtag: snap3.etag,
     });
@@ -218,11 +218,11 @@ test("annotation.create validates etag/range; list relocates; resolve/reopen/del
     assert.equal(listed.annotations[0]!.currentStart, shifted.indexOf(quote));
 
     // Remove quote → orphan
-    const read4 = await rpc(svc, "docs.readForEdit", { workspaceId, id: nodeId });
+    const read4 = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     const snap4 = read4.result as { etag: string };
     const write3 = await rpc(svc, "docs.write", {
       workspaceId,
-      id: nodeId,
+      nodeId,
       body: "no hits\n",
       baseEtag: snap4.etag,
     });
@@ -246,12 +246,11 @@ test("annotation.create validates etag/range; list relocates; resolve/reopen/del
     };
     assert.equal(reopened.annotation.status, "open");
 
-    // Missing node identity still lists by nodeId as orphan/missing-node
-    // (annotation still keyed by nodeId after concept gone — simulate by listing fake id)
-    const missingNodeList = (await client.annotationList(workspaceId, "cx-missing")) as {
-      annotations: unknown[];
-    };
-    assert.equal(missingNodeList.annotations.length, 0);
+    // Canonical annotation reads require an existing Node.
+    await assert.rejects(
+      () => client.annotationList(workspaceId, "cx-missing"),
+      /Node not found/i
+    );
 
     // Manually point record at missing node via second create then rename is heavy;
     // create on node then list after we only check delete path.
@@ -281,7 +280,7 @@ test("annotation.create validates etag/range; list relocates; resolve/reopen/del
   });
 });
 
-test("annotation.list projects missing-node when nodeId has records but concept is gone", async () => {
+test("annotation.list fails loud when its persisted Node is gone", async () => {
   const ws = await makeWorkspace("missing-node");
   await withService(async (svc) => {
     const workspaceId = await mount(svc, ws);
@@ -292,19 +291,19 @@ test("annotation.list projects missing-node when nodeId has records but concept 
       name: "temp-node",
       type: "prompt",
     });
-    const nodeId = (createdNote.result as { id: string }).id;
-    const read = await rpc(svc, "docs.readForEdit", { workspaceId, id: nodeId });
+    const nodeId = (createdNote.result as { nodeId: string }).nodeId;
+    const read = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     const snap = read.result as { body: string; etag: string };
     // body from scaffold createNote may vary; write fixed
     const body = "pick me please\n";
     const w = await rpc(svc, "docs.write", {
       workspaceId,
-      id: nodeId,
+      nodeId,
       body,
       baseEtag: snap.etag,
     });
     assert.ok(!w.error, JSON.stringify(w.error));
-    const read2 = await rpc(svc, "docs.readForEdit", { workspaceId, id: nodeId });
+    const read2 = await rpc(svc, "docs.readForEdit", { workspaceId, nodeId });
     const snap2 = read2.result as { body: string; etag: string };
     const quote = "pick me";
     const start = snap2.body.indexOf(quote);
@@ -317,7 +316,7 @@ test("annotation.list projects missing-node when nodeId has records but concept 
       documentEtag: snap2.etag,
     });
 
-    // Physically remove the concept folder so byId misses, annotations remain.
+    // Physically remove the Node folder so byId misses while annotations remain.
     const tentRoot = path.join(ws, ".tent");
     const entries = await fs.readdir(tentRoot, { withFileTypes: true });
     for (const ent of entries) {
@@ -333,11 +332,6 @@ test("annotation.list projects missing-node when nodeId has records but concept 
       }
     }
 
-    const listed = (await client.annotationList(workspaceId, nodeId)) as {
-      annotations: Array<{ anchorState: string; orphanReason?: string; id: string }>;
-    };
-    assert.equal(listed.annotations.length, 1);
-    assert.equal(listed.annotations[0]!.anchorState, "orphan");
-    assert.equal(listed.annotations[0]!.orphanReason, "missing-node");
+    await assert.rejects(() => client.annotationList(workspaceId, nodeId), /Node not found/i);
   });
 });

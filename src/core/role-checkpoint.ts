@@ -30,7 +30,7 @@ export const ROLE_CHECKPOINT_MAX_TAIL_CHARS = 8_192;
 export const ROLE_CHECKPOINT_FILENAME = "checkpoint.md";
 
 export type RoleCheckpointPointers = {
-  /** Durable Node / box ids (cx-…). */
+  /** Durable Node / node ids (cx-…). */
   nodes?: string[];
   /** Task ids or envelope paths (tk-… or temp/…). */
   tasks?: string[];

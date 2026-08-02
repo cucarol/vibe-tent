@@ -12,7 +12,7 @@ import { NodeFs } from "../src/fs/node-fs.js";
 import { loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
 import { taskReferencedNodeIds } from "../src/core/task-node-refs.js";
 import { parseFrontmatter } from "../src/core/frontmatter.js";
-import { dispatch, resolveDispatchNodeIds, archiveBox } from "../src/core/ops.js";
+import { dispatch, resolveDispatchNodeIds, archiveNode } from "../src/core/ops.js";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
@@ -32,10 +32,10 @@ function envFor(dir: string) {
 test("resolveDispatchNodeIds: nodeIds are ordered, deduped, and validated", () => {
   assert.deepEqual(
     resolveDispatchNodeIds({
-      nodeIds: ["bx-p1", "bx-o1", "bx-p1", "bx-g1"],
+      nodeIds: ["cx-p1", "cx-o1", "cx-p1", "cx-g1"],
       tentName: "demo",
     }),
-    ["bx-p1", "bx-o1", "bx-g1"]
+    ["cx-p1", "cx-o1", "cx-g1"]
   );
   assert.throws(
     () => resolveDispatchNodeIds({ nodeIds: [], tentName: "demo" }),
@@ -44,7 +44,7 @@ test("resolveDispatchNodeIds: nodeIds are ordered, deduped, and validated", () =
   assert.throws(
     () =>
       resolveDispatchNodeIds({
-        nodeIds: ["bx-p1", "  "],
+        nodeIds: ["cx-p1", "  "],
         tentName: "demo",
       }),
     /nodeIds\[1\]/
@@ -69,18 +69,18 @@ test("dispatch: multi nodeIds preserve exact order in Context Card; dedupe; no c
   const dir = await makeTent();
   const env = envFor(dir);
 
-  const result = await dispatch(env as any, "bx-o1", "analyst", {
+  const result = await dispatch(env as any, "cx-o1", "analyst", {
     userPrompt: "multi-node ordered work",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
-    nodeIds: ["bx-o1", "bx-p1", "bx-g1", "bx-p1", "bx-o1"],
+    nodeIds: ["cx-o1", "cx-p1", "cx-g1", "cx-p1", "cx-o1"],
   });
 
   const loaded = await loadTaskEnvelope(env.fs, result.taskPath);
-  assert.deepEqual(taskReferencedNodeIds(loaded), ["bx-o1", "bx-p1", "bx-g1"]);
+  assert.deepEqual(taskReferencedNodeIds(loaded), ["cx-o1", "cx-p1", "cx-g1"]);
   assert.deepEqual(
     loaded.contextCard?.refs.nodes.map((n) => n.id),
-    ["bx-o1", "bx-p1", "bx-g1"]
+    ["cx-o1", "cx-p1", "cx-g1"]
   );
   // Path hints present for resolved Nodes.
   assert.ok(loaded.contextCard!.refs.nodes.every((n) => typeof n.path === "string" && n.path));
@@ -89,9 +89,9 @@ test("dispatch: multi nodeIds preserve exact order in Context Card; dedupe; no c
   const { data } = parseFrontmatter(raw);
   assert.equal("claims" in data, false);
   // Manifest snapshots the same ids as writable pointers (auxiliary).
-  assert.match(result.manifestYaml, /id: bx-o1/);
-  assert.match(result.manifestYaml, /id: bx-p1/);
-  assert.match(result.manifestYaml, /id: bx-g1/);
+  assert.match(result.manifestYaml, /id: cx-o1/);
+  assert.match(result.manifestYaml, /id: cx-p1/);
+  assert.match(result.manifestYaml, /id: cx-g1/);
   assert.doesNotMatch(result.manifestYaml, /^claims:/m);
 });
 
@@ -100,18 +100,20 @@ test("dispatch: multiline Context Card strings round-trip without corrupting the
   const env = envFor(dir);
   const prompt = "先读取项目说明\n\n只修改核心解析器\n\n完成后运行测试";
 
-  const result = await dispatch(env as any, "bx-o1", "analyst", {
+  const result = await dispatch(env as any, "cx-o1", "analyst", {
     userPrompt: prompt,
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
-    nodeIds: ["bx-o1"],
+    nodeIds: ["cx-o1"],
   });
 
   const raw = await env.fs.readFile(result.taskPath);
-  assert.match(raw, /objective: "先读取项目说明\\n\\n只修改核心解析器/);
+  assert.doesNotMatch(raw, /objective: "先读取项目说明/);
   const loaded = await loadTaskEnvelope(env.fs, result.taskPath);
-  assert.equal(loaded.contextCard?.objective, prompt);
-  assert.deepEqual(loaded.contextCard?.acceptance, [prompt]);
+  assert.equal(loaded.contextCard.objective, "");
+  assert.deepEqual(loaded.contextCard.acceptance, []);
+  assert.ok(loaded.prompt?.endsWith(prompt));
+  assert.equal(loaded.prompt?.split(prompt).length, 2, "raw prompt appears exactly once");
 });
 
 test("dispatch: Role manifest snapshots only newly requested Nodes (no prior Role aggregation)", async () => {
@@ -119,31 +121,31 @@ test("dispatch: Role manifest snapshots only newly requested Nodes (no prior Rol
   const env = envFor(dir);
 
   // Prior active Role Task on the same Role with a different Node set.
-  const prior = await dispatch(env as any, "bx-p1", "analyst", {
+  const prior = await dispatch(env as any, "cx-p1", "analyst", {
     userPrompt: "prior active role task",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
-    nodeIds: ["bx-p1", "bx-p2"],
+    nodeIds: ["cx-p1", "cx-p2"],
   });
   assert.deepEqual(
     taskReferencedNodeIds(await loadTaskEnvelope(env.fs, prior.taskPath)),
-    ["bx-p1", "bx-p2"]
+    ["cx-p1", "cx-p2"]
   );
 
   // New Task for the same Role must not silently import prior refs into manifest
   // or Context Card — exact requested ordered selection only (one fact).
-  const next = await dispatch(env as any, "bx-o1", "analyst", {
+  const next = await dispatch(env as any, "cx-o1", "analyst", {
     userPrompt: "new role task exact selection",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
-    nodeIds: ["bx-o1", "bx-g1"],
+    nodeIds: ["cx-o1", "cx-g1"],
   });
 
   const loaded = await loadTaskEnvelope(env.fs, next.taskPath);
-  assert.deepEqual(taskReferencedNodeIds(loaded), ["bx-o1", "bx-g1"]);
+  assert.deepEqual(taskReferencedNodeIds(loaded), ["cx-o1", "cx-g1"]);
   assert.deepEqual(
     loaded.contextCard?.refs.nodes.map((n) => n.id),
-    ["bx-o1", "bx-g1"]
+    ["cx-o1", "cx-g1"]
   );
 
   // Each Task owns a distinct manifest snapshot; a later Task cannot overwrite
@@ -156,15 +158,15 @@ test("dispatch: Role manifest snapshots only newly requested Nodes (no prior Rol
   assert.equal(await env.fs.readFile(prior.manifestPath), prior.manifestYaml);
   assert.equal(await env.fs.readFile(next.manifestPath), next.manifestYaml);
 
-  // Auxiliary manifest selection is claimBoxes → writable scope. Readable still
+  // Auxiliary manifest selection is claimNodes → writable scope. Readable still
   // lists full Tent context, so assert only the writable section for exactness.
   const writableSection = next.manifestYaml.split(/^writable:\r?\n/m)[1] ?? "";
   assert.ok(writableSection.length > 0, "manifest must emit writable section");
-  assert.match(writableSection, /id: bx-o1/);
-  assert.match(writableSection, /id: bx-g1/);
+  assert.match(writableSection, /id: cx-o1/);
+  assert.match(writableSection, /id: cx-g1/);
   // Prior Role Task Nodes must not enter this Task's selection/writable scope.
-  assert.doesNotMatch(writableSection, /id: bx-p1\b/);
-  assert.doesNotMatch(writableSection, /id: bx-p2\b/);
+  assert.doesNotMatch(writableSection, /id: cx-p1\b/);
+  assert.doesNotMatch(writableSection, /id: cx-p2\b/);
   assert.doesNotMatch(next.manifestYaml, /^claims:/m);
 });
 
@@ -175,23 +177,23 @@ test("dispatch: missing / archived / invalid nodeIds zero-write (no task/manifes
   // Missing id
   await assert.rejects(
     () =>
-      dispatch(env as any, "bx-p1", "analyst", {
+      dispatch(env as any, "cx-p1", "analyst", {
         userPrompt: "missing node",
         parentActor: { kind: "user", id: "user" },
-        nodeIds: ["bx-p1", "bx-does-not-exist"],
+        nodeIds: ["cx-p1", "cx-doesnotexist"],
       }),
-    /Box not found/
+    /Node not found/
   );
   assert.equal(await env.fs.exists("temp/analyst"), false);
 
   // Archived
-  await archiveBox(env as any, "bx-o1");
+  await archiveNode(env as any, "cx-o1");
   await assert.rejects(
     () =>
-      dispatch(env as any, "bx-p1", "executor", {
+      dispatch(env as any, "cx-p1", "executor", {
         userPrompt: "archived node",
         parentActor: { kind: "user", id: "user" },
-        nodeIds: ["bx-p1", "bx-o1"],
+        nodeIds: ["cx-p1", "cx-o1"],
       }),
     /Cannot dispatch:.*[Aa]rchiv/
   );
@@ -200,10 +202,10 @@ test("dispatch: missing / archived / invalid nodeIds zero-write (no task/manifes
   // Root token mixed with concrete ids
   await assert.rejects(
     () =>
-      dispatch(env as any, "bx-p1", "planner", {
+      dispatch(env as any, "cx-p1", "planner", {
         userPrompt: "mixed root",
         parentActor: { kind: "user", id: "user" },
-        nodeIds: ["bx-p1", "root"],
+        nodeIds: ["cx-p1", "root"],
       }),
     /whole Tent/
   );
@@ -214,32 +216,32 @@ test("dispatch: exact Node occupation blocks only the same Node and releases on 
   const dir = await makeTent();
   const env = envFor(dir);
 
-  const first = await dispatch(env as any, "bx-p1", "analyst", {
+  const first = await dispatch(env as any, "cx-p1", "analyst", {
     userPrompt: "first exact Node task",
     parentActor: { kind: "user", id: "user" },
-    nodeIds: ["bx-p1", "bx-p2"],
+    nodeIds: ["cx-p1", "cx-p2"],
   });
   await assert.rejects(
     () =>
-      dispatch(env as any, "bx-p1", "executor", {
+      dispatch(env as any, "cx-p1", "executor", {
         userPrompt: "same Node concurrent",
         parentActor: { kind: "user", id: "user" },
-        nodeIds: ["bx-p1"],
+        nodeIds: ["cx-p1"],
       }),
     /occupied by active task/
   );
   assert.equal(await env.fs.exists("temp/executor"), false);
 
   // Parent/child and sibling Nodes are separate contexts and remain concurrent.
-  const parent = await dispatch(env as any, "bx-promptzone", "planner", {
+  const parent = await dispatch(env as any, "cx-promptzone", "planner", {
     userPrompt: "parent context concurrent",
     parentActor: { kind: "user", id: "user" },
-    nodeIds: ["bx-promptzone"],
+    nodeIds: ["cx-promptzone"],
   });
-  const sibling = await dispatch(env as any, "bx-g1", "reviewer", {
+  const sibling = await dispatch(env as any, "cx-g1", "reviewer", {
     userPrompt: "sibling context concurrent",
     parentActor: { kind: "user", id: "user" },
-    nodeIds: ["bx-g1"],
+    nodeIds: ["cx-g1"],
   });
 
   assert.ok(parent.taskPath);
@@ -252,10 +254,10 @@ test("dispatch: exact Node occupation blocks only the same Node and releases on 
     });
     await assert.rejects(
       () =>
-        dispatch(env as any, "bx-p1", "executor", {
+        dispatch(env as any, "cx-p1", "executor", {
           userPrompt: `blocked while ${state}`,
           parentActor: { kind: "user", id: "user" },
-          nodeIds: ["bx-p1"],
+          nodeIds: ["cx-p1"],
         }),
       /occupied by active task/
     );
@@ -271,10 +273,10 @@ test("dispatch: exact Node occupation blocks only the same Node and releases on 
       state,
       updatedAt: "2026-07-30T12:00:00.000Z",
     });
-    const released = await dispatch(env as any, "bx-p1", "executor", {
+    const released = await dispatch(env as any, "cx-p1", "executor", {
       userPrompt: `released after ${state}`,
       parentActor: { kind: "user", id: "user" },
-      nodeIds: ["bx-p1"],
+      nodeIds: ["cx-p1"],
     });
     assert.ok(released.taskPath);
     await patchTaskEnvelope(env.fs, released.taskPath, {
@@ -289,10 +291,10 @@ test("dispatch: malformed nodeIds reject before any Task or manifest write", asy
   const env = envFor(dir);
   await assert.rejects(
     () =>
-      dispatch(env as any, "bx-o1", "analyst", {
+      dispatch(env as any, "cx-o1", "analyst", {
         userPrompt: "conflict",
         parentActor: { kind: "user", id: "user" },
-        nodeIds: ["bx-o1", " "],
+        nodeIds: ["cx-o1", " "],
       }),
     /nodeIds\[1\]/
   );
@@ -306,7 +308,7 @@ async function makeWorkspace(name = "mn-dispatch"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -365,8 +367,8 @@ async function mountTwoNotes(
   assert.ok(!b.error, JSON.stringify(b.error));
   return {
     workspaceId,
-    idA: (a.result as { id: string }).id,
-    idB: (b.result as { id: string }).id,
+    idA: (a.result as { nodeId: string }).nodeId,
+    idB: (b.result as { nodeId: string }).nodeId,
   };
 }
 
@@ -420,13 +422,13 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [idA, "bx-missing-zz"],
+      nodeIds: [idA, "cx-missingzz"],
       assigneeKind: "route",
       routeId: "fake-default",
       prompt: "missing ref",
     });
     assert.ok(missing.error, "expected missing node fail");
-    assert.match(String(missing.error.message || missing.error), /Box not found|not found/i);
+    assert.match(String(missing.error.message || missing.error), /Node not found|not found/i);
 
     // Empty nodeIds
     const empty = await rpc(svc, "task.dispatch", {
@@ -454,7 +456,7 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
     assert.ok(bad.error);
     assert.match(String(bad.error.message || bad.error), /nodeIds/i);
 
-    for (const retiredField of ["boxId", "id", "claimId"] as const) {
+    for (const retiredField of ["nodeId", "id", "claimId"] as const) {
       const retired = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
@@ -487,7 +489,7 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
       type: "prompt",
     });
     assert.ok(!freeNote.error, JSON.stringify(freeNote.error));
-    const idFree = (freeNote.result as { id: string }).id;
+    const idFree = (freeNote.result as { nodeId: string }).nodeId;
 
     const beforeList = await rpc(svc, "task.list", { workspaceId });
     assert.ok(!beforeList.error);
@@ -495,7 +497,7 @@ test("service task.dispatch: invalid and retired selection fields fail before wr
 
     const arch = await rpc(svc, "docs.setMode", {
       workspaceId,
-      id: idFree,
+      nodeId: idFree,
       mode: "archived",
     });
     assert.ok(!arch.error, JSON.stringify(arch.error));
@@ -557,7 +559,7 @@ test("service task.dispatch: Role and agentProfile Tasks use distinct Node selec
       type: "prompt",
     });
     assert.ok(!extra.error, JSON.stringify(extra.error));
-    const idC = (extra.result as { id: string }).id;
+    const idC = (extra.result as { nodeId: string }).nodeId;
 
     const profileD = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },

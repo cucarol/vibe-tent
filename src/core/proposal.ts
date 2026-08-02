@@ -1,12 +1,13 @@
 import { withTentMutation, type Clock, type FsAdapter } from "./adapter.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
+import { isNodeId } from "./id.js";
 import { loadTent, join } from "./tree.js";
 
 export type ProposalStatus = "pending" | "accepted" | "rejected";
 
 export interface Proposal {
   path: string;
-  boxId: string;
+  nodeId: string;
   role: string;
   status: ProposalStatus;
   createdAt?: string;
@@ -17,28 +18,30 @@ export async function submitProposal(
   fs: FsAdapter,
   clock: Clock,
   role: string,
-  boxId: string,
+  nodeId: string,
   body: string
 ): Promise<Proposal> {
-  return withTentMutation(fs, async () => submitProposalUnlocked(fs, clock, role, boxId, body));
+  return withTentMutation(fs, async () => submitProposalUnlocked(fs, clock, role, nodeId, body));
 }
 
 async function submitProposalUnlocked(
   fs: FsAdapter,
   clock: Clock,
   roleInput: string,
-  boxId: string,
+  nodeId: string,
   body: string
 ): Promise<Proposal> {
   const text = body.trim();
   if (!text) throw new Error("Proposal body cannot be empty.");
   const role = normalizeRole(roleInput);
   const tent = await loadTent(fs);
-  if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
-  const box = tent.byId.get(boxId);
-  if (!box) throw new Error(`Box not found: ${boxId}.`);
+  if (tent.duplicateIds.has(nodeId)) {
+    throw new Error(`Duplicate Node id '${nodeId}' found; repair the duplicate Nodes before using this id.`);
+  }
+  const node = tent.byId.get(nodeId);
+  if (!node) throw new Error(`Node not found: ${nodeId}.`);
 
-  const path = proposalPath(role, box.id);
+  const path = proposalPath(role, node.id);
   if (await fs.exists(path)) {
     const current = await loadProposal(fs, path);
     if (current.status === "pending") throw new Error("A proposal is already pending triage; the user must confirm or reject it first.");
@@ -46,7 +49,7 @@ async function submitProposalUnlocked(
 
   const proposal: Proposal = {
     path,
-    boxId: box.id,
+    nodeId: node.id,
     role,
     status: "pending",
     createdAt: clock.now(),
@@ -83,7 +86,8 @@ export async function loadProposal(fs: FsAdapter, inputPath: string): Promise<Pr
   const { data, body } = parseFrontmatter(await fs.readFile(path));
   if (
     data.type !== "proposal" ||
-    typeof data.box !== "string" ||
+    typeof data.nodeId !== "string" ||
+    !isNodeId(data.nodeId) ||
     typeof data.role !== "string" ||
     (data.status !== "pending" && data.status !== "accepted" && data.status !== "rejected")
   ) {
@@ -91,7 +95,7 @@ export async function loadProposal(fs: FsAdapter, inputPath: string): Promise<Pr
   }
   return {
     path,
-    boxId: data.box,
+    nodeId: data.nodeId,
     role: data.role,
     status: data.status,
     createdAt: typeof data.createdAt === "string" ? data.createdAt : undefined,
@@ -117,14 +121,15 @@ export async function rejectProposal(fs: FsAdapter, inputPath: string): Promise<
   });
 }
 
-function proposalPath(role: string, boxId: string): string {
-  return join("temp", role, "proposals", `${boxId}.md`);
+function proposalPath(role: string, nodeId: string): string {
+  return join("temp", role, "proposals", `${nodeId}.md`);
 }
 
 function normalizeProposalPath(input: string): string {
   const path = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/proposals\/[bc]x-[^/]+\.md$/.test(path)) {
-    throw new Error("Proposal must point to temp/<role>/proposals/<boxId>.md.");
+  const match = /^temp\/[^/]+\/proposals\/([^/]+)\.md$/.exec(path);
+  if (!match || !isNodeId(match[1]!)) {
+    throw new Error("Proposal must point to temp/<role>/proposals/<nodeId>.md.");
   }
   return path;
 }
@@ -132,14 +137,14 @@ function normalizeProposalPath(input: string): string {
 async function writeProposal(fs: FsAdapter, proposal: Proposal): Promise<void> {
   const data: Record<string, unknown> = {
     type: "proposal",
-    box: proposal.boxId,
+    nodeId: proposal.nodeId,
     role: proposal.role,
     status: proposal.status,
     createdAt: proposal.createdAt,
   };
   await fs.writeFile(
     proposal.path,
-    serializeFrontmatter(data, proposal.body + "\n", ["type", "box", "role", "status", "createdAt"])
+    serializeFrontmatter(data, proposal.body + "\n", ["type", "nodeId", "role", "status", "createdAt"])
   );
 }
 

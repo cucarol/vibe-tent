@@ -18,6 +18,7 @@ import {
   type TaskActorRef,
 } from "./task-model.js";
 import type { TaskEnvelope } from "./task.js";
+import { isNodeId } from "./id.js";
 
 /** Re-export canonical actor type — single authoritative wire (task-model). */
 export type { TaskActorRef, TaskActorKind } from "./task-model.js";
@@ -389,12 +390,26 @@ function parseRefList(value: unknown, bucket: string): TaskContextCardRef[] {
   for (let i = 0; i < value.length; i++) {
     const item = value[i];
     if (typeof item === "string") {
+      if (bucket === "nodes") {
+        throw new TaskContextCardError(
+          "UNRESOLVED_REF",
+          `Context Card refs.nodes[${i}] must be a durable pointer object with id.`,
+          { bucket, index: i }
+        );
+      }
       const id = item.trim();
       if (!id) {
         throw new TaskContextCardError(
           "UNRESOLVED_REF",
           `Context Card refs.${bucket}[${i}] id is empty.`,
           { bucket, index: i }
+        );
+      }
+      if (bucket === "nodes" && !isNodeId(id)) {
+        throw new TaskContextCardError(
+          "UNRESOLVED_REF",
+          `Context Card refs.nodes[${i}] must use a canonical cx-* Node id.`,
+          { bucket, index: i, id }
         );
       }
       out.push({ id });
@@ -414,6 +429,13 @@ function parseRefList(value: unknown, bucket: string): TaskContextCardRef[] {
         "UNRESOLVED_REF",
         `Context Card refs.${bucket}[${i}] missing id.`,
         { bucket, index: i }
+      );
+    }
+    if (bucket === "nodes" && !isNodeId(id)) {
+      throw new TaskContextCardError(
+        "UNRESOLVED_REF",
+        `Context Card refs.nodes[${i}] must use a canonical cx-* Node id.`,
+        { bucket, index: i, id }
       );
     }
     const ref: TaskContextCardRef = { id };
@@ -519,10 +541,10 @@ export function parseTaskContextCard(data: unknown): TaskContextCardV1 {
     },
     acceptance: asStringList(raw.acceptance),
     refs: {
-      nodes: parseRefList(refsRaw.nodes ?? raw.refsNodes, "nodes"),
-      tasks: parseRefList(refsRaw.tasks ?? raw.refsTasks, "tasks"),
-      deliveries: parseRefList(refsRaw.deliveries ?? raw.refsDeliveries, "deliveries"),
-      git: parseRefList(refsRaw.git ?? raw.refsGit, "git"),
+      nodes: parseRefList(refsRaw.nodes, "nodes"),
+      tasks: parseRefList(refsRaw.tasks, "tasks"),
+      deliveries: parseRefList(refsRaw.deliveries, "deliveries"),
+      git: parseRefList(refsRaw.git, "git"),
     },
     contextGeneration:
       typeof raw.contextGeneration === "string" ? raw.contextGeneration : "",

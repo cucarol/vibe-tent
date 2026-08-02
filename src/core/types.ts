@@ -1,13 +1,11 @@
 // The Tent 核心类型。这一层是唯一真相,插件和 CLI 都 import 它。
 
-export type BoxType = string;
+export type NodeType = string;
 
 /**
- * Collaboration progress for Task / BoxProjection (todo|doing|done).
+ * Collaboration progress for Task / Node collaboration projection (todo|doing|done).
  * Not a Node frontmatter field — Nodes no longer carry status.
  */
-export type Status = "todo" | "doing" | "done";
-
 /**
  * Node lifecycle mode (document semantics; not Task state).
  * Absent on disk ≡ editable. Only archived inherits down the subtree.
@@ -23,7 +21,7 @@ export type RelationDirection = "directed" | "bidirectional";
 
 /**
  * Exactly one target form:
- * - resolved: stable concept handle
+ * - resolved: stable Node handle
  * - unresolved: explicit non-empty string (never silent-drop)
  */
 export type RelationTarget = { nodeId: string } | { unresolved: string };
@@ -43,10 +41,10 @@ export interface RelationRecord {
   target: RelationTarget;
 }
 
-/** concept 身份文件 frontmatter。type 必填。id 为 cx- handle（迁移前可有 bx-）。 */
-export interface BoxFrontmatter {
+/** Node identity-file frontmatter. `type` is required and `id` is a cx- handle. */
+export interface NodeFrontmatter {
   id: string;
-  type: BoxType;
+  type: NodeType;
   tags?: string[];
   /** Explicit mode only; omit for editable default. Only "archived" is persisted. */
   mode?: NodeMode;
@@ -60,12 +58,11 @@ export interface BoxFrontmatter {
 }
 
 /**
- * 解析进内存的 concept 节点。
- * 字段名 Box 为历史兼容；V0.2 每个有效 concept 均可被引用与派活。
+ * Parsed in-memory Node.
  */
-export interface Box {
+export interface Node {
   id: string;
-  type: BoxType;
+  type: NodeType;
   tags: string[];
   /**
    * Outgoing semantic relations owned by this Node (normalized).
@@ -91,11 +88,11 @@ export interface Box {
   path: string;
   /** 显示名 = 文件夹名。 */
   name: string;
-  fm: BoxFrontmatter;
-  /** 框身份文件正文(frontmatter 之后的部分)。 */
+  fm: NodeFrontmatter;
+  /** Node identity-file body (the content after frontmatter). */
   body: string;
-  children: Box[];
-  parent: Box | null;
+  children: Node[];
+  parent: Node | null;
 }
 
 /** manifest 里 context pointer 的一条（非文件级 ACL）。 */

@@ -48,7 +48,7 @@ async function makeWorkspace(
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -108,7 +108,7 @@ async function mountWorkItem(
   assert.ok(!created.error, JSON.stringify(created.error));
   return {
     workspaceId,
-    boxId: (created.result as { id: string }).id,
+    nodeId: (created.result as { nodeId: string }).nodeId,
   };
 }
 
@@ -124,7 +124,7 @@ async function initGitOnWorkspace(workspace: string): Promise<void> {
 test("agentProfile dispatch: envelope path, task-scoped manifest, no init/registry/tent-role", async () => {
   const ws = await makeWorkspace("ap-basic");
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const beforeRoles = await loadRolesRegistry(new NodeFs(path.join(ws, ".tent")));
     const roleCount = beforeRoles.roles.length;
 
@@ -132,7 +132,7 @@ test("agentProfile dispatch: envelope path, task-scoped manifest, no init/regist
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       assigneeKind: "route",
       routeId: "fake-default",
       prompt: "one-shot profile work",
@@ -207,12 +207,12 @@ test("agentProfile dispatch: envelope path, task-scoped manifest, no init/regist
 test("role dispatch creates init + task-scoped manifest + role path", async () => {
   const ws = await makeWorkspace("ap-role-reg");
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "role path stays",
     });
@@ -247,7 +247,7 @@ test("role dispatch creates init + task-scoped manifest + role path", async () =
 test("agent-profiles is reserved from durable role registration and dispatch", async () => {
   const ws = await makeWorkspace("ap-reserved-role");
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const created = await rpc(svc, "registry.role.create", {
       workspaceId,
       name: "agent-profiles",
@@ -260,7 +260,7 @@ test("agent-profiles is reserved from durable role registration and dispatch", a
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "agent-profiles",
       prompt: "must not enter the reserved namespace",
     });
@@ -277,12 +277,12 @@ test("Git agentProfile task gets tent-task/<taskId> isolated lane; commits from 
   const ws = await makeWorkspace("ap-git-lane");
   await initGitOnWorkspace(ws);
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       assigneeKind: "route",
       routeId: "fake-default",
       prompt: "git profile lane",
@@ -376,13 +376,13 @@ test("startSession profile match/mismatch; two same-profile tasks concurrent", a
       name: "box-b",
       type: "prompt",
     });
-    const boxIdB = (boxB.result as { id: string }).id;
+    const nodeIdB = (boxB.result as { nodeId: string }).nodeId;
 
     const d1 = await rpc(svc, "task.dispatch", {
       workspaceId: a.workspaceId,
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      nodeIds: [a.boxId],
+      nodeIds: [a.nodeId],
       assigneeKind: "route",
       routeId: "fake-default",
       prompt: "first",
@@ -391,7 +391,7 @@ test("startSession profile match/mismatch; two same-profile tasks concurrent", a
       workspaceId: a.workspaceId,
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      nodeIds: [boxIdB],
+      nodeIds: [nodeIdB],
       assigneeKind: "route",
       routeId: "fake-default",
       prompt: "second",
@@ -449,14 +449,14 @@ test("startSession profile match/mismatch; two same-profile tasks concurrent", a
 test("Settings routes work for user and Role callers without roster authorization", async () => {
   const ws = await makeWorkspace("route-authority");
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
 
     // User path always works.
     const userDispatch = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       assigneeKind: "route",
       routeId: "fake-default",
       prompt: "user starts profile",
@@ -478,10 +478,10 @@ test("Settings routes work for user and Role callers without roster authorizatio
       name: "box-2",
       type: "prompt",
     });
-    const boxId2 = (box2.result as { id: string }).id;
+    const nodeId2 = (box2.result as { nodeId: string }).nodeId;
     const noDisp = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [boxId2],
+      nodeIds: [nodeId2],
       assigneeKind: "route",
       routeId: "fake-default",
       prompt: "no dispatcher",
@@ -505,10 +505,10 @@ test("Settings routes work for user and Role callers without roster authorizatio
       name: "box-3",
       type: "prompt",
     });
-    const boxId3 = (box3.result as { id: string }).id;
+    const nodeId3 = (box3.result as { nodeId: string }).nodeId;
     const orch = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [boxId3],
+      nodeIds: [nodeId3],
       assigneeKind: "route",
       routeId: "fake-default",
       prompt: "orch dispatch",
@@ -539,10 +539,10 @@ test("Settings routes work for user and Role callers without roster authorizatio
       name: "box-3b",
       type: "prompt",
     });
-    const boxId3b = (box3b.result as { id: string }).id;
+    const nodeId3b = (box3b.result as { nodeId: string }).nodeId;
     const orchDenied = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [boxId3b],
+      nodeIds: [nodeId3b],
       assigneeKind: "route",
       routeId: "fake-default",
       prompt: "orch deny whitelist",
@@ -567,10 +567,10 @@ test("Settings routes work for user and Role callers without roster authorizatio
       name: "box-4",
       type: "prompt",
     });
-    const boxId4 = (box4.result as { id: string }).id;
+    const nodeId4 = (box4.result as { nodeId: string }).nodeId;
     const execDisp = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [boxId4],
+      nodeIds: [nodeId4],
       assigneeKind: "route",
       routeId: "fake-default",
       prompt: "executor dispatch",
@@ -611,12 +611,12 @@ test("role deletion not blocked by same-named profile session", async () => {
       name: "profile-work",
       type: "prompt",
     });
-    const boxId = (note.result as { id: string }).id;
+    const nodeId = (note.result as { nodeId: string }).nodeId;
     const d = await rpc(svc, "task.dispatch", {
       workspaceId: wid,
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       assigneeKind: "route",
       routeId: "fake-default",
       prompt: "profile session",
@@ -644,12 +644,12 @@ test("role deletion not blocked by same-named profile session", async () => {
 test("task discovery and retention see nested profile tasks", async () => {
   const ws = await makeWorkspace("ap-discover");
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       assigneeKind: "route",
       routeId: "fake-default",
       prompt: "discover me",
@@ -693,12 +693,12 @@ test("task discovery and retention see nested profile tasks", async () => {
 test("claim projects assignee=profileId; delivery submitter is profileId", async () => {
   const ws = await makeWorkspace("ap-claim-deliv");
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       assigneeKind: "route",
       routeId: "fake-default",
       prompt: "claim and deliver",
@@ -706,15 +706,13 @@ test("claim projects assignee=profileId; delivery submitter is profileId", async
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
 
-    const proj = await rpc(svc, "box.projection", { workspaceId, boxId });
+    const proj = await rpc(svc, "node.collaboration", { workspaceId, nodeId });
     assert.ok(!proj.error, JSON.stringify(proj.error));
     const projection = proj.result as {
-      status: string;
-      assignee?: string;
-      activeTaskId?: string;
+      activeTask: null | { task: { profileId?: string } };
     };
-    assert.equal(projection.status, "doing");
-    assert.equal(projection.assignee, "fake-default");
+    assert.ok(projection.activeTask);
+    assert.equal(projection.activeTask?.task.profileId, "fake-default");
 
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
@@ -748,13 +746,13 @@ test("claim projects assignee=profileId; delivery submitter is profileId", async
 test("invalid/missing assignee combinations fail loud", async () => {
   const ws = await makeWorkspace("ap-invalid");
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
 
     const missingRole = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       prompt: "no role",
     });
     assert.ok(missingRole.error);
@@ -764,7 +762,7 @@ test("invalid/missing assignee combinations fail loud", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       assigneeKind: "route",
       prompt: "no profile",
     });
@@ -776,7 +774,7 @@ test("invalid/missing assignee combinations fail loud", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       assigneeKind: "route",
       routeId: "missing-profile",
       prompt: "unknown profile",
@@ -789,7 +787,7 @@ test("invalid/missing assignee combinations fail loud", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       assigneeKind: "route",
       routeId: "fake-default",
       role: "executor",
@@ -803,7 +801,7 @@ test("invalid/missing assignee combinations fail loud", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       assigneeKind: "wizard",
       role: "executor",
       prompt: "bad kind",
@@ -819,7 +817,7 @@ test("invalid/missing assignee combinations fail loud", async () => {
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         assigneeKind: "route",
         prompt: "retired route wire",
         ...retired,
@@ -832,7 +830,7 @@ test("invalid/missing assignee combinations fail loud", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       assigneeKind: "agentProfile",
       routeId: "fake-default",
       prompt: "retired assignee kind",
@@ -844,7 +842,7 @@ test("invalid/missing assignee combinations fail loud", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "role ok",
     });
@@ -865,10 +863,10 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
   {
     const ws = await makeWorkspace("route-combined-role");
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws, "combined-role");
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "combined-role");
       const started = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         assigneeKind: "route",
         routeId: "fake-default",
         prompt: "combined role route",
@@ -888,13 +886,13 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
   {
     const ws = await makeWorkspace("ap-combo-invalid");
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws, "combo-invalid");
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "combo-invalid");
 
       const unknown = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         assigneeKind: "route",
         routeId: "missing-profile-xyz",
         prompt: "unknown profile combined",
@@ -908,7 +906,7 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "start without profileId",
         startSession: true,
@@ -929,10 +927,9 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
         `stale running tasks: ${JSON.stringify(tasks)}`
       );
 
-      const proj = await rpc(svc, "box.projection", { workspaceId, boxId });
-      const projection = proj.result as { status: string; activeTaskId?: string };
-      assert.notEqual(projection.status, "doing");
-      assert.ok(!projection.activeTaskId);
+      const proj = await rpc(svc, "node.collaboration", { workspaceId, nodeId });
+      const projection = proj.result as { activeTask: unknown | null };
+      assert.equal(projection.activeTask, null);
     });
   }
 
@@ -946,12 +943,12 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
       profiles: profilesWithLaunchFail(),
     });
     try {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws, "combo-launch");
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "combo-launch");
       const failed = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         assigneeKind: "route",
         routeId: "fake-launch-fail",
         prompt: "combined launch fail",
@@ -974,10 +971,9 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
       assert.equal(task.state, "failed");
       assert.ok(await envFs.exists(profileTasks[0]!.path));
 
-      const proj = await rpc(svc, "box.projection", { workspaceId, boxId });
-      const projection = proj.result as { status: string; activeTaskId?: string };
-      assert.notEqual(projection.status, "doing");
-      assert.ok(!projection.activeTaskId);
+      const proj = await rpc(svc, "node.collaboration", { workspaceId, nodeId });
+      const projection = proj.result as { activeTask: unknown | null };
+      assert.equal(projection.activeTask, null);
     } finally {
       await svc.stop();
     }
@@ -987,12 +983,12 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
   {
     const ws = await makeWorkspace("ap-combo-ok");
     await withService(async (svc) => {
-      const { workspaceId, boxId } = await mountWorkItem(svc, ws, "combo-ok");
+      const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "combo-ok");
       const ok = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         assigneeKind: "route",
         routeId: FAKE_DEFAULT_PROFILE_ID,
         prompt: "combined success",
@@ -1016,10 +1012,9 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
       assert.equal(task.state, "running");
       assert.equal(task.sessionId, sessionId);
 
-      const proj = await rpc(svc, "box.projection", { workspaceId, boxId });
-      const projection = proj.result as { status: string; activeTaskId?: string };
-      assert.equal(projection.status, "doing");
-      assert.ok(projection.activeTaskId);
+      const proj = await rpc(svc, "node.collaboration", { workspaceId, nodeId });
+      const projection = proj.result as { activeTask: unknown | null };
+      assert.ok(projection.activeTask);
     });
   }
 
@@ -1028,12 +1023,12 @@ test("combined dispatch startSession=true compensates pre-bind start failures", 
 test("missing assigneeKind on historical envelope reads as role", async () => {
   const ws = await makeWorkspace("ap-legacy");
   await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [boxId],
+      nodeIds: [nodeId],
       role: "executor",
       prompt: "legacy strip",
     });

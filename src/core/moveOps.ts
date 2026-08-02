@@ -1,23 +1,23 @@
-// Atomic concept move / reparent: keep cx- stable, reorder or reparent under DropPosition,
+// Atomic Node move / reparent: keep cx- stable, reorder or reparent under DropPosition,
 // rewrite path links only when the folder path changes, roll back on post-move failure.
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
-import { buildConceptIndex } from "./okf.js";
+import { buildNodeIndex } from "./okf.js";
 import type { OpsEnv } from "./ops-context.js";
 import { loadOrder, saveOrder, ROOT_KEY } from "./order.js";
 import { isOperationalPath } from "./paths.js";
 import {
   assertNoActiveTaskRefsInSubtree,
-  rewriteConceptLinks,
-  type RewriteConceptLinksOptions,
+  rewriteNodeLinks,
+  type RewriteNodeLinksOptions,
 } from "./renameOps.js";
-import type { Box } from "./types.js";
+import type { Node } from "./types.js";
 import {
-  boxNotePath,
+  nodeNotePath,
   dirName,
   assertContentMutable,
-  isUsableBox,
+  isUsableNode,
   join,
   loadTent,
   type LoadedTent,
@@ -46,7 +46,7 @@ type PlannedWrite = {
 };
 
 /**
- * Move or reorder a concept by stable `cx-`.
+ * Move or reorder a Node by stable `cx-`.
  * - `cx-` / frontmatter id never change; folder stem (display name) is preserved
  * - reparent: move directory tree, rewrite path-based links, roll back on failure
  * - same-parent reorder: order.json only — no link rewrite
@@ -55,46 +55,46 @@ type PlannedWrite = {
  */
 export async function moveNode(
   env: OpsEnv,
-  conceptId: string,
+  nodeId: string,
   newParentId: string | null,
   position: MovePosition
 ): Promise<MoveNodeResult> {
   return withTentMutation(env.fs, async () =>
-    moveNodeUnlocked(env, conceptId, newParentId, position)
+    moveNodeUnlocked(env, nodeId, newParentId, position)
   );
 }
 
 async function moveNodeUnlocked(
   env: OpsEnv,
-  conceptId: string,
+  nodeId: string,
   newParentId: string | null,
   position: MovePosition
 ): Promise<MoveNodeResult> {
-  const id = conceptId.trim();
-  if (!id) throw new Error("Concept id is required for move.");
+  const id = nodeId.trim();
+  if (!id) throw new Error("Node id is required for move.");
 
   const tent = await loadTent(env.fs);
   const moved = tent.byId.get(id);
-  if (!moved) throw new Error(`Concept not found: ${id}.`);
-  if (!isUsableBox(moved)) throw new Error("Invalid or archived boxes cannot be moved.");
+  if (!moved) throw new Error(`Node not found: ${id}.`);
+  if (!isUsableNode(moved)) throw new Error("Invalid or archived nodes cannot be moved.");
   assertContentMutable(moved, "moved");
   if (moved.invalid || moved.archived) {
-    throw new Error("Invalid or archived boxes cannot be moved.");
+    throw new Error("Invalid or archived nodes cannot be moved.");
   }
   assertNotOperationalPath(moved.path);
 
   await assertNoActiveTaskRefsInSubtree(env, moved, "move");
 
-  const parentBox = resolveNewParent(tent, newParentId);
-  if (parentBox) {
-    if (!isUsableBox(parentBox)) throw new Error("Target parent box is invalid or archived.");
-    assertContentMutable(parentBox, "used as move parent");
-    assertNotOperationalPath(parentBox.path);
+  const parentNode = resolveNewParent(tent, newParentId);
+  if (parentNode) {
+    if (!isUsableNode(parentNode)) throw new Error("Target parent node is invalid or archived.");
+    assertContentMutable(parentNode, "used as move parent");
+    assertNotOperationalPath(parentNode.path);
   }
 
-  const newParentPath = parentBox ? parentBox.path : "";
+  const newParentPath = parentNode ? parentNode.path : "";
   if (newParentPath === moved.path || newParentPath.startsWith(moved.path + "/")) {
-    throw new Error("Cannot move a box into its own subtree.");
+    throw new Error("Cannot move a node into its own subtree.");
   }
 
   // Validate before/after sibling belongs under the destination parent.
@@ -102,12 +102,12 @@ async function moveNodeUnlocked(
     const sibling = tent.byId.get(position.siblingId);
     if (!sibling) throw new Error(`Sibling not found: ${position.siblingId}.`);
     const siblingParentId = sibling.parent ? sibling.parent.id : null;
-    const destParentId = parentBox ? parentBox.id : null;
+    const destParentId = parentNode ? parentNode.id : null;
     if (siblingParentId !== destParentId) {
       throw new Error("before/after sibling must be under the destination parent.");
     }
     if (sibling.id === moved.id) {
-      throw new Error("Cannot position a box relative to itself.");
+      throw new Error("Cannot position a node relative to itself.");
     }
   }
 
@@ -121,16 +121,16 @@ async function moveNodeUnlocked(
       throw new Error(`Move target already exists: ${destination}.`);
     }
     // Name collision among destination siblings (tree may lag FS in edge cases).
-    const destSiblings = parentBox ? parentBox.children : tent.roots;
-    if (destSiblings.some((box) => box.id !== moved.id && box.name === movedName)) {
-      throw new Error(`A sibling concept already uses the name: ${movedName}.`);
+    const destSiblings = parentNode ? parentNode.children : tent.roots;
+    if (destSiblings.some((node) => node.id !== moved.id && node.name === movedName)) {
+      throw new Error(`A sibling Node already uses the name: ${movedName}.`);
     }
   }
 
-  const parentKey = parentBox ? parentBox.id : ROOT_KEY;
+  const parentKey = parentNode ? parentNode.id : ROOT_KEY;
   const oldParentKey = moved.parent ? moved.parent.id : ROOT_KEY;
 
-  const siblings = (parentBox ? parentBox.children : tent.roots)
+  const siblings = (parentNode ? parentNode.children : tent.roots)
     .filter((b) => b.id !== moved.id)
     .map((b) => b.id);
 
@@ -149,9 +149,9 @@ async function moveNodeUnlocked(
     order[parentKey] = siblings;
     await saveOrder(env.fs, order);
     const identityMap: Record<string, string> = {};
-    for (const box of collectSubtree(moved)) {
-      identityMap[box.path] = box.path;
-      identityMap[boxNotePath(box.path).replace(/\.md$/i, "")] = boxNotePath(box.path).replace(
+    for (const node of collectSubtree(moved)) {
+      identityMap[node.path] = node.path;
+      identityMap[nodeNotePath(node.path).replace(/\.md$/i, "")] = nodeNotePath(node.path).replace(
         /\.md$/i,
         ""
       );
@@ -168,19 +168,19 @@ async function moveNodeUnlocked(
   // ---- Reparent: pathMap + link rewrite + FS move + order + rollback ----
   const subtree = collectSubtree(moved);
   const pathMap = new Map<string, string>();
-  for (const box of subtree) {
-    const rel = relativePath(oldPath, box.path);
-    const nextBoxPath = rel ? join(destination, rel) : destination;
-    pathMap.set(box.path, nextBoxPath);
+  for (const node of subtree) {
+    const rel = relativePath(oldPath, node.path);
+    const nextNodePath = rel ? join(destination, rel) : destination;
+    pathMap.set(node.path, nextNodePath);
     pathMap.set(
-      boxNotePath(box.path).replace(/\.md$/i, ""),
-      boxNotePath(nextBoxPath).replace(/\.md$/i, "")
+      nodeNotePath(node.path).replace(/\.md$/i, ""),
+      nodeNotePath(nextNodePath).replace(/\.md$/i, "")
     );
   }
 
-  const conceptIndex = buildConceptIndex(tent.byPath.values());
-  const rewriteOpts: RewriteConceptLinksOptions = {
-    renameBoxId: moved.id,
+  const conceptIndex = buildNodeIndex(tent.byPath.values());
+  const rewriteOpts: RewriteNodeLinksOptions = {
+    renameNodeId: moved.id,
     conceptIndex,
   };
 
@@ -188,17 +188,17 @@ async function moveNodeUnlocked(
   // Resolve relatives against pre-move note path; restyle from post-move path so depth changes stay valid.
   const plannedWrites: PlannedWrite[] = [];
   const rewrittenNotes: string[] = [];
-  for (const box of tent.byPath.values()) {
-    const notePath = boxNotePath(box.path);
+  for (const node of tent.byPath.values()) {
+    const notePath = nodeNotePath(node.path);
     if (!(await env.fs.exists(notePath))) continue;
     const raw = await env.fs.readFile(notePath);
     const { data, body, keyOrder } = parseFrontmatter(raw);
-    if (typeof data.id === "string" && data.id !== box.id) {
-      throw new Error(`Refuse move: frontmatter id drift on ${box.path}.`);
+    if (typeof data.id === "string" && data.id !== node.id) {
+      throw new Error(`Refuse move: frontmatter id drift on ${node.path}.`);
     }
-    const afterBoxPath = pathMap.get(box.path) ?? box.path;
-    const restyleFromNotePath = boxNotePath(afterBoxPath);
-    const rewritten = rewriteConceptLinks(body, notePath, pathMap, movedName, movedName, {
+    const afterNodePath = pathMap.get(node.path) ?? node.path;
+    const restyleFromNotePath = nodeNotePath(afterNodePath);
+    const rewritten = rewriteNodeLinks(body, notePath, pathMap, movedName, movedName, {
       ...rewriteOpts,
       restyleFromNotePath,
     });
@@ -209,7 +209,7 @@ async function moveNodeUnlocked(
       originalContent: raw,
       newContent: serializeFrontmatter(data, rewritten.body, keyOrder),
     });
-    rewrittenNotes.push(afterBoxPath);
+    rewrittenNotes.push(afterNodePath);
   }
 
   const orderBefore = await loadOrder(env.fs);
@@ -298,7 +298,7 @@ async function rollbackMove(
   }
 }
 
-function resolveNewParent(tent: LoadedTent, newParentId: string | null): Box | null {
+function resolveNewParent(tent: LoadedTent, newParentId: string | null): Node | null {
   if (newParentId === null || newParentId === undefined || newParentId === "") {
     return null;
   }
@@ -309,17 +309,17 @@ function resolveNewParent(tent: LoadedTent, newParentId: string | null): Box | n
 
 function assertNotOperationalPath(path: string): void {
   if (isOperationalPath(path) || path === "temp" || path.startsWith("temp/")) {
-    throw new Error("temp/ and other system pipelines cannot be moved as concepts.");
+    throw new Error("temp/ and other system pipelines cannot be moved as Nodes.");
   }
   const top = path.split("/")[0] ?? "";
   if (top === "attachments" || top === ".tent") {
-    throw new Error("System directories cannot be moved as concepts.");
+    throw new Error("System directories cannot be moved as Nodes.");
   }
 }
 
-function collectSubtree(box: Box, out: Box[] = []): Box[] {
-  out.push(box);
-  for (const child of box.children) collectSubtree(child, out);
+function collectSubtree(node: Node, out: Node[] = []): Node[] {
+  out.push(node);
+  for (const child of node.children) collectSubtree(child, out);
   return out;
 }
 

@@ -64,7 +64,7 @@ export interface AcpProfileOptions {
   model?: string;
   /**
    * Process env key for API token (read from service process env only).
-   * Value is never written to workspace/box/task or agent-profiles.json.
+   * Value is never written to workspace, Node, Task, or agent-profiles.json.
    * When credentialRef is set, AgentRuntime resolves the vault secret into this env key
    * at startSession (process-scoped LaunchPlan.env only — never SessionRecord / disk).
    */

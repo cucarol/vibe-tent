@@ -8,8 +8,9 @@ import { nodeHelpText, runNodeCommand } from "../src/cli/node-rpc.js";
 
 function fakeClient() {
   const calls: Array<{ method: string; args: unknown[] }> = [];
-  const concept = (id: string, path: string, type = "prompt") => ({
-    concept: { id, name: path.split("/").at(-1) ?? path, path, type },
+  const node = (nodeId: string, path: string, type = "prompt") => ({
+    workspaceId: "ws-node-cli",
+    node: { nodeId, name: path.split("/").at(-1) ?? path, path, type },
   });
   const client = {
     listWorkspaces: async () => ({ workspaces: [] }),
@@ -20,22 +21,21 @@ function fakeClient() {
     }),
     docsList: async (...args: unknown[]) => {
       calls.push({ method: "docsList", args });
-      return { concepts: [] };
+      return { workspaceId: "ws-node-cli", nodes: [] };
     },
-    docsGet: async (_workspaceId: string, ref: { id?: string; path?: string }) => {
-      calls.push({ method: "docsGet", args: [_workspaceId, ref] });
-      if (ref.id === "cx-parent") return concept("cx-parent", "Project");
-      if (ref.id === "cx-child") return concept("cx-child", "Project/Context");
-      if (ref.id) return concept(ref.id, `Node-${ref.id}`);
-      return concept("cx-path", String(ref.path));
+    docsGet: async (_workspaceId: string, nodeId: string) => {
+      calls.push({ method: "docsGet", args: [_workspaceId, nodeId] });
+      if (nodeId === "cx-parent") return node("cx-parent", "Project");
+      if (nodeId === "cx-child") return node("cx-child", "Project/Context");
+      return node(nodeId, `Node-${nodeId}`);
     },
     docsCreateNote: async (...args: unknown[]) => {
       calls.push({ method: "docsCreateNote", args });
-      return { id: "cx-child", path: "Project/Context" };
+      return { workspaceId: "ws-node-cli", nodeId: "cx-child", path: "Project/Context", type: "prompt" };
     },
     docsReadForEdit: async (...args: unknown[]) => {
       calls.push({ method: "docsReadForEdit", args });
-      return { id: "cx-child", path: "Project/Context", etag: "etag-1" };
+      return { nodeId: "cx-child", path: "Project/Context", etag: "etag-1" };
     },
     registryTagCreate: async (...args: unknown[]) => {
       calls.push({ method: "registryTagCreate", args });
@@ -47,11 +47,11 @@ function fakeClient() {
     },
     docsWrite: async (...args: unknown[]) => {
       calls.push({ method: "docsWrite", args });
-      return { id: "cx-child", etag: "etag-2" };
+      return { nodeId: "cx-child", etag: "etag-2" };
     },
     docsMove: async (...args: unknown[]) => {
       calls.push({ method: "docsMove", args });
-      return { id: "cx-child", path: "Target/Context" };
+      return { nodeId: "cx-child", path: "Target/Context" };
     },
   };
   return { client: client as unknown as ServiceClient, calls };
@@ -101,7 +101,7 @@ test("node create resolves parent, writes body, and applies approved tags", asyn
   assert.equal(calls.filter((entry) => entry.method === "registryTagCreate").length, 2);
   const tags = calls.find((entry) => entry.method === "docsTagsSet");
   assert.deepEqual(tags?.args[1], {
-    id: "cx-child",
+    nodeId: "cx-child",
     tags: ["onboarding", "context"],
     baseEtag: "etag-1",
   });
@@ -118,7 +118,7 @@ test("node write obtains the authoritative etag before mutation", async () => {
   assert.equal(result.exitCode, 0, result.stderr);
   const write = calls.find((entry) => entry.method === "docsWrite");
   assert.deepEqual(write?.args[1], {
-    id: "cx-child",
+    nodeId: "cx-child",
     body: "Updated",
     baseEtag: "etag-1",
   });
@@ -135,7 +135,7 @@ test("node move uses stable id plus current expectedPath", async () => {
   assert.equal(result.exitCode, 0, result.stderr);
   const move = calls.find((entry) => entry.method === "docsMove");
   assert.deepEqual(move?.args[1], {
-    id: "cx-child",
+    nodeId: "cx-child",
     expectedPath: "Project/Context",
     newParentId: "cx-parent",
     position: { mode: "inside" },

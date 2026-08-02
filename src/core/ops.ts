@@ -1,26 +1,26 @@
 // Tent 状态动作的统一入口，供 CLI 与插件共同调用。
 
 import { FsAdapter, withTentMutation } from "./adapter.js";
-import { loadTent, join, dirName, boxNotePath, LoadedTent } from "./tree.js";
+import { loadTent, join, dirName, nodeNotePath, LoadedTent } from "./tree.js";
 import { buildManifest, manifestToYaml, DispatchInput } from "./manifest.js";
-import { makeUniqueConceptId } from "./id.js";
-import { BOX_FRONTMATTER_KEY_ORDER, serializeFrontmatter, parseFrontmatter } from "./frontmatter.js";
+import { makeUniqueNodeId } from "./id.js";
+import { NODE_FRONTMATTER_KEY_ORDER, serializeFrontmatter, parseFrontmatter } from "./frontmatter.js";
 import { loadOrder, saveOrder, ROOT_KEY } from "./order.js";
-import { Box, BoxType, NodeMode } from "./types.js";
+import { Node, NodeType, NodeMode } from "./types.js";
 import {
   canClaim,
   envelopeIsActiveOccupation,
   structuralClaimGate,
 } from "./claim.js";
 import { taskDirectlyReferencesNode, taskReferencedNodeIds } from "./task-node-refs.js";
-import { assertContentMutable, isExplicitArchiveRoot, isUsableBox, parseNodeMode } from "./tree.js";
+import { assertContentMutable, isExplicitArchiveRoot, isUsableNode, parseNodeMode } from "./tree.js";
 import {
   addRegistryTag,
   addTag,
   removeRegistryTag,
   removeTag,
   normalizeTagName,
-  syncTagRegistryAfterBoxTagsChangeUnlocked,
+  syncTagRegistryAfterNodeTagsChangeUnlocked,
 } from "./tags.js";
 import { typeExists } from "./typeRegistry.js";
 import { assertRoleNameAvailable, loadRolesRegistry } from "./skillRoleRegistry.js";
@@ -42,8 +42,8 @@ import {
   agentProfileTasksDir,
   agentProfileTempRoot,
 } from "./paths.js";
-import { removeNonAcceptedDeliveriesForBox } from "./delivery.js";
-import { validateBoxName } from "./scaffold.js";
+import { removeNonAcceptedDeliveriesForNode } from "./delivery.js";
+import { validateNodeName } from "./scaffold.js";
 import type { OpsEnv } from "./ops-context.js";
 import { taskClaim, taskFail, taskInterrupt } from "./task-lifecycle.js";
 import { assertNoActiveTaskRefsInSubtree } from "./renameOps.js";
@@ -119,8 +119,8 @@ export interface DispatchOptions {
   /**
    * Authoritative transient multi-Node dispatch source (durable Node IDs).
    * Non-empty; order-preserving dedupe; each id resolved + structurally gated
-   * before any Task/manifest write. Persisted only as Task.contextCard.refs.nodes[]
-   * (never a second claims/nodeIds fact). When omitted, the dispatch primary Node
+   * before any Task/manifest write. Persisted only as Task.contextCard.refs.nodes[].
+   * When omitted, the dispatch primary Node
    * is used as a one-element list.
    */
   nodeIds?: string[];
@@ -279,14 +279,14 @@ async function dispatchUnlocked(
   // Resolve every requested Node under this mutation; fail loud before any write.
   // Exact ordered refs only — no silent ancestry/descendant expansion into Context Card
   // and no aggregation of other active Role Task refs into this Task's selection.
-  const selectedNodes: Box[] = [];
+  const selectedNodes: Node[] = [];
   for (const id of nodeIds) {
-    const node = requireBoxById(tent, id);
+    const node = requireNodeById(tent, id);
     const structural = structuralClaimGate(node);
     if (!structural.ok) {
       throw new Error(`Cannot dispatch: ${structural.reason || "Node cannot be claimed"}`);
     }
-    const claimable = canClaim(node, { tent, tasks });
+    const claimable = canClaim(node, { tasks });
     if (!claimable.ok) {
       throw new Error(`Cannot dispatch: ${claimable.reason || "Node cannot be claimed"}`);
     }
@@ -299,7 +299,7 @@ async function dispatchUnlocked(
     const input: DispatchInput = {
       tentName: env.tentName,
       role: assigneeLabel,
-      claimBoxes: selectedNodes,
+      claimNodes: selectedNodes,
       ...options.workspace,
     };
     const manifest = buildManifest(tent, input);
@@ -329,12 +329,12 @@ async function dispatchUnlocked(
     }
 
     // Sole persisted Node-ref source is contextCard.refs.nodes via writeTaskEnvelope.
-    // Pass exact ordered selection only (no fake root; no dual claims fact).
-    const taskClaims = selectedNodes.map((node) => ({ id: node.id, path: node.path }));
+    // Pass exact ordered selection only.
+    const taskNodeRefs = selectedNodes.map((node) => ({ id: node.id, path: node.path }));
     const agentId = options.agentId?.trim() || undefined;
     const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
       role: assigneeLabel,
-      claims: taskClaims,
+      nodeRefs: taskNodeRefs,
       manifestPath,
       userPrompt,
       workspace: options.workspace,
@@ -357,26 +357,8 @@ async function dispatchUnlocked(
     });
 
     // Load the just-written envelope for an honest relay projection (parent/reviewer included).
-    const written = await loadTaskEnvelope(env.fs, taskPath).catch(() => null);
-    const parentActor = options.parentActor;
-    const reviewer = options.reviewer ?? { ...parentActor };
-    // Fallback is relay-only (no claims[] projection). Prefer the loaded envelope with contextCard.
-    const relayPrompt = relayPromptForTask(
-      written ?? {
-        path: taskPath,
-        role: assigneeLabel,
-        manifest: manifestPath,
-        status: "pending" as const,
-        state: "queued" as const,
-        assigneeKind,
-        ...(agentId ? { agentId } : {}),
-        id: taskId,
-        parentActor,
-        reviewer,
-        ...(options.asSub === true ? { asSub: true as const } : {}),
-      },
-      env.tentRoot || env.tentName
-    );
+    const written = await loadTaskEnvelope(env.fs, taskPath);
+    const relayPrompt = relayPromptForTask(written, env.tentRoot || env.tentName);
     return {
       manifestPath,
       manifestYaml: yaml,
@@ -423,9 +405,9 @@ const STAMP_RETIRED_MESSAGE =
  * @deprecated Retired: does not dual-write Node frontmatter.
  * Prefer task.deliver / task.accept. Throws with a clear migration message.
  */
-export async function stamp(_env: OpsEnv, _boxId: string, _acceptedBy = "user"): Promise<void> {
+export async function stamp(_env: OpsEnv, _nodeId: string, _acceptedBy = "user"): Promise<void> {
   void _env;
-  void _boxId;
+  void _nodeId;
   void _acceptedBy;
   throw new Error(STAMP_RETIRED_MESSAGE);
 }
@@ -433,19 +415,19 @@ export async function stamp(_env: OpsEnv, _boxId: string, _acceptedBy = "user"):
 /**
  * @deprecated Retired Node dual-write path.
  * Prefer task lifecycle. Optional integrate still runs only if a non-retired path is restored later;
- * currently always throws after validating the box exists (no FM write).
+ * currently always throws after validating the node exists (no FM write).
  */
 export async function completeClaim(
   env: OpsEnv,
-  boxId: string,
+  nodeId: string,
   integrate?: () => Promise<void>,
   _acceptedBy = "user"
 ): Promise<void> {
   void _acceptedBy;
-  // Resolve the box under lock first so a missing/invalid id fails before any work.
+  // Resolve the node under lock first so a missing/invalid id fails before any work.
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    requireBoxById(tent, boxId);
+    requireNodeById(tent, nodeId);
   });
   void integrate;
   throw new Error(STAMP_RETIRED_MESSAGE);
@@ -464,18 +446,18 @@ export async function cleanTemp(env: OpsEnv, role?: string): Promise<void> {
   });
 }
 
-// ---- force-release: cancel/fail active tasks for box (no FM owner clear) ----
+// ---- force-release: cancel/fail active tasks for node (no FM owner clear) ----
 
 /**
- * Release occupation for a box by terminating active tasks that claim it
+ * Release occupation for a node by terminating active tasks that claim it
  * (interrupt running/waiting/delivered; remove queued). Clears non-accepted deliveries.
  * Does not read or write Node frontmatter owner/status.
  */
-export async function forceRelease(env: OpsEnv, boxId: string): Promise<void> {
-  // Validate box exists first.
+export async function forceRelease(env: OpsEnv, nodeId: string): Promise<void> {
+  // Validate node exists first.
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    requireBoxById(tent, boxId);
+    requireNodeById(tent, nodeId);
   });
 
   const tasks = await loadTaskEnvelopes(env.fs);
@@ -483,18 +465,18 @@ export async function forceRelease(env: OpsEnv, boxId: string): Promise<void> {
     (t) =>
       envelopeIsActiveOccupation(t) &&
       t.contextCard != null &&
-      taskDirectlyReferencesNode(t, boxId)
+      taskDirectlyReferencesNode(t, nodeId)
   );
   if (active.length === 0) {
-    // Still clean stray non-accepted deliveries for the box.
+    // Still clean stray non-accepted deliveries for the node.
     await withMutation(env.fs, async () => {
-      await removeNonAcceptedDeliveriesForBox(env.fs, boxId);
+      await removeNonAcceptedDeliveriesForNode(env.fs, nodeId);
     });
     return;
   }
 
   for (const task of active) {
-    if (task.state === "queued" || task.status === "pending") {
+    if (task.state === "queued") {
       await cancelPendingTask(env, task.path);
       continue;
     }
@@ -517,7 +499,7 @@ export async function forceRelease(env: OpsEnv, boxId: string): Promise<void> {
               updatedAt: env.clock.now(),
             });
           }
-          await removeNonAcceptedDeliveriesForBox(env.fs, boxId);
+          await removeNonAcceptedDeliveriesForNode(env.fs, nodeId);
         });
       }
     }
@@ -526,18 +508,18 @@ export async function forceRelease(env: OpsEnv, boxId: string): Promise<void> {
   // force-release is the explicit Node-wide cleanup operation. Ordinary
   // task.fail/task.interrupt cleanup is deliberately exact-Task only.
   await withMutation(env.fs, async () => {
-    await removeNonAcceptedDeliveriesForBox(env.fs, boxId);
+    await removeNonAcceptedDeliveriesForNode(env.fs, nodeId);
   });
 }
 
 // ---- tags ----
 
-export async function tagBox(env: OpsEnv, boxId: string, name: string): Promise<void> {
-  await addTag(env.fs, boxId, normalizeTagName(name));
+export async function tagNode(env: OpsEnv, nodeId: string, name: string): Promise<void> {
+  await addTag(env.fs, nodeId, normalizeTagName(name));
 }
 
-export async function untagBox(env: OpsEnv, boxId: string, name: string): Promise<void> {
-  await removeTag(env.fs, boxId, normalizeTagName(name));
+export async function untagNode(env: OpsEnv, nodeId: string, name: string): Promise<void> {
+  await removeTag(env.fs, nodeId, normalizeTagName(name));
 }
 
 export async function createTag(env: OpsEnv, name: string): Promise<void> {
@@ -551,35 +533,35 @@ export async function deleteTag(env: OpsEnv, name: string): Promise<void> {
 // ---- 结构编辑(建框/移动/改属性)----
 // 这些是 user 的即时编辑；Tent 本身不使用 Git。
 
-export interface NewBoxInput {
+export interface NewNodeInput {
   parentPath: string; // "" = 顶层
   name: string;
-  type: BoxType;
+  type: NodeType;
 }
 
-export async function createBox(env: OpsEnv, input: NewBoxInput): Promise<string> {
-  return withMutation(env.fs, async () => createBoxUnlocked(env, input));
+export async function createNode(env: OpsEnv, input: NewNodeInput): Promise<string> {
+  return withMutation(env.fs, async () => createNodeUnlocked(env, input));
 }
 
-async function createBoxUnlocked(env: OpsEnv, input: NewBoxInput): Promise<string> {
+async function createNodeUnlocked(env: OpsEnv, input: NewNodeInput): Promise<string> {
   assertNotTempPath(input.parentPath);
-  const name = validateBoxName(input.name);
+  const name = validateNodeName(input.name);
   const tent = await loadTent(env.fs);
   if (!typeExists(input.type, tent.typeRegistry)) throw new Error(`Unknown type: ${input.type}.`);
   if (input.parentPath) {
     const parent = tent.byPath.get(input.parentPath);
-    if (!parent || !isUsableBox(parent)) throw new Error("Target parent box is invalid or archived.");
+    if (!parent || !isUsableNode(parent)) throw new Error("Target parent node is invalid or archived.");
     assertContentMutable(parent, "used as create parent");
   }
   const existing = new Set(tent.byId.keys());
-  const id = makeUniqueConceptId(existing, env.rand);
+  const id = makeUniqueNodeId(existing, env.rand);
   const path = join(input.parentPath, name);
   assertNotTempPath(path);
   await ensureDir(env.fs, path);
   // V0.2: new Nodes write only id + type (no owner/status/R/W/mode).
   const fm = { id, type: input.type };
-  const content = serializeFrontmatter(fm, `\n# ${name}\n`, BOX_FRONTMATTER_KEY_ORDER);
-  await env.fs.writeFile(boxNotePath(path), content);
+  const content = serializeFrontmatter(fm, `\n# ${name}\n`, NODE_FRONTMATTER_KEY_ORDER);
+  await env.fs.writeFile(nodeNotePath(path), content);
   const parent = input.parentPath ? tent.byPath.get(input.parentPath) : undefined;
   const parentKey = parent ? parent.id : ROOT_KEY;
   try {
@@ -602,16 +584,16 @@ export type DropPosition =
 
 // 统一的换爹 + 换序:把 fromPath 放到 newParentPath 下的指定位置。
 // 顺序记进隐藏的 .tent/order.json(对 user 不显式),不碰任何框身份文件 frontmatter。
-export async function placeBox(
+export async function placeNode(
   env: OpsEnv,
   fromPath: string,
   newParentPath: string,
   position: DropPosition
 ): Promise<void> {
-  await withMutation(env.fs, async () => placeBoxUnlocked(env, fromPath, newParentPath, position));
+  await withMutation(env.fs, async () => placeNodeUnlocked(env, fromPath, newParentPath, position));
 }
 
-async function placeBoxUnlocked(
+async function placeNodeUnlocked(
   env: OpsEnv,
   fromPath: string,
   newParentPath: string,
@@ -620,27 +602,27 @@ async function placeBoxUnlocked(
   assertNotTempPath(newParentPath);
   const before = await loadTent(env.fs);
   const moved = before.byPath.get(fromPath);
-  if (!moved) throw new Error(`Box not found: ${fromPath}.`);
-  if (!isUsableBox(moved)) throw new Error("Invalid or archived boxes cannot be moved.");
+  if (!moved) throw new Error(`Node not found: ${fromPath}.`);
+  if (!isUsableNode(moved)) throw new Error("Invalid or archived nodes cannot be moved.");
   assertContentMutable(moved, "moved");
   if (moved.invalid || moved.archived) {
-    throw new Error("Invalid or archived boxes cannot be moved.");
+    throw new Error("Invalid or archived nodes cannot be moved.");
   }
   await assertNoActiveTaskRefsInSubtree(env, moved, "move");
   const movedId = moved.id;
   const movedName = fromPath.slice(fromPath.lastIndexOf("/") + 1);
 
-  const parentBox = newParentPath ? before.byPath.get(newParentPath) : null;
-  if (newParentPath && (!parentBox || !isUsableBox(parentBox))) throw new Error("Target parent box is invalid or archived.");
-  if (parentBox) assertContentMutable(parentBox, "used as move parent");
+  const parentNode = newParentPath ? before.byPath.get(newParentPath) : null;
+  if (newParentPath && (!parentNode || !isUsableNode(parentNode))) throw new Error("Target parent node is invalid or archived.");
+  if (parentNode) assertContentMutable(parentNode, "used as move parent");
   if (newParentPath === fromPath || newParentPath.startsWith(fromPath + "/")) {
-    throw new Error("Cannot move a box into its own subtree.");
+    throw new Error("Cannot move a node into its own subtree.");
   }
-  const parentKey = parentBox ? parentBox.id : ROOT_KEY;
+  const parentKey = parentNode ? parentNode.id : ROOT_KEY;
   const oldParentKey = moved.parent ? moved.parent.id : ROOT_KEY;
 
   // 目标父级现有子框(已按当前 order 排好),排除被移动者 → 期望 id 序列
-  const siblings = (parentBox ? parentBox.children : before.roots)
+  const siblings = (parentNode ? parentNode.children : before.roots)
     .filter((b) => b.id !== movedId)
     .map((b) => b.id);
 
@@ -678,24 +660,24 @@ async function placeBoxUnlocked(
   await saveOrder(env.fs, order);
 }
 
-export async function patchBox(
+export async function patchNode(
   env: OpsEnv,
-  boxPath: string,
+  nodePath: string,
   patch: Record<string, unknown>,
   loadedTent?: LoadedTent
 ): Promise<void> {
-  await withMutation(env.fs, async () => patchBoxUnlocked(env, boxPath, patch, loadedTent));
+  await withMutation(env.fs, async () => patchNodeUnlocked(env, nodePath, patch, loadedTent));
 }
 
-async function patchBoxUnlocked(
+async function patchNodeUnlocked(
   env: OpsEnv,
-  boxPath: string,
+  nodePath: string,
   patch: Record<string, unknown>,
   loadedTent?: LoadedTent
 ): Promise<void> {
   const tent = loadedTent ?? await loadTent(env.fs);
-  const box = tent.byPath.get(boxPath);
-  if (!box) throw new Error(`Box not found: ${boxPath}.`);
+  const node = tent.byPath.get(nodePath);
+  if (!node) throw new Error(`Node not found: ${nodePath}.`);
   const reserved = [
     "id",
     "owner",
@@ -714,12 +696,12 @@ async function patchBoxUnlocked(
       `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection; relations use relation.* RPCs; Output deliveryId binds via task.accept.`
     );
   }
-  if (box.archived || box.mode === "archived") {
-    throw new Error("Archived boxes can only be restored or permanently deleted.");
+  if (node.archived || node.mode === "archived") {
+    throw new Error("Archived nodes can only be restored or permanently deleted.");
   }
-  if (box.invalid) {
+  if (node.invalid) {
     const keys = Object.keys(patch);
-    if (box.id !== box.invalidRootId || keys.some((key) => key !== "type")) {
+    if (node.id !== node.invalidRootId || keys.some((key) => key !== "type")) {
       throw new Error("Invalid subtrees can only be repaired by changing the type at the invalid root.");
     }
   }
@@ -728,45 +710,45 @@ async function patchBoxUnlocked(
     if (!typeExists(patch.type, tent.typeRegistry)) throw new Error(`Unknown type: ${patch.type}.`);
   }
   const tagsTouched = "tags" in patch;
-  const previousTags = box.tags.slice();
+  const previousTags = node.tags.slice();
   if (tagsTouched) {
     patch = { ...patch, tags: normalizeTagPatch(patch.tags) };
   }
-  const boxFile = boxNotePath(boxPath);
+  const boxFile = nodeNotePath(nodePath);
   const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
   for (const [k, v] of Object.entries(patch)) {
     if (v === undefined) delete data[k];
     else data[k] = v;
   }
-  await env.fs.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
+  await env.fs.writeFile(boxFile, serializeFrontmatter(data, body, nodeKeyOrder(keyOrder)));
   if (tagsTouched) {
     const nextTags = Array.isArray(patch.tags) ? (patch.tags as string[]) : [];
-    await syncTagRegistryAfterBoxTagsChangeUnlocked(env.fs, previousTags, nextTags);
+    await syncTagRegistryAfterNodeTagsChangeUnlocked(env.fs, previousTags, nextTags);
   }
 }
 
 /** 改框正文(note)。保留 frontmatter 原样。 */
 export async function patchBody(
   env: OpsEnv,
-  boxPath: string,
+  nodePath: string,
   newBody: string,
   loadedTent?: LoadedTent
 ): Promise<void> {
-  await withMutation(env.fs, async () => patchBodyUnlocked(env, boxPath, newBody, loadedTent));
+  await withMutation(env.fs, async () => patchBodyUnlocked(env, nodePath, newBody, loadedTent));
 }
 
 async function patchBodyUnlocked(
   env: OpsEnv,
-  boxPath: string,
+  nodePath: string,
   newBody: string,
   loadedTent?: LoadedTent
 ): Promise<void> {
   const tent = loadedTent ?? await loadTent(env.fs);
-  const box = tent.byPath.get(boxPath);
-  if (!box) throw new Error(`Box not found: ${boxPath}.`);
-  if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot have their body edited.");
-  assertContentMutable(box, "body-edited");
-  const boxFile = boxNotePath(boxPath);
+  const node = tent.byPath.get(nodePath);
+  if (!node) throw new Error(`Node not found: ${nodePath}.`);
+  if (!isUsableNode(node)) throw new Error("Invalid or archived nodes cannot have their body edited.");
+  assertContentMutable(node, "body-edited");
+  const boxFile = nodeNotePath(nodePath);
   const { data, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
   await env.fs.writeFile(boxFile, serializeFrontmatter(data, newBody, keyOrder));
 }
@@ -776,11 +758,11 @@ async function patchBodyUnlocked(
  * Dedicated mutation path — ordinary patch/docs.write cannot set mode.
  * V0.2: no read-only mode; archive is the freeze / soft-delete layer.
  */
-export async function setNodeMode(env: OpsEnv, boxId: string, mode: NodeMode | string): Promise<void> {
-  await withMutation(env.fs, async () => setNodeModeUnlocked(env, boxId, mode));
+export async function setNodeMode(env: OpsEnv, nodeId: string, mode: NodeMode | string): Promise<void> {
+  await withMutation(env.fs, async () => setNodeModeUnlocked(env, nodeId, mode));
 }
 
-async function setNodeModeUnlocked(env: OpsEnv, boxId: string, mode: NodeMode | string): Promise<void> {
+async function setNodeModeUnlocked(env: OpsEnv, nodeId: string, mode: NodeMode | string): Promise<void> {
   if (mode === "read-only") {
     throw new Error(
       'read-only mode is retired in V0.2; use "editable" or "archived" (archive freezes the subtree).'
@@ -791,25 +773,25 @@ async function setNodeModeUnlocked(env: OpsEnv, boxId: string, mode: NodeMode | 
     throw new Error('mode must be "editable" or "archived".');
   }
   const tent = await loadTent(env.fs);
-  const box = requireBoxById(tent, boxId);
+  const node = requireNodeById(tent, nodeId);
 
-  if (box.invalid) throw new Error("Invalid boxes cannot change mode.");
+  if (node.invalid) throw new Error("Invalid nodes cannot change mode.");
 
   // Descendants of an archive root stay archived until the root is restored.
-  if (box.archived && !isExplicitArchiveRoot(box)) {
+  if (node.archived && !isExplicitArchiveRoot(node)) {
     if (next === "archived") {
-      throw new Error("Invalid or already archived boxes cannot be archived.");
+      throw new Error("Invalid or already archived nodes cannot be archived.");
     }
     throw new Error("Only an explicit archive root can leave archived mode; restore the archive root first.");
   }
 
-  const current: NodeMode = isExplicitArchiveRoot(box) ? "archived" : "editable";
+  const current: NodeMode = isExplicitArchiveRoot(node) ? "archived" : "editable";
   if (current === next) {
     // Idempotent: ensure disk shape for archived; editable clears keys.
     if (next === "editable") {
-      await patchFrontmatter(env.fs, box, { mode: undefined, archived: undefined });
+      await patchFrontmatter(env.fs, node, { mode: undefined, archived: undefined });
     } else {
-      await patchFrontmatter(env.fs, box, { mode: "archived", archived: undefined });
+      await patchFrontmatter(env.fs, node, { mode: "archived", archived: undefined });
     }
     return;
   }
@@ -818,7 +800,7 @@ async function setNodeModeUnlocked(env: OpsEnv, boxId: string, mode: NodeMode | 
   // blocks the structural mutation. Tasks on ancestors or unrelated branches do not.
   if (next === "archived") {
     const tasks = await loadTaskEnvelopes(env.fs);
-    if (hasActiveTaskInSubtree(tent, box, tasks)) {
+    if (hasActiveTaskInSubtree(tent, node, tasks)) {
       throw new Error(
         "Node subtree has an active task and cannot be archived; complete or interrupt the task first."
       );
@@ -826,42 +808,42 @@ async function setNodeModeUnlocked(env: OpsEnv, boxId: string, mode: NodeMode | 
   }
 
   if (next === "archived") {
-    await patchFrontmatter(env.fs, box, { mode: "archived", archived: undefined });
+    await patchFrontmatter(env.fs, node, { mode: "archived", archived: undefined });
     return;
   }
   // editable (including archive restore)
-  await patchFrontmatter(env.fs, box, { mode: undefined, archived: undefined });
+  await patchFrontmatter(env.fs, node, { mode: undefined, archived: undefined });
 }
 
-export async function archiveBox(env: OpsEnv, boxId: string): Promise<void> {
-  await setNodeMode(env, boxId, "archived");
+export async function archiveNode(env: OpsEnv, nodeId: string): Promise<void> {
+  await setNodeMode(env, nodeId, "archived");
 }
 
-export async function restoreBox(env: OpsEnv, boxId: string): Promise<void> {
+export async function restoreNode(env: OpsEnv, nodeId: string): Promise<void> {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = requireBoxById(tent, boxId);
-    if (!isExplicitArchiveRoot(box)) {
+    const node = requireNodeById(tent, nodeId);
+    if (!isExplicitArchiveRoot(node)) {
       throw new Error("Only an explicit archive root can restore the subtree.");
     }
-    await patchFrontmatter(env.fs, box, { mode: undefined, archived: undefined });
+    await patchFrontmatter(env.fs, node, { mode: undefined, archived: undefined });
   });
 }
 
-export async function deleteArchivedBox(env: OpsEnv, boxId: string): Promise<void> {
+export async function deleteArchivedNode(env: OpsEnv, nodeId: string): Promise<void> {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = requireBoxById(tent, boxId);
-    if (!isExplicitArchiveRoot(box)) throw new Error("Box must be archived before permanent deletion.");
+    const node = requireNodeById(tent, nodeId);
+    if (!isExplicitArchiveRoot(node)) throw new Error("Node must be archived before permanent deletion.");
     const tasks = await loadTaskEnvelopes(env.fs);
-    if (hasActiveTaskInSubtree(tent, box, tasks)) {
+    if (hasActiveTaskInSubtree(tent, node, tasks)) {
       throw new Error(
         "Archived subtree still has an active task and cannot be deleted; cancel or fail the task first."
       );
     }
 
-    const removedIds = collectSubtreeIds(box);
-    await env.fs.remove(box.path);
+    const removedIds = collectSubtreeIds(node);
+    await env.fs.remove(node.path);
     const order = await loadOrder(env.fs);
     for (const key of Object.keys(order)) {
       if (removedIds.has(key)) delete order[key];
@@ -873,14 +855,14 @@ export async function deleteArchivedBox(env: OpsEnv, boxId: string): Promise<voi
 
 // ---- 内部工具 ----
 
-async function patchFrontmatter(fs: FsAdapter, box: Box, patch: Record<string, unknown>): Promise<void> {
-  const boxFile = boxNotePath(box.path);
+async function patchFrontmatter(fs: FsAdapter, node: Node, patch: Record<string, unknown>): Promise<void> {
+  const boxFile = nodeNotePath(node.path);
   const { data, body, keyOrder } = parseFrontmatter(await fs.readFile(boxFile));
   for (const [k, v] of Object.entries(patch)) {
     if (v === undefined) delete data[k];
     else data[k] = v;
   }
-  await fs.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
+  await fs.writeFile(boxFile, serializeFrontmatter(data, body, nodeKeyOrder(keyOrder)));
 }
 
 async function ensureDir(fs: FsAdapter, path: string): Promise<void> {
@@ -899,30 +881,30 @@ function normalizeTagPatch(value: unknown): string[] | undefined {
   return tags.length > 0 ? tags.sort((a, b) => a.localeCompare(b)) : undefined;
 }
 
-function boxKeyOrder(existing: string[]): string[] {
+function nodeKeyOrder(existing: string[]): string[] {
   return [
-    ...BOX_FRONTMATTER_KEY_ORDER,
-    ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key)),
+    ...NODE_FRONTMATTER_KEY_ORDER,
+    ...existing.filter((key) => !NODE_FRONTMATTER_KEY_ORDER.includes(key)),
   ];
 }
 
 function assertNotTempPath(path: string): void {
   if (path === "temp" || path.startsWith("temp/")) {
-    throw new Error("temp/ is a system pipeline; typed boxes cannot be created or moved there.");
+    throw new Error("temp/ is a system pipeline; typed nodes cannot be created or moved there.");
   }
 }
 
 /**
- * True when any active task *directly* references a box id in the subtree.
+ * True when any active task *directly* references a node id in the subtree.
  * Used by purge of archived roots. Workspace context alone does not block purge.
  * Ancestor-only refs outside the subtree do not apply; only direct id matches inside.
  */
 function hasActiveTaskInSubtree(
   tent: LoadedTent,
-  box: Box,
+  node: Node,
   tasks: TaskEnvelope[]
 ): boolean {
-  const ids = collectSubtreeIds(box);
+  const ids = collectSubtreeIds(node);
   for (const task of tasks) {
     if (!envelopeIsActiveOccupation(task)) continue;
     if (task.contextCard == null) continue;
@@ -934,9 +916,9 @@ function hasActiveTaskInSubtree(
   return false;
 }
 
-function collectSubtreeIds(box: Box, ids = new Set<string>()): Set<string> {
-  ids.add(box.id);
-  for (const child of box.children) collectSubtreeIds(child, ids);
+function collectSubtreeIds(node: Node, ids = new Set<string>()): Set<string> {
+  ids.add(node.id);
+  for (const child of node.children) collectSubtreeIds(child, ids);
   return ids;
 }
 
@@ -948,13 +930,13 @@ function assertRoleName(role: string): string {
   return name;
 }
 
-function requireBoxById(tent: LoadedTent, boxId: string): Box {
-  if (tent.duplicateIds.has(boxId)) {
-    throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+function requireNodeById(tent: LoadedTent, nodeId: string): Node {
+  if (tent.duplicateIds.has(nodeId)) {
+    throw new Error(`Duplicate node id '${nodeId}' found; repair or fork the duplicate nodes before using this id.`);
   }
-  const box = tent.byId.get(boxId);
-  if (!box) throw new Error(`Box not found: ${boxId}.`);
-  return box;
+  const node = tent.byId.get(nodeId);
+  if (!node) throw new Error(`Node not found: ${nodeId}.`);
+  return node;
 }
 
 async function withMutation<T>(fs: FsAdapter, action: () => Promise<T>): Promise<T> {

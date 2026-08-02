@@ -1,18 +1,18 @@
 // 工单(manifest)生成 —— 派活的硬执行层之一。
 // V0.2: readable/writable lists are **context pointers** (dispatch selection scope +
 // system paths), not domain R/W axes on Nodes. Deterministic for any agent/process.
-// DispatchInput.claimBoxes / claimRoot are ephemeral caller-side selection only —
+// DispatchInput.claimNodes / claimRoot are ephemeral caller-side selection only —
 // Manifest YAML never persists a second claims source (Task.contextCard.refs.nodes
 // is the sole Task Node-ref wire).
 
-import { Box, Manifest, ManifestEntry } from "./types.js";
-import { isUsableBox, LoadedTent, join } from "./tree.js";
+import { Node, Manifest, ManifestEntry } from "./types.js";
+import { isUsableNode, LoadedTent, join } from "./tree.js";
 
 export interface DispatchInput {
   tentName: string;
   role: string;
-  /** Ephemeral dispatch selection (boxes in writable scope). Not persisted as claims. */
-  claimBoxes?: Box[];
+  /** Ephemeral dispatch selection (nodes in writable scope). Not persisted as claims. */
+  claimNodes?: Node[];
   /** Ephemeral root/workspace selection. Not persisted as claims. */
   claimRoot?: boolean;
   workspace?: string;
@@ -23,34 +23,34 @@ export interface DispatchInput {
 
 export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest {
   const { role } = input;
-  const claimBoxes = input.claimRoot ? tent.roots : requireClaimBoxes(input);
+  const claimNodes = input.claimRoot ? tent.roots : requireClaimNodes(input);
   const claimScope = input.claimRoot
-    ? allBoxes(tent).filter(isUsableBox)
-    : claimBoxes.flatMap(subtree);
+    ? allNodes(tent).filter(isUsableNode)
+    : claimNodes.flatMap(subtree);
 
   const readable: ManifestEntry[] = [];
   const writable: ManifestEntry[] = [];
 
-  // Context readable set: all usable concepts (semantic context for the agent).
-  for (const box of allBoxes(tent)) {
-    if (isUsableBox(box)) {
-      readable.push({ id: box.id, path: box.path, note: oneLineNote(box) });
+  // Context readable set: all usable Nodes (semantic context for the agent).
+  for (const node of allNodes(tent)) {
+    if (isUsableNode(node)) {
+      readable.push({ id: node.id, path: node.path, note: oneLineNote(node) });
     }
   }
   readable.push({ path: "roles.json", note: "System registry: available roles and persistent prompts." });
   readable.push({ path: "temp/", note: "System pipeline: read all role temp state." });
 
   // Context writable set: dispatch selection scope (mutation authority is Task/Service, not this list).
-  for (const box of claimScope) {
-    if (isUsableBox(box)) {
-      writable.push({ id: box.id, path: box.path });
+  for (const node of claimScope) {
+    if (isUsableNode(node)) {
+      writable.push({ id: node.id, path: node.path });
     }
   }
   if (input.claimRoot) {
-    writable.push({ path: "./", note: "Structural permission: may create/move top-level boxes at the Tent root." });
+    writable.push({ path: "./", note: "Structural permission: may create/move top-level nodes at the Tent root." });
   }
-  for (const box of claimScope) {
-    writable.push({ id: box.id, path: `${box.path}/`, note: "Structural permission: may create/move/delete child boxes under this box." });
+  for (const node of claimScope) {
+    writable.push({ id: node.id, path: `${node.path}/`, note: "Structural permission: may create/move/delete child nodes under this node." });
   }
   // 角色 temp 格(总是可写)
   writable.push({ path: join("temp", role) + "/" });
@@ -96,25 +96,25 @@ function yamlStr(s: string): string {
   return /[:#{}\[\],]/.test(s) ? JSON.stringify(s) : s;
 }
 
-function oneLineNote(box: Box): string {
+function oneLineNote(node: Node): string {
   // 身份文件正文第一行非空文字当摘要
-  const firstLine = box.body.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#"));
-  return firstLine ? firstLine.slice(0, 40) : box.type;
+  const firstLine = node.body.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#"));
+  return firstLine ? firstLine.slice(0, 40) : node.type;
 }
 
-function allBoxes(tent: LoadedTent): Box[] {
+function allNodes(tent: LoadedTent): Node[] {
   return [...tent.byPath.values()];
 }
 
-function subtree(box: Box): Box[] {
-  const out: Box[] = [box];
-  for (const c of box.children) out.push(...subtree(c));
+function subtree(node: Node): Node[] {
+  const out: Node[] = [node];
+  for (const c of node.children) out.push(...subtree(c));
   return out;
 }
 
-function requireClaimBoxes(input: DispatchInput): Box[] {
-  if (!input.claimBoxes || input.claimBoxes.length === 0) throw new Error("Missing claim boxes.");
-  return input.claimBoxes;
+function requireClaimNodes(input: DispatchInput): Node[] {
+  if (!input.claimNodes || input.claimNodes.length === 0) throw new Error("Missing claim nodes.");
+  return input.claimNodes;
 }
 
 function dedupe(entries: ManifestEntry[]): ManifestEntry[] {

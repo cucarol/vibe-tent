@@ -42,15 +42,15 @@ export async function renderTentStatus(
   } else {
     lines.push("Pending proposals:");
     for (const proposal of proposals) {
-      const box = tent.byId.get(proposal.boxId);
+      const node = tent.byId.get(proposal.nodeId);
       const first = proposal.body.split("\n").map((line) => line.trim()).find(Boolean) || "(empty proposal)";
-      lines.push(`- ${proposal.boxId}: ${box?.name ?? "(missing box)"} (${proposal.role}) - ${first}`);
+      lines.push(`- ${proposal.nodeId}: ${node?.name ?? "(missing node)"} (${proposal.role}) - ${first}`);
     }
   }
 
   const allTasks = await loadTaskEnvelopes(fsAdapter);
   const pendingTasks = allTasks
-    .filter((task) => task.state === "queued" || task.status === "pending")
+    .filter((task) => task.state === "queued")
     .filter((task) => !role || task.role === role);
   lines.push("");
   if (pendingTasks.length === 0) {
@@ -58,8 +58,7 @@ export async function renderTentStatus(
   } else {
     lines.push("Pending tasks:");
     for (const task of pendingTasks) {
-      const nodeIds =
-        task.contextCard != null ? taskReferencedNodeIds(task) : [];
+      const nodeIds = taskReferencedNodeIds(task);
       lines.push(
         `- ${task.role}/${path.posix.basename(task.path)} -> ${nodeIds.join(", ") || "-"}`
       );
@@ -69,7 +68,7 @@ export async function renderTentStatus(
   // Claimed occupation only (running/waiting/delivered). Queued stays under Pending tasks.
   const activeTasks = allTasks
     .filter((task) => envelopeIsActiveOccupation(task))
-    .filter((task) => task.state !== "queued" && task.status !== "pending")
+    .filter((task) => task.state !== "queued")
     .filter((task) => !role || task.role === role);
   lines.push("");
   if (activeTasks.length === 0) {
@@ -77,9 +76,8 @@ export async function renderTentStatus(
   } else {
     lines.push("Active tasks:");
     for (const task of activeTasks) {
-      const state = task.state || task.status || "unknown";
-      const nodeIds =
-        task.contextCard != null ? taskReferencedNodeIds(task) : [];
+      const state = task.state;
+      const nodeIds = taskReferencedNodeIds(task);
       lines.push(
         `- ${task.id || path.posix.basename(task.path)}: ${task.role} [${state}] nodes=${nodeIds.join(",") || "-"}`
       );

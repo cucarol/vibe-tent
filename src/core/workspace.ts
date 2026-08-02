@@ -38,7 +38,7 @@ export interface WorkspaceCheckResult {
  * 解析一顶 Tent 对应的真实 workspace 根。
  *
  * B1 hardening：只从 in-workspace 布局推导（system root 目录名为 `.tent` 时父目录即 workspace）。
- * 不再扫描 concept 上任意 `workspace:` 字段作为长期 legacy pointer fallback。
+ * 不扫描 Node 上任意 `workspace:` 字段作为长期 pointer fallback。
  * 不再使用「workspace pointer type」产品语义。
  */
 export function resolveTentWorkspace(_tent: LoadedTent, systemRoot?: string): string | undefined {

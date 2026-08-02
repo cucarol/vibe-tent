@@ -31,7 +31,7 @@ export function bindDispatchHost(h: DispatchHost): void {
 export function renderDispatchPanel(): void {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab) {
-    el.dispatch.innerHTML = `<div class="muted dispatch-empty">选中协作框后可派活</div>`;
+    el.dispatch.innerHTML = `<div class="muted dispatch-empty">选中节点后可派活</div>`;
     return;
   }
   if (!tab.coordination) {
@@ -50,7 +50,7 @@ export function renderDispatchPanel(): void {
       : `<option value="">（无 role）</option>`;
 
   const validation = validateDispatchForm({
-    boxId: tab.cx,
+    nodeId: tab.nodeId,
     coordination: tab.coordination,
     role: dispatchRole,
     prompt: dispatchPrompt,
@@ -97,7 +97,7 @@ export function renderDispatchPanel(): void {
     // Lightweight re-validate without full rebuild of textarea focus:
     if (btn) {
       const v = validateDispatchForm({
-        boxId: tab.cx,
+        nodeId: tab.nodeId,
         coordination: tab.coordination,
         role: roleSel?.value || dispatchRole,
         prompt: nextPrompt,
@@ -121,7 +121,7 @@ async function onDispatch(): Promise<void> {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab || !workspaceId) return;
   const validation = validateDispatchForm({
-    boxId: tab.cx,
+    nodeId: tab.nodeId,
     coordination: tab.coordination,
     role: dispatchRole,
     prompt: dispatchPrompt,
@@ -134,7 +134,7 @@ async function onDispatch(): Promise<void> {
   try {
     const result = (await window.tentDesktop.rpc("task.dispatch", {
       workspaceId,
-      boxId: validation.payload.boxId,
+      nodeIds: [validation.payload.nodeId],
       role: validation.payload.role,
       prompt: validation.payload.prompt,
       parentActor: validation.payload.parentActor,

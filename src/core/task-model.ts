@@ -1,7 +1,7 @@
 // Task / delivery domain model + pure state machine (B0 task-api.md).
-// Operational records only — not OKF concepts.
+// Operational records only — not OKF Nodes.
 
-import { makeConceptId, type RandomSource } from "./id.js";
+import { makeNodeId, type RandomSource } from "./id.js";
 
 /** Canonical task states (task-api §2.1). */
 export type TaskState =
@@ -13,9 +13,6 @@ export type TaskState =
   | "rejected"
   | "interrupted"
   | "failed";
-
-/** Legacy envelope two-state (B2 / dogfood CLI). */
-export type LegacyTaskStatus = "pending" | "taken";
 
 /**
  * Canonical delivery-policy wire values (V0.2).
@@ -204,21 +201,6 @@ export function roleTaskActors(
 }
 
 /**
- * One-time migration: derive parentActor/reviewer from legacy asSub+dispatchedBy.
- * Deterministic; does not invent roles. Missing/invalid dispatcher → user parent.
- */
-export function migrateParentReviewerFromLegacy(input: {
-  asSub?: boolean;
-  dispatchedBy?: string;
-}): { parentActor: TaskActorRef; reviewer: TaskActorRef } {
-  const dispatcher = (input.dispatchedBy || "").trim();
-  if (dispatcher && dispatcher !== "user") {
-    return roleTaskActors(dispatcher);
-  }
-  return userTaskActors();
-}
-
-/**
  * Elevated deliveryPolicy (bypass | agent-decide) is legal only for a durable
  * Role's own user-facing delivery (parent=user, assigneeKind=role).
  * Downstream Task Agent → parent is always review-to-parent.
@@ -342,7 +324,7 @@ export type DeliveryReview = {
 };
 
 /**
- * States that occupy a box (active task).
+ * States that occupy a node (active task).
  * Rework after reject uses `running` (not a lingering `rejected` occupation).
  * Terminal `rejected` does not occupy.
  */
@@ -364,24 +346,14 @@ export function isActiveTaskState(state: TaskState): boolean {
   return ACTIVE_TASK_STATES.has(state);
 }
 
-/** Map full state → legacy envelope status for B2/CLI compatibility. */
-export function stateToLegacyStatus(state: TaskState): LegacyTaskStatus {
-  return state === "queued" ? "pending" : "taken";
-}
-
-/** Map legacy envelope status → state when state field is absent. */
-export function legacyStatusToState(status: LegacyTaskStatus): TaskState {
-  return status === "pending" ? "queued" : "running";
-}
-
 export function makeTaskId(rand: RandomSource = Math.random, len = 8): string {
-  // Reuse concept alphabet via makeConceptId stem, then re-prefix.
-  const stem = makeConceptId(rand, len).slice(3);
+  // Reuse the Node id alphabet via makeNodeId stem, then re-prefix.
+  const stem = makeNodeId(rand, len).slice(3);
   return `tk-${stem}`;
 }
 
 export function makeDeliveryId(rand: RandomSource = Math.random, len = 8): string {
-  const stem = makeConceptId(rand, len).slice(3);
+  const stem = makeNodeId(rand, len).slice(3);
   return `dl-${stem}`;
 }
 
@@ -437,16 +409,6 @@ export function allowedTransitions(from: TaskState): { event: string; to: TaskSt
     default:
       return [];
   }
-}
-
-/** Box projection from active/terminal task (task-api §2.3). */
-export function projectBoxFromTask(input: {
-  active: boolean;
-  terminalState?: TaskState;
-}): { status: "todo" | "doing" | "done"; clearAssignee: boolean } {
-  if (input.active) return { status: "doing", clearAssignee: false };
-  if (input.terminalState === "accepted") return { status: "done", clearAssignee: true };
-  return { status: "todo", clearAssignee: true };
 }
 
 export function resolveDeliverRouting(

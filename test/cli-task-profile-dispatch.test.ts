@@ -42,8 +42,8 @@ function capturingDispatchClient() {
 test("retired CLI profile/positional dispatch forms are rejected (no compatibility alias)", async () => {
   const help = taskHelpText();
   assert.match(help, /--target role:<roleIdOrName>\|route:<routeId>/);
-  assert.doesNotMatch(help, /tent task dispatch <boxId> --profile/);
-  assert.doesNotMatch(help, /tent task dispatch <boxId> <role>/);
+  assert.doesNotMatch(help, /tent task dispatch <nodeId> --profile/);
+  assert.doesNotMatch(help, /tent task dispatch <nodeId> <role>/);
 
   const cwd = await makeFakeTentCwd();
   const { client, calls } = capturingDispatchClient();

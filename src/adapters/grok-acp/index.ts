@@ -212,7 +212,7 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
           `不会回退官方 xAI（api.x.ai），也不会回退 fake provider。` +
           `请在启动 Local Service 前设置 ${envKey}` +
           (baseUrlEnvKey ? `（可选 ${baseUrlEnvKey}=CPA base URL）` : "") +
-          `；切勿把 key/URL 写入 workspace/box/task。`
+          `；切勿把 key/URL 写入 workspace/Node/Task。`
       );
     }
 

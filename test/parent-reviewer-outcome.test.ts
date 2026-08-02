@@ -12,7 +12,6 @@ import { NodeFs } from "../src/fs/node-fs.js";
 import {
   assertReviewAuthority,
   mayElevateDeliveryPolicy,
-  migrateParentReviewerFromLegacy,
   parseTaskOutcomeReport,
   roleTaskActors,
   TaskLifecycleError,
@@ -20,10 +19,8 @@ import {
 } from "../src/core/task-model.js";
 import {
   loadTaskEnvelope,
-  migrateParentReviewerEnvelopes,
   writeTaskEnvelope,
 } from "../src/core/task.js";
-import { parseFrontmatter } from "../src/core/frontmatter.js";
 
 test("parseTaskOutcomeReport: valid control headers parse; missing or malformed return null", () => {
   assert.deepEqual(parseTaskOutcomeReport("outcome: delivered\n\nAll good"), {
@@ -41,19 +38,6 @@ test("parseTaskOutcomeReport: valid control headers parse; missing or malformed 
   assert.equal(parseTaskOutcomeReport("Just a free-form report"), null);
   assert.equal(parseTaskOutcomeReport("outcome: weird\nnope"), null);
   assert.equal(parseTaskOutcomeReport(""), null);
-});
-
-test("migrateParentReviewerFromLegacy: durable dispatcher → role; else user", () => {
-  assert.deepEqual(migrateParentReviewerFromLegacy({ dispatchedBy: "user" }), userTaskActors());
-  assert.deepEqual(migrateParentReviewerFromLegacy({}), userTaskActors());
-  assert.deepEqual(
-    migrateParentReviewerFromLegacy({ asSub: true, dispatchedBy: "规划" }),
-    roleTaskActors("规划")
-  );
-  assert.deepEqual(
-    migrateParentReviewerFromLegacy({ asSub: false, dispatchedBy: "orchestrator" }),
-    roleTaskActors("orchestrator")
-  );
 });
 
 test("mayElevateDeliveryPolicy: only durable Role user-facing", () => {
@@ -106,7 +90,7 @@ test("writeTaskEnvelope persists parentActor/reviewer; strips dispatchedBy", asy
   const clock = new SystemClock();
   const p = await writeTaskEnvelope(fsa, clock, {
     role: "helper",
-    claims: [{ id: "cx-1", path: "a.md" }],
+    nodeRefs: [{ id: "cx-1", path: "a.md" }],
     manifestPath: "temp/helper/manifest.yml",
     userPrompt: "do it",
     parentActor: { kind: "role", id: "orchestrator" },
@@ -132,7 +116,7 @@ test("writeTaskEnvelope refuses elevated policy for downstream Task Agent", asyn
     () =>
       writeTaskEnvelope(fsa, clock, {
         role: "helper",
-        claims: [{ id: "cx-1", path: "a.md" }],
+        nodeRefs: [{ id: "cx-1", path: "a.md" }],
         manifestPath: "temp/helper/manifest.yml",
         userPrompt: "do it",
         parentActor: { kind: "role", id: "orchestrator" },
@@ -141,51 +125,6 @@ test("writeTaskEnvelope refuses elevated policy for downstream Task Agent", asyn
       }),
     /only legal for a durable Role's user-facing delivery|must use review/i
   );
-});
-
-test("migrateParentReviewerEnvelopes: one-time rewrite strips dispatchedBy", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-parent-mig-"));
-  const fsa = new NodeFs(dir);
-  await fsa.mkdir("temp/helper/tasks");
-  // Legacy envelope without parentActor.
-  await fsa.writeFile(
-    "temp/helper/tasks/task-legacy.md",
-    [
-      "---",
-      "type: task",
-      "id: tk-legacy01",
-      "status: pending",
-      "state: queued",
-      "role: helper",
-      "dispatchedBy: orchestrator",
-      "asSub: true",
-      "claims: [cx-1]",
-      "manifest: temp/helper/manifest.yml",
-      "deliveryPolicy: review",
-      "---",
-      "# Task",
-      "",
-      "## User Prompt",
-      "",
-      "legacy",
-      "",
-    ].join("\n")
-  );
-  const clock = new SystemClock();
-  const report = await migrateParentReviewerEnvelopes(fsa, clock);
-  assert.equal(report.rewritten.length, 1);
-  const raw = await fsa.readFile("temp/helper/tasks/task-legacy.md");
-  const { data } = parseFrontmatter(raw);
-  assert.equal((data.parentActor as { id: string }).id, "orchestrator");
-  assert.equal((data.reviewer as { id: string }).id, "orchestrator");
-  assert.equal(data.dispatchedBy, undefined);
-  assert.equal(data.asSub, true);
-  // Idempotent second pass.
-  const again = await migrateParentReviewerEnvelopes(fsa, clock);
-  assert.equal(again.rewritten.length, 0);
-  const task = await loadTaskEnvelope(fsa, "temp/helper/tasks/task-legacy.md");
-  assert.equal(task.parentActor?.id, "orchestrator");
-  assert.equal(task.reviewer?.id, "orchestrator");
 });
 
 test("resolveDispatchActors / writeTaskEnvelope refuse missing actors and dispatchedBy create path", async () => {
@@ -217,7 +156,7 @@ test("resolveDispatchActors / writeTaskEnvelope refuse missing actors and dispat
     () =>
       writeTaskEnvelope(fsa, clock, {
         role: "helper",
-        claims: [{ id: "cx-1", path: "a.md" }],
+        nodeRefs: [{ id: "cx-1", path: "a.md" }],
         manifestPath: "temp/helper/manifest.yml",
         userPrompt: "missing actors",
       } as never),
@@ -225,10 +164,8 @@ test("resolveDispatchActors / writeTaskEnvelope refuse missing actors and dispat
   );
 });
 
-test("Core+Service: parentActor/reviewer mismatch rejected at write, load, migration, and RPC", async () => {
-  const { resolveDispatchActors, migrateParentReviewerEnvelopes } = await import(
-    "../src/core/task.js"
-  );
+test("Core+Service: parentActor/reviewer mismatch rejected at write, load, and RPC", async () => {
+  const { resolveDispatchActors } = await import("../src/core/task.js");
   const {
     assertParentReviewerEqual,
     resolveParentReviewerPair,
@@ -286,7 +223,7 @@ test("Core+Service: parentActor/reviewer mismatch rejected at write, load, migra
     () =>
       writeTaskEnvelope(fsa, clock, {
         role: "helper",
-        claims: [{ id: "cx-1", path: "a.md" }],
+        nodeRefs: [{ id: "cx-1", path: "a.md" }],
         manifestPath: "temp/helper/manifest.yml",
         userPrompt: "mismatch",
         parentActor: { kind: "role", id: "orchestrator" },
@@ -325,13 +262,7 @@ test("Core+Service: parentActor/reviewer mismatch rejected at write, load, migra
     /must equal parentActor|no arbitrary delegation/i
   );
 
-  // Migration records mismatch as warning; does not rewrite to invent equality.
-  const report = await migrateParentReviewerEnvelopes(fsa, clock);
-  assert.ok(
-    report.warnings.some((w) => /must equal parentActor|no arbitrary delegation/i.test(w)),
-    `expected mismatch warning, got ${JSON.stringify(report.warnings)}`
-  );
-  assert.equal(report.rewritten.length, 0);
+  // Invalid persisted data remains untouched; runtime does not ship a migrator.
   const raw = await fsa.readFile("temp/helper/tasks/task-mismatch.md");
   assert.match(raw, /id:\s*planner/);
 });
@@ -398,7 +329,7 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
   const fsa = new NodeFs(dir);
   await scaffoldInWorkspace(fsa, {
     name: "parent-rpc",
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-parent-rpc-data-"));
   const svc = await startLocalTentService({
@@ -422,14 +353,14 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       { token: svc.token }
     );
     assert.ok(!created.error, JSON.stringify(created.error));
-    const boxId = (created.result as { id: string }).id;
+    const nodeId = (created.result as { nodeId: string }).nodeId;
 
     const legacy = await rpcCall(
       svc.url,
       "task.dispatch",
       {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "legacy wire",
         // Even with explicit actors present, dispatchedBy must be rejected.
@@ -448,7 +379,7 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       "task.dispatch",
       {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "missing actors",
       },
@@ -464,7 +395,7 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       "task.dispatch",
       {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "mismatch pair",
         parentActor: { kind: "role", id: "orchestrator" },
@@ -485,7 +416,7 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       "task.dispatch",
       {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "derived reviewer",
         parentActor: { kind: "user", id: "user" },
@@ -526,7 +457,7 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       "task.dispatch",
       {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "explicit actors",
         parentActor: { kind: "user", id: "user" },
@@ -547,7 +478,7 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
   }
 });
 
-test("loadTaskEnvelope: refuses unmigrated legacy dispatchedBy (migrator-only read)", async () => {
+test("loadTaskEnvelope: refuses retired dispatchedBy without rewriting", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-parent-load-"));
   const fsa = new NodeFs(dir);
   await fsa.mkdir("temp/helper/tasks");
@@ -572,20 +503,11 @@ test("loadTaskEnvelope: refuses unmigrated legacy dispatchedBy (migrator-only re
       "",
     ].join("\n")
   );
-  // Load must not dual-read dispatchedBy; only migrateParentReviewerEnvelopes may.
+  // Load must not dual-read or rewrite retired responsibility fields.
   await assert.rejects(
     () => loadTaskEnvelope(fsa, "temp/helper/tasks/task-mem.md"),
-    /legacy dispatchedBy|migrateParentReviewerEnvelopes|missing parentActor/i
+    /missing parentActor/i
   );
   const raw = await fsa.readFile("temp/helper/tasks/task-mem.md");
   assert.match(raw, /dispatchedBy:\s*user/);
-  // After one-time migration, load succeeds and dispatchedBy is gone.
-  const clock = new SystemClock();
-  const report = await migrateParentReviewerEnvelopes(fsa, clock);
-  assert.equal(report.rewritten.length, 1);
-  const task = await loadTaskEnvelope(fsa, "temp/helper/tasks/task-mem.md");
-  assert.equal(task.parentActor?.kind, "user");
-  assert.equal(task.reviewer?.id, "user");
-  const after = await fsa.readFile("temp/helper/tasks/task-mem.md");
-  assert.doesNotMatch(after, /^dispatchedBy:/m);
 });

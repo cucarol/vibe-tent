@@ -11,15 +11,12 @@ import {
   assertParentReviewerEqual,
   DEFAULT_DELIVERY_POLICY,
   isTaskId,
-  legacyStatusToState,
   makeTaskId,
   mayElevateDeliveryPolicy,
-  migrateParentReviewerFromLegacy,
   normalizeDeliveryPolicyRead,
   parseTaskActorRef,
   resolveParentReviewerPair,
   roleTaskActors,
-  stateToLegacyStatus,
   userTaskActors,
   type AssigneeKind,
   type DeliveryPolicy,
@@ -44,6 +41,7 @@ import {
 } from "./task-context-card.js";
 import {
   normalizeContextCardNodeRef,
+  parseContextCardNodeRefs,
   taskReferencedNodeIds,
 } from "./task-node-refs.js";
 
@@ -85,12 +83,10 @@ export interface TaskEnvelopeInput {
   role: string;
   /**
    * Node refs for this Task (durable id + optional path hint).
-   * Persisted only as Task.contextCard.refs.nodes[] — never as claims[].
-   * Pass `[{ id: "root", path: "./" }]` (or claimRoot via ops) for workspace-only
-   * context: "root" is discarded and yields empty refs.nodes (stable workspace
-   * context already present; no second source flag).
+   * Persisted only as Task.contextCard.refs.nodes[]. Formal Tasks require at
+   * least one real Node; fake root identities are never accepted.
    */
-  claims: { id: string; path: string }[];
+  nodeRefs: { id: string; path: string }[];
   manifestPath: string;
   userPrompt: string;
   workspace?: RoleWorkspaceContract;
@@ -164,25 +160,17 @@ export interface TaskEnvelopeInput {
   };
 }
 
-/** Legacy two-state for B2 / dogfood CLI. */
-export type TaskEnvelopeStatus = "pending" | "taken";
-
-/**
- * Operational task record.
- * - `status` is the legacy envelope field (pending|taken) kept for B2 projections.
- * - `state` is the full lifecycle state (task-api §2).
- */
+/** Operational task record. */
 export interface TaskEnvelope {
   path: string;
   role: string;
   /**
    * Node refs are sole-sourced from `contextCard.refs.nodes` via
-   * `taskReferencedNodeIds(task)` / `primaryBoxId(task)`.
-   * No in-memory claims[] projection — migrator is the only on-disk claims reader.
+   * `taskReferencedNodeIds(task)` / `primaryNodeId(task)`.
+   * No parallel legacy Node-reference projection.
    */
   manifest: string;
-  status: TaskEnvelopeStatus;
-  /** Full lifecycle state; always derived for legacy files. */
+  /** Canonical lifecycle state (task-api §2). */
   state: TaskState;
   /** Operational task id (tk-…). May be absent on pre-B4 envelopes. */
   id?: string;
@@ -231,7 +219,7 @@ export interface TaskEnvelope {
    * Authoritative Task Context Card v1 (cx-5q6za6).
    * Projected only from envelope frontmatter `contextCard`.
    */
-  contextCard?: TaskContextCardV1;
+  contextCard: TaskContextCardV1;
   /** In-memory projection of contextCard.contextGeneration. */
   contextGeneration?: string;
   /** Convenience projection of contextCard.taskDeltaDigest when present. */
@@ -288,144 +276,6 @@ export async function loadTaskEnvelopes(fs: FsAdapter): Promise<TaskEnvelope[]> 
   return tasks.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-export type ParentReviewerMigrationReport = {
-  scanned: number;
-  rewritten: string[];
-  skipped: string[];
-  warnings: string[];
-};
-
-/**
- * One-time disk migration: write explicit parentActor/reviewer and strip
- * legacy `dispatchedBy` from task envelopes that still carry it without
- * parentActor. Preserves asSub (Git lane), accepted records, and audit body.
- * Idempotent — envelopes that already have parentActor+reviewer and no
- * dispatchedBy are left untouched. Fail-loud per file is recorded in warnings
- * without aborting the whole scan.
- */
-export async function migrateParentReviewerEnvelopes(
-  fs: FsAdapter,
-  clock: Clock,
-  options?: { dryRun?: boolean }
-): Promise<ParentReviewerMigrationReport> {
-  const dryRun = options?.dryRun === true;
-  const report: ParentReviewerMigrationReport = {
-    scanned: 0,
-    rewritten: [],
-    skipped: [],
-    warnings: [],
-  };
-  if (!(await fs.exists(TEMP_DIR))) return report;
-
-  const paths: string[] = [];
-  for (const entry of await fs.listDir(TEMP_DIR)) {
-    if (!entry.isDir) continue;
-    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
-      const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
-      if (!(await fs.exists(profilesRoot))) continue;
-      for (const profileEntry of await fs.listDir(profilesRoot)) {
-        if (!profileEntry.isDir) continue;
-        const taskDir = join(profilesRoot, profileEntry.name, "tasks");
-        if (!(await fs.exists(taskDir))) continue;
-        for (const f of await fs.listDir(taskDir)) {
-          if (!f.isDir && f.name.endsWith(".md")) paths.push(join(taskDir, f.name));
-        }
-      }
-      continue;
-    }
-    const taskDir = join(TEMP_DIR, entry.name, "tasks");
-    if (!(await fs.exists(taskDir))) continue;
-    for (const f of await fs.listDir(taskDir)) {
-      if (!f.isDir && f.name.endsWith(".md")) paths.push(join(taskDir, f.name));
-    }
-  }
-
-  for (const path of paths.sort((a, b) => a.localeCompare(b))) {
-    report.scanned += 1;
-    try {
-      const raw = await fs.readFile(path);
-      const { data, body, keyOrder } = parseFrontmatter(raw);
-      if (data.type !== "task") {
-        report.skipped.push(path);
-        continue;
-      }
-      const hasParent =
-        data.parentActor !== undefined && data.parentActor !== null;
-      const hasReviewer = data.reviewer !== undefined && data.reviewer !== null;
-      const hasLegacyDispatcher =
-        typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
-
-      // Already on V0.2 wire with matching pair and no legacy key — nothing to do.
-      // Mismatched explicit pairs fail loud (recorded as warnings; not silently repaired).
-      if (hasParent && hasReviewer && !hasLegacyDispatcher) {
-        try {
-          resolveParentReviewerPair({
-            parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
-            reviewer: parseTaskActorRef(data.reviewer, "reviewer"),
-          });
-          report.skipped.push(path);
-        } catch (err) {
-          report.warnings.push(
-            `${path}: ${err instanceof Error ? err.message : String(err)}`
-          );
-          report.skipped.push(path);
-        }
-        continue;
-      }
-
-      let parentActor: TaskActorRef;
-      let reviewer: TaskActorRef;
-      if (hasParent && hasReviewer) {
-        // Has legacy key too — parse via shared pair resolver, then strip dispatchedBy.
-        const pair = resolveParentReviewerPair({
-          parentActor: parseTaskActorRef(data.parentActor, "parentActor"),
-          reviewer: parseTaskActorRef(data.reviewer, "reviewer"),
-        });
-        parentActor = pair.parentActor;
-        reviewer = pair.reviewer;
-      } else if (hasParent || hasReviewer) {
-        report.warnings.push(
-          `${path}: partial parentActor/reviewer pair; refusing silent repair`
-        );
-        report.skipped.push(path);
-        continue;
-      } else {
-        // Legacy derives equal parent+reviewer pair (never mismatched).
-        const migrated = migrateParentReviewerFromLegacy({
-          asSub: data.asSub === true,
-          dispatchedBy:
-            typeof data.dispatchedBy === "string" ? data.dispatchedBy : undefined,
-        });
-        parentActor = migrated.parentActor;
-        reviewer = migrated.reviewer;
-      }
-
-      const next: Record<string, unknown> = { ...data };
-      next.parentActor = serializeTaskActorRef(parentActor);
-      next.reviewer = serializeTaskActorRef(reviewer);
-      delete next.dispatchedBy;
-
-      const nextRaw = serializeFrontmatter(next, body, keyOrder);
-      if (nextRaw === raw) {
-        report.skipped.push(path);
-        continue;
-      }
-      if (!dryRun) {
-        // Touch updatedAt only when we actually rewrite keys.
-        next.updatedAt = clock.now();
-        await fs.writeFile(path, serializeFrontmatter(next, body, keyOrder));
-      }
-      report.rewritten.push(path);
-    } catch (err) {
-      report.warnings.push(
-        `${path}: ${err instanceof Error ? err.message : String(err)}`
-      );
-      report.skipped.push(path);
-    }
-  }
-  return report;
-}
-
 async function collectTaskFiles(
   fs: FsAdapter,
   taskDir: string,
@@ -435,11 +285,7 @@ async function collectTaskFiles(
   for (const entry of await fs.listDir(taskDir)) {
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
     const path = join(taskDir, entry.name);
-    try {
-      tasks.push(await loadTaskEnvelope(fs, path));
-    } catch {
-      // Invalid temp documents stay inspectable on disk but do not enter UI state.
-    }
+    tasks.push(await loadTaskEnvelope(fs, path));
   }
 }
 
@@ -581,8 +427,7 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
     throw new Error(`Invalid task envelope format: ${path}.`);
   }
 
-  const legacyStatus: TaskEnvelopeStatus = data.status === "taken" ? "taken" : "pending";
-  const state = parseTaskState(data.state, legacyStatus);
+  const state = parseTaskState(data.state);
 
   // V0.2 parent/reviewer: explicit wire required after disk migration.
   // Resolve actors before Context Card so mismatch / unmigrated dispatchedBy fail with
@@ -590,17 +435,15 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   const actors = resolveActorsFromDisk(data);
 
   // Complete Context Card v1 is the sole Node-ref source. Incomplete/partial → fail loud.
-  // Transitional pre-migration envelopes may still carry residual claims[] on disk;
-  // those are NOT used at runtime (migrator-only). hasClaimsKey only gates load so
-  // unmigrated envelopes can still be loaded (without claims projection) until
-  // migrateLegacyTaskNodeRefs writes a full card.
   const contextCard = loadTaskContextCardFromFrontmatter(data) ?? undefined;
-  const hasClaimsKey =
-    Array.isArray(data.claims) &&
-    data.claims.every((claim: unknown) => typeof claim === "string");
-  if (!contextCard && !hasClaimsKey) {
+  if (!contextCard) {
     throw new Error(
-      `Invalid task envelope format: ${path} (missing Task.contextCard.refs.nodes; run claims→refs migration).`
+      `Invalid task envelope format: ${path} (missing Task.contextCard.refs.nodes).`
+    );
+  }
+  if (parseContextCardNodeRefs(contextCard.refs.nodes).length === 0) {
+    throw new Error(
+      `Invalid task envelope format: ${path} (Task.contextCard.refs.nodes requires at least one Node).`
     );
   }
 
@@ -608,11 +451,11 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
     path,
     role: data.role,
     manifest: data.manifest,
-    status: stateToLegacyStatus(state),
     state,
     parentActor: actors.parentActor,
     reviewer: actors.reviewer,
     prompt: body.trim() || undefined,
+    contextCard,
   };
   if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
   if (data.asSub === true) task.asSub = true;
@@ -665,11 +508,8 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
     );
   }
   // Context Card v1 already loaded above from its sole nested wire.
-  if (contextCard) {
-    task.contextCard = contextCard;
-    task.contextGeneration = contextCard.contextGeneration;
-    task.taskDeltaDigest = contextCard.taskDeltaDigest;
-  }
+  task.contextGeneration = contextCard.contextGeneration;
+  task.taskDeltaDigest = contextCard.taskDeltaDigest;
   // Narrow read boundary: historical on-disk `manual` projects as `review`.
   const deliveryPolicy = normalizeDeliveryPolicyRead(data.deliveryPolicy);
   if (deliveryPolicy) task.deliveryPolicy = deliveryPolicy;
@@ -696,9 +536,7 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
 
 /**
  * Resolve parentActor/reviewer from on-disk frontmatter.
- * Explicit fields required. Legacy `dispatchedBy` is **not** read here — only
- * `migrateParentReviewerEnvelopes` (one-time disk migrator) may consume it.
- * Unmigrated envelopes fail loud so callers remount / migrate first.
+ * Explicit fields are required. Retired `dispatchedBy` is never read.
  */
 function resolveActorsFromDisk(data: Record<string, unknown>): {
   parentActor: TaskActorRef;
@@ -718,14 +556,7 @@ function resolveActorsFromDisk(data: Record<string, unknown>): {
       reviewer: parseTaskActorRef(data.reviewer, "reviewer"),
     });
   }
-  const hasLegacy =
-    typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
-  throw new Error(
-    hasLegacy
-      ? "Invalid task envelope: legacy dispatchedBy present without parentActor/reviewer; " +
-          "run workspace.mount migration (migrateParentReviewerEnvelopes) before load."
-      : "Invalid task envelope: missing parentActor/reviewer."
-  );
+  throw new Error("Invalid task envelope: missing parentActor/reviewer.");
 }
 
 /**
@@ -773,11 +604,7 @@ function formatTaskPointers(task: TaskEnvelope): string {
   ];
   if (task.contextCard) {
     const nodeIds = taskReferencedNodeIds(task);
-    if (nodeIds.length) {
-      lines.push(`contextCard.refs.nodes: ${nodeIds.join(", ")}`);
-    } else {
-      lines.push(`workspace context: true (no direct Node refs)`);
-    }
+    lines.push(`contextCard.refs.nodes: ${nodeIds.join(", ")}`);
   }
   if (task.parentActor) {
     lines.push(
@@ -850,7 +677,7 @@ export function relayPromptForTask(
 
 /**
  * Extract the near-field user prompt from a task envelope body.
- * Envelope layout: Context Pointers + `## User Prompt` — never the box/manifest body.
+ * Envelope layout: Context Pointers + `## User Prompt` — never the node/manifest body.
  */
 export function extractTaskUserPrompt(task: TaskEnvelope): string {
   const body = task.prompt?.trim() || "";
@@ -931,14 +758,13 @@ export async function writeTaskEnvelope(
   await ensureDir(fs, dir);
   const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
 
-  // Split workspace/root context from Node refs — never persist fake "root" Node.
-  // Empty nodes = stable workspace context (no second source flag).
-  const isRootToken = (id: string) => id.trim() === "root";
-  const workspaceOnly = input.claims.length > 0 && input.claims.every((c) => isRootToken(c.id));
-  const nodeRefs: TaskContextCardRef[] = input.claims
-    .filter((c) => !isRootToken(c.id))
-    .map((c) => normalizeContextCardNodeRef({ id: c.id, path: c.path }));
-  const primaryRef = nodeRefs[0]?.id || (workspaceOnly ? "root" : "node");
+  if (!Array.isArray(input.nodeRefs) || input.nodeRefs.length === 0) {
+    throw new Error("Task requires at least one canonical Node ref.");
+  }
+  const nodeRefs: TaskContextCardRef[] = parseContextCardNodeRefs(
+    input.nodeRefs.map((node) => ({ id: node.id, path: node.path }))
+  );
+  const primaryRef = nodeRefs[0]!.id;
   const stem = taskStem(clock.now(), primaryRef);
   const path = await uniqueMarkdownPath(fs, dir, stem);
   const now = clock.now();
@@ -1014,13 +840,12 @@ export async function writeTaskEnvelope(
   const data: Record<string, unknown> = {
     type: "task",
     id,
-    status: "pending",
     state: "queued",
     role: input.role,
     assigneeKind,
     parentActor: serializeTaskActorRef(actors.parentActor),
     reviewer: serializeTaskActorRef(actors.reviewer),
-    // Sole new persisted source wire — do not write claims[].
+    // Sole persisted Node-ref wire.
     contextCard: serializeTaskContextCardForFrontmatter(contextCard),
     manifest: input.manifestPath,
     deliveryPolicy,
@@ -1051,12 +876,9 @@ export async function writeTaskEnvelope(
       data.roleBranchBase = tip;
     }
   }
-  const pointers = [
-    ...(workspaceOnly || nodeRefs.length === 0
-      ? [`- workspace: ./ (stable workspace context; not a Node ref)`]
-      : []),
-    ...nodeRefs.map((claim) => `- ${claim.id}: ${claim.path || "(path hint pending)"}`),
-  ].join("\n");
+  const pointers = nodeRefs
+    .map((ref) => `- ${ref.id}: ${ref.path || "(path hint pending)"}`)
+    .join("\n");
   const body =
     `# Task\n\n` +
     `## Context Pointers\n\n${pointers || "(none)"}\n\n` +
@@ -1069,21 +891,19 @@ export async function writeTaskEnvelope(
 
 export async function ackTaskEnvelope(fs: FsAdapter, path: string): Promise<void> {
   await patchTaskEnvelope(fs, path, {
-    status: "taken",
     state: "running",
   });
 }
 
 export async function cancelTaskEnvelope(fs: FsAdapter, path: string): Promise<void> {
   const task = await loadTaskEnvelope(fs, path);
-  if (task.state !== "queued" && task.status !== "pending") {
-    throw new Error("Only queued (pending) task envelopes can be cancelled.");
+  if (task.state !== "queued") {
+    throw new Error("Only queued task envelopes can be cancelled.");
   }
   await fs.remove(path);
 }
 
 export interface TaskEnvelopePatch {
-  status?: TaskEnvelopeStatus;
   state?: TaskState;
   sessionId?: string | null;
   wait?: TaskWait | null;
@@ -1092,11 +912,6 @@ export interface TaskEnvelopePatch {
   parentActor?: TaskActorRef;
   reviewer?: TaskActorRef;
   lastOutcome?: TaskOutcome | null;
-  /**
-   * When true, strip legacy dispatchedBy from disk after parent/reviewer write
-   * (one-time migration). Does not dual-write.
-   */
-  clearLegacyDispatchedBy?: boolean;
   updatedAt?: string;
   /** Role WorkspaceLane fields (real workspace Git only). */
   workspace?: string | null;
@@ -1125,7 +940,7 @@ export interface TaskEnvelopePatch {
   /**
    * Persist authoritative Context Card v1 under frontmatter `contextCard`.
    */
-  contextCard?: TaskContextCardV1 | null;
+  contextCard?: TaskContextCardV1;
   /** Optional stable purpose/subKey; null clears. */
   purpose?: string | null;
 }
@@ -1143,10 +958,6 @@ export async function patchTaskEnvelope(
 
   if (patch.state) {
     data.state = patch.state;
-    data.status = stateToLegacyStatus(patch.state);
-  } else if (patch.status) {
-    data.status = patch.status;
-    if (!data.state) data.state = legacyStatusToState(patch.status);
   }
   if (patch.sessionId === null) delete data.sessionId;
   else if (typeof patch.sessionId === "string") data.sessionId = patch.sessionId;
@@ -1201,9 +1012,6 @@ export async function patchTaskEnvelope(
       actor: { kind: derived.actor.kind, id: derived.actor.id },
       mutator: "service",
     };
-  }
-  if (patch.clearLegacyDispatchedBy) {
-    delete data.dispatchedBy;
   }
   if (patch.lastOutcome === null) delete data.lastOutcome;
   else if (
@@ -1262,11 +1070,10 @@ export async function patchTaskEnvelope(
     };
   }
 
-  if (patch.contextCard === null) {
-    delete data.contextCard;
-    delete data.contextGeneration;
-    delete data.taskDeltaDigest;
-  } else if (patch.contextCard) {
+  if (patch.contextCard) {
+    if (parseContextCardNodeRefs(patch.contextCard.refs.nodes).length === 0) {
+      throw new Error("patchTaskEnvelope contextCard requires at least one canonical Node ref.");
+    }
     data.contextCard = serializeTaskContextCardForFrontmatter(patch.contextCard);
     delete data.contextGeneration;
     delete data.taskDeltaDigest;
@@ -1312,12 +1119,11 @@ export function workspaceLaneOf(task: TaskEnvelope): WorkspaceLane | undefined {
   };
 }
 
-export function primaryBoxId(task: TaskEnvelope): string | undefined {
-  if (task.contextCard == null) return undefined;
+export function primaryNodeId(task: TaskEnvelope): string | undefined {
   return taskReferencedNodeIds(task)[0];
 }
 
-function parseTaskState(value: unknown, legacy: TaskEnvelopeStatus): TaskState {
+function parseTaskState(value: unknown): TaskState {
   if (
     value === "queued" ||
     value === "running" ||
@@ -1330,7 +1136,7 @@ function parseTaskState(value: unknown, legacy: TaskEnvelopeStatus): TaskState {
   ) {
     return value;
   }
-  return legacyStatusToState(legacy);
+  throw new Error(`Invalid task state: ${String(value)}.`);
 }
 
 function parseWaitFields(data: Record<string, unknown>): TaskWait | undefined {

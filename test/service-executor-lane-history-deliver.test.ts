@@ -27,7 +27,7 @@ async function makeWorkspace(name = "lane-hist"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -91,8 +91,8 @@ async function mountWorkItem(
     type: "prompt",
   });
   assert.ok(!created.error, JSON.stringify(created.error));
-  const boxId = (created.result as { id: string }).id;
-  return { workspaceId, boxId };
+  const nodeId = (created.result as { nodeId: string }).nodeId;
+  return { workspaceId, nodeId };
 }
 
 /**
@@ -110,12 +110,12 @@ async function runningTaskWithBase(
   branch: string;
   worktree: string;
 }> {
-  const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+  const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
   const d = await rpc(svc, "task.dispatch", {
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     workspaceId,
-    nodeIds: [boxId],
+    nodeIds: [nodeId],
     role: "executor",
     prompt: "executor lane history fixture",
     deliveryPolicy: "review",

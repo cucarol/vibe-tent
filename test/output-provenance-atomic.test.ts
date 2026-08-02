@@ -8,9 +8,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { NodeFs } from "../src/fs/node-fs.js";
-import { boxNotePath, loadTent } from "../src/core/tree.js";
+import { nodeNotePath, loadTent } from "../src/core/tree.js";
 import { parseFrontmatter } from "../src/core/frontmatter.js";
-import { createBox, dispatch } from "../src/core/ops.js";
+import { createNode, dispatch } from "../src/core/ops.js";
 import { loadTaskEnvelope } from "../src/core/task.js";
 import { loadDeliveries, loadDelivery } from "../src/core/delivery.js";
 import {
@@ -38,7 +38,7 @@ async function createOutputBox(
   e: ReturnType<typeof env>,
   name: string
 ): Promise<{ id: string; path: string }> {
-  const id = await createBox(e as any, {
+  const id = await createNode(e as any, {
     parentPath: "output",
     name,
     type: "output",
@@ -51,7 +51,7 @@ async function createOutputBox(
 
 async function readyAcceptFixture(dir: string) {
   const e = env(dir);
-  const result = await dispatch(e as any, "bx-p1", "executor", {
+  const result = await dispatch(e as any, "cx-p1", "executor", {
     userPrompt: "atomic provenance fixture",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -76,8 +76,8 @@ test("multi-output bind: second write failure rolls back first Output; Task/Deli
   const outB = await createOutputBox(base, "atomic-b");
   const { result, delivery, taskPath } = await readyAcceptFixture(dir);
 
-  const noteA = boxNotePath(outA.path);
-  const noteB = boxNotePath(outB.path);
+  const noteA = nodeNotePath(outA.path);
+  const noteB = nodeNotePath(outB.path);
   const rawABefore = await base.fs.readFile(noteA);
   const rawBBefore = await base.fs.readFile(noteB);
   const taskBefore = await base.fs.readFile(taskPath);
@@ -148,8 +148,8 @@ test("accept: delivery/task snapshot read failure before Output write leaves all
   const outB = await createOutputBox(base, "snap-fail-b");
   const { delivery, taskPath } = await readyAcceptFixture(dir);
 
-  const noteA = boxNotePath(outA.path);
-  const noteB = boxNotePath(outB.path);
+  const noteA = nodeNotePath(outA.path);
+  const noteB = nodeNotePath(outB.path);
   const rawABefore = await base.fs.readFile(noteA);
   const rawBBefore = await base.fs.readFile(noteB);
   const taskBefore = await base.fs.readFile(taskPath);
@@ -199,7 +199,7 @@ test("accept: task snapshot read failure before Output write leaves all byte-ide
   const out = await createOutputBox(base, "snap-task-fail");
   const { delivery, taskPath } = await readyAcceptFixture(dir);
 
-  const notePath = boxNotePath(out.path);
+  const notePath = nodeNotePath(out.path);
   const rawOutBefore = await base.fs.readFile(notePath);
   const taskBefore = await base.fs.readFile(taskPath);
   const deliveryBefore = await base.fs.readFile(delivery.path);
@@ -251,8 +251,8 @@ test("accept: delivery write failure after Output binds rolls Outputs + keeps Ta
   const outB = await createOutputBox(base, "del-fail-b");
   const { delivery, taskPath } = await readyAcceptFixture(dir);
 
-  const noteA = boxNotePath(outA.path);
-  const noteB = boxNotePath(outB.path);
+  const noteA = nodeNotePath(outA.path);
+  const noteB = nodeNotePath(outB.path);
   const rawABefore = await base.fs.readFile(noteA);
   const rawBBefore = await base.fs.readFile(noteB);
   const taskBefore = await base.fs.readFile(taskPath);
@@ -301,7 +301,7 @@ test("accept: task envelope write failure after Delivery accepted restores Deliv
   const out = await createOutputBox(base, "task-fail-out");
   const { delivery, taskPath } = await readyAcceptFixture(dir);
 
-  const notePath = boxNotePath(out.path);
+  const notePath = nodeNotePath(out.path);
   const rawOutBefore = await base.fs.readFile(notePath);
   const taskBefore = await base.fs.readFile(taskPath);
   const deliveryBefore = await base.fs.readFile(delivery.path);
@@ -347,8 +347,8 @@ test("bindOutputsToDeliveryUnlocked: direct second-write failure restores first 
   const outA = await createOutputBox(base, "direct-a");
   const outB = await createOutputBox(base, "direct-b");
   const tent = await loadTent(base.fs);
-  const noteA = boxNotePath(outA.path);
-  const noteB = boxNotePath(outB.path);
+  const noteA = nodeNotePath(outA.path);
+  const noteB = nodeNotePath(outB.path);
   const rawA = await base.fs.readFile(noteA);
   const rawB = await base.fs.readFile(noteB);
 
@@ -383,7 +383,7 @@ test("retention pin scan fails closed: preview and purge refuse when loadTent br
 
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },role: "executor",
-    claims: [{ id: "bx-p1", path: "prompt/表达式任务书" }],
+    nodeRefs: [{ id: "cx-p1", path: "prompt/表达式任务书" }],
     manifestPath: "temp/executor/manifests/m.md",
     userPrompt: "old terminal",
     id: "tk-failscan1",

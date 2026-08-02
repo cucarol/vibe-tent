@@ -21,7 +21,7 @@ export function Outline(props: OutlineProps) {
   const {
     chrome,
     onClose,
-    subtitle = "Concept / box tree placeholder · open from rail or chrome",
+    subtitle = "Node tree placeholder · open from rail or chrome",
   } = props;
   const open = chrome.open;
 

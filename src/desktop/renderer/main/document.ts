@@ -10,7 +10,7 @@ import { ICO } from "./icons.js";
 import { el, setError } from "./elements.js";
 import {
   activeCx,
-  findConcept,
+  findNode,
   localTabs,
   reconstruct,
   reloadTree,
@@ -29,7 +29,7 @@ export type DocumentHost = {
   loadCards: () => Promise<void>;
   /** Empty-canvas left-click: mount workspace via main pick+workspace.mount. */
   openWorkspace?: () => void | Promise<void>;
-  /** After open/select — refresh box.projection + backlinks for the active node. */
+  /** After open/select — refresh node.collaboration + backlinks for the active Node. */
   onConceptOpened?: (cx: string) => void | Promise<void>;
 };
 
@@ -160,17 +160,17 @@ function focusActiveTab(): void {
   btn?.focus({ preventScroll: true });
 }
 
-export async function openConcept(cx: string): Promise<void> {
+export async function openNode(cx: string): Promise<void> {
   if (!workspaceId) return;
   const edit = (await window.tentDesktop.rpc("docs.readForEdit", {
     workspaceId,
-    id: cx,
+    nodeId: cx,
   })) as {
-    id: string;
+    nodeId: string;
     path: string;
     name?: string;
     type?: string;
-    mode?: "editable" | "archived" | "read-only";
+    mode: "editable" | "archived";
     body: string;
     raw?: string;
     etag: string;
@@ -178,24 +178,25 @@ export async function openConcept(cx: string): Promise<void> {
     artifactRefs?: TabView["artifactRefs"];
   };
 
-  const existing = localTabs.get(edit.id);
+  const existing = localTabs.get(edit.nodeId);
   if (existing?.dirty) {
-    setActiveCx(edit.id);
+    setActiveCx(edit.nodeId);
     host?.renderAll();
     el.status.textContent = "当前标签有未保存更改。";
     return;
   }
 
-  const concept = findConcept(tree, edit.id);
-  const rawMode = edit.mode || concept?.mode || "editable";
-  const nodeMode: TabView["nodeMode"] =
-    rawMode === "archived" ? "archived" : "editable";
+  const node = findNode(tree, edit.nodeId);
+  if (edit.mode !== "editable" && edit.mode !== "archived") {
+    throw new Error(`Invalid Node mode: ${String(edit.mode)}`);
+  }
+  const nodeMode: TabView["nodeMode"] = edit.mode;
   const usable =
-    concept?.coordination ??
-    (!concept?.invalid && nodeMode !== "archived");
+    node?.coordination ??
+    (!node?.invalid && nodeMode !== "archived");
 
   const tab: TabView = {
-    cx: edit.id,
+    nodeId: edit.nodeId,
     path: edit.path,
     name: edit.name || edit.path.split("/").pop() || edit.path,
     type: edit.type || String(edit.frontmatter?.type || "prompt"),
@@ -208,10 +209,10 @@ export async function openConcept(cx: string): Promise<void> {
     frontmatter: edit.frontmatter || {},
     artifactRefs: edit.artifactRefs,
   };
-  localTabs.set(tab.cx, tab);
-  setActiveCx(tab.cx);
+  localTabs.set(tab.nodeId, tab);
+  setActiveCx(tab.nodeId);
   host?.renderAll();
-  void host?.onConceptOpened?.(tab.cx);
+  void host?.onConceptOpened?.(tab.nodeId);
 }
 
 export function renderTabs(): void {
@@ -221,9 +222,9 @@ export function renderTabs(): void {
   el.tabs.innerHTML = tabs
     .map((t) =>
       documentTabHtml({
-        cx: t.cx,
+        nodeId: t.nodeId,
         name: t.name,
-        active: t.cx === activeCx,
+        active: t.nodeId === activeCx,
         dirty: t.dirty,
         closeIcon: ICO.close,
       })
@@ -322,12 +323,12 @@ async function onToolbar(act: string): Promise<void> {
     try {
       const result = (await window.tentDesktop.rpc("docs.fork", {
         workspaceId,
-        id: tab.cx,
-      })) as { id?: string; cx?: string };
-      const newId = result.id || result.cx;
+        nodeId: tab.nodeId,
+      })) as { nodeId: string };
+      const newId = result.nodeId;
       el.status.textContent = newId ? `已派生副本` : "已派生副本";
       await reloadTree();
-      if (newId) await openConcept(newId);
+      if (newId) await openNode(newId);
     } catch (err) {
       setError(err);
     }
@@ -339,8 +340,8 @@ async function onToolbar(act: string): Promise<void> {
   }
   if (act === "card") {
     await window.tentDesktop.pushContextCard({
-      kind: "box",
-      id: tab.cx,
+      kind: "node",
+      id: tab.nodeId,
       path: tab.path,
       label: tab.name,
     });
@@ -383,7 +384,7 @@ async function onImportAttachment(tab: TabView): Promise<void> {
     const bytesBase64 = await fileToBase64(file);
     const result = (await window.tentDesktop.rpc("docs.importAttachment", {
       workspaceId,
-      id: tab.cx,
+      nodeId: tab.nodeId,
       fileName: file.name,
       bytesBase64,
     })) as { markdown?: string; relativePath?: string };
@@ -423,7 +424,7 @@ export async function saveTab(tab: TabView): Promise<void> {
   try {
     const result = (await window.tentDesktop.rpc("docs.write", {
       workspaceId,
-      id: tab.cx,
+      nodeId: tab.nodeId,
       baseEtag: tab.etag,
       raw: tab.buffer,
     })) as { etag: string };

@@ -81,7 +81,11 @@ export class DesktopServiceHost {
   private handleEnvelope(ev: EventEnvelope): void {
     const type = ev?.type;
     if (typeof type !== "string" || !type) return;
-    if (!isPendingInteractionEventType(type) && !isTaskProjectionEventType(type)) {
+    if (
+      type !== "node.changed" &&
+      !isPendingInteractionEventType(type) &&
+      !isTaskProjectionEventType(type)
+    ) {
       return;
     }
     const workspaceId = typeof ev.workspaceId === "string" ? ev.workspaceId : "";

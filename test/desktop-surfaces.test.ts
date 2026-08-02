@@ -54,7 +54,7 @@ test("contract gaps list missing desktop methods without inventing RPCs", () => 
   // docs.move landed as the canonical structural move/reparent RPC — gap removed.
   assert.equal(ids.includes("docs.move-reparent"), false);
   assert.ok(CLIENT_METHODS.includes("docs.move"));
-  assert.ok(ids.includes("concept.permanent-delete"));
+  assert.ok(ids.includes("node.permanent-delete"));
   assert.ok(ids.includes("session.logs-reload"));
   // type-tag-mutation closed once Service type/tags RPCs landed on CLIENT_METHODS.
   assert.equal(ids.includes("type-tag-mutation"), false);
@@ -84,27 +84,27 @@ test("contract gaps list missing desktop methods without inventing RPCs", () => 
 test("flattenGraphNodes preserves tree order and depth", () => {
   const flat = flattenGraphNodes([
     {
-      id: "cx-a",
+      nodeId: "cx-a",
       path: "a",
       name: "A",
       type: "goal",
       coordination: true,
       children: [
-        { id: "cx-b", path: "a/b", name: "B", type: "prompt", coordination: false },
+        { nodeId: "cx-b", path: "a/b", name: "B", type: "prompt", coordination: false },
       ],
     },
-    { id: "cx-c", path: "c", name: "C", type: "prompt", coordination: false },
+    { nodeId: "cx-c", path: "c", name: "C", type: "prompt", coordination: false },
   ]);
   assert.deepEqual(
-    flat.map((n) => `${n.depth}:${n.id}`),
+    flat.map((n) => `${n.depth}:${n.nodeId}`),
     ["0:cx-a", "1:cx-b", "0:cx-c"]
   );
-  assert.equal(findGraphNode([{ id: "cx-a", path: "a", name: "A", type: "goal", coordination: true, children: [{ id: "cx-b", path: "a/b", name: "B", type: "prompt", coordination: false }] }], "cx-b")?.name, "B");
+  assert.equal(findGraphNode([{ nodeId: "cx-a", path: "a", name: "A", type: "goal", coordination: true, children: [{ nodeId: "cx-b", path: "a/b", name: "B", type: "prompt", coordination: false }] }], "cx-b")?.name, "B");
 });
 
 test("buildGraphSelectionView never invents edges", () => {
   const empty = buildGraphSelectionView({
-    node: { id: "cx-1", path: "x", name: "X", type: "prompt", coordination: false },
+    node: { nodeId: "cx-1", path: "x", name: "X", type: "prompt", coordination: false },
   });
   assert.equal(empty.backlinks.length, 0);
   assert.equal(empty.outLinks.length, 0);
@@ -411,7 +411,7 @@ test("service smoke: docs.backlinks + provider.catalog for graph/settings", asyn
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "surf",
-    boxes: [
+    nodes: [
       { name: "alpha", type: "prompt", body: "# alpha\nsee [[beta]]\n" },
       { name: "beta", type: "prompt", body: "# beta\n" },
     ],
@@ -421,23 +421,21 @@ test("service smoke: docs.backlinks + provider.catalog for graph/settings", asyn
   try {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const mounted = await client.mount(workspace) as { workspaceId: string };
-    const list = await client.docsList(mounted.workspaceId) as {
-      concepts: Array<{ id: string; name: string; children?: unknown[] }>;
-    };
-    const flat: Array<{ id: string; name: string }> = [];
-    const walk = (nodes: Array<{ id: string; name: string; children?: unknown[] }>) => {
+    const list = await client.docsList(mounted.workspaceId);
+    const flat: Array<{ nodeId: string; name: string }> = [];
+    const walk = (nodes: Array<{ nodeId: string; name: string; children?: unknown[] }>) => {
       for (const n of nodes) {
-        flat.push({ id: n.id, name: n.name });
+        flat.push({ nodeId: n.nodeId, name: n.name });
         if (Array.isArray(n.children)) walk(n.children as typeof nodes);
       }
     };
-    walk(list.concepts || []);
+    walk(list.nodes || []);
     const beta = flat.find((n) => n.name === "beta");
     assert.ok(beta, "beta concept present");
 
     const bl = await client.call<{ backlinks: Array<{ fromName: string }> }>("docs.backlinks", {
       workspaceId: mounted.workspaceId,
-      id: beta!.id,
+      nodeId: beta!.nodeId,
     });
     assert.ok(
       (bl.backlinks || []).some((b) => b.fromName === "alpha"),

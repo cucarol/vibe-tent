@@ -1,13 +1,12 @@
 // Typed ServiceClient for Desktop / CLI attach (task.* + docs.* only).
 
 import type {
-  BoxProjection,
-  BoxProjectionsResult,
   DeliveryProjection,
   EventEnvelope,
   GraphProjection,
   NodeCollaboration,
   NodeCollaborationsResult,
+  NodeProjection,
   OutputProvenance,
   PendingInteractionListResult,
   ProviderCatalogProjection,
@@ -237,19 +236,21 @@ export class ServiceClient {
 
   // ---- convenience: docs ----
   docsList(workspaceId: string, includeBody = false) {
-    return this.call("docs.list", { workspaceId, includeBody });
+    return this.call<{ workspaceId: string; nodes: NodeProjection[] }>("docs.list", {
+      workspaceId,
+      includeBody,
+    });
   }
-  docsGet(workspaceId: string, idOrPath: { id?: string; path?: string }) {
-    return this.call("docs.get", { workspaceId, ...idOrPath });
+  docsGet(workspaceId: string, nodeId: string) {
+    return this.call<{ workspaceId: string; node: NodeProjection }>("docs.get", {
+      workspaceId,
+      nodeId,
+    });
   }
-  docsReadForEdit(
-    workspaceId: string,
-    idOrPath: { id?: string; path?: string; boxId?: string }
-  ) {
+  docsReadForEdit(workspaceId: string, nodeId: string) {
     return this.call<{
       workspaceId: string;
-      id: string;
-      cx: string;
+      nodeId: string;
       path: string;
       name: string;
       type: string;
@@ -258,7 +259,7 @@ export class ServiceClient {
       etag: string;
       frontmatter: Record<string, unknown>;
       artifactRefs: unknown[];
-    }>("docs.readForEdit", { workspaceId, ...idOrPath });
+    }>("docs.readForEdit", { workspaceId, nodeId });
   }
   /**
    * Existing-node body/frontmatter write. baseEtag is required (from docs.readForEdit).
@@ -267,8 +268,7 @@ export class ServiceClient {
   docsWrite(
     workspaceId: string,
     args: {
-      id?: string;
-      path?: string;
+      nodeId: string;
       body?: string;
       frontmatter?: Record<string, unknown>;
       raw?: string;
@@ -281,19 +281,21 @@ export class ServiceClient {
     workspaceId: string,
     args: { name: string; type?: string; parentPath?: string; body?: string }
   ) {
-    return this.call("docs.createNote", { workspaceId, ...args });
+    return this.call<{ workspaceId: string; nodeId: string; path: string; type: string }>(
+      "docs.createNote",
+      { workspaceId, ...args }
+    );
   }
-  docsFork(workspaceId: string, idOrPath: { id?: string; path?: string; boxId?: string }) {
-    return this.call("docs.fork", { workspaceId, ...idOrPath });
+  docsFork(workspaceId: string, nodeId: string) {
+    return this.call("docs.fork", { workspaceId, nodeId });
   }
   /**
-   * User-only atomic concept rename (MutationBus).
-   * Resolve by id/path/boxId; pass newName only — cx- is immutable.
-   * Success emits exactly one concept.changed with oldPath/path.
+   * User-only atomic Node rename (MutationBus).
+   * Success emits exactly one node.changed with oldPath/path.
    */
   docsRename(
     workspaceId: string,
-    args: { id?: string; path?: string; boxId?: string; newName: string; actor?: string }
+    args: { nodeId: string; newName: string; actor?: string }
   ) {
     return this.call("docs.rename", { workspaceId, ...args });
   }
@@ -301,12 +303,12 @@ export class ServiceClient {
    * User-only structural move / reparent (MutationBus).
    * Resolve by stable cx- id; expectedPath required for stale-path conflict.
    * newParentId null = tent root. position: inside | before/after siblingId.
-   * Success emits exactly one concept.changed (reason docs.move) with oldPath/path/pathMap.
+   * Success emits exactly one node.changed (reason docs.move) with oldPath/path/pathMap.
    */
   docsMove(
     workspaceId: string,
     args: {
-      id: string;
+      nodeId: string;
       expectedPath: string;
       newParentId: string | null;
       position:
@@ -324,23 +326,19 @@ export class ServiceClient {
   docsSetMode(
     workspaceId: string,
     args: {
-      id?: string;
-      path?: string;
-      boxId?: string;
+      nodeId: string;
       mode: "editable" | "archived";
     }
   ) {
     return this.call("docs.setMode", { workspaceId, ...args });
   }
   /**
-   * Import attachment bytes for a concept. Wire payload is base64; disk stores original bytes.
+   * Import attachment bytes for a Node. Wire payload is base64; disk stores original bytes.
    */
   docsImportAttachment(
     workspaceId: string,
     args: {
-      id?: string;
-      path?: string;
-      boxId?: string;
+      nodeId: string;
       fileName: string;
       bytesBase64: string;
     }
@@ -349,14 +347,12 @@ export class ServiceClient {
   }
   /**
    * User-only set compound Node type (MutationBus + baseEtag).
-   * Missing baseEtag → -32008; stale → -32009. Emits concept.changed reason docs.setType.
+   * Missing baseEtag → -32008; stale → -32009. Emits node.changed reason docs.setType.
    */
   docsSetType(
     workspaceId: string,
     args: {
-      id?: string;
-      path?: string;
-      boxId?: string;
+      nodeId: string;
       type: string;
       baseEtag: string;
       actor?: string;
@@ -374,9 +370,7 @@ export class ServiceClient {
   docsTagsSet(
     workspaceId: string,
     args: {
-      id?: string;
-      path?: string;
-      boxId?: string;
+      nodeId: string;
       tags: string[];
       baseEtag: string;
       actor?: string;
@@ -392,9 +386,7 @@ export class ServiceClient {
   docsTagAdd(
     workspaceId: string,
     args: {
-      id?: string;
-      path?: string;
-      boxId?: string;
+      nodeId: string;
       tag: string;
       baseEtag: string;
       actor?: string;
@@ -410,9 +402,7 @@ export class ServiceClient {
   docsTagRemove(
     workspaceId: string,
     args: {
-      id?: string;
-      path?: string;
-      boxId?: string;
+      nodeId: string;
       tag: string;
       baseEtag: string;
       actor?: string;
@@ -432,21 +422,19 @@ export class ServiceClient {
    */
   relationList(
     workspaceId: string,
-    args: { id?: string; path?: string; boxId?: string }
+    args: { nodeId: string }
   ) {
     return this.call<RelationListResult>("relation.list", { workspaceId, ...args });
   }
 
   /**
    * User-only create semantic relation on source Node (MutationBus + baseEtag).
-   * Missing baseEtag → -32008; stale → -32009. Emits concept.changed reason relation.create.
+   * Missing baseEtag → -32008; stale → -32009. Emits node.changed reason relation.create.
    */
   relationCreate(
     workspaceId: string,
     args: {
-      id?: string;
-      path?: string;
-      boxId?: string;
+      nodeId: string;
       kind: string;
       direction: "directed" | "bidirectional";
       label?: string;
@@ -464,14 +452,12 @@ export class ServiceClient {
 
   /**
    * User-only update semantic relation (cannot change id/source).
-   * label: null clears. Emits concept.changed reason relation.update.
+   * label: null clears. Emits node.changed reason relation.update.
    */
   relationUpdate(
     workspaceId: string,
     args: {
-      id?: string;
-      path?: string;
-      boxId?: string;
+      nodeId: string;
       relationId: string;
       kind?: string;
       direction?: "directed" | "bidirectional";
@@ -490,14 +476,12 @@ export class ServiceClient {
 
   /**
    * User-only delete semantic relation by id on source Node.
-   * Missing id fails loudly. Emits concept.changed reason relation.delete.
+   * Missing id fails loudly. Emits node.changed reason relation.delete.
    */
   relationDelete(
     workspaceId: string,
     args: {
-      id?: string;
-      path?: string;
-      boxId?: string;
+      nodeId: string;
       relationId: string;
       baseEtag: string;
       actor?: string;
@@ -903,12 +887,12 @@ export class ServiceClient {
   }
 
   /**
-   * List deliveries for a workspace (optional taskId / boxId / role filters).
+   * List deliveries for a workspace (optional taskId / nodeId / role filters).
    * Read projection only — review still uses task.accept / task.reject.
    */
   deliveryList(
     workspaceId: string,
-    opts?: { taskId?: string; boxId?: string; role?: string }
+    opts?: { taskId?: string; nodeId?: string; role?: string }
   ) {
     return this.call<{ workspaceId: string; deliveries: DeliveryProjection[] }>(
       "delivery.list",
@@ -924,54 +908,19 @@ export class ServiceClient {
     );
   }
 
-  /**
-   * @deprecated Prefer nodeCollaboration (V0.2). Migration-only.
-   * Stable box collaboration projection (legacy task-api §2.3).
-   * Resolve by id, boxId, or path (same conventions as docs.get).
-   * Active task is authoritative; without one, only persisted done is preserved.
-   */
-  boxProjection(
-    workspaceId: string,
-    idOrPath: { id?: string; path?: string; boxId?: string }
-  ) {
-    return this.call<BoxProjection>("box.projection", { workspaceId, ...idOrPath });
-  }
-
-  /**
-   * @deprecated Prefer nodeCollaborations (V0.2). Migration-only.
-   * Batch box collaboration projection — same item semantics as box.projection.
-   * `ids` order is preserved in the returned `projections` array.
-   */
-  boxProjections(workspaceId: string, ids: string[]) {
-    return this.call<BoxProjectionsResult>("box.projections", { workspaceId, ids });
-  }
-
-  /**
-   * V0.2 Node-keyed collaboration projection (task-api §2.3 / cx-tsw53f).
-   * Resolve by id, boxId, or path (same conventions as docs.get).
-   * Multi-Task: activeTasks[] + activeTaskCount (projection-only mirror of length);
-   * Session/Delivery only via explicit ids. No totalCount/pagination.
-   * Idle Node returns activeTasks: [] / activeTaskCount: 0.
-   */
-  nodeCollaboration(
-    workspaceId: string,
-    idOrPath: { id?: string; path?: string; boxId?: string }
-  ) {
+  /** Exact-Node collaboration projection with at most one active Task. */
+  nodeCollaboration(workspaceId: string, nodeId: string) {
     return this.call<NodeCollaboration>("node.collaboration", {
       workspaceId,
-      ...idOrPath,
+      nodeId,
     });
   }
 
-  /**
-   * V0.2 batch Node collaboration projection — same multi-Task item semantics.
-   * `ids` order is preserved in the returned `items` array. Empty ids → empty items.
-   * Loads workspace tasks/sessions/deliveries once per batch (no N+1).
-   */
-  nodeCollaborations(workspaceId: string, ids: string[]) {
+  /** Batch exact-Node collaboration; input order is preserved. */
+  nodeCollaborations(workspaceId: string, nodeIds: string[]) {
     return this.call<NodeCollaborationsResult>("node.collaborations", {
       workspaceId,
-      ids,
+      nodeIds,
     });
   }
 
@@ -981,18 +930,18 @@ export class ServiceClient {
    */
   outputProvenance(
     workspaceId: string,
-    idOrPath: { id?: string; path?: string; outputId?: string }
+    nodeId: string
   ) {
     return this.call<OutputProvenance>("output.provenance", {
       workspaceId,
-      ...idOrPath,
+      nodeId,
     });
   }
 
   /**
    * Workspace-level graph projection for Working-set Canvas.
    * Node summaries + parent / markdown / wiki edges; no body, no placement.
-   * Unresolved concept links are retained with explicit unresolved payload.
+   * Unresolved Node links are retained with an explicit unresolved payload.
    */
   graphProjection(workspaceId: string) {
     return this.call<GraphProjection>("graph.projection", { workspaceId });
@@ -1001,13 +950,13 @@ export class ServiceClient {
   // ---- convenience: proposal (triage; separate from delivery review) ----
   proposalList(
     workspaceId: string,
-    opts?: { boxId?: string; status?: "pending" | "accepted" | "rejected" | "all" }
+    opts?: { nodeId?: string; status?: "pending" | "accepted" | "rejected" | "all" }
   ) {
     return this.call("proposal.list", { workspaceId, ...opts });
   }
   proposalSubmit(
     workspaceId: string,
-    args: { boxId: string; role: string; body: string }
+    args: { nodeId: string; role: string; body: string }
   ) {
     return this.call("proposal.submit", { workspaceId, ...args });
   }

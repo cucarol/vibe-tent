@@ -1,5 +1,5 @@
 // ProcessSupervisor — child-process lifecycle only (B0 agent-runtime.md §7).
-// Does not understand boxes, A2A, or task completion.
+// Does not understand nodes, A2A, or task completion.
 
 import { spawn, type ChildProcess } from "node:child_process";
 import type { ResolvedLaunch } from "../adapters/types.js";

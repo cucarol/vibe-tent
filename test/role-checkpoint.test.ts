@@ -32,6 +32,7 @@ import { createServiceClient } from "../src/service/client.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import { runRoleCheckpointCommand } from "../src/cli/role-checkpoint-rpc.js";
 import { sessionBootstrapPromptForTask } from "../src/core/task.js";
+import { buildTaskContextCard } from "../src/core/task-context-card.js";
 
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -43,7 +44,7 @@ async function makeWorkspace(name = "role-cp"): Promise<string> {
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name,
-    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+    nodes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -597,11 +598,11 @@ test("managed bootstrap appends Role Checkpoint as dynamic tail for durable role
         type: "prompt",
       });
       assert.ok(!created.error, JSON.stringify(created.error));
-      const boxId = (created.result as { id: string }).id;
+      const nodeId = (created.result as { nodeId: string }).nodeId;
 
       const d = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "bootstrap with checkpoint tail",
         deliveryPolicy: "review",
@@ -634,10 +635,13 @@ test("managed bootstrap appends Role Checkpoint as dynamic tail for durable role
           role: "executor",
           // Node refs live on Task.contextCard.refs.nodes only (no claims[]).
           manifest: "temp/executor/manifest.yml",
-          status: "taken",
           state: "running",
           deliveryPolicy: "review",
           prompt: "## User Prompt\n\nbootstrap with checkpoint tail\n",
+          contextCard: buildTaskContextCard({
+            contextGeneration: `cg-v1-${"0".repeat(64)}`,
+            refs: { nodes: [{ id: "cx-checkpoint" }] },
+          }),
         },
         { workspaceRoot: ws, systemRoot: path.join(ws, ".tent") }
       );
@@ -652,7 +656,7 @@ test("managed bootstrap appends Role Checkpoint as dynamic tail for durable role
       // agentProfile path must never load role checkpoint under profile id.
       const profileDispatch = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "fake-default",
         assigneeKind: "route",
         prompt: "profile one-shot",
@@ -710,10 +714,10 @@ test("managed bootstrap fails open when Role Checkpoint pointers are invalid", a
         type: "prompt",
       });
       assert.ok(!created.error, JSON.stringify(created.error));
-      const boxId = (created.result as { id: string }).id;
+      const nodeId = (created.result as { nodeId: string }).nodeId;
       const dispatched = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [boxId],
+        nodeIds: [nodeId],
         role: "executor",
         prompt: "bootstrap despite invalid checkpoint",
         deliveryPolicy: "review",

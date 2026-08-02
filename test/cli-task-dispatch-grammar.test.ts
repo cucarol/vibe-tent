@@ -79,8 +79,8 @@ test("CLI help documents --target / --node grammar; rejects retired public knobs
   assert.match(help, /queued; never starts managed ACP/);
   assert.match(help, /Settings route/);
   assert.doesNotMatch(help, /agent:<|AgentDefinition|LaunchProfile/);
-  assert.match(help, /Rejected \(no alias\)/);
-  assert.doesNotMatch(help, /tent task dispatch <boxId>/);
+  assert.match(help, /Any flag outside this command's canonical grammar is rejected/);
+  assert.doesNotMatch(help, /tent task dispatch <nodeId>/);
   // Usage line must not offer retired selectors as active syntax.
   const usageLine = help
     .split("\n")
@@ -451,12 +451,12 @@ test("loud rejection of every retired public knob and old positional grammar", a
     assert.equal(calls.length, n, `${case_.label} must not reach taskDispatch`);
   }
 
-  // Old positional <boxId> <role> grammar
+  // Old positional <nodeId> <role> grammar
   {
     const n = before();
     const r = await runTaskCommand(
       "dispatch",
-      ["cx-old-box", "executor", "old positional prompt"],
+      ["cx-oldnode", "executor", "old positional prompt"],
       { client: client as never, cwd }
     );
     assert.notEqual(r.exitCode, 0);

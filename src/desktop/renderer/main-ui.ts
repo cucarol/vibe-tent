@@ -14,7 +14,7 @@ import {
   loadCards,
   onEmitCard,
 } from "./main/collaboration.js";
-import { openConcept, renderEditor, renderTabs, renderToolbar, bindDocumentHost } from "./main/document.js";
+import { openNode, renderEditor, renderTabs, renderToolbar, bindDocumentHost } from "./main/document.js";
 import { renderDispatchPanel, bindDispatchHost } from "./main/dispatch.js";
 import { el, setError, syncActivityBadge } from "./main/elements.js";
 import {
@@ -30,7 +30,7 @@ import {
   onServiceEvent,
   pendingInteractionCount,
   reloadActiveBacklinks,
-  reloadBoxProjections,
+  reloadNodeCollaborations,
   reloadPendingInteractions,
   reloadProfiles,
   reloadRegistry,
@@ -52,7 +52,7 @@ import {
 import type { ShellState } from "./main/types.js";
 import {
   bindTreeHost,
-  onCreateCoordBox,
+  onCreateNode,
   onCreateNote,
   onSearch,
   renderCreateTypeSelect,
@@ -107,8 +107,9 @@ bindStateHost({
   },
   renderMeta,
   renderBacklinks,
+  openNode,
 });
-bindTreeHost({ openConcept });
+bindTreeHost({ openNode });
 bindDocumentHost({
   renderAll,
   renderTabs,
@@ -116,13 +117,13 @@ bindDocumentHost({
   loadCards,
   openWorkspace: () => void onOpenWorkspace(),
   onConceptOpened: async () => {
-    await Promise.all([reloadBoxProjections(), reloadActiveBacklinks()]);
+    await Promise.all([reloadNodeCollaborations(), reloadActiveBacklinks()]);
     renderTree();
     renderMeta();
     renderBacklinks();
   },
 });
-bindInspectorHost({ renderAll, openConcept });
+bindInspectorHost({ renderAll, openNode });
 bindDispatchHost({ renderDispatchPanel });
 bindShellHost({
   onSurfaceChange: (surface) => {
@@ -130,7 +131,7 @@ bindShellHost({
   },
 });
 bindGraphHost({
-  openConcept,
+  openNode,
   goWorkbench: () => setSurface("workbench"),
 });
 bindActivityHost({
@@ -154,7 +155,7 @@ async function boot(): Promise<void> {
   document.getElementById("btn-open-ws")!.addEventListener("click", onOpenWorkspace);
   document.getElementById("btn-refresh")!.addEventListener("click", () => void refresh());
   document.getElementById("btn-new-note")!.addEventListener("click", () => void onCreateNote());
-  el.btnNewBox.addEventListener("click", () => void onCreateCoordBox());
+  el.btnNewBox.addEventListener("click", () => void onCreateNode());
   el.createType.addEventListener("change", () => {
     setCreateTypePick(el.createType.value);
   });
@@ -237,7 +238,7 @@ function applyShell(s: ShellState): void {
   const live = s.statusMessage || s.workspace?.statusMessage || "";
   if (live) el.status.textContent = live;
 
-  // Shell tree already overlays box.projection when present; still re-fetch on refresh().
+  // Shell tree already overlays node.collaboration when present; still re-fetch on refresh().
   if (s.workspace?.tree?.length) {
     setTree(s.workspace.tree);
     renderTree();
@@ -269,13 +270,13 @@ function applyShell(s: ShellState): void {
           path: t.path,
           id: t.id,
           role: t.role,
-          referencedNodeIds: t.referencedNodeIds || [],
-          status: (t.status === "taken" ? "taken" : "pending") as "pending" | "taken",
-          state: t.state || t.status,
+          referencedNodeIds: t.referencedNodeIds,
+          state: t.state,
           prompt: t.prompt,
           activeDeliveryId: t.activeDeliveryId,
           sessionId: t.sessionId,
           manifest: "",
+          contextCard: t.contextCard,
         })),
         deliveries,
         sessions
