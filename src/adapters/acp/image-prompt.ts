@@ -8,7 +8,7 @@ import * as nodePath from "node:path";
 import { pathToFileURL } from "node:url";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import type { Image as MdastImage, Nodes, Root } from "mdast";
-import type { FsAdapter } from "../../core/adapter.js";
+import type { BoundedBinaryRead, FsAdapter } from "../../core/adapter.js";
 import { ATTACHMENTS_DIR } from "../../core/paths.js";
 import { MAX_ATTACHMENT_BYTES } from "../../markdown/attachments.js";
 
@@ -78,7 +78,10 @@ export type ProjectBootstrapImagesInput = {
    * Read bytes under tent system root (NodeFs). Required only when transport supports
    * image and imageRefs is non-empty. Callers pass FsAdapter rooted at system root.
    */
-  readBinary?: (relativePath: string) => Promise<Uint8Array>;
+  readBinaryBounded?: (
+    relativePath: string,
+    maxBytes: number
+  ) => Promise<BoundedBinaryRead>;
   /**
    * Absolute tent system root (`.tent`). When set, image blocks may include a valid
    * `file://` URI for the resolved absolute path. Never invent relative-only URIs.
@@ -180,8 +183,8 @@ export async function projectBootstrapImagesToAcpPrompt(
     };
   }
 
-  if (typeof input.readBinary !== "function") {
-    notes.push("image readBinary unavailable; keeping Markdown image pointers");
+  if (typeof input.readBinaryBounded !== "function") {
+    notes.push("bounded image reader unavailable; keeping Markdown image pointers");
     for (const ref of refs) {
       fallbackPointers.push(ref.markdownPointer || ref.relativePath);
     }
@@ -223,9 +226,11 @@ export async function projectBootstrapImagesToAcpPrompt(
       notes.push(`skip unsupported image type: ${rel}`);
       continue;
     }
-    let bytes: Uint8Array;
+    const remainingTotalBytes = MAX_ACP_IMAGES_TOTAL_BYTES - totalBytes;
+    const allowedBytes = Math.min(MAX_ACP_IMAGE_BYTES, remainingTotalBytes);
+    let read: BoundedBinaryRead;
     try {
-      bytes = await input.readBinary(rel);
+      read = await input.readBinaryBounded(rel, allowedBytes + 1);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       fallbackPointers.push(ref.markdownPointer || rel);
@@ -233,23 +238,21 @@ export async function projectBootstrapImagesToAcpPrompt(
       notes.push(`skip unreadable image ${rel}: ${msg.slice(0, 120)}`);
       continue;
     }
+    const { bytes } = read;
+    if (read.truncated || bytes.byteLength > allowedBytes) {
+      fallbackPointers.push(ref.markdownPointer || rel);
+      if (remainingTotalBytes < MAX_ACP_IMAGE_BYTES) {
+        notes.push(
+          `skip image ${rel}: would exceed total budget ${MAX_ACP_IMAGES_TOTAL_BYTES}`
+        );
+      } else {
+        notes.push(`skip oversized image ${rel}: exceeds ${MAX_ACP_IMAGE_BYTES}`);
+      }
+      continue;
+    }
     if (bytes.byteLength <= 0) {
       fallbackPointers.push(ref.markdownPointer || rel);
       notes.push(`skip empty image: ${rel}`);
-      continue;
-    }
-    if (bytes.byteLength > MAX_ACP_IMAGE_BYTES) {
-      fallbackPointers.push(ref.markdownPointer || rel);
-      notes.push(
-        `skip oversized image ${rel}: ${bytes.byteLength} > ${MAX_ACP_IMAGE_BYTES}`
-      );
-      continue;
-    }
-    if (totalBytes + bytes.byteLength > MAX_ACP_IMAGES_TOTAL_BYTES) {
-      fallbackPointers.push(ref.markdownPointer || rel);
-      notes.push(
-        `skip image ${rel}: would exceed total budget ${MAX_ACP_IMAGES_TOTAL_BYTES}`
-      );
       continue;
     }
     // Magic bytes win. Extension alone is not enough; mismatch → skip (no spoofed MIME).
@@ -547,7 +550,8 @@ export async function collectBootstrapImageRefsFromTask(input: {
 
 /** Convenience: FsAdapter → readBinary bound for projection. */
 export function bindSystemRootReadBinary(
-  fs: Pick<FsAdapter, "readBinary">
-): (relativePath: string) => Promise<Uint8Array> {
-  return (relativePath: string) => fs.readBinary(relativePath);
+  fs: { readBinaryBounded(path: string, maxBytes: number): Promise<BoundedBinaryRead> }
+): (relativePath: string, maxBytes: number) => Promise<BoundedBinaryRead> {
+  return (relativePath: string, maxBytes: number) =>
+    fs.readBinaryBounded(relativePath, maxBytes);
 }

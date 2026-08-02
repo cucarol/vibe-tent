@@ -16,6 +16,11 @@ export interface FsAdapter {
    */
   readBinary(path: string): Promise<Uint8Array>;
   /**
+   * Read at most maxBytes from the start of a binary file.
+   * `truncated` reports that more bytes exist without materializing the remainder.
+   */
+  readBinaryBounded?(path: string, maxBytes: number): Promise<BoundedBinaryRead>;
+  /**
    * Write raw bytes. Prefer atomic temp+rename where the backend allows.
    * Path traversal defenses must match writeFile.
    */
@@ -28,6 +33,11 @@ export interface FsAdapter {
   /** 跨进程短期写锁；实现可在锁过期后接管。 */
   withLock?<T>(path: string, action: () => Promise<T>): Promise<T>;
 }
+
+export type BoundedBinaryRead = {
+  bytes: Uint8Array;
+  truncated: boolean;
+};
 
 export interface Clock {
   /** ISO 字符串。抽象出来便于测试与 resume。 */

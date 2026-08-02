@@ -25,6 +25,8 @@ import {
   DEFAULT_GROK_MODEL,
   GROK_ACP_ADAPTER_ID,
 } from "../src/adapters/grok-acp/index.js";
+import { NodeFs } from "../src/fs/node-fs.js";
+import type { BoundedBinaryRead } from "../src/core/adapter.js";
 
 const MOCK = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -37,6 +39,10 @@ const PNG_1X1 = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
   "base64"
 );
+
+function completeBinary(bytes: Uint8Array): BoundedBinaryRead {
+  return { bytes, truncated: false };
+}
 
 function startRoute(
   runtime: ReturnType<typeof createAgentRuntime>,
@@ -139,7 +145,7 @@ test("projectBootstrapImagesToAcpPrompt: fallback when transport lacks image", a
     bootstrapText: text,
     imageRefs: refs,
     transportSupportsImage: false,
-    readBinary: async () => PNG_1X1,
+    readBinaryBounded: async () => completeBinary(PNG_1X1),
   });
   assert.equal(noTransport.imagesAttached, false);
   assert.equal(noTransport.prompt.length, 1);
@@ -173,9 +179,9 @@ test("projectBootstrapImagesToAcpPrompt: attaches image when transport advertise
     imageRefs: refs,
     transportSupportsImage: true,
     systemRoot,
-    readBinary: async (rel) => {
+    readBinaryBounded: async (rel) => {
       assert.equal(rel, "attachments/cx/a.png");
-      return new Uint8Array(PNG_1X1);
+      return completeBinary(new Uint8Array(PNG_1X1));
     },
   });
   assert.equal(result.imagesAttached, true);
@@ -201,7 +207,7 @@ test("projectBootstrapImagesToAcpPrompt: no invalid file URI without systemRoot"
     bootstrapText: "hello",
     imageRefs: [{ relativePath: "attachments/cx/a.png" }],
     transportSupportsImage: true,
-    readBinary: async () => new Uint8Array(PNG_1X1),
+    readBinaryBounded: async () => completeBinary(new Uint8Array(PNG_1X1)),
   });
   assert.equal(result.imagesAttached, true);
   const img = result.prompt[1] as { type: "image"; uri?: string };
@@ -213,7 +219,7 @@ test("projectBootstrapImagesToAcpPrompt: unreadable path keeps pointer (no throw
     bootstrapText: "bootstrap",
     imageRefs: [{ relativePath: "attachments/missing.png" }],
     transportSupportsImage: true,
-    readBinary: async () => {
+    readBinaryBounded: async () => {
       throw new Error("Path escapes Tent root: attachments/missing.png");
     },
   });
@@ -226,7 +232,7 @@ test("projectBootstrapImagesToAcpPrompt: rejects path traversal refs", async () 
     bootstrapText: "bootstrap",
     imageRefs: [{ relativePath: "../outside.png", markdownPointer: "![](../outside.png)" }],
     transportSupportsImage: true,
-    readBinary: async () => {
+    readBinaryBounded: async () => {
       throw new Error("should not read traversal path");
     },
   });
@@ -241,7 +247,7 @@ test("projectBootstrapImagesToAcpPrompt: magic bytes beat mismatched extension",
     bootstrapText: "bootstrap",
     imageRefs: [{ relativePath: "attachments/cx/lie.png" }],
     transportSupportsImage: true,
-    readBinary: async () => fake,
+    readBinaryBounded: async () => completeBinary(fake),
   });
   assert.equal(result.imagesAttached, false);
   assert.ok(
@@ -251,20 +257,52 @@ test("projectBootstrapImagesToAcpPrompt: magic bytes beat mismatched extension",
 });
 
 test("projectBootstrapImagesToAcpPrompt: skips oversized single image", async () => {
-  const huge = new Uint8Array(MAX_ACP_IMAGE_BYTES + 1);
-  // PNG magic so size gate is what fires (not magic).
-  huge[0] = 0x89;
-  huge[1] = 0x50;
-  huge[2] = 0x4e;
-  huge[3] = 0x47;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "tent-bounded-image-"));
+  const rel = "attachments/cx/big.png";
+  const abs = path.join(root, ...rel.split("/"));
+  await fs.mkdir(path.dirname(abs), { recursive: true });
+  await fs.writeFile(abs, PNG_1X1.subarray(0, 12));
+  await fs.truncate(abs, MAX_ACP_IMAGE_BYTES * 4);
+  const nodeFs = new NodeFs(root);
+  let requestedBytes = 0;
   const result = await projectBootstrapImagesToAcpPrompt({
     bootstrapText: "bootstrap",
-    imageRefs: [{ relativePath: "attachments/cx/big.png" }],
+    imageRefs: [{ relativePath: rel }],
     transportSupportsImage: true,
-    readBinary: async () => huge,
+    readBinaryBounded: async (relativePath, maxBytes) => {
+      requestedBytes = maxBytes;
+      const read = await nodeFs.readBinaryBounded(relativePath, maxBytes);
+      assert.ok(read.bytes.byteLength <= maxBytes);
+      return read;
+    },
   });
+  assert.equal(requestedBytes, MAX_ACP_IMAGE_BYTES + 1);
   assert.equal(result.imagesAttached, false);
   assert.ok(result.notes.some((n) => /oversized/i.test(n)));
+});
+
+test("projectBootstrapImagesToAcpPrompt: bounds each read by remaining aggregate budget", async () => {
+  const first = new Uint8Array(PNG_1X1.subarray(0, 12));
+  const requested: number[] = [];
+  const result = await projectBootstrapImagesToAcpPrompt({
+    bootstrapText: "bootstrap",
+    imageRefs: [
+      { relativePath: "attachments/cx/first.png" },
+      { relativePath: "attachments/cx/second.png" },
+    ],
+    transportSupportsImage: true,
+    readBinaryBounded: async (_relativePath, maxBytes) => {
+      requested.push(maxBytes);
+      if (requested.length === 1) return completeBinary(first);
+      return { bytes: new Uint8Array(), truncated: true };
+    },
+  });
+  assert.deepEqual(requested, [
+    MAX_ACP_IMAGE_BYTES + 1,
+    MAX_ACP_IMAGE_BYTES - first.byteLength + 1,
+  ]);
+  assert.equal(result.imagesAttached, true);
+  assert.ok(result.notes.some((n) => /total budget/i.test(n)));
 });
 
 test("fileUriForSystemRelative: rejects escape and missing root", () => {

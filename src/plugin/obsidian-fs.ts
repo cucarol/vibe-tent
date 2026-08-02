@@ -3,8 +3,9 @@
 // 用低层 vault.adapter(非高层 Vault API):需要文件夹操作 + 访问 .claude 这类 dotfile。
 
 import { App, FileSystemAdapter } from "obsidian";
+import * as fs from "node:fs/promises";
 import * as nodePath from "node:path";
-import { FsAdapter, Clock } from "../core/adapter.js";
+import { FsAdapter, Clock, type BoundedBinaryRead } from "../core/adapter.js";
 import { withFileMutationLock } from "../fs/mutation-lock.js";
 
 export class ObsidianFs implements FsAdapter {
@@ -60,6 +61,44 @@ export class ObsidianFs implements FsAdapter {
   async readBinary(path: string): Promise<Uint8Array> {
     const ab = await this.a.readBinary(this.vp(path));
     return new Uint8Array(ab);
+  }
+
+  async readBinaryBounded(path: string, maxBytes: number): Promise<BoundedBinaryRead> {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+      throw new Error(`Invalid binary read limit: ${maxBytes}`);
+    }
+    const vp = this.vp(path);
+    const adapter = this.a;
+    if (adapter instanceof FileSystemAdapter) {
+      const handle = await fs.open(nodePath.join(adapter.getBasePath(), vp), "r");
+      try {
+        const bytes = new Uint8Array(maxBytes);
+        let offset = 0;
+        while (offset < maxBytes) {
+          const read = await handle.read(bytes, offset, maxBytes - offset, offset);
+          if (read.bytesRead === 0) break;
+          offset += read.bytesRead;
+        }
+        const stat = await handle.stat();
+        return {
+          bytes: bytes.subarray(0, offset),
+          truncated: stat.size > offset,
+        };
+      } finally {
+        await handle.close();
+      }
+    }
+
+    // Mobile/non-filesystem adapters expose no range-read primitive. A stat gate
+    // avoids loading known oversized files; a post-read bound covers stale metadata.
+    const stat = await adapter.stat(vp);
+    if (stat && stat.size > maxBytes) {
+      return { bytes: new Uint8Array(), truncated: true };
+    }
+    const bytes = new Uint8Array(await adapter.readBinary(vp));
+    return bytes.byteLength > maxBytes
+      ? { bytes: bytes.subarray(0, maxBytes), truncated: true }
+      : { bytes, truncated: false };
   }
 
   async writeBinary(path: string, data: Uint8Array): Promise<void> {

@@ -9,6 +9,7 @@ import {
 import type { AcpMcpServerWire, AcpSkillMetaRef } from "./mcp-skills.js";
 import type { BootstrapImageRef } from "./image-prompt.js";
 import type { RouteLaunchPlan } from "../types.js";
+import type { BoundedBinaryRead } from "../../core/adapter.js";
 import { NodeFs } from "../../fs/node-fs.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -73,7 +74,10 @@ export function readCoreChildEnvClientOptions(plan: RouteLaunchPlan): {
 export function readBootstrapImageClientOptions(plan: RouteLaunchPlan): {
   bootstrapImageRefs?: BootstrapImageRef[];
   bootstrapImageSystemRoot?: string;
-  readBootstrapImageBinary?: (relativePath: string) => Promise<Uint8Array>;
+  readBootstrapImageBinary?: (
+    relativePath: string,
+    maxBytes: number
+  ) => Promise<BoundedBinaryRead>;
 } {
   const refs = Array.isArray(plan.bootstrapImageRefs)
     ? plan.bootstrapImageRefs
@@ -88,15 +92,18 @@ export function readBootstrapImageClientOptions(plan: RouteLaunchPlan): {
   const out: {
     bootstrapImageRefs?: BootstrapImageRef[];
     bootstrapImageSystemRoot?: string;
-    readBootstrapImageBinary?: (relativePath: string) => Promise<Uint8Array>;
+    readBootstrapImageBinary?: (
+      relativePath: string,
+      maxBytes: number
+    ) => Promise<BoundedBinaryRead>;
   } = {
     bootstrapImageRefs: refs,
   };
   if (systemRoot) {
     out.bootstrapImageSystemRoot = systemRoot;
     const nodeFs = new NodeFs(systemRoot);
-    out.readBootstrapImageBinary = (relativePath: string) =>
-      nodeFs.readBinary(relativePath);
+    out.readBootstrapImageBinary = (relativePath: string, maxBytes: number) =>
+      nodeFs.readBinaryBounded(relativePath, maxBytes);
   }
   return out;
 }

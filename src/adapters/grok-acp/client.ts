@@ -12,6 +12,7 @@ import type { AcpMcpServerWire, AcpSkillMetaRef } from "../acp/mcp-skills.js";
 import type { BootstrapImageRef } from "../acp/image-prompt.js";
 import type { AcpPermissionOption } from "../acp/types.js";
 import type { RuntimeEvent } from "../../runtime/types.js";
+import type { BoundedBinaryRead } from "../../core/adapter.js";
 import type { GrokAcpPermissionPolicy } from "./types.js";
 
 export type GrokAcpClientOptions = {
@@ -35,7 +36,10 @@ export type GrokAcpClientOptions = {
   skills?: AcpSkillMetaRef[];
   bootstrapImageRefs?: BootstrapImageRef[];
   bootstrapImageSystemRoot?: string;
-  readBootstrapImageBinary?: (relativePath: string) => Promise<Uint8Array>;
+  readBootstrapImageBinary?: (
+    relativePath: string,
+    maxBytes: number
+  ) => Promise<BoundedBinaryRead>;
   /** Emit RuntimeEvent fragments (caller fills sessionId where needed). */
   emit: (ev: RuntimeEvent) => void;
   /**

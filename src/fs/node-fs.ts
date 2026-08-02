@@ -3,7 +3,7 @@
 
 import * as fs from "node:fs/promises";
 import * as nodePath from "node:path";
-import { FsAdapter, Clock } from "../core/adapter.js";
+import { FsAdapter, Clock, type BoundedBinaryRead } from "../core/adapter.js";
 import { withFileMutationLock } from "./mutation-lock.js";
 
 export class NodeFs implements FsAdapter {
@@ -43,6 +43,29 @@ export class NodeFs implements FsAdapter {
   async readBinary(path: string): Promise<Uint8Array> {
     const buf = await fs.readFile(this.abs(path));
     return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+
+  async readBinaryBounded(path: string, maxBytes: number): Promise<BoundedBinaryRead> {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+      throw new Error(`Invalid binary read limit: ${maxBytes}`);
+    }
+    const handle = await fs.open(this.abs(path), "r");
+    try {
+      const bytes = new Uint8Array(maxBytes);
+      let offset = 0;
+      while (offset < maxBytes) {
+        const read = await handle.read(bytes, offset, maxBytes - offset, offset);
+        if (read.bytesRead === 0) break;
+        offset += read.bytesRead;
+      }
+      const stat = await handle.stat();
+      return {
+        bytes: bytes.subarray(0, offset),
+        truncated: stat.size > offset,
+      };
+    } finally {
+      await handle.close();
+    }
   }
 
   async writeBinary(path: string, data: Uint8Array): Promise<void> {

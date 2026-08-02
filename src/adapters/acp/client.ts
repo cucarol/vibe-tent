@@ -4,6 +4,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { RuntimeEvent } from "../../runtime/types.js";
 import { buildManagedChildEnv } from "../../runtime/child-env.js";
+import type { BoundedBinaryRead } from "../../core/adapter.js";
 import type {
   AcpAuthenticateParams,
   AcpJsonRpcNotification,
@@ -180,7 +181,10 @@ export type AcpClientOptions = {
    * Read image bytes under tent system root. Required to attach images when
    * transport supports image. Failures fall back to Markdown pointers.
    */
-  readBootstrapImageBinary?: (relativePath: string) => Promise<Uint8Array>;
+  readBootstrapImageBinary?: (
+    relativePath: string,
+    maxBytes: number
+  ) => Promise<BoundedBinaryRead>;
   /** Emit RuntimeEvent fragments (caller fills sessionId where needed). */
   emit: (ev: RuntimeEvent) => void;
   /**
@@ -702,7 +706,7 @@ export class AcpClient {
       bootstrapText: bootstrapPrompt,
       imageRefs: refs,
       transportSupportsImage: this.promptImageSupported,
-      readBinary: this.options.readBootstrapImageBinary,
+      readBinaryBounded: this.options.readBootstrapImageBinary,
       systemRoot: this.options.bootstrapImageSystemRoot,
     });
     return projected.prompt;
