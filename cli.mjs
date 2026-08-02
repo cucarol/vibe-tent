@@ -171,6 +171,28 @@ var NodeFs = class {
     const buf = await fs2.readFile(this.abs(path10));
     return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   }
+  async readBinaryBounded(path10, maxBytes) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+      throw new Error(`Invalid binary read limit: ${maxBytes}`);
+    }
+    const handle = await fs2.open(this.abs(path10), "r");
+    try {
+      const bytes = new Uint8Array(maxBytes);
+      let offset = 0;
+      while (offset < maxBytes) {
+        const read = await handle.read(bytes, offset, maxBytes - offset, offset);
+        if (read.bytesRead === 0) break;
+        offset += read.bytesRead;
+      }
+      const stat2 = await handle.stat();
+      return {
+        bytes: bytes.subarray(0, offset),
+        truncated: stat2.size > offset
+      };
+    } finally {
+      await handle.close();
+    }
+  }
   async writeBinary(path10, data) {
     const abs = this.abs(path10);
     await fs2.mkdir(nodePath.dirname(abs), { recursive: true });
@@ -3742,8 +3764,8 @@ var ServiceClient = class {
   taskDispatch(workspaceId, args) {
     return this.call("task.dispatch", { workspaceId, ...args });
   }
-  taskClaim(workspaceId, taskPath, sessionId) {
-    return this.call("task.claim", { workspaceId, taskPath, sessionId });
+  taskClaim(workspaceId, taskPath) {
+    return this.call("task.claim", { workspaceId, taskPath });
   }
   /**
    * Create and immediately claim a durable Role's own execution Task.
@@ -3787,12 +3809,11 @@ var ServiceClient = class {
   taskDeliver(workspaceId, taskPath, args) {
     return this.call("task.deliver", { workspaceId, taskPath, ...args });
   }
-  taskAccept(workspaceId, taskPath, actor, commits, opts) {
+  taskAccept(workspaceId, taskPath, actor, opts) {
     return this.call("task.accept", {
       workspaceId,
       taskPath,
       actor,
-      commits,
       ...opts?.outputNodeIds ? { outputNodeIds: opts.outputNodeIds } : {}
     });
   }
@@ -4357,6 +4378,11 @@ async function runTaskCommand(sub, args, globals = {}) {
         "tent task claim does not accept --session or --session-id; Session binding is owned by Tent host integration"
       );
     }
+    if (sub === "accept" && Object.prototype.hasOwnProperty.call(flags, "commits")) {
+      return failUsage(
+        "tent task accept does not accept --commits; the ready Delivery is the sole commit source"
+      );
+    }
     const workspaceFlag = flags.workspace || globals.workspace;
     const attachOpts = {
       dataDir: flags["data-dir"] || globals.dataDir,
@@ -4583,14 +4609,13 @@ ${usage2}`);
         const taskPath = positionals[0];
         if (!taskPath || positionals.length > 1) {
           return failUsage(
-            "Usage: tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--outputs id,id] [--workspace <path>] [--json]"
+            "Usage: tent task accept <taskPath> --actor <user|role> [--outputs id,id] [--workspace <path>] [--json]"
           );
         }
         const actor = flags.actor || flags.by || process.env.TENT_ROLE;
         if (!actor) return failUsage("tent task accept requires --actor <user|role>");
-        const commits = parseCommitsFlag(flags.commits);
         const outputNodeIds = parseCommitsFlag(flags.outputs) ?? parseCommitsFlag(flags["output-ids"]);
-        const result = await client.taskAccept(workspaceId, taskPath, actor, commits, {
+        const result = await client.taskAccept(workspaceId, taskPath, actor, {
           outputNodeIds
         });
         return okPrint(result, json, (r) => {
@@ -5141,7 +5166,7 @@ Commands:
       # --node           repeatable Node refs (at least one); sole source for contextCard.refs.nodes
       # parentActor/reviewer derive from the durable Role or local user boundary
       # Any flag outside this command's canonical grammar is rejected
-  tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--workspace <path>] [--json]
+  tent task accept <taskPath> --actor <user|role> [--outputs id,id] [--workspace <path>] [--json]
   tent task reject <taskPath> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]
   tent task interrupt <taskPath> [--workspace <path>] [--json]

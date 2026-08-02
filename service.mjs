@@ -3928,12 +3928,6 @@ async function taskClaim(env, taskPath, options = {}) {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     if (task.state === "running") {
-      if (options.sessionId) {
-        return patchTaskEnvelope(env.fs, taskPath, {
-          sessionId: options.sessionId,
-          updatedAt: env.clock.now()
-        });
-      }
       return task;
     }
     assertTransition(task.state, "claim", "running");
@@ -3955,20 +3949,18 @@ async function taskClaim(env, taskPath, options = {}) {
     }
     const now = env.clock.now();
     if (options.claimWrite) {
+      if (Object.prototype.hasOwnProperty.call(options.claimWrite, "sessionId")) {
+        throw new Error(
+          "task.claim claimWrite cannot bind sessionId; use task.startSession or task.replaceSession"
+        );
+      }
       return patchTaskEnvelope(env.fs, taskPath, {
         ...options.claimWrite,
         state: "running",
-        ...options.sessionId ? { sessionId: options.sessionId } : {},
         updatedAt: options.claimWrite.updatedAt ?? now
       });
     }
     await ackTaskEnvelope(env.fs, taskPath);
-    if (options.sessionId) {
-      return patchTaskEnvelope(env.fs, taskPath, {
-        sessionId: options.sessionId,
-        updatedAt: now
-      });
-    }
     return loadTaskEnvelope(env.fs, taskPath);
   });
 }
@@ -4087,11 +4079,10 @@ async function prepareTaskAccept(env, taskPath, options) {
       const tent = await loadTent(env.fs);
       validateOutputBindingsForAccept(tent, options.outputNodeIds, delivery.id);
     }
-    const commits = options.commits ?? delivery.commits;
     return {
       deliveryId: delivery.id,
       deliveryPath: delivery.path,
-      commits: [...commits]
+      commits: [...delivery.commits]
     };
   });
 }
@@ -4104,6 +4095,12 @@ async function finalizeTaskAccept(env, taskPath, options, prepared) {
       throw new TaskLifecycleError(
         "NO_ACTIVE_DELIVERY",
         "Ready delivery changed during integrate; refusing accept."
+      );
+    }
+    if (!exactStringListEqual(delivery.commits, prepared.commits)) {
+      throw new TaskLifecycleError(
+        "DELIVERY_CHANGED",
+        "Ready delivery commits changed during accept; refusing accept."
       );
     }
     assertReviewAuthority({
@@ -4151,6 +4148,9 @@ async function finalizeTaskAccept(env, taskPath, options, prepared) {
       throw err;
     }
   });
+}
+function exactStringListEqual(current, prepared) {
+  return current.length === prepared.length && current.every((value, index2) => value === prepared[index2]);
 }
 async function compensateAcceptAfterOutputBind(fs21, args) {
   const failures = [];
@@ -9664,7 +9664,7 @@ var attention = {
 };
 function resolveAllAttention(events, context) {
   let index2 = -1;
-  let open2;
+  let open3;
   let group;
   let text3;
   let openingSequence;
@@ -9674,16 +9674,16 @@ function resolveAllAttention(events, context) {
   let offset;
   while (++index2 < events.length) {
     if (events[index2][0] === "enter" && events[index2][1].type === "attentionSequence" && events[index2][1]._close) {
-      open2 = index2;
-      while (open2--) {
-        if (events[open2][0] === "exit" && events[open2][1].type === "attentionSequence" && events[open2][1]._open && // If the markers are the same:
-        context.sliceSerialize(events[open2][1]).charCodeAt(0) === context.sliceSerialize(events[index2][1]).charCodeAt(0)) {
-          if ((events[open2][1]._close || events[index2][1]._open) && (events[index2][1].end.offset - events[index2][1].start.offset) % 3 && !((events[open2][1].end.offset - events[open2][1].start.offset + events[index2][1].end.offset - events[index2][1].start.offset) % 3)) {
+      open3 = index2;
+      while (open3--) {
+        if (events[open3][0] === "exit" && events[open3][1].type === "attentionSequence" && events[open3][1]._open && // If the markers are the same:
+        context.sliceSerialize(events[open3][1]).charCodeAt(0) === context.sliceSerialize(events[index2][1]).charCodeAt(0)) {
+          if ((events[open3][1]._close || events[index2][1]._open) && (events[index2][1].end.offset - events[index2][1].start.offset) % 3 && !((events[open3][1].end.offset - events[open3][1].start.offset + events[index2][1].end.offset - events[index2][1].start.offset) % 3)) {
             continue;
           }
-          use = events[open2][1].end.offset - events[open2][1].start.offset > 1 && events[index2][1].end.offset - events[index2][1].start.offset > 1 ? 2 : 1;
+          use = events[open3][1].end.offset - events[open3][1].start.offset > 1 && events[index2][1].end.offset - events[index2][1].start.offset > 1 ? 2 : 1;
           const start = {
-            ...events[open2][1].end
+            ...events[open3][1].end
           };
           const end = {
             ...events[index2][1].start
@@ -9694,7 +9694,7 @@ function resolveAllAttention(events, context) {
             type: use > 1 ? "strongSequence" : "emphasisSequence",
             start,
             end: {
-              ...events[open2][1].end
+              ...events[open3][1].end
             }
           };
           closingSequence = {
@@ -9707,7 +9707,7 @@ function resolveAllAttention(events, context) {
           text3 = {
             type: use > 1 ? "strongText" : "emphasisText",
             start: {
-              ...events[open2][1].end
+              ...events[open3][1].end
             },
             end: {
               ...events[index2][1].start
@@ -9722,18 +9722,18 @@ function resolveAllAttention(events, context) {
               ...closingSequence.end
             }
           };
-          events[open2][1].end = {
+          events[open3][1].end = {
             ...openingSequence.start
           };
           events[index2][1].start = {
             ...closingSequence.end
           };
           nextEvents = [];
-          if (events[open2][1].end.offset - events[open2][1].start.offset) {
-            nextEvents = push(nextEvents, [["enter", events[open2][1], context], ["exit", events[open2][1], context]]);
+          if (events[open3][1].end.offset - events[open3][1].start.offset) {
+            nextEvents = push(nextEvents, [["enter", events[open3][1], context], ["exit", events[open3][1], context]]);
           }
           nextEvents = push(nextEvents, [["enter", group, context], ["enter", openingSequence, context], ["exit", openingSequence, context], ["enter", text3, context]]);
-          nextEvents = push(nextEvents, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open2 + 1, index2), context));
+          nextEvents = push(nextEvents, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open3 + 1, index2), context));
           nextEvents = push(nextEvents, [["exit", text3, context], ["enter", closingSequence, context], ["exit", closingSequence, context], ["exit", group, context]]);
           if (events[index2][1].end.offset - events[index2][1].start.offset) {
             offset = 2;
@@ -9741,8 +9741,8 @@ function resolveAllAttention(events, context) {
           } else {
             offset = 0;
           }
-          splice(events, open2 - 1, index2 - open2 + 3, nextEvents);
-          index2 = open2 + nextEvents.length - offset - 2;
+          splice(events, open3 - 1, index2 - open3 + 3, nextEvents);
+          index2 = open3 + nextEvents.length - offset - 2;
           break;
         }
       }
@@ -9774,10 +9774,10 @@ function tokenizeAttention(effects, ok2) {
     }
     const token = effects.exit("attentionSequence");
     const after = classifyCharacter(code);
-    const open2 = !after || after === 2 && before || attentionMarkers2.includes(code);
+    const open3 = !after || after === 2 && before || attentionMarkers2.includes(code);
     const close = !before || before === 2 && after || attentionMarkers2.includes(previous2);
-    token._open = Boolean(marker === 42 ? open2 : open2 && (before || !close));
-    token._close = Boolean(marker === 42 ? close : close && (after || !open2));
+    token._open = Boolean(marker === 42 ? open3 : open3 && (before || !close));
+    token._close = Boolean(marker === 42 ? close : close && (after || !open3));
     return ok2(code);
   }
 }
@@ -9801,9 +9801,9 @@ function tokenizeAutolink(effects, ok2, nok) {
     effects.consume(code);
     effects.exit("autolinkMarker");
     effects.enter("autolinkProtocol");
-    return open2;
+    return open3;
   }
-  function open2(code) {
+  function open3(code) {
     if (asciiAlpha(code)) {
       effects.consume(code);
       return schemeOrEmailAtext;
@@ -10003,9 +10003,9 @@ function tokenizeCharacterReference(effects, ok2, nok) {
     effects.enter("characterReferenceMarker");
     effects.consume(code);
     effects.exit("characterReferenceMarker");
-    return open2;
+    return open3;
   }
-  function open2(code) {
+  function open3(code) {
     if (code === 35) {
       effects.enter("characterReferenceMarkerNumeric");
       effects.consume(code);
@@ -11374,9 +11374,9 @@ function tokenizeHtmlFlow(effects, ok2, nok) {
     effects.enter("htmlFlow");
     effects.enter("htmlFlowData");
     effects.consume(code);
-    return open2;
+    return open3;
   }
-  function open2(code) {
+  function open3(code) {
     if (code === 33) {
       effects.consume(code);
       return declarationOpen;
@@ -11724,9 +11724,9 @@ function tokenizeHtmlText(effects, ok2, nok) {
     effects.enter("htmlText");
     effects.enter("htmlTextData");
     effects.consume(code);
-    return open2;
+    return open3;
   }
-  function open2(code) {
+  function open3(code) {
     if (code === 33) {
       effects.consume(code);
       return declarationOpen;
@@ -12052,12 +12052,12 @@ function resolveToLabelEnd(events, context) {
   let index2 = events.length;
   let offset = 0;
   let token;
-  let open2;
+  let open3;
   let close;
   let media;
   while (index2--) {
     token = events[index2][1];
-    if (open2) {
+    if (open3) {
       if (token.type === "link" || token.type === "labelLink" && token._inactive) {
         break;
       }
@@ -12066,7 +12066,7 @@ function resolveToLabelEnd(events, context) {
       }
     } else if (close) {
       if (events[index2][0] === "enter" && (token.type === "labelImage" || token.type === "labelLink") && !token._balanced) {
-        open2 = index2;
+        open3 = index2;
         if (token.type !== "labelLink") {
           offset = 2;
           break;
@@ -12077,9 +12077,9 @@ function resolveToLabelEnd(events, context) {
     }
   }
   const group = {
-    type: events[open2][1].type === "labelLink" ? "link" : "image",
+    type: events[open3][1].type === "labelLink" ? "link" : "image",
     start: {
-      ...events[open2][1].start
+      ...events[open3][1].start
     },
     end: {
       ...events[events.length - 1][1].end
@@ -12088,7 +12088,7 @@ function resolveToLabelEnd(events, context) {
   const label = {
     type: "label",
     start: {
-      ...events[open2][1].start
+      ...events[open3][1].start
     },
     end: {
       ...events[close][1].end
@@ -12097,20 +12097,20 @@ function resolveToLabelEnd(events, context) {
   const text3 = {
     type: "labelText",
     start: {
-      ...events[open2 + offset + 2][1].end
+      ...events[open3 + offset + 2][1].end
     },
     end: {
       ...events[close - 2][1].start
     }
   };
   media = [["enter", group, context], ["enter", label, context]];
-  media = push(media, events.slice(open2 + 1, open2 + offset + 3));
+  media = push(media, events.slice(open3 + 1, open3 + offset + 3));
   media = push(media, [["enter", text3, context]]);
-  media = push(media, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open2 + offset + 4, close - 3), context));
+  media = push(media, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open3 + offset + 4, close - 3), context));
   media = push(media, [["exit", text3, context], events[close - 2], events[close - 1], ["exit", label, context]]);
   media = push(media, events.slice(close + 1));
   media = push(media, [["exit", group, context]]);
-  splice(events, open2, events.length, media);
+  splice(events, open3, events.length, media);
   return events;
 }
 function tokenizeLabelEnd(effects, ok2, nok) {
@@ -12255,9 +12255,9 @@ function tokenizeLabelStartImage(effects, ok2, nok) {
     effects.enter("labelImageMarker");
     effects.consume(code);
     effects.exit("labelImageMarker");
-    return open2;
+    return open3;
   }
-  function open2(code) {
+  function open3(code) {
     if (code === 91) {
       effects.enter("labelMarker");
       effects.consume(code);
@@ -13561,8 +13561,8 @@ function compiler(options) {
     return length;
   }
   function opener(create, and) {
-    return open2;
-    function open2(token) {
+    return open3;
+    function open3(token) {
       enter.call(this, create(token), token);
       if (and) and.call(this, token);
     }
@@ -13594,18 +13594,18 @@ function compiler(options) {
   }
   function exit2(token, onExitError) {
     const node2 = this.stack.pop();
-    const open2 = this.tokenStack.pop();
-    if (!open2) {
+    const open3 = this.tokenStack.pop();
+    if (!open3) {
       throw new Error("Cannot close `" + token.type + "` (" + stringifyPosition({
         start: token.start,
         end: token.end
       }) + "): it\u2019s not open");
-    } else if (open2[0].type !== token.type) {
+    } else if (open3[0].type !== token.type) {
       if (onExitError) {
-        onExitError.call(this, token, open2[0]);
+        onExitError.call(this, token, open3[0]);
       } else {
-        const handler = open2[1] || defaultOnError;
-        handler.call(this, token, open2[0]);
+        const handler = open3[1] || defaultOnError;
+        handler.call(this, token, open3[0]);
       }
     }
     node2.position.end = point2(token.end);
@@ -14078,8 +14078,8 @@ async function projectBootstrapImagesToAcpPrompt(input) {
       notes
     };
   }
-  if (typeof input.readBinary !== "function") {
-    notes.push("image readBinary unavailable; keeping Markdown image pointers");
+  if (typeof input.readBinaryBounded !== "function") {
+    notes.push("bounded image reader unavailable; keeping Markdown image pointers");
     for (const ref of refs) {
       fallbackPointers.push(ref.markdownPointer || ref.relativePath);
     }
@@ -14119,32 +14119,32 @@ async function projectBootstrapImagesToAcpPrompt(input) {
       notes.push(`skip unsupported image type: ${rel}`);
       continue;
     }
-    let bytes;
+    const remainingTotalBytes = MAX_ACP_IMAGES_TOTAL_BYTES - totalBytes;
+    const allowedBytes = Math.min(MAX_ACP_IMAGE_BYTES, remainingTotalBytes);
+    let read;
     try {
-      bytes = await input.readBinary(rel);
+      read = await input.readBinaryBounded(rel, allowedBytes + 1);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       fallbackPointers.push(ref.markdownPointer || rel);
       notes.push(`skip unreadable image ${rel}: ${msg.slice(0, 120)}`);
       continue;
     }
+    const { bytes } = read;
+    if (read.truncated || bytes.byteLength > allowedBytes) {
+      fallbackPointers.push(ref.markdownPointer || rel);
+      if (remainingTotalBytes < MAX_ACP_IMAGE_BYTES) {
+        notes.push(
+          `skip image ${rel}: would exceed total budget ${MAX_ACP_IMAGES_TOTAL_BYTES}`
+        );
+      } else {
+        notes.push(`skip oversized image ${rel}: exceeds ${MAX_ACP_IMAGE_BYTES}`);
+      }
+      continue;
+    }
     if (bytes.byteLength <= 0) {
       fallbackPointers.push(ref.markdownPointer || rel);
       notes.push(`skip empty image: ${rel}`);
-      continue;
-    }
-    if (bytes.byteLength > MAX_ACP_IMAGE_BYTES) {
-      fallbackPointers.push(ref.markdownPointer || rel);
-      notes.push(
-        `skip oversized image ${rel}: ${bytes.byteLength} > ${MAX_ACP_IMAGE_BYTES}`
-      );
-      continue;
-    }
-    if (totalBytes + bytes.byteLength > MAX_ACP_IMAGES_TOTAL_BYTES) {
-      fallbackPointers.push(ref.markdownPointer || rel);
-      notes.push(
-        `skip image ${rel}: would exceed total budget ${MAX_ACP_IMAGES_TOTAL_BYTES}`
-      );
       continue;
     }
     const sniffed = sniffImageMime(bytes);
@@ -16285,13 +16285,13 @@ async function evaluateAcceptedSettle(input) {
     };
   }
   const related = input.deliveries.filter((d) => d.taskId === input.taskId);
-  const open2 = related.filter((d) => d.status === "ready" || d.status === "draft");
-  if (open2.length > 0) {
+  const open3 = related.filter((d) => d.status === "ready" || d.status === "draft");
+  if (open3.length > 0) {
     return {
       ok: false,
       code: "UNINTEGRATED",
-      reason: `Accepted Task still has ${open2.length} open delivery(ies); refuse reclaim.`,
-      details: { deliveryIds: open2.map((d) => d.id) }
+      reason: `Accepted Task still has ${open3.length} open delivery(ies); refuse reclaim.`,
+      details: { deliveryIds: open3.map((d) => d.id) }
     };
   }
   const accepted = related.filter((d) => d.status === "accepted");
@@ -18666,7 +18666,7 @@ var TaskInputStore = class {
   /**
    * Mark managed inject success: pending|processing → delivered.
    * Optional sessionId persists the session that actually received the inject
-   * (e.g. reject-resume new ss- after sessionIdOverride).
+   * after an exact Task Session replacement/rebind.
    */
   async markDelivered(id, resolvedBy = "service", opts) {
     if (this.closed) throw new Error("TaskInput store is closed");
@@ -18929,7 +18929,7 @@ var TaskInputStore = class {
       throw err;
     }
     const items = [...snapshot.values()];
-    const open2 = items.filter(
+    const open3 = items.filter(
       (i) => i.status === "pending" || i.status === "processing" || i.status === "failed" || i.status === "uncertain" || i.status === "delivered"
     );
     const terminal = items.filter((i) => i.status === "consumed" || i.status === "cancelled").sort(
@@ -18937,7 +18937,7 @@ var TaskInputStore = class {
         a.consumedAt || a.cancelledAt || a.updatedAt || ""
       )
     ).slice(0, 100);
-    await this.writeState(this.file, { items: [...open2, ...terminal] });
+    await this.writeState(this.file, { items: [...open3, ...terminal] });
   }
   async quarantineCorrupt() {
     const backupPath = await backupCorruptMachineFile(this.file);
@@ -20280,7 +20280,7 @@ var AcpClient = class {
       bootstrapText: bootstrapPrompt,
       imageRefs: refs,
       transportSupportsImage: this.promptImageSupported,
-      readBinary: this.options.readBootstrapImageBinary,
+      readBinaryBounded: this.options.readBootstrapImageBinary,
       systemRoot: this.options.bootstrapImageSystemRoot
     });
     return projected.prompt;
@@ -21225,6 +21225,28 @@ var NodeFs = class {
     const buf = await fs10.readFile(this.abs(path22));
     return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   }
+  async readBinaryBounded(path22, maxBytes) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+      throw new Error(`Invalid binary read limit: ${maxBytes}`);
+    }
+    const handle = await fs10.open(this.abs(path22), "r");
+    try {
+      const bytes = new Uint8Array(maxBytes);
+      let offset = 0;
+      while (offset < maxBytes) {
+        const read = await handle.read(bytes, offset, maxBytes - offset, offset);
+        if (read.bytesRead === 0) break;
+        offset += read.bytesRead;
+      }
+      const stat2 = await handle.stat();
+      return {
+        bytes: bytes.subarray(0, offset),
+        truncated: stat2.size > offset
+      };
+    } finally {
+      await handle.close();
+    }
+  }
   async writeBinary(path22, data) {
     const abs = this.abs(path22);
     await fs10.mkdir(nodePath5.dirname(abs), { recursive: true });
@@ -21324,7 +21346,7 @@ function readBootstrapImageClientOptions(plan) {
   if (systemRoot) {
     out.bootstrapImageSystemRoot = systemRoot;
     const nodeFs3 = new NodeFs(systemRoot);
-    out.readBootstrapImageBinary = (relativePath4) => nodeFs3.readBinary(relativePath4);
+    out.readBootstrapImageBinary = (relativePath4, maxBytes) => nodeFs3.readBinaryBounded(relativePath4, maxBytes);
   }
   return out;
 }
@@ -25992,10 +26014,14 @@ async function resolveDirectClaimResponsibility(ctx, input) {
   }
 }
 async function taskClaimRpc(ctx, p) {
+  assertAllowedParams(
+    p,
+    /* @__PURE__ */ new Set(["workspaceId", "taskPath"]),
+    "task.claim"
+  );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
-  const sessionId = optionalString2(p, "sessionId");
   return runTaskLifecycle(
     workspaceId,
     taskPath,
@@ -26010,7 +26036,6 @@ async function taskClaimRpc(ctx, p) {
         }
       }
       const task = await taskClaim(mount.env, taskPath, {
-        sessionId,
         ...claimWrite ? { claimWrite } : {}
       });
       emitTaskState(ctx, workspaceId, task, "task.claim");
@@ -26546,9 +26571,7 @@ async function taskSendInputRpc(ctx, p) {
   );
   const hasManagedSession = !!current.sessionId?.trim();
   if (hasManagedSession) {
-    enqueueManagedTaskInputBackground(ctx, input, {
-      sessionIdOverride: current.sessionId
-    });
+    enqueueManagedTaskInputBackground(ctx, input);
   }
   return {
     workspaceId,
@@ -26592,16 +26615,37 @@ function managedTaskInputQueueKey(workspaceId, taskPath) {
   return `${workspaceId}\0${taskPath}`;
 }
 var managedTaskInputQueueHoldForTests = /* @__PURE__ */ new Map();
-async function resolveManagedInjectSessionId(ctx, latest, opts) {
-  try {
-    const mount = ctx.host.get(latest.workspaceId);
-    if (mount) {
-      const bound = (await loadTaskEnvelope(mount.env.fs, latest.taskPath)).sessionId?.trim();
-      if (bound) return bound;
-    }
-  } catch {
+async function resolveManagedInjectSessionId(ctx, latest) {
+  const mount = ctx.host.get(latest.workspaceId);
+  if (!mount) {
+    throw new Error(`TaskInput workspace is not mounted: ${latest.workspaceId}`);
   }
-  return latest.sessionId?.trim() || opts?.sessionIdOverride?.trim() || void 0;
+  const task = await loadTaskEnvelope(mount.env.fs, latest.taskPath);
+  if (!task.id) {
+    throw new Error(`TaskInput exact Task is missing canonical id: ${latest.taskPath}`);
+  }
+  if (latest.taskId && task.id !== latest.taskId) {
+    throw new Error(
+      `TaskInput Task identity mismatch: expected ${latest.taskId}, got ${task.id}`
+    );
+  }
+  const sessionId = task.sessionId?.trim();
+  if (!sessionId) return void 0;
+  const session = await ctx.runtime.registry.read(sessionId);
+  if (!session) {
+    throw new Error(`TaskInput bound Session is missing from registry: ${sessionId}`);
+  }
+  if (session.workspace !== latest.workspaceId) {
+    throw new Error(
+      `TaskInput bound Session workspace mismatch: expected ${latest.workspaceId}, got ${session.workspace || "missing"}`
+    );
+  }
+  if (session.lastTaskId !== task.id) {
+    throw new Error(
+      `TaskInput bound Session Task mismatch: expected ${task.id}, got ${session.lastTaskId || "missing"}`
+    );
+  }
+  return sessionId;
 }
 function trackManagedTaskInputBackground(work) {
   managedTaskInputBackgroundInflight.add(work);
@@ -26616,11 +26660,11 @@ function trackManagedTaskInputBackground(work) {
     }
   );
 }
-function enqueueManagedTaskInputBackground(ctx, item, opts) {
+function enqueueManagedTaskInputBackground(ctx, item) {
   if (!managedTaskInputAccepting) {
     return;
   }
-  const work = deliverManagedTaskInput(ctx, item, opts).then(
+  const work = deliverManagedTaskInput(ctx, item).then(
     () => void 0,
     async (err) => {
       const message2 = err instanceof Error ? err.message : String(err);
@@ -26650,9 +26694,7 @@ async function scheduleRetryableTaskInputsAfterSessionBind(ctx, input) {
       (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)
     );
     for (const item of retryable) {
-      enqueueManagedTaskInputBackground(ctx, item, {
-        sessionIdOverride: input.sessionId
-      });
+      enqueueManagedTaskInputBackground(ctx, item);
     }
   } catch (err) {
     console.error(
@@ -26687,7 +26729,7 @@ async function drainManagedTaskInputBackgroundForShutdown(timeoutMs = 5e3) {
 function enableManagedTaskInputBackgroundAccept() {
   managedTaskInputAccepting = true;
 }
-async function deliverManagedTaskInput(ctx, item, opts) {
+async function deliverManagedTaskInput(ctx, item) {
   const queueKey = managedTaskInputQueueKey(item.workspaceId, item.taskPath);
   return managedTaskInputQueue.run(queueKey, async () => {
     const hold = managedTaskInputQueueHoldForTests.get(queueKey);
@@ -26710,8 +26752,6 @@ async function deliverManagedTaskInput(ctx, item, opts) {
         continueError: `TaskInput already ${latest.status}; skip managed inject`
       };
     }
-    let sessionId = await resolveManagedInjectSessionId(ctx, latest, opts);
-    if (!sessionId) return { input: latest, continued: false };
     const failRebind = async (prefix, err) => {
       const message2 = err instanceof Error ? err.message : String(err);
       try {
@@ -26720,6 +26760,13 @@ async function deliverManagedTaskInput(ctx, item, opts) {
       }
       return { input: latest, continued: false, continueError: `${prefix}: ${message2}` };
     };
+    let sessionId;
+    try {
+      sessionId = await resolveManagedInjectSessionId(ctx, latest);
+    } catch (err) {
+      return failRebind("TaskInput exact Session guard failed", err);
+    }
+    if (!sessionId) return { input: latest, continued: false };
     if ((latest.sessionId?.trim() || "") !== sessionId) {
       try {
         latest = await ctx.taskInputs.rebindSession(
@@ -26743,7 +26790,17 @@ async function deliverManagedTaskInput(ctx, item, opts) {
       };
     }
     latest = await ctx.taskInputs.get(latest.id, latest.workspaceId, latest.taskPath) ?? latest;
-    sessionId = await resolveManagedInjectSessionId(ctx, latest, opts) || sessionId;
+    try {
+      sessionId = await resolveManagedInjectSessionId(ctx, latest);
+    } catch (err) {
+      return failRebind("TaskInput exact Session guard failed after processing", err);
+    }
+    if (!sessionId) {
+      return failRebind(
+        "TaskInput exact Session guard failed after processing",
+        new Error("Task no longer has a managed Session binding")
+      );
+    }
     if ((latest.sessionId?.trim() || "") && latest.sessionId.trim() !== sessionId) {
       try {
         const rows = await ctx.taskInputs.rebindOpenSessions(
@@ -27192,13 +27249,17 @@ async function taskRequestReviewRpc(ctx, p) {
   return taskDeliverRpc(ctx, { ...p, decision: p.decision ?? "request-review" });
 }
 async function taskAcceptRpc(ctx, p) {
+  assertAllowedParams(
+    p,
+    /* @__PURE__ */ new Set(["workspaceId", "taskPath", "actor", "outputNodeIds"]),
+    "task.accept"
+  );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
   const actor = requireString(p, "actor");
-  const commits = optionalStringArray(p, "commits");
   const outputNodeIds = optionalStringArray(p, "outputNodeIds");
-  const acceptOptions = { actor, commits, outputNodeIds };
+  const acceptOptions = { actor, outputNodeIds };
   const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
     let prepared;
     let expectedTargetHead;
@@ -27391,9 +27452,7 @@ async function taskRejectRpc(ctx, p) {
         `reject-resume must preserve the exact Session id; expected ${boundSessionId}, got ${restoredSessionId}`
       );
     }
-    enqueueManagedTaskInputBackground(ctx, reviewInput, {
-      sessionIdOverride: restoredSessionId
-    });
+    enqueueManagedTaskInputBackground(ctx, reviewInput);
     return {
       workspaceId,
       taskPath,
@@ -27610,8 +27669,7 @@ async function taskStartSessionRpc(ctx, p) {
     });
     await scheduleRetryableTaskInputsAfterSessionBind(ctx, {
       workspaceId,
-      taskPath,
-      sessionId: result.session.sessionId
+      taskPath
     });
     return result;
   }
@@ -28041,8 +28099,7 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
   }
   await scheduleRetryableTaskInputsAfterSessionBind(ctx, {
     workspaceId,
-    taskPath,
-    sessionId: handle.sessionId
+    taskPath
   });
   return projectStartSessionResult(workspaceId, taskPath, bound, {
     id: handle.sessionId,
@@ -28330,8 +28387,7 @@ async function executeTaskReplaceSession(ctx, workspaceId, taskPath, routeId) {
     }
     await scheduleRetryableTaskInputsAfterSessionBind(ctx, {
       workspaceId,
-      taskPath,
-      sessionId: handle.sessionId
+      taskPath
     });
     return {
       workspaceId,
