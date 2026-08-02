@@ -3,7 +3,7 @@
   "name": "Tent",
   "version": "0.1.0",
   "minAppVersion": "1.5.0",
-  "description": "Manage intent, context, and delegated tasks with coding agents: a draggable box tree, frontmatter controls, and dispatch/approval workflows.",
+  "description": "Coordinate durable Node context, role-owned tasks, Settings routes, and reviewable deliveries with coding agents.",
   "author": "cucarol",
   "authorUrl": "https://github.com/cucarol",
   "isDesktopOnly": true

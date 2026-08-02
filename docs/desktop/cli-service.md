@@ -95,11 +95,11 @@ The managed executor does not run `claim` or `deliver` itself. A valid optional
 `blocked` or `needs-input` control outcome parks; ordinary final prose defaults
 to Delivery.
 
-### External executor
+### Durable Role executor
 
-An external process enters through `tent session enter`, claims a queued Task,
-and explicitly calls `tent task deliver`. `session leave` only unbinds the
-external Session; it does not deliver, accept, or kill the host.
+A Role claims its own queued work and explicitly calls `tent task deliver`.
+Host integration may supply the verified Role execution context, but it cannot
+deliver, accept, or rewrite Task responsibility on the Role's behalf.
 
 ## Interaction commands
 

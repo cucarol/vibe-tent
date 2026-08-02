@@ -18,7 +18,7 @@ Desktop / co-located agents use **in-workspace** layout only.
 3. CLI args (`taskPath`, most core-relative paths) stay `temp/...` relative to system root. On disk for editors/agents reading files: `.tent/temp/...`.
 4. Context Card / bootstrap may give `workspaceRoot` + `systemRoot`. Prefer those. If `tentRoot` appears, it means **system root** (`.tent`), not workspace.
 5. Do not invent a missing envelope, Context Card, manifest, or Node body — open the persisted source or fetch the Task first.
-6. `Task.contextCard.refs.nodes[]` is the only persisted Node-source wire. Stable Node ID is authoritative; path is a refreshable hint. A manifest is an auxiliary dispatch snapshot, not an ACL, authority source, or second Node-ref list.
+6. `Task.contextCard.refs.nodes[]` is the only persisted Node-source wire. Stable Node ID is authoritative; path is a refreshable hint. A manifest is an auxiliary dispatch snapshot, not an authority source or second Node-ref list.
 
 ## Common locations
 
@@ -28,8 +28,8 @@ Desktop / co-located agents use **in-workspace** layout only.
 | Tent structural marker | `.tent/index.md` | `index.md` |
 | Durable role init | `.tent/temp/<role>/init.md` | `temp/<role>/init.md` |
 | Role task envelope | `.tent/temp/<role>/tasks/*.md` | `temp/<role>/tasks/*.md` |
-| Route task | `.tent/temp/agent-profiles/<routeId>/tasks/*.md` | `temp/agent-profiles/<routeId>/tasks/*.md` |
-| Task-scoped manifest | `.tent/temp/agent-profiles/<routeId>/manifests/<taskId>.yml` | `temp/agent-profiles/…/manifests/….yml` |
+| Route task | use the exact `taskPath` returned by Service | use the exact `taskPath` returned by Service |
+| Task-scoped manifest | use the path recorded on the Task | use the path recorded on the Task |
 | Roles registry | `.tent/roles.json` | (file read) |
 | Types registry | `.tent/types.json` | (file read) |
 

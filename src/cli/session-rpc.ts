@@ -1,4 +1,4 @@
-// External Session lifecycle via Local Service RPC (V0.2 pull-host).
+// Host integration binding via Local Service RPC.
 // Surface: tent session enter|status|leave — machine-callable JSON, idempotent.
 // Hook aliases: tent session session-start|session-end [--host <agent>]
 // Does not start ACP; leave never deliver/accept.
@@ -116,7 +116,7 @@ export async function runSessionCommand(
         ? hookMeta.stdin.workspaceRoot
         : undefined);
 
-    // Non-Tent hook path: silent success (exit 0) so host agents never break outside Tent.
+    // Non-Tent hook path: silent success so host integrations never break outside Tent.
     const tentProbe = await probeTentPresence({
       cwd,
       workspace: workspaceFlag,
@@ -182,7 +182,7 @@ export async function runSessionCommand(
             exitCode: 1,
             stdout: "",
             stderr:
-              "session-start requires --host <agent> (or native session id + host) to form a stable externalKey; refusing to create orphan external rows\n",
+              "session-start requires --host <host> (or native session id + host) to form a stable externalKey; refusing to create an orphan host binding\n",
           };
         }
         const sessionId =
@@ -288,7 +288,7 @@ export async function runSessionCommand(
 }
 
 export function sessionHelpText(): string {
-  return `tent session — external / pull-host session lifecycle (Local Service RPC)
+  return `tent session — host integration binding (Local Service RPC)
 
 Usage:
   tent session enter   [--session <ss-…>] [--role <name>] [--route <routeId>]
@@ -297,13 +297,13 @@ Usage:
   tent session leave   [sessionId|externalKey] [--key <externalKey>] [--json]
 
 Semantics:
-  enter   Register or reuse a SessionRegistry row with state=external.
-          Does not start ACP or any managed agent process. Idempotent.
+  enter   Register or reuse the host's SessionRegistry binding.
+          Does not start ACP or any provider process. Idempotent.
   status  Probe session + list incomplete (active) tasks bound to it.
-  leave   End external session binding only. Never deliver or accept.
+  leave   End the host binding only. Never deliver or accept.
           Reports incompleteTasks still open for the caller to handle.
 
-Hook aliases (projection contract with Agent Hook task):
+Hook aliases (host integration contract):
   tent session session-start --host <agent>   → enter via stable externalKey
   tent session session-end   --host <agent>   → leave via same externalKey
   tent session session-status --host <agent>  → status via same externalKey
@@ -315,7 +315,7 @@ Hook aliases (projection contract with Agent Hook task):
 
 Common flags:
   --workspace <path>   Workspace root (default: resolve from cwd / stdin)
-  --host <agent>       Host/agent name for hook externalKey (alias: --agent)
+  --host <host>        Host integration name used in the stable externalKey
   --key <externalKey>  Explicit externalKey (overrides derived)
   --data-dir <path>    Service data area override
   --attach-only        Do not bootstrap Local Service
@@ -566,7 +566,7 @@ function formatEnter(result: unknown): string {
   };
   const s = row.session ?? {};
   return (
-    `✓ External session enter\n` +
+    `✓ Host session binding entered\n` +
     `sessionId: ${s.sessionId ?? "?"}\n` +
     `state: ${s.state ?? "external"}\n` +
     (s.externalKey ? `externalKey: ${s.externalKey}\n` : "") +
@@ -655,7 +655,7 @@ function formatLeave(result: unknown): string {
   };
   const tasks = row.incompleteTasks ?? [];
   const lines = [
-    `✓ External session leave`,
+    `✓ Host session binding left`,
     `sessionId: ${row.sessionId ?? "?"}`,
     ...(row.externalKey ? [`externalKey: ${row.externalKey}`] : []),
     `state: ${row.state ?? "stopped"}`,

@@ -62,7 +62,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
       "architecture.md",
       "agent-runtime.md",
       "cli-service.md",
-      "concept-model.md",
+      "node-model.md",
       "task-api.md",
       "grok-acp-provider.md",
     ].map((name) => fs.readFile(path.join(repoRoot, "docs", "desktop", name), "utf8"))
@@ -84,7 +84,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.equal(manifest.authorUrl, "https://github.com/cucarol");
   assert.equal(
     manifest.description,
-    "Manage intent, context, and delegated tasks with coding agents: a draggable box tree, frontmatter controls, and dispatch/approval workflows."
+    "Coordinate durable Node context, role-owned tasks, Settings routes, and reviewable deliveries with coding agents."
   );
   assert.ok(manifest.description.length <= 250);
   assert.match(manifest.description, /\.$/);
@@ -141,9 +141,9 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(roleSkill, /also apply `tent-task`/i);
   assert.match(roleSkill, /Role prompt/);
   assert.match(roleSkill, /downstream/i);
-  assert.match(roleSkill, /tent session enter/);
-  assert.match(roleSkill, /tent session status/);
-  assert.match(roleSkill, /tent session leave/);
+  assert.match(roleSkill, /immutable route snapshot/i);
+  assert.match(roleSkill, /task claim --node/i);
+  assert.match(roleSkill, /task dispatch --target route:/i);
   assert.ok(roleSkill.length < 6000, "tent-role SKILL.md should stay compact");
 
   assert.match(taskSkill, /name: tent-task/);
@@ -182,10 +182,10 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(taskCli, /publishes natural report content as Delivery/i);
   assert.match(taskCli, /schedules exactly one durable report-draft retry/i);
   assert.doesNotMatch(taskCli, /Agents never call|There is \*\*no\*\* `tent agent/i);
-  assert.match(taskSession, /tent session enter/i);
-  assert.match(taskSession, /tent session leave/i);
-  assert.match(taskSession, /never delivers|never deliver/i);
-  assert.match(taskSession, /Context Card|manifest is only an auxiliary/i);
+  assert.match(taskSession, /Temporary managed ACP Session boundaries/i);
+  assert.match(taskSession, /immutable non-secret route snapshot/i);
+  assert.match(taskSession, /waiting\(session_unavailable\)/i);
+  assert.match(taskSession, /Context Card/i);
   assert.doesNotMatch(`${roleSkill}\n${taskSkill}`, /name: tent-agent|tent handoff/i);
 
   const canonicalPublicContracts = [
@@ -200,10 +200,15 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
     /agent:<agentId>/i,
     /AgentDefinition/i,
     /LaunchProfile/i,
+    /AgentProfile/i,
+    /agent-profiles/i,
     /standing roster/i,
     /roster authorization/i,
     /out-of-roster/i,
     /authorized Agent roster/i,
+    /\basSub\b/i,
+    /concept\.(changed|removed)/i,
+    /\bboxId\b/i,
   ]) {
     assert.doesNotMatch(canonicalPublicContracts, retired);
   }

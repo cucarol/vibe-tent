@@ -71,21 +71,19 @@ async function withTentRole<T>(
   }
 }
 
-test("CLI help documents --target / --node grammar; rejects retired public knobs", () => {
+test("CLI help documents only the canonical target and Node grammar", () => {
   const help = taskHelpText();
   assert.match(help, /tent task dispatch --target role:<roleIdOrName>\|route:<routeId>/);
   assert.match(help, /--node <nodeId>/);
   assert.match(help, /queued; never starts managed ACP/);
   assert.match(help, /Settings route/);
-  assert.doesNotMatch(help, /agent:<|AgentDefinition|LaunchProfile/);
   assert.match(help, /Any flag outside this command's canonical grammar is rejected/);
   assert.doesNotMatch(help, /tent task dispatch <nodeId>/);
-  // Usage line must not offer retired selectors as active syntax.
   const usageLine = help
     .split("\n")
     .find((l) => l.includes("tent task dispatch --target"));
   assert.ok(usageLine);
-  assert.doesNotMatch(usageLine!, /--profile|--delivery-policy|--as-sub|--assignee-kind/);
+  assert.equal(usageLine!.includes("--target"), true);
 });
 
 test("parseTaskFlags collects repeatable --node values in order", () => {
@@ -354,135 +352,25 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
   });
 });
 
-test("loud rejection of every retired public knob and old positional grammar", async () => {
+test("unknown flags and positional dispatch input fail before mutation", async () => {
   const cwd = await makeFakeTentCwd();
   const { client, calls } = capturingDispatchClient();
-  const before = () => calls.length;
+  const unknown = await runTaskCommand(
+    "dispatch",
+    ["--target", "role:x", "--node", "cx-1", "--prompt", "p", "--unknown-option", "x"],
+    { client: client as never, cwd }
+  );
+  assert.notEqual(unknown.exitCode, 0);
+  assert.match(unknown.stderr, /Unknown option --unknown-option/);
 
-  const retired: Array<{ label: string; args: string[] }> = [
-    {
-      label: "--profile",
-      args: [
-        "--target",
-        "role:x",
-        "--node",
-        "cx-1",
-        "--prompt",
-        "p",
-        "--profile",
-        "fake-default",
-      ],
-    },
-    {
-      label: "--agent",
-      args: [
-        "--target",
-        "role:x",
-        "--node",
-        "cx-1",
-        "--prompt",
-        "p",
-        "--agent",
-        "worker-a",
-      ],
-    },
-    {
-      label: "--delivery-policy",
-      args: [
-        "--target",
-        "role:x",
-        "--node",
-        "cx-1",
-        "--prompt",
-        "p",
-        "--delivery-policy",
-        "bypass",
-      ],
-    },
-    {
-      label: "--as-sub",
-      args: ["--target", "role:x", "--node", "cx-1", "--prompt", "p", "--as-sub"],
-    },
-    {
-      label: "--by",
-      args: [
-        "--target",
-        "role:x",
-        "--node",
-        "cx-1",
-        "--prompt",
-        "p",
-        "--by",
-        "orchestrator",
-      ],
-    },
-    {
-      label: "--caller-kind",
-      args: [
-        "--target",
-        "role:x",
-        "--node",
-        "cx-1",
-        "--prompt",
-        "p",
-        "--caller-kind",
-        "role",
-      ],
-    },
-    {
-      label: "--assignee-kind",
-      args: [
-        "--target",
-        "role:x",
-        "--node",
-        "cx-1",
-        "--prompt",
-        "p",
-        "--assignee-kind",
-        "role",
-      ],
-    },
-  ];
-
-  for (const case_ of retired) {
-    const n = before();
-    const r = await runTaskCommand("dispatch", case_.args, {
-      client: client as never,
-      cwd,
-    });
-    assert.notEqual(r.exitCode, 0, `expected fail for ${case_.label}`);
-    assert.match(
-      r.stderr + r.stdout,
-      /no longer accepts|Usage: tent task dispatch --target/i,
-      case_.label
-    );
-    assert.equal(calls.length, n, `${case_.label} must not reach taskDispatch`);
-  }
-
-  // Old positional <nodeId> <role> grammar
-  {
-    const n = before();
-    const r = await runTaskCommand(
-      "dispatch",
-      ["cx-oldnode", "executor", "old positional prompt"],
-      { client: client as never, cwd }
-    );
-    assert.notEqual(r.exitCode, 0);
-    assert.match(r.stderr + r.stdout, /positional|no longer accepts|--target|--node/i);
-    assert.equal(calls.length, n);
-  }
-
-  // Old --profile form without --target
-  {
-    const n = before();
-    const r = await runTaskCommand(
-      "dispatch",
-      ["cx-box", "--profile", "fake-default", "x"],
-      { client: client as never, cwd }
-    );
-    assert.notEqual(r.exitCode, 0);
-    assert.equal(calls.length, n);
-  }
+  const positional = await runTaskCommand(
+    "dispatch",
+    ["cx-1", "executor", "positional prompt"],
+    { client: client as never, cwd }
+  );
+  assert.notEqual(positional.exitCode, 0);
+  assert.match(positional.stderr + positional.stdout, /--target|--node/i);
+  assert.equal(calls.length, 0);
 });
 
 test("missing --target / --node / --prompt and invalid target fail loud", async () => {
@@ -499,7 +387,7 @@ test("missing --target / --node / --prompt and invalid target fail loud", async 
 
   const badTarget = await runTaskCommand(
     "dispatch",
-    ["--target", "profile:fake", "--node", "cx-1", "--prompt", "p"],
+    ["--target", "worker:fake", "--node", "cx-1", "--prompt", "p"],
     { client: client as never, cwd }
   );
   assert.notEqual(badTarget.exitCode, 0);
@@ -559,12 +447,12 @@ test("missing --target / --node / --prompt and invalid target fail loud", async 
   assert.equal(calls.length, 0, "validation failures must not call taskDispatch");
 });
 
-test("legacy agent target is rejected without compatibility", async () => {
+test("unknown target kind is rejected", async () => {
   const cwd = await makeFakeTentCwd();
   const { client, calls } = capturingDispatchClient();
   const result = await runTaskCommand(
     "dispatch",
-    ["--target", "agent:worker-a", "--node", "cx-1", "--prompt", "p"],
+    ["--target", "worker:one", "--node", "cx-1", "--prompt", "p"],
     { client: client as never, cwd }
   );
   assert.notEqual(result.exitCode, 0);

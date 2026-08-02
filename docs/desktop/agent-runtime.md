@@ -1,7 +1,7 @@
-# Managed Agent Runtime Contract
+# Managed ACP Runtime Contract
 
-This document describes the Local Service execution boundary for managed ACP
-and external Sessions. Collaboration semantics remain in
+This document describes the Local Service execution boundary for temporary
+managed ACP Sessions. Collaboration semantics remain in
 [task-api.md](task-api.md); adapters never implement Node occupation, review, or
 Git integration.
 
@@ -49,19 +49,11 @@ Managed children receive a minimal environment allowlist plus reserved Core
 keys such as workspace, Task, Session, protocol, and owning Service data-dir.
 Route configuration cannot override reserved keys.
 
-## 3. Session kinds
-
-### Managed ACP Session
+## 3. Temporary managed Session
 
 Service owns the child process and ACP transport. It binds the Session to one
 Task before prompting and keeps the registry authoritative for state, turn
 busy status, provider resume capability, and Task linkage.
-
-### External Session
-
-An external host enters with `tent session enter`, may bind during Task claim,
-and leaves with `tent session leave`. Enter/leave never spawns or kills the host
-process and never delivers or accepts a Task.
 
 ## 4. Session states and events
 
@@ -97,13 +89,14 @@ lock:
 operation flight. Concurrent identical calls may coalesce; conflicting
 operations fail deterministically.
 
-## 6. Resume, reattach, and fresh replacement
+## 6. Resume, reattach, and explicit replacement
 
-Resume means reconnecting to the same provider conversation for the bound Task
-or durable Role. Core must prove route/adapter, workspace, parent Role, purpose,
-Skills, context generation, lane, exclusive idle lease, settled turn,
-TaskInput, and Delivery compatibility. Temporary route Sessions have no public
-cross-Task reuse promise.
+Resume means reconnecting to the same provider conversation for the exact
+bound Task. Identity comes from that Task's `sessionId`, the Session's immutable
+non-secret route snapshot and provider token, and its recorded lane. Current
+Settings are consulted for a fresh start, not to reinterpret an existing
+Session. Context-generation equality only decides whether the stable prompt
+prefix may be omitted; it never authorizes continuity.
 
 If the provider conversation is no longer recoverable, it is not silently
 relabeled as the old Session. `task.replaceSession` is an explicit fresh
@@ -124,13 +117,14 @@ The stable prefix contains:
 - workspace identity and project instruction pointers;
 - Role prompt when applicable;
 - live Settings route compatibility snapshot;
-- authoritative context generation.
+- the facts used to compute the current context generation.
 
 The dynamic tail contains the current Context Card, Node refs, Task state,
-TaskInput, review feedback, and optional Role checkpoint. Reuse may omit the
-stable prefix only after the live generation and every compatibility gate
-match. Collector failure fails loud and never creates reusable placeholder
-facts.
+TaskInput, review feedback, and optional Role checkpoint. Session runtime state
+is the authority for prefix deduplication; the Task records the generation only
+as execution provenance after a prompt is actually prepared. A mismatch sends
+the full current prefix on the same native conversation. Collector failure
+fails loud and never creates placeholder facts.
 
 ## 8. TaskInput and UserAsk
 

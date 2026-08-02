@@ -1,4 +1,4 @@
-# Desktop Contract · Node Document Model
+# Desktop Contract · Node Model
 
 This document defines durable Node content and structure. Task occupation and
 Delivery review are operational projections described in
@@ -139,12 +139,11 @@ being copied into Node files.
 Document invalidation uses:
 
 ```text
-concept.changed
-concept.removed
+node.changed
+node.removed
 ```
 
-The transport names are internal event compatibility, not a second public
-object model. Payloads contain stable Node id and safe path/reason metadata.
+Payloads contain stable Node id and safe path/reason metadata.
 Consumers re-read the Node or collaboration projection after the event.
 
 ## 11. Attachments and Output provenance

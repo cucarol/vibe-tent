@@ -44,4 +44,4 @@ Frozen product boundaries (not reopened here):
 - Switching Electron default entry
 - Implementing real Canvas engine, tree, or editor
 - Copying backend lifecycle state machines into the client
-- Hard-coding draft projection field lists from exploration boxes
+- Hard-coding draft projection field lists from exploration fixtures

@@ -9,7 +9,7 @@ Read only the section needed for the current responsibility. Dispatcher and revi
 ```text
 tent task list [--workspace <path>] [--json]
 tent task get <taskPath> [--workspace <path>] [--json]
-tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]
+tent task claim <taskPath> [--workspace <path>] [--json]
 tent task claim --node <nodeId> [--node <nodeId> …] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]
 tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
 tent task ask-user <taskPath> --question <text>|- [--choices id=label,…] [--workspace <path>] [--json]
@@ -34,12 +34,12 @@ tent task dispatch --target role:<roleIdOrName>|route:<routeId> \
 Direct Role ownership:
 
 - `task claim --node … --prompt …` atomically creates and claims this durable
-  Role's own execution Task. It has no target, does not set `asSub`, and does
-  not accept caller-authored parent/reviewer fields.
+  Role's own execution Task. It has no target and does not accept
+  caller-authored responsibility fields.
 - `--from-task <taskPath>` is optional and strict: that Task must be active,
   claimed, and owned by the same Role. Without it, Tent may inherit the exact
-  open Role Session's persisted chain, including a terminal last Task; missing
-  retained history falls back to the Role's user-facing root.
+  verified Role execution context's persisted chain, including a terminal last
+  Task; missing retained history falls back to the Role's user-facing root.
 
 Dispatch forms (downstream assignment only):
 
@@ -49,22 +49,22 @@ Dispatch forms (downstream assignment only):
 | `--target route:<routeId>` | Temporary ACP executor | Resolves the machine Settings route and starts a managed Session |
 
 - `--node` is repeatable and supplies the exact ordered Context Card Node refs; at least one is required. The full set is acquired atomically, and an exact Node cannot be occupied by two active Tasks.
-- `routeId` is a non-secret stable reference to machine Settings. The route resolves provider/model/endpoint/credential metadata; dispatch does not create a persistent worker record.
-- Tent derives equal `parentActor` and `reviewer`. A Role downstream dispatch also derives the parent Role Git lane internally; user-direct dispatch uses user. Do not pass or recreate internal profile, `--agent`, `--delivery-policy`, `--as-sub`, `--by`, `--caller-kind`, or `--assignee-kind`.
+- `routeId` is a non-secret stable reference to machine Settings. It resolves
+  provider, model, endpoint, and credential metadata for the exact Task's
+  temporary ACP Session.
+- Tent derives the exact parent reviewer and parent Role Git lane. Callers pass only the documented target, Node refs, and prompt; all other responsibility and execution fields are Service-owned.
 - Prompt is required through `--prompt <text>|-`; positional Task source or prompt forms are not aliases.
 
-Agents never self-accept. Review authority is the exact persisted `reviewer`, which must equal `parentActor`. Downstream Task Agents always use review-to-parent and cannot elevate `bypass` or `agent-decide`; the three-state policy is only for a durable Role's user-facing Delivery.
+Executors never self-accept. Review authority is the exact persisted parent reviewer. Downstream Tasks always use review-to-parent and cannot elevate the durable Role's user-facing Delivery policy.
 
 ## taskPath
 
-- Always relative to **system root** (`.tent`), e.g.  
-  `temp/agent-profiles/<routeId>/tasks/task-….md`
-- Reading the same file from disk:  
-  `.tent/temp/agent-profiles/<routeId>/tasks/task-….md`
+- Always use the exact system-relative `taskPath` returned by Service.
+- For a direct file read, prefix that returned path with `.tent/`; never infer a route directory or reconstruct the path from a route id.
 
 ## Claim / get / deliver
 
-1. **claim** — external path only when state is still `queued`. Moves the Task to `running`; Node collaboration remains a projection of exact active Task occupation.
+1. **claim** — Role path only when state is still `queued`. Moves the Task to `running`; Node collaboration remains a projection of exact active Task occupation.
    Managed ACP: service already claimed via `startSession` — **do not claim again**.
 2. **get** — re-read machine state after claim or mid-run. The Task envelope and Context Card are the execution contract; referenced Node bodies are context. Delivery is a separate record.
 3. **deliver** — submit Delivery with a human summary and optional commit SHAs.  
@@ -81,7 +81,7 @@ tent task deliver temp/.../tasks/task-….md --summary "what changed" --commits 
 
 ## U2A — writers vs executor
 
-**Write path** (`tent task send-input`): **user** or **dispatcher** (including an agent dispatcher pushing U2A into a **subordinate** task).
+**Write path** (`tent task send-input`): **user** or **parent dispatcher** writing to a downstream Task.
 
 ```bash
 tent task send-input <taskPath> [--text "…"] [--refs id,id]
@@ -102,7 +102,7 @@ Rules:
 - `list` / `get` / `ack` always need `taskPath` scope; no global inbox.
 - An explicit `--actor` must match the exact Task Role, persisted parent/reviewer Role, or a Service-verified Session bound to that Task. Text such as `--actor user` is not user authority.
 - For the Local Service user path, omit `--actor`; Service derives user authority from its authenticated boundary plus persisted user parent/reviewer. Acknowledging `uncertain` preserves its diagnostic history and never prompts the provider again.
-- Managed ACP injects fixed-format follow-ups (`## User Input` / review feedback); external agents poll + ack.
+- Managed ACP injects fixed-format follow-ups (`## User Input` / review feedback); a Role executor may poll and acknowledge its Task input.
 
 ## Stop an obsolete Task
 
@@ -135,7 +135,7 @@ During design, review, or planning, treat explicit user confirmation as durable 
 - Otherwise return it to the parent reviewer for placement.
 - Before Delivery, check that confirmed decisions do not exist only in chat.
 
-For external Session entry/status/leave, read [session-boundaries.md](session-boundaries.md). An external executor may bind an existing Session ID during claim with `tent task claim … --session <ss-…>`.
+For temporary managed ACP recovery boundaries, read [session-boundaries.md](session-boundaries.md).
 
 ## Orientation helpers
 
@@ -145,13 +145,12 @@ tent role list       # durable Role registry projection
 tent role show <id>  # durable Role metadata
 tent tree            # Node tree
 tent task list       # service task list
-tent session status  # managed or external Session orientation
 ```
 
 ## What not to use as the main path
 
 | Avoid as primary | Why |
 | --- | --- |
-| Chat-only “done” without deliver | External path must `task.deliver`; managed ACP Delivery is Service-owned |
+| Chat-only “done” without deliver | Role work must `task.deliver`; managed ACP Delivery is Service-owned |
 | Self `task.accept` | User (or authorized) review only |
 | Self `send-input` on **this** task | Executor consumes via `task-input *`; writers are user/dispatcher |

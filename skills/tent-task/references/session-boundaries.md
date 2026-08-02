@@ -1,51 +1,48 @@
-# Session boundaries
+# Temporary managed ACP Session boundaries
 
-## Managed and external Sessions
+Service starts a temporary managed ACP Session only for a Task assigned to a
+machine Settings route. The route is a non-secret launch reference; durable
+responsibility remains with the Task's Role and parent reviewer chain.
 
-| | Managed ACP | External / relay |
-| --- | --- | --- |
-| Start | Desktop / Service `task.startSession` | Host process + `tent session enter` |
-| Claim | Service claims first | Executor runs `tent task claim` |
-| Delivery | Service captures the final report | Executor runs `tent task deliver` |
-| Session ID | Service-owned `ss-…` | `tent session enter`, optionally with `--session` / `--key` |
-| Process | ACP child under Tent Service | Claude, Codex, Grok, or another host process |
+| Boundary | Contract |
+| --- | --- |
+| Start | Service resolves the Task's persisted route and claims the Task before provider launch |
+| Binding | One exact Task `sessionId`; final bind uses Task lifecycle snapshot/CAS |
+| Delivery | Service captures the natural non-empty final report and preserves its durable draft before publication |
+| Resume | Same Session, immutable route snapshot, recorded provider token, and native provider conversation |
+| Replacement | Explicit `task.replaceSession`; fresh execution for the same eligible Task |
 
-This file covers Session boundaries only. Read [task-cli.md](task-cli.md) for the Task lifecycle.
+## Recover a bound Task
 
-## External Session CLI
+1. Re-query the exact Task and Session after restart, compaction, provider exit,
+   or replacement.
+2. Never use a remembered process id, live route edit, or caller-supplied token
+   as continuity authority.
+3. Resume only the Session already bound to that exact Task. Native load uses
+   its immutable non-secret route snapshot and recorded provider token.
+4. Context-generation equality only permits stable-prefix omission. A mismatch
+   resumes the same provider conversation with the full current prefix.
+5. Missing or failed native recovery parks the Task at
+   `waiting(session_unavailable)` and preserves occupation, lane, TaskInput,
+   UserAsk, and report draft. It never starts fresh while claiming continuity.
+6. Use `task.replaceSession` only for a turn-idle eligible Task. Replacement is
+   explicitly fresh and uses the same lifecycle/binding CAS.
 
-```text
-tent session enter   → state=external registry row; no ACP spawn; idempotent
-tent session status  → open? + incompleteTasks
-tent session leave   → unbind only; delivered=false, accepted=false
-```
+Provider startup runs outside the Task lifecycle lock. If a terminal transition
+wins before final binding, Service stops the unbound child and reports
+`TASK_SESSION_BIND_CAS_FAILED`; never hand-bind it or overwrite the Task.
 
-- `leave` never delivers, accepts, or stops unrelated external processes.
-- Hook aliases are `tent session session-start|session-status|session-end --host <agent>` using a stable external key. Outside Tent, hooks exit silently.
-- External GUI Sessions are registry/orientation records; this Skill never turns them into ACP child processes.
+## Protocol, limits, and host boundary
 
-## Recover from stale or replaced Sessions
+- A CLI/Service protocol mismatch fails before Task mutation. Do not bypass
+  Service or invoke a provider adapter directly.
+- `ACP_OUTPUT_LIMIT` and `ACP_REQUEST_LIMIT` stop the provider and cannot
+  produce truncated `prompt_complete`, Delivery, or delivered outcome.
+- Diagnostic tails are bounded and redacted evidence, never lifecycle
+  authority.
+- Tent does not replace the host application's tool-approval UI. Managed ACP
+  tool approval remains a separate runtime path.
 
-1. Re-query persisted Session and Task state after restart, compaction, handoff, provider change, or replacement.
-2. Never treat an old live handle, process ID, or remembered resume token as current authority.
-3. Use `task.replaceSession` only through Service for the same Task when the bound context is unusable. It requires a turn-idle `running` Task or `waiting(session_unavailable)`; `TURN_BUSY` fails loud and has no force path. Replacement is explicitly fresh (`contextRestored=false`).
-4. Resume only through Core compatibility checks: workspace, parent Role, Settings route/adapter, purpose, Skills, context generation, lane, exclusive idle lease, settled turn, and no pending input/Delivery must match. Resume must preserve the same recoverable provider conversation; otherwise use an explicit fresh Task/Session path rather than relabeling new context as the old Session.
-5. Do not stop a process merely because its Session projection looks stale; confirm ownership and current runtime state first.
-
-Session startup runs outside the Task lifecycle lock, then final binding uses an authoritative Task snapshot and lifecycle CAS. A terminal transition may win; the unbound new Session is stopped and Service reports `TASK_SESSION_BIND_CAS_FAILED`. Never hand-bind it or overwrite the terminal Task.
-
-## Protocol and bounded ACP failure
-
-- Public CLI requires the compatible Local Service protocol. If attach reports a legacy/mismatched endpoint, do not bypass Service or call the provider adapter directly. Stop and report the mismatch; restart or upgrade through the environment's documented Service operator procedure rather than inventing a Skill command.
-- Oversized ACP frame/report/request fails loud as `ACP_OUTPUT_LIMIT` or `ACP_REQUEST_LIMIT`. Service stops the provider turn and must not publish `prompt_complete`, a Delivery, or a delivered outcome from truncated content.
-- Diagnostic tails may be bounded and redacted. They are evidence, not a substitute for the authoritative Session/Task terminal state.
-
-## Host tools stay with the host
-
-- Tent does not replace the host Agent’s tool-approval or permission UI.
-- Do not read or write host permission stores from this Skill.
-- Managed ACP tool approval, when available, remains a separate runtime path.
-
-## Context is not permission
-
-The Context Card supplies Task refs; the manifest is only an auxiliary snapshot. Neither is an ACL. Authority comes from persisted parent/reviewer, Task lifecycle, exact Node occupation, and integration lane. A Settings route proves machine availability, not collaboration authority.
+The Context Card supplies Task refs; authority comes from the persisted parent
+reviewer, exact Node occupation, Task lifecycle, and integration lane. A valid
+Settings route proves machine availability only.

@@ -15,9 +15,9 @@ while owning or executing a concrete Task.
 2. Read workspace `AGENTS.md`, `.tent/temp/<role>/init.md`, the Role projection,
    and relevant Nodes. If init is missing, run `tent role-init <role>`; do not
    fabricate it.
-3. For external-host fallback, use `tent session enter --role <role>`, inspect
-   with `tent session status`, and unbind with `tent session leave`. Managed
-   bootstrap belongs to Service.
+3. Use the verified Role execution context supplied by the host. Session
+   registration and managed bootstrap belong to Service and host integration;
+   do not fabricate or hand-bind them.
 4. After restart, compaction, handoff, or Session recovery, re-query the exact
    Task, Delivery, Session, Context Card, and Git facts.
 5. Treat the Role prompt as jointly maintained. Ask before changing durable
@@ -51,16 +51,17 @@ binding, compatibility result, or persisted state.
   machine Settings.
 - A route resolves provider/model/endpoint/credential metadata. Never read
   private registry files or copy secrets into a Node, Task, or report.
-- Route dispatch does not register a persistent worker or create another Role.
-  Reusable Session bookmarks are not a current public workflow.
+- A temporary route Session remains execution state of its exact downstream
+  Task; durable responsibility stays with the Role and parent reviewer chain.
 - Caller authority and parent lane are derived by Tent. Do not recreate
   internal assignee, reviewer, or delivery-policy knobs.
 
-Resume a managed Session for its bound Task or durable Role only when Core
-proves the same provider conversation is recoverable and route/adapter,
-workspace, Skills, context generation, lane, settled turn, interactions,
-Delivery, and exclusive idle lease all match. Otherwise use explicit Task
-recovery or dispatch new work; never present fresh context as the old Session.
+Resume a managed Session only for its exact bound Task when Service proves the
+same provider conversation is recoverable from the immutable route snapshot,
+provider token, and recorded lane. A changed context generation sends the full
+current stable prefix; it does not select another Session. If native recovery
+fails, use explicit Task replacement or dispatch new work; never present fresh
+context as the old Session.
 
 ## Review downstream Delivery
 

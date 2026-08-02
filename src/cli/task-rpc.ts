@@ -1,5 +1,5 @@
 // Task lifecycle commands via Local Service RPC (architecture §4 / task-api §3).
-// External agent claim/deliver MUST go through this path — no direct core mutation.
+// Role claim/deliver MUST go through this path — no direct Core mutation.
 
 import type { ServiceClient } from "../service/client.js";
 import { attachOrBootstrapService, type CliAttachOptions } from "./service-attach.js";
@@ -262,11 +262,10 @@ export async function runTaskCommand(
           return failUsage("tent task dispatch: --prompt must be non-empty");
         }
 
-        // Caller authority from environment / current actor only (no public --by / --as-sub).
+        // Caller authority comes from the verified environment/current actor.
         // Role caller → parentActor=reviewer=that Role + callerKind=role (downstream review).
         // User-direct → parentActor=reviewer=user + callerKind=user.
-        // Git-lane meaning of asSub is derived, not a public knob: Role caller dispatching
-        // role:* or route:* → asSub:true (Task targets parent Role lane); user-direct omits it.
+        // Role downstream work targets the parent Role lane; user-direct work does not.
         const envRole = String(
           (globals.env?.TENT_ROLE ?? process.env.TENT_ROLE ?? "") as string
         ).trim();
@@ -673,7 +672,6 @@ function formatTaskDispatch(result: unknown): string {
     taskPath: string;
     state?: string;
     relayPrompt?: string;
-    asSub?: boolean;
     parentActor?: { kind?: string; id?: string };
     reviewer?: { kind?: string; id?: string };
     assigneeKind?: string;
@@ -720,7 +718,6 @@ function formatTaskDispatch(result: unknown): string {
     (row.assigneeId ? `assigneeId: ${row.assigneeId}\n` : "") +
     (parentLabel ? `parentActor: ${parentLabel}\n` : "") +
     (reviewerLabel ? `reviewer: ${reviewerLabel}\n` : "") +
-    (row.asSub ? `asSub: true\n` : "") +
     (sessionId ? `sessionId: ${sessionId}\n` : "") +
     (sessionState ? `sessionState: ${sessionState}\n` : "") +
     (sessionRouteId ? `sessionRouteId: ${sessionRouteId}\n` : "") +
@@ -1057,7 +1054,7 @@ Local Service is the sole mutation entry; CLI does not kill the service on exit.
 Commands:
   tent task list [--workspace <path>] [--json]
   tent task get <taskPath> [--workspace <path>] [--json]
-  tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]
+  tent task claim <taskPath> [--workspace <path>] [--json]
   tent task claim --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]
       # direct Role execution: create + claim atomically; no --target and no downstream dispatch
       # Role comes from TENT_ROLE_NAME/TENT_ROLE; Service derives parent/reviewer from durable facts
@@ -1067,7 +1064,6 @@ Commands:
       # --target route:* machine Settings route + managed Session start
       # --node           repeatable Node refs (at least one); sole source for contextCard.refs.nodes
       # parentActor/reviewer derive from the durable Role or local user boundary
-      # Role caller also derives internal asSub (parent Role Git lane); not a public flag
       # Any flag outside this command's canonical grammar is rejected
   tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--workspace <path>] [--json]
   tent task reject <taskPath> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]

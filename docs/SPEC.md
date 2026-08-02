@@ -114,10 +114,10 @@ A durable Role takes ownership of its own work directly:
 tent task claim --node <nodeId> [--node <nodeId> ...] --prompt <text>|-
 ```
 
-This creates and immediately claims one Role Task. It has no target or `asSub`
-meaning. Tent inherits its persisted parent/reviewer responsibility from the
-explicit current Task or exact open Role Session; a Role root falls back to the
-user.
+This creates and immediately claims one Role Task. It has no target and is not
+downstream assignment. Tent inherits its persisted parent/reviewer
+responsibility from an explicit current Task or the verified current Role
+execution context; a Role root falls back to the user.
 
 Dispatch is downstream assignment only and has two public targets:
 
@@ -125,20 +125,20 @@ Dispatch is downstream assignment only and has two public targets:
 - `route:<routeId>` creates a formal Task and starts a temporary managed ACP
   Session through that Settings route.
 
-A temporary route Session is not registered as a persistent worker or second
-Role. Saving a reusable Session bookmark and host-native Advisor support are
-future capabilities, not current entities or authorization paths.
+A temporary route Session remains execution state of its exact Task. Durable
+responsibility, review authority, and Node ownership remain with the Role and
+Task chain.
 
 Role and Session are different:
 
-- a Role survives Session replacement;
-- a Session is one execution instance, managed or external;
-- a managed Session may resume only when the same provider conversation is
+- a Role remains durable across its execution contexts;
+- a temporary managed ACP Session is one Task execution instance;
+- that Session may resume only when the same provider conversation is
   still recoverable and Core proves compatibility;
 - persisted Nodes, Tasks, Deliveries, checkpoint, and Git are the recovery
   authority when a Session cannot continue.
 
-Two composable Skills define Agent behavior:
+Two composable Skills define executor behavior:
 
 - `tent-role`: durable Role responsibility, Node context, downstream review,
   and user-facing delivery;
@@ -177,14 +177,13 @@ commands and consume projections rather than deriving lifecycle from files.
 
 ## 6. Sessions And Runtime
 
-The Service owns managed ACP Session launch, binding, replacement, input
-injection, and terminal projection. External Sessions explicitly enter/claim
-and leave through the same persisted Task contract.
+The Service owns temporary managed ACP Session launch, binding, replacement,
+input injection, and terminal projection.
 
 A Task remains the Delivery boundary. A temporary route Session belongs to its
-Task; the public workflow does not promise cross-Task reuse. Resume reconnects
-the same recoverable provider conversation, while explicit replacement
-preserves the same Task and worktree without envelope edits.
+exact Task. Resume reconnects that same recoverable provider conversation,
+while explicit replacement preserves the Task and worktree without envelope
+edits.
 
 Provider/model/endpoint/credential configuration belongs to machine-local
 Settings routes or the provider's native tooling. Tent does not silently
@@ -287,7 +286,6 @@ Primary collaboration commands attach to the Local Service:
 tent status
 tent tree
 tent role list|show|config
-tent session enter|status|leave
 tent task list|get|dispatch|claim|deliver|accept|reject|cancel|send-input|...
 tent task dispatch --target role:<roleId>|route:<routeId> --node <nodeId> ...
 tent role-init <role>

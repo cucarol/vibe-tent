@@ -3,7 +3,7 @@
 This document defines the production boundary shared by Desktop, CLI, optional
 plugins, Core, Local Service, and ACP adapters. Task and Delivery details live
 in [task-api.md](task-api.md); Node storage lives in
-[concept-model.md](concept-model.md); provider process behavior lives in
+[node-model.md](node-model.md); provider process behavior lives in
 [agent-runtime.md](agent-runtime.md).
 
 ## 1. One workspace, one mutation authority
@@ -121,7 +121,7 @@ resolved target ref.
 Events are invalidation signals:
 
 ```text
-concept.changed | concept.removed
+node.changed | node.removed
 task.state | delivery.updated | session.state
 taskInput.* | userAsk.* | toolApproval.*
 workspace.settings.updated | service.health

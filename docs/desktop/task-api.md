@@ -10,7 +10,7 @@ state machines.
 | --- | --- | --- |
 | Node | `cx-…` | durable product context and knowledge |
 | Task | `tk-…` | one work and review attempt over exact Nodes |
-| Session | `ss-…` | managed or external execution binding |
+| Session | `ss-…` | temporary managed ACP execution binding |
 | Delivery | `dl-…` | formal result submitted to the exact reviewer |
 | TaskInput | `ti-…` | parent/user input scoped to one Task |
 | UserAsk | `ua-…` | executor question requiring a user answer |
@@ -33,11 +33,11 @@ tent task claim --node <nodeId> [--node <nodeId> ...] \
   --prompt <text>|- [--from-task <taskPath>]
 ```
 
-This is one create-and-claim Service mutation, not dispatch. It has no target,
-`asSub`, or caller-authored authority fields. An explicit `--from-task` must be
-an active claimed Task for the same Role. Otherwise an exact open Role Session
-may continue the persisted parent/reviewer chain from its last Task, including
-a terminal one; missing history falls back to the Role's user-facing root.
+This is one create-and-claim Service mutation, not dispatch. It has no target
+or caller-authored authority fields. An explicit `--from-task` must be an active
+claimed Task for the same Role. Otherwise Tent may continue the persisted
+parent/reviewer chain from a verified current Role execution context; missing
+history falls back to the Role's user-facing root.
 
 Dispatch is only downstream assignment. Its public target grammar is
 `role:<roleId>|route:<routeId>`. CLI form:
@@ -59,9 +59,9 @@ Targets:
 - `route:*` resolves one machine Settings route, creates the formal Task, and
   starts a temporary managed ACP Session.
 
-Route dispatch does not create a durable worker identity, Role membership, or
-reusable bookmark. Machine route availability and collaboration authority are
-separate checks.
+The temporary Session remains execution state of the dispatched Task. Durable
+responsibility and review authority remain with the persisted parent reviewer
+chain.
 
 ## 3. Exact Node occupation
 
@@ -300,7 +300,7 @@ taskInput.listPending
 interaction.listPending
 ```
 
-Events such as `task.state`, `session.state`, `delivery.updated`,
+Events such as `node.changed`, `task.state`, `session.state`, `delivery.updated`,
 `taskInput.*`, and `userAsk.*` only invalidate cached views. Consumers re-query
 the owning projection.
 

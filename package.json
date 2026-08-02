@@ -1,7 +1,7 @@
 {
   "name": "vibe-tent",
   "version": "0.1.0",
-  "description": "Manage intent, context, permissions, and task delegation between users and coding agents with an Obsidian plugin and CLI.",
+  "description": "Coordinate durable Node context, role-owned tasks, Settings routes, and reviewable deliveries with coding agents.",
   "type": "module",
   "bin": {
     "tent": "./cli.mjs",

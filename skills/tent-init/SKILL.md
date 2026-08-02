@@ -1,11 +1,11 @@
 ---
 name: tent-init
-description: "Initialize or adopt a software project as a Tent (帷幄) workspace. Use when a user asks to create a new Tent, add Tent to an existing or in-progress project, onboard a project into Tent, or derive an initial Tent Node and Role structure from the current Agent Session or project files. Preserve existing work, draft the initial structure before mutation, and require user approval before materializing an existing project's Nodes."
+description: "Initialize or adopt a software project as a Tent (帷幄) workspace. Use when a user asks to create a new Tent, add Tent to an existing or in-progress project, onboard a project into Tent, or derive an initial Tent Node and Role structure from the current working context or project files. Preserve existing work, draft the initial structure before mutation, and require user approval before materializing an existing project's Nodes."
 ---
 
 # tent-init
 
-Use this one-time onboarding contract to establish a Tent workspace. It does not replace `tent-role` or `tent-task`: after initialization, load those Skills only when the Agent enters a durable Role or executes a Task.
+Use this one-time onboarding contract to establish a Tent workspace. It does not replace `tent-role` or `tent-task`: after initialization, load those Skills only when an executor enters a durable Role or executes a Task.
 
 ## Establish the project root
 
@@ -16,14 +16,14 @@ Use this one-time onboarding contract to establish a Tent workspace. It does not
 
 For a repository with uncommitted work, explain that those changes are not part of a Task worktree's recorded Git base. Do not commit, stash, reset, clean, or discard them on the user's behalf.
 
-## Reuse current Session context
+## Reuse current working context
 
-First decide whether the current Session already understands the project.
+First decide whether the current working context already captures the project.
 
-- **Context-rich Session:** when it can accurately state the current objective, confirmed decisions, active problems, existing outputs, and workspace, reuse that context. Re-check only mutable facts such as root path, current Git state, `AGENTS.md`, and whether Tent already exists.
-- **New or uncertain Session:** inspect a bounded set of high-signal sources such as `AGENTS.md`, README, documentation indexes, package/project manifests, Git status, and recent history. Search for specific gaps instead of reading the whole repository.
+- **Context-rich execution:** when the executor can accurately state the current objective, confirmed decisions, active problems, existing outputs, and workspace, reuse that context. Re-check only mutable facts such as root path, current Git state, `AGENTS.md`, and whether Tent already exists.
+- **New or uncertain execution:** inspect a bounded set of high-signal sources such as `AGENTS.md`, README, documentation indexes, package/project manifests, Git status, and recent history. Search for specific gaps instead of reading the whole repository.
 
-Session memory is evidence for drafting, not durable truth. User approval and persisted Tent state make the result authoritative.
+Working memory is evidence for drafting, not durable truth. User approval and persisted Tent state make the result authoritative.
 
 ## Draft the initial Node map
 
@@ -35,12 +35,12 @@ For each proposed Node show:
 - primary type: `goal`, `prompt`, or `output`;
 - optional secondary type only when its symbol or behavior matters;
 - a small reused tag vocabulary;
-- source pointers to relevant workspace files, Git facts, deliverables, or confirmed Session context;
+- source pointers to relevant workspace files, Git facts, deliverables, or confirmed working context;
 - one short reason the Node belongs in the initial map.
 
 Use `goal` only for a real objective or outcome. Use `prompt` for context, work, questions, decisions, and constraints. Use `output` for an existing or intended deliverable or its workspace pointer. Prefer a few useful Nodes over exhaustive coverage.
 
-For an existing or in-progress project, wait for explicit user approval. Offer to accept, edit, or simplify the map. Do not materialize it merely because the Agent feels confident.
+For an existing or in-progress project, wait for explicit user approval. Offer to accept, edit, or simplify the map. Do not materialize it merely because the executor feels confident.
 
 For a new project, ask at most one or two lightweight questions about the intended outcome and immediate scope. If the user delegates the details, propose a minimal map and proceed after their confirmation.
 
@@ -61,7 +61,7 @@ After approval, create parents before children with `tent node create`, pass sub
 1. Mount or attach the workspace through Local Service and re-query it.
 2. Verify the persisted Node tree, types, tags, pointers, and workspace root against the approved draft.
 3. Show the resulting structure to the user and correct only requested differences through official mutations.
-4. Offer, but do not force, creation of the first durable Role. If the current Agent will remain accountable, enter that Role and load `tent-role`.
+4. Offer, but do not force, creation of the first durable Role. If the current executor will remain accountable, enter that Role and load `tent-role`.
 5. Load `tent-task` only when concrete work is dispatched or claimed.
 
 Finish with the workspace root, created Node IDs, any Role created or entered, Git/dirty-state warning, and remaining explicit choices. Do not leave behind temporary onboarding Nodes, copied project summaries, or duplicate rules files.

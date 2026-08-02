@@ -1,6 +1,6 @@
 ---
 name: tent-task
-description: "Execute one concrete Tent (帷幄) Task from its persisted Context Card through scoped work, interaction handling, the recorded Git lane, verification, an honest final report, and Delivery to the exact parent reviewer. Use for durable Roles, managed ACP Sessions, external Agents, and user-started one-shot work; also apply tent-role when the executor is a durable Role."
+description: "Execute one concrete Tent (帷幄) Task from its persisted Context Card through scoped work, interaction handling, the recorded Git lane, verification, an honest final report, and Delivery to the exact parent reviewer. Use for durable Role work, temporary managed ACP Sessions, and user-started work; also apply tent-role when the executor is a durable Role."
 ---
 
 # tent-task
@@ -16,9 +16,9 @@ incremental input/review delta.
 2. Resolve the exact Task path/ID from managed binding, Context Card, or
    `tent task list`. A durable Role may create and immediately claim its own
    Task with `tent task claim --node <nodeId> … --prompt <text>|-`; this has no
-   target and is not downstream dispatch. Managed ACP is already claimed;
-   external execution claims an existing Task before work and may bind its
-   external Session.
+   target and is not downstream dispatch. A managed route Task is already
+   claimed by Service; a durable Role claims its own work through the Role
+   boundary.
 3. Read the immutable prompt, `parentActor`, exact `reviewer`, assignee, and
    WorkspaceLane from the Task envelope. Read optional objective, frozen
    decisions, scope, acceptance, refs, and generation/digest from its Context
@@ -80,8 +80,8 @@ never invents success. Use UserAsk for a real question.
 
 - Managed ACP: Service owns claim, durable report draft, and Delivery
   publication. Return one honest final report only when the Task is ready.
-- External/relay: call `tent task deliver` with an honest summary and optional
-  exact commit SHAs. Chat text alone is not Delivery.
+- Durable Role execution: call `tent task deliver` with an honest summary and
+  optional exact commit SHAs. Chat text alone is not Delivery.
 - Every reported SHA must belong to this Task's lane. Ready Delivery snapshots
   target head; `TARGET_MOVED` requires reject/resume and re-delivery.
 - Delivery is never acceptance. The executor never accepts its own Delivery.

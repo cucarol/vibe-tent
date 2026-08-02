@@ -59,7 +59,7 @@ test("role help and list/show expose metadata only", async () => {
   const help = roleHelpText();
   assert.match(help, /tent role list/);
   assert.match(help, /--display-name/);
-  assert.doesNotMatch(help, /a2a|roster|rosterEntries|readiness|agentId/);
+  assert.doesNotMatch(help, /authorization|worker catalog/i);
 
   const state = {
     roles: [
@@ -70,9 +70,7 @@ test("role help and list/show expose metadata only", async () => {
         description: "plans work",
         prompt: "plan",
         color: "blue",
-        a2aPolicy: "ask",
-        roster: ["hidden-agent"],
-        rosterEntries: [{ agentId: "hidden-agent", readiness: "ready" }],
+        privateRuntimeData: ["hidden"],
       },
     ],
   };
@@ -83,19 +81,17 @@ test("role help and list/show expose metadata only", async () => {
   assert.equal(list.exitCode, 0, list.stderr);
   const listed = JSON.parse(list.stdout) as { roles: Record<string, unknown>[] };
   assert.equal(listed.roles[0]!.name, "planner");
-  assert.equal("roster" in listed.roles[0]!, false);
-  assert.equal("rosterEntries" in listed.roles[0]!, false);
+  assert.equal("privateRuntimeData" in listed.roles[0]!, false);
 
   const show = await runRoleCommand("show", ["planner", "--json"], g);
   assert.equal(show.exitCode, 0, show.stderr);
   const shown = JSON.parse(show.stdout) as { role: Record<string, unknown> };
   assert.equal(shown.role.prompt, "plan");
-  assert.equal("roster" in shown.role, false);
-  assert.equal("rosterEntries" in shown.role, false);
+  assert.equal("privateRuntimeData" in shown.role, false);
   assert.deepEqual(calls.map((call) => call.method), ["registry.roles", "registry.roles"]);
 });
 
-test("role config updates metadata without roster fields", async () => {
+test("role config updates metadata through the canonical field set", async () => {
   const state = {
     roles: [{ roleId: "rl-exec", name: "executor", displayName: "Executor" }],
   };
@@ -128,18 +124,16 @@ test("role config updates metadata without roster fields", async () => {
     color: "green",
     actor: "user",
   });
-  assert.equal("roster" in (update.args[2] as Record<string, unknown>), false);
+  assert.equal("privateRuntimeData" in (update.args[2] as Record<string, unknown>), false);
 });
 
-test("retired Role authorization flags fail without compatibility or mutation", async () => {
+test("unknown Role config flags fail without mutation", async () => {
   const state = { roles: [{ roleId: "rl-y", name: "y", displayName: "Y" }] };
   const { client, calls } = fake(state);
   const g = await roleGlobals(client);
 
-  for (const flag of ["--roster", "--roster-add", "--roster-remove", "--a2a-policy"]) {
-    const result = await runRoleCommand("config", ["y", flag, "agent-a"], g);
-    assert.notEqual(result.exitCode, 0, flag);
-    assert.match(result.stderr, /retired|no longer accepts/i, flag);
-  }
+  const result = await runRoleCommand("config", ["y", "--executor-policy", "allow"], g);
+  assert.notEqual(result.exitCode, 0);
+  assert.match(result.stderr, /Unknown role option/i);
   assert.equal(calls.length, 0);
 });

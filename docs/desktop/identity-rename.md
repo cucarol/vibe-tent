@@ -44,7 +44,7 @@ entire subtree.
 5. Move the folder and same-named identity note together.
 6. Preserve descendant ids, attachments, relations, and id-keyed order facts.
 7. Rewrite only links whose target resolves unambiguously to an affected path.
-8. Emit one `concept.changed` invalidation with stable id, old path, and new
+8. Emit one `node.changed` invalidation with stable id, old path, and new
    path.
 9. On post-move failure, restore touched notes and the tree from the operation's
    exact snapshot.

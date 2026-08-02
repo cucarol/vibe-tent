@@ -180,8 +180,7 @@ async function main() {
     return;
   }
 
-  // External / pull-host session lifecycle (SessionRegistry state=external; no ACP spawn).
-  // Public surface is tent session only — Session enter|status|leave|session-* never under tent agent.
+  // Host integration binding (SessionRegistry host state; no ACP spawn).
   if (cmd === "session") {
     const [sub, ...rest] = args;
     if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
@@ -195,7 +194,7 @@ async function main() {
     return;
   }
 
-  // Durable Role discovery + metadata config (list|show|config). Not the old registry-list alias.
+  // Durable Role discovery + metadata config (list|show|config).
   if (cmd === "role") {
     const [sub, ...rest] = args;
     if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
@@ -265,7 +264,7 @@ async function main() {
   const tentCommands = new Set(["role-init", "status", "tags", "find", "tree"]);
   if (!tentCommands.has(cmd)) {
     return fail(
-      `Unknown command: ${cmd || "(empty)"}\nCommands: new node task session role propose role-init role-checkpoint status tags find tree skill-install agent-hooks`
+      `Unknown command: ${cmd || "(empty)"}\nCommands: new node task role propose role-init role-checkpoint status tags find tree skill-install agent-hooks`
     );
   }
 
@@ -409,8 +408,8 @@ Behavior:
     silently skip non-Tent workspaces (leave never needs a sessionId positional).
   - Merges into existing agent configs; never rewrites permissions or MCP.
   - install / doctor / remove are idempotent; remove only Tent-managed handlers.
-  - Legacy tent agent session-* entries may be replaced/removed on install only;
-    they are not generated or advertised as callable aliases.
+  - Installation rewrites only Tent-managed hook entries; runtime never depends
+    on stale host configuration.
   - Antigravity (agy) and Copilot report unsupported when no verified lifecycle hook surface exists.
   - Projection only writes under --home (tests) or os.homedir(); never smoke real user configs.
 
@@ -471,11 +470,9 @@ Usage:
 
 Run commands from a workspace with <workspace>/.tent/ unless noted.
 
-Durable Role, Session, and Task (distinct surfaces):
+Node, Role, Task, Delivery, and Settings route:
   tent role list|show|config          Durable Role discovery + metadata config (Service-backed)
   tent role --help                    Role subcommand help
-  tent session enter|status|leave     External session lifecycle (no ACP spawn)
-  tent session --help                 Pull-host enter/status/leave + hook aliases
   tent task list|get|claim|deliver|…  Attach Local Service → mount → task.* RPC
   tent task --help                    Full task subcommand help
 

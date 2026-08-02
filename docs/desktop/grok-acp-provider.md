@@ -79,10 +79,10 @@ incremental TaskInput and review feedback are appended through Service.
 ## 6. Resume and replacement
 
 Resume or reattach must preserve the same recoverable Grok conversation for the
-bound Task or durable Role. Core checks route/adapter, workspace, parent Role,
-purpose, Skills, context generation, lane, exclusive idle lease, settled turn,
-and pending interaction/Delivery state. Temporary route Sessions have no public
-cross-Task reuse promise.
+exact bound Task. Tent uses the Task's bound Session, immutable non-secret route
+snapshot, provider token, native load support, and recorded lane. A changed
+context generation sends the full current stable prefix; it does not replace
+the conversation or select another Session.
 
 If that conversation cannot be recovered, it is not presented as the same
 Session. Explicit `task.replaceSession` may start fresh execution for the same
