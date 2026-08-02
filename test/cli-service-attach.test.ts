@@ -275,7 +275,7 @@ test("task RPC layer: claim → deliver; ServiceClient observes same state; serv
       prompt: "Ship CLI attach",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string; state: string };
     assert.equal(dispatched.state, "queued");
     const taskPath = dispatched.taskPath;

@@ -45,6 +45,7 @@ export type ShellTaskRow = {
   referencedNodeIds: string[];
   /** Canonical lifecycle state (task-api). */
   state: string;
+  acceptMode: TaskProjection["acceptMode"];
   id?: string;
   prompt?: string;
   activeDeliveryId?: string;
@@ -128,6 +129,7 @@ export class DesktopShellModel {
           activeDeliveryId: t.activeDeliveryId,
           sessionId: t.sessionId,
           manifest: "",
+          acceptMode: t.acceptMode,
           contextCard: t.contextCard,
         })),
         this.deliveries,
@@ -293,6 +295,7 @@ export class DesktopShellModel {
         roleId: t.roleId,
         referencedNodeIds: t.referencedNodeIds ?? [],
         state: t.state,
+        acceptMode: t.acceptMode,
         id: t.id,
         prompt: t.prompt,
         activeDeliveryId: t.activeDeliveryId,

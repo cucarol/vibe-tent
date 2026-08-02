@@ -14,16 +14,11 @@ export type TaskState =
   | "interrupted"
   | "failed";
 
-/**
- * Canonical delivery-policy wire values (V0.2).
- * Product-facing display labels (Review / Bypass / Agent Decide) live in UI/docs,
- * not Core. Historical on-disk `manual` is normalized to `review` only at a narrow
- * read boundary.
- */
-export type DeliveryPolicy = "review" | "bypass" | "agent-decide";
+/** Canonical Task-frozen acceptance policy (V0.2 hard cut). */
+export type AcceptMode = "review-required" | "auto-accept" | "agent-decide";
 
-/** Default for new tasks / workspace settings when policy is omitted. */
-export const DEFAULT_DELIVERY_POLICY: DeliveryPolicy = "review";
+/** Default for new Tasks and workspace settings. */
+export const DEFAULT_ACCEPT_MODE: AcceptMode = "review-required";
 
 export type DeliverDecision = "integrate" | "request-review";
 export type WaitReason = "user-input" | "review" | "external";
@@ -43,10 +38,11 @@ export type TaskActorRef = {
 };
 
 export type DeliveryStatus = "draft" | "ready" | "accepted" | "rejected";
-export type IntegrationMode = "manual-accept" | "bypass-auto" | "agent-decided-integrate" | null;
+export type IntegrationMode = "manual-accept" | "auto-accept" | "agent-decided-integrate" | null;
 
 export type TransitionErrorCode =
   | "INVALID_TRANSITION"
+  | "INVALID_ACCEPT_MODE"
   | "POLICY_FORBIDS_AUTO_INTEGRATE"
   | "DECISION_REQUIRED"
   | "SELF_ACCEPT_FORBIDDEN"
@@ -199,17 +195,13 @@ export function roleTaskActors(
 }
 
 /**
- * Elevated deliveryPolicy (bypass | agent-decide) is legal only for a durable
- * Role's own user-facing delivery (parent=user + Task.roleId).
- * Downstream Task Agent → parent is always review-to-parent.
+ * Non-review acceptMode is legal only for a Task directly accountable to User.
+ * Whether execution uses a Role, a Session, or both is orthogonal. Downstream
+ * Task → parent Role remains review-required.
  */
-export function mayElevateDeliveryPolicy(input: {
-  parentActor?: TaskActorRef;
-  roleId?: string;
-}): boolean {
+export function allowsNonReviewAcceptMode(input: { parentActor?: TaskActorRef }): boolean {
   const parent = input.parentActor;
-  if (!parent || parent.kind !== "user") return false;
-  return typeof input.roleId === "string" && input.roleId.length > 0;
+  return Boolean(parent && parent.kind === "user" && parent.id === "user");
 }
 
 /**
@@ -253,20 +245,13 @@ export function parseTaskOutcomeReport(text: string): {
   return { outcome, report };
 }
 
-/** True for canonical wire values only (not historical `manual`). */
-export function isDeliveryPolicy(value: unknown): value is DeliveryPolicy {
-  return value === "review" || value === "bypass" || value === "agent-decide";
-}
-
-/**
- * Narrow read/migration boundary for on-disk task/workspace policy fields.
- * Historical `manual` → `review`. Canonical values pass through. Other values → undefined.
- * Does not accept `manual` as a write/RPC value — callers must reject that at write boundaries.
- */
-export function normalizeDeliveryPolicyRead(value: unknown): DeliveryPolicy | undefined {
-  if (value === "manual") return "review";
-  if (isDeliveryPolicy(value)) return value;
-  return undefined;
+/** True only for the canonical hard-cut wire values. */
+export function isAcceptMode(value: unknown): value is AcceptMode {
+  return (
+    value === "review-required" ||
+    value === "auto-accept" ||
+    value === "agent-decide"
+  );
 }
 
 export type ArtifactRef = {
@@ -411,17 +396,23 @@ export function allowedTransitions(from: TaskState): { event: string; to: TaskSt
 }
 
 export function resolveDeliverRouting(
-  policy: DeliveryPolicy,
+  mode: AcceptMode,
   decision?: DeliverDecision
 ): { autoIntegrate: boolean; integrationMode: IntegrationMode; enterDelivered: boolean } {
-  if (policy === "bypass") {
-    return { autoIntegrate: true, integrationMode: "bypass-auto", enterDelivered: false };
+  if (!isAcceptMode(mode)) {
+    throw new TaskLifecycleError(
+      "INVALID_ACCEPT_MODE",
+      `Invalid acceptMode: ${String(mode)}.`
+    );
   }
-  if (policy === "review") {
+  if (mode === "auto-accept") {
+    return { autoIntegrate: true, integrationMode: "auto-accept", enterDelivered: false };
+  }
+  if (mode === "review-required") {
     if (decision === "integrate") {
       throw new TaskLifecycleError(
         "POLICY_FORBIDS_AUTO_INTEGRATE",
-        "deliveryPolicy=review forbids decision=integrate; use request-review or change policy."
+        "acceptMode=review-required forbids decision=integrate; use request-review or change mode."
       );
     }
     return { autoIntegrate: false, integrationMode: null, enterDelivered: true };
@@ -430,7 +421,7 @@ export function resolveDeliverRouting(
   if (!decision) {
     throw new TaskLifecycleError(
       "DECISION_REQUIRED",
-      "deliveryPolicy=agent-decide requires decision: integrate | request-review."
+      "acceptMode=agent-decide requires decision: integrate | request-review."
     );
   }
   if (decision === "integrate") {
@@ -455,7 +446,7 @@ export function assertNotSelfAccept(actor: string, executorRoleId?: string): voi
 /**
  * Review authority for task.accept / task.reject (V0.2 parent/reviewer wire).
  * Ordinary accept/reject must equal the **exact** persisted Task.reviewer and
- * never the submitter. There is no user root bypass on Role-reviewed Tasks.
+ * never the submitter. There is no user root override on Role-reviewed Tasks.
  *
  * - `reviewer.kind=user` → only `actor=user`.
  * - `reviewer.kind=role` → only `actor === reviewer.id` (exact parent Role).
@@ -501,7 +492,7 @@ export function assertReviewAuthority(input: {
       `task.${action} on user-reviewed task requires actor user; got ${actor}.`
     );
   }
-  // Role-reviewed: exact parent Role id only — never user ordinary-bypass.
+  // Role-reviewed: exact parent Role id only — never an ordinary user override.
   if (actor === reviewer.id) return;
   throw new TaskLifecycleError(
     "REVIEW_FORBIDDEN",

@@ -139,7 +139,7 @@ async function onDispatch(): Promise<void> {
       prompt: validation.payload.prompt,
       parentActor: validation.payload.parentActor,
       reviewer: validation.payload.reviewer,
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string; state: string };
     el.status.textContent = `已派活 → ${result.taskPath}（${result.state}）`;
     setDispatchPrompt("");

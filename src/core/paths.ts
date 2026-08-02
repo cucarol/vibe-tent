@@ -12,7 +12,7 @@ export const ORDER_PATH = "order.json";
 export const MUTATION_LOCK_PATH = "mutation.lock";
 /** Structural marker for an initialized Tent system root. */
 export const INDEX_PATH = "index.md";
-/** Workspace collaboration settings (defaultDeliveryPolicy, extensible). */
+/** Workspace collaboration settings (defaultAcceptMode, extensible). */
 export const WORKSPACE_SETTINGS_PATH = "settings.json";
 /**
  * First-class Node Markdown underline annotations (划线注释).

@@ -7,8 +7,10 @@ import { loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
 import { loadDeliveries, writeDelivery } from "../src/core/delivery.js";
 import {
   finalizeTaskAccept,
+  finalizeTaskDeliverAuto,
   findActiveTaskForNode,
   prepareTaskAccept,
+  prepareTaskDeliver,
   taskAccept,
   taskCancel,
   taskClaim,
@@ -115,7 +117,7 @@ test("lifecycle: dispatch → claim → wait → resume → deliver → accept",
   let task = await loadTaskEnvelope(e.fs, result.taskPath);
   assert.equal(task.state, "queued");
   assert.ok(task.id?.startsWith("tk-"));
-  assert.equal(task.deliveryPolicy, "review");
+  assert.equal(task.acceptMode, "review-required");
 
   task = await taskClaim(e as any, result.taskPath);
   assert.equal(task.state, "running");
@@ -221,7 +223,7 @@ test("lifecycle: agent-decide integrate auto-integrates without review.by=submit
     userPrompt: "auto path",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
-    deliveryPolicy: "agent-decide",
+    acceptMode: "agent-decide",
   });
   await taskClaim(e as any, result.taskPath);
   let integrated: string[] = [];
@@ -240,14 +242,14 @@ test("lifecycle: agent-decide integrate auto-integrates without review.by=submit
   assert.deepEqual(integrated, ["deadbee"]);
 });
 
-test("lifecycle: auto-integrate failure keeps running, no delivery, occupation held", async () => {
+test("lifecycle: auto-accept persists ready Delivery before integration and preserves it on failure", async () => {
   const dir = await makeTent();
   const e = env(dir);
   const result = await dispatchToRole(e as any, "cx-p1", "executor", {
-    userPrompt: "bypass fail",
+    userPrompt: "auto-accept failure",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
-    deliveryPolicy: "bypass",
+    acceptMode: "auto-accept",
   });
   await taskClaim(e as any, result.taskPath);
   await assert.rejects(
@@ -256,16 +258,72 @@ test("lifecycle: auto-integrate failure keeps running, no delivery, occupation h
         summary: "will fail integrate",
         commits: ["abc"],
         integrate: async () => {
+          const during = await loadTaskEnvelope(e.fs, result.taskPath);
+          assert.equal(during.state, "delivered");
+          const readyDuring = (await loadDeliveries(e.fs)).find((d) => d.status === "ready");
+          assert.ok(readyDuring, "durable Delivery must exist before Git integration");
           throw new Error("Workspace integration conflicted and was rolled back");
         },
       }),
     /Workspace integration conflicted/
   );
   const task = await loadTaskEnvelope(e.fs, result.taskPath);
-  assert.equal(task.state, "running");
-  assert.equal((await loadDeliveries(e.fs)).length, 0);
+  assert.equal(task.state, "delivered");
+  const deliveries = await loadDeliveries(e.fs);
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0]!.status, "ready");
+  assert.equal(deliveries[0]!.integrationMode, "auto-accept");
   assert.ok(await findActiveTaskForNode(e.fs, "cx-p1"));
   assertNoFmCollab((await loadTent(e.fs)).byId.get("cx-p1")!);
+});
+
+test("lifecycle: auto-accept finalize rejects Delivery commit drift", async () => {
+  const dir = await makeTent();
+  const e = env(dir);
+  const result = await dispatchToRole(e as any, "cx-p1", "executor", {
+    userPrompt: "auto candidate drift",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+    acceptMode: "auto-accept",
+  });
+  await taskClaim(e as any, result.taskPath);
+  const options = { summary: "ready", commits: ["aaa1111"] };
+  const prepared = await prepareTaskDeliver(e as any, result.taskPath, options);
+  assert.equal(prepared.kind, "auto");
+  if (prepared.kind !== "auto") return;
+  const delivery = (await loadDeliveries(e.fs)).find((d) => d.id === prepared.deliveryId);
+  assert.ok(delivery);
+  delivery.commits = ["bbb2222"];
+  await writeDelivery(e.fs, delivery);
+  await assert.rejects(
+    () => finalizeTaskDeliverAuto(e as any, result.taskPath, options, prepared),
+    (err: unknown) => err instanceof TaskLifecycleError && err.code === "DELIVERY_CHANGED"
+  );
+  delivery.commits = [...prepared.commits];
+  delivery.targetHead = "changed-target";
+  await writeDelivery(e.fs, delivery);
+  await assert.rejects(
+    () => finalizeTaskDeliverAuto(e as any, result.taskPath, options, prepared),
+    (err: unknown) => err instanceof TaskLifecycleError && err.code === "DELIVERY_CHANGED"
+  );
+  assert.equal((await loadTaskEnvelope(e.fs, result.taskPath)).state, "delivered");
+});
+
+test("lifecycle: acceptMode is frozen at Task creation", async () => {
+  const dir = await makeTent();
+  const e = env(dir);
+  const result = await dispatchToRole(e as any, "cx-p1", "executor", {
+    userPrompt: "freeze acceptance mode",
+    acceptMode: "review-required",
+  });
+  await assert.rejects(
+    () =>
+      patchTaskEnvelope(e.fs, result.taskPath, {
+        acceptMode: "auto-accept",
+      } as never),
+    /acceptMode is frozen at creation/
+  );
+  assert.equal((await loadTaskEnvelope(e.fs, result.taskPath)).acceptMode, "review-required");
 });
 
 test("lifecycle: manual accept integrate failure keeps delivered + occupation", async () => {
@@ -301,7 +359,7 @@ test("lifecycle: agent-decide without decision fails; review forbids integrate",
     userPrompt: "need decision",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
-    deliveryPolicy: "agent-decide",
+    acceptMode: "agent-decide",
   });
   await taskClaim(e as any, r1.taskPath);
   await assert.rejects(
@@ -314,7 +372,7 @@ test("lifecycle: agent-decide without decision fails; review forbids integrate",
     userPrompt: "review only",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
-    deliveryPolicy: "review",
+    acceptMode: "review-required",
   });
   await taskClaim(e as any, r2.taskPath);
   await assert.rejects(

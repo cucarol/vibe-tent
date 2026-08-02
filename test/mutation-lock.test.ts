@@ -200,16 +200,16 @@ test("mutation lock: stale dead-pid lock reclaimed via NodeFs then exclusive aga
   assert.equal(await fsAdapter.exists("mutation.lock"), false);
 });
 
-test("lifecycle: auto-integrate runs outside mutation.lock and failure leaves no delivery", async () => {
+test("lifecycle: auto-accept integrates outside mutation.lock and preserves ready Delivery on failure", async () => {
   const dir = await makeTent();
   const e = env(dir);
   await seedExecutorRole(e);
   const result = await dispatch(e as any, "cx-p1", {
     roleId: "rl-executor",
-    userPrompt: "bypass integrate outside lock",
+    userPrompt: "auto-accept integrate outside lock",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
-    deliveryPolicy: "bypass",
+    acceptMode: "auto-accept",
   });
   await taskClaim(e as any, result.taskPath);
 
@@ -233,8 +233,10 @@ test("lifecycle: auto-integrate runs outside mutation.lock and failure leaves no
     "Git integrate must not hold cross-process mutation.lock"
   );
   const task = await loadTaskEnvelope(e.fs, result.taskPath);
-  assert.equal(task.state, "running");
-  assert.equal((await loadDeliveries(e.fs)).length, 0);
+  assert.equal(task.state, "delivered");
+  const deliveries = await loadDeliveries(e.fs);
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0]!.status, "ready");
   const box = (await loadTent(e.fs)).byId.get("cx-p1")!;
   assert.equal(box.fm.owner, undefined);
   assert.equal(box.fm.status, undefined);
@@ -292,7 +294,7 @@ test("lifecycle: successful auto-integrate still accepts atomically after unlock
     userPrompt: "agent decide",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
-    deliveryPolicy: "agent-decide",
+    acceptMode: "agent-decide",
   });
   await taskClaim(e as any, result.taskPath);
 

@@ -276,6 +276,7 @@ function applyShell(s: ShellState): void {
           activeDeliveryId: t.activeDeliveryId,
           sessionId: t.sessionId,
           manifest: "",
+          acceptMode: t.acceptMode,
           contextCard: t.contextCard,
         })),
         deliveries,

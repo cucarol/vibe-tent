@@ -11,12 +11,12 @@ import type { CredentialProjection } from "../../service/credential-store.js";
 import type { ProviderCatalogEntry, ProviderVerificationLevel } from "../../service/types.js";
 import { verificationLevelLabel } from "./graph-model.js";
 
-/** Canonical wire values; product labels are English Review / Bypass / Agent Decide (not localized). */
-export type DeliveryPolicy = "review" | "bypass" | "agent-decide";
+/** Canonical Task acceptance modes. */
+export type AcceptMode = "review-required" | "auto-accept" | "agent-decide";
 
-export const DELIVERY_POLICY_OPTIONS: Array<{ value: DeliveryPolicy; label: string }> = [
-  { value: "review", label: "Review" },
-  { value: "bypass", label: "Bypass" },
+export const ACCEPT_MODE_OPTIONS: Array<{ value: AcceptMode; label: string }> = [
+  { value: "review-required", label: "Review required" },
+  { value: "auto-accept", label: "Auto accept" },
   { value: "agent-decide", label: "Agent Decide" },
 ];
 

@@ -84,7 +84,7 @@ export interface LocalTentServiceOptions {
    */
   home?: string;
   /**
-   * Optional commit integrate hook for accept/bypass paths (tests).
+   * Optional commit integrate hook for accept/auto-accept paths (tests).
    * Production uses real workspace Git via handlers → integrateWorkspaceCommits.
    */
   integrateCommits?: (workspaceRoot: string, commits: string[], role: string) => Promise<void>;

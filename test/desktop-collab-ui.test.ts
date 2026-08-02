@@ -176,6 +176,7 @@ test("accept/reject payload builders and task review model", () => {
         referencedNodeIds: ["cx-box"],
         state: "delivered",
         manifest: "m",
+        acceptMode: "review-required",
         activeDeliveryId: "dl-1",
         prompt: "ship it",
         contextCard: testTaskContextCard("cx-box"),
@@ -188,6 +189,7 @@ test("accept/reject payload builders and task review model", () => {
         referencedNodeIds: ["cx-box"],
         state: "queued",
         manifest: "m",
+        acceptMode: "review-required",
         prompt: "queued work",
         contextCard: testTaskContextCard("cx-box"),
       },
@@ -336,6 +338,7 @@ test("task/session state labels and start/interrupt gates", () => {
         referencedNodeIds: ["cx-1"],
         state: "running",
         manifest: "m",
+        acceptMode: "review-required",
         sessionId: "ss-live1",
         prompt: "go",
         contextCard: testTaskContextCard("cx-1"),
@@ -434,7 +437,7 @@ test("service+client: registry → create coordination box → dispatch → deli
       reviewer:
         form.payload!.reviewer ??
         form.payload!.parentActor ?? { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string; state: string };
     assert.equal(dispatched.state, "queued");
 
@@ -483,7 +486,7 @@ test("service+client: registry → create coordination box → dispatch → deli
       prompt: "will be rejected",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     await roleClient.taskClaim(workspaceId, d2.taskPath);
     await client.taskDeliver(workspaceId, d2.taskPath, {
@@ -568,7 +571,7 @@ test("service+client: connection.list safe metadata + managed Session/interrupt 
       prompt: "start via UI model",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as {
       taskPath: string;
       state: string;

@@ -371,7 +371,7 @@ test("B5: dispatch → claim → startSession → deliver → accept (manual) vi
       prompt: "Ship B5 wiring",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string; state: string };
     assert.equal(dispatched.state, "queued");
     const taskPath = dispatched.taskPath;
@@ -457,9 +457,9 @@ test("B5: dispatch → claim → startSession → deliver → accept (manual) vi
   });
 });
 
-// ---- bypass auto-integrate ----
+// ---- auto-accept integration ----
 
-test("B5: deliveryPolicy=bypass auto-integrates without review", async () => {
+test("B5: acceptMode=auto-accept integrates without reviewer action", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -470,7 +470,7 @@ test("B5: deliveryPolicy=bypass auto-integrates without review", async () => {
       nodeIds: [nodeId],
       roleId: "rl-executor",
       prompt: "auto path",
-      deliveryPolicy: "bypass",
+      acceptMode: "auto-accept",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -499,7 +499,7 @@ test("B5: agent-decide integrate vs request-review", async () => {
       nodeIds: [nodeId],
       roleId: "rl-executor",
       prompt: "agent decide",
-      deliveryPolicy: "agent-decide",
+      acceptMode: "agent-decide",
     });
     const taskPath = (d1.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -533,7 +533,7 @@ test("B5: agent-decide integrate vs request-review", async () => {
       nodeIds: [nodeId],
       roleId: "rl-executor",
       prompt: "review me",
-      deliveryPolicy: "agent-decide",
+      acceptMode: "agent-decide",
     });
     const taskPath = (d1.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -721,7 +721,7 @@ test("B5: startSession bootstrap is managed (Context Card + user prompt); relay 
     assert.match(bootstrap!, /Task envelope:/);
     assert.match(bootstrap!, /Manifest:/);
     assert.match(bootstrap!, /nodes:/);
-    assert.match(bootstrap!, /deliveryPolicy:/);
+    assert.match(bootstrap!, /acceptMode:/);
     // Path tutorial once (stable project context), not repeated by legacy Context Card prelude.
     const pathTutorialHits = bootstrap!.match(/run tent from workspaceRoot/gi) || [];
     assert.equal(pathTutorialHits.length, 1, "path tutorial should appear once in managed bootstrap");
@@ -763,7 +763,7 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual deli
         nodeIds: [nodeId],
         connectionId: "mock-acp-managed",
         prompt: userPrompt,
-        deliveryPolicy: "review",
+        acceptMode: "review-required",
       });
       assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -872,7 +872,7 @@ test("P0: Delivery only after turn seal — post-response tail write cannot land
         nodeIds: [nodeId],
         connectionId: "mock-acp-seal",
         prompt: "prove post-response worktree mutation cannot race Delivery",
-        deliveryPolicy: "review",
+        acceptMode: "review-required",
       });
       assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -976,7 +976,7 @@ test("P0: public task.deliver/requestReview refuse while managed turnBusy; idle 
         nodeIds: [nodeId],
         connectionId: "mock-acp-busy-deliver",
         prompt: "manual deliver must not publish during busy managed turn",
-        deliveryPolicy: "review",
+        acceptMode: "review-required",
       });
       assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -1144,7 +1144,7 @@ test("P0: public task.deliver/requestReview refuse while managed turnBusy; idle 
       nodeIds: [nodeId],
       connectionId: "mock-acp-busy-deliver",
       prompt: "idle manual deliver still ok",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -1463,13 +1463,13 @@ test("B5 managed ACP: interrupt / stop does not deliver", async () => {
   );
 });
 
-test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review (no auto-accept forge)", async () => {
+test("B5 managed ACP: auto-accept integrates; agent-decide stays pending review", async () => {
   resetManagedAutoDeliverDedupForTests();
 
-  // bypass → accepted without review.by
+  // auto-accept → accepted without review.by
   {
     const ws = await makeWorkspace();
-    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-bypass-"));
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-autoaccept-"));
     const logPath = path.join(dataDir, "mock-acp-log.json");
     await withService(
       async (svc) => {
@@ -1483,26 +1483,24 @@ test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review 
           reviewer: { kind: "user", id: "user" },
           workspaceId,
           nodeIds: [nodeId],
-          connectionId: "mock-acp-bypass",
-          prompt: "bypass policy path",
-          deliveryPolicy: "bypass",
+          connectionId: "mock-acp-autoaccept",
+          prompt: "auto-accept path",
+          acceptMode: "auto-accept",
         });
-        const taskPath = (d.result as { taskPath: string }).taskPath;
-        await rpc(svc, "task.claim", { workspaceId, taskPath });
-        const started = await rpc(svc, "task.startSession", {
-          workspaceId,
-          taskPath,
-          callerKind: "user",
-        });
-        const sessionId = (started.result as { session: { sessionId: string } }).session
-          .sessionId;
+        assert.ok(!d.error, JSON.stringify(d.error));
+        const dispatched = d.result as {
+          taskPath: string;
+          session: { sessionId: string };
+        };
+        const taskPath = dispatched.taskPath;
+        const sessionId = dispatched.session.sessionId;
         let accepted: { state: string };
         try {
           accepted = await pollUntil(async () => {
             const g = await rpc(svc, "task.get", { workspaceId, taskPath });
             const task = (g.result as { task: { state: string } }).task;
             return task.state === "accepted" ? task : null;
-          }, 30_000, "bypass accepted");
+          }, 30_000, "auto-accept accepted");
         } catch (error) {
           const probe = await svc.runtime.probe(sessionId);
           throw new Error(
@@ -1522,7 +1520,7 @@ test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review 
         assert.equal(deliveries[0].review, undefined);
       },
       {
-        connections: [mockAcpRoute("mock-acp-bypass", { logPath, promptText: "outcome: delivered\n\nBYPASS_OK" })],
+        connections: [mockAcpRoute("mock-acp-autoaccept", { logPath, promptText: "outcome: delivered\n\nAUTO_ACCEPT_OK" })],
       }
     );
   }
@@ -1547,17 +1545,15 @@ test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review 
           nodeIds: [nodeId],
           connectionId: "mock-acp-ad",
           prompt: "agent-decide path",
-          deliveryPolicy: "agent-decide",
+          acceptMode: "agent-decide",
         });
-        const taskPath = (d.result as { taskPath: string }).taskPath;
-        await rpc(svc, "task.claim", { workspaceId, taskPath });
-        const started = await rpc(svc, "task.startSession", {
-          workspaceId,
-          taskPath,
-          callerKind: "user",
-        });
-        const sessionId = (started.result as { session: { sessionId: string } }).session
-          .sessionId;
+        assert.ok(!d.error, JSON.stringify(d.error));
+        const dispatched = d.result as {
+          taskPath: string;
+          session: { sessionId: string };
+        };
+        const taskPath = dispatched.taskPath;
+        const sessionId = dispatched.session.sessionId;
         let delivered: { state: string };
         try {
           delivered = await pollUntil(async () => {
@@ -2750,7 +2746,7 @@ test("P0-2: manual accept integrates real commits into main; re-deliver of integ
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "integrate me",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -2838,8 +2834,8 @@ test("P0-2: manual accept integrates real commits into main; re-deliver of integ
   });
 });
 
-test("P0-2: bypass with commits integrates into main and accepts", async () => {
-  const ws = await makeWorkspace("p0-bypass");
+test("P0-2: auto-accept with commits integrates into main and accepts", async () => {
+  const ws = await makeWorkspace("p0-autoaccept");
   await initGitOnWorkspace(ws);
 
   await withService(async (svc) => {
@@ -2850,8 +2846,8 @@ test("P0-2: bypass with commits integrates into main and accepts", async () => {
       workspaceId,
       nodeIds: [nodeId],
       roleId: "rl-executor",
-      prompt: "bypass with git",
-      deliveryPolicy: "bypass",
+      prompt: "auto-accept with git",
+      acceptMode: "auto-accept",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -2871,19 +2867,19 @@ test("P0-2: bypass with commits integrates into main and accepts", async () => {
     assert.equal((delivered.result as { state: string }).state, "accepted");
     assert.equal(normalizeLf(await fs.readFile(path.join(ws, "auto.txt"), "utf8")), "auto\n");
 
-    // Bypass success: task terminal accepted + historical done, with no active occupation.
+    // Auto-accept success: Task terminal accepted, with no active occupation.
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
     assert.equal((got.result as { task: { state: string } }).task.state, "accepted");
     assertOccupationReleased(
       await nodeCollabProjection(svc, workspaceId, nodeId),
-      "bypass accept",
+      "auto-accept",
       "done"
     );
     const list = await rpc(svc, "delivery.list", { workspaceId });
     const acceptedDeliveries = (
       list.result as { deliveries: Array<{ status: string }> }
     ).deliveries.filter((d) => d.status === "accepted");
-    assert.ok(acceptedDeliveries.length >= 1, "bypass path must leave an accepted delivery");
+    assert.ok(acceptedDeliveries.length >= 1, "auto-accept must leave an accepted Delivery");
   });
 });
 
@@ -2900,7 +2896,7 @@ test("P0-2: agent-decide integrate with commits merges into main", async () => {
       nodeIds: [nodeId],
       roleId: "rl-executor",
       prompt: "agent decide integrate",
-      deliveryPolicy: "agent-decide",
+      acceptMode: "agent-decide",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -2977,7 +2973,7 @@ async function claimDeliveredReviewTask(
     nodeIds: [nodeId],
     connectionId: "fake-default",
     prompt,
-    deliveryPolicy: "review",
+    acceptMode: "review-required",
   });
   const taskPath = (d.result as { taskPath: string }).taskPath;
   // Peer route baseCommit is captured when the managed route Session creates its task lane.
@@ -3036,10 +3032,10 @@ test("P0-2: task.accept releases MutationBus during blocked Git integrate", asyn
 });
 
 /** Commit-bearing auto-integrate deliver also releases MutationBus during Git. */
-test("P0-2: bypass deliver releases MutationBus during blocked Git integrate", async () => {
-  const ws = await makeWorkspace("p0-bus-bypass");
+test("P0-2: auto-accept deliver releases MutationBus during blocked Git integrate", async () => {
+  const ws = await makeWorkspace("p0-bus-autoaccept");
   await initGitOnWorkspace(ws);
-  await withBlockedIntegrate("bus-bypass", async ({ svc, order, waitIntegrate, release }) => {
+  await withBlockedIntegrate("bus-autoaccept", async ({ svc, order, waitIntegrate, release }) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
@@ -3047,15 +3043,15 @@ test("P0-2: bypass deliver releases MutationBus during blocked Git integrate", a
       workspaceId,
       nodeIds: [nodeId],
       roleId: "rl-executor",
-      prompt: "block bus during bypass integrate",
-      deliveryPolicy: "bypass",
+      prompt: "block bus during auto-accept integration",
+      acceptMode: "auto-accept",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
     const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
       .baseCommit;
     assert.ok(base, "Role claim must capture its durable lane base before commits");
-    const sourceRef = await roleTaskCommit(ws, "executor", "bypass-bus.txt", "x\n", "bypass bus");
+    const sourceRef = await roleTaskCommit(ws, "executor", "autoaccept-bus.txt", "x\n", "auto-accept bus");
     await assertTaskCommitFirstParent(ws, sourceRef, base!);
     const deliverPromise = rpc(svc, "task.deliver", {
       workspaceId,
@@ -3066,7 +3062,7 @@ test("P0-2: bypass deliver releases MutationBus during blocked Git integrate", a
     await waitIntegrate();
     const note = await rpc(svc, "docs.createNote", {
       workspaceId,
-      name: "unrelated-while-bypass-integrate",
+      name: "unrelated-while-autoaccept-integrates",
       type: "prompt",
     });
     assert.ok(!note.error, JSON.stringify(note.error));
@@ -3142,7 +3138,7 @@ test("P0-2: same-Task reject waits for accept Git then refuses accepted", async 
 });
 
 /**
- * Same-Task sendInput waits on bypass auto-deliver Git, then refuses accepted
+ * Same-Task sendInput waits on auto-accept Git, then refuses an accepted
  * (cannot slip a pending TaskInput past auto-deliver).
  */
 test("P0-2: same-Task sendInput waits for auto-deliver Git then refuses accepted", async () => {
@@ -3156,8 +3152,8 @@ test("P0-2: same-Task sendInput waits for auto-deliver Git then refuses accepted
       workspaceId,
       nodeIds: [nodeId],
       roleId: "rl-executor",
-      prompt: "same-task sendInput serializes with bypass deliver",
-      deliveryPolicy: "bypass",
+      prompt: "same-task sendInput serializes with auto-accept",
+      acceptMode: "auto-accept",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -3282,8 +3278,8 @@ test("P0-2: accept integration conflict keeps delivered + occupation; no done", 
   });
 });
 
-test("P0-2: bypass integrate failure keeps running + occupation; no accepted/done", async () => {
-  const ws = await makeWorkspace("p0-conflict-bypass");
+test("P0-2: auto-accept integrate failure preserves ready Delivery and occupation", async () => {
+  const ws = await makeWorkspace("p0-conflict-autoaccept");
   await initGitOnWorkspace(ws);
 
   await withService(async (svc) => {
@@ -3294,8 +3290,8 @@ test("P0-2: bypass integrate failure keeps running + occupation; no accepted/don
       workspaceId,
       nodeIds: [nodeId],
       roleId: "rl-executor",
-      prompt: "bypass conflict",
-      deliveryPolicy: "bypass",
+      prompt: "auto-accept conflict",
+      acceptMode: "auto-accept",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -3323,25 +3319,29 @@ test("P0-2: bypass integrate failure keeps running + occupation; no accepted/don
       summary: "auto will fail",
       commits: [sourceRef],
     });
-    assert.ok(delivered.error, "bypass deliver must fail when integrate conflicts");
+    assert.ok(delivered.error, "auto-accept deliver must fail when integrate conflicts");
 
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
-    assert.equal((got.result as { task: { state: string } }).task.state, "running");
+    assert.equal((got.result as { task: { state: string } }).task.state, "delivered");
 
     assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, nodeId), {
       roleId: "rl-executor",
-      label: "bypass integrate failure",
+      label: "auto-accept integrate failure",
     });
 
     const list = await rpc(svc, "delivery.list", { workspaceId });
-    const deliveries = (list.result as { deliveries: unknown[] }).deliveries;
-    assert.equal(deliveries.length, 0, "failed auto-integrate must not leave a delivery");
+    const deliveries = (
+      list.result as { deliveries: Array<{ status: string; commits: string[] }> }
+    ).deliveries;
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0]!.status, "ready");
+    assert.deepEqual(deliveries[0]!.commits, [sourceRef]);
 
     assert.equal((await git(ws, "rev-parse", "HEAD")).trim(), beforeHead);
   });
 });
 
-test("P0 fix: managed auto-deliver integrate failure keeps running; session diagnostics only", async () => {
+test("P0 fix: managed auto-accept failure preserves ready Delivery and emits diagnostics", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace("p0-macp-integrate-fail");
   await initGitOnWorkspace(ws);
@@ -3355,7 +3355,7 @@ test("P0 fix: managed auto-deliver integrate failure keeps running; session diag
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "managed integrate will fail",
-      deliveryPolicy: "bypass",
+      acceptMode: "auto-accept",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -3371,9 +3371,10 @@ test("P0 fix: managed auto-deliver integrate failure keeps running; session diag
     const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
 
     // Divergent role/main AFTER claim base capture so cherry-pick conflicts and history gate passes.
-    const sourceRef = await roleCommit(
-      ws,
-      "executor",
+    const sourceRef = await routeTaskCommit(
+      svc,
+      workspaceId,
+      taskPath,
       "macp-conflict.txt",
       "role\n",
       "role macp conflict"
@@ -3403,13 +3404,13 @@ test("P0 fix: managed auto-deliver integrate failure keeps running; session diag
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
     assert.equal(
       (got.result as { task: { state: string } }).task.state,
-      "running",
-      "integrate failure must not terminal-fail the task"
+      "delivered",
+      "integrate failure must leave the candidate reviewable"
     );
     assert.equal(
       (got.result as { task: { lastOutcome?: string } }).task.lastOutcome,
-      undefined,
-      "delivered outcome must not publish before Delivery creation succeeds"
+      "delivered",
+      "Delivery creation publishes the durable execution outcome before integration"
     );
 
     assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, nodeId), {
@@ -3417,11 +3418,12 @@ test("P0 fix: managed auto-deliver integrate failure keeps running; session diag
     });
 
     const list = await rpc(svc, "delivery.list", { workspaceId });
-    assert.equal(
-      (list.result as { deliveries: unknown[] }).deliveries.length,
-      0,
-      "failed auto-integrate must not leave a delivery"
-    );
+    const deliveries = (
+      list.result as { deliveries: Array<{ status: string; commits: string[] }> }
+    ).deliveries;
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0]!.status, "ready");
+    assert.deepEqual(deliveries[0]!.commits, [sourceRef]);
 
     const failEv = diag.find((p) => p.runtimeEvent === "session.prompt_complete.failed");
     assert.ok(failEv, "must emit session diagnostics for integrate failure");
@@ -3459,7 +3461,7 @@ test("terminal consistency: managed finalization and interrupt have one winner",
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "race finalization and interrupt",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -3549,7 +3551,7 @@ test("terminal consistency: interrupt first suppresses managed finalization", as
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "interrupt first",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -3599,7 +3601,7 @@ test("P0 fix: managed auto-deliver collects role-lane commit; manual accept inte
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "auto-collect then review",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -3663,9 +3665,9 @@ test("P0 fix: managed auto-deliver collects role-lane commit; manual accept inte
   });
 });
 
-test("P0 fix: managed auto-deliver bypass integrates auto-collected commit", async () => {
+test("P0 fix: managed auto-accept integrates auto-collected commit", async () => {
   resetManagedAutoDeliverDedupForTests();
-  const ws = await makeWorkspace("p0-macp-collect-bypass");
+  const ws = await makeWorkspace("p0-macp-collect-autoaccept");
   await initGitOnWorkspace(ws);
 
   await withService(async (svc) => {
@@ -3676,8 +3678,8 @@ test("P0 fix: managed auto-deliver bypass integrates auto-collected commit", asy
       workspaceId,
       nodeIds: [nodeId],
       connectionId: "fake-default",
-      prompt: "auto-collect bypass",
-      deliveryPolicy: "bypass",
+      prompt: "auto-collect and accept",
+      acceptMode: "auto-accept",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -3691,12 +3693,13 @@ test("P0 fix: managed auto-deliver bypass integrates auto-collected commit", asy
     });
     assert.ok(!started.error, JSON.stringify(started.error));
     const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
-    const sourceRef = await roleCommit(
-      ws,
-      "executor",
-      "collect-bypass.txt",
+    const sourceRef = await routeTaskCommit(
+      svc,
+      workspaceId,
+      taskPath,
+      "collect-autoaccept.txt",
       "auto\n",
-      "collect bypass"
+      "collect auto-accept"
     );
     await assertTaskCommitFirstParent(ws, sourceRef, base!);
 
@@ -3704,7 +3707,7 @@ test("P0 fix: managed auto-deliver bypass integrates auto-collected commit", asy
       workspaceId,
       taskPath,
       sessionId,
-      assistantText: "outcome: delivered\n\nCOLLECTED_BYPASS_REPORT",
+      assistantText: "outcome: delivered\n\nCOLLECTED_AUTO_ACCEPT_REPORT",
     });
 
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
@@ -3718,7 +3721,7 @@ test("P0 fix: managed auto-deliver bypass integrates auto-collected commit", asy
     assert.equal(deliveries[0].status, "accepted");
     assert.deepEqual(deliveries[0].commits, [sourceRef]);
     assert.equal(
-      normalizeLf(await fs.readFile(path.join(ws, "collect-bypass.txt"), "utf8")),
+      normalizeLf(await fs.readFile(path.join(ws, "collect-autoaccept.txt"), "utf8")),
       "auto\n"
     );
 
@@ -3741,7 +3744,7 @@ test("P0 fix: managed auto-deliver zero-commit / non-Git remains legal", async (
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "docs only managed",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -3784,7 +3787,7 @@ test("P0 fix: managed auto-deliver zero-commit / non-Git remains legal", async (
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "report only",
-      deliveryPolicy: "bypass",
+      acceptMode: "auto-accept",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -3826,7 +3829,7 @@ test("P0: dirty task worktree refuses managed auto-deliver and public task.deliv
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "must not deliver with dirty role worktree",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -3983,7 +3986,7 @@ test("P0 fix: managed auto-collect excludes pre-session role commits; includes a
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "only my commits",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
 
@@ -4053,7 +4056,7 @@ test("P0 fix: roleBranchBase is stable across startSession and reject-resume", a
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "stable baseline",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     const mount = svc.ctx.host.require(workspaceId);
@@ -4146,7 +4149,7 @@ test("reject-resume restores live managed session for durable role (no false-run
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "reject resume must wake session",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -4239,7 +4242,7 @@ test("reject-resume restores live managed session for route tasks", async () => 
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "profile reject resume",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -4401,7 +4404,7 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
         nodeIds: [nodeId],
         connectionId: "mock-reject-resume",
         prompt: "native reject-resume continuity",
-        deliveryPolicy: "review",
+        acceptMode: "review-required",
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
       await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -4534,7 +4537,7 @@ test("reject-resume unavailable restore parks; task.replaceSession creates the e
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" }, reviewer: { kind: "user", id: "user" },
       workspaceId, nodeIds: [nodeId], connectionId: "fake-default",
-      prompt: "explicit replacement after unavailable resume", deliveryPolicy: "review",
+      prompt: "explicit replacement after unavailable resume", acceptMode: "review-required",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -4619,7 +4622,7 @@ test("late session.failed after managed Delivery is diagnostic only", async () =
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "delivery then late session.failed",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -4692,7 +4695,7 @@ test("P0 pre-Delivery session.failed parks waiting(external) and preserves TaskI
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "recoverable failure path",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -4789,7 +4792,7 @@ test("P0 pre-Delivery session.exited parks waiting(external) with stable summary
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "clean exit before delivery",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -5129,7 +5132,7 @@ test("P0 explicit replacement session resume after recoverable park", async () =
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "recover with new session",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -5262,7 +5265,7 @@ test("P0 UserAsk reply after park targets replacement Session, not dead origin",
         nodeIds: [nodeId],
         connectionId: "mock-ua-park-reply",
         prompt: "park ask then reply on replacement",
-        deliveryPolicy: "review",
+        acceptMode: "review-required",
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
       await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -5425,7 +5428,7 @@ test("reject-resume non-resume-capable binding parks; fresh Session is explicit 
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" }, reviewer: { kind: "user", id: "user" },
       workspaceId, nodeIds: [nodeId], connectionId: "fake-default",
-      prompt: "non-resume-capable binding", deliveryPolicy: "review",
+      prompt: "non-resume-capable binding", acceptMode: "review-required",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -5465,7 +5468,7 @@ test("explicit replaceSession preserves durable TaskInput after an unavailable r
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" }, reviewer: { kind: "user", id: "user" },
       workspaceId, nodeIds: [nodeId], connectionId: "fake-default",
-      prompt: "preserve durable input across explicit replacement", deliveryPolicy: "review",
+      prompt: "preserve durable input across explicit replacement", acceptMode: "review-required",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -5502,7 +5505,7 @@ test("reject-resume fails loud and parks waiting when session cannot be restored
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "force restore failure",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -5573,7 +5576,7 @@ test("P0 fix: recorded workspace lane collection errors stay retryable", async (
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "do not downgrade a broken lane",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -5631,7 +5634,7 @@ test("P0 fix: successful managed delivery frees same role for next task", async 
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "first managed task",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     const taskPath1 = (d1.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath: taskPath1 });
@@ -6595,7 +6598,7 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "stale envelope",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -6666,8 +6669,8 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
   });
 });
 
-test("P0 fix: bypass with zero commits is legal (pure docs / no auto-collect)", async () => {
-  const ws = await makeWorkspace("p0-bypass-zero");
+test("P0 fix: auto-accept with zero commits is legal (pure docs / no auto-collect)", async () => {
+  const ws = await makeWorkspace("p0-autoaccept-zero");
   await initGitOnWorkspace(ws);
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -6678,7 +6681,7 @@ test("P0 fix: bypass with zero commits is legal (pure docs / no auto-collect)", 
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "docs only delivery",
-      deliveryPolicy: "bypass",
+      acceptMode: "auto-accept",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });

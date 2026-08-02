@@ -76,17 +76,17 @@ test("CLIENT_METHODS includes workspace.settings and workspace.settings.update",
   assert.ok(CLIENT_METHODS.includes("workspace.settings.update"));
 });
 
-test("workspace.settings: missing file projects defaultDeliveryPolicy=review", async () => {
+test("workspace.settings: missing file projects defaultAcceptMode=review-required", async () => {
   const ws = await makeWorkspace("defaults");
   await withService(async (svc) => {
     const workspaceId = await mount(svc, ws);
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const result = (await client.workspaceSettings(workspaceId)) as {
       workspaceId: string;
-      settings: { defaultDeliveryPolicy: string };
+      settings: { defaultAcceptMode: string };
     };
     assert.equal(result.workspaceId, workspaceId);
-    assert.equal(result.settings.defaultDeliveryPolicy, "review");
+    assert.equal(result.settings.defaultAcceptMode, "review-required");
   });
 });
 
@@ -103,7 +103,7 @@ test("workspace.settings.update: user-only, MutationBus, one event on actual cha
 
     const denied = await rpc(svc, "workspace.settings.update", {
       workspaceId,
-      defaultDeliveryPolicy: "bypass",
+      defaultAcceptMode: "auto-accept",
       actor: "executor",
     });
     assert.ok(denied.error);
@@ -113,7 +113,7 @@ test("workspace.settings.update: user-only, MutationBus, one event on actual cha
 
     const invalid = await rpc(svc, "workspace.settings.update", {
       workspaceId,
-      defaultDeliveryPolicy: "nope",
+      defaultAcceptMode: "nope",
     });
     assert.ok(invalid.error);
     assert.equal(invalid.error!.code, -32602);
@@ -130,25 +130,25 @@ test("workspace.settings.update: user-only, MutationBus, one event on actual cha
 
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const updated = (await client.workspaceSettingsUpdate(workspaceId, {
-      defaultDeliveryPolicy: "bypass",
+      defaultAcceptMode: "auto-accept",
     })) as {
-      settings: { defaultDeliveryPolicy: string };
+      settings: { defaultAcceptMode: string };
       changed: boolean;
     };
-    assert.equal(updated.settings.defaultDeliveryPolicy, "bypass");
+    assert.equal(updated.settings.defaultAcceptMode, "auto-accept");
     assert.equal(updated.changed, true);
     assert.equal(events.length, 1);
     assert.equal(
-      (events[0]!.settings as { defaultDeliveryPolicy: string }).defaultDeliveryPolicy,
-      "bypass"
+      (events[0]!.settings as { defaultAcceptMode: string }).defaultAcceptMode,
+      "auto-accept"
     );
 
     // No-op update: same value → success but no event.
     const noop = (await client.workspaceSettingsUpdate(workspaceId, {
-      defaultDeliveryPolicy: "bypass",
-    })) as { changed: boolean; settings: { defaultDeliveryPolicy: string } };
+      defaultAcceptMode: "auto-accept",
+    })) as { changed: boolean; settings: { defaultAcceptMode: string } };
     assert.equal(noop.changed, false);
-    assert.equal(noop.settings.defaultDeliveryPolicy, "bypass");
+    assert.equal(noop.settings.defaultAcceptMode, "auto-accept");
     assert.equal(events.length, 1, "no-op must not emit workspace.settings.updated");
 
     // Empty patch against existing file → no-op, no event.
@@ -160,7 +160,7 @@ test("workspace.settings.update: user-only, MutationBus, one event on actual cha
     // Failed mutation after success still does not add events.
     const failAgain = await rpc(svc, "workspace.settings.update", {
       workspaceId,
-      defaultDeliveryPolicy: "invalid",
+      defaultAcceptMode: "invalid",
       actor: "user",
     });
     assert.ok(failAgain.error);
@@ -169,23 +169,31 @@ test("workspace.settings.update: user-only, MutationBus, one event on actual cha
     // Persist on disk under system root.
     const onDisk = JSON.parse(
       await fs.readFile(path.join(ws, ".tent", "settings.json"), "utf8")
-    ) as { defaultDeliveryPolicy: string };
-    assert.equal(onDisk.defaultDeliveryPolicy, "bypass");
+    ) as { defaultAcceptMode: string };
+    assert.equal(onDisk.defaultAcceptMode, "auto-accept");
 
-    // Historical wire value `manual` is rejected on new RPC writes.
-    const rejectManual = await rpc(svc, "workspace.settings.update", {
+    for (const value of ["manual", "review", "bypass"]) {
+      const rejected = await rpc(svc, "workspace.settings.update", {
+        workspaceId,
+        defaultAcceptMode: value,
+        actor: "user",
+      });
+      assert.ok(rejected.error);
+      assert.equal(rejected.error!.code, -32602);
+    }
+    const retiredField = await rpc(svc, "workspace.settings.update", {
       workspaceId,
-      defaultDeliveryPolicy: "manual",
+      defaultDeliveryPolicy: "review",
       actor: "user",
     });
-    assert.ok(rejectManual.error);
-    assert.equal(rejectManual.error!.code, -32602);
+    assert.ok(retiredField.error);
+    assert.equal(retiredField.error!.code, -32602);
 
     unsub();
   });
 });
 
-test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explicit overrides", async () => {
+test("task.dispatch: omitted acceptMode snapshots workspace default; explicit overrides", async () => {
   const ws = await makeWorkspace("dispatch-snapshot");
   await withService(async (svc) => {
     const { workspaceId, nodeId: box1 } = await mountWorkItem(svc, ws);
@@ -212,21 +220,21 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
       reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const t1 = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d1.taskPath);
-    assert.equal(t1.deliveryPolicy, "review");
+    assert.equal(t1.acceptMode, "review-required");
 
     await client.workspaceSettingsUpdate(workspaceId, {
-      defaultDeliveryPolicy: "bypass",
+      defaultAcceptMode: "auto-accept",
     });
 
     const d2 = (await client.taskDispatch(workspaceId, {
       nodeIds: [box2],
       roleId: "rl-executor",
-      prompt: "second task snapshots bypass",
+      prompt: "second task snapshots auto-accept",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const t2 = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d2.taskPath);
-    assert.equal(t2.deliveryPolicy, "bypass");
+    assert.equal(t2.acceptMode, "auto-accept");
 
     // Explicit override still wins over workspace default.
     const d3 = (await client.taskDispatch(workspaceId, {
@@ -235,38 +243,50 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
       prompt: "third task explicit agent-decide",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "agent-decide",
+      acceptMode: "agent-decide",
     })) as { taskPath: string };
     const t3 = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d3.taskPath);
-    assert.equal(t3.deliveryPolicy, "agent-decide");
+    assert.equal(t3.acceptMode, "agent-decide");
 
     // Existing tasks never change when settings change.
     await client.workspaceSettingsUpdate(workspaceId, {
-      defaultDeliveryPolicy: "review",
+      defaultAcceptMode: "review-required",
     });
     const t1Again = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d1.taskPath);
     const t2Again = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d2.taskPath);
-    assert.equal(t1Again.deliveryPolicy, "review");
-    assert.equal(t2Again.deliveryPolicy, "bypass");
+    assert.equal(t1Again.acceptMode, "review-required");
+    assert.equal(t2Again.acceptMode, "auto-accept");
     const t3Again = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d3.taskPath);
-    assert.equal(t3Again.deliveryPolicy, "agent-decide");
+    assert.equal(t3Again.acceptMode, "agent-decide");
 
-    // Explicit historical `manual` is rejected on dispatch (use review).
-    const rejectManual = await rpc(svc, "task.dispatch", {
+    for (const value of ["manual", "review", "bypass"]) {
+      const rejected = await rpc(svc, "task.dispatch", {
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+        workspaceId,
+        nodeIds: [await createNode(`work-item-${value}-reject`)],
+        roleId: "rl-executor",
+        prompt: "must reject retired accept mode",
+        acceptMode: value,
+      });
+      assert.ok(rejected.error);
+      assert.equal(rejected.error!.code, -32602);
+    }
+    const retiredField = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [await createNode("work-item-manual-reject")],
+      nodeIds: [await createNode("work-item-retired-field")],
       roleId: "rl-executor",
-      prompt: "must reject manual wire",
-      deliveryPolicy: "manual",
+      prompt: "must reject retired field",
+      deliveryPolicy: "review",
     });
-    assert.ok(rejectManual.error);
-    assert.equal(rejectManual.error!.code, -32602);
+    assert.ok(retiredField.error);
+    assert.equal(retiredField.error!.code, -32602);
   });
 });
 
-test("task envelope on-disk manual projects as review; new serialize writes review", async () => {
+test("task envelope persists canonical acceptMode and rejects retired disk values without rewrite", async () => {
   const ws = await makeWorkspace("historical-manual");
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -277,18 +297,22 @@ test("task envelope on-disk manual projects as review; new serialize writes revi
       prompt: "new wire writes review",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-    })) as { taskPath: string; task?: { deliveryPolicy?: string } };
+    })) as { taskPath: string; task?: { acceptMode?: string } };
     const fsa = new NodeFs(path.join(ws, ".tent"));
     const raw = await fsa.readFile(d.taskPath);
-    assert.match(raw, /deliveryPolicy:\s*review/);
-    assert.doesNotMatch(raw, /deliveryPolicy:\s*manual/);
+    assert.match(raw, /acceptMode:\s*review-required/);
 
-    // Plant historical on-disk manual; load projects review without rewriting disk.
-    const planted = raw.replace(/deliveryPolicy:\s*review/, "deliveryPolicy: manual");
+    const planted = raw.replace(/acceptMode:\s*review-required/, "acceptMode: manual");
     await fsa.writeFile(d.taskPath, planted);
-    const loaded = await loadTaskEnvelope(fsa, d.taskPath);
-    assert.equal(loaded.deliveryPolicy, "review");
-    const stillOnDisk = await fsa.readFile(d.taskPath);
-    assert.match(stillOnDisk, /deliveryPolicy:\s*manual/);
+    await assert.rejects(() => loadTaskEnvelope(fsa, d.taskPath), /acceptMode must be/);
+    assert.equal(await fsa.readFile(d.taskPath), planted);
+
+    const retiredField = raw.replace(
+      /acceptMode:\s*review-required/,
+      "deliveryPolicy: review"
+    );
+    await fsa.writeFile(d.taskPath, retiredField);
+    await assert.rejects(() => loadTaskEnvelope(fsa, d.taskPath), /retired deliveryPolicy/);
+    assert.equal(await fsa.readFile(d.taskPath), retiredField);
   });
 });

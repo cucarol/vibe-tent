@@ -130,7 +130,7 @@ test("task.askUser parks running task; second ask rejected; reply resumes + pers
       prompt: "Need a product decision",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
     await client.taskClaim(workspaceId, taskPath);
@@ -228,7 +228,7 @@ test("userAsk.deny resumes task; interrupt cancels pending ask", async () => {
       prompt: "Ask then deny",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
     await client.taskClaim(workspaceId, taskPath);
@@ -296,7 +296,7 @@ test("managed ACP: UserAsk reply continues same session with User Answer prompt 
       prompt: "Managed ask flow",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
 
@@ -419,7 +419,7 @@ test("two workspaces sharing relative taskPath keep independent UserAsk pending"
         nodeIds: [nodeId], connectionId: "fake-default",
         prompt: "Canonical cross-workspace UserAsk isolation fixture",
         parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" }, deliveryPolicy: "review",
+        reviewer: { kind: "user", id: "user" }, acceptMode: "review-required",
       })) as { taskPath: string };
       await client.taskClaim(workspaceId, dispatched.taskPath);
       return dispatched.taskPath;

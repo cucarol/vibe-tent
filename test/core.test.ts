@@ -424,7 +424,7 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.equal(tasks[0].parentActor?.kind, "user");
   assert.equal(tasks[0].parentActor?.id, "user");
   assert.equal(tasks[0].reviewer?.id, "user");
-  assert.equal(tasks[0].deliveryPolicy, "review");
+  assert.equal(tasks[0].acceptMode, "review-required");
   assert.ok(tasks[0].id?.startsWith("tk-"));
   const relay = relayPromptForTask(tasks[1], dir);
   assert.match(relay, /^A Tent task has been handed to Role rl-reviewer\./);
@@ -471,7 +471,7 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.match(bootstrap, /Manifest:/);
   assert.match(bootstrap, /contextCard\.refs\.nodes:/);
   assert.match(bootstrap, /parentActor:|reviewer:/);
-  assert.match(bootstrap, /deliveryPolicy:/);
+  assert.match(bootstrap, /acceptMode:/);
   assert.match(bootstrap, /## User Prompt/);
   // Path tutorial is owned by Context Card, not repeated in session body.
   assert.doesNotMatch(bootstrap, /workspaceRoot:|systemRoot:/);

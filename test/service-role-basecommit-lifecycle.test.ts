@@ -215,7 +215,7 @@ test("ordinary Role: dispatch omits lane/base; claim captures advanced tip; recl
       assigneeKind: "role",
       assigneeId: "executor",
       prompt: "fresh role claim base capture",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -317,7 +317,7 @@ test("Role asSub: dispatch omits lane/base; claim captures advanced tip + parent
       assigneeId: "executor",
       prompt: "role asSub claim base capture",
       asSub: true,
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -389,7 +389,7 @@ test("legacy running backfill then deliver; idempotent repeat; conflicts and rej
       assigneeKind: "role",
       assigneeId: "executor",
       prompt: "legacy missing base",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -542,7 +542,7 @@ test("backfill rejects workspace/target mismatch and non-ancestor base", async (
       assigneeKind: "role",
       assigneeId: "executor",
       prompt: "mismatch fixture",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -609,7 +609,7 @@ test("baseCommitCapture persists across Service restart reload", async () => {
       assigneeKind: "role",
       assigneeId: "executor",
       prompt: "persist audit",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     taskPath = (d.result as { taskPath: string }).taskPath;
@@ -647,7 +647,7 @@ test("non-Git Role claim invents no baseCommit", async () => {
       assigneeKind: "role",
       assigneeId: "executor",
       prompt: "docs only",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -675,7 +675,7 @@ test("claim fails loud when recorded baseCommit is unresolvable (stays queued)",
       assigneeKind: "role",
       assigneeId: "executor",
       prompt: "unresolvable base",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -721,7 +721,7 @@ test("backfill rejects Task-lane tip that is foreign to target ancestry", async 
       assigneeKind: "role",
       assigneeId: "executor",
       prompt: "target ancestry backfill",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -784,7 +784,7 @@ test("backfill rejects bare string actor (no kind inference)", async () => {
       assigneeKind: "role",
       assigneeId: "executor",
       prompt: "bare actor",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -824,7 +824,7 @@ test("failed claim preparation leaves Task queued (no intermediate running)", as
         assigneeKind: "role",
         assigneeId: "executor",
         prompt: "must stay queued on claim fail",
-        deliveryPolicy: "review",
+        acceptMode: "review-required",
       });
       assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -887,7 +887,7 @@ test("backfill cannot interleave with deliver (per-Task lifecycle flight)", asyn
         assigneeKind: "role",
         assigneeId: "executor",
         prompt: "race backfill vs deliver",
-        deliveryPolicy: "review",
+        acceptMode: "review-required",
       });
       assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -1003,7 +1003,7 @@ test("load fails loud on corrupt baseCommitCapture", async () => {
       assigneeKind: "role",
       assigneeId: "executor",
       prompt: "corrupt capture load",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;

@@ -206,9 +206,8 @@ export class ServiceClient {
     return this.call("workspace.setForeground", { workspaceId });
   }
   /**
-   * Read workspace collaboration settings projection (defaultDeliveryPolicy, extensible).
-   * Missing file/field resolves to defaultDeliveryPolicy=review.
-   * Historical on-disk `manual` is normalized to `review` at the settings read boundary.
+   * Read workspace collaboration settings projection (defaultAcceptMode, extensible).
+   * Missing file/field resolves to defaultAcceptMode=review-required.
    */
   workspaceSettings(workspaceId: string) {
     return this.call("workspace.settings", { workspaceId });
@@ -217,12 +216,12 @@ export class ServiceClient {
    * User-only settings mutation (MutationBus).
    * Emits exactly one workspace.settings.updated on successful actual change; no-op emits none.
    * `actor` defaults to "user"; non-user is rejected by the service.
-   * New writes accept review | bypass | agent-decide only (not historical manual).
+   * Canonical writes accept review-required | auto-accept | agent-decide only.
    */
   workspaceSettingsUpdate(
     workspaceId: string,
     patch: {
-      defaultDeliveryPolicy?: "review" | "bypass" | "agent-decide";
+      defaultAcceptMode?: "review-required" | "auto-accept" | "agent-decide";
     },
     actor = "user"
   ) {
@@ -737,7 +736,7 @@ export class ServiceClient {
        * asSub is lane-only — not review authority.
        */
       asSub?: boolean;
-      deliveryPolicy?: string;
+      acceptMode?: "review-required" | "auto-accept" | "agent-decide";
       callerKind?: "user" | "role";
     } & (
       | { roleId: string; connectionId?: never }

@@ -261,7 +261,7 @@ test("node.collaboration: delivered Task attaches Delivery summary via activeDel
       prompt: "ship for review",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     await claimRoleTask(svc, client, workspaceId, ws, dispatched.taskPath);
     await client.taskDeliver(workspaceId, dispatched.taskPath, {
@@ -302,7 +302,7 @@ test("node.collaboration: accepted Task clears occupation (empty activeTasks)", 
       prompt: "finish",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     await claimRoleTask(svc, client, workspaceId, ws, dispatched.taskPath);
     await client.taskDeliver(workspaceId, dispatched.taskPath, { summary: "done" });
@@ -665,7 +665,7 @@ test("node.collaboration: terminal rejected/interrupted/failed clear occupation"
       prompt: "reject me",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     await claimRoleTask(svc, client, workspaceId, ws, d2.taskPath);
     await client.taskDeliver(workspaceId, d2.taskPath, { summary: "for reject" });

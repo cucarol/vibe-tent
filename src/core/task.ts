@@ -12,16 +12,16 @@ import { join } from "./tree.js";
 import type { RoleDefinition } from "./skillRoleRegistry.js";
 import {
   assertParentReviewerEqual,
-  DEFAULT_DELIVERY_POLICY,
+  DEFAULT_ACCEPT_MODE,
+  isAcceptMode,
   isTaskId,
   makeTaskId,
-  mayElevateDeliveryPolicy,
-  normalizeDeliveryPolicyRead,
+  allowsNonReviewAcceptMode,
   parseTaskActorRef,
   resolveParentReviewerPair,
   roleTaskActors,
   userTaskActors,
-  type DeliveryPolicy,
+  type AcceptMode,
   type TaskActorRef,
   type TaskOutcome,
   type TaskState,
@@ -104,7 +104,7 @@ export interface TaskEnvelopeInput {
   asSub?: boolean;
   /** Full operational id (tk-…). Generated if omitted. */
   id?: string;
-  deliveryPolicy?: DeliveryPolicy;
+  acceptMode?: AcceptMode;
   /**
    * Optional explicit objective/acceptance for contextCard.
    * Defaults: objective = userPrompt; acceptance = [objective] when omitted.
@@ -180,7 +180,7 @@ export interface TaskEnvelope {
   contextGeneration?: string;
   /** Convenience projection of contextCard.taskDeltaDigest when present. */
   taskDeltaDigest?: string;
-  deliveryPolicy?: DeliveryPolicy;
+  acceptMode: AcceptMode;
   /** Exact executing Session; required for Session-only Tasks. */
   sessionId?: string;
   wait?: TaskWait;
@@ -405,6 +405,16 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
       `Invalid task envelope format: ${path} (Task.contextCard.refs.nodes requires at least one Node).`
     );
   }
+  if ("deliveryPolicy" in data) {
+    throw new Error(
+      `Invalid task envelope format: ${path} (retired deliveryPolicy field; use acceptMode).`
+    );
+  }
+  if (!isAcceptMode(data.acceptMode)) {
+    throw new Error(
+      `Invalid task envelope format: ${path} (acceptMode must be review-required, auto-accept, or agent-decide).`
+    );
+  }
 
   const task: TaskEnvelope = {
     path,
@@ -416,6 +426,7 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
     reviewer: actors.reviewer,
     prompt: body.trim() || undefined,
     contextCard,
+    acceptMode: data.acceptMode,
   };
   if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
   if (data.asSub === true) task.asSub = true;
@@ -470,9 +481,6 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   // Context Card v1 already loaded above from its sole nested wire.
   task.contextGeneration = contextCard.contextGeneration;
   task.taskDeltaDigest = contextCard.taskDeltaDigest;
-  // Narrow read boundary: historical on-disk `manual` projects as `review`.
-  const deliveryPolicy = normalizeDeliveryPolicyRead(data.deliveryPolicy);
-  if (deliveryPolicy) task.deliveryPolicy = deliveryPolicy;
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
   if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
     task.lastOutcome = data.lastOutcome;
@@ -563,9 +571,7 @@ function formatTaskPointers(task: TaskEnvelope): string {
   if (task.reviewer) {
     lines.push(`reviewer: ${task.reviewer.kind}:${task.reviewer.id}`);
   }
-  if (task.deliveryPolicy) {
-    lines.push(`deliveryPolicy: ${task.deliveryPolicy}`);
-  }
+  lines.push(`acceptMode: ${task.acceptMode}`);
   if (task.roleId) {
     const initCli = join("temp", ROLES_TEMP_DIR, task.roleId, "init.md");
     const initFile = join(".tent", initCli);
@@ -695,6 +701,9 @@ export async function writeTaskEnvelope(
   const userPrompt = input.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
 
+  if ("deliveryPolicy" in input) {
+    throw new Error("Task input contains retired deliveryPolicy; use acceptMode.");
+  }
   const roleId = input.roleId?.trim() || "";
   const sessionId = input.sessionId?.trim() || "";
   if (!roleId && !sessionId) {
@@ -727,19 +736,22 @@ export async function writeTaskEnvelope(
     parentActor: input.parentActor,
     reviewer: input.reviewer,
   });
-  const deliveryPolicy = input.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY;
+  const acceptMode = input.acceptMode ?? DEFAULT_ACCEPT_MODE;
+  if (!isAcceptMode(acceptMode)) {
+    throw new Error(`Invalid Task acceptMode: ${String(acceptMode)}.`);
+  }
   // Downstream Task Agent → parent: always review. Elevated policies only for
-  // durable Role user-facing deliveries (parent=user + roleId).
+  // Non-review modes are legal only at the user-facing responsibility boundary,
+  // independent of whether execution is carried by a Role Session or Session-only Agent.
   if (
-    deliveryPolicy !== "review" &&
-    !mayElevateDeliveryPolicy({
+    acceptMode !== "review-required" &&
+    !allowsNonReviewAcceptMode({
       parentActor: actors.parentActor,
-      roleId: roleId || undefined,
     })
   ) {
     throw new Error(
-      `deliveryPolicy=${deliveryPolicy} is only legal for a durable Role's user-facing delivery; ` +
-        `downstream Task Agent → parent must use review (parent=${actors.parentActor.kind}:${actors.parentActor.id}).`
+      `acceptMode=${acceptMode} is only legal for a user-facing Task; ` +
+        `downstream Task Agent → parent must use review-required (parent=${actors.parentActor.kind}:${actors.parentActor.id}).`
     );
   }
 
@@ -774,7 +786,7 @@ export async function writeTaskEnvelope(
     // Sole persisted Node-ref wire.
     contextCard: serializeTaskContextCardForFrontmatter(contextCard),
     manifest: input.manifestPath,
-    deliveryPolicy,
+    acceptMode,
     createdAt: now,
     updatedAt: now,
   };
@@ -831,7 +843,6 @@ export interface TaskEnvelopePatch {
   sessionId?: string;
   wait?: TaskWait | null;
   activeDeliveryId?: string | null;
-  deliveryPolicy?: DeliveryPolicy;
   parentActor?: TaskActorRef;
   reviewer?: TaskActorRef;
   lastOutcome?: TaskOutcome | null;
@@ -872,6 +883,9 @@ export async function patchTaskEnvelope(
   path: string,
   patch: TaskEnvelopePatch
 ): Promise<TaskEnvelope> {
+  if ("acceptMode" in patch || "deliveryPolicy" in patch) {
+    throw new Error("Task acceptMode is frozen at creation and cannot be patched.");
+  }
   if (!(await fs.exists(path))) throw new Error(`Task envelope not found: ${path}.`);
   const raw = await fs.readFile(path);
   const { data, body, keyOrder } = parseFrontmatter(raw);
@@ -901,7 +915,6 @@ export async function patchTaskEnvelope(
   if (patch.activeDeliveryId === null) delete data.activeDeliveryId;
   else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
 
-  if (patch.deliveryPolicy) data.deliveryPolicy = patch.deliveryPolicy;
   if (patch.parentActor || patch.reviewer) {
     // Keep parent/reviewer equal on every write via shared pair resolver.
     const nextParent = patch.parentActor

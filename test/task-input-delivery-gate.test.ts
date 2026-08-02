@@ -129,7 +129,7 @@ async function runningTask(
   opts?: {
     startSession?: boolean;
     connectionId?: string;
-    deliveryPolicy?: "review" | "bypass";
+    acceptMode?: "review-required" | "auto-accept";
   }
 ): Promise<{ workspaceId: string; taskPath: string; sessionId?: string }> {
   const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -140,7 +140,7 @@ async function runningTask(
     nodeIds: [nodeId],
     connectionId: opts?.connectionId ?? "fake-default",
     prompt: "delivery gate fixture",
-    deliveryPolicy: opts?.deliveryPolicy ?? "review",
+    acceptMode: opts?.acceptMode ?? "review-required",
   });
   assert.ok(!d.error, JSON.stringify(d.error));
   const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -399,12 +399,12 @@ test("P0: terminal TaskInput (delivered/acked/cancelled) do not block", async ()
   });
 });
 
-test("P0: uncertain blocks manual and bypass Delivery and is attention-visible", async () => {
-  for (const deliveryPolicy of ["review", "bypass"] as const) {
-    const ws = await makeWorkspace(`tent-ti-gate-uncertain-${deliveryPolicy}-`);
+test("P0: uncertain blocks review-required and auto-accept Delivery and is attention-visible", async () => {
+  for (const acceptMode of ["review-required", "auto-accept"] as const) {
+    const ws = await makeWorkspace(`tent-ti-gate-uncertain-${acceptMode}-`);
     await withService(async (svc) => {
       const { workspaceId, taskPath } = await runningTask(svc, ws, {
-        deliveryPolicy,
+        acceptMode,
       });
       const { id } = await seedTaskInput(svc, {
         workspaceId,
@@ -416,7 +416,7 @@ test("P0: uncertain blocks manual and bypass Delivery and is attention-visible",
       const manual = await rpc(svc, "task.deliver", {
         workspaceId,
         taskPath,
-        summary: `MUST_NOT_${deliveryPolicy.toUpperCase()}`,
+        summary: `MUST_NOT_${acceptMode.toUpperCase()}`,
       });
       assert.ok(manual.error);
       assertPendingTaskInputError(manual.error!);
@@ -450,7 +450,7 @@ test("P0: uncertain blocks manual and bypass Delivery and is attention-visible",
       assert.equal(
         (deliveries.result as { deliveries: unknown[] }).deliveries.length,
         0,
-        `${deliveryPolicy} must not publish/auto-accept around uncertain`
+        `${acceptMode} must not publish/auto-accept around uncertain`
       );
     });
   }
@@ -748,7 +748,7 @@ test("P0 race: input before deliver blocks; deliver first makes sendInput refuse
       nodeIds: [nodeId],
       roleId: "executor",
       prompt: "deliver first ordering",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -1000,7 +1000,7 @@ test("P0: public and managed paths share PENDING_TASK_INPUT authority payload sh
         nodeIds: [nodeId2],
         connectionId: "mock-gate",
         prompt: "managed gate shape",
-        deliveryPolicy: "review",
+        acceptMode: "review-required",
       });
       assert.ok(!dManaged.error, JSON.stringify(dManaged.error));
       const managedPath = (dManaged.result as { taskPath: string }).taskPath;

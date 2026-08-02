@@ -611,7 +611,7 @@ test("temporary Session Task bootstrap never assumes a durable Role checkpoint",
         nodeIds: [nodeId],
         connectionId: "fake-default",
         prompt: "bootstrap with checkpoint tail",
-        deliveryPolicy: "review",
+        acceptMode: "review-required",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
       });
@@ -641,7 +641,7 @@ test("temporary Session Task bootstrap never assumes a durable Role checkpoint",
           // Node refs live on Task.contextCard.refs.nodes only (no claims[]).
           manifest: "temp/sessions/ss-fakedefault/manifest.yml",
           state: "running",
-          deliveryPolicy: "review",
+          acceptMode: "review-required",
           prompt: "## User Prompt\n\nbootstrap with checkpoint tail\n",
           contextCard: buildTaskContextCard({
             contextGeneration: `cg-v1-${"0".repeat(64)}`,
@@ -703,7 +703,7 @@ test("managed bootstrap fails open when Role Checkpoint pointers are invalid", a
         nodeIds: [nodeId],
         connectionId: "fake-default",
         prompt: "bootstrap despite invalid checkpoint",
-        deliveryPolicy: "review",
+        acceptMode: "review-required",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
       });

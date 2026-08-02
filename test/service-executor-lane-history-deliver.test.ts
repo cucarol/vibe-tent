@@ -113,7 +113,7 @@ async function runningTaskWithBase(
     nodeIds: [nodeId],
     connectionId: "fake-default",
     prompt: "executor lane history fixture",
-    deliveryPolicy: "review",
+    acceptMode: "review-required",
   });
   assert.ok(!d.error, JSON.stringify(d.error));
   const taskPath = (d.result as { taskPath: string }).taskPath;

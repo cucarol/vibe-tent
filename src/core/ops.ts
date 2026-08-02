@@ -36,7 +36,7 @@ import {
   writeTaskEnvelope,
 } from "./task.js";
 import { isTaskId, makeTaskId } from "./task-model.js";
-import type { DeliveryPolicy } from "./task-model.js";
+import type { AcceptMode } from "./task-model.js";
 import {
   roleTempRoot,
   sessionTempRoot,
@@ -88,8 +88,8 @@ export interface DispatchOptions {
    * Git lane and a durable parent Role (validated by service/CLI). asSub is lane-only.
    */
   asSub?: boolean;
-  /** Delivery policy for this task (default review). */
-  deliveryPolicy?: DeliveryPolicy;
+  /** Frozen acceptance mode for this Task (default review-required). */
+  acceptMode?: AcceptMode;
   /** Durable Role responsibility/handoff. */
   roleId?: string;
   /** Exact executing Session; required for Session-only ACP work. */
@@ -194,6 +194,9 @@ export async function dispatch(
   primaryNodeId: string,
   options: DispatchOptions
 ): Promise<DispatchResult> {
+  if ("deliveryPolicy" in options) {
+    throw new Error("task.dispatch contains retired deliveryPolicy; use acceptMode.");
+  }
   return withMutation(env.fs, async () =>
     dispatchUnlocked(env, primaryNodeId, options)
   );
@@ -304,7 +307,7 @@ async function dispatchUnlocked(
       parentActor: options.parentActor,
       reviewer: options.reviewer,
       asSub: options.asSub === true,
-      deliveryPolicy: options.deliveryPolicy,
+      acceptMode: options.acceptMode,
       id: taskId,
       onPathAllocated: (path) => {
         allocatedTaskPath = path;

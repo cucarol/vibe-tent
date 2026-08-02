@@ -327,10 +327,10 @@ function parseDeliveryStatus(value: unknown): DeliveryStatus {
 
 function parseIntegrationMode(value: unknown): IntegrationMode {
   if (value === undefined || value === null || value === "null") return null;
-  if (value === "manual-accept" || value === "bypass-auto" || value === "agent-decided-integrate") {
+  if (value === "manual-accept" || value === "auto-accept" || value === "agent-decided-integrate") {
     return value;
   }
-  return null;
+  throw new Error(`Invalid delivery integrationMode: ${String(value)}.`);
 }
 
 function parseJsonArrayField<T>(value: unknown, parse: (arr: unknown) => T[]): T[] {

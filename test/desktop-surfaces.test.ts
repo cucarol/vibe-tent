@@ -26,6 +26,7 @@ import {
 import {
   buildMcpServersPayload,
   buildSkillsPayload,
+  ACCEPT_MODE_OPTIONS,
   credentialListRow,
   CREDENTIAL_VAULT_TYPE,
   mapProviderCatalogRows,
@@ -47,6 +48,13 @@ import {
   validateRoleUpdate,
   validateSkillAddDraft,
 } from "../src/desktop/workbench/settings-model.js";
+
+test("accept mode settings expose only canonical hard-cut values", () => {
+  assert.deepEqual(
+    ACCEPT_MODE_OPTIONS.map((option) => option.value),
+    ["review-required", "auto-accept", "agent-decide"]
+  );
+});
 
 test("contract gaps list missing desktop methods without inventing RPCs", () => {
   const ids = contractGapIds();
@@ -499,7 +507,7 @@ test("service smoke: docs.backlinks + provider.catalog for graph/settings", asyn
     );
 
     const settings = await client.workspaceSettings(mounted.workspaceId) as {
-      settings: { defaultDeliveryPolicy?: string };
+      settings: { defaultAcceptMode?: string };
     };
     assert.ok(settings.settings);
 

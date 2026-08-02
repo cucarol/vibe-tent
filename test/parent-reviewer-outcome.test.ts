@@ -12,7 +12,7 @@ import { NodeFs } from "../src/fs/node-fs.js";
 import { parseFrontmatter, serializeFrontmatter } from "../src/core/frontmatter.js";
 import {
   assertReviewAuthority,
-  mayElevateDeliveryPolicy,
+  allowsNonReviewAcceptMode,
   parseTaskOutcomeReport,
   roleTaskActors,
   TaskLifecycleError,
@@ -41,30 +41,28 @@ test("parseTaskOutcomeReport: valid control headers parse; missing or malformed 
   assert.equal(parseTaskOutcomeReport(""), null);
 });
 
-test("mayElevateDeliveryPolicy: only durable Role user-facing", () => {
+test("allowsNonReviewAcceptMode: user-facing Task regardless of Role/Session executor", () => {
   assert.equal(
-    mayElevateDeliveryPolicy({
+    allowsNonReviewAcceptMode({
       parentActor: { kind: "user", id: "user" },
-      roleId: "rl-helper",
     }),
     true
   );
   assert.equal(
-    mayElevateDeliveryPolicy({
+    allowsNonReviewAcceptMode({
       parentActor: { kind: "user", id: "user" },
     }),
-    false
+    true
   );
   assert.equal(
-    mayElevateDeliveryPolicy({
+    allowsNonReviewAcceptMode({
       parentActor: { kind: "role", id: "rl-planner" },
     }),
     false
   );
   assert.equal(
-    mayElevateDeliveryPolicy({
+    allowsNonReviewAcceptMode({
       parentActor: { kind: "role", id: "rl-planner" },
-      roleId: "rl-helper",
     }),
     false
   );
@@ -119,9 +117,9 @@ test("writeTaskEnvelope refuses elevated policy for downstream Task Agent", asyn
         userPrompt: "do it",
         parentActor: { kind: "role", id: "rl-orchestrator" },
         reviewer: { kind: "role", id: "rl-orchestrator" },
-        deliveryPolicy: "bypass",
+        acceptMode: "auto-accept",
       }),
-    /only legal for a durable Role's user-facing delivery|must use review/i
+    /only legal for a user-facing Task|must use review-required/i
   );
 });
 

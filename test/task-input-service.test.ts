@@ -150,7 +150,7 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
       prompt: "Work that may get user append",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
     await client.taskClaim(workspaceId, taskPath);
@@ -378,7 +378,7 @@ test("taskInput list/get/ack are isolated across workspaces (no cross get/ack)",
         prompt: "Canonical cross-workspace TaskInput isolation fixture",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
-        deliveryPolicy: "review",
+        acceptMode: "review-required",
       })) as { taskPath: string };
       await client.taskClaim(workspaceId, dispatched.taskPath);
       return dispatched.taskPath;
@@ -495,7 +495,7 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
       prompt: "Canonical parent acknowledgement fixture",
       parentActor: { kind: "role", id: "dispatcher" },
       reviewer: { kind: "role", id: "dispatcher" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string; taskId?: string };
     const parentTaskPath = parentDispatched.taskPath;
     await client.taskClaim(workspaceId, parentTaskPath);
@@ -539,7 +539,7 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
       prompt: "session-bound ack",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, dispatched.taskPath);
     const started = (await client.taskStartSession(workspaceId, {
@@ -654,7 +654,7 @@ test("explicit startSession bind and live reuse recover durable retryable TaskIn
       prompt: "Recover exact durable inputs after explicit Session bind",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
     await client.taskClaim(workspaceId, taskPath);
@@ -790,7 +790,7 @@ test("managed TaskInput fails loud when the bound Session is foreign to workspac
       prompt: "Guard TaskInput injection by exact Task Session binding",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     const started = (await client.taskStartSession(workspaceId, {
       taskPath: dispatched.taskPath,
@@ -877,7 +877,7 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
       prompt: "Managed sendInput flow",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
 
@@ -1030,7 +1030,7 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
       prompt: "Work that will be rejected with review note",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
 
@@ -1178,7 +1178,7 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
       prompt: "Native reject-resume same session",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
 
@@ -1395,7 +1395,7 @@ test("reject-resume: slow follow-up returns accepted without headers-timeout wai
       prompt: "Slow reject-resume inject",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
 
@@ -1497,7 +1497,7 @@ test("reject-resume: background completion projects processing → delivered", a
       prompt: "Background reject inject",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
 
@@ -1954,7 +1954,7 @@ test("reject-resume: second reject while rework running is rejected (no double i
       prompt: "Double reject protection",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
 
@@ -2058,7 +2058,7 @@ test("reject --no-resume: terminal reject without review-feedback or session res
       prompt: "Terminal reject path",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
     await client.taskClaim(workspaceId, taskPath);
@@ -2120,7 +2120,7 @@ test("managed U2A: concurrent sends on same task are FIFO and non-overlapping", 
       prompt: "FIFO serialization",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
 
@@ -2265,7 +2265,7 @@ test("managed U2A: different tasks remain concurrent (not process-wide serial)",
         prompt: `concurrent ${name}`,
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
-        deliveryPolicy: "review",
+        acceptMode: "review-required",
       })) as { taskPath: string };
       const taskPath = dispatched.taskPath;
       await client.taskStartSession(workspaceId, {
@@ -2369,7 +2369,7 @@ test("managed U2A: failed inject leaves item failed (not dropped) and does not o
       prompt: "queue failure semantics",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
     await client.taskClaim(workspaceId, taskPath);
@@ -2481,7 +2481,7 @@ test("task.sendInput: RPC returns accepted before managed turn finishes; status 
       prompt: "async accept path",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
 
@@ -2611,7 +2611,7 @@ test("task.sendInput: service stop drains background work without unhandled reje
       prompt: "drain semantics",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
     const started = (await client.taskStartSession(workspaceId, {
@@ -2710,7 +2710,7 @@ test("task.sendInput: hung follow-up turns stop promptly; durable row retained; 
       prompt: "hang shutdown",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     })) as { taskPath: string };
     taskPath = dispatched.taskPath;
     const started = (await client.taskStartSession(workspaceId, {

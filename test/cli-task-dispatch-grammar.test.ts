@@ -137,7 +137,7 @@ test("role target: queued durable handoff; multi --node; no startSession", async
     assert.deepEqual(args.reviewer, { kind: "user", id: "user" });
     assert.equal(args.callerKind, "user");
     assert.equal(args.asSub, undefined, "user-direct role target must not set asSub");
-    assert.equal(args.deliveryPolicy, undefined);
+    assert.equal(args.acceptMode, undefined);
 
     const parsed = JSON.parse(r.stdout) as {
       state?: string;

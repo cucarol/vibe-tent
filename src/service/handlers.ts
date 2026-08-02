@@ -54,7 +54,7 @@ import {
   type TaskEnvelopePatch,
 } from "../core/task.js";
 import {
-  mayElevateDeliveryPolicy,
+  allowsNonReviewAcceptMode,
   parseTaskActorRef,
   parseTaskOutcomeReport,
   resolveParentReviewerPair,
@@ -196,7 +196,7 @@ import {
   TaskLifecycleError,
   isActiveTaskState,
   type DeliverDecision,
-  type DeliveryPolicy,
+  type AcceptMode,
   type WaitReason,
 } from "../core/task-model.js";
 import {
@@ -911,8 +911,7 @@ function workspaceSetForeground(ctx: HandlerContext, p: Record<string, unknown>)
 
 /**
  * Read projection of workspace collaboration settings.
- * Missing file/field → defaultDeliveryPolicy=review (normalized in core).
- * Historical on-disk `manual` is normalized to `review` at the settings read boundary.
+ * Missing file/field → defaultAcceptMode=review-required.
  */
 async function workspaceSettingsRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -979,7 +978,7 @@ function parseWorkspaceSettingsPatch(p: Record<string, unknown>): Record<string,
     );
   }
   const reserved = new Set(["workspaceId", "actor", "patch"]);
-  const supported = new Set(["defaultDeliveryPolicy"]);
+  const supported = new Set(["defaultAcceptMode"]);
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(p)) {
     if (reserved.has(key)) continue;
@@ -989,13 +988,12 @@ function parseWorkspaceSettingsPatch(p: Record<string, unknown>): Record<string,
     if (value === undefined) continue;
     out[key] = value;
   }
-  // Explicit defaultDeliveryPolicy validation at the RPC boundary (clear error).
-  // New writes reject historical `manual`; use `review`.
-  if ("defaultDeliveryPolicy" in out) {
-    const v = out.defaultDeliveryPolicy;
-    if (v !== "review" && v !== "bypass" && v !== "agent-decide") {
-      throw new RpcError(-32602, `Invalid defaultDeliveryPolicy: ${String(v)}`, {
-        code: "INVALID_DELIVERY_POLICY",
+  // Explicit defaultAcceptMode validation at the RPC boundary (clear error).
+  if ("defaultAcceptMode" in out) {
+    const v = out.defaultAcceptMode;
+    if (v !== "review-required" && v !== "auto-accept" && v !== "agent-decide") {
+      throw new RpcError(-32602, `Invalid defaultAcceptMode: ${String(v)}`, {
+        code: "INVALID_ACCEPT_MODE",
       });
     }
   }
@@ -3091,7 +3089,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       "parentActor",
       "reviewer",
       "asSub",
-      "deliveryPolicy",
+      "acceptMode",
       "callerKind",
     ]),
     "task.dispatch"
@@ -3112,7 +3110,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   // Protocol 3 has one explicit responsibility pair.
   const explicitParentActor = parseOptionalTaskActor(p.parentActor, "parentActor");
   const explicitReviewer = parseOptionalTaskActor(p.reviewer, "reviewer");
-  const explicitDeliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
+  const explicitAcceptMode = parseAcceptMode(optionalString(p, "acceptMode"));
   // New create requires explicit parentActor + reviewer.
   const resolvedActors = resolveDispatchActorsFromRpc({
     parentActor: explicitParentActor,
@@ -3149,7 +3147,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   // Role target (peer + asSub): ensure durable Role/parent worktrees for validation only;
   // do NOT persist execution workspaceLane/baseCommit/roleBranchBase at queue — first claim
   // captures the real Role tip in the same lifecycle + workspace mutation boundary.
-  // When deliveryPolicy is omitted, snapshot current workspace default into the task
+  // When acceptMode is omitted, snapshot current workspace default into the task
   // envelope at dispatch time (settings changes never rewrite existing tasks).
   const preallocatedTaskId = connectionId ? makeTaskId() : undefined;
   const reservedSessionId = connectionId ? makeSessionId() : undefined;
@@ -3199,34 +3197,32 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     }
 
     ctx.host.markSelfWrite(workspaceId);
-    let deliveryPolicy = explicitDeliveryPolicy;
-    if (deliveryPolicy === undefined) {
+    let acceptMode = explicitAcceptMode;
+    if (acceptMode === undefined) {
       const settings = await loadWorkspaceSettings(mount.env.fs);
-      deliveryPolicy = settings.defaultDeliveryPolicy;
+      acceptMode = settings.defaultAcceptMode;
     }
-    // Downstream Task Agent → parent: force review (no bypass/agent-decide).
-    // Elevated policies only for durable Role user-facing delivery.
+    // Downstream Task Agent → parent: force review-required.
     if (
-      deliveryPolicy !== "review" &&
-      !mayElevateDeliveryPolicy({
+      acceptMode !== "review-required" &&
+      !allowsNonReviewAcceptMode({
         parentActor: resolvedActors.parentActor,
-        roleId: requestedRoleId,
       })
     ) {
-      if (explicitDeliveryPolicy !== undefined) {
+      if (explicitAcceptMode !== undefined) {
         throw new RpcError(
           -32602,
-          `deliveryPolicy=${deliveryPolicy} is only legal for a durable Role's user-facing delivery; ` +
-            `Task Agent → parent must use review (parent=${resolvedActors.parentActor.kind}:${resolvedActors.parentActor.id})`,
+          `acceptMode=${acceptMode} is only legal for a user-facing Task; ` +
+            `Task Agent → parent must use review-required (parent=${resolvedActors.parentActor.kind}:${resolvedActors.parentActor.id})`,
           {
-            deliveryPolicy,
+            acceptMode,
             parentActor: resolvedActors.parentActor,
             roleId: requestedRoleId,
           }
         );
       }
-      // Workspace default elevated while dispatching a downstream Task Agent → clamp to review.
-      deliveryPolicy = "review";
+      // Workspace default elevated downstream is clamped to review-required.
+      acceptMode = "review-required";
     }
     if (connectionId) {
       await ctx.runtime.reserveSession({
@@ -3245,7 +3241,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
         parentActor: resolvedActors.parentActor,
         reviewer: resolvedActors.reviewer,
         asSub,
-        deliveryPolicy,
+        acceptMode,
         workspace: workspaceLane,
         ...(requestedRoleId ? { roleId: requestedRoleId } : {}),
         ...(reservedSessionId ? { sessionId: reservedSessionId } : {}),
@@ -3613,12 +3609,11 @@ async function taskClaimDirectRpc(
     // self-subdispatch cycle guard.
     await ensureRoleWorkspaceIfGit(mount.workspaceRoot, roleDefinition.name);
     const settings = await loadWorkspaceSettings(mount.env.fs);
-    const deliveryPolicy = mayElevateDeliveryPolicy({
+    const acceptMode = allowsNonReviewAcceptMode({
       parentActor: actors.parentActor,
-      roleId,
     })
-      ? settings.defaultDeliveryPolicy
-      : "review";
+      ? settings.defaultAcceptMode
+      : "review-required";
 
     ctx.host.markSelfWrite(workspaceId);
     const roleRootPath = roleTempRoot(roleId);
@@ -3637,7 +3632,7 @@ async function taskClaimDirectRpc(
         userPrompt: prompt,
         parentActor: actors.parentActor,
         reviewer: actors.reviewer,
-        deliveryPolicy,
+        acceptMode,
         roleId,
         sessionId: callerSession.id,
         nodeIds: selection.nodeIds,
@@ -6236,7 +6231,7 @@ type TaskSessionBindSnapshot = {
   branch: string | undefined;
   targetBranch: string | undefined;
   baseCommit: string | undefined;
-  deliveryPolicy: TaskEnvelope["deliveryPolicy"];
+  acceptMode: TaskEnvelope["acceptMode"];
   parentActor: TaskEnvelope["parentActor"];
   reviewer: TaskEnvelope["reviewer"];
 };
@@ -6254,7 +6249,7 @@ function captureTaskSessionBindSnapshot(task: TaskEnvelope): TaskSessionBindSnap
     branch: task.branch,
     targetBranch: task.targetBranch,
     baseCommit: task.baseCommit,
-    deliveryPolicy: task.deliveryPolicy,
+    acceptMode: task.acceptMode,
     parentActor: task.parentActor,
     reviewer: task.reviewer,
   };
@@ -6278,7 +6273,7 @@ function assertTaskSessionBindSnapshot(
     actual.branch === expected.branch &&
     actual.targetBranch === expected.targetBranch &&
     actual.baseCommit === expected.baseCommit &&
-    actual.deliveryPolicy === expected.deliveryPolicy &&
+    actual.acceptMode === expected.acceptMode &&
     JSON.stringify(actual.parentActor) === JSON.stringify(expected.parentActor) &&
     JSON.stringify(actual.reviewer) === JSON.stringify(expected.reviewer) &&
     actual.nodeIds.length === expected.nodeIds.length &&
@@ -6312,7 +6307,7 @@ function assertTaskSessionPostStartOwnership(
     actual.branch === expected.branch &&
     actual.targetBranch === expected.targetBranch &&
     actual.baseCommit === expected.baseCommit &&
-    actual.deliveryPolicy === expected.deliveryPolicy &&
+    actual.acceptMode === expected.acceptMode &&
     JSON.stringify(actual.parentActor) === JSON.stringify(expected.parentActor) &&
     JSON.stringify(actual.reviewer) === JSON.stringify(expected.reviewer) &&
     actual.nodeIds.length === expected.nodeIds.length &&
@@ -6981,7 +6976,7 @@ async function executeTaskReplaceSession(
     nodeIds: [...taskReferencedNodeIds(task)],
     worktree: task.worktree,
     branch: task.branch,
-    deliveryPolicy: task.deliveryPolicy,
+    acceptMode: task.acceptMode,
     roleId: task.roleId,
   };
   let replacementSessionId: string | undefined;
@@ -7273,7 +7268,7 @@ async function executeTaskReplaceSession(
     if (
       bound.id !== preserved.taskId ||
       bound.roleId !== preserved.roleId ||
-      bound.deliveryPolicy !== preserved.deliveryPolicy ||
+      bound.acceptMode !== preserved.acceptMode ||
       bound.worktree !== preserved.worktree ||
       bound.branch !== preserved.branch ||
       nodeIds.length !== preserved.nodeIds.length ||
@@ -7415,7 +7410,7 @@ async function buildFreshReplaceSessionBootstrap(
     ...(task.id ? [`Task id: ${task.id}`] : []),
     ...(task.manifest ? [`Manifest: ${task.manifest}`] : []),
     `Node refs: ${taskReferencedNodeIds(task).join(", ")}`,
-    "Pending TaskInputs and delivery policy are preserved on this Task. Final report still goes through Delivery only.",
+    "Pending TaskInputs and acceptMode are preserved on this Task. Final report still goes through Delivery only.",
   ].join("\n");
   return `${base}\n\n${tail}\n`;
 }
@@ -11148,8 +11143,8 @@ function shouldSkipTaskFailOnSessionTerminal(input: {
  * **only when explicit outcome=delivered**.
  * - summary/report = assistant final reply body after outcome wire
  * - outcome blocked|needs-input → park via existing wait/UserAsk paths; no ready Delivery
- * - never auto-accept; review → pending independent accept; bypass/agent-decide only when
- *   legal for Role user-facing delivery (downstream always review)
+ * - review-required → pending independent accept; auto-accept/agent-decide only at
+ *   the user-facing responsibility boundary, regardless of Role/Session executor
  * - empty/error already filtered by adapter; still refuse empty here
  * - duplicate completion / already-delivered / terminal → ignore (no second delivery)
  * - production auto-collects pending commits from the task's authoritative role lane
@@ -11319,6 +11314,7 @@ async function tryManagedAutoDeliver(
         | {
             kind: "auto";
             sourceNodeId: string;
+            deliveryId: string;
             commits: string[];
             targetHead?: string;
             opts: {
@@ -11385,9 +11381,9 @@ async function tryManagedAutoDeliver(
 
         // agent-decide without an explicit agent decision: request-review (never auto-accept).
         // Downstream Task Agent → parent is always review (elevated policy already refused at dispatch).
-        const policy = task.deliveryPolicy ?? "review";
+        const mode = task.acceptMode;
         const decision =
-          policy === "agent-decide" ? ("request-review" as const) : undefined;
+          mode === "agent-decide" ? ("request-review" as const) : undefined;
 
         const opts = {
           summary,
@@ -11403,8 +11399,9 @@ async function tryManagedAutoDeliver(
         return {
           kind: "auto",
           sourceNodeId: prepared.sourceNodeId,
-          commits: pendingCommits,
-          ...(targetHead ? { targetHead } : {}),
+          deliveryId: prepared.deliveryId,
+          commits: prepared.commits,
+          ...(prepared.targetHead ? { targetHead: prepared.targetHead } : {}),
           opts,
         };
       });
@@ -11427,6 +11424,9 @@ async function tryManagedAutoDeliver(
           return finalizeTaskDeliverAuto(mount.env, input.taskPath, phase.opts, {
             kind: "auto",
             sourceNodeId: phase.sourceNodeId,
+            deliveryId: phase.deliveryId,
+            commits: phase.commits,
+            ...(phase.targetHead ? { targetHead: phase.targetHead } : {}),
           });
         });
       }
@@ -11486,9 +11486,11 @@ async function tryManagedAutoDeliver(
     }
   } catch (err) {
     // Deliver / integrate / collection / seal / dirty-worktree failure must NOT
-    // terminal-fail the task. Keep running/occupation so the user can retry;
-    // expose via session diagnostics/event. Only session.failed (launch/process)
-    // maps task → failed. Report draft stays on disk for idempotent retry.
+    // terminal-fail the task. Pre-delivery failures keep the Task running; an
+    // auto-accept integration failure keeps its already-published ready Delivery
+    // and delivered Task reviewable. Both remain occupied and emit diagnostics.
+    // Only session.failed (launch/process) maps Task → failed. Report draft stays
+    // on disk for idempotent retry.
     const message = err instanceof Error ? err.message : String(err);
     const errorCode =
       err instanceof RpcError &&
@@ -11514,7 +11516,11 @@ async function tryManagedAutoDeliver(
       const mount = ctx.host.get(input.workspaceId);
       if (!mount) return;
       const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
-      if (task.state === "running" || task.state === "waiting") {
+      if (
+        task.state === "running" ||
+        task.state === "waiting" ||
+        task.state === "delivered"
+      ) {
         // Clear in-flight so a later prompt_complete / retry can attempt again.
         // Do not add to managedAutoDeliverDone — failure is not success.
         try {
@@ -12318,11 +12324,12 @@ function optionalStringArray(p: Record<string, unknown>, key: string): string[] 
   return v as string[];
 }
 
-function parseDeliveryPolicy(raw: string | undefined): DeliveryPolicy | undefined {
+function parseAcceptMode(raw: string | undefined): AcceptMode | undefined {
   if (!raw) return undefined;
-  // New RPC writes reject historical `manual`; canonical value is `review`.
-  if (raw === "review" || raw === "bypass" || raw === "agent-decide") return raw;
-  throw new RpcError(-32602, `Invalid deliveryPolicy: ${raw}`);
+  if (raw === "review-required" || raw === "auto-accept" || raw === "agent-decide") {
+    return raw;
+  }
+  throw new RpcError(-32602, `Invalid acceptMode: ${raw}`);
 }
 
 function parseCallerKind(raw: string): "user" | "role" {
@@ -12395,7 +12402,7 @@ function parseArtifactRefs(data: Record<string, unknown>): ArtifactRef[] {
 /**
  * P0-2: integrate delivery commits into the real workspace Git main/target branch.
  * Reuses core ensureRoleWorkspace + integrateWorkspaceCommits (idempotent).
- * Failures propagate so accept/bypass cannot mark accepted/done or release occupation.
+ * Failures propagate so accept/auto-accept cannot mark accepted or release occupation.
  *
  * Production serializes by canonical git-common-dir + fully resolved target ref
  * (not workspaceId, taskPath, or lexical workspace path). Under that flight:
@@ -12991,7 +12998,7 @@ function buildContextCardManagedBootstrap(
     `Manifest: ${task.manifest}`,
     ...(task.id ? [`Task id: ${task.id}`] : []),
     ...(bootstrapNodeIds.length ? [`nodes: ${bootstrapNodeIds.join(", ")}`] : []),
-    `deliveryPolicy: ${task.deliveryPolicy ?? "review"}`,
+    `acceptMode: ${task.acceptMode}`,
     ...(task.parentActor
       ? [`parentActor: ${task.parentActor.kind}:${task.parentActor.id}`]
       : []),
@@ -13100,7 +13107,7 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
     reviewer: task.reviewer,
     // Missing asSub on disk reads as false (peer Git lane).
     asSub: taskAsSub(task),
-    deliveryPolicy: task.deliveryPolicy,
+    acceptMode: task.acceptMode,
     sessionId: task.sessionId,
     wait: task.wait,
     activeDeliveryId: task.activeDeliveryId,

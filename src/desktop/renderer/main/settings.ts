@@ -15,7 +15,7 @@ import {
   buildSkillsPayload,
   credentialListRow,
   CREDENTIAL_VAULT_TYPE,
-  DELIVERY_POLICY_OPTIONS,
+  ACCEPT_MODE_OPTIONS,
   mapProviderCatalogRows,
   mcpCredentialStatusLine,
   mcpDraftsFromProjection,
@@ -37,7 +37,7 @@ import {
   validateRoleCreate,
   validateRoleUpdate,
   validateSkillAddDraft,
-  type DeliveryPolicy,
+  type AcceptMode,
   type McpServerDraft,
   type ProviderRow,
   type SkillRefDraft,
@@ -74,7 +74,7 @@ let credentials: CredentialProjection[] = [];
 let skills: BundledSkillListEntry[] = [];
 let fullRoles: RoleRegistryEntryProjection[] = [];
 let fullRoutes: AgentConnectionProjection[] = [];
-let settingsPolicy: DeliveryPolicy = "review";
+let settingsAcceptMode: AcceptMode = "review-required";
 let agentsContent = "";
 let agentsEtag = "";
 let agentsExists = false;
@@ -216,8 +216,8 @@ async function loadWorkspaceSettings(): Promise<void> {
   if (!workspaceId) return;
   const result = (await window.tentDesktop.rpc("workspace.settings", {
     workspaceId,
-  })) as { settings?: { defaultDeliveryPolicy?: DeliveryPolicy } };
-  settingsPolicy = result.settings?.defaultDeliveryPolicy || "review";
+  })) as { settings?: { defaultAcceptMode?: AcceptMode } };
+  settingsAcceptMode = result.settings?.defaultAcceptMode || "review-required";
 }
 
 async function loadAgents(): Promise<void> {
@@ -317,15 +317,15 @@ function renderWorkspace(): string {
   if (!workspaceId) {
     return `<div class="empty"><p class="empty-title">打开工作区</p></div>`;
   }
-  const opts = DELIVERY_POLICY_OPTIONS.map(
+  const opts = ACCEPT_MODE_OPTIONS.map(
     (o) =>
-      `<option value="${o.value}"${o.value === settingsPolicy ? " selected" : ""}>${escapeHtml(o.label)}</option>`
+      `<option value="${o.value}"${o.value === settingsAcceptMode ? " selected" : ""}>${escapeHtml(o.label)}</option>`
   ).join("");
   return `
     <div class="settings-block">
       <div class="surface-section-head">交付策略</div>
       <div class="settings-row">
-        <select id="set-delivery-policy" class="field">${opts}</select>
+        <select id="set-accept-mode" class="field">${opts}</select>
         <button type="button" id="btn-save-policy" class="btn btn-secondary">保存</button>
       </div>
     </div>
@@ -859,15 +859,15 @@ function wireSection(s: SettingsSection, root: HTMLElement): void {
 
 async function onSavePolicy(): Promise<void> {
   if (!workspaceId) return;
-  const sel = document.getElementById("set-delivery-policy") as HTMLSelectElement | null;
-  const value = (sel?.value || "review") as DeliveryPolicy;
+  const sel = document.getElementById("set-accept-mode") as HTMLSelectElement | null;
+  const value = (sel?.value || "review-required") as AcceptMode;
   try {
     await window.tentDesktop.rpc("workspace.settings.update", {
       workspaceId,
-      defaultDeliveryPolicy: value,
+      defaultAcceptMode: value,
       actor: "user",
     });
-    settingsPolicy = value;
+    settingsAcceptMode = value;
     el.status.textContent = "工作区设置已保存";
   } catch (err) {
     setError(err);

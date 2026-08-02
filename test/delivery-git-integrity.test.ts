@@ -129,7 +129,7 @@ async function claimRunningWithBase(
     nodeIds: [nodeId],
     connectionId: "fake-default",
     prompt: opts.prompt,
-    deliveryPolicy: "review",
+    acceptMode: "review-required",
   });
   assert.ok(!d.error, JSON.stringify(d.error));
   const taskPath = (d.result as { taskPath: string }).taskPath;

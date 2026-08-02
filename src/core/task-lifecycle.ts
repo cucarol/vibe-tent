@@ -39,13 +39,11 @@ import { isSessionId } from "./id.js";
 import {
   assertReviewAuthority,
   assertTransition,
-  DEFAULT_DELIVERY_POLICY,
   resolveDeliverRouting,
   TaskLifecycleError,
   type ArtifactRef,
   type DeliverDecision,
   type DeliveryCheck,
-  type DeliveryPolicy,
   type TaskState,
   type WaitReason,
 } from "./task-model.js";
@@ -87,9 +85,9 @@ export interface TaskDeliverOptions {
   targetHead?: string;
   checks?: DeliveryCheck[];
   artifactRefs?: ArtifactRef[];
-  /** Required when deliveryPolicy=agent-decide. */
+  /** Required when acceptMode=agent-decide. */
   decision?: DeliverDecision;
-  /** Optional integrate hook for auto-integrate paths (bypass / agent-decide integrate). */
+  /** Optional integrate hook for auto-accept / agent-decide integrate. */
   integrate?: (commits: string[]) => Promise<void>;
 }
 
@@ -211,12 +209,18 @@ export interface TaskDeliverResult {
 
 /**
  * First deliver section under mutation.lock.
- * Manual/review: publishes ready Delivery and returns done.
- * Auto-integrate policies: validates only and returns auto (caller integrates Git outside lock).
+ * Every mode first publishes one durable ready Delivery candidate.
+ * Auto-integrate modes return that exact candidate for Git integration outside the lock.
  */
 export type TaskDeliverPrepared =
   | { kind: "done"; result: TaskDeliverResult }
-  | { kind: "auto"; sourceNodeId: string };
+  | {
+      kind: "auto";
+      sourceNodeId: string;
+      deliveryId: string;
+      commits: string[];
+      targetHead?: string;
+    };
 
 export interface TaskAcceptPrepared {
   deliveryId: string;
@@ -250,12 +254,7 @@ export async function prepareTaskDeliver(
     if (!nodeId) throw new Error("task.deliver requires a non-root node claim.");
     await assertNoReadyDelivery(env.fs, task.id || taskPath);
 
-    const policy: DeliveryPolicy = task.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY;
-    const routing = resolveDeliverRouting(policy, options.decision);
-
-    if (routing.autoIntegrate) {
-      return { kind: "auto", sourceNodeId: nodeId };
-    }
+    const routing = resolveDeliverRouting(task.acceptMode, options.decision);
 
     const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
       taskId: task.id || taskPath,
@@ -277,13 +276,22 @@ export async function prepareTaskDeliver(
       ...(options.lastOutcome ? { lastOutcome: options.lastOutcome } : {}),
       updatedAt: env.clock.now(),
     });
+    if (routing.autoIntegrate) {
+      return {
+        kind: "auto",
+        sourceNodeId: nodeId,
+        deliveryId: delivery.id,
+        commits: [...delivery.commits],
+        ...(delivery.targetHead ? { targetHead: delivery.targetHead } : {}),
+      };
+    }
     return { kind: "done", result: { task: next, delivery, autoIntegrated: false } };
   });
 }
 
 /**
- * Finalize auto-integrate deliver under mutation.lock after Git ran outside the lock.
- * Failure leaves running with no Delivery (same as holding the lock across integrate).
+ * Finalize auto-integrate under mutation.lock after Git ran outside the lock.
+ * Integration failure deliberately leaves the durable ready Delivery candidate intact.
  */
 export async function finalizeTaskDeliverAuto(
   env: OpsEnv,
@@ -293,31 +301,40 @@ export async function finalizeTaskDeliverAuto(
 ): Promise<TaskDeliverResult> {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
-    assertDeliverPreconditions(task);
+    assertTransition(task.state, "accept", "accepted");
     const nodeId = primaryNodeId(task);
     if (!nodeId || nodeId !== prepared.sourceNodeId) {
       throw new Error("task.deliver requires a non-root node claim.");
     }
-    await assertNoReadyDelivery(env.fs, task.id || taskPath);
-
-    const policy: DeliveryPolicy = task.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY;
-    const routing = resolveDeliverRouting(policy, options.decision);
-    if (!routing.autoIntegrate) {
-      throw new Error("Delivery policy changed during integrate; refusing state write.");
+    const delivery = await requireActiveReadyDelivery(env.fs, task);
+    if (delivery.id !== prepared.deliveryId) {
+      throw new TaskLifecycleError(
+        "DELIVERY_CHANGED",
+        "Ready delivery changed during auto-accept; refusing state write."
+      );
+    }
+    if (!exactStringListEqual(delivery.commits, prepared.commits)) {
+      throw new TaskLifecycleError(
+        "DELIVERY_CHANGED",
+        "Ready delivery commits changed during auto-accept; refusing state write."
+      );
+    }
+    if ((delivery.targetHead?.trim() || undefined) !== prepared.targetHead) {
+      throw new TaskLifecycleError(
+        "DELIVERY_CHANGED",
+        "Ready delivery targetHead changed during auto-accept; refusing state write."
+      );
     }
 
-    const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
-      taskId: task.id || taskPath,
-      sourceNodeId: nodeId,
-      summary: options.summary,
-      commits: options.commits,
-      targetHead: options.targetHead,
-      checks: options.checks,
-      artifactRefs: options.artifactRefs,
-      status: "accepted",
-      integrationMode: routing.integrationMode,
-      deliveriesDir: deliveryDirForTask(task),
-    });
+    const routing = resolveDeliverRouting(task.acceptMode, options.decision);
+    if (!routing.autoIntegrate) {
+      throw new Error("Task acceptMode changed during integrate; refusing state write.");
+    }
+
+    delivery.status = "accepted";
+    delivery.integrationMode = routing.integrationMode;
+    delivery.updatedAt = env.clock.now();
+    await writeDelivery(env.fs, delivery);
     // No review.by = submitter — integrate is service policy engine action.
     // Occupation ends via task state=accepted; no Node frontmatter write.
 
@@ -337,16 +354,14 @@ export async function taskDeliver(
   taskPath: string,
   options: TaskDeliverOptions
 ): Promise<TaskDeliverResult> {
-  // Manual path: single atomic lock section (no Git).
-  // Auto-integrate path: validate under lock → Git outside lock → re-validate +
-  // state write under lock. Failure before the second section keeps running and
-  // leaves no delivery (same semantics as holding the lock across integrate).
+  // review-required path: one atomic ready-Delivery section (no Git).
+  // Auto-integrate path: durable ready Delivery → Git outside lock → exact
+  // candidate re-validation + accepted writes. Integration failure preserves
+  // the candidate and targetHead/commits for review or retry.
   const phase = await prepareTaskDeliver(env, taskPath, options);
   if (phase.kind === "done") return phase.result;
 
-  const pendingCommits = [
-    ...new Set((options.commits ?? []).map((c) => c.trim()).filter(Boolean)),
-  ];
+  const pendingCommits = [...phase.commits];
   if (pendingCommits.length > 0) {
     if (!options.integrate) {
       throw new Error("Auto-integrate path requires integrate() when commits are present.");
@@ -565,7 +580,7 @@ export async function taskReject(
     assertTransition(task.state, event, to);
 
     const delivery = await requireActiveReadyDelivery(env.fs, task);
-    // Exact Task.reviewer only (no user bypass on Role-reviewed); never self.
+    // Exact Task.reviewer only (no user override on Role-reviewed); never self.
     assertReviewAuthority({
       actor: options.actor,
       executorRoleId: task.roleId,

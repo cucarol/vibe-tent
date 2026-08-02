@@ -1,57 +1,69 @@
 // Workspace collaboration settings under system root (.tent/settings.json).
 // Extensible projection: unknown fields are preserved on load/save.
-// defaultDeliveryPolicy defaults to review when missing/invalid.
-// Historical on-disk `manual` normalizes to `review` at this read boundary only.
+// defaultAcceptMode defaults to review-required only when omitted.
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
 import { backupCorruptRegistry, warnRegistryRecovered } from "./registryRecovery.js";
 import {
-  DEFAULT_DELIVERY_POLICY,
-  isDeliveryPolicy,
-  normalizeDeliveryPolicyRead,
-  type DeliveryPolicy,
+  DEFAULT_ACCEPT_MODE,
+  isAcceptMode,
+  type AcceptMode,
 } from "./task-model.js";
 import { WORKSPACE_SETTINGS_PATH } from "./paths.js";
 
 export { WORKSPACE_SETTINGS_PATH };
 
-/** Known delivery-policy enum for workspace default + task envelopes. */
-export type WorkspaceDeliveryPolicy = DeliveryPolicy;
+/** Known acceptance mode for workspace defaults and Task envelopes. */
+export type WorkspaceAcceptMode = AcceptMode;
 
 /**
  * Workspace-level collaboration settings (system-root settings.json).
  * Extensible: additional keys round-trip through load/save.
  */
 export type WorkspaceSettings = {
-  /** Default for task.dispatch when deliveryPolicy is omitted. */
-  defaultDeliveryPolicy: WorkspaceDeliveryPolicy;
+  /** Default for task.dispatch when acceptMode is omitted. */
+  defaultAcceptMode: WorkspaceAcceptMode;
   /** Future / unknown collaboration keys preserved on disk. */
   [key: string]: unknown;
 };
 
 const DEFAULT_SETTINGS: WorkspaceSettings = {
-  defaultDeliveryPolicy: DEFAULT_DELIVERY_POLICY,
+  defaultAcceptMode: DEFAULT_ACCEPT_MODE,
 };
 
-/** Canonical write/RPC values only — historical `manual` is not accepted on write. */
-export function isDeliveryPolicyValue(value: unknown): value is WorkspaceDeliveryPolicy {
-  return isDeliveryPolicy(value);
+/** Canonical hard-cut values only. */
+export function isAcceptModeValue(value: unknown): value is WorkspaceAcceptMode {
+  return isAcceptMode(value);
 }
 
 /**
  * Normalize raw JSON into WorkspaceSettings.
- * Missing / invalid defaultDeliveryPolicy → review.
- * Historical on-disk `manual` → review (narrow read/migration only).
- * Non-object roots become the default object (no extra keys).
+ * Missing defaultAcceptMode → review-required.
+ * Invalid or retired fields fail loud; there is no compatibility read path.
  * Other own enumerable keys are preserved as-is for extensibility.
  */
 export function normalizeWorkspaceSettings(value: unknown): WorkspaceSettings {
   if (!isRecord(value)) {
-    return { ...DEFAULT_SETTINGS };
+    throw new WorkspaceSettingsError(
+      "INVALID_PATCH",
+      "Workspace settings must be an object"
+    );
+  }
+  if ("defaultDeliveryPolicy" in value || "deliveryPolicy" in value) {
+    throw new WorkspaceSettingsError(
+      "INVALID_ACCEPT_MODE",
+      "Workspace settings contain a retired acceptance-policy field; use defaultAcceptMode"
+    );
   }
   const out: WorkspaceSettings = { ...value } as WorkspaceSettings;
-  const normalized = normalizeDeliveryPolicyRead(out.defaultDeliveryPolicy);
-  out.defaultDeliveryPolicy = normalized ?? DEFAULT_DELIVERY_POLICY;
+  if (out.defaultAcceptMode === undefined) {
+    out.defaultAcceptMode = DEFAULT_ACCEPT_MODE;
+  } else if (!isAcceptMode(out.defaultAcceptMode)) {
+    throw new WorkspaceSettingsError(
+      "INVALID_ACCEPT_MODE",
+      `Invalid defaultAcceptMode: ${String(out.defaultAcceptMode)}`
+    );
+  }
   return out;
 }
 
@@ -68,9 +80,9 @@ export async function loadWorkspaceSettings(fs: FsAdapter): Promise<WorkspaceSet
   if (!(await fs.exists(WORKSPACE_SETTINGS_PATH))) {
     return defaultWorkspaceSettings();
   }
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(await fs.readFile(WORKSPACE_SETTINGS_PATH)) as unknown;
-    return normalizeWorkspaceSettings(parsed);
+    parsed = JSON.parse(await fs.readFile(WORKSPACE_SETTINGS_PATH)) as unknown;
   } catch {
     const backupPath = await backupCorruptRegistry(fs, WORKSPACE_SETTINGS_PATH);
     const reset = defaultWorkspaceSettings();
@@ -83,6 +95,7 @@ export async function loadWorkspaceSettings(fs: FsAdapter): Promise<WorkspaceSet
     );
     return reset;
   }
+  return normalizeWorkspaceSettings(parsed);
 }
 
 /**
@@ -103,7 +116,7 @@ export async function saveWorkspaceSettings(
 /**
  * Apply a partial patch under mutation.lock.
  * Only provided keys are updated; unknown keys in the patch are stored (extensibility).
- * Invalid defaultDeliveryPolicy in the patch throws (mutations fail-loud; load soft-normalizes).
+ * Invalid defaultAcceptMode in the patch throws.
  *
  * Returns `{ settings, changed }` where `changed` is true only when the normalized
  * projection actually differs from the pre-patch normalized load (no-op → no event upstream).
@@ -123,15 +136,15 @@ export async function updateWorkspaceSettings(
     const nextRaw: Record<string, unknown> = { ...before };
 
     for (const [key, value] of Object.entries(patch)) {
-      if (key === "defaultDeliveryPolicy") {
+      if (key === "defaultAcceptMode") {
         if (value === undefined) continue;
-        if (!isDeliveryPolicyValue(value)) {
+        if (!isAcceptModeValue(value)) {
           throw new WorkspaceSettingsError(
-            "INVALID_DELIVERY_POLICY",
-            `Invalid defaultDeliveryPolicy: ${String(value)}`
+            "INVALID_ACCEPT_MODE",
+            `Invalid defaultAcceptMode: ${String(value)}`
           );
         }
-        nextRaw.defaultDeliveryPolicy = value;
+        nextRaw.defaultAcceptMode = value;
         continue;
       }
       // Extensibility: store other keys as provided (including null to clear).
@@ -149,8 +162,8 @@ export async function updateWorkspaceSettings(
 }
 
 export class WorkspaceSettingsError extends Error {
-  code: "INVALID_DELIVERY_POLICY" | "INVALID_PATCH";
-  constructor(code: "INVALID_DELIVERY_POLICY" | "INVALID_PATCH", message: string) {
+  code: "INVALID_ACCEPT_MODE" | "INVALID_PATCH";
+  constructor(code: "INVALID_ACCEPT_MODE" | "INVALID_PATCH", message: string) {
     super(message);
     this.code = code;
     this.name = "WorkspaceSettingsError";
@@ -159,7 +172,7 @@ export class WorkspaceSettingsError extends Error {
 
 async function writeSettingsUnlocked(fs: FsAdapter, settings: WorkspaceSettings): Promise<void> {
   // Stable key order: known fields first, then remaining keys sorted.
-  const known = ["defaultDeliveryPolicy"] as const;
+  const known = ["defaultAcceptMode"] as const;
   const ordered: Record<string, unknown> = {};
   for (const key of known) {
     if (key in settings) ordered[key] = settings[key];

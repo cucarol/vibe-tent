@@ -120,7 +120,7 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
       nodeIds: [nodeId],
       connectionId: "grok-live-e2e",
       prompt: "Reply with a short delivery report containing the marker TENT_GROK_E2E_OK. Do not call tools.",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;

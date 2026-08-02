@@ -63,6 +63,7 @@ function sessionTask(
   const contextCard = partial.contextCard ?? fixtureContextCard();
   return {
     sessionId: "ss-fakedefault",
+    acceptMode: "review-required",
     manifest: "temp/sessions/ss-fakedefault/manifests/m.yml",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },

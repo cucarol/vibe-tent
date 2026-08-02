@@ -1033,7 +1033,7 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
       nodeIds: [parentId],
       roleId: "rl-orchestrator",
       prompt: "own the goal; delegate child",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!parentDispatch.error, JSON.stringify(parentDispatch.error));
     const parentTaskPath = (parentDispatch.result as { taskPath: string }).taskPath;
@@ -1062,7 +1062,7 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
       asSub: true,
       parentActor: { kind: "role", id: "rl-orchestrator" },
       reviewer: { kind: "role", id: "rl-orchestrator" },
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!subDispatch.error, JSON.stringify(subDispatch.error));
     const subTaskPath = (subDispatch.result as { taskPath: string }).taskPath;

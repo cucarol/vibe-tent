@@ -1,5 +1,7 @@
 // Local Service wire types — B0 architecture §5.2 + attach protocol + B5 task surface.
 
+import type { AcceptMode } from "../core/task-model.js";
+
 /** Structured association to a real deliverable outside node identity. */
 export type ArtifactRef = {
   kind: "path" | "dir" | "commit" | "url" | "other";
@@ -302,7 +304,7 @@ export type TaskProjection = {
   reviewer?: TaskActorRefWire;
   /** Peer vs sub Git lane; missing/false = peer. */
   asSub?: boolean;
-  deliveryPolicy?: string;
+  acceptMode: AcceptMode;
   sessionId?: string;
   wait?: { reason: string; summary: string; code?: string };
   activeDeliveryId?: string;
@@ -819,7 +821,7 @@ export const CLIENT_METHODS = [
    * Never a silent fallback from task.startSession. Uses the same machine Settings
    * Agent Connection availability gate as startSession.
    * Shares the per-Task managed-session execution slot with startSession.
-   * Preserves nodeRefs/worktree/branch/lane/pending TaskInputs/deliveryPolicy;
+   * Preserves nodeRefs/worktree/branch/lane/pending TaskInputs/acceptMode;
    * stops the old Session first; new ss- has contextRestored=false + stable restoreReason.
    * turnBusy → fail-loud TURN_BUSY (retryable); no force flag in this contract.
    * waiting only when durable waitCode=session_unavailable (not user-input/tool).

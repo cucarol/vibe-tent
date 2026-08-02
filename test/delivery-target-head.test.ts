@@ -146,8 +146,8 @@ async function mountWorkItem(
 }
 
 /**
- * Dispatch + claim, then start a managed Session only for a review-policy route
- * Task. Elevated policies remain durable Role Tasks. Both paths persist the
+ * Dispatch + claim, then start the exact managed Connection Session. Every
+ * accept mode is valid for this Session-only user-facing Task and persists the
  * exact workspaceLane.baseCommit before Task commits are created.
  * Task commits must be created only after this returns.
  */
@@ -156,7 +156,7 @@ async function claimRunningWithBase(
   ws: string,
   opts: {
     prompt: string;
-    deliveryPolicy?: "review" | "bypass" | "agent-decide";
+    acceptMode?: "review-required" | "auto-accept" | "agent-decide";
   }
 ): Promise<{
   workspaceId: string;
@@ -165,29 +165,26 @@ async function claimRunningWithBase(
   worktree: string;
 }> {
   const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
-  const deliveryPolicy = opts.deliveryPolicy ?? "review";
-  const routeTask = deliveryPolicy === "review";
+  const acceptMode = opts.acceptMode ?? "review-required";
   const d = await rpc(svc, "task.dispatch", {
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     workspaceId,
     nodeIds: [nodeId],
-    ...(routeTask ? { connectionId: "fake-default" } : { roleId: "rl-executor" }),
+    connectionId: "fake-default",
     prompt: opts.prompt,
-    deliveryPolicy,
+    acceptMode,
   });
   assert.ok(!d.error, JSON.stringify(d.error));
   const taskPath = (d.result as { taskPath: string }).taskPath;
   const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
   assert.ok(!claimed.error, JSON.stringify(claimed.error));
-  if (routeTask) {
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
-  }
+  const started = await rpc(svc, "task.startSession", {
+    workspaceId,
+    taskPath,
+    callerKind: "user",
+  });
+  assert.ok(!started.error, JSON.stringify(started.error));
   const got = await rpc(svc, "task.get", { workspaceId, taskPath });
   const lane = (
     got.result as {
@@ -227,13 +224,14 @@ async function pathExists(p: string): Promise<boolean> {
 test("delivery parser: targetHead round-trip and legacy omit", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-th-parse-"));
   const fsa = new NodeFs(dir);
-  await fsa.mkdir("temp/executor/deliveries");
+  const deliveriesDir = "temp/sessions/ss-executor/deliveries";
+  await fsa.mkdir(deliveriesDir);
   const clock = { now: () => "2026-01-01T00:00:00.000Z" };
 
   const withHead = await createDelivery(fsa, clock, {
     taskId: "tk-a",
     sourceNodeId: "cx-a",
-    deliveriesDir: "temp/executor/deliveries",
+    deliveriesDir,
     summary: "with head",
     commits: ["abc123"],
     targetHead: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
@@ -242,7 +240,19 @@ test("delivery parser: targetHead round-trip and legacy omit", async () => {
   assert.equal(reloaded.targetHead, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
   assert.deepEqual(reloaded.commits, ["abc123"]);
 
-  const legacyPath = "temp/executor/deliveries/dl-legacy01.md";
+  const canonicalRaw = await fsa.readFile(withHead.path);
+  const retiredModeRaw = canonicalRaw.replace(
+    /integrationMode:\s*null/,
+    "integrationMode: bypass-auto"
+  );
+  assert.notEqual(retiredModeRaw, canonicalRaw, "fixture must replace the canonical null mode");
+  await fsa.writeFile(withHead.path, retiredModeRaw);
+  await assert.rejects(
+    () => loadDelivery(fsa, withHead.path),
+    /Invalid delivery integrationMode: bypass-auto/
+  );
+
+  const legacyPath = `${deliveriesDir}/dl-legacy01.md`;
   await fsa.writeFile(
     legacyPath,
     `---
@@ -272,7 +282,7 @@ test("targetHead: deliver snapshots HEAD; same-head accept integrates", async ()
   await withService(async (svc) => {
     const { workspaceId, taskPath, baseCommit, worktree } = await claimRunningWithBase(svc, ws, {
       prompt: "same head",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.equal(baseCommit, mainHeadAtDeliver, "base must be main baseline tip");
     // Ordinary Task commit only after base capture → non-empty base..tip.
@@ -316,7 +326,7 @@ test("targetHead: clean non-conflicting target advance fails TARGET_MOVED; Git u
   await withService(async (svc) => {
     const { workspaceId, taskPath, baseCommit, worktree } = await claimRunningWithBase(svc, ws, {
       prompt: "target will move",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     const sourceRef = await taskCommitOnRouteLane(
       worktree,
@@ -379,7 +389,7 @@ test("targetHead: zero-commit Delivery needs no snapshot; accept succeeds", asyn
       ws,
       {
         prompt: "docs only",
-        deliveryPolicy: "review",
+        acceptMode: "review-required",
       }
     );
     const tip = (await git(worktree, "rev-parse", "HEAD")).trim();
@@ -414,7 +424,7 @@ test("targetHead: legacy ready row without snapshot fails TARGET_MOVED (no silen
   await withService(async (svc) => {
     const { workspaceId, taskPath, baseCommit, worktree } = await claimRunningWithBase(svc, ws, {
       prompt: "legacy delivery",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     const sourceRef = await taskCommitOnRouteLane(
       worktree,
@@ -456,8 +466,8 @@ test("targetHead: legacy ready row without snapshot fails TARGET_MOVED (no silen
   });
 });
 
-test("targetHead: auto-integrate race — target moves after snapshot fails TARGET_MOVED; no Delivery", async () => {
-  const ws = await makeWorkspace("th-bypass-race");
+test("targetHead: auto-accept race preserves the snapshotted ready Delivery on TARGET_MOVED", async () => {
+  const ws = await makeWorkspace("th-autoaccept-race");
   await initGitOnWorkspace(ws);
   const headAtSnapshot = (await git(ws, "rev-parse", "main")).trim();
 
@@ -469,8 +479,8 @@ test("targetHead: auto-integrate race — target moves after snapshot fails TARG
     });
 
     const { workspaceId, taskPath, baseCommit, worktree } = await claimRunningWithBase(svc, ws, {
-      prompt: "bypass race",
-      deliveryPolicy: "bypass",
+      prompt: "auto-accept race",
+      acceptMode: "auto-accept",
     });
     const sourceRef = await taskCommitOnRouteLane(
       worktree,
@@ -494,15 +504,16 @@ test("targetHead: auto-integrate race — target moves after snapshot fails TARG
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
     assert.equal(
       (got.result as { task: { state: string } }).task.state,
-      "running",
-      "failed auto-integrate must leave task running"
+      "delivered",
+      "failed auto-accept leaves the durable candidate reviewable"
     );
     const list = await rpc(svc, "delivery.list", { workspaceId });
-    assert.equal(
-      (list.result as { deliveries: unknown[] }).deliveries.length,
-      0,
-      "failed auto-integrate must not leave a delivery"
-    );
+    const deliveries = (
+      list.result as { deliveries: Array<{ status: string; targetHead?: string }> }
+    ).deliveries;
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0]!.status, "ready");
+    assert.equal(deliveries[0]!.targetHead, headAtSnapshot);
 
     // Target advanced only by the race hook; delivery commit must not land.
     assert.equal(await pathExists(path.join(ws, "race.txt")), false);

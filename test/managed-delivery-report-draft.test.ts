@@ -218,7 +218,7 @@ test("P0: natural report without outcome survives dirty refusal and draft-only r
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "preserve draft on dirty refuse",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -320,7 +320,7 @@ test("malformed outcome text is delivered intact instead of discarding the repor
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "deliver malformed control text intact",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -377,7 +377,7 @@ test("P0: report draft survives service restart; retry publishes without re-prom
         nodeIds: [mounted.nodeId],
         connectionId: "fake-default",
         prompt: "restart must keep draft",
-        deliveryPolicy: "review",
+        acceptMode: "review-required",
       });
       assert.ok(!d.error, JSON.stringify(d.error));
       taskPath = (d.result as { taskPath: string }).taskPath;
@@ -508,7 +508,7 @@ test("P0: publish preparation failure preserves draft; retry publishes without r
       nodeIds: [nodeId],
       connectionId: "fake-default",
       prompt: "integrate fail keeps draft",
-      deliveryPolicy: "review",
+      acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;

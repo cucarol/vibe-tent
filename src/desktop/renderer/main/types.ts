@@ -95,6 +95,7 @@ export type ShellState = {
     roleId?: string;
     referencedNodeIds: string[];
     state: string;
+    acceptMode: import("../../../service/types.js").TaskProjection["acceptMode"];
     id?: string;
     prompt?: string;
     activeDeliveryId?: string;
