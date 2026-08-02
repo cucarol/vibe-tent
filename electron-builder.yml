@@ -10,7 +10,6 @@ files:
   - service.mjs
   - cli.mjs
   - package.json
-  - manifest.json
   - README.md
 extraResources:
   - from: service.mjs

@@ -39,9 +39,6 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   const manifest = JSON.parse(
     await fs.readFile(path.join(repoRoot, "manifest.json"), "utf8")
   );
-  const versions = JSON.parse(
-    await fs.readFile(path.join(repoRoot, "versions.json"), "utf8")
-  );
   const spec = await fs.readFile(path.join(repoRoot, "docs", "SPEC.md"), "utf8");
   const roleSkill = await fs.readFile(path.join(repoRoot, "skills", "tent-role", "SKILL.md"), "utf8");
   const taskSkill = await fs.readFile(path.join(repoRoot, "skills", "tent-task", "SKILL.md"), "utf8");
@@ -67,56 +64,32 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
       "grok-acp-provider.md",
     ].map((name) => fs.readFile(path.join(repoRoot, "docs", "desktop", name), "utf8"))
   );
-  const pluginMain = await fs.readFile(path.join(repoRoot, "src", "plugin", "main.ts"), "utf8");
-  const pluginSettings = await fs.readFile(path.join(repoRoot, "src", "plugin", "settings.ts"), "utf8");
   assert.equal(pkg.bin.tent, "./cli.mjs");
+  assert.equal(pkg.bin["tent-service"], "./service.mjs");
   assert.equal(pkg.license, "MIT");
+  assert.equal(pkg.author, "cucarol");
   assert.equal(pkg.author, manifest.author);
   assert.equal(pkg.repository.url, "git+https://github.com/cucarol/tent.git");
   assert.equal(pkg.bugs.url, "https://github.com/cucarol/tent/issues");
   assert.equal(pkg.homepage, "https://github.com/cucarol/tent#readme");
-  assert.equal(pkg.version, manifest.version, "npm 与 Obsidian 插件版本保持一致");
+  assert.equal(pkg.version, manifest.version, "npm package version matches release manifest");
   assert.match(pkg.description, /^[\x20-\x7E]+\.$/, "npm description 使用完整英文句子");
-  for (const keyword of ["obsidian", "cli", "okf", "coding-agents"]) {
+  for (const keyword of ["cli", "okf", "coding-agents", "desktop"]) {
     assert.ok(pkg.keywords.includes(keyword), `npm keywords 包含 ${keyword}`);
   }
-  assert.equal(manifest.name, "Tent");
-  assert.equal(manifest.authorUrl, "https://github.com/cucarol");
-  assert.equal(
-    manifest.description,
-    "Coordinate durable Node context, role-owned tasks, Settings routes, and reviewable deliveries with coding agents."
-  );
-  assert.ok(manifest.description.length <= 250);
-  assert.match(manifest.description, /\.$/);
-  assert.match(pluginMain, /addRibbonIcon\("tent", "Open Tent panel"/);
-  assert.match(pluginMain, /id: "open-panel"/);
-  assert.match(pluginMain, /id: "open-board-experimental"/);
-  assert.doesNotMatch(
-    pluginMain,
-    /id: "open-tent-/,
-    "Obsidian command ids should not repeat the plugin id"
-  );
-  assert.match(pluginMain, /name: "Open panel"/);
-  assert.match(pluginMain, /name: "Open or refresh experimental board"/);
-  assert.doesNotMatch(
-    pluginMain,
-    /name: "[^"]*Tent[^"]*"/,
-    "Obsidian command names should not repeat the plugin name"
-  );
-  assert.doesNotMatch(pluginMain, /name: "打开/);
-  assert.doesNotMatch(
-    pluginSettings,
-    /createEl\("h[1-4]"/,
-    "plugin settings should use Obsidian Setting headings instead of raw h1-h4 elements"
-  );
-  assert.match(pluginSettings, /\.setHeading\(\)/);
-  assert.equal(
-    versions[manifest.version],
-    manifest.minAppVersion,
-    "versions.json 记录当前插件所需的最低 Obsidian 版本"
-  );
-  assert.ok(pkg.files.includes("versions.json"), "npm 发布包包含 Obsidian 版本映射");
+  assert.equal(pkg.keywords.includes("obsidian"), false, "Obsidian plugin keywords are retired");
+  assert.equal(pkg.keywords.includes("obsidian-plugin"), false, "Obsidian plugin keywords are retired");
+  assert.equal(pkg.devDependencies?.obsidian, undefined, "obsidian devDependency is retired");
+  assert.equal(pkg.scripts?.["build:plugin"], undefined, "build:plugin script is retired");
+  assert.equal(pkg.files.includes("main.js"), false, "npm package no longer ships plugin main.js");
+  assert.equal(pkg.files.includes("styles.css"), false, "npm package no longer ships plugin styles.css");
+  assert.equal(pkg.files.includes("versions.json"), false, "npm package no longer ships Obsidian versions.json");
+  assert.equal(await exists(path.join(repoRoot, "src", "plugin")), false, "src/plugin production source is retired");
+  assert.equal(await exists(path.join(repoRoot, "versions.json")), false, "versions.json is retired");
+  assert.equal(await exists(path.join(repoRoot, "test", "plugin.test.ts")), false, "plugin-only tests are retired");
   assert.ok(pkg.files.includes("skills/"), "npm 发布包包含 bundled skills/");
+  assert.ok(pkg.files.includes("cli.mjs"), "npm 发布包包含 CLI bundle");
+  assert.ok(pkg.files.includes("service.mjs"), "npm 发布包包含 Service bundle");
   assert.equal(await exists(path.join(repoRoot, "LICENSE")), true);
   assert.equal(await exists(path.join(repoRoot, "skills", "tent-role", "SKILL.md")), true);
   assert.equal(await exists(path.join(repoRoot, "skills", "tent-task", "SKILL.md")), true);
@@ -222,9 +195,6 @@ test("docs/skill drift: in-workspace Node/Task/Delivery model and retired type a
     path.join(repoRoot, "skills", "tent-task", "references", "paths.md"),
     "utf8"
   );
-  const registryPane = await fs.readFile(path.join(repoRoot, "src", "plugin", "registry-pane.ts"), "utf8");
-  const pluginSettings = await fs.readFile(path.join(repoRoot, "src", "plugin", "settings.ts"), "utf8");
-  const uiControls = await fs.readFile(path.join(repoRoot, "src", "plugin", "ui-controls.ts"), "utf8");
 
   // SPEC: in-workspace root, fixed Node semantics, WorkspaceLane; no live workspacePointer axis.
   assert.match(spec, /in-workspace/i);
@@ -254,20 +224,8 @@ test("docs/skill drift: in-workspace Node/Task/Delivery model and retired type a
     /从 Tent 唯一的 workspace 指针框解析 workspace/
   );
 
-  // Obsidian plugin must not expose or write workspacePointer controls
-  assert.doesNotMatch(registryPane, /workspacePointer/);
-  assert.doesNotMatch(pluginSettings, /workspacePointer/);
-  assert.doesNotMatch(pluginSettings, /setBaseWorkspacePointer|baseDefinitionWorkspacePointer/);
-  assert.doesNotMatch(uiControls, /workspacePointer/);
-  assert.doesNotMatch(registryPane, /updateTypeMetadata|baseDefinitionCoordination/);
-  assert.doesNotMatch(pluginSettings, /setBaseCoordination|baseDefinitionCoordination/);
-
-  // Plugin user-facing copy must not reintroduce the retired product phrase
-  const viewSrc = await fs.readFile(path.join(repoRoot, "src", "plugin", "view.ts"), "utf8");
-  for (const src of [registryPane, pluginSettings, uiControls, viewSrc]) {
-    assert.doesNotMatch(src, /workspace pointer/i);
-  }
-  assert.match(viewSrc, /in-workspace[^\n]*workspace root/i);
+  // Obsidian plugin production source is retired; no plugin UI to reintroduce workspacePointer.
+  assert.equal(await exists(path.join(repoRoot, "src", "plugin")), false);
 
   // Retired direct-write commands are removed from the public CLI surface.
   const tentCli = await fs.readFile(path.join(repoRoot, "src", "cli", "tent.ts"), "utf8");
