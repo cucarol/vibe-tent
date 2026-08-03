@@ -7,7 +7,7 @@ import type {
   ConnectionMcpServerProjection,
   RouteSkillProjection,
 } from "../../adapters/acp/mcp-skills.js";
-import type { CredentialProjection } from "../../service/credential-store.js";
+import type { LaunchSecretProjection } from "../../service/launch-secret-store.js";
 import type { ProviderCatalogEntry, ProviderVerificationLevel } from "../../service/types.js";
 import { verificationLevelLabel } from "./graph-model.js";
 
@@ -47,7 +47,7 @@ export type ConnectionFormDraft = {
   model?: string;
   executable?: string;
   envKey?: string;
-  credentialRef?: string;
+  launchSecretRef?: string;
   baseUrlEnvKey?: string;
   baseUrl?: string;
   permissionPolicy?: "allow" | "ask" | "deny";
@@ -64,13 +64,13 @@ export type ConnectionUpdateDraft = {
   model?: string;
   executable?: string;
   envKey?: string;
-  credentialRef?: string;
+  launchSecretRef?: string;
   baseUrlEnvKey?: string;
   baseUrl?: string;
   permissionPolicy?: "allow" | "ask" | "deny";
 };
 
-export type CredentialFormDraft = {
+export type LaunchSecretFormDraft = {
   id: string;
   secret: string;
   label?: string;
@@ -173,7 +173,7 @@ export function validateConnectionCreate(draft: ConnectionFormDraft):
   if (draft.model?.trim()) payload.model = draft.model.trim();
   if (draft.executable?.trim()) payload.executable = draft.executable.trim();
   if (draft.envKey?.trim()) payload.envKey = draft.envKey.trim();
-  if (draft.credentialRef?.trim()) payload.credentialRef = draft.credentialRef.trim();
+  if (draft.launchSecretRef?.trim()) payload.launchSecretRef = draft.launchSecretRef.trim();
   if (draft.baseUrlEnvKey?.trim()) payload.baseUrlEnvKey = draft.baseUrlEnvKey.trim();
   if (draft.baseUrl?.trim()) payload.baseUrl = draft.baseUrl.trim();
   if (draft.permissionPolicy) payload.permissionPolicy = draft.permissionPolicy;
@@ -210,8 +210,8 @@ export function validateConnectionUpdate(draft: ConnectionUpdateDraft):
   if (draft.envKey !== undefined) {
     payload.envKey = (draft.envKey ?? "").trim() || null;
   }
-  if (draft.credentialRef !== undefined) {
-    payload.credentialRef = (draft.credentialRef ?? "").trim() || null;
+  if (draft.launchSecretRef !== undefined) {
+    payload.launchSecretRef = (draft.launchSecretRef ?? "").trim() || null;
   }
   if (draft.baseUrlEnvKey !== undefined) {
     payload.baseUrlEnvKey = (draft.baseUrlEnvKey ?? "").trim() || null;
@@ -249,20 +249,20 @@ export const CONNECTION_NEXT_SESSION_TIP =
 export const CONNECTION_SKILLS_METADATA_TIP =
   "Skill 仅 name/path 元数据（_meta.tent.skills）· 是否生效取决于 provider · 不宣称已激活";
 
-/** Vault entry type shown in credentials UI (store has no multi-provider field). */
-export const CREDENTIAL_VAULT_TYPE = "secret";
+/** Machine Settings type label; a launch secret is never an account identity. */
+export const LAUNCH_SECRET_STORE_TYPE = "secret";
 
 /**
- * Credential set payload. Secret is passed through for RPC only —
+ * Launch-secret set payload. Secret is passed through for RPC only —
  * callers must not log it or render it back after submit.
  */
-export function validateCredentialSet(draft: CredentialFormDraft):
+export function validateLaunchSecretSet(draft: LaunchSecretFormDraft):
   | { ok: true; payload: { id: string; secret: string; label?: string } }
   | { ok: false; reason: string } {
   const id = (draft.id || "").trim();
-  if (!id) return { ok: false, reason: "credential id 不能为空" };
+  if (!id) return { ok: false, reason: "启动 Secret id 不能为空" };
   if (!/^[a-z][a-z0-9-]{0,62}$/.test(id)) {
-    return { ok: false, reason: "credential id 须匹配 a-z 开头的小写 id" };
+    return { ok: false, reason: "启动 Secret id 须匹配 a-z 开头的小写 id" };
   }
   if (!draft.secret || draft.secret.length === 0) {
     return { ok: false, reason: "secret 不能为空" };
@@ -276,10 +276,10 @@ export function validateCredentialSet(draft: CredentialFormDraft):
 }
 
 /**
- * Safe credential list row for Settings — ref id + vault type + configured status.
+ * Safe launch-secret list row for Settings — ref id + configured status.
  * Never includes secret, ciphertext, or provider tokens.
  */
-export function credentialListRow(c: CredentialProjection): {
+export function launchSecretListRow(c: LaunchSecretProjection): {
   id: string;
   type: string;
   status: "已配置";
@@ -290,7 +290,7 @@ export function credentialListRow(c: CredentialProjection): {
   const label = (c.label || c.metadata?.label || "").trim() || undefined;
   return {
     id: c.id,
-    type: CREDENTIAL_VAULT_TYPE,
+    type: LAUNCH_SECRET_STORE_TYPE,
     status: "已配置",
     ...(label ? { label } : {}),
     ...(c.updatedAt ? { updatedAt: c.updatedAt } : {}),
@@ -314,10 +314,10 @@ export type McpServerDraft = {
   command?: string;
   args?: string[];
   envKeys?: Record<string, string>;
-  envCredentialRefs?: Record<string, string>;
+  envSecretRefs?: Record<string, string>;
   url?: string;
   headerEnvKeys?: Record<string, string>;
-  headerCredentialRefs?: Record<string, string>;
+  headerSecretRefs?: Record<string, string>;
 };
 
 /** Map projection → editor drafts (name/path/enabled only). */
@@ -344,13 +344,13 @@ export function mcpDraftsFromProjection(
     ...(s.command !== undefined ? { command: s.command } : {}),
     ...(s.args !== undefined ? { args: [...s.args] } : {}),
     ...(s.envKeys !== undefined ? { envKeys: { ...s.envKeys } } : {}),
-    ...(s.envCredentialRefs !== undefined
-      ? { envCredentialRefs: { ...s.envCredentialRefs } }
+    ...(s.envSecretRefs !== undefined
+      ? { envSecretRefs: { ...s.envSecretRefs } }
       : {}),
     ...(s.url !== undefined ? { url: s.url } : {}),
     ...(s.headerEnvKeys !== undefined ? { headerEnvKeys: { ...s.headerEnvKeys } } : {}),
-    ...(s.headerCredentialRefs !== undefined
-      ? { headerCredentialRefs: { ...s.headerCredentialRefs } }
+    ...(s.headerSecretRefs !== undefined
+      ? { headerSecretRefs: { ...s.headerSecretRefs } }
       : {}),
   }));
 }
@@ -399,7 +399,7 @@ export function buildSkillsPayload(
 }
 
 /**
- * Wire mcpServers for connection.update — envKey/credentialRef *names* only.
+ * Wire mcpServers for connection.update — envKey/launchSecretRef *names* only.
  * Strips accidental secret-shaped keys; never plaintext env/headers.
  */
 export function buildMcpServersPayload(drafts: McpServerDraft[]): Array<Record<string, unknown>> {
@@ -413,16 +413,16 @@ export function buildMcpServersPayload(drafts: McpServerDraft[]): Array<Record<s
       if (d.command?.trim()) row.command = d.command.trim();
       if (d.args?.length) row.args = [...d.args];
       if (d.envKeys && Object.keys(d.envKeys).length) row.envKeys = { ...d.envKeys };
-      if (d.envCredentialRefs && Object.keys(d.envCredentialRefs).length) {
-        row.envCredentialRefs = { ...d.envCredentialRefs };
+      if (d.envSecretRefs && Object.keys(d.envSecretRefs).length) {
+        row.envSecretRefs = { ...d.envSecretRefs };
       }
     } else {
       if (d.url?.trim()) row.url = d.url.trim();
       if (d.headerEnvKeys && Object.keys(d.headerEnvKeys).length) {
         row.headerEnvKeys = { ...d.headerEnvKeys };
       }
-      if (d.headerCredentialRefs && Object.keys(d.headerCredentialRefs).length) {
-        row.headerCredentialRefs = { ...d.headerCredentialRefs };
+      if (d.headerSecretRefs && Object.keys(d.headerSecretRefs).length) {
+        row.headerSecretRefs = { ...d.headerSecretRefs };
       }
     }
     // Defensive: never allow plaintext secret bags on the wire from this helper.
@@ -461,13 +461,13 @@ export function mcpSourceLine(s: {
 }
 
 /**
- * MCP credential ref status for UI — only ref ids + 已配置 / 缺失.
- * Never secret values. `configuredIds` is the set of vault ids from credential.list.
+ * MCP launch-secret ref status for UI — only ref ids + 已配置 / 缺失.
+ * Never secret values. `configuredIds` comes from settings.launchSecret.list.
  */
-export function mcpCredentialStatusParts(
+export function mcpLaunchSecretStatusParts(
   s: {
-    envCredentialRefs?: Record<string, string> | null;
-    headerCredentialRefs?: Record<string, string> | null;
+    envSecretRefs?: Record<string, string> | null;
+    headerSecretRefs?: Record<string, string> | null;
   },
   configuredIds: ReadonlySet<string> | readonly string[]
 ): Array<{ envName: string; refId: string; configured: boolean }> {
@@ -488,20 +488,20 @@ export function mcpCredentialStatusParts(
       out.push({ envName, refId: id, configured: set.has(id) });
     }
   };
-  pushMap(s.envCredentialRefs);
-  pushMap(s.headerCredentialRefs);
+  pushMap(s.envSecretRefs);
+  pushMap(s.headerSecretRefs);
   return out;
 }
 
-/** Compact Chinese status for MCP credential refs (no secrets). */
-export function mcpCredentialStatusLine(
+/** Compact Chinese status for MCP launch-secret refs (no values). */
+export function mcpLaunchSecretStatusLine(
   s: {
-    envCredentialRefs?: Record<string, string> | null;
-    headerCredentialRefs?: Record<string, string> | null;
+    envSecretRefs?: Record<string, string> | null;
+    headerSecretRefs?: Record<string, string> | null;
   },
   configuredIds: ReadonlySet<string> | readonly string[]
 ): string {
-  const parts = mcpCredentialStatusParts(s, configuredIds);
+  const parts = mcpLaunchSecretStatusParts(s, configuredIds);
   if (!parts.length) return "";
   return parts
     .map((p) => `${p.refId}${p.configured ? "·已配置" : "·缺失"}`)
@@ -532,7 +532,7 @@ export function validateSkillAddDraft(draft: {
 }
 
 /**
- * Minimal MCP add draft (name + transport + command/url + optional credential refs).
+ * Minimal MCP add draft (name + transport + command/url + optional launch-secret refs).
  * Not an MCP proxy / marketplace UI — refs only.
  */
 export function validateMcpAddDraft(draft: {
@@ -540,9 +540,9 @@ export function validateMcpAddDraft(draft: {
   transport: "stdio" | "http";
   command?: string;
   url?: string;
-  /** Single env var name → credential id (optional convenience). */
-  envCredentialName?: string;
-  envCredentialRef?: string;
+  /** Single env/header name → launch-secret id (optional convenience). */
+  envSecretName?: string;
+  envLaunchSecretRef?: string;
   enabled?: boolean;
 }): { ok: true; entry: McpServerDraft } | { ok: false; reason: string } {
   const name = (draft.name || "").trim();
@@ -567,19 +567,19 @@ export function validateMcpAddDraft(draft: {
     if (!url) return { ok: false, reason: "http 需要 url" };
     entry.url = url;
   }
-  const envName = (draft.envCredentialName || "").trim();
-  const envRef = (draft.envCredentialRef || "").trim();
+  const envName = (draft.envSecretName || "").trim();
+  const envRef = (draft.envLaunchSecretRef || "").trim();
   if (envName || envRef) {
     if (!envName || !envRef) {
-      return { ok: false, reason: "credential 需同时填 env 名与 vault id" };
+      return { ok: false, reason: "启动 Secret 需同时填 env/header 名与 ref id" };
     }
     if (!/^[a-z][a-z0-9-]{0,62}$/.test(envRef)) {
-      return { ok: false, reason: "credentialRef 须为 vault id" };
+      return { ok: false, reason: "launchSecretRef 须为有效启动 Secret id" };
     }
     if (draft.transport === "stdio") {
-      entry.envCredentialRefs = { [envName]: envRef };
+      entry.envSecretRefs = { [envName]: envRef };
     } else {
-      entry.headerCredentialRefs = { [envName]: envRef };
+      entry.headerSecretRefs = { [envName]: envRef };
     }
   }
   return { ok: true, entry };

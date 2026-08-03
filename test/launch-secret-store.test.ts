@@ -1,5 +1,5 @@
 /**
- * Windows MVP machine-local CredentialStore + credentialRef injection.
+ * Windows MVP machine-local LaunchSecretStore + launchSecretRef injection.
  * Offline: inject test protector (no real DPAPI / network).
  */
 import assert from "node:assert/strict";
@@ -17,11 +17,11 @@ import {
   type RuntimeEvent,
   type AgentConnectionConfig,
 } from "../src/runtime/index.js";
-import { createTestCredentialProtector } from "../src/service/credential-protector.js";
+import { createTestLaunchSecretProtector } from "../src/service/launch-secret-protector.js";
 import {
-  CredentialStore,
-  credentialsPath,
-} from "../src/service/credential-store.js";
+  LaunchSecretStore,
+  launchSecretsPath,
+} from "../src/service/launch-secret-store.js";
 import { CLIENT_METHODS, isClientMethod } from "../src/service/types.js";
 import { createServiceClient } from "../src/service/client.js";
 import { startLocalTentService } from "../src/service/service.js";
@@ -39,7 +39,7 @@ async function tempDir(prefix: string): Promise<string> {
 }
 
 function mockProtector() {
-  return createTestCredentialProtector("test-enc:");
+  return createTestLaunchSecretProtector("test-enc:");
 }
 
 async function startConnection(
@@ -54,18 +54,21 @@ async function startConnection(
   return runtime.startSession({ ...start, lastTaskId, workspace });
 }
 
-test("CLIENT_METHODS includes credential.list/set/delete and no get", () => {
-  assert.ok(isClientMethod("credential.list"));
-  assert.ok(isClientMethod("credential.set"));
-  assert.ok(isClientMethod("credential.delete"));
-  assert.equal(isClientMethod("credential.get"), false);
-  assert.equal(isClientMethod("credential.resolve"), false);
-  assert.ok(CLIENT_METHODS.includes("credential.list"));
+test("CLIENT_METHODS includes settings.launchSecret.list/set/delete and no get", () => {
+  assert.ok(isClientMethod("settings.launchSecret.list"));
+  assert.ok(isClientMethod("settings.launchSecret.set"));
+  assert.ok(isClientMethod("settings.launchSecret.delete"));
+  assert.equal(isClientMethod("launchSecret.get"), false);
+  assert.equal(isClientMethod("launchSecret.resolve"), false);
+  assert.equal(isClientMethod("credential.list"), false);
+  assert.equal(isClientMethod("credential.set"), false);
+  assert.equal(isClientMethod("credential.delete"), false);
+  assert.ok(CLIENT_METHODS.includes("settings.launchSecret.list"));
 });
 
-test("CredentialStore: disk has ciphertext only; list never returns secret", async () => {
+test("LaunchSecretStore: disk has ciphertext only; list never returns secret", async () => {
   const dataDir = await tempDir("tent-cred-store-");
-  const store = new CredentialStore(dataDir, { protector: mockProtector() });
+  const store = new LaunchSecretStore(dataDir, { protector: mockProtector() });
 
   const setResult = await store.set("grok-key", SECRET, { label: "Grok CPA" });
   assert.equal(setResult.id, "grok-key");
@@ -84,16 +87,16 @@ test("CredentialStore: disk has ciphertext only; list never returns secret", asy
   assert.equal(JSON.stringify(listed).includes(SECRET), false);
   assert.equal("ciphertext" in listed[0]!, false);
 
-  const raw = await fs.readFile(credentialsPath(dataDir), "utf8");
+  const raw = await fs.readFile(launchSecretsPath(dataDir), "utf8");
   assert.equal(raw.includes(SECRET), false, "disk must not contain plaintext secret");
   assert.equal(raw.includes("sk-test"), false);
   const parsed = JSON.parse(raw) as {
-    credentials: Array<{ id: string; ciphertext: string; metadata?: { label?: string } }>;
+    launchSecrets: Array<{ id: string; ciphertext: string; metadata?: { label?: string } }>;
   };
-  assert.equal(parsed.credentials.length, 1);
-  assert.ok(parsed.credentials[0]!.ciphertext.startsWith("test-enc:"));
-  assert.notEqual(parsed.credentials[0]!.ciphertext, SECRET);
-  assert.equal(parsed.credentials[0]!.metadata?.label, "Grok CPA");
+  assert.equal(parsed.launchSecrets.length, 1);
+  assert.ok(parsed.launchSecrets[0]!.ciphertext.startsWith("test-enc:"));
+  assert.notEqual(parsed.launchSecrets[0]!.ciphertext, SECRET);
+  assert.equal(parsed.launchSecrets[0]!.metadata?.label, "Grok CPA");
 
   const plain = await store.resolve("grok-key");
   assert.equal(plain, SECRET);
@@ -104,17 +107,17 @@ test("CredentialStore: disk has ciphertext only; list never returns secret", asy
 });
 
 test(
-  "CredentialStore: Windows DPAPI survives a fresh store instance",
+  "LaunchSecretStore: Windows DPAPI survives a fresh store instance",
   { skip: process.platform !== "win32" },
   async () => {
     const dataDir = await tempDir("tent-cred-dpapi-");
     const secret = `tent-dpapi-${Date.now()}-${Math.random()}`;
     try {
-      await new CredentialStore(dataDir).set("dpapi-smoke", secret);
-      const raw = await fs.readFile(credentialsPath(dataDir), "utf8");
+      await new LaunchSecretStore(dataDir).set("dpapi-smoke", secret);
+      const raw = await fs.readFile(launchSecretsPath(dataDir), "utf8");
       assert.equal(raw.includes(secret), false);
       assert.equal(
-        await new CredentialStore(dataDir).resolve("dpapi-smoke"),
+        await new LaunchSecretStore(dataDir).resolve("dpapi-smoke"),
         secret
       );
     } finally {
@@ -123,18 +126,18 @@ test(
   }
 );
 
-test("CredentialStore: invalid id and corrupt file quarantine", async () => {
+test("LaunchSecretStore: invalid id and corrupt file quarantine", async () => {
   const dataDir = await tempDir("tent-cred-bad-");
-  const store = new CredentialStore(dataDir, { protector: mockProtector() });
+  const store = new LaunchSecretStore(dataDir, { protector: mockProtector() });
 
-  await assert.rejects(() => store.set("BAD_ID", SECRET), /Invalid credential id/);
+  await assert.rejects(() => store.set("BAD_ID", SECRET), /Invalid launch secret id/);
   await assert.rejects(() => store.set("ok-id", ""), /non-empty/);
 
-  const file = credentialsPath(dataDir);
+  const file = launchSecretsPath(dataDir);
   await fs.mkdir(dataDir, { recursive: true });
   await fs.writeFile(file, "{not-json", "utf8");
 
-  const store2 = new CredentialStore(dataDir, { protector: mockProtector() });
+  const store2 = new LaunchSecretStore(dataDir, { protector: mockProtector() });
   const list = await store2.list();
   assert.deepEqual(list, []);
   const names = await fs.readdir(dataDir);
@@ -144,9 +147,9 @@ test("CredentialStore: invalid id and corrupt file quarantine", async () => {
   );
 });
 
-test("CredentialStore: good+bad row quarantines whole file; backup keeps bad ciphertext", async () => {
+test("LaunchSecretStore: good+bad row quarantines whole file; backup keeps bad ciphertext", async () => {
   const dataDir = await tempDir("tent-cred-row-quarantine-");
-  const file = credentialsPath(dataDir);
+  const file = launchSecretsPath(dataDir);
   await fs.mkdir(dataDir, { recursive: true });
 
   const badCiphertext = "test-enc:BAD-ROW-CIPHERTEXT-MUST-SURVIVE-BACKUP";
@@ -154,7 +157,7 @@ test("CredentialStore: good+bad row quarantines whole file; backup keeps bad cip
   await fs.writeFile(
     file,
     JSON.stringify({
-      credentials: [
+      launchSecrets: [
         {
           id: "good-key",
           ciphertext: goodCiphertext,
@@ -173,12 +176,12 @@ test("CredentialStore: good+bad row quarantines whole file; backup keeps bad cip
     "utf8"
   );
 
-  const store = new CredentialStore(dataDir, { protector: mockProtector() });
+  const store = new LaunchSecretStore(dataDir, { protector: mockProtector() });
   assert.deepEqual(await store.list(), []);
   await assert.rejects(() => fs.access(file));
 
   const names = await fs.readdir(dataDir);
-  const backups = names.filter((n) => n.startsWith("credentials.json.corrupt-"));
+  const backups = names.filter((n) => n.startsWith("launch-secrets.json.corrupt-"));
   assert.equal(backups.length, 1);
 
   const backupRaw = await fs.readFile(path.join(dataDir, backups[0]!), "utf8");
@@ -187,18 +190,18 @@ test("CredentialStore: good+bad row quarantines whole file; backup keeps bad cip
     "quarantine backup must retain original bad-row ciphertext"
   );
   assert.ok(backupRaw.includes(goodCiphertext));
-  const quarantined = JSON.parse(backupRaw) as { credentials: unknown[] };
-  assert.equal(quarantined.credentials.length, 2);
+  const quarantined = JSON.parse(backupRaw) as { launchSecrets: unknown[] };
+  assert.equal(quarantined.launchSecrets.length, 2);
 });
 
-test("CredentialStore: invalid metadata row quarantines whole file", async () => {
+test("LaunchSecretStore: invalid metadata row quarantines whole file", async () => {
   const dataDir = await tempDir("tent-cred-bad-meta-");
-  const file = credentialsPath(dataDir);
+  const file = launchSecretsPath(dataDir);
   await fs.mkdir(dataDir, { recursive: true });
   await fs.writeFile(
     file,
     JSON.stringify({
-      credentials: [
+      launchSecrets: [
         {
           id: "ok-key",
           ciphertext: "test-enc:ok",
@@ -211,19 +214,50 @@ test("CredentialStore: invalid metadata row quarantines whole file", async () =>
     "utf8"
   );
 
-  const store = new CredentialStore(dataDir, { protector: mockProtector() });
+  const store = new LaunchSecretStore(dataDir, { protector: mockProtector() });
   assert.deepEqual(await store.list(), []);
   await assert.rejects(() => fs.access(file));
   const names = await fs.readdir(dataDir);
-  assert.ok(names.some((n) => n.startsWith("credentials.json.corrupt-")));
+  assert.ok(names.some((n) => n.startsWith("launch-secrets.json.corrupt-")));
 });
 
-test("RPC credential.*: set/list/delete never echo secret; no get method", async () => {
+test("LaunchSecretStore hard cut never reads old credential file or old root field", async () => {
+  const oldOnlyDir = await tempDir("tent-launch-secret-old-file-");
+  const oldFile = path.join(oldOnlyDir, "credentials.json");
+  await fs.writeFile(
+    oldFile,
+    JSON.stringify({
+      credentials: [
+        {
+          id: "old-secret",
+          ciphertext: "test-enc:b2xk",
+          createdAt: "2024-01-01T00:00:00.000Z",
+          updatedAt: "2024-01-01T00:00:00.000Z",
+        },
+      ],
+    }),
+    "utf8"
+  );
+  const oldOnly = new LaunchSecretStore(oldOnlyDir, { protector: mockProtector() });
+  assert.deepEqual(await oldOnly.list(), []);
+  await fs.access(oldFile);
+
+  const oldRootDir = await tempDir("tent-launch-secret-old-root-");
+  const canonicalFile = launchSecretsPath(oldRootDir);
+  await fs.writeFile(canonicalFile, JSON.stringify({ credentials: [] }), "utf8");
+  const oldRoot = new LaunchSecretStore(oldRootDir, { protector: mockProtector() });
+  assert.deepEqual(await oldRoot.list(), []);
+  await assert.rejects(() => fs.access(canonicalFile));
+  const names = await fs.readdir(oldRootDir);
+  assert.equal(names.filter((name) => name.startsWith("launch-secrets.json.corrupt-")).length, 1);
+});
+
+test("RPC settings.launchSecret.*: set/list/delete never echo secret; no get method", async () => {
   const dataDir = await tempDir("tent-cred-rpc-");
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: false,
-    credentialProtector: mockProtector(),
+    launchSecretProtector: mockProtector(),
     connections: [
       {
         connectionId: "fake-default",
@@ -236,50 +270,91 @@ test("RPC credential.*: set/list/delete never echo secret; no get method", async
   try {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
 
-    const setRes = (await client.credentialSet("cpa-key", SECRET, {
-      label: "test",
-    })) as {
-      credential: { id: string; label?: string; metadata?: { label?: string } };
+    const setRes = (await client.settingsLaunchSecretSet("cpa-key", SECRET, "test")) as {
+      launchSecret: { id: string; label?: string; metadata?: { label?: string } };
     };
-    assert.equal(setRes.credential.id, "cpa-key");
+    assert.equal(setRes.launchSecret.id, "cpa-key");
     assert.ok(
-      setRes.credential.label === "test" || setRes.credential.metadata?.label === "test"
+      setRes.launchSecret.label === "test" || setRes.launchSecret.metadata?.label === "test"
     );
     assert.equal(JSON.stringify(setRes).includes(SECRET), false);
 
-    const listRes = (await client.credentialList()) as {
-      credentials: Array<Record<string, unknown>>;
+    const listRes = (await client.settingsLaunchSecretList()) as {
+      launchSecrets: Array<Record<string, unknown>>;
     };
-    assert.equal(listRes.credentials.length, 1);
+    assert.equal(listRes.launchSecrets.length, 1);
     assert.equal(JSON.stringify(listRes).includes(SECRET), false);
 
     // Direct RPC: method not found for get; set response still clean.
-    const getRpc = await rpcCall(svc.url, "credential.get", { id: "cpa-key" }, {
+    const getRpc = await rpcCall(svc.url, "launchSecret.get", { id: "cpa-key" }, {
       token: svc.token,
     });
     assert.ok(getRpc.error);
     assert.equal(getRpc.error!.code, -32601);
 
-    const rawDisk = await fs.readFile(credentialsPath(dataDir), "utf8");
+    for (const method of ["credential.list", "credential.set", "credential.delete"]) {
+      const retiredRpc = await rpcCall(svc.url, method, { id: "cpa-key", secret: SECRET }, {
+        token: svc.token,
+      });
+      assert.equal(retiredRpc.error?.code, -32601, method);
+    }
+
+    const rawDisk = await fs.readFile(launchSecretsPath(dataDir), "utf8");
     assert.equal(rawDisk.includes(SECRET), false);
 
-    // Connection projection can show credential-reference presence.
+    // Connection projection can show launchSecret-reference presence.
     const created = (await client.connectionCreate({
       connectionId: "with-ref",
       provider: "grok",
       adapterId: "grok-acp",
       envKey: "CPA_GROK_API_KEY",
-      credentialRef: "cpa-key",
+      launchSecretRef: "cpa-key",
     })) as {
       connection: {
-        credentialRef?: string;
-        credentialExists?: boolean;
+        launchSecretRef?: string;
+        launchSecretExists?: boolean;
         envKey?: string;
       };
     };
-    assert.equal(created.connection.credentialRef, "cpa-key");
-    assert.equal(created.connection.credentialExists, true);
+    assert.equal(created.connection.launchSecretRef, "cpa-key");
+    assert.equal(created.connection.launchSecretExists, true);
     assert.equal(JSON.stringify(created).includes(SECRET), false);
+
+    for (const [connectionId, retiredFields] of [
+      ["retired-connection-ref", { credentialRef: "cpa-key" }],
+      [
+        "retired-mcp-ref",
+        {
+          mcpServers: [
+            {
+              name: "legacy-mcp",
+              transport: "stdio",
+              command: "node",
+              envCredentialRefs: { API_KEY: "cpa-key" },
+            },
+          ],
+        },
+      ],
+    ] as const) {
+      await assert.rejects(
+        () =>
+          client.call("connection.create", {
+            connectionId,
+            provider: "grok",
+            adapterId: "grok-acp",
+            ...retiredFields,
+          }),
+        /unknown|unsupported|credential/i
+      );
+    }
+
+    const unchangedConnections = (await client.connectionList()) as {
+      connections: Array<{ connectionId: string }>;
+    };
+    assert.deepEqual(
+      unchangedConnections.connections.map((connection) => connection.connectionId).sort(),
+      ["fake-default", "with-ref"]
+    );
 
     // Reject secret-like Connection fields.
     await assert.rejects(
@@ -293,14 +368,62 @@ test("RPC credential.*: set/list/delete never echo secret; no get method", async
       /dangerous|unsupported|secret|apiKey/i
     );
 
-    await client.credentialDelete("cpa-key");
-    const after = (await client.credentialList()) as { credentials: unknown[] };
-    assert.equal(after.credentials.length, 0);
+    await client.settingsLaunchSecretDelete("cpa-key");
+    const after = (await client.settingsLaunchSecretList()) as { launchSecrets: unknown[] };
+    assert.equal(after.launchSecrets.length, 0);
 
     const gone = (await client.connectionGet("with-ref")) as {
-      connection: { credentialExists?: boolean };
+      connection: { launchSecretExists?: boolean };
     };
-    assert.equal(gone.connection.credentialExists, false);
+    assert.equal(gone.connection.launchSecretExists, false);
+  } finally {
+    await svc.stop();
+  }
+});
+
+test("settings.launchSecret.* rejects verified Session callers even when actor=user", async () => {
+  const dataDir = await tempDir("tent-launch-secret-authority-");
+  const svc = await startLocalTentService({
+    dataDir,
+    writeEndpoint: false,
+    launchSecretProtector: mockProtector(),
+    connections: [],
+  });
+  try {
+    const settingsClient = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    await settingsClient.settingsLaunchSecretSet("keep-secret", SECRET, "kept");
+
+    const entered = await svc.runtime.enterExternalSession({
+      workspace: "ws-launch-secret-authority",
+      roleId: "rl-test",
+      externalKey: "test:launch-secret-authority",
+    });
+    assert.ok(entered.sessionToken);
+    const sessionClient = createServiceClient({
+      baseUrl: svc.url,
+      token: svc.token,
+      currentSessionId: entered.sessionId,
+      currentSessionToken: entered.sessionToken,
+    });
+
+    for (const [method, params] of [
+      ["settings.launchSecret.list", { actor: "user" }],
+      ["settings.launchSecret.set", { id: "forbidden-secret", secret: SECRET, actor: "user" }],
+      ["settings.launchSecret.delete", { id: "keep-secret", actor: "user" }],
+    ] as const) {
+      await assert.rejects(
+        () => sessionClient.call(method, params),
+        (error: unknown) =>
+          error instanceof Error &&
+          (error as Error & { code?: number }).code === -32001 &&
+          /machine Settings client/i.test(error.message)
+      );
+    }
+
+    const after = (await settingsClient.settingsLaunchSecretList()) as {
+      launchSecrets: Array<{ id: string }>;
+    };
+    assert.deepEqual(after.launchSecrets.map((item) => item.id), ["keep-secret"]);
   } finally {
     await svc.stop();
   }
@@ -309,7 +432,7 @@ test("RPC credential.*: set/list/delete never echo secret; no get method", async
 test("AgentRuntime: Connection env resolution injects env; missing ref fails; no secret on SessionRecord", async () => {
   const dataDir = await tempDir("tent-cred-rt-");
   const cwd = await tempDir("tent-cred-cwd-");
-  const store = new CredentialStore(dataDir, { protector: mockProtector() });
+  const store = new LaunchSecretStore(dataDir, { protector: mockProtector() });
   await store.set("vault-1", SECRET);
 
   let capturedEnv: Record<string, string> | undefined;
@@ -350,7 +473,7 @@ test("AgentRuntime: Connection env resolution injects env; missing ref fails; no
     provider: "mock",
     adapterId: "mock-env-capture",
     envKey: "CPA_GROK_API_KEY",
-    credentialRef: "vault-1",
+    launchSecretRef: "vault-1",
     permissionPolicy: "deny",
   };
 
@@ -360,7 +483,7 @@ test("AgentRuntime: Connection env resolution injects env; missing ref fails; no
     connections: [route],
     adapters: [mockAdapter, createFakeAdapter()],
     resolveConnectionEnv: async (candidate) => {
-      const ref = candidate.credentialRef?.trim();
+      const ref = candidate.launchSecretRef?.trim();
       const envKey = candidate.envKey?.trim();
       if (!ref || !envKey) return {};
       const secret = await store.resolve(ref);
@@ -395,7 +518,7 @@ test("AgentRuntime: Connection env resolution injects env; missing ref fails; no
   await runtime.stopSession(sessionId, "user");
   await runtime.shutdown();
 
-  // Missing credentialRef fails loud
+  // Missing launchSecretRef fails loud
   const dataDir2 = await tempDir("tent-cred-rt2-");
   const runtime2 = createAgentRuntime({
     dataDir: dataDir2,
@@ -405,12 +528,12 @@ test("AgentRuntime: Connection env resolution injects env; missing ref fails; no
         provider: "mock",
         adapterId: "mock-env-capture",
         envKey: "CPA_GROK_API_KEY",
-        credentialRef: "does-not-exist",
+        launchSecretRef: "does-not-exist",
       },
     ],
     adapters: [mockAdapter, createFakeAdapter()],
     resolveConnectionEnv: async (candidate) => {
-      const ref = candidate.credentialRef?.trim();
+      const ref = candidate.launchSecretRef?.trim();
       const envKey = candidate.envKey?.trim();
       if (!ref || !envKey) return {};
       try {
@@ -429,14 +552,14 @@ test("AgentRuntime: Connection env resolution injects env; missing ref fails; no
         connectionId: "missing-ref",
         cwd,
       }),
-    /Credential not found|empty/i
+    /Launch secret not found|empty/i
   );
   const missingRecord = await runtime2.registry.read(missingSessionId);
   assert.equal(missingRecord?.state, "failed");
   assert.equal(JSON.stringify(missingRecord).includes(SECRET), false);
   await runtime2.shutdown();
 
-  // credentialRef without envKey fails
+  // launchSecretRef without envKey fails
   const dataDir3 = await tempDir("tent-cred-rt3-");
   const runtime3 = createAgentRuntime({
     dataDir: dataDir3,
@@ -445,7 +568,7 @@ test("AgentRuntime: Connection env resolution injects env; missing ref fails; no
         connectionId: "no-envkey",
         provider: "fake",
         adapterId: FAKE_ADAPTER_ID,
-        credentialRef: "vault-1",
+        launchSecretRef: "vault-1",
       },
     ],
     resolveConnectionEnv: async () => ({ X: "y" }),
@@ -462,7 +585,7 @@ test("AgentRuntime: Connection env resolution injects env; missing ref fails; no
   await runtime3.shutdown();
 });
 
-test("startLocalTentService: credentialRef reaches mock ACP env via vault", async () => {
+test("startLocalTentService: launchSecretRef reaches mock ACP env through encrypted store", async () => {
   const dataDir = await tempDir("tent-cred-svc-");
   const logPath = path.join(dataDir, "mock-acp.log");
   const connections: AgentConnectionConfig[] = [
@@ -480,7 +603,7 @@ test("startLocalTentService: credentialRef reaches mock ACP env via vault", asyn
       args: [MOCK, "agent", "--model", "test-model", "stdio"],
       model: "test-model",
       envKey: "CPA_GROK_API_KEY",
-      credentialRef: "svc-vault",
+      launchSecretRef: "svc-vault",
       permissionPolicy: "deny",
       promptTimeoutMs: 8_000,
     },
@@ -490,10 +613,10 @@ test("startLocalTentService: credentialRef reaches mock ACP env via vault", asyn
     dataDir,
     writeEndpoint: false,
     connections,
-    credentialProtector: mockProtector(),
+    launchSecretProtector: mockProtector(),
   });
   try {
-    await svc.credentials.set("svc-vault", SECRET, { label: "svc" });
+    await svc.launchSecrets.set("svc-vault", SECRET, { label: "svc" });
     const cwd = await tempDir("tent-cred-svc-cwd-");
     const sessionId = makeSessionId(() => 0.44);
     const handle = await startConnection(svc.runtime, {
@@ -521,11 +644,11 @@ test("startLocalTentService: credentialRef reaches mock ACP env via vault", asyn
       // session may already be cleaned; still ok
     }
 
-    const vaultRaw = await fs.readFile(credentialsPath(dataDir), "utf8");
-    assert.equal(vaultRaw.includes(SECRET), false);
+    const storeRaw = await fs.readFile(launchSecretsPath(dataDir), "utf8");
+    assert.equal(storeRaw.includes(SECRET), false);
 
-    // Remove vault entry — Connection still references it → fail-loud before live.
-    await svc.credentials.delete("svc-vault");
+    // Remove launch-secret entry — Connection still references it → fail loud before live.
+    await svc.launchSecrets.delete("svc-vault");
     await assert.rejects(
       () =>
         startConnection(svc.runtime, {
@@ -538,7 +661,7 @@ test("startLocalTentService: credentialRef reaches mock ACP env via vault", asyn
             MOCK_ACP_PROMPT_TEXT: "CRED_OK",
           },
         }),
-      /Credential not found|empty|credentialRef/i
+      /Launch secret not found|empty|launchSecretRef/i
     );
   } finally {
     await svc.stop();

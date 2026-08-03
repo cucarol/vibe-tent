@@ -23,8 +23,8 @@ export interface AgentConnectionConfig {
   model?: string;
   /** Process env key name only; the value is never persisted. */
   envKey?: string;
-  /** CredentialStore id only; resolve it for each start/resume. */
-  credentialRef?: string;
+  /** LaunchSecretStore id only; resolve it for each start/resume. */
+  launchSecretRef?: string;
   /** Process env key name only; its resolved endpoint affects continuity digest. */
   baseUrlEnvKey?: string;
   /** Non-secret endpoint configured directly in Settings. */
@@ -51,7 +51,7 @@ export interface FakeConnectionOptions {
 /**
  * Persisted session binding. `effectiveEndpointDigest` is derived by the launch
  * planner from a normalized endpoint; the raw resolved endpoint is never stored.
- * No raw environment map or credential material may be added to this type.
+ * No raw environment map or secret material may be added to this type.
  */
 export interface AgentConnectionSnapshot {
   connectionId: string;
@@ -62,7 +62,7 @@ export interface AgentConnectionSnapshot {
   args?: string[];
   executable?: string;
   envKey?: string;
-  credentialRef?: string;
+  launchSecretRef?: string;
   baseUrlEnvKey?: string;
   baseUrl?: string;
   permissionPolicy?: AcpPermissionPolicy;
@@ -96,7 +96,7 @@ function stableJson(value: unknown): string {
 /**
  * The continuity digest covers every non-secret launch-affecting Connection fact,
  * including custom command/args and skills/MCP topology. It intentionally uses
- * only env key names and credential ids, never their resolved values.
+ * only env key names and launch-secret ids, never their resolved values.
  */
 export function calculateAgentConnectionLaunchDigest(
   connection: AgentConnectionConfig,
@@ -106,7 +106,7 @@ export function calculateAgentConnectionLaunchDigest(
   const input = {
     connectionId: canonical.connectionId, provider: canonical.provider, adapterId: canonical.adapterId,
     command: canonical.command, args: canonical.args, executable: canonical.executable, model: canonical.model,
-    envKey: canonical.envKey, credentialRef: canonical.credentialRef,
+    envKey: canonical.envKey, launchSecretRef: canonical.launchSecretRef,
     baseUrlEnvKey: canonical.baseUrlEnvKey, baseUrl: canonical.baseUrl,
     effectiveEndpointDigest, permissionPolicy: canonical.permissionPolicy,
     promptTimeoutMs: canonical.promptTimeoutMs,
@@ -129,7 +129,7 @@ export function createAgentConnectionSnapshot(
     ...(connection.args?.length ? { args: [...connection.args] } : {}),
     ...(connection.executable ? { executable: connection.executable } : {}),
     ...(connection.envKey ? { envKey: connection.envKey } : {}),
-    ...(connection.credentialRef ? { credentialRef: connection.credentialRef } : {}),
+    ...(connection.launchSecretRef ? { launchSecretRef: connection.launchSecretRef } : {}),
     ...(connection.baseUrlEnvKey ? { baseUrlEnvKey: connection.baseUrlEnvKey } : {}),
     ...(connection.baseUrl ? { baseUrl: connection.baseUrl } : {}),
     ...(connection.permissionPolicy ? { permissionPolicy: connection.permissionPolicy } : {}),
@@ -156,7 +156,7 @@ export function connectionConfigFromSnapshot(snapshot: AgentConnectionSnapshot):
     ...(snapshot.args ? { args: [...snapshot.args] } : {}),
     ...(snapshot.executable ? { executable: snapshot.executable } : {}),
     ...(snapshot.envKey ? { envKey: snapshot.envKey } : {}),
-    ...(snapshot.credentialRef ? { credentialRef: snapshot.credentialRef } : {}),
+    ...(snapshot.launchSecretRef ? { launchSecretRef: snapshot.launchSecretRef } : {}),
     ...(snapshot.baseUrlEnvKey ? { baseUrlEnvKey: snapshot.baseUrlEnvKey } : {}),
     ...(snapshot.baseUrl ? { baseUrl: snapshot.baseUrl } : {}),
     ...(snapshot.permissionPolicy ? { permissionPolicy: snapshot.permissionPolicy } : {}),
@@ -174,20 +174,20 @@ export function connectionConfigFromSnapshot(snapshot: AgentConnectionSnapshot):
 
 const SNAPSHOT_KEYS = new Set([
   "connectionId", "provider", "adapterId", "model", "command", "args", "executable",
-  "envKey", "credentialRef", "baseUrlEnvKey", "baseUrl", "permissionPolicy",
+  "envKey", "launchSecretRef", "baseUrlEnvKey", "baseUrl", "permissionPolicy",
   "promptTimeoutMs", "permissionTimeoutMs", "skills", "mcpServers", "fake",
   "effectiveEndpointDigest", "launchDigest",
 ]);
 const SKILL_KEYS = new Set(["name", "path", "enabled"]);
 const MCP_KEYS = new Set([
   "name", "transport", "enabled", "command", "args", "envKeys",
-  "envCredentialRefs", "url", "headerEnvKeys", "headerCredentialRefs",
+  "envSecretRefs", "url", "headerEnvKeys", "headerSecretRefs",
 ]);
 const FAKE_KEYS = new Set([
   "sleepMs", "exitCode", "waitForSignal", "emitStdout", "failLaunch", "canResume",
 ]);
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const CREDENTIAL_REF_RE = /^[a-z][a-z0-9-]{0,62}$/;
+const LAUNCH_SECRET_REF_RE = /^[a-z][a-z0-9-]{0,62}$/;
 const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
 
 function plainRecord(value: unknown): value is Record<string, unknown> {
@@ -228,7 +228,7 @@ function validMcp(value: unknown): value is ConnectionMcpServer {
       (!Array.isArray(value.args) || !value.args.every((entry) => typeof entry === "string"))) {
     return false;
   }
-  for (const key of ["envKeys", "envCredentialRefs", "headerEnvKeys", "headerCredentialRefs"] as const) {
+  for (const key of ["envKeys", "envSecretRefs", "headerEnvKeys", "headerSecretRefs"] as const) {
     if (value[key] !== undefined && !stringMap(value[key])) return false;
   }
   return true;
@@ -275,8 +275,8 @@ export function parseAgentConnectionSnapshot(value: unknown): AgentConnectionSna
     if (value[key] !== undefined &&
         (typeof value[key] !== "string" || !ENV_KEY_RE.test(value[key]))) return null;
   }
-  if (value.credentialRef !== undefined &&
-      (typeof value.credentialRef !== "string" || !CREDENTIAL_REF_RE.test(value.credentialRef))) {
+  if (value.launchSecretRef !== undefined &&
+      (typeof value.launchSecretRef !== "string" || !LAUNCH_SECRET_REF_RE.test(value.launchSecretRef))) {
     return null;
   }
   if (!safeBaseUrl(value.baseUrl)) return null;

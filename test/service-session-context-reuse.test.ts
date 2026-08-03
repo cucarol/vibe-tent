@@ -517,7 +517,7 @@ test("Connection launch digest covers model, endpoint key, Skill, MCP, and crede
     executable: "/usr/bin/grok",
     model: "grok-4",
     envKey: "XAI_API_KEY",
-    credentialRef: "cred-main",
+    launchSecretRef: "cred-main",
     baseUrlEnvKey: "XAI_BASE_URL",
     permissionPolicy: "deny",
     promptTimeoutMs: 60_000,
@@ -530,9 +530,9 @@ test("Connection launch digest covers model, endpoint key, Skill, MCP, and crede
         command: "mcp-docs",
         args: ["--stdio"],
         envKeys: { API_TOKEN: "DOCS_TOKEN_ENV" },
-        envCredentialRefs: { API_TOKEN: "cred-docs" },
+        envSecretRefs: { API_TOKEN: "cred-docs" },
         headerEnvKeys: {},
-        headerCredentialRefs: {},
+        headerSecretRefs: {},
       },
     ],
   };
@@ -540,19 +540,19 @@ test("Connection launch digest covers model, endpoint key, Skill, MCP, and crede
   const variants: AgentConnectionConfig[] = [
     { ...base, model: "grok-4-fast" },
     { ...base, baseUrlEnvKey: "XAI_BASE_URL_ALT" },
-    { ...base, credentialRef: "cred-main-alt" },
+    { ...base, launchSecretRef: "cred-main-alt" },
     { ...base, skills: [{ name: "extra-skill", path: "/skills/v2", enabled: true }] },
     {
       ...base,
-      mcpServers: [{ ...base.mcpServers![0]!, envCredentialRefs: { API_TOKEN: "cred-docs-alt" } }],
+      mcpServers: [{ ...base.mcpServers![0]!, envSecretRefs: { API_TOKEN: "cred-docs-alt" } }],
     },
   ];
   for (const variant of variants) {
     assert.notEqual(calculateAgentConnectionLaunchDigest(variant), digest);
   }
   const snapshot = createAgentConnectionSnapshot(base, { effectiveEndpointDigest: "sha256:endpoint" });
-  assert.equal(snapshot.credentialRef, "cred-main");
-  assert.equal(snapshot.mcpServers?.[0]?.envCredentialRefs?.API_TOKEN, "cred-docs");
+  assert.equal(snapshot.launchSecretRef, "cred-main");
+  assert.equal(snapshot.mcpServers?.[0]?.envSecretRefs?.API_TOKEN, "cred-docs");
   assert.equal(JSON.stringify(snapshot).includes("actual-secret"), false);
 });
 

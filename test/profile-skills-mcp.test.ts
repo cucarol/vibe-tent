@@ -149,7 +149,7 @@ test("parseMcpServersArrayValue rejects plaintext env/headers maps", () => {
   assert.equal(ok.ok, true);
 });
 
-test("resolveAcpMcpServersWire fails loud on missing env / credential", () => {
+test("resolveAcpMcpServersWire fails loud on missing env / launch secret", () => {
   const servers = [
     {
       name: "fs",
@@ -168,21 +168,21 @@ test("resolveAcpMcpServersWire fails loud on missing env / credential", () => {
       name: "fs",
       transport: "stdio" as const,
       command: "npx",
-      envCredentialRefs: { API_KEY: "mcp-key-1" },
+      envSecretRefs: { API_KEY: "mcp-key-1" },
     },
   ];
   assert.throws(
     () =>
       resolveAcpMcpServersWire(withCred, {
         planEnv: {},
-        resolveCredential: () => undefined,
+        resolveLaunchSecret: () => undefined,
       }),
-    /credential not found/i
+    /launch secret not found/i
   );
 
   const wire = resolveAcpMcpServersWire(withCred, {
     planEnv: {},
-    resolveCredential: (id) => (id === "mcp-key-1" ? "secret-value" : undefined),
+    resolveLaunchSecret: (id) => (id === "mcp-key-1" ? "secret-value" : undefined),
   });
   assert.equal(wire.length, 1);
   assert.ok("command" in wire[0]!);
@@ -428,7 +428,7 @@ test("session/new projects mcpServers + skill meta from Connection snapshot; liv
   }
 });
 
-test("MCP credentialRef plaintext is ephemeral and redacted from ACP failure diagnostics", async () => {
+test("MCP launchSecretRef plaintext is ephemeral and redacted from ACP failure diagnostics", async () => {
   const secret = "mcp-vault-secret-never-persist";
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-redact-rt-"));
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-redact-cwd-"));
@@ -446,15 +446,15 @@ test("MCP credentialRef plaintext is ephemeral and redacted from ACP failure dia
         name: "vault-mcp",
         transport: "stdio",
         command: "npx",
-        envCredentialRefs: { API_KEY: "mcp-vault" },
+        envSecretRefs: { API_KEY: "mcp-vault" },
       },
     ],
   };
   const runtime = createAgentRuntime({
     dataDir,
     connections: [connection],
-    resolveCredentialRef: async (credentialRef) =>
-      credentialRef === "mcp-vault" ? secret : undefined,
+    resolveLaunchSecretRef: async (launchSecretRef) =>
+      launchSecretRef === "mcp-vault" ? secret : undefined,
   });
   const sessionId = makeSessionId();
   const events: unknown[] = [];
@@ -757,7 +757,7 @@ test("resumeSession fails loud when snapshot skill path is missing", async () =>
   }
 });
 
-test("buildAcpLaunchExtras / startSession does not swallow credential resolver errors", async () => {
+test("buildAcpLaunchExtras / startSession does not swallow launch-secret resolver errors", async () => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-cred-"));
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-cred-cwd-"));
   const route: AgentConnectionConfig = {
@@ -775,14 +775,14 @@ test("buildAcpLaunchExtras / startSession does not swallow credential resolver e
         name: "vaulted",
         transport: "stdio",
         command: "npx",
-        envCredentialRefs: { API_KEY: "mcp-secret-ref" },
+        envSecretRefs: { API_KEY: "mcp-secret-ref" },
       },
     ],
   };
   const runtime = createAgentRuntime({
     dataDir,
     connections: [route],
-    resolveCredentialRef: async () => {
+    resolveLaunchSecretRef: async () => {
       throw new Error("vault backend exploded with secret=sk-should-not-leak");
     },
   });
@@ -798,7 +798,7 @@ test("buildAcpLaunchExtras / startSession does not swallow credential resolver e
         }),
       (err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
-        assert.match(msg, /credential resolve failed/i);
+        assert.match(msg, /launch-secret resolve failed/i);
         assert.match(msg, /vaulted/);
         assert.match(msg, /mcp-secret-ref/);
         assert.match(msg, /grok-acp-cred-throw/);

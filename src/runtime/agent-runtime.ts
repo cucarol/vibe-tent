@@ -53,7 +53,7 @@ import type {
   AgentConnectionSnapshot,
   AgentRuntimePort,
   EnterExternalSessionRequest,
-  ResolveCredentialRef,
+  ResolveLaunchSecretRef,
   ResolveConnectionEnv,
   ReserveSessionRequest,
   ResumeSessionRequest,
@@ -85,19 +85,19 @@ export interface AgentRuntimeOptions {
   /** When true (default), capture short stdout tails as diagnostic events. */
   captureStdout?: boolean;
   /**
-   * Optional async hook to resolve Connection credentialRef → env values before LaunchPlan.
-   * Service wires CredentialStore.resolve here. Secrets never enter SessionRecord.
+   * Optional async hook to resolve Connection launchSecretRef → env values before LaunchPlan.
+   * Service wires LaunchSecretStore.resolve here. Secrets never enter SessionRecord.
    */
   resolveConnectionEnv?: ResolveConnectionEnv;
   /**
-   * Optional hook to resolve arbitrary credential ids for MCP env/header injection.
+   * Optional hook to resolve launch-secret ids for MCP env/header injection.
    * Process-scoped only; never persisted on SessionRecord.
    */
-  resolveCredentialRef?: ResolveCredentialRef;
+  resolveLaunchSecretRef?: ResolveLaunchSecretRef;
   /**
    * Package root for bundled tent-role / tent-task skill paths.
    * When set, managed sessions automatically compose built-in skill refs
-   * (route.skills remain optional extras).
+   * (Connection skills remain optional extras).
    */
   packageRoot?: string;
 }
@@ -176,7 +176,7 @@ export class AgentRuntime implements AgentRuntimePort {
   private readonly sinks = new Map<string, Set<(ev: RuntimeEvent) => void>>();
   private readonly globalSinks = new Set<(ev: RuntimeEvent) => void>();
   private readonly resolveConnectionEnv?: ResolveConnectionEnv;
-  private readonly resolveCredentialRef?: ResolveCredentialRef;
+  private readonly resolveLaunchSecretRef?: ResolveLaunchSecretRef;
   private readonly packageRoot?: string;
   /** Test-only: every sendFollowUpPrompt attempt (including not-alive / unsupported). */
   private readonly followUpAttemptsForTests: Array<{ sessionId: string }> = [];
@@ -191,7 +191,7 @@ export class AgentRuntime implements AgentRuntimePort {
     this.sessionTokenKey = options.sessionTokenKey ?? randomBytes(32).toString("base64url");
     this.registry = new SessionRegistry(this.dataDir);
     this.resolveConnectionEnv = options.resolveConnectionEnv;
-    this.resolveCredentialRef = options.resolveCredentialRef;
+    this.resolveLaunchSecretRef = options.resolveLaunchSecretRef;
     this.packageRoot = options.packageRoot;
 
     for (const connection of options.connections ?? []) {
@@ -545,10 +545,10 @@ export class AgentRuntime implements AgentRuntimePort {
     let resolvedEnv: Record<string, string> = {};
     let diagnosticSecrets: string[] = [];
     try {
-      // Resolve after the diagnostic row exists, so a missing/stale vault reference
+      // Resolve after the diagnostic row exists, so a missing/stale launch-secret reference
       // becomes an ordinary failed session without ever persisting the plaintext.
-      resolvedEnv = await this.resolveCredentialEnv(route);
-      // Vault injection wins for envKey; request env supplies non-secret knobs.
+      resolvedEnv = await this.resolveLaunchSecretEnv(route);
+      // Launch-secret injection wins for envKey; request env supplies non-secret knobs.
       // Reserved Tent Service/data-dir/session keys are Core-owned and cannot be
       // overridden by arbitrary Connection or request env.
       // Route/request cannot set reserved keys (stripped). Core mirrors reserved
@@ -690,7 +690,7 @@ export class AgentRuntime implements AgentRuntimePort {
         }
       } else {
         const launch = await adapter.resolveLaunch(plan);
-        // Core reserved overlay + credential secrets for redaction — not adapter authority.
+      // Core reserved overlay + launch secrets for redaction — not adapter authority.
         const proc = await this.supervisor.start(req.sessionId, {
           ...launch,
           coreEnv: {
@@ -740,7 +740,7 @@ export class AgentRuntime implements AgentRuntimePort {
         await this.waitForChildExit(req.sessionId, true);
       }
       const rawMessage = err instanceof Error ? err.message : String(err);
-      // Never persist raw credential values into SessionRegistry / Service errors.
+      // Never persist raw launch-secret values into SessionRegistry / Service errors.
       const message = redactDiagnosticText(rawMessage, {
         env: {
           ...(req.env ?? {}),
@@ -846,7 +846,7 @@ export class AgentRuntime implements AgentRuntimePort {
     let resolvedEnv: Record<string, string> = {};
     let diagnosticSecrets: string[] = [];
     try {
-      resolvedEnv = await this.resolveCredentialEnv(route);
+      resolvedEnv = await this.resolveLaunchSecretEnv(route);
       // Preserve the owning Service boundary across provider-native resume.
       // Reserved keys remain Core-owned (Connection/request cannot override).
       const coreEnv = {
@@ -1490,7 +1490,7 @@ export class AgentRuntime implements AgentRuntimePort {
   /**
    * Resolve skill metadata + MCP wire from the Connection snapshot.
    * Secret values only live on the plan (in-process) for session/new|load — never SessionRecord.
-   * Enabled skill path refs fail loud when missing; credential resolver errors are not swallowed.
+   * Enabled skill path refs fail loud when missing; launch-secret resolver errors are not swallowed.
    *
    * Built-in tent-role / tent-task contracts are injected only into the managed bootstrap
    * prompt prefix (cross-provider). ACP `_meta.tent.skills` carries optional Connection skills
@@ -1515,28 +1515,28 @@ export class AgentRuntime implements AgentRuntimePort {
     const hasMcp = Array.isArray(route.mcpServers) && route.mcpServers.length > 0;
     if (!hasSkills && !hasMcp) return { extras: {}, diagnosticSecrets: [] };
 
-    // Pre-resolve credential refs per server so failures name Connection/server/ref only.
+    // Pre-resolve launch-secret refs per server so failures name Connection/server/ref only.
     const credCache = new Map<string, string>();
-    if (hasMcp && this.resolveCredentialRef) {
+    if (hasMcp && this.resolveLaunchSecretRef) {
       for (const s of route.mcpServers ?? []) {
         if (s.enabled === false) continue;
         const refs = new Set<string>();
-        if (s.envCredentialRefs) {
-          for (const id of Object.values(s.envCredentialRefs)) refs.add(id);
+        if (s.envSecretRefs) {
+          for (const id of Object.values(s.envSecretRefs)) refs.add(id);
         }
-        if (s.headerCredentialRefs) {
-          for (const id of Object.values(s.headerCredentialRefs)) refs.add(id);
+        if (s.headerSecretRefs) {
+          for (const id of Object.values(s.headerSecretRefs)) refs.add(id);
         }
         for (const id of refs) {
           if (credCache.has(id)) continue;
           let value: string | undefined;
           try {
-            value = await this.resolveCredentialRef(id);
+            value = await this.resolveLaunchSecretRef(id);
           } catch {
             // Fail loud; do not convert resolver throws into "not found".
             // Name only Connection / server / ref — never secret material.
             throw new Error(
-              `MCP server ${s.name}: credential resolve failed for Agent Connection ${route.connectionId} credentialRef=${id}`
+              `MCP server ${s.name}: launch-secret resolve failed for Agent Connection ${route.connectionId} launchSecretRef=${id}`
             );
           }
           if (typeof value === "string" && value) {
@@ -1553,7 +1553,7 @@ export class AgentRuntime implements AgentRuntimePort {
     const acpMcpServers = hasMcp
       ? resolveAcpMcpServersWire(route.mcpServers, {
           planEnv,
-          resolveCredential: (id) => credCache.get(id),
+          resolveLaunchSecret: (id) => credCache.get(id),
         })
       : undefined;
 
@@ -1569,23 +1569,23 @@ export class AgentRuntime implements AgentRuntimePort {
   }
 
   /**
-   * Resolve credential and endpoint env values for one launch only.
+   * Resolve launch-secret and endpoint env values for one launch only.
    * Never persists secrets onto SessionRecord.
    */
-  private async resolveCredentialEnv(
+  private async resolveLaunchSecretEnv(
     route: AgentConnectionConfig
   ): Promise<Record<string, string>> {
     const out: Record<string, string> = {};
-    const ref = route.credentialRef?.trim() || "";
+    const ref = route.launchSecretRef?.trim() || "";
     const envKey = route.envKey?.trim() || "";
     if (ref && !envKey) {
       throw new Error(
-        `Agent Connection ${route.connectionId} has credentialRef but no envKey`
+        `Agent Connection ${route.connectionId} has launchSecretRef but no envKey`
       );
     }
     if (ref && !this.resolveConnectionEnv) {
       throw new Error(
-        `Agent Connection ${route.connectionId} references credential ${ref} but AgentRuntime has no resolveConnectionEnv hook`
+        `Agent Connection ${route.connectionId} references launch secret ${ref} but AgentRuntime has no resolveConnectionEnv hook`
       );
     }
     if (ref) {
@@ -1593,7 +1593,7 @@ export class AgentRuntime implements AgentRuntimePort {
       const secret = resolved[envKey];
       if (typeof secret !== "string" || !secret) {
         throw new Error(
-          `Credential not found or empty for Agent Connection ${route.connectionId} (credentialRef=${ref})`
+          `Launch secret not found or empty for Agent Connection ${route.connectionId} (launchSecretRef=${ref})`
         );
       }
       out[envKey] = secret;
@@ -1623,7 +1623,7 @@ export class AgentRuntime implements AgentRuntimePort {
       executable: route.executable,
       model: route.model,
       envKey: route.envKey,
-      credentialRef: route.credentialRef,
+      launchSecretRef: route.launchSecretRef,
       baseUrlEnvKey: route.baseUrlEnvKey,
       baseUrl: route.baseUrl,
       permissionPolicy: route.permissionPolicy,

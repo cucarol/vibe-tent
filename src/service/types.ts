@@ -526,19 +526,19 @@ export type AgentConnectionProjection = {
   displayName: string;
   command?: string;
   args?: string[];
-  /** Model id when known (e.g. grok-4.5); never credentials. */
+  /** Model id when known (e.g. grok-4.5); never secrets. */
   model?: string;
   /** Absolute path to provider executable on this machine (optional). */
   executable?: string;
   /** Process env *name* for API token — never the value. */
   envKey?: string;
   /**
-   * Machine-local CredentialStore id referenced by this connection (not a secret).
-   * Presence of the vault entry may be reported via credentialExists.
+   * Machine-local LaunchSecretStore id referenced by this connection (not a secret).
+   * Presence of the encrypted entry may be reported via launchSecretExists.
    */
-  credentialRef?: string;
-  /** true when credentialRef resolves to an existing vault entry (no secret). */
-  credentialExists?: boolean;
+  launchSecretRef?: string;
+  /** true when launchSecretRef resolves to an existing encrypted entry. */
+  launchSecretExists?: boolean;
   /** Process env *name* for base URL — never the value. */
   baseUrlEnvKey?: string;
   /** Optional machine-local literal base URL (not a workspace secret). */
@@ -563,7 +563,7 @@ export type AgentConnectionProjection = {
    */
   skillsNote?: string;
   /**
-   * MCP server descriptions with envKey/credentialRef *names* only — never secret values.
+   * MCP server descriptions with envKey/launchSecretRef *names* only — never secret values.
    */
   mcpServers?: import("../adapters/acp/mcp-skills.js").ConnectionMcpServerProjection[];
 };
@@ -603,7 +603,7 @@ export type NativeForegroundLevel =
 
 /**
  * One product provider verification fact (provider.catalog).
- * Never includes secrets, env values, credentials, or connection config.
+ * Never includes secrets, env values, or Connection config.
  */
 export type ProviderCatalogEntry = {
   adapterId: string;
@@ -634,7 +634,7 @@ export type ProviderCatalogProjection = {
  * Desktop P0-1 adds read-only registry.* for type + role pickers.
  * Desktop ACP launch surface adds connection.list/get/create/update/delete.
  * Provider verification: provider.catalog (read-only product facts; no secrets).
- * Credential vault: credential.list/set/delete (no get plaintext).
+ * Privileged machine Settings: settings.launchSecret.list/set/delete (no plaintext read).
  * Machine-local skills: skill.list/install (bundled only; no workspaceId).
  */
 export const CLIENT_METHODS = [
@@ -769,14 +769,14 @@ export const CLIENT_METHODS = [
    * Read-only product provider verification catalog.
    * Params: none (machine-global product facts; not workspace-scoped).
    * Result: { providers: ProviderCatalogEntry[] } — adapterId + verificationLevel
-   * (+ optional canResume/notes). Never secrets, env values, or credentials.
+   * (+ optional canResume/notes). Never secrets, env values, or Connection config.
    * Distinct from connection.* (machine-local launch config).
    */
   "provider.catalog",
-  /** Machine-local credential vault (user-only; never returns secret plaintext). */
-  "credential.list",
-  "credential.set",
-  "credential.delete",
+  /** Machine-local launch secrets (user Settings only; never returns plaintext). */
+  "settings.launchSecret.list",
+  "settings.launchSecret.set",
+  "settings.launchSecret.delete",
   /** Machine-local bundled skill list/install (user surface; no workspaceId). */
   "skill.list",
   "skill.install",

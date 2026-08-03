@@ -1062,7 +1062,7 @@ test("native resume uses immutable Connection snapshot but resolves rotated cred
     model: "old-model",
     baseUrl: "https://old.invalid/v1",
     envKey: "SNAPSHOT_KEY",
-    credentialRef: "credential-1",
+    launchSecretRef: "credential-1",
   };
   const runtime = createAgentRuntime({
     dataDir: path.relative(process.cwd(), dataDir),
@@ -1070,7 +1070,7 @@ test("native resume uses immutable Connection snapshot but resolves rotated cred
     connections: [original],
     resolveConnectionEnv: (route) => {
       const env: Record<string, string> = {};
-      if (route.credentialRef === "credential-1") {
+      if (route.launchSecretRef === "credential-1") {
         env.SNAPSHOT_KEY = secret;
       }
       return env;

@@ -172,7 +172,7 @@ export interface SessionRecord {
   /**
    * Immutable non-secret launch configuration captured when the session starts.
    * Resume uses this snapshot so later route edits cannot reinterpret an old
-   * provider token. credentialRef is resolved again at resume time; secret values
+   * provider token. launchSecretRef is resolved again at resume time; secret values
    * are never stored here. Missing snapshot is unrecoverable and fails loud.
    */
   connectionSnapshot?: AgentConnectionSnapshot;
@@ -235,19 +235,19 @@ export interface SessionRecord {
 /**
  * Optional service hook: resolve machine-local secrets into process env for one start.
  * Called by AgentRuntime before LaunchPlan construction. Must not persist secrets.
- * Returns a partial env map merged last into LaunchPlan.env, so the vault value cannot
- * be shadowed by non-secret route/request configuration.
+ * Returns a partial env map merged last into LaunchPlan.env, so the launch-secret value cannot
+ * be shadowed by non-secret Connection/request configuration.
  */
 export type ResolveConnectionEnv = (
   route: AgentConnectionConfig
 ) => Promise<Record<string, string>> | Record<string, string>;
 
 /**
- * Optional service hook: resolve one CredentialStore id → plaintext for MCP env/header injection.
- * Process-scoped only — never written to SessionRecord / route disk / events / logs.
+ * Optional service hook: resolve one LaunchSecretStore id → plaintext for MCP env/header injection.
+ * Process-scoped only — never written to SessionRecord / Connection disk / events / logs.
  */
-export type ResolveCredentialRef = (
-  credentialRef: string
+export type ResolveLaunchSecretRef = (
+  launchSecretRef: string
 ) => Promise<string | undefined> | string | undefined;
 
 /**

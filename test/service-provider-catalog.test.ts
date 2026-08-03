@@ -122,7 +122,7 @@ test("projectProviderCatalog covers every product adapter with closed levels", (
       EXPECTED_FOREGROUND[entry.adapterId as keyof typeof EXPECTED_FOREGROUND]
     );
     assert.ok(!("envKey" in entry));
-    assert.ok(!("credentialRef" in entry));
+    assert.ok(!("launchSecretRef" in entry));
     assert.ok(!("baseUrl" in entry));
     assert.ok(!("secret" in entry));
     assert.ok(!("apiKey" in entry));

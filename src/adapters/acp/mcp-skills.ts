@@ -1,4 +1,4 @@
-// Settings-route skill refs + MCP server config → ACP session/new|load projection.
+// Agent Connection skill refs + MCP server config → ACP session/new|load projection.
 // Tent does not proxy MCP, does not mirror SKILL.md bodies, and does not rewrite agent config.toml.
 // Adapter-safe module: no service/ imports (architecture: adapters ↛ service).
 
@@ -12,8 +12,8 @@ export const SAFE_SKILL_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 export const MCP_SERVER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 /** Process env name shape for envKey maps. */
 export const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-/** Same vault id shape as CredentialStore (reference only). */
-export const CREDENTIAL_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
+/** Same opaque id shape as LaunchSecretStore (reference only). */
+export const LAUNCH_SECRET_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
 
 export const MAX_ROUTE_SKILLS = 64;
 export const MAX_ROUTE_MCP_SERVERS = 32;
@@ -49,7 +49,7 @@ export type RouteMcpTransport = "stdio" | "http";
 
 /**
  * Machine-local MCP server description for ACP mcpServers projection.
- * Secrets only as envKey / credentialRef — never plaintext values on disk or projection.
+ * Secrets only as envKey / launchSecretRef — never plaintext values on disk or projection.
  */
 export interface ConnectionMcpServer {
   name: string;
@@ -65,15 +65,15 @@ export interface ConnectionMcpServer {
    */
   envKeys?: Record<string, string>;
   /**
-   * MCP process env var name → CredentialStore id (value resolved at launch only).
+   * MCP process env var name → LaunchSecretStore id (value resolved at launch only).
    */
-  envCredentialRefs?: Record<string, string>;
+  envSecretRefs?: Record<string, string>;
   // ---- http ----
   url?: string;
   /** HTTP header name → process env *key name*. */
   headerEnvKeys?: Record<string, string>;
-  /** HTTP header name → CredentialStore id. */
-  headerCredentialRefs?: Record<string, string>;
+  /** HTTP header name → LaunchSecretStore id. */
+  headerSecretRefs?: Record<string, string>;
 }
 
 /**
@@ -93,10 +93,10 @@ export type ConnectionMcpServerProjection = {
   command?: string;
   args?: string[];
   envKeys?: Record<string, string>;
-  envCredentialRefs?: Record<string, string>;
+  envSecretRefs?: Record<string, string>;
   url?: string;
   headerEnvKeys?: Record<string, string>;
-  headerCredentialRefs?: Record<string, string>;
+  headerSecretRefs?: Record<string, string>;
 };
 
 /**
@@ -127,7 +127,7 @@ export type AcpSkillMetaRef = {
   path?: string;
 };
 
-export type ResolveMcpSecret = (credentialRef: string) => string | undefined;
+export type ResolveMcpSecret = (launchSecretRef: string) => string | undefined;
 
 // ---------------------------------------------------------------------------
 // Allowed skill roots (machine-local user skill dirs only — no remote / arbitrary).
@@ -190,12 +190,12 @@ function parseEnvKeyName(raw: unknown, key: string): FieldResult<string> {
   return fieldOk(base.value);
 }
 
-function parseCredentialId(raw: unknown, key: string): FieldResult<string> {
+function parseLaunchSecretId(raw: unknown, key: string): FieldResult<string> {
   const base = parseNonEmptyString(raw, key);
   if (!base.ok) return base;
-  if (!CREDENTIAL_ID_RE.test(base.value)) {
+  if (!LAUNCH_SECRET_ID_RE.test(base.value)) {
     return fieldErr(
-      `Invalid ${key}: must match ${CREDENTIAL_ID_RE} (vault id, not secret value)`
+      `Invalid ${key}: must match ${LAUNCH_SECRET_ID_RE} (launch-secret id, not value)`
     );
   }
   return fieldOk(base.value);
@@ -249,12 +249,12 @@ function parseEnvKeyMap(
   return parseStringRecord(raw, field, (v, k) => parseEnvKeyName(v, k), maxEntries);
 }
 
-function parseCredentialRefMap(
+function parseLaunchSecretRefMap(
   raw: unknown,
   field: string,
   maxEntries: number
 ): FieldResult<Record<string, string> | undefined> {
-  return parseStringRecord(raw, field, (v, k) => parseCredentialId(v, k), maxEntries);
+  return parseStringRecord(raw, field, (v, k) => parseLaunchSecretId(v, k), maxEntries);
 }
 
 /** Reject absolute paths that are not under allowed skill roots. */
@@ -388,10 +388,10 @@ export function parseMcpServerValue(raw: unknown): FieldResult<ConnectionMcpServ
     "command",
     "args",
     "envKeys",
-    "envCredentialRefs",
+    "envSecretRefs",
     "url",
     "headerEnvKeys",
-    "headerCredentialRefs",
+    "headerSecretRefs",
   ]);
   for (const key of Object.keys(o)) {
     if (!allowed.has(key)) {
@@ -407,7 +407,7 @@ export function parseMcpServerValue(raw: unknown): FieldResult<ConnectionMcpServ
         lower.includes("bearer")
       ) {
         return fieldErr(
-          `Rejected dangerous or unsupported mcpServers[] field: ${key} (use envKeys/envCredentialRefs/headerEnvKeys/headerCredentialRefs)`
+          `Rejected dangerous or unsupported mcpServers[] field: ${key} (use envKeys/envSecretRefs/headerEnvKeys/headerSecretRefs)`
         );
       }
       return fieldErr(`Unknown mcpServers[] field: ${key}`);
@@ -440,9 +440,9 @@ export function parseMcpServerValue(raw: unknown): FieldResult<ConnectionMcpServ
     if ("headerEnvKeys" in o && o.headerEnvKeys != null) {
       return fieldErr("Invalid mcpServers[]: stdio transport must not set headerEnvKeys");
     }
-    if ("headerCredentialRefs" in o && o.headerCredentialRefs != null) {
+    if ("headerSecretRefs" in o && o.headerSecretRefs != null) {
       return fieldErr(
-        "Invalid mcpServers[]: stdio transport must not set headerCredentialRefs"
+        "Invalid mcpServers[]: stdio transport must not set headerSecretRefs"
       );
     }
     const cmd = parseNonEmptyString(o.command, "mcpServers[].command");
@@ -463,13 +463,13 @@ export function parseMcpServerValue(raw: unknown): FieldResult<ConnectionMcpServ
     if (!envKeys.ok) return envKeys;
     if (envKeys.value) server.envKeys = envKeys.value;
 
-    const envCreds = parseCredentialRefMap(
-      o.envCredentialRefs,
-      "mcpServers[].envCredentialRefs",
+    const envCreds = parseLaunchSecretRefMap(
+      o.envSecretRefs,
+      "mcpServers[].envSecretRefs",
       MAX_MCP_ENV_ENTRIES
     );
     if (!envCreds.ok) return envCreds;
-    if (envCreds.value) server.envCredentialRefs = envCreds.value;
+    if (envCreds.value) server.envSecretRefs = envCreds.value;
   } else {
     if ("command" in o && o.command !== undefined && o.command !== null) {
       return fieldErr("Invalid mcpServers[]: http transport must not set command");
@@ -480,9 +480,9 @@ export function parseMcpServerValue(raw: unknown): FieldResult<ConnectionMcpServ
     if ("envKeys" in o && o.envKeys != null) {
       return fieldErr("Invalid mcpServers[]: http transport must not set envKeys");
     }
-    if ("envCredentialRefs" in o && o.envCredentialRefs != null) {
+    if ("envSecretRefs" in o && o.envSecretRefs != null) {
       return fieldErr(
-        "Invalid mcpServers[]: http transport must not set envCredentialRefs"
+        "Invalid mcpServers[]: http transport must not set envSecretRefs"
       );
     }
     const urlR = parseHttpUrl(o.url);
@@ -497,13 +497,13 @@ export function parseMcpServerValue(raw: unknown): FieldResult<ConnectionMcpServ
     if (!headerEnv.ok) return headerEnv;
     if (headerEnv.value) server.headerEnvKeys = headerEnv.value;
 
-    const headerCreds = parseCredentialRefMap(
-      o.headerCredentialRefs,
-      "mcpServers[].headerCredentialRefs",
+    const headerCreds = parseLaunchSecretRefMap(
+      o.headerSecretRefs,
+      "mcpServers[].headerSecretRefs",
       MAX_MCP_HEADER_ENTRIES
     );
     if (!headerCreds.ok) return headerCreds;
-    if (headerCreds.value) server.headerCredentialRefs = headerCreds.value;
+    if (headerCreds.value) server.headerSecretRefs = headerCreds.value;
   }
 
   return fieldOk(server);
@@ -560,13 +560,13 @@ export function cloneMcpServers(
     ...(s.command !== undefined ? { command: s.command } : {}),
     ...(s.args !== undefined ? { args: [...s.args] } : {}),
     ...(s.envKeys !== undefined ? { envKeys: { ...s.envKeys } } : {}),
-    ...(s.envCredentialRefs !== undefined
-      ? { envCredentialRefs: { ...s.envCredentialRefs } }
+    ...(s.envSecretRefs !== undefined
+      ? { envSecretRefs: { ...s.envSecretRefs } }
       : {}),
     ...(s.url !== undefined ? { url: s.url } : {}),
     ...(s.headerEnvKeys !== undefined ? { headerEnvKeys: { ...s.headerEnvKeys } } : {}),
-    ...(s.headerCredentialRefs !== undefined
-      ? { headerCredentialRefs: { ...s.headerCredentialRefs } }
+    ...(s.headerSecretRefs !== undefined
+      ? { headerSecretRefs: { ...s.headerSecretRefs } }
       : {}),
   }));
 }
@@ -593,13 +593,13 @@ export function projectMcpServers(
     ...(s.command !== undefined ? { command: s.command } : {}),
     ...(s.args !== undefined ? { args: [...s.args] } : {}),
     ...(s.envKeys !== undefined ? { envKeys: { ...s.envKeys } } : {}),
-    ...(s.envCredentialRefs !== undefined
-      ? { envCredentialRefs: { ...s.envCredentialRefs } }
+    ...(s.envSecretRefs !== undefined
+      ? { envSecretRefs: { ...s.envSecretRefs } }
       : {}),
     ...(s.url !== undefined ? { url: s.url } : {}),
     ...(s.headerEnvKeys !== undefined ? { headerEnvKeys: { ...s.headerEnvKeys } } : {}),
-    ...(s.headerCredentialRefs !== undefined
-      ? { headerCredentialRefs: { ...s.headerCredentialRefs } }
+    ...(s.headerSecretRefs !== undefined
+      ? { headerSecretRefs: { ...s.headerSecretRefs } }
       : {}),
   }));
 }
@@ -625,7 +625,7 @@ export function resolveAcpMcpServersWire(
   servers: ConnectionMcpServer[] | undefined,
   opts: {
     planEnv: Record<string, string>;
-    resolveCredential?: ResolveMcpSecret;
+    resolveLaunchSecret?: ResolveMcpSecret;
   }
 ): AcpMcpServerWire[] {
   if (!servers || servers.length === 0) return [];
@@ -649,17 +649,17 @@ export function resolveAcpMcpServersWire(
           env.push({ name: envName, value });
         }
       }
-      if (s.envCredentialRefs) {
-        for (const [envName, credId] of Object.entries(s.envCredentialRefs)) {
-          if (!opts.resolveCredential) {
+      if (s.envSecretRefs) {
+        for (const [envName, secretId] of Object.entries(s.envSecretRefs)) {
+          if (!opts.resolveLaunchSecret) {
             throw new Error(
-              `MCP server ${s.name}: credentialRef ${credId} requires resolveCredential hook`
+              `MCP server ${s.name}: launch secret ${secretId} requires resolveLaunchSecret hook`
             );
           }
-          const value = opts.resolveCredential(credId);
+          const value = opts.resolveLaunchSecret(secretId);
           if (typeof value !== "string" || !value) {
             throw new Error(
-              `MCP server ${s.name}: credential not found or empty for ${credId} (env ${envName})`
+              `MCP server ${s.name}: launch secret not found or empty for ${secretId} (env ${envName})`
             );
           }
           env.push({ name: envName, value });
@@ -688,17 +688,17 @@ export function resolveAcpMcpServersWire(
           headers.push({ name: headerName, value });
         }
       }
-      if (s.headerCredentialRefs) {
-        for (const [headerName, credId] of Object.entries(s.headerCredentialRefs)) {
-          if (!opts.resolveCredential) {
+      if (s.headerSecretRefs) {
+        for (const [headerName, secretId] of Object.entries(s.headerSecretRefs)) {
+          if (!opts.resolveLaunchSecret) {
             throw new Error(
-              `MCP server ${s.name}: credentialRef ${credId} requires resolveCredential hook`
+              `MCP server ${s.name}: launch secret ${secretId} requires resolveLaunchSecret hook`
             );
           }
-          const value = opts.resolveCredential(credId);
+          const value = opts.resolveLaunchSecret(secretId);
           if (typeof value !== "string" || !value) {
             throw new Error(
-              `MCP server ${s.name}: credential not found or empty for ${credId} (header ${headerName})`
+              `MCP server ${s.name}: launch secret not found or empty for ${secretId} (header ${headerName})`
             );
           }
           headers.push({ name: headerName, value });

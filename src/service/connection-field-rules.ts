@@ -3,7 +3,7 @@
 
 import type { AcpPermissionPolicy } from "../adapters/acp/types.js";
 import { CONNECTION_ID_RE, isConnectionId } from "../core/id.js";
-import { CREDENTIAL_ID_RE, assertCredentialId } from "./credential-store.js";
+import { LAUNCH_SECRET_ID_RE, assertLaunchSecretId } from "./launch-secret-store.js";
 
 export type FieldResult<T> = { ok: true; value: T } | { ok: false; message: string };
 
@@ -58,13 +58,17 @@ export function parseBaseUrlValue(raw: unknown): FieldResult<string> {
   return value;
 }
 
-export function parseCredentialRefValue(raw: unknown): FieldResult<string> {
-  const value = parseNonEmptyStringValue(raw, "credentialRef");
+export function parseLaunchSecretRefValue(raw: unknown): FieldResult<string> {
+  const value = parseNonEmptyStringValue(raw, "launchSecretRef");
   if (!value.ok) return value;
   try {
-    return ok(assertCredentialId(value.value));
+    return ok(assertLaunchSecretId(value.value));
   } catch (err) {
-    return fail(err instanceof Error ? err.message.replace(/^Invalid credential id/, "Invalid credentialRef") : `Invalid credentialRef: must match ${CREDENTIAL_ID_RE}`);
+    return fail(
+      err instanceof Error
+        ? err.message.replace(/^Invalid launch secret id/, "Invalid launchSecretRef")
+        : `Invalid launchSecretRef: must match ${LAUNCH_SECRET_ID_RE}`
+    );
   }
 }
 

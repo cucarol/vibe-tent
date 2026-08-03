@@ -128,7 +128,7 @@ test("connection CRUD emits safe machine-local change events only after durable 
         connectionId: "evented",
         provider: "grok",
         adapterId: GROK_ACP_ADAPTER_ID,
-        credentialRef: "missing-vault-slot",
+        launchSecretRef: "missing-vault-slot",
       });
       await client.connectionUpdate("evented", { model: "event-model" });
       await expectInvalid(svc, "connection.update", {
@@ -240,7 +240,7 @@ test("Connection updates clear optional fields, reject unsafe URLs and preserve 
     provider: "grok",
     adapterId: GROK_ACP_ADAPTER_ID,
     model: "original",
-    credentialRef: "vault-id",
+    launchSecretRef: "vault-id",
   };
   const projection = projectAgentConnection(route);
   assert.equal(JSON.stringify(projection).includes("secret"), false);

@@ -672,23 +672,23 @@ export class ServiceClient {
     return this.call<ProviderCatalogProjection>("provider.catalog", {});
   }
 
-  // ---- convenience: machine-local credentials (never returns secret) ----
-  credentialList() {
-    return this.call("credential.list", {});
+  // ---- privileged machine Settings launch secrets (never returns plaintext) ----
+  settingsLaunchSecretList() {
+    return this.call("settings.launchSecret.list", {});
   }
   /**
    * Store encrypted secret under id. Response is id/metadata only.
    * Callers must not log `secret`; RPC response never echoes it.
    */
-  credentialSet(id: string, secret: string, metadata?: { label?: string }) {
-    return this.call("credential.set", {
+  settingsLaunchSecretSet(id: string, secret: string, label?: string) {
+    return this.call("settings.launchSecret.set", {
       id,
       secret,
-      ...(metadata !== undefined ? { metadata } : {}),
+      ...(label !== undefined ? { label } : {}),
     });
   }
-  credentialDelete(id: string) {
-    return this.call("credential.delete", { id });
+  settingsLaunchSecretDelete(id: string) {
+    return this.call("settings.launchSecret.delete", { id });
   }
 
   // ---- convenience: machine-local skills (bundled only; no workspaceId) ----

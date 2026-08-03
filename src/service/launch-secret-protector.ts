@@ -1,25 +1,25 @@
-// Machine-local secret protection for CredentialStore.
+// Machine-local protection for LaunchSecretStore.
 // Windows MVP: CurrentUser DPAPI via PowerShell — plaintext only on stdin (never argv/logs).
 // Non-Windows: fail-loud (no weak crypto fallback). Tests inject protect/unprotect.
 
 import { spawn } from "node:child_process";
 
 /** Protect / unprotect pair. Ciphertext is opaque base64 (or test-injected format). */
-export type CredentialProtector = {
+export type LaunchSecretProtector = {
   protect(plaintext: string): Promise<string>;
   unprotect(ciphertext: string): Promise<string>;
 };
 
 const NON_WINDOWS_MSG =
-  "CredentialStore requires Windows DPAPI (CurrentUser); non-Windows is not supported in this MVP (no weak-crypto fallback)";
+  "LaunchSecretStore requires Windows DPAPI (CurrentUser); non-Windows is not supported in this MVP (no weak-crypto fallback)";
 
 /**
  * Platform protector. Windows → DPAPI CurrentUser; elsewhere throws on use.
  * Prefer injecting a protector in tests so suites stay offline and cross-platform.
  */
-export function createPlatformCredentialProtector(
+export function createPlatformLaunchSecretProtector(
   platform: NodeJS.Platform = process.platform
-): CredentialProtector {
+): LaunchSecretProtector {
   if (platform !== "win32") {
     return {
       protect: async () => {
@@ -30,7 +30,7 @@ export function createPlatformCredentialProtector(
       },
     };
   }
-  return createWindowsDpapiProtector();
+  return createWindowsDpapiLaunchSecretProtector();
 }
 
 /**
@@ -38,7 +38,7 @@ export function createPlatformCredentialProtector(
  * Plaintext / ciphertext travel only on process stdin — never in argv, env, or scripts.
  * Payload is base64 on the wire so binary-safe; argv never contains secret material.
  */
-export function createWindowsDpapiProtector(): CredentialProtector {
+export function createWindowsDpapiLaunchSecretProtector(): LaunchSecretProtector {
   return {
     protect: async (plaintext) => {
       const b64In = Buffer.from(plaintext, "utf8").toString("base64");
@@ -124,7 +124,7 @@ function runPowerShellStdin(
 }
 
 /** In-memory envelope test protector (not secure). For offline unit tests only. */
-export function createTestCredentialProtector(prefix = "test-enc:"): CredentialProtector {
+export function createTestLaunchSecretProtector(prefix = "test-enc:"): LaunchSecretProtector {
   return {
     async protect(plaintext: string): Promise<string> {
       return prefix + Buffer.from(plaintext, "utf8").toString("base64");

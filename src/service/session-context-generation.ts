@@ -216,7 +216,7 @@ export async function collectStableContextGeneration(
 
 /**
  * Read the canonical runtime launch digest from an immutable machine-local snapshot.
- * The runtime digest covers provider, adapter, launch topology, credential references,
+ * The runtime digest covers provider, adapter, launch topology, launch-secret references,
  * and the hashed effective endpoint without exposing secret or raw environment values.
  */
 export function connectionLaunchDigestFromSnapshot(

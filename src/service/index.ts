@@ -17,6 +17,6 @@ export * from "./decision-request-flow.js";
 export * from "./connections.js";
 export * from "./connection-catalog.js";
 export * from "./provider-catalog.js";
-export * from "./credential-protector.js";
-export * from "./credential-store.js";
+export * from "./launch-secret-protector.js";
+export * from "./launch-secret-store.js";
 export * from "./rpc-error.js";

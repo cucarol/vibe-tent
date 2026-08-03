@@ -262,7 +262,7 @@ import {
   type TaskInputStore,
 } from "./task-input-store.js";
 import type { ManagedDeliveryReportDraftStore } from "./managed-delivery-report-draft-store.js";
-import type { CredentialStore } from "./credential-store.js";
+import type { LaunchSecretStore } from "./launch-secret-store.js";
 import {
   isClientMethod,
   PROTECTED_COLLAB_FIELDS,
@@ -346,11 +346,8 @@ export interface HandlerContext {
    * Survives restart so publish failures can retry without re-prompting the Agent.
    */
   managedDeliveryReportDrafts: ManagedDeliveryReportDraftStore;
-  /**
-   * Machine-local encrypted credential vault (Windows DPAPI).
-   * Client RPC: list/set/delete only — never get/resolve plaintext.
-   */
-  credentials: CredentialStore;
+  /** Machine-local encrypted launch secrets. Plaintext is Service-internal only. */
+  launchSecrets: LaunchSecretStore;
   dataDir: string;
   /** Machine-local AgentConnection catalog (serial CRUD + runtime sync). */
   connectionCatalog: AgentConnectionCatalog;
@@ -513,12 +510,12 @@ export async function dispatchMethod(
         return connectionDelete(ctx, p);
       case "provider.catalog":
         return providerCatalogRpc();
-      case "credential.list":
-        return credentialList(ctx);
-      case "credential.set":
-        return credentialSet(ctx, p);
-      case "credential.delete":
-        return credentialDelete(ctx, p);
+      case "settings.launchSecret.list":
+        return settingsLaunchSecretList(ctx, p, callContext);
+      case "settings.launchSecret.set":
+        return settingsLaunchSecretSet(ctx, p, callContext);
+      case "settings.launchSecret.delete":
+        return settingsLaunchSecretDelete(ctx, p, callContext);
       case "skill.list":
         return skillList(ctx);
       case "skill.install":
@@ -2415,7 +2412,7 @@ function emitRegistryRolesUpdated(
 
 /**
  * Parse role definition fields from top-level RPC params.
- * Never accepts credentials / secret-shaped keys.
+ * Never accepts launchSecrets / secret-shaped keys.
  */
 function parseRoleDefinitionParams(
   p: Record<string, unknown>,
@@ -2518,8 +2515,8 @@ function mapRoleRegistryError(err: unknown, surface: string): RpcError {
 async function connectionList(ctx: HandlerContext, p: Record<string, unknown>) {
   void p;
   const catalog = ctx.connectionCatalog.list();
-  const existsMap = await credentialExistsLookup(ctx, catalog);
-  return { connections: projectAgentConnections(catalog, { credentialExistsById: existsMap }) };
+  const existsMap = await launchSecretExistsLookup(ctx, catalog);
+  return { connections: projectAgentConnections(catalog, { launchSecretExistsById: existsMap }) };
 }
 
 async function connectionGet(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -2531,7 +2528,7 @@ async function connectionGet(ctx: HandlerContext, p: Record<string, unknown>) {
   return {
     connection: projectAgentConnection(
       connection,
-      await connectionCredentialExistsOpts(ctx, connection)
+      await connectionLaunchSecretExistsOpts(ctx, connection)
     ),
   };
 }
@@ -2540,7 +2537,7 @@ async function connectionCreate(ctx: HandlerContext, p: Record<string, unknown>)
   const created = await ctx.connectionCatalog.create(p);
   const connection = projectAgentConnection(
     created,
-    await connectionCredentialExistsOpts(ctx, created)
+    await connectionLaunchSecretExistsOpts(ctx, created)
   );
   ctx.events.emit(
     "connection.changed",
@@ -2559,7 +2556,7 @@ async function connectionUpdate(ctx: HandlerContext, p: Record<string, unknown>)
   const updated = await ctx.connectionCatalog.update(connectionId, patch);
   const connection = projectAgentConnection(
     updated,
-    await connectionCredentialExistsOpts(ctx, updated)
+    await connectionLaunchSecretExistsOpts(ctx, updated)
   );
   ctx.events.emit(
     "connection.changed",
@@ -2584,27 +2581,27 @@ async function connectionDelete(ctx: HandlerContext, p: Record<string, unknown>)
   return result;
 }
 
-async function credentialExistsLookup(
+async function launchSecretExistsLookup(
   ctx: HandlerContext,
-  routes: Array<{ credentialRef?: string }>
+  routes: Array<{ launchSecretRef?: string }>
 ): Promise<Map<string, boolean>> {
   const map = new Map<string, boolean>();
   for (const route of routes) {
-    const ref = typeof route.credentialRef === "string" ? route.credentialRef.trim() : "";
+    const ref = typeof route.launchSecretRef === "string" ? route.launchSecretRef.trim() : "";
     if (ref && !map.has(ref)) {
-      map.set(ref, await ctx.credentials.has(ref));
+      map.set(ref, ctx.launchSecrets.has(ref));
     }
   }
   return map;
 }
 
-async function connectionCredentialExistsOpts(
+async function connectionLaunchSecretExistsOpts(
   ctx: HandlerContext,
-  connection: { credentialRef?: string }
-): Promise<{ credentialExists: boolean } | undefined> {
-  const ref = connection.credentialRef?.trim() || undefined;
+  connection: { launchSecretRef?: string }
+): Promise<{ launchSecretExists: boolean } | undefined> {
+  const ref = connection.launchSecretRef?.trim() || undefined;
   if (!ref) return undefined;
-  return { credentialExists: await ctx.credentials.has(ref) };
+  return { launchSecretExists: ctx.launchSecrets.has(ref) };
 }
 
 /**
@@ -2616,64 +2613,93 @@ function providerCatalogRpc(): ProviderCatalogProjection {
 }
 
 /**
- * Machine-local credential vault RPCs — user-only loopback surface.
- * set accepts secret in params but response/events/errors never echo it.
- * No credential.get / resolve on the client surface.
+ * Privileged machine Settings surface for opaque launch secrets.
+ * It is not an account/OAuth manager. Plaintext is accepted only by set and is
+ * never returned, emitted, logged, or persisted outside the encrypted store.
  */
-async function credentialList(ctx: HandlerContext) {
-  const credentials = await ctx.credentials.list();
-  return { credentials };
-}
+type VerifiedCallerContext = {
+  callerSessionId?: string;
+  callerExternalKey?: string;
+};
 
-async function credentialSet(ctx: HandlerContext, p: Record<string, unknown>) {
-  if ("credential" in p) {
+function requireMachineSettingsCaller(
+  p: Record<string, unknown>,
+  surface: string,
+  callContext: VerifiedCallerContext
+): void {
+  if (callContext.callerSessionId || callContext.callerExternalKey) {
     throw new RpcError(
-      -32602,
-      "credential.set does not accept nested credential; pass { id, secret, metadata? } or { id, secret, label? }"
+      -32001,
+      `${surface} is available only to the local machine Settings client`,
+      {
+        code: "MACHINE_SETTINGS_CALLER_REQUIRED",
+        ...(callContext.callerSessionId ? { callerSessionId: callContext.callerSessionId } : {}),
+        ...(callContext.callerExternalKey ? { callerExternalKey: callContext.callerExternalKey } : {}),
+      }
     );
   }
+  requireUserActor(p, surface);
+}
+
+async function settingsLaunchSecretList(
+  ctx: HandlerContext,
+  p: Record<string, unknown>,
+  callContext: VerifiedCallerContext
+) {
+  assertAllowedParams(p, new Set(["actor"]), "settings.launchSecret.list");
+  requireMachineSettingsCaller(p, "settings.launchSecret.list", callContext);
+  const launchSecrets = await ctx.launchSecrets.list();
+  return { launchSecrets };
+}
+
+async function settingsLaunchSecretSet(
+  ctx: HandlerContext,
+  p: Record<string, unknown>,
+  callContext: VerifiedCallerContext
+) {
+  assertAllowedParams(
+    p,
+    new Set(["id", "secret", "label", "actor"]),
+    "settings.launchSecret.set"
+  );
+  requireMachineSettingsCaller(p, "settings.launchSecret.set", callContext);
   const id = requireString(p, "id");
   // Accept secret only as a string param; never log or re-emit it.
   if (!("secret" in p) || typeof p.secret !== "string" || p.secret.length === 0) {
     throw new RpcError(-32602, "Missing or invalid string param: secret");
   }
   const secret = p.secret;
-  // metadata bag or top-level label (both non-secret).
+  // Optional non-secret display label. There is one canonical wire spelling.
   let metadata: { label?: string } | undefined;
-  if ("metadata" in p && p.metadata !== undefined && p.metadata !== null) {
-    if (typeof p.metadata !== "object" || Array.isArray(p.metadata)) {
-      throw new RpcError(-32602, "Invalid metadata: must be a plain object when set");
-    }
-    metadata = p.metadata as { label?: string };
-  } else if ("label" in p && p.label !== undefined && p.label !== null) {
+  if ("label" in p && p.label !== undefined && p.label !== null) {
     if (typeof p.label !== "string") {
       throw new RpcError(-32602, "Invalid string param: label");
     }
     metadata = { label: p.label };
   }
   try {
-    const credential = await ctx.credentials.set(id, secret, metadata);
+    const launchSecret = await ctx.launchSecrets.set(id, secret, metadata);
     // Safe event: id/metadata only — never secret.
     ctx.events.emit(
-      "credential.changed",
+      "settings.launchSecret.changed",
       "",
       {
         action: "set",
-        id: credential.id,
-        updatedAt: credential.updatedAt,
-        ...(credential.metadata ? { metadata: credential.metadata } : {}),
+        id: launchSecret.id,
+        updatedAt: launchSecret.updatedAt,
+        ...(launchSecret.metadata ? { metadata: launchSecret.metadata } : {}),
       },
       "self"
     );
-    return { credential };
+    return { launchSecret };
   } catch (err) {
     // Sanitize: never include secret in error message/data.
-    const message = err instanceof Error ? err.message : "credential.set failed";
+    const message = err instanceof Error ? err.message : "settings.launchSecret.set failed";
     if (secret && message.includes(secret)) {
-      throw new RpcError(-32602, "credential.set failed");
+      throw new RpcError(-32602, "settings.launchSecret.set failed");
     }
     if (
-      /Invalid credential id|Missing or invalid credential|credential secret|metadata|must match/i.test(
+      /Invalid launch secret id|Missing or invalid launch secret|launch secret|metadata|must match/i.test(
         message
       )
     ) {
@@ -2683,23 +2709,29 @@ async function credentialSet(ctx: HandlerContext, p: Record<string, unknown>) {
   }
 }
 
-async function credentialDelete(ctx: HandlerContext, p: Record<string, unknown>) {
+async function settingsLaunchSecretDelete(
+  ctx: HandlerContext,
+  p: Record<string, unknown>,
+  callContext: VerifiedCallerContext
+) {
+  assertAllowedParams(p, new Set(["id", "actor"]), "settings.launchSecret.delete");
+  requireMachineSettingsCaller(p, "settings.launchSecret.delete", callContext);
   const id = requireString(p, "id");
   try {
-    const result = await ctx.credentials.delete(id);
+    const result = await ctx.launchSecrets.delete(id);
     ctx.events.emit(
-      "credential.changed",
+      "settings.launchSecret.changed",
       "",
       { action: "delete", id: result.deleted },
       "self"
     );
     return result;
   } catch (err) {
-    const message = err instanceof Error ? err.message : "credential.delete failed";
+    const message = err instanceof Error ? err.message : "settings.launchSecret.delete failed";
     if (/not found/i.test(message)) {
       throw new RpcError(-32004, message);
     }
-    if (/Invalid credential id|Missing or invalid credential/i.test(message)) {
+    if (/Invalid launch secret id|Missing or invalid launch secret/i.test(message)) {
       throw new RpcError(-32602, message);
     }
     throw new RpcError(-32000, message);

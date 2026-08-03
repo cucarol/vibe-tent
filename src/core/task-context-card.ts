@@ -649,8 +649,8 @@ export function connectionAdapterCompatibilityDigest(input: {
 
 /**
  * Sort a string→string map for canonical hashing (both keys and values matter).
- * Used for MCP envKeys / envCredentialRefs / headerEnvKeys / headerCredentialRefs
- * where values are process env *key names* or credentialRef *ids* — never secrets.
+ * Used for MCP envKeys / envSecretRefs / headerEnvKeys / headerSecretRefs
+ * where values are process env *key names* or launchSecretRef *ids* — never secrets.
  */
 export function canonicalStringMap(
   map: Record<string, string> | undefined | null
@@ -671,12 +671,12 @@ export function canonicalStringMap(
  *
  * Hashes the exact canonical launch configuration that can change provider/MCP/Skill
  * context — never resolved secret values:
- * - ACP: executable, model, envKey, credentialRef, baseUrlEnvKey, baseUrl,
+ * - ACP: executable, model, envKey, launchSecretRef, baseUrlEnvKey, baseUrl,
  *   permissionPolicy, promptTimeoutMs, permissionTimeoutMs
  * - generic: command, args, Connection env *key names* only
  * - enabled Skills: name + path identity
  * - enabled MCP: name, transport, command, args, url, and every env/header
- *   process-key name or credentialRef id (mapping keys *and* values)
+ *   process-key name or launchSecretRef id (mapping keys *and* values)
  */
 export function routeLaunchCompatibilityDigest(input: {
   connectionId: string;
@@ -693,7 +693,7 @@ export function routeLaunchCompatibilityDigest(input: {
     executable?: string;
     model?: string;
     envKey?: string;
-    credentialRef?: string;
+    launchSecretRef?: string;
     baseUrlEnvKey?: string;
     baseUrl?: string;
     permissionPolicy?: string;
@@ -712,7 +712,7 @@ export function routeLaunchCompatibilityDigest(input: {
   }[];
   /**
    * Enabled MCP servers: full non-secret launch identity including mapping
-   * values (process env key names / credentialRef ids).
+   * values (process env key names / launchSecretRef ids).
    */
   mcpServers?: readonly {
     name: string;
@@ -721,9 +721,9 @@ export function routeLaunchCompatibilityDigest(input: {
     args?: readonly string[];
     url?: string;
     envKeys?: Record<string, string>;
-    envCredentialRefs?: Record<string, string>;
+    envSecretRefs?: Record<string, string>;
     headerEnvKeys?: Record<string, string>;
-    headerCredentialRefs?: Record<string, string>;
+    headerSecretRefs?: Record<string, string>;
   }[];
   capabilityFlags?: readonly string[];
 }): string {
@@ -747,9 +747,9 @@ export function routeLaunchCompatibilityDigest(input: {
       args: [...(m.args ?? [])].map((s) => String(s)),
       url: m.url?.trim() || "",
       envKeys: canonicalStringMap(m.envKeys),
-      envCredentialRefs: canonicalStringMap(m.envCredentialRefs),
+      envSecretRefs: canonicalStringMap(m.envSecretRefs),
       headerEnvKeys: canonicalStringMap(m.headerEnvKeys),
-      headerCredentialRefs: canonicalStringMap(m.headerCredentialRefs),
+      headerSecretRefs: canonicalStringMap(m.headerSecretRefs),
     }))
     .filter((m) => m.name)
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -769,7 +769,7 @@ export function routeLaunchCompatibilityDigest(input: {
         executable: acp?.executable?.trim() || "",
         model: acp?.model?.trim() || "",
         envKey: acp?.envKey?.trim() || "",
-        credentialRef: acp?.credentialRef?.trim() || "",
+        launchSecretRef: acp?.launchSecretRef?.trim() || "",
         baseUrlEnvKey: acp?.baseUrlEnvKey?.trim() || "",
         baseUrl: acp?.baseUrl?.trim() || "",
         permissionPolicy: acp?.permissionPolicy?.trim() || "",

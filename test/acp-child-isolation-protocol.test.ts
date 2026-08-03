@@ -357,7 +357,7 @@ test("AgentRuntime: Connection/request cannot override reserved; coreEnv + diagn
         provider: "test",
         adapterId: "env-capture",
         envKey: "PROVIDER_RUNTIME_BLOB",
-        credentialRef: "cred-1",
+        launchSecretRef: "cred-1",
       },
     ],
     resolveConnectionEnv: async () => ({ PROVIDER_RUNTIME_BLOB: secret }),
@@ -479,7 +479,7 @@ test("resolved secret under non-secret-looking key redacted via diagnosticSecret
         args: [MOCK_ACP],
         model: DEFAULT_GROK_MODEL,
         envKey: "PROVIDER_RUNTIME_BLOB",
-        credentialRef: "cred-plain",
+        launchSecretRef: "cred-plain",
         permissionPolicy: "deny",
       },
     ],
@@ -711,7 +711,7 @@ process.exit(1);
         provider: "test",
         adapterId: "secret-print",
         envKey: "CPA_GROK_API_KEY",
-        credentialRef: "cred-1",
+        launchSecretRef: "cred-1",
       },
     ],
     resolveConnectionEnv: async () => ({ CPA_GROK_API_KEY: secret }),
@@ -770,7 +770,7 @@ test("AcpClient/runtime: resolved credential appears in fixture error and is red
         args: [MOCK_ACP],
         model: DEFAULT_GROK_MODEL,
         envKey: DEFAULT_GROK_ENV_KEY,
-        credentialRef: "cred-vault-1",
+        launchSecretRef: "cred-vault-1",
         permissionPolicy: "deny",
       },
     ],
@@ -925,7 +925,7 @@ test("tryAttachService: healthy legacy (no protocolVersion) fails before busines
   }
 });
 
-test("tryAttachService: healthy protocol 1 fails after the Connection wire bump and does not spawn competitor", async () => {
+test("tryAttachService: healthy protocol 3 fails after the Launch Secret wire bump and does not spawn competitor", async () => {
   const dataDir = await tempDir("tent-proto-mismatch-");
   const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
   let spawnCalled = false;
@@ -936,7 +936,7 @@ test("tryAttachService: healthy protocol 1 fails after the Connection wire bump 
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : String(input);
       if (url.includes("/health")) {
         const body = (await res.json()) as Record<string, unknown>;
-        body.protocolVersion = 1;
+        body.protocolVersion = 3;
         return new Response(JSON.stringify(body), {
           status: 200,
           headers: { "content-type": "application/json" },

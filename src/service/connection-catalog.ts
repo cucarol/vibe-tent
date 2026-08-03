@@ -2,7 +2,7 @@
 
 import { cloneAgentConnection, type AgentConnectionConfig } from "../runtime/agent-connection.js";
 import {
-  SECRET_CONNECTION_FIELD_HINTS, parseBaseUrlValue, parseCredentialRefValue, parseEnvKeyValue,
+  SECRET_CONNECTION_FIELD_HINTS, parseBaseUrlValue, parseLaunchSecretRefValue, parseEnvKeyValue,
   parseNonEmptyStringValue, parsePermissionPolicyValue, parsePositiveTimeoutValue, parseConnectionIdValue,
   type FieldResult,
 } from "./connection-field-rules.js";
@@ -59,7 +59,7 @@ function parseCreate(raw: Record<string, unknown>): AgentConnectionConfig {
   assign("executable", optional(raw, "executable", (v) => parseNonEmptyStringValue(v, "executable")));
   assign("model", optional(raw, "model", (v) => parseNonEmptyStringValue(v, "model")));
   assign("envKey", optional(raw, "envKey", (v) => parseEnvKeyValue(v, "envKey")));
-  assign("credentialRef", optional(raw, "credentialRef", parseCredentialRefValue));
+  assign("launchSecretRef", optional(raw, "launchSecretRef", parseLaunchSecretRefValue));
   assign("baseUrlEnvKey", optional(raw, "baseUrlEnvKey", (v) => parseEnvKeyValue(v, "baseUrlEnvKey")));
   assign("baseUrl", optional(raw, "baseUrl", parseBaseUrlValue));
   assign("permissionPolicy", optional(raw, "permissionPolicy", parsePermissionPolicyValue));
@@ -79,7 +79,7 @@ function applyPatch(current: AgentConnectionConfig, raw: Record<string, unknown>
   const scalar: Array<[keyof AgentConnectionConfig, (v: unknown) => FieldResult<unknown>]> = [
     ["displayName", (v) => parseNonEmptyStringValue(v, "displayName")], ["executable", (v) => parseNonEmptyStringValue(v, "executable")],
     ["model", (v) => parseNonEmptyStringValue(v, "model")], ["envKey", (v) => parseEnvKeyValue(v, "envKey")],
-    ["credentialRef", parseCredentialRefValue], ["baseUrlEnvKey", (v) => parseEnvKeyValue(v, "baseUrlEnvKey")],
+    ["launchSecretRef", parseLaunchSecretRefValue], ["baseUrlEnvKey", (v) => parseEnvKeyValue(v, "baseUrlEnvKey")],
     ["baseUrl", parseBaseUrlValue], ["permissionPolicy", parsePermissionPolicyValue],
     ["promptTimeoutMs", (v) => parsePositiveTimeoutValue(v, "promptTimeoutMs")], ["permissionTimeoutMs", (v) => parsePositiveTimeoutValue(v, "permissionTimeoutMs")],
   ];

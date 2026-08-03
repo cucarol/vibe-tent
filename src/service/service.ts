@@ -30,8 +30,8 @@ import { TaskInputStore } from "./task-input-store.js";
 import { ManagedDeliveryReportDraftStore } from "./managed-delivery-report-draft-store.js";
 import { ensureDefaultAgentConnections } from "./connections.js";
 import { AgentConnectionCatalog } from "./connection-catalog.js";
-import type { CredentialProtector } from "./credential-protector.js";
-import { CredentialStore } from "./credential-store.js";
+import type { LaunchSecretProtector } from "./launch-secret-protector.js";
+import { LaunchSecretStore } from "./launch-secret-store.js";
 import { createAgentRuntime, type AgentRuntime } from "../runtime/agent-runtime.js";
 import type { AgentConnectionConfig } from "../runtime/types.js";
 import {
@@ -69,10 +69,10 @@ export interface LocalTentServiceOptions {
   /** Explicit in-memory Agent Connections for tests/harness; skips disk persistence. */
   connections?: AgentConnectionConfig[];
   /**
-   * Inject CredentialStore protector (offline tests). Production uses Windows DPAPI.
-   * When omitted, CredentialStore uses createPlatformCredentialProtector (fail-loud off Windows).
+   * Inject LaunchSecretStore protector (offline tests). Production uses Windows DPAPI.
+   * When omitted, LaunchSecretStore uses createPlatformLaunchSecretProtector (fail-loud off Windows).
    */
-  credentialProtector?: CredentialProtector;
+  launchSecretProtector?: LaunchSecretProtector;
   /**
    * Package root for bundled skills (tests inject). Default: resolve from this module.
    */
@@ -99,7 +99,7 @@ export interface LocalTentService {
   events: EventBus;
   hostApi: WorkspaceHost;
   runtime: AgentRuntime;
-  credentials: CredentialStore;
+  launchSecrets: LaunchSecretStore;
   ctx: HandlerContext;
   endpoint: ServiceEndpointRecord | null;
   stop: () => Promise<void>;
@@ -167,10 +167,10 @@ async function startOwnedLocalTentService(
   // Process-local: previous in-process stop may have drained background U2A.
   enableManagedTaskInputBackgroundAccept();
 
-  const credentials = new CredentialStore(dataDir, {
-    protector: options.credentialProtector,
+  const launchSecrets = new LaunchSecretStore(dataDir, {
+    protector: options.launchSecretProtector,
   });
-  await credentials.ensureLoaded();
+  await launchSecrets.ensureLoaded();
 
   // options.connections: in-memory inject for tests (skip the default disk seed).
   // Injected catalogs never persist CRUD to dataDir/connections.json.
@@ -285,28 +285,28 @@ async function startOwnedLocalTentService(
       createPiAcpAdapter(acpPermissionHooks),
     ],
     resolveConnectionEnv: async (connection) => {
-      const ref = connection.credentialRef?.trim() || "";
+      const ref = connection.launchSecretRef?.trim() || "";
       if (!ref) return {};
       const envKey = connection.envKey?.trim() || "";
       if (!envKey) {
         throw new Error(
-          `Agent Connection ${connection.connectionId} has credentialRef but no envKey`
+          `Agent Connection ${connection.connectionId} has launchSecretRef but no envKey`
         );
       }
       // resolve() fail-loud when missing; map message without secret material.
-      const secret = await credentials.resolve(ref);
+      const secret = await launchSecrets.resolve(ref);
       if (!secret) {
         throw new Error(
-          `Credential not found or empty for Agent Connection ${connection.connectionId} (credentialRef=${ref})`
+          `Launch secret not found or empty for Agent Connection ${connection.connectionId} (launchSecretRef=${ref})`
         );
       }
       return { [envKey]: secret };
     },
-    resolveCredentialRef: async (credentialRef) => {
-      const id = typeof credentialRef === "string" ? credentialRef.trim() : "";
+    resolveLaunchSecretRef: async (launchSecretRef) => {
+      const id = typeof launchSecretRef === "string" ? launchSecretRef.trim() : "";
       if (!id) return undefined;
-      // Fail-loud: do not swallow vault/resolver errors (AgentRuntime redacts to route/server/ref).
-      const secret = await credentials.resolve(id);
+      // Fail loud; AgentRuntime redacts resolver diagnostics to Connection/server/ref.
+      const secret = await launchSecrets.resolve(id);
       return typeof secret === "string" && secret ? secret : undefined;
     },
   });
@@ -345,7 +345,7 @@ async function startOwnedLocalTentService(
     decisionRequests,
     taskInputs,
     managedDeliveryReportDrafts,
-    credentials,
+    launchSecrets,
     dataDir,
     connectionCatalog,
     packageRoot,
@@ -476,7 +476,7 @@ async function startOwnedLocalTentService(
     events,
     hostApi: workspaceHost,
     runtime,
-    credentials,
+    launchSecrets,
     ctx,
     endpoint,
     stop,

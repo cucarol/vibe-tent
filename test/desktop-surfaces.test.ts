@@ -27,10 +27,10 @@ import {
   buildMcpServersPayload,
   buildSkillsPayload,
   ACCEPT_MODE_OPTIONS,
-  credentialListRow,
-  CREDENTIAL_VAULT_TYPE,
+  launchSecretListRow,
+  LAUNCH_SECRET_STORE_TYPE,
   mapProviderCatalogRows,
-  mcpCredentialStatusLine,
+  mcpLaunchSecretStatusLine,
   mcpDraftsFromProjection,
   mcpSourceLine,
   CONNECTION_NEXT_SESSION_TIP,
@@ -40,7 +40,7 @@ import {
   setSkillEnabled,
   skillDraftsFromProjection,
   skillSourceLine,
-  validateCredentialSet,
+  validateLaunchSecretSet,
   validateMcpAddDraft,
   validateConnectionCreate,
   validateConnectionUpdate,
@@ -222,7 +222,7 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
     displayName: "本地 Grok",
     model: "",
     envKey: "CPA_GROK_API_KEY",
-    credentialRef: "vault-main",
+    launchSecretRef: "vault-main",
   });
   assert.equal(profUp.ok, true);
   if (profUp.ok) {
@@ -230,7 +230,7 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
     assert.equal(profUp.payload.displayName, "本地 Grok");
     assert.equal(profUp.payload.model, null);
     assert.equal(profUp.payload.envKey, "CPA_GROK_API_KEY");
-    assert.equal(profUp.payload.credentialRef, "vault-main");
+    assert.equal(profUp.payload.launchSecretRef, "vault-main");
     assert.ok(!("adapterId" in profUp.payload));
     assert.ok(!("secret" in profUp.payload));
     assert.ok(!("apiKey" in profUp.payload));
@@ -244,8 +244,8 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
   assert.equal(connectionDisplayLabel({ connectionId: "p1", displayName: "" }), "p1");
   assert.match(CONNECTION_NEXT_SESSION_TIP, /下次会话生效/);
 
-  assert.equal(validateCredentialSet({ id: "k", secret: "" }).ok, false);
-  const cred = validateCredentialSet({ id: "api-key", secret: "s3cret", label: "main" });
+  assert.equal(validateLaunchSecretSet({ id: "k", secret: "" }).ok, false);
+  const cred = validateLaunchSecretSet({ id: "api-key", secret: "s3cret", label: "main" });
   assert.equal(cred.ok, true);
   if (cred.ok) {
     assert.equal(cred.payload.secret, "s3cret");
@@ -253,14 +253,14 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
   }
 
   // credential list row: ref id + type + 已配置 — never secret fields.
-  const crow = credentialListRow({
+  const crow = launchSecretListRow({
     id: "api-key",
     createdAt: "t0",
     updatedAt: "t1",
     label: "main",
   });
   assert.equal(crow.id, "api-key");
-  assert.equal(crow.type, CREDENTIAL_VAULT_TYPE);
+  assert.equal(crow.type, LAUNCH_SECRET_STORE_TYPE);
   assert.equal(crow.status, "已配置");
   assert.equal(crow.label, "main");
   assert.ok(!("secret" in crow));
@@ -297,14 +297,14 @@ test("Connection skills/mcp drafts: toggle, id/ref only, no displayName/secrets"
       enabled: true,
       command: "npx",
       args: ["-y", "server"],
-      envCredentialRefs: { API_KEY: "mcp-key" },
+      envSecretRefs: { API_KEY: "mcp-key" },
     },
     {
       name: "remote",
       transport: "http",
       enabled: false,
       url: "https://mcp.example.com/mcp",
-      headerCredentialRefs: { Authorization: "missing-key" },
+      headerSecretRefs: { Authorization: "missing-key" },
     },
   ]);
   assert.equal(mcps.length, 2);
@@ -315,19 +315,19 @@ test("Connection skills/mcp drafts: toggle, id/ref only, no displayName/secrets"
   assert.equal(disabled.find((m) => m.name === "fs")?.enabled, false);
 
   const configured = new Set(["mcp-key"]);
-  assert.match(mcpCredentialStatusLine(mcps[0]!, configured), /mcp-key·已配置/);
-  assert.match(mcpCredentialStatusLine(mcps[1]!, configured), /missing-key·缺失/);
+  assert.match(mcpLaunchSecretStatusLine(mcps[0]!, configured), /mcp-key·已配置/);
+  assert.match(mcpLaunchSecretStatusLine(mcps[1]!, configured), /missing-key·缺失/);
   // Status line never embeds secret-like values beyond ref ids.
-  assert.equal(mcpCredentialStatusLine(mcps[0]!, configured).includes("sk-"), false);
+  assert.equal(mcpLaunchSecretStatusLine(mcps[0]!, configured).includes("sk-"), false);
 
   const mcpWire = buildMcpServersPayload(disabled);
   const wireJson = JSON.stringify(mcpWire);
   assert.equal(wireJson.includes("displayName"), false);
-  // No plaintext secret bags (substring-safe: envCredentialRefs / header* are allowed).
+  // No plaintext secret bags (substring-safe: envSecretRefs / header* are allowed).
   assert.equal(/"env"\s*:/.test(wireJson), false);
   assert.equal(/"headers"\s*:/.test(wireJson), false);
   assert.equal(/"secret"\s*:/.test(wireJson), false);
-  assert.ok(wireJson.includes("envCredentialRefs"));
+  assert.ok(wireJson.includes("envSecretRefs"));
   assert.ok(wireJson.includes("mcp-key"));
   assert.equal(mcpWire.find((m) => m.name === "fs")?.enabled, false);
 
@@ -339,12 +339,12 @@ test("Connection skills/mcp drafts: toggle, id/ref only, no displayName/secrets"
     name: "fs2",
     transport: "stdio",
     command: "npx",
-    envCredentialName: "API_KEY",
-    envCredentialRef: "vault-1",
+    envSecretName: "API_KEY",
+    envLaunchSecretRef: "vault-1",
   });
   assert.equal(addMcp.ok, true);
   if (addMcp.ok) {
-    assert.deepEqual(addMcp.entry.envCredentialRefs, { API_KEY: "vault-1" });
+    assert.deepEqual(addMcp.entry.envSecretRefs, { API_KEY: "vault-1" });
     assert.ok(!("env" in addMcp.entry));
   }
   assert.equal(
@@ -381,9 +381,9 @@ test("desktop settings RPCs used by UI are on CLIENT_METHODS", () => {
     "connection.update",
     "connection.delete",
     "provider.catalog",
-    "credential.list",
-    "credential.set",
-    "credential.delete",
+    "settings.launchSecret.list",
+    "settings.launchSecret.set",
+    "settings.launchSecret.delete",
     "skill.list",
     "skill.install",
     "docs.backlinks",
@@ -411,6 +411,18 @@ test("desktop settings RPCs used by UI are on CLIENT_METHODS", () => {
   ]) {
     assert.ok(CLIENT_METHODS.includes(m as (typeof CLIENT_METHODS)[number]), m);
   }
+});
+
+test("desktop keeps Launch Secret controls inside Agent Connections, without a standalone credential surface", async () => {
+  const source = await fs.readFile(
+    path.join(process.cwd(), "src", "desktop", "renderer", "main", "settings.ts"),
+    "utf8"
+  );
+  assert.match(source, /function renderLaunchSecretAdvanced\(\)/);
+  assert.match(source, /renderRoutes\(\)[\s\S]*renderLaunchSecretAdvanced\(\)/);
+  assert.doesNotMatch(source, /id:\s*"(?:credentials|launchSecrets)"/);
+  assert.doesNotMatch(source, /label:\s*"凭证"/);
+  assert.doesNotMatch(source, /renderCredentials|renderLaunchSecrets/);
 });
 
 test("service smoke: docs.backlinks + provider.catalog for graph/settings", async () => {

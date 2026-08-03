@@ -24,7 +24,7 @@ import { cloneAgentConnection, type AgentConnectionConfig } from "../runtime/age
 import type { AgentConnectionProjection } from "./types.js";
 import { backupCorruptMachineFile, isNotFoundError, warnCorruptMachineState, writeJsonAtomic } from "../machine-state.js";
 import {
-  parseBaseUrlValue, parseCredentialRefValue, parseEnvKeyValue, parseNonEmptyStringValue,
+  parseBaseUrlValue, parseLaunchSecretRefValue, parseEnvKeyValue, parseNonEmptyStringValue,
   parsePermissionPolicyValue, parsePositiveTimeoutValue, parseConnectionIdValue, type FieldResult,
 } from "./connection-field-rules.js";
 
@@ -32,7 +32,7 @@ export type { AgentConnectionConfig } from "../runtime/agent-connection.js";
 
 export const AGENT_CONNECTION_CREATE_FIELDS = [
   "connectionId", "provider", "adapterId", "displayName", "command", "args", "executable", "model", "envKey",
-  "credentialRef", "baseUrlEnvKey", "baseUrl", "permissionPolicy", "promptTimeoutMs",
+  "launchSecretRef", "baseUrlEnvKey", "baseUrl", "permissionPolicy", "promptTimeoutMs",
   "permissionTimeoutMs", "skills", "mcpServers",
 ] as const;
 export const AGENT_CONNECTION_UPDATE_FIELDS = AGENT_CONNECTION_CREATE_FIELDS.filter((field) => field !== "connectionId") as readonly string[];
@@ -77,7 +77,7 @@ function parseConnectionRow(value: unknown): AgentConnectionConfig | null {
   if (!optional("executable", (v) => parseNonEmptyStringValue(v, "executable"), (v) => { route.executable = v; })) return null;
   if (!optional("model", (v) => parseNonEmptyStringValue(v, "model"), (v) => { route.model = v; })) return null;
   if (!optional("envKey", (v) => parseEnvKeyValue(v, "envKey"), (v) => { route.envKey = v; })) return null;
-  if (!optional("credentialRef", parseCredentialRefValue, (v) => { route.credentialRef = v; })) return null;
+  if (!optional("launchSecretRef", parseLaunchSecretRefValue, (v) => { route.launchSecretRef = v; })) return null;
   if (!optional("baseUrlEnvKey", (v) => parseEnvKeyValue(v, "baseUrlEnvKey"), (v) => { route.baseUrlEnvKey = v; })) return null;
   if (!optional("baseUrl", parseBaseUrlValue, (v) => { route.baseUrl = v; })) return null;
   if (!optional("permissionPolicy", parsePermissionPolicyValue, (v) => { route.permissionPolicy = v; })) return null;
@@ -171,12 +171,12 @@ export async function ensureDefaultAgentConnections(dataDir: string): Promise<Ag
   return defaults;
 }
 
-/** Safe client projection; credential values and raw environment values never cross this boundary. */
+/** Safe client projection; launch-secret values and raw environment values never cross this boundary. */
 export function projectAgentConnection(
   connection: AgentConnectionConfig,
-  opts?: { credentialExists?: boolean }
+  opts?: { launchSecretExists?: boolean }
 ): AgentConnectionProjection {
-  const credentialRef = connection.credentialRef?.trim() || undefined;
+  const launchSecretRef = connection.launchSecretRef?.trim() || undefined;
   const skills = projectSkillRefs(connection.skills);
   const mcpServers = projectMcpServers(connection.mcpServers);
   return {
@@ -189,9 +189,9 @@ export function projectAgentConnection(
     ...(connection.model ? { model: connection.model } : {}),
     ...(connection.executable ? { executable: connection.executable } : {}),
     ...(connection.envKey ? { envKey: connection.envKey } : {}),
-    ...(credentialRef ? { credentialRef } : {}),
-    ...(credentialRef && opts?.credentialExists !== undefined
-      ? { credentialExists: opts.credentialExists }
+    ...(launchSecretRef ? { launchSecretRef } : {}),
+    ...(launchSecretRef && opts?.launchSecretExists !== undefined
+      ? { launchSecretExists: opts.launchSecretExists }
       : {}),
     ...(connection.baseUrlEnvKey ? { baseUrlEnvKey: connection.baseUrlEnvKey } : {}),
     ...(connection.baseUrl ? { baseUrl: connection.baseUrl } : {}),
@@ -214,20 +214,20 @@ export function projectAgentConnection(
 
 export function projectAgentConnections(
   connections: AgentConnectionConfig[],
-  opts?: { credentialExistsById?: ReadonlyMap<string, boolean> | Record<string, boolean> }
+  opts?: { launchSecretExistsById?: ReadonlyMap<string, boolean> | Record<string, boolean> }
 ): AgentConnectionProjection[] {
   const lookup = (ref: string | undefined): boolean | undefined => {
-    if (!ref || !opts?.credentialExistsById) return undefined;
-    return opts.credentialExistsById instanceof Map
-      ? opts.credentialExistsById.get(ref)
-      : (opts.credentialExistsById as Record<string, boolean>)[ref];
+    if (!ref || !opts?.launchSecretExistsById) return undefined;
+    return opts.launchSecretExistsById instanceof Map
+      ? opts.launchSecretExistsById.get(ref)
+      : (opts.launchSecretExistsById as Record<string, boolean>)[ref];
   };
   return connections
     .map((connection) => {
-      const exists = lookup(connection.credentialRef?.trim());
+      const exists = lookup(connection.launchSecretRef?.trim());
       return projectAgentConnection(
         connection,
-        exists === undefined ? undefined : { credentialExists: exists }
+        exists === undefined ? undefined : { launchSecretExists: exists }
       );
     })
     .sort((a, b) => a.connectionId.localeCompare(b.connectionId));

@@ -1,6 +1,6 @@
 // Settings secondary surface: one primary entry, secondary nav for
-// Workspace · Roles · Agent Connections · Credentials · Skills/MCP · Maintenance.
-// All mutations via Service RPC. Credentials never echo secrets.
+// Workspace · Roles · Agent Connections · Skills/MCP · Maintenance.
+// Launch secrets are an advanced Connection/MCP setting and never a product identity.
 
 import { escapeHtml } from "../../../markdown/render.js";
 import type {
@@ -8,16 +8,16 @@ import type {
   RoleRegistryEntryProjection,
   AgentConnectionProjection,
 } from "../../../service/types.js";
-import type { CredentialProjection } from "../../../service/credential-store.js";
+import type { LaunchSecretProjection } from "../../../service/launch-secret-store.js";
 import type { BundledSkillListEntry } from "../../../machine/skills.js";
 import {
   buildMcpServersPayload,
   buildSkillsPayload,
-  credentialListRow,
-  CREDENTIAL_VAULT_TYPE,
+  launchSecretListRow,
+  LAUNCH_SECRET_STORE_TYPE,
   ACCEPT_MODE_OPTIONS,
   mapProviderCatalogRows,
-  mcpCredentialStatusLine,
+  mcpLaunchSecretStatusLine,
   mcpDraftsFromProjection,
   mcpSourceLine,
   CONNECTION_NEXT_SESSION_TIP,
@@ -30,7 +30,7 @@ import {
   setSkillEnabled,
   skillDraftsFromProjection,
   skillSourceLine,
-  validateCredentialSet,
+  validateLaunchSecretSet,
   validateMcpAddDraft,
   validateConnectionCreate,
   validateConnectionUpdate,
@@ -55,7 +55,6 @@ export type SettingsSection =
   | "workspace"
   | "roles"
   | "routes"
-  | "credentials"
   | "skills"
   | "maintenance";
 
@@ -63,14 +62,13 @@ const SECTIONS: Array<{ id: SettingsSection; label: string }> = [
   { id: "workspace", label: "工作区" },
   { id: "roles", label: "角色" },
   { id: "routes", label: "Connections" },
-  { id: "credentials", label: "凭证" },
   { id: "skills", label: "Skills / MCP" },
   { id: "maintenance", label: "维护" },
 ];
 
 let section: SettingsSection = "workspace";
 let providers: ProviderRow[] = [];
-let credentials: CredentialProjection[] = [];
+let launchSecrets: LaunchSecretProjection[] = [];
 let skills: BundledSkillListEntry[] = [];
 let fullRoles: RoleRegistryEntryProjection[] = [];
 let fullRoutes: AgentConnectionProjection[] = [];
@@ -98,7 +96,7 @@ let routeFieldDraft: {
   model: string;
   executable: string;
   envKey: string;
-  credentialRef: string;
+  launchSecretRef: string;
   baseUrl: string;
 } | null = null;
 /** Role editor: operational name of the role being edited. */
@@ -127,14 +125,14 @@ function captureRouteFieldDraft(): void {
     executable:
       (document.getElementById("route-edit-exe") as HTMLInputElement | null)?.value ?? "",
     envKey: (document.getElementById("route-edit-env") as HTMLInputElement | null)?.value ?? "",
-    credentialRef:
-      (document.getElementById("route-edit-cred") as HTMLInputElement | null)?.value ?? "",
+    launchSecretRef:
+      (document.getElementById("route-edit-launch-secret") as HTMLInputElement | null)?.value ?? "",
     baseUrl: (document.getElementById("route-edit-base") as HTMLInputElement | null)?.value ?? "",
   };
 }
 
-function configuredCredentialIds(): Set<string> {
-  return new Set(credentials.map((c) => c.id));
+function configuredLaunchSecretIds(): Set<string> {
+  return new Set(launchSecrets.map((c) => c.id));
 }
 
 export function getSettingsSection(): SettingsSection {
@@ -154,7 +152,7 @@ export async function reloadSettings(): Promise<void> {
   try {
     await Promise.all([
       loadProviders(),
-      loadCredentials(),
+      loadLaunchSecrets(),
       loadSkills(),
       workspaceId ? loadWorkspaceSettings() : Promise.resolve(),
       workspaceId ? loadRolesFull() : Promise.resolve(),
@@ -177,11 +175,9 @@ async function loadSectionData(s: SettingsSection): Promise<void> {
     } else if (s === "roles" && workspaceId) {
       await loadRolesFull();
     } else if (s === "routes") {
-      await Promise.all([loadRoutesFull(), loadProviders(), loadCredentials()]);
-    } else if (s === "credentials") {
-      await loadCredentials();
+      await Promise.all([loadRoutesFull(), loadProviders(), loadLaunchSecrets()]);
     } else if (s === "skills") {
-      await Promise.all([loadSkills(), loadRoutesFull(), loadCredentials()]);
+      await Promise.all([loadSkills(), loadRoutesFull(), loadLaunchSecrets()]);
     } else if (s === "maintenance" && workspaceId) {
       await loadRetentionPreview();
     }
@@ -198,11 +194,11 @@ async function loadProviders(): Promise<void> {
   providers = mapProviderCatalogRows(result.providers || []);
 }
 
-async function loadCredentials(): Promise<void> {
-  const result = (await window.tentDesktop.rpc("credential.list", {})) as {
-    credentials: CredentialProjection[];
+async function loadLaunchSecrets(): Promise<void> {
+  const result = (await window.tentDesktop.rpc("settings.launchSecret.list", {})) as {
+    launchSecrets: LaunchSecretProjection[];
   };
-  credentials = result.credentials || [];
+  launchSecrets = result.launchSecrets || [];
 }
 
 async function loadSkills(): Promise<void> {
@@ -302,8 +298,6 @@ function renderSectionBody(s: SettingsSection): string {
       return renderRoles();
     case "routes":
       return renderRoutes();
-    case "credentials":
-      return renderCredentials();
     case "skills":
       return renderSkills();
     case "maintenance":
@@ -433,11 +427,11 @@ function renderRoutes(): string {
             const levelBit = level
               ? `<span class="badge-level" data-level="${escapeHtml(String(level.verificationLevel))}">${escapeHtml(level.levelLabel)}</span>`
               : `<span class="faint">未收录 catalog</span>`;
-            const cred =
-              route.credentialRef != null
-                ? route.credentialExists
-                  ? `凭证已配置`
-                  : `凭证缺失`
+            const secretStatus =
+              route.launchSecretRef != null
+                ? route.launchSecretExists
+                  ? `启动 Secret 已配置`
+                  : `启动 Secret 缺失`
                 : "";
             const label = connectionDisplayLabel(route);
             return `<li class="settings-list-item">
@@ -446,7 +440,7 @@ function renderRoutes(): string {
                 <span class="faint"><code>${escapeHtml(route.connectionId)}</code> · <code>${escapeHtml(route.adapterId)}</code></span>
                 <span class="muted">${route.model ? escapeHtml(route.model) : ""}</span>
                 ${levelBit}
-                ${cred ? `<span class="faint">${escapeHtml(cred)}</span>` : ""}
+                ${secretStatus ? `<span class="faint">${escapeHtml(secretStatus)}</span>` : ""}
               </div>
               <div class="settings-list-actions">
                 <button type="button" class="btn btn-ghost" data-route-edit="${escapeHtml(route.connectionId)}">编辑</button>
@@ -476,7 +470,7 @@ function renderRoutes(): string {
           <input id="route-name" class="field" placeholder="displayName" />
           <input id="route-model" class="field" placeholder="model" />
           <input id="route-env" class="field" placeholder="envKey（环境变量名，非 secret）" />
-          <input id="route-cred" class="field" placeholder="credentialRef（凭证 id，非 secret）" />
+          <input id="route-launch-secret" class="field" placeholder="launchSecretRef（启动 Secret id，可选）" />
           <button type="button" id="btn-route-create" class="btn btn-primary">创建</button>
         </div>
       </div>`;
@@ -492,7 +486,8 @@ function renderRoutes(): string {
       <p class="muted">${escapeHtml(CONNECTION_NEXT_SESSION_TIP)}</p>
       ${list}
     </div>
-    ${editor}`;
+    ${editor}
+    ${renderLaunchSecretAdvanced()}`;
 }
 
 function renderRouteEditor(route: AgentConnectionProjection): string {
@@ -502,10 +497,10 @@ function renderRouteEditor(route: AgentConnectionProjection): string {
     model: route.model || "",
     executable: route.executable || "",
     envKey: route.envKey || "",
-    credentialRef: route.credentialRef || "",
+    launchSecretRef: route.launchSecretRef || "",
     baseUrl: route.baseUrl || "",
   };
-  const credIds = configuredCredentialIds();
+  const launchSecretIds = configuredLaunchSecretIds();
   const skillList =
     skillDrafts.length === 0
       ? `<p class="muted">无 skill 引用</p>`
@@ -533,7 +528,7 @@ function renderRouteEditor(route: AgentConnectionProjection): string {
       : `<ul class="settings-list">${mcpDrafts
           .map((m) => {
             const src = mcpSourceLine(m);
-            const credLine = mcpCredentialStatusLine(m, credIds);
+            const secretLine = mcpLaunchSecretStatusLine(m, launchSecretIds);
             return `<li class="settings-list-item">
               <div class="settings-list-main">
                 <label class="settings-check">
@@ -542,8 +537,8 @@ function renderRouteEditor(route: AgentConnectionProjection): string {
                 </label>
                 <span class="muted">${escapeHtml(src)}</span>
                 ${
-                  credLine
-                    ? `<span class="faint">凭证 ${escapeHtml(credLine)}</span>`
+                  secretLine
+                    ? `<span class="faint">启动 Secret ${escapeHtml(secretLine)}</span>`
                     : ""
                 }
               </div>
@@ -554,7 +549,7 @@ function renderRouteEditor(route: AgentConnectionProjection): string {
           })
           .join("")}</ul>`;
 
-  const credOptions = credentials
+  const launchSecretOptions = launchSecrets
     .map((c) => `<option value="${escapeHtml(c.id)}">`)
     .join("");
 
@@ -574,9 +569,9 @@ function renderRouteEditor(route: AgentConnectionProjection): string {
         <input id="route-edit-exe" class="field" value="${escapeHtml(fields.executable)}" placeholder="executable" />
         <label class="settings-label" for="route-edit-env">envKey（环境变量名）</label>
         <input id="route-edit-env" class="field" value="${escapeHtml(fields.envKey)}" placeholder="envKey" />
-        <label class="settings-label" for="route-edit-cred">credentialRef（凭证 id）</label>
-        <input id="route-edit-cred" class="field" value="${escapeHtml(fields.credentialRef)}" placeholder="credentialRef" list="cred-ref-list" />
-        <datalist id="cred-ref-list">${credOptions}</datalist>
+        <label class="settings-label" for="route-edit-launch-secret">launchSecretRef（启动 Secret id）</label>
+        <input id="route-edit-launch-secret" class="field" value="${escapeHtml(fields.launchSecretRef)}" placeholder="launchSecretRef" list="launch-secret-ref-list" />
+        <datalist id="launch-secret-ref-list">${launchSecretOptions}</datalist>
         <label class="settings-label" for="route-edit-base">baseUrl</label>
         <input id="route-edit-base" class="field" value="${escapeHtml(fields.baseUrl)}" placeholder="baseUrl" />
       </div>
@@ -594,7 +589,7 @@ function renderRouteEditor(route: AgentConnectionProjection): string {
     </div>
     <div class="settings-block">
       <div class="surface-section-head">MCP Servers</div>
-      <p class="faint">只保存 id/ref · credential 仅显示已配置 · ${escapeHtml(CONNECTION_NEXT_SESSION_TIP)}</p>
+      <p class="faint">只保存 id/ref · launchSecret 仅显示已配置 · ${escapeHtml(CONNECTION_NEXT_SESSION_TIP)}</p>
       ${mcpList}
       <div class="settings-form">
         <div class="settings-form-inline">
@@ -608,7 +603,7 @@ function renderRouteEditor(route: AgentConnectionProjection): string {
         <input id="mcp-add-url" class="field" placeholder="url（http）" autocomplete="off" />
         <div class="settings-form-inline">
           <input id="mcp-add-env-name" class="field" placeholder="env/header 名（可选）" autocomplete="off" />
-          <input id="mcp-add-env-ref" class="field" placeholder="credential vault id（可选）" list="cred-ref-list" autocomplete="off" />
+          <input id="mcp-add-secret-ref" class="field" placeholder="启动 Secret id（可选）" list="launch-secret-ref-list" autocomplete="off" />
         </div>
         <button type="button" id="btn-mcp-add" class="btn btn-secondary">添加 MCP</button>
       </div>
@@ -620,13 +615,13 @@ function renderRouteEditor(route: AgentConnectionProjection): string {
     </div>`;
 }
 
-function renderCredentials(): string {
+function renderLaunchSecretAdvanced(): string {
   const list =
-    credentials.length === 0
-      ? `<p class="muted">无已配置凭证</p>`
-      : `<ul class="settings-list">${credentials
+    launchSecrets.length === 0
+      ? `<p class="muted">无已配置启动 Secret</p>`
+      : `<ul class="settings-list">${launchSecrets
           .map((c) => {
-            const row = credentialListRow(c);
+            const row = launchSecretListRow(c);
             return `<li class="settings-list-item">
               <div class="settings-list-main">
                 <strong><code>${escapeHtml(row.id)}</code></strong>
@@ -635,7 +630,7 @@ function renderCredentials(): string {
                 ${row.updatedAt ? `<span class="faint">${escapeHtml(row.updatedAt)}</span>` : ""}
               </div>
               <div class="settings-list-actions">
-                <button type="button" class="btn btn-ghost" data-cred-delete="${escapeHtml(row.id)}" title="删除凭证">删除</button>
+                <button type="button" class="btn btn-ghost" data-launch-secret-delete="${escapeHtml(row.id)}" title="删除启动 Secret">删除</button>
               </div>
             </li>`;
           })
@@ -643,17 +638,18 @@ function renderCredentials(): string {
 
   return `
     <div class="settings-block">
-      <div class="surface-section-head">凭证</div>
-      <p class="faint">仅显示 ref id · ${escapeHtml(CREDENTIAL_VAULT_TYPE)} · 已配置 · 绝不读回 secret</p>
+      <div class="surface-section-head">Advanced · 启动 Secret</div>
+      <p class="faint">仅用于明确的 Connection 进程注入或 MCP env/header。Agent OAuth、本地登录和账号生命周期仍由 Agent 自身管理；Tent 绝不读回明文。</p>
+      <p class="faint">ref id · ${escapeHtml(LAUNCH_SECRET_STORE_TYPE)} · 已配置</p>
       ${list}
     </div>
     <div class="settings-block">
-      <div class="surface-section-head">设置 / 更新</div>
+      <div class="surface-section-head">设置 / 更新启动 Secret</div>
       <div class="settings-form">
-        <input id="cred-id" class="field" placeholder="id（vault ref）" autocomplete="off" />
-        <input id="cred-label" class="field" placeholder="label（可选，非 secret）" autocomplete="off" />
-        <input id="cred-secret" class="field" type="password" placeholder="secret（提交后立即清空）" autocomplete="new-password" />
-        <button type="button" id="btn-cred-set" class="btn btn-primary">保存</button>
+        <input id="launch-secret-id" class="field" placeholder="启动 Secret id" autocomplete="off" />
+        <input id="launch-secret-label" class="field" placeholder="label（可选，非 secret）" autocomplete="off" />
+        <input id="launch-secret-value" class="field" type="password" placeholder="启动 Secret（提交后立即清空）" autocomplete="new-password" />
+        <button type="button" id="btn-launch-secret-set" class="btn btn-primary">保存</button>
       </div>
     </div>`;
 }
@@ -679,7 +675,7 @@ function renderSkills(): string {
           })
           .join("")}</ul>`;
 
-  const credIds = configuredCredentialIds();
+  const credIds = configuredLaunchSecretIds();
   const mcpNote = `
     <p class="muted">MCP / Connection Skills 在 Connection 编辑器中用列表 + 启用开关管理。${escapeHtml(CONNECTION_NEXT_SESSION_TIP)}。运行中 session 不热更新。</p>
     <p class="faint">无全局 mcp.* RPC · 见契约缺口 mcp.global-config · 不伪造全局目录</p>
@@ -690,7 +686,7 @@ function renderSkills(): string {
           .join(" ");
         const mcpBits = (route.mcpServers || [])
           .map((m) => {
-            const cred = mcpCredentialStatusLine(m, credIds);
+            const cred = mcpLaunchSecretStatusLine(m, credIds);
             return `${m.name}${m.enabled === false ? "·关" : "·开"}${cred ? `(${cred})` : ""}`;
           })
           .join(" ");
@@ -789,8 +785,8 @@ function wireSection(s: SettingsSection, root: HTMLElement): void {
         const id = btn.getAttribute("data-route-edit");
         section = "routes";
         openRouteEditor(id);
-        // Ensure credentials loaded for MCP "已配置" status.
-        void loadCredentials().then(() => renderSettings());
+        // Ensure launch secrets are loaded for Connection/MCP presence status.
+        void loadLaunchSecrets().then(() => renderSettings());
         renderSettings();
       });
     });
@@ -833,10 +829,12 @@ function wireSection(s: SettingsSection, root: HTMLElement): void {
     });
     document.getElementById("btn-mcp-add")?.addEventListener("click", () => onMcpAdd());
   }
-  if (s === "credentials") {
-    document.getElementById("btn-cred-set")?.addEventListener("click", () => void onCredSet());
-    root.querySelectorAll<HTMLElement>("[data-cred-delete]").forEach((btn) => {
-      btn.addEventListener("click", () => void onCredDelete(btn.getAttribute("data-cred-delete")!));
+  if (s === "routes") {
+    document.getElementById("btn-launch-secret-set")?.addEventListener("click", () => void onLaunchSecretSet());
+    root.querySelectorAll<HTMLElement>("[data-launch-secret-delete]").forEach((btn) => {
+      btn.addEventListener("click", () =>
+        void onLaunchSecretDelete(btn.getAttribute("data-launch-secret-delete")!)
+      );
     });
   }
   if (s === "skills") {
@@ -995,7 +993,8 @@ async function onRouteCreate(): Promise<void> {
     displayName: (document.getElementById("route-name") as HTMLInputElement | null)?.value || "",
     model: (document.getElementById("route-model") as HTMLInputElement | null)?.value || "",
     envKey: (document.getElementById("route-env") as HTMLInputElement | null)?.value || "",
-    credentialRef: (document.getElementById("route-cred") as HTMLInputElement | null)?.value || "",
+    launchSecretRef:
+      (document.getElementById("route-launch-secret") as HTMLInputElement | null)?.value || "",
   };
   const built = validateConnectionCreate(draft);
   if (!built.ok) {
@@ -1039,17 +1038,17 @@ function onMcpAdd(): void {
   const command =
     (document.getElementById("mcp-add-command") as HTMLInputElement | null)?.value || "";
   const url = (document.getElementById("mcp-add-url") as HTMLInputElement | null)?.value || "";
-  const envCredentialName =
+  const envSecretName =
     (document.getElementById("mcp-add-env-name") as HTMLInputElement | null)?.value || "";
-  const envCredentialRef =
-    (document.getElementById("mcp-add-env-ref") as HTMLInputElement | null)?.value || "";
+  const envLaunchSecretRef =
+    (document.getElementById("mcp-add-secret-ref") as HTMLInputElement | null)?.value || "";
   const built = validateMcpAddDraft({
     name,
     transport,
     command,
     url,
-    envCredentialName,
-    envCredentialRef,
+    envSecretName,
+    envLaunchSecretRef,
   });
   if (!built.ok) {
     el.status.textContent = built.reason;
@@ -1074,8 +1073,8 @@ async function onRouteSave(): Promise<void> {
     executable:
       (document.getElementById("route-edit-exe") as HTMLInputElement | null)?.value || "",
     envKey: (document.getElementById("route-edit-env") as HTMLInputElement | null)?.value || "",
-    credentialRef:
-      (document.getElementById("route-edit-cred") as HTMLInputElement | null)?.value || "",
+    launchSecretRef:
+      (document.getElementById("route-edit-launch-secret") as HTMLInputElement | null)?.value || "",
     baseUrl: (document.getElementById("route-edit-base") as HTMLInputElement | null)?.value || "",
   });
   if (!built.ok) {
@@ -1119,14 +1118,14 @@ async function onRouteDelete(connectionId: string): Promise<void> {
   }
 }
 
-async function onCredSet(): Promise<void> {
-  const idEl = document.getElementById("cred-id") as HTMLInputElement | null;
-  const labelEl = document.getElementById("cred-label") as HTMLInputElement | null;
-  const secretEl = document.getElementById("cred-secret") as HTMLInputElement | null;
+async function onLaunchSecretSet(): Promise<void> {
+  const idEl = document.getElementById("launch-secret-id") as HTMLInputElement | null;
+  const labelEl = document.getElementById("launch-secret-label") as HTMLInputElement | null;
+  const secretEl = document.getElementById("launch-secret-value") as HTMLInputElement | null;
   const id = idEl?.value || "";
   const label = labelEl?.value || "";
   const secret = secretEl?.value || "";
-  const built = validateCredentialSet({ id, secret, label });
+  const built = validateLaunchSecretSet({ id, secret, label });
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
@@ -1134,20 +1133,20 @@ async function onCredSet(): Promise<void> {
   // Clear secret from DOM immediately after successful validate / before RPC —
   // never re-display. Local `built.payload.secret` is the only remaining copy for the call.
   if (secretEl) secretEl.value = "";
-  const setBtn = document.getElementById("btn-cred-set") as HTMLButtonElement | null;
+  const setBtn = document.getElementById("btn-launch-secret-set") as HTMLButtonElement | null;
   if (setBtn) setBtn.disabled = true;
   try {
     // RPC: secret only on wire; response is id/metadata — never echo secret into UI state.
-    await window.tentDesktop.rpc("credential.set", {
+    await window.tentDesktop.rpc("settings.launchSecret.set", {
       id: built.payload.id,
       secret: built.payload.secret,
       ...(built.payload.label !== undefined ? { label: built.payload.label } : {}),
     });
     // Drop secret from local payload handle (do not keep in module state).
     (built.payload as { secret?: string }).secret = "";
-    el.status.textContent = `凭证 ${built.payload.id} 已配置`;
+    el.status.textContent = `启动 Secret ${built.payload.id} 已配置`;
     if (idEl) idEl.value = built.payload.id;
-    await loadCredentials();
+    await loadLaunchSecrets();
     renderSettings();
   } catch (err) {
     // Secret already cleared from DOM; user must re-enter (safer than echo).
@@ -1157,13 +1156,13 @@ async function onCredSet(): Promise<void> {
   }
 }
 
-async function onCredDelete(id: string): Promise<void> {
+async function onLaunchSecretDelete(id: string): Promise<void> {
   // Left-click confirm (window.confirm) — no secret shown.
-  if (!window.confirm(`删除凭证「${id}」？此操作不可撤销。`)) return;
+  if (!window.confirm(`删除启动 Secret「${id}」？此操作不可撤销。`)) return;
   try {
-    await window.tentDesktop.rpc("credential.delete", { id });
-    el.status.textContent = `已删除凭证 ${id}`;
-    await loadCredentials();
+    await window.tentDesktop.rpc("settings.launchSecret.delete", { id });
+    el.status.textContent = `已删除启动 Secret ${id}`;
+    await loadLaunchSecrets();
     renderSettings();
   } catch (err) {
     setError(err);
