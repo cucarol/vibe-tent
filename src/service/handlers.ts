@@ -9346,7 +9346,28 @@ async function removePendingDecisionRequestForTerminal(
   taskPath: string,
   resolvedBy: string
 ): Promise<void> {
-  const removed = await ctx.decisionRequests.removePendingForTask(workspaceId, taskPath);
+  let removed: DecisionRequestRecord | undefined;
+  try {
+    removed = await ctx.decisionRequests.removePendingForTask(workspaceId, taskPath);
+  } catch (error) {
+    const pending = await ctx.decisionRequests
+      .getPendingForTask(workspaceId, taskPath)
+      .catch(() => undefined);
+    ctx.events.emit(
+      "decisionRequest.resolved",
+      workspaceId,
+      {
+        ...(pending ? { requestId: pending.id, taskId: pending.taskId } : {}),
+        taskPath,
+        terminal: true,
+        resolvedBy,
+        cleanupFailed: true,
+        diagnostic: error instanceof Error ? error.message : String(error),
+      },
+      "self"
+    );
+    return;
+  }
   if (!removed) return;
   ctx.events.emit(
     "decisionRequest.resolved",

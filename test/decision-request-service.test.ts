@@ -10,9 +10,18 @@ import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { createServiceClient } from "../src/service/client.js";
+import { deriveSessionToken } from "../src/service/auth.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { CLIENT_METHODS } from "../src/service/types.js";
+import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
+
+const FAKE_CONNECTION = {
+  connectionId: "fake-default",
+  provider: "fake",
+  adapterId: FAKE_ADAPTER_ID,
+  fake: { waitForSignal: true, sleepMs: 60_000 },
+} as const;
 
 async function makeWorkspace(): Promise<string> {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-decision-ws-"));
@@ -41,7 +50,11 @@ async function withService<T>(
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-decision-data-"));
-  const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+  const svc = await startLocalTentService({
+    dataDir,
+    writeEndpoint: true,
+    connections: [FAKE_CONNECTION],
+  });
   try {
     return await fn(svc);
   } finally {
@@ -120,6 +133,44 @@ async function createRunningRoleTask(input: {
     taskPath: dispatched.taskPath,
     executor,
     executorExternalKey,
+  };
+}
+
+async function createRunningConnectionTask(input: {
+  svc: Awaited<ReturnType<typeof startLocalTentService>>;
+  workspace: string;
+}) {
+  const root = createServiceClient({ baseUrl: input.svc.url, token: input.svc.token });
+  const { workspaceId } = (await root.mount(input.workspace)) as { workspaceId: string };
+  const note = await root.docsCreateNote(workspaceId, {
+    name: `managed-decision-${Math.random().toString(36).slice(2, 8)}`,
+    type: "prompt",
+  });
+  const dispatched = (await root.taskDispatch(workspaceId, {
+    workNodeIds: [note.nodeId],
+    contextNodeIds: [],
+    connectionId: "fake-default",
+    prompt: "Managed Task with a durable Decision Request",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+    acceptMode: "review-required",
+  })) as { taskPath: string; task: { sessionId?: string } };
+  const current = (await root.taskGet(workspaceId, dispatched.taskPath)) as {
+    task: { sessionId?: string; state: string };
+  };
+  assert.equal(current.task.state, "running");
+  assert.ok(current.task.sessionId);
+  return {
+    root,
+    workspaceId,
+    taskPath: dispatched.taskPath,
+    sessionId: current.task.sessionId,
+    executor: createServiceClient({
+      baseUrl: input.svc.url,
+      token: input.svc.token,
+      currentSessionId: current.task.sessionId,
+      currentSessionToken: deriveSessionToken(input.svc.token, current.task.sessionId),
+    }),
   };
 }
 
@@ -485,12 +536,11 @@ test("terminal Task cleanup removes pending DecisionRequest and stale rows stay 
       undefined
     );
 
-    const second = await createRunningRoleTask({
+    const second = await createRunningConnectionTask({
       svc,
       workspace,
-      parentActor: { kind: "user", id: "user" },
     });
-    const stale = (await second.executor.client.taskRequestDecision(
+    const stale = (await second.executor.taskRequestDecision(
       second.workspaceId,
       second.taskPath,
       { question: "Cleanup failure stays terminal" }
@@ -506,15 +556,26 @@ test("terminal Task cleanup removes pending DecisionRequest and stale rows stay 
       }
       return originalRemove(...args);
     };
-    await assert.rejects(
-      () => second.root.taskInterrupt(second.workspaceId, second.taskPath),
-      /injected DecisionRequest cleanup failure/
-    );
+    const cleanupEvents: Array<{ type: string; payload: unknown }> = [];
+    const unsubscribe = svc.ctx.events.subscribe((event) => {
+      if (event.type === "decisionRequest.resolved") cleanupEvents.push(event);
+    });
+    await second.root.taskInterrupt(second.workspaceId, second.taskPath);
+    unsubscribe();
     const terminal = (await second.root.taskGet(
       second.workspaceId,
       second.taskPath
     )) as { task: { state: string } };
     assert.equal(terminal.task.state, "interrupted");
+    const probe = await svc.runtime.probe(second.sessionId);
+    assert.equal(probe.alive, false, "managed Session must stop despite request cleanup failure");
+    assert.ok(
+      cleanupEvents.some(
+        (event) =>
+          (event.payload as { cleanupFailed?: boolean }).cleanupFailed === true
+      ),
+      "cleanup failure must emit a non-authoritative diagnostic invalidation"
+    );
     assert.equal(
       (await svc.ctx.decisionRequests.getPendingForTask(
         second.workspaceId,
@@ -544,7 +605,7 @@ test("terminal Task cleanup removes pending DecisionRequest and stale rows stay 
           second.taskPath,
           stale.request.id,
           {
-          kind: "deny",
+            kind: "deny",
           }
         ),
       /terminal Task/
