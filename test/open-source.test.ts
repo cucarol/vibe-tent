@@ -39,6 +39,10 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   const manifest = JSON.parse(
     await fs.readFile(path.join(repoRoot, "manifest.json"), "utf8")
   );
+  const releaseWorkflow = await fs.readFile(
+    path.join(repoRoot, ".github", "workflows", "release.yml"),
+    "utf8"
+  );
   const spec = await fs.readFile(path.join(repoRoot, "docs", "SPEC.md"), "utf8");
   const roleSkill = await fs.readFile(path.join(repoRoot, "skills", "tent-role", "SKILL.md"), "utf8");
   const taskSkill = await fs.readFile(path.join(repoRoot, "skills", "tent-task", "SKILL.md"), "utf8");
@@ -69,11 +73,12 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.equal(pkg.license, "MIT");
   assert.equal(pkg.author, "cucarol");
   assert.equal(pkg.author, manifest.author);
+  assert.equal(manifest.name, "Vibe Tent");
   assert.equal(manifest.minAppVersion, undefined, "release manifest has no Obsidian compatibility axis");
   assert.equal(manifest.isDesktopOnly, undefined, "release manifest has no Obsidian plugin flag");
-  assert.equal(pkg.repository.url, "git+https://github.com/cucarol/tent.git");
-  assert.equal(pkg.bugs.url, "https://github.com/cucarol/tent/issues");
-  assert.equal(pkg.homepage, "https://github.com/cucarol/tent#readme");
+  assert.equal(pkg.repository.url, "git+https://github.com/cucarol/vibe-tent.git");
+  assert.equal(pkg.bugs.url, "https://github.com/cucarol/vibe-tent/issues");
+  assert.equal(pkg.homepage, "https://github.com/cucarol/vibe-tent#readme");
   assert.equal(pkg.version, manifest.version, "npm package version matches release manifest");
   assert.match(pkg.description, /^[\x20-\x7E]+\.$/, "npm description 使用完整英文句子");
   for (const keyword of ["cli", "okf", "coding-agents", "desktop"]) {
@@ -86,6 +91,10 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.equal(pkg.files.includes("main.js"), false, "npm package no longer ships plugin main.js");
   assert.equal(pkg.files.includes("styles.css"), false, "npm package no longer ships plugin styles.css");
   assert.equal(pkg.files.includes("versions.json"), false, "npm package no longer ships Obsidian versions.json");
+  assert.match(releaseWorkflow, /npm pack --ignore-scripts/);
+  assert.match(releaseWorkflow, /npm run desktop:package/);
+  assert.match(releaseWorkflow, /release\/\*-portable\.exe/);
+  assert.doesNotMatch(releaseWorkflow, /styles\.css|versions\.json/);
   assert.equal(await exists(path.join(repoRoot, "src", "plugin")), false, "src/plugin production source is retired");
   assert.equal(await exists(path.join(repoRoot, "versions.json")), false, "versions.json is retired");
   assert.equal(await exists(path.join(repoRoot, "test", "plugin.test.ts")), false, "plugin-only tests are retired");

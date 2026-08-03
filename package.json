@@ -60,12 +60,12 @@
   "author": "cucarol",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cucarol/tent.git"
+    "url": "git+https://github.com/cucarol/vibe-tent.git"
   },
   "bugs": {
-    "url": "https://github.com/cucarol/tent/issues"
+    "url": "https://github.com/cucarol/vibe-tent/issues"
   },
-  "homepage": "https://github.com/cucarol/tent#readme",
+  "homepage": "https://github.com/cucarol/vibe-tent#readme",
   "engines": {
     "node": ">=20"
   },

@@ -1,10 +1,10 @@
-# Tent / 帷幄
+# Vibe Tent / 帷幄
 
 > *vibe 于帷幄之中*
 
 user 和 coding agent 的协作，本质是把代表你意图的 **goal**，经由 **prompt** 交给 agent，最终得到 **output**。当你同时推进多项工作，这个过程很快会失控：长期事实在哪里、谁在承担责任、某次执行能改什么、交付是否可信——都散落在各处。
 
-**Tent（帷幄）承载这套协作**——用持久 Node 保存意图与事实，用 Task、Session 和 Delivery 管理一次次执行与验收，并把产出追踪回真实 workspace 和 Git。Desktop 与 CLI 都连接同一个 Local Service；你运筹，Role 承担长期责任，临时 ACP Session 执行具体工作，决策权始终在你。
+**Vibe Tent（帷幄）承载这套协作**——用持久 Node 保存意图与事实，用 Task、Session 和 Delivery 管理一次次执行与验收，并把产出追踪回真实 workspace 和 Git。Desktop 与 CLI 都连接同一个 Local Service；你运筹，Role 承担长期责任，临时 ACP Session 执行具体工作，决策权始终在你。
 
 **示例demo**：
 <img width="1572" height="1076" alt="image" src="https://github.com/user-attachments/assets/2989b6ff-e249-435e-913e-c0267c05ffdf" />
@@ -16,7 +16,7 @@ user 和 coding agent 的协作，本质是把代表你意图的 **goal**，经�
 **prompt agent 安装（推荐）** —— 把下面这段发给你的 coding agent（Claude Code / Codex）：
 
 ```
-Install Tent CLI, Desktop, and Skills for me (github.com/cucarol/tent):
+Install Vibe Tent CLI, Desktop, and Skills for me (github.com/cucarol/vibe-tent):
 1. Clone the repo and run `npm ci && npm run build && npm run build:desktop`.
 2. Run `npm link`, then `tent skill-install` to sync the bundled Skills.
 3. Verify `tent --help`; launch Desktop with `npm run desktop:start` when I ask.
@@ -24,7 +24,7 @@ Use only the CLI, Desktop, and bundled Skill installation paths above.
 ```
 
 也可以手动执行上述四条 npm / CLI 命令。
-在你的 Agent 里组合使用两个 Skill：`tent-role` 负责持久 Role 的连续性与编排，`tent-task` 负责所有具体 Task 的执行与交付；Role 执行 Task 时同时加载两者。
+已有项目先使用 `tent-init` 提议初始 Node / Role 结构，并在你确认后物化。日常协作组合两个 Skill：`tent-role` 负责持久 Role 的连续性与编排，`tent-task` 负责具体 Task 的执行与交付；Role 执行 Task 时同时加载两者。
 
 ## 架构与概念
 

@@ -15,8 +15,10 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  verify-and-pack:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
     steps:
       - name: Resolve release tag
         id: release
@@ -41,11 +43,10 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - run: npm ci
-
       - run: npm run check
 
       - name: Validate release version
@@ -68,20 +69,62 @@ jobs:
           console.log(`Release version verified: ${tag}`);
           NODE
 
-      - name: Verify release assets
+      - name: Pack CLI and Skills
         shell: bash
         run: |
-          test -f main.js
-          test -f manifest.json
-          test -f styles.css
-          test -f versions.json
+          mkdir -p release-assets
+          tarball="$(npm pack --ignore-scripts)"
+          mv "$tarball" release-assets/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-package
+          path: release-assets/*.tgz
+          if-no-files-found: error
+
+  package-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Resolve release tag
+        id: release
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ inputs.tag }}"
+          } else {
+            $tag = "$env:GITHUB_REF_NAME"
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run desktop:package
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable
+          path: release/*-portable.exe
+          if-no-files-found: error
+
+  publish-github-release:
+    needs: [verify-and-pack, package-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
 
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release.outputs.tag }}
-          name: ${{ steps.release.outputs.tag }}
-          files: |
-            main.js
-            manifest.json
-            styles.css
-            versions.json
+          tag_name: ${{ needs.verify-and-pack.outputs.tag }}
+          name: ${{ needs.verify-and-pack.outputs.tag }}
+          files: release-assets/*
