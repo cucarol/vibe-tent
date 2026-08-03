@@ -15,10 +15,6 @@ import {
   createClaudeAcpAdapter,
 } from "../adapters/claude-acp/index.js";
 import {
-  ANTIGRAVITY_ACP_ADAPTER_ID,
-  createAntigravityAcpAdapter,
-} from "../adapters/antigravity-acp/index.js";
-import {
   OPENCODE_ACP_ADAPTER_ID,
   createOpenCodeAcpAdapter,
 } from "../adapters/opencode-acp/index.js";
@@ -206,7 +202,6 @@ export class AgentRuntime implements AgentRuntimePort {
       createGrokAcpAdapter(),
       createCodexAcpAdapter(),
       createClaudeAcpAdapter(),
-      createAntigravityAcpAdapter(),
       createOpenCodeAcpAdapter(),
       createCopilotAcpAdapter(),
       createPiAcpAdapter(),
@@ -225,9 +220,6 @@ export class AgentRuntime implements AgentRuntimePort {
     }
     if (!this.adapters.has(CLAUDE_ACP_ADAPTER_ID)) {
       this.adapters.set(CLAUDE_ACP_ADAPTER_ID, createClaudeAcpAdapter());
-    }
-    if (!this.adapters.has(ANTIGRAVITY_ACP_ADAPTER_ID)) {
-      this.adapters.set(ANTIGRAVITY_ACP_ADAPTER_ID, createAntigravityAcpAdapter());
     }
     if (!this.adapters.has(OPENCODE_ACP_ADAPTER_ID)) {
       this.adapters.set(OPENCODE_ACP_ADAPTER_ID, createOpenCodeAcpAdapter());

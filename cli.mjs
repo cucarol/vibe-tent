@@ -426,13 +426,11 @@ async function existsPath(target) {
 import * as fs4 from "node:fs/promises";
 import * as os2 from "node:os";
 import * as path2 from "node:path";
-var AGENT_HOOK_IDS = ["claude", "codex", "antigravity", "copilot"];
+var AGENT_HOOK_IDS = ["claude", "codex", "copilot"];
 var AGENT_ALIASES = {
   claude: "claude",
   "claude-code": "claude",
   codex: "codex",
-  antigravity: "antigravity",
-  agy: "antigravity",
   copilot: "copilot",
   "github-copilot": "copilot"
 };
@@ -442,7 +440,7 @@ function parseAgentHookId(value) {
   const id = AGENT_ALIASES[key];
   if (!id) {
     throw new Error(
-      `Unknown agent: ${value} (allowed: all, ${AGENT_HOOK_IDS.join(", ")}, agy)`
+      `Unknown agent: ${value} (allowed: all, ${AGENT_HOOK_IDS.join(", ")})`
     );
   }
   return id;
@@ -559,11 +557,6 @@ async function installOne(agent, home, tentCommand) {
         wrapRoot: true,
         codexCommandShape: true
       });
-    case "antigravity":
-      return unsupportedResult(
-        agent,
-        "No verified native SessionStart/Stop (or SessionEnd) lifecycle hook surface for Antigravity/agy; not guessed."
-      );
     case "copilot":
       return unsupportedResult(
         agent,
@@ -594,11 +587,6 @@ async function doctorOne(agent, home, tentCommand) {
         wrapRoot: true,
         codexCommandShape: true
       });
-    case "antigravity":
-      return unsupportedResult(
-        agent,
-        "No verified native SessionStart/Stop (or SessionEnd) lifecycle hook surface for Antigravity/agy; not guessed."
-      );
     case "copilot":
       return unsupportedResult(
         agent,
@@ -627,11 +615,6 @@ async function removeOne(agent, home) {
         wrapRoot: true,
         codexCommandShape: true
       });
-    case "antigravity":
-      return unsupportedResult(
-        agent,
-        "No verified native SessionStart/Stop (or SessionEnd) lifecycle hook surface for Antigravity/agy; not guessed."
-      );
     case "copilot":
       return unsupportedResult(
         agent,
@@ -6648,13 +6631,13 @@ Usage: tent new <workspace-path>
     if (sub !== "install" && sub !== "doctor" && sub !== "remove") {
       return fail2(
         `Unknown agent-hooks subcommand: ${sub}
-Usage: tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copilot] [--json]`
+Usage: tent agent-hooks install|doctor|remove [--agent all|claude|codex|copilot] [--json]`
       );
     }
     const { positionals, flags } = parseFlags3(rest);
     if (positionals.length > 0) {
       return fail2(
-        `Usage: tent agent-hooks ${sub} [--agent all|claude|codex|agy|copilot] [--json]`
+        `Usage: tent agent-hooks ${sub} [--agent all|claude|codex|copilot] [--json]`
       );
     }
     let agents;
@@ -6886,9 +6869,9 @@ function agentHooksHelpText() {
   return `tent agent-hooks \u2014 machine-local native hook/config projection (V0.2)
 
 Usage:
-  tent agent-hooks install [--agent all|claude|codex|agy|copilot] [--json]
-  tent agent-hooks doctor  [--agent all|claude|codex|agy|copilot] [--json]
-  tent agent-hooks remove  [--agent all|claude|codex|agy|copilot] [--json]
+  tent agent-hooks install [--agent all|claude|codex|copilot] [--json]
+  tent agent-hooks doctor  [--agent all|claude|codex|copilot] [--json]
+  tent agent-hooks remove  [--agent all|claude|codex|copilot] [--json]
 
 Behavior:
   - SessionStart \u2192 tent session session-start --host <agent>
@@ -6899,11 +6882,11 @@ Behavior:
   - install / doctor / remove are idempotent; remove only Tent-managed handlers.
   - Installation rewrites only Tent-managed hook entries; runtime never depends
     on stale host configuration.
-  - Antigravity (agy) and Copilot report unsupported when no verified lifecycle hook surface exists.
+  - Copilot reports unsupported while no verified lifecycle hook surface exists.
   - Projection only writes under --home (tests) or os.homedir(); never smoke real user configs.
 
 Options:
-  --agent <id>     Target agent (default: all). Alias: agy \u2192 antigravity.
+  --agent <id>     Target agent (default: all).
   --json           Machine-readable result.
   --home <path>    Override home for config roots (tests / isolated fixtures only).
   --tent-command <cmd>  Override tent entry used in projected commands (tests).
@@ -6975,7 +6958,7 @@ Initialization and machine config:
                                      (missing index + Tent evidence). Never runs genesis.
   skill-install [--target all|claude|shared-agents] [--force]
                                      Install bundled skills to selected machine roots.
-  agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copilot]
+  agent-hooks install|doctor|remove [--agent all|claude|codex|copilot]
                                      Project Tent-managed SessionStart/Stop hooks into
                                      verified agent configs (no permissions / MCP).
   role-init <role>                   Regenerate the derived stable role init document.

@@ -366,7 +366,7 @@ test("buildHookExternalKey: host+nativeSessionId or host+workspace fallback", ()
     buildHookExternalKey({ nativeSessionId: "x", workspaceRoot: "/w" }),
     undefined
   );
-  assert.equal(buildHookExternalKey({ host: "agy" }), undefined);
+  assert.equal(buildHookExternalKey({ host: "unsupported-host" }), undefined);
 });
 
 test("parseNativeHookStdin + pickNativeSessionId accept common fields", () => {

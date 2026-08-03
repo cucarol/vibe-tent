@@ -3,7 +3,6 @@ export * from "./fake/index.js";
 export * from "./grok-acp/index.js";
 export * from "./codex-acp/index.js";
 export * from "./claude-acp/index.js";
-export * from "./antigravity-acp/index.js";
 export * from "./opencode-acp/index.js";
 export * from "./copilot-acp/index.js";
 export * from "./pi-acp/index.js";

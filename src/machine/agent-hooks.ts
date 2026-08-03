@@ -10,16 +10,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 /** Agents this projection layer knows about (product surface ids). */
-export const AGENT_HOOK_IDS = ["claude", "codex", "antigravity", "copilot"] as const;
+export const AGENT_HOOK_IDS = ["claude", "codex", "copilot"] as const;
 export type AgentHookId = (typeof AGENT_HOOK_IDS)[number];
 
-/** CLI aliases accepted by `--agent` (agy → antigravity). */
+/** CLI aliases accepted by `--agent`. */
 const AGENT_ALIASES: Record<string, AgentHookId> = {
   claude: "claude",
   "claude-code": "claude",
   codex: "codex",
-  antigravity: "antigravity",
-  agy: "antigravity",
   copilot: "copilot",
   "github-copilot": "copilot",
 };
@@ -92,13 +90,13 @@ export function isAgentHookId(value: string): value is AgentHookId {
   return (AGENT_HOOK_IDS as readonly string[]).includes(value);
 }
 
-/** Parse CLI `--agent` value; supports `all` and aliases (`agy`). */
+/** Parse CLI `--agent` value; supports `all` and documented aliases. */
 export function parseAgentHookId(value: string): AgentHookId {
   const key = value.trim().toLowerCase();
   const id = AGENT_ALIASES[key];
   if (!id) {
     throw new Error(
-      `Unknown agent: ${value} (allowed: all, ${AGENT_HOOK_IDS.join(", ")}, agy)`
+      `Unknown agent: ${value} (allowed: all, ${AGENT_HOOK_IDS.join(", ")})`
     );
   }
   return id;
@@ -285,11 +283,6 @@ async function installOne(
         wrapRoot: true,
         codexCommandShape: true,
       });
-    case "antigravity":
-      return unsupportedResult(
-        agent,
-        "No verified native SessionStart/Stop (or SessionEnd) lifecycle hook surface for Antigravity/agy; not guessed."
-      );
     case "copilot":
       return unsupportedResult(
         agent,
@@ -325,11 +318,6 @@ async function doctorOne(
         wrapRoot: true,
         codexCommandShape: true,
       });
-    case "antigravity":
-      return unsupportedResult(
-        agent,
-        "No verified native SessionStart/Stop (or SessionEnd) lifecycle hook surface for Antigravity/agy; not guessed."
-      );
     case "copilot":
       return unsupportedResult(
         agent,
@@ -359,11 +347,6 @@ async function removeOne(agent: AgentHookId, home: string): Promise<AgentHookAge
         wrapRoot: true,
         codexCommandShape: true,
       });
-    case "antigravity":
-      return unsupportedResult(
-        agent,
-        "No verified native SessionStart/Stop (or SessionEnd) lifecycle hook surface for Antigravity/agy; not guessed."
-      );
     case "copilot":
       return unsupportedResult(
         agent,

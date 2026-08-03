@@ -2,7 +2,7 @@
  * Machine-local agent hook/config projection — offline unit tests + fixtures.
  * Covers Claude + Codex lifecycle merge (install/doctor/remove idempotent),
  * session-start/end --host projection only (no bare enter/leave identity),
- * unsupported agents (antigravity/copilot), and preservation of non-hook config.
+ * unsupported Copilot hooks, and preservation of non-hook config.
  * Does not start real agents; does not touch permissions/MCP;
  * all mutations use isolated HOME fixtures only (never real user config).
  * No legacy agent session-* recognition or hooks-config migration coverage.
@@ -81,15 +81,12 @@ test("parseAgentHookId: aliases and rejection", () => {
   assert.equal(parseAgentHookId("claude"), "claude");
   assert.equal(parseAgentHookId("claude-code"), "claude");
   assert.equal(parseAgentHookId("codex"), "codex");
-  assert.equal(parseAgentHookId("agy"), "antigravity");
-  assert.equal(parseAgentHookId("antigravity"), "antigravity");
   assert.equal(parseAgentHookId("copilot"), "copilot");
+  assert.throws(() => parseAgentHookId("agy"), /Unknown agent/);
+  assert.throws(() => parseAgentHookId("antigravity"), /Unknown agent/);
   assert.throws(() => parseAgentHookId("gemini"), /Unknown agent/);
   assert.deepEqual(resolveAgentHookSelection(["all"]), [...AGENT_HOOK_IDS]);
-  assert.deepEqual(resolveAgentHookSelection(["agy", "claude"]), [
-    "antigravity",
-    "claude",
-  ]);
+  assert.deepEqual(resolveAgentHookSelection(["claude-code", "claude"]), ["claude"]);
 });
 
 test("managed identity: only session-start/end --host; never bare enter/leave or agent session-*", () => {
@@ -348,13 +345,13 @@ test("Codex: doctor missing when hooks.json absent", async () => {
   );
 });
 
-test("Antigravity and Copilot: unsupported without guessing config", async () => {
+test("Copilot hooks stay unsupported without guessing config", async () => {
   const home = await tempHome("tent-hooks-unsup-");
   const batch = await installAgentHooks({
     home,
-    agents: ["antigravity", "copilot"],
+    agents: ["copilot"],
   });
-  assert.equal(batch.results.length, 2);
+  assert.equal(batch.results.length, 1);
   for (const r of batch.results) {
     assert.equal(r.support, "unsupported");
     assert.equal(r.status, "unsupported");
@@ -362,17 +359,16 @@ test("Antigravity and Copilot: unsupported without guessing config", async () =>
   }
   assert.equal(await exists(path.join(home, ".gemini")), false);
   assert.equal(await exists(path.join(home, ".copilot")), false);
-  assert.equal(await exists(path.join(home, ".antigravity")), false);
 
   const doc = await doctorAgentHooks({
     home,
-    agents: resolveAgentHookSelection(["agy", "copilot"]),
+    agents: resolveAgentHookSelection(["copilot"]),
   });
   assert.equal(doc.results.every((r) => r.status === "unsupported"), true);
 
   const rm = await removeAgentHooks({
     home,
-    agents: ["antigravity", "copilot"],
+    agents: ["copilot"],
   });
   assert.equal(rm.results.every((r) => r.status === "unsupported"), true);
 });
@@ -383,7 +379,6 @@ test("install all: lifecycle agents + unsupported; host params per agent", async
   const byAgent = Object.fromEntries(batch.results.map((r) => [r.agent, r]));
   assert.equal(byAgent.claude?.status, "installed");
   assert.equal(byAgent.codex?.status, "installed");
-  assert.equal(byAgent.antigravity?.status, "unsupported");
   assert.equal(byAgent.copilot?.status, "unsupported");
 
   const claudeSettings = (await readJson(claudeSettingsPath(home))) as {

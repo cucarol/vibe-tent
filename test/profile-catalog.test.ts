@@ -259,7 +259,7 @@ test("Connection updates clear optional fields, reject unsafe URLs and preserve 
 test("missing Connections initialize once, explicit empty remains empty, corrupt Connections fail loud once", async () => {
   const missingDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-route-missing-"));
   const defaults = await ensureDefaultAgentConnections(missingDir);
-  assert.equal(defaults.length, 7);
+  assert.equal(defaults.length, 6);
   assert.deepEqual(await loadAgentConnections(missingDir), defaults);
 
   const emptyDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-route-empty-"));
@@ -277,7 +277,7 @@ test("missing Connections initialize once, explicit empty remains empty, corrupt
 
 test("canonical Agent Connections accept explicit launch fields", async () => {
   const defaults = defaultAgentConnections();
-  assert.equal(defaults.length, 7);
+  assert.equal(defaults.length, 6);
   assert.ok(defaults.every((route) => route.connectionId && route.provider && route.adapterId));
 
   await withService(async (svc) => {

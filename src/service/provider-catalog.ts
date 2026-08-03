@@ -18,7 +18,6 @@ import type { ProviderAdapter } from "../adapters/types.js";
 import { createGrokAcpAdapter } from "../adapters/grok-acp/index.js";
 import { createCodexAcpAdapter } from "../adapters/codex-acp/index.js";
 import { createClaudeAcpAdapter } from "../adapters/claude-acp/index.js";
-import { createAntigravityAcpAdapter } from "../adapters/antigravity-acp/index.js";
 import { createOpenCodeAcpAdapter } from "../adapters/opencode-acp/index.js";
 import { createCopilotAcpAdapter } from "../adapters/copilot-acp/index.js";
 import { createPiAcpAdapter } from "../adapters/pi-acp/index.js";
@@ -33,7 +32,6 @@ export const PRODUCT_ACP_ADAPTER_IDS = [
   "grok-acp",
   "codex-acp",
   "claude-acp",
-  "antigravity-acp",
   "opencode-acp",
   "copilot-acp",
   "pi-acp",
@@ -59,7 +57,6 @@ const PROVIDER_VERIFICATION_LEVELS_BY_ADAPTER: Readonly<
   // Checked-in opt-in: npm run test:foreground-e2e with TENT_LIVE_PROVIDERS=…
   "codex-acp": "opt-in-live-probe",
   "claude-acp": "opt-in-live-probe",
-  "antigravity-acp": "mock-tested",
   "opencode-acp": "opt-in-live-probe",
   "copilot-acp": "opt-in-live-probe",
   // Mock suite + initialize/session-new probe evidence; no checked-in paid live E2E yet.
@@ -72,7 +69,6 @@ const NATIVE_FOREGROUND_BY_ADAPTER: Readonly<
   "grok-acp": "verified",
   "codex-acp": "verified",
   "claude-acp": "verified",
-  "antigravity-acp": "unsupported",
   "opencode-acp": "verified",
   "copilot-acp": "verified",
   // pi-acp maps loadSession + session-map to pi session files; native CLI
@@ -90,8 +86,6 @@ const PROVIDER_CATALOG_NOTES: Readonly<
     "mock suite + opt-in live probe (test:foreground-e2e); not automatic CI certification",
   "claude-acp":
     "mock suite + opt-in live probe (test:foreground-e2e); Node bridge may require ≥22",
-  "antigravity-acp":
-    "mock suite only; third-party agy-acp; canResume unproven",
   "opencode-acp":
     "mock suite + opt-in live probe (test:foreground-e2e); not automatic CI certification",
   "copilot-acp":
@@ -117,7 +111,6 @@ export function defaultProductAcpAdapters(): ProviderAdapter[] {
     createGrokAcpAdapter(),
     createCodexAcpAdapter(),
     createClaudeAcpAdapter(),
-    createAntigravityAcpAdapter(),
     createOpenCodeAcpAdapter(),
     createCopilotAcpAdapter(),
     createPiAcpAdapter(),

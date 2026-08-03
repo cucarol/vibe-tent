@@ -393,7 +393,7 @@ export function mapAcpProcessExit(
 
 /**
  * Shared capabilities for ACP bridges without verified loadSession
- * (currently antigravity-acp / agy-acp only among product adapters).
+ * for any adapter that does not expose a provider-native restore path.
  */
 export function mainstreamAcpCapabilities(): {
   canSpawn: true;

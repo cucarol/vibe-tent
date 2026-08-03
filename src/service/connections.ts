@@ -3,7 +3,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
-  ANTIGRAVITY_ACP_ADAPTER_ID,
   CLAUDE_ACP_ADAPTER_ID,
   CODEX_ACP_ADAPTER_ID,
   COPILOT_ACP_ADAPTER_ID,
@@ -153,7 +152,6 @@ export function defaultAgentConnections(): AgentConnectionConfig[] {
     route("grok-acp-default", "grok", GROK_ACP_ADAPTER_ID, { model: DEFAULT_GROK_MODEL, envKey: DEFAULT_GROK_ENV_KEY, baseUrlEnvKey: DEFAULT_GROK_BASE_URL_ENV_KEY }),
     route("codex-acp-default", "codex", CODEX_ACP_ADAPTER_ID),
     route("claude-acp-default", "claude", CLAUDE_ACP_ADAPTER_ID),
-    route("antigravity-acp-default", "antigravity", ANTIGRAVITY_ACP_ADAPTER_ID),
     route("opencode-acp-default", "opencode", OPENCODE_ACP_ADAPTER_ID),
     route("copilot-acp-default", "copilot", COPILOT_ACP_ADAPTER_ID),
     route("pi-acp-default", "pi", PI_ACP_ADAPTER_ID),

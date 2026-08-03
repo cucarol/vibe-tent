@@ -39,7 +39,6 @@ const EXPECTED_LEVELS: Record<string, ProviderVerificationLevel> = {
   "grok-acp": "opt-in-live-probe",
   "codex-acp": "opt-in-live-probe",
   "claude-acp": "opt-in-live-probe",
-  "antigravity-acp": "mock-tested",
   "opencode-acp": "opt-in-live-probe",
   "copilot-acp": "opt-in-live-probe",
   "pi-acp": "mock-tested",
@@ -49,7 +48,6 @@ const EXPECTED_FOREGROUND = {
   "grok-acp": "verified",
   "codex-acp": "verified",
   "claude-acp": "verified",
-  "antigravity-acp": "unsupported",
   "opencode-acp": "verified",
   "copilot-acp": "verified",
   "pi-acp": "unverified",
@@ -133,7 +131,7 @@ test("projectProviderCatalog covers every product adapter with closed levels", (
   }
 
   // Product short names present as adapterId prefixes.
-  const shortNames = ["grok", "codex", "claude", "antigravity", "copilot", "opencode", "pi"];
+  const shortNames = ["grok", "codex", "claude", "copilot", "opencode", "pi"];
   for (const name of shortNames) {
     assert.ok(
       providers.some((p) => p.adapterId === `${name}-acp` || p.adapterId === name),
@@ -153,17 +151,16 @@ test("projectProviderCatalog covers every product adapter with closed levels", (
     0
   );
   // Mock-only product adapters.
-  assert.equal(providerCatalogEntry("antigravity-acp")?.verificationLevel, "mock-tested");
+  assert.equal(providerCatalogEntry("antigravity-acp"), undefined);
   assert.equal(providerCatalogEntry("pi-acp")?.verificationLevel, "mock-tested");
 
-  // Resume evidence: verified loadSession bridges advertise canResume; Antigravity does not.
+  // Resume evidence: every current product adapter has a verified native restore path.
   assert.equal(providerCatalogEntry("grok-acp")?.canResume, true);
   assert.equal(providerCatalogEntry("opencode-acp")?.canResume, true);
   assert.equal(providerCatalogEntry("codex-acp")?.canResume, true);
   assert.equal(providerCatalogEntry("claude-acp")?.canResume, true);
   assert.equal(providerCatalogEntry("copilot-acp")?.canResume, true);
   assert.equal(providerCatalogEntry("pi-acp")?.canResume, true);
-  assert.equal(providerCatalogEntry("antigravity-acp")?.canResume, false);
   assert.equal(providerCatalogEntry("fake-cli"), undefined);
   assert.equal(providerCatalogEntry("gemini-acp"), undefined);
 });

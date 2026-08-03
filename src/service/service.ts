@@ -40,7 +40,6 @@ import {
 } from "../adapters/grok-acp/index.js";
 import { createCodexAcpAdapter } from "../adapters/codex-acp/index.js";
 import { createClaudeAcpAdapter } from "../adapters/claude-acp/index.js";
-import { createAntigravityAcpAdapter } from "../adapters/antigravity-acp/index.js";
 import { createOpenCodeAcpAdapter } from "../adapters/opencode-acp/index.js";
 import { createCopilotAcpAdapter } from "../adapters/copilot-acp/index.js";
 import { createPiAcpAdapter } from "../adapters/pi-acp/index.js";
@@ -281,7 +280,6 @@ async function startOwnedLocalTentService(
       createGrokAcpAdapter(acpPermissionHooks),
       createCodexAcpAdapter(acpPermissionHooks),
       createClaudeAcpAdapter(acpPermissionHooks),
-      createAntigravityAcpAdapter(acpPermissionHooks),
       createOpenCodeAcpAdapter(acpPermissionHooks),
       createCopilotAcpAdapter(acpPermissionHooks),
       createPiAcpAdapter(acpPermissionHooks),

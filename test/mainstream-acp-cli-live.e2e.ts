@@ -64,7 +64,7 @@ const nativePaths = {
   codex: path.join(home, "AppData", "Local", "OpenAI", "Codex", "bin", "codex.exe"),
   claude: path.join(npmBin, "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe"),
   opencode: path.join(npmBin, "node_modules", "opencode-ai", "bin", "opencode.exe"),
-  copilot: path.join(home, "AppData", "Local", "GitHub CLI", "copilot", "copilot.exe"),
+  copilot: path.join(npmBin, "node_modules", "@github", "copilot", "npm-loader.js"),
 };
 const codexModel = process.env.TENT_LIVE_CODEX_MODEL || "gpt-5.4";
 
@@ -176,16 +176,12 @@ const providers: ProviderCase[] = [
   },
   {
     name: "copilot",
-    connection: connection(
-      "foreground-copilot",
-      COPILOT_ACP_ADAPTER_ID,
-      nativePaths.copilot,
-      ["--acp", "--stdio"]
-    ),
+    connection: connection("foreground-copilot", COPILOT_ACP_ADAPTER_ID),
     nativeResume: (sessionId, prompt, cwd, dataDir) =>
       runNative(
-        nativePaths.copilot,
+        process.execPath,
         [
+          nativePaths.copilot,
           `--resume=${sessionId}`,
           "--prompt",
           prompt,

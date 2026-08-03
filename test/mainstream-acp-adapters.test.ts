@@ -18,10 +18,6 @@ import {
   createClaudeAcpAdapter,
 } from "../src/adapters/claude-acp/index.js";
 import {
-  createAntigravityAcpAdapter,
-  defaultAntigravityAcpExecutable,
-} from "../src/adapters/antigravity-acp/index.js";
-import {
   createOpenCodeAcpAdapter,
   defaultOpenCodeExecutable,
 } from "../src/adapters/opencode-acp/index.js";
@@ -103,7 +99,7 @@ test("Codex ACP fails loud when an explicitly configured key is missing", () => 
   );
 });
 
-test("Claude ACP resolves the official npx bridge and permits local-login mode", () => {
+test("Claude ACP resolves the official npx bridge and leaves auth to the Agent by default", () => {
   assert.equal(CLAUDE_ACP_NPX_PACKAGE, "@agentclientprotocol/claude-agent-acp@0.62.0");
   const adapter = createClaudeAcpAdapter();
   const launch = adapter.resolveLaunch({
@@ -144,35 +140,6 @@ test("Codex auth request builder contains only the ACP api-key envelope", () => 
     methodId: "api-key",
     _meta: { "api-key": { apiKey: "k" } },
   });
-});
-
-test("Antigravity ACP uses the external agy-acp bridge, never agy directly", () => {
-  const adapter = createAntigravityAcpAdapter();
-  const launch = adapter.resolveLaunch({
-    sessionId: "ss-agy01",
-    connectionId: "antigravity-acp-default",
-    cwd: process.cwd(),
-    env: {},
-    extras: { acp: {} },
-  });
-  assert.equal(launch.command, defaultAntigravityAcpExecutable());
-  assert.deepEqual(launch.args, []);
-  assert.notEqual(launch.command, process.platform === "win32" ? "agy.exe" : "agy");
-});
-
-test("Antigravity ACP explicit env requirement fails loud and names the bridge", () => {
-  const adapter = createAntigravityAcpAdapter({ resolveEnvValue: () => undefined });
-  assert.throws(
-    () =>
-      adapter.resolveLaunch({
-        sessionId: "ss-agy02",
-        connectionId: "antigravity-acp-default",
-        cwd: process.cwd(),
-        env: {},
-        extras: { acp: { envKey: "AGY_API_KEY" } },
-      }),
-    /第三方 agy-acp bridge/
-  );
 });
 
 test("OpenCode ACP uses its native `opencode acp` entrypoint", () => {
@@ -304,7 +271,6 @@ test("Pi ACP may reuse local pi login or require an explicit env key", () => {
 for (const [name, adapter] of [
   ["Codex", createCodexAcpAdapter()],
   ["Claude", createClaudeAcpAdapter()],
-  ["Antigravity", createAntigravityAcpAdapter()],
   ["OpenCode", createOpenCodeAcpAdapter()],
   ["Copilot", createCopilotAcpAdapter()],
   ["Pi", createPiAcpAdapter()],
@@ -367,15 +333,12 @@ const RESUME_CAPABLE_MAINSTREAM: ReadonlyArray<
   ["Claude", createClaudeAcpAdapter],
 ];
 
-test("mainstream ACP loadSession adapters advertise canResume; Antigravity stays false", () => {
+test("mainstream ACP adapters advertise provider-native resume", () => {
   for (const [name, create] of RESUME_CAPABLE_MAINSTREAM) {
     const adapter = create();
     assert.equal(adapter.capabilities().canResume, true, name);
     assert.equal(typeof adapter.resumeManagedSession, "function", name);
   }
-  const antigravity: ProviderAdapter = createAntigravityAcpAdapter();
-  assert.equal(antigravity.capabilities().canResume, false);
-  assert.equal(antigravity.resumeManagedSession, undefined);
 });
 
 for (const [name, create] of LOAD_RESUME_MAINSTREAM) {

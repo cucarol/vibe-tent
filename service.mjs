@@ -21962,17 +21962,6 @@ function mapAcpProcessExit(code, signal) {
   }
   return { type: "session.exited", sessionId: "", exitCode: code };
 }
-function mainstreamAcpCapabilities() {
-  return {
-    canSpawn: true,
-    canResume: false,
-    canStopGraceful: true,
-    needsTty: false,
-    supportsWorktreeCwd: true,
-    authModel: "external-app",
-    observeLevel: "structured"
-  };
-}
 
 // src/fs/node-fs.ts
 import * as fs10 from "node:fs/promises";
@@ -22844,86 +22833,6 @@ var ClaudeAcpProviderAdapter = class {
 };
 function createClaudeAcpAdapter(options) {
   return new ClaudeAcpProviderAdapter(options);
-}
-
-// src/adapters/antigravity-acp/types.ts
-var ANTIGRAVITY_ACP_ADAPTER_ID = "antigravity-acp";
-var ANTIGRAVITY_ACP_BRIDGE = "agy-acp";
-
-// src/adapters/antigravity-acp/index.ts
-function defaultAntigravityAcpExecutable() {
-  return process.platform === "win32" ? "agy-acp.exe" : ANTIGRAVITY_ACP_BRIDGE;
-}
-var AntigravityAcpProviderAdapter = class {
-  constructor(options = {}) {
-    this.id = ANTIGRAVITY_ACP_ADAPTER_ID;
-    this.displayNameKey = "adapter.antigravityAcp.displayName";
-    this.resolveEnvValue = options.resolveEnvValue ?? ((envKey, planEnv) => resolvePlanOrProcessEnv(envKey, planEnv));
-    this.onPermissionAsk = options.onPermissionAsk;
-  }
-  capabilities() {
-    return mainstreamAcpCapabilities();
-  }
-  resolveLaunch(plan) {
-    const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
-    const env = {
-      ...plan.env,
-      TENT_SESSION_ID: plan.sessionId,
-      TENT_CONNECTION_ID: plan.connectionId
-    };
-    if (opts.envKey) {
-      const value = this.resolveEnvValue(opts.envKey, plan.env);
-      if (!value?.trim()) {
-        throw new Error(
-          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Aantigravity-acp Agent Connection \u660E\u786E\u8981\u6C42\u8BE5\u503C\u3002Tent \u901A\u8FC7\u7B2C\u4E09\u65B9 agy-acp bridge \u8FDE\u63A5\u5B98\u65B9 agy CLI\uFF1Bsecret \u53EA\u80FD\u653E\u5728 service \u8FDB\u7A0B\u73AF\u5883\u3002`
-        );
-      }
-      env[opts.envKey] = value;
-    }
-    return {
-      command: plan.command?.trim() || opts.executable || defaultAntigravityAcpExecutable(),
-      args: plan.args ? [...plan.args] : [],
-      cwd: plan.cwd,
-      env,
-      stopSignal: "SIGTERM"
-    };
-  }
-  async startManagedSession(plan, emit2) {
-    const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
-    const launch = this.resolveLaunch(plan);
-    const sessionProj = readAcpSessionProjection(plan.extras);
-    const imageOpts = readBootstrapImageClientOptions(plan);
-    const coreChildOpts = readCoreChildEnvClientOptions(plan);
-    const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
-      onPermissionAsk: this.onPermissionAsk
-    });
-    const client = new AcpClient({
-      command: launch.command,
-      args: launch.args,
-      cwd: launch.cwd,
-      env: launch.env,
-      sessionId: plan.sessionId,
-      promptTimeoutMs: opts.promptTimeoutMs,
-      permissionPolicy: opts.permissionPolicy,
-      mcpServers: sessionProj.mcpServers,
-      skills: sessionProj.skills,
-      ...imageOpts,
-      ...coreChildOpts,
-      label: "Antigravity ACP (third-party agy-acp bridge)",
-      emit: emit2,
-      onPermissionAsk: hooks.onPermissionAsk
-    });
-    return startManagedAcpSession({ plan, emit: emit2, client });
-  }
-  parseResumeToken(raw) {
-    return parseAcpResumeToken(raw);
-  }
-  mapExit(code, signal) {
-    return mapAcpProcessExit(code, signal);
-  }
-};
-function createAntigravityAcpAdapter(options) {
-  return new AntigravityAcpProviderAdapter(options);
 }
 
 // src/adapters/opencode-acp/types.ts
@@ -23871,7 +23780,6 @@ function defaultAgentConnections() {
     route("grok-acp-default", "grok", GROK_ACP_ADAPTER_ID, { model: DEFAULT_GROK_MODEL, envKey: DEFAULT_GROK_ENV_KEY, baseUrlEnvKey: DEFAULT_GROK_BASE_URL_ENV_KEY }),
     route("codex-acp-default", "codex", CODEX_ACP_ADAPTER_ID),
     route("claude-acp-default", "claude", CLAUDE_ACP_ADAPTER_ID),
-    route("antigravity-acp-default", "antigravity", ANTIGRAVITY_ACP_ADAPTER_ID),
     route("opencode-acp-default", "opencode", OPENCODE_ACP_ADAPTER_ID),
     route("copilot-acp-default", "copilot", COPILOT_ACP_ADAPTER_ID),
     route("pi-acp-default", "pi", PI_ACP_ADAPTER_ID)
@@ -23937,7 +23845,6 @@ var PRODUCT_ACP_ADAPTER_IDS = [
   "grok-acp",
   "codex-acp",
   "claude-acp",
-  "antigravity-acp",
   "opencode-acp",
   "copilot-acp",
   "pi-acp"
@@ -23948,7 +23855,6 @@ var PROVIDER_VERIFICATION_LEVELS_BY_ADAPTER = {
   // Checked-in opt-in: npm run test:foreground-e2e with TENT_LIVE_PROVIDERS=…
   "codex-acp": "opt-in-live-probe",
   "claude-acp": "opt-in-live-probe",
-  "antigravity-acp": "mock-tested",
   "opencode-acp": "opt-in-live-probe",
   "copilot-acp": "opt-in-live-probe",
   // Mock suite + initialize/session-new probe evidence; no checked-in paid live E2E yet.
@@ -23958,7 +23864,6 @@ var NATIVE_FOREGROUND_BY_ADAPTER = {
   "grok-acp": "verified",
   "codex-acp": "verified",
   "claude-acp": "verified",
-  "antigravity-acp": "unsupported",
   "opencode-acp": "verified",
   "copilot-acp": "verified",
   // pi-acp maps loadSession + session-map to pi session files; native CLI
@@ -23969,7 +23874,6 @@ var PROVIDER_CATALOG_NOTES = {
   "grok-acp": "mock suite + opt-in live E2E (test:grok-e2e); not automatic CI certification",
   "codex-acp": "mock suite + opt-in live probe (test:foreground-e2e); not automatic CI certification",
   "claude-acp": "mock suite + opt-in live probe (test:foreground-e2e); Node bridge may require \u226522",
-  "antigravity-acp": "mock suite only; third-party agy-acp; canResume unproven",
   "opencode-acp": "mock suite + opt-in live probe (test:foreground-e2e); not automatic CI certification",
   "copilot-acp": "mock suite + opt-in live probe (test:foreground-e2e); not automatic CI certification",
   "pi-acp": "third-party pi-acp bridge; mock suite; initialize loadSession verified when pi is installed; no paid live E2E in default CI"
@@ -23980,7 +23884,6 @@ function defaultProductAcpAdapters() {
     createGrokAcpAdapter(),
     createCodexAcpAdapter(),
     createClaudeAcpAdapter(),
-    createAntigravityAcpAdapter(),
     createOpenCodeAcpAdapter(),
     createCopilotAcpAdapter(),
     createPiAcpAdapter()
@@ -35716,7 +35619,6 @@ var AgentRuntime = class {
       createGrokAcpAdapter(),
       createCodexAcpAdapter(),
       createClaudeAcpAdapter(),
-      createAntigravityAcpAdapter(),
       createOpenCodeAcpAdapter(),
       createCopilotAcpAdapter(),
       createPiAcpAdapter()
@@ -35735,9 +35637,6 @@ var AgentRuntime = class {
     }
     if (!this.adapters.has(CLAUDE_ACP_ADAPTER_ID)) {
       this.adapters.set(CLAUDE_ACP_ADAPTER_ID, createClaudeAcpAdapter());
-    }
-    if (!this.adapters.has(ANTIGRAVITY_ACP_ADAPTER_ID)) {
-      this.adapters.set(ANTIGRAVITY_ACP_ADAPTER_ID, createAntigravityAcpAdapter());
     }
     if (!this.adapters.has(OPENCODE_ACP_ADAPTER_ID)) {
       this.adapters.set(OPENCODE_ACP_ADAPTER_ID, createOpenCodeAcpAdapter());
@@ -37436,7 +37335,6 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
       createGrokAcpAdapter(acpPermissionHooks),
       createCodexAcpAdapter(acpPermissionHooks),
       createClaudeAcpAdapter(acpPermissionHooks),
-      createAntigravityAcpAdapter(acpPermissionHooks),
       createOpenCodeAcpAdapter(acpPermissionHooks),
       createCopilotAcpAdapter(acpPermissionHooks),
       createPiAcpAdapter(acpPermissionHooks)
