@@ -95,6 +95,7 @@ import {
   collectBootstrapImageRefsFromTask,
   type BootstrapImageRef,
 } from "../adapters/acp/image-prompt.js";
+import { cloneAcpSessionConfigSnapshot } from "../adapters/acp/types.js";
 import { loadDeliveries } from "../core/delivery.js";
 import {
   OutputProvenanceError,
@@ -7765,6 +7766,9 @@ async function sessionList(ctx: HandlerContext, p: Record<string, unknown>) {
       sessionId: rec.id,
       connectionId: rec.connectionId,
       adapterId: rec.adapterId,
+      ...(rec.acpSession
+        ? { acpSession: cloneAcpSessionConfigSnapshot(rec.acpSession) }
+        : {}),
       state: probe.state,
       roleId: rec.roleId,
       alive: probe.alive,
@@ -7791,6 +7795,9 @@ async function sessionGet(ctx: HandlerContext, p: Record<string, unknown>) {
     sessionId: rec.id,
     connectionId: rec.connectionId,
     adapterId: rec.adapterId,
+    ...(rec.acpSession
+      ? { acpSession: cloneAcpSessionConfigSnapshot(rec.acpSession) }
+      : {}),
     state: probe.state,
     roleId: rec.roleId,
     alive: probe.alive,
@@ -10668,6 +10675,11 @@ async function projectRuntimeEventOnce(
   const workspaceId = rec?.workspace ?? ctx.host.getForegroundId() ?? "";
   if (ev.type === "session.stdout_tail") {
     // Diagnostics only — never product chat; optional quiet emit.
+    return;
+  }
+  if (ev.type === "session.config_options") {
+    // AgentRuntime enqueues the registry update before emit; registry reads join
+    // that write chain. No transcript/UI event is emitted for audit snapshots.
     return;
   }
 

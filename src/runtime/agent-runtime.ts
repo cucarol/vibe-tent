@@ -47,6 +47,7 @@ import { SessionRegistry } from "./session-registry.js";
 import { deriveSessionToken } from "./session-token.js";
 import { isRoleId } from "../core/id.js";
 import { redactDiagnosticText } from "../adapters/acp/redact.js";
+import { cloneAcpSessionConfigSnapshot } from "../adapters/acp/types.js";
 import {
   ACP_DIAGNOSTIC_EVENT_BYTES,
   truncateUtf8Text,
@@ -657,6 +658,12 @@ export class AgentRuntime implements AgentRuntimePort {
                 ...(ev.pid != null ? { pid: ev.pid } : {}),
               })
               .catch(() => undefined);
+          } else if (ev.type === "session.config_options") {
+            void this.registry
+              .update(req.sessionId, {
+                acpSession: cloneAcpSessionConfigSnapshot(ev.sessionConfig),
+              })
+              .catch(() => undefined);
           }
           this.emit(ev);
         });
@@ -713,6 +720,13 @@ export class AgentRuntime implements AgentRuntimePort {
         state: "live",
         pid,
         resumeToken,
+        ...(startedManaged?.acpSession
+          ? {
+              acpSession: cloneAcpSessionConfigSnapshot(
+                startedManaged.acpSession
+              ),
+            }
+          : {}),
         lastError: undefined,
         exitCode: undefined,
         stopReason: undefined,
@@ -937,6 +951,12 @@ export class AgentRuntime implements AgentRuntimePort {
                 ...(ev.pid != null ? { pid: ev.pid } : {}),
               })
               .catch(() => undefined);
+          } else if (ev.type === "session.config_options") {
+            void this.registry
+              .update(req.sessionId, {
+                acpSession: cloneAcpSessionConfigSnapshot(ev.sessionConfig),
+              })
+              .catch(() => undefined);
           }
           this.emit(ev);
         }
@@ -986,6 +1006,11 @@ export class AgentRuntime implements AgentRuntimePort {
         state: "live",
         pid,
         resumeToken: tokenRaw,
+        ...(managed.acpSession
+          ? {
+              acpSession: cloneAcpSessionConfigSnapshot(managed.acpSession),
+            }
+          : {}),
         // Native resume reuses provider context — honest continuity claim.
         contextRestored: true,
         lastError: undefined,

@@ -26,6 +26,11 @@ export type RuntimeEvent =
   | { type: "session.exited"; sessionId: string; exitCode: number | null }
   | { type: "session.failed"; sessionId: string; error: string }
   | { type: "session.stdout_tail"; sessionId: string; text: string }
+  | {
+      type: "session.config_options";
+      sessionId: string;
+      sessionConfig: import("../adapters/acp/types.js").AcpSessionConfigSnapshot;
+    }
   /**
    * Managed ACP: first session/prompt finished successfully (end_turn).
    * `assistantText` is the final user-facing assistant reply only: last non-empty
@@ -171,6 +176,8 @@ export interface SessionRecord {
    * are never stored here. Missing snapshot is unrecoverable and fails loud.
    */
   connectionSnapshot?: AgentConnectionSnapshot;
+  /** Bounded Agent-owned ACP capabilities/auth/config facts for this Session. */
+  acpSession?: import("../adapters/acp/types.js").AcpSessionConfigSnapshot;
   roleId?: string;
   state: SessionState;
   pid?: number;

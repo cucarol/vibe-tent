@@ -1,4 +1,4 @@
-// Provider-neutral ACP route bag helpers (extras.acp + shared field normalization).
+// Provider-neutral ACP Connection bag helpers (extras.acp + shared field normalization).
 
 import {
   DEFAULT_PERMISSION_TIMEOUT_MS,
@@ -15,7 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 /**
- * Read the canonical ACP route bag from ConnectionLaunchPlan.extras.
+ * Read the canonical ACP bag from ConnectionLaunchPlan.extras.
  */
 export function readAcpExtras(extras: Record<string, unknown> | undefined): unknown {
   if (!extras || typeof extras !== "object") return {};
@@ -25,7 +25,7 @@ export function readAcpExtras(extras: Record<string, unknown> | undefined): unkn
 
 /**
  * Read snapshot-time ACP session projection from ConnectionLaunchPlan.extras.
- * Built by AgentRuntime at start/resume from route snapshot — not hot-reloaded.
+ * Built by AgentRuntime at start/resume from the Connection snapshot — not hot-reloaded.
  * Wire values may contain secrets; never log the returned mcpServers array.
  */
 export function readAcpSessionProjection(extras: Record<string, unknown> | undefined): {
@@ -208,7 +208,7 @@ export function defaultNpxLaunch(): { command: string; argsPrefix: string[] } {
 
 /**
  * Resolve command/args for npx-based ACP bridges.
- * Precedence: plan.command/args → route executable → package defaults.
+ * Precedence: plan.command/args → Connection executable → package defaults.
  */
 export function resolveNpxAcpLaunch(input: {
   planCommand?: string;

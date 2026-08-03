@@ -25,6 +25,9 @@ export {
 export {
   DEFAULT_PERMISSION_TIMEOUT_MS,
   DEFAULT_PROMPT_TIMEOUT_MS,
+  cloneAcpSessionConfigSnapshot,
+  createAcpSessionConfigSnapshot,
+  parseAcpSessionConfigSnapshot,
   type AcpAuthenticateParams,
   type AcpJsonRpcNotification,
   type AcpJsonRpcRequest,
@@ -32,6 +35,10 @@ export {
   type AcpPermissionOption,
   type AcpPermissionPolicy,
   type AcpRouteOptions,
+  type AcpSessionConfigOption,
+  type AcpSessionConfigOptionValue,
+  type AcpSessionConfigSelectOptions,
+  type AcpSessionConfigSnapshot,
   type AcpSessionUpdate,
 } from "./types.js";
 export {

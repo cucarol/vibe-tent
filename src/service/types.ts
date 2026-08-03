@@ -452,6 +452,8 @@ export type SessionProjection = {
   /** Present only for managed Sessions launched from an Agent Connection. */
   connectionId?: string;
   adapterId?: string;
+  /** Bounded Agent-owned ACP capabilities/auth ids/config state for this Session. */
+  acpSession?: import("../adapters/acp/types.js").AcpSessionConfigSnapshot;
   state: string;
   roleId?: string;
   /** PID is machine-local diagnostic; clients may show status only. */

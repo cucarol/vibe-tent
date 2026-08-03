@@ -1,9 +1,9 @@
 /**
  * ACP resource-boundary regressions (tk-mf6jmc1s).
  *
- * The limits are deliberately overridden to small values. This exercises the
- * same comparisons as the production MiB/count ceilings without allocating
- * giant test payloads or a million-element segment array.
+ * Low-threshold cases exercise the same comparisons as production bounds.
+ * The high-fragmentation case intentionally sends more than 65,536 distinct
+ * JSON-RPC updates while keeping the assistant report itself small.
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -13,6 +13,7 @@ import { test } from "node:test";
 import { AcpClient } from "../src/adapters/acp/client.js";
 import {
   ACP_DIAGNOSTIC_EVENT_BYTES,
+  DEFAULT_ACP_DIAGNOSTIC_EVENTS,
   DEFAULT_ACP_REQUEST_FRAME_BYTES,
   ACP_OUTPUT_LIMIT_CODE,
   ACP_REQUEST_LIMIT_CODE,
@@ -104,6 +105,57 @@ if (process.argv[2] === "diagnostic-burst") {
       const count = Number(process.env.MOCK_COUNT || "1");
       for (let i = 0; i < count; i += 1) {
         update({ sessionUpdate: "status", status: "tick" });
+      }
+      finish(request.id);
+      return;
+    }
+    if (mode === "high-fragments") {
+      const count = Number(process.env.MOCK_COUNT || "65537");
+      const line = JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "${PROVIDER_SESSION_ID}",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "x" },
+          },
+        },
+      }) + "\n";
+      const batchSize = 512;
+      for (let i = 0; i < count; i += batchSize) {
+        process.stdout.write(line.repeat(Math.min(batchSize, count - i)));
+      }
+      finish(request.id);
+      return;
+    }
+    if (mode === "control-progress") {
+      update({ sessionUpdate: "status", status: "starting" });
+      update({ sessionUpdate: "status", status: "starting" });
+      update({ sessionUpdate: "status", status: "working" });
+      update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } });
+      update({ sessionUpdate: "tool_call", toolCallId: "read", title: "read", status: "pending" });
+      update({ sessionUpdate: "tool_call", toolCallId: "read", title: "read", status: "pending" });
+      update({ sessionUpdate: "tool_call_update", toolCallId: "read", title: "read", status: "completed" });
+      update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } });
+      finish(request.id);
+      return;
+    }
+    if (mode === "tool-storm") {
+      const count = Number(process.env.MOCK_COUNT || "3");
+      for (let i = 0; i < count; i += 1) {
+        update({ sessionUpdate: "tool_call_update", toolCallId: "read", title: "read", status: "pending" });
+      }
+      finish(request.id);
+      return;
+    }
+    if (mode === "config-storm") {
+      const count = Number(process.env.MOCK_COUNT || "3");
+      for (let i = 0; i < count; i += 1) {
+        update({
+          sessionUpdate: "config_option_update",
+          configOptions: [{ id: "thinking", name: "Thinking", type: "boolean", currentValue: true }],
+        });
       }
       finish(request.id);
       return;
@@ -323,6 +375,30 @@ test("AcpClient accepts an exact UTF-8 assistant budget across sustained small c
   }
 });
 
+test("AcpClient completes more than 65,536 content fragments exactly with bounded diagnostics", async () => {
+  const count = 65_537;
+  const events: RuntimeEvent[] = [];
+  const client = await makeClient({
+    sessionId: "ss-high-fragments",
+    events,
+    env: { MOCK_MODE: "high-fragments", MOCK_COUNT: String(count) },
+  });
+  try {
+    await client.connect();
+    const result = await client.sendPrompt("go");
+    assert.equal(result.assistantText.length, count);
+    assert.equal(result.assistantText, "x".repeat(count));
+    assert.ok(!events.some((event) => event.type === "session.failed"));
+    assert.ok(
+      events.filter((event) => event.type === "session.stdout_tail").length <=
+        DEFAULT_ACP_DIAGNOSTIC_EVENTS + 1,
+      "diagnostic fan-out remains capped plus one aggregate suppression record"
+    );
+  } finally {
+    await client.stop("shutdown");
+  }
+});
+
 test("AcpClient rejects one UTF-8 byte over assistant budget with stable ACP_OUTPUT_LIMIT", async () => {
   const events: RuntimeEvent[] = [];
   const client = await makeClient({
@@ -366,13 +442,13 @@ test("managed ACP rejects an oversized stdout JSON-RPC frame before parse and ne
 });
 
 test("low-count overrides cheaply prove million-small-update and segment exhaustion", async (t) => {
-  await t.test("session/update count", async () => {
+  await t.test("consecutive no-progress session/update count", async () => {
     const events: RuntimeEvent[] = [];
     const client = await makeClient({
       sessionId: "ss-update-count",
       events,
-      env: { MOCK_MODE: "updates", MOCK_COUNT: "4" },
-      limits: { sessionUpdates: 3 },
+      env: { MOCK_MODE: "updates", MOCK_COUNT: "5" },
+      limits: { noProgressUpdates: 3 },
     });
     await client.connect();
     await assert.rejects(
@@ -389,7 +465,7 @@ test("low-count overrides cheaply prove million-small-update and segment exhaust
       sessionId: "ss-segment-count",
       events,
       env: { MOCK_MODE: "segments", MOCK_COUNT: "3" },
-      limits: { assistantSegments: 2, sessionUpdates: 10 },
+      limits: { assistantSegments: 2 },
     });
     await client.connect();
     await assert.rejects(
@@ -401,6 +477,47 @@ test("low-count overrides cheaply prove million-small-update and segment exhaust
   });
 });
 
+test("observable ACP control progress resets the consecutive no-progress bound", async () => {
+  const events: RuntimeEvent[] = [];
+  const client = await makeClient({
+    sessionId: "ss-control-progress",
+    events,
+    env: { MOCK_MODE: "control-progress" },
+    limits: { noProgressUpdates: 1 },
+  });
+  try {
+    await client.connect();
+    const result = await client.sendPrompt("go");
+    assert.equal(result.assistantText, "ok");
+    assert.ok(!events.some((event) => event.type === "session.failed"));
+  } finally {
+    await client.stop("shutdown");
+  }
+});
+
+test("repeated identical tool and config control states hit the no-progress bound", async (t) => {
+  for (const mode of ["tool-storm", "config-storm"]) {
+    await t.test(mode, async () => {
+      const events: RuntimeEvent[] = [];
+      const client = await makeClient({
+        sessionId: `ss-${mode}`,
+        events,
+        env: { MOCK_MODE: mode, MOCK_COUNT: "3" },
+        limits: { noProgressUpdates: 1, diagnosticEvents: 1 },
+      });
+      await client.connect();
+      await assert.rejects(
+        () => client.sendPrompt("go"),
+        (error) => assertLimit(error, ACP_OUTPUT_LIMIT_CODE)
+      );
+      await assertStopped(client);
+      assert.ok(
+        events.filter((event) => event.type === "session.stdout_tail").length <= 2
+      );
+    });
+  }
+});
+
 test("final open segment cannot bypass segment limit into prompt_complete", async () => {
   const sessionId = "ss-final-open-limit";
   const events: RuntimeEvent[] = [];
@@ -408,7 +525,7 @@ test("final open segment cannot bypass segment limit into prompt_complete", asyn
     sessionId,
     events,
     env: { MOCK_MODE: "final-open-segment" },
-    limits: { assistantSegments: 2, sessionUpdates: 10 },
+    limits: { assistantSegments: 2 },
   });
   const session = await startManagedAcpSession({
     plan: {

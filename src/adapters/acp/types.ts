@@ -1,6 +1,8 @@
 // Provider-neutral ACP JSON-RPC types and session defaults.
 // No provider-specific argv / auth / env / model knowledge.
 
+import { utf8Bytes } from "./limits.js";
+
 /** Permission handling for ACP `session/request_permission` (no unconditional yolo). */
 export type AcpPermissionPolicy = "allow" | "ask" | "deny";
 
@@ -39,11 +41,364 @@ export type AcpPermissionOption = {
 export type AcpSessionUpdate = {
   sessionUpdate?: string;
   content?: { type?: string; text?: string };
+  configOptions?: unknown;
   toolCallId?: string;
   title?: string;
   status?: string;
   [key: string]: unknown;
 };
+
+export type AcpSessionConfigOptionValue = {
+  value: string;
+  name: string;
+  description?: string;
+};
+
+export type AcpSessionConfigSelectOptions =
+  | { kind: "flat"; options: AcpSessionConfigOptionValue[] }
+  | {
+      kind: "grouped";
+      groups: Array<{
+        group: string;
+        name: string;
+        options: AcpSessionConfigOptionValue[];
+      }>;
+    };
+
+export type AcpSessionConfigOption =
+  | {
+      id: string;
+      name: string;
+      description?: string;
+      category?: string;
+      type: "select";
+      currentValue: string;
+      options: AcpSessionConfigSelectOptions;
+    }
+  | {
+      id: string;
+      name: string;
+      description?: string;
+      category?: string;
+      type: "boolean";
+      currentValue: boolean;
+    };
+
+/**
+ * Bounded, non-secret ACP facts negotiated for one provider Session.
+ * Connections never own these values: the Agent is authoritative for its
+ * capabilities, auth method ids, option defaults, and current values.
+ */
+export type AcpSessionConfigSnapshot = {
+  capabilities: {
+    loadSession: boolean;
+    resumeSession: boolean;
+    promptImage: boolean;
+  };
+  authMethodIds: string[];
+  configOptions: AcpSessionConfigOption[];
+  /** True when an adversarially large Agent projection was safely bounded. */
+  truncated: boolean;
+};
+
+const ACP_SESSION_AUTH_METHODS_MAX = 64;
+const ACP_SESSION_CONFIG_OPTIONS_MAX = 128;
+const ACP_SESSION_CONFIG_VALUES_MAX = 256;
+const ACP_SESSION_CONFIG_GROUPS_MAX = 64;
+const ACP_SESSION_CONFIG_SNAPSHOT_BYTES = 256 * 1024;
+const ACP_SESSION_CONFIG_ID_BYTES = 256;
+const ACP_SESSION_CONFIG_LABEL_BYTES = 1024;
+const ACP_SESSION_CONFIG_DESCRIPTION_BYTES = 4096;
+
+function plainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function boundedString(
+  value: unknown,
+  maxBytes: number,
+  allowEmpty = false
+): string | undefined {
+  if (typeof value !== "string") return undefined;
+  if (!allowEmpty && value.length === 0) return undefined;
+  return utf8Bytes(value) <= maxBytes ? value : undefined;
+}
+
+function optionalBoundedString(
+  value: unknown,
+  maxBytes: number
+): string | undefined | null {
+  if (value === undefined) return undefined;
+  return boundedString(value, maxBytes, true) ?? null;
+}
+
+function normalizeConfigOptionValue(
+  value: unknown
+): AcpSessionConfigOptionValue | undefined {
+  if (!plainRecord(value)) return undefined;
+  const id = boundedString(value.value, ACP_SESSION_CONFIG_ID_BYTES);
+  const name = boundedString(value.name, ACP_SESSION_CONFIG_LABEL_BYTES);
+  const description = optionalBoundedString(
+    value.description,
+    ACP_SESSION_CONFIG_DESCRIPTION_BYTES
+  );
+  if (!id || !name || description === null) return undefined;
+  return {
+    value: id,
+    name,
+    ...(description !== undefined ? { description } : {}),
+  };
+}
+
+function normalizeConfigOption(
+  value: unknown,
+  bounds: { truncated: boolean }
+): AcpSessionConfigOption | undefined {
+  if (!plainRecord(value)) return undefined;
+  const id = boundedString(value.id, ACP_SESSION_CONFIG_ID_BYTES);
+  const name = boundedString(value.name, ACP_SESSION_CONFIG_LABEL_BYTES);
+  const description = optionalBoundedString(
+    value.description,
+    ACP_SESSION_CONFIG_DESCRIPTION_BYTES
+  );
+  const category = optionalBoundedString(
+    value.category,
+    ACP_SESSION_CONFIG_ID_BYTES
+  );
+  if (!id || !name || description === null || category === null) return undefined;
+
+  const common = {
+    id,
+    name,
+    ...(description !== undefined ? { description } : {}),
+    ...(category !== undefined ? { category } : {}),
+  };
+  if (value.type === "boolean") {
+    if (typeof value.currentValue !== "boolean") return undefined;
+    return { ...common, type: "boolean", currentValue: value.currentValue };
+  }
+  const currentValue = boundedString(value.currentValue, ACP_SESSION_CONFIG_ID_BYTES);
+  if (value.type !== "select" || !currentValue) {
+    // ACP requires clients to ignore option types they do not understand.
+    return undefined;
+  }
+  if (!Array.isArray(value.options)) return undefined;
+  const grouped = value.options.some(
+    (option) => plainRecord(option) && "group" in option
+  );
+  let options: AcpSessionConfigSelectOptions;
+  if (grouped) {
+    const groups: Extract<AcpSessionConfigSelectOptions, { kind: "grouped" }>["groups"] = [];
+    const seenGroups = new Set<string>();
+    const seenValues = new Set<string>();
+    let valueCount = 0;
+    if (value.options.length > ACP_SESSION_CONFIG_GROUPS_MAX) bounds.truncated = true;
+    for (const rawGroup of value.options.slice(0, ACP_SESSION_CONFIG_GROUPS_MAX)) {
+      if (!plainRecord(rawGroup) || !Array.isArray(rawGroup.options)) continue;
+      const group = boundedString(rawGroup.group, ACP_SESSION_CONFIG_ID_BYTES);
+      const groupName = boundedString(rawGroup.name, ACP_SESSION_CONFIG_LABEL_BYTES);
+      if (!group || !groupName || seenGroups.has(group)) continue;
+      const groupOptions: AcpSessionConfigOptionValue[] = [];
+      for (const raw of rawGroup.options) {
+        if (valueCount >= ACP_SESSION_CONFIG_VALUES_MAX) {
+          bounds.truncated = true;
+          break;
+        }
+        valueCount += 1;
+        const option = normalizeConfigOptionValue(raw);
+        if (!option || seenValues.has(option.value)) continue;
+        seenValues.add(option.value);
+        groupOptions.push(option);
+      }
+      if (groupOptions.length === 0) continue;
+      seenGroups.add(group);
+      groups.push({ group, name: groupName, options: groupOptions });
+      if (valueCount >= ACP_SESSION_CONFIG_VALUES_MAX) break;
+    }
+    if (groups.length === 0) return undefined;
+    options = { kind: "grouped", groups };
+  } else {
+    const flatOptions: AcpSessionConfigOptionValue[] = [];
+    const seen = new Set<string>();
+    if (value.options.length > ACP_SESSION_CONFIG_VALUES_MAX) bounds.truncated = true;
+    for (const raw of value.options.slice(0, ACP_SESSION_CONFIG_VALUES_MAX)) {
+      const option = normalizeConfigOptionValue(raw);
+      if (!option || seen.has(option.value)) continue;
+      seen.add(option.value);
+      flatOptions.push(option);
+    }
+    if (flatOptions.length === 0) return undefined;
+    options = { kind: "flat", options: flatOptions };
+  }
+  return {
+    ...common,
+    type: "select",
+    currentValue,
+    options,
+  };
+}
+
+function normalizeAuthMethodIds(value: unknown): {
+  ids: string[];
+  truncated: boolean;
+} {
+  if (!Array.isArray(value)) return { ids: [], truncated: false };
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of value.slice(0, ACP_SESSION_AUTH_METHODS_MAX)) {
+    const id = plainRecord(raw)
+      ? boundedString(raw.id, ACP_SESSION_CONFIG_ID_BYTES)
+      : undefined;
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return {
+    ids,
+    truncated: value.length > ACP_SESSION_AUTH_METHODS_MAX,
+  };
+}
+
+export function createAcpSessionConfigSnapshot(input: {
+  agentCapabilities?: unknown;
+  authMethods?: unknown;
+  configOptions?: unknown;
+}): AcpSessionConfigSnapshot {
+  const capabilities = plainRecord(input.agentCapabilities)
+    ? input.agentCapabilities
+    : {};
+  const sessionCapabilities = plainRecord(capabilities.sessionCapabilities)
+    ? capabilities.sessionCapabilities
+    : {};
+  const promptCapabilities = plainRecord(capabilities.promptCapabilities)
+    ? capabilities.promptCapabilities
+    : {};
+  const auth = normalizeAuthMethodIds(input.authMethods);
+  const rawOptions = Array.isArray(input.configOptions) ? input.configOptions : [];
+  const configOptions: AcpSessionConfigOption[] = [];
+  const seen = new Set<string>();
+  const bounds = { truncated: false };
+  let bytes = 2;
+  let truncated = auth.truncated || rawOptions.length > ACP_SESSION_CONFIG_OPTIONS_MAX;
+  for (const raw of rawOptions.slice(0, ACP_SESSION_CONFIG_OPTIONS_MAX)) {
+    const option = normalizeConfigOption(raw, bounds);
+    if (!option || seen.has(option.id)) continue;
+    const optionBytes = utf8Bytes(JSON.stringify(option)) + 1;
+    if (bytes + optionBytes > ACP_SESSION_CONFIG_SNAPSHOT_BYTES) {
+      truncated = true;
+      break;
+    }
+    bytes += optionBytes;
+    seen.add(option.id);
+    configOptions.push(option);
+  }
+  return {
+    capabilities: {
+      loadSession: capabilities.loadSession === true,
+      resumeSession:
+        plainRecord(sessionCapabilities.resume),
+      promptImage: promptCapabilities.image === true,
+    },
+    authMethodIds: auth.ids,
+    configOptions,
+    truncated: truncated || bounds.truncated,
+  };
+}
+
+export function cloneAcpSessionConfigSnapshot(
+  snapshot: AcpSessionConfigSnapshot
+): AcpSessionConfigSnapshot {
+  return {
+    capabilities: { ...snapshot.capabilities },
+    authMethodIds: [...snapshot.authMethodIds],
+    configOptions: snapshot.configOptions.map((option) =>
+      option.type === "select"
+        ? {
+            ...option,
+            options:
+              option.options.kind === "flat"
+                ? {
+                    kind: "flat" as const,
+                    options: option.options.options.map((value) => ({ ...value })),
+                  }
+                : {
+                    kind: "grouped" as const,
+                    groups: option.options.groups.map((group) => ({
+                      ...group,
+                      options: group.options.map((value) => ({ ...value })),
+                    })),
+                  },
+          }
+        : { ...option }
+    ),
+    truncated: snapshot.truncated,
+  };
+}
+
+/** Strict persisted-row parser; runtime wire normalization happens before disk. */
+export function parseAcpSessionConfigSnapshot(
+  value: unknown
+): AcpSessionConfigSnapshot | null {
+  if (!plainRecord(value)) return null;
+  if (
+    Object.keys(value).some(
+      (key) =>
+        key !== "capabilities" &&
+        key !== "authMethodIds" &&
+        key !== "configOptions" &&
+        key !== "truncated"
+    )
+  ) {
+    return null;
+  }
+  if (!plainRecord(value.capabilities)) return null;
+  if (
+    Object.keys(value.capabilities).some(
+      (key) => key !== "loadSession" && key !== "resumeSession" && key !== "promptImage"
+    ) ||
+    typeof value.capabilities.loadSession !== "boolean" ||
+    typeof value.capabilities.resumeSession !== "boolean" ||
+    typeof value.capabilities.promptImage !== "boolean"
+  ) {
+    return null;
+  }
+  if (!Array.isArray(value.authMethodIds) || !Array.isArray(value.configOptions)) {
+    return null;
+  }
+  if (typeof value.truncated !== "boolean") return null;
+  const wireOptions = value.configOptions.map((option) => {
+    if (!plainRecord(option) || option.type !== "select") return option;
+    if (!plainRecord(option.options)) return option;
+    if (option.options.kind === "flat" && Array.isArray(option.options.options)) {
+      return { ...option, options: option.options.options };
+    }
+    if (
+      option.options.kind === "grouped" &&
+      Array.isArray(option.options.groups)
+    ) {
+      return { ...option, options: option.options.groups };
+    }
+    return option;
+  });
+  const normalized = createAcpSessionConfigSnapshot({
+    agentCapabilities: {
+      loadSession: value.capabilities.loadSession,
+      sessionCapabilities: value.capabilities.resumeSession ? { resume: {} } : {},
+      promptCapabilities: { image: value.capabilities.promptImage },
+    },
+    authMethods: value.authMethodIds.map((id) => ({ id })),
+    configOptions: wireOptions,
+  });
+  if (
+    normalized.truncated ||
+    JSON.stringify(normalized.authMethodIds) !== JSON.stringify(value.authMethodIds) ||
+    JSON.stringify(normalized.configOptions) !== JSON.stringify(value.configOptions)
+  ) {
+    return null;
+  }
+  normalized.truncated = value.truncated;
+  return normalized;
+}
 
 /** Params returned by the adapter auth hook for the ACP `authenticate` RPC. */
 export type AcpAuthenticateParams = {
@@ -52,10 +407,10 @@ export type AcpAuthenticateParams = {
 };
 
 /**
- * Shared machine-local ACP route bag (canonical `ConnectionConfig.acp`).
+ * Shared machine-local ACP Connection launch bag (`ConnectionLaunchPlan.extras.acp`).
  * Provider-neutral field names; each *-acp adapter interprets values for its CLI.
  * Secret values stay in OS/process env — only env key *names* and non-secret paths live here.
- * Provider adapters may extend (e.g. GrokAcpRouteOptions) for provider-only knobs.
+ * Provider adapters may extend this bag for provider-only knobs.
  */
 export interface AcpRouteOptions {
   /** Absolute path to the provider CLI / ACP bridge executable on this machine. */
@@ -71,16 +426,16 @@ export interface AcpRouteOptions {
   envKey?: string;
   /**
    * Machine-local CredentialStore id (reference only — never the secret value).
-   * Service resolves via OS-backed vault before launch; route JSON stores only this id.
+   * Service resolves via OS-backed vault before launch; connections.json stores only this id.
    */
   credentialRef?: string;
   /**
    * Process env key whose **value** is an OpenAI-compatible / provider base URL.
-   * Only the env key *name* is stored on the machine-local route.
+   * Only the env key *name* is stored on the machine-local Connection.
    */
   baseUrlEnvKey?: string;
   /**
-   * Optional literal base URL on the **machine-local** route only.
+   * Optional literal base URL on the **machine-local** Connection only.
    * Prefer baseUrlEnvKey + process env. Never copy this field into workspace / git.
    */
   baseUrl?: string;

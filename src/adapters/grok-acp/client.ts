@@ -10,7 +10,10 @@ import {
 } from "../acp/client.js";
 import type { AcpMcpServerWire, AcpSkillMetaRef } from "../acp/mcp-skills.js";
 import type { BootstrapImageRef } from "../acp/image-prompt.js";
-import type { AcpPermissionOption } from "../acp/types.js";
+import type {
+  AcpPermissionOption,
+  AcpSessionConfigSnapshot,
+} from "../acp/types.js";
 import type { RuntimeEvent } from "../../runtime/types.js";
 import type { BoundedBinaryRead } from "../../core/adapter.js";
 import type { GrokAcpPermissionPolicy } from "./types.js";
@@ -107,6 +110,10 @@ export class GrokAcpClient {
 
   get providerSession(): string | undefined {
     return this.inner.providerSession;
+  }
+
+  get sessionConfig(): AcpSessionConfigSnapshot {
+    return this.inner.sessionConfig;
   }
 
   get lastAssistantText(): string {

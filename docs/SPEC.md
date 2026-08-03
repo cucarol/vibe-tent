@@ -191,12 +191,27 @@ edits.
 
 Provider/model/endpoint/credential configuration belongs to machine-local
 Agent Connections or the provider's native tooling. Tent does not silently
-rewrite every Agent's native configuration.
+rewrite every Agent's native configuration. A Connection contains launch facts
+only; it is not Session identity and does not define provider-owned Session
+configuration.
+
+ACP initialize capabilities and authentication method ids, plus the complete
+`configOptions` returned by session new/load/resume and later
+`config_option_update` notifications, are authoritative for that exact Session.
+Tent preserves a bounded, non-secret audit snapshot on the Session record,
+including flat or grouped select options and advertised boolean options.
+Unknown option types/categories are ignored safely and missing options do not
+invent defaults. Tent currently observes these options; it does not mutate them
+through `session/set_config_option`.
 
 ACP stdio is a bounded adapter boundary. Tent rejects an oversized JSON-RPC
-frame before parsing it, bounds per-turn assistant report bytes and update /
-segment counts, and bounds outbound bootstrap/request frames. A deliverable
-assistant report that crosses the limit fails loud with `ACP_OUTPUT_LIMIT`,
+frame before parsing it, bounds per-turn assistant report bytes and message
+segments, and bounds outbound bootstrap/request frames. There is no global
+count limit on real content, thought, tool-state, status-state, or configuration
+progress. A consecutive storm of control updates that changes no observable
+state fails loud, while diagnostic update fan-out is sampled and aggregated.
+A deliverable assistant report that crosses the limit fails loud with
+`ACP_OUTPUT_LIMIT`,
 stops the provider, and cannot emit `prompt_complete`, a ready Delivery, or a
 delivered outcome. Diagnostic tails are independently truncated and redacted;
 diagnostic truncation is never used to turn an oversized report into a Delivery.

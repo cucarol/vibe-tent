@@ -13,6 +13,7 @@ import type { SessionRecord, SessionState, StopReason } from "./types.js";
 import { EXTERNAL_ADAPTER_ID, isSessionId } from "./types.js";
 import { isConnectionId, isRoleId } from "../core/id.js";
 import { parseAgentConnectionSnapshot } from "./agent-connection.js";
+import { parseAcpSessionConfigSnapshot } from "../adapters/acp/types.js";
 
 type SessionRecordMutablePatch = Partial<
   Omit<
@@ -71,6 +72,7 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
     "connectionId",
     "adapterId",
     "connectionSnapshot",
+    "acpSession",
     "roleId",
     "state",
     "pid",
@@ -103,7 +105,11 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
   // adapter identity, not the mutable lifecycle state, selects the schema.
   const external = data.adapterId === EXTERNAL_ADAPTER_ID;
   if (external) {
-    if (data.connectionId !== undefined || data.connectionSnapshot !== undefined) return null;
+    if (
+      data.connectionId !== undefined ||
+      data.connectionSnapshot !== undefined ||
+      data.acpSession !== undefined
+    ) return null;
   } else {
     if (!isConnectionId(data.connectionId) || !isNonEmptyString(data.adapterId)) return null;
     if (data.roleId !== undefined) return null;
@@ -186,7 +192,17 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
   if (snapshot.adapterId !== data.adapterId || !isNonEmptyString(snapshot.adapterId)) return null;
   if (!isNonEmptyString(snapshot.launchDigest)) return null;
 
-  return { ...data, connectionSnapshot: snapshot } as unknown as SessionRecord;
+  const acpSession =
+    data.acpSession === undefined
+      ? undefined
+      : parseAcpSessionConfigSnapshot(data.acpSession);
+  if (data.acpSession !== undefined && !acpSession) return null;
+
+  return {
+    ...data,
+    connectionSnapshot: snapshot,
+    ...(acpSession ? { acpSession } : {}),
+  } as unknown as SessionRecord;
 }
 
 export class SessionRegistry {

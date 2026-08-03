@@ -11,9 +11,12 @@ import type {
   AcpJsonRpcResponse,
   AcpPermissionOption,
   AcpPermissionPolicy,
+  AcpSessionConfigSnapshot,
   AcpSessionUpdate,
 } from "./types.js";
 import {
+  cloneAcpSessionConfigSnapshot,
+  createAcpSessionConfigSnapshot,
   DEFAULT_PROMPT_TIMEOUT_MS,
 } from "./types.js";
 import type { AcpMcpServerWire, AcpSkillMetaRef } from "./mcp-skills.js";
@@ -49,6 +52,8 @@ import {
 const LOAD_REPLAY_QUIET_MS = 100;
 const LOAD_REPLAY_MAX_WAIT_MS = 2_000;
 const RPC_ERROR_DATA_MAX_CHARS = 600;
+const ASSISTANT_CHUNK_PAGE_BYTES = 64 * 1024;
+const ASSISTANT_CHUNK_PAGE_ITEMS = 1024;
 const RPC_ERROR_SAFE_KEYS = new Set([
   "code",
   "kind",
@@ -243,6 +248,8 @@ export type AcpConnectResult = {
    * as an object (including `{}`).
    */
   resumeSessionSupported: boolean;
+  /** Bounded Agent-owned capabilities, auth method ids, and Session options. */
+  sessionConfig: AcpSessionConfigSnapshot;
 };
 
 /**
@@ -280,10 +287,15 @@ export class AcpClient {
    * is the last non-empty segment (see selectFinalAssistantReport).
    */
   private assistantMessageSegments: string[] = [];
-  /** Open message chunks stay chunked so many small updates do not cause repeated copies. */
+  /** Fixed-size joined pages keep fragment overhead bounded by report bytes. */
   private assistantMessageCurrentChunks: string[] = [];
+  private assistantMessageCurrentPages: string[] = [];
+  private assistantMessageCurrentPageBytes = 0;
   private assistantReportBytes = 0;
-  private assistantUpdateCount = 0;
+  private consecutiveNoProgressUpdates = 0;
+  private lastObservableControlFingerprint: string | undefined;
+  private diagnosticEventsEmitted = 0;
+  private diagnosticEventsSuppressed = 0;
   private stdoutFrameBuffer: Buffer | undefined;
   private stdoutFrameBytes = 0;
   private limitError: AcpLimitError | undefined;
@@ -324,6 +336,9 @@ export class AcpClient {
    * Only explicit true counts; omit/false → unsupported (no guessing).
    */
   private promptImageSupported = false;
+  /** Latest complete bounded Agent-owned Session configuration state. */
+  private sessionConfigSnapshot: AcpSessionConfigSnapshot =
+    createAcpSessionConfigSnapshot({});
   /** Concurrent ask-policy requests keep the session waiting until all resolve. */
   private permissionAsksInFlight = 0;
   /** Stop/exit cancellation for in-flight onPermissionAsk waiters. */
@@ -393,6 +408,10 @@ export class AcpClient {
     return this.stderrTail;
   }
 
+  get sessionConfig(): AcpSessionConfigSnapshot {
+    return cloneAcpSessionConfigSnapshot(this.sessionConfigSnapshot);
+  }
+
   /**
    * True only when initialize advertised agentCapabilities.promptCapabilities.image === true.
    * Default false until connect(); custom/unclear transports stay false.
@@ -425,8 +444,33 @@ export class AcpClient {
   private resetAssistantReport(): void {
     this.assistantMessageSegments = [];
     this.assistantMessageCurrentChunks = [];
+    this.assistantMessageCurrentPages = [];
+    this.assistantMessageCurrentPageBytes = 0;
     this.assistantReportBytes = 0;
-    this.assistantUpdateCount = 0;
+    this.consecutiveNoProgressUpdates = 0;
+    this.lastObservableControlFingerprint = undefined;
+    this.diagnosticEventsEmitted = 0;
+    this.diagnosticEventsSuppressed = 0;
+  }
+
+  private appendAssistantMessageChunk(text: string, bytes: number): void {
+    this.assistantMessageCurrentChunks.push(text);
+    this.assistantMessageCurrentPageBytes += bytes;
+    if (
+      this.assistantMessageCurrentPageBytes >= ASSISTANT_CHUNK_PAGE_BYTES ||
+      this.assistantMessageCurrentChunks.length >= ASSISTANT_CHUNK_PAGE_ITEMS
+    ) {
+      this.flushAssistantMessagePage();
+    }
+  }
+
+  private flushAssistantMessagePage(): void {
+    if (this.assistantMessageCurrentChunks.length === 0) return;
+    this.assistantMessageCurrentPages.push(
+      this.assistantMessageCurrentChunks.join("")
+    );
+    this.assistantMessageCurrentChunks = [];
+    this.assistantMessageCurrentPageBytes = 0;
   }
 
   /**
@@ -434,9 +478,17 @@ export class AcpClient {
    * message chunks become a new final-report candidate.
    */
   private sealOpenAssistantSegment(): void {
-    if (this.assistantMessageCurrentChunks.length === 0) return;
-    const current = this.assistantMessageCurrentChunks.join("");
+    if (
+      this.assistantMessageCurrentPages.length === 0 &&
+      this.assistantMessageCurrentChunks.length === 0
+    ) {
+      return;
+    }
+    this.flushAssistantMessagePage();
+    const current = this.assistantMessageCurrentPages.join("");
+    this.assistantMessageCurrentPages = [];
     this.assistantMessageCurrentChunks = [];
+    this.assistantMessageCurrentPageBytes = 0;
     if (!current.trim()) return;
     if (this.assistantMessageSegments.length >= this.resourceLimits.assistantSegments) {
       this.triggerLimit(
@@ -481,6 +533,7 @@ export class AcpClient {
         clientCapabilities: {
           fs: { readTextFile: false, writeTextFile: false },
           terminal: false,
+          session: { configOptions: { boolean: {} } },
         },
       })) as {
         authMethods?: Array<{ id: string }>;
@@ -519,6 +572,7 @@ export class AcpClient {
       }
 
       let providerSessionId: string;
+      let sessionConfigOptions: unknown;
       if (mode === "load" || mode === "resume") {
         const method = mode === "resume" ? "session/resume" : "session/load";
         if (mode === "load" && !this.loadSessionSupported) {
@@ -548,14 +602,15 @@ export class AcpClient {
           this.lastLoadReplayUpdateAt = Date.now();
         }
         try {
-          await this.request(
+          const loaded = (await this.request(
             method,
             this.sessionStartParams({
               sessionId: loadId,
               cwd: this.options.cwd,
             }),
             60_000
-          );
+          )) as { configOptions?: unknown };
+          sessionConfigOptions = loaded.configOptions;
           if (mode === "load") {
             await this.waitForLoadReplayQuiescence();
           }
@@ -571,13 +626,20 @@ export class AcpClient {
           "session/new",
           this.sessionStartParams({ cwd: this.options.cwd }),
           60_000
-        )) as { sessionId?: string };
+        )) as { sessionId?: string; configOptions?: unknown };
         if (!session.sessionId) {
           throw new Error(`${this.label} session/new 未返回 sessionId`);
         }
         this.providerSessionId = session.sessionId;
         providerSessionId = session.sessionId;
+        sessionConfigOptions = session.configOptions;
       }
+
+      this.sessionConfigSnapshot = createAcpSessionConfigSnapshot({
+        agentCapabilities: init.agentCapabilities,
+        authMethods: init.authMethods,
+        configOptions: sessionConfigOptions,
+      });
 
       this.options.emit({
         type: "session.live",
@@ -590,6 +652,7 @@ export class AcpClient {
         providerSessionId,
         loadSessionSupported: this.loadSessionSupported,
         resumeSessionSupported: this.resumeSessionSupported,
+        sessionConfig: this.sessionConfig,
       };
     } catch (err) {
       if (isAcpLimitError(err)) throw err;
@@ -675,14 +738,7 @@ export class AcpClient {
       throw new Error(this.boundedRedactedDiagnostic(detail));
     } finally {
       this.collectingPromptResponse = false;
-      const tail = this.updateDiagnosticRedactor.flush();
-      if (tail) {
-        this.options.emit({
-          type: "session.stdout_tail",
-          sessionId: this.options.sessionId,
-          text: tail,
-        });
-      }
+      this.flushUpdateDiagnostics();
     }
   }
 
@@ -801,6 +857,69 @@ export class AcpClient {
       prefix + safe,
       ACP_DIAGNOSTIC_EVENT_BYTES
     );
+  }
+
+  private emitUpdateDiagnostic(prefix: string, text: string): void {
+    const diagnostic = this.formatDiagnostic(prefix, text);
+    if (!diagnostic) return;
+    if (this.diagnosticEventsEmitted < this.resourceLimits.diagnosticEvents) {
+      this.diagnosticEventsEmitted += 1;
+      this.options.emit({
+        type: "session.stdout_tail",
+        sessionId: this.options.sessionId,
+        text: diagnostic,
+      });
+      return;
+    }
+    this.diagnosticEventsSuppressed += 1;
+  }
+
+  private flushUpdateDiagnostics(): void {
+    const tail = this.updateDiagnosticRedactor.flush();
+    const suppressed = this.diagnosticEventsSuppressed;
+    this.diagnosticEventsSuppressed = 0;
+    if (!tail && suppressed === 0) return;
+    const summary = suppressed > 0
+      ? `[session/update] ${suppressed} diagnostic fragments suppressed by bounded fan-out\n`
+      : "";
+    this.options.emit({
+      type: "session.stdout_tail",
+      sessionId: this.options.sessionId,
+      text: truncateUtf8Text(summary + tail, ACP_DIAGNOSTIC_EVENT_BYTES),
+    });
+  }
+
+  private recordNoProgressUpdate(): boolean {
+    this.consecutiveNoProgressUpdates += 1;
+    if (
+      this.consecutiveNoProgressUpdates <=
+      this.resourceLimits.noProgressUpdates
+    ) {
+      return true;
+    }
+    this.triggerLimit(
+      ACP_OUTPUT_LIMIT_CODE,
+      `session/update made no observable progress for more than ${this.resourceLimits.noProgressUpdates} consecutive events`
+    );
+    return false;
+  }
+
+  private recordUpdateProgress(): void {
+    this.consecutiveNoProgressUpdates = 0;
+  }
+
+  private recordContentProgress(): void {
+    this.recordUpdateProgress();
+    this.lastObservableControlFingerprint = undefined;
+  }
+
+  private recordObservableControlProgress(fingerprint: string): boolean {
+    if (fingerprint === this.lastObservableControlFingerprint) {
+      return this.recordNoProgressUpdate();
+    }
+    this.lastObservableControlFingerprint = fingerprint;
+    this.recordUpdateProgress();
+    return true;
   }
 
   private spawnProcess(): void {
@@ -971,23 +1090,47 @@ export class AcpClient {
   }
 
   private handleSessionUpdate(update: AcpSessionUpdate | undefined): void {
-    if (!update) return;
+    if (!update || this.limitError) return;
     if (this.quarantiningLoadReplay) {
       this.lastLoadReplayUpdateAt = Date.now();
+      return;
+    }
+    const kind = update.sessionUpdate ?? "";
+    if (kind === "config_option_update") {
+      const projected = createAcpSessionConfigSnapshot({
+        configOptions: update.configOptions,
+      });
+      const nextSnapshot: AcpSessionConfigSnapshot = {
+        ...this.sessionConfigSnapshot,
+        configOptions: projected.configOptions,
+        truncated: this.sessionConfigSnapshot.truncated || projected.truncated,
+      };
+      const unchanged =
+        JSON.stringify(this.sessionConfigSnapshot.configOptions) ===
+          JSON.stringify(nextSnapshot.configOptions) &&
+        this.sessionConfigSnapshot.truncated === nextSnapshot.truncated;
+      if (this.collectingPromptResponse) {
+        if (
+          !this.recordObservableControlProgress(
+            `config:${JSON.stringify(nextSnapshot.configOptions)}`
+          )
+        ) {
+          return;
+        }
+        this.sealOpenAssistantSegment();
+      }
+      if (unchanged) return;
+      this.sessionConfigSnapshot = nextSnapshot;
+      this.options.emit({
+        type: "session.config_options",
+        sessionId: this.options.sessionId,
+        sessionConfig: this.sessionConfig,
+      });
       return;
     }
     // Tent is not a transcript router. Updates outside a prompt initiated by
     // this client are neither delivery text nor user-facing diagnostics.
     if (!this.collectingPromptResponse) return;
-    this.assistantUpdateCount += 1;
-    if (this.assistantUpdateCount > this.resourceLimits.sessionUpdates) {
-      this.triggerLimit(
-        ACP_OUTPUT_LIMIT_CODE,
-        `session/update count exceeds ${this.resourceLimits.sessionUpdates}`
-      );
-      return;
-    }
-    const kind = update.sessionUpdate ?? "";
     if (isAssistantMessageChunkKind(kind) && update.content?.text) {
       // Contiguous message chunks form one segment; other updates seal it.
       // Delivery summary uses only the last non-empty segment at prompt end.
@@ -1003,12 +1146,9 @@ export class AcpClient {
         return;
       }
       this.assistantReportBytes += chunkBytes;
-      this.assistantMessageCurrentChunks.push(update.content.text);
-      this.options.emit({
-        type: "session.stdout_tail",
-        sessionId: this.options.sessionId,
-        text: this.formatDiagnostic(`[${kind}] `, update.content.text),
-      });
+      this.appendAssistantMessageChunk(update.content.text, chunkBytes);
+      this.recordContentProgress();
+      this.emitUpdateDiagnostic(`[${kind}] `, update.content.text);
       return;
     }
     // Any non-message update seals the open segment (tool/status/thought/…).
@@ -1016,39 +1156,53 @@ export class AcpClient {
       this.sealOpenAssistantSegment();
     }
     if (kind === "agent_thought_chunk" && update.content?.text) {
-      this.options.emit({
-        type: "session.stdout_tail",
-        sessionId: this.options.sessionId,
-        text: this.formatDiagnostic(`[${kind}] `, update.content.text),
-      });
+      this.recordContentProgress();
+      this.emitUpdateDiagnostic(`[${kind}] `, update.content.text);
       return;
     }
     if (kind === "tool_call" || kind === "tool_call_update") {
-      const title =
+      const actualTitle =
         (typeof update.title === "string" && update.title) ||
         update.toolCallId ||
-        "tool";
+        "";
       const status = typeof update.status === "string" ? update.status : "";
+      if (
+        actualTitle || status
+          ? !this.recordObservableControlProgress(
+              `tool:${update.toolCallId ?? ""}:${actualTitle}:${status}`
+            )
+          : !this.recordNoProgressUpdate()
+      ) {
+        return;
+      }
+      const title =
+        actualTitle ||
+        "tool";
       const safeTitle = this.boundedRedactedDiagnostic(title, 8192);
       const safeStatus = status
         ? this.boundedRedactedDiagnostic(status, 4096)
         : "";
-      this.options.emit({
-        type: "session.stdout_tail",
-        sessionId: this.options.sessionId,
-        text: this.formatDiagnostic(
-          `[${kind}] `,
-          `${safeTitle}${safeStatus ? ` (${safeStatus})` : ""}\n`
-        ),
-      });
+      this.emitUpdateDiagnostic(
+        `[${kind}] `,
+        `${safeTitle}${safeStatus ? ` (${safeStatus})` : ""}\n`
+      );
       return;
     }
+    if (kind === "status") {
+      const status = typeof update.status === "string" ? update.status : "";
+      if (
+        status
+          ? !this.recordObservableControlProgress(`status:${status}`)
+          : !this.recordNoProgressUpdate()
+      ) {
+        return;
+      }
+      this.emitUpdateDiagnostic("[status] ", status || "status");
+      return;
+    }
+    if (!this.recordNoProgressUpdate()) return;
     if (kind) {
-      this.options.emit({
-        type: "session.stdout_tail",
-        sessionId: this.options.sessionId,
-        text: this.formatDiagnostic("[session/update] ", kind),
-      });
+      this.emitUpdateDiagnostic("[session/update] ", kind);
     }
   }
 

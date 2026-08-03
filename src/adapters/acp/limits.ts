@@ -5,7 +5,10 @@ export const ACP_REQUEST_LIMIT_CODE = "ACP_REQUEST_LIMIT";
 
 export const DEFAULT_ACP_ASSISTANT_REPORT_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_ACP_ASSISTANT_SEGMENTS = 4096;
-export const DEFAULT_ACP_SESSION_UPDATES = 65_536;
+/** Consecutive control updates that contribute no observable Session progress. */
+export const DEFAULT_ACP_NO_PROGRESS_UPDATES = 65_536;
+/** Diagnostic fan-out is sampled; the complete assistant report uses byte bounds. */
+export const DEFAULT_ACP_DIAGNOSTIC_EVENTS = 256;
 export const DEFAULT_ACP_STDOUT_FRAME_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_ACP_BOOTSTRAP_TEXT_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_ACP_REQUEST_FRAME_BYTES = 40 * 1024 * 1024;
@@ -18,7 +21,8 @@ export type AcpLimitCode =
 export type AcpResourceLimits = {
   assistantReportBytes: number;
   assistantSegments: number;
-  sessionUpdates: number;
+  noProgressUpdates: number;
+  diagnosticEvents: number;
   stdoutFrameBytes: number;
   bootstrapTextBytes: number;
   requestFrameBytes: number;
@@ -27,7 +31,8 @@ export type AcpResourceLimits = {
 export const DEFAULT_ACP_RESOURCE_LIMITS: Readonly<AcpResourceLimits> = {
   assistantReportBytes: DEFAULT_ACP_ASSISTANT_REPORT_BYTES,
   assistantSegments: DEFAULT_ACP_ASSISTANT_SEGMENTS,
-  sessionUpdates: DEFAULT_ACP_SESSION_UPDATES,
+  noProgressUpdates: DEFAULT_ACP_NO_PROGRESS_UPDATES,
+  diagnosticEvents: DEFAULT_ACP_DIAGNOSTIC_EVENTS,
   stdoutFrameBytes: DEFAULT_ACP_STDOUT_FRAME_BYTES,
   bootstrapTextBytes: DEFAULT_ACP_BOOTSTRAP_TEXT_BYTES,
   requestFrameBytes: DEFAULT_ACP_REQUEST_FRAME_BYTES,

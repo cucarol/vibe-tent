@@ -14,6 +14,7 @@ import type {
   RelationListResult,
   RelationMutationResult,
   RelationTargetWire,
+  SessionProjection,
 } from "./types.js";
 import {
   AUTH_TOKEN_HEADER,
@@ -962,11 +963,14 @@ export class ServiceClient {
     return this.call("proposal.resolve", { workspaceId, path, decision, actor });
   }
 
-  sessionList(workspaceId?: string) {
-    return this.call("session.list", workspaceId ? { workspaceId } : {});
+  sessionList(workspaceId?: string): Promise<{ sessions: SessionProjection[] }> {
+    return this.call<{ sessions: SessionProjection[] }>(
+      "session.list",
+      workspaceId ? { workspaceId } : {}
+    );
   }
-  sessionGet(sessionId: string) {
-    return this.call("session.get", { sessionId });
+  sessionGet(sessionId: string): Promise<{ session: SessionProjection }> {
+    return this.call<{ session: SessionProjection }>("session.get", { sessionId });
   }
 
   /**

@@ -8,7 +8,11 @@ import type {
   ResumeToken,
 } from "../types.js";
 import type { RuntimeEvent, StopReason } from "../../runtime/types.js";
-import type { AcpPermissionOption, AcpPermissionPolicy } from "./types.js";
+import type {
+  AcpPermissionOption,
+  AcpPermissionPolicy,
+  AcpSessionConfigSnapshot,
+} from "./types.js";
 import type {
   AcpConnectOptions,
   AcpConnectResult,
@@ -22,6 +26,7 @@ const DEFAULT_BOOTSTRAP =
 export type ManagedAcpClient = {
   readonly pid: number | undefined;
   readonly providerSession: string | undefined;
+  readonly sessionConfig: AcpSessionConfigSnapshot;
   isAlive(): boolean;
   connect(options?: AcpConnectOptions): Promise<AcpConnectResult>;
   sendPrompt(bootstrapPrompt: string): Promise<AcpStartResult>;
@@ -58,6 +63,10 @@ export class AcpManagedSession implements ManagedSession {
 
   get providerSessionId(): string | undefined {
     return this.client.providerSession;
+  }
+
+  get acpSession(): AcpSessionConfigSnapshot {
+    return this.client.sessionConfig;
   }
 
   isAlive(): boolean {

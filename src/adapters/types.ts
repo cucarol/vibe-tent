@@ -96,6 +96,8 @@ export interface ManagedSession {
   readonly pid?: number;
   /** Provider-native session id (e.g. ACP sessionId); machine-local only. */
   readonly providerSessionId?: string;
+  /** Bounded Agent-owned ACP negotiation facts, when this is an ACP Session. */
+  readonly acpSession?: import("./acp/types.js").AcpSessionConfigSnapshot;
   isAlive(): boolean;
   /**
    * Internal turn fact (not session liveness): true while a managed
