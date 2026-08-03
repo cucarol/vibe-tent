@@ -198,7 +198,7 @@ export type AcpClientOptions = {
    * Return authenticate RPC params, or throw. Omit to skip authenticate.
    */
   authenticate?: (
-    authMethods: Array<{ id: string }>
+    authMethods: AcpAuthMethod[]
   ) => Promise<AcpAuthenticateParams>;
   /**
    * When permissionPolicy is "ask", resolve allow/deny via Local Service
@@ -214,6 +214,42 @@ export type AcpClientOptions = {
   /** Internal/test seam. Product adapters use the frozen defaults. */
   resourceLimits?: Partial<AcpResourceLimits>;
 };
+
+export type AcpAuthMethod = {
+  id: string;
+  type?: string;
+  [key: string]: unknown;
+};
+
+function parseAcpAuthMethods(value: unknown): AcpAuthMethod[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const record = entry as Record<string, unknown>;
+    if (typeof record.id !== "string" || !record.id.trim()) return [];
+    if (record.type !== undefined && typeof record.type !== "string") return [];
+    return [{ ...record, id: record.id } as AcpAuthMethod];
+  });
+}
+
+function assertInBandAuthMethod(
+  methods: AcpAuthMethod[],
+  methodId: unknown
+): asserts methodId is string {
+  if (typeof methodId !== "string" || !methodId) {
+    throw new Error("ACP authenticate hook must select a non-empty methodId");
+  }
+  const matches = methods.filter((method) => method.id === methodId);
+  if (matches.length !== 1) {
+    throw new Error(`ACP authenticate hook selected unavailable methodId: ${methodId}`);
+  }
+  const type = matches[0]?.type ?? "agent";
+  if (type !== "agent") {
+    throw new Error(
+      `ACP auth method ${methodId} has out-of-band or unsupported type: ${type}`
+    );
+  }
+}
 
 export type AcpStartResult = {
   pid: number;
@@ -614,7 +650,7 @@ export class AcpClient {
           session: { configOptions: { boolean: {} } },
         },
       })) as {
-        authMethods?: Array<{ id: string }>;
+        authMethods?: unknown;
         agentCapabilities?: {
           loadSession?: boolean;
           sessionCapabilities?: { resume?: unknown };
@@ -633,9 +669,11 @@ export class AcpClient {
       );
 
       if (this.options.authenticate) {
+        const authMethods = parseAcpAuthMethods(init.authMethods);
         const authParams = await this.options.authenticate(
-          init.authMethods ?? []
+          authMethods
         );
+        assertInBandAuthMethod(authMethods, authParams.methodId);
         // headless is always set by the client; adapter may add extra _meta fields.
         const meta =
           authParams._meta &&
