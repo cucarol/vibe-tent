@@ -152,6 +152,9 @@ const secretUpdatedOptions = secret ? [{
   currentValue: true,
 }] : updated;
 function send(value) { process.stdout.write(JSON.stringify(value) + "\n"); }
+function sendBatch(values) {
+  process.stdout.write(values.map((value) => JSON.stringify(value)).join("\n") + "\n");
+}
 const rl = readline.createInterface({ input: process.stdin });
 rl.on("line", (line) => {
   let request;
@@ -175,24 +178,37 @@ rl.on("line", (line) => {
     return;
   }
   if (request.method === "session/new") {
-    send({ jsonrpc: "2.0", id: request.id, result: { sessionId: "provider-config", configOptions: secretOptions } });
+    const response = { jsonrpc: "2.0", id: request.id, result: { sessionId: "provider-config", configOptions: secretOptions } };
+    if (process.env.START_CONFIG_UPDATE === "1") {
+      sendBatch([response, { jsonrpc: "2.0", method: "session/update", params: {
+        sessionId: "provider-config",
+        update: { sessionUpdate: "config_option_update", configOptions: updated },
+      } }]);
+    } else {
+      send(response);
+    }
     return;
   }
   if (request.method === "session/load" || request.method === "session/resume") {
-    send({ jsonrpc: "2.0", id: request.id, result: { configOptions: initial } });
+    const response = { jsonrpc: "2.0", id: request.id, result: { configOptions: initial } };
     if (request.method === "session/load" && request.params?.sessionId === "provider-replay-config") {
-      send({ jsonrpc: "2.0", method: "session/update", params: {
+      sendBatch([response, { jsonrpc: "2.0", method: "session/update", params: {
         sessionId: "provider-replay-config",
         update: { sessionUpdate: "config_option_update", configOptions: updated },
-      } });
-      send({ jsonrpc: "2.0", method: "session/update", params: {
+      } }, { jsonrpc: "2.0", method: "session/update", params: {
         sessionId: "provider-replay-config",
         update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "replayed assistant history" } },
-      } });
-      send({ jsonrpc: "2.0", method: "session/update", params: {
+      } }, { jsonrpc: "2.0", method: "session/update", params: {
         sessionId: "provider-replay-config",
         update: { sessionUpdate: "config_option_update", configOptions: replayFinal },
-      } });
+      } }]);
+    } else if (request.method === "session/resume" && process.env.START_CONFIG_UPDATE === "1") {
+      sendBatch([response, { jsonrpc: "2.0", method: "session/update", params: {
+        sessionId: request.params?.sessionId,
+        update: { sessionUpdate: "config_option_update", configOptions: updated },
+      } }]);
+    } else {
+      send(response);
     }
     return;
   }
@@ -376,6 +392,32 @@ test("session/load keeps config updates received during replay quarantine and dr
     );
   } finally {
     await client.stop("shutdown");
+  }
+});
+
+test("session/new and session/resume commit same-chunk config updates after the response baseline", async (t) => {
+  for (const mode of ["new", "resume"] as const) {
+    await t.test(mode, async () => {
+      const events: RuntimeEvent[] = [];
+      const client = await makeClient(`ss-configstart${mode}`, events, {
+        START_CONFIG_UPDATE: "1",
+      });
+      try {
+        const connected = await client.connect(
+          mode === "new"
+            ? undefined
+            : { mode, providerSessionId: "provider-config" }
+        );
+        assert.deepEqual(connected.sessionConfig.configOptions, UPDATED_OPTIONS);
+        assert.deepEqual(client.sessionConfig, connected.sessionConfig);
+        assert.equal(
+          events.filter((event) => event.type === "session.config_options").length,
+          0
+        );
+      } finally {
+        await client.stop("shutdown");
+      }
+    });
   }
 });
 

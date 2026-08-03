@@ -319,6 +319,8 @@ export class AcpClient {
   private collectingPromptResponse = false;
   /** Defensive quarantine for bridges that resolve load before their final replay notification. */
   private quarantiningLoadReplay = false;
+  /** Buffer config replacements until the current new/load/resume response baseline lands. */
+  private bufferingSessionStartConfig = false;
   private lastLoadReplayUpdateAt = 0;
   /**
    * Bootstrap image refs are projected on the first managed session/prompt only.
@@ -341,7 +343,7 @@ export class AcpClient {
   private sessionConfigSnapshot: AcpSessionConfigSnapshot =
     createAcpSessionConfigSnapshot({});
   /** Last complete replacement received during load replay; committed at barrier. */
-  private pendingLoadReplayConfigSnapshot?: AcpSessionConfigSnapshot;
+  private pendingSessionStartConfigSnapshot?: AcpSessionConfigSnapshot;
   /** Concurrent ask-policy requests keep the session waiting until all resolve. */
   private permissionAsksInFlight = 0;
   /** Stop/exit cancellation for in-flight onPermissionAsk waiters. */
@@ -628,36 +630,38 @@ export class AcpClient {
         authMethods: init.authMethods,
       });
       let providerSessionId: string;
-      if (mode === "load" || mode === "resume") {
-        const method = mode === "resume" ? "session/resume" : "session/load";
-        if (mode === "load" && !this.loadSessionSupported) {
-          throw new Error(
-            `${this.label} does not advertise agentCapabilities.loadSession; cannot session/load`
-          );
-        }
-        if (mode === "resume" && !this.resumeSessionSupported) {
-          throw new Error(
-            `${this.label} does not advertise agentCapabilities.sessionCapabilities.resume; cannot session/resume`
-          );
-        }
-        const loadId =
-          typeof options?.providerSessionId === "string"
-            ? options.providerSessionId.trim()
-            : "";
-        if (!loadId) {
-          throw new Error(
-            `${this.label} ${method} requires providerSessionId (resume token)`
-          );
-        }
-        this.resetAssistantReport();
-        // Only session/load is expected to stream full transcript history.
-        // session/resume must not quarantine-wait for replay (none by contract).
-        if (mode === "load") {
-          this.quarantiningLoadReplay = true;
-          this.lastLoadReplayUpdateAt = Date.now();
-          this.pendingLoadReplayConfigSnapshot = undefined;
-        }
-        try {
+      this.bufferingSessionStartConfig = true;
+      this.pendingSessionStartConfigSnapshot = undefined;
+      try {
+        if (mode === "load" || mode === "resume") {
+          const method = mode === "resume" ? "session/resume" : "session/load";
+          if (mode === "load" && !this.loadSessionSupported) {
+            throw new Error(
+              `${this.label} does not advertise agentCapabilities.loadSession; cannot session/load`
+            );
+          }
+          if (mode === "resume" && !this.resumeSessionSupported) {
+            throw new Error(
+              `${this.label} does not advertise agentCapabilities.sessionCapabilities.resume; cannot session/resume`
+            );
+          }
+          const loadId =
+            typeof options?.providerSessionId === "string"
+              ? options.providerSessionId.trim()
+              : "";
+          if (!loadId) {
+            throw new Error(
+              `${this.label} ${method} requires providerSessionId (resume token)`
+            );
+          }
+          this.resetAssistantReport();
+          // Only session/load is expected to stream full transcript history.
+          // session/resume buffers config until its response, but does not
+          // quarantine or wait for replay.
+          if (mode === "load") {
+            this.quarantiningLoadReplay = true;
+            this.lastLoadReplayUpdateAt = Date.now();
+          }
           const loaded = (await this.request(
             method,
             this.sessionStartParams({
@@ -668,7 +672,7 @@ export class AcpClient {
           )) as { configOptions?: unknown };
           // The RPC response is always the baseline. Notifications received in
           // the same stdout chunk are queued by handleSessionUpdate and applied
-          // only after this baseline at the replay completion barrier.
+          // only after this baseline at the Session-start completion barrier.
           this.replaceSessionConfigOptions(
             this.createSessionConfigSnapshot({
               configOptions: loaded.configOptions,
@@ -676,35 +680,39 @@ export class AcpClient {
           );
           if (mode === "load") {
             await this.waitForLoadReplayQuiescence();
-            const pending = this.pendingLoadReplayConfigSnapshot;
-            this.pendingLoadReplayConfigSnapshot = undefined;
             this.quarantiningLoadReplay = false;
-            if (pending) this.replaceSessionConfigOptions(pending);
           }
-        } finally {
-          this.quarantiningLoadReplay = false;
-          this.pendingLoadReplayConfigSnapshot = undefined;
+          // Preserve the same provider session id — never invent a new one.
+          this.providerSessionId = loadId;
+          providerSessionId = loadId;
+        } else {
+          const session = (await this.request(
+            "session/new",
+            this.sessionStartParams({ cwd: this.options.cwd }),
+            60_000
+          )) as { sessionId?: string; configOptions?: unknown };
+          if (!session.sessionId) {
+            throw new Error(`${this.label} session/new 未返回 sessionId`);
+          }
+          this.providerSessionId = session.sessionId;
+          providerSessionId = session.sessionId;
+          this.replaceSessionConfigOptions(
+            this.createSessionConfigSnapshot({
+              configOptions: session.configOptions,
+            })
+          );
+        }
+        const pending = this.pendingSessionStartConfigSnapshot;
+        this.pendingSessionStartConfigSnapshot = undefined;
+        this.bufferingSessionStartConfig = false;
+        if (pending) this.replaceSessionConfigOptions(pending);
+      } finally {
+        this.bufferingSessionStartConfig = false;
+        this.quarantiningLoadReplay = false;
+        this.pendingSessionStartConfigSnapshot = undefined;
+        if (mode === "load" || mode === "resume") {
           this.resetAssistantReport();
         }
-        // Preserve the same provider session id — never invent a new one.
-        this.providerSessionId = loadId;
-        providerSessionId = loadId;
-      } else {
-        const session = (await this.request(
-          "session/new",
-          this.sessionStartParams({ cwd: this.options.cwd }),
-          60_000
-        )) as { sessionId?: string; configOptions?: unknown };
-        if (!session.sessionId) {
-          throw new Error(`${this.label} session/new 未返回 sessionId`);
-        }
-        this.providerSessionId = session.sessionId;
-        providerSessionId = session.sessionId;
-        this.replaceSessionConfigOptions(
-          this.createSessionConfigSnapshot({
-            configOptions: session.configOptions,
-          })
-        );
       }
 
       this.options.emit({
@@ -1158,13 +1166,11 @@ export class AcpClient {
   private handleSessionUpdate(update: AcpSessionUpdate | undefined): void {
     if (!update || this.limitError) return;
     const kind = update.sessionUpdate ?? "";
-    if (this.quarantiningLoadReplay) {
-      this.lastLoadReplayUpdateAt = Date.now();
-      // Configuration is durable Session state, not transcript replay. It is
-      // the only update kind retained through load-history quarantine. Keep
-      // only the last complete replacement; commit it once at the barrier.
-      if (kind === "config_option_update") {
-        if (!Array.isArray(update.configOptions)) return;
+    if (this.quarantiningLoadReplay) this.lastLoadReplayUpdateAt = Date.now();
+    if (this.bufferingSessionStartConfig && kind === "config_option_update") {
+      // Config is a complete replacement. Keep only the last valid sanitized
+      // snapshot, then commit it once after the response baseline.
+      if (Array.isArray(update.configOptions)) {
         const projected = this.createSessionConfigSnapshot({
           configOptions: update.configOptions,
         });
@@ -1174,11 +1180,12 @@ export class AcpClient {
           projected.configOptions.length > 0 ||
           projected.truncated
         ) {
-          this.pendingLoadReplayConfigSnapshot = projected;
+          this.pendingSessionStartConfigSnapshot = projected;
         }
       }
       return;
     }
+    if (this.quarantiningLoadReplay) return;
     if (kind === "config_option_update") {
       if (!Array.isArray(update.configOptions)) {
         if (this.collectingPromptResponse) this.recordNoProgressUpdate();
