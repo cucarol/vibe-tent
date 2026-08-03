@@ -5,7 +5,7 @@ stores project intent, context, relationships, work packages, execution state,
 review, and delivery without replacing the user's editor or Agent UI.
 
 The Local Service is the authority for mounted workspaces and mutations. The
-Desktop app, CLI, and optional plugins are clients of that same contract.
+Desktop and CLI are clients of that same contract.
 
 ## 1. Workspace And System Root
 
@@ -97,21 +97,23 @@ and are not Core type semantics.
 Archived or invalid Nodes reject ordinary content and structure mutations.
 There is no general `read-only` Node mode and no type-based R/W gate.
 
-## 4. Roles, Routes, And Sessions
+## 4. Roles, Connections, And Sessions
 
 A Role is a durable responsibility to the user. Its registry definition has a
 stable Role id, name/display name, optional prompt, and user-facing delivery
 policy. A Role is not a provider configuration or an ACL.
 
-Settings owns machine-local routes. A route has a stable `routeId` and resolves
-provider, model, endpoint, credential reference, command, and non-secret launch
-metadata. Credentials remain in the machine-local service data area and never
-enter workspace Nodes, Tasks, or Git.
+Settings owns machine-local Agent Connections. A Connection has a stable
+`connectionId` and resolves provider, model, endpoint, credential reference,
+command, and non-secret launch metadata. It is not Task responsibility or identity.
+Credentials remain in the machine-local service data area and never enter
+workspace Nodes, Tasks, Sessions, or Git.
 
 A durable Role takes ownership of its own work directly:
 
 ```text
-tent task claim --node <nodeId> [--node <nodeId> ...] --prompt <text>|-
+tent task claim --work-node <nodeId> [--work-node <nodeId> ...] \
+  [--context-node <nodeId> ...] --prompt <text>|-
 ```
 
 This creates and immediately claims one Role Task. It has no target and is not
@@ -122,10 +124,11 @@ execution context; a Role root falls back to the user.
 Dispatch is downstream assignment only and has two public targets:
 
 - `role:<roleId>` creates a queued handoff to a durable Role;
-- `route:<routeId>` creates a formal Task and starts a temporary managed ACP
-  Session through that Settings route.
+- `connection:<connectionId>` reserves a Session with an immutable non-secret
+  Connection snapshot, creates the formal Task already bound to that exact
+  Session, then starts the provider outside the lifecycle mutation.
 
-A temporary route Session remains execution state of its exact Task. Durable
+A temporary ACP Session remains execution state of its exact Task. Durable
 responsibility, review authority, and Node ownership remain with the Role and
 Task chain.
 
@@ -150,22 +153,23 @@ uses `tent-task` only.
 ## 5. Task And Context Card
 
 A Task is one work package and one review unit. It is not a Node. Its exact
-`nodeIds[]` are acquired atomically; while the Task is active, another Task
-cannot acquire the same Node. Parent and child Nodes do not imply subtree locks.
+`workNodeIds[]` are acquired atomically; `contextNodeIds[]` are shared read-only
+context. While the Task is active, another Task cannot acquire the same work
+Node. Parent and child Nodes do not imply subtree locks.
 
 Dispatch persists:
 
 - exact `parentActor` and `reviewer` authority;
-- assignee (`role` or machine-local Settings `routeId`);
+- optional durable `roleId` responsibility and/or exact executing `sessionId`;
 - the immutable raw prompt in the Task body;
 - optional structured objective, acceptance criteria, scope, decisions, and
-  referenced entities in a Context Card;
+  strict Artifact references in Context Card v2;
 - optional Git WorkspaceLane;
-- Context Card-owned compatibility generation and task delta digest.
+- optional execution provenance written only after a Session computes it.
 
-Node references live authoritatively in `Task.contextCard.refs.nodes[]`; ids are
-authoritative and paths are refreshable hints. Dispatch drafts are UI state and
-become Tasks only on confirmed dispatch.
+Work and context Node references live authoritatively in separate Context Card
+v2 buckets; ids are authoritative and paths are refreshable hints. Dispatch
+drafts are UI state and become Tasks only on confirmed dispatch.
 
 The stable managed prompt prefix contains the Task protocol, project
 instructions, Role prompt where applicable, and compatible Agent context.
@@ -180,13 +184,13 @@ commands and consume projections rather than deriving lifecycle from files.
 The Service owns temporary managed ACP Session launch, binding, replacement,
 input injection, and terminal projection.
 
-A Task remains the Delivery boundary. A temporary route Session belongs to its
+A Task remains the Delivery boundary. A temporary ACP Session belongs to its
 exact Task. Resume reconnects that same recoverable provider conversation,
 while explicit replacement preserves the Task and worktree without envelope
 edits.
 
 Provider/model/endpoint/credential configuration belongs to machine-local
-Settings routes or the provider's native tooling. Tent does not silently
+Agent Connections or the provider's native tooling. Tent does not silently
 rewrite every Agent's native configuration.
 
 ACP stdio is a bounded adapter boundary. Tent rejects an oversized JSON-RPC
@@ -206,11 +210,12 @@ commits, checks, and artifact references.
 The executor submits Delivery to the exact persisted reviewer. Downstream Task
 Agents always use review-to-parent and cannot self-accept.
 
-Role-to-user delivery policy is one of:
+Every Task freezes one `acceptMode` at creation:
 
-- `review`: user accepts or rejects;
-- `bypass`: Service may complete without user review under the persisted policy;
-- `agent-decide`: the accountable Role decides whether user review is needed.
+- `review-required`: the frozen reviewer accepts or rejects;
+- `auto-accept`: Service creates a durable ready Delivery, then mechanically
+  integrates and accepts under Core;
+- `agent-decide`: the executor Session explicitly chooses integration or review.
 
 Reject may resume the same Task with review feedback. Accept may integrate
 declared commits and then atomically update Task/Delivery state. Integration is
@@ -228,7 +233,8 @@ preserved as a durable draft, including a control report that parks the Task.
 The Service persists interaction types separately:
 
 - TaskInput for user/parent feedback to a Task executor;
-- UserAsk for an Agent question requiring a user answer;
+- DecisionRequest for an exact requester Session question to a frozen user or
+  Role authority; the response becomes deterministic exact-Task TaskInput;
 - tool approval where a provider requires it;
 - Delivery review.
 
@@ -267,7 +273,7 @@ parent history into their lane to bypass review.
 ## 10. Mutation And Projection
 
 All in-workspace mutations go through the Local Service and MutationBus. The
-CLI, Desktop, and plugins do not directly edit `.tent` operational state.
+CLI and Desktop do not directly edit `.tent` operational state.
 
 Core fails loud on duplicate identity, stale paths/etags, archived mutation,
 invalid registries, authority mismatch, dirty or ambiguous Git lanes, and
@@ -287,18 +293,22 @@ tent status
 tent tree
 tent role list|show|config
 tent task list|get|dispatch|claim|deliver|accept|reject|cancel|send-input|...
-tent task dispatch --target role:<roleId>|route:<routeId> --node <nodeId> ...
+tent task request-decision <taskPath> --question <text>|- [--options id=label,...]
+tent task decision list|get|respond|escalate ...
+tent task dispatch --target role:<roleId>|connection:<connectionId> \
+  --work-node <nodeId> [--context-node <nodeId> ...] ...
 tent role-init <role>
 tent role-checkpoint set|show|clear
 tent skill-install [--target ...] [--force]
 ```
 
 Retired public commands are removed rather than kept as aliases. Public Task
-dispatch accepts only repeated `--node` references and `role:*|route:*` targets.
+dispatch accepts repeated `--work-node` and `--context-node` references and
+`role:*|connection:*` targets.
 
 ## 12. Conformance
 
-The public contract has one Node model, one Settings-route execution selector,
+The public contract has one Node model, one Agent Connection launch selector,
 and one dispatch grammar. A private workspace that predates this contract must
 be canonicalized explicitly and audibly before use; Tent does not publish a
 permanent migration API, dual-read, or dual-write compatibility layer.

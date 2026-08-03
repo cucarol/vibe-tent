@@ -1,6 +1,6 @@
 ---
 name: tent-role
-description: "Operate a durable Tent (帷幄) Role across replaceable Sessions: resume Role identity and prompt, maintain Node context, dispatch formal work to Roles or machine Settings routes, review Tasks and Deliveries, preserve decisions, and remain accountable to the user. Also apply tent-task while executing a concrete Task."
+description: "Operate a durable Tent (帷幄) Role across replaceable Sessions: resume Role identity and prompt, maintain Node context, dispatch formal work to Roles or through machine Agent Connections, review Tasks and Deliveries, preserve decisions, and remain accountable to the user. Also apply tent-task while executing a concrete Task."
 ---
 
 # tent-role
@@ -23,7 +23,7 @@ while owning or executing a concrete Task.
 5. Treat the Role prompt as jointly maintained. Ask before changing durable
    responsibility, values, or unresolved product decisions.
 
-Never invent a Role prompt, route availability, Task, Delivery, Session
+Never invent a Role prompt, Connection availability, Task, Delivery, Session
 binding, compatibility result, or persisted state.
 
 ## Maintain Node-first context
@@ -33,31 +33,33 @@ binding, compatibility result, or persisted state.
   nearest relevant Node instead of relying on chat history.
 - Give each Task complete objective, frozen decisions, include/exclude scope,
   acceptance, and exact Node/Task/Delivery/Git refs.
-- Task `nodeIds[]` are its occupied write context. Parent, child, relation, and
-  link expansion is read-only unless explicitly included.
+- Task work Nodes are its occupied write context; context Nodes are shared
+  read-only context. Parent, child, relation, and link expansion stays read-only
+  unless explicitly included.
 - Keep irreversible product choices and final user judgment with this Role
   unless the user explicitly delegates them.
 
 ## Claim own work and dispatch downstream
 
-- Use `tent task claim --node <nodeId> … --prompt <text>|-` to create and
+- Use `tent task claim --work-node <nodeId> … [--context-node <nodeId> …]
+  --prompt <text>|-` to create and
   immediately claim this Role's own execution Task. Use `--from-task
   <taskPath>` only when inheriting that exact active Task's persisted
   responsibility chain. This form has no target and is not delegation.
-- Use `tent task dispatch --target role:<roleIdOrName> --node <nodeId> …
+- Use `tent task dispatch --target role:<roleId> --work-node <nodeId> …
   --prompt <text>|-` only for a queued handoff to another durable Role.
-- Use `tent task dispatch --target route:<routeId> --node <nodeId> …
+- Use `tent task dispatch --target connection:<connectionId> --work-node <nodeId> …
   --prompt <text>|-` only for downstream temporary managed ACP work through
   machine Settings.
-- A route resolves provider/model/endpoint/credential metadata. Never read
+- An Agent Connection resolves provider/model/endpoint/credential metadata. Never read
   private registry files or copy secrets into a Node, Task, or report.
-- A temporary route Session remains execution state of its exact downstream
+- A temporary ACP Session remains execution state of its exact downstream
   Task; durable responsibility stays with the Role and parent reviewer chain.
 - Caller authority and parent lane are derived by Tent. Do not recreate
-  internal assignee, reviewer, or delivery-policy knobs.
+  internal identity, reviewer, or accept-mode knobs.
 
 Resume a managed Session only for its exact bound Task when Service proves the
-same provider conversation is recoverable from the immutable route snapshot,
+same provider conversation is recoverable from the immutable Connection snapshot,
 provider token, and recorded lane. A changed context generation sends the full
 current stable prefix; it does not select another Session. If native recovery
 fails, use explicit Task replacement or dispatch new work; never present fresh
@@ -83,13 +85,13 @@ not a transcript or replacement for persisted facts.
 
 ## Deliver to the user
 
-- Follow this Role's persisted `review | bypass | agent-decide` user-facing
-  policy without elevating it.
+- Follow the Task's frozen `review-required | auto-accept | agent-decide`
+  `acceptMode` without elevating it.
 - `agent-decide` chooses integration or user review; it does not impersonate an
   independent reviewer.
 - Report judgment, evidence, remaining risk, and real blockers rather than
   forwarding raw downstream output.
 
-`tent-task` owns Task lane execution, TaskInput/UserAsk, verification, final
+`tent-task` owns Task lane execution, TaskInput/DecisionRequest, verification, final
 report, and Delivery wire. Do not create a second lifecycle for delegation or
 Session continuity.

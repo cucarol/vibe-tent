@@ -59,12 +59,6 @@ export const DESKTOP_CONTRACT_GAPS: readonly ContractGap[] = [
   // type-tag-mutation closed: Service now exposes registry.type.create/delete,
   // registry.tags / registry.tag.create/delete, docs.setType / docs.tags.set /
   // docs.tag.add / docs.tag.remove. Desktop UI wiring is out of this batch.
-  {
-    id: "userAsk.source-route",
-    methods: ["userAsk.sourceRoute"],
-    need: "Distinct source route id on UserAsk projection (role alone is insufficient).",
-    fallback: "UI labels source as role when present; sessionId shown only in detail notes.",
-  },
 ] as const;
 
 export function contractGapIds(): string[] {

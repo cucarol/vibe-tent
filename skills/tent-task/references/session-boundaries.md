@@ -1,30 +1,30 @@
 # Temporary managed ACP Session boundaries
 
-Service starts a temporary managed ACP Session only for a Task assigned to a
-machine Settings route. The route is a non-secret launch reference; durable
+Service starts a temporary managed ACP Session only through a machine Agent
+Connection. The Connection is non-secret launch configuration; durable
 responsibility remains with the Task's Role and parent reviewer chain.
 
 | Boundary | Contract |
 | --- | --- |
-| Start | Service resolves the Task's persisted route and claims the Task before provider launch |
-| Binding | One exact Task `sessionId`; final bind uses Task lifecycle snapshot/CAS |
+| Start | Service reserves a Session with the immutable Connection snapshot, then creates and claims the bound Task before provider launch |
+| Binding | One exact Task `sessionId`; Task+Session durable binding precedes provider startup |
 | Delivery | Service captures the natural non-empty final report and preserves its durable draft before publication |
-| Resume | Same Session, immutable route snapshot, recorded provider token, and native provider conversation |
+| Resume | Same Session, immutable Connection snapshot, recorded provider token, and native provider conversation |
 | Replacement | Explicit `task.replaceSession`; fresh execution for the same eligible Task |
 
 ## Recover a bound Task
 
 1. Re-query the exact Task and Session after restart, compaction, provider exit,
    or replacement.
-2. Never use a remembered process id, live route edit, or caller-supplied token
+2. Never use a remembered process id, live Connection edit, or caller-supplied token
    as continuity authority.
 3. Resume only the Session already bound to that exact Task. Native load uses
-   its immutable non-secret route snapshot and recorded provider token.
+   its immutable non-secret Connection snapshot and recorded provider token.
 4. Context-generation equality only permits stable-prefix omission. A mismatch
    resumes the same provider conversation with the full current prefix.
 5. Missing or failed native recovery parks the Task at
    `waiting(session_unavailable)` and preserves occupation, lane, TaskInput,
-   UserAsk, and report draft. It never starts fresh while claiming continuity.
+   DecisionRequest, and report draft. It never starts fresh while claiming continuity.
 6. Use `task.replaceSession` only for a turn-idle eligible Task. Replacement is
    explicitly fresh and uses the same lifecycle/binding CAS.
 
@@ -43,6 +43,6 @@ wins before final binding, Service stops the unbound child and reports
 - Tent does not replace the host application's tool-approval UI. Managed ACP
   tool approval remains a separate runtime path.
 
-The Context Card supplies Task refs; authority comes from the persisted parent
+Context Card v2 supplies Task refs; authority comes from the persisted parent
 reviewer, exact Node occupation, Task lifecycle, and integration lane. A valid
-Settings route proves machine availability only.
+Agent Connection proves machine availability only.

@@ -69,7 +69,6 @@ test("contract gaps list missing desktop methods without inventing RPCs", () => 
   assert.ok(ids.includes("mcp.global-config"));
   // A2U pending batch: field-level holes (not missing listPending RPCs).
   assert.ok(ids.includes("toolApproval.params"));
-  assert.ok(ids.includes("userAsk.source-route"));
   assert.ok(ids.includes("taskInput.global-list"));
 
   for (const gap of DESKTOP_CONTRACT_GAPS) {
@@ -393,9 +392,11 @@ test("desktop settings RPCs used by UI are on CLIENT_METHODS", () => {
     "docs.importAttachment",
     "proposal.list",
     "proposal.resolve",
-    "userAsk.deny",
-    "userAsk.listPending",
-    "userAsk.reply",    "toolApproval.listPending",
+    "decisionRequest.listPending",
+    "decisionRequest.get",
+    "decisionRequest.respond",
+    "decisionRequest.escalate",
+    "toolApproval.listPending",
     "toolApproval.approveOnce",
     "toolApproval.deny",
     "taskInput.listPending",

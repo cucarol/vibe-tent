@@ -23,7 +23,7 @@ Frozen product boundaries (not reopened here):
 
 1. **New tree** at `src/desktop/renderer-next/` — isolated from `src/desktop/renderer/`.
 2. **Independent build** emits `desktop/dist/renderer-next/`; default `index.html` / Electron load path **unchanged**.
-3. **Dependencies:** `react`, `react-dom`, and their types only — as **devDependencies** (desktop build tools; not runtime deps of the published Obsidian/CLI package). No X6, Tailwind, Redux/Zustand, or theme kits. The `renderer-next` esbuild target always sets `NODE_ENV=production` + minify so tracked `desktop/dist/renderer-next/main.js` never embeds React development builds.
+3. **Dependencies:** `react`, `react-dom`, and their types only — as **devDependencies** (Desktop build tools; not runtime deps of the published CLI package). No X6, Tailwind, Redux/Zustand, or theme kits. The `renderer-next` esbuild target always sets `NODE_ENV=production` + minify so tracked `desktop/dist/renderer-next/main.js` never embeds React development builds.
 4. **Boundary modules:**
    - `ServiceGateway` + projection invalidation
    - `UiIntent` + `undoPolicy`

@@ -7,7 +7,7 @@ fall back to direct operational-file writes.
 ## Attach and protocol
 
 The CLI discovers the machine-local endpoint and token, performs the
-`protocolVersion=2` handshake, mounts the requested workspace, then calls the
+`protocolVersion=3` handshake, mounts the requested workspace, then calls the
 typed RPC. A missing, legacy, or incompatible endpoint fails loud; the CLI does
 not bypass Service or call an ACP adapter directly.
 
@@ -26,7 +26,7 @@ tent status|tree|tags|find
 ```
 
 The public collaboration nouns are Node, Role, Session, Task, and Delivery.
-Machine Settings routes are execution selectors, not collaboration objects.
+Machine Agent Connections are launch configuration, not collaboration objects.
 
 ## Direct Role ownership and downstream dispatch
 
@@ -34,7 +34,8 @@ A durable Role creates and immediately claims its own Task directly:
 
 ```text
 tent task claim \
-  --node <nodeId> [--node <nodeId> ...] \
+  --work-node <nodeId> [--work-node <nodeId> ...] \
+  [--context-node <nodeId> ...] \
   --prompt <text>|-
 ```
 
@@ -44,27 +45,28 @@ inherit. Otherwise Tent uses the exact open Role Session when available and
 keeps its persisted chain, including a terminal last Task.
 
 `task dispatch` is only for assigning work to another durable Role or a machine
-Settings route:
+Agent Connection:
 
 ```text
 tent task dispatch \
-  --target role:<roleIdOrName>|route:<routeId> \
-  --node <nodeId> [--node <nodeId> ...] \
+  --target role:<roleId>|connection:<connectionId> \
+  --work-node <nodeId> [--work-node <nodeId> ...] \
+  [--context-node <nodeId> ...] \
   --prompt <text>|-
 ```
 
-- `--node` is required and repeatable. It maps to the authoritative ordered
-  `Task.contextCard.refs.nodes[]` set.
+- `--work-node` is required and repeatable; `--context-node` is shared read-only
+  context. Context Card v2 keeps these sets distinct.
 - `role:*` creates a queued durable Role handoff and never starts managed ACP at
   dispatch.
-- `route:*` resolves the selected machine Settings route and starts a temporary
-  managed ACP Session for the formal Task.
+- `connection:*` snapshots machine Settings into the exact temporary managed
+  Session and binds the formal Task to that `sessionId`.
 - Tent derives equal persisted `parentActor` and `reviewer`; the
   executor cannot select or elevate them.
 - prompt is explicit through `--prompt`; there is no positional dispatch form.
 
-Route dispatch does not register a worker, mutate a Role, or create a reusable
-bookmark. Missing route configuration fails before provider launch.
+Connection dispatch does not register a worker, mutate a Role, or create a
+reusable bookmark. Missing Connection configuration fails before Task mutation.
 
 ## Role and managed flows
 
@@ -83,9 +85,9 @@ no Git lane and may deliver with zero commits.
 ### Temporary managed ACP
 
 ```text
-task dispatch --target route:grok-core ...
+task dispatch --target connection:grok-core ...
   -> Service creates and claims Task
-  -> resolves Settings route
+  -> snapshots Agent Connection into exact Session
   -> starts/binds managed Session
   -> preserves every non-empty final report before outcome handling
   -> publishes Delivery after settle gates
@@ -106,13 +108,13 @@ deliver, accept, or rewrite Task responsibility on the Role's behalf.
 ```text
 tent task send-input <taskPath> ...
 tent task task-input list|get|ack ...
-tent task ask-user <taskPath> ...
-tent task user-ask list|get|reply|deny ...
+tent task request-decision <taskPath> --question <text>|- [--options id=label,...]
+tent task decision list|get|respond|escalate ...
 ```
 
 TaskInput is exact-Task scoped. `uncertain` input is visible attention state,
-blocks Delivery, and is never automatically reinjected. User authority is
-derived from the authenticated local boundary rather than caller-provided text.
+blocks Delivery, and is never automatically reinjected. Decision response
+authority is derived from authenticated transport rather than caller-provided text.
 
 ## Review and Git
 

@@ -1,7 +1,7 @@
 # Desktop And Local Service Architecture
 
-This document defines the production boundary shared by Desktop, CLI, optional
-plugins, Core, Local Service, and ACP adapters. Task and Delivery details live
+This document defines the production boundary shared by Desktop, CLI, Core,
+Local Service, and ACP adapters. Task and Delivery details live
 in [task-api.md](task-api.md); Node storage lives in
 [node-model.md](node-model.md); provider process behavior lives in
 [agent-runtime.md](agent-runtime.md).
@@ -10,7 +10,7 @@ in [task-api.md](task-api.md); Node storage lives in
 
 A mounted project has one workspace root and one `.tent/` system root. The
 Local Service is the sole writer for Tent collaboration state. Desktop, CLI,
-plugins, and managed ACP processes are clients; none may create a second
+and managed ACP processes are clients; none may create a second
 direct-write path into `.tent/temp/`.
 
 The workspace keeps project files and Git history. `.tent/` keeps Nodes,
@@ -25,18 +25,18 @@ indexes. It is ignored by the project repository.
 - **Session** is an execution binding, managed by ACP or entered by an external
   host.
 - **Delivery** is the formal result submitted to the persisted reviewer.
-- **Settings route** is a machine-local non-secret selector for provider,
+- **Agent Connection** is machine-local non-secret launch configuration for provider,
   model, endpoint, credential reference, command, and launch metadata.
 
-Only the first five are collaboration objects. A route is machine
+Only the first five are collaboration objects. A Connection is machine
 configuration, not an identity, Role, ACL, or durable worker record.
 
 ## 3. Process topology
 
 ```text
-Desktop / CLI / optional plugin
+Desktop / CLI
               |
-              | authenticated local RPC, protocolVersion=2
+              | authenticated local RPC, protocolVersion=3
               v
         Local Service process
           |             |
@@ -66,11 +66,11 @@ does not spawn providers or own windows.
 
 ### Local Service
 
-Service mounts workspaces, serializes mutations, resolves Settings routes,
+Service mounts workspaces, serializes mutations, snapshots Agent Connections,
 starts and binds managed Sessions, persists interaction state, supervises Git
 integration/reclaim, and emits invalidation events.
 
-### Desktop, CLI, and plugins
+### Desktop and CLI
 
 Clients issue RPC, render projections, and ask the user for decisions. They do
 not infer lifecycle state from files or events and do not treat cached views as
@@ -88,7 +88,7 @@ A durable Role creates and immediately claims its own execution Task without a
 target:
 
 ```text
-tent task claim --node <nodeId> ... --prompt <text>|-
+tent task claim --work-node <nodeId> ... [--context-node <nodeId> ...] --prompt <text>|-
 ```
 
 Tent derives the responsibility chain from persisted Task/Session facts. This
@@ -98,13 +98,14 @@ Public dispatch is only for assigning work downstream. It accepts repeated
 exact Node references and one target:
 
 ```text
-tent task dispatch --target role:<roleId>  --node <nodeId> ... --prompt <text>|-
-tent task dispatch --target route:<routeId> --node <nodeId> ... --prompt <text>|-
+tent task dispatch --target role:<roleId> --work-node <nodeId> ... --prompt <text>|-
+tent task dispatch --target connection:<connectionId> --work-node <nodeId> ... --prompt <text>|-
 ```
 
 `role:*` creates a queued durable handoff. The Role claims it in its existing
-lane. `route:*` resolves a machine Settings route, creates the formal Task, and
-starts a temporary managed ACP Session. The temporary Session is not
+lane. `connection:*` snapshots machine Settings into a reserved Session,
+creates the formal Task already bound to that Session, and starts ACP outside
+the lifecycle mutation. The temporary Session is not
 registered as a separate durable worker.
 
 Task Node refs are acquired atomically. An exact Node may have at most one
@@ -123,7 +124,7 @@ Events are invalidation signals:
 ```text
 node.changed | node.removed
 task.state | delivery.updated | session.state
-taskInput.* | userAsk.* | toolApproval.*
+taskInput.* | decisionRequest.* | toolApproval.*
 workspace.settings.updated | service.health
 ```
 
@@ -133,12 +134,12 @@ later Service write cannot retroactively drop an external change.
 
 ## 7. Machine Settings and credentials
 
-Settings routes are stored under the Service data directory, not in a
-workspace. Public projections expose only safe route metadata and availability.
+Agent Connections are stored under the Service data directory, not in a
+workspace. Public projections expose only safe Connection metadata and availability.
 Secrets are supplied to the launch plan at process start and are redacted from
 stderr, RPC errors, events, and diagnostic rings.
 
-Reserved Service environment keys override route-provided values. Managed
+Reserved Service environment keys override Connection-provided values. Managed
 children receive a minimal allowlist plus the exact Core overlay. They do not
 inherit the entire Service environment.
 
@@ -169,7 +170,7 @@ The minimum honest flow is:
 ```text
 mount workspace
   -> read or create Node
-  -> dispatch exact Node Task to Role or Settings route
+  -> dispatch exact Node Task to Role or Agent Connection
   -> execute through Role or managed Session
   -> publish Delivery
   -> exact reviewer accepts or rejects

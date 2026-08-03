@@ -10,8 +10,8 @@ import {
   PENDING_INTERACTION_GAPS,
   buildTaskSendInputPayload,
   buildToolApprovalResolvePayload,
-  buildUserAskDenyPayload,
-  buildUserAskReplyPayload,
+  buildDecisionDenyPayload,
+  buildDecisionResponsePayload,
   isPendingInteractionEventType,
   isTaskProjectionEventType,
   normalizeProposalList,
@@ -19,8 +19,8 @@ import {
   normalizeTaskInputList,
   normalizeToolApproval,
   normalizeToolApprovalList,
-  normalizeUserAsk,
-  normalizeUserAskList,
+  normalizeDecisionRequest,
+  normalizeDecisionRequestList,
   pendingInteractionCount,
   summarizeToolApprovalOptions,
   taskInputKindLabel,
@@ -37,10 +37,10 @@ test("CLIENT_METHODS covers all pending closed-loop RPCs used by Desktop", () =>
     "toolApproval.get",
     "toolApproval.approveOnce",
     "toolApproval.deny",
-    "userAsk.listPending",
-    "userAsk.get",
-    "userAsk.reply",
-    "userAsk.deny",
+    "decisionRequest.listPending",
+    "decisionRequest.get",
+    "decisionRequest.respond",
+    "decisionRequest.escalate",
     "interaction.listPending",
     "taskInput.listPending",
     "taskInput.get",
@@ -61,40 +61,44 @@ test("CLIENT_METHODS covers all pending closed-loop RPCs used by Desktop", () =>
   }
 });
 
-test("normalizeUserAsk keeps role/task/choices and never invents route", () => {
-  const item = normalizeUserAsk({
-    id: "ua-1",
+test("normalizeDecisionRequest keeps exact requester, target, task, and options", () => {
+  const item = normalizeDecisionRequest({
+    id: "dr-1",
     taskPath: "temp/executor/tasks/t1.md",
-    role: "executor",
+    taskId: "tk-1",
+    requester: { kind: "session", id: "ss-1" },
+    target: { kind: "role", id: "rl-reviewer" },
     question: "Which approach?",
-    choices: [
+    options: [
       { id: "a", label: "A" },
       { id: "b", label: "B" },
       { id: "", label: "skip" },
     ],
-    sessionId: "ss-1",
     createdAt: "2026-01-01T00:00:00.000Z",
   });
   assert.ok(item);
-  assert.equal(item!.kind, "userAsk");
-  assert.equal(item!.role, "executor");
-  assert.equal(item!.choices.length, 2);
-  assert.equal(item!.sessionId, "ss-1");
-  assert.equal((item as { routeId?: string }).routeId, undefined);
+  assert.equal(item!.kind, "decisionRequest");
+  assert.equal(item!.taskId, "tk-1");
+  assert.deepEqual(item!.requester, { kind: "session", id: "ss-1" });
+  assert.deepEqual(item!.target, { kind: "role", id: "rl-reviewer" });
+  assert.equal(item!.options.length, 2);
 
-  assert.equal(normalizeUserAsk({ id: "x" }), null);
+  assert.equal(normalizeDecisionRequest({ id: "x" }), null);
   assert.deepEqual(
-    normalizeUserAskList({
-      asks: [
+    normalizeDecisionRequestList({
+      requests: [
         {
-          id: "ua-2",
+          id: "dr-2",
           taskPath: "temp/r/tasks/t.md",
+          taskId: "tk-2",
+          requester: { kind: "session", id: "ss-2" },
+          target: { kind: "user", id: "user" },
           question: "ok?",
           createdAt: "t",
         },
       ],
     }).map((a) => a.id),
-    ["ua-2"]
+    ["dr-2"]
   );
 });
 
@@ -185,7 +189,7 @@ test("proposal normalize keeps only pending triage rows", () => {
 test("pendingInteractionCount sums independent types without double-count delivery", () => {
   assert.equal(
     pendingInteractionCount({
-      userAsks: [{}, {}],
+      decisionRequests: [{}, {}],
       toolApprovals: [{}, {}],
       taskInputs: [{}],
       proposals: [{}],
@@ -195,19 +199,24 @@ test("pendingInteractionCount sums independent types without double-count delive
   assert.equal(pendingInteractionCount({}), 0);
 });
 
-test("resolve payload builders are user-actor and fail-loud on empty reply", () => {
-  const bad = buildUserAskReplyPayload("ua-1", {});
+test("DecisionResponse payload builders are authority-free and fail-loud on empty reply", () => {
+  const bad = buildDecisionResponsePayload("ws", "task.md", "dr-1", {});
   assert.equal(bad.ok, false);
 
-  const ok = buildUserAskReplyPayload("ua-1", { answer: "  ship it  ", choiceId: "a" });
+  const ok = buildDecisionResponsePayload("ws", "task.md", "dr-1", {
+    text: "  ship it  ",
+  });
   assert.equal(ok.ok, true);
   if (ok.ok) {
-    assert.equal(ok.payload.actor, "user");
-    assert.equal(ok.payload.answer, "ship it");
-    assert.equal(ok.payload.choiceId, "a");
+    assert.deepEqual(ok.payload.response, { kind: "custom", text: "ship it" });
   }
 
-  assert.deepEqual(buildUserAskDenyPayload("ua-1"), { askId: "ua-1", actor: "user" });
+  assert.deepEqual(buildDecisionDenyPayload("ws", "task.md", "dr-1"), {
+    workspaceId: "ws",
+    taskPath: "task.md",
+    requestId: "dr-1",
+    response: { kind: "deny" },
+  });
   const allow = buildToolApprovalResolvePayload("ta-1", true);
   assert.equal(allow.method, "toolApproval.approveOnce");
   assert.deepEqual(allow.params, { approvalId: "ta-1", actor: "user" });
@@ -223,12 +232,12 @@ test("resolve payload builders are user-actor and fail-loud on empty reply", () 
   assert.equal(buildTaskSendInputPayload("ws", "t", "  ").ok, false);
 });
 
-test("pending interaction event types include tool/userAsk/taskInput/delivery", () => {
+test("pending interaction event types include tool/decisionRequest/taskInput/delivery", () => {
   for (const t of [
     "toolApproval.pending",
     "toolApproval.resolved",
-    "userAsk.pending",
-    "userAsk.resolved",
+    "decisionRequest.pending",
+    "decisionRequest.resolved",
     "taskInput.pending",
     "taskInput.delivered",
     "taskInput.consumed",
@@ -248,13 +257,11 @@ test("pending interaction event types include tool/userAsk/taskInput/delivery", 
 test("contract gaps record field holes without claiming missing RPCs that exist", () => {
   const ids = contractGapIds();
   assert.ok(ids.includes("toolApproval.params"));
-  assert.ok(ids.includes("userAsk.source-route"));
   assert.ok(ids.includes("taskInput.global-list"));
   // Real methods stay in CLIENT_METHODS; gap ids use placeholder method names.
   for (const gap of DESKTOP_CONTRACT_GAPS) {
     if (
       gap.id === "toolApproval.params" ||
-      gap.id === "userAsk.source-route" ||
       gap.id === "taskInput.global-list"
     ) {
       for (const m of gap.methods) {

@@ -1,5 +1,5 @@
 // Machine-local user→agent one-shot task input (U2A append-input).
-// Companion to A2U UserAsk — not chat, not a message bus, not route mutation.
+// One-shot exact-Task input — not chat, not a message bus, not Connection mutation.
 // Never written into workspace Git / .tent.
 
 import * as fs from "node:fs/promises";

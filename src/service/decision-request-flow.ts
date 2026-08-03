@@ -1,5 +1,7 @@
 import {
   answerDecisionRequest,
+  validateDecisionRequest,
+  validateDecisionResponse,
   type AnsweredDecisionRequest,
   type DecisionRequest,
   type DecisionResponse,
@@ -55,7 +57,8 @@ export function prepareDecisionResponse(input: {
   binding: DecisionRequestTaskBinding;
   now: string;
 }): PreparedDecisionResponse {
-  const { request, binding } = input;
+  const request = validateDecisionRequest(input.request);
+  const { binding } = input;
   if (request.taskId !== binding.taskId) {
     throw new Error(
       `DecisionRequest Task mismatch: expected ${request.taskId}, got ${binding.taskId}.`
@@ -69,7 +72,19 @@ export function prepareDecisionResponse(input: {
   if (!Number.isFinite(Date.parse(input.now))) {
     throw new Error("DecisionRequest response timestamp must be an ISO date.");
   }
-  const answered = answerDecisionRequest(request, input.responder, input.response);
+  const response = validateDecisionResponse(input.response, request.options);
+  const answered = request.status === "pending"
+    ? answerDecisionRequest(request, input.responder, response)
+    : (() => {
+        if (
+          request.resolvedBy.kind !== input.responder.kind ||
+          request.resolvedBy.id !== input.responder.id ||
+          JSON.stringify(request.response) !== JSON.stringify(response)
+        ) {
+          throw new Error(`Decision request already answered differently: ${request.id}.`);
+        }
+        return request;
+      })();
   const taskInput: TaskInputRecord = {
     id: taskInputIdForDecisionRequest(answered.id),
     workspaceId: binding.workspaceId,

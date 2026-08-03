@@ -10,9 +10,9 @@ Read only the section needed for the current responsibility. Dispatcher and revi
 tent task list [--workspace <path>] [--json]
 tent task get <taskPath> [--workspace <path>] [--json]
 tent task claim <taskPath> [--workspace <path>] [--json]
-tent task claim --node <nodeId> [--node <nodeId> …] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]
+tent task claim --work-node <nodeId> [--work-node <nodeId> …] [--context-node <nodeId> …] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]
 tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
-tent task ask-user <taskPath> --question <text>|- [--choices id=label,…] [--workspace <path>] [--json]
+tent task request-decision <taskPath> --question <text>|- [--options id=label,…] [--workspace <path>] [--json]
 tent task task-input list <taskPath> | --task <taskPath> [--workspace <path>] [--json]
 tent task task-input get <inputId> --task <taskPath> [--workspace <path>] [--json]
 tent task task-input ack <inputId> --task <taskPath> [--actor <role|sessionId>] [--workspace <path>] [--json]
@@ -22,18 +22,19 @@ User / dispatcher write path and review (not the executor’s self-inbox):
 
 ```text
 tent task send-input <taskPath> [--text <text>|-] [--refs id,id] [--workspace <path>] [--json]
-tent task user-ask list|get <askId>|reply <askId>|deny <askId> […]
+tent task decision list|get|respond|escalate […]
 tent task accept <taskPath> --actor <user|role> …
 tent task reject <taskPath> --actor <user|role> [--note …] [--resume|--no-resume] …
 tent task interrupt <taskPath> …
 tent task cancel <taskPath> …
-tent task dispatch --target role:<roleIdOrName>|route:<routeId> \
-  --node <nodeId> [--node <nodeId> …] --prompt <text>|-
+tent task dispatch --target role:<roleId>|connection:<connectionId> \
+  --work-node <nodeId> [--work-node <nodeId> …] \
+  [--context-node <nodeId> …] --prompt <text>|-
 ```
 
 Direct Role ownership:
 
-- `task claim --node … --prompt …` atomically creates and claims this durable
+- `task claim --work-node … --prompt …` atomically creates and claims this durable
   Role's own execution Task. It has no target and does not accept
   caller-authored responsibility fields.
 - `--from-task <taskPath>` is optional and strict: that Task must be active,
@@ -43,13 +44,14 @@ Direct Role ownership:
 
 Dispatch forms (downstream assignment only):
 
-| Form | Assignee | Session |
+| Form | Responsibility | Session |
 | --- | --- | --- |
-| `--target role:<roleIdOrName>` | Durable Role | Queued only; no managed ACP start at dispatch |
-| `--target route:<routeId>` | Temporary ACP executor | Resolves the machine Settings route and starts a managed Session |
+| `--target role:<roleId>` | Durable Role | Queued only; no managed ACP start at dispatch |
+| `--target connection:<connectionId>` | Temporary ACP executor | Reserves one Session with an immutable Connection snapshot |
 
-- `--node` is repeatable and supplies the exact ordered Context Card Node refs; at least one is required. The full set is acquired atomically, and an exact Node cannot be occupied by two active Tasks.
-- `routeId` is a non-secret stable reference to machine Settings. It resolves
+- `--work-node` supplies occupied write refs and is required; `--context-node`
+  supplies shared read-only refs. Context Card v2 keeps them separate.
+- `connectionId` is a non-secret stable reference to machine Settings. It resolves
   provider, model, endpoint, and credential metadata for the exact Task's
   temporary ACP Session.
 - Tent derives the exact parent reviewer and parent Role Git lane. Callers pass only the documented target, Node refs, and prompt; all other responsibility and execution fields are Service-owned.
@@ -60,7 +62,7 @@ Executors never self-accept. Review authority is the exact persisted parent revi
 ## taskPath
 
 - Always use the exact system-relative `taskPath` returned by Service.
-- For a direct file read, prefix that returned path with `.tent/`; never infer a route directory or reconstruct the path from a route id.
+- For a direct file read, prefix that returned path with `.tent/`; never infer a Session directory or reconstruct the path from a Connection id.
 
 ## Claim / get / deliver
 
@@ -68,7 +70,7 @@ Executors never self-accept. Review authority is the exact persisted parent revi
    Managed ACP: service already claimed via `startSession` — **do not claim again**.
 2. **get** — re-read machine state after claim or mid-run. The Task envelope and Context Card are the execution contract; referenced Node bodies are context. Delivery is a separate record.
 3. **deliver** — submit Delivery with a human summary and optional commit SHAs.  
-   Creates a Delivery; does **not** accept. A downstream executor delivers only for its exact parent reviewer. A durable Role's own user-facing Task may use its configured `review | bypass | agent-decide` policy.
+   Creates a Delivery; does **not** accept. A downstream executor delivers only for its exact parent reviewer. Every Task follows its frozen `review-required | auto-accept | agent-decide` mode.
    Service refuses ready Delivery while this task has attention TaskInput (`pending`, `processing`, `failed`, or `uncertain`) with stable code `PENDING_TASK_INPUT`. `uncertain` means injection may already have happened: never retry or re-inject it. Successful authorized acknowledgement resolves the blocker and schedules exactly one durable report-draft retry, never a provider prompt.
 
 A commit-bearing ready Delivery records reported commits from the exact lane range plus a target-head snapshot. The commit list may be empty or a relevant subset; every listed SHA must belong to the lane. `TARGET_MOVED` is a review boundary: reject/resume and re-deliver against the current target instead of overriding or rewriting persisted facts.
@@ -111,20 +113,25 @@ Rules:
 - Once a ready Delivery exists, the reviewer accepts or rejects it. Interrupt does not erase a published Delivery.
 - Never kill a provider PID, edit an envelope, or delete its lane as a lifecycle substitute.
 
-## A2U — agent asks, user answers
+## A2U — exact Session requests a decision
 
 ```bash
-tent task ask-user <taskPath> --question "…" [--choices a=Label A,b=Label B]
+tent task request-decision <taskPath> --question "…" [--options a=Label A,b=Label B]
 ```
 
-Creates a UserAsk and moves the task to `waiting(user-input)`. User replies via Desktop or:
+Creates a DecisionRequest targeted to the frozen parent user or Role and moves
+the Task to `waiting(user-input)`. The target responds via Desktop or:
 
 ```bash
-tent task user-ask reply <askId> [--answer …] [--choice <id>]
-tent task user-ask deny <askId>
+tent task decision respond <taskPath> <requestId> --option <id>
+tent task decision respond <taskPath> <requestId> --text <text>|-
+tent task decision respond <taskPath> <requestId> --deny
+tent task decision escalate <taskPath> <requestId>
 ```
 
-Wait for the reply through the service; do not busy-loop inventing answers.
+Authority comes from authenticated transport, never an actor argument. A Role
+target may escalate the same request id to user. Wait through Service; do not
+busy-loop inventing answers.
 
 ## Confirmed decisions
 

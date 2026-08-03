@@ -34,22 +34,22 @@ by the repository. The default suite is offline and mock-backed.
 The Local Service exposes `credential.list`, `credential.set`, and
 `credential.delete`. Secret values are protected with Windows CurrentUser DPAPI
 and stored only as ciphertext under the service data directory. There is no RPC
-that returns plaintext. A Settings route may store a non-secret `credentialRef`
+that returns plaintext. An Agent Connection may store a non-secret `credentialRef`
 alongside its `envKey`; the runtime resolves that reference only while building
-the child process environment. Secrets never enter the workspace, route JSON,
+the child process environment. Secrets never enter the workspace, Connection JSON,
 Session records, events, or logs. Missing references fail the Session launch
 loudly. Non-Windows hosts do not use a weak fallback.
 
-Antigravity uses the official `agy` CLI, but `agy` currently has no native ACP entrypoint; Tent therefore launches the third-party `agy-acp` executable and never starts `agy` directly. The bridge remains responsible for its own local conversation state. In particular, verify the bridge supports the host platform before selecting a default route.
+Antigravity uses the official `agy` CLI, but `agy` currently has no native ACP entrypoint; Tent therefore launches the third-party `agy-acp` executable and never starts `agy` directly. The bridge remains responsible for its own local conversation state. In particular, verify the bridge supports the host platform before selecting a default Connection.
 
 Pi uses the third-party `pi-acp` npm bridge (not an official Earendil ACP binary). The bridge requires `pi` (`@earendil-works/pi-coding-agent`) on PATH and currently documents Node ≥22 for the pi CLI even though Tent itself supports Node.js 20.
 
 The Claude Agent ACP npm bridge currently requires Node.js 22 or newer even though Tent itself supports Node.js 20. A machine running Node 20 can use the rest of Tent, but must upgrade Node or configure another executable before launching `claude-acp`.
 
-## Settings route rules
+## Agent Connection rules
 
-- Routes are machine-local and store only non-secret launch metadata: provider/adapter, executable or command, model, endpoint identity, environment key names, Skills/MCP references, and permission/time-out settings.
-- Secret values are read from `LaunchPlan.env` or the Local Service process environment. They are never written to a workspace, Node, Task, Delivery, route JSON, or Session record.
+- Connections are machine-local and store only non-secret launch metadata: provider/adapter, executable or command, model, endpoint identity, environment key names, Skills/MCP references, and permission/time-out settings.
+- Secret values are read from `LaunchPlan.env` or the Local Service process environment. They are never written to a workspace, Node, Task, Delivery, Connection JSON, or Session record.
 - Omitting `envKey` means the adapter relies on the provider's existing local login/configuration.
 - Configuring `envKey` makes it required; a missing value fails before spawn.
 - Tool permission policy defaults to `deny`. `ask` uses the same machine-local approval store for every ACP provider.
@@ -76,12 +76,12 @@ Tent only advertises `capabilities.canResume = true` for bridges whose ACP `init
 Rules:
 
 1. **Runtime gate:** each restore call checks **this** process’s `initialize` result for the transport it selected (`loadSession` or `sessionCapabilities.resume`). Missing capability fails loud; Tent never falls back to `session/new` (or the other transport) while pretending to resume.
-2. **RPC shape:** both `session/load` and `session/resume` send `{ sessionId, cwd, mcpServers }` from the immutable non-secret route snapshot captured at start. Empty MCP and Skill lists stay canonical. Optional Skill refs go under `_meta.tent.skills` as Tent metadata only; this is provider-dependent and never embeds Skill bodies. Enabled path refs are validated and fail loud when missing. Editing the live route never reinterprets an already-started Session.
+2. **RPC shape:** both `session/load` and `session/resume` send `{ sessionId, cwd, mcpServers }` from the immutable non-secret Connection snapshot captured at start. Empty MCP and Skill lists stay canonical. Optional Skill refs go under `_meta.tent.skills` as Tent metadata only; this is provider-dependent and never embeds Skill bodies. Enabled path refs are validated and fail loud when missing. Editing the live Connection never reinterprets an already-started Session.
 3. **Token:** machine-local `SessionRecord.resumeToken` is the provider ACP `sessionId` from `session/new`. After restore, Tent keeps the **same** `providerSessionId`. Tasks still store only Tent `ss-` ids.
 4. **History isolation:** `session/load` may stream full conversation history via `session/update`. Those notifications are quarantined until replay is quiet, are not projected as transcript diagnostics, and **must not** enter the next prompt’s `assistantText` or trigger `session.prompt_complete` / auto-`task.deliver`. `session/resume` must not replay history; Tent does not wait for load-style quiescence on that path.
 5. **Final-report segment contract:** during an in-flight `session/prompt`, contiguous `agent_message_chunk` text forms one segment; tool/status/thought (and any other non-message update) seals the open segment. `session.prompt_complete.assistantText` / Delivery.summary is the **last non-empty segment**. A single uninterrupted stream falls back to that full body so summary is never empty when real final text exists. Providers share this contract in `AcpClient` — do not re-implement fragile string cleaning in the Delivery store.
 6. **Process model:** resume always spawns a **new** bridge process (managed handles do not survive service restart). `AgentRuntime.resumeSession` reuses the same Tent `sessionId` + original provider token.
-7. **Exact-Task continuity:** only the Session already bound to the exact Task may resume. Resume uses its immutable route snapshot, recorded provider token, Task lane, and native load capability. Missing or corrupt identity parks the Task at `session_unavailable`; it never starts fresh while claiming continuity. `task.replaceSession` is the explicit fresh path for an eligible Task.
+7. **Exact-Task continuity:** only the Session already bound to the exact Task may resume. Resume uses its immutable Connection snapshot, recorded provider token, Task lane, and native load capability. Missing or corrupt identity parks the Task at `session_unavailable`; it never starts fresh while claiming continuity. `task.replaceSession` is the explicit fresh path for an eligible Task.
 8. **Concurrency and privacy:** concurrent resume calls for one Tent Session share one in-flight operation. Provider session ids are redacted from projected errors and never enter Task, Node, Delivery, or UI payloads. Safe RPC diagnostics may retain bounded scalar details so an opaque provider error still carries a usable reason.
 9. **Honest non-support:** adapters with `canResume: false` keep failing `resumeSession` with “cannot resume”; dead processes without resume capability become `failed` on probe (unchanged).
 

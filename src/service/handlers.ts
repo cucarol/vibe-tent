@@ -236,12 +236,21 @@ import { MutationBus } from "./mutation-bus.js";
 import type { WorkspaceHost } from "./workspace-host.js";
 import type { ToolApprovalStore, ToolPendingApproval } from "./tool-approval-store.js";
 import {
-  formatUserAskAnswerPrompt,
-  makeUserAskId,
-  type UserAskChoice,
-  type UserAskRecord,
-  type UserAskStore,
-} from "./user-ask-store.js";
+  makeDecisionRequestId,
+  type DecisionRequestRecord,
+  type DecisionRequestStore,
+} from "./decision-request-store.js";
+import {
+  assertDecisionResponseTaskInputMatches,
+  prepareDecisionResponse,
+} from "./decision-request-flow.js";
+import {
+  validateDecisionResponse,
+  type DecisionRequest,
+  type DecisionRequestOption,
+  type DecisionResponse,
+  type PendingDecisionRequest,
+} from "../core/decision-request.js";
 import {
   formatTaskInputPrompt,
   makeTaskInputId,
@@ -277,10 +286,10 @@ import {
   type RelationMutationResult,
   type RelationRecordWire,
   type PendingDeliveryInteraction,
+  type PendingDecisionRequestInteraction,
   type PendingInteractionItem,
   type PendingInteractionListResult,
   type PendingToolApprovalInteraction,
-  type PendingUserAskInteraction,
   type ProposalProjection,
   type ProviderCatalogProjection,
   type RoleRegistryEntryProjection,
@@ -321,11 +330,11 @@ export interface HandlerContext {
   runtime: AgentRuntime;
   /** Machine-local ACP tool permission approvals (permissionPolicy=ask). */
   toolApprovals: ToolApprovalStore;
-  /** Machine-local A2U business UserAsk rows (not chat; not tool permission). */
-  userAsks: UserAskStore;
+  /** Machine-local exact-Task Decision Requests (not chat; not tool permission). */
+  decisionRequests: DecisionRequestStore;
   /**
    * Machine-local U2A one-shot task inputs (user→agent append).
-   * Not chat; not UserAsk answer; scoped by workspaceId+taskPath.
+   * Not chat; not a Decision Request response; scoped by workspaceId+taskPath.
    */
   taskInputs: TaskInputStore;
   /**
@@ -527,8 +536,8 @@ export async function dispatchMethod(
         return taskWaitRpc(ctx, p);
       case "task.resume":
         return taskResumeRpc(ctx, p);
-      case "task.askUser":
-        return taskAskUserRpc(ctx, p);
+      case "task.requestDecision":
+        return taskRequestDecisionRpc(ctx, p, callContext);
       case "task.sendInput":
         return taskSendInputRpc(ctx, p);
       case "task.deliver":
@@ -593,14 +602,14 @@ export async function dispatchMethod(
         return toolApprovalResolve(ctx, p, "approved");
       case "toolApproval.deny":
         return toolApprovalResolve(ctx, p, "denied");
-      case "userAsk.listPending":
-        return userAskListPending(ctx, p);
-      case "userAsk.get":
-        return userAskGet(ctx, p);
-      case "userAsk.reply":
-        return userAskReplyRpc(ctx, p);
-      case "userAsk.deny":
-        return userAskDenyRpc(ctx, p);
+      case "decisionRequest.listPending":
+        return decisionRequestListPending(ctx, p, callContext);
+      case "decisionRequest.get":
+        return decisionRequestGet(ctx, p, callContext);
+      case "decisionRequest.respond":
+        return decisionRequestRespondRpc(ctx, p, callContext);
+      case "decisionRequest.escalate":
+        return decisionRequestEscalateRpc(ctx, p, callContext);
       case "interaction.listPending":
         return interactionListPending(ctx, p);
       case "taskInput.listPending":
@@ -708,7 +717,7 @@ export function isSessionUnavailableParkedWait(task: TaskEnvelope): boolean {
 
 /**
  * Apply waiting(reason=external) + SESSION_UNAVAILABLE_WAIT_SUMMARY under the caller's
- * MutationBus critical section. Does not release occupation, cancel TaskInputs/UserAsks,
+ * MutationBus critical section. Does not release occupation or cancel TaskInputs,
  * or clear report drafts / worktree. Idempotent when already parked with the same summary.
  * Returns the parked envelope, or null when no mutation was applied.
  */
@@ -757,7 +766,7 @@ async function applySessionUnavailablePark(
  * Live runtime terminal projection and mount reconcile converge here.
  *
  * - Task → waiting(reason=external) with SESSION_UNAVAILABLE_WAIT_SUMMARY
- * - Preserves occupation, worktree, report draft, TaskInputs, UserAsks, audit facts
+ * - Preserves occupation, worktree, report draft, TaskInputs, Decision Requests, audit facts
  * - Session registry may already be terminal/diagnostic; only Task is parked
  * - Same-session re-entry is idempotent; rebound sessionId mismatch is a no-op
  * - Does not auto-start or re-prompt; recovery is explicit task.startSession or task.replaceSession
@@ -813,7 +822,7 @@ async function parkTaskForUnavailableSession(
     );
   }
 
-  // Clear hanging tool-approval waiters. Do not cancel TaskInputs / UserAsks —
+  // Clear hanging tool-approval waiters. Do not cancel TaskInputs / Decision Requests —
   // recovery may still need them. If the process is still alive (synthetic
   // terminal event / adapter race), stop it so probe is not a live orphan.
   // stopReason stays non-user so this is not treated as intentional seal.
@@ -4185,93 +4194,161 @@ async function taskResumeRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   });
 }
 
-/**
- * A2U: create one pending business UserAsk and park the task on waiting(user-input).
- * Not tool permission, not chat. Same task may have at most one pending business ask.
- */
-async function taskAskUserRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+type DecisionCallerContext = {
+  callerSessionId?: string;
+  callerExternalKey?: string;
+};
+
+/** Resolve an authenticated transport Session; RPC params never select it. */
+async function resolveDecisionCallerSession(
+  ctx: HandlerContext,
+  caller: DecisionCallerContext
+): Promise<SessionRecord | undefined> {
+  const sessionId = caller.callerSessionId?.trim();
+  if (sessionId) {
+    const session = await ctx.runtime.registry.read(sessionId);
+    if (!session) {
+      throw new RpcError(-32001, "Authenticated caller Session is not registered", {
+        code: "DECISION_CALLER_SESSION_MISSING",
+        sessionId,
+      });
+    }
+    return session;
+  }
+  const externalKey = caller.callerExternalKey?.trim();
+  if (!externalKey) return undefined;
+  const matches = (await ctx.runtime.registry.list()).filter(
+    (record) => recordExternalKey(record) === externalKey
+  );
+  if (matches.length !== 1) {
+    throw new RpcError(-32001, "Host-native caller Session is missing or ambiguous", {
+      code: "DECISION_CALLER_SESSION_UNRESOLVED",
+      externalKey,
+      count: matches.length,
+    });
+  }
+  return matches[0];
+}
+
+function assertDecisionRequesterBinding(
+  task: TaskEnvelope,
+  workspaceId: string,
+  session: SessionRecord | undefined
+): asserts session is SessionRecord {
+  if (!task.id || !task.sessionId || !session) {
+    throw new RpcError(
+      -32001,
+      "task.requestDecision requires the exact authenticated executing Session",
+      { code: "DECISION_REQUESTER_SESSION_REQUIRED", taskPath: task.path }
+    );
+  }
+  if (
+    session.id !== task.sessionId ||
+    session.workspace !== workspaceId ||
+    session.lastTaskId !== task.id ||
+    !SessionRegistry.isOpen(session.state)
+  ) {
+    throw new RpcError(
+      -32001,
+      "Decision requester is not the exact live Session bound to this Task",
+      {
+        code: "DECISION_REQUESTER_SESSION_MISMATCH",
+        taskId: task.id,
+        taskSessionId: task.sessionId,
+        callerSessionId: session.id,
+      }
+    );
+  }
+}
+
+/** Create one exact-Task Decision Request and park on waiting(user-input). */
+async function taskRequestDecisionRpc(
+  ctx: HandlerContext,
+  p: Record<string, unknown>,
+  caller: DecisionCallerContext
+) {
+  assertAllowedParams(
+    p,
+    new Set(["workspaceId", "taskPath", "question", "options"]),
+    "task.requestDecision"
+  );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
   const question = requireString(p, "question").trim();
   if (!question) {
-    throw new RpcError(-32602, "task.askUser requires non-empty question");
+    throw new RpcError(-32602, "task.requestDecision requires non-empty question");
   }
-  const choices = parseUserAskChoices(p.choices);
-  const existing = await ctx.userAsks.getPendingForTask(workspaceId, taskPath);
+  const options = parseDecisionRequestOptions(p.options);
+  const existing = await ctx.decisionRequests.getPendingForTask(workspaceId, taskPath);
   if (existing) {
     throw new RpcError(
       RPC_LIFECYCLE,
-      `Task already has a pending UserAsk (${existing.id})`,
-      { askId: existing.id, workspaceId, taskPath }
+      `Task already has a pending Decision Request (${existing.id})`,
+      { requestId: existing.id, workspaceId, taskPath }
     );
   }
 
-  return ctx.mutations.run(workspaceId, async () => {
+  return runTaskLifecycle(workspaceId, taskPath, () =>
+  ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     const current = await loadTaskEnvelope(mount.env.fs, taskPath);
     if (current.state !== "running") {
       throw new RpcError(
         RPC_LIFECYCLE,
-        `task.askUser requires running task (state=${current.state})`,
+        `task.requestDecision requires running task (state=${current.state})`,
         { taskPath, state: current.state }
       );
     }
-    // Re-check under mutation lock so concurrent askUser cannot create two pendings.
-    const again = await ctx.userAsks.getPendingForTask(workspaceId, taskPath);
+    const callerSession = await resolveDecisionCallerSession(ctx, caller);
+    assertDecisionRequesterBinding(current, workspaceId, callerSession);
+    const again = await ctx.decisionRequests.getPendingForTask(workspaceId, taskPath);
     if (again) {
       throw new RpcError(
         RPC_LIFECYCLE,
-        `Task already has a pending UserAsk (${again.id})`,
-        { askId: again.id, workspaceId, taskPath }
+        `Task already has a pending Decision Request (${again.id})`,
+        { requestId: again.id, workspaceId, taskPath }
       );
     }
-    const now = new Date().toISOString();
-    const ask = await ctx.userAsks.add({
-      id: makeUserAskId(),
-      workspaceId,
-      taskPath,
-      taskId: current.id || undefined,
-      sessionId: current.sessionId || undefined,
-      role: taskParentRoleId(current),
+    if (!current.parentActor) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        "task.requestDecision requires a frozen parent authority",
+        { code: "DECISION_TARGET_MISSING", taskId: current.id }
+      );
+    }
+    const request: PendingDecisionRequest = {
+      id: makeDecisionRequestId(),
+      taskId: current.id!,
+      requester: { kind: "session", id: callerSession.id },
+      target: current.parentActor,
       question,
-      ...(choices ? { choices } : {}),
+      options,
       status: "pending",
-      createdAt: now,
-      updatedAt: now,
-    });
-    const summary = `UserAsk pending: ${question.slice(0, 200)}`;
+    };
     const task = await taskWait(mount.env, taskPath, {
       reason: "user-input",
-      summary,
+      summary: `Decision Request pending: ${question.slice(0, 200)}`,
     });
-    emitTaskState(ctx, workspaceId, task, "task.askUser");
+    let stored: DecisionRequestRecord;
+    try {
+      stored = await ctx.decisionRequests.add({ workspaceId, taskPath, request });
+    } catch (error) {
+      await taskResume(mount.env, taskPath);
+      throw error;
+    }
+    emitTaskState(ctx, workspaceId, task, "task.requestDecision");
     ctx.events.emit(
-      "userAsk.pending",
+      "decisionRequest.pending",
       workspaceId,
-      {
-        askId: ask.id,
-        taskPath: ask.taskPath,
-        taskId: ask.taskId,
-        sessionId: ask.sessionId,
-        role: ask.role,
-        question: ask.question,
-        choices: ask.choices,
-        createdAt: ask.createdAt,
-      },
+      projectDecisionRequest(stored),
       "self"
     );
-    // Reflect waiting-user on bound managed session when present.
-    if (ask.sessionId) {
+    if (callerSession.state !== "external") {
       try {
-        const rec = await ctx.runtime.registry.read(ask.sessionId);
-        if (rec && SessionRegistry.isNonTerminal(rec.state)) {
-          await ctx.runtime.registry.update(ask.sessionId, {
-            state: "waiting-user",
-          });
-        }
+        await ctx.runtime.registry.update(callerSession.id, { state: "waiting-user" });
       } catch {
-        // session projection is best-effort
+        // Task + Decision Request are already durable; managed Session projection is best-effort.
       }
     }
     return {
@@ -4279,36 +4356,36 @@ async function taskAskUserRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       taskPath,
       task: projectTask(task),
       state: task.state,
-      ask: projectUserAsk(ask),
+      request: projectDecisionRequest(stored),
     };
-  });
+  }));
 }
 
-function parseUserAskChoices(raw: unknown): UserAskChoice[] | undefined {
-  if (raw === undefined || raw === null) return undefined;
+function parseDecisionRequestOptions(raw: unknown): DecisionRequestOption[] {
+  if (raw === undefined || raw === null) return [];
   if (!Array.isArray(raw)) {
-    throw new RpcError(-32602, "task.askUser choices must be an array");
+    throw new RpcError(-32602, "task.requestDecision options must be an array");
   }
-  if (raw.length === 0) return undefined;
-  const choices: UserAskChoice[] = [];
+  const options: DecisionRequestOption[] = [];
   for (const item of raw) {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
-      throw new RpcError(-32602, "task.askUser choice must be {id,label}");
+      throw new RpcError(-32602, "task.requestDecision option must be {id,label}");
     }
     const row = item as Record<string, unknown>;
+    assertAllowedParams(row, new Set(["id", "label"]), "task.requestDecision option");
     const id = typeof row.id === "string" ? row.id.trim() : "";
     const label = typeof row.label === "string" ? row.label.trim() : "";
     if (!id || !label) {
-      throw new RpcError(-32602, "task.askUser choice requires non-empty id and label");
+      throw new RpcError(-32602, "task.requestDecision option requires non-empty id and label");
     }
-    choices.push({ id, label });
+    options.push({ id, label });
   }
-  return choices;
+  return options;
 }
 
 /**
  * U2A: user-only one-shot text and/or contextRefs to a running/waiting task.
- * Does not answer pending UserAsk, write chat history, or mutate Connections.
+ * Does not answer pending Decision Requests, write chat history, or mutate Connections.
  * RPC returns after durable accept (status=pending, accepted=true) — never waits
  * for the provider Agent turn. Managed inject runs on a per-task FIFO background
  * worker (status processing → delivered|failed). External: poll taskInput.* .
@@ -4345,14 +4422,13 @@ async function taskSendInputRpc(ctx: HandlerContext, p: Record<string, unknown>)
     );
   }
 
-  // Fail loud when a business UserAsk is still pending — reply path is userAsk.reply.
-  // Outside the mutation bus (machine-local ask store; not Delivery publish authority).
-  const pendingAsk = await ctx.userAsks.getPendingForTask(workspaceId, taskPath);
-  if (pendingAsk) {
+  // A pending decision has its own authenticated response path.
+  const pendingDecision = await ctx.decisionRequests.getPendingForTask(workspaceId, taskPath);
+  if (pendingDecision) {
     throw new RpcError(
       RPC_LIFECYCLE,
-      `Task has a pending UserAsk (${pendingAsk.id}); use userAsk.reply instead of task.sendInput`,
-      { askId: pendingAsk.id, workspaceId, taskPath }
+      `Task has a pending Decision Request (${pendingDecision.id}); use decisionRequest.respond instead of task.sendInput`,
+      { requestId: pendingDecision.id, workspaceId, taskPath }
     );
   }
 
@@ -5009,19 +5085,37 @@ async function assertManagedTurnIdleForPublicDeliver(
 }
 
 /**
- * Shared authority: any TaskInput still pending, processing, failed, or
- * uncertain on this task blocks a ready Delivery. Same check for public
+ * Shared authority: a pending Decision Request, or any TaskInput still pending,
+ * processing, failed, or uncertain on this task blocks a ready Delivery. Same check for public
  * task.deliver / task.requestReview and managed auto-deliver.
  *
  * Uncertain is at-most-once and never re-injected, but blocks until explicit
  * acknowledgement. delivered / consumed / cancelled rows do not block.
- * Does not invent a unified Pending domain — reads TaskInputStore only.
+ * Reads each durable domain store directly; interaction.listPending is projection only.
  */
 async function assertNoBlockingTaskInputsForDeliver(
   ctx: HandlerContext,
   workspaceId: string,
   task: { path: string; id?: string; state: string }
 ): Promise<void> {
+  const pendingDecision = await ctx.decisionRequests.getPendingForTask(
+    workspaceId,
+    task.path
+  );
+  if (pendingDecision) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `task.deliver refused: task has pending Decision Request ${pendingDecision.id}; ` +
+        `respond or escalate it before Delivery (task remains ${task.state}, no ready Delivery)`,
+      {
+        code: "PENDING_DECISION_REQUEST",
+        taskPath: task.path,
+        ...(task.id ? { taskId: task.id } : {}),
+        requestId: pendingDecision.id,
+        target: pendingDecision.target,
+      }
+    );
+  }
   const blockers = await ctx.taskInputs.listBlockingForDeliver(
     workspaceId,
     task.path
@@ -5785,16 +5879,10 @@ async function taskInterruptRpc(ctx: HandlerContext, p: Record<string, unknown>)
     ctx.host.markSelfWrite(workspaceId);
     const task = await taskInterrupt(mount.env, taskPath);
     emitTaskState(ctx, workspaceId, task, "task.interrupt");
-    await cancelUserAsksForTask(ctx, workspaceId, taskPath, "task.interrupt");
     await cancelTaskInputsForTask(ctx, workspaceId, taskPath, "task.interrupt");
     if (sessionId) {
       try {
         await ctx.toolApprovals.cancelSession(sessionId, "denied");
-      } catch {
-        // ignore
-      }
-      try {
-        await cancelUserAsksForSession(ctx, workspaceId, sessionId, "task.interrupt");
       } catch {
         // ignore
       }
@@ -8404,14 +8492,14 @@ async function toolApprovalResolve(
   // Adapter re-emits session.live after decision; service also resumes here for
   // approve path so UI does not wait solely on racey runtime events. Concurrent
   // tool requests keep the task waiting until the final pending request resolves.
-  // Do not resume when a business UserAsk is still pending for this task.
+  // Do not resume while the exact Task still has a pending Decision Request.
   if (decision === "approved" && !hasPendingForSession && item.taskPath) {
     try {
-      const pendingAsk = await ctx.userAsks.getPendingForTask(
+      const pendingDecision = await ctx.decisionRequests.getPendingForTask(
         item.workspaceId,
         item.taskPath
       );
-      if (!pendingAsk) {
+      if (!pendingDecision) {
         const mount = ctx.host.get(item.workspaceId);
         if (mount) {
           const task = await loadTaskEnvelope(mount.env.fs, item.taskPath);
@@ -8452,16 +8540,63 @@ function projectToolApproval(item: ToolPendingApproval) {
   };
 }
 
-// ---- A2U UserAsk (business question; not tool permission; not chat) ----
+// ---- Session → parent/user Decision Request (not tool permission; not chat) ----
 
-async function userAskListPending(ctx: HandlerContext, p: Record<string, unknown>) {
-  const workspaceId = optionalString(p, "workspaceId");
-  const pending = await ctx.userAsks.listPending(workspaceId);
-  return { asks: pending.map(projectUserAsk) };
+async function decisionCallerAuthority(
+  ctx: HandlerContext,
+  workspaceId: string,
+  caller: DecisionCallerContext
+): Promise<TaskActorRef> {
+  const session = await resolveDecisionCallerSession(ctx, caller);
+  if (!session) return { kind: "user", id: "user" };
+  if (
+    session.workspace !== workspaceId ||
+    !session.roleId ||
+    !SessionRegistry.isOpen(session.state)
+  ) {
+    throw new RpcError(-32001, "Caller Session is not an exact live Role authority", {
+      code: "DECISION_RESPONDER_FORBIDDEN",
+      sessionId: session.id,
+      workspaceId,
+    });
+  }
+  return { kind: "role", id: session.roleId };
+}
+
+function assertDecisionAuthority(
+  request: DecisionRequestRecord,
+  responder: TaskActorRef
+): void {
+  if (
+    request.target.kind !== responder.kind ||
+    request.target.id !== responder.id
+  ) {
+    throw new RpcError(-32001, "Caller is not the frozen Decision Request target", {
+      code: "DECISION_RESPONDER_FORBIDDEN",
+      requestId: request.id,
+      target: request.target,
+      responder,
+    });
+  }
+}
+
+async function decisionRequestListPending(
+  ctx: HandlerContext,
+  p: Record<string, unknown>,
+  caller: DecisionCallerContext
+) {
+  assertAllowedParams(p, new Set(["workspaceId"]), "decisionRequest.listPending");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const responder = await decisionCallerAuthority(ctx, workspaceId, caller);
+  const pending = (await ctx.decisionRequests.listPending(workspaceId)).filter(
+    (request) =>
+      request.target.kind === responder.kind && request.target.id === responder.id
+  );
+  return { requests: pending.map(projectDecisionRequest) };
 }
 
 /**
- * Workspace-scoped unified A2U pending projection.
+ * Workspace-scoped unified pending projection for the local user.
  * Aggregates three domain sources only — no new store, no resolve verbs, no
  * copied state events. Any source failure fails the whole RPC (fail-loud).
  */
@@ -8474,17 +8609,17 @@ async function interactionListPending(
   // fail with the same contract as delivery.list rather than a partial inbox.
   const mount = ctx.host.require(workspaceId);
 
-  let asks: Awaited<ReturnType<typeof ctx.userAsks.listPending>>;
+  let requests: Awaited<ReturnType<typeof ctx.decisionRequests.listPending>>;
   let toolApprovals: Awaited<ReturnType<typeof ctx.toolApprovals.listPending>>;
   let deliveries: Awaited<ReturnType<typeof loadDeliveries>>;
   try {
     // Parallel reads are independent; reject if any source fails.
     const settled = await Promise.all([
-      ctx.userAsks.listPending(workspaceId),
+      ctx.decisionRequests.listPending(workspaceId),
       ctx.toolApprovals.listPending(workspaceId),
       loadDeliveries(mount.env.fs),
     ]);
-    asks = settled[0];
+    requests = settled[0];
     toolApprovals = settled[1];
     deliveries = settled[2];
   } catch (err) {
@@ -8517,22 +8652,20 @@ async function interactionListPending(
 
   const items: PendingInteractionItem[] = [];
 
-  for (const ask of asks) {
-    const task = tasksByPath.get(ask.taskPath) ?? (ask.taskId ? tasksById.get(ask.taskId) : undefined);
-    const responsibleRole = ask.role ?? (task ? taskParentRoleId(task) : undefined);
-    const item: PendingUserAskInteraction = {
-      kind: "userAsk",
-      id: ask.id,
-      workspaceId: ask.workspaceId,
-      createdAt: ask.createdAt,
-      taskPath: ask.taskPath,
-      ...(ask.taskId ? { taskId: ask.taskId } : task?.id ? { taskId: task.id } : {}),
-      ...(responsibleRole ? { role: responsibleRole } : {}),
-      ...(ask.sessionId ?? task?.sessionId
-        ? { sessionId: ask.sessionId ?? task?.sessionId }
-        : {}),
-      question: ask.question,
-      ...(ask.choices?.length ? { choices: ask.choices.map((c) => ({ id: c.id, label: c.label })) } : {}),
+  for (const request of requests.filter((item) => item.target.kind === "user")) {
+    const task = tasksByPath.get(request.taskPath) ?? tasksById.get(request.taskId);
+    const item: PendingDecisionRequestInteraction = {
+      kind: "decisionRequest",
+      id: request.id,
+      workspaceId: request.workspaceId,
+      createdAt: request.createdAt,
+      taskPath: request.taskPath,
+      taskId: request.taskId,
+      sessionId: request.requester.id,
+      ...(task ? { role: taskParentRoleId(task) } : {}),
+      target: request.target,
+      question: request.question,
+      options: request.options.map((option) => ({ ...option })),
     };
     items.push(item);
   }
@@ -8591,7 +8724,7 @@ async function interactionListPending(
   items.sort(comparePendingInteraction);
 
   const counts = {
-    userAsk: 0,
+    decisionRequest: 0,
     toolApproval: 0,
     delivery: 0,
     total: items.length,
@@ -8612,314 +8745,243 @@ function comparePendingInteraction(a: PendingInteractionItem, b: PendingInteract
   return a.id.localeCompare(b.id);
 }
 
-async function userAskGet(ctx: HandlerContext, p: Record<string, unknown>) {
-  const askId = requireString(p, "askId");
-  const item = await ctx.userAsks.get(askId);
-  if (!item) throw new RpcError(-32004, `UserAsk not found: ${askId}`);
-  return { ask: projectUserAsk(item) };
-}
-
-/**
- * User-only reply. Persist answer first, then resume task, then optional managed
- * follow-up prompt. Answer is never lost if follow-up fails.
- */
-async function userAskReplyRpc(ctx: HandlerContext, p: Record<string, unknown>) {
-  const askId = requireString(p, "askId");
-  const actorRaw = optionalString(p, "actor") ?? "user";
-  if (actorRaw !== "user") {
-    throw new RpcError(
-      -32001,
-      "userAsk.reply is user-only; agent self-reply is forbidden",
-      { actor: actorRaw }
-    );
-  }
-  const answer = optionalString(p, "answer");
-  const choiceId = optionalString(p, "choiceId");
-  if (!(answer?.trim() || choiceId?.trim())) {
-    throw new RpcError(-32602, "userAsk.reply requires answer and/or choiceId");
-  }
-
-  const item = await ctx.userAsks.reply(askId, {
-    answer,
-    choiceId,
-    resolvedBy: actorRaw,
-  });
-
-  ctx.events.emit(
-    "userAsk.resolved",
-    item.workspaceId,
-    {
-      askId: item.id,
-      decision: "reply",
-      actor: actorRaw,
-      taskPath: item.taskPath,
-      sessionId: item.sessionId,
-      choiceId: item.choiceId,
-      answer: item.answer,
-    },
-    "self"
-  );
-
-  const resume = await resumeTaskAfterUserAsk(ctx, item, "userAsk.reply");
-  const continueResult = await continueManagedAfterUserAsk(ctx, item);
-
-  return {
-    ask: projectUserAsk(item),
-    task: resume.task,
-    state: resume.state,
-    continued: continueResult.continued,
-    continueError: continueResult.error,
-  };
-}
-
-/** User-only deny: cancel the business ask and resume the task for rework/decision. */
-async function userAskDenyRpc(ctx: HandlerContext, p: Record<string, unknown>) {
-  const askId = requireString(p, "askId");
-  const actorRaw = optionalString(p, "actor") ?? "user";
-  if (actorRaw !== "user") {
-    throw new RpcError(
-      -32001,
-      "userAsk.deny is user-only; agent self-deny is forbidden",
-      { actor: actorRaw }
-    );
-  }
-
-  const item = await ctx.userAsks.deny(askId, actorRaw);
-  ctx.events.emit(
-    "userAsk.resolved",
-    item.workspaceId,
-    {
-      askId: item.id,
-      decision: "deny",
-      actor: actorRaw,
-      taskPath: item.taskPath,
-      sessionId: item.sessionId,
-    },
-    "self"
-  );
-
-  // Deny still resumes task occupation so agent/external path can observe denial
-  // and deliver/interrupt — not a silent hang. Continuation targets the Task's
-  // current bound session when rebound (see continueManagedAfterUserAsk).
-  const resume = await resumeTaskAfterUserAsk(ctx, item, "userAsk.deny");
-  const continueResult = await continueManagedAfterUserAsk(ctx, item);
-
-  return {
-    ask: projectUserAsk(item),
-    task: resume.task,
-    state: resume.state,
-    continued: continueResult.continued,
-    continueError: continueResult.error,
-  };
-}
-
-async function resumeTaskAfterUserAsk(
+async function requireExactDecisionRequest(
   ctx: HandlerContext,
-  item: UserAskRecord,
-  reason: string
-): Promise<{ task: TaskProjection | null; state: string | null }> {
+  p: Record<string, unknown>
+): Promise<{ workspaceId: string; taskPath: string; request: DecisionRequestRecord }> {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const taskPath = requireString(p, "taskPath");
+  const requestId = requireString(p, "requestId");
+  const request = await ctx.decisionRequests.getExact(workspaceId, taskPath, requestId);
+  if (!request) {
+    throw new RpcError(-32004, `Decision Request not found for exact Task: ${requestId}`);
+  }
+  return { workspaceId, taskPath, request };
+}
+
+async function decisionRequestGet(
+  ctx: HandlerContext,
+  p: Record<string, unknown>,
+  caller: DecisionCallerContext
+) {
+  assertAllowedParams(
+    p,
+    new Set(["workspaceId", "taskPath", "requestId"]),
+    "decisionRequest.get"
+  );
+  const exact = await requireExactDecisionRequest(ctx, p);
+  const responder = await decisionCallerAuthority(ctx, exact.workspaceId, caller);
+  assertDecisionAuthority(exact.request, responder);
+  return { request: projectDecisionRequest(exact.request) };
+}
+
+function parseDecisionResponseParam(
+  raw: unknown,
+  options: readonly DecisionRequestOption[]
+): DecisionResponse {
   try {
-    const mount = ctx.host.get(item.workspaceId);
-    if (!mount) return { task: null, state: null };
-    return await ctx.mutations.run(item.workspaceId, async () => {
-      ctx.host.markSelfWrite(item.workspaceId);
-      const task = await loadTaskEnvelope(mount.env.fs, item.taskPath);
-      if (task.state === "waiting" && task.wait?.reason === "user-input") {
-        const resumed = await taskResume(mount.env, item.taskPath);
-        emitTaskState(ctx, item.workspaceId, resumed, reason);
-        return { task: projectTask(resumed), state: resumed.state };
-      }
-      return { task: projectTask(task), state: task.state };
-    });
-  } catch {
-    return { task: null, state: null };
+    return validateDecisionResponse(raw, options);
+  } catch (error) {
+    throw new RpcError(-32602, error instanceof Error ? error.message : String(error));
   }
 }
 
 /**
- * Resolve which managed Session should receive a UserAsk answer continuation.
- * Prefer the Task's current bound sessionId when it has changed after recovery
- * rebind (item.sessionId stays as audit origin of the ask). Fall back to the
- * origin sessionId when the Task has no binding or the task row is missing.
+ * Persist deterministic TaskInput before answering the request, then resume and
+ * schedule the existing exact-Task FIFO. A retry reuses the same ti-* row.
  */
-async function resolveUserAskContinueSessionId(
+async function decisionRequestRespondRpc(
   ctx: HandlerContext,
-  item: UserAskRecord
-): Promise<string | undefined> {
-  const origin = item.sessionId?.trim() || "";
-  try {
-    const mount = ctx.host.get(item.workspaceId);
-    if (mount) {
-      const task = await loadTaskEnvelope(mount.env.fs, item.taskPath).catch(
-        () => null
+  p: Record<string, unknown>,
+  caller: DecisionCallerContext
+) {
+  assertAllowedParams(
+    p,
+    new Set(["workspaceId", "taskPath", "requestId", "response"]),
+    "decisionRequest.respond"
+  );
+  const exact = await requireExactDecisionRequest(ctx, p);
+  const responder = await decisionCallerAuthority(ctx, exact.workspaceId, caller);
+  assertDecisionAuthority(exact.request, responder);
+  const response = parseDecisionResponseParam(p.response, exact.request.options);
+  const mount = ctx.host.require(exact.workspaceId);
+
+  const result = await runTaskLifecycle(exact.workspaceId, exact.taskPath, () =>
+    ctx.mutations.run(exact.workspaceId, async () => {
+      const currentRequest = await ctx.decisionRequests.getExact(
+        exact.workspaceId,
+        exact.taskPath,
+        exact.request.id
       );
-      const bound = task?.sessionId?.trim() || "";
-      if (bound) return bound;
-    }
-  } catch {
-    // best-effort: fall back to origin
-  }
-  return origin || undefined;
+      if (!currentRequest) {
+        throw new RpcError(-32004, `Decision Request not found: ${exact.request.id}`);
+      }
+      assertDecisionAuthority(currentRequest, responder);
+      const task = await loadTaskEnvelope(mount.env.fs, exact.taskPath);
+      if (!task.id || task.id !== currentRequest.taskId) {
+        throw new RpcError(RPC_LIFECYCLE, "Decision Request Task identity changed", {
+          code: "DECISION_TASK_MISMATCH",
+          requestId: currentRequest.id,
+        });
+      }
+      if (task.sessionId !== currentRequest.requester.id) {
+        throw new RpcError(RPC_LIFECYCLE, "Decision requester Session is no longer bound to the exact Task", {
+          code: "DECISION_SESSION_MISMATCH",
+          requestId: currentRequest.id,
+          requesterSessionId: currentRequest.requester.id,
+          taskSessionId: task.sessionId,
+        });
+      }
+      const session = await ctx.runtime.registry.read(currentRequest.requester.id);
+      if (
+        !session ||
+        session.workspace !== exact.workspaceId ||
+        session.lastTaskId !== task.id
+      ) {
+        throw new RpcError(RPC_LIFECYCLE, "Decision requester Session registry binding is stale", {
+          code: "DECISION_SESSION_BINDING_STALE",
+          requestId: currentRequest.id,
+        });
+      }
+      const now = new Date().toISOString();
+      const prepared = prepareDecisionResponse({
+        request: coreDecisionRequest(currentRequest),
+        responder,
+        response,
+        binding: {
+          workspaceId: exact.workspaceId,
+          taskPath: exact.taskPath,
+          taskId: task.id,
+          sessionId: currentRequest.requester.id,
+          ...(taskParentRoleId(task) ? { role: taskParentRoleId(task) } : {}),
+        },
+        now,
+      });
+      const existingInput = await ctx.taskInputs.get(
+        prepared.taskInput.id,
+        exact.workspaceId,
+        exact.taskPath
+      );
+      const input = existingInput
+        ? (assertDecisionResponseTaskInputMatches(existingInput, prepared.taskInput), existingInput)
+        : await ctx.taskInputs.add(prepared.taskInput);
+      const wasPending = currentRequest.status === "pending";
+      const answered = await ctx.decisionRequests.answerExact({
+        workspaceId: exact.workspaceId,
+        taskPath: exact.taskPath,
+        requestId: currentRequest.id,
+        responder,
+        response,
+      });
+      if (wasPending) {
+        ctx.events.emit(
+          "decisionRequest.resolved",
+          exact.workspaceId,
+          projectDecisionRequest(answered),
+          "self"
+        );
+      }
+      let nextTask = task;
+      if (task.state === "waiting" && task.wait?.reason === "user-input") {
+        ctx.host.markSelfWrite(exact.workspaceId);
+        nextTask = await taskResume(mount.env, exact.taskPath);
+        emitTaskState(ctx, exact.workspaceId, nextTask, "decisionRequest.respond");
+      }
+      return { answered, input, task: nextTask };
+    })
+  );
+
+  ctx.events.emit(
+    "taskInput.pending",
+    exact.workspaceId,
+    projectTaskInput(result.input),
+    "self"
+  );
+  enqueueManagedTaskInputBackground(ctx, result.input);
+  return {
+    request: projectDecisionRequest(result.answered),
+    input: projectTaskInput(result.input),
+    task: projectTask(result.task),
+    state: result.task.state,
+    accepted: true,
+    enqueued: true,
+  };
 }
 
-/**
- * Managed ACP: after user answer, feed fixed-format prompt into the live bound session.
- * Prefer Task.current sessionId when rebound after recoverable park; item.sessionId
- * remains audit origin only. Prefer live sendFollowUpPrompt; else resumeSession when capable.
- * External agents query userAsk.get — no auto chat.
- */
-async function continueManagedAfterUserAsk(
-  ctx: HandlerContext,
-  item: UserAskRecord
-): Promise<{ continued: boolean; error?: string }> {
-  const sessionId = await resolveUserAskContinueSessionId(ctx, item);
-  if (!sessionId) return { continued: false };
-  const prompt = formatUserAskAnswerPrompt(item);
-  try {
-    // Live follow-up path (prefer current bound process after replacement rebind).
-    try {
-      await ctx.runtime.sendFollowUpPrompt(sessionId, prompt);
-      return { continued: true };
-    } catch (liveErr) {
-      const liveMessage =
-        liveErr instanceof Error ? liveErr.message : String(liveErr);
-      // Live session without structured follow-up (e.g. fake process adapter):
-      // do not call resumeSession on an alive process.
-      try {
-        const liveProbe = await ctx.runtime.probe(sessionId);
-        if (liveProbe.alive && SessionRegistry.isNonTerminal(liveProbe.state)) {
-          return {
-            continued: false,
-            error:
-              liveMessage ||
-              "managed session live but does not support follow-up inject; external agent may poll userAsk.get",
-          };
-        }
-      } catch {
-        // probe failed — fall through to resume path
+function coreDecisionRequest(item: DecisionRequestRecord): DecisionRequest {
+  return item.status === "pending"
+    ? {
+        id: item.id,
+        taskId: item.taskId,
+        requester: item.requester,
+        target: item.target,
+        question: item.question,
+        options: item.options,
+        status: "pending",
       }
-      // Fall through to provider-native resume when live follow-up is unavailable.
-      if (!/not alive|does not support live follow-up/i.test(liveMessage)) {
-        // Unexpected live error — still try resume if possible.
-      }
-    }
-
-    const probe = await ctx.runtime.probe(sessionId);
-    if (!probe.resumeCapable) {
-      return {
-        continued: false,
-        error:
-          "managed session not live and not resume-capable; external agent may poll userAsk.get",
+    : {
+        id: item.id,
+        taskId: item.taskId,
+        requester: item.requester,
+        target: item.target,
+        question: item.question,
+        options: item.options,
+        status: "answered",
+        response: item.response,
+        resolvedBy: item.resolvedBy,
       };
-    }
-    const rec = await ctx.runtime.registry.read(sessionId);
-    const cwd = rec?.runtimeWorkspace?.cwd;
-    await ctx.runtime.resumeSession({
-      sessionId,
-      bootstrapPrompt: prompt,
-      ...(cwd ? { runtimeWorkspace: { cwd } } : {}),
-    });
-    return { continued: true };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    // Answer already persisted + task already resumed — continue failure is diagnostic only.
-    ctx.events.emit(
-      "session.state",
-      item.workspaceId,
-      {
-        sessionId,
-        originSessionId: item.sessionId,
-        taskPath: item.taskPath,
-        runtimeEvent: "userAsk.continue.failed",
-        error: message,
-        taskFailed: false,
-      },
-      "service"
-    );
-    return { continued: false, error: message };
-  }
 }
 
-function projectUserAsk(item: UserAskRecord) {
+async function decisionRequestEscalateRpc(
+  ctx: HandlerContext,
+  p: Record<string, unknown>,
+  caller: DecisionCallerContext
+) {
+  assertAllowedParams(
+    p,
+    new Set(["workspaceId", "taskPath", "requestId"]),
+    "decisionRequest.escalate"
+  );
+  const exact = await requireExactDecisionRequest(ctx, p);
+  const responder = await decisionCallerAuthority(ctx, exact.workspaceId, caller);
+  assertDecisionAuthority(exact.request, responder);
+  if (responder.kind !== "role") {
+    throw new RpcError(-32001, "Only the frozen Role target may escalate to user");
+  }
+  const escalated = await ctx.decisionRequests.escalateExact(
+    exact.workspaceId,
+    exact.taskPath,
+    exact.request.id
+  );
+  ctx.events.emit(
+    "decisionRequest.pending",
+    exact.workspaceId,
+    projectDecisionRequest(escalated),
+    "self"
+  );
+  return { request: projectDecisionRequest(escalated) };
+}
+
+function projectDecisionRequest(item: DecisionRequestRecord) {
   return {
     id: item.id,
     workspaceId: item.workspaceId,
     taskPath: item.taskPath,
     taskId: item.taskId,
-    sessionId: item.sessionId,
-    role: item.role,
+    requester: item.requester,
+    target: item.target,
     question: item.question,
-    choices: item.choices,
+    options: item.options,
     status: item.status,
-    answer: item.answer,
-    choiceId: item.choiceId,
+    ...(item.status === "answered"
+      ? { response: item.response, resolvedBy: item.resolvedBy, answeredAt: item.answeredAt }
+      : {}),
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
-    resolvedAt: item.resolvedAt,
-    resolvedBy: item.resolvedBy,
   };
 }
 
-/** Best-effort: cancel pending business asks when task occupation ends. */
-async function cancelUserAsksForTask(
-  ctx: HandlerContext,
-  workspaceId: string,
-  taskPath: string,
-  resolvedBy: string
-): Promise<void> {
-  try {
-    const cancelled = await ctx.userAsks.cancelTask(
-      workspaceId,
-      taskPath,
-      resolvedBy
-    );
-    for (const ask of cancelled) {
-      ctx.events.emit(
-        "userAsk.resolved",
-        workspaceId,
-        {
-          askId: ask.id,
-          decision: "cancelled",
-          actor: resolvedBy,
-          taskPath: ask.taskPath,
-          sessionId: ask.sessionId,
-        },
-        "service"
-      );
-    }
-  } catch {
-    // cleanup must not block interrupt/fail
-  }
-}
-
-async function cancelUserAsksForSession(
-  ctx: HandlerContext,
-  workspaceId: string,
-  sessionId: string,
-  resolvedBy: string
-): Promise<void> {
-  try {
-    const cancelled = await ctx.userAsks.cancelSession(sessionId, resolvedBy);
-    for (const ask of cancelled) {
-      ctx.events.emit(
-        "userAsk.resolved",
-        workspaceId || ask.workspaceId,
-        {
-          askId: ask.id,
-          decision: "cancelled",
-          actor: resolvedBy,
-          taskPath: ask.taskPath,
-          sessionId: ask.sessionId,
-        },
-        "service"
-      );
-    }
-  } catch {
-    // cleanup must not block session teardown
-  }
-}
-
-// ---- U2A task input (one-shot append; not chat; not UserAsk) ----
+// ---- U2A task input (one-shot append; not chat; not DecisionRequest) ----
 
 /**
  * Explicit workspaceId (no foreground fallback) + taskPath.
@@ -10485,7 +10547,7 @@ async function projectRuntimeEventOnce(
     // - reject-resume park / in-flight native restore;
     // - recoverable session-unavailable park (pre-Delivery);
     // - published Delivery / collaboration-terminal Task
-    // all retain durable TaskInputs / UserAsks. Unbound sessions still cancel by sessionId
+    // all retain durable TaskInputs. Unbound sessions still cancel by sessionId
     // (no Task mutation owns cleanup). Bound pre-Delivery tasks park recoverably and
     // preserve pending rows for explicit task.startSession recovery.
     const boundTaskForTerminal = await loadBoundTaskForSessionTerminal(
@@ -10507,13 +10569,6 @@ async function projectRuntimeEventOnce(
       !isTaskCollaborationTerminal(boundTaskForTerminal);
     if (!retainInputsOnTerminal && !boundTaskForTerminal) {
       // Unbound session: no task mutation can own cleanup, so cancel by session.
-      // Pending business UserAsks bound to this session are cancelled (not answered).
-      await cancelUserAsksForSession(
-        ctx,
-        workspaceId,
-        ev.sessionId,
-        ev.type === "session.failed" ? "session.failed" : "session.exited"
-      );
       // Only pending U2A inputs; delivered remains delivered after cleanup.
       await cancelTaskInputsForSession(
         ctx,
@@ -10528,12 +10583,6 @@ async function projectRuntimeEventOnce(
       boundTaskForTerminal.state === "failed"
     ) {
       // Terminal failed Task (legacy/start-launch fail path): cancel leftover pending rows.
-      await cancelUserAsksForTask(
-        ctx,
-        workspaceId,
-        boundTaskForTerminal.path,
-        ev.type === "session.failed" ? "session.failed" : "session.exited"
-      );
       await cancelTaskInputsForTask(
         ctx,
         workspaceId,
@@ -10587,12 +10636,12 @@ async function projectRuntimeEventOnce(
         task.wait?.reason === "user-input"
       ) {
         // Tool approval resolved (or session resumed) → running again.
-        // Keep waiting when a business UserAsk is still pending for this task.
-        const pendingAsk = await ctx.userAsks.getPendingForTask(
+        // Keep waiting while the exact Task has a pending Decision Request.
+        const pendingDecision = await ctx.decisionRequests.getPendingForTask(
           mount.workspaceId,
           task.path
         );
-        if (!pendingAsk) {
+        if (!pendingDecision) {
           await ctx.mutations.run(mount.workspaceId, async () => {
             ctx.host.markSelfWrite(mount.workspaceId);
             const resumed = await taskResume(mount.env, task.path);
@@ -10698,16 +10747,9 @@ async function failTaskFromRuntime(
     }
     // The authority check and all durable cleanup share the same mutation
     // boundary. Delivery/reject-resume cannot interleave between this read and
-    // cancellation of TaskInputs/UserAsks.
-    await cancelUserAsksForTask(ctx, input.workspaceId, input.taskPath, "task.fail");
+    // cancellation of TaskInputs.
     await cancelTaskInputsForTask(ctx, input.workspaceId, input.taskPath, "task.fail");
     if (input.sessionId) {
-      await cancelUserAsksForSession(
-        ctx,
-        input.workspaceId,
-        input.sessionId,
-        "task.fail"
-      );
       await cancelTaskInputsForSession(
         ctx,
         input.workspaceId,
@@ -10798,7 +10840,7 @@ async function loadBoundTaskForSessionTerminal(
 }
 
 /**
- * Whether session terminal cleanup must retain durable TaskInputs / UserAsks.
+ * Whether session terminal cleanup must retain durable TaskInputs.
  * stopReason=user covers seal-before-deliver and post-deliver stop even when the
  * adapter reports session.failed ("interrupted") instead of session.exited.
  * Recoverable session-unavailable park and reject-resume park also retain.
@@ -10864,7 +10906,7 @@ function shouldSkipTaskFailOnSessionTerminal(input: {
  * Managed ACP path: capture final assistant response → same task.deliver lifecycle
  * **only when explicit outcome=delivered**.
  * - summary/report = assistant final reply body after outcome wire
- * - outcome blocked|needs-input → park via existing wait/UserAsk paths; no ready Delivery
+ * - outcome blocked|needs-input → park via existing wait paths; no ready Delivery
  * - review-required → pending independent accept; auto-accept/agent-decide only at
  *   the user-facing responsibility boundary, regardless of Role/Session executor
  * - empty/error already filtered by adapter; still refuse empty here
@@ -11417,7 +11459,7 @@ async function collectManagedDeliveryCommits(
 
 /**
  * Seal the managed turn before publishing Delivery.
- * Stops the process (and cancels pending tool asks / A2U UserAsks) so
+ * Stops the process (and cancels pending tool asks) so
  * post-response worktree mutations cannot land after the task enters delivered.
  * Returns true when the session is no longer able to mutate (dead / terminal).
  * Returns false only when a stop was required and the process is still alive.
@@ -11436,16 +11478,6 @@ async function sealManagedSessionBeforeDelivery(
   try {
     try {
       await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
-    } catch {
-      // ignore
-    }
-    try {
-      await cancelUserAsksForSession(
-        ctx,
-        input.workspaceId,
-        input.sessionId,
-        "session.stop_after_deliver"
-      );
     } catch {
       // ignore
     }
@@ -11502,16 +11534,6 @@ async function stopManagedSessionAfterDelivery(
   try {
     try {
       await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
-    } catch {
-      // ignore
-    }
-    try {
-      await cancelUserAsksForSession(
-        ctx,
-        input.workspaceId,
-        input.sessionId,
-        "session.stop_after_deliver"
-      );
     } catch {
       // ignore
     }

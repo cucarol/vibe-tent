@@ -1,6 +1,6 @@
 /**
  * Unified A2U pending projection: interaction.listPending.
- * Aggregates UserAsk / toolApproval / ready Delivery — no new store.
+ * Aggregates DecisionRequest / toolApproval / ready Delivery — no new store.
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -105,14 +105,14 @@ test("interaction.listPending aggregates three kinds with stable sort and counts
     const taskId = taskGot.task.id;
     assert.ok(taskId, "task id required for delivery + pointers");
 
-    // 1) UserAsk pending
-    const asked = (await client.taskAskUser(workspaceId, taskPath, {
+    // 1) Decision Request pending from the exact executing Role Session
+    const requested = (await roleClient.taskRequestDecision(workspaceId, taskPath, {
       question: "Ship v1 or v2?",
-      choices: [
+      options: [
         { id: "v1", label: "Ship v1" },
         { id: "v2", label: "Ship v2" },
       ],
-    })) as { ask: { id: string; createdAt: string } };
+    })) as { request: { id: string; createdAt: string } };
 
     // 2) Tool approval pending (safe options only; no raw args in store row)
     const toolId = makeToolApprovalId();
@@ -160,7 +160,7 @@ test("interaction.listPending aggregates three kinds with stable sort and counts
 
     assert.equal(result.workspaceId, workspaceId);
     assert.equal(result.counts.total, 3);
-    assert.equal(result.counts.userAsk, 1);
+    assert.equal(result.counts.decisionRequest, 1);
     assert.equal(result.counts.toolApproval, 1);
     assert.equal(result.counts.delivery, 1);
     assert.equal(result.items.length, 3);
@@ -172,16 +172,16 @@ test("interaction.listPending aggregates three kinds with stable sort and counts
     assert.equal(result.items[0]!.id, toolId);
     assert.equal(result.items[1]!.kind, "delivery");
     assert.equal(result.items[1]!.id, delivery.id);
-    assert.equal(result.items[2]!.kind, "userAsk");
-    assert.equal(result.items[2]!.id, asked.ask.id);
+    assert.equal(result.items[2]!.kind, "decisionRequest");
+    assert.equal(result.items[2]!.id, requested.request.id);
 
-    const userAsk = result.items.find((i) => i.kind === "userAsk");
-    assert.ok(userAsk && userAsk.kind === "userAsk");
-    assert.equal(userAsk.taskPath, taskPath);
-    assert.equal(userAsk.taskId, taskId);
-    assert.equal("nodeId" in userAsk, false);
-    assert.equal(userAsk.question, "Ship v1 or v2?");
-    assert.equal(userAsk.choices?.length, 2);
+    const decisionRequest = result.items.find((i) => i.kind === "decisionRequest");
+    assert.ok(decisionRequest && decisionRequest.kind === "decisionRequest");
+    assert.equal(decisionRequest.taskPath, taskPath);
+    assert.equal(decisionRequest.taskId, taskId);
+    assert.equal("nodeId" in decisionRequest, false);
+    assert.equal(decisionRequest.question, "Ship v1 or v2?");
+    assert.equal(decisionRequest.options.length, 2);
 
     const tool = result.items.find((i) => i.kind === "toolApproval");
     assert.ok(tool && tool.kind === "toolApproval");
@@ -231,7 +231,7 @@ test("interaction.listPending empty workspace returns zero counts", async () => 
     )) as PendingInteractionListResult;
     assert.equal(result.counts.total, 0);
     assert.deepEqual(result.items, []);
-    assert.equal(result.counts.userAsk, 0);
+    assert.equal(result.counts.decisionRequest, 0);
     assert.equal(result.counts.toolApproval, 0);
     assert.equal(result.counts.delivery, 0);
   });

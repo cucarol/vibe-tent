@@ -60,7 +60,7 @@ export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
   }
   if (
     type.startsWith("toolApproval.") ||
-    type.startsWith("userAsk.") ||
+    type.startsWith("decisionRequest.") ||
     type.startsWith("taskInput.")
   ) {
     return { keys: ["pending.interactions"], event, reason: type };

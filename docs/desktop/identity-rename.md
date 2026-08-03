@@ -12,9 +12,9 @@ public objects. It does not define a migration or alternate lookup grammar.
 | Task | `tk-…` | none | Task envelope path |
 | Session | `ss-…` | safe runtime projection | machine registry row |
 | Delivery | `dl-…` | review note/summary | Delivery record path |
-| Settings route | machine `routeId` | display metadata | machine Settings only |
+| Agent Connection | machine `connectionId` | display metadata | machine Settings only |
 
-Do not invent ids merely for visual uniformity. A Settings route is machine
+Do not invent ids merely for visual uniformity. An Agent Connection is machine
 configuration, not a collaboration identity or Role.
 
 ## 2. Role identity
@@ -29,7 +29,7 @@ atomic contract covering `temp/<role>/`, open Task references, branch/worktree
 labels, and cached projections; it is not silently performed by metadata update.
 
 Role metadata does not select providers. Managed execution uses a machine
-Settings `routeId` at Task dispatch.
+Settings `connectionId` at Task dispatch.
 
 ## 3. Node rename
 

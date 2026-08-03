@@ -9,8 +9,8 @@
 export const PENDING_INTERACTION_EVENT_TYPES = [
   "toolApproval.pending",
   "toolApproval.resolved",
-  "userAsk.pending",
-  "userAsk.resolved",
+  "decisionRequest.pending",
+  "decisionRequest.resolved",
   "taskInput.pending",
   "taskInput.delivered",
   "taskInput.consumed",
@@ -30,8 +30,8 @@ export function isPendingInteractionEventType(type: string): boolean {
 export const TASK_PROJECTION_EVENT_TYPES = [
   "task.state",
   "delivery.updated",
-  "userAsk.pending",
-  "userAsk.resolved",
+  "decisionRequest.pending",
+  "decisionRequest.resolved",
   "toolApproval.pending",
   "toolApproval.resolved",
   "taskInput.pending",
@@ -46,16 +46,15 @@ export function isTaskProjectionEventType(type: string): boolean {
 
 // ---- Normalized view models (safe UI fields only) ----
 
-export type UserAskItem = {
-  kind: "userAsk";
+export type DecisionRequestItem = {
+  kind: "decisionRequest";
   id: string;
   taskPath: string;
-  taskId?: string;
-  sessionId?: string;
-  /** Source role when projected. */
-  role?: string;
+  taskId: string;
+  requester: { kind: "session"; id: string };
+  target: { kind: "user" | "role"; id: string };
   question: string;
-  choices: Array<{ id: string; label: string }>;
+  options: Array<{ id: string; label: string }>;
   createdAt: string;
 };
 
@@ -84,7 +83,7 @@ export type TaskInputItem = {
   taskId?: string;
   sessionId?: string;
   role?: string;
-  /** user-input | review-feedback — never folded into UserAsk. */
+  /** user-input | review-feedback | decision-response — never folded into a request. */
   inputKind: "user-input" | "review-feedback" | string;
   text?: string;
   contextRefs: string[];
@@ -127,29 +126,41 @@ export function summarizeToolApprovalOptions(
     .join(" · ");
 }
 
-export function normalizeUserAsk(raw: unknown): UserAskItem | null {
+export function normalizeDecisionRequest(raw: unknown): DecisionRequestItem | null {
   if (!isRecord(raw)) return null;
   const id = str(raw.id);
   const taskPath = str(raw.taskPath);
+  const taskId = str(raw.taskId);
   const question = str(raw.question);
-  if (!id || !taskPath || !question) return null;
-  const choicesRaw = Array.isArray(raw.choices) ? raw.choices : [];
-  const choices: Array<{ id: string; label: string }> = [];
-  for (const c of choicesRaw) {
+  const requester = isRecord(raw.requester) ? raw.requester : null;
+  const target = isRecord(raw.target) ? raw.target : null;
+  if (
+    !id ||
+    !taskPath ||
+    !taskId ||
+    !question ||
+    requester?.kind !== "session" ||
+    !str(requester.id) ||
+    (target?.kind !== "user" && target?.kind !== "role") ||
+    !str(target.id)
+  ) return null;
+  const optionsRaw = Array.isArray(raw.options) ? raw.options : [];
+  const options: Array<{ id: string; label: string }> = [];
+  for (const c of optionsRaw) {
     if (!isRecord(c)) continue;
     const cid = str(c.id);
     const label = str(c.label);
-    if (cid && label) choices.push({ id: cid, label });
+    if (cid && label) options.push({ id: cid, label });
   }
   return {
-    kind: "userAsk",
+    kind: "decisionRequest",
     id,
     taskPath,
-    taskId: str(raw.taskId),
-    sessionId: str(raw.sessionId),
-    role: str(raw.role),
+    taskId,
+    requester: { kind: "session", id: str(requester.id)! },
+    target: { kind: target.kind, id: str(target.id)! },
     question,
-    choices,
+    options,
     createdAt: strOrEmpty(raw.createdAt),
   };
 }
@@ -231,9 +242,11 @@ export function normalizeProposal(raw: unknown): ProposalItem | null {
   };
 }
 
-export function normalizeUserAskList(result: unknown): UserAskItem[] {
-  const list = isRecord(result) && Array.isArray(result.asks) ? result.asks : [];
-  return list.map(normalizeUserAsk).filter((x): x is UserAskItem => !!x);
+export function normalizeDecisionRequestList(result: unknown): DecisionRequestItem[] {
+  const list = isRecord(result) && Array.isArray(result.requests) ? result.requests : [];
+  return list
+    .map(normalizeDecisionRequest)
+    .filter((x): x is DecisionRequestItem => !!x);
 }
 
 export function normalizeToolApprovalList(result: unknown): ToolApprovalItem[] {
@@ -256,47 +269,70 @@ export function normalizeProposalList(result: unknown): ProposalItem[] {
  * Delivery review rows are counted separately by callers (from task projection).
  */
 export function pendingInteractionCount(parts: {
-  userAsks?: unknown[] | null;
+  decisionRequests?: unknown[] | null;
   toolApprovals?: unknown[] | null;
   taskInputs?: unknown[] | null;
   proposals?: unknown[] | null;
 }): number {
   return (
-    (parts.userAsks?.length ?? 0) +
+    (parts.decisionRequests?.length ?? 0) +
     (parts.toolApprovals?.length ?? 0) +
     (parts.taskInputs?.length ?? 0) +
     (parts.proposals?.length ?? 0)
   );
 }
 
-// ---- Resolve / reply payloads (user actor; real RPC shapes) ----
+// ---- Decision response payloads (transport-authenticated; no actor selector) ----
 
-export function buildUserAskReplyPayload(
-  askId: string,
-  args: { answer?: string; choiceId?: string; actor?: string }
+export function buildDecisionResponsePayload(
+  workspaceId: string,
+  taskPath: string,
+  requestId: string,
+  args: { text?: string; optionId?: string }
 ):
-  | { ok: true; payload: { askId: string; actor: string; answer?: string; choiceId?: string } }
+  | {
+      ok: true;
+      payload: {
+        workspaceId: string;
+        taskPath: string;
+        requestId: string;
+        response: { kind: "custom"; text: string } | { kind: "option"; optionId: string };
+      };
+    }
   | { ok: false; reason: string } {
-  const id = askId.trim();
-  if (!id) return { ok: false, reason: "缺少提问 id。" };
-  const answer = args.answer?.trim() || "";
-  const choiceId = args.choiceId?.trim() || "";
-  if (!answer && !choiceId) {
+  const id = requestId.trim();
+  if (!workspaceId) return { ok: false, reason: "缺少工作区。" };
+  if (!taskPath.trim()) return { ok: false, reason: "缺少任务路径。" };
+  if (!id) return { ok: false, reason: "缺少 Decision Request id。" };
+  const text = args.text?.trim() || "";
+  const optionId = args.optionId?.trim() || "";
+  if (Boolean(text) === Boolean(optionId)) {
     return { ok: false, reason: "请选择一个选项或填写回复。" };
   }
   return {
     ok: true,
     payload: {
-      askId: id,
-      actor: args.actor ?? "user",
-      ...(answer ? { answer } : {}),
-      ...(choiceId ? { choiceId } : {}),
+      workspaceId,
+      taskPath: taskPath.trim(),
+      requestId: id,
+      response: optionId
+        ? { kind: "option", optionId }
+        : { kind: "custom", text },
     },
   };
 }
 
-export function buildUserAskDenyPayload(askId: string, actor = "user") {
-  return { askId, actor };
+export function buildDecisionDenyPayload(
+  workspaceId: string,
+  taskPath: string,
+  requestId: string
+) {
+  return {
+    workspaceId,
+    taskPath,
+    requestId,
+    response: { kind: "deny" as const },
+  };
 }
 
 export function buildToolApprovalResolvePayload(

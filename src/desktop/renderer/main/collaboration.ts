@@ -12,8 +12,8 @@ import {
 import {
   buildTaskSendInputPayload,
   buildToolApprovalResolvePayload,
-  buildUserAskDenyPayload,
-  buildUserAskReplyPayload,
+  buildDecisionDenyPayload,
+  buildDecisionResponsePayload,
   taskInputKindLabel,
 } from "../../workbench/pending-interactions.js";
 import { bindContextCardDrag } from "../context-card-drag.js";
@@ -34,7 +34,7 @@ import {
   taskInputs,
   tasksForActiveNode,
   toolApprovals,
-  userAsks,
+  decisionRequests,
   workspaceId,
 } from "./state.js";
 
@@ -46,26 +46,25 @@ export function renderPendingInteractions(): void {
     renderTasks();
     return;
   }
-  // Independent types in one region — never merge UserAsk with TaskInput.
-  const asks = userAsks
-    .map((ask) => {
-      const choices = (ask.choices || [])
+  // Independent types in one region — never merge Decision Requests with TaskInput.
+  const requests = decisionRequests
+    .map((request) => {
+      const options = request.options
         .map(
-          (choice) => `<label class="choice-row">
-      <input type="radio" name="ask-choice-${escapeHtml(ask.id)}" value="${escapeHtml(choice.id)}" />
-      <span>${escapeHtml(choice.label)}</span></label>`
+          (option) => `<label class="choice-row">
+      <input type="radio" name="decision-option-${escapeHtml(request.id)}" value="${escapeHtml(option.id)}" />
+      <span>${escapeHtml(option.label)}</span></label>`
         )
         .join("");
-      const source = ask.role || "Agent";
-      return `<article class="interaction-item" data-ask-item="${escapeHtml(ask.id)}" data-pending-kind="userAsk">
-      <div class="interaction-kicker">USER ASK · ${escapeHtml(source)}</div>
-      <div class="interaction-title">${escapeHtml(ask.question)}</div>
-      <div class="muted interaction-note">${escapeHtml(ask.taskPath)}</div>
-      ${choices ? `<div class="choice-list">${choices}</div>` : ""}
-      <textarea class="line-input" data-ask-answer="${escapeHtml(ask.id)}" rows="2" placeholder="自由回答（可选）"></textarea>
-      <div class="interaction-actions"><button type="button" class="btn btn-primary" data-ask-reply="${escapeHtml(ask.id)}">回复</button>
-      <button type="button" class="btn btn-ghost" data-ask-deny="${escapeHtml(ask.id)}">拒绝</button>
-      <button type="button" class="btn btn-ghost" data-task-stop="${escapeHtml(ask.taskPath)}">中断任务</button></div>
+      return `<article class="interaction-item" data-decision-item="${escapeHtml(request.id)}" data-task-path="${escapeHtml(request.taskPath)}" data-pending-kind="decisionRequest">
+      <div class="interaction-kicker">DECISION REQUEST</div>
+      <div class="interaction-title">${escapeHtml(request.question)}</div>
+      <div class="muted interaction-note">${escapeHtml(request.taskPath)}</div>
+      ${options ? `<div class="choice-list">${options}</div>` : ""}
+      <textarea class="line-input" data-decision-answer="${escapeHtml(request.id)}" rows="2" placeholder="自定义回答（可选）"></textarea>
+      <div class="interaction-actions"><button type="button" class="btn btn-primary" data-decision-respond="${escapeHtml(request.id)}">回复</button>
+      <button type="button" class="btn btn-ghost" data-decision-deny="${escapeHtml(request.id)}">拒绝</button>
+      <button type="button" class="btn btn-ghost" data-task-stop="${escapeHtml(request.taskPath)}">中断任务</button></div>
     </article>`;
     })
     .join("");
@@ -83,7 +82,7 @@ export function renderPendingInteractions(): void {
     </article>`;
     })
     .join("");
-  // TaskInput is a distinct type (U2A one-shot), not a UserAsk message.
+  // TaskInput is a distinct type (U2A one-shot), not a Decision Request.
   const inputs = taskInputs
     .map((item) => {
       const text = (item.text || "").trim();
@@ -116,16 +115,16 @@ export function renderPendingInteractions(): void {
     </article>`;
     })
     .join("");
-  el.a2u.innerHTML = asks + tools + inputs + proposalItems;
+  el.a2u.innerHTML = requests + tools + inputs + proposalItems;
   el.a2u
-    .querySelectorAll<HTMLElement>("[data-ask-reply]")
+    .querySelectorAll<HTMLElement>("[data-decision-respond]")
     .forEach((button) =>
-      button.addEventListener("click", () => void onReplyUserAsk(button.getAttribute("data-ask-reply")!))
+      button.addEventListener("click", () => void onRespondDecision(button.getAttribute("data-decision-respond")!))
     );
   el.a2u
-    .querySelectorAll<HTMLElement>("[data-ask-deny]")
+    .querySelectorAll<HTMLElement>("[data-decision-deny]")
     .forEach((button) =>
-      button.addEventListener("click", () => void onDenyUserAsk(button.getAttribute("data-ask-deny")!))
+      button.addEventListener("click", () => void onDenyDecision(button.getAttribute("data-decision-deny")!))
     );
   el.a2u
     .querySelectorAll<HTMLElement>("[data-task-stop]")
@@ -160,28 +159,39 @@ export function renderPendingInteractions(): void {
   syncInspectorSections();
 }
 
-async function onReplyUserAsk(askId: string): Promise<void> {
-  const item = el.a2u.querySelector<HTMLElement>(`[data-ask-item="${CSS.escape(askId)}"]`);
-  const answer = item?.querySelector<HTMLTextAreaElement>("[data-ask-answer]")?.value.trim() || "";
-  const choiceId = item?.querySelector<HTMLInputElement>("input[type=radio]:checked")?.value || "";
-  const built = buildUserAskReplyPayload(askId, { answer, choiceId, actor: "user" });
+async function onRespondDecision(requestId: string): Promise<void> {
+  if (!workspaceId) return;
+  const item = el.a2u.querySelector<HTMLElement>(`[data-decision-item="${CSS.escape(requestId)}"]`);
+  const taskPath = item?.getAttribute("data-task-path") || "";
+  const answer = item?.querySelector<HTMLTextAreaElement>("[data-decision-answer]")?.value.trim() || "";
+  const optionId = item?.querySelector<HTMLInputElement>("input[type=radio]:checked")?.value || "";
+  const built = buildDecisionResponsePayload(workspaceId, taskPath, requestId, {
+    text: answer,
+    optionId,
+  });
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
   }
   try {
-    await window.tentDesktop.rpc("userAsk.reply", built.payload);
-    el.status.textContent = "已回复 Agent。";
+    await window.tentDesktop.rpc("decisionRequest.respond", built.payload);
+    el.status.textContent = "已提交决定。";
     await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
   } catch (err) {
     setError(err);
   }
 }
 
-async function onDenyUserAsk(askId: string): Promise<void> {
+async function onDenyDecision(requestId: string): Promise<void> {
+  if (!workspaceId) return;
+  const item = el.a2u.querySelector<HTMLElement>(`[data-decision-item="${CSS.escape(requestId)}"]`);
+  const taskPath = item?.getAttribute("data-task-path") || "";
   try {
-    await window.tentDesktop.rpc("userAsk.deny", buildUserAskDenyPayload(askId, "user"));
-    el.status.textContent = "已拒绝 Agent 提问。";
+    await window.tentDesktop.rpc(
+      "decisionRequest.respond",
+      buildDecisionDenyPayload(workspaceId, taskPath, requestId)
+    );
+    el.status.textContent = "已拒绝该请求。";
     await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
   } catch (err) {
     setError(err);

@@ -42,7 +42,7 @@ Node-owned facts are limited to:
 - annotations and attachment references;
 - Output provenance fields where applicable.
 
-Execution progress, assignee, reviewer, Session, Delivery status, and generic
+Execution progress, Task responsibility, reviewer, Session, Delivery status, and generic
 workflow state do not belong in Node frontmatter. Desktop derives those from
 Task, Session, and Delivery projections.
 
@@ -88,8 +88,9 @@ invalid cycle.
 
 ## 6. Exact Task occupation
 
-`Task.contextCard.refs.nodes[]` is the sole authoritative Node selection for a
-Task. Dispatch acquires the full exact set atomically:
+Context Card v2 `workNodeIds[]` is the authoritative occupied Node selection;
+`contextNodeIds[]` is shared read-only context. Dispatch acquires the full work
+set atomically:
 
 - one active Task may occupy an exact Node;
 - failure on any requested Node creates no Task, manifest, lane, or partial

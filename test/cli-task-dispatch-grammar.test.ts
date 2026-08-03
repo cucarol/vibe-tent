@@ -84,6 +84,95 @@ test("CLI help documents only the canonical target and work/context Node grammar
     .find((l) => l.includes("tent task dispatch --target"));
   assert.ok(usageLine);
   assert.equal(usageLine!.includes("--target"), true);
+  assert.match(help, /task request-decision/);
+  assert.match(help, /task decision list\|get\|respond\|escalate/);
+  assert.doesNotMatch(help, /ask-user|user-ask/i);
+});
+
+test("DecisionRequest CLI forwards canonical payloads and rejects actor/alias knobs", async () => {
+  const cwd = await makeFakeTentCwd();
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  const client = {
+    listWorkspaces: async () => ({ workspaces: [] }),
+    mount: async (workspaceRoot: string) => ({
+      workspaceId: "ws-decision",
+      workspaceRoot,
+      systemRoot: path.join(workspaceRoot, ".tent"),
+    }),
+    taskRequestDecision: async (...args: unknown[]) => {
+      calls.push({ method: "request", args });
+      return { taskPath: args[1], state: "waiting", request: { id: "dr-0000000000" } };
+    },
+    decisionRequestRespond: async (...args: unknown[]) => {
+      calls.push({ method: "respond", args });
+      return { request: { id: args[2], status: "answered" }, state: "running" };
+    },
+  };
+
+  const requested = await runTaskCommand(
+    "request-decision",
+    [
+      "temp/role/tasks/task.md",
+      "--question",
+      "Choose?",
+      "--options",
+      "a=Alpha,b=Beta",
+    ],
+    { client: client as never, cwd }
+  );
+  assert.equal(requested.exitCode, 0, requested.stderr);
+  assert.deepEqual(calls[0], {
+    method: "request",
+    args: [
+      "ws-decision",
+      "temp/role/tasks/task.md",
+      {
+        question: "Choose?",
+        options: [
+          { id: "a", label: "Alpha" },
+          { id: "b", label: "Beta" },
+        ],
+      },
+    ],
+  });
+
+  const denied = await runTaskCommand(
+    "decision",
+    ["respond", "temp/role/tasks/task.md", "dr-0000000000", "--deny"],
+    { client: client as never, cwd }
+  );
+  assert.equal(denied.exitCode, 0, denied.stderr);
+  assert.deepEqual(calls[1], {
+    method: "respond",
+    args: [
+      "ws-decision",
+      "temp/role/tasks/task.md",
+      "dr-0000000000",
+      { kind: "deny" },
+    ],
+  });
+
+  const actor = await runTaskCommand(
+    "decision",
+    [
+      "respond",
+      "temp/role/tasks/task.md",
+      "dr-0000000000",
+      "--deny",
+      "--actor",
+      "rl-forged",
+    ],
+    { client: client as never, cwd }
+  );
+  assert.notEqual(actor.exitCode, 0);
+  assert.match(actor.stderr, /Unknown option --actor/);
+  assert.equal(calls.length, 2, "rejected actor selector must not call mutation RPC");
+
+  for (const alias of ["requestDecision", "decision-request", "decisionRequest"]) {
+    const rejected = await runTaskCommand(alias, [], { client: client as never, cwd });
+    assert.notEqual(rejected.exitCode, 0);
+  }
+  assert.equal(calls.length, 2);
 });
 
 test("parseTaskFlags collects repeatable work/context Node values in order", () => {

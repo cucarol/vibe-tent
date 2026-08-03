@@ -9,7 +9,7 @@ Git integration.
 
 The runtime may:
 
-- resolve one machine Settings route into a private launch plan;
+- snapshot one machine Agent Connection into a private launch plan;
 - start, resume, prompt, observe, and stop a provider process;
 - normalize ACP updates into Session events;
 - enforce input, output, frame, update, and diagnostic bounds;
@@ -20,17 +20,17 @@ The runtime may not:
 - create or claim a Task on its own;
 - acquire or edit Nodes;
 - select a reviewer or accept a Delivery;
-- turn route availability into collaboration authority;
+- turn Connection availability into collaboration authority;
 - persist provider credentials or conversation tokens in a workspace.
 
-## 2. Settings route and launch plan
+## 2. Agent Connection and launch plan
 
-A public `routeId` is a stable, non-secret reference stored in machine
-Settings. Service resolves it immediately before launch into an internal plan:
+A public `connectionId` is a stable, non-secret reference stored in machine
+Settings. Service snapshots it into the exact Session before Task creation:
 
 ```ts
 type LaunchPlan = {
-  routeId: string;
+  connectionId: string;
   adapter: string;
   command: string;
   args: string[];
@@ -42,12 +42,12 @@ type LaunchPlan = {
 ```
 
 The plan is runtime-only. Public Task and Session projections may expose the
-route id and safe compatibility facts, never secret values. A missing or
-invalid route fails before provider launch.
+Connection id and safe launch facts, never secret values. A missing or invalid
+Connection fails before Task mutation or provider launch.
 
 Managed children receive a minimal environment allowlist plus reserved Core
 keys such as workspace, Task, Session, protocol, and owning Service data-dir.
-Route configuration cannot override reserved keys.
+Connection configuration cannot override reserved keys.
 
 ## 3. Temporary managed Session
 
@@ -93,7 +93,7 @@ operations fail deterministically.
 
 Resume means reconnecting to the same provider conversation for the exact
 bound Task. Identity comes from that Task's `sessionId`, the Session's immutable
-non-secret route snapshot and provider token, and its recorded lane. Current
+non-secret Connection snapshot and provider token, and its recorded lane. Current
 Settings are consulted for a fresh start, not to reinterpret an existing
 Session. Context-generation equality only decides whether the stable prompt
 prefix may be omitted; it never authorizes continuity.
@@ -116,7 +116,7 @@ The stable prefix contains:
 - Task protocol and installed Skill contract;
 - workspace identity and project instruction pointers;
 - Role prompt when applicable;
-- live Settings route compatibility snapshot;
+- immutable Agent Connection snapshot;
 - the facts used to compute the current context generation.
 
 The dynamic tail contains the current Context Card, Node refs, Task state,
@@ -126,7 +126,7 @@ as execution provenance after a prompt is actually prepared. A mismatch sends
 the full current prefix on the same native conversation. Collector failure
 fails loud and never creates placeholder facts.
 
-## 8. TaskInput and UserAsk
+## 8. TaskInput and DecisionRequest
 
 Managed input delivery is at-most-once. `pending` and `failed` rows are
 retryable; `processing` is in flight; `uncertain` is durable ambiguity and is
@@ -137,8 +137,9 @@ All four open states block Delivery. Successful authorized acknowledgement of
 of the existing durable Delivery draft. It never prompts the provider again,
 and background retry failure does not reverse the acknowledgement.
 
-UserAsk is the separate Agent-to-user question path. It parks the Task until
-the exact answer or denial returns through Service.
+DecisionRequest is the separate exact-Session question path. It parks the Task
+until the frozen user or Role target responds. Service persists the deterministic
+`decision-response` TaskInput before marking the request answered.
 
 ## 9. Final report and Delivery
 
@@ -176,7 +177,7 @@ split occurrences.
 
 An unintentional managed process exit before Delivery parks an eligible Task in
 the existing recoverable `session_unavailable` path. It preserves Node
-occupation, TaskInput/UserAsk records, worktree, and report draft. Recovery is
+occupation, TaskInput/DecisionRequest records, worktree, and report draft. Recovery is
 explicit start/resume or replacement; Service does not re-prompt in the
 background.
 

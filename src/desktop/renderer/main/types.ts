@@ -11,7 +11,7 @@ import type {
   ProposalItem,
   TaskInputItem,
   ToolApprovalItem,
-  UserAskItem,
+  DecisionRequestItem,
 } from "../../workbench/pending-interactions.js";
 
 /**
@@ -63,7 +63,7 @@ export type BacklinkView = {
 };
 
 /** Normalized pending rows — see workbench/pending-interactions.ts. */
-export type UserAskView = UserAskItem;
+export type DecisionRequestView = DecisionRequestItem;
 export type ToolApprovalView = ToolApprovalItem;
 export type TaskInputView = TaskInputItem;
 export type ProposalView = ProposalItem;

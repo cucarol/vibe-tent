@@ -433,118 +433,147 @@ export async function runTaskCommand(
           formatTaskWorktreeReclaim(r, action)
         );
       }
-      case "ask-user":
-      case "askUser": {
+      case "request-decision": {
+        const unknown = findUnknownFlag(
+          flags,
+          new Set(["question", "options", ...TASK_COMMON_FLAGS])
+        );
+        if (unknown) return failUsage(`Unknown option --${unknown} for task request-decision`);
         const taskPath = positionals[0];
-        if (!taskPath) {
+        if (!taskPath || positionals.length !== 1) {
           return failUsage(
-            "Usage: tent task ask-user <taskPath> --question <text>|- [--choices id=label,id=label] [--workspace <path>] [--json]"
+            "Usage: tent task request-decision <taskPath> --question <text>|- [--options id=label,id=label] [--workspace <path>] [--json]"
           );
         }
         if (!Object.prototype.hasOwnProperty.call(flags, "question")) {
-          return failUsage("tent task ask-user requires --question <text> or --question -");
+          return failUsage("tent task request-decision requires --question <text> or --question -");
         }
         let question = flags.question ?? "";
         if (question === "-") question = await readStdinText();
         if (!question.trim()) {
-          return failUsage("tent task ask-user: --question must be non-empty");
+          return failUsage("tent task request-decision: --question must be non-empty");
         }
-        const choices = parseChoicesFlag(flags.choices);
-        const result = await client.taskAskUser(workspaceId, taskPath, {
+        const options = parseDecisionOptionsFlag(flags.options);
+        const result = await client.taskRequestDecision(workspaceId, taskPath, {
           question,
-          choices,
+          options,
         });
         return okPrint(result, json, (r) => {
           const row = r as {
             taskPath: string;
             state?: string;
-            ask?: { id?: string; question?: string; status?: string };
+            request?: { id?: string; question?: string; status?: string };
           };
           return (
-            `✓ UserAsk created via service RPC\n` +
+            `✓ Decision Request created via service RPC\n` +
             `taskPath: ${row.taskPath}\n` +
             `state: ${row.state ?? "waiting"}\n` +
-            (row.ask?.id ? `askId: ${row.ask.id}\n` : "") +
-            (row.ask?.status ? `askStatus: ${row.ask.status}\n` : "")
+            (row.request?.id ? `requestId: ${row.request.id}\n` : "") +
+            (row.request?.status ? `requestStatus: ${row.request.status}\n` : "")
           );
         });
       }
-      case "user-ask":
-      case "userAsk": {
-        // tent task user-ask list|get|reply|deny
+      case "decision": {
+        // tent task decision list|get|respond|escalate
         const action = positionals[0];
         if (!action || action === "list") {
-          const result = await client.userAskListPending(workspaceId);
-          return okPrint(result, json, (r) => formatUserAskList(r));
+          const unknown = findUnknownFlag(flags, TASK_COMMON_FLAGS);
+          if (unknown) return failUsage(`Unknown option --${unknown} for task decision list`);
+          if (positionals.length > 1) {
+            return failUsage("Usage: tent task decision list [--workspace <path>] [--json]");
+          }
+          const result = await client.decisionRequestListPending(workspaceId);
+          return okPrint(result, json, (r) => formatDecisionRequestList(r));
         }
         if (action === "get") {
-          const askId = positionals[1];
-          if (!askId) {
+          const unknown = findUnknownFlag(flags, TASK_COMMON_FLAGS);
+          if (unknown) return failUsage(`Unknown option --${unknown} for task decision get`);
+          const taskPath = positionals[1];
+          const requestId = positionals[2];
+          if (!taskPath || !requestId || positionals.length !== 3) {
             return failUsage(
-              "Usage: tent task user-ask get <askId> [--workspace <path>] [--json]"
+              "Usage: tent task decision get <taskPath> <requestId> [--workspace <path>] [--json]"
             );
           }
-          const result = await client.userAskGet(askId);
-          return okPrint(result, json, (r) => formatUserAskGet(r));
+          const result = await client.decisionRequestGet(workspaceId, taskPath, requestId);
+          return okPrint(result, json, (r) => formatDecisionRequestGet(r));
         }
-        if (action === "reply") {
-          const askId = positionals[1];
-          if (!askId) {
+        if (action === "respond") {
+          const unknown = findUnknownFlag(
+            flags,
+            new Set(["option", "text", "deny", ...TASK_COMMON_FLAGS])
+          );
+          if (unknown) return failUsage(`Unknown option --${unknown} for task decision respond`);
+          const taskPath = positionals[1];
+          const requestId = positionals[2];
+          if (!taskPath || !requestId || positionals.length !== 3) {
             return failUsage(
-              "Usage: tent task user-ask reply <askId> [--answer <text>|-] [--choice <id>] [--workspace <path>] [--json]"
+              "Usage: tent task decision respond <taskPath> <requestId> (--option <id> | --text <text>|- | --deny) [--workspace <path>] [--json]"
             );
           }
-          let answer = flags.answer;
-          if (answer === "-") answer = await readStdinText();
-          const choiceId = flags.choice || flags["choice-id"] || flags.choiceId;
-          if (!(answer?.trim() || choiceId?.trim())) {
+          let text = flags.text;
+          if (text === "-") text = await readStdinText();
+          const optionId = flags.option;
+          const deny = flags.deny === "true" || flags.deny === "1" || flags.deny === "yes";
+          const selected = Number(Boolean(optionId?.trim())) + Number(Boolean(text?.trim())) + Number(deny);
+          if (selected !== 1) {
             return failUsage(
-              "tent task user-ask reply requires --answer and/or --choice"
+              "tent task decision respond requires exactly one of --option, --text, or --deny"
             );
           }
-          const result = await client.userAskReply(askId, {
-            answer,
-            choiceId,
-            actor: flags.actor || "user",
-          });
+          const response = optionId?.trim()
+            ? { kind: "option" as const, optionId: optionId.trim() }
+            : text?.trim()
+              ? { kind: "custom" as const, text }
+              : { kind: "deny" as const };
+          const result = await client.decisionRequestRespond(
+            workspaceId,
+            taskPath,
+            requestId,
+            response
+          );
           return okPrint(result, json, (r) => {
             const row = r as {
-              ask?: { id?: string; status?: string };
+              request?: { id?: string; status?: string };
               state?: string;
-              continued?: boolean;
+              enqueued?: boolean;
             };
             return (
-              `✓ UserAsk answered via service RPC\n` +
-              (row.ask?.id ? `askId: ${row.ask.id}\n` : "") +
-              (row.ask?.status ? `askStatus: ${row.ask.status}\n` : "") +
+              `✓ Decision Request answered via service RPC\n` +
+              (row.request?.id ? `requestId: ${row.request.id}\n` : "") +
+              (row.request?.status ? `requestStatus: ${row.request.status}\n` : "") +
               (row.state ? `taskState: ${row.state}\n` : "") +
-              (row.continued != null ? `continued: ${row.continued}\n` : "")
+              (row.enqueued != null ? `enqueued: ${row.enqueued}\n` : "")
             );
           });
         }
-        if (action === "deny") {
-          const askId = positionals[1];
-          if (!askId) {
+        if (action === "escalate") {
+          const unknown = findUnknownFlag(flags, TASK_COMMON_FLAGS);
+          if (unknown) return failUsage(`Unknown option --${unknown} for task decision escalate`);
+          const taskPath = positionals[1];
+          const requestId = positionals[2];
+          if (!taskPath || !requestId || positionals.length !== 3) {
             return failUsage(
-              "Usage: tent task user-ask deny <askId> [--workspace <path>] [--json]"
+              "Usage: tent task decision escalate <taskPath> <requestId> [--workspace <path>] [--json]"
             );
           }
-          const result = await client.userAskDeny(askId, flags.actor || "user");
+          const result = await client.decisionRequestEscalate(
+            workspaceId,
+            taskPath,
+            requestId
+          );
           return okPrint(result, json, (r) => {
             const row = r as {
-              ask?: { id?: string; status?: string };
-              state?: string;
+              request?: { id?: string; target?: { kind?: string; id?: string } };
             };
             return (
-              `✓ UserAsk denied via service RPC\n` +
-              (row.ask?.id ? `askId: ${row.ask.id}\n` : "") +
-              (row.ask?.status ? `askStatus: ${row.ask.status}\n` : "") +
-              (row.state ? `taskState: ${row.state}\n` : "")
+              `✓ Decision Request escalated to user\n` +
+              (row.request?.id ? `requestId: ${row.request.id}\n` : "")
             );
           });
         }
         return failUsage(
-          "Usage: tent task user-ask list|get|reply|deny …\n" + taskHelpText()
+          "Usage: tent task decision list|get|respond|escalate …\n" + taskHelpText()
         );
       }
       case "send-input":
@@ -833,8 +862,8 @@ function parseCommitsFlag(raw: string | undefined): string[] | undefined {
   return commits;
 }
 
-/** Parse `id=label,id=label` into UserAsk choices. */
-function parseChoicesFlag(
+/** Parse `id=label,id=label` into Decision Request options. */
+function parseDecisionOptionsFlag(
   raw: string | undefined
 ): Array<{ id: string; label: string }> | undefined {
   if (raw === undefined || !raw.trim()) return undefined;
@@ -844,12 +873,12 @@ function parseChoicesFlag(
     if (!trimmed) continue;
     const eq = trimmed.indexOf("=");
     if (eq <= 0) {
-      throw new Error(`Invalid --choices entry (expected id=label): ${trimmed}`);
+      throw new Error(`Invalid --options entry (expected id=label): ${trimmed}`);
     }
     const id = trimmed.slice(0, eq).trim();
     const label = trimmed.slice(eq + 1).trim();
     if (!id || !label) {
-      throw new Error(`Invalid --choices entry (empty id/label): ${trimmed}`);
+      throw new Error(`Invalid --options entry (empty id/label): ${trimmed}`);
     }
     choices.push({ id, label });
   }
@@ -870,19 +899,19 @@ function parseRefsFlag(raw: string | undefined): string[] | undefined {
   return refs.length ? refs : undefined;
 }
 
-function formatUserAskList(result: unknown): string {
+function formatDecisionRequestList(result: unknown): string {
   const row = result as {
-    asks?: Array<{
+    requests?: Array<{
       id?: string;
       taskPath?: string;
       question?: string;
       status?: string;
     }>;
   };
-  const asks = row.asks ?? [];
-  if (asks.length === 0) return "asks: (none)\n";
-  const lines = [`asks: ${asks.length}`, ""];
-  for (const a of asks) {
+  const requests = row.requests ?? [];
+  if (requests.length === 0) return "decisionRequests: (none)\n";
+  const lines = [`decisionRequests: ${requests.length}`, ""];
+  for (const a of requests) {
     lines.push(
       `- ${a.id ?? "?"}` +
         `\ttask=${a.taskPath ?? "?"}` +
@@ -893,30 +922,32 @@ function formatUserAskList(result: unknown): string {
   return lines.join("\n") + "\n";
 }
 
-function formatUserAskGet(result: unknown): string {
+function formatDecisionRequestGet(result: unknown): string {
   const row = result as {
-    ask?: {
+    request?: {
       id?: string;
       taskPath?: string;
       question?: string;
       status?: string;
-      answer?: string;
-      choiceId?: string;
-      choices?: Array<{ id: string; label: string }>;
+      response?: { kind?: string; optionId?: string; text?: string };
+      options?: Array<{ id: string; label: string }>;
+      target?: { kind?: string; id?: string };
     };
   };
-  const a = row.ask ?? {};
+  const a = row.request ?? {};
   const lines = [
     `id: ${a.id ?? "?"}`,
     `taskPath: ${a.taskPath ?? "?"}`,
     `status: ${a.status ?? "?"}`,
     `question: ${a.question ?? ""}`,
   ];
-  if (a.choiceId) lines.push(`choiceId: ${a.choiceId}`);
-  if (a.answer) lines.push(`answer: ${a.answer}`);
-  if (a.choices?.length) {
-    lines.push("choices:");
-    for (const c of a.choices) lines.push(`  - ${c.id}=${c.label}`);
+  if (a.target) lines.push(`target: ${a.target.kind ?? "?"}:${a.target.id ?? "?"}`);
+  if (a.response?.kind) lines.push(`response: ${a.response.kind}`);
+  if (a.response?.optionId) lines.push(`optionId: ${a.response.optionId}`);
+  if (a.response?.text) lines.push(`text: ${a.response.text}`);
+  if (a.options?.length) {
+    lines.push("options:");
+    for (const c of a.options) lines.push(`  - ${c.id}=${c.label}`);
   }
   return lines.join("\n") + "\n";
 }
@@ -988,6 +1019,7 @@ const BOOLEAN_FLAGS = new Set([
   "no-resume",
   "yes",
   "as-sub",
+  "deny",
 ]);
 
 /** Flags that may appear more than once (values collected in order). */
@@ -998,6 +1030,14 @@ const DISPATCH_FLAGS = new Set([
   "work-node",
   "context-node",
   "prompt",
+  "workspace",
+  "json",
+  "data-dir",
+  "attach-only",
+  "service-entry",
+]);
+
+const TASK_COMMON_FLAGS = new Set([
   "workspace",
   "json",
   "data-dir",
@@ -1095,8 +1135,8 @@ Commands:
   tent task interrupt <taskPath> [--workspace <path>] [--json]
   tent task worktree-reclaim preview <taskPath> [--workspace <path>] [--json]
   tent task worktree-reclaim reconcile <taskPath> [--workspace <path>] [--json]
-  tent task ask-user <taskPath> --question <text>|- [--choices id=label,…] [--workspace <path>] [--json]
-  tent task user-ask list|get <askId>|reply <askId>|deny <askId> […] [--workspace <path>] [--json]
+  tent task request-decision <taskPath> --question <text>|- [--options id=label,…] [--workspace <path>] [--json]
+  tent task decision list|get|respond|escalate […] [--workspace <path>] [--json]
   tent task send-input <taskPath> [--text <text>|-] [--refs id,id] [--workspace <path>] [--json]
   tent task task-input list <taskPath>|get <inputId>|ack <inputId> --task <taskPath> [--actor <role|sessionId>] [--workspace <path>] [--json]
 

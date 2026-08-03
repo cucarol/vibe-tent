@@ -568,7 +568,7 @@ rl.on("line", (line) => {
         return { type: typeof p.type === "string" ? p.type : null };
       })
     );
-    // U2A follow-ups: UserAsk "## User Answer"; sendInput "## User Input";
+    // U2A follow-ups: DecisionRequest "## Decision Response"; sendInput "## User Input";
     // reject-resume review "## Review Feedback". All use FOLLOWUP_TEXT.
     const isUserFollowUp =
       textParts.includes("## User Answer") ||

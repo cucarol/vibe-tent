@@ -106,7 +106,7 @@ export interface ManagedSession {
   stop(reason: StopReason): Promise<void>;
   /**
    * Optional follow-up session/prompt on a live managed session (U2A resume).
-   * Used after UserAsk reply — not multi-turn chat. Adapters without structured
+   * Used for persisted TaskInput follow-ups — not multi-turn chat. Adapters without structured
    * prompt transport leave this undefined; service falls back to resumeSession.
    */
   sendFollowUpPrompt?(prompt: string): Promise<void>;

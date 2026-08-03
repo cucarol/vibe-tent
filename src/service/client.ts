@@ -774,22 +774,22 @@ export class ServiceClient {
     return this.call("task.resume", { workspaceId, taskPath });
   }
   /**
-   * A2U business ask: running task → pending UserAsk + waiting(user-input).
-   * Not multi-turn chat. choices optional.
+   * Exact executing Session requests a parent/user decision. Transport metadata
+   * supplies requester identity; options are optional because custom/deny are universal.
    */
-  taskAskUser(
+  taskRequestDecision(
     workspaceId: string,
     taskPath: string,
     args: {
       question: string;
-      choices?: Array<{ id: string; label: string }>;
+      options?: Array<{ id: string; label: string }>;
     }
   ) {
-    return this.call("task.askUser", { workspaceId, taskPath, ...args });
+    return this.call("task.requestDecision", { workspaceId, taskPath, ...args });
   }
   /**
    * U2A one-shot append to a running/waiting managed task (user-only).
-   * Provide text and/or contextRefs (stable entity ids). Not chat; not UserAsk reply.
+   * Provide text and/or contextRefs (stable entity ids). Not chat; not a Decision response.
    */
   taskSendInput(
     workspaceId: string,
@@ -1081,33 +1081,37 @@ export class ServiceClient {
     return this.call("toolApproval.deny", { approvalId, actor });
   }
 
-  /** A2U UserAsk pending list (business questions). Not tool permission / not chat. */
-  userAskListPending(workspaceId?: string) {
-    return this.call("userAsk.listPending", workspaceId ? { workspaceId } : {});
+  /** Pending Decision Requests visible to the authenticated user/Role authority. */
+  decisionRequestListPending(workspaceId: string) {
+    return this.call("decisionRequest.listPending", { workspaceId });
   }
-  userAskGet(askId: string) {
-    return this.call("userAsk.get", { askId });
+  decisionRequestGet(workspaceId: string, taskPath: string, requestId: string) {
+    return this.call("decisionRequest.get", { workspaceId, taskPath, requestId });
   }
-  /** User-only: answer a business ask; resumes task + optional managed continue. */
-  userAskReply(
-    askId: string,
-    args: { answer?: string; choiceId?: string; actor?: string } = {}
+  /** Respond through authenticated transport authority; caller actor text is forbidden. */
+  decisionRequestRespond(
+    workspaceId: string,
+    taskPath: string,
+    requestId: string,
+    response:
+      | { kind: "option"; optionId: string }
+      | { kind: "custom"; text: string }
+      | { kind: "deny" }
   ) {
-    return this.call("userAsk.reply", {
-      askId,
-      actor: args.actor ?? "user",
-      answer: args.answer,
-      choiceId: args.choiceId,
+    return this.call("decisionRequest.respond", {
+      workspaceId,
+      taskPath,
+      requestId,
+      response,
     });
   }
-  /** User-only: deny a business ask; resumes task for rework/observe. */
-  userAskDeny(askId: string, actor = "user") {
-    return this.call("userAsk.deny", { askId, actor });
+  decisionRequestEscalate(workspaceId: string, taskPath: string, requestId: string) {
+    return this.call("decisionRequest.escalate", { workspaceId, taskPath, requestId });
   }
 
   /**
    * Unified A2U pending read projection for one workspace.
-   * Aggregates UserAsk / toolApproval / ready Delivery.
+   * Aggregates user-targeted Decision Requests / toolApproval / ready Delivery.
    * Resolve actions stay on domain RPCs — no interaction.resolve.
    */
   interactionListPending(workspaceId: string) {

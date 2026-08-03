@@ -25,7 +25,7 @@ import {
   resolveToolApprovalWorkspaceId,
   ToolApprovalStore,
 } from "./tool-approval-store.js";
-import { UserAskStore } from "./user-ask-store.js";
+import { DecisionRequestStore } from "./decision-request-store.js";
 import { TaskInputStore } from "./task-input-store.js";
 import { ManagedDeliveryReportDraftStore } from "./managed-delivery-report-draft-store.js";
 import { ensureDefaultAgentConnections } from "./connections.js";
@@ -159,8 +159,8 @@ async function startOwnedLocalTentService(
   registerStartupCleanup(30, () => workspaceHost.dispose());
   const toolApprovals = new ToolApprovalStore(dataDir);
   await toolApprovals.ensureLoaded();
-  const userAsks = new UserAskStore(dataDir);
-  await userAsks.ensureLoaded();
+  const decisionRequests = new DecisionRequestStore(dataDir);
+  await decisionRequests.ensureLoaded();
   const taskInputs = new TaskInputStore(dataDir);
   await taskInputs.ensureLoaded();
   const managedDeliveryReportDrafts = new ManagedDeliveryReportDraftStore(dataDir);
@@ -344,7 +344,7 @@ async function startOwnedLocalTentService(
     getPid,
     runtime,
     toolApprovals,
-    userAsks,
+    decisionRequests,
     taskInputs,
     managedDeliveryReportDrafts,
     credentials,
@@ -437,7 +437,7 @@ async function startOwnedLocalTentService(
         // Tool asks are process-bound. Close their store before stopping ACP
         // children so service-owned waiters/timers cannot outlive shutdown.
         await attempt(() => toolApprovals.shutdown(), true);
-        await attempt(() => userAsks.shutdown(), true);
+        await attempt(() => decisionRequests.shutdown(), true);
         // U2A shutdown order (bounded, no full promptTimeout wait):
         // 1) stop accepting new background enqueues
         // 2) interrupt/stop runtime so hung session/prompt can settle

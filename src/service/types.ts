@@ -361,7 +361,7 @@ export type DeliveryProjection = {
  * Facts remain in domain stores / task lifecycle — this is aggregation only.
  */
 export type PendingInteractionKind =
-  | "userAsk"
+  | "decisionRequest"
   | "toolApproval"
   | "delivery";
 
@@ -377,12 +377,15 @@ export type PendingInteractionBase = {
   sessionId?: string;
 };
 
-/** A2U business UserAsk — question + choices only; no chat transcript. */
-export type PendingUserAskInteraction = PendingInteractionBase & {
-  kind: "userAsk";
+/** Exact-Task Decision Request targeted to the local user. */
+export type PendingDecisionRequestInteraction = PendingInteractionBase & {
+  kind: "decisionRequest";
   taskPath: string;
+  taskId: string;
+  sessionId: string;
+  target: { kind: "user" | "role"; id: string };
   question: string;
-  choices?: Array<{ id: string; label: string }>;
+  options: Array<{ id: string; label: string }>;
 };
 
 /**
@@ -410,12 +413,12 @@ export type PendingDeliveryInteraction = PendingInteractionBase & {
 };
 
 export type PendingInteractionItem =
-  | PendingUserAskInteraction
+  | PendingDecisionRequestInteraction
   | PendingToolApprovalInteraction
   | PendingDeliveryInteraction;
 
 export type PendingInteractionCounts = {
-  userAsk: number;
+  decisionRequest: number;
   toolApproval: number;
   delivery: number;
   total: number;
@@ -787,13 +790,12 @@ export const CLIENT_METHODS = [
   "task.wait",
   "task.resume",
   /**
-   * A2U business ask: running task → create pending UserAsk + waiting(user-input).
-   * Not tool permission; not multi-turn chat.
+   * Exact executing Session requests one parent/user decision and parks the Task.
    */
-  "task.askUser",
+  "task.requestDecision",
   /**
    * U2A one-shot append: user-only text and/or contextRefs to a running/waiting task.
-   * Not chat; does not answer a pending UserAsk; does not mutate Agent Connections.
+   * Not chat; does not answer a pending Decision Request; does not mutate Agent Connections.
    */
   "task.sendInput",
   "task.deliver",
@@ -876,18 +878,18 @@ export const CLIENT_METHODS = [
   "toolApproval.approveOnce",
   "toolApproval.deny",
   /**
-   * A2U UserAsk (business question) — machine-local; not chat.
-   * reply/deny are user-only; resolve atomically resumes the task.
+   * Exact-Task Decision Request. Response authority comes from transport context;
+   * no caller-provided actor selector is accepted.
    */
-  "userAsk.listPending",
-  "userAsk.get",
-  "userAsk.reply",
-  "userAsk.deny",
+  "decisionRequest.listPending",
+  "decisionRequest.get",
+  "decisionRequest.respond",
+  "decisionRequest.escalate",
   /**
    * Unified A2U pending read projection (workspace-scoped).
-   * Aggregates pending UserAsk, ACP tool approval, and
+   * Aggregates user-targeted Decision Requests, ACP tool approval, and
    * status=ready Delivery. No new store / state machine; resolve stays on
-   * domain RPCs (userAsk.* / toolApproval.* / task.accept|reject).
+   * domain RPCs (decisionRequest.* / toolApproval.* / task.accept|reject).
    * Fail-loud on any source failure — never a partial authoritative inbox.
    */
   "interaction.listPending",

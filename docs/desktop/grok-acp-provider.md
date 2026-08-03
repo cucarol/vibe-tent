@@ -1,12 +1,12 @@
 # Grok ACP Provider Contract
 
 Grok is one managed ACP adapter behind the Local Service runtime. Users select a
-machine Settings route; Tasks and Skills do not contain provider credentials or
+machine Agent Connection; Tasks and Skills do not contain provider credentials or
 construct provider command lines.
 
-## 1. Settings route
+## 1. Agent Connection
 
-A Grok route may resolve:
+A Grok Connection may resolve:
 
 - provider adapter id;
 - model;
@@ -15,8 +15,8 @@ A Grok route may resolve:
 - command, args, isolated provider home, and safe environment entries;
 - timeout and capability metadata.
 
-The public selector is `route:<routeId>`. The route id is non-secret and stable
-on one machine. Route contents are machine configuration, not Node content,
+The public selector is `connection:<connectionId>`. The Connection id is
+non-secret and stable on one machine. Connection contents are machine configuration, not Node content,
 Role membership, or collaboration authorization.
 
 No key, token, OAuth blob, resume token, or full provider config is written to
@@ -24,11 +24,11 @@ the workspace, Task, Delivery, Node, Git history, or public event payload.
 
 ## 2. Launch isolation
 
-Service resolves the route immediately before launch and builds a private
+Service snapshots the Connection into the Session and builds a private
 launch plan. The Grok child receives a minimal inherited environment plus exact
-route values and reserved Core keys. Reserved keys win over route input.
+Connection values and reserved Core keys. Reserved keys win over Connection input.
 
-Provider home/config is isolated from unrelated host state when the route asks
+Provider home/config is isolated from unrelated host state when the Connection asks
 for it. Working directory is the persisted Task lane, not the Service data
 directory. The owning absolute Service data-dir is forwarded so child resume
 and registry access do not resolve relative paths against a Task worktree.
@@ -52,11 +52,12 @@ degradation rather than silently emulated.
 ## 4. Managed Task flow
 
 ```text
-task dispatch --target route:<routeId> --node <nodeId> ...
+task dispatch --target connection:<connectionId> --work-node <nodeId> ...
   -> Service validates exact Node occupation and Task authority
   -> claims the Task and prepares its lane
-  -> resolves the Grok route
-  -> starts and CAS-binds one managed Session
+  -> reserves one Session with an immutable Connection snapshot
+  -> creates and claims the Task already bound to that Session
+  -> starts the provider outside the lifecycle mutation
   -> assembles official bootstrap + Context Card tail
   -> prompts the provider
   -> preserves every non-empty final report before outcome handling
@@ -79,7 +80,7 @@ incremental TaskInput and review feedback are appended through Service.
 ## 6. Resume and replacement
 
 Resume or reattach must preserve the same recoverable Grok conversation for the
-exact bound Task. Tent uses the Task's bound Session, immutable non-secret route
+exact bound Task. Tent uses the Task's bound Session, immutable non-secret Connection
 snapshot, provider token, native load support, and recorded lane. A changed
 context generation sends the full current stable prefix; it does not replace
 the conversation or select another Session.
@@ -96,7 +97,7 @@ rows are injected at most once per attempt. `uncertain` means delivery may have
 happened and is never injected again; it remains a Delivery blocker until an
 authorized acknowledgement.
 
-A provider question that requires user authority uses UserAsk and parks the
+A provider question that requires authority uses DecisionRequest and parks the
 Task. The adapter does not turn arbitrary final prose ending in a question into
 an implicit user request.
 
@@ -129,7 +130,7 @@ permit unbounded text or frame accumulation.
 
 ## 10. Redaction
 
-Known secret values are harvested from route launch environment, reserved Core
+Known secret values are harvested from Connection launch environment, reserved Core
 environment, and explicit diagnostic secret inputs. One redaction-aware bounded
 primitive is used for strings and raw buffers.
 
@@ -142,7 +143,7 @@ a credential into a visible prefix or suffix.
 Provider start, prompt, transport, or unexpected-exit failure is mapped through
 Service to the exact Task and Session. Eligible pre-Delivery failure parks the
 Task at `session_unavailable`, preserving Node occupation, worktree, TaskInput,
-UserAsk, and report draft for explicit recovery.
+DecisionRequest, and report draft for explicit recovery.
 
 Start/replace binding races use the exact Task lifecycle snapshot/CAS. A
 terminal transition may win; Service stops the unbound Session and records

@@ -13,10 +13,11 @@ state machines.
 | Session | `ss-…` | temporary managed ACP execution binding |
 | Delivery | `dl-…` | formal result submitted to the exact reviewer |
 | TaskInput | `ti-…` | parent/user input scoped to one Task |
-| UserAsk | `ua-…` | executor question requiring a user answer |
+| DecisionRequest | `dr-…` | exact Session question to a frozen user or Role authority |
 
-The Task envelope owns the immutable raw prompt, lifecycle authority, assignee,
-and WorkspaceLane. The Context Card owns structured context and durable refs.
+The Task envelope owns the immutable raw prompt, lifecycle authority, optional
+`roleId`, exact `sessionId` when executing, and WorkspaceLane. Context Card v2
+owns structured context and durable refs.
 Node bodies provide durable context. Session state is runtime authority.
 Delivery is review evidence. No one object substitutes for another.
 
@@ -29,7 +30,8 @@ or elevate Role-to-user delivery policy.
 A durable Role creates and immediately claims its own execution Task:
 
 ```text
-tent task claim --node <nodeId> [--node <nodeId> ...] \
+tent task claim --work-node <nodeId> [--work-node <nodeId> ...] \
+  [--context-node <nodeId> ...] \
   --prompt <text>|- [--from-task <taskPath>]
 ```
 
@@ -40,24 +42,25 @@ parent/reviewer chain from a verified current Role execution context; missing
 history falls back to the Role's user-facing root.
 
 Dispatch is only downstream assignment. Its public target grammar is
-`role:<roleId>|route:<routeId>`. CLI form:
+`role:<roleId>|connection:<connectionId>`. CLI form:
 
 ```text
-tent task dispatch --target role:<roleId>|route:<routeId> \
-  --node <nodeId> [--node <nodeId> ...] --prompt <text>|-
+tent task dispatch --target role:<roleId>|connection:<connectionId> \
+  --work-node <nodeId> [--work-node <nodeId> ...] \
+  [--context-node <nodeId> ...] --prompt <text>|-
 ```
 
 There is no positional source form and no alternate public Node selector. The
-typed client carries mutually exclusive Role/route target fields plus ordered
-`nodeIds[]`; the latter is de-duplicated and persisted only as
-`Task.contextCard.refs.nodes[]`. Internal transport discriminants are not a
+typed client carries mutually exclusive Role/Connection target fields plus
+ordered work and context Node refs. Internal transport discriminants are not a
 second user-facing target grammar.
 
 Targets:
 
 - `role:*` creates a queued durable Role handoff. It does not start managed ACP.
-- `route:*` resolves one machine Settings route, creates the formal Task, and
-  starts a temporary managed ACP Session.
+- `connection:*` snapshots one machine Agent Connection into a reserved Session,
+  creates and claims the formal Task with that exact `sessionId` atomically,
+  then starts the provider outside the lifecycle mutation.
 
 The temporary Session remains execution state of the dispatched Task. Durable
 responsibility and review authority remain with the persisted parent reviewer
@@ -79,22 +82,23 @@ Active states are `queued`, `running`, `waiting`, and `delivered`. Terminal
 
 ## 4. Context Card
 
-The Context Card persists:
+Context Card v2 persists:
 
 - optional objective and acceptance criteria when explicitly supplied;
 - frozen decisions and explicit include/exclude scope;
-- exact Node, Task, Delivery, and Git references;
-- context generation and Task delta digest;
+- separate exact work/context Node refs plus strict Task, Delivery, Output,
+  DecisionRequest, and Git ArtifactRefs;
+- optional execution provenance written when an actual Session computes it;
 
 The Task envelope, not the Card, persists the raw prompt, parent/reviewer,
-assignee, and optional WorkspaceLane. Default dispatch never copies the raw
+Role/Session binding, and optional WorkspaceLane. Default dispatch never copies the raw
 prompt into objective or acceptance merely to satisfy a schema.
 
 Node id is authoritative; any stored path is a refreshable hint. Required refs
 are resolved before provider launch and fail loud when missing or invalid.
 
 The stable managed prompt contains Task protocol, project instruction pointers,
-Skills, Role prompt where applicable, and live route compatibility facts. The
+Skills, Role prompt where applicable, and immutable Connection snapshot facts. The
 dynamic tail contains the current Context Card, one raw User Prompt projection,
 Task authority/state, TaskInput/review delta, and optional Role checkpoint.
 
@@ -125,7 +129,7 @@ authoritative envelope and captures the Role lane base once within the Task and
 workspace mutation boundary. Repeated claim is idempotent; it never recomputes
 the base after the Role branch moves.
 
-A route Task is claimed and bound through Service's managed lifecycle. Pure
+A Connection-launched Task is created and bound through Service's managed lifecycle. Pure
 Tent work may have no Git lane and can legitimately deliver zero commits.
 
 WorkspaceLane records:
@@ -140,10 +144,11 @@ are never guessed from cwd or branch names.
 
 ## 7. Managed Session start and replacement
 
-Service resolves the Task's exact Settings route immediately before launch.
+Service snapshots the selected Agent Connection into the exact Session before
+Task creation. Provider startup never reinterprets Task identity from Settings.
 Provider startup runs outside the exact Task lifecycle lock. Before launch it
 captures an authoritative Task snapshot; after launch it binds only when Task
-identity, state, binding, assignee, and version still match.
+identity, state, binding, responsibility, and version still match.
 
 If interrupt, accept, cancel, or finalization wins the race, binding CAS fails.
 Service stops the new Session, records a stable diagnostic, and does not publish
@@ -181,10 +186,13 @@ and background retry failure does not reverse the acknowledgement.
 An explicit user retry creates a new TaskInput first, then acknowledges the old
 uncertain row. If either mutation fails, at least one blocker remains.
 
-## 9. UserAsk and tool approval
+## 9. DecisionRequest and tool approval
 
-UserAsk is an executor-to-user question. Creation parks the Task at
-`waiting(user-input)` until reply or denial. It is separate from TaskInput.
+DecisionRequest is an exact requester Session question to the frozen parent
+user or Role authority. Creation parks the Task at `waiting(user-input)`.
+Response authority comes only from authenticated transport, never actor text.
+Service persists one deterministic `decision-response` TaskInput before marking
+the same `dr-*` answered; Role targets may escalate that same id to user.
 
 Provider tool approval is runtime-scoped and does not change Task authority.
 Tent does not replace the host's native permission UI or copy raw secret tool
@@ -215,7 +223,7 @@ those exact bytes and never asks the provider to answer again.
 A ready Delivery may publish only when:
 
 - the producing turn is complete and Session is settled;
-- no blocking TaskInput, UserAsk, or review feedback remains;
+- no blocking TaskInput, DecisionRequest, or review feedback remains;
 - the worktree and Git history are settled;
 - reported commits pass lane ancestry checks;
 - no conflicting ready Delivery exists;
@@ -238,8 +246,9 @@ The exact persisted reviewer accepts or rejects:
 - reject records review feedback and either ends the Task or atomically resumes
   it;
 - executors never accept their own Delivery;
-- Role-to-user `review | bypass | agent-decide` policy does not apply to
-  subordinate review-to-parent Tasks.
+- `review-required` uses the frozen reviewer; `auto-accept` still persists a
+  ready Delivery before Core integration; `agent-decide` is available to an
+  executor Session and is not a Role identity test.
 
 Accepted conclusions are deliberately promoted into the relevant Node by the
 accountable Role or user through an etag-checked Node mutation. Tent does not
@@ -277,7 +286,7 @@ substitutes.
 
 ## 15. Worktree reclaim
 
-Only terminal, clean, fully integrated, unambiguous route Task worktrees may be
+Only terminal, clean, fully integrated, unambiguous managed Task worktrees may be
 reclaimed automatically. Service revalidates exact registration, branch/tip,
 dirty state, Session settle, and ownership before removal.
 
@@ -301,7 +310,7 @@ interaction.listPending
 ```
 
 Events such as `node.changed`, `task.state`, `session.state`, `delivery.updated`,
-`taskInput.*`, and `userAsk.*` only invalidate cached views. Consumers re-query
+`taskInput.*`, and `decisionRequest.*` only invalidate cached views. Consumers re-query
 the owning projection.
 
 ## 17. Stable failure classes
@@ -310,7 +319,7 @@ Public failures distinguish at least:
 
 - invalid Node refs or exact occupation conflict;
 - authority/reviewer mismatch;
-- unavailable Settings route;
+- unavailable Agent Connection;
 - Task lifecycle or Session binding CAS conflict;
 - pending interaction or unresolved Delivery;
 - oversized ACP input/output;

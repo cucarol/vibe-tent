@@ -35,12 +35,12 @@ import {
   normalizeProposalList,
   normalizeTaskInputList,
   normalizeToolApprovalList,
-  normalizeUserAskList,
+  normalizeDecisionRequestList,
   pendingInteractionCount as countPendingParts,
   type ProposalItem,
   type TaskInputItem,
   type ToolApprovalItem,
-  type UserAskItem,
+  type DecisionRequestItem,
 } from "../../workbench/pending-interactions.js";
 import type { BacklinkView, NodeView, ShellState, TabView } from "./types.js";
 import { setError } from "./elements.js";
@@ -67,9 +67,9 @@ export let roles: RoleOption[] = [];
 export let taskReview: TaskReviewItem[] = [];
 export let deliveries: DeliveryProjection[] = [];
 export let sessions: SessionProjection[] = [];
-export let userAsks: UserAskItem[] = [];
+export let decisionRequests: DecisionRequestItem[] = [];
 export let toolApprovals: ToolApprovalItem[] = [];
-/** U2A one-shot pending inputs — independent type, never folded into UserAsk. */
+/** U2A one-shot pending inputs — independent from Decision Requests. */
 export let taskInputs: TaskInputItem[] = [];
 /** Pending proposal triage (separate from delivery review). */
 export let proposals: ProposalItem[] = [];
@@ -117,8 +117,8 @@ export function setSessions(list: SessionProjection[]): void {
   sessions = list;
 }
 
-export function setUserAsks(list: UserAskItem[]): void {
-  userAsks = list;
+export function setDecisionRequests(list: DecisionRequestItem[]): void {
+  decisionRequests = list;
 }
 
 export function setProposals(list: ProposalItem[]): void {
@@ -171,7 +171,7 @@ export function actionableTasks(): TaskReviewItem[] {
 
 export function pendingInteractionCount(): number {
   return countPendingParts({
-    userAsks,
+    decisionRequests,
     toolApprovals,
     taskInputs,
     proposals,
@@ -419,15 +419,15 @@ export async function reloadTasks(): Promise<void> {
 export async function reloadPendingInteractions(): Promise<void> {
   if (!workspaceId) return;
   try {
-    const [askResult, toolResult, proposalResult] = await Promise.all([
-      window.tentDesktop.rpc("userAsk.listPending", { workspaceId }),
+    const [decisionResult, toolResult, proposalResult] = await Promise.all([
+      window.tentDesktop.rpc("decisionRequest.listPending", { workspaceId }),
       window.tentDesktop.rpc("toolApproval.listPending", { workspaceId }),
       window.tentDesktop.rpc("proposal.list", {
         workspaceId,
         status: "pending",
       }),
     ]);
-    userAsks = normalizeUserAskList(askResult);
+    decisionRequests = normalizeDecisionRequestList(decisionResult);
     toolApprovals = normalizeToolApprovalList(toolResult);
     proposals = normalizeProposalList(proposalResult);
 
@@ -464,8 +464,8 @@ function collectTaskPathsForInputPoll(): string[] {
   for (const t of taskReview) {
     if (t.path) paths.add(t.path);
   }
-  for (const ask of userAsks) {
-    if (ask.taskPath) paths.add(ask.taskPath);
+  for (const request of decisionRequests) {
+    if (request.taskPath) paths.add(request.taskPath);
   }
   for (const t of toolApprovals) {
     if (t.taskPath) paths.add(t.taskPath);

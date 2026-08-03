@@ -2,9 +2,7 @@
   "id": "tent",
   "name": "Tent",
   "version": "0.1.0",
-  "minAppVersion": "1.5.0",
-  "description": "Coordinate durable Node context, role-owned tasks, Settings routes, and reviewable deliveries with coding agents.",
+  "description": "Coordinate durable Node context, role-owned tasks, Agent Connections, and reviewable deliveries with coding agents.",
   "author": "cucarol",
-  "authorUrl": "https://github.com/cucarol",
-  "isDesktopOnly": true
+  "authorUrl": "https://github.com/cucarol"
 }

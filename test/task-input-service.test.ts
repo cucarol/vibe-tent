@@ -1,6 +1,6 @@
 /**
  * U2A task.sendInput + taskInput.* via Local Service RPC (mock ACP; no paid networks).
- * Minimal non-chat companion to A2U UserAsk.
+ * Minimal non-chat companion to Decision Requests.
  * Review boundaries: workspaceId+taskPath scope; ack actor binding; cancel pending-only.
  */
 import assert from "node:assert/strict";
@@ -14,6 +14,7 @@ import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { createServiceClient } from "../src/service/client.js";
+import { deriveSessionToken } from "../src/service/auth.js";
 import { CLIENT_METHODS, RPC_LIFECYCLE } from "../src/service/types.js";
 import {
   holdManagedTaskInputQueueForTests,
@@ -154,6 +155,16 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
     await client.taskClaim(workspaceId, taskPath);
+    const bound = (await client.taskGet(workspaceId, taskPath)) as {
+      task: { sessionId?: string };
+    };
+    assert.ok(bound.task.sessionId);
+    const executor = createServiceClient({
+      baseUrl: svc.url,
+      token: svc.token,
+      currentSessionId: bound.task.sessionId,
+      currentSessionToken: deriveSessionToken(svc.token, bound.task.sessionId!),
+    });
 
     // Empty payload rejected
     await assert.rejects(
@@ -323,21 +334,26 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
     assert.ok(doubleAck.error);
     assert.equal(doubleAck.error!.code, RPC_LIFECYCLE);
 
-    // Pending UserAsk blocks sendInput
-    const asked = (await client.taskAskUser(workspaceId, taskPath, {
+    // Pending Decision Request blocks ordinary sendInput
+    const requested = (await executor.taskRequestDecision(workspaceId, taskPath, {
       question: "Need a decision first?",
-    })) as { ask: { id: string }; state: string };
-    assert.equal(asked.state, "waiting");
+    })) as { request: { id: string }; state: string };
+    assert.equal(requested.state, "waiting");
 
     await assert.rejects(
       () =>
         client.taskSendInput(workspaceId, taskPath, {
           text: "should not land while ask pending",
         }),
-      /pending UserAsk|userAsk\.reply/
+      /pending Decision Request|decisionRequest\.respond/
     );
 
-    await client.userAskReply(asked.ask.id, { answer: "go" });
+    await client.decisionRequestRespond(
+      workspaceId,
+      taskPath,
+      requested.request.id,
+      { kind: "custom", text: "go" }
+    );
 
     // After ask resolved, sendInput works again; interrupt cancels pending input
     const finalHold = holdManagedTaskInputQueueForTests(workspaceId, taskPath);
