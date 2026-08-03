@@ -14826,22 +14826,46 @@ var ACP_SESSION_CONFIG_DESCRIPTION_BYTES = 4096;
 function plainRecord2(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
-function boundedString(value, maxBytes, allowEmpty = false) {
+function boundedString(value, maxBytes, allowEmpty = false, scrubText) {
   if (typeof value !== "string") return void 0;
-  if (!allowEmpty && value.length === 0) return void 0;
-  return utf8Bytes(value) <= maxBytes ? value : void 0;
+  const scrubbed = scrubText ? scrubText(value) : value;
+  if (scrubbed === void 0) return void 0;
+  if (!allowEmpty && scrubbed.length === 0) return void 0;
+  return utf8Bytes(scrubbed) <= maxBytes ? scrubbed : void 0;
 }
-function optionalBoundedString(value, maxBytes) {
+function boundedDisplayString(value, maxBytes, bounds, policy, allowEmpty = false) {
+  const containedSecret = typeof value === "string" && policy.containsSecret?.(value) === true;
+  const normalized = boundedString(
+    value,
+    maxBytes,
+    allowEmpty,
+    policy.scrubDisplayText
+  );
+  if (containedSecret && normalized === void 0) bounds.truncated = true;
+  return normalized;
+}
+function optionalBoundedDisplayString(value, maxBytes, bounds, policy) {
   if (value === void 0) return void 0;
-  return boundedString(value, maxBytes, true) ?? null;
+  return boundedDisplayString(value, maxBytes, bounds, policy, true) ?? null;
 }
-function normalizeConfigOptionValue(value) {
+function normalizeConfigOptionValue(value, bounds, policy) {
   if (!plainRecord2(value)) return void 0;
+  if (typeof value.value === "string" && policy.containsSecret?.(value.value)) {
+    bounds.truncated = true;
+    return void 0;
+  }
   const id = boundedString(value.value, ACP_SESSION_CONFIG_ID_BYTES);
-  const name = boundedString(value.name, ACP_SESSION_CONFIG_LABEL_BYTES);
-  const description = optionalBoundedString(
+  const name = boundedDisplayString(
+    value.name,
+    ACP_SESSION_CONFIG_LABEL_BYTES,
+    bounds,
+    policy
+  );
+  const description = optionalBoundedDisplayString(
     value.description,
-    ACP_SESSION_CONFIG_DESCRIPTION_BYTES
+    ACP_SESSION_CONFIG_DESCRIPTION_BYTES,
+    bounds,
+    policy
   );
   if (!id || !name || description === null) return void 0;
   return {
@@ -14850,17 +14874,30 @@ function normalizeConfigOptionValue(value) {
     ...description !== void 0 ? { description } : {}
   };
 }
-function normalizeConfigOption(value, bounds) {
+function normalizeConfigOption(value, bounds, policy) {
   if (!plainRecord2(value)) return void 0;
+  if (typeof value.id === "string" && policy.containsSecret?.(value.id)) {
+    bounds.truncated = true;
+    return void 0;
+  }
   const id = boundedString(value.id, ACP_SESSION_CONFIG_ID_BYTES);
-  const name = boundedString(value.name, ACP_SESSION_CONFIG_LABEL_BYTES);
-  const description = optionalBoundedString(
-    value.description,
-    ACP_SESSION_CONFIG_DESCRIPTION_BYTES
+  const name = boundedDisplayString(
+    value.name,
+    ACP_SESSION_CONFIG_LABEL_BYTES,
+    bounds,
+    policy
   );
-  const category = optionalBoundedString(
+  const description = optionalBoundedDisplayString(
+    value.description,
+    ACP_SESSION_CONFIG_DESCRIPTION_BYTES,
+    bounds,
+    policy
+  );
+  const category = optionalBoundedDisplayString(
     value.category,
-    ACP_SESSION_CONFIG_ID_BYTES
+    ACP_SESSION_CONFIG_ID_BYTES,
+    bounds,
+    policy
   );
   if (!id || !name || description === null || category === null) return void 0;
   const common = {
@@ -14872,6 +14909,10 @@ function normalizeConfigOption(value, bounds) {
   if (value.type === "boolean") {
     if (typeof value.currentValue !== "boolean") return void 0;
     return { ...common, type: "boolean", currentValue: value.currentValue };
+  }
+  if (typeof value.currentValue === "string" && policy.containsSecret?.(value.currentValue)) {
+    bounds.truncated = true;
+    return void 0;
   }
   const currentValue = boundedString(value.currentValue, ACP_SESSION_CONFIG_ID_BYTES);
   if (value.type !== "select" || !currentValue) {
@@ -14890,8 +14931,20 @@ function normalizeConfigOption(value, bounds) {
     if (value.options.length > ACP_SESSION_CONFIG_GROUPS_MAX) bounds.truncated = true;
     for (const rawGroup of value.options.slice(0, ACP_SESSION_CONFIG_GROUPS_MAX)) {
       if (!plainRecord2(rawGroup) || !Array.isArray(rawGroup.options)) continue;
-      const group = boundedString(rawGroup.group, ACP_SESSION_CONFIG_ID_BYTES);
-      const groupName = boundedString(rawGroup.name, ACP_SESSION_CONFIG_LABEL_BYTES);
+      if (typeof rawGroup.group === "string" && policy.containsSecret?.(rawGroup.group)) {
+        bounds.truncated = true;
+        continue;
+      }
+      const group = boundedString(
+        rawGroup.group,
+        ACP_SESSION_CONFIG_ID_BYTES
+      );
+      const groupName = boundedDisplayString(
+        rawGroup.name,
+        ACP_SESSION_CONFIG_LABEL_BYTES,
+        bounds,
+        policy
+      );
       if (!group || !groupName || seenGroups.has(group)) continue;
       const groupOptions = [];
       for (const raw of rawGroup.options) {
@@ -14900,7 +14953,7 @@ function normalizeConfigOption(value, bounds) {
           break;
         }
         valueCount += 1;
-        const option = normalizeConfigOptionValue(raw);
+        const option = normalizeConfigOptionValue(raw, bounds, policy);
         if (!option || seenValues.has(option.value)) continue;
         seenValues.add(option.value);
         groupOptions.push(option);
@@ -14917,13 +14970,20 @@ function normalizeConfigOption(value, bounds) {
     const seen = /* @__PURE__ */ new Set();
     if (value.options.length > ACP_SESSION_CONFIG_VALUES_MAX) bounds.truncated = true;
     for (const raw of value.options.slice(0, ACP_SESSION_CONFIG_VALUES_MAX)) {
-      const option = normalizeConfigOptionValue(raw);
+      const option = normalizeConfigOptionValue(raw, bounds, policy);
       if (!option || seen.has(option.value)) continue;
       seen.add(option.value);
       flatOptions.push(option);
     }
     if (flatOptions.length === 0) return void 0;
     options = { kind: "flat", options: flatOptions };
+  }
+  const survivingValues = options.kind === "flat" ? options.options.map((option) => option.value) : options.groups.flatMap(
+    (group) => group.options.map((option) => option.value)
+  );
+  if (!survivingValues.includes(currentValue)) {
+    bounds.truncated = true;
+    return void 0;
   }
   return {
     ...common,
@@ -14932,26 +14992,32 @@ function normalizeConfigOption(value, bounds) {
     options
   };
 }
-function normalizeAuthMethodIds(value) {
+function normalizeAuthMethodIds(value, policy) {
   if (!Array.isArray(value)) return { ids: [], truncated: false };
   const ids = [];
   const seen = /* @__PURE__ */ new Set();
+  let truncated = value.length > ACP_SESSION_AUTH_METHODS_MAX;
   for (const raw of value.slice(0, ACP_SESSION_AUTH_METHODS_MAX)) {
+    if (plainRecord2(raw) && typeof raw.id === "string" && policy.containsSecret?.(raw.id)) {
+      truncated = true;
+      continue;
+    }
     const id = plainRecord2(raw) ? boundedString(raw.id, ACP_SESSION_CONFIG_ID_BYTES) : void 0;
     if (!id || seen.has(id)) continue;
     seen.add(id);
     ids.push(id);
   }
-  return {
-    ids,
-    truncated: value.length > ACP_SESSION_AUTH_METHODS_MAX
-  };
+  return { ids, truncated };
 }
 function createAcpSessionConfigSnapshot(input) {
   const capabilities = plainRecord2(input.agentCapabilities) ? input.agentCapabilities : {};
   const sessionCapabilities = plainRecord2(capabilities.sessionCapabilities) ? capabilities.sessionCapabilities : {};
   const promptCapabilities = plainRecord2(capabilities.promptCapabilities) ? capabilities.promptCapabilities : {};
-  const auth = normalizeAuthMethodIds(input.authMethods);
+  const policy = {
+    scrubDisplayText: input.scrubDisplayText,
+    containsSecret: input.containsSecret
+  };
+  const auth = normalizeAuthMethodIds(input.authMethods, policy);
   const rawOptions = Array.isArray(input.configOptions) ? input.configOptions : [];
   const configOptions = [];
   const seen = /* @__PURE__ */ new Set();
@@ -14959,7 +15025,7 @@ function createAcpSessionConfigSnapshot(input) {
   let bytes = 2;
   let truncated = auth.truncated || rawOptions.length > ACP_SESSION_CONFIG_OPTIONS_MAX;
   for (const raw of rawOptions.slice(0, ACP_SESSION_CONFIG_OPTIONS_MAX)) {
-    const option = normalizeConfigOption(raw, bounds);
+    const option = normalizeConfigOption(raw, bounds, policy);
     if (!option || seen.has(option.id)) continue;
     const optionBytes = utf8Bytes(JSON.stringify(option)) + 1;
     if (bytes + optionBytes > ACP_SESSION_CONFIG_SNAPSHOT_BYTES) {
@@ -20496,11 +20562,11 @@ function valueLooksLikeHighEntropySecret(value) {
   void value;
   return false;
 }
-function redactSecrets(text3, secrets, placeholder = DEFAULT_PLACEHOLDER) {
+function redactSecrets(text3, secrets, placeholder = DEFAULT_PLACEHOLDER, minimumSecretLength = 4) {
   if (!text3 || secrets.length === 0) return text3;
   let out = text3;
   for (const secret of secrets) {
-    if (!secret || secret.length < 4) continue;
+    if (!secret || secret.length < minimumSecretLength) continue;
     if (!out.includes(secret)) continue;
     out = out.split(secret).join(placeholder);
   }
@@ -20603,6 +20669,8 @@ var AcpClient = class {
     this.collectingPromptResponse = false;
     /** Defensive quarantine for bridges that resolve load before their final replay notification. */
     this.quarantiningLoadReplay = false;
+    /** Buffer config replacements until the current new/load/resume response baseline lands. */
+    this.bufferingSessionStartConfig = false;
     this.lastLoadReplayUpdateAt = 0;
     /**
      * Bootstrap image refs are projected on the first managed session/prompt only.
@@ -20676,6 +20744,35 @@ var AcpClient = class {
   }
   get sessionConfig() {
     return cloneAcpSessionConfigSnapshot(this.sessionConfigSnapshot);
+  }
+  createSessionConfigSnapshot(input) {
+    const secrets = this.secretValues();
+    const containsSecret = (value) => secrets.some(
+      (secret) => secret.length > 0 && value.includes(secret)
+    );
+    const marker = ["[redacted]", "<hidden>", "***", "_"].find((candidate) => !containsSecret(candidate));
+    return createAcpSessionConfigSnapshot({
+      ...input,
+      ...secrets.length > 0 ? {
+        scrubDisplayText: (value) => {
+          if (!containsSecret(value)) return value;
+          if (!marker) return void 0;
+          const scrubbed = redactSecrets(value, secrets, marker, 1);
+          return containsSecret(scrubbed) ? marker : scrubbed;
+        },
+        containsSecret
+      } : {}
+    });
+  }
+  replaceSessionConfigOptions(projected) {
+    const nextSnapshot = {
+      ...this.sessionConfigSnapshot,
+      configOptions: projected.configOptions,
+      truncated: this.sessionConfigSnapshot.truncated || projected.truncated
+    };
+    const changed = JSON.stringify(this.sessionConfigSnapshot.configOptions) !== JSON.stringify(nextSnapshot.configOptions) || this.sessionConfigSnapshot.truncated !== nextSnapshot.truncated;
+    if (changed) this.sessionConfigSnapshot = nextSnapshot;
+    return changed;
   }
   /**
    * True only when initialize advertised agentCapabilities.promptCapabilities.image === true.
@@ -20801,32 +20898,37 @@ var AcpClient = class {
           _meta: meta
         });
       }
+      this.sessionConfigSnapshot = this.createSessionConfigSnapshot({
+        agentCapabilities: init.agentCapabilities,
+        authMethods: init.authMethods
+      });
       let providerSessionId;
-      let sessionConfigOptions;
-      if (mode === "load" || mode === "resume") {
-        const method = mode === "resume" ? "session/resume" : "session/load";
-        if (mode === "load" && !this.loadSessionSupported) {
-          throw new Error(
-            `${this.label} does not advertise agentCapabilities.loadSession; cannot session/load`
-          );
-        }
-        if (mode === "resume" && !this.resumeSessionSupported) {
-          throw new Error(
-            `${this.label} does not advertise agentCapabilities.sessionCapabilities.resume; cannot session/resume`
-          );
-        }
-        const loadId = typeof options?.providerSessionId === "string" ? options.providerSessionId.trim() : "";
-        if (!loadId) {
-          throw new Error(
-            `${this.label} ${method} requires providerSessionId (resume token)`
-          );
-        }
-        this.resetAssistantReport();
-        if (mode === "load") {
-          this.quarantiningLoadReplay = true;
-          this.lastLoadReplayUpdateAt = Date.now();
-        }
-        try {
+      this.bufferingSessionStartConfig = true;
+      this.pendingSessionStartConfigSnapshot = void 0;
+      try {
+        if (mode === "load" || mode === "resume") {
+          const method = mode === "resume" ? "session/resume" : "session/load";
+          if (mode === "load" && !this.loadSessionSupported) {
+            throw new Error(
+              `${this.label} does not advertise agentCapabilities.loadSession; cannot session/load`
+            );
+          }
+          if (mode === "resume" && !this.resumeSessionSupported) {
+            throw new Error(
+              `${this.label} does not advertise agentCapabilities.sessionCapabilities.resume; cannot session/resume`
+            );
+          }
+          const loadId = typeof options?.providerSessionId === "string" ? options.providerSessionId.trim() : "";
+          if (!loadId) {
+            throw new Error(
+              `${this.label} ${method} requires providerSessionId (resume token)`
+            );
+          }
+          this.resetAssistantReport();
+          if (mode === "load") {
+            this.quarantiningLoadReplay = true;
+            this.lastLoadReplayUpdateAt = Date.now();
+          }
           const loaded = await this.request(
             method,
             this.sessionStartParams({
@@ -20835,34 +20937,46 @@ var AcpClient = class {
             }),
             6e4
           );
-          sessionConfigOptions = loaded.configOptions;
+          this.replaceSessionConfigOptions(
+            this.createSessionConfigSnapshot({
+              configOptions: loaded.configOptions
+            })
+          );
           if (mode === "load") {
             await this.waitForLoadReplayQuiescence();
+            this.quarantiningLoadReplay = false;
           }
-        } finally {
-          this.quarantiningLoadReplay = false;
+          this.providerSessionId = loadId;
+          providerSessionId = loadId;
+        } else {
+          const session = await this.request(
+            "session/new",
+            this.sessionStartParams({ cwd: this.options.cwd }),
+            6e4
+          );
+          if (!session.sessionId) {
+            throw new Error(`${this.label} session/new \u672A\u8FD4\u56DE sessionId`);
+          }
+          this.providerSessionId = session.sessionId;
+          providerSessionId = session.sessionId;
+          this.replaceSessionConfigOptions(
+            this.createSessionConfigSnapshot({
+              configOptions: session.configOptions
+            })
+          );
+        }
+        const pending = this.pendingSessionStartConfigSnapshot;
+        this.pendingSessionStartConfigSnapshot = void 0;
+        this.bufferingSessionStartConfig = false;
+        if (pending) this.replaceSessionConfigOptions(pending);
+      } finally {
+        this.bufferingSessionStartConfig = false;
+        this.quarantiningLoadReplay = false;
+        this.pendingSessionStartConfigSnapshot = void 0;
+        if (mode === "load" || mode === "resume") {
           this.resetAssistantReport();
         }
-        this.providerSessionId = loadId;
-        providerSessionId = loadId;
-      } else {
-        const session = await this.request(
-          "session/new",
-          this.sessionStartParams({ cwd: this.options.cwd }),
-          6e4
-        );
-        if (!session.sessionId) {
-          throw new Error(`${this.label} session/new \u672A\u8FD4\u56DE sessionId`);
-        }
-        this.providerSessionId = session.sessionId;
-        providerSessionId = session.sessionId;
-        sessionConfigOptions = session.configOptions;
       }
-      this.sessionConfigSnapshot = createAcpSessionConfigSnapshot({
-        agentCapabilities: init.agentCapabilities,
-        authMethods: init.authMethods,
-        configOptions: sessionConfigOptions
-      });
       this.options.emit({
         type: "session.live",
         sessionId: this.options.sessionId,
@@ -21229,31 +21343,54 @@ var AcpClient = class {
   }
   handleSessionUpdate(update) {
     if (!update || this.limitError) return;
-    if (this.quarantiningLoadReplay) {
-      this.lastLoadReplayUpdateAt = Date.now();
+    const kind = update.sessionUpdate ?? "";
+    if (this.quarantiningLoadReplay) this.lastLoadReplayUpdateAt = Date.now();
+    if (this.bufferingSessionStartConfig && kind === "config_option_update") {
+      if (Array.isArray(update.configOptions)) {
+        const projected = this.createSessionConfigSnapshot({
+          configOptions: update.configOptions
+        });
+        const raw = update.configOptions;
+        if (raw.length === 0 || projected.configOptions.length > 0 || projected.truncated) {
+          this.pendingSessionStartConfigSnapshot = projected;
+        }
+      }
       return;
     }
-    const kind = update.sessionUpdate ?? "";
+    if (this.quarantiningLoadReplay) return;
     if (kind === "config_option_update") {
-      const projected = createAcpSessionConfigSnapshot({
+      if (!Array.isArray(update.configOptions)) {
+        if (this.collectingPromptResponse) this.recordNoProgressUpdate();
+        return;
+      }
+      const projected = this.createSessionConfigSnapshot({
         configOptions: update.configOptions
       });
-      const nextSnapshot = {
-        ...this.sessionConfigSnapshot,
-        configOptions: projected.configOptions,
-        truncated: this.sessionConfigSnapshot.truncated || projected.truncated
-      };
-      const unchanged = JSON.stringify(this.sessionConfigSnapshot.configOptions) === JSON.stringify(nextSnapshot.configOptions) && this.sessionConfigSnapshot.truncated === nextSnapshot.truncated;
-      if (this.collectingPromptResponse) {
-        if (!this.recordObservableControlProgress(
-          `config:${JSON.stringify(nextSnapshot.configOptions)}`
-        )) {
-          return;
-        }
-        this.sealOpenAssistantSegment();
+      const raw = update.configOptions;
+      const droppedOnly = raw.length > 0 && projected.configOptions.length === 0;
+      if (droppedOnly && !projected.truncated) {
+        if (this.collectingPromptResponse) this.recordNoProgressUpdate();
+        return;
       }
-      if (unchanged) return;
-      this.sessionConfigSnapshot = nextSnapshot;
+      const changed = this.replaceSessionConfigOptions(projected);
+      let observableProgress = false;
+      if (this.collectingPromptResponse) {
+        let acceptedProgressEvent;
+        if (droppedOnly || !changed) {
+          acceptedProgressEvent = this.recordNoProgressUpdate();
+        } else {
+          acceptedProgressEvent = this.recordObservableControlProgress(
+            `config:${JSON.stringify({
+              configOptions: this.sessionConfigSnapshot.configOptions,
+              truncated: this.sessionConfigSnapshot.truncated
+            })}`
+          );
+          observableProgress = acceptedProgressEvent;
+        }
+        if (!acceptedProgressEvent) return;
+      }
+      if (!changed) return;
+      if (observableProgress) this.sealOpenAssistantSegment();
       this.options.emit({
         type: "session.config_options",
         sessionId: this.options.sessionId,
