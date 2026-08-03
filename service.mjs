@@ -14876,6 +14876,7 @@ function normalizeConfigOptionValue(value, bounds, policy) {
 }
 function normalizeConfigOption(value, bounds, policy) {
   if (!plainRecord2(value)) return void 0;
+  if (value.type !== "boolean" && value.type !== "select") return void 0;
   if (typeof value.id === "string" && policy.containsSecret?.(value.id)) {
     bounds.truncated = true;
     return void 0;
@@ -14915,9 +14916,7 @@ function normalizeConfigOption(value, bounds, policy) {
     return void 0;
   }
   const currentValue = boundedString(value.currentValue, ACP_SESSION_CONFIG_ID_BYTES);
-  if (value.type !== "select" || !currentValue) {
-    return void 0;
-  }
+  if (!currentValue) return void 0;
   if (!Array.isArray(value.options)) return void 0;
   const grouped = value.options.some(
     (option) => plainRecord2(option) && "group" in option
@@ -20765,14 +20764,29 @@ var AcpClient = class {
     });
   }
   replaceSessionConfigOptions(projected) {
+    return this.commitSessionConfigOptions(
+      this.projectSessionConfigOptions(projected)
+    );
+  }
+  projectSessionConfigOptions(projected) {
     const nextSnapshot = {
       ...this.sessionConfigSnapshot,
       configOptions: projected.configOptions,
       truncated: this.sessionConfigSnapshot.truncated || projected.truncated
     };
     const changed = JSON.stringify(this.sessionConfigSnapshot.configOptions) !== JSON.stringify(nextSnapshot.configOptions) || this.sessionConfigSnapshot.truncated !== nextSnapshot.truncated;
-    if (changed) this.sessionConfigSnapshot = nextSnapshot;
-    return changed;
+    return { snapshot: nextSnapshot, changed };
+  }
+  commitSessionConfigOptions(candidate) {
+    if (candidate.changed) this.sessionConfigSnapshot = candidate.snapshot;
+    return candidate.changed;
+  }
+  /** Keep the last complete replacement plus structural loss seen before it. */
+  accumulateSessionStartConfigOptions(projected) {
+    this.pendingSessionStartConfigSnapshot = {
+      ...projected,
+      truncated: (this.pendingSessionStartConfigSnapshot?.truncated ?? false) || projected.truncated
+    };
   }
   /**
    * True only when initialize advertised agentCapabilities.promptCapabilities.image === true.
@@ -21352,7 +21366,7 @@ var AcpClient = class {
         });
         const raw = update.configOptions;
         if (raw.length === 0 || projected.configOptions.length > 0 || projected.truncated) {
-          this.pendingSessionStartConfigSnapshot = projected;
+          this.accumulateSessionStartConfigOptions(projected);
         }
       }
       return;
@@ -21372,7 +21386,8 @@ var AcpClient = class {
         if (this.collectingPromptResponse) this.recordNoProgressUpdate();
         return;
       }
-      const changed = this.replaceSessionConfigOptions(projected);
+      const candidate = this.projectSessionConfigOptions(projected);
+      const changed = candidate.changed;
       let observableProgress = false;
       if (this.collectingPromptResponse) {
         let acceptedProgressEvent;
@@ -21381,8 +21396,8 @@ var AcpClient = class {
         } else {
           acceptedProgressEvent = this.recordObservableControlProgress(
             `config:${JSON.stringify({
-              configOptions: this.sessionConfigSnapshot.configOptions,
-              truncated: this.sessionConfigSnapshot.truncated
+              configOptions: candidate.snapshot.configOptions,
+              truncated: candidate.snapshot.truncated
             })}`
           );
           observableProgress = acceptedProgressEvent;
@@ -21390,6 +21405,7 @@ var AcpClient = class {
         if (!acceptedProgressEvent) return;
       }
       if (!changed) return;
+      this.commitSessionConfigOptions(candidate);
       if (observableProgress) this.sealOpenAssistantSegment();
       this.options.emit({
         type: "session.config_options",
