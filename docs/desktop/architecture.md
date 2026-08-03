@@ -26,7 +26,7 @@ indexes. It is ignored by the project repository.
   host.
 - **Delivery** is the formal result submitted to the persisted reviewer.
 - **Agent Connection** is machine-local non-secret launch configuration for provider,
-  model, endpoint, credential reference, command, and launch metadata.
+  model, endpoint, command, and optional Launch Secret reference.
 
 Only the first five are collaboration objects. A Connection is machine
 configuration, not an identity, Role, ACL, or durable worker record.
@@ -36,11 +36,11 @@ configuration, not an identity, Role, ACL, or durable worker record.
 ```text
 Desktop / CLI
               |
-              | authenticated local RPC, protocolVersion=3
+              | authenticated local RPC, protocolVersion=4
               v
         Local Service process
           |             |
-          |             +-- machine Settings + credential references
+          |             +-- machine Settings + Launch Secret references
           |
           +-- WorkspaceHost per mounted workspace
           |      +-- Core mutations and projections
@@ -132,12 +132,14 @@ An event is never a second fact store. Clients re-query the relevant projection
 after receiving it. Watcher self-write suppression is scoped at ingress so a
 later Service write cannot retroactively drop an external change.
 
-## 7. Machine Settings and credentials
+## 7. Machine Settings and Launch Secrets
 
 Agent Connections are stored under the Service data directory, not in a
 workspace. Public projections expose only safe Connection metadata and availability.
-Secrets are supplied to the launch plan at process start and are redacted from
-stderr, RPC errors, events, and diagnostic rings.
+An optional encrypted Launch Secret is only a process/MCP injection primitive,
+not a provider account, login, or OAuth object. Secret values are supplied to
+the launch plan at process start and are redacted from stderr, RPC errors,
+events, and diagnostic rings.
 
 Reserved Service environment keys override Connection-provided values. Managed
 children receive a minimal allowlist plus the exact Core overlay. They do not

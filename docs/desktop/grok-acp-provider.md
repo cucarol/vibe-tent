@@ -11,7 +11,7 @@ A Grok Connection may resolve:
 - provider adapter id;
 - model;
 - API and authentication endpoints;
-- credential reference;
+- optional Launch Secret reference for the headless bridge;
 - command, args, isolated provider home, and safe environment entries;
 - timeout and capability metadata.
 

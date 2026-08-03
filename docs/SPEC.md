@@ -104,10 +104,11 @@ stable Role id, name/display name, optional prompt, and user-facing delivery
 policy. A Role is not a provider configuration or an ACL.
 
 Settings owns machine-local Agent Connections. A Connection has a stable
-`connectionId` and resolves provider, model, endpoint, credential reference,
-command, and non-secret launch metadata. It is not Task responsibility or identity.
-Credentials remain in the machine-local service data area and never enter
-workspace Nodes, Tasks, Sessions, or Git.
+`connectionId` and resolves the Agent program, model, endpoint, command, and
+non-secret launch metadata. It may reference an encrypted machine-local Launch
+Secret for process or MCP injection. Secret values never enter workspace Nodes,
+Tasks, Sessions, Git, events, or public projections. A Connection is not Task
+responsibility or identity.
 
 A durable Role takes ownership of its own work directly:
 
@@ -189,11 +190,18 @@ exact Task. Resume reconnects that same recoverable provider conversation,
 while explicit replacement preserves the Task and worktree without envelope
 edits.
 
-Provider/model/endpoint/credential configuration belongs to machine-local
-Agent Connections or the provider's native tooling. Tent does not silently
-rewrite every Agent's native configuration. A Connection contains launch facts
-only; it is not Session identity and does not define provider-owned Session
-configuration.
+Agent authentication, accounts, subscriptions, and provider-native model
+configuration belong to the Agent. A machine-local Connection may select a
+program, model, endpoint, and optional Launch Secret injection, but Tent does
+not manage OAuth tokens, account pools, refresh, rotation, or provider login.
+A Connection contains launch facts only; it is not Session identity and does
+not define provider-owned Session configuration.
+
+For stable ACP v1, adapters may invoke an advertised in-band `agent`
+authentication method by exact id. Tent never infers OAuth, API-key, or browser
+semantics from that id. Preview `terminal` authentication is out-of-band and is
+not advertised or invoked by the headless Local Service; unsupported auth
+types fail loud instead of being guessed.
 
 ACP initialize capabilities and authentication method ids, plus the complete
 `configOptions` returned by session new/load/resume and later

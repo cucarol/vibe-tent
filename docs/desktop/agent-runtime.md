@@ -21,7 +21,7 @@ The runtime may not:
 - acquire or edit Nodes;
 - select a reviewer or accept a Delivery;
 - turn Connection availability into collaboration authority;
-- persist provider credentials or conversation tokens in a workspace.
+- persist Launch Secrets, provider credentials, or conversation tokens in a workspace.
 
 ## 2. Agent Connection and launch plan
 

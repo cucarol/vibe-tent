@@ -18,25 +18,30 @@ Tent exposes a small, explicit set of coding-agent ACP adapters. It is not a uni
 | Adapter | Launch contract | Authentication | Repository verification |
 | --- | --- | --- | --- |
 | `grok-acp` | Local Grok executable in ACP stdio mode, using isolated Grok config plus Grok2API dual base-URL flags | Grok2API key and base URL from service process env | `opt-in-live-probe` — mock suite + `npm run test:grok-e2e` |
-| `codex-acp` | `npx --yes @agentclientprotocol/codex-acp` | Agent-owned local authentication/configuration; optional explicit `envKey` override | `opt-in-live-probe` — mock suite + `npm run test:foreground-e2e` |
-| `claude-acp` | `npx --yes @agentclientprotocol/claude-agent-acp@0.62.0` | Agent-owned local authentication/configuration; optional explicit `envKey` override | `opt-in-live-probe` — mock suite + `test:foreground-e2e` (bridge may need Node ≥22) |
-| `opencode-acp` | Native `opencode acp` | Agent-owned local authentication/configuration; optional explicit `envKey` override | `opt-in-live-probe` — mock suite + `test:foreground-e2e` |
-| `copilot-acp` | `npx --yes @github/copilot --acp --stdio` | Agent-owned local authentication/configuration; optional explicit `envKey` override | `opt-in-live-probe` — mock suite + `test:foreground-e2e` |
-| `pi-acp` | `npx --yes pi-acp` (third-party bridge; spawns `pi --mode rpc`) | Agent-owned local authentication/configuration; optional explicit `envKey` override | `mock-tested` — offline mock suite; initialize/`session/new` probe when `pi` is installed; no paid live E2E in default CI |
+| `codex-acp` | `npx --yes @agentclientprotocol/codex-acp` | Agent-owned local authentication/configuration; optional Launch Secret injection | `opt-in-live-probe` — mock suite + `npm run test:foreground-e2e` |
+| `claude-acp` | `npx --yes @agentclientprotocol/claude-agent-acp@0.62.0` | Agent-owned local authentication/configuration; optional Launch Secret injection | `opt-in-live-probe` — mock suite + `test:foreground-e2e` (bridge may need Node ≥22) |
+| `opencode-acp` | Native `opencode acp` | Agent-owned local authentication/configuration; optional Launch Secret injection | `opt-in-live-probe` — mock suite + `test:foreground-e2e` |
+| `copilot-acp` | `npx --yes @github/copilot --acp --stdio` | Agent-owned local authentication/configuration; optional Launch Secret injection | `opt-in-live-probe` — mock suite + `test:foreground-e2e` |
+| `pi-acp` | `npx --yes pi-acp` (third-party bridge; spawns `pi --mode rpc`) | Agent-owned local authentication/configuration; optional Launch Secret injection | `mock-tested` — offline mock suite; initialize/`session/new` probe when `pi` is installed; no paid live E2E in default CI |
 
 An adapter appearing in this table means its explicit launch contract is implemented;
 it does **not** mean every provider binary, account flow, or host platform is live-certified
 by the repository. The default suite is offline and mock-backed.
 
-## Machine-local credentials (Windows MVP)
+## Machine-local Launch Secrets
 
 Tent does not manage provider accounts, switch logins, refresh OAuth, or infer an
 Agent's authentication method. Authentication belongs to the Agent and the user's
 local setup. When a launch contract explicitly needs one secret environment value,
-the Local Service can resolve a non-secret `credentialRef` through its generic
-machine-local encrypted store. This is a process-launch boundary, not an account
-manager: plaintext is never returned by RPC or persisted in workspace state,
-Connection JSON, Session records, events, or logs.
+the Local Service can resolve a non-secret `launchSecretRef` from its encrypted
+machine-local Launch Secret store. This is a process-launch boundary, not an
+account manager: plaintext is never returned by RPC or persisted in workspace
+state, Connection JSON, Session records, events, or logs.
+
+ACP v1 `agent` authentication remains Agent-owned even when Tent invokes the
+advertised method id. Tent does not interpret it as OAuth or API-key auth. The
+Local Service does not advertise preview terminal-auth capability and never sends
+a `terminal` method through the in-band `authenticate` RPC.
 
 Pi uses the third-party `pi-acp` npm bridge (not an official Earendil ACP binary). The bridge requires `pi` (`@earendil-works/pi-coding-agent`) on PATH and currently documents Node ≥22 for the pi CLI even though Tent itself supports Node.js 20.
 
@@ -47,7 +52,8 @@ The Claude Agent ACP npm bridge currently requires Node.js 22 or newer even thou
 - Connections are machine-local and store only non-secret launch metadata: provider/adapter, executable or command, model, endpoint identity, environment key names, Skills/MCP references, and permission/time-out settings.
 - Secret values are read from `LaunchPlan.env` or the Local Service process environment. They are never written to a workspace, Node, Task, Delivery, Connection JSON, or Session record.
 - Omitting `envKey` leaves authentication entirely to the Agent's local configuration.
-- Configuring `envKey` makes it required; a missing value fails before spawn.
+- Pairing `envKey` with `launchSecretRef` injects that secret only into the child;
+  a missing reference fails before spawn.
 - Tool permission policy defaults to `deny`. `ask` uses the same machine-local approval store for every ACP provider.
 
 ## Provider-native session resume (`session/load` vs `session/resume`)
@@ -66,7 +72,7 @@ Tent only advertises `capabilities.canResume = true` for bridges whose ACP `init
 | `codex-acp` | **true** | same (`session/load`; no ACP `authenticate` RPC; auth via env/`DEFAULT_AUTH_REQUEST` or local login) | 2026-07-21 initialize-only probe: `@agentclientprotocol/codex-acp@1.1.5` advertises `agentCapabilities.loadSession=true`; native CLI has resume; bridge source shows ACP `sessionId` homologous with CLI resume |
 | `claude-acp` | **true** | **`session/resume`** (not `session/load`; no ACP `authenticate` RPC; local Claude login and/or injected env) | `@agentclientprotocol/claude-agent-acp@0.62.0` advertises `sessionCapabilities.resume` and implements `session/resume` via `getOrCreateSession` **without** `replaySessionHistory`; `session/load` additionally replays the full transcript and has failed large Opus sessions with opaque Internal error |
 | `copilot-acp` | **true** | `session/load` (local Copilot/`gh` login and/or injected env) | 2026-07-21 initialize-only probe: GitHub Copilot CLI/ACP **1.0.73** advertises `agentCapabilities.loadSession=true`; native CLI has resume; high confidence ACP `sessionId` is homologous with CLI resume |
-| `pi-acp` | **true** | `session/load` (no ACP `authenticate` RPC required for local pi login; optional explicit `envKey`) | 2026-07-23: `pi-acp@0.0.31` initialize advertises `agentCapabilities.loadSession=true`; `session/new` returns ACP sessionId when `pi` (`@earendil-works/pi-coding-agent`) is on PATH; bridge stores map under `~/.pi/pi-acp/` |
+| `pi-acp` | **true** | `session/load` (no ACP `authenticate` RPC required for local pi login; optional Launch Secret injection) | 2026-07-23: `pi-acp@0.0.31` initialize advertises `agentCapabilities.loadSession=true`; `session/new` returns ACP sessionId when `pi` (`@earendil-works/pi-coding-agent`) is on PATH; bridge stores map under `~/.pi/pi-acp/` |
 
 Rules:
 
