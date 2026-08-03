@@ -98,6 +98,8 @@ test("pickMinimalHostEnv: OS launch necessities only; drops NODE_OPTIONS/proxy/n
     USERDOMAIN: "EVILDOMAIN",
     ProgramFiles: "C:\\Program Files",
     USERPROFILE: "C:\\Users\\tent",
+    LOCALAPPDATA: "C:\\Users\\tent\\AppData\\Local",
+    APPDATA: "C:\\Users\\tent\\AppData\\Roaming",
     SystemRoot: "C:\\Windows",
     ComSpec: "C:\\Windows\\System32\\cmd.exe",
     PATHEXT: ".COM;.EXE;.BAT;.CMD",
@@ -106,6 +108,8 @@ test("pickMinimalHostEnv: OS launch necessities only; drops NODE_OPTIONS/proxy/n
   const win = pickMinimalHostEnv(host, "win32");
   assert.equal(win.PATH, "/usr/bin");
   assert.equal(win.USERPROFILE, "C:\\Users\\tent");
+  assert.equal(win.LOCALAPPDATA, "C:\\Users\\tent\\AppData\\Local");
+  assert.equal(win.APPDATA, "C:\\Users\\tent\\AppData\\Roaming");
   assert.equal(win.SystemRoot, "C:\\Windows");
   assert.equal(win.ComSpec, "C:\\Windows\\System32\\cmd.exe");
   assert.equal(win.PATHEXT, ".COM;.EXE;.BAT;.CMD");

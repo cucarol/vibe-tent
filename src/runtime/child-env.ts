@@ -53,6 +53,11 @@ const WIN32_HOST_ENV_KEYS = [
   // HOMEDRIVE+HOMEPATH together resolve ~ equivalent on some Windows toolchains
   "HOMEDRIVE",
   "HOMEPATH",
+  // Windows-native launchers such as npx resolve their cache and installed
+  // shims from these directories. Omitting them can redirect writes to an
+  // invalid profile-relative fallback even when the package is already cached.
+  "LOCALAPPDATA",
+  "APPDATA",
 ] as const;
 
 const POSIX_HOST_ENV_KEYS = ["HOME"] as const;
