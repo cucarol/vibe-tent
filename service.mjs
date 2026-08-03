@@ -20456,7 +20456,12 @@ var WIN32_HOST_ENV_KEYS = [
   "HOME",
   // HOMEDRIVE+HOMEPATH together resolve ~ equivalent on some Windows toolchains
   "HOMEDRIVE",
-  "HOMEPATH"
+  "HOMEPATH",
+  // Windows-native launchers such as npx resolve their cache and installed
+  // shims from these directories. Omitting them can redirect writes to an
+  // invalid profile-relative fallback even when the package is already cached.
+  "LOCALAPPDATA",
+  "APPDATA"
 ];
 var POSIX_HOST_ENV_KEYS = ["HOME"];
 function isReservedTentChildEnvKey(key2) {
