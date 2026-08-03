@@ -357,8 +357,8 @@ function sleep(ms) {
 var PENDING_INTERACTION_EVENT_TYPES = [
   "toolApproval.pending",
   "toolApproval.resolved",
-  "userAsk.pending",
-  "userAsk.resolved",
+  "decisionRequest.pending",
+  "decisionRequest.resolved",
   "taskInput.pending",
   "taskInput.delivered",
   "taskInput.consumed",
@@ -373,8 +373,8 @@ function isPendingInteractionEventType(type) {
 var TASK_PROJECTION_EVENT_TYPES = [
   "task.state",
   "delivery.updated",
-  "userAsk.pending",
-  "userAsk.resolved",
+  "decisionRequest.pending",
+  "decisionRequest.resolved",
   "toolApproval.pending",
   "toolApproval.resolved",
   "taskInput.pending",
@@ -1515,7 +1515,8 @@ function applyOne(node, byNodeId) {
   const active = byNodeId.get(node.nodeId)?.activeTask?.task;
   if (!active) return next;
   next.status = "doing";
-  if (active.assigneeId) next.assignee = active.assigneeId;
+  const executor = active.roleId ?? active.sessionId;
+  if (executor) next.assignee = executor;
   return next;
 }
 
@@ -1534,22 +1535,22 @@ function listCoordinationTypeOptions(types) {
   return listCoordinationTypeNames(types).map((name) => ({ name }));
 }
 function listRoleOptions(roles) {
-  return roles.map((r) => ({ name: r.name, description: r.description })).sort((a, b) => a.name.localeCompare(b.name));
+  return roles.map((r) => ({ roleId: r.roleId, name: r.name, description: r.description })).sort((a, b) => a.name.localeCompare(b.name));
 }
-function listRouteOptions(routes) {
-  return routes.map((route) => {
-    const parts = [route.displayName || route.routeId, route.adapterId, route.model].filter(Boolean);
+function listConnectionOptions(connections) {
+  return connections.map((connection) => {
+    const parts = [connection.displayName || connection.connectionId, connection.adapterId, connection.model].filter(Boolean);
     return {
-      routeId: route.routeId,
-      adapterId: route.adapterId,
-      displayName: route.displayName || route.routeId,
-      model: route.model,
+      connectionId: connection.connectionId,
+      adapterId: connection.adapterId,
+      displayName: connection.displayName || connection.connectionId,
+      model: connection.model,
       label: parts.join(" \xB7 ")
     };
-  }).sort((a, b) => a.routeId.localeCompare(b.routeId));
+  }).sort((a, b) => a.connectionId.localeCompare(b.connectionId));
 }
-function pickDefaultRouteId(routes) {
-  return routes[0]?.routeId ?? null;
+function pickDefaultConnectionId(connections) {
+  return connections[0]?.connectionId ?? null;
 }
 function buildStartSessionPayload(taskPath) {
   const path6 = taskPath.trim();
@@ -1608,7 +1609,7 @@ function sessionStateLabel(state) {
       return state;
   }
 }
-function canStartAgentOnTask(taskState, session) {
+function canStartAgentOnTask(taskState, session, opts) {
   const s = taskState || "";
   if (s === "delivered" || s === "accepted" || s === "rejected" || s === "interrupted") {
     return false;
@@ -1616,6 +1617,7 @@ function canStartAgentOnTask(taskState, session) {
   if (session && session.alive && (session.state === "live" || session.state === "starting" || session.state === "waiting-user")) {
     return false;
   }
+  if (!opts?.hasSessionId) return false;
   return s === "queued" || s === "pending" || s === "running" || s === "taken" || s === "waiting" || s === "failed";
 }
 function canInterruptTask(taskState, session, opts) {
@@ -1674,26 +1676,28 @@ function buildTaskReviewItems(tasks, deliveries = [], sessions = []) {
     const summaryLine = [
       label,
       sessLabel ? `\u4F1A\u8BDD${sessLabel}` : null,
-      `${task.assigneeKind}:${task.assigneeId}`,
+      task.roleId ? `role:${task.roleId}` : task.sessionId ? `session:${task.sessionId}` : null,
       deliverySummary ? truncate(deliverySummary, 64) : promptBit || null
     ].filter(Boolean).join(" \xB7 ");
     return {
       path: task.path,
       id: task.id,
-      assigneeKind: task.assigneeKind,
-      assigneeId: task.assigneeId,
+      roleId: task.roleId,
       state,
-      referencedNodeIds: task.referencedNodeIds ?? [],
+      workNodeIds: task.workNodeIds ?? [],
+      contextNodeIds: task.contextNodeIds ?? [],
       prompt: task.prompt,
       activeDeliveryId: task.activeDeliveryId,
       sessionId: task.sessionId ?? session?.sessionId,
       sessionState: session?.state,
       sessionAlive: session?.alive,
-      sessionRouteId: session?.routeId,
+      sessionConnectionId: session?.connectionId,
       deliverySummary,
       commits,
       canAcceptOrReject: state === "delivered",
-      canStartAgent: canStartAgentOnTask(state, session),
+      canStartAgent: canStartAgentOnTask(state, session, {
+        hasSessionId: !!(task.sessionId || session?.sessionId)
+      }),
       canInterrupt: canInterruptTask(state, session, {
         hasSessionId: !!(task.sessionId || session?.sessionId)
       }),
@@ -1722,8 +1726,8 @@ var DesktopShellModel = class {
     this.sessions = [];
     this.roles = [];
     this.coordinationTypes = [];
-    this.routes = [];
-    this.selectedRouteId = null;
+    this.connections = [];
+    this.selectedConnectionId = null;
     this.statusMessage = null;
     this.nodeCollaborations = /* @__PURE__ */ new Map();
     this.listeners = /* @__PURE__ */ new Set();
@@ -1757,14 +1761,15 @@ var DesktopShellModel = class {
         this.tasks.map((t) => ({
           path: t.path,
           id: t.id,
-          assigneeKind: t.assigneeKind,
-          assigneeId: t.assigneeId,
-          referencedNodeIds: t.referencedNodeIds,
+          roleId: t.roleId,
+          workNodeIds: t.workNodeIds,
+          contextNodeIds: t.contextNodeIds,
           state: t.state,
           prompt: t.prompt,
           activeDeliveryId: t.activeDeliveryId,
           sessionId: t.sessionId,
           manifest: "",
+          acceptMode: t.acceptMode,
           contextCard: t.contextCard
         })),
         this.deliveries,
@@ -1772,8 +1777,8 @@ var DesktopShellModel = class {
       ),
       roles: this.roles,
       coordinationTypes: this.coordinationTypes,
-      routes: this.routes,
-      selectedRouteId: this.selectedRouteId,
+      connections: this.connections,
+      selectedConnectionId: this.selectedConnectionId,
       statusMessage: this.statusMessage,
       nodeCollaborations: [...this.nodeCollaborations.values()]
     };
@@ -1781,8 +1786,8 @@ var DesktopShellModel = class {
   getController() {
     return this.controller;
   }
-  setSelectedRouteId(routeId) {
-    this.selectedRouteId = routeId;
+  setSelectedConnectionId(connectionId) {
+    this.selectedConnectionId = connectionId;
     this.emit();
   }
   async refreshHealth() {
@@ -1854,7 +1859,7 @@ var DesktopShellModel = class {
     this.controller = new WorkspaceController(this.docs);
     this.controller.subscribe(() => this.emit());
     await this.controller.refreshTree();
-    await Promise.all([this.refreshTasks(), this.refreshRegistry(), this.refreshRoutes()]);
+    await Promise.all([this.refreshTasks(), this.refreshRegistry(), this.refreshConnections()]);
     this.emit();
   }
   /** Refresh canonical Node collaboration in one batch. */
@@ -1905,10 +1910,11 @@ var DesktopShellModel = class {
       ]);
       this.tasks = (taskResult.tasks ?? []).map((t) => ({
         path: t.path,
-        assigneeKind: t.assigneeKind,
-        assigneeId: t.assigneeId,
-        referencedNodeIds: t.referencedNodeIds ?? [],
+        roleId: t.roleId,
+        workNodeIds: t.workNodeIds ?? [],
+        contextNodeIds: t.contextNodeIds ?? [],
         state: t.state,
+        acceptMode: t.acceptMode,
         id: t.id,
         prompt: t.prompt,
         activeDeliveryId: t.activeDeliveryId,
@@ -1950,28 +1956,28 @@ var DesktopShellModel = class {
     this.emit();
   }
   /**
-   * Load machine-local routes.
+   * Load machine-local Agent Connections.
    * Does not start sessions; selection only.
    */
-  async refreshRoutes() {
+  async refreshConnections() {
     if (!this.rpc) {
-      this.routes = [];
-      this.selectedRouteId = null;
+      this.connections = [];
+      this.selectedConnectionId = null;
       this.emit();
-      return this.routes;
+      return this.connections;
     }
     try {
-      const result = await this.rpc.call("route.list", {});
-      this.routes = listRouteOptions(result.routes ?? []);
-      if (!this.selectedRouteId || !this.routes.some((route) => route.routeId === this.selectedRouteId)) {
-        this.selectedRouteId = pickDefaultRouteId(this.routes);
+      const result = await this.rpc.call("connection.list", {});
+      this.connections = listConnectionOptions(result.connections ?? []);
+      if (!this.selectedConnectionId || !this.connections.some((connection) => connection.connectionId === this.selectedConnectionId)) {
+        this.selectedConnectionId = pickDefaultConnectionId(this.connections);
       }
     } catch {
-      this.routes = [];
-      if (!this.routes.length) this.selectedRouteId = null;
+      this.connections = [];
+      if (!this.connections.length) this.selectedConnectionId = null;
     }
     this.emit();
-    return this.routes;
+    return this.connections;
   }
   /**
    * User-clicked start agent. Builds task.startSession with callerKind=user.

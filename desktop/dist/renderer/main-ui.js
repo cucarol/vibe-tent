@@ -34,22 +34,22 @@ function listCoordinationTypeOptions(types) {
   return listCoordinationTypeNames(types).map((name) => ({ name }));
 }
 function listRoleOptions(roles2) {
-  return roles2.map((r) => ({ name: r.name, description: r.description })).sort((a, b) => a.name.localeCompare(b.name));
+  return roles2.map((r) => ({ roleId: r.roleId, name: r.name, description: r.description })).sort((a, b) => a.name.localeCompare(b.name));
 }
-function listRouteOptions(routes2) {
-  return routes2.map((route) => {
-    const parts = [route.displayName || route.routeId, route.adapterId, route.model].filter(Boolean);
+function listConnectionOptions(connections2) {
+  return connections2.map((connection) => {
+    const parts = [connection.displayName || connection.connectionId, connection.adapterId, connection.model].filter(Boolean);
     return {
-      routeId: route.routeId,
-      adapterId: route.adapterId,
-      displayName: route.displayName || route.routeId,
-      model: route.model,
+      connectionId: connection.connectionId,
+      adapterId: connection.adapterId,
+      displayName: connection.displayName || connection.connectionId,
+      model: connection.model,
       label: parts.join(" \xB7 ")
     };
-  }).sort((a, b) => a.routeId.localeCompare(b.routeId));
+  }).sort((a, b) => a.connectionId.localeCompare(b.connectionId));
 }
-function pickDefaultRouteId(routes2) {
-  return routes2[0]?.routeId ?? null;
+function pickDefaultConnectionId(connections2) {
+  return connections2[0]?.connectionId ?? null;
 }
 function buildStartSessionPayload(taskPath) {
   const path = taskPath.trim();
@@ -86,7 +86,8 @@ function validateDispatchForm(form) {
   if (!role) {
     return { ok: false, reason: "\u8BF7\u9009\u62E9\u76EE\u6807 role\u3002", payload: null };
   }
-  if (!form.roles.some((r) => r.name === role)) {
+  const selectedRole = form.roles.find((r) => r.roleId === role || r.name === role);
+  if (!selectedRole) {
     return { ok: false, reason: `\u76EE\u6807 role\u300C${role}\u300D\u4E0D\u5728\u6CE8\u518C\u8868\u4E2D\u3002`, payload: null };
   }
   const prompt = form.prompt.trim();
@@ -97,9 +98,9 @@ function validateDispatchForm(form) {
     ok: true,
     reason: null,
     payload: {
-      nodeId: form.nodeId,
-      assigneeKind: "role",
-      assigneeId: role,
+      workNodeIds: [form.nodeId],
+      contextNodeIds: [],
+      roleId: selectedRole.roleId,
       prompt,
       // Desktop form is user-direct; Role-dispatched child uses CLI/Service explicit actors.
       parentActor: { kind: "user", id: "user" },
@@ -169,7 +170,7 @@ function sessionStateLabel(state2) {
       return state2;
   }
 }
-function canStartAgentOnTask(taskState, session) {
+function canStartAgentOnTask(taskState, session, opts) {
   const s = taskState || "";
   if (s === "delivered" || s === "accepted" || s === "rejected" || s === "interrupted") {
     return false;
@@ -177,6 +178,7 @@ function canStartAgentOnTask(taskState, session) {
   if (session && session.alive && (session.state === "live" || session.state === "starting" || session.state === "waiting-user")) {
     return false;
   }
+  if (!opts?.hasSessionId) return false;
   return s === "queued" || s === "pending" || s === "running" || s === "taken" || s === "waiting" || s === "failed";
 }
 function canInterruptTask(taskState, session, opts) {
@@ -235,26 +237,28 @@ function buildTaskReviewItems(tasks, deliveries2 = [], sessions2 = []) {
     const summaryLine = [
       label,
       sessLabel ? `\u4F1A\u8BDD${sessLabel}` : null,
-      `${task.assigneeKind}:${task.assigneeId}`,
+      task.roleId ? `role:${task.roleId}` : task.sessionId ? `session:${task.sessionId}` : null,
       deliverySummary ? truncate(deliverySummary, 64) : promptBit || null
     ].filter(Boolean).join(" \xB7 ");
     return {
       path: task.path,
       id: task.id,
-      assigneeKind: task.assigneeKind,
-      assigneeId: task.assigneeId,
+      roleId: task.roleId,
       state: state2,
-      referencedNodeIds: task.referencedNodeIds ?? [],
+      workNodeIds: task.workNodeIds ?? [],
+      contextNodeIds: task.contextNodeIds ?? [],
       prompt: task.prompt,
       activeDeliveryId: task.activeDeliveryId,
       sessionId: task.sessionId ?? session?.sessionId,
       sessionState: session?.state,
       sessionAlive: session?.alive,
-      sessionRouteId: session?.routeId,
+      sessionConnectionId: session?.connectionId,
       deliverySummary,
       commits,
       canAcceptOrReject: state2 === "delivered",
-      canStartAgent: canStartAgentOnTask(state2, session),
+      canStartAgent: canStartAgentOnTask(state2, session, {
+        hasSessionId: !!(task.sessionId || session?.sessionId)
+      }),
       canInterrupt: canInterruptTask(state2, session, {
         hasSessionId: !!(task.sessionId || session?.sessionId)
       }),
@@ -5459,8 +5463,8 @@ function applyLinksFromOriginal(text3, options) {
 var PENDING_INTERACTION_EVENT_TYPES = [
   "toolApproval.pending",
   "toolApproval.resolved",
-  "userAsk.pending",
-  "userAsk.resolved",
+  "decisionRequest.pending",
+  "decisionRequest.resolved",
   "taskInput.pending",
   "taskInput.delivered",
   "taskInput.consumed",
@@ -5475,8 +5479,8 @@ function isPendingInteractionEventType(type) {
 var TASK_PROJECTION_EVENT_TYPES = [
   "task.state",
   "delivery.updated",
-  "userAsk.pending",
-  "userAsk.resolved",
+  "decisionRequest.pending",
+  "decisionRequest.resolved",
   "toolApproval.pending",
   "toolApproval.resolved",
   "taskInput.pending",
@@ -5500,29 +5504,32 @@ function summarizeToolApprovalOptions(options) {
   if (!options?.length) return "";
   return options.map((o) => o.name || o.kind || o.optionId || "").filter(Boolean).join(" \xB7 ");
 }
-function normalizeUserAsk(raw) {
+function normalizeDecisionRequest(raw) {
   if (!isRecord(raw)) return null;
   const id = str(raw.id);
   const taskPath = str(raw.taskPath);
+  const taskId = str(raw.taskId);
   const question = str(raw.question);
-  if (!id || !taskPath || !question) return null;
-  const choicesRaw = Array.isArray(raw.choices) ? raw.choices : [];
-  const choices = [];
-  for (const c of choicesRaw) {
+  const requester = isRecord(raw.requester) ? raw.requester : null;
+  const target = isRecord(raw.target) ? raw.target : null;
+  if (!id || !taskPath || !taskId || !question || requester?.kind !== "session" || !str(requester.id) || target?.kind !== "user" && target?.kind !== "role" || !str(target.id)) return null;
+  const optionsRaw = Array.isArray(raw.options) ? raw.options : [];
+  const options = [];
+  for (const c of optionsRaw) {
     if (!isRecord(c)) continue;
     const cid = str(c.id);
     const label = str(c.label);
-    if (cid && label) choices.push({ id: cid, label });
+    if (cid && label) options.push({ id: cid, label });
   }
   return {
-    kind: "userAsk",
+    kind: "decisionRequest",
     id,
     taskPath,
-    taskId: str(raw.taskId),
-    sessionId: str(raw.sessionId),
-    role: str(raw.role),
+    taskId,
+    requester: { kind: "session", id: str(requester.id) },
+    target: { kind: target.kind, id: str(target.id) },
     question,
-    choices,
+    options,
     createdAt: strOrEmpty(raw.createdAt)
   };
 }
@@ -5597,9 +5604,9 @@ function normalizeProposal(raw) {
     createdAt: str(raw.createdAt)
   };
 }
-function normalizeUserAskList(result) {
-  const list2 = isRecord(result) && Array.isArray(result.asks) ? result.asks : [];
-  return list2.map(normalizeUserAsk).filter((x) => !!x);
+function normalizeDecisionRequestList(result) {
+  const list2 = isRecord(result) && Array.isArray(result.requests) ? result.requests : [];
+  return list2.map(normalizeDecisionRequest).filter((x) => !!x);
 }
 function normalizeToolApprovalList(result) {
   const list2 = isRecord(result) && Array.isArray(result.approvals) ? result.approvals : [];
@@ -5614,28 +5621,35 @@ function normalizeProposalList(result) {
   return list2.map(normalizeProposal).filter((x) => !!x);
 }
 function pendingInteractionCount(parts) {
-  return (parts.userAsks?.length ?? 0) + (parts.toolApprovals?.length ?? 0) + (parts.taskInputs?.length ?? 0) + (parts.proposals?.length ?? 0);
+  return (parts.decisionRequests?.length ?? 0) + (parts.toolApprovals?.length ?? 0) + (parts.taskInputs?.length ?? 0) + (parts.proposals?.length ?? 0);
 }
-function buildUserAskReplyPayload(askId, args) {
-  const id = askId.trim();
-  if (!id) return { ok: false, reason: "\u7F3A\u5C11\u63D0\u95EE id\u3002" };
-  const answer = args.answer?.trim() || "";
-  const choiceId = args.choiceId?.trim() || "";
-  if (!answer && !choiceId) {
+function buildDecisionResponsePayload(workspaceId2, taskPath, requestId, args) {
+  const id = requestId.trim();
+  if (!workspaceId2) return { ok: false, reason: "\u7F3A\u5C11\u5DE5\u4F5C\u533A\u3002" };
+  if (!taskPath.trim()) return { ok: false, reason: "\u7F3A\u5C11\u4EFB\u52A1\u8DEF\u5F84\u3002" };
+  if (!id) return { ok: false, reason: "\u7F3A\u5C11 Decision Request id\u3002" };
+  const text3 = args.text?.trim() || "";
+  const optionId = args.optionId?.trim() || "";
+  if (Boolean(text3) === Boolean(optionId)) {
     return { ok: false, reason: "\u8BF7\u9009\u62E9\u4E00\u4E2A\u9009\u9879\u6216\u586B\u5199\u56DE\u590D\u3002" };
   }
   return {
     ok: true,
     payload: {
-      askId: id,
-      actor: args.actor ?? "user",
-      ...answer ? { answer } : {},
-      ...choiceId ? { choiceId } : {}
+      workspaceId: workspaceId2,
+      taskPath: taskPath.trim(),
+      requestId: id,
+      response: optionId ? { kind: "option", optionId } : { kind: "custom", text: text3 }
     }
   };
 }
-function buildUserAskDenyPayload(askId, actor = "user") {
-  return { askId, actor };
+function buildDecisionDenyPayload(workspaceId2, taskPath, requestId) {
+  return {
+    workspaceId: workspaceId2,
+    taskPath,
+    requestId,
+    response: { kind: "deny" }
+  };
 }
 function buildToolApprovalResolvePayload(approvalId, allow, actor = "user") {
   return {
@@ -5870,15 +5884,16 @@ function applyOne(node2, byNodeId) {
   const active = byNodeId.get(node2.nodeId)?.activeTask?.task;
   if (!active) return next;
   next.status = "doing";
-  if (active.assigneeId) next.assignee = active.assigneeId;
+  const executor = active.roleId ?? active.sessionId;
+  if (executor) next.assignee = executor;
   return next;
 }
 function nodeCollaborationSummaryLine(projection) {
   if (!projection) return null;
   if (!projection.activeTask) return "\u65E0\u6D3B\u52A8\u4EFB\u52A1";
   const first = projection.activeTask.task;
-  const assignee = first?.assigneeId;
-  return `\u6D3B\u52A8\u4EFB\u52A1${assignee ? ` \xB7 ${assignee}` : ""}`;
+  const executor = first?.roleId ?? first?.sessionId;
+  return `\u6D3B\u52A8\u4EFB\u52A1${executor ? ` \xB7 ${executor}` : ""}`;
 }
 
 // src/desktop/workbench/open-tabs.ts
@@ -5943,12 +5958,12 @@ var roles = [];
 var taskReview = [];
 var deliveries = [];
 var sessions = [];
-var userAsks = [];
+var decisionRequests = [];
 var toolApprovals = [];
 var taskInputs = [];
 var proposals = [];
-var routes = [];
-var selectedRouteId = null;
+var connections = [];
+var selectedConnectionId = null;
 var createTypePick = "";
 var dispatchRole = "";
 var dispatchPrompt = "";
@@ -5971,11 +5986,11 @@ function setRoles(list2) {
 function setTaskReview(list2) {
   taskReview = list2;
 }
-function setRoutes(list2) {
-  routes = list2;
+function setConnections(list2) {
+  connections = list2;
 }
-function setSelectedRouteId(id) {
-  selectedRouteId = id;
+function setSelectedConnectionId(id) {
+  selectedConnectionId = id;
 }
 function setCreateTypePick(value) {
   createTypePick = value;
@@ -6001,7 +6016,7 @@ function actionableTasks() {
 }
 function pendingInteractionCount2() {
   return pendingInteractionCount({
-    userAsks,
+    decisionRequests,
     toolApprovals,
     taskInputs,
     proposals
@@ -6011,7 +6026,7 @@ function tasksForActiveNode(states) {
   if (!activeCx) return [];
   return actionableTasks().filter((task) => {
     const st = task.state;
-    return task.referencedNodeIds.includes(activeCx) && (!states || states.includes(st));
+    return task.workNodeIds.includes(activeCx) && (!states || states.includes(st));
   });
 }
 function reconstruct(fm, body) {
@@ -6177,15 +6192,15 @@ async function reloadTasks() {
 async function reloadPendingInteractions() {
   if (!workspaceId) return;
   try {
-    const [askResult, toolResult, proposalResult] = await Promise.all([
-      window.tentDesktop.rpc("userAsk.listPending", { workspaceId }),
+    const [decisionResult, toolResult, proposalResult] = await Promise.all([
+      window.tentDesktop.rpc("decisionRequest.listPending", { workspaceId }),
       window.tentDesktop.rpc("toolApproval.listPending", { workspaceId }),
       window.tentDesktop.rpc("proposal.list", {
         workspaceId,
         status: "pending"
       })
     ]);
-    userAsks = normalizeUserAskList(askResult);
+    decisionRequests = normalizeDecisionRequestList(decisionResult);
     toolApprovals = normalizeToolApprovalList(toolResult);
     proposals = normalizeProposalList(proposalResult);
     const paths = collectTaskPathsForInputPoll();
@@ -6215,8 +6230,8 @@ function collectTaskPathsForInputPoll() {
   for (const t of taskReview) {
     if (t.path) paths.add(t.path);
   }
-  for (const ask of userAsks) {
-    if (ask.taskPath) paths.add(ask.taskPath);
+  for (const request of decisionRequests) {
+    if (request.taskPath) paths.add(request.taskPath);
   }
   for (const t of toolApprovals) {
     if (t.taskPath) paths.add(t.taskPath);
@@ -6245,17 +6260,17 @@ async function onServiceEvent(type) {
     setError(err);
   }
 }
-async function reloadRoutes() {
+async function reloadConnections() {
   try {
-    const result = await window.tentDesktop.rpc("route.list", {});
-    routes = listRouteOptions(result.routes || []);
-    if (!selectedRouteId || !routes.some((route) => route.routeId === selectedRouteId)) {
-      selectedRouteId = pickDefaultRouteId(routes);
+    const result = await window.tentDesktop.rpc("connection.list", {});
+    connections = listConnectionOptions(result.connections || []);
+    if (!selectedConnectionId || !connections.some((connection) => connection.connectionId === selectedConnectionId)) {
+      selectedConnectionId = pickDefaultConnectionId(connections);
     }
     host?.renderTasks();
   } catch (err) {
-    routes = [];
-    selectedRouteId = null;
+    connections = [];
+    selectedConnectionId = null;
     setError(err);
   }
 }
@@ -6352,7 +6367,7 @@ function renderMeta() {
   const oneLine = tab.coordination ? collabLine ? `${escapeHtml(tab.type)} \xB7 ${escapeHtml(collabLine)} \xB7 ${modeLabel}` : `${escapeHtml(tab.type)} \xB7 ${modeLabel}` : `${escapeHtml(tab.type)} \xB7 ${modeLabel}`;
   const renameDisabled = tab.nodeMode === "archived";
   const projDl = tab.coordination && proj ? `<dt>\u6D3B\u52A8\u4EFB\u52A1</dt><dd>${proj.activeTask ? "1" : "0"}</dd>
-        <dt>\u7ECF\u529E</dt><dd>${proj.activeTask?.task.assigneeId ?? "\u2014"}</dd>
+        <dt>\u7ECF\u529E</dt><dd>${proj.activeTask?.task.roleId ?? proj.activeTask?.task.sessionId ?? "\u2014"}</dd>
         <dt>\u4EFB\u52A1</dt><dd>${proj.activeTask?.task.id ? `<code title="${escapeHtml(proj.activeTask.task.id)}">${escapeHtml(proj.activeTask.task.id)}</code>` : "\u2014"}</dd>` : tab.coordination ? `<dt>\u72B6\u6001</dt><dd class="muted">\u6295\u5F71\u672A\u52A0\u8F7D</dd>` : "";
   el.meta.innerHTML = `
     <div class="meta-name">${escapeHtml(tab.name)}</div>
@@ -6478,22 +6493,21 @@ function renderPendingInteractions() {
     renderTasks();
     return;
   }
-  const asks = userAsks.map((ask) => {
-    const choices = (ask.choices || []).map(
-      (choice) => `<label class="choice-row">
-      <input type="radio" name="ask-choice-${escapeHtml(ask.id)}" value="${escapeHtml(choice.id)}" />
-      <span>${escapeHtml(choice.label)}</span></label>`
+  const requests = decisionRequests.map((request) => {
+    const options = request.options.map(
+      (option) => `<label class="choice-row">
+      <input type="radio" name="decision-option-${escapeHtml(request.id)}" value="${escapeHtml(option.id)}" />
+      <span>${escapeHtml(option.label)}</span></label>`
     ).join("");
-    const source = ask.role || "Agent";
-    return `<article class="interaction-item" data-ask-item="${escapeHtml(ask.id)}" data-pending-kind="userAsk">
-      <div class="interaction-kicker">USER ASK \xB7 ${escapeHtml(source)}</div>
-      <div class="interaction-title">${escapeHtml(ask.question)}</div>
-      <div class="muted interaction-note">${escapeHtml(ask.taskPath)}</div>
-      ${choices ? `<div class="choice-list">${choices}</div>` : ""}
-      <textarea class="line-input" data-ask-answer="${escapeHtml(ask.id)}" rows="2" placeholder="\u81EA\u7531\u56DE\u7B54\uFF08\u53EF\u9009\uFF09"></textarea>
-      <div class="interaction-actions"><button type="button" class="btn btn-primary" data-ask-reply="${escapeHtml(ask.id)}">\u56DE\u590D</button>
-      <button type="button" class="btn btn-ghost" data-ask-deny="${escapeHtml(ask.id)}">\u62D2\u7EDD</button>
-      <button type="button" class="btn btn-ghost" data-task-stop="${escapeHtml(ask.taskPath)}">\u4E2D\u65AD\u4EFB\u52A1</button></div>
+    return `<article class="interaction-item" data-decision-item="${escapeHtml(request.id)}" data-task-path="${escapeHtml(request.taskPath)}" data-pending-kind="decisionRequest">
+      <div class="interaction-kicker">DECISION REQUEST</div>
+      <div class="interaction-title">${escapeHtml(request.question)}</div>
+      <div class="muted interaction-note">${escapeHtml(request.taskPath)}</div>
+      ${options ? `<div class="choice-list">${options}</div>` : ""}
+      <textarea class="line-input" data-decision-answer="${escapeHtml(request.id)}" rows="2" placeholder="\u81EA\u5B9A\u4E49\u56DE\u7B54\uFF08\u53EF\u9009\uFF09"></textarea>
+      <div class="interaction-actions"><button type="button" class="btn btn-primary" data-decision-respond="${escapeHtml(request.id)}">\u56DE\u590D</button>
+      <button type="button" class="btn btn-ghost" data-decision-deny="${escapeHtml(request.id)}">\u62D2\u7EDD</button>
+      <button type="button" class="btn btn-ghost" data-task-stop="${escapeHtml(request.taskPath)}">\u4E2D\u65AD\u4EFB\u52A1</button></div>
     </article>`;
   }).join("");
   const tools = toolApprovals.map((item) => {
@@ -6532,12 +6546,12 @@ function renderPendingInteractions() {
       </div>
     </article>`;
   }).join("");
-  el.a2u.innerHTML = asks + tools + inputs + proposalItems;
-  el.a2u.querySelectorAll("[data-ask-reply]").forEach(
-    (button) => button.addEventListener("click", () => void onReplyUserAsk(button.getAttribute("data-ask-reply")))
+  el.a2u.innerHTML = requests + tools + inputs + proposalItems;
+  el.a2u.querySelectorAll("[data-decision-respond]").forEach(
+    (button) => button.addEventListener("click", () => void onRespondDecision(button.getAttribute("data-decision-respond")))
   );
-  el.a2u.querySelectorAll("[data-ask-deny]").forEach(
-    (button) => button.addEventListener("click", () => void onDenyUserAsk(button.getAttribute("data-ask-deny")))
+  el.a2u.querySelectorAll("[data-decision-deny]").forEach(
+    (button) => button.addEventListener("click", () => void onDenyDecision(button.getAttribute("data-decision-deny")))
   );
   el.a2u.querySelectorAll("[data-task-stop]").forEach(
     (button) => button.addEventListener("click", () => void onInterrupt(button.getAttribute("data-task-stop")))
@@ -6563,27 +6577,38 @@ function renderPendingInteractions() {
   renderTasks();
   syncInspectorSections();
 }
-async function onReplyUserAsk(askId) {
-  const item = el.a2u.querySelector(`[data-ask-item="${CSS.escape(askId)}"]`);
-  const answer = item?.querySelector("[data-ask-answer]")?.value.trim() || "";
-  const choiceId = item?.querySelector("input[type=radio]:checked")?.value || "";
-  const built = buildUserAskReplyPayload(askId, { answer, choiceId, actor: "user" });
+async function onRespondDecision(requestId) {
+  if (!workspaceId) return;
+  const item = el.a2u.querySelector(`[data-decision-item="${CSS.escape(requestId)}"]`);
+  const taskPath = item?.getAttribute("data-task-path") || "";
+  const answer = item?.querySelector("[data-decision-answer]")?.value.trim() || "";
+  const optionId = item?.querySelector("input[type=radio]:checked")?.value || "";
+  const built = buildDecisionResponsePayload(workspaceId, taskPath, requestId, {
+    text: answer,
+    optionId
+  });
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
   }
   try {
-    await window.tentDesktop.rpc("userAsk.reply", built.payload);
-    el.status.textContent = "\u5DF2\u56DE\u590D Agent\u3002";
+    await window.tentDesktop.rpc("decisionRequest.respond", built.payload);
+    el.status.textContent = "\u5DF2\u63D0\u4EA4\u51B3\u5B9A\u3002";
     await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
   } catch (err) {
     setError(err);
   }
 }
-async function onDenyUserAsk(askId) {
+async function onDenyDecision(requestId) {
+  if (!workspaceId) return;
+  const item = el.a2u.querySelector(`[data-decision-item="${CSS.escape(requestId)}"]`);
+  const taskPath = item?.getAttribute("data-task-path") || "";
   try {
-    await window.tentDesktop.rpc("userAsk.deny", buildUserAskDenyPayload(askId, "user"));
-    el.status.textContent = "\u5DF2\u62D2\u7EDD Agent \u63D0\u95EE\u3002";
+    await window.tentDesktop.rpc(
+      "decisionRequest.respond",
+      buildDecisionDenyPayload(workspaceId, taskPath, requestId)
+    );
+    el.status.textContent = "\u5DF2\u62D2\u7EDD\u8BE5\u8BF7\u6C42\u3002";
     await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
   } catch (err) {
     setError(err);
@@ -6622,7 +6647,7 @@ function renderTaskInput() {
     return;
   }
   const options = candidates.map(
-    (task) => `<option value="${escapeHtml(task.path)}">${escapeHtml(task.assigneeId)} \xB7 ${escapeHtml(taskStateLabel(task.state))}</option>`
+    (task) => `<option value="${escapeHtml(task.path)}">${escapeHtml(taskExecutionLabel(task))} \xB7 ${escapeHtml(taskStateLabel(task.state))}</option>`
   ).join("");
   el.u2a.innerHTML = `<article class="interaction-item u2a-item" data-pending-kind="taskSendInput"><div class="interaction-kicker">U2A \xB7 \u8FFD\u52A0\u4EFB\u52A1\u8F93\u5165</div>
     ${candidates.length > 1 ? `<select id="u2a-task" class="field">${options}</select>` : ""}
@@ -6656,7 +6681,7 @@ function renderSessions() {
   el.session.hidden = related.length === 0;
   el.session.innerHTML = related.map(
     (session) => `<div class="session-row"><span class="session-dot ${session.alive ? "is-live" : ""}" aria-hidden="true"></span>
-    <span>${escapeHtml(session.roleName || session.routeId)}</span><span class="muted">${escapeHtml(sessionStateLabel(session.state) || session.state)}</span></div>`
+    <span>${escapeHtml(session.roleId || session.connectionId || session.sessionId)}</span><span class="muted">${escapeHtml(sessionStateLabel(session.state) || session.state)}</span></div>`
   ).join("");
 }
 function renderTasks() {
@@ -6680,8 +6705,8 @@ function renderTasks() {
     return;
   }
   el.tasks.innerHTML = visibleTasks.map((t) => {
-    const who = escapeHtml(t.assigneeId);
-    const nodeIds = (t.referencedNodeIds || []).filter(
+    const who = escapeHtml(taskExecutionLabel(t));
+    const nodeIds = [...t.workNodeIds || [], ...t.contextNodeIds || []].filter(
       (c) => c !== "root" && !/^(cx|rl|tk|ss|dl|ti)-/i.test(c)
     );
     const claimBit = nodeIds.length ? `<span class="task-claims muted">${nodeIds.map((c) => escapeHtml(c)).join(" \xB7 ")}</span>` : "";
@@ -6755,6 +6780,9 @@ function renderTasks() {
   el.tasks.querySelectorAll("[data-reject]").forEach((btn) => {
     btn.addEventListener("click", () => void onReject(btn.getAttribute("data-reject")));
   });
+}
+function taskExecutionLabel(task) {
+  return task.roleId || task.sessionConnectionId || task.sessionId || "Session";
 }
 async function onStartAgent(taskPath) {
   if (!workspaceId) return;
@@ -7369,13 +7397,13 @@ async function onDispatch() {
   try {
     const result = await window.tentDesktop.rpc("task.dispatch", {
       workspaceId,
-      nodeIds: [validation.payload.nodeId],
-      assigneeKind: validation.payload.assigneeKind,
-      assigneeId: validation.payload.assigneeId,
+      workNodeIds: validation.payload.workNodeIds,
+      contextNodeIds: validation.payload.contextNodeIds,
+      roleId: validation.payload.roleId,
       prompt: validation.payload.prompt,
       parentActor: validation.payload.parentActor,
       reviewer: validation.payload.reviewer,
-      deliveryPolicy: "review"
+      acceptMode: "review-required"
     });
     el.status.textContent = `\u5DF2\u6D3E\u6D3B \u2192 ${result.taskPath}\uFF08${result.state}\uFF09`;
     setDispatchPrompt("");
@@ -8277,22 +8305,22 @@ function renderActivity() {
   const pendingN = pendingInteractionCount2();
   const tasks = actionableTasks();
   const liveSessions = sessions.filter((s) => s.alive || s.state === "running" || s.state === "waiting");
-  const asksHtml = userAsks.map((ask) => {
-    const choices = (ask.choices || []).map(
-      (choice) => `<label class="choice-row">
-        <input type="radio" name="act-ask-${escapeHtml(ask.id)}" value="${escapeHtml(choice.id)}" />
-        <span>${escapeHtml(choice.label)}</span></label>`
+  const requestsHtml = decisionRequests.map((request) => {
+    const options = request.options.map(
+      (option) => `<label class="choice-row">
+        <input type="radio" name="act-decision-${escapeHtml(request.id)}" value="${escapeHtml(option.id)}" />
+        <span>${escapeHtml(option.label)}</span></label>`
     ).join("");
-    return `<article class="interaction-item" data-act-ask="${escapeHtml(ask.id)}" data-pending-kind="userAsk">
-        <div class="interaction-kicker">USER ASK \xB7 ${escapeHtml(ask.role || "Agent")}</div>
-        <div class="interaction-title">${escapeHtml(ask.question)}</div>
-        <div class="muted interaction-note">${escapeHtml(ask.taskPath)}</div>
-        ${choices ? `<div class="choice-list">${choices}</div>` : ""}
-        <textarea class="line-input" data-act-answer="${escapeHtml(ask.id)}" rows="2" placeholder="\u81EA\u7531\u56DE\u7B54\uFF08\u53EF\u9009\uFF09"></textarea>
+    return `<article class="interaction-item" data-act-decision="${escapeHtml(request.id)}" data-task-path="${escapeHtml(request.taskPath)}" data-pending-kind="decisionRequest">
+        <div class="interaction-kicker">DECISION REQUEST</div>
+        <div class="interaction-title">${escapeHtml(request.question)}</div>
+        <div class="muted interaction-note">${escapeHtml(request.taskPath)}</div>
+        ${options ? `<div class="choice-list">${options}</div>` : ""}
+        <textarea class="line-input" data-act-answer="${escapeHtml(request.id)}" rows="2" placeholder="\u81EA\u5B9A\u4E49\u56DE\u7B54\uFF08\u53EF\u9009\uFF09"></textarea>
         <div class="interaction-actions">
-          <button type="button" class="btn btn-primary" data-act-reply="${escapeHtml(ask.id)}">\u56DE\u590D</button>
-          <button type="button" class="btn btn-ghost" data-act-ask-deny="${escapeHtml(ask.id)}">\u62D2\u7EDD</button>
-          <button type="button" class="btn btn-ghost" data-act-interrupt="${escapeHtml(ask.taskPath)}">\u4E2D\u65AD</button>
+          <button type="button" class="btn btn-primary" data-act-respond="${escapeHtml(request.id)}">\u56DE\u590D</button>
+          <button type="button" class="btn btn-ghost" data-act-decision-deny="${escapeHtml(request.id)}">\u62D2\u7EDD</button>
+          <button type="button" class="btn btn-ghost" data-act-interrupt="${escapeHtml(request.taskPath)}">\u4E2D\u65AD</button>
         </div>
       </article>`;
   }).join("");
@@ -8324,7 +8352,7 @@ function renderActivity() {
     const draft = rejectDrafts.get(t.path) || "";
     return `<article class="interaction-item" data-pending-kind="deliveryReview">
         <div class="interaction-kicker">DELIVERY REVIEW</div>
-        <div class="interaction-title">${escapeHtml(t.assigneeId)}</div>
+        <div class="interaction-title">${escapeHtml(t.roleId || t.sessionConnectionId || t.sessionId || "Session")}</div>
         <div class="muted interaction-note">${escapeHtml(t.deliverySummary || t.prompt || t.path)}</div>
         <div class="interaction-actions">
           <button type="button" class="btn btn-primary" data-act-accept="${escapeHtml(t.path)}">\u786E\u8BA4</button>
@@ -8351,13 +8379,13 @@ function renderActivity() {
       </article>`;
   }).join("");
   const pendingTotal = pendingN + reviewTasks.length;
-  const pendingBlock = pendingTotal === 0 ? `<p class="muted">\u6682\u65E0\u5F85\u5904\u7406</p>` : asksHtml + toolsHtml + inputsHtml + proposalHtml + reviewHtml;
+  const pendingBlock = pendingTotal === 0 ? `<p class="muted">\u6682\u65E0\u5F85\u5904\u7406</p>` : requestsHtml + toolsHtml + inputsHtml + proposalHtml + reviewHtml;
   const taskRows = tasks.map((t) => {
     const startBtn = t.canStartAgent ? `<button type="button" class="btn btn-primary" data-act-start="${escapeHtml(t.path)}">\u542F\u52A8</button>` : "";
     const interruptBtn = t.canInterrupt ? `<button type="button" class="btn btn-ghost" data-act-interrupt="${escapeHtml(t.path)}">\u4E2D\u65AD</button>` : "";
     const cancelBtn = t.canCancel ? `<button type="button" class="btn btn-ghost" data-act-cancel="${escapeHtml(t.path)}">\u53D6\u6D88</button>` : "";
     return `<li class="task-item">
-        <div class="task-head"><strong>${escapeHtml(t.assigneeId)}</strong>
+        <div class="task-head"><strong>${escapeHtml(t.roleId || t.sessionConnectionId || t.sessionId || "Session")}</strong>
           <span class="muted">${escapeHtml(taskStateLabel(t.state))}</span></div>
         ${t.prompt ? `<div class="task-summary">${escapeHtml(t.prompt.length > 100 ? t.prompt.slice(0, 97) + "\u2026" : t.prompt)}</div>` : ""}
         <div class="task-actions">${startBtn}${interruptBtn}${cancelBtn}</div>
@@ -8367,7 +8395,7 @@ function renderActivity() {
   const sessionRows = liveSessions.length ? liveSessions.map(
     (s) => `<li class="session-row">
           <span class="session-dot ${s.alive ? "is-live" : ""}" aria-hidden="true"></span>
-          <span>${escapeHtml(s.roleName || s.routeId)}</span>
+          <span>${escapeHtml(s.roleId || s.connectionId || s.sessionId)}</span>
           <span class="muted">${escapeHtml(sessionStateLabel(s.state) || s.state)}</span>
         </li>`
   ).join("") : `<li class="muted">\u65E0\u6D3B\u8DC3\u4F1A\u8BDD</li>`;
@@ -8387,11 +8415,11 @@ function renderActivity() {
   wireActivity(hostEl);
 }
 function wireActivity(root) {
-  root.querySelectorAll("[data-act-reply]").forEach((btn) => {
-    btn.addEventListener("click", () => void onReply(btn.getAttribute("data-act-reply")));
+  root.querySelectorAll("[data-act-respond]").forEach((btn) => {
+    btn.addEventListener("click", () => void onRespond(btn.getAttribute("data-act-respond")));
   });
-  root.querySelectorAll("[data-act-ask-deny]").forEach((btn) => {
-    btn.addEventListener("click", () => void onDenyAsk(btn.getAttribute("data-act-ask-deny")));
+  root.querySelectorAll("[data-act-decision-deny]").forEach((btn) => {
+    btn.addEventListener("click", () => void onDenyDecision2(btn.getAttribute("data-act-decision-deny")));
   });
   root.querySelectorAll("[data-act-tool-allow]").forEach((btn) => {
     btn.addEventListener("click", () => void onTool(btn.getAttribute("data-act-tool-allow"), true));
@@ -8446,27 +8474,38 @@ async function refreshAfter() {
   await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
   renderActivity();
 }
-async function onReply(askId) {
-  const item = el.activityHost?.querySelector(`[data-act-ask="${CSS.escape(askId)}"]`);
+async function onRespond(requestId) {
+  if (!workspaceId) return;
+  const item = el.activityHost?.querySelector(`[data-act-decision="${CSS.escape(requestId)}"]`);
+  const taskPath = item?.getAttribute("data-task-path") || "";
   const answer = item?.querySelector("[data-act-answer]")?.value.trim() || "";
-  const choiceId = item?.querySelector("input[type=radio]:checked")?.value || "";
-  const built = buildUserAskReplyPayload(askId, { answer, choiceId, actor: "user" });
+  const optionId = item?.querySelector("input[type=radio]:checked")?.value || "";
+  const built = buildDecisionResponsePayload(workspaceId, taskPath, requestId, {
+    text: answer,
+    optionId
+  });
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
   }
   try {
-    await window.tentDesktop.rpc("userAsk.reply", built.payload);
-    el.status.textContent = "\u5DF2\u56DE\u590D Agent\u3002";
+    await window.tentDesktop.rpc("decisionRequest.respond", built.payload);
+    el.status.textContent = "\u5DF2\u63D0\u4EA4\u51B3\u5B9A\u3002";
     await refreshAfter();
   } catch (err) {
     setError(err);
   }
 }
-async function onDenyAsk(askId) {
+async function onDenyDecision2(requestId) {
+  if (!workspaceId) return;
+  const item = el.activityHost?.querySelector(`[data-act-decision="${CSS.escape(requestId)}"]`);
+  const taskPath = item?.getAttribute("data-task-path") || "";
   try {
-    await window.tentDesktop.rpc("userAsk.deny", buildUserAskDenyPayload(askId, "user"));
-    el.status.textContent = "\u5DF2\u62D2\u7EDD Agent \u63D0\u95EE\u3002";
+    await window.tentDesktop.rpc(
+      "decisionRequest.respond",
+      buildDecisionDenyPayload(workspaceId, taskPath, requestId)
+    );
+    el.status.textContent = "\u5DF2\u62D2\u7EDD\u8BE5\u8BF7\u6C42\u3002";
     await refreshAfter();
   } catch (err) {
     setError(err);
@@ -8577,9 +8616,9 @@ async function onCancel(taskPath) {
 }
 
 // src/desktop/workbench/settings-model.ts
-var DELIVERY_POLICY_OPTIONS = [
-  { value: "review", label: "Review" },
-  { value: "bypass", label: "Bypass" },
+var ACCEPT_MODE_OPTIONS = [
+  { value: "review-required", label: "Review required" },
+  { value: "auto-accept", label: "Auto accept" },
   { value: "agent-decide", label: "Agent Decide" }
 ];
 function mapProviderCatalogRows(providers2) {
@@ -8628,17 +8667,17 @@ function validateRoleUpdate(draft) {
   payload.color = color || null;
   return { ok: true, payload };
 }
-function validateRouteCreate(draft) {
-  const routeId = (draft.routeId || "").trim();
+function validateConnectionCreate(draft) {
+  const connectionId = (draft.connectionId || "").trim();
   const provider = (draft.provider || "").trim();
   const adapterId = (draft.adapterId || "").trim();
-  if (!routeId) return { ok: false, reason: "routeId \u4E0D\u80FD\u4E3A\u7A7A" };
-  if (!/^[a-z][a-z0-9-]{0,62}$/.test(routeId)) {
-    return { ok: false, reason: "routeId \u987B\u5339\u914D a-z \u5F00\u5934\u7684\u5C0F\u5199 id" };
+  if (!connectionId) return { ok: false, reason: "connectionId \u4E0D\u80FD\u4E3A\u7A7A" };
+  if (!/^[a-z][a-z0-9-]{0,62}$/.test(connectionId)) {
+    return { ok: false, reason: "connectionId \u987B\u5339\u914D a-z \u5F00\u5934\u7684\u5C0F\u5199 id" };
   }
   if (!provider) return { ok: false, reason: "provider \u4E0D\u80FD\u4E3A\u7A7A" };
   if (!adapterId) return { ok: false, reason: "adapterId \u4E0D\u80FD\u4E3A\u7A7A" };
-  const payload = { routeId, provider, adapterId };
+  const payload = { connectionId, provider, adapterId };
   if (draft.displayName?.trim()) payload.displayName = draft.displayName.trim();
   if (draft.model?.trim()) payload.model = draft.model.trim();
   if (draft.executable?.trim()) payload.executable = draft.executable.trim();
@@ -8649,13 +8688,13 @@ function validateRouteCreate(draft) {
   if (draft.permissionPolicy) payload.permissionPolicy = draft.permissionPolicy;
   return { ok: true, payload };
 }
-function validateRouteUpdate(draft) {
-  const routeId = (draft.routeId || "").trim();
-  if (!routeId) return { ok: false, reason: "routeId \u4E0D\u80FD\u4E3A\u7A7A" };
-  if (!/^[a-z][a-z0-9-]{0,62}$/.test(routeId)) {
-    return { ok: false, reason: "routeId \u987B\u5339\u914D a-z \u5F00\u5934\u7684\u5C0F\u5199 id" };
+function validateConnectionUpdate(draft) {
+  const connectionId = (draft.connectionId || "").trim();
+  if (!connectionId) return { ok: false, reason: "connectionId \u4E0D\u80FD\u4E3A\u7A7A" };
+  if (!/^[a-z][a-z0-9-]{0,62}$/.test(connectionId)) {
+    return { ok: false, reason: "connectionId \u987B\u5339\u914D a-z \u5F00\u5934\u7684\u5C0F\u5199 id" };
   }
-  const payload = { routeId };
+  const payload = { connectionId };
   const dn = (draft.displayName ?? "").trim();
   payload.displayName = dn || null;
   if (draft.model !== void 0) {
@@ -8681,12 +8720,12 @@ function validateRouteUpdate(draft) {
   }
   return { ok: true, payload };
 }
-function routeDisplayLabel(route) {
-  const dn = (route.displayName || "").trim();
-  return dn || route.routeId;
+function connectionDisplayLabel(connection) {
+  const dn = (connection.displayName || "").trim();
+  return dn || connection.connectionId;
 }
-var ROUTE_NEXT_SESSION_TIP = "\u672C\u673A\u542F\u52A8\u914D\u7F6E \xB7 Session \u4F7F\u7528\u5FEB\u7167 \xB7 \u6539\u52A8\u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548";
-var ROUTE_SKILLS_METADATA_TIP = "Skill \u4EC5 name/path \u5143\u6570\u636E\uFF08_meta.tent.skills\uFF09\xB7 \u662F\u5426\u751F\u6548\u53D6\u51B3\u4E8E provider \xB7 \u4E0D\u5BA3\u79F0\u5DF2\u6FC0\u6D3B";
+var CONNECTION_NEXT_SESSION_TIP = "\u672C\u673A\u542F\u52A8\u914D\u7F6E \xB7 Session \u4F7F\u7528\u5FEB\u7167 \xB7 \u6539\u52A8\u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548";
+var CONNECTION_SKILLS_METADATA_TIP = "Skill \u4EC5 name/path \u5143\u6570\u636E\uFF08_meta.tent.skills\uFF09\xB7 \u662F\u5426\u751F\u6548\u53D6\u51B3\u4E8E provider \xB7 \u4E0D\u5BA3\u79F0\u5DF2\u6FC0\u6D3B";
 var CREDENTIAL_VAULT_TYPE = "secret";
 function validateCredentialSet(draft) {
   const id = (draft.id || "").trim();
@@ -8910,7 +8949,7 @@ var DESKTOP_CONTRACT_GAPS = [
   {
     id: "mcp.global-config",
     methods: ["mcp.list", "mcp.install"],
-    need: "Machine-global MCP server catalog independent of Settings routes.",
+    need: "Machine-global MCP server catalog independent of Agent Connections.",
     fallback: "MCP is edited only as route.mcpServers (next session); skill.list/install covers bundled skills only."
   },
   {
@@ -8930,23 +8969,17 @@ var DESKTOP_CONTRACT_GAPS = [
     methods: ["toolApproval.paramsProjection"],
     need: "Tool call argument / params summary on toolApproval projection (beyond options[]).",
     fallback: "UI shows toolTitle + options name/kind summary only; never invents args."
-  },
+  }
   // type-tag-mutation closed: Service now exposes registry.type.create/delete,
   // registry.tags / registry.tag.create/delete, docs.setType / docs.tags.set /
   // docs.tag.add / docs.tag.remove. Desktop UI wiring is out of this batch.
-  {
-    id: "userAsk.source-route",
-    methods: ["userAsk.sourceRoute"],
-    need: "Distinct source route id on UserAsk projection (role alone is insufficient).",
-    fallback: "UI labels source as role when present; sessionId shown only in detail notes."
-  }
 ];
 
 // src/desktop/renderer/main/settings.ts
 var SECTIONS = [
   { id: "workspace", label: "\u5DE5\u4F5C\u533A" },
   { id: "roles", label: "\u89D2\u8272" },
-  { id: "routes", label: "Routes" },
+  { id: "routes", label: "Connections" },
   { id: "credentials", label: "\u51ED\u8BC1" },
   { id: "skills", label: "Skills / MCP" },
   { id: "maintenance", label: "\u7EF4\u62A4" }
@@ -8957,7 +8990,7 @@ var credentials = [];
 var skills = [];
 var fullRoles = [];
 var fullRoutes = [];
-var settingsPolicy = "review";
+var settingsAcceptMode = "review-required";
 var agentsContent = "";
 var agentsEtag = "";
 var agentsExists = false;
@@ -8977,7 +9010,7 @@ function openRouteEditor(id) {
     mcpDrafts = [];
     return;
   }
-  const route = fullRoutes.find((item) => item.routeId === id);
+  const route = fullRoutes.find((item) => item.connectionId === id);
   skillDrafts = skillDraftsFromProjection(route?.skills);
   mcpDrafts = mcpDraftsFromProjection(route?.mcpServers);
 }
@@ -9059,7 +9092,7 @@ async function loadWorkspaceSettings() {
   const result = await window.tentDesktop.rpc("workspace.settings", {
     workspaceId
   });
-  settingsPolicy = result.settings?.defaultDeliveryPolicy || "review";
+  settingsAcceptMode = result.settings?.defaultAcceptMode || "review-required";
 }
 async function loadAgents() {
   if (!workspaceId) return;
@@ -9078,15 +9111,16 @@ async function loadRolesFull() {
   fullRoles = result.roles || [];
   setRoles(
     fullRoles.map((r) => ({
+      roleId: r.roleId,
       name: r.name,
       description: r.displayName || r.description
     }))
   );
 }
 async function loadRoutesFull() {
-  const result = await window.tentDesktop.rpc("route.list", {});
-  fullRoutes = result.routes || [];
-  await reloadRoutes();
+  const result = await window.tentDesktop.rpc("connection.list", {});
+  fullRoutes = result.connections || [];
+  await reloadConnections();
 }
 async function loadRetentionPreview() {
   if (!workspaceId) return;
@@ -9145,14 +9179,14 @@ function renderWorkspace() {
   if (!workspaceId) {
     return `<div class="empty"><p class="empty-title">\u6253\u5F00\u5DE5\u4F5C\u533A</p></div>`;
   }
-  const opts = DELIVERY_POLICY_OPTIONS.map(
-    (o) => `<option value="${o.value}"${o.value === settingsPolicy ? " selected" : ""}>${escapeHtml(o.label)}</option>`
+  const opts = ACCEPT_MODE_OPTIONS.map(
+    (o) => `<option value="${o.value}"${o.value === settingsAcceptMode ? " selected" : ""}>${escapeHtml(o.label)}</option>`
   ).join("");
   return `
     <div class="settings-block">
       <div class="surface-section-head">\u4EA4\u4ED8\u7B56\u7565</div>
       <div class="settings-row">
-        <select id="set-delivery-policy" class="field">${opts}</select>
+        <select id="set-accept-mode" class="field">${opts}</select>
         <button type="button" id="btn-save-policy" class="btn btn-secondary">\u4FDD\u5B58</button>
       </div>
     </div>
@@ -9232,32 +9266,32 @@ function renderRoutes() {
               ${p.canResume ? `<span class="faint">resume</span>` : ""}
               ${p.notes ? `<span class="muted">${escapeHtml(p.notes)}</span>` : ""}</li>`
   ).join("")}</ul>`;
-  const list2 = fullRoutes.length === 0 ? `<p class="muted">\u6682\u65E0 route</p>` : `<ul class="settings-list">${fullRoutes.map((route) => {
+  const list2 = fullRoutes.length === 0 ? `<p class="muted">\u6682\u65E0 Connection</p>` : `<ul class="settings-list">${fullRoutes.map((route) => {
     const level = providers.find((x) => x.adapterId === route.adapterId);
     const levelBit = level ? `<span class="badge-level" data-level="${escapeHtml(String(level.verificationLevel))}">${escapeHtml(level.levelLabel)}</span>` : `<span class="faint">\u672A\u6536\u5F55 catalog</span>`;
     const cred = route.credentialRef != null ? route.credentialExists ? `\u51ED\u8BC1\u5DF2\u914D\u7F6E` : `\u51ED\u8BC1\u7F3A\u5931` : "";
-    const label = routeDisplayLabel(route);
+    const label = connectionDisplayLabel(route);
     return `<li class="settings-list-item">
               <div class="settings-list-main">
                 <strong>${escapeHtml(label)}</strong>
-                <span class="faint"><code>${escapeHtml(route.routeId)}</code> \xB7 <code>${escapeHtml(route.adapterId)}</code></span>
+                <span class="faint"><code>${escapeHtml(route.connectionId)}</code> \xB7 <code>${escapeHtml(route.adapterId)}</code></span>
                 <span class="muted">${route.model ? escapeHtml(route.model) : ""}</span>
                 ${levelBit}
                 ${cred ? `<span class="faint">${escapeHtml(cred)}</span>` : ""}
               </div>
               <div class="settings-list-actions">
-                <button type="button" class="btn btn-ghost" data-route-edit="${escapeHtml(route.routeId)}">\u7F16\u8F91</button>
-                <button type="button" class="btn btn-ghost" data-route-delete="${escapeHtml(route.routeId)}">\u5220\u9664</button>
+                <button type="button" class="btn btn-ghost" data-route-edit="${escapeHtml(route.connectionId)}">\u7F16\u8F91</button>
+                <button type="button" class="btn btn-ghost" data-route-delete="${escapeHtml(route.connectionId)}">\u5220\u9664</button>
               </div>
             </li>`;
   }).join("")}</ul>`;
-  const editing = routeEditId ? fullRoutes.find((route) => route.routeId === routeEditId) : null;
+  const editing = routeEditId ? fullRoutes.find((route) => route.connectionId === routeEditId) : null;
   const editor = editing ? renderRouteEditor(editing) : `<div class="settings-block">
-        <div class="surface-section-head">\u65B0\u5EFA route</div>
-        <p class="muted">${escapeHtml(ROUTE_NEXT_SESSION_TIP)}</p>
+        <div class="surface-section-head">\u65B0\u5EFA Connection</div>
+        <p class="muted">${escapeHtml(CONNECTION_NEXT_SESSION_TIP)}</p>
         <div class="settings-form">
-          <label class="settings-label" for="route-id">routeId\uFF08\u521B\u5EFA\u540E\u4E0D\u53EF\u6539\uFF09</label>
-          <input id="route-id" class="field" placeholder="routeId" autocomplete="off" />
+          <label class="settings-label" for="route-id">connectionId\uFF08\u521B\u5EFA\u540E\u4E0D\u53EF\u6539\uFF09</label>
+          <input id="route-id" class="field" placeholder="connectionId" autocomplete="off" />
           <label class="settings-label" for="route-provider">provider</label>
           <input id="route-provider" class="field" placeholder="provider" autocomplete="off" />
           <label class="settings-label" for="route-adapter">adapterId</label>
@@ -9278,14 +9312,14 @@ function renderRoutes() {
       ${providerNote}
     </div>
     <div class="settings-block">
-      <div class="surface-section-head">Routes</div>
-      <p class="muted">${escapeHtml(ROUTE_NEXT_SESSION_TIP)}</p>
+      <div class="surface-section-head">Agent Connections</div>
+      <p class="muted">${escapeHtml(CONNECTION_NEXT_SESSION_TIP)}</p>
       ${list2}
     </div>
     ${editor}`;
 }
 function renderRouteEditor(route) {
-  const label = routeDisplayLabel(route);
+  const label = connectionDisplayLabel(route);
   const fields = routeFieldDraft ?? {
     displayName: route.displayName || "",
     model: route.model || "",
@@ -9333,11 +9367,11 @@ function renderRouteEditor(route) {
       <div class="surface-section-head">\u7F16\u8F91 \xB7 ${escapeHtml(label)}
         <button type="button" class="btn btn-ghost" id="btn-route-edit-close">\u5173\u95ED</button>
       </div>
-      <p class="muted">routeId <code>${escapeHtml(route.routeId)}</code> \xB7 adapterId <code>${escapeHtml(route.adapterId)}</code></p>
-      <p class="faint">${escapeHtml(ROUTE_NEXT_SESSION_TIP)} \xB7 \u8FD0\u884C\u4E2D session \u4E0D\u70ED\u66F4\u65B0 \xB7 \u52FF\u5199 secret</p>
+      <p class="muted">connectionId <code>${escapeHtml(route.connectionId)}</code> \xB7 adapterId <code>${escapeHtml(route.adapterId)}</code></p>
+      <p class="faint">${escapeHtml(CONNECTION_NEXT_SESSION_TIP)} \xB7 \u8FD0\u884C\u4E2D session \u4E0D\u70ED\u66F4\u65B0 \xB7 \u52FF\u5199 secret</p>
       <div class="settings-form">
         <label class="settings-label" for="route-edit-name">\u663E\u793A\u540D</label>
-        <input id="route-edit-name" class="field" value="${escapeHtml(fields.displayName)}" placeholder="\u7559\u7A7A\u5219\u56DE\u9000\u5230 routeId" />
+        <input id="route-edit-name" class="field" value="${escapeHtml(fields.displayName)}" placeholder="\u7559\u7A7A\u5219\u56DE\u9000\u5230 connectionId" />
         <label class="settings-label" for="route-edit-model">model</label>
         <input id="route-edit-model" class="field" value="${escapeHtml(fields.model)}" placeholder="model" />
         <label class="settings-label" for="route-edit-exe">executable</label>
@@ -9353,7 +9387,7 @@ function renderRouteEditor(route) {
     </div>
     <div class="settings-block">
       <div class="surface-section-head">Skills</div>
-      <p class="faint">\u53EA\u4FDD\u5B58 name/path/enabled \xB7 \u4E0D\u5B58 displayName \xB7 ${escapeHtml(ROUTE_SKILLS_METADATA_TIP)} \xB7 ${escapeHtml(ROUTE_NEXT_SESSION_TIP)}</p>
+      <p class="faint">\u53EA\u4FDD\u5B58 name/path/enabled \xB7 \u4E0D\u5B58 displayName \xB7 ${escapeHtml(CONNECTION_SKILLS_METADATA_TIP)} \xB7 ${escapeHtml(CONNECTION_NEXT_SESSION_TIP)}</p>
       ${skillList}
       <div class="settings-form settings-form-inline">
         <input id="skill-add-name" class="field" placeholder="skill name\uFF08id\uFF09" autocomplete="off" list="bundled-skill-list" />
@@ -9364,7 +9398,7 @@ function renderRouteEditor(route) {
     </div>
     <div class="settings-block">
       <div class="surface-section-head">MCP Servers</div>
-      <p class="faint">\u53EA\u4FDD\u5B58 id/ref \xB7 credential \u4EC5\u663E\u793A\u5DF2\u914D\u7F6E \xB7 ${escapeHtml(ROUTE_NEXT_SESSION_TIP)}</p>
+      <p class="faint">\u53EA\u4FDD\u5B58 id/ref \xB7 credential \u4EC5\u663E\u793A\u5DF2\u914D\u7F6E \xB7 ${escapeHtml(CONNECTION_NEXT_SESSION_TIP)}</p>
       ${mcpList}
       <div class="settings-form">
         <div class="settings-form-inline">
@@ -9435,7 +9469,7 @@ function renderSkills() {
   }).join("")}</ul>`;
   const credIds = configuredCredentialIds();
   const mcpNote = `
-    <p class="muted">MCP / Route Skills \u5728 Route \u7F16\u8F91\u5668\u4E2D\u7528\u5217\u8868 + \u542F\u7528\u5F00\u5173\u7BA1\u7406\u3002${escapeHtml(ROUTE_NEXT_SESSION_TIP)}\u3002\u8FD0\u884C\u4E2D session \u4E0D\u70ED\u66F4\u65B0\u3002</p>
+    <p class="muted">MCP / Connection Skills \u5728 Connection \u7F16\u8F91\u5668\u4E2D\u7528\u5217\u8868 + \u542F\u7528\u5F00\u5173\u7BA1\u7406\u3002${escapeHtml(CONNECTION_NEXT_SESSION_TIP)}\u3002\u8FD0\u884C\u4E2D session \u4E0D\u70ED\u66F4\u65B0\u3002</p>
     <p class="faint">\u65E0\u5168\u5C40 mcp.* RPC \xB7 \u89C1\u5951\u7EA6\u7F3A\u53E3 mcp.global-config \xB7 \u4E0D\u4F2A\u9020\u5168\u5C40\u76EE\u5F55</p>
     <ul class="settings-list">${fullRoutes.map((route) => {
     const skillBits = (route.skills || []).map((s) => `${s.name}${s.enabled === false ? "\xB7\u5173" : "\xB7\u5F00"}`).join(" ");
@@ -9445,16 +9479,16 @@ function renderSkills() {
     }).join(" ");
     return `<li class="settings-list-item">
           <div class="settings-list-main">
-            <strong>${escapeHtml(routeDisplayLabel(route))}</strong>
-            <span class="faint"><code>${escapeHtml(route.routeId)}</code></span>
+            <strong>${escapeHtml(connectionDisplayLabel(route))}</strong>
+            <span class="faint"><code>${escapeHtml(route.connectionId)}</code></span>
             <span class="muted">skills ${escapeHtml(skillBits || "\u2014")}</span>
             <span class="muted">mcp ${escapeHtml(mcpBits || "\u2014")}</span>
           </div>
           <div class="settings-list-actions">
-            <button type="button" class="btn btn-ghost" data-route-edit="${escapeHtml(route.routeId)}">\u7F16\u8F91 Skills/MCP</button>
+            <button type="button" class="btn btn-ghost" data-route-edit="${escapeHtml(route.connectionId)}">\u7F16\u8F91 Skills/MCP</button>
           </div>
         </li>`;
-  }).join("") || `<li class="muted">\u65E0 route</li>`}</ul>`;
+  }).join("") || `<li class="muted">\u65E0 Connection</li>`}</ul>`;
   return `
     <div class="settings-block">
       <div class="surface-section-head">Bundled Skills\uFF08skill.list / skill.install\uFF09</div>
@@ -9465,7 +9499,7 @@ function renderSkills() {
       </div>
     </div>
     <div class="settings-block">
-      <div class="surface-section-head">Route Skills / MCP</div>
+      <div class="surface-section-head">Connection Skills / MCP</div>
       ${mcpNote}
     </div>`;
 }
@@ -9594,15 +9628,15 @@ function wireSection(s, root) {
 }
 async function onSavePolicy() {
   if (!workspaceId) return;
-  const sel = document.getElementById("set-delivery-policy");
-  const value = sel?.value || "review";
+  const sel = document.getElementById("set-accept-mode");
+  const value = sel?.value || "review-required";
   try {
     await window.tentDesktop.rpc("workspace.settings.update", {
       workspaceId,
-      defaultDeliveryPolicy: value,
+      defaultAcceptMode: value,
       actor: "user"
     });
-    settingsPolicy = value;
+    settingsAcceptMode = value;
     el.status.textContent = "\u5DE5\u4F5C\u533A\u8BBE\u7F6E\u5DF2\u4FDD\u5B58";
   } catch (err) {
     setError(err);
@@ -9712,7 +9746,7 @@ async function onRoleDelete(name) {
 }
 async function onRouteCreate() {
   const draft = {
-    routeId: document.getElementById("route-id")?.value || "",
+    connectionId: document.getElementById("route-id")?.value || "",
     provider: document.getElementById("route-provider")?.value || "",
     adapterId: document.getElementById("route-adapter")?.value || "",
     displayName: document.getElementById("route-name")?.value || "",
@@ -9720,7 +9754,7 @@ async function onRouteCreate() {
     envKey: document.getElementById("route-env")?.value || "",
     credentialRef: document.getElementById("route-cred")?.value || ""
   };
-  const built = validateRouteCreate(draft);
+  const built = validateConnectionCreate(draft);
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
@@ -9728,8 +9762,8 @@ async function onRouteCreate() {
   const createBtn = document.getElementById("btn-route-create");
   if (createBtn) createBtn.disabled = true;
   try {
-    await window.tentDesktop.rpc("route.create", built.payload);
-    el.status.textContent = `\u5DF2\u521B\u5EFA route ${draft.routeId.trim()}`;
+    await window.tentDesktop.rpc("connection.create", built.payload);
+    el.status.textContent = `\u5DF2\u521B\u5EFA Connection ${draft.connectionId.trim()}`;
     await loadRoutesFull();
     renderSettings();
   } catch (err) {
@@ -9782,8 +9816,8 @@ function onMcpAdd() {
 }
 async function onRouteSave() {
   if (!routeEditId) return;
-  const built = validateRouteUpdate({
-    routeId: routeEditId,
+  const built = validateConnectionUpdate({
+    connectionId: routeEditId,
     displayName: document.getElementById("route-edit-name")?.value || "",
     model: document.getElementById("route-edit-model")?.value || "",
     executable: document.getElementById("route-edit-exe")?.value || "",
@@ -9806,8 +9840,8 @@ async function onRouteSave() {
   const saveBtn = document.getElementById("btn-route-save");
   if (saveBtn) saveBtn.disabled = true;
   try {
-    await window.tentDesktop.rpc("route.update", patch);
-    el.status.textContent = `Route \u5DF2\u4FDD\u5B58 \xB7 \u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548\uFF08\u8FD0\u884C\u4E2D session \u4E0D\u70ED\u66F4\u65B0\uFF09`;
+    await window.tentDesktop.rpc("connection.update", patch);
+    el.status.textContent = `Connection \u5DF2\u4FDD\u5B58 \xB7 \u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548\uFF08\u8FD0\u884C\u4E2D session \u4E0D\u70ED\u66F4\u65B0\uFF09`;
     await loadRoutesFull();
     openRouteEditor(routeEditId);
     renderSettings();
@@ -9816,12 +9850,12 @@ async function onRouteSave() {
     if (saveBtn) saveBtn.disabled = false;
   }
 }
-async function onRouteDelete(routeId) {
-  if (!window.confirm(`\u5220\u9664 route\u300C${routeId}\u300D\uFF1F`)) return;
+async function onRouteDelete(connectionId) {
+  if (!window.confirm(`\u5220\u9664 Connection\u300C${connectionId}\u300D\uFF1F`)) return;
   try {
-    await window.tentDesktop.rpc("route.delete", { routeId });
-    if (routeEditId === routeId) openRouteEditor(null);
-    el.status.textContent = `\u5DF2\u5220\u9664 route ${routeId}`;
+    await window.tentDesktop.rpc("connection.delete", { connectionId });
+    if (routeEditId === connectionId) openRouteEditor(null);
+    el.status.textContent = `\u5DF2\u5220\u9664 Connection ${connectionId}`;
     await loadRoutesFull();
     renderSettings();
   } catch (err) {
@@ -10042,12 +10076,12 @@ async function refresh() {
       reloadTree(),
       reloadRegistry(),
       reloadTasks(),
-      reloadRoutes(),
+      reloadConnections(),
       reloadPendingInteractions()
     ]);
     onGraphTreeChanged();
   } else {
-    await reloadRoutes();
+    await reloadConnections();
   }
   updateActivityChrome();
   const surface = getSurface();
@@ -10088,11 +10122,11 @@ function applyShell(s) {
   if (s.roles) {
     setRoles(s.roles);
   }
-  if (s.routes?.length) {
-    setRoutes(s.routes);
+  if (s.connections?.length) {
+    setConnections(s.connections);
   }
-  if (s.selectedRouteId !== void 0) {
-    setSelectedRouteId(s.selectedRouteId);
+  if (s.selectedConnectionId !== void 0) {
+    setSelectedConnectionId(s.selectedConnectionId);
   }
   if (s.taskReview?.length) {
     setTaskReview(s.taskReview);
@@ -10102,14 +10136,15 @@ function applyShell(s) {
         s.tasks.map((t) => ({
           path: t.path,
           id: t.id,
-          assigneeKind: t.assigneeKind,
-          assigneeId: t.assigneeId,
-          referencedNodeIds: t.referencedNodeIds,
+          roleId: t.roleId,
+          workNodeIds: t.workNodeIds,
+          contextNodeIds: t.contextNodeIds,
           state: t.state,
           prompt: t.prompt,
           activeDeliveryId: t.activeDeliveryId,
           sessionId: t.sessionId,
           manifest: "",
+          acceptMode: t.acceptMode,
           contextCard: t.contextCard
         })),
         deliveries,
