@@ -56,12 +56,13 @@ function valueLooksLikeHighEntropySecret(value: string): boolean {
 export function redactSecrets(
   text: string,
   secrets: readonly string[],
-  placeholder: string = DEFAULT_PLACEHOLDER
+  placeholder: string = DEFAULT_PLACEHOLDER,
+  minimumSecretLength = 4
 ): string {
   if (!text || secrets.length === 0) return text;
   let out = text;
   for (const secret of secrets) {
-    if (!secret || secret.length < 4) continue;
+    if (!secret || secret.length < minimumSecretLength) continue;
     if (!out.includes(secret)) continue;
     out = out.split(secret).join(placeholder);
   }

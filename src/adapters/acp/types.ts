@@ -114,33 +114,82 @@ function plainRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+type AcpSessionConfigTextPolicy = {
+  /** Marker-scrub display-only strings before byte accounting. */
+  scrubDisplayText?: (value: string) => string | undefined;
+  /** Exact known-secret containment for identity/value fields. */
+  containsSecret?: (value: string) => boolean;
+};
+
 function boundedString(
   value: unknown,
   maxBytes: number,
-  allowEmpty = false
+  allowEmpty = false,
+  scrubText?: (value: string) => string | undefined
 ): string | undefined {
   if (typeof value !== "string") return undefined;
-  if (!allowEmpty && value.length === 0) return undefined;
-  return utf8Bytes(value) <= maxBytes ? value : undefined;
+  const scrubbed = scrubText ? scrubText(value) : value;
+  if (scrubbed === undefined) return undefined;
+  if (!allowEmpty && scrubbed.length === 0) return undefined;
+  return utf8Bytes(scrubbed) <= maxBytes ? scrubbed : undefined;
 }
 
-function optionalBoundedString(
+function boundedDisplayString(
   value: unknown,
-  maxBytes: number
+  maxBytes: number,
+  bounds: { truncated: boolean },
+  policy: AcpSessionConfigTextPolicy,
+  allowEmpty = false
+): string | undefined {
+  const containedSecret =
+    typeof value === "string" && policy.containsSecret?.(value) === true;
+  const normalized = boundedString(
+    value,
+    maxBytes,
+    allowEmpty,
+    policy.scrubDisplayText
+  );
+  if (containedSecret && normalized === undefined) bounds.truncated = true;
+  return normalized;
+}
+
+function optionalBoundedDisplayString(
+  value: unknown,
+  maxBytes: number,
+  bounds: { truncated: boolean },
+  policy: AcpSessionConfigTextPolicy
 ): string | undefined | null {
   if (value === undefined) return undefined;
-  return boundedString(value, maxBytes, true) ?? null;
+  return (
+    boundedDisplayString(value, maxBytes, bounds, policy, true) ?? null
+  );
 }
 
 function normalizeConfigOptionValue(
-  value: unknown
+  value: unknown,
+  bounds: { truncated: boolean },
+  policy: AcpSessionConfigTextPolicy
 ): AcpSessionConfigOptionValue | undefined {
   if (!plainRecord(value)) return undefined;
+  if (
+    typeof value.value === "string" &&
+    policy.containsSecret?.(value.value)
+  ) {
+    bounds.truncated = true;
+    return undefined;
+  }
   const id = boundedString(value.value, ACP_SESSION_CONFIG_ID_BYTES);
-  const name = boundedString(value.name, ACP_SESSION_CONFIG_LABEL_BYTES);
-  const description = optionalBoundedString(
+  const name = boundedDisplayString(
+    value.name,
+    ACP_SESSION_CONFIG_LABEL_BYTES,
+    bounds,
+    policy
+  );
+  const description = optionalBoundedDisplayString(
     value.description,
-    ACP_SESSION_CONFIG_DESCRIPTION_BYTES
+    ACP_SESSION_CONFIG_DESCRIPTION_BYTES,
+    bounds,
+    policy
   );
   if (!id || !name || description === null) return undefined;
   return {
@@ -152,18 +201,32 @@ function normalizeConfigOptionValue(
 
 function normalizeConfigOption(
   value: unknown,
-  bounds: { truncated: boolean }
+  bounds: { truncated: boolean },
+  policy: AcpSessionConfigTextPolicy
 ): AcpSessionConfigOption | undefined {
   if (!plainRecord(value)) return undefined;
+  if (typeof value.id === "string" && policy.containsSecret?.(value.id)) {
+    bounds.truncated = true;
+    return undefined;
+  }
   const id = boundedString(value.id, ACP_SESSION_CONFIG_ID_BYTES);
-  const name = boundedString(value.name, ACP_SESSION_CONFIG_LABEL_BYTES);
-  const description = optionalBoundedString(
-    value.description,
-    ACP_SESSION_CONFIG_DESCRIPTION_BYTES
+  const name = boundedDisplayString(
+    value.name,
+    ACP_SESSION_CONFIG_LABEL_BYTES,
+    bounds,
+    policy
   );
-  const category = optionalBoundedString(
+  const description = optionalBoundedDisplayString(
+    value.description,
+    ACP_SESSION_CONFIG_DESCRIPTION_BYTES,
+    bounds,
+    policy
+  );
+  const category = optionalBoundedDisplayString(
     value.category,
-    ACP_SESSION_CONFIG_ID_BYTES
+    ACP_SESSION_CONFIG_ID_BYTES,
+    bounds,
+    policy
   );
   if (!id || !name || description === null || category === null) return undefined;
 
@@ -176,6 +239,13 @@ function normalizeConfigOption(
   if (value.type === "boolean") {
     if (typeof value.currentValue !== "boolean") return undefined;
     return { ...common, type: "boolean", currentValue: value.currentValue };
+  }
+  if (
+    typeof value.currentValue === "string" &&
+    policy.containsSecret?.(value.currentValue)
+  ) {
+    bounds.truncated = true;
+    return undefined;
   }
   const currentValue = boundedString(value.currentValue, ACP_SESSION_CONFIG_ID_BYTES);
   if (value.type !== "select" || !currentValue) {
@@ -195,8 +265,23 @@ function normalizeConfigOption(
     if (value.options.length > ACP_SESSION_CONFIG_GROUPS_MAX) bounds.truncated = true;
     for (const rawGroup of value.options.slice(0, ACP_SESSION_CONFIG_GROUPS_MAX)) {
       if (!plainRecord(rawGroup) || !Array.isArray(rawGroup.options)) continue;
-      const group = boundedString(rawGroup.group, ACP_SESSION_CONFIG_ID_BYTES);
-      const groupName = boundedString(rawGroup.name, ACP_SESSION_CONFIG_LABEL_BYTES);
+      if (
+        typeof rawGroup.group === "string" &&
+        policy.containsSecret?.(rawGroup.group)
+      ) {
+        bounds.truncated = true;
+        continue;
+      }
+      const group = boundedString(
+        rawGroup.group,
+        ACP_SESSION_CONFIG_ID_BYTES
+      );
+      const groupName = boundedDisplayString(
+        rawGroup.name,
+        ACP_SESSION_CONFIG_LABEL_BYTES,
+        bounds,
+        policy
+      );
       if (!group || !groupName || seenGroups.has(group)) continue;
       const groupOptions: AcpSessionConfigOptionValue[] = [];
       for (const raw of rawGroup.options) {
@@ -205,7 +290,7 @@ function normalizeConfigOption(
           break;
         }
         valueCount += 1;
-        const option = normalizeConfigOptionValue(raw);
+        const option = normalizeConfigOptionValue(raw, bounds, policy);
         if (!option || seenValues.has(option.value)) continue;
         seenValues.add(option.value);
         groupOptions.push(option);
@@ -222,13 +307,23 @@ function normalizeConfigOption(
     const seen = new Set<string>();
     if (value.options.length > ACP_SESSION_CONFIG_VALUES_MAX) bounds.truncated = true;
     for (const raw of value.options.slice(0, ACP_SESSION_CONFIG_VALUES_MAX)) {
-      const option = normalizeConfigOptionValue(raw);
+      const option = normalizeConfigOptionValue(raw, bounds, policy);
       if (!option || seen.has(option.value)) continue;
       seen.add(option.value);
       flatOptions.push(option);
     }
     if (flatOptions.length === 0) return undefined;
     options = { kind: "flat", options: flatOptions };
+  }
+  const survivingValues =
+    options.kind === "flat"
+      ? options.options.map((option) => option.value)
+      : options.groups.flatMap((group) =>
+          group.options.map((option) => option.value)
+        );
+  if (!survivingValues.includes(currentValue)) {
+    bounds.truncated = true;
+    return undefined;
   }
   return {
     ...common,
@@ -238,14 +333,26 @@ function normalizeConfigOption(
   };
 }
 
-function normalizeAuthMethodIds(value: unknown): {
+function normalizeAuthMethodIds(
+  value: unknown,
+  policy: AcpSessionConfigTextPolicy
+): {
   ids: string[];
   truncated: boolean;
 } {
   if (!Array.isArray(value)) return { ids: [], truncated: false };
   const ids: string[] = [];
   const seen = new Set<string>();
+  let truncated = value.length > ACP_SESSION_AUTH_METHODS_MAX;
   for (const raw of value.slice(0, ACP_SESSION_AUTH_METHODS_MAX)) {
+    if (
+      plainRecord(raw) &&
+      typeof raw.id === "string" &&
+      policy.containsSecret?.(raw.id)
+    ) {
+      truncated = true;
+      continue;
+    }
     const id = plainRecord(raw)
       ? boundedString(raw.id, ACP_SESSION_CONFIG_ID_BYTES)
       : undefined;
@@ -253,16 +360,17 @@ function normalizeAuthMethodIds(value: unknown): {
     seen.add(id);
     ids.push(id);
   }
-  return {
-    ids,
-    truncated: value.length > ACP_SESSION_AUTH_METHODS_MAX,
-  };
+  return { ids, truncated };
 }
 
 export function createAcpSessionConfigSnapshot(input: {
   agentCapabilities?: unknown;
   authMethods?: unknown;
   configOptions?: unknown;
+  /** Marker-scrub display-only strings before any byte accounting. */
+  scrubDisplayText?: (value: string) => string | undefined;
+  /** Drop structural identities/values containing a known launch secret. */
+  containsSecret?: (value: string) => boolean;
 }): AcpSessionConfigSnapshot {
   const capabilities = plainRecord(input.agentCapabilities)
     ? input.agentCapabilities
@@ -273,7 +381,11 @@ export function createAcpSessionConfigSnapshot(input: {
   const promptCapabilities = plainRecord(capabilities.promptCapabilities)
     ? capabilities.promptCapabilities
     : {};
-  const auth = normalizeAuthMethodIds(input.authMethods);
+  const policy: AcpSessionConfigTextPolicy = {
+    scrubDisplayText: input.scrubDisplayText,
+    containsSecret: input.containsSecret,
+  };
+  const auth = normalizeAuthMethodIds(input.authMethods, policy);
   const rawOptions = Array.isArray(input.configOptions) ? input.configOptions : [];
   const configOptions: AcpSessionConfigOption[] = [];
   const seen = new Set<string>();
@@ -281,7 +393,7 @@ export function createAcpSessionConfigSnapshot(input: {
   let bytes = 2;
   let truncated = auth.truncated || rawOptions.length > ACP_SESSION_CONFIG_OPTIONS_MAX;
   for (const raw of rawOptions.slice(0, ACP_SESSION_CONFIG_OPTIONS_MAX)) {
-    const option = normalizeConfigOption(raw, bounds);
+    const option = normalizeConfigOption(raw, bounds, policy);
     if (!option || seen.has(option.id)) continue;
     const optionBytes = utf8Bytes(JSON.stringify(option)) + 1;
     if (bytes + optionBytes > ACP_SESSION_CONFIG_SNAPSHOT_BYTES) {

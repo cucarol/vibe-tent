@@ -33,6 +33,7 @@ import {
 } from "./assistant-report.js";
 import {
   collectSecretValues,
+  redactSecrets,
 } from "./redact.js";
 import {
   ACP_DIAGNOSTIC_EVENT_BYTES,
@@ -339,6 +340,8 @@ export class AcpClient {
   /** Latest complete bounded Agent-owned Session configuration state. */
   private sessionConfigSnapshot: AcpSessionConfigSnapshot =
     createAcpSessionConfigSnapshot({});
+  /** Last complete replacement received during load replay; committed at barrier. */
+  private pendingLoadReplayConfigSnapshot?: AcpSessionConfigSnapshot;
   /** Concurrent ask-policy requests keep the session waiting until all resolve. */
   private permissionAsksInFlight = 0;
   /** Stop/exit cancellation for in-flight onPermissionAsk waiters. */
@@ -410,6 +413,52 @@ export class AcpClient {
 
   get sessionConfig(): AcpSessionConfigSnapshot {
     return cloneAcpSessionConfigSnapshot(this.sessionConfigSnapshot);
+  }
+
+  private createSessionConfigSnapshot(input: {
+    agentCapabilities?: unknown;
+    authMethods?: unknown;
+    configOptions?: unknown;
+  }): AcpSessionConfigSnapshot {
+    const secrets = this.secretValues();
+    const containsSecret = (value: string): boolean =>
+      secrets.some(
+        (secret) => secret.length > 0 && value.includes(secret)
+      );
+    const marker = ["[redacted]", "<hidden>", "***", "_"]
+      .find((candidate) => !containsSecret(candidate));
+    return createAcpSessionConfigSnapshot({
+      ...input,
+      ...(secrets.length > 0
+        ? {
+            scrubDisplayText: (value: string) => {
+              if (!containsSecret(value)) return value;
+              if (!marker) return undefined;
+              const scrubbed = redactSecrets(value, secrets, marker, 1);
+              // Surrounding text can form a new cross-boundary match. Collapse
+              // to the already-validated marker instead of recursive growth.
+              return containsSecret(scrubbed) ? marker : scrubbed;
+            },
+            containsSecret,
+          }
+        : {}),
+    });
+  }
+
+  private replaceSessionConfigOptions(
+    projected: AcpSessionConfigSnapshot
+  ): boolean {
+    const nextSnapshot: AcpSessionConfigSnapshot = {
+      ...this.sessionConfigSnapshot,
+      configOptions: projected.configOptions,
+      truncated: this.sessionConfigSnapshot.truncated || projected.truncated,
+    };
+    const changed =
+      JSON.stringify(this.sessionConfigSnapshot.configOptions) !==
+        JSON.stringify(nextSnapshot.configOptions) ||
+      this.sessionConfigSnapshot.truncated !== nextSnapshot.truncated;
+    if (changed) this.sessionConfigSnapshot = nextSnapshot;
+    return changed;
   }
 
   /**
@@ -571,8 +620,14 @@ export class AcpClient {
         });
       }
 
+      // Establish the durable initialize/auth baseline before session creation.
+      // Config notifications received while a request/replay is in flight then
+      // update this snapshot in their actual receipt order.
+      this.sessionConfigSnapshot = this.createSessionConfigSnapshot({
+        agentCapabilities: init.agentCapabilities,
+        authMethods: init.authMethods,
+      });
       let providerSessionId: string;
-      let sessionConfigOptions: unknown;
       if (mode === "load" || mode === "resume") {
         const method = mode === "resume" ? "session/resume" : "session/load";
         if (mode === "load" && !this.loadSessionSupported) {
@@ -600,6 +655,7 @@ export class AcpClient {
         if (mode === "load") {
           this.quarantiningLoadReplay = true;
           this.lastLoadReplayUpdateAt = Date.now();
+          this.pendingLoadReplayConfigSnapshot = undefined;
         }
         try {
           const loaded = (await this.request(
@@ -610,12 +666,24 @@ export class AcpClient {
             }),
             60_000
           )) as { configOptions?: unknown };
-          sessionConfigOptions = loaded.configOptions;
+          // The RPC response is always the baseline. Notifications received in
+          // the same stdout chunk are queued by handleSessionUpdate and applied
+          // only after this baseline at the replay completion barrier.
+          this.replaceSessionConfigOptions(
+            this.createSessionConfigSnapshot({
+              configOptions: loaded.configOptions,
+            })
+          );
           if (mode === "load") {
             await this.waitForLoadReplayQuiescence();
+            const pending = this.pendingLoadReplayConfigSnapshot;
+            this.pendingLoadReplayConfigSnapshot = undefined;
+            this.quarantiningLoadReplay = false;
+            if (pending) this.replaceSessionConfigOptions(pending);
           }
         } finally {
           this.quarantiningLoadReplay = false;
+          this.pendingLoadReplayConfigSnapshot = undefined;
           this.resetAssistantReport();
         }
         // Preserve the same provider session id — never invent a new one.
@@ -632,14 +700,12 @@ export class AcpClient {
         }
         this.providerSessionId = session.sessionId;
         providerSessionId = session.sessionId;
-        sessionConfigOptions = session.configOptions;
+        this.replaceSessionConfigOptions(
+          this.createSessionConfigSnapshot({
+            configOptions: session.configOptions,
+          })
+        );
       }
-
-      this.sessionConfigSnapshot = createAcpSessionConfigSnapshot({
-        agentCapabilities: init.agentCapabilities,
-        authMethods: init.authMethods,
-        configOptions: sessionConfigOptions,
-      });
 
       this.options.emit({
         type: "session.live",
@@ -1091,36 +1157,49 @@ export class AcpClient {
 
   private handleSessionUpdate(update: AcpSessionUpdate | undefined): void {
     if (!update || this.limitError) return;
+    const kind = update.sessionUpdate ?? "";
     if (this.quarantiningLoadReplay) {
       this.lastLoadReplayUpdateAt = Date.now();
+      // Configuration is durable Session state, not transcript replay. It is
+      // the only update kind retained through load-history quarantine. Keep
+      // only the last complete replacement; commit it once at the barrier.
+      if (kind === "config_option_update") {
+        if (!Array.isArray(update.configOptions)) return;
+        const projected = this.createSessionConfigSnapshot({
+          configOptions: update.configOptions,
+        });
+        const raw = update.configOptions;
+        if (
+          raw.length === 0 ||
+          projected.configOptions.length > 0 ||
+          projected.truncated
+        ) {
+          this.pendingLoadReplayConfigSnapshot = projected;
+        }
+      }
       return;
     }
-    const kind = update.sessionUpdate ?? "";
     if (kind === "config_option_update") {
-      const projected = createAcpSessionConfigSnapshot({
+      if (!Array.isArray(update.configOptions)) return;
+      const projected = this.createSessionConfigSnapshot({
         configOptions: update.configOptions,
       });
-      const nextSnapshot: AcpSessionConfigSnapshot = {
-        ...this.sessionConfigSnapshot,
-        configOptions: projected.configOptions,
-        truncated: this.sessionConfigSnapshot.truncated || projected.truncated,
-      };
-      const unchanged =
-        JSON.stringify(this.sessionConfigSnapshot.configOptions) ===
-          JSON.stringify(nextSnapshot.configOptions) &&
-        this.sessionConfigSnapshot.truncated === nextSnapshot.truncated;
-      if (this.collectingPromptResponse) {
+      const raw = update.configOptions;
+      const droppedOnly =
+        raw.length > 0 && projected.configOptions.length === 0;
+      if (droppedOnly && !projected.truncated) return;
+      const changed = this.replaceSessionConfigOptions(projected);
+      if (!changed) return;
+      if (this.collectingPromptResponse && !droppedOnly) {
         if (
           !this.recordObservableControlProgress(
-            `config:${JSON.stringify(nextSnapshot.configOptions)}`
+            `config:${JSON.stringify(this.sessionConfigSnapshot.configOptions)}`
           )
         ) {
           return;
         }
         this.sealOpenAssistantSegment();
       }
-      if (unchanged) return;
-      this.sessionConfigSnapshot = nextSnapshot;
       this.options.emit({
         type: "session.config_options",
         sessionId: this.options.sessionId,
