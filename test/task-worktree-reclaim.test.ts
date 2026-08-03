@@ -23,8 +23,9 @@ import type { TaskEnvelope } from "../src/core/task.js";
 import type { DeliveryRecord } from "../src/core/delivery.js";
 import {
   buildTaskContextCard,
-  type TaskContextCardV1,
+  type TaskContextCard,
 } from "../src/core/task-context-card.js";
+import { contentEtag } from "../src/core/etag.js";
 
 async function makeGitWorkspace(prefix: string): Promise<string> {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -42,18 +43,22 @@ async function makeGitWorkspace(prefix: string): Promise<string> {
 function fixtureContextCard(overrides?: {
   nodeId?: string;
   nodePath?: string;
-}): TaskContextCardV1 {
-  const nodeId = overrides?.nodeId ?? "cx-1";
+}): TaskContextCard {
+  const nodeId = overrides?.nodeId ?? "cx-abc123";
   const nodePath = overrides?.nodePath ?? "inbox";
+  const body = "Terminal Task worktree reclaim fixture\n";
   return buildTaskContextCard({
-    objective: "Terminal Task worktree reclaim fixture",
-    acceptance: ["Lane reclaims only when terminal, clean, and settled"],
-    refs: {
-      nodes: [{ id: nodeId, path: nodePath }],
-      tasks: [],
-      deliveries: [],
-      git: [],
-    },
+    workNodeIds: [nodeId],
+    contextNodeIds: [],
+    nodeSnapshots: [{
+      id: nodeId,
+      path: nodePath,
+      type: "prompt",
+      tags: [],
+      body,
+      etag: contentEtag(body),
+    }],
+    userPrompt: body,
   });
 }
 
@@ -67,6 +72,9 @@ function sessionTask(
     manifest: "temp/sessions/ss-fakedefault/manifests/m.yml",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
+    workNodeIds: partial.workNodeIds ?? contextCard.workNodeIds,
+    contextNodeIds: partial.contextNodeIds ?? contextCard.contextNodeIds,
+    nodeSnapshots: partial.nodeSnapshots ?? contextCard.nodeSnapshots,
     contextCard,
     taskDeltaDigest: contextCard.taskDeltaDigest,
     ...partial,
@@ -136,7 +144,7 @@ test("accepted clean integrated Session lane reclaims; branch+commits preserved;
       path: "temp/sessions/ss-fakedefault/deliveries/dl-1.md",
       id: "dl-1",
       taskId,
-      sourceNodeId: "cx-1",
+      sourceNodeId: "cx-abc123",
       status: "accepted",
       summary: "done",
       commits: [tip],
@@ -244,7 +252,7 @@ test("accepted with unintegrated commits refuses (UNINTEGRATED)", async () => {
       path: "d.md",
       id: "dl-u",
       taskId,
-      sourceNodeId: "cx-1",
+      sourceNodeId: "cx-abc123",
       status: "accepted",
       summary: "claimed integrated but was not",
       commits: [tip],
@@ -356,7 +364,7 @@ test("P0: accepted Delivery omits branch tip → UNINTEGRATED (task-branch settl
       path: "d.md",
       id: "dl-omit",
       taskId,
-      sourceNodeId: "cx-1",
+      sourceNodeId: "cx-abc123",
       status: "accepted",
       summary: "only declared",
       commits: [declared],

@@ -41,7 +41,7 @@ test("scaffoldTent:core 生成自包含帐骨架(index,不进 SPEC/CLAUDE/AGENTS
     name: "demo",
     nodes: [
       { name: "aim", type: "goal", body: "# demo · aim" },
-      { name: "out", type: "asset" },
+      { name: "out", type: "output-asset" },
     ],
   });
 
@@ -51,7 +51,7 @@ test("scaffoldTent:core 生成自包含帐骨架(index,不进 SPEC/CLAUDE/AGENTS
     ["aim", "out"],
   );
   assert.match(await fsa.readFile("aim/aim.md"), /# demo · aim/);
-  assert.match(await fsa.readFile("out/out.md"), /type: asset/);
+  assert.match(await fsa.readFile("out/out.md"), /type: output-asset/);
 
   const emptyDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-scaffold-empty-"));
   const emptyFs = new NodeFs(emptyDir);

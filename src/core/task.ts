@@ -35,14 +35,14 @@ import {
   loadTaskContextCardFromFrontmatter,
   serializeTaskContextCardForFrontmatter,
   type IntegrationAuthority,
-  type TaskContextCardRef,
-  type TaskContextCardV1,
+  type TaskContextCard,
 } from "./task-context-card.js";
+import { taskReferencedNodeIds } from "./task-node-refs.js";
 import {
-  normalizeContextCardNodeRef,
-  parseContextCardNodeRefs,
-  taskReferencedNodeIds,
-} from "./task-node-refs.js";
+  normalizeTaskNodeContext,
+  type TaskNodeContext,
+} from "./task-node-context.js";
+import type { TaskNodeSnapshot } from "./task-node-snapshot.js";
 
 export interface RoleWorkspaceContract {
   workspace: string;
@@ -58,11 +58,11 @@ export interface RoleWorkspaceContract {
 }
 
 /** How workspaceLane.baseCommit was first recorded (compact Task audit; no new entity). */
-export type BaseCommitCaptureSource = "first-claim" | "explicit-backfill";
+export type BaseCommitCaptureSource = "first-claim";
 
 /**
  * Compact audit bag for capture-once baseCommit.
- * Written on Role first-claim or explicit legacy backfill; never rewritten on same-SHA idempotent repeat.
+ * Written once on Role first claim.
  */
 export type BaseCommitCapture = {
   source: BaseCommitCaptureSource;
@@ -79,12 +79,12 @@ export interface TaskEnvelopeInput {
   roleId?: string;
   /** Exact executing Session. Connection identity is never stored on a Task. */
   sessionId?: string;
-  /**
-   * Node refs for this Task (durable id + optional path hint).
-   * Persisted only as Task.contextCard.refs.nodes[]. Formal Tasks require at
-   * least one real Node; fake root identities are never accepted.
-   */
-  nodeRefs: { id: string; path: string }[];
+  /** Exact writable Nodes occupied by this Task. */
+  workNodeIds: string[];
+  /** Shared read-only context Nodes. */
+  contextNodeIds: string[];
+  /** Frozen semantic snapshots ordered work then context. */
+  nodeSnapshots: TaskNodeSnapshot[];
   manifestPath: string;
   userPrompt: string;
   workspace?: RoleWorkspaceContract;
@@ -105,26 +105,15 @@ export interface TaskEnvelopeInput {
   /** Full operational id (tk-…). Generated if omitted. */
   id?: string;
   acceptMode?: AcceptMode;
-  /**
-   * Optional explicit objective/acceptance for contextCard.
-   * Defaults: objective = userPrompt; acceptance = [objective] when omitted.
-   */
-  objective?: string;
-  acceptance?: string[];
   /** Internal rollback hook: reports the exact path before the first Task write. */
   onPathAllocated?: (path: string) => void;
 }
 
 /** Operational task record. */
-export interface TaskEnvelope {
+export interface TaskEnvelope extends TaskNodeContext {
   path: string;
   /** Durable Role responsibility/handoff, when this is a Role Task. */
   roleId?: string;
-  /**
-   * Node refs are sole-sourced from `contextCard.refs.nodes` via
-   * `taskReferencedNodeIds(task)` / `primaryNodeId(task)`.
-   * No parallel legacy Node-reference projection.
-   */
   manifest: string;
   /** Canonical lifecycle state (task-api §2). */
   state: TaskState;
@@ -162,7 +151,7 @@ export interface TaskEnvelope {
   baseCommit?: string;
   /**
    * Compact audit for capture-once workspaceLane.baseCommit (no separate entity).
-   * source distinguishes Role first-claim vs explicit legacy backfill.
+   * source records the Role first-claim capture.
    * Immutable once written: same-SHA backfill leaves this bag unchanged.
    */
   baseCommitCapture?: BaseCommitCapture;
@@ -171,11 +160,8 @@ export interface TaskEnvelope {
    * Ordinary executors never mutate target; Service integrates after parent accept.
    */
   integrationAuthority?: IntegrationAuthority;
-  /**
-   * Authoritative Task Context Card v1 (cx-5q6za6).
-   * Projected only from envelope frontmatter `contextCard`.
-   */
-  contextCard: TaskContextCardV1;
+  /** Authoritative frozen Task Context Card v2. */
+  contextCard: TaskContextCard;
   /** In-memory projection of contextCard.contextGeneration. */
   contextGeneration?: string;
   /** Convenience projection of contextCard.taskDeltaDigest when present. */
@@ -321,9 +307,9 @@ export function parseBaseCommitCapture(value: unknown): BaseCommitCapture | unde
   }
   const raw = value as Record<string, unknown>;
   const source = raw.source;
-  if (source !== "first-claim" && source !== "explicit-backfill") {
+  if (source !== "first-claim") {
     throw new Error(
-      `Task baseCommitCapture.source must be first-claim|explicit-backfill; got ${String(source)}.`
+      `Task baseCommitCapture.source must be first-claim; got ${String(source)}.`
     );
   }
   const baseCommit =
@@ -393,16 +379,11 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   // by missing-card errors.
   const actors = resolveActorsFromDisk(data);
 
-  // Complete Context Card v1 is the sole Node-ref source. Incomplete/partial → fail loud.
+  // Complete Context Card v2 is the sole frozen Node context. Incomplete → fail loud.
   const contextCard = loadTaskContextCardFromFrontmatter(data) ?? undefined;
   if (!contextCard) {
     throw new Error(
-      `Invalid task envelope format: ${path} (missing Task.contextCard.refs.nodes).`
-    );
-  }
-  if (parseContextCardNodeRefs(contextCard.refs.nodes).length === 0) {
-    throw new Error(
-      `Invalid task envelope format: ${path} (Task.contextCard.refs.nodes requires at least one Node).`
+      `Invalid task envelope format: ${path} (missing Task Context Card v2).`
     );
   }
   if ("deliveryPolicy" in data) {
@@ -426,6 +407,9 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
     reviewer: actors.reviewer,
     prompt: body.trim() || undefined,
     contextCard,
+    workNodeIds: contextCard.workNodeIds,
+    contextNodeIds: contextCard.contextNodeIds,
+    nodeSnapshots: contextCard.nodeSnapshots,
     acceptMode: data.acceptMode,
   };
   if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
@@ -442,8 +426,8 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
     task.baseCommit = data.baseCommit.trim();
   }
-  // Compact baseCommit audit (first-claim | explicit-backfill). Absence is fine for
-  // pre-audit envelopes and non-Git Tasks; never invent from roleBranchBase.
+  // Compact first-claim baseCommit audit. Absence is fine before claim and for
+  // non-Git Tasks; never invent from roleBranchBase.
   // When capture exists: baseCommit must exist and equal capture.baseCommit (fail loud).
   const baseCommitCapture = parseBaseCommitCapture(data.baseCommitCapture);
   if (baseCommitCapture) {
@@ -478,7 +462,7 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
       task.reviewer
     );
   }
-  // Context Card v1 already loaded above from its sole nested wire.
+  // Context Card v2 already loaded above from its sole nested wire.
   task.contextGeneration = contextCard.contextGeneration;
   task.taskDeltaDigest = contextCard.taskDeltaDigest;
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
@@ -560,8 +544,8 @@ function formatTaskPointers(task: TaskEnvelope): string {
     `Manifest: ${task.manifest}`,
   ];
   if (task.contextCard) {
-    const nodeIds = taskReferencedNodeIds(task);
-    lines.push(`contextCard.refs.nodes: ${nodeIds.join(", ")}`);
+    lines.push(`workNodeIds: ${task.workNodeIds.join(", ")}`);
+    lines.push(`contextNodeIds: ${task.contextNodeIds.join(", ") || "(none)"}`);
   }
   if (task.parentActor) {
     lines.push(
@@ -619,7 +603,7 @@ export function relayPromptForTask(
     `${formatExternalPathBlock(task, resolved)}\n` +
     `${formatTaskPointers(task)}\n` +
     `1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).\n` +
-    `2. Read the Task Context Card (\`tent task get ${task.path}\` or the envelope file), then resolve each id in \`contextCard.refs.nodes\` with \`tent node get <nodeId>\`.\n` +
+    `2. Read the frozen Task Context Card (\`tent task get ${task.path}\` or the envelope file). Resolve current Node state by id only when comparing drift.\n` +
     `3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).\n` +
     initStep
   );
@@ -721,13 +705,12 @@ export async function writeTaskEnvelope(
   }
   const id = requestedId || makeTaskId();
 
-  if (!Array.isArray(input.nodeRefs) || input.nodeRefs.length === 0) {
-    throw new Error("Task requires at least one canonical Node ref.");
-  }
-  const nodeRefs: TaskContextCardRef[] = parseContextCardNodeRefs(
-    input.nodeRefs.map((node) => ({ id: node.id, path: node.path }))
-  );
-  const primaryRef = nodeRefs[0]!.id;
+  const nodeContext = normalizeTaskNodeContext({
+    workNodeIds: input.workNodeIds,
+    contextNodeIds: input.contextNodeIds,
+    nodeSnapshots: input.nodeSnapshots,
+  });
+  const primaryRef = nodeContext.workNodeIds[0]!;
   const stem = taskStem(clock.now(), primaryRef);
   const path = await uniqueMarkdownPath(fs, dir, stem);
   input.onPathAllocated?.(path);
@@ -755,23 +738,10 @@ export async function writeTaskEnvelope(
     );
   }
 
-  const objective = input.objective?.trim() || "";
-  const acceptance =
-    input.acceptance && input.acceptance.length > 0
-      ? input.acceptance.map((s) => s.trim()).filter(Boolean)
-      : [];
-
-  // Full Context Card v1 on every new write — sole Node-ref wire is refs.nodes[].
+  // Full Context Card v2 on every new write — frozen Node snapshots are the sole context wire.
   // contextGeneration is absent until a managed Session computes and uses it.
   const contextCard = buildTaskContextCard({
-    objective,
-    acceptance,
-    refs: {
-      nodes: nodeRefs,
-      tasks: [],
-      deliveries: [],
-      git: [],
-    },
+    ...nodeContext,
     userPrompt,
   });
 
@@ -783,7 +753,6 @@ export async function writeTaskEnvelope(
     ...(sessionId ? { sessionId } : {}),
     parentActor: serializeTaskActorRef(actors.parentActor),
     reviewer: serializeTaskActorRef(actors.reviewer),
-    // Sole persisted Node-ref wire.
     contextCard: serializeTaskContextCardForFrontmatter(contextCard),
     manifest: input.manifestPath,
     acceptMode,
@@ -810,8 +779,8 @@ export async function writeTaskEnvelope(
       data.roleBranchBase = tip;
     }
   }
-  const pointers = nodeRefs
-    .map((ref) => `- ${ref.id}: ${ref.path || "(path hint pending)"}`)
+  const pointers = nodeContext.nodeSnapshots
+    .map((snapshot) => `- ${snapshot.id}: ${snapshot.path}`)
     .join("\n");
   const body =
     `# Task\n\n` +
@@ -871,10 +840,8 @@ export interface TaskEnvelopePatch {
   baseCommitCapture?: BaseCommitCapture | null;
   /** Persist integrationAuthority; null clears. */
   integrationAuthority?: IntegrationAuthority | null;
-  /**
-   * Persist authoritative Context Card v1 under frontmatter `contextCard`.
-   */
-  contextCard?: TaskContextCardV1;
+  /** Update only the managed stable-context generation; frozen Node context is immutable. */
+  contextGeneration?: string;
 }
 
 /** Low-level patch of task operational frontmatter (body stays immutable). */
@@ -885,6 +852,11 @@ export async function patchTaskEnvelope(
 ): Promise<TaskEnvelope> {
   if ("acceptMode" in patch || "deliveryPolicy" in patch) {
     throw new Error("Task acceptMode is frozen at creation and cannot be patched.");
+  }
+  if ("contextCard" in patch) {
+    throw new Error(
+      "Task Context Card Node snapshots are frozen; patch contextGeneration only."
+    );
   }
   if (!(await fs.exists(path))) throw new Error(`Task envelope not found: ${path}.`);
   const raw = await fs.readFile(path);
@@ -1007,11 +979,18 @@ export async function patchTaskEnvelope(
     };
   }
 
-  if (patch.contextCard) {
-    if (parseContextCardNodeRefs(patch.contextCard.refs.nodes).length === 0) {
-      throw new Error("patchTaskEnvelope contextCard requires at least one canonical Node ref.");
+  if (patch.contextGeneration !== undefined) {
+    if (!/^cg-v1-[a-f0-9]{64}$/.test(patch.contextGeneration)) {
+      throw new Error("patchTaskEnvelope contextGeneration must be a canonical cg-v1 digest.");
     }
-    data.contextCard = serializeTaskContextCardForFrontmatter(patch.contextCard);
+    const currentCard = loadTaskContextCardFromFrontmatter(data);
+    if (!currentCard) {
+      throw new Error(`Invalid task envelope format: ${path} (missing Task Context Card v2).`);
+    }
+    data.contextCard = serializeTaskContextCardForFrontmatter({
+      ...currentCard,
+      contextGeneration: patch.contextGeneration,
+    });
     delete data.contextGeneration;
     delete data.taskDeltaDigest;
   }

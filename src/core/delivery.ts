@@ -5,6 +5,10 @@ import { withTentMutation, type Clock, type FsAdapter } from "./adapter.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { isNodeId } from "./id.js";
 import {
+  normalizeArtifactRefs,
+  type ArtifactRef,
+} from "./artifact.js";
+import {
   ROLES_TEMP_DIR,
   SESSIONS_TEMP_DIR,
   roleDeliveriesDir,
@@ -15,7 +19,6 @@ import { join } from "./tree.js";
 import {
   isDeliveryId,
   makeDeliveryId,
-  type ArtifactRef,
   type DeliveryCheck,
   type DeliveryReview,
   type DeliveryStatus,
@@ -120,7 +123,7 @@ export async function createDeliveryUnlocked(
     commits,
     ...(targetHead ? { targetHead } : {}),
     checks: input.checks ?? [],
-    artifactRefs: input.artifactRefs ?? [],
+    artifactRefs: normalizeArtifactRefs(input.artifactRefs ?? []),
     integrationMode: input.integrationMode ?? null,
     createdAt: now,
     updatedAt: now,
@@ -164,7 +167,7 @@ export async function loadDelivery(fs: FsAdapter, inputPath: string): Promise<De
       : [],
     ...(targetHead ? { targetHead } : {}),
     checks: parseJsonArrayField(data.checksJson, parseChecks),
-    artifactRefs: parseJsonArrayField(data.artifactRefsJson, parseArtifactRefs),
+    artifactRefs: parseArtifactRefsField(data.artifactRefsJson, path),
     integrationMode: parseIntegrationMode(data.integrationMode),
     review:
       reviewBy && reviewDecision
@@ -282,6 +285,7 @@ export async function removeNonAcceptedDeliveriesForTask(
 }
 
 export async function writeDelivery(fs: FsAdapter, record: DeliveryRecord): Promise<void> {
+  const artifactRefs = normalizeArtifactRefs(record.artifactRefs);
   const data: Record<string, unknown> = {
     type: "delivery",
     id: record.id,
@@ -291,7 +295,7 @@ export async function writeDelivery(fs: FsAdapter, record: DeliveryRecord): Prom
     commits: record.commits,
     targetHead: record.targetHead,
     checksJson: record.checks.length ? JSON.stringify(record.checks) : undefined,
-    artifactRefsJson: record.artifactRefs.length ? JSON.stringify(record.artifactRefs) : undefined,
+    artifactRefsJson: artifactRefs.length ? JSON.stringify(artifactRefs) : undefined,
     integrationMode: record.integrationMode,
     reviewBy: record.review?.by,
     reviewDecision: record.review?.decision,
@@ -354,21 +358,22 @@ function parseChecks(value: unknown): DeliveryCheck[] {
   return out;
 }
 
-function parseArtifactRefs(value: unknown): ArtifactRef[] {
-  if (!Array.isArray(value)) return [];
-  const out: ArtifactRef[] = [];
-  for (const item of value) {
-    if (!item || typeof item !== "object") continue;
-    const o = item as Record<string, unknown>;
-    if (typeof o.kind !== "string" || typeof o.target !== "string") continue;
-    if (!["path", "dir", "commit", "url", "other"].includes(o.kind)) continue;
-    out.push({
-      kind: o.kind as ArtifactRef["kind"],
-      target: o.target,
-      label: typeof o.label === "string" ? o.label : undefined,
-    });
+function parseArtifactRefsField(value: unknown, deliveryPath: string): ArtifactRef[] {
+  if (value === undefined || value === null || value === "") return [];
+  if (typeof value !== "string") {
+    throw new Error(`Invalid delivery artifactRefsJson: ${deliveryPath}.`);
   }
-  return out;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error(`Invalid delivery artifactRefsJson: ${deliveryPath}.`);
+  }
+  try {
+    return normalizeArtifactRefs(parsed);
+  } catch {
+    throw new Error(`Invalid delivery artifact refs: ${deliveryPath}.`);
+  }
 }
 
 async function ensureDir(fs: FsAdapter, path: string): Promise<void> {

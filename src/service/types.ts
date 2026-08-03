@@ -1,14 +1,7 @@
 // Local Service wire types — B0 architecture §5.2 + attach protocol + B5 task surface.
 
 import type { AcceptMode } from "../core/task-model.js";
-
-/** Structured association to a real deliverable outside node identity. */
-export type ArtifactRef = {
-  kind: "path" | "dir" | "commit" | "url" | "other";
-  /** Workspace-relative path, commit SHA, absolute URL, or other stable locator. */
-  target: string;
-  label?: string;
-};
+export type { ArtifactRef } from "../core/artifact.js";
 
 /** Common wire wrapper for all service fan-out events. */
 export type EventEnvelope<TType extends string = string, TPayload = unknown> = {
@@ -290,11 +283,10 @@ export type TaskProjection = {
   id?: string;
   /** Durable Role responsibility/handoff, when the Task belongs to a Role. */
   roleId?: string;
-  /**
-   * Node ids from Task.contextCard.refs.nodes (via taskReferencedNodeIds).
-   * Replaces the removed claims[] projection — occupation truth is Context Card only.
-   */
-  referencedNodeIds: string[];
+  /** Exact writable Nodes occupied by this Task. */
+  workNodeIds: string[];
+  /** Shared read-only context Nodes. */
+  contextNodeIds: string[];
   /** Full lifecycle state (task-api §2). */
   state: string;
   manifest: string;
@@ -324,11 +316,11 @@ export type TaskProjection = {
     };
   };
   /**
-   * Compact audit for capture-once baseCommit (first-claim | explicit-backfill).
+   * Compact audit for capture-once baseCommit at first Role claim.
    * Omitted on legacy / non-Git Tasks. Never rewritten on same-SHA idempotent backfill.
    */
   baseCommitCapture?: {
-    source: "first-claim" | "explicit-backfill";
+    source: "first-claim";
     baseCommit: string;
     actor: TaskActorRefWire;
     capturedAt: string;
@@ -336,8 +328,8 @@ export type TaskProjection = {
   createdAt?: string;
   updatedAt?: string;
   prompt?: string;
-  /** Authoritative non-empty Task Context Card v1. */
-  contextCard: import("../core/task-context-card.js").TaskContextCardV1;
+  /** Authoritative frozen Task Context Card v2. */
+  contextCard: import("../core/task-context-card.js").TaskContextCard;
   /** `cg-v1-<sha256>` stable-prefix generation when projected. */
   contextGeneration?: string;
   /** Current task context + input delta digest when projected. */
@@ -786,17 +778,12 @@ export const CLIENT_METHODS = [
   "task.dispatch",
   "task.claim",
   /**
-   * Durable Role self-execution: atomically create + claim from exact nodeIds[].
+   * Durable Role self-execution: atomically create + claim from exact
+   * workNodeIds[] with optional shared contextNodeIds[].
    * Service derives parent/reviewer from persisted Task/Session responsibility;
    * callers cannot provide actor, target, asSub, or Delivery authority fields.
    */
   "task.claimDirect",
-  /**
-   * Explicit legacy backfill of workspaceLane.baseCommit for running/waiting Tasks
-   * whose lane exists but base is missing. Authorized by exact parent/reviewer only.
-   * Never infers from roleBranchBase/cwd/current tip. Same SHA is idempotent.
-   */
-  "task.backfillWorkspaceLaneBase",
   "task.wait",
   "task.resume",
   /**
@@ -821,7 +808,7 @@ export const CLIENT_METHODS = [
    * Never a silent fallback from task.startSession. Uses the same machine Settings
    * Agent Connection availability gate as startSession.
    * Shares the per-Task managed-session execution slot with startSession.
-   * Preserves nodeRefs/worktree/branch/lane/pending TaskInputs/acceptMode;
+   * Preserves frozen Node context/worktree/branch/lane/pending TaskInputs/acceptMode;
    * stops the old Session first; new ss- has contextRestored=false + stable restoreReason.
    * turnBusy → fail-loud TURN_BUSY (retryable); no force flag in this contract.
    * waiting only when durable waitCode=session_unavailable (not user-input/tool).

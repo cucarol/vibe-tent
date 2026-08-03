@@ -515,7 +515,7 @@ test("docs.rename: service user-only, event, client, etag-independent resolve by
 
     const missing = await rpc(svc, "docs.rename", {
       workspaceId,
-      path: "no-such",
+      nodeId: "cx-missing",
       newName: "x",
     });
     assert.ok(missing.error);

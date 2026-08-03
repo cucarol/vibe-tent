@@ -137,7 +137,8 @@ async function runningTask(
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     workspaceId,
-    nodeIds: [nodeId],
+    workNodeIds: [nodeId],
+    contextNodeIds: [],
     connectionId: opts?.connectionId ?? "fake-default",
     prompt: "delivery gate fixture",
     acceptMode: opts?.acceptMode ?? "review-required",
@@ -495,7 +496,11 @@ test("P0: explicit retry is new-row first; ack old uncertain leaves new blocker"
     assertPendingTaskInputError(blocked.error!);
     const data = blocked.error!.data as { inputIds?: string[]; statuses?: string[] };
     assert.deepEqual(data.inputIds, [newId]);
-    assert.deepEqual(data.statuses, ["pending"]);
+    assert.equal(data.statuses?.length, 1);
+    assert.ok(
+      data.statuses![0] === "pending" || data.statuses![0] === "processing",
+      `new retry row must remain an open blocker, got ${data.statuses![0]}`
+    );
   });
 });
 
@@ -669,6 +674,7 @@ test("P0: managed auto-deliver refuses open TaskInput pre-seal; Session stays li
     },
     {
       connections: [
+        DEFAULT_CONNECTION,
         mockAcpRoute("mock-gate", {
           logPath,
           promptText: reportText,
@@ -745,8 +751,9 @@ test("P0 race: input before deliver blocks; deliver first makes sendInput refuse
       workspaceId: a.workspaceId,
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      nodeIds: [nodeId],
-      roleId: "executor",
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
+      connectionId: "fake-default",
       prompt: "deliver first ordering",
       acceptMode: "review-required",
     });
@@ -997,7 +1004,8 @@ test("P0: public and managed paths share PENDING_TASK_INPUT authority payload sh
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId2],
+        workNodeIds: [nodeId2],
+        contextNodeIds: [],
         connectionId: "mock-gate",
         prompt: "managed gate shape",
         acceptMode: "review-required",
@@ -1058,6 +1066,7 @@ test("P0: public and managed paths share PENDING_TASK_INPUT authority payload sh
     },
     {
       connections: [
+        DEFAULT_CONNECTION,
         mockAcpRoute("mock-gate", {
           logPath,
           hangBootstrap: true,

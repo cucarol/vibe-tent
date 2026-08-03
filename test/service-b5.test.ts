@@ -366,7 +366,7 @@ test("B5: dispatch → claim → startSession → deliver → accept (manual) vi
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "Ship B5 wiring",
       parentActor: { kind: "user", id: "user" },
@@ -467,7 +467,7 @@ test("B5: acceptMode=auto-accept integrates without reviewer action", async () =
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "auto path",
       acceptMode: "auto-accept",
@@ -496,7 +496,7 @@ test("B5: agent-decide integrate vs request-review", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "agent decide",
       acceptMode: "agent-decide",
@@ -530,7 +530,7 @@ test("B5: agent-decide integrate vs request-review", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "review me",
       acceptMode: "agent-decide",
@@ -569,7 +569,7 @@ test("B5: explicit fake-default route runs its assigned Task", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "explicit fake",
     });
@@ -596,7 +596,7 @@ test("B5: machine route availability permits role startSession without registry 
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "machine route path",
     });
@@ -623,7 +623,7 @@ test("B5: user callerKind starts the available machine route", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "user root",
     });
@@ -650,7 +650,7 @@ test("B5: dispatch relayPrompt uses task claim/deliver (not task-ack)", async ()
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "relay text",
     });
@@ -673,7 +673,7 @@ test("B5: startSession bootstrap is managed (Context Card + user prompt); relay 
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "bootstrap path semantics",
     });
@@ -760,7 +760,7 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual deli
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-managed",
         prompt: userPrompt,
         acceptMode: "review-required",
@@ -869,7 +869,7 @@ test("P0: Delivery only after turn seal — post-response tail write cannot land
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-seal",
         prompt: "prove post-response worktree mutation cannot race Delivery",
         acceptMode: "review-required",
@@ -973,7 +973,7 @@ test("P0: public task.deliver/requestReview refuse while managed turnBusy; idle 
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-busy-deliver",
         prompt: "manual deliver must not publish during busy managed turn",
         acceptMode: "review-required",
@@ -1141,7 +1141,7 @@ test("P0: public task.deliver/requestReview refuse while managed turnBusy; idle 
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "mock-acp-busy-deliver",
       prompt: "idle manual deliver still ok",
       acceptMode: "review-required",
@@ -1201,7 +1201,7 @@ test("B5 managed ACP: empty / error / non-end_turn do not deliver", async () => 
           parentActor: { kind: "user", id: "user" },
           reviewer: { kind: "user", id: "user" },
           workspaceId,
-          nodeIds: [nodeId],
+          workNodeIds: [nodeId], contextNodeIds: [],
           connectionId: `mock-acp-${mode}`,
           prompt: `mode ${mode}`,
         });
@@ -1262,7 +1262,7 @@ test("P0: ACP assistant output limit parks Task, stops child, and keeps Service 
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-output-limit",
         prompt: "bounded managed output",
       });
@@ -1422,7 +1422,7 @@ test("B5 managed ACP: interrupt / stop does not deliver", async () => {
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-interrupt",
         prompt: "will interrupt",
       });
@@ -1482,7 +1482,7 @@ test("B5 managed ACP: auto-accept integrates; agent-decide stays pending review"
           parentActor: { kind: "user", id: "user" },
           reviewer: { kind: "user", id: "user" },
           workspaceId,
-          nodeIds: [nodeId],
+          workNodeIds: [nodeId], contextNodeIds: [],
           connectionId: "mock-acp-autoaccept",
           prompt: "auto-accept path",
           acceptMode: "auto-accept",
@@ -1542,7 +1542,7 @@ test("B5 managed ACP: auto-accept integrates; agent-decide stays pending review"
           parentActor: { kind: "user", id: "user" },
           reviewer: { kind: "user", id: "user" },
           workspaceId,
-          nodeIds: [nodeId],
+          workNodeIds: [nodeId], contextNodeIds: [],
           connectionId: "mock-acp-ad",
           prompt: "agent-decide path",
           acceptMode: "agent-decide",
@@ -1622,7 +1622,7 @@ test("B5: task.interrupt stops bound session", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "interrupt me",
     });
@@ -1657,7 +1657,7 @@ test("B5: repeated interrupt repairs a late-bound Session projection", async () 
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "late bind repair",
     });
@@ -1707,7 +1707,7 @@ test("B5: task.cancel removes queued envelope", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "cancel me",
     });
@@ -1833,7 +1833,7 @@ test("B5 tool approval: ask → pending → approve once → running → deliver
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-tool-ask",
         prompt: "need tool then finish",
       });
@@ -1948,7 +1948,7 @@ test("B5 tool approval: concurrent asks keep task waiting until the final decisi
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "two concurrent tool requests",
     });
@@ -2038,7 +2038,7 @@ test("B5 tool approval: user deny cancels tool (ACP cancelled)", async () => {
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-tool-deny",
         prompt: "will deny tool",
       });
@@ -2108,7 +2108,7 @@ test("B5 tool approval: ask timeout expires pending; late approve fails", async 
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-tool-timeout",
         prompt: "will timeout tool ask",
       });
@@ -2191,7 +2191,7 @@ test("B5 failure cleanup: prompt error stops process, parks waiting(external), k
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-fail-clean",
         prompt: "will fail",
       });
@@ -2247,7 +2247,7 @@ test("B5 failure cleanup: prompt error stops process, parks waiting(external), k
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-fail-clean",
         prompt: "must be blocked by waiting occupation",
       });
@@ -2301,7 +2301,7 @@ for (const exitCode of [7, 0]) test(`B5 spontaneous managed child exit code=${ex
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-spontaneous-die",
         prompt: "child will die spontaneously",
       });
@@ -2356,7 +2356,7 @@ for (const exitCode of [7, 0]) test(`B5 spontaneous managed child exit code=${ex
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "fake-default",
         prompt: "must be blocked by parked occupation",
       });
@@ -2406,7 +2406,7 @@ test("B5: crash restart + mount parks running task bound to dead session (task-s
         workspaceId: mounted.workspaceId,
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "fake-default",
         prompt: "crash mid-session",
       });
@@ -2563,7 +2563,7 @@ test("P0-1: route Task start creates an isolated WorkspaceLane and uses its task
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "work in route task lane",
     });
@@ -2606,7 +2606,7 @@ test("P0-1: route Task start creates an isolated WorkspaceLane and uses its task
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId2],
+      workNodeIds: [nodeId2], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "second route task",
     });
@@ -2670,7 +2670,7 @@ test("P0-1: non-Git workspace dispatch has no lane; startSession cwd falls back 
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "docs only",
     });
@@ -2743,7 +2743,7 @@ test("P0-2: manual accept integrates real commits into main; re-deliver of integ
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "integrate me",
       acceptMode: "review-required",
@@ -2793,7 +2793,7 @@ test("P0-2: manual accept integrates real commits into main; re-deliver of integ
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId2],
+      workNodeIds: [nodeId2], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "already on main",
     });
@@ -2844,7 +2844,7 @@ test("P0-2: auto-accept with commits integrates into main and accepts", async ()
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "auto-accept with git",
       acceptMode: "auto-accept",
@@ -2893,7 +2893,7 @@ test("P0-2: agent-decide integrate with commits merges into main", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "agent decide integrate",
       acceptMode: "agent-decide",
@@ -2970,7 +2970,7 @@ async function claimDeliveredReviewTask(
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     workspaceId,
-    nodeIds: [nodeId],
+    workNodeIds: [nodeId], contextNodeIds: [],
     connectionId: "fake-default",
     prompt,
     acceptMode: "review-required",
@@ -3041,7 +3041,7 @@ test("P0-2: auto-accept deliver releases MutationBus during blocked Git integrat
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "block bus during auto-accept integration",
       acceptMode: "auto-accept",
@@ -3150,7 +3150,7 @@ test("P0-2: same-Task sendInput waits for auto-deliver Git then refuses accepted
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "same-task sendInput serializes with auto-accept",
       acceptMode: "auto-accept",
@@ -3219,7 +3219,7 @@ test("P0-2: accept integration conflict keeps delivered + occupation; no done", 
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "will conflict",
     });
@@ -3288,7 +3288,7 @@ test("P0-2: auto-accept integrate failure preserves ready Delivery and occupatio
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "auto-accept conflict",
       acceptMode: "auto-accept",
@@ -3352,7 +3352,7 @@ test("P0 fix: managed auto-accept failure preserves ready Delivery and emits dia
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "managed integrate will fail",
       acceptMode: "auto-accept",
@@ -3458,7 +3458,7 @@ test("terminal consistency: managed finalization and interrupt have one winner",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "race finalization and interrupt",
       acceptMode: "review-required",
@@ -3548,7 +3548,7 @@ test("terminal consistency: interrupt first suppresses managed finalization", as
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "interrupt first",
       acceptMode: "review-required",
@@ -3598,7 +3598,7 @@ test("P0 fix: managed auto-deliver collects role-lane commit; manual accept inte
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "auto-collect then review",
       acceptMode: "review-required",
@@ -3676,7 +3676,7 @@ test("P0 fix: managed auto-accept integrates auto-collected commit", async () =>
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "auto-collect and accept",
       acceptMode: "auto-accept",
@@ -3741,7 +3741,7 @@ test("P0 fix: managed auto-deliver zero-commit / non-Git remains legal", async (
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "docs only managed",
       acceptMode: "review-required",
@@ -3784,7 +3784,7 @@ test("P0 fix: managed auto-deliver zero-commit / non-Git remains legal", async (
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "report only",
       acceptMode: "auto-accept",
@@ -3826,7 +3826,7 @@ test("P0: dirty task worktree refuses managed auto-deliver and public task.deliv
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "must not deliver with dirty role worktree",
       acceptMode: "review-required",
@@ -3964,178 +3964,6 @@ test("P0: dirty task worktree refuses managed auto-deliver and public task.deliv
   });
 });
 
-test("P0 fix: managed auto-collect excludes pre-session role commits; includes active-window commits", async () => {
-  resetManagedAutoDeliverDedupForTests();
-  const ws = await makeWorkspace("p0-macp-base-scope");
-  await initGitOnWorkspace(ws);
-  // Pre-existing / unrelated commit on the long-lived role branch before any task binds.
-  const preExisting = await roleCommit(
-    ws,
-    "executor",
-    "stale-pre.txt",
-    "old\n",
-    "pre-existing unrelated"
-  );
-
-  await withService(async (svc) => {
-    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
-    const d = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
-      workspaceId,
-      nodeIds: [nodeId],
-      connectionId: "fake-default",
-      prompt: "only my commits",
-      acceptMode: "review-required",
-    });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-
-    const mount = svc.ctx.host.require(workspaceId);
-    // Dispatch does not freeze a Role execution lane.
-    const afterDispatch = await loadTaskEnvelope(mount.env.fs, taskPath);
-    assert.equal(afterDispatch.roleBranchBase, undefined);
-    assert.equal(afterDispatch.baseCommit, undefined);
-
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const afterClaim = await loadTaskEnvelope(mount.env.fs, taskPath);
-    assert.equal(afterClaim.roleBranchBase, preExisting);
-    assert.equal(afterClaim.baseCommit, preExisting);
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
-    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
-
-    const afterStart = await loadTaskEnvelope(mount.env.fs, taskPath);
-    assert.equal(afterStart.roleBranchBase, preExisting);
-    assert.equal(afterStart.baseCommit, preExisting);
-    // Active-window Task commit only after base capture; first parent must equal base.
-    const taskRef = await roleCommit(
-      ws,
-      "executor",
-      "task-only.txt",
-      "mine\n",
-      "task active-window commit"
-    );
-    await assertTaskCommitFirstParent(ws, taskRef, preExisting);
-
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
-      workspaceId,
-      taskPath,
-      sessionId,
-      assistantText: "outcome: delivered\n\nSCOPED_COLLECT",
-    });
-
-    const list = await rpc(svc, "delivery.list", { workspaceId });
-    const deliveries = (
-      list.result as { deliveries: Array<{ commits: string[]; status: string }> }
-    ).deliveries;
-    assert.equal(deliveries.length, 1);
-    assert.deepEqual(
-      deliveries[0].commits,
-      [taskRef],
-      "pre-session role commits must not be scooped into this task"
-    );
-    assert.ok(!deliveries[0].commits.includes(preExisting));
-  });
-});
-
-test("P0 fix: roleBranchBase is stable across startSession and reject-resume", async () => {
-  resetManagedAutoDeliverDedupForTests();
-  const ws = await makeWorkspace("p0-macp-base-stable");
-  await initGitOnWorkspace(ws);
-
-  await withService(async (svc) => {
-    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
-    const d = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
-      workspaceId,
-      nodeIds: [nodeId],
-      connectionId: "fake-default",
-      prompt: "stable baseline",
-      acceptMode: "review-required",
-    });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    const mount = svc.ctx.host.require(workspaceId);
-    // Role dispatch defers execution lane/base; first claim captures once.
-    assert.equal(
-      (await loadTaskEnvelope(mount.env.fs, taskPath)).baseCommit,
-      undefined,
-      "Role dispatch must not freeze baseCommit"
-    );
-    assert.equal(
-      (await loadTaskEnvelope(mount.env.fs, taskPath)).roleBranchBase,
-      undefined,
-      "Role dispatch must not freeze roleBranchBase"
-    );
-
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const baseAtClaim = (await loadTaskEnvelope(mount.env.fs, taskPath)).baseCommit;
-    assert.ok(baseAtClaim, "first claim captures baseCommit");
-    assert.equal(
-      (await loadTaskEnvelope(mount.env.fs, taskPath)).roleBranchBase,
-      baseAtClaim,
-      "first claim mirrors roleBranchBase with baseCommit"
-    );
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
-    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
-    const baseAtStart = (await loadTaskEnvelope(mount.env.fs, taskPath)).roleBranchBase;
-    assert.equal(baseAtStart, baseAtClaim, "startSession must not overwrite roleBranchBase");
-    await roleCommit(ws, "executor", "stable-a.txt", "a\n", "after start a");
-    assert.equal(
-      (await loadTaskEnvelope(mount.env.fs, taskPath)).roleBranchBase,
-      baseAtStart,
-      "startSession must not overwrite roleBranchBase"
-    );
-
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
-      workspaceId,
-      taskPath,
-      sessionId,
-      assistantText: "outcome: delivered\n\nNEED_REWORK",
-    });
-    assert.equal(
-      (await loadTaskEnvelope(mount.env.fs, taskPath)).roleBranchBase,
-      baseAtStart
-    );
-
-    const rejected = await rpc(svc, "task.reject", {
-      workspaceId,
-      taskPath,
-      actor: "user",
-      resume: true,
-      note: "rework",
-    });
-    assert.ok(!rejected.error, JSON.stringify(rejected.error));
-    assert.equal(
-      (await loadTaskEnvelope(mount.env.fs, taskPath)).roleBranchBase,
-      baseAtStart,
-      "reject-resume must retain the original baseline"
-    );
-
-    // Extra role commits after reject still belong to the same task scope.
-    const reworkRef = await roleCommit(ws, "executor", "stable-b.txt", "b\n", "rework commit");
-    await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-    });
-    const got = await loadTaskEnvelope(mount.env.fs, taskPath);
-    assert.equal(got.roleBranchBase, baseAtStart);
-    assert.equal(got.state, "running");
-    // Sanity: rework commit is above base (collection would include it).
-    assert.notEqual(reworkRef, baseAtStart);
-  });
-});
-
 test("reject-resume restores live managed session for durable role (no false-running)", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace("reject-resume-role-live");
@@ -4146,7 +3974,7 @@ test("reject-resume restores live managed session for durable role (no false-run
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "reject resume must wake session",
       acceptMode: "review-required",
@@ -4239,7 +4067,7 @@ test("reject-resume restores live managed session for route tasks", async () => 
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "profile reject resume",
       acceptMode: "review-required",
@@ -4401,7 +4229,7 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-reject-resume",
         prompt: "native reject-resume continuity",
         acceptMode: "review-required",
@@ -4536,7 +4364,7 @@ test("reject-resume unavailable restore parks; task.replaceSession creates the e
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" }, reviewer: { kind: "user", id: "user" },
-      workspaceId, nodeIds: [nodeId], connectionId: "fake-default",
+      workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId: "fake-default",
       prompt: "explicit replacement after unavailable resume", acceptMode: "review-required",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -4579,7 +4407,7 @@ test("late session.failed on a replaced prior Session keeps the exact Task runni
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" }, reviewer: { kind: "user", id: "user" },
-      workspaceId, nodeIds: [nodeId], connectionId: "fake-default",
+      workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId: "fake-default",
       prompt: "late prior terminal must not demote replacement",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -4619,7 +4447,7 @@ test("late session.failed after managed Delivery is diagnostic only", async () =
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "delivery then late session.failed",
       acceptMode: "review-required",
@@ -4692,7 +4520,7 @@ test("P0 pre-Delivery session.failed parks waiting(external) and preserves TaskI
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "recoverable failure path",
       acceptMode: "review-required",
@@ -4789,7 +4617,7 @@ test("P0 pre-Delivery session.exited parks waiting(external) with stable summary
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "clean exit before delivery",
       acceptMode: "review-required",
@@ -4840,7 +4668,7 @@ test("P0 duplicate session.failed/exited on same session is idempotent park", as
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "duplicate terminals",
     });
@@ -4894,7 +4722,7 @@ test("P0 late terminal from old session after rebind does not affect new occupat
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "rebind then late old exit",
     });
@@ -4999,7 +4827,7 @@ test("P0 three independent same-tick session terminals each park only their own 
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "fake-default",
         prompt: `independent ${name}`,
       });
@@ -5070,7 +4898,7 @@ test("P0 explicit interrupt remains terminal and releases occupation after park"
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "park then interrupt",
     });
@@ -5129,7 +4957,7 @@ test("P0 explicit replacement session resume after recoverable park", async () =
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "recover with new session",
       acceptMode: "review-required",
@@ -5262,7 +5090,7 @@ test("P0 UserAsk reply after park targets replacement Session, not dead origin",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-ua-park-reply",
         prompt: "park ask then reply on replacement",
         acceptMode: "review-required",
@@ -5427,7 +5255,7 @@ test("reject-resume non-resume-capable binding parks; fresh Session is explicit 
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" }, reviewer: { kind: "user", id: "user" },
-      workspaceId, nodeIds: [nodeId], connectionId: "fake-default",
+      workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId: "fake-default",
       prompt: "non-resume-capable binding", acceptMode: "review-required",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -5467,7 +5295,7 @@ test("explicit replaceSession preserves durable TaskInput after an unavailable r
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" }, reviewer: { kind: "user", id: "user" },
-      workspaceId, nodeIds: [nodeId], connectionId: "fake-default",
+      workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId: "fake-default",
       prompt: "preserve durable input across explicit replacement", acceptMode: "review-required",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
@@ -5502,7 +5330,7 @@ test("reject-resume fails loud and parks waiting when session cannot be restored
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "force restore failure",
       acceptMode: "review-required",
@@ -5573,7 +5401,7 @@ test("P0 fix: recorded workspace lane collection errors stay retryable", async (
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "do not downgrade a broken lane",
       acceptMode: "review-required",
@@ -5618,134 +5446,7 @@ test("P0 fix: recorded workspace lane collection errors stay retryable", async (
     const probe = await svc.runtime.probe(sessionId);
     assert.equal(probe.alive, false);
   });
-});
-
-test("P0 fix: successful managed delivery frees same role for next task", async () => {
-  resetManagedAutoDeliverDedupForTests();
-  const ws = await makeWorkspace("p0-macp-role-free");
-  await initGitOnWorkspace(ws);
-
-  await withService(async (svc) => {
-    const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
-    const d1 = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
-      workspaceId,
-      nodeIds: [nodeId],
-      connectionId: "fake-default",
-      prompt: "first managed task",
-      acceptMode: "review-required",
-    });
-    const taskPath1 = (d1.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath: taskPath1 });
-    const base1 = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath1))
-      .baseCommit;
-    assert.ok(base1, "Git Role claim must capture baseCommit before Task commits");
-    const s1 = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath: taskPath1,
-      callerKind: "user",
-    });
-    assert.ok(!s1.error, JSON.stringify(s1.error));
-    const sessionId1 = (s1.result as { session: { sessionId: string } }).session.sessionId;
-
-    // Queue the next task while the first role session is still active.
-    const box2 = await rpc(svc, "docs.createNote", {
-      workspaceId,
-      name: "next-item",
-      type: "prompt",
-    });
-    const nodeId2 = (box2.result as { nodeId: string }).nodeId;
-    const d2 = await rpc(svc, "task.dispatch", {
-      parentActor: { kind: "user", id: "user" },
-      reviewer: { kind: "user", id: "user" },
-      workspaceId,
-      nodeIds: [nodeId2],
-      connectionId: "fake-default",
-      prompt: "second managed task",
-    });
-    const taskPath2 = (d2.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath: taskPath2 });
-    const blocked = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath: taskPath2,
-      callerKind: "user",
-    });
-    assert.ok(blocked.error);
-    const mount = svc.ctx.host.require(workspaceId);
-    // Claim-time base: second Role task freezes tip at its own first claim (before firstRef).
-    const baseAtClaim2 = (await loadTaskEnvelope(mount.env.fs, taskPath2)).roleBranchBase;
-    assert.ok(
-      baseAtClaim2,
-      "Git Role claim captures baseline even when startSession is later blocked"
-    );
-    assert.equal(
-      (await loadTaskEnvelope(mount.env.fs, taskPath2)).baseCommit,
-      baseAtClaim2
-    );
-
-    // Task1 commit only after its claim base; tip may move before this commit
-    // (task2 claim reuses the role lane tip) so first parent is current tip, not base1.
-    const firstRef = await roleCommit(
-      ws,
-      "executor",
-      "first-task.txt",
-      "first\n",
-      "first task commit"
-    );
-    assert.notEqual(firstRef, base1, "Task commit must be after recorded base");
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
-      workspaceId,
-      taskPath: taskPath1,
-      sessionId: sessionId1,
-      assistantText: "outcome: delivered\n\nFIRST_DONE",
-    });
-
-    const rec1 = await svc.runtime.registry.read(sessionId1);
-    assert.ok(rec1, "prior session registry retained");
-    assert.notEqual(rec1!.state, "live");
-
-    // startSession remains capture-once: must not rewrite claim-time base to firstRef.
-    const s2 = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath: taskPath2,
-      callerKind: "user",
-    });
-    assert.ok(!s2.error, JSON.stringify(s2.error));
-    const sessionId2 = (s2.result as { session: { sessionId: string } }).session.sessionId;
-    assert.notEqual(
-      sessionId2,
-      sessionId1,
-      "a delivered-but-unreviewed prior Task must not lend its Session across Tasks"
-    );
-    assert.equal(
-      (await loadTaskEnvelope(mount.env.fs, taskPath2)).roleBranchBase,
-      baseAtClaim2,
-      "startSession must not overwrite claim-time base with a later tip"
-    );
-    assert.notEqual(baseAtClaim2, firstRef);
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
-      workspaceId,
-      taskPath: taskPath2,
-      sessionId: sessionId2,
-      assistantText: "outcome: delivered\n\nSECOND_DONE",
-    });
-    const listed = await rpc(svc, "delivery.list", { workspaceId });
-    const secondDelivery = (
-      listed.result as { deliveries: Array<{ summary: string; commits: string[] }> }
-    ).deliveries.find((delivery) => delivery.summary === "SECOND_DONE");
-    // Shared Role lane: task2 base froze at claim (before firstRef). Managed
-    // collection from that baseline still sees firstRef on the branch until a
-    // later tip advances past it — no startSession rewrite of the baseline.
-    assert.deepEqual(secondDelivery?.commits, [firstRef]);
-
-    // Prior registry row still readable (resume metadata not wiped).
-    const rec1Again = await svc.runtime.registry.read(sessionId1);
-    assert.ok(rec1Again);
-  });
-});
-
-/**
+});/**
  * P0: task.startSession single-flight / idempotency per Task.
  * Same-tick concurrent callers must not mint two provider processes before
  * envelope sessionId bind. Fake adapter only — no paid/live providers.
@@ -5759,7 +5460,7 @@ test("P0: concurrent task.startSession same tick coalesces to one Session", asyn
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "single-flight concurrent start",
     });
@@ -5810,7 +5511,7 @@ test("P0: repeated task.startSession after success reuses bound Session", async 
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "idempotent restart reuse",
     });
@@ -5866,7 +5567,7 @@ test("P0: failed launch clears same-task flight slot (lifecycle failed)", async 
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "fake-fail-launch",
         prompt: "fail launch clears exact flight key",
       });
@@ -5943,7 +5644,7 @@ test("P0: user and role concurrent starts share one machine-route launch", async
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "auth gate before coalesce",
     });
@@ -6030,7 +5731,7 @@ test("mount reconcile: dead/missing/stale-live session → waiting(external); tr
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "fake-default",
         prompt: `seed ${name}`,
       });
@@ -6236,7 +5937,7 @@ test("task.startSession resumes any waiting (external) before launch", async () 
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "resume external wait",
     });
@@ -6278,7 +5979,7 @@ test("task.startSession parks an unavailable bound session; replaceSession creat
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "explicit recovery only",
     });
@@ -6356,7 +6057,7 @@ test("task.startSession parks a stale missing binding; replaceSession recovers e
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "stale session binding",
     });
@@ -6420,7 +6121,7 @@ test("task.startSession parks a foreign binding; replaceSession explicitly creat
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-acp-boundary",
         prompt: "workspace-bound resume",
       });
@@ -6499,75 +6200,7 @@ test("task.startSession parks a foreign binding; replaceSession explicitly creat
     },
     { connections: [profile] }
   );
-});
-
-test("P0 fix: concurrent first claims same role serialize worktree ensure (no race)", async () => {
-  const ws = await makeWorkspace("p0-concurrent-lane");
-  await initGitOnWorkspace(ws);
-  await withService(async (svc) => {
-    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
-    const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
-    const nodes = await Promise.all(
-      [1, 2, 3].map(async (i) => {
-        const created = await rpc(svc, "docs.createNote", {
-          workspaceId,
-          name: `concurrent-item-${i}`,
-          type: "prompt",
-        });
-        return (created.result as { nodeId: string }).nodeId;
-      })
-    );
-
-    const results = await Promise.all(
-      nodes.map((nodeId, i) =>
-        rpc(svc, "task.dispatch", {
-          parentActor: { kind: "user", id: "user" },
-          reviewer: { kind: "user", id: "user" },
-          workspaceId,
-          nodeIds: [nodeId],
-          connectionId: "fake-default",
-          prompt: `concurrent ${i}`,
-        })
-      )
-    );
-    for (const r of results) {
-      assert.ok(!r.error, JSON.stringify(r.error));
-    }
-    assert.ok(
-      results.every(
-        (r) =>
-          (r.result as { workspaceLane?: { worktree?: string } }).workspaceLane?.worktree ===
-          undefined
-      ),
-      "Role dispatch must not bind an execution lane before first claim"
-    );
-    const claims = await Promise.all(
-      results.map((result) =>
-        rpc(svc, "task.claim", {
-          workspaceId,
-          taskPath: (result.result as { taskPath: string }).taskPath,
-        })
-      )
-    );
-    for (const claim of claims) assert.ok(!claim.error, JSON.stringify(claim.error));
-    const lanes = claims.map(
-      (claim) =>
-        (
-          claim.result as {
-            task: { workspaceLane: { worktree: string; branch: string } };
-          }
-        ).task.workspaceLane
-    );
-    assert.ok(lanes.every((l) => l && l.worktree));
-    const wt = path.resolve(lanes[0].worktree);
-    for (const l of lanes) {
-      assert.equal(path.resolve(l.worktree), wt);
-      assert.equal(l.branch, "tent-role/executor");
-    }
-  });
-});
-
-async function tentFsFor(ws: string): Promise<NodeFs> {
+});async function tentFsFor(ws: string): Promise<NodeFs> {
   return new NodeFs(path.join(ws, ".tent"));
 }
 
@@ -6595,7 +6228,7 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "stale envelope",
       acceptMode: "review-required",
@@ -6633,7 +6266,7 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "wrong workspace",
     });
@@ -6678,7 +6311,7 @@ test("P0 fix: auto-accept with zero commits is legal (pure docs / no auto-collec
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "docs only delivery",
       acceptMode: "auto-accept",

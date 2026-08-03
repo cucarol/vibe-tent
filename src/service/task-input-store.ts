@@ -10,6 +10,7 @@ import {
   warnCorruptMachineState,
   writeJsonAtomic,
 } from "../machine-state.js";
+import type { AnsweredDecisionRequest } from "../core/decision-request.js";
 
 /**
  * pending    — accepted/enqueued; waiting for managed inject and/or external poll
@@ -46,7 +47,7 @@ export type TaskInputStatus =
  * Both reuse the same persistence, delivery, state, and external poll/ack path.
  * Not chat; not a second prompt channel.
  */
-export type TaskInputKind = "user-input" | "review-feedback";
+export type TaskInputKind = "user-input" | "review-feedback" | "decision-response";
 
 export interface TaskInputRecord {
   id: string;
@@ -139,12 +140,14 @@ export function isTaskInputCancelEligibleStatus(
 const TASK_INPUT_KINDS = new Set<TaskInputKind>([
   "user-input",
   "review-feedback",
+  "decision-response",
 ]);
 
 export function normalizeTaskInputKind(
   kind: TaskInputKind | string | undefined | null
 ): TaskInputKind {
   if (kind === "review-feedback") return "review-feedback";
+  if (kind === "decision-response") return "decision-response";
   return "user-input";
 }
 
@@ -236,11 +239,15 @@ function parseInput(value: unknown): TaskInputRecord | null {
   const resolvedKind = normalizeTaskInputKind(parsedKind);
   // user-input: at least one of text / contextRefs.
   // review-feedback: text may be empty (exact empty note); kind alone is enough.
+  // decision-response: canonical non-empty response text is required.
   const hasText =
     typeof text === "string" &&
     (resolvedKind === "review-feedback" || text.trim().length > 0);
   const hasRefs = (parsedRefs?.length ?? 0) > 0;
-  if (resolvedKind === "user-input" && !hasText && !hasRefs) return null;
+  if (
+    (resolvedKind === "user-input" && !hasText && !hasRefs) ||
+    (resolvedKind === "decision-response" && !hasText)
+  ) return null;
   if (
     resolvedKind === "review-feedback" &&
     text !== undefined &&
@@ -967,6 +974,34 @@ export function makeTaskInputId(rand: () => number = Math.random): string {
   return s;
 }
 
+export function taskInputIdForDecisionRequest(requestId: string): string {
+  if (!/^dr-[0-9a-z]{10}$/.test(requestId)) {
+    throw new Error("DecisionRequest id must be a canonical dr-* id.");
+  }
+  return `ti-${requestId.slice(3)}`;
+}
+
+export function decisionResponseTaskInputText(request: AnsweredDecisionRequest): string {
+  const id = taskInputIdForDecisionRequest(request.id);
+  void id;
+  const lines = [`requestId: ${request.id}`];
+  const response = request.response;
+  if (response.kind === "option") {
+    const option = request.options.find((candidate) => candidate.id === response.optionId);
+    if (!option) throw new Error("DecisionResponse option is missing from its request.");
+    lines.push(
+      "response: option",
+      `optionId: ${response.optionId}`,
+      `optionLabel: ${JSON.stringify(option.label)}`
+    );
+  } else if (response.kind === "custom") {
+    lines.push("response: custom", `text: ${JSON.stringify(response.text)}`);
+  } else {
+    lines.push("response: deny");
+  }
+  return lines.join("\n");
+}
+
 /**
  * Fixed-format U2A payload for managed ACP follow-up session/prompt.
  * user-input → ## User Input; review-feedback → ## Review Feedback.
@@ -991,6 +1026,14 @@ export function formatTaskInputPrompt(input: TaskInputRecord): string {
       "Lifecycle-generated review feedback for the same task after reject-resume. Not chat history. Do not invent prior messages. Final report still goes through Delivery only."
     );
     return lines.join("\n");
+  }
+  if (kind === "decision-response") {
+    return [
+      "## Decision Response",
+      `inputId: ${input.id}`,
+      "kind: decision-response",
+      input.text?.trim() || "",
+    ].join("\n");
   }
 
   const lines = [

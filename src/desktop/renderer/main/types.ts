@@ -1,7 +1,7 @@
 // Shared main-workbench view types (renderer-local; not Service wire types).
 
 import type { TaskReviewItem } from "../../workbench/collaboration-ui.js";
-import type { TaskContextCardV1 } from "../../../core/task-context-card.js";
+import type { TaskContextCard } from "../../../core/task-context-card.js";
 import type {
   CoordinationTypeOption,
   ConnectionOption,
@@ -93,14 +93,15 @@ export type ShellState = {
   tasks: Array<{
     path: string;
     roleId?: string;
-    referencedNodeIds: string[];
+    workNodeIds: string[];
+    contextNodeIds: string[];
     state: string;
     acceptMode: import("../../../service/types.js").TaskProjection["acceptMode"];
     id?: string;
     prompt?: string;
     activeDeliveryId?: string;
     sessionId?: string;
-    contextCard: TaskContextCardV1;
+    contextCard: TaskContextCard;
   }>;
   taskReview?: TaskReviewItem[];
   roles?: RoleOption[];

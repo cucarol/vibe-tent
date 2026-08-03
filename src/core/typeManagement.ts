@@ -4,7 +4,6 @@ import { Node } from "./types.js";
 import { loadTent, nodeNotePath } from "./tree.js";
 import { loadTaskEnvelopes, taskExecutionLabel } from "./task.js";
 import { envelopeIsActiveOccupation } from "./claim.js";
-import { taskReferencedNodeIds } from "./task-node-refs.js";
 import {
   BUILTIN_SECONDARY_TYPES,
   CANONICAL_PRIMARY_TYPES,
@@ -101,7 +100,7 @@ export async function inspectTypeDeletion(
     if (!envelopeIsActiveOccupation(task)) continue;
     if (task.contextCard == null) continue;
     // Direct Node refs only (cx-tsw53f). Workspace context is not a Tent-wide type lock.
-    for (const nodeId of taskReferencedNodeIds(task)) {
+    for (const nodeId of task.workNodeIds) {
       if (!relatedIds.has(nodeId)) continue;
       const node = tent.byId.get(nodeId);
       if (!node) continue;

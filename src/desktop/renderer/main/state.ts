@@ -183,7 +183,7 @@ export function tasksForActiveNode(states?: string[]): TaskReviewItem[] {
   return actionableTasks().filter((task) => {
     const st = task.state;
     return (
-      task.referencedNodeIds.includes(activeCx!) &&
+      task.workNodeIds.includes(activeCx!) &&
       (!states || states.includes(st))
     );
   });

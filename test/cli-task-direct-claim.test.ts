@@ -37,18 +37,20 @@ function capturingClient() {
   };
 }
 
-test("direct Role claim forwards Nodes and durable provenance without authority or target fields", async () => {
+test("direct Role claim forwards work/context Nodes and durable provenance without authority or target fields", async () => {
   const cwd = await makeTentCwd();
   const capture = capturingClient();
   const result = await runTaskCommand(
     "claim",
     [
-      "--node",
+      "--work-node",
       "cx-one",
-      "--node",
+      "--work-node",
       "cx-two",
-      "--node",
+      "--work-node",
       "cx-one",
+      "--context-node",
+      "cx-context",
       "--prompt",
       "own this work",
       "--from-task",
@@ -61,18 +63,18 @@ test("direct Role claim forwards Nodes and durable provenance without authority 
       json: true,
       env: {
         ...process.env,
-        TENT_ROLE_NAME: "planner",
-        TENT_SESSION_ID: "ss-source",
+        TENT_ROLE_ID: "rl-planner",
+        TENT_EXTERNAL_SESSION_KEY: "external-source",
       },
     }
   );
   assert.equal(result.exitCode, 0, result.stderr);
   assert.equal(capture.directCalls.length, 1);
   assert.deepEqual(capture.directCalls[0], {
-    role: "planner",
-    nodeIds: ["cx-one", "cx-two"],
+    roleId: "rl-planner",
+    workNodeIds: ["cx-one", "cx-two"],
+    contextNodeIds: ["cx-context"],
     prompt: "own this work",
-    sourceSessionId: "ss-source",
     sourceTaskPath: "temp/planner/tasks/parent.md",
   });
   for (const forbidden of ["target", "parentActor", "reviewer", "asSub", "callerKind"]) {
@@ -85,7 +87,7 @@ test("direct Role claim is mutually exclusive with queued taskPath claim and req
   const capture = capturingClient();
   const mixed = await runTaskCommand(
     "claim",
-    ["temp/planner/tasks/existing.md", "--node", "cx-one", "--prompt", "x"],
+    ["temp/planner/tasks/existing.md", "--work-node", "cx-one", "--prompt", "x"],
     { client: capture.client as never, cwd, env: { ...process.env, TENT_ROLE: "planner" } }
   );
   assert.equal(mixed.exitCode, 1);
@@ -93,11 +95,11 @@ test("direct Role claim is mutually exclusive with queued taskPath claim and req
 
   const unbound = await runTaskCommand(
     "claim",
-    ["--node", "cx-one", "--prompt", "x"],
+    ["--work-node", "cx-one", "--prompt", "x"],
     { client: capture.client as never, cwd, env: {} }
   );
   assert.equal(unbound.exitCode, 1);
-  assert.match(unbound.stderr, /durable Role environment/i);
+  assert.match(unbound.stderr, /canonical durable Role id|TENT_ROLE_ID/i);
   assert.equal(capture.directCalls.length, 0);
 });
 
@@ -143,7 +145,7 @@ test("task claim rejects caller-selected Session flags before client access", as
 
 test("task help separates direct Role claim from downstream dispatch", () => {
   const help = taskHelpText();
-  assert.match(help, /task claim --node <nodeId>/);
+  assert.match(help, /task claim --work-node <nodeId>/);
   assert.match(help, /create \+ claim atomically/);
   assert.match(help, /no --target and no downstream dispatch/);
   assert.match(help, /Service derives parent\/reviewer from durable facts/);

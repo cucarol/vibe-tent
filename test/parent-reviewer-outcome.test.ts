@@ -22,6 +22,11 @@ import {
   loadTaskEnvelope,
   writeTaskEnvelope,
 } from "../src/core/task.js";
+import { contentEtag } from "../src/core/etag.js";
+
+function nodeSnapshot(id: string, nodePath: string, body = "") {
+  return { id, path: nodePath, type: "prompt", tags: [], body, etag: contentEtag(body) };
+}
 
 test("parseTaskOutcomeReport: valid control headers parse; missing or malformed return null", () => {
   assert.deepEqual(parseTaskOutcomeReport("outcome: delivered\n\nAll good"), {
@@ -87,7 +92,9 @@ test("writeTaskEnvelope persists canonical parentActor/reviewer", async () => {
   const clock = new SystemClock();
   const p = await writeTaskEnvelope(fsa, clock, {
     roleId: "rl-helper",
-    nodeRefs: [{ id: "cx-1", path: "a.md" }],
+    workNodeIds: ["cx-1"],
+    contextNodeIds: [],
+    nodeSnapshots: [nodeSnapshot("cx-1", "a.md")],
     manifestPath: "temp/helper/manifest.yml",
     userPrompt: "do it",
     parentActor: { kind: "role", id: "rl-orchestrator" },
@@ -112,7 +119,9 @@ test("writeTaskEnvelope refuses elevated policy for downstream Task Agent", asyn
     () =>
       writeTaskEnvelope(fsa, clock, {
         roleId: "rl-helper",
-        nodeRefs: [{ id: "cx-1", path: "a.md" }],
+        workNodeIds: ["cx-1"],
+        contextNodeIds: [],
+        nodeSnapshots: [nodeSnapshot("cx-1", "a.md")],
         manifestPath: "temp/helper/manifest.yml",
         userPrompt: "do it",
         parentActor: { kind: "role", id: "rl-orchestrator" },
@@ -152,7 +161,9 @@ test("resolveDispatchActors / writeTaskEnvelope refuse missing actors and dispat
     () =>
       writeTaskEnvelope(fsa, clock, {
         roleId: "rl-helper",
-        nodeRefs: [{ id: "cx-1", path: "a.md" }],
+        workNodeIds: ["cx-1"],
+        contextNodeIds: [],
+        nodeSnapshots: [nodeSnapshot("cx-1", "a.md")],
         manifestPath: "temp/helper/manifest.yml",
         userPrompt: "missing actors",
       } as never),
@@ -219,7 +230,9 @@ test("Core+Service: parentActor/reviewer mismatch rejected at write, load, and R
     () =>
       writeTaskEnvelope(fsa, clock, {
         roleId: "rl-helper",
-        nodeRefs: [{ id: "cx-1", path: "a.md" }],
+        workNodeIds: ["cx-1"],
+        contextNodeIds: [],
+        nodeSnapshots: [nodeSnapshot("cx-1", "a.md")],
         manifestPath: "temp/helper/manifest.yml",
         userPrompt: "mismatch",
         parentActor: { kind: "role", id: "orchestrator" },
@@ -231,7 +244,9 @@ test("Core+Service: parentActor/reviewer mismatch rejected at write, load, and R
   // Persisted mismatched pair fails loud on load (resolveActorsFromDisk).
   const mismatchPath = await writeTaskEnvelope(fsa, clock, {
     roleId: "rl-helper",
-    nodeRefs: [{ id: "cx-1", path: "a.md" }],
+    workNodeIds: ["cx-1"],
+    contextNodeIds: [],
+    nodeSnapshots: [nodeSnapshot("cx-1", "a.md")],
     manifestPath: "temp/helper/manifest.yml",
     userPrompt: "bad pair",
     parentActor: { kind: "role", id: "orchestrator" },
@@ -350,7 +365,8 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       "task.dispatch",
       {
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId],
+        contextNodeIds: [],
         roleId: "rl-executor",
         prompt: "legacy wire",
         // Even with explicit actors present, dispatchedBy must be rejected.
@@ -369,7 +385,8 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       "task.dispatch",
       {
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId],
+        contextNodeIds: [],
         roleId: "rl-executor",
         prompt: "missing actors",
       },
@@ -385,7 +402,8 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       "task.dispatch",
       {
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId],
+        contextNodeIds: [],
         roleId: "rl-executor",
         prompt: "mismatch pair",
         parentActor: { kind: "role", id: "orchestrator" },
@@ -406,7 +424,8 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       "task.dispatch",
       {
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId],
+        contextNodeIds: [],
         roleId: "rl-executor",
         prompt: "derived reviewer",
         parentActor: { kind: "user", id: "user" },
@@ -447,7 +466,8 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
       "task.dispatch",
       {
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId],
+        contextNodeIds: [],
         roleId: "rl-executor",
         prompt: "explicit actors",
         parentActor: { kind: "user", id: "user" },
@@ -473,7 +493,9 @@ test("loadTaskEnvelope ignores unknown dispatchedBy without rewriting or using i
   const fsa = new NodeFs(dir);
   const taskPath = await writeTaskEnvelope(fsa, new SystemClock(), {
     roleId: "rl-helper",
-    nodeRefs: [{ id: "cx-2", path: "b.md" }],
+    workNodeIds: ["cx-2"],
+    contextNodeIds: [],
+    nodeSnapshots: [nodeSnapshot("cx-2", "b.md")],
     manifestPath: "temp/helper/manifest.yml",
     userPrompt: "x",
     parentActor: { kind: "user", id: "user" },

@@ -12,7 +12,7 @@ import {
   envelopeIsActiveOccupation,
   structuralClaimGate,
 } from "./claim.js";
-import { taskDirectlyReferencesNode, taskReferencedNodeIds } from "./task-node-refs.js";
+import { taskDirectlyReferencesNode } from "./task-node-refs.js";
 import { assertContentMutable, isExplicitArchiveRoot, isUsableNode, parseNodeMode } from "./tree.js";
 import {
   addRegistryTag,
@@ -37,6 +37,16 @@ import {
 } from "./task.js";
 import { isTaskId, makeTaskId } from "./task-model.js";
 import type { AcceptMode } from "./task-model.js";
+import {
+  normalizeTaskNodeSelection,
+  orderedTaskNodeIds,
+  type TaskNodeSelection,
+} from "./task-node-selection.js";
+import {
+  captureTaskNodeSnapshot,
+  type TaskNodeSnapshot,
+} from "./task-node-snapshot.js";
+import { contentEtag } from "./etag.js";
 import {
   roleTempRoot,
   sessionTempRoot,
@@ -99,86 +109,29 @@ export interface DispatchOptions {
    * tent-task/<taskId> lane can be created before the envelope is written.
    */
   taskId?: string;
-  /**
-   * Authoritative transient multi-Node dispatch source (durable Node IDs).
-   * Non-empty; order-preserving dedupe; each id resolved + structurally gated
-   * before any Task/manifest write. Persisted only as Task.contextCard.refs.nodes[].
-   * When omitted, the dispatch primary Node
-   * is used as a one-element list.
-   */
-  nodeIds?: string[];
+  /** Exact writable Node selection; at least one id is required. */
+  workNodeIds: string[];
+  /** Exact shared read-only context selection. */
+  contextNodeIds: string[];
 }
 
-/**
- * Resolve the authoritative ordered Node id list for dispatch.
- * Prefers `nodeIds` when present; otherwise uses the required primary Node.
- * When both are present, the primary must equal the first deduped nodeId.
- * Rejects empty/malformed lists and root/workspace tokens (no fake root Node).
- */
-export function resolveDispatchNodeIds(input: {
-  nodeIds?: string[] | null;
-  primaryNodeId?: string | null;
+/** Resolve and validate the sole Task Node selection used by dispatch. */
+export function resolveDispatchTaskNodeSelection(input: {
+  workNodeIds: unknown;
+  contextNodeIds: unknown;
   tentName: string;
-}): string[] {
+}): TaskNodeSelection {
   const tentName = input.tentName.trim();
-  const primaryNodeId = input.primaryNodeId?.trim() ?? "";
-
-  if (input.nodeIds !== undefined && input.nodeIds !== null) {
-    if (!Array.isArray(input.nodeIds)) {
-      throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
+  const selection = normalizeTaskNodeSelection({
+    workNodeIds: input.workNodeIds,
+    contextNodeIds: input.contextNodeIds,
+  });
+  for (const id of orderedTaskNodeIds(selection)) {
+    if (isForbiddenRootDispatchToken(id, tentName)) {
+      throw new Error("Task Node selection cannot contain ., root, or the Tent name.");
     }
-    if (input.nodeIds.length === 0) {
-      throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
-    }
-    const out: string[] = [];
-    const seen = new Set<string>();
-    for (let i = 0; i < input.nodeIds.length; i++) {
-      const raw = input.nodeIds[i];
-      if (typeof raw !== "string" || !raw.trim()) {
-        throw new Error(
-          `Dispatch nodeIds[${i}] must be a non-empty durable Node ID string.`
-        );
-      }
-      const id = raw.trim();
-      if (isForbiddenRootDispatchToken(id, tentName)) {
-        throw new Error(
-          "Cannot dispatch the whole Tent directly; dispatch specific Nodes " +
-            "(nodeIds cannot include ., root, or the Tent name)."
-        );
-      }
-      if (seen.has(id)) continue;
-      seen.add(id);
-      out.push(id);
-    }
-    if (out.length === 0) {
-      throw new Error("Dispatch nodeIds must be a non-empty string array of durable Node IDs.");
-    }
-    if (primaryNodeId) {
-      if (isForbiddenRootDispatchToken(primaryNodeId, tentName)) {
-        throw new Error(
-          "Cannot dispatch the whole Tent directly; dispatch a specific Node " +
-            "(primary Node cannot be ., root, or the Tent name)."
-        );
-      }
-      if (primaryNodeId !== out[0]) {
-        throw new Error(
-          `Dispatch primary Node '${primaryNodeId}' conflicts with nodeIds[0] '${out[0]}'.`
-        );
-      }
-    }
-    return out;
   }
-
-  if (!primaryNodeId) {
-    throw new Error("Dispatch requires at least one Node.");
-  }
-  if (isForbiddenRootDispatchToken(primaryNodeId, tentName)) {
-    throw new Error(
-      "Cannot dispatch the whole Tent directly; dispatch a specific Node " +
-        "(primary Node cannot be ., root, or the Tent name)."
-    );
-  }
-  return [primaryNodeId];
+  return selection;
 }
 
 function isForbiddenRootDispatchToken(id: string, tentName: string): boolean {
@@ -187,7 +140,7 @@ function isForbiddenRootDispatchToken(id: string, tentName: string): boolean {
 
 /**
  * Dispatch a Task from one or more Nodes. The primary Node is always the first
- * selected Node; `options.nodeIds` carries an ordered multi-Node selection.
+ * selected work Node; work/context arrays carry the canonical Task selection.
  */
 export async function dispatch(
   env: OpsEnv,
@@ -217,11 +170,17 @@ async function dispatchUnlocked(
   if (sessionId && !isSessionId(sessionId)) throw new Error(`Invalid Session id: ${sessionId}.`);
 
   // Resolve and gate every selected Node before writes.
-  const nodeIds = resolveDispatchNodeIds({
-    nodeIds: options.nodeIds,
-    primaryNodeId,
+  const selection = resolveDispatchTaskNodeSelection({
+    workNodeIds: options.workNodeIds,
+    contextNodeIds: options.contextNodeIds,
     tentName: env.tentName,
   });
+  if (primaryNodeId !== selection.workNodeIds[0]) {
+    throw new Error(
+      `Dispatch primary Node '${primaryNodeId}' conflicts with workNodeIds[0] '${selection.workNodeIds[0]}'.`
+    );
+  }
+  const nodeIds = orderedTaskNodeIds(selection);
   const tasks = await loadTaskEnvelopes(env.fs);
   // Cleanup only removes the exact Role/Session operational root created here.
   const createdRoot = roleId ? roleTempRoot(roleId) : sessionTempRoot(sessionId);
@@ -259,13 +218,17 @@ async function dispatchUnlocked(
   const selectedNodes: Node[] = [];
   for (const id of nodeIds) {
     const node = requireNodeById(tent, id);
-    const structural = structuralClaimGate(node);
-    if (!structural.ok) {
-      throw new Error(`Cannot dispatch: ${structural.reason || "Node cannot be claimed"}`);
-    }
-    const claimable = canClaim(node, { tasks });
-    if (!claimable.ok) {
-      throw new Error(`Cannot dispatch: ${claimable.reason || "Node cannot be claimed"}`);
+    if (selection.workNodeIds.includes(id)) {
+      const structural = structuralClaimGate(node);
+      if (!structural.ok) {
+        throw new Error(`Cannot dispatch: ${structural.reason || "Node cannot be claimed"}`);
+      }
+      const claimable = canClaim(node, { tasks });
+      if (!claimable.ok) {
+        throw new Error(`Cannot dispatch: ${claimable.reason || "Node cannot be claimed"}`);
+      }
+    } else if (node.invalid) {
+      throw new Error(`Cannot dispatch invalid context Node ${id}: ${node.invalidReason || "invalid"}.`);
     }
     selectedNodes.push(node);
   }
@@ -277,7 +240,7 @@ async function dispatchUnlocked(
       tentName: env.tentName,
       ...(roleId ? { roleId } : {}),
       ...(sessionId ? { sessionId } : {}),
-      claimNodes: selectedNodes,
+      claimNodes: selectedNodes.filter((node) => selection.workNodeIds.includes(node.id)),
       ...options.workspace,
     };
     const manifest = buildManifest(tent, input);
@@ -294,13 +257,18 @@ async function dispatchUnlocked(
       initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
     }
 
-    // Sole persisted Node-ref source is contextCard.refs.nodes via writeTaskEnvelope.
-    // Pass exact ordered selection only.
-    const taskNodeRefs = selectedNodes.map((node) => ({ id: node.id, path: node.path }));
+    // Persist the exact ordered work/context selection and frozen snapshots.
+    const nodeSnapshots: TaskNodeSnapshot[] = [];
+    for (const node of selectedNodes) {
+      const raw = await env.fs.readFile(nodeNotePath(node.path));
+      nodeSnapshots.push(captureTaskNodeSnapshot(node, contentEtag(raw)));
+    }
     const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
       ...(roleId ? { roleId } : {}),
       ...(sessionId ? { sessionId } : {}),
-      nodeRefs: taskNodeRefs,
+      workNodeIds: selection.workNodeIds,
+      contextNodeIds: selection.contextNodeIds,
+      nodeSnapshots,
       manifestPath,
       userPrompt,
       workspace: options.workspace,
@@ -873,7 +841,7 @@ function hasActiveTaskInSubtree(
   for (const task of tasks) {
     if (!envelopeIsActiveOccupation(task)) continue;
     if (task.contextCard == null) continue;
-    for (const nodeId of taskReferencedNodeIds(task)) {
+    for (const nodeId of task.workNodeIds) {
       if (ids.has(nodeId)) return true;
     }
   }

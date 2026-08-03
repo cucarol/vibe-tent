@@ -206,6 +206,8 @@ test("lifecycle: auto-accept integrates outside mutation.lock and preserves read
   await seedExecutorRole(e);
   const result = await dispatch(e as any, "cx-p1", {
     roleId: "rl-executor",
+    workNodeIds: ["cx-p1"],
+    contextNodeIds: [],
     userPrompt: "auto-accept integrate outside lock",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -248,6 +250,8 @@ test("lifecycle: accept integrate runs outside mutation.lock; failure keeps deli
   await seedExecutorRole(e);
   const result = await dispatch(e as any, "cx-p1", {
     roleId: "rl-executor",
+    workNodeIds: ["cx-p1"],
+    contextNodeIds: [],
     userPrompt: "manual accept outside lock",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -291,6 +295,8 @@ test("lifecycle: successful auto-integrate still accepts atomically after unlock
   await seedExecutorRole(e);
   const result = await dispatch(e as any, "cx-p1", {
     roleId: "rl-executor",
+    workNodeIds: ["cx-p1"],
+    contextNodeIds: [],
     userPrompt: "agent decide",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },

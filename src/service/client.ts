@@ -282,7 +282,7 @@ export class ServiceClient {
       raw: string;
       etag: string;
       frontmatter: Record<string, unknown>;
-      artifactRefs: unknown[];
+      artifactRefs: import("../core/artifact.js").ArtifactRef[];
     }>("docs.readForEdit", { workspaceId, nodeId });
   }
   /**
@@ -711,14 +711,10 @@ export class ServiceClient {
   taskDispatch(
     workspaceId: string,
     args: {
-      /**
-       * Authoritative multi-Node dispatch source (durable Node IDs).
-       * Non-empty; Service dedupes while preserving order and resolves every id
-       * under the workspace MutationBus before Task/manifest writes.
-       * Persisted only as Task.contextCard.refs.nodes[] — not a second claims fact.
-       * This is the only public Node selection input.
-       */
-      nodeIds: string[];
+      /** Exact writable Nodes; each exact Node can have one active Task. */
+      workNodeIds: string[];
+      /** Shared read-only context Nodes; these never occupy a Node. */
+      contextNodeIds: string[];
       prompt: string;
       /**
        * Explicit parent actor (V0.2). Required on every dispatch.
@@ -757,32 +753,14 @@ export class ServiceClient {
     workspaceId: string,
     args: {
       roleId: string;
-      nodeIds: string[];
+      workNodeIds: string[];
+      contextNodeIds: string[];
       prompt: string;
       /** Optional exact current Task used only to inherit persisted responsibility. */
       sourceTaskPath?: string;
     }
   ) {
     return this.call("task.claimDirect", { workspaceId, ...args });
-  }
-  /**
-   * Explicit legacy baseCommit backfill for running/waiting Tasks missing base.
-   * Actor must equal exact persisted parent/reviewer. Same SHA is idempotent.
-   */
-  taskBackfillWorkspaceLaneBase(
-    workspaceId: string,
-    taskPath: string,
-    args: {
-      /** Exact TaskActorRef only — bare strings are rejected by the Service. */
-      actor: { kind: "user" | "role"; id: string };
-      baseCommit: string;
-    }
-  ) {
-    return this.call("task.backfillWorkspaceLaneBase", {
-      workspaceId,
-      taskPath,
-      ...args,
-    });
   }
   taskWait(
     workspaceId: string,
@@ -831,7 +809,7 @@ export class ServiceClient {
       summary: string;
       commits?: string[];
       checks?: unknown[];
-      artifactRefs?: unknown[];
+      artifactRefs?: import("../core/artifact.js").ArtifactRef[];
       decision?: string;
     }
   ) {

@@ -23,7 +23,12 @@ import {
   writeTaskEnvelope,
 } from "../src/core/task.js";
 import { cli, makeTent } from "./helpers.js";
+import { contentEtag } from "../src/core/etag.js";
 // loadTaskEnvelopes used by occupation tests
+
+function nodeSnapshot(id: string, nodePath: string, type = "prompt", body = "") {
+  return { id, path: nodePath, type, tags: [], body, etag: contentEtag(body) };
+}
 
 async function dispatchToRole(env: any, nodeId: string, roleName: string, input: string | Record<string, unknown>) {
   const roleId = `rl-${roleName.replace(/[^a-z0-9]/gi, "").toLowerCase()}`;
@@ -37,6 +42,8 @@ async function dispatchToRole(env: any, nodeId: string, roleName: string, input:
   const { dispatch } = await import("../src/core/ops.js");
   return dispatch(env, nodeId, {
       roleId,
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       ...(typeof input === "string" ? { userPrompt: input } : input),
@@ -133,7 +140,9 @@ test("Node occupation: exact Node exclusive; parent, child, and sibling remain i
   const fsa = new NodeFs(dir);
   const g2Path = await writeTaskEnvelope(fsa, { now: () => "2026-07-28T12:00:00.000Z" }, {
     roleId: "rl-executor",
-    nodeRefs: [{ id: "cx-g2", path: "goal/x" }],
+    workNodeIds: ["cx-g2"],
+    contextNodeIds: [],
+    nodeSnapshots: [nodeSnapshot("cx-g2", "goal/x", "goal")],
     manifestPath: "temp/roles/rl-executor/manifests/tk-activeg2.yml",
     userPrompt: "hold g2",
     id: "tk-activeg2",
@@ -176,7 +185,9 @@ test("active Task occupation projects only its exact Node refs", async () => {
 
   await writeTaskEnvelope(fsa, { now: () => "2026-07-28T12:00:00.000Z" }, {
     roleId: "rl-reviewer",
-    nodeRefs: [{ id: "cx-p1", path: "prompt/x" }],
+    workNodeIds: ["cx-p1"],
+    contextNodeIds: [],
+    nodeSnapshots: [nodeSnapshot("cx-p1", "prompt/x")],
     manifestPath: "temp/roles/rl-reviewer/manifests/tk-boxocc.yml",
     userPrompt: "Node ref",
     id: "tk-boxocc",
@@ -187,7 +198,7 @@ test("active Task occupation projects only its exact Node refs", async () => {
   assert.ok(anyBox);
   assert.equal(anyBox!.roleId, "rl-reviewer");
   assert.equal(anyBox!.sessionId, undefined);
-  assert.ok(anyBox!.contextCard?.refs.nodes.some((n) => n.id === "cx-p1"));
+  assert.ok(anyBox!.contextCard?.workNodeIds.includes("cx-p1"));
   assert.equal(occupiedNodesFromTasks(tent, tasks).map((node) => node.id).join(","), "cx-p1");
 });
 
@@ -292,7 +303,7 @@ test("manifest:认领即得子树结构权,帐根 claim 可写顶层结构", asy
   assert.ok(rootManifest.writable.some((e) => e.path === "goal/"), "帐根 claim 覆盖全帐结构");
 });
 
-test("dispatch:只写 pending envelope + contextCard.refs.nodes；exact Node 占用且 manifest 按 Task 隔离", async () => {
+test("dispatch:只写 pending envelope + frozen Node Context Card；exact Node 占用且 manifest 按 Task 隔离", async () => {
   const dir = await makeTent();
   const env = {
     fs: new NodeFs(dir),
@@ -382,6 +393,8 @@ test("dispatch: corrupt Role registry is quarantined and exact missing roleId fa
   await assert.rejects(
     () => dispatch(env as any, "cx-p1", {
       roleId: "rl-analyst",
+      workNodeIds: ["cx-p1"],
+      contextNodeIds: [],
       userPrompt: "请只处理表达式任务书。",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
@@ -415,7 +428,7 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.equal(tasks[0].roleId, "rl-analyst");
   assert.equal(tasks[0].sessionId, undefined);
   assert.deepEqual(
-    tasks[0].contextCard?.refs.nodes.map((n) => n.id) ?? [],
+    tasks[0].contextCard?.nodeSnapshots.map((n) => n.id) ?? [],
     ["cx-p1"]
   );
   assert.equal(tasks[0].manifest, first.manifestPath);
@@ -441,8 +454,8 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
     new RegExp(`tent task get ${second.taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`)
   );
   assert.match(relay, /Task Context Card/);
-  assert.match(relay, /contextCard\.refs\.nodes/);
-  assert.match(relay, /tent node get <nodeId>/);
+  assert.match(relay, /workNodeIds:/);
+  assert.match(relay, /workNodeIds:/);
   assert.match(
     relay,
     new RegExp(
@@ -469,7 +482,7 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.doesNotMatch(bootstrap, /explicit outcome wire|outcome:\s*delivered\|/i);
   assert.match(bootstrap, /Task envelope:/);
   assert.match(bootstrap, /Manifest:/);
-  assert.match(bootstrap, /contextCard\.refs\.nodes:/);
+  assert.match(bootstrap, /workNodeIds:/);
   assert.match(bootstrap, /parentActor:|reviewer:/);
   assert.match(bootstrap, /acceptMode:/);
   assert.match(bootstrap, /## User Prompt/);
@@ -524,8 +537,7 @@ test("dispatch:拒绝整帐 claim,具体框仍可派活", async () => {
     tentName: "wqb",
   };
   const { dispatch } = await import("../src/core/ops.js");
-  const message =
-    /Cannot dispatch the whole Tent directly; dispatch a specific Node \(primary Node cannot be \., root, or the Tent name\)\./;
+  const message = /Task workNodeIds must contain canonical lowercase cx-\* Node ids/;
   await assert.rejects(() => dispatchToRole(env as any, ".", "architect", "接管全帐"), message);
   await assert.rejects(() => dispatchToRole(env as any, "root", "architect", "接管全帐"), message);
   await assert.rejects(() => dispatchToRole(env as any, "wqb", "architect", "接管全帐"), message);
@@ -602,7 +614,9 @@ test("moveNode: active Task refs freeze the affected Node subtree", async () => 
   const fsa = new NodeFs(dir);
   const movePath = await writeTaskEnvelope(fsa, { now: () => "t" }, {
     roleId: "rl-executor",
-    nodeRefs: [{ id: "cx-g2", path: "goal/x" }],
+    workNodeIds: ["cx-g2"],
+    contextNodeIds: [],
+    nodeSnapshots: [nodeSnapshot("cx-g2", "goal/x", "goal")],
     manifestPath: "temp/roles/rl-executor/manifests/tk-moveg2.yml",
     userPrompt: "hold",
     id: "tk-moveg2",
@@ -657,7 +671,7 @@ test("中断认领:force-release 清理非 accepted delivery（不写 Node owner
   assert.equal(await fsa.exists(delivery.path), false);
 });
 
-test("force-release: migrated no-claims Task (contextCard refs only) ends occupation", async () => {
+test("force-release: canonical Node selection Task ends occupation", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   const clock = { now: () => "2026-07-28T15:00:00.000Z" };
@@ -665,14 +679,16 @@ test("force-release: migrated no-claims Task (contextCard refs only) ends occupa
   await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
   const taskPath = await writeTaskEnvelope(fsa, clock, {
     roleId: "rl-executor",
-    nodeRefs: [{ id: "cx-g2", path: "goal/x" }],
+    workNodeIds: ["cx-g2"],
+    contextNodeIds: [],
+    nodeSnapshots: [nodeSnapshot("cx-g2", "goal/x", "goal")],
     manifestPath: "temp/roles/rl-executor/manifests/tk-fr-card.yml",
     userPrompt: "hold g2 for force-release",
-    id: "tk-fr-card",
+    id: "tk-frcard01",
     parentActor: { kind: "user", id: "user" },
   });
   const raw = await fsa.readFile(taskPath);
-  // New write must not persist claims[]; occupation is contextCard only.
+  // Canonical writes persist the frozen Node selection, never claims[].
   assert.doesNotMatch(raw, /^claims:/m);
   assert.match(raw, /contextCard:/);
   await fsa.writeFile(

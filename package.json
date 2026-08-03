@@ -25,7 +25,7 @@
     "build:desktop": "node scripts/build-desktop.mjs",
     "build:desktop:next": "node scripts/build-desktop.mjs",
     "dev": "node esbuild.config.mjs",
-    "build:core": "tsc -p tsconfig.core.json",
+    "build:core": "node scripts/build-core.mjs",
     "typecheck:renderer-next": "tsc -p tsconfig.renderer-next.json --noEmit",
     "test": "node --import tsx scripts/run-tests.ts full",
     "test:fast": "node --import tsx scripts/run-tests.ts fast",

@@ -18,6 +18,16 @@ import { CLIENT_METHODS, isClientMethod } from "../src/service/types.js";
 
 const OLD = "2026-06-01T12:00:00.000Z";
 
+function taskNodeContext(id: string, nodePath: string) {
+  return {
+    workNodeIds: [id],
+    contextNodeIds: [],
+    nodeSnapshots: [
+      { id, path: nodePath, type: "prompt", tags: [], body: "", etag: "a".repeat(24) },
+    ],
+  };
+}
+
 async function makeWorkspace(name = "retention-rpc"): Promise<string> {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-retention-ws-"));
   const fsa = new NodeFs(workspace);
@@ -63,7 +73,7 @@ async function seedOldTerminal(
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     sessionId: "ss-executor",
-    nodeRefs: [{ id: "cx-seed", path: "inbox" }],
+    ...taskNodeContext("cx-seed", "inbox"),
     manifestPath: "temp/sessions/ss-executor/manifests/m.md",
     userPrompt: "old terminal work",
     id: opts.taskId,
@@ -225,7 +235,7 @@ test("operationalRetention.purge never deletes active task or ready delivery", a
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       sessionId: "ss-executor",
-      nodeRefs: [{ id: "cx-live", path: "inbox" }],
+      ...taskNodeContext("cx-live", "inbox"),
       manifestPath: "temp/sessions/ss-executor/manifests/m.md",
       userPrompt: "active",
       id: "tk-actlive",
@@ -238,7 +248,7 @@ test("operationalRetention.purge never deletes active task or ready delivery", a
     await fsa.writeFile(activePath, raw);
 
     const ready = await createDelivery(fsa, clock, {
-      taskId: "tk-orphan-ready",
+      taskId: "tk-orphanready",
       sourceNodeId: "cx-live",
       deliveriesDir: "temp/sessions/ss-executor/deliveries",
       summary: "ready review",

@@ -192,7 +192,8 @@ test("node.collaboration: running Task projects raw state + assignee; no session
     const note = await createNote(svc, workspaceId, { name: "run-item" });
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [note.nodeId],
+      workNodeIds: [note.nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "do running work",
       parentActor: { kind: "user", id: "user" },
@@ -230,7 +231,8 @@ test("node.collaboration: waiting Task projects raw waiting state", async () => 
     const note = await createNote(svc, workspaceId, { name: "wait-item" });
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [note.nodeId],
+      workNodeIds: [note.nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "need input",
       parentActor: { kind: "user", id: "user" },
@@ -256,7 +258,8 @@ test("node.collaboration: delivered Task attaches Delivery summary via activeDel
     const note = await createNote(svc, workspaceId, { name: "deliver-item" });
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [note.nodeId],
+      workNodeIds: [note.nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "ship for review",
       parentActor: { kind: "user", id: "user" },
@@ -297,7 +300,8 @@ test("node.collaboration: accepted Task clears occupation (empty activeTasks)", 
     const note = await createNote(svc, workspaceId, { name: "accept-item" });
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [note.nodeId],
+      workNodeIds: [note.nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "finish",
       parentActor: { kind: "user", id: "user" },
@@ -324,7 +328,8 @@ test("node.collaborations: order preserved; empty ids → empty items", async ()
     const c = await createNote(svc, workspaceId, { name: "item-c" });
 
     await client.taskDispatch(workspaceId, {
-      nodeIds: [a.nodeId],
+      workNodeIds: [a.nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "work a",
       parentActor: { kind: "user", id: "user" },
@@ -435,14 +440,16 @@ test("node.collaboration: parent and child Nodes are independently occupied", as
     });
 
     await client.taskDispatch(workspaceId, {
-      nodeIds: [parent.nodeId],
+      workNodeIds: [parent.nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "occupy parent",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     });
     await client.taskDispatch(workspaceId, {
-      nodeIds: [child.nodeId],
+      workNodeIds: [child.nodeId],
+      contextNodeIds: [],
       roleId: "rl-planner",
       prompt: "occupy child",
       parentActor: { kind: "user", id: "user" },
@@ -478,7 +485,8 @@ test("task.claim rejects Session selectors and derives exact transport binding",
     const note = await createNote(svc, workspaceId, { name: "session-item" });
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [note.nodeId],
+      workNodeIds: [note.nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "bind session",
       parentActor: { kind: "user", id: "user" },
@@ -524,7 +532,8 @@ test("node.collaboration: exact Node occupation and multi-Node projection", asyn
     const third = await createNote(svc, workspaceId, { name: "third-node" });
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [first.nodeId],
+      workNodeIds: [first.nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "occupy one exact Node",
       parentActor: { kind: "user", id: "user" },
@@ -533,7 +542,8 @@ test("node.collaboration: exact Node occupation and multi-Node projection", asyn
 
     const blocked = await client.tryCall("task.dispatch", {
       workspaceId,
-      nodeIds: [first.nodeId],
+      workNodeIds: [first.nodeId],
+      contextNodeIds: [],
       roleId: "rl-planner",
       prompt: "second exact Node task",
       parentActor: { kind: "user", id: "user" },
@@ -553,7 +563,8 @@ test("node.collaboration: exact Node occupation and multi-Node projection", asyn
     assert.equal(occupied.activeTask!.task.id, occupiedTask.task.id);
 
     const multi = (await client.taskDispatch(workspaceId, {
-      nodeIds: [second.nodeId, third.nodeId],
+      workNodeIds: [second.nodeId, third.nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "reference two Nodes",
       parentActor: { kind: "user", id: "user" },
@@ -581,7 +592,8 @@ test("node.collaborations: duplicate ids preserve order and project same item", 
     const workspaceId = await mountWorkspace(svc, ws);
     const note = await createNote(svc, workspaceId, { name: "dup-item" });
     await client.taskDispatch(workspaceId, {
-      nodeIds: [note.nodeId],
+      workNodeIds: [note.nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "dup",
       parentActor: { kind: "user", id: "user" },
@@ -618,7 +630,8 @@ test("node.collaboration: descendant claim does not paint parent", async () => {
     });
 
     await client.taskDispatch(workspaceId, {
-      nodeIds: [child.nodeId],
+      workNodeIds: [child.nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "occupy child only",
       parentActor: { kind: "user", id: "user" },
@@ -643,7 +656,8 @@ test("node.collaboration: terminal rejected/interrupted/failed clear occupation"
     // interrupted
     const n1 = await createNote(svc, workspaceId, { name: "term-int" });
     const d1 = (await client.taskDispatch(workspaceId, {
-      nodeIds: [n1.nodeId],
+      workNodeIds: [n1.nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "interrupt me",
       parentActor: { kind: "user", id: "user" },
@@ -660,7 +674,8 @@ test("node.collaboration: terminal rejected/interrupted/failed clear occupation"
     // rejected (terminal, resume:false)
     const n2 = await createNote(svc, workspaceId, { name: "term-rej" });
     const d2 = (await client.taskDispatch(workspaceId, {
-      nodeIds: [n2.nodeId],
+      workNodeIds: [n2.nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "reject me",
       parentActor: { kind: "user", id: "user" },
@@ -682,7 +697,8 @@ test("node.collaboration: terminal rejected/interrupted/failed clear occupation"
     // failed via envelope patch (service has no public task.fail convenience in all paths)
     const n3 = await createNote(svc, workspaceId, { name: "term-fail" });
     const d3 = (await client.taskDispatch(workspaceId, {
-      nodeIds: [n3.nodeId],
+      workNodeIds: [n3.nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "fail me",
       parentActor: { kind: "user", id: "user" },
@@ -707,7 +723,8 @@ test("node.collaboration: stale sessionId/activeDeliveryId keep task, null summa
     const note = await createNote(svc, workspaceId, { name: "stale-item" });
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [note.nodeId],
+      workNodeIds: [note.nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "stale pointers",
       parentActor: { kind: "user", id: "user" },
@@ -739,7 +756,8 @@ test("node.collaboration: Connection dispatch projects exact Session binding", a
     const note = await createNote(svc, workspaceId, { name: "connection-item" });
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [note.nodeId],
+      workNodeIds: [note.nodeId],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "Connection work",
       parentActor: { kind: "user", id: "user" },
@@ -768,7 +786,8 @@ test("node.collaboration: idle / no sessionId incurs no session probe", async ()
     const idle = await createNote(svc, workspaceId, { name: "idle-probe" });
     const active = await createNote(svc, workspaceId, { name: "active-no-session" });
     await client.taskDispatch(workspaceId, {
-      nodeIds: [active.nodeId],
+      workNodeIds: [active.nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "no session bind",
       parentActor: { kind: "user", id: "user" },
@@ -830,14 +849,16 @@ test("node.collaborations: duplicate Node requests probe each exact Task Session
     const a = await createNote(svc, workspaceId, { name: "share-a" });
     const b = await createNote(svc, workspaceId, { name: "share-b" });
     const dA = (await client.taskDispatch(workspaceId, {
-      nodeIds: [a.nodeId],
+      workNodeIds: [a.nodeId],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "a",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
     const dB = (await client.taskDispatch(workspaceId, {
-      nodeIds: [b.nodeId],
+      workNodeIds: [b.nodeId],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "b",
       parentActor: { kind: "user", id: "user" },

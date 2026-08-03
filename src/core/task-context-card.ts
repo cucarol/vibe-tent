@@ -1,4 +1,4 @@
-// Task Context Card v1 + managed prompt assembly + exact-Session context generation.
+// Task Context Card v2 + managed prompt assembly + exact-Session context generation.
 // Frozen by Node cx-5q6za6. No new lifecycle entity — projected via Task envelope /
 // Session registry / manifest only.
 //
@@ -9,7 +9,17 @@
 // workspaceLane baseCommit/targetBranch/integrationAuthority are Task truth;
 // Context Card executionLane is a derived dynamic projection only.
 
-import { createHash } from "node:crypto";
+import { canonicalJson, sha256Hex } from "./canonical-digest.js";
+import {
+  buildTaskContextCardV2,
+  computeTaskContextCardDeltaDigest,
+  formatTaskContextCardV2Prompt,
+  normalizeTaskContextCard,
+  serializeTaskContextCard,
+  TASK_CONTEXT_CARD_SCHEMA_VERSION,
+  type BuildTaskContextCardInput as BuildTaskContextCardV2Input,
+  type TaskContextCard,
+} from "./task-context-card-schema.js";
 import {
   parseTaskActorRef,
   resolveParentReviewerPair,
@@ -17,13 +27,20 @@ import {
   type TaskActorRef,
 } from "./task-model.js";
 import type { TaskEnvelope } from "./task.js";
-import { isNodeId } from "./id.js";
+
+export { canonicalJson, sha256Hex } from "./canonical-digest.js";
+export {
+  buildTaskContextCardV2,
+  computeTaskContextCardDeltaDigest,
+  formatTaskContextCardV2Prompt,
+  normalizeTaskContextCard,
+  serializeTaskContextCard,
+  TASK_CONTEXT_CARD_SCHEMA_VERSION,
+};
+export type { TaskContextCard } from "./task-context-card-schema.js";
 
 /** Re-export canonical actor type — single authoritative wire (task-model). */
 export type { TaskActorRef, TaskActorKind } from "./task-model.js";
-
-/** Context Card schema version (prompt + wire). */
-export const TASK_CONTEXT_CARD_SCHEMA_VERSION = "v1" as const;
 
 /** contextGeneration prefix: cg-v1-<sha256 hex>. */
 export const CONTEXT_GENERATION_VERSION = "v1" as const;
@@ -32,52 +49,13 @@ export const CONTEXT_GENERATION_VERSION = "v1" as const;
 export const MANAGED_BOOTSTRAP_INVARIANT =
   "Tent managed bootstrap invariant v1: Core is authoritative. " +
   "Fetch by durable id before answering. Never invent missing Context Card fields, " +
-  "Task authority, refs, or chat-memory continuity. Final report goes through Delivery only.";
+  "Task authority, Node context, or chat-memory continuity. Final report goes through Delivery only.";
 
 /**
  * Git mutator for ordinary Task lanes. Always Local Service —
  * ordinary executors never hold integration authority.
  */
 export const INTEGRATION_MUTATOR_SERVICE = "service" as const;
-
-/** Durable pointer only — never a long body copy. */
-export type TaskContextCardRef = {
-  id: string;
-  /** Optional human path / locator. */
-  path?: string;
-  /** Optional revision (git sha, etag, …). */
-  revision?: string;
-};
-
-export type TaskContextCardRefs = {
-  nodes: TaskContextCardRef[];
-  tasks: TaskContextCardRef[];
-  deliveries: TaskContextCardRef[];
-  git: TaskContextCardRef[];
-};
-
-export type TaskContextCardScope = {
-  include: string[];
-  exclude: string[];
-};
-
-/**
- * Authoritative Task Context Card v1.
- * Carried on Task envelope frontmatter / projected into managed prompts.
- */
-export type TaskContextCardV1 = {
-  schemaVersion: typeof TASK_CONTEXT_CARD_SCHEMA_VERSION;
-  /** Optional structured refinement of the immutable Task prompt. */
-  objective: string;
-  frozenDecisions: string[];
-  scope: TaskContextCardScope;
-  acceptance: string[];
-  refs: TaskContextCardRefs;
-  /** Optional audit of the stable Session context actually used for execution. */
-  contextGeneration?: string;
-  /** Canonical digest of current card context + TaskInput/review delta. */
-  taskDeltaDigest: string;
-};
 
 /** Inputs that produce contextGeneration (stable prefix / compatibility). */
 export type ContextGenerationInputs = {
@@ -125,17 +103,16 @@ export const CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS = [
 
 /** Dynamic delta inputs (per Task / turn). */
 export type TaskDeltaInputs = {
-  card: Omit<TaskContextCardV1, "taskDeltaDigest">;
+  card: TaskContextCard;
+  /** Immutable prompt that created the card. */
+  userPrompt: string;
   /** Formatted TaskInput / review-feedback blocks, if any. */
   taskInputDelta?: string;
   /** Optional Role Checkpoint tail. */
   checkpoint?: string;
-  /** Near-field user prompt excerpt (already on envelope). */
-  userPrompt?: string;
 };
 
 export type TaskContextCardErrorCode =
-  | "UNRESOLVED_REF"
   | "INVALID_ACTOR"
   | "INVALID_GENERATION"
   | "INVALID_CARD";
@@ -158,28 +135,6 @@ export class TaskContextCardError extends Error {
 // ---------------------------------------------------------------------------
 // Canonical digests
 // ---------------------------------------------------------------------------
-
-/** Deterministic JSON for hashing (sorted object keys, stable arrays). */
-export function canonicalJson(value: unknown): string {
-  return JSON.stringify(sortForCanonical(value));
-}
-
-function sortForCanonical(value: unknown): unknown {
-  if (value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map(sortForCanonical);
-  const obj = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(obj).sort((a, b) => a.localeCompare(b))) {
-    const v = obj[key];
-    if (v === undefined) continue;
-    out[key] = sortForCanonical(v);
-  }
-  return out;
-}
-
-export function sha256Hex(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
-}
 
 /** Format `cg-v1-<sha256>`. */
 export function formatContextGeneration(stableCanonicalBytes: string): string {
@@ -334,211 +289,75 @@ export function computeContextGenerationFromStableFacts(input: {
  * Excludes contextGeneration itself to avoid circular self-hash.
  */
 export function computeTaskDeltaDigest(inputs: TaskDeltaInputs): string {
-  const { card, taskInputDelta, checkpoint, userPrompt } = inputs;
-  const payload = {
-    v: TASK_CONTEXT_CARD_SCHEMA_VERSION,
-    objective: card.objective,
-    frozenDecisions: card.frozenDecisions,
-    scope: card.scope,
-    acceptance: card.acceptance,
-    refs: card.refs,
-    taskInputDelta: taskInputDelta?.trim() || "",
-    checkpoint: checkpoint?.trim() || "",
-    userPrompt: userPrompt?.trim() || "",
-  };
-  return sha256Hex(canonicalJson(payload));
+  return computeTaskContextCardDeltaDigest({
+    nodeContext: {
+      workNodeIds: inputs.card.workNodeIds,
+      contextNodeIds: inputs.card.contextNodeIds,
+      nodeSnapshots: inputs.card.nodeSnapshots,
+    },
+    userPrompt: inputs.userPrompt,
+    taskInputDelta: inputs.taskInputDelta,
+    checkpoint: inputs.checkpoint,
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Parse / validate / project
 // ---------------------------------------------------------------------------
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
+export type BuildTaskContextCardInput = BuildTaskContextCardV2Input;
 
-function asStringList(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((item): item is string => typeof item === "string")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-function parseRefList(value: unknown, bucket: string): TaskContextCardRef[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) {
+/** Build the sole v2 Context Card wire from frozen Node snapshots. */
+export function buildTaskContextCard(input: BuildTaskContextCardInput): TaskContextCard {
+  const retired = [
+    "objective",
+    "frozenDecisions",
+    "scope",
+    "acceptance",
+    "refs",
+    "taskDeltaDigest",
+  ] as const;
+  const record = input as unknown as Record<string, unknown>;
+  const retiredField = retired.find((field) => field in record);
+  if (retiredField) {
     throw new TaskContextCardError(
       "INVALID_CARD",
-      `Context Card refs.${bucket} must be an array of durable pointers.`,
-      { bucket, value }
+      `Task Context Card field ${retiredField} is retired; use frozen Node snapshots.`,
+      { retiredField }
     );
   }
-  const out: TaskContextCardRef[] = [];
-  for (let i = 0; i < value.length; i++) {
-    const item = value[i];
-    if (typeof item === "string") {
-      if (bucket === "nodes") {
-        throw new TaskContextCardError(
-          "UNRESOLVED_REF",
-          `Context Card refs.nodes[${i}] must be a durable pointer object with id.`,
-          { bucket, index: i }
-        );
-      }
-      const id = item.trim();
-      if (!id) {
-        throw new TaskContextCardError(
-          "UNRESOLVED_REF",
-          `Context Card refs.${bucket}[${i}] id is empty.`,
-          { bucket, index: i }
-        );
-      }
-      if (bucket === "nodes" && !isNodeId(id)) {
-        throw new TaskContextCardError(
-          "UNRESOLVED_REF",
-          `Context Card refs.nodes[${i}] must use a canonical cx-* Node id.`,
-          { bucket, index: i, id }
-        );
-      }
-      out.push({ id });
-      continue;
-    }
-    if (!item || typeof item !== "object" || Array.isArray(item)) {
-      throw new TaskContextCardError(
-        "UNRESOLVED_REF",
-        `Context Card refs.${bucket}[${i}] is not a durable pointer.`,
-        { bucket, index: i, value: item }
-      );
-    }
-    const raw = item as Record<string, unknown>;
-    const id = typeof raw.id === "string" ? raw.id.trim() : "";
-    if (!id) {
-      throw new TaskContextCardError(
-        "UNRESOLVED_REF",
-        `Context Card refs.${bucket}[${i}] missing id.`,
-        { bucket, index: i }
-      );
-    }
-    if (bucket === "nodes" && !isNodeId(id)) {
-      throw new TaskContextCardError(
-        "UNRESOLVED_REF",
-        `Context Card refs.nodes[${i}] must use a canonical cx-* Node id.`,
-        { bucket, index: i, id }
-      );
-    }
-    const ref: TaskContextCardRef = { id };
-    if (typeof raw.path === "string" && raw.path.trim()) ref.path = raw.path.trim();
-    if (typeof raw.revision === "string" && raw.revision.trim()) {
-      ref.revision = raw.revision.trim();
-    }
-    out.push(ref);
-  }
-  return out;
-}
-
-export type BuildTaskContextCardInput = {
-  objective?: string;
-  frozenDecisions?: readonly string[];
-  scope?: { include?: readonly string[]; exclude?: readonly string[] };
-  acceptance?: readonly string[];
-  refs?: Partial<TaskContextCardRefs>;
-  /** Optional execution provenance; absent before the first managed start. */
-  contextGeneration?: string;
-  /** Optional precomputed delta digest; recomputed when omitted. */
-  taskDeltaDigest?: string;
-  taskInputDelta?: string;
-  checkpoint?: string;
-  userPrompt?: string;
-};
-
-/**
- * Build a complete Context Card v1. The immutable Task body owns the raw prompt;
- * objective and acceptance are optional structured refinements and are never
- * synthesized from chat memory.
- */
-export function buildTaskContextCard(input: BuildTaskContextCardInput): TaskContextCardV1 {
-  const objective = input.objective?.trim() || "";
-  const acceptance = asStringList([...(input.acceptance ?? [])]);
-  const contextGeneration = input.contextGeneration?.trim() || undefined;
-  if (contextGeneration && !isContextGenerationId(contextGeneration)) {
+  if (input.contextGeneration && !isContextGenerationId(input.contextGeneration)) {
     throw new TaskContextCardError(
       "INVALID_GENERATION",
       `contextGeneration must match cg-v1-<sha256>; got ${String(input.contextGeneration)}`
     );
   }
-  const cardBody: Omit<TaskContextCardV1, "taskDeltaDigest"> = {
-    schemaVersion: TASK_CONTEXT_CARD_SCHEMA_VERSION,
-    objective,
-    frozenDecisions: asStringList([...(input.frozenDecisions ?? [])]),
-    scope: {
-      include: asStringList([...(input.scope?.include ?? [])]),
-      exclude: asStringList([...(input.scope?.exclude ?? [])]),
-    },
-    acceptance,
-    refs: {
-      nodes: parseRefList(input.refs?.nodes ?? [], "nodes"),
-      tasks: parseRefList(input.refs?.tasks ?? [], "tasks"),
-      deliveries: parseRefList(input.refs?.deliveries ?? [], "deliveries"),
-      git: parseRefList(input.refs?.git ?? [], "git"),
-    },
-  };
-
-  const taskDeltaDigest =
-    input.taskDeltaDigest?.trim() ||
-    computeTaskDeltaDigest({
-      card: cardBody,
-      taskInputDelta: input.taskInputDelta,
-      checkpoint: input.checkpoint,
-      userPrompt: input.userPrompt,
-    });
-
-  return {
-    ...cardBody,
-    ...(contextGeneration ? { contextGeneration } : {}),
-    taskDeltaDigest,
-  };
+  try {
+    return buildTaskContextCardV2(input);
+  } catch (error) {
+    if (error instanceof TaskContextCardError) throw error;
+    throw new TaskContextCardError(
+      "INVALID_CARD",
+      error instanceof Error ? error.message : "Invalid Task Context Card.",
+      { cause: error }
+    );
+  }
 }
 
 /**
  * Parse a Context Card from Task envelope frontmatter / projection bag.
  * Fail-loud when required fields are missing or malformed.
  */
-export function parseTaskContextCard(data: unknown): TaskContextCardV1 {
-  if (!data || typeof data !== "object" || Array.isArray(data)) {
+export function parseTaskContextCard(data: unknown): TaskContextCard {
+  try {
+    return normalizeTaskContextCard(data);
+  } catch (error) {
     throw new TaskContextCardError(
       "INVALID_CARD",
-      "Context Card payload must be a plain object."
+      error instanceof Error ? error.message : "Invalid Task Context Card.",
+      { cause: error }
     );
   }
-  const raw = data as Record<string, unknown>;
-  const scopeRaw =
-    raw.scope && typeof raw.scope === "object" && !Array.isArray(raw.scope)
-      ? (raw.scope as Record<string, unknown>)
-      : {};
-  const refsRaw =
-    raw.refs && typeof raw.refs === "object" && !Array.isArray(raw.refs)
-      ? (raw.refs as Record<string, unknown>)
-      : {};
-
-  return buildTaskContextCard({
-    objective: typeof raw.objective === "string" ? raw.objective : "",
-    frozenDecisions: asStringList(raw.frozenDecisions),
-    scope: {
-      include: asStringList(scopeRaw.include ?? raw.scopeInclude),
-      exclude: asStringList(scopeRaw.exclude ?? raw.scopeExclude),
-    },
-    acceptance: asStringList(raw.acceptance),
-    refs: {
-      nodes: parseRefList(refsRaw.nodes, "nodes"),
-      tasks: parseRefList(refsRaw.tasks, "tasks"),
-      deliveries: parseRefList(refsRaw.deliveries, "deliveries"),
-      git: parseRefList(refsRaw.git, "git"),
-    },
-    contextGeneration:
-      typeof raw.contextGeneration === "string" ? raw.contextGeneration : undefined,
-    taskDeltaDigest:
-      typeof raw.taskDeltaDigest === "string" ? raw.taskDeltaDigest : undefined,
-  });
 }
 
 /**
@@ -548,7 +367,7 @@ export function parseTaskContextCard(data: unknown): TaskContextCardV1 {
  */
 export function loadTaskContextCardFromFrontmatter(
   data: Record<string, unknown>
-): TaskContextCardV1 | null {
+): TaskContextCard | null {
   if (data.contextCard !== undefined && data.contextCard !== null) {
     return parseTaskContextCard(data.contextCard);
   }
@@ -557,53 +376,9 @@ export function loadTaskContextCardFromFrontmatter(
 
 /** Serialize card for Task envelope frontmatter (single nested object). */
 export function serializeTaskContextCardForFrontmatter(
-  card: TaskContextCardV1
+  card: TaskContextCard
 ): Record<string, unknown> {
-  return {
-    schemaVersion: card.schemaVersion,
-    objective: card.objective,
-    frozenDecisions: [...card.frozenDecisions],
-    scope: {
-      include: [...card.scope.include],
-      exclude: [...card.scope.exclude],
-    },
-    acceptance: [...card.acceptance],
-    refs: {
-      nodes: card.refs.nodes.map((r) => ({ ...r })),
-      tasks: card.refs.tasks.map((r) => ({ ...r })),
-      deliveries: card.refs.deliveries.map((r) => ({ ...r })),
-      git: card.refs.git.map((r) => ({ ...r })),
-    },
-    ...(card.contextGeneration ? { contextGeneration: card.contextGeneration } : {}),
-    taskDeltaDigest: card.taskDeltaDigest,
-  };
-}
-
-/**
- * Validate declared durable refs against a resolver.
- * Unresolved declared refs fail loud — never drop silently.
- */
-export function assertRefsResolved(
-  card: TaskContextCardV1,
-  resolve: (kind: keyof TaskContextCardRefs, ref: TaskContextCardRef) => boolean
-): void {
-  const buckets: (keyof TaskContextCardRefs)[] = [
-    "nodes",
-    "tasks",
-    "deliveries",
-    "git",
-  ];
-  for (const bucket of buckets) {
-    for (const ref of card.refs[bucket]) {
-      if (!resolve(bucket, ref)) {
-        throw new TaskContextCardError(
-          "UNRESOLVED_REF",
-          `Context Card refs.${bucket} id=${ref.id} could not be resolved (fail-loud to parent).`,
-          { bucket, ref }
-        );
-      }
-    }
-  }
+  return serializeTaskContextCard(card);
 }
 
 // ---------------------------------------------------------------------------
@@ -629,8 +404,8 @@ export type ManagedPromptAssemblyInput = {
    * Supplied by tk-3s598jtn compose; optional here.
    */
   tentTaskSection?: string;
-  /** Authoritative Context Card v1. */
-  contextCard: TaskContextCardV1;
+  /** Authoritative Context Card v2. */
+  contextCard: TaskContextCard;
   /** Live Session generation used to assemble this prompt. */
   contextGeneration: string;
   /** Task envelope path / id pointers for the dynamic section. */
@@ -662,54 +437,9 @@ export type ManagedPromptAssembly = {
   dynamicDelta: string;
 };
 
-/** Format Context Card as a stable, cache-friendly markdown block. */
-export function formatTaskContextCardPrompt(card: TaskContextCardV1): string {
-  const lines: string[] = [
-    "Tent Task Context Card v1",
-    `schemaVersion: ${card.schemaVersion}`,
-    `taskDeltaDigest: ${card.taskDeltaDigest}`,
-  ];
-  if (card.contextGeneration) {
-    lines.splice(2, 0, `contextGeneration: ${card.contextGeneration}`);
-  }
-  if (card.objective) lines.push(`objective: ${card.objective}`);
-  if (card.frozenDecisions.length) {
-    lines.push("frozenDecisions:");
-    for (const d of card.frozenDecisions) lines.push(`  - ${d}`);
-  } else {
-    lines.push("frozenDecisions: []");
-  }
-  lines.push("scope.include:");
-  if (card.scope.include.length === 0) lines.push("  (none)");
-  else for (const s of card.scope.include) lines.push(`  - ${s}`);
-  lines.push("scope.exclude:");
-  if (card.scope.exclude.length === 0) lines.push("  (none)");
-  else for (const s of card.scope.exclude) lines.push(`  - ${s}`);
-  if (card.acceptance.length) {
-    lines.push("acceptance:");
-    for (const a of card.acceptance) lines.push(`  - ${a}`);
-  }
-  const fmtRefs = (label: string, refs: TaskContextCardRef[]) => {
-    lines.push(`refs.${label}:`);
-    if (refs.length === 0) {
-      lines.push("  (none)");
-      return;
-    }
-    for (const r of refs) {
-      const bits = [r.id];
-      if (r.path) bits.push(`path=${r.path}`);
-      if (r.revision) bits.push(`rev=${r.revision}`);
-      lines.push(`  - ${bits.join(" ")}`);
-    }
-  };
-  fmtRefs("nodes", card.refs.nodes);
-  fmtRefs("tasks", card.refs.tasks);
-  fmtRefs("deliveries", card.refs.deliveries);
-  fmtRefs("git", card.refs.git);
-  lines.push(
-    "Core is authoritative for this card. Missing fields or unresolved refs must fail loud to parent — never invent from chat memory."
-  );
-  return lines.join("\n");
+/** Format the v2 Node snapshot card as a stable, cache-friendly markdown block. */
+export function formatTaskContextCardPrompt(card: TaskContextCard): string {
+  return formatTaskContextCardV2Prompt(card);
 }
 
 function formatStableProjectContext(input: ManagedPromptAssemblyInput): string {
@@ -764,19 +494,8 @@ export function assembleManagedPrompt(
       `contextGeneration must match cg-v1-<sha256>; got ${String(input.contextGeneration)}`
     );
   }
-  // Re-validate card (fail loud).
-  const card = buildTaskContextCard({
-    objective: input.contextCard.objective,
-    frozenDecisions: input.contextCard.frozenDecisions,
-    scope: input.contextCard.scope,
-    acceptance: input.contextCard.acceptance,
-    refs: input.contextCard.refs,
-    contextGeneration: input.contextCard.contextGeneration,
-    taskDeltaDigest: input.contextCard.taskDeltaDigest,
-    taskInputDelta: input.taskInputDelta,
-    checkpoint: input.checkpoint,
-    userPrompt: input.userPrompt,
-  });
+  // Re-validate the frozen Node snapshot card without rebuilding its digest.
+  const card = parseTaskContextCard(input.contextCard);
 
   const includeStablePrefix = input.includeStablePrefix !== false;
   const dynamicDelta = formatDynamicDelta({ ...input, contextCard: card });

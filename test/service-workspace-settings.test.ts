@@ -213,7 +213,8 @@ test("task.dispatch: omitted acceptMode snapshots workspace default; explicit ov
 
     // Default (no settings file) → review
     const d1 = (await client.taskDispatch(workspaceId, {
-      nodeIds: [box1],
+      workNodeIds: [box1],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "first task uses default review",
       parentActor: { kind: "user", id: "user" },
@@ -227,7 +228,8 @@ test("task.dispatch: omitted acceptMode snapshots workspace default; explicit ov
     });
 
     const d2 = (await client.taskDispatch(workspaceId, {
-      nodeIds: [box2],
+      workNodeIds: [box2],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "second task snapshots auto-accept",
       parentActor: { kind: "user", id: "user" },
@@ -238,7 +240,8 @@ test("task.dispatch: omitted acceptMode snapshots workspace default; explicit ov
 
     // Explicit override still wins over workspace default.
     const d3 = (await client.taskDispatch(workspaceId, {
-      nodeIds: [box3],
+      workNodeIds: [box3],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "third task explicit agent-decide",
       parentActor: { kind: "user", id: "user" },
@@ -264,7 +267,8 @@ test("task.dispatch: omitted acceptMode snapshots workspace default; explicit ov
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [await createNode(`work-item-${value}-reject`)],
+        workNodeIds: [await createNode(`work-item-${value}-reject`)],
+        contextNodeIds: [],
         roleId: "rl-executor",
         prompt: "must reject retired accept mode",
         acceptMode: value,
@@ -276,7 +280,8 @@ test("task.dispatch: omitted acceptMode snapshots workspace default; explicit ov
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [await createNode("work-item-retired-field")],
+      workNodeIds: [await createNode("work-item-retired-field")],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "must reject retired field",
       deliveryPolicy: "review",
@@ -292,7 +297,8 @@ test("task envelope persists canonical acceptMode and rejects retired disk value
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const d = (await client.taskDispatch(workspaceId, {
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "new wire writes review",
       parentActor: { kind: "user", id: "user" },

@@ -125,7 +125,7 @@ test("task.askUser parks running task; second ask rejected; reply resumes + pers
     const nodeId = created.nodeId;
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "Need a product decision",
       parentActor: { kind: "user", id: "user" },
@@ -223,7 +223,7 @@ test("userAsk.deny resumes task; interrupt cancels pending ask", async () => {
     }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "Ask then deny",
       parentActor: { kind: "user", id: "user" },
@@ -291,7 +291,7 @@ test("managed ACP: UserAsk reply continues same session with User Answer prompt 
     }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ua",
       prompt: "Managed ask flow",
       parentActor: { kind: "user", id: "user" },
@@ -416,7 +416,7 @@ test("two workspaces sharing relative taskPath keep independent UserAsk pending"
 
     async function dispatchRunningTask(workspaceId: string, nodeId: string) {
       const dispatched = (await client.taskDispatch(workspaceId, {
-        nodeIds: [nodeId], connectionId: "fake-default",
+        workNodeIds: [nodeId], contextNodeIds: [], connectionId: "fake-default",
         prompt: "Canonical cross-workspace UserAsk isolation fixture",
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" }, acceptMode: "review-required",
@@ -472,7 +472,7 @@ test("two workspaces sharing relative taskPath keep independent UserAsk pending"
   });
 });
 
-test("task.askUser rejects non-running task", async () => {
+test("task.askUser rejects a terminal task", async () => {
   const ws = await makeWorkspace();
   await withService([], async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
@@ -483,12 +483,13 @@ test("task.askUser rejects non-running task", async () => {
       type: "prompt",
     }));
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "not claimed",
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
     })) as { taskPath: string };
+    await client.taskInterrupt(workspaceId, dispatched.taskPath);
 
     const res = await rpcCall(
       svc.url,

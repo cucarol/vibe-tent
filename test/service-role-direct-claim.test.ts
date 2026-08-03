@@ -124,7 +124,8 @@ test("Role direct claim creates one running Task with ordered Nodes and root use
     const claimed = await plannerSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
       roleId: "rl-planner",
-      nodeIds: [first, second, first],
+      workNodeIds: [first, second],
+      contextNodeIds: [],
       prompt: "own both Nodes",
     });
     assert.ok(!claimed.error, JSON.stringify(claimed.error));
@@ -137,12 +138,16 @@ test("Role direct claim creates one running Task with ordered Nodes and root use
     assert.equal(taskAsSub(task), false);
     assert.deepEqual(task.parentActor, { kind: "user", id: "user" });
     assert.deepEqual(task.reviewer, { kind: "user", id: "user" });
+    assert.deepEqual(task.workNodeIds, [first, second]);
+    assert.deepEqual(task.contextNodeIds, []);
+    assert.deepEqual(task.contextCard.nodeSnapshots.map((snapshot) => snapshot.id), [first, second]);
     assert.deepEqual(taskReferencedNodeIds(task), [first, second]);
 
     const forbidden = await plannerSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
       roleId: "rl-planner",
-      nodeIds: [second],
+      workNodeIds: [second],
+      contextNodeIds: [],
       prompt: "bad authority",
       parentActor: { kind: "role", id: "rl-planner" },
     });
@@ -163,7 +168,8 @@ test("Role direct claim inherits persisted parent/reviewer while real self-subdi
 
     const sourceDispatch = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [parentNode],
+      workNodeIds: [parentNode],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "parent responsibility",
       parentActor: { kind: "role", id: "rl-orchestrator" },
@@ -181,7 +187,8 @@ test("Role direct claim inherits persisted parent/reviewer while real self-subdi
     const direct = await executorSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
       roleId: "rl-executor",
-      nodeIds: [ownNode],
+      workNodeIds: [ownNode],
+      contextNodeIds: [],
       prompt: "executor owns this attempt",
       sourceTaskPath: sourcePath,
     });
@@ -197,7 +204,8 @@ test("Role direct claim inherits persisted parent/reviewer while real self-subdi
     const viaSession = await executorSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
       roleId: "rl-executor",
-      nodeIds: [sessionNode],
+      workNodeIds: [sessionNode],
+      contextNodeIds: [],
       prompt: "inherit via exact Session binding",
     });
     assert.ok(!viaSession.error, JSON.stringify(viaSession.error));
@@ -210,7 +218,8 @@ test("Role direct claim inherits persisted parent/reviewer while real self-subdi
 
     const selfDispatch = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [downstreamNode],
+      workNodeIds: [downstreamNode],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "not a direct claim",
       parentActor: { kind: "role", id: "rl-executor" },
@@ -234,7 +243,8 @@ test("Role task.claim trusts only exact live transport Session binding", async (
     const dispatchTask = async (nodeId: string) => {
       const dispatched = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId],
+        contextNodeIds: [],
         roleId: "rl-executor",
         prompt: `execute ${nodeId}`,
         parentActor: { kind: "user", id: "user" },
@@ -355,7 +365,8 @@ test("direct create+claim failure removes only its exact Task and manifest artif
     const failed = await plannerSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
       roleId: "rl-planner",
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       prompt: "must not strand queued state",
     });
     assert.ok(failed.error);
@@ -383,7 +394,8 @@ test("direct create+claim failure removes only its exact Task and manifest artif
     const secondFailure = await executorSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
       roleId: "rl-executor",
-      nodeIds: [secondNodeId],
+      workNodeIds: [secondNodeId],
+      contextNodeIds: [],
       prompt: "restore existing init on failure",
     });
     assert.ok(secondFailure.error);
@@ -407,7 +419,8 @@ test("open Role Session inherits terminal lastTask responsibility and tolerates 
 
     const dispatched = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [priorNode],
+      workNodeIds: [priorNode],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "prior delegated work",
       parentActor: { kind: "role", id: "rl-orchestrator" },
@@ -437,7 +450,8 @@ test("open Role Session inherits terminal lastTask responsibility and tolerates 
     const next = await nextExecutorSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
       roleId: "rl-executor",
-      nodeIds: [nextNode],
+      workNodeIds: [nextNode],
+      contextNodeIds: [],
       prompt: "new root responsibility after terminal Task",
     });
     assert.ok(!next.error, JSON.stringify(next.error));
@@ -458,7 +472,8 @@ test("open Role Session inherits terminal lastTask responsibility and tolerates 
     const afterMissing = await missingSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
       roleId: "rl-planner",
-      nodeIds: [missingNode],
+      workNodeIds: [missingNode],
+      contextNodeIds: [],
       prompt: "new root responsibility after retained pointer was purged",
     });
     assert.ok(!afterMissing.error, JSON.stringify(afterMissing.error));

@@ -276,7 +276,7 @@ export async function assertNoActiveTaskRefsInSubtree(
   const subtreeIds = new Set(collectSubtree(root).map((node) => node.id));
   const blockers = (await loadTaskEnvelopes(env.fs)).filter((task) => {
     if (!ACTIVE_TASK_STATES.has(task.state)) return false;
-    return task.contextCard.refs.nodes.some((node) => subtreeIds.has(node.id));
+    return task.workNodeIds.some((nodeId) => subtreeIds.has(nodeId));
   });
   if (blockers.length === 0) return;
 

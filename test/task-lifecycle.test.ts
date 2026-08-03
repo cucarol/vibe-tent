@@ -57,6 +57,8 @@ async function dispatchToRole(env: any, nodeId: string, roleName: string, input:
   }
   return dispatch(env, nodeId, {
     roleId,
+    workNodeIds: [nodeId],
+    contextNodeIds: [],
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     ...(typeof input === "string" ? { userPrompt: input } : input),
@@ -91,6 +93,8 @@ test("lifecycle: queued Task cannot replace an already-bound Session during clai
   const e = env(dir);
   const result = await dispatch(e as any, "cx-p1", {
     sessionId: "ss-bounda",
+    workNodeIds: ["cx-p1"],
+    contextNodeIds: [],
     userPrompt: "Keep the exact pre-bound Session",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },

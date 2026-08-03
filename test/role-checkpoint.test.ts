@@ -608,7 +608,8 @@ test("temporary Session Task bootstrap never assumes a durable Role checkpoint",
 
       const d = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId],
+        contextNodeIds: [],
         connectionId: "fake-default",
         prompt: "bootstrap with checkpoint tail",
         acceptMode: "review-required",
@@ -638,14 +639,34 @@ test("temporary Session Task bootstrap never assumes a durable Role checkpoint",
         {
           path: taskPath,
           sessionId: "ss-fakedefault",
-          // Node refs live on Task.contextCard.refs.nodes only (no claims[]).
+          // Frozen Node context is the sole Task Context Card source.
           manifest: "temp/sessions/ss-fakedefault/manifest.yml",
           state: "running",
           acceptMode: "review-required",
           prompt: "## User Prompt\n\nbootstrap with checkpoint tail\n",
+          workNodeIds: ["cx-checkpoint"],
+          contextNodeIds: [],
+          nodeSnapshots: [{
+            id: "cx-checkpoint",
+            path: "prompt/checkpoint",
+            type: "prompt",
+            tags: [],
+            body: "checkpoint context\n",
+            etag: "a".repeat(24),
+          }],
           contextCard: buildTaskContextCard({
             contextGeneration: `cg-v1-${"0".repeat(64)}`,
-            refs: { nodes: [{ id: "cx-checkpoint" }] },
+            workNodeIds: ["cx-checkpoint"],
+            contextNodeIds: [],
+            nodeSnapshots: [{
+              id: "cx-checkpoint",
+              path: "prompt/checkpoint",
+              type: "prompt",
+              tags: [],
+              body: "checkpoint context\n",
+              etag: "a".repeat(24),
+            }],
+            userPrompt: "bootstrap with checkpoint tail",
           }),
         },
         { workspaceRoot: ws, systemRoot: path.join(ws, ".tent") }
@@ -700,7 +721,8 @@ test("managed bootstrap fails open when Role Checkpoint pointers are invalid", a
       const nodeId = (created.result as { nodeId: string }).nodeId;
       const dispatched = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId],
+        contextNodeIds: [],
         connectionId: "fake-default",
         prompt: "bootstrap despite invalid checkpoint",
         acceptMode: "review-required",

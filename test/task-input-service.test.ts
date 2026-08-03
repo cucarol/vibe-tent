@@ -145,7 +145,7 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
     const nodeId = created.nodeId;
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Work that may get user append",
       parentActor: { kind: "user", id: "user" },
@@ -176,6 +176,7 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
     assert.ok(agentSend.error);
     assert.equal(agentSend.error!.code, -32001);
 
+    const firstHold = holdManagedTaskInputQueueForTests(workspaceId, taskPath);
     const sent = (await client.taskSendInput(workspaceId, taskPath, {
       text: "Also consider cx-abc",
       contextRefs: [nodeId, "cx-dup", "cx-dup"],
@@ -197,7 +198,8 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
     assert.deepEqual(sent.input.contextRefs, [nodeId, "cx-dup"]);
     assert.equal(sent.input.workspaceId, workspaceId);
     assert.equal(sent.input.taskPath, taskPath);
-    // No managed session → not continued
+    await firstHold.entered;
+    // Managed injection is asynchronous; durable acceptance never claims continuation.
     assert.equal(sent.continued, false);
 
     const pending = (await client.taskInputListPending(
@@ -290,11 +292,14 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
     };
     assert.equal(userAcked.input.status, "consumed");
     assert.ok(userAcked.input.consumedAt);
+    firstHold.release();
 
     // A second user-path acknowledgement remains scoped to the exact Task.
+    const secondHold = holdManagedTaskInputQueueForTests(workspaceId, taskPath);
     const secondRow = (await client.taskSendInput(workspaceId, taskPath, {
       text: "second scoped acknowledgement",
     })) as { input: { id: string } };
+    await secondHold.entered;
     const secondAcked = (await client.taskInputAck(
       workspaceId,
       taskPath,
@@ -302,6 +307,7 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
     )) as { input: { status: string; consumedAt?: string } };
     assert.equal(secondAcked.input.status, "consumed");
     assert.ok(secondAcked.input.consumedAt);
+    secondHold.release();
 
     // Double-ack fails loud
     const doubleAck = await rpcCall(
@@ -334,12 +340,15 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
     await client.userAskReply(asked.ask.id, { answer: "go" });
 
     // After ask resolved, sendInput works again; interrupt cancels pending input
+    const finalHold = holdManagedTaskInputQueueForTests(workspaceId, taskPath);
     const sent2 = (await client.taskSendInput(workspaceId, taskPath, {
       contextRefs: [nodeId],
     })) as { input: { id: string; status: string } };
     assert.equal(sent2.input.status, "pending");
+    await finalHold.entered;
 
     await client.taskInterrupt(workspaceId, taskPath);
+    finalHold.release();
     const cancelled = (await client.taskInputGet(
       workspaceId,
       taskPath,
@@ -373,7 +382,7 @@ test("taskInput list/get/ack are isolated across workspaces (no cross get/ack)",
     }));
     async function dispatchRunningTask(workspaceId: string, nodeId: string) {
       const dispatched = (await client.taskDispatch(workspaceId, {
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId], contextNodeIds: [],
         connectionId: "mock-ti",
         prompt: "Canonical cross-workspace TaskInput isolation fixture",
         parentActor: { kind: "user", id: "user" },
@@ -490,7 +499,7 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
     }));
     // Persisted parent/reviewer Role may acknowledge ambiguity for its child.
     const parentDispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [note.nodeId],
+      workNodeIds: [note.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Canonical parent acknowledgement fixture",
       parentActor: { kind: "role", id: "dispatcher" },
@@ -534,7 +543,7 @@ test("taskInput ack authority includes persisted parent Role and verified bound 
       type: "prompt",
     }));
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [sessionNote.nodeId],
+      workNodeIds: [sessionNote.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "session-bound ack",
       parentActor: { kind: "user", id: "user" },
@@ -649,7 +658,7 @@ test("explicit startSession bind and live reuse recover durable retryable TaskIn
       type: "prompt",
     }));
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Recover exact durable inputs after explicit Session bind",
       parentActor: { kind: "user", id: "user" },
@@ -785,7 +794,7 @@ test("managed TaskInput fails loud when the bound Session is foreign to workspac
       type: "prompt",
     });
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Guard TaskInput injection by exact Task Session binding",
       parentActor: { kind: "user", id: "user" },
@@ -872,7 +881,7 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
     }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Managed sendInput flow",
       parentActor: { kind: "user", id: "user" },
@@ -1025,7 +1034,7 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
     }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Work that will be rejected with review note",
       parentActor: { kind: "user", id: "user" },
@@ -1173,7 +1182,7 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
     }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Native reject-resume same session",
       parentActor: { kind: "user", id: "user" },
@@ -1390,7 +1399,7 @@ test("reject-resume: slow follow-up returns accepted without headers-timeout wai
     }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Slow reject-resume inject",
       parentActor: { kind: "user", id: "user" },
@@ -1492,7 +1501,7 @@ test("reject-resume: background completion projects processing → delivered", a
     }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Background reject inject",
       parentActor: { kind: "user", id: "user" },
@@ -1949,7 +1958,7 @@ test("reject-resume: second reject while rework running is rejected (no double i
     }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Double reject protection",
       parentActor: { kind: "user", id: "user" },
@@ -2053,7 +2062,7 @@ test("reject --no-resume: terminal reject without review-feedback or session res
     }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "Terminal reject path",
       parentActor: { kind: "user", id: "user" },
@@ -2115,7 +2124,7 @@ test("managed U2A: concurrent sends on same task are FIFO and non-overlapping", 
     }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "FIFO serialization",
       parentActor: { kind: "user", id: "user" },
@@ -2260,7 +2269,7 @@ test("managed U2A: different tasks remain concurrent (not process-wide serial)",
         type: "prompt",
       }));
       const dispatched = (await client.taskDispatch(workspaceId, {
-        nodeIds: [created.nodeId],
+        workNodeIds: [created.nodeId], contextNodeIds: [],
         connectionId: connectionId,
         prompt: `concurrent ${name}`,
         parentActor: { kind: "user", id: "user" },
@@ -2364,7 +2373,7 @@ test("managed U2A: failed inject leaves item failed (not dropped) and does not o
     }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "queue failure semantics",
       parentActor: { kind: "user", id: "user" },
@@ -2476,7 +2485,7 @@ test("task.sendInput: RPC returns accepted before managed turn finishes; status 
     }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "async accept path",
       parentActor: { kind: "user", id: "user" },
@@ -2606,7 +2615,7 @@ test("task.sendInput: service stop drains background work without unhandled reje
       type: "prompt",
     }));
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "drain semantics",
       parentActor: { kind: "user", id: "user" },
@@ -2705,7 +2714,7 @@ test("task.sendInput: hung follow-up turns stop promptly; durable row retained; 
       type: "prompt",
     }));
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       connectionId: "mock-ti",
       prompt: "hang shutdown",
       parentActor: { kind: "user", id: "user" },

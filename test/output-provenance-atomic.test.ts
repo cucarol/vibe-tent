@@ -24,6 +24,7 @@ import {
 } from "../src/core/retention.js";
 import { taskAccept, taskClaim, taskDeliver } from "../src/core/task-lifecycle.js";
 import { makeTent } from "./helpers.js";
+import { contentEtag } from "../src/core/etag.js";
 
 function env(dir: string) {
   return {
@@ -32,6 +33,10 @@ function env(dir: string) {
     tentName: "wqb",
     tentRoot: dir,
   };
+}
+
+function nodeSnapshot(id: string, nodePath: string, type = "prompt", body = "") {
+  return { id, path: nodePath, type, tags: [], body, etag: contentEtag(body) };
 }
 
 async function createOutputBox(
@@ -53,6 +58,8 @@ async function readyAcceptFixture(dir: string) {
   const e = env(dir);
   const result = await dispatch(e as any, "cx-p1", {
     sessionId: "ss-executor",
+    workNodeIds: ["cx-p1"],
+    contextNodeIds: [],
     userPrompt: "atomic provenance fixture",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -385,7 +392,9 @@ test("retention pin scan fails closed: preview and purge refuse when loadTent br
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     sessionId: "ss-executor",
-    nodeRefs: [{ id: "cx-p1", path: "prompt/表达式任务书" }],
+    workNodeIds: ["cx-p1"],
+    contextNodeIds: [],
+    nodeSnapshots: [nodeSnapshot("cx-p1", "prompt/表达式任务书")],
     manifestPath: "temp/sessions/ss-executor/manifests/m.md",
     userPrompt: "old terminal",
     id: "tk-failscan1",

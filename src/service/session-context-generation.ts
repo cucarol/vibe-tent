@@ -12,28 +12,15 @@ import {
 } from "../core/managed-skill-compose.js";
 import {
   agentsBodyCompatibilityDigest,
-  assertRefsResolved,
-  canonicalJson,
   computeContextGenerationFromStableFacts,
-  sha256Hex,
   skillBodyCompatibilityDigest,
-  TaskContextCardError,
-  type TaskContextCardV1,
 } from "../core/task-context-card.js";
 import type { AgentConnectionSnapshot, SessionRecord } from "../runtime/types.js";
 import {
   calculateAgentConnectionLaunchDigest,
   connectionConfigFromSnapshot,
 } from "../runtime/agent-connection.js";
-import { loadDeliveries } from "../core/delivery.js";
-import { isDeliveryId, isTaskId } from "../core/task-model.js";
-// isDeliveryId / isTaskId: durable id shape checks before workspace lookup.
-import {
-  loadTaskEnvelope,
-  loadTaskEnvelopes,
-  type TaskEnvelope,
-} from "../core/task.js";
-import { loadTent } from "../core/tree.js";
+import type { TaskEnvelope } from "../core/task.js";
 import { loadWorkspaceAgents } from "../core/workspace-agents.js";
 import {
   loadRolesRegistry,
@@ -48,8 +35,6 @@ export type StableContextGenerationBundle = {
   tentTaskDigest: string;
   tentTaskVersion: string;
   rolePrompt: string;
-  /** Current exact referenced-Node facts, ordered as persisted on the Task. */
-  nodeContextDigest: string;
   /** Immutable, non-secret launch snapshot digest. */
   connectionLaunchDigest: string;
 };
@@ -106,36 +91,6 @@ async function requireResolvedRoleFromRegistry(
   return role;
 }
 
-async function collectReferencedNodeDigest(
-  fs: FsAdapter,
-  task: Pick<TaskEnvelope, "contextCard">
-): Promise<string> {
-  const tent = await loadTent(fs);
-  const rows = task.contextCard.refs.nodes.map((ref) => {
-    const node = tent.byId.get(ref.id);
-    if (!node) {
-      throw new Error(
-        `contextGeneration referenced Node not found: ${ref.id}`
-      );
-    }
-    return {
-      id: node.id,
-      path: node.path,
-      type: node.type,
-      tags: node.tags,
-      mode: node.mode,
-      relations: node.relations,
-      frontmatter: node.fm,
-      body: node.body,
-      pointer: {
-        path: ref.path?.trim() || "",
-        revision: ref.revision?.trim() || "",
-      },
-    };
-  });
-  return sha256Hex(canonicalJson(rows));
-}
-
 /**
  * Collect real stable compatibility facts and compute contextGeneration.
  * Excludes taskId / objective / acceptance / Task delta.
@@ -183,11 +138,6 @@ export async function collectStableContextGeneration(
         "durable Role responsibility"
       )
     : undefined;
-  const nodeContextDigest = await collectReferencedNodeDigest(
-    input.fs,
-    input.task
-  );
-
   // Skill body/version reads fail loud when required built-in SKILL.md is missing.
   const skillInputs = managedSkillCompatibilityInputs({
     packageRoot: input.packageRoot,
@@ -250,7 +200,6 @@ export async function collectStableContextGeneration(
     roleId: roleId || undefined,
     capabilityFlags: input.capabilityFlags,
     connectionLaunchDigest,
-    extraStable: { nodeContextDigest },
   });
 
   return {
@@ -261,7 +210,6 @@ export async function collectStableContextGeneration(
     tentTaskDigest,
     tentTaskVersion,
     rolePrompt,
-    nodeContextDigest,
     connectionLaunchDigest,
   };
 }
@@ -288,107 +236,6 @@ export function connectionLaunchDigestFromSnapshot(
     );
   }
   return digest;
-}
-
-/**
- * Validate every declared durable Node/Task/Delivery ref against persisted workspace facts.
- * Fail loud (TaskContextCardError UNRESOLVED_REF) — never invent or drop.
- * git refs only require non-empty id (revision pointer).
- */
-export async function assertDurableContextCardRefsResolved(
-  fs: FsAdapter,
-  card: TaskContextCardV1
-): Promise<void> {
-  let tent: Awaited<ReturnType<typeof loadTent>> | null = null;
-  let tasks: TaskEnvelope[] | null = null;
-  let deliveries: Awaited<ReturnType<typeof loadDeliveries>> | null = null;
-
-  const ensureTent = async () => {
-    if (!tent) tent = await loadTent(fs);
-    return tent;
-  };
-  const ensureTasks = async () => {
-    if (!tasks) tasks = await loadTaskEnvelopes(fs);
-    return tasks;
-  };
-  const ensureDeliveries = async () => {
-    if (!deliveries) deliveries = await loadDeliveries(fs);
-    return deliveries;
-  };
-
-  // Pre-resolve async, then assertRefsResolved with sync predicate.
-  const nodeOk = new Map<string, boolean>();
-  for (const ref of card.refs.nodes) {
-    const id = ref.id.trim();
-    if (!id) {
-      nodeOk.set(ref.id, false);
-      continue;
-    }
-    try {
-      const t = await ensureTent();
-      nodeOk.set(ref.id, t.byId.has(id));
-    } catch {
-      nodeOk.set(ref.id, false);
-    }
-  }
-
-  const taskOk = new Map<string, boolean>();
-  for (const ref of card.refs.tasks) {
-    const id = ref.id.trim();
-    if (!id || !isTaskId(id)) {
-      taskOk.set(ref.id, false);
-      continue;
-    }
-    try {
-      const all = await ensureTasks();
-      const hit = all.some((t) => t.id === id);
-      if (hit) {
-        taskOk.set(ref.id, true);
-        continue;
-      }
-      // Path hint: try load by path when provided.
-      if (ref.path?.trim()) {
-        try {
-          const loaded = await loadTaskEnvelope(fs, ref.path.trim());
-          taskOk.set(ref.id, loaded.id === id);
-          continue;
-        } catch {
-          /* fall through */
-        }
-      }
-      taskOk.set(ref.id, false);
-    } catch {
-      taskOk.set(ref.id, false);
-    }
-  }
-
-  const deliveryOk = new Map<string, boolean>();
-  for (const ref of card.refs.deliveries) {
-    const id = ref.id.trim();
-    if (!id || !isDeliveryId(id)) {
-      deliveryOk.set(ref.id, false);
-      continue;
-    }
-    try {
-      const all = await ensureDeliveries();
-      deliveryOk.set(ref.id, all.some((d) => d.id === id));
-    } catch {
-      deliveryOk.set(ref.id, false);
-    }
-  }
-
-  try {
-    assertRefsResolved(card, (bucket, ref) => {
-      if (bucket === "git") return Boolean(ref.id?.trim());
-      if (bucket === "nodes") return nodeOk.get(ref.id) === true;
-      if (bucket === "tasks") return taskOk.get(ref.id) === true;
-      if (bucket === "deliveries") return deliveryOk.get(ref.id) === true;
-      return false;
-    });
-  } catch (err) {
-    if (err instanceof TaskContextCardError) throw err;
-    throw err;
-  }
 }
 
 /**

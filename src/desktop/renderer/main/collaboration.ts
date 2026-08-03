@@ -298,7 +298,7 @@ export function renderTasks(): void {
         // 谁 / 在做什么 / 一句摘要 / 动作；id/path/状态字收进详情
         const who = escapeHtml(taskExecutionLabel(t));
         // 主行不裸露 cx-/rl-/tk- 等技术 id
-        const nodeIds = (t.referencedNodeIds || []).filter(
+        const nodeIds = [...(t.workNodeIds || []), ...(t.contextNodeIds || [])].filter(
           (c) => c !== "root" && !/^(cx|rl|tk|ss|dl|ti)-/i.test(c)
         );
         const claimBit = nodeIds.length

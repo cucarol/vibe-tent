@@ -7,7 +7,6 @@ import { withTentMutation, type FsAdapter } from "./adapter.js";
 import { canClaim, envelopeIsActiveOccupation } from "./claim.js";
 import {
   listDirectActiveTasksForNode,
-  taskReferencedNodeIds,
 } from "./task-node-refs.js";
 import {
   createDeliveryUnlocked,
@@ -129,12 +128,7 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
     assertTransition(task.state, "claim", "running");
 
     const tent = await loadTent(env.fs);
-    if (task.contextCard == null) {
-      throw new Error(
-        `Cannot claim task: missing Task.contextCard.refs.nodes.`
-      );
-    }
-    const claimedNodes = taskReferencedNodeIds(task).map((claimId) =>
+    const claimedNodes = task.workNodeIds.map((claimId) =>
       requireNodeById(tent, claimId)
     );
 

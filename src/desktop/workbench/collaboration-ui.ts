@@ -50,8 +50,8 @@ export type TaskReviewItem = {
   id?: string;
   roleId?: string;
   state: string;
-  /** Node ids from TaskProjection.referencedNodeIds (Context Card refs). */
-  referencedNodeIds: string[];
+  workNodeIds: string[];
+  contextNodeIds: string[];
   prompt?: string;
   activeDeliveryId?: string;
   sessionId?: string;
@@ -87,7 +87,8 @@ export type DispatchValidation = {
   ok: boolean;
   reason: string | null;
   payload: {
-    nodeIds: string[];
+    workNodeIds: string[];
+    contextNodeIds: string[];
     roleId: string;
     prompt: string;
     parentActor: { kind: "user" | "role"; id: string };
@@ -236,7 +237,8 @@ export function validateDispatchForm(form: DispatchFormState): DispatchValidatio
     ok: true,
     reason: null,
     payload: {
-      nodeIds: [form.nodeId],
+      workNodeIds: [form.nodeId],
+      contextNodeIds: [],
       roleId: selectedRole.roleId,
       prompt,
       // Desktop form is user-direct; Role-dispatched child uses CLI/Service explicit actors.
@@ -469,7 +471,8 @@ export function buildTaskReviewItems(
       id: task.id,
       roleId: task.roleId,
       state,
-      referencedNodeIds: task.referencedNodeIds ?? [],
+      workNodeIds: task.workNodeIds ?? [],
+      contextNodeIds: task.contextNodeIds ?? [],
       prompt: task.prompt,
       activeDeliveryId: task.activeDeliveryId,
       sessionId: task.sessionId ?? session?.sessionId,

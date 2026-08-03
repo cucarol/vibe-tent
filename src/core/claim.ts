@@ -9,7 +9,6 @@ import { LoadedTent } from "./tree.js";
 import {
   listDirectActiveTasksForNode,
   taskDirectlyReferencesNode,
-  taskReferencedNodeIds,
 } from "./task-node-refs.js";
 
 export interface ClaimCheck {
@@ -123,7 +122,7 @@ export function occupiedNodesFromTasks(tent: LoadedTent, tasks: readonly TaskEnv
   for (const task of tasks) {
     if (!envelopeIsActiveOccupation(task)) continue;
     if (task.contextCard == null) continue;
-    for (const nodeId of taskReferencedNodeIds(task)) {
+    for (const nodeId of task.workNodeIds) {
       const node = tent.byId.get(nodeId);
       if (node) out.set(node.id, node);
     }

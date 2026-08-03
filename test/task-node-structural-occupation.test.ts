@@ -7,6 +7,9 @@ import { NodeFs } from "../src/fs/node-fs.js";
 import { createNode, moveNode, placeNode, renameNode } from "../src/core/ops.js";
 import { patchTaskEnvelope, writeTaskEnvelope } from "../src/core/task.js";
 import { scaffoldTent } from "../src/core/scaffold.js";
+import { loadTent } from "../src/core/tree.js";
+import { captureTaskNodeSnapshot } from "../src/core/task-node-snapshot.js";
+import { contentEtag } from "../src/core/etag.js";
 import type { FsAdapter } from "../src/core/adapter.js";
 
 function envFor(fsAdapter: FsAdapter) {
@@ -30,11 +33,19 @@ async function writeTask(
   id: string,
   state: "queued" | "accepted" = "queued"
 ): Promise<string> {
+  const tent = await loadTent(fsAdapter);
+  const nodeSnapshots = nodeIds.map((nodeId) => {
+    const node = tent.byId.get(nodeId);
+    if (!node) throw new Error(`missing fixture Node ${nodeId}`);
+    return captureTaskNodeSnapshot(node, contentEtag(node.body));
+  });
   const taskPath = await writeTaskEnvelope(fsAdapter, {
     now: () => "2026-08-01T00:00:00.000Z",
   }, {
     sessionId: `ss-${id.replace(/[^a-z0-9]/gi, "").toLowerCase()}`,
-    nodeRefs: nodeIds.map((nodeId) => ({ id: nodeId, path: "prompt/node" })),
+    workNodeIds: nodeIds,
+    contextNodeIds: [],
+    nodeSnapshots,
     manifestPath: `temp/sessions/ss-${id.replace(/[^a-z0-9]/gi, "").toLowerCase()}/manifest.yml`,
     userPrompt: "hold this Node",
     id,
@@ -51,15 +62,15 @@ test("active self ref blocks rename and exact-subtree reorder", async () => {
     name: "occupied",
     type: "prompt",
   });
-  await writeTask(fsAdapter, [occupied], "tk-struct-self");
+  await writeTask(fsAdapter, [occupied], "tk-stself01");
 
   await assert.rejects(
     () => renameNode(env as any, occupied, "renamed"),
-    /active Task ref.*tk-struct-self/i
+    /active Task ref.*tk-stself01/i
   );
   await assert.rejects(
     () => moveNode(env as any, occupied, null, { mode: "before", siblingId: "cx-promptzone" }),
-    /active Task ref.*tk-struct-self/i
+    /active Task ref.*tk-stself01/i
   );
 });
 
@@ -80,15 +91,15 @@ test("active descendant ref blocks moving the containing subtree", async () => {
     name: "destination",
     type: "prompt",
   });
-  await writeTask(fsAdapter, [child], "tk-struct-descendant");
+  await writeTask(fsAdapter, [child], "tk-stdesc01");
 
   await assert.rejects(
     () => moveNode(env as any, parent, destination, { mode: "inside" }),
-    /active Task ref.*tk-struct-descendant/i
+    /active Task ref.*tk-stdesc01/i
   );
   await assert.rejects(
     () => placeNode(env as any, "parent", "destination", { mode: "inside" }),
-    /active Task ref.*tk-struct-descendant/i
+    /active Task ref.*tk-stdesc01/i
   );
 });
 
@@ -109,7 +120,7 @@ test("unrelated sibling and occupied destination parent do not block a move", as
     name: "sibling",
     type: "prompt",
   });
-  await writeTask(fsAdapter, [sibling, destination], "tk-struct-unrelated");
+  await writeTask(fsAdapter, [sibling, destination], "tk-stunrel1");
 
   const result = await moveNode(env as any, source, destination, { mode: "inside" });
   assert.equal(result.path, "destination/source");
@@ -122,7 +133,7 @@ test("terminal Task ref does not block structural rename", async () => {
     name: "terminal-target",
     type: "prompt",
   });
-  await writeTask(fsAdapter, [target], "tk-struct-terminal", "accepted");
+  await writeTask(fsAdapter, [target], "tk-stterm01", "accepted");
 
   const result = await renameNode(env as any, target, "terminal-renamed");
   assert.equal(result.path, "terminal-renamed");
@@ -141,7 +152,7 @@ test("structural mutation fails loud when canonical Task inventory is unreadable
     [
       "---",
       "type: task",
-      "id: tk-struct-no-card",
+      "id: tk-stnocard",
       "sessionId: ss-executor",
       "parentActor: { kind: user, id: user }",
       "reviewer: { kind: user, id: user }",
@@ -158,6 +169,6 @@ test("structural mutation fails loud when canonical Task inventory is unreadable
 
   await assert.rejects(
     () => renameNode(env as any, target, "context-card-renamed"),
-    /missing Task\.contextCard\.refs\.nodes/
+    /missing Task Context Card v2/
   );
 });

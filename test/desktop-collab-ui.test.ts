@@ -45,7 +45,19 @@ import { buildTaskContextCard } from "../src/core/task-context-card.js";
 
 const testTaskContextCard = (nodeId: string) =>
   buildTaskContextCard({
-    refs: { nodes: [{ id: nodeId }] },
+    workNodeIds: [nodeId],
+    contextNodeIds: [],
+    nodeSnapshots: [
+      {
+        id: nodeId,
+        path: `nodes/${nodeId}.md`,
+        type: "prompt",
+        tags: [],
+        body: "",
+        etag: "000000000000000000000000",
+      },
+    ],
+    userPrompt: "test task",
   });
 
 // ---- pure UI model ----
@@ -81,7 +93,7 @@ test("validateDispatchForm builds task.dispatch payload and blocks invalid cases
   });
   assert.equal(ok.ok, true);
   assert.deepEqual(ok.payload, {
-    nodeIds: ["cx-1"],
+    workNodeIds: ["cx-1"], contextNodeIds: [],
     roleId: "rl-executor",
     prompt: "implement feature",
     parentActor: { kind: "user", id: "user" },
@@ -173,7 +185,7 @@ test("accept/reject payload builders and task review model", () => {
         path: "temp/executor/tasks/a.md",
         id: "tk-a",
         roleId: "rl-executor",
-        referencedNodeIds: ["cx-box"],
+        workNodeIds: ["cx-box"], contextNodeIds: [],
         state: "delivered",
         manifest: "m",
         acceptMode: "review-required",
@@ -186,7 +198,7 @@ test("accept/reject payload builders and task review model", () => {
         id: "tk-b",
         roleId: "rl-executor",
         sessionId: "ss-b",
-        referencedNodeIds: ["cx-box"],
+        workNodeIds: ["cx-box"], contextNodeIds: [],
         state: "queued",
         manifest: "m",
         acceptMode: "review-required",
@@ -211,8 +223,10 @@ test("accept/reject payload builders and task review model", () => {
   assert.equal(items[0].canAcceptOrReject, true);
   assert.equal(items[0].deliverySummary, "Done with tests");
   assert.deepEqual(items[0].commits, ["abcdef123456"]);
-  assert.deepEqual(items[0].referencedNodeIds, ["cx-box"]);
-  assert.deepEqual(items[1].referencedNodeIds, ["cx-box"]);
+  assert.deepEqual(items[0].workNodeIds, ["cx-box"]);
+  assert.deepEqual(items[0].contextNodeIds, []);
+  assert.deepEqual(items[1].workNodeIds, ["cx-box"]);
+  assert.deepEqual(items[1].contextNodeIds, []);
   assert.equal(items[1].canAcceptOrReject, false);
   assert.equal(items[1].canStartAgent, true);
   assert.equal(items[0].canStartAgent, false);
@@ -335,7 +349,7 @@ test("task/session state labels and start/interrupt gates", () => {
         path: "temp/executor/tasks/live.md",
         id: "tk-live",
         roleId: "rl-executor",
-        referencedNodeIds: ["cx-1"],
+        workNodeIds: ["cx-1"], contextNodeIds: [],
         state: "running",
         manifest: "m",
         acceptMode: "review-required",
@@ -360,6 +374,8 @@ test("task/session state labels and start/interrupt gates", () => {
   assert.equal(items[0].canStartAgent, false);
   assert.equal(items[0].canInterrupt, true);
   assert.equal(items[0].sessionState, "live");
+  assert.deepEqual(items[0].workNodeIds, ["cx-1"]);
+  assert.deepEqual(items[0].contextNodeIds, []);
   assert.match(items[0].summaryLine, /会话运行中/);
 });
 
@@ -430,7 +446,8 @@ test("service+client: registry → create coordination box → dispatch → deli
     assert.ok(form.payload);
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: form.payload!.nodeIds,
+      workNodeIds: form.payload!.workNodeIds,
+      contextNodeIds: [],
       roleId: form.payload!.roleId,
       prompt: form.payload!.prompt,
       parentActor: form.payload!.parentActor ?? { kind: "user", id: "user" },
@@ -481,7 +498,7 @@ test("service+client: registry → create coordination box → dispatch → deli
       type: "prompt",
     }));
     const d2 = (await client.taskDispatch(workspaceId, {
-      nodeIds: [box2.nodeId],
+      workNodeIds: [box2.nodeId], contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "will be rejected",
       parentActor: { kind: "user", id: "user" },
@@ -566,7 +583,7 @@ test("service+client: connection.list safe metadata + managed Session/interrupt 
     }));
 
     const dispatched = (await client.taskDispatch(workspaceId, {
-      nodeIds: [box.nodeId],
+      workNodeIds: [box.nodeId], contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "start via UI model",
       parentActor: { kind: "user", id: "user" },

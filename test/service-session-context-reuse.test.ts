@@ -32,7 +32,6 @@ import type { AgentConnectionConfig } from "../src/runtime/types.js";
 import type { ProviderAdapter } from "../src/adapters/types.js";
 import {
   appendCallerBootstrapSection,
-  assertDurableContextCardRefsResolved,
   collectStableContextGeneration,
 } from "../src/service/session-context-generation.js";
 import { rpcCall } from "../src/service/http-server.js";
@@ -162,6 +161,16 @@ async function createWorkItemNode(svc: Svc, workspaceId: string): Promise<string
   return (created.result as { nodeId: string }).nodeId;
 }
 
+function taskNodeContext(id: string, nodePath: string, body = "") {
+  return {
+    workNodeIds: [id],
+    contextNodeIds: [],
+    nodeSnapshots: [
+      { id, path: nodePath, type: "prompt", tags: [], body, etag: "a".repeat(24) },
+    ],
+  };
+}
+
 async function dispatchConnectionTask(
   svc: Svc,
   workspaceId: string,
@@ -171,7 +180,8 @@ async function dispatchConnectionTask(
 ) {
   const dispatched = await rpc(svc, "task.dispatch", {
     workspaceId,
-    nodeIds: [nodeId],
+    workNodeIds: [nodeId],
+    contextNodeIds: [],
     prompt,
     connectionId,
     parentActor: { kind: "role", id: "rl-orchestrator" },
@@ -226,14 +236,12 @@ test("collectStableContextGeneration digests AGENTS, Skills, and Connection fact
       task: {
         sessionId: "ss-collect",
         contextCard: buildTaskContextCard({
-          objective: "collect",
-          acceptance: ["stable"],
-          refs: {
-            nodes: [{ id: [...(await loadTent(new NodeFs(path.join(workspace, ".tent")))).byId.keys()][0]! }],
-            tasks: [],
-            deliveries: [],
-            git: [],
-          },
+          ...taskNodeContext(
+            [...(await loadTent(new NodeFs(path.join(workspace, ".tent")))).byId.keys()][0]!,
+            "inbox",
+            "# inbox\n"
+          ),
+          userPrompt: "collect",
         }),
       },
       session: { id: "ss-collect", connectionSnapshot },
@@ -258,36 +266,34 @@ test("collectStableContextGeneration digests AGENTS, Skills, and Connection fact
   }
 });
 
-test("assertDurableContextCardRefsResolved fails loud on missing Node, Task, or Delivery", async () => {
-  const workspace = await makeWorkspace("refs");
+test("frozen Node snapshots are the only durable context; Task prompt changes do not change generation", async () => {
+  const workspace = await makeWorkspace("frozen-node-context");
   try {
     const fsa = new NodeFs(path.join(workspace, ".tent"));
-    const nodeId = [...(await loadTent(fsa)).byId.keys()][0]!;
-    const card = (refs: Parameters<typeof buildTaskContextCard>[0]["refs"]) =>
-      buildTaskContextCard({ objective: "o", acceptance: ["a"], refs });
+    const node = [...(await loadTent(fsa)).byId.values()][0]!;
+    const nodeContext = taskNodeContext(node.id, node.path, node.body);
+    const firstCard = buildTaskContextCard({ ...nodeContext, userPrompt: "first Task prompt" });
+    const secondCard = buildTaskContextCard({ ...nodeContext, userPrompt: "second Task prompt" });
+    assert.notEqual(firstCard.taskDeltaDigest, secondCard.taskDeltaDigest);
 
-    await assertDurableContextCardRefsResolved(
-      fsa,
-      card({ nodes: [{ id: nodeId }], tasks: [], deliveries: [], git: [{ id: "HEAD" }] })
+    const connectionSnapshot = createAgentConnectionSnapshot(FAKE_RESUMABLE, {});
+    const makeInput = (contextCard: typeof firstCard) => ({
+      workspaceRoot: workspace,
+      workspaceIdentity: "ws-frozen-node-context",
+      packageRoot: repoRoot,
+      packageVersion: "0.1.0",
+      task: { sessionId: "ss-frozen", contextCard },
+      session: { id: "ss-frozen", connectionSnapshot },
+      fs: fsa,
+    });
+    const first = await collectStableContextGeneration(makeInput(firstCard));
+    const second = await collectStableContextGeneration(makeInput(secondCard));
+    assert.equal(
+      first.contextGeneration,
+      second.contextGeneration,
+      "stable compatibility facts must ignore Task prompt/delta changes"
     );
-    await assert.rejects(() =>
-      assertDurableContextCardRefsResolved(
-        fsa,
-        card({ nodes: [{ id: "cx-doesnotexist" }], tasks: [], deliveries: [], git: [] })
-      )
-    );
-    await assert.rejects(() =>
-      assertDurableContextCardRefsResolved(
-        fsa,
-        card({ nodes: [{ id: nodeId }], tasks: [{ id: "tk-zzzzzzzz" }], deliveries: [], git: [] })
-      )
-    );
-    await assert.rejects(() =>
-      assertDurableContextCardRefsResolved(
-        fsa,
-        card({ nodes: [{ id: nodeId }], tasks: [], deliveries: [{ id: "dl-zzzzzzzz" }], git: [] })
-      )
-    );
+    assert.deepEqual(firstCard.nodeSnapshots, secondCard.nodeSnapshots);
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
   }
@@ -312,10 +318,10 @@ test("Connection dispatch starts independent exact Sessions and persists each ge
       assert.notEqual(extractTaskUserPrompt(first), extractTaskUserPrompt(second));
       assert.notEqual(first.id, second.id);
       assert.ok(isContextGenerationId(first.contextGeneration!));
-      assert.notEqual(
+      assert.equal(
         first.contextGeneration,
         second.contextGeneration,
-        "different Node context must produce a different stable generation"
+        "Node snapshots belong to the Task delta; stable generation is independent of Task Node context"
       );
       assert.notEqual(first.taskDeltaDigest, second.taskDeltaDigest);
       assert.equal(
@@ -376,42 +382,22 @@ test("same exact Task resumes native Session; replaceSession is the only explici
   }
 });
 
-test("startSession fails loud for unresolved durable Node, Task, and Delivery refs", async () => {
-  const workspace = await makeWorkspace("missing-refs");
+test("contextGeneration patch cannot mutate frozen Node snapshots", async () => {
+  const workspace = await makeWorkspace("generation-patch");
   try {
     await initGit(workspace);
     await withService(async (svc) => {
       const { workspaceId, nodeId } = await mountWorkItem(svc, workspace);
       const systemFs = new NodeFs(path.join(workspace, ".tent"));
-      const cases = [
-        { bucket: "nodes", value: [{ id: "cx-missingnode" }] },
-        { bucket: "tasks", value: [{ id: "tk-zzzzzzzz" }] },
-        { bucket: "deliveries", value: [{ id: "dl-zzzzzzzz" }] },
-      ] as const;
-      for (const entry of cases) {
-        const taskNodeId = entry.bucket === "nodes" ? nodeId : await createWorkItemNode(svc, workspaceId);
-        const dispatched = await dispatchConnectionTask(
-          svc,
-          workspaceId,
-          taskNodeId,
-          `missing ${entry.bucket}`
-        );
-        const task = await loadTaskEnvelope(systemFs, dispatched.taskPath);
-        assert.ok(task.sessionId);
-        await svc.runtime.stopSession(task.sessionId!, "user");
-        const contextCard = {
-          ...task.contextCard,
-          refs: { ...task.contextCard.refs, [entry.bucket]: entry.value },
-        };
-        await patchTaskEnvelope(systemFs, task.path, { contextCard });
-        const started = await rpc(svc, "task.startSession", {
-          workspaceId,
-          taskPath: task.path,
-          callerKind: "user",
-        });
-        assert.ok(started.error, `${entry.bucket} must fail loud`);
-        assert.match(String(started.error.message), /could not be resolved|UNRESOLVED_REF/i);
-      }
+      const dispatched = await dispatchConnectionTask(svc, workspaceId, nodeId, "freeze context");
+      const before = await loadTaskEnvelope(systemFs, dispatched.taskPath);
+      const snapshots = structuredClone(before.contextCard.nodeSnapshots);
+      const generation = `cg-v1-${"b".repeat(64)}`;
+      await patchTaskEnvelope(systemFs, before.path, { contextGeneration: generation });
+      const after = await loadTaskEnvelope(systemFs, before.path);
+      assert.equal(after.contextGeneration, generation);
+      assert.deepEqual(after.contextCard.nodeSnapshots, snapshots);
+      assert.deepEqual(after.contextCard.workNodeIds, before.contextCard.workNodeIds);
     });
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
@@ -426,7 +412,7 @@ test("writeTaskEnvelope persists no dispatch-time generation and remains task-sp
       writeTaskEnvelope(systemFs, new SystemClock(), {
         id,
         sessionId: id === "tk-aaaaaaa1" ? "ss-contexta" : "ss-contextb",
-        nodeRefs: [{ id: nodeId, path: `nodes/${nodeId}` }],
+        ...taskNodeContext(nodeId, `nodes/${nodeId}`),
         manifestPath: `temp/sessions/${id === "tk-aaaaaaa1" ? "ss-contexta" : "ss-contextb"}/manifests/${id}.yml`,
         userPrompt: prompt,
         parentActor: { kind: "role", id: "rl-orchestrator" },

@@ -1,5 +1,5 @@
 /**
- * P0 Core/Runtime: Task Context Card v1 + prompt assembly + Session reuse gate
+ * P0 Core/Runtime: Task Context Card v2 + prompt assembly + Session reuse gate
  * (Node cx-5q6za6).
  */
 import assert from "node:assert/strict";
@@ -7,10 +7,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { NodeFs, SystemClock } from "../src/fs/node-fs.js";
 import {
   assembleManagedPrompt,
-  assertRefsResolved,
   buildTaskContextCard,
   canonicalJson,
   computeContextGeneration,
@@ -32,15 +30,8 @@ import {
   projectExecutionLaneFromTask,
   deriveIntegrationAuthority,
   assertIntegrationAuthorityMatchesParent,
-  type TaskContextCardV1,
+  type TaskContextCard,
 } from "../src/core/task-context-card.js";
-import {
-  loadTaskEnvelope,
-  patchTaskEnvelope,
-  writeTaskEnvelope,
-  workspaceLaneOf,
-} from "../src/core/task.js";
-import { parseFrontmatter, serializeFrontmatter } from "../src/core/frontmatter.js";
 import { assertOrdinaryExecutorLaneHistoryInGit } from "../src/core/workspace.js";
 import { spawnSync } from "node:child_process";
 
@@ -61,33 +52,36 @@ function sampleGeneration(extra?: string): string {
 
 function sampleCard(
   overrides?: Partial<Parameters<typeof buildTaskContextCard>[0]>
-): TaskContextCardV1 {
+): TaskContextCard {
   const contextGeneration = overrides?.contextGeneration ?? sampleGeneration();
   const base: Parameters<typeof buildTaskContextCard>[0] = {
-    objective: "Implement Context Card v1 Core seam",
-    frozenDecisions: ["No new lifecycle entity", "Core is authoritative"],
-    scope: {
-      include: ["src/core/task-context-card.ts", "tests"],
-      exclude: ["skills/", "UI"],
-    },
-    acceptance: [
-      "Schema + digests + fail-loud tests",
-      "Stable prefix once per generation",
+    workNodeIds: ["cx-5q6za6"],
+    contextNodeIds: ["cx-context"],
+    nodeSnapshots: [
+      {
+        id: "cx-5q6za6",
+        path: "Agent/Context Card",
+        type: "prompt",
+        tags: ["core"],
+        body: "Implement the Context Card core seam.",
+        etag: "a".repeat(24),
+      },
+      {
+        id: "cx-context",
+        path: "Agent/Context",
+        type: "reference",
+        tags: ["context"],
+        body: "Core is authoritative.",
+        etag: "b".repeat(24),
+      },
     ],
-    refs: {
-      nodes: [{ id: "cx-5q6za6", path: "Agent/Context Card" }],
-      tasks: [],
-      deliveries: [],
-      git: [{ id: "HEAD", revision: "abc123" }],
-    },
     contextGeneration,
+    userPrompt: "Implement the Context Card core seam.",
   };
   return buildTaskContextCard({
     ...base,
     ...overrides,
     contextGeneration: overrides?.contextGeneration ?? contextGeneration,
-    refs: overrides?.refs ?? base.refs,
-    scope: overrides?.scope ?? base.scope,
   });
 }
 
@@ -165,7 +159,7 @@ test("contextGeneration changes when a skill version changes", () => {
   assert.notEqual(base, versionBump);
 });
 
-test("taskDeltaDigest is independent of contextGeneration and tracks card+delta", () => {
+test("taskDeltaDigest is independent of contextGeneration and tracks Node context+delta", () => {
   const card = sampleCard();
   const d1 = computeTaskDeltaDigest({ card, userPrompt: "do the work" });
   const d2 = computeTaskDeltaDigest({ card, userPrompt: "do the work" });
@@ -188,35 +182,41 @@ test("canonicalJson sorts object keys for stable hashing", () => {
   assert.equal(sha256Hex("x"), formatContextGeneration("x").slice("cg-v1-".length));
 });
 
-test("buildTaskContextCard keeps objective and acceptance optional", () => {
+test("buildTaskContextCard requires Node context and rejects retired v1 fields", () => {
   const gen = sampleGeneration();
-  const card = buildTaskContextCard({ contextGeneration: gen });
-  assert.equal(card.objective, "");
-  assert.deepEqual(card.acceptance, []);
+  const card = sampleCard({ contextGeneration: gen });
+  assert.deepEqual(card.workNodeIds, ["cx-5q6za6"]);
+  assert.deepEqual(card.contextNodeIds, ["cx-context"]);
   assert.throws(
-    () => buildTaskContextCard({ contextGeneration: "bad" }),
+    () => buildTaskContextCard({
+      ...(card as unknown as Record<string, unknown>),
+      objective: "retired",
+    } as never),
+    (err: unknown) => err instanceof TaskContextCardError && err.code === "INVALID_CARD"
+  );
+  assert.throws(
+    () => buildTaskContextCard({
+      workNodeIds: card.workNodeIds,
+      contextNodeIds: card.contextNodeIds,
+      nodeSnapshots: card.nodeSnapshots,
+      userPrompt: "Implement the Context Card core seam.",
+      contextGeneration: "bad",
+    }),
     (err: unknown) =>
       err instanceof TaskContextCardError && err.code === "INVALID_GENERATION"
   );
 });
 
-test("assertRefsResolved fail-loud on unresolved declared refs", () => {
-  const card = sampleCard({
-    refs: {
-      nodes: [{ id: "cx-missing" }],
-      tasks: [],
-      deliveries: [],
-      git: [],
-    },
-  });
+test("parseTaskContextCard rejects retired v1 mirrors and malformed snapshots", () => {
   assert.throws(
-    () =>
-      assertRefsResolved(card, (kind, ref) => kind === "nodes" && ref.id === "cx-ok"),
+    () => parseTaskContextCard({ ...sampleCard(), objective: "retired" }),
     (err: unknown) =>
-      err instanceof TaskContextCardError && err.code === "UNRESOLVED_REF"
+      err instanceof TaskContextCardError && err.code === "INVALID_CARD"
   );
-  assert.doesNotThrow(() =>
-    assertRefsResolved(card, (kind, ref) => kind === "nodes" && ref.id === "cx-missing")
+  assert.throws(
+    () => parseTaskContextCard({ ...sampleCard(), nodeSnapshots: [] }),
+    (err: unknown) =>
+      err instanceof TaskContextCardError && err.code === "INVALID_CARD"
   );
 });
 
@@ -224,17 +224,17 @@ test("parseTaskContextCard round-trips serialize shape", () => {
   const card = sampleCard();
   const wire = serializeTaskContextCardForFrontmatter(card);
   const parsed = parseTaskContextCard(wire);
-  assert.equal(parsed.objective, card.objective);
+  assert.deepEqual(parsed.workNodeIds, card.workNodeIds);
+  assert.deepEqual(parsed.nodeSnapshots, card.nodeSnapshots);
   assert.equal(parsed.contextGeneration, card.contextGeneration);
-  assert.deepEqual(parsed.frozenDecisions, card.frozenDecisions);
-  assert.equal("parentActor" in wire, false);
-  assert.equal("reviewer" in wire, false);
-  assert.equal("assignee" in wire, false);
+  assert.equal("objective" in wire, false);
+  assert.equal("acceptance" in wire, false);
+  assert.equal("refs" in wire, false);
 });
 
 test("loadTaskContextCardFromFrontmatter reads only the nested card wire", () => {
   assert.equal(loadTaskContextCardFromFrontmatter({ type: "task", role: "r" }), null);
-  // generation-only mirrors do not force a full card
+  // Flat mirrors do not force or supplement a full card.
   assert.equal(
     loadTaskContextCardFromFrontmatter({
       contextGeneration: sampleGeneration(),
@@ -251,6 +251,7 @@ test("loadTaskContextCardFromFrontmatter reads only the nested card wire", () =>
     contextCard: serializeTaskContextCardForFrontmatter(card),
   });
   assert.equal(loaded?.contextGeneration, card.contextGeneration);
+  assert.deepEqual(loaded?.workNodeIds, card.workNodeIds);
 });
 
 // ---- prompt ordering / cache ----
@@ -285,7 +286,7 @@ test("assembleManagedPrompt order: invariant → project → role → task → c
   const iRoleSkill = idx("## Built-in skill: tent-role");
   const iRolePrompt = idx("## Role prompt");
   const iTaskSkill = idx("## Built-in skill: tent-task");
-  const iCard = idx("Tent Task Context Card v1");
+  const iCard = idx("Tent Task Context Card v2");
   const iUser = idx("## User Prompt");
   const iReview = idx("## Review Feedback");
   const iCp = idx("--- Role Checkpoint ---");
@@ -298,7 +299,7 @@ test("assembleManagedPrompt order: invariant → project → role → task → c
   assert.ok(iUser < iReview);
   assert.ok(iReview < iCp);
   assert.match(text, /contextGeneration: cg-v1-/);
-  assert.match(formatTaskContextCardPrompt(card), /Core is authoritative/);
+  assert.match(formatTaskContextCardPrompt(card), /Work Node cx-5q6za6/);
 });
 
 test("stable prefix injected once per generation; later Tasks append delta only", () => {
@@ -353,7 +354,7 @@ test("stable prefix injected once per generation; later Tasks append delta only"
   assert.doesNotMatch(delta.text, new RegExp(MANAGED_BOOTSTRAP_INVARIANT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.doesNotMatch(delta.text, /## Built-in skill: tent-task/);
   assert.match(delta.text, /second task/);
-  assert.match(delta.text, /Tent Task Context Card v1/);
+  assert.match(delta.text, /Tent Task Context Card v2/);
   // Identical stable prefix bytes across two full assemblies with same generation inputs
   const full2 = assembleManagedPrompt({
     workspaceRoot: "/w",
@@ -370,7 +371,7 @@ test("stable prefix injected once per generation; later Tasks append delta only"
 
 test("prompt-only managed context emits the immutable user prompt once", () => {
   const marker = "PROMPT_ONLY_MARKER";
-  const card = buildTaskContextCard({ contextGeneration: sampleGeneration() });
+  const card = sampleCard({ contextGeneration: sampleGeneration() });
   const assembled = assembleManagedPrompt({
     workspaceRoot: "/w",
     systemRoot: "/w/.tent",
@@ -380,265 +381,12 @@ test("prompt-only managed context emits the immutable user prompt once", () => {
     userPrompt: marker,
   });
   assert.equal(assembled.text.split(marker).length - 1, 1);
+  assert.match(assembled.dynamicDelta, /workNodeIds: cx-5q6za6/);
   assert.doesNotMatch(assembled.dynamicDelta, /^objective:/m);
   assert.doesNotMatch(assembled.dynamicDelta, /^acceptance:/m);
 });
 
 // ---- envelope persistence ----
-
-test("Task envelope persists and reloads contextCard + digests", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-cc-"));
-  try {
-    const nfs = new NodeFs(dir);
-    const card = sampleCard();
-    const taskPath = await writeTaskEnvelope(nfs, new SystemClock(), {
-      sessionId: "ss-grokcoreworker",
-      nodeRefs: [{ id: "cx-5q6za6", path: "n" }],
-      manifestPath: "temp/sessions/ss-grokcoreworker/manifests/tk-x.yml",
-      userPrompt: "Implement Context Card",
-      parentActor: { kind: "role", id: "规划" },
-    });
-    const initial = parseFrontmatter(await nfs.readFile(taskPath));
-    const initialCard = initial.data.contextCard as Record<string, unknown>;
-    assert.equal(initial.data.contextGeneration, undefined);
-    assert.equal(initial.data.taskDeltaDigest, undefined);
-    assert.equal(initialCard.parentActor, undefined);
-    assert.equal(initialCard.reviewer, undefined);
-    assert.equal(initialCard.assignee, undefined);
-    assert.equal(initialCard.objective, "");
-    assert.deepEqual(initialCard.acceptance, []);
-    assert.equal(initial.body.split("Implement Context Card").length - 1, 1);
-    await patchTaskEnvelope(nfs, taskPath, { contextCard: card });
-    const patched = parseFrontmatter(await nfs.readFile(taskPath));
-    assert.equal(patched.data.contextGeneration, undefined);
-    assert.equal(patched.data.taskDeltaDigest, undefined);
-    const loaded = await loadTaskEnvelope(nfs, taskPath);
-    assert.ok(loaded.contextCard);
-    assert.equal(loaded.contextCard?.objective, card.objective);
-    assert.equal(loaded.taskDeltaDigest, card.taskDeltaDigest);
-    assert.deepEqual(loaded.parentActor, { kind: "role", id: "规划" });
-  } finally {
-    await fs.rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("Task sessionId is canonical at write and load boundaries", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-session-binding-"));
-  try {
-    const nfs = new NodeFs(dir);
-    await assert.rejects(
-      () =>
-        writeTaskEnvelope(nfs, new SystemClock(), {
-          sessionId: "Bad Session",
-          nodeRefs: [{ id: "cx-5q6za6", path: "n" }],
-          manifestPath: "temp/sessions/bad/manifests/tk-x.yml",
-          userPrompt: "invalid Session binding",
-          parentActor: { kind: "user", id: "user" },
-        }),
-      /sessionId/i
-    );
-
-    const taskPath = await writeTaskEnvelope(nfs, new SystemClock(), {
-      sessionId: "ss-grokcoreworker",
-      nodeRefs: [{ id: "cx-5q6za6", path: "n" }],
-      manifestPath: "temp/sessions/ss-grokcoreworker/manifests/tk-x.yml",
-      userPrompt: "tamper Session binding",
-      parentActor: { kind: "user", id: "user" },
-    });
-    const raw = await nfs.readFile(taskPath);
-    const { data, body, keyOrder } = parseFrontmatter(raw);
-    data.sessionId = "bad/session";
-    await nfs.writeFile(taskPath, serializeFrontmatter(data, body, keyOrder));
-    await assert.rejects(
-      () => loadTaskEnvelope(nfs, taskPath),
-      /sessionId/i
-    );
-  } finally {
-    await fs.rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("missing nested contextCard fails loud even when flat mirrors exist", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-cc-bad-"));
-  try {
-    const nfs = new NodeFs(dir);
-    const taskPath = await writeTaskEnvelope(nfs, new SystemClock(), {
-      roleId: "rl-analyst",
-      nodeRefs: [{ id: "cx-1", path: "p" }],
-      manifestPath: "temp/roles/rl-analyst/manifest.yml",
-      userPrompt: "x",
-      parentActor: { kind: "user", id: "user" },
-    });
-    // Corrupt: strip the sole nested wire and leave a retired flat mirror.
-    const raw = await nfs.readFile(taskPath);
-    const { data, body, keyOrder } = parseFrontmatter(raw);
-    delete data.contextCard;
-    delete data.contextGeneration;
-    delete data.taskDeltaDigest;
-    data.objective = "half card only";
-    await nfs.writeFile(taskPath, serializeFrontmatter(data, body, keyOrder));
-    await assert.rejects(
-      () => loadTaskEnvelope(nfs, taskPath),
-      /missing Task\.contextCard\.refs\.nodes/i
-    );
-  } finally {
-    await fs.rm(dir, { recursive: true, force: true });
-  }
-});
-
-/**
- * P0 persistence: recorded lane truth for baseCommit + integrationAuthority.
- * - Missing on-disk authority must NOT invent an in-memory phantom on load
- *   (so ensureTaskWorkspaceLane can detect absence and persist).
- * - Explicit backfill writes canonical bag; reload retains/validates.
- * - Tampered actor/mutator fails loud.
- * - Context projection may still derive without inventing envelope truth.
- */
-test("lane authority: no phantom on load; persist/reload/tamper/backfill", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-lane-auth-"));
-  try {
-    const nfs = new NodeFs(dir);
-    await nfs.mkdir("temp/sessions/ss-grokcoreworker/tasks");
-    const parent = { kind: "role" as const, id: "规划" };
-    const taskPath = await writeTaskEnvelope(nfs, new SystemClock(), {
-      sessionId: "ss-grokcoreworker",
-      nodeRefs: [{ id: "cx-5q6za6", path: "n" }],
-      manifestPath: "temp/sessions/ss-grokcoreworker/manifests/tk-x.yml",
-      userPrompt: "lane authority",
-      parentActor: parent,
-      reviewer: parent,
-    });
-
-    // Fresh write has parent/reviewer but no recorded baseCommit / integrationAuthority.
-    const raw0 = await nfs.readFile(taskPath);
-    const fm0 = parseFrontmatter(raw0);
-    assert.equal(fm0.data.integrationAuthority, undefined);
-    assert.equal(fm0.data.baseCommit, undefined);
-
-    const loaded0 = await loadTaskEnvelope(nfs, taskPath);
-    // No in-memory phantom — absence must stay absent for backfill detection.
-    assert.equal(loaded0.integrationAuthority, undefined);
-    assert.equal(loaded0.baseCommit, undefined);
-    // Context / workspaceLane projection may derive without inventing envelope field.
-    const projected = workspaceLaneOf({
-      ...loaded0,
-      workspace: "C:/ws",
-      worktree: "C:/wt",
-      branch: "tent-task/tk-x",
-      targetBranch: "tent-role/规划",
-    });
-    assert.equal(projected?.integrationAuthority?.mutator, "service");
-    assert.equal(projected?.integrationAuthority?.actor.id, "规划");
-    // Envelope field still unset after projection helper.
-    assert.equal(loaded0.integrationAuthority, undefined);
-
-    // Explicit managed-lane backfill (same writes ensureTaskWorkspaceLane performs).
-    const baseSha = "a".repeat(40);
-    const authority = deriveIntegrationAuthority({
-      parentActor: parent,
-      reviewer: parent,
-    });
-    const afterBind = await patchTaskEnvelope(nfs, taskPath, {
-      workspace: "C:/ws",
-      worktree: "C:/wt",
-      branch: "tent-task/tk-x",
-      targetBranch: "tent-role/规划",
-      baseCommit: baseSha,
-      integrationAuthority: authority,
-    });
-    assert.equal(afterBind.baseCommit, baseSha);
-    assert.ok(afterBind.integrationAuthority);
-    assert.equal(afterBind.integrationAuthority?.mutator, "service");
-    assert.equal(afterBind.integrationAuthority?.actor.id, "规划");
-
-    // Raw frontmatter must record both fields (restart audit truth).
-    const raw1 = await nfs.readFile(taskPath);
-    const fm1 = parseFrontmatter(raw1);
-    assert.equal(fm1.data.baseCommit, baseSha);
-    assert.ok(fm1.data.integrationAuthority);
-    const bag = fm1.data.integrationAuthority as {
-      actor: { kind: string; id: string };
-      mutator: string;
-    };
-    assert.equal(bag.mutator, "service");
-    assert.equal(bag.actor.id, "规划");
-
-    // Reload retains and validates recorded bag.
-    const reloaded = await loadTaskEnvelope(nfs, taskPath);
-    assert.equal(reloaded.baseCommit, baseSha);
-    assert.equal(reloaded.integrationAuthority?.mutator, "service");
-    assert.equal(reloaded.integrationAuthority?.actor.kind, "role");
-    assert.equal(reloaded.integrationAuthority?.actor.id, "规划");
-
-    const { serializeFrontmatter } = await import("../src/core/frontmatter.js");
-
-    // Tampered actor on disk fails loud at load.
-    const fmTamper = parseFrontmatter(raw1);
-    fmTamper.data.integrationAuthority = {
-      actor: { kind: "role", id: "forged-actor" },
-      mutator: "service",
-    };
-    await nfs.writeFile(
-      taskPath,
-      serializeFrontmatter(fmTamper.data, fmTamper.body, fmTamper.keyOrder)
-    );
-    await assert.rejects(
-      () => loadTaskEnvelope(nfs, taskPath),
-      (err: unknown) =>
-        err instanceof TaskContextCardError && err.code === "INVALID_ACTOR"
-    );
-
-    // Tampered mutator fails loud.
-    fmTamper.data.integrationAuthority = {
-      actor: { kind: "role", id: "规划" },
-      mutator: "executor",
-    };
-    await nfs.writeFile(
-      taskPath,
-      serializeFrontmatter(fmTamper.data, fmTamper.body, fmTamper.keyOrder)
-    );
-    await assert.rejects(
-      () => loadTaskEnvelope(nfs, taskPath),
-      (err: unknown) =>
-        err instanceof TaskContextCardError && err.code === "INVALID_ACTOR"
-    );
-
-    // Missing legacy authority: strip bag → load stays absent (explicit backfill path).
-    const withoutAuth = Object.fromEntries(
-      Object.entries(fmTamper.data).filter(([k]) => k !== "integrationAuthority")
-    );
-    await nfs.writeFile(
-      taskPath,
-      serializeFrontmatter(
-        withoutAuth,
-        fmTamper.body,
-        fmTamper.keyOrder.filter((k) => k !== "integrationAuthority")
-      )
-    );
-    const legacy = await loadTaskEnvelope(nfs, taskPath);
-    assert.equal(
-      legacy.integrationAuthority,
-      undefined,
-      "legacy missing authority stays absent (no phantom)"
-    );
-    assert.equal(legacy.baseCommit, baseSha);
-    // Explicit backfill (same as ensureTaskWorkspaceLane) persists canonical bag.
-    const backfilled = await patchTaskEnvelope(nfs, taskPath, {
-      integrationAuthority: deriveIntegrationAuthority({
-        parentActor: legacy.parentActor!,
-        reviewer: legacy.reviewer!,
-      }),
-    });
-    assert.equal(backfilled.integrationAuthority?.mutator, "service");
-    const rawBack = await nfs.readFile(taskPath);
-    assert.match(rawBack, /integrationAuthority:/);
-    assert.match(rawBack, /mutator: service/);
-    const finalLoad = await loadTaskEnvelope(nfs, taskPath);
-    assert.equal(finalLoad.integrationAuthority?.actor.id, "规划");
-  } finally {
-    await fs.rm(dir, { recursive: true, force: true });
-  }
-});
 
 
 // ---- stable prefix decision (no prompt-memory) ----

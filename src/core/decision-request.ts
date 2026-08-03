@@ -1,4 +1,5 @@
-import type { TaskActorRef } from "./task-model.js";
+import { isTaskId, type TaskActorRef } from "./task-model.js";
+import { isSessionId } from "./id.js";
 
 export type DecisionRequestStatus = "pending" | "answered";
 
@@ -24,7 +25,6 @@ export type PendingDecisionRequest = {
   target: TaskActorRef;
   question: string;
   options: DecisionRequestOption[];
-  blocking: boolean;
   status: "pending";
   response?: never;
 };
@@ -36,7 +36,6 @@ export type AnsweredDecisionRequest = {
   target: TaskActorRef;
   question: string;
   options: DecisionRequestOption[];
-  blocking: boolean;
   status: "answered";
   response: DecisionResponse;
   resolvedBy: TaskActorRef;
@@ -53,7 +52,6 @@ const REQUEST_FIELDS = [
   "target",
   "question",
   "options",
-  "blocking",
   "status",
 ] as const;
 
@@ -80,6 +78,19 @@ function requiredText(value: unknown, label: string): string {
   return value;
 }
 
+function canonicalId(
+  value: unknown,
+  label: string,
+  prefix: string,
+  validate: (value: string) => boolean
+): string {
+  const id = requiredText(value, label);
+  if (id !== id.trim() || id !== id.toLowerCase() || !validate(id)) {
+    throw new Error(`${label} must be a canonical lowercase ${prefix}-* id.`);
+  }
+  return id;
+}
+
 function parseRequester(value: unknown): DecisionRequester {
   const label = "Decision request.requester";
   if (!isRecord(value)) throw new Error(`${label} must be a session actor object.`);
@@ -87,7 +98,10 @@ function parseRequester(value: unknown): DecisionRequester {
   if (value.kind !== "session") {
     throw new Error(`${label}.kind must be session.`);
   }
-  return { kind: "session", id: requiredText(value.id, `${label}.id`).trim() };
+  return {
+    kind: "session",
+    id: canonicalId(value.id, `${label}.id`, "ss", isSessionId),
+  };
 }
 
 function parseAuthorityActor(value: unknown, label: string): TaskActorRef {
@@ -171,19 +185,19 @@ export function validateDecisionRequest(value: unknown): DecisionRequest {
     optionIds.add(option.id);
   }
 
-  const blocking = value.blocking;
-  if (typeof blocking !== "boolean") {
-    throw new Error("Decision request.blocking must be a boolean.");
-  }
   const target = parseAuthorityActor(value.target, "Decision request.target");
   const base = {
-    id: requiredText(value.id, "Decision request.id").trim(),
-    taskId: requiredText(value.taskId, "Decision request.taskId").trim(),
+    id: canonicalId(
+      value.id,
+      "Decision request.id",
+      "dr",
+      (id) => /^dr-[0-9a-z]{10}$/.test(id)
+    ),
+    taskId: canonicalId(value.taskId, "Decision request.taskId", "tk", isTaskId),
     requester: parseRequester(value.requester),
     target,
     question: requiredText(value.question, "Decision request.question"),
     options,
-    blocking,
   };
   if (status === "pending") {
     return { ...base, status };

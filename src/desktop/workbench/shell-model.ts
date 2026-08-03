@@ -41,8 +41,8 @@ import {
 export type ShellTaskRow = {
   path: string;
   roleId?: string;
-  /** Node ids from TaskProjection.referencedNodeIds (Context Card refs). */
-  referencedNodeIds: string[];
+  workNodeIds: string[];
+  contextNodeIds: string[];
   /** Canonical lifecycle state (task-api). */
   state: string;
   acceptMode: TaskProjection["acceptMode"];
@@ -123,7 +123,8 @@ export class DesktopShellModel {
           path: t.path,
           id: t.id,
           roleId: t.roleId,
-          referencedNodeIds: t.referencedNodeIds,
+          workNodeIds: t.workNodeIds,
+          contextNodeIds: t.contextNodeIds,
           state: t.state,
           prompt: t.prompt,
           activeDeliveryId: t.activeDeliveryId,
@@ -293,7 +294,8 @@ export class DesktopShellModel {
       this.tasks = (taskResult.tasks ?? []).map((t) => ({
         path: t.path,
         roleId: t.roleId,
-        referencedNodeIds: t.referencedNodeIds ?? [],
+        workNodeIds: t.workNodeIds ?? [],
+        contextNodeIds: t.contextNodeIds ?? [],
         state: t.state,
         acceptMode: t.acceptMode,
         id: t.id,

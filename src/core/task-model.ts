@@ -254,11 +254,7 @@ export function isAcceptMode(value: unknown): value is AcceptMode {
   );
 }
 
-export type ArtifactRef = {
-  kind: "path" | "dir" | "commit" | "url" | "other";
-  target: string;
-  label?: string;
-};
+export type { ArtifactRef } from "./artifact.js";
 
 /**
  * Task Git lane projection (operational truth on the envelope).

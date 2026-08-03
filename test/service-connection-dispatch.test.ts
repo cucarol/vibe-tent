@@ -132,7 +132,8 @@ test("Connection dispatch removes its exact reservation when Task creation fails
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "occupied-node");
     const occupied = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "occupy exact Node",
       parentActor: { kind: "user", id: "user" },
@@ -144,7 +145,8 @@ test("Connection dispatch removes its exact reservation when Task creation fails
 
     const failed = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       connectionId: FAKE_DEFAULT_CONNECTION_ID,
       prompt: "must fail after exact Session reservation",
       parentActor: { kind: "user", id: "user" },
@@ -170,7 +172,8 @@ test("concurrent Connection dispatch atomically claims one exact-Node Task and l
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "atomic-node");
     const payload = (prompt: string) => ({
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       connectionId: FAKE_DEFAULT_CONNECTION_ID,
       prompt,
       parentActor: { kind: "user" as const, id: "user" },
@@ -190,8 +193,8 @@ test("concurrent Connection dispatch atomically claims one exact-Node Task and l
     const listed = await rpc(svc, "task.list", { workspaceId });
     assert.ok(!listed.error, JSON.stringify(listed.error));
     const tasks = (listed.result as {
-      tasks: Array<{ state: string; sessionId?: string; referencedNodeIds: string[] }>;
-    }).tasks.filter((task) => task.referencedNodeIds.includes(nodeId));
+      tasks: Array<{ state: string; sessionId?: string; workNodeIds: string[] }>;
+    }).tasks.filter((task) => task.workNodeIds.includes(nodeId));
     assert.equal(tasks.length, 1, JSON.stringify(tasks));
     assert.notEqual(tasks[0]!.state, "queued");
     assert.match(tasks[0]!.sessionId ?? "", /^ss-/);
@@ -216,7 +219,8 @@ test("Connection dispatch claim persistence failure leaves an interrupted Task a
     try {
       const failed = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId],
+        contextNodeIds: [],
         connectionId: FAKE_DEFAULT_CONNECTION_ID,
         prompt: "claim must fail with a durable audit",
         parentActor: { kind: "user", id: "user" },
@@ -228,8 +232,8 @@ test("Connection dispatch claim persistence failure leaves an interrupted Task a
       const listed = await rpc(svc, "task.list", { workspaceId });
       assert.ok(!listed.error, JSON.stringify(listed.error));
       const tasks = (listed.result as {
-        tasks: Array<{ state: string; sessionId?: string; referencedNodeIds: string[] }>;
-      }).tasks.filter((task) => task.referencedNodeIds.includes(nodeId));
+        tasks: Array<{ state: string; sessionId?: string; workNodeIds: string[] }>;
+      }).tasks.filter((task) => task.workNodeIds.includes(nodeId));
       assert.equal(tasks.length, 1, JSON.stringify(listed.result));
       assert.equal(tasks[0]!.state, "interrupted");
       assert.match(tasks[0]!.sessionId ?? "", /^ss-/);
@@ -255,7 +259,8 @@ test("Connection dispatch: Session path, task-scoped manifest, no Role identity"
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "one-shot Connection work",
     });
@@ -332,7 +337,8 @@ test("role dispatch creates init + task-scoped manifest + role path", async () =
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "role path stays",
     });
@@ -372,7 +378,8 @@ test("Git Connection Task gets tent-task/<taskId> isolated lane before provider 
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "git Connection lane",
     });
@@ -466,7 +473,8 @@ test("Connection dispatch binds two same-Connection Tasks to independent Session
       workspaceId: a.workspaceId,
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      nodeIds: [a.nodeId],
+      workNodeIds: [a.nodeId],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "first",
     });
@@ -474,7 +482,8 @@ test("Connection dispatch binds two same-Connection Tasks to independent Session
       workspaceId: a.workspaceId,
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      nodeIds: [nodeIdB],
+      workNodeIds: [nodeIdB],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "second",
     });
@@ -510,7 +519,8 @@ test("Agent Connections work for user and Role callers without identity pre-regi
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "user starts Connection",
     });
@@ -527,7 +537,8 @@ test("Agent Connections work for user and Role callers without identity pre-regi
     const nodeId2 = (box2.result as { nodeId: string }).nodeId;
     const noDisp = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [nodeId2],
+      workNodeIds: [nodeId2],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "no dispatcher",
       parentActor: { kind: "user", id: "user" },
@@ -546,7 +557,8 @@ test("Agent Connections work for user and Role callers without identity pre-regi
     const nodeId3 = (box3.result as { nodeId: string }).nodeId;
     const orch = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [nodeId3],
+      workNodeIds: [nodeId3],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "orch dispatch",
       callerKind: "role",
@@ -566,7 +578,8 @@ test("Agent Connections work for user and Role callers without identity pre-regi
     const nodeId4 = (box4.result as { nodeId: string }).nodeId;
     const execDisp = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [nodeId4],
+      workNodeIds: [nodeId4],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "executor dispatch",
       callerKind: "role",
@@ -604,7 +617,8 @@ test("Role deletion is not blocked by a same-named Agent Connection Session", as
       workspaceId: wid,
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "Connection Session",
     });
@@ -628,7 +642,8 @@ test("task discovery and retention see nested Session Tasks", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "discover me",
     });
@@ -675,7 +690,8 @@ test("Connection Task projects exact Session and Delivery remains Task-scoped", 
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "claim and deliver",
     });
@@ -724,7 +740,8 @@ test("invalid/missing Role-or-Connection assignment combinations fail loud", asy
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       prompt: "no durable Role or Session allocator",
     });
     assert.ok(missingAssignment.error);
@@ -734,7 +751,8 @@ test("invalid/missing Role-or-Connection assignment combinations fail loud", asy
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       connectionId: "missing-connection",
       prompt: "unknown Connection",
     });
@@ -746,7 +764,8 @@ test("invalid/missing Role-or-Connection assignment combinations fail loud", asy
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       connectionId: "fake-default",
       prompt: "ambiguous assignment",
@@ -760,7 +779,8 @@ test("invalid/missing Role-or-Connection assignment combinations fail loud", asy
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "role ok",
     });
@@ -784,7 +804,8 @@ test("Connection dispatch reserves exact Session and parks provider launch failu
       const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "combined-role");
       const started = await rpc(svc, "task.dispatch", {
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId],
+        contextNodeIds: [],
         connectionId: "fake-default",
         prompt: "combined Role Connection",
         callerKind: "role",
@@ -808,7 +829,8 @@ test("Connection dispatch reserves exact Session and parks provider launch failu
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId],
+        contextNodeIds: [],
         connectionId: "missing-connection",
         prompt: "unknown Connection",
       });
@@ -845,7 +867,8 @@ test("Connection dispatch reserves exact Session and parks provider launch failu
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId],
+        contextNodeIds: [],
         connectionId: "fake-launch-fail",
         prompt: "combined launch fail",
         callerKind: "user",
@@ -888,7 +911,8 @@ test("Connection dispatch reserves exact Session and parks provider launch failu
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
-        nodeIds: [nodeId],
+        workNodeIds: [nodeId],
+        contextNodeIds: [],
         connectionId: FAKE_DEFAULT_CONNECTION_ID,
         prompt: "combined success",
         callerKind: "user",
@@ -926,7 +950,8 @@ test("Task envelope missing both roleId and sessionId fails loud", async () => {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "strip canonical assignment",
     });
@@ -956,7 +981,8 @@ test("managed Connection Session carries no durable Role identity", async () => 
     assert.ok(!note.error, JSON.stringify(note.error));
     const dispatched = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [(note.result as { nodeId: string }).nodeId],
+      workNodeIds: [(note.result as { nodeId: string }).nodeId],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "managed Session without Role identity",
       parentActor: { kind: "user", id: "user" },

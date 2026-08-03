@@ -93,12 +93,13 @@ export async function runTaskCommand(
       case "claim": {
         const taskPath = positionals[0];
         const hasDirectClaimInput =
-          (repeatable.node?.length ?? 0) > 0 ||
+          (repeatable["work-node"]?.length ?? 0) > 0 ||
+          (repeatable["context-node"]?.length ?? 0) > 0 ||
           Object.prototype.hasOwnProperty.call(flags, "prompt") ||
           Object.prototype.hasOwnProperty.call(flags, "from-task");
         if (taskPath && hasDirectClaimInput) {
           return failUsage(
-            "tent task claim: <taskPath> cannot be combined with --node, --prompt, or --from-task"
+            "tent task claim: <taskPath> cannot be combined with --work-node, --context-node, --prompt, or --from-task"
           );
         }
         if (taskPath) {
@@ -120,16 +121,18 @@ export async function runTaskCommand(
         }
         if (!hasDirectClaimInput || positionals.length > 0) {
           return failUsage(
-            "Usage: tent task claim --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]"
+            "Usage: tent task claim --work-node <nodeId> [--work-node <nodeId> ...] [--context-node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]"
           );
         }
-        const rawNodes = repeatable.node ?? [];
-        if (rawNodes.some((value) => !String(value ?? "").trim())) {
-          return failUsage("tent task claim: every --node value must be a non-empty nodeId");
+        const rawWorkNodes = repeatable["work-node"] ?? [];
+        const rawContextNodes = repeatable["context-node"] ?? [];
+        if ([...rawWorkNodes, ...rawContextNodes].some((value) => !String(value ?? "").trim())) {
+          return failUsage("tent task claim: every Node value must be a non-empty nodeId");
         }
-        const nodeIds = collectTaskNodeIds(rawNodes);
-        if (nodeIds.length === 0) {
-          return failUsage("tent task claim: direct Role claim requires at least one --node");
+        const workNodeIds = collectTaskNodeIds(rawWorkNodes);
+        const contextNodeIds = collectTaskNodeIds(rawContextNodes);
+        if (workNodeIds.length === 0) {
+          return failUsage("tent task claim: direct Role claim requires at least one --work-node");
         }
         if (!Object.prototype.hasOwnProperty.call(flags, "prompt")) {
           return failUsage("tent task claim: direct Role claim requires --prompt <text> or --prompt -");
@@ -160,7 +163,8 @@ export async function runTaskCommand(
         const sourceTaskPath = String(flags["from-task"] ?? "").trim() || undefined;
         const result = await client.taskClaimDirect(workspaceId, {
           roleId,
-          nodeIds,
+          workNodeIds,
+          contextNodeIds,
           prompt,
           sourceTaskPath,
         });
@@ -219,11 +223,11 @@ export async function runTaskCommand(
       }
       case "dispatch": {
         // Public ordinary dispatch (cx-b9bf58):
-        //   tent task dispatch --target role:<id>|connection:<connectionId> --node <nodeId>… --prompt <text>|-
-        // Node refs map to transient RPC nodeIds[] (→ contextCard.refs.nodes sole persist).
+        //   tent task dispatch --target role:<id>|connection:<connectionId>
+        //     --work-node <nodeId>… [--context-node <nodeId>…] --prompt <text>|-
         // Agent Connection ids are transient launch selectors and are never Task identity.
         const usage =
-          "Usage: tent task dispatch --target role:<roleId>|connection:<connectionId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]";
+          "Usage: tent task dispatch --target role:<roleId>|connection:<connectionId> --work-node <nodeId> [--work-node <nodeId> ...] [--context-node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]";
 
         const unknownFlag = findUnknownFlag(flags, DISPATCH_FLAGS);
         if (unknownFlag) {
@@ -232,7 +236,7 @@ export async function runTaskCommand(
         if (positionals.length > 0) {
           return failUsage(
             "Public ordinary dispatch no longer accepts positional <nodeId> <role> grammar; " +
-              "use --target and --node.\n" +
+              "use --target, --work-node, and optional --context-node.\n" +
               usage
           );
         }
@@ -256,20 +260,22 @@ export async function runTaskCommand(
           );
         }
 
-        const rawNodes = repeatable.node ?? [];
-        // Every --node occurrence must be non-empty; do not silently drop blanks
+        const rawWorkNodes = repeatable["work-node"] ?? [];
+        const rawContextNodes = repeatable["context-node"] ?? [];
+        // Every Node occurrence must be non-empty; do not silently drop blanks
         // when another valid Node is present in the same batch.
-        for (const value of rawNodes) {
+        for (const value of [...rawWorkNodes, ...rawContextNodes]) {
           if (!String(value ?? "").trim()) {
             return failUsage(
-              `Every --node value must be a non-empty nodeId (got empty/whitespace)\n${usage}`
+              `Every Node value must be a non-empty nodeId (got empty/whitespace)\n${usage}`
             );
           }
         }
-        const nodeIds = collectTaskNodeIds(rawNodes);
-        if (nodeIds.length === 0) {
+        const workNodeIds = collectTaskNodeIds(rawWorkNodes);
+        const contextNodeIds = collectTaskNodeIds(rawContextNodes);
+        if (workNodeIds.length === 0) {
           return failUsage(
-            `At least one --node <nodeId> is required in this batch\n${usage}`
+            `At least one --work-node <nodeId> is required in this batch\n${usage}`
           );
         }
 
@@ -300,10 +306,10 @@ export async function runTaskCommand(
         // - role target: durable Role handoff, queued, never startSession
         // - connection target: reserve a temporary ACP Session from Settings,
         //   then create the Task already bound to that exact Session.
-        // nodeIds is the sole public Node selection and persists only through
-        // Context Card refs.nodes. No single-Node compatibility field is emitted.
+        // Exact work/context Node arrays are the sole public Node selection.
         const common = {
-          nodeIds,
+          workNodeIds,
+          contextNodeIds,
           prompt,
           parentActor,
           reviewer: parentActor,
@@ -676,8 +682,8 @@ type TaskLike = {
   roleId?: string;
   state?: string;
   status?: string;
-  /** Node ids from TaskProjection.referencedNodeIds (Context Card refs). */
-  referencedNodeIds?: string[];
+  workNodeIds?: string[];
+  contextNodeIds?: string[];
   sessionId?: string;
   prompt?: string;
 };
@@ -752,7 +758,8 @@ function formatTaskList(result: unknown): string {
       `- ${t.path ?? t.id ?? "?"}` +
         `\tstate=${t.state ?? t.status ?? "?"}` +
         (t.roleId ? `\trole=${t.roleId}` : "") +
-        `\tnodes=${(t.referencedNodeIds ?? []).join(",") || "-"}` +
+        `\twork=${(t.workNodeIds ?? []).join(",") || "-"}` +
+        `\tcontext=${(t.contextNodeIds ?? []).join(",") || "-"}` +
         (t.sessionId ? `\tsession=${t.sessionId}` : "")
     );
   }
@@ -767,7 +774,8 @@ function formatTaskGet(result: { task: TaskLike }): string {
     `roleId: ${t.roleId ?? "-"}`,
     `state: ${t.state ?? t.status ?? "?"}`,
     `status: ${t.status ?? "?"}`,
-    `nodes: ${(t.referencedNodeIds ?? []).join(", ") || "-"}`,
+    `workNodeIds: ${(t.workNodeIds ?? []).join(", ") || "-"}`,
+    `contextNodeIds: ${(t.contextNodeIds ?? []).join(", ") || "-"}`,
   ];
   if (t.sessionId) lines.push(`sessionId: ${t.sessionId}`);
   if (t.prompt) {
@@ -983,11 +991,12 @@ const BOOLEAN_FLAGS = new Set([
 ]);
 
 /** Flags that may appear more than once (values collected in order). */
-const REPEATABLE_FLAGS = new Set(["node"]);
+const REPEATABLE_FLAGS = new Set(["work-node", "context-node"]);
 
 const DISPATCH_FLAGS = new Set([
   "target",
-  "node",
+  "work-node",
+  "context-node",
   "prompt",
   "workspace",
   "json",
@@ -1069,14 +1078,15 @@ Commands:
   tent task list [--workspace <path>] [--json]
   tent task get <taskPath> [--workspace <path>] [--json]
   tent task claim <taskPath> [--workspace <path>] [--json]
-  tent task claim --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]
+  tent task claim --work-node <nodeId> [--work-node <nodeId> ...] [--context-node <nodeId> ...] --prompt <text>|- [--from-task <taskPath>] [--workspace <path>] [--json]
       # direct Role execution: create + claim atomically; no --target and no downstream dispatch
       # Role comes from TENT_ROLE_NAME/TENT_ROLE; Service derives parent/reviewer from durable facts
   tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
-  tent task dispatch --target role:<roleId>|connection:<connectionId> --node <nodeId> [--node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]
+  tent task dispatch --target role:<roleId>|connection:<connectionId> --work-node <nodeId> [--work-node <nodeId> ...] [--context-node <nodeId> ...] --prompt <text>|- [--workspace <path>] [--json]
       # --target role:*  durable Role handoff (queued; never starts managed ACP at dispatch)
       # --target connection:* machine Settings Connection + exact managed Session
-      # --node           repeatable Node refs (at least one); sole source for contextCard.refs.nodes
+      # --work-node      repeatable writable Nodes (at least one; exact occupation)
+      # --context-node   repeatable shared read-only context Nodes
       # parentActor/reviewer derive from the durable Role or local user boundary
       # Any flag outside this command's canonical grammar is rejected
   tent task accept <taskPath> --actor <user|role> [--outputs id,id] [--workspace <path>] [--json]

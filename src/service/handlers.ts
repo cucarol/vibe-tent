@@ -8,7 +8,7 @@ import {
   dispatch,
   patchBody,
   patchNode,
-  resolveDispatchNodeIds,
+  resolveDispatchTaskNodeSelection,
   setNodeMode,
 } from "../core/ops.js";
 import {
@@ -72,18 +72,15 @@ import {
 } from "../core/role-checkpoint.js";
 import {
   assembleManagedPrompt,
-  assertRefsResolved,
   deriveIntegrationAuthority,
   decideStablePrefixInjection,
   ExecutorLaneHistoryError,
   formatExecutionLanePrompt,
   projectExecutionLaneFromTask,
   shouldInjectStablePrefix,
-  TaskContextCardError,
-  type TaskContextCardV1,
+  type TaskContextCard,
 } from "../core/task-context-card.js";
 import {
-  assertDurableContextCardRefsResolved,
   collectStableContextGeneration,
   appendCallerBootstrapSection,
   type StableContextGenerationBundle,
@@ -233,6 +230,7 @@ import {
   resolveOutLink,
 } from "../markdown/links.js";
 import { contentEtag } from "./etag.js";
+import { normalizeArtifactRefs } from "../core/artifact.js";
 import type { EventBus } from "./events.js";
 import { MutationBus } from "./mutation-bus.js";
 import type { WorkspaceHost } from "./workspace-host.js";
@@ -525,8 +523,6 @@ export async function dispatchMethod(
           sessionId: callContext.callerSessionId,
           externalKey: callContext.callerExternalKey,
         });
-      case "task.backfillWorkspaceLaneBase":
-        return taskBackfillWorkspaceLaneBaseRpc(ctx, p);
       case "task.wait":
         return taskWaitRpc(ctx, p);
       case "task.resume":
@@ -3082,7 +3078,8 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     p,
     new Set([
       "workspaceId",
-      "nodeIds",
+      "workNodeIds",
+      "contextNodeIds",
       "roleId",
       "connectionId",
       "prompt",
@@ -3096,10 +3093,9 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  // Authoritative public Node selection is nodeIds[] only.
+  // Authoritative public Node selection is exact writable work plus shared context.
   const dispatchSelection = resolveTaskNodeSelection(p, mount.env.tentName, "task.dispatch");
   const primaryNodeId = dispatchSelection.primaryId;
-  const nodeIds = dispatchSelection.nodeIds;
   const requestedRoleId = optionalString(p, "roleId");
   const connectionId = optionalString(p, "connectionId");
   if (Boolean(requestedRoleId) === Boolean(connectionId)) {
@@ -3245,7 +3241,8 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
         workspace: workspaceLane,
         ...(requestedRoleId ? { roleId: requestedRoleId } : {}),
         ...(reservedSessionId ? { sessionId: reservedSessionId } : {}),
-        nodeIds,
+        workNodeIds: dispatchSelection.workNodeIds,
+        contextNodeIds: dispatchSelection.contextNodeIds,
         ...(preallocatedTaskId ? { taskId: preallocatedTaskId } : {}),
       });
     } catch (error) {
@@ -3347,7 +3344,8 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
         state: dispatchedState,
         roleId: dispatched.roleId,
         sessionId: dispatched.sessionId,
-        nodeIds,
+        workNodeIds: [...dispatchSelection.workNodeIds],
+        contextNodeIds: [...dispatchSelection.contextNodeIds],
         reason: "task.dispatch",
       },
       "self"
@@ -3482,8 +3480,8 @@ function parseOptionalTaskActor(
 
 /**
  * Resolve authoritative Node selection for task.dispatch.
- * Accept only transient `nodeIds` (ordered, deduped). The old
- * nodeId/id/claimId dispatch grammar is retired rather than silently translated.
+ * Accept only canonical `workNodeIds` + `contextNodeIds`. Retired generic Node
+ * selection fields are rejected rather than silently translated.
  * Fail loud before MutationBus Task/manifest writes for malformed input.
  * Node existence/archive gates run inside Core under the same workspace lock.
  */
@@ -3491,36 +3489,31 @@ function resolveTaskNodeSelection(
   p: Record<string, unknown>,
   tentName: string,
   method: "task.dispatch" | "task.claimDirect"
-): { nodeIds: string[]; primaryId: string } {
-  for (const retired of ["nodeId", "id", "claimId"] as const) {
+): { workNodeIds: string[]; contextNodeIds: string[]; primaryId: string } {
+  for (const retired of ["nodeId", "nodeIds", "id", "claimId"] as const) {
     if (p[retired] !== undefined && p[retired] !== null) {
       throw new RpcError(
         -32602,
-        `${method} ${retired} is retired; pass non-empty nodeIds[]`,
+        `${method} ${retired} is retired; pass workNodeIds[] and contextNodeIds[]`,
         { field: retired }
       );
     }
   }
-  // Refuse non-array / non-string-element nodeIds fail-loud (not silent ignore).
-  if ("nodeIds" in p && p.nodeIds !== undefined && p.nodeIds !== null) {
-    if (!Array.isArray(p.nodeIds)) {
-      throw new RpcError(-32602, "Invalid string[] param: nodeIds");
-    }
-    if (!p.nodeIds.every((x) => typeof x === "string")) {
-      throw new RpcError(-32602, "Invalid string[] param: nodeIds");
+  for (const field of ["workNodeIds", "contextNodeIds"] as const) {
+    if (!Array.isArray(p[field]) || !(p[field] as unknown[]).every((x) => typeof x === "string")) {
+      throw new RpcError(-32602, `Invalid string[] param: ${field}`);
     }
   }
-  const rawNodeIds = optionalStringArray(p, "nodeIds");
   try {
-    const nodeIds = resolveDispatchNodeIds({
-      nodeIds: rawNodeIds,
-      primaryNodeId: rawNodeIds?.[0] ?? "",
+    const selection = resolveDispatchTaskNodeSelection({
+      workNodeIds: p.workNodeIds,
+      contextNodeIds: p.contextNodeIds,
       tentName,
     });
-    return { nodeIds, primaryId: nodeIds[0]! };
+    return { ...selection, primaryId: selection.workNodeIds[0]! };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    throw new RpcError(-32602, message, { field: "nodeIds" });
+    throw new RpcError(-32602, message, { field: "workNodeIds" });
   }
 }
 
@@ -3569,7 +3562,8 @@ async function taskClaimDirectRpc(
     new Set([
       "workspaceId",
       "roleId",
-      "nodeIds",
+      "workNodeIds",
+      "contextNodeIds",
       "prompt",
       "sourceTaskPath",
     ]),
@@ -3635,7 +3629,8 @@ async function taskClaimDirectRpc(
         acceptMode,
         roleId,
         sessionId: callerSession.id,
-        nodeIds: selection.nodeIds,
+        workNodeIds: selection.workNodeIds,
+        contextNodeIds: selection.contextNodeIds,
       });
       const pre = await loadTaskEnvelope(mount.env.fs, created.taskPath);
       previousLastTaskId = callerSession.lastTaskId;
@@ -3655,8 +3650,7 @@ async function taskClaimDirectRpc(
         ...(claimWrite ? { claimWrite } : {}),
       });
       emitTaskState(ctx, workspaceId, task, "task.claimDirect");
-      const nodeIds = taskReferencedNodeIds(task);
-      for (const nodeId of nodeIds) {
+      for (const nodeId of task.workNodeIds) {
         if (nodeId === "root") continue;
         ctx.events.emit(
           "node.changed",
@@ -3674,7 +3668,8 @@ async function taskClaimDirectRpc(
         state: task.state,
         roleId: task.roleId,
         sessionId: task.sessionId,
-        referencedNodeIds: nodeIds,
+        workNodeIds: [...task.workNodeIds],
+        contextNodeIds: [...task.contextNodeIds],
       };
     } catch (err) {
       if (callerSessionRebound) {
@@ -3944,9 +3939,7 @@ async function taskClaimRpc(
         throw error;
       }
       emitTaskState(ctx, workspaceId, task, "task.claim");
-      const nodeIds =
-        taskReferencedNodeIds(task);
-      for (const nodeId of nodeIds) {
+      for (const nodeId of task.workNodeIds) {
         if (nodeId === "root") continue;
         ctx.events.emit(
           "node.changed",
@@ -3961,7 +3954,8 @@ async function taskClaimRpc(
         task: projectTask(task),
         state: task.state,
         roleId: task.roleId,
-        referencedNodeIds: nodeIds,
+        workNodeIds: [...task.workNodeIds],
+        contextNodeIds: [...task.contextNodeIds],
         sessionId: task.sessionId,
       };
     })
@@ -4016,261 +4010,6 @@ async function requireRoleClaimCallerSession(
     );
   }
   return session;
-}
-
-/**
- * Explicit legacy backfill of workspaceLane.baseCommit for running/waiting Tasks
- * whose lane exists but base is missing. Authorized only by exact persisted
- * parent/reviewer. Never infers from roleBranchBase/cwd/current tip.
- * Same SHA is idempotent (original audit unchanged); different SHA fails loud.
- * Wrapped by per-Task lifecycle flight so it cannot race deliver/accept.
- */
-async function taskBackfillWorkspaceLaneBaseRpc(
-  ctx: HandlerContext,
-  p: Record<string, unknown>
-) {
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const taskPath = requireString(p, "taskPath");
-  const baseCommitRaw = requireString(p, "baseCommit");
-  const actor = parseBackfillActor(p.actor);
-
-  return runTaskLifecycle(workspaceId, taskPath, () =>
-    ctx.mutations.run(workspaceId, async () => {
-      ctx.host.markSelfWrite(workspaceId);
-      if (beforeTaskBackfillWorkspaceLaneBaseForTests) {
-        await beforeTaskBackfillWorkspaceLaneBaseForTests({
-          workspaceId,
-          taskPath,
-        });
-      }
-      // Re-read under task lifecycle + workspace mutation lock.
-      const current = await loadTaskEnvelope(mount.env.fs, taskPath);
-
-      if (current.state !== "running" && current.state !== "waiting") {
-        throw new RpcError(
-          RPC_LIFECYCLE,
-          `task.backfillWorkspaceLaneBase requires running|waiting task (state=${current.state})`,
-          { taskPath, state: current.state, code: "BASE_BACKFILL_STATE" }
-        );
-      }
-
-      if (!current.parentActor || !current.reviewer) {
-        throw new RpcError(
-          RPC_LIFECYCLE,
-          "task.backfillWorkspaceLaneBase requires exact persisted parentActor/reviewer",
-          { taskPath, code: "BASE_BACKFILL_ACTOR" }
-        );
-      }
-      // Only exact persisted parent/reviewer may authorize (they are equal by invariant).
-      const authorized =
-        (actor.kind === current.parentActor.kind &&
-          actor.id === current.parentActor.id) ||
-        (actor.kind === current.reviewer.kind && actor.id === current.reviewer.id);
-      if (!authorized) {
-        throw new RpcError(
-          RPC_LIFECYCLE,
-          `task.backfillWorkspaceLaneBase unauthorized actor ${actor.kind}:${actor.id}; ` +
-            `requires exact parent/reviewer ${current.parentActor.kind}:${current.parentActor.id}`,
-          {
-            taskPath,
-            actor,
-            parentActor: current.parentActor,
-            reviewer: current.reviewer,
-            code: "BASE_BACKFILL_UNAUTHORIZED",
-          }
-        );
-      }
-
-      const laneComplete = Boolean(
-        current.workspace && current.worktree && current.branch && current.targetBranch
-      );
-      if (!laneComplete) {
-        throw new RpcError(
-          RPC_LIFECYCLE,
-          "task.backfillWorkspaceLaneBase requires recorded workspace/worktree/branch/targetBranch " +
-            "(legacy lane must already exist; never invent lane facts)",
-          { taskPath, code: "BASE_BACKFILL_LANE_INCOMPLETE" }
-        );
-      }
-
-      // Validate recorded lane against real Role/Task integration contract.
-      let real: RoleWorkspaceContract;
-      try {
-        real = await resolveIntegrationContract(mount.workspaceRoot, current, mount.env.fs);
-      } catch (err) {
-        throw new RpcError(
-          RPC_LIFECYCLE,
-          err instanceof Error
-            ? err.message
-            : "task.backfillWorkspaceLaneBase lane/workspace mismatch",
-          { taskPath, code: "BASE_BACKFILL_LANE_MISMATCH" }
-        );
-      }
-      // Target branch must exist in the same repo (resolveIntegrationContract already
-      // cross-checks envelope vs real; re-verify tip resolvable for fail-loud clarity).
-      try {
-        await readRoleBranchTip(real.workspace, real.targetBranch);
-      } catch (err) {
-        throw new RpcError(
-          RPC_LIFECYCLE,
-          err instanceof Error
-            ? `task.backfillWorkspaceLaneBase targetBranch invalid: ${err.message}`
-            : "task.backfillWorkspaceLaneBase targetBranch invalid",
-          {
-            taskPath,
-            targetBranch: real.targetBranch,
-            code: "BASE_BACKFILL_TARGET",
-          }
-        );
-      }
-
-      // Supplied SHA must be a commit in this repo — never infer from tip/cwd/roleBranchBase.
-      let fullBase: string;
-      try {
-        fullBase = await resolveCommitSha(real.workspace, baseCommitRaw);
-      } catch (err) {
-        throw new RpcError(
-          RPC_LIFECYCLE,
-          err instanceof Error
-            ? `task.backfillWorkspaceLaneBase baseCommit rejected: ${err.message}`
-            : "task.backfillWorkspaceLaneBase baseCommit rejected (foreign/unreachable)",
-          {
-            taskPath,
-            baseCommit: baseCommitRaw,
-            code: "BASE_BACKFILL_FOREIGN",
-          }
-        );
-      }
-
-      // Capture-once: when base already exists, same SHA is idempotent; any other
-      // resolvable SHA conflicts immediately (do not re-run ancestry as a substitute).
-      const existingBase = current.baseCommit?.trim() || "";
-      if (existingBase) {
-        let existingFull = existingBase;
-        try {
-          existingFull = await resolveCommitSha(real.workspace, existingBase);
-        } catch {
-          // Compare raw when existing cannot resolve (still conflict if different).
-        }
-        if (existingFull === fullBase || existingBase === fullBase) {
-          return {
-            workspaceId,
-            taskPath,
-            task: projectTask(current),
-            state: current.state,
-            baseCommit: existingFull || existingBase,
-            idempotent: true,
-          };
-        }
-        throw new RpcError(
-          RPC_LIFECYCLE,
-          `task.backfillWorkspaceLaneBase conflicts with recorded baseCommit ` +
-            `${existingFull || existingBase}; supplied ${fullBase} (capture-once immutable)`,
-          {
-            taskPath,
-            recorded: existingFull || existingBase,
-            supplied: fullBase,
-            code: "BASE_BACKFILL_CONFLICT",
-          }
-        );
-      }
-
-      // Ancestor of recorded Task branch tip (inclusive: tip itself is legal).
-      const branchTip = await readRoleBranchTip(real.workspace, real.branch);
-      const isAncestor = await isCommitAncestor(real.workspace, fullBase, branchTip);
-      if (!isAncestor) {
-        throw new RpcError(
-          RPC_LIFECYCLE,
-          `task.backfillWorkspaceLaneBase baseCommit ${fullBase} is not an ancestor of ` +
-            `recorded Task branch ${real.branch} tip ${branchTip}`,
-          {
-            taskPath,
-            baseCommit: fullBase,
-            branch: real.branch,
-            branchTip,
-            code: "BASE_BACKFILL_NOT_ANCESTOR",
-          }
-        );
-      }
-      // Also legal for the recorded target/Role integration lane: must be an ancestor
-      // of the resolved targetBranch tip (not only Task branch). A tip exclusive to the
-      // executor lane is not a valid workspaceLane.baseCommit for Delivery history.
-      const targetTip = await readRoleBranchTip(real.workspace, real.targetBranch);
-      const isTargetAncestor = await isCommitAncestor(
-        real.workspace,
-        fullBase,
-        targetTip
-      );
-      if (!isTargetAncestor) {
-        throw new RpcError(
-          RPC_LIFECYCLE,
-          `task.backfillWorkspaceLaneBase baseCommit ${fullBase} is not an ancestor of ` +
-            `recorded targetBranch ${real.targetBranch} tip ${targetTip} ` +
-            `(Task-lane-only / foreign to target ancestry)`,
-          {
-            taskPath,
-            baseCommit: fullBase,
-            targetBranch: real.targetBranch,
-            targetTip,
-            branch: real.branch,
-            branchTip,
-            code: "BASE_BACKFILL_NOT_TARGET_ANCESTOR",
-          }
-        );
-      }
-
-      const now = mount.env.clock.now();
-      const patched = await patchTaskEnvelope(mount.env.fs, current.path, {
-        baseCommit: fullBase,
-        // Keep managed collection baseline once when missing; do not invent from tip.
-        ...(current.roleBranchBase?.trim()
-          ? {}
-          : { roleBranchBase: fullBase }),
-        baseCommitCapture: {
-          source: "explicit-backfill",
-          baseCommit: fullBase,
-          actor,
-          capturedAt: now,
-        },
-        updatedAt: now,
-      });
-      emitTaskState(ctx, workspaceId, patched, "task.backfillWorkspaceLaneBase");
-      return {
-        workspaceId,
-        taskPath,
-        task: projectTask(patched),
-        state: patched.state,
-        baseCommit: fullBase,
-        idempotent: false,
-      };
-    })
-  );
-}
-
-/**
- * Parse backfill actor: explicit TaskActorRef `{ kind, id }` only.
- * Bare strings are rejected — authority must not be inferred.
- */
-function parseBackfillActor(raw: unknown): TaskActorRef {
-  if (typeof raw === "string") {
-    throw new RpcError(
-      -32602,
-      "task.backfillWorkspaceLaneBase actor must be { kind, id } (bare string rejected; no kind inference)",
-      { code: "BASE_BACKFILL_ACTOR" }
-    );
-  }
-  try {
-    return parseTaskActorRef(raw, "parentActor");
-  } catch (err) {
-    throw new RpcError(
-      -32602,
-      err instanceof Error
-        ? `task.backfillWorkspaceLaneBase actor: ${err.message}`
-        : "task.backfillWorkspaceLaneBase requires actor { kind, id }",
-      { code: "BASE_BACKFILL_ACTOR" }
-    );
-  }
 }
 
 /**
@@ -5746,9 +5485,7 @@ async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     },
     "self"
   );
-  const acceptNodeIds =
-    taskReferencedNodeIds(result.task);
-  for (const nodeId of acceptNodeIds) {
+  for (const nodeId of result.task.workNodeIds) {
     if (nodeId === "root") continue;
     ctx.events.emit(
       "node.changed",
@@ -6225,7 +5962,7 @@ type TaskSessionBindSnapshot = {
   sessionId: string;
   updatedAt: string | undefined;
   roleId: string | undefined;
-  nodeIds: string[];
+  nodeContextJson: string;
   workspace: string | undefined;
   worktree: string | undefined;
   branch: string | undefined;
@@ -6243,7 +5980,11 @@ function captureTaskSessionBindSnapshot(task: TaskEnvelope): TaskSessionBindSnap
     sessionId: task.sessionId?.trim() || "",
     updatedAt: task.updatedAt,
     roleId: task.roleId,
-    nodeIds: taskReferencedNodeIds(task),
+    nodeContextJson: JSON.stringify({
+      workNodeIds: task.workNodeIds,
+      contextNodeIds: task.contextNodeIds,
+      nodeSnapshots: task.nodeSnapshots,
+    }),
     workspace: task.workspace,
     worktree: task.worktree,
     branch: task.branch,
@@ -6276,8 +6017,7 @@ function assertTaskSessionBindSnapshot(
     actual.acceptMode === expected.acceptMode &&
     JSON.stringify(actual.parentActor) === JSON.stringify(expected.parentActor) &&
     JSON.stringify(actual.reviewer) === JSON.stringify(expected.reviewer) &&
-    actual.nodeIds.length === expected.nodeIds.length &&
-    actual.nodeIds.every((nodeId, index) => nodeId === expected.nodeIds[index]);
+    actual.nodeContextJson === expected.nodeContextJson;
   if (unchanged && current.state === "running") return;
   throw new RpcError(
     RPC_LIFECYCLE,
@@ -6310,8 +6050,7 @@ function assertTaskSessionPostStartOwnership(
     actual.acceptMode === expected.acceptMode &&
     JSON.stringify(actual.parentActor) === JSON.stringify(expected.parentActor) &&
     JSON.stringify(actual.reviewer) === JSON.stringify(expected.reviewer) &&
-    actual.nodeIds.length === expected.nodeIds.length &&
-    actual.nodeIds.every((nodeId, index) => nodeId === expected.nodeIds[index]);
+    actual.nodeContextJson === expected.nodeContextJson;
   const validSameSessionProgress =
     current.state === "running" ||
     current.state === "waiting" ||
@@ -6536,24 +6275,6 @@ async function launchAndBindTaskStartSession(
         }
       : undefined;
 
-  // Before managed start: validate every declared durable Node/Task/Delivery ref
-  // against persisted workspace facts — fail loud to parent (never invent).
-  if (task.contextCard) {
-    try {
-      await assertDurableContextCardRefsResolved(mount.env.fs, task.contextCard);
-    } catch (err) {
-      if (err instanceof TaskContextCardError) {
-        throw new RpcError(-32000, err.message, {
-          code: err.code,
-          details: err.details,
-          taskPath,
-          taskId: task.id,
-        });
-      }
-      throw err;
-    }
-  }
-
   // Live authoritative contextGeneration: always recompute from current AGENTS /
   // Skill body+version / Role prompt / Connection launch snapshot. Persisted
   // Task/card generation never overrides live facts. Collector failure is fail-loud
@@ -6688,7 +6409,7 @@ async function launchAndBindTaskStartSession(
   // Ephemeral image path refs from task user prompt + claimed node bodies only.
   // Paths only — never base64; never written to Task/Session/Connection disk.
   // ACP image blocks still require live initialize promptCapabilities.image === true.
-  const bootstrapImageRefs = await collectTaskBootstrapImageRefs(mount.env.fs, task);
+  const bootstrapImageRefs = await collectTaskBootstrapImageRefs(task);
   const bootstrapImageSystemRoot =
     bootstrapImageRefs.length > 0 ? mount.systemRoot : undefined;
 
@@ -6790,10 +6511,7 @@ async function launchAndBindTaskStartSession(
         ctx.host.markSelfWrite(workspaceId);
         const next = await patchTaskEnvelope(mount.env.fs, taskPath, {
           sessionId: handle.sessionId,
-          contextCard: {
-            ...current.contextCard,
-            contextGeneration: liveGeneration,
-          },
+          contextGeneration: liveGeneration,
           updatedAt: mount.env.clock.now(),
         });
         const generation = liveGeneration;
@@ -6973,7 +6691,11 @@ async function executeTaskReplaceSession(
   const priorSessionId = task.sessionId!.trim();
   const preserved = {
     taskId: task.id,
-    nodeIds: [...taskReferencedNodeIds(task)],
+    nodeContextJson: JSON.stringify({
+      workNodeIds: task.workNodeIds,
+      contextNodeIds: task.contextNodeIds,
+      nodeSnapshots: task.nodeSnapshots,
+    }),
     worktree: task.worktree,
     branch: task.branch,
     acceptMode: task.acceptMode,
@@ -7037,7 +6759,7 @@ async function executeTaskReplaceSession(
       if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) throw err;
     }
     clearManagedAutoDeliverDedup(priorSessionId, taskPath);
-    const bootstrapImageRefs = await collectTaskBootstrapImageRefs(mount.env.fs, task);
+    const bootstrapImageRefs = await collectTaskBootstrapImageRefs(task);
     task = await runTaskLifecycle(workspaceId, taskPath, async () => {
       let current = await loadTaskEnvelope(mount.env.fs, taskPath);
       // Stopping the prior managed Session legitimately projects this exact Task to
@@ -7098,10 +6820,7 @@ async function executeTaskReplaceSession(
               sessionId: replacementSessionId,
               state: "running",
               wait: null,
-              contextCard: {
-                ...current.contextCard,
-                contextGeneration: liveGeneration,
-              },
+              contextGeneration: liveGeneration,
               updatedAt: mount.env.clock.now(),
             });
             emitTaskState(ctx, workspaceId, next, "task.replaceSession.prebind");
@@ -7264,17 +6983,20 @@ async function executeTaskReplaceSession(
     }
     clearManagedAutoDeliverDedup(handle.sessionId, taskPath);
 
-    const nodeIds = taskReferencedNodeIds(bound);
+    const nodeContextJson = JSON.stringify({
+      workNodeIds: bound.workNodeIds,
+      contextNodeIds: bound.contextNodeIds,
+      nodeSnapshots: bound.nodeSnapshots,
+    });
     if (
       bound.id !== preserved.taskId ||
       bound.roleId !== preserved.roleId ||
       bound.acceptMode !== preserved.acceptMode ||
       bound.worktree !== preserved.worktree ||
       bound.branch !== preserved.branch ||
-      nodeIds.length !== preserved.nodeIds.length ||
-      nodeIds.some((id, i) => id !== preserved.nodeIds[i])
+      nodeContextJson !== preserved.nodeContextJson
     ) {
-      throw new RpcError(RPC_LIFECYCLE, "task.replaceSession mutated task lane/nodeRefs/identity", {
+      throw new RpcError(RPC_LIFECYCLE, "task.replaceSession mutated task lane/Node context/identity", {
         code: "TASK_IDENTITY_DRIFT",
       });
     }
@@ -12257,8 +11979,8 @@ function emitTaskState(
       id: task.id,
       state: task.state,
       roleId: task.roleId,
-      referencedNodeIds:
-        taskReferencedNodeIds(task),
+      workNodeIds: [...task.workNodeIds],
+      contextNodeIds: [...task.contextNodeIds],
       sessionId: task.sessionId,
       reason,
     },
@@ -12379,24 +12101,7 @@ function projectNode(
 function parseArtifactRefs(data: Record<string, unknown>): ArtifactRef[] {
   const raw = data.artifactRefs;
   if (!Array.isArray(raw)) return [];
-  const out: ArtifactRef[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const rec = item as Record<string, unknown>;
-    const kind = rec.kind;
-    const target = rec.target;
-    if (
-      (kind === "path" || kind === "dir" || kind === "commit" || kind === "url" || kind === "other") &&
-      typeof target === "string"
-    ) {
-      out.push({
-        kind,
-        target,
-        label: typeof rec.label === "string" ? rec.label : undefined,
-      });
-    }
-  }
-  return out;
+  return normalizeArtifactRefs(raw);
 }
 
 /**
@@ -12692,8 +12397,8 @@ async function resolveIntegrationContract(
 
 /**
  * Ensure task envelope carries WorkspaceLane before managed startSession.
- * - Role / asSub: lane + baseCommit are normally captured at task.dispatch; this
- *   path is capture-once backfill only and must never overwrite an existing base.
+ * - Role / asSub: lane + baseCommit are captured by their canonical creation/claim path;
+ *   this function never repairs a completed lane with missing provenance.
  * - Session-only Task: first create tent-task/<taskId> here (never a Role lane).
  * Persists exact workspaceLane.baseCommit at first bind (capture-once).
  * Also backfills roleBranchBase for managed collection once when missing.
@@ -12791,8 +12496,8 @@ async function ensureTaskWorkspaceLane(
     }
     // Capture-once exact baseCommit only when first binding an incomplete lane
     // (e.g. Connection execution at startSession). Never rewrite an existing base.
-    // Complete-lane legacy Tasks missing baseCommit must use explicit
-    // task.backfillWorkspaceLaneBase — never infer from tip/roleBranchBase/cwd.
+    // A complete lane missing baseCommit is invalid in the fresh registry; never
+    // infer it from tip/roleBranchBase/cwd.
     // Role-assignee first-claim capture happens in task.claim (captureRoleBaseCommitOnClaim).
     if (!currentHasBase && !currentLaneComplete) {
       const fromEnsure =
@@ -12953,12 +12658,12 @@ async function appendRoleCheckpointTail(
 }
 
 /**
- * Context Card v1 managed bootstrap (stable prefix + dynamic delta).
+ * Context Card v2 managed bootstrap (stable prefix + dynamic delta).
  * Skill bodies and Role prompt come from managed compose when provided as tentTaskSection.
  */
 function buildContextCardManagedBootstrap(
   task: TaskEnvelope,
-  contextCard: TaskContextCardV1,
+  contextCard: TaskContextCard,
   roots: {
     workspaceRoot: string;
     systemRoot: string;
@@ -12971,14 +12676,6 @@ function buildContextCardManagedBootstrap(
     checkpoint?: string;
   }
 ): string {
-  // Fail-loud on unresolved declared durable refs (never invent / drop).
-  assertRefsResolved(contextCard, (bucket, ref) => {
-    // git refs are revision pointers — presence of id is enough at bootstrap.
-    if (bucket === "git") return Boolean(ref.id?.trim());
-    // nodes/tasks/deliveries: id required (full FS resolve is Service's job at dispatch).
-    return Boolean(ref.id?.trim());
-  });
-
   const includeStablePrefix = shouldInjectStablePrefix({
     sessionContextGeneration: roots.sessionContextGeneration,
     currentContextGeneration: roots.currentContextGeneration,
@@ -13041,31 +12738,16 @@ function buildContextCardManagedBootstrap(
 }
 
 /**
- * Collect local image path refs from task user prompt + referenced Node bodies.
- * Explicit sources only — no workspace scan. Missing node ids/files are skipped.
+ * Collect local image path refs from the Task prompt + frozen Node snapshots.
+ * Explicit sources only — no workspace scan and no live Node body re-read.
  * Returns paths only (never base64).
  */
-async function collectTaskBootstrapImageRefs(
-  fs: import("../core/adapter.js").FsAdapter,
-  task: TaskEnvelope
-): Promise<BootstrapImageRef[]> {
+async function collectTaskBootstrapImageRefs(task: TaskEnvelope): Promise<BootstrapImageRef[]> {
   const userPrompt = extractTaskUserPrompt(task);
-  const claimBodies: Array<{ body: string; notePath?: string }> = [];
-  try {
-    const tent = await loadTent(fs);
-    const nodeIds =
-      taskReferencedNodeIds(task);
-    for (const nodeId of nodeIds) {
-      const node = tent.byId.get(nodeId);
-      if (!node || typeof node.body !== "string") continue;
-      claimBodies.push({
-        body: node.body,
-        notePath: nodeNotePath(node.path),
-      });
-    }
-  } catch {
-    // Tree load failure must not block startSession — fall back to user prompt only.
-  }
+  const claimBodies = task.nodeSnapshots.map((snapshot) => ({
+    body: snapshot.body,
+    notePath: nodeNotePath(snapshot.path),
+  }));
   return collectBootstrapImageRefsFromTask({ userPrompt, claimBodies });
 }
 
@@ -13100,7 +12782,8 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
     path: task.path,
     id: task.id,
     roleId: task.roleId,
-    referencedNodeIds: taskReferencedNodeIds(task),
+    workNodeIds: [...task.workNodeIds],
+    contextNodeIds: [...task.contextNodeIds],
     state: task.state,
     manifest: task.manifest,
     parentActor: task.parentActor,
@@ -13113,7 +12796,7 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
     activeDeliveryId: task.activeDeliveryId,
     lastOutcome: task.lastOutcome,
     workspaceLane: lane,
-    // Compact baseCommit capture audit (first-claim | explicit-backfill).
+    // Compact first-claim baseCommit capture audit.
     ...(task.baseCommitCapture
       ? {
           baseCommitCapture: {

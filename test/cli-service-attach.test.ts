@@ -270,7 +270,7 @@ test("task RPC layer: claim → deliver; ServiceClient observes same state; serv
     const nodeId = created.nodeId;
 
     const dispatched = (await observer.taskDispatch(workspaceId, {
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId], contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "Ship CLI attach",
       parentActor: { kind: "user", id: "user" },
@@ -335,7 +335,7 @@ test("task claim/deliver via attach (not injected client) sees same ServiceClien
       type: "prompt",
     })) as { nodeId: string };
     const dispatched = (await setup.taskDispatch(mount.workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "agent path",
       parentActor: { kind: "user", id: "user" },
@@ -391,7 +391,7 @@ test("task command errors: missing summary / unknown sub / attach-only miss", as
       type: "prompt",
     })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "x",
       parentActor: { kind: "user", id: "user" },
@@ -420,7 +420,7 @@ test("task list/get human output uses canonical assignee fields", async () => {
       type: "prompt",
     })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "list test",
       parentActor: { kind: "user", id: "user" },
@@ -450,7 +450,7 @@ test("task-input ack CLI omits actor for persisted user reviewer path", async ()
       type: "prompt",
     })) as { nodeId: string };
     const dispatched = (await client.taskDispatch(mount.workspaceId, {
-      nodeIds: [created.nodeId],
+      workNodeIds: [created.nodeId], contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "cli user ack",
       parentActor: { kind: "user", id: "user" },

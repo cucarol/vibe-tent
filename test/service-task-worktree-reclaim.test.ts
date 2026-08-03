@@ -32,6 +32,16 @@ const FAKE_CONNECTION = {
   fake: { waitForSignal: true, sleepMs: 60_000 },
 } as const;
 
+function taskNodeContext(id: string, nodePath: string) {
+  return {
+    workNodeIds: [id],
+    contextNodeIds: [],
+    nodeSnapshots: [
+      { id, path: nodePath, type: "prompt", tags: [], body: "", etag: "a".repeat(24) },
+    ],
+  };
+}
+
 async function makeGitTentWorkspace(name = "reclaim-svc"): Promise<string> {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-reclaim-svc-"));
   const workspace = path.join(parent, "repo");
@@ -119,7 +129,7 @@ test("P0: terminal reject auto-reclaims clean Session Task worktree", async () =
     const systemRoot = path.join(ws, ".tent");
     const sysFs = new NodeFs(systemRoot);
     const clock = { now: () => new Date().toISOString() };
-    const taskId = "tk-svc-reclaim-1";
+    const taskId = "tk-svcreclaim1";
     const lane = await ensureTaskWorkspace(ws, taskId);
 
     // Prefer real box id from tent tree when available.
@@ -133,7 +143,7 @@ test("P0: terminal reject auto-reclaims clean Session Task worktree", async () =
     const taskPath = await writeTaskEnvelope(sysFs, clock, {
       parentActor: { kind: "user", id: "user" },
       sessionId: "ss-fakedefault",
-      nodeRefs: [{ id: nodeId, path: nodePath }],
+      ...taskNodeContext(nodeId, nodePath),
       manifestPath: `temp/sessions/ss-fakedefault/manifests/${taskId}.yml`,
       userPrompt: "reclaim after reject",
       id: taskId,
@@ -214,7 +224,7 @@ test("P0: dirty terminal lane fails closed; exact reconcile reclaims after clean
   const systemRoot = path.join(ws, ".tent");
   const sysFs = new NodeFs(systemRoot);
   const clock = { now: () => new Date().toISOString() };
-  const taskId = "tk-svc-reclaim-dirty";
+  const taskId = "tk-svcreclaimdirty";
   const lane = await ensureTaskWorkspace(ws, taskId);
   await fs.writeFile(path.join(lane.worktree, "UNCOMMITTED.txt"), "dirty\n");
 
@@ -228,7 +238,7 @@ test("P0: dirty terminal lane fails closed; exact reconcile reclaims after clean
   const taskPath = await writeTaskEnvelope(sysFs, clock, {
     parentActor: { kind: "user", id: "user" },
     sessionId: "ss-fakedefault",
-    nodeRefs: [{ id: nodeId, path: nodePath }],
+    ...taskNodeContext(nodeId, nodePath),
     manifestPath: `temp/sessions/ss-fakedefault/manifests/${taskId}.yml`,
     userPrompt: "dirty then clean",
     id: taskId,
@@ -312,14 +322,14 @@ test("P0: workspace.mount does not discover or reclaim historical terminal lanes
   const systemRoot = path.join(ws, ".tent");
   const sysFs = new NodeFs(systemRoot);
   const clock = { now: () => new Date().toISOString() };
-  const taskId = "tk-historical-only";
+  const taskId = "tk-historicalonly";
   const lane = await ensureTaskWorkspace(ws, taskId);
   const tent = await import("../src/core/tree.js").then((m) => m.loadTent(sysFs));
   const inboxBox = [...tent.byId.values()][0];
   const taskPath = await writeTaskEnvelope(sysFs, clock, {
     parentActor: { kind: "user", id: "user" },
     sessionId: "ss-fakedefault",
-    nodeRefs: [{ id: inboxBox?.id ?? "cx-1", path: inboxBox?.path ?? "inbox" }],
+    ...taskNodeContext(inboxBox?.id ?? "cx-1", inboxBox?.path ?? "inbox"),
     manifestPath: `temp/sessions/ss-fakedefault/manifests/${taskId}.yml`,
     userPrompt: "old terminal never observed by reclaim feature",
     id: taskId,
@@ -353,7 +363,7 @@ test("P0: SESSION_ACTIVE when bound managed session still live", async () => {
     const systemRoot = path.join(ws, ".tent");
     const sysFs = new NodeFs(systemRoot);
     const clock = { now: () => new Date().toISOString() };
-    const taskId = "tk-sess-active";
+    const taskId = "tk-sessactive";
     const lane = await ensureTaskWorkspace(ws, taskId);
     const managedSessionId = "ss-sessactive";
     await svc.ctx.runtime.reserveSession({
@@ -372,7 +382,7 @@ test("P0: SESSION_ACTIVE when bound managed session still live", async () => {
     const taskPath = await writeTaskEnvelope(sysFs, clock, {
       parentActor: { kind: "user", id: "user" },
       sessionId: managedSessionId,
-      nodeRefs: [{ id: nodeId, path: nodePath }],
+      ...taskNodeContext(nodeId, nodePath),
       manifestPath: `temp/sessions/${managedSessionId}/manifests/${taskId}.yml`,
       userPrompt: "session still live",
       id: taskId,
@@ -476,15 +486,15 @@ test("P0: accepted-while-external queues; session.leave reclaims exact Task only
     const nodeId = inboxBox?.id ?? "cx-1";
     const nodePath = inboxBox?.path ?? "inbox";
 
-    const targetId = "tk-ext-target";
-    const otherId = "tk-ext-other";
+    const targetId = "tk-exttarget";
+    const otherId = "tk-extother";
     const targetLane = await ensureTaskWorkspace(ws, targetId);
     const otherLane = await ensureTaskWorkspace(ws, otherId);
 
     const targetPath = await writeTaskEnvelope(sysFs, clock, {
       parentActor: { kind: "user", id: "user" },
       sessionId: "ss-fakedefault",
-      nodeRefs: [{ id: nodeId, path: nodePath }],
+      ...taskNodeContext(nodeId, nodePath),
       manifestPath: `temp/sessions/ss-fakedefault/manifests/${targetId}.yml`,
       userPrompt: "accepted under external session",
       id: targetId,
@@ -498,7 +508,7 @@ test("P0: accepted-while-external queues; session.leave reclaims exact Task only
     const otherPath = await writeTaskEnvelope(sysFs, clock, {
       parentActor: { kind: "user", id: "user" },
       sessionId: "ss-fakedefault",
-      nodeRefs: [{ id: nodeId, path: nodePath }],
+      ...taskNodeContext(nodeId, nodePath),
       manifestPath: `temp/sessions/ss-fakedefault/manifests/${otherId}.yml`,
       userPrompt: "unrelated pending must stay",
       id: otherId,
@@ -633,10 +643,10 @@ test("P0: role worktree never reclaimed on terminal role task", async () => {
     const taskPath = await writeTaskEnvelope(sysFs, clock, {
       parentActor: { kind: "role", id: "规划" },
       roleId: "rl-executor",
-      nodeRefs: [{ id: nodeId, path: nodePath }],
+      ...taskNodeContext(nodeId, nodePath),
       manifestPath: "temp/roles/rl-executor/manifests/m.yml",
       userPrompt: "role terminal",
-      id: "tk-role-keep",
+      id: "tk-rolekeep",
 
       workspace: {
         workspace: roleLane.workspace,
@@ -693,7 +703,7 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
     const systemRoot = path.join(ws, ".tent");
     const sysFs = new NodeFs(systemRoot);
     const clock = { now: () => new Date().toISOString() };
-    const taskId = "tk-busy-late";
+    const taskId = "tk-busylate";
     const lane = await ensureTaskWorkspace(ws, taskId);
     const managedSessionId = "ss-busylate";
     await svc.ctx.runtime.reserveSession({
@@ -712,7 +722,7 @@ test("P0: terminal+busy late-write defers reclaim until settle+clean", async () 
     const taskPath = await writeTaskEnvelope(sysFs, clock, {
       parentActor: { kind: "user", id: "user" },
       sessionId: managedSessionId,
-      nodeRefs: [{ id: nodeId, path: nodePath }],
+      ...taskNodeContext(nodeId, nodePath),
       manifestPath: `temp/sessions/${managedSessionId}/manifests/${taskId}.yml`,
       userPrompt: "terminal while turn still busy + late write",
       id: taskId,

@@ -14,7 +14,7 @@ export const INTEGRATION_TEST_FILES = Object.freeze([
   "test/machine-state-hardening.test.ts",
   "test/open-source.test.ts",
   "test/package.test.ts",
-  "test/service-agent-profile-dispatch.test.ts",
+  "test/service-connection-dispatch.test.ts",
   "test/service-b5.test.ts",
   "test/service-sub-dispatch.test.ts",
   "test/task-lifecycle.test.ts",

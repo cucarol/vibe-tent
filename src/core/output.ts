@@ -7,7 +7,6 @@ import { loadDeliveries, type DeliveryRecord } from "./delivery.js";
 import { NODE_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { loadTaskEnvelopes, type TaskEnvelope } from "./task.js";
 import { isDeliveryId } from "./task-model.js";
-import { taskReferencedNodeIds } from "./task-node-refs.js";
 import { nodeNotePath, loadTent, type LoadedTent } from "./tree.js";
 import type { Node } from "./types.js";
 import { splitType } from "./typeRegistry.js";
@@ -446,7 +445,7 @@ export function projectOutputProvenance(
     if (delivery.taskId && taskKey && delivery.taskId !== taskKey && delivery.taskId !== task.path) {
       if (!base.incomplete.includes("mismatch")) base.incomplete.push("mismatch");
     }
-    if (!taskReferencedNodeIds(task).includes(delivery.sourceNodeId)) {
+    if (!task.workNodeIds.includes(delivery.sourceNodeId)) {
       if (!base.incomplete.includes("mismatch")) base.incomplete.push("mismatch");
     }
   }

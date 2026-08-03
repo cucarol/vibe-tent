@@ -16,6 +16,7 @@ import {
 } from "../src/core/retention.js";
 import { writeTaskEnvelope, loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
 import { makeTent } from "./helpers.js";
+import { contentEtag } from "../src/core/etag.js";
 
 const NOW = "2026-07-16T12:00:00.000Z";
 const OLD = "2026-06-01T12:00:00.000Z"; // > 30 days before NOW
@@ -23,6 +24,10 @@ const RECENT = "2026-07-10T12:00:00.000Z"; // < 30 days before NOW
 
 function clock(iso: string) {
   return { now: () => iso };
+}
+
+function nodeSnapshot(id: string, nodePath: string, type = "prompt", body = "") {
+  return { id, path: nodePath, type, tags: [], body, etag: contentEtag(body) };
 }
 
 class FailTaskRemoveFs extends NodeFs {
@@ -53,7 +58,9 @@ async function writeTerminalTask(
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     sessionId,
-    nodeRefs: [{ id: opts.claimId ?? "cx-p1", path: "prompt/表达式任务书" }],
+    workNodeIds: [opts.claimId ?? "cx-p1"],
+    contextNodeIds: [],
+    nodeSnapshots: [nodeSnapshot(opts.claimId ?? "cx-p1", "prompt/表达式任务书")],
     manifestPath: `temp/sessions/${sessionId}/manifests/m.md`,
     userPrompt: "retention fixture",
     id: opts.id,
@@ -102,7 +109,9 @@ test("preview: never selects active tasks or ready deliveries", async () => {
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     sessionId: "ss-executor",
-    nodeRefs: [{ id: "cx-p1", path: "prompt/表达式任务书" }],
+    workNodeIds: ["cx-p1"],
+    contextNodeIds: [],
+    nodeSnapshots: [nodeSnapshot("cx-p1", "prompt/表达式任务书")],
     manifestPath: "temp/sessions/ss-executor/manifests/m.md",
     userPrompt: "still running work",
     id: "tk-active01",
@@ -281,7 +290,9 @@ test("purge: deletes task + deliveries as a group; leaves active work", async ()
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     sessionId: "ss-executor",
-    nodeRefs: [{ id: "cx-p2", path: "prompt/表达式任务书/草稿" }],
+    workNodeIds: ["cx-p2"],
+    contextNodeIds: [],
+    nodeSnapshots: [nodeSnapshot("cx-p2", "prompt/表达式任务书/草稿")],
     manifestPath: "temp/sessions/ss-executor/manifests/m2.md",
     userPrompt: "do not purge me",
     id: "tk-live01",

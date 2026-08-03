@@ -405,7 +405,7 @@ test("docs.createNote / list / get / write with etag; promote retired + fork", a
       type: "note",
     });
     assert.ok(badNote.error);
-    assert.match(badNote.error!.message, /Unknown type|unknown type/i);
+    assert.match(badNote.error!.message, /Invalid node type/i);
 
     const created = await rpc(svc, "docs.createNote", {
       workspaceId,
@@ -617,7 +617,7 @@ test("docs.importAttachment: base64 wire → binary disk; rejects bad base64/siz
   });
 });
 
-test("task.dispatch + task.claim project doing; docs.write blocks collab fields", async () => {
+test("task.dispatch projects exact Node occupation; docs.write blocks collab fields", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
@@ -634,7 +634,8 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "implement the thing",
     });
@@ -654,10 +655,6 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
     });
     assert.ok(blockedPending.error);
     assert.equal(blockedPending.error!.code, -32010);
-
-    const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
-    assert.ok(!claimed.error, JSON.stringify(claimed.error));
-    assert.equal((claimed.result as { state: string }).state, "running");
 
     const got = await rpc(svc, "docs.get", { workspaceId, nodeId });
     const node = (got.result as {
@@ -700,7 +697,7 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
 
     const listed = await rpc(svc, "task.list", { workspaceId });
     const tasks = (listed.result as { tasks: { path: string; state: string }[] }).tasks;
-    assert.ok(tasks.some((t) => t.path === taskPath && t.state === "running"));
+    assert.ok(tasks.some((t) => t.path === taskPath && t.state === "queued"));
   });
 });
 
@@ -1038,7 +1035,8 @@ test("mount dead-session reconcile does not suppress an immediate external Node 
     const nodeId = (created.result as { nodeId: string }).nodeId;
     const dispatched = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "seed dead session reconciliation",
       parentActor: { kind: "user", id: "user" },
@@ -1047,11 +1045,12 @@ test("mount dead-session reconcile does not suppress an immediate external Node 
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const dispatchedResult = dispatched.result as {
       taskPath: string;
-      session: { sessionId: string; connectionId: string };
+      sessionId: string;
     };
     const taskPath = dispatchedResult.taskPath;
-    const sessionId = dispatchedResult.session.sessionId;
-    assert.equal(dispatchedResult.session.connectionId, "fake-default");
+    const sessionId = dispatchedResult.sessionId;
+    const sessionRecord = await svc.runtime.registry.read(sessionId);
+    assert.equal(sessionRecord?.connectionId, "fake-default");
     await svc.runtime.stopSession(sessionId, "interrupt");
     const unmounted = await rpc(svc, "workspace.unmount", { workspaceId });
     assert.ok(!unmounted.error, JSON.stringify(unmounted.error));

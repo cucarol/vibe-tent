@@ -33,6 +33,16 @@ import {
 
 const OLD = "2026-06-01T12:00:00.000Z";
 
+function taskNodeContext(id: string, nodePath: string) {
+  return {
+    workNodeIds: [id],
+    contextNodeIds: [],
+    nodeSnapshots: [
+      { id, path: nodePath, type: "prompt", tags: [], body: "", etag: "a".repeat(24) },
+    ],
+  };
+}
+
 async function makeWorkspace(name = "output-prov"): Promise<string> {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-out-prov-ws-"));
   const fsa = new NodeFs(workspace);
@@ -120,7 +130,8 @@ async function readyDeliveryTask(
 ): Promise<{ taskPath: string; deliveryId: string }> {
   const dispatched = await rpc(svc, "task.dispatch", {
     workspaceId,
-    nodeIds: [nodeId],
+    workNodeIds: [nodeId],
+    contextNodeIds: [],
     roleId: `rl-${role}`,
     prompt: "do the work",
     parentActor: { kind: "user", id: "user" },
@@ -476,7 +487,7 @@ test("retention pins Delivery+Task referenced by Output.deliveryId (including ar
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     roleId: "rl-executor",
-    nodeRefs: [{ id: "cx-src", path: "inbox" }],
+    ...taskNodeContext("cx-src", "inbox"),
     manifestPath: "temp/roles/rl-executor/manifests/m.md",
     userPrompt: "old accepted",
     id: "tk-pinned01",
@@ -531,7 +542,7 @@ test("retention pins Delivery+Task referenced by Output.deliveryId (including ar
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
     roleId: "rl-executor",
-    nodeRefs: [{ id: "cx-other", path: "inbox" }],
+    ...taskNodeContext("cx-other", "inbox"),
     manifestPath: "temp/roles/rl-executor/manifests/m2.md",
     userPrompt: "unrelated",
     id: "tk-other01",

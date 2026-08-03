@@ -212,7 +212,7 @@ export interface SessionRecord {
    */
   externalKey?: string;
   /**
-   * Context Card v1 stable-prefix generation last injected on this Session
+   * Stable-prefix generation last injected on this Session
    * (`cg-v1-<sha256>`). Used for prompt-cache reuse: same generation → delta only.
    * Not a new lifecycle entity — machine-local Session projection (cx-5q6za6).
    */

@@ -241,7 +241,9 @@ test("writeTaskEnvelope: asSub true persists; missing/false omitted (reads as pe
   const clock = new SystemClock();
   const peerPath = await writeTaskEnvelope(fsa, clock, {
     roleId: "rl-helper",
-    nodeRefs: [{ id: "cx-1", path: "a.md" }],
+    workNodeIds: ["cx-1"],
+    contextNodeIds: [],
+    nodeSnapshots: [{ id: "cx-1", path: "a.md", type: "prompt", tags: [], body: "", etag: "a".repeat(24) }],
     manifestPath: "temp/helper/manifest.yml",
     userPrompt: "peer",
     parentActor: { kind: "user", id: "user" },
@@ -259,7 +261,9 @@ test("writeTaskEnvelope: asSub true persists; missing/false omitted (reads as pe
 
   const subPath = await writeTaskEnvelope(fsa, clock, {
     roleId: "rl-helper",
-    nodeRefs: [{ id: "cx-2", path: "b.md" }],
+    workNodeIds: ["cx-2"],
+    contextNodeIds: [],
+    nodeSnapshots: [{ id: "cx-2", path: "b.md", type: "prompt", tags: [], body: "", etag: "a".repeat(24) }],
     manifestPath: "temp/helper/manifest.yml",
     userPrompt: "sub",
     parentActor: { kind: "role", id: "rl-orchestrator" },
@@ -349,7 +353,8 @@ test("task.dispatch asSub role: tent-role assignee lane + dispatcher targetBranc
 
     const sub = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       roleId: "rl-helper",
       prompt: "help orchestrator",
       asSub: true,
@@ -400,7 +405,8 @@ test("task.dispatch asSub role: tent-role assignee lane + dispatcher targetBranc
     const peerBox = await createNote(svc, workspaceId, "role-peer");
     const peer = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [peerBox],
+      workNodeIds: [peerBox],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "peer work",
       parentActor: { kind: "user", id: "user" },
@@ -457,7 +463,8 @@ test("task.dispatch asSub Connection: exact Task lane at dispatch for sub and pe
 
     const sub = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "Connection helper",
       asSub: true,
@@ -502,7 +509,8 @@ test("task.dispatch asSub Connection: exact Task lane at dispatch for sub and pe
     const peerBox = await createNote(svc, workspaceId, "connection-peer");
     const peer = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [peerBox],
+      workNodeIds: [peerBox],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "peer Connection",
       parentActor: { kind: "user", id: "user" },
@@ -555,7 +563,8 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
 
     const asUser = await rpc(svc, "task.dispatch", {
       workspaceId: gitMount.workspaceId,
-      nodeIds: [gitMount.nodeId],
+      workNodeIds: [gitMount.nodeId],
+      contextNodeIds: [],
       roleId: "rl-helper",
       prompt: "nope",
       asSub: true,
@@ -563,12 +572,13 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
       reviewer: { kind: "user", id: "user" },
     });
     assert.ok(asUser.error);
-    assert.equal(asUser.error!.code, -32602);
-    assert.match(String(asUser.error!.message), /parentActor|durable registry role|not user/i);
+    assert.equal(asUser.error!.code, -32004);
+    assert.match(String(asUser.error!.message), /parent role|parentActor|durable registry role|not user/i);
 
     const asSelf = await rpc(svc, "task.dispatch", {
       workspaceId: gitMount.workspaceId,
-      nodeIds: [gitMount.nodeId],
+      workNodeIds: [gitMount.nodeId],
+      contextNodeIds: [],
       roleId: "rl-helper",
       prompt: "nope",
       asSub: true,
@@ -580,7 +590,8 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
 
     const unknown = await rpc(svc, "task.dispatch", {
       workspaceId: gitMount.workspaceId,
-      nodeIds: [gitMount.nodeId],
+      workNodeIds: [gitMount.nodeId],
+      contextNodeIds: [],
       roleId: "rl-helper",
       prompt: "nope",
       asSub: true,
@@ -595,7 +606,8 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
 
     const noGit = await rpc(svc, "task.dispatch", {
       workspaceId: noGitMount.workspaceId,
-      nodeIds: [noGitMount.nodeId],
+      workNodeIds: [noGitMount.nodeId],
+      contextNodeIds: [],
       roleId: "rl-helper",
       prompt: "nope",
       asSub: true,
@@ -611,7 +623,8 @@ test("task.dispatch asSub: rejects user/self/unknown dispatcher and non-Git befo
       workspaceId: noGitMount.workspaceId,
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      nodeIds: [noGitMount.nodeId],
+      workNodeIds: [noGitMount.nodeId],
+      contextNodeIds: [],
       roleId: "rl-executor",
       prompt: "pure tent peer",
     });
@@ -656,7 +669,8 @@ test("sub task accept/reject: exact parent Role only; user cannot ordinary-bypas
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "review-box");
     const dispatched = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       roleId: "rl-helper",
       prompt: "sub review",
       asSub: true,
@@ -710,7 +724,8 @@ test("managed Sessions are Connection-only; Role Tasks never start one", async (
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "role-task");
     const roleTask = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       roleId: "rl-helper",
       prompt: "durable handoff only",
       asSub: true,
@@ -732,7 +747,8 @@ test("managed Sessions are Connection-only; Role Tasks never start one", async (
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [connectionNode],
+      workNodeIds: [connectionNode],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "managed Connection task",
     });
@@ -754,7 +770,8 @@ test("sub accept integrates commits into dispatcher worktree; main stays put", a
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "accept-sub");
     const sub = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       roleId: "rl-helper",
       prompt: "integrate to dispatcher",
       asSub: true,
@@ -815,7 +832,8 @@ test("resolveIntegrationContract: sub targetBranch mismatch fails loud", async (
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws, "mismatch");
     const sub = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       roleId: "rl-helper",
       prompt: "corrupt me",
       asSub: true,
@@ -912,7 +930,8 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [parentId],
+      workNodeIds: [parentId],
+      contextNodeIds: [],
       roleId: "rl-orchestrator",
       prompt: "own the goal",
     });
@@ -925,7 +944,8 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [subChildId],
+      workNodeIds: [subChildId],
+      contextNodeIds: [],
       roleId: "rl-helper",
       prompt: "peer concurrent under ancestor",
     });
@@ -934,7 +954,8 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
 
     const subOk = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [childId],
+      workNodeIds: [childId],
+      contextNodeIds: [],
       roleId: "rl-helper",
       prompt: "sub under dispatcher claim",
       asSub: true,
@@ -963,7 +984,8 @@ test("task.dispatch asSub: concurrent peer and sub under active ancestor are leg
     assert.ok(!otherChild.error, JSON.stringify(otherChild.error));
     const otherParent = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [(otherChild.result as { nodeId: string }).nodeId],
+      workNodeIds: [(otherChild.result as { nodeId: string }).nodeId],
+      contextNodeIds: [],
       roleId: "rl-helper",
       prompt: "sub with executor parent",
       asSub: true,
@@ -1030,7 +1052,8 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [parentId],
+      workNodeIds: [parentId],
+      contextNodeIds: [],
       roleId: "rl-orchestrator",
       prompt: "own the goal; delegate child",
       acceptMode: "review-required",
@@ -1056,7 +1079,8 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
     // 3. Orchestrator dispatches helper asSub under the claimed parent.
     const subDispatch = await rpc(svc, "task.dispatch", {
       workspaceId,
-      nodeIds: [childId],
+      workNodeIds: [childId],
+      contextNodeIds: [],
       roleId: "rl-helper",
       prompt: "produce sub artifact for parent",
       asSub: true,
@@ -1168,7 +1192,8 @@ test("peer Connection dispatch creates exact tent-task lane before provider work
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "peer Connection exact lane",
     });

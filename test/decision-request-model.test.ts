@@ -10,16 +10,15 @@ import {
 
 function pending(overrides: Partial<PendingDecisionRequest> = {}): PendingDecisionRequest {
   return {
-    id: "dr-1",
+    id: "dr-0123456789",
     taskId: "tk-12345678",
-    requester: { kind: "session", id: "ss-executor-1" },
+    requester: { kind: "session", id: "ss-executor1" },
     target: { kind: "role", id: "implementer" },
     question: "Which implementation should ship?",
     options: [
       { id: "safe", label: "Use the safe implementation" },
       { id: "fast", label: "Use the fast implementation" },
     ],
-    blocking: true,
     status: "pending",
     ...overrides,
   };

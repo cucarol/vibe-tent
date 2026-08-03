@@ -1,6 +1,6 @@
 /**
  * Public ordinary Task dispatch grammar (cx-b9bf58 / tk-vnb8vesj):
- *   tent task dispatch --target role:<roleId>|connection:<connectionId> --node <nodeId>… --prompt <text>|-
+ *   tent task dispatch --target role:<roleId>|connection:<connectionId> --work-node <nodeId>… [--context-node <nodeId>…] --prompt <text>|-
  *
  * Fake Service/client only — no paid/live provider, no real Local Service.
  */
@@ -70,10 +70,11 @@ async function withTentRoleId<T>(
   }
 }
 
-test("CLI help documents only the canonical target and Node grammar", () => {
+test("CLI help documents only the canonical target and work/context Node grammar", () => {
   const help = taskHelpText();
   assert.match(help, /tent task dispatch --target role:<roleId>\|connection:<connectionId>/);
-  assert.match(help, /--node <nodeId>/);
+  assert.match(help, /--work-node <nodeId>/);
+  assert.match(help, /--context-node <nodeId>/);
   assert.match(help, /queued; never starts managed ACP/);
   assert.match(help, /Settings Connection/);
   assert.match(help, /Any flag outside this command's canonical grammar is rejected/);
@@ -85,26 +86,31 @@ test("CLI help documents only the canonical target and Node grammar", () => {
   assert.equal(usageLine!.includes("--target"), true);
 });
 
-test("parseTaskFlags collects repeatable --node values in order", () => {
+test("parseTaskFlags collects repeatable work/context Node values in order", () => {
   const parsed = parseTaskFlags([
     "--target",
     "role:rl-planner",
-    "--node",
+    "--work-node",
     "cx-a",
-    "--node",
+    "--context-node",
+    "cx-context",
+    "--work-node",
     "cx-b",
-    "--node",
+    "--context-node",
+    "cx-context-2",
+    "--work-node",
     "cx-a",
     "--prompt",
     "hi",
   ]);
-  assert.deepEqual(parsed.repeatable.node, ["cx-a", "cx-b", "cx-a"]);
+  assert.deepEqual(parsed.repeatable["work-node"], ["cx-a", "cx-b", "cx-a"]);
+  assert.deepEqual(parsed.repeatable["context-node"], ["cx-context", "cx-context-2"]);
   assert.equal(parsed.flags.target, "role:rl-planner");
   assert.equal(parsed.flags.prompt, "hi");
   assert.deepEqual(parsed.positionals, []);
 });
 
-test("role target: queued durable handoff; multi --node; no startSession", async () => {
+test("role target: queued durable handoff; work/context Nodes; no startSession", async () => {
   const cwd = await makeFakeTentCwd();
   const { client, calls } = capturingDispatchClient();
   await withTentRoleId(undefined, async () => {
@@ -113,12 +119,14 @@ test("role target: queued durable handoff; multi --node; no startSession", async
       [
         "--target",
         "role:rl-executor",
-        "--node",
+        "--work-node",
         "cx-one",
-        "--node",
+        "--work-node",
         "cx-two",
-        "--node",
+        "--work-node",
         "cx-one",
+        "--context-node",
+        "cx-context",
         "--prompt",
         "role handoff work",
         "--json",
@@ -130,8 +138,8 @@ test("role target: queued durable handoff; multi --node; no startSession", async
     const args = calls[0]!;
     assert.equal(args.roleId, "rl-executor");
     assert.equal(args.connectionId, undefined);
-    assert.deepEqual(args.nodeIds, ["cx-one", "cx-two"]);
-    assert.equal(args.nodes, undefined, "must not send retired nodes[] key");
+    assert.deepEqual(args.workNodeIds, ["cx-one", "cx-two"]);
+    assert.deepEqual(args.contextNodeIds, ["cx-context"]);
     assert.equal(args.prompt, "role handoff work");
     assert.deepEqual(args.parentActor, { kind: "user", id: "user" });
     assert.deepEqual(args.reviewer, { kind: "user", id: "user" });
@@ -150,7 +158,7 @@ test("role target: queued durable handoff; multi --node; no startSession", async
   });
 });
 
-test("Connection target: managed ACP exact Session; multi --node", async () => {
+test("Connection target: managed ACP exact Session; work/context Nodes", async () => {
   const cwd = await makeFakeTentCwd();
   const { client, calls } = capturingDispatchClient();
   await withTentRoleId(undefined, async () => {
@@ -159,10 +167,12 @@ test("Connection target: managed ACP exact Session; multi --node", async () => {
       [
         "--target",
         "connection:connection-a",
-        "--node",
+        "--work-node",
         "cx-alpha",
-        "--node",
+        "--work-node",
         "cx-beta",
+        "--context-node",
+        "cx-context",
         "--prompt",
         "managed agent work",
         "--json",
@@ -174,8 +184,8 @@ test("Connection target: managed ACP exact Session; multi --node", async () => {
     const args = calls[0]!;
     assert.equal(args.connectionId, "connection-a");
     assert.equal(args.roleId, undefined);
-    assert.deepEqual(args.nodeIds, ["cx-alpha", "cx-beta"]);
-    assert.equal(args.nodes, undefined, "must not send retired nodes[] key");
+    assert.deepEqual(args.workNodeIds, ["cx-alpha", "cx-beta"]);
+    assert.deepEqual(args.contextNodeIds, ["cx-context"]);
     assert.deepEqual(args.parentActor, { kind: "user", id: "user" });
     assert.deepEqual(args.reviewer, { kind: "user", id: "user" });
     assert.equal(args.callerKind, "user");
@@ -203,7 +213,7 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
       [
         "--target",
         "role:rl-executor",
-        "--node",
+        "--work-node",
         "cx-n1",
         "--prompt",
         "from role to role",
@@ -233,7 +243,7 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
       [
         "--target",
         "connection:connection-a",
-        "--node",
+        "--work-node",
         "cx-n1b",
         "--prompt",
         "from role to agent",
@@ -263,7 +273,7 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
       [
         "--target",
         "connection:connection-b",
-        "--node",
+        "--work-node",
         "cx-n2",
         "--prompt",
         "from user",
@@ -288,7 +298,7 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
       [
         "--target",
         "role:rl-executor",
-        "--node",
+        "--work-node",
         "cx-n2b",
         "--prompt",
         "user to role",
@@ -312,7 +322,7 @@ test("parentActor/reviewer + derived asSub: Role caller vs user-direct (both tar
       [
         "--target",
         "role:rl-executor",
-        "--node",
+        "--work-node",
         "cx-n3",
         "--prompt",
         "tent role user token",
@@ -338,7 +348,7 @@ test("unknown flags and positional dispatch input fail before mutation", async (
   const { client, calls } = capturingDispatchClient();
   const unknown = await runTaskCommand(
     "dispatch",
-    ["--target", "role:x", "--node", "cx-1", "--prompt", "p", "--unknown-option", "x"],
+    ["--target", "role:x", "--work-node", "cx-1", "--prompt", "p", "--unknown-option", "x"],
     { client: client as never, cwd }
   );
   assert.notEqual(unknown.exitCode, 0);
@@ -350,7 +360,7 @@ test("unknown flags and positional dispatch input fail before mutation", async (
     { client: client as never, cwd }
   );
   assert.notEqual(positional.exitCode, 0);
-  assert.match(positional.stderr + positional.stdout, /--target|--node/i);
+  assert.match(positional.stderr + positional.stdout, /--target|--work-node/i);
   assert.equal(calls.length, 0);
 });
 
@@ -382,13 +392,13 @@ test("task accept rejects --commits before workspace or client access", async ()
   assert.doesNotMatch(acceptUsage!, /--commits/);
 });
 
-test("missing --target / --node / --prompt and invalid target fail loud", async () => {
+test("missing --target / --work-node / --prompt and invalid target fail loud", async () => {
   const cwd = await makeFakeTentCwd();
   const { client, calls } = capturingDispatchClient();
 
   const missingTarget = await runTaskCommand(
     "dispatch",
-    ["--node", "cx-1", "--prompt", "p"],
+    ["--work-node", "cx-1", "--prompt", "p"],
     { client: client as never, cwd }
   );
   assert.notEqual(missingTarget.exitCode, 0);
@@ -396,23 +406,23 @@ test("missing --target / --node / --prompt and invalid target fail loud", async 
 
   const badTarget = await runTaskCommand(
     "dispatch",
-    ["--target", "worker:fake", "--node", "cx-1", "--prompt", "p"],
+    ["--target", "worker:fake", "--work-node", "cx-1", "--prompt", "p"],
     { client: client as never, cwd }
   );
   assert.notEqual(badTarget.exitCode, 0);
   assert.match(badTarget.stderr, /role:|connection:/i);
 
-  const missingNode = await runTaskCommand(
+  const missingWorkNode = await runTaskCommand(
     "dispatch",
     ["--target", "role:rl-executor", "--prompt", "p"],
     { client: client as never, cwd }
   );
-  assert.notEqual(missingNode.exitCode, 0);
-  assert.match(missingNode.stderr, /--node/i);
+  assert.notEqual(missingWorkNode.exitCode, 0);
+  assert.match(missingWorkNode.stderr, /--work-node/i);
 
   const missingPrompt = await runTaskCommand(
     "dispatch",
-    ["--target", "role:rl-executor", "--node", "cx-1"],
+    ["--target", "role:rl-executor", "--work-node", "cx-1"],
     { client: client as never, cwd }
   );
   assert.notEqual(missingPrompt.exitCode, 0);
@@ -420,20 +430,20 @@ test("missing --target / --node / --prompt and invalid target fail loud", async 
 
   const emptyPrompt = await runTaskCommand(
     "dispatch",
-    ["--target", "role:rl-executor", "--node", "cx-1", "--prompt", "   "],
+    ["--target", "role:rl-executor", "--work-node", "cx-1", "--prompt", "   "],
     { client: client as never, cwd }
   );
   assert.notEqual(emptyPrompt.exitCode, 0);
 
-  // Empty/whitespace --node must fail even when another --node is valid.
+  // Empty/whitespace --work-node must fail even when another --work-node is valid.
   const emptyNodeAmongValid = await runTaskCommand(
     "dispatch",
     [
       "--target",
       "role:rl-executor",
-      "--node",
+      "--work-node",
       "cx-valid",
-      "--node",
+      "--work-node",
       "   ",
       "--prompt",
       "p",
@@ -443,12 +453,12 @@ test("missing --target / --node / --prompt and invalid target fail loud", async 
   assert.notEqual(emptyNodeAmongValid.exitCode, 0);
   assert.match(
     emptyNodeAmongValid.stderr + emptyNodeAmongValid.stdout,
-    /--node|non-empty|empty|whitespace/i
+    /--work-node|non-empty|empty|whitespace/i
   );
 
   const bareEmptyNode = await runTaskCommand(
     "dispatch",
-    ["--target", "role:rl-executor", "--node", "", "--prompt", "p"],
+    ["--target", "role:rl-executor", "--work-node", "", "--prompt", "p"],
     { client: client as never, cwd }
   );
   assert.notEqual(bareEmptyNode.exitCode, 0);
@@ -461,7 +471,7 @@ test("unknown target kind is rejected", async () => {
   const { client, calls } = capturingDispatchClient();
   const result = await runTaskCommand(
     "dispatch",
-    ["--target", "worker:one", "--node", "cx-1", "--prompt", "p"],
+    ["--target", "worker:one", "--work-node", "cx-1", "--prompt", "p"],
     { client: client as never, cwd }
   );
   assert.notEqual(result.exitCode, 0);

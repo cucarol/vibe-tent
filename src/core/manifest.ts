@@ -2,8 +2,7 @@
 // V0.2: readable/writable lists are **context pointers** (dispatch selection scope +
 // system paths), not domain R/W axes on Nodes. Deterministic for any agent/process.
 // DispatchInput.claimNodes / claimRoot are ephemeral caller-side selection only —
-// Manifest YAML never persists a second claims source (Task.contextCard.refs.nodes
-// is the sole Task Node-ref wire).
+// Manifest YAML is auxiliary; Task Context Card v2 is the sole frozen Node context wire.
 
 import { Node, Manifest, ManifestEntry } from "./types.js";
 import { isUsableNode, LoadedTent, join } from "./tree.js";

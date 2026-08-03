@@ -32,7 +32,13 @@ import { configureTestGitIdentity, git } from "./helpers.js";
 const MOCK_ACP = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "mock-acp-server.mjs");
 type Svc = Awaited<ReturnType<typeof startLocalTentService>>;
 type TaskSnap = {
-  id?: string; state: string; sessionId?: string; referencedNodeIds?: string[];
+  id?: string; state: string; sessionId?: string;
+  workNodeIds?: string[]; contextNodeIds?: string[];
+  contextCard?: {
+    workNodeIds: string[];
+    contextNodeIds: string[];
+    nodeSnapshots: Array<{ id: string }>;
+  };
   worktree?: string; branch?: string; acceptMode?: string;
   wait?: { reason?: string; summary?: string; code?: string } | null;
 };
@@ -120,7 +126,7 @@ async function dispatchClaimStart(svc: Svc, workspaceId: string, nodeId: string,
   const d = await rpc(svc, "task.dispatch", {
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
-    workspaceId, nodeIds: [nodeId], connectionId, prompt: "replace-session fixture", acceptMode: "review-required",
+    workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId, prompt: "replace-session fixture", acceptMode: "review-required",
   });
   assert.ok(!d.error, JSON.stringify(d.error));
   const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -170,7 +176,8 @@ test("start/replace reject caller-supplied connectionId and unknown fields witho
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "strict start and replace params",
       acceptMode: "review-required",
@@ -228,7 +235,7 @@ test("managed start refuses a Role Task; only an exact Connection Task owns a Se
     const dispatched = await rpc(svc, "task.dispatch", {
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
-      workspaceId, nodeIds: [nodeId], roleId: "rl-executor",
+      workspaceId, workNodeIds: [nodeId], contextNodeIds: [], roleId: "rl-executor",
       prompt: "Role Task must never receive a Connection-managed Session", acceptMode: "review-required",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
@@ -259,7 +266,8 @@ test("Connection dispatch: interrupt wins while provider start is held; late Ses
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [nodeId],
+      workNodeIds: [nodeId],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "held start race",
       acceptMode: "review-required",
@@ -407,7 +415,12 @@ test("replaceSession: success preserves Task + contextRestored=false + audit", a
     assert.equal(replaced.task.id, before.id);
     assert.equal(replaced.task.state, "running");
     assert.equal(replaced.task.sessionId, replaced.session.sessionId);
-    assert.deepEqual(replaced.task.referencedNodeIds ?? [], before.referencedNodeIds ?? []);
+    assert.deepEqual(replaced.task.workNodeIds ?? [], before.workNodeIds ?? []);
+    assert.deepEqual(replaced.task.contextNodeIds ?? [], before.contextNodeIds ?? []);
+    assert.deepEqual(
+      replaced.task.contextCard?.nodeSnapshots.map((snapshot) => snapshot.id) ?? [],
+      before.contextCard?.nodeSnapshots.map((snapshot) => snapshot.id) ?? []
+    );
     assert.equal(replaced.task.worktree, before.worktree);
     assert.equal(replaced.task.branch, before.branch);
     assert.equal(replaced.task.acceptMode, before.acceptMode);
@@ -440,7 +453,7 @@ test("replaceSession: eligibility - turnBusy, waitCode, force refused", async ()
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
-        workspaceId, nodeIds: [nodeId], connectionId: "mock-acp-replace-busy", prompt: "busy replace must fail-loud", acceptMode: "review-required",
+        workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId: "mock-acp-replace-busy", prompt: "busy replace must fail-loud", acceptMode: "review-required",
       });
       assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -838,7 +851,8 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       workspaceId,
-      nodeIds: [otherNodeId],
+      workNodeIds: [otherNodeId],
+      contextNodeIds: [],
       connectionId: "fake-default",
       prompt: "unrelated concurrent replace",
       acceptMode: "review-required",

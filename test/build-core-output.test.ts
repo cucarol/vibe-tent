@@ -17,7 +17,7 @@ function runBuildCore(): Promise<{ code: number | null; stdout: string; stderr: 
   return new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
-      [path.join(repoRoot, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.core.json"],
+      [path.join(repoRoot, "scripts", "build-core.mjs")],
       {
         cwd: repoRoot,
         env: process.env,

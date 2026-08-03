@@ -32,6 +32,8 @@ test("buildInbox: active task occupation 聚合,不计入待裁", async () => {
   };
   const result = await dispatch(env as any, "cx-p1", {
     sessionId: "ss-executor",
+    workNodeIds: ["cx-p1"],
+    contextNodeIds: [],
     userPrompt: "for inbox",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -58,6 +60,8 @@ test("delivery:驳回后 task 仍 running,重新交付后 accept 保留 accepted
 
   const result = await dispatch(env as any, "cx-p1", {
     sessionId: "ss-executor",
+    workNodeIds: ["cx-p1"],
+    contextNodeIds: [],
     userPrompt: "Implement delivery single-track",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -122,6 +126,8 @@ test("delivery:单轨写入 deliveries，不创建 legacy reports 路径", async
   };
   const result = await dispatch(env as any, "cx-p1", {
     sessionId: "ss-executor",
+    workNodeIds: ["cx-p1"],
+    contextNodeIds: [],
     userPrompt: "Delivery-only formal record",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -196,12 +202,16 @@ test("task interrupt/fail remove only their own non-accepted Delivery", async ()
 
   const first = await dispatch(env as any, "cx-g2", {
     sessionId: "ss-workera",
+    workNodeIds: ["cx-g2"],
+    contextNodeIds: [],
     userPrompt: "first task",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
   });
   const second = await dispatch(env as any, "cx-p1", {
     sessionId: "ss-workerb",
+    workNodeIds: ["cx-p1"],
+    contextNodeIds: [],
     userPrompt: "second task on an independent Node",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
@@ -232,6 +242,8 @@ test("task interrupt/fail remove only their own non-accepted Delivery", async ()
 
   const third = await dispatch(env as any, "cx-g2", {
     sessionId: "ss-workerc",
+    workNodeIds: ["cx-g2"],
+    contextNodeIds: [],
     userPrompt: "third task after exact Node release",
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },
