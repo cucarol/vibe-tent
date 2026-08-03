@@ -1180,26 +1180,39 @@ export class AcpClient {
       return;
     }
     if (kind === "config_option_update") {
-      if (!Array.isArray(update.configOptions)) return;
+      if (!Array.isArray(update.configOptions)) {
+        if (this.collectingPromptResponse) this.recordNoProgressUpdate();
+        return;
+      }
       const projected = this.createSessionConfigSnapshot({
         configOptions: update.configOptions,
       });
       const raw = update.configOptions;
       const droppedOnly =
         raw.length > 0 && projected.configOptions.length === 0;
-      if (droppedOnly && !projected.truncated) return;
-      const changed = this.replaceSessionConfigOptions(projected);
-      if (!changed) return;
-      if (this.collectingPromptResponse && !droppedOnly) {
-        if (
-          !this.recordObservableControlProgress(
-            `config:${JSON.stringify(this.sessionConfigSnapshot.configOptions)}`
-          )
-        ) {
-          return;
-        }
-        this.sealOpenAssistantSegment();
+      if (droppedOnly && !projected.truncated) {
+        if (this.collectingPromptResponse) this.recordNoProgressUpdate();
+        return;
       }
+      const changed = this.replaceSessionConfigOptions(projected);
+      let observableProgress = false;
+      if (this.collectingPromptResponse) {
+        let acceptedProgressEvent: boolean;
+        if (droppedOnly || !changed) {
+          acceptedProgressEvent = this.recordNoProgressUpdate();
+        } else {
+          acceptedProgressEvent = this.recordObservableControlProgress(
+            `config:${JSON.stringify({
+              configOptions: this.sessionConfigSnapshot.configOptions,
+              truncated: this.sessionConfigSnapshot.truncated,
+            })}`
+          );
+          observableProgress = acceptedProgressEvent;
+        }
+        if (!acceptedProgressEvent) return;
+      }
+      if (!changed) return;
+      if (observableProgress) this.sealOpenAssistantSegment();
       this.options.emit({
         type: "session.config_options",
         sessionId: this.options.sessionId,

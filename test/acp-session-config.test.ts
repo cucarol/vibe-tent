@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { AcpClient } from "../src/adapters/acp/client.js";
+import type { AcpResourceLimits } from "../src/adapters/acp/limits.js";
 import {
   createAcpSessionConfigSnapshot,
   parseAcpSessionConfigSnapshot,
@@ -197,26 +198,27 @@ rl.on("line", (line) => {
   }
   if (request.method === "session/prompt") {
     if (process.env.MALFORMED_CONFIG_UPDATES === "1") {
-      send({ jsonrpc: "2.0", method: "session/update", params: {
-        sessionId: "provider-config",
-        update: { sessionUpdate: "config_option_update", configOptions: { malformed: true } },
-      } });
-      send({ jsonrpc: "2.0", method: "session/update", params: {
-        sessionId: "provider-config",
-        update: { sessionUpdate: "config_option_update", configOptions: [
-          { id: "future", name: "Future", type: "future", currentValue: "x" },
-        ] },
-      } });
+      for (const configOptions of [
+        { malformed: true },
+        [{ id: "future", name: "Future", type: "future", currentValue: "x" }],
+      ]) {
+        send({ jsonrpc: "2.0", method: "session/update", params: {
+          sessionId: "provider-config",
+          update: { sessionUpdate: "config_option_update", configOptions },
+        } });
+      }
     } else if (process.env.SECRET_ONLY_CONFIG_UPDATE === "1") {
-      send({ jsonrpc: "2.0", method: "session/update", params: {
-        sessionId: "provider-config",
-        update: { sessionUpdate: "config_option_update", configOptions: [{
-          id: "secret-only-" + shortSecret,
-          name: "secret only",
-          type: "boolean",
-          currentValue: true,
-        }] },
-      } });
+      for (let index = 0; index < 2; index += 1) {
+        send({ jsonrpc: "2.0", method: "session/update", params: {
+          sessionId: "provider-config",
+          update: { sessionUpdate: "config_option_update", configOptions: [{
+            id: "secret-only-" + shortSecret,
+            name: "secret only",
+            type: "boolean",
+            currentValue: true,
+          }] },
+        } });
+      }
     } else {
     send({ jsonrpc: "2.0", method: "session/update", params: {
       sessionId: "provider-config",
@@ -248,7 +250,8 @@ async function mockFile(): Promise<string> {
 async function makeClient(
   sessionId: string,
   events: RuntimeEvent[],
-  env: Record<string, string> = {}
+  env: Record<string, string> = {},
+  resourceLimits?: Partial<AcpResourceLimits>
 ) {
   return new AcpClient({
     command: process.execPath,
@@ -257,6 +260,7 @@ async function makeClient(
     env,
     sessionId,
     permissionPolicy: "deny",
+    resourceLimits,
     emit: (event) => events.push(event),
   });
 }
@@ -564,6 +568,42 @@ test("secret-only config replacement clears options, records truncation, and nev
     );
   } finally {
     await client.stop("shutdown");
+  }
+});
+
+test("config updates rejected by sanitizer still consume the prompt no-progress bound", async (t) => {
+  const testCases: Array<{ name: string; env: Record<string, string> }> = [
+    {
+      name: "malformed and unknown-only",
+      env: { MALFORMED_CONFIG_UPDATES: "1" },
+    },
+    {
+      name: "secret-only",
+      env: {
+        CONFIG_SECRET,
+        CONFIG_SHORT_SECRET,
+        SECRET_ONLY_CONFIG_UPDATE: "1",
+      },
+    },
+  ];
+  for (const testCase of testCases) {
+    await t.test(testCase.name, async () => {
+      const client = await makeClient(
+        `ss-confignoprogress${testCase.name.replaceAll(" ", "")}`,
+        [],
+        testCase.env,
+        { noProgressUpdates: 1 }
+      );
+      try {
+        await client.connect();
+        await assert.rejects(
+          () => client.sendPrompt("no progress"),
+          /ACP_OUTPUT_LIMIT/
+        );
+      } finally {
+        await client.stop("shutdown");
+      }
+    });
   }
 });
 
