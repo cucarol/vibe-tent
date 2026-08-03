@@ -52,6 +52,23 @@ async function createFixture(authType?: string) {
   return { client, logPath };
 }
 
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForProcessExit(pid: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (processIsAlive(pid) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(processIsAlive(pid), false, `ACP child ${pid} remained alive`);
+}
+
 test("ACP agent auth method is sent through authenticate", async () => {
   const { client, logPath } = await createFixture("agent");
   try {
@@ -65,28 +82,36 @@ test("ACP agent auth method is sent through authenticate", async () => {
 
 test("ACP terminal auth method remains out-of-band", async () => {
   const { client, logPath } = await createFixture("terminal");
+  let pid: number | undefined;
   try {
     await assert.rejects(
       client.connect(),
       /out-of-band or unsupported type: terminal/
     );
+    pid = client.pid;
+    assert.ok(pid);
+    await waitForProcessExit(pid);
     const methods = (await fs.readFile(logPath, "utf8")).trim().split(/\r?\n/);
     assert.deepEqual(methods, ["initialize"]);
   } finally {
-    await client.stop("shutdown");
+    if (pid && processIsAlive(pid)) await client.stop("shutdown");
   }
 });
 
 test("ACP unknown auth method types fail loud instead of guessing", async () => {
   const { client, logPath } = await createFixture("future-auth");
+  let pid: number | undefined;
   try {
     await assert.rejects(
       client.connect(),
       /out-of-band or unsupported type: future-auth/
     );
+    pid = client.pid;
+    assert.ok(pid);
+    await waitForProcessExit(pid);
     const methods = (await fs.readFile(logPath, "utf8")).trim().split(/\r?\n/);
     assert.deepEqual(methods, ["initialize"]);
   } finally {
-    await client.stop("shutdown");
+    if (pid && processIsAlive(pid)) await client.stop("shutdown");
   }
 });

@@ -794,6 +794,10 @@ export class AcpClient {
         sessionConfig: this.sessionConfig,
       };
     } catch (err) {
+      // connect owns the freshly spawned process until a Session exists. Any
+      // initialize/auth/session-start failure must close that exact child before
+      // control returns to AgentRuntime; callers cannot safely recover this handle.
+      await this.stop("shutdown").catch(() => undefined);
       if (isAcpLimitError(err)) throw err;
       if (this.limitError) throw this.limitError;
       const message = err instanceof Error ? err.message : String(err);
