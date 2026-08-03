@@ -450,6 +450,14 @@ export class AcpClient {
   private replaceSessionConfigOptions(
     projected: AcpSessionConfigSnapshot
   ): boolean {
+    return this.commitSessionConfigOptions(
+      this.projectSessionConfigOptions(projected)
+    );
+  }
+
+  private projectSessionConfigOptions(
+    projected: AcpSessionConfigSnapshot
+  ): { snapshot: AcpSessionConfigSnapshot; changed: boolean } {
     const nextSnapshot: AcpSessionConfigSnapshot = {
       ...this.sessionConfigSnapshot,
       configOptions: projected.configOptions,
@@ -459,8 +467,27 @@ export class AcpClient {
       JSON.stringify(this.sessionConfigSnapshot.configOptions) !==
         JSON.stringify(nextSnapshot.configOptions) ||
       this.sessionConfigSnapshot.truncated !== nextSnapshot.truncated;
-    if (changed) this.sessionConfigSnapshot = nextSnapshot;
-    return changed;
+    return { snapshot: nextSnapshot, changed };
+  }
+
+  private commitSessionConfigOptions(candidate: {
+    snapshot: AcpSessionConfigSnapshot;
+    changed: boolean;
+  }): boolean {
+    if (candidate.changed) this.sessionConfigSnapshot = candidate.snapshot;
+    return candidate.changed;
+  }
+
+  /** Keep the last complete replacement plus structural loss seen before it. */
+  private accumulateSessionStartConfigOptions(
+    projected: AcpSessionConfigSnapshot
+  ): void {
+    this.pendingSessionStartConfigSnapshot = {
+      ...projected,
+      truncated:
+        (this.pendingSessionStartConfigSnapshot?.truncated ?? false) ||
+        projected.truncated,
+    };
   }
 
   /**
@@ -1180,7 +1207,7 @@ export class AcpClient {
           projected.configOptions.length > 0 ||
           projected.truncated
         ) {
-          this.pendingSessionStartConfigSnapshot = projected;
+          this.accumulateSessionStartConfigOptions(projected);
         }
       }
       return;
@@ -1201,7 +1228,8 @@ export class AcpClient {
         if (this.collectingPromptResponse) this.recordNoProgressUpdate();
         return;
       }
-      const changed = this.replaceSessionConfigOptions(projected);
+      const candidate = this.projectSessionConfigOptions(projected);
+      const changed = candidate.changed;
       let observableProgress = false;
       if (this.collectingPromptResponse) {
         let acceptedProgressEvent: boolean;
@@ -1210,8 +1238,8 @@ export class AcpClient {
         } else {
           acceptedProgressEvent = this.recordObservableControlProgress(
             `config:${JSON.stringify({
-              configOptions: this.sessionConfigSnapshot.configOptions,
-              truncated: this.sessionConfigSnapshot.truncated,
+              configOptions: candidate.snapshot.configOptions,
+              truncated: candidate.snapshot.truncated,
             })}`
           );
           observableProgress = acceptedProgressEvent;
@@ -1219,6 +1247,7 @@ export class AcpClient {
         if (!acceptedProgressEvent) return;
       }
       if (!changed) return;
+      this.commitSessionConfigOptions(candidate);
       if (observableProgress) this.sealOpenAssistantSegment();
       this.options.emit({
         type: "session.config_options",

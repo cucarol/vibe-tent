@@ -205,6 +205,10 @@ function normalizeConfigOption(
   policy: AcpSessionConfigTextPolicy
 ): AcpSessionConfigOption | undefined {
   if (!plainRecord(value)) return undefined;
+  // ACP requires clients to ignore option types they do not understand. Do
+  // this before secret inspection so an unknown wire shape cannot create a
+  // false structural-truncation fact from fields we do not project.
+  if (value.type !== "boolean" && value.type !== "select") return undefined;
   if (typeof value.id === "string" && policy.containsSecret?.(value.id)) {
     bounds.truncated = true;
     return undefined;
@@ -248,10 +252,7 @@ function normalizeConfigOption(
     return undefined;
   }
   const currentValue = boundedString(value.currentValue, ACP_SESSION_CONFIG_ID_BYTES);
-  if (value.type !== "select" || !currentValue) {
-    // ACP requires clients to ignore option types they do not understand.
-    return undefined;
-  }
+  if (!currentValue) return undefined;
   if (!Array.isArray(value.options)) return undefined;
   const grouped = value.options.some(
     (option) => plainRecord(option) && "group" in option

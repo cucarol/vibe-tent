@@ -151,6 +151,17 @@ const secretUpdatedOptions = secret ? [{
   type: "boolean",
   currentValue: true,
 }] : updated;
+const stickyIntermediateOptions = [{
+  id: "intermediate-safe",
+  name: "Intermediate safe",
+  type: "boolean",
+  currentValue: false,
+}, {
+  id: "intermediate-" + shortSecret,
+  name: "structurally dropped",
+  type: "boolean",
+  currentValue: true,
+}];
 function send(value) { process.stdout.write(JSON.stringify(value) + "\n"); }
 function sendBatch(values) {
   process.stdout.write(values.map((value) => JSON.stringify(value)).join("\n") + "\n");
@@ -179,7 +190,15 @@ rl.on("line", (line) => {
   }
   if (request.method === "session/new") {
     const response = { jsonrpc: "2.0", id: request.id, result: { sessionId: "provider-config", configOptions: secretOptions } };
-    if (process.env.START_CONFIG_UPDATE === "1") {
+    if (process.env.START_CONFIG_STICKY_TRUNCATED === "1") {
+      sendBatch([response, { jsonrpc: "2.0", method: "session/update", params: {
+        sessionId: "provider-config",
+        update: { sessionUpdate: "config_option_update", configOptions: stickyIntermediateOptions },
+      } }, { jsonrpc: "2.0", method: "session/update", params: {
+        sessionId: "provider-config",
+        update: { sessionUpdate: "config_option_update", configOptions: replayFinal },
+      } }]);
+    } else if (process.env.START_CONFIG_UPDATE === "1") {
       sendBatch([response, { jsonrpc: "2.0", method: "session/update", params: {
         sessionId: "provider-config",
         update: { sessionUpdate: "config_option_update", configOptions: updated },
@@ -191,7 +210,15 @@ rl.on("line", (line) => {
   }
   if (request.method === "session/load" || request.method === "session/resume") {
     const response = { jsonrpc: "2.0", id: request.id, result: { configOptions: initial } };
-    if (request.method === "session/load" && request.params?.sessionId === "provider-replay-config") {
+    if (process.env.START_CONFIG_STICKY_TRUNCATED === "1") {
+      sendBatch([response, { jsonrpc: "2.0", method: "session/update", params: {
+        sessionId: request.params?.sessionId,
+        update: { sessionUpdate: "config_option_update", configOptions: stickyIntermediateOptions },
+      } }, { jsonrpc: "2.0", method: "session/update", params: {
+        sessionId: request.params?.sessionId,
+        update: { sessionUpdate: "config_option_update", configOptions: replayFinal },
+      } }]);
+    } else if (request.method === "session/load" && request.params?.sessionId === "provider-replay-config") {
       sendBatch([response, { jsonrpc: "2.0", method: "session/update", params: {
         sessionId: "provider-replay-config",
         update: { sessionUpdate: "config_option_update", configOptions: updated },
@@ -213,7 +240,33 @@ rl.on("line", (line) => {
     return;
   }
   if (request.method === "session/prompt") {
-    if (process.env.MALFORMED_CONFIG_UPDATES === "1") {
+    if (process.env.UNKNOWN_SECRET_CONFIG_UPDATES === "1") {
+      for (let index = 0; index < 2; index += 1) {
+        send({ jsonrpc: "2.0", method: "session/update", params: {
+          sessionId: "provider-config",
+          update: { sessionUpdate: "config_option_update", configOptions: [{
+            id: "future-" + shortSecret,
+            name: "Future",
+            type: "future",
+            currentValue: shortSecret,
+          }] },
+        } });
+      }
+    } else if (process.env.LIMIT_CROSSING_SECRET_CONFIG_UPDATE === "1") {
+      send({ jsonrpc: "2.0", method: "session/update", params: {
+        sessionId: "provider-config",
+        update: { sessionUpdate: "config_option_update", configOptions: { malformed: true } },
+      } });
+      send({ jsonrpc: "2.0", method: "session/update", params: {
+        sessionId: "provider-config",
+        update: { sessionUpdate: "config_option_update", configOptions: [{
+          id: "secret-only-" + shortSecret,
+          name: "secret only",
+          type: "boolean",
+          currentValue: true,
+        }] },
+      } });
+    } else if (process.env.MALFORMED_CONFIG_UPDATES === "1") {
       for (const configOptions of [
         { malformed: true },
         [{ id: "future", name: "Future", type: "future", currentValue: "x" }],
@@ -421,6 +474,34 @@ test("session/new and session/resume commit same-chunk config updates after the 
   }
 });
 
+test("session start keeps the last replacement with sticky structural truncation", async (t) => {
+  for (const mode of ["new", "load", "resume"] as const) {
+    await t.test(mode, async () => {
+      const events: RuntimeEvent[] = [];
+      const client = await makeClient(`ss-configsticky${mode}`, events, {
+        CONFIG_SHORT_SECRET,
+        START_CONFIG_STICKY_TRUNCATED: "1",
+      });
+      try {
+        const connected = await client.connect(
+          mode === "new"
+            ? undefined
+            : { mode, providerSessionId: "provider-config" }
+        );
+        assert.deepEqual(connected.sessionConfig.configOptions, REPLAY_FINAL_OPTIONS);
+        assert.equal(connected.sessionConfig.truncated, true);
+        assert.deepEqual(client.sessionConfig, connected.sessionConfig);
+        assert.equal(
+          events.filter((event) => event.type === "session.config_options").length,
+          0
+        );
+      } finally {
+        await client.stop("shutdown");
+      }
+    });
+  }
+});
+
 test("ACP Session config scrubs launch secrets before Registry and Service projection", async () => {
   const events: RuntimeEvent[] = [];
   const acp = await makeClient("ss-configsecret", events, {
@@ -578,6 +659,55 @@ test("malformed and unknown-only config updates do not clear baseline or emit pr
     const baseline = connected.sessionConfig;
     const result = await client.sendPrompt("malformed updates");
     assert.equal(result.assistantText, "ok");
+    assert.deepEqual(client.sessionConfig, baseline);
+    assert.equal(
+      events.filter((event) => event.type === "session.config_options").length,
+      0
+    );
+  } finally {
+    await client.stop("shutdown");
+  }
+});
+
+test("unknown option types with short secrets stay ignored and consume no-progress", async () => {
+  const events: RuntimeEvent[] = [];
+  const client = await makeClient(
+    "ss-configunknownsecret",
+    events,
+    { CONFIG_SHORT_SECRET, UNKNOWN_SECRET_CONFIG_UPDATES: "1" },
+    { noProgressUpdates: 1 }
+  );
+  try {
+    const baseline = (await client.connect()).sessionConfig;
+    assert.equal(baseline.truncated, false);
+    await assert.rejects(
+      () => client.sendPrompt("unknown short secret"),
+      /ACP_OUTPUT_LIMIT/
+    );
+    assert.deepEqual(client.sessionConfig, baseline);
+    assert.equal(
+      events.filter((event) => event.type === "session.config_options").length,
+      0
+    );
+  } finally {
+    await client.stop("shutdown");
+  }
+});
+
+test("limit-crossing secret-only update cannot commit or emit", async () => {
+  const events: RuntimeEvent[] = [];
+  const client = await makeClient(
+    "ss-configlimitsecret",
+    events,
+    { CONFIG_SHORT_SECRET, LIMIT_CROSSING_SECRET_CONFIG_UPDATE: "1" },
+    { noProgressUpdates: 1 }
+  );
+  try {
+    const baseline = (await client.connect()).sessionConfig;
+    await assert.rejects(
+      () => client.sendPrompt("limit before secret commit"),
+      /ACP_OUTPUT_LIMIT/
+    );
     assert.deepEqual(client.sessionConfig, baseline);
     assert.equal(
       events.filter((event) => event.type === "session.config_options").length,
