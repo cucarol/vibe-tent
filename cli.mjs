@@ -3715,23 +3715,23 @@ var ServiceClient = class {
   providerCatalog() {
     return this.call("provider.catalog", {});
   }
-  // ---- convenience: machine-local credentials (never returns secret) ----
-  credentialList() {
-    return this.call("credential.list", {});
+  // ---- privileged machine Settings launch secrets (never returns plaintext) ----
+  settingsLaunchSecretList() {
+    return this.call("settings.launchSecret.list", {});
   }
   /**
    * Store encrypted secret under id. Response is id/metadata only.
    * Callers must not log `secret`; RPC response never echoes it.
    */
-  credentialSet(id, secret, metadata) {
-    return this.call("credential.set", {
+  settingsLaunchSecretSet(id, secret, label) {
+    return this.call("settings.launchSecret.set", {
       id,
       secret,
-      ...metadata !== void 0 ? { metadata } : {}
+      ...label !== void 0 ? { label } : {}
     });
   }
-  credentialDelete(id) {
-    return this.call("credential.delete", { id });
+  settingsLaunchSecretDelete(id) {
+    return this.call("settings.launchSecret.delete", { id });
   }
   // ---- convenience: machine-local skills (bundled only; no workspaceId) ----
   skillList() {
@@ -4129,7 +4129,7 @@ function createServiceClient(options) {
 }
 
 // src/service/protocol.ts
-var TENT_SERVICE_PROTOCOL_VERSION = 3;
+var TENT_SERVICE_PROTOCOL_VERSION = 4;
 var ServiceProtocolIncompatibleError = class extends Error {
   constructor(kind, options = {}) {
     const servicePackageVersion = typeof options.servicePackageVersion === "string" && options.servicePackageVersion.trim() ? options.servicePackageVersion.trim() : "unknown";

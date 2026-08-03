@@ -6204,7 +6204,7 @@ import * as path3 from "node:path";
 var SAFE_SKILL_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 var MCP_SERVER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 var ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-var CREDENTIAL_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
+var LAUNCH_SECRET_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
 var MAX_ROUTE_SKILLS = 64;
 var MAX_ROUTE_MCP_SERVERS = 32;
 var MAX_MCP_ARGS = 64;
@@ -6260,12 +6260,12 @@ function parseEnvKeyName(raw, key2) {
   }
   return fieldOk(base.value);
 }
-function parseCredentialId(raw, key2) {
+function parseLaunchSecretId(raw, key2) {
   const base = parseNonEmptyString(raw, key2);
   if (!base.ok) return base;
-  if (!CREDENTIAL_ID_RE.test(base.value)) {
+  if (!LAUNCH_SECRET_ID_RE.test(base.value)) {
     return fieldErr(
-      `Invalid ${key2}: must match ${CREDENTIAL_ID_RE} (vault id, not secret value)`
+      `Invalid ${key2}: must match ${LAUNCH_SECRET_ID_RE} (launch-secret id, not value)`
     );
   }
   return fieldOk(base.value);
@@ -6302,8 +6302,8 @@ function parseStringRecord(raw, field, valueParse, maxEntries) {
 function parseEnvKeyMap(raw, field, maxEntries) {
   return parseStringRecord(raw, field, (v, k) => parseEnvKeyName(v, k), maxEntries);
 }
-function parseCredentialRefMap(raw, field, maxEntries) {
-  return parseStringRecord(raw, field, (v, k) => parseCredentialId(v, k), maxEntries);
+function parseLaunchSecretRefMap(raw, field, maxEntries) {
+  return parseStringRecord(raw, field, (v, k) => parseLaunchSecretId(v, k), maxEntries);
 }
 function parseSkillPathValue(raw, allowedRoots) {
   const base = parseNonEmptyString(raw, "skills[].path");
@@ -6418,17 +6418,17 @@ function parseMcpServerValue(raw) {
     "command",
     "args",
     "envKeys",
-    "envCredentialRefs",
+    "envSecretRefs",
     "url",
     "headerEnvKeys",
-    "headerCredentialRefs"
+    "headerSecretRefs"
   ]);
   for (const key2 of Object.keys(o)) {
     if (!allowed.has(key2)) {
       const lower = key2.toLowerCase();
       if (lower === "env" || lower === "headers" || lower.includes("secret") || lower.includes("token") || lower.includes("apikey") || lower.includes("password") || lower.includes("authorization") || lower.includes("bearer")) {
         return fieldErr(
-          `Rejected dangerous or unsupported mcpServers[] field: ${key2} (use envKeys/envCredentialRefs/headerEnvKeys/headerCredentialRefs)`
+          `Rejected dangerous or unsupported mcpServers[] field: ${key2} (use envKeys/envSecretRefs/headerEnvKeys/headerSecretRefs)`
         );
       }
       return fieldErr(`Unknown mcpServers[] field: ${key2}`);
@@ -6456,9 +6456,9 @@ function parseMcpServerValue(raw) {
     if ("headerEnvKeys" in o && o.headerEnvKeys != null) {
       return fieldErr("Invalid mcpServers[]: stdio transport must not set headerEnvKeys");
     }
-    if ("headerCredentialRefs" in o && o.headerCredentialRefs != null) {
+    if ("headerSecretRefs" in o && o.headerSecretRefs != null) {
       return fieldErr(
-        "Invalid mcpServers[]: stdio transport must not set headerCredentialRefs"
+        "Invalid mcpServers[]: stdio transport must not set headerSecretRefs"
       );
     }
     const cmd = parseNonEmptyString(o.command, "mcpServers[].command");
@@ -6476,13 +6476,13 @@ function parseMcpServerValue(raw) {
     const envKeys = parseEnvKeyMap(o.envKeys, "mcpServers[].envKeys", MAX_MCP_ENV_ENTRIES);
     if (!envKeys.ok) return envKeys;
     if (envKeys.value) server.envKeys = envKeys.value;
-    const envCreds = parseCredentialRefMap(
-      o.envCredentialRefs,
-      "mcpServers[].envCredentialRefs",
+    const envCreds = parseLaunchSecretRefMap(
+      o.envSecretRefs,
+      "mcpServers[].envSecretRefs",
       MAX_MCP_ENV_ENTRIES
     );
     if (!envCreds.ok) return envCreds;
-    if (envCreds.value) server.envCredentialRefs = envCreds.value;
+    if (envCreds.value) server.envSecretRefs = envCreds.value;
   } else {
     if ("command" in o && o.command !== void 0 && o.command !== null) {
       return fieldErr("Invalid mcpServers[]: http transport must not set command");
@@ -6493,9 +6493,9 @@ function parseMcpServerValue(raw) {
     if ("envKeys" in o && o.envKeys != null) {
       return fieldErr("Invalid mcpServers[]: http transport must not set envKeys");
     }
-    if ("envCredentialRefs" in o && o.envCredentialRefs != null) {
+    if ("envSecretRefs" in o && o.envSecretRefs != null) {
       return fieldErr(
-        "Invalid mcpServers[]: http transport must not set envCredentialRefs"
+        "Invalid mcpServers[]: http transport must not set envSecretRefs"
       );
     }
     const urlR = parseHttpUrl(o.url);
@@ -6508,13 +6508,13 @@ function parseMcpServerValue(raw) {
     );
     if (!headerEnv.ok) return headerEnv;
     if (headerEnv.value) server.headerEnvKeys = headerEnv.value;
-    const headerCreds = parseCredentialRefMap(
-      o.headerCredentialRefs,
-      "mcpServers[].headerCredentialRefs",
+    const headerCreds = parseLaunchSecretRefMap(
+      o.headerSecretRefs,
+      "mcpServers[].headerSecretRefs",
       MAX_MCP_HEADER_ENTRIES
     );
     if (!headerCreds.ok) return headerCreds;
-    if (headerCreds.value) server.headerCredentialRefs = headerCreds.value;
+    if (headerCreds.value) server.headerSecretRefs = headerCreds.value;
   }
   return fieldOk(server);
 }
@@ -6557,10 +6557,10 @@ function cloneMcpServers(servers) {
     ...s.command !== void 0 ? { command: s.command } : {},
     ...s.args !== void 0 ? { args: [...s.args] } : {},
     ...s.envKeys !== void 0 ? { envKeys: { ...s.envKeys } } : {},
-    ...s.envCredentialRefs !== void 0 ? { envCredentialRefs: { ...s.envCredentialRefs } } : {},
+    ...s.envSecretRefs !== void 0 ? { envSecretRefs: { ...s.envSecretRefs } } : {},
     ...s.url !== void 0 ? { url: s.url } : {},
     ...s.headerEnvKeys !== void 0 ? { headerEnvKeys: { ...s.headerEnvKeys } } : {},
-    ...s.headerCredentialRefs !== void 0 ? { headerCredentialRefs: { ...s.headerCredentialRefs } } : {}
+    ...s.headerSecretRefs !== void 0 ? { headerSecretRefs: { ...s.headerSecretRefs } } : {}
   }));
 }
 function projectSkillRefs(skills) {
@@ -6580,10 +6580,10 @@ function projectMcpServers(servers) {
     ...s.command !== void 0 ? { command: s.command } : {},
     ...s.args !== void 0 ? { args: [...s.args] } : {},
     ...s.envKeys !== void 0 ? { envKeys: { ...s.envKeys } } : {},
-    ...s.envCredentialRefs !== void 0 ? { envCredentialRefs: { ...s.envCredentialRefs } } : {},
+    ...s.envSecretRefs !== void 0 ? { envSecretRefs: { ...s.envSecretRefs } } : {},
     ...s.url !== void 0 ? { url: s.url } : {},
     ...s.headerEnvKeys !== void 0 ? { headerEnvKeys: { ...s.headerEnvKeys } } : {},
-    ...s.headerCredentialRefs !== void 0 ? { headerCredentialRefs: { ...s.headerCredentialRefs } } : {}
+    ...s.headerSecretRefs !== void 0 ? { headerSecretRefs: { ...s.headerSecretRefs } } : {}
   }));
 }
 function resolveEnvValue(envKey, planEnv) {
@@ -6615,17 +6615,17 @@ function resolveAcpMcpServersWire(servers, opts) {
           env.push({ name: envName, value });
         }
       }
-      if (s.envCredentialRefs) {
-        for (const [envName, credId] of Object.entries(s.envCredentialRefs)) {
-          if (!opts.resolveCredential) {
+      if (s.envSecretRefs) {
+        for (const [envName, secretId] of Object.entries(s.envSecretRefs)) {
+          if (!opts.resolveLaunchSecret) {
             throw new Error(
-              `MCP server ${s.name}: credentialRef ${credId} requires resolveCredential hook`
+              `MCP server ${s.name}: launch secret ${secretId} requires resolveLaunchSecret hook`
             );
           }
-          const value = opts.resolveCredential(credId);
+          const value = opts.resolveLaunchSecret(secretId);
           if (typeof value !== "string" || !value) {
             throw new Error(
-              `MCP server ${s.name}: credential not found or empty for ${credId} (env ${envName})`
+              `MCP server ${s.name}: launch secret not found or empty for ${secretId} (env ${envName})`
             );
           }
           env.push({ name: envName, value });
@@ -6654,17 +6654,17 @@ function resolveAcpMcpServersWire(servers, opts) {
           headers.push({ name: headerName, value });
         }
       }
-      if (s.headerCredentialRefs) {
-        for (const [headerName, credId] of Object.entries(s.headerCredentialRefs)) {
-          if (!opts.resolveCredential) {
+      if (s.headerSecretRefs) {
+        for (const [headerName, secretId] of Object.entries(s.headerSecretRefs)) {
+          if (!opts.resolveLaunchSecret) {
             throw new Error(
-              `MCP server ${s.name}: credentialRef ${credId} requires resolveCredential hook`
+              `MCP server ${s.name}: launch secret ${secretId} requires resolveLaunchSecret hook`
             );
           }
-          const value = opts.resolveCredential(credId);
+          const value = opts.resolveLaunchSecret(secretId);
           if (typeof value !== "string" || !value) {
             throw new Error(
-              `MCP server ${s.name}: credential not found or empty for ${credId} (header ${headerName})`
+              `MCP server ${s.name}: launch secret not found or empty for ${secretId} (header ${headerName})`
             );
           }
           headers.push({ name: headerName, value });
@@ -6726,7 +6726,7 @@ function calculateAgentConnectionLaunchDigest(connection, effectiveEndpointDiges
     executable: canonical.executable,
     model: canonical.model,
     envKey: canonical.envKey,
-    credentialRef: canonical.credentialRef,
+    launchSecretRef: canonical.launchSecretRef,
     baseUrlEnvKey: canonical.baseUrlEnvKey,
     baseUrl: canonical.baseUrl,
     effectiveEndpointDigest,
@@ -6749,7 +6749,7 @@ function createAgentConnectionSnapshot(connection, details) {
     ...connection.args?.length ? { args: [...connection.args] } : {},
     ...connection.executable ? { executable: connection.executable } : {},
     ...connection.envKey ? { envKey: connection.envKey } : {},
-    ...connection.credentialRef ? { credentialRef: connection.credentialRef } : {},
+    ...connection.launchSecretRef ? { launchSecretRef: connection.launchSecretRef } : {},
     ...connection.baseUrlEnvKey ? { baseUrlEnvKey: connection.baseUrlEnvKey } : {},
     ...connection.baseUrl ? { baseUrl: connection.baseUrl } : {},
     ...connection.permissionPolicy ? { permissionPolicy: connection.permissionPolicy } : {},
@@ -6772,7 +6772,7 @@ function connectionConfigFromSnapshot(snapshot) {
     ...snapshot.args ? { args: [...snapshot.args] } : {},
     ...snapshot.executable ? { executable: snapshot.executable } : {},
     ...snapshot.envKey ? { envKey: snapshot.envKey } : {},
-    ...snapshot.credentialRef ? { credentialRef: snapshot.credentialRef } : {},
+    ...snapshot.launchSecretRef ? { launchSecretRef: snapshot.launchSecretRef } : {},
     ...snapshot.baseUrlEnvKey ? { baseUrlEnvKey: snapshot.baseUrlEnvKey } : {},
     ...snapshot.baseUrl ? { baseUrl: snapshot.baseUrl } : {},
     ...snapshot.permissionPolicy ? { permissionPolicy: snapshot.permissionPolicy } : {},
@@ -6792,7 +6792,7 @@ var SNAPSHOT_KEYS = /* @__PURE__ */ new Set([
   "args",
   "executable",
   "envKey",
-  "credentialRef",
+  "launchSecretRef",
   "baseUrlEnvKey",
   "baseUrl",
   "permissionPolicy",
@@ -6812,10 +6812,10 @@ var MCP_KEYS = /* @__PURE__ */ new Set([
   "command",
   "args",
   "envKeys",
-  "envCredentialRefs",
+  "envSecretRefs",
   "url",
   "headerEnvKeys",
-  "headerCredentialRefs"
+  "headerSecretRefs"
 ]);
 var FAKE_KEYS = /* @__PURE__ */ new Set([
   "sleepMs",
@@ -6826,7 +6826,7 @@ var FAKE_KEYS = /* @__PURE__ */ new Set([
   "canResume"
 ]);
 var ENV_KEY_RE2 = /^[A-Za-z_][A-Za-z0-9_]*$/;
-var CREDENTIAL_REF_RE = /^[a-z][a-z0-9-]{0,62}$/;
+var LAUNCH_SECRET_REF_RE = /^[a-z][a-z0-9-]{0,62}$/;
 var SHA256_RE = /^sha256:[0-9a-f]{64}$/;
 function plainRecord(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -6855,7 +6855,7 @@ function validMcp(value) {
   if (value.args !== void 0 && (!Array.isArray(value.args) || !value.args.every((entry) => typeof entry === "string"))) {
     return false;
   }
-  for (const key2 of ["envKeys", "envCredentialRefs", "headerEnvKeys", "headerCredentialRefs"]) {
+  for (const key2 of ["envKeys", "envSecretRefs", "headerEnvKeys", "headerSecretRefs"]) {
     if (value[key2] !== void 0 && !stringMap(value[key2])) return false;
   }
   return true;
@@ -6894,7 +6894,7 @@ function parseAgentConnectionSnapshot(value) {
   for (const key2 of ["envKey", "baseUrlEnvKey"]) {
     if (value[key2] !== void 0 && (typeof value[key2] !== "string" || !ENV_KEY_RE2.test(value[key2]))) return null;
   }
-  if (value.credentialRef !== void 0 && (typeof value.credentialRef !== "string" || !CREDENTIAL_REF_RE.test(value.credentialRef))) {
+  if (value.launchSecretRef !== void 0 && (typeof value.launchSecretRef !== "string" || !LAUNCH_SECRET_REF_RE.test(value.launchSecretRef))) {
     return null;
   }
   if (!safeBaseUrl(value.baseUrl)) return null;
@@ -20106,14 +20106,14 @@ var CLIENT_METHODS = [
    * Read-only product provider verification catalog.
    * Params: none (machine-global product facts; not workspace-scoped).
    * Result: { providers: ProviderCatalogEntry[] } — adapterId + verificationLevel
-   * (+ optional canResume/notes). Never secrets, env values, or credentials.
+   * (+ optional canResume/notes). Never secrets, env values, or Connection config.
    * Distinct from connection.* (machine-local launch config).
    */
   "provider.catalog",
-  /** Machine-local credential vault (user-only; never returns secret plaintext). */
-  "credential.list",
-  "credential.set",
-  "credential.delete",
+  /** Machine-local launch secrets (user Settings only; never returns plaintext). */
+  "settings.launchSecret.list",
+  "settings.launchSecret.set",
+  "settings.launchSecret.delete",
   /** Machine-local bundled skill list/install (user surface; no workspaceId). */
   "skill.list",
   "skill.install",
@@ -20628,6 +20628,31 @@ function summarizeRpcErrorData(data, secrets = []) {
   if (Object.keys(safe).length === 0) return void 0;
   return `data=${JSON.stringify(safe).slice(0, RPC_ERROR_DATA_MAX_CHARS)}`;
 }
+function parseAcpAuthMethods(value) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const record = entry;
+    if (typeof record.id !== "string" || !record.id.trim()) return [];
+    if (record.type !== void 0 && typeof record.type !== "string") return [];
+    return [{ ...record, id: record.id }];
+  });
+}
+function assertInBandAuthMethod(methods, methodId) {
+  if (typeof methodId !== "string" || !methodId) {
+    throw new Error("ACP authenticate hook must select a non-empty methodId");
+  }
+  const matches = methods.filter((method) => method.id === methodId);
+  if (matches.length !== 1) {
+    throw new Error(`ACP authenticate hook selected unavailable methodId: ${methodId}`);
+  }
+  const type = matches[0]?.type ?? "agent";
+  if (type !== "agent") {
+    throw new Error(
+      `ACP auth method ${methodId} has out-of-band or unsupported type: ${type}`
+    );
+  }
+}
 function isSessionResumeAdvertised(sessionCapabilities) {
   if (!sessionCapabilities || typeof sessionCapabilities !== "object" || Array.isArray(sessionCapabilities)) {
     return false;
@@ -20908,9 +20933,11 @@ var AcpClient = class {
         init.agentCapabilities
       );
       if (this.options.authenticate) {
+        const authMethods = parseAcpAuthMethods(init.authMethods);
         const authParams = await this.options.authenticate(
-          init.authMethods ?? []
+          authMethods
         );
+        assertInBandAuthMethod(authMethods, authParams.methodId);
         const meta = authParams._meta && typeof authParams._meta === "object" && !Array.isArray(authParams._meta) ? { ...authParams._meta, headless: true } : { headless: true };
         await this.request("authenticate", {
           ...authParams,
@@ -21009,6 +21036,7 @@ var AcpClient = class {
         sessionConfig: this.sessionConfig
       };
     } catch (err) {
+      await this.stop("shutdown").catch(() => void 0);
       if (isAcpLimitError(err)) throw err;
       if (this.limitError) throw this.limitError;
       const message2 = err instanceof Error ? err.message : String(err);
@@ -22263,7 +22291,7 @@ function normalizeSharedAcpOpts(raw) {
     executable: typeof o.executable === "string" && o.executable.trim() ? o.executable.trim() : void 0,
     model: typeof o.model === "string" && o.model.trim() ? o.model.trim() : void 0,
     envKey: typeof o.envKey === "string" && o.envKey.trim() ? o.envKey.trim() : void 0,
-    credentialRef: typeof o.credentialRef === "string" && o.credentialRef.trim() ? o.credentialRef.trim() : void 0,
+    launchSecretRef: typeof o.launchSecretRef === "string" && o.launchSecretRef.trim() ? o.launchSecretRef.trim() : void 0,
     baseUrlEnvKey: typeof o.baseUrlEnvKey === "string" && o.baseUrlEnvKey.trim() ? o.baseUrlEnvKey.trim() : void 0,
     baseUrl: typeof o.baseUrl === "string" && o.baseUrl.trim() ? o.baseUrl.trim() : void 0,
     promptTimeoutMs: typeof o.promptTimeoutMs === "number" && o.promptTimeoutMs > 0 ? o.promptTimeoutMs : DEFAULT_PROMPT_TIMEOUT_MS,
@@ -23159,14 +23187,14 @@ function createPiAcpAdapter(options) {
   return new PiAcpProviderAdapter(options);
 }
 
-// src/service/credential-store.ts
+// src/service/launch-secret-store.ts
 import * as fs13 from "node:fs/promises";
 import * as path12 from "node:path";
 
-// src/service/credential-protector.ts
+// src/service/launch-secret-protector.ts
 import { spawn as spawn4 } from "node:child_process";
-var NON_WINDOWS_MSG = "CredentialStore requires Windows DPAPI (CurrentUser); non-Windows is not supported in this MVP (no weak-crypto fallback)";
-function createPlatformCredentialProtector(platform = process.platform) {
+var NON_WINDOWS_MSG = "LaunchSecretStore requires Windows DPAPI (CurrentUser); non-Windows is not supported in this MVP (no weak-crypto fallback)";
+function createPlatformLaunchSecretProtector(platform = process.platform) {
   if (platform !== "win32") {
     return {
       protect: async () => {
@@ -23177,9 +23205,9 @@ function createPlatformCredentialProtector(platform = process.platform) {
       }
     };
   }
-  return createWindowsDpapiProtector();
+  return createWindowsDpapiLaunchSecretProtector();
 }
-function createWindowsDpapiProtector() {
+function createWindowsDpapiLaunchSecretProtector() {
   return {
     protect: async (plaintext) => {
       const b64In = Buffer.from(plaintext, "utf8").toString("base64");
@@ -23253,21 +23281,21 @@ function runPowerShellStdin(command, stdinData, op) {
   });
 }
 
-// src/service/credential-store.ts
-var CREDENTIAL_ID_RE2 = /^[a-z][a-z0-9-]{0,62}$/;
+// src/service/launch-secret-store.ts
+var LAUNCH_SECRET_ID_RE2 = /^[a-z][a-z0-9-]{0,62}$/;
 var MAX_SECRET_BYTES = 64 * 1024;
 var MAX_LABEL_LEN = 200;
-function credentialsPath(dataDir) {
-  return path12.join(dataDir, "credentials.json");
+function launchSecretsPath(dataDir) {
+  return path12.join(dataDir, "launch-secrets.json");
 }
-function assertCredentialId(id) {
+function assertLaunchSecretId(id) {
   if (typeof id !== "string" || !id.trim()) {
-    throw new Error("Missing or invalid credential id");
+    throw new Error("Missing or invalid launch secret id");
   }
   const trimmed = id.trim();
-  if (!CREDENTIAL_ID_RE2.test(trimmed)) {
+  if (!LAUNCH_SECRET_ID_RE2.test(trimmed)) {
     throw new Error(
-      `Invalid credential id: must match ${CREDENTIAL_ID_RE2} (lowercase letter, then a-z0-9-, max 63)`
+      `Invalid launch secret id: must match ${LAUNCH_SECRET_ID_RE2} (lowercase letter, then a-z0-9-, max 63)`
     );
   }
   return trimmed;
@@ -23300,20 +23328,20 @@ function normalizeSetOpts(opts) {
 function normalizeMetadata(raw) {
   if (raw === void 0 || raw === null) return void 0;
   if (typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error("Invalid credential metadata: must be a plain object when set");
+    throw new Error("Invalid launch secret metadata: must be a plain object when set");
   }
   const obj = raw;
   const out = {};
   if ("label" in obj) {
     if (obj.label === void 0 || obj.label === null) {
     } else if (typeof obj.label !== "string") {
-      throw new Error("Invalid credential metadata.label: must be a string");
+      throw new Error("Invalid launch secret metadata.label: must be a string");
     } else {
       const t = obj.label.trim();
-      if (!t) throw new Error("Invalid credential metadata.label: must be non-empty when set");
+      if (!t) throw new Error("Invalid launch secret metadata.label: must be non-empty when set");
       if (t.length > MAX_LABEL_LEN) {
         throw new Error(
-          `Invalid credential metadata.label: exceeds ${MAX_LABEL_LEN} characters`
+          `Invalid launch secret metadata.label: exceeds ${MAX_LABEL_LEN} characters`
         );
       }
       out.label = t;
@@ -23321,7 +23349,7 @@ function normalizeMetadata(raw) {
   }
   for (const key2 of Object.keys(obj)) {
     if (key2 !== "label") {
-      throw new Error(`Unknown credential metadata field: ${key2}`);
+      throw new Error(`Unknown launch secret metadata field: ${key2}`);
     }
   }
   return Object.keys(out).length > 0 ? out : void 0;
@@ -23329,15 +23357,17 @@ function normalizeMetadata(raw) {
 function isValidDate3(value) {
   return Number.isFinite(Date.parse(value));
 }
-function parseCredentialRecord(value) {
+function parseLaunchSecretRecord(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
   const item = value;
+  const allowed = /* @__PURE__ */ new Set(["id", "ciphertext", "createdAt", "updatedAt", "metadata"]);
+  if (Object.keys(item).some((key2) => !allowed.has(key2))) return null;
   if (typeof item.id !== "string") return null;
   let id;
   try {
-    id = assertCredentialId(item.id);
+    id = assertLaunchSecretId(item.id);
   } catch {
     return null;
   }
@@ -23353,14 +23383,10 @@ function parseCredentialRecord(value) {
   if (!isValidDate3(item.createdAt) || !isValidDate3(item.updatedAt)) {
     return null;
   }
-  let metaSrc = item.metadata;
-  if ((metaSrc === void 0 || metaSrc === null) && typeof item.label === "string") {
-    metaSrc = { label: item.label };
-  }
   let metadata;
-  if (metaSrc !== void 0 && metaSrc !== null) {
+  if (item.metadata !== void 0 && item.metadata !== null) {
     try {
-      metadata = normalizeMetadata(metaSrc);
+      metadata = normalizeMetadata(item.metadata);
     } catch {
       return null;
     }
@@ -23374,18 +23400,18 @@ function parseCredentialRecord(value) {
   if (metadata) rec.metadata = metadata;
   return rec;
 }
-var CredentialStore = class {
+var LaunchSecretStore = class {
   constructor(dataDir, options) {
     this.records = /* @__PURE__ */ new Map();
     this.loaded = false;
     this.chain = Promise.resolve();
-    this.file = credentialsPath(dataDir);
+    this.file = launchSecretsPath(dataDir);
     if (options && typeof options === "object" && "protect" in options && "unprotect" in options) {
       this.protector = options;
     } else if (options && typeof options === "object" && "protector" in options) {
-      this.protector = options.protector ?? createPlatformCredentialProtector();
+      this.protector = options.protector ?? createPlatformLaunchSecretProtector();
     } else {
-      this.protector = createPlatformCredentialProtector();
+      this.protector = createPlatformLaunchSecretProtector();
     }
   }
   enqueue(fn) {
@@ -23419,15 +23445,21 @@ var CredentialStore = class {
         this.loaded = true;
         return;
       }
-      const list2 = parsed.credentials;
-      if (list2 !== void 0 && !Array.isArray(list2)) {
+      const root = parsed;
+      if (Object.keys(root).some((key2) => key2 !== "launchSecrets")) {
+        await this.quarantineCorrupt();
+        this.loaded = true;
+        return;
+      }
+      const list2 = root.launchSecrets;
+      if (!Array.isArray(list2)) {
         await this.quarantineCorrupt();
         this.loaded = true;
         return;
       }
       const loaded = /* @__PURE__ */ new Map();
-      for (const item of list2 ?? []) {
-        const restored = parseCredentialRecord(item);
+      for (const item of list2) {
+        const restored = parseLaunchSecretRecord(item);
         if (!restored) {
           await this.quarantineCorrupt();
           this.loaded = true;
@@ -23451,7 +23483,7 @@ var CredentialStore = class {
     this.records.clear();
   }
   async persist() {
-    const credentials = [...this.records.values()].map((r) => {
+    const launchSecrets = [...this.records.values()].map((r) => {
       const row = {
         id: r.id,
         ciphertext: r.ciphertext,
@@ -23461,7 +23493,7 @@ var CredentialStore = class {
       if (r.metadata) row.metadata = { ...r.metadata };
       return row;
     }).sort((a, b) => String(a.id).localeCompare(String(b.id)));
-    await writeJsonAtomic(this.file, { credentials });
+    await writeJsonAtomic(this.file, { launchSecrets });
   }
   /**
    * Sync presence after ensureLoaded (projection helper).
@@ -23469,7 +23501,7 @@ var CredentialStore = class {
    */
   has(idRaw) {
     try {
-      const id = assertCredentialId(idRaw);
+      const id = assertLaunchSecretId(idRaw);
       return this.records.has(id);
     } catch {
       return false;
@@ -23486,22 +23518,22 @@ var CredentialStore = class {
    * Response is id/metadata only — never echoes secret or ciphertext.
    */
   async set(idRaw, secret, opts) {
-    const id = assertCredentialId(idRaw);
+    const id = assertLaunchSecretId(idRaw);
     if (typeof secret !== "string" || secret.length === 0) {
-      throw new Error("credential secret must be a non-empty string");
+      throw new Error("launch secret must be a non-empty string");
     }
     if (Buffer.byteLength(secret, "utf8") > MAX_SECRET_BYTES) {
-      throw new Error(`credential secret exceeds ${MAX_SECRET_BYTES} bytes`);
+      throw new Error(`launch secret exceeds ${MAX_SECRET_BYTES} bytes`);
     }
     const metaNorm = normalizeSetOpts(opts);
     await this.ensureLoaded();
     return this.enqueue(async () => {
       const ciphertext = await this.protector.protect(secret);
       if (typeof ciphertext !== "string" || !ciphertext.trim()) {
-        throw new Error("credential protect() returned empty ciphertext");
+        throw new Error("launch secret protect() returned empty ciphertext");
       }
       if (ciphertext === secret) {
-        throw new Error("credential protect() must not return plaintext");
+        throw new Error("launch secret protect() must not return plaintext");
       }
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const prev = this.records.get(id);
@@ -23531,11 +23563,11 @@ var CredentialStore = class {
     });
   }
   async delete(idRaw) {
-    const id = assertCredentialId(idRaw);
+    const id = assertLaunchSecretId(idRaw);
     await this.ensureLoaded();
     return this.enqueue(async () => {
       if (!this.records.has(id)) {
-        throw new Error(`Credential not found: ${id}`);
+        throw new Error(`Launch secret not found: ${id}`);
       }
       const prev = this.records.get(id);
       this.records.delete(id);
@@ -23553,16 +23585,16 @@ var CredentialStore = class {
    * Never exposed as client RPC. Fail-loud when missing.
    */
   async resolve(idRaw) {
-    const id = assertCredentialId(idRaw);
+    const id = assertLaunchSecretId(idRaw);
     await this.ensureLoaded();
     return this.enqueue(async () => {
       const rec = this.records.get(id);
       if (!rec) {
-        throw new Error(`Credential not found: ${id}`);
+        throw new Error(`Launch secret not found: ${id}`);
       }
       const plain = await this.protector.unprotect(rec.ciphertext);
       if (typeof plain !== "string" || !plain) {
-        throw new Error(`Credential unprotect failed for ${id}`);
+        throw new Error(`Launch secret unprotect failed for ${id}`);
       }
       return plain;
     });
@@ -23611,13 +23643,15 @@ function parseBaseUrlValue(raw) {
   }
   return value;
 }
-function parseCredentialRefValue(raw) {
-  const value = parseNonEmptyStringValue(raw, "credentialRef");
+function parseLaunchSecretRefValue(raw) {
+  const value = parseNonEmptyStringValue(raw, "launchSecretRef");
   if (!value.ok) return value;
   try {
-    return ok(assertCredentialId(value.value));
+    return ok(assertLaunchSecretId(value.value));
   } catch (err) {
-    return fail(err instanceof Error ? err.message.replace(/^Invalid credential id/, "Invalid credentialRef") : `Invalid credentialRef: must match ${CREDENTIAL_ID_RE2}`);
+    return fail(
+      err instanceof Error ? err.message.replace(/^Invalid launch secret id/, "Invalid launchSecretRef") : `Invalid launchSecretRef: must match ${LAUNCH_SECRET_ID_RE2}`
+    );
   }
 }
 function parsePermissionPolicyValue(raw) {
@@ -23638,7 +23672,7 @@ var AGENT_CONNECTION_CREATE_FIELDS = [
   "executable",
   "model",
   "envKey",
-  "credentialRef",
+  "launchSecretRef",
   "baseUrlEnvKey",
   "baseUrl",
   "permissionPolicy",
@@ -23696,8 +23730,8 @@ function parseConnectionRow(value) {
   if (!optional2("envKey", (v) => parseEnvKeyValue(v, "envKey"), (v) => {
     route.envKey = v;
   })) return null;
-  if (!optional2("credentialRef", parseCredentialRefValue, (v) => {
-    route.credentialRef = v;
+  if (!optional2("launchSecretRef", parseLaunchSecretRefValue, (v) => {
+    route.launchSecretRef = v;
   })) return null;
   if (!optional2("baseUrlEnvKey", (v) => parseEnvKeyValue(v, "baseUrlEnvKey"), (v) => {
     route.baseUrlEnvKey = v;
@@ -23798,7 +23832,7 @@ async function ensureDefaultAgentConnections(dataDir) {
   return defaults;
 }
 function projectAgentConnection(connection, opts) {
-  const credentialRef = connection.credentialRef?.trim() || void 0;
+  const launchSecretRef = connection.launchSecretRef?.trim() || void 0;
   const skills = projectSkillRefs(connection.skills);
   const mcpServers = projectMcpServers(connection.mcpServers);
   return {
@@ -23811,8 +23845,8 @@ function projectAgentConnection(connection, opts) {
     ...connection.model ? { model: connection.model } : {},
     ...connection.executable ? { executable: connection.executable } : {},
     ...connection.envKey ? { envKey: connection.envKey } : {},
-    ...credentialRef ? { credentialRef } : {},
-    ...credentialRef && opts?.credentialExists !== void 0 ? { credentialExists: opts.credentialExists } : {},
+    ...launchSecretRef ? { launchSecretRef } : {},
+    ...launchSecretRef && opts?.launchSecretExists !== void 0 ? { launchSecretExists: opts.launchSecretExists } : {},
     ...connection.baseUrlEnvKey ? { baseUrlEnvKey: connection.baseUrlEnvKey } : {},
     ...connection.baseUrl ? { baseUrl: connection.baseUrl } : {},
     ...connection.permissionPolicy ? { permissionPolicy: connection.permissionPolicy } : {},
@@ -23828,14 +23862,14 @@ function projectAgentConnection(connection, opts) {
 }
 function projectAgentConnections(connections, opts) {
   const lookup = (ref) => {
-    if (!ref || !opts?.credentialExistsById) return void 0;
-    return opts.credentialExistsById instanceof Map ? opts.credentialExistsById.get(ref) : opts.credentialExistsById[ref];
+    if (!ref || !opts?.launchSecretExistsById) return void 0;
+    return opts.launchSecretExistsById instanceof Map ? opts.launchSecretExistsById.get(ref) : opts.launchSecretExistsById[ref];
   };
   return connections.map((connection) => {
-    const exists = lookup(connection.credentialRef?.trim());
+    const exists = lookup(connection.launchSecretRef?.trim());
     return projectAgentConnection(
       connection,
-      exists === void 0 ? void 0 : { credentialExists: exists }
+      exists === void 0 ? void 0 : { launchSecretExists: exists }
     );
   }).sort((a, b) => a.connectionId.localeCompare(b.connectionId));
 }
@@ -24231,12 +24265,12 @@ async function dispatchMethod(ctx, method, params, callContext = {}) {
         return connectionDelete(ctx, p);
       case "provider.catalog":
         return providerCatalogRpc();
-      case "credential.list":
-        return credentialList(ctx);
-      case "credential.set":
-        return credentialSet(ctx, p);
-      case "credential.delete":
-        return credentialDelete(ctx, p);
+      case "settings.launchSecret.list":
+        return settingsLaunchSecretList(ctx, p, callContext);
+      case "settings.launchSecret.set":
+        return settingsLaunchSecretSet(ctx, p, callContext);
+      case "settings.launchSecret.delete":
+        return settingsLaunchSecretDelete(ctx, p, callContext);
       case "skill.list":
         return skillList(ctx);
       case "skill.install":
@@ -25809,8 +25843,8 @@ function mapRoleRegistryError(err, surface) {
 async function connectionList(ctx, p) {
   void p;
   const catalog = ctx.connectionCatalog.list();
-  const existsMap = await credentialExistsLookup(ctx, catalog);
-  return { connections: projectAgentConnections(catalog, { credentialExistsById: existsMap }) };
+  const existsMap = await launchSecretExistsLookup(ctx, catalog);
+  return { connections: projectAgentConnections(catalog, { launchSecretExistsById: existsMap }) };
 }
 async function connectionGet(ctx, p) {
   const connectionId = requireString(p, "connectionId");
@@ -25821,7 +25855,7 @@ async function connectionGet(ctx, p) {
   return {
     connection: projectAgentConnection(
       connection,
-      await connectionCredentialExistsOpts(ctx, connection)
+      await connectionLaunchSecretExistsOpts(ctx, connection)
     )
   };
 }
@@ -25829,7 +25863,7 @@ async function connectionCreate(ctx, p) {
   const created = await ctx.connectionCatalog.create(p);
   const connection = projectAgentConnection(
     created,
-    await connectionCredentialExistsOpts(ctx, created)
+    await connectionLaunchSecretExistsOpts(ctx, created)
   );
   ctx.events.emit(
     "connection.changed",
@@ -25847,7 +25881,7 @@ async function connectionUpdate(ctx, p) {
   const updated = await ctx.connectionCatalog.update(connectionId, patch);
   const connection = projectAgentConnection(
     updated,
-    await connectionCredentialExistsOpts(ctx, updated)
+    await connectionLaunchSecretExistsOpts(ctx, updated)
   );
   ctx.events.emit(
     "connection.changed",
@@ -25870,72 +25904,83 @@ async function connectionDelete(ctx, p) {
   );
   return result;
 }
-async function credentialExistsLookup(ctx, routes) {
+async function launchSecretExistsLookup(ctx, routes) {
   const map = /* @__PURE__ */ new Map();
   for (const route of routes) {
-    const ref = typeof route.credentialRef === "string" ? route.credentialRef.trim() : "";
+    const ref = typeof route.launchSecretRef === "string" ? route.launchSecretRef.trim() : "";
     if (ref && !map.has(ref)) {
-      map.set(ref, await ctx.credentials.has(ref));
+      map.set(ref, ctx.launchSecrets.has(ref));
     }
   }
   return map;
 }
-async function connectionCredentialExistsOpts(ctx, connection) {
-  const ref = connection.credentialRef?.trim() || void 0;
+async function connectionLaunchSecretExistsOpts(ctx, connection) {
+  const ref = connection.launchSecretRef?.trim() || void 0;
   if (!ref) return void 0;
-  return { credentialExists: await ctx.credentials.has(ref) };
+  return { launchSecretExists: ctx.launchSecrets.has(ref) };
 }
 function providerCatalogRpc() {
   return projectProviderCatalog();
 }
-async function credentialList(ctx) {
-  const credentials = await ctx.credentials.list();
-  return { credentials };
-}
-async function credentialSet(ctx, p) {
-  if ("credential" in p) {
+function requireMachineSettingsCaller(p, surface, callContext) {
+  if (callContext.callerSessionId || callContext.callerExternalKey) {
     throw new RpcError(
-      -32602,
-      "credential.set does not accept nested credential; pass { id, secret, metadata? } or { id, secret, label? }"
+      -32001,
+      `${surface} is available only to the local machine Settings client`,
+      {
+        code: "MACHINE_SETTINGS_CALLER_REQUIRED",
+        ...callContext.callerSessionId ? { callerSessionId: callContext.callerSessionId } : {},
+        ...callContext.callerExternalKey ? { callerExternalKey: callContext.callerExternalKey } : {}
+      }
     );
   }
+  requireUserActor(p, surface);
+}
+async function settingsLaunchSecretList(ctx, p, callContext) {
+  assertAllowedParams(p, /* @__PURE__ */ new Set(["actor"]), "settings.launchSecret.list");
+  requireMachineSettingsCaller(p, "settings.launchSecret.list", callContext);
+  const launchSecrets = await ctx.launchSecrets.list();
+  return { launchSecrets };
+}
+async function settingsLaunchSecretSet(ctx, p, callContext) {
+  assertAllowedParams(
+    p,
+    /* @__PURE__ */ new Set(["id", "secret", "label", "actor"]),
+    "settings.launchSecret.set"
+  );
+  requireMachineSettingsCaller(p, "settings.launchSecret.set", callContext);
   const id = requireString(p, "id");
   if (!("secret" in p) || typeof p.secret !== "string" || p.secret.length === 0) {
     throw new RpcError(-32602, "Missing or invalid string param: secret");
   }
   const secret = p.secret;
   let metadata;
-  if ("metadata" in p && p.metadata !== void 0 && p.metadata !== null) {
-    if (typeof p.metadata !== "object" || Array.isArray(p.metadata)) {
-      throw new RpcError(-32602, "Invalid metadata: must be a plain object when set");
-    }
-    metadata = p.metadata;
-  } else if ("label" in p && p.label !== void 0 && p.label !== null) {
+  if ("label" in p && p.label !== void 0 && p.label !== null) {
     if (typeof p.label !== "string") {
       throw new RpcError(-32602, "Invalid string param: label");
     }
     metadata = { label: p.label };
   }
   try {
-    const credential = await ctx.credentials.set(id, secret, metadata);
+    const launchSecret = await ctx.launchSecrets.set(id, secret, metadata);
     ctx.events.emit(
-      "credential.changed",
+      "settings.launchSecret.changed",
       "",
       {
         action: "set",
-        id: credential.id,
-        updatedAt: credential.updatedAt,
-        ...credential.metadata ? { metadata: credential.metadata } : {}
+        id: launchSecret.id,
+        updatedAt: launchSecret.updatedAt,
+        ...launchSecret.metadata ? { metadata: launchSecret.metadata } : {}
       },
       "self"
     );
-    return { credential };
+    return { launchSecret };
   } catch (err) {
-    const message2 = err instanceof Error ? err.message : "credential.set failed";
+    const message2 = err instanceof Error ? err.message : "settings.launchSecret.set failed";
     if (secret && message2.includes(secret)) {
-      throw new RpcError(-32602, "credential.set failed");
+      throw new RpcError(-32602, "settings.launchSecret.set failed");
     }
-    if (/Invalid credential id|Missing or invalid credential|credential secret|metadata|must match/i.test(
+    if (/Invalid launch secret id|Missing or invalid launch secret|launch secret|metadata|must match/i.test(
       message2
     )) {
       throw new RpcError(-32602, message2);
@@ -25943,23 +25988,25 @@ async function credentialSet(ctx, p) {
     throw new RpcError(-32e3, message2);
   }
 }
-async function credentialDelete(ctx, p) {
+async function settingsLaunchSecretDelete(ctx, p, callContext) {
+  assertAllowedParams(p, /* @__PURE__ */ new Set(["id", "actor"]), "settings.launchSecret.delete");
+  requireMachineSettingsCaller(p, "settings.launchSecret.delete", callContext);
   const id = requireString(p, "id");
   try {
-    const result = await ctx.credentials.delete(id);
+    const result = await ctx.launchSecrets.delete(id);
     ctx.events.emit(
-      "credential.changed",
+      "settings.launchSecret.changed",
       "",
       { action: "delete", id: result.deleted },
       "self"
     );
     return result;
   } catch (err) {
-    const message2 = err instanceof Error ? err.message : "credential.delete failed";
+    const message2 = err instanceof Error ? err.message : "settings.launchSecret.delete failed";
     if (/not found/i.test(message2)) {
       throw new RpcError(-32004, message2);
     }
-    if (/Invalid credential id|Missing or invalid credential/i.test(message2)) {
+    if (/Invalid launch secret id|Missing or invalid launch secret/i.test(message2)) {
       throw new RpcError(-32602, message2);
     }
     throw new RpcError(-32e3, message2);
@@ -34453,7 +34500,7 @@ function makeWorkspaceId(workspaceRoot) {
 }
 
 // src/service/protocol.ts
-var TENT_SERVICE_PROTOCOL_VERSION = 3;
+var TENT_SERVICE_PROTOCOL_VERSION = 4;
 
 // src/service/tool-approval-store.ts
 import * as fs18 from "node:fs/promises";
@@ -35196,7 +35243,7 @@ function parseCreate(raw) {
   assign("executable", optional(raw, "executable", (v) => parseNonEmptyStringValue(v, "executable")));
   assign("model", optional(raw, "model", (v) => parseNonEmptyStringValue(v, "model")));
   assign("envKey", optional(raw, "envKey", (v) => parseEnvKeyValue(v, "envKey")));
-  assign("credentialRef", optional(raw, "credentialRef", parseCredentialRefValue));
+  assign("launchSecretRef", optional(raw, "launchSecretRef", parseLaunchSecretRefValue));
   assign("baseUrlEnvKey", optional(raw, "baseUrlEnvKey", (v) => parseEnvKeyValue(v, "baseUrlEnvKey")));
   assign("baseUrl", optional(raw, "baseUrl", parseBaseUrlValue));
   assign("permissionPolicy", optional(raw, "permissionPolicy", parsePermissionPolicyValue));
@@ -35217,7 +35264,7 @@ function applyPatch(current, raw) {
     ["executable", (v) => parseNonEmptyStringValue(v, "executable")],
     ["model", (v) => parseNonEmptyStringValue(v, "model")],
     ["envKey", (v) => parseEnvKeyValue(v, "envKey")],
-    ["credentialRef", parseCredentialRefValue],
+    ["launchSecretRef", parseLaunchSecretRefValue],
     ["baseUrlEnvKey", (v) => parseEnvKeyValue(v, "baseUrlEnvKey")],
     ["baseUrl", parseBaseUrlValue],
     ["permissionPolicy", parsePermissionPolicyValue],
@@ -35609,7 +35656,7 @@ var AgentRuntime = class {
     this.sessionTokenKey = options.sessionTokenKey ?? randomBytes3(32).toString("base64url");
     this.registry = new SessionRegistry(this.dataDir);
     this.resolveConnectionEnv = options.resolveConnectionEnv;
-    this.resolveCredentialRef = options.resolveCredentialRef;
+    this.resolveLaunchSecretRef = options.resolveLaunchSecretRef;
     this.packageRoot = options.packageRoot;
     for (const connection of options.connections ?? []) {
       this.connections.set(connection.connectionId, cloneAgentConnection(connection));
@@ -35926,7 +35973,7 @@ var AgentRuntime = class {
     let resolvedEnv = {};
     let diagnosticSecrets = [];
     try {
-      resolvedEnv = await this.resolveCredentialEnv(route);
+      resolvedEnv = await this.resolveLaunchSecretEnv(route);
       const coreEnv = {
         // Reserved routing authority: installed native Tent hooks spawned by an
         // isolated Service must attach back to that Service, never %APPDATA%\Tent.
@@ -36170,7 +36217,7 @@ var AgentRuntime = class {
     let resolvedEnv = {};
     let diagnosticSecrets = [];
     try {
-      resolvedEnv = await this.resolveCredentialEnv(route);
+      resolvedEnv = await this.resolveLaunchSecretEnv(route);
       const coreEnv = {
         TENT_SERVICE_DATA_DIR: this.dataDir,
         TENT_SESSION_ID: req.sessionId,
@@ -36704,7 +36751,7 @@ var AgentRuntime = class {
   /**
    * Resolve skill metadata + MCP wire from the Connection snapshot.
    * Secret values only live on the plan (in-process) for session/new|load — never SessionRecord.
-   * Enabled skill path refs fail loud when missing; credential resolver errors are not swallowed.
+   * Enabled skill path refs fail loud when missing; launch-secret resolver errors are not swallowed.
    *
    * Built-in tent-role / tent-task contracts are injected only into the managed bootstrap
    * prompt prefix (cross-provider). ACP `_meta.tent.skills` carries optional Connection skills
@@ -36719,24 +36766,24 @@ var AgentRuntime = class {
     const hasMcp = Array.isArray(route.mcpServers) && route.mcpServers.length > 0;
     if (!hasSkills && !hasMcp) return { extras: {}, diagnosticSecrets: [] };
     const credCache = /* @__PURE__ */ new Map();
-    if (hasMcp && this.resolveCredentialRef) {
+    if (hasMcp && this.resolveLaunchSecretRef) {
       for (const s of route.mcpServers ?? []) {
         if (s.enabled === false) continue;
         const refs = /* @__PURE__ */ new Set();
-        if (s.envCredentialRefs) {
-          for (const id of Object.values(s.envCredentialRefs)) refs.add(id);
+        if (s.envSecretRefs) {
+          for (const id of Object.values(s.envSecretRefs)) refs.add(id);
         }
-        if (s.headerCredentialRefs) {
-          for (const id of Object.values(s.headerCredentialRefs)) refs.add(id);
+        if (s.headerSecretRefs) {
+          for (const id of Object.values(s.headerSecretRefs)) refs.add(id);
         }
         for (const id of refs) {
           if (credCache.has(id)) continue;
           let value;
           try {
-            value = await this.resolveCredentialRef(id);
+            value = await this.resolveLaunchSecretRef(id);
           } catch {
             throw new Error(
-              `MCP server ${s.name}: credential resolve failed for Agent Connection ${route.connectionId} credentialRef=${id}`
+              `MCP server ${s.name}: launch-secret resolve failed for Agent Connection ${route.connectionId} launchSecretRef=${id}`
             );
           }
           if (typeof value === "string" && value) {
@@ -36748,7 +36795,7 @@ var AgentRuntime = class {
     const acpSkills = hasSkills ? resolveAcpSkillMeta(composedSkills, { requirePathExists: true }) : void 0;
     const acpMcpServers = hasMcp ? resolveAcpMcpServersWire(route.mcpServers, {
       planEnv,
-      resolveCredential: (id) => credCache.get(id)
+      resolveLaunchSecret: (id) => credCache.get(id)
     }) : void 0;
     return {
       extras: {
@@ -36761,21 +36808,21 @@ var AgentRuntime = class {
     };
   }
   /**
-   * Resolve credential and endpoint env values for one launch only.
+   * Resolve launch-secret and endpoint env values for one launch only.
    * Never persists secrets onto SessionRecord.
    */
-  async resolveCredentialEnv(route) {
+  async resolveLaunchSecretEnv(route) {
     const out = {};
-    const ref = route.credentialRef?.trim() || "";
+    const ref = route.launchSecretRef?.trim() || "";
     const envKey = route.envKey?.trim() || "";
     if (ref && !envKey) {
       throw new Error(
-        `Agent Connection ${route.connectionId} has credentialRef but no envKey`
+        `Agent Connection ${route.connectionId} has launchSecretRef but no envKey`
       );
     }
     if (ref && !this.resolveConnectionEnv) {
       throw new Error(
-        `Agent Connection ${route.connectionId} references credential ${ref} but AgentRuntime has no resolveConnectionEnv hook`
+        `Agent Connection ${route.connectionId} references launch secret ${ref} but AgentRuntime has no resolveConnectionEnv hook`
       );
     }
     if (ref) {
@@ -36783,7 +36830,7 @@ var AgentRuntime = class {
       const secret = resolved[envKey];
       if (typeof secret !== "string" || !secret) {
         throw new Error(
-          `Credential not found or empty for Agent Connection ${route.connectionId} (credentialRef=${ref})`
+          `Launch secret not found or empty for Agent Connection ${route.connectionId} (launchSecretRef=${ref})`
         );
       }
       out[envKey] = secret;
@@ -36809,7 +36856,7 @@ var AgentRuntime = class {
       executable: route.executable,
       model: route.model,
       envKey: route.envKey,
-      credentialRef: route.credentialRef,
+      launchSecretRef: route.launchSecretRef,
       baseUrlEnvKey: route.baseUrlEnvKey,
       baseUrl: route.baseUrl,
       permissionPolicy: route.permissionPolicy,
@@ -37254,10 +37301,10 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
   const managedDeliveryReportDrafts = new ManagedDeliveryReportDraftStore(dataDir);
   await managedDeliveryReportDrafts.ensureLoaded();
   enableManagedTaskInputBackgroundAccept();
-  const credentials = new CredentialStore(dataDir, {
-    protector: options.credentialProtector
+  const launchSecrets = new LaunchSecretStore(dataDir, {
+    protector: options.launchSecretProtector
   });
-  await credentials.ensureLoaded();
+  await launchSecrets.ensureLoaded();
   const connectionsInjected = options.connections !== void 0;
   const connections = connectionsInjected ? options.connections : await ensureDefaultAgentConnections(dataDir);
   const runtimeHolder = { current: null };
@@ -37340,26 +37387,26 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
       createPiAcpAdapter(acpPermissionHooks)
     ],
     resolveConnectionEnv: async (connection) => {
-      const ref = connection.credentialRef?.trim() || "";
+      const ref = connection.launchSecretRef?.trim() || "";
       if (!ref) return {};
       const envKey = connection.envKey?.trim() || "";
       if (!envKey) {
         throw new Error(
-          `Agent Connection ${connection.connectionId} has credentialRef but no envKey`
+          `Agent Connection ${connection.connectionId} has launchSecretRef but no envKey`
         );
       }
-      const secret = await credentials.resolve(ref);
+      const secret = await launchSecrets.resolve(ref);
       if (!secret) {
         throw new Error(
-          `Credential not found or empty for Agent Connection ${connection.connectionId} (credentialRef=${ref})`
+          `Launch secret not found or empty for Agent Connection ${connection.connectionId} (launchSecretRef=${ref})`
         );
       }
       return { [envKey]: secret };
     },
-    resolveCredentialRef: async (credentialRef) => {
-      const id = typeof credentialRef === "string" ? credentialRef.trim() : "";
+    resolveLaunchSecretRef: async (launchSecretRef) => {
+      const id = typeof launchSecretRef === "string" ? launchSecretRef.trim() : "";
       if (!id) return void 0;
-      const secret = await credentials.resolve(id);
+      const secret = await launchSecrets.resolve(id);
       return typeof secret === "string" && secret ? secret : void 0;
     }
   });
@@ -37392,7 +37439,7 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
     decisionRequests,
     taskInputs,
     managedDeliveryReportDrafts,
-    credentials,
+    launchSecrets,
     dataDir,
     connectionCatalog,
     packageRoot,
@@ -37496,7 +37543,7 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
     events,
     hostApi: workspaceHost,
     runtime,
-    credentials,
+    launchSecrets,
     ctx,
     endpoint,
     stop

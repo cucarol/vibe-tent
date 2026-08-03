@@ -8682,7 +8682,7 @@ function validateConnectionCreate(draft) {
   if (draft.model?.trim()) payload.model = draft.model.trim();
   if (draft.executable?.trim()) payload.executable = draft.executable.trim();
   if (draft.envKey?.trim()) payload.envKey = draft.envKey.trim();
-  if (draft.credentialRef?.trim()) payload.credentialRef = draft.credentialRef.trim();
+  if (draft.launchSecretRef?.trim()) payload.launchSecretRef = draft.launchSecretRef.trim();
   if (draft.baseUrlEnvKey?.trim()) payload.baseUrlEnvKey = draft.baseUrlEnvKey.trim();
   if (draft.baseUrl?.trim()) payload.baseUrl = draft.baseUrl.trim();
   if (draft.permissionPolicy) payload.permissionPolicy = draft.permissionPolicy;
@@ -8706,8 +8706,8 @@ function validateConnectionUpdate(draft) {
   if (draft.envKey !== void 0) {
     payload.envKey = (draft.envKey ?? "").trim() || null;
   }
-  if (draft.credentialRef !== void 0) {
-    payload.credentialRef = (draft.credentialRef ?? "").trim() || null;
+  if (draft.launchSecretRef !== void 0) {
+    payload.launchSecretRef = (draft.launchSecretRef ?? "").trim() || null;
   }
   if (draft.baseUrlEnvKey !== void 0) {
     payload.baseUrlEnvKey = (draft.baseUrlEnvKey ?? "").trim() || null;
@@ -8726,12 +8726,12 @@ function connectionDisplayLabel(connection) {
 }
 var CONNECTION_NEXT_SESSION_TIP = "\u672C\u673A\u542F\u52A8\u914D\u7F6E \xB7 Session \u4F7F\u7528\u5FEB\u7167 \xB7 \u6539\u52A8\u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548";
 var CONNECTION_SKILLS_METADATA_TIP = "Skill \u4EC5 name/path \u5143\u6570\u636E\uFF08_meta.tent.skills\uFF09\xB7 \u662F\u5426\u751F\u6548\u53D6\u51B3\u4E8E provider \xB7 \u4E0D\u5BA3\u79F0\u5DF2\u6FC0\u6D3B";
-var CREDENTIAL_VAULT_TYPE = "secret";
-function validateCredentialSet(draft) {
+var LAUNCH_SECRET_STORE_TYPE = "secret";
+function validateLaunchSecretSet(draft) {
   const id = (draft.id || "").trim();
-  if (!id) return { ok: false, reason: "credential id \u4E0D\u80FD\u4E3A\u7A7A" };
+  if (!id) return { ok: false, reason: "\u542F\u52A8 Secret id \u4E0D\u80FD\u4E3A\u7A7A" };
   if (!/^[a-z][a-z0-9-]{0,62}$/.test(id)) {
-    return { ok: false, reason: "credential id \u987B\u5339\u914D a-z \u5F00\u5934\u7684\u5C0F\u5199 id" };
+    return { ok: false, reason: "\u542F\u52A8 Secret id \u987B\u5339\u914D a-z \u5F00\u5934\u7684\u5C0F\u5199 id" };
   }
   if (!draft.secret || draft.secret.length === 0) {
     return { ok: false, reason: "secret \u4E0D\u80FD\u4E3A\u7A7A" };
@@ -8743,11 +8743,11 @@ function validateCredentialSet(draft) {
   if (draft.label?.trim()) payload.label = draft.label.trim();
   return { ok: true, payload };
 }
-function credentialListRow(c) {
+function launchSecretListRow(c) {
   const label = (c.label || c.metadata?.label || "").trim() || void 0;
   return {
     id: c.id,
-    type: CREDENTIAL_VAULT_TYPE,
+    type: LAUNCH_SECRET_STORE_TYPE,
     status: "\u5DF2\u914D\u7F6E",
     ...label ? { label } : {},
     ...c.updatedAt ? { updatedAt: c.updatedAt } : {}
@@ -8770,10 +8770,10 @@ function mcpDraftsFromProjection(servers) {
     ...s.command !== void 0 ? { command: s.command } : {},
     ...s.args !== void 0 ? { args: [...s.args] } : {},
     ...s.envKeys !== void 0 ? { envKeys: { ...s.envKeys } } : {},
-    ...s.envCredentialRefs !== void 0 ? { envCredentialRefs: { ...s.envCredentialRefs } } : {},
+    ...s.envSecretRefs !== void 0 ? { envSecretRefs: { ...s.envSecretRefs } } : {},
     ...s.url !== void 0 ? { url: s.url } : {},
     ...s.headerEnvKeys !== void 0 ? { headerEnvKeys: { ...s.headerEnvKeys } } : {},
-    ...s.headerCredentialRefs !== void 0 ? { headerCredentialRefs: { ...s.headerCredentialRefs } } : {}
+    ...s.headerSecretRefs !== void 0 ? { headerSecretRefs: { ...s.headerSecretRefs } } : {}
   }));
 }
 function setSkillEnabled(drafts, name, enabled) {
@@ -8810,16 +8810,16 @@ function buildMcpServersPayload(drafts) {
       if (d.command?.trim()) row.command = d.command.trim();
       if (d.args?.length) row.args = [...d.args];
       if (d.envKeys && Object.keys(d.envKeys).length) row.envKeys = { ...d.envKeys };
-      if (d.envCredentialRefs && Object.keys(d.envCredentialRefs).length) {
-        row.envCredentialRefs = { ...d.envCredentialRefs };
+      if (d.envSecretRefs && Object.keys(d.envSecretRefs).length) {
+        row.envSecretRefs = { ...d.envSecretRefs };
       }
     } else {
       if (d.url?.trim()) row.url = d.url.trim();
       if (d.headerEnvKeys && Object.keys(d.headerEnvKeys).length) {
         row.headerEnvKeys = { ...d.headerEnvKeys };
       }
-      if (d.headerCredentialRefs && Object.keys(d.headerCredentialRefs).length) {
-        row.headerCredentialRefs = { ...d.headerCredentialRefs };
+      if (d.headerSecretRefs && Object.keys(d.headerSecretRefs).length) {
+        row.headerSecretRefs = { ...d.headerSecretRefs };
       }
     }
     delete row.env;
@@ -8846,7 +8846,7 @@ function mcpSourceLine(s) {
   if (cmd) return `stdio \xB7 ${cmd}`;
   return "stdio";
 }
-function mcpCredentialStatusParts(s, configuredIds) {
+function mcpLaunchSecretStatusParts(s, configuredIds) {
   const set = configuredIds instanceof Set ? configuredIds : new Set(
     Array.from(configuredIds).filter(
       (x) => typeof x === "string" && x.length > 0
@@ -8861,12 +8861,12 @@ function mcpCredentialStatusParts(s, configuredIds) {
       out.push({ envName, refId: id, configured: set.has(id) });
     }
   };
-  pushMap(s.envCredentialRefs);
-  pushMap(s.headerCredentialRefs);
+  pushMap(s.envSecretRefs);
+  pushMap(s.headerSecretRefs);
   return out;
 }
-function mcpCredentialStatusLine(s, configuredIds) {
-  const parts = mcpCredentialStatusParts(s, configuredIds);
+function mcpLaunchSecretStatusLine(s, configuredIds) {
+  const parts = mcpLaunchSecretStatusParts(s, configuredIds);
   if (!parts.length) return "";
   return parts.map((p) => `${p.refId}${p.configured ? "\xB7\u5DF2\u914D\u7F6E" : "\xB7\u7F3A\u5931"}`).join(" ");
 }
@@ -8907,19 +8907,19 @@ function validateMcpAddDraft(draft) {
     if (!url) return { ok: false, reason: "http \u9700\u8981 url" };
     entry.url = url;
   }
-  const envName = (draft.envCredentialName || "").trim();
-  const envRef = (draft.envCredentialRef || "").trim();
+  const envName = (draft.envSecretName || "").trim();
+  const envRef = (draft.envLaunchSecretRef || "").trim();
   if (envName || envRef) {
     if (!envName || !envRef) {
-      return { ok: false, reason: "credential \u9700\u540C\u65F6\u586B env \u540D\u4E0E vault id" };
+      return { ok: false, reason: "\u542F\u52A8 Secret \u9700\u540C\u65F6\u586B env/header \u540D\u4E0E ref id" };
     }
     if (!/^[a-z][a-z0-9-]{0,62}$/.test(envRef)) {
-      return { ok: false, reason: "credentialRef \u987B\u4E3A vault id" };
+      return { ok: false, reason: "launchSecretRef \u987B\u4E3A\u6709\u6548\u542F\u52A8 Secret id" };
     }
     if (draft.transport === "stdio") {
-      entry.envCredentialRefs = { [envName]: envRef };
+      entry.envSecretRefs = { [envName]: envRef };
     } else {
-      entry.headerCredentialRefs = { [envName]: envRef };
+      entry.headerSecretRefs = { [envName]: envRef };
     }
   }
   return { ok: true, entry };
@@ -8980,13 +8980,12 @@ var SECTIONS = [
   { id: "workspace", label: "\u5DE5\u4F5C\u533A" },
   { id: "roles", label: "\u89D2\u8272" },
   { id: "routes", label: "Connections" },
-  { id: "credentials", label: "\u51ED\u8BC1" },
   { id: "skills", label: "Skills / MCP" },
   { id: "maintenance", label: "\u7EF4\u62A4" }
 ];
 var section = "workspace";
 var providers = [];
-var credentials = [];
+var launchSecrets = [];
 var skills = [];
 var fullRoles = [];
 var fullRoutes = [];
@@ -9021,12 +9020,12 @@ function captureRouteFieldDraft() {
     model: document.getElementById("route-edit-model")?.value ?? "",
     executable: document.getElementById("route-edit-exe")?.value ?? "",
     envKey: document.getElementById("route-edit-env")?.value ?? "",
-    credentialRef: document.getElementById("route-edit-cred")?.value ?? "",
+    launchSecretRef: document.getElementById("route-edit-launch-secret")?.value ?? "",
     baseUrl: document.getElementById("route-edit-base")?.value ?? ""
   };
 }
-function configuredCredentialIds() {
-  return new Set(credentials.map((c) => c.id));
+function configuredLaunchSecretIds() {
+  return new Set(launchSecrets.map((c) => c.id));
 }
 function setSettingsSection(next) {
   section = next;
@@ -9040,7 +9039,7 @@ async function reloadSettings() {
   try {
     await Promise.all([
       loadProviders(),
-      loadCredentials(),
+      loadLaunchSecrets(),
       loadSkills(),
       workspaceId ? loadWorkspaceSettings() : Promise.resolve(),
       workspaceId ? loadRolesFull() : Promise.resolve(),
@@ -9062,11 +9061,9 @@ async function loadSectionData(s) {
     } else if (s === "roles" && workspaceId) {
       await loadRolesFull();
     } else if (s === "routes") {
-      await Promise.all([loadRoutesFull(), loadProviders(), loadCredentials()]);
-    } else if (s === "credentials") {
-      await loadCredentials();
+      await Promise.all([loadRoutesFull(), loadProviders(), loadLaunchSecrets()]);
     } else if (s === "skills") {
-      await Promise.all([loadSkills(), loadRoutesFull(), loadCredentials()]);
+      await Promise.all([loadSkills(), loadRoutesFull(), loadLaunchSecrets()]);
     } else if (s === "maintenance" && workspaceId) {
       await loadRetentionPreview();
     }
@@ -9079,9 +9076,9 @@ async function loadProviders() {
   const result = await window.tentDesktop.rpc("provider.catalog", {});
   providers = mapProviderCatalogRows(result.providers || []);
 }
-async function loadCredentials() {
-  const result = await window.tentDesktop.rpc("credential.list", {});
-  credentials = result.credentials || [];
+async function loadLaunchSecrets() {
+  const result = await window.tentDesktop.rpc("settings.launchSecret.list", {});
+  launchSecrets = result.launchSecrets || [];
 }
 async function loadSkills() {
   const result = await window.tentDesktop.rpc("skill.list", {});
@@ -9165,8 +9162,6 @@ function renderSectionBody(s) {
       return renderRoles();
     case "routes":
       return renderRoutes();
-    case "credentials":
-      return renderCredentials();
     case "skills":
       return renderSkills();
     case "maintenance":
@@ -9269,7 +9264,7 @@ function renderRoutes() {
   const list2 = fullRoutes.length === 0 ? `<p class="muted">\u6682\u65E0 Connection</p>` : `<ul class="settings-list">${fullRoutes.map((route) => {
     const level = providers.find((x) => x.adapterId === route.adapterId);
     const levelBit = level ? `<span class="badge-level" data-level="${escapeHtml(String(level.verificationLevel))}">${escapeHtml(level.levelLabel)}</span>` : `<span class="faint">\u672A\u6536\u5F55 catalog</span>`;
-    const cred = route.credentialRef != null ? route.credentialExists ? `\u51ED\u8BC1\u5DF2\u914D\u7F6E` : `\u51ED\u8BC1\u7F3A\u5931` : "";
+    const secretStatus = route.launchSecretRef != null ? route.launchSecretExists ? `\u542F\u52A8 Secret \u5DF2\u914D\u7F6E` : `\u542F\u52A8 Secret \u7F3A\u5931` : "";
     const label = connectionDisplayLabel(route);
     return `<li class="settings-list-item">
               <div class="settings-list-main">
@@ -9277,7 +9272,7 @@ function renderRoutes() {
                 <span class="faint"><code>${escapeHtml(route.connectionId)}</code> \xB7 <code>${escapeHtml(route.adapterId)}</code></span>
                 <span class="muted">${route.model ? escapeHtml(route.model) : ""}</span>
                 ${levelBit}
-                ${cred ? `<span class="faint">${escapeHtml(cred)}</span>` : ""}
+                ${secretStatus ? `<span class="faint">${escapeHtml(secretStatus)}</span>` : ""}
               </div>
               <div class="settings-list-actions">
                 <button type="button" class="btn btn-ghost" data-route-edit="${escapeHtml(route.connectionId)}">\u7F16\u8F91</button>
@@ -9301,7 +9296,7 @@ function renderRoutes() {
           <input id="route-name" class="field" placeholder="displayName" />
           <input id="route-model" class="field" placeholder="model" />
           <input id="route-env" class="field" placeholder="envKey\uFF08\u73AF\u5883\u53D8\u91CF\u540D\uFF0C\u975E secret\uFF09" />
-          <input id="route-cred" class="field" placeholder="credentialRef\uFF08\u51ED\u8BC1 id\uFF0C\u975E secret\uFF09" />
+          <input id="route-launch-secret" class="field" placeholder="launchSecretRef\uFF08\u542F\u52A8 Secret id\uFF0C\u53EF\u9009\uFF09" />
           <button type="button" id="btn-route-create" class="btn btn-primary">\u521B\u5EFA</button>
         </div>
       </div>`;
@@ -9316,7 +9311,8 @@ function renderRoutes() {
       <p class="muted">${escapeHtml(CONNECTION_NEXT_SESSION_TIP)}</p>
       ${list2}
     </div>
-    ${editor}`;
+    ${editor}
+    ${renderLaunchSecretAdvanced()}`;
 }
 function renderRouteEditor(route) {
   const label = connectionDisplayLabel(route);
@@ -9325,10 +9321,10 @@ function renderRouteEditor(route) {
     model: route.model || "",
     executable: route.executable || "",
     envKey: route.envKey || "",
-    credentialRef: route.credentialRef || "",
+    launchSecretRef: route.launchSecretRef || "",
     baseUrl: route.baseUrl || ""
   };
-  const credIds = configuredCredentialIds();
+  const launchSecretIds = configuredLaunchSecretIds();
   const skillList = skillDrafts.length === 0 ? `<p class="muted">\u65E0 skill \u5F15\u7528</p>` : `<ul class="settings-list">${skillDrafts.map((s) => {
     const src = skillSourceLine(s);
     return `<li class="settings-list-item">
@@ -9346,7 +9342,7 @@ function renderRouteEditor(route) {
   }).join("")}</ul>`;
   const mcpList = mcpDrafts.length === 0 ? `<p class="muted">\u65E0 MCP \u670D\u52A1\u5668</p>` : `<ul class="settings-list">${mcpDrafts.map((m) => {
     const src = mcpSourceLine(m);
-    const credLine = mcpCredentialStatusLine(m, credIds);
+    const secretLine = mcpLaunchSecretStatusLine(m, launchSecretIds);
     return `<li class="settings-list-item">
               <div class="settings-list-main">
                 <label class="settings-check">
@@ -9354,14 +9350,14 @@ function renderRouteEditor(route) {
                   <strong><code>${escapeHtml(m.name)}</code></strong>
                 </label>
                 <span class="muted">${escapeHtml(src)}</span>
-                ${credLine ? `<span class="faint">\u51ED\u8BC1 ${escapeHtml(credLine)}</span>` : ""}
+                ${secretLine ? `<span class="faint">\u542F\u52A8 Secret ${escapeHtml(secretLine)}</span>` : ""}
               </div>
               <div class="settings-list-actions">
                 <button type="button" class="btn btn-ghost" data-mcp-remove="${escapeHtml(m.name)}" title="\u79FB\u9664">\u79FB\u9664</button>
               </div>
             </li>`;
   }).join("")}</ul>`;
-  const credOptions = credentials.map((c) => `<option value="${escapeHtml(c.id)}">`).join("");
+  const launchSecretOptions = launchSecrets.map((c) => `<option value="${escapeHtml(c.id)}">`).join("");
   return `
     <div class="settings-block">
       <div class="surface-section-head">\u7F16\u8F91 \xB7 ${escapeHtml(label)}
@@ -9378,9 +9374,9 @@ function renderRouteEditor(route) {
         <input id="route-edit-exe" class="field" value="${escapeHtml(fields.executable)}" placeholder="executable" />
         <label class="settings-label" for="route-edit-env">envKey\uFF08\u73AF\u5883\u53D8\u91CF\u540D\uFF09</label>
         <input id="route-edit-env" class="field" value="${escapeHtml(fields.envKey)}" placeholder="envKey" />
-        <label class="settings-label" for="route-edit-cred">credentialRef\uFF08\u51ED\u8BC1 id\uFF09</label>
-        <input id="route-edit-cred" class="field" value="${escapeHtml(fields.credentialRef)}" placeholder="credentialRef" list="cred-ref-list" />
-        <datalist id="cred-ref-list">${credOptions}</datalist>
+        <label class="settings-label" for="route-edit-launch-secret">launchSecretRef\uFF08\u542F\u52A8 Secret id\uFF09</label>
+        <input id="route-edit-launch-secret" class="field" value="${escapeHtml(fields.launchSecretRef)}" placeholder="launchSecretRef" list="launch-secret-ref-list" />
+        <datalist id="launch-secret-ref-list">${launchSecretOptions}</datalist>
         <label class="settings-label" for="route-edit-base">baseUrl</label>
         <input id="route-edit-base" class="field" value="${escapeHtml(fields.baseUrl)}" placeholder="baseUrl" />
       </div>
@@ -9398,7 +9394,7 @@ function renderRouteEditor(route) {
     </div>
     <div class="settings-block">
       <div class="surface-section-head">MCP Servers</div>
-      <p class="faint">\u53EA\u4FDD\u5B58 id/ref \xB7 credential \u4EC5\u663E\u793A\u5DF2\u914D\u7F6E \xB7 ${escapeHtml(CONNECTION_NEXT_SESSION_TIP)}</p>
+      <p class="faint">\u53EA\u4FDD\u5B58 id/ref \xB7 launchSecret \u4EC5\u663E\u793A\u5DF2\u914D\u7F6E \xB7 ${escapeHtml(CONNECTION_NEXT_SESSION_TIP)}</p>
       ${mcpList}
       <div class="settings-form">
         <div class="settings-form-inline">
@@ -9412,7 +9408,7 @@ function renderRouteEditor(route) {
         <input id="mcp-add-url" class="field" placeholder="url\uFF08http\uFF09" autocomplete="off" />
         <div class="settings-form-inline">
           <input id="mcp-add-env-name" class="field" placeholder="env/header \u540D\uFF08\u53EF\u9009\uFF09" autocomplete="off" />
-          <input id="mcp-add-env-ref" class="field" placeholder="credential vault id\uFF08\u53EF\u9009\uFF09" list="cred-ref-list" autocomplete="off" />
+          <input id="mcp-add-secret-ref" class="field" placeholder="\u542F\u52A8 Secret id\uFF08\u53EF\u9009\uFF09" list="launch-secret-ref-list" autocomplete="off" />
         </div>
         <button type="button" id="btn-mcp-add" class="btn btn-secondary">\u6DFB\u52A0 MCP</button>
       </div>
@@ -9423,9 +9419,9 @@ function renderRouteEditor(route) {
       </div>
     </div>`;
 }
-function renderCredentials() {
-  const list2 = credentials.length === 0 ? `<p class="muted">\u65E0\u5DF2\u914D\u7F6E\u51ED\u8BC1</p>` : `<ul class="settings-list">${credentials.map((c) => {
-    const row = credentialListRow(c);
+function renderLaunchSecretAdvanced() {
+  const list2 = launchSecrets.length === 0 ? `<p class="muted">\u65E0\u5DF2\u914D\u7F6E\u542F\u52A8 Secret</p>` : `<ul class="settings-list">${launchSecrets.map((c) => {
+    const row = launchSecretListRow(c);
     return `<li class="settings-list-item">
               <div class="settings-list-main">
                 <strong><code>${escapeHtml(row.id)}</code></strong>
@@ -9434,23 +9430,24 @@ function renderCredentials() {
                 ${row.updatedAt ? `<span class="faint">${escapeHtml(row.updatedAt)}</span>` : ""}
               </div>
               <div class="settings-list-actions">
-                <button type="button" class="btn btn-ghost" data-cred-delete="${escapeHtml(row.id)}" title="\u5220\u9664\u51ED\u8BC1">\u5220\u9664</button>
+                <button type="button" class="btn btn-ghost" data-launch-secret-delete="${escapeHtml(row.id)}" title="\u5220\u9664\u542F\u52A8 Secret">\u5220\u9664</button>
               </div>
             </li>`;
   }).join("")}</ul>`;
   return `
     <div class="settings-block">
-      <div class="surface-section-head">\u51ED\u8BC1</div>
-      <p class="faint">\u4EC5\u663E\u793A ref id \xB7 ${escapeHtml(CREDENTIAL_VAULT_TYPE)} \xB7 \u5DF2\u914D\u7F6E \xB7 \u7EDD\u4E0D\u8BFB\u56DE secret</p>
+      <div class="surface-section-head">Advanced \xB7 \u542F\u52A8 Secret</div>
+      <p class="faint">\u4EC5\u7528\u4E8E\u660E\u786E\u7684 Connection \u8FDB\u7A0B\u6CE8\u5165\u6216 MCP env/header\u3002Agent OAuth\u3001\u672C\u5730\u767B\u5F55\u548C\u8D26\u53F7\u751F\u547D\u5468\u671F\u4ECD\u7531 Agent \u81EA\u8EAB\u7BA1\u7406\uFF1BTent \u7EDD\u4E0D\u8BFB\u56DE\u660E\u6587\u3002</p>
+      <p class="faint">ref id \xB7 ${escapeHtml(LAUNCH_SECRET_STORE_TYPE)} \xB7 \u5DF2\u914D\u7F6E</p>
       ${list2}
     </div>
     <div class="settings-block">
-      <div class="surface-section-head">\u8BBE\u7F6E / \u66F4\u65B0</div>
+      <div class="surface-section-head">\u8BBE\u7F6E / \u66F4\u65B0\u542F\u52A8 Secret</div>
       <div class="settings-form">
-        <input id="cred-id" class="field" placeholder="id\uFF08vault ref\uFF09" autocomplete="off" />
-        <input id="cred-label" class="field" placeholder="label\uFF08\u53EF\u9009\uFF0C\u975E secret\uFF09" autocomplete="off" />
-        <input id="cred-secret" class="field" type="password" placeholder="secret\uFF08\u63D0\u4EA4\u540E\u7ACB\u5373\u6E05\u7A7A\uFF09" autocomplete="new-password" />
-        <button type="button" id="btn-cred-set" class="btn btn-primary">\u4FDD\u5B58</button>
+        <input id="launch-secret-id" class="field" placeholder="\u542F\u52A8 Secret id" autocomplete="off" />
+        <input id="launch-secret-label" class="field" placeholder="label\uFF08\u53EF\u9009\uFF0C\u975E secret\uFF09" autocomplete="off" />
+        <input id="launch-secret-value" class="field" type="password" placeholder="\u542F\u52A8 Secret\uFF08\u63D0\u4EA4\u540E\u7ACB\u5373\u6E05\u7A7A\uFF09" autocomplete="new-password" />
+        <button type="button" id="btn-launch-secret-set" class="btn btn-primary">\u4FDD\u5B58</button>
       </div>
     </div>`;
 }
@@ -9467,14 +9464,14 @@ function renderSkills() {
               </div>
             </li>`;
   }).join("")}</ul>`;
-  const credIds = configuredCredentialIds();
+  const credIds = configuredLaunchSecretIds();
   const mcpNote = `
     <p class="muted">MCP / Connection Skills \u5728 Connection \u7F16\u8F91\u5668\u4E2D\u7528\u5217\u8868 + \u542F\u7528\u5F00\u5173\u7BA1\u7406\u3002${escapeHtml(CONNECTION_NEXT_SESSION_TIP)}\u3002\u8FD0\u884C\u4E2D session \u4E0D\u70ED\u66F4\u65B0\u3002</p>
     <p class="faint">\u65E0\u5168\u5C40 mcp.* RPC \xB7 \u89C1\u5951\u7EA6\u7F3A\u53E3 mcp.global-config \xB7 \u4E0D\u4F2A\u9020\u5168\u5C40\u76EE\u5F55</p>
     <ul class="settings-list">${fullRoutes.map((route) => {
     const skillBits = (route.skills || []).map((s) => `${s.name}${s.enabled === false ? "\xB7\u5173" : "\xB7\u5F00"}`).join(" ");
     const mcpBits = (route.mcpServers || []).map((m) => {
-      const cred = mcpCredentialStatusLine(m, credIds);
+      const cred = mcpLaunchSecretStatusLine(m, credIds);
       return `${m.name}${m.enabled === false ? "\xB7\u5173" : "\xB7\u5F00"}${cred ? `(${cred})` : ""}`;
     }).join(" ");
     return `<li class="settings-list-item">
@@ -9564,7 +9561,7 @@ function wireSection(s, root) {
         const id = btn.getAttribute("data-route-edit");
         section = "routes";
         openRouteEditor(id);
-        void loadCredentials().then(() => renderSettings());
+        void loadLaunchSecrets().then(() => renderSettings());
         renderSettings();
       });
     });
@@ -9606,10 +9603,13 @@ function wireSection(s, root) {
     });
     document.getElementById("btn-mcp-add")?.addEventListener("click", () => onMcpAdd());
   }
-  if (s === "credentials") {
-    document.getElementById("btn-cred-set")?.addEventListener("click", () => void onCredSet());
-    root.querySelectorAll("[data-cred-delete]").forEach((btn) => {
-      btn.addEventListener("click", () => void onCredDelete(btn.getAttribute("data-cred-delete")));
+  if (s === "routes") {
+    document.getElementById("btn-launch-secret-set")?.addEventListener("click", () => void onLaunchSecretSet());
+    root.querySelectorAll("[data-launch-secret-delete]").forEach((btn) => {
+      btn.addEventListener(
+        "click",
+        () => void onLaunchSecretDelete(btn.getAttribute("data-launch-secret-delete"))
+      );
     });
   }
   if (s === "skills") {
@@ -9752,7 +9752,7 @@ async function onRouteCreate() {
     displayName: document.getElementById("route-name")?.value || "",
     model: document.getElementById("route-model")?.value || "",
     envKey: document.getElementById("route-env")?.value || "",
-    credentialRef: document.getElementById("route-cred")?.value || ""
+    launchSecretRef: document.getElementById("route-launch-secret")?.value || ""
   };
   const built = validateConnectionCreate(draft);
   if (!built.ok) {
@@ -9792,15 +9792,15 @@ function onMcpAdd() {
   const transport = document.getElementById("mcp-add-transport")?.value || "stdio";
   const command = document.getElementById("mcp-add-command")?.value || "";
   const url = document.getElementById("mcp-add-url")?.value || "";
-  const envCredentialName = document.getElementById("mcp-add-env-name")?.value || "";
-  const envCredentialRef = document.getElementById("mcp-add-env-ref")?.value || "";
+  const envSecretName = document.getElementById("mcp-add-env-name")?.value || "";
+  const envLaunchSecretRef = document.getElementById("mcp-add-secret-ref")?.value || "";
   const built = validateMcpAddDraft({
     name,
     transport,
     command,
     url,
-    envCredentialName,
-    envCredentialRef
+    envSecretName,
+    envLaunchSecretRef
   });
   if (!built.ok) {
     el.status.textContent = built.reason;
@@ -9822,7 +9822,7 @@ async function onRouteSave() {
     model: document.getElementById("route-edit-model")?.value || "",
     executable: document.getElementById("route-edit-exe")?.value || "",
     envKey: document.getElementById("route-edit-env")?.value || "",
-    credentialRef: document.getElementById("route-edit-cred")?.value || "",
+    launchSecretRef: document.getElementById("route-edit-launch-secret")?.value || "",
     baseUrl: document.getElementById("route-edit-base")?.value || ""
   });
   if (!built.ok) {
@@ -9862,31 +9862,31 @@ async function onRouteDelete(connectionId) {
     setError(err);
   }
 }
-async function onCredSet() {
-  const idEl = document.getElementById("cred-id");
-  const labelEl = document.getElementById("cred-label");
-  const secretEl = document.getElementById("cred-secret");
+async function onLaunchSecretSet() {
+  const idEl = document.getElementById("launch-secret-id");
+  const labelEl = document.getElementById("launch-secret-label");
+  const secretEl = document.getElementById("launch-secret-value");
   const id = idEl?.value || "";
   const label = labelEl?.value || "";
   const secret = secretEl?.value || "";
-  const built = validateCredentialSet({ id, secret, label });
+  const built = validateLaunchSecretSet({ id, secret, label });
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
   }
   if (secretEl) secretEl.value = "";
-  const setBtn = document.getElementById("btn-cred-set");
+  const setBtn = document.getElementById("btn-launch-secret-set");
   if (setBtn) setBtn.disabled = true;
   try {
-    await window.tentDesktop.rpc("credential.set", {
+    await window.tentDesktop.rpc("settings.launchSecret.set", {
       id: built.payload.id,
       secret: built.payload.secret,
       ...built.payload.label !== void 0 ? { label: built.payload.label } : {}
     });
     built.payload.secret = "";
-    el.status.textContent = `\u51ED\u8BC1 ${built.payload.id} \u5DF2\u914D\u7F6E`;
+    el.status.textContent = `\u542F\u52A8 Secret ${built.payload.id} \u5DF2\u914D\u7F6E`;
     if (idEl) idEl.value = built.payload.id;
-    await loadCredentials();
+    await loadLaunchSecrets();
     renderSettings();
   } catch (err) {
     built.payload.secret = "";
@@ -9894,12 +9894,12 @@ async function onCredSet() {
     if (setBtn) setBtn.disabled = false;
   }
 }
-async function onCredDelete(id) {
-  if (!window.confirm(`\u5220\u9664\u51ED\u8BC1\u300C${id}\u300D\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u64A4\u9500\u3002`)) return;
+async function onLaunchSecretDelete(id) {
+  if (!window.confirm(`\u5220\u9664\u542F\u52A8 Secret\u300C${id}\u300D\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u64A4\u9500\u3002`)) return;
   try {
-    await window.tentDesktop.rpc("credential.delete", { id });
-    el.status.textContent = `\u5DF2\u5220\u9664\u51ED\u8BC1 ${id}`;
-    await loadCredentials();
+    await window.tentDesktop.rpc("settings.launchSecret.delete", { id });
+    el.status.textContent = `\u5DF2\u5220\u9664\u542F\u52A8 Secret ${id}`;
+    await loadLaunchSecrets();
     renderSettings();
   } catch (err) {
     setError(err);
