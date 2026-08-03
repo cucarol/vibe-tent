@@ -3900,7 +3900,10 @@ var ServiceClient = class {
     return this.call("proposal.resolve", { workspaceId, path: path11, decision, actor });
   }
   sessionList(workspaceId) {
-    return this.call("session.list", workspaceId ? { workspaceId } : {});
+    return this.call(
+      "session.list",
+      workspaceId ? { workspaceId } : {}
+    );
   }
   sessionGet(sessionId) {
     return this.call("session.get", { sessionId });

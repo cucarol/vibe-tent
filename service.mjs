@@ -14547,6 +14547,506 @@ async function collectBootstrapImageRefsFromTask(input) {
   return out.slice(0, MAX_ACP_IMAGES_PER_PROMPT * 2);
 }
 
+// src/adapters/acp/limits.ts
+import { StringDecoder } from "node:string_decoder";
+var ACP_OUTPUT_LIMIT_CODE = "ACP_OUTPUT_LIMIT";
+var ACP_REQUEST_LIMIT_CODE = "ACP_REQUEST_LIMIT";
+var DEFAULT_ACP_ASSISTANT_REPORT_BYTES = 4 * 1024 * 1024;
+var DEFAULT_ACP_ASSISTANT_SEGMENTS = 4096;
+var DEFAULT_ACP_NO_PROGRESS_UPDATES = 65536;
+var DEFAULT_ACP_DIAGNOSTIC_EVENTS = 256;
+var DEFAULT_ACP_STDOUT_FRAME_BYTES = 8 * 1024 * 1024;
+var DEFAULT_ACP_BOOTSTRAP_TEXT_BYTES = 4 * 1024 * 1024;
+var DEFAULT_ACP_REQUEST_FRAME_BYTES = 40 * 1024 * 1024;
+var ACP_DIAGNOSTIC_EVENT_BYTES = 16 * 1024;
+var DEFAULT_ACP_RESOURCE_LIMITS = {
+  assistantReportBytes: DEFAULT_ACP_ASSISTANT_REPORT_BYTES,
+  assistantSegments: DEFAULT_ACP_ASSISTANT_SEGMENTS,
+  noProgressUpdates: DEFAULT_ACP_NO_PROGRESS_UPDATES,
+  diagnosticEvents: DEFAULT_ACP_DIAGNOSTIC_EVENTS,
+  stdoutFrameBytes: DEFAULT_ACP_STDOUT_FRAME_BYTES,
+  bootstrapTextBytes: DEFAULT_ACP_BOOTSTRAP_TEXT_BYTES,
+  requestFrameBytes: DEFAULT_ACP_REQUEST_FRAME_BYTES
+};
+var AcpLimitError = class extends Error {
+  constructor(code, detail) {
+    super(`${code}: ${detail}`);
+    this.name = "AcpLimitError";
+    this.code = code;
+  }
+};
+function isAcpLimitError(value) {
+  if (!(value instanceof Error)) return false;
+  const code = value.code;
+  return code === ACP_OUTPUT_LIMIT_CODE || code === ACP_REQUEST_LIMIT_CODE;
+}
+function resolveAcpResourceLimits(overrides) {
+  const resolved = { ...DEFAULT_ACP_RESOURCE_LIMITS, ...overrides ?? {} };
+  for (const [name, value] of Object.entries(resolved)) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new Error(`Invalid ACP resource limit ${name}=${value}`);
+    }
+  }
+  return resolved;
+}
+function utf8Bytes(text3) {
+  return Buffer.byteLength(text3, "utf8");
+}
+var TRUNCATED_MARKER = "\n\u2026[truncated]";
+var REDACTED_MARKER = "[redacted]";
+var MAX_DIAGNOSTIC_SECRET_LOOKAHEAD_BYTES = 4096;
+function truncateUtf8Text(text3, maxBytes = ACP_DIAGNOSTIC_EVENT_BYTES) {
+  if (maxBytes <= 0) return "";
+  if (utf8Bytes(text3) <= maxBytes) return text3;
+  const markerBytes = utf8Bytes(TRUNCATED_MARKER);
+  if (markerBytes >= maxBytes) {
+    const marker = Buffer.allocUnsafe(maxBytes);
+    const markerWritten = marker.write(TRUNCATED_MARKER, 0, maxBytes, "utf8");
+    return marker.subarray(0, markerWritten).toString("utf8");
+  }
+  const payloadBytes = Math.max(0, maxBytes - markerBytes);
+  const buffer = Buffer.allocUnsafe(payloadBytes);
+  const written = buffer.write(text3, 0, payloadBytes, "utf8");
+  return buffer.subarray(0, written).toString("utf8") + TRUNCATED_MARKER;
+}
+function appendUtf8Tail(current, next, maxBytes) {
+  const combined = current + next;
+  if (utf8Bytes(combined) <= maxBytes) return combined;
+  const encoded = Buffer.from(combined, "utf8");
+  return truncateUtf8Text(
+    encoded.subarray(Math.max(0, encoded.byteLength - maxBytes)).toString("utf8"),
+    maxBytes
+  );
+}
+function utf8Prefix(text3, maxBytes) {
+  if (utf8Bytes(text3) <= maxBytes) return { text: text3, truncated: false };
+  const buffer = Buffer.allocUnsafe(maxBytes);
+  const written = buffer.write(text3, 0, maxBytes, "utf8");
+  return {
+    text: buffer.subarray(0, written).toString("utf8"),
+    truncated: true
+  };
+}
+function activeDiagnosticSecrets(secrets) {
+  return [...new Set(secrets.filter((secret) => secret.length >= 4))].sort(
+    (a, b) => b.length - a.length
+  );
+}
+function redactDiagnosticSecrets(raw, secrets) {
+  const intervals = [];
+  for (const secret of secrets) {
+    let found = raw.indexOf(secret);
+    while (found >= 0) {
+      intervals.push({ start: found, end: found + secret.length });
+      found = raw.indexOf(secret, found + 1);
+    }
+  }
+  if (intervals.length === 0) return raw;
+  intervals.sort((left, right) => left.start - right.start || left.end - right.end);
+  let output = "";
+  let cursor = 0;
+  let start = intervals[0].start;
+  let end = intervals[0].end;
+  for (const interval of intervals.slice(1)) {
+    if (interval.start <= end) {
+      end = Math.max(end, interval.end);
+      continue;
+    }
+    output += raw.slice(cursor, start) + REDACTED_MARKER;
+    cursor = end;
+    start = interval.start;
+    end = interval.end;
+  }
+  return output + raw.slice(cursor, start) + REDACTED_MARKER + raw.slice(end);
+}
+function diagnosticCarryChars(raw, secrets) {
+  let lastCompleteSecretEnd = 0;
+  for (const secret of secrets) {
+    let found = raw.indexOf(secret);
+    while (found >= 0) {
+      lastCompleteSecretEnd = Math.max(
+        lastCompleteSecretEnd,
+        found + secret.length
+      );
+      found = raw.indexOf(secret, found + 1);
+    }
+  }
+  let carryChars = 0;
+  for (const secret of secrets) {
+    const max = Math.min(secret.length - 1, raw.length);
+    for (let length = max; length > carryChars; length -= 1) {
+      const start = raw.length - length;
+      if (start >= lastCompleteSecretEnd && raw.endsWith(secret.slice(0, length))) {
+        carryChars = length;
+        break;
+      }
+    }
+  }
+  return carryChars;
+}
+function redactFinalDiagnosticTail(raw, secrets) {
+  let partialChars = 0;
+  for (const secret of secrets) {
+    const max = Math.min(secret.length - 1, raw.length);
+    for (let length = max; length >= 1; length -= 1) {
+      if (raw.endsWith(secret.slice(0, length))) {
+        partialChars = Math.max(partialChars, length);
+        break;
+      }
+    }
+  }
+  if (partialChars === 0) return redactDiagnosticSecrets(raw, secrets);
+  return redactDiagnosticSecrets(
+    raw.slice(0, raw.length - partialChars),
+    secrets
+  ) + REDACTED_MARKER;
+}
+var BoundedDiagnosticRedactor = class {
+  constructor(secrets, maxBytes = ACP_DIAGNOSTIC_EVENT_BYTES) {
+    this.maxBytes = maxBytes;
+    this.carry = "";
+    this.bufferDecoder = new StringDecoder("utf8");
+    this.discardUntilFlush = false;
+    this.secrets = activeDiagnosticSecrets(secrets);
+    const oversizedSecret = this.secrets.find(
+      (secret) => utf8Bytes(secret) > MAX_DIAGNOSTIC_SECRET_LOOKAHEAD_BYTES
+    );
+    if (oversizedSecret) {
+      this.maxSecretChars = -1;
+      this.lookaheadBytes = 0;
+      return;
+    }
+    this.maxSecretChars = Math.max(
+      1,
+      ...this.secrets.map((secret) => secret.length)
+    );
+    this.lookaheadBytes = Math.max(
+      0,
+      ...this.secrets.map((secret) => utf8Bytes(secret))
+    );
+  }
+  pushText(text3) {
+    if (this.discardUntilFlush) return "";
+    return this.project(utf8Prefix(text3, this.inputWindowBytes()));
+  }
+  pushBuffer(value) {
+    if (this.discardUntilFlush) return "";
+    const windowBytes = this.inputWindowBytes();
+    const truncated = value.byteLength > windowBytes;
+    let text3 = this.bufferDecoder.write(
+      truncated ? value.subarray(0, windowBytes) : value
+    );
+    if (truncated) {
+      text3 += this.bufferDecoder.end();
+      this.bufferDecoder = new StringDecoder("utf8");
+    }
+    return this.project({ text: text3, truncated });
+  }
+  flush() {
+    if (this.discardUntilFlush) {
+      this.bufferDecoder.end();
+      this.bufferDecoder = new StringDecoder("utf8");
+      this.carry = "";
+      this.discardUntilFlush = false;
+      return "";
+    }
+    const decodedTail = this.bufferDecoder.end();
+    this.bufferDecoder = new StringDecoder("utf8");
+    const decodedHead = decodedTail ? this.project({ text: decodedTail, truncated: false }) : "";
+    if (!this.carry) return truncateUtf8Text(decodedHead, this.maxBytes);
+    if (this.maxSecretChars < 0) {
+      this.carry = "";
+      return joinBoundedDiagnosticParts(
+        decodedHead,
+        REDACTED_MARKER,
+        this.maxBytes
+      );
+    }
+    const raw = this.carry;
+    this.carry = "";
+    return joinBoundedDiagnosticParts(
+      decodedHead,
+      redactFinalDiagnosticTail(raw, this.secrets),
+      this.maxBytes
+    );
+  }
+  inputWindowBytes() {
+    return this.maxBytes + this.lookaheadBytes * 2;
+  }
+  project(input) {
+    if (input.truncated) this.discardUntilFlush = true;
+    if (this.maxSecretChars < 0) {
+      this.carry = "";
+      return truncateUtf8Text(REDACTED_MARKER, this.maxBytes);
+    }
+    const raw = this.carry + input.text;
+    this.carry = "";
+    let safeRaw;
+    if (input.truncated) {
+      safeRaw = raw;
+    } else {
+      const retainedChars = diagnosticCarryChars(raw, this.secrets);
+      const boundary = raw.length - retainedChars;
+      safeRaw = raw.slice(0, boundary);
+      this.carry = raw.slice(boundary);
+    }
+    let redacted = input.truncated ? redactFinalDiagnosticTail(safeRaw, this.secrets) : redactDiagnosticSecrets(safeRaw, this.secrets);
+    if (redacted !== safeRaw) {
+      redacted = `${REDACTED_MARKER}
+${redacted}`;
+    }
+    if (input.truncated) redacted += TRUNCATED_MARKER;
+    return truncateUtf8Text(redacted, this.maxBytes);
+  }
+};
+function joinBoundedDiagnosticParts(head, tail, maxBytes) {
+  if (!tail) return truncateUtf8Text(head, maxBytes);
+  const boundedTail = truncateUtf8Text(tail, maxBytes);
+  const headBudget = Math.max(0, maxBytes - utf8Bytes(boundedTail));
+  return truncateUtf8Text(head, headBudget) + boundedTail;
+}
+function redactBoundedDiagnosticText(text3, secrets, maxBytes = ACP_DIAGNOSTIC_EVENT_BYTES) {
+  const redactor = new BoundedDiagnosticRedactor(secrets, maxBytes);
+  const head = redactor.pushText(text3);
+  const tail = redactor.flush();
+  return joinBoundedDiagnosticParts(head, tail, maxBytes);
+}
+
+// src/adapters/acp/types.ts
+var DEFAULT_PROMPT_TIMEOUT_MS = 30 * 6e4;
+var DEFAULT_PERMISSION_TIMEOUT_MS = 12e4;
+var ACP_SESSION_AUTH_METHODS_MAX = 64;
+var ACP_SESSION_CONFIG_OPTIONS_MAX = 128;
+var ACP_SESSION_CONFIG_VALUES_MAX = 256;
+var ACP_SESSION_CONFIG_GROUPS_MAX = 64;
+var ACP_SESSION_CONFIG_SNAPSHOT_BYTES = 256 * 1024;
+var ACP_SESSION_CONFIG_ID_BYTES = 256;
+var ACP_SESSION_CONFIG_LABEL_BYTES = 1024;
+var ACP_SESSION_CONFIG_DESCRIPTION_BYTES = 4096;
+function plainRecord2(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function boundedString(value, maxBytes, allowEmpty = false) {
+  if (typeof value !== "string") return void 0;
+  if (!allowEmpty && value.length === 0) return void 0;
+  return utf8Bytes(value) <= maxBytes ? value : void 0;
+}
+function optionalBoundedString(value, maxBytes) {
+  if (value === void 0) return void 0;
+  return boundedString(value, maxBytes, true) ?? null;
+}
+function normalizeConfigOptionValue(value) {
+  if (!plainRecord2(value)) return void 0;
+  const id = boundedString(value.value, ACP_SESSION_CONFIG_ID_BYTES);
+  const name = boundedString(value.name, ACP_SESSION_CONFIG_LABEL_BYTES);
+  const description = optionalBoundedString(
+    value.description,
+    ACP_SESSION_CONFIG_DESCRIPTION_BYTES
+  );
+  if (!id || !name || description === null) return void 0;
+  return {
+    value: id,
+    name,
+    ...description !== void 0 ? { description } : {}
+  };
+}
+function normalizeConfigOption(value, bounds) {
+  if (!plainRecord2(value)) return void 0;
+  const id = boundedString(value.id, ACP_SESSION_CONFIG_ID_BYTES);
+  const name = boundedString(value.name, ACP_SESSION_CONFIG_LABEL_BYTES);
+  const description = optionalBoundedString(
+    value.description,
+    ACP_SESSION_CONFIG_DESCRIPTION_BYTES
+  );
+  const category = optionalBoundedString(
+    value.category,
+    ACP_SESSION_CONFIG_ID_BYTES
+  );
+  if (!id || !name || description === null || category === null) return void 0;
+  const common = {
+    id,
+    name,
+    ...description !== void 0 ? { description } : {},
+    ...category !== void 0 ? { category } : {}
+  };
+  if (value.type === "boolean") {
+    if (typeof value.currentValue !== "boolean") return void 0;
+    return { ...common, type: "boolean", currentValue: value.currentValue };
+  }
+  const currentValue = boundedString(value.currentValue, ACP_SESSION_CONFIG_ID_BYTES);
+  if (value.type !== "select" || !currentValue) {
+    return void 0;
+  }
+  if (!Array.isArray(value.options)) return void 0;
+  const grouped = value.options.some(
+    (option) => plainRecord2(option) && "group" in option
+  );
+  let options;
+  if (grouped) {
+    const groups = [];
+    const seenGroups = /* @__PURE__ */ new Set();
+    const seenValues = /* @__PURE__ */ new Set();
+    let valueCount = 0;
+    if (value.options.length > ACP_SESSION_CONFIG_GROUPS_MAX) bounds.truncated = true;
+    for (const rawGroup of value.options.slice(0, ACP_SESSION_CONFIG_GROUPS_MAX)) {
+      if (!plainRecord2(rawGroup) || !Array.isArray(rawGroup.options)) continue;
+      const group = boundedString(rawGroup.group, ACP_SESSION_CONFIG_ID_BYTES);
+      const groupName = boundedString(rawGroup.name, ACP_SESSION_CONFIG_LABEL_BYTES);
+      if (!group || !groupName || seenGroups.has(group)) continue;
+      const groupOptions = [];
+      for (const raw of rawGroup.options) {
+        if (valueCount >= ACP_SESSION_CONFIG_VALUES_MAX) {
+          bounds.truncated = true;
+          break;
+        }
+        valueCount += 1;
+        const option = normalizeConfigOptionValue(raw);
+        if (!option || seenValues.has(option.value)) continue;
+        seenValues.add(option.value);
+        groupOptions.push(option);
+      }
+      if (groupOptions.length === 0) continue;
+      seenGroups.add(group);
+      groups.push({ group, name: groupName, options: groupOptions });
+      if (valueCount >= ACP_SESSION_CONFIG_VALUES_MAX) break;
+    }
+    if (groups.length === 0) return void 0;
+    options = { kind: "grouped", groups };
+  } else {
+    const flatOptions = [];
+    const seen = /* @__PURE__ */ new Set();
+    if (value.options.length > ACP_SESSION_CONFIG_VALUES_MAX) bounds.truncated = true;
+    for (const raw of value.options.slice(0, ACP_SESSION_CONFIG_VALUES_MAX)) {
+      const option = normalizeConfigOptionValue(raw);
+      if (!option || seen.has(option.value)) continue;
+      seen.add(option.value);
+      flatOptions.push(option);
+    }
+    if (flatOptions.length === 0) return void 0;
+    options = { kind: "flat", options: flatOptions };
+  }
+  return {
+    ...common,
+    type: "select",
+    currentValue,
+    options
+  };
+}
+function normalizeAuthMethodIds(value) {
+  if (!Array.isArray(value)) return { ids: [], truncated: false };
+  const ids = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const raw of value.slice(0, ACP_SESSION_AUTH_METHODS_MAX)) {
+    const id = plainRecord2(raw) ? boundedString(raw.id, ACP_SESSION_CONFIG_ID_BYTES) : void 0;
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return {
+    ids,
+    truncated: value.length > ACP_SESSION_AUTH_METHODS_MAX
+  };
+}
+function createAcpSessionConfigSnapshot(input) {
+  const capabilities = plainRecord2(input.agentCapabilities) ? input.agentCapabilities : {};
+  const sessionCapabilities = plainRecord2(capabilities.sessionCapabilities) ? capabilities.sessionCapabilities : {};
+  const promptCapabilities = plainRecord2(capabilities.promptCapabilities) ? capabilities.promptCapabilities : {};
+  const auth = normalizeAuthMethodIds(input.authMethods);
+  const rawOptions = Array.isArray(input.configOptions) ? input.configOptions : [];
+  const configOptions = [];
+  const seen = /* @__PURE__ */ new Set();
+  const bounds = { truncated: false };
+  let bytes = 2;
+  let truncated = auth.truncated || rawOptions.length > ACP_SESSION_CONFIG_OPTIONS_MAX;
+  for (const raw of rawOptions.slice(0, ACP_SESSION_CONFIG_OPTIONS_MAX)) {
+    const option = normalizeConfigOption(raw, bounds);
+    if (!option || seen.has(option.id)) continue;
+    const optionBytes = utf8Bytes(JSON.stringify(option)) + 1;
+    if (bytes + optionBytes > ACP_SESSION_CONFIG_SNAPSHOT_BYTES) {
+      truncated = true;
+      break;
+    }
+    bytes += optionBytes;
+    seen.add(option.id);
+    configOptions.push(option);
+  }
+  return {
+    capabilities: {
+      loadSession: capabilities.loadSession === true,
+      resumeSession: plainRecord2(sessionCapabilities.resume),
+      promptImage: promptCapabilities.image === true
+    },
+    authMethodIds: auth.ids,
+    configOptions,
+    truncated: truncated || bounds.truncated
+  };
+}
+function cloneAcpSessionConfigSnapshot(snapshot) {
+  return {
+    capabilities: { ...snapshot.capabilities },
+    authMethodIds: [...snapshot.authMethodIds],
+    configOptions: snapshot.configOptions.map(
+      (option) => option.type === "select" ? {
+        ...option,
+        options: option.options.kind === "flat" ? {
+          kind: "flat",
+          options: option.options.options.map((value) => ({ ...value }))
+        } : {
+          kind: "grouped",
+          groups: option.options.groups.map((group) => ({
+            ...group,
+            options: group.options.map((value) => ({ ...value }))
+          }))
+        }
+      } : { ...option }
+    ),
+    truncated: snapshot.truncated
+  };
+}
+function parseAcpSessionConfigSnapshot(value) {
+  if (!plainRecord2(value)) return null;
+  if (Object.keys(value).some(
+    (key2) => key2 !== "capabilities" && key2 !== "authMethodIds" && key2 !== "configOptions" && key2 !== "truncated"
+  )) {
+    return null;
+  }
+  if (!plainRecord2(value.capabilities)) return null;
+  if (Object.keys(value.capabilities).some(
+    (key2) => key2 !== "loadSession" && key2 !== "resumeSession" && key2 !== "promptImage"
+  ) || typeof value.capabilities.loadSession !== "boolean" || typeof value.capabilities.resumeSession !== "boolean" || typeof value.capabilities.promptImage !== "boolean") {
+    return null;
+  }
+  if (!Array.isArray(value.authMethodIds) || !Array.isArray(value.configOptions)) {
+    return null;
+  }
+  if (typeof value.truncated !== "boolean") return null;
+  const wireOptions = value.configOptions.map((option) => {
+    if (!plainRecord2(option) || option.type !== "select") return option;
+    if (!plainRecord2(option.options)) return option;
+    if (option.options.kind === "flat" && Array.isArray(option.options.options)) {
+      return { ...option, options: option.options.options };
+    }
+    if (option.options.kind === "grouped" && Array.isArray(option.options.groups)) {
+      return { ...option, options: option.options.groups };
+    }
+    return option;
+  });
+  const normalized = createAcpSessionConfigSnapshot({
+    agentCapabilities: {
+      loadSession: value.capabilities.loadSession,
+      sessionCapabilities: value.capabilities.resumeSession ? { resume: {} } : {},
+      promptCapabilities: { image: value.capabilities.promptImage }
+    },
+    authMethods: value.authMethodIds.map((id) => ({ id })),
+    configOptions: wireOptions
+  });
+  if (normalized.truncated || JSON.stringify(normalized.authMethodIds) !== JSON.stringify(value.authMethodIds) || JSON.stringify(normalized.configOptions) !== JSON.stringify(value.configOptions)) {
+    return null;
+  }
+  normalized.truncated = value.truncated;
+  return normalized;
+}
+
 // src/core/proposal.ts
 async function submitProposal(fs21, clock, role, nodeId, body) {
   return withTentMutation(fs21, async () => submitProposalUnlocked(fs21, clock, role, nodeId, body));
@@ -17605,6 +18105,7 @@ function parseSessionRecord(data, sessionId) {
     "connectionId",
     "adapterId",
     "connectionSnapshot",
+    "acpSession",
     "roleId",
     "state",
     "pid",
@@ -17633,7 +18134,7 @@ function parseSessionRecord(data, sessionId) {
   if (!isNonEmptyString(data.updatedAt)) return null;
   const external = data.adapterId === EXTERNAL_ADAPTER_ID;
   if (external) {
-    if (data.connectionId !== void 0 || data.connectionSnapshot !== void 0) return null;
+    if (data.connectionId !== void 0 || data.connectionSnapshot !== void 0 || data.acpSession !== void 0) return null;
   } else {
     if (!isConnectionId(data.connectionId) || !isNonEmptyString(data.adapterId)) return null;
     if (data.roleId !== void 0) return null;
@@ -17703,7 +18204,13 @@ function parseSessionRecord(data, sessionId) {
   if (!isNonEmptyString(snapshot.provider)) return null;
   if (snapshot.adapterId !== data.adapterId || !isNonEmptyString(snapshot.adapterId)) return null;
   if (!isNonEmptyString(snapshot.launchDigest)) return null;
-  return { ...data, connectionSnapshot: snapshot };
+  const acpSession = data.acpSession === void 0 ? void 0 : parseAcpSessionConfigSnapshot(data.acpSession);
+  if (data.acpSession !== void 0 && !acpSession) return null;
+  return {
+    ...data,
+    connectionSnapshot: snapshot,
+    ...acpSession ? { acpSession } : {}
+  };
 }
 var SessionRegistry = class _SessionRegistry {
   constructor(dataDir) {
@@ -19940,10 +20447,6 @@ function buildManagedChildEnv(options = {}) {
   return out;
 }
 
-// src/adapters/acp/types.ts
-var DEFAULT_PROMPT_TIMEOUT_MS = 30 * 6e4;
-var DEFAULT_PERMISSION_TIMEOUT_MS = 12e4;
-
 // src/adapters/acp/assistant-report.ts
 function selectFinalAssistantReport(segments) {
   for (let i = segments.length - 1; i >= 0; i -= 1) {
@@ -20008,273 +20511,12 @@ function redactDiagnosticText(text3, options) {
   return redactSecrets(text3, secrets, options?.placeholder ?? DEFAULT_PLACEHOLDER);
 }
 
-// src/adapters/acp/limits.ts
-import { StringDecoder } from "node:string_decoder";
-var ACP_OUTPUT_LIMIT_CODE = "ACP_OUTPUT_LIMIT";
-var ACP_REQUEST_LIMIT_CODE = "ACP_REQUEST_LIMIT";
-var DEFAULT_ACP_ASSISTANT_REPORT_BYTES = 4 * 1024 * 1024;
-var DEFAULT_ACP_ASSISTANT_SEGMENTS = 4096;
-var DEFAULT_ACP_SESSION_UPDATES = 65536;
-var DEFAULT_ACP_STDOUT_FRAME_BYTES = 8 * 1024 * 1024;
-var DEFAULT_ACP_BOOTSTRAP_TEXT_BYTES = 4 * 1024 * 1024;
-var DEFAULT_ACP_REQUEST_FRAME_BYTES = 40 * 1024 * 1024;
-var ACP_DIAGNOSTIC_EVENT_BYTES = 16 * 1024;
-var DEFAULT_ACP_RESOURCE_LIMITS = {
-  assistantReportBytes: DEFAULT_ACP_ASSISTANT_REPORT_BYTES,
-  assistantSegments: DEFAULT_ACP_ASSISTANT_SEGMENTS,
-  sessionUpdates: DEFAULT_ACP_SESSION_UPDATES,
-  stdoutFrameBytes: DEFAULT_ACP_STDOUT_FRAME_BYTES,
-  bootstrapTextBytes: DEFAULT_ACP_BOOTSTRAP_TEXT_BYTES,
-  requestFrameBytes: DEFAULT_ACP_REQUEST_FRAME_BYTES
-};
-var AcpLimitError = class extends Error {
-  constructor(code, detail) {
-    super(`${code}: ${detail}`);
-    this.name = "AcpLimitError";
-    this.code = code;
-  }
-};
-function isAcpLimitError(value) {
-  if (!(value instanceof Error)) return false;
-  const code = value.code;
-  return code === ACP_OUTPUT_LIMIT_CODE || code === ACP_REQUEST_LIMIT_CODE;
-}
-function resolveAcpResourceLimits(overrides) {
-  const resolved = { ...DEFAULT_ACP_RESOURCE_LIMITS, ...overrides ?? {} };
-  for (const [name, value] of Object.entries(resolved)) {
-    if (!Number.isSafeInteger(value) || value <= 0) {
-      throw new Error(`Invalid ACP resource limit ${name}=${value}`);
-    }
-  }
-  return resolved;
-}
-function utf8Bytes(text3) {
-  return Buffer.byteLength(text3, "utf8");
-}
-var TRUNCATED_MARKER = "\n\u2026[truncated]";
-var REDACTED_MARKER = "[redacted]";
-var MAX_DIAGNOSTIC_SECRET_LOOKAHEAD_BYTES = 4096;
-function truncateUtf8Text(text3, maxBytes = ACP_DIAGNOSTIC_EVENT_BYTES) {
-  if (maxBytes <= 0) return "";
-  if (utf8Bytes(text3) <= maxBytes) return text3;
-  const markerBytes = utf8Bytes(TRUNCATED_MARKER);
-  if (markerBytes >= maxBytes) {
-    const marker = Buffer.allocUnsafe(maxBytes);
-    const markerWritten = marker.write(TRUNCATED_MARKER, 0, maxBytes, "utf8");
-    return marker.subarray(0, markerWritten).toString("utf8");
-  }
-  const payloadBytes = Math.max(0, maxBytes - markerBytes);
-  const buffer = Buffer.allocUnsafe(payloadBytes);
-  const written = buffer.write(text3, 0, payloadBytes, "utf8");
-  return buffer.subarray(0, written).toString("utf8") + TRUNCATED_MARKER;
-}
-function appendUtf8Tail(current, next, maxBytes) {
-  const combined = current + next;
-  if (utf8Bytes(combined) <= maxBytes) return combined;
-  const encoded = Buffer.from(combined, "utf8");
-  return truncateUtf8Text(
-    encoded.subarray(Math.max(0, encoded.byteLength - maxBytes)).toString("utf8"),
-    maxBytes
-  );
-}
-function utf8Prefix(text3, maxBytes) {
-  if (utf8Bytes(text3) <= maxBytes) return { text: text3, truncated: false };
-  const buffer = Buffer.allocUnsafe(maxBytes);
-  const written = buffer.write(text3, 0, maxBytes, "utf8");
-  return {
-    text: buffer.subarray(0, written).toString("utf8"),
-    truncated: true
-  };
-}
-function activeDiagnosticSecrets(secrets) {
-  return [...new Set(secrets.filter((secret) => secret.length >= 4))].sort(
-    (a, b) => b.length - a.length
-  );
-}
-function redactDiagnosticSecrets(raw, secrets) {
-  const intervals = [];
-  for (const secret of secrets) {
-    let found = raw.indexOf(secret);
-    while (found >= 0) {
-      intervals.push({ start: found, end: found + secret.length });
-      found = raw.indexOf(secret, found + 1);
-    }
-  }
-  if (intervals.length === 0) return raw;
-  intervals.sort((left, right) => left.start - right.start || left.end - right.end);
-  let output = "";
-  let cursor = 0;
-  let start = intervals[0].start;
-  let end = intervals[0].end;
-  for (const interval of intervals.slice(1)) {
-    if (interval.start <= end) {
-      end = Math.max(end, interval.end);
-      continue;
-    }
-    output += raw.slice(cursor, start) + REDACTED_MARKER;
-    cursor = end;
-    start = interval.start;
-    end = interval.end;
-  }
-  return output + raw.slice(cursor, start) + REDACTED_MARKER + raw.slice(end);
-}
-function diagnosticCarryChars(raw, secrets) {
-  let lastCompleteSecretEnd = 0;
-  for (const secret of secrets) {
-    let found = raw.indexOf(secret);
-    while (found >= 0) {
-      lastCompleteSecretEnd = Math.max(
-        lastCompleteSecretEnd,
-        found + secret.length
-      );
-      found = raw.indexOf(secret, found + 1);
-    }
-  }
-  let carryChars = 0;
-  for (const secret of secrets) {
-    const max = Math.min(secret.length - 1, raw.length);
-    for (let length = max; length > carryChars; length -= 1) {
-      const start = raw.length - length;
-      if (start >= lastCompleteSecretEnd && raw.endsWith(secret.slice(0, length))) {
-        carryChars = length;
-        break;
-      }
-    }
-  }
-  return carryChars;
-}
-function redactFinalDiagnosticTail(raw, secrets) {
-  let partialChars = 0;
-  for (const secret of secrets) {
-    const max = Math.min(secret.length - 1, raw.length);
-    for (let length = max; length >= 1; length -= 1) {
-      if (raw.endsWith(secret.slice(0, length))) {
-        partialChars = Math.max(partialChars, length);
-        break;
-      }
-    }
-  }
-  if (partialChars === 0) return redactDiagnosticSecrets(raw, secrets);
-  return redactDiagnosticSecrets(
-    raw.slice(0, raw.length - partialChars),
-    secrets
-  ) + REDACTED_MARKER;
-}
-var BoundedDiagnosticRedactor = class {
-  constructor(secrets, maxBytes = ACP_DIAGNOSTIC_EVENT_BYTES) {
-    this.maxBytes = maxBytes;
-    this.carry = "";
-    this.bufferDecoder = new StringDecoder("utf8");
-    this.discardUntilFlush = false;
-    this.secrets = activeDiagnosticSecrets(secrets);
-    const oversizedSecret = this.secrets.find(
-      (secret) => utf8Bytes(secret) > MAX_DIAGNOSTIC_SECRET_LOOKAHEAD_BYTES
-    );
-    if (oversizedSecret) {
-      this.maxSecretChars = -1;
-      this.lookaheadBytes = 0;
-      return;
-    }
-    this.maxSecretChars = Math.max(
-      1,
-      ...this.secrets.map((secret) => secret.length)
-    );
-    this.lookaheadBytes = Math.max(
-      0,
-      ...this.secrets.map((secret) => utf8Bytes(secret))
-    );
-  }
-  pushText(text3) {
-    if (this.discardUntilFlush) return "";
-    return this.project(utf8Prefix(text3, this.inputWindowBytes()));
-  }
-  pushBuffer(value) {
-    if (this.discardUntilFlush) return "";
-    const windowBytes = this.inputWindowBytes();
-    const truncated = value.byteLength > windowBytes;
-    let text3 = this.bufferDecoder.write(
-      truncated ? value.subarray(0, windowBytes) : value
-    );
-    if (truncated) {
-      text3 += this.bufferDecoder.end();
-      this.bufferDecoder = new StringDecoder("utf8");
-    }
-    return this.project({ text: text3, truncated });
-  }
-  flush() {
-    if (this.discardUntilFlush) {
-      this.bufferDecoder.end();
-      this.bufferDecoder = new StringDecoder("utf8");
-      this.carry = "";
-      this.discardUntilFlush = false;
-      return "";
-    }
-    const decodedTail = this.bufferDecoder.end();
-    this.bufferDecoder = new StringDecoder("utf8");
-    const decodedHead = decodedTail ? this.project({ text: decodedTail, truncated: false }) : "";
-    if (!this.carry) return truncateUtf8Text(decodedHead, this.maxBytes);
-    if (this.maxSecretChars < 0) {
-      this.carry = "";
-      return joinBoundedDiagnosticParts(
-        decodedHead,
-        REDACTED_MARKER,
-        this.maxBytes
-      );
-    }
-    const raw = this.carry;
-    this.carry = "";
-    return joinBoundedDiagnosticParts(
-      decodedHead,
-      redactFinalDiagnosticTail(raw, this.secrets),
-      this.maxBytes
-    );
-  }
-  inputWindowBytes() {
-    return this.maxBytes + this.lookaheadBytes * 2;
-  }
-  project(input) {
-    if (input.truncated) this.discardUntilFlush = true;
-    if (this.maxSecretChars < 0) {
-      this.carry = "";
-      return truncateUtf8Text(REDACTED_MARKER, this.maxBytes);
-    }
-    const raw = this.carry + input.text;
-    this.carry = "";
-    let safeRaw;
-    if (input.truncated) {
-      safeRaw = raw;
-    } else {
-      const retainedChars = diagnosticCarryChars(raw, this.secrets);
-      const boundary = raw.length - retainedChars;
-      safeRaw = raw.slice(0, boundary);
-      this.carry = raw.slice(boundary);
-    }
-    let redacted = input.truncated ? redactFinalDiagnosticTail(safeRaw, this.secrets) : redactDiagnosticSecrets(safeRaw, this.secrets);
-    if (redacted !== safeRaw) {
-      redacted = `${REDACTED_MARKER}
-${redacted}`;
-    }
-    if (input.truncated) redacted += TRUNCATED_MARKER;
-    return truncateUtf8Text(redacted, this.maxBytes);
-  }
-};
-function joinBoundedDiagnosticParts(head, tail, maxBytes) {
-  if (!tail) return truncateUtf8Text(head, maxBytes);
-  const boundedTail = truncateUtf8Text(tail, maxBytes);
-  const headBudget = Math.max(0, maxBytes - utf8Bytes(boundedTail));
-  return truncateUtf8Text(head, headBudget) + boundedTail;
-}
-function redactBoundedDiagnosticText(text3, secrets, maxBytes = ACP_DIAGNOSTIC_EVENT_BYTES) {
-  const redactor = new BoundedDiagnosticRedactor(secrets, maxBytes);
-  const head = redactor.pushText(text3);
-  const tail = redactor.flush();
-  return joinBoundedDiagnosticParts(head, tail, maxBytes);
-}
-
 // src/adapters/acp/client.ts
 var LOAD_REPLAY_QUIET_MS = 100;
 var LOAD_REPLAY_MAX_WAIT_MS = 2e3;
 var RPC_ERROR_DATA_MAX_CHARS = 600;
+var ASSISTANT_CHUNK_PAGE_BYTES = 64 * 1024;
+var ASSISTANT_CHUNK_PAGE_ITEMS = 1024;
 var RPC_ERROR_SAFE_KEYS = /* @__PURE__ */ new Set([
   "code",
   "kind",
@@ -20336,10 +20578,14 @@ var AcpClient = class {
      * is the last non-empty segment (see selectFinalAssistantReport).
      */
     this.assistantMessageSegments = [];
-    /** Open message chunks stay chunked so many small updates do not cause repeated copies. */
+    /** Fixed-size joined pages keep fragment overhead bounded by report bytes. */
     this.assistantMessageCurrentChunks = [];
+    this.assistantMessageCurrentPages = [];
+    this.assistantMessageCurrentPageBytes = 0;
     this.assistantReportBytes = 0;
-    this.assistantUpdateCount = 0;
+    this.consecutiveNoProgressUpdates = 0;
+    this.diagnosticEventsEmitted = 0;
+    this.diagnosticEventsSuppressed = 0;
     this.stdoutFrameBytes = 0;
     this.stderrTail = "";
     this.closed = false;
@@ -20375,6 +20621,8 @@ var AcpClient = class {
      * Only explicit true counts; omit/false → unsupported (no guessing).
      */
     this.promptImageSupported = false;
+    /** Latest complete bounded Agent-owned Session configuration state. */
+    this.sessionConfigSnapshot = createAcpSessionConfigSnapshot({});
     /** Concurrent ask-policy requests keep the session waiting until all resolve. */
     this.permissionAsksInFlight = 0;
     /** Stop/exit cancellation for in-flight onPermissionAsk waiters. */
@@ -20426,6 +20674,9 @@ var AcpClient = class {
   get lastStderrTail() {
     return this.stderrTail;
   }
+  get sessionConfig() {
+    return cloneAcpSessionConfigSnapshot(this.sessionConfigSnapshot);
+  }
   /**
    * True only when initialize advertised agentCapabilities.promptCapabilities.image === true.
    * Default false until connect(); custom/unclear transports stay false.
@@ -20455,17 +20706,42 @@ var AcpClient = class {
   resetAssistantReport() {
     this.assistantMessageSegments = [];
     this.assistantMessageCurrentChunks = [];
+    this.assistantMessageCurrentPages = [];
+    this.assistantMessageCurrentPageBytes = 0;
     this.assistantReportBytes = 0;
-    this.assistantUpdateCount = 0;
+    this.consecutiveNoProgressUpdates = 0;
+    this.lastObservableControlFingerprint = void 0;
+    this.diagnosticEventsEmitted = 0;
+    this.diagnosticEventsSuppressed = 0;
+  }
+  appendAssistantMessageChunk(text3, bytes) {
+    this.assistantMessageCurrentChunks.push(text3);
+    this.assistantMessageCurrentPageBytes += bytes;
+    if (this.assistantMessageCurrentPageBytes >= ASSISTANT_CHUNK_PAGE_BYTES || this.assistantMessageCurrentChunks.length >= ASSISTANT_CHUNK_PAGE_ITEMS) {
+      this.flushAssistantMessagePage();
+    }
+  }
+  flushAssistantMessagePage() {
+    if (this.assistantMessageCurrentChunks.length === 0) return;
+    this.assistantMessageCurrentPages.push(
+      this.assistantMessageCurrentChunks.join("")
+    );
+    this.assistantMessageCurrentChunks = [];
+    this.assistantMessageCurrentPageBytes = 0;
   }
   /**
    * Non-message session/update kinds seal the open assistant segment so later
    * message chunks become a new final-report candidate.
    */
   sealOpenAssistantSegment() {
-    if (this.assistantMessageCurrentChunks.length === 0) return;
-    const current = this.assistantMessageCurrentChunks.join("");
+    if (this.assistantMessageCurrentPages.length === 0 && this.assistantMessageCurrentChunks.length === 0) {
+      return;
+    }
+    this.flushAssistantMessagePage();
+    const current = this.assistantMessageCurrentPages.join("");
+    this.assistantMessageCurrentPages = [];
     this.assistantMessageCurrentChunks = [];
+    this.assistantMessageCurrentPageBytes = 0;
     if (!current.trim()) return;
     if (this.assistantMessageSegments.length >= this.resourceLimits.assistantSegments) {
       this.triggerLimit(
@@ -20504,7 +20780,8 @@ var AcpClient = class {
         protocolVersion: 1,
         clientCapabilities: {
           fs: { readTextFile: false, writeTextFile: false },
-          terminal: false
+          terminal: false,
+          session: { configOptions: { boolean: {} } }
         }
       });
       this.loadSessionSupported = init.agentCapabilities?.loadSession === true;
@@ -20525,6 +20802,7 @@ var AcpClient = class {
         });
       }
       let providerSessionId;
+      let sessionConfigOptions;
       if (mode === "load" || mode === "resume") {
         const method = mode === "resume" ? "session/resume" : "session/load";
         if (mode === "load" && !this.loadSessionSupported) {
@@ -20549,7 +20827,7 @@ var AcpClient = class {
           this.lastLoadReplayUpdateAt = Date.now();
         }
         try {
-          await this.request(
+          const loaded = await this.request(
             method,
             this.sessionStartParams({
               sessionId: loadId,
@@ -20557,6 +20835,7 @@ var AcpClient = class {
             }),
             6e4
           );
+          sessionConfigOptions = loaded.configOptions;
           if (mode === "load") {
             await this.waitForLoadReplayQuiescence();
           }
@@ -20577,7 +20856,13 @@ var AcpClient = class {
         }
         this.providerSessionId = session.sessionId;
         providerSessionId = session.sessionId;
+        sessionConfigOptions = session.configOptions;
       }
+      this.sessionConfigSnapshot = createAcpSessionConfigSnapshot({
+        agentCapabilities: init.agentCapabilities,
+        authMethods: init.authMethods,
+        configOptions: sessionConfigOptions
+      });
       this.options.emit({
         type: "session.live",
         sessionId: this.options.sessionId,
@@ -20587,7 +20872,8 @@ var AcpClient = class {
         pid,
         providerSessionId,
         loadSessionSupported: this.loadSessionSupported,
-        resumeSessionSupported: this.resumeSessionSupported
+        resumeSessionSupported: this.resumeSessionSupported,
+        sessionConfig: this.sessionConfig
       };
     } catch (err) {
       if (isAcpLimitError(err)) throw err;
@@ -20656,14 +20942,7 @@ var AcpClient = class {
       throw new Error(this.boundedRedactedDiagnostic(detail));
     } finally {
       this.collectingPromptResponse = false;
-      const tail = this.updateDiagnosticRedactor.flush();
-      if (tail) {
-        this.options.emit({
-          type: "session.stdout_tail",
-          sessionId: this.options.sessionId,
-          text: tail
-        });
-      }
+      this.flushUpdateDiagnostics();
     }
   }
   /**
@@ -20761,6 +21040,59 @@ var AcpClient = class {
       prefix + safe,
       ACP_DIAGNOSTIC_EVENT_BYTES
     );
+  }
+  emitUpdateDiagnostic(prefix, text3) {
+    const diagnostic = this.formatDiagnostic(prefix, text3);
+    if (!diagnostic) return;
+    if (this.diagnosticEventsEmitted < this.resourceLimits.diagnosticEvents) {
+      this.diagnosticEventsEmitted += 1;
+      this.options.emit({
+        type: "session.stdout_tail",
+        sessionId: this.options.sessionId,
+        text: diagnostic
+      });
+      return;
+    }
+    this.diagnosticEventsSuppressed += 1;
+  }
+  flushUpdateDiagnostics() {
+    const tail = this.updateDiagnosticRedactor.flush();
+    const suppressed = this.diagnosticEventsSuppressed;
+    this.diagnosticEventsSuppressed = 0;
+    if (!tail && suppressed === 0) return;
+    const summary = suppressed > 0 ? `[session/update] ${suppressed} diagnostic fragments suppressed by bounded fan-out
+` : "";
+    this.options.emit({
+      type: "session.stdout_tail",
+      sessionId: this.options.sessionId,
+      text: truncateUtf8Text(summary + tail, ACP_DIAGNOSTIC_EVENT_BYTES)
+    });
+  }
+  recordNoProgressUpdate() {
+    this.consecutiveNoProgressUpdates += 1;
+    if (this.consecutiveNoProgressUpdates <= this.resourceLimits.noProgressUpdates) {
+      return true;
+    }
+    this.triggerLimit(
+      ACP_OUTPUT_LIMIT_CODE,
+      `session/update made no observable progress for more than ${this.resourceLimits.noProgressUpdates} consecutive events`
+    );
+    return false;
+  }
+  recordUpdateProgress() {
+    this.consecutiveNoProgressUpdates = 0;
+  }
+  recordContentProgress() {
+    this.recordUpdateProgress();
+    this.lastObservableControlFingerprint = void 0;
+  }
+  recordObservableControlProgress(fingerprint) {
+    if (fingerprint === this.lastObservableControlFingerprint) {
+      return this.recordNoProgressUpdate();
+    }
+    this.lastObservableControlFingerprint = fingerprint;
+    this.recordUpdateProgress();
+    return true;
   }
   spawnProcess() {
     const env = buildManagedChildEnv({
@@ -20896,21 +21228,40 @@ var AcpClient = class {
     }
   }
   handleSessionUpdate(update) {
-    if (!update) return;
+    if (!update || this.limitError) return;
     if (this.quarantiningLoadReplay) {
       this.lastLoadReplayUpdateAt = Date.now();
       return;
     }
-    if (!this.collectingPromptResponse) return;
-    this.assistantUpdateCount += 1;
-    if (this.assistantUpdateCount > this.resourceLimits.sessionUpdates) {
-      this.triggerLimit(
-        ACP_OUTPUT_LIMIT_CODE,
-        `session/update count exceeds ${this.resourceLimits.sessionUpdates}`
-      );
+    const kind = update.sessionUpdate ?? "";
+    if (kind === "config_option_update") {
+      const projected = createAcpSessionConfigSnapshot({
+        configOptions: update.configOptions
+      });
+      const nextSnapshot = {
+        ...this.sessionConfigSnapshot,
+        configOptions: projected.configOptions,
+        truncated: this.sessionConfigSnapshot.truncated || projected.truncated
+      };
+      const unchanged = JSON.stringify(this.sessionConfigSnapshot.configOptions) === JSON.stringify(nextSnapshot.configOptions) && this.sessionConfigSnapshot.truncated === nextSnapshot.truncated;
+      if (this.collectingPromptResponse) {
+        if (!this.recordObservableControlProgress(
+          `config:${JSON.stringify(nextSnapshot.configOptions)}`
+        )) {
+          return;
+        }
+        this.sealOpenAssistantSegment();
+      }
+      if (unchanged) return;
+      this.sessionConfigSnapshot = nextSnapshot;
+      this.options.emit({
+        type: "session.config_options",
+        sessionId: this.options.sessionId,
+        sessionConfig: this.sessionConfig
+      });
       return;
     }
-    const kind = update.sessionUpdate ?? "";
+    if (!this.collectingPromptResponse) return;
     if (isAssistantMessageChunkKind(kind) && update.content?.text) {
       const chunkBytes = utf8Bytes(update.content.text);
       if (chunkBytes > this.resourceLimits.assistantReportBytes - this.assistantReportBytes) {
@@ -20921,47 +21272,48 @@ var AcpClient = class {
         return;
       }
       this.assistantReportBytes += chunkBytes;
-      this.assistantMessageCurrentChunks.push(update.content.text);
-      this.options.emit({
-        type: "session.stdout_tail",
-        sessionId: this.options.sessionId,
-        text: this.formatDiagnostic(`[${kind}] `, update.content.text)
-      });
+      this.appendAssistantMessageChunk(update.content.text, chunkBytes);
+      this.recordContentProgress();
+      this.emitUpdateDiagnostic(`[${kind}] `, update.content.text);
       return;
     }
     if (kind) {
       this.sealOpenAssistantSegment();
     }
     if (kind === "agent_thought_chunk" && update.content?.text) {
-      this.options.emit({
-        type: "session.stdout_tail",
-        sessionId: this.options.sessionId,
-        text: this.formatDiagnostic(`[${kind}] `, update.content.text)
-      });
+      this.recordContentProgress();
+      this.emitUpdateDiagnostic(`[${kind}] `, update.content.text);
       return;
     }
     if (kind === "tool_call" || kind === "tool_call_update") {
-      const title = typeof update.title === "string" && update.title || update.toolCallId || "tool";
+      const actualTitle = typeof update.title === "string" && update.title || update.toolCallId || "";
       const status = typeof update.status === "string" ? update.status : "";
+      if (actualTitle || status ? !this.recordObservableControlProgress(
+        `tool:${update.toolCallId ?? ""}:${actualTitle}:${status}`
+      ) : !this.recordNoProgressUpdate()) {
+        return;
+      }
+      const title = actualTitle || "tool";
       const safeTitle = this.boundedRedactedDiagnostic(title, 8192);
       const safeStatus = status ? this.boundedRedactedDiagnostic(status, 4096) : "";
-      this.options.emit({
-        type: "session.stdout_tail",
-        sessionId: this.options.sessionId,
-        text: this.formatDiagnostic(
-          `[${kind}] `,
-          `${safeTitle}${safeStatus ? ` (${safeStatus})` : ""}
+      this.emitUpdateDiagnostic(
+        `[${kind}] `,
+        `${safeTitle}${safeStatus ? ` (${safeStatus})` : ""}
 `
-        )
-      });
+      );
       return;
     }
+    if (kind === "status") {
+      const status = typeof update.status === "string" ? update.status : "";
+      if (status ? !this.recordObservableControlProgress(`status:${status}`) : !this.recordNoProgressUpdate()) {
+        return;
+      }
+      this.emitUpdateDiagnostic("[status] ", status || "status");
+      return;
+    }
+    if (!this.recordNoProgressUpdate()) return;
     if (kind) {
-      this.options.emit({
-        type: "session.stdout_tail",
-        sessionId: this.options.sessionId,
-        text: this.formatDiagnostic("[session/update] ", kind)
-      });
+      this.emitUpdateDiagnostic("[session/update] ", kind);
     }
   }
   async waitForLoadReplayQuiescence() {
@@ -21265,6 +21617,9 @@ var AcpManagedSession = class {
   }
   get providerSessionId() {
     return this.client.providerSession;
+  }
+  get acpSession() {
+    return this.client.sessionConfig;
   }
   isAlive() {
     return !this.stopRequested && this.client.isAlive();
@@ -21847,6 +22202,9 @@ var GrokAcpClient = class {
   }
   get providerSession() {
     return this.inner.providerSession;
+  }
+  get sessionConfig() {
+    return this.inner.sessionConfig;
   }
   get lastAssistantText() {
     return this.inner.lastAssistantText;
@@ -29478,6 +29836,7 @@ async function sessionList(ctx, p) {
       sessionId: rec.id,
       connectionId: rec.connectionId,
       adapterId: rec.adapterId,
+      ...rec.acpSession ? { acpSession: cloneAcpSessionConfigSnapshot(rec.acpSession) } : {},
       state: probe.state,
       roleId: rec.roleId,
       alive: probe.alive,
@@ -29503,6 +29862,7 @@ async function sessionGet(ctx, p) {
     sessionId: rec.id,
     connectionId: rec.connectionId,
     adapterId: rec.adapterId,
+    ...rec.acpSession ? { acpSession: cloneAcpSessionConfigSnapshot(rec.acpSession) } : {},
     state: probe.state,
     roleId: rec.roleId,
     alive: probe.alive,
@@ -31609,6 +31969,9 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
   }
   const workspaceId = rec?.workspace ?? ctx.host.getForegroundId() ?? "";
   if (ev.type === "session.stdout_tail") {
+    return;
+  }
+  if (ev.type === "session.config_options") {
     return;
   }
   const hasPendingToolApproval = ev.type === "session.live" ? await ctx.toolApprovals.hasPendingForSession(ev.sessionId) : false;
@@ -35587,6 +35950,10 @@ var AgentRuntime = class {
               state: "live",
               ...ev.pid != null ? { pid: ev.pid } : {}
             }).catch(() => void 0);
+          } else if (ev.type === "session.config_options") {
+            void this.registry.update(req.sessionId, {
+              acpSession: cloneAcpSessionConfigSnapshot(ev.sessionConfig)
+            }).catch(() => void 0);
           }
           this.emit(ev);
         });
@@ -35631,6 +35998,11 @@ var AgentRuntime = class {
         state: "live",
         pid,
         resumeToken,
+        ...startedManaged?.acpSession ? {
+          acpSession: cloneAcpSessionConfigSnapshot(
+            startedManaged.acpSession
+          )
+        } : {},
         lastError: void 0,
         exitCode: void 0,
         stopReason: void 0
@@ -35819,6 +36191,10 @@ var AgentRuntime = class {
               state: "live",
               ...ev.pid != null ? { pid: ev.pid } : {}
             }).catch(() => void 0);
+          } else if (ev.type === "session.config_options") {
+            void this.registry.update(req.sessionId, {
+              acpSession: cloneAcpSessionConfigSnapshot(ev.sessionConfig)
+            }).catch(() => void 0);
           }
           this.emit(ev);
         }
@@ -35857,6 +36233,9 @@ var AgentRuntime = class {
         state: "live",
         pid,
         resumeToken: tokenRaw,
+        ...managed.acpSession ? {
+          acpSession: cloneAcpSessionConfigSnapshot(managed.acpSession)
+        } : {},
         // Native resume reuses provider context — honest continuity claim.
         contextRestored: true,
         lastError: void 0,
