@@ -91,6 +91,29 @@ test("DecisionRequestStore answers once and retries the exact same answer idempo
   });
 });
 
+test("DecisionRequestStore durably removes only the exact Task pending request", async () => {
+  await withStore(async (store, dataDir) => {
+    const taskPath = "temp/roles/rl-owner/tasks/task.md";
+    const added = await store.add({ workspaceId: "ws-one", taskPath, request: request() });
+    await store.add({
+      workspaceId: "ws-two",
+      taskPath,
+      request: request("dr-abcdefghjk"),
+    });
+    assert.equal(await store.removePendingForTask("ws-other", taskPath), undefined);
+    assert.deepEqual(await store.removePendingForTask("ws-one", taskPath), added);
+    assert.equal(await store.getPendingForTask("ws-one", taskPath), undefined);
+
+    const reloaded = new DecisionRequestStore(dataDir);
+    try {
+      assert.equal(await reloaded.getExact("ws-one", taskPath, added.id), undefined);
+      assert.equal((await reloaded.listPending("ws-two")).length, 1);
+    } finally {
+      await reloaded.shutdown();
+    }
+  });
+});
+
 test("DecisionRequestStore permits one pending request per exact Task and same-id escalation", async () => {
   await withStore(async (store) => {
     const taskPath = "temp/roles/rl-owner/tasks/task.md";

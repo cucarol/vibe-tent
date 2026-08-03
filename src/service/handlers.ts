@@ -192,6 +192,7 @@ import {
 import {
   TaskLifecycleError,
   isActiveTaskState,
+  TERMINAL_TASK_STATES,
   type DeliverDecision,
   type AcceptMode,
   type WaitReason,
@@ -255,6 +256,7 @@ import {
   formatTaskInputPrompt,
   makeTaskInputId,
   normalizeTaskInputKind,
+  taskInputIdForDecisionRequest,
   type TaskInputRecord,
   type TaskInputStore,
 } from "./task-input-store.js";
@@ -537,7 +539,9 @@ export async function dispatchMethod(
       case "task.resume":
         return taskResumeRpc(ctx, p);
       case "task.requestDecision":
-        return taskRequestDecisionRpc(ctx, p, callContext);
+        return taskRequestDecisionRpc(ctx, p, {
+          callerSessionId: callContext.callerSessionId,
+        });
       case "task.sendInput":
         return taskSendInputRpc(ctx, p);
       case "task.deliver":
@@ -603,13 +607,21 @@ export async function dispatchMethod(
       case "toolApproval.deny":
         return toolApprovalResolve(ctx, p, "denied");
       case "decisionRequest.listPending":
-        return decisionRequestListPending(ctx, p, callContext);
+        return decisionRequestListPending(ctx, p, {
+          callerSessionId: callContext.callerSessionId,
+        });
       case "decisionRequest.get":
-        return decisionRequestGet(ctx, p, callContext);
+        return decisionRequestGet(ctx, p, {
+          callerSessionId: callContext.callerSessionId,
+        });
       case "decisionRequest.respond":
-        return decisionRequestRespondRpc(ctx, p, callContext);
+        return decisionRequestRespondRpc(ctx, p, {
+          callerSessionId: callContext.callerSessionId,
+        });
       case "decisionRequest.escalate":
-        return decisionRequestEscalateRpc(ctx, p, callContext);
+        return decisionRequestEscalateRpc(ctx, p, {
+          callerSessionId: callContext.callerSessionId,
+        });
       case "interaction.listPending":
         return interactionListPending(ctx, p);
       case "taskInput.listPending":
@@ -4194,9 +4206,9 @@ async function taskResumeRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   });
 }
 
+/** Decision authority accepts only the derived Session capability, never externalKey discovery. */
 type DecisionCallerContext = {
   callerSessionId?: string;
-  callerExternalKey?: string;
 };
 
 /** Resolve an authenticated transport Session; RPC params never select it. */
@@ -4215,19 +4227,7 @@ async function resolveDecisionCallerSession(
     }
     return session;
   }
-  const externalKey = caller.callerExternalKey?.trim();
-  if (!externalKey) return undefined;
-  const matches = (await ctx.runtime.registry.list()).filter(
-    (record) => recordExternalKey(record) === externalKey
-  );
-  if (matches.length !== 1) {
-    throw new RpcError(-32001, "Host-native caller Session is missing or ambiguous", {
-      code: "DECISION_CALLER_SESSION_UNRESOLVED",
-      externalKey,
-      count: matches.length,
-    });
-  }
-  return matches[0];
+  return undefined;
 }
 
 function assertDecisionRequesterBinding(
@@ -4442,6 +4442,18 @@ async function taskSendInputRpc(ctx: HandlerContext, p: Record<string, unknown>)
         RPC_LIFECYCLE,
         `task.sendInput requires running or waiting task (state=${current.state})`,
         { taskPath, state: current.state }
+      );
+    }
+
+    const currentDecision = await ctx.decisionRequests.getPendingForTask(
+      workspaceId,
+      taskPath
+    );
+    if (currentDecision) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Task has a pending Decision Request (${currentDecision.id}); use decisionRequest.respond instead of task.sendInput`,
+        { requestId: currentDecision.id, workspaceId, taskPath }
       );
     }
 
@@ -5878,6 +5890,12 @@ async function taskInterruptRpc(ctx: HandlerContext, p: Record<string, unknown>)
     const sessionId = before?.sessionId;
     ctx.host.markSelfWrite(workspaceId);
     const task = await taskInterrupt(mount.env, taskPath);
+    await removePendingDecisionRequestForTerminal(
+      ctx,
+      workspaceId,
+      taskPath,
+      "task.interrupt"
+    );
     emitTaskState(ctx, workspaceId, task, "task.interrupt");
     await cancelTaskInputsForTask(ctx, workspaceId, taskPath, "task.interrupt");
     if (sessionId) {
@@ -5938,6 +5956,12 @@ async function taskCancelRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     const before = await loadTaskEnvelope(mount.env.fs, taskPath).catch(() => null);
     ctx.host.markSelfWrite(workspaceId);
     await taskCancel(mount.env, taskPath);
+    await removePendingDecisionRequestForTerminal(
+      ctx,
+      workspaceId,
+      taskPath,
+      "task.cancel"
+    );
     ctx.events.emit(
       "task.state",
       workspaceId,
@@ -8588,10 +8612,23 @@ async function decisionRequestListPending(
   assertAllowedParams(p, new Set(["workspaceId"]), "decisionRequest.listPending");
   const workspaceId = requireWorkspaceId(ctx, p);
   const responder = await decisionCallerAuthority(ctx, workspaceId, caller);
-  const pending = (await ctx.decisionRequests.listPending(workspaceId)).filter(
+  const mounted = ctx.host.require(workspaceId);
+  const authorized = (await ctx.decisionRequests.listPending(workspaceId)).filter(
     (request) =>
       request.target.kind === responder.kind && request.target.id === responder.id
   );
+  const pending = (
+    await Promise.all(
+      authorized.map(async (request) => {
+        const task = await loadTaskEnvelope(mounted.env.fs, request.taskPath).catch(
+          () => undefined
+        );
+        return task && task.id === request.taskId && !TERMINAL_TASK_STATES.has(task.state)
+          ? request
+          : undefined;
+      })
+    )
+  ).filter((request): request is DecisionRequestRecord => request !== undefined);
   return { requests: pending.map(projectDecisionRequest) };
 }
 
@@ -8654,6 +8691,9 @@ async function interactionListPending(
 
   for (const request of requests.filter((item) => item.target.kind === "user")) {
     const task = tasksByPath.get(request.taskPath) ?? tasksById.get(request.taskId);
+    if (!task || task.id !== request.taskId || TERMINAL_TASK_STATES.has(task.state)) {
+      continue;
+    }
     const item: PendingDecisionRequestInteraction = {
       kind: "decisionRequest",
       id: request.id,
@@ -8772,6 +8812,13 @@ async function decisionRequestGet(
   const exact = await requireExactDecisionRequest(ctx, p);
   const responder = await decisionCallerAuthority(ctx, exact.workspaceId, caller);
   assertDecisionAuthority(exact.request, responder);
+  if (exact.request.status === "pending") {
+    const mount = ctx.host.require(exact.workspaceId);
+    const task = await loadTaskEnvelope(mount.env.fs, exact.taskPath).catch(() => undefined);
+    if (!task || task.id !== exact.request.taskId || TERMINAL_TASK_STATES.has(task.state)) {
+      throw new RpcError(-32004, `Decision Request not found for active exact Task: ${exact.request.id}`);
+    }
+  }
   return { request: projectDecisionRequest(exact.request) };
 }
 
@@ -8822,6 +8869,14 @@ async function decisionRequestRespondRpc(
         throw new RpcError(RPC_LIFECYCLE, "Decision Request Task identity changed", {
           code: "DECISION_TASK_MISMATCH",
           requestId: currentRequest.id,
+        });
+      }
+      if (TERMINAL_TASK_STATES.has(task.state)) {
+        throw new RpcError(RPC_LIFECYCLE, "Cannot respond to a Decision Request for a terminal Task", {
+          code: "DECISION_TASK_TERMINAL",
+          requestId: currentRequest.id,
+          taskId: task.id,
+          state: task.state,
         });
       }
       if (task.sessionId !== currentRequest.requester.id) {
@@ -8948,10 +9003,36 @@ async function decisionRequestEscalateRpc(
   if (responder.kind !== "role") {
     throw new RpcError(-32001, "Only the frozen Role target may escalate to user");
   }
-  const escalated = await ctx.decisionRequests.escalateExact(
-    exact.workspaceId,
-    exact.taskPath,
-    exact.request.id
+  const mount = ctx.host.require(exact.workspaceId);
+  const escalated = await runTaskLifecycle(exact.workspaceId, exact.taskPath, () =>
+    ctx.mutations.run(exact.workspaceId, async () => {
+      const current = await ctx.decisionRequests.getExact(
+        exact.workspaceId,
+        exact.taskPath,
+        exact.request.id
+      );
+      if (!current) {
+        throw new RpcError(-32004, `Decision Request not found: ${exact.request.id}`);
+      }
+      assertDecisionAuthority(current, responder);
+      if (current.status !== "pending") {
+        throw new RpcError(RPC_LIFECYCLE, `Decision Request is already answered: ${current.id}`);
+      }
+      const task = await loadTaskEnvelope(mount.env.fs, exact.taskPath);
+      if (!task.id || task.id !== current.taskId || TERMINAL_TASK_STATES.has(task.state)) {
+        throw new RpcError(RPC_LIFECYCLE, "Cannot escalate a Decision Request for a terminal or changed Task", {
+          code: "DECISION_TASK_TERMINAL_OR_CHANGED",
+          requestId: current.id,
+          taskId: current.taskId,
+          state: task.state,
+        });
+      }
+      return ctx.decisionRequests.escalateExact(
+        exact.workspaceId,
+        exact.taskPath,
+        exact.request.id
+      );
+    })
   );
   ctx.events.emit(
     "decisionRequest.pending",
@@ -9016,7 +9097,8 @@ async function taskInputListPending(ctx: HandlerContext, p: Record<string, unkno
       workspaceId,
       taskPath
     );
-    return { inputs: attention.map(projectTaskInput) };
+    const visible = await filterPublishedTaskInputs(ctx, attention);
+    return { inputs: visible.map(projectTaskInput) };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new RpcError(-32602, message);
@@ -9039,6 +9121,9 @@ async function taskInputGet(ctx: HandlerContext, p: Record<string, unknown>) {
     throw new RpcError(-32602, message);
   }
   if (!item) throw new RpcError(-32004, `TaskInput not found: ${inputId}`);
+  if (await isUnpublishedDecisionResponseInput(ctx, item)) {
+    throw new RpcError(-32004, `TaskInput not found: ${inputId}`);
+  }
   return { input: projectTaskInput(item) };
 }
 
@@ -9063,6 +9148,13 @@ async function taskInputAckRpc(ctx: HandlerContext, p: Record<string, unknown>) 
     throw new RpcError(-32602, message);
   }
   if (!existing) throw new RpcError(-32004, `TaskInput not found: ${inputId}`);
+  if (await isUnpublishedDecisionResponseInput(ctx, existing)) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "Decision response TaskInput is not published until its Decision Request is answered",
+      { inputId, workspaceId, taskPath }
+    );
+  }
 
   const authority = await resolveTaskInputAckAuthority(ctx, existing, actorRaw);
   const actor = authority.actor;
@@ -9224,6 +9316,50 @@ function projectTaskInput(item: TaskInputRecord) {
     uncertainAt: item.uncertainAt,
     resolvedBy: item.resolvedBy,
   };
+}
+
+async function isUnpublishedDecisionResponseInput(
+  ctx: HandlerContext,
+  item: TaskInputRecord
+): Promise<boolean> {
+  if (normalizeTaskInputKind(item.kind) !== "decision-response") return false;
+  const pending = await ctx.decisionRequests.getPendingForTask(
+    item.workspaceId,
+    item.taskPath
+  );
+  return !!pending && taskInputIdForDecisionRequest(pending.id) === item.id;
+}
+
+async function filterPublishedTaskInputs(
+  ctx: HandlerContext,
+  items: TaskInputRecord[]
+): Promise<TaskInputRecord[]> {
+  const visibility = await Promise.all(
+    items.map(async (item) => !(await isUnpublishedDecisionResponseInput(ctx, item)))
+  );
+  return items.filter((_item, index) => visibility[index]);
+}
+
+async function removePendingDecisionRequestForTerminal(
+  ctx: HandlerContext,
+  workspaceId: string,
+  taskPath: string,
+  resolvedBy: string
+): Promise<void> {
+  const removed = await ctx.decisionRequests.removePendingForTask(workspaceId, taskPath);
+  if (!removed) return;
+  ctx.events.emit(
+    "decisionRequest.resolved",
+    workspaceId,
+    {
+      requestId: removed.id,
+      taskId: removed.taskId,
+      taskPath: removed.taskPath,
+      terminal: true,
+      resolvedBy,
+    },
+    "self"
+  );
 }
 
 /** Best-effort: cancel only pending task inputs when task occupation ends. */
@@ -10760,6 +10896,12 @@ async function failTaskFromRuntime(
     const failed = await taskFail(mount.env, input.taskPath, {
       summary: input.summary,
     });
+    await removePendingDecisionRequestForTerminal(
+      ctx,
+      input.workspaceId,
+      input.taskPath,
+      "task.fail"
+    );
     emitTaskState(ctx, input.workspaceId, failed, input.reason);
     appliedFailure = true;
     failedTask = failed;

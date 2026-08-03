@@ -53,10 +53,16 @@ async function enterRole(
   svc: Awaited<ReturnType<typeof startLocalTentService>>,
   workspaceId: string,
   workspace: string,
-  roleId: string
+  roleId: string,
+  externalKey?: string
 ) {
   const root = createServiceClient({ baseUrl: svc.url, token: svc.token });
-  const entered = (await root.sessionEnter({ workspaceId, roleId, cwd: workspace })) as {
+  const entered = (await root.sessionEnter({
+    workspaceId,
+    roleId,
+    cwd: workspace,
+    ...(externalKey ? { externalKey } : {}),
+  })) as {
     session: { sessionId: string };
     sessionToken: string;
   };
@@ -71,6 +77,14 @@ async function enterRole(
   };
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 async function createRunningRoleTask(input: {
   svc: Awaited<ReturnType<typeof startLocalTentService>>;
   workspace: string;
@@ -78,7 +92,14 @@ async function createRunningRoleTask(input: {
 }) {
   const root = createServiceClient({ baseUrl: input.svc.url, token: input.svc.token });
   const { workspaceId } = (await root.mount(input.workspace)) as { workspaceId: string };
-  const executor = await enterRole(input.svc, workspaceId, input.workspace, "rl-executor");
+  const executorExternalKey = `codex:${Math.random().toString(36).slice(2)}`;
+  const executor = await enterRole(
+    input.svc,
+    workspaceId,
+    input.workspace,
+    "rl-executor",
+    executorExternalKey
+  );
   const note = await root.docsCreateNote(workspaceId, {
     name: `decision-${Math.random().toString(36).slice(2, 8)}`,
     type: "prompt",
@@ -93,7 +114,13 @@ async function createRunningRoleTask(input: {
     acceptMode: "review-required",
   })) as { taskPath: string };
   await executor.client.taskClaim(workspaceId, dispatched.taskPath);
-  return { root, workspaceId, taskPath: dispatched.taskPath, executor };
+  return {
+    root,
+    workspaceId,
+    taskPath: dispatched.taskPath,
+    executor,
+    executorExternalKey,
+  };
 }
 
 test("public RPC surface contains only DecisionRequest methods", () => {
@@ -120,15 +147,28 @@ test("public RPC surface contains only DecisionRequest methods", () => {
 test("exact requester Session creates a user DecisionRequest and blocks ordinary input and Delivery", async () => {
   const workspace = await makeWorkspace();
   await withService(async (svc) => {
-    const { root, workspaceId, taskPath, executor } = await createRunningRoleTask({
-      svc,
-      workspace,
-      parentActor: { kind: "user", id: "user" },
-    });
+    const { root, workspaceId, taskPath, executor, executorExternalKey } =
+      await createRunningRoleTask({
+        svc,
+        workspace,
+        parentActor: { kind: "user", id: "user" },
+      });
 
     await assert.rejects(
       () => root.taskRequestDecision(workspaceId, taskPath, { question: "forged" }),
       /caller Session|session context|authenticated/i
+    );
+    const externalKeyOnly = createServiceClient({
+      baseUrl: svc.url,
+      token: svc.token,
+      currentExternalKey: executorExternalKey,
+    });
+    await assert.rejects(
+      () =>
+        externalKeyOnly.taskRequestDecision(workspaceId, taskPath, {
+          question: "external key is not a Session capability",
+        }),
+      /caller Session|authenticated/i
     );
 
     const created = (await executor.client.taskRequestDecision(workspaceId, taskPath, {
@@ -220,6 +260,22 @@ test("response persists deterministic TaskInput before answer and retry creates 
       requested.request.id
     );
     assert.equal(stillPending?.status, "pending");
+    const hidden = (await root.taskInputListPending(workspaceId, taskPath)) as {
+      inputs: unknown[];
+    };
+    assert.deepEqual(
+      hidden.inputs,
+      [],
+      "unpublished decision response must not appear in TaskInput attention"
+    );
+    await assert.rejects(
+      () => root.taskInputGet(workspaceId, taskPath, beforeRetry[0]!.id),
+      /TaskInput not found/
+    );
+    await assert.rejects(
+      () => root.taskInputAck(workspaceId, taskPath, beforeRetry[0]!.id),
+      /not published until its Decision Request is answered/
+    );
 
     const eventTypes: string[] = [];
     const unsubscribe = svc.ctx.events.subscribe((event) => eventTypes.push(event.type));
@@ -238,6 +294,12 @@ test("response persists deterministic TaskInput before answer and retry creates 
     );
     const afterRetry = await svc.ctx.taskInputs.listForTask(workspaceId, taskPath);
     assert.equal(afterRetry.length, 1, "same request id must reuse one deterministic TaskInput");
+    const published = (await root.taskInputGet(
+      workspaceId,
+      taskPath,
+      beforeRetry[0]!.id
+    )) as { input: { id: string } };
+    assert.equal(published.input.id, beforeRetry[0]!.id);
 
     const forged = await rpcCall(
       svc.url,
@@ -263,7 +325,14 @@ test("Role target alone may escalate the same request id to user", async () => {
       workspace,
       parentActor: { kind: "role", id: "rl-reviewer" },
     });
-    const reviewer = await enterRole(svc, workspaceId, workspace, "rl-reviewer");
+    const reviewerExternalKey = `codex:${Math.random().toString(36).slice(2)}`;
+    const reviewer = await enterRole(
+      svc,
+      workspaceId,
+      workspace,
+      "rl-reviewer",
+      reviewerExternalKey
+    );
     const requested = (await executor.client.taskRequestDecision(workspaceId, taskPath, {
       question: "Escalate this?",
     })) as { request: { id: string; target: { kind: string; id: string } } };
@@ -277,6 +346,22 @@ test("Role target alone may escalate the same request id to user", async () => {
       requests: Array<{ id: string }>;
     };
     assert.deepEqual(rolePending.requests.map((row) => row.id), [requested.request.id]);
+
+    const externalKeyOnly = createServiceClient({
+      baseUrl: svc.url,
+      token: svc.token,
+      currentExternalKey: reviewerExternalKey,
+    });
+    await assert.rejects(
+      () =>
+        externalKeyOnly.decisionRequestEscalate(
+          workspaceId,
+          taskPath,
+          requested.request.id
+        ),
+      /frozen Decision Request target|forbidden/i,
+      "a machine token plus bare externalKey must remain user authority"
+    );
 
     await assert.rejects(
       () => executor.client.decisionRequestEscalate(workspaceId, taskPath, requested.request.id),
@@ -298,5 +383,171 @@ test("Role target alone may escalate the same request id to user", async () => {
     )) as { request: { status: string; response: { kind: string } } };
     assert.equal(answered.request.status, "answered");
     assert.deepEqual(answered.request.response, { kind: "deny" });
+  });
+});
+
+test("escalation and response serialize on the exact Task lifecycle", async () => {
+  const workspace = await makeWorkspace();
+  await withService(async (svc) => {
+    const { root, workspaceId, taskPath, executor } = await createRunningRoleTask({
+      svc,
+      workspace,
+      parentActor: { kind: "role", id: "rl-reviewer" },
+    });
+    const reviewer = await enterRole(svc, workspaceId, workspace, "rl-reviewer");
+    const requested = (await executor.client.taskRequestDecision(workspaceId, taskPath, {
+      question: "Serialize this?",
+    })) as { request: { id: string } };
+
+    const entered = deferred();
+    const release = deferred();
+    const originalEscalate = svc.ctx.decisionRequests.escalateExact.bind(
+      svc.ctx.decisionRequests
+    );
+    svc.ctx.decisionRequests.escalateExact = async (...args) => {
+      entered.resolve();
+      await release.promise;
+      return originalEscalate(...args);
+    };
+    const escalating = reviewer.client.decisionRequestEscalate(
+      workspaceId,
+      taskPath,
+      requested.request.id
+    );
+    await entered.promise;
+    const racingResponse = reviewer.client.decisionRequestRespond(
+      workspaceId,
+      taskPath,
+      requested.request.id,
+      { kind: "custom", text: "stale role answer" }
+    );
+    release.resolve();
+    await escalating;
+    await assert.rejects(racingResponse, /frozen Decision Request target|forbidden/i);
+    assert.equal((await svc.ctx.taskInputs.listForTask(workspaceId, taskPath)).length, 0);
+    await root.decisionRequestRespond(workspaceId, taskPath, requested.request.id, {
+      kind: "deny",
+    });
+  });
+});
+
+test("task.sendInput rechecks DecisionRequest under the exact mutation boundary", async () => {
+  const workspace = await makeWorkspace();
+  await withService(async (svc) => {
+    const { root, workspaceId, taskPath, executor } = await createRunningRoleTask({
+      svc,
+      workspace,
+      parentActor: { kind: "user", id: "user" },
+    });
+    await executor.client.taskRequestDecision(workspaceId, taskPath, {
+      question: "Block racing input?",
+    });
+    const originalGet = svc.ctx.decisionRequests.getPendingForTask.bind(
+      svc.ctx.decisionRequests
+    );
+    let reads = 0;
+    svc.ctx.decisionRequests.getPendingForTask = async (...args) => {
+      reads += 1;
+      return reads === 1 ? undefined : originalGet(...args);
+    };
+    await assert.rejects(
+      () => root.taskSendInput(workspaceId, taskPath, { text: "racing input" }),
+      /pending Decision Request/
+    );
+    assert.ok(reads >= 2, "sendInput must re-read the decision inside the lock");
+    assert.equal((await svc.ctx.taskInputs.listForTask(workspaceId, taskPath)).length, 0);
+  });
+});
+
+test("terminal Task cleanup removes pending DecisionRequest and stale rows stay hidden", async () => {
+  const workspace = await makeWorkspace();
+  await withService(async (svc) => {
+    const { root, workspaceId, taskPath, executor } = await createRunningRoleTask({
+      svc,
+      workspace,
+      parentActor: { kind: "user", id: "user" },
+    });
+    const requested = (await executor.client.taskRequestDecision(workspaceId, taskPath, {
+      question: "Will be interrupted",
+    })) as {
+      request: {
+        id: string;
+        taskId: string;
+        requester: { kind: "session"; id: string };
+        target: { kind: "user"; id: "user" };
+        question: string;
+        options: [];
+      };
+    };
+    await root.taskInterrupt(workspaceId, taskPath);
+    assert.equal(
+      await svc.ctx.decisionRequests.getPendingForTask(workspaceId, taskPath),
+      undefined
+    );
+
+    const second = await createRunningRoleTask({
+      svc,
+      workspace,
+      parentActor: { kind: "user", id: "user" },
+    });
+    const stale = (await second.executor.client.taskRequestDecision(
+      second.workspaceId,
+      second.taskPath,
+      { question: "Cleanup failure stays terminal" }
+    )) as { request: { id: string } };
+    const originalRemove = svc.ctx.decisionRequests.removePendingForTask.bind(
+      svc.ctx.decisionRequests
+    );
+    let failCleanup = true;
+    svc.ctx.decisionRequests.removePendingForTask = async (...args) => {
+      if (failCleanup) {
+        failCleanup = false;
+        throw new Error("injected DecisionRequest cleanup failure");
+      }
+      return originalRemove(...args);
+    };
+    await assert.rejects(
+      () => second.root.taskInterrupt(second.workspaceId, second.taskPath),
+      /injected DecisionRequest cleanup failure/
+    );
+    const terminal = (await second.root.taskGet(
+      second.workspaceId,
+      second.taskPath
+    )) as { task: { state: string } };
+    assert.equal(terminal.task.state, "interrupted");
+    assert.equal(
+      (await svc.ctx.decisionRequests.getPendingForTask(
+        second.workspaceId,
+        second.taskPath
+      ))?.id,
+      stale.request.id,
+      "cleanup failure may retain only a hidden machine row after terminal transition"
+    );
+
+    const pending = (await second.root.decisionRequestListPending(second.workspaceId)) as {
+      requests: unknown[];
+    };
+    assert.deepEqual(pending.requests, [], "terminal Task requests must not project as pending");
+    await assert.rejects(
+      () =>
+        second.root.decisionRequestGet(
+          second.workspaceId,
+          second.taskPath,
+          stale.request.id
+        ),
+      /not found for active exact Task/
+    );
+    await assert.rejects(
+      () =>
+        second.root.decisionRequestRespond(
+          second.workspaceId,
+          second.taskPath,
+          stale.request.id,
+          {
+          kind: "deny",
+          }
+        ),
+      /terminal Task/
+    );
   });
 });

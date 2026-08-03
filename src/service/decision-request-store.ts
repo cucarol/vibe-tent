@@ -226,6 +226,33 @@ export class DecisionRequestStore {
     return item ? cloneRecord(item) : undefined;
   }
 
+  /**
+   * Remove the one pending request owned by an exact Task before that Task
+   * becomes terminal. Answered requests remain durable audit history.
+   */
+  async removePendingForTask(
+    workspaceId: string,
+    taskPath: string
+  ): Promise<DecisionRequestRecord | undefined> {
+    if (this.closed) throw new Error("DecisionRequest store is closed");
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      if (this.closed) throw new Error("DecisionRequest store is closed");
+      const current = [...this.items.values()].find(
+        (candidate) =>
+          candidate.status === "pending" &&
+          candidate.workspaceId === workspaceId &&
+          candidate.taskPath === taskPath
+      );
+      if (!current) return undefined;
+      const next = new Map(this.items);
+      next.delete(current.id);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneRecord(current);
+    });
+  }
+
   async add(input: {
     workspaceId: string;
     taskPath: string;
