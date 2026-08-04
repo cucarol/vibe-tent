@@ -96,17 +96,27 @@ async function bootstrap(): Promise<void> {
 
   // SSE → IPC: renderer re-fetches projections; main does not invent UI state.
   host.onServiceEvent((ev) => {
-    // Keep shell-model task rows roughly in sync for float metrics.
-    void model.refreshTasks().then(() => {
+    // Invalidation must not wait for the legacy shell snapshot. The protocol-4
+    // renderer owns its named re-reads and stays fail-closed on their result.
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      win.webContents.send(DESKTOP_IPC.onServiceEvent, {
+        type: ev.type,
+        workspaceId: ev.workspaceId,
+      });
+    }
+    const refresh =
+      ev.type === "workspace.switched" || ev.type === "service.health"
+        ? Promise.all([model.refreshHealth(), model.refreshWorkspaces()])
+        : model.refreshTasks();
+    void refresh.then(() => {
       const snap = model.getSnapshot();
       for (const win of BrowserWindow.getAllWindows()) {
         if (win.isDestroyed()) continue;
         win.webContents.send(DESKTOP_IPC.onStateChanged, snap);
-        win.webContents.send(DESKTOP_IPC.onServiceEvent, {
-          type: ev.type,
-          workspaceId: ev.workspaceId,
-        });
       }
+    }).catch((error) => {
+      console.warn("Desktop shell snapshot refresh failed after Service event:", error);
     });
   });
 

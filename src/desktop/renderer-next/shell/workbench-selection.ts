@@ -23,3 +23,19 @@ export function focusWorkbenchNode(
     ?? document.placements.find((candidate) => candidate.entityRef === nodeId);
   return setFocusedPlacement(document, placement?.placementId ?? null);
 }
+
+export function initializeWorkbenchSelection(
+  document: CanvasDocument,
+  requestedNodeId: string | null
+): { document: CanvasDocument; selectedNodeId: string | null } {
+  const focusedNodeId = document.focusedPlacementId
+    ? document.placements.find(
+        (placement) => placement.placementId === document.focusedPlacementId
+      )?.entityRef ?? null
+    : null;
+  const selectedNodeId = requestedNodeId ?? focusedNodeId;
+  return {
+    document: focusWorkbenchNode(document, selectedNodeId),
+    selectedNodeId,
+  };
+}

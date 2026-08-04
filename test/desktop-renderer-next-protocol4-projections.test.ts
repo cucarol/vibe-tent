@@ -148,6 +148,15 @@ test("protocol-4 gateway exposes only named typed reads with explicit workspaceI
   const provenanceRead = await gateway.outputProvenance(workspaceId, "cx-output");
 
   assert.equal(graphRead.ok, true);
+  if (graphRead.ok) {
+    assert.deepEqual(graphRead.value.edges.relation[0], {
+      id: "rel-1",
+      fromNodeId: "cx-source",
+      kind: "supports",
+      direction: "directed",
+      unresolved: "cx-missing",
+    });
+  }
   assert.equal(singleCollabRead.ok, true);
   assert.equal(collabRead.ok, true);
   assert.equal(provenanceRead.ok, true);

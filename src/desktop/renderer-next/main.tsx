@@ -1,6 +1,6 @@
 /**
- * Isolated next renderer entry.
- * Built to desktop/dist/renderer-next/ — not the default Electron load path.
+ * Protocol-4 production renderer entry.
+ * Built to desktop/dist/renderer-next/ and loaded by the main Electron window.
  */
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";

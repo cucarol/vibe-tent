@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { GraphEdgeSource } from "../model/canvas-edges.js";
 import { createEmptyCanvasDocument, type CanvasDocument } from "../types/identity.js";
 import { Button, IconButton } from "../ui/index.js";
@@ -8,7 +8,9 @@ import { OutlinePanel } from "../components/OutlinePanel.js";
 import { StatusBar } from "../components/StatusBar.js";
 import { ShellIcon } from "./icons.js";
 import type { WorkbenchNodeView } from "./workbench-types.js";
-import { focusWorkbenchNode } from "./workbench-selection.js";
+import { focusWorkbenchNode, initializeWorkbenchSelection } from "./workbench-selection.js";
+import type { DrawingPersistenceStatus } from "../model/drawing-persistence-status.js";
+import type { ExcalidrawSceneSnapshot } from "../canvas/excalidraw/excalidrawSceneTypes.js";
 
 export type AppShellProps = {
   workspaceId?: string | null;
@@ -19,6 +21,12 @@ export type AppShellProps = {
   graph?: GraphEdgeSource;
   connection?: "online" | "offline" | "reconnecting";
   onRetryConnection?: () => void;
+  initialScene?: ExcalidrawSceneSnapshot | null;
+  persistenceStatus?: DrawingPersistenceStatus;
+  onRetryPersistence?: () => void;
+  onCanvasDocumentChange?: (document: CanvasDocument) => void;
+  onSelectedNodeChange?: (nodeId: string | null) => void;
+  onScenePersist?: (scene: ExcalidrawSceneSnapshot) => void;
 };
 
 /**
@@ -32,17 +40,32 @@ export function AppShell({
   initialDocument,
   initialSelectedNodeId = null,
   graph = null,
-  connection = "online",
+  connection = "offline",
   onRetryConnection,
+  initialScene = null,
+  persistenceStatus = { kind: "ok" },
+  onRetryPersistence,
+  onCanvasDocumentChange,
+  onSelectedNodeChange,
+  onScenePersist,
 }: AppShellProps = {}) {
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [focusOpen, setFocusOpen] = useState(true);
   const [immersive, setImmersive] = useState(false);
-  const [document, setDocument] = useState<CanvasDocument>(() => initialDocument ?? createEmptyCanvasDocument());
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialSelectedNodeId);
+  const initialSelection = useRef<ReturnType<typeof initializeWorkbenchSelection> | null>(null);
+  if (!initialSelection.current) {
+    initialSelection.current = initializeWorkbenchSelection(
+      initialDocument ?? createEmptyCanvasDocument(),
+      initialSelectedNodeId
+    );
+  }
+  const [document, setDocument] = useState<CanvasDocument>(() => initialSelection.current!.document);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(() => initialSelection.current!.selectedNodeId);
   const nodes = useMemo(() => [...initialNodes], [initialNodes]);
   const selectedNode = useMemo(() => nodes.find((node) => node.nodeId === selectedNodeId) ?? null, [nodes, selectedNodeId]);
-  const projection = nodes.some((node) => node.projectionState === "error")
+  const projection = !workspaceId
+    ? "error"
+    : nodes.some((node) => node.projectionState === "error")
     ? "error"
     : nodes.some((node) => node.projectionState === "unresolved")
       ? "unresolved"
@@ -52,8 +75,18 @@ export function AppShell({
 
   const selectNode = (nodeId: string | null, placementId?: string | null) => {
     setSelectedNodeId(nodeId);
-    setDocument((current) => focusWorkbenchNode(current, nodeId, placementId));
+    onSelectedNodeChange?.(nodeId);
+    setDocument((current) => {
+      const next = focusWorkbenchNode(current, nodeId, placementId);
+      onCanvasDocumentChange?.(next);
+      return next;
+    });
     if (nodeId) setFocusOpen(true);
+  };
+
+  const updateDocument = (next: CanvasDocument) => {
+    setDocument(next);
+    onCanvasDocumentChange?.(next);
   };
 
   return (
@@ -81,7 +114,7 @@ export function AppShell({
 
       <div className="tn-workbench" data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-immersive={immersive ? "true" : "false"}>
         <OutlinePanel nodes={nodes} selectedNodeId={selectedNodeId} onSelectNode={selectNode} onCollapse={() => setOutlineOpen(false)} />
-        <CanvasWorkbench document={document} nodes={nodes} graph={graph} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={setDocument} onSelectNode={selectNode} />
+        <CanvasWorkbench document={document} nodes={nodes} graph={graph} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNode} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
         <InspectorPanel node={selectedNode} onCollapse={() => setFocusOpen(false)} />
       </div>
 

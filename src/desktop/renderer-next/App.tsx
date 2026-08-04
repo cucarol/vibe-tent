@@ -1,6 +1,6 @@
-import { AppShell } from "./shell/AppShell.js";
+import { ProductionApp } from "./ProductionApp.js";
 
-/** Root React component for the isolated next renderer. */
+/** Root React component for the protocol-4 production renderer. */
 export function App() {
-  return <AppShell />;
+  return <ProductionApp />;
 }

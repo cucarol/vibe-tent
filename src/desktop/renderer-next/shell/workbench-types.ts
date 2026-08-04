@@ -14,6 +14,7 @@ export type WorkbenchNodeView = {
   activeTaskState?: string | null;
   projectionState?: ProjectionState;
   projectionMessage?: string;
+  outputProvenance?: { state: "ready" | "error"; label: string };
 };
 
 export function nodeTitle(node: WorkbenchNodeView): string {
@@ -24,7 +25,21 @@ export function nodeTypeLabel(type: string): string {
   if (type === "goal") return "目标";
   if (type === "prompt") return "提示";
   if (type === "output") return "输出";
-  return "节点";
+  return type.trim() || "未知类型";
+}
+
+export function taskStateLabel(state: string): string {
+  const labels: Record<string, string> = {
+    queued: "排队中",
+    running: "运行中",
+    waiting: "等待中",
+    delivered: "待审阅",
+    accepted: "已接受",
+    rejected: "已驳回",
+    interrupted: "已中断",
+    failed: "失败",
+  };
+  return labels[state] ?? `任务 · ${state}`;
 }
 
 export function projectionLabel(state: ProjectionState | undefined): string | null {

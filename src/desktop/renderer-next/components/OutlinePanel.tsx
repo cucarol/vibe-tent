@@ -1,7 +1,7 @@
 import { useRef, type CSSProperties, type KeyboardEvent } from "react";
 import { IconButton, PaneHeader, StatusBadge } from "../ui/index.js";
 import { ShellIcon } from "../shell/icons.js";
-import { nodeTitle, nodeTypeLabel, projectionLabel, type WorkbenchNodeView } from "../shell/workbench-types.js";
+import { nodeTitle, nodeTypeLabel, projectionLabel, taskStateLabel, type WorkbenchNodeView } from "../shell/workbench-types.js";
 
 export type OutlinePanelProps = {
   nodes: readonly WorkbenchNodeView[];
@@ -72,7 +72,7 @@ export function OutlinePanel({ nodes, selectedNodeId, onSelectNode, onCollapse }
                   <span className="tn-outline-title">{nodeTitle(node)}</span>
                   <span className="tn-outline-meta">{projectionReady ? nodeTypeLabel(node.type) : projection}</span>
                 </span>
-                {projectionReady && node.activeTaskState ? <StatusBadge tone="running">协作中</StatusBadge> : null}
+                {projectionReady && node.activeTaskState ? <StatusBadge tone="running" data-task-state={node.activeTaskState}>{taskStateLabel(node.activeTaskState)}</StatusBadge> : null}
               </button>
             );
           })}

@@ -139,7 +139,20 @@ export function tentNodeLink(nodeId: string): string {
 }
 
 export function validateTentEmbeddableLink(link: string | null | undefined): boolean {
-  return typeof link === "string" && link.startsWith(TENT_NODE_LINK_PREFIX);
+  return link == null || link === "" || link.startsWith(TENT_NODE_LINK_PREFIX);
+}
+
+/**
+ * Resolve Excalidraw's required embeddable link to a Tent-owned Node action.
+ * Both customData and the internal URL must agree; malformed or generic links
+ * fail closed and are never opened by the host.
+ */
+export function tentNodeOpenTarget(
+  element: { link?: string | null; customData?: unknown } | null | undefined
+): TentNodeCustomData | null {
+  const custom = readTentNodeCustomData(element);
+  if (!custom || element?.link !== tentNodeLink(custom.nodeId)) return null;
+  return custom;
 }
 
 function placementSize(p: CanvasPlacement): { width: number; height: number } {
@@ -314,6 +327,9 @@ export function placementToEmbeddableElement(
     isDeleted: false,
     boundElements: [],
     updated: 1,
+    // Excalidraw requires a link to activate its public renderEmbeddable seam.
+    // CanvasV5Host owns this internal URL and maps it to the tested Focus action;
+    // it is never allowed to navigate the browser.
     link: tentNodeLink(nodeId),
     locked: false,
     customData: {

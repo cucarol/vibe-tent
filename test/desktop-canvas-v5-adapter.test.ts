@@ -15,6 +15,8 @@ import {
   placementToEmbeddableElement,
   readTentNodeCustomData,
   selectionToFocusedPlacement,
+  tentNodeLink,
+  tentNodeOpenTarget,
   tentPlacementElementId,
   validateTentEmbeddableLink,
   viewportFromExcalidrawAppState,
@@ -33,6 +35,7 @@ import {
   canvasGesturesEnabled,
   embeddableInteractive,
 } from "../src/desktop/renderer-next/canvas/excalidraw/v5InteractionOwnership.js";
+import { shouldRefreshCanvasV5Scene } from "../src/desktop/renderer-next/canvas/excalidraw/sceneRefreshPolicy.js";
 
 function sampleDoc(): CanvasDocument {
   return {
@@ -96,10 +99,23 @@ test("same nodeId maps to multiple placements with distinct element ids", () => 
     assert.ok(custom);
     assert.equal(custom!.kind, TENT_NODE_CUSTOM_KIND);
     assert.equal(el.id, tentPlacementElementId(custom!.placementId));
-    assert.ok(validateTentEmbeddableLink(String(el.link)));
+    assert.equal(el.link, tentNodeLink(custom!.nodeId));
+    assert.ok(validateTentEmbeddableLink(el.link as string | null));
     // Must not copy body/task facts into customData
     assert.equal(Object.keys(custom!).sort().join(","), "kind,nodeId,placementId");
   }
+});
+
+test("Tent embeddable links resolve only to their exact Node Focus target", () => {
+  const element = placementToEmbeddableElement(sampleDoc().placements[0]!);
+  assert.deepEqual(tentNodeOpenTarget(element), {
+    kind: TENT_NODE_CUSTOM_KIND,
+    nodeId: "cx-alpha",
+    placementId: "pl-a",
+  });
+  assert.equal(tentNodeOpenTarget({ ...element, link: "https://example.com" }), null);
+  assert.equal(tentNodeOpenTarget({ ...element, link: tentNodeLink("cx-other") }), null);
+  assert.equal(tentNodeOpenTarget({ ...element, customData: undefined }), null);
 });
 
 test("hydrate restores the local focused placement as Excalidraw selection", () => {
@@ -108,6 +124,44 @@ test("hydrate restores the local focused placement as Excalidraw selection", () 
   assert.deepEqual(hydrated.appState.selectedElementIds, {
     [tentPlacementElementId("pl-a")]: true,
   });
+});
+
+test("live V5 scene refreshes for edge layers and external documents only", () => {
+  const document = sampleDoc();
+  const graph = { edges: { parent: [] } };
+  const previous = {
+    document,
+    graph,
+    edgeLayers: { ...DEFAULT_EDGE_LAYERS },
+  };
+  assert.equal(
+    shouldRefreshCanvasV5Scene(
+      previous,
+      {
+        ...previous,
+        edgeLayers: { ...DEFAULT_EDGE_LAYERS, parent: false },
+      },
+      null
+    ),
+    true
+  );
+  const externallyChanged = { ...document, viewport: { x: 4, y: 8, zoom: 1 } };
+  assert.equal(
+    shouldRefreshCanvasV5Scene(
+      previous,
+      { ...previous, document: externallyChanged },
+      null
+    ),
+    true
+  );
+  assert.equal(
+    shouldRefreshCanvasV5Scene(
+      previous,
+      { ...previous, document: externallyChanged },
+      externallyChanged
+    ),
+    false
+  );
 });
 
 test("position and resize mid-change patches write back continuously", () => {
@@ -316,6 +370,7 @@ test("V5 persist strips tent nodes and keeps drawing file map", () => {
     assert.equal(String(el.id ?? "").startsWith("tent-pl:"), false);
   }
   assert.ok(persisted.files?.["canvas_image_keep"]);
+  assert.equal(persisted.layerVisible, true);
 });
 
 test("projected edges become locked arrows without inventing missing endpoints", () => {

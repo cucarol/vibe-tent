@@ -6,4 +6,6 @@ export type ExcalidrawSceneSnapshot = {
   appState?: Record<string, unknown>;
   /** Binary file map retained by id. */
   files?: Record<string, unknown>;
+  /** User presentation preference; independent from Canvas background mode. */
+  layerVisible?: boolean;
 };

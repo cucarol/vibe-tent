@@ -4,6 +4,7 @@ export type ServiceHealthView = {
   status: "ok" | "stopping" | "offline";
   pid?: number;
   version?: string;
+  protocolVersion?: number;
   startedAt?: string;
   workspaceCount?: number;
   foregroundWorkspaceId?: string | null;

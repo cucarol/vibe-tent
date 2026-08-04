@@ -18,6 +18,7 @@ import {
   createEmptyCanvasDocument,
   defaultAppSurface,
   focusWorkbenchNode,
+  initializeWorkbenchSelection,
   invalidationFromEvent,
   isAppSurfaceId,
   isLayoutIntent,
@@ -70,6 +71,24 @@ test("Outline and Canvas share one focused placement fact", () => {
     "pl-output-copy"
   );
   assert.equal(focusWorkbenchNode(document, "cx-not-on-canvas").focusedPlacementId, null);
+});
+
+test("initial workbench selection cannot split shell and Canvas focus", () => {
+  const document = {
+    ...createEmptyCanvasDocument(),
+    focusedPlacementId: "pl-prompt",
+    placements: [
+      { placementId: "pl-prompt", entityRef: "cx-prompt", kind: "node" },
+      { placementId: "pl-output", entityRef: "cx-output", kind: "node" },
+    ],
+  };
+  const requested = initializeWorkbenchSelection(document, "cx-output");
+  assert.equal(requested.selectedNodeId, "cx-output");
+  assert.equal(requested.document.focusedPlacementId, "pl-output");
+
+  const inherited = initializeWorkbenchSelection(document, null);
+  assert.equal(inherited.selectedNodeId, "cx-prompt");
+  assert.equal(inherited.document.focusedPlacementId, "pl-prompt");
 });
 
 test("entityRef and placementId stay separate on CanvasDocument", () => {
@@ -141,7 +160,6 @@ test("UiIntent undoPolicy splits layout / reversible-domain / lifecycle", () => 
 
 test("ServiceGateway treats events as invalidation only", async () => {
   const gateway = new ServiceGateway();
-  assert.equal(gateway.isDirty(), true);
 
   const hints: string[] = [];
   gateway.onInvalidation((h) => hints.push(h.reason ?? ""));
@@ -150,14 +168,7 @@ test("ServiceGateway treats events as invalidation only", async () => {
   assert.ok(hint.keys.includes("task.list"));
   assert.ok(hint.keys.includes("node.collaboration"));
   assert.ok(hint.keys.includes("node.collaborations"));
-  // Payload must not be merged into projection bags.
-  assert.deepEqual(gateway.getProjectionSnapshot().bags, {});
-  assert.equal(gateway.isDirty("task.list"), true);
-
-  await gateway.refresh(["task.list"]);
-  // Without a fetch handler, bags stay empty — still not event payload.
-  assert.deepEqual(gateway.getProjectionSnapshot().bags, {});
-  assert.equal(gateway.isDirty("task.list"), false);
+  // Payload is notification-only; the gateway owns no opaque projection bags.
   assert.ok(hints.includes("task.state"));
 
   const conceptHint = invalidationFromEvent(ev("node.changed"));
@@ -285,13 +296,12 @@ test("tokens.css has one product palette and one primitive entry", async () => {
   assert.doesNotMatch(product, /data-theme|theme-id|dark/i);
 });
 
-test("Desktop keeps its private Electron entry without exposing it as the CLI package main", async () => {
+test("Desktop loads renderer-next without exposing Electron as the CLI package main", async () => {
   const windows = await read("src/desktop/main/windows.ts");
   assert.match(
     windows,
-    /mainHtml: path\.join\(appRoot, "desktop", "dist", "renderer", "index\.html"\)/
+    /mainHtml: path\.join\(appRoot, "desktop", "dist", "renderer-next", "index\.html"\)/
   );
-  assert.doesNotMatch(windows, /renderer-next/);
 
   const packageJson = JSON.parse(await read("package.json")) as { main?: string };
   assert.equal(packageJson.main, undefined);
@@ -301,13 +311,26 @@ test("Desktop keeps its private Electron entry without exposing it as the CLI pa
   assert.equal(desktopPackageJson.main, "dist/main/index.cjs");
 });
 
+test("production invalidation is immediate and provenance is selected-output only", async () => {
+  const main = await read("src/desktop/main/index.ts");
+  const eventSend = main.indexOf("DESKTOP_IPC.onServiceEvent");
+  const shellRefresh = main.indexOf("const refresh =", eventSend);
+  assert.ok(eventSend >= 0 && shellRefresh > eventSend);
+  assert.match(main, /\.catch\(\(error\) =>/);
+
+  const production = await read("src/desktop/renderer-next/ProductionApp.tsx");
+  assert.match(production, /selected\?\.type !== "output"/);
+  assert.match(production, /gateway\.outputProvenance\(workspace\.workspaceId, selectedNodeId\)/);
+  assert.doesNotMatch(production, /outputs\.map|provenanceRows|Promise\.all\([\s\S]*outputProvenance/);
+});
+
 test("ADR documents foundation boundary", async () => {
   const adr = await read("docs/desktop/adr-renderer-next-foundation.md");
   assert.match(adr, /Service is the sole fact/);
   assert.match(adr, /entityRef/);
   assert.match(adr, /placementId/);
   assert.match(adr, /renderer-next/);
-  assert.match(adr, /default Electron entry/);
+  assert.match(adr, /production entry/i);
   assert.match(adr, /drawer\/overlay|default-collapsed/i);
   assert.doesNotMatch(adr, /always-on|always reachable/i);
 });

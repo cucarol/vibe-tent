@@ -99,7 +99,7 @@ export function resolveDesktopAssetPaths(appRoot: string): WindowPaths {
   // Built layout: desktop/dist/{main,preload,renderer}
   return {
     preload: path.join(appRoot, "desktop", "dist", "preload", "preload.cjs"),
-    mainHtml: path.join(appRoot, "desktop", "dist", "renderer", "index.html"),
+    mainHtml: path.join(appRoot, "desktop", "dist", "renderer-next", "index.html"),
     floatHtml: path.join(appRoot, "desktop", "dist", "renderer", "float.html"),
   };
 }

@@ -6,6 +6,8 @@ import type { CanvasDocument } from "../types/identity.js";
 import { IconButton } from "../ui/index.js";
 import { ShellIcon } from "../shell/icons.js";
 import { nodeTitle, nodeTypeLabel, type WorkbenchNodeView } from "../shell/workbench-types.js";
+import type { DrawingPersistenceStatus } from "../model/drawing-persistence-status.js";
+import type { ExcalidrawSceneSnapshot } from "../canvas/excalidraw/excalidrawSceneTypes.js";
 
 export type CanvasWorkbenchProps = {
   document: CanvasDocument;
@@ -15,10 +17,16 @@ export type CanvasWorkbenchProps = {
   onImmersiveChange: (immersive: boolean) => void;
   onDocumentChange: (document: CanvasDocument) => void;
   onSelectNode: (nodeId: string | null, placementId?: string | null) => void;
+  initialScene?: ExcalidrawSceneSnapshot | null;
+  persistenceStatus?: DrawingPersistenceStatus;
+  onRetryPersistence?: () => void;
+  onScenePersist?: (scene: ExcalidrawSceneSnapshot) => void;
 };
 
-export function CanvasWorkbench({ document, nodes, graph = null, immersive, onImmersiveChange, onDocumentChange, onSelectNode }: CanvasWorkbenchProps) {
-  const [drawingVisible, setDrawingVisible] = useState(true);
+export function CanvasWorkbench({ document, nodes, graph = null, immersive, onImmersiveChange, onDocumentChange, onSelectNode, initialScene = null, persistenceStatus = { kind: "ok" }, onRetryPersistence, onScenePersist }: CanvasWorkbenchProps) {
+  const [drawingVisible, setDrawingVisible] = useState(
+    () => initialScene?.layerVisible ?? true
+  );
   const [edgeLayers, setEdgeLayers] = useState<CanvasEdgeLayerVisibility>(() => defaultEdgeLayers());
   const byId = useMemo(() => new Map(nodes.map((node) => [node.nodeId, node] as const)), [nodes]);
   const resolvers = useMemo<CanvasNodeResolvers>(() => ({
@@ -55,8 +63,8 @@ export function CanvasWorkbench({ document, nodes, graph = null, immersive, onIm
     <section className="tn-canvas-pane" aria-label="画布" data-region="canvas">
       {!immersive ? (
         <div className="tn-canvas-tabbar">
-          <div className="tn-canvas-tabs" role="tablist" aria-label="画布标签">
-            <button type="button" role="tab" aria-selected="true" className="tn-canvas-tab"><ShellIcon name="canvas" /><span>工作集</span></button>
+          <div className="tn-canvas-tabs" aria-label="当前画布">
+            <span className="tn-canvas-tab" aria-current="page"><ShellIcon name="canvas" /><span>工作集</span></span>
           </div>
           <div className="tn-canvas-tools">
             <IconButton aria-label="进入沉浸画布" variant="ghost" onClick={() => onImmersiveChange(true)}><ShellIcon name="focus" /></IconButton>
@@ -74,7 +82,10 @@ export function CanvasWorkbench({ document, nodes, graph = null, immersive, onIm
           onToggleEdgeLayer={(layer) => setEdgeLayers((current) => toggleEdgeLayer(current, layer))}
           layerVisible={drawingVisible}
           onLayerVisibleChange={setDrawingVisible}
-          persistenceStatus={{ kind: "ok" }}
+          initialScene={initialScene}
+          persistenceStatus={persistenceStatus}
+          onRetryPersistence={onRetryPersistence}
+          onScenePersist={onScenePersist ? (scene) => onScenePersist(scene) : undefined}
           immersive={immersive}
           onImmersiveChange={onImmersiveChange}
         />

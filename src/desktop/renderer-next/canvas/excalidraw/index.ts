@@ -2,6 +2,7 @@ export { CanvasV5Host, type CanvasV5HostProps } from "./CanvasV5Host.js";
 export {
   buildTentEmbeddableCardModels,
   documentToExcalidrawElements,
+  tentNodeOpenTarget,
   type CanvasNodeResolvers,
 } from "./documentToExcalidraw.js";
 export {
@@ -11,3 +12,7 @@ export {
   type V5HydrateStatus,
 } from "./v5Migration.js";
 export type { ExcalidrawSceneSnapshot } from "./excalidrawSceneTypes.js";
+export {
+  shouldRefreshCanvasV5Scene,
+  type LiveSceneInputs,
+} from "./sceneRefreshPolicy.js";

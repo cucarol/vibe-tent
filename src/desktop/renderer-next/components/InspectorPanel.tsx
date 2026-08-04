@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { IconButton, PaneHeader, StatusBadge, Tabs } from "../ui/index.js";
 import { ShellIcon } from "../shell/icons.js";
-import { nodeTitle, nodeTypeLabel, projectionLabel, type WorkbenchNodeView } from "../shell/workbench-types.js";
+import { nodeTitle, nodeTypeLabel, projectionLabel, taskStateLabel, type WorkbenchNodeView } from "../shell/workbench-types.js";
 
 export type InspectorPanelProps = {
   node: WorkbenchNodeView | null;
@@ -28,7 +28,7 @@ export function InspectorPanel({ node, onCollapse }: InspectorPanelProps) {
             <div className="tn-focus-kicker">
               <span>{projectionReady ? nodeTypeLabel(node.type) : "本地画布位置"}</span>
               {projectionReady ? (
-                node.activeTaskState ? <StatusBadge tone="running">正在协作</StatusBadge> : <StatusBadge tone="neutral">空闲</StatusBadge>
+                node.activeTaskState ? <StatusBadge tone="running" data-task-state={node.activeTaskState}>{taskStateLabel(node.activeTaskState)}</StatusBadge> : <StatusBadge tone="neutral">空闲</StatusBadge>
               ) : <StatusBadge tone="neutral">状态未知</StatusBadge>}
             </div>
             <h1>{nodeTitle(node)}</h1>
@@ -70,12 +70,20 @@ export function InspectorPanel({ node, onCollapse }: InspectorPanelProps) {
                   <div><dt>标签</dt><dd>{node.tags.length ? node.tags.join(" · ") : "无"}</dd></div>
                 </dl>
               </section>
+              {node.type === "output" ? (
+                <section>
+                  <h2>交付来源</h2>
+                  <p data-provenance-state={node.outputProvenance?.state ?? "error"}>
+                    {node.outputProvenance?.label ?? "来源状态未知"}
+                  </p>
+                </section>
+              ) : null}
             </div>
           ) : (
             <div className="tn-focus-sections">
               <section>
                 <h2>当前协作</h2>
-                <p>{node.activeTaskState ? `任务状态：${node.activeTaskState}` : "这个节点当前没有进行中的任务。"}</p>
+                <p>{node.activeTaskState ? `任务状态：${taskStateLabel(node.activeTaskState)}` : "这个节点当前没有进行中的任务。"}</p>
               </section>
               <section>
                 <h2>交付与审阅</h2>

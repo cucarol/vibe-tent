@@ -166,6 +166,7 @@ export class DesktopShellModel {
         status: h.status === "ok" ? "ok" : "stopping",
         pid: h.pid,
         version: h.version,
+        protocolVersion: h.protocolVersion,
         startedAt: h.startedAt,
         workspaceCount: h.workspaceCount,
         foregroundWorkspaceId: h.foregroundWorkspaceId,

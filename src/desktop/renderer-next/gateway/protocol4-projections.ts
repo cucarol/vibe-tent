@@ -228,16 +228,21 @@ function parseRelationEdge(
   ) {
     throw new Error(`graph.projection relation[${index}] is corrupt`);
   }
-  // A stored relation may point at a missing Node. Keep that explicit id; do
-  // not re-resolve, drop, or reinterpret it as a local Canvas placement.
+  const targetExists = hasTarget && knownNodeIds.has(raw.toNodeId as string);
+  // A stored relation may point at a missing Node. Keep that absence explicit;
+  // never expose its stale id as a resolved target or infer a Canvas endpoint.
   return {
     id: raw.id,
     fromNodeId: raw.fromNodeId,
     kind: raw.kind,
     direction: raw.direction,
     ...(typeof raw.label === "string" ? { label: raw.label } : {}),
-    ...(hasTarget ? { toNodeId: raw.toNodeId as string } : {}),
-    ...(hasUnresolved ? { unresolved: raw.unresolved as string } : {}),
+    ...(targetExists ? { toNodeId: raw.toNodeId as string } : {}),
+    ...(hasUnresolved
+      ? { unresolved: raw.unresolved as string }
+      : hasTarget
+        ? { unresolved: raw.toNodeId as string }
+        : {}),
   };
 }
 

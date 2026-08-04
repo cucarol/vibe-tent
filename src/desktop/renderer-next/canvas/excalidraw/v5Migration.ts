@@ -195,11 +195,11 @@ export function sceneSnapshotForV4Persist(
   layerVisible = true
 ): ExcalidrawSceneSnapshot {
   const drawingOnly = drawingElementsFromScene(elements);
-  void layerVisible;
   return {
     elements: drawingOnly,
     appState: isPlainObject(appState) ? { ...appState } : {},
     files: isPlainObject(files) ? { ...files } : {},
+    layerVisible,
   };
 }
 

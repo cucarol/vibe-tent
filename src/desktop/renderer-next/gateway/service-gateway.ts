@@ -25,16 +25,6 @@ import type {
   OutputProvenance,
 } from "../../../service/types.js";
 
-/** Opaque projection snapshot — concrete shapes come from Service RPCs later. */
-export type ProjectionSnapshot = {
-  /** Workspace id the snapshot was fetched for, when known. */
-  workspaceId?: string | null;
-  /** Wall-clock ISO when the client applied this snapshot. */
-  fetchedAt: string;
-  /** Free-form projection bags keyed by logical name (docs.tree, node.collaboration, …). */
-  bags: Readonly<Record<string, unknown>>;
-};
-
 export type ProjectionKey = string;
 
 export type InvalidationHint = {
@@ -52,8 +42,6 @@ export type ServiceGatewayHandlers = {
   projectionTimeoutMs?: number;
   /** Execute a domain-facing intent via Service RPC (never local FS mutation). */
   dispatchIntent?: (intent: UiIntent) => Promise<unknown>;
-  /** Fetch one or more projection keys. */
-  fetchProjections?: (keys: readonly ProjectionKey[]) => Promise<ProjectionSnapshot>;
   /** Subscribe to Service events; return unsubscribe. */
   subscribeEvents?: (
     onEvent: (event: EventEnvelope) => void
@@ -108,36 +96,21 @@ export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
 }
 
 /**
- * Client-side gateway: holds the last projection snapshot and applies
- * invalidation. Domain mutation always goes through `dispatchIntent`.
+ * Client-side gateway for named protocol-4 reads and invalidation listeners.
+ * It deliberately owns no second projection cache or opaque bags.
  */
 export class ServiceGateway {
-  private snapshot: ProjectionSnapshot = {
-    fetchedAt: new Date(0).toISOString(),
-    bags: {},
-  };
-  private dirty = new Set<ProjectionKey>(["*"]);
   private unsub: (() => void) | null = null;
   private readonly listeners = new Set<(hint: InvalidationHint) => void>();
 
   constructor(private readonly handlers: ServiceGatewayHandlers = {}) {}
-
-  getProjectionSnapshot(): ProjectionSnapshot {
-    return this.snapshot;
-  }
-
-  isDirty(key?: ProjectionKey): boolean {
-    if (this.dirty.has("*")) return true;
-    if (key === undefined) return this.dirty.size > 0;
-    return this.dirty.has(key);
-  }
 
   onInvalidation(listener: (hint: InvalidationHint) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
 
-  /** Apply an event as invalidation only — never merge payload into bags. */
+  /** Apply an event as invalidation only — never merge payload into UI state. */
   handleServiceEvent(event: EventEnvelope): InvalidationHint {
     const hint = invalidationFromEvent(event);
     this.applyInvalidation(hint);
@@ -145,31 +118,7 @@ export class ServiceGateway {
   }
 
   applyInvalidation(hint: InvalidationHint): void {
-    for (const key of hint.keys) this.dirty.add(key);
     for (const listener of this.listeners) listener(hint);
-  }
-
-  async refresh(keys?: readonly ProjectionKey[]): Promise<ProjectionSnapshot> {
-    const target =
-      keys ??
-      (this.dirty.has("*") ? (["*"] as const) : ([...this.dirty] as ProjectionKey[]));
-    if (!this.handlers.fetchProjections) {
-      // No transport yet — foundation placeholder keeps empty bags.
-      this.snapshot = {
-        ...this.snapshot,
-        fetchedAt: new Date().toISOString(),
-      };
-      this.dirty.clear();
-      return this.snapshot;
-    }
-    const next = await this.handlers.fetchProjections(target);
-    this.snapshot = next;
-    if (target.includes("*")) {
-      this.dirty.clear();
-    } else {
-      for (const key of target) this.dirty.delete(key);
-    }
-    return this.snapshot;
   }
 
   async dispatch(intent: UiIntent): Promise<unknown> {

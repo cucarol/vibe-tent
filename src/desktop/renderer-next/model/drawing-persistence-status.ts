@@ -12,6 +12,7 @@ export type DrawingPersistenceDegraded =
 
 export type DrawingPersistenceStatus =
   | { kind: "ok" }
+  | { kind: "pending"; message: string; retryable: false }
   | {
       kind: "quota";
       message: string;
@@ -114,7 +115,7 @@ export function mergePersistenceStatus(
   b: DrawingPersistenceStatus
 ): DrawingPersistenceStatus {
   const rank = (s: DrawingPersistenceStatus): number => {
-    if (s.kind === "ok") return 0;
+    if (s.kind === "ok" || s.kind === "pending") return 0;
     if (s.kind === "unavailable") return 1;
     if (s.kind === "error") return 2;
     return 3; // quota

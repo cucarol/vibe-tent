@@ -38,6 +38,7 @@ import {
   extractPlacementPatchesFromElements,
   readTentNodeCustomData,
   selectionToFocusedPlacement,
+  tentNodeOpenTarget,
   tentPlacementElementId,
   validateTentEmbeddableLink,
   viewportFromExcalidrawAppState,
@@ -62,6 +63,10 @@ import {
   type TentEmbeddableNodeData,
   type TentEmbeddableNodeState,
 } from "./TentEmbeddableNode.js";
+import {
+  shouldRefreshCanvasV5Scene,
+  type LiveSceneInputs,
+} from "./sceneRefreshPolicy.js";
 import "./tent-embeddable-prototype.css";
 import "./canvas-v5-host.css";
 
@@ -137,6 +142,10 @@ type ExcalidrawComponentProps = {
     element: { id: string; link?: string | null; customData?: unknown },
     appState: Record<string, unknown>
   ) => ReactNode;
+  onLinkOpen?: (
+    element: { id: string; link?: string | null; customData?: unknown },
+    event: { preventDefault: () => void }
+  ) => void;
   UIOptions?: {
     canvasActions?: Record<string, boolean>;
     tools?: { image?: boolean };
@@ -266,9 +275,21 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
 
   const applyingExternal = useRef(false);
   const apiRef = useRef<ExcalidrawApi | null>(null);
+  const lastInternallyPublishedDocument = useRef<CanvasDocument | null>(null);
+  const liveSceneInputs = useRef<LiveSceneInputs>({
+    document: canvasDocument,
+    graph,
+    edgeLayers,
+  });
   const lastPersistedDrawingSig = useRef<string>("");
   const persistGate = useRef(createPersistGate(120));
   const placementPersistGate = useRef(createPersistGate(80));
+
+  const publishDocument = useCallback((nextDocument: CanvasDocument) => {
+    lastInternallyPublishedDocument.current = nextDocument;
+    documentRef.current = nextDocument;
+    onDocumentChangeRef.current(nextDocument);
+  }, []);
 
   const hydrated = useMemo(
     () =>
@@ -326,6 +347,60 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
   }, [scopeGeneration]);
 
   useEffect(() => {
+    const previous = liveSceneInputs.current;
+    const next = { document: canvasDocument, graph, edgeLayers };
+    liveSceneInputs.current = next;
+    if (
+      !shouldRefreshCanvasV5Scene(
+        previous,
+        next,
+        lastInternallyPublishedDocument.current
+      )
+    ) {
+      return;
+    }
+
+    const api = apiRef.current;
+    if (!api) return;
+    const drawingScene = sceneSnapshotForV4Persist(
+      api.getSceneElements?.() ?? [],
+      api.getAppState?.() ?? {},
+      api.getFiles?.() ?? {},
+      layerVisibleRef.current
+    );
+    const refreshed = hydrateCanvasV5Scene({
+      document: canvasDocument,
+      drawingScene,
+      resolvers,
+      graph,
+      edgeLayers,
+    });
+
+    applyingExternal.current = true;
+    try {
+      api.updateScene({
+        elements: refreshed.elements,
+        appState: {
+          activeEmbeddable: null,
+          selectedElementIds: canvasDocument.focusedPlacementId
+            ? {
+                [tentPlacementElementId(canvasDocument.focusedPlacementId)]: true,
+              }
+            : {},
+        },
+        captureUpdate: "NEVER",
+      });
+      setLoadBanner(
+        refreshed.status.kind === "ok" ? null : refreshed.status.message
+      );
+    } finally {
+      void Promise.resolve().then(() => {
+        applyingExternal.current = false;
+      });
+    }
+  }, [canvasDocument, edgeLayers, graph, resolvers]);
+
+  useEffect(() => {
     const focusedPlacementId = canvasDocument.focusedPlacementId ?? null;
     if (ownershipRef.current.focusedPlacementId === focusedPlacementId) return;
 
@@ -381,8 +456,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
         ownershipRef.current = next;
         if (next.focusedPlacementId == null && prev.focusedPlacementId != null) {
           const doc = setFocusedPlacement(documentRef.current, null);
-          documentRef.current = doc;
-          onDocumentChangeRef.current(doc);
+          publishDocument(doc);
           onSelectPlacementRef.current(null, null);
         }
         const api = apiRef.current;
@@ -409,7 +483,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [displayMenuOpen, immersive, onImmersiveChange]);
+  }, [displayMenuOpen, immersive, onImmersiveChange, publishDocument]);
 
   const persistDrawing = useCallback(
     (
@@ -424,7 +498,9 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
         files,
         layerVisibleRef.current
       );
-      const sig = sceneContentSignature(snapshot.elements, snapshot.files);
+      const sig = `${sceneContentSignature(snapshot.elements, snapshot.files)}:${
+        layerVisibleRef.current ? "shown" : "hidden"
+      }`;
       if (sig === lastPersistedDrawingSig.current) return;
       lastPersistedDrawingSig.current = sig;
       onScenePersistRef.current(snapshot, layerVisibleRef.current);
@@ -462,8 +538,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
         focus.placementId
       );
       if (doc.focusedPlacementId !== documentRef.current.focusedPlacementId) {
-        onDocumentChangeRef.current(doc);
-        documentRef.current = doc;
+        publishDocument(doc);
       }
       onSelectPlacementRef.current(focus.placementId, focus.entityRef);
     }
@@ -518,8 +593,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
           documentRef.current.viewport ?? DEFAULT_VIEWPORT
         );
         const withVp = withViewport(nextDoc, vp);
-        documentRef.current = withVp;
-        onDocumentChangeRef.current(withVp);
+        publishDocument(withVp);
       } else {
         const vp = viewportFromExcalidrawAppState(
           {
@@ -536,8 +610,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
           Math.abs(prev.zoom - vp.zoom) > 0.0001
         ) {
           const withVp = withViewport(documentRef.current, vp);
-          documentRef.current = withVp;
-          onDocumentChangeRef.current(withVp);
+          publishDocument(withVp);
         }
       }
     });
@@ -550,8 +623,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
         doc = removePlacement(doc, placementId);
       }
       if (doc !== documentRef.current) {
-        documentRef.current = doc;
-        onDocumentChangeRef.current(doc);
+        publishDocument(doc);
         if (
           ownershipRef.current.focusedPlacementId &&
           deleted.includes(ownershipRef.current.focusedPlacementId)
@@ -565,12 +637,63 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     persistGate.current.schedule(() => {
       persistDrawing(elements, appObj, filesObj);
     });
-  }, [persistDrawing]);
+  }, [persistDrawing, publishDocument]);
+
+  const handleLinkOpen = useCallback<
+    NonNullable<ExcalidrawComponentProps["onLinkOpen"]>
+  >((element, event) => {
+    // Every Tent embeddable URL is an internal action, never a browser target.
+    event.preventDefault();
+    const target = tentNodeOpenTarget(element);
+    if (!target) return;
+
+    const nextOwnership = reduceV5Ownership(ownershipRef.current, {
+      type: "select-placement",
+      placementId: target.placementId,
+    });
+    ownershipRef.current = nextOwnership;
+    setOwnership(nextOwnership);
+
+    const nextDocument = setFocusedPlacement(
+      documentRef.current,
+      target.placementId
+    );
+    if (
+      nextDocument.focusedPlacementId !==
+      documentRef.current.focusedPlacementId
+    ) {
+      publishDocument(nextDocument);
+    }
+    onSelectPlacementRef.current(target.placementId, target.nodeId);
+
+    apiRef.current?.updateScene({
+      appState: {
+        activeEmbeddable: null,
+        selectedElementIds: { [element.id]: true },
+      },
+      captureUpdate: "NEVER",
+    });
+  }, [publishDocument]);
+
+  const handleLayerVisibleChange = useCallback(
+    (visible: boolean) => {
+      layerVisibleRef.current = visible;
+      onLayerVisibleChange(visible);
+      const api = apiRef.current;
+      if (!api) return;
+      persistDrawing(
+        api.getSceneElements?.() ?? [],
+        api.getAppState?.() ?? {},
+        api.getFiles?.() ?? {}
+      );
+    },
+    [onLayerVisibleChange, persistDrawing]
+  );
 
   const setBackgroundMode = useCallback(
     (mode: CanvasBackgroundMode) => {
       if ((canvasDocument.backgroundMode ?? "grid") === mode) return;
-      onDocumentChange({ ...canvasDocument, backgroundMode: mode });
+      publishDocument({ ...canvasDocument, backgroundMode: mode });
       const api = apiRef.current;
       if (!api) return;
       applyingExternal.current = true;
@@ -591,7 +714,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
         });
       }
     },
-    [canvasDocument, onDocumentChange]
+    [canvasDocument, publishDocument]
   );
 
   const banner =
@@ -700,7 +823,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
               size="compact"
               data-testid="canvas-drawing-toggle"
               aria-pressed={layerVisible}
-              onClick={() => onLayerVisibleChange(!layerVisible)}
+              onClick={() => handleLayerVisibleChange(!layerVisible)}
             >
               {layerVisible
                 ? canvasCopy("canvas.drawing.hide")
@@ -760,22 +883,23 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
             langCode="zh-CN"
             detectScroll={false}
             handleKeyboardGlobally={false}
-            validateEmbeddable={(link) => validateTentEmbeddableLink(link)}
-            renderEmbeddable={(element, appState) => {
+             validateEmbeddable={(link) => validateTentEmbeddableLink(link)}
+             onLinkOpen={handleLinkOpen}
+             renderEmbeddable={(element, appState) => {
               const custom = readTentNodeCustomData(element);
               if (!custom) return null;
               const model = cardModels.get(custom.placementId);
               if (!model) {
-                // Stale/error projection: still show unresolved card; never drop placement chrome.
+                // Missing view data is unknown, not evidence of stale/error/unresolved.
                 return (
                   <TentEmbeddableNode
                     data={{
                       nodeId: custom.nodeId,
-                      title: "未解析节点",
+                      title: "本地画布位置",
                       type: "节点",
-                      state: "stale",
-                      stateLabel: "投影未就绪",
-                      detail: "投影未就绪；本地位置已保留。",
+                      state: "unknown",
+                      stateLabel: "状态未知",
+                      detail: "权威投影尚不可用；本地位置已保留。",
                     }}
                     selected={Boolean(
                       (appState.selectedElementIds as Record<string, boolean> | undefined)?.[

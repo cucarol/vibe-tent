@@ -32,7 +32,6 @@ export {
   invalidationFromEvent,
   type InvalidationHint,
   type ProjectionKey,
-  type ProjectionSnapshot,
   type ServiceGatewayHandlers,
 } from "./gateway/service-gateway.js";
 export {
@@ -57,4 +56,4 @@ export {
   toggleOutlineExpanded,
   type OutlineChromeState,
 } from "./types/outline.js";
-export { focusWorkbenchNode } from "./shell/workbench-selection.js";
+export { focusWorkbenchNode, initializeWorkbenchSelection } from "./shell/workbench-selection.js";
