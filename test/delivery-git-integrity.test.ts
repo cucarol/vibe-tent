@@ -384,6 +384,66 @@ test("task.accept rejects caller commit overrides without mutating ready Deliver
   });
 });
 
+test("task.reject rejects unknown fields before mutating Task or Delivery", async () => {
+  const ws = await makeWorkspace("reject-exact-params");
+  await initGitOnWorkspace(ws);
+
+  await withService(async (svc) => {
+    const task = await claimRunningWithBase(svc, ws, {
+      label: "reject-params",
+      prompt: "reject unknown parameters before mutation",
+    });
+    const delivered = await rpc(svc, "task.deliver", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      summary: "ready for exact reject",
+      commits: [],
+    });
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    const deliveryPath = (
+      delivered.result as { delivery: { path: string; status: string } }
+    ).delivery.path;
+
+    const taskFile = path.join(ws, ".tent", ...task.taskPath.split("/"));
+    const deliveryFile = path.join(ws, ".tent", ...deliveryPath.split("/"));
+    const beforeTask = await fs.readFile(taskFile);
+    const beforeDelivery = await fs.readFile(deliveryFile);
+
+    for (const extra of [
+      { actorOverride: "rl-forged" },
+      { commits: [] },
+      { session: "ss-forged" },
+    ]) {
+      const rejected = await rpc(svc, "task.reject", {
+        workspaceId: task.workspaceId,
+        taskPath: task.taskPath,
+        actor: "user",
+        note: "must not be applied",
+        resume: false,
+        ...extra,
+      });
+      assert.equal(rejected.error?.code, -32602, JSON.stringify(rejected));
+      assert.match(rejected.error?.message ?? "", /unknown parameter/i);
+      assert.deepEqual(await fs.readFile(taskFile), beforeTask);
+      assert.deepEqual(await fs.readFile(deliveryFile), beforeDelivery);
+    }
+
+    const rejected = await rpc(svc, "task.reject", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      actor: "user",
+      note: "valid terminal reject",
+      resume: false,
+    });
+    assert.ok(!rejected.error, JSON.stringify(rejected.error));
+    assert.equal((rejected.result as { state: string }).state, "rejected");
+    assert.equal(
+      (rejected.result as { delivery: { status: string } }).delivery.status,
+      "rejected"
+    );
+  });
+});
+
 /**
  * Production path: two distinct Service workspaceId mounts whose roots are
  * different git worktrees of the same repository (shared git-common-dir) and

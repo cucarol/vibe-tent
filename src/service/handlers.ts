@@ -5735,6 +5735,11 @@ function outputProvenanceErrorToRpc(err: OutputProvenanceError): RpcError {
  * Role/Connection restore semantics and Delivery authority are unchanged.
  */
 async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  assertAllowedParams(
+    p,
+    new Set(["workspaceId", "taskPath", "actor", "note", "resume"]),
+    "task.reject"
+  );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
