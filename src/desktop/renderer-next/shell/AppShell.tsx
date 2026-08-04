@@ -1,174 +1,92 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  PlaceholderCanvasEngine,
-  type CanvasEngine,
-} from "../canvas/engine.js";
-import { ServiceGateway } from "../gateway/service-gateway.js";
-import {
-  createEmptyCanvasDocument,
-  type CanvasDocument,
-} from "../types/identity.js";
-import {
-  OUTLINE_PANEL_ID,
-  OUTLINE_TOGGLE_ID,
-  closeOutline,
-  createDefaultOutlineChrome,
-  toggleOutline,
-  type OutlineChromeState,
-} from "../types/outline.js";
-import {
-  APP_SURFACES,
-  defaultAppSurface,
-  type AppSurfaceId,
-} from "../types/surfaces.js";
-import { Outline } from "./Outline.js";
-import { SurfaceStage } from "./SurfaceStage.js";
+import { useMemo, useState } from "react";
+import type { GraphEdgeSource } from "../model/canvas-edges.js";
+import { createEmptyCanvasDocument, type CanvasDocument } from "../types/identity.js";
+import { Button, IconButton } from "../ui/index.js";
+import { CanvasWorkbench } from "../components/CanvasWorkbench.js";
+import { InspectorPanel } from "../components/InspectorPanel.js";
+import { OutlinePanel } from "../components/OutlinePanel.js";
+import { StatusBar } from "../components/StatusBar.js";
+import { ShellIcon } from "./icons.js";
+import type { WorkbenchNodeView } from "./workbench-types.js";
+import { focusWorkbenchNode } from "./workbench-selection.js";
 
 export type AppShellProps = {
-  /** Optional injected gateway (tests / future preload bridge). */
-  gateway?: ServiceGateway;
-  /** Optional canvas engine (defaults to PlaceholderCanvasEngine). */
-  canvasEngine?: CanvasEngine;
-  /** Initial local canvas document. */
+  workspaceId?: string | null;
+  workspaceLabel?: string;
+  initialNodes?: readonly WorkbenchNodeView[];
   initialDocument?: CanvasDocument;
-  /** Initial stage surface. */
-  initialSurface?: AppSurfaceId;
-  /** Initial Outline chrome (default collapsed). */
-  initialOutline?: OutlineChromeState;
-  /**
-   * Optional controlled Outline chrome. When set with `onOutlineChange`, the
-   * shell reports open/toggle/close so hosts can apply expand/locate helpers
-   * from `types/outline.ts` without inventing a real tree.
-   */
-  outline?: OutlineChromeState;
-  onOutlineChange?: (next: OutlineChromeState) => void;
+  initialSelectedNodeId?: string | null;
+  graph?: GraphEdgeSource;
+  connection?: "online" | "offline" | "reconnecting";
+  onRetryConnection?: () => void;
 };
 
 /**
- * Canvas-first single-window app shell.
- * Rail + stage surfaces; Outline is a default-collapsed drawer/overlay
- * invoked from rail or chrome — not a permanent grid column.
- *
- * Open / expand / locate-entity interfaces live in `types/outline.ts`
- * (`OutlineChromeState` + pure helpers). Shell owns the open flag and a11y.
+ * Protocol-4 desktop composition. Canvas is the only stage; Outline and Focus
+ * are local presentation trays. Domain reads arrive as validated view models.
  */
-export function AppShell(props: AppShellProps = {}) {
-  const gateway = useMemo(
-    () => props.gateway ?? new ServiceGateway(),
-    [props.gateway]
-  );
-  const engine = useMemo(
-    () => props.canvasEngine ?? new PlaceholderCanvasEngine(),
-    [props.canvasEngine]
-  );
-  const [surface, setSurface] = useState<AppSurfaceId>(
-    () => props.initialSurface ?? defaultAppSurface()
-  );
-  const [document] = useState<CanvasDocument>(
-    () => props.initialDocument ?? createEmptyCanvasDocument()
-  );
-  const [internalOutline, setInternalOutline] = useState<OutlineChromeState>(
-    () => props.initialOutline ?? createDefaultOutlineChrome()
-  );
-  const controlled = props.outline !== undefined;
-  const outline = controlled ? props.outline! : internalOutline;
+export function AppShell({
+  workspaceId = null,
+  workspaceLabel = "未挂载工作区",
+  initialNodes = [],
+  initialDocument,
+  initialSelectedNodeId = null,
+  graph = null,
+  connection = "online",
+  onRetryConnection,
+}: AppShellProps = {}) {
+  const [outlineOpen, setOutlineOpen] = useState(true);
+  const [focusOpen, setFocusOpen] = useState(true);
+  const [immersive, setImmersive] = useState(false);
+  const [document, setDocument] = useState<CanvasDocument>(() => initialDocument ?? createEmptyCanvasDocument());
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialSelectedNodeId);
+  const nodes = useMemo(() => [...initialNodes], [initialNodes]);
+  const selectedNode = useMemo(() => nodes.find((node) => node.nodeId === selectedNodeId) ?? null, [nodes, selectedNodeId]);
+  const projection = nodes.some((node) => node.projectionState === "error")
+    ? "error"
+    : nodes.some((node) => node.projectionState === "unresolved")
+      ? "unresolved"
+      : nodes.some((node) => node.projectionState === "stale")
+      ? "stale"
+      : "fresh";
 
-  const commitOutline = useCallback(
-    (next: OutlineChromeState) => {
-      if (props.onOutlineChange) props.onOutlineChange(next);
-      if (!controlled) setInternalOutline(next);
-    },
-    [controlled, props.onOutlineChange]
-  );
-
-  const handleToggleOutline = useCallback(() => {
-    commitOutline(toggleOutline(outline));
-  }, [commitOutline, outline]);
-
-  const handleCloseOutline = useCallback(() => {
-    commitOutline(closeOutline(outline));
-  }, [commitOutline, outline]);
-
-  useEffect(() => {
-    if (!outline.open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        commitOutline(closeOutline(outline));
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [outline, commitOutline]);
+  const selectNode = (nodeId: string | null, placementId?: string | null) => {
+    setSelectedNodeId(nodeId);
+    setDocument((current) => focusWorkbenchNode(current, nodeId, placementId));
+    if (nodeId) setFocusOpen(true);
+  };
 
   return (
-    <div
-      className="tn-app"
-      data-shell="renderer-next"
-      data-surface={surface}
-      data-outline-open={outline.open ? "true" : "false"}
-    >
-      <nav className="tn-rail" aria-label="Surfaces">
-        <button
-          id={OUTLINE_TOGGLE_ID}
-          type="button"
-          data-outline-toggle="rail"
-          aria-expanded={outline.open}
-          aria-controls={OUTLINE_PANEL_ID}
-          title="Outline"
-          onClick={handleToggleOutline}
-        >
-          Outline
-        </button>
-        {APP_SURFACES.map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            data-surface-nav={s.id}
-            aria-current={surface === s.id ? "page" : undefined}
-            title={s.label}
-            onClick={() => setSurface(s.id)}
-          >
-            {s.label}
-          </button>
-        ))}
-      </nav>
-
-      <header className="tn-chrome" data-region="chrome">
-        <button
-          type="button"
-          data-outline-toggle="chrome"
-          aria-expanded={outline.open}
-          aria-controls={OUTLINE_PANEL_ID}
-          title="Outline"
-          onClick={handleToggleOutline}
-        >
-          Outline
-        </button>
-        <strong>帷幄 · Tent</strong>
-        <span className="tn-chrome-surface" data-testid="active-surface">
-          {surface}
-        </span>
-        <span className="sr-only">
-          Service gateway dirty: {gateway.isDirty() ? "yes" : "no"}
-        </span>
+    <div className="tn-app" data-shell="renderer-next" data-connection={connection}>
+      <header className="tn-global-chrome" data-region="chrome">
+        <div className="tn-brand-group">
+          <div className="tn-brand"><span>帷幄</span><small>Tent</small></div>
+          <span className="tn-workspace-select" title={workspaceLabel}>{workspaceLabel}</span>
+        </div>
+        <div className="tn-surface-nav" aria-label="当前界面">
+          <span className="tn-surface-tab"><ShellIcon name="canvas" />画布</span>
+        </div>
+        <div className="tn-global-actions">
+          <IconButton aria-label={outlineOpen ? "收起节点面板" : "展开节点面板"} variant="ghost" aria-pressed={outlineOpen} onClick={() => setOutlineOpen((value) => !value)}><ShellIcon name="panel-left" /></IconButton>
+          <IconButton aria-label={focusOpen ? "收起焦点面板" : "展开焦点面板"} variant="ghost" aria-pressed={focusOpen} onClick={() => setFocusOpen((value) => !value)}><ShellIcon name="panel-right" /></IconButton>
+        </div>
       </header>
 
-      <main className="tn-stage" data-region="stage" id="tn-stage">
-        <SurfaceStage
-          surface={surface}
-          canvasEngine={engine}
-          canvasDocument={document}
-        />
-      </main>
+      {connection !== "online" ? (
+        <div className="tn-connection-banner" role="alert">
+          <span>{connection === "reconnecting" ? "正在重新连接本地服务。画布位置会保留，节点事实暂不视为最新。" : "本地服务连接已断开。画布位置会保留，节点事实暂不视为最新。"}</span>
+          {onRetryConnection ? <Button size="compact" onClick={onRetryConnection} loading={connection === "reconnecting"}>重试连接</Button> : null}
+        </div>
+      ) : null}
 
-      <footer className="tn-status" data-region="status">
-        <span>renderer-next foundation</span>
-        <span aria-hidden="true">·</span>
-        <span>Service sole authority · events invalidate only</span>
-      </footer>
+      <div className="tn-workbench" data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-immersive={immersive ? "true" : "false"}>
+        <OutlinePanel nodes={nodes} selectedNodeId={selectedNodeId} onSelectNode={selectNode} onCollapse={() => setOutlineOpen(false)} />
+        <CanvasWorkbench document={document} nodes={nodes} graph={graph} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={setDocument} onSelectNode={selectNode} />
+        <InspectorPanel node={selectedNode} onCollapse={() => setFocusOpen(false)} />
+      </div>
 
-      <Outline chrome={outline} onClose={handleCloseOutline} />
+      <StatusBar connection={connection} projection={projection} nodeCount={nodes.length} />
+      <span className="tn-sr-only">工作区 {workspaceId ?? "未挂载"}；画布本地布局不等于节点事实。</span>
     </div>
   );
 }

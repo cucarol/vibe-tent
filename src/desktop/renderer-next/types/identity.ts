@@ -12,6 +12,9 @@ export type EntityRef = string;
 /** Local Canvas placement instance id — UI-only; may point at an EntityRef. */
 export type PlacementId = string;
 
+/** Machine-local Canvas presentation preference, never a Service fact. */
+export type CanvasBackgroundMode = "grid" | "blank";
+
 /**
  * A placement on the local CanvasDocument.
  * Position/size are optional so early shells can host placeholders without
@@ -37,6 +40,8 @@ export type CanvasPlacement = {
 export type CanvasDocument = {
   version: 1;
   placements: readonly CanvasPlacement[];
+  /** Local presentation only; never a Service/domain fact. */
+  backgroundMode?: CanvasBackgroundMode;
   /** Which placement currently has focus chrome, if any. */
   focusedPlacementId?: PlacementId | null;
   /** Viewport camera — opaque to keep schema open. */
@@ -51,6 +56,7 @@ export function createEmptyCanvasDocument(): CanvasDocument {
   return {
     version: 1,
     placements: [],
+    backgroundMode: "grid",
     focusedPlacementId: null,
   };
 }

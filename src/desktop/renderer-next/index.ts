@@ -57,3 +57,4 @@ export {
   toggleOutlineExpanded,
   type OutlineChromeState,
 } from "./types/outline.js";
+export { focusWorkbenchNode } from "./shell/workbench-selection.js";

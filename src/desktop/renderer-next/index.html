@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta
     http-equiv="Content-Security-Policy"
-    content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;"
+    content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self';"
   />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>帷幄 · Tent (next)</title>
@@ -15,7 +15,7 @@
   <!--
     Isolated React + TypeScript next renderer foundation.
     Not the default Electron main window entry — load via desktop/dist/renderer-next/.
-    Canvas-first · multi-surface · single window · Outline drawer (default collapsed).
+    Canvas-first · single stage · collapsible Outline and Focus trays.
   -->
   <div id="root"></div>
   <script type="module" src="./main.js"></script>

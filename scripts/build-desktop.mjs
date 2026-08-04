@@ -3,6 +3,7 @@ import * as esbuild from "esbuild";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { copyExcalidrawProdAssets } from "./excalidraw-assets.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -76,34 +77,50 @@ async function listFiles(dir) {
 export async function assertCanonicalDesktopArtifacts(buildRoot, buildOutRoot) {
   const absoluteRoot = path.resolve(buildRoot);
   const files = await listFiles(buildOutRoot);
+  const textExtensions = new Set([
+    ".cjs",
+    ".css",
+    ".html",
+    ".js",
+    ".json",
+    ".map",
+    ".mjs",
+    ".svg",
+    ".txt",
+  ]);
   for (const file of files) {
+    // Font and image bytes can coincidentally decode to a Windows-looking
+    // sequence. Canonical path checks apply only to textual artifacts.
+    if (!textExtensions.has(path.extname(file).toLowerCase())) continue;
     const text = await fs.readFile(file, "utf8");
+    if (file.endsWith(".map")) {
+      const sourceMap = JSON.parse(text);
+      const sourceRoot =
+        typeof sourceMap.sourceRoot === "string" ? sourceMap.sourceRoot : "";
+      for (const source of sourceMap.sources ?? []) {
+        const resolved = path.resolve(path.dirname(file), sourceRoot, source);
+        const relative = slash(path.relative(absoluteRoot, resolved));
+        if (
+          relative.startsWith("../") ||
+          path.isAbsolute(relative) ||
+          (!relative.startsWith("src/") && !relative.startsWith("node_modules/"))
+        ) {
+          throw new Error(
+            `${slash(path.relative(absoluteRoot, file))}: non-repository source ${source}`
+          );
+        }
+      }
+      continue;
+    }
     const portable = slash(text);
     if (
-      /(?:^|[^A-Za-z])[A-Za-z]:[\\/](?![\\/])/.test(text) ||
+      /(?:^|[\s"'`(=])[A-Za-z]:[\\/](?![\\/])/.test(text) ||
       portable.includes("../../Tent") ||
       /Tent-worktrees/i.test(portable)
     ) {
       throw new Error(
         `${slash(path.relative(absoluteRoot, file))}: contains a machine- or lane-specific path`
       );
-    }
-    if (!file.endsWith(".map")) continue;
-    const sourceMap = JSON.parse(text);
-    const sourceRoot =
-      typeof sourceMap.sourceRoot === "string" ? sourceMap.sourceRoot : "";
-    for (const source of sourceMap.sources ?? []) {
-      const resolved = path.resolve(path.dirname(file), sourceRoot, source);
-      const relative = slash(path.relative(absoluteRoot, resolved));
-      if (
-        relative.startsWith("../") ||
-        path.isAbsolute(relative) ||
-        (!relative.startsWith("src/") && !relative.startsWith("node_modules/"))
-      ) {
-        throw new Error(
-          `${slash(path.relative(absoluteRoot, file))}: non-repository source ${source}`
-        );
-      }
     }
   }
 }
@@ -142,6 +159,19 @@ async function copyRendererNextStatic(buildRoot, buildOutRoot) {
   for (const name of await fs.readdir(stylesSrc)) {
     if (!name.endsWith(".css")) continue;
     await fs.copyFile(path.join(stylesSrc, name), path.join(stylesOut, name));
+  }
+}
+
+async function copyExcalidrawAssets(buildRoot, buildOutRoot) {
+  const result = await copyExcalidrawProdAssets({
+    repoRoot: buildRoot,
+    rendererNextOutDir: path.join(buildOutRoot, "renderer-next"),
+  });
+  if (!result.ok) {
+    throw new Error(
+      `Excalidraw offline asset copy failed: ${result.reason}\n` +
+        "Install @excalidraw/excalidraw and re-run build:desktop."
+    );
   }
 }
 
@@ -206,6 +236,7 @@ export async function build(buildRoot = root) {
     sourcemap: true,
     minify: true,
     logLevel: "info",
+    conditions: ["production"],
     define: {
       "process.env.NODE_ENV": '"production"',
     },
@@ -213,12 +244,17 @@ export async function build(buildRoot = root) {
       ".tsx": "tsx",
       ".ts": "ts",
       ".css": "css",
+      ".woff2": "file",
+      ".woff": "file",
+      ".ttf": "file",
+      ".otf": "file",
     },
     jsx: "automatic",
   }, ["react", "react-dom", "scheduler"]);
 
   await copyRendererStatic(absoluteRoot, buildOutRoot);
   await copyRendererNextStatic(absoluteRoot, buildOutRoot);
+  await copyExcalidrawAssets(absoluteRoot, buildOutRoot);
 
   // Package entry for electron .
   await fs.writeFile(

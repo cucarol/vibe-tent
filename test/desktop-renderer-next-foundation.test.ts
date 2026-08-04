@@ -17,6 +17,7 @@ import {
   createDefaultOutlineChrome,
   createEmptyCanvasDocument,
   defaultAppSurface,
+  focusWorkbenchNode,
   invalidationFromEvent,
   isAppSurfaceId,
   isLayoutIntent,
@@ -52,6 +53,24 @@ function ev(type: string): EventEnvelope {
     payload: { shouldNotBecomeTruth: true },
   };
 }
+
+test("Outline and Canvas share one focused placement fact", () => {
+  const document = {
+    ...createEmptyCanvasDocument(),
+    focusedPlacementId: "pl-prompt",
+    placements: [
+      { placementId: "pl-prompt", entityRef: "cx-prompt", kind: "node", x: 0, y: 0 },
+      { placementId: "pl-output", entityRef: "cx-output", kind: "node", x: 200, y: 0 },
+      { placementId: "pl-output-copy", entityRef: "cx-output", kind: "node", x: 400, y: 0 },
+    ],
+  };
+  assert.equal(focusWorkbenchNode(document, "cx-output").focusedPlacementId, "pl-output");
+  assert.equal(
+    focusWorkbenchNode(document, "cx-output", "pl-output-copy").focusedPlacementId,
+    "pl-output-copy"
+  );
+  assert.equal(focusWorkbenchNode(document, "cx-not-on-canvas").focusedPlacementId, null);
+});
 
 test("entityRef and placementId stay separate on CanvasDocument", () => {
   const doc = createEmptyCanvasDocument();
@@ -179,20 +198,12 @@ test("CanvasEngine placeholder keeps document and separates focus placement", ()
   assert.ok(container);
 });
 
-test("app surfaces include Canvas-first set and default to canvas", () => {
+test("batch-1 production shell exposes Canvas as the sole stage", () => {
   assert.equal(defaultAppSurface(), "canvas");
-  for (const id of [
-    "canvas",
-    "focus-workspace",
-    "inbox",
-    "search",
-    "settings",
-    "activity",
-  ] as const) {
-    assert.equal(isAppSurfaceId(id), true);
-    assert.ok(APP_SURFACE_IDS.includes(id));
-  }
+  assert.equal(isAppSurfaceId("canvas"), true);
+  assert.deepEqual(APP_SURFACE_IDS, ["canvas"]);
   assert.equal(isAppSurfaceId("workbench"), false);
+  assert.equal(isAppSurfaceId("settings"), false);
   assert.ok(APP_SURFACES.some((s) => s.id === "canvas" && s.defaultStage));
 });
 
@@ -253,8 +264,11 @@ test("renderer-next source tree is split and avoids forbidden deps", async () =>
   assert.doesNotMatch(allSrc, /always reachable/i);
 });
 
-test("tokens.css defines semantic structure without a locked brand hex palette", async () => {
+test("tokens.css has one product palette and one primitive entry", async () => {
   const css = await read("src/desktop/renderer-next/styles/tokens.css");
+  assert.match(css, /product-tokens\.css/);
+  assert.match(css, /ui\/primitives\.css/);
+  const product = await read("src/desktop/renderer-next/styles/product-tokens.css");
   for (const token of [
     "--tn-color-app-bg:",
     "--tn-color-text-primary:",
@@ -265,10 +279,10 @@ test("tokens.css defines semantic structure without a locked brand hex palette",
     "--tn-focus-ring:",
     "--tn-font-ui:",
   ]) {
-    assert.ok(css.includes(token), `missing ${token}`);
+    assert.ok(product.includes(token), `missing ${token}`);
   }
-  // No hard-coded brand hex lock-in for the foundation pass.
-  assert.doesNotMatch(css, /#[0-9a-fA-F]{3,8}\b/);
+  assert.match(product, /--tn-color-accent:\s*#b85235/);
+  assert.doesNotMatch(product, /data-theme|theme-id|dark/i);
 });
 
 test("Desktop keeps its private Electron entry without exposing it as the CLI package main", async () => {
@@ -326,35 +340,20 @@ test("Outline chrome defaults collapsed with open/expand/locate interfaces", () 
   assert.deepEqual(located.expandedIds, []);
 });
 
-test("Outline is drawer/overlay chrome with a11y hooks, not a grid column", async () => {
+test("Outline and Focus are collapsible trays around one Canvas stage", async () => {
   const shellCss = await read("src/desktop/renderer-next/styles/shell.css");
-  assert.match(shellCss, /\.tn-outline\s*\{[^}]*position:\s*fixed/s);
-  assert.match(shellCss, /\.tn-outline-scrim/);
-  // Grid is rail + stage only (no permanent outline column).
-  assert.match(
-    shellCss,
-    /grid-template-areas:\s*"rail chrome"\s*"rail stage"\s*"rail status"/
-  );
-  // grid-area assignments must not reserve a permanent outline track.
-  assert.doesNotMatch(shellCss, /grid-area:\s*outline\b/);
+  assert.match(shellCss, /\.tn-workbench\s*\{[^}]*grid-template-columns:\s*252px minmax\(0, 1fr\) 320px/s);
+  assert.match(shellCss, /data-outline-open="false"/);
+  assert.match(shellCss, /data-focus-open="false"/);
+  assert.match(shellCss, /data-immersive="true"/);
 
   const shell = await read("src/desktop/renderer-next/shell/AppShell.tsx");
-  assert.match(shell, /aria-expanded=\{outline\.open\}/);
-  assert.match(shell, /aria-controls=\{OUTLINE_PANEL_ID\}/);
-  assert.match(shell, /Escape/);
-  assert.match(shell, /data-outline-toggle="rail"/);
-  assert.match(shell, /data-outline-toggle="chrome"/);
-  assert.match(shell, /OUTLINE_TOGGLE_ID/);
+  assert.match(shell, /aria-pressed=\{outlineOpen\}/);
+  assert.match(shell, /aria-pressed=\{focusOpen\}/);
+  assert.match(shell, /CanvasWorkbench/);
+  assert.doesNotMatch(shell, /SettingsSurface|InboxSurface|SearchSurface/);
   assert.equal(OUTLINE_PANEL_ID, "tn-outline-panel");
   assert.equal(OUTLINE_TOGGLE_ID, "tn-outline-toggle");
-
-  const outline = await read("src/desktop/renderer-next/shell/Outline.tsx");
-  assert.match(outline, /data-outline-close/);
-  assert.match(outline, /onClose/);
-  assert.match(outline, /id=\{OUTLINE_PANEL_ID\}/);
-  // Panel remains addressable for aria-controls when collapsed.
-  assert.match(outline, /hidden=\{!open\}/);
-  assert.doesNotMatch(outline, /if \(!chrome\.open\) return null/);
 });
 
 test("React stays a desktop devDependency, not a published runtime dep", async () => {

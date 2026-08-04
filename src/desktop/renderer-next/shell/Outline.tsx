@@ -21,7 +21,7 @@ export function Outline(props: OutlineProps) {
   const {
     chrome,
     onClose,
-    subtitle = "Node tree placeholder · open from rail or chrome",
+    subtitle = "节点树占位 · 可从侧栏或顶部打开",
   } = props;
   const open = chrome.open;
 

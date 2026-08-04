@@ -9,6 +9,21 @@
 
 import type { EventEnvelope } from "../../../service/types.js";
 import type { UiIntent } from "../types/intent.js";
+import {
+  PROJECTION_TIMEOUT_MS,
+  readGraphProjection,
+  readNodeCollaboration,
+  readNodeCollaborations,
+  readOutputProvenance,
+  type ProjectionRead,
+  type Protocol4ProjectionRpc,
+} from "./protocol4-projections.js";
+import type {
+  GraphProjection,
+  NodeCollaboration,
+  NodeCollaborationsResult,
+  OutputProvenance,
+} from "../../../service/types.js";
 
 /** Opaque projection snapshot — concrete shapes come from Service RPCs later. */
 export type ProjectionSnapshot = {
@@ -31,6 +46,10 @@ export type InvalidationHint = {
 };
 
 export type ServiceGatewayHandlers = {
+  /** Closed protocol-4 read transport for the main Canvas surface. */
+  projectionRpc?: Protocol4ProjectionRpc;
+  /** Bounded renderer wait; the underlying IPC may continue after UI timeout. */
+  projectionTimeoutMs?: number;
   /** Execute a domain-facing intent via Service RPC (never local FS mutation). */
   dispatchIntent?: (intent: UiIntent) => Promise<unknown>;
   /** Fetch one or more projection keys. */
@@ -49,11 +68,28 @@ export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
   const type = event.type;
   // Coarse default mapping — keep open; do not hard-code draft field lists.
   if (type.startsWith("node.") || type.startsWith("docs.")) {
-    return { keys: ["docs.tree", "docs.get"], event, reason: type };
+    return {
+      keys: [
+        "docs.tree",
+        "docs.get",
+        "graph.projection",
+        "node.collaboration",
+        "node.collaborations",
+        "output.provenance",
+      ],
+      event,
+      reason: type,
+    };
   }
   if (type.startsWith("task.") || type.startsWith("delivery.") || type.startsWith("session.")) {
     return {
-      keys: ["task.list", "node.collaboration", "node.collaborations", "session.list"],
+      keys: [
+        "task.list",
+        "node.collaboration",
+        "node.collaborations",
+        "output.provenance",
+        "session.list",
+      ],
       event,
       reason: type,
     };
@@ -147,6 +183,74 @@ export class ServiceGateway {
       );
     }
     return this.handlers.dispatchIntent(intent);
+  }
+
+  graphProjection(workspaceId: string): Promise<ProjectionRead<GraphProjection>> {
+    if (!this.handlers.projectionRpc) {
+      return Promise.resolve(this.missingProjectionTransport(workspaceId));
+    }
+    return readGraphProjection(
+      this.handlers.projectionRpc,
+      workspaceId,
+      this.handlers.projectionTimeoutMs ?? PROJECTION_TIMEOUT_MS
+    );
+  }
+
+  nodeCollaborations(
+    workspaceId: string,
+    nodeIds: readonly string[]
+  ): Promise<ProjectionRead<NodeCollaborationsResult>> {
+    if (!this.handlers.projectionRpc) {
+      return Promise.resolve(this.missingProjectionTransport(workspaceId));
+    }
+    return readNodeCollaborations(
+      this.handlers.projectionRpc,
+      workspaceId,
+      nodeIds,
+      this.handlers.projectionTimeoutMs ?? PROJECTION_TIMEOUT_MS
+    );
+  }
+
+  nodeCollaboration(
+    workspaceId: string,
+    nodeId: string
+  ): Promise<ProjectionRead<NodeCollaboration>> {
+    if (!this.handlers.projectionRpc) {
+      return Promise.resolve(this.missingProjectionTransport(workspaceId));
+    }
+    return readNodeCollaboration(
+      this.handlers.projectionRpc,
+      workspaceId,
+      nodeId,
+      this.handlers.projectionTimeoutMs ?? PROJECTION_TIMEOUT_MS
+    );
+  }
+
+  outputProvenance(
+    workspaceId: string,
+    outputId: string
+  ): Promise<ProjectionRead<OutputProvenance>> {
+    if (!this.handlers.projectionRpc) {
+      return Promise.resolve(this.missingProjectionTransport(workspaceId));
+    }
+    return readOutputProvenance(
+      this.handlers.projectionRpc,
+      workspaceId,
+      outputId,
+      this.handlers.projectionTimeoutMs ?? PROJECTION_TIMEOUT_MS
+    );
+  }
+
+  private missingProjectionTransport<T>(workspaceId: string): ProjectionRead<T> {
+    return {
+      ok: false,
+      workspaceId,
+      issue: {
+        kind: "transport",
+        message: "ServiceGateway: protocol-4 projection transport is unavailable",
+      },
+      failedAt: new Date().toISOString(),
+    };
   }
 
   startEventBridge(): void {

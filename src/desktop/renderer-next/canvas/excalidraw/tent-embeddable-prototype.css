@@ -1,0 +1,538 @@
+.tn-excal-prototype {
+  --tn-excal-ink: var(--tn-color-text-primary);
+  --tn-excal-muted: var(--tn-color-text-secondary);
+  --tn-excal-line: var(--tn-color-border);
+  min-height: 100vh;
+  padding: 16px;
+  color: var(--tn-excal-ink);
+  background: var(--tn-color-stage-bg);
+  font-family: var(--tn-font-ui);
+}
+
+/* Bridge Excalidraw's light theme to Tent's product tokens without leaking
+   into any other embedded editor. The stage stays neutral; the accent is
+   reserved for the current object and keyboard focus. */
+.tn-canvas-v5-host__scene .excalidraw,
+.tn-excal-prototype__canvas .excalidraw {
+  --button-gray-1: var(--tn-color-elevated-bg);
+  --button-gray-2: var(--tn-color-hover);
+  --button-gray-3: var(--tn-color-border-strong);
+  --button-destructive-bg-color: var(--tn-color-danger-soft);
+  --button-destructive-color: var(--tn-color-danger);
+  --button-special-active-bg-color: var(--tn-color-success-soft);
+  --focus-highlight-color: var(--tn-color-focus);
+  --icon-fill-color: var(--tn-color-text-primary);
+  --icon-green-fill-color: var(--tn-color-success);
+  --default-bg-color: var(--tn-color-stage-bg);
+  --input-bg-color: var(--tn-color-elevated-bg);
+  --input-border-color: var(--tn-color-border);
+  --input-hover-bg-color: var(--tn-color-hover);
+  --input-label-color: var(--tn-color-text-secondary);
+  --island-bg-color: var(--tn-color-elevated-bg);
+  --keybinding-color: var(--tn-color-text-faint);
+  --link-color: var(--tn-color-accent);
+  --overlay-bg-color: var(--tn-color-overlay);
+  --popup-bg-color: var(--tn-color-elevated-bg);
+  --popup-secondary-bg-color: var(--tn-color-panel-bg);
+  --popup-text-color: var(--tn-color-text-primary);
+  --popup-text-inverted-color: var(--tn-color-text-on-accent);
+  --select-highlight-color: var(--tn-color-focus);
+  --shadow-island: var(--tn-shadow-card);
+  --button-hover-bg: var(--tn-color-hover);
+  --button-active-bg: var(--tn-color-selected);
+  --button-active-border: var(--tn-color-accent);
+  --default-border-color: var(--tn-color-border);
+  --scrollbar-thumb: var(--tn-color-border-strong);
+  --scrollbar-thumb-hover: var(--tn-color-text-faint);
+  --sidebar-border-color: var(--tn-color-border);
+  --sidebar-bg-color: var(--tn-color-elevated-bg);
+  --text-primary-color: var(--tn-color-text-primary);
+  --color-selection: var(--tn-color-accent);
+  --color-icon-white: var(--tn-color-text-on-accent);
+  --color-primary: var(--tn-color-accent);
+  --color-primary-darker: color-mix(in srgb, var(--tn-color-accent) 84%, var(--tn-color-text-primary));
+  --color-primary-darkest: color-mix(in srgb, var(--tn-color-accent) 68%, var(--tn-color-text-primary));
+  --color-primary-light: var(--tn-color-accent-soft);
+  --color-primary-light-darker: color-mix(in srgb, var(--tn-color-accent) 22%, var(--tn-color-elevated-bg));
+  --color-primary-hover: color-mix(in srgb, var(--tn-color-accent) 88%, var(--tn-color-text-primary));
+  --color-gray-10: var(--tn-color-panel-bg);
+  --color-gray-20: var(--tn-color-elevated-bg);
+  --color-gray-30: var(--tn-color-border);
+  --color-gray-40: var(--tn-color-border-strong);
+  --color-gray-50: var(--tn-color-text-faint);
+  --color-gray-60: var(--tn-color-text-secondary);
+  --color-gray-70: var(--tn-color-text-secondary);
+  --color-gray-80: var(--tn-color-text-primary);
+  --color-gray-85: var(--tn-color-text-primary);
+  --color-gray-90: var(--tn-color-text-primary);
+  --color-gray-100: var(--tn-color-text-primary);
+  --color-disabled: var(--tn-color-ghost);
+  --color-warning: var(--tn-color-warning-soft);
+  --color-warning-dark: var(--tn-color-warning-border);
+  --color-warning-darker: var(--tn-color-warning);
+  --color-warning-darkest: var(--tn-color-warning);
+  --color-text-warning: var(--tn-color-text-primary);
+  --color-danger: var(--tn-color-danger);
+  --color-danger-dark: var(--tn-color-danger-border);
+  --color-danger-darker: var(--tn-color-danger);
+  --color-danger-darkest: var(--tn-color-danger);
+  --color-danger-text: var(--tn-color-text-primary);
+  --color-danger-background: var(--tn-color-danger-soft);
+  --color-danger-icon-background: var(--tn-color-danger-soft);
+  --color-danger-color: var(--tn-color-danger);
+  --color-danger-icon-color: var(--tn-color-danger);
+  --color-warning-background: var(--tn-color-warning-soft);
+  --color-warning-icon-background: var(--tn-color-warning-border);
+  --color-warning-color: var(--tn-color-text-primary);
+  --color-warning-icon-color: var(--tn-color-warning);
+  --color-success: var(--tn-color-success-soft);
+  --color-success-darker: var(--tn-color-success);
+  --color-success-darkest: var(--tn-color-success);
+  --color-success-text: var(--tn-color-success);
+  --color-muted: var(--tn-color-text-secondary);
+  --color-muted-darker: var(--tn-color-text-faint);
+  --color-muted-darkest: var(--tn-color-text-primary);
+  --color-muted-background: var(--tn-color-hover);
+  --color-muted-background-darker: var(--tn-color-border);
+  --color-surface-high: var(--tn-color-hover);
+  --color-surface-mid: var(--tn-color-panel-bg);
+  --color-surface-low: var(--tn-color-stage-bg);
+  --color-surface-lowest: var(--tn-color-elevated-bg);
+  --color-on-surface: var(--tn-color-text-primary);
+  --color-brand-hover: var(--tn-color-accent);
+  --color-brand-active: var(--tn-color-accent);
+  --color-on-primary-container: var(--tn-color-accent);
+  --color-surface-primary-container: var(--tn-color-accent-soft);
+  --color-border-outline: var(--tn-color-border-strong);
+  --color-border-outline-variant: var(--tn-color-border);
+}
+
+.tn-excal-prototype__header {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(320px, 0.8fr);
+  gap: 24px;
+  align-items: end;
+  max-width: 1440px;
+  margin: 0 auto 12px;
+  padding: 0 2px;
+}
+
+.tn-excal-prototype__header h1,
+.tn-excal-prototype__focus h2 {
+  margin: 4px 0 0;
+  font-size: 18px;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+.tn-excal-prototype__header p,
+.tn-excal-prototype__focus p {
+  margin: 0;
+  color: var(--tn-excal-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.tn-excal-prototype__eyebrow {
+  color: var(--tn-color-accent);
+  font-family: "Cascadia Code", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.tn-excal-prototype__workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  min-height: 720px;
+  max-width: 1440px;
+  margin: 0 auto;
+  overflow: hidden;
+  border: 1px solid var(--tn-color-border);
+  background: var(--tn-color-elevated-bg);
+}
+
+.tn-excal-prototype__canvas {
+  position: relative;
+  min-width: 0;
+  min-height: 720px;
+  border-right: 1px solid var(--tn-excal-line);
+}
+
+.tn-excal-prototype__canvas .excalidraw,
+.tn-excal-prototype__canvas .excalidraw-container {
+  width: 100%;
+  height: 100%;
+}
+
+/* Keep Excalidraw's explicit activation boundary, but let the Tent card carry
+   the instruction instead of covering its content with the default hint. */
+.tn-excal-prototype__canvas .excalidraw__embeddable-hint {
+  display: none;
+}
+
+.tn-excal-prototype__focus {
+  padding: 20px 18px;
+  background: var(--tn-color-panel-bg);
+}
+
+.tn-excal-prototype__focus dl {
+  display: grid;
+  gap: 14px;
+  margin: 24px 0;
+}
+
+.tn-excal-prototype__focus dl div {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--tn-color-border);
+}
+
+.tn-excal-prototype__focus dt {
+  margin-bottom: 4px;
+  color: var(--tn-color-text-faint);
+  font-size: 11px;
+}
+
+.tn-excal-prototype__focus dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.tn-excal-prototype__focus-note {
+  padding: 12px;
+  border-left: 2px solid var(--tn-color-accent);
+  background: var(--tn-color-accent-soft);
+}
+
+.tn-excal-prototype__empty {
+  margin-top: 24px;
+}
+
+.tn-excal-node {
+  position: relative;
+  container-type: size;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--tn-color-border);
+  border-radius: var(--tn-radius-md);
+  background: var(--tn-color-card-bg);
+  box-shadow: var(--tn-shadow-card);
+  color: var(--tn-color-text-primary);
+  font-family: var(--tn-font-ui);
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    background 140ms ease;
+}
+
+.tn-excal-node[data-selected="true"] {
+  border-color: var(--tn-color-border);
+  border-left: 2px solid var(--tn-color-accent);
+  background: color-mix(in srgb, var(--tn-color-card-bg) 92%, var(--tn-color-accent-soft));
+  box-shadow: none;
+}
+
+.tn-excal-node__signal {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: flex;
+  gap: 4px;
+  height: 3px;
+  overflow: hidden;
+  background: var(--tn-color-border);
+}
+
+.tn-excal-node__signal span {
+  width: 34%;
+  height: 100%;
+  background: var(--tn-color-running);
+  transform: translateX(-320%);
+}
+
+.tn-excal-node[data-node-state="active"] .tn-excal-node__signal span {
+  animation: tn-excal-node-signal 1.5s ease-in-out infinite;
+}
+
+.tn-excal-node[data-node-state="active"] .tn-excal-node__signal span:nth-child(2) {
+  animation-delay: 140ms;
+}
+
+.tn-excal-node[data-node-state="active"] .tn-excal-node__signal span:nth-child(3) {
+  animation-delay: 280ms;
+}
+
+.tn-excal-node[data-node-state="waiting"] .tn-excal-node__signal {
+  background: var(--tn-color-warning-soft);
+}
+
+.tn-excal-node[data-node-state="waiting"] .tn-excal-node__signal::after {
+  width: 42%;
+  height: 100%;
+  background: var(--tn-color-warning);
+  content: "";
+  animation: tn-excal-node-wait 2.2s ease-in-out infinite;
+}
+
+.tn-excal-node[data-node-state="delivered"] .tn-excal-node__signal {
+  background: var(--tn-color-success-soft);
+}
+
+.tn-excal-node[data-node-state="stale"] .tn-excal-node__signal,
+.tn-excal-node[data-node-state="unknown"] .tn-excal-node__signal {
+  background: var(--tn-color-ghost);
+}
+
+.tn-excal-node[data-node-state="unresolved"] .tn-excal-node__signal,
+.tn-excal-node[data-node-state="error"] .tn-excal-node__signal {
+  background: var(--tn-color-danger-soft);
+}
+
+.tn-excal-node__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 16px 0;
+}
+
+.tn-excal-node__type,
+.tn-excal-node__id {
+  color: var(--tn-color-text-faint);
+  font-family: "Cascadia Code", monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tn-excal-node__state {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--tn-color-text-secondary);
+  font-size: 11px;
+}
+
+.tn-excal-node__state-mark {
+  width: 7px;
+  height: 7px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: var(--tn-color-elevated-bg);
+}
+
+.tn-excal-node[data-node-state="active"] .tn-excal-node__state-mark {
+  color: var(--tn-color-running);
+  background: var(--tn-color-info-soft);
+  animation: tn-excal-node-pulse 1.6s ease-in-out infinite;
+}
+
+.tn-excal-node[data-node-state="waiting"] .tn-excal-node__state-mark {
+  color: var(--tn-color-warning);
+  background: var(--tn-color-warning-soft);
+}
+
+.tn-excal-node[data-node-state="delivered"] .tn-excal-node__state-mark {
+  color: var(--tn-color-success);
+  background: var(--tn-color-success-soft);
+}
+
+.tn-excal-node[data-node-state="stale"] .tn-excal-node__state-mark,
+.tn-excal-node[data-node-state="unknown"] .tn-excal-node__state-mark {
+  color: var(--tn-color-pending);
+  background: var(--tn-color-ghost);
+}
+
+.tn-excal-node[data-node-state="unresolved"] .tn-excal-node__state-mark,
+.tn-excal-node[data-node-state="error"] .tn-excal-node__state-mark {
+  color: var(--tn-color-danger);
+  background: var(--tn-color-danger-soft);
+}
+
+.tn-excal-node h3 {
+  margin: 18px 16px 5px;
+  overflow: hidden;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tn-excal-node p {
+  display: -webkit-box;
+  margin: 0 16px;
+  overflow: hidden;
+  color: var(--tn-color-text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.tn-excal-node[data-expanded="true"] > p {
+  display: none;
+}
+
+.tn-excal-node__peek {
+  display: grid;
+  gap: 3px;
+  margin: 9px 16px 0;
+  font-size: 10px;
+}
+
+.tn-excal-node__peek div {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 7px;
+}
+
+.tn-excal-node__peek dt,
+.tn-excal-node__peek dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tn-excal-node__peek dt {
+  color: var(--tn-color-text-faint);
+}
+
+.tn-excal-node__peek dd {
+  color: var(--tn-color-text-primary);
+}
+
+.tn-excal-node footer {
+  position: absolute;
+  right: 16px;
+  bottom: 13px;
+  left: 16px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  padding-top: 9px;
+  border-top: 1px solid var(--tn-color-border);
+}
+
+.tn-excal-node__hint {
+  color: var(--tn-color-text-faint);
+  font-size: 10px;
+}
+
+.tn-excal-node__peek-toggle {
+  padding: 1px 0;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  color: var(--tn-color-accent);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.tn-excal-node__peek-toggle:hover {
+  border-bottom-color: currentColor;
+}
+
+.tn-excal-node__peek-toggle:focus-visible {
+  border-radius: 2px;
+  outline: var(--tn-focus-ring);
+  outline-offset: 2px;
+}
+
+/*
+ * Existing Canvas documents may still contain the original 200 x 72
+ * placements. A short placement is a compact node label, not a clipped full
+ * card: keep its authoritative type/state/title and move detail work to the
+ * right pane. Taller placements progressively reveal the summary and footer.
+ */
+@container (max-height: 110px) {
+  .tn-excal-node__header {
+    gap: 8px;
+    padding: 10px 12px 0;
+  }
+
+  .tn-excal-node h3 {
+    margin: 9px 12px 0;
+    font-size: 15px;
+  }
+
+  .tn-excal-node > p,
+  .tn-excal-node__peek,
+  .tn-excal-node footer {
+    display: none;
+  }
+}
+
+@keyframes tn-excal-node-signal {
+  0% {
+    opacity: 0;
+    transform: translateX(-320%);
+  }
+  25% {
+    opacity: 1;
+  }
+  80%,
+  100% {
+    opacity: 0;
+    transform: translateX(320%);
+  }
+}
+
+@keyframes tn-excal-node-wait {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: translateX(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateX(138%);
+  }
+}
+
+@keyframes tn-excal-node-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--tn-color-info-soft);
+  }
+  50% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tn-excal-node *,
+  .tn-excal-node *::before,
+  .tn-excal-node *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .tn-excal-prototype__header {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .tn-excal-prototype__workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .tn-excal-prototype__canvas {
+    min-height: 620px;
+    border-right: 0;
+    border-bottom: 1px solid var(--tn-excal-line);
+  }
+}

@@ -1,0 +1,152 @@
+/**
+ * Production Canvas V5 host chrome (Excalidraw single scene).
+ * Node card styles live in tent-embeddable-prototype.css (shared with prototype).
+ */
+
+.tn-canvas-v5-host {
+  position: relative;
+  container-type: inline-size;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--tn-color-stage-bg);
+}
+
+.tn-canvas-v5-host__scene {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.tn-canvas-v5-host__scene .excalidraw,
+.tn-canvas-v5-host__scene .excalidraw-container {
+  width: 100%;
+  height: 100%;
+}
+
+/* Default Excalidraw embeddable hint covers Tent cards — hide it; card footer carries the cue. */
+.tn-canvas-v5-host__scene .excalidraw__embeddable-hint {
+  display: none !important;
+}
+
+/* Tent Node commands live in Focus. Excalidraw's generic shape styling remains
+ * available for user drawings, but must not become a second Node inspector. */
+.tn-canvas-v5-host[data-tent-node-focused="true"]
+  .selected-shape-actions {
+  display: none !important;
+}
+
+.tn-canvas-v5-host__chrome {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+.tn-canvas-v5-host__settings {
+  position: relative;
+}
+
+.tn-canvas-v5-host__settings > button {
+  min-height: 30px;
+  padding: 5px 10px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: var(--tn-radius-sm);
+  background: color-mix(
+    in srgb,
+    var(--tn-color-chrome-bg) 82%,
+    transparent
+  );
+  color: var(--tn-color-text-primary);
+  font-size: 12px;
+  line-height: 1.4;
+  box-shadow: none;
+  backdrop-filter: blur(10px);
+}
+
+.tn-canvas-v5-host__settings > button:hover,
+.tn-canvas-v5-host__settings > button[aria-expanded="true"] {
+  border-color: var(--tn-color-border);
+  background: var(--tn-color-elevated-bg);
+}
+
+.tn-canvas-v5-host__settings-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  display: grid;
+  min-width: 210px;
+  max-width: calc(100cqw - 20px);
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--tn-color-border);
+  border-radius: var(--tn-radius-md);
+  background: var(--tn-color-elevated-bg);
+  box-shadow: var(--tn-shadow-float);
+}
+
+.tn-canvas-v5-host__settings-popover fieldset {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.tn-canvas-v5-host__settings-popover legend {
+  margin-bottom: 4px;
+  color: var(--tn-color-text-secondary);
+  font-size: 11px;
+}
+
+.tn-canvas-v5-host__banner {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 45;
+  max-width: min(420px, calc(100% - 140px));
+  padding: 8px 10px;
+  border: 1px solid var(--tn-color-warning-border);
+  border-radius: 6px;
+  background: var(--tn-color-warning-soft);
+  color: var(--tn-color-warning);
+  font-size: 12px;
+  line-height: 1.45;
+  pointer-events: auto;
+}
+
+.tn-canvas-v5-host__banner[data-kind="error"] {
+  border-color: var(--tn-color-danger-border);
+  background: var(--tn-color-danger-soft);
+  color: var(--tn-color-danger);
+}
+
+@container (max-width: 420px) {
+  .tn-canvas-v5-host__chrome {
+    top: 58px;
+  }
+
+  .tn-canvas-v5-host__settings-popover {
+    min-width: min(210px, calc(100cqw - 20px));
+  }
+
+  .tn-canvas-v5-host__banner {
+    right: 10px;
+    max-width: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tn-canvas-v5-host * {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}

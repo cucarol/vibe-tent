@@ -2,6 +2,7 @@ temp/
 node_modules/
 release/
 dist-core/
+storybook-static/
 .playwright-cli/
 output/
 *-preview.html
