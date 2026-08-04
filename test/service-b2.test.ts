@@ -635,6 +635,63 @@ test("docs.importAttachment: base64 wire → binary disk; rejects bad base64/siz
   });
 });
 
+test("docs.importAttachment rejects legacy and unknown fields before any write", async () => {
+  const ws = await makeWorkspace();
+  await withService(async (svc) => {
+    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+    const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+
+    const created = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "attach-guard",
+      type: "prompt",
+    });
+    assert.ok(!created.error, JSON.stringify(created.error));
+    const nodeId = (created.result as { nodeId: string }).nodeId;
+    const notePath = path.join(ws, ".tent", "attach-guard", "attach-guard.md");
+    const attachmentDir = path.join(ws, ".tent", "attachments", nodeId);
+
+    const snapshotAttachmentDir = async (): Promise<Array<[string, string]>> => {
+      try {
+        const names = (await fs.readdir(attachmentDir)).sort();
+        return await Promise.all(
+          names.map(async (name): Promise<[string, string]> => [
+            name,
+            (await fs.readFile(path.join(attachmentDir, name))).toString("base64"),
+          ])
+        );
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw err;
+      }
+    };
+
+    const noteBefore = await fs.readFile(notePath);
+    const attachmentsBefore = await snapshotAttachmentDir();
+    const rawBase64 = Buffer.from("must-not-be-written").toString("base64");
+    const retiredCases: Array<[string, Record<string, unknown>]> = [
+      ["contentBase64", { contentBase64: rawBase64 }],
+      ["bytes", { bytes: rawBase64 }],
+      ["actorOverride", { bytesBase64: rawBase64, actorOverride: "user" }],
+      ["commits", { bytesBase64: rawBase64, commits: [] }],
+      ["session", { bytesBase64: rawBase64, session: "ss-shouldnotmatter" }],
+    ];
+
+    for (const [field, extra] of retiredCases) {
+      const rejected = await rpc(svc, "docs.importAttachment", {
+        workspaceId,
+        nodeId,
+        fileName: `${field}.bin`,
+        ...extra,
+      });
+      assert.equal(rejected.error?.code, -32602, field);
+      assert.match(rejected.error?.message ?? "", /unknown parameter/i, field);
+      assert.deepEqual(await fs.readFile(notePath), noteBefore, field);
+      assert.deepEqual(await snapshotAttachmentDir(), attachmentsBefore, field);
+    }
+  });
+});
+
 test("task.dispatch projects exact Node occupation; docs.write blocks collab fields", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
