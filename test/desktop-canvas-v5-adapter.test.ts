@@ -22,7 +22,12 @@ import {
   viewportFromExcalidrawAppState,
   excalidrawAppStateFromViewport,
   TENT_NODE_CUSTOM_KIND,
+  captureTentNodeOpenTarget,
 } from "../src/desktop/renderer-next/canvas/excalidraw/documentToExcalidraw.js";
+import {
+  createCanvasV5PersistGate,
+  flushCanvasV5PersistGates,
+} from "../src/desktop/renderer-next/canvas/excalidraw/canvasV5PersistGate.js";
 import {
   assertIdempotentPlacementHydrate,
   collectImageFileIds,
@@ -426,4 +431,61 @@ test("V5 leaves generic drawing tools exclusively to Excalidraw", async () => {
   assert.doesNotMatch(css, /tn-canvas-v5-host__toolbar/);
   assert.match(host, /tools:\s*\{\s*image:\s*true\s*\}/);
   assert.match(host, /data-testid="canvas-display-menu"/);
+});
+
+test("Canvas V5 only captures an exact internal Tent Node link", async () => {
+  const internal = {
+    id: "tent-pl:pl-a",
+    link: tentNodeLink("cx-alpha"),
+    customData: {
+      kind: TENT_NODE_CUSTOM_KIND,
+      nodeId: "cx-alpha",
+      placementId: "pl-a",
+    },
+  };
+  assert.deepEqual(tentNodeOpenTarget(internal), internal.customData);
+  assert.equal(
+    tentNodeOpenTarget({
+      ...internal,
+      link: "https://example.com/reference",
+    }),
+    null
+  );
+  assert.equal(
+    tentNodeOpenTarget({ link: "https://example.com/reference" }),
+    null
+  );
+  let internalPrevented = 0;
+  assert.deepEqual(
+    captureTentNodeOpenTarget(internal, {
+      preventDefault: () => { internalPrevented += 1; },
+    }),
+    internal.customData
+  );
+  assert.equal(internalPrevented, 1);
+  let externalPrevented = 0;
+  assert.equal(
+    captureTentNodeOpenTarget(
+      { link: "https://example.com/reference" },
+      { preventDefault: () => { externalPrevented += 1; } }
+    ),
+    null
+  );
+  assert.equal(externalPrevented, 0, "generic Excalidraw URL keeps native behavior");
+});
+
+test("immediate Canvas V5 unmount flushes queued placement and scene writes before remount", () => {
+  const durable: string[] = [];
+  const placement = createCanvasV5PersistGate(60_000);
+  const drawing = createCanvasV5PersistGate(60_000);
+  placement.schedule(() => durable.push("placement:last"));
+  drawing.schedule(() => durable.push("scene:last"));
+
+  // React cleanup uses this exact synchronous seam before cancelling gates.
+  flushCanvasV5PersistGates({ placement, drawing });
+  drawing.cancel();
+  placement.cancel();
+
+  assert.deepEqual(durable, ["placement:last", "scene:last"]);
+  assert.deepEqual([...durable], ["placement:last", "scene:last"], "next mount sees both final writes");
 });

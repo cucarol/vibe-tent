@@ -1,12 +1,22 @@
 export type StatusBarProps = {
-  connection: "online" | "offline" | "reconnecting";
-  projection: "fresh" | "stale" | "unresolved" | "error";
+  connection: "connecting" | "online" | "offline" | "reconnecting";
+  projection: "loading" | "fresh" | "stale" | "unresolved" | "error" | "unmounted";
   nodeCount: number;
 };
 
 export function StatusBar({ connection, projection, nodeCount }: StatusBarProps) {
-  const connectionLabel = connection === "online" ? "服务已连接" : connection === "reconnecting" ? "正在重连" : "连接已断开";
-  const projectionLabel = projection === "fresh"
+  const connectionLabel = connection === "online"
+    ? "服务已连接"
+    : connection === "connecting"
+      ? "正在连接"
+      : connection === "reconnecting"
+        ? "正在重连"
+        : "连接已断开";
+  const projectionLabel = projection === "loading"
+    ? "正在读取投影"
+    : projection === "unmounted"
+      ? "未挂载工作区"
+      : projection === "fresh"
     ? "投影已同步"
     : projection === "stale"
       ? "投影已过期"
@@ -19,7 +29,7 @@ export function StatusBar({ connection, projection, nodeCount }: StatusBarProps)
       <span className="tn-status-separator" aria-hidden="true" />
       <span className="tn-status-item" data-state={projection}>{projectionLabel}</span>
       <span className="tn-status-spacer" />
-      <span>{nodeCount} 个节点</span>
+      <span>{projection === "loading" || projection === "unmounted" ? "节点数未知" : `${nodeCount} 个节点`}</span>
     </footer>
   );
 }

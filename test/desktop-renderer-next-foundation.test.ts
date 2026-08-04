@@ -314,7 +314,7 @@ test("Desktop loads renderer-next without exposing Electron as the CLI package m
 test("production invalidation is immediate and provenance is selected-output only", async () => {
   const main = await read("src/desktop/main/index.ts");
   const eventSend = main.indexOf("DESKTOP_IPC.onServiceEvent");
-  const shellRefresh = main.indexOf("const refresh =", eventSend);
+  const shellRefresh = main.indexOf("refreshDesktopShellForEvent(model, ev.type)", eventSend);
   assert.ok(eventSend >= 0 && shellRefresh > eventSend);
   assert.match(main, /\.catch\(\(error\) =>/);
 

@@ -155,6 +155,17 @@ export function tentNodeOpenTarget(
   return custom;
 }
 
+/** Capture only an exact internal Tent target; generic links remain native. */
+export function captureTentNodeOpenTarget(
+  element: { link?: string | null; customData?: unknown } | null | undefined,
+  event: { preventDefault: () => void }
+): TentNodeCustomData | null {
+  const target = tentNodeOpenTarget(element);
+  if (!target) return null;
+  event.preventDefault();
+  return target;
+}
+
 function placementSize(p: CanvasPlacement): { width: number; height: number } {
   return {
     width: isFiniteNumber(p.width) ? p.width : NODE_CARD.width,

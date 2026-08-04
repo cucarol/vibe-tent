@@ -5,13 +5,45 @@ import { nodeTitle, nodeTypeLabel, projectionLabel, taskStateLabel, type Workben
 
 export type OutlinePanelProps = {
   nodes: readonly WorkbenchNodeView[];
+  projection: "loading" | "fresh" | "stale" | "unresolved" | "error" | "unmounted";
   selectedNodeId: string | null;
   onSelectNode: (nodeId: string) => void;
   onCollapse: () => void;
 };
 
-export function OutlinePanel({ nodes, selectedNodeId, onSelectNode, onCollapse }: OutlinePanelProps) {
+const EMPTY_COPY: Record<
+  OutlinePanelProps["projection"],
+  { title: string; body: string }
+> = {
+  loading: {
+    title: "正在加载节点",
+    body: "正在读取权威图投影，请稍候。",
+  },
+  error: {
+    title: "节点加载失败",
+    body: "未把失败的读取伪装成空工作区；请恢复连接后重试。",
+  },
+  unmounted: {
+    title: "尚未挂载工作区",
+    body: "挂载工作区后，节点会按结构显示在这里。",
+  },
+  stale: {
+    title: "节点状态已过期",
+    body: "本地画布仍会保留，等待权威投影恢复。",
+  },
+  unresolved: {
+    title: "节点尚未解析",
+    body: "本地位置仍在，但权威 Node 尚未解析。",
+  },
+  fresh: {
+    title: "还没有节点",
+    body: "权威图投影已就绪，这个工作区目前没有节点。",
+  },
+};
+
+export function OutlinePanel({ nodes, projection, selectedNodeId, onSelectNode, onCollapse }: OutlinePanelProps) {
   const itemRefs = useRef(new Map<string, HTMLButtonElement>());
+  const emptyCopy = EMPTY_COPY[projection];
 
   const focusItem = (index: number) => {
     const node = nodes[index];
@@ -40,8 +72,8 @@ export function OutlinePanel({ nodes, selectedNodeId, onSelectNode, onCollapse }
       />
       {nodes.length === 0 ? (
         <div className="tn-pane-empty" role="status">
-          <strong>还没有节点</strong>
-          <p>挂载工作区后，节点会按结构显示在这里。</p>
+          <strong>{emptyCopy.title}</strong>
+          <p>{emptyCopy.body}</p>
         </div>
       ) : (
         <div className="tn-outline-tree" role="tree" aria-label="工作区节点">

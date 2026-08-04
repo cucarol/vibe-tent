@@ -35,6 +35,15 @@ import {
   collaborationProjectionState,
   type WorkbenchNodeView,
 } from "./shell/workbench-types.js";
+import {
+  graphPresentationState,
+  projectionForConnection,
+  workspaceProjectionStatus,
+} from "./model/workspace-projection-view.js";
+import {
+  handleDesktopRecoveryEvent,
+  type DesktopConnection,
+} from "./model/desktop-recovery.js";
 
 type ProvenanceView = { state: "ready" | "error"; label: string };
 
@@ -57,16 +66,6 @@ function depthByNodeId(graph: GraphProjection): ReadonlyMap<string, number> {
   return depths;
 }
 
-function resourcePresentationState(
-  graph: ProjectionResource<GraphProjection>
-): "ready" | "stale" | "error" {
-  if (graph.state === "ready") return "ready";
-  if (graph.state === "stale" || (graph.state === "loading" && graph.previous)) {
-    return "stale";
-  }
-  return "error";
-}
-
 export function workbenchNodesFromResources(
   graphResource: ProjectionResource<GraphProjection>,
   collaborationResource: ProjectionResource<NodeCollaborationsResult>,
@@ -81,7 +80,7 @@ export function workbenchNodesFromResources(
         : graphResource.state === "loading"
           ? graphResource.previous ?? null
           : null;
-  const graphState = resourcePresentationState(graphResource);
+  const graphState = graphPresentationState(graphResource);
   const collabs =
     collaborationResource.state === "ready"
       ? collaborationByNodeId(collaborationResource.value)
@@ -135,10 +134,17 @@ export function workbenchNodesFromResources(
       archived: false,
       invalid: false,
       collaborationState: "unknown",
-      projectionState: graphState === "error" ? "error" : "unresolved",
+      projectionState:
+        graphState === "error"
+          ? "error"
+          : graphState === "loading"
+            ? "loading"
+            : "unresolved",
       projectionMessage:
         graphState === "error"
           ? "图投影查询失败；本地位置已保留。"
+          : graphState === "loading"
+            ? "正在读取权威图投影；本地位置已保留。"
           : "权威投影中没有解析到这个 Node；本地位置已保留。",
     });
   }
@@ -174,8 +180,19 @@ function seedDocument(graph: GraphProjection): CanvasDocument {
 function MountedWorkspace(props: {
   bridge: RendererDesktopBridge;
   workspace: DesktopWorkspace;
+  connection: "online" | "offline" | "reconnecting";
+  recoveryGeneration: number;
+  onConnectionChange: (connection: "online" | "offline") => void;
+  onRetryConnection: () => void;
 }) {
-  const { bridge, workspace } = props;
+  const {
+    bridge,
+    workspace,
+    connection,
+    recoveryGeneration,
+    onConnectionChange,
+    onRetryConnection,
+  } = props;
   const gateway = useMemo(() => createDesktopServiceGateway(bridge), [bridge]);
   const persistence = useMemo(
     () => new CanvasV5LocalPersistence(window.localStorage, workspace.workspaceId),
@@ -215,6 +232,7 @@ function MountedWorkspace(props: {
   );
   const provenanceGeneration = useRef(0);
   const [shellGeneration, setShellGeneration] = useState(0);
+  const seenRecoveryGeneration = useRef(recoveryGeneration);
 
   function applyLoadRetry(result: CanvasV5LoadResult): void {
     setPersistenceStatus(result.status);
@@ -304,7 +322,11 @@ function MountedWorkspace(props: {
     if (generation !== requestGeneration.current) return;
     graphRef.current = settleProjection(graphRef.current, graphRead);
     setGraphResource(graphRef.current);
-    if (!graphRead.ok) return;
+    if (!graphRead.ok) {
+      if (graphRead.issue.kind === "transport") onConnectionChange("offline");
+      return;
+    }
+    onConnectionChange("online");
 
     if (
       !seeded.current &&
@@ -339,8 +361,11 @@ function MountedWorkspace(props: {
       collaborationRead
     );
     setCollaborationResource(collaborationRef.current);
+    if (!collaborationRead.ok && collaborationRead.issue.kind === "transport") {
+      onConnectionChange("offline");
+    }
 
-  }, [gateway, scheduleSnapshot, workspace.workspaceId]);
+  }, [gateway, onConnectionChange, scheduleSnapshot, workspace.workspaceId]);
 
   useEffect(() => {
     const current = ++provenanceGeneration.current;
@@ -387,13 +412,30 @@ function MountedWorkspace(props: {
     };
   }, [commitSnapshot, gateway, refresh, workspace.workspaceId]);
 
-  const nodes = workbenchNodesFromResources(
+  useEffect(() => {
+    if (seenRecoveryGeneration.current === recoveryGeneration) return;
+    seenRecoveryGeneration.current = recoveryGeneration;
+    void refresh();
+  }, [recoveryGeneration, refresh]);
+
+  const presentedGraphResource = projectionForConnection(
     graphResource,
+    workspace.workspaceId,
+    connection
+  );
+  const presentedCollaborationResource = projectionForConnection(
     collaborationResource,
+    workspace.workspaceId,
+    connection
+  );
+  const nodes = workbenchNodesFromResources(
+    presentedGraphResource,
+    presentedCollaborationResource,
     snapshot.document,
     provenance
   );
-  const graph = graphResource.state === "ready" ? graphResource.value : null;
+  const graph = presentedGraphResource.state === "ready" ? presentedGraphResource.value : null;
+  const projectionState = workspaceProjectionStatus(presentedGraphResource, nodes);
 
   return (
     <AppShell
@@ -412,7 +454,9 @@ function MountedWorkspace(props: {
           : null
       }
       graph={graph}
-      connection="online"
+      connection={connection}
+      projectionState={projectionState}
+      onRetryConnection={connection === "offline" ? onRetryConnection : undefined}
       persistenceStatus={persistenceStatus}
       onRetryPersistence={retrySave.current ?? undefined}
       onCanvasDocumentChange={(document) => scheduleSnapshot({ document })}
@@ -431,42 +475,83 @@ export function ProductionApp() {
     }
   });
   const [bootstrap, setBootstrap] = useState<DesktopBootstrap | null>(null);
+  const bootstrapRef = useRef<DesktopBootstrap | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [connection, setConnection] = useState<DesktopConnection>(
+    bridge ? "connecting" : "offline"
+  );
+  const connectionRef = useRef(connection);
+  const [recoveryGeneration, setRecoveryGeneration] = useState(0);
   const generation = useRef(0);
+
+  const updateConnection = useCallback(
+    (next: DesktopConnection) => {
+      connectionRef.current = next;
+      setConnection(next);
+    },
+    []
+  );
 
   const reloadBootstrap = useCallback(async () => {
     const current = ++generation.current;
     if (!bridge) {
       setBootstrap(null);
+      bootstrapRef.current = null;
       setError("Electron preload bridge 不可用");
+      updateConnection("offline");
       return;
     }
+    if (connectionRef.current === "offline") updateConnection("reconnecting");
     try {
       const normalized = normalizeDesktopBootstrap(await bridge.getState());
       if (current !== generation.current) return;
+      const previousWorkspaceId =
+        bootstrapRef.current?.foregroundWorkspace?.workspaceId ?? null;
+      const wasRecovering =
+        connectionRef.current === "offline" ||
+        connectionRef.current === "reconnecting";
+      bootstrapRef.current = normalized;
       setBootstrap(normalized);
       setError(null);
+      updateConnection("online");
+      if (
+        wasRecovering &&
+        previousWorkspaceId &&
+        previousWorkspaceId === normalized.foregroundWorkspace?.workspaceId
+      ) {
+        setRecoveryGeneration((value) => value + 1);
+      }
     } catch (cause) {
       if (current !== generation.current) return;
-      setBootstrap(null);
       setError(cause instanceof Error ? cause.message : "桌面服务连接失败");
+      updateConnection("offline");
     }
-  }, [bridge]);
+  }, [bridge, updateConnection]);
 
   useEffect(() => {
     void reloadBootstrap();
     if (!bridge) return;
-    return bridge.onStateChanged(() => void reloadBootstrap());
-  }, [bridge, reloadBootstrap]);
+    const stopState = bridge.onStateChanged(() => void reloadBootstrap());
+    const stopRecoveryEvents = bridge.onServiceEvent((event) => {
+      void handleDesktopRecoveryEvent(
+        event.type,
+        updateConnection,
+        reloadBootstrap
+      );
+    });
+    return () => {
+      stopRecoveryEvents();
+      stopState();
+    };
+  }, [bridge, reloadBootstrap, updateConnection]);
 
   if (!bootstrap?.foregroundWorkspace) {
     return (
       <AppShell
         workspaceLabel={bootstrap ? "未挂载工作区" : "正在连接本地服务"}
-        // A healthy transport without an authoritative foreground workspace is
-        // still an unmounted workbench, never a ready/online Canvas.
-        connection="offline"
-        onRetryConnection={error ? reloadBootstrap : undefined}
+        connection={connection}
+        projectionState={bootstrap ? "unmounted" : error ? "error" : "loading"}
+        onRetryConnection={connection === "offline" ? reloadBootstrap : undefined}
       />
     );
   }
@@ -475,6 +560,10 @@ export function ProductionApp() {
       key={bootstrap.foregroundWorkspace.workspaceId}
       bridge={bridge!}
       workspace={bootstrap.foregroundWorkspace}
+      connection={connection === "connecting" ? "reconnecting" : connection}
+      recoveryGeneration={recoveryGeneration}
+      onConnectionChange={updateConnection}
+      onRetryConnection={reloadBootstrap}
     />
   );
 }

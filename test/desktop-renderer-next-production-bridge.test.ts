@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { handleDesktopRecoveryEvent } from "../src/desktop/renderer-next/model/desktop-recovery.js";
 import {
   createDesktopServiceGateway,
   normalizeDesktopBootstrap,
   type RendererDesktopBridge,
 } from "../src/desktop/renderer-next/gateway/desktop-bridge.js";
+import { DesktopServiceHost } from "../src/desktop/main/service-host.js";
+import type { EventEnvelope } from "../src/service/types.js";
 import { shouldSeedLocalCanvas } from "../src/desktop/renderer-next/model/canvas-v5-local-persistence.js";
 import { startWorkspaceProjectionBridge } from "../src/desktop/renderer-next/gateway/workspace-projection-bridge.js";
 import {
@@ -16,6 +19,10 @@ import {
   type WorkbenchNodeView,
 } from "../src/desktop/renderer-next/shell/workbench-types.js";
 import { InspectorPanel } from "../src/desktop/renderer-next/components/InspectorPanel.js";
+import { OutlinePanel } from "../src/desktop/renderer-next/components/OutlinePanel.js";
+import { StatusBar } from "../src/desktop/renderer-next/components/StatusBar.js";
+import { projectionForConnection, workspaceProjectionStatus } from "../src/desktop/renderer-next/model/workspace-projection-view.js";
+import type { GraphProjection } from "../src/service/types.js";
 
 function state(workspaceId = "ws-a") {
   return {
@@ -105,11 +112,107 @@ test("projection events during the held initial read schedule a newer read", asy
   assert.equal(reads, 1);
   invalidation!({ keys: ["graph.projection"], event: { workspaceId: "ws-a" } });
   assert.equal(reads, 2);
+  invalidation!({ keys: ["service.health"], event: { workspaceId: "" } });
+  assert.equal(reads, 3, "global health recovery schedules a named projection reread");
   releaseInitial();
   await initialRead;
   stop();
   assert.equal(started, false);
   assert.equal(invalidation, null);
+});
+
+test("desktop disconnect becomes reconnecting before held bootstrap recovery", async () => {
+  const states: string[] = [];
+  let release!: () => void;
+  const heldRead = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let reads = 0;
+
+  const pending = handleDesktopRecoveryEvent(
+    "service.disconnected",
+    (connection) => states.push(connection),
+    async () => {
+      reads += 1;
+      await heldRead;
+      states.push("online");
+    }
+  );
+
+  assert.ok(pending);
+  assert.deepEqual(states, ["reconnecting"]);
+  assert.equal(reads, 1);
+  release();
+  await pending;
+  assert.deepEqual(states, ["reconnecting", "online"]);
+});
+
+test("initial projection loading/error stays distinct from authoritative ready-empty", () => {
+  const emptyGraph = {
+    workspaceId: "ws-a",
+    nodes: [],
+    edges: { parent: [], markdown: [], wiki: [], relation: [] },
+  } as unknown as GraphProjection;
+  assert.equal(workspaceProjectionStatus({ state: "idle" }, []), "loading");
+  assert.equal(
+    workspaceProjectionStatus({ state: "loading", workspaceId: "ws-a" }, []),
+    "loading"
+  );
+  assert.equal(
+    workspaceProjectionStatus({ state: "error", workspaceId: "ws-a", issue: { kind: "transport", message: "offline" }, failedAt: "now" }, []),
+    "error"
+  );
+  assert.equal(
+    workspaceProjectionStatus({ state: "ready", workspaceId: "ws-a", value: emptyGraph, fetchedAt: "now" }, []),
+    "fresh"
+  );
+  assert.equal(
+    workspaceProjectionStatus(
+      projectionForConnection(
+        { state: "ready", workspaceId: "ws-a", value: emptyGraph, fetchedAt: "now" },
+        "ws-a",
+        "offline"
+      ),
+      []
+    ),
+    "stale",
+    "cached ready data becomes stale when transport authority is offline"
+  );
+
+  const outlineProps = {
+    nodes: [],
+    selectedNodeId: null,
+    onSelectNode: () => {},
+    onCollapse: () => {},
+  };
+  const loading = renderToStaticMarkup(
+    createElement(OutlinePanel, { ...outlineProps, projection: "loading" })
+  ) + renderToStaticMarkup(
+    createElement(StatusBar, { connection: "connecting", projection: "loading", nodeCount: 0 })
+  );
+  assert.match(loading, /正在加载节点/);
+  assert.match(loading, /正在读取投影/);
+  assert.doesNotMatch(loading, /还没有节点|投影已同步/);
+
+  const failed = renderToStaticMarkup(
+    createElement(OutlinePanel, { ...outlineProps, projection: "error" })
+  );
+  assert.match(failed, /节点加载失败/);
+  assert.doesNotMatch(failed, /还没有节点/);
+
+  const staleEmpty = renderToStaticMarkup(
+    createElement(OutlinePanel, { ...outlineProps, projection: "stale" })
+  );
+  assert.match(staleEmpty, /节点状态已过期/);
+  assert.doesNotMatch(staleEmpty, /还没有节点/);
+
+  const readyEmpty = renderToStaticMarkup(
+    createElement(OutlinePanel, { ...outlineProps, projection: "fresh" })
+  ) + renderToStaticMarkup(
+    createElement(StatusBar, { connection: "online", projection: "fresh", nodeCount: 0 })
+  );
+  assert.match(readyEmpty, /还没有节点/);
+  assert.match(readyEmpty, /投影已同步/);
 });
 
 test("non-ready collaboration never becomes a confirmed idle claim", () => {
@@ -202,4 +305,40 @@ test("desktop event payload is invalidation only and named RPC stays closed", as
   ]);
   gateway.stopEventBridge();
   assert.equal(serviceEvent, null);
+});
+
+test("client-visible session.state crosses the desktop host into renderer invalidation", async () => {
+  const host = new DesktopServiceHost();
+  const bridge: RendererDesktopBridge = {
+    getState: async () => state(),
+    rpc: async () => ({ workspaceId: "ws-a", nodes: [], edges: {} }),
+    onStateChanged: () => () => {},
+    // This has the same narrow `{ type, workspaceId }` contract exposed by
+    // preload. The host remains responsible for event filtering/debouncing.
+    onServiceEvent: (handler) => host.onServiceEvent(handler),
+  };
+  const gateway = createDesktopServiceGateway(bridge);
+  const hints: Array<readonly string[]> = [];
+  gateway.onInvalidation((hint) => hints.push(hint.keys));
+  gateway.startEventBridge();
+
+  const push = (host as unknown as {
+    handleEnvelope: (event: EventEnvelope) => void;
+  }).handleEnvelope.bind(host);
+  push({
+    id: "ev-session-state",
+    type: "session.state",
+    workspaceId: "ws-a",
+    ts: new Date().toISOString(),
+    source: "service",
+    payload: {},
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(hints.length, 1);
+  assert.ok(hints[0]!.includes("node.collaborations"));
+  assert.ok(hints[0]!.includes("output.provenance"));
+
+  gateway.stopEventBridge();
+  await host.disposeShellOnly();
 });

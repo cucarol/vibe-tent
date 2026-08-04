@@ -1,4 +1,9 @@
-export type ProjectionState = "ready" | "stale" | "unresolved" | "error";
+export type ProjectionState =
+  | "loading"
+  | "ready"
+  | "stale"
+  | "unresolved"
+  | "error";
 export type CollaborationProjectionState =
   | "ready"
   | "refreshing"
@@ -82,6 +87,7 @@ export function collaborationSummary(node: WorkbenchNodeView): string {
 
 export function projectionLabel(state: ProjectionState | undefined): string | null {
   if (!state || state === "ready") return null;
+  if (state === "loading") return "正在加载";
   if (state === "stale") return "数据已过期";
   if (state === "unresolved") return "节点未解析";
   return "加载失败";

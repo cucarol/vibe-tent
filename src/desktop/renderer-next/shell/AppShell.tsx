@@ -19,7 +19,8 @@ export type AppShellProps = {
   initialDocument?: CanvasDocument;
   initialSelectedNodeId?: string | null;
   graph?: GraphEdgeSource;
-  connection?: "online" | "offline" | "reconnecting";
+  connection?: "connecting" | "online" | "offline" | "reconnecting";
+  projectionState?: "loading" | "fresh" | "stale" | "unresolved" | "error" | "unmounted";
   onRetryConnection?: () => void;
   initialScene?: ExcalidrawSceneSnapshot | null;
   persistenceStatus?: DrawingPersistenceStatus;
@@ -41,6 +42,7 @@ export function AppShell({
   initialSelectedNodeId = null,
   graph = null,
   connection = "offline",
+  projectionState,
   onRetryConnection,
   initialScene = null,
   persistenceStatus = { kind: "ok" },
@@ -63,15 +65,17 @@ export function AppShell({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(() => initialSelection.current!.selectedNodeId);
   const nodes = useMemo(() => [...initialNodes], [initialNodes]);
   const selectedNode = useMemo(() => nodes.find((node) => node.nodeId === selectedNodeId) ?? null, [nodes, selectedNodeId]);
-  const projection = !workspaceId
-    ? "error"
+  const projection = projectionState ?? (!workspaceId
+    ? "unmounted"
     : nodes.some((node) => node.projectionState === "error")
     ? "error"
     : nodes.some((node) => node.projectionState === "unresolved")
       ? "unresolved"
       : nodes.some((node) => node.projectionState === "stale")
       ? "stale"
-      : "fresh";
+      : nodes.some((node) => node.projectionState === "loading")
+        ? "loading"
+        : "fresh");
 
   const selectNode = (nodeId: string | null, placementId?: string | null) => {
     setSelectedNodeId(nodeId);
@@ -107,13 +111,13 @@ export function AppShell({
 
       {connection !== "online" ? (
         <div className="tn-connection-banner" role="alert">
-          <span>{connection === "reconnecting" ? "正在重新连接本地服务。画布位置会保留，节点事实暂不视为最新。" : "本地服务连接已断开。画布位置会保留，节点事实暂不视为最新。"}</span>
+          <span>{connection === "connecting" ? "正在连接本地服务；节点事实尚未加载。" : connection === "reconnecting" ? "正在重新连接本地服务。画布位置会保留，节点事实暂不视为最新。" : "本地服务连接已断开。画布位置会保留，节点事实暂不视为最新。"}</span>
           {onRetryConnection ? <Button size="compact" onClick={onRetryConnection} loading={connection === "reconnecting"}>重试连接</Button> : null}
         </div>
       ) : null}
 
       <div className="tn-workbench" data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-immersive={immersive ? "true" : "false"}>
-        <OutlinePanel nodes={nodes} selectedNodeId={selectedNodeId} onSelectNode={selectNode} onCollapse={() => setOutlineOpen(false)} />
+        <OutlinePanel nodes={nodes} projection={projection} selectedNodeId={selectedNodeId} onSelectNode={selectNode} onCollapse={() => setOutlineOpen(false)} />
         <CanvasWorkbench document={document} nodes={nodes} graph={graph} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNode} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
         <InspectorPanel node={selectedNode} onCollapse={() => setFocusOpen(false)} />
       </div>

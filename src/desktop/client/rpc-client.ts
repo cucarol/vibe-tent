@@ -101,7 +101,12 @@ export class ServiceRpcClient {
         let buffer = "";
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            if (!ac.signal.aborted) {
+              onError?.(new Error("SSE stream closed"));
+            }
+            break;
+          }
           buffer += decoder.decode(value, { stream: true });
           const parts = buffer.split("\n\n");
           buffer = parts.pop() ?? "";

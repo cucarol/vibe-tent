@@ -34,11 +34,11 @@ import type { DrawingPersistenceStatus } from "../../model/drawing-persistence-s
 import {
   applyPlacementPatches,
   buildTentEmbeddableCardModels,
+  captureTentNodeOpenTarget,
   deletedTentPlacementIds,
   extractPlacementPatchesFromElements,
   readTentNodeCustomData,
   selectionToFocusedPlacement,
-  tentNodeOpenTarget,
   tentPlacementElementId,
   validateTentEmbeddableLink,
   viewportFromExcalidrawAppState,
@@ -67,6 +67,10 @@ import {
   shouldRefreshCanvasV5Scene,
   type LiveSceneInputs,
 } from "./sceneRefreshPolicy.js";
+import {
+  createCanvasV5PersistGate,
+  flushCanvasV5PersistGates,
+} from "./canvasV5PersistGate.js";
 import "./tent-embeddable-prototype.css";
 import "./canvas-v5-host.css";
 
@@ -208,40 +212,6 @@ function toNodeData(model: {
   };
 }
 
-/**
- * Debounced persist helper — coalesces pointermove storms.
- */
-function createPersistGate(ms: number) {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let latest: (() => void) | null = null;
-  return {
-    schedule(fn: () => void) {
-      latest = fn;
-      if (timer) return;
-      timer = setTimeout(() => {
-        timer = null;
-        const run = latest;
-        latest = null;
-        run?.();
-      }, ms);
-    },
-    flush() {
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      const run = latest;
-      latest = null;
-      run?.();
-    },
-    cancel() {
-      if (timer) clearTimeout(timer);
-      timer = null;
-      latest = null;
-    },
-  };
-}
-
 export function CanvasV5Host(props: CanvasV5HostProps) {
   const {
     document: canvasDocument,
@@ -282,8 +252,8 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     edgeLayers,
   });
   const lastPersistedDrawingSig = useRef<string>("");
-  const persistGate = useRef(createPersistGate(120));
-  const placementPersistGate = useRef(createPersistGate(80));
+  const persistGate = useRef(createCanvasV5PersistGate(120));
+  const placementPersistGate = useRef(createCanvasV5PersistGate(80));
 
   const publishDocument = useCallback((nextDocument: CanvasDocument) => {
     lastInternallyPublishedDocument.current = nextDocument;
@@ -430,6 +400,10 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
 
   useEffect(() => {
     return () => {
+      flushCanvasV5PersistGates({
+        placement: placementPersistGate.current,
+        drawing: persistGate.current,
+      });
       persistGate.current.cancel();
       placementPersistGate.current.cancel();
     };
@@ -642,9 +616,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
   const handleLinkOpen = useCallback<
     NonNullable<ExcalidrawComponentProps["onLinkOpen"]>
   >((element, event) => {
-    // Every Tent embeddable URL is an internal action, never a browser target.
-    event.preventDefault();
-    const target = tentNodeOpenTarget(element);
+    const target = captureTentNodeOpenTarget(element, event);
     if (!target) return;
 
     const nextOwnership = reduceV5Ownership(ownershipRef.current, {

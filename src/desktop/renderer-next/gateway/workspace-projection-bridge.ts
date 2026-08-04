@@ -11,6 +11,7 @@ const PROJECTION_KEYS = new Set([
   "node.collaboration",
   "node.collaborations",
   "output.provenance",
+  "service.health",
 ]);
 
 /**

@@ -10,6 +10,7 @@ import { DesktopShellModel } from "../workbench/shell-model.js";
 import { loadDesktopPrefs, saveDesktopPrefs, rememberWorkspace } from "../prefs.js";
 import { defaultServiceDataDir } from "../../service/data-dir.js";
 import { DESKTOP_IPC } from "../types.js";
+import { refreshDesktopShellForEvent } from "./service-event-refresh.js";
 
 const isDev = !app.isPackaged;
 const appRoot = isDev ? process.cwd() : app.getAppPath();
@@ -105,11 +106,7 @@ async function bootstrap(): Promise<void> {
         workspaceId: ev.workspaceId,
       });
     }
-    const refresh =
-      ev.type === "workspace.switched" || ev.type === "service.health"
-        ? Promise.all([model.refreshHealth(), model.refreshWorkspaces()])
-        : model.refreshTasks();
-    void refresh.then(() => {
+    void refreshDesktopShellForEvent(model, ev.type).then(() => {
       const snap = model.getSnapshot();
       for (const win of BrowserWindow.getAllWindows()) {
         if (win.isDestroyed()) continue;

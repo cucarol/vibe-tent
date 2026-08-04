@@ -26,8 +26,21 @@ export type IpcContext = {
 
 export function registerDesktopIpc(ctx: IpcContext): void {
   ipcMain.handle(DESKTOP_IPC.getState, async () => {
+    // A renderer retry must be able to recover a dead Service attachment using
+    // the exact options captured at desktop bootstrap. Rebind the shell model
+    // only after the host has proved a healthy compatible endpoint.
+    const previousClient = ctx.host.client;
+    const attach = await ctx.host.ensureAttached();
+    const recoveredAttachment = previousClient !== attach.client;
+    ctx.model.setRpc(attach.client);
     await ctx.model.refreshHealth();
     await ctx.model.refreshWorkspaces();
+    if (recoveredAttachment && !ctx.model.getSnapshot().foregroundWorkspaceId) {
+      const prefs = await loadDesktopPrefs(ctx.dataDir);
+      if (prefs.lastWorkspaceRoot) {
+        await ctx.model.mountWorkspace(prefs.lastWorkspaceRoot);
+      }
+    }
     if (ctx.model.getSnapshot().foregroundWorkspaceId) {
       await ctx.model.refreshTasks();
     }

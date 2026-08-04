@@ -89,7 +89,11 @@ export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
   ) {
     return { keys: ["pending.interactions"], event, reason: type };
   }
-  if (type.startsWith("workspace.") || type === "service.health") {
+  if (
+    type.startsWith("workspace.") ||
+    type === "service.health" ||
+    type === "service.disconnected"
+  ) {
     return { keys: ["workspace.list", "service.health"], event, reason: type };
   }
   return { keys: ["*"], event, reason: type };

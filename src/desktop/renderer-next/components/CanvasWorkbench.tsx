@@ -45,7 +45,10 @@ export function CanvasWorkbench({ document, nodes, graph = null, immersive, onIm
       return !byId.has(entityRef) || state === "unresolved";
     },
     resolveError: (entityRef) => byId.get(entityRef)?.projectionState === "error",
-    resolvePendingRecovery: (entityRef) => byId.get(entityRef)?.projectionState === "stale",
+    resolvePendingRecovery: (entityRef) => {
+      const state = byId.get(entityRef)?.projectionState;
+      return state === "loading" || state === "stale";
+    },
     resolveActiveTaskState: (entityRef) => {
       const node = byId.get(entityRef);
       if (!node || (node.projectionState && node.projectionState !== "ready")) return undefined;
