@@ -108,10 +108,10 @@ function validateDispatchForm(form) {
     }
   };
 }
-function buildAcceptPayload(taskPath, actor = "user") {
-  return { taskPath, actor };
+function buildAcceptPayload(taskPath, deliveryId, actor = "user") {
+  return { taskPath, deliveryId, actor };
 }
-function buildRejectPayload(taskPath, reason, actor = "user") {
+function buildRejectPayload(taskPath, deliveryId, reason, actor = "user") {
   const note = reason.trim();
   if (!note) {
     return { ok: false, reason: "\u9A73\u56DE\u9700\u8981\u586B\u5199\u7B80\u77ED\u539F\u56E0\u3002" };
@@ -120,6 +120,7 @@ function buildRejectPayload(taskPath, reason, actor = "user") {
     ok: true,
     payload: {
       taskPath,
+      deliveryId,
       actor,
       note,
       resume: true
@@ -6719,12 +6720,12 @@ function renderTasks() {
     const interruptBtn = t.canInterrupt ? `<button type="button" class="btn btn-ghost" data-interrupt="${escapeHtml(t.path)}" title="\u4E2D\u65AD">\u4E2D\u65AD</button>` : "";
     const cancelBtn = t.canCancel ? `<button type="button" class="btn btn-ghost" data-cancel="${escapeHtml(t.path)}" title="\u53D6\u6D88\u4EFB\u52A1">\u53D6\u6D88</button>` : "";
     const reviewActions = t.canAcceptOrReject ? `<div class="task-primary-row">
-              <button type="button" class="btn btn-primary" data-accept="${escapeHtml(t.path)}">\u786E\u8BA4</button>
+              <button type="button" class="btn btn-primary" data-accept="${escapeHtml(t.path)}" data-delivery="${escapeHtml(t.activeDeliveryId || "")}">\u786E\u8BA4</button>
               <button type="button" class="btn btn-ghost" data-reject-toggle="${escapeHtml(t.path)}" aria-expanded="false">\u9A73\u56DE</button>
             </div>
             <div class="reject-panel" data-reject-panel="${escapeHtml(t.path)}" hidden>
               <input type="text" class="field" data-reject-reason="${escapeHtml(t.path)}" placeholder="\u9A73\u56DE\u539F\u56E0" value="${escapeHtml(rejectDraft)}" />
-              <button type="button" class="${btnClass("danger")}" data-reject="${escapeHtml(t.path)}">\u786E\u8BA4\u9A73\u56DE</button>
+              <button type="button" class="${btnClass("danger")}" data-reject="${escapeHtml(t.path)}" data-delivery="${escapeHtml(t.activeDeliveryId || "")}">\u786E\u8BA4\u9A73\u56DE</button>
             </div>` : "";
     const actions = startBtn || interruptBtn || cancelBtn || reviewActions ? `<div class="task-actions">${startBtn}${interruptBtn}${cancelBtn}${reviewActions}</div>` : "";
     return `<li class="task-item" data-task="${escapeHtml(t.path)}">
@@ -6754,7 +6755,10 @@ function renderTasks() {
     btn.addEventListener("click", () => void onCancelTask(btn.getAttribute("data-cancel")));
   });
   el.tasks.querySelectorAll("[data-accept]").forEach((btn) => {
-    btn.addEventListener("click", () => void onAccept(btn.getAttribute("data-accept")));
+    btn.addEventListener(
+      "click",
+      () => void onAccept(btn.getAttribute("data-accept"), btn.getAttribute("data-delivery"))
+    );
   });
   el.tasks.querySelectorAll("[data-reject-toggle]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -6778,7 +6782,10 @@ function renderTasks() {
     });
   });
   el.tasks.querySelectorAll("[data-reject]").forEach((btn) => {
-    btn.addEventListener("click", () => void onReject(btn.getAttribute("data-reject")));
+    btn.addEventListener(
+      "click",
+      () => void onReject(btn.getAttribute("data-reject"), btn.getAttribute("data-delivery"))
+    );
   });
 }
 function taskExecutionLabel(task) {
@@ -6833,13 +6840,14 @@ async function onCancelTask(taskPath) {
     setError(err);
   }
 }
-async function onAccept(taskPath) {
+async function onAccept(taskPath, deliveryId) {
   if (!workspaceId) return;
-  const payload = buildAcceptPayload(taskPath, "user");
+  const payload = buildAcceptPayload(taskPath, deliveryId, "user");
   try {
     await window.tentDesktop.rpc("task.accept", {
       workspaceId,
       taskPath: payload.taskPath,
+      deliveryId: payload.deliveryId,
       actor: payload.actor
     });
     el.status.textContent = `\u5DF2\u786E\u8BA4\u4EA4\u4ED8\uFF1A${taskPath}`;
@@ -6848,10 +6856,10 @@ async function onAccept(taskPath) {
     setError(err);
   }
 }
-async function onReject(taskPath) {
+async function onReject(taskPath, deliveryId) {
   if (!workspaceId) return;
   const reason = rejectDrafts.get(taskPath) || "";
-  const built = buildRejectPayload(taskPath, reason, "user");
+  const built = buildRejectPayload(taskPath, deliveryId, reason, "user");
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
@@ -6860,6 +6868,7 @@ async function onReject(taskPath) {
     await window.tentDesktop.rpc("task.reject", {
       workspaceId,
       taskPath: built.payload.taskPath,
+      deliveryId: built.payload.deliveryId,
       actor: built.payload.actor,
       note: built.payload.note,
       resume: built.payload.resume
@@ -8355,13 +8364,13 @@ function renderActivity() {
         <div class="interaction-title">${escapeHtml(t.roleId || t.sessionConnectionId || t.sessionId || "Session")}</div>
         <div class="muted interaction-note">${escapeHtml(t.deliverySummary || t.prompt || t.path)}</div>
         <div class="interaction-actions">
-          <button type="button" class="btn btn-primary" data-act-accept="${escapeHtml(t.path)}">\u786E\u8BA4</button>
+          <button type="button" class="btn btn-primary" data-act-accept="${escapeHtml(t.path)}" data-act-delivery="${escapeHtml(t.activeDeliveryId || "")}">\u786E\u8BA4</button>
           <button type="button" class="btn btn-ghost" data-act-reject-toggle="${escapeHtml(t.path)}">\u9A73\u56DE</button>
           ${t.canInterrupt ? `<button type="button" class="btn btn-ghost" data-act-interrupt="${escapeHtml(t.path)}">\u4E2D\u65AD</button>` : ""}
         </div>
         <div class="reject-panel" data-act-reject-panel="${escapeHtml(t.path)}" hidden>
           <input type="text" class="field" data-act-reject-reason="${escapeHtml(t.path)}" placeholder="\u9A73\u56DE\u539F\u56E0" value="${escapeHtml(draft)}" />
-          <button type="button" class="btn btn-danger" data-act-reject="${escapeHtml(t.path)}">\u786E\u8BA4\u9A73\u56DE</button>
+          <button type="button" class="btn btn-danger" data-act-reject="${escapeHtml(t.path)}" data-act-delivery="${escapeHtml(t.activeDeliveryId || "")}">\u786E\u8BA4\u9A73\u56DE</button>
         </div>
       </article>`;
   }).join("");
@@ -8440,7 +8449,13 @@ function wireActivity(root) {
     );
   });
   root.querySelectorAll("[data-act-accept]").forEach((btn) => {
-    btn.addEventListener("click", () => void onAccept2(btn.getAttribute("data-act-accept")));
+    btn.addEventListener(
+      "click",
+      () => void onAccept2(
+        btn.getAttribute("data-act-accept"),
+        btn.getAttribute("data-act-delivery")
+      )
+    );
   });
   root.querySelectorAll("[data-act-reject-toggle]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -8458,7 +8473,13 @@ function wireActivity(root) {
     });
   });
   root.querySelectorAll("[data-act-reject]").forEach((btn) => {
-    btn.addEventListener("click", () => void onReject2(btn.getAttribute("data-act-reject")));
+    btn.addEventListener(
+      "click",
+      () => void onReject2(
+        btn.getAttribute("data-act-reject"),
+        btn.getAttribute("data-act-delivery")
+      )
+    );
   });
   root.querySelectorAll("[data-act-start]").forEach((btn) => {
     btn.addEventListener("click", () => void onStart(btn.getAttribute("data-act-start")));
@@ -8536,13 +8557,14 @@ async function onTool(id, allow) {
     setError(err);
   }
 }
-async function onAccept2(taskPath) {
+async function onAccept2(taskPath, deliveryId) {
   if (!workspaceId) return;
-  const payload = buildAcceptPayload(taskPath, "user");
+  const payload = buildAcceptPayload(taskPath, deliveryId, "user");
   try {
     await window.tentDesktop.rpc("task.accept", {
       workspaceId,
       taskPath: payload.taskPath,
+      deliveryId: payload.deliveryId,
       actor: payload.actor
     });
     el.status.textContent = `\u5DF2\u786E\u8BA4\u4EA4\u4ED8\uFF1A${taskPath}`;
@@ -8551,10 +8573,10 @@ async function onAccept2(taskPath) {
     setError(err);
   }
 }
-async function onReject2(taskPath) {
+async function onReject2(taskPath, deliveryId) {
   if (!workspaceId) return;
   const reason = rejectDrafts.get(taskPath) || "";
-  const built = buildRejectPayload(taskPath, reason, "user");
+  const built = buildRejectPayload(taskPath, deliveryId, reason, "user");
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
@@ -8563,6 +8585,7 @@ async function onReject2(taskPath) {
     await window.tentDesktop.rpc("task.reject", {
       workspaceId,
       taskPath: built.payload.taskPath,
+      deliveryId: built.payload.deliveryId,
       actor: built.payload.actor,
       note: built.payload.note,
       resume: built.payload.resume

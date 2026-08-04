@@ -3,3 +3,4 @@
 *.bat text eol=crlf
 *.ps1 text eol=crlf
 desktop/dist/renderer-next/main.js whitespace=-trailing-space
+desktop/dist/renderer-next/excalidraw-assets/** whitespace=-trailing-space

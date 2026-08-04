@@ -4300,7 +4300,11 @@ async function prepareTaskAccept(env, taskPath, options) {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertTransition(task.state, "accept", "accepted");
-    const delivery = await requireActiveReadyDelivery(env.fs, task);
+    const delivery = await requireExpectedActiveReadyDelivery(
+      env.fs,
+      task,
+      options.deliveryId
+    );
     assertReviewAuthority({
       actor: options.actor,
       executorRoleId: task.roleId,
@@ -4322,10 +4326,14 @@ async function finalizeTaskAccept(env, taskPath, options, prepared) {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertTransition(task.state, "accept", "accepted");
-    const delivery = await requireActiveReadyDelivery(env.fs, task);
+    const delivery = await requireExpectedActiveReadyDelivery(
+      env.fs,
+      task,
+      options.deliveryId
+    );
     if (delivery.id !== prepared.deliveryId) {
       throw new TaskLifecycleError(
-        "NO_ACTIVE_DELIVERY",
+        "DELIVERY_CHANGED",
         "Ready delivery changed during integrate; refusing accept."
       );
     }
@@ -4421,7 +4429,11 @@ async function taskReject(env, taskPath, options) {
     const event = resume ? "reject-resume" : "reject-terminal";
     const to = resume ? "running" : "rejected";
     assertTransition(task.state, event, to);
-    const delivery = await requireActiveReadyDelivery(env.fs, task);
+    const delivery = await requireExpectedActiveReadyDelivery(
+      env.fs,
+      task,
+      options.deliveryId
+    );
     assertReviewAuthority({
       actor: options.actor,
       executorRoleId: task.roleId,
@@ -4534,6 +4546,22 @@ async function requireActiveReadyDelivery(fs21, task) {
     throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No ready delivery for this task.");
   }
   return ready;
+}
+async function requireExpectedActiveReadyDelivery(fs21, task, deliveryId) {
+  if (task.activeDeliveryId !== deliveryId) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      "The ready delivery changed; refresh before reviewing it."
+    );
+  }
+  const delivery = await requireActiveReadyDelivery(fs21, task);
+  if (delivery.id !== deliveryId) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      "The ready delivery changed; refresh before reviewing it."
+    );
+  }
+  return delivery;
 }
 function requireNodeById(tent, nodeId) {
   if (tent.duplicateIds.has(nodeId)) {
@@ -28172,15 +28200,16 @@ async function taskRequestReviewRpc(ctx, p) {
 async function taskAcceptRpc(ctx, p) {
   assertAllowedParams(
     p,
-    /* @__PURE__ */ new Set(["workspaceId", "taskPath", "actor", "outputNodeIds"]),
+    /* @__PURE__ */ new Set(["workspaceId", "taskPath", "deliveryId", "actor", "outputNodeIds"]),
     "task.accept"
   );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
+  const deliveryId = requireString(p, "deliveryId");
   const actor = requireString(p, "actor");
   const outputNodeIds = optionalStringArray(p, "outputNodeIds");
-  const acceptOptions = { actor, outputNodeIds };
+  const acceptOptions = { actor, deliveryId, outputNodeIds };
   const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
     let prepared;
     let expectedTargetHead;
@@ -28300,9 +28329,15 @@ function outputProvenanceErrorToRpc(err) {
   }
 }
 async function taskRejectRpc(ctx, p) {
+  assertAllowedParams(
+    p,
+    /* @__PURE__ */ new Set(["workspaceId", "taskPath", "deliveryId", "actor", "note", "resume"]),
+    "task.reject"
+  );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
+  const deliveryId = requireString(p, "deliveryId");
   const actor = requireString(p, "actor");
   const noteForDelivery = optionalString2(p, "note");
   const noteExact = optionalStringExact(p, "note");
@@ -28311,6 +28346,7 @@ async function taskRejectRpc(ctx, p) {
     ctx.host.markSelfWrite(workspaceId);
     const rejected = await taskReject(mount.env, taskPath, {
       actor,
+      deliveryId,
       note: noteForDelivery,
       resume
     });
@@ -34500,7 +34536,7 @@ function makeWorkspaceId(workspaceRoot) {
 }
 
 // src/service/protocol.ts
-var TENT_SERVICE_PROTOCOL_VERSION = 4;
+var TENT_SERVICE_PROTOCOL_VERSION = 5;
 
 // src/service/tool-approval-store.ts
 import * as fs18 from "node:fs/promises";
