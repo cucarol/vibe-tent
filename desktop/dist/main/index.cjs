@@ -1340,10 +1340,12 @@ var DESKTOP_PROJECTION_METHOD_SET = new Set(
 function isDesktopProjectionMethod(value) {
   return typeof value === "string" && DESKTOP_PROJECTION_METHOD_SET.has(value);
 }
-async function callDesktopProjection(client, method, params) {
+async function invokeDesktopProjectionRpc(getClient, method, params) {
   if (!isDesktopProjectionMethod(method)) {
     throw new Error(`Unsupported desktop projection method: ${String(method)}`);
   }
+  const client = getClient();
+  if (!client) throw new Error("Service not attached");
   return client.call(method, params);
 }
 
@@ -1389,12 +1391,7 @@ function registerDesktopIpc(ctx) {
   import_electron2.ipcMain.handle(
     DESKTOP_IPC.rpc,
     async (_e, method, params) => {
-      if (!isDesktopProjectionMethod(method)) {
-        throw new Error(`Unsupported desktop projection method: ${String(method)}`);
-      }
-      const client = ctx.host.client;
-      if (!client) throw new Error("Service not attached");
-      return callDesktopProjection(client, method, params);
+      return invokeDesktopProjectionRpc(() => ctx.host.client, method, params);
     }
   );
   import_electron2.ipcMain.handle(
