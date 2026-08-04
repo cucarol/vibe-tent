@@ -55,7 +55,7 @@ export type AppShellProps = {
 };
 
 /**
- * Protocol-4 desktop composition. Canvas is the only stage; Outline and Focus
+ * Production desktop composition. Canvas is the only stage; Outline and Focus
  * are local presentation trays. Domain reads arrive as validated view models.
  */
 export function AppShell({

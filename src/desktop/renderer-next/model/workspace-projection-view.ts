@@ -1,5 +1,5 @@
 import type { GraphProjection } from "../../../service/types.js";
-import type { ProjectionResource } from "../gateway/protocol4-projections.js";
+import type { ProjectionResource } from "../gateway/workspace-projections.js";
 import type { WorkbenchNodeView } from "../shell/workbench-types.js";
 
 export function projectionForConnection<T>(

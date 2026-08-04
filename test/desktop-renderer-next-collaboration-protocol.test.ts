@@ -232,8 +232,8 @@ test("accept/reject fix actor=user and reject resumes the same Task", async () =
   assert.equal((await handleDesktopCollaborationRequest(client as never, { operation: "acceptDelivery", workspaceId: "ws-a", taskPath: "temp/tasks/a.md", deliveryId: "dl-a" })).ok, true);
   assert.equal((await handleDesktopCollaborationRequest(client as never, { operation: "rejectDelivery", workspaceId: "ws-a", taskPath: "temp/tasks/a.md", deliveryId: "dl-a", note: "请补测试" })).ok, true);
   assert.deepEqual(calls, [
-    { method: "task.accept", params: { workspaceId: "ws-a", taskPath: "temp/tasks/a.md", actor: "user" } },
-    { method: "task.reject", params: { workspaceId: "ws-a", taskPath: "temp/tasks/a.md", actor: "user", note: "请补测试", resume: true } },
+    { method: "task.accept", params: { workspaceId: "ws-a", taskPath: "temp/tasks/a.md", deliveryId: "dl-a", actor: "user" } },
+    { method: "task.reject", params: { workspaceId: "ws-a", taskPath: "temp/tasks/a.md", deliveryId: "dl-a", actor: "user", note: "请补测试", resume: true } },
   ]);
 
   const rendererRequests: unknown[] = [];

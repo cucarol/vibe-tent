@@ -16,7 +16,7 @@ import {
   beginProjectionLoad,
   settleProjection,
   type ProjectionResource,
-} from "./gateway/protocol4-projections.js";
+} from "./gateway/workspace-projections.js";
 import { startWorkspaceProjectionBridge } from "./gateway/workspace-projection-bridge.js";
 import {
   CanvasV5LocalPersistence,

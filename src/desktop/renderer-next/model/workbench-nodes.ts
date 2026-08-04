@@ -2,7 +2,7 @@ import type {
   GraphProjection,
   NodeCollaborationsResult,
 } from "../../../service/types.js";
-import type { ProjectionResource } from "../gateway/protocol4-projections.js";
+import type { ProjectionResource } from "../gateway/workspace-projections.js";
 import {
   activeTaskState,
   collaborationByNodeId,

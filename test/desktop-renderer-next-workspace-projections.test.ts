@@ -6,8 +6,8 @@ import {
   beginProjectionLoad,
   settleProjection,
   type ProjectionResource,
-  type Protocol4ProjectionRpc,
-} from "../src/desktop/renderer-next/gateway/protocol4-projections.js";
+  type WorkspaceProjectionRpc,
+} from "../src/desktop/renderer-next/gateway/workspace-projections.js";
 import {
   activeTaskState,
   normalizeNodeCollaborations,
@@ -15,7 +15,7 @@ import {
 import { normalizeOutputProvenance } from "../src/desktop/renderer-next/model/output-provenance-view.js";
 import type { EventEnvelope, GraphProjection } from "../src/service/types.js";
 
-const workspaceId = "ws-protocol4";
+const workspaceId = "ws-projections";
 
 function graph(): GraphProjection {
   return {
@@ -122,9 +122,9 @@ function provenance() {
   };
 }
 
-test("protocol-4 gateway exposes only named typed reads with explicit workspaceId", async () => {
+test("workspace gateway exposes only named typed reads with explicit workspaceId", async () => {
   const calls: Array<{ method: string; params: unknown }> = [];
-  const rpc: Protocol4ProjectionRpc = async (method, params) => {
+  const rpc: WorkspaceProjectionRpc = async (method, params) => {
     calls.push({ method, params });
     switch (method) {
       case "graph.projection":

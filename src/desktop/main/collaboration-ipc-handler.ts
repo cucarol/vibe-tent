@@ -636,6 +636,7 @@ export async function handleDesktopCollaborationRequest(
       const accepted = await client.call("task.accept", {
           workspaceId: request.workspaceId,
           taskPath: request.taskPath,
+          deliveryId: request.deliveryId,
           actor: "user",
         });
       if (!isRecord(accepted) || accepted.workspaceId !== request.workspaceId) {
@@ -647,6 +648,7 @@ export async function handleDesktopCollaborationRequest(
       const rejected = await client.call("task.reject", {
           workspaceId: request.workspaceId,
           taskPath: request.taskPath,
+          deliveryId: request.deliveryId,
           actor: "user",
           note: request.note,
           resume: true,

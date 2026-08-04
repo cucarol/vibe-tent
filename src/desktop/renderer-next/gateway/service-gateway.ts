@@ -16,8 +16,8 @@ import {
   readNodeCollaborations,
   readOutputProvenance,
   type ProjectionRead,
-  type Protocol4ProjectionRpc,
-} from "./protocol4-projections.js";
+  type WorkspaceProjectionRpc,
+} from "./workspace-projections.js";
 import type {
   GraphProjection,
   NodeCollaboration,
@@ -59,8 +59,8 @@ export type InvalidationHint = {
 };
 
 export type ServiceGatewayHandlers = {
-  /** Closed protocol-4 read transport for the main Canvas surface. */
-  projectionRpc?: Protocol4ProjectionRpc;
+  /** Closed workspace-projection transport for the main Canvas surface. */
+  projectionRpc?: WorkspaceProjectionRpc;
   /** Bounded renderer wait; the underlying IPC may continue after UI timeout. */
   projectionTimeoutMs?: number;
   /** Structured document transport preserves JSON-RPC code/data across Electron. */
@@ -133,7 +133,7 @@ export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
 }
 
 /**
- * Client-side gateway for named protocol-4 reads and invalidation listeners.
+ * Client-side gateway for named workspace reads and invalidation listeners.
  * It deliberately owns no second projection cache or opaque bags.
  */
 export class ServiceGateway {
@@ -357,7 +357,7 @@ export class ServiceGateway {
       workspaceId,
       issue: {
         kind: "transport",
-        message: "ServiceGateway: protocol-4 projection transport is unavailable",
+        message: "ServiceGateway: workspace projection transport is unavailable",
       },
       failedAt: new Date().toISOString(),
     };

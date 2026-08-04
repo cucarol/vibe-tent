@@ -1,5 +1,5 @@
 /**
- * Protocol-4 production renderer entry.
+ * Production renderer entry.
  * Built to desktop/dist/renderer-next/ and loaded by the main Electron window.
  */
 import { StrictMode } from "react";

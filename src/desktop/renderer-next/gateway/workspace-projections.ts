@@ -14,7 +14,7 @@ import { normalizeOutputProvenance } from "../model/output-provenance-view.js";
 
 export const PROJECTION_TIMEOUT_MS = 12_000;
 
-export type Protocol4ProjectionMap = {
+export type WorkspaceProjectionMap = {
   "graph.projection": {
     params: { workspaceId: string };
     result: GraphProjection;
@@ -33,16 +33,16 @@ export type Protocol4ProjectionMap = {
   };
 };
 
-export type Protocol4ProjectionMethod = keyof Protocol4ProjectionMap;
-export type Protocol4ProjectionParams<M extends Protocol4ProjectionMethod> =
-  Protocol4ProjectionMap[M]["params"];
-export type Protocol4ProjectionResult<M extends Protocol4ProjectionMethod> =
-  Protocol4ProjectionMap[M]["result"];
+export type WorkspaceProjectionMethod = keyof WorkspaceProjectionMap;
+export type WorkspaceProjectionParams<M extends WorkspaceProjectionMethod> =
+  WorkspaceProjectionMap[M]["params"];
+export type WorkspaceProjectionResult<M extends WorkspaceProjectionMethod> =
+  WorkspaceProjectionMap[M]["result"];
 
 /** Raw IPC stays behind this closed map; components use named gateway methods. */
-export type Protocol4ProjectionRpc = <M extends Protocol4ProjectionMethod>(
+export type WorkspaceProjectionRpc = <M extends WorkspaceProjectionMethod>(
   method: M,
-  params: Protocol4ProjectionParams<M>
+  params: WorkspaceProjectionParams<M>
 ) => Promise<unknown>;
 
 export type ProjectionIssueKind =
@@ -399,9 +399,9 @@ function invalidRequest(workspaceId: string, message: string): ProjectionRead<ne
 
 async function readProjection<T>(args: {
   workspaceId: string;
-  method: Protocol4ProjectionMethod;
+  method: WorkspaceProjectionMethod;
   params: Record<string, unknown>;
-  rpc: Protocol4ProjectionRpc;
+  rpc: WorkspaceProjectionRpc;
   timeoutMs: number;
   normalize: (raw: unknown) => { ok: true; value: T } | { ok: false; message: string };
 }): Promise<ProjectionRead<T>> {
@@ -409,7 +409,7 @@ async function readProjection<T>(args: {
     const raw = await withTimeout(
       args.rpc(
         args.method,
-        args.params as Protocol4ProjectionParams<typeof args.method>
+        args.params as WorkspaceProjectionParams<typeof args.method>
       ),
       args.method,
       args.timeoutMs
@@ -440,7 +440,7 @@ async function readProjection<T>(args: {
 }
 
 export function readGraphProjection(
-  rpc: Protocol4ProjectionRpc,
+  rpc: WorkspaceProjectionRpc,
   workspaceId: string,
   timeoutMs = PROJECTION_TIMEOUT_MS
 ): Promise<ProjectionRead<GraphProjection>> {
@@ -457,7 +457,7 @@ export function readGraphProjection(
 }
 
 export function readNodeCollaborations(
-  rpc: Protocol4ProjectionRpc,
+  rpc: WorkspaceProjectionRpc,
   workspaceId: string,
   nodeIds: readonly string[],
   timeoutMs = PROJECTION_TIMEOUT_MS
@@ -484,7 +484,7 @@ export function readNodeCollaborations(
 }
 
 export function readNodeCollaboration(
-  rpc: Protocol4ProjectionRpc,
+  rpc: WorkspaceProjectionRpc,
   workspaceId: string,
   nodeId: string,
   timeoutMs = PROJECTION_TIMEOUT_MS
@@ -509,7 +509,7 @@ export function readNodeCollaboration(
 }
 
 export function readOutputProvenance(
-  rpc: Protocol4ProjectionRpc,
+  rpc: WorkspaceProjectionRpc,
   workspaceId: string,
   outputId: string,
   timeoutMs = PROJECTION_TIMEOUT_MS

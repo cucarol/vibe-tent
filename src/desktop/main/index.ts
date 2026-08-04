@@ -97,7 +97,7 @@ async function bootstrap(): Promise<void> {
 
   // SSE → IPC: renderer re-fetches projections; main does not invent UI state.
   host.onServiceEvent((ev) => {
-    // Invalidation must not wait for the legacy shell snapshot. The protocol-4
+    // Invalidation must not wait for the legacy shell snapshot. The production
     // renderer owns its named re-reads and stays fail-closed on their result.
     for (const win of BrowserWindow.getAllWindows()) {
       if (win.isDestroyed()) continue;
