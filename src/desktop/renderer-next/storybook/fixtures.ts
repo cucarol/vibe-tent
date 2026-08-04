@@ -4,6 +4,8 @@ import type { ProjectionState, WorkbenchNodeView } from "../shell/workbench-type
 export const FIXTURE_WORKSPACE_ID = "ws-storybook-ui";
 
 export function fixtureNodes(state: ProjectionState = "ready"): WorkbenchNodeView[] {
+  const collaborationState =
+    state === "ready" ? "ready" : state === "stale" ? "stale" : state === "error" ? "error" : "unknown";
   return [
     {
       nodeId: "cx-product",
@@ -16,6 +18,8 @@ export function fixtureNodes(state: ProjectionState = "ready"): WorkbenchNodeVie
       archived: false,
       invalid: false,
       depth: 0,
+      activeTaskState: state === "ready" ? null : undefined,
+      collaborationState,
       projectionState: state,
       projectionMessage: state === "stale" ? "服务仍在线，但图投影已超过可用时限。" : state === "unresolved" ? "本地位置仍在，权威节点暂时无法解析。" : state === "error" ? "图投影查询失败；没有把缓存内容当作最新事实。" : undefined,
     },
@@ -31,6 +35,7 @@ export function fixtureNodes(state: ProjectionState = "ready"): WorkbenchNodeVie
       invalid: false,
       depth: 1,
       activeTaskState: state === "ready" ? "running" : undefined,
+      collaborationState,
       projectionState: state,
       projectionMessage: state === "stale" ? "协作状态未知，等待重新查询。" : undefined,
     },
@@ -45,6 +50,8 @@ export function fixtureNodes(state: ProjectionState = "ready"): WorkbenchNodeVie
       archived: false,
       invalid: false,
       depth: 2,
+      activeTaskState: state === "ready" ? null : undefined,
+      collaborationState,
       projectionState: state,
     },
   ];

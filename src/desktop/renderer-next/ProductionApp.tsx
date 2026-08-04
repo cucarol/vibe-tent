@@ -31,7 +31,10 @@ import {
 } from "./model/canvas-v5-local-persistence.js";
 import type { ExcalidrawSceneSnapshot } from "./canvas/excalidraw/excalidrawSceneTypes.js";
 import type { CanvasDocument } from "./types/identity.js";
-import type { WorkbenchNodeView } from "./shell/workbench-types.js";
+import {
+  collaborationProjectionState,
+  type WorkbenchNodeView,
+} from "./shell/workbench-types.js";
 
 type ProvenanceView = { state: "ready" | "error"; label: string };
 
@@ -83,6 +86,9 @@ export function workbenchNodesFromResources(
     collaborationResource.state === "ready"
       ? collaborationByNodeId(collaborationResource.value)
       : null;
+  const collaborationState = collaborationProjectionState(
+    collaborationResource.state
+  );
   const result: WorkbenchNodeView[] = [];
   const known = new Set<string>();
   if (graph) {
@@ -101,9 +107,10 @@ export function workbenchNodesFromResources(
         invalid: node.invalid,
         depth: depths.get(node.nodeId) ?? 0,
         activeTaskState:
-          graphState === "ready" && collabs
+          graphState === "ready" && collaborationState === "ready" && collabs
             ? activeTaskState(collabs.get(node.nodeId))
             : undefined,
+        collaborationState,
         projectionState: graphState,
         projectionMessage:
           graphState === "stale"
@@ -127,6 +134,7 @@ export function workbenchNodesFromResources(
       mode: "editable",
       archived: false,
       invalid: false,
+      collaborationState: "unknown",
       projectionState: graphState === "error" ? "error" : "unresolved",
       projectionMessage:
         graphState === "error"

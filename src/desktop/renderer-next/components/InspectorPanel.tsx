@@ -1,7 +1,14 @@
 import { useState } from "react";
 import { IconButton, PaneHeader, StatusBadge, Tabs } from "../ui/index.js";
 import { ShellIcon } from "../shell/icons.js";
-import { nodeTitle, nodeTypeLabel, projectionLabel, taskStateLabel, type WorkbenchNodeView } from "../shell/workbench-types.js";
+import {
+  collaborationBadgeLabel,
+  collaborationSummary,
+  nodeTitle,
+  nodeTypeLabel,
+  projectionLabel,
+  type WorkbenchNodeView,
+} from "../shell/workbench-types.js";
 
 export type InspectorPanelProps = {
   node: WorkbenchNodeView | null;
@@ -11,6 +18,9 @@ export type InspectorPanelProps = {
 export function InspectorPanel({ node, onCollapse }: InspectorPanelProps) {
   const [tab, setTab] = useState("content");
   const projectionReady = !node?.projectionState || node.projectionState === "ready";
+  const collaborationRunning =
+    node?.collaborationState === "ready" &&
+    typeof node.activeTaskState === "string";
   return (
     <aside className="tn-pane tn-inspector-pane" aria-label="焦点面板" data-region="focus">
       <PaneHeader
@@ -28,7 +38,13 @@ export function InspectorPanel({ node, onCollapse }: InspectorPanelProps) {
             <div className="tn-focus-kicker">
               <span>{projectionReady ? nodeTypeLabel(node.type) : "本地画布位置"}</span>
               {projectionReady ? (
-                node.activeTaskState ? <StatusBadge tone="running" data-task-state={node.activeTaskState}>{taskStateLabel(node.activeTaskState)}</StatusBadge> : <StatusBadge tone="neutral">空闲</StatusBadge>
+                <StatusBadge
+                  tone={collaborationRunning ? "running" : "neutral"}
+                  data-task-state={node.activeTaskState ?? undefined}
+                  data-collaboration-state={node.collaborationState ?? "unknown"}
+                >
+                  {collaborationBadgeLabel(node)}
+                </StatusBadge>
               ) : <StatusBadge tone="neutral">状态未知</StatusBadge>}
             </div>
             <h1>{nodeTitle(node)}</h1>
@@ -83,7 +99,7 @@ export function InspectorPanel({ node, onCollapse }: InspectorPanelProps) {
             <div className="tn-focus-sections">
               <section>
                 <h2>当前协作</h2>
-                <p>{node.activeTaskState ? `任务状态：${taskStateLabel(node.activeTaskState)}` : "这个节点当前没有进行中的任务。"}</p>
+                <p>{collaborationSummary(node)}</p>
               </section>
               <section>
                 <h2>交付与审阅</h2>

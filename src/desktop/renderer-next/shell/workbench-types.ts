@@ -1,4 +1,10 @@
 export type ProjectionState = "ready" | "stale" | "unresolved" | "error";
+export type CollaborationProjectionState =
+  | "ready"
+  | "refreshing"
+  | "stale"
+  | "error"
+  | "unknown";
 
 export type WorkbenchNodeView = {
   nodeId: string;
@@ -12,6 +18,7 @@ export type WorkbenchNodeView = {
   invalid: boolean;
   depth?: number;
   activeTaskState?: string | null;
+  collaborationState?: CollaborationProjectionState;
   projectionState?: ProjectionState;
   projectionMessage?: string;
   outputProvenance?: { state: "ready" | "error"; label: string };
@@ -40,6 +47,37 @@ export function taskStateLabel(state: string): string {
     failed: "失败",
   };
   return labels[state] ?? `任务 · ${state}`;
+}
+
+export function collaborationProjectionState(
+  state: "idle" | "loading" | "ready" | "stale" | "error"
+): CollaborationProjectionState {
+  if (state === "ready") return "ready";
+  if (state === "loading") return "refreshing";
+  if (state === "stale") return "stale";
+  if (state === "error") return "error";
+  return "unknown";
+}
+
+export function collaborationBadgeLabel(node: WorkbenchNodeView): string {
+  if (node.collaborationState === "refreshing") return "正在刷新";
+  if (node.collaborationState !== "ready") return "状态未知";
+  if (typeof node.activeTaskState === "string") {
+    return taskStateLabel(node.activeTaskState);
+  }
+  return node.activeTaskState === null ? "空闲" : "状态未知";
+}
+
+export function collaborationSummary(node: WorkbenchNodeView): string {
+  if (node.collaborationState === "refreshing") {
+    return "正在刷新协作状态；不会把旧结果当作当前事实。";
+  }
+  if (node.collaborationState !== "ready" || node.activeTaskState === undefined) {
+    return "协作状态未知；等待权威投影恢复。";
+  }
+  return node.activeTaskState
+    ? `任务状态：${taskStateLabel(node.activeTaskState)}`
+    : "这个节点当前没有进行中的任务。";
 }
 
 export function projectionLabel(state: ProjectionState | undefined): string | null {
