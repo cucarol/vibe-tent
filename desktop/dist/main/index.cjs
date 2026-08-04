@@ -23,7 +23,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // src/desktop/main/index.ts
-var path5 = __toESM(require("node:path"), 1);
+var path6 = __toESM(require("node:path"), 1);
 var import_electron3 = require("electron");
 
 // src/desktop/client/service-attach.ts
@@ -516,8 +516,52 @@ var DesktopServiceHost = class {
 };
 
 // src/desktop/main/windows.ts
-var path3 = __toESM(require("node:path"), 1);
+var path4 = __toESM(require("node:path"), 1);
 var import_electron = require("electron");
+
+// src/desktop/main/navigation-policy.ts
+var path3 = __toESM(require("node:path"), 1);
+var import_node_url = require("node:url");
+function decideDesktopNavigation(requestedUrl, localHtmlPath) {
+  let requested;
+  try {
+    requested = new URL(requestedUrl);
+  } catch {
+    return { kind: "deny" };
+  }
+  if (requested.protocol === "http:" || requested.protocol === "https:") {
+    return { kind: "open-external", url: requested.href };
+  }
+  if (requested.protocol !== "file:") return { kind: "deny" };
+  const expected = new URL((0, import_node_url.pathToFileURL)(path3.resolve(localHtmlPath)).href);
+  requested.hash = "";
+  if (requested.href === expected.href) return { kind: "allow-local" };
+  return { kind: "deny" };
+}
+function installDesktopNavigationPolicy(webContents, localHtmlPath, openExternal) {
+  const openInSystemBrowser = (url) => {
+    void openExternal(url).catch((error) => {
+      console.warn("Failed to open external URL:", error);
+    });
+  };
+  webContents.on("will-navigate", (event, url) => {
+    const decision = decideDesktopNavigation(url, localHtmlPath);
+    if (decision.kind === "allow-local") return;
+    event.preventDefault();
+    if (decision.kind === "open-external") {
+      openInSystemBrowser(decision.url);
+    }
+  });
+  webContents.setWindowOpenHandler(({ url }) => {
+    const decision = decideDesktopNavigation(url, localHtmlPath);
+    if (decision.kind === "open-external") {
+      openInSystemBrowser(decision.url);
+    }
+    return { action: "deny" };
+  });
+}
+
+// src/desktop/main/windows.ts
 function createMainWindow(paths, prefs, isDev2) {
   const bounds = prefs.mainWindowBounds;
   const opts = {
@@ -551,6 +595,11 @@ function createMainWindow(paths, prefs, isDev2) {
     }
   };
   const win = new import_electron.BrowserWindow(opts);
+  installDesktopNavigationPolicy(
+    win.webContents,
+    paths.mainHtml,
+    (url) => import_electron.shell.openExternal(url)
+  );
   void win.loadFile(paths.mainHtml);
   if (isDev2) {
     if (process.env.TENT_DESKTOP_DEVTOOLS === "1") win.webContents.openDevTools({ mode: "detach" });
@@ -587,14 +636,19 @@ function createFloatWindow(paths, prefs) {
       spellcheck: false
     }
   });
+  installDesktopNavigationPolicy(
+    win.webContents,
+    paths.floatHtml,
+    (url) => import_electron.shell.openExternal(url)
+  );
   void win.loadFile(paths.floatHtml);
   return win;
 }
 function resolveDesktopAssetPaths(appRoot2) {
   return {
-    preload: path3.join(appRoot2, "desktop", "dist", "preload", "preload.cjs"),
-    mainHtml: path3.join(appRoot2, "desktop", "dist", "renderer-next", "index.html"),
-    floatHtml: path3.join(appRoot2, "desktop", "dist", "renderer", "float.html")
+    preload: path4.join(appRoot2, "desktop", "dist", "preload", "preload.cjs"),
+    mainHtml: path4.join(appRoot2, "desktop", "dist", "renderer-next", "index.html"),
+    floatHtml: path4.join(appRoot2, "desktop", "dist", "renderer", "float.html")
   };
 }
 
@@ -603,7 +657,7 @@ var import_electron2 = require("electron");
 
 // src/desktop/prefs.ts
 var fs3 = __toESM(require("node:fs/promises"), 1);
-var path4 = __toESM(require("node:path"), 1);
+var path5 = __toESM(require("node:path"), 1);
 
 // src/desktop/types.ts
 var DEFAULT_DESKTOP_PREFS = {
@@ -635,7 +689,7 @@ var DESKTOP_IPC = {
 
 // src/desktop/prefs.ts
 function desktopPrefsPath(dataDir2) {
-  return path4.join(dataDir2 ?? defaultServiceDataDir(), "desktop.json");
+  return path5.join(dataDir2 ?? defaultServiceDataDir(), "desktop.json");
 }
 async function loadDesktopPrefs(dataDir2) {
   try {
@@ -653,7 +707,7 @@ async function loadDesktopPrefs(dataDir2) {
 }
 async function saveDesktopPrefs(prefs, dataDir2) {
   const file = desktopPrefsPath(dataDir2);
-  await fs3.mkdir(path4.dirname(file), { recursive: true });
+  await fs3.mkdir(path5.dirname(file), { recursive: true });
   await fs3.writeFile(file, JSON.stringify(prefs, null, 2) + "\n", "utf8");
 }
 function rememberWorkspace(prefs, root) {
@@ -715,8 +769,8 @@ function formatContextCardPrompt(ref, hints) {
   lines.push("Do not resolve operational files as <workspaceRoot>/temp \u2014 use .tent/temp.");
   return lines.join("\n");
 }
-function nodeContextCard(nodeId, path6, opts) {
-  return buildContextCard({ kind: "node", id: nodeId, path: path6 }, opts);
+function nodeContextCard(nodeId, path7, opts) {
+  return buildContextCard({ kind: "node", id: nodeId, path: path7 }, opts);
 }
 function taskContextCard(taskId, opts) {
   return buildContextCard({ kind: "task", id: taskId, path: opts?.path }, opts);
@@ -1273,6 +1327,26 @@ async function handleDesktopCollaborationRequest(client, rawRequest) {
   }
 }
 
+// src/desktop/projection-ipc.ts
+var DESKTOP_PROJECTION_METHODS = [
+  "graph.projection",
+  "node.collaborations",
+  "node.collaboration",
+  "output.provenance"
+];
+var DESKTOP_PROJECTION_METHOD_SET = new Set(
+  DESKTOP_PROJECTION_METHODS
+);
+function isDesktopProjectionMethod(value) {
+  return typeof value === "string" && DESKTOP_PROJECTION_METHOD_SET.has(value);
+}
+async function callDesktopProjection(client, method, params) {
+  if (!isDesktopProjectionMethod(method)) {
+    throw new Error(`Unsupported desktop projection method: ${String(method)}`);
+  }
+  return client.call(method, params);
+}
+
 // src/desktop/main/ipc.ts
 function registerDesktopIpc(ctx) {
   import_electron2.ipcMain.handle(DESKTOP_IPC.getState, async () => {
@@ -1315,9 +1389,12 @@ function registerDesktopIpc(ctx) {
   import_electron2.ipcMain.handle(
     DESKTOP_IPC.rpc,
     async (_e, method, params) => {
+      if (!isDesktopProjectionMethod(method)) {
+        throw new Error(`Unsupported desktop projection method: ${String(method)}`);
+      }
       const client = ctx.host.client;
       if (!client) throw new Error("Service not attached");
-      return client.call(method, params);
+      return callDesktopProjection(client, method, params);
     }
   );
   import_electron2.ipcMain.handle(
@@ -1590,10 +1667,10 @@ function normalizeProjection(c) {
     artifactRefs: c.artifactRefs
   };
 }
-function findByPath(nodes, path6) {
+function findByPath(nodes, path7) {
   for (const n of nodes) {
-    if (n.path === path6) return n;
-    const child = findByPath(n.children ?? [], path6);
+    if (n.path === path7) return n;
+    const child = findByPath(n.children ?? [], path7);
     if (child) return child;
   }
   return null;
@@ -2050,11 +2127,11 @@ var ContextCardStore = class {
     this.emit();
     return entry;
   }
-  pushNode(nodeId, path6, label, tentRootHint) {
-    return this.pushFromCard(nodeContextCard(nodeId, path6, { label, tentRootHint }));
+  pushNode(nodeId, path7, label, tentRootHint) {
+    return this.pushFromCard(nodeContextCard(nodeId, path7, { label, tentRootHint }));
   }
-  pushTask(taskId, path6, label) {
-    return this.pushFromCard(taskContextCard(taskId, { path: path6, label }));
+  pushTask(taskId, path7, label) {
+    return this.pushFromCard(taskContextCard(taskId, { path: path7, label }));
   }
   pushRef(ref, opts) {
     return this.pushFromCard(buildContextCard(ref, opts));
@@ -2155,14 +2232,14 @@ function pickDefaultConnectionId(connections) {
   return connections[0]?.connectionId ?? null;
 }
 function buildStartSessionPayload(taskPath) {
-  const path6 = taskPath.trim();
-  if (!path6) {
+  const path7 = taskPath.trim();
+  if (!path7) {
     return { ok: false, reason: "\u7F3A\u5C11\u4EFB\u52A1\u8DEF\u5F84\u3002" };
   }
   return {
     ok: true,
     payload: {
-      taskPath: path6,
+      taskPath: path7,
       callerKind: "user"
     }
   };
@@ -2670,7 +2747,7 @@ var quitting = false;
 var host = new DesktopServiceHost();
 var model = new DesktopShellModel();
 async function bootstrap() {
-  const serviceEntry = process.env.TENT_SERVICE_ENTRY || path5.join(serviceRoot, "service.mjs");
+  const serviceEntry = process.env.TENT_SERVICE_ENTRY || path6.join(serviceRoot, "service.mjs");
   const attach = await host.ensureAttached({
     dataDir,
     serviceEntry,
@@ -2750,7 +2827,7 @@ async function bootstrap() {
   createTray(paths);
   const mountIdx = process.argv.indexOf("--mount");
   if (mountIdx >= 0 && process.argv[mountIdx + 1]) {
-    const root = path5.resolve(process.argv[mountIdx + 1]);
+    const root = path6.resolve(process.argv[mountIdx + 1]);
     try {
       await model.mountWorkspace(root);
       const next = rememberWorkspace(await loadDesktopPrefs(dataDir), root);

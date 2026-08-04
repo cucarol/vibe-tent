@@ -42,6 +42,20 @@ var DESKTOP_IPC = {
   onServiceEvent: "tent:service-event"
 };
 
+// src/desktop/projection-ipc.ts
+var DESKTOP_PROJECTION_METHODS = [
+  "graph.projection",
+  "node.collaborations",
+  "node.collaboration",
+  "output.provenance"
+];
+var DESKTOP_PROJECTION_METHOD_SET = new Set(
+  DESKTOP_PROJECTION_METHODS
+);
+function isDesktopProjectionMethod(value) {
+  return typeof value === "string" && DESKTOP_PROJECTION_METHOD_SET.has(value);
+}
+
 // src/desktop/preload/preload.ts
 var api = {
   getState: () => import_electron.ipcRenderer.invoke(DESKTOP_IPC.getState),
@@ -49,7 +63,14 @@ var api = {
   listWorkspaces: () => import_electron.ipcRenderer.invoke(DESKTOP_IPC.listWorkspaces),
   mountWorkspace: (workspaceRoot) => import_electron.ipcRenderer.invoke(DESKTOP_IPC.mountWorkspace, workspaceRoot),
   setForeground: (workspaceId) => import_electron.ipcRenderer.invoke(DESKTOP_IPC.setForeground, workspaceId),
-  rpc: (method, params) => import_electron.ipcRenderer.invoke(DESKTOP_IPC.rpc, method, params),
+  rpc: (method, params) => {
+    if (!isDesktopProjectionMethod(method)) {
+      return Promise.reject(
+        new Error(`Unsupported desktop projection method: ${method}`)
+      );
+    }
+    return import_electron.ipcRenderer.invoke(DESKTOP_IPC.rpc, method, params);
+  },
   document: (request) => import_electron.ipcRenderer.invoke(DESKTOP_IPC.document, request),
   collaboration: (request) => import_electron.ipcRenderer.invoke(DESKTOP_IPC.collaboration, request),
   pickWorkspaceFolder: () => import_electron.ipcRenderer.invoke(DESKTOP_IPC.pickWorkspaceFolder),

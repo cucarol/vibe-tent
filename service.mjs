@@ -20054,7 +20054,7 @@ var CLIENT_METHODS = [
   "docs.backlinks",
   /**
    * Import binary attachment for a node.
-   * Wire: base64 string in `bytesBase64` (or legacy `contentBase64`).
+   * Wire: base64 string in the canonical `bytesBase64` field.
    * Disk: original bytes under attachments/<cx>/… — never a .b64 text companion.
    */
   "docs.importAttachment",
@@ -26139,10 +26139,15 @@ async function docsCreateNote(ctx, p) {
   });
 }
 async function docsImportAttachment(ctx, p) {
+  assertAllowedParams(
+    p,
+    /* @__PURE__ */ new Set(["workspaceId", "nodeId", "fileName", "bytesBase64"]),
+    "docs.importAttachment"
+  );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const fileName = requireString(p, "fileName");
-  const rawBase64 = typeof p.bytesBase64 === "string" ? p.bytesBase64 : typeof p.contentBase64 === "string" ? p.contentBase64 : typeof p.bytes === "string" ? p.bytes : void 0;
+  const rawBase64 = typeof p.bytesBase64 === "string" ? p.bytesBase64 : void 0;
   if (rawBase64 === void 0) {
     throw new RpcError(
       -32602,
