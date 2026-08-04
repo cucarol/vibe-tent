@@ -6,4 +6,6 @@ export { Select, type SelectOption, type SelectProps } from "./Select.js";
 export { Tabs, TabPanel, type TabItem, type TabsProps } from "./Tabs.js";
 export { PaneHeader, type PaneHeaderProps } from "./PaneHeader.js";
 export { StatusBadge, type StatusBadgeProps, type StatusTone } from "./StatusBadge.js";
+export { Checkbox, type CheckboxProps } from "./Checkbox.js";
+export { Radio, type RadioProps } from "./Radio.js";
 export { cx } from "./utils.js";

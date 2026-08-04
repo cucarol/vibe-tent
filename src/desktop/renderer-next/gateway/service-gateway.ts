@@ -34,6 +34,19 @@ import {
   type FocusDocumentSnapshot,
   type FocusDocumentWrite,
 } from "./document-protocol.js";
+import {
+  acceptDelivery,
+  dispatchTask,
+  readCollaborationSnapshot,
+  rejectDelivery,
+  respondDecision,
+  type CollaborationMutation,
+  type CollaborationRead,
+  type CollaborationSnapshot,
+  type CollaborationTransport,
+  type DispatchTaskRequest,
+} from "./collaboration-protocol.js";
+import type { DesktopDecisionResponse } from "../../collaboration-ipc.js";
 
 export type ProjectionKey = string;
 
@@ -53,6 +66,8 @@ export type ServiceGatewayHandlers = {
   /** Structured document transport preserves JSON-RPC code/data across Electron. */
   documentTransport?: DocumentTransport;
   documentTimeoutMs?: number;
+  /** Typed user-facing Task/Delivery/Decision boundary. */
+  collaborationTransport?: CollaborationTransport;
   /** Execute a domain-facing intent via Service RPC (never local FS mutation). */
   dispatchIntent?: (intent: UiIntent) => Promise<unknown>;
   /** Subscribe to Service events; return unsubscribe. */
@@ -91,10 +106,14 @@ export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
         "node.collaborations",
         "output.provenance",
         "session.list",
+        ...(type.startsWith("delivery.") ? ["pending.interactions"] : []),
       ],
       event,
       reason: type,
     };
+  }
+  if (type === "registry.roles.updated" || type === "connection.changed") {
+    return { keys: ["dispatch.targets"], event, reason: type };
   }
   if (
     type.startsWith("toolApproval.") ||
@@ -257,6 +276,81 @@ export class ServiceGateway {
     );
   }
 
+  collaborationSnapshot(
+    workspaceId: string,
+    nodeId: string
+  ): Promise<CollaborationRead<CollaborationSnapshot>> {
+    if (!this.handlers.collaborationTransport) {
+      return Promise.resolve(this.missingCollaborationTransport(workspaceId));
+    }
+    return readCollaborationSnapshot(
+      this.handlers.collaborationTransport,
+      workspaceId,
+      nodeId
+    );
+  }
+
+  dispatchTask(
+    input: DispatchTaskRequest
+  ): Promise<CollaborationRead<CollaborationMutation>> {
+    if (!this.handlers.collaborationTransport) {
+      return Promise.resolve(this.missingCollaborationTransport(input.workspaceId));
+    }
+    return dispatchTask(this.handlers.collaborationTransport, input);
+  }
+
+  acceptDelivery(
+    workspaceId: string,
+    taskPath: string,
+    deliveryId: string
+  ): Promise<CollaborationRead<CollaborationMutation>> {
+    if (!this.handlers.collaborationTransport) {
+      return Promise.resolve(this.missingCollaborationTransport(workspaceId));
+    }
+    return acceptDelivery(
+      this.handlers.collaborationTransport,
+      workspaceId,
+      taskPath,
+      deliveryId
+    );
+  }
+
+  rejectDelivery(
+    workspaceId: string,
+    taskPath: string,
+    deliveryId: string,
+    note: string
+  ): Promise<CollaborationRead<CollaborationMutation>> {
+    if (!this.handlers.collaborationTransport) {
+      return Promise.resolve(this.missingCollaborationTransport(workspaceId));
+    }
+    return rejectDelivery(
+      this.handlers.collaborationTransport,
+      workspaceId,
+      taskPath,
+      deliveryId,
+      note
+    );
+  }
+
+  respondDecision(
+    workspaceId: string,
+    taskPath: string,
+    requestId: string,
+    response: DesktopDecisionResponse
+  ): Promise<CollaborationRead<CollaborationMutation>> {
+    if (!this.handlers.collaborationTransport) {
+      return Promise.resolve(this.missingCollaborationTransport(workspaceId));
+    }
+    return respondDecision(
+      this.handlers.collaborationTransport,
+      workspaceId,
+      taskPath,
+      requestId,
+      response
+    );
+  }
+
   private missingProjectionTransport<T>(workspaceId: string): ProjectionRead<T> {
     return {
       ok: false,
@@ -277,6 +371,20 @@ export class ServiceGateway {
       issue: {
         kind: "transport",
         message: "ServiceGateway: document transport is unavailable",
+      },
+      failedAt: new Date().toISOString(),
+    };
+  }
+
+  private missingCollaborationTransport<T>(
+    workspaceId: string
+  ): CollaborationRead<T> {
+    return {
+      ok: false,
+      workspaceId,
+      issue: {
+        kind: "transport",
+        message: "ServiceGateway: collaboration transport is unavailable",
       },
       failedAt: new Date().toISOString(),
     };

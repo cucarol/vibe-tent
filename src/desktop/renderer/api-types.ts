@@ -4,6 +4,10 @@ import type {
   DesktopDocumentRequest,
   DesktopDocumentResponse,
 } from "../document-ipc.js";
+import type {
+  DesktopCollaborationRequest,
+  DesktopCollaborationResponse,
+} from "../collaboration-ipc.js";
 
 export type TentDesktopBridge = {
   getState: () => Promise<unknown>;
@@ -13,6 +17,9 @@ export type TentDesktopBridge = {
   setForeground: (workspaceId: string) => Promise<unknown>;
   rpc: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
   document: (request: DesktopDocumentRequest) => Promise<DesktopDocumentResponse>;
+  collaboration: (
+    request: DesktopCollaborationRequest
+  ) => Promise<DesktopCollaborationResponse>;
   pickWorkspaceFolder: () => Promise<string | null>;
   getPrefs: () => Promise<unknown>;
   setPrefs: (patch: Record<string, unknown>) => Promise<unknown>;

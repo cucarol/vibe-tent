@@ -42,6 +42,7 @@ import {
 } from "./model/workbench-nodes.js";
 import { seedCanvasDocumentFromGraph } from "./model/canvas-seeding.js";
 import { useFocusDocument } from "./model/use-focus-document.js";
+import { useCollaborationSurface } from "./model/use-collaboration-surface.js";
 
 function MountedWorkspace(props: {
   bridge: RendererDesktopBridge;
@@ -328,6 +329,12 @@ function MountedWorkspace(props: {
     archived: documentNode?.archived ?? false,
     online: connection === "online",
   });
+  const collaborationSurface = useCollaborationSurface({
+    gateway,
+    workspaceId: workspace.workspaceId,
+    nodeId: documentNode?.nodeId ?? null,
+    online: connection === "online",
+  });
 
   return (
     <AppShell
@@ -345,6 +352,8 @@ function MountedWorkspace(props: {
       persistenceStatus={persistenceStatus}
       focusDocument={focusedDocument.view}
       focusDocumentActions={focusedDocument.actions}
+      collaboration={collaborationSurface.view}
+      collaborationActions={collaborationSurface.actions}
       onRetryPersistence={retrySave.current ?? undefined}
       onPresentationChange={(update) => {
         const next = update({

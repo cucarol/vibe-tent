@@ -26,6 +26,10 @@ import type {
   FocusDocumentActions,
   FocusDocumentView,
 } from "../model/focus-document-controller.js";
+import type {
+  CollaborationSurfaceActions,
+  CollaborationSurfaceView,
+} from "../model/collaboration-surface-controller.js";
 
 export type AppShellProps = {
   workspaceId?: string | null;
@@ -44,7 +48,10 @@ export type AppShellProps = {
   onScenePersist?: (scene: ExcalidrawSceneSnapshot) => void;
   focusDocument?: FocusDocumentView;
   focusDocumentActions?: FocusDocumentActions;
+  collaboration?: CollaborationSurfaceView;
+  collaborationActions?: CollaborationSurfaceActions;
   initialFocusExpanded?: boolean;
+  initialInspectorTab?: "content" | "collaboration";
 };
 
 /**
@@ -68,7 +75,10 @@ export function AppShell({
   onScenePersist,
   focusDocument,
   focusDocumentActions,
+  collaboration,
+  collaborationActions,
   initialFocusExpanded = false,
+  initialInspectorTab = "content",
 }: AppShellProps = {}) {
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [focusOpen, setFocusOpen] = useState(true);
@@ -158,11 +168,15 @@ export function AppShell({
           placementActionRef={placementActionRef}
           document={focusDocument}
           documentActions={focusDocumentActions}
+          allNodes={nodes}
+          collaboration={collaboration}
+          collaborationActions={collaborationActions}
           expanded={focusExpanded}
           onExpandedChange={(expanded) => {
             setFocusOpen(true);
             setFocusExpanded(expanded);
           }}
+          initialTab={initialInspectorTab}
           onCollapse={() => setFocusOpen(false)}
         />
       </div>

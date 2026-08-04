@@ -12,6 +12,8 @@ import { DESKTOP_IPC, type DesktopPreferences, type RecentContextCard } from "..
 import { contextCardToDragText } from "../../core/context-card.js";
 import type { DesktopDocumentResponse } from "../document-ipc.js";
 import { handleDesktopDocumentRequest } from "./document-ipc-handler.js";
+import type { DesktopCollaborationResponse } from "../collaboration-ipc.js";
+import { handleDesktopCollaborationRequest } from "./collaboration-ipc-handler.js";
 
 export type IpcContext = {
   host: DesktopServiceHost;
@@ -85,6 +87,12 @@ export function registerDesktopIpc(ctx: IpcContext): void {
     DESKTOP_IPC.document,
     async (_e: unknown, request: unknown): Promise<DesktopDocumentResponse> =>
       handleDesktopDocumentRequest(ctx.host.client, request)
+  );
+
+  ipcMain.handle(
+    DESKTOP_IPC.collaboration,
+    async (_e: unknown, request: unknown): Promise<DesktopCollaborationResponse> =>
+      handleDesktopCollaborationRequest(ctx.host.client, request)
   );
 
   ipcMain.handle(DESKTOP_IPC.pickWorkspaceFolder, async (event: IpcMainInvokeEvent) => {

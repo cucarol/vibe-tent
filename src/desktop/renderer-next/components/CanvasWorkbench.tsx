@@ -52,7 +52,7 @@ export function CanvasWorkbench({ document, nodes, graph = null, immersive, onIm
     resolveActiveTaskState: (entityRef) => {
       const node = byId.get(entityRef);
       if (!node || (node.projectionState && node.projectionState !== "ready")) return undefined;
-      return node.activeTaskState ?? null;
+      return node.activeTaskState;
     },
     resolveSummary: (entityRef) => {
       const node = byId.get(entityRef);

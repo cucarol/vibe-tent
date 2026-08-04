@@ -6,6 +6,10 @@ import type {
   DesktopDocumentRequest,
   DesktopDocumentResponse,
 } from "../document-ipc.js";
+import type {
+  DesktopCollaborationRequest,
+  DesktopCollaborationResponse,
+} from "../collaboration-ipc.js";
 
 export type TentDesktopApi = {
   getState: () => Promise<unknown>;
@@ -15,6 +19,9 @@ export type TentDesktopApi = {
   setForeground: (workspaceId: string) => Promise<unknown>;
   rpc: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
   document: (request: DesktopDocumentRequest) => Promise<DesktopDocumentResponse>;
+  collaboration: (
+    request: DesktopCollaborationRequest
+  ) => Promise<DesktopCollaborationResponse>;
   pickWorkspaceFolder: () => Promise<string | null>;
   getPrefs: () => Promise<unknown>;
   setPrefs: (patch: Record<string, unknown>) => Promise<unknown>;
@@ -47,6 +54,7 @@ const api: TentDesktopApi = {
   rpc: (method: string, params?: Record<string, unknown>) =>
     ipcRenderer.invoke(DESKTOP_IPC.rpc, method, params),
   document: (request) => ipcRenderer.invoke(DESKTOP_IPC.document, request),
+  collaboration: (request) => ipcRenderer.invoke(DESKTOP_IPC.collaboration, request),
   pickWorkspaceFolder: () => ipcRenderer.invoke(DESKTOP_IPC.pickWorkspaceFolder),
   getPrefs: () => ipcRenderer.invoke(DESKTOP_IPC.getPrefs),
   setPrefs: (patch: Record<string, unknown>) =>

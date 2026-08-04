@@ -10,10 +10,18 @@ import {
   type WorkbenchNodeView,
 } from "../shell/workbench-types.js";
 import { FocusDocumentPanel } from "./FocusDocumentPanel.js";
+import {
+  CollaborationPanel,
+  collaborationPanelIdentity,
+} from "./CollaborationPanel.js";
 import type {
   FocusDocumentActions,
   FocusDocumentView,
 } from "../model/focus-document-controller.js";
+import type {
+  CollaborationSurfaceActions,
+  CollaborationSurfaceView,
+} from "../model/collaboration-surface-controller.js";
 
 export type InspectorPanelProps = {
   node: WorkbenchNodeView | null;
@@ -24,8 +32,12 @@ export type InspectorPanelProps = {
   placementActionRef?: Ref<HTMLButtonElement>;
   document?: FocusDocumentView;
   documentActions?: FocusDocumentActions;
+  allNodes?: readonly WorkbenchNodeView[];
+  collaboration?: CollaborationSurfaceView;
+  collaborationActions?: CollaborationSurfaceActions;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
+  initialTab?: "content" | "collaboration";
   onCollapse: () => void;
 };
 
@@ -38,11 +50,15 @@ export function InspectorPanel({
   placementActionRef,
   document,
   documentActions,
+  allNodes = [],
+  collaboration,
+  collaborationActions,
   expanded = false,
   onExpandedChange,
+  initialTab = "content",
   onCollapse,
 }: InspectorPanelProps) {
-  const [tab, setTab] = useState("content");
+  const [tab, setTab] = useState(initialTab);
   const projectionReady = !node?.projectionState || node.projectionState === "ready";
   const collaborationRunning =
     node?.collaborationState === "ready" &&
@@ -131,14 +147,22 @@ export function InspectorPanel({
             )}
           </section>
 
-          {projectionReady ? <Tabs
+          <Tabs
             aria-label="焦点内容"
             value={tab}
-            onValueChange={setTab}
+            onValueChange={(value) => setTab(value as "content" | "collaboration")}
             items={[{ id: "content", label: "内容" }, { id: "collaboration", label: "协作" }]}
-          /> : null}
+          />
 
-          {!projectionReady ? (
+          {tab === "collaboration" && collaboration && collaborationActions ? (
+            <CollaborationPanel
+              key={collaborationPanelIdentity(collaboration)}
+              node={node}
+              allNodes={allNodes}
+              view={collaboration}
+              actions={collaborationActions}
+            />
+          ) : !projectionReady ? (
             <div className="tn-focus-sections">
               {documentPanel}
               <section>
@@ -177,10 +201,7 @@ export function InspectorPanel({
                 <h2>当前协作</h2>
                 <p>{collaborationSummary(node)}</p>
               </section>
-              <section>
-                <h2>交付与审阅</h2>
-                <p>准备好的交付会在这里显示；不会从画布外观推断状态。</p>
-              </section>
+              <section><h2>协作尚未接入</h2><p>等待权威任务与收件箱投影。</p></section>
             </div>
           )}
         </div>

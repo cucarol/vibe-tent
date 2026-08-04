@@ -43,6 +43,11 @@ textarea.tn-ui-text-field { min-height: calc(var(--tn-size-control) * 2); paddin
 .tn-ui-field-hint { color: var(--tn-color-text-faint); font-size: var(--tn-font-ui-tiny); }
 .tn-ui-field-error { color: var(--tn-color-danger); font-size: var(--tn-font-ui-tiny); }
 
+.tn-ui-checkbox, .tn-ui-radio { display: flex; align-items: flex-start; gap: var(--tn-space-2); min-width: 0; color: var(--tn-color-text-secondary); font-size: var(--tn-font-ui-tiny); line-height: 1.4; cursor: pointer; }
+.tn-ui-checkbox input, .tn-ui-radio input { flex: none; width: 14px; height: 14px; margin: 1px 0 0; accent-color: var(--tn-color-accent); }
+.tn-ui-checkbox:focus-within, .tn-ui-radio:focus-within { outline: var(--tn-focus-ring); outline-offset: 2px; border-radius: var(--tn-radius-sm); }
+.tn-ui-checkbox[data-disabled], .tn-ui-radio[data-disabled] { opacity: var(--tn-control-disabled-opacity); cursor: not-allowed; }
+
 .tn-ui-tabs { display: flex; align-items: stretch; min-height: var(--tn-size-control); gap: 2px; padding: 0 var(--tn-space-1); border-bottom: 1px solid var(--tn-color-border); background: var(--tn-color-chrome-bg); overflow-x: auto; }
 .tn-ui-tab { min-height: var(--tn-size-control); padding: 0 var(--tn-space-2); border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--tn-color-text-secondary); cursor: pointer; white-space: nowrap; }
 .tn-ui-tab:hover:not(:disabled) { color: var(--tn-color-text-primary); background: var(--tn-color-hover); }

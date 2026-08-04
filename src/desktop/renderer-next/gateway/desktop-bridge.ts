@@ -18,7 +18,7 @@ export type DesktopBootstrap = {
 export type RendererDesktopBridge = Pick<
   TentDesktopBridge,
   "getState" | "rpc" | "document" | "onStateChanged" | "onServiceEvent"
->;
+> & Partial<Pick<TentDesktopBridge, "collaboration">>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -92,6 +92,9 @@ export function createDesktopServiceGateway(
   return new ServiceGateway({
     projectionRpc: (method, params) => bridge.rpc(method, params),
     documentTransport: (request) => bridge.document(request),
+    ...(bridge.collaboration
+      ? { collaborationTransport: (request) => bridge.collaboration!(request) }
+      : {}),
     subscribeEvents: (handler) =>
       bridge.onServiceEvent((event) => {
         const envelope: EventEnvelope = {

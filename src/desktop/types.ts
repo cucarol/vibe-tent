@@ -58,6 +58,7 @@ export const DESKTOP_IPC = {
   health: "tent:health",
   rpc: "tent:rpc",
   document: "tent:document",
+  collaboration: "tent:collaboration",
   openMain: "tent:open-main",
   hideMain: "tent:hide-main",
   showFloat: "tent:show-float",

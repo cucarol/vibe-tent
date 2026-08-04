@@ -30,6 +30,8 @@ export function isDesktopProjectionEventType(type: string): boolean {
     // projection event. Keep this explicit: runtime stdout/config events are
     // diagnostics, not renderer projection invalidations.
     type === "session.state" ||
+    type === "registry.roles.updated" ||
+    type === "connection.changed" ||
     isPendingInteractionEventType(type) ||
     isTaskProjectionEventType(type)
   );

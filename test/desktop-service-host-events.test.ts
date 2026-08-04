@@ -15,6 +15,8 @@ test("desktop host forwards workspace and projection invalidations only", () => 
     "task.state",
     "delivery.updated",
     "session.state",
+    "registry.roles.updated",
+    "connection.changed",
   ]) {
     assert.equal(isDesktopProjectionEventType(type), true, type);
   }

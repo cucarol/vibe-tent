@@ -2,13 +2,21 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "../shell/AppShell.js";
 import { focusWorkbenchNode } from "../shell/workbench-selection.js";
-import type { ProjectionState } from "../shell/workbench-types.js";
+import type {
+  CollaborationProjectionState,
+  ProjectionState,
+  WorkbenchNodeView,
+} from "../shell/workbench-types.js";
 import { fixtureCanvasDocument, fixtureNodes, FIXTURE_WORKSPACE_ID } from "./fixtures.js";
 import type {
   FocusDocumentActions,
   FocusDocumentStatus,
   FocusDocumentView,
 } from "../model/focus-document-controller.js";
+import type {
+  CollaborationSurfaceActions,
+  CollaborationSurfaceView,
+} from "../model/collaboration-surface-controller.js";
 
 type MainWindowPreviewProps = {
   state: ProjectionState;
@@ -17,7 +25,98 @@ type MainWindowPreviewProps = {
   selectedPlacement?: "placed" | "unplaced";
   documentStatus?: FocusDocumentStatus;
   expanded?: boolean;
+  collaborationState?: "none" | "empty" | "active" | "delivery" | "decision" | "loading" | "stale" | "error";
 };
+
+const collaborationActions: CollaborationSurfaceActions = {
+  async retry() {},
+  async dispatch() { return true; },
+  async acceptDelivery() { return true; },
+  async rejectDelivery() { return true; },
+  async respondDecision() { return true; },
+};
+
+function fixtureCollaboration(state: NonNullable<MainWindowPreviewProps["collaborationState"]>): CollaborationSurfaceView | undefined {
+  if (state === "none") return undefined;
+  const task = state === "empty" || state === "loading" || state === "error" ? null : {
+    id: "tk-ui",
+    path: "temp/UI/tasks/ui.md",
+    state: state === "delivery" ? "delivered" : state === "decision" ? "waiting" : "running",
+    workNodeIds: ["cx-workbench"],
+    contextNodeIds: ["cx-product"],
+    acceptMode: state === "delivery" ? "agent-decide" as const : "review-required" as const,
+    assignee: { kind: "connection" as const, label: "Grok UI" },
+    sessionId: "ss-ui",
+    session: { id: "ss-ui", state: "live", alive: true, turnBusy: state === "active", connectionLabel: "Grok UI" },
+    updatedAt: "2026-08-04T12:20:00.000Z",
+  };
+  const snapshot = {
+    workspaceId: FIXTURE_WORKSPACE_ID,
+    nodeId: "cx-workbench",
+    targets: [
+      { kind: "role" as const, id: "rl-ui", label: "界面" },
+      { kind: "connection" as const, id: "cn-grok", label: "Grok UI" },
+    ],
+    task,
+    delivery: state === "delivery" ? {
+      id: "dl-ui",
+      taskId: "tk-ui",
+      taskPath: "temp/UI/tasks/ui.md",
+      sourceNodeId: "cx-workbench",
+      summary: "已完成右侧协作闭环，并补齐状态与键盘验证。",
+      status: "ready" as const,
+      createdAt: "2026-08-04T12:20:00.000Z",
+    } : null,
+    decisions: state === "decision" ? [{
+      id: "dr-ui",
+      taskId: "tk-ui",
+      taskPath: "temp/UI/tasks/ui.md",
+      question: "审阅区在窄侧栏中应优先展示摘要还是验证证据？",
+      options: [{ id: "summary", label: "优先摘要" }, { id: "evidence", label: "优先验证证据" }],
+      createdAt: "2026-08-04T12:20:00.000Z",
+    }] : [],
+  };
+  return {
+    workspaceId: FIXTURE_WORKSPACE_ID,
+    nodeId: "cx-workbench",
+    status: state === "loading" ? "loading" : state === "stale" ? "stale" : state === "error" ? "error" : "ready",
+    snapshot: state === "loading" || state === "error" ? null : snapshot,
+    ...(state === "stale" || state === "error" ? { issue: { kind: "transport" as const, message: "本地服务暂时不可用" } } : {}),
+    busyKey: null,
+    canMutate: !["loading", "stale", "error"].includes(state),
+  };
+}
+
+function fixtureNodesForCollaboration(
+  projectionState: ProjectionState,
+  collaborationState: NonNullable<MainWindowPreviewProps["collaborationState"]>
+): WorkbenchNodeView[] {
+  const nodes = fixtureNodes(projectionState);
+  if (collaborationState === "none") return nodes;
+  const selectedCollaborationState: CollaborationProjectionState = collaborationState === "loading"
+    ? "refreshing"
+    : collaborationState === "stale"
+      ? "stale"
+      : collaborationState === "error"
+        ? "error"
+        : "ready";
+  const activeTaskState = collaborationState === "active"
+    ? "running"
+    : collaborationState === "delivery"
+      ? "delivered"
+      : collaborationState === "decision"
+        ? "waiting"
+        : collaborationState === "empty"
+          ? null
+          : undefined;
+  return nodes.map((node) => node.nodeId === "cx-workbench"
+    ? {
+        ...node,
+        collaborationState: selectedCollaborationState,
+        activeTaskState,
+      }
+    : node);
+}
 
 function fixtureDocument(status: FocusDocumentStatus): FocusDocumentView {
   const withoutSnapshot = status === "loading" || status === "error";
@@ -56,7 +155,7 @@ function previewDocument(
   }, selectedNodeId);
 }
 
-function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-workbench", selectedPlacement = "placed", documentStatus = "read", expanded = false }: MainWindowPreviewProps) {
+function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-workbench", selectedPlacement = "placed", documentStatus = "read", expanded = false, collaborationState = "none" }: MainWindowPreviewProps) {
   const [presentation, setPresentation] = useState(() => ({
     document: previewDocument(selectedNodeId, selectedPlacement),
     selectedNodeId,
@@ -130,10 +229,10 @@ function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-
   return (
     <div style={{ width: "100vw", height: "100vh", overflow: "hidden" }} data-testid="storybook-main-window" data-fixture-state={state}>
       <AppShell
-        key={`${documentStatus}:${expanded}`}
+        key={`${documentStatus}:${expanded}:${collaborationState}`}
         workspaceId={FIXTURE_WORKSPACE_ID}
         workspaceLabel="产品工作区"
-        initialNodes={fixtureNodes(state)}
+        initialNodes={fixtureNodesForCollaboration(state, collaborationState)}
         document={presentation.document}
         selectedNodeId={presentation.selectedNodeId}
         onPresentationChange={(update) => setPresentation((current) => update(current))}
@@ -141,6 +240,9 @@ function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-
         onRetryConnection={connection === "online" ? undefined : () => {}}
         focusDocument={focusDocument}
         focusDocumentActions={documentActions}
+        collaboration={fixtureCollaboration(collaborationState)}
+        collaborationActions={collaborationState === "none" ? undefined : collaborationActions}
+        initialInspectorTab={collaborationState === "none" ? "content" : "collaboration"}
         initialFocusExpanded={expanded}
         graph={{ edges: { parent: [
           { parentNodeId: "cx-product", childNodeId: "cx-workbench" },
@@ -186,3 +288,10 @@ export const 正文冲突: Story = { name: "Focus · 版本冲突", args: { docu
 export const 正文已过期: Story = { name: "Focus · 断线保留", args: { documentStatus: "stale", connection: "reconnecting", expanded: true } };
 export const 正文错误: Story = { name: "Focus · 读取失败", args: { documentStatus: "error", expanded: true } };
 export const 正文已归档: Story = { name: "Focus · 已归档", args: { documentStatus: "archived" } };
+export const 协作空闲: Story = { name: "协作 · 空闲与派活入口", args: { collaborationState: "empty" } };
+export const 协作活动任务: Story = { name: "协作 · 活动任务", args: { collaborationState: "active" } };
+export const 协作待审交付: Story = { name: "协作 · 待审交付", args: { collaborationState: "delivery" } };
+export const 协作决策请求: Story = { name: "协作 · 决策请求", args: { collaborationState: "decision" } };
+export const 协作加载中: Story = { name: "协作 · 首次加载", args: { collaborationState: "loading" } };
+export const 协作已过期: Story = { name: "协作 · 断线保留", args: { collaborationState: "stale", connection: "reconnecting" } };
+export const 协作读取失败: Story = { name: "协作 · 读取失败", args: { collaborationState: "error" } };
