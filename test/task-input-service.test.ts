@@ -126,6 +126,18 @@ async function withService<T>(
   }
 }
 
+async function exactReadyDeliveryId(
+  client: ReturnType<typeof createServiceClient>,
+  workspaceId: string,
+  taskPath: string
+): Promise<string> {
+  const got = (await client.taskGet(workspaceId, taskPath)) as {
+    task: { activeDeliveryId?: string };
+  };
+  assert.ok(got.task.activeDeliveryId, "fixture requires an exact ready Delivery");
+  return got.task.activeDeliveryId;
+}
+
 test("CLIENT_METHODS includes task.sendInput and taskInput.*", () => {
   assert.ok(CLIENT_METHODS.includes("task.sendInput"));
   assert.ok(CLIENT_METHODS.includes("taskInput.listPending"));
@@ -1075,10 +1087,16 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
 
     const exactNote = "  please fix the edge case and re-run tests  ";
     const t0 = Date.now();
-    const rejected = (await client.taskReject(workspaceId, taskPath, "user", {
-      resume: true,
-      note: exactNote,
-    })) as {
+    const rejected = (await client.taskReject(
+      workspaceId,
+      taskPath,
+      await exactReadyDeliveryId(client, workspaceId, taskPath),
+      "user",
+      {
+        resume: true,
+        note: exactNote,
+      }
+    )) as {
       state: string;
       session?: { sessionId: string };
       input?: {
@@ -1250,10 +1268,16 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
     assert.equal(beforeReject.task.sessionId, priorSessionId);
 
     const exactNote = "  native-resume: fix and re-run  ";
-    const rejected = (await client.taskReject(workspaceId, taskPath, "user", {
-      resume: true,
-      note: exactNote,
-    })) as {
+    const rejected = (await client.taskReject(
+      workspaceId,
+      taskPath,
+      await exactReadyDeliveryId(client, workspaceId, taskPath),
+      "user",
+      {
+        resume: true,
+        note: exactNote,
+      }
+    )) as {
       state: string;
       session?: { sessionId: string };
       input?: {
@@ -1437,10 +1461,16 @@ test("reject-resume: slow follow-up returns accepted without headers-timeout wai
     }, 20_000, "first delivery before slow reject");
 
     const t0 = Date.now();
-    const rejected = (await client.taskReject(workspaceId, taskPath, "user", {
-      resume: true,
-      note: "SLOW_REVIEW_NOTE",
-    })) as {
+    const rejected = (await client.taskReject(
+      workspaceId,
+      taskPath,
+      await exactReadyDeliveryId(client, workspaceId, taskPath),
+      "user",
+      {
+        resume: true,
+        note: "SLOW_REVIEW_NOTE",
+      }
+    )) as {
       accepted?: boolean;
       enqueued?: boolean;
       continued?: boolean;
@@ -1571,10 +1601,16 @@ test("reject-resume: background completion projects processing → delivered", a
       input: { id: string; status: string };
     };
     try {
-      rejected = (await client.taskReject(workspaceId, taskPath, "user", {
-        resume: true,
-        note: "BG_COMPLETE_NOTE",
-      })) as typeof rejected;
+      rejected = (await client.taskReject(
+        workspaceId,
+        taskPath,
+        await exactReadyDeliveryId(client, workspaceId, taskPath),
+        "user",
+        {
+          resume: true,
+          note: "BG_COMPLETE_NOTE",
+        }
+      )) as typeof rejected;
       await markDeliveredEntered;
       await pollUntil(async () =>
         diagnostics.some(
@@ -1674,6 +1710,7 @@ test("reject-resume: background completion projects processing → delivered", a
       uncertainRejected = (await client.taskReject(
         workspaceId,
         taskPath,
+        await exactReadyDeliveryId(client, workspaceId, taskPath),
         "user",
         { resume: true, note: "BG_UNCERTAIN_NOTE" }
       )) as typeof uncertainRejected;
@@ -1995,10 +2032,16 @@ test("reject-resume: second reject while rework running is rejected (no double i
       return t.task.state === "delivered" ? t : null;
     }, 20_000, "first delivery for dup reject");
 
-    const first = (await client.taskReject(workspaceId, taskPath, "user", {
-      resume: true,
-      note: "FIRST_FEEDBACK_ONLY",
-    })) as {
+    const first = (await client.taskReject(
+      workspaceId,
+      taskPath,
+      await exactReadyDeliveryId(client, workspaceId, taskPath),
+      "user",
+      {
+        resume: true,
+        note: "FIRST_FEEDBACK_ONLY",
+      }
+    )) as {
       accepted?: boolean;
       input: { id: string };
       state: string;
@@ -2008,11 +2051,17 @@ test("reject-resume: second reject while rework running is rejected (no double i
 
     // Immediate second reject while occupation is rework/running — must fail.
     await assert.rejects(
-      () =>
-        client.taskReject(workspaceId, taskPath, "user", {
-          resume: true,
-          note: "SECOND_MUST_NOT_INJECT",
-        }),
+      async () =>
+        client.taskReject(
+          workspaceId,
+          taskPath,
+          await exactReadyDeliveryId(client, workspaceId, taskPath),
+          "user",
+          {
+            resume: true,
+            note: "SECOND_MUST_NOT_INJECT",
+          }
+        ),
       /delivered|reject|state/i
     );
 
@@ -2091,10 +2140,16 @@ test("reject --no-resume: terminal reject without review-feedback or session res
       summary: "will reject terminal",
     });
 
-    const rejected = (await client.taskReject(workspaceId, taskPath, "user", {
-      resume: false,
-      note: "no rework",
-    })) as {
+    const rejected = (await client.taskReject(
+      workspaceId,
+      taskPath,
+      await exactReadyDeliveryId(client, workspaceId, taskPath),
+      "user",
+      {
+        resume: false,
+        note: "no rework",
+      }
+    )) as {
       state: string;
       input?: unknown;
       accepted?: boolean;

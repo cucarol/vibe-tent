@@ -302,7 +302,7 @@ test("targetHead: deliver snapshots HEAD; same-head accept integrates", async ()
       commits: [sourceRef],
     });
     assert.ok(!delivered.error, JSON.stringify(delivered.error));
-    const delivery = (delivered.result as { delivery: { targetHead?: string; commits: string[] } })
+    const delivery = (delivered.result as { delivery: { id: string; targetHead?: string; commits: string[] } })
       .delivery;
     assert.equal(delivery.targetHead, mainHeadAtDeliver);
     assert.deepEqual(delivery.commits, [sourceRef]);
@@ -310,6 +310,7 @@ test("targetHead: deliver snapshots HEAD; same-head accept integrates", async ()
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
+      deliveryId: delivery.id,
       actor: "user",
     });
     assert.ok(!accepted.error, JSON.stringify(accepted.error));
@@ -344,8 +345,8 @@ test("targetHead: clean non-conflicting target advance fails TARGET_MOVED; Git u
       commits: [sourceRef],
     });
     assert.ok(!delivered.error, JSON.stringify(delivered.error));
-    const expectedHead = (delivered.result as { delivery: { targetHead: string } }).delivery
-      .targetHead;
+    const delivery = (delivered.result as { delivery: { id: string; targetHead: string } }).delivery;
+    const expectedHead = delivery.targetHead;
     assert.ok(expectedHead);
 
     // Clean non-conflicting advance on main (not the delivery commit).
@@ -358,6 +359,7 @@ test("targetHead: clean non-conflicting target advance fails TARGET_MOVED; Git u
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
+      deliveryId: delivery.id,
       actor: "user",
     });
     const data = targetMovedData(accepted.error as { code?: number; data?: unknown });
@@ -402,7 +404,7 @@ test("targetHead: zero-commit Delivery needs no snapshot; accept succeeds", asyn
       summary: "no commits",
     });
     assert.ok(!delivered.error, JSON.stringify(delivered.error));
-    const delivery = (delivered.result as { delivery: { targetHead?: string; commits: string[] } })
+    const delivery = (delivered.result as { delivery: { id: string; targetHead?: string; commits: string[] } })
       .delivery;
     assert.equal(delivery.targetHead, undefined);
     assert.deepEqual(delivery.commits, []);
@@ -410,6 +412,7 @@ test("targetHead: zero-commit Delivery needs no snapshot; accept succeeds", asyn
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
+      deliveryId: delivery.id,
       actor: "user",
     });
     assert.ok(!accepted.error, JSON.stringify(accepted.error));
@@ -442,7 +445,8 @@ test("targetHead: legacy ready row without snapshot fails TARGET_MOVED (no silen
       commits: [sourceRef],
     });
     assert.ok(!delivered.error, JSON.stringify(delivered.error));
-    const deliveryPath = (delivered.result as { delivery: { path: string } }).delivery.path;
+    const delivery = (delivered.result as { delivery: { id: string; path: string } }).delivery;
+    const deliveryPath = delivery.path;
     assert.ok(deliveryPath);
 
     // Simulate pre-field ready Delivery: drop targetHead from disk only.
@@ -455,6 +459,7 @@ test("targetHead: legacy ready row without snapshot fails TARGET_MOVED (no silen
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
+      deliveryId: delivery.id,
       actor: "user",
     });
     const data = targetMovedData(accepted.error as { code?: number; data?: unknown });

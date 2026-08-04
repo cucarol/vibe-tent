@@ -185,6 +185,7 @@ test("P0: terminal reject auto-reclaims clean Session Task worktree", async () =
     const rejectedRes = await rpc(svc, "task.reject", {
       workspaceId,
       taskPath,
+      deliveryId: delivery.id,
       actor: "user",
       resume: false,
       note: "no rework",
@@ -278,6 +279,7 @@ test("P0: dirty terminal lane fails closed; exact reconcile reclaims after clean
     const rejectedRes = await rpc(svc, "task.reject", {
       workspaceId,
       taskPath,
+      deliveryId: delivery.id,
       actor: "user",
       resume: false,
       note: "dirty keep",

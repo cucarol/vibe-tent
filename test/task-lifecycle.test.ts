@@ -152,6 +152,7 @@ test("lifecycle: dispatch → claim → wait → resume → deliver → accept",
   let integrated: string[] = [];
   const accepted = await taskAccept(e as any, result.taskPath, {
     actor: "user",
+    deliveryId: delivered.delivery.id,
     integrate: async (commits) => {
       integrated = commits;
     },
@@ -170,12 +171,13 @@ test("lifecycle: finalize rejects a ready Delivery commit-list drift without mut
   const dir = await makeTent();
   const { e, result } = await dispatchOnFreeBox(dir);
   await taskClaim(e as any, result.taskPath);
-  await taskDeliver(e as any, result.taskPath, {
+  const delivered = await taskDeliver(e as any, result.taskPath, {
     summary: "ready",
     commits: ["aaa1111"],
   });
 
-  const prepared = await prepareTaskAccept(e as any, result.taskPath, { actor: "user" });
+  const acceptOptions = { actor: "user", deliveryId: delivered.delivery.id };
+  const prepared = await prepareTaskAccept(e as any, result.taskPath, acceptOptions);
   assert.deepEqual(prepared.commits, ["aaa1111"]);
   const delivery = (await loadDeliveries(e.fs)).find((row) => row.id === prepared.deliveryId);
   assert.ok(delivery);
@@ -183,7 +185,7 @@ test("lifecycle: finalize rejects a ready Delivery commit-list drift without mut
   await writeDelivery(e.fs, delivery);
 
   await assert.rejects(
-    () => finalizeTaskAccept(e as any, result.taskPath, { actor: "user" }, prepared),
+    () => finalizeTaskAccept(e as any, result.taskPath, acceptOptions, prepared),
     (err: unknown) => err instanceof TaskLifecycleError && err.code === "DELIVERY_CHANGED"
   );
   const task = await loadTaskEnvelope(e.fs, result.taskPath);
@@ -197,12 +199,15 @@ test("lifecycle: zero-commit ready Delivery remains legal to accept", async () =
   const dir = await makeTent();
   const { e, result } = await dispatchOnFreeBox(dir);
   await taskClaim(e as any, result.taskPath);
-  await taskDeliver(e as any, result.taskPath, {
+  const delivered = await taskDeliver(e as any, result.taskPath, {
     summary: "non-code result",
     commits: [],
   });
 
-  const accepted = await taskAccept(e as any, result.taskPath, { actor: "user" });
+  const accepted = await taskAccept(e as any, result.taskPath, {
+    actor: "user",
+    deliveryId: delivered.delivery.id,
+  });
   assert.equal(accepted.task.state, "accepted");
   assert.equal(accepted.delivery.status, "accepted");
   assert.deepEqual(accepted.delivery.commits, []);
@@ -212,10 +217,13 @@ test("lifecycle: self-accept is hard-forbidden", async () => {
   const dir = await makeTent();
   const { e, result } = await dispatchOnFreeBox(dir);
   await taskClaim(e as any, result.taskPath);
-  await taskDeliver(e as any, result.taskPath, { summary: "ship it", commits: [] });
+  const delivered = await taskDeliver(e as any, result.taskPath, { summary: "ship it", commits: [] });
 
   await assert.rejects(
-    () => taskAccept(e as any, result.taskPath, { actor: "rl-executor" }),
+    () => taskAccept(e as any, result.taskPath, {
+      actor: "rl-executor",
+      deliveryId: delivered.delivery.id,
+    }),
     (err: unknown) => err instanceof TaskLifecycleError && err.code === "SELF_ACCEPT_FORBIDDEN"
   );
 });
@@ -334,7 +342,7 @@ test("lifecycle: manual accept integrate failure keeps delivered + occupation", 
   const dir = await makeTent();
   const { e, result } = await dispatchOnFreeBox(dir);
   await taskClaim(e as any, result.taskPath);
-  await taskDeliver(e as any, result.taskPath, {
+  const delivered = await taskDeliver(e as any, result.taskPath, {
     summary: "ready",
     commits: ["abc1234"],
   });
@@ -342,6 +350,7 @@ test("lifecycle: manual accept integrate failure keeps delivered + occupation", 
     () =>
       taskAccept(e as any, result.taskPath, {
         actor: "user",
+        deliveryId: delivered.delivery.id,
         integrate: async () => {
           throw new Error("Workspace integration conflicted and was rolled back");
         },
@@ -393,9 +402,10 @@ test("lifecycle: reject(resume) returns to running; re-deliver works", async () 
   const dir = await makeTent();
   const { e, result } = await dispatchOnFreeBox(dir);
   await taskClaim(e as any, result.taskPath);
-  await taskDeliver(e as any, result.taskPath, { summary: "first try" });
+  const delivered = await taskDeliver(e as any, result.taskPath, { summary: "first try" });
   const rejected = await taskReject(e as any, result.taskPath, {
     actor: "user",
+    deliveryId: delivered.delivery.id,
     note: "add tests",
     resume: true,
   });
@@ -518,9 +528,10 @@ test("lifecycle: every terminal state releases exact Node occupation", async () 
 
   const rejected = await dispatchOnFreeBox(dir);
   await taskClaim(e as any, rejected.result.taskPath);
-  await taskDeliver(e as any, rejected.result.taskPath, { summary: "reject me" });
+  const rejectedDelivery = await taskDeliver(e as any, rejected.result.taskPath, { summary: "reject me" });
   const rejectedResult = await taskReject(e as any, rejected.result.taskPath, {
     actor: "user",
+    deliveryId: rejectedDelivery.delivery.id,
     note: "not accepted",
     resume: false,
   });
@@ -541,8 +552,11 @@ test("lifecycle: every terminal state releases exact Node occupation", async () 
 
   const accepted = await dispatchOnFreeBox(dir);
   await taskClaim(e as any, accepted.result.taskPath);
-  await taskDeliver(e as any, accepted.result.taskPath, { summary: "accept me", commits: [] });
-  const acceptedResult = await taskAccept(e as any, accepted.result.taskPath, { actor: "user" });
+  const acceptedDelivery = await taskDeliver(e as any, accepted.result.taskPath, { summary: "accept me", commits: [] });
+  const acceptedResult = await taskAccept(e as any, accepted.result.taskPath, {
+    actor: "user",
+    deliveryId: acceptedDelivery.delivery.id,
+  });
   assert.equal(acceptedResult.task.state, "accepted");
   assert.equal(await findActiveTaskForNode(e.fs, "cx-p1"), undefined);
 });

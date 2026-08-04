@@ -201,6 +201,7 @@ test("accept binds output deliveryId atomically; unbound query; same-delivery id
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
+      deliveryId,
       actor: "user",
       outputNodeIds: [output.nodeId],
     });
@@ -263,6 +264,7 @@ test("accept all-or-nothing: bad Output leaves Task/Delivery/Output unbound", as
     const failed = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
+      deliveryId,
       actor: "user",
       outputNodeIds: [good.nodeId, notOutput.nodeId],
     });
@@ -298,6 +300,7 @@ test("cross-delivery bind fails; archived/missing/non-output rejected", async ()
     const ok = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath: first.taskPath,
+      deliveryId: first.deliveryId,
       actor: "user",
       outputNodeIds: [output.nodeId],
     });
@@ -308,6 +311,7 @@ test("cross-delivery bind fails; archived/missing/non-output rejected", async ()
     const conflict = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath: second.taskPath,
+      deliveryId: second.deliveryId,
       actor: "user",
       outputNodeIds: [output.nodeId],
     });
@@ -328,6 +332,7 @@ test("cross-delivery bind fails; archived/missing/non-output rejected", async ()
     const archFail = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath: second.taskPath,
+      deliveryId: second.deliveryId,
       actor: "user",
       outputNodeIds: [archivedOut.nodeId],
     });
@@ -338,6 +343,7 @@ test("cross-delivery bind fails; archived/missing/non-output rejected", async ()
     const missing = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath: second.taskPath,
+      deliveryId: second.deliveryId,
       actor: "user",
       outputNodeIds: ["cx-doesnotexist"],
     });
@@ -348,6 +354,7 @@ test("cross-delivery bind fails; archived/missing/non-output rejected", async ()
     const plain = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath: second.taskPath,
+      deliveryId: second.deliveryId,
       actor: "user",
     });
     assert.ok(!plain.error, JSON.stringify(plain.error));
@@ -366,6 +373,7 @@ test("same-delivery multi-output idempotent re-bind on accept of shared ids", as
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
+      deliveryId,
       actor: "user",
       outputNodeIds: [a.nodeId, b.nodeId, a.nodeId], // dedupe
     });
@@ -425,6 +433,7 @@ test("output.provenance incomplete when delivery missing; archived output still 
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
+      deliveryId,
       actor: "user",
       outputNodeIds: [output.nodeId],
     });
@@ -569,9 +578,9 @@ test("ServiceClient.taskAccept passes outputNodeIds", async () => {
     const workspaceId = await mountWorkspace(svc, ws);
     const source = await createNote(svc, workspaceId, { name: "job-cli", type: "prompt" });
     const output = await createNote(svc, workspaceId, { name: "out-cli", type: "output" });
-    const { taskPath } = await readyDeliveryTask(svc, workspaceId, ws, source.nodeId);
+    const { taskPath, deliveryId } = await readyDeliveryTask(svc, workspaceId, ws, source.nodeId);
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
-    const result = (await client.taskAccept(workspaceId, taskPath, "user", {
+    const result = (await client.taskAccept(workspaceId, taskPath, deliveryId, "user", {
       outputNodeIds: [output.nodeId],
     })) as { state: string; boundOutputIds: string[] };
     assert.equal(result.state, "accepted");

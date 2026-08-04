@@ -819,12 +819,14 @@ export class ServiceClient {
   taskAccept(
     workspaceId: string,
     taskPath: string,
+    deliveryId: string,
     actor: string,
     opts?: { outputNodeIds?: string[] }
   ) {
     return this.call("task.accept", {
       workspaceId,
       taskPath,
+      deliveryId,
       actor,
       ...(opts?.outputNodeIds ? { outputNodeIds: opts.outputNodeIds } : {}),
     });
@@ -832,10 +834,11 @@ export class ServiceClient {
   taskReject(
     workspaceId: string,
     taskPath: string,
+    deliveryId: string,
     actor: string,
     opts?: { note?: string; resume?: boolean }
   ) {
-    return this.call("task.reject", { workspaceId, taskPath, actor, ...opts });
+    return this.call("task.reject", { workspaceId, taskPath, deliveryId, actor, ...opts });
   }
   taskInterrupt(workspaceId: string, taskPath: string) {
     return this.call("task.interrupt", { workspaceId, taskPath });

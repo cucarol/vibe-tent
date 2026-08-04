@@ -98,11 +98,13 @@ export type DispatchValidation = {
 
 export type AcceptPayload = {
   taskPath: string;
+  deliveryId: string;
   actor: string;
 };
 
 export type RejectPayload = {
   taskPath: string;
+  deliveryId: string;
   actor: string;
   note: string;
   resume: boolean;
@@ -248,12 +250,17 @@ export function validateDispatchForm(form: DispatchFormState): DispatchValidatio
   };
 }
 
-export function buildAcceptPayload(taskPath: string, actor = "user"): AcceptPayload {
-  return { taskPath, actor };
+export function buildAcceptPayload(
+  taskPath: string,
+  deliveryId: string,
+  actor = "user"
+): AcceptPayload {
+  return { taskPath, deliveryId, actor };
 }
 
 export function buildRejectPayload(
   taskPath: string,
+  deliveryId: string,
   reason: string,
   actor = "user"
 ): { ok: true; payload: RejectPayload } | { ok: false; reason: string } {
@@ -265,6 +272,7 @@ export function buildRejectPayload(
     ok: true,
     payload: {
       taskPath,
+      deliveryId,
       actor,
       note,
       resume: true,

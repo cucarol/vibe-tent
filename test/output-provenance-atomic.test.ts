@@ -111,6 +111,7 @@ test("multi-output bind: second write failure rolls back first Output; Task/Deli
     () =>
       taskAccept(failEnv as any, taskPath, {
         actor: "user",
+        deliveryId: delivery.id,
         outputNodeIds: [outA.id, outB.id],
       }),
     (err: unknown) =>
@@ -135,6 +136,7 @@ test("multi-output bind: second write failure rolls back first Output; Task/Deli
   // Successful accept still works after rollback.
   const accepted = await taskAccept(base as any, taskPath, {
     actor: "user",
+    deliveryId: delivery.id,
     outputNodeIds: [outA.id, outB.id],
   });
   assert.equal(accepted.task.state, "accepted");
@@ -185,6 +187,7 @@ test("accept: delivery/task snapshot read failure before Output write leaves all
     () =>
       taskAccept(failEnv as any, taskPath, {
         actor: "user",
+        deliveryId: delivery.id,
         outputNodeIds: [outA.id, outB.id],
       }),
     (err: unknown) =>
@@ -238,6 +241,7 @@ test("accept: task snapshot read failure before Output write leaves all byte-ide
     () =>
       taskAccept(failEnv as any, taskPath, {
         actor: "user",
+        deliveryId: delivery.id,
         outputNodeIds: [out.id],
       }),
     (err: unknown) =>
@@ -287,6 +291,7 @@ test("accept: delivery write failure after Output binds rolls Outputs + keeps Ta
     () =>
       taskAccept(failEnv as any, taskPath, {
         actor: "user",
+        deliveryId: delivery.id,
         outputNodeIds: [outA.id, outB.id],
       }),
     (err: unknown) =>
@@ -331,6 +336,7 @@ test("accept: task envelope write failure after Delivery accepted restores Deliv
     () =>
       taskAccept(failEnv as any, taskPath, {
         actor: "user",
+        deliveryId: delivery.id,
         outputNodeIds: [out.id],
       }),
     (err: unknown) =>

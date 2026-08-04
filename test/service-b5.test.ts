@@ -257,6 +257,18 @@ function rpc(
   return rpcCall(svc.url, method, params, { token: svc.token });
 }
 
+async function readyDeliveryId(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>,
+  workspaceId: string,
+  taskPath: string
+): Promise<string> {
+  const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+  assert.ok(!got.error, JSON.stringify(got.error));
+  const id = (got.result as { task: { activeDeliveryId?: string } }).task.activeDeliveryId;
+  assert.ok(id, "fixture requires an exact ready Delivery id");
+  return id;
+}
+
 /** Task-oracle collaboration view — not Node frontmatter owner/status. */
 type NodeCollabProjection = {
   workspaceId: string;
@@ -412,7 +424,7 @@ test("B5: dispatch → claim → startSession → deliver → accept (manual) vi
     // No commits: pure Tent path (Git integration covered by dedicated P0 tests).
     const delivered = (await client.taskDeliver(workspaceId, taskPath, {
       summary: "Implemented service wiring",
-    })) as { state: string; autoIntegrated: boolean; delivery: { status: string } };
+    })) as { state: string; autoIntegrated: boolean; delivery: { id: string; status: string } };
     assert.equal(delivered.autoIntegrated, false);
     assert.equal(delivered.state, "delivered");
     assert.equal(delivered.delivery.status, "ready");
@@ -421,11 +433,17 @@ test("B5: dispatch → claim → startSession → deliver → accept (manual) vi
     const selfAccept = await client.tryCall("task.accept", {
       workspaceId,
       taskPath,
+      deliveryId: delivered.delivery.id,
       actor: "executor",
     });
     assert.equal(selfAccept.ok, false);
 
-    const accepted = (await client.taskAccept(workspaceId, taskPath, "user")) as {
+    const accepted = (await client.taskAccept(
+      workspaceId,
+      taskPath,
+      delivered.delivery.id,
+      "user"
+    )) as {
       state: string;
       delivery: { status: string; integrationMode: string };
     };
@@ -550,6 +568,7 @@ test("B5: agent-decide integrate vs request-review", async () => {
     const rejected = await rpc(svc, "task.reject", {
       workspaceId,
       taskPath,
+      deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
       note: "needs more tests",
       resume: true,
@@ -2769,6 +2788,7 @@ test("P0-2: manual accept integrates real commits into main; re-deliver of integ
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
+      deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
     });
     assert.ok(!accepted.error, JSON.stringify(accepted.error));
@@ -3013,7 +3033,12 @@ test("P0-2: task.accept releases MutationBus during blocked Git integrate", asyn
       { file: "bus.txt", content: "bus\n", message: "bus accept" },
       "block bus during accept integrate"
     );
-    const acceptPromise = rpc(svc, "task.accept", { workspaceId, taskPath, actor: "user" });
+    const acceptPromise = rpc(svc, "task.accept", {
+      workspaceId,
+      taskPath,
+      deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
+      actor: "user",
+    });
     await waitIntegrate();
     const note = await rpc(svc, "docs.createNote", {
       workspaceId,
@@ -3091,7 +3116,12 @@ test("P0-2: same-Task reject waits for accept Git then refuses accepted", async 
       { file: "life-reject.txt", content: "r\n", message: "life reject" },
       "same-task reject serializes with accept"
     );
-    const acceptPromise = rpc(svc, "task.accept", { workspaceId, taskPath, actor: "user" }).then(
+    const acceptPromise = rpc(svc, "task.accept", {
+      workspaceId,
+      taskPath,
+      deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
+      actor: "user",
+    }).then(
       (res) => {
         order.push("accept-done");
         return res;
@@ -3108,6 +3138,7 @@ test("P0-2: same-Task reject waits for accept Git then refuses accepted", async 
     const rejectPromise = rpc(svc, "task.reject", {
       workspaceId,
       taskPath,
+      deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
       note: "should wait then refuse",
       resume: false,
@@ -3256,6 +3287,7 @@ test("P0-2: accept integration conflict keeps delivered + occupation; no done", 
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
+      deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
     });
     assert.ok(accepted.error, "accept must fail on integrate conflict");
@@ -3654,6 +3686,7 @@ test("P0 fix: managed auto-deliver collects role-lane commit; manual accept inte
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
+      deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
     });
     assert.ok(!accepted.error, JSON.stringify(accepted.error));
@@ -4008,6 +4041,7 @@ test("reject-resume restores live managed session for durable role (no false-run
     const rejected = await rpc(svc, "task.reject", {
       workspaceId,
       taskPath,
+      deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
       resume: true,
       note: "please fix tests",
@@ -4118,6 +4152,7 @@ test("reject-resume restores live managed session for route tasks", async () => 
     const rejected = await rpc(svc, "task.reject", {
       workspaceId,
       taskPath,
+      deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
       resume: true,
       note: "profile rework",
@@ -4265,6 +4300,7 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
       const rejected = await rpc(svc, "task.reject", {
         workspaceId,
         taskPath,
+        deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
         actor: "user",
         resume: true,
         note: "  keep provider context  ",
@@ -4378,7 +4414,12 @@ test("reject-resume unavailable restore parks; task.replaceSession creates the e
     await svc.runtime.registry.update(priorSessionId, { state: "stopped", pid: undefined, resumeToken: undefined });
 
     const rejected = await rpc(svc, "task.reject", {
-      workspaceId, taskPath, actor: "user", resume: true, note: "explicit replacement required",
+      workspaceId,
+      taskPath,
+      deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
+      actor: "user",
+      resume: true,
+      note: "explicit replacement required",
     });
     assert.ok(rejected.error);
     assert.equal(rejected.error!.code, RPC_LIFECYCLE);
@@ -5078,7 +5119,12 @@ test("reject-resume non-resume-capable binding parks; fresh Session is explicit 
     await svc.runtime.registry.update(priorSessionId, { state: "stopped", pid: undefined, resumeToken: undefined });
 
     const rejected = await rpc(svc, "task.reject", {
-      workspaceId, taskPath, actor: "user", resume: true, note: "no implicit fresh session",
+      workspaceId,
+      taskPath,
+      deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
+      actor: "user",
+      resume: true,
+      note: "no implicit fresh session",
     });
     assert.ok(rejected.error);
     assert.equal(rejected.error!.code, RPC_LIFECYCLE);
@@ -5169,6 +5215,7 @@ test("reject-resume fails loud and parks waiting when session cannot be restored
     const rejected = await rpc(svc, "task.reject", {
       workspaceId,
       taskPath,
+      deliveryId: await readyDeliveryId(svc, workspaceId, taskPath),
       actor: "user",
       resume: true,
       note: "should fail loud",

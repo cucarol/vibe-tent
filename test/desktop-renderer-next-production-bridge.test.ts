@@ -32,7 +32,7 @@ import type { FocusDocumentActions, FocusDocumentView } from "../src/desktop/ren
 
 function state(workspaceId = "ws-a") {
   return {
-    health: { status: "ok", protocolVersion: 4 },
+    health: { status: "ok", protocolVersion: 5 },
     foregroundWorkspaceId: workspaceId,
     workspaces: [
       {
@@ -55,9 +55,9 @@ const noDocumentActions: FocusDocumentActions = {
   async retry() {},
 };
 
-test("production bootstrap requires protocol 4 and exact foreground identity", () => {
+test("production bootstrap requires protocol 5 and exact foreground identity", () => {
   const normalized = normalizeDesktopBootstrap(state());
-  assert.equal(normalized.protocolVersion, 4);
+  assert.equal(normalized.protocolVersion, 5);
   assert.equal(normalized.foregroundWorkspace?.workspaceId, "ws-a");
 
   assert.throws(() =>
@@ -71,7 +71,7 @@ test("production bootstrap requires protocol 4 and exact foreground identity", (
   );
 
   const unmounted = normalizeDesktopBootstrap({
-    health: { status: "ok", protocolVersion: 4 },
+    health: { status: "ok", protocolVersion: 5 },
     foregroundWorkspaceId: null,
     workspaces: [],
   });

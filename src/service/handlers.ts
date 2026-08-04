@@ -5562,16 +5562,17 @@ async function taskRequestReviewRpc(ctx: HandlerContext, p: Record<string, unkno
 async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   assertAllowedParams(
     p,
-    new Set(["workspaceId", "taskPath", "actor", "outputNodeIds"]),
+    new Set(["workspaceId", "taskPath", "deliveryId", "actor", "outputNodeIds"]),
     "task.accept"
   );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
+  const deliveryId = requireString(p, "deliveryId");
   const actor = requireString(p, "actor");
   const outputNodeIds = optionalStringArray(p, "outputNodeIds");
 
-  const acceptOptions = { actor, outputNodeIds };
+  const acceptOptions = { actor, deliveryId, outputNodeIds };
   // Per-Task flight spans prepare → Git → finalize; MutationBus only around prepare/finalize.
   const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
     let prepared: Awaited<ReturnType<typeof prepareTaskAccept>>;
@@ -5737,12 +5738,13 @@ function outputProvenanceErrorToRpc(err: OutputProvenanceError): RpcError {
 async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   assertAllowedParams(
     p,
-    new Set(["workspaceId", "taskPath", "actor", "note", "resume"]),
+    new Set(["workspaceId", "taskPath", "deliveryId", "actor", "note", "resume"]),
     "task.reject"
   );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
+  const deliveryId = requireString(p, "deliveryId");
   const actor = requireString(p, "actor");
   // Delivery record may use trimmed note; U2A review-feedback preserves exact text.
   const noteForDelivery = optionalString(p, "note");
@@ -5756,6 +5758,7 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     ctx.host.markSelfWrite(workspaceId);
     const rejected = await taskReject(mount.env, taskPath, {
       actor,
+      deliveryId,
       note: noteForDelivery,
       resume,
     });

@@ -681,34 +681,48 @@ test("sub task accept/reject: exact parent Role only; user cannot ordinary-bypas
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
 
     await taskClaim(env as any, taskPath);
-    await taskDeliver(env as any, taskPath, {
+    const delivered = await taskDeliver(env as any, taskPath, {
       summary: "done",
       commits: [],
     });
 
     await assert.rejects(
-      () => taskAccept(env as any, taskPath, { actor: "rl-helper" }),
+      () => taskAccept(env as any, taskPath, {
+        actor: "rl-helper",
+        deliveryId: delivered.delivery.id,
+      }),
       (err: unknown) => err instanceof TaskLifecycleError && err.code === "SELF_ACCEPT_FORBIDDEN"
     );
     await assert.rejects(
-      () => taskReject(env as any, taskPath, { actor: "rl-executor", note: "nope" }),
+      () => taskReject(env as any, taskPath, {
+        actor: "rl-executor",
+        deliveryId: delivered.delivery.id,
+        note: "nope",
+      }),
       (err: unknown) => err instanceof TaskLifecycleError && err.code === "REVIEW_FORBIDDEN"
     );
     // User must not ordinary-bypass parent Role review.
     await assert.rejects(
-      () => taskAccept(env as any, taskPath, { actor: "user" }),
+      () => taskAccept(env as any, taskPath, {
+        actor: "user",
+        deliveryId: delivered.delivery.id,
+      }),
       (err: unknown) => err instanceof TaskLifecycleError && err.code === "REVIEW_FORBIDDEN"
     );
 
     // Parent Role may reject; re-deliver for accept path.
     const rejected = await taskReject(env as any, taskPath, {
       actor: "rl-orchestrator",
+      deliveryId: delivered.delivery.id,
       note: "rework",
       resume: true,
     });
     assert.equal(rejected.task.state, "running");
-    await taskDeliver(env as any, taskPath, { summary: "done v2", commits: [] });
-    const accepted = await taskAccept(env as any, taskPath, { actor: "rl-orchestrator" });
+    const redelivered = await taskDeliver(env as any, taskPath, { summary: "done v2", commits: [] });
+    const accepted = await taskAccept(env as any, taskPath, {
+      actor: "rl-orchestrator",
+      deliveryId: redelivered.delivery.id,
+    });
     assert.equal(accepted.task.state, "accepted");
     assert.equal(accepted.delivery.review?.by, "rl-orchestrator");
   });
@@ -804,6 +818,7 @@ test("sub accept integrates commits into dispatcher worktree; main stays put", a
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
+      deliveryId: (delivered.result as { delivery: { id: string } }).delivery.id,
       actor: "rl-orchestrator",
     });
     assert.ok(!accepted.error, JSON.stringify(accepted.error));
@@ -1124,6 +1139,7 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
     const subAccepted = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath: subTaskPath,
+      deliveryId: (subDelivered.result as { delivery: { id: string } }).delivery.id,
       actor: "rl-orchestrator",
     });
     assert.ok(!subAccepted.error, JSON.stringify(subAccepted.error));
@@ -1161,6 +1177,7 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
     const parentAccepted = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath: parentTaskPath,
+      deliveryId: (parentDelivered.result as { delivery: { id: string } }).delivery.id,
       actor: "user",
     });
     assert.ok(!parentAccepted.error, JSON.stringify(parentAccepted.error));

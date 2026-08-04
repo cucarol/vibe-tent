@@ -79,6 +79,7 @@ test("delivery:驳回后 task 仍 running,重新交付后 accept 保留 accepted
 
   const rejected = await taskReject(env as any, result.taskPath, {
     actor: "user",
+    deliveryId: first.delivery.id,
     note: "需要补测试",
   });
   assert.equal(rejected.delivery.status, "rejected");
@@ -96,6 +97,7 @@ test("delivery:驳回后 task 仍 running,重新交付后 accept 保留 accepted
   let integrated: string[] = [];
   const accepted = await taskAccept(env as any, result.taskPath, {
     actor: "user",
+    deliveryId: revised.delivery.id,
     integrate: async (commits) => {
       integrated = commits;
     },

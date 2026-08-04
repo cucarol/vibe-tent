@@ -114,7 +114,7 @@ export function renderActivity(): void {
         <div class="interaction-title">${escapeHtml(t.roleId || t.sessionConnectionId || t.sessionId || "Session")}</div>
         <div class="muted interaction-note">${escapeHtml(t.deliverySummary || t.prompt || t.path)}</div>
         <div class="interaction-actions">
-          <button type="button" class="btn btn-primary" data-act-accept="${escapeHtml(t.path)}">确认</button>
+          <button type="button" class="btn btn-primary" data-act-accept="${escapeHtml(t.path)}" data-act-delivery="${escapeHtml(t.activeDeliveryId || "")}">确认</button>
           <button type="button" class="btn btn-ghost" data-act-reject-toggle="${escapeHtml(t.path)}">驳回</button>
           ${
             t.canInterrupt
@@ -124,7 +124,7 @@ export function renderActivity(): void {
         </div>
         <div class="reject-panel" data-act-reject-panel="${escapeHtml(t.path)}" hidden>
           <input type="text" class="field" data-act-reject-reason="${escapeHtml(t.path)}" placeholder="驳回原因" value="${escapeHtml(draft)}" />
-          <button type="button" class="btn btn-danger" data-act-reject="${escapeHtml(t.path)}">确认驳回</button>
+          <button type="button" class="btn btn-danger" data-act-reject="${escapeHtml(t.path)}" data-act-delivery="${escapeHtml(t.activeDeliveryId || "")}">确认驳回</button>
         </div>
       </article>`;
     })
@@ -226,7 +226,12 @@ function wireActivity(root: HTMLElement): void {
     );
   });
   root.querySelectorAll<HTMLElement>("[data-act-accept]").forEach((btn) => {
-    btn.addEventListener("click", () => void onAccept(btn.getAttribute("data-act-accept")!));
+    btn.addEventListener("click", () =>
+      void onAccept(
+        btn.getAttribute("data-act-accept")!,
+        btn.getAttribute("data-act-delivery")!
+      )
+    );
   });
   root.querySelectorAll<HTMLElement>("[data-act-reject-toggle]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -244,7 +249,12 @@ function wireActivity(root: HTMLElement): void {
     });
   });
   root.querySelectorAll<HTMLElement>("[data-act-reject]").forEach((btn) => {
-    btn.addEventListener("click", () => void onReject(btn.getAttribute("data-act-reject")!));
+    btn.addEventListener("click", () =>
+      void onReject(
+        btn.getAttribute("data-act-reject")!,
+        btn.getAttribute("data-act-delivery")!
+      )
+    );
   });
   root.querySelectorAll<HTMLElement>("[data-act-start]").forEach((btn) => {
     btn.addEventListener("click", () => void onStart(btn.getAttribute("data-act-start")!));
@@ -330,13 +340,14 @@ async function onTool(id: string, allow: boolean): Promise<void> {
   }
 }
 
-async function onAccept(taskPath: string): Promise<void> {
+async function onAccept(taskPath: string, deliveryId: string): Promise<void> {
   if (!workspaceId) return;
-  const payload = buildAcceptPayload(taskPath, "user");
+  const payload = buildAcceptPayload(taskPath, deliveryId, "user");
   try {
     await window.tentDesktop.rpc("task.accept", {
       workspaceId,
       taskPath: payload.taskPath,
+      deliveryId: payload.deliveryId,
       actor: payload.actor,
     });
     el.status.textContent = `已确认交付：${taskPath}`;
@@ -346,10 +357,10 @@ async function onAccept(taskPath: string): Promise<void> {
   }
 }
 
-async function onReject(taskPath: string): Promise<void> {
+async function onReject(taskPath: string, deliveryId: string): Promise<void> {
   if (!workspaceId) return;
   const reason = rejectDrafts.get(taskPath) || "";
-  const built = buildRejectPayload(taskPath, reason, "user");
+  const built = buildRejectPayload(taskPath, deliveryId, reason, "user");
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
@@ -358,6 +369,7 @@ async function onReject(taskPath: string): Promise<void> {
     await window.tentDesktop.rpc("task.reject", {
       workspaceId,
       taskPath: built.payload.taskPath,
+      deliveryId: built.payload.deliveryId,
       actor: built.payload.actor,
       note: built.payload.note,
       resume: built.payload.resume,

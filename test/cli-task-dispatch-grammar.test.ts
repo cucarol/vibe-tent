@@ -481,6 +481,34 @@ test("task accept rejects --commits before workspace or client access", async ()
   assert.doesNotMatch(acceptUsage!, /--commits/);
 });
 
+test("task accept/reject require the exact --delivery-id before client access", async () => {
+  const accessed: string[] = [];
+  const client = new Proxy(
+    {},
+    {
+      get(_target, property) {
+        accessed.push(String(property));
+        return async () => {
+          throw new Error("client must not be called");
+        };
+      },
+    }
+  );
+  for (const [sub, args] of [
+    ["accept", ["temp/规划/tasks/task-example.md", "--actor", "user"]],
+    ["reject", ["temp/规划/tasks/task-example.md", "--actor", "user", "--note", "no"]],
+    ["accept", ["temp/规划/tasks/task-example.md", "--actor", "user", "--expected-delivery-id", "dl-old"]],
+  ] as const) {
+    const result = await runTaskCommand(sub, [...args], {
+      client: client as never,
+      cwd: "C:\\path-that-must-not-be-read",
+    });
+    assert.notEqual(result.exitCode, 0);
+    assert.match(result.stderr, /delivery-id|Unknown option/);
+  }
+  assert.deepEqual(accessed, []);
+});
+
 test("missing --target / --work-node / --prompt and invalid target fail loud", async () => {
   const cwd = await makeFakeTentCwd();
   const { client, calls } = capturingDispatchClient();

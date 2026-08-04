@@ -333,12 +333,12 @@ export function renderTasks(): void {
           : "";
         const reviewActions = t.canAcceptOrReject
           ? `<div class="task-primary-row">
-              <button type="button" class="btn btn-primary" data-accept="${escapeHtml(t.path)}">确认</button>
+              <button type="button" class="btn btn-primary" data-accept="${escapeHtml(t.path)}" data-delivery="${escapeHtml(t.activeDeliveryId || "")}">确认</button>
               <button type="button" class="btn btn-ghost" data-reject-toggle="${escapeHtml(t.path)}" aria-expanded="false">驳回</button>
             </div>
             <div class="reject-panel" data-reject-panel="${escapeHtml(t.path)}" hidden>
               <input type="text" class="field" data-reject-reason="${escapeHtml(t.path)}" placeholder="驳回原因" value="${escapeHtml(rejectDraft)}" />
-              <button type="button" class="${btnClass("danger")}" data-reject="${escapeHtml(t.path)}">确认驳回</button>
+              <button type="button" class="${btnClass("danger")}" data-reject="${escapeHtml(t.path)}" data-delivery="${escapeHtml(t.activeDeliveryId || "")}">确认驳回</button>
             </div>`
           : "";
         const actions =
@@ -379,7 +379,9 @@ export function renderTasks(): void {
     btn.addEventListener("click", () => void onCancelTask(btn.getAttribute("data-cancel")!));
   });
   el.tasks.querySelectorAll<HTMLElement>("[data-accept]").forEach((btn) => {
-    btn.addEventListener("click", () => void onAccept(btn.getAttribute("data-accept")!));
+    btn.addEventListener("click", () =>
+      void onAccept(btn.getAttribute("data-accept")!, btn.getAttribute("data-delivery")!)
+    );
   });
   el.tasks.querySelectorAll<HTMLElement>("[data-reject-toggle]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -403,7 +405,9 @@ export function renderTasks(): void {
     });
   });
   el.tasks.querySelectorAll<HTMLElement>("[data-reject]").forEach((btn) => {
-    btn.addEventListener("click", () => void onReject(btn.getAttribute("data-reject")!));
+    btn.addEventListener("click", () =>
+      void onReject(btn.getAttribute("data-reject")!, btn.getAttribute("data-delivery")!)
+    );
   });
 }
 
@@ -476,13 +480,14 @@ async function onCancelTask(taskPath: string): Promise<void> {
   }
 }
 
-async function onAccept(taskPath: string): Promise<void> {
+async function onAccept(taskPath: string, deliveryId: string): Promise<void> {
   if (!workspaceId) return;
-  const payload = buildAcceptPayload(taskPath, "user");
+  const payload = buildAcceptPayload(taskPath, deliveryId, "user");
   try {
     await window.tentDesktop.rpc("task.accept", {
       workspaceId,
       taskPath: payload.taskPath,
+      deliveryId: payload.deliveryId,
       actor: payload.actor,
     });
     el.status.textContent = `已确认交付：${taskPath}`;
@@ -492,10 +497,10 @@ async function onAccept(taskPath: string): Promise<void> {
   }
 }
 
-async function onReject(taskPath: string): Promise<void> {
+async function onReject(taskPath: string, deliveryId: string): Promise<void> {
   if (!workspaceId) return;
   const reason = rejectDrafts.get(taskPath) || "";
-  const built = buildRejectPayload(taskPath, reason, "user");
+  const built = buildRejectPayload(taskPath, deliveryId, reason, "user");
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
@@ -504,6 +509,7 @@ async function onReject(taskPath: string): Promise<void> {
     await window.tentDesktop.rpc("task.reject", {
       workspaceId,
       taskPath: built.payload.taskPath,
+      deliveryId: built.payload.deliveryId,
       actor: built.payload.actor,
       note: built.payload.note,
       resume: built.payload.resume,

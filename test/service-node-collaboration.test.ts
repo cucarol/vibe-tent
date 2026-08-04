@@ -309,8 +309,10 @@ test("node.collaboration: accepted Task clears occupation (empty activeTasks)", 
       acceptMode: "review-required",
     })) as { taskPath: string };
     await claimRoleTask(svc, client, workspaceId, ws, dispatched.taskPath);
-    await client.taskDeliver(workspaceId, dispatched.taskPath, { summary: "done" });
-    await client.taskAccept(workspaceId, dispatched.taskPath, "user");
+    const delivered = (await client.taskDeliver(workspaceId, dispatched.taskPath, {
+      summary: "done",
+    })) as { delivery: { id: string } };
+    await client.taskAccept(workspaceId, dispatched.taskPath, delivered.delivery.id, "user");
 
     const item = (await client.nodeCollaboration(workspaceId, note.nodeId)) as NodeCollaboration;
     assertIdle(item, note.nodeId, workspaceId);
@@ -683,8 +685,10 @@ test("node.collaboration: terminal rejected/interrupted/failed clear occupation"
       acceptMode: "review-required",
     })) as { taskPath: string };
     await claimRoleTask(svc, client, workspaceId, ws, d2.taskPath);
-    await client.taskDeliver(workspaceId, d2.taskPath, { summary: "for reject" });
-    await client.taskReject(workspaceId, d2.taskPath, "user", {
+    const delivered = (await client.taskDeliver(workspaceId, d2.taskPath, {
+      summary: "for reject",
+    })) as { delivery: { id: string } };
+    await client.taskReject(workspaceId, d2.taskPath, delivered.delivery.id, "user", {
       resume: false,
       note: "terminal reject",
     });

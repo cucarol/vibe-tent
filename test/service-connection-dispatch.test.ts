@@ -658,7 +658,7 @@ test("task discovery and retention see nested Session Tasks", async () => {
     assert.match(found.sessionId || "", /^ss-/);
 
     // Accept so retention can see terminal candidate under nested path.
-    await rpc(svc, "task.deliver", {
+    const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
       taskPath,
       summary: "done",
@@ -666,6 +666,7 @@ test("task discovery and retention see nested Session Tasks", async () => {
     await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
+      deliveryId: (delivered.result as { delivery: { id: string } }).delivery.id,
       actor: "user",
     });
 
@@ -711,7 +712,7 @@ test("Connection Task projects exact Session and Delivery remains Task-scoped", 
       summary: "Connection Task delivery",
     });
     assert.ok(!delivered.error, JSON.stringify(delivered.error));
-    const delivery = (delivered.result as { delivery: { path: string } })
+    const delivery = (delivered.result as { delivery: { id: string; path: string } })
       .delivery;
     assert.match(
       delivery.path,
@@ -721,6 +722,7 @@ test("Connection Task projects exact Session and Delivery remains Task-scoped", 
     const accepted = await rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
+      deliveryId: delivery.id,
       actor: "user",
     });
     assert.ok(!accepted.error, JSON.stringify(accepted.error));

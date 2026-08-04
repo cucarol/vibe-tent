@@ -879,10 +879,12 @@ test("replaceSession: waits on same-Task accept Git then refuses accepted; unrel
     });
     assert.ok(!delivered.error, JSON.stringify(delivered.error));
     assert.equal((delivered.result as { state: string }).state, "delivered");
+    const deliveryId = (delivered.result as { delivery: { id: string } }).delivery.id;
 
     const acceptPromise = rpc(svc, "task.accept", {
       workspaceId,
       taskPath,
+      deliveryId,
       actor: "user",
     }).then((res) => {
       order.push("accept-done");

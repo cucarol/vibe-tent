@@ -163,15 +163,20 @@ test("validateDispatchForm builds task.dispatch payload and blocks invalid cases
 });
 
 test("accept/reject payload builders and task review model", () => {
-  assert.deepEqual(buildAcceptPayload("temp/executor/tasks/t1.md"), {
+  assert.deepEqual(buildAcceptPayload("temp/executor/tasks/t1.md", "dl-ready"), {
     taskPath: "temp/executor/tasks/t1.md",
+    deliveryId: "dl-ready",
     actor: "user",
   });
 
-  const badReject = buildRejectPayload("temp/executor/tasks/t1.md", "  ");
+  const badReject = buildRejectPayload("temp/executor/tasks/t1.md", "dl-ready", "  ");
   assert.equal(badReject.ok, false);
 
-  const goodReject = buildRejectPayload("temp/executor/tasks/t1.md", "  need more tests  ");
+  const goodReject = buildRejectPayload(
+    "temp/executor/tasks/t1.md",
+    "dl-ready",
+    "  need more tests  "
+  );
   assert.equal(goodReject.ok, true);
   if (goodReject.ok) {
     assert.equal(goodReject.payload.note, "need more tests");
@@ -473,21 +478,23 @@ test("service+client: registry → create coordination box → dispatch → deli
     // No commits: pure Tent accept path (Git integrate covered by service P0 tests).
     const delivered = (await client.taskDeliver(workspaceId, dispatched.taskPath, {
       summary: "Implemented closed loop",
-    })) as { state: string; delivery: { status: string } };
+    })) as { state: string; delivery: { id: string; status: string } };
     assert.equal(delivered.state, "delivered");
 
     // Self-accept still forbidden (UI must not bypass)
     const self = await client.tryCall("task.accept", {
       workspaceId,
       taskPath: dispatched.taskPath,
+      deliveryId: delivered.delivery.id,
       actor: "executor",
     });
     assert.equal(self.ok, false);
 
-    const acceptPayload = buildAcceptPayload(dispatched.taskPath, "user");
+    const acceptPayload = buildAcceptPayload(dispatched.taskPath, delivered.delivery.id, "user");
     const accepted = (await client.taskAccept(
       workspaceId,
       acceptPayload.taskPath,
+      acceptPayload.deliveryId,
       acceptPayload.actor
     )) as { state: string };
     assert.equal(accepted.state, "accepted");
@@ -506,15 +513,21 @@ test("service+client: registry → create coordination box → dispatch → deli
       acceptMode: "review-required",
     })) as { taskPath: string };
     await roleClient.taskClaim(workspaceId, d2.taskPath);
-    await client.taskDeliver(workspaceId, d2.taskPath, {
+    const delivered2 = (await client.taskDeliver(workspaceId, d2.taskPath, {
       summary: "not good enough",
-    });
-    const rejectPayload = buildRejectPayload(d2.taskPath, "缺测试", "user");
+    })) as { delivery: { id: string } };
+    const rejectPayload = buildRejectPayload(
+      d2.taskPath,
+      delivered2.delivery.id,
+      "缺测试",
+      "user"
+    );
     assert.equal(rejectPayload.ok, true);
     if (rejectPayload.ok) {
       const rejected = (await client.taskReject(
         workspaceId,
         rejectPayload.payload.taskPath,
+        rejectPayload.payload.deliveryId,
         rejectPayload.payload.actor,
         { note: rejectPayload.payload.note, resume: false }
       )) as { state: string; delivery: { status: string } };

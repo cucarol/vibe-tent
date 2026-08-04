@@ -257,7 +257,7 @@ test("lifecycle: accept integrate runs outside mutation.lock; failure keeps deli
     reviewer: { kind: "user", id: "user" },
   });
   await taskClaim(e as any, result.taskPath);
-  await taskDeliver(e as any, result.taskPath, {
+  const delivered = await taskDeliver(e as any, result.taskPath, {
     summary: "ready",
     commits: ["abc1234"],
   });
@@ -267,6 +267,7 @@ test("lifecycle: accept integrate runs outside mutation.lock; failure keeps deli
     () =>
       taskAccept(e as any, result.taskPath, {
         actor: "user",
+        deliveryId: delivered.delivery.id,
         integrate: async () => {
           sawLockDuringIntegrate = await e.fs.exists("mutation.lock");
           throw new Error("Workspace integration conflicted and was rolled back");

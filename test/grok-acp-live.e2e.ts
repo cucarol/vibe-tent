@@ -136,11 +136,16 @@ test("real Grok ACP: dispatch → managed report → review accept", async () =>
 
     const deliveries = await rpc("delivery.list", { workspaceId });
     assert.ok(!deliveries.error, JSON.stringify(deliveries.error));
-    const rows = (deliveries.result as { deliveries: Array<{ summary: string }> }).deliveries;
+    const rows = (deliveries.result as { deliveries: Array<{ id: string; summary: string }> }).deliveries;
     assert.equal(rows.length, 1);
     assert.match(rows[0]!.summary, /TENT_GROK_E2E_OK/i);
 
-    const accepted = await rpc("task.accept", { workspaceId, taskPath, actor: "user" });
+    const accepted = await rpc("task.accept", {
+      workspaceId,
+      taskPath,
+      deliveryId: rows[0]!.id,
+      actor: "user",
+    });
     assert.ok(!accepted.error, JSON.stringify(accepted.error));
   } finally {
     await svc.stop();

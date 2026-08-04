@@ -92,6 +92,8 @@ export interface TaskDeliverOptions {
 
 export interface TaskAcceptOptions {
   actor: string;
+  /** Exact ready Delivery shown to the reviewer. */
+  deliveryId: string;
   integrate?: (commits: string[]) => Promise<void>;
   /**
    * Optional Output Node ids to bind to the accepted Delivery (`deliveryId` FM).
@@ -103,6 +105,8 @@ export interface TaskAcceptOptions {
 
 export interface TaskRejectOptions {
   actor: string;
+  /** Exact ready Delivery shown to the reviewer. */
+  deliveryId: string;
   note?: string;
   /** Default true — rework path delivered → running. */
   resume?: boolean;
@@ -378,7 +382,11 @@ export async function prepareTaskAccept(
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertTransition(task.state, "accept", "accepted");
-    const delivery = await requireActiveReadyDelivery(env.fs, task);
+    const delivery = await requireExpectedActiveReadyDelivery(
+      env.fs,
+      task,
+      options.deliveryId
+    );
     assertReviewAuthority({
       actor: options.actor,
       executorRoleId: task.roleId,
@@ -411,10 +419,14 @@ export async function finalizeTaskAccept(
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertTransition(task.state, "accept", "accepted");
-    const delivery = await requireActiveReadyDelivery(env.fs, task);
+    const delivery = await requireExpectedActiveReadyDelivery(
+      env.fs,
+      task,
+      options.deliveryId
+    );
     if (delivery.id !== prepared.deliveryId) {
       throw new TaskLifecycleError(
-        "NO_ACTIVE_DELIVERY",
+        "DELIVERY_CHANGED",
         "Ready delivery changed during integrate; refusing accept."
       );
     }
@@ -573,7 +585,11 @@ export async function taskReject(
     const to: TaskState = resume ? "running" : "rejected";
     assertTransition(task.state, event, to);
 
-    const delivery = await requireActiveReadyDelivery(env.fs, task);
+    const delivery = await requireExpectedActiveReadyDelivery(
+      env.fs,
+      task,
+      options.deliveryId
+    );
     // Exact Task.reviewer only (no user override on Role-reviewed); never self.
     assertReviewAuthority({
       actor: options.actor,
@@ -731,6 +747,27 @@ async function requireActiveReadyDelivery(fs: FsAdapter, task: TaskEnvelope): Pr
     throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No ready delivery for this task.");
   }
   return ready;
+}
+
+async function requireExpectedActiveReadyDelivery(
+  fs: FsAdapter,
+  task: TaskEnvelope,
+  deliveryId: string
+): Promise<DeliveryRecord> {
+  if (task.activeDeliveryId !== deliveryId) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      "The ready delivery changed; refresh before reviewing it."
+    );
+  }
+  const delivery = await requireActiveReadyDelivery(fs, task);
+  if (delivery.id !== deliveryId) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      "The ready delivery changed; refresh before reviewing it."
+    );
+  }
+  return delivery;
 }
 
 function requireNodeById(tent: LoadedTent, nodeId: string): Node {

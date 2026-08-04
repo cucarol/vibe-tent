@@ -21,6 +21,7 @@ import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { RPC_LIFECYCLE } from "../src/service/types.js";
+import { taskReject } from "../src/core/task-lifecycle.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
 
 async function makeWorkspace(name = "git-integrity"): Promise<string> {
@@ -43,7 +44,8 @@ async function initGitOnWorkspace(workspace: string): Promise<void> {
 }
 
 async function withService<T>(
-  fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>
+  fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>,
+  options: { integrateCommits?: () => Promise<void> } = {}
 ): Promise<T> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-gi-svc-"));
   const svc = await startLocalTentService({
@@ -56,6 +58,7 @@ async function withService<T>(
         fake: { waitForSignal: true },
       },
     ],
+    ...options,
   });
   try {
     return await fn(svc);
@@ -70,6 +73,12 @@ function rpc(
   params?: Record<string, unknown>
 ) {
   return rpcCall(svc.url, method, params, { token: svc.token });
+}
+
+function deliveryIdOf(response: { result?: unknown }): string {
+  const id = (response.result as { delivery?: { id?: string } } | undefined)?.delivery?.id;
+  assert.ok(id, "fixture requires an exact ready Delivery id");
+  return id;
 }
 
 async function mountWorkItem(
@@ -273,11 +282,13 @@ test("concurrent accept same targetHead: one integrates; other TARGET_MOVED rema
       rpc(svc, "task.accept", {
         workspaceId,
         taskPath: taskA.taskPath,
+        deliveryId: deliveryIdOf(deliveredA),
         actor: "user",
       }),
       rpc(svc, "task.accept", {
         workspaceId,
         taskPath: taskB.taskPath,
+        deliveryId: deliveryIdOf(deliveredB),
         actor: "user",
       }),
     ]);
@@ -359,10 +370,21 @@ test("task.accept rejects caller commit overrides without mutating ready Deliver
     const beforeDelivery = await fs.readFile(deliveryFile);
     const beforeMain = (await git(ws, "rev-parse", "main")).trim();
 
+    const missingDeliveryId = await rpc(svc, "task.accept", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      actor: "user",
+    });
+    assert.equal(missingDeliveryId.error?.code, -32602);
+    assert.deepEqual(await fs.readFile(taskFile), beforeTask);
+    assert.deepEqual(await fs.readFile(deliveryFile), beforeDelivery);
+    assert.equal((await git(ws, "rev-parse", "main")).trim(), beforeMain);
+
     for (const commits of [[], ["bbbbbbb"]]) {
       const rejected = await rpc(svc, "task.accept", {
         workspaceId: task.workspaceId,
         taskPath: task.taskPath,
+        deliveryId: deliveryIdOf(delivered),
         actor: "user",
         commits,
       });
@@ -376,6 +398,7 @@ test("task.accept rejects caller commit overrides without mutating ready Deliver
     const accepted = await rpc(svc, "task.accept", {
       workspaceId: task.workspaceId,
       taskPath: task.taskPath,
+      deliveryId: deliveryIdOf(delivered),
       actor: "user",
     });
     assert.ok(!accepted.error, JSON.stringify(accepted.error));
@@ -409,6 +432,17 @@ test("task.reject rejects unknown fields before mutating Task or Delivery", asyn
     const beforeTask = await fs.readFile(taskFile);
     const beforeDelivery = await fs.readFile(deliveryFile);
 
+    const missingDeliveryId = await rpc(svc, "task.reject", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      actor: "user",
+      note: "must not be applied",
+      resume: false,
+    });
+    assert.equal(missingDeliveryId.error?.code, -32602);
+    assert.deepEqual(await fs.readFile(taskFile), beforeTask);
+    assert.deepEqual(await fs.readFile(deliveryFile), beforeDelivery);
+
     for (const extra of [
       { actorOverride: "rl-forged" },
       { commits: [] },
@@ -417,6 +451,7 @@ test("task.reject rejects unknown fields before mutating Task or Delivery", asyn
       const rejected = await rpc(svc, "task.reject", {
         workspaceId: task.workspaceId,
         taskPath: task.taskPath,
+        deliveryId: deliveryIdOf(delivered),
         actor: "user",
         note: "must not be applied",
         resume: false,
@@ -431,6 +466,7 @@ test("task.reject rejects unknown fields before mutating Task or Delivery", asyn
     const rejected = await rpc(svc, "task.reject", {
       workspaceId: task.workspaceId,
       taskPath: task.taskPath,
+      deliveryId: deliveryIdOf(delivered),
       actor: "user",
       note: "valid terminal reject",
       resume: false,
@@ -441,6 +477,104 @@ test("task.reject rejects unknown fields before mutating Task or Delivery", asyn
       (rejected.result as { delivery: { status: string } }).delivery.status,
       "rejected"
     );
+  });
+});
+
+test("review mutations reject a replaced Delivery before Git or durable writes", async () => {
+  const ws = await makeWorkspace("delivery-bound-review");
+  await initGitOnWorkspace(ws);
+  let integrateCalls = 0;
+
+  await withService(async (svc) => {
+    const task = await claimRunningWithBase(svc, ws, {
+      label: "delivery-bound",
+      prompt: "review the exact ready Delivery",
+    });
+    const commitA = await taskCommitOnLane(
+      task.worktree,
+      "candidate-a.txt",
+      "a\n",
+      "candidate a"
+    );
+    const deliveredA = await rpc(svc, "task.deliver", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      summary: "candidate A",
+      commits: [commitA],
+    });
+    assert.ok(!deliveredA.error, JSON.stringify(deliveredA.error));
+    const deliveryA = (deliveredA.result as {
+      delivery: { id: string; path: string };
+    }).delivery;
+
+    await taskReject(svc.ctx.host.require(task.workspaceId).env, task.taskPath, {
+      actor: "user",
+      deliveryId: deliveryA.id,
+      note: "replace A",
+      resume: true,
+    });
+
+    const commitB = await taskCommitOnLane(
+      task.worktree,
+      "candidate-b.txt",
+      "b\n",
+      "candidate b"
+    );
+    const deliveredB = await rpc(svc, "task.deliver", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      summary: "candidate B",
+      commits: [commitB],
+    });
+    assert.ok(!deliveredB.error, JSON.stringify(deliveredB.error));
+    const deliveryB = (deliveredB.result as {
+      delivery: { id: string; path: string };
+    }).delivery;
+    assert.notEqual(deliveryA.id, deliveryB.id);
+
+    const taskFile = path.join(ws, ".tent", ...task.taskPath.split("/"));
+    const deliveryAFile = path.join(ws, ".tent", ...deliveryA.path.split("/"));
+    const deliveryBFile = path.join(ws, ".tent", ...deliveryB.path.split("/"));
+    const beforeTask = await fs.readFile(taskFile);
+    const beforeA = await fs.readFile(deliveryAFile);
+    const beforeB = await fs.readFile(deliveryBFile);
+    const beforeMain = (await git(ws, "rev-parse", "main")).trim();
+
+    for (const method of ["task.accept", "task.reject"] as const) {
+      const stale = await rpc(svc, method, {
+        workspaceId: task.workspaceId,
+        taskPath: task.taskPath,
+        deliveryId: deliveryA.id,
+        actor: "user",
+        ...(method === "task.reject" ? { note: "stale card", resume: false } : {}),
+      });
+      assert.equal(stale.error?.code, RPC_LIFECYCLE, JSON.stringify(stale.error));
+      assert.equal(
+        (stale.error?.data as { code?: string } | undefined)?.code,
+        "DELIVERY_CHANGED"
+      );
+      assert.equal(integrateCalls, 0, "stale accept must fail before the Git integrator");
+      assert.deepEqual(await fs.readFile(taskFile), beforeTask);
+      assert.deepEqual(await fs.readFile(deliveryAFile), beforeA);
+      assert.deepEqual(await fs.readFile(deliveryBFile), beforeB);
+      assert.equal((await git(ws, "rev-parse", "main")).trim(), beforeMain);
+    }
+
+    const alias = await rpc(svc, "task.accept", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      deliveryId: deliveryB.id,
+      expectedDeliveryId: deliveryB.id,
+      actor: "user",
+    });
+    assert.equal(alias.error?.code, -32602, JSON.stringify(alias.error));
+    assert.deepEqual(await fs.readFile(taskFile), beforeTask);
+    assert.deepEqual(await fs.readFile(deliveryBFile), beforeB);
+    assert.equal((await git(ws, "rev-parse", "main")).trim(), beforeMain);
+  }, {
+    integrateCommits: async () => {
+      integrateCalls += 1;
+    },
   });
 });
 
@@ -544,11 +678,13 @@ test("Service dual workspaceId projections same common-dir+target: concurrent ac
       rpc(svc, "task.accept", {
         workspaceId: workspaceIdA,
         taskPath: taskA.taskPath,
+        deliveryId: deliveryIdOf(deliveredA),
         actor: "user",
       }),
       rpc(svc, "task.accept", {
         workspaceId: workspaceIdB,
         taskPath: taskB.taskPath,
+        deliveryId: deliveryIdOf(deliveredB),
         actor: "user",
       }),
     ]);
@@ -660,6 +796,7 @@ test("Service dual workspaceId: blocked integrate critical section is exclusive"
     const refA = await taskCommitOnLane(taskA.worktree, "hold-a.txt", "a\n", "hold a");
     const refB = await taskCommitOnLane(taskB.worktree, "hold-b.txt", "b\n", "hold b");
 
+    const deliveryIds = new Map<string, string>();
     for (const row of [
       { workspaceId: workspaceIdA, taskPath: taskA.taskPath, commits: [refA] },
       { workspaceId: workspaceIdB, taskPath: taskB.taskPath, commits: [refB] },
@@ -671,16 +808,19 @@ test("Service dual workspaceId: blocked integrate critical section is exclusive"
         commits: row.commits,
       });
       assert.ok(!d.error, JSON.stringify(d.error));
+      deliveryIds.set(row.taskPath, deliveryIdOf(d));
     }
 
     const acceptA = rpc(svc, "task.accept", {
       workspaceId: workspaceIdA,
       taskPath: taskA.taskPath,
+      deliveryId: deliveryIds.get(taskA.taskPath),
       actor: "user",
     });
     const acceptB = rpc(svc, "task.accept", {
       workspaceId: workspaceIdB,
       taskPath: taskB.taskPath,
+      deliveryId: deliveryIds.get(taskB.taskPath),
       actor: "user",
     });
 
