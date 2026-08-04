@@ -25,6 +25,13 @@ export const NODE_CARD = {
   padY: 24,
 } as const;
 
+export const VISIBLE_NODE_PLACEMENT = {
+  width: 264,
+  height: 138,
+  insetX: 96,
+  insetY: 150,
+} as const;
+
 export function withViewport(
   doc: CanvasDocument,
   viewport: Partial<Viewport>
@@ -70,6 +77,76 @@ export function hasEntityPlacement(
   entityRef: EntityRef
 ): boolean {
   return doc.placements.some((p) => p.entityRef === entityRef);
+}
+
+/**
+ * Put one Node placement inside the currently visible Excalidraw viewport.
+ * The viewport stores Excalidraw's pixel translation (`scroll * zoom`), so
+ * the inverse transform below produces a scene point at a stable screen
+ * inset. Existing placements are focused instead of duplicated.
+ */
+export function placeEntityInVisibleViewport(
+  doc: CanvasDocument,
+  entityRef: EntityRef,
+  createPlacementId: () => PlacementId = () => newPlacementId("pl-node")
+): { document: CanvasDocument; placementId: PlacementId; added: boolean } {
+  const existing = doc.placements.find((placement) => placement.entityRef === entityRef);
+  if (existing) {
+    return {
+      document: setFocusedPlacement(doc, existing.placementId),
+      placementId: existing.placementId,
+      added: false,
+    };
+  }
+
+  const viewport = doc.viewport ?? DEFAULT_VIEWPORT;
+  const zoom = Number.isFinite(viewport.zoom) && viewport.zoom > 0 ? viewport.zoom : 1;
+  const placementId = createPlacementId();
+  const baseX = (VISIBLE_NODE_PLACEMENT.insetX - viewport.x) / zoom;
+  const baseY = (VISIBLE_NODE_PLACEMENT.insetY - viewport.y) / zoom;
+  const overlaps = (x: number, y: number) => doc.placements.some((candidate) => {
+    const candidateX = candidate.x ?? 0;
+    const candidateY = candidate.y ?? 0;
+    const candidateWidth = candidate.width ?? NODE_CARD.width;
+    const candidateHeight = candidate.height ?? NODE_CARD.height;
+    const margin = 20;
+    return x < candidateX + candidateWidth + margin &&
+      x + VISIBLE_NODE_PLACEMENT.width + margin > candidateX &&
+      y < candidateY + candidateHeight + margin &&
+      y + VISIBLE_NODE_PLACEMENT.height + margin > candidateY;
+  });
+  let x = baseX;
+  let y = baseY;
+  const slotLimit = Math.max(12, doc.placements.length * 4 + 4);
+  for (let slot = 0; slot < slotLimit; slot += 1) {
+    const candidateX = baseX + (slot % 2) * (VISIBLE_NODE_PLACEMENT.width + 32);
+    const candidateY = baseY + Math.floor(slot / 2) * (VISIBLE_NODE_PLACEMENT.height + 32);
+    // If every scanned slot is obstructed, the final bounded candidate is a
+    // safer fallback than silently returning to the known-conflicting base.
+    x = candidateX;
+    y = candidateY;
+    if (!overlaps(candidateX, candidateY)) {
+      break;
+    }
+  }
+  const placement: CanvasPlacement = {
+    placementId,
+    entityRef,
+    kind: "node",
+    x,
+    y,
+    width: VISIBLE_NODE_PLACEMENT.width,
+    height: VISIBLE_NODE_PLACEMENT.height,
+  };
+  return {
+    document: {
+      ...doc,
+      placements: [...doc.placements, placement],
+      focusedPlacementId: placementId,
+    },
+    placementId,
+    added: true,
+  };
 }
 
 export function movePlacement(

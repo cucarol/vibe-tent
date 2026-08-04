@@ -8,6 +8,7 @@ export type OutlinePanelProps = {
   projection: "loading" | "fresh" | "stale" | "unresolved" | "error" | "unmounted";
   selectedNodeId: string | null;
   onSelectNode: (nodeId: string) => void;
+  onOpenNodeActions?: (nodeId: string) => void;
   onCollapse: () => void;
 };
 
@@ -41,7 +42,7 @@ const EMPTY_COPY: Record<
   },
 };
 
-export function OutlinePanel({ nodes, projection, selectedNodeId, onSelectNode, onCollapse }: OutlinePanelProps) {
+export function OutlinePanel({ nodes, projection, selectedNodeId, onSelectNode, onOpenNodeActions, onCollapse }: OutlinePanelProps) {
   const itemRefs = useRef(new Map<string, HTMLButtonElement>());
   const emptyCopy = EMPTY_COPY[projection];
 
@@ -53,6 +54,14 @@ export function OutlinePanel({ nodes, projection, selectedNodeId, onSelectNode, 
   };
 
   const onTreeKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if ((event.key === "Enter" || event.key === " ") && onOpenNodeActions) {
+      event.preventDefault();
+      const node = nodes[index];
+      if (!node) return;
+      onSelectNode(node.nodeId);
+      onOpenNodeActions(node.nodeId);
+      return;
+    }
     let nextIndex: number | null = null;
     if (event.key === "ArrowDown") nextIndex = Math.min(index + 1, nodes.length - 1);
     if (event.key === "ArrowUp") nextIndex = Math.max(index - 1, 0);
@@ -86,6 +95,7 @@ export function OutlinePanel({ nodes, projection, selectedNodeId, onSelectNode, 
                 key={node.nodeId}
                 type="button"
                 role="treeitem"
+                aria-level={(node.depth ?? 0) + 1}
                 aria-selected={selected}
                 tabIndex={selected || (!selectedNodeId && node === nodes[0]) ? 0 : -1}
                 ref={(element) => {

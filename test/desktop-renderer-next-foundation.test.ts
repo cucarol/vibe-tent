@@ -29,6 +29,8 @@ import {
   locateOutlineEntity,
   openOutline,
   placementEntityRef,
+  placeEntityInVisibleViewport,
+  removeEntityFromCanvas,
   setOutlineExpanded,
   toggleOutline,
   toggleOutlineExpanded,
@@ -36,6 +38,12 @@ import {
   type UiIntent,
 } from "../src/desktop/renderer-next/index.js";
 import type { EventEnvelope } from "../src/service/types.js";
+import {
+  canCreateNodePlacement,
+  selectPresentationNode,
+  withPresentationDocument,
+  type WorkbenchPresentationState,
+} from "../src/desktop/renderer-next/shell/workbench-presentation.js";
 
 const root = process.cwd();
 const nextRoot = path.join(root, "src/desktop/renderer-next");
@@ -89,6 +97,103 @@ test("initial workbench selection cannot split shell and Canvas focus", () => {
   const inherited = initializeWorkbenchSelection(document, null);
   assert.equal(inherited.selectedNodeId, "cx-prompt");
   assert.equal(inherited.document.focusedPlacementId, "pl-prompt");
+});
+
+test("placement add is visible, focused, idempotent, and local removal preserves Node identity", () => {
+  const empty = {
+    ...createEmptyCanvasDocument(),
+    viewport: { x: 240, y: -60, zoom: 1.5 },
+  };
+  const first = placeEntityInVisibleViewport(empty, "cx-unplaced", () => "pl-new");
+  assert.equal(first.added, true);
+  assert.equal(first.placementId, "pl-new");
+  assert.equal(first.document.focusedPlacementId, "pl-new");
+  assert.equal(first.document.placements.length, 1);
+  assert.deepEqual(first.document.placements[0], {
+    placementId: "pl-new",
+    entityRef: "cx-unplaced",
+    kind: "node",
+    x: -96,
+    y: 140,
+    width: 264,
+    height: 138,
+  });
+
+  const repeated = placeEntityInVisibleViewport(first.document, "cx-unplaced", () => "pl-wrong");
+  assert.equal(repeated.added, false);
+  assert.equal(repeated.placementId, "pl-new");
+  assert.equal(repeated.document.placements.length, 1);
+
+  const removed = removeEntityFromCanvas(repeated.document, "cx-unplaced");
+  assert.deepEqual(removed.placements, []);
+  assert.equal(removed.focusedPlacementId, null);
+  assert.deepEqual(removed.viewport, empty.viewport);
+});
+
+test("controlled presentation sequences Canvas removal before selection without reviving stale placements", () => {
+  let state: WorkbenchPresentationState = {
+    selectedNodeId: "cx-a",
+    document: {
+      ...createEmptyCanvasDocument(),
+      focusedPlacementId: "pl-a",
+      placements: [{ placementId: "pl-a", entityRef: "cx-a", kind: "node" }],
+    },
+  };
+  const publish = (
+    update: (current: WorkbenchPresentationState) => WorkbenchPresentationState
+  ) => {
+    state = update(state);
+  };
+  publish((current) =>
+    withPresentationDocument(current, removeEntityFromCanvas(current.document, "cx-a"))
+  );
+  publish((current) => selectPresentationNode(current, null, null));
+  assert.deepEqual(state.document.placements, []);
+  assert.equal(state.document.focusedPlacementId, null);
+  assert.equal(state.selectedNodeId, null);
+});
+
+test("placement creation is permitted only by fresh authoritative graph identity", () => {
+  assert.equal(canCreateNodePlacement("fresh", "ready"), true);
+  for (const state of ["loading", "stale", "unresolved", "error", "unmounted"] as const) {
+    assert.equal(canCreateNodePlacement(state, "ready"), false, state);
+  }
+  for (const state of ["loading", "stale", "unresolved", "error"] as const) {
+    assert.equal(canCreateNodePlacement("fresh", state), false, state);
+  }
+});
+
+test("new placements choose a visible free slot instead of stacking on existing cards", () => {
+  const document = {
+    ...createEmptyCanvasDocument(),
+    viewport: { x: 0, y: 0, zoom: 1 },
+    placements: [
+      { placementId: "pl-a", entityRef: "cx-a", kind: "node", x: 96, y: 150, width: 264, height: 138 },
+      { placementId: "pl-b", entityRef: "cx-b", kind: "node", x: 392, y: 150, width: 264, height: 138 },
+    ],
+  };
+  const placed = placeEntityInVisibleViewport(document, "cx-c", () => "pl-c");
+  assert.equal(placed.document.placements[2]?.x, 96);
+  assert.equal(placed.document.placements[2]?.y, 320);
+});
+
+test("placement slot search grows beyond twelve occupied candidates", () => {
+  const placements = Array.from({ length: 14 }, (_, slot) => ({
+    placementId: `pl-${slot}`,
+    entityRef: `cx-${slot}`,
+    kind: "node",
+    x: 96 + (slot % 2) * 296,
+    y: 150 + Math.floor(slot / 2) * 170,
+    width: 264,
+    height: 138,
+  }));
+  const placed = placeEntityInVisibleViewport({
+    ...createEmptyCanvasDocument(),
+    viewport: { x: 0, y: 0, zoom: 1 },
+    placements,
+  }, "cx-late", () => "pl-late");
+  assert.equal(placed.document.placements[14]?.x, 96);
+  assert.equal(placed.document.placements[14]?.y, 1340);
 });
 
 test("entityRef and placementId stay separate on CanvasDocument", () => {

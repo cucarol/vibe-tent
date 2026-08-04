@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { IconButton, PaneHeader, StatusBadge, Tabs } from "../ui/index.js";
+import { useState, type Ref } from "react";
+import { Button, IconButton, PaneHeader, StatusBadge, Tabs } from "../ui/index.js";
 import { ShellIcon } from "../shell/icons.js";
 import {
   collaborationBadgeLabel,
@@ -12,10 +12,23 @@ import {
 
 export type InspectorPanelProps = {
   node: WorkbenchNodeView | null;
+  placementState?: "placed" | "unplaced";
+  canCreatePlacement?: boolean;
+  onPlaceNode?: () => void;
+  onRemoveNode?: () => void;
+  placementActionRef?: Ref<HTMLButtonElement>;
   onCollapse: () => void;
 };
 
-export function InspectorPanel({ node, onCollapse }: InspectorPanelProps) {
+export function InspectorPanel({
+  node,
+  placementState = "unplaced",
+  canCreatePlacement = false,
+  onPlaceNode,
+  onRemoveNode,
+  placementActionRef,
+  onCollapse,
+}: InspectorPanelProps) {
   const [tab, setTab] = useState("content");
   const projectionReady = !node?.projectionState || node.projectionState === "ready";
   const collaborationRunning =
@@ -57,6 +70,45 @@ export function InspectorPanel({ node, onCollapse }: InspectorPanelProps) {
               <span>{node.projectionMessage ?? "保留本地画布位置，等待权威投影恢复。"}</span>
             </div>
           ) : null}
+
+          <section
+            className="tn-focus-placement"
+            aria-labelledby="tn-focus-placement-title"
+            data-placement-state={placementState}
+          >
+            <div>
+              <h2 id="tn-focus-placement-title">画布位置</h2>
+              <p id="tn-focus-placement-description">
+                {placementState === "placed"
+                  ? "已放入当前画布。移动与移除只影响本机布局。"
+                  : canCreatePlacement
+                    ? "尚未放入画布。节点事实仍保留在工作区中。"
+                    : "尚未放入画布；权威节点恢复后才能创建本地位置。"}
+              </p>
+            </div>
+            {placementState === "placed" ? (
+              <Button
+                ref={placementActionRef}
+                variant="quiet"
+                size="compact"
+                aria-describedby="tn-focus-placement-description"
+                onClick={onRemoveNode}
+              >
+                从画布移除
+              </Button>
+            ) : (
+              <Button
+                ref={placementActionRef}
+                variant="primary"
+                size="compact"
+                disabled={!canCreatePlacement}
+                aria-describedby="tn-focus-placement-description"
+                onClick={onPlaceNode}
+              >
+                放入画布
+              </Button>
+            )}
+          </section>
 
           {projectionReady ? <Tabs
             aria-label="焦点内容"

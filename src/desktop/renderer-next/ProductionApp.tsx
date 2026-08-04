@@ -19,10 +19,6 @@ import {
 } from "./gateway/protocol4-projections.js";
 import { startWorkspaceProjectionBridge } from "./gateway/workspace-projection-bridge.js";
 import {
-  activeTaskState,
-  collaborationByNodeId,
-} from "./model/node-collaboration-view.js";
-import {
   CanvasV5LocalPersistence,
   shouldSeedLocalCanvas,
   type CanvasV5LoadResult,
@@ -32,11 +28,6 @@ import {
 import type { ExcalidrawSceneSnapshot } from "./canvas/excalidraw/excalidrawSceneTypes.js";
 import type { CanvasDocument } from "./types/identity.js";
 import {
-  collaborationProjectionState,
-  type WorkbenchNodeView,
-} from "./shell/workbench-types.js";
-import {
-  graphPresentationState,
   projectionForConnection,
   workspaceProjectionStatus,
 } from "./model/workspace-projection-view.js";
@@ -45,137 +36,11 @@ import {
   type DesktopConnection,
 } from "./model/desktop-recovery.js";
 
-type ProvenanceView = { state: "ready" | "error"; label: string };
-
-function depthByNodeId(graph: GraphProjection): ReadonlyMap<string, number> {
-  const parent = new Map<string, string>();
-  for (const edge of graph.edges.parent) {
-    if (edge.parentNodeId) parent.set(edge.childNodeId, edge.parentNodeId);
-  }
-  const depths = new Map<string, number>();
-  const visit = (nodeId: string, seen = new Set<string>()): number => {
-    if (depths.has(nodeId)) return depths.get(nodeId)!;
-    if (seen.has(nodeId)) return 0;
-    seen.add(nodeId);
-    const parentId = parent.get(nodeId);
-    const depth = parentId ? Math.min(8, visit(parentId, seen) + 1) : 0;
-    depths.set(nodeId, depth);
-    return depth;
-  };
-  for (const node of graph.nodes) visit(node.nodeId);
-  return depths;
-}
-
-export function workbenchNodesFromResources(
-  graphResource: ProjectionResource<GraphProjection>,
-  collaborationResource: ProjectionResource<NodeCollaborationsResult>,
-  document: CanvasDocument,
-  provenance: ReadonlyMap<string, ProvenanceView> = new Map()
-): WorkbenchNodeView[] {
-  const graph =
-    graphResource.state === "ready"
-      ? graphResource.value
-      : graphResource.state === "stale"
-        ? graphResource.previous
-        : graphResource.state === "loading"
-          ? graphResource.previous ?? null
-          : null;
-  const graphState = graphPresentationState(graphResource);
-  const collabs =
-    collaborationResource.state === "ready"
-      ? collaborationByNodeId(collaborationResource.value)
-      : null;
-  const collaborationState = collaborationProjectionState(
-    collaborationResource.state
-  );
-  const result: WorkbenchNodeView[] = [];
-  const known = new Set<string>();
-  if (graph) {
-    const depths = depthByNodeId(graph);
-    for (const node of graph.nodes) {
-      known.add(node.nodeId);
-      result.push({
-        nodeId: node.nodeId,
-        path: node.path,
-        name: node.name,
-        title: node.title,
-        type: node.type,
-        tags: node.tags,
-        mode: node.mode,
-        archived: node.archived,
-        invalid: node.invalid,
-        depth: depths.get(node.nodeId) ?? 0,
-        activeTaskState:
-          graphState === "ready" && collaborationState === "ready" && collabs
-            ? activeTaskState(collabs.get(node.nodeId))
-            : undefined,
-        collaborationState,
-        projectionState: graphState,
-        projectionMessage:
-          graphState === "stale"
-            ? "权威图投影需要重新查询；当前只保留本地位置。"
-            : graphState === "error"
-              ? "权威图投影不可用；没有把缓存当作最新事实。"
-              : undefined,
-        outputProvenance:
-          node.type === "output" ? provenance.get(node.nodeId) : undefined,
-      });
-    }
-  }
-  for (const placement of document.placements) {
-    if (!placement.entityRef || known.has(placement.entityRef)) continue;
-    result.push({
-      nodeId: placement.entityRef,
-      path: "本地画布位置",
-      name: "本地画布位置",
-      type: "未知类型",
-      tags: [],
-      mode: "editable",
-      archived: false,
-      invalid: false,
-      collaborationState: "unknown",
-      projectionState:
-        graphState === "error"
-          ? "error"
-          : graphState === "loading"
-            ? "loading"
-            : "unresolved",
-      projectionMessage:
-        graphState === "error"
-          ? "图投影查询失败；本地位置已保留。"
-          : graphState === "loading"
-            ? "正在读取权威图投影；本地位置已保留。"
-          : "权威投影中没有解析到这个 Node；本地位置已保留。",
-    });
-  }
-  return result;
-}
-
-function seedDocument(graph: GraphProjection): CanvasDocument {
-  const depths = depthByNodeId(graph);
-  const rows = new Map<number, number>();
-  const placements = graph.nodes.slice(0, 10).map((node) => {
-    const depth = depths.get(node.nodeId) ?? 0;
-    const row = rows.get(depth) ?? 0;
-    rows.set(depth, row + 1);
-    return {
-      placementId: `pl-default-${node.nodeId}`,
-      entityRef: node.nodeId,
-      kind: "node",
-      x: 90 + depth * 320,
-      y: 110 + row * 190,
-      width: 264,
-      height: 138,
-    };
-  });
-  return {
-    version: 1,
-    backgroundMode: "grid",
-    focusedPlacementId: placements[0]?.placementId ?? null,
-    viewport: { x: 0, y: 0, zoom: 1 },
-    placements,
-  };
-}
+import {
+  workbenchNodesFromResources,
+  type ProvenanceView,
+} from "./model/workbench-nodes.js";
+import { seedCanvasDocumentFromGraph } from "./model/canvas-seeding.js";
 
 function MountedWorkspace(props: {
   bridge: RendererDesktopBridge;
@@ -230,8 +95,12 @@ function MountedWorkspace(props: {
         )?.entityRef ?? null
       : null
   );
+  const selectedNodeRef = useRef(selectedNodeId);
+  const publishSelectedNode = useCallback((nodeId: string | null) => {
+    selectedNodeRef.current = nodeId;
+    setSelectedNodeId(nodeId);
+  }, []);
   const provenanceGeneration = useRef(0);
-  const [shellGeneration, setShellGeneration] = useState(0);
   const seenRecoveryGeneration = useRef(recoveryGeneration);
 
   function applyLoadRetry(result: CanvasV5LoadResult): void {
@@ -239,7 +108,7 @@ function MountedWorkspace(props: {
     if (!("retry" in result)) {
       snapshotRef.current = result.snapshot;
       setSnapshot(result.snapshot);
-      setSelectedNodeId(
+      publishSelectedNode(
         result.snapshot.document.focusedPlacementId
           ? result.snapshot.document.placements.find(
               (placement) =>
@@ -254,7 +123,6 @@ function MountedWorkspace(props: {
       seeded.current = result.kind === "loaded";
       initialLoadRetryPending.current = false;
       retrySave.current = null;
-      setShellGeneration((value) => value + 1);
 
       const graph = graphRef.current.state === "ready" ? graphRef.current.value : null;
       if (
@@ -266,10 +134,10 @@ function MountedWorkspace(props: {
         )
       ) {
         seeded.current = true;
-        const document = seedDocument(graph);
+        const document = seedCanvasDocumentFromGraph(graph);
         snapshotRef.current = { ...result.snapshot, document };
         setSnapshot(snapshotRef.current);
-        setSelectedNodeId(document.placements[0]?.entityRef ?? null);
+        publishSelectedNode(document.placements[0]?.entityRef ?? null);
         scheduleSnapshot({ document });
       }
       return;
@@ -337,11 +205,10 @@ function MountedWorkspace(props: {
       )
     ) {
       seeded.current = true;
-      const document = seedDocument(graphRead.value);
+      const document = seedCanvasDocumentFromGraph(graphRead.value);
       snapshotRef.current = { ...snapshotRef.current, document };
       setSnapshot(snapshotRef.current);
-      setSelectedNodeId(document.placements[0]?.entityRef ?? null);
-      setShellGeneration((value) => value + 1);
+      publishSelectedNode(document.placements[0]?.entityRef ?? null);
       scheduleSnapshot({ document });
     }
 
@@ -365,7 +232,7 @@ function MountedWorkspace(props: {
       onConnectionChange("offline");
     }
 
-  }, [gateway, onConnectionChange, scheduleSnapshot, workspace.workspaceId]);
+  }, [gateway, onConnectionChange, publishSelectedNode, scheduleSnapshot, workspace.workspaceId]);
 
   useEffect(() => {
     const current = ++provenanceGeneration.current;
@@ -439,28 +306,27 @@ function MountedWorkspace(props: {
 
   return (
     <AppShell
-      key={`${workspace.workspaceId}:${shellGeneration}`}
+      key={workspace.workspaceId}
       workspaceId={workspace.workspaceId}
       workspaceLabel={workspace.tentName || "产品工作区"}
       initialNodes={nodes}
-      initialDocument={snapshot.document}
+      document={snapshot.document}
       initialScene={snapshot.scene}
-      initialSelectedNodeId={
-        snapshot.document.focusedPlacementId
-          ? snapshot.document.placements.find(
-              (placement) =>
-                placement.placementId === snapshot.document.focusedPlacementId
-            )?.entityRef ?? null
-          : null
-      }
+      selectedNodeId={selectedNodeId}
       graph={graph}
       connection={connection}
       projectionState={projectionState}
-      onRetryConnection={connection === "offline" ? onRetryConnection : undefined}
+      onRetryConnection={connection === "offline" || connection === "reconnecting" ? onRetryConnection : undefined}
       persistenceStatus={persistenceStatus}
       onRetryPersistence={retrySave.current ?? undefined}
-      onCanvasDocumentChange={(document) => scheduleSnapshot({ document })}
-      onSelectedNodeChange={setSelectedNodeId}
+      onPresentationChange={(update) => {
+        const next = update({
+          document: snapshotRef.current.document,
+          selectedNodeId: selectedNodeRef.current,
+        });
+        publishSelectedNode(next.selectedNodeId);
+        scheduleSnapshot({ document: next.document });
+      }}
       onScenePersist={(scene: ExcalidrawSceneSnapshot) => scheduleSnapshot({ scene })}
     />
   );
@@ -551,7 +417,7 @@ export function ProductionApp() {
         workspaceLabel={bootstrap ? "未挂载工作区" : "正在连接本地服务"}
         connection={connection}
         projectionState={bootstrap ? "unmounted" : error ? "error" : "loading"}
-        onRetryConnection={connection === "offline" ? reloadBootstrap : undefined}
+        onRetryConnection={connection === "offline" || connection === "reconnecting" ? reloadBootstrap : undefined}
       />
     );
   }

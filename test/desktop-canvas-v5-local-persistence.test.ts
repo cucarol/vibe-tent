@@ -3,8 +3,13 @@ import { test } from "node:test";
 import {
   CanvasV5LocalPersistence,
   canvasV5LocalPersistenceKey,
+  shouldSeedLocalCanvas,
   type CanvasV5LocalSnapshot,
 } from "../src/desktop/renderer-next/model/canvas-v5-local-persistence.js";
+import {
+  placeEntityInVisibleViewport,
+  removeEntityFromCanvas,
+} from "../src/desktop/renderer-next/model/canvas-document.js";
 
 class MemoryStorage {
   private readonly values = new Map<string, string>();
@@ -78,6 +83,40 @@ test("exact workspace key prevents Canvas document and scene leaking across work
   assert.deepEqual(betaLoad.snapshot.document.placements, []);
   assert.equal(betaLoad.snapshot.scene, null);
   assert.notEqual(canvasV5LocalPersistenceKey("ws-alpha"), canvasV5LocalPersistenceKey("ws-beta"));
+});
+
+test("placement add and intentional empty removal both survive reload", () => {
+  const storage = new MemoryStorage();
+  const persistence = new CanvasV5LocalPersistence(storage, "ws-alpha");
+  const base = {
+    ...snapshot(),
+    document: {
+      ...snapshot().document,
+      focusedPlacementId: null,
+      placements: [],
+    },
+  };
+  const placed = placeEntityInVisibleViewport(base.document, "cx-added", () => "pl-added");
+  assert.equal(
+    persistence.save({ ...base, document: placed.document }).kind,
+    "saved"
+  );
+  const reloadedPlaced = persistence.load();
+  assert.equal(reloadedPlaced.kind, "loaded");
+  assert.deepEqual(
+    reloadedPlaced.snapshot.document.placements.map((placement) => placement.entityRef),
+    ["cx-added"]
+  );
+
+  const empty = removeEntityFromCanvas(
+    reloadedPlaced.snapshot.document,
+    "cx-added"
+  );
+  assert.equal(persistence.save({ ...reloadedPlaced.snapshot, document: empty }).kind, "saved");
+  const reloadedEmpty = persistence.load();
+  assert.equal(reloadedEmpty.kind, "loaded", "saved empty Canvas remains intentional state");
+  assert.deepEqual(reloadedEmpty.snapshot.document.placements, []);
+  assert.equal(shouldSeedLocalCanvas(reloadedEmpty.kind, 0, 1), false);
 });
 
 test("malformed or wrong-workspace payload fails closed to an empty local scene", () => {

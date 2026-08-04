@@ -23,6 +23,10 @@ import { OutlinePanel } from "../src/desktop/renderer-next/components/OutlinePan
 import { StatusBar } from "../src/desktop/renderer-next/components/StatusBar.js";
 import { projectionForConnection, workspaceProjectionStatus } from "../src/desktop/renderer-next/model/workspace-projection-view.js";
 import type { GraphProjection } from "../src/service/types.js";
+import { createEmptyCanvasDocument } from "../src/desktop/renderer-next/types/identity.js";
+import { workbenchNodesFromResources } from "../src/desktop/renderer-next/model/workbench-nodes.js";
+import { ConnectionBanner } from "../src/desktop/renderer-next/components/ConnectionBanner.js";
+import { seedCanvasDocumentFromGraph } from "../src/desktop/renderer-next/model/canvas-seeding.js";
 
 function state(workspaceId = "ws-a") {
   return {
@@ -69,6 +73,129 @@ test("first non-empty graph seeds only a truly absent local Canvas", () => {
   assert.equal(shouldSeedLocalCanvas("error", 0, 1), false);
   assert.equal(shouldSeedLocalCanvas("unavailable", 0, 1), false);
   assert.equal(shouldSeedLocalCanvas("empty", 1, 1), false);
+});
+
+test("initial Canvas seed materializes only the first authoritative Node", () => {
+  const graph = {
+    workspaceId: "ws-a",
+    nodes: [
+      { nodeId: "cx-first", path: "first", name: "first", type: "goal", tags: [], mode: "editable", archived: false, invalid: false },
+      { nodeId: "cx-second", path: "second", name: "second", type: "prompt", tags: [], mode: "editable", archived: false, invalid: false },
+    ],
+    edges: { parent: [], markdown: [], wiki: [], relation: [] },
+  } as unknown as GraphProjection;
+  const seeded = seedCanvasDocumentFromGraph(graph);
+  assert.deepEqual(seeded.placements.map((placement) => placement.entityRef), ["cx-first"]);
+  assert.equal(seeded.focusedPlacementId, "pl-default-cx-first");
+});
+
+test("Outline keeps every authoritative Node even when Canvas has no placement", () => {
+  const graph = {
+    workspaceId: "ws-a",
+    nodes: [
+      { nodeId: "cx-placed", path: "placed", name: "placed", type: "goal", tags: [], mode: "editable", archived: false, invalid: false },
+      { nodeId: "cx-unplaced", path: "unplaced", name: "unplaced", type: "prompt", tags: [], mode: "editable", archived: false, invalid: false },
+    ],
+    edges: { parent: [], markdown: [], wiki: [], relation: [] },
+  } as unknown as GraphProjection;
+  const nodes = workbenchNodesFromResources(
+    { state: "ready", workspaceId: "ws-a", value: graph, fetchedAt: "now" },
+    {
+      state: "ready",
+      workspaceId: "ws-a",
+      value: {
+        workspaceId: "ws-a",
+        items: ["cx-placed", "cx-unplaced"].map((nodeId) => ({
+          workspaceId: "ws-a",
+          nodeId,
+          activeTask: null,
+        })),
+      },
+      fetchedAt: "now",
+    },
+    {
+      ...createEmptyCanvasDocument(),
+      placements: [{ placementId: "pl-placed", entityRef: "cx-placed", kind: "node" }],
+    }
+  );
+  assert.deepEqual(nodes.map((node) => node.nodeId), ["cx-placed", "cx-unplaced"]);
+  const outline = renderToStaticMarkup(createElement(OutlinePanel, {
+    nodes: [{ ...nodes[1]!, depth: 2 }],
+    projection: "fresh",
+    selectedNodeId: "cx-unplaced",
+    onSelectNode: () => {},
+    onCollapse: () => {},
+  }));
+  assert.match(outline, /aria-level="3"/);
+});
+
+test("Focus renders externally controlled placement state without inventing a second owner", () => {
+  const node = {
+    nodeId: "cx-a",
+    path: "A",
+    name: "A",
+    type: "goal",
+    tags: [],
+    mode: "editable",
+    archived: false,
+    invalid: false,
+    projectionState: "ready",
+    collaborationState: "ready",
+    activeTaskState: null,
+  } satisfies WorkbenchNodeView;
+  const unplaced = renderToStaticMarkup(createElement(InspectorPanel, {
+    node,
+    placementState: "unplaced",
+    canCreatePlacement: true,
+    onPlaceNode: () => {},
+    onRemoveNode: () => {},
+    onCollapse: () => {},
+  }));
+  assert.match(unplaced, /尚未放入画布/);
+  assert.match(unplaced, /放入画布/);
+
+  const placed = renderToStaticMarkup(createElement(InspectorPanel, {
+    node,
+    placementState: "placed",
+    canCreatePlacement: true,
+    onPlaceNode: () => {},
+    onRemoveNode: () => {},
+    onCollapse: () => {},
+  }));
+  assert.match(placed, /已放入当前画布/);
+  assert.match(placed, /从画布移除/);
+});
+
+test("placement creation fails closed while stale and reconnecting exposes one retry", () => {
+  const node = {
+    nodeId: "cx-a",
+    path: "A",
+    name: "A",
+    type: "goal",
+    tags: [],
+    mode: "editable",
+    archived: false,
+    invalid: false,
+    projectionState: "stale",
+    collaborationState: "stale",
+  } satisfies WorkbenchNodeView;
+  const focus = renderToStaticMarkup(createElement(InspectorPanel, {
+    node,
+    placementState: "unplaced",
+    canCreatePlacement: false,
+    onPlaceNode: () => {},
+    onRemoveNode: () => {},
+    onCollapse: () => {},
+  }));
+  assert.match(focus, /权威节点恢复后才能创建本地位置/);
+  assert.match(focus, /<button[^>]*disabled=""[^>]*>放入画布<\/button>/);
+
+  const banner = renderToStaticMarkup(createElement(ConnectionBanner, {
+    connection: "reconnecting",
+    onRetry: () => {},
+  }));
+  assert.equal((banner.match(/重试连接/g) ?? []).length, 1);
+  assert.doesNotMatch(banner, /disabled/);
 });
 
 test("projection events during the held initial read schedule a newer read", async () => {

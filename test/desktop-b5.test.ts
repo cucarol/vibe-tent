@@ -133,6 +133,30 @@ test("ServiceDocsClient over real Local Service: list/open/write/search", async 
   }
 });
 
+test("DesktopShellModel mount makes the mounted workspace authoritative foreground", async () => {
+  const workspaceA = await makeWorkspace();
+  const workspaceB = await makeWorkspace();
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-switch-"));
+  const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+  try {
+    const rpc = new ServiceRpcClient({ baseUrl: svc.url, token: svc.token });
+    const model = new DesktopShellModel(rpc);
+    const mountedA = await model.mountWorkspace(workspaceA);
+    assert.equal(model.getSnapshot().foregroundWorkspaceId, mountedA.workspaceId);
+
+    const mountedB = await model.mountWorkspace(workspaceB);
+    const snapshot = model.getSnapshot();
+    assert.equal(snapshot.foregroundWorkspaceId, mountedB.workspaceId);
+    assert.equal(
+      snapshot.workspaces.find((workspace) => workspace.foreground)?.workspaceId,
+      mountedB.workspaceId
+    );
+    assert.equal((await rpc.health()).foregroundWorkspaceId, mountedB.workspaceId);
+  } finally {
+    await svc.stop();
+  }
+});
+
 test("tryAttach finds healthy endpoint; attach leaves service alive after client drop", async () => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-attach-"));
   const svc = await startLocalTentService({ dataDir, writeEndpoint: true });

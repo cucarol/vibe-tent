@@ -57,3 +57,9 @@ export {
   type OutlineChromeState,
 } from "./types/outline.js";
 export { focusWorkbenchNode, initializeWorkbenchSelection } from "./shell/workbench-selection.js";
+export {
+  findPlacementsByEntity,
+  hasEntityPlacement,
+  placeEntityInVisibleViewport,
+  removeEntityFromCanvas,
+} from "./model/canvas-document.js";

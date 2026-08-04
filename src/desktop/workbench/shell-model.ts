@@ -213,6 +213,10 @@ export class DesktopShellModel {
       tentName: string;
       foreground: boolean;
     }>("workspace.mount", { workspaceRoot });
+    // Mounting through the desktop shell is also the user's explicit request
+    // to work in that workspace. Keep the Service foreground authoritative;
+    // a local-only bind is overwritten by the next workspace.list refresh.
+    await this.rpc.call("workspace.setForeground", { workspaceId: info.workspaceId });
     await this.refreshWorkspaces();
     await this.bindForeground(info.workspaceId);
     this.statusMessage = `Mounted ${info.workspaceRoot}`;
