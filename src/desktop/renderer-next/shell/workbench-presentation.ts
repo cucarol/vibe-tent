@@ -1,6 +1,7 @@
 import {
   placeEntityInVisibleViewport,
-  removeEntityFromCanvas,
+  removePlacement,
+  setFocusedPlacement,
 } from "../model/canvas-document.js";
 import type { CanvasDocument } from "../types/identity.js";
 import { focusWorkbenchNode } from "./workbench-selection.js";
@@ -50,12 +51,27 @@ export function placePresentationNode(
   };
 }
 
-export function removePresentationNode(
+export function removeFocusedPresentationPlacement(
   current: WorkbenchPresentationState,
   nodeId: string
 ): WorkbenchPresentationState {
+  const target = current.document.placements.find(
+    (placement) =>
+      placement.placementId === current.document.focusedPlacementId &&
+      placement.entityRef === nodeId
+  ) ?? current.document.placements.find(
+    (placement) => placement.entityRef === nodeId
+  );
+  if (!target) return current;
+  const removed = removePlacement(current.document, target.placementId);
+  const nextForNode = removed.placements.find(
+    (placement) => placement.entityRef === nodeId
+  );
   return {
     selectedNodeId: nodeId,
-    document: removeEntityFromCanvas(current.document, nodeId),
+    document: setFocusedPlacement(
+      removed,
+      nextForNode?.placementId ?? null
+    ),
   };
 }

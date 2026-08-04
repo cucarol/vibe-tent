@@ -40,6 +40,7 @@ import {
 import type { EventEnvelope } from "../src/service/types.js";
 import {
   canCreateNodePlacement,
+  removeFocusedPresentationPlacement,
   selectPresentationNode,
   withPresentationDocument,
   type WorkbenchPresentationState,
@@ -151,6 +152,28 @@ test("controlled presentation sequences Canvas removal before selection without 
   assert.deepEqual(state.document.placements, []);
   assert.equal(state.document.focusedPlacementId, null);
   assert.equal(state.selectedNodeId, null);
+});
+
+test("Focus removal deletes only the current placement when one Node has multiple instances", () => {
+  const state: WorkbenchPresentationState = {
+    selectedNodeId: "cx-a",
+    document: {
+      ...createEmptyCanvasDocument(),
+      focusedPlacementId: "pl-a-2",
+      placements: [
+        { placementId: "pl-a-1", entityRef: "cx-a", kind: "node" },
+        { placementId: "pl-a-2", entityRef: "cx-a", kind: "node" },
+        { placementId: "pl-b", entityRef: "cx-b", kind: "node" },
+      ],
+    },
+  };
+  const next = removeFocusedPresentationPlacement(state, "cx-a");
+  assert.deepEqual(
+    next.document.placements.map((placement) => placement.placementId),
+    ["pl-a-1", "pl-b"]
+  );
+  assert.equal(next.document.focusedPlacementId, "pl-a-1");
+  assert.equal(next.selectedNodeId, "cx-a");
 });
 
 test("placement creation is permitted only by fresh authoritative graph identity", () => {

@@ -15,7 +15,7 @@ import type { WorkbenchNodeView } from "./workbench-types.js";
 import {
   canCreateNodePlacement,
   placePresentationNode,
-  removePresentationNode,
+  removeFocusedPresentationPlacement,
   selectPresentationNode,
   withPresentationDocument,
   type WorkbenchPresentationUpdate,
@@ -106,7 +106,7 @@ export function AppShell({
   const removeSelectedNode = () => {
     if (!selectedNode || selectedPlacements.length === 0) return;
     onPresentationChange?.((current) =>
-      removePresentationNode(current, selectedNode.nodeId)
+      removeFocusedPresentationPlacement(current, selectedNode.nodeId)
     );
   };
 
