@@ -689,7 +689,7 @@ export const CLIENT_METHODS = [
   "docs.backlinks",
   /**
    * Import binary attachment for a node.
-   * Wire: base64 string in `bytesBase64` (or legacy `contentBase64`).
+   * Wire: base64 string in the canonical `bytesBase64` field.
    * Disk: original bytes under attachments/<cx>/… — never a .b64 text companion.
    */
   "docs.importAttachment",

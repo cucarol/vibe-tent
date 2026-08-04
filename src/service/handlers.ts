@@ -2855,21 +2855,20 @@ async function docsCreateNote(ctx: HandlerContext, p: Record<string, unknown>) {
 
 /**
  * Store original attachment bytes under attachments/<cx>/….
- * Wire transport is base64 (`bytesBase64` preferred; `contentBase64` accepted).
+ * Wire transport is base64 in the canonical `bytesBase64` field.
  * No .b64 companion files; disk is the decoded binary payload.
  */
 async function docsImportAttachment(ctx: HandlerContext, p: Record<string, unknown>) {
+  assertAllowedParams(
+    p,
+    new Set(["workspaceId", "nodeId", "fileName", "bytesBase64"]),
+    "docs.importAttachment"
+  );
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const fileName = requireString(p, "fileName");
   const rawBase64 =
-    typeof p.bytesBase64 === "string"
-      ? p.bytesBase64
-      : typeof p.contentBase64 === "string"
-        ? p.contentBase64
-        : typeof p.bytes === "string"
-          ? p.bytes
-          : undefined;
+    typeof p.bytesBase64 === "string" ? p.bytesBase64 : undefined;
   if (rawBase64 === undefined) {
     throw new RpcError(
       -32602,

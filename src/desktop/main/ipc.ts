@@ -14,6 +14,10 @@ import type { DesktopDocumentResponse } from "../document-ipc.js";
 import { handleDesktopDocumentRequest } from "./document-ipc-handler.js";
 import type { DesktopCollaborationResponse } from "../collaboration-ipc.js";
 import { handleDesktopCollaborationRequest } from "./collaboration-ipc-handler.js";
+import {
+  callDesktopProjection,
+  isDesktopProjectionMethod,
+} from "../projection-ipc.js";
 
 export type IpcContext = {
   host: DesktopServiceHost;
@@ -76,10 +80,13 @@ export function registerDesktopIpc(ctx: IpcContext): void {
 
   ipcMain.handle(
     DESKTOP_IPC.rpc,
-    async (_e: unknown, method: string, params?: Record<string, unknown>) => {
+    async (_e: unknown, method: unknown, params?: Record<string, unknown>) => {
+      if (!isDesktopProjectionMethod(method)) {
+        throw new Error(`Unsupported desktop projection method: ${String(method)}`);
+      }
       const client = ctx.host.client;
       if (!client) throw new Error("Service not attached");
-      return client.call(method, params);
+      return callDesktopProjection(client, method, params);
     }
   );
 

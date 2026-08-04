@@ -10,6 +10,7 @@ import type {
   DesktopCollaborationRequest,
   DesktopCollaborationResponse,
 } from "../collaboration-ipc.js";
+import { isDesktopProjectionMethod } from "../projection-ipc.js";
 
 export type TentDesktopApi = {
   getState: () => Promise<unknown>;
@@ -17,6 +18,7 @@ export type TentDesktopApi = {
   listWorkspaces: () => Promise<unknown>;
   mountWorkspace: (workspaceRoot: string) => Promise<unknown>;
   setForeground: (workspaceId: string) => Promise<unknown>;
+  /** Closed, read-only projection transport. Main validates the same allowlist. */
   rpc: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
   document: (request: DesktopDocumentRequest) => Promise<DesktopDocumentResponse>;
   collaboration: (
@@ -51,8 +53,14 @@ const api: TentDesktopApi = {
     ipcRenderer.invoke(DESKTOP_IPC.mountWorkspace, workspaceRoot),
   setForeground: (workspaceId: string) =>
     ipcRenderer.invoke(DESKTOP_IPC.setForeground, workspaceId),
-  rpc: (method: string, params?: Record<string, unknown>) =>
-    ipcRenderer.invoke(DESKTOP_IPC.rpc, method, params),
+  rpc: (method: string, params?: Record<string, unknown>) => {
+    if (!isDesktopProjectionMethod(method)) {
+      return Promise.reject(
+        new Error(`Unsupported desktop projection method: ${method}`)
+      );
+    }
+    return ipcRenderer.invoke(DESKTOP_IPC.rpc, method, params);
+  },
   document: (request) => ipcRenderer.invoke(DESKTOP_IPC.document, request),
   collaboration: (request) => ipcRenderer.invoke(DESKTOP_IPC.collaboration, request),
   pickWorkspaceFolder: () => ipcRenderer.invoke(DESKTOP_IPC.pickWorkspaceFolder),

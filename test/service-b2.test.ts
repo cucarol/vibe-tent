@@ -531,6 +531,24 @@ test("docs.importAttachment: base64 wire → binary disk; rejects bad base64/siz
     const nodeId = (created.result as { nodeId: string }).nodeId;
 
     const raw = Buffer.from([0x00, 0xff, 0x10, 0x80, 0x00, 0x7f]);
+    for (const obsolete of [
+      { contentBase64: raw.toString("base64") },
+      { bytes: raw.toString("base64") },
+      { bytesBase64: raw.toString("base64"), extra: "not-allowed" },
+    ]) {
+      const rejected = await rpc(svc, "docs.importAttachment", {
+        workspaceId,
+        nodeId,
+        fileName: "obsolete.bin",
+        ...obsolete,
+      });
+      assert.equal(rejected.error?.code, -32602);
+    }
+    await assert.rejects(
+      () => fs.access(path.join(ws, ".tent", "attachments", nodeId)),
+      /ENOENT/
+    );
+
     const imported = await rpc(svc, "docs.importAttachment", {
       workspaceId,
       nodeId,

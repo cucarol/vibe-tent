@@ -1,8 +1,14 @@
 // Electron BrowserWindow factory for main workbench + floating control.
 
 import * as path from "node:path";
-import { BrowserWindow, screen, type BrowserWindowConstructorOptions } from "electron";
+import {
+  BrowserWindow,
+  screen,
+  shell,
+  type BrowserWindowConstructorOptions,
+} from "electron";
 import type { DesktopPreferences } from "../types.js";
+import { installDesktopNavigationPolicy } from "./navigation-policy.js";
 
 export type WindowPaths = {
   preload: string;
@@ -49,6 +55,11 @@ export function createMainWindow(
     },
   };
   const win = new BrowserWindow(opts);
+  installDesktopNavigationPolicy(
+    win.webContents,
+    paths.mainHtml,
+    (url) => shell.openExternal(url)
+  );
   void win.loadFile(paths.mainHtml);
   if (isDev) {
     // Optional: open DevTools when TENT_DESKTOP_DEVTOOLS=1
@@ -91,6 +102,11 @@ export function createFloatWindow(
       spellcheck: false,
     },
   });
+  installDesktopNavigationPolicy(
+    win.webContents,
+    paths.floatHtml,
+    (url) => shell.openExternal(url)
+  );
   void win.loadFile(paths.floatHtml);
   return win;
 }
