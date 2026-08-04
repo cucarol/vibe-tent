@@ -20,18 +20,20 @@ export function isDesktopProjectionMethod(
   );
 }
 
-export async function callDesktopProjection(
-  client: {
+export async function invokeDesktopProjectionRpc(
+  getClient: () => {
     call: (
       method: DesktopProjectionMethod,
       params?: Record<string, unknown>
     ) => Promise<unknown>;
-  },
+  } | null,
   method: unknown,
   params?: Record<string, unknown>
 ): Promise<unknown> {
   if (!isDesktopProjectionMethod(method)) {
     throw new Error(`Unsupported desktop projection method: ${String(method)}`);
   }
+  const client = getClient();
+  if (!client) throw new Error("Service not attached");
   return client.call(method, params);
 }

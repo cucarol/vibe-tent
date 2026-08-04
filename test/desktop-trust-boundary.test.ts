@@ -8,8 +8,8 @@ import {
   type DesktopNavigationWebContents,
 } from "../src/desktop/main/navigation-policy.js";
 import {
-  callDesktopProjection,
   DESKTOP_PROJECTION_METHODS,
+  invokeDesktopProjectionRpc,
   isDesktopProjectionMethod,
 } from "../src/desktop/projection-ipc.js";
 
@@ -89,18 +89,24 @@ test("desktop raw RPC surface is exactly the four read-only projections", async 
   }
 
   const calls: Array<{ method: string; params: unknown }> = [];
-  const client = {
-    call: async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params });
-      return { ok: true };
-    },
+  let clientAccesses = 0;
+  const getClient = () => {
+    clientAccesses += 1;
+    return {
+      call: async (method: string, params?: Record<string, unknown>) => {
+        calls.push({ method, params });
+        return { ok: true };
+      },
+    };
   };
   await assert.rejects(
-    () => callDesktopProjection(client, "docs.write", { workspaceId: "ws-a" }),
+    () => invokeDesktopProjectionRpc(getClient, "docs.write", { workspaceId: "ws-a" }),
     /Unsupported desktop projection method/
   );
+  assert.equal(clientAccesses, 0);
   assert.deepEqual(calls, []);
-  await callDesktopProjection(client, "graph.projection", { workspaceId: "ws-a" });
+  await invokeDesktopProjectionRpc(getClient, "graph.projection", { workspaceId: "ws-a" });
+  assert.equal(clientAccesses, 1);
   assert.deepEqual(calls, [
     { method: "graph.projection", params: { workspaceId: "ws-a" } },
   ]);
