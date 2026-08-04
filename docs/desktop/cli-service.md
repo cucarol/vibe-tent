@@ -7,7 +7,7 @@ fall back to direct operational-file writes.
 ## Attach and protocol
 
 The CLI discovers the machine-local endpoint and token, performs the
-`protocolVersion=4` handshake, mounts the requested workspace, then calls the
+`protocolVersion=5` handshake, mounts the requested workspace, then calls the
 typed RPC. A missing, legacy, or incompatible endpoint fails loud; the CLI does
 not bypass Service or call an ACP adapter directly.
 
@@ -119,8 +119,17 @@ authority is derived from authenticated transport rather than caller-provided te
 ## Review and Git
 
 `task deliver` creates a Delivery; it never accepts it. The exact persisted
-reviewer uses `task accept` or `task reject`. Commit-bearing Delivery validates
-every reported SHA against the Task lane and snapshots the target head.
+reviewer acts on the exact ready Delivery shown for the Task:
+
+```text
+tent task accept <taskPath> --delivery-id <deliveryId> --actor <user|role> ...
+tent task reject <taskPath> --delivery-id <deliveryId> --actor <user|role> [--note ...] [--resume|--no-resume] ...
+```
+
+The Delivery id is required and prevents a stale review card from accepting or
+rejecting a newer Delivery for the same Task. `DELIVERY_CHANGED` requires the
+client to refresh before retrying. Commit-bearing Delivery validates every
+reported SHA against the Task lane and snapshots the target head.
 `TARGET_MOVED` requires reject/resume and a new Delivery; clients never rewrite
 the snapshot.
 
