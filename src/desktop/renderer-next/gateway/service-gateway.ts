@@ -24,6 +24,16 @@ import type {
   NodeCollaborationsResult,
   OutputProvenance,
 } from "../../../service/types.js";
+import {
+  readFocusBacklinks,
+  readFocusDocument,
+  writeFocusDocumentBody,
+  type DocumentRead,
+  type DocumentTransport,
+  type FocusBacklinks,
+  type FocusDocumentSnapshot,
+  type FocusDocumentWrite,
+} from "./document-protocol.js";
 
 export type ProjectionKey = string;
 
@@ -40,6 +50,9 @@ export type ServiceGatewayHandlers = {
   projectionRpc?: Protocol4ProjectionRpc;
   /** Bounded renderer wait; the underlying IPC may continue after UI timeout. */
   projectionTimeoutMs?: number;
+  /** Structured document transport preserves JSON-RPC code/data across Electron. */
+  documentTransport?: DocumentTransport;
+  documentTimeoutMs?: number;
   /** Execute a domain-facing intent via Service RPC (never local FS mutation). */
   dispatchIntent?: (intent: UiIntent) => Promise<unknown>;
   /** Subscribe to Service events; return unsubscribe. */
@@ -60,6 +73,7 @@ export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
       keys: [
         "docs.tree",
         "docs.get",
+        "docs.focus",
         "graph.projection",
         "node.collaboration",
         "node.collaborations",
@@ -194,6 +208,55 @@ export class ServiceGateway {
     );
   }
 
+  focusDocument(
+    workspaceId: string,
+    nodeId: string
+  ): Promise<DocumentRead<FocusDocumentSnapshot>> {
+    if (!this.handlers.documentTransport) {
+      return Promise.resolve(this.missingDocumentTransport(workspaceId, nodeId));
+    }
+    return readFocusDocument(
+      this.handlers.documentTransport,
+      workspaceId,
+      nodeId,
+      this.handlers.documentTimeoutMs
+    );
+  }
+
+  focusBacklinks(
+    workspaceId: string,
+    nodeId: string
+  ): Promise<DocumentRead<FocusBacklinks>> {
+    if (!this.handlers.documentTransport) {
+      return Promise.resolve(this.missingDocumentTransport(workspaceId, nodeId));
+    }
+    return readFocusBacklinks(
+      this.handlers.documentTransport,
+      workspaceId,
+      nodeId,
+      this.handlers.documentTimeoutMs
+    );
+  }
+
+  writeFocusDocumentBody(
+    workspaceId: string,
+    nodeId: string,
+    body: string,
+    baseEtag: string
+  ): Promise<DocumentRead<FocusDocumentWrite>> {
+    if (!this.handlers.documentTransport) {
+      return Promise.resolve(this.missingDocumentTransport(workspaceId, nodeId));
+    }
+    return writeFocusDocumentBody(
+      this.handlers.documentTransport,
+      workspaceId,
+      nodeId,
+      body,
+      baseEtag,
+      this.handlers.documentTimeoutMs
+    );
+  }
+
   private missingProjectionTransport<T>(workspaceId: string): ProjectionRead<T> {
     return {
       ok: false,
@@ -201,6 +264,19 @@ export class ServiceGateway {
       issue: {
         kind: "transport",
         message: "ServiceGateway: protocol-4 projection transport is unavailable",
+      },
+      failedAt: new Date().toISOString(),
+    };
+  }
+
+  private missingDocumentTransport<T>(workspaceId: string, nodeId: string): DocumentRead<T> {
+    return {
+      ok: false,
+      workspaceId,
+      nodeId,
+      issue: {
+        kind: "transport",
+        message: "ServiceGateway: document transport is unavailable",
       },
       failedAt: new Date().toISOString(),
     };

@@ -33,7 +33,7 @@
     "test:fast": "node --import tsx scripts/run-tests.ts fast",
     "test:integration": "node --import tsx scripts/run-tests.ts integration",
     "test:acp-images": "node --test --import tsx test/acp-image-prompt.test.ts",
-    "test:renderer-next": "node --test --import tsx test/desktop-renderer-next-foundation.test.ts test/desktop-renderer-next-protocol4-projections.test.ts test/desktop-canvas-v5-adapter.test.ts test/desktop-canvas-v5-local-persistence.test.ts test/desktop-renderer-next-service-gateway-failclosed.test.ts test/desktop-renderer-next-production-bridge.test.ts test/desktop-service-host-events.test.ts",
+    "test:renderer-next": "node --test --import tsx test/desktop-renderer-next-foundation.test.ts test/desktop-renderer-next-protocol4-projections.test.ts test/desktop-renderer-next-focus-document.test.ts test/desktop-canvas-v5-adapter.test.ts test/desktop-canvas-v5-local-persistence.test.ts test/desktop-renderer-next-service-gateway-failclosed.test.ts test/desktop-renderer-next-production-bridge.test.ts test/desktop-service-host-events.test.ts",
     "test:grok-e2e": "node --test --import tsx test/grok-acp-live.e2e.ts",
     "test:foreground-e2e": "node --test --import tsx test/mainstream-acp-cli-live.e2e.ts",
     "typecheck": "tsc -noEmit",
@@ -92,7 +92,13 @@
     "vite": "^6.4.3"
   },
   "dependencies": {
+    "@codemirror/commands": "^6.10.4",
+    "@codemirror/lang-markdown": "^6.5.1",
+    "@codemirror/state": "^6.7.1",
+    "@codemirror/view": "^6.43.7",
     "@excalidraw/excalidraw": "^0.18.1",
-    "mdast-util-from-markdown": "^2.0.3"
+    "mdast-util-from-markdown": "^2.0.3",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   }
 }

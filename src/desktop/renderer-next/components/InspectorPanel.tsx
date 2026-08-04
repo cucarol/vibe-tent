@@ -9,6 +9,11 @@ import {
   projectionLabel,
   type WorkbenchNodeView,
 } from "../shell/workbench-types.js";
+import { FocusDocumentPanel } from "./FocusDocumentPanel.js";
+import type {
+  FocusDocumentActions,
+  FocusDocumentView,
+} from "../model/focus-document-controller.js";
 
 export type InspectorPanelProps = {
   node: WorkbenchNodeView | null;
@@ -17,6 +22,10 @@ export type InspectorPanelProps = {
   onPlaceNode?: () => void;
   onRemoveNode?: () => void;
   placementActionRef?: Ref<HTMLButtonElement>;
+  document?: FocusDocumentView;
+  documentActions?: FocusDocumentActions;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
   onCollapse: () => void;
 };
 
@@ -27,6 +36,10 @@ export function InspectorPanel({
   onPlaceNode,
   onRemoveNode,
   placementActionRef,
+  document,
+  documentActions,
+  expanded = false,
+  onExpandedChange,
   onCollapse,
 }: InspectorPanelProps) {
   const [tab, setTab] = useState("content");
@@ -34,6 +47,14 @@ export function InspectorPanel({
   const collaborationRunning =
     node?.collaborationState === "ready" &&
     typeof node.activeTaskState === "string";
+  const documentPanel = document && documentActions && onExpandedChange ? (
+    <FocusDocumentPanel
+      document={document}
+      actions={documentActions}
+      expanded={expanded}
+      onExpandedChange={onExpandedChange}
+    />
+  ) : null;
   return (
     <aside className="tn-pane tn-inspector-pane" aria-label="焦点面板" data-region="focus">
       <PaneHeader
@@ -119,17 +140,20 @@ export function InspectorPanel({
 
           {!projectionReady ? (
             <div className="tn-focus-sections">
+              {documentPanel}
               <section>
                 <h2>等待权威投影</h2>
-                <p>类型、标签、正文与协作状态暂不展示；恢复后会重新查询。</p>
+                <p>节点属性、协作与交付来源暂不展示；恢复后会重新查询。</p>
               </section>
             </div>
           ) : tab === "content" ? (
             <div className="tn-focus-sections">
-              <section>
-                <h2>摘要</h2>
-                <p>{node.projectionState && node.projectionState !== "ready" ? "当前内容不可作为最新事实。" : "选择正文后可在这里阅读与编辑；画布节点保持轻量。"}</p>
-              </section>
+              {documentPanel ?? (
+                <section>
+                  <h2>正文</h2>
+                  <p>正文读取尚未接入当前预览。</p>
+                </section>
+              )}
               <section>
                 <h2>属性</h2>
                 <dl>

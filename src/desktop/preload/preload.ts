@@ -2,6 +2,10 @@
 
 import { contextBridge, ipcRenderer } from "electron";
 import { DESKTOP_IPC } from "../types.js";
+import type {
+  DesktopDocumentRequest,
+  DesktopDocumentResponse,
+} from "../document-ipc.js";
 
 export type TentDesktopApi = {
   getState: () => Promise<unknown>;
@@ -10,6 +14,7 @@ export type TentDesktopApi = {
   mountWorkspace: (workspaceRoot: string) => Promise<unknown>;
   setForeground: (workspaceId: string) => Promise<unknown>;
   rpc: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+  document: (request: DesktopDocumentRequest) => Promise<DesktopDocumentResponse>;
   pickWorkspaceFolder: () => Promise<string | null>;
   getPrefs: () => Promise<unknown>;
   setPrefs: (patch: Record<string, unknown>) => Promise<unknown>;
@@ -41,6 +46,7 @@ const api: TentDesktopApi = {
     ipcRenderer.invoke(DESKTOP_IPC.setForeground, workspaceId),
   rpc: (method: string, params?: Record<string, unknown>) =>
     ipcRenderer.invoke(DESKTOP_IPC.rpc, method, params),
+  document: (request) => ipcRenderer.invoke(DESKTOP_IPC.document, request),
   pickWorkspaceFolder: () => ipcRenderer.invoke(DESKTOP_IPC.pickWorkspaceFolder),
   getPrefs: () => ipcRenderer.invoke(DESKTOP_IPC.getPrefs),
   setPrefs: (patch: Record<string, unknown>) =>

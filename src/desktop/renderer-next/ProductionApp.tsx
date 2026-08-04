@@ -41,6 +41,7 @@ import {
   type ProvenanceView,
 } from "./model/workbench-nodes.js";
 import { seedCanvasDocumentFromGraph } from "./model/canvas-seeding.js";
+import { useFocusDocument } from "./model/use-focus-document.js";
 
 function MountedWorkspace(props: {
   bridge: RendererDesktopBridge;
@@ -96,6 +97,10 @@ function MountedWorkspace(props: {
       : null
   );
   const selectedNodeRef = useRef(selectedNodeId);
+  const lastAuthoritativeDocumentNode = useRef<{
+    nodeId: string;
+    archived: boolean;
+  } | null>(null);
   const publishSelectedNode = useCallback((nodeId: string | null) => {
     selectedNodeRef.current = nodeId;
     setSelectedNodeId(nodeId);
@@ -303,6 +308,26 @@ function MountedWorkspace(props: {
   );
   const graph = presentedGraphResource.state === "ready" ? presentedGraphResource.value : null;
   const projectionState = workspaceProjectionStatus(presentedGraphResource, nodes);
+  const selectedAuthoritativeNode = graph?.nodes.find((node) => node.nodeId === selectedNodeId) ?? null;
+  if (!selectedNodeId) {
+    lastAuthoritativeDocumentNode.current = null;
+  } else if (selectedAuthoritativeNode) {
+    lastAuthoritativeDocumentNode.current = {
+      nodeId: selectedAuthoritativeNode.nodeId,
+      archived: selectedAuthoritativeNode.archived,
+    };
+  } else if (lastAuthoritativeDocumentNode.current?.nodeId !== selectedNodeId) {
+    // A newly selected local placement is not enough authority to read a Node.
+    lastAuthoritativeDocumentNode.current = null;
+  }
+  const documentNode = lastAuthoritativeDocumentNode.current;
+  const focusedDocument = useFocusDocument({
+    gateway,
+    workspaceId: workspace.workspaceId,
+    nodeId: documentNode?.nodeId ?? null,
+    archived: documentNode?.archived ?? false,
+    online: connection === "online",
+  });
 
   return (
     <AppShell
@@ -318,6 +343,8 @@ function MountedWorkspace(props: {
       projectionState={projectionState}
       onRetryConnection={connection === "offline" || connection === "reconnecting" ? onRetryConnection : undefined}
       persistenceStatus={persistenceStatus}
+      focusDocument={focusedDocument.view}
+      focusDocumentActions={focusedDocument.actions}
       onRetryPersistence={retrySave.current ?? undefined}
       onPresentationChange={(update) => {
         const next = update({

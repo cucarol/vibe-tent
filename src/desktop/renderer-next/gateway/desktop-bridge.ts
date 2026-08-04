@@ -17,7 +17,7 @@ export type DesktopBootstrap = {
 
 export type RendererDesktopBridge = Pick<
   TentDesktopBridge,
-  "getState" | "rpc" | "onStateChanged" | "onServiceEvent"
+  "getState" | "rpc" | "document" | "onStateChanged" | "onServiceEvent"
 >;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -91,6 +91,7 @@ export function createDesktopServiceGateway(
   let eventCounter = 0;
   return new ServiceGateway({
     projectionRpc: (method, params) => bridge.rpc(method, params),
+    documentTransport: (request) => bridge.document(request),
     subscribeEvents: (handler) =>
       bridge.onServiceEvent((event) => {
         const envelope: EventEnvelope = {

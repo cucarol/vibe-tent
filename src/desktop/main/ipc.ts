@@ -10,6 +10,8 @@ import {
 } from "../prefs.js";
 import { DESKTOP_IPC, type DesktopPreferences, type RecentContextCard } from "../types.js";
 import { contextCardToDragText } from "../../core/context-card.js";
+import type { DesktopDocumentResponse } from "../document-ipc.js";
+import { handleDesktopDocumentRequest } from "./document-ipc-handler.js";
 
 export type IpcContext = {
   host: DesktopServiceHost;
@@ -77,6 +79,12 @@ export function registerDesktopIpc(ctx: IpcContext): void {
       if (!client) throw new Error("Service not attached");
       return client.call(method, params);
     }
+  );
+
+  ipcMain.handle(
+    DESKTOP_IPC.document,
+    async (_e: unknown, request: unknown): Promise<DesktopDocumentResponse> =>
+      handleDesktopDocumentRequest(ctx.host.client, request)
   );
 
   ipcMain.handle(DESKTOP_IPC.pickWorkspaceFolder, async (event: IpcMainInvokeEvent) => {

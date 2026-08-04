@@ -497,6 +497,8 @@ test("Outline and Focus are collapsible trays around one Canvas stage", async ()
   assert.match(shellCss, /data-outline-open="false"/);
   assert.match(shellCss, /data-focus-open="false"/);
   assert.match(shellCss, /data-immersive="true"/);
+  assert.match(shellCss, /data-focus-expanded="true"[^}]*clamp\(480px, 46vw, 680px\)/);
+  assert.match(shellCss, /data-connection="connecting"/);
 
   const shell = await read("src/desktop/renderer-next/shell/AppShell.tsx");
   assert.match(shell, /aria-pressed=\{outlineOpen\}/);

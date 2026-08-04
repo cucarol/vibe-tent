@@ -27,6 +27,8 @@ import { createEmptyCanvasDocument } from "../src/desktop/renderer-next/types/id
 import { workbenchNodesFromResources } from "../src/desktop/renderer-next/model/workbench-nodes.js";
 import { ConnectionBanner } from "../src/desktop/renderer-next/components/ConnectionBanner.js";
 import { seedCanvasDocumentFromGraph } from "../src/desktop/renderer-next/model/canvas-seeding.js";
+import { FocusDocumentPanel } from "../src/desktop/renderer-next/components/FocusDocumentPanel.js";
+import type { FocusDocumentActions, FocusDocumentView } from "../src/desktop/renderer-next/model/focus-document-controller.js";
 
 function state(workspaceId = "ws-a") {
   return {
@@ -42,6 +44,16 @@ function state(workspaceId = "ws-a") {
     ],
   };
 }
+
+const noDocumentActions: FocusDocumentActions = {
+  beginEdit() {},
+  updateBody() {},
+  async save() {},
+  discard() {},
+  loadDisk() {},
+  async overwriteWithLocal() {},
+  async retry() {},
+};
 
 test("production bootstrap requires protocol 4 and exact foreground identity", () => {
   const normalized = normalizeDesktopBootstrap(state());
@@ -196,6 +208,80 @@ test("placement creation fails closed while stale and reconnecting exposes one r
   }));
   assert.equal((banner.match(/重试连接/g) ?? []).length, 1);
   assert.doesNotMatch(banner, /disabled/);
+});
+
+test("Focus conflict overwrite renders saving feedback instead of live conflict actions", () => {
+  const saving = {
+    workspaceId: "ws-a",
+    nodeId: "cx-a",
+    status: "saving",
+    mode: "edit",
+    body: "local",
+    diskBody: "external",
+    etag: "etag-1",
+    dirty: true,
+    canSave: false,
+    archived: false,
+    backlinks: [],
+    backlinksState: "ready",
+    artifactRefs: [],
+  } satisfies FocusDocumentView;
+  const html = renderToStaticMarkup(createElement(FocusDocumentPanel, {
+    document: saving,
+    actions: noDocumentActions,
+    expanded: true,
+    onExpandedChange: () => {},
+  }));
+  assert.match(html, /正在保存/);
+  assert.doesNotMatch(html, /载入磁盘版本|保留本地并保存/);
+  assert.match(html, /恢复侧栏/);
+});
+
+test("stale graph keeps an independent dirty document visible while hiding graph authority", () => {
+  const node = {
+    nodeId: "cx-a",
+    path: "cached/path",
+    name: "cached-node",
+    type: "output",
+    tags: ["cached-tag"],
+    mode: "editable",
+    archived: false,
+    invalid: false,
+    projectionState: "stale",
+    projectionMessage: "投影连接已断开",
+    collaborationState: "stale",
+  } satisfies WorkbenchNodeView;
+  const document = {
+    workspaceId: "ws-a",
+    nodeId: "cx-a",
+    status: "stale",
+    mode: "edit",
+    body: "# 本地草稿仍在",
+    etag: "etag-before-disconnect",
+    dirty: true,
+    canSave: false,
+    archived: false,
+    backlinks: [],
+    backlinksState: "stale",
+    artifactRefs: [],
+  } satisfies FocusDocumentView;
+
+  const html = renderToStaticMarkup(createElement(InspectorPanel, {
+    node,
+    document,
+    documentActions: noDocumentActions,
+    expanded: true,
+    onExpandedChange: () => {},
+    canCreatePlacement: false,
+    onCollapse: () => {},
+  }));
+
+  assert.match(html, /本地草稿仍在/);
+  assert.match(html, /内容已过期/);
+  assert.match(html, /<button[^>]*disabled=""[^>]*>保存<\/button>/);
+  assert.match(html, /等待权威投影/);
+  assert.doesNotMatch(html, /<h2>属性<\/h2>|<h2>当前协作<\/h2>|<h2>交付来源<\/h2>/);
+  assert.doesNotMatch(html, /cached-tag/);
 });
 
 test("projection events during the held initial read schedule a newer read", async () => {
@@ -410,6 +496,10 @@ test("desktop event payload is invalidation only and named RPC stays closed", as
         edges: { parent: [], markdown: [], wiki: [], relation: [] },
       };
     },
+    document: async () => ({
+      ok: false,
+      error: { kind: "transport", message: "document fixture not configured" },
+    }),
     onStateChanged: () => () => {},
     onServiceEvent: (handler) => {
       serviceEvent = handler;
@@ -439,6 +529,10 @@ test("client-visible session.state crosses the desktop host into renderer invali
   const bridge: RendererDesktopBridge = {
     getState: async () => state(),
     rpc: async () => ({ workspaceId: "ws-a", nodes: [], edges: {} }),
+    document: async () => ({
+      ok: false,
+      error: { kind: "transport", message: "document fixture not configured" },
+    }),
     onStateChanged: () => () => {},
     // This has the same narrow `{ type, workspaceId }` contract exposed by
     // preload. The host remains responsible for event filtering/debouncing.

@@ -22,6 +22,10 @@ import {
 } from "./workbench-presentation.js";
 import type { DrawingPersistenceStatus } from "../model/drawing-persistence-status.js";
 import type { ExcalidrawSceneSnapshot } from "../canvas/excalidraw/excalidrawSceneTypes.js";
+import type {
+  FocusDocumentActions,
+  FocusDocumentView,
+} from "../model/focus-document-controller.js";
 
 export type AppShellProps = {
   workspaceId?: string | null;
@@ -38,6 +42,9 @@ export type AppShellProps = {
   onRetryPersistence?: () => void;
   onPresentationChange?: (update: WorkbenchPresentationUpdate) => void;
   onScenePersist?: (scene: ExcalidrawSceneSnapshot) => void;
+  focusDocument?: FocusDocumentView;
+  focusDocumentActions?: FocusDocumentActions;
+  initialFocusExpanded?: boolean;
 };
 
 /**
@@ -59,9 +66,13 @@ export function AppShell({
   onRetryPersistence,
   onPresentationChange,
   onScenePersist,
+  focusDocument,
+  focusDocumentActions,
+  initialFocusExpanded = false,
 }: AppShellProps = {}) {
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [focusOpen, setFocusOpen] = useState(true);
+  const [focusExpanded, setFocusExpanded] = useState(initialFocusExpanded);
   const [immersive, setImmersive] = useState(false);
   const placementActionRef = useRef<HTMLButtonElement>(null);
   const nodes = useMemo(() => [...initialNodes], [initialNodes]);
@@ -135,7 +146,7 @@ export function AppShell({
         <ConnectionBanner connection={connection} onRetry={onRetryConnection} />
       ) : null}
 
-      <div className="tn-workbench" data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-immersive={immersive ? "true" : "false"}>
+      <div className="tn-workbench" data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-focus-expanded={focusExpanded ? "true" : "false"} data-immersive={immersive ? "true" : "false"}>
         <OutlinePanel nodes={nodes} projection={projection} selectedNodeId={selectedNodeId} onSelectNode={selectNode} onOpenNodeActions={openNodeActions} onCollapse={() => setOutlineOpen(false)} />
         <CanvasWorkbench document={document} nodes={nodes} graph={graph} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNode} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
         <InspectorPanel
@@ -145,6 +156,13 @@ export function AppShell({
           onPlaceNode={placeSelectedNode}
           onRemoveNode={removeSelectedNode}
           placementActionRef={placementActionRef}
+          document={focusDocument}
+          documentActions={focusDocumentActions}
+          expanded={focusExpanded}
+          onExpandedChange={(expanded) => {
+            setFocusOpen(true);
+            setFocusExpanded(expanded);
+          }}
           onCollapse={() => setFocusOpen(false)}
         />
       </div>

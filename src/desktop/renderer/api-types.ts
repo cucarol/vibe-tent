@@ -1,5 +1,10 @@
 // Shared renderer bridge typings for main + float windows.
 
+import type {
+  DesktopDocumentRequest,
+  DesktopDocumentResponse,
+} from "../document-ipc.js";
+
 export type TentDesktopBridge = {
   getState: () => Promise<unknown>;
   health: () => Promise<unknown>;
@@ -7,6 +12,7 @@ export type TentDesktopBridge = {
   mountWorkspace: (workspaceRoot: string) => Promise<unknown>;
   setForeground: (workspaceId: string) => Promise<unknown>;
   rpc: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+  document: (request: DesktopDocumentRequest) => Promise<DesktopDocumentResponse>;
   pickWorkspaceFolder: () => Promise<string | null>;
   getPrefs: () => Promise<unknown>;
   setPrefs: (patch: Record<string, unknown>) => Promise<unknown>;
