@@ -1,34 +1,34 @@
 /**
- * Tent B3 default product tokens.
+ * Tent default product tokens.
  *
- * A quiet light workbench: cool-neutral paper, ink controls, and one warm
- * contextual accent.  These are product roles, not a menu of themes.
+ * A quiet light workbench: neutral chrome, white Canvas, ink controls and
+ * grayscale interaction contrast. These are product roles, not a theme menu.
  */
 
 :root {
   color-scheme: light;
 
-  --tn-color-app-bg: #e8e7e4;
-  --tn-color-stage-bg: #e1e1de;
-  --tn-color-panel-bg: #f7f6f3;
-  --tn-color-chrome-bg: #eeedeb;
-  --tn-color-elevated-bg: #fbfaf8;
-  --tn-color-sunken-bg: #deddda;
-  --tn-color-card-bg: #fbfaf8;
-  --tn-color-overlay: rgba(34, 35, 33, 0.16);
+  --tn-color-app-bg: #ededf0;
+  --tn-color-stage-bg: #f1f1f3;
+  --tn-color-panel-bg: #f7f7f8;
+  --tn-color-chrome-bg: #f3f3f4;
+  --tn-color-elevated-bg: #ffffff;
+  --tn-color-sunken-bg: #e5e5e8;
+  --tn-color-card-bg: #ffffff;
+  --tn-color-overlay: rgba(24, 25, 28, 0.16);
 
-  --tn-color-text-primary: #222321;
-  --tn-color-text-secondary: #5f605c;
-  --tn-color-text-faint: #7b7c76;
-  --tn-color-text-on-accent: #fffaf6;
-  --tn-color-border: #d3d1cc;
-  --tn-color-border-strong: #aaa8a1;
-  --tn-color-hover: #e8e6e1;
-  --tn-color-selected: #f2dfd5;
-  --tn-color-selected-strong: #e9cbbd;
-  --tn-color-accent: #b85235;
-  --tn-color-accent-soft: #f3dfd6;
-  --tn-color-focus: #9d4128;
+  --tn-color-text-primary: #202124;
+  --tn-color-text-secondary: #5e6067;
+  --tn-color-text-faint: #6c6e75;
+  --tn-color-text-on-accent: #ffffff;
+  --tn-color-border: #d8d9dd;
+  --tn-color-border-strong: #aeb0b7;
+  --tn-color-hover: #e9e9ec;
+  --tn-color-selected: #e5e7eb;
+  --tn-color-selected-strong: #d8dbe1;
+  --tn-color-accent: #4b4d52;
+  --tn-color-accent-soft: #e7e7e9;
+  --tn-color-focus: #3f4146;
 
   --tn-color-action-bg: #252624;
   --tn-color-action-text: #faf9f6;
@@ -47,6 +47,9 @@
   --tn-color-pending: #706b63;
   --tn-color-ghost: #87847e;
   --tn-color-running: #516f8d;
+  --tn-color-node-goal: #686a71;
+  --tn-color-node-prompt: #85878e;
+  --tn-color-node-output: #a2a4aa;
 
   --tn-layout-outline-width: 252px;
   --tn-layout-rail-width: 52px;
@@ -67,8 +70,8 @@
   --tn-radius-sm: 4px;
   --tn-radius-md: 6px;
   --tn-radius-lg: 8px;
-  --tn-shadow-float: 0 10px 28px rgba(29, 28, 25, 0.12);
-  --tn-shadow-card: 0 1px 2px rgba(29, 28, 25, 0.08);
+  --tn-shadow-float: 0 10px 28px rgba(24, 25, 28, 0.12);
+  --tn-shadow-card: 0 1px 2px rgba(24, 25, 28, 0.08);
 
   --tn-font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   --tn-font-body: var(--tn-font-ui);

@@ -442,6 +442,11 @@ var TEMP_DIR = "temp";
 var ATTACHMENTS_DIR = "attachments";
 var ROLES_TEMP_DIR = "roles";
 var SESSIONS_TEMP_DIR = "sessions";
+function nodeNotePath(nodePath8) {
+  const separator = nodePath8.lastIndexOf("/");
+  const name = separator === -1 ? nodePath8 : nodePath8.slice(separator + 1);
+  return nodePath8 === "" ? ".md" : `${nodePath8}/${name}.md`;
+}
 var OPERATIONAL_TOP_LEVEL = /* @__PURE__ */ new Set([
   TEMP_DIR,
   ATTACHMENTS_DIR,
@@ -1125,10 +1130,13 @@ function isSessionId(id) {
   return /^ss-[a-z0-9]+$/i.test(id);
 }
 
-// src/core/tree.ts
-function nodeNotePath(nodePath8) {
-  return join(nodePath8, baseName(nodePath8) + ".md");
+// src/core/etag.ts
+import { createHash } from "node:crypto";
+function contentEtag(content3) {
+  return createHash("sha256").update(content3, "utf8").digest("hex").slice(0, 24);
 }
+
+// src/core/tree.ts
 async function loadTent(fs21) {
   const byId = /* @__PURE__ */ new Map();
   const byPath = /* @__PURE__ */ new Map();
@@ -1203,6 +1211,7 @@ async function loadNode(fs21, path23, parent, registry) {
     path: path23,
     name,
     fm,
+    etag: contentEtag(raw),
     body,
     children: [],
     parent
@@ -1669,7 +1678,7 @@ function assertReviewAuthority(input) {
 }
 
 // src/core/canonical-digest.ts
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 function sortForCanonical(value) {
   if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map(sortForCanonical);
@@ -1689,7 +1698,7 @@ function canonicalJson(value) {
   return JSON.stringify(sortForCanonical(value));
 }
 function sha256Hex(text3) {
-  return createHash("sha256").update(text3, "utf8").digest("hex");
+  return createHash2("sha256").update(text3, "utf8").digest("hex");
 }
 function canonicalSha256(value) {
   return sha256Hex(canonicalJson(value));
@@ -3493,12 +3502,6 @@ function isRecord4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// src/core/etag.ts
-import { createHash as createHash2 } from "node:crypto";
-function contentEtag(content3) {
-  return createHash2("sha256").update(content3, "utf8").digest("hex").slice(0, 24);
-}
-
 // src/core/artifact.ts
 import path from "node:path";
 var ARTIFACT_KINDS = ["path", "directory", "commit", "url"];
@@ -4575,16 +4578,16 @@ async function withMutation(fs21, action) {
   return withTentMutation(fs21, action);
 }
 
-// src/core/okf.ts
+// src/core/okf-index.ts
 function buildNodeIndex(nodes) {
   const index2 = /* @__PURE__ */ new Map();
   for (const node2 of nodes) {
-    const concept = toNode(node2);
-    addIndex(index2, concept.nodeId, concept);
-    addIndex(index2, concept.id, concept);
-    addIndex(index2, concept.path, concept);
-    addIndex(index2, concept.notePath, concept);
-    addIndex(index2, concept.name, concept);
+    const projected = toOkfNode(node2);
+    addIndex(index2, projected.nodeId, projected);
+    addIndex(index2, projected.id, projected);
+    addIndex(index2, projected.path, projected);
+    addIndex(index2, projected.notePath, projected);
+    addIndex(index2, projected.name, projected);
   }
   return index2;
 }
@@ -4595,16 +4598,17 @@ function resolveNode(index2, target) {
   const normalized = normalizeLookupKey(clean);
   if (normalized.length >= 4) {
     const all2 = index2.get("__all__") ?? [];
-    const fuzzy = all2.filter((concept) => normalizeLookupKey(concept.name).includes(normalized));
+    const fuzzy = all2.filter(
+      (node2) => normalizeLookupKey(node2.name).includes(normalized)
+    );
     if (fuzzy.length === 1) return fuzzy[0];
   }
   return matches?.length === 1 ? matches[0] : void 0;
 }
-function toNode(node2) {
+function toOkfNode(node2) {
   const notePath = nodeNotePath(node2.path);
-  const id = notePath.replace(/\.md$/i, "");
   return {
-    id,
+    id: notePath.replace(/\.md$/i, ""),
     nodeId: node2.id,
     path: node2.path,
     notePath,
@@ -4612,17 +4616,17 @@ function toNode(node2) {
     type: node2.type
   };
 }
-function addIndex(index2, key2, concept) {
+function addIndex(index2, key2, node2) {
   const clean = key2.trim();
   if (!clean) return;
-  addRawIndex(index2, clean, concept);
-  addRawIndex(index2, normalizeLookupKey(clean), concept);
-  addRawIndex(index2, "__all__", concept);
+  addRawIndex(index2, clean, node2);
+  addRawIndex(index2, normalizeLookupKey(clean), node2);
+  addRawIndex(index2, "__all__", node2);
 }
-function addRawIndex(index2, key2, concept) {
+function addRawIndex(index2, key2, node2) {
   if (!key2) return;
   const list2 = index2.get(key2) ?? [];
-  if (!list2.some((item) => item.id === concept.id)) list2.push(concept);
+  if (!list2.some((item) => item.id === node2.id)) list2.push(node2);
   index2.set(key2, list2);
 }
 function normalizeLookupKey(value) {
@@ -29874,6 +29878,7 @@ function projectGraphNodeSummary(source) {
   const title = typeof source.fm.title === "string" ? source.fm.title : void 0;
   const node2 = {
     nodeId: source.id,
+    etag: source.etag,
     path: source.path,
     name: source.name,
     type: source.type,

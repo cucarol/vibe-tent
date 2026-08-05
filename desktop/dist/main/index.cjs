@@ -1349,25 +1349,45 @@ async function invokeDesktopProjectionRpc(getClient, method, params) {
   return client.call(method, params);
 }
 
+// src/desktop/main/workspace-recovery.ts
+var recoveryFlights = /* @__PURE__ */ new WeakMap();
+function recoverDesktopState(args) {
+  const existing = recoveryFlights.get(args.model);
+  if (existing) return existing;
+  const flight = recoverDesktopStateOnce(args);
+  const tracked = flight.finally(() => {
+    if (recoveryFlights.get(args.model) === tracked) {
+      recoveryFlights.delete(args.model);
+    }
+  });
+  recoveryFlights.set(args.model, tracked);
+  return tracked;
+}
+async function recoverDesktopStateOnce(args) {
+  const attach = await args.host.ensureAttached();
+  args.model.setRpc(attach.client);
+  await args.model.refreshHealth();
+  await args.model.refreshWorkspaces();
+  if (!args.model.getSnapshot().foregroundWorkspaceId) {
+    const prefs = await (args.loadPrefs ?? loadDesktopPrefs)(args.dataDir);
+    if (prefs.lastWorkspaceRoot) {
+      await args.model.mountWorkspace(prefs.lastWorkspaceRoot);
+    }
+  }
+  if (args.model.getSnapshot().foregroundWorkspaceId) {
+    await args.model.refreshTasks();
+  }
+  return args.model.getSnapshot();
+}
+
 // src/desktop/main/ipc.ts
 function registerDesktopIpc(ctx) {
   import_electron2.ipcMain.handle(DESKTOP_IPC.getState, async () => {
-    const previousClient = ctx.host.client;
-    const attach = await ctx.host.ensureAttached();
-    const recoveredAttachment = previousClient !== attach.client;
-    ctx.model.setRpc(attach.client);
-    await ctx.model.refreshHealth();
-    await ctx.model.refreshWorkspaces();
-    if (recoveredAttachment && !ctx.model.getSnapshot().foregroundWorkspaceId) {
-      const prefs = await loadDesktopPrefs(ctx.dataDir);
-      if (prefs.lastWorkspaceRoot) {
-        await ctx.model.mountWorkspace(prefs.lastWorkspaceRoot);
-      }
-    }
-    if (ctx.model.getSnapshot().foregroundWorkspaceId) {
-      await ctx.model.refreshTasks();
-    }
-    return ctx.model.getSnapshot();
+    return recoverDesktopState({
+      host: ctx.host,
+      model: ctx.model,
+      dataDir: ctx.dataDir
+    });
   });
   import_electron2.ipcMain.handle(DESKTOP_IPC.health, async () => {
     return ctx.model.refreshHealth();

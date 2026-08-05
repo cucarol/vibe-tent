@@ -1398,6 +1398,11 @@ var TEMP_DIR = "temp";
 var ATTACHMENTS_DIR = "attachments";
 var ROLES_TEMP_DIR = "roles";
 var SESSIONS_TEMP_DIR = "sessions";
+function nodeNotePath(nodePath3) {
+  const separator = nodePath3.lastIndexOf("/");
+  const name = separator === -1 ? nodePath3 : nodePath3.slice(separator + 1);
+  return nodePath3 === "" ? ".md" : `${nodePath3}/${name}.md`;
+}
 var OPERATIONAL_TOP_LEVEL = /* @__PURE__ */ new Set([
   TEMP_DIR,
   ATTACHMENTS_DIR,
@@ -1796,10 +1801,13 @@ function isSessionId(id) {
   return /^ss-[a-z0-9]+$/i.test(id);
 }
 
-// src/core/tree.ts
-function nodeNotePath(nodePath3) {
-  return join3(nodePath3, baseName(nodePath3) + ".md");
+// src/core/etag.ts
+import { createHash } from "node:crypto";
+function contentEtag(content) {
+  return createHash("sha256").update(content, "utf8").digest("hex").slice(0, 24);
 }
+
+// src/core/tree.ts
 async function loadTent(fs10) {
   const byId = /* @__PURE__ */ new Map();
   const byPath = /* @__PURE__ */ new Map();
@@ -1874,6 +1882,7 @@ async function loadNode(fs10, path11, parent, registry) {
     path: path11,
     name,
     fm,
+    etag: contentEtag(raw),
     body,
     children: [],
     parent
@@ -2123,7 +2132,7 @@ function isTaskId(id) {
 }
 
 // src/core/canonical-digest.ts
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 
 // src/core/task-node-selection.ts
 var TaskNodeSelectionError = class extends Error {
@@ -3863,7 +3872,8 @@ var ServiceClient = class {
   }
   /**
    * Workspace-level graph projection for Working-set Canvas.
-   * Node summaries + parent / markdown / wiki edges; no body, no placement.
+   * Node summaries include the raw document etag; no body or placement state.
+   * Parent / markdown / wiki / relation edges remain separately partitioned.
    * Unresolved Node links are retained with an explicit unresolved payload.
    */
   graphProjection(workspaceId) {
