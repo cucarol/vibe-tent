@@ -42,9 +42,15 @@ import {
   canCreateNodePlacement,
   removeFocusedPresentationPlacement,
   selectPresentationNode,
+  syncFocusedPresentationSnapshot,
   withPresentationDocument,
   type WorkbenchPresentationState,
 } from "../src/desktop/renderer-next/shell/workbench-presentation.js";
+import {
+  captureCanvasNodeSnapshot,
+  readCanvasNodeSnapshot,
+  withCanvasNodeSnapshot,
+} from "../src/desktop/renderer-next/model/canvas-node-snapshot.js";
 
 const root = process.cwd();
 const nextRoot = path.join(root, "src/desktop/renderer-next");
@@ -201,6 +207,78 @@ test("Focus removal deletes only the current placement when one Node has multipl
   );
   assert.equal(next.document.focusedPlacementId, "pl-a-1");
   assert.equal(next.selectedNodeId, "cx-a");
+});
+
+test("snapshot sync updates only the captured focused placement", () => {
+  const oldSnapshot = captureCanvasNodeSnapshot({
+    nodeId: "cx-a",
+    etag: "etag-old",
+    name: "旧标题",
+    path: "旧路径",
+    type: "prompt",
+    tags: ["old"],
+    mode: "editable",
+    archived: false,
+    invalid: false,
+  });
+  const freshSnapshot = captureCanvasNodeSnapshot({
+    nodeId: "cx-a",
+    etag: "etag-new",
+    name: "新标题",
+    path: "新路径",
+    type: "prompt",
+    tags: ["new"],
+    mode: "editable",
+    archived: false,
+    invalid: false,
+  });
+  const state: WorkbenchPresentationState = {
+    selectedNodeId: "cx-a",
+    document: {
+      ...createEmptyCanvasDocument(),
+      focusedPlacementId: "pl-a-2",
+      viewport: { x: 12, y: 24, zoom: 1.25 },
+      placements: [
+        withCanvasNodeSnapshot({
+          placementId: "pl-a-1",
+          entityRef: "cx-a",
+          kind: "node",
+          x: 10,
+          y: 20,
+          zIndex: 2,
+          meta: { sibling: "keep" },
+        }, oldSnapshot),
+        withCanvasNodeSnapshot({
+          placementId: "pl-a-2",
+          entityRef: "cx-a",
+          kind: "node",
+          x: 300,
+          y: 80,
+          width: 260,
+          height: 140,
+          zIndex: 7,
+          meta: { presentation: "expanded" },
+        }, oldSnapshot),
+      ],
+    },
+  };
+  const next = syncFocusedPresentationSnapshot(
+    state,
+    "pl-a-2",
+    "cx-a",
+    freshSnapshot
+  );
+  assert.equal(readCanvasNodeSnapshot(next.document.placements[0]!)?.etag, "etag-old");
+  assert.equal(readCanvasNodeSnapshot(next.document.placements[1]!)?.etag, "etag-new");
+  assert.equal(next.document.placements[1]!.x, 300);
+  assert.equal(next.document.placements[1]!.zIndex, 7);
+  assert.equal(next.document.placements[1]!.meta?.presentation, "expanded");
+  assert.deepEqual(next.document.viewport, state.document.viewport);
+  assert.deepEqual(
+    syncFocusedPresentationSnapshot(state, "pl-a-1", "cx-a", freshSnapshot),
+    state,
+    "a stale click cannot update a placement after focus moved"
+  );
 });
 
 test("placement creation is permitted only by fresh authoritative graph identity", () => {

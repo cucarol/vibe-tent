@@ -4,7 +4,10 @@ import {
   removePlacement,
   setFocusedPlacement,
 } from "../model/canvas-document.js";
-import type { CanvasNodeSnapshot } from "../model/canvas-node-snapshot.js";
+import {
+  withCanvasNodeSnapshot,
+  type CanvasNodeSnapshot,
+} from "../model/canvas-node-snapshot.js";
 import type { CanvasDocument } from "../types/identity.js";
 import { focusWorkbenchNode } from "./workbench-selection.js";
 
@@ -23,6 +26,21 @@ export function canCreateNodePlacement(
 ): boolean {
   return workspaceProjection === "fresh" &&
     (nodeProjection === undefined || nodeProjection === "ready");
+}
+
+export function canvasPlacementSourceAuthority(
+  workspaceProjection: "loading" | "fresh" | "stale" | "unresolved" | "error" | "unmounted",
+  selectedNodeProjection: "ready" | "loading" | "stale" | "unresolved" | "error" | null | undefined
+): "fresh" | "unknown" {
+  if (workspaceProjection !== "fresh") return "unknown";
+  // null means the exact Node is absent from a genuinely fresh graph, which is
+  // the only authoritative deletion signal. An existing Node must itself be
+  // ready; a conflicting row-level state cannot authorize snapshot sync.
+  return selectedNodeProjection === null ||
+    selectedNodeProjection === undefined ||
+    selectedNodeProjection === "ready"
+    ? "fresh"
+    : "unknown";
 }
 
 export function withPresentationDocument(
@@ -93,5 +111,34 @@ export function removeFocusedPresentationPlacement(
       removed,
       nextForNode?.placementId ?? null
     ),
+  };
+}
+
+/**
+ * Replace only the placement that was focused when the command was invoked.
+ * The captured ids close the focus-race without updating duplicate instances.
+ */
+export function syncFocusedPresentationSnapshot(
+  current: WorkbenchPresentationState,
+  expectedPlacementId: string,
+  expectedNodeId: string,
+  snapshot: CanvasNodeSnapshot
+): WorkbenchPresentationState {
+  if (current.document.focusedPlacementId !== expectedPlacementId) return current;
+  let changed = false;
+  const placements = current.document.placements.map((placement) => {
+    if (
+      placement.placementId !== expectedPlacementId ||
+      placement.entityRef !== expectedNodeId
+    ) {
+      return placement;
+    }
+    changed = true;
+    return withCanvasNodeSnapshot(placement, snapshot);
+  });
+  if (!changed) return current;
+  return {
+    selectedNodeId: current.selectedNodeId,
+    document: { ...current.document, placements },
   };
 }

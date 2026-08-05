@@ -9,7 +9,8 @@ export type ShellIconName =
   | "outline"
   | "panel-left"
   | "panel-right"
-  | "plus";
+  | "plus"
+  | "refresh";
 
 export function ShellIcon({ name, ...props }: SVGProps<SVGSVGElement> & { name: ShellIconName }) {
   const common = { fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
@@ -21,6 +22,7 @@ export function ShellIcon({ name, ...props }: SVGProps<SVGSVGElement> & { name: 
       {name === "panel-left" ? <><rect {...common} x="3" y="4" width="14" height="12" rx="1.5"/><path {...common} d="M7 4v12"/></> : null}
       {name === "panel-right" ? <><rect {...common} x="3" y="4" width="14" height="12" rx="1.5"/><path {...common} d="M13 4v12"/></> : null}
       {name === "plus" ? <path {...common} d="M10 4v12M4 10h12"/> : null}
+      {name === "refresh" ? <><path {...common} d="M15.5 7.5A6 6 0 1 0 16 12"/><path {...common} d="M15.5 3.8v3.7h-3.7"/></> : null}
       {name === "command" ? <><path {...common} d="M7.5 6.5V5a2 2 0 1 0-2 2H14.5a2 2 0 1 0-2-2v10a2 2 0 1 0 2-2H5.5a2 2 0 1 0 2 2z"/></> : null}
       {name === "chevron-left" ? <path {...common} d="m12 5-5 5 5 5"/> : null}
       {name === "chevron-right" ? <path {...common} d="m8 5 5 5-5 5"/> : null}

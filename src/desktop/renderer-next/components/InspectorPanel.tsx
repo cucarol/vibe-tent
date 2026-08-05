@@ -22,14 +22,22 @@ import type {
   CollaborationSurfaceActions,
   CollaborationSurfaceView,
 } from "../model/collaboration-surface-controller.js";
+import type { CanvasPlacementSourceState } from "../model/canvas-node-snapshot.js";
+
+export type InspectorLocalNodeView = Omit<WorkbenchNodeView, "etag"> & {
+  etag?: string;
+};
 
 export type InspectorPanelProps = {
   id?: string;
   node: WorkbenchNodeView | null;
+  localNode?: InspectorLocalNodeView | null;
   placementState?: "placed" | "unplaced";
+  placementSourceState?: CanvasPlacementSourceState | null;
   canCreatePlacement?: boolean;
   onPlaceNode?: () => void;
   onRemoveNode?: () => void;
+  onSyncSnapshot?: () => void;
   placementActionRef?: Ref<HTMLButtonElement>;
   document?: FocusDocumentView;
   documentActions?: FocusDocumentActions;
@@ -45,10 +53,13 @@ export type InspectorPanelProps = {
 export function InspectorPanel({
   id,
   node,
+  localNode = null,
   placementState = "unplaced",
+  placementSourceState = null,
   canCreatePlacement = false,
   onPlaceNode,
   onRemoveNode,
+  onSyncSnapshot,
   placementActionRef,
   document,
   documentActions,
@@ -60,11 +71,16 @@ export function InspectorPanel({
   initialTab = "content",
   onCollapse,
 }: InspectorPanelProps) {
+  const displayNode = node ?? localNode;
   const [tab, setTab] = useState(initialTab);
-  const projectionReady = !node?.projectionState || node.projectionState === "ready";
+  const authoritativeNode =
+    node && (!node.projectionState || node.projectionState === "ready")
+      ? node
+      : null;
+  const projectionReady = Boolean(authoritativeNode);
   const collaborationRunning =
-    node?.collaborationState === "ready" &&
-    typeof node.activeTaskState === "string";
+    authoritativeNode?.collaborationState === "ready" &&
+    typeof authoritativeNode.activeTaskState === "string";
   const documentPanel = document && documentActions && onExpandedChange ? (
     <FocusDocumentPanel
       document={document}
@@ -73,13 +89,22 @@ export function InspectorPanel({
       onExpandedChange={onExpandedChange}
     />
   ) : null;
+  const sourceLabel = placementSourceState?.state === "current"
+    ? "来源一致"
+    : placementSourceState?.state === "changed"
+      ? "来源有更新"
+      : placementSourceState?.state === "deleted"
+        ? "源节点已删除"
+        : placementSourceState?.reason === "revision-unavailable"
+          ? "来源版本未知"
+          : "来源状态未知";
   return (
     <aside id={id} className="tn-pane tn-inspector-pane" aria-label="焦点面板" data-region="focus">
       <PaneHeader
         title="焦点"
         actions={<IconButton size="compact" aria-label="收起焦点面板" tooltip="收起焦点面板" variant="ghost" onClick={onCollapse}><ShellIcon name="chevron-right" /></IconButton>}
       />
-      {!node ? (
+      {!displayNode ? (
         <div className="tn-pane-empty" role="status">
           <strong>选择一个节点</strong>
           <p>正文、属性、派活与审阅会在这里打开。</p>
@@ -88,25 +113,25 @@ export function InspectorPanel({
         <div className="tn-inspector-content">
           <header className="tn-focus-identity">
             <div className="tn-focus-kicker">
-              <span>{projectionReady ? nodeTypeLabel(node.type) : "本地画布位置"}</span>
-              {projectionReady ? (
+              <span>{projectionReady ? nodeTypeLabel(displayNode.type) : "本地画布位置"}</span>
+              {authoritativeNode ? (
                 <StatusBadge
                   tone={collaborationRunning ? "running" : "neutral"}
-                  data-task-state={node.activeTaskState ?? undefined}
-                  data-collaboration-state={node.collaborationState ?? "unknown"}
+                  data-task-state={authoritativeNode.activeTaskState ?? undefined}
+                  data-collaboration-state={authoritativeNode.collaborationState ?? "unknown"}
                 >
-                  {collaborationBadgeLabel(node)}
+                  {collaborationBadgeLabel(authoritativeNode)}
                 </StatusBadge>
               ) : <StatusBadge tone="neutral">状态未知</StatusBadge>}
             </div>
-            <h1>{nodeTitle(node)}</h1>
-            <p>{projectionReady ? node.path : "非权威缓存，仅用于找回画布位置"}</p>
+            <h1>{nodeTitle(displayNode)}</h1>
+            <p>{projectionReady ? displayNode.path : "非权威缓存，仅用于找回画布位置"}</p>
           </header>
 
-          {projectionLabel(node.projectionState) ? (
-            <div className="tn-projection-notice" data-state={node.projectionState} role={node.projectionState === "error" ? "alert" : "status"}>
-              <strong>{projectionLabel(node.projectionState)}</strong>
-              <span>{node.projectionMessage ?? "保留本地画布位置，等待权威投影恢复。"}</span>
+          {projectionLabel(displayNode.projectionState) ? (
+            <div className="tn-projection-notice" data-state={displayNode.projectionState} role={displayNode.projectionState === "error" ? "alert" : "status"}>
+              <strong>{projectionLabel(displayNode.projectionState)}</strong>
+              <span>{displayNode.projectionMessage ?? "保留本地画布位置，等待权威投影恢复。"}</span>
             </div>
           ) : null}
 
@@ -124,17 +149,39 @@ export function InspectorPanel({
                     ? "尚未放入画布。节点事实仍保留在工作区中。"
                     : "尚未放入画布；权威节点恢复后才能创建本地位置。"}
               </p>
+              {placementState === "placed" && placementSourceState ? (
+                <span
+                  className="tn-focus-placement__source"
+                  data-source-state={placementSourceState.state}
+                  data-source-reason={placementSourceState.reason}
+                >
+                  {sourceLabel}
+                </span>
+              ) : null}
             </div>
             {placementState === "placed" ? (
-              <Button
-                ref={placementActionRef}
-                variant="quiet"
-                size="compact"
-                aria-describedby="tn-focus-placement-description"
-                onClick={onRemoveNode}
-              >
-                从画布移除
-              </Button>
+              <div className="tn-focus-placement__actions">
+                {placementSourceState?.canSync ? (
+                  <IconButton
+                    size="compact"
+                    aria-label="同步快照"
+                    tooltip="同步快照"
+                    variant="ghost"
+                    onClick={onSyncSnapshot}
+                  >
+                    <ShellIcon name="refresh" />
+                  </IconButton>
+                ) : null}
+                <Button
+                  ref={placementActionRef}
+                  variant="quiet"
+                  size="compact"
+                  aria-describedby="tn-focus-placement-description"
+                  onClick={onRemoveNode}
+                >
+                  从画布移除
+                </Button>
+              </div>
             ) : (
               <Button
                 ref={placementActionRef}
@@ -149,17 +196,19 @@ export function InspectorPanel({
             )}
           </section>
 
-          <Tabs
-            aria-label="焦点内容"
-            value={tab}
-            onValueChange={(value) => setTab(value as "content" | "collaboration")}
-            items={[{ id: "content", label: "内容" }, { id: "collaboration", label: "协作" }]}
-          />
+          {projectionReady ? (
+            <Tabs
+              aria-label="焦点内容"
+              value={tab}
+              onValueChange={(value) => setTab(value as "content" | "collaboration")}
+              items={[{ id: "content", label: "内容" }, { id: "collaboration", label: "协作" }]}
+            />
+          ) : null}
 
-          {tab === "collaboration" && collaboration && collaborationActions ? (
+          {tab === "collaboration" && authoritativeNode && collaboration && collaborationActions ? (
             <CollaborationPanel
               key={collaborationPanelIdentity(collaboration)}
-              node={node}
+              node={authoritativeNode}
               allNodes={allNodes}
               view={collaboration}
               actions={collaborationActions}
@@ -172,7 +221,7 @@ export function InspectorPanel({
                 <p>节点属性、协作与交付来源暂不展示；恢复后会重新查询。</p>
               </section>
             </div>
-          ) : tab === "content" ? (
+          ) : tab === "content" && authoritativeNode ? (
             <div className="tn-focus-sections">
               {documentPanel ?? (
                 <section>
@@ -183,29 +232,29 @@ export function InspectorPanel({
               <section>
                 <h2>属性</h2>
                 <dl>
-                  <div><dt>类型</dt><dd>{nodeTypeLabel(node.type)}</dd></div>
-                  <div><dt>模式</dt><dd>{node.archived ? "已归档" : "可编辑"}</dd></div>
-                  <div><dt>标签</dt><dd>{node.tags.length ? node.tags.join(" · ") : "无"}</dd></div>
+                  <div><dt>类型</dt><dd>{nodeTypeLabel(displayNode.type)}</dd></div>
+                  <div><dt>模式</dt><dd>{displayNode.archived ? "已归档" : "可编辑"}</dd></div>
+                  <div><dt>标签</dt><dd>{displayNode.tags.length ? displayNode.tags.join(" · ") : "无"}</dd></div>
                 </dl>
               </section>
-              {node.type === "output" ? (
+              {displayNode.type === "output" ? (
                 <section>
                   <h2>交付来源</h2>
-                  <p data-provenance-state={node.outputProvenance?.state ?? "error"}>
-                    {node.outputProvenance?.label ?? "来源状态未知"}
+                  <p data-provenance-state={authoritativeNode.outputProvenance?.state ?? "error"}>
+                    {authoritativeNode.outputProvenance?.label ?? "来源状态未知"}
                   </p>
                 </section>
               ) : null}
             </div>
-          ) : (
+          ) : authoritativeNode ? (
             <div className="tn-focus-sections">
               <section>
                 <h2>当前协作</h2>
-                <p>{collaborationSummary(node)}</p>
+                <p>{collaborationSummary(authoritativeNode)}</p>
               </section>
               <section><h2>协作尚未接入</h2><p>等待权威任务与收件箱投影。</p></section>
             </div>
-          )}
+          ) : null}
         </div>
       )}
     </aside>

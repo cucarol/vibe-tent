@@ -13,6 +13,8 @@ export type CollaborationProjectionState =
 
 export type WorkbenchNodeView = {
   nodeId: string;
+  /** Required authoritative graph revision; local snapshot fallback uses a separate view. */
+  etag: string;
   path: string;
   name: string;
   title?: string;
@@ -29,7 +31,7 @@ export type WorkbenchNodeView = {
   outputProvenance?: { state: "ready" | "error"; label: string };
 };
 
-export function nodeTitle(node: WorkbenchNodeView): string {
+export function nodeTitle(node: Pick<WorkbenchNodeView, "title" | "name">): string {
   return node.title?.trim() || node.name;
 }
 

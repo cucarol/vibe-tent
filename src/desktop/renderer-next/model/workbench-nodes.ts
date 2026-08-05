@@ -60,6 +60,7 @@ export function workbenchNodesFromResources(
     for (const node of graph.nodes) {
       result.push({
         nodeId: node.nodeId,
+        etag: node.etag,
         path: node.path,
         name: node.name,
         title: node.title,

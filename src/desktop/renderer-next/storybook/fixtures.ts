@@ -13,6 +13,7 @@ export function fixtureNodes(state: ProjectionState = "ready"): WorkbenchNodeVie
   return [
     {
       nodeId: "cx-product",
+      etag: "etag-product-v1",
       path: "产品方向",
       name: "产品方向",
       title: "把复杂协作变成可见的工作",
@@ -29,6 +30,7 @@ export function fixtureNodes(state: ProjectionState = "ready"): WorkbenchNodeVie
     },
     {
       nodeId: "cx-workbench",
+      etag: "etag-workbench-v1",
       path: "产品方向/桌面工作台",
       name: "桌面工作台",
       title: "主界面：Canvas、节点与焦点",
@@ -45,6 +47,7 @@ export function fixtureNodes(state: ProjectionState = "ready"): WorkbenchNodeVie
     },
     {
       nodeId: "cx-delivery",
+      etag: "etag-delivery-v1",
       path: "产品方向/桌面工作台/视觉验收",
       name: "视觉验收",
       title: "主界面视觉与交互证据",
@@ -78,8 +81,8 @@ export function fixtureCanvasDocument(): CanvasDocument {
     viewport: { x: 0, y: 0, zoom: 1 },
     placements: [
       placement({ placementId: "pl-product", entityRef: "cx-product", kind: "node", x: 110, y: 130, width: 260, height: 138 }),
-      placement({ placementId: "pl-workbench", entityRef: "cx-workbench", kind: "node", x: 480, y: 170, width: 282, height: 152 }),
-      placement({ placementId: "pl-delivery", entityRef: "cx-delivery", kind: "node", x: 500, y: 430, width: 260, height: 138 }),
+      placement({ placementId: "pl-workbench", entityRef: "cx-workbench", kind: "node", x: 390, y: 170, width: 282, height: 152 }),
+      placement({ placementId: "pl-delivery", entityRef: "cx-delivery", kind: "node", x: 420, y: 430, width: 260, height: 138 }),
     ],
   };
 }

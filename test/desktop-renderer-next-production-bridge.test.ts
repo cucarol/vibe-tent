@@ -32,6 +32,7 @@ import {
 } from "../src/desktop/renderer-next/model/canvas-seeding.js";
 import { FocusDocumentPanel } from "../src/desktop/renderer-next/components/FocusDocumentPanel.js";
 import type { FocusDocumentActions, FocusDocumentView } from "../src/desktop/renderer-next/model/focus-document-controller.js";
+import { canvasPlacementSourceAuthority } from "../src/desktop/renderer-next/shell/workbench-presentation.js";
 
 function state(workspaceId = "ws-a") {
   return {
@@ -94,8 +95,8 @@ test("initial Canvas seed materializes only the first authoritative Node", () =>
   const graph = {
     workspaceId: "ws-a",
     nodes: [
-      { nodeId: "cx-first", path: "first", name: "first", type: "goal", tags: [], mode: "editable", archived: false, invalid: false },
-      { nodeId: "cx-second", path: "second", name: "second", type: "prompt", tags: [], mode: "editable", archived: false, invalid: false },
+      { nodeId: "cx-first", etag: "etag-first", path: "first", name: "first", type: "goal", tags: [], mode: "editable", archived: false, invalid: false },
+      { nodeId: "cx-second", etag: "etag-second", path: "second", name: "second", type: "prompt", tags: [], mode: "editable", archived: false, invalid: false },
     ],
     edges: { parent: [], markdown: [], wiki: [], relation: [] },
   } as unknown as GraphProjection;
@@ -108,7 +109,7 @@ test("storage retry immediately materializes legacy snapshots from an already-re
   const graph = {
     workspaceId: "ws-a",
     nodes: [
-      { nodeId: "cx-first", path: "first", name: "first", type: "goal", tags: ["live"], mode: "editable", archived: false, invalid: false },
+      { nodeId: "cx-first", etag: "etag-first", path: "first", name: "first", type: "goal", tags: ["live"], mode: "editable", archived: false, invalid: false },
     ],
     edges: { parent: [], markdown: [], wiki: [], relation: [] },
   } as unknown as GraphProjection;
@@ -140,6 +141,7 @@ test("storage retry immediately materializes legacy snapshots from an already-re
       mode: "editable",
       archived: false,
       invalid: false,
+      etag: "etag-first",
     }
   );
 });
@@ -187,6 +189,7 @@ test("Outline keeps every authoritative Node even when Canvas has no placement",
 test("Focus renders externally controlled placement state without inventing a second owner", () => {
   const node = {
     nodeId: "cx-a",
+    etag: "etag-a",
     path: "A",
     name: "A",
     type: "goal",
@@ -221,9 +224,88 @@ test("Focus renders externally controlled placement state without inventing a se
   assert.match(placed, /从画布移除/);
 });
 
+test("Focus source status exposes one exact sync action only when permitted", () => {
+  const node = {
+    nodeId: "cx-a",
+    etag: "etag-live",
+    path: "A",
+    name: "A",
+    type: "goal",
+    tags: [],
+    mode: "editable",
+    archived: false,
+    invalid: false,
+    projectionState: "ready",
+    collaborationState: "ready",
+    activeTaskState: null,
+  } satisfies WorkbenchNodeView;
+  const changed = renderToStaticMarkup(createElement(InspectorPanel, {
+    node,
+    placementState: "placed",
+    placementSourceState: {
+      state: "changed",
+      reason: "revision-or-fields-changed",
+      canSync: true,
+    },
+    onSyncSnapshot: () => {},
+    onRemoveNode: () => {},
+    onCollapse: () => {},
+  }));
+  assert.match(changed, /来源有更新/);
+  assert.equal((changed.match(/同步快照/g) ?? []).length, 2, "aria label plus tooltip");
+
+  const current = renderToStaticMarkup(createElement(InspectorPanel, {
+    node,
+    placementState: "placed",
+    placementSourceState: { state: "current", reason: "matched", canSync: false },
+    onSyncSnapshot: () => {},
+    onRemoveNode: () => {},
+    onCollapse: () => {},
+  }));
+  assert.match(current, /来源一致/);
+  assert.doesNotMatch(current, /同步快照/);
+
+  const deleted = renderToStaticMarkup(createElement(InspectorPanel, {
+    node: null,
+    localNode: {
+      nodeId: "cx-a",
+      path: "旧路径",
+      name: "本地 A",
+      type: "goal",
+      tags: [],
+      mode: "editable",
+      archived: false,
+      invalid: false,
+      projectionState: "unresolved",
+      collaborationState: "unknown",
+    },
+    placementState: "placed",
+    placementSourceState: {
+      state: "deleted",
+      reason: "fresh-source-missing",
+      canSync: false,
+    },
+    onRemoveNode: () => {},
+    onCollapse: () => {},
+  }));
+  assert.match(deleted, /源节点已删除/);
+  assert.match(deleted, /本地 A/);
+  assert.doesNotMatch(deleted, /同步快照/);
+  assert.doesNotMatch(deleted, /aria-label="焦点内容"/);
+});
+
+test("fresh workspace cannot authorize snapshot sync from a stale selected Node", () => {
+  assert.equal(canvasPlacementSourceAuthority("fresh", "stale"), "unknown");
+  assert.equal(canvasPlacementSourceAuthority("fresh", "error"), "unknown");
+  assert.equal(canvasPlacementSourceAuthority("fresh", "unresolved"), "unknown");
+  assert.equal(canvasPlacementSourceAuthority("fresh", "ready"), "fresh");
+  assert.equal(canvasPlacementSourceAuthority("fresh", null), "fresh");
+});
+
 test("placement creation fails closed while stale and reconnecting exposes one retry", () => {
   const node = {
     nodeId: "cx-a",
+    etag: "etag-a",
     path: "A",
     name: "A",
     type: "goal",
@@ -283,6 +365,7 @@ test("Focus conflict overwrite renders saving feedback instead of live conflict 
 test("stale graph keeps an independent dirty document visible while hiding graph authority", () => {
   const node = {
     nodeId: "cx-a",
+    etag: "etag-a",
     path: "cached/path",
     name: "cached-node",
     type: "output",
@@ -474,6 +557,7 @@ test("initial projection loading/error stays distinct from authoritative ready-e
 test("non-ready collaboration never becomes a confirmed idle claim", () => {
   const node = {
     nodeId: "cx-a",
+    etag: "etag-a",
     path: "A",
     name: "A",
     type: "goal",

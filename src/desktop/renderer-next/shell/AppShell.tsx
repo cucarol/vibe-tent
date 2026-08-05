@@ -5,7 +5,10 @@ import {
 } from "../model/canvas-document.js";
 import { IconButton } from "../ui/index.js";
 import { CanvasWorkbench } from "../components/CanvasWorkbench.js";
-import { InspectorPanel } from "../components/InspectorPanel.js";
+import {
+  InspectorPanel,
+  type InspectorLocalNodeView,
+} from "../components/InspectorPanel.js";
 import { OutlinePanel } from "../components/OutlinePanel.js";
 import { StatusBar } from "../components/StatusBar.js";
 import { ConnectionBanner } from "../components/ConnectionBanner.js";
@@ -13,14 +16,21 @@ import { ShellIcon } from "./icons.js";
 import type { WorkbenchNodeView } from "./workbench-types.js";
 import {
   canCreateNodePlacement,
+  canvasPlacementSourceAuthority,
   dropPresentationNode,
   placePresentationNode,
   removeFocusedPresentationPlacement,
   selectPresentationNode,
+  syncFocusedPresentationSnapshot,
   withPresentationDocument,
   type WorkbenchPresentationUpdate,
 } from "./workbench-presentation.js";
-import { captureCanvasNodeSnapshot } from "../model/canvas-node-snapshot.js";
+import {
+  captureCanvasNodeSnapshot,
+  deriveCanvasPlacementSourceState,
+  readCanvasNodeSnapshot,
+  type CanvasSnapshotSource,
+} from "../model/canvas-node-snapshot.js";
 import type { DrawingPersistenceStatus } from "../model/drawing-persistence-status.js";
 import type { ExcalidrawSceneSnapshot } from "../canvas/excalidraw/excalidrawSceneTypes.js";
 import type {
@@ -54,6 +64,22 @@ export type AppShellProps = {
   initialInspectorTab?: "content" | "collaboration";
   initialLayoutMode?: "compact" | "detail";
 };
+
+function snapshotSource(node: WorkbenchNodeView | null | undefined): CanvasSnapshotSource | null {
+  if (!node) return null;
+  return {
+    nodeId: node.nodeId,
+    etag: node.etag,
+    name: node.name,
+    ...(node.title?.trim() ? { title: node.title } : {}),
+    path: node.path,
+    type: node.type,
+    tags: node.tags,
+    mode: node.mode,
+    archived: node.archived,
+    invalid: node.invalid,
+  };
+}
 
 /**
  * Production desktop composition. Canvas is the only stage; Outline and Focus
@@ -102,6 +128,54 @@ export function AppShell({
       : nodes.some((node) => node.projectionState === "loading")
         ? "loading"
         : "fresh");
+  const focusedPlacement = useMemo(
+    () =>
+      selectedNodeId
+        ? document.placements.find(
+            (placement) =>
+              placement.placementId === document.focusedPlacementId &&
+              placement.entityRef === selectedNodeId
+          ) ?? null
+        : null,
+    [document, selectedNodeId]
+  );
+  const focusedSnapshot = focusedPlacement
+    ? readCanvasNodeSnapshot(focusedPlacement)
+    : null;
+  const currentSource = snapshotSource(selectedNode);
+  const sourceAuthority = canvasPlacementSourceAuthority(
+    projection,
+    selectedNode ? selectedNode.projectionState : null
+  );
+  const placementSourceState = focusedPlacement
+    ? deriveCanvasPlacementSourceState({
+        placement: focusedPlacement,
+        authority: sourceAuthority,
+        source: sourceAuthority === "fresh" ? currentSource : null,
+      })
+    : null;
+  const localInspectorNode: InspectorLocalNodeView | null = !selectedNode && focusedPlacement
+    ? {
+        nodeId: selectedNodeId ?? focusedPlacement.entityRef ?? focusedPlacement.placementId,
+        etag: focusedSnapshot?.etag,
+        path: focusedSnapshot?.path ?? "本地画布位置",
+        name: focusedSnapshot?.name ?? "未解析的本地快照",
+        title: focusedSnapshot?.title,
+        type: focusedSnapshot?.type ?? "",
+        tags: focusedSnapshot?.tags ?? [],
+        mode: focusedSnapshot?.mode ?? "editable",
+        archived: focusedSnapshot?.archived ?? false,
+        invalid: focusedSnapshot?.invalid ?? true,
+        collaborationState: "unknown" as const,
+        projectionState: projection === "fresh" ? "unresolved" as const :
+          projection === "loading" ? "loading" as const :
+          projection === "error" ? "error" as const : "stale" as const,
+        projectionMessage:
+          placementSourceState?.state === "deleted"
+            ? "权威图投影中已不存在该节点；本地快照仍保留。"
+            : "本地快照仍保留，等待权威来源恢复。",
+      }
+    : null;
 
   const selectNode = (nodeId: string | null, placementId?: string | null) => {
     onPresentationChange?.((current) =>
@@ -114,16 +188,16 @@ export function AppShell({
     onPresentationChange?.((current) => withPresentationDocument(current, next));
   };
 
-  const selectedPlacements = selectedNode
-    ? findPlacementsByEntity(document, selectedNode.nodeId)
+  const selectedPlacements = selectedNodeId
+    ? findPlacementsByEntity(document, selectedNodeId)
     : [];
   const canCreatePlacement =
-    Boolean(selectedNode) &&
+    Boolean(currentSource) &&
     canCreateNodePlacement(projection, selectedNode?.projectionState);
 
   const placeSelectedNode = () => {
-    if (!selectedNode || !canCreatePlacement) return;
-    const snapshot = captureCanvasNodeSnapshot(selectedNode);
+    if (!selectedNode || !currentSource || !canCreatePlacement) return;
+    const snapshot = captureCanvasNodeSnapshot(currentSource);
     onPresentationChange?.((current) =>
       placePresentationNode(current, selectedNode.nodeId, snapshot)
     );
@@ -131,17 +205,37 @@ export function AppShell({
 
   const dropNode = (nodeId: string, point: { x: number; y: number }) => {
     const node = nodes.find((candidate) => candidate.nodeId === nodeId);
-    if (!node || !canCreateNodePlacement(projection, node.projectionState)) return;
-    const snapshot = captureCanvasNodeSnapshot(node);
+    const source = snapshotSource(node);
+    if (!node || !source || !canCreateNodePlacement(projection, node.projectionState)) return;
+    const snapshot = captureCanvasNodeSnapshot(source);
     onPresentationChange?.((current) =>
       dropPresentationNode(current, nodeId, snapshot, point)
     );
   };
 
   const removeSelectedNode = () => {
-    if (!selectedNode || selectedPlacements.length === 0) return;
+    if (!selectedNodeId || selectedPlacements.length === 0) return;
     onPresentationChange?.((current) =>
-      removeFocusedPresentationPlacement(current, selectedNode.nodeId)
+      removeFocusedPresentationPlacement(current, selectedNodeId)
+    );
+  };
+
+  const syncSelectedSnapshot = () => {
+    if (
+      !selectedNodeId ||
+      !focusedPlacement ||
+      !currentSource ||
+      !placementSourceState?.canSync
+    ) return;
+    const placementId = focusedPlacement.placementId;
+    const snapshot = captureCanvasNodeSnapshot(currentSource);
+    onPresentationChange?.((current) =>
+      syncFocusedPresentationSnapshot(
+        current,
+        placementId,
+        selectedNodeId,
+        snapshot
+      )
     );
   };
 
@@ -195,10 +289,13 @@ export function AppShell({
         <InspectorPanel
           id="tn-focus-panel"
           node={selectedNode}
+          localNode={localInspectorNode}
           placementState={selectedPlacements.length > 0 ? "placed" : "unplaced"}
+          placementSourceState={placementSourceState}
           canCreatePlacement={canCreatePlacement}
           onPlaceNode={placeSelectedNode}
           onRemoveNode={removeSelectedNode}
+          onSyncSnapshot={syncSelectedSnapshot}
           placementActionRef={placementActionRef}
           document={focusDocument}
           documentActions={focusDocumentActions}

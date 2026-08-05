@@ -6,7 +6,9 @@ export const OUTLINE_NODE_DRAG_TYPE = "application/x-tent-node-ref" as const;
 /**
  * Frozen, machine-local presentation captured when a Node is placed.
  * It intentionally contains only fields available in graph.projection. Body,
- * etag, Task and collaboration facts are not part of a Canvas snapshot.
+ * Task and collaboration facts are not part of a Canvas snapshot. `etag` is
+ * optional only because existing machine-local snapshots predate revisions;
+ * every new capture requires and persists it.
  */
 export type CanvasNodeSnapshot = {
   version: 1;
@@ -19,9 +21,26 @@ export type CanvasNodeSnapshot = {
   mode: "editable" | "archived";
   archived: boolean;
   invalid: boolean;
+  etag?: string;
 };
 
-export type CanvasSnapshotSource = Omit<CanvasNodeSnapshot, "version">;
+export type CanvasSnapshotSource = Omit<CanvasNodeSnapshot, "version" | "etag"> & {
+  etag: string;
+};
+
+export type CanvasPlacementSourceState =
+  | { state: "current"; reason: "matched"; canSync: false }
+  | { state: "changed"; reason: "revision-or-fields-changed"; canSync: true }
+  | { state: "deleted"; reason: "fresh-source-missing"; canSync: false }
+  | {
+      state: "unknown";
+      reason:
+        | "authority-unavailable"
+        | "placement-unavailable"
+        | "snapshot-malformed"
+        | "revision-unavailable";
+      canSync: boolean;
+    };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -41,6 +60,7 @@ export function captureCanvasNodeSnapshot(
     mode: source.mode,
     archived: source.archived,
     invalid: source.invalid,
+    etag: source.etag,
   };
 }
 
@@ -61,7 +81,9 @@ export function readCanvasNodeSnapshot(
     (value.mode !== "editable" && value.mode !== "archived") ||
     typeof value.archived !== "boolean" ||
     typeof value.invalid !== "boolean" ||
-    !(value.title === undefined || typeof value.title === "string")
+    !(value.title === undefined || typeof value.title === "string") ||
+    !(value.etag === undefined ||
+      (typeof value.etag === "string" && value.etag.length > 0))
   ) {
     return null;
   }
@@ -107,6 +129,49 @@ export function canvasSnapshotVisibleFieldsChanged(
     snapshot.invalid !== current.invalid ||
     snapshot.tags.length !== current.tags.length ||
     snapshot.tags.some((tag, index) => tag !== current.tags[index]);
+}
+
+/**
+ * Compare one exact local placement with one authoritative graph read. The
+ * caller must pass `authority=fresh` only for a successful current projection;
+ * cached/stale identities never prove current, changed, or deleted.
+ */
+export function deriveCanvasPlacementSourceState(args: {
+  placement: Pick<CanvasPlacement, "entityRef" | "meta"> | null | undefined;
+  authority: "fresh" | "unknown";
+  source: CanvasSnapshotSource | null;
+}): CanvasPlacementSourceState {
+  if (!args.placement) {
+    return { state: "unknown", reason: "placement-unavailable", canSync: false };
+  }
+  const snapshot = readCanvasNodeSnapshot(args.placement);
+  if (!snapshot) {
+    return { state: "unknown", reason: "snapshot-malformed", canSync: false };
+  }
+  if (args.authority !== "fresh") {
+    return { state: "unknown", reason: "authority-unavailable", canSync: false };
+  }
+  if (!args.source) {
+    return { state: "deleted", reason: "fresh-source-missing", canSync: false };
+  }
+  if (canvasSnapshotVisibleFieldsChanged(snapshot, args.source)) {
+    return {
+      state: "changed",
+      reason: "revision-or-fields-changed",
+      canSync: true,
+    };
+  }
+  if (!snapshot.etag) {
+    return { state: "unknown", reason: "revision-unavailable", canSync: true };
+  }
+  if (snapshot.etag !== args.source.etag) {
+    return {
+      state: "changed",
+      reason: "revision-or-fields-changed",
+      canSync: true,
+    };
+  }
+  return { state: "current", reason: "matched", canSync: false };
 }
 
 /** Capture missing legacy placement snapshots once; never refresh existing ones. */

@@ -240,6 +240,22 @@ button, input, select, textarea { font: inherit; }
 .tn-focus-placement h2 { margin: 0 0 3px; color: var(--tn-color-text-secondary); font-size: 11px; }
 .tn-focus-placement p { margin: 0; color: var(--tn-color-text-faint); font-size: 11px; line-height: 1.45; }
 .tn-focus-placement .tn-ui-btn { flex: none; }
+.tn-focus-placement__source {
+  display: block;
+  margin-top: 4px;
+  color: var(--tn-color-text-secondary);
+  font-size: 11px;
+}
+.tn-focus-placement__source[data-source-state="changed"],
+.tn-focus-placement__source[data-source-state="deleted"] {
+  color: var(--tn-color-text-primary);
+}
+.tn-focus-placement__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--tn-space-1);
+}
 
 .tn-inspector-content > .tn-ui-tabs { margin-top: 8px; background: transparent; }
 .tn-focus-sections { padding: 0 16px 24px; }

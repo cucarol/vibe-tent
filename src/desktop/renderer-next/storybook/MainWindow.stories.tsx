@@ -27,6 +27,7 @@ type MainWindowPreviewProps = {
   expanded?: boolean;
   collaborationState?: "none" | "empty" | "active" | "delivery" | "decision" | "loading" | "stale" | "error";
   layoutMode?: "compact" | "detail";
+  snapshotSourceState?: "current" | "changed" | "deleted" | "revision-unknown" | "authority-unknown";
 };
 
 const collaborationActions: CollaborationSurfaceActions = {
@@ -142,9 +143,25 @@ function fixtureDocument(status: FocusDocumentStatus): FocusDocumentView {
 
 function previewDocument(
   selectedNodeId: string | null,
-  selectedPlacement: "placed" | "unplaced"
+  selectedPlacement: "placed" | "unplaced",
+  snapshotSourceState: NonNullable<MainWindowPreviewProps["snapshotSourceState"]>
 ) {
-  const document = fixtureCanvasDocument();
+  let document = fixtureCanvasDocument();
+  if (snapshotSourceState === "revision-unknown" && selectedNodeId) {
+    document = {
+      ...document,
+      placements: document.placements.map((placement) => {
+        if (placement.entityRef !== selectedNodeId) return placement;
+        const snapshot = placement.meta?.tentNodeSnapshot;
+        if (!snapshot || typeof snapshot !== "object") return placement;
+        const { etag: _etag, ...legacy } = snapshot as Record<string, unknown>;
+        return {
+          ...placement,
+          meta: { ...(placement.meta ?? {}), tentNodeSnapshot: legacy },
+        };
+      }),
+    };
+  }
   if (selectedPlacement === "placed" || !selectedNodeId) {
     return focusWorkbenchNode(document, selectedNodeId);
   }
@@ -156,17 +173,29 @@ function previewDocument(
   }, selectedNodeId);
 }
 
-function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-workbench", selectedPlacement = "placed", documentStatus = "read", expanded = false, collaborationState = "none", layoutMode = "compact" }: MainWindowPreviewProps) {
+function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-workbench", selectedPlacement = "placed", documentStatus = "read", expanded = false, collaborationState = "none", layoutMode = "compact", snapshotSourceState = "current" }: MainWindowPreviewProps) {
   const [presentation, setPresentation] = useState(() => ({
-    document: previewDocument(selectedNodeId, selectedPlacement),
+    document: previewDocument(selectedNodeId, selectedPlacement, snapshotSourceState),
     selectedNodeId,
   }));
   useEffect(() => {
     setPresentation({
-      document: previewDocument(selectedNodeId, selectedPlacement),
+      document: previewDocument(selectedNodeId, selectedPlacement, snapshotSourceState),
       selectedNodeId,
     });
-  }, [selectedNodeId, selectedPlacement, state]);
+  }, [selectedNodeId, selectedPlacement, snapshotSourceState, state]);
+  const previewNodes = useMemo(() => {
+    const nodes = fixtureNodesForCollaboration(state, collaborationState);
+    if (snapshotSourceState === "deleted") {
+      return nodes.filter((node) => node.nodeId !== selectedNodeId);
+    }
+    if (snapshotSourceState === "changed") {
+      return nodes.map((node) => node.nodeId === selectedNodeId
+        ? { ...node, etag: `${node.etag}-changed` }
+        : node);
+    }
+    return nodes;
+  }, [collaborationState, selectedNodeId, snapshotSourceState, state]);
   const [focusDocument, setFocusDocument] = useState(() => fixtureDocument(documentStatus));
   useEffect(() => {
     setFocusDocument(fixtureDocument(documentStatus));
@@ -233,7 +262,7 @@ function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-
         key={`${documentStatus}:${expanded}:${collaborationState}:${layoutMode}`}
         workspaceId={FIXTURE_WORKSPACE_ID}
         workspaceLabel="产品工作区"
-        initialNodes={fixtureNodesForCollaboration(state, collaborationState)}
+        initialNodes={previewNodes}
         document={presentation.document}
         selectedNodeId={presentation.selectedNodeId}
         onPresentationChange={(update) => setPresentation((current) => update(current))}
@@ -296,6 +325,11 @@ export const 数据过期不可放入: Story = {
 };
 export const 节点未解析: Story = { name: "未解析 · 不伪装权威节点", args: { state: "unresolved" } };
 export const 投影失败: Story = { name: "错误 · 查询失败", args: { state: "error", connection: "offline" } };
+export const 快照来源一致: Story = { name: "快照 · 来源一致", args: { snapshotSourceState: "current" } };
+export const 快照来源变化: Story = { name: "快照 · 来源有更新", args: { snapshotSourceState: "changed" } };
+export const 快照源节点删除: Story = { name: "快照 · 源节点已删除", args: { snapshotSourceState: "deleted" } };
+export const 快照版本未知: Story = { name: "快照 · 旧版本未知", args: { snapshotSourceState: "revision-unknown" } };
+export const 快照来源未知: Story = { name: "快照 · 来源状态未知", args: { snapshotSourceState: "authority-unknown", state: "stale", connection: "reconnecting" } };
 export const 正文阅读: Story = { name: "Focus · 阅读" };
 export const 正文编辑: Story = { name: "Focus · 编辑", args: { documentStatus: "edit", expanded: true } };
 export const 正文未保存: Story = { name: "Focus · 未保存", args: { documentStatus: "dirty", expanded: true } };

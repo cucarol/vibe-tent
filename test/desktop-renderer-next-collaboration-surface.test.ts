@@ -362,6 +362,7 @@ test("ordered multi-Node dispatch keeps the selected Node first and work/context
 test("initial loading and error without a snapshot never claim authoritative empty collaboration", () => {
   const node: WorkbenchNodeView = {
     nodeId: "cx-a",
+    etag: "etag-a",
     path: "产品/界面",
     name: "界面",
     type: "prompt",
@@ -410,6 +411,7 @@ test("initial loading and error without a snapshot never claim authoritative emp
 test("Focus collaboration stays a flat exact-Node workflow and stale content is non-mutating", () => {
   const node: WorkbenchNodeView = {
     nodeId: "cx-a",
+    etag: "etag-a",
     path: "产品/界面",
     name: "界面",
     type: "prompt",

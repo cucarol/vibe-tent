@@ -21,6 +21,7 @@ export function seedCanvasDocumentFromGraph(graph: GraphProjection): CanvasDocum
         height: 138,
       }, captureCanvasNodeSnapshot({
         nodeId: node.nodeId,
+        etag: node.etag,
         name: node.name,
         ...(node.title ? { title: node.title } : {}),
         path: node.path,

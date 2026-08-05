@@ -48,8 +48,9 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
     resolveCurrent: (entityRef) => {
       const node = byId.get(entityRef);
       return node && (!node.projectionState || node.projectionState === "ready")
-        ? {
+          ? {
             nodeId: node.nodeId,
+            etag: node.etag,
             name: node.name,
             ...(node.title ? { title: node.title } : {}),
             path: node.path,

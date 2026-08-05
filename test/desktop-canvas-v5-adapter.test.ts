@@ -9,6 +9,7 @@ import type { CanvasDocument } from "../src/desktop/renderer-next/types/identity
 import { dropNodeSnapshotAt, hasEntityPlacement } from "../src/desktop/renderer-next/model/canvas-document.js";
 import {
   captureCanvasNodeSnapshot,
+  deriveCanvasPlacementSourceState,
   materializeMissingCanvasNodeSnapshots,
   readCanvasNodeSnapshot,
   withCanvasNodeSnapshot,
@@ -51,6 +52,7 @@ import { shouldRefreshCanvasV5Scene } from "../src/desktop/renderer-next/canvas/
 function sampleDoc(): CanvasDocument {
   const snapshot = (nodeId: string, type: string) => captureCanvasNodeSnapshot({
     nodeId,
+    etag: `etag-${nodeId}`,
     name: nodeId === "cx-alpha" ? "Alpha" : "Beta",
     title: nodeId === "cx-alpha" ? "Alpha snapshot" : "Beta snapshot",
     path: `产品/${nodeId}`,
@@ -244,6 +246,7 @@ test("node cards stay frozen while projection-visible fields change", () => {
     resolvers: {
       resolveCurrent: (nodeId) => ({
         nodeId,
+        etag: `etag-${nodeId}`,
         name: "Live renamed Node",
         title: "Live renamed title",
         path: "Live/new/path",
@@ -269,6 +272,7 @@ test("whiteboard drop creates another placement with an independent frozen snaps
   const sourceTags = ["dragged"];
   const snapshot = captureCanvasNodeSnapshot({
     nodeId: "cx-alpha",
+    etag: "etag-dragged",
     name: "Dragged Alpha",
     path: "产品/拖放",
     type: "prompt",
@@ -297,6 +301,7 @@ test("whiteboard drop creates another placement with an independent frozen snaps
 test("legacy snapshot materialization never overwrites malformed snapshot metadata", () => {
   const source = {
     nodeId: "cx-alpha",
+    etag: "etag-authoritative-alpha",
     name: "Authoritative Alpha",
     path: "产品/Alpha",
     type: "prompt",
@@ -327,6 +332,99 @@ test("legacy snapshot materialization never overwrites malformed snapshot metada
     legacy.placements[1]!.meta,
     "an existing malformed key is preserved fail-closed"
   );
+});
+
+test("snapshot revisions remain local, explicit, and fail closed", () => {
+  const source = {
+    nodeId: "cx-alpha",
+    etag: "etag-live",
+    name: "Alpha",
+    title: "Alpha snapshot",
+    path: "产品/cx-alpha",
+    type: "prompt",
+    tags: ["prompt"],
+    mode: "editable" as const,
+    archived: false,
+    invalid: false,
+  };
+  const captured = captureCanvasNodeSnapshot(source);
+  assert.equal(captured.etag, "etag-live");
+  const placement = withCanvasNodeSnapshot(
+    { placementId: "pl-a", entityRef: "cx-alpha", kind: "node" },
+    captured
+  );
+  assert.deepEqual(deriveCanvasPlacementSourceState({
+    placement,
+    authority: "fresh",
+    source,
+  }), { state: "current", reason: "matched", canSync: false });
+
+  assert.equal(deriveCanvasPlacementSourceState({
+    placement,
+    authority: "fresh",
+    source: { ...source, etag: "etag-new" },
+  }).state, "changed", "etag alone proves a changed source");
+  const visibleFieldChanges = [
+    { ...source, name: "Renamed Alpha" },
+    { ...source, title: "Retitled Alpha" },
+    { ...source, path: "产品/移动后/cx-alpha" },
+    { ...source, type: "goal" },
+    { ...source, tags: ["prompt", "changed"] },
+    { ...source, mode: "archived" as const },
+    { ...source, archived: true },
+    { ...source, invalid: true },
+  ];
+  for (const changedSource of visibleFieldChanges) {
+    assert.equal(deriveCanvasPlacementSourceState({
+      placement,
+      authority: "fresh",
+      source: changedSource,
+    }).state, "changed", "every frozen projection-visible field proves a change");
+  }
+
+  const { etag: _legacyEtag, ...legacySnapshot } = captured;
+  const legacyPlacement = withCanvasNodeSnapshot(
+    { placementId: "pl-legacy", entityRef: "cx-alpha", kind: "node" },
+    legacySnapshot
+  );
+  assert.equal(readCanvasNodeSnapshot(legacyPlacement)?.etag, undefined);
+  assert.deepEqual(deriveCanvasPlacementSourceState({
+    placement: legacyPlacement,
+    authority: "fresh",
+    source,
+  }), { state: "unknown", reason: "revision-unavailable", canSync: true });
+  const legacyDocument: CanvasDocument = {
+    version: 1,
+    backgroundMode: "blank",
+    focusedPlacementId: "pl-legacy",
+    placements: [legacyPlacement],
+  };
+  const preserved = materializeMissingCanvasNodeSnapshots(legacyDocument, [source]);
+  assert.equal(preserved.changed, false);
+  assert.deepEqual(preserved.document, legacyDocument);
+  assert.equal(readCanvasNodeSnapshot(preserved.document.placements[0]!)?.etag, undefined);
+  assert.deepEqual(deriveCanvasPlacementSourceState({
+    placement,
+    authority: "fresh",
+    source: null,
+  }), { state: "deleted", reason: "fresh-source-missing", canSync: false });
+  assert.deepEqual(deriveCanvasPlacementSourceState({
+    placement,
+    authority: "unknown",
+    source,
+  }), { state: "unknown", reason: "authority-unavailable", canSync: false });
+
+  const malformed = {
+    placementId: "pl-bad",
+    entityRef: "cx-alpha",
+    kind: "node",
+    meta: { tentNodeSnapshot: { ...captured, etag: "" } },
+  };
+  assert.deepEqual(deriveCanvasPlacementSourceState({
+    placement: malformed,
+    authority: "fresh",
+    source,
+  }), { state: "unknown", reason: "snapshot-malformed", canSync: false });
 });
 
 test("snapshotless cards never read live Node fields as a fallback", () => {
