@@ -2,11 +2,18 @@
 
 import type { ChildProcess } from "node:child_process";
 import {
+  authenticateServiceEndpoint,
   attachOrStartService,
+  sameServiceEndpointIdentity,
   type AttachOptions,
   type AttachResult,
 } from "../client/service-attach.js";
 import type { ServiceRpcClient } from "../client/rpc-client.js";
+import {
+  defaultServiceDataDir,
+  readServiceEndpoint,
+} from "../../service/data-dir.js";
+import { isServiceProtocolIncompatibleError } from "../../service/protocol.js";
 import type { EventEnvelope } from "../../service/types.js";
 import {
   isPendingInteractionEventType,
@@ -100,14 +107,23 @@ export class DesktopServiceHost {
     serviceEntry?: string;
     cwd?: string;
   }): Promise<AttachResult> {
-    if (this.attach) {
+    const cached = this.attach;
+    if (cached) {
       try {
-        await this.attach.client.health();
+        const dataDir = options.dataDir ?? defaultServiceDataDir(process.env);
+        const endpoint = await readServiceEndpoint(dataDir);
+        if (!endpoint || !sameServiceEndpointIdentity(cached.endpoint, endpoint)) {
+          throw new Error("Local Tent Service endpoint identity changed");
+        }
+        const health = await authenticateServiceEndpoint(endpoint, cached.client);
+        if (!health || this.attach !== cached) {
+          throw new Error("Local Tent Service authenticated attach is no longer current");
+        }
         this.ensureEventSubscription();
-        return this.attach;
-      } catch {
-        this.teardownEvents();
-        this.attach = null;
+        return cached;
+      } catch (error) {
+        this.invalidateCachedAttach(cached);
+        if (isServiceProtocolIncompatibleError(error)) throw error;
       }
     }
     const result = await this.attachService({
@@ -122,23 +138,36 @@ export class DesktopServiceHost {
   }
 
   private ensureEventSubscription(): void {
-    if (!this.attach?.client || this.eventsSub) return;
-    this.eventsSub = this.attach.client.subscribeEvents(
+    const attached = this.attach;
+    if (!attached?.client || this.eventsSub) return;
+    const subscription = attached.client.subscribeEvents(
       (ev) => this.handleEnvelope(ev),
       () => {
-        // Drop dead stream; next ensureAttached / health path re-subscribes.
-        this.handleEventStreamClosed();
+        this.handleEventStreamClosed(attached);
       }
     );
+    if (this.attach !== attached) {
+      subscription.close();
+      return;
+    }
+    this.eventsSub = subscription;
   }
 
-  private handleEventStreamClosed(): void {
-    this.teardownEvents();
+  private handleEventStreamClosed(expectedAttach: AttachResult): void {
+    if (!this.invalidateCachedAttach(expectedAttach)) return;
     // This is a desktop-local transport fact, not a Service projection event.
     // Renderers must drop an apparently fresh projection to stale before they
     // await a potentially slow reattach/remount cycle.
     const event = { type: "service.disconnected", workspaceId: "" };
     for (const listener of this.eventListeners) listener(event);
+  }
+
+  private invalidateCachedAttach(expectedAttach: AttachResult): boolean {
+    if (this.attach !== expectedAttach) return false;
+    this.teardownEvents();
+    this.attach = null;
+    this.child = null;
+    return true;
   }
 
   private handleEnvelope(ev: EventEnvelope): void {

@@ -63,7 +63,13 @@ test("generated renderer-next dependency closure is complete", async () => {
   );
   assert.deepEqual(
     htmlRefs.sort(),
-    ["main.css", "main.js", "styles/shell.css", "styles/tokens.css"].sort()
+    [
+      "excalidraw-asset-bootstrap.js",
+      "main.css",
+      "main.js",
+      "styles/shell.css",
+      "styles/tokens.css",
+    ].sort()
   );
   for (const ref of htmlRefs) await assertGeneratedFile(`${rendererRoot}/${ref}`);
 

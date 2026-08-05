@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { test } from "node:test";
 import { isDesktopProjectionEventType } from "../src/desktop/main/service-host.js";
 import { DesktopServiceHost } from "../src/desktop/main/service-host.js";
@@ -6,6 +9,11 @@ import type { EventEnvelope } from "../src/service/types.js";
 import { refreshDesktopShellForEvent } from "../src/desktop/main/service-event-refresh.js";
 import type { AttachResult } from "../src/desktop/client/service-attach.js";
 import { ServiceRpcClient } from "../src/desktop/client/rpc-client.js";
+import { writeServiceEndpoint } from "../src/service/data-dir.js";
+import {
+  recoverDesktopState,
+  type DesktopRecoveryModel,
+} from "../src/desktop/main/workspace-recovery.js";
 
 test("desktop host forwards workspace and projection invalidations only", () => {
   for (const type of [
@@ -58,12 +66,200 @@ test("desktop host coalesces identical types independently per workspace", async
 });
 
 test("event stream disconnect publishes an immediate desktop-local signal", async () => {
-  const host = new DesktopServiceHost();
+  let disconnect!: () => void;
+  const attached = {
+    url: "http://127.0.0.1:4403",
+    endpoint: {
+      instanceId: "instance-events",
+      pid: 4403,
+      host: "127.0.0.1",
+      port: 4403,
+      startedAt: "2026-08-05T00:00:00.000Z",
+      version: "0.1.0",
+      token: "events-token",
+    },
+    started: false,
+    child: null,
+    client: {
+      subscribeEvents(_onEvent: unknown, onError: () => void) {
+        disconnect = onError;
+        return { close() {} };
+      },
+    },
+  } as unknown as AttachResult;
+  const host = new DesktopServiceHost(async () => attached);
   const seen: Array<{ type: string; workspaceId: string }> = [];
   host.onServiceEvent((event) => seen.push(event));
-  (host as unknown as { handleEventStreamClosed: () => void }).handleEventStreamClosed();
+  await host.ensureAttached();
+  disconnect();
   assert.deepEqual(seen, [{ type: "service.disconnected", workspaceId: "" }]);
+  assert.equal(host.client, null, "stream invalidation must discard the cached attach");
   await host.disposeShellOnly();
+});
+
+test("same-URL Service replacement discards the stale token and coalesces recovery", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-desktop-replace-"));
+  const endpointA = {
+    instanceId: "instance-a",
+    pid: 4510,
+    host: "127.0.0.1",
+    port: 4510,
+    startedAt: "2026-08-05T00:00:00.000Z",
+    version: "0.1.0",
+    token: "token-a",
+  };
+  const endpointB = {
+    ...endpointA,
+    instanceId: "instance-b",
+    pid: 4511,
+    startedAt: "2026-08-05T00:00:01.000Z",
+    token: "token-b",
+  };
+  await writeServiceEndpoint(dataDir, endpointA);
+
+  let oldSubscriptionCloses = 0;
+  let oldDisconnect!: () => void;
+  let newSubscriptions = 0;
+  let oldAuthenticatedCalls = 0;
+  const oldClient = {
+    token: endpointA.token,
+    url: "http://127.0.0.1:4510",
+    async health() {
+      // Open health already sees Service B and therefore cannot prove token A.
+      return { status: "ok", ...endpointB, protocolVersion: 5, workspaceCount: 0 };
+    },
+    async call() {
+      oldAuthenticatedCalls += 1;
+      throw new Error("old token must never reach recovery RPC");
+    },
+    subscribeEvents(_onEvent: unknown, onError: () => void) {
+      oldDisconnect = onError;
+      return { close: () => (oldSubscriptionCloses += 1) };
+    },
+  } as unknown as ServiceRpcClient;
+
+  let mounted = false;
+  let mountCalls = 0;
+  const newClient = {
+    token: endpointB.token,
+    url: "http://127.0.0.1:4510",
+    async health() {
+      return { status: "ok", ...endpointB, protocolVersion: 5, workspaceCount: 0 };
+    },
+    async call(method: string) {
+      if (method === "service.health") {
+        return { status: "ok", ...endpointB, protocolVersion: 5, workspaceCount: 0 };
+      }
+      if (method === "workspace.list") {
+        return {
+          workspaces: mounted
+            ? [{
+                workspaceId: "ws-remembered",
+                workspaceRoot: "C:/remembered",
+                tentName: "remembered",
+                foreground: true,
+              }]
+            : [],
+        };
+      }
+      if (method === "workspace.mount") {
+        mountCalls += 1;
+        mounted = true;
+        return {
+          workspaceId: "ws-remembered",
+          workspaceRoot: "C:/remembered",
+          tentName: "remembered",
+          foreground: true,
+        };
+      }
+      throw new Error(`unexpected RPC ${method}`);
+    },
+    subscribeEvents() {
+      newSubscriptions += 1;
+      return { close() {} };
+    },
+  } as unknown as ServiceRpcClient;
+
+  const resultA = {
+    url: oldClient.url,
+    endpoint: endpointA,
+    started: false,
+    child: null,
+    client: oldClient,
+  } as AttachResult;
+  const resultB = {
+    url: newClient.url,
+    endpoint: endpointB,
+    started: false,
+    child: null,
+    client: newClient,
+  } as AttachResult;
+  let attachCalls = 0;
+  const host = new DesktopServiceHost(async () => {
+    attachCalls += 1;
+    return attachCalls === 1 ? resultA : resultB;
+  });
+  await host.ensureAttached({ dataDir });
+
+  // Service B is fully ready at the same URL before either recovery probe.
+  await writeServiceEndpoint(dataDir, endpointB);
+  let foregroundWorkspaceId: string | null = null;
+  let rpc: ServiceRpcClient | null = null;
+  let taskRefreshes = 0;
+  const model: DesktopRecoveryModel = {
+    setRpc(client) {
+      rpc = client;
+    },
+    async refreshHealth() {
+      await rpc!.health();
+    },
+    async refreshWorkspaces() {
+      const result = await rpc!.call<{ workspaces: Array<{ workspaceId: string }> }>(
+        "workspace.list",
+        {}
+      );
+      foregroundWorkspaceId = result.workspaces[0]?.workspaceId ?? null;
+    },
+    getSnapshot() {
+      return { foregroundWorkspaceId };
+    },
+    async mountWorkspace(workspaceRoot) {
+      const result = await rpc!.call<{ workspaceId: string }>("workspace.mount", {
+        workspaceRoot,
+      });
+      foregroundWorkspaceId = result.workspaceId;
+    },
+    async refreshTasks() {
+      taskRefreshes += 1;
+    },
+  };
+  const recovery = {
+    host,
+    model,
+    dataDir,
+    loadPrefs: async () => ({
+      recentWorkspaces: ["C:/remembered"],
+      lastWorkspaceRoot: "C:/remembered",
+      showFloatOnClose: true,
+    }),
+  };
+  const [first, second] = await Promise.all([
+    recoverDesktopState(recovery),
+    recoverDesktopState(recovery),
+  ]);
+
+  assert.strictEqual(first, second);
+  assert.equal(first.foregroundWorkspaceId, "ws-remembered");
+  assert.equal(attachCalls, 2, "replacement attach must be discovered once");
+  assert.equal(oldAuthenticatedCalls, 0, "stale token must not reach recovery RPC");
+  assert.equal(oldSubscriptionCloses, 1);
+  assert.equal(newSubscriptions, 1, "authenticated Service B events must be restored");
+  assert.equal(mountCalls, 1, "remembered workspace mounts exactly once");
+  assert.equal(taskRefreshes, 1);
+  oldDisconnect();
+  assert.strictEqual(host.client, newClient, "late Service A close cannot clear Service B");
+  await host.disposeShellOnly();
+  await fs.rm(dataDir, { recursive: true, force: true });
 });
 
 test("a graceful SSE EOF is reported as a transport disconnect", async () => {

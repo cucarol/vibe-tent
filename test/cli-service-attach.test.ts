@@ -21,6 +21,7 @@ import {
 } from "../src/cli/service-attach.js";
 import { runTaskCommand } from "../src/cli/task-rpc.js";
 import { ensureMountedWorkspace } from "../src/cli/workspace-context.js";
+import { tryAttach as tryAttachDesktop } from "../src/desktop/client/service-attach.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const serviceEntry = path.join(repoRoot, "service.mjs");
@@ -103,6 +104,25 @@ test("tryAttachService: requires endpoint token; health open is not enough", asy
 
     const health = await fetch(`${svc.url}/health`);
     assert.equal(health.status, 200);
+  });
+});
+
+test("desktop tryAttach requires authenticated token and exact endpoint process identity", async () => {
+  await withService(async (svc, dataDir) => {
+    const endpoint = await readServiceEndpoint(dataDir);
+    assert.ok(endpoint);
+
+    await writeServiceEndpoint(dataDir, { ...endpoint!, token: "stale-token" });
+    assert.equal(await tryAttachDesktop(dataDir), null);
+    assert.equal((await fetch(`${svc.url}/health`)).status, 200);
+
+    await writeServiceEndpoint(dataDir, { ...endpoint!, pid: endpoint!.pid + 1 });
+    assert.equal(await tryAttachDesktop(dataDir), null);
+
+    await writeServiceEndpoint(dataDir, endpoint!);
+    const attached = await tryAttachDesktop(dataDir);
+    assert.ok(attached);
+    assert.equal(attached!.client.token, svc.token);
   });
 });
 

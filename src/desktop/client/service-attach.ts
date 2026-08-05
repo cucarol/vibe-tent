@@ -136,15 +136,50 @@ export async function tryAttach(
   }
   const url = serviceBaseUrl(endpoint.host, endpoint.port);
   const client = new ServiceRpcClient({ baseUrl: url, token: endpoint.token, fetchImpl });
+  const health = await authenticateServiceEndpoint(endpoint, client);
+  return health ? { url, endpoint, client } : null;
+}
+
+type AuthenticatedServiceHealth = Awaited<ReturnType<ServiceRpcClient["health"]>>;
+
+/**
+ * Prove that an endpoint record and its token identify the Service answering
+ * authenticated RPC now. Open /health is discovery only and cannot establish
+ * attach identity after a same-URL Service replacement.
+ */
+export async function authenticateServiceEndpoint(
+  endpoint: ServiceEndpointRecord,
+  client: ServiceRpcClient
+): Promise<AuthenticatedServiceHealth | null> {
   try {
-    const health = await client.health();
+    if (client.url !== serviceBaseUrl(endpoint.host, endpoint.port)) return null;
+    const health = await client.call<AuthenticatedServiceHealth>("service.health", {});
     if (health.status !== "ok") return null;
     assertServiceProtocolCompatible(health);
-    return { url, endpoint, client };
+    if (health.pid !== endpoint.pid || health.startedAt !== endpoint.startedAt) {
+      return null;
+    }
+    return health;
   } catch (err) {
     if (isServiceProtocolIncompatibleError(err)) throw err;
     return null;
   }
+}
+
+/** Exact machine-local identity captured by a successful attach. */
+export function sameServiceEndpointIdentity(
+  left: ServiceEndpointRecord,
+  right: ServiceEndpointRecord
+): boolean {
+  return (
+    left.instanceId === right.instanceId &&
+    left.pid === right.pid &&
+    left.host === right.host &&
+    left.port === right.port &&
+    left.startedAt === right.startedAt &&
+    left.version === right.version &&
+    left.token === right.token
+  );
 }
 
 async function rejectIncompatibleHealthyService(
