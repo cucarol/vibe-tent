@@ -16,7 +16,7 @@ import type {
   Nodes,
   Root,
 } from "mdast";
-import { buildNodeIndex, resolveNode, type OkfNode } from "../core/okf.js";
+import { buildNodeIndex, resolveNode, type OkfNode } from "../core/okf-index.js";
 import { normalizeTarget } from "../core/link-target.js";
 import { ATTACHMENTS_DIR } from "../core/paths.js";
 import type { Node } from "../core/types.js";

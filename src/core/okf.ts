@@ -2,15 +2,9 @@ import { FsAdapter, withTentMutation } from "./adapter.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { Node } from "./types.js";
 import { nodeNotePath, dirName, join, loadTent } from "./tree.js";
+import { buildNodeIndex, resolveNode, type OkfNode } from "./okf-index.js";
 
-export interface OkfNode {
-  id: string;
-  nodeId: string;
-  path: string;
-  notePath: string;
-  name: string;
-  type: string;
-}
+export { buildNodeIndex, resolveNode, type OkfNode } from "./okf-index.js";
 
 export interface OkfProjectionResult {
   projectedFiles: string[];
@@ -32,33 +26,6 @@ async function syncOkfBundleUnlocked(fs: FsAdapter): Promise<OkfSyncResult> {
   const generatedFiles = await writeIndexes(fs, concepts);
   const projection = await projectWikiLinks(fs, concepts, index);
   return { generatedFiles, ...projection };
-}
-
-export function buildNodeIndex(nodes: Iterable<Node>): Map<string, OkfNode[]> {
-  const index = new Map<string, OkfNode[]>();
-  for (const node of nodes) {
-    const concept = toNode(node);
-    addIndex(index, concept.nodeId, concept);
-    addIndex(index, concept.id, concept);
-    addIndex(index, concept.path, concept);
-    addIndex(index, concept.notePath, concept);
-    addIndex(index, concept.name, concept);
-  }
-  return index;
-}
-
-export function resolveNode(index: Map<string, OkfNode[]>, target: string): OkfNode | undefined {
-  const clean = target.trim().replace(/^\.\//, "").replace(/\.md$/i, "");
-  const matches = index.get(clean) ?? index.get(`${clean}.md`) ?? index.get(normalizeLookupKey(clean));
-  if (matches?.length === 1) return matches[0];
-
-  const normalized = normalizeLookupKey(clean);
-  if (normalized.length >= 4) {
-    const all = index.get("__all__") ?? [];
-    const fuzzy = all.filter((concept) => normalizeLookupKey(concept.name).includes(normalized));
-    if (fuzzy.length === 1) return fuzzy[0];
-  }
-  return matches?.length === 1 ? matches[0] : undefined;
 }
 
 export function projectMarkdownLinks(
@@ -142,38 +109,6 @@ async function writeIndexes(fs: FsAdapter, nodes: Node[]): Promise<string[]> {
   generated.add("log.md");
 
   return [...generated].sort();
-}
-
-function toNode(node: Node): OkfNode {
-  const notePath = nodeNotePath(node.path);
-  const id = notePath.replace(/\.md$/i, "");
-  return {
-    id,
-    nodeId: node.id,
-    path: node.path,
-    notePath,
-    name: node.name,
-    type: node.type,
-  };
-}
-
-function addIndex(index: Map<string, OkfNode[]>, key: string, concept: OkfNode): void {
-  const clean = key.trim();
-  if (!clean) return;
-  addRawIndex(index, clean, concept);
-  addRawIndex(index, normalizeLookupKey(clean), concept);
-  addRawIndex(index, "__all__", concept);
-}
-
-function addRawIndex(index: Map<string, OkfNode[]>, key: string, concept: OkfNode): void {
-  if (!key) return;
-  const list = index.get(key) ?? [];
-  if (!list.some((item) => item.id === concept.id)) list.push(concept);
-  index.set(key, list);
-}
-
-function normalizeLookupKey(value: string): string {
-  return value.toLowerCase().replace(/[\s、，,。:：;；/\\_\-.()[\]（）【】"'`]+/g, "");
 }
 
 function relativeMarkdownPath(fromNotePath: string, toNotePath: string): string {

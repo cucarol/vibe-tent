@@ -25,6 +25,13 @@ export const ATTACHMENTS_DIR = "attachments";
 export const ROLES_TEMP_DIR = "roles";
 export const SESSIONS_TEMP_DIR = "sessions";
 
+/** Canonical Markdown identity file for a Node directory. */
+export function nodeNotePath(nodePath: string): string {
+  const separator = nodePath.lastIndexOf("/");
+  const name = separator === -1 ? nodePath : nodePath.slice(separator + 1);
+  return nodePath === "" ? ".md" : `${nodePath}/${name}.md`;
+}
+
 /** 不进入 Node 索引的顶层/路径前缀（相对 system root）。 */
 export const OPERATIONAL_TOP_LEVEL = new Set([
   TEMP_DIR,

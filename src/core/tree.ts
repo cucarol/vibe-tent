@@ -16,7 +16,12 @@ import {
   TypeRegistry,
   typeExists,
 } from "./typeRegistry.js";
-import { isOperationalPath, isSystemNoteName, OPERATIONAL_TOP_LEVEL } from "./paths.js";
+import {
+  isOperationalPath,
+  isSystemNoteName,
+  nodeNotePath,
+  OPERATIONAL_TOP_LEVEL,
+} from "./paths.js";
 import {
   normalizeRelationsList,
   relationsToFrontmatterValue,
@@ -24,10 +29,7 @@ import {
 import { isNodeId } from "./id.js";
 import { contentEtag } from "./etag.js";
 
-/** Node 身份文件路径 = <文件夹名>.md */
-export function nodeNotePath(nodePath: string): string {
-  return join(nodePath, baseName(nodePath) + ".md");
-}
+export { nodeNotePath } from "./paths.js";
 
 export interface LoadedTent {
   /** 顶层 Node，order.json 优先，缺省按稳定名称排序。temp 等 operational 不在树内。 */
