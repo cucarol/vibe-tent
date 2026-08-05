@@ -933,7 +933,8 @@ export class ServiceClient {
 
   /**
    * Workspace-level graph projection for Working-set Canvas.
-   * Node summaries + parent / markdown / wiki edges; no body, no placement.
+   * Node summaries include the raw document etag; no body or placement state.
+   * Parent / markdown / wiki / relation edges remain separately partitioned.
    * Unresolved Node links are retained with an explicit unresolved payload.
    */
   graphProjection(workspaceId: string) {

@@ -4,6 +4,7 @@ import { ServiceGateway, invalidationFromEvent } from "../src/desktop/renderer-n
 import {
   authoritativeProjection,
   beginProjectionLoad,
+  normalizeGraphProjection,
   settleProjection,
   type ProjectionResource,
   type WorkspaceProjectionRpc,
@@ -23,6 +24,7 @@ function graph(): GraphProjection {
     nodes: [
       {
         nodeId: "cx-source",
+        etag: "a".repeat(24),
         path: "Source/Source.md",
         name: "Source",
         title: "源节点",
@@ -34,6 +36,7 @@ function graph(): GraphProjection {
       },
       {
         nodeId: "cx-output",
+        etag: "b".repeat(24),
         path: "Output/Output.md",
         name: "Output",
         type: "output",
@@ -149,6 +152,7 @@ test("workspace gateway exposes only named typed reads with explicit workspaceId
 
   assert.equal(graphRead.ok, true);
   if (graphRead.ok) {
+    assert.equal(graphRead.value.nodes[0]?.etag, "a".repeat(24));
     assert.deepEqual(graphRead.value.edges.relation[0], {
       id: "rel-1",
       fromNodeId: "cx-source",
@@ -175,6 +179,28 @@ test("workspace gateway exposes only named typed reads with explicit workspaceId
       params: { workspaceId, nodeId: "cx-output" },
     },
   ]);
+});
+
+test("graph projection parser requires and retains the exact Node etag", () => {
+  const valid = normalizeGraphProjection(graph(), workspaceId);
+  assert.equal(valid.ok, true);
+  if (valid.ok) assert.equal(valid.value.nodes[0]?.etag, "a".repeat(24));
+
+  const missing = structuredClone(graph()) as unknown as {
+    nodes: Array<Record<string, unknown>>;
+  };
+  delete missing.nodes[0]!.etag;
+  const missingResult = normalizeGraphProjection(missing, workspaceId);
+  assert.equal(missingResult.ok, false);
+  if (!missingResult.ok) assert.match(missingResult.message, /nodes\[0\].*corrupt/);
+
+  const nonString = structuredClone(graph()) as unknown as {
+    nodes: Array<Record<string, unknown>>;
+  };
+  nonString.nodes[0]!.etag = 42;
+  const nonStringResult = normalizeGraphProjection(nonString, workspaceId);
+  assert.equal(nonStringResult.ok, false);
+  if (!nonStringResult.ok) assert.match(nonStringResult.message, /nodes\[0\].*corrupt/);
 });
 
 test("graph identity mismatch and bounded timeout fail closed", async () => {

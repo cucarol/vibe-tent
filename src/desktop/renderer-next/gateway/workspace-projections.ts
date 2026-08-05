@@ -273,6 +273,8 @@ export function normalizeGraphProjection(
         !isRecord(item) ||
         typeof item.nodeId !== "string" ||
         !item.nodeId ||
+        typeof item.etag !== "string" ||
+        !item.etag ||
         typeof item.path !== "string" ||
         typeof item.name !== "string" ||
         typeof item.type !== "string" ||
@@ -289,6 +291,7 @@ export function normalizeGraphProjection(
       nodeIds.add(item.nodeId);
       return {
         nodeId: item.nodeId,
+        etag: item.etag,
         path: item.path,
         name: item.name,
         type: item.type,

@@ -79,6 +79,7 @@ test("captureTaskNodeSnapshot copies the loaded Node semantic view", () => {
     archived: false,
     invalid: false,
     fm: { id: A, type: "goal-reference", tags: ["release", "review"] },
+    etag: "a".repeat(24),
     body: "Frozen body\n",
     children: [],
     parent: null,

@@ -157,6 +157,8 @@ export type OutputProvenance = {
  */
 export type GraphNodeSummary = {
   nodeId: string;
+  /** Exact raw Node document revision at projection time. */
+  etag: string;
   path: string;
   name: string;
   type: string;

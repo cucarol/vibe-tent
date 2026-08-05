@@ -89,6 +89,8 @@ export interface Node {
   /** 显示名 = 文件夹名。 */
   name: string;
   fm: NodeFrontmatter;
+  /** Exact content etag of the raw Node identity file read into this projection. */
+  etag: string;
   /** Node identity-file body (the content after frontmatter). */
   body: string;
   children: Node[];

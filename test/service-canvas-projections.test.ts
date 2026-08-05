@@ -11,12 +11,12 @@ import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { nodeNotePath } from "../src/core/tree.js";
 import { parseFrontmatter, serializeFrontmatter } from "../src/core/frontmatter.js";
+import { contentEtag } from "../src/core/etag.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { createServiceClient } from "../src/service/client.js";
 import { CLIENT_METHODS, isClientMethod } from "../src/service/types.js";
-import type { GraphProjection } from "../src/service/types.js";
 
 async function makeWorkspace(name = "canvas-proj"): Promise<string> {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-canvas-proj-ws-"));
@@ -113,7 +113,7 @@ test("graph.projection: nodes + parent edges; no body fields", async () => {
       parentPath: parent.path,
     });
 
-    const graph = (await client.graphProjection(workspaceId)) as GraphProjection;
+    const graph = await client.graphProjection(workspaceId);
     assert.equal(graph.workspaceId, workspaceId);
     assert.ok(Array.isArray(graph.nodes));
     assert.ok(graph.nodes.length >= 2);
@@ -124,6 +124,9 @@ test("graph.projection: nodes + parent edges; no body fields", async () => {
     assert.ok(childNode, "child node present");
     assert.equal(parentNode!.path, parent.path);
     assert.equal(parentNode!.name, "parent-goal");
+    const tentFs = new NodeFs(path.join(ws, ".tent"));
+    const parentRaw = await tentFs.readFile(nodeNotePath(parent.path));
+    assert.equal(parentNode!.etag, contentEtag(parentRaw));
     assert.equal(parentNode!.invalid, false);
     assert.equal(parentNode!.archived, false);
     assert.equal(childNode!.path, child.path);
@@ -135,6 +138,7 @@ test("graph.projection: nodes + parent edges; no body fields", async () => {
       assert.equal("bodyPreview" in n, false);
       assert.equal("coordination" in n, false);
       assert.ok(typeof n.nodeId === "string");
+      assert.ok(typeof n.etag === "string");
       assert.ok(typeof n.path === "string");
       assert.ok(typeof n.name === "string");
       assert.ok(typeof n.type === "string");
@@ -151,6 +155,14 @@ test("graph.projection: nodes + parent edges; no body fields", async () => {
     const rootEdge = graph.edges.parent.find((e) => e.childNodeId === parent.nodeId);
     assert.ok(rootEdge);
     assert.equal(rootEdge!.parentNodeId, null);
+
+    await writeBody(ws, parent.path, "# changed parent\n");
+    const updatedGraph = await client.graphProjection(workspaceId);
+    const updatedParent = updatedGraph.nodes.find((n) => n.nodeId === parent.nodeId);
+    assert.ok(updatedParent);
+    const updatedRaw = await tentFs.readFile(nodeNotePath(parent.path));
+    assert.equal(updatedParent!.etag, contentEtag(updatedRaw));
+    assert.notEqual(updatedParent!.etag, parentNode!.etag);
   });
 });
 
@@ -179,7 +191,7 @@ test("graph.projection: resolved markdown + wiki edges; unresolved kept explicit
       ].join("\n")
     );
 
-    const graph = (await client.graphProjection(workspaceId)) as GraphProjection;
+    const graph = await client.graphProjection(workspaceId);
 
     const wikiResolved = graph.edges.wiki.find(
       (e) => e.fromNodeId === source.nodeId && e.toNodeId === alpha.nodeId

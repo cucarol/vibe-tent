@@ -22,6 +22,7 @@ import {
   relationsToFrontmatterValue,
 } from "./relations.js";
 import { isNodeId } from "./id.js";
+import { contentEtag } from "./etag.js";
 
 /** Node 身份文件路径 = <文件夹名>.md */
 export function nodeNotePath(nodePath: string): string {
@@ -98,7 +99,8 @@ function applyDuplicateInvalid(
 export async function reloadLoadedNode(fs: FsAdapter, tent: LoadedTent, path: string): Promise<Node> {
   const node = tent.byPath.get(path);
   if (!node) throw new Error(`Node not found: ${path}.`);
-  const { data, body } = parseFrontmatter(await fs.readFile(nodeNotePath(path)));
+  const raw = await fs.readFile(nodeNotePath(path));
+  const { data, body } = parseFrontmatter(raw);
   const schemaError = canonicalIdentityError(data);
   if (schemaError) throw new Error(schemaError);
   const identity = normalizeIdentity(data);
@@ -107,6 +109,7 @@ export async function reloadLoadedNode(fs: FsAdapter, tent: LoadedTent, path: st
   node.tags = identity.tags;
   node.relations = identity.relations;
   node.fm = identity.fm;
+  node.etag = contentEtag(raw);
   node.body = body;
   for (const root of tent.roots) resolveSubtree(root, tent.typeRegistry);
   return node;
@@ -149,6 +152,7 @@ async function loadNode(fs: FsAdapter, path: string, parent: Node | null, regist
     path,
     name,
     fm,
+    etag: contentEtag(raw),
     body,
     children: [],
     parent,

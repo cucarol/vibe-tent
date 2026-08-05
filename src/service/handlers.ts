@@ -7667,6 +7667,7 @@ function projectGraphNodeSummary(source: import("../core/types.js").Node): Graph
   const title = typeof source.fm.title === "string" ? source.fm.title : undefined;
   const node: GraphNodeSummary = {
     nodeId: source.id,
+    etag: source.etag,
     path: source.path,
     name: source.name,
     type: source.type,
