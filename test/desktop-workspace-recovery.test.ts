@@ -103,3 +103,78 @@ test("existing authoritative foreground is preserved without a duplicate mount",
     "refreshTasks",
   ]);
 });
+
+test("concurrent recovery callers share attach, remount, task refresh, and result", async () => {
+  const client = {} as ServiceRpcClient;
+  const { model, calls } = recoveryModel();
+  let attachCalls = 0;
+  let releaseAttach!: () => void;
+  const heldAttach = new Promise<void>((resolve) => {
+    releaseAttach = resolve;
+  });
+  const args = {
+    host: {
+      async ensureAttached() {
+        attachCalls += 1;
+        await heldAttach;
+        return { client };
+      },
+    },
+    model,
+    loadPrefs: async () => ({
+      recentWorkspaces: ["C:/remembered"],
+      lastWorkspaceRoot: "C:/remembered",
+      showFloatOnClose: true,
+    }),
+  };
+
+  const first = recoverDesktopState(args);
+  const second = recoverDesktopState(args);
+  assert.equal(attachCalls, 1, "the full recovery flight starts once");
+  releaseAttach();
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+
+  assert.strictEqual(secondResult, firstResult);
+  assert.deepEqual(calls, [
+    "setRpc",
+    "refreshHealth",
+    "refreshWorkspaces",
+    "mount:C:/remembered",
+    "refreshTasks",
+  ]);
+});
+
+test("failed recovery releases the flight so the next call can retry", async () => {
+  const client = {} as ServiceRpcClient;
+  const { model, calls } = recoveryModel();
+  let attachCalls = 0;
+  const host = {
+    async ensureAttached() {
+      attachCalls += 1;
+      if (attachCalls === 1) throw new Error("isolated attach failed");
+      return { client };
+    },
+  };
+  const args = {
+    host,
+    model,
+    loadPrefs: async () => ({
+      recentWorkspaces: ["C:/remembered"],
+      lastWorkspaceRoot: "C:/remembered",
+      showFloatOnClose: true,
+    }),
+  };
+
+  await assert.rejects(recoverDesktopState(args), /isolated attach failed/);
+  const recovered = await recoverDesktopState(args);
+
+  assert.equal(attachCalls, 2);
+  assert.equal(recovered.foregroundWorkspaceId, "ws-remembered");
+  assert.deepEqual(calls, [
+    "setRpc",
+    "refreshHealth",
+    "refreshWorkspaces",
+    "mount:C:/remembered",
+    "refreshTasks",
+  ]);
+});
