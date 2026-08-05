@@ -40,10 +40,16 @@ const preview: Preview = {
     backgrounds: {
       default: "Tent 工作台",
       values: [
-        { name: "Tent 工作台", value: "#e8e7e4" },
-        { name: "Canvas", value: "#e1e1de" },
-        { name: "纸面", value: "#f7f6f3" },
+        { name: "Tent 工作台", value: "#ededf0" },
+        { name: "Canvas", value: "#ffffff" },
+        { name: "面板", value: "#f7f7f8" },
       ],
+    },
+    viewport: {
+      viewports: {
+        desktop: { name: "Desktop 1440×900", styles: { width: "1440px", height: "900px" } },
+        compactDesktop: { name: "Desktop 1280×840", styles: { width: "1280px", height: "840px" } },
+      },
     },
   },
 };

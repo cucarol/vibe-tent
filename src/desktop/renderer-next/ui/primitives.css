@@ -33,6 +33,7 @@
 .tn-ui-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: var(--tn-size-control); height: var(--tn-size-control); padding: 0; border: 1px solid var(--tn-color-border); border-radius: var(--tn-radius-md); background: var(--tn-color-elevated-bg); color: var(--tn-color-text-primary); cursor: pointer; transition: background 120ms ease, border-color 120ms ease; }
 .tn-ui-icon-btn:hover:not(:disabled) { background: var(--tn-color-hover); border-color: var(--tn-color-border-strong); }
 .tn-ui-icon-btn[data-variant="quiet"], .tn-ui-icon-btn[data-variant="ghost"] { background: transparent; border-color: transparent; }
+.tn-ui-icon-btn[data-size="compact"] { width: var(--tn-size-control-compact); height: var(--tn-size-control-compact); }
 
 .tn-ui-field { display: grid; gap: var(--tn-space-1); font-size: var(--tn-font-ui-small); }
 .tn-ui-field-label { color: var(--tn-color-text-secondary); font-weight: var(--tn-font-weight-ui); }

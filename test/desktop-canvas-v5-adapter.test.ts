@@ -6,7 +6,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { CanvasDocument } from "../src/desktop/renderer-next/types/identity.js";
-import { hasEntityPlacement } from "../src/desktop/renderer-next/model/canvas-document.js";
+import { dropNodeSnapshotAt, hasEntityPlacement } from "../src/desktop/renderer-next/model/canvas-document.js";
+import {
+  captureCanvasNodeSnapshot,
+  materializeMissingCanvasNodeSnapshots,
+  readCanvasNodeSnapshot,
+  withCanvasNodeSnapshot,
+} from "../src/desktop/renderer-next/model/canvas-node-snapshot.js";
 import { DEFAULT_EDGE_LAYERS } from "../src/desktop/renderer-next/model/canvas-edges.js";
 import {
   applyPlacementPatches,
@@ -43,13 +49,24 @@ import {
 import { shouldRefreshCanvasV5Scene } from "../src/desktop/renderer-next/canvas/excalidraw/sceneRefreshPolicy.js";
 
 function sampleDoc(): CanvasDocument {
+  const snapshot = (nodeId: string, type: string) => captureCanvasNodeSnapshot({
+    nodeId,
+    name: nodeId === "cx-alpha" ? "Alpha" : "Beta",
+    title: nodeId === "cx-alpha" ? "Alpha snapshot" : "Beta snapshot",
+    path: `产品/${nodeId}`,
+    type,
+    tags: [type],
+    mode: "editable",
+    archived: false,
+    invalid: false,
+  });
   return {
     version: 1,
-    backgroundMode: "grid",
+    backgroundMode: "blank",
     focusedPlacementId: "pl-a",
     viewport: { x: 40, y: 80, zoom: 1.25 },
     placements: [
-      {
+      withCanvasNodeSnapshot({
         placementId: "pl-a",
         entityRef: "cx-alpha",
         kind: "node",
@@ -57,8 +74,8 @@ function sampleDoc(): CanvasDocument {
         y: 120,
         width: 220,
         height: 96,
-      },
-      {
+      }, snapshot("cx-alpha", "prompt")),
+      withCanvasNodeSnapshot({
         placementId: "pl-b",
         entityRef: "cx-alpha",
         kind: "node",
@@ -66,8 +83,8 @@ function sampleDoc(): CanvasDocument {
         y: 200,
         width: 200,
         height: 80,
-      },
-      {
+      }, snapshot("cx-alpha", "prompt")),
+      withCanvasNodeSnapshot({
         placementId: "pl-c",
         entityRef: "cx-beta",
         kind: "node",
@@ -75,18 +92,14 @@ function sampleDoc(): CanvasDocument {
         y: 300,
         width: 180,
         height: 72,
-      },
+      }, snapshot("cx-beta", "output")),
     ],
   };
 }
 
 test("same nodeId maps to multiple placements with distinct element ids", () => {
   const doc = sampleDoc();
-  const mapped = documentToExcalidrawElements(doc, {
-    resolvers: {
-      resolveLabel: (id) => (id === "cx-alpha" ? "Alpha" : "Beta"),
-    },
-  });
+  const mapped = documentToExcalidrawElements(doc);
   const tent = mapped.elements.filter((el) => el.type === "embeddable");
   assert.equal(tent.length, 3);
   const alpha = tent.filter(
@@ -221,29 +234,119 @@ test("projection stale/error keeps placements and marks pending recovery", () =>
   assert.equal(ghosted.cards.get("pl-c")!.recovery, "ghost");
   assert.equal(ghosted.cards.get("pl-c")!.state, "unresolved");
   assert.equal(ghosted.cards.get("pl-a")!.recovery, "none");
-  assert.equal(ghosted.cards.get("pl-a")!.state, "unknown");
+  assert.equal(ghosted.cards.get("pl-a")!.state, "snapshot");
   // Placements still present
   assert.equal(ghosted.elements.filter((e) => e.type === "embeddable").length, 3);
 });
 
-test("node cards translate presentation while retaining the exact collaboration state", () => {
+test("node cards stay frozen while projection-visible fields change", () => {
   const mapped = documentToExcalidrawElements(sampleDoc(), {
     resolvers: {
-      resolveType: (nodeId) => (nodeId === "cx-beta" ? "output" : "prompt"),
-      resolveActiveTaskState: (nodeId) =>
-        nodeId === "cx-beta" ? "running" : null,
+      resolveCurrent: (nodeId) => ({
+        nodeId,
+        name: "Live renamed Node",
+        title: "Live renamed title",
+        path: "Live/new/path",
+        type: "goal",
+        tags: ["live"],
+        mode: "editable",
+        archived: false,
+        invalid: false,
+      }),
     },
   });
-  const idle = mapped.cards.get("pl-a")!;
-  assert.equal(idle.typeLabel, "prompt");
-  assert.equal(idle.state, "idle");
-  assert.equal(idle.stateLabel, "无进行中任务");
+  const frozen = mapped.cards.get("pl-a")!;
+  assert.equal(frozen.title, "Alpha snapshot");
+  assert.equal(frozen.typeLabel, "提示");
+  assert.equal(frozen.detail, "产品/cx-alpha");
+  assert.equal(frozen.state, "snapshot");
+  assert.equal(frozen.stateLabel, "可见字段已变化");
+  assert.equal(frozen.rawTaskState, undefined);
+});
 
-  const active = mapped.cards.get("pl-c")!;
-  assert.equal(active.typeLabel, "output");
-  assert.equal(active.state, "active");
-  assert.equal(active.stateLabel, "任务进行中");
-  assert.equal(active.rawTaskState, "running");
+test("whiteboard drop creates another placement with an independent frozen snapshot", () => {
+  const doc = sampleDoc();
+  const sourceTags = ["dragged"];
+  const snapshot = captureCanvasNodeSnapshot({
+    nodeId: "cx-alpha",
+    name: "Dragged Alpha",
+    path: "产品/拖放",
+    type: "prompt",
+    tags: sourceTags,
+    mode: "editable",
+    archived: false,
+    invalid: false,
+  });
+  sourceTags.push("mutated-after-capture");
+  const dropped = dropNodeSnapshotAt(
+    doc,
+    "cx-alpha",
+    snapshot,
+    { x: 812, y: 456 },
+    () => "pl-drop"
+  );
+  assert.equal(dropped.document.placements.length, doc.placements.length + 1);
+  assert.deepEqual(doc, sampleDoc());
+  const placement = dropped.document.placements.at(-1)!;
+  assert.equal(placement.x, 812);
+  assert.equal(placement.y, 456);
+  assert.deepEqual(readCanvasNodeSnapshot(placement)?.tags, ["dragged"]);
+  assert.equal(dropped.document.focusedPlacementId, "pl-drop");
+});
+
+test("legacy snapshot materialization never overwrites malformed snapshot metadata", () => {
+  const source = {
+    nodeId: "cx-alpha",
+    name: "Authoritative Alpha",
+    path: "产品/Alpha",
+    type: "prompt",
+    tags: ["ui"],
+    mode: "editable" as const,
+    archived: false,
+    invalid: false,
+  };
+  const legacy: CanvasDocument = {
+    version: 1,
+    backgroundMode: "blank",
+    placements: [
+      { placementId: "pl-empty", entityRef: "cx-alpha", kind: "node" },
+      {
+        placementId: "pl-corrupt",
+        entityRef: "cx-alpha",
+        kind: "node",
+        meta: { tentNodeSnapshot: { version: 1, nodeId: "foreign" } },
+      },
+    ],
+  };
+  const result = materializeMissingCanvasNodeSnapshots(legacy, [source]);
+  assert.equal(result.changed, true);
+  assert.equal(readCanvasNodeSnapshot(result.document.placements[0]!)?.name, "Authoritative Alpha");
+  assert.equal(readCanvasNodeSnapshot(result.document.placements[1]!), null);
+  assert.deepEqual(
+    result.document.placements[1]!.meta,
+    legacy.placements[1]!.meta,
+    "an existing malformed key is preserved fail-closed"
+  );
+});
+
+test("snapshotless cards never read live Node fields as a fallback", () => {
+  let liveReads = 0;
+  const document: CanvasDocument = {
+    version: 1,
+    backgroundMode: "blank",
+    placements: [{ placementId: "pl-legacy", entityRef: "cx-alpha", kind: "node" }],
+  };
+  const mapped = documentToExcalidrawElements(document, {
+    resolvers: {
+      resolveCurrent: () => {
+        liveReads += 1;
+        throw new Error("live fields must not be consulted");
+      },
+    },
+  });
+  assert.equal(liveReads, 0);
+  assert.equal(mapped.cards.get("pl-legacy")?.title, "未固化的节点快照");
+  assert.equal(mapped.cards.get("pl-legacy")?.state, "unknown");
 });
 
 test("V4 hydrate is idempotent and preserves image fileId", () => {
@@ -425,12 +528,22 @@ test("V5 leaves generic drawing tools exclusively to Excalidraw", async () => {
     ),
     "utf8"
   );
+  const workbench = await fs.readFile(
+    path.join(
+      process.cwd(),
+      "src/desktop/renderer-next/components/CanvasWorkbench.tsx"
+    ),
+    "utf8"
+  );
 
   assert.doesNotMatch(host, /canvas-v5-toolbar|canvas-v5-tool-/);
   assert.doesNotMatch(host, /TOOL_ORDER|TOOL_LABELS|setTool\(/);
   assert.doesNotMatch(css, /tn-canvas-v5-host__toolbar/);
   assert.match(host, /tools:\s*\{\s*image:\s*true\s*\}/);
   assert.match(host, /data-testid="canvas-display-menu"/);
+  assert.match(workbench, /graph=\{null\}/);
+  assert.doesNotMatch(workbench, /onToggleEdgeLayer|GraphEdgeSource|graph=\{graph\}/);
+  assert.match(workbench, /\{hidden \? null : \(\s*<CanvasV5Host/);
 });
 
 test("Canvas V5 only captures an exact internal Tent Node link", async () => {

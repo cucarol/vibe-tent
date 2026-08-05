@@ -16,10 +16,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import type {
-  CanvasBackgroundMode,
-  CanvasDocument,
-} from "../../types/identity.js";
+import type { CanvasDocument } from "../../types/identity.js";
 import {
   removePlacement,
   setFocusedPlacement,
@@ -168,9 +165,6 @@ const CANVAS_COPY = {
   "canvas.display": "显示",
   "canvas.immersive.exit": "退出沉浸",
   "canvas.immersive.enter": "沉浸画布",
-  "canvas.background": "画布背景",
-  "canvas.background.grid": "网格",
-  "canvas.background.blank": "空白",
   "canvas.drawing.hide": "隐藏绘图",
   "canvas.drawing.show": "显示绘图",
   "canvas.relations.help": "选择要在画布中显示的关系",
@@ -662,33 +656,6 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     [onLayerVisibleChange, persistDrawing]
   );
 
-  const setBackgroundMode = useCallback(
-    (mode: CanvasBackgroundMode) => {
-      if ((canvasDocument.backgroundMode ?? "grid") === mode) return;
-      publishDocument({ ...canvasDocument, backgroundMode: mode });
-      const api = apiRef.current;
-      if (!api) return;
-      applyingExternal.current = true;
-      try {
-        api.updateScene({
-          appState: {
-            viewBackgroundColor:
-              mode === "blank"
-                ? CANVAS_V5_COLORS.blankBackground
-                : CANVAS_V5_COLORS.gridBackground,
-            gridModeEnabled: mode === "grid",
-          },
-          captureUpdate: "NEVER",
-        });
-      } finally {
-        void Promise.resolve().then(() => {
-          applyingExternal.current = false;
-        });
-      }
-    },
-    [canvasDocument, publishDocument]
-  );
-
   const banner =
     loadBanner ?? statusMessage(persistenceStatus);
   const canRetry =
@@ -769,27 +736,6 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
                   : canvasCopy("canvas.immersive.enter")}
               </Button>
             ) : null}
-            <fieldset>
-              <legend>{canvasCopy("canvas.background")}</legend>
-              <label>
-                <input
-                  type="radio"
-                  name="canvas-v5-background-mode"
-                  checked={(canvasDocument.backgroundMode ?? "grid") === "grid"}
-                  onChange={() => setBackgroundMode("grid")}
-                />
-                {canvasCopy("canvas.background.grid")}
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  name="canvas-v5-background-mode"
-                  checked={(canvasDocument.backgroundMode ?? "grid") === "blank"}
-                  onChange={() => setBackgroundMode("blank")}
-                />
-                {canvasCopy("canvas.background.blank")}
-              </label>
-            </fieldset>
             <Button
               variant="quiet"
               size="compact"
@@ -850,7 +796,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
             onChange={handleChange}
             viewModeEnabled={false}
             zenModeEnabled={false}
-            gridModeEnabled={(canvasDocument.backgroundMode ?? "grid") === "grid"}
+            gridModeEnabled={false}
             theme="light"
             langCode="zh-CN"
             detectScroll={false}

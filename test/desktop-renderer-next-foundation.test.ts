@@ -64,6 +64,33 @@ function ev(type: string): EventEnvelope {
   };
 }
 
+function cssHexToken(css: string, token: string): string {
+  const match = css.match(new RegExp(`${token}:\\s*(#[0-9a-f]{6})`, "i"));
+  assert.ok(match, `missing hex token ${token}`);
+  return match[1]!;
+}
+
+function relativeLuminance(hex: string): number {
+  const channels = [1, 3, 5].map((offset) =>
+    Number.parseInt(hex.slice(offset, offset + 2), 16) / 255
+  );
+  const linear = channels.map((channel) =>
+    channel <= 0.04045
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4
+  );
+  return linear[0]! * 0.2126 + linear[1]! * 0.7152 + linear[2]! * 0.0722;
+}
+
+function contrastRatio(foreground: string, background: string): number {
+  const foregroundLuminance = relativeLuminance(foreground);
+  const backgroundLuminance = relativeLuminance(background);
+  return (
+    (Math.max(foregroundLuminance, backgroundLuminance) + 0.05) /
+    (Math.min(foregroundLuminance, backgroundLuminance) + 0.05)
+  );
+}
+
 test("Outline and Canvas share one focused placement fact", () => {
   const document = {
     ...createEmptyCanvasDocument(),
@@ -420,8 +447,23 @@ test("tokens.css has one product palette and one primitive entry", async () => {
   ]) {
     assert.ok(product.includes(token), `missing ${token}`);
   }
-  assert.match(product, /--tn-color-accent:\s*#b85235/);
+  assert.match(product, /--tn-color-accent:\s*#4b4d52/);
+  assert.match(product, /--tn-color-focus:\s*#3f4146/);
+  assert.doesNotMatch(product, /#536a9f|#e8ecf5/);
+  assert.match(product, /--tn-color-node-goal:/);
+  assert.match(product, /--tn-color-node-prompt:/);
+  assert.match(product, /--tn-color-node-output:/);
   assert.doesNotMatch(product, /data-theme|theme-id|dark/i);
+});
+
+test("faint helper text token meets WCAG AA on white and panel surfaces", async () => {
+  const product = await read("src/desktop/renderer-next/styles/product-tokens.css");
+  const faint = cssHexToken(product, "--tn-color-text-faint");
+  const canvas = cssHexToken(product, "--tn-color-elevated-bg");
+  const panel = cssHexToken(product, "--tn-color-panel-bg");
+
+  assert.ok(contrastRatio(faint, canvas) >= 4.5, `${faint} on ${canvas}`);
+  assert.ok(contrastRatio(faint, panel) >= 4.5, `${faint} on ${panel}`);
 });
 
 test("Desktop loads renderer-next without exposing Electron as the CLI package main", async () => {
@@ -445,6 +487,22 @@ test("Desktop loads renderer-next without exposing Electron as the CLI package m
     main: string;
   };
   assert.equal(desktopPackageJson.main, "dist/main/index.cjs");
+});
+
+test("production bootstraps local Excalidraw assets before the main renderer bundle", async () => {
+  const html = await read("src/desktop/renderer-next/index.html");
+  const bootstrap = html.indexOf('src="./excalidraw-asset-bootstrap.js"');
+  const main = html.indexOf('src="./main.js"');
+  assert.ok(bootstrap >= 0 && main > bootstrap);
+  assert.doesNotMatch(html, /font-src[^;]*https?:/);
+
+  const rendererMain = await read("src/desktop/renderer-next/main.tsx");
+  assert.doesNotMatch(rendererMain, /ensureExcalidrawAssetPath/);
+
+  const build = await read("scripts/build-desktop.mjs");
+  assert.match(build, /desktop-renderer-next-asset-bootstrap/);
+  assert.match(build, /excalidraw-asset-bootstrap\.js/);
+  assert.match(build, /path\.join\(uiOut, "primitives\.css"\)/);
 });
 
 test("production invalidation is immediate and provenance is selected-output only", async () => {
@@ -509,8 +567,12 @@ test("Outline and Focus are collapsible trays around one Canvas stage", async ()
   assert.match(shellCss, /data-connection="connecting"/);
 
   const shell = await read("src/desktop/renderer-next/shell/AppShell.tsx");
-  assert.match(shell, /aria-pressed=\{outlineOpen\}/);
-  assert.match(shell, /aria-pressed=\{focusOpen\}/);
+  assert.match(shell, /aria-expanded=\{outlineOpen\}/);
+  assert.match(shell, /aria-expanded=\{focusOpen\}/);
+  assert.match(shell, /aria-controls="tn-outline-panel"/);
+  assert.match(shell, /aria-controls="tn-focus-panel"/);
+  assert.match(shellCss, /data-layout-mode="detail"[^}]*minmax\(360px, 42vw\) 0 minmax\(420px, 1fr\)/);
+  assert.match(shellCss, /data-layout-mode="detail"[^}]*\.tn-canvas-pane[^}]*visibility:\s*hidden/);
   assert.match(shell, /CanvasWorkbench/);
   assert.doesNotMatch(shell, /SettingsSurface|InboxSurface|SearchSurface/);
   assert.equal(OUTLINE_PANEL_ID, "tn-outline-panel");

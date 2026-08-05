@@ -10,6 +10,7 @@ import {
   placeEntityInVisibleViewport,
   removeEntityFromCanvas,
 } from "../src/desktop/renderer-next/model/canvas-document.js";
+import { normalizeCanvasWorkspaceSession } from "../src/desktop/renderer-next/model/canvas-session-store.js";
 
 class MemoryStorage {
   private readonly values = new Map<string, string>();
@@ -24,6 +25,10 @@ class MemoryStorage {
 
   raw(key: string, value: string): void {
     this.values.set(key, value);
+  }
+
+  peek(key: string): string | null {
+    return this.values.get(key) ?? null;
   }
 }
 
@@ -69,6 +74,52 @@ test("V5 local persistence round-trips document and freehand scene after reload"
   const loaded = reader.load();
   assert.equal(loaded.kind, "loaded");
   assert.deepEqual(loaded.snapshot, snapshot());
+});
+
+test("persisted legacy grid state is hard-cut to the pure white Canvas", () => {
+  const storage = new MemoryStorage();
+  const legacy = snapshot();
+  storage.raw(
+    canvasV5LocalPersistenceKey("ws-alpha"),
+    JSON.stringify({
+      ...legacy,
+      document: { ...legacy.document, backgroundMode: "grid" },
+    })
+  );
+  const persistence = new CanvasV5LocalPersistence(storage, "ws-alpha");
+  const loaded = persistence.load();
+  assert.equal(loaded.kind, "loaded");
+  assert.equal(loaded.snapshot.document.backgroundMode, "blank");
+  assert.equal(persistence.save(loaded.snapshot).kind, "saved");
+  assert.equal(
+    JSON.parse(storage.peek(canvasV5LocalPersistenceKey("ws-alpha"))!).document.backgroundMode,
+    "blank"
+  );
+});
+
+test("legacy tab-session documents cannot preserve a hidden grid preference", () => {
+  const normalized = normalizeCanvasWorkspaceSession("ws-alpha", {
+    version: 1,
+    workspaceId: "ws-alpha",
+    tabs: {
+      activeId: "tab-1",
+      order: ["tab-1"],
+      byId: {
+        "tab-1": {
+          id: "tab-1",
+          title: "Canvas",
+          document: {
+            version: 1,
+            backgroundMode: "grid",
+            focusedPlacementId: null,
+            placements: [],
+          },
+        },
+      },
+    },
+    edgeLayers: {},
+  });
+  assert.equal(normalized.tabs.byId["tab-1"]?.document.backgroundMode, "blank");
 });
 
 test("exact workspace key prevents Canvas document and scene leaking across workspaces", () => {

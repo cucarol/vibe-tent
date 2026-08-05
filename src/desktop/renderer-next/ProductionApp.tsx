@@ -40,9 +40,13 @@ import {
   workbenchNodesFromResources,
   type ProvenanceView,
 } from "./model/workbench-nodes.js";
-import { seedCanvasDocumentFromGraph } from "./model/canvas-seeding.js";
+import {
+  reconcileLoadedCanvasDocument,
+  seedCanvasDocumentFromGraph,
+} from "./model/canvas-seeding.js";
 import { useFocusDocument } from "./model/use-focus-document.js";
 import { useCollaborationSurface } from "./model/use-collaboration-surface.js";
+import { materializeMissingCanvasNodeSnapshots } from "./model/canvas-node-snapshot.js";
 
 function MountedWorkspace(props: {
   bridge: RendererDesktopBridge;
@@ -112,39 +116,35 @@ function MountedWorkspace(props: {
   function applyLoadRetry(result: CanvasV5LoadResult): void {
     setPersistenceStatus(result.status);
     if (!("retry" in result)) {
-      snapshotRef.current = result.snapshot;
-      setSnapshot(result.snapshot);
+      const graph =
+        graphRef.current.state === "ready" ? graphRef.current.value : null;
+      const reconciled = reconcileLoadedCanvasDocument(
+        result.kind,
+        result.snapshot.document,
+        graph
+      );
+      snapshotRef.current = {
+        ...result.snapshot,
+        document: reconciled.document,
+      };
+      setSnapshot(snapshotRef.current);
       publishSelectedNode(
-        result.snapshot.document.focusedPlacementId
-          ? result.snapshot.document.placements.find(
+        reconciled.document.focusedPlacementId
+          ? reconciled.document.placements.find(
               (placement) =>
                 placement.placementId ===
-                result.snapshot.document.focusedPlacementId
+                reconciled.document.focusedPlacementId
             )?.entityRef ?? null
           : null
       );
       // A loaded empty document is an intentional user-owned Canvas. A truly
       // absent record remains eligible for the first non-empty graph seed.
       loadKind.current = result.kind;
-      seeded.current = result.kind === "loaded";
+      seeded.current = reconciled.seeded;
       initialLoadRetryPending.current = false;
       retrySave.current = null;
-
-      const graph = graphRef.current.state === "ready" ? graphRef.current.value : null;
-      if (
-        graph &&
-        shouldSeedLocalCanvas(
-          result.kind,
-          result.snapshot.document.placements.length,
-          graph.nodes.length
-        )
-      ) {
-        seeded.current = true;
-        const document = seedCanvasDocumentFromGraph(graph);
-        snapshotRef.current = { ...result.snapshot, document };
-        setSnapshot(snapshotRef.current);
-        publishSelectedNode(document.placements[0]?.entityRef ?? null);
-        scheduleSnapshot({ document });
+      if (reconciled.changed) {
+        scheduleSnapshot({ document: reconciled.document });
       }
       return;
     }
@@ -201,6 +201,14 @@ function MountedWorkspace(props: {
       return;
     }
     onConnectionChange("online");
+
+    const materialized = materializeMissingCanvasNodeSnapshots(
+      snapshotRef.current.document,
+      graphRead.value.nodes
+    );
+    if (materialized.changed) {
+      scheduleSnapshot({ document: materialized.document });
+    }
 
     if (
       !seeded.current &&
@@ -345,7 +353,6 @@ function MountedWorkspace(props: {
       document={snapshot.document}
       initialScene={snapshot.scene}
       selectedNodeId={selectedNodeId}
-      graph={graph}
       connection={connection}
       projectionState={projectionState}
       onRetryConnection={connection === "offline" || connection === "reconnecting" ? onRetryConnection : undefined}

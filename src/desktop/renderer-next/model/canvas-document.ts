@@ -11,6 +11,10 @@ import type {
   PlacementId,
 } from "../types/identity.js";
 import { createEmptyCanvasDocument } from "../types/identity.js";
+import {
+  type CanvasNodeSnapshot,
+  withCanvasNodeSnapshot,
+} from "./canvas-node-snapshot.js";
 
 export type Viewport = NonNullable<CanvasDocument["viewport"]>;
 
@@ -88,7 +92,8 @@ export function hasEntityPlacement(
 export function placeEntityInVisibleViewport(
   doc: CanvasDocument,
   entityRef: EntityRef,
-  createPlacementId: () => PlacementId = () => newPlacementId("pl-node")
+  createPlacementId: () => PlacementId = () => newPlacementId("pl-node"),
+  snapshot?: CanvasNodeSnapshot
 ): { document: CanvasDocument; placementId: PlacementId; added: boolean } {
   const existing = doc.placements.find((placement) => placement.entityRef === entityRef);
   if (existing) {
@@ -129,7 +134,7 @@ export function placeEntityInVisibleViewport(
       break;
     }
   }
-  const placement: CanvasPlacement = {
+  const placementBase: CanvasPlacement = {
     placementId,
     entityRef,
     kind: "node",
@@ -138,6 +143,9 @@ export function placeEntityInVisibleViewport(
     width: VISIBLE_NODE_PLACEMENT.width,
     height: VISIBLE_NODE_PLACEMENT.height,
   };
+  const placement = snapshot
+    ? withCanvasNodeSnapshot(placementBase, snapshot)
+    : placementBase;
   return {
     document: {
       ...doc,
@@ -146,6 +154,37 @@ export function placeEntityInVisibleViewport(
     },
     placementId,
     added: true,
+  };
+}
+
+/**
+ * Whiteboard drop semantics: every drop creates a new local placement at the
+ * exact scene point, even when another placement already references the Node.
+ */
+export function dropNodeSnapshotAt(
+  doc: CanvasDocument,
+  entityRef: EntityRef,
+  snapshot: CanvasNodeSnapshot,
+  point: { x: number; y: number },
+  createPlacementId: () => PlacementId = () => newPlacementId("pl-node")
+): { document: CanvasDocument; placementId: PlacementId } {
+  const placementId = createPlacementId();
+  const placement = withCanvasNodeSnapshot({
+    placementId,
+    entityRef,
+    kind: "node",
+    x: point.x,
+    y: point.y,
+    width: VISIBLE_NODE_PLACEMENT.width,
+    height: VISIBLE_NODE_PLACEMENT.height,
+  }, snapshot);
+  return {
+    placementId,
+    document: {
+      ...doc,
+      placements: [...doc.placements, placement],
+      focusedPlacementId: placementId,
+    },
   };
 }
 

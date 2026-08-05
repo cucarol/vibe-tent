@@ -1,6 +1,6 @@
 /**
- * Pure Canvas V5 adapter: CanvasDocument placements + Service summaries +
- * projected edges → Excalidraw embeddable / arrow elements, and the reverse
+ * Pure Canvas V5 adapter: CanvasDocument placements + frozen local snapshots
+ * → Excalidraw embeddables, and the reverse
  * write-back from element changes into local placement geometry/selection.
  *
  * Frozen rules:
@@ -28,26 +28,21 @@ import {
   type PlacementPresentation,
 } from "../../model/placement-chrome.js";
 import type { CanvasDocument, CanvasPlacement } from "../../types/identity.js";
+import {
+  canvasSnapshotVisibleFieldsChanged,
+  readCanvasNodeSnapshot,
+  type CanvasSnapshotSource,
+} from "../../model/canvas-node-snapshot.js";
 
 /** V5-local recovery labels; the pure adapter has no UI-engine dependency. */
 export type TentNodeRecovery = "none" | "pending" | "ghost" | "error";
 
 export type CanvasNodeResolvers = {
-  resolveLabel?: (entityRef: string) => string | undefined;
-  resolveType?: (entityRef: string) => string | undefined;
   resolveGhost?: (entityRef: string) => boolean;
   resolveError?: (entityRef: string) => boolean;
   resolvePendingRecovery?: (entityRef: string) => boolean;
-  /** `null` is authoritative idle; `undefined` is not loaded / failed. */
-  resolveActiveTaskState?: (entityRef: string) => string | null | undefined;
-  resolveSummary?: (entityRef: string) =>
-    | {
-        type?: string;
-        tags?: readonly string[];
-        path?: string;
-        childCount?: number;
-      }
-    | undefined;
+  /** Used only to compare projection-visible fields with the frozen snapshot. */
+  resolveCurrent?: (entityRef: string) => CanvasSnapshotSource | undefined;
 };
 
 export const TENT_NODE_CUSTOM_KIND = "tent-node" as const;
@@ -70,6 +65,7 @@ export type TentEmbeddableCardModel = {
   summary?: string;
   detail: string;
   state:
+    | "snapshot"
     | "active"
     | "waiting"
     | "delivered"
@@ -184,7 +180,7 @@ function recoveryForEntity(
   return "none";
 }
 
-function detailForRecovery(recovery: TentNodeRecovery): string {
+function detailForRecovery(recovery: TentNodeRecovery, path?: string): string {
   switch (recovery) {
     case "ghost":
       return "权威投影中已不存在该节点；本地位置仍保留。";
@@ -193,13 +189,21 @@ function detailForRecovery(recovery: TentNodeRecovery): string {
     case "error":
       return "投影查询失败；本地位置仍保留。";
     default:
-      return "空间表达与状态动效；正文与派活在右侧详情栏。";
+      return path || "拖放时冻结的本地快照；当前内容在右侧焦点栏。";
   }
 }
 
-function stateForProjection(
+function snapshotTypeLabel(type: string | undefined): string {
+  if (type === "goal") return "目标";
+  if (type === "prompt") return "提示";
+  if (type === "output") return "输出";
+  return type?.trim() || "节点";
+}
+
+function stateForSnapshot(
   recovery: TentNodeRecovery,
-  activeTaskState: string | null | undefined
+  changed: boolean,
+  hasSnapshot: boolean
 ): Pick<TentEmbeddableCardModel, "state" | "stateLabel"> {
   if (recovery === "ghost") {
     return { state: "unresolved", stateLabel: "节点未解析" };
@@ -210,28 +214,10 @@ function stateForProjection(
   if (recovery === "error") {
     return { state: "error", stateLabel: "加载失败" };
   }
-  if (activeTaskState === undefined) {
-    return { state: "unknown", stateLabel: "协作状态未加载" };
-  }
-  if (activeTaskState === null) {
-    return { state: "idle", stateLabel: "无进行中任务" };
-  }
-  if (activeTaskState === "waiting") {
-    return { state: "waiting", stateLabel: "任务等待中" };
-  }
-  if (activeTaskState === "delivered") {
-    return { state: "delivered", stateLabel: "交付待审" };
-  }
-  const exactStateLabels: Record<string, string> = {
-    claimed: "任务已认领",
-    running: "任务进行中",
-    interrupted: "任务已中断",
-    rejected: "返工中",
-  };
-  return {
-    state: "active",
-    stateLabel: exactStateLabels[activeTaskState] ?? `任务 · ${activeTaskState}`,
-  };
+  if (!hasSnapshot) return { state: "unknown", stateLabel: "快照尚未固化" };
+  return changed
+    ? { state: "snapshot", stateLabel: "可见字段已变化" }
+    : { state: "snapshot", stateLabel: "本地快照" };
 }
 
 /**
@@ -248,22 +234,16 @@ export function buildTentEmbeddableCardModels(
     const size = placementSize(p);
     const presentation = getPlacementPresentation(p.meta);
     const recovery = recoveryForEntity(entityRef, resolvers);
-    const title =
-      (entityRef && resolvers.resolveLabel?.(entityRef)) ||
-      (typeof p.meta?.name === "string" ? p.meta.name : null) ||
-      (entityRef ? "未解析节点" : p.kind);
-    const typeLabel =
-      (entityRef && resolvers.resolveType?.(entityRef)) ||
-      (typeof p.meta?.type === "string" ? p.meta.type : "") ||
-      "节点";
-    const summaryFields =
-      entityRef && resolvers.resolveSummary
-        ? resolvers.resolveSummary(entityRef)
-        : undefined;
-    const rawTaskState = entityRef
-      ? resolvers.resolveActiveTaskState?.(entityRef)
+    const snapshot = readCanvasNodeSnapshot(p);
+    const current = snapshot && entityRef
+      ? resolvers.resolveCurrent?.(entityRef)
       : undefined;
-    const projectedState = stateForProjection(recovery, rawTaskState);
+    const changed = snapshot
+      ? canvasSnapshotVisibleFieldsChanged(snapshot, current)
+      : false;
+    const title = snapshot?.title?.trim() || snapshot?.name || "未固化的节点快照";
+    const typeLabel = snapshotTypeLabel(snapshot?.type);
+    const projectedState = stateForSnapshot(recovery, changed, Boolean(snapshot));
     map.set(p.placementId, {
       placementId: p.placementId,
       nodeId: entityRef ?? p.placementId,
@@ -274,15 +254,13 @@ export function buildTentEmbeddableCardModels(
       summary:
         presentation === "expanded"
           ? compactExpandedSummary({
-              type: summaryFields?.type ?? typeLabel,
-              tags: summaryFields?.tags,
-              path: summaryFields?.path,
-              childCount: summaryFields?.childCount,
+              type: typeLabel,
+              tags: snapshot?.tags,
+              path: snapshot?.path,
             })
           : undefined,
-      detail: detailForRecovery(recovery),
+      detail: detailForRecovery(recovery, snapshot?.path),
       ...projectedState,
-      rawTaskState,
       width: size.width,
       height: size.height,
     });
@@ -420,7 +398,9 @@ export type DocumentToExcalidrawResult = {
 };
 
 /**
- * Full pure mapping of local document + projection into Excalidraw elements.
+ * Full pure mapping of a local document into Excalidraw elements. An optional
+ * graph input is reserved for explicitly local/frozen relation snapshots;
+ * production never passes the live graph projection.
  * Drawing-layer freehand/text/image elements are supplied separately by the host
  * (V4 scene) so this function never invents ink or binaries.
  */

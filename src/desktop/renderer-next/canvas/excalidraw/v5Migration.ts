@@ -129,11 +129,8 @@ export function hydrateCanvasV5Scene(input: {
   const appState: Record<string, unknown> = {
     ...drawing.appState,
     ...camera,
-    viewBackgroundColor:
-      (input.document.backgroundMode ?? "grid") === "blank"
-        ? CANVAS_V5_COLORS.blankBackground
-        : CANVAS_V5_COLORS.gridBackground,
-    gridModeEnabled: (input.document.backgroundMode ?? "grid") === "grid",
+    viewBackgroundColor: CANVAS_V5_COLORS.blankBackground,
+    gridModeEnabled: false,
     collaborators: new Map(),
     selectedElementIds: input.document.focusedPlacementId
       ? { [tentPlacementElementId(input.document.focusedPlacementId)]: true }

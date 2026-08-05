@@ -26,7 +26,10 @@ import type { GraphProjection } from "../src/service/types.js";
 import { createEmptyCanvasDocument } from "../src/desktop/renderer-next/types/identity.js";
 import { workbenchNodesFromResources } from "../src/desktop/renderer-next/model/workbench-nodes.js";
 import { ConnectionBanner } from "../src/desktop/renderer-next/components/ConnectionBanner.js";
-import { seedCanvasDocumentFromGraph } from "../src/desktop/renderer-next/model/canvas-seeding.js";
+import {
+  reconcileLoadedCanvasDocument,
+  seedCanvasDocumentFromGraph,
+} from "../src/desktop/renderer-next/model/canvas-seeding.js";
 import { FocusDocumentPanel } from "../src/desktop/renderer-next/components/FocusDocumentPanel.js";
 import type { FocusDocumentActions, FocusDocumentView } from "../src/desktop/renderer-next/model/focus-document-controller.js";
 
@@ -99,6 +102,46 @@ test("initial Canvas seed materializes only the first authoritative Node", () =>
   const seeded = seedCanvasDocumentFromGraph(graph);
   assert.deepEqual(seeded.placements.map((placement) => placement.entityRef), ["cx-first"]);
   assert.equal(seeded.focusedPlacementId, "pl-default-cx-first");
+});
+
+test("storage retry immediately materializes legacy snapshots from an already-ready graph", () => {
+  const graph = {
+    workspaceId: "ws-a",
+    nodes: [
+      { nodeId: "cx-first", path: "first", name: "first", type: "goal", tags: ["live"], mode: "editable", archived: false, invalid: false },
+    ],
+    edges: { parent: [], markdown: [], wiki: [], relation: [] },
+  } as unknown as GraphProjection;
+  const legacy = {
+    ...createEmptyCanvasDocument(),
+    placements: [
+      {
+        placementId: "pl-legacy",
+        entityRef: "cx-first",
+        kind: "node",
+        x: 80,
+        y: 90,
+      },
+    ],
+  };
+  const reconciled = reconcileLoadedCanvasDocument("loaded", legacy, graph);
+  assert.equal(reconciled.changed, true);
+  assert.equal(reconciled.seeded, true);
+  assert.deepEqual(
+    (reconciled.document.placements[0]?.meta as Record<string, unknown>)
+      ?.tentNodeSnapshot,
+    {
+      version: 1,
+      nodeId: "cx-first",
+      name: "first",
+      path: "first",
+      type: "goal",
+      tags: ["live"],
+      mode: "editable",
+      archived: false,
+      invalid: false,
+    }
+  );
 });
 
 test("Outline keeps every authoritative Node even when Canvas has no placement", () => {

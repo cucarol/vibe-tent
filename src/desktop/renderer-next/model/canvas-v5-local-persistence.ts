@@ -117,6 +117,12 @@ function validScene(value: unknown): value is ExcalidrawSceneSnapshot {
   );
 }
 
+function forceBlankCanvas(document: CanvasDocument): CanvasDocument {
+  return document.backgroundMode === "blank"
+    ? document
+    : { ...document, backgroundMode: "blank" };
+}
+
 function emptySnapshot(workspaceId: string): CanvasV5LocalSnapshot {
   return {
     version: 1,
@@ -184,7 +190,7 @@ export class CanvasV5LocalPersistence {
         snapshot: {
           version: 1,
           workspaceId: this.workspaceId,
-          document: parsed.document,
+          document: forceBlankCanvas(parsed.document),
           scene: parsed.scene,
         },
         status: { kind: "ok" },
@@ -224,7 +230,10 @@ export class CanvasV5LocalPersistence {
     try {
       this.storage.setItem(
         canvasV5LocalPersistenceKey(this.workspaceId),
-        JSON.stringify(snapshot)
+        JSON.stringify({
+          ...snapshot,
+          document: forceBlankCanvas(snapshot.document),
+        })
       );
       return { kind: "saved", status: { kind: "ok" } };
     } catch (error) {

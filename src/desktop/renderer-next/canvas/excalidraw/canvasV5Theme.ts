@@ -4,10 +4,9 @@
  * Excalidraw appState/elements and stay deliberately neutral.
  */
 export const CANVAS_V5_COLORS = Object.freeze({
-  gridBackground: "#ebe9e5",
-  blankBackground: "#f7f6f3",
-  accent: "#a34a33",
-  borderStrong: "#8f8982",
-  relationParent: "#716b65",
-  relationSecondary: "#918b84",
+  blankBackground: "#ffffff",
+  accent: "#4b4d52",
+  borderStrong: "#8b8d94",
+  relationParent: "#6d7078",
+  relationSecondary: "#9a9ca3",
 });

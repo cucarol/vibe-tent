@@ -52,3 +52,8 @@ export function ensureExcalidrawAssetPath(
   window.EXCALIDRAW_ASSET_PATH = resolved;
   return resolved;
 }
+
+// This module is also built as a tiny classic-script bootstrap and loaded
+// before main.js. The ordering matters because the bundled Excalidraw module
+// creates its font faces while main.js is being evaluated.
+ensureExcalidrawAssetPath();

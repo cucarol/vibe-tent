@@ -61,8 +61,10 @@ function isFiniteNumber(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
 
-function normalizeBackgroundMode(raw: unknown): CanvasBackgroundMode {
-  return raw === "blank" ? "blank" : "grid";
+function normalizeBackgroundMode(_raw: unknown): CanvasBackgroundMode {
+  // Product hard-cut: persisted legacy grid preferences must not keep the
+  // current Canvas gridded after the default direction moved to pure white.
+  return "blank";
 }
 
 function normalizePlacement(raw: unknown): CanvasPlacement | null {

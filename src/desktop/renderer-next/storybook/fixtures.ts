@@ -1,5 +1,9 @@
 import type { CanvasDocument } from "../types/identity.js";
 import type { ProjectionState, WorkbenchNodeView } from "../shell/workbench-types.js";
+import {
+  captureCanvasNodeSnapshot,
+  withCanvasNodeSnapshot,
+} from "../model/canvas-node-snapshot.js";
 
 export const FIXTURE_WORKSPACE_ID = "ws-storybook-ui";
 
@@ -58,15 +62,24 @@ export function fixtureNodes(state: ProjectionState = "ready"): WorkbenchNodeVie
 }
 
 export function fixtureCanvasDocument(): CanvasDocument {
+  const byId = new Map(fixtureNodes().map((node) => [node.nodeId, node] as const));
+  const placement = (
+    value: CanvasDocument["placements"][number]
+  ) => {
+    const node = value.entityRef ? byId.get(value.entityRef) : undefined;
+    return node
+      ? withCanvasNodeSnapshot(value, captureCanvasNodeSnapshot(node))
+      : value;
+  };
   return {
     version: 1,
-    backgroundMode: "grid",
+    backgroundMode: "blank",
     focusedPlacementId: "pl-workbench",
     viewport: { x: 0, y: 0, zoom: 1 },
     placements: [
-      { placementId: "pl-product", entityRef: "cx-product", kind: "node", x: 110, y: 130, width: 260, height: 138 },
-      { placementId: "pl-workbench", entityRef: "cx-workbench", kind: "node", x: 480, y: 170, width: 282, height: 152 },
-      { placementId: "pl-delivery", entityRef: "cx-delivery", kind: "node", x: 500, y: 430, width: 260, height: 138 },
+      placement({ placementId: "pl-product", entityRef: "cx-product", kind: "node", x: 110, y: 130, width: 260, height: 138 }),
+      placement({ placementId: "pl-workbench", entityRef: "cx-workbench", kind: "node", x: 480, y: 170, width: 282, height: 152 }),
+      placement({ placementId: "pl-delivery", entityRef: "cx-delivery", kind: "node", x: 500, y: 430, width: 260, height: 138 }),
     ],
   };
 }

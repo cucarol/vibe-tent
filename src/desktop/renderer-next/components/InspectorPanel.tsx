@@ -24,6 +24,7 @@ import type {
 } from "../model/collaboration-surface-controller.js";
 
 export type InspectorPanelProps = {
+  id?: string;
   node: WorkbenchNodeView | null;
   placementState?: "placed" | "unplaced";
   canCreatePlacement?: boolean;
@@ -42,6 +43,7 @@ export type InspectorPanelProps = {
 };
 
 export function InspectorPanel({
+  id,
   node,
   placementState = "unplaced",
   canCreatePlacement = false,
@@ -72,10 +74,10 @@ export function InspectorPanel({
     />
   ) : null;
   return (
-    <aside className="tn-pane tn-inspector-pane" aria-label="焦点面板" data-region="focus">
+    <aside id={id} className="tn-pane tn-inspector-pane" aria-label="焦点面板" data-region="focus">
       <PaneHeader
         title="焦点"
-        actions={<IconButton aria-label="收起焦点面板" variant="ghost" onClick={onCollapse}><ShellIcon name="chevron-right" /></IconButton>}
+        actions={<IconButton size="compact" aria-label="收起焦点面板" tooltip="收起焦点面板" variant="ghost" onClick={onCollapse}><ShellIcon name="chevron-right" /></IconButton>}
       />
       {!node ? (
         <div className="tn-pane-empty" role="status">

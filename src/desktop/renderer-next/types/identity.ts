@@ -56,7 +56,7 @@ export function createEmptyCanvasDocument(): CanvasDocument {
   return {
     version: 1,
     placements: [],
-    backgroundMode: "grid",
+    backgroundMode: "blank",
     focusedPlacementId: null,
   };
 }

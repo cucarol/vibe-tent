@@ -160,6 +160,13 @@ async function copyRendererNextStatic(buildRoot, buildOutRoot) {
     if (!name.endsWith(".css")) continue;
     await fs.copyFile(path.join(stylesSrc, name), path.join(stylesOut, name));
   }
+  // tokens.css imports the primitive layer by this exact relative path.
+  const uiOut = path.join(outDir, "ui");
+  await fs.mkdir(uiOut, { recursive: true });
+  await fs.copyFile(
+    path.join(srcDir, "ui", "primitives.css"),
+    path.join(uiOut, "primitives.css")
+  );
 }
 
 async function copyExcalidrawAssets(buildRoot, buildOutRoot) {
@@ -226,6 +233,23 @@ export async function build(buildRoot = root) {
   // Electron default mainHtml still points at desktop/dist/renderer/index.html.
   // Always emit a production React build (minify + NODE_ENV) so the tracked
   // dist artifact stays lean and never ships react-dom.development.js.
+  await buildBundle(absoluteRoot, "desktop-renderer-next-asset-bootstrap", {
+    entryPoints: [
+      "src/desktop/renderer-next/canvas/excalidraw/excalidrawAssetPath.ts",
+    ],
+    bundle: true,
+    platform: "browser",
+    format: "iife",
+    target: "es2022",
+    outfile: path.join(
+      buildOutRoot,
+      "renderer-next",
+      "excalidraw-asset-bootstrap.js"
+    ),
+    minify: true,
+    logLevel: "info",
+  });
+
   await buildBundle(absoluteRoot, "desktop-renderer-next", {
     entryPoints: ["src/desktop/renderer-next/main.tsx"],
     bundle: true,

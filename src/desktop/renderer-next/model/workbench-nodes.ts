@@ -35,7 +35,7 @@ export function depthByNodeId(graph: GraphProjection): ReadonlyMap<string, numbe
 export function workbenchNodesFromResources(
   graphResource: ProjectionResource<GraphProjection>,
   collaborationResource: ProjectionResource<NodeCollaborationsResult>,
-  document: CanvasDocument,
+  _document: CanvasDocument,
   provenance: ReadonlyMap<string, ProvenanceView> = new Map()
 ): WorkbenchNodeView[] {
   const graph =
@@ -55,11 +55,9 @@ export function workbenchNodesFromResources(
     collaborationResource.state
   );
   const result: WorkbenchNodeView[] = [];
-  const known = new Set<string>();
   if (graph) {
     const depths = depthByNodeId(graph);
     for (const node of graph.nodes) {
-      known.add(node.nodeId);
       result.push({
         nodeId: node.nodeId,
         path: node.path,
@@ -87,32 +85,6 @@ export function workbenchNodesFromResources(
           node.type === "output" ? provenance.get(node.nodeId) : undefined,
       });
     }
-  }
-  for (const placement of document.placements) {
-    if (!placement.entityRef || known.has(placement.entityRef)) continue;
-    result.push({
-      nodeId: placement.entityRef,
-      path: "本地画布位置",
-      name: "本地画布位置",
-      type: "未知类型",
-      tags: [],
-      mode: "editable",
-      archived: false,
-      invalid: false,
-      collaborationState: "unknown",
-      projectionState:
-        graphState === "error"
-          ? "error"
-          : graphState === "loading"
-            ? "loading"
-            : "unresolved",
-      projectionMessage:
-        graphState === "error"
-          ? "图投影查询失败；本地位置已保留。"
-          : graphState === "loading"
-            ? "正在读取权威图投影；本地位置已保留。"
-            : "权威投影中没有解析到这个 Node；本地位置已保留。",
-    });
   }
   return result;
 }

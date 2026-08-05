@@ -1,8 +1,10 @@
 import {
+  dropNodeSnapshotAt,
   placeEntityInVisibleViewport,
   removePlacement,
   setFocusedPlacement,
 } from "../model/canvas-document.js";
+import type { CanvasNodeSnapshot } from "../model/canvas-node-snapshot.js";
 import type { CanvasDocument } from "../types/identity.js";
 import { focusWorkbenchNode } from "./workbench-selection.js";
 
@@ -43,11 +45,29 @@ export function selectPresentationNode(
 
 export function placePresentationNode(
   current: WorkbenchPresentationState,
-  nodeId: string
+  nodeId: string,
+  snapshot?: CanvasNodeSnapshot
 ): WorkbenchPresentationState {
   return {
     selectedNodeId: nodeId,
-    document: placeEntityInVisibleViewport(current.document, nodeId).document,
+    document: placeEntityInVisibleViewport(
+      current.document,
+      nodeId,
+      undefined,
+      snapshot
+    ).document,
+  };
+}
+
+export function dropPresentationNode(
+  current: WorkbenchPresentationState,
+  nodeId: string,
+  snapshot: CanvasNodeSnapshot,
+  point: { x: number; y: number }
+): WorkbenchPresentationState {
+  return {
+    selectedNodeId: nodeId,
+    document: dropNodeSnapshotAt(current.document, nodeId, snapshot, point).document,
   };
 }
 

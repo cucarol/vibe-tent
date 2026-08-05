@@ -2,8 +2,12 @@ import { useRef, type CSSProperties, type KeyboardEvent } from "react";
 import { IconButton, PaneHeader, StatusBadge } from "../ui/index.js";
 import { ShellIcon } from "../shell/icons.js";
 import { nodeTitle, nodeTypeLabel, projectionLabel, taskStateLabel, type WorkbenchNodeView } from "../shell/workbench-types.js";
+import { OUTLINE_NODE_DRAG_TYPE } from "../model/canvas-node-snapshot.js";
 
 export type OutlinePanelProps = {
+  id?: string;
+  mode?: "compact" | "detail";
+  onModeChange?: (mode: "compact" | "detail") => void;
   nodes: readonly WorkbenchNodeView[];
   projection: "loading" | "fresh" | "stale" | "unresolved" | "error" | "unmounted";
   selectedNodeId: string | null;
@@ -42,7 +46,7 @@ const EMPTY_COPY: Record<
   },
 };
 
-export function OutlinePanel({ nodes, projection, selectedNodeId, onSelectNode, onOpenNodeActions, onCollapse }: OutlinePanelProps) {
+export function OutlinePanel({ id, mode = "compact", onModeChange, nodes, projection, selectedNodeId, onSelectNode, onOpenNodeActions, onCollapse }: OutlinePanelProps) {
   const itemRefs = useRef(new Map<string, HTMLButtonElement>());
   const emptyCopy = EMPTY_COPY[projection];
 
@@ -73,11 +77,25 @@ export function OutlinePanel({ nodes, projection, selectedNodeId, onSelectNode, 
   };
 
   return (
-    <aside className="tn-pane tn-outline-pane" aria-label="节点大纲" data-region="outline">
+    <aside id={id} className="tn-pane tn-outline-pane" aria-label="节点大纲" data-region="outline" data-outline-mode={mode}>
       <PaneHeader
         title="节点"
         meta={`${nodes.length}`}
-        actions={<IconButton aria-label="收起节点面板" variant="ghost" onClick={onCollapse}><ShellIcon name="chevron-left" /></IconButton>}
+        actions={<>
+          {onModeChange ? (
+            <IconButton
+              size="compact"
+              aria-label={mode === "detail" ? "恢复紧凑工作台" : "打开节点详细模式"}
+              tooltip={mode === "detail" ? "恢复紧凑工作台" : "打开节点详细模式"}
+              variant="ghost"
+              aria-pressed={mode === "detail"}
+              onClick={() => onModeChange(mode === "detail" ? "compact" : "detail")}
+            >
+              <ShellIcon name={mode === "detail" ? "canvas" : "focus"} />
+            </IconButton>
+          ) : null}
+          <IconButton size="compact" aria-label="收起节点面板" tooltip="收起节点面板" variant="ghost" onClick={onCollapse}><ShellIcon name="chevron-left" /></IconButton>
+        </>}
       />
       {nodes.length === 0 ? (
         <div className="tn-pane-empty" role="status">
@@ -88,7 +106,7 @@ export function OutlinePanel({ nodes, projection, selectedNodeId, onSelectNode, 
         <div className="tn-outline-tree" role="tree" aria-label="工作区节点">
           {nodes.map((node) => {
             const selected = node.nodeId === selectedNodeId;
-            const projection = projectionLabel(node.projectionState);
+            const projectionCopy = projectionLabel(node.projectionState);
             const projectionReady = !node.projectionState || node.projectionState === "ready";
             return (
               <button
@@ -108,11 +126,27 @@ export function OutlinePanel({ nodes, projection, selectedNodeId, onSelectNode, 
                 data-projection={node.projectionState ?? "ready"}
                 onClick={() => onSelectNode(node.nodeId)}
                 onKeyDown={(event) => onTreeKeyDown(event, nodes.indexOf(node))}
+                draggable={projection === "fresh" && projectionReady}
+                onDragStart={(event) => {
+                  if (projection !== "fresh" || !projectionReady) {
+                    event.preventDefault();
+                    return;
+                  }
+                  event.dataTransfer.effectAllowed = "copy";
+                  event.dataTransfer.setData(OUTLINE_NODE_DRAG_TYPE, node.nodeId);
+                  event.dataTransfer.setData("text/plain", nodeTitle(node));
+                }}
               >
                 <span className="tn-outline-spine" data-type={node.type} aria-hidden="true" />
                 <span className="tn-outline-copy">
                   <span className="tn-outline-title">{nodeTitle(node)}</span>
-                  <span className="tn-outline-meta">{projectionReady ? nodeTypeLabel(node.type) : projection}</span>
+                  <span className="tn-outline-meta">{projectionReady ? nodeTypeLabel(node.type) : projectionCopy}</span>
+                  {mode === "detail" && projectionReady ? (
+                    <span className="tn-outline-detail">
+                      <span>{node.path}</span>
+                      {node.tags.length ? <span>{node.tags.join(" · ")}</span> : null}
+                    </span>
+                  ) : null}
                 </span>
                 {projectionReady && node.activeTaskState ? <StatusBadge tone="running" data-task-state={node.activeTaskState}>{taskStateLabel(node.activeTaskState)}</StatusBadge> : null}
               </button>

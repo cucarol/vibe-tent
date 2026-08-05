@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Button } from "../../ui/index.js";
 
 export type TentEmbeddableNodeState =
+  | "snapshot"
   | "active"
   | "waiting"
   | "delivered"
@@ -31,6 +32,7 @@ export type TentEmbeddableNodeProps = {
 };
 
 const STATE_LABELS: Record<TentEmbeddableNodeState, string> = {
+  snapshot: "本地快照",
   active: "任务进行中",
   waiting: "等待确认",
   delivered: "已交付",

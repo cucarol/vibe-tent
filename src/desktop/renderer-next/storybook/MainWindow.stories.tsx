@@ -26,6 +26,7 @@ type MainWindowPreviewProps = {
   documentStatus?: FocusDocumentStatus;
   expanded?: boolean;
   collaborationState?: "none" | "empty" | "active" | "delivery" | "decision" | "loading" | "stale" | "error";
+  layoutMode?: "compact" | "detail";
 };
 
 const collaborationActions: CollaborationSurfaceActions = {
@@ -155,7 +156,7 @@ function previewDocument(
   }, selectedNodeId);
 }
 
-function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-workbench", selectedPlacement = "placed", documentStatus = "read", expanded = false, collaborationState = "none" }: MainWindowPreviewProps) {
+function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-workbench", selectedPlacement = "placed", documentStatus = "read", expanded = false, collaborationState = "none", layoutMode = "compact" }: MainWindowPreviewProps) {
   const [presentation, setPresentation] = useState(() => ({
     document: previewDocument(selectedNodeId, selectedPlacement),
     selectedNodeId,
@@ -229,7 +230,7 @@ function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-
   return (
     <div style={{ width: "100vw", height: "100vh", overflow: "hidden" }} data-testid="storybook-main-window" data-fixture-state={state}>
       <AppShell
-        key={`${documentStatus}:${expanded}:${collaborationState}`}
+        key={`${documentStatus}:${expanded}:${collaborationState}:${layoutMode}`}
         workspaceId={FIXTURE_WORKSPACE_ID}
         workspaceLabel="产品工作区"
         initialNodes={fixtureNodesForCollaboration(state, collaborationState)}
@@ -244,10 +245,7 @@ function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-
         collaborationActions={collaborationState === "none" ? undefined : collaborationActions}
         initialInspectorTab={collaborationState === "none" ? "content" : "collaboration"}
         initialFocusExpanded={expanded}
-        graph={{ edges: { parent: [
-          { parentNodeId: "cx-product", childNodeId: "cx-workbench" },
-          { parentNodeId: "cx-workbench", childNodeId: "cx-delivery" },
-        ] } }}
+        initialLayoutMode={layoutMode}
       />
     </div>
   );
@@ -264,6 +262,24 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const 正常选中: Story = { name: "正常 · 已选中节点" };
+export const 紧凑工作台1440: Story = {
+  name: "布局 · 紧凑工作台 1440×900",
+  parameters: { viewport: { defaultViewport: "desktop" } },
+};
+export const 紧凑工作台1280: Story = {
+  name: "布局 · 紧凑工作台 1280×840",
+  parameters: { viewport: { defaultViewport: "compactDesktop" } },
+};
+export const 节点详细模式1440: Story = {
+  name: "布局 · 节点详细模式 1440×900",
+  args: { layoutMode: "detail" },
+  parameters: { viewport: { defaultViewport: "desktop" } },
+};
+export const 节点详细模式1280: Story = {
+  name: "布局 · 节点详细模式 1280×840",
+  args: { layoutMode: "detail" },
+  parameters: { viewport: { defaultViewport: "compactDesktop" } },
+};
 export const 尚未放入画布: Story = {
   name: "正常 · 尚未放入画布",
   args: { selectedNodeId: "cx-delivery", selectedPlacement: "unplaced" },
