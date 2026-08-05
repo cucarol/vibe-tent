@@ -433,6 +433,14 @@ test("Desktop loads renderer-next without exposing Electron as the CLI package m
 
   const packageJson = JSON.parse(await read("package.json")) as { main?: string };
   assert.equal(packageJson.main, undefined);
+  const packageScripts = JSON.parse(await read("package.json")) as {
+    scripts: Record<string, string>;
+  };
+  assert.equal(packageScripts.scripts["desktop:start"], "electron desktop");
+  assert.equal(
+    packageScripts.scripts["desktop:dev"],
+    "npm run desktop:build && electron desktop"
+  );
   const desktopPackageJson = JSON.parse(await read("desktop/package.json")) as {
     main: string;
   };
