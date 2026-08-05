@@ -21,13 +21,15 @@ interface RunResult {
   code: number | null;
   stdout: string;
   stderr: string;
+  timedOut: boolean;
 }
 
 function run(
   command: string,
   args: string[],
   cwd: string,
-  envExtra: Record<string, string> = {}
+  envExtra: Record<string, string> = {},
+  timeoutMs?: number
 ): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -37,10 +39,28 @@ function run(
     });
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
+    const timeout = timeoutMs == null
+      ? undefined
+      : setTimeout(() => {
+          timedOut = true;
+          child.kill();
+        }, timeoutMs);
     child.stdout.on("data", (chunk) => (stdout += chunk));
     child.stderr.on("data", (chunk) => (stderr += chunk));
-    child.on("error", reject);
-    child.on("close", (code) => resolve({ code, stdout, stderr }));
+    child.on("error", (error) => {
+      if (timeout != null) clearTimeout(timeout);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      if (timeout != null) clearTimeout(timeout);
+      resolve({
+        code,
+        stdout,
+        stderr: timedOut ? `${stderr}\nTimed out after ${timeoutMs}ms.` : stderr,
+        timedOut,
+      });
+    });
   });
 }
 
@@ -161,12 +181,14 @@ test("CLI help and version expose only the current surface", async () => {
   assert.equal((await runCliOk(repoRoot, "-v")).stdout.trim(), pkg.version);
 });
 
-test("packed npm CLI keeps the current initialization and help surface", async (t) => {
+test("packed npm runtime installs dependency-free and keeps the current CLI and Service surface", async (t) => {
   const npmCli = process.env.npm_execpath;
   if (!npmCli) {
     t.skip("package smoke runs under npm test");
     return;
   }
+  const sourcePackage = JSON.parse(await fs.readFile(path.join(repoRoot, "package.json"), "utf8"));
+  assert.deepEqual(sourcePackage.dependencies ?? {}, {}, "published runtime must stay dependency-free");
   const packDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-pack-")));
   const packed = await runOk(
     process.execPath,
@@ -174,20 +196,41 @@ test("packed npm CLI keeps the current initialization and help surface", async (
     repoRoot
   );
   const packageInfo = JSON.parse(packed.stdout)[0];
+  const packedPaths = packageInfo.files.map((entry: { path: string }) => entry.path);
+  assert.ok(packedPaths.includes("cli.mjs"));
+  assert.ok(packedPaths.includes("service.mjs"));
+  assert.equal(
+    packedPaths.some((entry: string) => /^(desktop|src|test|node_modules)\//.test(entry)),
+    false,
+    "public tarball must not contain Desktop/editor or development trees"
+  );
   const tarball = path.join(packDir, packageInfo.filename);
   const parent = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-package-")));
   const prefix = path.join(parent, "install");
   const workspace = path.join(parent, "workspace");
+  const npmLogs = path.join(parent, "npm-logs");
 
   try {
     await fs.mkdir(prefix, { recursive: true });
-    await runOk(
+    await fs.mkdir(npmLogs, { recursive: true });
+    const install = await run(
       process.execPath,
       [npmCli, "install", "--ignore-scripts", "--dry-run=false", "--prefix", prefix, tarball],
-      repoRoot
+      repoRoot,
+      { npm_config_logs_dir: npmLogs },
+      90_000
+    );
+    const npmDebugLogs = install.code === 0 ? "" : await readNpmDebugLogs(npmLogs);
+    assert.equal(
+      install.code,
+      0,
+      `ordinary bounded npm install failed${install.timedOut ? " (timed out)" : ""}\nstdout:\n${install.stdout}\nstderr:\n${install.stderr}\nnpm debug logs:\n${npmDebugLogs}`
     );
     const installed = path.join(prefix, "node_modules", packageInfo.name);
     const cli = path.join(installed, "cli.mjs");
+    const service = path.join(installed, "service.mjs");
+    const installedPackage = JSON.parse(await fs.readFile(path.join(installed, "package.json"), "utf8"));
+    assert.deepEqual(installedPackage.dependencies ?? {}, {}, "packed package must stay dependency-free");
     await fs.mkdir(workspace, { recursive: true });
     await fs.writeFile(path.join(workspace, "README.md"), "# keep\n", "utf8");
     await runOk(process.execPath, [cli, "new", "."], workspace);
@@ -196,15 +239,49 @@ test("packed npm CLI keeps the current initialization and help surface", async (
     const help = await runOk(process.execPath, [cli, "--help"], workspace);
     assert.match(help.stdout, /tent node/);
     assert.doesNotMatch(help.stdout, /new-box|migrate|--vault/);
+    const serviceHelp = await runOk(process.execPath, [service, "--help"], workspace);
+    assert.match(serviceHelp.stdout, /tent-service/);
     for (const name of BUNDLED_SKILLS) {
       assert.equal(await exists(path.join(installed, "skills", name, "SKILL.md")), true);
     }
     assert.equal(await exists(path.join(installed, "LICENSE")), true);
     assert.equal(await exists(path.join(installed, "docs", "SPEC.md")), true);
   } finally {
-    await fs.rm(tarball, { force: true });
+    await fs.rm(parent, { recursive: true, force: true });
+    await fs.rm(packDir, { recursive: true, force: true });
   }
 });
+
+async function readNpmDebugLogs(root: string): Promise<string> {
+  try {
+    const entries = (await fs.readdir(root)).filter((entry) => entry.endsWith(".log"));
+    const candidates = await Promise.all(
+      entries.map(async (entry) => ({ entry, stat: await fs.stat(path.join(root, entry)) }))
+    );
+    candidates.sort((left, right) => right.stat.mtimeMs - left.stat.mtimeMs || left.entry.localeCompare(right.entry));
+
+    let remainingBytes = 64 * 1024;
+    const logs: string[] = [];
+    for (const { entry, stat } of candidates.slice(0, 3)) {
+      if (remainingBytes === 0) break;
+      const bytesToRead = Math.min(stat.size, remainingBytes);
+      const buffer = Buffer.alloc(bytesToRead);
+      const handle = await fs.open(path.join(root, entry), "r");
+      let bytesRead = 0;
+      try {
+        ({ bytesRead } = await handle.read(buffer, 0, bytesToRead, Math.max(0, stat.size - bytesToRead)));
+      } finally {
+        await handle.close();
+      }
+      remainingBytes -= bytesRead;
+      const truncated = stat.size > bytesRead ? ` (tail ${bytesRead}/${stat.size} bytes)` : "";
+      logs.push(`--- ${entry}${truncated} ---\n${buffer.subarray(0, bytesRead).toString("utf8")}`);
+    }
+    return logs.join("\n") || "<none>";
+  } catch {
+    return "<unavailable>";
+  }
+}
 
 async function assertInstalledSkills(root: string): Promise<void> {
   const init = await fs.readFile(path.join(root, "tent-init", "SKILL.md"), "utf8");
