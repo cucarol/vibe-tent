@@ -12,6 +12,7 @@ import { defaultServiceDataDir } from "../../service/data-dir.js";
 import { DESKTOP_IPC } from "../types.js";
 import { refreshDesktopShellForEvent } from "./service-event-refresh.js";
 import { normalizeFloatWindowBounds } from "./float-window-layout.js";
+import { FloatWindowBoundsPersistence } from "./float-window-persistence.js";
 
 const isDev = !app.isPackaged;
 const appRoot = isDev ? process.cwd() : app.getAppPath();
@@ -22,19 +23,18 @@ let mainWindow: BrowserWindow | null = null;
 let floatWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let quitting = false;
-let floatBoundsSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let floatBoundsPersistence: FloatWindowBoundsPersistence | null = null;
+let quitAfterFloatBoundsFlush = false;
 const readyMainWindows = new WeakSet<BrowserWindow>();
 
 const host = new DesktopServiceHost();
 const model = new DesktopShellModel();
 
-async function saveCurrentFloatBounds(): Promise<void> {
+function captureCurrentFloatBounds() {
   if (!floatWindow || floatWindow.isDestroyed()) return;
   const currentBounds = floatWindow.getBounds();
   const workArea = screen.getDisplayMatching(currentBounds).workArea;
-  const floatWindowBounds = normalizeFloatWindowBounds(currentBounds, workArea);
-  const current = await loadDesktopPrefs(dataDir);
-  await saveDesktopPrefs({ ...current, floatWindowBounds }, dataDir);
+  return normalizeFloatWindowBounds(currentBounds, workArea);
 }
 
 async function waitUntilMainWindowReady(win: BrowserWindow): Promise<void> {
@@ -110,6 +110,14 @@ async function bootstrap(): Promise<void> {
 
   mainWindow = makeMainWindow();
   floatWindow = createFloatWindow(paths, prefs);
+  const boundsPersistence = new FloatWindowBoundsPersistence({
+    loadPrefs: () => loadDesktopPrefs(dataDir),
+    savePrefs: (next) => saveDesktopPrefs(next, dataDir),
+    onError: (error) => {
+      console.warn("Failed to persist floating control bounds:", error);
+    },
+  });
+  floatBoundsPersistence = boundsPersistence;
 
   const showMainWindow = async () => {
     if (!mainWindow || mainWindow.isDestroyed()) {
@@ -124,28 +132,22 @@ async function bootstrap(): Promise<void> {
     floatWindow?.hide();
   };
 
-  const persistFloatBounds = () => {
-    void saveCurrentFloatBounds().catch((error) => {
-      console.warn("Failed to persist floating control bounds:", error);
-    });
-  };
-
   const scheduleFloatBoundsSave = () => {
-    if (floatBoundsSaveTimer) clearTimeout(floatBoundsSaveTimer);
-    floatBoundsSaveTimer = setTimeout(() => {
-      floatBoundsSaveTimer = null;
-      persistFloatBounds();
-    }, 240);
+    const bounds = captureCurrentFloatBounds();
+    if (bounds) boundsPersistence.schedule(bounds);
   };
 
   floatWindow.on("move", scheduleFloatBoundsSave);
   floatWindow.on("resize", scheduleFloatBoundsSave);
   floatWindow.on("closed", () => {
-    if (floatBoundsSaveTimer) {
-      clearTimeout(floatBoundsSaveTimer);
-      floatBoundsSaveTimer = null;
-    }
     floatWindow = null;
+    void boundsPersistence.flush()
+      .catch(() => undefined)
+      .finally(() => {
+        if (floatBoundsPersistence === boundsPersistence) {
+          floatBoundsPersistence = null;
+        }
+      });
   });
 
   mainWindow.on("close", (e: { preventDefault: () => void }) => {
@@ -274,18 +276,16 @@ app.on("window-all-closed", () => {
   // Do not call app.quit() — Local Service must outlive the UI.
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
   quitting = true;
-  if (floatBoundsSaveTimer) {
-    clearTimeout(floatBoundsSaveTimer);
-    floatBoundsSaveTimer = null;
-  }
-  if (floatWindow && !floatWindow.isDestroyed()) {
-    void saveCurrentFloatBounds()
-      .catch((error) => {
-        console.warn("Failed to persist floating control bounds before quit:", error);
-      });
-  }
+  if (quitAfterFloatBoundsFlush || !floatBoundsPersistence) return;
+  event.preventDefault();
+  quitAfterFloatBoundsFlush = true;
+  void floatBoundsPersistence.flush()
+    .catch((error) => {
+      console.warn("Failed to flush floating control bounds before quit:", error);
+    })
+    .finally(() => app.quit());
 });
 
 // Ensure single instance

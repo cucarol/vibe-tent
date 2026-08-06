@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { test } from "node:test";
+import type { DesktopPreferences } from "../src/desktop/types.js";
 import {
   FLOAT_WINDOW_BOUNDS,
   normalizeFloatWindowBounds,
 } from "../src/desktop/main/float-window-layout.js";
+import { FloatWindowBoundsPersistence } from "../src/desktop/main/float-window-persistence.js";
 
 const root = process.cwd();
 
@@ -42,6 +44,79 @@ test("floating control preserves valid bounds on a secondary display", () => {
     ),
     { x: -1180, y: 80, width: 340, height: 300 }
   );
+});
+
+test("floating bounds writes serialize and the newest captured bounds win", async () => {
+  let persisted: DesktopPreferences = {
+    recentWorkspaces: ["C:\\workspace"],
+    lastWorkspaceRoot: "C:\\workspace",
+    showFloatOnClose: false,
+  };
+  let saveCount = 0;
+  let releaseFirst!: () => void;
+  let markFirstStarted!: () => void;
+  const firstStarted = new Promise<void>((resolve) => {
+    markFirstStarted = resolve;
+  });
+  const firstRelease = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const serializedWrites: string[] = [];
+  const persistence = new FloatWindowBoundsPersistence({
+    delayMs: 5,
+    loadPrefs: async () => ({ ...persisted }),
+    savePrefs: async (next) => {
+      saveCount += 1;
+      const serialized = JSON.stringify(next);
+      serializedWrites.push(serialized);
+      if (saveCount === 1) {
+        markFirstStarted();
+        await firstRelease;
+      }
+      persisted = JSON.parse(serialized);
+    },
+  });
+
+  persistence.schedule({ x: 10, y: 20, width: 320, height: 260 });
+  const firstFlush = persistence.flush();
+  await firstStarted;
+  persistence.schedule({ x: 120, y: 140, width: 340, height: 300 });
+  const closeFlush = persistence.flush();
+  releaseFirst();
+  await Promise.all([firstFlush, closeFlush]);
+
+  assert.equal(saveCount, 2);
+  assert.deepEqual(persisted.floatWindowBounds, {
+    x: 120,
+    y: 140,
+    width: 340,
+    height: 300,
+  });
+  assert.deepEqual(persisted.recentWorkspaces, ["C:\\workspace"]);
+  assert.equal(persisted.lastWorkspaceRoot, "C:\\workspace");
+  assert.equal(persisted.showFloatOnClose, false);
+  for (const serialized of serializedWrites) assert.doesNotThrow(() => JSON.parse(serialized));
+});
+
+test("flush deterministically commits a debounced final move exactly once", async () => {
+  let savedBounds: unknown;
+  let saveCount = 0;
+  const persistence = new FloatWindowBoundsPersistence({
+    delayMs: 20,
+    loadPrefs: async () => ({ recentWorkspaces: [], showFloatOnClose: true }),
+    savePrefs: async (next) => {
+      saveCount += 1;
+      savedBounds = next.floatWindowBounds;
+    },
+  });
+
+  persistence.schedule({ x: -1100, y: 60, width: 328, height: 280 });
+  await persistence.flush();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await persistence.flush();
+
+  assert.equal(saveCount, 1);
+  assert.deepEqual(savedBounds, { x: -1100, y: 60, width: 328, height: 280 });
 });
 
 test("floating control has an honest, draggable, recoverable surface", async () => {
@@ -81,6 +156,8 @@ test("floating control has an honest, draggable, recoverable surface", async () 
   assert.match(main, /floatWindow\.on\("resize", scheduleFloatBoundsSave\)/);
   assert.match(main, /normalizeFloatWindowBounds\(currentBounds, workArea\)/);
   assert.match(main, /floatWindow\.on\("closed"/);
+  assert.match(main, /event\.preventDefault\(\)/);
+  assert.match(main, /floatBoundsPersistence\.flush\(\)/);
   assert.match(windows, /screen\.getDisplayMatching\(savedBounds\)/);
   assert.match(build, /"float\.css"/);
 });
