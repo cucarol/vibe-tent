@@ -425,6 +425,56 @@ test("task.accept retry rejects a foreign advance after exact integration", asyn
   });
 });
 
+test("task.accept retry rejects a foreign patch with a forged exact cherry-pick trailer", async () => {
+  const ws = await makeWorkspace("accept-crash-forged-trailer");
+  await initGitOnWorkspace(ws);
+
+  await withService(async (svc) => {
+    const task = await claimRunningWithBase(svc, ws, {
+      label: "forged-trailer",
+      prompt: "reject forged cherry-pick trailer",
+    });
+    const sourceCommit = await taskCommitOnLane(
+      task.worktree,
+      "real-source.txt",
+      "real source patch\n",
+      "real source"
+    );
+    const delivered = await rpc(svc, "task.deliver", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      summary: "ready before forged trailer",
+      commits: [sourceCommit],
+    });
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    const deliveryId = deliveryIdOf(delivered);
+
+    await fs.writeFile(path.join(ws, "foreign-forgery.txt"), "different patch\n");
+    await git(ws, "add", "foreign-forgery.txt");
+    await git(
+      ws,
+      "commit",
+      "-q",
+      "-m",
+      "foreign forged trailer",
+      "-m",
+      `(cherry picked from commit ${sourceCommit})`
+    );
+    const forgedTip = (await git(ws, "rev-parse", "main")).trim();
+
+    const retry = await rpc(svc, "task.accept", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      deliveryId,
+      actor: "user",
+    });
+    targetMovedData(retry.error as { code?: number; data?: unknown });
+    assert.equal((await git(ws, "rev-parse", "main")).trim(), forgedTip);
+    assert.equal(await pathExists(path.join(ws, "real-source.txt")), false);
+    await assertReadyAfterFailedAccept(svc, task.workspaceId, task.taskPath, deliveryId);
+  });
+});
+
 test("concurrent accept same targetHead: one integrates; other TARGET_MOVED remains ready", async () => {
   const ws = await makeWorkspace("concurrent-accept");
   await initGitOnWorkspace(ws);

@@ -986,6 +986,8 @@ async function findCherryPick(
   targetBranch: string
 ): Promise<string | undefined> {
   const full = await fullRef(root, sourceRef);
+  const sourcePatchId = await verbatimPatchId(root, full);
+  if (!sourcePatchId) return undefined;
   const needle = `(cherry picked from commit ${full})`;
   const targetRef = `refs/heads/${targetBranch}`;
   // 仅扫描目标分支可达历史；短窗口会导致「已合入」误判为需再次 cherry-pick。
@@ -993,10 +995,39 @@ async function findCherryPick(
   const parts = output.split("\0");
   for (let i = 0; i + 1 < parts.length; i += 2) {
     const body = parts[i + 1] ?? "";
-    // 精确匹配完整 sha 的标准 -x 文案；拒绝子串/截断误判。
-    if (body.includes(needle)) return parts[i].trim();
+    // Exact full-SHA trailer is necessary but not sufficient: commit prose is
+    // caller-controlled and may forge a standard -x marker. Require Git's
+    // whitespace-preserving patch identity before treating it as integrated.
+    if (!body.includes(needle)) continue;
+    const candidate = parts[i]?.trim() ?? "";
+    if (!candidate) continue;
+    const candidatePatchId = await verbatimPatchId(root, candidate);
+    if (candidatePatchId && candidatePatchId === sourcePatchId) return candidate;
   }
   return undefined;
+}
+
+/**
+ * Git-standard patch identity with whitespace preserved. Any Git/process or
+ * parse failure returns undefined so a trailer can never authorize recovery by
+ * itself. Empty commits also fail closed because production cherry-pick does
+ * not integrate them with --allow-empty.
+ */
+async function verbatimPatchId(root: string, commitRef: string): Promise<string | undefined> {
+  try {
+    const patch = await git(root, [
+      "show",
+      "--format=",
+      "--no-ext-diff",
+      "--binary",
+      commitRef,
+    ]);
+    const output = await git(root, ["patch-id", "--verbatim"], patch);
+    const patchId = output.trim().split(/\s+/, 1)[0]?.trim().toLowerCase() ?? "";
+    return /^[0-9a-f]{40,64}$/.test(patchId) ? patchId : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function findAncestorIntegration(
@@ -1248,7 +1279,7 @@ async function gitOk(cwd: string, args: string[]): Promise<boolean> {
   }
 }
 
-function git(cwd: string, args: string[]): Promise<string> {
+function git(cwd: string, args: string[], stdin?: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn("git", args, { cwd, windowsHide: true });
     let out = "";
@@ -1260,6 +1291,7 @@ function git(cwd: string, args: string[]): Promise<string> {
       else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
     });
     child.on("error", reject);
+    if (stdin !== undefined) child.stdin.end(stdin);
   });
 }
 
