@@ -161,16 +161,12 @@ function MountedWorkspace(props: {
   }
 
   const commitSnapshot = useCallback(() => {
-    const result = persistence.beginSave(snapshotRef.current).commit();
-    setPersistenceStatus(result.status);
-    retrySave.current =
-      "retry" in result
-        ? () => {
-            const retried = result.retry();
-            setPersistenceStatus(retried.status);
-            retrySave.current = "retry" in retried ? () => setPersistenceStatus(retried.retry().status) : null;
-          }
-        : null;
+    const attempt = () => {
+      const result = persistence.beginSave(snapshotRef.current).commit();
+      setPersistenceStatus(result.status);
+      retrySave.current = "retry" in result ? attempt : null;
+    };
+    attempt();
   }, [persistence]);
 
   const scheduleSnapshot = useCallback(

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -10,7 +11,11 @@ import {
 } from "../src/desktop/renderer-next/gateway/desktop-bridge.js";
 import { DesktopServiceHost } from "../src/desktop/main/service-host.js";
 import type { EventEnvelope } from "../src/service/types.js";
-import { shouldSeedLocalCanvas } from "../src/desktop/renderer-next/model/canvas-v5-local-persistence.js";
+import {
+  CanvasV5LocalPersistence,
+  shouldSeedLocalCanvas,
+  type CanvasV5LocalSnapshot,
+} from "../src/desktop/renderer-next/model/canvas-v5-local-persistence.js";
 import { startWorkspaceProjectionBridge } from "../src/desktop/renderer-next/gateway/workspace-projection-bridge.js";
 import {
   collaborationBadgeLabel,
@@ -89,6 +94,117 @@ test("first non-empty graph seeds only a truly absent local Canvas", () => {
   assert.equal(shouldSeedLocalCanvas("error", 0, 1), false);
   assert.equal(shouldSeedLocalCanvas("unavailable", 0, 1), false);
   assert.equal(shouldSeedLocalCanvas("empty", 1, 1), false);
+});
+
+test("Canvas persistence retry commits the latest local snapshot", async () => {
+  let failWrite = true;
+  let stored: string | null = null;
+  const persistence = new CanvasV5LocalPersistence(
+    {
+      getItem: () => stored,
+      setItem: (_key, value) => {
+        if (failWrite) throw new Error("quota exceeded");
+        stored = value;
+      },
+    },
+    "ws-a"
+  );
+  let current: CanvasV5LocalSnapshot = {
+    version: 1,
+    workspaceId: "ws-a",
+    document: {
+      ...createEmptyCanvasDocument(),
+      viewport: { x: 10, y: 20, zoom: 1 },
+    },
+    scene: null,
+  };
+  const retry = { current: null as (() => void) | null };
+  const attempt = () => {
+    const result = persistence.beginSave(current).commit();
+    retry.current = "retry" in result ? attempt : null;
+    return result;
+  };
+  const invokeRetry = () => {
+    const callback = retry.current;
+    assert.ok(callback);
+    callback();
+  };
+
+  const failed = attempt();
+  assert.equal(failed.kind, "error");
+  assert.equal(stored, null);
+  assert.ok(retry.current);
+
+  current = {
+    ...current,
+    document: {
+      ...current.document,
+      viewport: { x: 80, y: 90, zoom: 1.25 },
+    },
+  };
+  failWrite = false;
+  invokeRetry();
+  assert.equal(retry.current, null);
+
+  const loaded = persistence.load();
+  assert.equal(loaded.kind, "loaded");
+  assert.deepEqual(loaded.snapshot.document.viewport, {
+    x: 80,
+    y: 90,
+    zoom: 1.25,
+  });
+
+  stored = null;
+  failWrite = true;
+  current = {
+    ...current,
+    document: {
+      ...current.document,
+      viewport: { x: 100, y: 110, zoom: 1 },
+    },
+  };
+  assert.equal(attempt().kind, "error");
+  current = {
+    ...current,
+    document: {
+      ...current.document,
+      viewport: { x: 200, y: 210, zoom: 1.5 },
+    },
+  };
+  assert.ok(retry.current);
+  invokeRetry();
+  assert.ok(retry.current);
+  assert.equal(stored, null);
+
+  current = {
+    ...current,
+    document: {
+      ...current.document,
+      viewport: { x: 300, y: 310, zoom: 2 },
+    },
+  };
+  failWrite = false;
+  invokeRetry();
+  assert.equal(retry.current, null);
+  const loadedAfterRepeatedFailure = persistence.load();
+  assert.equal(loadedAfterRepeatedFailure.kind, "loaded");
+  assert.deepEqual(loadedAfterRepeatedFailure.snapshot.document.viewport, {
+    x: 300,
+    y: 310,
+    zoom: 2,
+  });
+
+  const production = await readFile(
+    new URL("../src/desktop/renderer-next/ProductionApp.tsx", import.meta.url),
+    "utf8"
+  );
+  const commitBlock = production.slice(
+    production.indexOf("const commitSnapshot"),
+    production.indexOf("const scheduleSnapshot")
+  );
+  assert.match(commitBlock, /beginSave\(snapshotRef\.current\)\.commit\(\)/);
+  assert.match(commitBlock, /retrySave\.current = "retry" in result \? attempt : null/);
+  assert.doesNotMatch(commitBlock, /result\.retry\(\)|retried\.retry\(\)/);
 });
 
 test("initial Canvas seed materializes only the first authoritative Node", () => {
