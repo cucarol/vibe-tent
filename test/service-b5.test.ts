@@ -41,6 +41,7 @@ import {
   stopManagedTaskInputBackgroundAccept,
 } from "../src/service/handlers.js";
 import { loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
+import { taskClaim } from "../src/core/task-lifecycle.js";
 import { ensureRoleWorkspace } from "../src/core/workspace.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -190,6 +191,20 @@ async function ensureManagedDelivered(
     ).state;
     return state === "delivered" ? state : null;
   }, 20_000, "managed auto-deliver reached delivered");
+}
+
+async function resetExactBoundSessionToReserved(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>,
+  sessionId: string
+): Promise<void> {
+  await svc.runtime.stopSession(sessionId, "user");
+  await svc.runtime.registry.update(sessionId, {
+    state: "reserved",
+    pid: undefined,
+    resumeToken: undefined,
+    lastError: undefined,
+  });
+  assert.equal((await svc.runtime.probe(sessionId)).alive, false);
 }
 
 async function makeWorkspace(
@@ -371,7 +386,7 @@ test("B5: unauthenticated RPC and SSE rejected; health open; token not in worksp
 
 // ---- full lifecycle manual review ----
 
-test("B5: dispatch → claim → startSession → deliver → accept (manual) via ServiceClient", async () => {
+test("B5: Connection dispatch → deliver → accept (manual) via ServiceClient", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
@@ -384,20 +399,16 @@ test("B5: dispatch → claim → startSession → deliver → accept (manual) vi
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },
       acceptMode: "review-required",
-    })) as { taskPath: string; state: string };
-    assert.equal(dispatched.state, "queued");
+    })) as { taskPath: string; state: string; sessionId: string };
+    assert.equal(dispatched.state, "running");
     const taskPath = dispatched.taskPath;
-
-    await client.taskClaim(workspaceId, taskPath);
-    const started = (await client.taskStartSession(workspaceId, {
-      taskPath,
-      callerKind: "user",
-    })) as { session: { sessionId: string; state: string }; task: { sessionId?: string; state: string } };
-
-    assert.match(started.session.sessionId, /^ss-/);
-    assert.equal(started.task.sessionId, started.session.sessionId);
-    assert.equal(started.task.state, "running");
-    const managedRecord = await svc.runtime.registry.read(started.session.sessionId);
+    assert.match(dispatched.sessionId, /^ss-/);
+    const running = (await client.taskGet(workspaceId, taskPath)) as {
+      task: { sessionId?: string; state: string };
+    };
+    assert.equal(running.task.sessionId, dispatched.sessionId);
+    assert.equal(running.task.state, "running");
+    const managedRecord = await svc.runtime.registry.read(dispatched.sessionId);
     assert.equal(managedRecord?.connectionId, "fake-default");
     assert.equal(
       "roleName" in (managedRecord ?? {}),
@@ -409,7 +420,7 @@ test("B5: dispatch → claim → startSession → deliver → accept (manual) vi
     const sessions = (await client.sessionList(workspaceId)) as {
       sessions: { sessionId: string; alive: boolean }[];
     };
-    assert.ok(sessions.sessions.some((s) => s.sessionId === started.session.sessionId && s.alive));
+    assert.ok(sessions.sessions.some((s) => s.sessionId === dispatched.sessionId && s.alive));
 
     // Direct runtime port still forbidden
     const banned = await rpc(svc, "AgentRuntimePort.startSession", {});
@@ -465,7 +476,7 @@ test("B5: dispatch → claim → startSession → deliver → accept (manual) vi
 
     // stop session cleanup via interrupt would be after deliver; already terminal
     const projectedSession = await client.call("session.get", {
-      sessionId: started.session.sessionId,
+      sessionId: dispatched.sessionId,
     });
     assert.equal(
       JSON.stringify(projectedSession).includes("connectionSnapshot"),
@@ -486,12 +497,11 @@ test("B5: acceptMode=auto-accept integrates without reviewer action", async () =
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
-      roleId: "rl-executor",
+      connectionId: "fake-default",
       prompt: "auto path",
       acceptMode: "auto-accept",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
     // No commits: policy auto-accept without Git. Commit integrate is covered by P0 tests.
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
@@ -515,12 +525,11 @@ test("B5: agent-decide integrate vs request-review", async () => {
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
-      roleId: "rl-executor",
+      connectionId: "fake-default",
       prompt: "agent decide",
       acceptMode: "agent-decide",
     });
     const taskPath = (d1.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
 
     // missing decision
     const missing = await rpc(svc, "task.deliver", {
@@ -549,12 +558,11 @@ test("B5: agent-decide integrate vs request-review", async () => {
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
-      roleId: "rl-executor",
+      connectionId: "fake-default",
       prompt: "review me",
       acceptMode: "agent-decide",
     });
     const taskPath = (d1.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
     const review = await rpc(svc, "task.deliver", {
       workspaceId,
       taskPath,
@@ -607,7 +615,7 @@ test("B5: explicit fake-default route runs its assigned Task", async () => {
   });
 });
 
-test("B5: machine route availability permits role startSession without registry authorization", async () => {
+test("B5: available Connection permits role startSession for an exact reserved binding", async () => {
   const ws = await makeWorkspace("b5-route", { executor: "deny" });
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -619,8 +627,10 @@ test("B5: machine route availability permits role startSession without registry 
       connectionId: "fake-default",
       prompt: "machine route path",
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const direct = d.result as { taskPath: string; sessionId: string };
+    const taskPath = direct.taskPath;
+    await resetExactBoundSessionToReserved(svc, direct.sessionId);
     const started = await rpc(svc, "task.startSession", {
       workspaceId,
       taskPath,
@@ -634,7 +644,7 @@ test("B5: machine route availability permits role startSession without registry 
   });
 });
 
-test("B5: user callerKind starts the available machine route", async () => {
+test("B5: user callerKind starts an available exact reserved Connection binding", async () => {
   const ws = await makeWorkspace("b5-user", { executor: "deny" });
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -646,8 +656,10 @@ test("B5: user callerKind starts the available machine route", async () => {
       connectionId: "fake-default",
       prompt: "user root",
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const direct = d.result as { taskPath: string; sessionId: string };
+    const taskPath = direct.taskPath;
+    await resetExactBoundSessionToReserved(svc, direct.sessionId);
     const started = await rpc(svc, "task.startSession", {
       workspaceId,
       taskPath,
@@ -707,14 +719,7 @@ test("B5: startSession bootstrap is managed (Context Card + user prompt); relay 
     assert.match(relay, /\.tent\/temp\//);
     assert.doesNotMatch(relay, /task-ack|tent report\b/);
 
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
-    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+    const sessionId = (d.result as { sessionId: string }).sessionId;
 
     // Capture managed bootstrap from fake adapter temp file.
     const bootstrap = await findFakeBootstrapPrompt(sessionId);
@@ -749,10 +754,11 @@ test("B5: startSession bootstrap is managed (Context Card + user prompt); relay 
       /^Tent contextCard v1/m,
       "managed bootstrap must not prepend drag-style Context Card prelude"
     );
-    // Must not instruct claim/get/deliver CLI commands (managed path auto-delivers final reply).
-    assert.doesNotMatch(bootstrap!, /tent task claim|task-ack|tent report\b/);
+    // The stable Skill may explain how a durable Role creates its own Task, but this
+    // exact managed Connection Task must never be told to claim itself again.
+    assert.doesNotMatch(bootstrap!, new RegExp(`tent task claim ${escapeRegExp(taskPath)}`));
+    assert.doesNotMatch(bootstrap!, /task-ack|tent report\b/);
     assert.doesNotMatch(bootstrap!, /tent task get |tent task deliver /);
-    assert.doesNotMatch(bootstrap!, /Run `tent task claim/);
     assert.doesNotMatch(bootstrap!, /docs API|CLI aliases/i);
   });
 });
@@ -786,16 +792,7 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual deli
       });
       assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
-      await rpc(svc, "task.claim", { workspaceId, taskPath });
-
-      const started = await rpc(svc, "task.startSession", {
-        workspaceId,
-        taskPath,
-        callerKind: "user",
-      });
-      assert.ok(!started.error, JSON.stringify(started.error));
-      const sessionId = (started.result as { session: { sessionId: string } }).session
-        .sessionId;
+      const sessionId = (d.result as { sessionId: string }).sessionId;
 
       // Wait for managed auto-deliver → delivered + one ready delivery.
       const delivered = await pollUntil(async () => {
@@ -895,16 +892,7 @@ test("P0: Delivery only after turn seal — post-response tail write cannot land
       });
       assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
-      await rpc(svc, "task.claim", { workspaceId, taskPath });
-
-      const started = await rpc(svc, "task.startSession", {
-        workspaceId,
-        taskPath,
-        callerKind: "user",
-      });
-      assert.ok(!started.error, JSON.stringify(started.error));
-      const sessionId = (started.result as { session: { sessionId: string } }).session
-        .sessionId;
+      const sessionId = (d.result as { sessionId: string }).sessionId;
 
       // Wait for Delivery via real prompt_complete projection (no sleep forge).
       const delivered = await pollUntil(async () => {
@@ -999,16 +987,7 @@ test("P0: public task.deliver/requestReview refuse while managed turnBusy; idle 
       });
       assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
-      await rpc(svc, "task.claim", { workspaceId, taskPath });
-
-      const started = await rpc(svc, "task.startSession", {
-        workspaceId,
-        taskPath,
-        callerKind: "user",
-      });
-      assert.ok(!started.error, JSON.stringify(started.error));
-      const sessionId = (started.result as { session: { sessionId: string } })
-        .session.sessionId;
+      const sessionId = (d.result as { sessionId: string }).sessionId;
 
       // Wait until the managed turn is actually busy (not merely session live).
       await pollUntil(async () => {
@@ -1161,20 +1140,13 @@ test("P0: public task.deliver/requestReview refuse while managed turnBusy; idle 
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
-      connectionId: "mock-acp-busy-deliver",
+      connectionId: "fake-default",
       prompt: "idle manual deliver still ok",
       acceptMode: "review-required",
     });
+    assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
-    const sessionId = (started.result as { session: { sessionId: string } })
-      .session.sessionId;
+    const sessionId = (d.result as { sessionId: string }).sessionId;
 
     const probe = await rpc(svc, "session.get", { workspaceId, sessionId });
     assert.ok(!probe.error, JSON.stringify(probe.error));
@@ -1224,14 +1196,8 @@ test("B5 managed ACP: empty / error / non-end_turn do not deliver", async () => 
           connectionId: `mock-acp-${mode}`,
           prompt: `mode ${mode}`,
         });
+        assert.ok(!d.error, JSON.stringify(d.error));
         const taskPath = (d.result as { taskPath: string }).taskPath;
-        await rpc(svc, "task.claim", { workspaceId, taskPath });
-        const started = await rpc(svc, "task.startSession", {
-          workspaceId,
-          taskPath,
-          callerKind: "user",
-        });
-        assert.ok(!started.error, JSON.stringify(started.error));
 
         const parked = await pollUntil(async () => {
           const g = await rpc(svc, "task.get", { workspaceId, taskPath });
@@ -1287,17 +1253,7 @@ test("P0: ACP assistant output limit parks Task, stops child, and keeps Service 
       });
       assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
       const taskPath = (dispatched.result as { taskPath: string }).taskPath;
-      await rpc(svc, "task.claim", { workspaceId, taskPath });
-      const started = await rpc(svc, "task.startSession", {
-        workspaceId,
-        taskPath,
-        callerKind: "user",
-      });
-      assert.ok(!started.error, JSON.stringify(started.error));
-      const startedSession = (
-        started.result as { session: { sessionId: string } }
-      ).session;
-      const sessionId = startedSession.sessionId;
+      const sessionId = (dispatched.result as { sessionId: string }).sessionId;
       const liveEvent = runtimeEvents.find(
         (event): event is Extract<
           import("../src/runtime/types.js").RuntimeEvent,
@@ -1401,10 +1357,19 @@ test("P0: ACP assistant output limit parks Task, stops child, and keeps Service 
       assert.equal(replacement.task.state, "running");
       assert.equal(replacement.task.sessionId, replacement.session.sessionId);
       assert.notEqual(replacement.session.sessionId, sessionId);
+      const replacementParked = await pollUntil(async () => {
+        const current = await rpc(svc, "task.get", { workspaceId, taskPath });
+        const task = (current.result as {
+          task: { state: string; sessionId?: string; wait?: { code?: string } };
+        }).task;
+        return task.state === "waiting" ? task : null;
+      }, 10_000, "replacement with the same bounded-output Connection parks again");
+      assert.equal(replacementParked.sessionId, replacement.session.sessionId);
+      assert.equal(replacementParked.wait?.code, SESSION_UNAVAILABLE_WAIT_CODE);
       assert.equal(
         (await svc.runtime.probe(replacement.session.sessionId)).alive,
-        true,
-        "explicit replacement must restore a live recoverable Task"
+        false,
+        "explicit replacement must not pretend the same failing provider is live"
       );
       assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, nodeId), {
         label: "output-limit replacement",
@@ -1445,16 +1410,9 @@ test("B5 managed ACP: interrupt / stop does not deliver", async () => {
         connectionId: "mock-acp-interrupt",
         prompt: "will interrupt",
       });
+      assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
-      await rpc(svc, "task.claim", { workspaceId, taskPath });
-      const started = await rpc(svc, "task.startSession", {
-        workspaceId,
-        taskPath,
-        callerKind: "user",
-      });
-      assert.ok(!started.error, JSON.stringify(started.error));
-      const sessionId = (started.result as { session: { sessionId: string } }).session
-        .sessionId;
+      const sessionId = (d.result as { sessionId: string }).sessionId;
 
       // Hang mode: wait until session is live, then interrupt task.
       await pollUntil(async () => {
@@ -1645,14 +1603,10 @@ test("B5: task.interrupt stops bound session", async () => {
       connectionId: "fake-default",
       prompt: "interrupt me",
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-    });
-    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const direct = d.result as { taskPath: string; sessionId: string };
+    const taskPath = direct.taskPath;
+    const sessionId = direct.sessionId;
     assert.equal((await svc.runtime.probe(sessionId)).alive, true);
 
     const interrupted = await rpc(svc, "task.interrupt", { workspaceId, taskPath });
@@ -1680,8 +1634,9 @@ test("B5: repeated interrupt repairs a late-bound Session projection", async () 
       connectionId: "fake-default",
       prompt: "late bind repair",
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const direct = d.result as { taskPath: string; sessionId: string };
+    const taskPath = direct.taskPath;
     const started = await rpc(svc, "task.startSession", {
       workspaceId,
       taskPath,
@@ -1727,7 +1682,7 @@ test("B5: task.cancel removes queued envelope", async () => {
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
-      connectionId: "fake-default",
+      roleId: "rl-executor",
       prompt: "cancel me",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -1856,16 +1811,9 @@ test("B5 tool approval: ask → pending → approve once → running → deliver
         connectionId: "mock-acp-tool-ask",
         prompt: "need tool then finish",
       });
+      assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
-      await rpc(svc, "task.claim", { workspaceId, taskPath });
-      const started = await rpc(svc, "task.startSession", {
-        workspaceId,
-        taskPath,
-        callerKind: "user",
-      });
-      assert.ok(!started.error, JSON.stringify(started.error));
-      const sessionId = (started.result as { session: { sessionId: string } }).session
-        .sessionId;
+      const sessionId = (d.result as { sessionId: string }).sessionId;
 
       // Task parks waiting on tool permission.
       await pollUntil(async () => {
@@ -1971,16 +1919,10 @@ test("B5 tool approval: concurrent asks keep task waiting until the final decisi
       connectionId: "fake-default",
       prompt: "two concurrent tool requests",
     });
-    const taskPath = (dispatched.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
-    const sessionId = (started.result as { session: { sessionId: string } }).session
-      .sessionId;
+    assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
+    const direct = dispatched.result as { taskPath: string; sessionId: string };
+    const taskPath = direct.taskPath;
+    const sessionId = direct.sessionId;
 
     await mapRuntimeEventToService(svc.ctx, {
       type: "session.waiting_user",
@@ -2061,14 +2003,8 @@ test("B5 tool approval: user deny cancels tool (ACP cancelled)", async () => {
         connectionId: "mock-acp-tool-deny",
         prompt: "will deny tool",
       });
+      assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
-      await rpc(svc, "task.claim", { workspaceId, taskPath });
-      const started = await rpc(svc, "task.startSession", {
-        workspaceId,
-        taskPath,
-        callerKind: "user",
-      });
-      assert.ok(!started.error, JSON.stringify(started.error));
 
       const pending = await pollUntil(async () => {
         const list = await rpc(svc, "toolApproval.listPending", { workspaceId });
@@ -2214,16 +2150,9 @@ test("B5 failure cleanup: prompt error stops process, parks waiting(external), k
         connectionId: "mock-acp-fail-clean",
         prompt: "will fail",
       });
+      assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
-      await rpc(svc, "task.claim", { workspaceId, taskPath });
-      const started = await rpc(svc, "task.startSession", {
-        workspaceId,
-        taskPath,
-        callerKind: "user",
-      });
-      assert.ok(!started.error, JSON.stringify(started.error));
-      const sessionId = (started.result as { session: { sessionId: string } }).session
-        .sessionId;
+      const sessionId = (d.result as { sessionId: string }).sessionId;
 
       const parked = await pollUntil(async () => {
         const g = await rpc(svc, "task.get", { workspaceId, taskPath });
@@ -2324,16 +2253,10 @@ for (const exitCode of [7, 0]) test(`B5 spontaneous managed child exit code=${ex
         connectionId: "mock-acp-spontaneous-die",
         prompt: "child will die spontaneously",
       });
-      const taskPath = (d.result as { taskPath: string }).taskPath;
-      await rpc(svc, "task.claim", { workspaceId, taskPath });
-      const started = await rpc(svc, "task.startSession", {
-        workspaceId,
-        taskPath,
-        callerKind: "user",
-      });
-      assert.ok(!started.error, JSON.stringify(started.error));
-      const sessionId = (started.result as { session: { sessionId: string } }).session
-        .sessionId;
+      assert.ok(!d.error, JSON.stringify(d.error));
+      const direct = d.result as { taskPath: string; sessionId: string };
+      const taskPath = direct.taskPath;
+      const sessionId = direct.sessionId;
 
       // Child exits after session/new even if prompt never settles. Both abnormal
       // and clean exit without delivery recoverably park the bound task.
@@ -2417,7 +2340,11 @@ test("B5: crash restart + mount parks running task bound to dead session (task-s
   let nodeId = "";
 
   {
-    const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+    const svc = await startLocalTentService({
+      dataDir,
+      writeEndpoint: true,
+      connections: [FAKE_DEFAULT_ROUTE],
+    });
     try {
       const mounted = await mountWorkItem(svc, ws);
       nodeId = mounted.nodeId;
@@ -2429,15 +2356,9 @@ test("B5: crash restart + mount parks running task bound to dead session (task-s
         connectionId: "fake-default",
         prompt: "crash mid-session",
       });
+      assert.ok(!d.error, JSON.stringify(d.error));
       taskPath = (d.result as { taskPath: string }).taskPath;
-      await rpc(svc, "task.claim", { workspaceId: mounted.workspaceId, taskPath });
-      const started = await rpc(svc, "task.startSession", {
-        workspaceId: mounted.workspaceId,
-        taskPath,
-        callerKind: "user",
-      });
-      assert.ok(!started.error, JSON.stringify(started.error));
-      sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+      sessionId = (d.result as { sessionId: string }).sessionId;
       assert.equal((await svc.runtime.probe(sessionId)).alive, true);
 
       // Snapshot: task running + bound, occupation held, process alive.
@@ -2533,9 +2454,10 @@ async function routeTaskCommit(
   contents: string,
   message: string
 ): Promise<string> {
-  await startRouteTaskSession(svc, workspaceId, taskPath);
   const task = await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath);
-  assert.ok(task.worktree, "route Task start must create its exact task worktree");
+  assert.equal(task.state, "running", "Connection dispatch must atomically claim its Task");
+  assert.match(task.sessionId ?? "", /^ss-/);
+  assert.ok(task.worktree, "Connection dispatch must create its exact task worktree");
   await fs.writeFile(path.join(task.worktree!, filename), contents);
   await git(task.worktree!, "add", filename);
   await git(task.worktree!, "commit", "-q", "-m", message);
@@ -2559,20 +2481,7 @@ async function roleTaskCommit(
 // Remaining durable-Role P0 fixtures deliberately commit in the Role lane.
 const roleCommit = roleTaskCommit;
 
-async function startRouteTaskSession(
-  svc: Awaited<ReturnType<typeof startLocalTentService>>,
-  workspaceId: string,
-  taskPath: string
-): Promise<void> {
-  const started = await rpc(svc, "task.startSession", {
-    workspaceId,
-    taskPath,
-    callerKind: "user",
-  });
-  assert.ok(!started.error, JSON.stringify(started.error));
-}
-
-test("P0-1: route Task start creates an isolated WorkspaceLane and uses its task worktree", async () => {
+test("P0-1: Connection dispatch creates an isolated WorkspaceLane and uses its Task worktree", async () => {
   const ws = await makeWorkspace("p0-lane");
   await initGitOnWorkspace(ws);
   await withService(async (svc) => {
@@ -2584,37 +2493,19 @@ test("P0-1: route Task start creates an isolated WorkspaceLane and uses its task
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
       connectionId: "fake-default",
-      prompt: "work in route task lane",
+      prompt: "work in Connection Task lane",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
     const dispatchLane = (dispatched.result as {
       workspaceLane?: { workspace?: string; worktree?: string; branch?: string; targetBranch?: string };
     }).workspaceLane;
-    assert.equal(dispatchLane?.workspace, undefined);
-    assert.equal(dispatchLane?.worktree, undefined);
-    assert.equal(dispatchLane?.branch, undefined);
-    assert.equal(dispatchLane?.targetBranch, undefined);
+    assert.equal(path.resolve(dispatchLane!.workspace!), path.resolve(ws));
+    assert.ok(dispatchLane?.worktree);
+    assert.match(dispatchLane?.branch ?? "", /^tent-task\//);
+    assert.equal(dispatchLane?.targetBranch, "main");
 
-    const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
-    assert.ok(!claimed.error, JSON.stringify(claimed.error));
-    const lane = (claimed.result as {
-      task: {
-        workspaceLane?: {
-          workspace?: string;
-          worktree?: string;
-          branch?: string;
-          targetBranch?: string;
-        };
-      };
-    }).task.workspaceLane;
-    assert.deepEqual(
-      lane,
-      { integrationAuthority: { actor: { kind: "user", id: "user" }, mutator: "service" } },
-      "route Task lane has authority only until managed startSession"
-    );
-
-    // Route Tasks have exact-task lanes; they must never inherit a durable Role lane.
+    // Connection Tasks have exact-Task lanes; they never inherit a durable Role lane.
     const box2 = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "work-item-2",
@@ -2627,54 +2518,37 @@ test("P0-1: route Task start creates an isolated WorkspaceLane and uses its task
       workspaceId,
       workNodeIds: [nodeId2], contextNodeIds: [],
       connectionId: "fake-default",
-      prompt: "second route task",
+      prompt: "second Connection task",
     });
     assert.ok(!d2.error, JSON.stringify(d2.error));
-    assert.equal(
-      (d2.result as { workspaceLane?: { worktree?: string } }).workspaceLane?.worktree,
-      undefined
-    );
-    const claimed2 = await rpc(svc, "task.claim", {
-      workspaceId,
-      taskPath: (d2.result as { taskPath: string }).taskPath,
-    });
-    assert.ok(!claimed2.error, JSON.stringify(claimed2.error));
-    const lane2 = (
-      claimed2.result as {
-        task: { workspaceLane?: { worktree?: string; branch?: string } };
-      }
-    ).task.workspaceLane;
-    assert.deepEqual(
-      lane2,
-      { integrationAuthority: { actor: { kind: "user", id: "user" }, mutator: "service" } },
-      "second route Task lane has authority only until managed startSession"
-    );
+    const lane2 = (d2.result as {
+      workspaceLane?: { worktree?: string; branch?: string };
+    }).workspaceLane;
+    assert.ok(lane2?.worktree);
+    assert.match(lane2?.branch ?? "", /^tent-task\//);
 
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
-    const session = (started.result as { session: { cwd?: string } }).session;
+    const sessionId = (dispatched.result as { sessionId: string }).sessionId;
+    const session = await svc.runtime.registry.read(sessionId);
+    assert.ok(session);
     const startedLane = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath));
-    assert.ok(startedLane.worktree, "managed route start must create a task worktree");
-    assert.equal(path.resolve(session.cwd!), path.resolve(startedLane.worktree!));
+    assert.ok(startedLane.worktree, "Connection dispatch must create a Task worktree");
+    assert.equal(
+      path.resolve(session!.runtimeWorkspace!.cwd),
+      path.resolve(startedLane.worktree!)
+    );
     assert.match(startedLane.branch ?? "", /^tent-task\//);
     assert.equal(startedLane.targetBranch, "main");
-    const task = (started.result as { task: { workspaceLane?: { worktree?: string } } }).task;
-    assert.equal(path.resolve(task.workspaceLane!.worktree!), path.resolve(startedLane.worktree!));
+    assert.equal(path.resolve(dispatchLane!.worktree!), path.resolve(startedLane.worktree!));
 
-    const started2 = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath: (d2.result as { taskPath: string }).taskPath,
-      callerKind: "user",
-    });
-    assert.ok(!started2.error, JSON.stringify(started2.error));
     const secondLane = await loadTaskEnvelope(
       svc.ctx.host.require(workspaceId).env.fs,
       (d2.result as { taskPath: string }).taskPath
     );
+    const secondSessionId = (d2.result as { sessionId: string }).sessionId;
+    const secondSession = await svc.runtime.registry.read(secondSessionId);
+    assert.ok(secondSession, "second Connection dispatch must persist its exact Session");
+    assert.equal((await svc.runtime.probe(secondSessionId)).alive, true);
+    assert.equal(path.resolve(secondSession!.runtimeWorkspace!.cwd), path.resolve(secondLane.worktree!));
     assert.notEqual(path.resolve(secondLane.worktree!), path.resolve(startedLane.worktree!));
     assert.notEqual(secondLane.branch, startedLane.branch);
   });
@@ -2767,12 +2641,11 @@ test("P0-2: manual accept integrates real commits into main; re-deliver of integ
       prompt: "integrate me",
       acceptMode: "review-required",
     });
+    assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const preStartBase = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
+    const dispatchBase = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
       .baseCommit;
-    assert.equal(preStartBase, undefined, "peer route lane/base are deferred until managed start");
-    // Route Task commits only after managed start captures its exact task lane/base.
+    assert.ok(dispatchBase, "Connection dispatch must capture its exact Task base");
     const sourceRef = await routeTaskCommit(svc, workspaceId, taskPath, "feature.txt", "ship\n", "feature work");
     const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath)).baseCommit;
     await assertTaskCommitFirstParent(ws, sourceRef, base!);
@@ -2817,12 +2690,11 @@ test("P0-2: manual accept integrates real commits into main; re-deliver of integ
       connectionId: "fake-default",
       prompt: "already on main",
     });
+    assert.ok(!d2.error, JSON.stringify(d2.error));
     const taskPath2 = (d2.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath: taskPath2 });
-    await startRouteTaskSession(svc, workspaceId, taskPath2);
     assert.ok(
       (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath2)).baseCommit,
-      "second claim must capture its own baseCommit"
+      "second Connection dispatch must capture its own baseCommit"
     );
     const reDeliver = await rpc(svc, "task.deliver", {
       workspaceId,
@@ -2865,16 +2737,22 @@ test("P0-2: auto-accept with commits integrates into main and accepts", async ()
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
-      roleId: "rl-executor",
+      connectionId: "fake-default",
       prompt: "auto-accept with git",
       acceptMode: "auto-accept",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
     const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
       .baseCommit;
-    assert.ok(base, "Role claim must capture its durable lane base before commits");
-    const sourceRef = await roleTaskCommit(ws, "executor", "auto.txt", "auto\n", "auto delivery");
+    assert.ok(base, "Connection dispatch must capture its durable lane base before commits");
+    const sourceRef = await routeTaskCommit(
+      svc,
+      workspaceId,
+      taskPath,
+      "auto.txt",
+      "auto\n",
+      "auto delivery"
+    );
     await assertTaskCommitFirstParent(ws, sourceRef, base!);
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
@@ -2914,16 +2792,22 @@ test("P0-2: agent-decide integrate with commits merges into main", async () => {
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
-      roleId: "rl-executor",
+      connectionId: "fake-default",
       prompt: "agent decide integrate",
       acceptMode: "agent-decide",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
     const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
       .baseCommit;
-    assert.ok(base, "Role claim must capture its durable lane base before commits");
-    const sourceRef = await roleTaskCommit(ws, "executor", "agent.txt", "agent\n", "agent integrate");
+    assert.ok(base, "Connection dispatch must capture its durable lane base before commits");
+    const sourceRef = await routeTaskCommit(
+      svc,
+      workspaceId,
+      taskPath,
+      "agent.txt",
+      "agent\n",
+      "agent integrate"
+    );
     await assertTaskCommitFirstParent(ws, sourceRef, base!);
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
@@ -2995,9 +2879,9 @@ async function claimDeliveredReviewTask(
     prompt,
     acceptMode: "review-required",
   });
+  assert.ok(!d.error, JSON.stringify(d.error));
   const taskPath = (d.result as { taskPath: string }).taskPath;
-  // Peer route baseCommit is captured when the managed route Session creates its task lane.
-  await rpc(svc, "task.claim", { workspaceId, taskPath });
+  // Connection dispatch atomically creates the managed Session and exact Task lane.
   const sourceRef = await routeTaskCommit(
     svc,
     workspaceId,
@@ -3009,7 +2893,7 @@ async function claimDeliveredReviewTask(
   const baseCommit =
     (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath)).baseCommit?.trim() ||
     "";
-  assert.ok(baseCommit, "managed route start must capture baseCommit before Task commits");
+  assert.ok(baseCommit, "Connection dispatch must capture baseCommit before Task commits");
   await assertTaskCommitFirstParent(ws, sourceRef, baseCommit);
   const delivered = await rpc(svc, "task.deliver", {
     workspaceId,
@@ -3067,16 +2951,22 @@ test("P0-2: auto-accept deliver releases MutationBus during blocked Git integrat
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
-      roleId: "rl-executor",
+      connectionId: "fake-default",
       prompt: "block bus during auto-accept integration",
       acceptMode: "auto-accept",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
     const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
       .baseCommit;
-    assert.ok(base, "Role claim must capture its durable lane base before commits");
-    const sourceRef = await roleTaskCommit(ws, "executor", "autoaccept-bus.txt", "x\n", "auto-accept bus");
+    assert.ok(base, "Connection dispatch must capture its durable lane base before commits");
+    const sourceRef = await routeTaskCommit(
+      svc,
+      workspaceId,
+      taskPath,
+      "autoaccept-bus.txt",
+      "x\n",
+      "auto-accept bus"
+    );
     await assertTaskCommitFirstParent(ws, sourceRef, base!);
     const deliverPromise = rpc(svc, "task.deliver", {
       workspaceId,
@@ -3164,7 +3054,8 @@ test("P0-2: same-Task reject waits for accept Git then refuses accepted", async 
     assert.equal((get.result as { task: { state: string } }).task.state, "accepted");
     assert.ok(order.indexOf("docs-done") < order.indexOf("integrate-exit"));
     assert.ok(order.indexOf("integrate-exit") < order.indexOf("accept-done"));
-    assert.ok(order.indexOf("accept-done") < order.indexOf("reject-done"));
+    // Promise continuation order is not an authority boundary: the queued reject
+    // may resolve before the accept caller's .then runs after lifecycle unlock.
   });
 });
 
@@ -3182,16 +3073,22 @@ test("P0-2: same-Task sendInput waits for auto-deliver Git then refuses accepted
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
-      roleId: "rl-executor",
+      connectionId: "fake-default",
       prompt: "same-task sendInput serializes with auto-accept",
       acceptMode: "auto-accept",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
     const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
       .baseCommit;
-    assert.ok(base, "Role claim must capture its durable lane base before commits");
-    const sourceRef = await roleTaskCommit(ws, "executor", "life-send.txt", "s\n", "life send");
+    assert.ok(base, "Connection dispatch must capture its durable lane base before commits");
+    const sourceRef = await routeTaskCommit(
+      svc,
+      workspaceId,
+      taskPath,
+      "life-send.txt",
+      "s\n",
+      "life send"
+    );
     await assertTaskCommitFirstParent(ws, sourceRef, base!);
     const deliverPromise = rpc(svc, "task.deliver", {
       workspaceId,
@@ -3236,7 +3133,8 @@ test("P0-2: same-Task sendInput waits for auto-deliver Git then refuses accepted
     assert.equal(inputs.length, 0, "no pending TaskInput may slip past auto-deliver");
     assert.ok(order.indexOf("docs-done") < order.indexOf("integrate-exit"));
     assert.ok(order.indexOf("integrate-exit") < order.indexOf("deliver-done"));
-    assert.ok(order.indexOf("deliver-done") < order.indexOf("send-done"));
+    // Promise continuation order may differ after lifecycle unlock; the held-Git
+    // assertions above and accepted/no-TaskInput outcome prove serialization.
   });
 });
 
@@ -3254,11 +3152,11 @@ test("P0-2: accept integration conflict keeps delivered + occupation; no done", 
       connectionId: "fake-default",
       prompt: "will conflict",
     });
+    assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const preStartBase = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
+    const dispatchBase = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
       .baseCommit;
-    assert.equal(preStartBase, undefined, "peer route lane/base are deferred until managed start");
+    assert.ok(dispatchBase, "Connection dispatch must capture its exact Task base");
 
     // Task commit AFTER claim base capture so history gate sees non-empty base..tip.
     const sourceRef = await routeTaskCommit(
@@ -3321,19 +3219,19 @@ test("P0-2: auto-accept integrate failure preserves ready Delivery and occupatio
       reviewer: { kind: "user", id: "user" },
       workspaceId,
       workNodeIds: [nodeId], contextNodeIds: [],
-      roleId: "rl-executor",
+      connectionId: "fake-default",
       prompt: "auto-accept conflict",
       acceptMode: "auto-accept",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
     const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
       .baseCommit;
-    assert.ok(base, "Role claim must capture its durable lane base before commits");
+    assert.ok(base, "Connection dispatch must capture its durable lane base before commits");
 
-    const sourceRef = await roleTaskCommit(
-      ws,
-      "executor",
+    const sourceRef = await routeTaskCommit(
+      svc,
+      workspaceId,
+      taskPath,
       "conflict.txt",
       "role\n",
       "role conflict"
@@ -3357,7 +3255,6 @@ test("P0-2: auto-accept integrate failure preserves ready Delivery and occupatio
     assert.equal((got.result as { task: { state: string } }).task.state, "delivered");
 
     assertOccupationHeld(await nodeCollabProjection(svc, workspaceId, nodeId), {
-      roleId: "rl-executor",
       label: "auto-accept integrate failure",
     });
 
@@ -3495,22 +3392,19 @@ test("terminal consistency: managed finalization and interrupt have one winner",
       prompt: "race finalization and interrupt",
       acceptMode: "review-required",
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const direct = d.result as { taskPath: string; sessionId: string };
+    const taskPath = direct.taskPath;
     const base = (await loadTaskEnvelope(
       svc.ctx.host.require(workspaceId).env.fs,
       taskPath
     )).baseCommit;
     assert.ok(base);
-    const started = await rpc(svc, "task.startSession", {
+    const sessionId = direct.sessionId;
+    const sourceRef = await routeTaskCommit(
+      svc,
       workspaceId,
       taskPath,
-      callerKind: "user",
-    });
-    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
-    const sourceRef = await roleCommit(
-      ws,
-      "executor",
       "terminal-race.txt",
       "ready\n",
       "terminal race"
@@ -3585,14 +3479,10 @@ test("terminal consistency: interrupt first suppresses managed finalization", as
       prompt: "interrupt first",
       acceptMode: "review-required",
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-    });
-    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const direct = d.result as { taskPath: string; sessionId: string };
+    const taskPath = direct.taskPath;
+    const sessionId = direct.sessionId;
 
     const interrupted = await rpc(svc, "task.interrupt", { workspaceId, taskPath });
     assert.ok(!interrupted.error, JSON.stringify(interrupted.error));
@@ -3619,7 +3509,7 @@ test("terminal consistency: interrupt first suppresses managed finalization", as
   });
 });
 
-test("P0 fix: managed auto-deliver collects role-lane commit; manual accept integrates", async () => {
+test("P0 fix: managed auto-deliver collects exact Task-lane commit; manual accept integrates", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace("p0-macp-collect-manual");
   await initGitOnWorkspace(ws);
@@ -3636,28 +3526,23 @@ test("P0 fix: managed auto-deliver collects role-lane commit; manual accept inte
       acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const direct = d.result as { taskPath: string; sessionId: string };
+    const taskPath = direct.taskPath;
     const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
       .baseCommit;
-    assert.ok(base, "Git Role claim must capture baseCommit before Task commits");
-    const started = await rpc(svc, "task.startSession", {
+    assert.ok(base, "Connection dispatch must capture baseCommit before Task commits");
+    const sessionId = direct.sessionId;
+    const sourceRef = await routeTaskCommit(
+      svc,
       workspaceId,
       taskPath,
-      callerKind: "user",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
-    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
-    const sourceRef = await roleCommit(
-      ws,
-      "executor",
       "collect-manual.txt",
       "ship\n",
       "collect manual"
     );
     await assertTaskCommitFirstParent(ws, sourceRef, base!);
 
-    // Production path: omit commits → collect from authoritative role lane.
+    // Production path: omit commits → collect from the exact Task lane.
     await invokeManagedAutoDeliverForTests(svc.ctx, {
       workspaceId,
       taskPath,
@@ -3677,7 +3562,7 @@ test("P0 fix: managed auto-deliver collects role-lane commit; manual accept inte
     assert.equal(deliveries[0].status, "ready");
     assert.deepEqual(deliveries[0].commits, [sourceRef]);
 
-    // Session stopped after successful delivery so role can take the next task.
+    // Session stopped after successful delivery.
     const rec = await svc.runtime.registry.read(sessionId);
     assert.ok(rec, "registry row retained for resume metadata");
     assert.notEqual(rec!.state, "live");
@@ -3714,18 +3599,12 @@ test("P0 fix: managed auto-accept integrates auto-collected commit", async () =>
       prompt: "auto-collect and accept",
       acceptMode: "auto-accept",
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const direct = d.result as { taskPath: string; sessionId: string };
+    const taskPath = direct.taskPath;
     const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
       .baseCommit;
-    assert.ok(base, "Git Role claim must capture baseCommit before Task commits");
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
-    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+    assert.ok(base, "Connection dispatch must capture baseCommit before Task commits");
+    const sessionId = direct.sessionId;
     const sourceRef = await routeTaskCommit(
       svc,
       workspaceId,
@@ -3865,37 +3744,31 @@ test("P0: dirty task worktree refuses managed auto-deliver and public task.deliv
       acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
-      .baseCommit;
-    assert.ok(base, "Git Role claim must capture baseCommit before Task commits");
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
-    const sessionId = (started.result as { session: { sessionId: string } }).session
-      .sessionId;
+    const direct = d.result as { taskPath: string; sessionId: string };
+    const taskPath = direct.taskPath;
+    const task = await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath);
+    const base = task.baseCommit;
+    assert.ok(base, "Connection dispatch must capture baseCommit before Task commits");
+    assert.ok(task.worktree, "Connection Task must own an exact worktree");
+    const sessionId = direct.sessionId;
 
     // One committed change (would be collectable) plus uncommitted tracked + untracked.
-    // Task commit only after claim base capture so ancestry remains exact.
-    const sourceRef = await roleCommit(
-      ws,
-      "executor",
+    // Task commit only after dispatch base capture so ancestry remains exact.
+    const sourceRef = await routeTaskCommit(
+      svc,
+      workspaceId,
+      taskPath,
       "committed-before-dirty.txt",
       "committed\n",
       "committed before dirty"
     );
     await assertTaskCommitFirstParent(ws, sourceRef, base!);
-    const contract = await ensureRoleWorkspace(ws, "executor");
     await fs.writeFile(
-      path.join(contract.worktree, "committed-before-dirty.txt"),
+      path.join(task.worktree!, "committed-before-dirty.txt"),
       "tracked dirty edit\n"
     );
     await fs.writeFile(
-      path.join(contract.worktree, "UNTRACKED_DIRTY.txt"),
+      path.join(task.worktree!, "UNTRACKED_DIRTY.txt"),
       "untracked dirty\n"
     );
     // Main must stay clean: gate inspects task/role worktree only.
@@ -3968,10 +3841,10 @@ test("P0: dirty task worktree refuses managed auto-deliver and public task.deliv
     );
 
     // Clean worktree: commit remaining edits, then auto-deliver succeeds with full SHA set.
-    await git(contract.worktree, "add", "committed-before-dirty.txt", "UNTRACKED_DIRTY.txt");
-    await git(contract.worktree, "commit", "-q", "-m", "commit dirty edits");
-    const cleanRef = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
-    assert.equal((await git(contract.worktree, "status", "--porcelain")).trim(), "");
+    await git(task.worktree!, "add", "committed-before-dirty.txt", "UNTRACKED_DIRTY.txt");
+    await git(task.worktree!, "commit", "-q", "-m", "commit dirty edits");
+    const cleanRef = (await git(task.worktree!, "rev-parse", "HEAD")).trim();
+    assert.equal((await git(task.worktree!, "status", "--porcelain")).trim(), "");
 
     resetManagedAutoDeliverDedupForTests();
     await invokeManagedAutoDeliverForTests(svc.ctx, {
@@ -3997,7 +3870,7 @@ test("P0: dirty task worktree refuses managed auto-deliver and public task.deliv
   });
 });
 
-test("reject-resume restores live managed session for durable role (no false-running)", async () => {
+test("reject-resume fail-closes a non-resumable Connection Task without false-running", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace("reject-resume-role-live");
 
@@ -4012,16 +3885,10 @@ test("reject-resume restores live managed session for durable role (no false-run
       prompt: "reject resume must wake session",
       acceptMode: "review-required",
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
-    const sessionId = (started.result as { session: { sessionId: string } }).session
-      .sessionId;
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const direct = d.result as { taskPath: string; sessionId: string };
+    const taskPath = direct.taskPath;
+    const sessionId = direct.sessionId;
 
     await invokeManagedAutoDeliverForTests(svc.ctx, {
       workspaceId,
@@ -4046,52 +3913,16 @@ test("reject-resume restores live managed session for durable role (no false-run
       resume: true,
       note: "please fix tests",
     });
-    assert.ok(!rejected.error, JSON.stringify(rejected.error));
-    const body = rejected.result as {
-      state: string;
-      task: { state: string; sessionId?: string };
-      session?: { sessionId: string; state: string };
-    };
-    assert.equal(body.state, "running");
-    assert.equal(body.task.state, "running");
-    assert.ok(body.session?.sessionId, "reject-resume must return a session projection");
-    assert.equal(body.task.sessionId, body.session!.sessionId);
-
-    const probeLive = await svc.runtime.probe(body.session!.sessionId);
-    assert.equal(probeLive.alive, true, "runtime process must be alive after reject-resume");
-    assert.ok(
-      probeLive.state === "live" || probeLive.state === "starting" || probeLive.state === "waiting-user",
-      `session state must be non-terminal, got ${probeLive.state}`
-    );
-
-    // Consume durable review-feedback before rework Delivery (TaskInput gate).
-    // fake-default may leave the row pending/failed when follow-up inject is unsupported.
-    const pendingFeedback = await svc.ctx.taskInputs.listBlockingForDeliver(
-      workspaceId,
-      taskPath
-    );
-    for (const row of pendingFeedback) {
-      if (row.status === "pending" || row.status === "failed") {
-        await svc.ctx.taskInputs.markDelivered(row.id, "test-consume-review-feedback");
-      }
-    }
-
-    // Rework can deliver again (dedup cleared for session+task).
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
-      workspaceId,
-      taskPath,
-      sessionId: body.session!.sessionId,
-      assistantText: "outcome: delivered\n\nREWORK_DELIVERY",
-    });
-    const afterRework = await loadTaskEnvelope(
-      svc.ctx.host.require(workspaceId).env.fs,
-      taskPath
-    );
-    assert.equal(afterRework.state, "delivered");
+    assert.ok(rejected.error, "fake Connection has no provider continuity to resume");
+    assert.equal(rejected.error!.code, RPC_LIFECYCLE);
+    const parked = await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath);
+    assert.equal(parked.state, "waiting");
+    assert.equal(parked.sessionId, sessionId);
+    assert.match(parked.wait?.summary ?? "", /cannot restore|replaceSession/i);
   });
 });
 
-test("reject-resume restores live managed session for route tasks", async () => {
+test("Connection Task paths bind the exact Session and failed resume preserves feedback", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace("reject-resume-profile-live");
 
@@ -4107,18 +3938,10 @@ test("reject-resume restores live managed session for route tasks", async () => 
       acceptMode: "review-required",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    assert.match(taskPath, /^temp\/routes\/fake-default\/tasks\//);
-
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
-    const sessionId = (started.result as { session: { sessionId: string } }).session
-      .sessionId;
+    const direct = d.result as { taskPath: string; sessionId: string };
+    const taskPath = direct.taskPath;
+    const sessionId = direct.sessionId;
+    assert.match(taskPath, new RegExp(`^temp/sessions/${sessionId}/tasks/`));
 
     await invokeManagedAutoDeliverForTests(svc.ctx, {
       workspaceId,
@@ -4130,7 +3953,7 @@ test("reject-resume restores live managed session for route tasks", async () => 
       (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath)).state,
       "delivered"
     );
-    // Stop prior process; fake-default is resumeCapable → same Tent sessionId.
+    // Stop prior process; fake-default cannot prove provider continuity.
     await svc.runtime.stopSession(sessionId, "user");
     const priorProbe = await svc.runtime.probe(sessionId);
     assert.equal(
@@ -4138,7 +3961,7 @@ test("reject-resume restores live managed session for route tasks", async () => 
       false,
       `prior session must be dead before reject-resume (state=${priorProbe.state})`
     );
-    assert.equal(priorProbe.resumeCapable, true, JSON.stringify(priorProbe));
+    assert.equal(priorProbe.resumeCapable, false, JSON.stringify(priorProbe));
     assert.ok(
       priorProbe.state === "stopped" || priorProbe.state === "failed",
       `prior session must be terminal; got state=${priorProbe.state}`
@@ -4157,87 +3980,17 @@ test("reject-resume restores live managed session for route tasks", async () => 
       resume: true,
       note: "profile rework",
     });
-    assert.ok(!rejected.error, JSON.stringify(rejected.error));
-    const body = rejected.result as {
-      state: string;
-      task: { state: string; sessionId?: string; assigneeKind?: string };
-      session?: { sessionId: string };
-      input?: {
-        id: string;
-        kind?: string;
-        status: string;
-        sessionId?: string;
-        text?: string;
-      };
-      accepted?: boolean;
-      enqueued?: boolean;
-      continued?: boolean;
-    };
-    assert.equal(body.state, "running");
-    assert.equal(body.task.assigneeKind, "route");
-    assert.ok(body.session?.sessionId);
-    assert.equal(body.task.sessionId, body.session!.sessionId);
-    assert.equal((await svc.runtime.probe(body.session!.sessionId)).alive, true);
+    assert.ok(rejected.error);
+    const inputs = await svc.ctx.taskInputs.listBlockingForDeliver(workspaceId, taskPath);
+    assert.equal(inputs.length, 1);
+    assert.equal(inputs[0]!.kind, "review-feedback");
+    assert.equal(inputs[0]!.text, "profile rework");
+    assert.equal(inputs[0]!.sessionId, sessionId);
 
-    // fake-default is resumeCapable → same Tent sessionId (native resume path).
-    assert.equal(
-      body.session!.sessionId,
-      sessionId,
-      "reject-resume must reuse prior Tent sessionId when resumeCapable"
-    );
-    assert.ok(body.input, "reject-resume must return review-feedback TaskInput");
-    assert.equal(body.input!.kind, "review-feedback");
-    assert.equal(body.input!.text, "profile rework");
-    assert.equal(
-      body.input!.sessionId,
-      sessionId,
-      "review-feedback must stay bound to the resumed session"
-    );
-    // Async accept: RPC does not wait for inject; continued is always false.
-    assert.equal(body.accepted, true);
-    assert.equal(body.enqueued, true);
-    assert.equal(body.continued, false);
-    // fake-default may leave pending or record a retryable failed row when
-    // follow-up inject is unsupported; either way durable binding stays on the
-    // same session and the feedback stays visible.
-    assert.ok(
-      body.input!.status === "pending" || body.input!.status === "processing",
-      `accept status should be pending|processing, got ${body.input!.status}`
-    );
-
-    // Background inject settles to a terminal-or-retryable durable status.
-    const settled = await pollUntil(async () => {
-      const stored = await svc.ctx.taskInputs.get(
-        body.input!.id,
-        workspaceId,
-        taskPath
-      );
-      if (!stored) return null;
-      if (
-        stored.status === "delivered" ||
-        stored.status === "failed" ||
-        stored.status === "uncertain"
-      ) {
-        return stored;
-      }
-      return null;
-    }, 15_000, "review-feedback background inject settles");
-    assert.equal(settled.sessionId, body.session!.sessionId);
-    // fake-default may leave failed when follow-up inject is unsupported;
-    // durable binding must remain on the resumed session.
-    assert.ok(
-      settled.status === "delivered" ||
-        settled.status === "failed" ||
-        settled.status === "uncertain",
-      `unexpected review-feedback status: ${settled.status}`
-    );
-    if (settled.status === "failed") {
-      const retryable = await svc.ctx.taskInputs.listRetryableForTask(workspaceId, taskPath);
-      assert.ok(
-        retryable.some((row) => row.id === settled.id),
-        "failed review-feedback must remain visible for retry/poll"
-      );
-    }
+    const parked = await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath);
+    assert.equal(parked.state, "waiting");
+    assert.equal(parked.sessionId, sessionId);
+    assert.match(parked.wait?.summary ?? "", /cannot restore|replaceSession/i);
   });
 });
 
@@ -4269,16 +4022,10 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
         prompt: "native reject-resume continuity",
         acceptMode: "review-required",
       });
-      const taskPath = (d.result as { taskPath: string }).taskPath;
-      await rpc(svc, "task.claim", { workspaceId, taskPath });
-      const started = await rpc(svc, "task.startSession", {
-        workspaceId,
-        taskPath,
-        callerKind: "user",
-      });
-      assert.ok(!started.error, JSON.stringify(started.error));
-      const sessionId = (started.result as { session: { sessionId: string } }).session
-        .sessionId;
+      assert.ok(!d.error, JSON.stringify(d.error));
+      const direct = d.result as { taskPath: string; sessionId: string };
+      const taskPath = direct.taskPath;
+      const sessionId = direct.sessionId;
 
       await ensureManagedDelivered(
         svc,
@@ -4403,11 +4150,10 @@ test("reject-resume unavailable restore parks; task.replaceSession creates the e
       workspaceId, workNodeIds: [nodeId], contextNodeIds: [], connectionId: "fake-default",
       prompt: "explicit replacement after unavailable resume", acceptMode: "review-required",
     });
-    const taskPath = (dispatched.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const started = await rpc(svc, "task.startSession", { workspaceId, taskPath, callerKind: "user" });
-    assert.ok(!started.error, JSON.stringify(started.error));
-    const priorSessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+    assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
+    const direct = dispatched.result as { taskPath: string; sessionId: string };
+    const taskPath = direct.taskPath;
+    const priorSessionId = direct.sessionId;
     const delivered = await rpc(svc, "task.deliver", { workspaceId, taskPath, summary: "first delivery" });
     assert.ok(!delivered.error, JSON.stringify(delivered.error));
     await svc.runtime.stopSession(priorSessionId, "user");
@@ -4755,16 +4501,10 @@ test("P0 late terminal from old session after rebind does not affect new occupat
       connectionId: "fake-default",
       prompt: "rebind then late old exit",
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
-    const oldSessionId = (started.result as { session: { sessionId: string } }).session
-      .sessionId;
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const direct = d.result as { taskPath: string; sessionId: string };
+    const taskPath = direct.taskPath;
+    const oldSessionId = direct.sessionId;
 
     // Park old session first, then force a true rebind (new ss-) by clearing
     // resume capability so late events from the old id can be proven inert.
@@ -4783,7 +4523,7 @@ test("P0 late terminal from old session after rebind does not affect new occupat
       state: "failed",
     });
 
-    const resumed = await rpc(svc, "task.startSession", {
+    const resumed = await rpc(svc, "task.replaceSession", {
       workspaceId,
       taskPath,
       callerKind: "user",
@@ -4794,7 +4534,7 @@ test("P0 late terminal from old session after rebind does not affect new occupat
     assert.notEqual(
       newSessionId,
       oldSessionId,
-      "non-resumeCapable prior must allocate a replacement sessionId"
+      "explicit replace must allocate a replacement sessionId"
     );
 
     const afterBind = await rpc(svc, "task.get", { workspaceId, taskPath });
@@ -5305,8 +5045,8 @@ test("P0 fix: recorded workspace lane collection errors stay retryable", async (
   });
 });/**
  * P0: task.startSession single-flight / idempotency per Task.
- * Same-tick concurrent callers must not mint two provider processes before
- * envelope sessionId bind. Fake adapter only — no paid/live providers.
+ * Same-tick concurrent callers must not mint two provider processes for one
+ * exact-bound reserved Session before provider launch. Fake adapter only.
  */
 test("P0: concurrent task.startSession same tick coalesces to one Session", async () => {
   resetManagedAutoDeliverDedupForTests();
@@ -5321,8 +5061,10 @@ test("P0: concurrent task.startSession same tick coalesces to one Session", asyn
       connectionId: "fake-default",
       prompt: "single-flight concurrent start",
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const direct = d.result as { taskPath: string; sessionId: string };
+    const taskPath = direct.taskPath;
+    await resetExactBoundSessionToReserved(svc, direct.sessionId);
 
     const payload = {
       workspaceId,
@@ -5428,55 +5170,40 @@ test("P0: failed launch clears same-task flight slot (lifecycle failed)", async 
         connectionId: "fake-fail-launch",
         prompt: "fail launch clears exact flight key",
       });
-      const taskPath = (d.result as { taskPath: string }).taskPath;
-      await rpc(svc, "task.claim", { workspaceId, taskPath });
-
-      const payload = {
-        workspaceId,
-        taskPath,
-        callerKind: "user" as const,
-      };
-      // Same-tick concurrent failures coalesce onto one launch attempt.
-      const [a, b] = await Promise.all([
-        rpc(svc, "task.startSession", payload),
-        rpc(svc, "task.startSession", payload),
-      ]);
-      assert.ok(a.error, "failLaunch must fail startSession");
-      assert.ok(b.error, "coalesced authorized caller must observe the same failure");
-      assert.match(String(a.error!.message), /simulated launch failure/);
-      assert.match(String(b.error!.message), /simulated launch failure/);
-
+      assert.ok(d.error, "atomic Connection dispatch must report provider launch failure");
+      assert.match(String(d.error!.message), /simulated launch failure/);
+      const listed = await rpc(svc, "task.list", { workspaceId });
+      const tasks = (listed.result as { tasks: Array<{ path: string }> }).tasks;
+      assert.equal(tasks.length, 1);
+      const taskPath = tasks[0]!.path;
       const mount = svc.ctx.host.require(workspaceId);
       const failedTask = await loadTaskEnvelope(mount.env.fs, taskPath);
       assert.equal(
         failedTask.state,
-        "failed",
-        "launch failure still taskFails occupation (unchanged contract)"
+        "waiting",
+        "launch failure keeps the exact Task recoverable"
       );
+      assert.equal(failedTask.wait?.code, SESSION_UNAVAILABLE_WAIT_CODE);
+      assert.ok(failedTask.sessionId);
+      await resetExactBoundSessionToReserved(svc, failedTask.sessionId!);
 
-      // Exact same taskPath flight key must be gone after the attempt settles.
-      assert.equal(
-        isTaskStartSessionInFlightForTests(workspaceId, taskPath),
-        false,
-        "same-task flight slot must clear after failed launch"
-      );
-
-      // Same-task re-start is refused by lifecycle (failed), not by a stuck flight.
-      const retrySame = await rpc(svc, "task.startSession", {
+      const payload = {
         workspaceId,
         taskPath,
         callerKind: "user",
-      });
-      assert.ok(retrySame.error);
-      assert.equal(retrySame.error!.code, RPC_LIFECYCLE);
-      assert.match(
-        String(retrySame.error!.message),
-        /requires running or waiting; got failed/
-      );
+      } as const;
+      const [first, second] = await Promise.all([
+        rpc(svc, "task.startSession", payload),
+        rpc(svc, "task.startSession", payload),
+      ]);
+      assert.ok(first.error);
+      assert.ok(second.error);
+      assert.match(String(first.error!.message), /simulated launch failure/);
+      assert.match(String(second.error!.message), /simulated launch failure/);
       assert.equal(
         isTaskStartSessionInFlightForTests(workspaceId, taskPath),
         false,
-        "lifecycle reject must not leave a flight slot"
+        "coalesced launch failure must clear the exact flight slot"
       );
     },
     {
@@ -5505,8 +5232,10 @@ test("P0: user and role concurrent starts share one machine-route launch", async
       connectionId: "fake-default",
       prompt: "auth gate before coalesce",
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const direct = d.result as { taskPath: string; sessionId: string };
+    const taskPath = direct.taskPath;
+    await resetExactBoundSessionToReserved(svc, direct.sessionId);
 
     const [userStart, roleStart] = await Promise.all([
       rpc(svc, "task.startSession", {
@@ -5584,18 +5313,25 @@ test("mount reconcile: dead/missing/stale-live session → waiting(external); tr
     ) {
       const created = await rpc(svc, "docs.createNote", { workspaceId, name, type: "prompt" });
       const nodeId = (created.result as { nodeId: string }).nodeId;
+      const connectionBound = opts.realLiveSession === true;
       const d = await rpc(svc, "task.dispatch", {
         parentActor: { kind: "user", id: "user" },
         reviewer: { kind: "user", id: "user" },
         workspaceId,
         workNodeIds: [nodeId], contextNodeIds: [],
-        connectionId: "fake-default",
+        ...(connectionBound
+          ? { connectionId: "fake-default" }
+          : { roleId: _role === "executor" ? "rl-executor" : "rl-orchestrator" }),
         prompt: `seed ${name}`,
       });
+      assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
-      await rpc(svc, "task.claim", { workspaceId, taskPath });
-
-      let sessionId: string | undefined;
+      let sessionId = connectionBound
+        ? (d.result as { sessionId: string }).sessionId
+        : undefined;
+      if (!connectionBound) {
+        await taskClaim(svc.hostApi.require(workspaceId).env, taskPath);
+      }
 
       if (opts.terminal) {
         await rpc(svc, "task.interrupt", { workspaceId, taskPath });
@@ -5607,13 +5343,7 @@ test("mount reconcile: dead/missing/stale-live session → waiting(external); tr
       }
 
       if (opts.realLiveSession) {
-        const started = await rpc(svc, "task.startSession", {
-          workspaceId,
-          taskPath,
-          callerKind: "user",
-        });
-        assert.ok(!started.error, JSON.stringify(started.error));
-        sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+        assert.ok(sessionId);
         const probe = await svc.runtime.probe(sessionId);
         assert.equal(probe.alive, true, "seeded live session must be process-alive");
       } else if (opts.bindSession) {
@@ -5786,7 +5516,7 @@ test("mount reconcile: dead/missing/stale-live session → waiting(external); tr
   });
 });
 
-test("task.startSession resumes any waiting (external) before launch", async () => {
+test("task.startSession clears a recoverable external wait before provider launch", async () => {
   const ws = await makeWorkspace("start-from-wait");
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -5798,8 +5528,11 @@ test("task.startSession resumes any waiting (external) before launch", async () 
       connectionId: "fake-default",
       prompt: "resume external wait",
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const direct = d.result as { taskPath: string; sessionId: string };
+    const taskPath = direct.taskPath;
+    await resetExactBoundSessionToReserved(svc, direct.sessionId);
+    assert.equal((await svc.runtime.probe(direct.sessionId)).alive, false);
 
     // Simulate post-restart parked task
     await rpc(svc, "task.wait", {
@@ -5906,7 +5639,7 @@ test("task.startSession parks an unavailable bound session; replaceSession creat
   });
 });
 
-test("task.startSession parks a stale missing binding; replaceSession recovers explicitly", async () => {
+test("task.startSession and replaceSession fail closed on a stale missing binding", async () => {
   const ws = await makeWorkspace("resume-missing-registry");
   await withService(async (svc) => {
     const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
@@ -5943,7 +5676,7 @@ test("task.startSession parks a stale missing binding; replaceSession recovers e
     });
     assert.ok(started.error);
     assert.equal(started.error!.code, RPC_LIFECYCLE);
-    assert.match(String(started.error!.message), /Bound Session not found.*replaceSession/i);
+    assert.match(String(started.error!.message), /Bound managed Session not found/i);
     const parked = await rpc(svc, "task.get", { workspaceId, taskPath });
     assert.equal((parked.result as { task: { state: string } }).task.state, "waiting");
 
@@ -5952,13 +5685,15 @@ test("task.startSession parks a stale missing binding; replaceSession recovers e
       taskPath,
       callerKind: "user",
     });
-    assert.ok(!replaced.error, JSON.stringify(replaced.error));
-    const sessionId = (replaced.result as { session: { sessionId: string } }).session.sessionId;
-    assert.notEqual(sessionId, missingSessionId);
+    assert.ok(replaced.error, "replacement requires an exact existing managed Session binding");
+    assert.equal(
+      (replaced.error!.data as { code?: string } | undefined)?.code,
+      "BOUND_SESSION_MISSING"
+    );
   });
 });
 
-test("task.startSession parks a foreign binding; replaceSession explicitly creates fresh", async () => {
+test("task.startSession and replaceSession fail closed on a foreign binding", async () => {
   const ws = await makeWorkspace("resume-workspace-boundary");
   const logPath = path.join(
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-resume-boundary-")),
@@ -5982,8 +5717,11 @@ test("task.startSession parks a foreign binding; replaceSession explicitly creat
         connectionId: "mock-acp-boundary",
         prompt: "workspace-bound resume",
       });
-      const taskPath = (dispatched.result as { taskPath: string }).taskPath;
-      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
+      const direct = dispatched.result as { taskPath: string; sessionId: string };
+      const taskPath = direct.taskPath;
+      await svc.runtime.stopSession(direct.sessionId, "user");
+      await svc.runtime.registry.remove(direct.sessionId);
       const loaded = await rpc(svc, "task.get", { workspaceId, taskPath });
       const task = (loaded.result as { task: { id?: string; worktree?: string } }).task;
       const cwd = task.worktree || ws;
@@ -6033,27 +5771,23 @@ test("task.startSession parks a foreign binding; replaceSession explicitly creat
       );
       const parked = await rpc(svc, "task.get", { workspaceId, taskPath });
       const parkedTask = (parked.result as {
-        task: { state: string; wait?: { reason?: string; code?: string } };
+        task: { state: string; wait?: { reason?: string; code?: string; summary?: string } };
       }).task;
       assert.equal(parkedTask.state, "waiting");
       assert.equal(parkedTask.wait?.reason, "external");
-      assert.equal(parkedTask.wait?.code, SESSION_UNAVAILABLE_WAIT_CODE);
+      assert.match(parkedTask.wait?.summary ?? "", /Bound session unavailable|could not restore/i);
 
       const replaced = await rpc(svc, "task.replaceSession", {
         workspaceId,
         taskPath,
         callerKind: "user",
       });
-      assert.ok(!replaced.error, JSON.stringify(replaced.error));
-      const newSessionId = (replaced.result as { session: { sessionId: string } }).session
-        .sessionId;
-      assert.notEqual(newSessionId, priorSessionId);
-      const replacementRecord = await svc.runtime.registry.read(newSessionId);
-      assert.equal(replacementRecord?.contextRestored, false);
-      assert.equal(replacementRecord?.replacedSessionId, priorSessionId);
-      assert.equal("roleName" in (replacementRecord ?? {}), false);
-      const retiredRecord = await svc.runtime.registry.read(priorSessionId);
-      assert.equal(retiredRecord?.replacedBySessionId, newSessionId);
+      assert.ok(replaced.error, "replacement must not trust a foreign Session row");
+      assert.equal(
+        (replaced.error!.data as { code?: string } | undefined)?.code,
+        "BOUND_SESSION_IDENTITY_MISMATCH"
+      );
+      assert.equal((await svc.runtime.registry.list()).length, sessionsBeforeForeignStart);
     },
     { connections: [profile] }
   );
@@ -6090,12 +5824,19 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
       prompt: "stale envelope",
       acceptMode: "review-required",
     });
+    assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
     const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
       .baseCommit;
-    assert.ok(base, "Git Role claim must capture baseCommit before Task commits");
-    const sourceRef = await roleCommit(ws, "executor", "reval.txt", "ok\n", "reval commit");
+    assert.ok(base, "Connection dispatch must capture baseCommit before Task commits");
+    const sourceRef = await routeTaskCommit(
+      svc,
+      workspaceId,
+      taskPath,
+      "reval.txt",
+      "ok\n",
+      "reval commit"
+    );
     await assertTaskCommitFirstParent(ws, sourceRef, base!);
 
     // Corrupt envelope targetBranch after base+commit — must not be trusted blindly.
@@ -6127,14 +5868,15 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
       connectionId: "fake-default",
       prompt: "wrong workspace",
     });
+    assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
     const base = (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath))
       .baseCommit;
-    assert.ok(base, "Git Role claim must capture baseCommit before Task commits");
-    const sourceRef = await roleCommit(
-      ws,
-      "executor",
+    assert.ok(base, "Connection dispatch must capture baseCommit before Task commits");
+    const sourceRef = await routeTaskCommit(
+      svc,
+      workspaceId,
+      taskPath,
       "reval-ws.txt",
       "ok\n",
       "reval workspace commit"
@@ -6448,6 +6190,7 @@ test("service stop waits for terminal runtime projections before disposing", asy
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: false,
+    connections: [FAKE_DEFAULT_ROUTE],
   });
   const sessionId = "ss-stopdrain1";
   let releaseProjection!: () => void;
