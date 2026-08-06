@@ -271,7 +271,10 @@ export function AppShell({
           <span className="tn-workspace-select" title={workspaceLabel}>{workspaceLabel}</span>
         </div>
         <div className="tn-surface-nav" aria-label="当前界面">
-          <span className="tn-surface-tab"><ShellIcon name="canvas" />画布</span>
+          <span className="tn-surface-tab">
+            <ShellIcon name={layoutMode === "detail" ? "outline" : "canvas"} />
+            {layoutMode === "detail" ? "节点详情" : "画布"}
+          </span>
         </div>
         <div className="tn-global-actions">
           <IconButton size="compact" id="tn-outline-toggle" aria-label={outlineOpen ? "收起节点面板" : "展开节点面板"} tooltip={outlineOpen ? "收起节点面板" : "展开节点面板"} variant="ghost" aria-expanded={outlineOpen} aria-controls="tn-outline-panel" onClick={toggleOutline}><ShellIcon name="panel-left" /></IconButton>

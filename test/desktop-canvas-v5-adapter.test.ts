@@ -48,6 +48,14 @@ import {
   embeddableInteractive,
 } from "../src/desktop/renderer-next/canvas/excalidraw/v5InteractionOwnership.js";
 import { shouldRefreshCanvasV5Scene } from "../src/desktop/renderer-next/canvas/excalidraw/sceneRefreshPolicy.js";
+import {
+  getPlacementPresentation,
+  togglePlacementPresentation,
+} from "../src/desktop/renderer-next/model/placement-chrome.js";
+import {
+  schedulePostMountCanvasViewportSync,
+  viewportAfterCanvasResize,
+} from "../src/desktop/renderer-next/model/canvas-viewport-resize.js";
 
 function sampleDoc(): CanvasDocument {
   const snapshot = (nodeId: string, type: string) => captureCanvasNodeSnapshot({
@@ -263,8 +271,169 @@ test("node cards stay frozen while projection-visible fields change", () => {
   assert.equal(frozen.typeLabel, "提示");
   assert.equal(frozen.detail, "产品/cx-alpha");
   assert.equal(frozen.state, "snapshot");
-  assert.equal(frozen.stateLabel, "可见字段已变化");
+  assert.equal(frozen.stateLabel, "来源有更新");
   assert.equal(frozen.rawTaskState, undefined);
+});
+
+test("etag-only source changes use the same fail-closed state on Canvas cards", () => {
+  const doc = sampleDoc();
+  const current = {
+    nodeId: "cx-alpha",
+    etag: "etag-new",
+    name: "Alpha",
+    title: "Alpha snapshot",
+    path: "产品/cx-alpha",
+    type: "prompt",
+    tags: ["prompt"],
+    mode: "editable" as const,
+    archived: false,
+    invalid: false,
+  };
+  const changed = documentToExcalidrawElements(doc, {
+    resolvers: { resolveCurrent: (nodeId) => nodeId === "cx-alpha" ? current : undefined },
+  });
+  assert.equal(changed.cards.get("pl-a")?.stateLabel, "来源有更新");
+
+  const stale = documentToExcalidrawElements(doc, {
+    resolvers: {
+      resolveCurrent: () => current,
+      resolvePendingRecovery: (nodeId) => nodeId === "cx-alpha",
+    },
+  });
+  assert.equal(stale.cards.get("pl-a")?.stateLabel, "投影已过期");
+});
+
+test("placement presentation is exact-instance local state and survives adapter rebuilds", () => {
+  const doc = sampleDoc();
+  const expanded = togglePlacementPresentation(doc, "pl-a");
+  assert.equal(getPlacementPresentation(expanded.placements[0]?.meta), "expanded");
+  assert.equal(getPlacementPresentation(expanded.placements[1]?.meta), "compact");
+  const mapped = documentToExcalidrawElements(expanded);
+  assert.equal(mapped.cards.get("pl-a")?.presentation, "expanded");
+  assert.equal(mapped.cards.get("pl-b")?.presentation, "compact");
+  const compact = togglePlacementPresentation(expanded, "pl-a");
+  assert.equal(getPlacementPresentation(compact.placements[0]?.meta), "compact");
+});
+
+test("Canvas resize preserves world centre then minimally reveals the focused placement", () => {
+  const direct1280 = viewportAfterCanvasResize({
+    viewport: { x: 0, y: 0, zoom: 1 },
+    previousSize: { width: 650, height: 640 },
+    nextSize: { width: 650, height: 640 },
+    focusedPlacement: {
+      placementId: "pl-selected",
+      entityRef: "cx-selected",
+      kind: "node",
+      x: 760,
+      y: 220,
+      width: 240,
+      height: 120,
+    },
+  });
+  assert.equal(760 + direct1280.x + 240, 626, "direct narrow mount reveals the full focused placement");
+
+  const viewport = viewportAfterCanvasResize({
+    viewport: { x: -320, y: 40, zoom: 1 },
+    previousSize: { width: 900, height: 700 },
+    nextSize: { width: 650, height: 640 },
+    focusedPlacement: {
+      placementId: "pl-selected",
+      entityRef: "cx-selected",
+      kind: "node",
+      x: 760,
+      y: 220,
+      width: 240,
+      height: 120,
+    },
+  });
+  const left = 760 + viewport.x;
+  const right = left + 240;
+  assert.ok(left >= 24 && right <= 626, "selected placement remains fully visible");
+  assert.notEqual(viewport.x, 0, "manual pan is not reset to the origin");
+
+  assert.deepEqual(viewportAfterCanvasResize({
+    viewport: { x: -1000, y: -300, zoom: 1 },
+    previousSize: { width: 900, height: 700 },
+    nextSize: { width: 650, height: 640 },
+    focusedPlacement: {
+      placementId: "pl-offscreen",
+      entityRef: "cx-offscreen",
+      kind: "node",
+      x: 100,
+      y: 100,
+      width: 240,
+      height: 120,
+    },
+    focusVisibility: "if-visible-before-resize",
+  }), { x: -1125, y: -330, zoom: 1 }, "offscreen selection does not override a manual pan");
+
+  assert.deepEqual(viewportAfterCanvasResize({
+    viewport: { x: -500, y: 80, zoom: 1.5 },
+    previousSize: { width: 1000, height: 700 },
+    nextSize: { width: 800, height: 600 },
+  }), { x: -600, y: 30, zoom: 1.5 }, "unselected resize preserves the visible world centre");
+});
+
+test("pending pan flushes before resize and cannot restore the pre-resize camera", () => {
+  let document = sampleDoc();
+  const gate = createCanvasV5PersistGate(60_000);
+  gate.schedule(() => {
+    document = {
+      ...document,
+      viewport: { x: -480, y: -220, zoom: 1.25 },
+    };
+  });
+
+  gate.flush();
+  const resized = viewportAfterCanvasResize({
+    viewport: document.viewport!,
+    previousSize: { width: 1440, height: 900 },
+    nextSize: { width: 1280, height: 840 },
+    focusedPlacement: document.placements[0]!,
+    focusVisibility: "if-visible-before-resize",
+  });
+  document = { ...document, viewport: resized };
+
+  assert.notDeepEqual(document.viewport, { x: -480, y: -220, zoom: 1.25 });
+  gate.flush();
+  assert.deepEqual(
+    document.viewport,
+    resized,
+    "the flushed debounce gate has no captured camera left to publish"
+  );
+});
+
+test("delayed Canvas API sync applies the latest direct-mount viewport after mount", () => {
+  let queued: (() => void) | null = null;
+  let cancelled = 0;
+  let current = true;
+  let viewport = { x: -120, y: -80, zoom: 1 };
+  const applied: Array<typeof viewport> = [];
+  const cancel = schedulePostMountCanvasViewportSync({
+    scheduler: {
+      requestFrame: (callback) => {
+        queued = callback;
+        return 17;
+      },
+      cancelFrame: (frameId) => {
+        assert.equal(frameId, 17);
+        cancelled += 1;
+      },
+    },
+    isCurrent: () => current,
+    readViewport: () => viewport,
+    applyViewport: (value) => applied.push(value),
+  });
+
+  assert.deepEqual(applied, [], "API delivery does not synchronously update an unmounted engine");
+  viewport = { x: -210, y: -95, zoom: 1 };
+  assert.ok(queued);
+  (queued as () => void)();
+  assert.deepEqual(applied, [{ x: -210, y: -95, zoom: 1 }]);
+
+  current = false;
+  cancel();
+  assert.equal(cancelled, 1);
 });
 
 test("whiteboard drop creates another placement with an independent frozen snapshot", () => {

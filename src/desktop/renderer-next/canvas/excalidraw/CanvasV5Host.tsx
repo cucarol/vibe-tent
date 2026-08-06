@@ -39,8 +39,14 @@ import {
   tentPlacementElementId,
   validateTentEmbeddableLink,
   viewportFromExcalidrawAppState,
+  excalidrawAppStateFromViewport,
   type CanvasNodeResolvers,
 } from "./documentToExcalidraw.js";
+import { togglePlacementPresentation } from "../../model/placement-chrome.js";
+import {
+  schedulePostMountCanvasViewportSync,
+  viewportAfterCanvasResize,
+} from "../../model/canvas-viewport-resize.js";
 import { CANVAS_V5_COLORS } from "./canvasV5Theme.js";
 import { Button } from "../../ui/index.js";
 import type { ExcalidrawSceneSnapshot } from "./excalidrawSceneTypes.js";
@@ -239,6 +245,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
 
   const applyingExternal = useRef(false);
   const apiRef = useRef<ExcalidrawApi | null>(null);
+  const cancelApiViewportSyncRef = useRef<(() => void) | null>(null);
   const lastInternallyPublishedDocument = useRef<CanvasDocument | null>(null);
   const liveSceneInputs = useRef<LiveSceneInputs>({
     document: canvasDocument,
@@ -279,9 +286,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
   );
   const ownershipRef = useRef(ownership);
   ownershipRef.current = ownership;
-  const [expandedPlacementIds, setExpandedPlacementIds] = useState<
-    ReadonlySet<string>
-  >(() => new Set());
+  const hostRef = useRef<HTMLDivElement>(null);
   const initialDataRef = useRef({
     elements: hydrated.elements as unknown[],
     appState: hydrated.appState,
@@ -394,6 +399,9 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
 
   useEffect(() => {
     return () => {
+      cancelApiViewportSyncRef.current?.();
+      cancelApiViewportSyncRef.current = null;
+      apiRef.current = null;
       flushCanvasV5PersistGates({
         placement: placementPersistGate.current,
         drawing: persistGate.current,
@@ -402,6 +410,72 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
       placementPersistGate.current.cancel();
     };
   }, []);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host || typeof ResizeObserver === "undefined") return;
+    let previousSize: { width: number; height: number } | null = null;
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect;
+      if (!rect || rect.width <= 0 || rect.height <= 0) return;
+      const nextSize = { width: rect.width, height: rect.height };
+      const sizeBeforeResize = previousSize ?? nextSize;
+      if (
+        previousSize &&
+        Math.abs(sizeBeforeResize.width - nextSize.width) < 0.5 &&
+        Math.abs(sizeBeforeResize.height - nextSize.height) < 0.5
+      ) return;
+      // Resolve the latest captured pan/zoom before deriving the resize. A
+      // delayed placement write must never restore the pre-resize camera.
+      placementPersistGate.current.flush();
+      const document = documentRef.current;
+      const focusedPlacement = document.focusedPlacementId
+        ? document.placements.find(
+            (placement) => placement.placementId === document.focusedPlacementId
+          ) ?? null
+        : null;
+      const viewport = viewportAfterCanvasResize({
+        viewport: document.viewport ?? DEFAULT_VIEWPORT,
+        previousSize: sizeBeforeResize,
+        nextSize,
+        focusedPlacement,
+        focusVisibility: previousSize ? "if-visible-before-resize" : "always",
+      });
+      previousSize = nextSize;
+      const currentViewport = document.viewport ?? DEFAULT_VIEWPORT;
+      if (
+        Math.abs(currentViewport.x - viewport.x) < 0.01 &&
+        Math.abs(currentViewport.y - viewport.y) < 0.01 &&
+        Math.abs(currentViewport.zoom - viewport.zoom) < 0.0001
+      ) return;
+      const nextDocument = withViewport(document, viewport);
+      const viewportAppState = excalidrawAppStateFromViewport(viewport);
+      applyingExternal.current = true;
+      try {
+        if (apiRef.current) {
+          apiRef.current.updateScene({
+            appState: viewportAppState,
+            captureUpdate: "NEVER",
+          });
+        } else {
+          initialDataRef.current = {
+            ...initialDataRef.current,
+            appState: {
+              ...initialDataRef.current.appState,
+              ...viewportAppState,
+            },
+          };
+        }
+        publishDocument(nextDocument);
+      } finally {
+        void Promise.resolve().then(() => {
+          applyingExternal.current = false;
+        });
+      }
+    });
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [publishDocument]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -478,6 +552,28 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
 
   const handleApi = useCallback((api: ExcalidrawApi) => {
     apiRef.current = api;
+    cancelApiViewportSyncRef.current?.();
+    cancelApiViewportSyncRef.current = schedulePostMountCanvasViewportSync({
+      scheduler: {
+        requestFrame: (callback) => requestAnimationFrame(callback),
+        cancelFrame: (frameId) => cancelAnimationFrame(frameId),
+      },
+      isCurrent: () => apiRef.current === api,
+      readViewport: () => documentRef.current.viewport ?? DEFAULT_VIEWPORT,
+      applyViewport: (viewport) => {
+        applyingExternal.current = true;
+        try {
+          api.updateScene({
+            appState: excalidrawAppStateFromViewport(viewport),
+            captureUpdate: "NEVER",
+          });
+        } finally {
+          void Promise.resolve().then(() => {
+            applyingExternal.current = false;
+          });
+        }
+      },
+    });
   }, []);
 
   const handleChange = useCallback<
@@ -670,6 +766,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
 
   return (
     <div
+      ref={hostRef}
       className={`tn-canvas-v5-host${props.className ? ` ${props.className}` : ""}`}
       data-testid="canvas-v5-host"
       data-canvas-v5="excalidraw-single-scene"
@@ -841,14 +938,15 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
                   data={toNodeData(model)}
                   selected={selected}
                   interactive={interactive}
-                  expanded={expandedPlacementIds.has(custom.placementId)}
+                  expanded={model.presentation === "expanded"}
                   onToggleExpanded={() => {
-                    setExpandedPlacementIds((current) => {
-                      const next = new Set(current);
-                      if (next.has(custom.placementId)) next.delete(custom.placementId);
-                      else next.add(custom.placementId);
-                      return next;
-                    });
+                    const nextDocument = togglePlacementPresentation(
+                      documentRef.current,
+                      custom.placementId
+                    );
+                    if (nextDocument !== documentRef.current) {
+                      publishDocument(nextDocument);
+                    }
                   }}
                 />
               );

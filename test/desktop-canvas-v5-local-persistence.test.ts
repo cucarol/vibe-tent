@@ -50,6 +50,7 @@ function snapshot(workspaceId = "ws-alpha"): CanvasV5LocalSnapshot {
           y: 200,
           width: 240,
           height: 96,
+          meta: { presentation: "expanded" },
         },
       ],
     },

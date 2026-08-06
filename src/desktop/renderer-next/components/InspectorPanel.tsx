@@ -24,7 +24,10 @@ import type {
 } from "../model/collaboration-surface-controller.js";
 import type { CanvasPlacementSourceState } from "../model/canvas-node-snapshot.js";
 
-export type InspectorLocalNodeView = Omit<WorkbenchNodeView, "etag"> & {
+export type InspectorLocalNodeView = Omit<
+  WorkbenchNodeView,
+  "etag" | "parentNodeId" | "hasChildren"
+> & {
   etag?: string;
 };
 

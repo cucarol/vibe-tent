@@ -32,6 +32,21 @@ export function depthByNodeId(graph: GraphProjection): ReadonlyMap<string, numbe
   return depths;
 }
 
+export function parentByNodeId(
+  graph: GraphProjection
+): ReadonlyMap<string, string | null> {
+  const parents = new Map<string, string | null>();
+  for (const edge of graph.edges.parent) {
+    if (!parents.has(edge.childNodeId)) {
+      parents.set(edge.childNodeId, edge.parentNodeId);
+    }
+  }
+  for (const node of graph.nodes) {
+    if (!parents.has(node.nodeId)) parents.set(node.nodeId, null);
+  }
+  return parents;
+}
+
 export function workbenchNodesFromResources(
   graphResource: ProjectionResource<GraphProjection>,
   collaborationResource: ProjectionResource<NodeCollaborationsResult>,
@@ -57,6 +72,12 @@ export function workbenchNodesFromResources(
   const result: WorkbenchNodeView[] = [];
   if (graph) {
     const depths = depthByNodeId(graph);
+    const parents = parentByNodeId(graph);
+    const parentsWithChildren = new Set(
+      graph.edges.parent
+        .map((edge) => edge.parentNodeId)
+        .filter((nodeId): nodeId is string => Boolean(nodeId))
+    );
     for (const node of graph.nodes) {
       result.push({
         nodeId: node.nodeId,
@@ -69,6 +90,8 @@ export function workbenchNodesFromResources(
         mode: node.mode,
         archived: node.archived,
         invalid: node.invalid,
+        parentNodeId: parents.get(node.nodeId) ?? null,
+        hasChildren: parentsWithChildren.has(node.nodeId),
         depth: depths.get(node.nodeId) ?? 0,
         activeTaskState:
           graphState === "ready" && collaborationState === "ready" && collabs

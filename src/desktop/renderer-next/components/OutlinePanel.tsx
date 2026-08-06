@@ -1,8 +1,13 @@
-import { useRef, type CSSProperties, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from "react";
 import { IconButton, PaneHeader, StatusBadge } from "../ui/index.js";
 import { ShellIcon } from "../shell/icons.js";
 import { nodeTitle, nodeTypeLabel, projectionLabel, taskStateLabel, type WorkbenchNodeView } from "../shell/workbench-types.js";
 import { OUTLINE_NODE_DRAG_TYPE } from "../model/canvas-node-snapshot.js";
+import {
+  firstOutlineChild,
+  updateOutlineExpansion,
+  visibleOutlineNodes,
+} from "../model/outline-tree.js";
 
 export type OutlinePanelProps = {
   id?: string;
@@ -47,33 +52,102 @@ const EMPTY_COPY: Record<
 };
 
 export function OutlinePanel({ id, mode = "compact", onModeChange, nodes, projection, selectedNodeId, onSelectNode, onOpenNodeActions, onCollapse }: OutlinePanelProps) {
-  const itemRefs = useRef(new Map<string, HTMLButtonElement>());
+  const itemRefs = useRef(new Map<string, HTMLDivElement>());
+  const knownExpandableIds = useRef(new Set<string>());
+  const [expandedNodeIds, setExpandedNodeIds] = useState<ReadonlySet<string>>(
+    () => new Set(nodes.filter((node) => node.hasChildren).map((node) => node.nodeId))
+  );
   const emptyCopy = EMPTY_COPY[projection];
+  useEffect(() => {
+    setExpandedNodeIds((current) => {
+      const next = new Set(
+        [...current].filter((nodeId) => nodes.some((node) => node.nodeId === nodeId && node.hasChildren))
+      );
+      for (const node of nodes) {
+        if (node.hasChildren && !knownExpandableIds.current.has(node.nodeId)) {
+          next.add(node.nodeId);
+        }
+      }
+      knownExpandableIds.current = new Set(
+        nodes.filter((node) => node.hasChildren).map((node) => node.nodeId)
+      );
+      return next;
+    });
+  }, [nodes]);
+  const visibleNodes = useMemo(
+    () => visibleOutlineNodes(nodes, expandedNodeIds),
+    [expandedNodeIds, nodes]
+  );
+  const siblingInfo = useMemo(() => {
+    const siblings = new Map<string | null, WorkbenchNodeView[]>();
+    for (const node of nodes) {
+      const group = siblings.get(node.parentNodeId) ?? [];
+      group.push(node);
+      siblings.set(node.parentNodeId, group);
+    }
+    return new Map(nodes.map((node) => {
+      const group = siblings.get(node.parentNodeId) ?? [node];
+      return [node.nodeId, { position: group.indexOf(node) + 1, size: group.length }] as const;
+    }));
+  }, [nodes]);
 
-  const focusItem = (index: number) => {
-    const node = nodes[index];
+  const focusItem = (node: WorkbenchNodeView | undefined | null) => {
     if (!node) return;
     onSelectNode(node.nodeId);
     itemRefs.current.get(node.nodeId)?.focus();
   };
 
-  const onTreeKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+  const setExpanded = (node: WorkbenchNodeView, expanded: boolean) => {
+    if (!node.hasChildren) return;
+    const next = updateOutlineExpansion({
+      nodes,
+      expandedNodeIds,
+      nodeId: node.nodeId,
+      expanded,
+      selectedNodeId,
+    });
+    setExpandedNodeIds(next.expandedNodeIds);
+    if (next.selectedNodeId !== selectedNodeId && next.selectedNodeId) {
+      onSelectNode(next.selectedNodeId);
+      requestAnimationFrame(() => itemRefs.current.get(node.nodeId)?.focus());
+    }
+  };
+
+  const onTreeKeyDown = (event: KeyboardEvent<HTMLDivElement>, index: number) => {
+    const node = visibleNodes[index];
+    if (!node) return;
     if ((event.key === "Enter" || event.key === " ") && onOpenNodeActions) {
       event.preventDefault();
-      const node = nodes[index];
-      if (!node) return;
       onSelectNode(node.nodeId);
       onOpenNodeActions(node.nodeId);
       return;
     }
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      if (node.hasChildren && !expandedNodeIds.has(node.nodeId)) {
+        setExpanded(node, true);
+      } else {
+        focusItem(firstOutlineChild(visibleNodes, node.nodeId));
+      }
+      return;
+    }
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      if (node.hasChildren && expandedNodeIds.has(node.nodeId)) {
+        setExpanded(node, false);
+      } else {
+        focusItem(nodes.find((candidate) => candidate.nodeId === node.parentNodeId));
+      }
+      return;
+    }
     let nextIndex: number | null = null;
-    if (event.key === "ArrowDown") nextIndex = Math.min(index + 1, nodes.length - 1);
+    if (event.key === "ArrowDown") nextIndex = Math.min(index + 1, visibleNodes.length - 1);
     if (event.key === "ArrowUp") nextIndex = Math.max(index - 1, 0);
     if (event.key === "Home") nextIndex = 0;
-    if (event.key === "End") nextIndex = nodes.length - 1;
+    if (event.key === "End") nextIndex = visibleNodes.length - 1;
     if (nextIndex === null) return;
     event.preventDefault();
-    focusItem(nextIndex);
+    focusItem(visibleNodes[nextIndex]);
   };
 
   return (
@@ -91,7 +165,7 @@ export function OutlinePanel({ id, mode = "compact", onModeChange, nodes, projec
               aria-pressed={mode === "detail"}
               onClick={() => onModeChange(mode === "detail" ? "compact" : "detail")}
             >
-              <ShellIcon name={mode === "detail" ? "canvas" : "focus"} />
+              <ShellIcon name={mode === "detail" ? "canvas" : "outline"} />
             </IconButton>
           ) : null}
           <IconButton size="compact" aria-label="收起节点面板" tooltip="收起节点面板" variant="ghost" onClick={onCollapse}><ShellIcon name="chevron-left" /></IconButton>
@@ -104,18 +178,22 @@ export function OutlinePanel({ id, mode = "compact", onModeChange, nodes, projec
         </div>
       ) : (
         <div className="tn-outline-tree" role="tree" aria-label="工作区节点">
-          {nodes.map((node) => {
+          {visibleNodes.map((node, index) => {
             const selected = node.nodeId === selectedNodeId;
             const projectionCopy = projectionLabel(node.projectionState);
             const projectionReady = !node.projectionState || node.projectionState === "ready";
+            const expanded = node.hasChildren ? expandedNodeIds.has(node.nodeId) : undefined;
+            const position = siblingInfo.get(node.nodeId);
             return (
-              <button
+              <div
                 key={node.nodeId}
-                type="button"
                 role="treeitem"
                 aria-level={(node.depth ?? 0) + 1}
                 aria-selected={selected}
-                tabIndex={selected || (!selectedNodeId && node === nodes[0]) ? 0 : -1}
+                aria-expanded={expanded}
+                aria-posinset={position?.position}
+                aria-setsize={position?.size}
+                tabIndex={selected || (!selectedNodeId && node === visibleNodes[0]) ? 0 : -1}
                 ref={(element) => {
                   if (element) itemRefs.current.set(node.nodeId, element);
                   else itemRefs.current.delete(node.nodeId);
@@ -125,7 +203,7 @@ export function OutlinePanel({ id, mode = "compact", onModeChange, nodes, projec
                 data-selected={selected || undefined}
                 data-projection={node.projectionState ?? "ready"}
                 onClick={() => onSelectNode(node.nodeId)}
-                onKeyDown={(event) => onTreeKeyDown(event, nodes.indexOf(node))}
+                onKeyDown={(event) => onTreeKeyDown(event, index)}
                 draggable={projection === "fresh" && projectionReady}
                 onDragStart={(event) => {
                   if (projection !== "fresh" || !projectionReady) {
@@ -137,6 +215,18 @@ export function OutlinePanel({ id, mode = "compact", onModeChange, nodes, projec
                   event.dataTransfer.setData("text/plain", nodeTitle(node));
                 }}
               >
+                <span
+                  className="tn-outline-disclosure"
+                  data-visible={node.hasChildren || undefined}
+                  data-expanded={expanded}
+                  onClick={(event: MouseEvent<HTMLSpanElement>) => {
+                    if (!node.hasChildren) return;
+                    event.stopPropagation();
+                    setExpanded(node, !expanded);
+                  }}
+                >
+                  {node.hasChildren ? <ShellIcon name="chevron-right" /> : null}
+                </span>
                 <span className="tn-outline-spine" data-type={node.type} aria-hidden="true" />
                 <span className="tn-outline-copy">
                   <span className="tn-outline-title">{nodeTitle(node)}</span>
@@ -149,7 +239,7 @@ export function OutlinePanel({ id, mode = "compact", onModeChange, nodes, projec
                   ) : null}
                 </span>
                 {projectionReady && node.activeTaskState ? <StatusBadge tone="running" data-task-state={node.activeTaskState}>{taskStateLabel(node.activeTaskState)}</StatusBadge> : null}
-              </button>
+              </div>
             );
           })}
         </div>

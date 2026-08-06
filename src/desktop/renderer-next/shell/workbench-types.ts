@@ -23,6 +23,9 @@ export type WorkbenchNodeView = {
   mode: "editable" | "archived";
   archived: boolean;
   invalid: boolean;
+  /** Exact authoritative hierarchy from graph parent edges; never inferred from path. */
+  parentNodeId: string | null;
+  hasChildren: boolean;
   depth?: number;
   activeTaskState?: string | null;
   collaborationState?: CollaborationProjectionState;

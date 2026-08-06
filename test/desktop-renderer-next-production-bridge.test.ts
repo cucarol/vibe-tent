@@ -38,6 +38,10 @@ import {
 import { FocusDocumentPanel } from "../src/desktop/renderer-next/components/FocusDocumentPanel.js";
 import type { FocusDocumentActions, FocusDocumentView } from "../src/desktop/renderer-next/model/focus-document-controller.js";
 import { canvasPlacementSourceAuthority } from "../src/desktop/renderer-next/shell/workbench-presentation.js";
+import {
+  updateOutlineExpansion,
+  visibleOutlineNodes,
+} from "../src/desktop/renderer-next/model/outline-tree.js";
 
 function state(workspaceId = "ws-a") {
   return {
@@ -292,6 +296,10 @@ test("Outline keeps every authoritative Node even when Canvas has no placement",
     }
   );
   assert.deepEqual(nodes.map((node) => node.nodeId), ["cx-placed", "cx-unplaced"]);
+  assert.deepEqual(nodes.map((node) => [node.parentNodeId, node.hasChildren]), [
+    [null, false],
+    [null, false],
+  ]);
   const outline = renderToStaticMarkup(createElement(OutlinePanel, {
     nodes: [{ ...nodes[1]!, depth: 2 }],
     projection: "fresh",
@@ -300,6 +308,44 @@ test("Outline keeps every authoritative Node even when Canvas has no placement",
     onCollapse: () => {},
   }));
   assert.match(outline, /aria-level="3"/);
+});
+
+test("Outline tree collapse hides descendants and atomically selects the collapsed parent", () => {
+  const base = {
+    etag: "etag",
+    tags: [] as string[],
+    mode: "editable" as const,
+    archived: false,
+    invalid: false,
+    projectionState: "ready" as const,
+  };
+  const nodes: WorkbenchNodeView[] = [
+    { ...base, nodeId: "root", path: "root", name: "Root", type: "goal", parentNodeId: null, hasChildren: true, depth: 0 },
+    { ...base, nodeId: "child", path: "child", name: "Child", type: "prompt", parentNodeId: "root", hasChildren: true, depth: 1 },
+    { ...base, nodeId: "leaf", path: "leaf", name: "Leaf", type: "output", parentNodeId: "child", hasChildren: false, depth: 2 },
+  ];
+  const expanded = new Set(["root", "child"]);
+  assert.deepEqual(visibleOutlineNodes(nodes, expanded).map((node) => node.nodeId), ["root", "child", "leaf"]);
+  const collapsed = updateOutlineExpansion({
+    nodes,
+    expandedNodeIds: expanded,
+    nodeId: "root",
+    expanded: false,
+    selectedNodeId: "leaf",
+  });
+  assert.equal(collapsed.selectedNodeId, "root");
+  assert.deepEqual(visibleOutlineNodes(nodes, collapsed.expandedNodeIds).map((node) => node.nodeId), ["root"]);
+
+  const markup = renderToStaticMarkup(createElement(OutlinePanel, {
+    nodes,
+    projection: "fresh",
+    selectedNodeId: "leaf",
+    onSelectNode: () => {},
+    onCollapse: () => {},
+  }));
+  assert.match(markup, /role="tree"/);
+  assert.match(markup, /aria-expanded="true"/);
+  assert.match(markup, /aria-posinset="1"/);
 });
 
 test("Focus renders externally controlled placement state without inventing a second owner", () => {
@@ -313,6 +359,8 @@ test("Focus renders externally controlled placement state without inventing a se
     mode: "editable",
     archived: false,
     invalid: false,
+    parentNodeId: null,
+    hasChildren: false,
     projectionState: "ready",
     collaborationState: "ready",
     activeTaskState: null,
@@ -351,6 +399,8 @@ test("Focus source status exposes one exact sync action only when permitted", ()
     mode: "editable",
     archived: false,
     invalid: false,
+    parentNodeId: null,
+    hasChildren: false,
     projectionState: "ready",
     collaborationState: "ready",
     activeTaskState: null,
@@ -429,6 +479,8 @@ test("placement creation fails closed while stale and reconnecting exposes one r
     mode: "editable",
     archived: false,
     invalid: false,
+    parentNodeId: null,
+    hasChildren: false,
     projectionState: "stale",
     collaborationState: "stale",
   } satisfies WorkbenchNodeView;
@@ -489,6 +541,8 @@ test("stale graph keeps an independent dirty document visible while hiding graph
     mode: "editable",
     archived: false,
     invalid: false,
+    parentNodeId: null,
+    hasChildren: false,
     projectionState: "stale",
     projectionMessage: "投影连接已断开",
     collaborationState: "stale",
@@ -681,6 +735,8 @@ test("non-ready collaboration never becomes a confirmed idle claim", () => {
     mode: "editable",
     archived: false,
     invalid: false,
+    parentNodeId: null,
+    hasChildren: false,
     projectionState: "ready",
     activeTaskState: undefined,
   } satisfies WorkbenchNodeView;

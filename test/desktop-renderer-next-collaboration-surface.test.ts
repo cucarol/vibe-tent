@@ -370,6 +370,8 @@ test("initial loading and error without a snapshot never claim authoritative emp
     mode: "editable",
     archived: false,
     invalid: false,
+    parentNodeId: null,
+    hasChildren: false,
     projectionState: "ready",
     collaborationState: "stale",
   };
@@ -419,6 +421,8 @@ test("Focus collaboration stays a flat exact-Node workflow and stale content is 
     mode: "editable",
     archived: false,
     invalid: false,
+    parentNodeId: null,
+    hasChildren: false,
     projectionState: "ready",
     collaborationState: "ready",
     activeTaskState: "delivered",

@@ -29,7 +29,7 @@ import {
 } from "../../model/placement-chrome.js";
 import type { CanvasDocument, CanvasPlacement } from "../../types/identity.js";
 import {
-  canvasSnapshotVisibleFieldsChanged,
+  deriveCanvasPlacementSourceState,
   readCanvasNodeSnapshot,
   type CanvasSnapshotSource,
 } from "../../model/canvas-node-snapshot.js";
@@ -202,7 +202,7 @@ function snapshotTypeLabel(type: string | undefined): string {
 
 function stateForSnapshot(
   recovery: TentNodeRecovery,
-  changed: boolean,
+  sourceState: ReturnType<typeof deriveCanvasPlacementSourceState>,
   hasSnapshot: boolean
 ): Pick<TentEmbeddableCardModel, "state" | "stateLabel"> {
   if (recovery === "ghost") {
@@ -215,9 +215,13 @@ function stateForSnapshot(
     return { state: "error", stateLabel: "加载失败" };
   }
   if (!hasSnapshot) return { state: "unknown", stateLabel: "快照尚未固化" };
-  return changed
-    ? { state: "snapshot", stateLabel: "可见字段已变化" }
-    : { state: "snapshot", stateLabel: "本地快照" };
+  if (sourceState.state === "changed") {
+    return { state: "snapshot", stateLabel: "来源有更新" };
+  }
+  if (sourceState.reason === "revision-unavailable") {
+    return { state: "snapshot", stateLabel: "来源版本未知" };
+  }
+  return { state: "snapshot", stateLabel: "本地快照" };
 }
 
 /**
@@ -238,12 +242,14 @@ export function buildTentEmbeddableCardModels(
     const current = snapshot && entityRef
       ? resolvers.resolveCurrent?.(entityRef)
       : undefined;
-    const changed = snapshot
-      ? canvasSnapshotVisibleFieldsChanged(snapshot, current)
-      : false;
+    const sourceState = deriveCanvasPlacementSourceState({
+      placement: p,
+      authority: recovery === "none" ? "fresh" : "unknown",
+      source: current ?? null,
+    });
     const title = snapshot?.title?.trim() || snapshot?.name || "未固化的节点快照";
     const typeLabel = snapshotTypeLabel(snapshot?.type);
-    const projectedState = stateForSnapshot(recovery, changed, Boolean(snapshot));
+    const projectedState = stateForSnapshot(recovery, sourceState, Boolean(snapshot));
     map.set(p.placementId, {
       placementId: p.placementId,
       nodeId: entityRef ?? p.placementId,
