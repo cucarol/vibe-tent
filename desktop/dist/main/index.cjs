@@ -306,15 +306,26 @@ async function tryAttach(dataDir2, fetchImpl = fetch) {
   }
   const url = serviceBaseUrl(endpoint.host, endpoint.port);
   const client = new ServiceRpcClient({ baseUrl: url, token: endpoint.token, fetchImpl });
+  const health = await authenticateServiceEndpoint(endpoint, client);
+  return health ? { url, endpoint, client } : null;
+}
+async function authenticateServiceEndpoint(endpoint, client) {
   try {
-    const health = await client.health();
+    if (client.url !== serviceBaseUrl(endpoint.host, endpoint.port)) return null;
+    const health = await client.call("service.health", {});
     if (health.status !== "ok") return null;
     assertServiceProtocolCompatible(health);
-    return { url, endpoint, client };
+    if (health.pid !== endpoint.pid || health.startedAt !== endpoint.startedAt) {
+      return null;
+    }
+    return health;
   } catch (err) {
     if (isServiceProtocolIncompatibleError(err)) throw err;
     return null;
   }
+}
+function sameServiceEndpointIdentity(left, right) {
+  return left.instanceId === right.instanceId && left.pid === right.pid && left.host === right.host && left.port === right.port && left.startedAt === right.startedAt && left.version === right.version && left.token === right.token;
 }
 async function rejectIncompatibleHealthyService(dataDir2, fetchImpl) {
   const endpoint = await readServiceEndpoint(dataDir2);
@@ -437,14 +448,23 @@ var DesktopServiceHost = class {
     return tracked;
   }
   async ensureAttachedOnce(options) {
-    if (this.attach) {
+    const cached = this.attach;
+    if (cached) {
       try {
-        await this.attach.client.health();
+        const dataDir2 = options.dataDir ?? defaultServiceDataDir(process.env);
+        const endpoint = await readServiceEndpoint(dataDir2);
+        if (!endpoint || !sameServiceEndpointIdentity(cached.endpoint, endpoint)) {
+          throw new Error("Local Tent Service endpoint identity changed");
+        }
+        const health = await authenticateServiceEndpoint(endpoint, cached.client);
+        if (!health || this.attach !== cached) {
+          throw new Error("Local Tent Service authenticated attach is no longer current");
+        }
         this.ensureEventSubscription();
-        return this.attach;
-      } catch {
-        this.teardownEvents();
-        this.attach = null;
+        return cached;
+      } catch (error) {
+        this.invalidateCachedAttach(cached);
+        if (isServiceProtocolIncompatibleError(error)) throw error;
       }
     }
     const result = await this.attachService({
@@ -458,18 +478,31 @@ var DesktopServiceHost = class {
     return result;
   }
   ensureEventSubscription() {
-    if (!this.attach?.client || this.eventsSub) return;
-    this.eventsSub = this.attach.client.subscribeEvents(
+    const attached = this.attach;
+    if (!attached?.client || this.eventsSub) return;
+    const subscription = attached.client.subscribeEvents(
       (ev) => this.handleEnvelope(ev),
       () => {
-        this.handleEventStreamClosed();
+        this.handleEventStreamClosed(attached);
       }
     );
+    if (this.attach !== attached) {
+      subscription.close();
+      return;
+    }
+    this.eventsSub = subscription;
   }
-  handleEventStreamClosed() {
-    this.teardownEvents();
+  handleEventStreamClosed(expectedAttach) {
+    if (!this.invalidateCachedAttach(expectedAttach)) return;
     const event = { type: "service.disconnected", workspaceId: "" };
     for (const listener of this.eventListeners) listener(event);
+  }
+  invalidateCachedAttach(expectedAttach) {
+    if (this.attach !== expectedAttach) return false;
+    this.teardownEvents();
+    this.attach = null;
+    this.child = null;
+    return true;
   }
   handleEnvelope(ev) {
     const type = ev?.type;

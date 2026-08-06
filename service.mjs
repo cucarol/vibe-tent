@@ -24518,7 +24518,7 @@ async function parkTaskForUnavailableSession(ctx, input) {
   let applied = false;
   let parked = null;
   await ctx.mutations.run(input.workspaceId, async () => {
-    ctx.host.markSelfWrite(input.workspaceId);
+    ctx.host.markSelfWrite(input.workspaceId, 200, TEMP_DIR);
     const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
     if (current.state !== "running" && current.state !== "waiting") return;
     if (input.sessionId && current.sessionId && current.sessionId !== input.sessionId) {
