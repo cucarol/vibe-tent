@@ -15305,6 +15305,61 @@ async function findIntegratedCommit(workspace, sourceRef, targetBranch) {
   if (prior) return { integratedRef: prior, reason: "cherry-pick" };
   return void 0;
 }
+async function findExactCompletedIntegrationAtTip(contract, refs, expectedTargetHead) {
+  const commits = [...new Set(refs.map((ref) => ref.trim()).filter(Boolean))];
+  const expected = expectedTargetHead.trim();
+  if (commits.length === 0 || !expected) return void 0;
+  const root = nodePath3.resolve(contract.workspace);
+  await assertGitWorkspace(root);
+  if (!await gitOk(root, ["cat-file", "-e", `${expected}^{commit}`])) return void 0;
+  const targetRef = `refs/heads/${contract.targetBranch}`;
+  const current = (await git(root, ["rev-parse", targetRef])).trim();
+  if (!current || current === expected) return void 0;
+  const resolved = [];
+  for (const sourceRef of commits) {
+    if (!await gitOk(root, ["cat-file", "-e", `${sourceRef}^{commit}`])) return void 0;
+    resolved.push(await fullRef(root, sourceRef));
+  }
+  const fastForwardRef = await completeFastForwardRef(
+    root,
+    expected,
+    resolved,
+    contract.branch
+  );
+  if (fastForwardRef === current) {
+    return {
+      targetHead: current,
+      mode: "fast-forward",
+      integratedRefs: [...resolved]
+    };
+  }
+  if (!await gitOk(root, ["merge-base", "--is-ancestor", expected, current])) {
+    return void 0;
+  }
+  const firstParentRange = (await git(root, [
+    "rev-list",
+    "--first-parent",
+    "--reverse",
+    `${expected}..${current}`
+  ])).split(/\r?\n/).map((ref) => ref.trim()).filter(Boolean);
+  const integratedRefs = [];
+  for (const sourceRef of resolved) {
+    if (await gitOk(root, ["merge-base", "--is-ancestor", sourceRef, expected])) {
+      continue;
+    }
+    const integratedRef = await findCherryPick(root, sourceRef, contract.targetBranch);
+    if (!integratedRef) return void 0;
+    integratedRefs.push(integratedRef);
+  }
+  if (integratedRefs.length === 0 || integratedRefs.length !== firstParentRange.length || integratedRefs.some((ref, index2) => ref !== firstParentRange[index2]) || integratedRefs.at(-1) !== current) {
+    return void 0;
+  }
+  return {
+    targetHead: current,
+    mode: "cherry-pick",
+    integratedRefs
+  };
+}
 async function readRoleBranchTip(workspace, branch) {
   const root = nodePath3.resolve(workspace);
   await assertGitWorkspace(root);
@@ -15778,15 +15833,37 @@ async function worktreeForBranch(root, branch) {
 }
 async function findCherryPick(root, sourceRef, targetBranch) {
   const full = await fullRef(root, sourceRef);
+  const sourcePatchId = await verbatimPatchId(root, full);
+  if (!sourcePatchId) return void 0;
   const needle = `(cherry picked from commit ${full})`;
   const targetRef = `refs/heads/${targetBranch}`;
   const output = await git(root, ["log", targetRef, "--format=%H%x00%B%x00", "-n", "5000"]);
   const parts = output.split("\0");
   for (let i = 0; i + 1 < parts.length; i += 2) {
     const body = parts[i + 1] ?? "";
-    if (body.includes(needle)) return parts[i].trim();
+    if (!body.includes(needle)) continue;
+    const candidate = parts[i]?.trim() ?? "";
+    if (!candidate) continue;
+    const candidatePatchId = await verbatimPatchId(root, candidate);
+    if (candidatePatchId && candidatePatchId === sourcePatchId) return candidate;
   }
   return void 0;
+}
+async function verbatimPatchId(root, commitRef) {
+  try {
+    const patch = await git(root, [
+      "show",
+      "--format=",
+      "--no-ext-diff",
+      "--binary",
+      commitRef
+    ]);
+    const output = await git(root, ["patch-id", "--verbatim"], patch);
+    const patchId = output.trim().split(/\s+/, 1)[0]?.trim().toLowerCase() ?? "";
+    return /^[0-9a-f]{40,64}$/.test(patchId) ? patchId : void 0;
+  } catch {
+    return void 0;
+  }
 }
 async function findAncestorIntegration(root, sourceRef, targetBranch) {
   const targetRef = `refs/heads/${targetBranch}`;
@@ -15916,7 +15993,7 @@ async function gitOk(cwd, args) {
     return false;
   }
 }
-function git(cwd, args) {
+function git(cwd, args, stdin) {
   return new Promise((resolve15, reject) => {
     const child = spawn("git", args, { cwd, windowsHide: true });
     let out = "";
@@ -15928,6 +16005,7 @@ function git(cwd, args) {
       else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
     });
     child.on("error", reject);
+    if (stdin !== void 0) child.stdin.end(stdin);
   });
 }
 
@@ -24334,9 +24412,9 @@ async function dispatchMethod(ctx, method, params, callContext = {}) {
       case "task.requestReview":
         return taskRequestReviewRpc(ctx, p);
       case "task.accept":
-        return taskAcceptRpc(ctx, p);
+        return taskAcceptRpc(ctx, p, callContext);
       case "task.reject":
-        return taskRejectRpc(ctx, p);
+        return taskRejectRpc(ctx, p, callContext);
       case "task.interrupt":
         return taskInterruptRpc(ctx, p);
       case "task.cancel":
@@ -28206,7 +28284,52 @@ async function taskDeliverRpc(ctx, p) {
 async function taskRequestReviewRpc(ctx, p) {
   return taskDeliverRpc(ctx, { ...p, decision: p.decision ?? "request-review" });
 }
-async function taskAcceptRpc(ctx, p) {
+async function resolveReviewCallerActor(ctx, workspaceId, requestedActor, action, callContext) {
+  const callerSessionId = callContext.callerSessionId?.trim();
+  let derivedActor = "user";
+  if (callerSessionId) {
+    const session = await ctx.runtime.registry.read(callerSessionId);
+    if (!session || session.state !== "external" || session.workspace !== workspaceId || !session.roleId) {
+      throw new RpcError(
+        -32001,
+        `task.${action} requires an exact authenticated external Role Session reviewer`,
+        {
+          code: "REVIEW_CALLER_FORBIDDEN",
+          action,
+          workspaceId,
+          callerSessionId
+        }
+      );
+    }
+    derivedActor = session.roleId;
+  } else if (callContext.callerExternalKey?.trim()) {
+    throw new RpcError(
+      -32001,
+      `task.${action} external host identity requires a valid Session capability`,
+      {
+        code: "REVIEW_CALLER_SESSION_REQUIRED",
+        action,
+        workspaceId
+      }
+    );
+  }
+  if (requestedActor.trim() !== derivedActor) {
+    throw new RpcError(
+      -32001,
+      `task.${action} actor does not match authenticated caller authority`,
+      {
+        code: "REVIEW_CALLER_MISMATCH",
+        action,
+        workspaceId,
+        requestedActor: requestedActor.trim(),
+        derivedActor,
+        ...callerSessionId ? { callerSessionId } : {}
+      }
+    );
+  }
+  return derivedActor;
+}
+async function taskAcceptRpc(ctx, p, callContext) {
   assertAllowedParams(
     p,
     /* @__PURE__ */ new Set(["workspaceId", "taskPath", "deliveryId", "actor", "outputNodeIds"]),
@@ -28218,8 +28341,15 @@ async function taskAcceptRpc(ctx, p) {
   const deliveryId = requireString(p, "deliveryId");
   const actor = requireString(p, "actor");
   const outputNodeIds = optionalStringArray(p, "outputNodeIds");
-  const acceptOptions = { actor, deliveryId, outputNodeIds };
   const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
+    const reviewerActor = await resolveReviewCallerActor(
+      ctx,
+      workspaceId,
+      actor,
+      "accept",
+      callContext
+    );
+    const acceptOptions = { actor: reviewerActor, deliveryId, outputNodeIds };
     let prepared;
     let expectedTargetHead;
     try {
@@ -28243,6 +28373,7 @@ async function taskAcceptRpc(ctx, p) {
         action: "task.accept",
         taskPath
       })(prepared.commits);
+      await beforeTaskAcceptFinalizeForTests?.({ workspaceId, taskPath, deliveryId });
     }
     try {
       return await ctx.mutations.run(workspaceId, async () => {
@@ -28337,7 +28468,7 @@ function outputProvenanceErrorToRpc(err) {
       return new RpcError(-32010, err.message, { code: err.code, ...err.details });
   }
 }
-async function taskRejectRpc(ctx, p) {
+async function taskRejectRpc(ctx, p, callContext) {
   assertAllowedParams(
     p,
     /* @__PURE__ */ new Set(["workspaceId", "taskPath", "deliveryId", "actor", "note", "resume"]),
@@ -28351,28 +28482,37 @@ async function taskRejectRpc(ctx, p) {
   const noteForDelivery = optionalString2(p, "note");
   const noteExact = optionalStringExact(p, "note");
   const resume = p.resume !== false;
-  const result = await runTaskLifecycle(workspaceId, taskPath, () => ctx.mutations.run(workspaceId, async () => {
-    ctx.host.markSelfWrite(workspaceId);
-    const rejected = await taskReject(mount.env, taskPath, {
-      actor,
-      deliveryId,
-      note: noteForDelivery,
-      resume
-    });
-    emitTaskState(ctx, workspaceId, rejected.task, "task.reject");
-    ctx.events.emit(
-      "delivery.updated",
+  const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
+    const reviewerActor = await resolveReviewCallerActor(
+      ctx,
       workspaceId,
-      {
-        id: rejected.delivery.id,
-        taskId: rejected.delivery.taskId,
-        status: rejected.delivery.status,
-        reason: "task.reject"
-      },
-      "self"
+      actor,
+      "reject",
+      callContext
     );
-    return rejected;
-  }));
+    return ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      const rejected = await taskReject(mount.env, taskPath, {
+        actor: reviewerActor,
+        deliveryId,
+        note: noteForDelivery,
+        resume
+      });
+      emitTaskState(ctx, workspaceId, rejected.task, "task.reject");
+      ctx.events.emit(
+        "delivery.updated",
+        workspaceId,
+        {
+          id: rejected.delivery.id,
+          taskId: rejected.delivery.taskId,
+          status: rejected.delivery.status,
+          reason: "task.reject"
+        },
+        "self"
+      );
+      return rejected;
+    });
+  });
   if (!resume) {
     await maybeAutoReclaimTaskWorktree(ctx, workspaceId, result.task, "task.reject");
     return {
@@ -32751,6 +32891,7 @@ async function stopManagedSessionAfterDelivery(ctx, input) {
   }
 }
 var afterTargetHeadSnapshotForTests = null;
+var beforeTaskAcceptFinalizeForTests = null;
 var beforeTaskClaimCoreForTests = null;
 var beforeReplaceTaskInputRollbackForTests = null;
 function clearManagedAutoDeliverDedup(sessionId, taskPath) {
@@ -33090,9 +33231,15 @@ function makeCommitIntegrator(ctx, workspaceRoot, task, options) {
         const mount2 = requireMountByWorkspaceRoot(ctx, workspaceRoot);
         expected = await loadReadyDeliveryTargetHead(mount2.env.fs, liveTask);
       }
-      await assertIntegrationTargetHeadUnchanged(workspaceRoot, liveTask, expected, mount.env.fs, {
-        action: options.action
-      });
+      const recovered = await assertIntegrationTargetHeadUnchanged(
+        workspaceRoot,
+        liveTask,
+        refs,
+        expected,
+        mount.env.fs,
+        { action: options.action }
+      );
+      if (recovered) return;
       if (ctx.integrateCommits) {
         await ctx.integrateCommits(
           workspaceRoot,
@@ -33129,7 +33276,7 @@ async function snapshotIntegrationTargetHead(workspaceRoot, task, fs21) {
   const contract = await resolveIntegrationContract(workspaceRoot, task, fs21);
   return readRoleBranchTip(contract.workspace, contract.targetBranch);
 }
-async function assertIntegrationTargetHeadUnchanged(workspaceRoot, task, expectedTargetHead, fs21, meta) {
+async function assertIntegrationTargetHeadUnchanged(workspaceRoot, task, commits, expectedTargetHead, fs21, meta) {
   const contract = await resolveIntegrationContract(workspaceRoot, task, fs21);
   const current = await readRoleBranchTip(contract.workspace, contract.targetBranch);
   const expected = expectedTargetHead?.trim() || "";
@@ -33149,6 +33296,8 @@ async function assertIntegrationTargetHeadUnchanged(workspaceRoot, task, expecte
     );
   }
   if (current !== expected) {
+    const recovered = await findExactCompletedIntegrationAtTip(contract, commits, expected);
+    if (recovered?.targetHead === current) return true;
     throw new RpcError(
       RPC_LIFECYCLE,
       `${meta.action} refused: integration target HEAD moved since Delivery review (target=${contract.targetBranch} expected=${expected} current=${current}); re-review or re-deliver (task/delivery state unchanged; Git not touched)`,
@@ -33164,6 +33313,7 @@ async function assertIntegrationTargetHeadUnchanged(workspaceRoot, task, expecte
       }
     );
   }
+  return false;
 }
 async function loadReadyDeliveryTargetHead(fs21, task) {
   const taskId = task.id || task.path;
