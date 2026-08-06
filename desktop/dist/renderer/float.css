@@ -1,0 +1,196 @@
+:root {
+  color: #202124;
+  background: #f7f7f8;
+  font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  font-size: 12px;
+}
+
+* { box-sizing: border-box; }
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #f7f7f8;
+}
+
+button { font: inherit; }
+
+.float-shell {
+  display: grid;
+  grid-template-rows: 44px auto auto minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid #c8c9cc;
+  border-radius: 10px;
+  background: #f7f7f8;
+}
+
+.float-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid #dedfe1;
+  background: #f1f1f2;
+  user-select: none;
+  -webkit-app-region: drag;
+}
+
+.float-brand {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  gap: 7px;
+}
+
+.float-brand strong { font-size: 13px; }
+.float-brand span { color: #5d5f65; font-size: 10px; }
+
+.float-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+}
+
+#btn-open-main,
+#btn-hide-float {
+  min-height: 28px;
+  border: 1px solid #cfd0d3;
+  border-radius: 6px;
+  color: #202124;
+  background: #fff;
+  cursor: pointer;
+}
+
+#btn-open-main { padding: 0 9px; }
+#btn-hide-float { width: 28px; padding: 0; font-size: 17px; line-height: 1; }
+#btn-open-main:hover,
+#btn-hide-float:hover { background: #e9e9eb; }
+#btn-open-main:focus-visible,
+#btn-hide-float:focus-visible,
+.card-item:focus-visible {
+  outline: 2px solid #4e5055;
+  outline-offset: 2px;
+}
+
+.float-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  min-width: 0;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-width: 0;
+  min-height: 22px;
+  padding: 0 7px;
+  overflow: hidden;
+  border: 1px solid #cfd0d3;
+  border-radius: 5px;
+  color: #56585e;
+  background: #fff;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pill.ok { color: #315c43; border-color: #aebdaf; background: #f1f6f2; }
+.pill.off { color: #8c3434; border-color: #d2b2b2; background: #faf1f1; }
+.pill.loading { color: #56585e; background: #f1f1f2; }
+
+.metric {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  gap: 4px;
+  padding-left: 12px;
+  border-left: 1px solid #dedfe1;
+  color: #5d5f65;
+  white-space: nowrap;
+}
+
+.metric .n { color: #202124; font-size: 15px; font-weight: 650; }
+
+.float-workspace {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0 12px;
+  padding: 8px 0;
+  border-top: 1px solid #dedfe1;
+  border-bottom: 1px solid #dedfe1;
+}
+
+.float-workspace > span:first-child { color: #5d5f65; font-size: 10px; }
+#fg-root {
+  min-width: 0;
+  overflow: hidden;
+  color: #42444a;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.float-context {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  padding: 10px 12px 12px;
+}
+
+.float-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.float-section-head h2 { margin: 0; font-size: 11px; }
+.panel-head {
+  overflow: hidden;
+  color: #66686e;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.float-cards { min-height: 0; overflow: auto; }
+.card-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+
+.card-item {
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid #dedfe1;
+  border-radius: 6px;
+  background: #fff;
+  cursor: grab;
+}
+
+.card-item:hover { border-color: #b9bbc0; }
+.card-item:active { cursor: grabbing; }
+.card-item.is-dragging { opacity: 0.55; }
+.card-item strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-meta { margin-top: 2px; color: #66686e; font-size: 10px; }
+.card-hint { margin-top: 4px; color: #66686e; font-size: 10px; text-align: right; }
+.float-state { padding: 14px 8px; color: #66686e; font-size: 10px; text-align: center; }
+.float-state.error { color: #8c3434; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { scroll-behavior: auto !important; }
+}

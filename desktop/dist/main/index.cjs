@@ -594,6 +594,45 @@ function installDesktopNavigationPolicy(webContents, localHtmlPath, openExternal
   });
 }
 
+// src/desktop/main/float-window-layout.ts
+var FLOAT_WINDOW_BOUNDS = {
+  defaultWidth: 328,
+  defaultHeight: 280,
+  minWidth: 300,
+  maxWidth: 360,
+  minHeight: 240,
+  maxHeight: 360,
+  edgeMargin: 24
+};
+function clampFinite(value, fallback, min, max) {
+  const finite = Number.isFinite(value) ? Math.round(value) : fallback;
+  return Math.min(Math.max(finite, min), max);
+}
+function normalizeFloatWindowBounds(saved, workArea) {
+  const width = clampFinite(
+    saved?.width,
+    FLOAT_WINDOW_BOUNDS.defaultWidth,
+    FLOAT_WINDOW_BOUNDS.minWidth,
+    Math.min(FLOAT_WINDOW_BOUNDS.maxWidth, workArea.width)
+  );
+  const height = clampFinite(
+    saved?.height,
+    FLOAT_WINDOW_BOUNDS.defaultHeight,
+    FLOAT_WINDOW_BOUNDS.minHeight,
+    Math.min(FLOAT_WINDOW_BOUNDS.maxHeight, workArea.height)
+  );
+  const fallbackX = workArea.x + workArea.width - width - FLOAT_WINDOW_BOUNDS.edgeMargin;
+  const fallbackY = workArea.y + FLOAT_WINDOW_BOUNDS.edgeMargin;
+  const maxX = workArea.x + workArea.width - width;
+  const maxY = workArea.y + workArea.height - height;
+  return {
+    width,
+    height,
+    x: clampFinite(saved?.x, fallbackX, workArea.x, Math.max(workArea.x, maxX)),
+    y: clampFinite(saved?.y, fallbackY, workArea.y, Math.max(workArea.y, maxY))
+  };
+}
+
 // src/desktop/main/windows.ts
 function createMainWindow(paths, prefs, isDev2) {
   const bounds = prefs.mainWindowBounds;
@@ -641,16 +680,15 @@ function createMainWindow(paths, prefs, isDev2) {
   return win;
 }
 function createFloatWindow(paths, prefs) {
-  const display = import_electron.screen.getPrimaryDisplay().workArea;
-  const width = prefs.floatWindowBounds?.width ?? 320;
-  const height = prefs.floatWindowBounds?.height ?? 280;
-  const x = prefs.floatWindowBounds?.x ?? display.x + display.width - width - 24;
-  const y = prefs.floatWindowBounds?.y ?? display.y + 24;
+  const savedBounds = prefs.floatWindowBounds;
+  const display = savedBounds ? import_electron.screen.getDisplayMatching(savedBounds).workArea : import_electron.screen.getPrimaryDisplay().workArea;
+  const bounds = normalizeFloatWindowBounds(savedBounds, display);
   const win = new import_electron.BrowserWindow({
-    width,
-    height,
-    x,
-    y,
+    ...bounds,
+    minWidth: FLOAT_WINDOW_BOUNDS.minWidth,
+    maxWidth: FLOAT_WINDOW_BOUNDS.maxWidth,
+    minHeight: FLOAT_WINDOW_BOUNDS.minHeight,
+    maxHeight: FLOAT_WINDOW_BOUNDS.maxHeight,
     show: false,
     frame: false,
     transparent: false,
@@ -660,7 +698,7 @@ function createFloatWindow(paths, prefs) {
     minimizable: false,
     maximizable: false,
     title: "\u5E37\u5E44 \xB7 \u6D6E\u52A8\u63A7\u4EF6",
-    backgroundColor: "#e8e4d7",
+    backgroundColor: "#f7f7f8",
     webPreferences: {
       preload: paths.preload,
       contextIsolation: true,
@@ -1476,7 +1514,7 @@ function registerDesktopIpc(ctx) {
     }
   );
   import_electron2.ipcMain.handle(DESKTOP_IPC.openMain, async () => {
-    ctx.openMain();
+    await ctx.openMain();
   });
   import_electron2.ipcMain.handle(DESKTOP_IPC.hideMain, async () => {
     ctx.hideMain();
@@ -2785,6 +2823,51 @@ async function refreshDesktopShellForEvent(model2, type) {
   await model2.refreshTasks();
 }
 
+// src/desktop/main/float-window-persistence.ts
+var FloatWindowBoundsPersistence = class {
+  #delayMs;
+  #loadPrefs;
+  #savePrefs;
+  #onError;
+  #timer = null;
+  #pendingBounds = null;
+  #writeChain = Promise.resolve();
+  constructor(options) {
+    this.#delayMs = options.delayMs ?? 240;
+    this.#loadPrefs = options.loadPrefs;
+    this.#savePrefs = options.savePrefs;
+    this.#onError = options.onError ?? (() => void 0);
+  }
+  schedule(bounds) {
+    this.#pendingBounds = { ...bounds };
+    if (this.#timer) clearTimeout(this.#timer);
+    this.#timer = setTimeout(() => {
+      this.#timer = null;
+      void this.#enqueuePending().catch(() => void 0);
+    }, this.#delayMs);
+  }
+  async flush() {
+    if (this.#timer) {
+      clearTimeout(this.#timer);
+      this.#timer = null;
+    }
+    await this.#enqueuePending();
+  }
+  #enqueuePending() {
+    const bounds = this.#pendingBounds;
+    this.#pendingBounds = null;
+    if (!bounds) return this.#writeChain;
+    const write = this.#writeChain.then(async () => {
+      const current = await this.#loadPrefs();
+      await this.#savePrefs({ ...current, floatWindowBounds: bounds });
+    });
+    this.#writeChain = write.catch((error) => {
+      this.#onError(error);
+    });
+    return write;
+  }
+};
+
 // src/desktop/main/index.ts
 var isDev = !import_electron3.app.isPackaged;
 var appRoot = isDev ? process.cwd() : import_electron3.app.getAppPath();
@@ -2794,8 +2877,47 @@ var mainWindow = null;
 var floatWindow = null;
 var tray = null;
 var quitting = false;
+var floatBoundsPersistence = null;
+var quitAfterFloatBoundsFlush = false;
+var readyMainWindows = /* @__PURE__ */ new WeakSet();
 var host = new DesktopServiceHost();
 var model = new DesktopShellModel();
+function captureCurrentFloatBounds() {
+  if (!floatWindow || floatWindow.isDestroyed()) return;
+  const currentBounds = floatWindow.getBounds();
+  const workArea = import_electron3.screen.getDisplayMatching(currentBounds).workArea;
+  return normalizeFloatWindowBounds(currentBounds, workArea);
+}
+async function waitUntilMainWindowReady(win) {
+  if (readyMainWindows.has(win)) return;
+  if (!win.webContents.isLoadingMainFrame()) {
+    throw new Error("Main window finished loading without becoming ready");
+  }
+  await new Promise((resolve5, reject) => {
+    const cleanup = () => {
+      win.removeListener("ready-to-show", onReady);
+      win.removeListener("closed", onClosed);
+      win.webContents.removeListener("did-fail-load", onFailed);
+    };
+    const onReady = () => {
+      readyMainWindows.add(win);
+      cleanup();
+      resolve5();
+    };
+    const onClosed = () => {
+      cleanup();
+      reject(new Error("Main window closed before it was ready"));
+    };
+    const onFailed = (_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
+      if (!isMainFrame) return;
+      cleanup();
+      reject(new Error(`Main window failed to load (${errorCode}): ${errorDescription}`));
+    };
+    win.once("ready-to-show", onReady);
+    win.once("closed", onClosed);
+    win.webContents.on("did-fail-load", onFailed);
+  });
+}
 async function bootstrap() {
   const serviceEntry = process.env.TENT_SERVICE_ENTRY || path6.join(serviceRoot, "service.mjs");
   const attach = await host.ensureAttached({
@@ -2814,8 +2936,52 @@ async function bootstrap() {
     }
   }
   const paths = resolveDesktopAssetPaths(appRoot);
-  mainWindow = createMainWindow(paths, prefs, isDev);
+  const makeMainWindow = () => {
+    const win = createMainWindow(paths, prefs, isDev);
+    win.once("ready-to-show", () => {
+      readyMainWindows.add(win);
+    });
+    win.webContents.on("did-fail-load", (_event, _code, _description, _url, isMainFrame) => {
+      if (isMainFrame) readyMainWindows.delete(win);
+    });
+    return win;
+  };
+  mainWindow = makeMainWindow();
   floatWindow = createFloatWindow(paths, prefs);
+  const boundsPersistence = new FloatWindowBoundsPersistence({
+    loadPrefs: () => loadDesktopPrefs(dataDir),
+    savePrefs: (next) => saveDesktopPrefs(next, dataDir),
+    onError: (error) => {
+      console.warn("Failed to persist floating control bounds:", error);
+    }
+  });
+  floatBoundsPersistence = boundsPersistence;
+  const showMainWindow = async () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      mainWindow = makeMainWindow();
+    }
+    await waitUntilMainWindowReady(mainWindow);
+    if (mainWindow.isDestroyed()) {
+      throw new Error("Main window is unavailable");
+    }
+    mainWindow.show();
+    mainWindow.focus();
+    floatWindow?.hide();
+  };
+  const scheduleFloatBoundsSave = () => {
+    const bounds = captureCurrentFloatBounds();
+    if (bounds) boundsPersistence.schedule(bounds);
+  };
+  floatWindow.on("move", scheduleFloatBoundsSave);
+  floatWindow.on("resize", scheduleFloatBoundsSave);
+  floatWindow.on("closed", () => {
+    floatWindow = null;
+    void boundsPersistence.flush().catch(() => void 0).finally(() => {
+      if (floatBoundsPersistence === boundsPersistence) {
+        floatBoundsPersistence = null;
+      }
+    });
+  });
   mainWindow.on("close", (e) => {
     if (quitting) return;
     e.preventDefault();
@@ -2832,13 +2998,7 @@ async function bootstrap() {
     dataDir,
     getMainWindow: () => mainWindow,
     getFloatWindow: () => floatWindow,
-    openMain: () => {
-      if (!mainWindow || mainWindow.isDestroyed()) {
-        mainWindow = createMainWindow(paths, prefs, isDev);
-      }
-      mainWindow.show();
-      mainWindow.focus();
-    },
+    openMain: showMainWindow,
     showFloat: () => {
       floatWindow?.show();
     },
@@ -2874,7 +3034,11 @@ async function bootstrap() {
       console.warn("Desktop shell snapshot refresh failed after Service event:", error);
     });
   });
-  createTray(paths);
+  createTray(paths, () => {
+    void showMainWindow().catch((error) => {
+      console.warn("Failed to open main window:", error);
+    });
+  });
   const mountIdx = process.argv.indexOf("--mount");
   if (mountIdx >= 0 && process.argv[mountIdx + 1]) {
     const root = path6.resolve(process.argv[mountIdx + 1]);
@@ -2887,17 +3051,14 @@ async function bootstrap() {
     }
   }
 }
-function createTray(_paths) {
+function createTray(_paths, showMainWindow) {
   const img = import_electron3.nativeImage.createEmpty();
   tray = new import_electron3.Tray(img.isEmpty() ? import_electron3.nativeImage.createFromDataURL(TINY_PNG) : img);
   tray.setToolTip("\u5E37\u5E44 \xB7 Tent");
   const menu = import_electron3.Menu.buildFromTemplate([
     {
       label: "\u6253\u5F00\u4E3B\u754C\u9762",
-      click: () => {
-        mainWindow?.show();
-        mainWindow?.focus();
-      }
+      click: showMainWindow
     },
     {
       label: "\u663E\u793A\u6D6E\u52A8\u63A7\u4EF6",
@@ -2913,10 +3074,7 @@ function createTray(_paths) {
     }
   ]);
   tray.setContextMenu(menu);
-  tray.on("click", () => {
-    mainWindow?.show();
-    mainWindow?.focus();
-  });
+  tray.on("click", showMainWindow);
 }
 var TINY_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 import_electron3.app.whenReady().then(() => {
@@ -2927,16 +3085,25 @@ import_electron3.app.whenReady().then(() => {
 });
 import_electron3.app.on("window-all-closed", () => {
 });
-import_electron3.app.on("before-quit", () => {
+import_electron3.app.on("before-quit", (event) => {
   quitting = true;
+  if (quitAfterFloatBoundsFlush || !floatBoundsPersistence) return;
+  event.preventDefault();
+  quitAfterFloatBoundsFlush = true;
+  void floatBoundsPersistence.flush().catch((error) => {
+    console.warn("Failed to flush floating control bounds before quit:", error);
+  }).finally(() => import_electron3.app.quit());
 });
 var gotLock = import_electron3.app.requestSingleInstanceLock();
 if (!gotLock) {
   import_electron3.app.quit();
 } else {
   import_electron3.app.on("second-instance", () => {
-    mainWindow?.show();
-    mainWindow?.focus();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+      floatWindow?.hide();
+    }
   });
 }
 //# sourceMappingURL=index.cjs.map

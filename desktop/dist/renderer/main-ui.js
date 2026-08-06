@@ -5682,7 +5682,13 @@ function applyContextCardDragStart(dataTransfer, text3) {
 }
 function bindContextCardDrag(node2, text3, options = {}) {
   node2.draggable = true;
+  node2.setAttribute("role", "button");
+  node2.setAttribute("tabindex", "0");
+  node2.setAttribute("aria-label", "\u4E0A\u4E0B\u6587\u5361\uFF1A\u62D6\u5230\u5916\u90E8\u8F93\u5165\u6846\uFF0C\u6216\u6309\u56DE\u8F66\u590D\u5236");
   node2.setAttribute("title", "\u62D6\u5230\u5916\u90E8\u8F93\u5165\u6846 \xB7 \u5355\u51FB\u590D\u5236");
+  const copy = () => {
+    void copyContextCardText(text3, options);
+  };
   node2.addEventListener("dragstart", (ev) => {
     applyContextCardDragStart(ev.dataTransfer, text3);
     node2.classList.add("is-dragging");
@@ -5691,7 +5697,12 @@ function bindContextCardDrag(node2, text3, options = {}) {
     node2.classList.remove("is-dragging");
   });
   node2.addEventListener("click", () => {
-    void copyContextCardText(text3, options);
+    copy();
+  });
+  node2.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Enter" && ev.key !== " ") return;
+    ev.preventDefault();
+    copy();
   });
 }
 async function copyContextCardText(text3, options = {}) {

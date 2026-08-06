@@ -5,26 +5,34 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>帷幄 · 浮动控件</title>
-  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./float.css" />
 </head>
 <body class="float">
   <div class="float-shell">
-    <div class="float-head">
-      <strong>帷幄</strong>
-      <div class="row">
-        <span id="health-pill" class="pill off">离线</span>
+    <header class="float-head">
+      <div class="float-brand"><strong>帷幄</strong><span>浮动控件</span></div>
+      <div class="float-head-actions">
         <button type="button" id="btn-open-main">打开主界面</button>
+        <button type="button" id="btn-hide-float" aria-label="隐藏浮动控件" title="隐藏浮动控件">×</button>
       </div>
+    </header>
+    <div class="float-overview" aria-label="服务与任务状态">
+      <span id="health-pill" class="pill loading" role="status" aria-live="polite">正在连接</span>
+      <div class="metric"><span class="n" id="n-pending">—</span><span>待处理</span></div>
+      <div class="metric"><span class="n" id="n-taken">—</span><span>进行中</span></div>
     </div>
-    <div class="float-metrics">
-      <div class="metric"><div class="muted">待处理</div><div class="n" id="n-pending">0</div></div>
-      <div class="metric"><div class="muted">进行中</div><div class="n" id="n-taken">0</div></div>
-    </div>
-    <div class="muted" id="fg-root"></div>
-    <div class="panel-head" style="margin:0 0 4px;padding:0">上下文卡 · 拖出 text/plain</div>
-    <div class="float-cards">
-      <ul id="cards" class="card-list"></ul>
-    </div>
+    <div class="float-workspace"><span>工作区</span><span id="fg-root" title="">正在读取…</span></div>
+    <section class="float-context">
+      <header class="float-section-head">
+        <h2>上下文卡</h2>
+        <span id="context-hint" class="panel-head" aria-live="polite">拖到外部输入框</span>
+      </header>
+      <div class="float-cards">
+        <ul id="cards" class="card-list" aria-busy="true">
+          <li class="float-state" role="status">正在读取上下文卡…</li>
+        </ul>
+      </div>
+    </section>
   </div>
   <script type="module" src="./float-ui.js"></script>
 </body>
