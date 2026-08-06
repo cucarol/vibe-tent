@@ -28,6 +28,15 @@ export function canCreateNodePlacement(
     (nodeProjection === undefined || nodeProjection === "ready");
 }
 
+export function canDropNodeIntoPresentation(
+  hasPresentationOwner: boolean,
+  workspaceProjection: "loading" | "fresh" | "stale" | "unresolved" | "error" | "unmounted",
+  nodeProjection: "ready" | "loading" | "stale" | "unresolved" | "error" | undefined
+): boolean {
+  return hasPresentationOwner &&
+    canCreateNodePlacement(workspaceProjection, nodeProjection);
+}
+
 export function canvasPlacementSourceAuthority(
   workspaceProjection: "loading" | "fresh" | "stale" | "unresolved" | "error" | "unmounted",
   selectedNodeProjection: "ready" | "loading" | "stale" | "unresolved" | "error" | null | undefined

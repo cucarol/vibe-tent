@@ -348,6 +348,55 @@ test("Outline tree collapse hides descendants and atomically selects the collaps
   assert.match(markup, /aria-posinset="1"/);
 });
 
+test("Outline drag is enabled only when its Canvas owner and Node are ready", () => {
+  const node = {
+    nodeId: "cx-drag",
+    etag: "etag-drag",
+    path: "Drag",
+    name: "Drag",
+    type: "prompt",
+    tags: [],
+    mode: "editable" as const,
+    archived: false,
+    invalid: false,
+    parentNodeId: null,
+    hasChildren: false,
+    projectionState: "ready" as const,
+    collaborationState: "ready" as const,
+  } satisfies WorkbenchNodeView;
+
+  const readOnly = renderToStaticMarkup(createElement(OutlinePanel, {
+    nodes: [node],
+    projection: "fresh",
+    selectedNodeId: node.nodeId,
+    onSelectNode: () => {},
+    canDragToCanvas: false,
+    onCollapse: () => {},
+  }));
+  assert.match(readOnly, /draggable="false"/);
+  assert.doesNotMatch(readOnly, /draggable="true"/);
+
+  const writable = renderToStaticMarkup(createElement(OutlinePanel, {
+    nodes: [node],
+    projection: "fresh",
+    selectedNodeId: node.nodeId,
+    onSelectNode: () => {},
+    canDragToCanvas: true,
+    onCollapse: () => {},
+  }));
+  assert.match(writable, /draggable="true"/);
+
+  const stale = renderToStaticMarkup(createElement(OutlinePanel, {
+    nodes: [{ ...node, projectionState: "stale" }],
+    projection: "fresh",
+    selectedNodeId: node.nodeId,
+    onSelectNode: () => {},
+    canDragToCanvas: true,
+    onCollapse: () => {},
+  }));
+  assert.match(stale, /draggable="false"/);
+});
+
 test("Focus renders externally controlled placement state without inventing a second owner", () => {
   const node = {
     nodeId: "cx-a",

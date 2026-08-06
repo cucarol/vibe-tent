@@ -18,6 +18,7 @@ export type TentEmbeddableNodeData = {
   type: string;
   state: TentEmbeddableNodeState;
   stateLabel?: string;
+  sourceState?: "current" | "changed" | "deleted" | "unknown";
   rawTaskState?: string | null;
   detail: string;
 };
@@ -62,6 +63,7 @@ export function TentEmbeddableNode(props: TentEmbeddableNodeProps) {
     <article
       className="tn-excal-node"
       data-node-state={data.state}
+      data-source-state={data.sourceState}
       data-selected={selected ? "true" : "false"}
       data-expanded={expanded ? "true" : "false"}
       data-task-state={data.rawTaskState ?? undefined}

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { CanvasV5Host } from "../canvas/excalidraw/CanvasV5Host.js";
 import type { CanvasNodeResolvers } from "../canvas/excalidraw/documentToExcalidraw.js";
 import { defaultEdgeLayers } from "../model/canvas-edges.js";
@@ -10,6 +10,12 @@ import type { DrawingPersistenceStatus } from "../model/drawing-persistence-stat
 import type { ExcalidrawSceneSnapshot } from "../canvas/excalidraw/excalidrawSceneTypes.js";
 import { clientPointToCanvasOrigin } from "../model/canvas-session-store.js";
 import { OUTLINE_NODE_DRAG_TYPE } from "../model/canvas-node-snapshot.js";
+import {
+  completeCanvasDrop,
+  enterCanvasDropTarget,
+  IDLE_CANVAS_DROP_FEEDBACK,
+  leaveCanvasDropTarget,
+} from "../model/canvas-drop-feedback.js";
 
 export type CanvasWorkbenchProps = {
   document: CanvasDocument;
@@ -23,7 +29,7 @@ export type CanvasWorkbenchProps = {
   persistenceStatus?: DrawingPersistenceStatus;
   onRetryPersistence?: () => void;
   onScenePersist?: (scene: ExcalidrawSceneSnapshot) => void;
-  onDropNode?: (nodeId: string, point: { x: number; y: number }) => void;
+  onDropNode?: (nodeId: string, point: { x: number; y: number }) => boolean;
   hidden?: boolean;
 };
 
@@ -31,6 +37,8 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
   const [drawingVisible, setDrawingVisible] = useState(
     () => initialScene?.layerVisible ?? true
   );
+  const [dropFeedback, setDropFeedback] = useState(IDLE_CANVAS_DROP_FEEDBACK);
+  const successTimerRef = useRef<number | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const byId = useMemo(() => new Map(nodes.map((node) => [node.nodeId, node] as const)), [nodes]);
   const resolvers = useMemo<CanvasNodeResolvers>(() => ({
@@ -67,6 +75,15 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
   const hasNodeDrag = (event: DragEvent) =>
     Array.from(event.dataTransfer.types).includes(OUTLINE_NODE_DRAG_TYPE);
 
+  const cancelSuccessTimer = () => {
+    if (successTimerRef.current !== null) {
+      window.clearTimeout(successTimerRef.current);
+      successTimerRef.current = null;
+    }
+  };
+
+  useEffect(() => () => cancelSuccessTimer(), []);
+
   const handleDrop = (event: DragEvent<HTMLDivElement>) => {
     if (!onDropNode || !hasNodeDrag(event)) return;
     const nodeId = event.dataTransfer.getData(OUTLINE_NODE_DRAG_TYPE);
@@ -78,7 +95,15 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
       rect,
       document.viewport
     );
-    onDropNode(nodeId, point);
+    const accepted = onDropNode(nodeId, point);
+    setDropFeedback(completeCanvasDrop(accepted));
+    cancelSuccessTimer();
+    if (accepted) {
+      successTimerRef.current = window.setTimeout(() => {
+        successTimerRef.current = null;
+        setDropFeedback(IDLE_CANVAS_DROP_FEEDBACK);
+      }, 1400);
+    }
   };
 
   return (
@@ -96,10 +121,21 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
       <div
         ref={hostRef}
         className="tn-canvas-host"
+        data-drop-state={dropFeedback.phase}
+        onDragEnter={(event) => {
+          if (!onDropNode || !hasNodeDrag(event)) return;
+          event.preventDefault();
+          cancelSuccessTimer();
+          setDropFeedback(enterCanvasDropTarget);
+        }}
         onDragOver={(event) => {
           if (!onDropNode || !hasNodeDrag(event)) return;
           event.preventDefault();
           event.dataTransfer.dropEffect = "copy";
+        }}
+        onDragLeave={(event) => {
+          if (!onDropNode || !hasNodeDrag(event)) return;
+          setDropFeedback(leaveCanvasDropTarget);
         }}
         onDrop={handleDrop}
       >
@@ -121,6 +157,19 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
             onImmersiveChange={onImmersiveChange}
           />
         )}
+        <div
+          className="tn-canvas-drop-feedback"
+          data-state={dropFeedback.phase}
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {dropFeedback.phase === "target"
+            ? "松开以创建本地画布快照"
+            : dropFeedback.phase === "success"
+              ? "已放入画布"
+              : ""}
+        </div>
       </div>
     </section>
   );

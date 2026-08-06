@@ -84,13 +84,27 @@
   --tn-focus-ring: 2px solid var(--tn-color-focus);
   --tn-focus-ring-offset: 2px;
   --tn-control-disabled-opacity: 0.46;
+
+  --tn-motion-duration-fast: 120ms;
+  --tn-motion-duration-standard: 160ms;
+  --tn-motion-duration-progress: 640ms;
+  --tn-motion-ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --tn-motion-ease-linear: linear;
+  --tn-motion-distance-sm: 4px;
 }
 
 @media (prefers-reduced-motion: reduce) {
+  :root {
+    --tn-motion-duration-fast: 0ms;
+    --tn-motion-duration-standard: 0ms;
+    --tn-motion-duration-progress: 0ms;
+    --tn-motion-distance-sm: 0px;
+  }
+
   *, *::before, *::after {
-    animation-duration: 0.01ms !important;
+    animation-duration: 0ms !important;
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
+    transition-duration: 0ms !important;
   }
 }

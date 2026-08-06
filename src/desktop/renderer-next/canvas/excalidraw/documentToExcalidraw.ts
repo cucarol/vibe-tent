@@ -75,6 +75,7 @@ export type TentEmbeddableCardModel = {
     | "unresolved"
     | "error";
   stateLabel: string;
+  sourceState: "current" | "changed" | "deleted" | "unknown";
   /** Exact protocol state retained for diagnostics; presentation may translate it. */
   rawTaskState?: string | null;
   width: number;
@@ -204,24 +205,24 @@ function stateForSnapshot(
   recovery: TentNodeRecovery,
   sourceState: ReturnType<typeof deriveCanvasPlacementSourceState>,
   hasSnapshot: boolean
-): Pick<TentEmbeddableCardModel, "state" | "stateLabel"> {
+): Pick<TentEmbeddableCardModel, "state" | "stateLabel" | "sourceState"> {
   if (recovery === "ghost") {
-    return { state: "unresolved", stateLabel: "节点未解析" };
+    return { state: "unresolved", stateLabel: "节点未解析", sourceState: "deleted" };
   }
   if (recovery === "pending") {
-    return { state: "stale", stateLabel: "投影已过期" };
+    return { state: "stale", stateLabel: "投影已过期", sourceState: "unknown" };
   }
   if (recovery === "error") {
-    return { state: "error", stateLabel: "加载失败" };
+    return { state: "error", stateLabel: "加载失败", sourceState: "unknown" };
   }
-  if (!hasSnapshot) return { state: "unknown", stateLabel: "快照尚未固化" };
+  if (!hasSnapshot) return { state: "unknown", stateLabel: "快照尚未固化", sourceState: "unknown" };
   if (sourceState.state === "changed") {
-    return { state: "snapshot", stateLabel: "来源有更新" };
+    return { state: "snapshot", stateLabel: "来源有更新", sourceState: "changed" };
   }
   if (sourceState.reason === "revision-unavailable") {
-    return { state: "snapshot", stateLabel: "来源版本未知" };
+    return { state: "snapshot", stateLabel: "来源版本未知", sourceState: "unknown" };
   }
-  return { state: "snapshot", stateLabel: "本地快照" };
+  return { state: "snapshot", stateLabel: "本地快照", sourceState: "current" };
 }
 
 /**

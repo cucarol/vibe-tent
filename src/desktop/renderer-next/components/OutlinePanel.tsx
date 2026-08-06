@@ -18,6 +18,7 @@ export type OutlinePanelProps = {
   selectedNodeId: string | null;
   onSelectNode: (nodeId: string) => void;
   onOpenNodeActions?: (nodeId: string) => void;
+  canDragToCanvas?: boolean;
   onCollapse: () => void;
 };
 
@@ -51,7 +52,8 @@ const EMPTY_COPY: Record<
   },
 };
 
-export function OutlinePanel({ id, mode = "compact", onModeChange, nodes, projection, selectedNodeId, onSelectNode, onOpenNodeActions, onCollapse }: OutlinePanelProps) {
+export function OutlinePanel({ id, mode = "compact", onModeChange, nodes, projection, selectedNodeId, onSelectNode, onOpenNodeActions, canDragToCanvas = false, onCollapse }: OutlinePanelProps) {
+  const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
   const itemRefs = useRef(new Map<string, HTMLDivElement>());
   const knownExpandableIds = useRef(new Set<string>());
   const [expandedNodeIds, setExpandedNodeIds] = useState<ReadonlySet<string>>(
@@ -177,7 +179,10 @@ export function OutlinePanel({ id, mode = "compact", onModeChange, nodes, projec
           <p>{emptyCopy.body}</p>
         </div>
       ) : (
-        <div className="tn-outline-tree" role="tree" aria-label="工作区节点">
+        <div className="tn-outline-tree" role="tree" aria-label="工作区节点" aria-describedby="tn-outline-drag-instructions">
+          <span id="tn-outline-drag-instructions" className="tn-sr-only">
+            可将权威状态正常的节点拖到画布，创建独立的本地快照位置。
+          </span>
           {visibleNodes.map((node, index) => {
             const selected = node.nodeId === selectedNodeId;
             const projectionCopy = projectionLabel(node.projectionState);
@@ -201,19 +206,22 @@ export function OutlinePanel({ id, mode = "compact", onModeChange, nodes, projec
                 className="tn-outline-node"
                 style={{ "--tn-tree-depth": node.depth ?? 0 } as CSSProperties}
                 data-selected={selected || undefined}
+                data-drag-active={draggingNodeId === node.nodeId || undefined}
                 data-projection={node.projectionState ?? "ready"}
                 onClick={() => onSelectNode(node.nodeId)}
                 onKeyDown={(event) => onTreeKeyDown(event, index)}
-                draggable={projection === "fresh" && projectionReady}
+                draggable={canDragToCanvas && projection === "fresh" && projectionReady}
                 onDragStart={(event) => {
-                  if (projection !== "fresh" || !projectionReady) {
+                  if (!canDragToCanvas || projection !== "fresh" || !projectionReady) {
                     event.preventDefault();
                     return;
                   }
                   event.dataTransfer.effectAllowed = "copy";
                   event.dataTransfer.setData(OUTLINE_NODE_DRAG_TYPE, node.nodeId);
                   event.dataTransfer.setData("text/plain", nodeTitle(node));
+                  setDraggingNodeId(node.nodeId);
                 }}
+                onDragEnd={() => setDraggingNodeId(null)}
               >
                 <span
                   className="tn-outline-disclosure"

@@ -16,6 +16,7 @@ import { ShellIcon } from "./icons.js";
 import type { WorkbenchNodeView } from "./workbench-types.js";
 import {
   canCreateNodePlacement,
+  canDropNodeIntoPresentation,
   canvasPlacementSourceAuthority,
   dropPresentationNode,
   placePresentationNode,
@@ -204,13 +205,23 @@ export function AppShell({
   };
 
   const dropNode = (nodeId: string, point: { x: number; y: number }) => {
+    if (!onPresentationChange) return false;
     const node = nodes.find((candidate) => candidate.nodeId === nodeId);
     const source = snapshotSource(node);
-    if (!node || !source || !canCreateNodePlacement(projection, node.projectionState)) return;
+    if (
+      !node ||
+      !source ||
+      !canDropNodeIntoPresentation(
+        Boolean(onPresentationChange),
+        projection,
+        node.projectionState
+      )
+    ) return false;
     const snapshot = captureCanvasNodeSnapshot(source);
-    onPresentationChange?.((current) =>
+    onPresentationChange((current) =>
       dropPresentationNode(current, nodeId, snapshot, point)
     );
+    return true;
   };
 
   const removeSelectedNode = () => {
@@ -287,8 +298,8 @@ export function AppShell({
       ) : null}
 
       <div className="tn-workbench" data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-focus-expanded={focusExpanded ? "true" : "false"} data-layout-mode={layoutMode} data-immersive={immersive ? "true" : "false"}>
-        <OutlinePanel id="tn-outline-panel" mode={layoutMode} onModeChange={setOutlineMode} nodes={nodes} projection={projection} selectedNodeId={selectedNodeId} onSelectNode={selectNode} onOpenNodeActions={openNodeActions} onCollapse={() => { setLayoutMode("compact"); setOutlineOpen(false); }} />
-        <CanvasWorkbench hidden={layoutMode === "detail"} document={document} nodes={nodes} projection={projection} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNode} onDropNode={dropNode} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
+        <OutlinePanel id="tn-outline-panel" mode={layoutMode} onModeChange={setOutlineMode} nodes={nodes} projection={projection} selectedNodeId={selectedNodeId} onSelectNode={selectNode} onOpenNodeActions={openNodeActions} canDragToCanvas={Boolean(onPresentationChange)} onCollapse={() => { setLayoutMode("compact"); setOutlineOpen(false); }} />
+        <CanvasWorkbench hidden={layoutMode === "detail"} document={document} nodes={nodes} projection={projection} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNode} onDropNode={onPresentationChange ? dropNode : undefined} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
         <InspectorPanel
           id="tn-focus-panel"
           node={selectedNode}

@@ -56,6 +56,12 @@ import {
   schedulePostMountCanvasViewportSync,
   viewportAfterCanvasResize,
 } from "../src/desktop/renderer-next/model/canvas-viewport-resize.js";
+import {
+  completeCanvasDrop,
+  enterCanvasDropTarget,
+  IDLE_CANVAS_DROP_FEEDBACK,
+  leaveCanvasDropTarget,
+} from "../src/desktop/renderer-next/model/canvas-drop-feedback.js";
 
 function sampleDoc(): CanvasDocument {
   const snapshot = (nodeId: string, type: string) => captureCanvasNodeSnapshot({
@@ -272,6 +278,7 @@ test("node cards stay frozen while projection-visible fields change", () => {
   assert.equal(frozen.detail, "产品/cx-alpha");
   assert.equal(frozen.state, "snapshot");
   assert.equal(frozen.stateLabel, "来源有更新");
+  assert.equal(frozen.sourceState, "changed");
   assert.equal(frozen.rawTaskState, undefined);
 });
 
@@ -293,6 +300,7 @@ test("etag-only source changes use the same fail-closed state on Canvas cards", 
     resolvers: { resolveCurrent: (nodeId) => nodeId === "cx-alpha" ? current : undefined },
   });
   assert.equal(changed.cards.get("pl-a")?.stateLabel, "来源有更新");
+  assert.equal(changed.cards.get("pl-a")?.sourceState, "changed");
 
   const stale = documentToExcalidrawElements(doc, {
     resolvers: {
@@ -301,6 +309,7 @@ test("etag-only source changes use the same fail-closed state on Canvas cards", 
     },
   });
   assert.equal(stale.cards.get("pl-a")?.stateLabel, "投影已过期");
+  assert.equal(stale.cards.get("pl-a")?.sourceState, "unknown");
 });
 
 test("placement presentation is exact-instance local state and survives adapter rebuilds", () => {
@@ -465,6 +474,22 @@ test("whiteboard drop creates another placement with an independent frozen snaps
   assert.equal(placement.y, 456);
   assert.deepEqual(readCanvasNodeSnapshot(placement)?.tags, ["dragged"]);
   assert.equal(dropped.document.focusedPlacementId, "pl-drop");
+});
+
+test("Canvas owns one stable nested drop-target lifecycle", () => {
+  const firstEnter = enterCanvasDropTarget(IDLE_CANVAS_DROP_FEEDBACK);
+  const nestedEnter = enterCanvasDropTarget(firstEnter);
+  assert.deepEqual(nestedEnter, { phase: "target", depth: 2 });
+  assert.deepEqual(leaveCanvasDropTarget(nestedEnter), {
+    phase: "target",
+    depth: 1,
+  });
+  assert.deepEqual(
+    leaveCanvasDropTarget({ phase: "target", depth: 1 }),
+    IDLE_CANVAS_DROP_FEEDBACK
+  );
+  assert.deepEqual(completeCanvasDrop(false), IDLE_CANVAS_DROP_FEEDBACK);
+  assert.deepEqual(completeCanvasDrop(true), { phase: "success", depth: 0 });
 });
 
 test("legacy snapshot materialization never overwrites malformed snapshot metadata", () => {

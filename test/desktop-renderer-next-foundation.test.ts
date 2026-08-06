@@ -40,6 +40,7 @@ import {
 import type { EventEnvelope } from "../src/service/types.js";
 import {
   canCreateNodePlacement,
+  canDropNodeIntoPresentation,
   removeFocusedPresentationPlacement,
   selectPresentationNode,
   syncFocusedPresentationSnapshot,
@@ -291,6 +292,13 @@ test("placement creation is permitted only by fresh authoritative graph identity
   }
 });
 
+test("Canvas drop requires a real presentation owner and fresh Node authority", () => {
+  assert.equal(canDropNodeIntoPresentation(true, "fresh", "ready"), true);
+  assert.equal(canDropNodeIntoPresentation(false, "fresh", "ready"), false);
+  assert.equal(canDropNodeIntoPresentation(true, "stale", "ready"), false);
+  assert.equal(canDropNodeIntoPresentation(true, "fresh", "stale"), false);
+});
+
 test("new placements choose a visible free slot instead of stacking on existing cards", () => {
   const document = {
     ...createEmptyCanvasDocument(),
@@ -532,6 +540,28 @@ test("tokens.css has one product palette and one primitive entry", async () => {
   assert.match(product, /--tn-color-node-prompt:/);
   assert.match(product, /--tn-color-node-output:/);
   assert.doesNotMatch(product, /data-theme|theme-id|dark/i);
+});
+
+test("motion uses one bounded token grammar and reduced motion is instant", async () => {
+  const product = await read("src/desktop/renderer-next/styles/product-tokens.css");
+  const primitives = await read("src/desktop/renderer-next/ui/primitives.css");
+  const shell = await read("src/desktop/renderer-next/styles/shell.css");
+  const cards = await read(
+    "src/desktop/renderer-next/canvas/excalidraw/tent-embeddable-prototype.css"
+  );
+
+  assert.match(product, /--tn-motion-duration-fast:\s*120ms/);
+  assert.match(product, /--tn-motion-duration-standard:\s*160ms/);
+  assert.match(product, /--tn-motion-ease-out:\s*cubic-bezier\(0\.2, 0\.8, 0\.2, 1\)/);
+  assert.match(
+    product,
+    /prefers-reduced-motion:[\s\S]*--tn-motion-duration-fast:\s*0ms[\s\S]*transition-duration:\s*0ms !important/
+  );
+  assert.match(primitives, /var\(--tn-motion-duration-fast\)/);
+  assert.match(shell, /var\(--tn-motion-duration-standard\)/);
+  assert.match(cards, /var\(--tn-motion-duration-standard\)/);
+  assert.doesNotMatch(cards, /infinite|@keyframes\s+tn-excal-node/);
+  assert.doesNotMatch(shell, /grid-template-columns[^;]*transition|transition:[^;]*grid-template-columns/);
 });
 
 test("faint helper text token meets WCAG AA on white and panel surfaces", async () => {

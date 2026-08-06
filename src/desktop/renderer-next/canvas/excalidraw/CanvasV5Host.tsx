@@ -199,6 +199,7 @@ function toNodeData(model: {
   summary?: string;
   state: TentEmbeddableNodeState;
   stateLabel: string;
+  sourceState?: "current" | "changed" | "deleted" | "unknown";
   rawTaskState?: string | null;
 }): TentEmbeddableNodeData {
   return {
@@ -207,6 +208,7 @@ function toNodeData(model: {
     type: model.typeLabel,
     state: model.state,
     stateLabel: model.stateLabel,
+    sourceState: model.sourceState,
     rawTaskState: model.rawTaskState,
     detail: model.summary ? `${model.detail} ${model.summary}` : model.detail,
   };
