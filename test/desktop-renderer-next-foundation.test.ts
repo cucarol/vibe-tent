@@ -679,6 +679,15 @@ test("Outline and Focus are collapsible trays around one Canvas stage", async ()
   assert.match(shell, /aria-expanded=\{focusOpen\}/);
   assert.match(shell, /aria-controls="tn-outline-panel"/);
   assert.match(shell, /aria-controls="tn-focus-panel"/);
+  assert.match(shell, /id="tn-outline-restore"/);
+  assert.match(shell, /id="tn-focus-restore"/);
+  assert.match(shell, /aria-label="展开节点面板"/);
+  assert.match(shell, /aria-label="展开焦点面板"/);
+  assert.match(shell, /const openOutline = \(\) => \{\s*setImmersive\(false\)/s);
+  assert.match(shell, /const openFocus = \(\) => \{\s*setImmersive\(false\)/s);
+  assert.match(shellCss, /\.tn-pane-restore\s*\{[^}]*position:\s*absolute[^}]*z-index:\s*80/s);
+  assert.match(shellCss, /\.tn-pane-restore--outline\s*\{[^}]*left:\s*0/s);
+  assert.match(shellCss, /\.tn-pane-restore--focus\s*\{[^}]*right:\s*0/s);
   assert.match(shellCss, /data-layout-mode="detail"[^}]*minmax\(360px, 42vw\) 0 minmax\(420px, 1fr\)/);
   assert.match(shellCss, /data-layout-mode="detail"[^}]*\.tn-canvas-pane[^}]*visibility:\s*hidden/);
   assert.match(shell, /CanvasWorkbench/);

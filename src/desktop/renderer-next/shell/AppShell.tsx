@@ -256,13 +256,27 @@ export function AppShell({
   };
 
   const toggleOutline = () => {
+    setImmersive(false);
     if (layoutMode === "detail") setLayoutMode("compact");
     setOutlineOpen((value) => !value);
   };
 
   const toggleFocus = () => {
+    setImmersive(false);
     if (layoutMode === "detail") setLayoutMode("compact");
     setFocusOpen((value) => !value);
+  };
+
+  const openOutline = () => {
+    setImmersive(false);
+    setLayoutMode("compact");
+    setOutlineOpen(true);
+  };
+
+  const openFocus = () => {
+    setImmersive(false);
+    setLayoutMode("compact");
+    setFocusOpen(true);
   };
 
   const setOutlineMode = (mode: "compact" | "detail") => {
@@ -327,6 +341,32 @@ export function AppShell({
             setFocusOpen(false);
           }}
         />
+        {!outlineOpen ? (
+          <IconButton
+            id="tn-outline-restore"
+            className="tn-pane-restore tn-pane-restore--outline"
+            aria-label="展开节点面板"
+            tooltip="展开节点面板"
+            aria-expanded="false"
+            aria-controls="tn-outline-panel"
+            onClick={openOutline}
+          >
+            <ShellIcon name="panel-left" />
+          </IconButton>
+        ) : null}
+        {!focusOpen ? (
+          <IconButton
+            id="tn-focus-restore"
+            className="tn-pane-restore tn-pane-restore--focus"
+            aria-label="展开焦点面板"
+            tooltip="展开焦点面板"
+            aria-expanded="false"
+            aria-controls="tn-focus-panel"
+            onClick={openFocus}
+          >
+            <ShellIcon name="panel-right" />
+          </IconButton>
+        ) : null}
       </div>
 
       <StatusBar connection={connection} projection={projection} nodeCount={nodes.length} />
