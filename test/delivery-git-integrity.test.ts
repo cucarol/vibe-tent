@@ -19,6 +19,7 @@ import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
+import { setBeforeTaskAcceptFinalizeForTests } from "../src/service/handlers.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { RPC_LIFECYCLE } from "../src/service/types.js";
 import { taskReject } from "../src/core/task-lifecycle.js";
@@ -211,6 +212,218 @@ async function pathExists(p: string): Promise<boolean> {
     return false;
   }
 }
+
+async function assertReadyAfterFailedAccept(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>,
+  workspaceId: string,
+  taskPath: string,
+  deliveryId: string
+): Promise<void> {
+  const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+  assert.ok(!got.error, JSON.stringify(got.error));
+  assert.equal((got.result as { task: { state: string } }).task.state, "delivered");
+  const delivery = await rpc(svc, "delivery.get", { workspaceId, id: deliveryId });
+  assert.ok(!delivery.error, JSON.stringify(delivery.error));
+  assert.equal(
+    (delivery.result as { delivery: { status: string } }).delivery.status,
+    "ready"
+  );
+}
+
+test("task.accept retry finalizes an exact fast-forward already integrated before crash", async () => {
+  const ws = await makeWorkspace("accept-crash-fast-forward");
+  await initGitOnWorkspace(ws);
+
+  await withService(async (svc) => {
+    const task = await claimRunningWithBase(svc, ws, {
+      label: "crash-ff",
+      prompt: "recover exact fast-forward",
+    });
+    const commit = await taskCommitOnLane(
+      task.worktree,
+      "crash-ff.txt",
+      "fast-forward\n",
+      "crash ff"
+    );
+    const delivered = await rpc(svc, "task.deliver", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      summary: "ready for fast-forward crash recovery",
+      commits: [commit],
+    });
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    const deliveryId = deliveryIdOf(delivered);
+
+    setBeforeTaskAcceptFinalizeForTests(async () => {
+      throw new Error("injected post-integrate crash");
+    });
+    try {
+      const first = await rpc(svc, "task.accept", {
+        workspaceId: task.workspaceId,
+        taskPath: task.taskPath,
+        deliveryId,
+        actor: "user",
+      });
+      assert.ok(first.error, "injected crash must stop before finalize");
+    } finally {
+      setBeforeTaskAcceptFinalizeForTests(null);
+    }
+
+    assert.equal((await git(ws, "rev-parse", "main")).trim(), commit);
+    await assertReadyAfterFailedAccept(svc, task.workspaceId, task.taskPath, deliveryId);
+
+    const retry = await rpc(svc, "task.accept", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      deliveryId,
+      actor: "user",
+    });
+    assert.ok(!retry.error, JSON.stringify(retry.error));
+    assert.equal((retry.result as { state: string }).state, "accepted");
+    assert.equal((await git(ws, "rev-parse", "main")).trim(), commit);
+  });
+});
+
+test("task.accept retry finalizes only an exact ordered cherry-pick integration at target tip", async () => {
+  const ws = await makeWorkspace("accept-crash-cherry-pick");
+  await initGitOnWorkspace(ws);
+
+  await withService(async (svc) => {
+    const task = await claimRunningWithBase(svc, ws, {
+      label: "crash-cp",
+      prompt: "recover exact ordered cherry-picks",
+    });
+    const first = await taskCommitOnLane(task.worktree, "cp-first.txt", "first\n", "cp first");
+    await taskCommitOnLane(task.worktree, "cp-gap.txt", "gap\n", "cp gap");
+    const last = await taskCommitOnLane(task.worktree, "cp-last.txt", "last\n", "cp last");
+    const delivered = await rpc(svc, "task.deliver", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      summary: "ready for cherry-pick crash recovery",
+      commits: [first, last],
+    });
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    const deliveryId = deliveryIdOf(delivered);
+
+    setBeforeTaskAcceptFinalizeForTests(async () => {
+      throw new Error("injected post-integrate crash");
+    });
+    try {
+      const firstAccept = await rpc(svc, "task.accept", {
+        workspaceId: task.workspaceId,
+        taskPath: task.taskPath,
+        deliveryId,
+        actor: "user",
+      });
+      assert.ok(firstAccept.error, "injected crash must stop before finalize");
+    } finally {
+      setBeforeTaskAcceptFinalizeForTests(null);
+    }
+
+    const integratedTip = (await git(ws, "rev-parse", "main")).trim();
+    assert.notEqual(integratedTip, last, "production must cherry-pick the non-contiguous refs");
+    assert.equal(await pathExists(path.join(ws, "cp-first.txt")), true);
+    assert.equal(await pathExists(path.join(ws, "cp-gap.txt")), false);
+    assert.equal(await pathExists(path.join(ws, "cp-last.txt")), true);
+    await assertReadyAfterFailedAccept(svc, task.workspaceId, task.taskPath, deliveryId);
+
+    const retry = await rpc(svc, "task.accept", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      deliveryId,
+      actor: "user",
+    });
+    assert.ok(!retry.error, JSON.stringify(retry.error));
+    assert.equal((retry.result as { state: string }).state, "accepted");
+    assert.equal((await git(ws, "rev-parse", "main")).trim(), integratedTip);
+  });
+});
+
+test("task.accept retry rejects a partial ordered integration", async () => {
+  const ws = await makeWorkspace("accept-crash-partial");
+  await initGitOnWorkspace(ws);
+
+  await withService(async (svc) => {
+    const task = await claimRunningWithBase(svc, ws, {
+      label: "partial",
+      prompt: "reject partial integration",
+    });
+    const first = await taskCommitOnLane(task.worktree, "partial-first.txt", "first\n", "partial first");
+    const last = await taskCommitOnLane(task.worktree, "partial-last.txt", "last\n", "partial last");
+    const delivered = await rpc(svc, "task.deliver", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      summary: "ready for partial check",
+      commits: [first, last],
+    });
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    const deliveryId = deliveryIdOf(delivered);
+
+    await git(ws, "cherry-pick", "-x", first);
+    const partialTip = (await git(ws, "rev-parse", "main")).trim();
+    const retry = await rpc(svc, "task.accept", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      deliveryId,
+      actor: "user",
+    });
+    targetMovedData(retry.error as { code?: number; data?: unknown });
+    assert.equal((await git(ws, "rev-parse", "main")).trim(), partialTip);
+    assert.equal(await pathExists(path.join(ws, "partial-last.txt")), false);
+    await assertReadyAfterFailedAccept(svc, task.workspaceId, task.taskPath, deliveryId);
+  });
+});
+
+test("task.accept retry rejects a foreign advance after exact integration", async () => {
+  const ws = await makeWorkspace("accept-crash-foreign-advance");
+  await initGitOnWorkspace(ws);
+
+  await withService(async (svc) => {
+    const task = await claimRunningWithBase(svc, ws, {
+      label: "foreign",
+      prompt: "reject later foreign advance",
+    });
+    const commit = await taskCommitOnLane(task.worktree, "foreign-task.txt", "task\n", "task ref");
+    const delivered = await rpc(svc, "task.deliver", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      summary: "ready before foreign advance",
+      commits: [commit],
+    });
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    const deliveryId = deliveryIdOf(delivered);
+
+    setBeforeTaskAcceptFinalizeForTests(async () => {
+      throw new Error("injected post-integrate crash");
+    });
+    try {
+      const first = await rpc(svc, "task.accept", {
+        workspaceId: task.workspaceId,
+        taskPath: task.taskPath,
+        deliveryId,
+        actor: "user",
+      });
+      assert.ok(first.error, "injected crash must stop before finalize");
+    } finally {
+      setBeforeTaskAcceptFinalizeForTests(null);
+    }
+
+    await fs.writeFile(path.join(ws, "foreign-after.txt"), "foreign\n");
+    await git(ws, "add", "foreign-after.txt");
+    await git(ws, "commit", "-q", "-m", "foreign after integration");
+    const foreignTip = (await git(ws, "rev-parse", "main")).trim();
+
+    const retry = await rpc(svc, "task.accept", {
+      workspaceId: task.workspaceId,
+      taskPath: task.taskPath,
+      deliveryId,
+      actor: "user",
+    });
+    targetMovedData(retry.error as { code?: number; data?: unknown });
+    assert.equal((await git(ws, "rev-parse", "main")).trim(), foreignTip);
+    await assertReadyAfterFailedAccept(svc, task.workspaceId, task.taskPath, deliveryId);
+  });
+});
 
 test("concurrent accept same targetHead: one integrates; other TARGET_MOVED remains ready", async () => {
   const ws = await makeWorkspace("concurrent-accept");

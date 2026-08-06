@@ -16,6 +16,12 @@ export interface IntegrationResult {
   alreadyIntegrated: boolean;
 }
 
+export interface ExactCompletedIntegration {
+  targetHead: string;
+  mode: "fast-forward" | "cherry-pick";
+  integratedRefs: string[];
+}
+
 export interface RoleCommit {
   ref: string;
   shortRef: string;
@@ -65,6 +71,93 @@ export async function findIntegratedCommit(
   const prior = await findCherryPick(root, full, targetBranch);
   if (prior) return { integratedRef: prior, reason: "cherry-pick" };
   return undefined;
+}
+
+/**
+ * Read-only crash-recovery proof for the exact integration operation that
+ * `integrateWorkspaceCommits` would perform from `expectedTargetHead`.
+ *
+ * This is deliberately stricter than "all source commits are ancestors":
+ * - fast-forward recovery must end at the exact production FF tip;
+ * - cherry-pick recovery must have an exact first-parent sequence of `-x`
+ *   commits after the frozen target head;
+ * - partial integration and any later/foreign target advance return undefined.
+ */
+export async function findExactCompletedIntegrationAtTip(
+  contract: RoleWorkspaceContract,
+  refs: string[],
+  expectedTargetHead: string
+): Promise<ExactCompletedIntegration | undefined> {
+  const commits = [...new Set(refs.map((ref) => ref.trim()).filter(Boolean))];
+  const expected = expectedTargetHead.trim();
+  if (commits.length === 0 || !expected) return undefined;
+
+  const root = nodePath.resolve(contract.workspace);
+  await assertGitWorkspace(root);
+  if (!(await gitOk(root, ["cat-file", "-e", `${expected}^{commit}`]))) return undefined;
+
+  const targetRef = `refs/heads/${contract.targetBranch}`;
+  const current = (await git(root, ["rev-parse", targetRef])).trim();
+  if (!current || current === expected) return undefined;
+
+  const resolved: string[] = [];
+  for (const sourceRef of commits) {
+    if (!(await gitOk(root, ["cat-file", "-e", `${sourceRef}^{commit}`]))) return undefined;
+    resolved.push(await fullRef(root, sourceRef));
+  }
+
+  const fastForwardRef = await completeFastForwardRef(
+    root,
+    expected,
+    resolved,
+    contract.branch
+  );
+  if (fastForwardRef === current) {
+    return {
+      targetHead: current,
+      mode: "fast-forward",
+      integratedRefs: [...resolved],
+    };
+  }
+
+  if (!(await gitOk(root, ["merge-base", "--is-ancestor", expected, current]))) {
+    return undefined;
+  }
+
+  const firstParentRange = (await git(root, [
+    "rev-list",
+    "--first-parent",
+    "--reverse",
+    `${expected}..${current}`,
+  ]))
+    .split(/\r?\n/)
+    .map((ref) => ref.trim())
+    .filter(Boolean);
+  const integratedRefs: string[] = [];
+  for (const sourceRef of resolved) {
+    // Production skips a source commit already integrated at the frozen base.
+    if (await gitOk(root, ["merge-base", "--is-ancestor", sourceRef, expected])) {
+      continue;
+    }
+    const integratedRef = await findCherryPick(root, sourceRef, contract.targetBranch);
+    if (!integratedRef) return undefined;
+    integratedRefs.push(integratedRef);
+  }
+
+  if (
+    integratedRefs.length === 0 ||
+    integratedRefs.length !== firstParentRange.length ||
+    integratedRefs.some((ref, index) => ref !== firstParentRange[index]) ||
+    integratedRefs.at(-1) !== current
+  ) {
+    return undefined;
+  }
+
+  return {
+    targetHead: current,
+    mode: "cherry-pick",
+    integratedRefs,
+  };
 }
 
 /** 读取正式分支当前 HEAD；只读，不要求 workspace 正 checkout 在正式分支。 */

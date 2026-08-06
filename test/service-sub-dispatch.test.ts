@@ -141,20 +141,36 @@ async function claimRoleTask(
   roleId: string,
   taskPath: string
 ) {
+  const roleClient = await enterRoleClient(
+    svc,
+    workspaceId,
+    workspace,
+    roleId,
+    `sub-dispatch:${roleId}:${taskPath}`
+  );
+  return roleClient.rpcRaw("task.claim", { workspaceId, taskPath });
+}
+
+async function enterRoleClient(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>,
+  workspaceId: string,
+  workspace: string,
+  roleId: string,
+  externalKey: string
+) {
   const setup = createServiceClient({ baseUrl: svc.url, token: svc.token });
   const entered = (await setup.sessionEnter({
     workspaceId,
     roleId,
-    externalKey: `sub-dispatch:${roleId}:${taskPath}`,
+    externalKey,
     cwd: workspace,
   })) as { session: { sessionId: string }; sessionToken: string };
-  const roleClient = createServiceClient({
+  return createServiceClient({
     baseUrl: svc.url,
     token: svc.token,
     currentSessionId: entered.session.sessionId,
     currentSessionToken: entered.sessionToken,
   });
-  return roleClient.rpcRaw("task.claim", { workspaceId, taskPath });
 }
 
 // ---- pure unit: review authority + envelope asSub ----
@@ -815,7 +831,14 @@ test("sub accept integrates commits into dispatcher worktree; main stays put", a
     });
     assert.ok(!delivered.error, JSON.stringify(delivered.error));
 
-    const accepted = await rpc(svc, "task.accept", {
+    const reviewerClient = await enterRoleClient(
+      svc,
+      workspaceId,
+      ws,
+      "rl-orchestrator",
+      `sub-review:${taskPath}`
+    );
+    const accepted = await reviewerClient.rpcRaw("task.accept", {
       workspaceId,
       taskPath,
       deliveryId: (delivered.result as { delivery: { id: string } }).delivery.id,
@@ -1136,7 +1159,14 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
     assert.ok(!subDelivered.error, JSON.stringify(subDelivered.error));
     assert.equal((subDelivered.result as { state: string }).state, "delivered");
 
-    const subAccepted = await rpc(svc, "task.accept", {
+    const reviewerClient = await enterRoleClient(
+      svc,
+      workspaceId,
+      ws,
+      "rl-orchestrator",
+      `sub-review:${subTaskPath}`
+    );
+    const subAccepted = await reviewerClient.rpcRaw("task.accept", {
       workspaceId,
       taskPath: subTaskPath,
       deliveryId: (subDelivered.result as { delivery: { id: string } }).delivery.id,

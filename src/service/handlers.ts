@@ -206,6 +206,7 @@ import {
   ensureRoleWorkspaceIfGit,
   ensureTaskWorkspace,
   ensureTaskWorkspaceIfGit,
+  findExactCompletedIntegrationAtTip,
   inspectWorktreeDirtiness,
   integrateWorkspaceCommits,
   isCommitAncestor,
@@ -547,9 +548,9 @@ export async function dispatchMethod(
       case "task.requestReview":
         return taskRequestReviewRpc(ctx, p);
       case "task.accept":
-        return taskAcceptRpc(ctx, p);
+        return taskAcceptRpc(ctx, p, callContext);
       case "task.reject":
-        return taskRejectRpc(ctx, p);
+        return taskRejectRpc(ctx, p, callContext);
       case "task.interrupt":
         return taskInterruptRpc(ctx, p);
       case "task.cancel":
@@ -5558,7 +5559,74 @@ async function taskRequestReviewRpc(ctx: HandlerContext, p: Record<string, unkno
   return taskDeliverRpc(ctx, { ...p, decision: p.decision ?? "request-review" });
 }
 
-async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+/**
+ * Bind a review mutation to authenticated transport authority. The actor field
+ * remains an audit/consistency assertion; it never selects caller identity.
+ */
+async function resolveReviewCallerActor(
+  ctx: HandlerContext,
+  workspaceId: string,
+  requestedActor: string,
+  action: "accept" | "reject",
+  callContext: VerifiedCallerContext
+): Promise<string> {
+  const callerSessionId = callContext.callerSessionId?.trim();
+  let derivedActor = "user";
+
+  if (callerSessionId) {
+    const session = await ctx.runtime.registry.read(callerSessionId);
+    if (
+      !session ||
+      session.state !== "external" ||
+      session.workspace !== workspaceId ||
+      !session.roleId
+    ) {
+      throw new RpcError(
+        -32001,
+        `task.${action} requires an exact authenticated external Role Session reviewer`,
+        {
+          code: "REVIEW_CALLER_FORBIDDEN",
+          action,
+          workspaceId,
+          callerSessionId,
+        }
+      );
+    }
+    derivedActor = session.roleId;
+  } else if (callContext.callerExternalKey?.trim()) {
+    throw new RpcError(
+      -32001,
+      `task.${action} external host identity requires a valid Session capability`,
+      {
+        code: "REVIEW_CALLER_SESSION_REQUIRED",
+        action,
+        workspaceId,
+      }
+    );
+  }
+
+  if (requestedActor.trim() !== derivedActor) {
+    throw new RpcError(
+      -32001,
+      `task.${action} actor does not match authenticated caller authority`,
+      {
+        code: "REVIEW_CALLER_MISMATCH",
+        action,
+        workspaceId,
+        requestedActor: requestedActor.trim(),
+        derivedActor,
+        ...(callerSessionId ? { callerSessionId } : {}),
+      }
+    );
+  }
+  return derivedActor;
+}
+
+async function taskAcceptRpc(
+  ctx: HandlerContext,
+  p: Record<string, unknown>,
+  callContext: VerifiedCallerContext
+) {
   assertAllowedParams(
     p,
     new Set(["workspaceId", "taskPath", "deliveryId", "actor", "outputNodeIds"]),
@@ -5571,9 +5639,16 @@ async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const actor = requireString(p, "actor");
   const outputNodeIds = optionalStringArray(p, "outputNodeIds");
 
-  const acceptOptions = { actor, deliveryId, outputNodeIds };
   // Per-Task flight spans prepare → Git → finalize; MutationBus only around prepare/finalize.
   const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
+    const reviewerActor = await resolveReviewCallerActor(
+      ctx,
+      workspaceId,
+      actor,
+      "accept",
+      callContext
+    );
+    const acceptOptions = { actor: reviewerActor, deliveryId, outputNodeIds };
     let prepared: Awaited<ReturnType<typeof prepareTaskAccept>>;
     let expectedTargetHead: string | undefined;
     try {
@@ -5601,6 +5676,7 @@ async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
         action: "task.accept",
         taskPath,
       })(prepared.commits);
+      await beforeTaskAcceptFinalizeForTests?.({ workspaceId, taskPath, deliveryId });
     }
     try {
       return await ctx.mutations.run(workspaceId, async () => {
@@ -5734,7 +5810,11 @@ function outputProvenanceErrorToRpc(err: OutputProvenanceError): RpcError {
  * External / no sessionId: core rework + pending review-feedback for poll+ack.
  * Role/Connection restore semantics and Delivery authority are unchanged.
  */
-async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+async function taskRejectRpc(
+  ctx: HandlerContext,
+  p: Record<string, unknown>,
+  callContext: VerifiedCallerContext
+) {
   assertAllowedParams(
     p,
     new Set(["workspaceId", "taskPath", "deliveryId", "actor", "note", "resume"]),
@@ -5752,29 +5832,37 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
 
   // Per-Task lifecycle flight + MutationBus: wait out same-Task accept mid-Git.
   // Managed session restore happens after so runtime never nests inside either lock.
-  const result = await runTaskLifecycle(workspaceId, taskPath, () =>
-  ctx.mutations.run(workspaceId, async () => {
-    ctx.host.markSelfWrite(workspaceId);
-    const rejected = await taskReject(mount.env, taskPath, {
-      actor,
-      deliveryId,
-      note: noteForDelivery,
-      resume,
-    });
-    emitTaskState(ctx, workspaceId, rejected.task, "task.reject");
-    ctx.events.emit(
-      "delivery.updated",
+  const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
+    const reviewerActor = await resolveReviewCallerActor(
+      ctx,
       workspaceId,
-      {
-        id: rejected.delivery.id,
-        taskId: rejected.delivery.taskId,
-        status: rejected.delivery.status,
-        reason: "task.reject",
-      },
-      "self"
+      actor,
+      "reject",
+      callContext
     );
-    return rejected;
-  }));
+    return ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      const rejected = await taskReject(mount.env, taskPath, {
+        actor: reviewerActor,
+        deliveryId,
+        note: noteForDelivery,
+        resume,
+      });
+      emitTaskState(ctx, workspaceId, rejected.task, "task.reject");
+      ctx.events.emit(
+        "delivery.updated",
+        workspaceId,
+        {
+          id: rejected.delivery.id,
+          taskId: rejected.delivery.taskId,
+          status: rejected.delivery.status,
+          reason: "task.reject",
+        },
+        "self"
+      );
+      return rejected;
+    });
+  });
 
   // Terminal reject: collaboration only; no session restore / no review U2A.
   if (!resume) {
@@ -11809,6 +11897,19 @@ export function setAfterTargetHeadSnapshotForTests(
   afterTargetHeadSnapshotForTests = fn;
 }
 
+/** Test-only crash boundary after real accept integration and before finalize. */
+let beforeTaskAcceptFinalizeForTests:
+  | ((input: { workspaceId: string; taskPath: string; deliveryId: string }) => Promise<void>)
+  | null = null;
+
+export function setBeforeTaskAcceptFinalizeForTests(
+  fn:
+    | ((input: { workspaceId: string; taskPath: string; deliveryId: string }) => Promise<void>)
+    | null
+): void {
+  beforeTaskAcceptFinalizeForTests = fn;
+}
+
 /**
  * Test-only: after Role claim prepare succeeds and before Core taskClaim write.
  * Production never sets this. Used to prove failed claim leaves Task queued.
@@ -12407,9 +12508,15 @@ function makeCommitIntegrator(
         expected = await loadReadyDeliveryTargetHead(mount.env.fs, liveTask);
       }
 
-      await assertIntegrationTargetHeadUnchanged(workspaceRoot, liveTask, expected, mount.env.fs, {
-        action: options.action,
-      });
+      const recovered = await assertIntegrationTargetHeadUnchanged(
+        workspaceRoot,
+        liveTask,
+        refs,
+        expected,
+        mount.env.fs,
+        { action: options.action }
+      );
+      if (recovered) return;
 
       if (ctx.integrateCommits) {
         await ctx.integrateCommits(
@@ -12482,10 +12589,11 @@ async function snapshotIntegrationTargetHead(
 async function assertIntegrationTargetHeadUnchanged(
   workspaceRoot: string,
   task: TaskEnvelope,
+  commits: string[],
   expectedTargetHead: string | undefined,
   fs: import("../core/adapter.js").FsAdapter,
   meta: { action: "task.accept" | "task.deliver" }
-): Promise<void> {
+): Promise<boolean> {
   const contract = await resolveIntegrationContract(workspaceRoot, task, fs);
   const current = await readRoleBranchTip(contract.workspace, contract.targetBranch);
   const expected = expectedTargetHead?.trim() || "";
@@ -12507,6 +12615,8 @@ async function assertIntegrationTargetHeadUnchanged(
     );
   }
   if (current !== expected) {
+    const recovered = await findExactCompletedIntegrationAtTip(contract, commits, expected);
+    if (recovered?.targetHead === current) return true;
     throw new RpcError(
       RPC_LIFECYCLE,
       `${meta.action} refused: integration target HEAD moved since Delivery review ` +
@@ -12524,6 +12634,7 @@ async function assertIntegrationTargetHeadUnchanged(
       }
     );
   }
+  return false;
 }
 
 /** Load targetHead from the task's active ready Delivery (accept path). */
