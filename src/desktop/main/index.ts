@@ -2,7 +2,7 @@
 // Security: contextIsolation on, nodeIntegration off; service outlives windows.
 
 import * as path from "node:path";
-import { app, BrowserWindow, Tray, Menu, nativeImage } from "electron";
+import { app, BrowserWindow, Tray, Menu, nativeImage, screen } from "electron";
 import { DesktopServiceHost } from "./service-host.js";
 import { createFloatWindow, createMainWindow, resolveDesktopAssetPaths } from "./windows.js";
 import { registerDesktopIpc } from "./ipc.js";
@@ -11,6 +11,7 @@ import { loadDesktopPrefs, saveDesktopPrefs, rememberWorkspace } from "../prefs.
 import { defaultServiceDataDir } from "../../service/data-dir.js";
 import { DESKTOP_IPC } from "../types.js";
 import { refreshDesktopShellForEvent } from "./service-event-refresh.js";
+import { normalizeFloatWindowBounds } from "./float-window-layout.js";
 
 const isDev = !app.isPackaged;
 const appRoot = isDev ? process.cwd() : app.getAppPath();
@@ -21,9 +22,57 @@ let mainWindow: BrowserWindow | null = null;
 let floatWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let quitting = false;
+let floatBoundsSaveTimer: ReturnType<typeof setTimeout> | null = null;
+const readyMainWindows = new WeakSet<BrowserWindow>();
 
 const host = new DesktopServiceHost();
 const model = new DesktopShellModel();
+
+async function saveCurrentFloatBounds(): Promise<void> {
+  if (!floatWindow || floatWindow.isDestroyed()) return;
+  const currentBounds = floatWindow.getBounds();
+  const workArea = screen.getDisplayMatching(currentBounds).workArea;
+  const floatWindowBounds = normalizeFloatWindowBounds(currentBounds, workArea);
+  const current = await loadDesktopPrefs(dataDir);
+  await saveDesktopPrefs({ ...current, floatWindowBounds }, dataDir);
+}
+
+async function waitUntilMainWindowReady(win: BrowserWindow): Promise<void> {
+  if (readyMainWindows.has(win)) return;
+  if (!win.webContents.isLoadingMainFrame()) {
+    throw new Error("Main window finished loading without becoming ready");
+  }
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      win.removeListener("ready-to-show", onReady);
+      win.removeListener("closed", onClosed);
+      win.webContents.removeListener("did-fail-load", onFailed);
+    };
+    const onReady = () => {
+      readyMainWindows.add(win);
+      cleanup();
+      resolve();
+    };
+    const onClosed = () => {
+      cleanup();
+      reject(new Error("Main window closed before it was ready"));
+    };
+    const onFailed = (
+      _event: Electron.Event,
+      errorCode: number,
+      errorDescription: string,
+      _validatedURL: string,
+      isMainFrame: boolean
+    ) => {
+      if (!isMainFrame) return;
+      cleanup();
+      reject(new Error(`Main window failed to load (${errorCode}): ${errorDescription}`));
+    };
+    win.once("ready-to-show", onReady);
+    win.once("closed", onClosed);
+    win.webContents.on("did-fail-load", onFailed);
+  });
+}
 
 async function bootstrap(): Promise<void> {
   const serviceEntry =
@@ -48,8 +97,56 @@ async function bootstrap(): Promise<void> {
   }
 
   const paths = resolveDesktopAssetPaths(appRoot);
-  mainWindow = createMainWindow(paths, prefs, isDev);
+  const makeMainWindow = () => {
+    const win = createMainWindow(paths, prefs, isDev);
+    win.once("ready-to-show", () => {
+      readyMainWindows.add(win);
+    });
+    win.webContents.on("did-fail-load", (_event, _code, _description, _url, isMainFrame) => {
+      if (isMainFrame) readyMainWindows.delete(win);
+    });
+    return win;
+  };
+
+  mainWindow = makeMainWindow();
   floatWindow = createFloatWindow(paths, prefs);
+
+  const showMainWindow = async () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      mainWindow = makeMainWindow();
+    }
+    await waitUntilMainWindowReady(mainWindow);
+    if (mainWindow.isDestroyed()) {
+      throw new Error("Main window is unavailable");
+    }
+    mainWindow.show();
+    mainWindow.focus();
+    floatWindow?.hide();
+  };
+
+  const persistFloatBounds = () => {
+    void saveCurrentFloatBounds().catch((error) => {
+      console.warn("Failed to persist floating control bounds:", error);
+    });
+  };
+
+  const scheduleFloatBoundsSave = () => {
+    if (floatBoundsSaveTimer) clearTimeout(floatBoundsSaveTimer);
+    floatBoundsSaveTimer = setTimeout(() => {
+      floatBoundsSaveTimer = null;
+      persistFloatBounds();
+    }, 240);
+  };
+
+  floatWindow.on("move", scheduleFloatBoundsSave);
+  floatWindow.on("resize", scheduleFloatBoundsSave);
+  floatWindow.on("closed", () => {
+    if (floatBoundsSaveTimer) {
+      clearTimeout(floatBoundsSaveTimer);
+      floatBoundsSaveTimer = null;
+    }
+    floatWindow = null;
+  });
 
   mainWindow.on("close", (e: { preventDefault: () => void }) => {
     if (quitting) return;
@@ -70,13 +167,7 @@ async function bootstrap(): Promise<void> {
     dataDir,
     getMainWindow: () => mainWindow,
     getFloatWindow: () => floatWindow,
-    openMain: () => {
-      if (!mainWindow || mainWindow.isDestroyed()) {
-        mainWindow = createMainWindow(paths, prefs, isDev);
-      }
-      mainWindow.show();
-      mainWindow.focus();
-    },
+    openMain: showMainWindow,
     showFloat: () => {
       floatWindow?.show();
     },
@@ -117,7 +208,11 @@ async function bootstrap(): Promise<void> {
     });
   });
 
-  createTray(paths);
+  createTray(paths, () => {
+    void showMainWindow().catch((error) => {
+      console.warn("Failed to open main window:", error);
+    });
+  });
 
   // Optional CLI arg: tent-desktop --mount <workspace>
   const mountIdx = process.argv.indexOf("--mount");
@@ -133,7 +228,10 @@ async function bootstrap(): Promise<void> {
   }
 }
 
-function createTray(_paths: ReturnType<typeof resolveDesktopAssetPaths>): void {
+function createTray(
+  _paths: ReturnType<typeof resolveDesktopAssetPaths>,
+  showMainWindow: () => void
+): void {
   // 16x16 simple tray icon as data URL PNG is heavy; use empty and set title on Windows.
   const img = nativeImage.createEmpty();
   tray = new Tray(img.isEmpty() ? nativeImage.createFromDataURL(TINY_PNG) : img);
@@ -141,10 +239,7 @@ function createTray(_paths: ReturnType<typeof resolveDesktopAssetPaths>): void {
   const menu = Menu.buildFromTemplate([
     {
       label: "打开主界面",
-      click: () => {
-        mainWindow?.show();
-        mainWindow?.focus();
-      },
+      click: showMainWindow,
     },
     {
       label: "显示浮动控件",
@@ -160,10 +255,7 @@ function createTray(_paths: ReturnType<typeof resolveDesktopAssetPaths>): void {
     },
   ]);
   tray.setContextMenu(menu);
-  tray.on("click", () => {
-    mainWindow?.show();
-    mainWindow?.focus();
-  });
+  tray.on("click", showMainWindow);
 }
 
 // 1x1 dark pixel PNG
@@ -184,6 +276,16 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   quitting = true;
+  if (floatBoundsSaveTimer) {
+    clearTimeout(floatBoundsSaveTimer);
+    floatBoundsSaveTimer = null;
+  }
+  if (floatWindow && !floatWindow.isDestroyed()) {
+    void saveCurrentFloatBounds()
+      .catch((error) => {
+        console.warn("Failed to persist floating control bounds before quit:", error);
+      });
+  }
 });
 
 // Ensure single instance
@@ -192,7 +294,10 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    mainWindow?.show();
-    mainWindow?.focus();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+      floatWindow?.hide();
+    }
   });
 }

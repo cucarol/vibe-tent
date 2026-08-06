@@ -39,7 +39,14 @@ export function bindContextCardDrag(
   options: BindContextCardDragOptions = {}
 ): void {
   node.draggable = true;
+  node.setAttribute("role", "button");
+  node.setAttribute("tabindex", "0");
+  node.setAttribute("aria-label", "上下文卡：拖到外部输入框，或按回车复制");
   node.setAttribute("title", "拖到外部输入框 · 单击复制");
+
+  const copy = () => {
+    void copyContextCardText(text, options);
+  };
 
   node.addEventListener("dragstart", (ev: DragEvent) => {
     applyContextCardDragStart(ev.dataTransfer, text);
@@ -51,7 +58,13 @@ export function bindContextCardDrag(
   });
 
   node.addEventListener("click", () => {
-    void copyContextCardText(text, options);
+    copy();
+  });
+
+  node.addEventListener("keydown", (ev: KeyboardEvent) => {
+    if (ev.key !== "Enter" && ev.key !== " ") return;
+    ev.preventDefault();
+    copy();
   });
 }
 

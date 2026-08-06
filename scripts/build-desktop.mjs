@@ -135,7 +135,7 @@ async function clean(buildOutRoot) {
 
 async function copyRendererStatic(buildRoot, buildOutRoot) {
   const srcDir = path.join(buildRoot, "src", "desktop", "renderer");
-  for (const name of ["index.html", "float.html", "styles.css"]) {
+  for (const name of ["index.html", "float.html", "float.css", "styles.css"]) {
     await fs.copyFile(path.join(srcDir, name), path.join(buildOutRoot, "renderer", name));
   }
   // Layered CSS parts referenced by styles.css @import (file:// / asar relative).

@@ -179,6 +179,35 @@ test("bindContextCardDrag: click may copy as auxiliary path only", async () => {
   assert.deepEqual(copied, [text]);
 });
 
+test("bindContextCardDrag: Context Card is keyboard reachable and Enter copies", async () => {
+  const text = contextCardToDragText(nodeContextCard("cx-keyboard", "keyboard/card"));
+  const el = mockElement();
+  const copied: string[] = [];
+  let prevented = false;
+
+  bindContextCardDrag(el as unknown as HTMLElement, text, {
+    writeClipboard: async (value) => {
+      copied.push(value);
+    },
+  });
+
+  assert.equal(el.getAttribute("role"), "button");
+  assert.equal(el.getAttribute("tabindex"), "0");
+  assert.match(el.getAttribute("aria-label") ?? "", /回车复制/);
+
+  el.dispatch("keydown", {
+    key: "Enter",
+    preventDefault: () => {
+      prevented = true;
+    },
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(prevented, true);
+  assert.deepEqual(copied, [text]);
+});
+
 test("copyContextCardText surfaces clipboard errors without throwing", async () => {
   const errs: unknown[] = [];
   await copyContextCardText("payload", {

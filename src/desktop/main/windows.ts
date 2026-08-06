@@ -9,6 +9,10 @@ import {
 } from "electron";
 import type { DesktopPreferences } from "../types.js";
 import { installDesktopNavigationPolicy } from "./navigation-policy.js";
+import {
+  FLOAT_WINDOW_BOUNDS,
+  normalizeFloatWindowBounds,
+} from "./float-window-layout.js";
 
 export type WindowPaths = {
   preload: string;
@@ -73,17 +77,18 @@ export function createFloatWindow(
   paths: WindowPaths,
   prefs: DesktopPreferences
 ): BrowserWindow {
-  const display = screen.getPrimaryDisplay().workArea;
-  const width = prefs.floatWindowBounds?.width ?? 320;
-  const height = prefs.floatWindowBounds?.height ?? 280;
-  const x = prefs.floatWindowBounds?.x ?? display.x + display.width - width - 24;
-  const y = prefs.floatWindowBounds?.y ?? display.y + 24;
+  const savedBounds = prefs.floatWindowBounds;
+  const display = savedBounds
+    ? screen.getDisplayMatching(savedBounds).workArea
+    : screen.getPrimaryDisplay().workArea;
+  const bounds = normalizeFloatWindowBounds(savedBounds, display);
 
   const win = new BrowserWindow({
-    width,
-    height,
-    x,
-    y,
+    ...bounds,
+    minWidth: FLOAT_WINDOW_BOUNDS.minWidth,
+    maxWidth: FLOAT_WINDOW_BOUNDS.maxWidth,
+    minHeight: FLOAT_WINDOW_BOUNDS.minHeight,
+    maxHeight: FLOAT_WINDOW_BOUNDS.maxHeight,
     show: false,
     frame: false,
     transparent: false,
@@ -93,7 +98,7 @@ export function createFloatWindow(
     minimizable: false,
     maximizable: false,
     title: "帷幄 · 浮动控件",
-    backgroundColor: "#e8e4d7",
+    backgroundColor: "#f7f7f8",
     webPreferences: {
       preload: paths.preload,
       contextIsolation: true,

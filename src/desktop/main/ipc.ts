@@ -25,7 +25,7 @@ export type IpcContext = {
   dataDir?: string;
   getMainWindow: () => BrowserWindow | null;
   getFloatWindow: () => BrowserWindow | null;
-  openMain: () => void;
+  openMain: () => void | Promise<void>;
   showFloat: () => void;
   hideFloat: () => void;
   hideMain: () => void;
@@ -107,7 +107,7 @@ export function registerDesktopIpc(ctx: IpcContext): void {
   );
 
   ipcMain.handle(DESKTOP_IPC.openMain, async () => {
-    ctx.openMain();
+    await ctx.openMain();
   });
 
   ipcMain.handle(DESKTOP_IPC.hideMain, async () => {
