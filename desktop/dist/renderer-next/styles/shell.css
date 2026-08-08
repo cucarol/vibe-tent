@@ -173,41 +173,13 @@ button, input, select, textarea { font: inherit; }
 .tn-canvas-pane {
   position: relative;
   display: grid;
-  grid-template-rows: 34px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
   background: var(--tn-color-stage-bg);
 }
 
-.tn-canvas-tabbar {
-  display: flex;
-  align-items: stretch;
-  justify-content: space-between;
-  min-width: 0;
-  border-bottom: 1px solid var(--tn-color-border);
-  background: var(--tn-color-chrome-bg);
-}
-
-.tn-canvas-tabs { display: flex; align-items: stretch; min-width: 0; }
-.tn-canvas-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 110px;
-  max-width: 240px;
-  padding: 0 12px;
-  border: 0;
-  border-right: 1px solid var(--tn-color-border);
-  border-bottom: 2px solid var(--tn-color-accent);
-  background: var(--tn-color-elevated-bg);
-  color: var(--tn-color-text-primary);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.tn-canvas-tab span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tn-canvas-tools { display: flex; align-items: center; gap: 2px; padding: 0 4px; }
 .tn-canvas-host { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
 
 .tn-canvas-host::after {
@@ -295,17 +267,26 @@ button, input, select, textarea { font: inherit; }
   color: var(--tn-color-text-primary);
 }
 
-.tn-outline-tree { height: calc(100% - 32px); padding: 6px; overflow: auto; }
+.tn-outline-tree {
+  box-sizing: border-box;
+  min-width: 0;
+  height: calc(100% - 32px);
+  padding: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
 .tn-outline-node {
   --tn-tree-depth: 0;
+  box-sizing: border-box;
   position: relative;
   display: grid;
   grid-template-columns: 14px 3px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 43px;
-  padding: 5px 6px 5px calc(7px + var(--tn-tree-depth) * 13px);
+  min-width: 0;
+  min-height: 32px;
+  padding: 3px 6px 3px calc(7px + var(--tn-tree-depth) * 13px);
   border: 1px solid transparent;
   border-radius: var(--tn-radius-md);
   color: var(--tn-color-text-primary);
@@ -328,17 +309,18 @@ button, input, select, textarea { font: inherit; }
 }
 .tn-outline-node:focus-visible { outline: var(--tn-focus-ring); outline-offset: -1px; }
 .tn-outline-node[data-projection="stale"], .tn-outline-node[data-projection="unresolved"] { color: var(--tn-color-text-secondary); }
-.tn-outline-disclosure { display: grid; width: 14px; height: 24px; place-items: center; color: var(--tn-color-text-faint); }
+.tn-outline-disclosure { display: grid; width: 14px; height: 20px; place-items: center; color: var(--tn-color-text-faint); }
 .tn-outline-disclosure:not([data-visible="true"]) { pointer-events: none; }
 .tn-outline-disclosure[data-visible="true"] { cursor: pointer; }
 .tn-outline-disclosure svg { width: 12px; height: 12px; transition: transform var(--tn-motion-duration-fast) var(--tn-motion-ease-out); }
 .tn-outline-disclosure[data-expanded="true"] svg { transform: rotate(90deg); }
 
-.tn-outline-spine { width: 3px; height: 25px; border-radius: 3px; background: var(--tn-color-border-strong); }
+.tn-outline-spine { width: 3px; height: 20px; border-radius: 3px; background: var(--tn-color-border-strong); }
 .tn-outline-spine[data-type="goal"] { background: var(--tn-color-node-goal); }
 .tn-outline-spine[data-type="prompt"] { background: var(--tn-color-node-prompt); }
 .tn-outline-spine[data-type="output"] { background: var(--tn-color-node-output); }
-.tn-outline-copy { display: grid; min-width: 0; gap: 2px; }
+.tn-outline-copy { display: block; min-width: 0; }
+.tn-outline-node[data-selected="true"] .tn-outline-copy { display: grid; gap: 2px; }
 .tn-outline-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .tn-outline-meta { overflow: hidden; color: var(--tn-color-text-faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .tn-outline-node .tn-ui-status-badge { padding-inline: 5px; }
