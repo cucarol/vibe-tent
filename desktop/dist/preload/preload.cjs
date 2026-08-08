@@ -26,6 +26,7 @@ var DESKTOP_IPC = {
   listWorkspaces: "tent:list-workspaces",
   health: "tent:health",
   rpc: "tent:rpc",
+  listPendingInteractions: "tent:list-pending-interactions",
   document: "tent:document",
   collaboration: "tent:collaboration",
   openMain: "tent:open-main",
@@ -71,6 +72,7 @@ var api = {
     }
     return import_electron.ipcRenderer.invoke(DESKTOP_IPC.rpc, method, params);
   },
+  listPendingInteractions: (workspaceId) => import_electron.ipcRenderer.invoke(DESKTOP_IPC.listPendingInteractions, workspaceId),
   document: (request) => import_electron.ipcRenderer.invoke(DESKTOP_IPC.document, request),
   collaboration: (request) => import_electron.ipcRenderer.invoke(DESKTOP_IPC.collaboration, request),
   pickWorkspaceFolder: () => import_electron.ipcRenderer.invoke(DESKTOP_IPC.pickWorkspaceFolder),

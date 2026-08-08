@@ -164,6 +164,7 @@ button, input, select, textarea { font: inherit; }
 }
 
 .tn-outline-pane { border-right: 1px solid var(--tn-color-border); }
+.tn-outline-pane[data-outline-mode="inbox"] { display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .tn-inspector-pane { border-left: 1px solid var(--tn-color-border); }
 .tn-workbench[data-outline-open="false"] .tn-outline-pane,
 .tn-workbench[data-focus-open="false"] .tn-inspector-pane,
@@ -423,6 +424,21 @@ button, input, select, textarea { font: inherit; }
 .tn-inbox-item-heading strong { color: var(--tn-color-text-primary); font-size: 12px; }
 .tn-inbox-item > p { margin: 0; color: var(--tn-color-text-secondary); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .tn-inbox-actions, .tn-inline-form > div { display: flex; justify-content: flex-end; gap: 6px; }
+.tn-inbox-view { min-height: 0; overflow: auto; padding: 0 10px 18px; }
+.tn-inbox-status { padding: 10px 2px 4px; }
+.tn-inbox-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.tn-inbox-row-wrap { min-width: 0; border-bottom: 1px solid var(--tn-color-border); }
+.tn-inbox-row-wrap:last-child { border-bottom: 0; }
+.tn-inbox-row { display: grid; gap: 4px; width: 100%; min-width: 0; padding: 11px 2px; border: 0; border-radius: 0; background: transparent; color: var(--tn-color-text-secondary); font: inherit; text-align: left; }
+button.tn-inbox-row { cursor: pointer; }
+button.tn-inbox-row:hover { background: var(--tn-color-hover); }
+button.tn-inbox-row:focus-visible { outline: var(--tn-focus-ring); outline-offset: -2px; }
+.tn-inbox-row-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.tn-inbox-row-heading strong { min-width: 0; overflow: hidden; color: var(--tn-color-text-primary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.tn-inbox-row-heading time { flex: none; color: var(--tn-color-text-faint); font-size: 10px; }
+.tn-inbox-row-summary { display: -webkit-box; overflow: hidden; color: var(--tn-color-text-secondary); font-size: 12px; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.tn-inbox-row-source { color: var(--tn-color-text-faint); font-size: 10px; }
+.tn-inbox-row[data-actionable="false"] { opacity: .72; }
 .tn-inline-form { display: grid; gap: 8px; }
 .tn-decision-options { display: grid; gap: 7px; margin: 0; padding: 0; border: 0; color: var(--tn-color-text-secondary); font-size: 11px; }
 .tn-decision-options legend { margin-bottom: 6px; color: var(--tn-color-text-faint); font-size: 10px; }

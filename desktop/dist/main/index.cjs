@@ -742,6 +742,7 @@ var DESKTOP_IPC = {
   listWorkspaces: "tent:list-workspaces",
   health: "tent:health",
   rpc: "tent:rpc",
+  listPendingInteractions: "tent:list-pending-interactions",
   document: "tent:document",
   collaboration: "tent:collaboration",
   openMain: "tent:open-main",
@@ -1451,6 +1452,84 @@ async function recoverDesktopStateOnce(args) {
   return args.model.getSnapshot();
 }
 
+// src/desktop/inbox-ipc.ts
+function isRecord3(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function nonEmptyString2(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function isInteractionKind(value) {
+  return value === "decisionRequest" || value === "toolApproval" || value === "delivery";
+}
+function normalizeServiceItem(value, workspaceId, index) {
+  if (!isRecord3(value) || value.workspaceId !== workspaceId) {
+    throw new Error(`interaction.listPending items[${index}] workspaceId mismatch`);
+  }
+  if (!nonEmptyString2(value.id) || !isInteractionKind(value.kind) || !nonEmptyString2(value.createdAt)) {
+    throw new Error(`interaction.listPending items[${index}] identity is corrupt`);
+  }
+  let summary;
+  if (value.kind === "decisionRequest") {
+    if (!nonEmptyString2(value.question)) {
+      throw new Error(`interaction.listPending items[${index}] question is corrupt`);
+    }
+    summary = value.question;
+  } else if (value.kind === "toolApproval") {
+    if (!nonEmptyString2(value.toolTitle)) {
+      throw new Error(`interaction.listPending items[${index}] tool title is corrupt`);
+    }
+    summary = value.toolTitle;
+  } else {
+    summary = "Delivery ready for review";
+  }
+  const sourceNodeId = value.kind === "delivery" ? value.sourceNodeId : void 0;
+  if (sourceNodeId !== void 0 && !nonEmptyString2(sourceNodeId)) {
+    throw new Error(`interaction.listPending items[${index}] sourceNodeId is corrupt`);
+  }
+  return {
+    id: value.id,
+    kind: value.kind,
+    createdAt: value.createdAt,
+    summary,
+    ...nonEmptyString2(sourceNodeId) ? { sourceNodeId } : {}
+  };
+}
+function normalizeServiceInboxResponse(value, expectedWorkspaceId) {
+  if (!nonEmptyString2(expectedWorkspaceId)) {
+    throw new Error("workspaceId is required");
+  }
+  if (!isRecord3(value) || value.workspaceId !== expectedWorkspaceId) {
+    throw new Error("interaction.listPending workspaceId mismatch or payload is not an object");
+  }
+  if (!Array.isArray(value.items) || !isRecord3(value.counts)) {
+    throw new Error("interaction.listPending payload is missing items or counts");
+  }
+  const items = value.items.map(
+    (item, index) => normalizeServiceItem(item, expectedWorkspaceId, index)
+  );
+  const counts = value.counts;
+  const byKind = {
+    decisionRequest: items.filter((item) => item.kind === "decisionRequest").length,
+    toolApproval: items.filter((item) => item.kind === "toolApproval").length,
+    delivery: items.filter((item) => item.kind === "delivery").length
+  };
+  if (counts.decisionRequest !== byKind.decisionRequest || counts.toolApproval !== byKind.toolApproval || counts.delivery !== byKind.delivery || counts.total !== items.length || Object.values(counts).some(
+    (count) => typeof count !== "number" || !Number.isInteger(count) || count < 0
+  )) {
+    throw new Error("interaction.listPending counts are corrupt");
+  }
+  return { workspaceId: expectedWorkspaceId, items, count: items.length };
+}
+async function handleDesktopInboxRequest(getClient, workspaceId) {
+  if (!nonEmptyString2(workspaceId)) throw new Error("workspaceId is required");
+  const client = getClient();
+  if (!client) throw new Error("Service not attached");
+  const ws = workspaceId.trim();
+  const raw = await client.call("interaction.listPending", { workspaceId: ws });
+  return normalizeServiceInboxResponse(raw, ws);
+}
+
 // src/desktop/main/ipc.ts
 function registerDesktopIpc(ctx) {
   import_electron2.ipcMain.handle(DESKTOP_IPC.getState, async () => {
@@ -1484,6 +1563,10 @@ function registerDesktopIpc(ctx) {
     async (_e, method, params) => {
       return invokeDesktopProjectionRpc(() => ctx.host.client, method, params);
     }
+  );
+  import_electron2.ipcMain.handle(
+    DESKTOP_IPC.listPendingInteractions,
+    async (_e, workspaceId) => handleDesktopInboxRequest(() => ctx.host.client, workspaceId)
   );
   import_electron2.ipcMain.handle(
     DESKTOP_IPC.document,
