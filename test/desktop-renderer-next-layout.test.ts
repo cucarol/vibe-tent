@@ -171,3 +171,22 @@ test("ordinary Canvas and Outline selection does not open either pane", async ()
   assert.doesNotMatch(canvasSelection, /layout\.(toggle|restore|collapse)\(/);
   assert.doesNotMatch(outlineSelection, /layout\.(toggle|restore|collapse)\(/);
 });
+
+test("Outline ordinary rows stay dense while selected rows retain type and full-title access", async () => {
+  const outline = await fs.readFile(
+    path.join(process.cwd(), "src/desktop/renderer-next/components/OutlinePanel.tsx"),
+    "utf8"
+  );
+  const css = await fs.readFile(
+    path.join(process.cwd(), "src/desktop/renderer-next/styles/shell.css"),
+    "utf8"
+  );
+  assert.match(outline, /role="treeitem"/);
+  assert.match(outline, /title=\{nodeTitle\(node\)\}/);
+  assert.match(outline, /selected \? <span className="tn-outline-meta">/);
+  assert.match(outline, /selected && projectionReady && node\.activeTaskState/);
+  assert.match(css, /\.tn-outline-node\s*\{[^}]*min-height: 32px;/s);
+  assert.match(css, /\.tn-outline-copy\s*\{[^}]*display: block;/s);
+  assert.match(css, /\.tn-outline-node\[data-selected="true"\] \.tn-outline-copy\s*\{[^}]*display: grid;/s);
+  assert.match(css, /\.tn-outline-title\s*\{[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/s);
+});

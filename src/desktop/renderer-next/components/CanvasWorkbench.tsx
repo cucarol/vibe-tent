@@ -3,8 +3,6 @@ import { CanvasV5Host } from "../canvas/excalidraw/CanvasV5Host.js";
 import type { CanvasNodeResolvers } from "../canvas/excalidraw/documentToExcalidraw.js";
 import type { GraphEdgeSource } from "../model/canvas-edges.js";
 import type { CanvasDocument } from "../types/identity.js";
-import { IconButton } from "../ui/index.js";
-import { ShellIcon } from "../shell/icons.js";
 import type { WorkbenchNodeView } from "../shell/workbench-types.js";
 import type { DrawingPersistenceStatus } from "../model/drawing-persistence-status.js";
 import type { ExcalidrawSceneSnapshot } from "../canvas/excalidraw/excalidrawSceneTypes.js";
@@ -126,16 +124,6 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
 
   return (
     <section className="tn-canvas-pane" aria-label="画布" data-region="canvas" hidden={hidden}>
-      {!immersive ? (
-        <div className="tn-canvas-tabbar">
-          <div className="tn-canvas-tabs" aria-label="当前画布">
-            <span className="tn-canvas-tab" aria-current="page"><ShellIcon name="canvas" /><span>工作集</span></span>
-          </div>
-          <div className="tn-canvas-tools">
-            <IconButton size="compact" aria-label="进入沉浸画布" tooltip="进入沉浸画布" variant="ghost" onClick={() => onImmersiveChange(true)}><ShellIcon name="focus" /></IconButton>
-          </div>
-        </div>
-      ) : null}
       <div
         ref={hostRef}
         className="tn-canvas-host"

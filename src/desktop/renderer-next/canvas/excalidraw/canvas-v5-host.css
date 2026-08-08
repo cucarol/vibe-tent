@@ -31,6 +31,12 @@
   display: none !important;
 }
 
+/* The shell already names the single Canvas; keep Excalidraw's toolbar free of onboarding copy. */
+.tn-canvas-v5-host__scene .welcome-screen-decor-hint--toolbar,
+.tn-canvas-v5-host__scene .HintViewer {
+  display: none !important;
+}
+
 .tn-canvas-node-preview {
   position: absolute;
   z-index: 35;

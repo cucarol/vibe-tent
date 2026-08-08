@@ -1054,6 +1054,10 @@ test("V5 leaves generic drawing tools exclusively to Excalidraw", async () => {
     ),
     "utf8"
   );
+  const shellCss = await fs.readFile(
+    path.join(process.cwd(), "src/desktop/renderer-next/styles/shell.css"),
+    "utf8"
+  );
   const host = await fs.readFile(
     path.join(
       process.cwd(),
@@ -1076,6 +1080,10 @@ test("V5 leaves generic drawing tools exclusively to Excalidraw", async () => {
   assert.doesNotMatch(css, /tn-canvas-v5-host__toolbar/);
   assert.match(host, /tools:\s*\{\s*image:\s*true\s*\}/);
   assert.match(host, /data-testid="canvas-display-menu"/);
+  assert.match(shellCss, /\.tn-canvas-pane\s*\{[^}]*grid-template-rows: minmax\(0, 1fr\);/s);
+  assert.match(css, /\.tn-canvas-v5-host__scene \.welcome-screen-decor-hint--toolbar/);
+  assert.match(css, /\.tn-canvas-v5-host__scene \.HintViewer/);
+  assert.doesNotMatch(workbench, /tn-canvas-tabbar|tn-canvas-tab|tn-canvas-tools|工作集/);
   assert.match(workbench, /graph=\{structureGraph\}/);
   assert.match(workbench, /markdown:\s*false,\s*wiki:\s*false,\s*relation:\s*false/);
   assert.doesNotMatch(workbench, /onToggleEdgeLayer/);

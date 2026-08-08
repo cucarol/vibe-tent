@@ -294,6 +294,7 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
               <div
                 key={node.nodeId}
                 role="treeitem"
+                title={nodeTitle(node)}
                 aria-level={(node.depth ?? 0) + 1}
                 aria-selected={selected}
                 aria-expanded={expanded}
@@ -339,9 +340,9 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
                 <span className="tn-outline-spine" data-type={node.type} aria-hidden="true" />
                 <span className="tn-outline-copy">
                   <span className="tn-outline-title">{nodeTitle(node)}</span>
-                  <span className="tn-outline-meta">{projectionReady ? nodeTypeLabel(node.type) : projectionCopy}</span>
+                  {selected ? <span className="tn-outline-meta">{projectionReady ? nodeTypeLabel(node.type) : projectionCopy}</span> : null}
                 </span>
-                {projectionReady && node.activeTaskState ? <StatusBadge tone="running" data-task-state={node.activeTaskState}>{taskStateLabel(node.activeTaskState)}</StatusBadge> : null}
+                {selected && projectionReady && node.activeTaskState ? <StatusBadge tone="running" data-task-state={node.activeTaskState}>{taskStateLabel(node.activeTaskState)}</StatusBadge> : null}
               </div>
             );
           })}
