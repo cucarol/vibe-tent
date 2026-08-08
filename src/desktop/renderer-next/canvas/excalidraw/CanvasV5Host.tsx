@@ -52,6 +52,7 @@ import {
   restoreTentPlacementAfterCancel,
   type TentPlacementDrag,
 } from "./tent-placement-drag.js";
+import { NODE_CARD } from "../../model/canvas-document.js";
 import {
   schedulePostMountCanvasViewportSync,
   viewportAfterCanvasResize,
@@ -356,7 +357,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     };
     const zoom = appState.zoom?.value ?? 1;
     const rect = host.getBoundingClientRect();
-    const preferredLeft = (element.x + (element.width ?? 264) + (appState.scrollX ?? 0)) * zoom + 14;
+    const preferredLeft = (element.x + (element.width ?? NODE_CARD.width) + (appState.scrollX ?? 0)) * zoom + 14;
     const preferredTop = (element.y + (appState.scrollY ?? 0)) * zoom;
     preview.style.left = `${Math.max(12, Math.min(rect.width - 250, preferredLeft))}px`;
     preview.style.top = `${Math.max(52, Math.min(rect.height - 142, preferredTop))}px`;

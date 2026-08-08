@@ -7,6 +7,7 @@ import {
   type CanvasV5LocalSnapshot,
 } from "../src/desktop/renderer-next/model/canvas-v5-local-persistence.js";
 import {
+  NODE_CARD,
   placeEntityInVisibleViewport,
   removeEntityFromCanvas,
 } from "../src/desktop/renderer-next/model/canvas-document.js";
@@ -120,6 +121,11 @@ test("legacy tab-session documents cannot preserve a hidden grid preference", ()
               width: 420,
               height: 280,
               meta: { presentation: "expanded", retained: "yes" },
+            }, {
+              placementId: "pl-local",
+              kind: "note-stub",
+              width: 420,
+              height: 280,
             }],
           },
         },
@@ -129,9 +135,11 @@ test("legacy tab-session documents cannot preserve a hidden grid preference", ()
   });
   assert.equal(normalized.tabs.byId["tab-1"]?.document.backgroundMode, "blank");
   const normalizedPlacement = normalized.tabs.byId["tab-1"]?.document.placements[0];
-  assert.equal(normalizedPlacement?.width, 264);
-  assert.equal(normalizedPlacement?.height, 138);
+  assert.equal(normalizedPlacement?.width, NODE_CARD.width);
+  assert.equal(normalizedPlacement?.height, NODE_CARD.height);
   assert.deepEqual(normalizedPlacement?.meta, { retained: "yes" });
+  assert.equal(normalized.tabs.byId["tab-1"]?.document.placements[1]?.width, 420);
+  assert.equal(normalized.tabs.byId["tab-1"]?.document.placements[1]?.height, 280);
 });
 
 test("exact workspace key prevents Canvas document and scene leaking across workspaces", () => {

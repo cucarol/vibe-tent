@@ -14,7 +14,10 @@ import {
   readCanvasNodeSnapshot,
   withCanvasNodeSnapshot,
 } from "../src/desktop/renderer-next/model/canvas-node-snapshot.js";
-import { DEFAULT_EDGE_LAYERS } from "../src/desktop/renderer-next/model/canvas-edges.js";
+import {
+  DEFAULT_EDGE_LAYERS,
+  placementEdgePoint,
+} from "../src/desktop/renderer-next/model/canvas-edges.js";
 import {
   applyPlacementPatches,
   documentToExcalidrawElements,
@@ -560,6 +563,14 @@ test("Tent Node cards have one fixed presentation and ignore legacy display mode
   assert.equal(element?.width, NODE_CARD.width);
   assert.equal(element?.height, NODE_CARD.height);
   assert.equal("presentation" in (mapped.cards.get("pl-a") ?? {}), false);
+  assert.deepEqual(
+    placementEdgePoint(doc.placements[0]!, "right-center"),
+    {
+      x: (doc.placements[0]!.x ?? 0) + NODE_CARD.width,
+      y: (doc.placements[0]!.y ?? 0) + NODE_CARD.height / 2,
+    },
+    "edge anchors use canonical geometry instead of legacy persisted dimensions"
+  );
 });
 
 test("Canvas resize preserves world centre then minimally reveals the focused placement", () => {
@@ -573,8 +584,8 @@ test("Canvas resize preserves world centre then minimally reveals the focused pl
       kind: "node",
       x: 760,
       y: 220,
-      width: 240,
-      height: 120,
+      width: 420,
+      height: 280,
     },
   });
   assert.equal(760 + direct1280.x + 240, 626, "direct narrow mount reveals the full focused placement");
@@ -589,8 +600,8 @@ test("Canvas resize preserves world centre then minimally reveals the focused pl
       kind: "node",
       x: 760,
       y: 220,
-      width: 240,
-      height: 120,
+      width: 420,
+      height: 280,
     },
   });
   const left = 760 + viewport.x;
@@ -608,8 +619,8 @@ test("Canvas resize preserves world centre then minimally reveals the focused pl
       kind: "node",
       x: 100,
       y: 100,
-      width: 240,
-      height: 120,
+      width: 420,
+      height: 280,
     },
     focusVisibility: "if-visible-before-resize",
   }), { x: -1125, y: -330, zoom: 1 }, "offscreen selection does not override a manual pan");
@@ -710,6 +721,8 @@ test("whiteboard drop creates another placement with an independent frozen snaps
   const placement = dropped.document.placements.at(-1)!;
   assert.equal(placement.x, 812);
   assert.equal(placement.y, 456);
+  assert.equal(placement.width, NODE_CARD.width);
+  assert.equal(placement.height, NODE_CARD.height);
   assert.deepEqual(readCanvasNodeSnapshot(placement)?.tags, ["dragged"]);
   assert.equal(dropped.document.focusedPlacementId, "pl-drop");
 });

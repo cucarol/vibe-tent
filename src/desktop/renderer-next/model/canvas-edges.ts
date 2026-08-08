@@ -5,7 +5,7 @@
  */
 
 import type { CanvasDocument, CanvasPlacement, EntityRef, PlacementId } from "../types/identity.js";
-import { NODE_CARD } from "./canvas-document.js";
+import { canvasPlacementSize } from "./canvas-document.js";
 
 export type CanvasEdgeKind = "parent" | "markdown" | "wiki" | "relation";
 
@@ -114,8 +114,7 @@ export function placementEdgePoint(
 ): { x: number; y: number } {
   const x = placement.x ?? 0;
   const y = placement.y ?? 0;
-  const w = placement.width ?? NODE_CARD.width;
-  const h = placement.height ?? NODE_CARD.height;
+  const { width: w, height: h } = canvasPlacementSize(placement);
   const cy = y + h / 2;
   if (endpoint === "right-center") return { x: x + w, y: cy };
   if (endpoint === "left-center") return { x, y: cy };

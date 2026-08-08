@@ -1,5 +1,5 @@
+import { canvasPlacementSize, type Viewport } from "./canvas-document.js";
 import type { CanvasPlacement } from "../types/identity.js";
-import type { Viewport } from "./canvas-document.js";
 
 export type CanvasViewportSize = { width: number; height: number };
 
@@ -50,8 +50,9 @@ export function viewportAfterCanvasResize(args: {
   if (!placement) return next;
 
   const margin = Math.max(0, args.margin ?? 24);
-  const width = (placement.width ?? 0) * zoom;
-  const height = (placement.height ?? 0) * zoom;
+  const placementSize = canvasPlacementSize(placement);
+  const width = placementSize.width * zoom;
+  const height = placementSize.height * zoom;
   const placementX = placement.x ?? 0;
   const placementY = placement.y ?? 0;
   if (args.focusVisibility === "if-visible-before-resize") {

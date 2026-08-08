@@ -1,5 +1,6 @@
 import type { GraphProjection } from "../../../service/types.js";
 import type { CanvasDocument } from "../types/identity.js";
+import { NODE_CARD } from "./canvas-document.js";
 import { depthByNodeId } from "./workbench-nodes.js";
 import {
   captureCanvasNodeSnapshot,
@@ -15,10 +16,11 @@ export function seedCanvasDocumentFromGraph(graph: GraphProjection): CanvasDocum
         placementId: `pl-default-${node.nodeId}`,
         entityRef: node.nodeId,
         kind: "node",
-        x: 90 + (depthByNodeId(graph).get(node.nodeId) ?? 0) * 320,
+        x: 90 + (depthByNodeId(graph).get(node.nodeId) ?? 0) *
+          (NODE_CARD.width + NODE_CARD.gapX),
         y: 110,
-        width: 264,
-        height: 138,
+        width: NODE_CARD.width,
+        height: NODE_CARD.height,
       }, captureCanvasNodeSnapshot({
         nodeId: node.nodeId,
         etag: node.etag,

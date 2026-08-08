@@ -49,6 +49,13 @@ import {
   type WorkbenchPresentationState,
 } from "../src/desktop/renderer-next/shell/workbench-presentation.js";
 import {
+  NODE_CARD,
+  canvasPlacementSize,
+} from "../src/desktop/renderer-next/model/canvas-document.js";
+import {
+  clientPointToCanvasNodeOrigin,
+} from "../src/desktop/renderer-next/model/canvas-session-store.js";
+import {
   captureCanvasNodeSnapshot,
   readCanvasNodeSnapshot,
   withCanvasNodeSnapshot,
@@ -171,8 +178,8 @@ test("placement add is visible, focused, idempotent, and local removal preserves
     kind: "node",
     x: -96,
     y: 140,
-    width: 264,
-    height: 138,
+    width: NODE_CARD.width,
+    height: NODE_CARD.height,
   });
 
   const repeated = placeEntityInVisibleViewport(first.document, "cx-unplaced", () => "pl-wrong");
@@ -320,18 +327,20 @@ test("Canvas drop requires a real presentation owner and fresh Node authority", 
   assert.equal(canDropNodeIntoPresentation(true, "fresh", "stale"), false);
 });
 
-test("new placements choose a visible free slot instead of stacking on existing cards", () => {
+test("new placements use the canonical card geometry and choose a visible free slot", () => {
   const document = {
     ...createEmptyCanvasDocument(),
     viewport: { x: 0, y: 0, zoom: 1 },
     placements: [
       { placementId: "pl-a", entityRef: "cx-a", kind: "node", x: 96, y: 150, width: 264, height: 138 },
-      { placementId: "pl-b", entityRef: "cx-b", kind: "node", x: 392, y: 150, width: 264, height: 138 },
+      { placementId: "pl-b", entityRef: "cx-b", kind: "node", x: 368, y: 150, width: 264, height: 138 },
     ],
   };
   const placed = placeEntityInVisibleViewport(document, "cx-c", () => "pl-c");
   assert.equal(placed.document.placements[2]?.x, 96);
-  assert.equal(placed.document.placements[2]?.y, 320);
+  assert.equal(placed.document.placements[2]?.y, 286);
+  assert.equal(placed.document.placements[2]?.width, NODE_CARD.width);
+  assert.equal(placed.document.placements[2]?.height, NODE_CARD.height);
 });
 
 test("placement slot search grows beyond twelve occupied candidates", () => {
@@ -339,8 +348,8 @@ test("placement slot search grows beyond twelve occupied candidates", () => {
     placementId: `pl-${slot}`,
     entityRef: `cx-${slot}`,
     kind: "node",
-    x: 96 + (slot % 2) * 296,
-    y: 150 + Math.floor(slot / 2) * 170,
+    x: 96 + (slot % 2) * (NODE_CARD.width + 32),
+    y: 150 + Math.floor(slot / 2) * (NODE_CARD.height + 32),
     width: 264,
     height: 138,
   }));
@@ -350,7 +359,38 @@ test("placement slot search grows beyond twelve occupied candidates", () => {
     placements,
   }, "cx-late", () => "pl-late");
   assert.equal(placed.document.placements[14]?.x, 96);
-  assert.equal(placed.document.placements[14]?.y, 1340);
+  assert.equal(placed.document.placements[14]?.y, 1102);
+});
+
+test("Outline drop pointer anchors the canonical Node centre across pan and zoom", () => {
+  const host = { left: 120, top: 48 };
+  for (const row of [
+    { zoom: 0.5, viewport: { x: 36, y: -24 }, client: { x: 306, y: 176 }, centre: { x: 300, y: 304 } },
+    { zoom: 1, viewport: { x: -80, y: 40 }, client: { x: 340, y: 268 }, centre: { x: 300, y: 180 } },
+    { zoom: 2, viewport: { x: 60, y: -30 }, client: { x: 780, y: 438 }, centre: { x: 300, y: 210 } },
+  ]) {
+    const origin = clientPointToCanvasNodeOrigin(
+      row.client,
+      host,
+      { ...row.viewport, zoom: row.zoom }
+    );
+    assert.deepEqual(
+      { x: origin.x + NODE_CARD.width / 2, y: origin.y + NODE_CARD.height / 2 },
+      row.centre,
+      `zoom ${row.zoom}`
+    );
+  }
+});
+
+test("canonical Canvas size overrides legacy Node geometry without changing local drawings", () => {
+  assert.deepEqual(
+    canvasPlacementSize({ kind: "node", width: 420, height: 280 }),
+    { width: NODE_CARD.width, height: NODE_CARD.height }
+  );
+  assert.deepEqual(
+    canvasPlacementSize({ kind: "note-stub", width: 420, height: 280 }),
+    { width: 420, height: 280 }
+  );
 });
 
 test("entityRef and placementId stay separate on CanvasDocument", () => {

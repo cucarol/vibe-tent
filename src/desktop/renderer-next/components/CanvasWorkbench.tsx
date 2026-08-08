@@ -6,7 +6,7 @@ import type { CanvasDocument } from "../types/identity.js";
 import type { WorkbenchNodeView } from "../shell/workbench-types.js";
 import type { DrawingPersistenceStatus } from "../model/drawing-persistence-status.js";
 import type { ExcalidrawSceneSnapshot } from "../canvas/excalidraw/excalidrawSceneTypes.js";
-import { clientPointToCanvasOrigin } from "../model/canvas-session-store.js";
+import { clientPointToCanvasNodeOrigin } from "../model/canvas-session-store.js";
 import { OUTLINE_NODE_DRAG_TYPE } from "../model/canvas-node-snapshot.js";
 import {
   completeCanvasDrop,
@@ -106,7 +106,7 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
     const rect = hostRef.current?.getBoundingClientRect();
     if (!nodeId || !rect) return;
     event.preventDefault();
-    const point = clientPointToCanvasOrigin(
+    const point = clientPointToCanvasNodeOrigin(
       { x: event.clientX, y: event.clientY },
       rect,
       document.viewport

@@ -256,11 +256,8 @@ export function saveCanvasWorkspaceSession(
   }
 }
 
-/**
- * Convert screen (client) drop coordinates into canvas world origin,
- * using the engine host rect and current viewport.
- */
-export function clientPointToCanvasOrigin(
+/** Convert a screen pointer into the top-left origin of a centered Tent Node. */
+export function clientPointToCanvasNodeOrigin(
   client: { x: number; y: number },
   hostRect: { left: number; top: number },
   viewport: { x: number; y: number; zoom: number } = DEFAULT_VIEWPORT
@@ -269,8 +266,8 @@ export function clientPointToCanvasOrigin(
   const localX = client.x - hostRect.left;
   const localY = client.y - hostRect.top;
   return {
-    x: (localX - viewport.x) / zoom,
-    y: (localY - viewport.y) / zoom,
+    x: (localX - viewport.x) / zoom - NODE_CARD.width / 2,
+    y: (localY - viewport.y) / zoom - NODE_CARD.height / 2,
   };
 }
 

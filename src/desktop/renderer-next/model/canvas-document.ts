@@ -21,20 +21,39 @@ export type Viewport = NonNullable<CanvasDocument["viewport"]>;
 export const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 };
 
 export const NODE_CARD = {
-  width: 264,
-  height: 138,
-  gapX: 48,
-  gapY: 20,
-  padX: 24,
-  padY: 24,
+  width: 240,
+  height: 104,
+  gapX: 40,
+  gapY: 16,
+  padX: 20,
+  padY: 20,
 } as const;
 
 export const VISIBLE_NODE_PLACEMENT = {
-  width: 264,
-  height: 138,
   insetX: 96,
   insetY: 150,
 } as const;
+
+/**
+ * Resolve the geometry used by Canvas spatial consumers. Tent Nodes always
+ * use the product's fixed card size, even when an older persisted placement
+ * still carries legacy dimensions. Non-Node drawing geometry remains intact.
+ */
+export function canvasPlacementSize(
+  placement: Pick<CanvasPlacement, "kind" | "width" | "height">
+): { width: number; height: number } {
+  if (placement.kind === "node") {
+    return { width: NODE_CARD.width, height: NODE_CARD.height };
+  }
+  return {
+    width: typeof placement.width === "number" && Number.isFinite(placement.width)
+      ? placement.width
+      : 0,
+    height: typeof placement.height === "number" && Number.isFinite(placement.height)
+      ? placement.height
+      : 0,
+  };
+}
 
 export function withViewport(
   doc: CanvasDocument,
@@ -112,20 +131,19 @@ export function placeEntityInVisibleViewport(
   const overlaps = (x: number, y: number) => doc.placements.some((candidate) => {
     const candidateX = candidate.x ?? 0;
     const candidateY = candidate.y ?? 0;
-    const candidateWidth = candidate.width ?? NODE_CARD.width;
-    const candidateHeight = candidate.height ?? NODE_CARD.height;
+    const { width: candidateWidth, height: candidateHeight } = canvasPlacementSize(candidate);
     const margin = 20;
     return x < candidateX + candidateWidth + margin &&
-      x + VISIBLE_NODE_PLACEMENT.width + margin > candidateX &&
+      x + NODE_CARD.width + margin > candidateX &&
       y < candidateY + candidateHeight + margin &&
-      y + VISIBLE_NODE_PLACEMENT.height + margin > candidateY;
+      y + NODE_CARD.height + margin > candidateY;
   });
   let x = baseX;
   let y = baseY;
   const slotLimit = Math.max(12, doc.placements.length * 4 + 4);
   for (let slot = 0; slot < slotLimit; slot += 1) {
-    const candidateX = baseX + (slot % 2) * (VISIBLE_NODE_PLACEMENT.width + 32);
-    const candidateY = baseY + Math.floor(slot / 2) * (VISIBLE_NODE_PLACEMENT.height + 32);
+    const candidateX = baseX + (slot % 2) * (NODE_CARD.width + 32);
+    const candidateY = baseY + Math.floor(slot / 2) * (NODE_CARD.height + 32);
     // If every scanned slot is obstructed, the final bounded candidate is a
     // safer fallback than silently returning to the known-conflicting base.
     x = candidateX;
@@ -140,8 +158,8 @@ export function placeEntityInVisibleViewport(
     kind: "node",
     x,
     y,
-    width: VISIBLE_NODE_PLACEMENT.width,
-    height: VISIBLE_NODE_PLACEMENT.height,
+    width: NODE_CARD.width,
+    height: NODE_CARD.height,
   };
   const placement = snapshot
     ? withCanvasNodeSnapshot(placementBase, snapshot)
@@ -175,8 +193,8 @@ export function dropNodeSnapshotAt(
     kind: "node",
     x: point.x,
     y: point.y,
-    width: VISIBLE_NODE_PLACEMENT.width,
-    height: VISIBLE_NODE_PLACEMENT.height,
+    width: NODE_CARD.width,
+    height: NODE_CARD.height,
   }, snapshot);
   return {
     placementId,
