@@ -20,6 +20,8 @@ export type DesktopInboxClient = {
   call: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
 };
 
+export type DesktopInboxClientGetter = () => DesktopInboxClient | null;
+
 type RecordValue = Record<string, unknown>;
 
 function isRecord(value: unknown): value is RecordValue {
@@ -118,10 +120,11 @@ export function normalizeDesktopInboxSnapshot(
 }
 
 export async function handleDesktopInboxRequest(
-  client: DesktopInboxClient | null,
+  getClient: DesktopInboxClientGetter,
   workspaceId: unknown
 ): Promise<DesktopInboxSnapshot> {
   if (!nonEmptyString(workspaceId)) throw new Error("workspaceId is required");
+  const client = getClient();
   if (!client) throw new Error("Service not attached");
   const ws = workspaceId.trim();
   const raw = await client.call("interaction.listPending", { workspaceId: ws });

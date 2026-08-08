@@ -90,6 +90,9 @@ export class InboxController {
         void this.refresh();
       } else if (this.workspaceId !== ws) {
         this.rereadQueued = false;
+        // A workspace switch while the old flight was held must start the
+        // current workspace read after the old result has been discarded.
+        void this.refresh();
       }
     }
   }

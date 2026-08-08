@@ -75,7 +75,7 @@ export function registerDesktopIpc(ctx: IpcContext): void {
   ipcMain.handle(
     DESKTOP_IPC.listPendingInteractions,
     async (_e: unknown, workspaceId: unknown) =>
-      handleDesktopInboxRequest(ctx.host.client, workspaceId)
+      handleDesktopInboxRequest(() => ctx.host.client, workspaceId)
   );
 
   ipcMain.handle(

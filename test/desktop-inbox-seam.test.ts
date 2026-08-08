@@ -87,12 +87,12 @@ function bridgeWithInbox(read: (workspaceId: string) => Promise<unknown>): Rende
 
 test("named Inbox bridge calls only interaction.listPending and strips the domain bag", async () => {
   const calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
-  const snapshot = await handleDesktopInboxRequest({
+  const snapshot = await handleDesktopInboxRequest(() => ({
     call: async (method, params) => {
       calls.push({ method, params });
       return rawPending();
     },
-  }, "ws-a");
+  }), "ws-a");
 
   assert.deepEqual(calls, [{ method: "interaction.listPending", params: { workspaceId: "ws-a" } }]);
   assert.deepEqual(snapshot, {
@@ -108,6 +108,28 @@ test("named Inbox bridge calls only interaction.listPending and strips the domai
   });
   assert.equal("path" in snapshot.items[0]!, false);
   assert.equal("title" in snapshot.items[0]!, false);
+});
+
+test("main Inbox request validates workspace before touching the lazy client getter", async () => {
+  let accesses = 0;
+  const client = {
+    call: async () => rawPending(),
+  };
+  const host = new Proxy({} as { client: typeof client }, {
+    get(_target, property) {
+      if (property === "client") accesses += 1;
+      return client;
+    },
+  });
+
+  await assert.rejects(
+    handleDesktopInboxRequest(() => host.client, "  "),
+    /workspaceId is required/
+  );
+  assert.equal(accesses, 0);
+
+  await handleDesktopInboxRequest(() => host.client, "ws-a");
+  assert.equal(accesses, 1);
 });
 
 test("forbidden generic projection calls remain rejected before the client getter", async () => {
@@ -196,6 +218,41 @@ test("controller subscribes before its first read and rereads after an event rac
   await flush();
   assert.equal(reads, 2);
   assert.equal(controller.getView().state, "ready");
+  controller.dispose();
+});
+
+test("workspace switch discards held A and authoritatively reads B", async () => {
+  const releaseA = deferred<void>();
+  const reads: string[] = [];
+  const controller = new InboxController({
+    onInvalidation: () => () => {},
+    async pendingInteractions(workspaceId) {
+      reads.push(workspaceId);
+      if (workspaceId === "ws-a") await releaseA.promise;
+      return ready(workspaceId, `interaction-${workspaceId}`);
+    },
+  });
+
+  controller.select("ws-a");
+  await flush();
+  assert.deepEqual(reads, ["ws-a"]);
+  controller.select("ws-b");
+  const loading = controller.getView();
+  assert.equal(loading.state, "loading");
+  if (loading.state !== "loading") throw new Error("workspace B did not start loading");
+  assert.equal(loading.workspaceId, "ws-b");
+  assert.equal("snapshot" in loading, false);
+
+  releaseA.resolve();
+  await flush();
+  await flush();
+  assert.deepEqual(reads, ["ws-a", "ws-b"]);
+  const view = controller.getView();
+  assert.equal(view.state, "ready");
+  if (view.state !== "ready") throw new Error("workspace B did not become ready");
+  assert.equal(view.workspaceId, "ws-b");
+  assert.equal(view.snapshot.workspaceId, "ws-b");
+  assert.equal(view.snapshot.items[0]?.id, "interaction-ws-b");
   controller.dispose();
 });
 
