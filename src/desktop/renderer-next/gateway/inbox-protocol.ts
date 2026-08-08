@@ -1,5 +1,5 @@
 import {
-  normalizeDesktopInboxSnapshot,
+  validateDesktopInboxSnapshot,
   type DesktopInboxSnapshot,
 } from "../../inbox-ipc.js";
 import type {
@@ -57,7 +57,7 @@ export async function readDesktopInbox(
         timer = setTimeout(() => reject(new InboxProjectionTimeoutError()), timeoutMs);
       }),
     ]);
-    const value = normalizeDesktopInboxSnapshot(raw, ws);
+    const value = validateDesktopInboxSnapshot(raw, ws);
     return { ok: true, workspaceId: ws, value, fetchedAt: new Date().toISOString() };
   } catch (error) {
     return {

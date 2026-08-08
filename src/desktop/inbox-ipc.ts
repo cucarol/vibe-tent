@@ -36,7 +36,7 @@ function isInteractionKind(value: unknown): value is DesktopInboxInteractionKind
   return value === "decisionRequest" || value === "toolApproval" || value === "delivery";
 }
 
-function normalizeItem(
+function normalizeServiceItem(
   value: unknown,
   workspaceId: string,
   index: number
@@ -81,7 +81,7 @@ function normalizeItem(
   };
 }
 
-export function normalizeDesktopInboxSnapshot(
+export function normalizeServiceInboxResponse(
   value: unknown,
   expectedWorkspaceId: string
 ): DesktopInboxSnapshot {
@@ -96,7 +96,7 @@ export function normalizeDesktopInboxSnapshot(
   }
 
   const items = value.items.map((item, index) =>
-    normalizeItem(item, expectedWorkspaceId, index)
+    normalizeServiceItem(item, expectedWorkspaceId, index)
   );
   const counts = value.counts;
   const byKind = {
@@ -119,6 +119,63 @@ export function normalizeDesktopInboxSnapshot(
   return { workspaceId: expectedWorkspaceId, items, count: items.length };
 }
 
+const DESKTOP_INBOX_SNAPSHOT_KEYS = new Set(["workspaceId", "items", "count"]);
+const DESKTOP_INBOX_ITEM_KEYS = new Set(["id", "kind", "createdAt", "summary", "sourceNodeId"]);
+
+function hasOnlyKeys(value: RecordValue, allowed: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function validateDesktopInboxItem(
+  value: unknown,
+  index: number
+): DesktopInboxItem {
+  if (!isRecord(value) || !hasOnlyKeys(value, DESKTOP_INBOX_ITEM_KEYS)) {
+    throw new Error(`Desktop Inbox item[${index}] is corrupt`);
+  }
+  if (
+    !nonEmptyString(value.id) ||
+    !isInteractionKind(value.kind) ||
+    !nonEmptyString(value.createdAt) ||
+    !nonEmptyString(value.summary)
+  ) {
+    throw new Error(`Desktop Inbox item[${index}] identity is corrupt`);
+  }
+  if (value.sourceNodeId !== undefined && !nonEmptyString(value.sourceNodeId)) {
+    throw new Error(`Desktop Inbox item[${index}] sourceNodeId is corrupt`);
+  }
+  return {
+    id: value.id,
+    kind: value.kind,
+    createdAt: value.createdAt,
+    summary: value.summary,
+    ...(nonEmptyString(value.sourceNodeId) ? { sourceNodeId: value.sourceNodeId } : {}),
+  };
+}
+
+export function validateDesktopInboxSnapshot(
+  value: unknown,
+  expectedWorkspaceId: string
+): DesktopInboxSnapshot {
+  if (!nonEmptyString(expectedWorkspaceId)) {
+    throw new Error("workspaceId is required");
+  }
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, DESKTOP_INBOX_SNAPSHOT_KEYS) ||
+    value.workspaceId !== expectedWorkspaceId ||
+    !Array.isArray(value.items) ||
+    typeof value.count !== "number" ||
+    !Number.isInteger(value.count) ||
+    value.count < 0 ||
+    value.count !== value.items.length
+  ) {
+    throw new Error("Desktop Inbox DTO is corrupt or workspace-scoped incorrectly");
+  }
+  const items = value.items.map((item, index) => validateDesktopInboxItem(item, index));
+  return { workspaceId: expectedWorkspaceId, items, count: items.length };
+}
+
 export async function handleDesktopInboxRequest(
   getClient: DesktopInboxClientGetter,
   workspaceId: unknown
@@ -128,5 +185,5 @@ export async function handleDesktopInboxRequest(
   if (!client) throw new Error("Service not attached");
   const ws = workspaceId.trim();
   const raw = await client.call("interaction.listPending", { workspaceId: ws });
-  return normalizeDesktopInboxSnapshot(raw, ws);
+  return normalizeServiceInboxResponse(raw, ws);
 }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   handleDesktopInboxRequest,
-  normalizeDesktopInboxSnapshot,
+  normalizeServiceInboxResponse,
   type DesktopInboxSnapshot,
 } from "../src/desktop/inbox-ipc.js";
 import {
@@ -10,6 +10,7 @@ import {
   type RendererDesktopBridge,
 } from "../src/desktop/renderer-next/gateway/desktop-bridge.js";
 import { invalidationFromEvent } from "../src/desktop/renderer-next/gateway/service-gateway.js";
+import { readDesktopInbox } from "../src/desktop/renderer-next/gateway/inbox-protocol.js";
 import { InboxController } from "../src/desktop/renderer-next/model/inbox-controller.js";
 import { isDesktopProjectionMethod, invokeDesktopProjectionRpc } from "../src/desktop/projection-ipc.js";
 import type { ProjectionRead } from "../src/desktop/renderer-next/gateway/workspace-projections.js";
@@ -38,7 +39,7 @@ function ready(workspaceId: string, id = "interaction-1"): ProjectionRead<Deskto
   return {
     ok: true,
     workspaceId,
-    value: normalizeDesktopInboxSnapshot(rawPending(workspaceId, {
+    value: normalizeServiceInboxResponse(rawPending(workspaceId, {
       items: [{
         id,
         kind: "delivery",
@@ -85,6 +86,16 @@ function bridgeWithInbox(read: (workspaceId: string) => Promise<unknown>): Rende
   };
 }
 
+function desktopPending(
+  workspaceId: string,
+  overrides: Record<string, unknown> = {}
+): Promise<DesktopInboxSnapshot> {
+  return handleDesktopInboxRequest(
+    () => ({ call: async () => rawPending(workspaceId, overrides) }),
+    workspaceId
+  );
+}
+
 test("named Inbox bridge calls only interaction.listPending and strips the domain bag", async () => {
   const calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
   const snapshot = await handleDesktopInboxRequest(() => ({
@@ -108,6 +119,47 @@ test("named Inbox bridge calls only interaction.listPending and strips the domai
   });
   assert.equal("path" in snapshot.items[0]!, false);
   assert.equal("title" in snapshot.items[0]!, false);
+});
+
+test("Main Desktop DTO feeds renderer Inbox validation for empty and nonempty responses", async () => {
+  const empty = await readDesktopInbox(
+    (workspaceId) => desktopPending(workspaceId, {
+      items: [],
+      counts: { decisionRequest: 0, toolApproval: 0, delivery: 0, total: 0 },
+    }),
+    "ws-a"
+  );
+  assert.deepEqual(empty, {
+    ok: true,
+    workspaceId: "ws-a",
+    value: { workspaceId: "ws-a", items: [], count: 0 },
+    fetchedAt: empty.ok ? empty.fetchedAt : "",
+  });
+
+  const nonempty = await readDesktopInbox(
+    (workspaceId) => desktopPending(workspaceId),
+    "ws-a"
+  );
+  assert.equal(nonempty.ok, true);
+  if (!nonempty.ok) throw new Error("Main DTO was rejected by renderer");
+  assert.equal(nonempty.value.count, 1);
+  assert.equal(nonempty.value.items[0]?.sourceNodeId, "node-authoritative");
+
+  const corruptDto = await readDesktopInbox(
+    async () => ({
+      workspaceId: "ws-a",
+      items: [{
+        id: "interaction-1",
+        kind: "delivery",
+        createdAt: "2026-08-09T00:00:00.000Z",
+        summary: "ready",
+      }],
+      count: 2,
+    }),
+    "ws-a"
+  );
+  assert.equal(corruptDto.ok, false);
+  assert.equal(corruptDto.ok ? "" : corruptDto.issue.kind, "corrupt");
 });
 
 test("main Inbox request validates workspace before touching the lazy client getter", async () => {
@@ -147,15 +199,26 @@ test("forbidden generic projection calls remain rejected before the client gette
 
 test("corrupt and mismatched workspace responses fail closed in the renderer gateway", async () => {
   const corrupt = createDesktopServiceGateway(
-    bridgeWithInbox(async () => ({ ...rawPending(), workspaceId: "ws-other" }))
+    bridgeWithInbox(async () => ({
+      workspaceId: "ws-other",
+      items: [],
+      count: 0,
+    }))
   );
   const mismatch = await corrupt.pendingInteractions("ws-a");
   assert.equal(mismatch.ok, false);
   assert.equal(mismatch.ok ? "" : mismatch.issue.kind, "corrupt");
 
   const counts = createDesktopServiceGateway(
-    bridgeWithInbox(async () => rawPending("ws-a", {
-      counts: { decisionRequest: 0, toolApproval: 0, delivery: 0, total: 0 },
+    bridgeWithInbox(async () => ({
+      workspaceId: "ws-a",
+      items: [{
+        id: "interaction-1",
+        kind: "delivery",
+        createdAt: "2026-08-09T00:00:00.000Z",
+        summary: "Delivery ready for review",
+      }],
+      count: 0,
     }))
   );
   const badCounts = await counts.pendingInteractions("ws-a");
@@ -172,7 +235,7 @@ test("same workspace reads coalesce exactly while other workspaces stay independ
       calls += 1;
       if (workspaceId === "ws-a") await releaseA.promise;
       if (workspaceId === "ws-b") await releaseB.promise;
-      return rawPending(workspaceId);
+      return desktopPending(workspaceId);
     })
   );
 
@@ -329,7 +392,7 @@ test("session-state invalidation includes the Inbox projection", () => {
 });
 
 test("an absent authoritative source Node id stays absent", () => {
-  const snapshot = normalizeDesktopInboxSnapshot(rawPending("ws-a", {
+  const snapshot = normalizeServiceInboxResponse(rawPending("ws-a", {
     items: [{
       id: "delivery-without-node",
       kind: "delivery",
