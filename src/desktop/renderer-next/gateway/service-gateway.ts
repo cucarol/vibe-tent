@@ -47,6 +47,11 @@ import {
   type DispatchTaskRequest,
 } from "./collaboration-protocol.js";
 import type { DesktopDecisionResponse } from "../../collaboration-ipc.js";
+import {
+  readDesktopInbox,
+  type InboxTransport,
+} from "./inbox-protocol.js";
+import type { DesktopInboxSnapshot } from "../../inbox-ipc.js";
 
 export type ProjectionKey = string;
 
@@ -68,6 +73,8 @@ export type ServiceGatewayHandlers = {
   documentTimeoutMs?: number;
   /** Typed user-facing Task/Delivery/Decision boundary. */
   collaborationTransport?: CollaborationTransport;
+  /** Named, read-only Desktop Inbox transport; never falls back to generic RPC. */
+  inboxTransport?: InboxTransport;
   /** Execute a domain-facing intent via Service RPC (never local FS mutation). */
   dispatchIntent?: (intent: UiIntent) => Promise<unknown>;
   /** Subscribe to Service events; return unsubscribe. */
@@ -106,7 +113,9 @@ export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
         "node.collaborations",
         "output.provenance",
         "session.list",
-        ...(type.startsWith("delivery.") ? ["pending.interactions"] : []),
+        ...(type.startsWith("delivery.") || type.startsWith("session.") || type === "task.state"
+          ? ["pending.interactions"]
+          : []),
       ],
       event,
       reason: type,
@@ -118,7 +127,8 @@ export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
   if (
     type.startsWith("toolApproval.") ||
     type.startsWith("decisionRequest.") ||
-    type.startsWith("taskInput.")
+    type.startsWith("taskInput.") ||
+    type.startsWith("proposal.")
   ) {
     return { keys: ["pending.interactions"], event, reason: type };
   }
@@ -127,7 +137,11 @@ export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
     type === "service.health" ||
     type === "service.disconnected"
   ) {
-    return { keys: ["workspace.list", "service.health"], event, reason: type };
+    return {
+      keys: ["workspace.list", "service.health", ...(type === "service.disconnected" ? ["pending.interactions"] : [])],
+      event,
+      reason: type,
+    };
   }
   return { keys: ["*"], event, reason: type };
 }
@@ -139,6 +153,10 @@ export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
 export class ServiceGateway {
   private unsub: (() => void) | null = null;
   private readonly listeners = new Set<(hint: InvalidationHint) => void>();
+  private readonly inboxFlights = new Map<
+    string,
+    Promise<ProjectionRead<DesktopInboxSnapshot>>
+  >();
 
   constructor(private readonly handlers: ServiceGatewayHandlers = {}) {}
 
@@ -225,6 +243,26 @@ export class ServiceGateway {
       outputId,
       this.handlers.projectionTimeoutMs ?? PROJECTION_TIMEOUT_MS
     );
+  }
+
+  /** One read flight per exact workspace; different workspaces never share it. */
+  pendingInteractions(
+    workspaceId: string
+  ): Promise<ProjectionRead<DesktopInboxSnapshot>> {
+    const ws = workspaceId.trim();
+    const existing = this.inboxFlights.get(ws);
+    if (existing) return existing;
+    const flight = readDesktopInbox(
+      this.handlers.inboxTransport,
+      ws,
+      this.handlers.projectionTimeoutMs ?? 12_000
+    );
+    this.inboxFlights.set(ws, flight);
+    const clear = () => {
+      if (this.inboxFlights.get(ws) === flight) this.inboxFlights.delete(ws);
+    };
+    void flight.then(clear, clear);
+    return flight;
   }
 
   focusDocument(

@@ -8,6 +8,7 @@ import type {
   DesktopCollaborationRequest,
   DesktopCollaborationResponse,
 } from "../collaboration-ipc.js";
+import type { DesktopInboxSnapshot } from "../inbox-ipc.js";
 
 export type TentDesktopBridge = {
   getState: () => Promise<unknown>;
@@ -16,6 +17,7 @@ export type TentDesktopBridge = {
   mountWorkspace: (workspaceRoot: string) => Promise<unknown>;
   setForeground: (workspaceId: string) => Promise<unknown>;
   rpc: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+  listPendingInteractions: (workspaceId: string) => Promise<DesktopInboxSnapshot>;
   document: (request: DesktopDocumentRequest) => Promise<DesktopDocumentResponse>;
   collaboration: (
     request: DesktopCollaborationRequest
