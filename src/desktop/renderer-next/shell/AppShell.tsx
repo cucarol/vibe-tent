@@ -44,6 +44,7 @@ import type {
   CollaborationSurfaceActions,
   CollaborationSurfaceView,
 } from "../model/collaboration-surface-controller.js";
+import type { InboxModel } from "../model/inbox.js";
 
 export type AppShellProps = {
   workspaceId?: string | null;
@@ -66,6 +67,7 @@ export type AppShellProps = {
   initialFocusExpanded?: boolean;
   initialInspectorTab?: "content" | "collaboration";
   initialOutlineMode?: "nodes" | "inbox";
+  inboxModel?: InboxModel;
 };
 
 function snapshotSource(node: WorkbenchNodeView | null | undefined): CanvasSnapshotSource | null {
@@ -109,6 +111,7 @@ export function AppShell({
   initialFocusExpanded = false,
   initialInspectorTab = "content",
   initialOutlineMode = "nodes",
+  inboxModel,
 }: AppShellProps = {}) {
   const layout = useMainLayout();
   const outlineOpen = !layout.effective.leftCollapsed;
@@ -311,7 +314,7 @@ export function AppShell({
       ) : null}
 
       <div className="tn-workbench" data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-focus-expanded={focusExpanded ? "true" : "false"} data-immersive={immersive ? "true" : "false"}>
-        <OutlinePanel id="tn-outline-panel" mode={outlineMode} onModeChange={setOutlineMode} nodes={nodes} projection={projection} selectedNodeId={selectedNodeId} reveal={outlineReveal} visible={outlineOpen} onSelectNode={selectNodeFromOutline} onOpenNodeActions={openNodeActions} canDragToCanvas={Boolean(onPresentationChange)} onCollapse={() => layout.collapse("left")} />
+        <OutlinePanel id="tn-outline-panel" mode={outlineMode} onModeChange={setOutlineMode} nodes={nodes} projection={projection} selectedNodeId={selectedNodeId} reveal={outlineReveal} visible={outlineOpen} onSelectNode={selectNodeFromOutline} onOpenNodeActions={openNodeActions} canDragToCanvas={Boolean(onPresentationChange)} onCollapse={() => layout.collapse("left")} inboxModel={inboxModel} />
         <CanvasWorkbench document={document} nodes={nodes} projection={projection} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNodeFromCanvas} onDropNode={onPresentationChange ? dropNode : undefined} previewDocument={focusDocument?.nodeId && typeof focusDocument.body === "string" ? { nodeId: focusDocument.nodeId, body: focusDocument.body } : null} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
         <InspectorPanel
           id="tn-focus-panel"

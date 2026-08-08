@@ -47,6 +47,7 @@ import {
 import { useFocusDocument } from "./model/use-focus-document.js";
 import { useCollaborationSurface } from "./model/use-collaboration-surface.js";
 import { materializeMissingCanvasNodeSnapshots } from "./model/canvas-node-snapshot.js";
+import { useInboxController } from "./model/use-inbox-controller.js";
 
 function MountedWorkspace(props: {
   bridge: RendererDesktopBridge;
@@ -65,6 +66,7 @@ function MountedWorkspace(props: {
     onRetryConnection,
   } = props;
   const gateway = useMemo(() => createDesktopServiceGateway(bridge), [bridge]);
+  const inboxModel = useInboxController(gateway, workspace.workspaceId);
   const persistence = useMemo(
     () => new CanvasV5LocalPersistence(window.localStorage, workspace.workspaceId),
     [workspace.workspaceId]
@@ -357,6 +359,7 @@ function MountedWorkspace(props: {
       focusDocumentActions={focusedDocument.actions}
       collaboration={collaborationSurface.view}
       collaborationActions={collaborationSurface.actions}
+      inboxModel={inboxModel}
       onRetryPersistence={retrySave.current ?? undefined}
       onPresentationChange={(update) => {
         const next = update({

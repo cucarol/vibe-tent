@@ -12,6 +12,8 @@ import {
   resolveOutlineReveal,
   type OutlineRevealRequest,
 } from "../model/outline-reveal.js";
+import { InboxView, inboxModelCount } from "./InboxView.js";
+import type { InboxModel } from "../model/inbox.js";
 
 export type OutlinePanelProps = {
   id?: string;
@@ -26,6 +28,7 @@ export type OutlinePanelProps = {
   reveal?: { nodeId: string; revision: number };
   visible?: boolean;
   onCollapse: () => void;
+  inboxModel?: InboxModel;
 };
 
 const EMPTY_COPY: Record<
@@ -58,7 +61,7 @@ const EMPTY_COPY: Record<
   },
 };
 
-export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projection, selectedNodeId, onSelectNode, onOpenNodeActions, canDragToCanvas = false, reveal, visible = true, onCollapse }: OutlinePanelProps) {
+export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projection, selectedNodeId, onSelectNode, onOpenNodeActions, canDragToCanvas = false, reveal, visible = true, onCollapse, inboxModel = { state: "idle" } }: OutlinePanelProps) {
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
   const itemRefs = useRef(new Map<string, HTMLDivElement>());
   const knownExpandableIds = useRef(new Set<string>());
@@ -258,7 +261,7 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
     <aside id={id} className="tn-pane tn-outline-pane" aria-label="工作区导航" data-region="outline" data-outline-mode={mode}>
       <PaneHeader
         title={mode === "nodes" ? "节点" : "收件箱"}
-        meta={mode === "nodes" ? `${nodes.length}` : undefined}
+        meta={mode === "nodes" ? `${nodes.length}` : inboxModelCount(inboxModel) ?? undefined}
         actions={<>
           {onModeChange ? (
             <div className="tn-outline-modes" role="group" aria-label="左栏内容">
@@ -270,10 +273,7 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
         </>}
       />
       {mode === "inbox" ? (
-        <div className="tn-pane-empty" role="status" data-testid="workspace-inbox-unavailable">
-          <strong>收件箱尚未接入</strong>
-          <p>这里将只显示工作区级待处理事项；不会用当前节点的协作状态冒充全局收件箱。</p>
-        </div>
+        <InboxView model={inboxModel} nodes={nodes} projection={projection} onSelectNode={onSelectNode} />
       ) : nodes.length === 0 ? (
         <div className="tn-pane-empty" role="status">
           <strong>{emptyCopy.title}</strong>
