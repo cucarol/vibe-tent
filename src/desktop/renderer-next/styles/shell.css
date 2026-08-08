@@ -267,15 +267,24 @@ button, input, select, textarea { font: inherit; }
   color: var(--tn-color-text-primary);
 }
 
-.tn-outline-tree { height: calc(100% - 32px); padding: 6px; overflow: auto; }
+.tn-outline-tree {
+  box-sizing: border-box;
+  min-width: 0;
+  height: calc(100% - 32px);
+  padding: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
 .tn-outline-node {
   --tn-tree-depth: 0;
+  box-sizing: border-box;
   position: relative;
   display: grid;
   grid-template-columns: 14px 3px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   width: 100%;
+  min-width: 0;
   min-height: 32px;
   padding: 3px 6px 3px calc(7px + var(--tn-tree-depth) * 13px);
   border: 1px solid transparent;
