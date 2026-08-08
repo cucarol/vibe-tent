@@ -5,10 +5,13 @@ import { nodeTitle, nodeTypeLabel, projectionLabel, taskStateLabel, type Workben
 import { OUTLINE_NODE_DRAG_TYPE } from "../model/canvas-node-snapshot.js";
 import {
   firstOutlineChild,
-  outlineAncestorNodeIds,
   updateOutlineExpansion,
   visibleOutlineNodes,
 } from "../model/outline-tree.js";
+import {
+  resolveOutlineReveal,
+  type OutlineRevealRequest,
+} from "../model/outline-reveal.js";
 
 export type OutlinePanelProps = {
   id?: string;
@@ -59,10 +62,21 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
   const itemRefs = useRef(new Map<string, HTMLDivElement>());
   const knownExpandableIds = useRef(new Set<string>());
+  const handledRevealRevision = useRef(0);
+  const pendingRevealFocus = useRef<OutlineRevealRequest | null>(null);
+  const revealFocusCancel = useRef<(() => void) | null>(null);
+  const visibleRef = useRef(visible);
+  const latestRevealRef = useRef(reveal);
+  visibleRef.current = visible;
+  latestRevealRef.current = reveal;
   const [expandedNodeIds, setExpandedNodeIds] = useState<ReadonlySet<string>>(
     () => new Set(nodes.filter((node) => node.hasChildren).map((node) => node.nodeId))
   );
   const emptyCopy = EMPTY_COPY[projection];
+  const cancelRevealFocus = () => {
+    revealFocusCancel.current?.();
+    revealFocusCancel.current = null;
+  };
   useEffect(() => {
     setExpandedNodeIds((current) => {
       const next = new Set(
@@ -79,22 +93,95 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
       return next;
     });
   }, [nodes]);
-  useEffect(() => {
-    if (!reveal?.nodeId || reveal.revision === 0) return;
-    const node = nodes.find((candidate) => candidate.nodeId === reveal.nodeId);
-    if (!node) return;
-    const ancestors = outlineAncestorNodeIds(nodes, reveal.nodeId);
-    setExpandedNodeIds((current) => {
-      const next = new Set(current);
-      for (const ancestor of ancestors) next.add(ancestor);
-      return next;
-    });
-    onModeChange?.("nodes");
-  }, [nodes, onModeChange, reveal?.nodeId, reveal?.revision]);
   const visibleNodes = useMemo(
     () => visibleOutlineNodes(nodes, expandedNodeIds),
     [expandedNodeIds, nodes]
   );
+  useEffect(() => {
+    const resolution = resolveOutlineReveal({
+      nodes,
+      expandedNodeIds,
+      reveal,
+      visible,
+      handledRevision: handledRevealRevision.current,
+      pendingFocus: pendingRevealFocus.current,
+    });
+    const previousPending = pendingRevealFocus.current;
+    handledRevealRevision.current = resolution.handledRevision;
+    pendingRevealFocus.current = resolution.pendingFocus;
+    if (
+      previousPending !== resolution.pendingFocus &&
+      (!resolution.pendingFocus ||
+        previousPending?.revision !== resolution.pendingFocus.revision ||
+        previousPending.nodeId !== resolution.pendingFocus.nodeId)
+    ) {
+      cancelRevealFocus();
+    }
+    if (resolution.shouldShowNodes) {
+      setExpandedNodeIds(resolution.expandedNodeIds);
+      onModeChange?.("nodes");
+    }
+  }, [nodes, onModeChange, reveal?.nodeId, reveal?.revision, visible]);
+  useEffect(() => {
+    cancelRevealFocus();
+    if (!visible) {
+      pendingRevealFocus.current = null;
+      return;
+    }
+
+    const pending = pendingRevealFocus.current;
+    const latestReveal = latestRevealRef.current;
+    if (
+      !pending ||
+      pending.nodeId !== latestReveal?.nodeId ||
+      pending.revision !== latestReveal?.revision
+    ) {
+      pendingRevealFocus.current = null;
+      return;
+    }
+    if (
+      !nodes.some((node) => node.nodeId === pending.nodeId) ||
+      !visibleNodes.some((node) => node.nodeId === pending.nodeId)
+    ) return;
+
+    let cancelled = false;
+    const focus = () => {
+      revealFocusCancel.current = null;
+      if (cancelled || !visibleRef.current) return;
+      const current = pendingRevealFocus.current;
+      const currentReveal = latestRevealRef.current;
+      if (
+        !current ||
+        current.nodeId !== currentReveal?.nodeId ||
+        current.revision !== currentReveal?.revision
+      ) return;
+      const item = itemRefs.current.get(current.nodeId);
+      if (!item) return;
+      pendingRevealFocus.current = null;
+      item.focus();
+    };
+    if (typeof requestAnimationFrame === "function") {
+      const frame = requestAnimationFrame(focus);
+      revealFocusCancel.current = () => {
+        cancelled = true;
+        cancelAnimationFrame(frame);
+      };
+    } else {
+      const timeout = globalThis.setTimeout(focus, 0);
+      revealFocusCancel.current = () => {
+        cancelled = true;
+        globalThis.clearTimeout(timeout);
+      };
+    }
+    return () => {
+      cancelled = true;
+      cancelRevealFocus();
+    };
+  }, [mode, nodes, reveal?.nodeId, reveal?.revision, visible, visibleNodes]);
+  useEffect(() => () => {
+    pendingRevealFocus.current = null;
+    cancelRevealFocus();
+  }, []);
   const siblingInfo = useMemo(() => {
     const siblings = new Map<string | null, WorkbenchNodeView[]>();
     for (const node of nodes) {
