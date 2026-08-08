@@ -137,6 +137,35 @@ test("Inbox view keeps every loading, ready, stale, and error state honest", () 
   assert.doesNotMatch(error, /交付审阅|工具许可/);
 });
 
+test("Inbox owns the remaining pane height and keeps long lists reachable", async () => {
+  const styles = await readFile(
+    new URL("../src/desktop/renderer-next/styles/shell.css", import.meta.url),
+    "utf8"
+  );
+  assert.match(
+    styles,
+    /\.tn-outline-pane\[data-outline-mode="inbox"\]\s*\{\s*display: grid;\s*grid-template-rows: auto minmax\(0, 1fr\);\s*\}/
+  );
+  assert.match(
+    styles,
+    /\.tn-inbox-view\s*\{[^}]*min-height: 0;[^}]*overflow: auto;/
+  );
+
+  const longItems = Array.from({ length: 40 }, (_, index) => ({
+    ...snapshot.items[1]!,
+    id: `tool-${index}`,
+    summary: index === 39 ? "列表末项仍可到达" : `较长收件箱事项 ${index}`,
+  }));
+  const markup = renderInbox({
+    state: "ready",
+    workspaceId: "ws-a",
+    snapshot: { workspaceId: "ws-a", items: longItems, count: longItems.length },
+    fetchedAt: "now",
+  }, []);
+  assert.match(markup, /较长收件箱事项 0/);
+  assert.match(markup, /列表末项仍可到达/);
+});
+
 test("Inbox controller wiring keeps one controller, selects the exact workspace, and disposes", async () => {
   let invalidation: ((hint: InvalidationHint) => void) | null = null;
   const release = deferred<void>();

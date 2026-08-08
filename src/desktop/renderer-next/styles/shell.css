@@ -164,6 +164,7 @@ button, input, select, textarea { font: inherit; }
 }
 
 .tn-outline-pane { border-right: 1px solid var(--tn-color-border); }
+.tn-outline-pane[data-outline-mode="inbox"] { display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .tn-inspector-pane { border-left: 1px solid var(--tn-color-border); }
 .tn-workbench[data-outline-open="false"] .tn-outline-pane,
 .tn-workbench[data-focus-open="false"] .tn-inspector-pane,
