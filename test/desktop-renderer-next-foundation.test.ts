@@ -496,6 +496,7 @@ test("renderer-next source tree is split and avoids forbidden deps", async () =>
     "main.tsx",
     "App.tsx",
     "shell/AppShell.tsx",
+    "model/use-main-layout.ts",
     "shell/Outline.tsx",
     "shell/SurfaceStage.tsx",
     "surfaces/CanvasSurface.tsx",
@@ -706,6 +707,12 @@ test("Outline and Focus are collapsible trays around one Canvas stage", async ()
   assert.match(shell, /aria-label="展开详情面板"/);
   assert.match(shell, /const openOutline = \(\) => \{\s*setImmersive\(false\)/s);
   assert.match(shell, /const openFocus = \(\) => \{\s*setImmersive\(false\)/s);
+  assert.match(shell, /useMainLayout/);
+  assert.match(shell, /layout\.effective\.leftCollapsed/);
+  assert.match(shell, /layout\.effective\.rightCollapsed/);
+  assert.match(shell, /onCollapse=\{\(\) => layout\.collapse\("left"\)\}/);
+  assert.match(shell, /onCollapse=\{\(\) => \{\s*layout\.collapse\("right"\)/s);
+  assert.doesNotMatch(shell, /setOutlineOpen|setFocusOpen/);
   assert.match(shellCss, /\.tn-pane-restore\s*\{[^}]*position:\s*absolute[^}]*z-index:\s*80/s);
   assert.match(shellCss, /\.tn-pane-restore--outline\s*\{[^}]*left:\s*0/s);
   assert.match(shellCss, /\.tn-pane-restore--focus\s*\{[^}]*right:\s*0/s);

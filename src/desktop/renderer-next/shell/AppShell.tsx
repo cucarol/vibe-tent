@@ -13,6 +13,7 @@ import { OutlinePanel } from "../components/OutlinePanel.js";
 import { StatusBar } from "../components/StatusBar.js";
 import { ConnectionBanner } from "../components/ConnectionBanner.js";
 import { ShellIcon } from "./icons.js";
+import { useMainLayout } from "../model/use-main-layout.js";
 import type { WorkbenchNodeView } from "./workbench-types.js";
 import {
   canCreateNodePlacement,
@@ -109,8 +110,9 @@ export function AppShell({
   initialInspectorTab = "content",
   initialOutlineMode = "nodes",
 }: AppShellProps = {}) {
-  const [outlineOpen, setOutlineOpen] = useState(true);
-  const [focusOpen, setFocusOpen] = useState(true);
+  const layout = useMainLayout();
+  const outlineOpen = !layout.effective.leftCollapsed;
+  const focusOpen = !layout.effective.rightCollapsed;
   const [focusExpanded, setFocusExpanded] = useState(initialFocusExpanded);
   const [immersive, setImmersive] = useState(false);
   const [outlineMode, setOutlineMode] = useState<"nodes" | "inbox">(
@@ -261,28 +263,28 @@ export function AppShell({
   };
 
   const openNodeActions = () => {
-    setFocusOpen(true);
+    layout.restore("right");
     requestAnimationFrame(() => placementActionRef.current?.focus());
   };
 
   const toggleOutline = () => {
     setImmersive(false);
-    setOutlineOpen((value) => !value);
+    layout.toggle("left");
   };
 
   const toggleFocus = () => {
     setImmersive(false);
-    setFocusOpen((value) => !value);
+    layout.toggle("right");
   };
 
   const openOutline = () => {
     setImmersive(false);
-    setOutlineOpen(true);
+    layout.restore("left");
   };
 
   const openFocus = () => {
     setImmersive(false);
-    setFocusOpen(true);
+    layout.restore("right");
   };
 
   return (
@@ -309,7 +311,7 @@ export function AppShell({
       ) : null}
 
       <div className="tn-workbench" data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-focus-expanded={focusExpanded ? "true" : "false"} data-immersive={immersive ? "true" : "false"}>
-        <OutlinePanel id="tn-outline-panel" mode={outlineMode} onModeChange={setOutlineMode} nodes={nodes} projection={projection} selectedNodeId={selectedNodeId} reveal={outlineReveal} visible={outlineOpen} onSelectNode={selectNodeFromOutline} onOpenNodeActions={openNodeActions} canDragToCanvas={Boolean(onPresentationChange)} onCollapse={() => setOutlineOpen(false)} />
+        <OutlinePanel id="tn-outline-panel" mode={outlineMode} onModeChange={setOutlineMode} nodes={nodes} projection={projection} selectedNodeId={selectedNodeId} reveal={outlineReveal} visible={outlineOpen} onSelectNode={selectNodeFromOutline} onOpenNodeActions={openNodeActions} canDragToCanvas={Boolean(onPresentationChange)} onCollapse={() => layout.collapse("left")} />
         <CanvasWorkbench document={document} nodes={nodes} projection={projection} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNodeFromCanvas} onDropNode={onPresentationChange ? dropNode : undefined} previewDocument={focusDocument?.nodeId && typeof focusDocument.body === "string" ? { nodeId: focusDocument.nodeId, body: focusDocument.body } : null} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
         <InspectorPanel
           id="tn-focus-panel"
@@ -329,12 +331,12 @@ export function AppShell({
           collaborationActions={collaborationActions}
           expanded={focusExpanded}
           onExpandedChange={(expanded) => {
-            setFocusOpen(true);
+            if (expanded) layout.restore("right");
             setFocusExpanded(expanded);
           }}
           initialTab={initialInspectorTab}
           onCollapse={() => {
-            setFocusOpen(false);
+            layout.collapse("right");
           }}
         />
         {!outlineOpen ? (
