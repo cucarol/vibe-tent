@@ -1,6 +1,6 @@
 /**
  * Per-workspace local persistence for Canvas tabs, placements, viewport,
- * presentation, and edge-layer visibility. Machine-local only — never Service.
+ * placements, viewport and edge-layer visibility. Machine-local only — never Service.
  * Parse failure always falls back to empty session (never pollutes domain).
  */
 
@@ -11,6 +11,7 @@ import type {
 } from "../types/identity.js";
 import {
   DEFAULT_VIEWPORT,
+  NODE_CARD,
   emptyCanvasTabDocument,
   withViewport,
 } from "./canvas-document.js";
@@ -25,7 +26,6 @@ import {
   type CanvasTab,
   type CanvasTabSession,
 } from "./tabs.js";
-import { getPlacementPresentation } from "./placement-chrome.js";
 
 export const CANVAS_SESSION_STORAGE_PREFIX = "tent.desktop.canvasSession.v1";
 
@@ -76,21 +76,22 @@ function normalizePlacement(raw: unknown): CanvasPlacement | null {
     p.meta && typeof p.meta === "object"
       ? (p.meta as Record<string, unknown>)
       : undefined;
-  const presentation = getPlacementPresentation(meta);
+  const normalizedMeta = meta
+    ? Object.fromEntries(Object.entries(meta).filter(([key]) => key !== "presentation"))
+    : undefined;
+  const isNode = p.kind === "node";
   return {
     placementId: p.placementId,
     entityRef: typeof p.entityRef === "string" ? p.entityRef : undefined,
     kind: p.kind,
     x: isFiniteNumber(p.x) ? p.x : undefined,
     y: isFiniteNumber(p.y) ? p.y : undefined,
-    width: isFiniteNumber(p.width) ? p.width : undefined,
-    height: isFiniteNumber(p.height) ? p.height : undefined,
+    width: isNode ? NODE_CARD.width : isFiniteNumber(p.width) ? p.width : undefined,
+    height: isNode ? NODE_CARD.height : isFiniteNumber(p.height) ? p.height : undefined,
     zIndex: isFiniteNumber(p.zIndex) ? p.zIndex : undefined,
-    meta: meta
-      ? { ...meta, presentation }
-      : presentation === "expanded"
-        ? { presentation }
-        : undefined,
+    meta: normalizedMeta && Object.keys(normalizedMeta).length > 0
+      ? normalizedMeta
+      : undefined,
   };
 }
 

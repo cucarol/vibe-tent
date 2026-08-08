@@ -31,6 +31,47 @@
   display: none !important;
 }
 
+.tn-canvas-node-preview {
+  position: absolute;
+  z-index: 35;
+  display: grid;
+  width: 236px;
+  max-height: 126px;
+  gap: 6px;
+  padding: 12px 14px;
+  overflow: hidden;
+  border: 1px solid var(--tn-color-border-strong);
+  border-radius: var(--tn-radius-md);
+  background: color-mix(in srgb, var(--tn-color-elevated-bg) 96%, transparent);
+  box-shadow: var(--tn-shadow-float);
+  color: var(--tn-color-text-primary);
+  pointer-events: none;
+}
+
+.tn-canvas-node-preview > span {
+  color: var(--tn-color-text-faint);
+  font-size: 10px;
+}
+
+.tn-canvas-node-preview > strong {
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tn-canvas-node-preview > p {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--tn-color-text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
 /* Tent Node commands live in Focus. Excalidraw's generic shape styling remains
  * available for user drawings, but must not become a second Node inspector. */
 .tn-canvas-v5-host[data-tent-node-focused="true"]

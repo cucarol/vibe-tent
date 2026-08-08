@@ -26,7 +26,7 @@ type MainWindowPreviewProps = {
   documentStatus?: FocusDocumentStatus;
   expanded?: boolean;
   collaborationState?: "none" | "empty" | "active" | "delivery" | "decision" | "loading" | "stale" | "error";
-  layoutMode?: "compact" | "detail";
+  outlineMode?: "nodes" | "inbox";
   snapshotSourceState?: "current" | "changed" | "deleted" | "revision-unknown" | "authority-unknown";
 };
 
@@ -173,7 +173,7 @@ function previewDocument(
   }, selectedNodeId);
 }
 
-function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-workbench", selectedPlacement = "placed", documentStatus = "read", expanded = false, collaborationState = "none", layoutMode = "compact", snapshotSourceState = "current" }: MainWindowPreviewProps) {
+function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-workbench", selectedPlacement = "placed", documentStatus = "read", expanded = false, collaborationState = "none", outlineMode = "nodes", snapshotSourceState = "current" }: MainWindowPreviewProps) {
   const [presentation, setPresentation] = useState(() => ({
     document: previewDocument(selectedNodeId, selectedPlacement, snapshotSourceState),
     selectedNodeId,
@@ -259,7 +259,7 @@ function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-
   return (
     <div style={{ width: "100vw", height: "100vh", overflow: "hidden" }} data-testid="storybook-main-window" data-fixture-state={state}>
       <AppShell
-        key={`${documentStatus}:${expanded}:${collaborationState}:${layoutMode}`}
+        key={`${documentStatus}:${expanded}:${collaborationState}:${outlineMode}`}
         workspaceId={FIXTURE_WORKSPACE_ID}
         workspaceLabel="产品工作区"
         initialNodes={previewNodes}
@@ -274,7 +274,7 @@ function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-
         collaborationActions={collaborationState === "none" ? undefined : collaborationActions}
         initialInspectorTab={collaborationState === "none" ? "content" : "collaboration"}
         initialFocusExpanded={expanded}
-        initialLayoutMode={layoutMode}
+        initialOutlineMode={outlineMode}
       />
     </div>
   );
@@ -291,23 +291,18 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const 正常选中: Story = { name: "正常 · 已选中节点" };
-export const 紧凑工作台1440: Story = {
-  name: "布局 · 紧凑工作台 1440×900",
+export const 工作台1440: Story = {
+  name: "布局 · 工作台 1440×900",
   parameters: { viewport: { defaultViewport: "desktop" } },
 };
-export const 紧凑工作台1280: Story = {
-  name: "布局 · 紧凑工作台 1280×840",
+export const 工作台1280: Story = {
+  name: "布局 · 工作台 1280×840",
   parameters: { viewport: { defaultViewport: "compactDesktop" } },
 };
-export const 节点详细模式1440: Story = {
-  name: "布局 · 节点详细模式 1440×900",
-  args: { layoutMode: "detail" },
+export const 收件箱模式1440: Story = {
+  name: "左栏 · 收件箱 1440×900",
+  args: { outlineMode: "inbox" },
   parameters: { viewport: { defaultViewport: "desktop" } },
-};
-export const 节点详细模式1280: Story = {
-  name: "布局 · 节点详细模式 1280×840",
-  args: { layoutMode: "detail" },
-  parameters: { viewport: { defaultViewport: "compactDesktop" } },
 };
 export const 尚未放入画布: Story = {
   name: "正常 · 尚未放入画布",

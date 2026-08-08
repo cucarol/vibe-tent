@@ -113,7 +113,14 @@ test("legacy tab-session documents cannot preserve a hidden grid preference", ()
             version: 1,
             backgroundMode: "grid",
             focusedPlacementId: null,
-            placements: [],
+            placements: [{
+              placementId: "pl-node",
+              entityRef: "cx-node",
+              kind: "node",
+              width: 420,
+              height: 280,
+              meta: { presentation: "expanded", retained: "yes" },
+            }],
           },
         },
       },
@@ -121,6 +128,10 @@ test("legacy tab-session documents cannot preserve a hidden grid preference", ()
     edgeLayers: {},
   });
   assert.equal(normalized.tabs.byId["tab-1"]?.document.backgroundMode, "blank");
+  const normalizedPlacement = normalized.tabs.byId["tab-1"]?.document.placements[0];
+  assert.equal(normalizedPlacement?.width, 264);
+  assert.equal(normalizedPlacement?.height, 138);
+  assert.deepEqual(normalizedPlacement?.meta, { retained: "yes" });
 });
 
 test("exact workspace key prevents Canvas document and scene leaking across workspaces", () => {

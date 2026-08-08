@@ -12,6 +12,8 @@
 
 import {
   NODE_CARD,
+  removePlacement,
+  setFocusedPlacement,
   type Viewport,
   DEFAULT_VIEWPORT,
 } from "../../model/canvas-document.js";
@@ -22,11 +24,6 @@ import {
   type GraphEdgeSource,
   DEFAULT_EDGE_LAYERS,
 } from "../../model/canvas-edges.js";
-import {
-  compactExpandedSummary,
-  getPlacementPresentation,
-  type PlacementPresentation,
-} from "../../model/placement-chrome.js";
 import type { CanvasDocument, CanvasPlacement } from "../../types/identity.js";
 import {
   deriveCanvasPlacementSourceState,
@@ -61,15 +58,10 @@ export type TentEmbeddableCardModel = {
   title: string;
   typeLabel: string;
   recovery: TentNodeRecovery;
-  presentation: PlacementPresentation;
   summary?: string;
   detail: string;
   state:
     | "snapshot"
-    | "active"
-    | "waiting"
-    | "delivered"
-    | "idle"
     | "unknown"
     | "stale"
     | "unresolved"
@@ -139,6 +131,16 @@ export function validateTentEmbeddableLink(link: string | null | undefined): boo
   return link == null || link === "" || link.startsWith(TENT_NODE_LINK_PREFIX);
 }
 
+export function limitedCanvasNodePreview(body: string, limit = 180): string {
+  const plain = body
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/[#*_>`~\[\]()!-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (plain.length <= limit) return plain;
+  return `${plain.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+}
+
 /**
  * Resolve Excalidraw's required embeddable link to a Tent-owned Node action.
  * Both customData and the internal URL must agree; malformed or generic links
@@ -165,8 +167,8 @@ export function captureTentNodeOpenTarget(
 
 function placementSize(p: CanvasPlacement): { width: number; height: number } {
   return {
-    width: isFiniteNumber(p.width) ? p.width : NODE_CARD.width,
-    height: isFiniteNumber(p.height) ? p.height : NODE_CARD.height,
+    width: p.kind === "node" ? NODE_CARD.width : isFiniteNumber(p.width) ? p.width : NODE_CARD.width,
+    height: p.kind === "node" ? NODE_CARD.height : isFiniteNumber(p.height) ? p.height : NODE_CARD.height,
   };
 }
 
@@ -237,7 +239,6 @@ export function buildTentEmbeddableCardModels(
   for (const p of doc.placements) {
     const entityRef = p.entityRef;
     const size = placementSize(p);
-    const presentation = getPlacementPresentation(p.meta);
     const recovery = recoveryForEntity(entityRef, resolvers);
     const snapshot = readCanvasNodeSnapshot(p);
     const current = snapshot && entityRef
@@ -257,15 +258,9 @@ export function buildTentEmbeddableCardModels(
       title,
       typeLabel,
       recovery,
-      presentation,
-      summary:
-        presentation === "expanded"
-          ? compactExpandedSummary({
-              type: typeLabel,
-              tags: snapshot?.tags,
-              path: snapshot?.path,
-            })
-          : undefined,
+      summary: snapshot?.tags?.length
+        ? snapshot.tags.slice(0, 2).join(" · ")
+        : undefined,
       detail: detailForRecovery(recovery, snapshot?.path),
       ...projectedState,
       width: size.width,
@@ -363,10 +358,10 @@ export function projectedEdgesToArrowElements(
           : CANVAS_V5_COLORS.relationSecondary,
       backgroundColor: "transparent",
       fillStyle: "solid",
-      strokeWidth: edge.kind === "parent" ? 2 : 1.5,
-      strokeStyle: edge.unresolved ? "dashed" : "solid",
+      strokeWidth: edge.emphasis === "quiet" ? 1.25 : 2,
+      strokeStyle: edge.emphasis === "quiet" ? "dashed" : "solid",
       roughness: 0,
-      opacity: 74,
+      opacity: edge.emphasis === "quiet" ? 34 : 76,
       groupIds: [],
       frameId: null,
       roundness: { type: 2 },
@@ -386,7 +381,7 @@ export function projectedEdgesToArrowElements(
       startBinding: null,
       endBinding: null,
       startArrowhead: null,
-      endArrowhead: "arrow",
+      endArrowhead: null,
       elbowed: false,
       customData: {
         kind: "tent-edge",
@@ -406,8 +401,8 @@ export type DocumentToExcalidrawResult = {
 
 /**
  * Full pure mapping of a local document into Excalidraw elements. An optional
- * graph input is reserved for explicitly local/frozen relation snapshots;
- * production never passes the live graph projection.
+ * graph input is a read-only, non-persisted structure overlay. Production only
+ * passes authoritative direct-parent pairs; card snapshots remain frozen.
  * Drawing-layer freehand/text/image elements are supplied separately by the host
  * (V4 scene) so this function never invents ink or binaries.
  */
@@ -483,8 +478,8 @@ export function extractPlacementPatchesFromElements(
       placementId: custom.placementId,
       x: el.x,
       y: el.y,
-      width: isFiniteNumber(el.width) ? el.width : NODE_CARD.width,
-      height: isFiniteNumber(el.height) ? el.height : NODE_CARD.height,
+      width: NODE_CARD.width,
+      height: NODE_CARD.height,
     });
   }
   return patches;
@@ -550,6 +545,57 @@ export function selectionToFocusedPlacement(
 }
 
 /**
+ * Release Excalidraw's transient Tent-node selection after a pointer gesture.
+ * This removes resize/rotation affordances without locking the element, and
+ * canonicalizes any attempted transform while retaining the element position.
+ * Non-Tent drawing selections remain owned by Excalidraw.
+ */
+export function releaseTentTransformSelection(
+  elements: readonly unknown[],
+  selectedElementIds: Record<string, boolean> | null | undefined
+): {
+  elements: readonly unknown[];
+  selectedElementIds: Record<string, boolean>;
+  elementsChanged: boolean;
+  selectionChanged: boolean;
+  changed: boolean;
+} {
+  const nextSelection = { ...(selectedElementIds ?? {}) };
+  let elementsChanged = false;
+  let selectionChanged = false;
+  const nextElements = elements.map((raw) => {
+    if (!raw || typeof raw !== "object") return raw;
+    const element = raw as ExcalidrawElementLike;
+    if (!readTentNodeCustomData(element)) return raw;
+    if (nextSelection[element.id]) {
+      delete nextSelection[element.id];
+      selectionChanged = true;
+    }
+    if (
+      element.width === NODE_CARD.width &&
+      element.height === NODE_CARD.height &&
+      (element.angle ?? 0) === 0
+    ) {
+      return raw;
+    }
+    elementsChanged = true;
+    return {
+      ...element,
+      width: NODE_CARD.width,
+      height: NODE_CARD.height,
+      angle: 0,
+    };
+  });
+  return {
+    elements: elementsChanged ? nextElements : elements,
+    selectedElementIds: nextSelection,
+    elementsChanged,
+    selectionChanged,
+    changed: elementsChanged || selectionChanged,
+  };
+}
+
+/**
  * Placement ids whose tent embeddable is marked isDeleted in the scene.
  */
 export function deletedTentPlacementIds(
@@ -564,6 +610,152 @@ export function deletedTentPlacementIds(
     if (custom) out.push(custom.placementId);
   }
   return out;
+}
+
+/**
+ * Reconcile local placement instances from one authoritative Excalidraw scene
+ * frame. The cache is supplied by the host and contains only exact placements
+ * that a local duplicate/delete command may restore through native undo/redo.
+ * No Node/domain state participates in this operation.
+ */
+export function reconcileTentPlacementHistory(args: {
+  document: CanvasDocument;
+  elements: readonly unknown[];
+  cachedPlacements: ReadonlyMap<string, CanvasPlacement>;
+  knownHistoryPlacementIds?: ReadonlySet<string>;
+  focusRestoredPlacementId?: string | null;
+}): {
+  document: CanvasDocument;
+  restoredPlacements: CanvasPlacement[];
+  deletedPlacements: CanvasPlacement[];
+  conflictedPlacementIds: string[];
+} {
+  let document = args.document;
+  const restoredPlacements: CanvasPlacement[] = [];
+  const restoredIds = new Set<string>();
+  const activeIds = new Set<string>();
+  const deletedIds = new Set<string>();
+
+  for (const raw of args.elements) {
+    if (!raw || typeof raw !== "object") continue;
+    const element = raw as ExcalidrawElementLike;
+    const placementId = readTentNodeCustomData(element)?.placementId;
+    if (!placementId) continue;
+    (element.isDeleted === true ? deletedIds : activeIds).add(placementId);
+  }
+  const conflictedPlacementIds = [...activeIds].filter((placementId) =>
+    deletedIds.has(placementId)
+  );
+  const conflictedIds = new Set(conflictedPlacementIds);
+
+  for (const raw of args.elements) {
+    if (!raw || typeof raw !== "object") continue;
+    const element = raw as ExcalidrawElementLike;
+    if (element.isDeleted === true) continue;
+    const placementId = readTentNodeCustomData(element)?.placementId;
+    if (
+      !placementId ||
+      conflictedIds.has(placementId) ||
+      restoredIds.has(placementId) ||
+      document.placements.some((placement) => placement.placementId === placementId)
+    ) continue;
+    const cached = args.cachedPlacements.get(placementId);
+    if (!cached) continue;
+    restoredIds.add(placementId);
+    restoredPlacements.push(cached);
+    document = {
+      ...document,
+      placements: [...document.placements, cached],
+    };
+  }
+
+  if (
+    args.focusRestoredPlacementId &&
+    restoredIds.has(args.focusRestoredPlacementId)
+  ) {
+    document = setFocusedPlacement(document, args.focusRestoredPlacementId);
+  }
+
+  const removedIds = new Set(deletedIds);
+  for (const placementId of args.knownHistoryPlacementIds ?? []) {
+    if (!activeIds.has(placementId) && !deletedIds.has(placementId)) {
+      removedIds.add(placementId);
+    }
+  }
+
+  const deletedPlacements: CanvasPlacement[] = [];
+  for (const placementId of removedIds) {
+    if (conflictedIds.has(placementId)) continue;
+    const placement = document.placements.find(
+      (candidate) => candidate.placementId === placementId
+    );
+    if (!placement) continue;
+    deletedPlacements.push(placement);
+    document = removePlacement(document, placementId);
+  }
+
+  return {
+    document,
+    restoredPlacements,
+    deletedPlacements,
+    conflictedPlacementIds,
+  };
+}
+
+/**
+ * Re-key duplicated Tent embeddables as new local placement instances.
+ * Domain identity and frozen snapshot metadata are copied, never mutated.
+ */
+export function duplicateTentPlacements(args: {
+  document: CanvasDocument;
+  nextElements: readonly ExcalidrawElementLike[];
+  previousElements: readonly ExcalidrawElementLike[];
+  createPlacementId: () => string;
+}): { document: CanvasDocument; elements: ExcalidrawElementLike[]; addedPlacementIds: string[] } {
+  const previousIds = new Set(args.previousElements.map((element) => element.id));
+  const placementsById = new Map(
+    args.document.placements.map((placement) => [placement.placementId, placement] as const)
+  );
+  const addedPlacements: CanvasPlacement[] = [];
+  const addedPlacementIds: string[] = [];
+  const elements = args.nextElements.map((element) => {
+    if (previousIds.has(element.id)) return element;
+    const custom = readTentNodeCustomData(element);
+    if (!custom) return element;
+    const source = placementsById.get(custom.placementId);
+    if (!source) return element;
+    const placementId = args.createPlacementId();
+    addedPlacementIds.push(placementId);
+    addedPlacements.push({
+      ...source,
+      placementId,
+      x: isFiniteNumber(element.x) ? element.x : source.x,
+      y: isFiniteNumber(element.y) ? element.y : source.y,
+      width: NODE_CARD.width,
+      height: NODE_CARD.height,
+    });
+    return {
+      ...element,
+      id: tentPlacementElementId(placementId),
+      width: NODE_CARD.width,
+      height: NODE_CARD.height,
+      angle: 0,
+      link: tentNodeLink(custom.nodeId),
+      customData: { ...custom, placementId },
+    };
+  });
+  if (addedPlacements.length === 0) {
+    return { document: args.document, elements, addedPlacementIds };
+  }
+  return {
+    document: {
+      ...args.document,
+      placements: [...args.document.placements, ...addedPlacements],
+      focusedPlacementId: addedPlacementIds.at(-1) ?? args.document.focusedPlacementId,
+    },
+    elements,
+    addedPlacementIds,
+  };
 }
 
 /**

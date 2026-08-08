@@ -213,6 +213,12 @@
 
 .tn-excal-node {
   position: relative;
+  /*
+   * Tent cards are a read-only projection. Keeping their DOM transparent to
+   * pointer input lets Excalidraw own selection and placement dragging from
+   * the first gesture instead of first activating the embeddable overlay.
+   */
+  pointer-events: none;
   container-type: size;
   box-sizing: border-box;
   width: 100%;
@@ -258,34 +264,6 @@
   transition:
     opacity var(--tn-motion-duration-standard) var(--tn-motion-ease-out),
     transform var(--tn-motion-duration-standard) var(--tn-motion-ease-out);
-}
-
-.tn-excal-node[data-node-state="active"] .tn-excal-node__signal span {
-  opacity: 0.34;
-  transform: none;
-}
-
-.tn-excal-node[data-node-state="active"] .tn-excal-node__signal span:nth-child(2) {
-  opacity: 0.66;
-}
-
-.tn-excal-node[data-node-state="active"] .tn-excal-node__signal span:nth-child(3) {
-  opacity: 1;
-}
-
-.tn-excal-node[data-node-state="waiting"] .tn-excal-node__signal {
-  background: var(--tn-color-warning-soft);
-}
-
-.tn-excal-node[data-node-state="waiting"] .tn-excal-node__signal::after {
-  width: 42%;
-  height: 100%;
-  background: var(--tn-color-warning);
-  content: "";
-}
-
-.tn-excal-node[data-node-state="delivered"] .tn-excal-node__signal {
-  background: var(--tn-color-success-soft);
 }
 
 .tn-excal-node[data-node-state="stale"] .tn-excal-node__signal,
@@ -334,11 +312,6 @@
     border-color var(--tn-motion-duration-standard) var(--tn-motion-ease-out);
 }
 
-.tn-excal-node[data-node-state="active"] .tn-excal-node__state-mark {
-  color: var(--tn-color-running);
-  background: var(--tn-color-info-soft);
-}
-
 .tn-excal-node[data-source-state="changed"] .tn-excal-node__signal {
   background: var(--tn-color-selected-strong);
 }
@@ -346,16 +319,6 @@
 .tn-excal-node[data-source-state="changed"] .tn-excal-node__state-mark {
   color: var(--tn-color-text-primary);
   background: var(--tn-color-selected);
-}
-
-.tn-excal-node[data-node-state="waiting"] .tn-excal-node__state-mark {
-  color: var(--tn-color-warning);
-  background: var(--tn-color-warning-soft);
-}
-
-.tn-excal-node[data-node-state="delivered"] .tn-excal-node__state-mark {
-  color: var(--tn-color-success);
-  background: var(--tn-color-success-soft);
 }
 
 .tn-excal-node[data-node-state="stale"] .tn-excal-node__state-mark,
@@ -380,96 +343,35 @@
   white-space: nowrap;
 }
 
-.tn-excal-node p {
-  display: -webkit-box;
-  margin: 0 16px;
-  overflow: hidden;
-  color: var(--tn-color-text-secondary);
-  font-size: 12px;
-  line-height: 1.55;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.tn-excal-node[data-expanded="true"] > p {
-  display: none;
-}
-
-.tn-excal-node__peek {
+.tn-excal-node__fact {
   display: grid;
-  gap: 3px;
-  margin: 9px 16px 0;
-  font-size: 10px;
-}
-
-.tn-excal-node__peek div {
-  display: grid;
-  grid-template-columns: 38px minmax(0, 1fr);
-  gap: 7px;
-}
-
-.tn-excal-node__peek dt,
-.tn-excal-node__peek dd {
-  min-width: 0;
-  margin: 0;
-  overflow: hidden;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tn-excal-node__peek dt {
-  color: var(--tn-color-text-faint);
-}
-
-.tn-excal-node__peek dd {
-  color: var(--tn-color-text-primary);
-}
-
-.tn-excal-node footer {
-  position: absolute;
-  right: 16px;
-  bottom: 13px;
-  left: 16px;
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: center;
+  grid-template-columns: 46px minmax(0, 1fr);
+  gap: 8px;
+  margin: 12px 16px 0;
   padding-top: 9px;
   border-top: 1px solid var(--tn-color-border);
 }
 
-.tn-excal-node__hint {
+.tn-excal-node__fact > span {
   color: var(--tn-color-text-faint);
   font-size: 10px;
 }
 
-.tn-excal-node__peek-toggle {
-  padding: 1px 0;
-  border: 0;
-  border-bottom: 1px solid transparent;
-  background: transparent;
-  color: var(--tn-color-accent);
-  font: inherit;
-  font-size: 10px;
-  cursor: pointer;
-}
-
-.tn-excal-node__peek-toggle:hover {
-  border-bottom-color: currentColor;
-}
-
-.tn-excal-node__peek-toggle:focus-visible {
-  border-radius: 2px;
-  outline: var(--tn-focus-ring);
-  outline-offset: 2px;
+.tn-excal-node__fact p {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--tn-color-text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 /*
- * Existing Canvas documents may still contain the original 200 x 72
- * placements. A short placement is a compact node label, not a clipped full
- * card: keep its authoritative type/state/title and move detail work to the
- * right pane. Taller placements progressively reveal the summary and footer.
+ * Tiny transient sizes can exist for one frame while Excalidraw releases a
+ * transform gesture. Keep the fixed card legible until the adapter restores
+ * its canonical dimensions.
  */
 @container (max-height: 110px) {
   .tn-excal-node__header {
@@ -482,9 +384,7 @@
     font-size: 15px;
   }
 
-  .tn-excal-node > p,
-  .tn-excal-node__peek,
-  .tn-excal-node footer {
+  .tn-excal-node__fact {
     display: none;
   }
 }

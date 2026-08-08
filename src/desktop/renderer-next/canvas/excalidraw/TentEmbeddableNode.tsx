@@ -1,12 +1,5 @@
-import type { ReactNode } from "react";
-import { Button } from "../../ui/index.js";
-
 export type TentEmbeddableNodeState =
   | "snapshot"
-  | "active"
-  | "waiting"
-  | "delivered"
-  | "idle"
   | "unknown"
   | "stale"
   | "unresolved"
@@ -25,19 +18,12 @@ export type TentEmbeddableNodeData = {
 
 export type TentEmbeddableNodeProps = {
   data: TentEmbeddableNodeData;
+  placementId: string;
   selected: boolean;
-  interactive?: boolean;
-  expanded?: boolean;
-  onToggleExpanded?: () => void;
-  children?: ReactNode;
 };
 
 const STATE_LABELS: Record<TentEmbeddableNodeState, string> = {
   snapshot: "本地快照",
-  active: "任务进行中",
-  waiting: "等待确认",
-  delivered: "已交付",
-  idle: "就绪",
   unknown: "协作状态未加载",
   stale: "投影已过期",
   unresolved: "节点未解析",
@@ -50,23 +36,18 @@ const STATE_LABELS: Record<TentEmbeddableNodeState, string> = {
  * real Focus pane, while animation communicates collaboration state.
  */
 export function TentEmbeddableNode(props: TentEmbeddableNodeProps) {
-  const {
-    data,
-    selected,
-    interactive = false,
-    expanded = false,
-    onToggleExpanded,
-    children,
-  } = props;
+  const { data, placementId, selected } = props;
   const stateLabel = data.stateLabel ?? STATE_LABELS[data.state];
+  const detailLabel =
+    data.type === "目标" ? "范围" : data.type === "输出" ? "产物" : "上下文";
   return (
     <article
       className="tn-excal-node"
       data-node-state={data.state}
       data-source-state={data.sourceState}
       data-selected={selected ? "true" : "false"}
-      data-expanded={expanded ? "true" : "false"}
       data-task-state={data.rawTaskState ?? undefined}
+      data-tent-placement-id={placementId}
       data-testid={`tent-embeddable-node-${data.nodeId}`}
       aria-label={`${data.title}，${stateLabel}`}
       title={data.nodeId}
@@ -84,49 +65,10 @@ export function TentEmbeddableNode(props: TentEmbeddableNodeProps) {
         </span>
       </header>
       <h3>{data.title}</h3>
-      <p>{data.detail}</p>
-      {expanded ? (
-        <dl
-          className="tn-excal-node__peek"
-          data-testid={`tent-embeddable-node-peek-${data.nodeId}`}
-        >
-          <div>
-            <dt>位置</dt>
-            <dd>Canvas 本机保存</dd>
-          </div>
-          <div>
-            <dt>状态</dt>
-            <dd>{stateLabel}</dd>
-          </div>
-          <div>
-            <dt>节点 ID</dt>
-            <dd>{data.nodeId}</dd>
-          </div>
-          <div>
-            <dt>操作</dt>
-            <dd>右侧栏继续处理</dd>
-          </div>
-        </dl>
-      ) : null}
-      {children}
-      {selected && interactive && onToggleExpanded ? (
-        <footer>
-          <Button
-            variant="quiet"
-            size="compact"
-            className="tn-excal-node__peek-toggle"
-            data-testid={`tent-embeddable-node-toggle-${data.nodeId}`}
-            aria-expanded={expanded}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onToggleExpanded();
-            }}
-          >
-            {expanded ? "收起状态" : "查看状态"}
-          </Button>
-        </footer>
-      ) : null}
+      <div className="tn-excal-node__fact">
+        <span>{detailLabel}</span>
+        <p>{data.detail}</p>
+      </div>
     </article>
   );
 }

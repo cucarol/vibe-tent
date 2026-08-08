@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { CanvasV5Host } from "../canvas/excalidraw/CanvasV5Host.js";
 import type { CanvasNodeResolvers } from "../canvas/excalidraw/documentToExcalidraw.js";
-import { defaultEdgeLayers } from "../model/canvas-edges.js";
+import type { GraphEdgeSource } from "../model/canvas-edges.js";
 import type { CanvasDocument } from "../types/identity.js";
 import { IconButton } from "../ui/index.js";
 import { ShellIcon } from "../shell/icons.js";
@@ -30,10 +30,11 @@ export type CanvasWorkbenchProps = {
   onRetryPersistence?: () => void;
   onScenePersist?: (scene: ExcalidrawSceneSnapshot) => void;
   onDropNode?: (nodeId: string, point: { x: number; y: number }) => boolean;
+  previewDocument?: { nodeId: string; body: string } | null;
   hidden?: boolean;
 };
 
-export function CanvasWorkbench({ document, nodes, projection, immersive, onImmersiveChange, onDocumentChange, onSelectNode, initialScene = null, persistenceStatus = { kind: "ok" }, onRetryPersistence, onScenePersist, onDropNode, hidden = false }: CanvasWorkbenchProps) {
+export function CanvasWorkbench({ document, nodes, projection, immersive, onImmersiveChange, onDocumentChange, onSelectNode, initialScene = null, persistenceStatus = { kind: "ok" }, onRetryPersistence, onScenePersist, onDropNode, previewDocument = null, hidden = false }: CanvasWorkbenchProps) {
   const [drawingVisible, setDrawingVisible] = useState(
     () => initialScene?.layerVisible ?? true
   );
@@ -71,6 +72,23 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
         : undefined;
     },
   }), [byId, projection]);
+  const structureGraph = useMemo<GraphEdgeSource>(() => {
+    if (projection !== "fresh") return null;
+    const readyIds = new Set(
+      nodes
+        .filter((node) => !node.projectionState || node.projectionState === "ready")
+        .map((node) => node.nodeId)
+    );
+    return {
+      edges: {
+        parent: nodes.flatMap((node) =>
+          node.parentNodeId && readyIds.has(node.nodeId) && readyIds.has(node.parentNodeId)
+            ? [{ parentNodeId: node.parentNodeId, childNodeId: node.nodeId }]
+            : []
+        ),
+      },
+    };
+  }, [nodes, projection]);
 
   const hasNodeDrag = (event: DragEvent) =>
     Array.from(event.dataTransfer.types).includes(OUTLINE_NODE_DRAG_TYPE);
@@ -145,8 +163,8 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
             onDocumentChange={onDocumentChange}
             onSelectPlacement={(placementId, entityRef) => onSelectNode(entityRef, placementId)}
             resolvers={resolvers}
-            graph={null}
-            edgeLayers={defaultEdgeLayers()}
+            graph={structureGraph}
+            edgeLayers={{ parent: true, markdown: false, wiki: false, relation: false }}
             layerVisible={drawingVisible}
             onLayerVisibleChange={setDrawingVisible}
             initialScene={initialScene}
@@ -155,6 +173,7 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
             onScenePersist={onScenePersist ? (scene) => onScenePersist(scene) : undefined}
             immersive={immersive}
             onImmersiveChange={onImmersiveChange}
+            previewDocument={previewDocument}
           />
         )}
         <div

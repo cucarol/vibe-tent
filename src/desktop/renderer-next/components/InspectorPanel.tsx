@@ -102,10 +102,10 @@ export function InspectorPanel({
           ? "来源版本未知"
           : "来源状态未知";
   return (
-    <aside id={id} className="tn-pane tn-inspector-pane" aria-label="焦点面板" data-region="focus">
+    <aside id={id} className="tn-pane tn-inspector-pane" aria-label="详情面板" data-region="focus">
       <PaneHeader
-        title="焦点"
-        actions={<IconButton size="compact" aria-label="收起焦点面板" tooltip="收起焦点面板" variant="ghost" onClick={onCollapse}><ShellIcon name="chevron-right" /></IconButton>}
+        title="详情"
+        actions={<IconButton size="compact" aria-label="收起详情面板" tooltip="收起详情面板" variant="ghost" onClick={onCollapse}><ShellIcon name="chevron-right" /></IconButton>}
       />
       {!displayNode ? (
         <div className="tn-pane-empty" role="status">
@@ -201,7 +201,7 @@ export function InspectorPanel({
 
           {projectionReady ? (
             <Tabs
-              aria-label="焦点内容"
+              aria-label="详情内容"
               value={tab}
               onValueChange={(value) => setTab(value as "content" | "collaboration")}
               items={[{ id: "content", label: "内容" }, { id: "collaboration", label: "协作" }]}

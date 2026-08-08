@@ -18,7 +18,7 @@ import {
 } from "react";
 import type { CanvasDocument } from "../../types/identity.js";
 import {
-  removePlacement,
+  newPlacementId,
   setFocusedPlacement,
   withViewport,
   DEFAULT_VIEWPORT,
@@ -32,17 +32,26 @@ import {
   applyPlacementPatches,
   buildTentEmbeddableCardModels,
   captureTentNodeOpenTarget,
-  deletedTentPlacementIds,
+  duplicateTentPlacements,
   extractPlacementPatchesFromElements,
+  limitedCanvasNodePreview,
   readTentNodeCustomData,
+  reconcileTentPlacementHistory,
+  releaseTentTransformSelection,
   selectionToFocusedPlacement,
-  tentPlacementElementId,
   validateTentEmbeddableLink,
   viewportFromExcalidrawAppState,
   excalidrawAppStateFromViewport,
   type CanvasNodeResolvers,
+  type ExcalidrawElementLike,
 } from "./documentToExcalidraw.js";
-import { togglePlacementPresentation } from "../../model/placement-chrome.js";
+import {
+  createTentPlacementDrag,
+  focusExcalidrawKeyboardOwner,
+  moveTentPlacementForPointer,
+  restoreTentPlacementAfterCancel,
+  type TentPlacementDrag,
+} from "./tent-placement-drag.js";
 import {
   schedulePostMountCanvasViewportSync,
   viewportAfterCanvasResize,
@@ -57,7 +66,6 @@ import {
 } from "./v5Migration.js";
 import {
   createV5OwnershipState,
-  embeddableInteractive,
   reduceV5Ownership,
   type V5OwnershipState,
 } from "./v5InteractionOwnership.js";
@@ -102,6 +110,7 @@ export type CanvasV5HostProps = {
   style?: CSSProperties;
   immersive?: boolean;
   onImmersiveChange?: (immersive: boolean) => void;
+  previewDocument?: { nodeId: string; body: string } | null;
 };
 
 type ExcalidrawApi = {
@@ -137,6 +146,18 @@ type ExcalidrawComponentProps = {
     },
     files: Record<string, unknown>
   ) => void;
+  onDuplicate?: (
+    nextElements: readonly unknown[],
+    previousElements: readonly unknown[]
+  ) => unknown[] | void;
+  onPointerDown?: (
+    activeTool: unknown,
+    pointerDownState: {
+      hit?: { element?: { id?: string; customData?: unknown } | null };
+      withCmdOrCtrl?: boolean;
+    }
+  ) => void;
+  onPointerUp?: () => void;
   viewModeEnabled?: boolean;
   zenModeEnabled?: boolean;
   gridModeEnabled?: boolean;
@@ -181,6 +202,12 @@ const CANVAS_COPY = {
   "canvas.layer.relation": "语义关系",
   "canvas.aria": "Tent 画布",
 } as const;
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && Boolean(
+    target.closest("input, textarea, select, [contenteditable='true'], .cm-editor")
+  );
+}
 
 function canvasCopy(key: keyof typeof CANVAS_COPY): string {
   return CANVAS_COPY[key];
@@ -232,6 +259,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     onScenePersist,
     immersive = false,
     onImmersiveChange,
+    previewDocument = null,
   } = props;
 
   const documentRef = useRef(canvasDocument);
@@ -244,9 +272,17 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
   onScenePersistRef.current = onScenePersist;
   const layerVisibleRef = useRef(layerVisible);
   layerVisibleRef.current = layerVisible;
+  const deletedPlacementCacheRef = useRef(new Map<string, CanvasDocument["placements"][number]>());
+  const adapterHistoryPlacementIdsRef = useRef(new Set<string>());
 
   const applyingExternal = useRef(false);
   const apiRef = useRef<ExcalidrawApi | null>(null);
+  const releaseTransformFrameRef = useRef<number | null>(null);
+  const pointerGestureActiveRef = useRef(false);
+  const tentPlacementDragRef = useRef<TentPlacementDrag | null>(null);
+  const tentPlacementDragPreviewRef = useRef<HTMLElement | null>(null);
+  const tentPlacementPreviewFrameRef = useRef<number | null>(null);
+  const pendingHistoryFocusPlacementIdRef = useRef<string | null>(null);
   const cancelApiViewportSyncRef = useRef<(() => void) | null>(null);
   const lastInternallyPublishedDocument = useRef<CanvasDocument | null>(null);
   const liveSceneInputs = useRef<LiveSceneInputs>({
@@ -280,6 +316,15 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
 
   const [mountKey, setMountKey] = useState(0);
   const [displayMenuOpen, setDisplayMenuOpen] = useState(false);
+  const [previewPlacementId, setPreviewPlacementId] = useState<string | null>(null);
+  const previewPlacementIdRef = useRef<string | null>(null);
+  const previewCandidateRef = useRef<string | null>(null);
+  const previewTimerRef = useRef<number | null>(null);
+  const previewRef = useRef<HTMLElement | null>(null);
+  const latestSceneRef = useRef<{
+    elements: readonly unknown[];
+    appState: Record<string, unknown>;
+  }>({ elements: [], appState: {} });
   const [loadBanner, setLoadBanner] = useState<string | null>(() =>
     hydrated.status.kind === "ok" ? null : hydrated.status.message
   );
@@ -294,6 +339,54 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     appState: hydrated.appState,
     files: hydrated.files,
   });
+
+  const positionPreview = useCallback((placementId: string) => {
+    const preview = previewRef.current;
+    const host = hostRef.current;
+    if (!preview || !host) return;
+    const element = latestSceneRef.current.elements.find((raw) => {
+      if (!raw || typeof raw !== "object") return false;
+      return readTentNodeCustomData(raw as { customData?: unknown })?.placementId === placementId;
+    }) as { x?: number; y?: number; width?: number } | undefined;
+    if (!element || typeof element.x !== "number" || typeof element.y !== "number") return;
+    const appState = latestSceneRef.current.appState as {
+      scrollX?: number;
+      scrollY?: number;
+      zoom?: { value?: number };
+    };
+    const zoom = appState.zoom?.value ?? 1;
+    const rect = host.getBoundingClientRect();
+    const preferredLeft = (element.x + (element.width ?? 264) + (appState.scrollX ?? 0)) * zoom + 14;
+    const preferredTop = (element.y + (appState.scrollY ?? 0)) * zoom;
+    preview.style.left = `${Math.max(12, Math.min(rect.width - 250, preferredLeft))}px`;
+    preview.style.top = `${Math.max(52, Math.min(rect.height - 142, preferredTop))}px`;
+  }, []);
+
+  const clearPreviewTimer = useCallback(() => {
+    if (previewTimerRef.current !== null) {
+      window.clearTimeout(previewTimerRef.current);
+      previewTimerRef.current = null;
+    }
+  }, []);
+
+  const selectTentPlacement = useCallback(
+    (placementId: string | null, nodeId: string | null) => {
+      const nextOwnership = reduceV5Ownership(ownershipRef.current, {
+        type: "select-placement",
+        placementId,
+      });
+      ownershipRef.current = nextOwnership;
+      setOwnership(nextOwnership);
+      const nextDocument = setFocusedPlacement(documentRef.current, placementId);
+      if (nextDocument.focusedPlacementId !== documentRef.current.focusedPlacementId) {
+        publishDocument(nextDocument);
+      }
+      onSelectPlacementRef.current(placementId, nodeId);
+    },
+    [publishDocument]
+  );
+
+  useEffect(() => () => clearPreviewTimer(), [clearPreviewTimer]);
 
   useEffect(() => {
     const next = hydrateCanvasV5Scene({
@@ -353,11 +446,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
         elements: refreshed.elements,
         appState: {
           activeEmbeddable: null,
-          selectedElementIds: canvasDocument.focusedPlacementId
-            ? {
-                [tentPlacementElementId(canvasDocument.focusedPlacementId)]: true,
-              }
-            : {},
+          selectedElementIds: {},
         },
         captureUpdate: "NEVER",
       });
@@ -386,9 +475,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
       api.updateScene({
         appState: {
           activeEmbeddable: null,
-          selectedElementIds: focusedPlacementId
-            ? { [tentPlacementElementId(focusedPlacementId)]: true }
-            : {},
+          selectedElementIds: {},
         },
         captureUpdate: "NEVER",
       });
@@ -403,6 +490,19 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     return () => {
       cancelApiViewportSyncRef.current?.();
       cancelApiViewportSyncRef.current = null;
+      if (releaseTransformFrameRef.current !== null) {
+        cancelAnimationFrame(releaseTransformFrameRef.current);
+        releaseTransformFrameRef.current = null;
+      }
+      if (tentPlacementPreviewFrameRef.current !== null) {
+        cancelAnimationFrame(tentPlacementPreviewFrameRef.current);
+        tentPlacementPreviewFrameRef.current = null;
+      }
+      if (tentPlacementDragPreviewRef.current) {
+        tentPlacementDragPreviewRef.current.style.translate = "";
+        tentPlacementDragPreviewRef.current = null;
+      }
+      pointerGestureActiveRef.current = false;
       apiRef.current = null;
       flushCanvasV5PersistGates({
         placement: placementPersistGate.current,
@@ -481,10 +581,104 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      const host = hostRef.current;
+      const ownsKeyboard = Boolean(
+        host &&
+        ((event.target instanceof Node && host.contains(event.target)) ||
+          (document.activeElement && host.contains(document.activeElement)))
+      );
+      const focusedPlacementId = documentRef.current.focusedPlacementId;
+      const isDelete = event.key === "Delete" || event.key === "Backspace";
+      const isDuplicate =
+        (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "d";
+      if (
+        ownsKeyboard &&
+        focusedPlacementId &&
+        !isEditableTarget(event.target) &&
+        (isDelete || isDuplicate)
+      ) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const placement = documentRef.current.placements.find(
+          (candidate) => candidate.placementId === focusedPlacementId
+        );
+        const api = apiRef.current;
+        if (!placement || !api || !host) return;
+        const scene = api?.getSceneElements?.() ?? [];
+        const source = scene.find((raw) => {
+          if (!raw || typeof raw !== "object") return false;
+          return readTentNodeCustomData(raw as { customData?: unknown })?.placementId === focusedPlacementId;
+        }) as ExcalidrawElementLike | undefined;
+        if (!source) return;
+        if (isDelete) {
+          adapterHistoryPlacementIdsRef.current.add(focusedPlacementId);
+          deletedPlacementCacheRef.current.set(focusedPlacementId, placement);
+          const deletedElements = scene.map((raw) => {
+            if (!raw || typeof raw !== "object") return raw;
+            const element = raw as ExcalidrawElementLike;
+            if (element.id !== source.id) return element;
+            return {
+              ...element,
+              isDeleted: true,
+              version: typeof element.version === "number" ? element.version + 1 : 1,
+              versionNonce: Math.floor(Math.random() * 2_147_483_647),
+              updated: Date.now(),
+            };
+          });
+          api.updateScene({
+            elements: deletedElements,
+            appState: { activeEmbeddable: null, selectedElementIds: {} },
+            captureUpdate: "IMMEDIATELY",
+          });
+          return;
+        }
+
+        const provisional = {
+          ...source,
+          id: `tent-copy:${newPlacementId("scene")}`,
+          x: source.x + 24,
+          y: source.y + 24,
+          isDeleted: false,
+          version: 1,
+          versionNonce: Math.floor(Math.random() * 2_147_483_647),
+          seed: Math.floor(Math.random() * 2_147_483_647),
+          updated: Date.now(),
+        } satisfies ExcalidrawElementLike;
+        const duplicated = duplicateTentPlacements({
+          document: documentRef.current,
+          previousElements: scene as ExcalidrawElementLike[],
+          nextElements: [...scene, provisional] as ExcalidrawElementLike[],
+          createPlacementId: () => newPlacementId("pl-node"),
+        });
+        const placementId = duplicated.addedPlacementIds.at(-1);
+        const duplicatedPlacement = placementId
+          ? duplicated.document.placements.find(
+              (candidate) => candidate.placementId === placementId
+            )
+          : undefined;
+        if (!placementId || !duplicatedPlacement) return;
+        adapterHistoryPlacementIdsRef.current.add(placementId);
+        deletedPlacementCacheRef.current.set(placementId, duplicatedPlacement);
+        pendingHistoryFocusPlacementIdRef.current = placementId;
+        api.updateScene({
+          elements: duplicated.elements,
+          appState: { activeEmbeddable: null, selectedElementIds: {} },
+          captureUpdate: "IMMEDIATELY",
+        });
+        return;
+      }
       if (event.key !== "Escape") return;
       if (displayMenuOpen) {
         event.preventDefault();
         setDisplayMenuOpen(false);
+        return;
+      }
+      if (previewPlacementIdRef.current) {
+        event.preventDefault();
+        clearPreviewTimer();
+        previewCandidateRef.current = null;
+        previewPlacementIdRef.current = null;
+        setPreviewPlacementId(null);
         return;
       }
       const prev = ownershipRef.current;
@@ -525,9 +719,9 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
         onImmersiveChange(false);
       }
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [displayMenuOpen, immersive, onImmersiveChange, publishDocument]);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [clearPreviewTimer, displayMenuOpen, immersive, onImmersiveChange, publishDocument]);
 
   const persistDrawing = useCallback(
     (
@@ -578,6 +772,58 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     });
   }, []);
 
+  const commitPlacementFromScene = useCallback((
+    elements: readonly unknown[],
+    appState: {
+      scrollX?: number;
+      scrollY?: number;
+      zoom?: { value: number };
+    }
+  ) => {
+    const moved = applyPlacementPatches(
+      documentRef.current,
+      extractPlacementPatchesFromElements(elements)
+    );
+    const viewport = viewportFromExcalidrawAppState(
+      appState,
+      moved.viewport ?? DEFAULT_VIEWPORT
+    );
+    const previousViewport = moved.viewport ?? DEFAULT_VIEWPORT;
+    const viewportChanged =
+      Math.abs(previousViewport.x - viewport.x) > 0.01 ||
+      Math.abs(previousViewport.y - viewport.y) > 0.01 ||
+      Math.abs(previousViewport.zoom - viewport.zoom) > 0.0001;
+    const committed = viewportChanged ? withViewport(moved, viewport) : moved;
+    if (committed !== documentRef.current) {
+      publishDocument(committed);
+    }
+  }, [publishDocument]);
+
+  const releaseNativeTentSelection = useCallback((
+    api: ExcalidrawApi,
+    elements: readonly unknown[],
+    selectedElementIds: Record<string, boolean>,
+    deactivateEmbeddable = false
+  ) => {
+    const released = releaseTentTransformSelection(elements, selectedElementIds);
+    if (!released.changed && !deactivateEmbeddable) return;
+    applyingExternal.current = true;
+    try {
+      api.updateScene({
+        ...(released.elementsChanged ? { elements: released.elements } : {}),
+        appState: {
+          selectedElementIds: released.selectedElementIds,
+          ...(deactivateEmbeddable ? { activeEmbeddable: null } : {}),
+        },
+        captureUpdate: "NEVER",
+      });
+    } finally {
+      queueMicrotask(() => {
+        applyingExternal.current = false;
+      });
+    }
+  }, []);
+
   const handleChange = useCallback<
     NonNullable<ExcalidrawComponentProps["onChange"]>
   >((elements, appState, files) => {
@@ -585,14 +831,146 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
 
     const filesObj = (files ?? {}) as Record<string, unknown>;
     const appObj = appState as Record<string, unknown>;
+    latestSceneRef.current = { elements, appState: appObj };
+    if (tentPlacementDragRef.current) return;
 
-    // Selection → Focus (right pane). Mid-gesture continuous.
+    // Native Store history is the causal source for duplicate/delete. The
+    // CanvasDocument follows the exact scene frame using only locally cached
+    // placements, so undo/redo never creates or mutates a domain Node.
+    const history = reconcileTentPlacementHistory({
+      document: documentRef.current,
+      elements,
+      cachedPlacements: deletedPlacementCacheRef.current,
+      knownHistoryPlacementIds: adapterHistoryPlacementIdsRef.current,
+      focusRestoredPlacementId: pendingHistoryFocusPlacementIdRef.current,
+    });
+    const topologyChanged = history.document !== documentRef.current;
+    for (const placement of history.deletedPlacements) {
+      deletedPlacementCacheRef.current.set(placement.placementId, placement);
+    }
+    for (const placement of history.restoredPlacements) {
+      deletedPlacementCacheRef.current.delete(placement.placementId);
+    }
+    if (topologyChanged) {
+      placementPersistGate.current.cancel();
+      publishDocument(history.document);
+    }
+    const restoredFocus = pendingHistoryFocusPlacementIdRef.current;
+    if (
+      restoredFocus &&
+      history.restoredPlacements.some(
+        (placement) => placement.placementId === restoredFocus
+      )
+    ) {
+      pendingHistoryFocusPlacementIdRef.current = null;
+      const placement = history.restoredPlacements.find(
+        (candidate) => candidate.placementId === restoredFocus
+      );
+      if (placement) selectTentPlacement(restoredFocus, placement.entityRef ?? null);
+    }
+
+    const activeEmbeddableElementId =
+      typeof appState.activeEmbeddable?.element?.id === "string"
+        ? appState.activeEmbeddable.element.id
+        : null;
+    const activeEmbeddableIsActive =
+      appState.activeEmbeddable?.state === "active";
+    const activeEmbeddableIsTent = Boolean(
+      readTentNodeCustomData(
+        appState.activeEmbeddable?.element as { customData?: unknown } | undefined
+      ) ?? (activeEmbeddableElementId
+        ? readTentNodeCustomData(
+            elements.find((raw) => Boolean(
+              raw &&
+              typeof raw === "object" &&
+              (raw as { id?: string }).id === activeEmbeddableElementId
+            )) as { customData?: unknown } | undefined
+          )
+        : null)
+    );
+
+    // Excalidraw can promote an embeddable to active shortly after pointer-up.
+    // A Tent card is a read-only projection, so leaving it active would let its
+    // wrapper consume the next pointer stream. During a real gesture, clear
+    // only that activation and leave native selection intact for the move.
+    // This update deliberately is not wrapped in applyingExternal: the next
+    // onChange may contain the authoritative final geometry for this gesture.
+    if (
+      activeEmbeddableIsTent &&
+      activeEmbeddableIsActive &&
+      pointerGestureActiveRef.current
+    ) {
+      apiRef.current?.updateScene({
+        appState: { activeEmbeddable: null },
+        captureUpdate: "NEVER",
+      });
+    }
+
+    const transientTentSelection = selectionToFocusedPlacement(
+      elements,
+      appState.selectedElementIds
+    );
+    if (!pointerGestureActiveRef.current && transientTentSelection.placementId) {
+      placementPersistGate.current.cancel();
+      commitPlacementFromScene(elements, appState);
+      const api = apiRef.current;
+      if (api) {
+        releaseNativeTentSelection(
+          api,
+          elements,
+          appState.selectedElementIds ?? {},
+          activeEmbeddableIsTent && activeEmbeddableIsActive
+        );
+      }
+      return;
+    }
+
+    if (
+      activeEmbeddableIsTent &&
+      activeEmbeddableIsActive &&
+      !pointerGestureActiveRef.current
+    ) {
+      apiRef.current?.updateScene({
+        appState: { activeEmbeddable: null },
+        captureUpdate: "NEVER",
+      });
+    }
+
+    const hoveredCustom = appState.activeEmbeddable?.element?.id
+      ? readTentNodeCustomData(
+          elements.find((raw) =>
+            Boolean(raw && typeof raw === "object" && (raw as { id?: string }).id === appState.activeEmbeddable?.element?.id)
+          ) as { customData?: unknown } | undefined
+        )
+      : null;
+    const previewCandidate = hoveredCustom?.placementId ?? null;
+    if (previewCandidate !== previewCandidateRef.current) {
+      previewCandidateRef.current = previewCandidate;
+      clearPreviewTimer();
+      previewPlacementIdRef.current = null;
+      setPreviewPlacementId(null);
+      if (previewCandidate) {
+        previewTimerRef.current = window.setTimeout(() => {
+          previewTimerRef.current = null;
+          if (previewCandidateRef.current !== previewCandidate) return;
+          previewPlacementIdRef.current = previewCandidate;
+          setPreviewPlacementId(previewCandidate);
+          requestAnimationFrame(() => positionPreview(previewCandidate));
+        }, 460);
+      }
+    } else if (previewCandidate && previewPlacementIdRef.current === previewCandidate) {
+      positionPreview(previewCandidate);
+    }
+
+    // Native selection is only used while a pointer gesture is active. It can
+    // select a Tent element long enough for Excalidraw to perform a move, while
+    // persistent product focus stays in CanvasDocument/V5OwnershipState.
     const focus = selectionToFocusedPlacement(
       elements,
       appState.selectedElementIds
     );
     const prevOwn = ownershipRef.current;
-    if (focus.placementId !== prevOwn.focusedPlacementId) {
+    if (focus.placementId && focus.placementId !== prevOwn.focusedPlacementId) {
       const nextOwn = reduceV5Ownership(prevOwn, {
         type: "select-placement",
         placementId: focus.placementId,
@@ -645,65 +1023,294 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     }
 
     // Geometry write-back (continuous visual via Excalidraw; doc merge debounced)
-    const patches = extractPlacementPatchesFromElements(elements);
-    placementPersistGate.current.schedule(() => {
-      const nextDoc = applyPlacementPatches(documentRef.current, patches);
-      if (nextDoc !== documentRef.current) {
-        // Also fold viewport from Excalidraw (sole camera).
-        const vp = viewportFromExcalidrawAppState(
-          {
-            scrollX: appState.scrollX,
-            scrollY: appState.scrollY,
-            zoom: appState.zoom,
-          },
-          documentRef.current.viewport ?? DEFAULT_VIEWPORT
-        );
-        const withVp = withViewport(nextDoc, vp);
-        publishDocument(withVp);
-      } else {
-        const vp = viewportFromExcalidrawAppState(
-          {
-            scrollX: appState.scrollX,
-            scrollY: appState.scrollY,
-            zoom: appState.zoom,
-          },
-          documentRef.current.viewport ?? DEFAULT_VIEWPORT
-        );
-        const prev = documentRef.current.viewport ?? DEFAULT_VIEWPORT;
-        if (
-          Math.abs(prev.x - vp.x) > 0.01 ||
-          Math.abs(prev.y - vp.y) > 0.01 ||
-          Math.abs(prev.zoom - vp.zoom) > 0.0001
-        ) {
-          const withVp = withViewport(documentRef.current, vp);
-          publishDocument(withVp);
-        }
-      }
-    });
+    if (!topologyChanged) {
+      placementPersistGate.current.schedule(() => {
+        commitPlacementFromScene(elements, appState);
+      });
+    }
 
-    // Remove-from-canvas when tent embeddable deleted
-    const deleted = deletedTentPlacementIds(elements);
-    if (deleted.length > 0) {
-      let doc = documentRef.current;
-      for (const placementId of deleted) {
-        doc = removePlacement(doc, placementId);
-      }
-      if (doc !== documentRef.current) {
-        publishDocument(doc);
-        if (
-          ownershipRef.current.focusedPlacementId &&
-          deleted.includes(ownershipRef.current.focusedPlacementId)
-        ) {
-          onSelectPlacementRef.current(null, null);
-        }
-      }
+    if (
+      history.deletedPlacements.some(
+        (placement) => placement.placementId === ownershipRef.current.focusedPlacementId
+      )
+    ) {
+      onSelectPlacementRef.current(null, null);
     }
 
     // Drawing persistence (strip tent nodes) — debounced
     persistGate.current.schedule(() => {
       persistDrawing(elements, appObj, filesObj);
     });
-  }, [persistDrawing, publishDocument]);
+  }, [clearPreviewTimer, commitPlacementFromScene, persistDrawing, positionPreview, publishDocument, releaseNativeTentSelection, selectTentPlacement]);
+
+  const handlePointerDown = useCallback<
+    NonNullable<ExcalidrawComponentProps["onPointerDown"]>
+  >((_activeTool, pointerDownState) => {
+    const hit = pointerDownState.hit?.element;
+    const custom = readTentNodeCustomData(hit ?? undefined);
+    if (custom) {
+      pointerGestureActiveRef.current = true;
+      selectTentPlacement(custom.placementId, custom.nodeId);
+      return;
+    }
+    if (!pointerDownState.withCmdOrCtrl) {
+      selectTentPlacement(null, null);
+    }
+  }, [selectTentPlacement]);
+
+  const handlePointerUp = useCallback(() => {
+    const api = apiRef.current;
+    if (!api) return;
+    placementPersistGate.current.cancel();
+    if (releaseTransformFrameRef.current !== null) {
+      cancelAnimationFrame(releaseTransformFrameRef.current);
+    }
+    releaseTransformFrameRef.current = requestAnimationFrame(() => {
+      releaseTransformFrameRef.current = null;
+      if (apiRef.current !== api) return;
+      const elements = api.getSceneElements?.() ?? [];
+      const appState = api.getAppState?.() ?? {};
+      placementPersistGate.current.cancel();
+      commitPlacementFromScene(
+        elements,
+        appState as {
+          scrollX?: number;
+          scrollY?: number;
+          zoom?: { value: number };
+        }
+      );
+      pointerGestureActiveRef.current = false;
+      const nextOwnership = createV5OwnershipState(
+        documentRef.current.focusedPlacementId ?? null
+      );
+      ownershipRef.current = nextOwnership;
+      setOwnership(nextOwnership);
+      releaseNativeTentSelection(
+        api,
+        elements,
+        (appState.selectedElementIds ?? {}) as Record<string, boolean>,
+        true
+      );
+    });
+  }, [commitPlacementFromScene, releaseNativeTentSelection]);
+
+  useEffect(() => {
+    const stopAdapterEvent = (event: PointerEvent) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+
+    const finishAdapterDrag = (event: PointerEvent, cancelled: boolean) => {
+      const drag = tentPlacementDragRef.current;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      stopAdapterEvent(event);
+
+      const api = apiRef.current;
+      const target = event.target;
+      if (target instanceof Element && target.hasPointerCapture?.(event.pointerId)) {
+        target.releasePointerCapture(event.pointerId);
+      }
+      if (!api) {
+        if (tentPlacementDragPreviewRef.current) {
+          tentPlacementDragPreviewRef.current.style.translate = "";
+          tentPlacementDragPreviewRef.current = null;
+        }
+        tentPlacementDragRef.current = null;
+        return;
+      }
+
+      placementPersistGate.current.cancel();
+      const scene = api.getSceneElements?.() ?? [];
+      const appState = api.getAppState?.() ?? {};
+      const final = moveTentPlacementForPointer(
+        scene,
+        drag,
+        event.clientX,
+        event.clientY
+      );
+      const nextElements = cancelled
+        ? restoreTentPlacementAfterCancel(scene, drag)
+        : final.elements;
+
+      applyingExternal.current = true;
+      try {
+        api.updateScene({
+          elements: nextElements,
+          appState: {
+            activeEmbeddable: null,
+            selectedElementIds: {},
+          },
+          // Pointer-move preview frames do not participate in Store capture.
+          // This is the only history boundary for the final placement.
+          captureUpdate: !cancelled && final.moved ? "IMMEDIATELY" : "NEVER",
+        });
+        latestSceneRef.current = {
+          elements: nextElements,
+          appState: {
+            ...appState,
+            activeEmbeddable: null,
+            selectedElementIds: {},
+          },
+        };
+        if (!cancelled && final.moved) {
+          commitPlacementFromScene(
+            nextElements,
+            appState as {
+              scrollX?: number;
+              scrollY?: number;
+              zoom?: { value: number };
+            }
+          );
+        }
+      } finally {
+        const preview = tentPlacementDragPreviewRef.current;
+        if (tentPlacementPreviewFrameRef.current !== null) {
+          cancelAnimationFrame(tentPlacementPreviewFrameRef.current);
+        }
+        if (cancelled) {
+          if (preview) preview.style.translate = "";
+          tentPlacementDragPreviewRef.current = null;
+        } else {
+          tentPlacementPreviewFrameRef.current = requestAnimationFrame(() => {
+            tentPlacementPreviewFrameRef.current = null;
+            if (preview) preview.style.translate = "";
+            if (tentPlacementDragPreviewRef.current === preview) {
+              tentPlacementDragPreviewRef.current = null;
+            }
+          });
+        }
+        tentPlacementDragRef.current = null;
+        pointerGestureActiveRef.current = false;
+        queueMicrotask(() => {
+          applyingExternal.current = false;
+        });
+      }
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      const host = hostRef.current;
+      const api = apiRef.current;
+      const target = event.target;
+      if (
+        !host ||
+        !api ||
+        event.button !== 0 ||
+        !(target instanceof HTMLCanvasElement) ||
+        !host.contains(target)
+      ) {
+        return;
+      }
+
+      const card = Array.from(
+        host.querySelectorAll<HTMLElement>("[data-tent-placement-id]")
+      ).find((candidate) => {
+        const rect = candidate.getBoundingClientRect();
+        return (
+          event.clientX >= rect.left &&
+          event.clientX <= rect.right &&
+          event.clientY >= rect.top &&
+          event.clientY <= rect.bottom
+        );
+      });
+      const placementId = card?.dataset.tentPlacementId;
+      if (!placementId) return;
+
+      const scene = api.getSceneElements?.() ?? [];
+      const element = scene.find((raw) => {
+        if (!raw || typeof raw !== "object") return false;
+        return readTentNodeCustomData(raw as { customData?: unknown })?.placementId === placementId;
+      }) as ExcalidrawElementLike | undefined;
+      const custom = readTentNodeCustomData(element);
+      if (!element || !custom || element.isDeleted === true) return;
+
+      stopAdapterEvent(event);
+      placementPersistGate.current.cancel();
+      clearPreviewTimer();
+      previewCandidateRef.current = null;
+      previewPlacementIdRef.current = null;
+      setPreviewPlacementId(null);
+      const appState = api.getAppState?.() ?? {};
+      const zoom = (
+        appState.zoom as { value?: number } | undefined
+      )?.value ?? 1;
+      tentPlacementDragRef.current = createTentPlacementDrag({
+        pointerId: event.pointerId,
+        placementId,
+        nodeId: custom.nodeId,
+        elementId: element.id,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        originX: element.x,
+        originY: element.y,
+        zoom,
+      });
+      tentPlacementDragPreviewRef.current =
+        card.parentElement?.parentElement instanceof HTMLElement
+          ? card.parentElement.parentElement
+          : card;
+      selectTentPlacement(placementId, custom.nodeId);
+      focusExcalidrawKeyboardOwner(host);
+      api.updateScene({
+        appState: {
+          activeEmbeddable: null,
+          selectedElementIds: {},
+        },
+        captureUpdate: "NEVER",
+      });
+      target.setPointerCapture?.(event.pointerId);
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      const drag = tentPlacementDragRef.current;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      stopAdapterEvent(event);
+      const api = apiRef.current;
+      if (!api) return;
+      const moved = moveTentPlacementForPointer(
+        api.getSceneElements?.() ?? [],
+        drag,
+        event.clientX,
+        event.clientY
+      );
+      if (!moved.moved) return;
+      const preview = tentPlacementDragPreviewRef.current;
+      if (preview) {
+        preview.style.translate = `${event.clientX - drag.startClientX}px ${
+          event.clientY - drag.startClientY
+        }px`;
+      }
+    };
+
+    const onPointerUp = (event: PointerEvent) => finishAdapterDrag(event, false);
+    const onPointerCancel = (event: PointerEvent) => finishAdapterDrag(event, true);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("pointermove", onPointerMove, true);
+    window.addEventListener("pointerup", onPointerUp, true);
+    window.addEventListener("pointercancel", onPointerCancel, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("pointermove", onPointerMove, true);
+      window.removeEventListener("pointerup", onPointerUp, true);
+      window.removeEventListener("pointercancel", onPointerCancel, true);
+      const drag = tentPlacementDragRef.current;
+      const api = apiRef.current;
+      if (drag && api) {
+        api.updateScene({
+          elements: restoreTentPlacementAfterCancel(
+            api.getSceneElements?.() ?? [],
+            drag
+          ),
+          appState: { activeEmbeddable: null, selectedElementIds: {} },
+          captureUpdate: "NEVER",
+        });
+      }
+      if (tentPlacementDragPreviewRef.current) {
+        tentPlacementDragPreviewRef.current.style.translate = "";
+        tentPlacementDragPreviewRef.current = null;
+      }
+      tentPlacementDragRef.current = null;
+    };
+  }, [clearPreviewTimer, commitPlacementFromScene, selectTentPlacement]);
 
   const handleLinkOpen = useCallback<
     NonNullable<ExcalidrawComponentProps["onLinkOpen"]>
@@ -733,7 +1340,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     apiRef.current?.updateScene({
       appState: {
         activeEmbeddable: null,
-        selectedElementIds: { [element.id]: true },
+        selectedElementIds: {},
       },
       captureUpdate: "NEVER",
     });
@@ -893,6 +1500,8 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
             excalidrawAPI={handleApi}
             initialData={initialDataRef.current}
             onChange={handleChange}
+            onPointerDown={handlePointerDown}
+            onPointerUp={handlePointerUp}
             viewModeEnabled={false}
             zenModeEnabled={false}
             gridModeEnabled={false}
@@ -910,6 +1519,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
                 // Missing view data is unknown, not evidence of stale/error/unresolved.
                 return (
                   <TentEmbeddableNode
+                    placementId={custom.placementId}
                     data={{
                       nodeId: custom.nodeId,
                       title: "本地画布位置",
@@ -918,38 +1528,16 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
                       stateLabel: "状态未知",
                       detail: "权威投影尚不可用；本地位置已保留。",
                     }}
-                    selected={Boolean(
-                      (appState.selectedElementIds as Record<string, boolean> | undefined)?.[
-                        element.id
-                      ]
-                    )}
+                    selected={canvasDocument.focusedPlacementId === custom.placementId}
                   />
                 );
               }
-              const selected = Boolean(
-                (appState.selectedElementIds as Record<string, boolean> | undefined)?.[
-                  element.id
-                ]
-              );
-              const interactive = embeddableInteractive(
-                ownershipRef.current,
-                element.id
-              );
+              const selected = canvasDocument.focusedPlacementId === custom.placementId;
               return (
                 <TentEmbeddableNode
+                  placementId={custom.placementId}
                   data={toNodeData(model)}
                   selected={selected}
-                  interactive={interactive}
-                  expanded={model.presentation === "expanded"}
-                  onToggleExpanded={() => {
-                    const nextDocument = togglePlacementPresentation(
-                      documentRef.current,
-                      custom.placementId
-                    );
-                    if (nextDocument !== documentRef.current) {
-                      publishDocument(nextDocument);
-                    }
-                  }}
                 />
               );
             }}
@@ -967,6 +1555,22 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
             }}
           />
         </Suspense>
+        {previewPlacementId && cardModels.get(previewPlacementId) ? (
+          <aside
+            ref={previewRef}
+            className="tn-canvas-node-preview"
+            data-testid="canvas-node-quick-preview"
+            aria-hidden="true"
+          >
+            <span>{cardModels.get(previewPlacementId)!.typeLabel}</span>
+            <strong>{cardModels.get(previewPlacementId)!.title}</strong>
+            <p>{
+              previewDocument?.nodeId === cardModels.get(previewPlacementId)!.nodeId
+                ? limitedCanvasNodePreview(previewDocument.body) || "正文为空"
+                : cardModels.get(previewPlacementId)!.detail
+            }</p>
+          </aside>
+        ) : null}
       </div>
 
     </div>

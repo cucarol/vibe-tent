@@ -155,7 +155,6 @@ button, input, select, textarea { font: inherit; }
 .tn-workbench[data-focus-open="false"] { grid-template-columns: 252px minmax(0, 1fr) 0; }
 .tn-workbench[data-outline-open="false"][data-focus-open="false"] { grid-template-columns: 0 minmax(0, 1fr) 0; }
 .tn-workbench[data-immersive="true"] { grid-template-columns: 0 minmax(0, 1fr) 0; }
-.tn-workbench[data-layout-mode="detail"] { grid-template-columns: minmax(360px, 42vw) 0 minmax(420px, 1fr); }
 
 .tn-pane {
   min-width: 0;
@@ -169,7 +168,6 @@ button, input, select, textarea { font: inherit; }
 .tn-workbench[data-outline-open="false"] .tn-outline-pane,
 .tn-workbench[data-focus-open="false"] .tn-inspector-pane,
 .tn-workbench[data-immersive="true"] :is(.tn-outline-pane, .tn-inspector-pane) { visibility: hidden; }
-.tn-workbench[data-layout-mode="detail"] .tn-canvas-pane { visibility: hidden; }
 
 .tn-canvas-pane {
   position: relative;
@@ -275,6 +273,27 @@ button, input, select, textarea { font: inherit; }
 .tn-pane-empty strong { color: var(--tn-color-text-primary); font-size: 13px; }
 .tn-pane-empty p { margin: 0; font-size: 12px; line-height: 1.55; }
 
+.tn-outline-modes {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 1px;
+  border: 1px solid var(--tn-color-border);
+  border-radius: var(--tn-radius-sm);
+  background: var(--tn-color-stage-bg);
+}
+
+.tn-outline-modes .tn-ui-btn {
+  min-height: 24px;
+  padding: 2px 7px;
+  border: 0;
+}
+
+.tn-outline-modes .tn-ui-btn[aria-pressed="true"] {
+  background: var(--tn-color-elevated-bg);
+  color: var(--tn-color-text-primary);
+}
+
 .tn-outline-tree { height: calc(100% - 32px); padding: 6px; overflow: auto; }
 .tn-outline-node {
   --tn-tree-depth: 0;
@@ -321,9 +340,6 @@ button, input, select, textarea { font: inherit; }
 .tn-outline-copy { display: grid; min-width: 0; gap: 2px; }
 .tn-outline-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .tn-outline-meta { overflow: hidden; color: var(--tn-color-text-faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.tn-outline-detail { display: grid; min-width: 0; gap: 2px; margin-top: 4px; color: var(--tn-color-text-faint); font-size: 10px; line-height: 1.35; }
-.tn-outline-detail span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tn-outline-pane[data-outline-mode="detail"] .tn-outline-node { min-height: 60px; padding-block: 8px; }
 .tn-outline-node .tn-ui-status-badge { padding-inline: 5px; }
 
 .tn-inspector-content { height: calc(100% - 32px); overflow: auto; }

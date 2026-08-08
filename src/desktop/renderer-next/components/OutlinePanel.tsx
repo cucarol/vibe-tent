@@ -1,24 +1,27 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from "react";
-import { IconButton, PaneHeader, StatusBadge } from "../ui/index.js";
+import { Button, IconButton, PaneHeader, StatusBadge } from "../ui/index.js";
 import { ShellIcon } from "../shell/icons.js";
 import { nodeTitle, nodeTypeLabel, projectionLabel, taskStateLabel, type WorkbenchNodeView } from "../shell/workbench-types.js";
 import { OUTLINE_NODE_DRAG_TYPE } from "../model/canvas-node-snapshot.js";
 import {
   firstOutlineChild,
+  outlineAncestorNodeIds,
   updateOutlineExpansion,
   visibleOutlineNodes,
 } from "../model/outline-tree.js";
 
 export type OutlinePanelProps = {
   id?: string;
-  mode?: "compact" | "detail";
-  onModeChange?: (mode: "compact" | "detail") => void;
+  mode?: "nodes" | "inbox";
+  onModeChange?: (mode: "nodes" | "inbox") => void;
   nodes: readonly WorkbenchNodeView[];
   projection: "loading" | "fresh" | "stale" | "unresolved" | "error" | "unmounted";
   selectedNodeId: string | null;
   onSelectNode: (nodeId: string) => void;
   onOpenNodeActions?: (nodeId: string) => void;
   canDragToCanvas?: boolean;
+  reveal?: { nodeId: string; revision: number };
+  visible?: boolean;
   onCollapse: () => void;
 };
 
@@ -52,7 +55,7 @@ const EMPTY_COPY: Record<
   },
 };
 
-export function OutlinePanel({ id, mode = "compact", onModeChange, nodes, projection, selectedNodeId, onSelectNode, onOpenNodeActions, canDragToCanvas = false, onCollapse }: OutlinePanelProps) {
+export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projection, selectedNodeId, onSelectNode, onOpenNodeActions, canDragToCanvas = false, reveal, visible = true, onCollapse }: OutlinePanelProps) {
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
   const itemRefs = useRef(new Map<string, HTMLDivElement>());
   const knownExpandableIds = useRef(new Set<string>());
@@ -76,6 +79,18 @@ export function OutlinePanel({ id, mode = "compact", onModeChange, nodes, projec
       return next;
     });
   }, [nodes]);
+  useEffect(() => {
+    if (!reveal?.nodeId || reveal.revision === 0) return;
+    const node = nodes.find((candidate) => candidate.nodeId === reveal.nodeId);
+    if (!node) return;
+    const ancestors = outlineAncestorNodeIds(nodes, reveal.nodeId);
+    setExpandedNodeIds((current) => {
+      const next = new Set(current);
+      for (const ancestor of ancestors) next.add(ancestor);
+      return next;
+    });
+    onModeChange?.("nodes");
+  }, [nodes, onModeChange, reveal?.nodeId, reveal?.revision]);
   const visibleNodes = useMemo(
     () => visibleOutlineNodes(nodes, expandedNodeIds),
     [expandedNodeIds, nodes]
@@ -153,27 +168,26 @@ export function OutlinePanel({ id, mode = "compact", onModeChange, nodes, projec
   };
 
   return (
-    <aside id={id} className="tn-pane tn-outline-pane" aria-label="节点大纲" data-region="outline" data-outline-mode={mode}>
+    <aside id={id} className="tn-pane tn-outline-pane" aria-label="工作区导航" data-region="outline" data-outline-mode={mode}>
       <PaneHeader
-        title="节点"
-        meta={`${nodes.length}`}
+        title={mode === "nodes" ? "节点" : "收件箱"}
+        meta={mode === "nodes" ? `${nodes.length}` : undefined}
         actions={<>
           {onModeChange ? (
-            <IconButton
-              size="compact"
-              aria-label={mode === "detail" ? "恢复紧凑工作台" : "打开节点详细模式"}
-              tooltip={mode === "detail" ? "恢复紧凑工作台" : "打开节点详细模式"}
-              variant="ghost"
-              aria-pressed={mode === "detail"}
-              onClick={() => onModeChange(mode === "detail" ? "compact" : "detail")}
-            >
-              <ShellIcon name={mode === "detail" ? "canvas" : "outline"} />
-            </IconButton>
+            <div className="tn-outline-modes" role="group" aria-label="左栏内容">
+              <Button size="compact" variant="ghost" aria-pressed={mode === "nodes"} onClick={() => onModeChange("nodes")}>节点</Button>
+              <Button size="compact" variant="ghost" aria-pressed={mode === "inbox"} onClick={() => onModeChange("inbox")}>收件箱</Button>
+            </div>
           ) : null}
           <IconButton size="compact" aria-label="收起节点面板" tooltip="收起节点面板" variant="ghost" onClick={onCollapse}><ShellIcon name="chevron-left" /></IconButton>
         </>}
       />
-      {nodes.length === 0 ? (
+      {mode === "inbox" ? (
+        <div className="tn-pane-empty" role="status" data-testid="workspace-inbox-unavailable">
+          <strong>收件箱尚未接入</strong>
+          <p>这里将只显示工作区级待处理事项；不会用当前节点的协作状态冒充全局收件箱。</p>
+        </div>
+      ) : nodes.length === 0 ? (
         <div className="tn-pane-empty" role="status">
           <strong>{emptyCopy.title}</strong>
           <p>{emptyCopy.body}</p>
@@ -239,12 +253,6 @@ export function OutlinePanel({ id, mode = "compact", onModeChange, nodes, projec
                 <span className="tn-outline-copy">
                   <span className="tn-outline-title">{nodeTitle(node)}</span>
                   <span className="tn-outline-meta">{projectionReady ? nodeTypeLabel(node.type) : projectionCopy}</span>
-                  {mode === "detail" && projectionReady ? (
-                    <span className="tn-outline-detail">
-                      <span>{node.path}</span>
-                      {node.tags.length ? <span>{node.tags.join(" · ")}</span> : null}
-                    </span>
-                  ) : null}
                 </span>
                 {projectionReady && node.activeTaskState ? <StatusBadge tone="running" data-task-state={node.activeTaskState}>{taskStateLabel(node.activeTaskState)}</StatusBadge> : null}
               </div>

@@ -63,6 +63,23 @@ export function firstOutlineChild(
   return nodes.find((node) => node.parentNodeId === parentNodeId) ?? null;
 }
 
+/** Exact authoritative ancestors ordered root -> direct parent. */
+export function outlineAncestorNodeIds(
+  nodes: readonly WorkbenchNodeView[],
+  nodeId: string
+): string[] {
+  const byId = new Map(nodes.map((node) => [node.nodeId, node] as const));
+  const result: string[] = [];
+  const seen = new Set<string>([nodeId]);
+  let current = byId.get(nodeId)?.parentNodeId ?? null;
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    result.unshift(current);
+    current = byId.get(current)?.parentNodeId ?? null;
+  }
+  return result;
+}
+
 export function updateOutlineExpansion(args: {
   nodes: readonly WorkbenchNodeView[];
   expandedNodeIds: ReadonlySet<string>;

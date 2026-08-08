@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { CanvasDocument } from "../src/desktop/renderer-next/types/identity.js";
-import { dropNodeSnapshotAt, hasEntityPlacement } from "../src/desktop/renderer-next/model/canvas-document.js";
+import { dropNodeSnapshotAt, hasEntityPlacement, NODE_CARD } from "../src/desktop/renderer-next/model/canvas-document.js";
 import {
   captureCanvasNodeSnapshot,
   deriveCanvasPlacementSourceState,
@@ -18,9 +18,13 @@ import { DEFAULT_EDGE_LAYERS } from "../src/desktop/renderer-next/model/canvas-e
 import {
   applyPlacementPatches,
   documentToExcalidrawElements,
+  duplicateTentPlacements,
   extractPlacementPatchesFromElements,
+  limitedCanvasNodePreview,
   placementToEmbeddableElement,
   readTentNodeCustomData,
+  reconcileTentPlacementHistory,
+  releaseTentTransformSelection,
   selectionToFocusedPlacement,
   tentNodeLink,
   tentNodeOpenTarget,
@@ -30,6 +34,7 @@ import {
   excalidrawAppStateFromViewport,
   TENT_NODE_CUSTOM_KIND,
   captureTentNodeOpenTarget,
+  type ExcalidrawElementLike,
 } from "../src/desktop/renderer-next/canvas/excalidraw/documentToExcalidraw.js";
 import {
   createCanvasV5PersistGate,
@@ -49,10 +54,6 @@ import {
 } from "../src/desktop/renderer-next/canvas/excalidraw/v5InteractionOwnership.js";
 import { shouldRefreshCanvasV5Scene } from "../src/desktop/renderer-next/canvas/excalidraw/sceneRefreshPolicy.js";
 import {
-  getPlacementPresentation,
-  togglePlacementPresentation,
-} from "../src/desktop/renderer-next/model/placement-chrome.js";
-import {
   schedulePostMountCanvasViewportSync,
   viewportAfterCanvasResize,
 } from "../src/desktop/renderer-next/model/canvas-viewport-resize.js";
@@ -62,6 +63,34 @@ import {
   IDLE_CANVAS_DROP_FEEDBACK,
   leaveCanvasDropTarget,
 } from "../src/desktop/renderer-next/model/canvas-drop-feedback.js";
+import {
+  createTentPlacementDrag,
+  focusExcalidrawKeyboardOwner,
+  moveTentPlacementForPointer,
+  restoreTentPlacementAfterCancel,
+} from "../src/desktop/renderer-next/canvas/excalidraw/tent-placement-drag.js";
+
+test("Tent placement pointer ownership focuses the native Canvas keyboard surface", () => {
+  let selector = "";
+  let options: FocusOptions | undefined;
+  const host = {
+    querySelector(query: string) {
+      selector = query;
+      return {
+        focus(next: FocusOptions) {
+          options = next;
+        },
+      };
+    },
+  } as unknown as ParentNode;
+  assert.equal(focusExcalidrawKeyboardOwner(host), true);
+  assert.equal(selector, ".excalidraw-container");
+  assert.deepEqual(options, { preventScroll: true });
+  assert.equal(
+    focusExcalidrawKeyboardOwner({ querySelector: () => null } as unknown as ParentNode),
+    false
+  );
+});
 
 function sampleDoc(): CanvasDocument {
   const snapshot = (nodeId: string, type: string) => captureCanvasNodeSnapshot({
@@ -140,6 +169,187 @@ test("same nodeId maps to multiple placements with distinct element ids", () => 
   }
 });
 
+test("Tent placement drag moves one fixed instance at viewport zoom and preserves siblings", () => {
+  const scene = documentToExcalidrawElements(sampleDoc()).elements;
+  const source = scene.find((element) =>
+    readTentNodeCustomData(element)?.placementId === "pl-a"
+  )!;
+  const sibling = scene.find((element) =>
+    readTentNodeCustomData(element)?.placementId === "pl-b"
+  )!;
+  const drag = createTentPlacementDrag({
+    pointerId: 7,
+    placementId: "pl-a",
+    nodeId: "cx-alpha",
+    elementId: source.id,
+    startClientX: 300,
+    startClientY: 200,
+    originX: source.x,
+    originY: source.y,
+    zoom: 2,
+  });
+
+  const moved = moveTentPlacementForPointer(scene, drag, 360, 236);
+  const movedElements = moved.elements as ExcalidrawElementLike[];
+  const movedSource = movedElements.find((element) =>
+    readTentNodeCustomData(element)?.placementId === "pl-a"
+  )!;
+  const untouchedSibling = movedElements.find((element) =>
+    readTentNodeCustomData(element)?.placementId === "pl-b"
+  )!;
+  assert.equal(moved.moved, true);
+  assert.equal(movedSource.x, source.x + 30);
+  assert.equal(movedSource.y, source.y + 18);
+  assert.equal(movedSource.width, NODE_CARD.width);
+  assert.equal(movedSource.height, NODE_CARD.height);
+  assert.equal(movedSource.angle, 0);
+  assert.equal(untouchedSibling, sibling, "duplicate placement remains untouched");
+
+  const restored = restoreTentPlacementAfterCancel(
+    moved.elements,
+    drag
+  ) as ExcalidrawElementLike[];
+  const restoredSource = restored.find((element) =>
+    readTentNodeCustomData(element)?.placementId === "pl-a"
+  )!;
+  assert.equal(restoredSource.x, source.x);
+  assert.equal(restoredSource.y, source.y);
+  assert.equal(
+    restored.find((element) => readTentNodeCustomData(element)?.placementId === "pl-b"),
+    sibling,
+    "cancel does not create or mutate sibling placement"
+  );
+});
+
+test("Tent placement click below drag threshold creates no geometry change", () => {
+  const scene = documentToExcalidrawElements(sampleDoc()).elements;
+  const source = scene.find((element) =>
+    readTentNodeCustomData(element)?.placementId === "pl-a"
+  )!;
+  const drag = createTentPlacementDrag({
+    pointerId: 9,
+    placementId: "pl-a",
+    nodeId: "cx-alpha",
+    elementId: source.id,
+    startClientX: 100,
+    startClientY: 100,
+    originX: source.x,
+    originY: source.y,
+    zoom: 1,
+  });
+  const click = moveTentPlacementForPointer(scene, drag, 101, 100);
+  assert.equal(click.moved, false);
+  assert.equal(click.elements, scene);
+});
+
+test("Excalidraw duplicate becomes a new local placement without changing Node identity", () => {
+  const doc = sampleDoc();
+  const original = placementToEmbeddableElement(doc.placements[0]!);
+  const copied = { ...original, id: "excal-copy", x: 180, y: 220 };
+  const result = duplicateTentPlacements({
+    document: doc,
+    previousElements: [original],
+    nextElements: [original, copied],
+    createPlacementId: () => "pl-copy",
+  });
+  assert.deepEqual(result.addedPlacementIds, ["pl-copy"]);
+  assert.equal(result.document.placements.length, doc.placements.length + 1);
+  const placement = result.document.placements.find((item) => item.placementId === "pl-copy");
+  assert.equal(placement?.entityRef, "cx-alpha");
+  assert.equal(placement?.x, 180);
+  assert.equal(placement?.width, NODE_CARD.width);
+  assert.equal(readTentNodeCustomData(result.elements[1])?.placementId, "pl-copy");
+  assert.equal(readTentNodeCustomData(result.elements[1])?.nodeId, "cx-alpha");
+});
+
+test("duplicate and delete follow native scene history without losing local placements", () => {
+  const base = sampleDoc();
+  const initial = base;
+  const initialElements = documentToExcalidrawElements(initial).elements;
+  const source = initialElements[0]!;
+  const duplicate = duplicateTentPlacements({
+    document: initial,
+    previousElements: initialElements,
+    nextElements: [
+      ...initialElements,
+      { ...source, id: "excal-copy", x: source.x + 24, y: source.y + 24 },
+    ],
+    createPlacementId: () => "pl-copy",
+  });
+  const copyPlacement = duplicate.document.placements.find(
+    (placement) => placement.placementId === "pl-copy"
+  )!;
+  const cache = new Map([[copyPlacement.placementId, copyPlacement]]);
+  const knownHistoryPlacements = new Set([copyPlacement.placementId]);
+
+  const applyFrame = (document: CanvasDocument, elements: typeof duplicate.elements) => {
+    const result = reconcileTentPlacementHistory({
+      document,
+      elements,
+      cachedPlacements: cache,
+      knownHistoryPlacementIds: knownHistoryPlacements,
+      focusRestoredPlacementId: "pl-copy",
+    });
+    for (const placement of result.deletedPlacements) {
+      cache.set(placement.placementId, placement);
+    }
+    for (const placement of result.restoredPlacements) {
+      cache.delete(placement.placementId);
+    }
+    return result.document;
+  };
+
+  const afterDuplicate = applyFrame(initial, duplicate.elements);
+  assert.equal(initial.placements.length, 3);
+  assert.equal(afterDuplicate.placements.length, 4);
+  assert.equal(afterDuplicate.focusedPlacementId, "pl-copy");
+
+  const missingCopyElements = duplicate.elements.filter(
+    (element) => readTentNodeCustomData(element)?.placementId !== "pl-copy"
+  );
+  const afterDirectUndo = applyFrame(afterDuplicate, missingCopyElements);
+  assert.equal(afterDirectUndo.placements.length, 3, "missing native undo removes the copy");
+  const afterDirectRedo = applyFrame(afterDirectUndo, duplicate.elements);
+  assert.equal(afterDirectRedo.placements.length, 4);
+
+  const deletedElements = duplicate.elements.map((element) =>
+    readTentNodeCustomData(element)?.placementId === "pl-copy"
+      ? { ...element, isDeleted: true }
+      : element
+  );
+  const afterDelete = applyFrame(afterDirectRedo, deletedElements);
+  assert.equal(afterDelete.placements.length, 3);
+
+  const afterUndo = applyFrame(afterDelete, duplicate.elements);
+  assert.equal(afterUndo.placements.length, 4);
+  assert.equal(afterUndo.placements.filter((placement) => placement.placementId === "pl-copy").length, 1);
+
+  const copyElement = duplicate.elements.find(
+    (element) => readTentNodeCustomData(element)?.placementId === "pl-copy"
+  )!;
+  const conflicted = reconcileTentPlacementHistory({
+    document: afterUndo,
+    elements: [
+      ...duplicate.elements,
+      { ...copyElement, id: "conflicting-tombstone", isDeleted: true },
+    ],
+    cachedPlacements: cache,
+  });
+  assert.equal(conflicted.document, afterUndo, "ambiguous topology stays fail-closed");
+  assert.deepEqual(conflicted.conflictedPlacementIds, ["pl-copy"]);
+  assert.deepEqual(conflicted.restoredPlacements, []);
+  assert.deepEqual(conflicted.deletedPlacements, []);
+
+  const afterRedo = applyFrame(afterUndo, deletedElements);
+  assert.equal(afterRedo.placements.length, 3);
+});
+
+test("quick preview derives a bounded non-interactive excerpt from already-loaded Markdown", () => {
+  const body = "# 标题\n\n这是 **已经加载** 的正文。\n\n- 第一项\n- 第二项";
+  assert.equal(limitedCanvasNodePreview(body), "标题 这是 已经加载 的正文。 第一项 第二项");
+  assert.equal(limitedCanvasNodePreview(body, 10).endsWith("…"), true);
+});
+
 test("Tent embeddable links resolve only to their exact Node Focus target", () => {
   const element = placementToEmbeddableElement(sampleDoc().placements[0]!);
   assert.deepEqual(tentNodeOpenTarget(element), {
@@ -152,12 +362,34 @@ test("Tent embeddable links resolve only to their exact Node Focus target", () =
   assert.equal(tentNodeOpenTarget({ ...element, customData: undefined }), null);
 });
 
-test("hydrate restores the local focused placement as Excalidraw selection", () => {
+test("hydrate keeps Tent focus separate from Excalidraw transform selection", () => {
   const doc = sampleDoc();
   const hydrated = hydrateCanvasV5Scene({ document: doc });
-  assert.deepEqual(hydrated.appState.selectedElementIds, {
-    [tentPlacementElementId("pl-a")]: true,
-  });
+  assert.deepEqual(hydrated.appState.selectedElementIds, {});
+});
+
+test("pointer-up cleanup removes Tent transform handles and canonicalizes size without clearing drawing selection", () => {
+  const tent = {
+    ...placementToEmbeddableElement(sampleDoc().placements[0]!),
+    width: 420,
+    height: 240,
+    angle: 0.5,
+  };
+  const drawing = { id: "drawing-1", type: "rectangle", width: 10, height: 10 };
+  const released = releaseTentTransformSelection(
+    [tent, drawing],
+    { [tent.id]: true, [drawing.id]: true }
+  );
+  assert.equal(released.changed, true);
+  assert.deepEqual(released.selectedElementIds, { [drawing.id]: true });
+  assert.deepEqual(
+    Object.fromEntries(
+      Object.entries(released.elements[0] as Record<string, unknown>).filter(([key]) =>
+        ["width", "height", "angle", "x", "y"].includes(key)
+      )
+    ),
+    { x: 100, y: 120, width: NODE_CARD.width, height: NODE_CARD.height, angle: 0 }
+  );
 });
 
 test("live V5 scene refreshes for edge layers and external documents only", () => {
@@ -198,7 +430,7 @@ test("live V5 scene refreshes for edge layers and external documents only", () =
   );
 });
 
-test("position and resize mid-change patches write back continuously", () => {
+test("position writes back continuously while Tent Node geometry stays fixed", () => {
   const doc = sampleDoc();
   const el = placementToEmbeddableElement(doc.placements[0]!);
   // Simulate mid-drag frames
@@ -206,14 +438,14 @@ test("position and resize mid-change patches write back continuously", () => {
   const patches = extractPlacementPatchesFromElements([mid]);
   assert.equal(patches.length, 1);
   assert.equal(patches[0]!.x, 150);
-  assert.equal(patches[0]!.width, 240);
+  assert.equal(patches[0]!.width, NODE_CARD.width);
   const next = applyPlacementPatches(doc, patches);
   const p = next.placements.find((x) => x.placementId === "pl-a");
   assert.ok(p);
   assert.equal(p!.x, 150);
   assert.equal(p!.y, 160);
-  assert.equal(p!.width, 240);
-  assert.equal(p!.height, 110);
+  assert.equal(p!.width, NODE_CARD.width);
+  assert.equal(p!.height, NODE_CARD.height);
   // Other placements unchanged
   assert.equal(next.placements.find((x) => x.placementId === "pl-b")!.x, 400);
 });
@@ -312,16 +544,22 @@ test("etag-only source changes use the same fail-closed state on Canvas cards", 
   assert.equal(stale.cards.get("pl-a")?.sourceState, "unknown");
 });
 
-test("placement presentation is exact-instance local state and survives adapter rebuilds", () => {
-  const doc = sampleDoc();
-  const expanded = togglePlacementPresentation(doc, "pl-a");
-  assert.equal(getPlacementPresentation(expanded.placements[0]?.meta), "expanded");
-  assert.equal(getPlacementPresentation(expanded.placements[1]?.meta), "compact");
-  const mapped = documentToExcalidrawElements(expanded);
-  assert.equal(mapped.cards.get("pl-a")?.presentation, "expanded");
-  assert.equal(mapped.cards.get("pl-b")?.presentation, "compact");
-  const compact = togglePlacementPresentation(expanded, "pl-a");
-  assert.equal(getPlacementPresentation(compact.placements[0]?.meta), "compact");
+test("Tent Node cards have one fixed presentation and ignore legacy display mode", () => {
+  const base = sampleDoc();
+  const doc: CanvasDocument = {
+    ...base,
+    placements: base.placements.map((placement, index) => index === 0 ? {
+      ...placement,
+      width: 420,
+      height: 280,
+      meta: { ...(placement.meta ?? {}), presentation: "expanded" },
+    } : placement),
+  };
+  const mapped = documentToExcalidrawElements(doc);
+  const element = mapped.elements.find((item) => item.id === tentPlacementElementId("pl-a"));
+  assert.equal(element?.width, NODE_CARD.width);
+  assert.equal(element?.height, NODE_CARD.height);
+  assert.equal("presentation" in (mapped.cards.get("pl-a") ?? {}), false);
 });
 
 test("Canvas resize preserves world centre then minimally reveals the focused placement", () => {
@@ -796,10 +1034,13 @@ test("projected edges become locked arrows without inventing missing endpoints",
     edgeLayers: { ...DEFAULT_EDGE_LAYERS, parent: true, relation: true },
   });
   const arrows = mapped.elements.filter((el) => el.type === "arrow");
-  // parent edge should project for at least one placement pair of alpha→beta
-  assert.ok(arrows.length >= 1);
+  // Duplicate placements still produce exactly one quiet structure edge.
+  assert.equal(arrows.length, 1);
   for (const arrow of arrows) {
     assert.equal(arrow.locked, true);
+    assert.equal(arrow.endArrowhead, null);
+    assert.equal(arrow.strokeStyle, "solid", "focused parent emphasizes direct children");
+    assert.equal(arrow.opacity, 76);
   }
 });
 
@@ -830,12 +1071,14 @@ test("V5 leaves generic drawing tools exclusively to Excalidraw", async () => {
 
   assert.doesNotMatch(host, /canvas-v5-toolbar|canvas-v5-tool-/);
   assert.doesNotMatch(host, /TOOL_ORDER|TOOL_LABELS|setTool\(/);
+  assert.doesNotMatch(host, /canvasKeyboardOwnerRef|onDuplicate=/);
+  assert.match(host, /document\.activeElement && host\.contains\(document\.activeElement\)/);
   assert.doesNotMatch(css, /tn-canvas-v5-host__toolbar/);
   assert.match(host, /tools:\s*\{\s*image:\s*true\s*\}/);
   assert.match(host, /data-testid="canvas-display-menu"/);
-  assert.match(workbench, /graph=\{null\}/);
-  assert.doesNotMatch(workbench, /onToggleEdgeLayer|GraphEdgeSource|graph=\{graph\}/);
-  assert.match(workbench, /\{hidden \? null : \(\s*<CanvasV5Host/);
+  assert.match(workbench, /graph=\{structureGraph\}/);
+  assert.match(workbench, /markdown:\s*false,\s*wiki:\s*false,\s*relation:\s*false/);
+  assert.doesNotMatch(workbench, /onToggleEdgeLayer/);
 });
 
 test("Canvas V5 only captures an exact internal Tent Node link", async () => {

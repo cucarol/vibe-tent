@@ -51,7 +51,7 @@ export function FocusDocumentPanel(props: {
         </div>
         <div className="tn-focus-document-actions">
           <Button variant="ghost" size="compact" onClick={() => onExpandedChange(!expanded)} aria-pressed={expanded}>
-            {expanded ? "恢复侧栏" : "展开焦点"}
+            {expanded ? "恢复详情栏" : "展开详情"}
           </Button>
           {editing && document.status !== "conflict" ? (
             <>

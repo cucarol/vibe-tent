@@ -72,6 +72,8 @@ export type CanvasEdge = {
   /** Semantic relation kind when kind === "relation". */
   relationKind?: string;
   direction?: "directed" | "bidirectional";
+  /** Local selection emphasis; never a graph/domain field. */
+  emphasis?: "quiet" | "selected-path" | "direct-child";
 };
 
 export type EdgeEndpoint = "right-center" | "left-center" | "center";
@@ -120,11 +122,38 @@ export function placementEdgePoint(
   return { x: x + w / 2, y: cy };
 }
 
-function firstPlacementForEntity(
+function preferredPlacementForEntity(
   doc: CanvasDocument,
   entityRef: EntityRef
 ): CanvasPlacement | undefined {
+  const focused = doc.focusedPlacementId
+    ? doc.placements.find((placement) =>
+        placement.placementId === doc.focusedPlacementId &&
+        placement.entityRef === entityRef
+      )
+    : undefined;
+  if (focused) return focused;
   return doc.placements.find((p) => p.entityRef === entityRef);
+}
+
+function parentEdgeEmphasis(
+  parentByChild: ReadonlyMap<string, string>,
+  focusedEntityRef: string | undefined,
+  parentNodeId: string,
+  childNodeId: string
+): CanvasEdge["emphasis"] {
+  if (!focusedEntityRef) return "quiet";
+  if (parentNodeId === focusedEntityRef) return "direct-child";
+  const seen = new Set<string>();
+  let current: string | undefined = focusedEntityRef;
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    const parent: string | undefined = parentByChild.get(current);
+    if (!parent) break;
+    if (parent === parentNodeId && current === childNodeId) return "selected-path";
+    current = parent;
+  }
+  return "quiet";
 }
 
 /**
@@ -140,12 +169,22 @@ export function projectCanvasEdges(
 ): CanvasEdge[] {
   if (!graph?.edges) return [];
   const out: CanvasEdge[] = [];
+  const focusedEntityRef = doc.focusedPlacementId
+    ? doc.placements.find((placement) => placement.placementId === doc.focusedPlacementId)?.entityRef
+    : undefined;
+  const parentByChild = new Map(
+    (graph.edges.parent ?? [])
+      .filter((edge): edge is { parentNodeId: string; childNodeId: string } =>
+        Boolean(edge.parentNodeId && edge.childNodeId)
+      )
+      .map((edge) => [edge.childNodeId, edge.parentNodeId] as const)
+  );
 
   if (layers.parent) {
     for (const e of graph.edges.parent ?? []) {
       if (!e.parentNodeId || !e.childNodeId) continue;
-      const from = firstPlacementForEntity(doc, e.parentNodeId);
-      const to = firstPlacementForEntity(doc, e.childNodeId);
+      const from = preferredPlacementForEntity(doc, e.parentNodeId);
+      const to = preferredPlacementForEntity(doc, e.childNodeId);
       if (!from || !to) continue;
       const a = placementEdgePoint(from, "right-center");
       const b = placementEdgePoint(to, "left-center");
@@ -160,6 +199,7 @@ export function projectCanvasEdges(
         y1: a.y,
         x2: b.x,
         y2: b.y,
+        emphasis: parentEdgeEmphasis(parentByChild, focusedEntityRef, e.parentNodeId, e.childNodeId),
       });
     }
   }
@@ -167,8 +207,8 @@ export function projectCanvasEdges(
   if (layers.markdown) {
     for (const e of graph.edges.markdown ?? []) {
       if (!e.toNodeId) continue;
-      const from = firstPlacementForEntity(doc, e.fromNodeId);
-      const to = firstPlacementForEntity(doc, e.toNodeId);
+      const from = preferredPlacementForEntity(doc, e.fromNodeId);
+      const to = preferredPlacementForEntity(doc, e.toNodeId);
       if (!from || !to) continue;
       const a = placementEdgePoint(from, "center");
       const b = placementEdgePoint(to, "center");
@@ -192,8 +232,8 @@ export function projectCanvasEdges(
   if (layers.wiki) {
     for (const e of graph.edges.wiki ?? []) {
       if (!e.toNodeId) continue;
-      const from = firstPlacementForEntity(doc, e.fromNodeId);
-      const to = firstPlacementForEntity(doc, e.toNodeId);
+      const from = preferredPlacementForEntity(doc, e.fromNodeId);
+      const to = preferredPlacementForEntity(doc, e.toNodeId);
       if (!from || !to) continue;
       const a = placementEdgePoint(from, "center");
       const b = placementEdgePoint(to, "center");
@@ -218,8 +258,8 @@ export function projectCanvasEdges(
     for (const e of graph.edges.relation ?? []) {
       // Unresolved targets have no toNodeId — do not invent Canvas endpoints.
       if (!e.toNodeId || !e.fromNodeId || !e.id) continue;
-      const from = firstPlacementForEntity(doc, e.fromNodeId);
-      const to = firstPlacementForEntity(doc, e.toNodeId);
+      const from = preferredPlacementForEntity(doc, e.fromNodeId);
+      const to = preferredPlacementForEntity(doc, e.toNodeId);
       if (!from || !to) continue;
       const a = placementEdgePoint(from, "center");
       const b = placementEdgePoint(to, "center");

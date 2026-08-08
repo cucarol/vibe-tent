@@ -70,6 +70,20 @@ export function selectPresentationNode(
   };
 }
 
+/**
+ * Authoritative tree browsing changes the selected Node without touching the
+ * Canvas camera or focused placement. The asymmetric selection contract keeps
+ * spatial work stable while the user inspects the Node tree.
+ */
+export function selectPresentationNodeFromOutline(
+  current: WorkbenchPresentationState,
+  nodeId: string
+): WorkbenchPresentationState {
+  return current.selectedNodeId === nodeId
+    ? current
+    : { ...current, selectedNodeId: nodeId };
+}
+
 export function placePresentationNode(
   current: WorkbenchPresentationState,
   nodeId: string,

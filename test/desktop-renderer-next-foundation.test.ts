@@ -43,6 +43,7 @@ import {
   canDropNodeIntoPresentation,
   removeFocusedPresentationPlacement,
   selectPresentationNode,
+  selectPresentationNodeFromOutline,
   syncFocusedPresentationSnapshot,
   withPresentationDocument,
   type WorkbenchPresentationState,
@@ -132,6 +133,26 @@ test("initial workbench selection cannot split shell and Canvas focus", () => {
   const inherited = initializeWorkbenchSelection(document, null);
   assert.equal(inherited.selectedNodeId, "cx-prompt");
   assert.equal(inherited.document.focusedPlacementId, "pl-prompt");
+});
+
+test("Outline selection changes identity without moving the Canvas camera or focused placement", () => {
+  const state: WorkbenchPresentationState = {
+    selectedNodeId: "cx-prompt",
+    document: {
+      ...createEmptyCanvasDocument(),
+      viewport: { x: 128, y: -32, zoom: 1.25 },
+      focusedPlacementId: "pl-prompt",
+      placements: [
+        { placementId: "pl-prompt", entityRef: "cx-prompt", kind: "node" },
+        { placementId: "pl-output", entityRef: "cx-output", kind: "node" },
+      ],
+    },
+  };
+  const next = selectPresentationNodeFromOutline(state, "cx-output");
+  assert.equal(next.selectedNodeId, "cx-output");
+  assert.equal(next.document, state.document);
+  assert.equal(next.document.focusedPlacementId, "pl-prompt");
+  assert.deepEqual(next.document.viewport, state.document.viewport);
 });
 
 test("placement add is visible, focused, idempotent, and local removal preserves Node identity", () => {
@@ -682,14 +703,15 @@ test("Outline and Focus are collapsible trays around one Canvas stage", async ()
   assert.match(shell, /id="tn-outline-restore"/);
   assert.match(shell, /id="tn-focus-restore"/);
   assert.match(shell, /aria-label="展开节点面板"/);
-  assert.match(shell, /aria-label="展开焦点面板"/);
+  assert.match(shell, /aria-label="展开详情面板"/);
   assert.match(shell, /const openOutline = \(\) => \{\s*setImmersive\(false\)/s);
   assert.match(shell, /const openFocus = \(\) => \{\s*setImmersive\(false\)/s);
   assert.match(shellCss, /\.tn-pane-restore\s*\{[^}]*position:\s*absolute[^}]*z-index:\s*80/s);
   assert.match(shellCss, /\.tn-pane-restore--outline\s*\{[^}]*left:\s*0/s);
   assert.match(shellCss, /\.tn-pane-restore--focus\s*\{[^}]*right:\s*0/s);
-  assert.match(shellCss, /data-layout-mode="detail"[^}]*minmax\(360px, 42vw\) 0 minmax\(420px, 1fr\)/);
-  assert.match(shellCss, /data-layout-mode="detail"[^}]*\.tn-canvas-pane[^}]*visibility:\s*hidden/);
+  assert.doesNotMatch(shellCss, /data-layout-mode="detail"/);
+  assert.match(shell, /initialOutlineMode\?: "nodes" \| "inbox"/);
+  assert.match(shell, /selectPresentationNodeFromOutline/);
   assert.match(shell, /CanvasWorkbench/);
   assert.doesNotMatch(shell, /SettingsSurface|InboxSurface|SearchSurface/);
   assert.equal(OUTLINE_PANEL_ID, "tn-outline-panel");

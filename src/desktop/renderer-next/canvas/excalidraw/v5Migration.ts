@@ -13,7 +13,6 @@ import {
   documentToExcalidrawElements,
   drawingElementsFromScene,
   excalidrawAppStateFromViewport,
-  tentPlacementElementId,
   type CanvasNodeResolvers,
   type ExcalidrawElementLike,
 } from "./documentToExcalidraw.js";
@@ -132,9 +131,10 @@ export function hydrateCanvasV5Scene(input: {
     viewBackgroundColor: CANVAS_V5_COLORS.blankBackground,
     gridModeEnabled: false,
     collaborators: new Map(),
-    selectedElementIds: input.document.focusedPlacementId
-      ? { [tentPlacementElementId(input.document.focusedPlacementId)]: true }
-      : {},
+    // Tent owns persistent placement focus. Excalidraw selection is only a
+    // short-lived gesture detail, otherwise its transform handles would imply
+    // that fixed-size Tent nodes can be resized or rotated.
+    selectedElementIds: {},
   };
 
   let status: V5HydrateStatus = { kind: "ok" };

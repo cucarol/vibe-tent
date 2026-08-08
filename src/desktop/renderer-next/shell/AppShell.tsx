@@ -22,6 +22,7 @@ import {
   placePresentationNode,
   removeFocusedPresentationPlacement,
   selectPresentationNode,
+  selectPresentationNodeFromOutline,
   syncFocusedPresentationSnapshot,
   withPresentationDocument,
   type WorkbenchPresentationUpdate,
@@ -63,7 +64,7 @@ export type AppShellProps = {
   collaborationActions?: CollaborationSurfaceActions;
   initialFocusExpanded?: boolean;
   initialInspectorTab?: "content" | "collaboration";
-  initialLayoutMode?: "compact" | "detail";
+  initialOutlineMode?: "nodes" | "inbox";
 };
 
 function snapshotSource(node: WorkbenchNodeView | null | undefined): CanvasSnapshotSource | null {
@@ -106,15 +107,16 @@ export function AppShell({
   collaborationActions,
   initialFocusExpanded = false,
   initialInspectorTab = "content",
-  initialLayoutMode = "compact",
+  initialOutlineMode = "nodes",
 }: AppShellProps = {}) {
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [focusOpen, setFocusOpen] = useState(true);
   const [focusExpanded, setFocusExpanded] = useState(initialFocusExpanded);
   const [immersive, setImmersive] = useState(false);
-  const [layoutMode, setLayoutMode] = useState<"compact" | "detail">(
-    initialLayoutMode
+  const [outlineMode, setOutlineMode] = useState<"nodes" | "inbox">(
+    initialOutlineMode
   );
+  const [outlineReveal, setOutlineReveal] = useState({ nodeId: "", revision: 0 });
   const placementActionRef = useRef<HTMLButtonElement>(null);
   const nodes = useMemo(() => [...initialNodes], [initialNodes]);
   const selectedNode = useMemo(() => nodes.find((node) => node.nodeId === selectedNodeId) ?? null, [nodes, selectedNodeId]);
@@ -178,11 +180,19 @@ export function AppShell({
       }
     : null;
 
-  const selectNode = (nodeId: string | null, placementId?: string | null) => {
+  const selectNodeFromCanvas = (nodeId: string | null, placementId?: string | null) => {
     onPresentationChange?.((current) =>
       selectPresentationNode(current, nodeId, placementId)
     );
-    if (nodeId) setFocusOpen(true);
+    if (nodeId) {
+      setOutlineReveal((current) => ({ nodeId, revision: current.revision + 1 }));
+    }
+  };
+
+  const selectNodeFromOutline = (nodeId: string) => {
+    onPresentationChange?.((current) =>
+      selectPresentationNodeFromOutline(current, nodeId)
+    );
   };
 
   const updateDocument = (next: CanvasDocument) => {
@@ -257,35 +267,22 @@ export function AppShell({
 
   const toggleOutline = () => {
     setImmersive(false);
-    if (layoutMode === "detail") setLayoutMode("compact");
     setOutlineOpen((value) => !value);
   };
 
   const toggleFocus = () => {
     setImmersive(false);
-    if (layoutMode === "detail") setLayoutMode("compact");
     setFocusOpen((value) => !value);
   };
 
   const openOutline = () => {
     setImmersive(false);
-    setLayoutMode("compact");
     setOutlineOpen(true);
   };
 
   const openFocus = () => {
     setImmersive(false);
-    setLayoutMode("compact");
     setFocusOpen(true);
-  };
-
-  const setOutlineMode = (mode: "compact" | "detail") => {
-    setLayoutMode(mode);
-    setOutlineOpen(true);
-    if (mode === "detail") {
-      setFocusOpen(true);
-      setImmersive(false);
-    }
   };
 
   return (
@@ -297,13 +294,13 @@ export function AppShell({
         </div>
         <div className="tn-surface-nav" aria-label="当前界面">
           <span className="tn-surface-tab">
-            <ShellIcon name={layoutMode === "detail" ? "outline" : "canvas"} />
-            {layoutMode === "detail" ? "节点详情" : "画布"}
+            <ShellIcon name="canvas" />
+            画布
           </span>
         </div>
         <div className="tn-global-actions">
           <IconButton size="compact" id="tn-outline-toggle" aria-label={outlineOpen ? "收起节点面板" : "展开节点面板"} tooltip={outlineOpen ? "收起节点面板" : "展开节点面板"} variant="ghost" aria-expanded={outlineOpen} aria-controls="tn-outline-panel" onClick={toggleOutline}><ShellIcon name="panel-left" /></IconButton>
-          <IconButton size="compact" id="tn-focus-toggle" aria-label={focusOpen ? "收起焦点面板" : "展开焦点面板"} tooltip={focusOpen ? "收起焦点面板" : "展开焦点面板"} variant="ghost" aria-expanded={focusOpen} aria-controls="tn-focus-panel" onClick={toggleFocus}><ShellIcon name="panel-right" /></IconButton>
+          <IconButton size="compact" id="tn-focus-toggle" aria-label={focusOpen ? "收起详情面板" : "展开详情面板"} tooltip={focusOpen ? "收起详情面板" : "展开详情面板"} variant="ghost" aria-expanded={focusOpen} aria-controls="tn-focus-panel" onClick={toggleFocus}><ShellIcon name="panel-right" /></IconButton>
         </div>
       </header>
 
@@ -311,9 +308,9 @@ export function AppShell({
         <ConnectionBanner connection={connection} onRetry={onRetryConnection} />
       ) : null}
 
-      <div className="tn-workbench" data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-focus-expanded={focusExpanded ? "true" : "false"} data-layout-mode={layoutMode} data-immersive={immersive ? "true" : "false"}>
-        <OutlinePanel id="tn-outline-panel" mode={layoutMode} onModeChange={setOutlineMode} nodes={nodes} projection={projection} selectedNodeId={selectedNodeId} onSelectNode={selectNode} onOpenNodeActions={openNodeActions} canDragToCanvas={Boolean(onPresentationChange)} onCollapse={() => { setLayoutMode("compact"); setOutlineOpen(false); }} />
-        <CanvasWorkbench hidden={layoutMode === "detail"} document={document} nodes={nodes} projection={projection} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNode} onDropNode={onPresentationChange ? dropNode : undefined} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
+      <div className="tn-workbench" data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-focus-expanded={focusExpanded ? "true" : "false"} data-immersive={immersive ? "true" : "false"}>
+        <OutlinePanel id="tn-outline-panel" mode={outlineMode} onModeChange={setOutlineMode} nodes={nodes} projection={projection} selectedNodeId={selectedNodeId} reveal={outlineReveal} visible={outlineOpen} onSelectNode={selectNodeFromOutline} onOpenNodeActions={openNodeActions} canDragToCanvas={Boolean(onPresentationChange)} onCollapse={() => setOutlineOpen(false)} />
+        <CanvasWorkbench document={document} nodes={nodes} projection={projection} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNodeFromCanvas} onDropNode={onPresentationChange ? dropNode : undefined} previewDocument={focusDocument?.nodeId && typeof focusDocument.body === "string" ? { nodeId: focusDocument.nodeId, body: focusDocument.body } : null} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
         <InspectorPanel
           id="tn-focus-panel"
           node={selectedNode}
@@ -337,7 +334,6 @@ export function AppShell({
           }}
           initialTab={initialInspectorTab}
           onCollapse={() => {
-            if (layoutMode === "detail") setLayoutMode("compact");
             setFocusOpen(false);
           }}
         />
@@ -358,8 +354,8 @@ export function AppShell({
           <IconButton
             id="tn-focus-restore"
             className="tn-pane-restore tn-pane-restore--focus"
-            aria-label="展开焦点面板"
-            tooltip="展开焦点面板"
+            aria-label="展开详情面板"
+            tooltip="展开详情面板"
             aria-expanded="false"
             aria-controls="tn-focus-panel"
             onClick={openFocus}

@@ -39,6 +39,7 @@ import { FocusDocumentPanel } from "../src/desktop/renderer-next/components/Focu
 import type { FocusDocumentActions, FocusDocumentView } from "../src/desktop/renderer-next/model/focus-document-controller.js";
 import { canvasPlacementSourceAuthority } from "../src/desktop/renderer-next/shell/workbench-presentation.js";
 import {
+  outlineAncestorNodeIds,
   updateOutlineExpansion,
   visibleOutlineNodes,
 } from "../src/desktop/renderer-next/model/outline-tree.js";
@@ -335,6 +336,7 @@ test("Outline tree collapse hides descendants and atomically selects the collaps
   });
   assert.equal(collapsed.selectedNodeId, "root");
   assert.deepEqual(visibleOutlineNodes(nodes, collapsed.expandedNodeIds).map((node) => node.nodeId), ["root"]);
+  assert.deepEqual(outlineAncestorNodeIds(nodes, "leaf"), ["root", "child"]);
 
   const markup = renderToStaticMarkup(createElement(OutlinePanel, {
     nodes,
@@ -506,7 +508,7 @@ test("Focus source status exposes one exact sync action only when permitted", ()
   assert.match(deleted, /源节点已删除/);
   assert.match(deleted, /本地 A/);
   assert.doesNotMatch(deleted, /同步快照/);
-  assert.doesNotMatch(deleted, /aria-label="焦点内容"/);
+  assert.doesNotMatch(deleted, /aria-label="详情内容"/);
 });
 
 test("fresh workspace cannot authorize snapshot sync from a stale selected Node", () => {
@@ -576,7 +578,7 @@ test("Focus conflict overwrite renders saving feedback instead of live conflict 
   }));
   assert.match(html, /正在保存/);
   assert.doesNotMatch(html, /载入磁盘版本|保留本地并保存/);
-  assert.match(html, /恢复侧栏/);
+  assert.match(html, /恢复详情栏/);
 });
 
 test("stale graph keeps an independent dirty document visible while hiding graph authority", () => {
