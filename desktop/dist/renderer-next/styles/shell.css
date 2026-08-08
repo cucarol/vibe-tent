@@ -68,7 +68,7 @@ button, input, select, textarea { font: inherit; }
   align-items: center;
   min-width: 0;
   max-width: 170px;
-  height: 32px;
+  height: var(--tn-size-control);
   padding: 0 9px;
   overflow: hidden;
   border: 1px solid transparent;
@@ -100,14 +100,10 @@ button, input, select, textarea { font: inherit; }
 .tn-global-actions {
   justify-self: end;
   gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--tn-color-border);
-  border-radius: var(--tn-radius-md);
-  background: var(--tn-color-elevated-bg);
+  padding: 0;
 }
 
 .tn-global-actions .tn-ui-icon-btn[aria-expanded="true"] {
-  border-color: var(--tn-color-border-strong);
   background: var(--tn-color-selected);
 }
 
@@ -125,11 +121,11 @@ button, input, select, textarea { font: inherit; }
   position: absolute;
   top: 50%;
   z-index: 80;
-  width: 32px;
-  height: 48px;
-  border-color: var(--tn-color-border-strong);
+  width: 28px;
+  height: 40px;
+  border-color: var(--tn-color-border);
   background: var(--tn-color-elevated-bg);
-  box-shadow: var(--tn-shadow-card);
+  box-shadow: none;
   transform: translateY(-50%);
 }
 
@@ -249,11 +245,8 @@ button, input, select, textarea { font: inherit; }
 .tn-outline-modes {
   display: inline-flex;
   align-items: center;
-  gap: 1px;
-  padding: 1px;
-  border: 1px solid var(--tn-color-border);
-  border-radius: var(--tn-radius-sm);
-  background: var(--tn-color-stage-bg);
+  gap: 2px;
+  padding: 0;
 }
 
 .tn-outline-modes .tn-ui-btn {
@@ -263,7 +256,7 @@ button, input, select, textarea { font: inherit; }
 }
 
 .tn-outline-modes .tn-ui-btn[aria-pressed="true"] {
-  background: var(--tn-color-elevated-bg);
+  background: var(--tn-color-selected);
   color: var(--tn-color-text-primary);
 }
 
