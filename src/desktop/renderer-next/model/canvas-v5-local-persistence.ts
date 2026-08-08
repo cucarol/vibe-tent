@@ -13,6 +13,7 @@ import {
   classifyStorageError,
   type DrawingPersistenceStatus,
 } from "./drawing-persistence-status.js";
+import { NODE_CARD } from "./canvas-document.js";
 import { createEmptyCanvasDocument, type CanvasDocument } from "../types/identity.js";
 import type { StorageLike } from "./canvas-session-store.js";
 
@@ -117,10 +118,25 @@ function validScene(value: unknown): value is ExcalidrawSceneSnapshot {
   );
 }
 
-function forceBlankCanvas(document: CanvasDocument): CanvasDocument {
-  return document.backgroundMode === "blank"
-    ? document
-    : { ...document, backgroundMode: "blank" };
+function normalizePersistedCanvasDocument(document: CanvasDocument): CanvasDocument {
+  let changed = document.backgroundMode !== "blank";
+  const placements = document.placements.map((placement) => {
+    if (
+      placement.kind !== "node" ||
+      (placement.width === NODE_CARD.width && placement.height === NODE_CARD.height)
+    ) {
+      return placement;
+    }
+    changed = true;
+    return {
+      ...placement,
+      width: NODE_CARD.width,
+      height: NODE_CARD.height,
+    };
+  });
+  return changed
+    ? { ...document, backgroundMode: "blank", placements }
+    : document;
 }
 
 function emptySnapshot(workspaceId: string): CanvasV5LocalSnapshot {
@@ -190,7 +206,7 @@ export class CanvasV5LocalPersistence {
         snapshot: {
           version: 1,
           workspaceId: this.workspaceId,
-          document: forceBlankCanvas(parsed.document),
+          document: normalizePersistedCanvasDocument(parsed.document),
           scene: parsed.scene,
         },
         status: { kind: "ok" },
@@ -232,7 +248,7 @@ export class CanvasV5LocalPersistence {
         canvasV5LocalPersistenceKey(this.workspaceId),
         JSON.stringify({
           ...snapshot,
-          document: forceBlankCanvas(snapshot.document),
+          document: normalizePersistedCanvasDocument(snapshot.document),
         })
       );
       return { kind: "saved", status: { kind: "ok" } };

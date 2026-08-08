@@ -49,9 +49,17 @@ function snapshot(workspaceId = "ws-alpha"): CanvasV5LocalSnapshot {
           kind: "node",
           x: 100,
           y: 200,
-          width: 240,
-          height: 96,
+          width: NODE_CARD.width,
+          height: NODE_CARD.height,
           meta: { presentation: "expanded" },
+        },
+        {
+          placementId: "pl-local",
+          kind: "note-stub",
+          x: 420,
+          y: 80,
+          width: 311,
+          height: 177,
         },
       ],
     },
@@ -97,6 +105,51 @@ test("persisted legacy grid state is hard-cut to the pure white Canvas", () => {
     JSON.parse(storage.peek(canvasV5LocalPersistenceKey("ws-alpha"))!).document.backgroundMode,
     "blank"
   );
+});
+
+test("V5 persistence normalizes legacy Node geometry on read and save only", () => {
+  const storage = new MemoryStorage();
+  const persistence = new CanvasV5LocalPersistence(storage, "ws-alpha");
+  const legacy = snapshot();
+  const legacyDocument = {
+    ...legacy.document,
+    placements: legacy.document.placements.map((placement) =>
+      placement.kind === "node"
+        ? { ...placement, width: 420, height: 280 }
+        : placement
+    ),
+  };
+  storage.raw(
+    canvasV5LocalPersistenceKey("ws-alpha"),
+    JSON.stringify({ ...legacy, document: legacyDocument })
+  );
+
+  const loaded = persistence.load();
+  assert.equal(loaded.kind, "loaded");
+  assert.equal(loaded.snapshot.document.placements[0]?.width, NODE_CARD.width);
+  assert.equal(loaded.snapshot.document.placements[0]?.height, NODE_CARD.height);
+  assert.equal(loaded.snapshot.document.placements[1]?.width, 311);
+  assert.equal(loaded.snapshot.document.placements[1]?.height, 177);
+
+  const saveCandidate = {
+    ...loaded.snapshot,
+    document: {
+      ...loaded.snapshot.document,
+      placements: loaded.snapshot.document.placements.map((placement) =>
+        placement.kind === "node"
+          ? { ...placement, width: 512, height: 256 }
+          : placement
+      ),
+    },
+  };
+  assert.equal(persistence.save(saveCandidate).kind, "saved");
+  const persisted = JSON.parse(
+    storage.peek(canvasV5LocalPersistenceKey("ws-alpha"))!
+  ) as CanvasV5LocalSnapshot;
+  assert.equal(persisted.document.placements[0]?.width, NODE_CARD.width);
+  assert.equal(persisted.document.placements[0]?.height, NODE_CARD.height);
+  assert.equal(persisted.document.placements[1]?.width, 311);
+  assert.equal(persisted.document.placements[1]?.height, 177);
 });
 
 test("legacy tab-session documents cannot preserve a hidden grid preference", () => {
