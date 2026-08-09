@@ -5935,6 +5935,56 @@ function normalizeLf(value: string): string {
 
 // ---- runtime projection reliability (per-session queue + one retry) ----
 
+test("runtime projection: ACP observation is internal-only and emits no session state", async () => {
+  await withService(async (svc) => {
+    const sessionId = "ss-acpobsproj";
+    const now = new Date().toISOString();
+    await svc.runtime.registry.write({
+      id: sessionId,
+      connectionId: "fake-default",
+      adapterId: FAKE_ADAPTER_ID,
+      connectionSnapshot: testRouteSnapshot("fake-default", FAKE_ADAPTER_ID),
+      state: "live",
+      createdAt: now,
+      updatedAt: now,
+    });
+    const sessionStates: unknown[] = [];
+    const unsubscribe = svc.events.subscribe((event) => {
+      if (event.type === "session.state") sessionStates.push(event.payload);
+    });
+    try {
+      await svc.runtime.registry.update(sessionId, {
+        acpObservation: {
+          permissionRequestCount: 1,
+          permissionPolicy: "deny",
+          permissionDecision: "deny",
+          permissionOutcome: "cancelled",
+          spontaneousChildExit: false,
+        },
+      });
+      await mapRuntimeEventToService(svc.ctx, {
+        type: "session.acp_observation",
+        sessionId,
+        observation: {
+          permissionRequestCount: 1,
+          permissionPolicy: "deny",
+          permissionDecision: "deny",
+          permissionOutcome: "cancelled",
+          spontaneousChildExit: false,
+        },
+      });
+      assert.deepEqual(sessionStates, []);
+      assert.equal((await svc.runtime.registry.read(sessionId))?.state, "live");
+      const getResult = await rpc(svc, "session.get", { sessionId });
+      const listResult = await rpc(svc, "session.list", {});
+      assert.doesNotMatch(JSON.stringify(getResult.result), /acpObservation/);
+      assert.doesNotMatch(JSON.stringify(listResult.result), /acpObservation/);
+    } finally {
+      unsubscribe();
+    }
+  });
+});
+
 test("runtime projection: same-session waiting_user → live preserves order under delay", async () => {
   await withService(async (svc) => {
     const sessionId = "ss-projord1";

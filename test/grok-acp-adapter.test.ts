@@ -21,7 +21,10 @@ import { GrokAcpClient } from "../src/adapters/grok-acp/client.js";
 import { AcpClient } from "../src/adapters/acp/client.js";
 import { startManagedAcpSession } from "../src/adapters/acp/managed-session.js";
 import {
+  ACP_OBSERVATION_TEXT_BYTES,
+  ACP_PERMISSION_REQUEST_COUNT_MAX,
   createAgentRuntime,
+  type AcpRuntimeObservation,
   type RuntimeEvent,
   type AgentConnectionConfig,
   type StartSessionRequest,
@@ -271,6 +274,59 @@ test("AcpClient: stdin stream error rejects all pending requests", async () => {
   }
 });
 
+test("AcpClient clears prior permission result in count-before-decision snapshot", async () => {
+  const cwd = await tempDir("tent-acp-permission-snapshot-");
+  const events: RuntimeEvent[] = [];
+  const client = new AcpClient({
+    command: process.execPath,
+    args: [MOCK_ACP],
+    cwd,
+    env: { MOCK_ACP_KEEP_ALIVE: "1" },
+    sessionId: "ss-permsnapshot",
+    permissionPolicy: "deny",
+    label: "MockACP",
+    emit: (event) => events.push(event),
+  });
+  const permissionClient = client as unknown as {
+    handlePermissionRequest(
+      id: number,
+      params: { options: []; toolCall?: { title?: string } }
+    ): Promise<void>;
+  };
+  try {
+    await client.connect();
+    await permissionClient.handlePermissionRequest(9001, {
+      options: [],
+      toolCall: { title: "first" },
+    });
+    await permissionClient.handlePermissionRequest(9002, {
+      options: [],
+      toolCall: { title: "second" },
+    });
+    const observations = events
+      .filter(
+        (event): event is Extract<
+          RuntimeEvent,
+          { type: "session.acp_observation" }
+        > => event.type === "session.acp_observation"
+      )
+      .map((event) => event.observation);
+    const countOnly = observations.find(
+      (value) =>
+        value.permissionRequestCount === 2 &&
+        value.permissionDecision === undefined &&
+        value.permissionOutcome === undefined
+    );
+    assert.ok(countOnly, "second request must clear the first result before deciding");
+    const settled = observations.at(-1);
+    assert.equal(settled?.permissionRequestCount, 2);
+    assert.equal(settled?.permissionDecision, "deny");
+    assert.equal(settled?.permissionOutcome, "cancelled");
+  } finally {
+    await client.stop("shutdown");
+  }
+});
+
 function waitFor(
   events: RuntimeEvent[],
   type: RuntimeEvent["type"],
@@ -293,6 +349,21 @@ function waitFor(
     };
     tick();
   });
+}
+
+async function waitForObservation(
+  runtime: ReturnType<typeof createAgentRuntime>,
+  sessionId: string,
+  predicate: (value: AcpRuntimeObservation) => boolean,
+  timeoutMs = 8000
+): Promise<AcpRuntimeObservation> {
+  const started = Date.now();
+  while (Date.now() - started <= timeoutMs) {
+    const value = (await runtime.registry.read(sessionId))?.acpObservation;
+    if (value && predicate(value)) return value;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timeout waiting for ACP observation on ${sessionId}`);
 }
 
 const mockLaunchEnvByConnection = new Map<string, Record<string, string>>();
@@ -668,6 +739,15 @@ test("permission policy deny cancels tool permission (no yolo)", async () => {
   assert.ok(
     !JSON.stringify(log.permissionOutcomes).includes("allow_always")
   );
+  const observation = await waitForObservation(
+    runtime,
+    sessionId,
+    (value) => value.permissionOutcome === "cancelled"
+  );
+  assert.equal(observation.permissionRequestCount, 1);
+  assert.equal(observation.permissionPolicy, "deny");
+  assert.equal(observation.permissionDecision, "deny");
+  assert.equal(observation.permissionOutcome, "cancelled");
 
   await runtime.stopSession(sessionId, "user");
   await runtime.shutdown();
@@ -724,6 +804,146 @@ test("permission policy allow selects allow_once only (never allow_always)", asy
   assert.equal(outcome!.optionId, "allow_once");
 
   await runtime.stopSession(sessionId, "user");
+  await runtime.shutdown();
+});
+
+test("ACP observation records cancelled when allow has no allow_once option", async () => {
+  const dataDir = await tempDir("tent-acp-observe-no-once-");
+  const cwd = await tempDir("tent-grok-cwd-");
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  const adapter = createGrokAcpAdapter({ resolveApiKey: () => "test-key" });
+  const connection = withMockEnv(
+    mockConnection("grok-observe-no-once", {
+      logPath,
+      apiKey: "test-key",
+      permissionPolicy: "allow",
+      requestPermission: true,
+    }),
+    { MOCK_ACP_PERMISSION_NO_ALLOW_ONCE: "1" }
+  );
+  const runtime = createAgentRuntime({ dataDir, adapters: [adapter], connections: [connection] });
+  const sessionId = "ss-acpobsnoonce";
+
+  await startConnection(runtime, {
+    sessionId,
+    connectionId: connection.connectionId,
+    cwd,
+    bootstrapPrompt: "pointer",
+  });
+  const observation = await waitForObservation(
+    runtime,
+    sessionId,
+    (value) => value.permissionOutcome === "cancelled"
+  );
+  assert.equal(observation.permissionDecision, "allow");
+  assert.equal(observation.permissionOutcome, "cancelled");
+
+  await runtime.stopSession(sessionId, "user");
+  await runtime.shutdown();
+});
+
+test("ACP observation bounds and redacts provider stopReason with zero permission requests", async () => {
+  const dataDir = await tempDir("tent-acp-observe-stop-");
+  const cwd = await tempDir("tent-grok-cwd-");
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  const secret = "observation-secret-value";
+  const rawStopReason = `cancelled-${secret}-${"x".repeat(2048)}`;
+  const adapter = createGrokAcpAdapter({ resolveApiKey: () => secret });
+  const connection = withMockEnv(
+    mockConnection("grok-observe-stop", {
+      logPath,
+      apiKey: secret,
+      permissionPolicy: "deny",
+    }),
+    { MOCK_ACP_STOP_REASON: rawStopReason }
+  );
+  const runtime = createAgentRuntime({ dataDir, adapters: [adapter], connections: [connection] });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((event) => events.push(event));
+  const sessionId = "ss-acpobsstop";
+
+  await startConnection(runtime, {
+    sessionId,
+    connectionId: connection.connectionId,
+    cwd,
+    bootstrapPrompt: "pointer",
+  });
+  await waitFor(events, "session.failed", sessionId);
+  const observation = await waitForObservation(
+    runtime,
+    sessionId,
+    (value) => value.promptStopReason !== undefined
+  );
+  assert.equal(observation.permissionRequestCount, 0);
+  assert.equal(observation.permissionPolicy, "deny");
+  assert.equal(observation.spontaneousChildExit, false);
+  assert.ok(observation.promptStopReason);
+  assert.ok(
+    Buffer.byteLength(observation.promptStopReason!, "utf8") <=
+      ACP_OBSERVATION_TEXT_BYTES
+  );
+  assert.doesNotMatch(observation.promptStopReason!, new RegExp(secret));
+  assert.match(observation.promptStopReason!, /cancelled/);
+
+  await runtime.shutdown();
+});
+
+test("ACP observation permission request count saturates at its fixed cap", async () => {
+  const dataDir = await tempDir("tent-acp-observe-cap-");
+  const cwd = await tempDir("tent-grok-cwd-");
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  const adapter = createGrokAcpAdapter({ resolveApiKey: () => "test-key" });
+  const connection = mockConnection("grok-observe-cap", {
+    logPath,
+    apiKey: "test-key",
+    permissionPolicy: "deny",
+    requestPermission: true,
+    permissionCount: ACP_PERMISSION_REQUEST_COUNT_MAX + 5,
+  });
+  const runtime = createAgentRuntime({ dataDir, adapters: [adapter], connections: [connection] });
+  const sessionId = "ss-acpobscap1";
+
+  await startConnection(runtime, {
+    sessionId,
+    connectionId: connection.connectionId,
+    cwd,
+    bootstrapPrompt: "pointer",
+  });
+  const observation = await waitForObservation(
+    runtime,
+    sessionId,
+    (value) => value.permissionRequestCount === ACP_PERMISSION_REQUEST_COUNT_MAX
+  );
+  assert.equal(observation.permissionRequestCount, ACP_PERMISSION_REQUEST_COUNT_MAX);
+  assert.equal(observation.permissionPolicy, "deny");
+
+  await runtime.stopSession(sessionId, "user");
+  await runtime.shutdown();
+});
+
+test("intentional ACP stop does not record a spontaneous child exit", async () => {
+  const dataDir = await tempDir("tent-acp-observe-stop-intentional-");
+  const cwd = await tempDir("tent-grok-cwd-");
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  const adapter = createGrokAcpAdapter({ resolveApiKey: () => "test-key" });
+  const connection = mockConnection("grok-observe-intentional", {
+    logPath,
+    apiKey: "test-key",
+    permissionPolicy: "deny",
+  });
+  const runtime = createAgentRuntime({ dataDir, adapters: [adapter], connections: [connection] });
+  const sessionId = "ss-acpobsintent";
+
+  await startConnection(runtime, {
+    sessionId,
+    connectionId: connection.connectionId,
+    cwd,
+    bootstrapPrompt: "",
+  });
+  await runtime.stopSession(sessionId, "user");
+  const record = await runtime.registry.read(sessionId);
+  assert.equal(record?.acpObservation, undefined);
+
   await runtime.shutdown();
 });
 
@@ -1179,6 +1399,14 @@ test("spontaneous child exit emits session.failed once (deduped)", async () => {
 
   const probe = await runtime.probe(sessionId);
   assert.equal(probe.alive, false);
+  const observation = await waitForObservation(
+    runtime,
+    sessionId,
+    (value) => value.spontaneousChildExit
+  );
+  assert.equal(observation.spontaneousChildExit, true);
+  assert.equal(observation.exitCode, 9);
+  assert.equal(observation.permissionRequestCount, 0);
 
   await runtime.shutdown();
 });

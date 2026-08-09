@@ -9,11 +9,23 @@ import {
   warnCorruptMachineState,
   writeJsonAtomic,
 } from "../machine-state.js";
-import type { SessionRecord, SessionState, StopReason } from "./types.js";
-import { EXTERNAL_ADAPTER_ID, isSessionId } from "./types.js";
+import type {
+  AcpRuntimeObservation,
+  SessionRecord,
+  SessionState,
+  StopReason,
+} from "./types.js";
+import {
+  ACP_OBSERVATION_SIGNAL_BYTES,
+  ACP_OBSERVATION_TEXT_BYTES,
+  ACP_PERMISSION_REQUEST_COUNT_MAX,
+  EXTERNAL_ADAPTER_ID,
+  isSessionId,
+} from "./types.js";
 import { isConnectionId, isRoleId } from "../core/id.js";
 import { parseAgentConnectionSnapshot } from "./agent-connection.js";
 import { parseAcpSessionConfigSnapshot } from "../adapters/acp/types.js";
+import { utf8Bytes } from "../adapters/acp/limits.js";
 
 type SessionRecordMutablePatch = Partial<
   Omit<
@@ -60,6 +72,82 @@ function isSessionState(value: unknown): value is SessionState {
   return typeof value === "string" && SESSION_STATES.has(value as SessionState);
 }
 
+function parseAcpRuntimeObservation(
+  value: unknown
+): AcpRuntimeObservation | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const allowed = new Set([
+    "permissionRequestCount",
+    "permissionPolicy",
+    "permissionDecision",
+    "permissionOutcome",
+    "promptStopReason",
+    "spontaneousChildExit",
+    "exitCode",
+    "signal",
+  ]);
+  if (Object.keys(value).some((key) => !allowed.has(key))) return undefined;
+  if (
+    !Number.isInteger(value.permissionRequestCount) ||
+    (value.permissionRequestCount as number) < 0 ||
+    (value.permissionRequestCount as number) > ACP_PERMISSION_REQUEST_COUNT_MAX
+  ) return undefined;
+  if (!new Set(["allow", "ask", "deny"]).has(value.permissionPolicy as string)) {
+    return undefined;
+  }
+  if (
+    value.permissionDecision !== undefined &&
+    !new Set(["allow", "deny"]).has(value.permissionDecision as string)
+  ) return undefined;
+  if (
+    value.permissionOutcome !== undefined &&
+    !new Set(["allow_once", "cancelled"]).has(value.permissionOutcome as string)
+  ) return undefined;
+  if (typeof value.spontaneousChildExit !== "boolean") return undefined;
+  if (
+    value.promptStopReason !== undefined &&
+    (typeof value.promptStopReason !== "string" ||
+      utf8Bytes(value.promptStopReason) > ACP_OBSERVATION_TEXT_BYTES)
+  ) return undefined;
+  if (
+    value.exitCode !== undefined &&
+    value.exitCode !== null &&
+    (typeof value.exitCode !== "number" ||
+      !Number.isInteger(value.exitCode) ||
+      value.exitCode < -2_147_483_648 ||
+      value.exitCode > 2_147_483_647)
+  ) return undefined;
+  if (
+    value.signal !== undefined &&
+    (typeof value.signal !== "string" ||
+      utf8Bytes(value.signal) > ACP_OBSERVATION_SIGNAL_BYTES)
+  ) return undefined;
+  return {
+    permissionRequestCount: value.permissionRequestCount as number,
+    permissionPolicy: value.permissionPolicy as AcpRuntimeObservation["permissionPolicy"],
+    ...(value.permissionDecision !== undefined
+      ? {
+          permissionDecision:
+            value.permissionDecision as AcpRuntimeObservation["permissionDecision"],
+        }
+      : {}),
+    ...(value.permissionOutcome !== undefined
+      ? {
+          permissionOutcome:
+            value.permissionOutcome as AcpRuntimeObservation["permissionOutcome"],
+        }
+      : {}),
+    ...(value.promptStopReason !== undefined
+      ? { promptStopReason: value.promptStopReason as string }
+      : {}),
+    spontaneousChildExit: value.spontaneousChildExit as boolean,
+    ...(value.exitCode !== undefined
+      ? { exitCode: value.exitCode as number | null }
+      : {}),
+    ...(value.signal !== undefined ? { signal: value.signal as string } : {}),
+  };
+}
+
 /**
  * Validate a parsed session JSON row. Returns the record when shape is safe for
  * runtime consumers (list sort, probe, stop). Identity consistency of
@@ -73,6 +161,7 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
     "adapterId",
     "connectionSnapshot",
     "acpSession",
+    "acpObservation",
     "roleId",
     "state",
     "pid",
@@ -108,7 +197,8 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
     if (
       data.connectionId !== undefined ||
       data.connectionSnapshot !== undefined ||
-      data.acpSession !== undefined
+      data.acpSession !== undefined ||
+      data.acpObservation !== undefined
     ) return null;
   } else {
     if (!isConnectionId(data.connectionId) || !isNonEmptyString(data.adapterId)) return null;
@@ -197,11 +287,17 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
       ? undefined
       : parseAcpSessionConfigSnapshot(data.acpSession);
   if (data.acpSession !== undefined && !acpSession) return null;
+  const acpObservation =
+    data.acpObservation === undefined
+      ? undefined
+      : parseAcpRuntimeObservation(data.acpObservation);
+  if (data.acpObservation !== undefined && !acpObservation) return null;
 
   return {
     ...data,
     connectionSnapshot: snapshot,
     ...(acpSession ? { acpSession } : {}),
+    ...(acpObservation ? { acpObservation } : {}),
   } as unknown as SessionRecord;
 }
 

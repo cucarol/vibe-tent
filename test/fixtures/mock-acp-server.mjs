@@ -17,6 +17,7 @@
  *   MOCK_ACP_FOLLOWUP_HANG — "1" never answer User Input / User Answer / Review Feedback (hang until SIGTERM)
  *   MOCK_ACP_REQUEST_PERMISSION — "1" to send session/request_permission before prompt result
  *   MOCK_ACP_PERMISSION_COUNT — concurrent permission requests to send (default 1)
+ *   MOCK_ACP_PERMISSION_NO_ALLOW_ONCE — "1" to offer no allow_once option
  *   MOCK_ACP_KEEP_ALIVE — "1" stay alive after prompt until SIGTERM (default 1)
  *   MOCK_ACP_FAIL_AUTH — "1" reject authenticate
  *   MOCK_ACP_FAIL_NEW — "1" reject session/new with safe + secret-shaped data
@@ -74,6 +75,8 @@ const permissionCount = Math.max(
   1,
   Number(process.env.MOCK_ACP_PERMISSION_COUNT || "1") || 1
 );
+const permissionNoAllowOnce =
+  process.env.MOCK_ACP_PERMISSION_NO_ALLOW_ONCE === "1";
 const keepAlive = process.env.MOCK_ACP_KEEP_ALIVE !== "0";
 const failAuth = process.env.MOCK_ACP_FAIL_AUTH === "1";
 const failNew = process.env.MOCK_ACP_FAIL_NEW === "1";
@@ -645,7 +648,15 @@ rl.on("line", (line) => {
                 title: `read_file${suffix}`,
               },
               options: [
-                { optionId: "allow_once", kind: "allow_once", name: "Allow once" },
+                ...(permissionNoAllowOnce
+                  ? []
+                  : [
+                      {
+                        optionId: "allow_once",
+                        kind: "allow_once",
+                        name: "Allow once",
+                      },
+                    ]),
                 { optionId: "allow_always", kind: "allow_always", name: "Always" },
                 { optionId: "reject", kind: "reject_once", name: "Reject" },
               ],

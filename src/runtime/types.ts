@@ -19,6 +19,22 @@ export type SessionState =
 
 export type StopReason = "user" | "interrupt" | "shutdown";
 
+export const ACP_PERMISSION_REQUEST_COUNT_MAX = 255;
+export const ACP_OBSERVATION_TEXT_BYTES = 256;
+export const ACP_OBSERVATION_SIGNAL_BYTES = 32;
+
+/** Machine-local bounded ACP facts; intentionally absent from public projections. */
+export type AcpRuntimeObservation = {
+  permissionRequestCount: number;
+  permissionPolicy: "allow" | "ask" | "deny";
+  permissionDecision?: "allow" | "deny";
+  permissionOutcome?: "allow_once" | "cancelled";
+  promptStopReason?: string;
+  spontaneousChildExit: boolean;
+  exitCode?: number | null;
+  signal?: string;
+};
+
 export type RuntimeEvent =
   | { type: "session.starting"; sessionId: string }
   | { type: "session.live"; sessionId: string; pid?: number }
@@ -26,6 +42,11 @@ export type RuntimeEvent =
   | { type: "session.exited"; sessionId: string; exitCode: number | null }
   | { type: "session.failed"; sessionId: string; error: string }
   | { type: "session.stdout_tail"; sessionId: string; text: string }
+  | {
+      type: "session.acp_observation";
+      sessionId: string;
+      observation: AcpRuntimeObservation;
+    }
   | {
       type: "session.config_options";
       sessionId: string;
@@ -178,6 +199,8 @@ export interface SessionRecord {
   connectionSnapshot?: AgentConnectionSnapshot;
   /** Bounded Agent-owned ACP capabilities/auth/config facts for this Session. */
   acpSession?: import("../adapters/acp/types.js").AcpSessionConfigSnapshot;
+  /** Internal-only ACP cancellation/exit evidence; never public projection. */
+  acpObservation?: AcpRuntimeObservation;
   roleId?: string;
   state: SessionState;
   pid?: number;

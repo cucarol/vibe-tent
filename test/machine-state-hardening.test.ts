@@ -382,8 +382,16 @@ test("SessionRegistry: missing createdAt is quarantined so list remains safe", a
   }
 });
 
-test("SessionRegistry: illegal state, Connection snapshot, or managed Role identity is quarantined", async () => {
-  for (const variant of ["state", "snapshot", "snapshot-unknown", "roleId"] as const) {
+test("SessionRegistry: illegal state, Connection snapshot, ACP observation, or managed Role identity is quarantined", async () => {
+  for (const variant of [
+    "state",
+    "snapshot",
+    "snapshot-unknown",
+    "observation-unknown",
+    "observation-oversize",
+    "observation-malformed",
+    "roleId",
+  ] as const) {
     const dataDir = await tempDir(`tent-sess-bad-${variant}-`);
     const registry = new SessionRegistry(dataDir);
     await registry.write(sessionRecord("ss-good03", "stopped"));
@@ -391,6 +399,9 @@ test("SessionRegistry: illegal state, Connection snapshot, or managed Role ident
       state: "ss-badstat",
       snapshot: "ss-badsnap",
       "snapshot-unknown": "ss-badextra",
+      "observation-unknown": "ss-badobsx",
+      "observation-oversize": "ss-badobsl",
+      "observation-malformed": "ss-badobsm",
       roleId: "ss-badrole",
     }[variant];
     const bad = sessionRecord(badId) as unknown as Record<string, unknown>;
@@ -404,6 +415,27 @@ test("SessionRegistry: illegal state, Connection snapshot, or managed Role ident
       bad.connectionSnapshot = {
         ...(bad.connectionSnapshot as Record<string, unknown>),
         rawSecret: "sk-must-not-survive",
+      };
+    } else if (variant === "observation-unknown") {
+      bad.acpObservation = {
+        permissionRequestCount: 0,
+        permissionPolicy: "deny",
+        spontaneousChildExit: false,
+        rawPayload: "must-not-survive",
+      };
+    } else if (variant === "observation-oversize") {
+      bad.acpObservation = {
+        permissionRequestCount: 0,
+        permissionPolicy: "deny",
+        promptStopReason: "x".repeat(300),
+        spontaneousChildExit: false,
+      };
+    } else if (variant === "observation-malformed") {
+      bad.acpObservation = {
+        permissionRequestCount: -1,
+        permissionPolicy: "deny",
+        permissionOutcome: "selected",
+        spontaneousChildExit: "no",
       };
     } else {
       bad.roleId = "rl-executor";

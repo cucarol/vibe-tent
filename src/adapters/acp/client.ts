@@ -2,7 +2,13 @@
 // No provider argv/auth/env/model knowledge; adapters supply launch + auth hooks.
 
 import { spawn, type ChildProcess } from "node:child_process";
-import type { RuntimeEvent } from "../../runtime/types.js";
+import {
+  ACP_OBSERVATION_SIGNAL_BYTES,
+  ACP_OBSERVATION_TEXT_BYTES,
+  ACP_PERMISSION_REQUEST_COUNT_MAX,
+  type AcpRuntimeObservation,
+  type RuntimeEvent,
+} from "../../runtime/types.js";
 import { buildManagedChildEnv } from "../../runtime/child-env.js";
 import type { BoundedBinaryRead } from "../../core/adapter.js";
 import type {
@@ -384,6 +390,8 @@ export class AcpClient {
   private permissionAsksInFlight = 0;
   /** Stop/exit cancellation for in-flight onPermissionAsk waiters. */
   private readonly permissionWaitCancels = new Set<() => void>();
+  /** Full bounded snapshot emitted after each internal ACP observation. */
+  private acpObservation: AcpRuntimeObservation;
   private readonly resourceLimits: AcpResourceLimits;
   private readonly stderrDiagnosticRedactor: BoundedDiagnosticRedactor;
   private readonly updateDiagnosticRedactor: BoundedDiagnosticRedactor;
@@ -394,6 +402,11 @@ export class AcpClient {
         ? options.label.trim()
         : "ACP";
     this.resourceLimits = resolveAcpResourceLimits(options.resourceLimits);
+    this.acpObservation = {
+      permissionRequestCount: 0,
+      permissionPolicy: options.permissionPolicy,
+      spontaneousChildExit: false,
+    };
     const diagnosticSecrets = this.secretValues();
     this.stderrDiagnosticRedactor = new BoundedDiagnosticRedactor(
       diagnosticSecrets,
@@ -855,6 +868,15 @@ export class AcpClient {
         promptTimeout
       )) as { stopReason?: string };
 
+      if (typeof result.stopReason === "string") {
+        this.emitAcpObservation({
+          promptStopReason: this.boundedRedactedDiagnostic(
+            result.stopReason,
+            ACP_OBSERVATION_TEXT_BYTES
+          ),
+        });
+      }
+
       if (this.limitError) throw this.limitError;
       if (this.stopRequested) {
         throw new Error("session interrupted before prompt completed");
@@ -1135,6 +1157,18 @@ export class AcpClient {
       // so service can taskFail / release occupation. Dedupe against prompt failure.
       // Non-zero / abnormal signal → failed (occupation release). Clean 0 → exited.
       if (!this.stopRequested && !this.terminalEmitted) {
+        this.emitAcpObservation({
+          spontaneousChildExit: true,
+          exitCode: boundedAcpExitCode(code),
+          ...(typeof signal === "string" && signal
+            ? {
+                signal: truncateUtf8Text(
+                  signal,
+                  ACP_OBSERVATION_SIGNAL_BYTES
+                ),
+              }
+            : {}),
+        });
         this.terminalEmitted = true;
         if (
           (signal && signal !== "SIGTERM" && signal !== "SIGINT") ||
@@ -1397,6 +1431,12 @@ export class AcpClient {
       toolCall?: { title?: string; toolCallId?: string };
     }
   ): Promise<void> {
+    this.emitAcpObservation({
+      permissionRequestCount: Math.min(
+        ACP_PERMISSION_REQUEST_COUNT_MAX,
+        this.acpObservation.permissionRequestCount + 1
+      ),
+    }, true);
     const options = params.options ?? [];
     const toolTitle = truncateUtf8Text(
       params.toolCall?.title || params.toolCall?.toolCallId || "tool",
@@ -1442,6 +1482,12 @@ export class AcpClient {
         decision === "allow"
           ? selectAllowOnce(options)
           : { outcome: "cancelled" as const };
+
+      this.emitAcpObservation({
+        permissionDecision: decision,
+        permissionOutcome:
+          outcome.outcome === "selected" ? "allow_once" : "cancelled",
+      });
 
       this.write({
         jsonrpc: "2.0",
@@ -1712,6 +1758,23 @@ export class AcpClient {
     this.stdoutFrameBytes = 0;
   }
 
+  private emitAcpObservation(
+    patch: Partial<AcpRuntimeObservation>,
+    clearPermissionResult = false
+  ): void {
+    const prior = { ...this.acpObservation };
+    if (clearPermissionResult) {
+      delete prior.permissionDecision;
+      delete prior.permissionOutcome;
+    }
+    this.acpObservation = { ...prior, ...patch };
+    this.options.emit({
+      type: "session.acp_observation",
+      sessionId: this.options.sessionId,
+      observation: { ...this.acpObservation },
+    });
+  }
+
   private triggerLimit(code: typeof ACP_OUTPUT_LIMIT_CODE | typeof ACP_REQUEST_LIMIT_CODE, detail: string): AcpLimitError {
     if (this.limitError) return this.limitError;
     const error = new AcpLimitError(code, detail);
@@ -1722,6 +1785,11 @@ export class AcpClient {
     void this.stop("interrupt").catch(() => undefined);
     return error;
   }
+}
+
+function boundedAcpExitCode(value: number | null): number | null {
+  if (value === null || !Number.isInteger(value)) return null;
+  return Math.max(-2_147_483_648, Math.min(2_147_483_647, value));
 }
 
 function selectAllowOnce(options: AcpPermissionOption[]): {

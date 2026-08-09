@@ -11056,6 +11056,11 @@ async function projectRuntimeEventOnce(
     // that write chain. No transcript/UI event is emitted for audit snapshots.
     return;
   }
+  if (ev.type === "session.acp_observation") {
+    // Machine-local diagnostics only. AgentRuntime enqueues persistence before
+    // fan-out; never project this into Task/chat or client-visible state.
+    return;
+  }
 
   const hasPendingToolApproval =
     ev.type === "session.live"

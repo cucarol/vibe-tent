@@ -49,6 +49,7 @@ import {
   truncateUtf8Text,
 } from "../adapters/acp/limits.js";
 import type {
+  AcpRuntimeObservation,
   AgentConnectionConfig,
   AgentConnectionSnapshot,
   AgentRuntimePort,
@@ -66,6 +67,9 @@ import type {
   Unsubscribe,
 } from "./types.js";
 import {
+  ACP_OBSERVATION_SIGNAL_BYTES,
+  ACP_OBSERVATION_TEXT_BYTES,
+  ACP_PERMISSION_REQUEST_COUNT_MAX,
   EXTERNAL_ADAPTER_ID,
   isSessionId,
   makeSessionId,
@@ -139,7 +143,71 @@ function boundRuntimeDiagnosticEvent(ev: RuntimeEvent): RuntimeEvent {
       summary: truncateUtf8Text(ev.summary, ACP_DIAGNOSTIC_EVENT_BYTES),
     };
   }
+  if (ev.type === "session.acp_observation") {
+    return {
+      ...ev,
+      observation: boundAcpRuntimeObservation(ev.observation),
+    };
+  }
   return ev;
+}
+
+function boundAcpRuntimeObservation(
+  observation: AcpRuntimeObservation
+): AcpRuntimeObservation {
+  const count = Number.isInteger(observation.permissionRequestCount)
+    ? Math.max(
+        0,
+        Math.min(
+          ACP_PERMISSION_REQUEST_COUNT_MAX,
+          observation.permissionRequestCount
+        )
+      )
+    : 0;
+  const policy = ["allow", "ask", "deny"].includes(
+    observation.permissionPolicy
+  )
+    ? observation.permissionPolicy
+    : "deny";
+  const exitCode =
+    observation.exitCode === null
+      ? null
+      : Number.isInteger(observation.exitCode)
+        ? Math.max(
+            -2_147_483_648,
+            Math.min(2_147_483_647, observation.exitCode as number)
+          )
+        : undefined;
+  return {
+    permissionRequestCount: count,
+    permissionPolicy: policy,
+    ...(observation.permissionDecision === "allow" ||
+    observation.permissionDecision === "deny"
+      ? { permissionDecision: observation.permissionDecision }
+      : {}),
+    ...(observation.permissionOutcome === "allow_once" ||
+    observation.permissionOutcome === "cancelled"
+      ? { permissionOutcome: observation.permissionOutcome }
+      : {}),
+    ...(observation.promptStopReason !== undefined
+      ? {
+          promptStopReason: truncateUtf8Text(
+            observation.promptStopReason,
+            ACP_OBSERVATION_TEXT_BYTES
+          ),
+        }
+      : {}),
+    spontaneousChildExit: observation.spontaneousChildExit === true,
+    ...(exitCode !== undefined ? { exitCode } : {}),
+    ...(observation.signal !== undefined
+      ? {
+          signal: truncateUtf8Text(
+            observation.signal,
+            ACP_OBSERVATION_SIGNAL_BYTES
+          ),
+        }
+      : {}),
+  };
 }
 
 function copyRuntimeErrorMetadata(error: unknown): {
@@ -656,6 +724,12 @@ export class AgentRuntime implements AgentRuntimePort {
                 acpSession: cloneAcpSessionConfigSnapshot(ev.sessionConfig),
               })
               .catch(() => undefined);
+          } else if (ev.type === "session.acp_observation") {
+            void this.registry
+              .update(req.sessionId, {
+                acpObservation: { ...ev.observation },
+              })
+              .catch(() => undefined);
           }
           this.emit(ev);
         });
@@ -947,6 +1021,12 @@ export class AgentRuntime implements AgentRuntimePort {
             void this.registry
               .update(req.sessionId, {
                 acpSession: cloneAcpSessionConfigSnapshot(ev.sessionConfig),
+              })
+              .catch(() => undefined);
+          } else if (ev.type === "session.acp_observation") {
+            void this.registry
+              .update(req.sessionId, {
+                acpObservation: { ...ev.observation },
               })
               .catch(() => undefined);
           }
