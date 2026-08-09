@@ -29,14 +29,27 @@ type Rect = { x: number; y: number; width: number; height: number };
 
 export type CanvasStructureRouteDiagnostics = {
   segmentRectChecks: number;
+  indexBuildRectChecks?: number;
+  indexedIntervalChecks?: number;
   visibilityNodesExpanded?: number;
 };
 
 type CanvasStructureObstacle = { placementId: string; rect: Rect };
+type CanvasStructureInterval = {
+  min: number;
+  max: number;
+  placementId: string;
+};
+type CanvasStructureIntervalIndex = {
+  intervals: readonly CanvasStructureInterval[];
+  prefixMax: readonly number[];
+};
 type CanvasStructureObstacleGeometry = {
   obstacles: readonly CanvasStructureObstacle[];
   xLanes: readonly number[];
   yLanes: readonly number[];
+  horizontalByY: Map<number, CanvasStructureIntervalIndex>;
+  verticalByX: Map<number, CanvasStructureIntervalIndex>;
 };
 
 const STRUCTURE_CLEARANCE = 12;
@@ -114,13 +127,6 @@ function pathIsClear(
   return true;
 }
 
-function pointIsBlocked(point: Point, obstacles: readonly Rect[]): boolean {
-  return obstacles.some((rect) =>
-    point.x > rect.x && point.x < rect.x + rect.width &&
-    point.y > rect.y && point.y < rect.y + rect.height
-  );
-}
-
 function collapseCollinear(points: readonly Point[]): Point[] {
   if (points.length <= 2) return [...points];
   const result = [points[0]];
@@ -185,14 +191,149 @@ function buildObstacleGeometry(obstacles: readonly CanvasStructureObstacle[]): C
     obstacles,
     xLanes: [...xLanes].sort((a, b) => a - b),
     yLanes: [...yLanes].sort((a, b) => a - b),
+    horizontalByY: new Map(),
+    verticalByX: new Map(),
   };
+}
+
+function buildIntervalIndex(intervals: CanvasStructureInterval[]): CanvasStructureIntervalIndex {
+  intervals.sort((a, b) => a.min - b.min || a.max - b.max || a.placementId.localeCompare(b.placementId));
+  const prefixMax: number[] = [];
+  for (let index = 0; index < intervals.length; index += 1) {
+    prefixMax[index] = Math.max(prefixMax[index - 1] ?? Number.NEGATIVE_INFINITY, intervals[index].max);
+  }
+  return { intervals, prefixMax };
+}
+
+function horizontalIndex(
+  geometry: CanvasStructureObstacleGeometry,
+  y: number,
+  diagnostics?: CanvasStructureRouteDiagnostics
+): CanvasStructureIntervalIndex {
+  const cached = geometry.horizontalByY.get(y);
+  if (cached) return cached;
+  const intervals: CanvasStructureInterval[] = [];
+  for (const obstacle of geometry.obstacles) {
+    if (diagnostics) diagnostics.indexBuildRectChecks = (diagnostics.indexBuildRectChecks ?? 0) + 1;
+    const { rect } = obstacle;
+    if (y > rect.y && y < rect.y + rect.height) {
+      intervals.push({ min: rect.x, max: rect.x + rect.width, placementId: obstacle.placementId });
+    }
+  }
+  const index = buildIntervalIndex(intervals);
+  geometry.horizontalByY.set(y, index);
+  return index;
+}
+
+function verticalIndex(
+  geometry: CanvasStructureObstacleGeometry,
+  x: number,
+  diagnostics?: CanvasStructureRouteDiagnostics
+): CanvasStructureIntervalIndex {
+  const cached = geometry.verticalByX.get(x);
+  if (cached) return cached;
+  const intervals: CanvasStructureInterval[] = [];
+  for (const obstacle of geometry.obstacles) {
+    if (diagnostics) diagnostics.indexBuildRectChecks = (diagnostics.indexBuildRectChecks ?? 0) + 1;
+    const { rect } = obstacle;
+    if (x > rect.x && x < rect.x + rect.width) {
+      intervals.push({ min: rect.y, max: rect.y + rect.height, placementId: obstacle.placementId });
+    }
+  }
+  const index = buildIntervalIndex(intervals);
+  geometry.verticalByX.set(x, index);
+  return index;
+}
+
+function firstGreater(values: readonly number[], value: number): number {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (values[middle] > value) high = middle;
+    else low = middle + 1;
+  }
+  return low;
+}
+
+function firstAtLeastByMin(intervals: readonly CanvasStructureInterval[], value: number): number {
+  let low = 0;
+  let high = intervals.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (intervals[middle].min >= value) high = middle;
+    else low = middle + 1;
+  }
+  return low;
+}
+
+function indexedRangeIsClear(
+  index: CanvasStructureIntervalIndex,
+  from: number,
+  to: number,
+  ignoredPlacementIds: ReadonlySet<string>,
+  diagnostics?: CanvasStructureRouteDiagnostics
+): boolean {
+  const min = Math.min(from, to);
+  const max = Math.max(from, to);
+  const end = firstAtLeastByMin(index.intervals, max);
+  const start = firstGreater(index.prefixMax, min);
+  for (let cursor = start; cursor < end; cursor += 1) {
+    if (diagnostics) diagnostics.indexedIntervalChecks = (diagnostics.indexedIntervalChecks ?? 0) + 1;
+    const interval = index.intervals[cursor];
+    if (!ignoredPlacementIds.has(interval.placementId) && interval.max > min) return false;
+  }
+  return true;
+}
+
+function indexedPointIsBlocked(
+  point: Point,
+  geometry: CanvasStructureObstacleGeometry,
+  ignoredPlacementIds: ReadonlySet<string>,
+  diagnostics?: CanvasStructureRouteDiagnostics
+): boolean {
+  return !indexedRangeIsClear(
+    horizontalIndex(geometry, point.y, diagnostics),
+    point.x,
+    point.x,
+    ignoredPlacementIds,
+    diagnostics
+  );
+}
+
+function indexedSegmentIsClear(
+  a: Point,
+  b: Point,
+  geometry: CanvasStructureObstacleGeometry,
+  ignoredPlacementIds: ReadonlySet<string>,
+  diagnostics?: CanvasStructureRouteDiagnostics
+): boolean {
+  if (a.y === b.y) {
+    return indexedRangeIsClear(
+      horizontalIndex(geometry, a.y, diagnostics),
+      a.x,
+      b.x,
+      ignoredPlacementIds,
+      diagnostics
+    );
+  }
+  if (a.x === b.x) {
+    return indexedRangeIsClear(
+      verticalIndex(geometry, a.x, diagnostics),
+      a.y,
+      b.y,
+      ignoredPlacementIds,
+      diagnostics
+    );
+  }
+  return false;
 }
 
 function routeVisibilityGrid(
   start: Point,
   end: Point,
-  obstacles: readonly Rect[],
   geometry: CanvasStructureObstacleGeometry,
+  ignoredPlacementIds: ReadonlySet<string>,
   diagnostics?: CanvasStructureRouteDiagnostics
 ): Point[] | null {
   const xs = [...new Set([...geometry.xLanes, start.x, end.x])].sort((a, b) => a - b);
@@ -202,7 +343,8 @@ function routeVisibilityGrid(
   const endIx = xs.indexOf(end.x);
   const endIy = ys.indexOf(end.y);
   if (startIx < 0 || startIy < 0 || endIx < 0 || endIy < 0 ||
-    pointIsBlocked(start, obstacles) || pointIsBlocked(end, obstacles)) return null;
+    indexedPointIsBlocked(start, geometry, ignoredPlacementIds, diagnostics) ||
+    indexedPointIsBlocked(end, geometry, ignoredPlacementIds, diagnostics)) return null;
 
   const keyFor = (ix: number, iy: number) => `${ix}:${iy}`;
   const startKey = keyFor(startIx, startIy);
@@ -239,8 +381,8 @@ function routeVisibilityGrid(
       const iy = current.iy + dy;
       if (ix < 0 || iy < 0 || ix >= xs.length || iy >= ys.length) continue;
       const point = { x: xs[ix], y: ys[iy] };
-      if (pointIsBlocked(point, obstacles) ||
-        !pathIsClear([currentPoint, point], obstacles, diagnostics)) continue;
+      if (indexedPointIsBlocked(point, geometry, ignoredPlacementIds, diagnostics) ||
+        !indexedSegmentIsClear(currentPoint, point, geometry, ignoredPlacementIds, diagnostics)) continue;
       const key = keyFor(ix, iy);
       const g = current.g + Math.abs(point.x - currentPoint.x) + Math.abs(point.y - currentPoint.y);
       if (g >= (best.get(key) ?? Number.POSITIVE_INFINITY)) continue;
@@ -263,6 +405,7 @@ function routeOrthogonal(
   end: Point,
   obstacles: readonly Rect[],
   geometry: CanvasStructureObstacleGeometry,
+  ignoredPlacementIds: ReadonlySet<string>,
   diagnostics?: CanvasStructureRouteDiagnostics
 ): Point[] | null {
   const direct = [
@@ -272,7 +415,7 @@ function routeOrthogonal(
   for (const candidate of direct) {
     if (pathIsClear(candidate, obstacles, diagnostics)) return candidate;
   }
-  return routeVisibilityGrid(start, end, obstacles, geometry, diagnostics);
+  return routeVisibilityGrid(start, end, geometry, ignoredPlacementIds, diagnostics);
 }
 
 function pathData(points: readonly Point[]): string {
@@ -339,53 +482,39 @@ export function deriveCanvasSubtreeStructureBranches(
       : [];
   });
   const obstacleGeometry = buildObstacleGeometry(visibleNodeRects);
-  const grouped = new Map<string, {
-    parent: CanvasPlacement;
-    direction: SubtreeDirection;
-    edges: { relationship: CanvasSubtreeRelationship; child: CanvasPlacement }[];
-  }>();
-  for (const relationship of projection.relationships) {
+  return projection.relationships.flatMap((relationship) => {
     const parent = byId.get(relationship.parentPlacementId);
     const child = byId.get(relationship.childPlacementId);
-    if (!parent || !child) continue;
+    if (!parent || !child) return [];
     const direction = centersDirection(
       placementRect(parent, override),
       placementRect(child, override)
     );
-    const key = `${relationship.parentPlacementId}:${direction}`;
-    const group = grouped.get(key) ?? { parent, direction, edges: [] };
-    group.edges.push({ relationship, child });
-    grouped.set(key, group);
-  }
-  return [...grouped.entries()].map(([key, group]) => {
-    const parentRect = placementRect(group.parent, override);
-    const parentPoint = anchor(parentRect, group.direction);
-    const routed = group.edges.flatMap(({ relationship, child }) => {
-      const childPoint = anchor(placementRect(child, override), opposite(group.direction));
-      const obstacles = visibleNodeRects.flatMap((candidate) =>
-        candidate.placementId === relationship.parentPlacementId ||
-        candidate.placementId === relationship.childPlacementId
-          ? []
-          : [candidate.rect]
-      );
-      const points = routeOrthogonal(
-        parentPoint,
-        childPoint,
-        obstacles,
-        obstacleGeometry,
-        diagnostics
-      );
-      return points ? [{ relationship, path: pathData(points) }] : [];
-    });
-    const highlights = routed.flatMap(({ relationship, path }) =>
-      emphasized.has(relationship.id) ? [path] : []
+    const parentPoint = anchor(placementRect(parent, override), direction);
+    const childPoint = anchor(placementRect(child, override), opposite(direction));
+    const ignoredPlacementIds = new Set([
+      relationship.parentPlacementId,
+      relationship.childPlacementId,
+    ]);
+    const obstacles = visibleNodeRects.flatMap((candidate) =>
+      ignoredPlacementIds.has(candidate.placementId) ? [] : [candidate.rect]
     );
-    return {
-      id: `branch:${key}`,
-      parentPlacementId: group.parent.placementId,
-      direction: group.direction,
-      path: routed.map((edge) => edge.path).join(" "),
-      highlightPath: highlights.length > 0 ? highlights.join(" ") : null,
-    };
-  }).filter((branch) => branch.path.length > 0);
+    const points = routeOrthogonal(
+      parentPoint,
+      childPoint,
+      obstacles,
+      obstacleGeometry,
+      ignoredPlacementIds,
+      diagnostics
+    );
+    if (!points) return [];
+    const path = pathData(points);
+    return [{
+      id: `branch:${relationship.id}`,
+      parentPlacementId: parent.placementId,
+      direction,
+      path,
+      highlightPath: emphasized.has(relationship.id) ? path : null,
+    }];
+  });
 }

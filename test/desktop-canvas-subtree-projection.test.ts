@@ -409,6 +409,116 @@ test("clear structure routing stays linear across a representative 48-Node canva
   assert.equal(diagnostics.segmentRectChecks, 24 * 46);
 });
 
+test("a full 48-Node frame reuses indexed obstacle geometry across 24 blocked relationships", () => {
+  const placements: CanvasPlacement[] = [];
+  const relationships = [];
+  for (let row = 0; row < 8; row += 1) {
+    const rowPlacements: CanvasPlacement[] = [];
+    for (let column = 0; column < 6; column += 1) {
+      const placement = nodePlacement(
+        `blocked-${row}-${column}`,
+        `blocked-node-${row}-${column}`,
+        column * 360,
+        row * 300
+      );
+      placements.push(placement);
+      rowPlacements.push(placement);
+    }
+    for (const [from, to] of [[0, 2], [2, 4], [0, 5]] as const) {
+      relationships.push({
+        id: `subtree:blocked-${row}:${from}->${to}`,
+        instanceId: `blocked-instance-${row}`,
+        parentPlacementId: rowPlacements[from].placementId,
+        childPlacementId: rowPlacements[to].placementId,
+      });
+    }
+  }
+  const diagnostics = {
+    segmentRectChecks: 0,
+    indexBuildRectChecks: 0,
+    indexedIntervalChecks: 0,
+    visibilityNodesExpanded: 0,
+  };
+  const startedAt = performance.now();
+  const branches = deriveCanvasSubtreeStructureBranches(
+    { ...emptyDocument(), placements },
+    {
+      authority: "fresh",
+      visiblePlacementIds: placements.map((placement) => placement.placementId),
+      relationships,
+      controls: [],
+      placementStates: [],
+      syncControls: [],
+    },
+    null,
+    diagnostics
+  );
+  const elapsed = performance.now() - startedAt;
+  assert.equal(branches.length, 24);
+  assert.ok(diagnostics.visibilityNodesExpanded > 0);
+  for (const branch of branches) {
+    const relationship = relationships.find((candidate) => `branch:${candidate.id}` === branch.id)!;
+    assertPathAvoidsPlacements(
+      branch.path,
+      placements.filter((placement) =>
+        placement.placementId !== relationship.parentPlacementId &&
+        placement.placementId !== relationship.childPlacementId
+      )
+    );
+  }
+  const indexedWork = diagnostics.indexBuildRectChecks + diagnostics.indexedIntervalChecks;
+  assert.ok(indexedWork < 150_000, `indexed obstacle work was ${indexedWork}`);
+  assert.ok(diagnostics.visibilityNodesExpanded < 20_000);
+  assert.ok(elapsed < 80, `24 blocked routes took ${elapsed.toFixed(1)}ms`);
+});
+
+test("branch DOM identity stays stable when a live drag crosses the parent center", () => {
+  const document: CanvasDocument = {
+    ...emptyDocument(),
+    focusedPlacementId: "parent",
+    placements: [
+      nodePlacement("parent", "root", 0, 0),
+      nodePlacement("child", "child-a", 600, 0),
+    ],
+  };
+  const projection = {
+    authority: "fresh" as const,
+    visiblePlacementIds: ["parent", "child"],
+    relationships: [{
+      id: "subtree:stable:parent->child",
+      instanceId: "stable",
+      parentPlacementId: "parent",
+      childPlacementId: "child",
+    }],
+    controls: [],
+    placementStates: [],
+    syncControls: [],
+  };
+  const before = deriveCanvasSubtreeStructureBranches(document, projection);
+  const after = deriveCanvasSubtreeStructureBranches(
+    document,
+    projection,
+    { placementId: "child", x: -600, y: 0 }
+  );
+  assert.equal(before.length, 1);
+  assert.equal(after.length, 1);
+  assert.equal(before[0].direction, "right");
+  assert.equal(after[0].direction, "left");
+  assert.equal(after[0].id, before[0].id);
+  assert.notEqual(after[0].path, before[0].path);
+
+  const values = { base: before[0].path, highlight: before[0].highlightPath ?? "" };
+  const refs = new Map([[before[0].id, {
+    base: { setAttribute: (_name: "d", value: string) => { values.base = value; } },
+    highlight: { setAttribute: (_name: "d", value: string) => { values.highlight = value; } },
+  }]]);
+  applyCanvasSubtreeStructureBranchPaths(refs, after);
+  assert.equal(values.base, after[0].path);
+  assert.equal(values.highlight, after[0].highlightPath);
+  assert.notEqual(values.base, "");
+  assert.notEqual(values.highlight, "");
+});
+
 test("stale authority preserves placements but hides relationships and disables sync", () => {
   const created = createInstance();
   const projection = deriveCanvasSubtreeProjection(created.document, null);
