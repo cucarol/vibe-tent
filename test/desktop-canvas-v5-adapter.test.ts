@@ -55,7 +55,10 @@ import {
   canvasGesturesEnabled,
   embeddableInteractive,
 } from "../src/desktop/renderer-next/canvas/excalidraw/v5InteractionOwnership.js";
-import { shouldRefreshCanvasV5Scene } from "../src/desktop/renderer-next/canvas/excalidraw/sceneRefreshPolicy.js";
+import {
+  resolveCanvasV5SceneRefresh,
+  shouldRefreshCanvasV5Scene,
+} from "../src/desktop/renderer-next/canvas/excalidraw/sceneRefreshPolicy.js";
 import {
   schedulePostMountCanvasViewportSync,
   viewportAfterCanvasResize,
@@ -431,6 +434,23 @@ test("live V5 scene refreshes for edge layers and external documents only", () =
     ),
     false
   );
+
+  const beforeApi = resolveCanvasV5SceneRefresh(
+    previous,
+    { ...previous, document: externallyChanged },
+    null,
+    false
+  );
+  assert.equal(beforeApi.refresh, false);
+  assert.equal(beforeApi.consumed.document, document);
+  const afterApi = resolveCanvasV5SceneRefresh(
+    beforeApi.consumed,
+    { ...previous, document: externallyChanged },
+    null,
+    true
+  );
+  assert.equal(afterApi.refresh, true);
+  assert.equal(afterApi.consumed.document, externallyChanged);
 });
 
 test("position writes back continuously while Tent Node geometry stays fixed", () => {
@@ -1111,6 +1131,7 @@ test("V5 leaves generic drawing tools exclusively to Excalidraw", async () => {
     "durable projection sync cannot start before the presentation-history owner exists"
   );
   assert.match(host, /commandsEnabled=\{apiReady\}/);
+  assert.match(host, /const handleApi = useCallback[\s\S]*applyLatestControlledScene\(api\)/);
   assert.match(host, /const handleSubtreeDirectionWhenReady[\s\S]*if \(!apiRef\.current\) return;[\s\S]*onSubtreeDirection\(placementId, direction\)/);
   assert.match(host, /onDirection=\{handleSubtreeDirectionWhenReady\}/);
   const overlay = await fs.readFile(

@@ -77,7 +77,7 @@ import {
   type TentEmbeddableNodeState,
 } from "./TentEmbeddableNode.js";
 import {
-  shouldRefreshCanvasV5Scene,
+  resolveCanvasV5SceneRefresh,
   type LiveSceneInputs,
 } from "./sceneRefreshPolicy.js";
 import {
@@ -364,6 +364,14 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     graph,
     edgeLayers,
   });
+  const latestSceneInputs = useRef<LiveSceneInputs>({
+    document: sceneDocument,
+    graph,
+    edgeLayers,
+  });
+  latestSceneInputs.current = { document: sceneDocument, graph, edgeLayers };
+  const resolversRef = useRef(resolvers);
+  resolversRef.current = resolvers;
   const lastPersistedDrawingSig = useRef<string>("");
   const persistGate = useRef(createCanvasV5PersistGate(120));
   const placementPersistGate = useRef(createCanvasV5PersistGate(80));
@@ -502,22 +510,19 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeGeneration]);
 
-  useEffect(() => {
+  const applyLatestControlledScene = useCallback((api: ExcalidrawApi) => {
     const previous = liveSceneInputs.current;
-    const next = { document: sceneDocument, graph, edgeLayers };
-    liveSceneInputs.current = next;
-    if (
-      !shouldRefreshCanvasV5Scene(
-        previous,
-        next,
-        lastInternallyPublishedDocument.current
-      )
-    ) {
+    const next = latestSceneInputs.current;
+    const decision = resolveCanvasV5SceneRefresh(
+      previous,
+      next,
+      lastInternallyPublishedDocument.current,
+      apiRef.current === api
+    );
+    if (!decision.refresh) {
+      liveSceneInputs.current = decision.consumed;
       return;
     }
-
-    const api = apiRef.current;
-    if (!api) return;
     const sceneElements = api.getSceneElementsIncludingDeleted?.() ?? api.getSceneElements?.() ?? [];
     const drawingScene = sceneSnapshotForV4Persist(
       sceneElements,
@@ -526,11 +531,11 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
       layerVisibleRef.current
     );
     const refreshed = hydrateCanvasV5Scene({
-      document: sceneDocument,
+      document: next.document,
       drawingScene,
-      resolvers,
-      graph,
-      edgeLayers,
+      resolvers: resolversRef.current,
+      graph: next.graph,
+      edgeLayers: next.edgeLayers,
     });
 
     applyingExternal.current = true;
@@ -549,12 +554,19 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
       setLoadBanner(
         refreshed.status.kind === "ok" ? null : refreshed.status.message
       );
+      liveSceneInputs.current = decision.consumed;
     } finally {
       void Promise.resolve().then(() => {
         applyingExternal.current = false;
       });
     }
-  }, [edgeLayers, graph, resolvers, sceneDocument]);
+  }, []);
+
+  useEffect(() => {
+    const api = apiRef.current;
+    if (!api) return;
+    applyLatestControlledScene(api);
+  }, [applyLatestControlledScene, edgeLayers, graph, resolvers, sceneDocument]);
 
   useEffect(() => {
     const focusedPlacementId = canvasDocument.focusedPlacementId ?? null;
@@ -868,6 +880,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
   const handleApi = useCallback((api: ExcalidrawApi) => {
     apiRef.current = api;
     setApiReady(true);
+    applyLatestControlledScene(api);
     cancelApiViewportSyncRef.current?.();
     cancelApiViewportSyncRef.current = schedulePostMountCanvasViewportSync({
       scheduler: {
@@ -894,7 +907,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
       if (apiRef.current !== api) return;
       subtreeOverlayRef.current?.update(api.getAppState?.() ?? {});
     });
-  }, []);
+  }, [applyLatestControlledScene]);
 
   const commitPlacementFromScene = useCallback((
     elements: readonly unknown[],

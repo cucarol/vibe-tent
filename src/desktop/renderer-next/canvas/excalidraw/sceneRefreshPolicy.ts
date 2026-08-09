@@ -20,3 +20,20 @@ export function shouldRefreshCanvasV5Scene(
     next.document !== lastInternallyPublishedDocument;
   return previous.graph !== next.graph || edgeLayersChanged || externalDocumentChanged;
 }
+
+export function resolveCanvasV5SceneRefresh(
+  previous: LiveSceneInputs,
+  next: LiveSceneInputs,
+  lastInternallyPublishedDocument: CanvasDocument | null,
+  apiReady: boolean
+): { consumed: LiveSceneInputs; refresh: boolean } {
+  if (!apiReady) return { consumed: previous, refresh: false };
+  return {
+    consumed: next,
+    refresh: shouldRefreshCanvasV5Scene(
+      previous,
+      next,
+      lastInternallyPublishedDocument
+    ),
+  };
+}
