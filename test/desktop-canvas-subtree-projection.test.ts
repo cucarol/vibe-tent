@@ -21,6 +21,7 @@ import {
   preserveCanvasPresentationHistoryMarker,
 } from "../src/desktop/renderer-next/canvas/excalidraw/canvas-presentation-history.js";
 import { drawingElementsFromScene } from "../src/desktop/renderer-next/canvas/excalidraw/documentToExcalidraw.js";
+import { dropPresentationSubtreeOrLeaf } from "../src/desktop/renderer-next/shell/workbench-presentation.js";
 
 const emptyDocument = (): CanvasDocument => ({
   version: 1,
@@ -47,6 +48,19 @@ function source(nodeId: string, parentNodeId: string | null, etag = `${nodeId}-v
       archived: false,
       invalid: false,
     },
+  };
+}
+
+function nodePlacement(placementId: string, nodeId: string, x: number, y: number): CanvasPlacement {
+  return {
+    placementId,
+    kind: "node",
+    entityRef: nodeId,
+    x,
+    y,
+    width: 240,
+    height: 104,
+    meta: {},
   };
 }
 
@@ -143,6 +157,90 @@ test("structure paths reroute from current geometry and stay orthogonal", () => 
   assert.ok(branches.length >= 2);
   assert.ok(branches.every((branch) => !/[Ll]\s*-?\d+(?:\.\d+)?\s+-?\d/.test(branch.path)));
   assert.ok(branches.some((branch) => branch.direction === "left" || branch.direction === "down"));
+});
+
+test("structure routing deterministically avoids visible Node obstacles and reroutes when geometry moves", () => {
+  const document: CanvasDocument = {
+    ...emptyDocument(),
+    placements: [
+      nodePlacement("parent", "root", 0, 0),
+      nodePlacement("child", "child-a", 600, 0),
+      nodePlacement("obstacle", "other", 300, 0),
+    ],
+  };
+  const projection = {
+    authority: "fresh" as const,
+    visiblePlacementIds: ["parent", "child", "obstacle"],
+    relationships: [{
+      id: "subtree:test:parent->child",
+      instanceId: "test",
+      parentPlacementId: "parent",
+      childPlacementId: "child",
+    }],
+    controls: [],
+    placementStates: [],
+    syncControls: [],
+  };
+  const blockedDiagnostics = { segmentRectChecks: 0 };
+  const blocked = deriveCanvasSubtreeStructureBranches(
+    document,
+    projection,
+    null,
+    blockedDiagnostics
+  )[0]?.path;
+  assert.equal(blocked, "M 240 52 V -12 H 600 V 52");
+  assert.ok(blockedDiagnostics.segmentRectChecks <= 8);
+
+  const movedObstacle = {
+    ...document,
+    placements: document.placements.map((placement) =>
+      placement.placementId === "obstacle" ? { ...placement, y: 180 } : placement
+    ),
+  };
+  const clear = deriveCanvasSubtreeStructureBranches(movedObstacle, projection)[0]?.path;
+  assert.equal(clear, "M 240 52 H 600");
+
+  const movedEndpoint = {
+    ...movedObstacle,
+    placements: movedObstacle.placements.map((placement) =>
+      placement.placementId === "child" ? { ...placement, y: 300 } : placement
+    ),
+  };
+  const rerouted = deriveCanvasSubtreeStructureBranches(movedEndpoint, projection)[0]?.path;
+  assert.notEqual(rerouted, clear);
+  assert.match(rerouted ?? "", /^M 240 52 (?:H|V)/);
+});
+
+test("clear structure routing stays linear across a representative 48-Node canvas", () => {
+  const placements: CanvasPlacement[] = [];
+  const relationships = [];
+  for (let index = 0; index < 24; index += 1) {
+    const y = index * 400;
+    placements.push(nodePlacement(`parent-${index}`, `parent-node-${index}`, 0, y));
+    placements.push(nodePlacement(`child-${index}`, `child-node-${index}`, 600, y));
+    relationships.push({
+      id: `subtree:${index}:parent->child`,
+      instanceId: `instance-${index}`,
+      parentPlacementId: `parent-${index}`,
+      childPlacementId: `child-${index}`,
+    });
+  }
+  const diagnostics = { segmentRectChecks: 0 };
+  const branches = deriveCanvasSubtreeStructureBranches(
+    { ...emptyDocument(), placements },
+    {
+      authority: "fresh",
+      visiblePlacementIds: placements.map((placement) => placement.placementId),
+      relationships,
+      controls: [],
+      placementStates: [],
+      syncControls: [],
+    },
+    null,
+    diagnostics
+  );
+  assert.equal(branches.length, 24);
+  assert.equal(diagnostics.segmentRectChecks, 24 * 46);
 });
 
 test("stale authority preserves placements but hides relationships and disables sync", () => {
@@ -268,6 +366,36 @@ test("drop joins only one explicitly hit eligible instance and never nearest-pai
     joinCanvasSubtreeInstanceAt(created.document, source("far", "root"), { x: 5000, y: 5000 }),
     null
   );
+});
+
+test("dropping a nested parent always creates a complete instance while a leaf may join", () => {
+  const created = createInstance();
+  const parentTarget = created.document.placements.find((placement) => placement.placementId === "placement-a-1")!;
+  const nested = dropPresentationSubtreeOrLeaf(
+    { document: created.document, selectedNodeId: null },
+    "child-a",
+    [source("child-a", "root"), source("grandchild", "child-a")],
+    { x: (parentTarget.x ?? 0) + 20, y: (parentTarget.y ?? 0) + 20 }
+  );
+  const nestedInstanceIds = new Set(nested.document.placements.flatMap((placement) => {
+    const meta = readCanvasSubtreePlacementMeta(placement);
+    return meta ? [meta.instanceId] : [];
+  }));
+  assert.equal(nestedInstanceIds.size, 2);
+  const newInstanceId = [...nestedInstanceIds].find((instanceId) => instanceId !== "instance-a")!;
+  assert.equal(nested.document.placements.filter((placement) =>
+    readCanvasSubtreePlacementMeta(placement)?.instanceId === newInstanceId
+  ).length, 2);
+
+  const rootTarget = created.document.placements.find((placement) => placement.placementId === "placement-a-0")!;
+  const joinedLeaf = dropPresentationSubtreeOrLeaf(
+    { document: created.document, selectedNodeId: null },
+    "leaf",
+    [source("leaf", "root")],
+    { x: (rootTarget.x ?? 0) + 20, y: (rootTarget.y ?? 0) + 20 }
+  );
+  const leaf = joinedLeaf.document.placements.find((placement) => placement.entityRef === "leaf")!;
+  assert.equal(readCanvasSubtreePlacementMeta(leaf)?.instanceId, "instance-a");
 });
 
 test("malformed subtree metadata fails closed as a visible standalone placement", () => {

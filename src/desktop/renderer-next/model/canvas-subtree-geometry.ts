@@ -16,8 +16,15 @@ export type CanvasSubtreeStructureBranch = {
 
 type PositionOverride = { placementId: string; x: number; y: number } | null;
 type Point = { x: number; y: number };
+type Rect = { x: number; y: number; width: number; height: number };
 
-function placementRect(placement: CanvasPlacement, override: PositionOverride) {
+export type CanvasStructureRouteDiagnostics = {
+  segmentRectChecks: number;
+};
+
+const STRUCTURE_CLEARANCE = 12;
+
+function placementRect(placement: CanvasPlacement, override: PositionOverride): Rect {
   const x = override?.placementId === placement.placementId ? override.x : placement.x ?? 0;
   const y = override?.placementId === placement.placementId ? override.y : placement.y ?? 0;
   return { x, y, width: NODE_CARD.width, height: NODE_CARD.height };
@@ -44,28 +51,108 @@ function opposite(direction: SubtreeDirection): SubtreeDirection {
   return "down";
 }
 
-function edgePath(parent: Point, child: Point, direction: SubtreeDirection, bus: number): string {
-  if (direction === "right" || direction === "left") {
-    return `M ${parent.x} ${parent.y} H ${bus} V ${child.y} H ${child.x}`;
-  }
-  return `M ${parent.x} ${parent.y} V ${bus} H ${child.x} V ${child.y}`;
+function inflateRect(rect: Rect, clearance: number): Rect {
+  return {
+    x: rect.x - clearance,
+    y: rect.y - clearance,
+    width: rect.width + clearance * 2,
+    height: rect.height + clearance * 2,
+  };
 }
 
-function branchPath(parent: Point, children: readonly Point[], direction: SubtreeDirection, bus: number): string {
-  if (direction === "right" || direction === "left") {
-    const ys = children.map((point) => point.y);
-    return [
-      `M ${parent.x} ${parent.y} H ${bus}`,
-      `M ${bus} ${Math.min(parent.y, ...ys)} V ${Math.max(parent.y, ...ys)}`,
-      ...children.map((point) => `M ${bus} ${point.y} H ${point.x}`),
-    ].join(" ");
+function segmentIntersectsRect(a: Point, b: Point, rect: Rect): boolean {
+  const right = rect.x + rect.width;
+  const bottom = rect.y + rect.height;
+  if (a.y === b.y) {
+    if (a.y <= rect.y || a.y >= bottom) return false;
+    return Math.max(Math.min(a.x, b.x), rect.x) < Math.min(Math.max(a.x, b.x), right);
   }
-  const xs = children.map((point) => point.x);
-  return [
-    `M ${parent.x} ${parent.y} V ${bus}`,
-    `M ${Math.min(parent.x, ...xs)} ${bus} H ${Math.max(parent.x, ...xs)}`,
-    ...children.map((point) => `M ${point.x} ${bus} V ${point.y}`),
-  ].join(" ");
+  if (a.x === b.x) {
+    if (a.x <= rect.x || a.x >= right) return false;
+    return Math.max(Math.min(a.y, b.y), rect.y) < Math.min(Math.max(a.y, b.y), bottom);
+  }
+  return true;
+}
+
+function normalizePoints(points: readonly Point[]): Point[] {
+  const result: Point[] = [];
+  for (const point of points) {
+    const previous = result.at(-1);
+    if (!previous || previous.x !== point.x || previous.y !== point.y) result.push(point);
+  }
+  return result;
+}
+
+function pathIsClear(
+  points: readonly Point[],
+  obstacles: readonly Rect[],
+  diagnostics?: CanvasStructureRouteDiagnostics
+): boolean {
+  for (let index = 1; index < points.length; index += 1) {
+    for (const rect of obstacles) {
+      if (diagnostics) diagnostics.segmentRectChecks += 1;
+      if (segmentIntersectsRect(points[index - 1], points[index], rect)) return false;
+    }
+  }
+  return true;
+}
+
+function pathScore(points: readonly Point[]): number {
+  let distance = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    distance += Math.abs(points[index].x - points[index - 1].x) +
+      Math.abs(points[index].y - points[index - 1].y);
+  }
+  return distance + Math.max(0, points.length - 2) * 8;
+}
+
+function routeOrthogonal(
+  start: Point,
+  end: Point,
+  obstacles: readonly Rect[],
+  diagnostics?: CanvasStructureRouteDiagnostics
+): Point[] | null {
+  const direct = [
+    normalizePoints([start, { x: end.x, y: start.y }, end]),
+    normalizePoints([start, { x: start.x, y: end.y }, end]),
+  ];
+  for (const candidate of direct) {
+    if (pathIsClear(candidate, obstacles, diagnostics)) return candidate;
+  }
+
+  const xLanes = new Set<number>([start.x, end.x]);
+  const yLanes = new Set<number>([start.y, end.y]);
+  for (const rect of obstacles) {
+    xLanes.add(rect.x);
+    xLanes.add(rect.x + rect.width);
+    yLanes.add(rect.y);
+    yLanes.add(rect.y + rect.height);
+  }
+  const detours = [
+    ...[...yLanes].map((y) =>
+      normalizePoints([start, { x: start.x, y }, { x: end.x, y }, end])
+    ),
+    ...[...xLanes].map((x) =>
+      normalizePoints([start, { x, y: start.y }, { x, y: end.y }, end])
+    ),
+  ].filter((points) => points.length > 2);
+  detours.sort((a, b) => pathScore(a) - pathScore(b) ||
+    JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  for (const candidate of detours) {
+    if (pathIsClear(candidate, obstacles, diagnostics)) return candidate;
+  }
+  return null;
+}
+
+function pathData(points: readonly Point[]): string {
+  if (points.length === 0) return "";
+  const commands = [`M ${points[0].x} ${points[0].y}`];
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const point = points[index];
+    commands.push(previous.y === point.y ? `H ${point.x}` : `V ${point.y}`);
+  }
+  return commands.join(" ");
 }
 
 function emphasizedRelationshipIds(
@@ -93,7 +180,8 @@ function emphasizedRelationshipIds(
 export function deriveCanvasSubtreeStructureBranches(
   document: CanvasDocument,
   projection: CanvasSubtreeProjection,
-  override: PositionOverride = null
+  override: PositionOverride = null,
+  diagnostics?: CanvasStructureRouteDiagnostics
 ): CanvasSubtreeStructureBranch[] {
   if (projection.authority !== "fresh") return [];
   const byId = new Map(document.placements.map((placement) => [placement.placementId, placement] as const));
@@ -101,6 +189,12 @@ export function deriveCanvasSubtreeStructureBranches(
     projection.relationships,
     document.focusedPlacementId
   );
+  const visibleNodeRects = projection.visiblePlacementIds.flatMap((placementId) => {
+    const placement = byId.get(placementId);
+    return placement?.kind === "node"
+      ? [{ placementId, rect: inflateRect(placementRect(placement, override), STRUCTURE_CLEARANCE) }]
+      : [];
+  });
   const grouped = new Map<string, {
     parent: CanvasPlacement;
     direction: SubtreeDirection;
@@ -122,35 +216,26 @@ export function deriveCanvasSubtreeStructureBranches(
   return [...grouped.entries()].map(([key, group]) => {
     const parentRect = placementRect(group.parent, override);
     const parentPoint = anchor(parentRect, group.direction);
-    const childPoints = group.edges.map(({ child }) =>
-      anchor(placementRect(child, override), opposite(group.direction))
-    );
-    const gap = 28;
-    const nearest = group.direction === "right"
-      ? Math.min(...childPoints.map((point) => point.x))
-      : group.direction === "left"
-        ? Math.max(...childPoints.map((point) => point.x))
-        : group.direction === "down"
-          ? Math.min(...childPoints.map((point) => point.y))
-          : Math.max(...childPoints.map((point) => point.y));
-    const bus = group.direction === "right"
-      ? Math.min(parentPoint.x + gap, (parentPoint.x + nearest) / 2)
-      : group.direction === "left"
-        ? Math.max(parentPoint.x - gap, (parentPoint.x + nearest) / 2)
-        : group.direction === "down"
-          ? Math.min(parentPoint.y + gap, (parentPoint.y + nearest) / 2)
-          : Math.max(parentPoint.y - gap, (parentPoint.y + nearest) / 2);
-    const highlights = group.edges.flatMap(({ relationship }, index) =>
-      emphasized.has(relationship.id)
-        ? [edgePath(parentPoint, childPoints[index], group.direction, bus)]
-        : []
+    const routed = group.edges.flatMap(({ relationship, child }) => {
+      const childPoint = anchor(placementRect(child, override), opposite(group.direction));
+      const obstacles = visibleNodeRects.flatMap((candidate) =>
+        candidate.placementId === relationship.parentPlacementId ||
+        candidate.placementId === relationship.childPlacementId
+          ? []
+          : [candidate.rect]
+      );
+      const points = routeOrthogonal(parentPoint, childPoint, obstacles, diagnostics);
+      return points ? [{ relationship, path: pathData(points) }] : [];
+    });
+    const highlights = routed.flatMap(({ relationship, path }) =>
+      emphasized.has(relationship.id) ? [path] : []
     );
     return {
       id: `branch:${key}`,
       parentPlacementId: group.parent.placementId,
       direction: group.direction,
-      path: branchPath(parentPoint, childPoints, group.direction, bus),
+      path: routed.map((edge) => edge.path).join(" "),
       highlightPath: highlights.length > 0 ? highlights.join(" ") : null,
     };
-  });
+  }).filter((branch) => branch.path.length > 0);
 }

@@ -19,9 +19,7 @@ import {
   canCreateNodePlacement,
   canDropNodeIntoPresentation,
   canvasPlacementSourceAuthority,
-  dropPresentationNode,
-  dropPresentationSubtree,
-  joinPresentationSubtreeInstanceAt,
+  dropPresentationSubtreeOrLeaf,
   placePresentationNode,
   removeFocusedPresentationPlacement,
   selectPresentationNode,
@@ -294,20 +292,12 @@ export function AppShell({
       queue.push(...(byParent.get(candidate.nodeId) ?? []));
     }
     onPresentationChange((current) => {
-      const joined = joinPresentationSubtreeInstanceAt(
+      return dropPresentationSubtreeOrLeaf(
         current,
-        subtreeSources[0],
+        nodeId,
+        subtreeSources,
         point
       );
-      if (joined) return joined;
-      return subtreeSources.length > 1
-        ? dropPresentationSubtree(current, nodeId, subtreeSources, point)
-        : dropPresentationNode(
-          current,
-          nodeId,
-          subtreeSources[0].snapshot,
-          point
-        );
     });
     return true;
   };

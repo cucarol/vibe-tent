@@ -151,6 +151,21 @@ export function joinPresentationSubtreeInstanceAt(
   };
 }
 
+export function dropPresentationSubtreeOrLeaf(
+  current: WorkbenchPresentationState,
+  rootNodeId: string,
+  sources: readonly CanvasSubtreeNodeSource[],
+  point: { x: number; y: number }
+): WorkbenchPresentationState {
+  const root = sources[0];
+  if (!root) return current;
+  if (sources.length > 1) {
+    return dropPresentationSubtree(current, rootNodeId, sources, point);
+  }
+  return joinPresentationSubtreeInstanceAt(current, root, point) ??
+    dropPresentationNode(current, rootNodeId, root.snapshot, point);
+}
+
 export function removeFocusedPresentationPlacement(
   current: WorkbenchPresentationState,
   nodeId: string
