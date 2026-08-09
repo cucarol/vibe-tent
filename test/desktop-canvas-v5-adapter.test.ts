@@ -40,6 +40,7 @@ import {
   type ExcalidrawElementLike,
 } from "../src/desktop/renderer-next/canvas/excalidraw/documentToExcalidraw.js";
 import {
+  captureCanvasV5SyncBaseline,
   createCanvasV5PersistGate,
   flushCanvasV5PersistGates,
 } from "../src/desktop/renderer-next/canvas/excalidraw/canvasV5PersistGate.js";
@@ -1127,8 +1128,9 @@ test("V5 leaves generic drawing tools exclusively to Excalidraw", async () => {
     host.indexOf("const handleProjectionSyncWithHistory"),
     host.indexOf("const handlePlacementHiddenChange")
   );
-  assert.match(syncHandler, /if \(!apiRef\.current \|\| !sync\?\.canSync \|\| syncPendingRef\.current\) return/);
-  assert.match(syncHandler, /const documentAtRequest = documentRef\.current/);
+  assert.match(syncHandler, /if \(!api \|\| !sync\?\.canSync \|\| syncPendingRef\.current\) return/);
+  assert.match(syncHandler, /captureCanvasV5SyncBaseline\(\{/);
+  assert.match(syncHandler, /const documentAtRequest = captureCanvasV5SyncBaseline/);
   assert.match(syncHandler, /const nextDocument = await onProjectionSync\(sync\.authorityDigest\)/);
   assert.match(syncHandler, /documentRef\.current !== documentAtRequest/);
   assert.ok(
@@ -1151,6 +1153,74 @@ test("V5 leaves generic drawing tools exclusively to Excalidraw", async () => {
   assert.match(overlay, /onClick=\{\(\) => \{\s*if \(!commandsEnabled\) return;/);
   assert.match(workbench, /markdown:\s*false,\s*wiki:\s*false,\s*relation:\s*false/);
   assert.doesNotMatch(workbench, /onToggleEdgeLayer/);
+});
+
+test("Canvas sync samples live placement and drawing state before capturing its document baseline", () => {
+  const placement = createCanvasV5PersistGate(60_000);
+  const drawing = createCanvasV5PersistGate(60_000);
+  let document = { placement: { x: 0, y: 0 }, viewport: { x: 0, y: 0, zoom: 1 } };
+  const persistedDrawing: number[] = [];
+
+  placement.schedule(() => {
+    document = { ...document, placement: { x: 12, y: 8 } };
+  });
+  drawing.schedule(() => persistedDrawing.push(1));
+
+  const baseline = captureCanvasV5SyncBaseline({
+    placement,
+    drawing,
+    readScene: () => ({
+      elements: [{ x: 84, y: 52 }] as const,
+      appState: { scrollX: -18, scrollY: -9, zoom: { value: 1.25 } },
+      files: { latest: true },
+    }),
+    commitPlacement: (elements, appState) => {
+      document = {
+        placement: { x: elements[0].x, y: elements[0].y },
+        viewport: {
+          x: appState.scrollX,
+          y: appState.scrollY,
+          zoom: appState.zoom.value,
+        },
+      };
+    },
+    persistDrawing: (elements) => persistedDrawing.push(elements[0].x),
+    readDocument: () => document,
+  });
+
+  assert.deepEqual(baseline, {
+    placement: { x: 84, y: 52 },
+    viewport: { x: -18, y: -9, zoom: 1.25 },
+  });
+  assert.deepEqual(persistedDrawing, [1, 84], "queued drawing persists before the exact live frame");
+  placement.flush();
+  assert.deepEqual(document, baseline, "cancelled stale geometry cannot overwrite the sync baseline");
+
+  // Pointer-up may already have cancelled the debounce while its final RAF has
+  // not committed. The live API sample must still become the sync baseline.
+  placement.cancel();
+  const pointerUpGapBaseline = captureCanvasV5SyncBaseline({
+    placement,
+    drawing,
+    readScene: () => ({
+      elements: [{ x: 126, y: 77 }] as const,
+      appState: { scrollX: -24, scrollY: -11, zoom: { value: 1.25 } },
+      files: {},
+    }),
+    commitPlacement: (elements, appState) => {
+      document = {
+        placement: { x: elements[0].x, y: elements[0].y },
+        viewport: {
+          x: appState.scrollX,
+          y: appState.scrollY,
+          zoom: appState.zoom.value,
+        },
+      };
+    },
+    persistDrawing: () => {},
+    readDocument: () => document,
+  });
+  assert.deepEqual(pointerUpGapBaseline.placement, { x: 126, y: 77 });
 });
 
 test("Canvas V5 only captures an exact internal Tent Node link", async () => {

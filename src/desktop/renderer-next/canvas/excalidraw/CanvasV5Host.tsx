@@ -81,6 +81,7 @@ import {
   type LiveSceneInputs,
 } from "./sceneRefreshPolicy.js";
 import {
+  captureCanvasV5SyncBaseline,
   createCanvasV5PersistGate,
   flushCanvasV5PersistGates,
 } from "./canvasV5PersistGate.js";
@@ -1572,8 +1573,35 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
   const syncPendingRef = useRef(false);
   const handleProjectionSyncWithHistory = useCallback(async () => {
     const sync = subtreeProjectionRef.current.documentSync;
-    if (!apiRef.current || !sync?.canSync || syncPendingRef.current) return;
-    const documentAtRequest = documentRef.current;
+    const api = apiRef.current;
+    if (!api || !sync?.canSync || syncPendingRef.current) return;
+    const documentAtRequest = captureCanvasV5SyncBaseline({
+      placement: placementPersistGate.current,
+      drawing: persistGate.current,
+      readScene: () => ({
+        elements: api.getSceneElementsIncludingDeleted?.() ?? api.getSceneElements?.() ?? [],
+        appState: api.getAppState?.() ?? {},
+        files: api.getFiles?.() ?? {},
+      }),
+      commitPlacement: (elements, appState) => {
+        commitPlacementFromScene(
+          elements,
+          appState as {
+            scrollX?: number;
+            scrollY?: number;
+            zoom?: { value: number };
+          }
+        );
+      },
+      persistDrawing: (elements, appState, files) => {
+        persistDrawing(
+          elements,
+          appState as Record<string, unknown>,
+          files as Record<string, unknown>
+        );
+      },
+      readDocument: () => documentRef.current,
+    });
     syncPendingRef.current = true;
     try {
       const nextDocument = await onProjectionSync(sync.authorityDigest);
@@ -1586,7 +1614,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     } finally {
       syncPendingRef.current = false;
     }
-  }, [commitPresentationDocumentWithHistory, onProjectionSync]);
+  }, [commitPlacementFromScene, commitPresentationDocumentWithHistory, onProjectionSync, persistDrawing]);
   const handlePlacementHiddenChange = useCallback(
     (placementId: string, hidden: boolean) => {
       if (!apiRef.current) return;
