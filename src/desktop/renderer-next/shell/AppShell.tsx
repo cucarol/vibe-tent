@@ -21,7 +21,6 @@ import {
   canvasPlacementSourceAuthority,
   dropPresentationSubtreeOrLeaf,
   placePresentationNode,
-  removeFocusedPresentationPlacement,
   selectPresentationNode,
   selectPresentationNodeFromOutline,
   withPresentationDocument,
@@ -46,8 +45,7 @@ import type {
 import type { InboxModel } from "../model/inbox.js";
 import {
   deriveCanvasSubtreeProjection,
-  readCanvasSubtreePlacementMeta,
-  reconcileCanvasProjectionSyncFromLatestAuthority,
+  reconcileCanvasDocumentSyncFromLatestAuthority,
   type CanvasProjectionAuthorityReader,
   type CanvasSubtreeNodeSource,
 } from "../model/canvas-subtree-projection.js";
@@ -76,6 +74,8 @@ export type AppShellProps = {
   inboxModel?: InboxModel;
   /** Production supplies a synchronous graphRef-backed fresh authority read. */
   readCurrentCanvasAuthority?: CanvasProjectionAuthorityReader;
+  /** Production persists the exact global sync transaction before publish. */
+  onCanvasSync?: (authorityDigest: string) => CanvasDocument | null;
 };
 
 function snapshotSource(node: WorkbenchNodeView | null | undefined): CanvasSnapshotSource | null {
@@ -121,6 +121,7 @@ export function AppShell({
   initialOutlineMode = "nodes",
   inboxModel,
   readCurrentCanvasAuthority,
+  onCanvasSync,
 }: AppShellProps = {}) {
   const layout = useMainLayout();
   const outlineOpen = !layout.effective.leftCollapsed;
@@ -321,41 +322,13 @@ export function AppShell({
     return true;
   };
 
-  const removeSelectedNode = () => {
-    if (!selectedNodeId || selectedPlacements.length === 0) return;
-    onPresentationChange?.((current) =>
-      removeFocusedPresentationPlacement(current, selectedNodeId)
+  const syncCanvas = (authorityDigest: string) => {
+    if (onCanvasSync) return onCanvasSync(authorityDigest);
+    return reconcileCanvasDocumentSyncFromLatestAuthority(
+      document,
+      authorityDigest,
+      readCurrentCanvasAuthority ?? (() => canvasSubtreeSources)
     );
-  };
-
-  const syncSelectedSnapshot = () => {
-    if (
-      !selectedNodeId ||
-      !focusedPlacement ||
-      !currentSource ||
-      !placementSourceState?.canSync
-    ) return;
-    const placementId = focusedPlacement.placementId;
-    const subtreeMeta = readCanvasSubtreePlacementMeta(focusedPlacement);
-    const controlPlacementId = subtreeMeta?.rootPlacementId ?? placementId;
-    const control = canvasSubtreeProjection.syncControls.find(
-      (candidate) => candidate.placementId === controlPlacementId
-    );
-    onPresentationChange?.((current) => {
-      if (control) {
-        const readAuthority = readCurrentCanvasAuthority ?? (() => canvasSubtreeSources);
-        return withPresentationDocument(
-          current,
-          reconcileCanvasProjectionSyncFromLatestAuthority(
-            current.document,
-            controlPlacementId,
-            control.authorityDigest,
-            readAuthority
-          )
-        );
-      }
-      return current;
-    });
   };
 
   const openNodeActions = () => {
@@ -408,7 +381,7 @@ export function AppShell({
 
       <div className="tn-workbench" data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-focus-expanded={focusExpanded ? "true" : "false"} data-immersive={immersive ? "true" : "false"}>
         <OutlinePanel id="tn-outline-panel" mode={outlineMode} onModeChange={setOutlineMode} nodes={nodes} projection={projection} selectedNodeId={selectedNodeId} reveal={outlineReveal} visible={outlineOpen} onSelectNode={selectNodeFromOutline} onOpenNodeActions={openNodeActions} canDragToCanvas={Boolean(onPresentationChange)} canvasPresence={canvasProjectionPresence} onCollapse={() => layout.collapse("left")} inboxModel={inboxModel} />
-        <CanvasWorkbench document={document} nodes={nodes} projection={projection} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNodeFromCanvas} onDropNode={onPresentationChange ? dropNode : undefined} previewDocument={focusDocument?.nodeId && typeof focusDocument.body === "string" ? { nodeId: focusDocument.nodeId, body: focusDocument.body } : null} attentionNodeIds={attentionNodeIds} readCurrentCanvasAuthority={readCurrentCanvasAuthority} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
+        <CanvasWorkbench document={document} nodes={nodes} projection={projection} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNodeFromCanvas} onDropNode={onPresentationChange ? dropNode : undefined} previewDocument={focusDocument?.nodeId && typeof focusDocument.body === "string" ? { nodeId: focusDocument.nodeId, body: focusDocument.body } : null} attentionNodeIds={attentionNodeIds} onCanvasSync={syncCanvas} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
         <InspectorPanel
           id="tn-focus-panel"
           node={selectedNode}
@@ -417,8 +390,6 @@ export function AppShell({
           placementSourceState={placementSourceState}
           canCreatePlacement={canCreatePlacement}
           onPlaceNode={placeSelectedNode}
-          onRemoveNode={removeSelectedNode}
-          onSyncSnapshot={syncSelectedSnapshot}
           placementActionRef={placementActionRef}
           document={focusDocument}
           documentActions={focusDocumentActions}

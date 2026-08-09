@@ -588,7 +588,7 @@ test("Canvas resize preserves world centre then minimally reveals the focused pl
       height: 280,
     },
   });
-  assert.equal(760 + direct1280.x + 240, 626, "direct narrow mount reveals the full focused placement");
+  assert.equal(760 + direct1280.x + NODE_CARD.width, 626, "direct narrow mount reveals the full focused placement");
 
   const viewport = viewportAfterCanvasResize({
     viewport: { x: -320, y: 40, zoom: 1 },

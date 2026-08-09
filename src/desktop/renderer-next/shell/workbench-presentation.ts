@@ -1,18 +1,14 @@
 import {
   dropNodeSnapshotAt,
   placeEntityInVisibleViewport,
-  removePlacement,
-  setFocusedPlacement,
 } from "../model/canvas-document.js";
 import {
-  withCanvasNodeSnapshot,
   type CanvasNodeSnapshot,
 } from "../model/canvas-node-snapshot.js";
 import type { CanvasDocument } from "../types/identity.js";
 import { focusWorkbenchNode } from "./workbench-selection.js";
 import {
   createCanvasSubtreeProjectionInstance,
-  joinCanvasSubtreeInstanceAt,
   type CanvasSubtreeNodeSource,
   type SubtreeDirection,
 } from "../model/canvas-subtree-projection.js";
@@ -138,19 +134,6 @@ export function dropPresentationSubtree(
   };
 }
 
-export function joinPresentationSubtreeInstanceAt(
-  current: WorkbenchPresentationState,
-  source: CanvasSubtreeNodeSource,
-  point: { x: number; y: number }
-): WorkbenchPresentationState | null {
-  const joined = joinCanvasSubtreeInstanceAt(current.document, source, point);
-  if (!joined) return null;
-  return {
-    selectedNodeId: source.nodeId,
-    document: joined.document,
-  };
-}
-
 export function dropPresentationSubtreeOrLeaf(
   current: WorkbenchPresentationState,
   rootNodeId: string,
@@ -162,60 +145,5 @@ export function dropPresentationSubtreeOrLeaf(
   if (sources.length > 1) {
     return dropPresentationSubtree(current, rootNodeId, sources, point);
   }
-  return joinPresentationSubtreeInstanceAt(current, root, point) ??
-    dropPresentationNode(current, rootNodeId, root.snapshot, point);
-}
-
-export function removeFocusedPresentationPlacement(
-  current: WorkbenchPresentationState,
-  nodeId: string
-): WorkbenchPresentationState {
-  const target = current.document.placements.find(
-    (placement) =>
-      placement.placementId === current.document.focusedPlacementId &&
-      placement.entityRef === nodeId
-  ) ?? current.document.placements.find(
-    (placement) => placement.entityRef === nodeId
-  );
-  if (!target) return current;
-  const removed = removePlacement(current.document, target.placementId);
-  const nextForNode = removed.placements.find(
-    (placement) => placement.entityRef === nodeId
-  );
-  return {
-    selectedNodeId: nodeId,
-    document: setFocusedPlacement(
-      removed,
-      nextForNode?.placementId ?? null
-    ),
-  };
-}
-
-/**
- * Replace only the placement that was focused when the command was invoked.
- * The captured ids close the focus-race without updating duplicate instances.
- */
-export function syncFocusedPresentationSnapshot(
-  current: WorkbenchPresentationState,
-  expectedPlacementId: string,
-  expectedNodeId: string,
-  snapshot: CanvasNodeSnapshot
-): WorkbenchPresentationState {
-  if (current.document.focusedPlacementId !== expectedPlacementId) return current;
-  let changed = false;
-  const placements = current.document.placements.map((placement) => {
-    if (
-      placement.placementId !== expectedPlacementId ||
-      placement.entityRef !== expectedNodeId
-    ) {
-      return placement;
-    }
-    changed = true;
-    return withCanvasNodeSnapshot(placement, snapshot);
-  });
-  if (!changed) return current;
-  return {
-    selectedNodeId: current.selectedNodeId,
-    document: { ...current.document, placements },
-  };
+  return dropPresentationNode(current, rootNodeId, root.snapshot, point);
 }

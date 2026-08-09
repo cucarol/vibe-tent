@@ -213,34 +213,31 @@
 
 .tn-excal-node {
   position: relative;
-  /*
-   * Tent cards are a read-only projection. Keeping their DOM transparent to
-   * pointer input lets Excalidraw own selection and placement dragging from
-   * the first gesture instead of first activating the embeddable overlay.
-   */
   pointer-events: none;
-  container-type: size;
   box-sizing: border-box;
   width: 100%;
   height: 100%;
+  display: grid;
+  place-items: center;
   overflow: hidden;
-  border: 1px solid var(--tn-color-border);
-  border-radius: var(--tn-radius-md);
-  background: var(--tn-color-card-bg);
-  box-shadow: var(--tn-shadow-card);
+  border: 1px solid color-mix(in srgb, var(--tn-color-border) 84%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--tn-color-card-bg) 88%, transparent);
   color: var(--tn-color-text-primary);
   font-family: var(--tn-font-ui);
   transition:
     border-color var(--tn-motion-duration-standard) var(--tn-motion-ease-out),
-    box-shadow var(--tn-motion-duration-standard) var(--tn-motion-ease-out),
     background-color var(--tn-motion-duration-standard) var(--tn-motion-ease-out);
 }
 
+.tn-excal-node[data-title-lines="1"] {
+  height: 40px;
+  margin-block: 8px;
+}
+
 .tn-excal-node[data-selected="true"] {
-  border-color: var(--tn-color-border);
-  border-left: 2px solid var(--tn-color-accent);
-  background: color-mix(in srgb, var(--tn-color-card-bg) 92%, var(--tn-color-accent-soft));
-  box-shadow: none;
+  border-color: var(--tn-color-text-secondary);
+  background: color-mix(in srgb, var(--tn-color-card-bg) 82%, var(--tn-color-selected));
 }
 
 .tn-excal-node[data-projection-sync="pending-sync"] {
@@ -252,12 +249,19 @@
   border-color: var(--tn-color-border-strong);
 }
 
+.tn-excal-node[data-projection-sync="tombstone"] {
+  border-style: dashed;
+  border-color: var(--tn-color-text-faint);
+  background: var(--tn-color-panel-bg);
+  color: var(--tn-color-text-secondary);
+}
+
 .tn-excal-node::after {
   position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 6px;
-  height: 6px;
+  top: 6px;
+  right: 6px;
+  width: 5px;
+  height: 5px;
   border: 1px solid var(--tn-color-text-secondary);
   border-radius: 2px;
   background: var(--tn-color-elevated-bg);
@@ -270,151 +274,17 @@
   opacity: 1;
 }
 
-.tn-excal-node__signal {
-  position: absolute;
-  top: 0;
-  right: 0;
-  left: 0;
-  display: flex;
-  gap: 4px;
-  height: 2px;
-  overflow: hidden;
-  background: var(--tn-color-border);
-  transition: background-color var(--tn-motion-duration-standard) var(--tn-motion-ease-out);
-}
-
-.tn-excal-node__signal span {
-  width: 34%;
-  height: 100%;
-  background: var(--tn-color-running);
-  transform: translateX(-320%);
-  transition:
-    opacity var(--tn-motion-duration-standard) var(--tn-motion-ease-out),
-    transform var(--tn-motion-duration-standard) var(--tn-motion-ease-out);
-}
-
-.tn-excal-node[data-node-state="stale"] .tn-excal-node__signal,
-.tn-excal-node[data-node-state="unknown"] .tn-excal-node__signal {
-  background: var(--tn-color-ghost);
-}
-
-.tn-excal-node[data-node-state="unresolved"] .tn-excal-node__signal,
-.tn-excal-node[data-node-state="error"] .tn-excal-node__signal {
-  background: var(--tn-color-danger-soft);
-}
-
-.tn-excal-node__header {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 9px 11px 0;
-}
-
-.tn-excal-node__type,
-.tn-excal-node__id {
-  color: var(--tn-color-text-faint);
-  font-family: "Cascadia Code", monospace;
-  font-size: 9px;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-
-.tn-excal-node__state {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-  color: var(--tn-color-text-secondary);
-  padding-right: 10px;
-  font-size: 9px;
-}
-
-.tn-excal-node__state-mark {
-  width: 6px;
-  height: 6px;
-  border: 1px solid currentColor;
-  border-radius: 50%;
-  background: var(--tn-color-elevated-bg);
-  transition:
-    color var(--tn-motion-duration-standard) var(--tn-motion-ease-out),
-    background-color var(--tn-motion-duration-standard) var(--tn-motion-ease-out),
-    border-color var(--tn-motion-duration-standard) var(--tn-motion-ease-out);
-}
-
-.tn-excal-node[data-source-state="changed"] .tn-excal-node__signal {
-  background: var(--tn-color-selected-strong);
-}
-
-.tn-excal-node[data-source-state="changed"] .tn-excal-node__state-mark {
-  color: var(--tn-color-text-primary);
-  background: var(--tn-color-selected);
-}
-
-.tn-excal-node[data-node-state="stale"] .tn-excal-node__state-mark,
-.tn-excal-node[data-node-state="unknown"] .tn-excal-node__state-mark {
-  color: var(--tn-color-pending);
-  background: var(--tn-color-ghost);
-}
-
-.tn-excal-node[data-node-state="unresolved"] .tn-excal-node__state-mark,
-.tn-excal-node[data-node-state="error"] .tn-excal-node__state-mark {
-  color: var(--tn-color-danger);
-  background: var(--tn-color-danger-soft);
-}
-
 .tn-excal-node h3 {
-  margin: 8px 11px 2px;
-  overflow: hidden;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tn-excal-node__fact {
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
-  gap: 6px;
-  margin: 6px 11px 0;
-  padding-top: 5px;
-  border-top: 1px solid var(--tn-color-border);
-}
-
-.tn-excal-node__fact > span {
-  color: var(--tn-color-text-faint);
-  font-size: 9px;
-}
-
-.tn-excal-node__fact p {
   display: -webkit-box;
   margin: 0;
+  padding: 0 12px;
   overflow: hidden;
-  color: var(--tn-color-text-secondary);
-  font-size: 10px;
-  line-height: 1.3;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.35;
+  text-align: center;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
-}
-
-/*
- * Tiny transient sizes can exist for one frame while Excalidraw releases a
- * transform gesture. Keep the fixed card legible until the adapter restores
- * its canonical dimensions.
- */
-@container (max-height: 82px) {
-  .tn-excal-node__header {
-    gap: 8px;
-    padding: 10px 12px 0;
-  }
-
-  .tn-excal-node h3 {
-    margin: 9px 12px 0;
-    font-size: 13px;
-  }
-
-  .tn-excal-node__fact {
-    display: none;
-  }
+  -webkit-line-clamp: 2;
 }
 
 @media (prefers-reduced-motion: reduce) {

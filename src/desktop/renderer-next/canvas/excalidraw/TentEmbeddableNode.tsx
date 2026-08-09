@@ -20,7 +20,7 @@ export type TentEmbeddableNodeProps = {
   data: TentEmbeddableNodeData;
   placementId: string;
   selected: boolean;
-  projectionSyncState?: "current" | "pending-sync" | "unknown";
+  projectionSyncState?: "current" | "pending-sync" | "unknown" | "tombstone";
   needsAttention?: boolean;
 };
 
@@ -40,8 +40,7 @@ const STATE_LABELS: Record<TentEmbeddableNodeState, string> = {
 export function TentEmbeddableNode(props: TentEmbeddableNodeProps) {
   const { data, placementId, selected, projectionSyncState = "current", needsAttention = false } = props;
   const stateLabel = data.stateLabel ?? STATE_LABELS[data.state];
-  const detailLabel =
-    data.type === "目标" ? "范围" : data.type === "输出" ? "产物" : "上下文";
+  const titleLines = Array.from(data.title.trim()).length <= 16 ? 1 : 2;
   return (
     <article
       className="tn-excal-node"
@@ -51,28 +50,13 @@ export function TentEmbeddableNode(props: TentEmbeddableNodeProps) {
       data-task-state={data.rawTaskState ?? undefined}
       data-projection-sync={projectionSyncState}
       data-needs-attention={needsAttention ? "true" : "false"}
+      data-title-lines={titleLines}
       data-tent-placement-id={placementId}
       data-testid={`tent-embeddable-node-${data.nodeId}`}
       aria-label={`${data.title}，${stateLabel}`}
-      title={data.nodeId}
+      title={data.title}
     >
-      <div className="tn-excal-node__signal" aria-hidden="true">
-        <span />
-        <span />
-        <span />
-      </div>
-      <header className="tn-excal-node__header">
-        <span className="tn-excal-node__type">{data.type}</span>
-        <span className="tn-excal-node__state">
-          <span className="tn-excal-node__state-mark" aria-hidden="true" />
-          {stateLabel}
-        </span>
-      </header>
       <h3>{data.title}</h3>
-      <div className="tn-excal-node__fact">
-        <span>{detailLabel}</span>
-        <p>{data.detail}</p>
-      </div>
     </article>
   );
 }

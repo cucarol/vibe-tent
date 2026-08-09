@@ -12,9 +12,8 @@ import {
 } from "../model/canvas-node-snapshot.js";
 import {
   deriveCanvasSubtreeProjection,
-  reconcileCanvasProjectionSyncFromLatestAuthority,
+  reconcileCanvasDocumentSync,
   toggleCanvasSubtreeBranch,
-  type CanvasProjectionAuthorityReader,
   type CanvasSubtreeNodeSource,
   type SubtreeDirection,
 } from "../model/canvas-subtree-projection.js";
@@ -41,11 +40,11 @@ export type CanvasWorkbenchProps = {
   onDropNode?: (nodeId: string, point: { x: number; y: number }) => boolean;
   previewDocument?: { nodeId: string; body: string } | null;
   attentionNodeIds?: ReadonlySet<string>;
-  readCurrentCanvasAuthority?: CanvasProjectionAuthorityReader;
+  onCanvasSync?: (authorityDigest: string) => CanvasDocument | null;
   hidden?: boolean;
 };
 
-export function CanvasWorkbench({ document, nodes, projection, immersive, onImmersiveChange, onDocumentChange, onSelectNode, initialScene = null, persistenceStatus = { kind: "ok" }, onRetryPersistence, onScenePersist, onDropNode, previewDocument = null, attentionNodeIds = new Set(), readCurrentCanvasAuthority, hidden = false }: CanvasWorkbenchProps) {
+export function CanvasWorkbench({ document, nodes, projection, immersive, onImmersiveChange, onDocumentChange, onSelectNode, initialScene = null, persistenceStatus = { kind: "ok" }, onRetryPersistence, onScenePersist, onDropNode, previewDocument = null, attentionNodeIds = new Set(), onCanvasSync, hidden = false }: CanvasWorkbenchProps) {
   const [drawingVisible, setDrawingVisible] = useState(
     () => initialScene?.layerVisible ?? true
   );
@@ -115,20 +114,17 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
   );
 
   const handleSubtreeDirection = (placementId: string, direction: SubtreeDirection) => {
-    if (subtreeProjection.authority !== "fresh") return;
     const control = subtreeProjection.controls.find((candidate) => candidate.placementId === placementId);
     if (!control?.canMutate) return;
     onDocumentChange(toggleCanvasSubtreeBranch(document, placementId, direction));
   };
 
-  const handleProjectionSync = (placementId: string) => {
-    const control = subtreeProjection.syncControls.find((candidate) => candidate.placementId === placementId);
-    if (!control?.canSync) return null;
-    return reconcileCanvasProjectionSyncFromLatestAuthority(
+  const handleProjectionSync = (authorityDigest: string) => {
+    if (!subtreeProjection.documentSync?.canSync) return null;
+    return onCanvasSync?.(authorityDigest) ?? reconcileCanvasDocumentSync(
       document,
-      placementId,
-      control.authorityDigest,
-      readCurrentCanvasAuthority ?? (() => subtreeSources)
+      subtreeSources,
+      { authorityDigest }
     );
   };
 

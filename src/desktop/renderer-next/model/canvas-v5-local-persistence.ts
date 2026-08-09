@@ -16,6 +16,10 @@ import {
 import { NODE_CARD } from "./canvas-document.js";
 import { createEmptyCanvasDocument, type CanvasDocument } from "../types/identity.js";
 import type { StorageLike } from "./canvas-session-store.js";
+import {
+  reconcileCanvasDocumentSyncFromLatestAuthority,
+  type CanvasProjectionAuthorityReader,
+} from "./canvas-subtree-projection.js";
 
 export const CANVAS_V5_LOCAL_PERSISTENCE_PREFIX = "tent.desktop.canvasV5Local.v1";
 
@@ -57,6 +61,37 @@ export type CanvasV5PendingSave = {
   status: Extract<CanvasV5PersistenceStatus, { kind: "pending" }>;
   commit: () => CanvasV5SaveResult;
 };
+
+export type CanvasV5DocumentSyncTransaction = {
+  document: CanvasDocument;
+  status: CanvasV5PersistenceStatus | null;
+  committed: boolean;
+};
+
+/**
+ * One fail-closed current-Canvas sync transaction. Authority is re-read at
+ * this boundary, and the reconciled document is published only after its
+ * complete local snapshot is durably written.
+ */
+export function commitCanvasV5DocumentSync(
+  persistence: Pick<CanvasV5LocalPersistence, "beginSave">,
+  snapshot: CanvasV5LocalSnapshot,
+  expectedDigest: string,
+  readAuthority: CanvasProjectionAuthorityReader
+): CanvasV5DocumentSyncTransaction {
+  const nextDocument = reconcileCanvasDocumentSyncFromLatestAuthority(
+    snapshot.document,
+    expectedDigest,
+    readAuthority
+  );
+  if (nextDocument === snapshot.document) {
+    return { document: snapshot.document, status: null, committed: false };
+  }
+  const result = persistence.beginSave({ ...snapshot, document: nextDocument }).commit();
+  return result.kind === "saved"
+    ? { document: nextDocument, status: result.status, committed: true }
+    : { document: snapshot.document, status: result.status, committed: false };
+}
 
 /** Only a valid, genuinely empty record may receive first-run placements. */
 export function shouldSeedLocalCanvas(

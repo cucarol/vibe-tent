@@ -39,8 +39,6 @@ export type InspectorPanelProps = {
   placementSourceState?: CanvasPlacementSourceState | null;
   canCreatePlacement?: boolean;
   onPlaceNode?: () => void;
-  onRemoveNode?: () => void;
-  onSyncSnapshot?: () => void;
   placementActionRef?: Ref<HTMLButtonElement>;
   document?: FocusDocumentView;
   documentActions?: FocusDocumentActions;
@@ -61,8 +59,6 @@ export function InspectorPanel({
   placementSourceState = null,
   canCreatePlacement = false,
   onPlaceNode,
-  onRemoveNode,
-  onSyncSnapshot,
   placementActionRef,
   document,
   documentActions,
@@ -147,7 +143,7 @@ export function InspectorPanel({
               <h2 id="tn-focus-placement-title">画布位置</h2>
               <p id="tn-focus-placement-description">
                 {placementState === "placed"
-                  ? "已放入当前画布。移动与移除只影响本机布局。"
+                  ? "已放入当前画布。移动与隐藏只影响本机布局。"
                   : canCreatePlacement
                     ? "尚未放入画布。节点事实仍保留在工作区中。"
                     : "尚未放入画布；权威节点恢复后才能创建本地位置。"}
@@ -162,30 +158,7 @@ export function InspectorPanel({
                 </span>
               ) : null}
             </div>
-            {placementState === "placed" ? (
-              <div className="tn-focus-placement__actions">
-                {placementSourceState?.canSync ? (
-                  <IconButton
-                    size="compact"
-                    aria-label="同步快照"
-                    tooltip="同步快照"
-                    variant="ghost"
-                    onClick={onSyncSnapshot}
-                  >
-                    <ShellIcon name="refresh" />
-                  </IconButton>
-                ) : null}
-                <Button
-                  ref={placementActionRef}
-                  variant="quiet"
-                  size="compact"
-                  aria-describedby="tn-focus-placement-description"
-                  onClick={onRemoveNode}
-                >
-                  从画布移除
-                </Button>
-              </div>
-            ) : (
+            {placementState !== "placed" ? (
               <Button
                 ref={placementActionRef}
                 variant="primary"
@@ -196,7 +169,7 @@ export function InspectorPanel({
               >
                 放入画布
               </Button>
-            )}
+            ) : null}
           </section>
 
           {projectionReady ? (

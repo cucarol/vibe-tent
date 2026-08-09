@@ -12,6 +12,7 @@ export type CanvasSubtreeStructureBranch = {
   direction: SubtreeDirection;
   path: string;
   highlightPath: string | null;
+  routePoints: readonly { x: number; y: number }[];
 };
 
 export type CanvasSubtreeStructurePathTarget = {
@@ -53,6 +54,7 @@ type CanvasStructureObstacleGeometry = {
 };
 
 const STRUCTURE_CLEARANCE = 12;
+const STRUCTURE_TRUNK = 18;
 
 function placementRect(placement: CanvasPlacement, override: PositionOverride): Rect {
   const x = override?.placementId === placement.placementId ? override.x : placement.x ?? 0;
@@ -79,6 +81,13 @@ function opposite(direction: SubtreeDirection): SubtreeDirection {
   if (direction === "left") return "right";
   if (direction === "down") return "up";
   return "down";
+}
+
+function trunkEnd(point: Point, direction: SubtreeDirection): Point {
+  if (direction === "right") return { x: point.x + STRUCTURE_TRUNK, y: point.y };
+  if (direction === "left") return { x: point.x - STRUCTURE_TRUNK, y: point.y };
+  if (direction === "down") return { x: point.x, y: point.y + STRUCTURE_TRUNK };
+  return { x: point.x, y: point.y - STRUCTURE_TRUNK };
 }
 
 function inflateRect(rect: Rect, clearance: number): Rect {
@@ -418,14 +427,34 @@ function routeOrthogonal(
   return routeVisibilityGrid(start, end, geometry, ignoredPlacementIds, diagnostics);
 }
 
-function pathData(points: readonly Point[]): string {
+function segmentCommand(from: Point, to: Point): string {
+  return from.y === to.y ? `H ${to.x}` : `V ${to.y}`;
+}
+
+function roundedPathData(points: readonly Point[]): string {
   if (points.length === 0) return "";
   const commands = [`M ${points[0].x} ${points[0].y}`];
-  for (let index = 1; index < points.length; index += 1) {
-    const previous = points[index - 1];
-    const point = points[index];
-    commands.push(previous.y === point.y ? `H ${point.x}` : `V ${point.y}`);
+  let cursor = points[0];
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const corner = points[index];
+    const next = points[index + 1];
+    const incoming = Math.abs(corner.x - cursor.x) + Math.abs(corner.y - cursor.y);
+    const outgoing = Math.abs(next.x - corner.x) + Math.abs(next.y - corner.y);
+    const radius = Math.min(7, incoming / 2, outgoing / 2);
+    if (radius <= 0) continue;
+    const before = {
+      x: corner.x === cursor.x ? corner.x : corner.x + (cursor.x < corner.x ? -radius : radius),
+      y: corner.y === cursor.y ? corner.y : corner.y + (cursor.y < corner.y ? -radius : radius),
+    };
+    const after = {
+      x: next.x === corner.x ? corner.x : corner.x + (next.x > corner.x ? radius : -radius),
+      y: next.y === corner.y ? corner.y : corner.y + (next.y > corner.y ? radius : -radius),
+    };
+    commands.push(segmentCommand(cursor, before));
+    commands.push(`Q ${corner.x} ${corner.y} ${after.x} ${after.y}`);
+    cursor = after;
   }
+  commands.push(segmentCommand(cursor, points.at(-1)!));
   return commands.join(" ");
 }
 
@@ -469,7 +498,6 @@ export function deriveCanvasSubtreeStructureBranches(
   override: PositionOverride = null,
   diagnostics?: CanvasStructureRouteDiagnostics
 ): CanvasSubtreeStructureBranch[] {
-  if (projection.authority !== "fresh") return [];
   const byId = new Map(document.placements.map((placement) => [placement.placementId, placement] as const));
   const emphasized = emphasizedRelationshipIds(
     projection.relationships,
@@ -491,6 +519,7 @@ export function deriveCanvasSubtreeStructureBranches(
       placementRect(child, override)
     );
     const parentPoint = anchor(placementRect(parent, override), direction);
+    const branchPoint = trunkEnd(parentPoint, direction);
     const childPoint = anchor(placementRect(child, override), opposite(direction));
     const ignoredPlacementIds = new Set([
       relationship.parentPlacementId,
@@ -500,7 +529,7 @@ export function deriveCanvasSubtreeStructureBranches(
       ignoredPlacementIds.has(candidate.placementId) ? [] : [candidate.rect]
     );
     const points = routeOrthogonal(
-      parentPoint,
+      branchPoint,
       childPoint,
       obstacles,
       obstacleGeometry,
@@ -508,13 +537,15 @@ export function deriveCanvasSubtreeStructureBranches(
       diagnostics
     );
     if (!points) return [];
-    const path = pathData(points);
+    const routePoints = [parentPoint, ...points];
+    const path = roundedPathData(routePoints);
     return [{
       id: `branch:${relationship.id}`,
       parentPlacementId: parent.placementId,
       direction,
       path,
       highlightPath: emphasized.has(relationship.id) ? path : null,
+      routePoints,
     }];
   });
 }

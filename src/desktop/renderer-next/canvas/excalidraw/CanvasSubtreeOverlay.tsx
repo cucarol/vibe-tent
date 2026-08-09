@@ -17,7 +17,6 @@ import type {
   SubtreeDirection,
 } from "../../model/canvas-subtree-projection.js";
 import { IconButton } from "../../ui/index.js";
-import { ShellIcon } from "../../shell/icons.js";
 
 export type CanvasSubtreeOverlayHandle = {
   update: (
@@ -32,7 +31,7 @@ type Props = {
   hoveredPlacementId: string | null;
   selectedPlacementId: string | null;
   onDirection: (placementId: string, direction: SubtreeDirection) => void;
-  onSync: (placementId: string) => void;
+  onHide: (placementId: string) => void;
 };
 
 const directionLabel: Record<SubtreeDirection, string> = {
@@ -57,16 +56,24 @@ function DirectionGlyph({ direction }: { direction: SubtreeDirection }) {
   );
 }
 
+function HideGlyph() {
+  return (
+    <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
+      <path d="M3 3l14 14M8.4 5.1A8.7 8.7 0 0 1 10 5c4 0 6.8 3.8 6.8 3.8a10.8 10.8 0 0 1-2 2.4M11.8 12.7A4.6 4.6 0 0 1 10 13c-4 0-6.8-3.8-6.8-3.8a11 11 0 0 1 2.1-2.4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props>(
   function CanvasSubtreeOverlay(
-    { document, projection, hoveredPlacementId, selectedPlacementId, onDirection, onSync },
+    { document, projection, hoveredPlacementId, selectedPlacementId, onDirection, onHide },
     ref
   ) {
     const [directionMenuPlacementId, setDirectionMenuPlacementId] = useState<string | null>(null);
     const groupRef = useRef<SVGGElement>(null);
     const pathRefs = useRef(new Map<string, { base: SVGPathElement | null; highlight: SVGPathElement | null }>());
     const controlRefs = useRef(new Map<string, HTMLDivElement>());
-    const syncRefs = useRef(new Map<string, HTMLDivElement>());
+    const placementActionRefs = useRef(new Map<string, HTMLDivElement>());
     const branches = useMemo(
       () => deriveCanvasSubtreeStructureBranches(document, projection),
       [document, projection]
@@ -142,7 +149,7 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
           element.style.height = `${NODE_CARD.height * zoom}px`;
         };
         for (const [placementId, element] of controlRefs.current) placeControl(placementId, element);
-        for (const [placementId, element] of syncRefs.current) placeControl(placementId, element);
+        for (const [placementId, element] of placementActionRefs.current) placeControl(placementId, element);
       },
     }), [byPlacementId, document, projection]);
 
@@ -264,34 +271,30 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
             </div>
           );
         })}
-        {projection.syncControls.map((control) => {
-          const visible = control.placementId === selectedPlacementId || control.placementId === hoveredPlacementId;
-          const label = control.scope === "subtree"
-            ? `同步投影，${control.affectedCount} 项待更新`
-            : "同步快照";
+        {projection.visiblePlacementIds.map((placementId) => {
+          const placement = byPlacementId.get(placementId);
+          if (!placement || placement.kind !== "node") return null;
+          const visible = placementId === selectedPlacementId || placementId === hoveredPlacementId;
           return (
             <div
-              key={`sync:${control.placementId}`}
+              key={`placement-actions:${placementId}`}
               ref={(element) => {
-                if (element) syncRefs.current.set(control.placementId, element);
-                else syncRefs.current.delete(control.placementId);
+                if (element) placementActionRefs.current.set(placementId, element);
+                else placementActionRefs.current.delete(placementId);
               }}
-              className="tn-canvas-projection-sync"
+              className="tn-canvas-placement-actions"
               data-visible={visible ? "true" : "false"}
-              data-sync-placement-id={control.placementId}
             >
               <IconButton
                 variant="quiet"
                 size="compact"
-                aria-label={label}
-                tooltip={label}
-                disabled={!control.canSync}
+                aria-label="在画布中隐藏"
+                tooltip="在画布中隐藏"
                 onPointerDown={(event) => event.stopPropagation()}
-                onClick={() => onSync(control.placementId)}
+                onClick={() => onHide(placementId)}
               >
-                <ShellIcon name="refresh" />
+                <HideGlyph />
               </IconButton>
-              {control.scope === "subtree" ? <span>{control.affectedCount}</span> : null}
             </div>
           );
         })}

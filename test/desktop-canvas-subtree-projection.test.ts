@@ -5,14 +5,15 @@ import type { CanvasDocument, CanvasPlacement } from "../src/desktop/renderer-ne
 import { movePlacement, NODE_CARD } from "../src/desktop/renderer-next/model/canvas-document.js";
 import {
   CANVAS_SUBTREE_META_KEY,
-  canvasProjectionAuthorityDigest,
+  canvasDocumentAuthorityDigest,
   carryCollapsedSubtreeDescendants,
   createCanvasSubtreeProjectionInstance,
   deriveCanvasSubtreeProjection,
-  joinCanvasSubtreeInstanceAt,
   readCanvasSubtreePlacementMeta,
-  reconcileCanvasProjectionSync,
-  reconcileCanvasProjectionSyncFromLatestAuthority,
+  reconcileCanvasDocumentSync,
+  reconcileCanvasDocumentSyncFromLatestAuthority,
+  readCanvasProjectionPlacementMeta,
+  setCanvasProjectionPlacementHidden,
   toggleCanvasSubtreeBranch,
   type CanvasSubtreeNodeSource,
 } from "../src/desktop/renderer-next/model/canvas-subtree-projection.js";
@@ -36,7 +37,6 @@ const emptyDocument = (): CanvasDocument => ({
   focusedPlacementId: null,
   viewport: { x: 0, y: 0, zoom: 1 },
 });
-
 function source(nodeId: string, parentNodeId: string | null, etag = `${nodeId}-v1`): CanvasSubtreeNodeSource {
   return {
     nodeId,
@@ -70,27 +70,18 @@ function nodePlacement(placementId: string, nodeId: string, x: number, y: number
   };
 }
 
-type Segment = { from: { x: number; y: number }; to: { x: number; y: number } };
-
-function pathSegments(path: string): Segment[] {
-  const tokens = path.match(/[MHV]|-?\d+(?:\.\d+)?/g) ?? [];
-  const segments: Segment[] = [];
-  let index = 0;
-  let point = { x: 0, y: 0 };
-  while (index < tokens.length) {
-    const command = tokens[index++];
-    if (command === "M") {
-      point = { x: Number(tokens[index++]), y: Number(tokens[index++]) };
-      continue;
-    }
-    const next = command === "H"
-      ? { x: Number(tokens[index++]), y: point.y }
-      : { x: point.x, y: Number(tokens[index++]) };
-    segments.push({ from: point, to: next });
-    point = next;
-  }
-  return segments;
+function placementRectForTest(placement: CanvasPlacement) {
+  const left = placement.x ?? 0;
+  const top = placement.y ?? 0;
+  return {
+    left,
+    top,
+    right: left + NODE_CARD.width,
+    bottom: top + NODE_CARD.height,
+  };
 }
+
+type Segment = { from: { x: number; y: number }; to: { x: number; y: number } };
 
 function segmentCrossesPlacement(segment: Segment, placement: CanvasPlacement): boolean {
   const clearance = 12;
@@ -111,8 +102,11 @@ function segmentCrossesPlacement(segment: Segment, placement: CanvasPlacement): 
   return true;
 }
 
-function assertPathAvoidsPlacements(path: string, placements: readonly CanvasPlacement[]): void {
-  const segments = pathSegments(path);
+function assertRouteAvoidsPlacements(
+  points: readonly { x: number; y: number }[],
+  placements: readonly CanvasPlacement[]
+): void {
+  const segments = points.slice(1).map((to, index) => ({ from: points[index], to }));
   assert.ok(segments.length > 0);
   for (const segment of segments) {
     assert.ok(segment.from.x === segment.to.x || segment.from.y === segment.to.y);
@@ -142,26 +136,38 @@ function createInstance(document = emptyDocument(), prefix = "a") {
   );
 }
 
-test("subtree drop persists all members while only root and direct children start visible", () => {
+test("subtree drop freezes the complete bundle while only its root starts visible", () => {
   const created = createInstance();
   assert.equal(created.document.placements.length, 4);
   const projection = deriveCanvasSubtreeProjection(created.document, TREE);
   assert.deepEqual(
     projection.visiblePlacementIds,
-    ["placement-a-0", "placement-a-1", "placement-a-3"]
+    ["placement-a-0"]
   );
   assert.deepEqual(
     projection.relationships.map((edge) => [edge.parentPlacementId, edge.childPlacementId]),
-    [["placement-a-0", "placement-a-1"], ["placement-a-0", "placement-a-3"]]
+    []
   );
-  assert.equal(projection.controls.find((item) => item.placementId === "placement-a-0")?.expandedDirection, "right");
-  assert.equal(projection.controls.find((item) => item.placementId === "placement-a-1")?.expandedDirection, null);
+  assert.equal(projection.controls.find((item) => item.placementId === "placement-a-0")?.expandedDirection, null);
+  const expanded = toggleCanvasSubtreeBranch(created.document, "placement-a-0", "right");
+  assert.deepEqual(
+    deriveCanvasSubtreeProjection(expanded, TREE).visiblePlacementIds,
+    ["placement-a-0", "placement-a-1", "placement-a-3"]
+  );
+  const branches = deriveCanvasSubtreeStructureBranches(
+    expanded,
+    deriveCanvasSubtreeProjection(expanded, TREE)
+  );
+  const sharedTrunks = branches.map((branch) => branch.path.split(/(?= H | V )/).slice(0, 2).join(""));
+  assert.equal(new Set(sharedTrunks).size, 1, "direct siblings share one quiet short trunk");
 });
 
 test("duplicate subtree instances never cross-pair relationships", () => {
   const first = createInstance();
   const second = createInstance(first.document, "b");
-  const projection = deriveCanvasSubtreeProjection(second.document, TREE);
+  const expandedA = toggleCanvasSubtreeBranch(second.document, "placement-a-0", "right");
+  const expanded = toggleCanvasSubtreeBranch(expandedA, "placement-b-0", "right");
+  const projection = deriveCanvasSubtreeProjection(expanded, TREE);
   assert.equal(projection.relationships.length, 4);
   assert.equal(new Set(projection.relationships.map((edge) => edge.instanceId)).size, 2);
   for (const edge of projection.relationships) {
@@ -174,12 +180,13 @@ test("duplicate subtree instances never cross-pair relationships", () => {
 test("collapse preserves positions and explicit direction change alone relayouts descendants", () => {
   const created = createInstance();
   const before = new Map(created.document.placements.map((placement) => [placement.placementId, [placement.x, placement.y]]));
-  const collapsed = toggleCanvasSubtreeBranch(created.document, "placement-a-0", "right");
+  const expanded = toggleCanvasSubtreeBranch(created.document, "placement-a-0", "right");
+  const collapsed = toggleCanvasSubtreeBranch(expanded, "placement-a-0", "right");
   assert.equal(deriveCanvasSubtreeProjection(collapsed, TREE).visiblePlacementIds.length, 1);
   const reopened = toggleCanvasSubtreeBranch(collapsed, "placement-a-0", "right");
   assert.deepEqual(
     reopened.placements.map((placement) => [placement.x, placement.y]),
-    created.document.placements.map((placement) => before.get(placement.placementId))
+    expanded.placements.map((placement) => before.get(placement.placementId))
   );
   const collapsedAgain = toggleCanvasSubtreeBranch(reopened, "placement-a-0", "right");
   const relaid = toggleCanvasSubtreeBranch(collapsedAgain, "placement-a-0", "down");
@@ -192,12 +199,13 @@ test("collapse preserves positions and explicit direction change alone relayouts
 
 test("expanded children move freely while collapsed roots carry hidden descendants", () => {
   const created = createInstance();
-  const movedChild = movePlacement(created.document, "placement-a-1", { x: 740, y: 40 });
+  const expanded = toggleCanvasSubtreeBranch(created.document, "placement-a-0", "right");
+  const movedChild = movePlacement(expanded, "placement-a-1", { x: 740, y: 40 });
   assert.deepEqual(
     movedChild.placements.find((placement) => placement.placementId === "placement-a-2")?.x,
     created.document.placements.find((placement) => placement.placementId === "placement-a-2")?.x
   );
-  const collapsed = toggleCanvasSubtreeBranch(created.document, "placement-a-0", "right");
+  const collapsed = toggleCanvasSubtreeBranch(expanded, "placement-a-0", "right");
   const movedRootOnly = movePlacement(collapsed, "placement-a-0", { x: 160, y: 170 });
   const carried = carryCollapsedSubtreeDescendants(collapsed, movedRootOnly);
   for (const placement of carried.placements.slice(1)) {
@@ -209,7 +217,8 @@ test("expanded children move freely while collapsed roots carry hidden descendan
 
 test("structure paths reroute from current geometry and stay orthogonal", () => {
   const created = createInstance();
-  const moved = movePlacement(created.document, "placement-a-1", { x: -260, y: 500 });
+  const expanded = toggleCanvasSubtreeBranch(created.document, "placement-a-0", "right");
+  const moved = movePlacement(expanded, "placement-a-1", { x: -260, y: 500 });
   const projection = deriveCanvasSubtreeProjection(moved, TREE);
   const branches = deriveCanvasSubtreeStructureBranches(moved, projection);
   assert.ok(branches.length >= 2);
@@ -237,7 +246,7 @@ test("structure routing deterministically avoids visible Node obstacles and rero
     }],
     controls: [],
     placementStates: [],
-    syncControls: [],
+    documentSync: null,
   };
   const blockedDiagnostics = { segmentRectChecks: 0 };
   const blocked = deriveCanvasSubtreeStructureBranches(
@@ -245,9 +254,9 @@ test("structure routing deterministically avoids visible Node obstacles and rero
     projection,
     null,
     blockedDiagnostics
-  )[0]?.path;
-  assert.match(blocked ?? "", /^M 240 52 /);
-  assertPathAvoidsPlacements(blocked ?? "", [document.placements[2]]);
+  )[0];
+  assert.match(blocked?.path ?? "", new RegExp(`^M ${NODE_CARD.width} ${NODE_CARD.height / 2} `));
+  assertRouteAvoidsPlacements(blocked?.routePoints ?? [], [document.placements[2]]);
   assert.ok(blockedDiagnostics.segmentRectChecks <= 64);
 
   const movedObstacle = {
@@ -256,8 +265,12 @@ test("structure routing deterministically avoids visible Node obstacles and rero
       placement.placementId === "obstacle" ? { ...placement, y: 180 } : placement
     ),
   };
-  const clear = deriveCanvasSubtreeStructureBranches(movedObstacle, projection)[0]?.path;
-  assert.equal(clear, "M 240 52 H 600");
+  const clear = deriveCanvasSubtreeStructureBranches(movedObstacle, projection)[0];
+  assert.deepEqual(clear?.routePoints, [
+    { x: NODE_CARD.width, y: NODE_CARD.height / 2 },
+    { x: NODE_CARD.width + 18, y: NODE_CARD.height / 2 },
+    { x: 600, y: NODE_CARD.height / 2 },
+  ]);
 
   const movedEndpoint = {
     ...movedObstacle,
@@ -265,9 +278,9 @@ test("structure routing deterministically avoids visible Node obstacles and rero
       placement.placementId === "child" ? { ...placement, y: 300 } : placement
     ),
   };
-  const rerouted = deriveCanvasSubtreeStructureBranches(movedEndpoint, projection)[0]?.path;
-  assert.notEqual(rerouted, clear);
-  assert.match(rerouted ?? "", /^M 240 52 (?:H|V)/);
+  const rerouted = deriveCanvasSubtreeStructureBranches(movedEndpoint, projection)[0];
+  assert.notEqual(rerouted?.path, clear?.path);
+  assert.match(rerouted?.path ?? "", new RegExp(`^M ${NODE_CARD.width} ${NODE_CARD.height / 2} `));
 });
 
 test("multi-bend visibility routing preserves a fresh relationship through a six-card corridor", () => {
@@ -290,7 +303,7 @@ test("multi-bend visibility routing preserves a fresh relationship through a six
     }],
     controls: [],
     placementStates: [],
-    syncControls: [],
+    documentSync: null,
   };
   const diagnostics = { segmentRectChecks: 0, visibilityNodesExpanded: 0 };
   const branches = deriveCanvasSubtreeStructureBranches(
@@ -300,8 +313,8 @@ test("multi-bend visibility routing preserves a fresh relationship through a six
     diagnostics
   );
   assert.equal(branches.length, 1);
-  assertPathAvoidsPlacements(branches[0].path, placements.slice(2));
-  assert.ok(pathSegments(branches[0].path).length > 3);
+  assertRouteAvoidsPlacements(branches[0].routePoints, placements.slice(2));
+  assert.ok(branches[0].routePoints.length - 1 > 3);
 
   const densePlacements = [...placements];
   for (let index = 0; index < 42; index += 1) {
@@ -322,7 +335,7 @@ test("multi-bend visibility routing preserves a fresh relationship through a six
   );
   const elapsed = performance.now() - startedAt;
   assert.equal(dense.length, 1);
-  assertPathAvoidsPlacements(dense[0].path, densePlacements.slice(2));
+  assertRouteAvoidsPlacements(dense[0].routePoints, densePlacements.slice(2));
   assert.ok((denseDiagnostics.visibilityNodesExpanded ?? 0) < 10_000);
   assert.ok(denseDiagnostics.segmentRectChecks < 2_000_000);
   assert.ok(elapsed < 250, `dense visibility route took ${elapsed.toFixed(1)}ms`);
@@ -343,7 +356,7 @@ test("imperative overlay clears an unavailable route and restores it in the same
     }],
     controls: [],
     placementStates: [],
-    syncControls: [],
+    documentSync: null,
   };
   const feasibleDocument = {
     ...emptyDocument(),
@@ -402,7 +415,7 @@ test("clear structure routing stays linear across a representative 48-Node canva
       relationships,
       controls: [],
       placementStates: [],
-      syncControls: [],
+      documentSync: null,
     },
     null,
     diagnostics
@@ -435,7 +448,7 @@ test("clear structure routing remains frame-bounded across 128 visible Nodes", (
       relationships,
       controls: [],
       placementStates: [],
-      syncControls: [],
+      documentSync: null,
     },
     null,
     diagnostics
@@ -485,7 +498,7 @@ test("a full 48-Node frame reuses indexed obstacle geometry across 24 blocked re
       relationships,
       controls: [],
       placementStates: [],
-      syncControls: [],
+      documentSync: null,
     },
     null,
     diagnostics
@@ -495,8 +508,8 @@ test("a full 48-Node frame reuses indexed obstacle geometry across 24 blocked re
   assert.ok(diagnostics.visibilityNodesExpanded > 0);
   for (const branch of branches) {
     const relationship = relationships.find((candidate) => `branch:${candidate.id}` === branch.id)!;
-    assertPathAvoidsPlacements(
-      branch.path,
+    assertRouteAvoidsPlacements(
+      branch.routePoints,
       placements.filter((placement) =>
         placement.placementId !== relationship.parentPlacementId &&
         placement.placementId !== relationship.childPlacementId
@@ -529,7 +542,7 @@ test("branch DOM identity stays stable when a live drag crosses the parent cente
     }],
     controls: [],
     placementStates: [],
-    syncControls: [],
+    documentSync: null,
   };
   const before = deriveCanvasSubtreeStructureBranches(document, projection);
   const after = deriveCanvasSubtreeStructureBranches(
@@ -556,16 +569,22 @@ test("branch DOM identity stays stable when a live drag crosses the parent cente
   assert.notEqual(values.highlight, "");
 });
 
-test("stale authority preserves placements but hides relationships and disables sync", () => {
+test("stale authority preserves frozen membership lines but disables sync", () => {
   const created = createInstance();
-  const projection = deriveCanvasSubtreeProjection(created.document, null);
-  assert.equal(projection.relationships.length, 0);
-  assert.equal(projection.syncControls.length, 0);
+  const expanded = toggleCanvasSubtreeBranch(created.document, "placement-a-0", "right");
+  const projection = deriveCanvasSubtreeProjection(expanded, null);
+  assert.equal(projection.relationships.length, 2);
   assert.equal(projection.visiblePlacementIds.length, 3);
   assert.ok(projection.placementStates.every((item) => item.state === "unknown"));
+  assert.equal(projection.documentSync, null);
+  assert.equal(
+    deriveCanvasSubtreeStructureBranches(expanded, projection).length,
+    2,
+    "frozen local membership lines remain visible without claiming fresh authority"
+  );
 });
 
-test("pending sync aggregates content and membership drift at the exact instance root", () => {
+test("pending sync aggregates content and membership drift once for the Canvas", () => {
   const created = createInstance();
   const changed = [
     source("root", null, "root-v2"),
@@ -575,9 +594,8 @@ test("pending sync aggregates content and membership drift at the exact instance
     source("new-child", "root"),
   ];
   const projection = deriveCanvasSubtreeProjection(created.document, changed);
-  const control = projection.syncControls.find((item) => item.placementId === "placement-a-0");
-  assert.equal(control?.scope, "subtree");
-  assert.ok((control?.affectedCount ?? 0) >= 3);
+  assert.ok((projection.documentSync?.affectedCount ?? 0) >= 3);
+  assert.equal(projection.documentSync?.canSync, true);
   assert.equal(
     projection.placementStates.find((item) => item.placementId === "placement-a-0")?.state,
     "pending-sync"
@@ -601,14 +619,13 @@ test("a nested projection root ignores its external parent while internal repare
     () => `placement-nested-${placement++}`
   );
 
-  assert.equal(deriveCanvasSubtreeProjection(created.document, nested).syncControls.length, 0);
-  const reconciled = reconcileCanvasProjectionSync(
+  assert.equal(deriveCanvasSubtreeProjection(created.document, nested).documentSync, null);
+  const reconciled = reconcileCanvasDocumentSync(
     created.document,
-    "placement-nested-0",
     nested,
-    { authorityDigest: canvasProjectionAuthorityDigest(created.document, "placement-nested-0", nested)! }
+    { authorityDigest: canvasDocumentAuthorityDigest(created.document, nested)! }
   );
-  assert.equal(deriveCanvasSubtreeProjection(reconciled, nested).syncControls.length, 0);
+  assert.equal(deriveCanvasSubtreeProjection(reconciled, nested).documentSync, null);
 
   const reparented = [
     source("ancestor", null),
@@ -616,11 +633,10 @@ test("a nested projection root ignores its external parent while internal repare
     source("child-a", "ancestor"),
   ];
   const pending = deriveCanvasSubtreeProjection(reconciled, reparented);
-  assert.equal(pending.syncControls[0]?.placementId, "placement-nested-0");
-  assert.equal(pending.syncControls[0]?.affectedCount, 1);
+  assert.equal(pending.documentSync?.affectedCount, 1);
 });
 
-test("sync preserves surviving manual coordinates and only adds/removes affected members", () => {
+test("sync preserves manual coordinates, adds new members, and keeps deleted evidence as tombstones", () => {
   const created = createInstance();
   const manuallyMoved = movePlacement(created.document, "placement-a-1", { x: 711, y: 333 });
   const changed = [
@@ -629,38 +645,155 @@ test("sync preserves surviving manual coordinates and only adds/removes affected
     source("new-child", "root"),
   ];
   let nextId = 0;
-  const synced = reconcileCanvasProjectionSync(
+  const synced = reconcileCanvasDocumentSync(
     manuallyMoved,
-    "placement-a-0",
     changed,
     {
-      authorityDigest: canvasProjectionAuthorityDigest(manuallyMoved, "placement-a-0", changed)!,
+      authorityDigest: canvasDocumentAuthorityDigest(manuallyMoved, changed)!,
       createPlacementId: () => `added-${nextId++}`,
     }
   );
-  assert.equal(synced.placements.some((placement) => placement.entityRef === "grandchild"), false);
-  assert.equal(synced.placements.some((placement) => placement.entityRef === "out-b"), false);
+  const missing = synced.placements.filter((placement) =>
+    placement.entityRef === "grandchild" || placement.entityRef === "out-b"
+  );
+  assert.equal(missing.length, 2);
+  assert.ok(missing.every((placement) =>
+    readCanvasProjectionPlacementMeta(placement).sourceStatus === "deleted" &&
+    readCanvasSubtreePlacementMeta(placement) === null
+  ));
   const retained = synced.placements.find((placement) => placement.entityRef === "child-a")!;
   assert.deepEqual([retained.x, retained.y], [711, 333]);
   assert.equal(synced.placements.filter((placement) => placement.entityRef === "new-child").length, 1);
-  assert.equal(deriveCanvasSubtreeProjection(synced, changed).syncControls.length, 0);
+  assert.equal(deriveCanvasSubtreeProjection(synced, changed).documentSync, null);
+});
+
+test("a newly inserted earlier sibling avoids every surviving placement without moving it", () => {
+  let placement = 0;
+  const initialSources = [source("root", null), source("existing", "root")];
+  const created = createCanvasSubtreeProjectionInstance(
+    emptyDocument(),
+    "root",
+    initialSources,
+    { x: 0, y: 0 },
+    "right",
+    () => "instance-insert",
+    () => `insert-${placement++}`
+  );
+  const existingBefore = created.document.placements.find(
+    (candidate) => candidate.entityRef === "existing"
+  )!;
+  const authority = [
+    source("root", null),
+    source("new-earlier", "root"),
+    source("existing", "root"),
+  ];
+  const synced = reconcileCanvasDocumentSync(created.document, authority, {
+    authorityDigest: canvasDocumentAuthorityDigest(created.document, authority)!,
+    createPlacementId: () => "insert-new",
+  });
+  const existingAfter = synced.placements.find(
+    (candidate) => candidate.entityRef === "existing"
+  )!;
+  const inserted = synced.placements.find(
+    (candidate) => candidate.entityRef === "new-earlier"
+  )!;
+
+  assert.deepEqual(
+    [existingAfter.x, existingAfter.y],
+    [existingBefore.x, existingBefore.y],
+    "a surviving sibling keeps its exact manual geometry"
+  );
+  const existingRect = placementRectForTest(existingAfter);
+  const insertedRect = placementRectForTest(inserted);
+  assert.equal(
+    insertedRect.right <= existingRect.left ||
+      insertedRect.left >= existingRect.right ||
+      insertedRect.bottom <= existingRect.top ||
+      insertedRect.top >= existingRect.bottom,
+    true,
+    "the new sibling must not overlap a surviving placement that appears later"
+  );
+});
+
+test("global sync reconnects in-bundle members, detaches exits, and adds entries without moving survivors", () => {
+  const created = createInstance();
+  const manual = movePlacement(created.document, "placement-a-2", { x: 733, y: 411 });
+  const beforeGeometry = new Map(manual.placements.map((placement) => [
+    placement.placementId,
+    [placement.x, placement.y] as const,
+  ]));
+  const reparentedWithin = TREE.map((item) =>
+    item.nodeId === "grandchild" ? source("grandchild", "out-b", "grandchild-v2") : item
+  );
+  const reconnected = reconcileCanvasDocumentSync(manual, reparentedWithin, {
+    authorityDigest: canvasDocumentAuthorityDigest(manual, reparentedWithin)!,
+  });
+  const grandchild = reconnected.placements.find((placement) => placement.placementId === "placement-a-2")!;
+  assert.deepEqual([grandchild.x, grandchild.y], [733, 411]);
+  assert.equal(readCanvasSubtreePlacementMeta(grandchild)?.parentPlacementId, "placement-a-3");
+
+  const external = source("external", null);
+  const reparentedOut = [...TREE.map((item) =>
+    item.nodeId === "grandchild" ? source("grandchild", "external", "grandchild-v3") : item
+  ), external];
+  const detached = reconcileCanvasDocumentSync(reconnected, reparentedOut, {
+    authorityDigest: canvasDocumentAuthorityDigest(reconnected, reparentedOut)!,
+  });
+  const detachedGrandchild = detached.placements.find((placement) => placement.placementId === "placement-a-2")!;
+  assert.equal(readCanvasSubtreePlacementMeta(detachedGrandchild), null);
+  assert.deepEqual([detachedGrandchild.x, detachedGrandchild.y], [733, 411]);
+
+  const withNewMember = [...reparentedOut, source("new-direct", "root")];
+  let added = 0;
+  const expandedMembership = reconcileCanvasDocumentSync(detached, withNewMember, {
+    authorityDigest: canvasDocumentAuthorityDigest(detached, withNewMember)!,
+    createPlacementId: () => `placement-added-${added++}`,
+  });
+  for (const placement of manual.placements.filter((item) => item.placementId !== "placement-a-2")) {
+    const next = expandedMembership.placements.find((candidate) => candidate.placementId === placement.placementId)!;
+    assert.deepEqual([next.x, next.y], beforeGeometry.get(placement.placementId));
+  }
+  const newMember = expandedMembership.placements.find((placement) => placement.entityRef === "new-direct")!;
+  assert.equal(readCanvasSubtreePlacementMeta(newMember)?.instanceId, "instance-a");
+  assert.equal(
+    deriveCanvasSubtreeProjection(expandedMembership, withNewMember).visiblePlacementIds.includes(newMember.placementId),
+    false,
+    "a new member under a collapsed root stays hidden until the local branch opens"
+  );
+});
+
+test("hide preserves exact placement geometry and folded descendants until restored", () => {
+  const created = createInstance();
+  const expanded = toggleCanvasSubtreeBranch(created.document, "placement-a-0", "right");
+  const before = JSON.stringify(expanded.placements);
+  const hidden = setCanvasProjectionPlacementHidden(expanded, "placement-a-0", true);
+  assert.deepEqual(deriveCanvasSubtreeProjection(hidden, TREE).visiblePlacementIds, []);
+  assert.equal(readCanvasProjectionPlacementMeta(hidden.placements[0]).hidden, true);
+  const restored = setCanvasProjectionPlacementHidden(hidden, "placement-a-0", false);
+  assert.deepEqual(
+    restored.placements.map((placement) => ({ ...placement, meta: {
+      ...placement.meta,
+      tentProjectionPlacement: undefined,
+    } })),
+    expanded.placements.map((placement) => ({ ...placement, meta: {
+      ...placement.meta,
+      tentProjectionPlacement: undefined,
+    } }))
+  );
+  assert.equal(JSON.stringify(restored.placements).includes('"hidden":false'), true);
+  assert.equal(before.includes('"hidden"'), false);
 });
 
 test("projection sync rejects an authority digest race without mutating local layout", () => {
   const created = createInstance();
   const firstAuthority = [...TREE, source("new-child", "root", "new-v1")];
-  const digest = canvasProjectionAuthorityDigest(
-    created.document,
-    "placement-a-0",
-    firstAuthority
-  )!;
+  const digest = canvasDocumentAuthorityDigest(created.document, firstAuthority)!;
   const newerAuthority = firstAuthority.map((item) =>
     item.nodeId === "child-a" ? source("child-a", "root", "child-a-v3") : item
   );
   let reads = 0;
-  const rejected = reconcileCanvasProjectionSyncFromLatestAuthority(
+  const rejected = reconcileCanvasDocumentSyncFromLatestAuthority(
     created.document,
-    "placement-a-0",
     digest,
     () => {
       reads += 1;
@@ -675,55 +808,31 @@ test("projection sync rejects an authority digest race without mutating local la
 
 test("local movement never changes the authority digest or creates pending sync", () => {
   const created = createInstance();
-  const digest = canvasProjectionAuthorityDigest(created.document, "placement-a-0", TREE);
+  const digest = canvasDocumentAuthorityDigest(created.document, TREE);
   const moved = movePlacement(created.document, "placement-a-1", { x: 944, y: 512 });
-  assert.equal(canvasProjectionAuthorityDigest(moved, "placement-a-0", TREE), digest);
-  assert.equal(deriveCanvasSubtreeProjection(moved, TREE).syncControls.length, 0);
+  assert.equal(canvasDocumentAuthorityDigest(moved, TREE), digest);
+  assert.equal(deriveCanvasSubtreeProjection(moved, TREE).documentSync, null);
 });
 
-test("duplicate instances reconcile independently", () => {
+test("one Canvas sync reconciles duplicate instances without cross-linking them", () => {
   const first = createInstance();
   const second = createInstance(first.document, "b");
   const changed = [...TREE, source("new-child", "root")];
-  const synced = reconcileCanvasProjectionSync(second.document, "placement-a-0", changed, {
-    authorityDigest: canvasProjectionAuthorityDigest(second.document, "placement-a-0", changed)!,
-    createPlacementId: () => "placement-a-new",
+  let index = 0;
+  const synced = reconcileCanvasDocumentSync(second.document, changed, {
+    authorityDigest: canvasDocumentAuthorityDigest(second.document, changed)!,
+    createPlacementId: () => `placement-new-${index++}`,
   });
-  assert.equal(synced.placements.some((placement) => placement.placementId === "placement-a-new"), true);
+  assert.equal(synced.placements.filter((placement) => placement.entityRef === "new-child").length, 2);
   assert.equal(
     synced.placements.filter((placement) =>
       readCanvasSubtreePlacementMeta(placement)?.instanceId === "instance-b"
-    ).length,
-    4
+    ).length, 5
   );
-  assert.ok(deriveCanvasSubtreeProjection(synced, changed).syncControls.some((item) => item.placementId === "placement-b-0"));
+  assert.equal(deriveCanvasSubtreeProjection(synced, changed).documentSync, null);
 });
 
-test("drop joins only one explicitly hit eligible instance and never nearest-pairs blank space", () => {
-  const created = createCanvasSubtreeProjectionInstance(
-    emptyDocument(),
-    "root",
-    [source("root", null), source("child-a", "root")],
-    { x: 100, y: 100 },
-    "right",
-    () => "instance-a",
-    (() => { let index = 0; return () => `placement-${index++}`; })()
-  );
-  const joined = joinCanvasSubtreeInstanceAt(
-    created.document,
-    source("new-child", "root"),
-    { x: 240, y: 180 },
-    () => "joined"
-  );
-  assert.equal(joined?.document.placements.at(-1)?.placementId, "joined");
-  assert.equal(readCanvasSubtreePlacementMeta(joined!.document.placements.at(-1)!)?.instanceId, "instance-a");
-  assert.equal(
-    joinCanvasSubtreeInstanceAt(created.document, source("far", "root"), { x: 5000, y: 5000 }),
-    null
-  );
-});
-
-test("dropping a nested parent always creates a complete instance while a leaf may join", () => {
+test("dropping a nested parent creates a complete instance and a leaf stays standalone", () => {
   const created = createInstance();
   const parentTarget = created.document.placements.find((placement) => placement.placementId === "placement-a-1")!;
   const nested = dropPresentationSubtreeOrLeaf(
@@ -743,14 +852,14 @@ test("dropping a nested parent always creates a complete instance while a leaf m
   ).length, 2);
 
   const rootTarget = created.document.placements.find((placement) => placement.placementId === "placement-a-0")!;
-  const joinedLeaf = dropPresentationSubtreeOrLeaf(
+  const standaloneLeaf = dropPresentationSubtreeOrLeaf(
     { document: created.document, selectedNodeId: null },
     "leaf",
     [source("leaf", "root")],
     { x: (rootTarget.x ?? 0) + 20, y: (rootTarget.y ?? 0) + 20 }
   );
-  const leaf = joinedLeaf.document.placements.find((placement) => placement.entityRef === "leaf")!;
-  assert.equal(readCanvasSubtreePlacementMeta(leaf)?.instanceId, "instance-a");
+  const leaf = standaloneLeaf.document.placements.find((placement) => placement.entityRef === "leaf")!;
+  assert.equal(readCanvasSubtreePlacementMeta(leaf), null);
 });
 
 test("malformed subtree metadata fails closed as a visible standalone placement", () => {

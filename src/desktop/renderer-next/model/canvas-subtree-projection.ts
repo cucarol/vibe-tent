@@ -8,6 +8,7 @@ import {
 } from "./canvas-node-snapshot.js";
 
 export const CANVAS_SUBTREE_META_KEY = "tentSubtreeProjection";
+export const CANVAS_PROJECTION_PLACEMENT_META_KEY = "tentProjectionPlacement";
 
 export type SubtreeDirection = "up" | "right" | "down" | "left";
 
@@ -20,6 +21,17 @@ export type CanvasSubtreePlacementMeta = {
   siblingOrder: number;
   expandedDirection: SubtreeDirection | null;
   lastDirection: SubtreeDirection;
+};
+
+/**
+ * Local presentation state shared by standalone and subtree placements.
+ * Missing metadata is the canonical legacy/default state; it is never
+ * materialized just because the Canvas was read.
+ */
+export type CanvasProjectionPlacementMeta = {
+  version: 1;
+  hidden: boolean;
+  sourceStatus: "active" | "deleted";
 };
 
 export type CanvasSubtreeNodeSource = {
@@ -49,13 +61,9 @@ export type CanvasSubtreeControl = {
   canMutate: boolean;
 };
 
-export type CanvasProjectionSyncControl = {
-  placementId: string;
-  scope: "standalone" | "subtree";
+type CanvasProjectionSyncDiff = {
   affectedCount: number;
   reasons: readonly CanvasProjectionSyncReason[];
-  authorityDigest: string;
-  canSync: boolean;
 };
 
 export type CanvasProjectionSyncReason =
@@ -69,8 +77,15 @@ export type CanvasProjectionSyncReason =
 
 export type CanvasProjectionPlacementState = {
   placementId: string;
-  state: "current" | "pending-sync" | "unknown";
+  state: "current" | "pending-sync" | "tombstone" | "unknown";
   reasons: readonly CanvasProjectionSyncReason[];
+};
+
+export type CanvasDocumentSyncControl = {
+  affectedCount: number;
+  reasons: readonly CanvasProjectionSyncReason[];
+  authorityDigest: string;
+  canSync: boolean;
 };
 
 export type CanvasSubtreeProjection = {
@@ -79,7 +94,7 @@ export type CanvasSubtreeProjection = {
   relationships: readonly CanvasSubtreeRelationship[];
   controls: readonly CanvasSubtreeControl[];
   placementStates: readonly CanvasProjectionPlacementState[];
-  syncControls: readonly CanvasProjectionSyncControl[];
+  documentSync: CanvasDocumentSyncControl | null;
 };
 
 export type CanvasProjectionAuthorityReader =
@@ -89,6 +104,61 @@ const DIRECTIONS = new Set<SubtreeDirection>(["up", "right", "down", "left"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export function readCanvasProjectionPlacementMeta(
+  placement: Pick<CanvasPlacement, "meta">
+): CanvasProjectionPlacementMeta {
+  const raw = placement.meta?.[CANVAS_PROJECTION_PLACEMENT_META_KEY];
+  if (
+    !isRecord(raw) ||
+    raw.version !== 1 ||
+    typeof raw.hidden !== "boolean" ||
+    (raw.sourceStatus !== "active" && raw.sourceStatus !== "deleted")
+  ) {
+    return { version: 1, hidden: false, sourceStatus: "active" };
+  }
+  return {
+    version: 1,
+    hidden: raw.hidden,
+    sourceStatus: raw.sourceStatus,
+  };
+}
+
+export function withCanvasProjectionPlacementMeta(
+  placement: CanvasPlacement,
+  state: CanvasProjectionPlacementMeta
+): CanvasPlacement {
+  return {
+    ...placement,
+    meta: {
+      ...(placement.meta ?? {}),
+      [CANVAS_PROJECTION_PLACEMENT_META_KEY]: state,
+    },
+  };
+}
+
+export function setCanvasProjectionPlacementHidden(
+  document: CanvasDocument,
+  placementId: string,
+  hidden: boolean
+): CanvasDocument {
+  let changed = false;
+  const placements = document.placements.map((placement) => {
+    if (placement.placementId !== placementId || placement.kind !== "node") return placement;
+    const state = readCanvasProjectionPlacementMeta(placement);
+    if (state.hidden === hidden) return placement;
+    changed = true;
+    return withCanvasProjectionPlacementMeta(placement, { ...state, hidden });
+  });
+  if (!changed) return document;
+  return {
+    ...document,
+    placements,
+    focusedPlacementId: hidden && document.focusedPlacementId === placementId
+      ? null
+      : document.focusedPlacementId,
+  };
 }
 
 export function readCanvasSubtreePlacementMeta(
@@ -217,7 +287,9 @@ export function createCanvasSubtreeProjectionInstance(
       parentPlacementId,
       depth,
       siblingOrder,
-      expandedDirection: depth === 0 && directChildren.length > 0 ? direction : null,
+      // A captured bundle starts folded. The root is the only visible member;
+      // each branch is revealed explicitly, one level at a time.
+      expandedDirection: null,
       lastDirection: direction,
     } satisfies CanvasSubtreePlacementMeta;
     placements.push(withCanvasSubtreePlacementMeta(withCanvasNodeSnapshot({
@@ -299,6 +371,7 @@ function visiblePlacementIds(
 ): Set<string> {
   const visible = new Set<string>();
   for (const placement of document.placements) {
+    if (readCanvasProjectionPlacementMeta(placement).hidden) continue;
     const member = valid.get(placement.placementId);
     if (!member) {
       visible.add(placement.placementId);
@@ -314,7 +387,11 @@ function visiblePlacementIds(
       }
       seen.add(current.placement.placementId);
       const parent = valid.get(current.meta.parentPlacementId);
-      if (!parent || parent.meta.expandedDirection === null) {
+      if (
+        !parent ||
+        parent.meta.expandedDirection === null ||
+        readCanvasProjectionPlacementMeta(parent.placement).hidden
+      ) {
         isVisible = false;
         break;
       }
@@ -327,17 +404,6 @@ function visiblePlacementIds(
 
 function encodeAuthorityPart(value: string): string {
   return `${value.length}:${value}`;
-}
-
-function authorityTupleDigest(sources: readonly CanvasSubtreeNodeSource[]): string {
-  const tuples = sources
-    .map((source) => [source.nodeId, source.parentNodeId ?? "", source.snapshot.etag] as const)
-    .sort((left, right) =>
-      left[0].localeCompare(right[0]) ||
-      left[1].localeCompare(right[1]) ||
-      left[2].localeCompare(right[2])
-    );
-  return `v1:${tuples.map((tuple) => tuple.map(encodeAuthorityPart).join("|")).join(";")}`;
 }
 
 function reachableAuthoritySources(
@@ -362,27 +428,57 @@ function reachableAuthoritySources(
 }
 
 /**
- * Exact UI-local authority guard for one standalone placement or subtree
- * instance. The canonical tuple is collision-free and intentionally includes
- * only current authoritative identity/revision facts, never local geometry.
+ * Optimistic guard for the one current-Canvas sync command. Geometry and
+ * camera are intentionally excluded because sync preserves the latest local
+ * layout, while exact placement/instance membership and source revisions are
+ * included so a stale rendered command cannot commit over either change.
  */
-export function canvasProjectionAuthorityDigest(
+export function canvasDocumentAuthorityDigest(
   document: CanvasDocument,
-  controlPlacementId: string,
   sources: readonly CanvasSubtreeNodeSource[] | null
 ): string | null {
   if (!sources) return null;
+  const sourceById = new Map(sources.map((source) => [source.nodeId, source] as const));
   const valid = validSubtreeMembers(document);
-  const member = valid.get(controlPlacementId);
-  if (!member) {
-    const placement = document.placements.find((candidate) => candidate.placementId === controlPlacementId);
-    if (!placement?.entityRef) return null;
-    const source = sources.find((candidate) => candidate.nodeId === placement.entityRef);
-    return authorityTupleDigest(source ? [source] : []);
+  const relevantNodeIds = new Set<string>();
+  for (const placement of document.placements) {
+    if (placement.kind !== "node" || !placement.entityRef) continue;
+    relevantNodeIds.add(placement.entityRef);
+    const member = valid.get(placement.placementId);
+    if (member?.meta.parentPlacementId === null) {
+      for (const source of reachableAuthoritySources(placement.entityRef, sources)) {
+        relevantNodeIds.add(source.nodeId);
+      }
+    }
   }
-  const root = valid.get(member.meta.rootPlacementId);
-  if (!root?.placement.entityRef) return null;
-  return authorityTupleDigest(reachableAuthoritySources(root.placement.entityRef, sources));
+  const local = document.placements
+    .filter((placement) => placement.kind === "node")
+    .map((placement) => {
+      const subtree = valid.get(placement.placementId)?.meta;
+      const state = readCanvasProjectionPlacementMeta(placement);
+      return [
+        placement.placementId,
+        placement.entityRef ?? "",
+        subtree?.instanceId ?? "standalone",
+        subtree?.rootPlacementId ?? "",
+        subtree?.parentPlacementId ?? "",
+        String(subtree?.depth ?? -1),
+        String(subtree?.siblingOrder ?? -1),
+        state.sourceStatus,
+      ] as const;
+    })
+    .sort((left, right) => left[0].localeCompare(right[0]));
+  const authority = [...relevantNodeIds]
+    .sort((left, right) => left.localeCompare(right))
+    .map((nodeId) => {
+      const source = sourceById.get(nodeId);
+      return source
+        ? [nodeId, source.parentNodeId ?? "", source.snapshot.etag] as const
+        : [nodeId, "!missing", "!missing"] as const;
+    });
+  const encodeRows = (rows: readonly (readonly string[])[]) =>
+    rows.map((row) => row.map(encodeAuthorityPart).join("|")).join(";");
+  return `v2:local:${encodeRows(local)}:authority:${encodeRows(authority)}`;
 }
 
 export function deriveCanvasSubtreeProjection(
@@ -392,16 +488,56 @@ export function deriveCanvasSubtreeProjection(
   const authority = sources ? "fresh" : "unknown";
   const valid = validSubtreeMembers(document);
   const visible = visiblePlacementIds(document, valid);
+  const relationships: CanvasSubtreeRelationship[] = [];
+  const childrenByPlacement = new Map<string, ValidMember[]>();
+  for (const member of valid.values()) {
+    if (!member.meta.parentPlacementId) continue;
+    const children = childrenByPlacement.get(member.meta.parentPlacementId) ?? [];
+    children.push(member);
+    childrenByPlacement.set(member.meta.parentPlacementId, children);
+    const parent = valid.get(member.meta.parentPlacementId);
+    if (
+      !parent ||
+      !visible.has(parent.placement.placementId) ||
+      !visible.has(member.placement.placementId)
+    ) continue;
+    relationships.push({
+      id: `subtree:${member.meta.instanceId}:${parent.placement.placementId}->${member.placement.placementId}`,
+      instanceId: member.meta.instanceId,
+      parentPlacementId: parent.placement.placementId,
+      childPlacementId: member.placement.placementId,
+    });
+  }
+  const controls: CanvasSubtreeControl[] = [];
+  for (const member of valid.values()) {
+    if (!visible.has(member.placement.placementId)) continue;
+    const projectedChildren = childrenByPlacement.get(member.placement.placementId) ?? [];
+    if (projectedChildren.length === 0) continue;
+    controls.push({
+      placementId: member.placement.placementId,
+      projectedDirectChildCount: projectedChildren.length,
+      unprojectedDirectChildCount: 0,
+      expandedDirection: member.meta.expandedDirection,
+      lastDirection: member.meta.lastDirection,
+      canMutate: true,
+    });
+  }
   if (!sources) {
     return {
       authority,
       visiblePlacementIds: [...visible],
-      relationships: [],
-      controls: [],
+      relationships,
+      controls,
       placementStates: document.placements
         .filter((placement) => placement.kind === "node")
-        .map((placement) => ({ placementId: placement.placementId, state: "unknown", reasons: [] })),
-      syncControls: [],
+        .map((placement) => ({
+          placementId: placement.placementId,
+          state: readCanvasProjectionPlacementMeta(placement).sourceStatus === "deleted"
+            ? "tombstone" as const
+            : "unknown" as const,
+          reasons: [],
+        })),
+      documentSync: null,
     };
   }
   const hierarchy: CanvasSubtreeHierarchy[] = sources.flatMap((source) =>
@@ -418,49 +554,6 @@ export function deriveCanvasSubtreeProjection(
     const children = authoritativeChildrenByParent.get(edge.parentNodeId) ?? [];
     children.push(edge.childNodeId);
     authoritativeChildrenByParent.set(edge.parentNodeId, children);
-  }
-  const relationships: CanvasSubtreeRelationship[] = [];
-  const childrenByPlacement = new Map<string, ValidMember[]>();
-  for (const member of valid.values()) {
-    if (!member.meta.parentPlacementId) continue;
-    const children = childrenByPlacement.get(member.meta.parentPlacementId) ?? [];
-    children.push(member);
-    childrenByPlacement.set(member.meta.parentPlacementId, children);
-    const parent = valid.get(member.meta.parentPlacementId);
-    if (
-      !parent ||
-      !visible.has(parent.placement.placementId) ||
-      !visible.has(member.placement.placementId) ||
-      !parent.placement.entityRef ||
-      !member.placement.entityRef ||
-      authoritativeParentByChild.get(member.placement.entityRef) !== parent.placement.entityRef
-    ) continue;
-    relationships.push({
-      id: `subtree:${member.meta.instanceId}:${parent.placement.placementId}->${member.placement.placementId}`,
-      instanceId: member.meta.instanceId,
-      parentPlacementId: parent.placement.placementId,
-      childPlacementId: member.placement.placementId,
-    });
-  }
-  const controls: CanvasSubtreeControl[] = [];
-  for (const member of valid.values()) {
-    if (!visible.has(member.placement.placementId) || !member.placement.entityRef) continue;
-    const projectedChildren = (childrenByPlacement.get(member.placement.placementId) ?? [])
-      .filter((child) =>
-        child.placement.entityRef &&
-        authoritativeParentByChild.get(child.placement.entityRef) === member.placement.entityRef
-      );
-    const authoritativeChildren = authoritativeChildrenByParent.get(member.placement.entityRef) ?? [];
-    if (projectedChildren.length === 0 && authoritativeChildren.length === 0) continue;
-    const projectedEntityIds = new Set(projectedChildren.map((child) => child.placement.entityRef));
-    controls.push({
-      placementId: member.placement.placementId,
-      projectedDirectChildCount: projectedChildren.length,
-      unprojectedDirectChildCount: authoritativeChildren.filter((id) => !projectedEntityIds.has(id)).length,
-      expandedDirection: member.meta.expandedDirection,
-      lastDirection: member.meta.lastDirection,
-      canMutate: projectedChildren.length > 0,
-    });
   }
   const placementStates = new Map<string, CanvasProjectionPlacementState>();
   for (const placement of document.placements) {
@@ -485,8 +578,13 @@ export function deriveCanvasSubtreeProjection(
         : null,
     });
     const snapshot = readCanvasNodeSnapshot(placement);
+    const localState = readCanvasProjectionPlacementMeta(placement);
     const reasons: CanvasProjectionSyncReason[] = [];
-    if (state.state === "deleted") reasons.push("source-deleted");
+    if (source && localState.sourceStatus === "deleted") {
+      reasons.push("content-changed");
+    } else if (state.state === "deleted" && localState.sourceStatus !== "deleted") {
+      reasons.push("source-deleted");
+    }
     else if (state.state === "changed") {
       if (source?.snapshot.archived && snapshot?.archived !== source.snapshot.archived) {
         reasons.push("source-archived");
@@ -498,11 +596,15 @@ export function deriveCanvasSubtreeProjection(
     }
     placementStates.set(placement.placementId, {
       placementId: placement.placementId,
-      state: state.state === "current" ? "current" : "pending-sync",
+      state: !source && localState.sourceStatus === "deleted"
+        ? "tombstone"
+        : state.state === "current" && localState.sourceStatus === "active"
+          ? "current"
+          : "pending-sync",
       reasons,
     });
   }
-  const syncControls: CanvasProjectionSyncControl[] = [];
+  const syncDiffs: CanvasProjectionSyncDiff[] = [];
   const membersByInstance = new Map<string, ValidMember[]>();
   for (const member of valid.values()) {
     const members = membersByInstance.get(member.meta.instanceId) ?? [];
@@ -567,13 +669,9 @@ export function deriveCanvasSubtreeProjection(
         state: "pending-sync",
         reasons: [...new Set([...(rootState?.reasons ?? []), ...reasons])],
       });
-      syncControls.push({
-        placementId: root.placement.placementId,
-        scope: "subtree",
+      syncDiffs.push({
         affectedCount: affected.size,
         reasons: [...reasons],
-        authorityDigest: canvasProjectionAuthorityDigest(document, root.placement.placementId, sources)!,
-        canSync: true,
       });
     }
   }
@@ -581,22 +679,26 @@ export function deriveCanvasSubtreeProjection(
     if (placement.kind !== "node" || valid.has(placement.placementId)) continue;
     const placementState = placementStates.get(placement.placementId);
     if (placementState?.state !== "pending-sync") continue;
-    syncControls.push({
-      placementId: placement.placementId,
-      scope: "standalone",
+    syncDiffs.push({
       affectedCount: 1,
       reasons: placementState.reasons,
-      authorityDigest: canvasProjectionAuthorityDigest(document, placement.placementId, sources)!,
-      canSync: true,
     });
   }
+  const documentSync = syncDiffs.length > 0
+    ? {
+      affectedCount: syncDiffs.reduce((total, control) => total + control.affectedCount, 0),
+      reasons: [...new Set(syncDiffs.flatMap((control) => control.reasons))],
+      authorityDigest: canvasDocumentAuthorityDigest(document, sources)!,
+      canSync: true,
+    } satisfies CanvasDocumentSyncControl
+    : null;
   return {
     authority,
     visiblePlacementIds: [...visible],
     relationships,
     controls,
     placementStates: [...placementStates.values()],
-    syncControls,
+    documentSync,
   };
 }
 
@@ -604,171 +706,299 @@ function sourceSnapshot(source: CanvasSubtreeNodeSource): CanvasNodeSnapshot {
   return source.snapshot;
 }
 
-export function reconcileCanvasProjectionSync(
+function withProjectionSource(
+  placement: CanvasPlacement,
+  source: CanvasSubtreeNodeSource | null
+): CanvasPlacement {
+  const current = readCanvasProjectionPlacementMeta(placement);
+  const next = source
+    ? withCanvasNodeSnapshot(placement, sourceSnapshot(source))
+    : placement;
+  return withCanvasProjectionPlacementMeta(next, {
+    ...current,
+    sourceStatus: source ? "active" : "deleted",
+  });
+}
+
+function placementRect(placement: CanvasPlacement): {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+} {
+  const width = placement.kind === "node"
+    ? NODE_CARD.width
+    : typeof placement.width === "number" ? placement.width : 0;
+  const height = placement.kind === "node"
+    ? NODE_CARD.height
+    : typeof placement.height === "number" ? placement.height : 0;
+  const left = placement.x ?? 0;
+  const top = placement.y ?? 0;
+  return { left, top, right: left + width, bottom: top + height };
+}
+
+function positionIsAvailable(
+  position: { x: number; y: number },
+  occupied: readonly ReturnType<typeof placementRect>[]
+): boolean {
+  const margin = 20;
+  const candidate = {
+    left: position.x - margin,
+    top: position.y - margin,
+    right: position.x + NODE_CARD.width + margin,
+    bottom: position.y + NODE_CARD.height + margin,
+  };
+  return occupied.every((rect) =>
+    candidate.right <= rect.left ||
+    candidate.left >= rect.right ||
+    candidate.bottom <= rect.top ||
+    candidate.top >= rect.bottom
+  );
+}
+
+function nearestAvailableChildPosition(
+  parent: { x: number; y: number },
+  direction: SubtreeDirection,
+  siblingOrder: number,
+  siblingCount: number,
+  occupied: readonly ReturnType<typeof placementRect>[]
+): { x: number; y: number } {
+  const initial = childPosition(parent, direction, siblingOrder, siblingCount);
+  const perpendicularGap = direction === "left" || direction === "right"
+    ? NODE_CARD.height + 28
+    : NODE_CARD.width + 28;
+  const forwardGap = direction === "left" || direction === "right"
+    ? NODE_CARD.width + 76
+    : NODE_CARD.height + 76;
+  for (let lane = 0; lane < 9; lane += 1) {
+    const laneOffset = lane === 0
+      ? 0
+      : Math.ceil(lane / 2) * (lane % 2 === 1 ? 1 : -1);
+    for (let depth = 0; depth < 8; depth += 1) {
+      const position = { ...initial };
+      if (direction === "right" || direction === "left") {
+        position.x += (direction === "right" ? 1 : -1) * depth * forwardGap;
+        position.y += laneOffset * perpendicularGap;
+      } else {
+        position.x += laneOffset * perpendicularGap;
+        position.y += (direction === "down" ? 1 : -1) * depth * forwardGap;
+      }
+      if (positionIsAvailable(position, occupied)) return position;
+    }
+  }
+  return initial;
+}
+
+function reconcileSubtreeInstance(
   document: CanvasDocument,
-  controlPlacementId: string,
+  rootPlacementId: string,
+  sources: readonly CanvasSubtreeNodeSource[],
+  createPlacementId: () => string
+): CanvasDocument {
+  const valid = validSubtreeMembers(document);
+  const root = valid.get(rootPlacementId);
+  if (!root || root.meta.parentPlacementId !== null || !root.placement.entityRef) return document;
+  const instanceId = root.meta.instanceId;
+  const members = document.placements.flatMap((placement) => {
+    const member = valid.get(placement.placementId);
+    return member?.meta.instanceId === instanceId ? [member] : [];
+  });
+  const sourceById = new Map(sources.map((source) => [source.nodeId, source] as const));
+  const rootSource = sourceById.get(root.placement.entityRef) ?? null;
+
+  if (!rootSource) {
+    const memberIds = new Set(members.map((member) => member.placement.placementId));
+    return {
+      ...document,
+      placements: document.placements.map((placement) =>
+        memberIds.has(placement.placementId)
+          ? withProjectionSource(
+            withoutCanvasSubtreePlacementMeta(placement),
+            placement.entityRef ? sourceById.get(placement.entityRef) ?? null : null
+          )
+          : placement
+      ),
+    };
+  }
+
+  const authorityChildren = childrenByParent(sources);
+  const expected: Array<{
+    source: CanvasSubtreeNodeSource;
+    parentNodeId: string | null;
+    depth: number;
+    siblingOrder: number;
+  }> = [];
+  const queue: Array<{
+    source: CanvasSubtreeNodeSource;
+    parentNodeId: string | null;
+    depth: number;
+    siblingOrder: number;
+  }> = [{ source: rootSource, parentNodeId: null, depth: 0, siblingOrder: 0 }];
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const entry = queue.shift()!;
+    if (seen.has(entry.source.nodeId)) continue;
+    seen.add(entry.source.nodeId);
+    expected.push(entry);
+    (authorityChildren.get(entry.source.nodeId) ?? []).forEach((child, siblingOrder) => {
+      queue.push({
+        source: child,
+        parentNodeId: entry.source.nodeId,
+        depth: entry.depth + 1,
+        siblingOrder,
+      });
+    });
+  }
+
+  const expectedNodeIds = new Set(expected.map((entry) => entry.source.nodeId));
+  const membersByNodeId = new Map<string, ValidMember[]>();
+  for (const member of members) {
+    if (!member.placement.entityRef) continue;
+    const list = membersByNodeId.get(member.placement.entityRef) ?? [];
+    list.push(member);
+    membersByNodeId.set(member.placement.entityRef, list);
+  }
+  const canonicalMemberByNodeId = new Map(
+    [...membersByNodeId].map(([nodeId, nodeMembers]) => [nodeId, nodeMembers[0]!] as const)
+  );
+  const updated = new Map<string, CanvasPlacement>();
+  for (const member of members) {
+    const nodeId = member.placement.entityRef;
+    const canonical = nodeId ? canonicalMemberByNodeId.get(nodeId) : null;
+    if (
+      !nodeId ||
+      !expectedNodeIds.has(nodeId) ||
+      canonical?.placement.placementId !== member.placement.placementId
+    ) {
+      updated.set(
+        member.placement.placementId,
+        withProjectionSource(
+          withoutCanvasSubtreePlacementMeta(member.placement),
+          nodeId ? sourceById.get(nodeId) ?? null : null
+        )
+      );
+    }
+  }
+
+  // New members must avoid every placement that survives this transaction,
+  // including existing members that appear later in authoritative sibling
+  // order. Existing members keep their exact geometry and never need to be
+  // searched, so retaining their rectangles here cannot move them.
+  const occupied = document.placements.map(placementRect);
+  const nextByNodeId = new Map<string, CanvasPlacement>();
+  const additions: CanvasPlacement[] = [];
+  for (const entry of expected) {
+    const existing = canonicalMemberByNodeId.get(entry.source.nodeId)?.placement ?? null;
+    const parentPlacement = entry.parentNodeId ? nextByNodeId.get(entry.parentNodeId) ?? null : null;
+    const parentMeta = parentPlacement ? readCanvasSubtreePlacementMeta(parentPlacement) : null;
+    const direction = parentMeta?.expandedDirection ?? parentMeta?.lastDirection ?? root.meta.lastDirection;
+    const siblings = entry.parentNodeId ? authorityChildren.get(entry.parentNodeId) ?? [] : [entry.source];
+    const position = existing
+      ? { x: existing.x ?? 0, y: existing.y ?? 0 }
+      : parentPlacement
+        ? nearestAvailableChildPosition(
+          { x: parentPlacement.x ?? 0, y: parentPlacement.y ?? 0 },
+          direction,
+          entry.siblingOrder,
+          siblings.length,
+          occupied
+        )
+        : { x: root.placement.x ?? 0, y: root.placement.y ?? 0 };
+    const placementId = existing?.placementId ?? createPlacementId();
+    const existingMeta = existing ? readCanvasSubtreePlacementMeta(existing) : null;
+    const meta: CanvasSubtreePlacementMeta = {
+      version: 1,
+      instanceId,
+      rootPlacementId,
+      parentPlacementId: parentPlacement?.placementId ?? null,
+      depth: entry.depth,
+      siblingOrder: entry.siblingOrder,
+      expandedDirection: existingMeta?.expandedDirection ?? null,
+      lastDirection: existingMeta?.lastDirection ?? direction,
+    };
+    const placement = withCanvasProjectionPlacementMeta(
+      withCanvasSubtreePlacementMeta(
+        withCanvasNodeSnapshot({
+          ...(existing ?? {}),
+          placementId,
+          entityRef: entry.source.nodeId,
+          kind: "node",
+          x: position.x,
+          y: position.y,
+          width: NODE_CARD.width,
+          height: NODE_CARD.height,
+        }, sourceSnapshot(entry.source)),
+        meta
+      ),
+      {
+        ...readCanvasProjectionPlacementMeta(existing ?? { meta: undefined }),
+        sourceStatus: "active",
+      }
+    );
+    nextByNodeId.set(entry.source.nodeId, placement);
+    occupied.push(placementRect(placement));
+    if (existing) updated.set(existing.placementId, placement);
+    else additions.push(placement);
+  }
+
+  return {
+    ...document,
+    placements: [
+      ...document.placements.map((placement) => updated.get(placement.placementId) ?? placement),
+      ...additions,
+    ],
+  };
+}
+
+/**
+ * Reconcile every projection in the current Canvas as one pure document
+ * transaction. Callers persist the returned document before publishing it.
+ */
+export function reconcileCanvasDocumentSync(
+  document: CanvasDocument,
   sources: readonly CanvasSubtreeNodeSource[] | null,
   request: {
     authorityDigest: string;
     createPlacementId?: () => string;
   }
 ): CanvasDocument {
-  if (!sources) return document;
-  if (canvasProjectionAuthorityDigest(document, controlPlacementId, sources) !== request.authorityDigest) {
+  if (!sources || canvasDocumentAuthorityDigest(document, sources) !== request.authorityDigest) {
     return document;
   }
   const createPlacementId = request.createPlacementId ?? (() => newPlacementId("pl-node"));
+  const originalValid = validSubtreeMembers(document);
+  const rootIds = document.placements.flatMap((placement) => {
+    const member = originalValid.get(placement.placementId);
+    return member?.meta.parentPlacementId === null ? [placement.placementId] : [];
+  });
+  let next = document;
+  for (const rootId of rootIds) {
+    next = reconcileSubtreeInstance(next, rootId, sources, createPlacementId);
+  }
+  const validAfterInstances = validSubtreeMembers(next);
   const sourceById = new Map(sources.map((source) => [source.nodeId, source] as const));
-  const children = childrenByParent(sources);
-  const valid = validSubtreeMembers(document);
-  const controlMember = valid.get(controlPlacementId);
-  if (!controlMember) {
-    const placement = document.placements.find((candidate) => candidate.placementId === controlPlacementId);
-    if (!placement?.entityRef) return document;
-    const source = sourceById.get(placement.entityRef);
-    return source
-      ? {
-        ...document,
-        placements: document.placements.map((candidate) =>
-          candidate.placementId === controlPlacementId
-            ? withCanvasNodeSnapshot(candidate, sourceSnapshot(source))
-            : candidate
-        ),
-      }
-      : {
-        ...document,
-        placements: document.placements.filter((candidate) => candidate.placementId !== controlPlacementId),
-        focusedPlacementId: document.focusedPlacementId === controlPlacementId
-          ? null
-          : document.focusedPlacementId,
-      };
-  }
-  const root = valid.get(controlMember.meta.rootPlacementId);
-  if (!root?.placement.entityRef) return document;
-  const instanceId = root.meta.instanceId;
-  const members = [...valid.values()].filter((member) => member.meta.instanceId === instanceId);
-  const memberByNodeId = new Map(
-    members.flatMap((member) => member.placement.entityRef
-      ? [[member.placement.entityRef, member] as const]
-      : [])
-  );
-  const rootSource = sourceById.get(root.placement.entityRef);
-  if (!rootSource) {
-    const removedIds = new Set(members.map((member) => member.placement.placementId));
-    return {
-      ...document,
-      placements: document.placements.filter((placement) => !removedIds.has(placement.placementId)),
-      focusedPlacementId: document.focusedPlacementId && removedIds.has(document.focusedPlacementId)
-        ? null
-        : document.focusedPlacementId,
-    };
-  }
-  const expected: CanvasSubtreeNodeSource[] = [];
-  const queue: { source: CanvasSubtreeNodeSource; parentNodeId: string | null; depth: number; siblingOrder: number }[] = [
-    { source: rootSource, parentNodeId: null, depth: 0, siblingOrder: 0 },
-  ];
-  const seen = new Set<string>();
-  while (queue.length > 0) {
-    const entry = queue.shift()!;
-    if (seen.has(entry.source.nodeId)) continue;
-    seen.add(entry.source.nodeId);
-    expected.push(entry.source);
-    (children.get(entry.source.nodeId) ?? []).forEach((child, siblingOrder) => {
-      queue.push({ source: child, parentNodeId: entry.source.nodeId, depth: entry.depth + 1, siblingOrder });
-    });
-  }
-  const expectedIds = new Set(expected.map((source) => source.nodeId));
-  const nextByNodeId = new Map<string, CanvasPlacement>();
-  const nextPlacements = document.placements.filter((placement) => {
-    const member = valid.get(placement.placementId);
-    if (!member || member.meta.instanceId !== instanceId) return true;
-    if (!placement.entityRef || !expectedIds.has(placement.entityRef)) return false;
-    nextByNodeId.set(placement.entityRef, placement);
-    return false;
-  });
-  const depthByNodeId = new Map<string, number>([[rootSource.nodeId, 0]]);
-  const visit = (source: CanvasSubtreeNodeSource, parentNodeId: string | null, siblingOrder: number) => {
-    const parentPlacement = parentNodeId ? nextByNodeId.get(parentNodeId) : null;
-    const parentMeta = parentPlacement ? readCanvasSubtreePlacementMeta(parentPlacement) : null;
-    const existing = memberByNodeId.get(source.nodeId)?.placement;
-    const placementId = existing?.placementId ?? createPlacementId();
-    const direction = parentMeta?.expandedDirection ?? parentMeta?.lastDirection ?? root.meta.lastDirection;
-    const siblingCount = parentNodeId ? (children.get(parentNodeId) ?? []).length : 1;
-    const position = existing
-      ? { x: existing.x ?? 0, y: existing.y ?? 0 }
-      : parentPlacement
-        ? childPosition(
-          { x: parentPlacement.x ?? 0, y: parentPlacement.y ?? 0 },
-          direction,
-          siblingOrder,
-          siblingCount
-        )
-        : { x: root.placement.x ?? 0, y: root.placement.y ?? 0 };
-    const depth = parentNodeId ? (depthByNodeId.get(parentNodeId) ?? 0) + 1 : 0;
-    depthByNodeId.set(source.nodeId, depth);
-    const meta: CanvasSubtreePlacementMeta = existing
-      ? {
-        ...(readCanvasSubtreePlacementMeta(existing) ?? root.meta),
-        instanceId,
-        rootPlacementId: root.placement.placementId,
-        parentPlacementId: parentPlacement?.placementId ?? null,
-        depth,
-        siblingOrder,
-      }
-      : {
-        version: 1,
-        instanceId,
-        rootPlacementId: root.placement.placementId,
-        parentPlacementId: parentPlacement?.placementId ?? null,
-        depth,
-        siblingOrder,
-        expandedDirection: null,
-        lastDirection: direction,
-      };
-    const placement = withCanvasSubtreePlacementMeta(withCanvasNodeSnapshot({
-      ...(existing ?? {}),
-      placementId,
-      entityRef: source.nodeId,
-      kind: "node",
-      x: position.x,
-      y: position.y,
-      width: NODE_CARD.width,
-      height: NODE_CARD.height,
-    }, sourceSnapshot(source)), meta);
-    nextByNodeId.set(source.nodeId, placement);
-    (children.get(source.nodeId) ?? []).forEach((child, index) => visit(child, source.nodeId, index));
-  };
-  visit(rootSource, null, 0);
-  const orderedMembers = expected.flatMap((source) => {
-    const placement = nextByNodeId.get(source.nodeId);
-    return placement ? [placement] : [];
-  });
-  const retainedIds = new Set(orderedMembers.map((placement) => placement.placementId));
   return {
-    ...document,
-    placements: [...nextPlacements, ...orderedMembers],
-    focusedPlacementId: document.focusedPlacementId && !retainedIds.has(document.focusedPlacementId) &&
-      members.some((member) => member.placement.placementId === document.focusedPlacementId)
-      ? root.placement.placementId
-      : document.focusedPlacementId,
+    ...next,
+    placements: next.placements.map((placement) => {
+      if (
+        placement.kind !== "node" ||
+        validAfterInstances.has(placement.placementId)
+      ) return placement;
+      return withProjectionSource(
+        placement,
+        placement.entityRef ? sourceById.get(placement.entityRef) ?? null : null
+      );
+    }),
   };
 }
 
-/**
- * Re-read authority at the mutation boundary. A sync control is derived from a
- * rendered snapshot, but its click may race a graph invalidation or a newer
- * projection. The reader must therefore be backed by the current projection
- * resource (not the render closure); null or a changed digest is a no-op.
- */
-export function reconcileCanvasProjectionSyncFromLatestAuthority(
+export function reconcileCanvasDocumentSyncFromLatestAuthority(
   document: CanvasDocument,
-  controlPlacementId: string,
   authorityDigest: string,
   readAuthority: CanvasProjectionAuthorityReader,
   createPlacementId?: () => string
 ): CanvasDocument {
-  const sources = readAuthority();
-  return reconcileCanvasProjectionSync(document, controlPlacementId, sources, {
+  return reconcileCanvasDocumentSync(document, readAuthority(), {
     authorityDigest,
     ...(createPlacementId ? { createPlacementId } : {}),
   });
@@ -886,87 +1116,5 @@ export function carryCollapsedSubtreeDescendants(
         ? { ...placement, x: (placement.x ?? 0) + delta.x, y: (placement.y ?? 0) + delta.y }
         : placement;
     }),
-  };
-}
-
-function instanceVisibleBounds(
-  document: CanvasDocument,
-  instanceId: string,
-  visible: ReadonlySet<string>
-): { left: number; top: number; right: number; bottom: number } | null {
-  const placements = document.placements.filter((placement) =>
-    visible.has(placement.placementId) &&
-    readCanvasSubtreePlacementMeta(placement)?.instanceId === instanceId
-  );
-  if (placements.length === 0) return null;
-  return placements.reduce((bounds, placement) => ({
-    left: Math.min(bounds.left, placement.x ?? 0),
-    top: Math.min(bounds.top, placement.y ?? 0),
-    right: Math.max(bounds.right, (placement.x ?? 0) + NODE_CARD.width),
-    bottom: Math.max(bounds.bottom, (placement.y ?? 0) + NODE_CARD.height),
-  }), { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity });
-}
-
-/**
- * Join a newly authoritative Node only when the drop point is inside exactly
- * one eligible projection-instance envelope. This is explicit scope hit
- * testing, never nearest-copy pairing.
- */
-export function joinCanvasSubtreeInstanceAt(
-  document: CanvasDocument,
-  source: CanvasSubtreeNodeSource,
-  point: { x: number; y: number },
-  createPlacementId: () => string = () => newPlacementId("pl-node")
-): { document: CanvasDocument; placementId: string } | null {
-  if (!source.parentNodeId) return null;
-  const valid = validSubtreeMembers(document);
-  const visible = visiblePlacementIds(document, valid);
-  const instancesContainingNode = new Set(
-    [...valid.values()]
-      .filter((member) => member.placement.entityRef === source.nodeId)
-      .map((member) => member.meta.instanceId)
-  );
-  const candidates = [...valid.values()].filter((member) =>
-    member.placement.entityRef === source.parentNodeId &&
-    visible.has(member.placement.placementId) &&
-    !instancesContainingNode.has(member.meta.instanceId)
-  ).filter((member) => {
-    const bounds = instanceVisibleBounds(document, member.meta.instanceId, visible);
-    if (!bounds) return false;
-    const padding = 56;
-    return point.x >= bounds.left - padding && point.x <= bounds.right + padding &&
-      point.y >= bounds.top - padding && point.y <= bounds.bottom + padding;
-  });
-  if (candidates.length !== 1) return null;
-  const parent = candidates[0];
-  const siblings = [...valid.values()].filter((member) =>
-    member.meta.parentPlacementId === parent.placement.placementId
-  );
-  const placementId = createPlacementId();
-  const placement = withCanvasSubtreePlacementMeta(withCanvasNodeSnapshot({
-    placementId,
-    entityRef: source.nodeId,
-    kind: "node",
-    x: point.x,
-    y: point.y,
-    width: NODE_CARD.width,
-    height: NODE_CARD.height,
-  }, source.snapshot), {
-    version: 1,
-    instanceId: parent.meta.instanceId,
-    rootPlacementId: parent.meta.rootPlacementId,
-    parentPlacementId: parent.placement.placementId,
-    depth: parent.meta.depth + 1,
-    siblingOrder: siblings.length,
-    expandedDirection: null,
-    lastDirection: parent.meta.expandedDirection ?? parent.meta.lastDirection,
-  });
-  return {
-    placementId,
-    document: {
-      ...document,
-      placements: [...document.placements, placement],
-      focusedPlacementId: placementId,
-    },
   };
 }

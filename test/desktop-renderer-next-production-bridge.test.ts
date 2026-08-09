@@ -46,6 +46,31 @@ import {
   updateOutlineExpansion,
   visibleOutlineNodes,
 } from "../src/desktop/renderer-next/model/outline-tree.js";
+import { TentEmbeddableNode } from "../src/desktop/renderer-next/canvas/excalidraw/TentEmbeddableNode.js";
+
+test("compact Canvas cards expose only a one-or-two-line title while sync and attention remain composable", () => {
+  const card = (title: string) => renderToStaticMarkup(createElement(TentEmbeddableNode, {
+    placementId: "pl-a",
+    selected: true,
+    projectionSyncState: "pending-sync",
+    needsAttention: true,
+    data: {
+      nodeId: "cx-a",
+      title,
+      type: "目标",
+      state: "snapshot",
+      stateLabel: "本地快照",
+      detail: "不应进入紧凑卡片的详情",
+    },
+  }));
+  const short = card("精简标题");
+  assert.match(short, /data-title-lines="1"/);
+  assert.match(short, /data-projection-sync="pending-sync"/);
+  assert.match(short, /data-needs-attention="true"/);
+  assert.doesNotMatch(short, />目标</);
+  assert.doesNotMatch(short, /不应进入紧凑卡片的详情/);
+  assert.match(card("这是一段需要自然换成两行显示的中文节点标题"), /data-title-lines="2"/);
+});
 
 function state(workspaceId = "ws-a") {
   return {
@@ -476,7 +501,6 @@ test("Focus renders externally controlled placement state without inventing a se
     placementState: "unplaced",
     canCreatePlacement: true,
     onPlaceNode: () => {},
-    onRemoveNode: () => {},
     onCollapse: () => {},
   }));
   assert.match(unplaced, /尚未放入画布/);
@@ -487,14 +511,12 @@ test("Focus renders externally controlled placement state without inventing a se
     placementState: "placed",
     canCreatePlacement: true,
     onPlaceNode: () => {},
-    onRemoveNode: () => {},
     onCollapse: () => {},
   }));
   assert.match(placed, /已放入当前画布/);
-  assert.match(placed, /从画布移除/);
 });
 
-test("Focus source status exposes one exact sync action only when permitted", () => {
+test("Focus reports source status while sync remains a single Canvas command", () => {
   const node = {
     nodeId: "cx-a",
     etag: "etag-live",
@@ -519,19 +541,15 @@ test("Focus source status exposes one exact sync action only when permitted", ()
       reason: "revision-or-fields-changed",
       canSync: true,
     },
-    onSyncSnapshot: () => {},
-    onRemoveNode: () => {},
     onCollapse: () => {},
   }));
   assert.match(changed, /来源有更新/);
-  assert.equal((changed.match(/同步快照/g) ?? []).length, 2, "aria label plus tooltip");
+  assert.doesNotMatch(changed, /同步快照/, "sync is owned by the current Canvas, not one placement");
 
   const current = renderToStaticMarkup(createElement(InspectorPanel, {
     node,
     placementState: "placed",
     placementSourceState: { state: "current", reason: "matched", canSync: false },
-    onSyncSnapshot: () => {},
-    onRemoveNode: () => {},
     onCollapse: () => {},
   }));
   assert.match(current, /来源一致/);
@@ -557,7 +575,6 @@ test("Focus source status exposes one exact sync action only when permitted", ()
       reason: "fresh-source-missing",
       canSync: false,
     },
-    onRemoveNode: () => {},
     onCollapse: () => {},
   }));
   assert.match(deleted, /源节点已删除/);
@@ -595,7 +612,6 @@ test("placement creation fails closed while stale and reconnecting exposes one r
     placementState: "unplaced",
     canCreatePlacement: false,
     onPlaceNode: () => {},
-    onRemoveNode: () => {},
     onCollapse: () => {},
   }));
   assert.match(focus, /权威节点恢复后才能创建本地位置/);

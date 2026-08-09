@@ -20,6 +20,7 @@ import {
 import { startWorkspaceProjectionBridge } from "./gateway/workspace-projection-bridge.js";
 import {
   CanvasV5LocalPersistence,
+  commitCanvasV5DocumentSync,
   shouldSeedLocalCanvas,
   type CanvasV5LoadResult,
   type CanvasV5LocalSnapshot,
@@ -351,6 +352,26 @@ function MountedWorkspace(props: {
       connectionRef.current === "online"
     );
   }, [workspace.workspaceId]);
+  const commitCanvasSync = useCallback(
+    (expectedDigest: string): CanvasDocument | null => {
+      const result = commitCanvasV5DocumentSync(
+        persistence,
+        snapshotRef.current,
+        expectedDigest,
+        readCurrentCanvasAuthority
+      );
+      if (result.status) setPersistenceStatus(result.status);
+      if (!result.committed) {
+        // The sync transaction is deliberately not published until durable
+        // local persistence succeeds. The pending diff therefore remains.
+        retrySave.current = null;
+        return null;
+      }
+      retrySave.current = null;
+      return result.document;
+    },
+    [persistence, readCurrentCanvasAuthority]
+  );
 
   return (
     <AppShell
@@ -371,6 +392,7 @@ function MountedWorkspace(props: {
       collaborationActions={collaborationSurface.actions}
       inboxModel={inboxModel}
       readCurrentCanvasAuthority={readCurrentCanvasAuthority}
+      onCanvasSync={commitCanvasSync}
       onRetryPersistence={retrySave.current ?? undefined}
       onPresentationChange={(update) => {
         const next = update({

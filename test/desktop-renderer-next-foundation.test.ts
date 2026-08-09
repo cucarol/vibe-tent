@@ -41,10 +41,8 @@ import type { EventEnvelope } from "../src/service/types.js";
 import {
   canCreateNodePlacement,
   canDropNodeIntoPresentation,
-  removeFocusedPresentationPlacement,
   selectPresentationNode,
   selectPresentationNodeFromOutline,
-  syncFocusedPresentationSnapshot,
   withPresentationDocument,
   type WorkbenchPresentationState,
 } from "../src/desktop/renderer-next/shell/workbench-presentation.js";
@@ -216,100 +214,6 @@ test("controlled presentation sequences Canvas removal before selection without 
   assert.equal(state.selectedNodeId, null);
 });
 
-test("Focus removal deletes only the current placement when one Node has multiple instances", () => {
-  const state: WorkbenchPresentationState = {
-    selectedNodeId: "cx-a",
-    document: {
-      ...createEmptyCanvasDocument(),
-      focusedPlacementId: "pl-a-2",
-      placements: [
-        { placementId: "pl-a-1", entityRef: "cx-a", kind: "node" },
-        { placementId: "pl-a-2", entityRef: "cx-a", kind: "node" },
-        { placementId: "pl-b", entityRef: "cx-b", kind: "node" },
-      ],
-    },
-  };
-  const next = removeFocusedPresentationPlacement(state, "cx-a");
-  assert.deepEqual(
-    next.document.placements.map((placement) => placement.placementId),
-    ["pl-a-1", "pl-b"]
-  );
-  assert.equal(next.document.focusedPlacementId, "pl-a-1");
-  assert.equal(next.selectedNodeId, "cx-a");
-});
-
-test("snapshot sync updates only the captured focused placement", () => {
-  const oldSnapshot = captureCanvasNodeSnapshot({
-    nodeId: "cx-a",
-    etag: "etag-old",
-    name: "旧标题",
-    path: "旧路径",
-    type: "prompt",
-    tags: ["old"],
-    mode: "editable",
-    archived: false,
-    invalid: false,
-  });
-  const freshSnapshot = captureCanvasNodeSnapshot({
-    nodeId: "cx-a",
-    etag: "etag-new",
-    name: "新标题",
-    path: "新路径",
-    type: "prompt",
-    tags: ["new"],
-    mode: "editable",
-    archived: false,
-    invalid: false,
-  });
-  const state: WorkbenchPresentationState = {
-    selectedNodeId: "cx-a",
-    document: {
-      ...createEmptyCanvasDocument(),
-      focusedPlacementId: "pl-a-2",
-      viewport: { x: 12, y: 24, zoom: 1.25 },
-      placements: [
-        withCanvasNodeSnapshot({
-          placementId: "pl-a-1",
-          entityRef: "cx-a",
-          kind: "node",
-          x: 10,
-          y: 20,
-          zIndex: 2,
-          meta: { sibling: "keep" },
-        }, oldSnapshot),
-        withCanvasNodeSnapshot({
-          placementId: "pl-a-2",
-          entityRef: "cx-a",
-          kind: "node",
-          x: 300,
-          y: 80,
-          width: 260,
-          height: 140,
-          zIndex: 7,
-          meta: { presentation: "expanded" },
-        }, oldSnapshot),
-      ],
-    },
-  };
-  const next = syncFocusedPresentationSnapshot(
-    state,
-    "pl-a-2",
-    "cx-a",
-    freshSnapshot
-  );
-  assert.equal(readCanvasNodeSnapshot(next.document.placements[0]!)?.etag, "etag-old");
-  assert.equal(readCanvasNodeSnapshot(next.document.placements[1]!)?.etag, "etag-new");
-  assert.equal(next.document.placements[1]!.x, 300);
-  assert.equal(next.document.placements[1]!.zIndex, 7);
-  assert.equal(next.document.placements[1]!.meta?.presentation, "expanded");
-  assert.deepEqual(next.document.viewport, state.document.viewport);
-  assert.deepEqual(
-    syncFocusedPresentationSnapshot(state, "pl-a-1", "cx-a", freshSnapshot),
-    state,
-    "a stale click cannot update a placement after focus moved"
-  );
-});
-
 test("placement creation is permitted only by fresh authoritative graph identity", () => {
   assert.equal(canCreateNodePlacement("fresh", "ready"), true);
   for (const state of ["loading", "stale", "unresolved", "error", "unmounted"] as const) {
@@ -338,7 +242,7 @@ test("new placements use the canonical card geometry and choose a visible free s
   };
   const placed = placeEntityInVisibleViewport(document, "cx-c", () => "pl-c");
   assert.equal(placed.document.placements[2]?.x, 96);
-  assert.equal(placed.document.placements[2]?.y, 286);
+  assert.equal(placed.document.placements[2]?.y, 150 + NODE_CARD.height + 32);
   assert.equal(placed.document.placements[2]?.width, NODE_CARD.width);
   assert.equal(placed.document.placements[2]?.height, NODE_CARD.height);
 });
@@ -359,7 +263,7 @@ test("placement slot search grows beyond twelve occupied candidates", () => {
     placements,
   }, "cx-late", () => "pl-late");
   assert.equal(placed.document.placements[14]?.x, 96);
-  assert.equal(placed.document.placements[14]?.y, 1102);
+  assert.equal(placed.document.placements[14]?.y, 150 + 7 * (NODE_CARD.height + 32));
 });
 
 test("Outline drop pointer anchors the canonical Node centre across pan and zoom", () => {

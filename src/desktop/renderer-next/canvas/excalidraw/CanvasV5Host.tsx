@@ -58,7 +58,8 @@ import {
   viewportAfterCanvasResize,
 } from "../../model/canvas-viewport-resize.js";
 import { CANVAS_V5_COLORS } from "./canvasV5Theme.js";
-import { Button } from "../../ui/index.js";
+import { Button, IconButton } from "../../ui/index.js";
+import { ShellIcon } from "../../shell/icons.js";
 import type { ExcalidrawSceneSnapshot } from "./excalidrawSceneTypes.js";
 import { sceneContentSignature } from "./sceneContentSignature.js";
 import {
@@ -89,7 +90,11 @@ import type {
   CanvasSubtreeProjection,
   SubtreeDirection,
 } from "../../model/canvas-subtree-projection.js";
-import { carryCollapsedSubtreeDescendants } from "../../model/canvas-subtree-projection.js";
+import {
+  carryCollapsedSubtreeDescendants,
+  readCanvasProjectionPlacementMeta,
+  setCanvasProjectionPlacementHidden,
+} from "../../model/canvas-subtree-projection.js";
 import {
   CanvasSubtreeOverlay,
   type CanvasSubtreeOverlayHandle,
@@ -129,7 +134,7 @@ export type CanvasV5HostProps = {
   attentionNodeIds?: ReadonlySet<string>;
   subtreeProjection?: CanvasSubtreeProjection;
   onSubtreeDirection?: (placementId: string, direction: SubtreeDirection) => void;
-  onProjectionSync?: (placementId: string) => CanvasDocument | null;
+  onProjectionSync?: (authorityDigest: string) => CanvasDocument | null;
 };
 
 type ExcalidrawApi = {
@@ -220,6 +225,9 @@ const CANVAS_COPY = {
   "canvas.layer.markdown": "Markdown",
   "canvas.layer.wiki": "Wiki",
   "canvas.layer.relation": "语义关系",
+  "canvas.sync": "同步画布",
+  "canvas.sync.current": "画布已同步",
+  "canvas.sync.unavailable": "权威来源不可用，暂不能同步",
   "canvas.aria": "Tent 画布",
 } as const;
 
@@ -229,16 +237,13 @@ const EMPTY_SUBTREE_PROJECTION: CanvasSubtreeProjection = {
   relationships: [],
   controls: [],
   placementStates: [],
-  syncControls: [],
+  documentSync: null,
 };
 
 function sceneDocumentForSubtreeProjection(
   document: CanvasDocument,
   projection: CanvasSubtreeProjection
 ): CanvasDocument {
-  if (projection.authority === "unknown" && projection.visiblePlacementIds.length === 0) {
-    return document;
-  }
   const visible = new Set(projection.visiblePlacementIds);
   return {
     ...document,
@@ -248,7 +253,6 @@ function sceneDocumentForSubtreeProjection(
       : null,
   };
 }
-
 function isEditableTarget(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && Boolean(
     target.closest("input, textarea, select, [contenteditable='true'], .cm-editor")
@@ -657,6 +661,40 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     return () => observer.disconnect();
   }, [publishDocument]);
 
+  const commitPresentationDocumentWithHistory = useCallback(
+    (nextDocument: CanvasDocument): boolean => {
+      const api = apiRef.current;
+      if (!api || nextDocument === documentRef.current) return false;
+      const elements = api.getSceneElementsIncludingDeleted?.() ?? api.getSceneElements?.() ?? [];
+      const currentRevision = activeCanvasPresentationRevision(elements);
+      if (!currentRevision) {
+        presentationHistoryBaselineRef.current = documentRef.current;
+      }
+      const revision = newPlacementId("canvas-presentation");
+      presentationHistoryDocumentsRef.current.set(revision, nextDocument);
+      if (presentationHistoryDocumentsRef.current.size > 64) {
+        const oldest = presentationHistoryDocumentsRef.current.keys().next().value;
+        if (oldest) presentationHistoryDocumentsRef.current.delete(oldest);
+      }
+      presentationHistoryStartedRef.current = true;
+      presentationHistoryRevisionRef.current = revision;
+      placementPersistGate.current.cancel();
+      publishDocument(nextDocument);
+      const nextElements = advanceCanvasPresentationHistory(elements, revision);
+      latestSceneRef.current = {
+        elements: nextElements,
+        appState: api.getAppState?.() ?? latestSceneRef.current.appState,
+      };
+      api.updateScene({
+        elements: nextElements,
+        appState: { activeEmbeddable: null, selectedElementIds: {} },
+        captureUpdate: "IMMEDIATELY",
+      });
+      return true;
+    },
+    [publishDocument]
+  );
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const host = hostRef.current;
@@ -689,25 +727,13 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
         }) as ExcalidrawElementLike | undefined;
         if (!source) return;
         if (isDelete) {
-          adapterHistoryPlacementIdsRef.current.add(focusedPlacementId);
-          deletedPlacementCacheRef.current.set(focusedPlacementId, placement);
-          const deletedElements = scene.map((raw) => {
-            if (!raw || typeof raw !== "object") return raw;
-            const element = raw as ExcalidrawElementLike;
-            if (element.id !== source.id) return element;
-            return {
-              ...element,
-              isDeleted: true,
-              version: typeof element.version === "number" ? element.version + 1 : 1,
-              versionNonce: Math.floor(Math.random() * 2_147_483_647),
-              updated: Date.now(),
-            };
-          });
-          api.updateScene({
-            elements: deletedElements,
-            appState: { activeEmbeddable: null, selectedElementIds: {} },
-            captureUpdate: "IMMEDIATELY",
-          });
+          commitPresentationDocumentWithHistory(
+            setCanvasProjectionPlacementHidden(
+              documentRef.current,
+              focusedPlacementId,
+              true
+            )
+          );
           return;
         }
 
@@ -799,7 +825,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [clearPreviewTimer, displayMenuOpen, immersive, onImmersiveChange, publishDocument]);
+  }, [clearPreviewTimer, commitPresentationDocumentWithHistory, displayMenuOpen, immersive, onImmersiveChange, publishDocument]);
 
   const persistDrawing = useCallback(
     (
@@ -1497,38 +1523,34 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     ),
     [subtreeProjection.placementStates]
   );
+  const hiddenNodePlacements = useMemo(
+    () => canvasDocument.placements.filter(
+      (placement) =>
+        placement.kind === "node" &&
+        readCanvasProjectionPlacementMeta(placement).hidden
+    ),
+    [canvasDocument.placements]
+  );
 
-  const handleProjectionSyncWithHistory = useCallback((placementId: string) => {
-    const api = apiRef.current;
-    if (!api) return;
-    const nextDocument = onProjectionSync(placementId);
+  const handleProjectionSyncWithHistory = useCallback(() => {
+    const sync = subtreeProjectionRef.current.documentSync;
+    if (!sync?.canSync) return;
+    const nextDocument = onProjectionSync(sync.authorityDigest);
     if (!nextDocument || nextDocument === documentRef.current) return;
-    const elements = api.getSceneElementsIncludingDeleted?.() ?? api.getSceneElements?.() ?? [];
-    const currentRevision = activeCanvasPresentationRevision(elements);
-    if (!currentRevision) {
-      presentationHistoryBaselineRef.current = documentRef.current;
-    }
-    const revision = newPlacementId("projection-sync");
-    presentationHistoryDocumentsRef.current.set(revision, nextDocument);
-    if (presentationHistoryDocumentsRef.current.size > 64) {
-      const oldest = presentationHistoryDocumentsRef.current.keys().next().value;
-      if (oldest) presentationHistoryDocumentsRef.current.delete(oldest);
-    }
-    presentationHistoryStartedRef.current = true;
-    presentationHistoryRevisionRef.current = revision;
-    placementPersistGate.current.cancel();
-    publishDocument(nextDocument);
-    const nextElements = advanceCanvasPresentationHistory(elements, revision);
-    latestSceneRef.current = {
-      elements: nextElements,
-      appState: api.getAppState?.() ?? latestSceneRef.current.appState,
-    };
-    api.updateScene({
-      elements: nextElements,
-      appState: { activeEmbeddable: null, selectedElementIds: {} },
-      captureUpdate: "IMMEDIATELY",
-    });
-  }, [onProjectionSync, publishDocument]);
+    commitPresentationDocumentWithHistory(nextDocument);
+  }, [commitPresentationDocumentWithHistory, onProjectionSync]);
+  const handlePlacementHiddenChange = useCallback(
+    (placementId: string, hidden: boolean) => {
+      commitPresentationDocumentWithHistory(
+        setCanvasProjectionPlacementHidden(
+          documentRef.current,
+          placementId,
+          hidden
+        )
+      );
+    },
+    [commitPresentationDocumentWithHistory]
+  );
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -1576,6 +1598,33 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
       ) : null}
 
       <div className="tn-canvas-v5-host__chrome" data-testid="canvas-v5-chrome">
+        <div
+          className="tn-canvas-v5-host__projection-sync"
+          data-state={subtreeProjection.documentSync ? "pending" : subtreeProjection.authority}
+        >
+          <IconButton
+            variant="ghost"
+            size="compact"
+            data-testid="canvas-projection-sync"
+            aria-label={subtreeProjection.documentSync
+              ? `${canvasCopy("canvas.sync")}，${subtreeProjection.documentSync.affectedCount} 项待更新`
+              : subtreeProjection.authority === "fresh"
+                ? canvasCopy("canvas.sync.current")
+                : canvasCopy("canvas.sync.unavailable")}
+            tooltip={subtreeProjection.documentSync
+              ? `${canvasCopy("canvas.sync")} · ${subtreeProjection.documentSync.affectedCount}`
+              : subtreeProjection.authority === "fresh"
+                ? canvasCopy("canvas.sync.current")
+                : canvasCopy("canvas.sync.unavailable")}
+            disabled={!subtreeProjection.documentSync?.canSync}
+            onClick={handleProjectionSyncWithHistory}
+          >
+            <ShellIcon name="refresh" />
+          </IconButton>
+          {subtreeProjection.documentSync ? (
+            <span aria-hidden="true">{subtreeProjection.documentSync.affectedCount}</span>
+          ) : null}
+        </div>
         <div className="tn-canvas-v5-host__settings">
           <Button
             variant="quiet"
@@ -1643,6 +1692,22 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
                   </label>
                 ))}
               </fieldset>
+            ) : null}
+            {hiddenNodePlacements.length > 0 ? (
+              <div className="tn-canvas-v5-host__hidden-list" data-testid="canvas-hidden-placements">
+                <span>已隐藏投影</span>
+                {hiddenNodePlacements.map((placement) => (
+                  <Button
+                    key={placement.placementId}
+                    variant="quiet"
+                    size="compact"
+                    data-placement-id={placement.placementId}
+                    onClick={() => handlePlacementHiddenChange(placement.placementId, false)}
+                  >
+                    显示 {cardModels.get(placement.placementId)?.title ?? placement.entityRef ?? "本地节点"}
+                  </Button>
+                ))}
+              </div>
             ) : null}
           </div>
           ) : null}
@@ -1731,7 +1796,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
           hoveredPlacementId={hoveredPlacementId}
           selectedPlacementId={canvasDocument.focusedPlacementId ?? null}
           onDirection={onSubtreeDirection}
-          onSync={handleProjectionSyncWithHistory}
+          onHide={(placementId) => handlePlacementHiddenChange(placementId, true)}
         />
         {previewPlacementId && cardModels.get(previewPlacementId) ? (
           <aside

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   CanvasV5LocalPersistence,
+  commitCanvasV5DocumentSync,
   canvasV5LocalPersistenceKey,
   shouldSeedLocalCanvas,
   type CanvasV5LocalSnapshot,
@@ -14,8 +15,12 @@ import {
 import { normalizeCanvasWorkspaceSession } from "../src/desktop/renderer-next/model/canvas-session-store.js";
 import {
   CANVAS_SUBTREE_META_KEY,
+  canvasDocumentAuthorityDigest,
+  createCanvasSubtreeProjectionInstance,
   readCanvasSubtreePlacementMeta,
+  type CanvasSubtreeNodeSource,
 } from "../src/desktop/renderer-next/model/canvas-subtree-projection.js";
+import { captureCanvasNodeSnapshot } from "../src/desktop/renderer-next/model/canvas-node-snapshot.js";
 
 class MemoryStorage {
   private readonly values = new Map<string, string>();
@@ -316,4 +321,38 @@ test("storage failures retain a retry closure instead of claiming a save", () =>
   assert.equal(first.status.kind, "quota");
   shouldThrow = false;
   assert.equal(first.retry().kind, "saved");
+});
+
+test("global Canvas sync publishes nothing when the complete local snapshot cannot persist", () => {
+  const root = captureCanvasNodeSnapshot({
+    nodeId: "cx-root", etag: "root-v1", name: "根", path: "根", type: "goal",
+    tags: [], mode: "editable", archived: false, invalid: false,
+  }) as CanvasSubtreeNodeSource["snapshot"];
+  const originalSources: CanvasSubtreeNodeSource[] = [{ nodeId: "cx-root", parentNodeId: null, snapshot: root }];
+  const created = createCanvasSubtreeProjectionInstance(
+    { ...snapshot().document, placements: [], focusedPlacementId: null },
+    "cx-root",
+    originalSources,
+    { x: 100, y: 120 }
+  );
+  const currentSnapshot = { ...snapshot(), document: created.document };
+  const newerSources: CanvasSubtreeNodeSource[] = [{
+    nodeId: "cx-root",
+    parentNodeId: null,
+    snapshot: { ...root, etag: "root-v2", title: "更新后的根" },
+  }];
+  const expectedDigest = canvasDocumentAuthorityDigest(created.document, newerSources)!;
+  const storage = {
+    getItem: () => null,
+    setItem: () => { throw new Error("quota exceeded"); },
+  };
+  const result = commitCanvasV5DocumentSync(
+    new CanvasV5LocalPersistence(storage, "ws-alpha"),
+    currentSnapshot,
+    expectedDigest,
+    () => newerSources
+  );
+  assert.equal(result.committed, false);
+  assert.equal(result.status?.kind, "quota");
+  assert.equal(result.document, created.document, "failed persistence returns the exact original document");
 });
