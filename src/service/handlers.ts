@@ -707,8 +707,9 @@ async function workspaceMount(ctx: HandlerContext, p: Record<string, unknown>) {
 }
 
 /**
- * Stable wait summary when a bound managed Session is unintentionally unavailable
- * (live terminal exit/fail before Delivery, or dead after service restart / remount).
+ * Stable wait summary when a bound Session is unintentionally unavailable
+ * (live terminal exit/fail before Delivery, explicit external leave, or dead
+ * after service restart / remount).
  * Kept as a constant so tests, recovery UX, and remount reconcile share one contract text.
  * Recovery: explicit `task.startSession` or explicit `task.replaceSession`; occupation held.
  */
@@ -718,7 +719,7 @@ export const SESSION_UNAVAILABLE_WAIT_SUMMARY =
 /** Stable machine-facing code for session-unavailable recoverable park (wait.reason stays external). */
 export const SESSION_UNAVAILABLE_WAIT_CODE = "session_unavailable" as const;
 
-/** True when Task is recoverably parked for a dead/unavailable managed Session. */
+/** True when Task is recoverably parked for a dead/unavailable bound Session. */
 export function isSessionUnavailableParkedWait(task: TaskEnvelope): boolean {
   if (task.state !== "waiting" || task.wait?.reason !== "external") return false;
   // Prefer durable waitCode; fall back to stable summary for rows written before code.
@@ -773,7 +774,7 @@ async function applySessionUnavailablePark(
 }
 
 /**
- * Shared recoverable park path for an unintentionally dead managed Session before Delivery.
+ * Shared recoverable park path for an unintentionally unavailable bound Session before Delivery.
  * Live runtime terminal projection and mount reconcile converge here.
  *
  * - Task → waiting(reason=external) with SESSION_UNAVAILABLE_WAIT_SUMMARY
@@ -3935,13 +3936,13 @@ async function taskClaimRpc(
   // Per-Task lifecycle flight + workspace mutation: claim must not race deliver/backfill.
   return runTaskLifecycle(workspaceId, taskPath, () =>
     ctx.mutations.run(workspaceId, async () => {
-      ctx.host.markSelfWrite(workspaceId);
       // Prepare Role lane/base BEFORE Core claim transition so a failed prepare
       // leaves the Task queued (no intermediate running without base).
       const pre = await loadTaskEnvelope(mount.env.fs, taskPath);
       let claimWrite: TaskClaimWrite | undefined;
       let callerSession: SessionRecord | undefined;
       let previousLastTaskId: string | undefined;
+      let recoverWaitingExternalRoleTask = false;
       if (pre.roleId) {
         callerSession = await requireRoleClaimCallerSession(
           ctx,
@@ -3961,8 +3962,9 @@ async function taskClaimRpc(
             }
           );
         }
+        recoverWaitingExternalRoleTask = pre.state === "waiting";
       }
-      if (pre.state !== "running") {
+      if (pre.state !== "running" && !recoverWaitingExternalRoleTask) {
         // First claim only: prepare lane/base (no disk write) then single-patch claim.
         const preparedRoleWrite = await prepareRoleClaimWrite(ctx, workspaceId, pre);
         claimWrite = {
@@ -3973,7 +3975,7 @@ async function taskClaimRpc(
           await beforeTaskClaimCoreForTests({ workspaceId, taskPath, task: pre });
         }
       }
-      if (callerSession && pre.state !== "running") {
+      if (callerSession && pre.state !== "running" && !recoverWaitingExternalRoleTask) {
         previousLastTaskId = callerSession.lastTaskId;
         await ctx.runtime.registry.update(callerSession.id, {
           lastTaskId: pre.id || pre.path,
@@ -3981,11 +3983,20 @@ async function taskClaimRpc(
       }
       let task: TaskEnvelope;
       try {
-        task = await taskClaim(mount.env, taskPath, {
-          ...(claimWrite ? { claimWrite } : {}),
-        });
+        if (pre.state !== "running" && !recoverWaitingExternalRoleTask) {
+          ctx.host.markSelfWrite(workspaceId);
+        }
+        task = recoverWaitingExternalRoleTask
+          ? await restoreExactExternalRoleTask(ctx, {
+              workspaceId,
+              taskPath,
+              callerSessionId: callerSession!.id,
+            })
+          : await taskClaim(mount.env, taskPath, {
+              ...(claimWrite ? { claimWrite } : {}),
+            });
       } catch (error) {
-        if (callerSession && pre.state !== "running") {
+        if (callerSession && pre.state !== "running" && !recoverWaitingExternalRoleTask) {
           await ctx.runtime.registry
             .update(callerSession.id, { lastTaskId: previousLastTaskId })
             .catch(() => undefined);
@@ -4014,6 +4025,98 @@ async function taskClaimRpc(
       };
     })
   );
+}
+
+/**
+ * Validate and, only for an explicitly recoverable wait, resume a Role Task on
+ * its exact existing external Session. This never creates/replaces a Session or
+ * starts an Agent Connection/provider. Callers must hold the Task lifecycle and
+ * workspace mutation boundaries whenever a waiting Task may be resumed.
+ */
+async function restoreExactExternalRoleTask(
+  ctx: HandlerContext,
+  input: {
+    workspaceId: string;
+    taskPath: string;
+    callerSessionId?: string;
+  }
+): Promise<TaskEnvelope> {
+  const mount = ctx.host.require(input.workspaceId);
+  const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+  const roleId = task.roleId?.trim() || "";
+  const sessionId = task.sessionId?.trim() || "";
+  if (!roleId || !sessionId) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "External Role Task recovery requires exact persisted roleId and sessionId",
+      { code: "EXTERNAL_ROLE_TASK_BINDING_REQUIRED", taskPath: input.taskPath }
+    );
+  }
+  if (input.callerSessionId && input.callerSessionId !== sessionId) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "task.claim caller Session does not own the exact waiting Role Task",
+      {
+        code: "TASK_CLAIM_SESSION_MISMATCH",
+        taskPath: input.taskPath,
+        boundSessionId: sessionId,
+        callerSessionId: input.callerSessionId,
+      }
+    );
+  }
+
+  const session = await ctx.runtime.registry.read(sessionId);
+  const lastTaskRef = session?.lastTaskId?.trim() || "";
+  if (
+    !session ||
+    session.state !== "external" ||
+    session.workspace !== input.workspaceId ||
+    session.roleId !== roleId ||
+    (lastTaskRef !== task.id && lastTaskRef !== task.path)
+  ) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "External Role Session is not bound to the exact workspace/Role/Task",
+      {
+        code: "EXTERNAL_ROLE_TASK_SESSION_MISMATCH",
+        taskPath: input.taskPath,
+        sessionId,
+        roleId,
+      }
+    );
+  }
+  const probe = await ctx.runtime.probe(sessionId);
+  if (!probe.alive || probe.state !== "external" || !SessionRegistry.isOpen(probe.state)) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "External Role Session is not alive and open for exact Task recovery",
+      {
+        code: "EXTERNAL_ROLE_TASK_SESSION_UNAVAILABLE",
+        taskPath: input.taskPath,
+        sessionId,
+        state: probe.state,
+      }
+    );
+  }
+
+  if (task.state === "running") return task;
+  if (
+    task.state !== "waiting" ||
+    (!isRejectResumeParkedWait(task) && !isSessionUnavailableParkedWait(task))
+  ) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "External Role Task is not in an exact recoverable Session wait",
+      {
+        code: "EXTERNAL_ROLE_TASK_WAIT_NOT_RECOVERABLE",
+        taskPath: input.taskPath,
+        state: task.state,
+        waitCode: task.wait?.code,
+      }
+    );
+  }
+  ctx.host.markSelfWrite(input.workspaceId);
+  return taskResume(mount.env, input.taskPath);
 }
 
 async function requireRoleClaimCallerSession(
@@ -5796,7 +5899,10 @@ function outputProvenanceErrorToRpc(err: OutputProvenanceError): RpcError {
  * resume:true: same async accept contract as task.sendInput for the review note:
  *   1) core reject → running occupation
  *   2) durable review-feedback TaskInput (pending)
- *   3) managed session restore/bind when sessionId present (still on RPC path):
+ *   3) exact Session continuity when sessionId is present (still on RPC path):
+ *      external Role Session validates the exact durable Task binding and stays
+ *      running without any Agent Connection/provider operation;
+ *      managed Session restore/bind otherwise:
  *      alive rebind or native resume first (contextRestored=true); when native
  *      resume explicitly fails or prior is not resumeCapable, start an honest
  *      independent new Session with recovery bootstrap (contextRestored=false).
@@ -5807,8 +5913,8 @@ function outputProvenanceErrorToRpc(err: OutputProvenanceError): RpcError {
  *      status/events queryable via taskInput.*; failed is retryable, uncertain
  *      is at-most-once; already processing/delivered/uncertain skips re-inject
  *
- * External / no sessionId: core rework + pending review-feedback for poll+ack.
- * Role/Connection restore semantics and Delivery authority are unchanged.
+ * No sessionId: core rework + pending review-feedback for poll+ack.
+ * Role/Connection continuity and Delivery authority are unchanged.
  */
 async function taskRejectRpc(
   ctx: HandlerContext,
@@ -5848,6 +5954,17 @@ async function taskRejectRpc(
         note: noteForDelivery,
         resume,
       });
+      // External Role continuity is a pure exact-binding validation and belongs
+      // in the same Task lifecycle/mutation flight as reject. Capture failure so
+      // the already-durable rejected Delivery can be parked honestly afterward.
+      let externalRestoreError: unknown;
+      if (resume && rejected.task.roleId && rejected.task.sessionId) {
+        try {
+          await restoreExactExternalRoleTask(ctx, { workspaceId, taskPath });
+        } catch (error) {
+          externalRestoreError = error;
+        }
+      }
       emitTaskState(ctx, workspaceId, rejected.task, "task.reject");
       ctx.events.emit(
         "delivery.updated",
@@ -5860,7 +5977,7 @@ async function taskRejectRpc(
         },
         "self"
       );
-      return rejected;
+      return { ...rejected, externalRestoreError };
     });
   });
 
@@ -5886,8 +6003,7 @@ async function taskRejectRpc(
     note: noteExact,
   });
 
-  // Managed ACP session restore when bound; external/manual (no sessionId) stay
-  // running with review feedback pending for scoped poll/get/ack.
+  // No bound Session: keep review feedback pending for scoped poll/get/ack.
   const boundSessionId = result.task.sessionId?.trim() || "";
   if (!boundSessionId) {
     return {
@@ -5903,6 +6019,42 @@ async function taskRejectRpc(
       /** Always false on accept — external agents poll taskInput.* */
       continued: false,
     };
+  }
+
+  // A durable Role Task is executed by its exact external Role Session. Reuse
+  // the same bounded recovery primitive as task.claim: validate workspace,
+  // Role, Task and liveness, but never start an Agent Connection/provider.
+  if (result.task.roleId) {
+    if (result.externalRestoreError === undefined) {
+      return {
+        workspaceId,
+        taskPath,
+        task: projectTask(result.task),
+        delivery: projectDelivery(result.delivery),
+        state: result.task.state,
+        input: projectTaskInput(reviewInput),
+        /** Durable review-feedback accepted for external poll/get/ack. */
+        accepted: true,
+        enqueued: false,
+        continued: false,
+      };
+    }
+    const message =
+      result.externalRestoreError instanceof Error
+        ? result.externalRestoreError.message
+        : String(result.externalRestoreError);
+    await parkTaskAfterRejectResumeFailure(ctx, {
+      workspaceId,
+      taskPath,
+      sessionId: boundSessionId,
+      message,
+      summaryPrefix: EXTERNAL_ROLE_REJECT_RESUME_FAILED_WAIT_SUMMARY,
+    });
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `task.reject resume failed to restore external Role Session: ${message}`,
+      { taskPath, sessionId: boundSessionId, inputId: reviewInput.id }
+    );
   }
 
   // Prior managed delivery marks sessionId+taskPath delivered; clear dedup so a
@@ -8376,8 +8528,8 @@ async function sessionStatus(ctx: HandlerContext, p: Record<string, unknown>) {
 }
 
 /**
- * End or unbind an external session. Never delivers or accepts tasks —
- * only stops the session registry binding and reports incomplete task state.
+ * End or unbind an external session. Never delivers or accepts tasks. Any exact
+ * running Task remains occupied but is parked recoverably after the binding stops.
  * Resolves by sessionId **or** workspace-scoped externalKey.
  */
 async function sessionLeave(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -8444,6 +8596,24 @@ async function sessionLeave(ctx: HandlerContext, p: Record<string, unknown>) {
     left = true;
     const after = await ctx.runtime.registry.read(sessionId);
     state = after?.state ?? "stopped";
+
+    // Serialize with exact-Task recovery. If leave overlaps the probe→resume
+    // window, recovery may briefly observe the prior external state, but this
+    // queued park wins durably after the lifecycle flight releases. No Task,
+    // Session, or provider identity is replaced.
+    const leaveWorkspaceId = rec.workspace || workspaceId;
+    if (leaveWorkspaceId) {
+      for (const task of incompleteTasks) {
+        await runTaskLifecycle(leaveWorkspaceId, task.path, () =>
+          parkTaskForUnavailableSession(ctx, {
+            workspaceId: leaveWorkspaceId,
+            taskPath: task.path,
+            sessionId,
+            reason: "session.leave",
+          })
+        );
+      }
+    }
   } else {
     // Already stopped/failed — idempotent leave.
     state = rec.state === "failed" ? "failed" : "stopped";
@@ -11095,7 +11265,8 @@ function isRejectResumeParkedWait(task: TaskEnvelope): boolean {
     task.state === "waiting" &&
     task.wait?.reason === "external" &&
     typeof task.wait.summary === "string" &&
-    task.wait.summary.includes(REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY)
+    (task.wait.summary.includes(REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY) ||
+      task.wait.summary.includes(EXTERNAL_ROLE_REJECT_RESUME_FAILED_WAIT_SUMMARY))
   );
 }
 
@@ -12016,6 +12187,10 @@ function clearManagedAutoDeliverDedup(sessionId: string, taskPath: string): void
 export const REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY =
   "驳回续跑未能恢复原 managed Session。可显式 replaceSession，或 interrupt 任务；occupation 保持。";
 
+/** Honest diagnostic for an exact external Role Session that could not resume. */
+export const EXTERNAL_ROLE_REJECT_RESUME_FAILED_WAIT_SUMMARY =
+  "驳回续跑未能恢复原 external Role Session。请恢复同一 Session 后 claim，或 interrupt 任务；occupation 保持。";
+
 /** Restore provenance for reject-resume managed session recovery. */
 export type RejectResumeRestoreReason =
   | "task.reject.resume.alive"
@@ -12220,6 +12395,7 @@ async function parkTaskAfterRejectResumeFailure(
     taskPath: string;
     sessionId?: string;
     message: string;
+    summaryPrefix?: string;
   }
 ): Promise<void> {
   const mount = ctx.host.get(input.workspaceId);
@@ -12244,7 +12420,7 @@ async function parkTaskAfterRejectResumeFailure(
       const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
       if (current.state !== "running" && current.state !== "waiting") return;
 
-      const summary = `${REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY} (${input.message})`;
+      const summary = `${input.summaryPrefix ?? REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY} (${input.message})`;
       let next = current;
       if (current.state === "running") {
         next = await taskWait(mount.env, input.taskPath, {
