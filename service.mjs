@@ -26863,6 +26863,11 @@ async function taskClaimDirectRpc(ctx, p, caller = {}) {
       roleId,
       caller
     );
+    await assertRoleSessionHasNoOtherActiveTask(
+      ctx,
+      workspaceId,
+      callerSession.id
+    );
     const actors = await resolveDirectClaimResponsibility(ctx, {
       workspaceId,
       roleId,
@@ -27104,17 +27109,23 @@ async function taskClaimRpc(ctx, p, caller = {}) {
     workspaceId,
     taskPath,
     () => ctx.mutations.run(workspaceId, async () => {
-      ctx.host.markSelfWrite(workspaceId);
       const pre = await loadTaskEnvelope(mount.env.fs, taskPath);
       let claimWrite;
       let callerSession;
       let previousLastTaskId;
+      let recoverWaitingExternalRoleTask = false;
       if (pre.roleId) {
         callerSession = await requireRoleClaimCallerSession(
           ctx,
           workspaceId,
           pre.roleId,
           caller
+        );
+        await assertRoleSessionHasNoOtherActiveTask(
+          ctx,
+          workspaceId,
+          callerSession.id,
+          { path: pre.path, id: pre.id }
         );
         if (pre.state === "running" && pre.sessionId !== callerSession.id) {
           throw new RpcError(
@@ -27128,8 +27139,9 @@ async function taskClaimRpc(ctx, p, caller = {}) {
             }
           );
         }
+        recoverWaitingExternalRoleTask = pre.state === "waiting";
       }
-      if (pre.state !== "running") {
+      if (pre.state !== "running" && !recoverWaitingExternalRoleTask) {
         const preparedRoleWrite = await prepareRoleClaimWrite(ctx, workspaceId, pre);
         claimWrite = {
           ...preparedRoleWrite ?? {},
@@ -27139,7 +27151,7 @@ async function taskClaimRpc(ctx, p, caller = {}) {
           await beforeTaskClaimCoreForTests({ workspaceId, taskPath, task: pre });
         }
       }
-      if (callerSession && pre.state !== "running") {
+      if (callerSession && pre.state !== "running" && !recoverWaitingExternalRoleTask) {
         previousLastTaskId = callerSession.lastTaskId;
         await ctx.runtime.registry.update(callerSession.id, {
           lastTaskId: pre.id || pre.path
@@ -27147,11 +27159,18 @@ async function taskClaimRpc(ctx, p, caller = {}) {
       }
       let task;
       try {
-        task = await taskClaim(mount.env, taskPath, {
+        if (pre.state !== "running" && !recoverWaitingExternalRoleTask) {
+          ctx.host.markSelfWrite(workspaceId);
+        }
+        task = recoverWaitingExternalRoleTask ? await restoreExactExternalRoleTask(ctx, {
+          workspaceId,
+          taskPath,
+          callerSessionId: callerSession.id
+        }) : await taskClaim(mount.env, taskPath, {
           ...claimWrite ? { claimWrite } : {}
         });
       } catch (error) {
-        if (callerSession && pre.state !== "running") {
+        if (callerSession && pre.state !== "running" && !recoverWaitingExternalRoleTask) {
           await ctx.runtime.registry.update(callerSession.id, { lastTaskId: previousLastTaskId }).catch(() => void 0);
         }
         throw error;
@@ -27178,6 +27197,73 @@ async function taskClaimRpc(ctx, p, caller = {}) {
       };
     })
   );
+}
+async function restoreExactExternalRoleTask(ctx, input) {
+  const mount = ctx.host.require(input.workspaceId);
+  const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+  const roleId = task.roleId?.trim() || "";
+  const sessionId = task.sessionId?.trim() || "";
+  if (!roleId || !sessionId) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "External Role Task recovery requires exact persisted roleId and sessionId",
+      { code: "EXTERNAL_ROLE_TASK_BINDING_REQUIRED", taskPath: input.taskPath }
+    );
+  }
+  if (input.callerSessionId && input.callerSessionId !== sessionId) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "task.claim caller Session does not own the exact waiting Role Task",
+      {
+        code: "TASK_CLAIM_SESSION_MISMATCH",
+        taskPath: input.taskPath,
+        boundSessionId: sessionId,
+        callerSessionId: input.callerSessionId
+      }
+    );
+  }
+  const session = await ctx.runtime.registry.read(sessionId);
+  const lastTaskRef = session?.lastTaskId?.trim() || "";
+  if (!session || session.state !== "external" || session.adapterId !== EXTERNAL_ADAPTER_ID || session.workspace !== input.workspaceId || session.roleId !== roleId || lastTaskRef !== task.id && lastTaskRef !== task.path) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "External Role Session is not bound to the exact workspace/Role/Task",
+      {
+        code: "EXTERNAL_ROLE_TASK_SESSION_MISMATCH",
+        taskPath: input.taskPath,
+        sessionId,
+        roleId
+      }
+    );
+  }
+  const probe = await ctx.runtime.probe(sessionId);
+  if (!probe.alive || probe.state !== "external" || !SessionRegistry.isOpen(probe.state)) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "External Role Session is not alive and open for exact Task recovery",
+      {
+        code: "EXTERNAL_ROLE_TASK_SESSION_UNAVAILABLE",
+        taskPath: input.taskPath,
+        sessionId,
+        state: probe.state
+      }
+    );
+  }
+  if (task.state === "running") return task;
+  if (task.state !== "waiting" || !isRejectResumeParkedWait(task) && !isSessionUnavailableParkedWait(task)) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "External Role Task is not in an exact recoverable Session wait",
+      {
+        code: "EXTERNAL_ROLE_TASK_WAIT_NOT_RECOVERABLE",
+        taskPath: input.taskPath,
+        state: task.state,
+        waitCode: task.wait?.code
+      }
+    );
+  }
+  ctx.host.markSelfWrite(input.workspaceId);
+  return taskResume(mount.env, input.taskPath);
 }
 async function requireRoleClaimCallerSession(ctx, workspaceId, roleId, caller) {
   let callerSessionId = caller.sessionId?.trim() || void 0;
@@ -27215,6 +27301,24 @@ async function requireRoleClaimCallerSession(ctx, workspaceId, roleId, caller) {
     );
   }
   return session;
+}
+async function assertRoleSessionHasNoOtherActiveTask(ctx, workspaceId, sessionId, excludeTask) {
+  const conflictingTasks = (await listIncompleteTasksBoundToSession(ctx, workspaceId, sessionId)).filter(
+    (task) => !excludeTask || task.path !== excludeTask.path && (!excludeTask.id || task.id !== excludeTask.id)
+  ).sort((a, b) => a.path.localeCompare(b.path));
+  if (conflictingTasks.length === 0) return;
+  const conflict = conflictingTasks[0];
+  throw new RpcError(
+    RPC_LIFECYCLE,
+    "task.claim caller Session is already bound to another active Task",
+    {
+      code: "TASK_CLAIM_SESSION_ALREADY_ACTIVE",
+      sessionId,
+      conflictingTaskPath: conflict.path,
+      conflictingTaskId: conflict.id,
+      conflictingTaskState: conflict.state
+    }
+  );
 }
 async function prepareRoleClaimWrite(ctx, workspaceId, task) {
   if (!task.roleId) return void 0;
@@ -28498,6 +28602,14 @@ async function taskRejectRpc(ctx, p, callContext) {
         note: noteForDelivery,
         resume
       });
+      let externalRestoreError;
+      if (resume && rejected.task.roleId && rejected.task.sessionId) {
+        try {
+          await restoreExactExternalRoleTask(ctx, { workspaceId, taskPath });
+        } catch (error) {
+          externalRestoreError = error;
+        }
+      }
       emitTaskState(ctx, workspaceId, rejected.task, "task.reject");
       ctx.events.emit(
         "delivery.updated",
@@ -28510,7 +28622,7 @@ async function taskRejectRpc(ctx, p, callContext) {
         },
         "self"
       );
-      return rejected;
+      return { ...rejected, externalRestoreError };
     });
   });
   if (!resume) {
@@ -28544,6 +28656,35 @@ async function taskRejectRpc(ctx, p, callContext) {
       /** Always false on accept — external agents poll taskInput.* */
       continued: false
     };
+  }
+  if (result.task.roleId) {
+    if (result.externalRestoreError === void 0) {
+      return {
+        workspaceId,
+        taskPath,
+        task: projectTask(result.task),
+        delivery: projectDelivery(result.delivery),
+        state: result.task.state,
+        input: projectTaskInput(reviewInput),
+        /** Durable review-feedback accepted for external poll/get/ack. */
+        accepted: true,
+        enqueued: false,
+        continued: false
+      };
+    }
+    const message2 = result.externalRestoreError instanceof Error ? result.externalRestoreError.message : String(result.externalRestoreError);
+    await parkTaskAfterRejectResumeFailure(ctx, {
+      workspaceId,
+      taskPath,
+      sessionId: boundSessionId,
+      message: message2,
+      summaryPrefix: EXTERNAL_ROLE_REJECT_RESUME_FAILED_WAIT_SUMMARY
+    });
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `task.reject resume failed to restore external Role Session: ${message2}`,
+      { taskPath, sessionId: boundSessionId, inputId: reviewInput.id }
+    );
   }
   clearManagedAutoDeliverDedup(boundSessionId, taskPath);
   try {
@@ -30531,7 +30672,7 @@ async function sessionLeave(ctx, p) {
     };
   }
   const { rec, sessionId } = resolved;
-  const incompleteTasks = await listIncompleteTasksBoundToSession(
+  let incompleteTasks = await listIncompleteTasksBoundToSession(
     ctx,
     rec.workspace || workspaceId,
     sessionId
@@ -30546,10 +30687,49 @@ async function sessionLeave(ctx, p) {
   let left = false;
   let state = rec.state;
   if (rec.state === "external") {
-    await ctx.runtime.stopSession(sessionId, "user");
-    left = true;
-    const after = await ctx.runtime.registry.read(sessionId);
-    state = after?.state ?? "stopped";
+    const leaveWorkspaceId2 = rec.workspace || workspaceId;
+    const closeWithinMutation = async () => {
+      const currentSession = await ctx.runtime.registry.read(sessionId);
+      if (currentSession?.state !== "external") {
+        state = currentSession?.state === "failed" ? "failed" : "stopped";
+        return;
+      }
+      if (leaveWorkspaceId2) {
+        const mount = ctx.host.require(leaveWorkspaceId2);
+        const boundTasks = (await listIncompleteTasksBoundToSession(
+          ctx,
+          leaveWorkspaceId2,
+          sessionId
+        )).sort((a, b) => a.path.localeCompare(b.path));
+        ctx.host.markSelfWrite(leaveWorkspaceId2, 200, TEMP_DIR);
+        for (const boundTask of boundTasks) {
+          const currentTask = await loadTaskEnvelope(mount.env.fs, boundTask.path);
+          if (currentTask.sessionId?.trim() !== sessionId) continue;
+          await applySessionUnavailablePark(
+            ctx,
+            leaveWorkspaceId2,
+            boundTask.path,
+            "session.leave"
+          );
+        }
+      }
+      await ctx.runtime.stopSession(sessionId, "user");
+      left = true;
+      const after = await ctx.runtime.registry.read(sessionId);
+      state = after?.state ?? "stopped";
+    };
+    if (leaveWorkspaceId2) {
+      await ctx.mutations.run(leaveWorkspaceId2, closeWithinMutation);
+    } else {
+      await closeWithinMutation();
+    }
+    if (leaveWorkspaceId2) {
+      incompleteTasks = await listIncompleteTasksBoundToSession(
+        ctx,
+        leaveWorkspaceId2,
+        sessionId
+      );
+    }
   } else {
     state = rec.state === "failed" ? "failed" : "stopped";
   }
@@ -32400,7 +32580,7 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
   );
 }
 function isRejectResumeParkedWait(task) {
-  return task.state === "waiting" && task.wait?.reason === "external" && typeof task.wait.summary === "string" && task.wait.summary.includes(REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY);
+  return task.state === "waiting" && task.wait?.reason === "external" && typeof task.wait.summary === "string" && (task.wait.summary.includes(REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY) || task.wait.summary.includes(EXTERNAL_ROLE_REJECT_RESUME_FAILED_WAIT_SUMMARY));
 }
 function isTaskCollaborationTerminal(task) {
   return task.state === "delivered" || task.state === "accepted" || task.state === "rejected" || task.state === "interrupted" || task.state === "failed";
@@ -32901,6 +33081,7 @@ function clearManagedAutoDeliverDedup(sessionId, taskPath) {
   managedAutoDeliverRetryRequested.delete(key2);
 }
 var REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY = "\u9A73\u56DE\u7EED\u8DD1\u672A\u80FD\u6062\u590D\u539F managed Session\u3002\u53EF\u663E\u5F0F replaceSession\uFF0C\u6216 interrupt \u4EFB\u52A1\uFF1Boccupation \u4FDD\u6301\u3002";
+var EXTERNAL_ROLE_REJECT_RESUME_FAILED_WAIT_SUMMARY = "\u9A73\u56DE\u7EED\u8DD1\u672A\u80FD\u6062\u590D\u539F external Role Session\u3002\u8BF7\u6062\u590D\u540C\u4E00 Session \u540E claim\uFF0C\u6216 interrupt \u4EFB\u52A1\uFF1Boccupation \u4FDD\u6301\u3002";
 async function restoreManagedSessionAfterRejectResume(ctx, input) {
   const mount = ctx.host.require(input.workspaceId);
   let task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
@@ -33063,7 +33244,7 @@ async function parkTaskAfterRejectResumeFailure(ctx, input) {
       ctx.host.markSelfWrite(input.workspaceId);
       const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
       if (current.state !== "running" && current.state !== "waiting") return;
-      const summary = `${REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY} (${input.message})`;
+      const summary = `${input.summaryPrefix ?? REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY} (${input.message})`;
       let next = current;
       if (current.state === "running") {
         next = await taskWait(mount.env, input.taskPath, {
