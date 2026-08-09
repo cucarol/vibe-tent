@@ -107,6 +107,8 @@ jobs:
 
       - run: npm ci
       - run: npm run desktop:package
+      - name: Smoke exact packaged Desktop artifacts
+        run: node scripts/test-renderer-next-canvas-e2e.mjs --package-smoke --packaged-only --package-output release
 
       - uses: actions/upload-artifact@v4
         with:

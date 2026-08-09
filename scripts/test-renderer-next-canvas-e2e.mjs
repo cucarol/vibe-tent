@@ -15,11 +15,23 @@ const storyTitle = "E2E/Production Canvas Interactions";
 const storyPort = Number(process.env.TENT_E2E_STORYBOOK_PORT || 6107);
 const storybookUrl = process.env.TENT_E2E_STORYBOOK_URL || `http://127.0.0.1:${storyPort}`;
 const packageSmoke = process.argv.includes("--package-smoke");
+const packagedOnly = process.argv.includes("--packaged-only");
+const packageOutputOption = optionValue("--package-output");
+if (packagedOnly && !packageSmoke) throw new Error("--packaged-only requires --package-smoke");
+if (packageOutputOption && !packageSmoke) throw new Error("--package-output requires --package-smoke");
 const deadlineMs = Number(process.env.TENT_E2E_DEADLINE_MS || (packageSmoke ? 600_000 : 180_000));
 const runAbortController = new AbortController();
 const runAbortSignal = runAbortController.signal;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function optionValue(name) {
+  const index = process.argv.indexOf(name);
+  if (index < 0) return null;
+  const value = process.argv[index + 1];
+  if (!value || value.startsWith("--")) throw new Error(`${name} requires a value`);
+  return value;
+}
 
 async function waitFor(check, label, timeout = 30_000, observeRunAbort = true) {
   const started = Date.now();
@@ -622,6 +634,24 @@ async function readJsonIfExists(file) {
   }
 }
 
+async function authenticatedServiceHealth(endpoint) {
+  assert.equal(typeof endpoint?.host, "string", "Service endpoint host is required");
+  assert.equal(Number.isInteger(endpoint?.port), true, "Service endpoint port is required");
+  assert.equal(typeof endpoint?.token, "string", "Service endpoint token is required");
+  const response = await fetch(`http://${endpoint.host}:${endpoint.port}/rpc`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-tent-token": endpoint.token,
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "service.health", params: {} }),
+  });
+  assert.equal(response.ok, true, `Authenticated Service health HTTP ${response.status}`);
+  const payload = await response.json();
+  assert.equal(payload.error, undefined, `Authenticated Service health failed: ${JSON.stringify(payload.error)}`);
+  return payload.result;
+}
+
 function runCli(args, serviceDataDir, timeout = 30_000) {
   const result = spawnSync(process.execPath, [path.join(root, "cli.mjs"), ...args], {
     cwd: root,
@@ -735,6 +765,138 @@ function persistedCanvas(page) {
   });
 }
 
+async function findPortableExecutable(packageOutput) {
+  const candidates = (await fsp.readdir(packageOutput))
+    .filter((entry) => /^Tent-.+-portable\.exe$/i.test(entry))
+    .sort((left, right) => left.localeCompare(right));
+  assert.equal(candidates.length, 1, `Expected one final portable executable in ${packageOutput}: ${candidates.join(", ")}`);
+  return path.join(packageOutput, candidates[0]);
+}
+
+async function exercisePortableLaunch(portable, temp, defaultBefore) {
+  if (process.platform !== "win32") return { skipped: true, reason: "Windows portable smoke" };
+  const serviceDataDir = path.join(temp, "portable-service");
+  const appData = path.join(temp, "portable-appdata");
+  const localAppData = path.join(temp, "portable-localappdata");
+  const home = path.join(temp, "portable-home");
+  const userData = path.join(temp, "portable-user-data");
+  await Promise.all([serviceDataDir, appData, localAppData, home, userData].map((entry) => fsp.mkdir(entry, { recursive: true })));
+  const defaultEndpointPath = path.join(process.env.APPDATA ?? "", "Tent", "service.json");
+  const endpointPath = path.join(serviceDataDir, "service.json");
+  const env = {
+    ...process.env,
+    TENT_SERVICE_DATA_DIR: serviceDataDir,
+    APPDATA: appData,
+    LOCALAPPDATA: localAppData,
+    USERPROFILE: home,
+    HOME: home,
+  };
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.TENT_SERVICE_ENTRY;
+  delete env.TENT_DESKTOP_DEVTOOLS;
+
+  let wrapper = null;
+  let launchError = null;
+  let primaryError = null;
+  const cleanupErrors = [];
+  let evidence = null;
+  try {
+    wrapper = spawn(portable, ["--headless", `--user-data-dir=${userData}`], {
+      cwd: path.dirname(portable),
+      env,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    wrapper.once("error", (error) => {
+      launchError = error;
+    });
+    const endpoint = await waitFor(async () => {
+      if (launchError) throw launchError;
+      const candidate = await readJsonIfExists(endpointPath);
+      if (!candidate || !(await portOpen(candidate.host, candidate.port))) return null;
+      return candidate;
+    }, "portable first-launch Service endpoint", 60_000);
+    const appProcesses = await waitFor(async () => {
+      const matches = await processInfosContaining(path.resolve(userData));
+      return matches.length > 0 ? matches : null;
+    }, "portable owned app process", 30_000);
+    const health = await authenticatedServiceHealth(endpoint);
+    assert.equal(health.protocolVersion, 5);
+    assert.equal(health.pid, endpoint.pid);
+    assert.notEqual(endpoint.pid, defaultBefore?.pid, "portable smoke must not reuse the default Service");
+    evidence = {
+      skipped: false,
+      executable: path.basename(portable),
+      servicePid: endpoint.pid,
+      appProcessCount: appProcesses.length,
+      protocolVersion: health.protocolVersion,
+    };
+  } catch (error) {
+    primaryError = error;
+  }
+
+  try {
+    if (wrapper?.pid && await pidAlive(wrapper.pid)) {
+      await stopOwnedPidTree(wrapper.pid, (info) => {
+        assert.equal(path.basename(info.executablePath).toLowerCase(), path.basename(portable).toLowerCase());
+        assert.ok(info.commandLine.toLowerCase().includes(path.resolve(userData).toLowerCase()));
+      });
+    }
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const matches = await processInfosContaining(path.resolve(userData));
+      if (matches.length === 0) break;
+      const info = matches[0];
+      await stopOwnedPidTree(info.pid, (fresh) => {
+        assert.ok(fresh.commandLine.toLowerCase().includes(path.resolve(userData).toLowerCase()));
+        const executable = path.resolve(fresh.executablePath).toLowerCase();
+        assert.ok(
+          executable === path.resolve(portable).toLowerCase() || path.basename(executable) === "tent.exe",
+          `Unexpected portable child executable: ${fresh.executablePath}`,
+        );
+      });
+    }
+    assert.deepEqual(await processInfosContaining(path.resolve(userData)), [], "No portable app process may remain");
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  try {
+    const endpoint = await readJsonIfExists(endpointPath);
+    if (endpoint?.pid && await pidAlive(endpoint.pid)) {
+      await stopOwnedPidTree(endpoint.pid, (info) => {
+        assert.notEqual(info.pid, defaultBefore?.pid);
+        assert.match(info.commandLine, /service\.mjs/i);
+        assert.ok(info.commandLine.toLowerCase().includes(path.resolve(serviceDataDir).toLowerCase()));
+      });
+      await waitFor(() => portOpen(endpoint.host, endpoint.port).then((open) => !open), "portable Service listener close", 8_000, false);
+    }
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const matches = await processInfosContaining(path.resolve(serviceDataDir));
+      if (matches.length === 0) break;
+      const info = matches[0];
+      await stopOwnedPidTree(info.pid, (fresh) => {
+        assert.notEqual(fresh.pid, defaultBefore?.pid);
+        assert.match(fresh.commandLine, /service\.mjs/i);
+        assert.ok(fresh.commandLine.toLowerCase().includes(path.resolve(serviceDataDir).toLowerCase()));
+      });
+    }
+    assert.deepEqual(await processInfosContaining(path.resolve(serviceDataDir)), [], "No portable Service process may remain");
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  try {
+    assert.deepEqual(await readJsonIfExists(defaultEndpointPath), defaultBefore, "portable smoke must not touch the default Service endpoint");
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  if (primaryError || cleanupErrors.length > 0) {
+    throw new AggregateError(
+      [primaryError, ...cleanupErrors].filter(Boolean),
+      "Portable launch smoke or exact cleanup failed",
+    );
+  }
+  return evidence;
+}
+
 function isKnownBlockedExcalidrawFontFallback(message) {
   const text = message.text();
   return message.type() === "error" &&
@@ -804,7 +966,9 @@ async function exercisePackagedElectron() {
     JSON.stringify({ owner: "test-renderer-next-canvas-e2e", runId }),
     "utf8"
   );
-  const packageOutput = path.join(temp, "package");
+  const packageOutput = packageOutputOption
+    ? path.resolve(root, packageOutputOption)
+    : path.join(temp, "package");
   const packageDir = path.join(packageOutput, "win-unpacked");
   const executable = path.join(packageDir, "Tent.exe");
   const serviceDataDir = path.join(temp, "service");
@@ -827,16 +991,20 @@ async function exercisePackagedElectron() {
   let primaryError = null;
   let evidence = null;
   try {
-    await runNodeScriptBounded(path.join(root, "scripts", "build-desktop.mjs"), [], 120_000);
-    await runNodeScriptBounded(path.join(root, "esbuild.config.mjs"), ["production"], 120_000);
-    await runNodeScriptBounded(path.join(root, "node_modules", "electron-builder", "cli.js"), [
-      "--win",
-      "--dir",
-      "--config",
-      "electron-builder.yml",
-      `--config.directories.output=${packageOutput}`,
-    ], 240_000);
+    if (!packageOutputOption) {
+      await runNodeScriptBounded(path.join(root, "scripts", "build-desktop.mjs"), [], 120_000);
+      await runNodeScriptBounded(path.join(root, "esbuild.config.mjs"), ["production"], 120_000);
+      await runNodeScriptBounded(path.join(root, "node_modules", "electron-builder", "cli.js"), [
+        "--win",
+        "portable",
+        "--config",
+        "electron-builder.yml",
+        `--config.directories.output=${packageOutput}`,
+      ], 240_000);
+    }
     assert.ok(fs.existsSync(executable), `Packaged executable missing: ${executable}`);
+    const portable = await findPortableExecutable(packageOutput);
+    const portableEvidence = await exercisePortableLaunch(portable, temp, defaultBefore);
     runCli(["new", workspace], serviceDataDir);
     const rootNode = parseCliJson(runCli([
       "node", "create", "E2E Root", "--type", "goal", "--parent", "root",
@@ -879,6 +1047,13 @@ async function exercisePackagedElectron() {
     const health = await window.evaluate(() => window.tentDesktop.health());
     assert.equal(health?.protocolVersion, 5);
     assert.equal(health.pid, servicePid);
+    await window.evaluate((workspaceRoot) => window.tentDesktop.mountWorkspace(workspaceRoot), workspace);
+    const desktopPrefs = await window.evaluate(() => window.tentDesktop.getPrefs());
+    assert.equal(
+      path.resolve(desktopPrefs.lastWorkspaceRoot),
+      path.resolve(workspace),
+      "production Desktop mount must persist the exact remembered workspace before recovery",
+    );
 
     await dispatchBackgroundOutlineDrag(window, /E2E Root/, { x: 260, y: 220 });
     // Production preserves the first-node seed placement. One explicit parent
@@ -944,6 +1119,68 @@ async function exercisePackagedElectron() {
       beforeLossDocument,
       "Service loss must preserve the complete persisted local Canvas document byte-for-byte"
     );
+    await fsp.rename(serviceEntryHold, serviceEntry);
+    serviceEntryHeld = false;
+    const recoveredEndpoint = await waitFor(async () => {
+      try {
+        await run.window.evaluate(() => window.tentDesktop.getState());
+      } catch {
+        return null;
+      }
+      const candidate = await readJsonIfExists(path.join(serviceDataDir, "service.json"));
+      if (!candidate || candidate.pid === serviceEndpoint.pid) return null;
+      if (!(await portOpen(candidate.host, candidate.port))) return null;
+      return candidate;
+    }, "replacement packaged Service endpoint", 60_000);
+    assert.notEqual(recoveredEndpoint.token, serviceEndpoint.token, "replacement Service token must change");
+    assert.notEqual(recoveredEndpoint.startedAt, serviceEndpoint.startedAt, "replacement Service start identity must change");
+    if (serviceEndpoint.instanceId && recoveredEndpoint.instanceId) {
+      assert.notEqual(recoveredEndpoint.instanceId, serviceEndpoint.instanceId, "replacement Service instance must change");
+    }
+    await run.window.locator('[data-shell="renderer-next"][data-connection="online"]').waitFor({ timeout: 30_000 });
+    const recoveredHealth = await run.window.evaluate(() => window.tentDesktop.health());
+    assert.equal(recoveredHealth.protocolVersion, 5);
+    assert.equal(recoveredHealth.pid, recoveredEndpoint.pid);
+    assert.notEqual(recoveredHealth.pid, servicePid);
+    const recoveredWorkspaces = await waitFor(async () => {
+      const workspaces = await run.window.evaluate(() => window.tentDesktop.listWorkspaces());
+      return workspaces.length === 1
+        && workspaces[0].foreground === true
+        && path.resolve(workspaces[0].workspaceRoot) === path.resolve(workspace)
+        ? workspaces
+        : null;
+    }, "replacement Service remembered workspace remount", 30_000);
+    assert.equal(recoveredWorkspaces.length, 1, "replacement Service must remount exactly one remembered workspace");
+    assert.equal(path.resolve(recoveredWorkspaces[0].workspaceRoot), path.resolve(workspace));
+    assert.equal(recoveredWorkspaces[0].foreground, true);
+    const recoveredCanvasDocument = await waitFor(async () => {
+      const serialized = JSON.stringify((await persistedCanvas(run.window)).document);
+      return serialized === beforeLossDocument ? serialized : null;
+    }, "stable Canvas viewport after Service recovery", 20_000);
+    assert.equal(
+      recoveredCanvasDocument,
+      beforeLossDocument,
+      "Service recovery must not rewrite the persisted local Canvas document",
+    );
+    await run.window.locator('button[aria-label="同步快照"]:not([disabled])').first().waitFor({
+      state: "visible",
+      timeout: 20_000,
+    });
+    await run.window.locator(
+      `[data-tent-placement-id="${rootPlacement.placementId}"][data-projection-sync="pending-sync"]`,
+    ).waitFor({ timeout: 20_000 });
+    runCli([
+      "node", "write", childNode.nodeId, "--body", "# E2E Child changed after recovery",
+      "--workspace", workspace, "--data-dir", serviceDataDir, "--json",
+    ], serviceDataDir);
+    await run.window.locator(
+      `[data-tent-placement-id="${childPlacement.placementId}"][data-projection-sync="pending-sync"]`,
+    ).waitFor({ timeout: 20_000 });
+    assert.equal(
+      JSON.stringify((await persistedCanvas(run.window)).document),
+      beforeLossDocument,
+      "reattached Service events must not mutate the frozen Canvas document",
+    );
     assert.equal(consoleProblems.length, 0, `Packaged renderer console must stay clean:\n${consoleProblems.join("\n")}`);
     evidence = {
       skipped: false,
@@ -954,6 +1191,13 @@ async function exercisePackagedElectron() {
       instanceId,
       placementGeometry: beforeRestartGeometry,
       serviceLossFailClosed: true,
+      serviceRecovery: {
+        oldPid: servicePid,
+        newPid: recoveredEndpoint.pid,
+        rememberedWorkspaceCount: recoveredWorkspaces.length,
+        eventsRestored: true,
+      },
+      portable: portableEvidence,
       blockedExcalidrawFontFallbacks: consoleDisclosures.length,
     };
   } catch (error) {
@@ -1018,8 +1262,8 @@ const deadline = setTimeout(() => {
 }, deadlineMs);
 try {
   runAbortSignal.throwIfAborted();
-  storybook = await startStorybook();
-  const browserEvidence = await exerciseBrowser();
+  if (!packagedOnly) storybook = await startStorybook();
+  const browserEvidence = packagedOnly ? { skipped: true } : await exerciseBrowser();
   const packagedEvidence = await exercisePackagedElectron();
   runAbortSignal.throwIfAborted();
   console.log(JSON.stringify({ ok: true, browserEvidence, packagedEvidence }, null, 2));

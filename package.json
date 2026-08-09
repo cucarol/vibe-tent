@@ -46,7 +46,7 @@
     "desktop:dev": "npm run desktop:build && electron desktop",
     "desktop:start": "electron desktop",
     "desktop:package": "node scripts/package-desktop.mjs",
-    "check": "npm run typecheck && npm run build && npm run build:desktop && npm test && npm run okf:check",
+    "check": "npm run typecheck && npm run typecheck:renderer-next && npm run build && npm run build:desktop && npm test && npm run okf:check",
     "prepack": "npm run check"
   },
   "keywords": [
