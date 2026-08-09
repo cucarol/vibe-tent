@@ -781,11 +781,11 @@ function nearestAvailableChildPosition(
   // This keeps the search deterministic without ever falling back to a known
   // collision after a fixed number of candidates.
   const maxDepth = Math.ceil(Math.max(0, forwardLimit) / forwardGap) + 1;
-  for (let lane = 0; lane < 9; lane += 1) {
-    const laneOffset = lane === 0
-      ? 0
-      : Math.ceil(lane / 2) * (lane % 2 === 1 ? 1 : -1);
-    for (let depth = 0; depth <= maxDepth; depth += 1) {
+  for (let depth = 0; depth <= maxDepth; depth += 1) {
+    for (let lane = 0; lane < 9; lane += 1) {
+      const laneOffset = lane === 0
+        ? 0
+        : Math.ceil(lane / 2) * (lane % 2 === 1 ? 1 : -1);
       const position = { ...initial };
       if (direction === "right" || direction === "left") {
         position.x += (direction === "right" ? 1 : -1) * depth * forwardGap;

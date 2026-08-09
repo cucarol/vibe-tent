@@ -763,6 +763,44 @@ test("new membership searches beyond the former seventy-two occupied candidates"
   assert.ok((added.x ?? 0) > blockers.at(-1)!.x!);
 });
 
+test("new membership chooses a nearby side lane before a distant forward slot", () => {
+  let placement = 0;
+  const initialSources = [source("root", null)];
+  const created = createCanvasSubtreeProjectionInstance(
+    emptyDocument(),
+    "root",
+    initialSources,
+    { x: 0, y: 0 },
+    "right",
+    () => "instance-near",
+    () => `near-root-${placement++}`
+  );
+  const centreBlockers = Array.from({ length: 8 }, (_, depth) =>
+    nodePlacement(
+      `near-block-${depth}`,
+      `near-block-${depth}`,
+      NODE_CARD.width + 76 + depth * (NODE_CARD.width + 76),
+      0
+    )
+  );
+  const denseDocument = {
+    ...created.document,
+    placements: [...created.document.placements, ...centreBlockers],
+  };
+  const authority = [source("root", null), source("new-member", "root")];
+  const synced = reconcileCanvasDocumentSync(denseDocument, authority, {
+    authorityDigest: canvasDocumentAuthorityDigest(denseDocument, authority)!,
+    createPlacementId: () => "near-new",
+  });
+  const added = synced.placements.find((candidate) => candidate.entityRef === "new-member")!;
+
+  assert.deepEqual(
+    [added.x, added.y],
+    [NODE_CARD.width + 76, NODE_CARD.height + 28],
+    "the first adjacent lane at the nearest depth wins before depth eight"
+  );
+});
+
 test("global sync reconnects in-bundle members, detaches exits, and adds entries without moving survivors", () => {
   const created = createInstance();
   const manual = movePlacement(created.document, "placement-a-2", { x: 733, y: 411 });
