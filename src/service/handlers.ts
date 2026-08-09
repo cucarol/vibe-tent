@@ -220,6 +220,7 @@ import { makeTaskId } from "../core/task-model.js";
 import type { AgentRuntime } from "../runtime/agent-runtime.js";
 import type { RuntimeEvent, SessionRecord } from "../runtime/types.js";
 import {
+  EXTERNAL_ADAPTER_ID,
   isSessionId,
   makeSessionId,
   recordExternalKey,
@@ -3646,6 +3647,11 @@ async function taskClaimDirectRpc(
       roleId,
       caller
     );
+    await assertRoleSessionHasNoOtherActiveTask(
+      ctx,
+      workspaceId,
+      callerSession.id
+    );
     const actors = await resolveDirectClaimResponsibility(ctx, {
       workspaceId,
       roleId,
@@ -3950,6 +3956,12 @@ async function taskClaimRpc(
           pre.roleId,
           caller
         );
+        await assertRoleSessionHasNoOtherActiveTask(
+          ctx,
+          workspaceId,
+          callerSession.id,
+          { path: pre.path, id: pre.id }
+        );
         if (pre.state === "running" && pre.sessionId !== callerSession.id) {
           throw new RpcError(
             RPC_LIFECYCLE,
@@ -4070,6 +4082,7 @@ async function restoreExactExternalRoleTask(
   if (
     !session ||
     session.state !== "external" ||
+    session.adapterId !== EXTERNAL_ADAPTER_ID ||
     session.workspace !== input.workspaceId ||
     session.roleId !== roleId ||
     (lastTaskRef !== task.id && lastTaskRef !== task.path)
@@ -4167,6 +4180,37 @@ async function requireRoleClaimCallerSession(
     );
   }
   return session;
+}
+
+async function assertRoleSessionHasNoOtherActiveTask(
+  ctx: HandlerContext,
+  workspaceId: string,
+  sessionId: string,
+  excludeTask?: { path: string; id?: string }
+): Promise<void> {
+  const conflictingTasks = (
+    await listIncompleteTasksBoundToSession(ctx, workspaceId, sessionId)
+  )
+    .filter(
+      (task) =>
+        !excludeTask ||
+        (task.path !== excludeTask.path &&
+          (!excludeTask.id || task.id !== excludeTask.id))
+    )
+    .sort((a, b) => a.path.localeCompare(b.path));
+  if (conflictingTasks.length === 0) return;
+  const conflict = conflictingTasks[0]!;
+  throw new RpcError(
+    RPC_LIFECYCLE,
+    "task.claim caller Session is already bound to another active Task",
+    {
+      code: "TASK_CLAIM_SESSION_ALREADY_ACTIVE",
+      sessionId,
+      conflictingTaskPath: conflict.path,
+      conflictingTaskId: conflict.id,
+      conflictingTaskState: conflict.state,
+    }
+  );
 }
 
 /**
@@ -8529,7 +8573,7 @@ async function sessionStatus(ctx: HandlerContext, p: Record<string, unknown>) {
 
 /**
  * End or unbind an external session. Never delivers or accepts tasks. Any exact
- * running Task remains occupied but is parked recoverably after the binding stops.
+ * running Task remains occupied and is parked recoverably before the binding stops.
  * Resolves by sessionId **or** workspace-scoped externalKey.
  */
 async function sessionLeave(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -8573,7 +8617,7 @@ async function sessionLeave(ctx: HandlerContext, p: Record<string, unknown>) {
   const { rec, sessionId } = resolved;
 
   // Snapshot incomplete tasks before unbinding (leave must not deliver/accept).
-  const incompleteTasks = await listIncompleteTasksBoundToSession(
+  let incompleteTasks = await listIncompleteTasksBoundToSession(
     ctx,
     rec.workspace || workspaceId,
     sessionId
@@ -8592,27 +8636,59 @@ async function sessionLeave(ctx: HandlerContext, p: Record<string, unknown>) {
   let left = false;
   let state = rec.state;
   if (rec.state === "external") {
-    await ctx.runtime.stopSession(sessionId, "user");
-    left = true;
-    const after = await ctx.runtime.registry.read(sessionId);
-    state = after?.state ?? "stopped";
-
-    // Serialize with exact-Task recovery. If leave overlaps the probe→resume
-    // window, recovery may briefly observe the prior external state, but this
-    // queued park wins durably after the lifecycle flight releases. No Task,
-    // Session, or provider identity is replaced.
     const leaveWorkspaceId = rec.workspace || workspaceId;
-    if (leaveWorkspaceId) {
-      for (const task of incompleteTasks) {
-        await runTaskLifecycle(leaveWorkspaceId, task.path, () =>
-          parkTaskForUnavailableSession(ctx, {
-            workspaceId: leaveWorkspaceId,
-            taskPath: task.path,
-            sessionId,
-            reason: "session.leave",
-          })
-        );
+    const closeWithinMutation = async () => {
+      const currentSession = await ctx.runtime.registry.read(sessionId);
+      if (currentSession?.state !== "external") {
+        state = currentSession?.state === "failed" ? "failed" : "stopped";
+        return;
       }
+      if (leaveWorkspaceId) {
+        const mount = ctx.host.require(leaveWorkspaceId);
+        const boundTasks = (
+          await listIncompleteTasksBoundToSession(
+            ctx,
+            leaveWorkspaceId,
+            sessionId
+          )
+        ).sort((a, b) => a.path.localeCompare(b.path));
+        ctx.host.markSelfWrite(leaveWorkspaceId, 200, TEMP_DIR);
+        for (const boundTask of boundTasks) {
+          const currentTask = await loadTaskEnvelope(mount.env.fs, boundTask.path);
+          if (currentTask.sessionId?.trim() !== sessionId) continue;
+          // Persist/project every exact running/waiting binding before closing
+          // the Session. A single workspace mutation is the ordering authority:
+          // no multiple Task locks are held, so deterministic path iteration
+          // cannot deadlock with claim/reject lifecycle flights.
+          await applySessionUnavailablePark(
+            ctx,
+            leaveWorkspaceId,
+            boundTask.path,
+            "session.leave"
+          );
+        }
+      }
+      await ctx.runtime.stopSession(sessionId, "user");
+      left = true;
+      const after = await ctx.runtime.registry.read(sessionId);
+      state = after?.state ?? "stopped";
+    };
+
+    // Match external claim/reject's workspace mutation boundary. The whole
+    // probe→resume operation or the whole enumerate→park-all→close operation
+    // wins; neither can interleave inside the workspace mutation boundary.
+    if (leaveWorkspaceId) {
+      await ctx.mutations.run(leaveWorkspaceId, closeWithinMutation);
+    } else {
+      await closeWithinMutation();
+    }
+
+    if (leaveWorkspaceId) {
+      incompleteTasks = await listIncompleteTasksBoundToSession(
+        ctx,
+        leaveWorkspaceId,
+        sessionId
+      );
     }
   } else {
     // Already stopped/failed — idempotent leave.

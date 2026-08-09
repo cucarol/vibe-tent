@@ -1098,7 +1098,7 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
       }
     )) as {
       state: string;
-      session?: { sessionId: string };
+      session?: { sessionId: string; connectionId?: string };
       input?: {
         id: string;
         kind?: string;
@@ -1115,6 +1115,8 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
 
     assert.equal(rejected.state, "running");
     assert.ok(rejected.session?.sessionId, "reject-resume must restore a session");
+    assert.ok(rejected.session?.connectionId, "managed reject-resume stays Connection-bound");
+    assert.doesNotMatch(JSON.stringify(rejected), /external Role Session/i);
     assert.ok(rejected.input, "reject-resume must create a TaskInput for review note");
     assert.equal(rejected.input!.kind, "review-feedback");
     assert.equal(rejected.input!.text, exactNote, "review note must be preserved exactly");

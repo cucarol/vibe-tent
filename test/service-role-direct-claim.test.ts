@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { loadTaskEnvelope, loadTaskEnvelopes, taskAsSub } from "../src/core/task.js";
+import { taskInterrupt } from "../src/core/task-lifecycle.js";
 import { taskReferencedNodeIds } from "../src/core/task-node-refs.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { rpcCall } from "../src/service/http-server.js";
@@ -181,10 +182,23 @@ test("Role direct claim inherits persisted parent/reviewer while real self-subdi
       svc,
       workspaceId,
       workspace,
-      "rl-executor"
+      "rl-executor",
+      undefined,
+      "direct-responsibility-source"
     );
     await executorSession.client.taskClaim(workspaceId, sourcePath);
-    const direct = await executorSession.client.rpcRaw("task.claimDirect", {
+    // sourceTaskPath is responsibility provenance. A distinct exact Role
+    // Session with no active Task may inherit it; the source Session itself may
+    // not create a second active binding.
+    const continuationSession = await enterRoleSession(
+      svc,
+      workspaceId,
+      workspace,
+      "rl-executor",
+      undefined,
+      "direct-responsibility-continuation"
+    );
+    const direct = await continuationSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
       roleId: "rl-executor",
       workNodeIds: [ownNode],
@@ -200,8 +214,9 @@ test("Role direct claim inherits persisted parent/reviewer while real self-subdi
     assert.deepEqual(directTask.parentActor, { kind: "role", id: "rl-orchestrator" });
     assert.deepEqual(directTask.reviewer, { kind: "role", id: "rl-orchestrator" });
     assert.equal(taskAsSub(directTask), false);
+    await taskInterrupt(svc.hostApi.require(workspaceId).env, directTask.path);
 
-    const viaSession = await executorSession.client.rpcRaw("task.claimDirect", {
+    const viaSession = await continuationSession.client.rpcRaw("task.claimDirect", {
       workspaceId,
       roleId: "rl-executor",
       workNodeIds: [sessionNode],
