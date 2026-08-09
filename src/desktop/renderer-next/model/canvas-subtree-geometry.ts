@@ -14,12 +14,29 @@ export type CanvasSubtreeStructureBranch = {
   highlightPath: string | null;
 };
 
+export type CanvasSubtreeStructurePathTarget = {
+  setAttribute(name: "d", value: string): void;
+};
+
+export type CanvasSubtreeStructurePathRefs = ReadonlyMap<string, {
+  base: CanvasSubtreeStructurePathTarget | null;
+  highlight: CanvasSubtreeStructurePathTarget | null;
+}>;
+
 type PositionOverride = { placementId: string; x: number; y: number } | null;
 type Point = { x: number; y: number };
 type Rect = { x: number; y: number; width: number; height: number };
 
 export type CanvasStructureRouteDiagnostics = {
   segmentRectChecks: number;
+  visibilityNodesExpanded?: number;
+};
+
+type CanvasStructureObstacle = { placementId: string; rect: Rect };
+type CanvasStructureObstacleGeometry = {
+  obstacles: readonly CanvasStructureObstacle[];
+  xLanes: readonly number[];
+  yLanes: readonly number[];
 };
 
 const STRUCTURE_CLEARANCE = 12;
@@ -97,19 +114,155 @@ function pathIsClear(
   return true;
 }
 
-function pathScore(points: readonly Point[]): number {
-  let distance = 0;
-  for (let index = 1; index < points.length; index += 1) {
-    distance += Math.abs(points[index].x - points[index - 1].x) +
-      Math.abs(points[index].y - points[index - 1].y);
+function pointIsBlocked(point: Point, obstacles: readonly Rect[]): boolean {
+  return obstacles.some((rect) =>
+    point.x > rect.x && point.x < rect.x + rect.width &&
+    point.y > rect.y && point.y < rect.y + rect.height
+  );
+}
+
+function collapseCollinear(points: readonly Point[]): Point[] {
+  if (points.length <= 2) return [...points];
+  const result = [points[0]];
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const previous = result.at(-1)!;
+    const point = points[index];
+    const next = points[index + 1];
+    if ((previous.x === point.x && point.x === next.x) ||
+      (previous.y === point.y && point.y === next.y)) continue;
+    result.push(point);
   }
-  return distance + Math.max(0, points.length - 2) * 8;
+  result.push(points.at(-1)!);
+  return result;
+}
+
+type OpenNode = { key: string; ix: number; iy: number; g: number; f: number };
+
+function pushOpen(heap: OpenNode[], node: OpenNode): void {
+  heap.push(node);
+  let index = heap.length - 1;
+  while (index > 0) {
+    const parent = Math.floor((index - 1) / 2);
+    if (compareOpen(heap[parent], heap[index]) <= 0) break;
+    [heap[parent], heap[index]] = [heap[index], heap[parent]];
+    index = parent;
+  }
+}
+
+function popOpen(heap: OpenNode[]): OpenNode | undefined {
+  const first = heap[0];
+  const last = heap.pop();
+  if (!first || !last || heap.length === 0) return first;
+  heap[0] = last;
+  let index = 0;
+  while (true) {
+    const left = index * 2 + 1;
+    const right = left + 1;
+    let next = index;
+    if (left < heap.length && compareOpen(heap[left], heap[next]) < 0) next = left;
+    if (right < heap.length && compareOpen(heap[right], heap[next]) < 0) next = right;
+    if (next === index) break;
+    [heap[index], heap[next]] = [heap[next], heap[index]];
+    index = next;
+  }
+  return first;
+}
+
+function compareOpen(a: OpenNode, b: OpenNode): number {
+  return a.f - b.f || a.g - b.g || a.key.localeCompare(b.key);
+}
+
+function buildObstacleGeometry(obstacles: readonly CanvasStructureObstacle[]): CanvasStructureObstacleGeometry {
+  const xLanes = new Set<number>();
+  const yLanes = new Set<number>();
+  for (const { rect } of obstacles) {
+    xLanes.add(rect.x);
+    xLanes.add(rect.x + rect.width);
+    yLanes.add(rect.y);
+    yLanes.add(rect.y + rect.height);
+  }
+  return {
+    obstacles,
+    xLanes: [...xLanes].sort((a, b) => a - b),
+    yLanes: [...yLanes].sort((a, b) => a - b),
+  };
+}
+
+function routeVisibilityGrid(
+  start: Point,
+  end: Point,
+  obstacles: readonly Rect[],
+  geometry: CanvasStructureObstacleGeometry,
+  diagnostics?: CanvasStructureRouteDiagnostics
+): Point[] | null {
+  const xs = [...new Set([...geometry.xLanes, start.x, end.x])].sort((a, b) => a - b);
+  const ys = [...new Set([...geometry.yLanes, start.y, end.y])].sort((a, b) => a - b);
+  const startIx = xs.indexOf(start.x);
+  const startIy = ys.indexOf(start.y);
+  const endIx = xs.indexOf(end.x);
+  const endIy = ys.indexOf(end.y);
+  if (startIx < 0 || startIy < 0 || endIx < 0 || endIy < 0 ||
+    pointIsBlocked(start, obstacles) || pointIsBlocked(end, obstacles)) return null;
+
+  const keyFor = (ix: number, iy: number) => `${ix}:${iy}`;
+  const startKey = keyFor(startIx, startIy);
+  const endKey = keyFor(endIx, endIy);
+  const open: OpenNode[] = [];
+  const best = new Map<string, number>([[startKey, 0]]);
+  const previous = new Map<string, string>();
+  pushOpen(open, {
+    key: startKey,
+    ix: startIx,
+    iy: startIy,
+    g: 0,
+    f: Math.abs(end.x - start.x) + Math.abs(end.y - start.y),
+  });
+  const directions = [[1, 0], [0, 1], [-1, 0], [0, -1]] as const;
+  while (open.length > 0) {
+    const current = popOpen(open)!;
+    if (current.g !== best.get(current.key)) continue;
+    if (diagnostics) diagnostics.visibilityNodesExpanded =
+      (diagnostics.visibilityNodesExpanded ?? 0) + 1;
+    if (current.key === endKey) {
+      const reversed: Point[] = [];
+      let key: string | undefined = endKey;
+      while (key) {
+        const [ix, iy] = key.split(":").map(Number);
+        reversed.push({ x: xs[ix], y: ys[iy] });
+        key = previous.get(key);
+      }
+      return collapseCollinear(reversed.reverse());
+    }
+    const currentPoint = { x: xs[current.ix], y: ys[current.iy] };
+    for (const [dx, dy] of directions) {
+      const ix = current.ix + dx;
+      const iy = current.iy + dy;
+      if (ix < 0 || iy < 0 || ix >= xs.length || iy >= ys.length) continue;
+      const point = { x: xs[ix], y: ys[iy] };
+      if (pointIsBlocked(point, obstacles) ||
+        !pathIsClear([currentPoint, point], obstacles, diagnostics)) continue;
+      const key = keyFor(ix, iy);
+      const g = current.g + Math.abs(point.x - currentPoint.x) + Math.abs(point.y - currentPoint.y);
+      if (g >= (best.get(key) ?? Number.POSITIVE_INFINITY)) continue;
+      best.set(key, g);
+      previous.set(key, current.key);
+      pushOpen(open, {
+        key,
+        ix,
+        iy,
+        g,
+        f: g + Math.abs(end.x - point.x) + Math.abs(end.y - point.y),
+      });
+    }
+  }
+  return null;
 }
 
 function routeOrthogonal(
   start: Point,
   end: Point,
   obstacles: readonly Rect[],
+  geometry: CanvasStructureObstacleGeometry,
   diagnostics?: CanvasStructureRouteDiagnostics
 ): Point[] | null {
   const direct = [
@@ -119,29 +272,7 @@ function routeOrthogonal(
   for (const candidate of direct) {
     if (pathIsClear(candidate, obstacles, diagnostics)) return candidate;
   }
-
-  const xLanes = new Set<number>([start.x, end.x]);
-  const yLanes = new Set<number>([start.y, end.y]);
-  for (const rect of obstacles) {
-    xLanes.add(rect.x);
-    xLanes.add(rect.x + rect.width);
-    yLanes.add(rect.y);
-    yLanes.add(rect.y + rect.height);
-  }
-  const detours = [
-    ...[...yLanes].map((y) =>
-      normalizePoints([start, { x: start.x, y }, { x: end.x, y }, end])
-    ),
-    ...[...xLanes].map((x) =>
-      normalizePoints([start, { x, y: start.y }, { x, y: end.y }, end])
-    ),
-  ].filter((points) => points.length > 2);
-  detours.sort((a, b) => pathScore(a) - pathScore(b) ||
-    JSON.stringify(a).localeCompare(JSON.stringify(b)));
-  for (const candidate of detours) {
-    if (pathIsClear(candidate, obstacles, diagnostics)) return candidate;
-  }
-  return null;
+  return routeVisibilityGrid(start, end, obstacles, geometry, diagnostics);
 }
 
 function pathData(points: readonly Point[]): string {
@@ -177,6 +308,18 @@ function emphasizedRelationshipIds(
   return emphasized;
 }
 
+export function applyCanvasSubtreeStructureBranchPaths(
+  refs: CanvasSubtreeStructurePathRefs,
+  branches: readonly CanvasSubtreeStructureBranch[]
+): void {
+  const byId = new Map(branches.map((branch) => [branch.id, branch] as const));
+  for (const [id, targets] of refs) {
+    const branch = byId.get(id);
+    targets.base?.setAttribute("d", branch?.path ?? "");
+    targets.highlight?.setAttribute("d", branch?.highlightPath ?? "");
+  }
+}
+
 export function deriveCanvasSubtreeStructureBranches(
   document: CanvasDocument,
   projection: CanvasSubtreeProjection,
@@ -195,6 +338,7 @@ export function deriveCanvasSubtreeStructureBranches(
       ? [{ placementId, rect: inflateRect(placementRect(placement, override), STRUCTURE_CLEARANCE) }]
       : [];
   });
+  const obstacleGeometry = buildObstacleGeometry(visibleNodeRects);
   const grouped = new Map<string, {
     parent: CanvasPlacement;
     direction: SubtreeDirection;
@@ -224,7 +368,13 @@ export function deriveCanvasSubtreeStructureBranches(
           ? []
           : [candidate.rect]
       );
-      const points = routeOrthogonal(parentPoint, childPoint, obstacles, diagnostics);
+      const points = routeOrthogonal(
+        parentPoint,
+        childPoint,
+        obstacles,
+        obstacleGeometry,
+        diagnostics
+      );
       return points ? [{ relationship, path: pathData(points) }] : [];
     });
     const highlights = routed.flatMap(({ relationship, path }) =>

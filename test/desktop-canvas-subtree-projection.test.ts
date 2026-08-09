@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { performance } from "node:perf_hooks";
 import type { CanvasDocument, CanvasPlacement } from "../src/desktop/renderer-next/types/identity.js";
-import { movePlacement } from "../src/desktop/renderer-next/model/canvas-document.js";
+import { movePlacement, NODE_CARD } from "../src/desktop/renderer-next/model/canvas-document.js";
 import {
   CANVAS_SUBTREE_META_KEY,
   carryCollapsedSubtreeDescendants,
@@ -13,7 +14,10 @@ import {
   toggleCanvasSubtreeBranch,
   type CanvasSubtreeNodeSource,
 } from "../src/desktop/renderer-next/model/canvas-subtree-projection.js";
-import { deriveCanvasSubtreeStructureBranches } from "../src/desktop/renderer-next/model/canvas-subtree-geometry.js";
+import {
+  applyCanvasSubtreeStructureBranchPaths,
+  deriveCanvasSubtreeStructureBranches,
+} from "../src/desktop/renderer-next/model/canvas-subtree-geometry.js";
 import {
   activeCanvasPresentationRevision,
   advanceCanvasPresentationHistory,
@@ -62,6 +66,58 @@ function nodePlacement(placementId: string, nodeId: string, x: number, y: number
     height: 104,
     meta: {},
   };
+}
+
+type Segment = { from: { x: number; y: number }; to: { x: number; y: number } };
+
+function pathSegments(path: string): Segment[] {
+  const tokens = path.match(/[MHV]|-?\d+(?:\.\d+)?/g) ?? [];
+  const segments: Segment[] = [];
+  let index = 0;
+  let point = { x: 0, y: 0 };
+  while (index < tokens.length) {
+    const command = tokens[index++];
+    if (command === "M") {
+      point = { x: Number(tokens[index++]), y: Number(tokens[index++]) };
+      continue;
+    }
+    const next = command === "H"
+      ? { x: Number(tokens[index++]), y: point.y }
+      : { x: point.x, y: Number(tokens[index++]) };
+    segments.push({ from: point, to: next });
+    point = next;
+  }
+  return segments;
+}
+
+function segmentCrossesPlacement(segment: Segment, placement: CanvasPlacement): boolean {
+  const clearance = 12;
+  const left = (placement.x ?? 0) - clearance;
+  const top = (placement.y ?? 0) - clearance;
+  const right = left + NODE_CARD.width + clearance * 2;
+  const bottom = top + NODE_CARD.height + clearance * 2;
+  if (segment.from.y === segment.to.y) {
+    if (segment.from.y <= top || segment.from.y >= bottom) return false;
+    return Math.max(Math.min(segment.from.x, segment.to.x), left) <
+      Math.min(Math.max(segment.from.x, segment.to.x), right);
+  }
+  if (segment.from.x === segment.to.x) {
+    if (segment.from.x <= left || segment.from.x >= right) return false;
+    return Math.max(Math.min(segment.from.y, segment.to.y), top) <
+      Math.min(Math.max(segment.from.y, segment.to.y), bottom);
+  }
+  return true;
+}
+
+function assertPathAvoidsPlacements(path: string, placements: readonly CanvasPlacement[]): void {
+  const segments = pathSegments(path);
+  assert.ok(segments.length > 0);
+  for (const segment of segments) {
+    assert.ok(segment.from.x === segment.to.x || segment.from.y === segment.to.y);
+    for (const placement of placements) {
+      assert.equal(segmentCrossesPlacement(segment, placement), false);
+    }
+  }
 }
 
 const TREE = [
@@ -188,8 +244,9 @@ test("structure routing deterministically avoids visible Node obstacles and rero
     null,
     blockedDiagnostics
   )[0]?.path;
-  assert.equal(blocked, "M 240 52 V -12 H 600 V 52");
-  assert.ok(blockedDiagnostics.segmentRectChecks <= 8);
+  assert.match(blocked ?? "", /^M 240 52 /);
+  assertPathAvoidsPlacements(blocked ?? "", [document.placements[2]]);
+  assert.ok(blockedDiagnostics.segmentRectChecks <= 64);
 
   const movedObstacle = {
     ...document,
@@ -209,6 +266,115 @@ test("structure routing deterministically avoids visible Node obstacles and rero
   const rerouted = deriveCanvasSubtreeStructureBranches(movedEndpoint, projection)[0]?.path;
   assert.notEqual(rerouted, clear);
   assert.match(rerouted ?? "", /^M 240 52 (?:H|V)/);
+});
+
+test("multi-bend visibility routing preserves a fresh relationship through a six-card corridor", () => {
+  const placements = [
+    nodePlacement("p0", "root", 0, 0),
+    nodePlacement("p47", "child-a", 1960, 700),
+    nodePlacement("o1", "o1", 1680, 0),
+    nodePlacement("o2", "o2", 0, 560),
+    nodePlacement("o3", "o3", 1960, 560),
+    nodePlacement("o4", "o4", 1680, 700),
+  ];
+  const projection = {
+    authority: "fresh" as const,
+    visiblePlacementIds: placements.map((placement) => placement.placementId),
+    relationships: [{
+      id: "subtree:corridor:p0->p47",
+      instanceId: "corridor",
+      parentPlacementId: "p0",
+      childPlacementId: "p47",
+    }],
+    controls: [],
+    placementStates: [],
+    syncControls: [],
+  };
+  const diagnostics = { segmentRectChecks: 0, visibilityNodesExpanded: 0 };
+  const branches = deriveCanvasSubtreeStructureBranches(
+    { ...emptyDocument(), placements },
+    projection,
+    null,
+    diagnostics
+  );
+  assert.equal(branches.length, 1);
+  assertPathAvoidsPlacements(branches[0].path, placements.slice(2));
+  assert.ok(pathSegments(branches[0].path).length > 3);
+
+  const densePlacements = [...placements];
+  for (let index = 0; index < 42; index += 1) {
+    densePlacements.push(nodePlacement(
+      `far-${index}`,
+      `far-node-${index}`,
+      3000 + (index % 7) * 320,
+      Math.floor(index / 7) * 240
+    ));
+  }
+  const denseDiagnostics = { segmentRectChecks: 0, visibilityNodesExpanded: 0 };
+  const startedAt = performance.now();
+  const dense = deriveCanvasSubtreeStructureBranches(
+    { ...emptyDocument(), placements: densePlacements },
+    { ...projection, visiblePlacementIds: densePlacements.map((placement) => placement.placementId) },
+    null,
+    denseDiagnostics
+  );
+  const elapsed = performance.now() - startedAt;
+  assert.equal(dense.length, 1);
+  assertPathAvoidsPlacements(dense[0].path, densePlacements.slice(2));
+  assert.ok((denseDiagnostics.visibilityNodesExpanded ?? 0) < 10_000);
+  assert.ok(denseDiagnostics.segmentRectChecks < 2_000_000);
+  assert.ok(elapsed < 250, `dense visibility route took ${elapsed.toFixed(1)}ms`);
+});
+
+test("imperative overlay clears an unavailable route and restores it in the same update path", () => {
+  const parent = nodePlacement("parent", "root", 0, 0);
+  const child = nodePlacement("child", "child-a", 600, 0);
+  const obstacle = nodePlacement("obstacle", "other", 590, -10);
+  const projection = {
+    authority: "fresh" as const,
+    visiblePlacementIds: ["parent", "child", "obstacle"],
+    relationships: [{
+      id: "subtree:test:parent->child",
+      instanceId: "test",
+      parentPlacementId: "parent",
+      childPlacementId: "child",
+    }],
+    controls: [],
+    placementStates: [],
+    syncControls: [],
+  };
+  const feasibleDocument = {
+    ...emptyDocument(),
+    focusedPlacementId: "parent",
+    placements: [parent, child, { ...obstacle, y: 180 }],
+  };
+  const feasible = deriveCanvasSubtreeStructureBranches(feasibleDocument, projection);
+  const blocked = deriveCanvasSubtreeStructureBranches(
+    { ...feasibleDocument, placements: [parent, child, obstacle] },
+    projection
+  );
+  const restored = deriveCanvasSubtreeStructureBranches(
+    { ...feasibleDocument, placements: [parent, child, { ...obstacle, x: 300, y: 180 }] },
+    projection
+  );
+  assert.equal(feasible.length, 1);
+  assert.equal(blocked.length, 0);
+  assert.equal(restored.length, 1);
+
+  const values = { base: "", highlight: "" };
+  const refs = new Map([[feasible[0].id, {
+    base: { setAttribute: (_name: "d", value: string) => { values.base = value; } },
+    highlight: { setAttribute: (_name: "d", value: string) => { values.highlight = value; } },
+  }]]);
+  applyCanvasSubtreeStructureBranchPaths(refs, feasible);
+  assert.notEqual(values.base, "");
+  assert.notEqual(values.highlight, "");
+  applyCanvasSubtreeStructureBranchPaths(refs, blocked);
+  assert.equal(values.base, "");
+  assert.equal(values.highlight, "");
+  applyCanvasSubtreeStructureBranchPaths(refs, restored);
+  assert.equal(values.base, restored[0].path);
+  assert.equal(values.highlight, restored[0].highlightPath);
 });
 
 test("clear structure routing stays linear across a representative 48-Node canvas", () => {

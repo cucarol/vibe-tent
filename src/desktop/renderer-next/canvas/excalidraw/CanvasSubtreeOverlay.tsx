@@ -7,6 +7,7 @@ import {
 import type { CanvasDocument } from "../../types/identity.js";
 import { NODE_CARD } from "../../model/canvas-document.js";
 import {
+  applyCanvasSubtreeStructureBranchPaths,
   deriveCanvasSubtreeStructureBranches,
 } from "../../model/canvas-subtree-geometry.js";
 import type {
@@ -85,11 +86,10 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
           `translate(${scrollX * zoom} ${scrollY * zoom}) scale(${zoom})`
         );
         if (override) {
-          for (const branch of deriveCanvasSubtreeStructureBranches(document, projection, override)) {
-            const paths = pathRefs.current.get(branch.id);
-            paths?.base?.setAttribute("d", branch.path);
-            if (branch.highlightPath) paths?.highlight?.setAttribute("d", branch.highlightPath);
-          }
+          applyCanvasSubtreeStructureBranchPaths(
+            pathRefs.current,
+            deriveCanvasSubtreeStructureBranches(document, projection, override)
+          );
         }
         const placeControl = (placementId: string, element: HTMLDivElement) => {
           const placement = byPlacementId.get(placementId);
