@@ -5,12 +5,14 @@ import type { CanvasDocument, CanvasPlacement } from "../src/desktop/renderer-ne
 import { movePlacement, NODE_CARD } from "../src/desktop/renderer-next/model/canvas-document.js";
 import {
   CANVAS_SUBTREE_META_KEY,
+  canvasProjectionAuthorityDigest,
   carryCollapsedSubtreeDescendants,
   createCanvasSubtreeProjectionInstance,
   deriveCanvasSubtreeProjection,
   joinCanvasSubtreeInstanceAt,
   readCanvasSubtreePlacementMeta,
   reconcileCanvasProjectionSync,
+  reconcileCanvasProjectionSyncFromLatestAuthority,
   toggleCanvasSubtreeBranch,
   type CanvasSubtreeNodeSource,
 } from "../src/desktop/renderer-next/model/canvas-subtree-projection.js";
@@ -409,6 +411,41 @@ test("clear structure routing stays linear across a representative 48-Node canva
   assert.equal(diagnostics.segmentRectChecks, 24 * 46);
 });
 
+test("clear structure routing remains frame-bounded across 128 visible Nodes", () => {
+  const placements: CanvasPlacement[] = [];
+  const relationships = [];
+  for (let index = 0; index < 64; index += 1) {
+    const y = index * 260;
+    placements.push(nodePlacement(`large-parent-${index}`, `large-parent-node-${index}`, 0, y));
+    placements.push(nodePlacement(`large-child-${index}`, `large-child-node-${index}`, 620, y));
+    relationships.push({
+      id: `subtree:large-${index}:parent->child`,
+      instanceId: `large-instance-${index}`,
+      parentPlacementId: `large-parent-${index}`,
+      childPlacementId: `large-child-${index}`,
+    });
+  }
+  const diagnostics = { segmentRectChecks: 0 };
+  const startedAt = performance.now();
+  const branches = deriveCanvasSubtreeStructureBranches(
+    { ...emptyDocument(), placements },
+    {
+      authority: "fresh",
+      visiblePlacementIds: placements.map((placement) => placement.placementId),
+      relationships,
+      controls: [],
+      placementStates: [],
+      syncControls: [],
+    },
+    null,
+    diagnostics
+  );
+  const elapsed = performance.now() - startedAt;
+  assert.equal(branches.length, 64);
+  assert.equal(diagnostics.segmentRectChecks, 64 * 126);
+  assert.ok(elapsed < 120, `64 clear routes across 128 Nodes took ${elapsed.toFixed(1)}ms`);
+});
+
 test("a full 48-Node frame reuses indexed obstacle geometry across 24 blocked relationships", () => {
   const placements: CanvasPlacement[] = [];
   const relationships = [];
@@ -568,7 +605,8 @@ test("a nested projection root ignores its external parent while internal repare
   const reconciled = reconcileCanvasProjectionSync(
     created.document,
     "placement-nested-0",
-    nested
+    nested,
+    { authorityDigest: canvasProjectionAuthorityDigest(created.document, "placement-nested-0", nested)! }
   );
   assert.equal(deriveCanvasSubtreeProjection(reconciled, nested).syncControls.length, 0);
 
@@ -595,7 +633,10 @@ test("sync preserves surviving manual coordinates and only adds/removes affected
     manuallyMoved,
     "placement-a-0",
     changed,
-    () => `added-${nextId++}`
+    {
+      authorityDigest: canvasProjectionAuthorityDigest(manuallyMoved, "placement-a-0", changed)!,
+      createPlacementId: () => `added-${nextId++}`,
+    }
   );
   assert.equal(synced.placements.some((placement) => placement.entityRef === "grandchild"), false);
   assert.equal(synced.placements.some((placement) => placement.entityRef === "out-b"), false);
@@ -605,11 +646,49 @@ test("sync preserves surviving manual coordinates and only adds/removes affected
   assert.equal(deriveCanvasSubtreeProjection(synced, changed).syncControls.length, 0);
 });
 
+test("projection sync rejects an authority digest race without mutating local layout", () => {
+  const created = createInstance();
+  const firstAuthority = [...TREE, source("new-child", "root", "new-v1")];
+  const digest = canvasProjectionAuthorityDigest(
+    created.document,
+    "placement-a-0",
+    firstAuthority
+  )!;
+  const newerAuthority = firstAuthority.map((item) =>
+    item.nodeId === "child-a" ? source("child-a", "root", "child-a-v3") : item
+  );
+  let reads = 0;
+  const rejected = reconcileCanvasProjectionSyncFromLatestAuthority(
+    created.document,
+    "placement-a-0",
+    digest,
+    () => {
+      reads += 1;
+      return newerAuthority;
+    },
+    () => "must-not-create"
+  );
+  assert.equal(reads, 1, "the mutation boundary must synchronously re-read current authority");
+  assert.equal(rejected, created.document);
+  assert.equal(rejected.placements.some((placement) => placement.placementId === "must-not-create"), false);
+});
+
+test("local movement never changes the authority digest or creates pending sync", () => {
+  const created = createInstance();
+  const digest = canvasProjectionAuthorityDigest(created.document, "placement-a-0", TREE);
+  const moved = movePlacement(created.document, "placement-a-1", { x: 944, y: 512 });
+  assert.equal(canvasProjectionAuthorityDigest(moved, "placement-a-0", TREE), digest);
+  assert.equal(deriveCanvasSubtreeProjection(moved, TREE).syncControls.length, 0);
+});
+
 test("duplicate instances reconcile independently", () => {
   const first = createInstance();
   const second = createInstance(first.document, "b");
   const changed = [...TREE, source("new-child", "root")];
-  const synced = reconcileCanvasProjectionSync(second.document, "placement-a-0", changed, () => "placement-a-new");
+  const synced = reconcileCanvasProjectionSync(second.document, "placement-a-0", changed, {
+    authorityDigest: canvasProjectionAuthorityDigest(second.document, "placement-a-0", changed)!,
+    createPlacementId: () => "placement-a-new",
+  });
   assert.equal(synced.placements.some((placement) => placement.placementId === "placement-a-new"), true);
   assert.equal(
     synced.placements.filter((placement) =>

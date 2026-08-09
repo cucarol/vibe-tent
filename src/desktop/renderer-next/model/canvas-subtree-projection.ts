@@ -3,6 +3,7 @@ import { NODE_CARD, newPlacementId } from "./canvas-document.js";
 import {
   type CanvasNodeSnapshot,
   deriveCanvasPlacementSourceState,
+  readCanvasNodeSnapshot,
   withCanvasNodeSnapshot,
 } from "./canvas-node-snapshot.js";
 
@@ -52,12 +53,24 @@ export type CanvasProjectionSyncControl = {
   placementId: string;
   scope: "standalone" | "subtree";
   affectedCount: number;
+  reasons: readonly CanvasProjectionSyncReason[];
+  authorityDigest: string;
   canSync: boolean;
 };
+
+export type CanvasProjectionSyncReason =
+  | "content-changed"
+  | "reparented"
+  | "member-added"
+  | "member-removed"
+  | "source-deleted"
+  | "source-archived"
+  | "revision-unknown";
 
 export type CanvasProjectionPlacementState = {
   placementId: string;
   state: "current" | "pending-sync" | "unknown";
+  reasons: readonly CanvasProjectionSyncReason[];
 };
 
 export type CanvasSubtreeProjection = {
@@ -68,6 +81,9 @@ export type CanvasSubtreeProjection = {
   placementStates: readonly CanvasProjectionPlacementState[];
   syncControls: readonly CanvasProjectionSyncControl[];
 };
+
+export type CanvasProjectionAuthorityReader =
+  () => readonly CanvasSubtreeNodeSource[] | null;
 
 const DIRECTIONS = new Set<SubtreeDirection>(["up", "right", "down", "left"]);
 
@@ -309,6 +325,66 @@ function visiblePlacementIds(
   return visible;
 }
 
+function encodeAuthorityPart(value: string): string {
+  return `${value.length}:${value}`;
+}
+
+function authorityTupleDigest(sources: readonly CanvasSubtreeNodeSource[]): string {
+  const tuples = sources
+    .map((source) => [source.nodeId, source.parentNodeId ?? "", source.snapshot.etag] as const)
+    .sort((left, right) =>
+      left[0].localeCompare(right[0]) ||
+      left[1].localeCompare(right[1]) ||
+      left[2].localeCompare(right[2])
+    );
+  return `v1:${tuples.map((tuple) => tuple.map(encodeAuthorityPart).join("|")).join(";")}`;
+}
+
+function reachableAuthoritySources(
+  rootNodeId: string,
+  sources: readonly CanvasSubtreeNodeSource[]
+): CanvasSubtreeNodeSource[] {
+  const byId = new Map(sources.map((source) => [source.nodeId, source] as const));
+  const children = childrenByParent(sources);
+  const reachable: CanvasSubtreeNodeSource[] = [];
+  const queue = [rootNodeId];
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const nodeId = queue.shift()!;
+    if (seen.has(nodeId)) continue;
+    seen.add(nodeId);
+    const source = byId.get(nodeId);
+    if (!source) continue;
+    reachable.push(source);
+    queue.push(...(children.get(nodeId) ?? []).map((child) => child.nodeId));
+  }
+  return reachable;
+}
+
+/**
+ * Exact UI-local authority guard for one standalone placement or subtree
+ * instance. The canonical tuple is collision-free and intentionally includes
+ * only current authoritative identity/revision facts, never local geometry.
+ */
+export function canvasProjectionAuthorityDigest(
+  document: CanvasDocument,
+  controlPlacementId: string,
+  sources: readonly CanvasSubtreeNodeSource[] | null
+): string | null {
+  if (!sources) return null;
+  const valid = validSubtreeMembers(document);
+  const member = valid.get(controlPlacementId);
+  if (!member) {
+    const placement = document.placements.find((candidate) => candidate.placementId === controlPlacementId);
+    if (!placement?.entityRef) return null;
+    const source = sources.find((candidate) => candidate.nodeId === placement.entityRef);
+    return authorityTupleDigest(source ? [source] : []);
+  }
+  const root = valid.get(member.meta.rootPlacementId);
+  if (!root?.placement.entityRef) return null;
+  return authorityTupleDigest(reachableAuthoritySources(root.placement.entityRef, sources));
+}
+
 export function deriveCanvasSubtreeProjection(
   document: CanvasDocument,
   sources: readonly CanvasSubtreeNodeSource[] | null
@@ -324,7 +400,7 @@ export function deriveCanvasSubtreeProjection(
       controls: [],
       placementStates: document.placements
         .filter((placement) => placement.kind === "node")
-        .map((placement) => ({ placementId: placement.placementId, state: "unknown" })),
+        .map((placement) => ({ placementId: placement.placementId, state: "unknown", reasons: [] })),
       syncControls: [],
     };
   }
@@ -386,7 +462,7 @@ export function deriveCanvasSubtreeProjection(
       canMutate: projectedChildren.length > 0,
     });
   }
-  const placementStates = new Map<string, CanvasProjectionPlacementState["state"]>();
+  const placementStates = new Map<string, CanvasProjectionPlacementState>();
   for (const placement of document.placements) {
     if (placement.kind !== "node" || !placement.entityRef) continue;
     const source = sourceById.get(placement.entityRef);
@@ -408,10 +484,23 @@ export function deriveCanvasSubtreeProjection(
         }
         : null,
     });
-    placementStates.set(
-      placement.placementId,
-      state.state === "current" ? "current" : "pending-sync"
-    );
+    const snapshot = readCanvasNodeSnapshot(placement);
+    const reasons: CanvasProjectionSyncReason[] = [];
+    if (state.state === "deleted") reasons.push("source-deleted");
+    else if (state.state === "changed") {
+      if (source?.snapshot.archived && snapshot?.archived !== source.snapshot.archived) {
+        reasons.push("source-archived");
+      } else {
+        reasons.push("content-changed");
+      }
+    } else if (state.state === "unknown" && state.reason === "revision-unavailable") {
+      reasons.push("revision-unknown");
+    }
+    placementStates.set(placement.placementId, {
+      placementId: placement.placementId,
+      state: state.state === "current" ? "current" : "pending-sync",
+      reasons,
+    });
   }
   const syncControls: CanvasProjectionSyncControl[] = [];
   const membersByInstance = new Map<string, ValidMember[]>();
@@ -437,10 +526,18 @@ export function deriveCanvasSubtreeProjection(
       queue.push(...(authoritativeChildrenByParent.get(nodeId) ?? []));
     }
     const affected = new Set<string>();
+    const reasons = new Set<CanvasProjectionSyncReason>();
     for (const member of members) {
       const nodeId = member.placement.entityRef;
       if (!nodeId || !expected.has(nodeId)) {
         affected.add(member.placement.placementId);
+        reasons.add(
+          !nodeId
+            ? "member-removed"
+            : sourceById.has(nodeId)
+              ? "reparented"
+              : "source-deleted"
+        );
         continue;
       }
       if (member.meta.parentPlacementId !== null) {
@@ -448,32 +545,48 @@ export function deriveCanvasSubtreeProjection(
         const actualParentNodeId = valid.get(member.meta.parentPlacementId)?.placement.entityRef ?? null;
         if (expectedParentNodeId !== actualParentNodeId) {
           affected.add(member.placement.placementId);
+          reasons.add("reparented");
         }
       }
-      if (placementStates.get(member.placement.placementId) !== "current") {
+      const placementState = placementStates.get(member.placement.placementId);
+      if (placementState?.state !== "current") {
         affected.add(member.placement.placementId);
+        placementState?.reasons.forEach((reason) => reasons.add(reason));
       }
     }
     for (const nodeId of expected) {
-      if (!memberByNodeId.has(nodeId)) affected.add(`missing:${nodeId}`);
+      if (!memberByNodeId.has(nodeId)) {
+        affected.add(`missing:${nodeId}`);
+        reasons.add("member-added");
+      }
     }
     if (affected.size > 0) {
-      placementStates.set(root.placement.placementId, "pending-sync");
+      const rootState = placementStates.get(root.placement.placementId);
+      placementStates.set(root.placement.placementId, {
+        placementId: root.placement.placementId,
+        state: "pending-sync",
+        reasons: [...new Set([...(rootState?.reasons ?? []), ...reasons])],
+      });
       syncControls.push({
         placementId: root.placement.placementId,
         scope: "subtree",
         affectedCount: affected.size,
+        reasons: [...reasons],
+        authorityDigest: canvasProjectionAuthorityDigest(document, root.placement.placementId, sources)!,
         canSync: true,
       });
     }
   }
   for (const placement of document.placements) {
     if (placement.kind !== "node" || valid.has(placement.placementId)) continue;
-    if (placementStates.get(placement.placementId) !== "pending-sync") continue;
+    const placementState = placementStates.get(placement.placementId);
+    if (placementState?.state !== "pending-sync") continue;
     syncControls.push({
       placementId: placement.placementId,
       scope: "standalone",
       affectedCount: 1,
+      reasons: placementState.reasons,
+      authorityDigest: canvasProjectionAuthorityDigest(document, placement.placementId, sources)!,
       canSync: true,
     });
   }
@@ -482,7 +595,7 @@ export function deriveCanvasSubtreeProjection(
     visiblePlacementIds: [...visible],
     relationships,
     controls,
-    placementStates: [...placementStates].map(([placementId, state]) => ({ placementId, state })),
+    placementStates: [...placementStates.values()],
     syncControls,
   };
 }
@@ -495,9 +608,16 @@ export function reconcileCanvasProjectionSync(
   document: CanvasDocument,
   controlPlacementId: string,
   sources: readonly CanvasSubtreeNodeSource[] | null,
-  createPlacementId: () => string = () => newPlacementId("pl-node")
+  request: {
+    authorityDigest: string;
+    createPlacementId?: () => string;
+  }
 ): CanvasDocument {
   if (!sources) return document;
+  if (canvasProjectionAuthorityDigest(document, controlPlacementId, sources) !== request.authorityDigest) {
+    return document;
+  }
+  const createPlacementId = request.createPlacementId ?? (() => newPlacementId("pl-node"));
   const sourceById = new Map(sources.map((source) => [source.nodeId, source] as const));
   const children = childrenByParent(sources);
   const valid = validSubtreeMembers(document);
@@ -632,6 +752,26 @@ export function reconcileCanvasProjectionSync(
       ? root.placement.placementId
       : document.focusedPlacementId,
   };
+}
+
+/**
+ * Re-read authority at the mutation boundary. A sync control is derived from a
+ * rendered snapshot, but its click may race a graph invalidation or a newer
+ * projection. The reader must therefore be backed by the current projection
+ * resource (not the render closure); null or a changed digest is a no-op.
+ */
+export function reconcileCanvasProjectionSyncFromLatestAuthority(
+  document: CanvasDocument,
+  controlPlacementId: string,
+  authorityDigest: string,
+  readAuthority: CanvasProjectionAuthorityReader,
+  createPlacementId?: () => string
+): CanvasDocument {
+  const sources = readAuthority();
+  return reconcileCanvasProjectionSync(document, controlPlacementId, sources, {
+    authorityDigest,
+    ...(createPlacementId ? { createPlacementId } : {}),
+  });
 }
 
 function subtreeDescendantPlacementIds(

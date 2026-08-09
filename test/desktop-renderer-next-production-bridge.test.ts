@@ -29,7 +29,10 @@ import { StatusBar } from "../src/desktop/renderer-next/components/StatusBar.js"
 import { projectionForConnection, workspaceProjectionStatus } from "../src/desktop/renderer-next/model/workspace-projection-view.js";
 import type { GraphProjection } from "../src/service/types.js";
 import { createEmptyCanvasDocument } from "../src/desktop/renderer-next/types/identity.js";
-import { workbenchNodesFromResources } from "../src/desktop/renderer-next/model/workbench-nodes.js";
+import {
+  readFreshCanvasSubtreeAuthority,
+  workbenchNodesFromResources,
+} from "../src/desktop/renderer-next/model/workbench-nodes.js";
 import { ConnectionBanner } from "../src/desktop/renderer-next/components/ConnectionBanner.js";
 import {
   reconcileLoadedCanvasDocument,
@@ -90,6 +93,29 @@ test("production bootstrap requires protocol 5 and exact foreground identity", (
     workspaces: [],
   });
   assert.equal(unmounted.foregroundWorkspace, null);
+});
+
+test("Canvas sync authority reader exposes only the latest fresh exact-workspace graph", () => {
+  const graph = {
+    workspaceId: "ws-a",
+    nodes: [{
+      nodeId: "cx-a",
+      etag: "etag-b",
+      path: "a",
+      name: "a",
+      type: "goal",
+      tags: [],
+      mode: "editable",
+      archived: false,
+      invalid: false,
+    }],
+    edges: { parent: [{ parentNodeId: null, childNodeId: "cx-a" }], markdown: [], wiki: [], relation: [] },
+  } satisfies GraphProjection;
+  const ready = { state: "ready", workspaceId: "ws-a", value: graph, fetchedAt: "now" } as const;
+  assert.equal(readFreshCanvasSubtreeAuthority(ready, "ws-a", true)?.[0]?.snapshot.etag, "etag-b");
+  assert.equal(readFreshCanvasSubtreeAuthority(ready, "ws-a", false), null);
+  assert.equal(readFreshCanvasSubtreeAuthority(ready, "ws-b", true), null);
+  assert.equal(readFreshCanvasSubtreeAuthority({ state: "loading", workspaceId: "ws-a", previous: graph }, "ws-a", true), null);
 });
 
 test("first non-empty graph seeds only a truly absent local Canvas", () => {

@@ -3,6 +3,7 @@ import {
   useImperativeHandle,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import type { CanvasDocument } from "../../types/identity.js";
 import { NODE_CARD } from "../../model/canvas-document.js";
@@ -60,6 +61,7 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
     { document, projection, hoveredPlacementId, selectedPlacementId, onDirection, onSync },
     ref
   ) {
+    const [directionMenuPlacementId, setDirectionMenuPlacementId] = useState<string | null>(null);
     const groupRef = useRef<SVGGElement>(null);
     const pathRefs = useRef(new Map<string, { base: SVGPathElement | null; highlight: SVGPathElement | null }>());
     const controlRefs = useRef(new Map<string, HTMLDivElement>());
@@ -145,9 +147,12 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
         </svg>
         {projection.controls.map((control) => {
           const visible = control.placementId === selectedPlacementId || control.placementId === hoveredPlacementId;
-          const directions: readonly SubtreeDirection[] = control.expandedDirection
-            ? [control.expandedDirection]
-            : ["up", "right", "down", "left"];
+          const activeDirection = control.expandedDirection ?? control.lastDirection;
+          const directionMenuOpen = !control.expandedDirection && directionMenuPlacementId === control.placementId;
+          const count = control.projectedDirectChildCount;
+          const label = control.expandedDirection
+            ? `收起${directionLabel[control.expandedDirection]}侧 ${count} 个后代`
+            : `展开子树，${count} 个直接后代`;
           return (
             <div
               key={`control:${control.placementId}`}
@@ -159,35 +164,62 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
               data-visible={visible ? "true" : "false"}
               data-expanded={control.expandedDirection ?? "collapsed"}
               role="group"
-              aria-label="子树投影方向"
+              aria-label="子树投影"
             >
-              {directions.map((direction) => {
-                const expanded = control.expandedDirection === direction;
-                const count = control.projectedDirectChildCount;
-                const label = expanded
-                  ? `收起${directionLabel[direction]}侧 ${count} 个后代`
-                  : `向${directionLabel[direction]}展开 ${count} 个后代`;
-                return (
+              <IconButton
+                className="tn-canvas-subtree-controls__button"
+                data-role="toggle"
+                data-direction={activeDirection}
+                variant="quiet"
+                size="compact"
+                aria-label={label}
+                tooltip={label}
+                aria-expanded={control.expandedDirection ? true : directionMenuOpen}
+                aria-haspopup={control.expandedDirection ? undefined : "menu"}
+                disabled={!control.canMutate}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => {
+                  if (control.expandedDirection) {
+                    onDirection(control.placementId, control.expandedDirection);
+                    return;
+                  }
+                  setDirectionMenuPlacementId((current) => current === control.placementId ? null : control.placementId);
+                }}
+              >
+                <DirectionGlyph direction={activeDirection} />
+              </IconButton>
+              {directionMenuOpen ? (
+                <div className="tn-canvas-subtree-controls__menu" role="menu" aria-label="选择展开方向">
+                  {(["up", "right", "down", "left"] as const).map((direction) => (
                   <IconButton
                     key={direction}
-                    className="tn-canvas-subtree-controls__button"
+                    className="tn-canvas-subtree-controls__menu-button"
+                    data-role="direction"
                     data-direction={direction}
                     variant="quiet"
                     size="compact"
-                    aria-label={label}
-                    tooltip={label}
-                    aria-expanded={expanded}
+                    role="menuitem"
+                    aria-label={`向${directionLabel[direction]}展开 ${count} 个后代`}
+                    tooltip={`向${directionLabel[direction]}展开`}
                     disabled={!control.canMutate}
                     onPointerDown={(event) => event.stopPropagation()}
-                    onClick={() => onDirection(control.placementId, direction)}
+                    onClick={() => {
+                      setDirectionMenuPlacementId(null);
+                      onDirection(control.placementId, direction);
+                    }}
                   >
                     <DirectionGlyph direction={direction} />
                   </IconButton>
-                );
-              })}
+                  ))}
+                </div>
+              ) : null}
               {control.unprojectedDirectChildCount > 0 ? (
-                <span className="tn-canvas-subtree-controls__pending">
-                  +{control.unprojectedDirectChildCount} 未投影
+                <span
+                  className="tn-canvas-subtree-controls__pending"
+                  title={`${control.unprojectedDirectChildCount} 个直接后代尚未进入此投影实例`}
+                  aria-label={`${control.unprojectedDirectChildCount} 个直接后代尚未投影`}
+                >
+                  +{control.unprojectedDirectChildCount}
                 </span>
               ) : null}
             </div>

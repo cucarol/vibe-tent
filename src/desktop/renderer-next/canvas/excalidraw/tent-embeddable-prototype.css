@@ -252,6 +252,24 @@
   border-color: var(--tn-color-border-strong);
 }
 
+.tn-excal-node::after {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--tn-color-text-secondary);
+  border-radius: 2px;
+  background: var(--tn-color-elevated-bg);
+  content: "";
+  opacity: 0;
+  transform: rotate(45deg);
+}
+
+.tn-excal-node[data-needs-attention="true"]::after {
+  opacity: 1;
+}
+
 .tn-excal-node__signal {
   position: absolute;
   top: 0;
@@ -259,7 +277,7 @@
   left: 0;
   display: flex;
   gap: 4px;
-  height: 3px;
+  height: 2px;
   overflow: hidden;
   background: var(--tn-color-border);
   transition: background-color var(--tn-motion-duration-standard) var(--tn-motion-ease-out);
@@ -289,7 +307,7 @@
   display: flex;
   justify-content: space-between;
   gap: 8px;
-  padding: 10px 12px 0;
+  padding: 9px 11px 0;
 }
 
 .tn-excal-node__type,
@@ -306,7 +324,8 @@
   gap: 6px;
   align-items: center;
   color: var(--tn-color-text-secondary);
-  font-size: 10px;
+  padding-right: 10px;
+  font-size: 9px;
 }
 
 .tn-excal-node__state-mark {
@@ -343,9 +362,9 @@
 }
 
 .tn-excal-node h3 {
-  margin: 9px 12px 3px;
+  margin: 8px 11px 2px;
   overflow: hidden;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   line-height: 1.25;
   text-overflow: ellipsis;
@@ -356,8 +375,8 @@
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
   gap: 6px;
-  margin: 7px 12px 0;
-  padding-top: 6px;
+  margin: 6px 11px 0;
+  padding-top: 5px;
   border-top: 1px solid var(--tn-color-border);
 }
 

@@ -178,6 +178,12 @@ async function dispatchBackgroundOutlineDrag(page, accessibleName, targetPositio
   assert.ok(types.includes("application/x-tent-node-ref"), `Outline drag must populate Tent MIME: ${types.join(",")}`);
   await target.dispatchEvent("dragenter", { dataTransfer, ...point });
   await target.dispatchEvent("dragover", { dataTransfer, ...point });
+  assert.equal(await target.getAttribute("data-drop-state"), "target", "Canvas must expose one active drop target");
+  const preview = target.locator(".tn-canvas-drop-preview");
+  await preview.waitFor({ state: "visible" });
+  const previewRect = await preview.boundingBox();
+  assert.ok(previewRect && previewRect.width > 0 && previewRect.height > 0, "Canvas drop preview must use visible canonical card geometry");
+  assert.equal(await target.locator("[data-state=target]").textContent(), "松开以创建本地画布快照");
   await target.dispatchEvent("drop", { dataTransfer, ...point });
   await source.dispatchEvent("dragend", { dataTransfer, ...point });
   await dataTransfer.dispose();
@@ -241,7 +247,7 @@ async function selectedControls(page, placementId) {
   const card = page.locator(`[data-tent-placement-id="${placementId}"]`);
   const cardRect = await card.boundingBox();
   assert.ok(cardRect, `Selected placement must be visible: ${placementId}`);
-  const controls = page.getByRole("group", { name: "子树投影方向" });
+  const controls = page.getByRole("group", { name: "子树投影" });
   const boxes = await controls.evaluateAll((elements) => elements.map((element) => {
     const rect = element.getBoundingClientRect();
     return { left: rect.left, top: rect.top };
@@ -259,6 +265,17 @@ async function selectedControls(page, placementId) {
   const selected = controls.nth(index);
   await selected.waitFor({ state: "visible" });
   return selected;
+}
+
+async function collapseSubtree(page, placementId) {
+  const controls = await selectedControls(page, placementId);
+  await controls.locator("button[data-role=toggle]").click();
+}
+
+async function expandSubtree(page, placementId, direction) {
+  const controls = await selectedControls(page, placementId);
+  await controls.locator("button[data-role=toggle]").click();
+  await controls.locator(`button[data-role=direction][data-direction="${direction}"]`).click();
 }
 
 async function selectPlacement(page, placementId) {
@@ -389,11 +406,10 @@ async function exerciseBrowser() {
       let controls = await selectedControls(page, firstRoot.placementId);
       const expanded = await controls.getAttribute("data-expanded");
       if (expanded !== "collapsed") {
-        await controls.locator(`button[data-direction="${expanded}"]`).click();
+        await collapseSubtree(page, firstRoot.placementId);
         await waitFor(async () => (await selectedControls(page, firstRoot.placementId)).getAttribute("data-expanded").then((value) => value === "collapsed"), "subtree collapse");
       }
-      controls = await selectedControls(page, firstRoot.placementId);
-      await controls.locator(`button[data-direction="${direction}"]`).click();
+      await expandSubtree(page, firstRoot.placementId, direction);
       await waitFor(async () => (await selectedControls(page, firstRoot.placementId)).getAttribute("data-expanded").then((value) => value === direction), `expand ${direction}`);
     }
 
@@ -409,9 +425,8 @@ async function exerciseBrowser() {
     await selectPlacement(page, firstRoot.placementId);
     let controls = await selectedControls(page, firstRoot.placementId);
     const lastDirection = await controls.getAttribute("data-expanded");
-    await controls.locator(`button[data-direction="${lastDirection}"]`).click();
-    controls = await selectedControls(page, firstRoot.placementId);
-    await controls.locator(`button[data-direction="${lastDirection}"]`).click();
+    await collapseSubtree(page, firstRoot.placementId);
+    await expandSubtree(page, firstRoot.placementId, lastDirection);
     state = await readState(page);
     const reopenedChild = placementMap(state.presentation.document).get(workbench.placementId);
     assert.deepEqual(
@@ -422,7 +437,7 @@ async function exerciseBrowser() {
 
     // Collapsed root carries every hidden descendant by the exact same delta.
     controls = await selectedControls(page, firstRoot.placementId);
-    await controls.locator(`button[data-direction="${lastDirection}"]`).click();
+    await collapseSubtree(page, firstRoot.placementId);
     const beforeCarryState = await readState(page);
     const beforeCarry = placementMap(beforeCarryState.presentation.document);
     await dragPlacement(page, firstRoot.placementId, 37, 23);
@@ -437,8 +452,7 @@ async function exerciseBrowser() {
       assert.equal(afterCarry.get(member.placementId).x - beforeCarry.get(member.placementId).x, rootDx);
       assert.equal(afterCarry.get(member.placementId).y - beforeCarry.get(member.placementId).y, rootDy);
     }
-    controls = await selectedControls(page, firstRoot.placementId);
-    await controls.locator(`button[data-direction="${lastDirection}"]`).click();
+    await expandSubtree(page, firstRoot.placementId, lastDirection);
 
     // Authority drift marks both instances. Sync reconciles exactly one and
     // preserves survivor coordinates; the other remains pending.
@@ -498,10 +512,9 @@ async function exerciseBrowser() {
     controls = await selectedControls(page, currentRoot.placementId);
     let currentDirection = await controls.getAttribute("data-expanded");
     if (currentDirection !== "collapsed") {
-      await controls.locator(`button[data-direction="${currentDirection}"]`).click();
-      controls = await selectedControls(page, currentRoot.placementId);
+      await collapseSubtree(page, currentRoot.placementId);
     }
-    await controls.locator("button[data-direction=down]").click();
+    await expandSubtree(page, currentRoot.placementId, "down");
     state = await readState(page);
     firstCurrentMembers = instanceMembers(state.presentation.document, firstInstanceId);
     currentWorkbench = firstCurrentMembers.find((placement) => placement.entityRef === "cx-workbench");
@@ -510,7 +523,7 @@ async function exerciseBrowser() {
     await selectPlacement(page, currentWorkbench.placementId);
     controls = await selectedControls(page, currentWorkbench.placementId);
     if ((await controls.getAttribute("data-expanded")) === "collapsed") {
-      await controls.locator("button[data-direction=down]").click();
+      await expandSubtree(page, currentWorkbench.placementId, "down");
     }
     await page.locator(`[data-tent-placement-id="${delivery.placementId}"]`).waitFor();
     const workbenchTree = page.getByRole("treeitem", { name: /主界面：Canvas、节点与焦点/ });

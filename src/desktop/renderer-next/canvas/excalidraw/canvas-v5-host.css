@@ -38,19 +38,19 @@
 
 .tn-canvas-subtree-lines__path {
   fill: none;
-  stroke: var(--tn-color-border-strong);
+  stroke: color-mix(in srgb, var(--tn-color-text-faint) 58%, var(--tn-color-stage-bg));
   stroke-width: 1;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-dasharray: none;
-  opacity: .38;
+  opacity: .54;
 }
 
 .tn-canvas-subtree-lines__path--highlight {
   stroke: var(--tn-color-text-secondary);
-  stroke-width: 1.45;
+  stroke-width: 1.35;
   stroke-dasharray: none;
-  opacity: .82;
+  opacity: .76;
 }
 
 .tn-canvas-subtree-controls,
@@ -73,8 +73,8 @@
 }
 
 .tn-canvas-subtree-controls__button,
+.tn-canvas-subtree-controls__menu-button,
 .tn-canvas-projection-sync .tn-ui-icon-btn {
-  position: absolute;
   width: 24px;
   min-width: 24px;
   height: 24px;
@@ -84,6 +84,11 @@
   background: var(--tn-color-elevated-bg);
   box-shadow: var(--tn-shadow-card);
   pointer-events: auto;
+}
+
+.tn-canvas-subtree-controls__button,
+.tn-canvas-projection-sync .tn-ui-icon-btn {
+  position: absolute;
 }
 
 .tn-canvas-subtree-controls__button[data-direction="up"] {
@@ -114,7 +119,8 @@
   position: absolute;
   top: calc(100% + 6px);
   left: 50%;
-  padding: 2px 6px;
+  min-width: 16px;
+  padding: 2px 4px;
   border: 1px solid var(--tn-color-border);
   border-radius: var(--tn-radius-sm);
   background: var(--tn-color-elevated-bg);
@@ -145,6 +151,27 @@
   font-size: 9px;
   text-align: center;
   pointer-events: none;
+}
+
+.tn-canvas-subtree-controls__menu {
+  position: absolute;
+  top: calc(100% + 7px);
+  left: 50%;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--tn-color-border);
+  border-radius: var(--tn-radius-md);
+  background: var(--tn-color-elevated-bg);
+  box-shadow: var(--tn-shadow-card);
+  pointer-events: auto;
+  transform: translateX(-50%);
+}
+
+.tn-canvas-subtree-controls__menu-button {
+  position: static;
+  border-color: transparent;
+  box-shadow: none;
 }
 
 /* Default Excalidraw embeddable hint covers Tent cards — hide it; card footer carries the cue. */

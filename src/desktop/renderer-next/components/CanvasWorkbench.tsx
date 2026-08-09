@@ -12,8 +12,9 @@ import {
 } from "../model/canvas-node-snapshot.js";
 import {
   deriveCanvasSubtreeProjection,
-  reconcileCanvasProjectionSync,
+  reconcileCanvasProjectionSyncFromLatestAuthority,
   toggleCanvasSubtreeBranch,
+  type CanvasProjectionAuthorityReader,
   type CanvasSubtreeNodeSource,
   type SubtreeDirection,
 } from "../model/canvas-subtree-projection.js";
@@ -23,6 +24,7 @@ import {
   IDLE_CANVAS_DROP_FEEDBACK,
   leaveCanvasDropTarget,
 } from "../model/canvas-drop-feedback.js";
+import { NODE_CARD } from "../model/canvas-document.js";
 
 export type CanvasWorkbenchProps = {
   document: CanvasDocument;
@@ -38,16 +40,19 @@ export type CanvasWorkbenchProps = {
   onScenePersist?: (scene: ExcalidrawSceneSnapshot) => void;
   onDropNode?: (nodeId: string, point: { x: number; y: number }) => boolean;
   previewDocument?: { nodeId: string; body: string } | null;
+  attentionNodeIds?: ReadonlySet<string>;
+  readCurrentCanvasAuthority?: CanvasProjectionAuthorityReader;
   hidden?: boolean;
 };
 
-export function CanvasWorkbench({ document, nodes, projection, immersive, onImmersiveChange, onDocumentChange, onSelectNode, initialScene = null, persistenceStatus = { kind: "ok" }, onRetryPersistence, onScenePersist, onDropNode, previewDocument = null, hidden = false }: CanvasWorkbenchProps) {
+export function CanvasWorkbench({ document, nodes, projection, immersive, onImmersiveChange, onDocumentChange, onSelectNode, initialScene = null, persistenceStatus = { kind: "ok" }, onRetryPersistence, onScenePersist, onDropNode, previewDocument = null, attentionNodeIds = new Set(), readCurrentCanvasAuthority, hidden = false }: CanvasWorkbenchProps) {
   const [drawingVisible, setDrawingVisible] = useState(
     () => initialScene?.layerVisible ?? true
   );
   const [dropFeedback, setDropFeedback] = useState(IDLE_CANVAS_DROP_FEEDBACK);
   const successTimerRef = useRef<number | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
+  const dropPreviewRef = useRef<HTMLDivElement>(null);
   const byId = useMemo(() => new Map(nodes.map((node) => [node.nodeId, node] as const)), [nodes]);
   const resolvers = useMemo<CanvasNodeResolvers>(() => ({
     resolveGhost: (entityRef) => {
@@ -118,8 +123,13 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
 
   const handleProjectionSync = (placementId: string) => {
     const control = subtreeProjection.syncControls.find((candidate) => candidate.placementId === placementId);
-    if (!control?.canSync || !subtreeSources) return null;
-    return reconcileCanvasProjectionSync(document, placementId, subtreeSources);
+    if (!control?.canSync) return null;
+    return reconcileCanvasProjectionSyncFromLatestAuthority(
+      document,
+      placementId,
+      control.authorityDigest,
+      readCurrentCanvasAuthority ?? (() => subtreeSources)
+    );
   };
 
   const hasNodeDrag = (event: DragEvent) =>
@@ -172,6 +182,12 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
           if (!onDropNode || !hasNodeDrag(event)) return;
           event.preventDefault();
           event.dataTransfer.dropEffect = "copy";
+          const rect = hostRef.current?.getBoundingClientRect();
+          const preview = dropPreviewRef.current;
+          if (rect && preview) {
+            preview.style.left = `${event.clientX - rect.left - NODE_CARD.width / 2}px`;
+            preview.style.top = `${event.clientY - rect.top - NODE_CARD.height / 2}px`;
+          }
         }}
         onDragLeave={(event) => {
           if (!onDropNode || !hasNodeDrag(event)) return;
@@ -199,8 +215,15 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
             immersive={immersive}
             onImmersiveChange={onImmersiveChange}
             previewDocument={previewDocument}
+            attentionNodeIds={attentionNodeIds}
           />
         )}
+        <div
+          ref={dropPreviewRef}
+          className="tn-canvas-drop-preview"
+          style={{ width: NODE_CARD.width, height: NODE_CARD.height }}
+          aria-hidden="true"
+        />
         <div
           className="tn-canvas-drop-feedback"
           data-state={dropFeedback.phase}

@@ -24,7 +24,6 @@ import {
   removeFocusedPresentationPlacement,
   selectPresentationNode,
   selectPresentationNodeFromOutline,
-  syncFocusedPresentationSnapshot,
   withPresentationDocument,
   type WorkbenchPresentationUpdate,
 } from "./workbench-presentation.js";
@@ -47,6 +46,9 @@ import type {
 import type { InboxModel } from "../model/inbox.js";
 import {
   deriveCanvasSubtreeProjection,
+  readCanvasSubtreePlacementMeta,
+  reconcileCanvasProjectionSyncFromLatestAuthority,
+  type CanvasProjectionAuthorityReader,
   type CanvasSubtreeNodeSource,
 } from "../model/canvas-subtree-projection.js";
 
@@ -72,6 +74,8 @@ export type AppShellProps = {
   initialInspectorTab?: "content" | "collaboration";
   initialOutlineMode?: "nodes" | "inbox";
   inboxModel?: InboxModel;
+  /** Production supplies a synchronous graphRef-backed fresh authority read. */
+  readCurrentCanvasAuthority?: CanvasProjectionAuthorityReader;
 };
 
 function snapshotSource(node: WorkbenchNodeView | null | undefined): CanvasSnapshotSource | null {
@@ -116,6 +120,7 @@ export function AppShell({
   initialInspectorTab = "content",
   initialOutlineMode = "nodes",
   inboxModel,
+  readCurrentCanvasAuthority,
 }: AppShellProps = {}) {
   const layout = useMainLayout();
   const outlineOpen = !layout.effective.leftCollapsed;
@@ -129,6 +134,15 @@ export function AppShell({
   const placementActionRef = useRef<HTMLButtonElement>(null);
   const nodes = useMemo(() => [...initialNodes], [initialNodes]);
   const selectedNode = useMemo(() => nodes.find((node) => node.nodeId === selectedNodeId) ?? null, [nodes, selectedNodeId]);
+  const attentionNodeIds = useMemo(() => {
+    if (
+      collaboration?.status !== "ready" ||
+      !collaboration.snapshot ||
+      collaboration.snapshot.nodeId !== selectedNodeId ||
+      (!collaboration.snapshot.delivery && collaboration.snapshot.decisions.length === 0)
+    ) return new Set<string>();
+    return new Set([collaboration.snapshot.nodeId]);
+  }, [collaboration, selectedNodeId]);
   const projection = projectionState ?? (!workspaceId
     ? "unmounted"
     : nodes.some((node) => node.projectionState === "error")
@@ -140,8 +154,8 @@ export function AppShell({
       : nodes.some((node) => node.projectionState === "loading")
         ? "loading"
         : "fresh");
-  const canvasProjectionPresence = useMemo(() => {
-    const sources: CanvasSubtreeNodeSource[] | null = projection === "fresh" &&
+  const canvasSubtreeSources = useMemo<CanvasSubtreeNodeSource[] | null>(() => {
+    return projection === "fresh" &&
       nodes.every((node) => node.projectionState === undefined || node.projectionState === "ready")
       ? nodes.map((node) => {
         const source = snapshotSource(node)!;
@@ -152,9 +166,14 @@ export function AppShell({
         };
       })
       : null;
-    const subtree = deriveCanvasSubtreeProjection(document, sources);
+  }, [nodes, projection]);
+  const canvasSubtreeProjection = useMemo(
+    () => deriveCanvasSubtreeProjection(document, canvasSubtreeSources),
+    [canvasSubtreeSources, document]
+  );
+  const canvasProjectionPresence = useMemo(() => {
     const stateByPlacementId = new Map(
-      subtree.placementStates.map((state) => [state.placementId, state.state] as const)
+      canvasSubtreeProjection.placementStates.map((state) => [state.placementId, state.state] as const)
     );
     const presence = new Map<string, { count: number; pendingSync: boolean }>();
     for (const placement of document.placements) {
@@ -165,7 +184,7 @@ export function AppShell({
       presence.set(placement.entityRef, current);
     }
     return presence;
-  }, [document, nodes, projection]);
+  }, [canvasSubtreeProjection.placementStates, document]);
   const focusedPlacement = useMemo(
     () =>
       selectedNodeId
@@ -317,15 +336,26 @@ export function AppShell({
       !placementSourceState?.canSync
     ) return;
     const placementId = focusedPlacement.placementId;
-    const snapshot = captureCanvasNodeSnapshot(currentSource);
-    onPresentationChange?.((current) =>
-      syncFocusedPresentationSnapshot(
-        current,
-        placementId,
-        selectedNodeId,
-        snapshot
-      )
+    const subtreeMeta = readCanvasSubtreePlacementMeta(focusedPlacement);
+    const controlPlacementId = subtreeMeta?.rootPlacementId ?? placementId;
+    const control = canvasSubtreeProjection.syncControls.find(
+      (candidate) => candidate.placementId === controlPlacementId
     );
+    onPresentationChange?.((current) => {
+      if (control) {
+        const readAuthority = readCurrentCanvasAuthority ?? (() => canvasSubtreeSources);
+        return withPresentationDocument(
+          current,
+          reconcileCanvasProjectionSyncFromLatestAuthority(
+            current.document,
+            controlPlacementId,
+            control.authorityDigest,
+            readAuthority
+          )
+        );
+      }
+      return current;
+    });
   };
 
   const openNodeActions = () => {
@@ -378,7 +408,7 @@ export function AppShell({
 
       <div className="tn-workbench" data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-focus-expanded={focusExpanded ? "true" : "false"} data-immersive={immersive ? "true" : "false"}>
         <OutlinePanel id="tn-outline-panel" mode={outlineMode} onModeChange={setOutlineMode} nodes={nodes} projection={projection} selectedNodeId={selectedNodeId} reveal={outlineReveal} visible={outlineOpen} onSelectNode={selectNodeFromOutline} onOpenNodeActions={openNodeActions} canDragToCanvas={Boolean(onPresentationChange)} canvasPresence={canvasProjectionPresence} onCollapse={() => layout.collapse("left")} inboxModel={inboxModel} />
-        <CanvasWorkbench document={document} nodes={nodes} projection={projection} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNodeFromCanvas} onDropNode={onPresentationChange ? dropNode : undefined} previewDocument={focusDocument?.nodeId && typeof focusDocument.body === "string" ? { nodeId: focusDocument.nodeId, body: focusDocument.body } : null} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
+        <CanvasWorkbench document={document} nodes={nodes} projection={projection} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNodeFromCanvas} onDropNode={onPresentationChange ? dropNode : undefined} previewDocument={focusDocument?.nodeId && typeof focusDocument.body === "string" ? { nodeId: focusDocument.nodeId, body: focusDocument.body } : null} attentionNodeIds={attentionNodeIds} readCurrentCanvasAuthority={readCurrentCanvasAuthority} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
         <InspectorPanel
           id="tn-focus-panel"
           node={selectedNode}

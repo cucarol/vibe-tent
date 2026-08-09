@@ -10,8 +10,38 @@ import {
 import { graphPresentationState } from "./workspace-projection-view.js";
 import { collaborationProjectionState, type WorkbenchNodeView } from "../shell/workbench-types.js";
 import type { CanvasDocument } from "../types/identity.js";
+import { captureCanvasNodeSnapshot } from "./canvas-node-snapshot.js";
+import type { CanvasSubtreeNodeSource } from "./canvas-subtree-projection.js";
 
 export type ProvenanceView = { state: "ready" | "error"; label: string };
+
+export function canvasSubtreeSourcesFromGraph(
+  graph: GraphProjection
+): CanvasSubtreeNodeSource[] {
+  const parents = parentByNodeId(graph);
+  return graph.nodes.map((node) => ({
+    nodeId: node.nodeId,
+    parentNodeId: parents.get(node.nodeId) ?? null,
+    snapshot: {
+      ...captureCanvasNodeSnapshot(node),
+      etag: node.etag,
+    },
+  }));
+}
+
+export function readFreshCanvasSubtreeAuthority(
+  resource: ProjectionResource<GraphProjection>,
+  workspaceId: string,
+  online: boolean
+): CanvasSubtreeNodeSource[] | null {
+  if (
+    !online ||
+    resource.state !== "ready" ||
+    resource.workspaceId !== workspaceId ||
+    resource.value.workspaceId !== workspaceId
+  ) return null;
+  return canvasSubtreeSourcesFromGraph(resource.value);
+}
 
 export function depthByNodeId(graph: GraphProjection): ReadonlyMap<string, number> {
   const parent = new Map<string, string>();

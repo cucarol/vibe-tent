@@ -37,6 +37,7 @@ import {
 } from "./model/desktop-recovery.js";
 
 import {
+  readFreshCanvasSubtreeAuthority,
   workbenchNodesFromResources,
   type ProvenanceView,
 } from "./model/workbench-nodes.js";
@@ -92,6 +93,8 @@ function MountedWorkspace(props: {
   );
   const requestGeneration = useRef(0);
   const graphRef = useRef<ProjectionResource<GraphProjection>>({ state: "idle" });
+  const connectionRef = useRef(connection);
+  connectionRef.current = connection;
   const collaborationRef = useRef<ProjectionResource<NodeCollaborationsResult>>({ state: "idle" });
   const [graphResource, setGraphResource] = useState(graphRef.current);
   const [collaborationResource, setCollaborationResource] = useState(collaborationRef.current);
@@ -341,6 +344,13 @@ function MountedWorkspace(props: {
     nodeId: documentNode?.nodeId ?? null,
     online: connection === "online",
   });
+  const readCurrentCanvasAuthority = useCallback(() => {
+    return readFreshCanvasSubtreeAuthority(
+      graphRef.current,
+      workspace.workspaceId,
+      connectionRef.current === "online"
+    );
+  }, [workspace.workspaceId]);
 
   return (
     <AppShell
@@ -360,6 +370,7 @@ function MountedWorkspace(props: {
       collaboration={collaborationSurface.view}
       collaborationActions={collaborationSurface.actions}
       inboxModel={inboxModel}
+      readCurrentCanvasAuthority={readCurrentCanvasAuthority}
       onRetryPersistence={retrySave.current ?? undefined}
       onPresentationChange={(update) => {
         const next = update({

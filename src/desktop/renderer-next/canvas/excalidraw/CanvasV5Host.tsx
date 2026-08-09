@@ -126,6 +126,7 @@ export type CanvasV5HostProps = {
   immersive?: boolean;
   onImmersiveChange?: (immersive: boolean) => void;
   previewDocument?: { nodeId: string; body: string } | null;
+  attentionNodeIds?: ReadonlySet<string>;
   subtreeProjection?: CanvasSubtreeProjection;
   onSubtreeDirection?: (placementId: string, direction: SubtreeDirection) => void;
   onProjectionSync?: (placementId: string) => CanvasDocument | null;
@@ -305,6 +306,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     immersive = false,
     onImmersiveChange,
     previewDocument = null,
+    attentionNodeIds = new Set<string>(),
     subtreeProjection = EMPTY_SUBTREE_PROJECTION,
     onSubtreeDirection = () => {},
     onProjectionSync = () => null,
@@ -1704,6 +1706,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
                   data={toNodeData(model)}
                   selected={selected}
                   projectionSyncState={projectionStateByPlacement.get(custom.placementId) ?? "unknown"}
+                  needsAttention={attentionNodeIds.has(custom.nodeId)}
                 />
               );
             }}

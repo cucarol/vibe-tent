@@ -197,6 +197,24 @@ button, input, select, textarea { font: inherit; }
   background: color-mix(in srgb, var(--tn-color-selected) 42%, transparent);
 }
 
+.tn-canvas-drop-preview {
+  position: absolute;
+  z-index: 31;
+  box-sizing: border-box;
+  border: 1px dashed var(--tn-color-border-strong);
+  border-radius: var(--tn-radius-md);
+  background:
+    linear-gradient(var(--tn-color-border), var(--tn-color-border)) 11px 31px / calc(100% - 22px) 1px no-repeat,
+    color-mix(in srgb, var(--tn-color-elevated-bg) 84%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--tn-motion-duration-fast) var(--tn-motion-ease-out);
+}
+
+.tn-canvas-host[data-drop-state="target"] .tn-canvas-drop-preview {
+  opacity: .76;
+}
+
 .tn-canvas-drop-feedback {
   position: absolute;
   top: 50%;

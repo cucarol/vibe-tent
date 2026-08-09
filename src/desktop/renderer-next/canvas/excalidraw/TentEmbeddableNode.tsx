@@ -21,6 +21,7 @@ export type TentEmbeddableNodeProps = {
   placementId: string;
   selected: boolean;
   projectionSyncState?: "current" | "pending-sync" | "unknown";
+  needsAttention?: boolean;
 };
 
 const STATE_LABELS: Record<TentEmbeddableNodeState, string> = {
@@ -37,7 +38,7 @@ const STATE_LABELS: Record<TentEmbeddableNodeState, string> = {
  * real Focus pane, while animation communicates collaboration state.
  */
 export function TentEmbeddableNode(props: TentEmbeddableNodeProps) {
-  const { data, placementId, selected, projectionSyncState = "current" } = props;
+  const { data, placementId, selected, projectionSyncState = "current", needsAttention = false } = props;
   const stateLabel = data.stateLabel ?? STATE_LABELS[data.state];
   const detailLabel =
     data.type === "目标" ? "范围" : data.type === "输出" ? "产物" : "上下文";
@@ -49,6 +50,7 @@ export function TentEmbeddableNode(props: TentEmbeddableNodeProps) {
       data-selected={selected ? "true" : "false"}
       data-task-state={data.rawTaskState ?? undefined}
       data-projection-sync={projectionSyncState}
+      data-needs-attention={needsAttention ? "true" : "false"}
       data-tent-placement-id={placementId}
       data-testid={`tent-embeddable-node-${data.nodeId}`}
       aria-label={`${data.title}，${stateLabel}`}
