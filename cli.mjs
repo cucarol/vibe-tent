@@ -3255,6 +3255,11 @@ function isNotFoundError(err) {
 }
 
 // src/service/data-dir.ts
+var MAX_SERVICE_ENDPOINT_CANDIDATES = 32;
+var MAX_SERVICE_ENDPOINT_FILE_BYTES = 16 * 1024;
+var SERVICE_ENDPOINT_PREFIX = "service.endpoint.";
+var SERVICE_ENDPOINT_SUFFIX = ".json";
+var INSTANCE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 function defaultServiceDataDir(env = process.env) {
   if (env.TENT_SERVICE_DATA_DIR) return path6.resolve(env.TENT_SERVICE_DATA_DIR);
   if (process.platform === "win32") {
@@ -3266,9 +3271,6 @@ function defaultServiceDataDir(env = process.env) {
   }
   const xdg = env.XDG_STATE_HOME || path6.join(os3.homedir(), ".local", "state");
   return path6.join(xdg, "tent");
-}
-function serviceEndpointPath(dataDir) {
-  return path6.join(dataDir, "service.json");
 }
 function serviceBaseUrl(host, port) {
   const authorityHost = isIP(host) === 6 ? `[${host}]` : host;
@@ -3283,24 +3285,236 @@ function isLoopbackServiceHost(host) {
   }
   return false;
 }
-async function readServiceEndpoint(dataDir) {
-  const file = serviceEndpointPath(dataDir);
-  try {
-    const raw = await fs7.readFile(file, "utf8");
-    let data;
+async function readServiceEndpointCandidates(dataDir) {
+  const names = await newestEndpointGenerationNames(dataDir);
+  const records = [];
+  for (const name of names) {
+    const file = path6.join(dataDir, name);
     try {
-      data = JSON.parse(raw);
-    } catch {
-      return null;
+      const raw = await readBoundedEndpointFile(file);
+      if (raw === null) continue;
+      const value = parseServiceEndpointRecord(JSON.parse(raw));
+      if (!value || endpointGenerationName(value.instanceId, value.startedAt) !== name) {
+        continue;
+      }
+      records.push(value);
+    } catch (error) {
+      if (isNotFoundError(error) || error instanceof SyntaxError) continue;
+      continue;
     }
-    if (!Number.isInteger(data.pid) || data.pid <= 0 || !Number.isInteger(data.port) || data.port <= 0 || data.port > 65535 || typeof data.host !== "string" || !isLoopbackServiceHost(data.host) || typeof data.startedAt !== "string" || typeof data.version !== "string" || data.token !== void 0 && typeof data.token !== "string" || data.instanceId !== void 0 && (typeof data.instanceId !== "string" || !data.instanceId)) {
-      return null;
-    }
-    return data;
-  } catch (err) {
-    if (isNotFoundError(err)) return null;
-    throw err;
   }
+  return records;
+}
+function parseServiceEndpointRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const data = value;
+  if (typeof data.instanceId !== "string" || !INSTANCE_ID_PATTERN.test(data.instanceId) || !Number.isInteger(data.pid) || (data.pid ?? 0) <= 0 || !Number.isInteger(data.port) || (data.port ?? 0) <= 0 || (data.port ?? 0) > 65535 || typeof data.host !== "string" || !isLoopbackServiceHost(data.host) || typeof data.startedAt !== "string" || !isCanonicalServiceStartedAt(data.startedAt) || typeof data.version !== "string" || data.token !== void 0 && typeof data.token !== "string") {
+    return null;
+  }
+  return data;
+}
+function endpointGenerationName(instanceId, startedAt) {
+  if (!INSTANCE_ID_PATTERN.test(instanceId)) {
+    throw new Error("Invalid Local Tent Service instance id");
+  }
+  if (!isCanonicalServiceStartedAt(startedAt)) {
+    throw new Error("Invalid Local Tent Service startedAt");
+  }
+  const startedMs = Date.parse(startedAt);
+  return `${SERVICE_ENDPOINT_PREFIX}${Math.trunc(startedMs).toString().padStart(16, "0")}.${instanceId}${SERVICE_ENDPOINT_SUFFIX}`;
+}
+function isCanonicalServiceStartedAt(value) {
+  const startedMs = Date.parse(value);
+  return Number.isFinite(startedMs) && startedMs >= 0 && new Date(startedMs).toISOString() === value;
+}
+async function newestEndpointGenerationNames(dataDir) {
+  const newest = [];
+  let directory;
+  try {
+    directory = await fs7.opendir(dataDir);
+  } catch (error) {
+    if (isNotFoundError(error)) return [];
+    throw error;
+  }
+  for await (const entry2 of directory) {
+    if (!entry2.isFile() || !isEndpointGenerationName(entry2.name)) continue;
+    const insertAt = newest.findIndex((name) => entry2.name > name);
+    if (insertAt < 0) newest.push(entry2.name);
+    else newest.splice(insertAt, 0, entry2.name);
+    if (newest.length > MAX_SERVICE_ENDPOINT_CANDIDATES) newest.pop();
+  }
+  return newest;
+}
+function isEndpointGenerationName(name) {
+  if (!name.startsWith(SERVICE_ENDPOINT_PREFIX) || !name.endsWith(SERVICE_ENDPOINT_SUFFIX)) {
+    return false;
+  }
+  const middle = name.slice(SERVICE_ENDPOINT_PREFIX.length, -SERVICE_ENDPOINT_SUFFIX.length);
+  const separator = middle.indexOf(".");
+  if (separator <= 0) return false;
+  const timestamp2 = middle.slice(0, separator);
+  const instanceId = middle.slice(separator + 1);
+  return /^\d{16}$/.test(timestamp2) && INSTANCE_ID_PATTERN.test(instanceId);
+}
+async function readBoundedEndpointFile(file) {
+  let handle;
+  try {
+    handle = await fs7.open(file, "r");
+    const buffer = Buffer.allocUnsafe(MAX_SERVICE_ENDPOINT_FILE_BYTES + 1);
+    let used = 0;
+    while (used < buffer.length) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        used,
+        buffer.length - used,
+        null
+      );
+      if (bytesRead === 0) break;
+      used += bytesRead;
+    }
+    if (used === 0 || used > MAX_SERVICE_ENDPOINT_FILE_BYTES) return null;
+    return buffer.subarray(0, used).toString("utf8");
+  } finally {
+    await handle?.close().catch(() => void 0);
+  }
+}
+
+// src/service/protocol.ts
+var TENT_SERVICE_PROTOCOL_VERSION = 5;
+var ServiceProtocolIncompatibleError = class extends Error {
+  constructor(kind, options = {}) {
+    const servicePackageVersion = typeof options.servicePackageVersion === "string" && options.servicePackageVersion.trim() ? options.servicePackageVersion.trim() : "unknown";
+    const serviceProtocolVersion = options.serviceProtocolVersion;
+    const message = options.message ?? (kind === "missing" ? `Local Tent Service protocol is missing (legacy endpoint). This CLI requires protocol ${TENT_SERVICE_PROTOCOL_VERSION} (package version stays 0.1.0; protocol is a separate contract). Service package version=${servicePackageVersion}. Restart or upgrade tent-service, then retry. Refusing to attach or spawn a competing service against an incompatible process.` : `Local Tent Service protocol mismatch: service=${String(serviceProtocolVersion)}, client=${TENT_SERVICE_PROTOCOL_VERSION} (package 0.1.0; protocol is separate). Service package version=${servicePackageVersion}. Restart or upgrade tent-service to a compatible build before any business RPC. Refusing attach success and refusing to spawn a competing service.`);
+    super(message);
+    this.code = "TENT_SERVICE_PROTOCOL_INCOMPATIBLE";
+    this.name = "ServiceProtocolIncompatibleError";
+    this.kind = kind;
+    this.clientProtocolVersion = TENT_SERVICE_PROTOCOL_VERSION;
+    this.serviceProtocolVersion = serviceProtocolVersion;
+    this.servicePackageVersion = servicePackageVersion;
+  }
+};
+function isServiceProtocolIncompatibleError(err) {
+  return err instanceof ServiceProtocolIncompatibleError || typeof err === "object" && err !== null && err.code === "TENT_SERVICE_PROTOCOL_INCOMPATIBLE";
+}
+function assertServiceProtocolCompatible(health) {
+  const servicePackageVersion = health && typeof health.version === "string" && health.version.trim() ? health.version.trim() : "unknown";
+  const raw = health?.protocolVersion;
+  if (raw === void 0 || raw === null) {
+    throw new ServiceProtocolIncompatibleError("missing", {
+      servicePackageVersion,
+      serviceProtocolVersion: raw
+    });
+  }
+  if (raw !== TENT_SERVICE_PROTOCOL_VERSION) {
+    throw new ServiceProtocolIncompatibleError("mismatch", {
+      servicePackageVersion,
+      serviceProtocolVersion: raw
+    });
+  }
+}
+
+// src/service/endpoint-discovery.ts
+var SERVICE_ENDPOINT_PROBE_TIMEOUT_MS = 1e3;
+var OWNED_SERVICE_CHILD_STOP_TIMEOUT_MS = 2e3;
+var MultipleHealthyServiceEndpointsError = class extends Error {
+  constructor(endpoints) {
+    super(
+      `Multiple authenticated Local Tent Services are healthy: ${endpoints.map((endpoint) => `${endpoint.instanceId}@${serviceBaseUrl(endpoint.host, endpoint.port)}`).join(", ")}`
+    );
+    this.endpoints = endpoints;
+    this.code = "MULTIPLE_HEALTHY_SERVICE_ENDPOINTS";
+    this.name = "MultipleHealthyServiceEndpointsError";
+  }
+};
+async function discoverAuthenticatedServiceEndpoint(dataDir, probe) {
+  const candidates = await readServiceEndpointCandidates(dataDir);
+  const results = await Promise.all(
+    candidates.map(async (endpoint) => {
+      if (!endpoint.token?.trim()) return { kind: "unhealthy", endpoint };
+      let probed;
+      try {
+        probed = await runBoundedProbe(endpoint, probe);
+      } catch {
+        return { kind: "unhealthy", endpoint };
+      }
+      if (!probed || probed.health.status !== "ok") {
+        return { kind: "unhealthy", endpoint };
+      }
+      try {
+        assertServiceProtocolCompatible(probed.health);
+      } catch (error) {
+        if (isServiceProtocolIncompatibleError(error)) {
+          return { kind: "incompatible", endpoint, error };
+        }
+        throw error;
+      }
+      if (probed.health.instanceId !== endpoint.instanceId || probed.health.pid !== endpoint.pid || probed.health.startedAt !== endpoint.startedAt) {
+        return { kind: "unhealthy", endpoint };
+      }
+      return { kind: "compatible", endpoint, value: probed.value };
+    })
+  );
+  const incompatible = results.find((result) => result.kind === "incompatible");
+  if (incompatible?.kind === "incompatible") throw incompatible.error;
+  const compatible = results.filter(
+    (result) => result.kind === "compatible"
+  );
+  if (compatible.length > 1) {
+    throw new MultipleHealthyServiceEndpointsError(
+      compatible.map((result) => result.endpoint)
+    );
+  }
+  return compatible[0]?.value ?? null;
+}
+async function runBoundedProbe(endpoint, probe) {
+  const controller = new AbortController();
+  let timer;
+  try {
+    return await Promise.race([
+      probe(endpoint, controller.signal),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error("Local Tent Service authenticated probe timed out"));
+        }, SERVICE_ENDPOINT_PROBE_TIMEOUT_MS);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+async function stopOwnedServiceChild(child) {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  try {
+    child.kill();
+  } catch {
+  }
+  if (await waitForChildExit(child, OWNED_SERVICE_CHILD_STOP_TIMEOUT_MS)) return;
+  try {
+    child.kill("SIGKILL");
+  } catch {
+  }
+  if (await waitForChildExit(child, OWNED_SERVICE_CHILD_STOP_TIMEOUT_MS)) return;
+  throw new Error(`Owned Local Tent Service child ${child.pid} did not exit`);
+}
+async function waitForChildExit(child, timeoutMs) {
+  if (child.exitCode !== null || child.signalCode !== null) return true;
+  return new Promise((resolve10) => {
+    let timer;
+    const finish = (exited) => {
+      if (timer) clearTimeout(timer);
+      child.off("exit", onExit);
+      child.off("error", onError);
+      resolve10(exited);
+    };
+    const onExit = () => finish(true);
+    const onError = () => finish(child.exitCode !== null || child.signalCode !== null);
+    child.once("exit", onExit);
+    child.once("error", onError);
+    timer = setTimeout(() => finish(false), timeoutMs);
+  });
 }
 
 // src/service/auth.ts
@@ -3343,8 +3557,8 @@ var ServiceClient = class {
     if (!res.ok) throw new Error(`health HTTP ${res.status}`);
     return res.json();
   }
-  async call(method, params) {
-    const rpc = await this.rpcRaw(method, params);
+  async call(method, params, request) {
+    const rpc = await this.rpcRaw(method, params, request);
     if (rpc.error) {
       const err = new Error(rpc.error.message);
       err.code = rpc.error.code;
@@ -3360,7 +3574,7 @@ var ServiceClient = class {
     }
     return { ok: true, result: rpc.result };
   }
-  async rpcRaw(method, params) {
+  async rpcRaw(method, params, request) {
     const id = this.idSeq++;
     const res = await this.fetchImpl(`${this.baseUrl}/rpc`, {
       method: "POST",
@@ -3373,7 +3587,8 @@ var ServiceClient = class {
         } : {},
         ...this.currentExternalKey ? { [CALLER_EXTERNAL_KEY_HEADER]: this.currentExternalKey } : {}
       },
-      body: JSON.stringify({ jsonrpc: "2.0", id, method, params })
+      body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+      signal: request?.signal
     });
     if (res.status === 401) {
       return { error: { code: -32001, message: "Unauthorized: invalid or missing service token" } };
@@ -4139,46 +4354,6 @@ function createServiceClient(options) {
   return new ServiceClient(options);
 }
 
-// src/service/protocol.ts
-var TENT_SERVICE_PROTOCOL_VERSION = 5;
-var ServiceProtocolIncompatibleError = class extends Error {
-  constructor(kind, options = {}) {
-    const servicePackageVersion = typeof options.servicePackageVersion === "string" && options.servicePackageVersion.trim() ? options.servicePackageVersion.trim() : "unknown";
-    const serviceProtocolVersion = options.serviceProtocolVersion;
-    const message = options.message ?? (kind === "missing" ? `Local Tent Service protocol is missing (legacy endpoint). This CLI requires protocol ${TENT_SERVICE_PROTOCOL_VERSION} (package version stays 0.1.0; protocol is a separate contract). Service package version=${servicePackageVersion}. Restart or upgrade tent-service, then retry. Refusing to attach or spawn a competing service against an incompatible process.` : `Local Tent Service protocol mismatch: service=${String(serviceProtocolVersion)}, client=${TENT_SERVICE_PROTOCOL_VERSION} (package 0.1.0; protocol is separate). Service package version=${servicePackageVersion}. Restart or upgrade tent-service to a compatible build before any business RPC. Refusing attach success and refusing to spawn a competing service.`);
-    super(message);
-    this.code = "TENT_SERVICE_PROTOCOL_INCOMPATIBLE";
-    this.name = "ServiceProtocolIncompatibleError";
-    this.kind = kind;
-    this.clientProtocolVersion = TENT_SERVICE_PROTOCOL_VERSION;
-    this.serviceProtocolVersion = serviceProtocolVersion;
-    this.servicePackageVersion = servicePackageVersion;
-  }
-};
-function isServiceProtocolIncompatibleError(err) {
-  return err instanceof ServiceProtocolIncompatibleError || typeof err === "object" && err !== null && err.code === "TENT_SERVICE_PROTOCOL_INCOMPATIBLE";
-}
-function isServiceProtocolCompatible(health) {
-  if (!health || typeof health !== "object") return false;
-  return health.protocolVersion === TENT_SERVICE_PROTOCOL_VERSION;
-}
-function assertServiceProtocolCompatible(health) {
-  const servicePackageVersion = health && typeof health.version === "string" && health.version.trim() ? health.version.trim() : "unknown";
-  const raw = health?.protocolVersion;
-  if (raw === void 0 || raw === null) {
-    throw new ServiceProtocolIncompatibleError("missing", {
-      servicePackageVersion,
-      serviceProtocolVersion: raw
-    });
-  }
-  if (raw !== TENT_SERVICE_PROTOCOL_VERSION) {
-    throw new ServiceProtocolIncompatibleError("mismatch", {
-      servicePackageVersion,
-      serviceProtocolVersion: raw
-    });
-  }
-}
-
 // src/cli/service-attach.ts
 async function attachOrBootstrapService(options = {}) {
   const dataDir = options.dataDir ?? defaultServiceDataDir(options.env);
@@ -4200,7 +4375,6 @@ async function attachOrBootstrapService(options = {}) {
   if (existing) {
     return { ...existing, started: false, child: null, dataDir };
   }
-  await rejectIncompatibleHealthyService(dataDir, fetchImpl);
   if (options.attachOnly) {
     throw new Error(
       `No healthy Local Tent Service endpoint in ${dataDir}. Start tent-service, or omit --attach-only to let CLI bootstrap one.`
@@ -4226,32 +4400,41 @@ async function attachOrBootstrapService(options = {}) {
     spawnLog += String(err);
   });
   child.unref();
-  const deadline = Date.now() + readyTimeoutMs;
-  while (Date.now() < deadline) {
-    const attached = await tryAttachService(
-      dataDir,
-      fetchImpl,
-      currentSessionId,
-      currentSessionToken,
-      currentExternalKey
+  let attachSucceeded = false;
+  try {
+    const deadline = Date.now() + readyTimeoutMs;
+    while (Date.now() < deadline) {
+      const attached = await tryAttachService(
+        dataDir,
+        fetchImpl,
+        currentSessionId,
+        currentSessionToken,
+        currentExternalKey
+      );
+      if (attached) {
+        attachSucceeded = true;
+        return { ...attached, started: true, child, dataDir };
+      }
+      await sleep(pollMs);
+    }
+    if (child.exitCode !== null && child.exitCode !== 0) {
+      throw new Error(
+        `Local Tent Service exited before an endpoint became healthy (code=${child.exitCode}). entry=${entryAbs}
+${spawnLog}`
+      );
+    }
+    throw new Error(
+      `Timed out waiting for Local Tent Service after spawn (entry=${entryAbs}, dataDir=${dataDir})
+${spawnLog}`
     );
-    if (attached) {
+  } finally {
+    try {
+      if (!attachSucceeded) await stopOwnedServiceChild(child);
+    } finally {
       child.stdout?.destroy();
       child.stderr?.destroy();
-      return { ...attached, started: true, child, dataDir };
     }
-    await sleep(pollMs);
   }
-  if (child.exitCode !== null && child.exitCode !== 0) {
-    throw new Error(
-      `Local Tent Service exited before an endpoint became healthy (code=${child.exitCode}). entry=${entryAbs}
-${spawnLog}`
-    );
-  }
-  throw new Error(
-    `Timed out waiting for Local Tent Service after spawn (entry=${entryAbs}, dataDir=${dataDir})
-${spawnLog}`
-  );
 }
 function cliServiceChildEnv(overrides, dataDir) {
   return {
@@ -4263,46 +4446,23 @@ function cliServiceChildEnv(overrides, dataDir) {
   };
 }
 async function tryAttachService(dataDir, fetchImpl = fetch, currentSessionId, currentSessionToken, currentExternalKey) {
-  const endpoint = await readServiceEndpoint(dataDir);
-  if (!endpoint) return null;
-  if (!endpoint.token || typeof endpoint.token !== "string" || !endpoint.token.trim()) {
-    return null;
-  }
-  const url = serviceBaseUrl(endpoint.host, endpoint.port);
-  const client = createServiceClient({
-    baseUrl: url,
-    token: endpoint.token,
-    fetchImpl,
-    currentSessionId,
-    currentSessionToken,
-    currentExternalKey
+  return discoverAuthenticatedServiceEndpoint(dataDir, async (endpoint, signal) => {
+    const url = serviceBaseUrl(endpoint.host, endpoint.port);
+    const client = createServiceClient({
+      baseUrl: url,
+      token: endpoint.token,
+      fetchImpl,
+      currentSessionId,
+      currentSessionToken,
+      currentExternalKey
+    });
+    const health = await client.call(
+      "service.health",
+      {},
+      { signal }
+    );
+    return { health, value: { url, endpoint, client } };
   });
-  try {
-    const health = await client.health();
-    if (health.status !== "ok") return null;
-    assertServiceProtocolCompatible(health);
-    return { url, endpoint, client };
-  } catch (err) {
-    if (isServiceProtocolIncompatibleError(err)) throw err;
-    return null;
-  }
-}
-async function rejectIncompatibleHealthyService(dataDir, fetchImpl) {
-  const endpoint = await readServiceEndpoint(dataDir);
-  if (!endpoint?.token || typeof endpoint.token !== "string" || !endpoint.token.trim()) {
-    return;
-  }
-  const url = serviceBaseUrl(endpoint.host, endpoint.port);
-  const client = createServiceClient({ baseUrl: url, token: endpoint.token, fetchImpl });
-  try {
-    const health = await client.health();
-    if (health.status !== "ok") return;
-    if (!isServiceProtocolCompatible(health)) {
-      assertServiceProtocolCompatible(health);
-    }
-  } catch (err) {
-    if (isServiceProtocolIncompatibleError(err)) throw err;
-  }
 }
 async function resolveDefaultServiceEntry(packageRootHint) {
   const roots = [];
@@ -6971,7 +7131,7 @@ Service-backed workspace operations:
   tent role-checkpoint set|show|clear Optional cooperative Role continuation note
   tent role-checkpoint --help         set/clear \u2192 Service; show read-only; --actor
   propose <nodeId> <file|->           Submit a Node proposal (in-workspace \u2192 proposal.submit RPC)
-  CLI exit does not stop Local Service. Token stays in machine-local service.json.
+  CLI exit does not stop Local Service. Token stays in machine-local endpoint records.
 
 Initialization and machine config:
   new <workspace-path>               Create <workspace>/.tent without touching project files.

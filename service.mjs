@@ -9898,7 +9898,7 @@ var attention = {
 };
 function resolveAllAttention(events, context) {
   let index2 = -1;
-  let open3;
+  let open4;
   let group;
   let text3;
   let openingSequence;
@@ -9908,16 +9908,16 @@ function resolveAllAttention(events, context) {
   let offset;
   while (++index2 < events.length) {
     if (events[index2][0] === "enter" && events[index2][1].type === "attentionSequence" && events[index2][1]._close) {
-      open3 = index2;
-      while (open3--) {
-        if (events[open3][0] === "exit" && events[open3][1].type === "attentionSequence" && events[open3][1]._open && // If the markers are the same:
-        context.sliceSerialize(events[open3][1]).charCodeAt(0) === context.sliceSerialize(events[index2][1]).charCodeAt(0)) {
-          if ((events[open3][1]._close || events[index2][1]._open) && (events[index2][1].end.offset - events[index2][1].start.offset) % 3 && !((events[open3][1].end.offset - events[open3][1].start.offset + events[index2][1].end.offset - events[index2][1].start.offset) % 3)) {
+      open4 = index2;
+      while (open4--) {
+        if (events[open4][0] === "exit" && events[open4][1].type === "attentionSequence" && events[open4][1]._open && // If the markers are the same:
+        context.sliceSerialize(events[open4][1]).charCodeAt(0) === context.sliceSerialize(events[index2][1]).charCodeAt(0)) {
+          if ((events[open4][1]._close || events[index2][1]._open) && (events[index2][1].end.offset - events[index2][1].start.offset) % 3 && !((events[open4][1].end.offset - events[open4][1].start.offset + events[index2][1].end.offset - events[index2][1].start.offset) % 3)) {
             continue;
           }
-          use = events[open3][1].end.offset - events[open3][1].start.offset > 1 && events[index2][1].end.offset - events[index2][1].start.offset > 1 ? 2 : 1;
+          use = events[open4][1].end.offset - events[open4][1].start.offset > 1 && events[index2][1].end.offset - events[index2][1].start.offset > 1 ? 2 : 1;
           const start = {
-            ...events[open3][1].end
+            ...events[open4][1].end
           };
           const end = {
             ...events[index2][1].start
@@ -9928,7 +9928,7 @@ function resolveAllAttention(events, context) {
             type: use > 1 ? "strongSequence" : "emphasisSequence",
             start,
             end: {
-              ...events[open3][1].end
+              ...events[open4][1].end
             }
           };
           closingSequence = {
@@ -9941,7 +9941,7 @@ function resolveAllAttention(events, context) {
           text3 = {
             type: use > 1 ? "strongText" : "emphasisText",
             start: {
-              ...events[open3][1].end
+              ...events[open4][1].end
             },
             end: {
               ...events[index2][1].start
@@ -9956,18 +9956,18 @@ function resolveAllAttention(events, context) {
               ...closingSequence.end
             }
           };
-          events[open3][1].end = {
+          events[open4][1].end = {
             ...openingSequence.start
           };
           events[index2][1].start = {
             ...closingSequence.end
           };
           nextEvents = [];
-          if (events[open3][1].end.offset - events[open3][1].start.offset) {
-            nextEvents = push(nextEvents, [["enter", events[open3][1], context], ["exit", events[open3][1], context]]);
+          if (events[open4][1].end.offset - events[open4][1].start.offset) {
+            nextEvents = push(nextEvents, [["enter", events[open4][1], context], ["exit", events[open4][1], context]]);
           }
           nextEvents = push(nextEvents, [["enter", group, context], ["enter", openingSequence, context], ["exit", openingSequence, context], ["enter", text3, context]]);
-          nextEvents = push(nextEvents, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open3 + 1, index2), context));
+          nextEvents = push(nextEvents, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open4 + 1, index2), context));
           nextEvents = push(nextEvents, [["exit", text3, context], ["enter", closingSequence, context], ["exit", closingSequence, context], ["exit", group, context]]);
           if (events[index2][1].end.offset - events[index2][1].start.offset) {
             offset = 2;
@@ -9975,8 +9975,8 @@ function resolveAllAttention(events, context) {
           } else {
             offset = 0;
           }
-          splice(events, open3 - 1, index2 - open3 + 3, nextEvents);
-          index2 = open3 + nextEvents.length - offset - 2;
+          splice(events, open4 - 1, index2 - open4 + 3, nextEvents);
+          index2 = open4 + nextEvents.length - offset - 2;
           break;
         }
       }
@@ -10008,10 +10008,10 @@ function tokenizeAttention(effects, ok2) {
     }
     const token = effects.exit("attentionSequence");
     const after = classifyCharacter(code);
-    const open3 = !after || after === 2 && before || attentionMarkers2.includes(code);
+    const open4 = !after || after === 2 && before || attentionMarkers2.includes(code);
     const close = !before || before === 2 && after || attentionMarkers2.includes(previous2);
-    token._open = Boolean(marker === 42 ? open3 : open3 && (before || !close));
-    token._close = Boolean(marker === 42 ? close : close && (after || !open3));
+    token._open = Boolean(marker === 42 ? open4 : open4 && (before || !close));
+    token._close = Boolean(marker === 42 ? close : close && (after || !open4));
     return ok2(code);
   }
 }
@@ -10035,9 +10035,9 @@ function tokenizeAutolink(effects, ok2, nok) {
     effects.consume(code);
     effects.exit("autolinkMarker");
     effects.enter("autolinkProtocol");
-    return open3;
+    return open4;
   }
-  function open3(code) {
+  function open4(code) {
     if (asciiAlpha(code)) {
       effects.consume(code);
       return schemeOrEmailAtext;
@@ -10237,9 +10237,9 @@ function tokenizeCharacterReference(effects, ok2, nok) {
     effects.enter("characterReferenceMarker");
     effects.consume(code);
     effects.exit("characterReferenceMarker");
-    return open3;
+    return open4;
   }
-  function open3(code) {
+  function open4(code) {
     if (code === 35) {
       effects.enter("characterReferenceMarkerNumeric");
       effects.consume(code);
@@ -11608,9 +11608,9 @@ function tokenizeHtmlFlow(effects, ok2, nok) {
     effects.enter("htmlFlow");
     effects.enter("htmlFlowData");
     effects.consume(code);
-    return open3;
+    return open4;
   }
-  function open3(code) {
+  function open4(code) {
     if (code === 33) {
       effects.consume(code);
       return declarationOpen;
@@ -11958,9 +11958,9 @@ function tokenizeHtmlText(effects, ok2, nok) {
     effects.enter("htmlText");
     effects.enter("htmlTextData");
     effects.consume(code);
-    return open3;
+    return open4;
   }
-  function open3(code) {
+  function open4(code) {
     if (code === 33) {
       effects.consume(code);
       return declarationOpen;
@@ -12286,12 +12286,12 @@ function resolveToLabelEnd(events, context) {
   let index2 = events.length;
   let offset = 0;
   let token;
-  let open3;
+  let open4;
   let close;
   let media;
   while (index2--) {
     token = events[index2][1];
-    if (open3) {
+    if (open4) {
       if (token.type === "link" || token.type === "labelLink" && token._inactive) {
         break;
       }
@@ -12300,7 +12300,7 @@ function resolveToLabelEnd(events, context) {
       }
     } else if (close) {
       if (events[index2][0] === "enter" && (token.type === "labelImage" || token.type === "labelLink") && !token._balanced) {
-        open3 = index2;
+        open4 = index2;
         if (token.type !== "labelLink") {
           offset = 2;
           break;
@@ -12311,9 +12311,9 @@ function resolveToLabelEnd(events, context) {
     }
   }
   const group = {
-    type: events[open3][1].type === "labelLink" ? "link" : "image",
+    type: events[open4][1].type === "labelLink" ? "link" : "image",
     start: {
-      ...events[open3][1].start
+      ...events[open4][1].start
     },
     end: {
       ...events[events.length - 1][1].end
@@ -12322,7 +12322,7 @@ function resolveToLabelEnd(events, context) {
   const label = {
     type: "label",
     start: {
-      ...events[open3][1].start
+      ...events[open4][1].start
     },
     end: {
       ...events[close][1].end
@@ -12331,20 +12331,20 @@ function resolveToLabelEnd(events, context) {
   const text3 = {
     type: "labelText",
     start: {
-      ...events[open3 + offset + 2][1].end
+      ...events[open4 + offset + 2][1].end
     },
     end: {
       ...events[close - 2][1].start
     }
   };
   media = [["enter", group, context], ["enter", label, context]];
-  media = push(media, events.slice(open3 + 1, open3 + offset + 3));
+  media = push(media, events.slice(open4 + 1, open4 + offset + 3));
   media = push(media, [["enter", text3, context]]);
-  media = push(media, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open3 + offset + 4, close - 3), context));
+  media = push(media, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open4 + offset + 4, close - 3), context));
   media = push(media, [["exit", text3, context], events[close - 2], events[close - 1], ["exit", label, context]]);
   media = push(media, events.slice(close + 1));
   media = push(media, [["exit", group, context]]);
-  splice(events, open3, events.length, media);
+  splice(events, open4, events.length, media);
   return events;
 }
 function tokenizeLabelEnd(effects, ok2, nok) {
@@ -12489,9 +12489,9 @@ function tokenizeLabelStartImage(effects, ok2, nok) {
     effects.enter("labelImageMarker");
     effects.consume(code);
     effects.exit("labelImageMarker");
-    return open3;
+    return open4;
   }
-  function open3(code) {
+  function open4(code) {
     if (code === 91) {
       effects.enter("labelMarker");
       effects.consume(code);
@@ -13549,7 +13549,7 @@ function compiler(options) {
     transforms: [],
     canContainEols: ["emphasis", "fragment", "heading", "paragraph", "strong"],
     enter: {
-      autolink: opener(link2),
+      autolink: opener(link3),
       autolinkProtocol: onenterdata,
       autolinkEmail: onenterdata,
       atxHeading: opener(heading),
@@ -13577,7 +13577,7 @@ function compiler(options) {
       htmlTextData: onenterdata,
       image: opener(image),
       label: buffer,
-      link: opener(link2),
+      link: opener(link3),
       listItem: opener(listItem),
       listItemValue: onenterlistitemvalue,
       listOrdered: opener(list2, onenterlistordered),
@@ -13795,8 +13795,8 @@ function compiler(options) {
     return length;
   }
   function opener(create, and) {
-    return open3;
-    function open3(token) {
+    return open4;
+    function open4(token) {
       enter.call(this, create(token), token);
       if (and) and.call(this, token);
     }
@@ -13828,18 +13828,18 @@ function compiler(options) {
   }
   function exit2(token, onExitError) {
     const node2 = this.stack.pop();
-    const open3 = this.tokenStack.pop();
-    if (!open3) {
+    const open4 = this.tokenStack.pop();
+    if (!open4) {
       throw new Error("Cannot close `" + token.type + "` (" + stringifyPosition({
         start: token.start,
         end: token.end
       }) + "): it\u2019s not open");
-    } else if (open3[0].type !== token.type) {
+    } else if (open4[0].type !== token.type) {
       if (onExitError) {
-        onExitError.call(this, token, open3[0]);
+        onExitError.call(this, token, open4[0]);
       } else {
-        const handler = open3[1] || defaultOnError;
-        handler.call(this, token, open3[0]);
+        const handler = open4[1] || defaultOnError;
+        handler.call(this, token, open4[0]);
       }
     }
     node2.position.end = point2(token.end);
@@ -14129,7 +14129,7 @@ function compiler(options) {
       alt: null
     };
   }
-  function link2() {
+  function link3() {
     return {
       type: "link",
       title: null,
@@ -17132,13 +17132,13 @@ async function evaluateAcceptedSettle(input) {
     };
   }
   const related = input.deliveries.filter((d) => d.taskId === input.taskId);
-  const open3 = related.filter((d) => d.status === "ready" || d.status === "draft");
-  if (open3.length > 0) {
+  const open4 = related.filter((d) => d.status === "ready" || d.status === "draft");
+  if (open4.length > 0) {
     return {
       ok: false,
       code: "UNINTEGRATED",
-      reason: `Accepted Task still has ${open3.length} open delivery(ies); refuse reclaim.`,
-      details: { deliveryIds: open3.map((d) => d.id) }
+      reason: `Accepted Task still has ${open4.length} open delivery(ies); refuse reclaim.`,
+      details: { deliveryIds: open4.map((d) => d.id) }
     };
   }
   const accepted = related.filter((d) => d.status === "accepted");
@@ -18593,14 +18593,14 @@ function extractOutLinksDetailed(body) {
   const definitions = collectDefinitions(tree);
   walk(tree, (node2) => {
     if (node2.type === "link") {
-      const link2 = outLinkFromMdast(node2);
-      if (link2) pushLink(out, seen, link2);
+      const link3 = outLinkFromMdast(node2);
+      if (link3) pushLink(out, seen, link3);
       return "skip";
     }
     if (node2.type === "linkReference") {
       const definition2 = definitions.get(normalizeIdentifier2(node2.identifier));
-      const link2 = definition2 ? outLinkFromReference(node2, definition2) : null;
-      if (link2) pushLink(out, seen, link2);
+      const link3 = definition2 ? outLinkFromReference(node2, definition2) : null;
+      if (link3) pushLink(out, seen, link3);
       return "skip";
     }
     if (node2.type === "image") return "skip";
@@ -18616,24 +18616,24 @@ function extractOutLinksDetailed(body) {
 function indexFromNodes(nodes) {
   return buildNodeIndex(nodes);
 }
-function resolveOutLink(index2, link2, fromNotePath) {
-  if (link2.kind === "artifact") {
-    return { raw: link2.raw, kind: "artifact", label: link2.label };
+function resolveOutLink(index2, link3, fromNotePath) {
+  if (link3.kind === "artifact") {
+    return { raw: link3.raw, kind: "artifact", label: link3.label };
   }
-  const meta = link2;
-  const resolutionRaw = meta.targetPath ?? (link2.kind === "wiki" ? stripWikiSuffix(link2.raw).target : splitHref(link2.raw).pathPart);
+  const meta = link3;
+  const resolutionRaw = meta.targetPath ?? (link3.kind === "wiki" ? stripWikiSuffix(link3.raw).target : splitHref(link3.raw).pathPart);
   const target = normalizeTarget(resolutionRaw, fromNotePath);
   if (!isConceptCandidate(target) && !isConceptCandidate(resolutionRaw)) {
-    return { raw: link2.raw, kind: "unresolved", label: link2.label };
+    return { raw: link3.raw, kind: "unresolved", label: link3.label };
   }
   const concept = resolveNode(index2, target) ?? resolveNode(index2, resolutionRaw);
-  if (!concept) return { raw: link2.raw, kind: "unresolved", label: link2.label };
+  if (!concept) return { raw: link3.raw, kind: "unresolved", label: link3.label };
   return {
-    raw: link2.raw,
-    kind: link2.kind,
+    raw: link3.raw,
+    kind: link3.kind,
     targetNodeId: concept.id,
     targetPath: concept.path,
-    label: link2.label ?? concept.name
+    label: link3.label ?? concept.name
   };
 }
 function buildBacklinkIndex(concepts) {
@@ -18655,17 +18655,17 @@ function buildBacklinkIndex(concepts) {
   }
   const reverse = /* @__PURE__ */ new Map();
   for (const c of list2) {
-    for (const link2 of extractOutLinksDetailed(c.body)) {
-      if (link2.kind === "artifact") continue;
-      const resolved = resolveOutLink(index2, link2, c.notePath);
+    for (const link3 of extractOutLinksDetailed(c.body)) {
+      if (link3.kind === "artifact") continue;
+      const resolved = resolveOutLink(index2, link3, c.notePath);
       if (!resolved.targetNodeId) continue;
       const arr = reverse.get(resolved.targetNodeId) ?? [];
       arr.push({
         fromNodeId: c.id,
         fromPath: c.path,
         fromName: c.name,
-        raw: link2.raw,
-        kind: link2.kind === "wiki" ? "wiki" : "md"
+        raw: link3.raw,
+        kind: link3.kind === "wiki" ? "wiki" : "md"
       });
       reverse.set(resolved.targetNodeId, arr);
     }
@@ -18771,11 +18771,11 @@ function findWikiEnd(text3, from) {
   }
   return -1;
 }
-function pushLink(out, seen, link2) {
-  const key2 = `${link2.kind}:${link2.raw}|${link2.label ?? ""}`;
+function pushLink(out, seen, link3) {
+  const key2 = `${link3.kind}:${link3.raw}|${link3.label ?? ""}`;
   if (seen.has(key2)) return;
   seen.add(key2);
-  out.push(link2);
+  out.push(link3);
 }
 function stripWikiSuffix(raw) {
   const t = raw.trim();
@@ -19971,7 +19971,7 @@ var TaskInputStore = class {
       throw err;
     }
     const items = [...snapshot.values()];
-    const open3 = items.filter(
+    const open4 = items.filter(
       (i) => i.status === "pending" || i.status === "processing" || i.status === "failed" || i.status === "uncertain" || i.status === "delivered"
     );
     const terminal = items.filter((i) => i.status === "consumed" || i.status === "cancelled").sort(
@@ -19979,7 +19979,7 @@ var TaskInputStore = class {
         a.consumedAt || a.cancelledAt || a.updatedAt || ""
       )
     ).slice(0, 100);
-    await this.writeState(this.file, { items: [...open3, ...terminal] });
+    await this.writeState(this.file, { items: [...open4, ...terminal] });
   }
   async quarantineCorrupt() {
     const backupPath = await backupCorruptMachineFile(this.file);
@@ -24631,6 +24631,7 @@ async function dispatchMethod(ctx, method, params, callContext = {}) {
 function health(ctx) {
   return {
     status: "ok",
+    instanceId: ctx.instanceId,
     pid: ctx.getPid(),
     version: ctx.version,
     /** Wire protocol contract — independent of package version (0.1.0). */
@@ -30199,22 +30200,22 @@ function buildGraphProjection(workspaceId, tent) {
   const nodeIndex = indexFromNodes(tent.byId.values());
   const emitLinks = (node2) => {
     const notePath = nodeNotePath(node2.path);
-    for (const link2 of extractOutLinksDetailed(node2.body)) {
-      if (link2.kind === "artifact") continue;
-      const resolved = resolveOutLink(nodeIndex, link2, notePath);
+    for (const link3 of extractOutLinksDetailed(node2.body)) {
+      if (link3.kind === "artifact") continue;
+      const resolved = resolveOutLink(nodeIndex, link3, notePath);
       const edge = {
         fromNodeId: node2.id,
-        raw: link2.raw
+        raw: link3.raw
       };
-      if (link2.label) edge.label = link2.label;
+      if (link3.label) edge.label = link3.label;
       const targetNode = (resolved.targetPath ? tent.byPath.get(resolved.targetPath) : void 0) ?? (resolved.targetNodeId ? tent.byId.get(resolved.targetNodeId) : void 0);
       if (resolved.kind === "unresolved" || !targetNode) {
-        const target = link2.targetPath ?? resolved.targetPath ?? (resolved.targetNodeId && resolved.targetNodeId !== link2.raw ? resolved.targetNodeId : void 0);
-        edge.unresolved = target ? { raw: link2.raw, target } : { raw: link2.raw };
+        const target = link3.targetPath ?? resolved.targetPath ?? (resolved.targetNodeId && resolved.targetNodeId !== link3.raw ? resolved.targetNodeId : void 0);
+        edge.unresolved = target ? { raw: link3.raw, target } : { raw: link3.raw };
       } else {
         edge.toNodeId = targetNode.id;
       }
-      if (link2.kind === "wiki") wikiEdges.push(edge);
+      if (link3.kind === "wiki") wikiEdges.push(edge);
       else markdownEdges.push(edge);
     }
     for (const child of node2.children) emitLinks(child);
@@ -34118,6 +34119,11 @@ import * as fs16 from "node:fs/promises";
 import { isIP } from "node:net";
 import * as os5 from "node:os";
 import * as path15 from "node:path";
+var MAX_SERVICE_ENDPOINT_CANDIDATES = 32;
+var MAX_SERVICE_ENDPOINT_FILE_BYTES = 16 * 1024;
+var SERVICE_ENDPOINT_PREFIX = "service.endpoint.";
+var SERVICE_ENDPOINT_SUFFIX = ".json";
+var INSTANCE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 function defaultServiceDataDir(env = process.env) {
   if (env.TENT_SERVICE_DATA_DIR) return path15.resolve(env.TENT_SERVICE_DATA_DIR);
   if (process.platform === "win32") {
@@ -34130,8 +34136,9 @@ function defaultServiceDataDir(env = process.env) {
   const xdg = env.XDG_STATE_HOME || path15.join(os5.homedir(), ".local", "state");
   return path15.join(xdg, "tent");
 }
-function serviceEndpointPath(dataDir) {
-  return path15.join(dataDir, "service.json");
+function serviceEndpointPath(dataDir, instanceId, startedAt) {
+  const generation = endpointGenerationName(instanceId, startedAt);
+  return path15.join(dataDir, generation);
 }
 function serviceBaseUrl(host, port) {
   const authorityHost = isIP(host) === 6 ? `[${host}]` : host;
@@ -34147,36 +34154,155 @@ function isLoopbackServiceHost(host) {
   return false;
 }
 async function writeServiceEndpoint(dataDir, record) {
-  const file = serviceEndpointPath(dataDir);
-  await writeJsonAtomic(file, record);
+  const validated = parseServiceEndpointRecord(record);
+  if (!validated) throw new Error("Invalid Local Tent Service endpoint record");
+  const file = serviceEndpointPath(dataDir, validated.instanceId, validated.startedAt);
+  await fs16.mkdir(dataDir, { recursive: true });
+  const body = JSON.stringify(validated, null, 2) + "\n";
+  if (Buffer.byteLength(body, "utf8") > MAX_SERVICE_ENDPOINT_FILE_BYTES) {
+    throw new Error("Local Tent Service endpoint record exceeds the byte limit");
+  }
+  const temp = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
+  await fs16.writeFile(temp, body, { encoding: "utf8", flag: "wx" });
+  try {
+    await fs16.link(temp, file);
+  } finally {
+    try {
+      await fs16.rm(temp, { force: true });
+    } catch {
+    }
+  }
+  void cleanupOverflowServiceEndpointGenerations(dataDir);
   return file;
 }
 async function readServiceEndpoint(dataDir) {
-  const file = serviceEndpointPath(dataDir);
-  try {
-    const raw = await fs16.readFile(file, "utf8");
-    let data;
+  return (await readServiceEndpointCandidates(dataDir))[0] ?? null;
+}
+async function readServiceEndpointCandidates(dataDir) {
+  const names = await newestEndpointGenerationNames(dataDir);
+  const records = [];
+  for (const name of names) {
+    const file = path15.join(dataDir, name);
     try {
-      data = JSON.parse(raw);
-    } catch {
-      return null;
+      const raw = await readBoundedEndpointFile(file);
+      if (raw === null) continue;
+      const value = parseServiceEndpointRecord(JSON.parse(raw));
+      if (!value || endpointGenerationName(value.instanceId, value.startedAt) !== name) {
+        continue;
+      }
+      records.push(value);
+    } catch (error) {
+      if (isNotFoundError(error) || error instanceof SyntaxError) continue;
+      continue;
     }
-    if (!Number.isInteger(data.pid) || data.pid <= 0 || !Number.isInteger(data.port) || data.port <= 0 || data.port > 65535 || typeof data.host !== "string" || !isLoopbackServiceHost(data.host) || typeof data.startedAt !== "string" || typeof data.version !== "string" || data.token !== void 0 && typeof data.token !== "string" || data.instanceId !== void 0 && (typeof data.instanceId !== "string" || !data.instanceId)) {
-      return null;
-    }
-    return data;
-  } catch (err) {
-    if (isNotFoundError(err)) return null;
-    throw err;
+  }
+  return records;
+}
+async function removeServiceEndpoint(dataDir, expected) {
+  try {
+    await fs16.rm(
+      serviceEndpointPath(dataDir, expected.instanceId, expected.startedAt),
+      { force: true }
+    );
+  } catch {
   }
 }
-async function removeServiceEndpoint(dataDir, expectedInstanceId) {
+function parseServiceEndpointRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const data = value;
+  if (typeof data.instanceId !== "string" || !INSTANCE_ID_PATTERN.test(data.instanceId) || !Number.isInteger(data.pid) || (data.pid ?? 0) <= 0 || !Number.isInteger(data.port) || (data.port ?? 0) <= 0 || (data.port ?? 0) > 65535 || typeof data.host !== "string" || !isLoopbackServiceHost(data.host) || typeof data.startedAt !== "string" || !isCanonicalServiceStartedAt(data.startedAt) || typeof data.version !== "string" || data.token !== void 0 && typeof data.token !== "string") {
+    return null;
+  }
+  return data;
+}
+function endpointGenerationName(instanceId, startedAt) {
+  if (!INSTANCE_ID_PATTERN.test(instanceId)) {
+    throw new Error("Invalid Local Tent Service instance id");
+  }
+  if (!isCanonicalServiceStartedAt(startedAt)) {
+    throw new Error("Invalid Local Tent Service startedAt");
+  }
+  const startedMs = Date.parse(startedAt);
+  return `${SERVICE_ENDPOINT_PREFIX}${Math.trunc(startedMs).toString().padStart(16, "0")}.${instanceId}${SERVICE_ENDPOINT_SUFFIX}`;
+}
+function isCanonicalServiceStartedAt(value) {
+  const startedMs = Date.parse(value);
+  return Number.isFinite(startedMs) && startedMs >= 0 && new Date(startedMs).toISOString() === value;
+}
+async function newestEndpointGenerationNames(dataDir) {
+  const newest = [];
+  let directory;
   try {
-    if (expectedInstanceId) {
-      const endpoint = await readServiceEndpoint(dataDir);
-      if (endpoint?.instanceId !== expectedInstanceId) return;
+    directory = await fs16.opendir(dataDir);
+  } catch (error) {
+    if (isNotFoundError(error)) return [];
+    throw error;
+  }
+  for await (const entry of directory) {
+    if (!entry.isFile() || !isEndpointGenerationName(entry.name)) continue;
+    const insertAt = newest.findIndex((name) => entry.name > name);
+    if (insertAt < 0) newest.push(entry.name);
+    else newest.splice(insertAt, 0, entry.name);
+    if (newest.length > MAX_SERVICE_ENDPOINT_CANDIDATES) newest.pop();
+  }
+  return newest;
+}
+function isEndpointGenerationName(name) {
+  if (!name.startsWith(SERVICE_ENDPOINT_PREFIX) || !name.endsWith(SERVICE_ENDPOINT_SUFFIX)) {
+    return false;
+  }
+  const middle = name.slice(SERVICE_ENDPOINT_PREFIX.length, -SERVICE_ENDPOINT_SUFFIX.length);
+  const separator = middle.indexOf(".");
+  if (separator <= 0) return false;
+  const timestamp2 = middle.slice(0, separator);
+  const instanceId = middle.slice(separator + 1);
+  return /^\d{16}$/.test(timestamp2) && INSTANCE_ID_PATTERN.test(instanceId);
+}
+async function readBoundedEndpointFile(file) {
+  let handle;
+  try {
+    handle = await fs16.open(file, "r");
+    const buffer = Buffer.allocUnsafe(MAX_SERVICE_ENDPOINT_FILE_BYTES + 1);
+    let used = 0;
+    while (used < buffer.length) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        used,
+        buffer.length - used,
+        null
+      );
+      if (bytesRead === 0) break;
+      used += bytesRead;
     }
-    await fs16.rm(serviceEndpointPath(dataDir), { force: true });
+    if (used === 0 || used > MAX_SERVICE_ENDPOINT_FILE_BYTES) return null;
+    return buffer.subarray(0, used).toString("utf8");
+  } finally {
+    await handle?.close().catch(() => void 0);
+  }
+}
+async function cleanupOverflowServiceEndpointGenerations(dataDir) {
+  try {
+    const newest = [];
+    const directory = await fs16.opendir(dataDir);
+    for await (const entry of directory) {
+      if (!entry.isFile() || !isEndpointGenerationName(entry.name)) continue;
+      const insertAt = newest.findIndex((name) => entry.name > name);
+      if (insertAt < 0) {
+        if (newest.length >= MAX_SERVICE_ENDPOINT_CANDIDATES) {
+          await fs16.rm(path15.join(dataDir, entry.name), { force: true }).catch(() => void 0);
+        } else {
+          newest.push(entry.name);
+        }
+        continue;
+      }
+      newest.splice(insertAt, 0, entry.name);
+      if (newest.length > MAX_SERVICE_ENDPOINT_CANDIDATES) {
+        const overflow = newest.pop();
+        if (overflow) {
+          await fs16.rm(path15.join(dataDir, overflow), { force: true }).catch(() => void 0);
+        }
+      }
+    }
   } catch {
   }
 }
@@ -37957,6 +38083,7 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
     events,
     version,
     protocolVersion: TENT_SERVICE_PROTOCOL_VERSION,
+    instanceId: serviceLease.instanceId,
     startedAt,
     getPid,
     runtime,
@@ -38011,7 +38138,7 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
     await writeServiceEndpoint(dataDir, endpoint);
     registerStartupCleanup(
       50,
-      () => removeServiceEndpoint(dataDir, serviceLease.instanceId)
+      () => removeServiceEndpoint(dataDir, endpoint)
     );
   }
   events.emit("service.health", "", {
@@ -38050,7 +38177,7 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
       } finally {
         if (options.writeEndpoint !== false) {
           await attempt(
-            () => removeServiceEndpoint(dataDir, serviceLease.instanceId)
+            () => removeServiceEndpoint(dataDir, endpoint)
           );
         }
         await attempt(() => serviceLease.release());
@@ -38099,8 +38226,8 @@ async function main() {
         "  TENT_SERVICE_DATA_DIR  machine-local data area (default: %APPDATA%/Tent)",
         "",
         "Auth:",
-        "  Loopback token is written to <dataDir>/service.json and required on /rpc + /events.",
-        "  GET /health remains open for attach discovery (no mutation).",
+        "  Loopback token is written to an immutable endpoint generation under <dataDir> and required on /rpc + /events.",
+        "  GET /health remains open for unauthenticated liveness diagnostics only; attach identity uses authenticated service.health RPC.",
         ""
       ].join("\n")
     );
@@ -38140,7 +38267,7 @@ async function main() {
     `Local Tent Service listening on ${service.url}
 dataDir: ${service.dataDir}
 pid: ${process.pid}
-token: (written to service.json under dataDir; required on /rpc and /events)
+token: (written to an immutable endpoint generation under dataDir; required on /rpc and /events)
 Attach: POST ${service.url}/rpc  |  events: GET ${service.url}/events  |  health: GET ${service.url}/health
 `
   );

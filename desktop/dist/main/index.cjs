@@ -43,6 +43,11 @@ function isNotFoundError(err) {
 }
 
 // src/service/data-dir.ts
+var MAX_SERVICE_ENDPOINT_CANDIDATES = 32;
+var MAX_SERVICE_ENDPOINT_FILE_BYTES = 16 * 1024;
+var SERVICE_ENDPOINT_PREFIX = "service.endpoint.";
+var SERVICE_ENDPOINT_SUFFIX = ".json";
+var INSTANCE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 function defaultServiceDataDir(env = process.env) {
   if (env.TENT_SERVICE_DATA_DIR) return path.resolve(env.TENT_SERVICE_DATA_DIR);
   if (process.platform === "win32") {
@@ -54,9 +59,6 @@ function defaultServiceDataDir(env = process.env) {
   }
   const xdg = env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
   return path.join(xdg, "tent");
-}
-function serviceEndpointPath(dataDir2) {
-  return path.join(dataDir2, "service.json");
 }
 function serviceBaseUrl(host2, port) {
   const authorityHost = (0, import_node_net.isIP)(host2) === 6 ? `[${host2}]` : host2;
@@ -71,23 +73,97 @@ function isLoopbackServiceHost(host2) {
   }
   return false;
 }
-async function readServiceEndpoint(dataDir2) {
-  const file = serviceEndpointPath(dataDir2);
-  try {
-    const raw = await fs.readFile(file, "utf8");
-    let data;
+async function readServiceEndpointCandidates(dataDir2) {
+  const names = await newestEndpointGenerationNames(dataDir2);
+  const records = [];
+  for (const name of names) {
+    const file = path.join(dataDir2, name);
     try {
-      data = JSON.parse(raw);
-    } catch {
-      return null;
+      const raw = await readBoundedEndpointFile(file);
+      if (raw === null) continue;
+      const value = parseServiceEndpointRecord(JSON.parse(raw));
+      if (!value || endpointGenerationName(value.instanceId, value.startedAt) !== name) {
+        continue;
+      }
+      records.push(value);
+    } catch (error) {
+      if (isNotFoundError(error) || error instanceof SyntaxError) continue;
+      continue;
     }
-    if (!Number.isInteger(data.pid) || data.pid <= 0 || !Number.isInteger(data.port) || data.port <= 0 || data.port > 65535 || typeof data.host !== "string" || !isLoopbackServiceHost(data.host) || typeof data.startedAt !== "string" || typeof data.version !== "string" || data.token !== void 0 && typeof data.token !== "string" || data.instanceId !== void 0 && (typeof data.instanceId !== "string" || !data.instanceId)) {
-      return null;
+  }
+  return records;
+}
+function parseServiceEndpointRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const data = value;
+  if (typeof data.instanceId !== "string" || !INSTANCE_ID_PATTERN.test(data.instanceId) || !Number.isInteger(data.pid) || (data.pid ?? 0) <= 0 || !Number.isInteger(data.port) || (data.port ?? 0) <= 0 || (data.port ?? 0) > 65535 || typeof data.host !== "string" || !isLoopbackServiceHost(data.host) || typeof data.startedAt !== "string" || !isCanonicalServiceStartedAt(data.startedAt) || typeof data.version !== "string" || data.token !== void 0 && typeof data.token !== "string") {
+    return null;
+  }
+  return data;
+}
+function endpointGenerationName(instanceId, startedAt) {
+  if (!INSTANCE_ID_PATTERN.test(instanceId)) {
+    throw new Error("Invalid Local Tent Service instance id");
+  }
+  if (!isCanonicalServiceStartedAt(startedAt)) {
+    throw new Error("Invalid Local Tent Service startedAt");
+  }
+  const startedMs = Date.parse(startedAt);
+  return `${SERVICE_ENDPOINT_PREFIX}${Math.trunc(startedMs).toString().padStart(16, "0")}.${instanceId}${SERVICE_ENDPOINT_SUFFIX}`;
+}
+function isCanonicalServiceStartedAt(value) {
+  const startedMs = Date.parse(value);
+  return Number.isFinite(startedMs) && startedMs >= 0 && new Date(startedMs).toISOString() === value;
+}
+async function newestEndpointGenerationNames(dataDir2) {
+  const newest = [];
+  let directory;
+  try {
+    directory = await fs.opendir(dataDir2);
+  } catch (error) {
+    if (isNotFoundError(error)) return [];
+    throw error;
+  }
+  for await (const entry of directory) {
+    if (!entry.isFile() || !isEndpointGenerationName(entry.name)) continue;
+    const insertAt = newest.findIndex((name) => entry.name > name);
+    if (insertAt < 0) newest.push(entry.name);
+    else newest.splice(insertAt, 0, entry.name);
+    if (newest.length > MAX_SERVICE_ENDPOINT_CANDIDATES) newest.pop();
+  }
+  return newest;
+}
+function isEndpointGenerationName(name) {
+  if (!name.startsWith(SERVICE_ENDPOINT_PREFIX) || !name.endsWith(SERVICE_ENDPOINT_SUFFIX)) {
+    return false;
+  }
+  const middle = name.slice(SERVICE_ENDPOINT_PREFIX.length, -SERVICE_ENDPOINT_SUFFIX.length);
+  const separator = middle.indexOf(".");
+  if (separator <= 0) return false;
+  const timestamp = middle.slice(0, separator);
+  const instanceId = middle.slice(separator + 1);
+  return /^\d{16}$/.test(timestamp) && INSTANCE_ID_PATTERN.test(instanceId);
+}
+async function readBoundedEndpointFile(file) {
+  let handle;
+  try {
+    handle = await fs.open(file, "r");
+    const buffer = Buffer.allocUnsafe(MAX_SERVICE_ENDPOINT_FILE_BYTES + 1);
+    let used = 0;
+    while (used < buffer.length) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        used,
+        buffer.length - used,
+        null
+      );
+      if (bytesRead === 0) break;
+      used += bytesRead;
     }
-    return data;
-  } catch (err) {
-    if (isNotFoundError(err)) return null;
-    throw err;
+    if (used === 0 || used > MAX_SERVICE_ENDPOINT_FILE_BYTES) return null;
+    return buffer.subarray(0, used).toString("utf8");
+  } finally {
+    await handle?.close().catch(() => void 0);
   }
 }
 
@@ -110,10 +186,6 @@ var ServiceProtocolIncompatibleError = class extends Error {
 function isServiceProtocolIncompatibleError(err) {
   return err instanceof ServiceProtocolIncompatibleError || typeof err === "object" && err !== null && err.code === "TENT_SERVICE_PROTOCOL_INCOMPATIBLE";
 }
-function isServiceProtocolCompatible(health) {
-  if (!health || typeof health !== "object") return false;
-  return health.protocolVersion === TENT_SERVICE_PROTOCOL_VERSION;
-}
 function assertServiceProtocolCompatible(health) {
   const servicePackageVersion = health && typeof health.version === "string" && health.version.trim() ? health.version.trim() : "unknown";
   const raw = health?.protocolVersion;
@@ -129,6 +201,108 @@ function assertServiceProtocolCompatible(health) {
       serviceProtocolVersion: raw
     });
   }
+}
+
+// src/service/endpoint-discovery.ts
+var SERVICE_ENDPOINT_PROBE_TIMEOUT_MS = 1e3;
+var OWNED_SERVICE_CHILD_STOP_TIMEOUT_MS = 2e3;
+var MultipleHealthyServiceEndpointsError = class extends Error {
+  constructor(endpoints) {
+    super(
+      `Multiple authenticated Local Tent Services are healthy: ${endpoints.map((endpoint) => `${endpoint.instanceId}@${serviceBaseUrl(endpoint.host, endpoint.port)}`).join(", ")}`
+    );
+    this.endpoints = endpoints;
+    this.code = "MULTIPLE_HEALTHY_SERVICE_ENDPOINTS";
+    this.name = "MultipleHealthyServiceEndpointsError";
+  }
+};
+async function discoverAuthenticatedServiceEndpoint(dataDir2, probe) {
+  const candidates = await readServiceEndpointCandidates(dataDir2);
+  const results = await Promise.all(
+    candidates.map(async (endpoint) => {
+      if (!endpoint.token?.trim()) return { kind: "unhealthy", endpoint };
+      let probed;
+      try {
+        probed = await runBoundedProbe(endpoint, probe);
+      } catch {
+        return { kind: "unhealthy", endpoint };
+      }
+      if (!probed || probed.health.status !== "ok") {
+        return { kind: "unhealthy", endpoint };
+      }
+      try {
+        assertServiceProtocolCompatible(probed.health);
+      } catch (error) {
+        if (isServiceProtocolIncompatibleError(error)) {
+          return { kind: "incompatible", endpoint, error };
+        }
+        throw error;
+      }
+      if (probed.health.instanceId !== endpoint.instanceId || probed.health.pid !== endpoint.pid || probed.health.startedAt !== endpoint.startedAt) {
+        return { kind: "unhealthy", endpoint };
+      }
+      return { kind: "compatible", endpoint, value: probed.value };
+    })
+  );
+  const incompatible = results.find((result) => result.kind === "incompatible");
+  if (incompatible?.kind === "incompatible") throw incompatible.error;
+  const compatible = results.filter(
+    (result) => result.kind === "compatible"
+  );
+  if (compatible.length > 1) {
+    throw new MultipleHealthyServiceEndpointsError(
+      compatible.map((result) => result.endpoint)
+    );
+  }
+  return compatible[0]?.value ?? null;
+}
+async function runBoundedProbe(endpoint, probe) {
+  const controller = new AbortController();
+  let timer;
+  try {
+    return await Promise.race([
+      probe(endpoint, controller.signal),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error("Local Tent Service authenticated probe timed out"));
+        }, SERVICE_ENDPOINT_PROBE_TIMEOUT_MS);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+async function stopOwnedServiceChild(child) {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  try {
+    child.kill();
+  } catch {
+  }
+  if (await waitForChildExit(child, OWNED_SERVICE_CHILD_STOP_TIMEOUT_MS)) return;
+  try {
+    child.kill("SIGKILL");
+  } catch {
+  }
+  if (await waitForChildExit(child, OWNED_SERVICE_CHILD_STOP_TIMEOUT_MS)) return;
+  throw new Error(`Owned Local Tent Service child ${child.pid} did not exit`);
+}
+async function waitForChildExit(child, timeoutMs) {
+  if (child.exitCode !== null || child.signalCode !== null) return true;
+  return new Promise((resolve5) => {
+    let timer;
+    const finish = (exited) => {
+      if (timer) clearTimeout(timer);
+      child.off("exit", onExit);
+      child.off("error", onError);
+      resolve5(exited);
+    };
+    const onExit = () => finish(true);
+    const onError = () => finish(child.exitCode !== null || child.signalCode !== null);
+    child.once("exit", onExit);
+    child.once("error", onError);
+    timer = setTimeout(() => finish(false), timeoutMs);
+  });
 }
 
 // src/service/auth.ts
@@ -153,7 +327,7 @@ var ServiceRpcClient = class {
   get url() {
     return this.baseUrl;
   }
-  async call(method, params) {
+  async call(method, params, request) {
     const id = `${this.idPrefix}-${++this.seq}`;
     const res = await this.fetchImpl(`${this.baseUrl}/rpc`, {
       method: "POST",
@@ -161,7 +335,8 @@ var ServiceRpcClient = class {
         "content-type": "application/json",
         [AUTH_TOKEN_HEADER]: this.token
       },
-      body: JSON.stringify({ jsonrpc: "2.0", id, method, params })
+      body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+      signal: request?.signal
     });
     if (res.status === 401) {
       throw new ServiceRpcError({
@@ -243,7 +418,6 @@ async function attachOrStartService(options = {}) {
   if (existing) {
     return { ...existing, started: false, child: null };
   }
-  await rejectIncompatibleHealthyService(dataDir2, fetchImpl);
   if (options.attachOnly) {
     throw new Error(`No healthy Local Tent Service endpoint in ${dataDir2}`);
   }
@@ -267,26 +441,35 @@ async function attachOrStartService(options = {}) {
     spawnLog += String(err);
   });
   child.unref();
-  const deadline = Date.now() + readyTimeoutMs;
-  while (Date.now() < deadline) {
-    const attached = await tryAttach(dataDir2, fetchImpl);
-    if (attached) {
-      child.stdout?.destroy();
-      child.stderr?.destroy();
-      return { ...attached, started: true, child };
+  let attachSucceeded = false;
+  try {
+    const deadline = Date.now() + readyTimeoutMs;
+    while (Date.now() < deadline) {
+      const attached = await tryAttach(dataDir2, fetchImpl);
+      if (attached) {
+        attachSucceeded = true;
+        return { ...attached, started: true, child };
+      }
+      await sleep(pollMs);
     }
-    await sleep(pollMs);
-  }
-  if (child.exitCode !== null && child.exitCode !== 0) {
+    if (child.exitCode !== null && child.exitCode !== 0) {
+      throw new Error(
+        `Local Tent Service exited before an endpoint became healthy (code=${child.exitCode}). entry=${entryAbs}
+${spawnLog}`
+      );
+    }
     throw new Error(
-      `Local Tent Service exited before an endpoint became healthy (code=${child.exitCode}). entry=${entryAbs}
+      `Timed out waiting for Local Tent Service after spawn (entry=${entryAbs}, dataDir=${dataDir2})
 ${spawnLog}`
     );
+  } finally {
+    try {
+      if (!attachSucceeded) await stopOwnedServiceChild(child);
+    } finally {
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    }
   }
-  throw new Error(
-    `Timed out waiting for Local Tent Service after spawn (entry=${entryAbs}, dataDir=${dataDir2})
-${spawnLog}`
-  );
 }
 function serviceChildEnv(overrides, dataDir2) {
   return {
@@ -299,50 +482,23 @@ function serviceChildEnv(overrides, dataDir2) {
   };
 }
 async function tryAttach(dataDir2, fetchImpl = fetch) {
-  const endpoint = await readServiceEndpoint(dataDir2);
-  if (!endpoint) return null;
-  if (!endpoint.token || typeof endpoint.token !== "string" || !endpoint.token.trim()) {
-    return null;
-  }
-  const url = serviceBaseUrl(endpoint.host, endpoint.port);
-  const client = new ServiceRpcClient({ baseUrl: url, token: endpoint.token, fetchImpl });
-  const health = await authenticateServiceEndpoint(endpoint, client);
-  return health ? { url, endpoint, client } : null;
-}
-async function authenticateServiceEndpoint(endpoint, client) {
-  try {
-    if (client.url !== serviceBaseUrl(endpoint.host, endpoint.port)) return null;
-    const health = await client.call("service.health", {});
-    if (health.status !== "ok") return null;
-    assertServiceProtocolCompatible(health);
-    if (health.pid !== endpoint.pid || health.startedAt !== endpoint.startedAt) {
-      return null;
-    }
-    return health;
-  } catch (err) {
-    if (isServiceProtocolIncompatibleError(err)) throw err;
-    return null;
-  }
+  return discoverAuthenticatedServiceEndpoint(dataDir2, async (endpoint, signal) => {
+    const url = serviceBaseUrl(endpoint.host, endpoint.port);
+    const client = new ServiceRpcClient({
+      baseUrl: url,
+      token: endpoint.token,
+      fetchImpl
+    });
+    const health = await client.call(
+      "service.health",
+      {},
+      { signal }
+    );
+    return { health, value: { url, endpoint, client } };
+  });
 }
 function sameServiceEndpointIdentity(left, right) {
   return left.instanceId === right.instanceId && left.pid === right.pid && left.host === right.host && left.port === right.port && left.startedAt === right.startedAt && left.version === right.version && left.token === right.token;
-}
-async function rejectIncompatibleHealthyService(dataDir2, fetchImpl) {
-  const endpoint = await readServiceEndpoint(dataDir2);
-  if (!endpoint?.token || typeof endpoint.token !== "string" || !endpoint.token.trim()) {
-    return;
-  }
-  const url = serviceBaseUrl(endpoint.host, endpoint.port);
-  const client = new ServiceRpcClient({ baseUrl: url, token: endpoint.token, fetchImpl });
-  try {
-    const health = await client.health();
-    if (health.status !== "ok") return;
-    if (!isServiceProtocolCompatible(health)) {
-      assertServiceProtocolCompatible(health);
-    }
-  } catch (err) {
-    if (isServiceProtocolIncompatibleError(err)) throw err;
-  }
 }
 async function resolveDefaultServiceEntry(cwd = process.cwd()) {
   const candidates = [
@@ -452,12 +608,11 @@ var DesktopServiceHost = class {
     if (cached) {
       try {
         const dataDir2 = options.dataDir ?? defaultServiceDataDir(process.env);
-        const endpoint = await readServiceEndpoint(dataDir2);
-        if (!endpoint || !sameServiceEndpointIdentity(cached.endpoint, endpoint)) {
+        const discovered = await tryAttach(dataDir2);
+        if (!discovered || !sameServiceEndpointIdentity(cached.endpoint, discovered.endpoint)) {
           throw new Error("Local Tent Service endpoint identity changed");
         }
-        const health = await authenticateServiceEndpoint(endpoint, cached.client);
-        if (!health || this.attach !== cached) {
+        if (cached.client.token !== discovered.client.token || this.attach !== cached) {
           throw new Error("Local Tent Service authenticated attach is no longer current");
         }
         this.ensureEventSubscription();
