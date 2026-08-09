@@ -326,9 +326,12 @@ export interface HandlerContext {
   version: string;
   /**
    * CLI↔Service wire protocol version (independent of package version).
-   * Advertised on service.health / GET /health for attach handshake.
+   * Authenticated service.health is the attach identity proof; GET /health only
+   * exposes unauthenticated liveness diagnostics.
    */
   protocolVersion: number;
+  /** Exact machine-local Service generation identity. */
+  instanceId: string;
   startedAt: string;
   getPid: () => number;
   /** Service-internal runtime (never exposed as client methods). */
@@ -686,6 +689,7 @@ export async function dispatchMethod(
 function health(ctx: HandlerContext) {
   return {
     status: "ok" as const,
+    instanceId: ctx.instanceId,
     pid: ctx.getPid(),
     version: ctx.version,
     /** Wire protocol contract — independent of package version (0.1.0). */

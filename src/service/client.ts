@@ -25,7 +25,7 @@ import {
 
 export interface ServiceClientOptions {
   baseUrl: string;
-  /** Loopback token from machine-local service.json (required for RPC/SSE). */
+  /** Loopback token from an authenticated machine-local endpoint record. */
   token: string;
   /** Host execution capability; sent as transport metadata, never RPC params. */
   currentSessionId?: string;
@@ -80,8 +80,12 @@ export class ServiceClient {
     return res.json();
   }
 
-  async call<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
-    const rpc = await this.rpcRaw(method, params);
+  async call<T = unknown>(
+    method: string,
+    params?: Record<string, unknown>,
+    request?: { signal?: AbortSignal }
+  ): Promise<T> {
+    const rpc = await this.rpcRaw(method, params, request);
     if (rpc.error) {
       const err = new Error(rpc.error.message) as Error & {
         code: number;
@@ -107,7 +111,8 @@ export class ServiceClient {
 
   async rpcRaw(
     method: string,
-    params?: Record<string, unknown>
+    params?: Record<string, unknown>,
+    request?: { signal?: AbortSignal }
   ): Promise<{ result?: unknown; error?: RpcErrorBody }> {
     const id = this.idSeq++;
     const res = await this.fetchImpl(`${this.baseUrl}/rpc`, {
@@ -126,6 +131,7 @@ export class ServiceClient {
           : {}),
       },
       body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+      signal: request?.signal,
     });
     if (res.status === 401) {
       return { error: { code: -32001, message: "Unauthorized: invalid or missing service token" } };

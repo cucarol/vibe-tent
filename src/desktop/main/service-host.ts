@@ -2,17 +2,14 @@
 
 import type { ChildProcess } from "node:child_process";
 import {
-  authenticateServiceEndpoint,
   attachOrStartService,
   sameServiceEndpointIdentity,
+  tryAttach,
   type AttachOptions,
   type AttachResult,
 } from "../client/service-attach.js";
 import type { ServiceRpcClient } from "../client/rpc-client.js";
-import {
-  defaultServiceDataDir,
-  readServiceEndpoint,
-} from "../../service/data-dir.js";
+import { defaultServiceDataDir } from "../../service/data-dir.js";
 import { isServiceProtocolIncompatibleError } from "../../service/protocol.js";
 import type { EventEnvelope } from "../../service/types.js";
 import {
@@ -111,12 +108,17 @@ export class DesktopServiceHost {
     if (cached) {
       try {
         const dataDir = options.dataDir ?? defaultServiceDataDir(process.env);
-        const endpoint = await readServiceEndpoint(dataDir);
-        if (!endpoint || !sameServiceEndpointIdentity(cached.endpoint, endpoint)) {
+        const discovered = await tryAttach(dataDir);
+        if (
+          !discovered ||
+          !sameServiceEndpointIdentity(cached.endpoint, discovered.endpoint)
+        ) {
           throw new Error("Local Tent Service endpoint identity changed");
         }
-        const health = await authenticateServiceEndpoint(endpoint, cached.client);
-        if (!health || this.attach !== cached) {
+        if (
+          cached.client.token !== discovered.client.token ||
+          this.attach !== cached
+        ) {
           throw new Error("Local Tent Service authenticated attach is no longer current");
         }
         this.ensureEventSubscription();

@@ -1,5 +1,5 @@
 // Typed JSON-RPC client for Local Tent Service (loopback HTTP).
-// B5: endpoint token required on /rpc and /events; /health stays open.
+// B5: endpoint token required on /rpc and /events; /health is liveness-only.
 
 import type { EventEnvelope } from "../../service/types.js";
 import { AUTH_TOKEN_HEADER } from "../../service/auth.js";
@@ -22,7 +22,7 @@ export class ServiceRpcError extends Error {
 
 export type RpcClientOptions = {
   baseUrl: string;
-  /** Loopback token from machine-local service.json (required for RPC/SSE). */
+  /** Loopback token from an authenticated machine-local endpoint record. */
   token: string;
   fetchImpl?: typeof fetch;
   /** Optional client id prefix for JSON-RPC id generation. */
@@ -47,7 +47,11 @@ export class ServiceRpcClient {
     return this.baseUrl;
   }
 
-  async call<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
+  async call<T = unknown>(
+    method: string,
+    params?: Record<string, unknown>,
+    request?: { signal?: AbortSignal }
+  ): Promise<T> {
     const id = `${this.idPrefix}-${++this.seq}`;
     const res = await this.fetchImpl(`${this.baseUrl}/rpc`, {
       method: "POST",
@@ -56,6 +60,7 @@ export class ServiceRpcClient {
         [AUTH_TOKEN_HEADER]: this.token,
       },
       body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+      signal: request?.signal,
     });
     if (res.status === 401) {
       throw new ServiceRpcError({
@@ -130,6 +135,7 @@ export class ServiceRpcClient {
 
   async health(): Promise<{
     status: string;
+    instanceId: string;
     pid: number;
     version: string;
     /** Wire protocol; independent of package version. */
@@ -138,11 +144,12 @@ export class ServiceRpcClient {
     workspaceCount: number;
     foregroundWorkspaceId: string | null;
   }> {
-    // Intentionally no token — /health is open for discovery probes.
+    // Intentionally no token — /health is liveness diagnostics only.
     const res = await this.fetchImpl(`${this.baseUrl}/health`);
     if (!res.ok) throw new Error(`Health check failed: HTTP ${res.status}`);
     return (await res.json()) as {
       status: string;
+      instanceId: string;
       pid: number;
       version: string;
       protocolVersion?: number;

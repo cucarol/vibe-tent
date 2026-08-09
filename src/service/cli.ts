@@ -23,8 +23,8 @@ async function main(): Promise<void> {
         "  TENT_SERVICE_DATA_DIR  machine-local data area (default: %APPDATA%/Tent)",
         "",
         "Auth:",
-        "  Loopback token is written to <dataDir>/service.json and required on /rpc + /events.",
-        "  GET /health remains open for attach discovery (no mutation).",
+        "  Loopback token is written to an immutable endpoint generation under <dataDir> and required on /rpc + /events.",
+        "  GET /health remains open for unauthenticated liveness diagnostics only; attach identity uses authenticated service.health RPC.",
         "",
       ].join("\n")
     );
@@ -67,7 +67,7 @@ async function main(): Promise<void> {
     `Local Tent Service listening on ${service.url}\n` +
       `dataDir: ${service.dataDir}\n` +
       `pid: ${process.pid}\n` +
-      `token: (written to service.json under dataDir; required on /rpc and /events)\n` +
+      `token: (written to an immutable endpoint generation under dataDir; required on /rpc and /events)\n` +
       `Attach: POST ${service.url}/rpc  |  events: GET ${service.url}/events  |  health: GET ${service.url}/health\n`
   );
 

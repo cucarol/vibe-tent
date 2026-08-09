@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { spawn, type SpawnOptions } from "node:child_process";
 import { get as httpGet } from "node:http";
 import * as fs from "node:fs/promises";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import {
   nodeContextCard,
@@ -25,7 +27,61 @@ import { DesktopShellModel } from "../src/desktop/workbench/shell-model.js";
 import { WorkspaceController } from "../src/markdown/workspace-controller.js";
 import { loadDesktopPrefs, rememberWorkspace, saveDesktopPrefs } from "../src/desktop/prefs.js";
 import { CLIENT_METHODS } from "../src/service/types.js";
-import { readServiceEndpoint } from "../src/service/data-dir.js";
+import { readServiceEndpoint, serviceEndpointPath } from "../src/service/data-dir.js";
+import { serviceLeasePath } from "../src/service/service-lease.js";
+
+const repoRoot = path.resolve(".");
+const sourceServiceEntry = path.join(repoRoot, "src", "service", "cli.ts");
+const sourceServiceModuleUrl = pathToFileURL(
+  path.join(repoRoot, "src", "service", "service.ts")
+).href;
+const spawnSourceService = ((
+  _command: string,
+  args: readonly string[] = [],
+  options: SpawnOptions = {}
+) => {
+  const dataDirFlag = args.indexOf("--data-dir");
+  assert.ok(dataDirFlag >= 0 && args[dataDirFlag + 1]);
+  return spawn(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      sourceServiceEntry,
+      "start",
+      "--data-dir",
+      args[dataDirFlag + 1]!,
+    ],
+    { ...options, cwd: repoRoot }
+  );
+}) as typeof spawn;
+
+function spawnDelayedSourceService(dataDir: string, options: SpawnOptions) {
+  const script = `
+    setTimeout(async () => {
+      const { startLocalTentService } = await import(${JSON.stringify(sourceServiceModuleUrl)});
+      await startLocalTentService({ dataDir: ${JSON.stringify(dataDir)}, writeEndpoint: true });
+    }, 250);
+    setInterval(() => {}, 1000);
+  `;
+  return spawn(process.execPath, ["--import", "tsx", "--eval", script], {
+    ...options,
+    cwd: repoRoot,
+  });
+}
+
+async function waitForProcessExit(pid: number, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.fail(`process ${pid} did not exit within ${timeoutMs}ms`);
+}
 
 async function makeWorkspace(): Promise<string> {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-ws-"));
@@ -237,7 +293,11 @@ test("tryAttach rejects endpoint without token even if health is open", async ()
   const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
   try {
     // Corrupt endpoint: strip token while service still healthy
-    const epPath = path.join(dataDir, "service.json");
+    const epPath = serviceEndpointPath(
+      dataDir,
+      svc.endpoint!.instanceId,
+      svc.endpoint!.startedAt
+    );
     const raw = JSON.parse(await fs.readFile(epPath, "utf8")) as Record<string, unknown>;
     delete raw.token;
     await fs.writeFile(epPath, JSON.stringify(raw, null, 2) + "\n", "utf8");
@@ -267,6 +327,7 @@ test("attachOrStartService can bootstrap via spawn of service entry", async () =
     const result = await attachOrStartService({
       dataDir,
       serviceEntry,
+      spawnFn: spawnSourceService,
       readyTimeoutMs: 20_000,
     });
     assert.equal(result.started, true);
@@ -274,6 +335,7 @@ test("attachOrStartService can bootstrap via spawn of service entry", async () =
     assert.ok(result.endpoint.token);
     assert.equal(result.client.token, result.endpoint.token);
     childPid = result.endpoint.pid;
+    assert.doesNotThrow(() => process.kill(childPid!, 0));
     const health = await result.client.health();
     assert.equal(health.status, "ok");
 
@@ -307,8 +369,18 @@ test("desktop concurrent bootstraps attach to the same Local Service", async () 
   const serviceEntry = path.resolve("service.mjs");
   try {
     const [first, second] = await Promise.all([
-      attachOrStartService({ dataDir, serviceEntry, readyTimeoutMs: 20_000 }),
-      attachOrStartService({ dataDir, serviceEntry, readyTimeoutMs: 20_000 }),
+      attachOrStartService({
+        dataDir,
+        serviceEntry,
+        spawnFn: spawnSourceService,
+        readyTimeoutMs: 20_000,
+      }),
+      attachOrStartService({
+        dataDir,
+        serviceEntry,
+        spawnFn: spawnSourceService,
+        readyTimeoutMs: 20_000,
+      }),
     ]);
     assert.equal(first.endpoint.instanceId, second.endpoint.instanceId);
     assert.equal(first.endpoint.pid, second.endpoint.pid);
@@ -326,6 +398,34 @@ test("desktop concurrent bootstraps attach to the same Local Service", async () 
     }
     await fs.rm(dataDir, { recursive: true, force: true }).catch(() => undefined);
   }
+});
+
+test("desktop attach timeout stops its owned child before any endpoint or lease can publish", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-desktop-timeout-pipes-"));
+  const serviceEntry = path.resolve("service.mjs");
+  let spawned: ReturnType<typeof spawn> | undefined;
+  const spawnHung = ((_command: string, _args: readonly string[], options: SpawnOptions) => {
+    spawned = spawnDelayedSourceService(dataDir, options);
+    return spawned;
+  }) as typeof spawn;
+  await assert.rejects(
+    () =>
+      attachOrStartService({
+        dataDir,
+        serviceEntry,
+        spawnFn: spawnHung,
+        readyTimeoutMs: 50,
+        pollMs: 5,
+      }),
+    /Timed out waiting/
+  );
+  assert.ok(spawned?.pid);
+  await waitForProcessExit(spawned!.pid!);
+  assert.equal(spawned?.stdout?.destroyed, true);
+  assert.equal(spawned?.stderr?.destroyed, true);
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  assert.equal(await readServiceEndpoint(dataDir), null);
+  await assert.rejects(() => fs.access(serviceLeasePath(dataDir)), /ENOENT/);
 });
 
 test("packaged service spawn forces Electron into Node mode", () => {

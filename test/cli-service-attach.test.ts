@@ -3,16 +3,21 @@
  * Real service lifecycle — no parallel direct-core mutation for task path.
  */
 import assert from "node:assert/strict";
+import { spawn, type SpawnOptions } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { createServiceClient, type ServiceClient } from "../src/service/client.js";
-import { readServiceEndpoint, writeServiceEndpoint } from "../src/service/data-dir.js";
+import {
+  readServiceEndpoint,
+  serviceEndpointPath,
+  writeServiceEndpoint,
+} from "../src/service/data-dir.js";
 import {
   attachOrBootstrapService,
   tryAttachService,
@@ -21,10 +26,54 @@ import {
 } from "../src/cli/service-attach.js";
 import { runTaskCommand } from "../src/cli/task-rpc.js";
 import { ensureMountedWorkspace } from "../src/cli/workspace-context.js";
-import { tryAttach as tryAttachDesktop } from "../src/desktop/client/service-attach.js";
+import {
+  attachOrStartService,
+  tryAttach as tryAttachDesktop,
+} from "../src/desktop/client/service-attach.js";
+import { DesktopServiceHost } from "../src/desktop/main/service-host.js";
+import { serviceLeasePath } from "../src/service/service-lease.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const serviceEntry = path.join(repoRoot, "service.mjs");
+const sourceServiceEntry = path.join(repoRoot, "src", "service", "cli.ts");
+const sourceServiceModuleUrl = pathToFileURL(
+  path.join(repoRoot, "src", "service", "service.ts")
+).href;
+
+const spawnSourceService = ((
+  _command: string,
+  args: readonly string[] = [],
+  options: SpawnOptions = {}
+) => {
+  const dataDirFlag = args.indexOf("--data-dir");
+  assert.ok(dataDirFlag >= 0 && args[dataDirFlag + 1]);
+  return spawn(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      sourceServiceEntry,
+      "start",
+      "--data-dir",
+      args[dataDirFlag + 1]!,
+    ],
+    { ...options, cwd: repoRoot }
+  );
+}) as typeof spawn;
+
+function spawnDelayedSourceService(dataDir: string, options: SpawnOptions) {
+  const script = `
+    setTimeout(async () => {
+      const { startLocalTentService } = await import(${JSON.stringify(sourceServiceModuleUrl)});
+      await startLocalTentService({ dataDir: ${JSON.stringify(dataDir)}, writeEndpoint: true });
+    }, 250);
+    setInterval(() => {}, 1000);
+  `;
+  return spawn(process.execPath, ["--import", "tsx", "--eval", script], {
+    ...options,
+    cwd: repoRoot,
+  });
+}
 
 async function makeWorkspace(name = "cli-p02"): Promise<string> {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-cli-ws-"));
@@ -87,6 +136,19 @@ async function enterRoleClient(
   };
 }
 
+async function waitForProcessExit(pid: number, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.fail(`process ${pid} did not exit within ${timeoutMs}ms`);
+}
+
 test("tryAttachService: requires endpoint token; health open is not enough", async () => {
   await withService(async (svc, dataDir) => {
     const ok = await tryAttachService(dataDir);
@@ -95,7 +157,11 @@ test("tryAttachService: requires endpoint token; health open is not enough", asy
     assert.equal(ok!.client.token, svc.token);
 
     // Strip token from endpoint — attach must fail even if health is up.
-    const epPath = path.join(dataDir, "service.json");
+    const epPath = serviceEndpointPath(
+      dataDir,
+      svc.endpoint!.instanceId,
+      svc.endpoint!.startedAt
+    );
     const raw = JSON.parse(await fs.readFile(epPath, "utf8")) as Record<string, unknown>;
     delete raw.token;
     await fs.writeFile(epPath, JSON.stringify(raw, null, 2) + "\n", "utf8");
@@ -107,19 +173,131 @@ test("tryAttachService: requires endpoint token; health open is not enough", asy
   });
 });
 
+test("tryAttachService: forged public health cannot authenticate an endpoint", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-cli-public-health-"));
+  const endpoint = {
+    instanceId: "instance-public-health",
+    pid: 4321,
+    host: "127.0.0.1",
+    port: 7788,
+    startedAt: "2026-08-10T00:00:00.000Z",
+    version: "0.1.0",
+    token: "invalid-token",
+  };
+  await writeServiceEndpoint(dataDir, endpoint);
+  let publicHealthCalls = 0;
+  let authenticatedRpcCalls = 0;
+  const fakeFetch: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/health")) {
+      publicHealthCalls += 1;
+      return jsonResponse(200, {
+        status: "ok",
+        protocolVersion: 5,
+        instanceId: endpoint.instanceId,
+        pid: endpoint.pid,
+        startedAt: endpoint.startedAt,
+      });
+    }
+    assert.equal(url.endsWith("/rpc"), true);
+    assert.equal(init?.method, "POST");
+    authenticatedRpcCalls += 1;
+    return new Response("Unauthorized", { status: 401 });
+  };
+
+  assert.equal(await tryAttachService(dataDir, fakeFetch), null);
+  assert.equal(authenticatedRpcCalls, 1);
+  assert.equal(publicHealthCalls, 0);
+});
+
+test("tryAttachService: hanging authenticated candidates are aborted without hiding a healthy generation", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-cli-hanging-probe-"));
+  const healthy = {
+    instanceId: "instance-healthy-probe",
+    pid: 5101,
+    host: "127.0.0.1",
+    port: 25101,
+    startedAt: "2026-08-10T00:00:00.000Z",
+    version: "0.1.0",
+    token: "healthy-token",
+  };
+  const hanging = {
+    ...healthy,
+    instanceId: "instance-hanging-probe",
+    pid: 5102,
+    port: 25102,
+    startedAt: "2026-08-10T00:00:01.000Z",
+    token: "hanging-token",
+  };
+  await writeServiceEndpoint(dataDir, healthy);
+  await writeServiceEndpoint(dataDir, hanging);
+  let aborted = 0;
+  const fakeFetch: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.port === String(hanging.port)) {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => {
+            aborted += 1;
+            reject(new DOMException("aborted", "AbortError"));
+          },
+          { once: true }
+        );
+      });
+    }
+    const request = JSON.parse(String(init?.body)) as { id: unknown };
+    return jsonResponse(200, {
+      jsonrpc: "2.0",
+      id: request.id,
+      result: {
+        status: "ok",
+        protocolVersion: 5,
+        instanceId: healthy.instanceId,
+        pid: healthy.pid,
+        startedAt: healthy.startedAt,
+      },
+    });
+  };
+
+  const startedAt = Date.now();
+  const attached = await tryAttachService(dataDir, fakeFetch);
+  assert.equal(attached?.endpoint.instanceId, healthy.instanceId);
+  assert.equal(aborted, 1);
+  assert.ok(Date.now() - startedAt < 2_500);
+
+  const allHangingDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-cli-all-hanging-"));
+  await writeServiceEndpoint(allHangingDir, hanging);
+  assert.equal(await tryAttachService(allHangingDir, fakeFetch), null);
+  assert.equal(aborted, 2);
+});
+
 test("desktop tryAttach requires authenticated token and exact endpoint process identity", async () => {
   await withService(async (svc, dataDir) => {
     const endpoint = await readServiceEndpoint(dataDir);
     assert.ok(endpoint);
 
-    await writeServiceEndpoint(dataDir, { ...endpoint!, token: "stale-token" });
+    const endpointPath = serviceEndpointPath(
+      dataDir,
+      endpoint!.instanceId,
+      endpoint!.startedAt
+    );
+    await fs.writeFile(
+      endpointPath,
+      JSON.stringify({ ...endpoint!, token: "stale-token" }, null, 2) + "\n",
+      "utf8"
+    );
     assert.equal(await tryAttachDesktop(dataDir), null);
     assert.equal((await fetch(`${svc.url}/health`)).status, 200);
 
-    await writeServiceEndpoint(dataDir, { ...endpoint!, pid: endpoint!.pid + 1 });
+    await fs.writeFile(
+      endpointPath,
+      JSON.stringify({ ...endpoint!, pid: endpoint!.pid + 1 }, null, 2) + "\n",
+      "utf8"
+    );
     assert.equal(await tryAttachDesktop(dataDir), null);
 
-    await writeServiceEndpoint(dataDir, endpoint!);
+    await fs.writeFile(endpointPath, JSON.stringify(endpoint!, null, 2) + "\n", "utf8");
     const attached = await tryAttachDesktop(dataDir);
     assert.ok(attached);
     assert.equal(attached!.client.token, svc.token);
@@ -150,7 +328,7 @@ test("attachOrBootstrapService: reuses healthy endpoint; attachOnly fails when m
   });
 });
 
-test("attachOrBootstrapService: bootstrap starts service.mjs; CLI exit does not kill it", async () => {
+test("attachOrBootstrapService: bootstrap starts current source; CLI exit does not kill it", async () => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-cli-boot-"));
   let childPid: number | undefined;
   try {
@@ -160,6 +338,7 @@ test("attachOrBootstrapService: bootstrap starts service.mjs; CLI exit does not 
     const attached = await attachOrBootstrapService({
       dataDir,
       serviceEntry,
+      spawnFn: spawnSourceService,
       packageRoot: repoRoot,
       readyTimeoutMs: 20_000,
     });
@@ -167,6 +346,7 @@ test("attachOrBootstrapService: bootstrap starts service.mjs; CLI exit does not 
     assert.ok(attached.endpoint.token);
     childPid = attached.child?.pid;
     assert.ok(childPid && childPid > 0);
+    assert.doesNotThrow(() => process.kill(childPid!, 0));
 
     const health1 = (await attached.client.health()) as { status: string };
     assert.equal(health1.status, "ok");
@@ -204,12 +384,14 @@ test("attachOrBootstrapService: concurrent bootstraps converge on one service", 
       attachOrBootstrapService({
         dataDir,
         serviceEntry,
+        spawnFn: spawnSourceService,
         packageRoot: repoRoot,
         readyTimeoutMs: 20_000,
       }),
       attachOrBootstrapService({
         dataDir,
         serviceEntry,
+        spawnFn: spawnSourceService,
         packageRoot: repoRoot,
         readyTimeoutMs: 20_000,
       }),
@@ -230,6 +412,103 @@ test("attachOrBootstrapService: concurrent bootstraps converge on one service", 
       }
     }
   }
+});
+
+test("DesktopServiceHost and seven CLI bootstraps converge on one source Service", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-source-bootstrap-race-"));
+  const staleEndpoint = {
+    instanceId: "instance-locked-stale",
+    pid: 999_999,
+    host: "127.0.0.1",
+    port: 9,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    version: "0.1.0",
+    token: "stale-token",
+  };
+  const staleFile = await writeServiceEndpoint(dataDir, staleEndpoint);
+  const staleHandle = await fs.open(staleFile, "r");
+  const host = new DesktopServiceHost((options) =>
+    attachOrStartService({
+      ...options,
+      dataDir,
+      serviceEntry,
+      spawnFn: spawnSourceService,
+      readyTimeoutMs: 30_000,
+      pollMs: 5,
+    })
+  );
+  let results: Array<{
+    endpoint: { instanceId: string; pid: number; startedAt: string };
+    child: { pid?: number } | null;
+  }> = [];
+  try {
+    results = await Promise.all([
+      host.ensureAttached({ dataDir, serviceEntry }),
+      ...Array.from({ length: 7 }, () =>
+        attachOrBootstrapService({
+          dataDir,
+          serviceEntry,
+          spawnFn: spawnSourceService,
+          packageRoot: repoRoot,
+          readyTimeoutMs: 30_000,
+          pollMs: 5,
+        })
+      ),
+    ]);
+    const identities = new Set(
+      results.map(
+        (result) =>
+          `${result.endpoint.instanceId}:${result.endpoint.pid}:${result.endpoint.startedAt}`
+      )
+    );
+    assert.deepEqual([...identities], [
+      `${results[0].endpoint.instanceId}:${results[0].endpoint.pid}:${results[0].endpoint.startedAt}`,
+    ]);
+    assert.equal((await readServiceEndpoint(dataDir))?.instanceId, results[0].endpoint.instanceId);
+  } finally {
+    await staleHandle.close();
+    await host.disposeShellOnly();
+    const exactPids = new Set<number>();
+    for (const result of results) {
+      if (result.child?.pid) exactPids.add(result.child.pid);
+      exactPids.add(result.endpoint.pid);
+    }
+    for (const pid of exactPids) {
+      try {
+        process.kill(pid);
+      } catch {
+        // already stopped
+      }
+    }
+    await Promise.all([...exactPids].map((pid) => waitForProcessExit(pid)));
+  }
+});
+
+test("CLI attach timeout stops its owned child before any endpoint or lease can publish", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-cli-timeout-pipes-"));
+  let spawned: ReturnType<typeof spawn> | undefined;
+  const spawnHung = ((_command: string, _args: readonly string[], options: SpawnOptions) => {
+    spawned = spawnDelayedSourceService(dataDir, options);
+    return spawned;
+  }) as typeof spawn;
+  await assert.rejects(
+    () =>
+      attachOrBootstrapService({
+        dataDir,
+        serviceEntry,
+        spawnFn: spawnHung,
+        readyTimeoutMs: 50,
+        pollMs: 5,
+      }),
+    /Timed out waiting/
+  );
+  assert.ok(spawned?.pid);
+  await waitForProcessExit(spawned!.pid!);
+  assert.equal(spawned?.stdout?.destroyed, true);
+  assert.equal(spawned?.stderr?.destroyed, true);
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  assert.equal(await readServiceEndpoint(dataDir), null);
+  await assert.rejects(() => fs.access(serviceLeasePath(dataDir)), /ENOENT/);
 });
 
 test("cliServiceChildEnv: sets TENT_SERVICE_DATA_DIR; does not write workspace token", async () => {
@@ -520,6 +799,7 @@ test("writeServiceEndpoint never targets workspace; token only in dataDir", asyn
   const ws = await makeWorkspace();
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-cli-ep-"));
   await writeServiceEndpoint(dataDir, {
+    instanceId: "instance-cli-endpoint",
     pid: 1,
     host: "127.0.0.1",
     port: 9,
@@ -529,7 +809,7 @@ test("writeServiceEndpoint never targets workspace; token only in dataDir", asyn
   });
   const ep = await readServiceEndpoint(dataDir);
   assert.equal(ep?.token, "secret-token-xyz");
-  // Workspace must not contain service.json
+  // Workspace must not contain any machine-local endpoint record.
   await assert.rejects(() => fs.access(path.join(ws, "service.json")));
   await assert.rejects(() => fs.access(path.join(ws, ".tent", "service.json")));
 });

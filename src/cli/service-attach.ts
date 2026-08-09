@@ -1,5 +1,5 @@
 // CLI-side Local Service attach / bootstrap (architecture §1 / §8 B4).
-// No Electron dependency. Token stays machine-local (service.json); never workspace.
+// No Electron dependency. Token stays in machine-local endpoint generations; never workspace.
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -7,16 +7,15 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   defaultServiceDataDir,
-  readServiceEndpoint,
   serviceBaseUrl,
   type ServiceEndpointRecord,
 } from "../service/data-dir.js";
-import { createServiceClient, type ServiceClient } from "../service/client.js";
 import {
-  assertServiceProtocolCompatible,
-  isServiceProtocolCompatible,
-  isServiceProtocolIncompatibleError,
-} from "../service/protocol.js";
+  discoverAuthenticatedServiceEndpoint,
+  stopOwnedServiceChild,
+  type AuthenticatedServiceEndpointHealth,
+} from "../service/endpoint-discovery.js";
+import { createServiceClient, type ServiceClient } from "../service/client.js";
 
 export type CliAttachResult = {
   url: string;
@@ -82,8 +81,6 @@ export async function attachOrBootstrapService(
   if (existing) {
     return { ...existing, started: false, child: null, dataDir };
   }
-  await rejectIncompatibleHealthyService(dataDir, fetchImpl);
-
   if (options.attachOnly) {
     throw new Error(
       `No healthy Local Tent Service endpoint in ${dataDir}. ` +
@@ -115,32 +112,41 @@ export async function attachOrBootstrapService(
   // Detach so CLI exit does not kill the service.
   child.unref();
 
-  const deadline = Date.now() + readyTimeoutMs;
-  while (Date.now() < deadline) {
-    const attached = await tryAttachService(
-      dataDir,
-      fetchImpl,
-      currentSessionId,
-      currentSessionToken,
-      currentExternalKey
+  let attachSucceeded = false;
+  try {
+    const deadline = Date.now() + readyTimeoutMs;
+    while (Date.now() < deadline) {
+      const attached = await tryAttachService(
+        dataDir,
+        fetchImpl,
+        currentSessionId,
+        currentSessionToken,
+        currentExternalKey
+      );
+      if (attached) {
+        attachSucceeded = true;
+        return { ...attached, started: true, child, dataDir };
+      }
+      await sleep(pollMs);
+    }
+
+    if (child.exitCode !== null && child.exitCode !== 0) {
+      throw new Error(
+        `Local Tent Service exited before an endpoint became healthy ` +
+          `(code=${child.exitCode}). entry=${entryAbs}\n${spawnLog}`
+      );
+    }
+    throw new Error(
+      `Timed out waiting for Local Tent Service after spawn (entry=${entryAbs}, dataDir=${dataDir})\n${spawnLog}`
     );
-    if (attached) {
+  } finally {
+    try {
+      if (!attachSucceeded) await stopOwnedServiceChild(child);
+    } finally {
       child.stdout?.destroy();
       child.stderr?.destroy();
-      return { ...attached, started: true, child, dataDir };
     }
-    await sleep(pollMs);
   }
-
-  if (child.exitCode !== null && child.exitCode !== 0) {
-    throw new Error(
-      `Local Tent Service exited before an endpoint became healthy ` +
-        `(code=${child.exitCode}). entry=${entryAbs}\n${spawnLog}`
-    );
-  }
-  throw new Error(
-    `Timed out waiting for Local Tent Service after spawn (entry=${entryAbs}, dataDir=${dataDir})\n${spawnLog}`
-  );
 }
 
 export function cliServiceChildEnv(
@@ -157,7 +163,8 @@ export function cliServiceChildEnv(
 }
 
 /**
- * Read machine-local endpoint + token; probe /health + protocol compatibility.
+ * Read bounded machine-local endpoint generations and prove identity through
+ * token-bearing service.health RPC.
  * Returns null when missing, unhealthy, or token absent.
  * Throws (does not return null) when the Service is healthy but protocol-incompatible
  * so callers never treat mismatch as "missing → bootstrap another service".
@@ -169,64 +176,23 @@ export async function tryAttachService(
   currentSessionToken?: string,
   currentExternalKey?: string
 ): Promise<{ url: string; endpoint: ServiceEndpointRecord; client: ServiceClient } | null> {
-  const endpoint = await readServiceEndpoint(dataDir);
-  if (!endpoint) return null;
-  if (!endpoint.token || typeof endpoint.token !== "string" || !endpoint.token.trim()) {
-    return null;
-  }
-  const url = serviceBaseUrl(endpoint.host, endpoint.port);
-  const client = createServiceClient({
-    baseUrl: url,
-    token: endpoint.token,
-    fetchImpl,
-    currentSessionId,
-    currentSessionToken,
-    currentExternalKey,
+  return discoverAuthenticatedServiceEndpoint(dataDir, async (endpoint, signal) => {
+    const url = serviceBaseUrl(endpoint.host, endpoint.port);
+    const client = createServiceClient({
+      baseUrl: url,
+      token: endpoint.token!,
+      fetchImpl,
+      currentSessionId,
+      currentSessionToken,
+      currentExternalKey,
+    });
+    const health = await client.call<AuthenticatedServiceEndpointHealth>(
+      "service.health",
+      {},
+      { signal }
+    );
+    return { health, value: { url, endpoint, client } };
   });
-  try {
-    const health = (await client.health()) as {
-      status?: string;
-      protocolVersion?: unknown;
-      version?: string;
-    };
-    if (health.status !== "ok") return null;
-    assertServiceProtocolCompatible(health);
-    return { url, endpoint, client };
-  } catch (err) {
-    // Typed protocol incompatibility must not be swallowed as "no service".
-    if (isServiceProtocolIncompatibleError(err)) throw err;
-    return null;
-  }
-}
-
-/**
- * When endpoint+token+health exist but protocol is missing/mismatched, throw
- * before bootstrap so CLI does not spawn a competing service.
- */
-async function rejectIncompatibleHealthyService(
-  dataDir: string,
-  fetchImpl: typeof fetch
-): Promise<void> {
-  const endpoint = await readServiceEndpoint(dataDir);
-  if (!endpoint?.token || typeof endpoint.token !== "string" || !endpoint.token.trim()) {
-    return;
-  }
-  const url = serviceBaseUrl(endpoint.host, endpoint.port);
-  const client = createServiceClient({ baseUrl: url, token: endpoint.token, fetchImpl });
-  try {
-    const health = (await client.health()) as {
-      status?: string;
-      protocolVersion?: unknown;
-      version?: string;
-    };
-    if (health.status !== "ok") return;
-    if (!isServiceProtocolCompatible(health)) {
-      assertServiceProtocolCompatible(health);
-    }
-  } catch (err) {
-    if (isServiceProtocolIncompatibleError(err)) throw err;
-    // Unreachable / network — allow bootstrap path.
-  }
 }
 
 export async function resolveDefaultServiceEntry(packageRootHint?: string): Promise<string> {

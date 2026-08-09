@@ -15,6 +15,7 @@ export type EventEnvelope<TType extends string = string, TPayload = unknown> = {
 
 export type ServiceHealth = {
   status: "ok" | "stopping";
+  instanceId: string;
   pid: number;
   version: string;
   startedAt: string;

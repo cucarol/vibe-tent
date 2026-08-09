@@ -482,7 +482,7 @@ Service-backed workspace operations:
   tent role-checkpoint set|show|clear Optional cooperative Role continuation note
   tent role-checkpoint --help         set/clear → Service; show read-only; --actor
   propose <nodeId> <file|->           Submit a Node proposal (in-workspace → proposal.submit RPC)
-  CLI exit does not stop Local Service. Token stays in machine-local service.json.
+  CLI exit does not stop Local Service. Token stays in machine-local endpoint records.
 
 Initialization and machine config:
   new <workspace-path>               Create <workspace>/.tent without touching project files.

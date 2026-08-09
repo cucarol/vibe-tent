@@ -1,5 +1,5 @@
 // Loopback HTTP + JSON-RPC 2.0 attach transport for Local Tent Service.
-// B5: loopback token required for /rpc and /events; /health stays open for discovery.
+// B5: loopback token required for /rpc and /events; /health is liveness-only.
 
 import * as http from "node:http";
 import type { EventEnvelope } from "./types.js";
@@ -199,7 +199,8 @@ async function handleRequest(
   const { ctx, events, token } = options;
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
 
-  // Health is open so attach discovery can probe without token (no mutation).
+  // Public health is unauthenticated liveness/diagnostics only (no mutation).
+  // Endpoint identity is proven separately through token-bearing service.health RPC.
   if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/")) {
     const body = await dispatchMethod(ctx, "service.health", {});
     writeJson(res, 200, body);

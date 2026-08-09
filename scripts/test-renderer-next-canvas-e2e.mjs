@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import net from "node:net";
@@ -743,6 +744,77 @@ async function readJsonIfExists(file) {
   }
 }
 
+const endpointGenerationPattern = /^service\.endpoint\.(\d{16})\.([A-Za-z0-9][A-Za-z0-9._-]{0,127})\.json$/;
+const endpointFileByteLimit = 16 * 1024;
+
+async function readEndpointGenerationFile(file, name) {
+  let handle;
+  try {
+    handle = await fsp.open(file, "r");
+    const buffer = Buffer.allocUnsafe(endpointFileByteLimit + 1);
+    let used = 0;
+    while (used < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, used, buffer.length - used, null);
+      if (bytesRead === 0) break;
+      used += bytesRead;
+    }
+    if (used === 0 || used > endpointFileByteLimit) return null;
+    const value = JSON.parse(buffer.subarray(0, used).toString("utf8"));
+    const match = endpointGenerationPattern.exec(name);
+    if (!match || typeof value !== "object" || value === null) return null;
+    const expectedStarted = String(Date.parse(value.startedAt)).padStart(16, "0");
+    if (value.instanceId !== match[2] || expectedStarted !== match[1]) return null;
+    return value;
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+async function readNewestServiceEndpointGeneration(dataDir) {
+  let names;
+  try {
+    names = (await fsp.readdir(dataDir))
+      .filter((name) => endpointGenerationPattern.test(name))
+      .sort((left, right) => right.localeCompare(left))
+      .slice(0, 32);
+  } catch {
+    return null;
+  }
+  for (const name of names) {
+    const endpoint = await readEndpointGenerationFile(path.join(dataDir, name), name);
+    if (endpoint) return endpoint;
+  }
+  return null;
+}
+
+async function snapshotEndpointFiles(dataDir) {
+  let names;
+  try {
+    names = (await fsp.readdir(dataDir))
+      .filter((name) => name === "service.json" || endpointGenerationPattern.test(name))
+      .sort((left, right) => left.localeCompare(right));
+  } catch {
+    return [];
+  }
+  return Promise.all(names.map(async (name) => {
+    const bytes = await fsp.readFile(path.join(dataDir, name));
+    return {
+      name,
+      bytes: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    };
+  }));
+}
+
+async function readDefaultServiceEndpointForOwnership(dataDir) {
+  return (
+    (await readNewestServiceEndpointGeneration(dataDir)) ??
+    (await readJsonIfExists(path.join(dataDir, "service.json")))
+  );
+}
+
 async function authenticatedServiceHealth(endpoint) {
   assert.equal(typeof endpoint?.host, "string", "Service endpoint host is required");
   assert.equal(Number.isInteger(endpoint?.port), true, "Service endpoint port is required");
@@ -758,6 +830,9 @@ async function authenticatedServiceHealth(endpoint) {
   assert.equal(response.ok, true, `Authenticated Service health HTTP ${response.status}`);
   const payload = await response.json();
   assert.equal(payload.error, undefined, `Authenticated Service health failed: ${JSON.stringify(payload.error)}`);
+  assert.equal(payload.result?.instanceId, endpoint.instanceId, "Authenticated Service instance identity must match its generation");
+  assert.equal(payload.result?.pid, endpoint.pid, "Authenticated Service PID must match its generation");
+  assert.equal(payload.result?.startedAt, endpoint.startedAt, "Authenticated Service start identity must match its generation");
   return payload.result;
 }
 
@@ -882,7 +957,7 @@ async function findPortableExecutable(packageOutput) {
   return path.join(packageOutput, candidates[0]);
 }
 
-async function exercisePortableLaunch(portable, temp, defaultBefore) {
+async function exercisePortableLaunch(portable, temp, defaultGuard) {
   if (process.platform !== "win32") return { skipped: true, reason: "Windows portable smoke" };
   const serviceDataDir = path.join(temp, "portable-service");
   const appData = path.join(temp, "portable-appdata");
@@ -890,8 +965,7 @@ async function exercisePortableLaunch(portable, temp, defaultBefore) {
   const home = path.join(temp, "portable-home");
   const userData = path.join(temp, "portable-user-data");
   await Promise.all([serviceDataDir, appData, localAppData, home, userData].map((entry) => fsp.mkdir(entry, { recursive: true })));
-  const defaultEndpointPath = path.join(process.env.APPDATA ?? "", "Tent", "service.json");
-  const endpointPath = path.join(serviceDataDir, "service.json");
+  const defaultDataDir = path.join(process.env.APPDATA ?? "", "Tent");
   const env = {
     ...process.env,
     TENT_SERVICE_DATA_DIR: serviceDataDir,
@@ -921,7 +995,7 @@ async function exercisePortableLaunch(portable, temp, defaultBefore) {
     });
     const endpoint = await waitFor(async () => {
       if (launchError) throw launchError;
-      const candidate = await readJsonIfExists(endpointPath);
+      const candidate = await readNewestServiceEndpointGeneration(serviceDataDir);
       if (!candidate || !(await portOpen(candidate.host, candidate.port))) return null;
       return candidate;
     }, "portable first-launch Service endpoint", 60_000);
@@ -932,7 +1006,7 @@ async function exercisePortableLaunch(portable, temp, defaultBefore) {
     const health = await authenticatedServiceHealth(endpoint);
     assert.equal(health.protocolVersion, 5);
     assert.equal(health.pid, endpoint.pid);
-    assert.notEqual(endpoint.pid, defaultBefore?.pid, "portable smoke must not reuse the default Service");
+    assert.notEqual(endpoint.pid, defaultGuard.endpoint?.pid, "portable smoke must not reuse the default Service");
     evidence = {
       skipped: false,
       executable: path.basename(portable),
@@ -969,10 +1043,10 @@ async function exercisePortableLaunch(portable, temp, defaultBefore) {
     cleanupErrors.push(error);
   }
   try {
-    const endpoint = await readJsonIfExists(endpointPath);
+    const endpoint = await readNewestServiceEndpointGeneration(serviceDataDir);
     if (endpoint?.pid && await pidAlive(endpoint.pid)) {
       await stopOwnedPidTree(endpoint.pid, (info) => {
-        assert.notEqual(info.pid, defaultBefore?.pid);
+        assert.notEqual(info.pid, defaultGuard.endpoint?.pid);
         assert.match(info.commandLine, /service\.mjs/i);
         assert.ok(info.commandLine.toLowerCase().includes(path.resolve(serviceDataDir).toLowerCase()));
       });
@@ -983,7 +1057,7 @@ async function exercisePortableLaunch(portable, temp, defaultBefore) {
       if (matches.length === 0) break;
       const info = matches[0];
       await stopOwnedPidTree(info.pid, (fresh) => {
-        assert.notEqual(fresh.pid, defaultBefore?.pid);
+        assert.notEqual(fresh.pid, defaultGuard.endpoint?.pid);
         assert.match(fresh.commandLine, /service\.mjs/i);
         assert.ok(fresh.commandLine.toLowerCase().includes(path.resolve(serviceDataDir).toLowerCase()));
       });
@@ -993,7 +1067,11 @@ async function exercisePortableLaunch(portable, temp, defaultBefore) {
     cleanupErrors.push(error);
   }
   try {
-    assert.deepEqual(await readJsonIfExists(defaultEndpointPath), defaultBefore, "portable smoke must not touch the default Service endpoint");
+    assert.deepEqual(
+      await snapshotEndpointFiles(defaultDataDir),
+      defaultGuard.files,
+      "portable smoke must not touch the default Service endpoint generations"
+    );
   } catch (error) {
     cleanupErrors.push(error);
   }
@@ -1086,8 +1164,11 @@ async function exercisePackagedElectron() {
   const localAppData = path.join(temp, "localappdata");
   const home = path.join(temp, "home");
   const userData = path.join(temp, "electron-user-data");
-  const defaultEndpointPath = path.join(process.env.APPDATA ?? "", "Tent", "service.json");
-  const defaultBefore = await readJsonIfExists(defaultEndpointPath);
+  const defaultDataDir = path.join(process.env.APPDATA ?? "", "Tent");
+  const defaultBefore = {
+    endpoint: await readDefaultServiceEndpointForOwnership(defaultDataDir),
+    files: await snapshotEndpointFiles(defaultDataDir),
+  };
   let run = null;
   let servicePid = null;
   let serviceEndpoint = null;
@@ -1128,12 +1209,12 @@ async function exercisePackagedElectron() {
       "--body", "# E2E Grandchild", "--workspace", workspace, "--data-dir", serviceDataDir, "--json",
     ], serviceDataDir));
     serviceEndpoint = await waitFor(
-      () => readJsonIfExists(path.join(serviceDataDir, "service.json")),
+      () => readNewestServiceEndpointGeneration(serviceDataDir),
       "isolated Service endpoint",
       15_000
     );
     servicePid = serviceEndpoint.pid;
-    assert.notEqual(servicePid, defaultBefore?.pid, "isolated Service PID must differ from default Service PID");
+    assert.notEqual(servicePid, defaultBefore.endpoint?.pid, "isolated Service PID must differ from default Service PID");
     const serviceProcess = await processInfo(servicePid);
     assert.ok(serviceProcess);
     assert.match(serviceProcess.commandLine, /service\.mjs/i);
@@ -1216,7 +1297,7 @@ async function exercisePackagedElectron() {
     await fsp.rename(serviceEntry, serviceEntryHold);
     serviceEntryHeld = true;
     await stopOwnedPidTree(servicePid, (info) => {
-      assert.notEqual(info.pid, defaultBefore?.pid);
+      assert.notEqual(info.pid, defaultBefore.endpoint?.pid);
       assert.match(info.commandLine, /service\.mjs/i);
       assert.ok(info.commandLine.toLowerCase().includes(path.resolve(serviceDataDir).toLowerCase()));
     });
@@ -1236,7 +1317,7 @@ async function exercisePackagedElectron() {
       } catch {
         return null;
       }
-      const candidate = await readJsonIfExists(path.join(serviceDataDir, "service.json"));
+      const candidate = await readNewestServiceEndpointGeneration(serviceDataDir);
       if (!candidate || candidate.pid === serviceEndpoint.pid) return null;
       if (!(await portOpen(candidate.host, candidate.port))) return null;
       return candidate;
@@ -1323,11 +1404,11 @@ async function exercisePackagedElectron() {
     cleanupErrors.push(error);
   }
   try {
-    const latestEndpoint = await readJsonIfExists(path.join(serviceDataDir, "service.json"));
+    const latestEndpoint = await readNewestServiceEndpointGeneration(serviceDataDir);
     const latestPid = latestEndpoint?.pid;
     if (latestPid && await pidAlive(latestPid)) {
       await stopOwnedPidTree(latestPid, (info) => {
-        assert.notEqual(info.pid, defaultBefore?.pid);
+        assert.notEqual(info.pid, defaultBefore.endpoint?.pid);
         assert.match(info.commandLine, /service\.mjs/i);
         assert.ok(info.commandLine.toLowerCase().includes(path.resolve(serviceDataDir).toLowerCase()));
       });
@@ -1336,7 +1417,7 @@ async function exercisePackagedElectron() {
     const serviceStragglers = await processInfosContaining(path.resolve(serviceDataDir));
     for (const info of serviceStragglers) {
       await stopOwnedPidTree(info.pid, (fresh) => {
-        assert.notEqual(fresh.pid, defaultBefore?.pid);
+        assert.notEqual(fresh.pid, defaultBefore.endpoint?.pid);
         assert.match(fresh.commandLine, /service\.mjs/i);
         assert.ok(fresh.commandLine.toLowerCase().includes(path.resolve(serviceDataDir).toLowerCase()));
       });
@@ -1346,8 +1427,12 @@ async function exercisePackagedElectron() {
     cleanupErrors.push(error);
   }
   try {
-    const defaultAfter = await readJsonIfExists(defaultEndpointPath);
-    assert.deepEqual(defaultAfter, defaultBefore, "default Service endpoint must remain untouched");
+    const defaultAfter = await snapshotEndpointFiles(defaultDataDir);
+    assert.deepEqual(
+      defaultAfter,
+      defaultBefore.files,
+      "default Service endpoint generations must remain untouched"
+    );
   } catch (error) {
     cleanupErrors.push(error);
   }

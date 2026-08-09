@@ -5,15 +5,14 @@ import * as path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   defaultServiceDataDir,
-  readServiceEndpoint,
   serviceBaseUrl,
   type ServiceEndpointRecord,
 } from "../../service/data-dir.js";
 import {
-  assertServiceProtocolCompatible,
-  isServiceProtocolCompatible,
-  isServiceProtocolIncompatibleError,
-} from "../../service/protocol.js";
+  discoverAuthenticatedServiceEndpoint,
+  stopOwnedServiceChild,
+  type AuthenticatedServiceEndpointHealth,
+} from "../../service/endpoint-discovery.js";
 import { ServiceRpcClient } from "./rpc-client.js";
 
 export type AttachResult = {
@@ -56,8 +55,6 @@ export async function attachOrStartService(options: AttachOptions = {}): Promise
   if (existing) {
     return { ...existing, started: false, child: null };
   }
-  await rejectIncompatibleHealthyService(dataDir, fetchImpl);
-
   if (options.attachOnly) {
     throw new Error(`No healthy Local Tent Service endpoint in ${dataDir}`);
   }
@@ -87,27 +84,35 @@ export async function attachOrStartService(options: AttachOptions = {}): Promise
   // Detach so closing Electron does not kill the service.
   child.unref();
 
-  const deadline = Date.now() + readyTimeoutMs;
-  while (Date.now() < deadline) {
-    const attached = await tryAttach(dataDir, fetchImpl);
-    if (attached) {
-      // Close pipes after attach so we don't hold the child.
+  let attachSucceeded = false;
+  try {
+    const deadline = Date.now() + readyTimeoutMs;
+    while (Date.now() < deadline) {
+      const attached = await tryAttach(dataDir, fetchImpl);
+      if (attached) {
+        attachSucceeded = true;
+        return { ...attached, started: true, child };
+      }
+      await sleep(pollMs);
+    }
+
+    if (child.exitCode !== null && child.exitCode !== 0) {
+      throw new Error(
+        `Local Tent Service exited before an endpoint became healthy ` +
+          `(code=${child.exitCode}). entry=${entryAbs}\n${spawnLog}`
+      );
+    }
+    throw new Error(
+      `Timed out waiting for Local Tent Service after spawn (entry=${entryAbs}, dataDir=${dataDir})\n${spawnLog}`
+    );
+  } finally {
+    try {
+      if (!attachSucceeded) await stopOwnedServiceChild(child);
+    } finally {
       child.stdout?.destroy();
       child.stderr?.destroy();
-      return { ...attached, started: true, child };
     }
-    await sleep(pollMs);
   }
-
-  if (child.exitCode !== null && child.exitCode !== 0) {
-    throw new Error(
-      `Local Tent Service exited before an endpoint became healthy ` +
-        `(code=${child.exitCode}). entry=${entryAbs}\n${spawnLog}`
-    );
-  }
-  throw new Error(
-    `Timed out waiting for Local Tent Service after spawn (entry=${entryAbs}, dataDir=${dataDir})\n${spawnLog}`
-  );
 }
 
 export function serviceChildEnv(
@@ -128,42 +133,20 @@ export async function tryAttach(
   dataDir: string,
   fetchImpl: typeof fetch = fetch
 ): Promise<{ url: string; endpoint: ServiceEndpointRecord; client: ServiceRpcClient } | null> {
-  const endpoint = await readServiceEndpoint(dataDir);
-  if (!endpoint) return null;
-  // B5 loopback token is required for RPC/SSE; health stays open without it.
-  if (!endpoint.token || typeof endpoint.token !== "string" || !endpoint.token.trim()) {
-    return null;
-  }
-  const url = serviceBaseUrl(endpoint.host, endpoint.port);
-  const client = new ServiceRpcClient({ baseUrl: url, token: endpoint.token, fetchImpl });
-  const health = await authenticateServiceEndpoint(endpoint, client);
-  return health ? { url, endpoint, client } : null;
-}
-
-type AuthenticatedServiceHealth = Awaited<ReturnType<ServiceRpcClient["health"]>>;
-
-/**
- * Prove that an endpoint record and its token identify the Service answering
- * authenticated RPC now. Open /health is discovery only and cannot establish
- * attach identity after a same-URL Service replacement.
- */
-export async function authenticateServiceEndpoint(
-  endpoint: ServiceEndpointRecord,
-  client: ServiceRpcClient
-): Promise<AuthenticatedServiceHealth | null> {
-  try {
-    if (client.url !== serviceBaseUrl(endpoint.host, endpoint.port)) return null;
-    const health = await client.call<AuthenticatedServiceHealth>("service.health", {});
-    if (health.status !== "ok") return null;
-    assertServiceProtocolCompatible(health);
-    if (health.pid !== endpoint.pid || health.startedAt !== endpoint.startedAt) {
-      return null;
-    }
-    return health;
-  } catch (err) {
-    if (isServiceProtocolIncompatibleError(err)) throw err;
-    return null;
-  }
+  return discoverAuthenticatedServiceEndpoint(dataDir, async (endpoint, signal) => {
+    const url = serviceBaseUrl(endpoint.host, endpoint.port);
+    const client = new ServiceRpcClient({
+      baseUrl: url,
+      token: endpoint.token!,
+      fetchImpl,
+    });
+    const health = await client.call<AuthenticatedServiceEndpointHealth>(
+      "service.health",
+      {},
+      { signal }
+    );
+    return { health, value: { url, endpoint, client } };
+  });
 }
 
 /** Exact machine-local identity captured by a successful attach. */
@@ -180,27 +163,6 @@ export function sameServiceEndpointIdentity(
     left.version === right.version &&
     left.token === right.token
   );
-}
-
-async function rejectIncompatibleHealthyService(
-  dataDir: string,
-  fetchImpl: typeof fetch
-): Promise<void> {
-  const endpoint = await readServiceEndpoint(dataDir);
-  if (!endpoint?.token || typeof endpoint.token !== "string" || !endpoint.token.trim()) {
-    return;
-  }
-  const url = serviceBaseUrl(endpoint.host, endpoint.port);
-  const client = new ServiceRpcClient({ baseUrl: url, token: endpoint.token, fetchImpl });
-  try {
-    const health = await client.health();
-    if (health.status !== "ok") return;
-    if (!isServiceProtocolCompatible(health)) {
-      assertServiceProtocolCompatible(health);
-    }
-  } catch (err) {
-    if (isServiceProtocolIncompatibleError(err)) throw err;
-  }
 }
 
 export async function resolveDefaultServiceEntry(cwd = process.cwd()): Promise<string> {

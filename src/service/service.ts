@@ -61,7 +61,7 @@ export interface LocalTentServiceOptions {
   port?: number;
   dataDir?: string;
   version?: string;
-  /** When false, skip writing machine-local service.json (tests). */
+  /** When false, skip publishing a machine-local endpoint generation (tests). */
   writeEndpoint?: boolean;
   getPid?: () => number;
   /** Override token (tests); otherwise generated and stored in endpoint. */
@@ -338,6 +338,7 @@ async function startOwnedLocalTentService(
     events,
     version,
     protocolVersion: TENT_SERVICE_PROTOCOL_VERSION,
+    instanceId: serviceLease.instanceId,
     startedAt,
     getPid,
     runtime,
@@ -403,7 +404,7 @@ async function startOwnedLocalTentService(
     };
     await writeServiceEndpoint(dataDir, endpoint);
     registerStartupCleanup(50, () =>
-      removeServiceEndpoint(dataDir, serviceLease.instanceId)
+      removeServiceEndpoint(dataDir, endpoint!)
     );
   }
 
@@ -457,7 +458,7 @@ async function startOwnedLocalTentService(
       } finally {
         if (options.writeEndpoint !== false) {
           await attempt(() =>
-            removeServiceEndpoint(dataDir, serviceLease.instanceId)
+            removeServiceEndpoint(dataDir, endpoint!)
           );
         }
         await attempt(() => serviceLease.release());

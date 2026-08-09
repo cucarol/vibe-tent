@@ -481,9 +481,10 @@ test("SessionRegistry: update preserves immutable Connection identity and snapsh
   assert.deepEqual(reloaded?.connectionSnapshot, original.connectionSnapshot);
 });
 
-test("service endpoint write is atomic pretty JSON; malformed read is null", async () => {
+test("service endpoint generation is immutable pretty JSON; malformed read is null", async () => {
   const dataDir = await tempDir("tent-svc-ep-");
-  await writeServiceEndpoint(dataDir, {
+  const file = await writeServiceEndpoint(dataDir, {
+    instanceId: "instance-atomic",
     pid: 1234,
     host: "127.0.0.1",
     port: 7788,
@@ -491,7 +492,6 @@ test("service endpoint write is atomic pretty JSON; malformed read is null", asy
     version: "0.1.0",
     token: "tok-test",
   });
-  const file = serviceEndpointPath(dataDir);
   const raw = await fs.readFile(file, "utf8");
   assert.equal(raw.endsWith("\n"), true);
   assert.equal(JSON.parse(raw).port, 7788);
@@ -509,17 +509,22 @@ test("service endpoint write is atomic pretty JSON; malformed read is null", asy
 test("service endpoint discovery rejects non-loopback or invalid coordinates", async () => {
   const dataDir = await tempDir("tent-svc-ep-invalid-");
   const base = {
+    instanceId: "instance-invalid",
     pid: 1234,
     host: "127.0.0.1",
     port: 7788,
     startedAt: "2026-01-01T00:00:00.000Z",
     version: "0.1.0",
   };
-  await writeServiceEndpoint(dataDir, { ...base, host: "203.0.113.8" });
-  assert.equal(await readServiceEndpoint(dataDir), null);
-  await writeServiceEndpoint(dataDir, { ...base, port: 70_000 });
-  assert.equal(await readServiceEndpoint(dataDir), null);
-  await writeServiceEndpoint(dataDir, { ...base, pid: -1 });
+  await assert.rejects(() =>
+    writeServiceEndpoint(dataDir, { ...base, host: "203.0.113.8" })
+  );
+  await assert.rejects(() =>
+    writeServiceEndpoint(dataDir, { ...base, port: 70_000 })
+  );
+  await assert.rejects(() =>
+    writeServiceEndpoint(dataDir, { ...base, pid: -1 })
+  );
   assert.equal(await readServiceEndpoint(dataDir), null);
 });
 
@@ -533,9 +538,15 @@ test("service endpoint removal is scoped to its owning instance", async () => {
     startedAt: "2026-01-01T00:00:00.000Z",
     version: "0.1.0",
   });
-  await removeServiceEndpoint(dataDir, "instance-old");
+  await removeServiceEndpoint(dataDir, {
+    instanceId: "instance-old",
+    startedAt: "2026-01-01T00:00:00.000Z",
+  });
   assert.equal((await readServiceEndpoint(dataDir))?.instanceId, "instance-current");
-  await removeServiceEndpoint(dataDir, "instance-current");
+  await removeServiceEndpoint(dataDir, {
+    instanceId: "instance-current",
+    startedAt: "2026-01-01T00:00:00.000Z",
+  });
   assert.equal(await readServiceEndpoint(dataDir), null);
 });
 

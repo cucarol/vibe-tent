@@ -232,11 +232,16 @@ test("RPC transport rejects invalid envelopes and oversized bodies without killi
   });
 });
 
-test("service.health + endpoint file written for attach discovery", async () => {
+test("public liveness and authenticated service.health expose the exact endpoint generation", async () => {
   await withService(async (svc, dataDir) => {
     const res = await fetch(`${svc.url}/health`);
     assert.equal(res.status, 200);
-    const body = (await res.json()) as { status: string; pid: number; version: string };
+    const body = (await res.json()) as {
+      status: string;
+      instanceId: string;
+      pid: number;
+      version: string;
+    };
     assert.equal(body.status, "ok");
     assert.equal(typeof body.pid, "number");
 
@@ -244,8 +249,14 @@ test("service.health + endpoint file written for attach discovery", async () => 
     assert.ok(ep);
     assert.equal(ep!.port, svc.port);
     assert.equal(ep!.host, svc.host);
+    assert.equal(body.instanceId, ep!.instanceId);
     assert.ok(ep!.token);
     assert.equal(ep!.token, svc.token);
+    const authenticated = await rpc(svc, "service.health", {});
+    assert.equal(
+      (authenticated.result as { instanceId: string }).instanceId,
+      ep!.instanceId
+    );
   });
 });
 
@@ -1253,7 +1264,17 @@ test("service stop terminates active SSE and releases discovery ownership", asyn
     }
 
     assert.equal(svc.events.listenerCount(), baselineListeners);
-    await assert.rejects(() => fs.access(serviceEndpointPath(dataDir)), /ENOENT/);
+    await assert.rejects(
+      () =>
+        fs.access(
+          serviceEndpointPath(
+            dataDir,
+            svc.endpoint!.instanceId,
+            svc.endpoint!.startedAt
+          )
+        ),
+      /ENOENT/
+    );
     await assert.rejects(() => fs.access(serviceLeasePath(dataDir)), /ENOENT/);
     await assert.rejects(() => fetch(`${svc.url}/health`));
 

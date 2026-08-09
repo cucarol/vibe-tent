@@ -892,9 +892,11 @@ test("tryAttachService: healthy legacy (no protocolVersion) fails before busines
     const shimFetch: typeof fetch = async (input, init) => {
       const res = await realFetch(input, init);
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : String(input);
-      if (url.includes("/health")) {
-        const body = (await res.json()) as Record<string, unknown>;
-        delete body.protocolVersion;
+      const request = init?.body ? JSON.parse(String(init.body)) as { method?: string } : null;
+      if (url.includes("/rpc") && request?.method === "service.health") {
+        const body = (await res.json()) as { result?: Record<string, unknown> };
+        delete body.result?.protocolVersion;
+        delete body.result?.instanceId;
         return new Response(JSON.stringify(body), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -934,9 +936,10 @@ test("tryAttachService: healthy protocol 3 fails after the Launch Secret wire bu
     const shimFetch: typeof fetch = async (input, init) => {
       const res = await realFetch(input, init);
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : String(input);
-      if (url.includes("/health")) {
-        const body = (await res.json()) as Record<string, unknown>;
-        body.protocolVersion = 3;
+      const request = init?.body ? JSON.parse(String(init.body)) as { method?: string } : null;
+      if (url.includes("/rpc") && request?.method === "service.health") {
+        const body = (await res.json()) as { result?: Record<string, unknown> };
+        if (body.result) body.result.protocolVersion = 3;
         return new Response(JSON.stringify(body), {
           status: 200,
           headers: { "content-type": "application/json" },
