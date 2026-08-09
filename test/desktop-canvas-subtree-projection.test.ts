@@ -173,6 +173,41 @@ test("pending sync aggregates content and membership drift at the exact instance
   );
 });
 
+test("a nested projection root ignores its external parent while internal reparent stays pending", () => {
+  const nested = [
+    source("ancestor", null),
+    source("root", "ancestor"),
+    source("child-a", "root"),
+  ];
+  let placement = 0;
+  const created = createCanvasSubtreeProjectionInstance(
+    emptyDocument(),
+    "root",
+    nested,
+    { x: 100, y: 120 },
+    "right",
+    () => "instance-nested",
+    () => `placement-nested-${placement++}`
+  );
+
+  assert.equal(deriveCanvasSubtreeProjection(created.document, nested).syncControls.length, 0);
+  const reconciled = reconcileCanvasProjectionSync(
+    created.document,
+    "placement-nested-0",
+    nested
+  );
+  assert.equal(deriveCanvasSubtreeProjection(reconciled, nested).syncControls.length, 0);
+
+  const reparented = [
+    source("ancestor", null),
+    source("root", "ancestor"),
+    source("child-a", "ancestor"),
+  ];
+  const pending = deriveCanvasSubtreeProjection(reconciled, reparented);
+  assert.equal(pending.syncControls[0]?.placementId, "placement-nested-0");
+  assert.equal(pending.syncControls[0]?.affectedCount, 1);
+});
+
 test("sync preserves surviving manual coordinates and only adds/removes affected members", () => {
   const created = createInstance();
   const manuallyMoved = movePlacement(created.document, "placement-a-1", { x: 711, y: 333 });

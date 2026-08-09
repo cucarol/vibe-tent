@@ -443,12 +443,12 @@ export function deriveCanvasSubtreeProjection(
         affected.add(member.placement.placementId);
         continue;
       }
-      const expectedParentNodeId = authoritativeParentByChild.get(nodeId) ?? null;
-      const actualParentNodeId = member.meta.parentPlacementId
-        ? valid.get(member.meta.parentPlacementId)?.placement.entityRef ?? null
-        : null;
-      if (expectedParentNodeId !== actualParentNodeId) {
-        affected.add(member.placement.placementId);
+      if (member.meta.parentPlacementId !== null) {
+        const expectedParentNodeId = authoritativeParentByChild.get(nodeId) ?? null;
+        const actualParentNodeId = valid.get(member.meta.parentPlacementId)?.placement.entityRef ?? null;
+        if (expectedParentNodeId !== actualParentNodeId) {
+          affected.add(member.placement.placementId);
+        }
       }
       if (placementStates.get(member.placement.placementId) !== "current") {
         affected.add(member.placement.placementId);
