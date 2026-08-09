@@ -32,6 +32,7 @@ type Props = {
   selectedPlacementId: string | null;
   onDirection: (placementId: string, direction: SubtreeDirection) => void;
   onHide: (placementId: string) => void;
+  commandsEnabled: boolean;
 };
 
 const directionLabel: Record<SubtreeDirection, string> = {
@@ -66,7 +67,7 @@ function HideGlyph() {
 
 export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props>(
   function CanvasSubtreeOverlay(
-    { document, projection, hoveredPlacementId, selectedPlacementId, onDirection, onHide },
+    { document, projection, hoveredPlacementId, selectedPlacementId, onDirection, onHide, commandsEnabled },
     ref
   ) {
     const [directionMenuPlacementId, setDirectionMenuPlacementId] = useState<string | null>(null);
@@ -290,6 +291,7 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
                 size="compact"
                 aria-label="在画布中隐藏"
                 tooltip="在画布中隐藏"
+                disabled={!commandsEnabled}
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={() => onHide(placementId)}
               >

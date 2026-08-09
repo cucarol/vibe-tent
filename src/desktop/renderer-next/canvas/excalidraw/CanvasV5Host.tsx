@@ -130,7 +130,12 @@ export type CanvasV5HostProps = {
   style?: CSSProperties;
   immersive?: boolean;
   onImmersiveChange?: (immersive: boolean) => void;
-  previewDocument?: { nodeId: string; body: string } | null;
+  previewDocument?: {
+    nodeId: string;
+    status?: "loading" | "ready" | "error";
+    body?: string;
+  } | null;
+  onPreviewNode?: (nodeId: string | null) => void;
   attentionNodeIds?: ReadonlySet<string>;
   subtreeProjection?: CanvasSubtreeProjection;
   onSubtreeDirection?: (placementId: string, direction: SubtreeDirection) => void;
@@ -310,6 +315,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     immersive = false,
     onImmersiveChange,
     previewDocument = null,
+    onPreviewNode,
     attentionNodeIds = new Set<string>(),
     subtreeProjection = EMPTY_SUBTREE_PROJECTION,
     onSubtreeDirection = () => {},
@@ -327,6 +333,8 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
   onDocumentChangeRef.current = onDocumentChange;
   const onSelectPlacementRef = useRef(onSelectPlacement);
   onSelectPlacementRef.current = onSelectPlacement;
+  const onPreviewNodeRef = useRef(onPreviewNode);
+  onPreviewNodeRef.current = onPreviewNode;
   const onScenePersistRef = useRef(onScenePersist);
   onScenePersistRef.current = onScenePersist;
   const layerVisibleRef = useRef(layerVisible);
@@ -381,6 +389,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
   );
 
   const [mountKey, setMountKey] = useState(0);
+  const [apiReady, setApiReady] = useState(false);
   const [displayMenuOpen, setDisplayMenuOpen] = useState(false);
   const [previewPlacementId, setPreviewPlacementId] = useState<string | null>(null);
   const [hoveredPlacementId, setHoveredPlacementId] = useState<string | null>(null);
@@ -457,7 +466,10 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     [publishDocument]
   );
 
-  useEffect(() => () => clearPreviewTimer(), [clearPreviewTimer]);
+  useEffect(() => () => {
+    clearPreviewTimer();
+    onPreviewNodeRef.current?.(null);
+  }, [clearPreviewTimer]);
 
   useEffect(() => {
     presentationHistoryDocumentsRef.current.clear();
@@ -483,6 +495,8 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     setOwnership(
       createV5OwnershipState(documentRef.current.focusedPlacementId ?? null)
     );
+    apiRef.current = null;
+    setApiReady(false);
     setMountKey((k) => k + 1);
     lastPersistedDrawingSig.current = "";
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -783,6 +797,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
         previewCandidateRef.current = null;
         previewPlacementIdRef.current = null;
         setPreviewPlacementId(null);
+        onPreviewNodeRef.current?.(null);
         return;
       }
       const prev = ownershipRef.current;
@@ -852,6 +867,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
 
   const handleApi = useCallback((api: ExcalidrawApi) => {
     apiRef.current = api;
+    setApiReady(true);
     cancelApiViewportSyncRef.current?.();
     cancelApiViewportSyncRef.current = schedulePostMountCanvasViewportSync({
       scheduler: {
@@ -1075,6 +1091,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
       : null;
     const previewCandidate = hoveredCustom?.placementId ?? null;
     if (previewCandidate !== previewCandidateRef.current) {
+      if (previewPlacementIdRef.current) onPreviewNodeRef.current?.(null);
       previewCandidateRef.current = previewCandidate;
       setHoveredPlacementId(previewCandidate);
       clearPreviewTimer();
@@ -1086,6 +1103,10 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
           if (previewCandidateRef.current !== previewCandidate) return;
           previewPlacementIdRef.current = previewCandidate;
           setPreviewPlacementId(previewCandidate);
+          const nodeId = documentRef.current.placements.find(
+            (placement) => placement.placementId === previewCandidate
+          )?.entityRef ?? null;
+          onPreviewNodeRef.current?.(nodeId);
           requestAnimationFrame(() => positionPreview(previewCandidate));
         }, 460);
       }
@@ -1361,6 +1382,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
       previewCandidateRef.current = null;
       previewPlacementIdRef.current = null;
       setPreviewPlacementId(null);
+      onPreviewNodeRef.current?.(null);
       const appState = api.getAppState?.() ?? {};
       const zoom = (
         appState.zoom as { value?: number } | undefined
@@ -1534,13 +1556,14 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
 
   const handleProjectionSyncWithHistory = useCallback(() => {
     const sync = subtreeProjectionRef.current.documentSync;
-    if (!sync?.canSync) return;
+    if (!apiRef.current || !sync?.canSync) return;
     const nextDocument = onProjectionSync(sync.authorityDigest);
     if (!nextDocument || nextDocument === documentRef.current) return;
     commitPresentationDocumentWithHistory(nextDocument);
   }, [commitPresentationDocumentWithHistory, onProjectionSync]);
   const handlePlacementHiddenChange = useCallback(
     (placementId: string, hidden: boolean) => {
+      if (!apiRef.current) return;
       commitPresentationDocumentWithHistory(
         setCanvasProjectionPlacementHidden(
           documentRef.current,
@@ -1616,7 +1639,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
               : subtreeProjection.authority === "fresh"
                 ? canvasCopy("canvas.sync.current")
                 : canvasCopy("canvas.sync.unavailable")}
-            disabled={!subtreeProjection.documentSync?.canSync}
+            disabled={!apiReady || !subtreeProjection.documentSync?.canSync}
             onClick={handleProjectionSyncWithHistory}
           >
             <ShellIcon name="refresh" />
@@ -1702,6 +1725,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
                     variant="quiet"
                     size="compact"
                     data-placement-id={placement.placementId}
+                    disabled={!apiReady}
                     onClick={() => handlePlacementHiddenChange(placement.placementId, false)}
                   >
                     显示 {cardModels.get(placement.placementId)?.title ?? placement.entityRef ?? "本地节点"}
@@ -1797,6 +1821,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
           selectedPlacementId={canvasDocument.focusedPlacementId ?? null}
           onDirection={onSubtreeDirection}
           onHide={(placementId) => handlePlacementHiddenChange(placementId, true)}
+          commandsEnabled={apiReady}
         />
         {previewPlacementId && cardModels.get(previewPlacementId) ? (
           <aside
@@ -1809,7 +1834,13 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
             <strong>{cardModels.get(previewPlacementId)!.title}</strong>
             <p>{
               previewDocument?.nodeId === cardModels.get(previewPlacementId)!.nodeId
-                ? limitedCanvasNodePreview(previewDocument.body) || "正文为空"
+                ? previewDocument.status === "loading"
+                  ? "正在载入正文…"
+                  : previewDocument.status === "error"
+                    ? "正文暂不可用"
+                    : limitedCanvasNodePreview(previewDocument.body ?? "") || "正文为空"
+                : onPreviewNode
+                  ? "正在载入正文…"
                 : cardModels.get(previewPlacementId)!.detail
             }</p>
           </aside>

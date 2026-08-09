@@ -38,13 +38,18 @@ export type CanvasWorkbenchProps = {
   onRetryPersistence?: () => void;
   onScenePersist?: (scene: ExcalidrawSceneSnapshot) => void;
   onDropNode?: (nodeId: string, point: { x: number; y: number }) => boolean;
-  previewDocument?: { nodeId: string; body: string } | null;
+  previewDocument?: {
+    nodeId: string;
+    status?: "loading" | "ready" | "error";
+    body?: string;
+  } | null;
+  onPreviewNode?: (nodeId: string | null) => void;
   attentionNodeIds?: ReadonlySet<string>;
   onCanvasSync?: (authorityDigest: string) => CanvasDocument | null;
   hidden?: boolean;
 };
 
-export function CanvasWorkbench({ document, nodes, projection, immersive, onImmersiveChange, onDocumentChange, onSelectNode, initialScene = null, persistenceStatus = { kind: "ok" }, onRetryPersistence, onScenePersist, onDropNode, previewDocument = null, attentionNodeIds = new Set(), onCanvasSync, hidden = false }: CanvasWorkbenchProps) {
+export function CanvasWorkbench({ document, nodes, projection, immersive, onImmersiveChange, onDocumentChange, onSelectNode, initialScene = null, persistenceStatus = { kind: "ok" }, onRetryPersistence, onScenePersist, onDropNode, previewDocument = null, onPreviewNode, attentionNodeIds = new Set(), onCanvasSync, hidden = false }: CanvasWorkbenchProps) {
   const [drawingVisible, setDrawingVisible] = useState(
     () => initialScene?.layerVisible ?? true
   );
@@ -211,6 +216,7 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
             immersive={immersive}
             onImmersiveChange={onImmersiveChange}
             previewDocument={previewDocument}
+            onPreviewNode={onPreviewNode}
             attentionNodeIds={attentionNodeIds}
           />
         )}

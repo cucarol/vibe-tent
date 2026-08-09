@@ -1100,6 +1100,17 @@ test("V5 leaves generic drawing tools exclusively to Excalidraw", async () => {
   assert.match(workbench, /graph=\{null\}/);
   assert.match(workbench, /subtreeProjection=\{subtreeProjection\}/);
   assert.match(host, /<CanvasSubtreeOverlay/);
+  assert.match(host, /disabled=\{!apiReady \|\| !subtreeProjection\.documentSync\?\.canSync\}/);
+  const syncHandler = host.slice(
+    host.indexOf("const handleProjectionSyncWithHistory"),
+    host.indexOf("const handlePlacementHiddenChange")
+  );
+  assert.ok(
+    syncHandler.indexOf("if (!apiRef.current || !sync?.canSync) return") <
+      syncHandler.indexOf("onProjectionSync(sync.authorityDigest)"),
+    "durable projection sync cannot start before the presentation-history owner exists"
+  );
+  assert.match(host, /commandsEnabled=\{apiReady\}/);
   assert.match(workbench, /markdown:\s*false,\s*wiki:\s*false,\s*relation:\s*false/);
   assert.doesNotMatch(workbench, /onToggleEdgeLayer/);
 });

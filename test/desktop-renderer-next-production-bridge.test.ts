@@ -143,6 +143,32 @@ test("Canvas sync authority reader exposes only the latest fresh exact-workspace
   assert.equal(readFreshCanvasSubtreeAuthority({ state: "loading", workspaceId: "ws-a", previous: graph }, "ws-a", true), null);
 });
 
+test("Canvas hover preview lazily reads the exact authoritative Node and rejects late identity", async () => {
+  const production = await readFile(
+    new URL("../src/desktop/renderer-next/ProductionApp.tsx", import.meta.url),
+    "utf8"
+  );
+  const requestBlock = production.slice(
+    production.indexOf("const requestCanvasPreview"),
+    production.indexOf("return (", production.indexOf("const requestCanvasPreview"))
+  );
+  assert.match(requestBlock, /graph\.state !== "ready"/);
+  assert.match(requestBlock, /graph\.workspaceId !== workspace\.workspaceId/);
+  assert.match(requestBlock, /graph\.value\.nodes\.some\(\(node\) => node\.nodeId === nodeId\)/);
+  assert.match(requestBlock, /gateway\.focusDocument\(workspace\.workspaceId, nodeId\)/);
+  assert.match(requestBlock, /generation !== previewReadGeneration\.current/);
+  assert.match(requestBlock, /result\.value\.body/);
+
+  const host = await readFile(
+    new URL("../src/desktop/renderer-next/canvas/excalidraw/CanvasV5Host.tsx", import.meta.url),
+    "utf8"
+  );
+  assert.match(host, /onPreviewNodeRef\.current\?\.\(nodeId\)/);
+  assert.match(host, /onPreviewNodeRef\.current\?\.\(null\)/);
+  assert.match(host, /previewDocument\.status === "loading"/);
+  assert.match(host, /previewDocument\.status === "error"/);
+});
+
 test("first non-empty graph seeds only a truly absent local Canvas", () => {
   assert.equal(shouldSeedLocalCanvas("empty", 0, 0), false);
   assert.equal(shouldSeedLocalCanvas("empty", 0, 1), true);

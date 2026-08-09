@@ -65,6 +65,12 @@ export type AppShellProps = {
   onPresentationChange?: (update: WorkbenchPresentationUpdate) => void;
   onScenePersist?: (scene: ExcalidrawSceneSnapshot) => void;
   focusDocument?: FocusDocumentView;
+  canvasPreviewDocument?: {
+    nodeId: string;
+    status?: "loading" | "ready" | "error";
+    body?: string;
+  } | null;
+  onCanvasPreviewNode?: (nodeId: string | null) => void;
   focusDocumentActions?: FocusDocumentActions;
   collaboration?: CollaborationSurfaceView;
   collaborationActions?: CollaborationSurfaceActions;
@@ -113,6 +119,8 @@ export function AppShell({
   onPresentationChange,
   onScenePersist,
   focusDocument,
+  canvasPreviewDocument,
+  onCanvasPreviewNode,
   focusDocumentActions,
   collaboration,
   collaborationActions,
@@ -381,7 +389,7 @@ export function AppShell({
 
       <div className="tn-workbench" data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-focus-expanded={focusExpanded ? "true" : "false"} data-immersive={immersive ? "true" : "false"}>
         <OutlinePanel id="tn-outline-panel" mode={outlineMode} onModeChange={setOutlineMode} nodes={nodes} projection={projection} selectedNodeId={selectedNodeId} reveal={outlineReveal} visible={outlineOpen} onSelectNode={selectNodeFromOutline} onOpenNodeActions={openNodeActions} canDragToCanvas={Boolean(onPresentationChange)} canvasPresence={canvasProjectionPresence} onCollapse={() => layout.collapse("left")} inboxModel={inboxModel} />
-        <CanvasWorkbench document={document} nodes={nodes} projection={projection} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNodeFromCanvas} onDropNode={onPresentationChange ? dropNode : undefined} previewDocument={focusDocument?.nodeId && typeof focusDocument.body === "string" ? { nodeId: focusDocument.nodeId, body: focusDocument.body } : null} attentionNodeIds={attentionNodeIds} onCanvasSync={syncCanvas} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
+        <CanvasWorkbench document={document} nodes={nodes} projection={projection} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNodeFromCanvas} onDropNode={onPresentationChange ? dropNode : undefined} previewDocument={canvasPreviewDocument ?? (focusDocument?.nodeId && typeof focusDocument.body === "string" ? { nodeId: focusDocument.nodeId, status: "ready", body: focusDocument.body } : null)} onPreviewNode={onCanvasPreviewNode} attentionNodeIds={attentionNodeIds} onCanvasSync={syncCanvas} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
         <InspectorPanel
           id="tn-focus-panel"
           node={selectedNode}

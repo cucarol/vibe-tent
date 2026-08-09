@@ -770,11 +770,22 @@ function nearestAvailableChildPosition(
   const forwardGap = direction === "left" || direction === "right"
     ? NODE_CARD.width + 76
     : NODE_CARD.height + 76;
+  const forwardLimit = occupied.reduce((limit, rect) => {
+    if (direction === "right") return Math.max(limit, rect.right - (initial.x - 20));
+    if (direction === "left") return Math.max(limit, initial.x + NODE_CARD.width + 20 - rect.left);
+    if (direction === "down") return Math.max(limit, rect.bottom - (initial.y - 20));
+    return Math.max(limit, initial.y + NODE_CARD.height + 20 - rect.top);
+  }, 0);
+  // One step beyond the furthest occupied bound is guaranteed free on the
+  // centre lane because the Canvas plane is unbounded in the chosen direction.
+  // This keeps the search deterministic without ever falling back to a known
+  // collision after a fixed number of candidates.
+  const maxDepth = Math.ceil(Math.max(0, forwardLimit) / forwardGap) + 1;
   for (let lane = 0; lane < 9; lane += 1) {
     const laneOffset = lane === 0
       ? 0
       : Math.ceil(lane / 2) * (lane % 2 === 1 ? 1 : -1);
-    for (let depth = 0; depth < 8; depth += 1) {
+    for (let depth = 0; depth <= maxDepth; depth += 1) {
       const position = { ...initial };
       if (direction === "right" || direction === "left") {
         position.x += (direction === "right" ? 1 : -1) * depth * forwardGap;
@@ -786,7 +797,7 @@ function nearestAvailableChildPosition(
       if (positionIsAvailable(position, occupied)) return position;
     }
   }
-  return initial;
+  throw new Error("Canvas child placement search exhausted outside occupied bounds");
 }
 
 function reconcileSubtreeInstance(

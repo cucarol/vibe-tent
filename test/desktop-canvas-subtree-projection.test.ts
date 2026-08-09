@@ -715,6 +715,54 @@ test("a newly inserted earlier sibling avoids every surviving placement without 
   );
 });
 
+test("new membership searches beyond the former seventy-two occupied candidates", () => {
+  let placement = 0;
+  const initialSources = [source("root", null)];
+  const created = createCanvasSubtreeProjectionInstance(
+    emptyDocument(),
+    "root",
+    initialSources,
+    { x: 0, y: 0 },
+    "right",
+    () => "instance-dense",
+    () => `dense-root-${placement++}`
+  );
+  const laneOffsets = [0, 1, -1, 2, -2, 3, -3, 4, -4];
+  const blockers = laneOffsets.flatMap((laneOffset, lane) =>
+    Array.from({ length: 8 }, (_, depth) =>
+      nodePlacement(
+        `dense-block-${lane}-${depth}`,
+        `block-${lane}-${depth}`,
+        NODE_CARD.width + 76 + depth * (NODE_CARD.width + 76),
+        laneOffset * (NODE_CARD.height + 28)
+      )
+    )
+  );
+  const denseDocument = {
+    ...created.document,
+    placements: [...created.document.placements, ...blockers],
+  };
+  const authority = [source("root", null), source("new-member", "root")];
+  const synced = reconcileCanvasDocumentSync(denseDocument, authority, {
+    authorityDigest: canvasDocumentAuthorityDigest(denseDocument, authority)!,
+    createPlacementId: () => "dense-new",
+  });
+  const added = synced.placements.find((candidate) => candidate.entityRef === "new-member")!;
+  const addedRect = placementRectForTest(added);
+
+  for (const blocker of blockers) {
+    const rect = placementRectForTest(blocker);
+    assert.equal(
+      addedRect.right <= rect.left ||
+        addedRect.left >= rect.right ||
+        addedRect.bottom <= rect.top ||
+        addedRect.top >= rect.bottom,
+      true
+    );
+  }
+  assert.ok((added.x ?? 0) > blockers.at(-1)!.x!);
+});
+
 test("global sync reconnects in-bundle members, detaches exits, and adds entries without moving survivors", () => {
   const created = createInstance();
   const manual = movePlacement(created.document, "placement-a-2", { x: 733, y: 411 });

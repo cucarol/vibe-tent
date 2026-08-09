@@ -107,6 +107,12 @@ function MountedWorkspace(props: {
         )?.entityRef ?? null
       : null
   );
+  const previewReadGeneration = useRef(0);
+  const [canvasPreviewDocument, setCanvasPreviewDocument] = useState<{
+    nodeId: string;
+    status: "loading" | "ready" | "error";
+    body?: string;
+  } | null>(null);
   const selectedNodeRef = useRef(selectedNodeId);
   const lastAuthoritativeDocumentNode = useRef<{
     nodeId: string;
@@ -372,6 +378,55 @@ function MountedWorkspace(props: {
     },
     [persistence, readCurrentCanvasAuthority]
   );
+  const requestCanvasPreview = useCallback((nodeId: string | null) => {
+    const generation = ++previewReadGeneration.current;
+    if (!nodeId) {
+      setCanvasPreviewDocument(null);
+      return;
+    }
+    const graph = graphRef.current;
+    if (
+      connectionRef.current !== "online" ||
+      graph.state !== "ready" ||
+      graph.workspaceId !== workspace.workspaceId ||
+      !graph.value.nodes.some((node) => node.nodeId === nodeId)
+    ) {
+      setCanvasPreviewDocument({ nodeId, status: "error" });
+      return;
+    }
+    setCanvasPreviewDocument({ nodeId, status: "loading" });
+    void gateway.focusDocument(workspace.workspaceId, nodeId).then((result) => {
+      if (generation !== previewReadGeneration.current) return;
+      setCanvasPreviewDocument(result.ok
+        ? { nodeId, status: "ready", body: result.value.body }
+        : { nodeId, status: "error" });
+    });
+  }, [gateway, workspace.workspaceId]);
+
+  useEffect(() => {
+    if (connection === "online") return;
+    previewReadGeneration.current += 1;
+    setCanvasPreviewDocument((current) => current
+      ? { nodeId: current.nodeId, status: "error" }
+      : null);
+  }, [connection]);
+
+  useEffect(() => gateway.onInvalidation((hint) => {
+    if (hint.event?.workspaceId && hint.event.workspaceId !== workspace.workspaceId) return;
+    if (
+      !hint.keys.includes("*") &&
+      !hint.keys.includes("docs.focus") &&
+      !hint.keys.includes("docs.get")
+    ) return;
+    previewReadGeneration.current += 1;
+    setCanvasPreviewDocument((current) => current
+      ? { nodeId: current.nodeId, status: "error" }
+      : null);
+  }), [gateway, workspace.workspaceId]);
+
+  useEffect(() => () => {
+    previewReadGeneration.current += 1;
+  }, []);
 
   return (
     <AppShell
@@ -387,6 +442,8 @@ function MountedWorkspace(props: {
       onRetryConnection={connection === "offline" || connection === "reconnecting" ? onRetryConnection : undefined}
       persistenceStatus={persistenceStatus}
       focusDocument={focusedDocument.view}
+      canvasPreviewDocument={canvasPreviewDocument}
+      onCanvasPreviewNode={requestCanvasPreview}
       focusDocumentActions={focusedDocument.actions}
       collaboration={collaborationSurface.view}
       collaborationActions={collaborationSurface.actions}

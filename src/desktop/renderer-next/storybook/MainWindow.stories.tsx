@@ -197,6 +197,11 @@ function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-
     return nodes;
   }, [collaborationState, selectedNodeId, snapshotSourceState, state]);
   const [focusDocument, setFocusDocument] = useState(() => fixtureDocument(documentStatus));
+  const [canvasPreviewDocument, setCanvasPreviewDocument] = useState<{
+    nodeId: string;
+    status: "ready";
+    body: string;
+  } | null>(null);
   useEffect(() => {
     setFocusDocument(fixtureDocument(documentStatus));
   }, [documentStatus]);
@@ -269,6 +274,14 @@ function MainWindowPreview({ state, connection = "online", selectedNodeId = "cx-
         connection={connection}
         onRetryConnection={connection === "online" ? undefined : () => {}}
         focusDocument={focusDocument}
+        canvasPreviewDocument={canvasPreviewDocument}
+        onCanvasPreviewNode={(nodeId) => setCanvasPreviewDocument(nodeId
+          ? {
+            nodeId,
+            status: "ready",
+            body: `这是 ${nodeId} 的权威只读正文预览。`,
+          }
+          : null)}
         focusDocumentActions={documentActions}
         collaboration={fixtureCollaboration(collaborationState)}
         collaborationActions={collaborationState === "none" ? undefined : collaborationActions}
