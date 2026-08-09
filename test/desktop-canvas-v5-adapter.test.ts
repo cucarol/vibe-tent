@@ -1111,6 +1111,17 @@ test("V5 leaves generic drawing tools exclusively to Excalidraw", async () => {
     "durable projection sync cannot start before the presentation-history owner exists"
   );
   assert.match(host, /commandsEnabled=\{apiReady\}/);
+  assert.match(host, /const handleSubtreeDirectionWhenReady[\s\S]*if \(!apiRef\.current\) return;[\s\S]*onSubtreeDirection\(placementId, direction\)/);
+  assert.match(host, /onDirection=\{handleSubtreeDirectionWhenReady\}/);
+  const overlay = await fs.readFile(
+    path.join(
+      process.cwd(),
+      "src/desktop/renderer-next/canvas/excalidraw/CanvasSubtreeOverlay.tsx"
+    ),
+    "utf8"
+  );
+  assert.match(overlay, /disabled=\{!commandsEnabled \|\| !control\.canMutate\}/);
+  assert.match(overlay, /onClick=\{\(\) => \{\s*if \(!commandsEnabled\) return;/);
   assert.match(workbench, /markdown:\s*false,\s*wiki:\s*false,\s*relation:\s*false/);
   assert.doesNotMatch(workbench, /onToggleEdgeLayer/);
 });

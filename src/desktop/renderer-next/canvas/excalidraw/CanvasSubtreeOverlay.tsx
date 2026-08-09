@@ -223,9 +223,10 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
                 tooltip={label}
                 aria-expanded={control.expandedDirection ? true : directionMenuOpen}
                 aria-haspopup={control.expandedDirection ? undefined : "menu"}
-                disabled={!control.canMutate}
+                disabled={!commandsEnabled || !control.canMutate}
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={() => {
+                  if (!commandsEnabled) return;
                   if (control.expandedDirection) {
                     onDirection(control.placementId, control.expandedDirection);
                     return;
@@ -248,9 +249,10 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
                     role="menuitem"
                     aria-label={`向${directionLabel[direction]}展开 ${count} 个后代`}
                     tooltip={`向${directionLabel[direction]}展开`}
-                    disabled={!control.canMutate}
+                    disabled={!commandsEnabled || !control.canMutate}
                     onPointerDown={(event) => event.stopPropagation()}
                     onClick={() => {
+                      if (!commandsEnabled) return;
                       setDirectionMenuPlacementId(null);
                       onDirection(control.placementId, direction);
                     }}

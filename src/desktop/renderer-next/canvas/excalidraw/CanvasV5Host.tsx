@@ -1574,6 +1574,13 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     },
     [commitPresentationDocumentWithHistory]
   );
+  const handleSubtreeDirectionWhenReady = useCallback(
+    (placementId: string, direction: SubtreeDirection) => {
+      if (!apiRef.current) return;
+      onSubtreeDirection(placementId, direction);
+    },
+    [onSubtreeDirection]
+  );
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -1819,7 +1826,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
           projection={subtreeProjection}
           hoveredPlacementId={hoveredPlacementId}
           selectedPlacementId={canvasDocument.focusedPlacementId ?? null}
-          onDirection={onSubtreeDirection}
+          onDirection={handleSubtreeDirectionWhenReady}
           onHide={(placementId) => handlePlacementHiddenChange(placementId, true)}
           commandsEnabled={apiReady}
         />
