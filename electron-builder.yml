@@ -11,6 +11,7 @@ files:
   - cli.mjs
   - package.json
   - README.md
+  - LICENSE
 extraResources:
   - from: service.mjs
     to: service.mjs

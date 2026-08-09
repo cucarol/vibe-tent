@@ -10,25 +10,30 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
 
 test("开源可移植性:发布源文件不含开发者机器绝对路径", async () => {
-  const roots = [
-    "README.md",
-    "package.json",
-    "scripts",
-    "skills",
-    "src",
-    "docs/SPEC.md",
+  const tracked = gitTrackedFiles();
+  for (const retiredRoot of [".tent/", "output/"]) {
+    assert.equal(
+      tracked.some((entry) => entry === retiredRoot.slice(0, -1) || entry.startsWith(retiredRoot)),
+      false,
+      `${retiredRoot} is machine-local output and must not be Git-tracked`,
+    );
+  }
+
+  const localRoots = [repoRoot, os.homedir()].flatMap((entry) => [entry, entry.replaceAll("\\", "/")]);
+  const forbidden = [
+    ...localRoots.map((entry) => new RegExp(escapeRegExp(entry), "i")),
+    new RegExp(`C:[\\\\/]+${"cuca" + "rol"}[\\\\/]+_code[\\\\/]+Tent`, "i"),
   ];
-  const files = (
-    await Promise.all(roots.map((entry) => collectFiles(path.join(repoRoot, entry))))
-  ).flat();
-  const forbidden = [/C:\/cucarol/i, /C:\\Users\\/i, /\/Users\/[^/]+\//i];
-  for (const file of files) {
-    const raw = await fs.readFile(file, "utf8");
+  for (const entry of tracked) {
+    const file = path.join(repoRoot, entry);
+    const buffer = await fs.readFile(file);
+    if (buffer.includes(0)) continue;
+    const raw = buffer.toString("utf8");
     for (const pattern of forbidden) {
       assert.doesNotMatch(
         raw,
         pattern,
-        `${path.relative(repoRoot, file)} 包含本机绑定路径`
+        `${entry} 包含本机绑定路径`
       );
     }
   }
@@ -42,6 +47,10 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   const releaseWorkflow = await fs.readFile(
     path.join(repoRoot, ".github", "workflows", "release.yml"),
     "utf8"
+  );
+  const desktopBuilder = await fs.readFile(
+    path.join(repoRoot, "electron-builder.yml"),
+    "utf8",
   );
   const spec = await fs.readFile(path.join(repoRoot, "docs", "SPEC.md"), "utf8");
   const roleSkill = await fs.readFile(path.join(repoRoot, "skills", "tent-role", "SKILL.md"), "utf8");
@@ -95,6 +104,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(releaseWorkflow, /npm run desktop:package/);
   assert.match(releaseWorkflow, /release\/\*-portable\.exe/);
   assert.doesNotMatch(releaseWorkflow, /styles\.css|versions\.json/);
+  assert.match(desktopBuilder, /^\s*-\s+LICENSE\s*$/m, "Desktop package includes the project MIT LICENSE");
   assert.equal(await exists(path.join(repoRoot, "src", "plugin")), false, "src/plugin production source is retired");
   assert.equal(await exists(path.join(repoRoot, "versions.json")), false, "versions.json is retired");
   assert.equal(await exists(path.join(repoRoot, "test", "plugin.test.ts")), false, "plugin-only tests are retired");
@@ -332,14 +342,19 @@ async function exists(target: string): Promise<boolean> {
   }
 }
 
-async function collectFiles(target: string): Promise<string[]> {
-  const stat = await fs.stat(target);
-  if (stat.isFile()) return [target];
-  const entries = await fs.readdir(target, { withFileTypes: true });
-  const nested = await Promise.all(
-    entries
-      .filter((entry) => !entry.name.startsWith("."))
-      .map((entry) => collectFiles(path.join(target, entry.name)))
-  );
-  return nested.flat();
+function gitTrackedFiles(): string[] {
+  const result = spawnSync("git", ["ls-files", "-z"], {
+    cwd: repoRoot,
+    encoding: "buffer",
+  });
+  assert.equal(result.status, 0, result.stderr?.toString("utf8"));
+  return result.stdout
+    .toString("utf8")
+    .split("\0")
+    .filter(Boolean)
+    .map((entry) => entry.replaceAll("\\", "/"));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
