@@ -1097,7 +1097,9 @@ test("V5 leaves generic drawing tools exclusively to Excalidraw", async () => {
   assert.match(css, /\.tn-canvas-v5-host__scene \.welcome-screen-decor-hint--toolbar/);
   assert.match(css, /\.tn-canvas-v5-host__scene \.HintViewer/);
   assert.doesNotMatch(workbench, /tn-canvas-tabbar|tn-canvas-tab|tn-canvas-tools|工作集/);
-  assert.match(workbench, /graph=\{structureGraph\}/);
+  assert.match(workbench, /graph=\{null\}/);
+  assert.match(workbench, /subtreeProjection=\{subtreeProjection\}/);
+  assert.match(host, /<CanvasSubtreeOverlay/);
   assert.match(workbench, /markdown:\s*false,\s*wiki:\s*false,\s*relation:\s*false/);
   assert.doesNotMatch(workbench, /onToggleEdgeLayer/);
 });

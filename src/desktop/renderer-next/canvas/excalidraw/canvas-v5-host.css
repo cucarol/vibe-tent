@@ -26,6 +26,127 @@
   height: 100%;
 }
 
+.tn-canvas-subtree-lines {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.tn-canvas-subtree-lines__path {
+  fill: none;
+  stroke: var(--tn-color-border-strong);
+  stroke-width: 1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: none;
+  opacity: .38;
+}
+
+.tn-canvas-subtree-lines__path--highlight {
+  stroke: var(--tn-color-text-secondary);
+  stroke-width: 1.45;
+  stroke-dasharray: none;
+  opacity: .82;
+}
+
+.tn-canvas-subtree-controls,
+.tn-canvas-projection-sync {
+  position: absolute;
+  z-index: 34;
+  pointer-events: none;
+}
+
+.tn-canvas-subtree-controls {
+  opacity: 0;
+  transition: opacity var(--tn-motion-duration-fast) var(--tn-motion-ease-out);
+}
+
+.tn-canvas-subtree-controls[data-visible="true"],
+.tn-canvas-subtree-controls:focus-within,
+.tn-canvas-projection-sync[data-visible="true"],
+.tn-canvas-projection-sync:focus-within {
+  opacity: 1;
+}
+
+.tn-canvas-subtree-controls__button,
+.tn-canvas-projection-sync .tn-ui-icon-btn {
+  position: absolute;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  border-color: var(--tn-color-border);
+  background: var(--tn-color-elevated-bg);
+  box-shadow: var(--tn-shadow-card);
+  pointer-events: auto;
+}
+
+.tn-canvas-subtree-controls__button[data-direction="up"] {
+  top: 0;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.tn-canvas-subtree-controls__button[data-direction="right"] {
+  top: 50%;
+  right: 0;
+  transform: translate(50%, -50%);
+}
+
+.tn-canvas-subtree-controls__button[data-direction="down"] {
+  bottom: 0;
+  left: 50%;
+  transform: translate(-50%, 50%);
+}
+
+.tn-canvas-subtree-controls__button[data-direction="left"] {
+  top: 50%;
+  left: 0;
+  transform: translate(-50%, -50%);
+}
+
+.tn-canvas-subtree-controls__pending {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  padding: 2px 6px;
+  border: 1px solid var(--tn-color-border);
+  border-radius: var(--tn-radius-sm);
+  background: var(--tn-color-elevated-bg);
+  color: var(--tn-color-text-secondary);
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+.tn-canvas-projection-sync {
+  opacity: 0;
+  transition: opacity var(--tn-motion-duration-fast) var(--tn-motion-ease-out);
+}
+
+.tn-canvas-projection-sync .tn-ui-icon-btn {
+  top: 0;
+  right: 0;
+  transform: translate(50%, -50%);
+}
+
+.tn-canvas-projection-sync > span {
+  position: absolute;
+  top: -18px;
+  right: -20px;
+  min-width: 16px;
+  color: var(--tn-color-text-secondary);
+  font-size: 9px;
+  text-align: center;
+  pointer-events: none;
+}
+
 /* Default Excalidraw embeddable hint covers Tent cards — hide it; card footer carries the cue. */
 .tn-canvas-v5-host__scene .excalidraw__embeddable-hint {
   display: none !important;

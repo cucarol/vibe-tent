@@ -322,6 +322,10 @@ export const 节点未解析: Story = { name: "未解析 · 不伪装权威节�
 export const 投影失败: Story = { name: "错误 · 查询失败", args: { state: "error", connection: "offline" } };
 export const 快照来源一致: Story = { name: "快照 · 来源一致", args: { snapshotSourceState: "current" } };
 export const 快照来源变化: Story = { name: "快照 · 来源有更新", args: { snapshotSourceState: "changed" } };
+export const 子树投影待同步: Story = {
+  name: "画布 · 子树投影待同步",
+  args: { selectedNodeId: "cx-product", snapshotSourceState: "changed" },
+};
 export const 快照源节点删除: Story = { name: "快照 · 源节点已删除", args: { snapshotSourceState: "deleted" } };
 export const 快照版本未知: Story = { name: "快照 · 旧版本未知", args: { snapshotSourceState: "revision-unknown" } };
 export const 快照来源未知: Story = { name: "快照 · 来源状态未知", args: { snapshotSourceState: "authority-unknown", state: "stale", connection: "reconnecting" } };

@@ -20,6 +20,8 @@ import {
   canDropNodeIntoPresentation,
   canvasPlacementSourceAuthority,
   dropPresentationNode,
+  dropPresentationSubtree,
+  joinPresentationSubtreeInstanceAt,
   placePresentationNode,
   removeFocusedPresentationPlacement,
   selectPresentationNode,
@@ -45,6 +47,10 @@ import type {
   CollaborationSurfaceView,
 } from "../model/collaboration-surface-controller.js";
 import type { InboxModel } from "../model/inbox.js";
+import {
+  deriveCanvasSubtreeProjection,
+  type CanvasSubtreeNodeSource,
+} from "../model/canvas-subtree-projection.js";
 
 export type AppShellProps = {
   workspaceId?: string | null;
@@ -136,6 +142,32 @@ export function AppShell({
       : nodes.some((node) => node.projectionState === "loading")
         ? "loading"
         : "fresh");
+  const canvasProjectionPresence = useMemo(() => {
+    const sources: CanvasSubtreeNodeSource[] | null = projection === "fresh" &&
+      nodes.every((node) => node.projectionState === undefined || node.projectionState === "ready")
+      ? nodes.map((node) => {
+        const source = snapshotSource(node)!;
+        return {
+          nodeId: node.nodeId,
+          parentNodeId: node.parentNodeId,
+          snapshot: { ...captureCanvasNodeSnapshot(source), etag: source.etag },
+        };
+      })
+      : null;
+    const subtree = deriveCanvasSubtreeProjection(document, sources);
+    const stateByPlacementId = new Map(
+      subtree.placementStates.map((state) => [state.placementId, state.state] as const)
+    );
+    const presence = new Map<string, { count: number; pendingSync: boolean }>();
+    for (const placement of document.placements) {
+      if (placement.kind !== "node" || !placement.entityRef) continue;
+      const current = presence.get(placement.entityRef) ?? { count: 0, pendingSync: false };
+      current.count += 1;
+      current.pendingSync ||= stateByPlacementId.get(placement.placementId) === "pending-sync";
+      presence.set(placement.entityRef, current);
+    }
+    return presence;
+  }, [document, nodes, projection]);
   const focusedPlacement = useMemo(
     () =>
       selectedNodeId
@@ -232,10 +264,51 @@ export function AppShell({
         node.projectionState
       )
     ) return false;
-    const snapshot = captureCanvasNodeSnapshot(source);
-    onPresentationChange((current) =>
-      dropPresentationNode(current, nodeId, snapshot, point)
-    );
+    const byParent = new Map<string, WorkbenchNodeView[]>();
+    for (const candidate of nodes) {
+      if (!candidate.parentNodeId) continue;
+      const siblings = byParent.get(candidate.parentNodeId) ?? [];
+      siblings.push(candidate);
+      byParent.set(candidate.parentNodeId, siblings);
+    }
+    const subtreeSources: CanvasSubtreeNodeSource[] = [];
+    const queue = [node];
+    const seen = new Set<string>();
+    while (queue.length > 0) {
+      const candidate = queue.shift()!;
+      if (seen.has(candidate.nodeId)) return false;
+      seen.add(candidate.nodeId);
+      const candidateSource = snapshotSource(candidate);
+      if (
+        !candidateSource ||
+        (candidate.projectionState !== undefined && candidate.projectionState !== "ready")
+      ) return false;
+      subtreeSources.push({
+        nodeId: candidate.nodeId,
+        parentNodeId: candidate.parentNodeId,
+        snapshot: {
+          ...captureCanvasNodeSnapshot(candidateSource),
+          etag: candidateSource.etag,
+        },
+      });
+      queue.push(...(byParent.get(candidate.nodeId) ?? []));
+    }
+    onPresentationChange((current) => {
+      const joined = joinPresentationSubtreeInstanceAt(
+        current,
+        subtreeSources[0],
+        point
+      );
+      if (joined) return joined;
+      return subtreeSources.length > 1
+        ? dropPresentationSubtree(current, nodeId, subtreeSources, point)
+        : dropPresentationNode(
+          current,
+          nodeId,
+          subtreeSources[0].snapshot,
+          point
+        );
+    });
     return true;
   };
 
@@ -314,7 +387,7 @@ export function AppShell({
       ) : null}
 
       <div className="tn-workbench" data-outline-open={outlineOpen ? "true" : "false"} data-focus-open={focusOpen ? "true" : "false"} data-focus-expanded={focusExpanded ? "true" : "false"} data-immersive={immersive ? "true" : "false"}>
-        <OutlinePanel id="tn-outline-panel" mode={outlineMode} onModeChange={setOutlineMode} nodes={nodes} projection={projection} selectedNodeId={selectedNodeId} reveal={outlineReveal} visible={outlineOpen} onSelectNode={selectNodeFromOutline} onOpenNodeActions={openNodeActions} canDragToCanvas={Boolean(onPresentationChange)} onCollapse={() => layout.collapse("left")} inboxModel={inboxModel} />
+        <OutlinePanel id="tn-outline-panel" mode={outlineMode} onModeChange={setOutlineMode} nodes={nodes} projection={projection} selectedNodeId={selectedNodeId} reveal={outlineReveal} visible={outlineOpen} onSelectNode={selectNodeFromOutline} onOpenNodeActions={openNodeActions} canDragToCanvas={Boolean(onPresentationChange)} canvasPresence={canvasProjectionPresence} onCollapse={() => layout.collapse("left")} inboxModel={inboxModel} />
         <CanvasWorkbench document={document} nodes={nodes} projection={projection} immersive={immersive} onImmersiveChange={setImmersive} onDocumentChange={updateDocument} onSelectNode={selectNodeFromCanvas} onDropNode={onPresentationChange ? dropNode : undefined} previewDocument={focusDocument?.nodeId && typeof focusDocument.body === "string" ? { nodeId: focusDocument.nodeId, body: focusDocument.body } : null} initialScene={initialScene} persistenceStatus={persistenceStatus} onRetryPersistence={onRetryPersistence} onScenePersist={onScenePersist} />
         <InspectorPanel
           id="tn-focus-panel"

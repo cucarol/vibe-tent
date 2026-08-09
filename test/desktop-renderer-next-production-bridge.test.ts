@@ -399,6 +399,35 @@ test("Outline drag is enabled only when its Canvas owner and Node are ready", ()
   assert.match(stale, /draggable="false"/);
 });
 
+test("Outline uses one projection-presence indicator for count and pending sync", () => {
+  const node = {
+    nodeId: "cx-presence",
+    etag: "etag-presence",
+    path: "Presence",
+    name: "Presence",
+    type: "prompt",
+    tags: [],
+    mode: "editable" as const,
+    archived: false,
+    invalid: false,
+    parentNodeId: null,
+    hasChildren: false,
+    projectionState: "ready" as const,
+    collaborationState: "ready" as const,
+  } satisfies WorkbenchNodeView;
+  const markup = renderToStaticMarkup(createElement(OutlinePanel, {
+    nodes: [node],
+    projection: "fresh",
+    selectedNodeId: node.nodeId,
+    onSelectNode: () => {},
+    onCollapse: () => {},
+    canvasPresence: new Map([[node.nodeId, { count: 2, pendingSync: true }]]),
+  }));
+  assert.match(markup, /当前画布中有 2 份投影，等待同步/);
+  assert.match(markup, /data-pending-sync="true"/);
+  assert.equal((markup.match(/tn-outline-presence/g) ?? []).length, 1);
+});
+
 test("Focus renders externally controlled placement state without inventing a second owner", () => {
   const node = {
     nodeId: "cx-a",

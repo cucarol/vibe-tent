@@ -243,6 +243,15 @@
   box-shadow: none;
 }
 
+.tn-excal-node[data-projection-sync="pending-sync"] {
+  border-style: dashed;
+}
+
+.tn-excal-node[data-projection-sync="unknown"] {
+  border-style: dashed;
+  border-color: var(--tn-color-border-strong);
+}
+
 .tn-excal-node__signal {
   position: absolute;
   top: 0;

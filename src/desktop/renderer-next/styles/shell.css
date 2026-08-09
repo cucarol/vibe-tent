@@ -317,6 +317,23 @@ button, input, select, textarea { font: inherit; }
 .tn-outline-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .tn-outline-meta { overflow: hidden; color: var(--tn-color-text-faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .tn-outline-node .tn-ui-status-badge { padding-inline: 5px; }
+.tn-outline-presence {
+  display: inline-grid;
+  place-items: center;
+  min-width: 14px;
+  height: 14px;
+  padding-inline: 3px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--tn-color-text-faint);
+  font-size: 9px;
+  line-height: 1;
+}
+.tn-outline-presence[data-pending-sync="true"] {
+  border-style: dashed;
+  border-color: var(--tn-color-border-strong);
+  color: var(--tn-color-text-secondary);
+}
 
 .tn-inspector-content { height: calc(100% - 32px); overflow: auto; }
 .tn-focus-identity { padding: 18px 16px 14px; border-bottom: 1px solid var(--tn-color-border); }

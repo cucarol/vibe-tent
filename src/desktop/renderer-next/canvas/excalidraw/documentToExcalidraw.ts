@@ -30,6 +30,8 @@ import {
   readCanvasNodeSnapshot,
   type CanvasSnapshotSource,
 } from "../../model/canvas-node-snapshot.js";
+import { withoutCanvasSubtreePlacementMeta } from "../../model/canvas-subtree-projection.js";
+import { isCanvasPresentationHistoryElement } from "./canvas-presentation-history.js";
 
 /** V5-local recovery labels; the pure adapter has no UI-engine dependency. */
 export type TentNodeRecovery = "none" | "pending" | "ghost" | "error";
@@ -726,14 +728,14 @@ export function duplicateTentPlacements(args: {
     if (!source) return element;
     const placementId = args.createPlacementId();
     addedPlacementIds.push(placementId);
-    addedPlacements.push({
+    addedPlacements.push(withoutCanvasSubtreePlacementMeta({
       ...source,
       placementId,
       x: isFiniteNumber(element.x) ? element.x : source.x,
       y: isFiniteNumber(element.y) ? element.y : source.y,
       width: NODE_CARD.width,
       height: NODE_CARD.height,
-    });
+    }));
     return {
       ...element,
       id: tentPlacementElementId(placementId),
@@ -766,6 +768,7 @@ export function drawingElementsFromScene(
 ): unknown[] {
   return elements.filter((raw) => {
     if (!raw || typeof raw !== "object") return false;
+    if (isCanvasPresentationHistoryElement(raw)) return false;
     const el = raw as ExcalidrawElementLike;
     if (readTentNodeCustomData(el)) return false;
     if (typeof el.id === "string" && el.id.startsWith("tent-edge:")) return false;

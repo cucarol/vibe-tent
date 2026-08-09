@@ -4,6 +4,11 @@ import {
   captureCanvasNodeSnapshot,
   withCanvasNodeSnapshot,
 } from "../model/canvas-node-snapshot.js";
+import { NODE_CARD } from "../model/canvas-document.js";
+import {
+  type SubtreeDirection,
+  withCanvasSubtreePlacementMeta,
+} from "../model/canvas-subtree-projection.js";
 
 export const FIXTURE_WORKSPACE_ID = "ws-storybook-ui";
 
@@ -50,6 +55,24 @@ export function fixtureNodes(state: ProjectionState = "ready"): WorkbenchNodeVie
       projectionMessage: state === "stale" ? "协作状态未知，等待重新查询。" : undefined,
     },
     {
+      nodeId: "cx-research",
+      etag: "etag-research-v1",
+      path: "产品方向/交互原则",
+      name: "交互原则",
+      title: "稳定、克制的空间交互",
+      type: "prompt",
+      tags: ["体验", "原则"],
+      mode: "editable",
+      archived: false,
+      invalid: false,
+      parentNodeId: "cx-product",
+      hasChildren: false,
+      depth: 1,
+      activeTaskState: state === "ready" ? null : undefined,
+      collaborationState,
+      projectionState: state,
+    },
+    {
       nodeId: "cx-delivery",
       etag: "etag-delivery-v1",
       path: "产品方向/桌面工作台/视觉验收",
@@ -72,13 +95,30 @@ export function fixtureNodes(state: ProjectionState = "ready"): WorkbenchNodeVie
 
 export function fixtureCanvasDocument(): CanvasDocument {
   const byId = new Map(fixtureNodes().map((node) => [node.nodeId, node] as const));
+  const instanceId = "subtree-storybook-product";
   const placement = (
-    value: CanvasDocument["placements"][number]
+    value: CanvasDocument["placements"][number],
+    subtree: {
+      parentPlacementId: string | null;
+      depth: number;
+      siblingOrder: number;
+      expandedDirection: SubtreeDirection | null;
+    }
   ) => {
     const node = value.entityRef ? byId.get(value.entityRef) : undefined;
-    return node
+    const frozen = node
       ? withCanvasNodeSnapshot(value, captureCanvasNodeSnapshot(node))
       : value;
+    return withCanvasSubtreePlacementMeta(frozen, {
+      version: 1,
+      instanceId,
+      rootPlacementId: "pl-product",
+      parentPlacementId: subtree.parentPlacementId,
+      depth: subtree.depth,
+      siblingOrder: subtree.siblingOrder,
+      expandedDirection: subtree.expandedDirection,
+      lastDirection: "down",
+    });
   };
   return {
     version: 1,
@@ -86,9 +126,22 @@ export function fixtureCanvasDocument(): CanvasDocument {
     focusedPlacementId: "pl-workbench",
     viewport: { x: 0, y: 0, zoom: 1 },
     placements: [
-      placement({ placementId: "pl-product", entityRef: "cx-product", kind: "node", x: 110, y: 130, width: 260, height: 138 }),
-      placement({ placementId: "pl-workbench", entityRef: "cx-workbench", kind: "node", x: 390, y: 170, width: 282, height: 152 }),
-      placement({ placementId: "pl-delivery", entityRef: "cx-delivery", kind: "node", x: 420, y: 430, width: 260, height: 138 }),
+      placement(
+        { placementId: "pl-product", entityRef: "cx-product", kind: "node", x: 224, y: 80, width: NODE_CARD.width, height: NODE_CARD.height },
+        { parentPlacementId: null, depth: 0, siblingOrder: 0, expandedDirection: "down" }
+      ),
+      placement(
+        { placementId: "pl-workbench", entityRef: "cx-workbench", kind: "node", x: 76, y: 260, width: NODE_CARD.width, height: NODE_CARD.height },
+        { parentPlacementId: "pl-product", depth: 1, siblingOrder: 0, expandedDirection: "down" }
+      ),
+      placement(
+        { placementId: "pl-research", entityRef: "cx-research", kind: "node", x: 372, y: 260, width: NODE_CARD.width, height: NODE_CARD.height },
+        { parentPlacementId: "pl-product", depth: 1, siblingOrder: 1, expandedDirection: null }
+      ),
+      placement(
+        { placementId: "pl-delivery", entityRef: "cx-delivery", kind: "node", x: 76, y: 440, width: NODE_CARD.width, height: NODE_CARD.height },
+        { parentPlacementId: "pl-workbench", depth: 2, siblingOrder: 0, expandedDirection: null }
+      ),
     ],
   };
 }

@@ -85,6 +85,20 @@ import {
 } from "./canvasV5PersistGate.js";
 import "./tent-embeddable-prototype.css";
 import "./canvas-v5-host.css";
+import type {
+  CanvasSubtreeProjection,
+  SubtreeDirection,
+} from "../../model/canvas-subtree-projection.js";
+import { carryCollapsedSubtreeDescendants } from "../../model/canvas-subtree-projection.js";
+import {
+  CanvasSubtreeOverlay,
+  type CanvasSubtreeOverlayHandle,
+} from "./CanvasSubtreeOverlay.js";
+import {
+  activeCanvasPresentationRevision,
+  advanceCanvasPresentationHistory,
+  preserveCanvasPresentationHistoryMarker,
+} from "./canvas-presentation-history.js";
 
 export type CanvasV5HostProps = {
   document: CanvasDocument;
@@ -112,6 +126,9 @@ export type CanvasV5HostProps = {
   immersive?: boolean;
   onImmersiveChange?: (immersive: boolean) => void;
   previewDocument?: { nodeId: string; body: string } | null;
+  subtreeProjection?: CanvasSubtreeProjection;
+  onSubtreeDirection?: (placementId: string, direction: SubtreeDirection) => void;
+  onProjectionSync?: (placementId: string) => CanvasDocument | null;
 };
 
 type ExcalidrawApi = {
@@ -121,6 +138,7 @@ type ExcalidrawApi = {
     captureUpdate?: string;
   }) => void;
   getSceneElements?: () => readonly unknown[];
+  getSceneElementsIncludingDeleted?: () => readonly unknown[];
   getAppState?: () => Record<string, unknown>;
   getFiles?: () => Record<string, unknown>;
   resetScene?: () => void;
@@ -204,6 +222,32 @@ const CANVAS_COPY = {
   "canvas.aria": "Tent 画布",
 } as const;
 
+const EMPTY_SUBTREE_PROJECTION: CanvasSubtreeProjection = {
+  authority: "unknown",
+  visiblePlacementIds: [],
+  relationships: [],
+  controls: [],
+  placementStates: [],
+  syncControls: [],
+};
+
+function sceneDocumentForSubtreeProjection(
+  document: CanvasDocument,
+  projection: CanvasSubtreeProjection
+): CanvasDocument {
+  if (projection.authority === "unknown" && projection.visiblePlacementIds.length === 0) {
+    return document;
+  }
+  const visible = new Set(projection.visiblePlacementIds);
+  return {
+    ...document,
+    placements: document.placements.filter((placement) => visible.has(placement.placementId)),
+    focusedPlacementId: document.focusedPlacementId && visible.has(document.focusedPlacementId)
+      ? document.focusedPlacementId
+      : null,
+  };
+}
+
 function isEditableTarget(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && Boolean(
     target.closest("input, textarea, select, [contenteditable='true'], .cm-editor")
@@ -261,7 +305,15 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     immersive = false,
     onImmersiveChange,
     previewDocument = null,
+    subtreeProjection = EMPTY_SUBTREE_PROJECTION,
+    onSubtreeDirection = () => {},
+    onProjectionSync = () => null,
   } = props;
+
+  const sceneDocument = useMemo(
+    () => sceneDocumentForSubtreeProjection(canvasDocument, subtreeProjection),
+    [canvasDocument, subtreeProjection]
+  );
 
   const documentRef = useRef(canvasDocument);
   documentRef.current = canvasDocument;
@@ -275,6 +327,13 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
   layerVisibleRef.current = layerVisible;
   const deletedPlacementCacheRef = useRef(new Map<string, CanvasDocument["placements"][number]>());
   const adapterHistoryPlacementIdsRef = useRef(new Set<string>());
+  const subtreeProjectionRef = useRef(subtreeProjection);
+  subtreeProjectionRef.current = subtreeProjection;
+  const subtreeOverlayRef = useRef<CanvasSubtreeOverlayHandle>(null);
+  const presentationHistoryDocumentsRef = useRef(new Map<string, CanvasDocument>());
+  const presentationHistoryBaselineRef = useRef<CanvasDocument | null>(null);
+  const presentationHistoryRevisionRef = useRef<string | null>(null);
+  const presentationHistoryStartedRef = useRef(false);
 
   const applyingExternal = useRef(false);
   const apiRef = useRef<ExcalidrawApi | null>(null);
@@ -287,7 +346,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
   const cancelApiViewportSyncRef = useRef<(() => void) | null>(null);
   const lastInternallyPublishedDocument = useRef<CanvasDocument | null>(null);
   const liveSceneInputs = useRef<LiveSceneInputs>({
-    document: canvasDocument,
+    document: sceneDocument,
     graph,
     edgeLayers,
   });
@@ -304,7 +363,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
   const hydrated = useMemo(
     () =>
       hydrateCanvasV5Scene({
-        document: canvasDocument,
+        document: sceneDocument,
         drawingScene: initialScene,
         resolvers,
         graph,
@@ -318,6 +377,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
   const [mountKey, setMountKey] = useState(0);
   const [displayMenuOpen, setDisplayMenuOpen] = useState(false);
   const [previewPlacementId, setPreviewPlacementId] = useState<string | null>(null);
+  const [hoveredPlacementId, setHoveredPlacementId] = useState<string | null>(null);
   const previewPlacementIdRef = useRef<string | null>(null);
   const previewCandidateRef = useRef<string | null>(null);
   const previewTimerRef = useRef<number | null>(null);
@@ -357,7 +417,11 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     };
     const zoom = appState.zoom?.value ?? 1;
     const rect = host.getBoundingClientRect();
-    const preferredLeft = (element.x + (element.width ?? NODE_CARD.width) + (appState.scrollX ?? 0)) * zoom + 14;
+    const hasSubtreeControl = subtreeProjectionRef.current.controls.some(
+      (control) => control.placementId === placementId
+    );
+    const preferredLeft = (element.x + (element.width ?? NODE_CARD.width) + (appState.scrollX ?? 0)) * zoom +
+      (hasSubtreeControl ? 38 : 14);
     const preferredTop = (element.y + (appState.scrollY ?? 0)) * zoom;
     preview.style.left = `${Math.max(12, Math.min(rect.width - 250, preferredLeft))}px`;
     preview.style.top = `${Math.max(52, Math.min(rect.height - 142, preferredTop))}px`;
@@ -390,8 +454,15 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
   useEffect(() => () => clearPreviewTimer(), [clearPreviewTimer]);
 
   useEffect(() => {
+    presentationHistoryDocumentsRef.current.clear();
+    presentationHistoryBaselineRef.current = null;
+    presentationHistoryRevisionRef.current = null;
+    presentationHistoryStartedRef.current = false;
     const next = hydrateCanvasV5Scene({
-      document: documentRef.current,
+      document: sceneDocumentForSubtreeProjection(
+        documentRef.current,
+        subtreeProjectionRef.current
+      ),
       drawingScene: initialScene,
       resolvers,
       graph,
@@ -413,7 +484,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
 
   useEffect(() => {
     const previous = liveSceneInputs.current;
-    const next = { document: canvasDocument, graph, edgeLayers };
+    const next = { document: sceneDocument, graph, edgeLayers };
     liveSceneInputs.current = next;
     if (
       !shouldRefreshCanvasV5Scene(
@@ -427,14 +498,15 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
 
     const api = apiRef.current;
     if (!api) return;
+    const sceneElements = api.getSceneElementsIncludingDeleted?.() ?? api.getSceneElements?.() ?? [];
     const drawingScene = sceneSnapshotForV4Persist(
-      api.getSceneElements?.() ?? [],
+      sceneElements,
       api.getAppState?.() ?? {},
       api.getFiles?.() ?? {},
       layerVisibleRef.current
     );
     const refreshed = hydrateCanvasV5Scene({
-      document: canvasDocument,
+      document: sceneDocument,
       drawingScene,
       resolvers,
       graph,
@@ -444,7 +516,10 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     applyingExternal.current = true;
     try {
       api.updateScene({
-        elements: refreshed.elements,
+        elements: preserveCanvasPresentationHistoryMarker(
+          refreshed.elements,
+          sceneElements
+        ),
         appState: {
           activeEmbeddable: null,
           selectedElementIds: {},
@@ -459,7 +534,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
         applyingExternal.current = false;
       });
     }
-  }, [canvasDocument, edgeLayers, graph, resolvers]);
+  }, [edgeLayers, graph, resolvers, sceneDocument]);
 
   useEffect(() => {
     const focusedPlacementId = canvasDocument.focusedPlacementId ?? null;
@@ -771,6 +846,10 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
         }
       },
     });
+    requestAnimationFrame(() => {
+      if (apiRef.current !== api) return;
+      subtreeOverlayRef.current?.update(api.getAppState?.() ?? {});
+    });
   }, []);
 
   const commitPlacementFromScene = useCallback((
@@ -781,9 +860,12 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
       zoom?: { value: number };
     }
   ) => {
-    const moved = applyPlacementPatches(
+    const moved = carryCollapsedSubtreeDescendants(
+      documentRef.current,
+      applyPlacementPatches(
       documentRef.current,
       extractPlacementPatchesFromElements(elements)
+      )
     );
     const viewport = viewportFromExcalidrawAppState(
       appState,
@@ -833,7 +915,26 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     const filesObj = (files ?? {}) as Record<string, unknown>;
     const appObj = appState as Record<string, unknown>;
     latestSceneRef.current = { elements, appState: appObj };
+    subtreeOverlayRef.current?.update(appObj);
     if (tentPlacementDragRef.current) return;
+
+    if (presentationHistoryStartedRef.current) {
+      const revision = activeCanvasPresentationRevision(elements);
+      if (revision !== presentationHistoryRevisionRef.current) {
+        const stored = revision
+          ? presentationHistoryDocumentsRef.current.get(revision) ?? null
+          : presentationHistoryBaselineRef.current;
+        if (stored) {
+          presentationHistoryRevisionRef.current = revision;
+          placementPersistGate.current.cancel();
+          publishDocument({
+            ...stored,
+            viewport: documentRef.current.viewport,
+          });
+          return;
+        }
+      }
+    }
 
     // Native Store history is the causal source for duplicate/delete. The
     // CanvasDocument follows the exact scene frame using only locally cached
@@ -947,6 +1048,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     const previewCandidate = hoveredCustom?.placementId ?? null;
     if (previewCandidate !== previewCandidateRef.current) {
       previewCandidateRef.current = previewCandidate;
+      setHoveredPlacementId(previewCandidate);
       clearPreviewTimer();
       previewPlacementIdRef.current = null;
       setPreviewPlacementId(null);
@@ -1163,6 +1265,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
             }
           );
         }
+        subtreeOverlayRef.current?.update(appState);
       } finally {
         const preview = tentPlacementDragPreviewRef.current;
         if (tentPlacementPreviewFrameRef.current !== null) {
@@ -1274,6 +1377,19 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
         event.clientY
       );
       if (!moved.moved) return;
+      const movedElement = moved.elements.find((raw) =>
+        Boolean(
+          raw &&
+          typeof raw === "object" &&
+          readTentNodeCustomData(raw as { customData?: unknown })?.placementId === drag.placementId
+        )
+      ) as { x?: number; y?: number } | undefined;
+      if (typeof movedElement?.x === "number" && typeof movedElement.y === "number") {
+        subtreeOverlayRef.current?.update(
+          api.getAppState?.() ?? latestSceneRef.current.appState,
+          { placementId: drag.placementId, x: movedElement.x, y: movedElement.y }
+        );
+      }
       const preview = tentPlacementDragPreviewRef.current;
       if (preview) {
         preview.style.translate = `${event.clientX - drag.startClientX}px ${
@@ -1373,6 +1489,53 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     () => buildTentEmbeddableCardModels(canvasDocument, resolvers),
     [canvasDocument, resolvers]
   );
+  const projectionStateByPlacement = useMemo(
+    () => new Map(
+      subtreeProjection.placementStates.map((item) => [item.placementId, item.state] as const)
+    ),
+    [subtreeProjection.placementStates]
+  );
+
+  const handleProjectionSyncWithHistory = useCallback((placementId: string) => {
+    const api = apiRef.current;
+    if (!api) return;
+    const nextDocument = onProjectionSync(placementId);
+    if (!nextDocument || nextDocument === documentRef.current) return;
+    const elements = api.getSceneElementsIncludingDeleted?.() ?? api.getSceneElements?.() ?? [];
+    const currentRevision = activeCanvasPresentationRevision(elements);
+    if (!currentRevision) {
+      presentationHistoryBaselineRef.current = documentRef.current;
+    }
+    const revision = newPlacementId("projection-sync");
+    presentationHistoryDocumentsRef.current.set(revision, nextDocument);
+    if (presentationHistoryDocumentsRef.current.size > 64) {
+      const oldest = presentationHistoryDocumentsRef.current.keys().next().value;
+      if (oldest) presentationHistoryDocumentsRef.current.delete(oldest);
+    }
+    presentationHistoryStartedRef.current = true;
+    presentationHistoryRevisionRef.current = revision;
+    placementPersistGate.current.cancel();
+    publishDocument(nextDocument);
+    const nextElements = advanceCanvasPresentationHistory(elements, revision);
+    latestSceneRef.current = {
+      elements: nextElements,
+      appState: api.getAppState?.() ?? latestSceneRef.current.appState,
+    };
+    api.updateScene({
+      elements: nextElements,
+      appState: { activeEmbeddable: null, selectedElementIds: {} },
+      captureUpdate: "IMMEDIATELY",
+    });
+  }, [onProjectionSync, publishDocument]);
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      subtreeOverlayRef.current?.update(
+        apiRef.current?.getAppState?.() ?? latestSceneRef.current.appState
+      );
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [canvasDocument, subtreeProjection]);
 
   return (
     <div
@@ -1530,6 +1693,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
                       detail: "权威投影尚不可用；本地位置已保留。",
                     }}
                     selected={canvasDocument.focusedPlacementId === custom.placementId}
+                    projectionSyncState="unknown"
                   />
                 );
               }
@@ -1539,6 +1703,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
                   placementId={custom.placementId}
                   data={toNodeData(model)}
                   selected={selected}
+                  projectionSyncState={projectionStateByPlacement.get(custom.placementId) ?? "unknown"}
                 />
               );
             }}
@@ -1556,6 +1721,15 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
             }}
           />
         </Suspense>
+        <CanvasSubtreeOverlay
+          ref={subtreeOverlayRef}
+          document={canvasDocument}
+          projection={subtreeProjection}
+          hoveredPlacementId={hoveredPlacementId}
+          selectedPlacementId={canvasDocument.focusedPlacementId ?? null}
+          onDirection={onSubtreeDirection}
+          onSync={handleProjectionSyncWithHistory}
+        />
         {previewPlacementId && cardModels.get(previewPlacementId) ? (
           <aside
             ref={previewRef}

@@ -1,13 +1,22 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { CanvasV5Host } from "../canvas/excalidraw/CanvasV5Host.js";
 import type { CanvasNodeResolvers } from "../canvas/excalidraw/documentToExcalidraw.js";
-import type { GraphEdgeSource } from "../model/canvas-edges.js";
 import type { CanvasDocument } from "../types/identity.js";
 import type { WorkbenchNodeView } from "../shell/workbench-types.js";
 import type { DrawingPersistenceStatus } from "../model/drawing-persistence-status.js";
 import type { ExcalidrawSceneSnapshot } from "../canvas/excalidraw/excalidrawSceneTypes.js";
 import { clientPointToCanvasNodeOrigin } from "../model/canvas-session-store.js";
-import { OUTLINE_NODE_DRAG_TYPE } from "../model/canvas-node-snapshot.js";
+import {
+  OUTLINE_NODE_DRAG_TYPE,
+  captureCanvasNodeSnapshot,
+} from "../model/canvas-node-snapshot.js";
+import {
+  deriveCanvasSubtreeProjection,
+  reconcileCanvasProjectionSync,
+  toggleCanvasSubtreeBranch,
+  type CanvasSubtreeNodeSource,
+  type SubtreeDirection,
+} from "../model/canvas-subtree-projection.js";
 import {
   completeCanvasDrop,
   enterCanvasDropTarget,
@@ -70,23 +79,48 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
         : undefined;
     },
   }), [byId, projection]);
-  const structureGraph = useMemo<GraphEdgeSource>(() => {
-    if (projection !== "fresh") return null;
-    const readyIds = new Set(
-      nodes
-        .filter((node) => !node.projectionState || node.projectionState === "ready")
-        .map((node) => node.nodeId)
-    );
-    return {
-      edges: {
-        parent: nodes.flatMap((node) =>
-          node.parentNodeId && readyIds.has(node.nodeId) && readyIds.has(node.parentNodeId)
-            ? [{ parentNodeId: node.parentNodeId, childNodeId: node.nodeId }]
-            : []
-        ),
+  const subtreeSources = useMemo<readonly CanvasSubtreeNodeSource[] | null>(() => {
+    if (
+      projection !== "fresh" ||
+      nodes.some((node) => node.projectionState !== undefined && node.projectionState !== "ready")
+    ) return null;
+    return nodes.map((node) => ({
+      nodeId: node.nodeId,
+      parentNodeId: node.parentNodeId,
+      snapshot: {
+        ...captureCanvasNodeSnapshot({
+          nodeId: node.nodeId,
+          etag: node.etag,
+          name: node.name,
+          ...(node.title?.trim() ? { title: node.title } : {}),
+          path: node.path,
+          type: node.type,
+          tags: node.tags,
+          mode: node.mode,
+          archived: node.archived,
+          invalid: node.invalid,
+        }),
+        etag: node.etag,
       },
-    };
+    }));
   }, [nodes, projection]);
+  const subtreeProjection = useMemo(
+    () => deriveCanvasSubtreeProjection(document, subtreeSources),
+    [document, subtreeSources]
+  );
+
+  const handleSubtreeDirection = (placementId: string, direction: SubtreeDirection) => {
+    if (subtreeProjection.authority !== "fresh") return;
+    const control = subtreeProjection.controls.find((candidate) => candidate.placementId === placementId);
+    if (!control?.canMutate) return;
+    onDocumentChange(toggleCanvasSubtreeBranch(document, placementId, direction));
+  };
+
+  const handleProjectionSync = (placementId: string) => {
+    const control = subtreeProjection.syncControls.find((candidate) => candidate.placementId === placementId);
+    if (!control?.canSync || !subtreeSources) return null;
+    return reconcileCanvasProjectionSync(document, placementId, subtreeSources);
+  };
 
   const hasNodeDrag = (event: DragEvent) =>
     Array.from(event.dataTransfer.types).includes(OUTLINE_NODE_DRAG_TYPE);
@@ -151,7 +185,10 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
             onDocumentChange={onDocumentChange}
             onSelectPlacement={(placementId, entityRef) => onSelectNode(entityRef, placementId)}
             resolvers={resolvers}
-            graph={structureGraph}
+            graph={null}
+            subtreeProjection={subtreeProjection}
+            onSubtreeDirection={handleSubtreeDirection}
+            onProjectionSync={handleProjectionSync}
             edgeLayers={{ parent: true, markdown: false, wiki: false, relation: false }}
             layerVisible={drawingVisible}
             onLayerVisibleChange={setDrawingVisible}

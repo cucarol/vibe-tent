@@ -10,6 +10,12 @@ import {
 } from "../model/canvas-node-snapshot.js";
 import type { CanvasDocument } from "../types/identity.js";
 import { focusWorkbenchNode } from "./workbench-selection.js";
+import {
+  createCanvasSubtreeProjectionInstance,
+  joinCanvasSubtreeInstanceAt,
+  type CanvasSubtreeNodeSource,
+  type SubtreeDirection,
+} from "../model/canvas-subtree-projection.js";
 
 export type WorkbenchPresentationState = {
   document: CanvasDocument;
@@ -109,6 +115,39 @@ export function dropPresentationNode(
   return {
     selectedNodeId: nodeId,
     document: dropNodeSnapshotAt(current.document, nodeId, snapshot, point).document,
+  };
+}
+
+export function dropPresentationSubtree(
+  current: WorkbenchPresentationState,
+  rootNodeId: string,
+  sources: readonly CanvasSubtreeNodeSource[],
+  point: { x: number; y: number },
+  direction: SubtreeDirection = "right"
+): WorkbenchPresentationState {
+  const dropped = createCanvasSubtreeProjectionInstance(
+    current.document,
+    rootNodeId,
+    sources,
+    point,
+    direction
+  );
+  return {
+    selectedNodeId: rootNodeId,
+    document: dropped.document,
+  };
+}
+
+export function joinPresentationSubtreeInstanceAt(
+  current: WorkbenchPresentationState,
+  source: CanvasSubtreeNodeSource,
+  point: { x: number; y: number }
+): WorkbenchPresentationState | null {
+  const joined = joinCanvasSubtreeInstanceAt(current.document, source, point);
+  if (!joined) return null;
+  return {
+    selectedNodeId: source.nodeId,
+    document: joined.document,
   };
 }
 

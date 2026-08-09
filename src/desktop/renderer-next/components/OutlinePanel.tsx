@@ -25,6 +25,7 @@ export type OutlinePanelProps = {
   onSelectNode: (nodeId: string) => void;
   onOpenNodeActions?: (nodeId: string) => void;
   canDragToCanvas?: boolean;
+  canvasPresence?: ReadonlyMap<string, { count: number; pendingSync: boolean }>;
   reveal?: { nodeId: string; revision: number };
   visible?: boolean;
   onCollapse: () => void;
@@ -61,7 +62,7 @@ const EMPTY_COPY: Record<
   },
 };
 
-export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projection, selectedNodeId, onSelectNode, onOpenNodeActions, canDragToCanvas = false, reveal, visible = true, onCollapse, inboxModel = { state: "idle" } }: OutlinePanelProps) {
+export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projection, selectedNodeId, onSelectNode, onOpenNodeActions, canDragToCanvas = false, canvasPresence = new Map(), reveal, visible = true, onCollapse, inboxModel = { state: "idle" } }: OutlinePanelProps) {
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
   const itemRefs = useRef(new Map<string, HTMLDivElement>());
   const knownExpandableIds = useRef(new Set<string>());
@@ -290,6 +291,7 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
             const projectionReady = !node.projectionState || node.projectionState === "ready";
             const expanded = node.hasChildren ? expandedNodeIds.has(node.nodeId) : undefined;
             const position = siblingInfo.get(node.nodeId);
+            const presence = canvasPresence.get(node.nodeId);
             return (
               <div
                 key={node.nodeId}
@@ -342,6 +344,16 @@ export function OutlinePanel({ id, mode = "nodes", onModeChange, nodes, projecti
                   <span className="tn-outline-title">{nodeTitle(node)}</span>
                   {selected ? <span className="tn-outline-meta">{projectionReady ? nodeTypeLabel(node.type) : projectionCopy}</span> : null}
                 </span>
+                {presence && presence.count > 0 ? (
+                  <span
+                    className="tn-outline-presence"
+                    data-pending-sync={presence.pendingSync || undefined}
+                    title={`当前画布中有 ${presence.count} 份投影${presence.pendingSync ? "，等待同步" : ""}`}
+                    aria-label={`当前画布中有 ${presence.count} 份投影${presence.pendingSync ? "，等待同步" : ""}`}
+                  >
+                    {presence.count > 1 ? presence.count : <span aria-hidden="true">•</span>}
+                  </span>
+                ) : null}
                 {selected && projectionReady && node.activeTaskState ? <StatusBadge tone="running" data-task-state={node.activeTaskState}>{taskStateLabel(node.activeTaskState)}</StatusBadge> : null}
               </div>
             );

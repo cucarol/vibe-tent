@@ -12,6 +12,10 @@ import {
   removeEntityFromCanvas,
 } from "../src/desktop/renderer-next/model/canvas-document.js";
 import { normalizeCanvasWorkspaceSession } from "../src/desktop/renderer-next/model/canvas-session-store.js";
+import {
+  CANVAS_SUBTREE_META_KEY,
+  readCanvasSubtreePlacementMeta,
+} from "../src/desktop/renderer-next/model/canvas-subtree-projection.js";
 
 class MemoryStorage {
   private readonly values = new Map<string, string>();
@@ -84,6 +88,42 @@ test("V5 local persistence round-trips document and freehand scene after reload"
   const loaded = reader.load();
   assert.equal(loaded.kind, "loaded");
   assert.deepEqual(loaded.snapshot, snapshot());
+});
+
+test("V5 local persistence retains subtree identity and collapsed branches exactly", () => {
+  const storage = new MemoryStorage();
+  const persistence = new CanvasV5LocalPersistence(storage, "ws-alpha");
+  const base = snapshot();
+  const subtreeMeta = {
+    version: 1,
+    instanceId: "subtree-a",
+    rootPlacementId: "pl-1",
+    parentPlacementId: null,
+    depth: 0,
+    siblingOrder: 0,
+    expandedDirection: null,
+    lastDirection: "left",
+  } as const;
+  const document = {
+    ...base.document,
+    placements: base.document.placements.map((placement) => placement.placementId === "pl-1"
+      ? {
+        ...placement,
+        meta: {
+          ...(placement.meta ?? {}),
+          [CANVAS_SUBTREE_META_KEY]: subtreeMeta,
+        },
+      }
+      : placement),
+  };
+
+  assert.equal(persistence.save({ ...base, document }).kind, "saved");
+  const reloaded = persistence.load();
+  assert.equal(reloaded.kind, "loaded");
+  const root = reloaded.snapshot.document.placements.find(
+    (placement) => placement.placementId === "pl-1"
+  );
+  assert.deepEqual(root ? readCanvasSubtreePlacementMeta(root) : null, subtreeMeta);
 });
 
 test("persisted legacy grid state is hard-cut to the pure white Canvas", () => {
