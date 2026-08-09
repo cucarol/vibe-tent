@@ -350,7 +350,7 @@ test("global Canvas sync publishes nothing when the complete local snapshot cann
     new CanvasV5LocalPersistence(storage, "ws-alpha"),
     currentSnapshot,
     expectedDigest,
-    () => newerSources
+    newerSources
   );
   assert.equal(result.committed, false);
   assert.equal(result.status?.kind, "quota");

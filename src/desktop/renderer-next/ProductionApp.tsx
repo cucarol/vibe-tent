@@ -20,7 +20,6 @@ import {
 import { startWorkspaceProjectionBridge } from "./gateway/workspace-projection-bridge.js";
 import {
   CanvasV5LocalPersistence,
-  commitCanvasV5DocumentSync,
   shouldSeedLocalCanvas,
   type CanvasV5LoadResult,
   type CanvasV5LocalSnapshot,
@@ -38,7 +37,6 @@ import {
 } from "./model/desktop-recovery.js";
 
 import {
-  readFreshCanvasSubtreeAuthority,
   workbenchNodesFromResources,
   type ProvenanceView,
 } from "./model/workbench-nodes.js";
@@ -50,6 +48,7 @@ import { useFocusDocument } from "./model/use-focus-document.js";
 import { useCollaborationSurface } from "./model/use-collaboration-surface.js";
 import { materializeMissingCanvasNodeSnapshots } from "./model/canvas-node-snapshot.js";
 import { useInboxController } from "./model/use-inbox-controller.js";
+import { createCanvasSyncCommand } from "./gateway/canvas-sync-command.js";
 
 function MountedWorkspace(props: {
   bridge: RendererDesktopBridge;
@@ -96,6 +95,7 @@ function MountedWorkspace(props: {
   const graphRef = useRef<ProjectionResource<GraphProjection>>({ state: "idle" });
   const connectionRef = useRef(connection);
   connectionRef.current = connection;
+  const mountedWorkspaceIdRef = useRef<string | null>(workspace.workspaceId);
   const collaborationRef = useRef<ProjectionResource<NodeCollaborationsResult>>({ state: "idle" });
   const [graphResource, setGraphResource] = useState(graphRef.current);
   const [collaborationResource, setCollaborationResource] = useState(collaborationRef.current);
@@ -351,21 +351,20 @@ function MountedWorkspace(props: {
     nodeId: documentNode?.nodeId ?? null,
     online: connection === "online",
   });
-  const readCurrentCanvasAuthority = useCallback(() => {
-    return readFreshCanvasSubtreeAuthority(
-      graphRef.current,
-      workspace.workspaceId,
-      connectionRef.current === "online"
-    );
-  }, [workspace.workspaceId]);
+  const canvasSyncCommand = useMemo(
+    () => createCanvasSyncCommand({
+      workspaceId: workspace.workspaceId,
+      currentWorkspaceId: () => mountedWorkspaceIdRef.current,
+      online: () => connectionRef.current === "online",
+      readGraphProjection: (workspaceId) => gateway.graphProjection(workspaceId),
+      currentSnapshot: () => snapshotRef.current,
+      persistence,
+    }),
+    [gateway, persistence, workspace.workspaceId]
+  );
   const commitCanvasSync = useCallback(
-    (expectedDigest: string): CanvasDocument | null => {
-      const result = commitCanvasV5DocumentSync(
-        persistence,
-        snapshotRef.current,
-        expectedDigest,
-        readCurrentCanvasAuthority
-      );
+    async (expectedDigest: string): Promise<CanvasDocument | null> => {
+      const result = await canvasSyncCommand.execute(expectedDigest);
       if (result.status) setPersistenceStatus(result.status);
       if (!result.committed) {
         // The sync transaction is deliberately not published until durable
@@ -376,8 +375,15 @@ function MountedWorkspace(props: {
       retrySave.current = null;
       return result.document;
     },
-    [persistence, readCurrentCanvasAuthority]
+    [canvasSyncCommand]
   );
+
+  useEffect(() => {
+    mountedWorkspaceIdRef.current = workspace.workspaceId;
+    return () => {
+      mountedWorkspaceIdRef.current = null;
+    };
+  }, [workspace.workspaceId]);
   const requestCanvasPreview = useCallback((nodeId: string | null) => {
     const generation = ++previewReadGeneration.current;
     if (!nodeId) {
@@ -448,7 +454,6 @@ function MountedWorkspace(props: {
       collaboration={collaborationSurface.view}
       collaborationActions={collaborationSurface.actions}
       inboxModel={inboxModel}
-      readCurrentCanvasAuthority={readCurrentCanvasAuthority}
       onCanvasSync={commitCanvasSync}
       onRetryPersistence={retrySave.current ?? undefined}
       onPresentationChange={(update) => {

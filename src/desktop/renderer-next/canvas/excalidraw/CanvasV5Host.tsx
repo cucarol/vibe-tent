@@ -136,10 +136,12 @@ export type CanvasV5HostProps = {
     body?: string;
   } | null;
   onPreviewNode?: (nodeId: string | null) => void;
-  attentionNodeIds?: ReadonlySet<string>;
+  attentionPlacementIds?: ReadonlySet<string>;
   subtreeProjection?: CanvasSubtreeProjection;
   onSubtreeDirection?: (placementId: string, direction: SubtreeDirection) => void;
-  onProjectionSync?: (authorityDigest: string) => CanvasDocument | null;
+  onProjectionSync?: (
+    authorityDigest: string
+  ) => CanvasDocument | null | Promise<CanvasDocument | null>;
 };
 
 type ExcalidrawApi = {
@@ -316,7 +318,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     onImmersiveChange,
     previewDocument = null,
     onPreviewNode,
-    attentionNodeIds = new Set<string>(),
+    attentionPlacementIds = new Set<string>(),
     subtreeProjection = EMPTY_SUBTREE_PROJECTION,
     onSubtreeDirection = () => {},
     onProjectionSync = () => null,
@@ -1567,12 +1569,23 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
     [canvasDocument.placements]
   );
 
-  const handleProjectionSyncWithHistory = useCallback(() => {
+  const syncPendingRef = useRef(false);
+  const handleProjectionSyncWithHistory = useCallback(async () => {
     const sync = subtreeProjectionRef.current.documentSync;
-    if (!apiRef.current || !sync?.canSync) return;
-    const nextDocument = onProjectionSync(sync.authorityDigest);
-    if (!nextDocument || nextDocument === documentRef.current) return;
-    commitPresentationDocumentWithHistory(nextDocument);
+    if (!apiRef.current || !sync?.canSync || syncPendingRef.current) return;
+    const documentAtRequest = documentRef.current;
+    syncPendingRef.current = true;
+    try {
+      const nextDocument = await onProjectionSync(sync.authorityDigest);
+      if (
+        documentRef.current !== documentAtRequest ||
+        !nextDocument ||
+        nextDocument === documentAtRequest
+      ) return;
+      commitPresentationDocumentWithHistory(nextDocument);
+    } finally {
+      syncPendingRef.current = false;
+    }
   }, [commitPresentationDocumentWithHistory, onProjectionSync]);
   const handlePlacementHiddenChange = useCallback(
     (placementId: string, hidden: boolean) => {
@@ -1815,7 +1828,7 @@ export function CanvasV5Host(props: CanvasV5HostProps) {
                   data={toNodeData(model)}
                   selected={selected}
                   projectionSyncState={projectionStateByPlacement.get(custom.placementId) ?? "unknown"}
-                  needsAttention={attentionNodeIds.has(custom.nodeId)}
+                  needsAttention={attentionPlacementIds.has(custom.placementId)}
                 />
               );
             }}

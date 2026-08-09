@@ -47,6 +47,14 @@ import {
   visibleOutlineNodes,
 } from "../src/desktop/renderer-next/model/outline-tree.js";
 import { TentEmbeddableNode } from "../src/desktop/renderer-next/canvas/excalidraw/TentEmbeddableNode.js";
+import { createCanvasSyncCommand } from "../src/desktop/renderer-next/gateway/canvas-sync-command.js";
+import {
+  canvasDocumentAuthorityDigest,
+  createCanvasSubtreeProjectionInstance,
+  type CanvasSubtreeNodeSource,
+} from "../src/desktop/renderer-next/model/canvas-subtree-projection.js";
+import { captureCanvasNodeSnapshot } from "../src/desktop/renderer-next/model/canvas-node-snapshot.js";
+import { canvasAttentionPlacementIds } from "../src/desktop/renderer-next/model/canvas-attention.js";
 
 test("compact Canvas cards expose only a one-or-two-line title while sync and attention remain composable", () => {
   const card = (title: string) => renderToStaticMarkup(createElement(TentEmbeddableNode, {
@@ -141,6 +149,288 @@ test("Canvas sync authority reader exposes only the latest fresh exact-workspace
   assert.equal(readFreshCanvasSubtreeAuthority(ready, "ws-a", false), null);
   assert.equal(readFreshCanvasSubtreeAuthority(ready, "ws-b", true), null);
   assert.equal(readFreshCanvasSubtreeAuthority({ state: "loading", workspaceId: "ws-a", previous: graph }, "ws-a", true), null);
+});
+
+function syncGraph(etag: string, title: string): GraphProjection {
+  return {
+    workspaceId: "ws-a",
+    nodes: [{
+      nodeId: "cx-a",
+      etag,
+      path: "a",
+      name: "a",
+      title,
+      type: "goal",
+      tags: [],
+      mode: "editable",
+      archived: false,
+      invalid: false,
+    }],
+    edges: {
+      parent: [{ parentNodeId: null, childNodeId: "cx-a" }],
+      markdown: [],
+      wiki: [],
+      relation: [],
+    },
+  };
+}
+
+function syncSource(graph: GraphProjection): CanvasSubtreeNodeSource[] {
+  return graph.nodes.map((node) => ({
+    nodeId: node.nodeId,
+    parentNodeId: null,
+    snapshot: { ...captureCanvasNodeSnapshot(node), etag: node.etag },
+  }));
+}
+
+test("production Canvas sync rereads Service authority and fails closed on stale digest", async () => {
+  const graphA = syncGraph("etag-a", "A");
+  const graphB = syncGraph("etag-b", "B");
+  const original = createCanvasSubtreeProjectionInstance(
+    createEmptyCanvasDocument(),
+    "cx-a",
+    syncSource(graphA),
+    { x: 40, y: 60 },
+    "right",
+    () => "instance-a",
+    () => "pl-a"
+  ).document;
+  const snapshot: CanvasV5LocalSnapshot = {
+    version: 1,
+    workspaceId: "ws-a",
+    document: original,
+    scene: null,
+  };
+  let writes = 0;
+  const command = createCanvasSyncCommand({
+    workspaceId: "ws-a",
+    currentWorkspaceId: () => "ws-a",
+    online: () => true,
+    readGraphProjection: async () => ({
+      ok: true,
+      workspaceId: "ws-a",
+      value: graphB,
+      fetchedAt: "now",
+    }),
+    currentSnapshot: () => snapshot,
+    persistence: {
+      beginSave: () => ({
+        kind: "pending",
+        status: { kind: "pending", message: "pending", retryable: false },
+        commit: () => {
+          writes += 1;
+          return {
+            kind: "saved",
+            status: { kind: "ok", message: "saved", retryable: false },
+          };
+        },
+      }),
+    },
+  });
+
+  const staleDigest = canvasDocumentAuthorityDigest(original, syncSource(graphA))!;
+  const rejected = await command.execute(staleDigest);
+  assert.equal(rejected.committed, false);
+  assert.equal(rejected.document, original);
+  assert.equal(writes, 0);
+
+  const currentDigest = canvasDocumentAuthorityDigest(original, syncSource(graphB))!;
+  const committed = await command.execute(currentDigest);
+  assert.equal(committed.committed, true);
+  assert.equal(writes, 1);
+  assert.equal(
+    committed.document.placements[0]?.meta?.tentNodeSnapshot &&
+      (committed.document.placements[0].meta!.tentNodeSnapshot as { etag?: string }).etag,
+    "etag-b"
+  );
+});
+
+test("production Canvas sync is single-flight and workspace/RPC failures write nothing", async () => {
+  const graph = syncGraph("etag-b", "B");
+  const original = createCanvasSubtreeProjectionInstance(
+    createEmptyCanvasDocument(),
+    "cx-a",
+    syncSource(syncGraph("etag-a", "A")),
+    { x: 40, y: 60 },
+    "right",
+    () => "instance-a",
+    () => "pl-a"
+  ).document;
+  const snapshot: CanvasV5LocalSnapshot = {
+    version: 1,
+    workspaceId: "ws-a",
+    document: original,
+    scene: null,
+  };
+  const expectedDigest = canvasDocumentAuthorityDigest(original, syncSource(graph))!;
+  let currentWorkspaceId = "ws-a";
+  let writes = 0;
+  let reads = 0;
+  let resolveRead!: (read: {
+    ok: true;
+    workspaceId: string;
+    value: GraphProjection;
+    fetchedAt: string;
+  }) => void;
+  const pendingRead = new Promise<{
+    ok: true;
+    workspaceId: string;
+    value: GraphProjection;
+    fetchedAt: string;
+  }>((resolve) => { resolveRead = resolve; });
+  const command = createCanvasSyncCommand({
+    workspaceId: "ws-a",
+    currentWorkspaceId: () => currentWorkspaceId,
+    online: () => true,
+    readGraphProjection: () => {
+      reads += 1;
+      return pendingRead;
+    },
+    currentSnapshot: () => snapshot,
+    persistence: {
+      beginSave: () => ({
+        kind: "pending",
+        status: { kind: "pending", message: "pending", retryable: false },
+        commit: () => {
+          writes += 1;
+          return {
+            kind: "saved",
+            status: { kind: "ok", message: "saved", retryable: false },
+          };
+        },
+      }),
+    },
+  });
+  const first = command.execute(expectedDigest);
+  const second = command.execute(expectedDigest);
+  assert.equal(first, second, "concurrent sync uses one authoritative read promise");
+  assert.equal(reads, 1);
+  currentWorkspaceId = "ws-b";
+  resolveRead({ ok: true, workspaceId: "ws-a", value: graph, fetchedAt: "now" });
+  assert.equal((await first).committed, false);
+  assert.equal(writes, 0);
+
+  const failed = createCanvasSyncCommand({
+    workspaceId: "ws-a",
+    currentWorkspaceId: () => "ws-a",
+    online: () => true,
+    readGraphProjection: async () => ({
+      ok: false,
+      workspaceId: "ws-a",
+      issue: { kind: "transport", message: "offline" },
+      failedAt: "now",
+    }),
+    currentSnapshot: () => snapshot,
+    persistence: {
+      beginSave: () => {
+        writes += 1;
+        throw new Error("must not persist after a failed authority read");
+      },
+    },
+  });
+  assert.equal((await failed.execute(expectedDigest)).committed, false);
+  assert.equal(writes, 0);
+});
+
+test("held Canvas authority read never overwrites a newer local document", async () => {
+  const graph = syncGraph("etag-b", "B");
+  const original = createCanvasSubtreeProjectionInstance(
+    createEmptyCanvasDocument(),
+    "cx-a",
+    syncSource(syncGraph("etag-a", "A")),
+    { x: 40, y: 60 },
+    "right",
+    () => "instance-a",
+    () => "pl-a"
+  ).document;
+  let currentSnapshot: CanvasV5LocalSnapshot = {
+    version: 1,
+    workspaceId: "ws-a",
+    document: original,
+    scene: null,
+  };
+  let writes = 0;
+  let resolveRead!: (read: {
+    ok: true;
+    workspaceId: string;
+    value: GraphProjection;
+    fetchedAt: string;
+  }) => void;
+  const read = new Promise<{
+    ok: true;
+    workspaceId: string;
+    value: GraphProjection;
+    fetchedAt: string;
+  }>((resolve) => { resolveRead = resolve; });
+  const command = createCanvasSyncCommand({
+    workspaceId: "ws-a",
+    currentWorkspaceId: () => "ws-a",
+    online: () => true,
+    readGraphProjection: () => read,
+    currentSnapshot: () => currentSnapshot,
+    persistence: {
+      beginSave: () => {
+        writes += 1;
+        throw new Error("a changed local document must not reach persistence");
+      },
+    },
+  });
+  const pending = command.execute(
+    canvasDocumentAuthorityDigest(original, syncSource(graph))!
+  );
+  const moved = {
+    ...original,
+    placements: original.placements.map((placement) => ({
+      ...placement,
+      x: (placement.x ?? 0) + 80,
+      y: (placement.y ?? 0) + 40,
+    })),
+  };
+  currentSnapshot = { ...currentSnapshot, document: moved };
+  resolveRead({ ok: true, workspaceId: "ws-a", value: graph, fetchedAt: "now" });
+  const result = await pending;
+  assert.equal(result.committed, false);
+  assert.equal(result.document, moved);
+  assert.equal(writes, 0);
+});
+
+test("Canvas attention selects one exact visible duplicate placement", () => {
+  const document = {
+    ...createEmptyCanvasDocument(),
+    placements: [
+      { placementId: "pl-hidden", kind: "node", entityRef: "cx-a" },
+      { placementId: "pl-first", kind: "node", entityRef: "cx-a" },
+      { placementId: "pl-focused", kind: "node", entityRef: "cx-a" },
+      { placementId: "pl-other", kind: "node", entityRef: "cx-b" },
+    ],
+    focusedPlacementId: "pl-focused",
+  };
+  const attention = new Set(["cx-a"]);
+  assert.deepEqual(
+    [...canvasAttentionPlacementIds(
+      document,
+      ["pl-first", "pl-focused", "pl-other"],
+      attention
+    )],
+    ["pl-focused"]
+  );
+  assert.deepEqual(
+    [...canvasAttentionPlacementIds(
+      { ...document, focusedPlacementId: null },
+      ["pl-first", "pl-focused", "pl-other"],
+      attention
+    )],
+    ["pl-first"]
+  );
+  assert.deepEqual(
+    [...canvasAttentionPlacementIds(
+      { ...document, focusedPlacementId: "pl-hidden" },
+      ["pl-first", "pl-focused", "pl-other"],
+      attention
+    )],
+    ["pl-first"],
+    "a hidden focused placement never receives the Canvas marker"
+  );
 });
 
 test("Canvas hover preview lazily reads the exact authoritative Node and rejects late identity", async () => {

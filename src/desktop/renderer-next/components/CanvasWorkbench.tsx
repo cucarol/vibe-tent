@@ -44,12 +44,14 @@ export type CanvasWorkbenchProps = {
     body?: string;
   } | null;
   onPreviewNode?: (nodeId: string | null) => void;
-  attentionNodeIds?: ReadonlySet<string>;
-  onCanvasSync?: (authorityDigest: string) => CanvasDocument | null;
+  attentionPlacementIds?: ReadonlySet<string>;
+  onCanvasSync?: (
+    authorityDigest: string
+  ) => CanvasDocument | null | Promise<CanvasDocument | null>;
   hidden?: boolean;
 };
 
-export function CanvasWorkbench({ document, nodes, projection, immersive, onImmersiveChange, onDocumentChange, onSelectNode, initialScene = null, persistenceStatus = { kind: "ok" }, onRetryPersistence, onScenePersist, onDropNode, previewDocument = null, onPreviewNode, attentionNodeIds = new Set(), onCanvasSync, hidden = false }: CanvasWorkbenchProps) {
+export function CanvasWorkbench({ document, nodes, projection, immersive, onImmersiveChange, onDocumentChange, onSelectNode, initialScene = null, persistenceStatus = { kind: "ok" }, onRetryPersistence, onScenePersist, onDropNode, previewDocument = null, onPreviewNode, attentionPlacementIds = new Set(), onCanvasSync, hidden = false }: CanvasWorkbenchProps) {
   const [drawingVisible, setDrawingVisible] = useState(
     () => initialScene?.layerVisible ?? true
   );
@@ -217,7 +219,7 @@ export function CanvasWorkbench({ document, nodes, projection, immersive, onImme
             onImmersiveChange={onImmersiveChange}
             previewDocument={previewDocument}
             onPreviewNode={onPreviewNode}
-            attentionNodeIds={attentionNodeIds}
+            attentionPlacementIds={attentionPlacementIds}
           />
         )}
         <div

@@ -1120,14 +1120,20 @@ test("V5 leaves generic drawing tools exclusively to Excalidraw", async () => {
   assert.match(workbench, /graph=\{null\}/);
   assert.match(workbench, /subtreeProjection=\{subtreeProjection\}/);
   assert.match(host, /<CanvasSubtreeOverlay/);
+  assert.match(host, /needsAttention=\{attentionPlacementIds\.has\(custom\.placementId\)\}/);
+  assert.doesNotMatch(host, /attentionNodeIds\.has\(custom\.nodeId\)/);
   assert.match(host, /disabled=\{!apiReady \|\| !subtreeProjection\.documentSync\?\.canSync\}/);
   const syncHandler = host.slice(
     host.indexOf("const handleProjectionSyncWithHistory"),
     host.indexOf("const handlePlacementHiddenChange")
   );
+  assert.match(syncHandler, /if \(!apiRef\.current \|\| !sync\?\.canSync \|\| syncPendingRef\.current\) return/);
+  assert.match(syncHandler, /const documentAtRequest = documentRef\.current/);
+  assert.match(syncHandler, /const nextDocument = await onProjectionSync\(sync\.authorityDigest\)/);
+  assert.match(syncHandler, /documentRef\.current !== documentAtRequest/);
   assert.ok(
-    syncHandler.indexOf("if (!apiRef.current || !sync?.canSync) return") <
-      syncHandler.indexOf("onProjectionSync(sync.authorityDigest)"),
+    syncHandler.indexOf("if (!apiRef.current") <
+      syncHandler.indexOf("await onProjectionSync(sync.authorityDigest)"),
     "durable projection sync cannot start before the presentation-history owner exists"
   );
   assert.match(host, /commandsEnabled=\{apiReady\}/);

@@ -17,8 +17,8 @@ import { NODE_CARD } from "./canvas-document.js";
 import { createEmptyCanvasDocument, type CanvasDocument } from "../types/identity.js";
 import type { StorageLike } from "./canvas-session-store.js";
 import {
-  reconcileCanvasDocumentSyncFromLatestAuthority,
-  type CanvasProjectionAuthorityReader,
+  reconcileCanvasDocumentSync,
+  type CanvasSubtreeNodeSource,
 } from "./canvas-subtree-projection.js";
 
 export const CANVAS_V5_LOCAL_PERSISTENCE_PREFIX = "tent.desktop.canvasV5Local.v1";
@@ -69,20 +69,20 @@ export type CanvasV5DocumentSyncTransaction = {
 };
 
 /**
- * One fail-closed current-Canvas sync transaction. Authority is re-read at
- * this boundary, and the reconciled document is published only after its
- * complete local snapshot is durably written.
+ * Pure fail-closed current-Canvas sync transaction. Production supplies the
+ * newly read authority; the reconciled document is returned as committed only
+ * after its complete local snapshot is durably written.
  */
 export function commitCanvasV5DocumentSync(
   persistence: Pick<CanvasV5LocalPersistence, "beginSave">,
   snapshot: CanvasV5LocalSnapshot,
   expectedDigest: string,
-  readAuthority: CanvasProjectionAuthorityReader
+  authority: readonly CanvasSubtreeNodeSource[] | null
 ): CanvasV5DocumentSyncTransaction {
-  const nextDocument = reconcileCanvasDocumentSyncFromLatestAuthority(
+  const nextDocument = reconcileCanvasDocumentSync(
     snapshot.document,
-    expectedDigest,
-    readAuthority
+    authority,
+    { authorityDigest: expectedDigest }
   );
   if (nextDocument === snapshot.document) {
     return { document: snapshot.document, status: null, committed: false };
