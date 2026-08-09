@@ -18156,6 +18156,9 @@ async function deleteAnnotation(fs21, id) {
 }
 
 // src/runtime/types.ts
+var ACP_PERMISSION_REQUEST_COUNT_MAX = 255;
+var ACP_OBSERVATION_TEXT_BYTES = 256;
+var ACP_OBSERVATION_SIGNAL_BYTES = 32;
 var EXTERNAL_ADAPTER_ID = "external";
 var SESSION_ID_PREFIX = "ss-";
 var SESSION_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
@@ -18273,6 +18276,44 @@ function isPlainObject2(value) {
 function isSessionState(value) {
   return typeof value === "string" && SESSION_STATES.has(value);
 }
+function parseAcpRuntimeObservation(value) {
+  if (!isPlainObject2(value)) return void 0;
+  const allowed = /* @__PURE__ */ new Set([
+    "permissionRequestCount",
+    "permissionPolicy",
+    "permissionDecision",
+    "permissionOutcome",
+    "promptStopReason",
+    "spontaneousChildExit",
+    "exitCode",
+    "signal"
+  ]);
+  if (Object.keys(value).some((key2) => !allowed.has(key2))) return void 0;
+  if (!Number.isInteger(value.permissionRequestCount) || value.permissionRequestCount < 0 || value.permissionRequestCount > ACP_PERMISSION_REQUEST_COUNT_MAX) return void 0;
+  if (!(/* @__PURE__ */ new Set(["allow", "ask", "deny"])).has(value.permissionPolicy)) {
+    return void 0;
+  }
+  if (value.permissionDecision !== void 0 && !(/* @__PURE__ */ new Set(["allow", "deny"])).has(value.permissionDecision)) return void 0;
+  if (value.permissionOutcome !== void 0 && !(/* @__PURE__ */ new Set(["allow_once", "cancelled"])).has(value.permissionOutcome)) return void 0;
+  if (typeof value.spontaneousChildExit !== "boolean") return void 0;
+  if (value.promptStopReason !== void 0 && (typeof value.promptStopReason !== "string" || utf8Bytes(value.promptStopReason) > ACP_OBSERVATION_TEXT_BYTES)) return void 0;
+  if (value.exitCode !== void 0 && value.exitCode !== null && (typeof value.exitCode !== "number" || !Number.isInteger(value.exitCode) || value.exitCode < -2147483648 || value.exitCode > 2147483647)) return void 0;
+  if (value.signal !== void 0 && (typeof value.signal !== "string" || utf8Bytes(value.signal) > ACP_OBSERVATION_SIGNAL_BYTES)) return void 0;
+  return {
+    permissionRequestCount: value.permissionRequestCount,
+    permissionPolicy: value.permissionPolicy,
+    ...value.permissionDecision !== void 0 ? {
+      permissionDecision: value.permissionDecision
+    } : {},
+    ...value.permissionOutcome !== void 0 ? {
+      permissionOutcome: value.permissionOutcome
+    } : {},
+    ...value.promptStopReason !== void 0 ? { promptStopReason: value.promptStopReason } : {},
+    spontaneousChildExit: value.spontaneousChildExit,
+    ...value.exitCode !== void 0 ? { exitCode: value.exitCode } : {},
+    ...value.signal !== void 0 ? { signal: value.signal } : {}
+  };
+}
 function parseSessionRecord(data, sessionId) {
   if (!isPlainObject2(data)) return null;
   const allowedKeys = /* @__PURE__ */ new Set([
@@ -18281,6 +18322,7 @@ function parseSessionRecord(data, sessionId) {
     "adapterId",
     "connectionSnapshot",
     "acpSession",
+    "acpObservation",
     "roleId",
     "state",
     "pid",
@@ -18309,7 +18351,7 @@ function parseSessionRecord(data, sessionId) {
   if (!isNonEmptyString(data.updatedAt)) return null;
   const external = data.adapterId === EXTERNAL_ADAPTER_ID;
   if (external) {
-    if (data.connectionId !== void 0 || data.connectionSnapshot !== void 0 || data.acpSession !== void 0) return null;
+    if (data.connectionId !== void 0 || data.connectionSnapshot !== void 0 || data.acpSession !== void 0 || data.acpObservation !== void 0) return null;
   } else {
     if (!isConnectionId(data.connectionId) || !isNonEmptyString(data.adapterId)) return null;
     if (data.roleId !== void 0) return null;
@@ -18381,10 +18423,13 @@ function parseSessionRecord(data, sessionId) {
   if (!isNonEmptyString(snapshot.launchDigest)) return null;
   const acpSession = data.acpSession === void 0 ? void 0 : parseAcpSessionConfigSnapshot(data.acpSession);
   if (data.acpSession !== void 0 && !acpSession) return null;
+  const acpObservation = data.acpObservation === void 0 ? void 0 : parseAcpRuntimeObservation(data.acpObservation);
+  if (data.acpObservation !== void 0 && !acpObservation) return null;
   return {
     ...data,
     connectionSnapshot: snapshot,
-    ...acpSession ? { acpSession } : {}
+    ...acpSession ? { acpSession } : {},
+    ...acpObservation ? { acpObservation } : {}
   };
 }
 var SessionRegistry = class _SessionRegistry {
@@ -20836,6 +20881,11 @@ var AcpClient = class {
     this.permissionWaitCancels = /* @__PURE__ */ new Set();
     this.label = typeof options.label === "string" && options.label.trim() ? options.label.trim() : "ACP";
     this.resourceLimits = resolveAcpResourceLimits(options.resourceLimits);
+    this.acpObservation = {
+      permissionRequestCount: 0,
+      permissionPolicy: options.permissionPolicy,
+      spontaneousChildExit: false
+    };
     const diagnosticSecrets = this.secretValues();
     this.stderrDiagnosticRedactor = new BoundedDiagnosticRedactor(
       diagnosticSecrets,
@@ -21190,6 +21240,14 @@ var AcpClient = class {
         },
         promptTimeout
       );
+      if (typeof result.stopReason === "string") {
+        this.emitAcpObservation({
+          promptStopReason: this.boundedRedactedDiagnostic(
+            result.stopReason,
+            ACP_OBSERVATION_TEXT_BYTES
+          )
+        });
+      }
       if (this.limitError) throw this.limitError;
       if (this.stopRequested) {
         throw new Error("session interrupted before prompt completed");
@@ -21421,6 +21479,16 @@ var AcpClient = class {
         )
       );
       if (!this.stopRequested && !this.terminalEmitted) {
+        this.emitAcpObservation({
+          spontaneousChildExit: true,
+          exitCode: boundedAcpExitCode(code),
+          ...typeof signal === "string" && signal ? {
+            signal: truncateUtf8Text(
+              signal,
+              ACP_OBSERVATION_SIGNAL_BYTES
+            )
+          } : {}
+        });
         this.terminalEmitted = true;
         if (signal && signal !== "SIGTERM" && signal !== "SIGINT" || code !== 0 && code != null) {
           this.options.emit({
@@ -21623,6 +21691,12 @@ var AcpClient = class {
     }
   }
   async handlePermissionRequest(id, params) {
+    this.emitAcpObservation({
+      permissionRequestCount: Math.min(
+        ACP_PERMISSION_REQUEST_COUNT_MAX,
+        this.acpObservation.permissionRequestCount + 1
+      )
+    }, true);
     const options = params.options ?? [];
     const toolTitle = truncateUtf8Text(
       params.toolCall?.title || params.toolCall?.toolCallId || "tool",
@@ -21656,6 +21730,10 @@ var AcpClient = class {
         }
       }
       const outcome = decision === "allow" ? selectAllowOnce(options) : { outcome: "cancelled" };
+      this.emitAcpObservation({
+        permissionDecision: decision,
+        permissionOutcome: outcome.outcome === "selected" ? "allow_once" : "cancelled"
+      });
       this.write({
         jsonrpc: "2.0",
         id,
@@ -21874,6 +21952,19 @@ var AcpClient = class {
     this.stdoutFrameBuffer = void 0;
     this.stdoutFrameBytes = 0;
   }
+  emitAcpObservation(patch, clearPermissionResult = false) {
+    const prior = { ...this.acpObservation };
+    if (clearPermissionResult) {
+      delete prior.permissionDecision;
+      delete prior.permissionOutcome;
+    }
+    this.acpObservation = { ...prior, ...patch };
+    this.options.emit({
+      type: "session.acp_observation",
+      sessionId: this.options.sessionId,
+      observation: { ...this.acpObservation }
+    });
+  }
   triggerLimit(code, detail) {
     if (this.limitError) return this.limitError;
     const error = new AcpLimitError(code, detail);
@@ -21885,6 +21976,10 @@ var AcpClient = class {
     return error;
   }
 };
+function boundedAcpExitCode(value) {
+  if (value === null || !Number.isInteger(value)) return null;
+  return Math.max(-2147483648, Math.min(2147483647, value));
+}
 function selectAllowOnce(options) {
   const once = options.find((o) => o.kind === "allow_once") || options.find((o) => o.optionId === "allow_once");
   if (once?.optionId) {
@@ -32448,6 +32543,9 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
   if (ev.type === "session.config_options") {
     return;
   }
+  if (ev.type === "session.acp_observation") {
+    return;
+  }
   const hasPendingToolApproval = ev.type === "session.live" ? await ctx.toolApprovals.hasPendingForSession(ev.sessionId) : false;
   if (ev.type === "session.waiting_user") {
     if (rec && SessionRegistry.isNonTerminal(rec.state)) {
@@ -36004,7 +36102,49 @@ function boundRuntimeDiagnosticEvent(ev) {
       summary: truncateUtf8Text(ev.summary, ACP_DIAGNOSTIC_EVENT_BYTES)
     };
   }
+  if (ev.type === "session.acp_observation") {
+    return {
+      ...ev,
+      observation: boundAcpRuntimeObservation(ev.observation)
+    };
+  }
   return ev;
+}
+function boundAcpRuntimeObservation(observation) {
+  const count = Number.isInteger(observation.permissionRequestCount) ? Math.max(
+    0,
+    Math.min(
+      ACP_PERMISSION_REQUEST_COUNT_MAX,
+      observation.permissionRequestCount
+    )
+  ) : 0;
+  const policy = ["allow", "ask", "deny"].includes(
+    observation.permissionPolicy
+  ) ? observation.permissionPolicy : "deny";
+  const exitCode = observation.exitCode === null ? null : Number.isInteger(observation.exitCode) ? Math.max(
+    -2147483648,
+    Math.min(2147483647, observation.exitCode)
+  ) : void 0;
+  return {
+    permissionRequestCount: count,
+    permissionPolicy: policy,
+    ...observation.permissionDecision === "allow" || observation.permissionDecision === "deny" ? { permissionDecision: observation.permissionDecision } : {},
+    ...observation.permissionOutcome === "allow_once" || observation.permissionOutcome === "cancelled" ? { permissionOutcome: observation.permissionOutcome } : {},
+    ...observation.promptStopReason !== void 0 ? {
+      promptStopReason: truncateUtf8Text(
+        observation.promptStopReason,
+        ACP_OBSERVATION_TEXT_BYTES
+      )
+    } : {},
+    spontaneousChildExit: observation.spontaneousChildExit === true,
+    ...exitCode !== void 0 ? { exitCode } : {},
+    ...observation.signal !== void 0 ? {
+      signal: truncateUtf8Text(
+        observation.signal,
+        ACP_OBSERVATION_SIGNAL_BYTES
+      )
+    } : {}
+  };
 }
 function copyRuntimeErrorMetadata(error) {
   if (!error || typeof error !== "object") return {};
@@ -36435,6 +36575,10 @@ var AgentRuntime = class {
             void this.registry.update(req.sessionId, {
               acpSession: cloneAcpSessionConfigSnapshot(ev.sessionConfig)
             }).catch(() => void 0);
+          } else if (ev.type === "session.acp_observation") {
+            void this.registry.update(req.sessionId, {
+              acpObservation: { ...ev.observation }
+            }).catch(() => void 0);
           }
           this.emit(ev);
         });
@@ -36675,6 +36819,10 @@ var AgentRuntime = class {
           } else if (ev.type === "session.config_options") {
             void this.registry.update(req.sessionId, {
               acpSession: cloneAcpSessionConfigSnapshot(ev.sessionConfig)
+            }).catch(() => void 0);
+          } else if (ev.type === "session.acp_observation") {
+            void this.registry.update(req.sessionId, {
+              acpObservation: { ...ev.observation }
             }).catch(() => void 0);
           }
           this.emit(ev);
