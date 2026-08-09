@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  useEffect,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -74,6 +75,43 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
       () => new Map(document.placements.map((placement) => [placement.placementId, placement] as const)),
       [document]
     );
+
+    useEffect(() => {
+      setDirectionMenuPlacementId(null);
+    }, [selectedPlacementId]);
+
+    useEffect(() => {
+      if (
+        directionMenuPlacementId &&
+        !projection.controls.some((control) => control.placementId === directionMenuPlacementId)
+      ) {
+        setDirectionMenuPlacementId(null);
+      }
+    }, [directionMenuPlacementId, projection.controls]);
+
+    useEffect(() => {
+      if (!directionMenuPlacementId) return;
+      const closeOnOutsidePointer = (event: PointerEvent) => {
+        const control = controlRefs.current.get(directionMenuPlacementId);
+        if (event.target instanceof Node && control?.contains(event.target)) return;
+        setDirectionMenuPlacementId(null);
+      };
+      const closeOnEscape = (event: KeyboardEvent) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        const control = controlRefs.current.get(directionMenuPlacementId);
+        setDirectionMenuPlacementId(null);
+        requestAnimationFrame(() => {
+          control?.querySelector<HTMLButtonElement>("[data-role=toggle]")?.focus({ preventScroll: true });
+        });
+      };
+      window.addEventListener("pointerdown", closeOnOutsidePointer, true);
+      window.addEventListener("keydown", closeOnEscape, true);
+      return () => {
+        window.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+        window.removeEventListener("keydown", closeOnEscape, true);
+      };
+    }, [directionMenuPlacementId]);
 
     useImperativeHandle(ref, () => ({
       update(appState, override = null) {
@@ -163,6 +201,7 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
               className="tn-canvas-subtree-controls"
               data-visible={visible ? "true" : "false"}
               data-expanded={control.expandedDirection ?? "collapsed"}
+              data-menu-open={directionMenuOpen ? "true" : "false"}
               role="group"
               aria-label="子树投影"
             >
@@ -239,6 +278,7 @@ export const CanvasSubtreeOverlay = forwardRef<CanvasSubtreeOverlayHandle, Props
               }}
               className="tn-canvas-projection-sync"
               data-visible={visible ? "true" : "false"}
+              data-sync-placement-id={control.placementId}
             >
               <IconButton
                 variant="quiet"

@@ -272,10 +272,51 @@ async function collapseSubtree(page, placementId) {
   await controls.locator("button[data-role=toggle]").click();
 }
 
-async function expandSubtree(page, placementId, direction) {
+async function openDirectionMenu(page, placementId) {
   const controls = await selectedControls(page, placementId);
   await controls.locator("button[data-role=toggle]").click();
+  await controls.locator('[role=menu][aria-label="选择展开方向"]').waitFor({ state: "visible" });
+  return controls;
+}
+
+async function expandSubtree(page, placementId, direction) {
+  const controls = await openDirectionMenu(page, placementId);
   await controls.locator(`button[data-role=direction][data-direction="${direction}"]`).click();
+}
+
+async function setCanvasZoom(page, percent) {
+  const reset = page.locator("button.reset-zoom-button");
+  await reset.click();
+  await waitFor(async () => (await reset.textContent())?.trim() === "100%", "reset Canvas zoom");
+  const step = percent > 100 ? page.locator("button.zoom-in-button") : page.locator("button.zoom-out-button");
+  const count = Math.abs(percent - 100) / 10;
+  assert.equal(Number.isInteger(count), true, `Zoom target must align to public 10% steps: ${percent}`);
+  for (let index = 0; index < count; index += 1) await step.click();
+  await waitFor(async () => (await reset.textContent())?.trim() === `${percent}%`, `Canvas zoom ${percent}%`);
+}
+
+async function assertSyncAffordanceSeparated(page, placementId) {
+  const card = page.locator(`[data-tent-placement-id="${placementId}"]`);
+  const sync = page.locator(`[data-sync-placement-id="${placementId}"] .tn-ui-icon-btn`);
+  const controls = await selectedControls(page, placementId);
+  const fold = controls.locator("button[data-role=toggle]");
+  const [cardRect, syncRect, foldRect] = await Promise.all([
+    card.boundingBox(),
+    sync.boundingBox(),
+    fold.boundingBox(),
+  ]);
+  assert.ok(cardRect && syncRect && foldRect, "Pending card, sync, and fold affordances must all be visible");
+  assert.ok(
+    syncRect.x + syncRect.width / 2 <= cardRect.x + 1 &&
+      syncRect.y + syncRect.height / 2 >= cardRect.y + cardRect.height - 1,
+    "Sync must stay at the card lower-left, away from the accepted upper-right internal link"
+  );
+  const separated =
+    syncRect.x + syncRect.width <= foldRect.x ||
+    foldRect.x + foldRect.width <= syncRect.x ||
+    syncRect.y + syncRect.height <= foldRect.y ||
+    foldRect.y + foldRect.height <= syncRect.y;
+  assert.equal(separated, true, "Sync and the single fold entry must not overlap");
 }
 
 async function selectPlacement(page, placementId) {
@@ -540,14 +581,69 @@ async function exerciseBrowser() {
     const cameraAfter = await page.locator("[data-testid=canvas-subtree-lines] > g").getAttribute("transform");
     assert.equal(cameraAfter, cameraBefore, "Canvas selection must not move the camera");
 
+    // Final visual evidence uses one clean subtree instance. Deliberate overlap
+    // remains covered above as interaction evidence, never as the review frame.
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.getByTestId("e2e-reset").click();
+    await waitState(page, (candidate) => candidate.presentation.document.placements.length === 0, "visual reset");
+    await dragOutlineNode(page, rootTitle, { x: 250, y: 220 });
+    state = await waitState(page, (candidate) => candidate.presentation.document.placements.length === 4, "clean visual subtree");
+    const visualRoot = state.presentation.document.placements.find((placement) => placement.entityRef === "cx-product");
+    const visualChild = state.presentation.document.placements.find((placement) => placement.entityRef === "cx-workbench");
+    assert.ok(visualRoot && visualChild);
+    await page.getByTestId("e2e-drift").click();
+    await selectPlacement(page, visualRoot.placementId);
+    await page.locator(`[data-tent-placement-id="${visualRoot.placementId}"][data-projection-sync=pending-sync]`).waitFor();
     await fsp.mkdir(outputDir, { recursive: true });
+    for (const percent of [50, 100, 200]) {
+      await setCanvasZoom(page, percent);
+      await assertSyncAffordanceSeparated(page, visualRoot.placementId);
+      await page.screenshot({ path: path.join(outputDir, `canvas-sync-zoom-${percent}-1440x900.png`) });
+    }
+    await setCanvasZoom(page, 100);
     await page.screenshot({ path: path.join(outputDir, "canvas-production-e2e-1440x900.png") });
+    await dragPlacement(page, visualChild.placementId, 42, 24, async () => {
+      await page.screenshot({ path: path.join(outputDir, "canvas-connector-live-1440x900.png") });
+      await assertPathsAvoidVisibleCards(page);
+    });
+    await page.screenshot({ path: path.join(outputDir, "canvas-connector-after-1440x900.png") });
+    await selectPlacement(page, visualRoot.placementId);
+    await collapseSubtree(page, visualRoot.placementId);
+    let visualControls = await openDirectionMenu(page, visualRoot.placementId);
+    await page.screenshot({ path: path.join(outputDir, "canvas-direction-menu-1440x900.png") });
+    await page.keyboard.press("Escape");
+    await waitFor(async () => (await visualControls.getAttribute("data-menu-open")) === "false", "Escape direction-menu dismissal");
+    assert.equal(await visualControls.locator("button[data-role=toggle]").evaluate((element) => document.activeElement === element), true);
+    visualControls = await openDirectionMenu(page, visualRoot.placementId);
+    await page.locator("body").dispatchEvent("pointerdown");
+    await waitFor(async () => (await visualControls.getAttribute("data-menu-open")) === "false", "outside direction-menu dismissal");
+    visualControls = await openDirectionMenu(page, visualRoot.placementId);
+    await page.getByTestId("e2e-stale").click();
+    await visualControls.waitFor({ state: "detached" });
+    assert.equal(await page.locator('[role=menu][aria-label="选择展开方向"]').count(), 0, "authority removal must close the menu");
+    await page.getByTestId("e2e-online").click();
+    await selectPlacement(page, visualRoot.placementId);
+    await expandSubtree(page, visualRoot.placementId, "right");
+
     await page.setViewportSize({ width: 1280, height: 840 });
+    await selectPlacement(page, visualRoot.placementId);
+    await assertSyncAffordanceSeparated(page, visualRoot.placementId);
     await page.screenshot({ path: path.join(outputDir, "canvas-production-e2e-1280x840.png") });
+    await dragPlacement(page, visualChild.placementId, -30, 18, async () => {
+      await page.screenshot({ path: path.join(outputDir, "canvas-connector-live-1280x840.png") });
+      await assertPathsAvoidVisibleCards(page);
+    });
+    await page.screenshot({ path: path.join(outputDir, "canvas-connector-after-1280x840.png") });
+    const cleanBranchCount = await page.locator("[data-testid=canvas-subtree-lines] g[data-branch-id]").count();
+    assert.ok(cleanBranchCount > 0, "clean expanded subtree must retain a visible direct-child branch");
+    await selectPlacement(page, visualRoot.placementId);
+    await collapseSubtree(page, visualRoot.placementId);
+    await openDirectionMenu(page, visualRoot.placementId);
+    await page.screenshot({ path: path.join(outputDir, "canvas-direction-menu-1280x840.png") });
     assert.equal(consoleProblems.length, 0, `Browser console must stay clean:\n${consoleProblems.join("\n")}`);
     return {
       placements: state.presentation.document.placements.length,
-      branchCount: await page.locator("[data-testid=canvas-subtree-lines] g[data-branch-id]").count(),
+      branchCount: cleanBranchCount,
       screenshots: [
         path.join(outputDir, "canvas-production-e2e-1440x900.png"),
         path.join(outputDir, "canvas-production-e2e-1280x840.png"),
