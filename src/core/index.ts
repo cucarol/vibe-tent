@@ -39,6 +39,5 @@ export * from "./task-node-context.js";
 export * from "./task-node-occupation.js";
 export * from "./task-node-selection.js";
 export * from "./task-node-snapshot.js";
-export * from "./role-checkpoint.js";
 export * from "./decision-request.js";
 export * from "./etag.js";

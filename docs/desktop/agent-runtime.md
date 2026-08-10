@@ -120,7 +120,7 @@ The stable prefix contains:
 - the facts used to compute the current context generation.
 
 The dynamic tail contains the current Context Card, Node refs, Task state,
-TaskInput, review feedback, and optional Role checkpoint. Session runtime state
+TaskInput, and review feedback. Session runtime state
 is the authority for prefix deduplication; the Task records the generation only
 as execution provenance after a prompt is actually prepared. A mismatch sends
 the full current prefix on the same native conversation. Collector failure

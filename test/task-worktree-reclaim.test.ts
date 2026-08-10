@@ -58,7 +58,6 @@ function fixtureContextCard(overrides?: {
       body,
       etag: contentEtag(body),
     }],
-    userPrompt: body,
   });
 }
 
@@ -76,7 +75,6 @@ function sessionTask(
     contextNodeIds: partial.contextNodeIds ?? contextCard.contextNodeIds,
     nodeSnapshots: partial.nodeSnapshots ?? contextCard.nodeSnapshots,
     contextCard,
-    taskDeltaDigest: contextCard.taskDeltaDigest,
     ...partial,
   };
 }

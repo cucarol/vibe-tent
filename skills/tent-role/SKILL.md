@@ -31,8 +31,8 @@ binding, compatibility result, or persisted state.
 - Node is durable product context; Task is one attempt. Promote confirmed
   decisions, facts, open questions, provenance, and accepted results into the
   nearest relevant Node instead of relying on chat history.
-- Give each Task complete objective, frozen decisions, include/exclude scope,
-  acceptance, and exact Node/Task/Delivery/Git refs.
+- Put the concrete work request in the Task prompt and durable facts in the
+  referenced Nodes; do not duplicate them into parallel Context Card fields.
 - Task work Nodes are its occupied write context; context Nodes are shared
   read-only context. Parent, child, relation, and link expansion stays read-only
   unless explicitly included.
@@ -75,13 +75,6 @@ context as the old Session.
   snapshot, hand-edit state, or merge unrelated lanes.
 - Use `task.replaceSession` only for the same eligible Task while the turn is
   idle. A changed work contract requires a new Task.
-
-## Preserve cooperative continuity
-
-For a planned Role Session transfer, an optional bounded checkpoint may record
-the current objective, next action, and essential Node/Task/Delivery/Git refs.
-Use `tent role-checkpoint set|show|clear`. It is advisory dynamic-tail context,
-not a transcript or replacement for persisted facts.
 
 ## Deliver to the user
 

@@ -50,11 +50,12 @@ test("Role and Task commands route to their canonical modules", async () => {
   assert.match(unknown.stderr, /Unknown command: not-a-command/);
 });
 
-test("Role checkpoint remains available", async () => {
+test("retired role-init remains routed while Role checkpoint is removed", async () => {
   const roleInit = await runCli("role-init");
   assert.notEqual(roleInit.code, 0);
   assert.doesNotMatch(roleInit.stderr, /Unknown command: role-init/);
 
   const roleCpHelp = await runCli("role-checkpoint", "--help");
-  assert.equal(roleCpHelp.code, 0, roleCpHelp.stderr);
+  assert.notEqual(roleCpHelp.code, 0);
+  assert.match(roleCpHelp.stderr, /Unknown command: role-checkpoint/);
 });

@@ -181,7 +181,6 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
     "replacedBySessionId",
     "externalKey",
     "contextGeneration",
-    "taskDeltaDigest",
   ]);
   if (Object.keys(data).some((key) => !allowedKeys.has(key))) return null;
 
@@ -227,7 +226,6 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
     "lastError",
     "externalKey",
     "contextGeneration",
-    "taskDeltaDigest",
   ] as const) {
     if (key in data && data[key] !== undefined && typeof data[key] !== "string") {
       return null;

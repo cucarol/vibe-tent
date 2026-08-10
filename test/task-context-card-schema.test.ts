@@ -5,7 +5,6 @@ import {
   TASK_CONTEXT_CARD_SCHEMA_VERSION,
   TaskContextCardSchemaError,
   buildTaskContextCardV2,
-  computeTaskContextCardDeltaDigest,
   formatTaskContextCardV2Prompt,
   normalizeTaskContextCard,
   serializeTaskContextCard,
@@ -25,7 +24,6 @@ function card() {
       etag: "a".repeat(24),
     })),
     contextGeneration: `cg-v1-${"b".repeat(64)}`,
-    taskDeltaDigest: "c".repeat(64),
   };
 }
 
@@ -35,10 +33,26 @@ test("Task Context Card is the minimal frozen Node context wire", () => {
   assert.deepEqual(serializeTaskContextCard(value), value);
 });
 
-test("Task Context Card rejects v1 prompt mirrors and generic refs", () => {
-  for (const retired of ["objective", "acceptance", "frozenDecisions", "scope", "refs"]) {
+test("Task Context Card rejects retired prompt mirrors, refs, and digest", () => {
+  for (const retired of [
+    "objective",
+    "acceptance",
+    "frozenDecisions",
+    "scope",
+    "refs",
+    "taskDeltaDigest",
+  ]) {
     assert.throws(
-      () => normalizeTaskContextCard({ ...card(), [retired]: retired === "refs" ? { nodes: [] } : [] }),
+      () =>
+        normalizeTaskContextCard({
+          ...card(),
+          [retired]:
+            retired === "refs"
+              ? { nodes: [] }
+              : retired === "taskDeltaDigest"
+                ? "c".repeat(64)
+                : [],
+        }),
       TaskContextCardSchemaError
     );
   }
@@ -48,13 +62,9 @@ test("Task Context Card rejects v1 prompt mirrors and generic refs", () => {
   );
 });
 
-test("Task Context Card requires exact ordered snapshots and digests", () => {
+test("Task Context Card requires exact ordered snapshots and generation", () => {
   assert.throws(
     () => normalizeTaskContextCard({ ...card(), nodeSnapshots: [...card().nodeSnapshots].reverse() }),
-    TaskContextCardSchemaError
-  );
-  assert.throws(
-    () => normalizeTaskContextCard({ ...card(), taskDeltaDigest: "BAD" }),
     TaskContextCardSchemaError
   );
   assert.throws(
@@ -63,31 +73,18 @@ test("Task Context Card requires exact ordered snapshots and digests", () => {
   );
 });
 
-test("Task Context Card delta digest includes the prompt once without mirroring it", () => {
+test("Task Context Card contains only Node context and optional generation", () => {
   const value = card();
   const built = buildTaskContextCardV2({
     workNodeIds: value.workNodeIds,
     contextNodeIds: value.contextNodeIds,
     nodeSnapshots: value.nodeSnapshots,
     contextGeneration: value.contextGeneration,
-    userPrompt: "Implement the frozen goal.",
   });
-  assert.equal(
-    built.taskDeltaDigest,
-    computeTaskContextCardDeltaDigest({
-      nodeContext: value,
-      userPrompt: "Implement the frozen goal.",
-    })
-  );
+  assert.deepEqual(built, value);
   assert.equal("userPrompt" in built, false);
   assert.equal("objective" in built, false);
-  assert.notEqual(
-    built.taskDeltaDigest,
-    computeTaskContextCardDeltaDigest({
-      nodeContext: value,
-      userPrompt: "A different attempt.",
-    })
-  );
+  assert.equal("taskDeltaDigest" in built, false);
 });
 
 test("Task Context Card prompt emits each frozen Node body exactly once", () => {
@@ -97,5 +94,5 @@ test("Task Context Card prompt emits each frozen Node body exactly once", () => 
   assert.match(text, /--- Context Node cx-context ---/);
   assert.equal(text.split("cx-work frozen").length - 1, 1);
   assert.equal(text.split("cx-context frozen").length - 1, 1);
-  assert.doesNotMatch(text, /objective:|acceptance:|refs\.nodes/);
+  assert.doesNotMatch(text, /objective:|acceptance:|refs\.nodes|taskDeltaDigest/);
 });

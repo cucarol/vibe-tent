@@ -329,43 +329,6 @@ export async function cancelPendingTask(env: OpsEnv, taskPath: string): Promise<
   await withMutation(env.fs, () => cancelTaskEnvelope(env.fs, taskPath));
 }
 
-// ---- stamp / complete (legacy CLI; Node owner/status dual-write retired) ----
-
-const STAMP_RETIRED_MESSAGE =
-  "stamp/complete no longer write Node owner/status. Use task.deliver + task.accept (or task.fail) for collaboration completion.";
-
-/**
- * @deprecated Retired: does not dual-write Node frontmatter.
- * Prefer task.deliver / task.accept. Throws with a clear migration message.
- */
-export async function stamp(_env: OpsEnv, _nodeId: string, _acceptedBy = "user"): Promise<void> {
-  void _env;
-  void _nodeId;
-  void _acceptedBy;
-  throw new Error(STAMP_RETIRED_MESSAGE);
-}
-
-/**
- * @deprecated Retired Node dual-write path.
- * Prefer task lifecycle. Optional integrate still runs only if a non-retired path is restored later;
- * currently always throws after validating the node exists (no FM write).
- */
-export async function completeClaim(
-  env: OpsEnv,
-  nodeId: string,
-  integrate?: () => Promise<void>,
-  _acceptedBy = "user"
-): Promise<void> {
-  void _acceptedBy;
-  // Resolve the node under lock first so a missing/invalid id fails before any work.
-  await withMutation(env.fs, async () => {
-    const tent = await loadTent(env.fs);
-    requireNodeById(tent, nodeId);
-  });
-  void integrate;
-  throw new Error(STAMP_RETIRED_MESSAGE);
-}
-
 // ---- clean-temp ----
 
 export async function cleanTemp(env: OpsEnv, role?: string): Promise<void> {

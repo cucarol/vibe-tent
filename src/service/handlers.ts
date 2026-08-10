@@ -63,15 +63,6 @@ import {
   type TaskOutcome,
 } from "../core/task-model.js";
 import {
-  assertRoleCheckpointRoleName,
-  clearRoleCheckpoint,
-  formatRoleCheckpointTail,
-  readRoleCheckpoint,
-  writeRoleCheckpoint,
-  type RoleCheckpointPointers,
-  type RoleCheckpointRecord,
-} from "../core/role-checkpoint.js";
-import {
   assembleManagedPrompt,
   deriveIntegrationAuthority,
   decideStablePrefixInjection,
@@ -600,12 +591,6 @@ export async function dispatchMethod(
         return sessionStatus(ctx, p);
       case "session.leave":
         return sessionLeave(ctx, p);
-      case "role.checkpoint.get":
-        return roleCheckpointGetRpc(ctx, p);
-      case "role.checkpoint.set":
-        return roleCheckpointSetRpc(ctx, p);
-      case "role.checkpoint.clear":
-        return roleCheckpointClearRpc(ctx, p);
       case "toolApproval.listPending":
         return toolApprovalListPending(ctx, p);
       case "toolApproval.get":
@@ -2284,10 +2269,6 @@ async function registryRoleUpdate(ctx: HandlerContext, p: Record<string, unknown
       updatePatch.displayName = p.displayName;
     }
   }
-  if ("cli" in p && p.cli === null) {
-    updatePatch.cli = undefined;
-  }
-
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     try {
@@ -2442,7 +2423,6 @@ function parseRoleDefinitionParams(
       "prompt",
       "description",
       "color",
-      "cli",
     ]),
     surface
   );
@@ -2481,16 +2461,6 @@ function parseRoleDefinitionParams(
     }
     if (typeof p.color === "string") raw.color = p.color;
   }
-  if ("cli" in p) {
-    if (p.cli === null) {
-      // Explicit clear is re-attached to the update patch after normalization.
-    } else if (typeof p.cli !== "object" || Array.isArray(p.cli)) {
-      throw new RpcError(-32602, "role.cli must be an object");
-    } else {
-      raw.cli = p.cli;
-    }
-  }
-
   try {
     const role = normalizeRoleDefinition(raw);
     if (opts.requireName && !role.name) {
@@ -2508,7 +2478,7 @@ function mapRoleRegistryError(err: unknown, surface: string): RpcError {
   if (err instanceof RpcError) return err;
   const message = err instanceof Error ? err.message : `${surface} failed`;
   if (
-    /already exists|does not exist|Confirmation mismatch|cannot be empty|cli\.|immutable|cannot be renamed/i.test(
+    /already exists|does not exist|Confirmation mismatch|cannot be empty|immutable|cannot be renamed/i.test(
       message
     )
   ) {
@@ -7284,9 +7254,6 @@ async function launchAndBindTaskStartSession(
         try {
           await ctx.runtime.registry.update(handle.sessionId, {
             contextGeneration: generation,
-            ...(next.taskDeltaDigest
-              ? { taskDeltaDigest: next.taskDeltaDigest }
-              : {}),
           });
         } catch {
           // Session row projection is best-effort; Task remains authoritative.
@@ -8639,267 +8606,11 @@ async function sessionEnter(ctx: HandlerContext, p: Record<string, unknown>) {
     updatedAt: handle.updatedAt,
   };
 
-  const roleCheckpointTail = handle.roleId
-    ? await loadRoleCheckpointTailByIdSafe(ctx, workspaceId, handle.roleId)
-    : "";
-
   return {
     session,
     sessionToken: handle.sessionToken,
     reused: priorExternalId === handle.sessionId,
-    /**
-     * Optional cooperative Role Checkpoint tail for the durable Role just entered.
-     * Dynamic only — callers append after stable Role init / bootstrap prefix.
-     * Absent when no Role or no note on disk.
-     */
-    ...(roleCheckpointTail ? { roleCheckpointTail } : {}),
   };
-}
-
-/**
- * Optional Role Checkpoint RPCs — cooperative continuation note only.
- * Not Task/Delivery lifecycle; not required for crash recovery.
- *
- * Soft actor authority (set/clear): `user` (default) or the **exact target Role**
- * operational name. Unrelated Role actors are refused. Get is read-only and does
- * not require actor match, but still requires a path-safe durable Role.
- */
-function projectRoleCheckpoint(record: RoleCheckpointRecord) {
-  return {
-    role: record.role,
-    text: record.text,
-    updatedAt: record.updatedAt,
-    path: record.path,
-    ...(record.sourceSessionId ? { sourceSessionId: record.sourceSessionId } : {}),
-    ...(record.pointers ? { pointers: record.pointers } : {}),
-  };
-}
-
-/**
- * Resolve operational Role name for checkpoint surfaces.
- * Path-safe name first; Service requires a durable registry Role (by name or rl- id).
- * Returns the Role's operational `name` (temp/<name>/ key), never displayName alone.
- */
-async function resolveDurableCheckpointRole(
-  ctx: HandlerContext,
-  workspaceId: string,
-  roleRef: string
-): Promise<{ roleName: string; roleId?: string }> {
-  let safe: string;
-  try {
-    // Path gate first so `.` / `..` never reach join/delete even before registry.
-    safe = assertRoleCheckpointRoleName(roleRef);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new RpcError(-32602, message, { code: "INVALID_ROLE_NAME", role: roleRef });
-  }
-  const mount = ctx.host.require(workspaceId);
-  const registry = await loadRolesRegistry(mount.env.fs);
-  // Accept operational name or rl- id; resolveRole never uses displayName.
-  const found = resolveRole(registry.roles, safe) ?? resolveRole(registry.roles, roleRef.trim());
-  if (!found?.name) {
-    throw new RpcError(-32602, `Unknown durable Role for checkpoint: ${roleRef.trim()}`, {
-      code: "UNKNOWN_ROLE",
-      role: roleRef.trim(),
-    });
-  }
-  // Re-validate the resolved operational name (id lookup may yield a different string).
-  let roleName: string;
-  try {
-    roleName = assertRoleCheckpointRoleName(found.name);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new RpcError(-32602, message, { code: "INVALID_ROLE_NAME", role: found.name });
-  }
-  return { roleName, roleId: found.id };
-}
-
-/**
- * Soft actor gate: user (default) or exact target Role operational name only.
- * Loopback token does not distinguish human vs role — same convention as other soft surfaces.
- */
-function requireRoleCheckpointActor(
-  p: Record<string, unknown>,
-  targetRoleName: string,
-  surface: string
-): string {
-  const actorRaw = (optionalString(p, "actor") ?? "user").trim();
-  if (!actorRaw) {
-    throw new RpcError(-32001, `${surface} actor cannot be empty`, { code: "ACTOR_FORBIDDEN" });
-  }
-  if (actorRaw === "user") return actorRaw;
-  if (actorRaw === targetRoleName) return actorRaw;
-  throw new RpcError(
-    -32001,
-    `${surface} allows actor "user" or the exact target Role "${targetRoleName}"; got "${actorRaw}"`,
-    { code: "ACTOR_FORBIDDEN", actor: actorRaw, role: targetRoleName }
-  );
-}
-
-/**
- * Optional sourceSessionId audit: keep only when the persisted Session row has
- * exact workspace === this workspaceId AND roleId === the checkpoint Role.
- * Missing or mismatched workspace/role (including unscoped legacy rows) drop
- * attribution — never invent continuity from an unrelated Session.
- */
-async function resolveRoleCheckpointSourceSessionId(
-  ctx: HandlerContext,
-  workspaceId: string,
-  roleId: string,
-  raw?: string
-): Promise<string | undefined> {
-  const sessionId = raw?.trim();
-  if (!sessionId) return undefined;
-  try {
-    const rec = await ctx.runtime.registry.read(sessionId);
-    if (!rec) return undefined;
-    // Exact workspace match required (unscoped / missing → drop).
-    if (!rec.workspace || rec.workspace !== workspaceId) return undefined;
-    // Exact Role match required (unscoped / missing → drop).
-    const recRole = rec.roleId?.trim() || "";
-    if (!recRole || recRole !== roleId) return undefined;
-    return sessionId;
-  } catch {
-    return undefined;
-  }
-}
-
-async function roleCheckpointGetRpc(ctx: HandlerContext, p: Record<string, unknown>) {
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const roleRef = requireString(p, "role");
-  const { roleName } = await resolveDurableCheckpointRole(ctx, workspaceId, roleRef);
-  try {
-    const record = await readRoleCheckpoint(mount.env.fs, roleName);
-    return {
-      workspaceId,
-      role: roleName,
-      checkpoint: record ? projectRoleCheckpoint(record) : null,
-      tail: formatRoleCheckpointTail(record),
-    };
-  } catch (err) {
-    if (err instanceof RpcError) throw err;
-    const message = err instanceof Error ? err.message : String(err);
-    throw new RpcError(-32602, message);
-  }
-}
-
-async function roleCheckpointSetRpc(ctx: HandlerContext, p: Record<string, unknown>) {
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const roleRef = requireString(p, "role");
-  const { roleName, roleId } = await resolveDurableCheckpointRole(ctx, workspaceId, roleRef);
-  if (!roleId) throw new RpcError(-32602, `Durable Role is missing canonical id: ${roleRef}`);
-  const actor = requireRoleCheckpointActor(p, roleName, "role.checkpoint.set");
-  const text = requireString(p, "text");
-  const rawSource =
-    optionalString(p, "sourceSessionId") || optionalString(p, "sessionId") || undefined;
-  const sourceSessionId = await resolveRoleCheckpointSourceSessionId(
-    ctx,
-    workspaceId,
-    roleId,
-    rawSource
-  );
-  const pointersRaw = p.pointers;
-  let pointers: RoleCheckpointPointers | undefined;
-  if (pointersRaw !== undefined && pointersRaw !== null) {
-    if (typeof pointersRaw !== "object" || Array.isArray(pointersRaw)) {
-      throw new RpcError(-32602, "role.checkpoint.set pointers must be an object");
-    }
-    pointers = pointersRaw as RoleCheckpointPointers;
-  } else {
-    // Flat convenience: nodes/tasks/deliveries/git at top level.
-    const nodes = optionalStringArray(p, "nodes");
-    const tasks = optionalStringArray(p, "tasks");
-    const deliveries = optionalStringArray(p, "deliveries");
-    const git = optionalStringArray(p, "git");
-    if (nodes || tasks || deliveries || git) {
-      pointers = {
-        ...(nodes ? { nodes } : {}),
-        ...(tasks ? { tasks } : {}),
-        ...(deliveries ? { deliveries } : {}),
-        ...(git ? { git } : {}),
-      };
-    }
-  }
-
-  try {
-    // MutationBus-serialized with other workspace writes (sole mutation entry).
-    const record = await ctx.mutations.run(workspaceId, async () => {
-      ctx.host.markSelfWrite(workspaceId);
-      return writeRoleCheckpoint(mount.env.fs, {
-        role: roleName,
-        text,
-        updatedAt: mount.env.clock.now(),
-        sourceSessionId,
-        pointers,
-      });
-    });
-    return {
-      workspaceId,
-      role: roleName,
-      actor,
-      checkpoint: projectRoleCheckpoint(record),
-      tail: formatRoleCheckpointTail(record),
-      // Echo whether caller-supplied sourceSessionId was kept (audit honesty).
-      sourceSessionIdAccepted: Boolean(sourceSessionId),
-    };
-  } catch (err) {
-    if (err instanceof RpcError) throw err;
-    const message = err instanceof Error ? err.message : String(err);
-    throw new RpcError(-32602, message);
-  }
-}
-
-async function roleCheckpointClearRpc(ctx: HandlerContext, p: Record<string, unknown>) {
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const roleRef = requireString(p, "role");
-  const { roleName } = await resolveDurableCheckpointRole(ctx, workspaceId, roleRef);
-  const actor = requireRoleCheckpointActor(p, roleName, "role.checkpoint.clear");
-  try {
-    const cleared = await ctx.mutations.run(workspaceId, async () => {
-      ctx.host.markSelfWrite(workspaceId);
-      return clearRoleCheckpoint(mount.env.fs, roleName);
-    });
-    return { workspaceId, role: roleName, actor, cleared };
-  } catch (err) {
-    if (err instanceof RpcError) throw err;
-    const message = err instanceof Error ? err.message : String(err);
-    throw new RpcError(-32602, message);
-  }
-}
-
-/** Best-effort tail load for enter/bootstrap; missing is fine, parse errors omit tail. */
-async function loadRoleCheckpointTailSafe(
-  ctx: HandlerContext,
-  workspaceId: string | undefined,
-  roleName: string
-): Promise<string> {
-  if (!workspaceId || !roleName.trim()) return "";
-  try {
-    // Path-safe only here — bootstrap must not fail the Session on unknown Role.
-    const safe = assertRoleCheckpointRoleName(roleName);
-    const mount = ctx.host.require(workspaceId);
-    const record = await readRoleCheckpoint(mount.env.fs, safe);
-    return formatRoleCheckpointTail(record);
-  } catch {
-    return "";
-  }
-}
-
-async function loadRoleCheckpointTailByIdSafe(
-  ctx: HandlerContext,
-  workspaceId: string | undefined,
-  roleId: string
-): Promise<string> {
-  if (!workspaceId || !roleId.trim()) return "";
-  try {
-    const resolved = await resolveDurableCheckpointRole(ctx, workspaceId, roleId);
-    return loadRoleCheckpointTailSafe(ctx, workspaceId, resolved.roleName);
-  } catch {
-    return "";
-  }
 }
 
 /**
@@ -13745,7 +13456,6 @@ async function buildSessionBootstrapPrompt(
     /** Live generation computed from the actual immutable Connection snapshot. */
     currentContextGeneration: string;
     taskInputDelta?: string;
-    checkpoint?: string;
   },
   roleFs?: import("../core/adapter.js").FsAdapter
 ): Promise<string> {
@@ -13776,36 +13486,10 @@ async function buildSessionBootstrapPrompt(
     currentContextGeneration: roots.currentContextGeneration,
     tentTaskSection: skillPrefix,
     taskInputDelta: roots.taskInputDelta,
-    // Explicit caller checkpoint only (digest slot). On-disk Role Checkpoint is
-    // appended after full assembly as dynamic tail — never stable prefix.
-    checkpoint: roots.checkpoint,
   });
 
-  // Optional Role Checkpoint: last dynamic tail only. Missing/corrupt fail-open.
-  // Temporary Sessions never inject Role continuation notes.
-  return appendRoleCheckpointTail(base, roleDef?.name, roleFs);
+  return base;
 }
-
-/**
- * Append formatted Role Checkpoint after stable Context Card / skill bootstrap.
- * Fail-open on missing note, path errors, or corrupt files.
- */
-async function appendRoleCheckpointTail(
-  base: string,
-  roleName: string | undefined,
-  roleFs?: import("../core/adapter.js").FsAdapter
-): Promise<string> {
-  if (!roleName?.trim() || !roleFs) return base;
-  try {
-    const record = await readRoleCheckpoint(roleFs, roleName);
-    const tail = formatRoleCheckpointTail(record);
-    if (!tail) return base;
-    return `${base.trimEnd()}\n\n${tail}\n`;
-  } catch {
-    return base;
-  }
-}
-
 /**
  * Context Card v2 managed bootstrap (stable prefix + dynamic delta).
  * Skill bodies and Role prompt come from managed compose when provided as tentTaskSection.
@@ -13822,7 +13506,6 @@ function buildContextCardManagedBootstrap(
     rolePromptSection?: string;
     tentTaskSection?: string;
     taskInputDelta?: string;
-    checkpoint?: string;
   }
 ): string {
   const includeStablePrefix = shouldInjectStablePrefix({
@@ -13870,7 +13553,6 @@ function buildContextCardManagedBootstrap(
     taskPointers: pointers,
     userPrompt: extractTaskUserPrompt(task),
     taskInputDelta: roots.taskInputDelta,
-    checkpoint: roots.checkpoint,
     includeStablePrefix,
   });
 
@@ -13964,7 +13646,6 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
     prompt: task.prompt,
     contextCard: task.contextCard,
     ...(task.contextGeneration ? { contextGeneration: task.contextGeneration } : {}),
-    ...(task.taskDeltaDigest ? { taskDeltaDigest: task.taskDeltaDigest } : {}),
   };
   return proj;
 }

@@ -84,23 +84,19 @@ Active states are `queued`, `running`, `waiting`, and `delivered`. Terminal
 
 Context Card v2 persists:
 
-- optional objective and acceptance criteria when explicitly supplied;
-- frozen decisions and explicit include/exclude scope;
-- separate exact work/context Node refs plus strict Task, Delivery, Output,
-  DecisionRequest, and Git ArtifactRefs;
-- optional execution provenance written when an actual Session computes it;
+- separate exact work/context Node ids and their frozen Node snapshots;
+- optional `contextGeneration` written when an actual Session computes it.
 
 The Task envelope, not the Card, persists the raw prompt, parent/reviewer,
-Role/Session binding, and optional WorkspaceLane. Default dispatch never copies the raw
-prompt into objective or acceptance merely to satisfy a schema.
+Role/Session binding, and optional WorkspaceLane.
 
-Node id is authoritative; any stored path is a refreshable hint. Required refs
+Node id is authoritative; snapshot paths are refreshable hints. Referenced Nodes
 are resolved before provider launch and fail loud when missing or invalid.
 
 The stable managed prompt contains Task protocol, project instruction pointers,
 Skills, Role prompt where applicable, and immutable Connection snapshot facts. The
 dynamic tail contains the current Context Card, one raw User Prompt projection,
-Task authority/state, TaskInput/review delta, and optional Role checkpoint.
+Task authority/state, and TaskInput/review delta.
 
 ## 5. Task states
 

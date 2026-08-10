@@ -26,6 +26,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   ];
   for (const entry of tracked) {
     const file = path.join(repoRoot, entry);
+    if (!(await exists(file))) continue;
     const buffer = await fs.readFile(file);
     if (buffer.includes(0)) continue;
     const raw = buffer.toString("utf8");

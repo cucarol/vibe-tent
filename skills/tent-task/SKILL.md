@@ -20,10 +20,9 @@ incremental input/review delta.
    claimed by Service; a durable Role claims its own work through the Role
    boundary.
 3. Read the immutable prompt, `parentActor`, exact `reviewer`, optional `roleId`,
-   exact executing `sessionId`, and
-   WorkspaceLane from the Task envelope. Read optional objective, frozen
-   decisions, scope, acceptance, refs, and generation/digest from its Context
-   Card. Do not expect prompt copies in objective or acceptance.
+   exact executing `sessionId`, and WorkspaceLane from the Task envelope. Read
+   work/context Node ids, frozen Node snapshots, and optional
+   `contextGeneration` from Context Card v2.
 4. Resolve Context Card v2 work/context Node refs by stable id; paths are
    refreshable hints. Work refs are occupied; context refs remain shared
    read-only. Related Nodes are read-only unless included.

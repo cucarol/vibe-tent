@@ -241,7 +241,6 @@ test("collectStableContextGeneration digests AGENTS, Skills, and Connection fact
             "inbox",
             "# inbox\n"
           ),
-          userPrompt: "collect",
         }),
       },
       session: { id: "ss-collect", connectionSnapshot },
@@ -272,9 +271,9 @@ test("frozen Node snapshots are the only durable context; Task prompt changes do
     const fsa = new NodeFs(path.join(workspace, ".tent"));
     const node = [...(await loadTent(fsa)).byId.values()][0]!;
     const nodeContext = taskNodeContext(node.id, node.path, node.body);
-    const firstCard = buildTaskContextCard({ ...nodeContext, userPrompt: "first Task prompt" });
-    const secondCard = buildTaskContextCard({ ...nodeContext, userPrompt: "second Task prompt" });
-    assert.notEqual(firstCard.taskDeltaDigest, secondCard.taskDeltaDigest);
+    const firstCard = buildTaskContextCard(nodeContext);
+    const secondCard = buildTaskContextCard(nodeContext);
+    assert.deepEqual(firstCard, secondCard);
 
     const connectionSnapshot = createAgentConnectionSnapshot(FAKE_RESUMABLE, {});
     const makeInput = (contextCard: typeof firstCard) => ({
@@ -323,7 +322,8 @@ test("Connection dispatch starts independent exact Sessions and persists each ge
         second.contextGeneration,
         "Node snapshots belong to the Task delta; stable generation is independent of Task Node context"
       );
-      assert.notEqual(first.taskDeltaDigest, second.taskDeltaDigest);
+      assert.equal("taskDeltaDigest" in first, false);
+      assert.equal("taskDeltaDigest" in second, false);
       assert.equal(
         (await svc.runtime.registry.read(first.sessionId!))?.contextGeneration,
         first.contextGeneration
@@ -404,7 +404,7 @@ test("contextGeneration patch cannot mutate frozen Node snapshots", async () => 
   }
 });
 
-test("writeTaskEnvelope persists no dispatch-time generation and remains task-specific by delta", async () => {
+test("writeTaskEnvelope persists no dispatch-time generation and keeps exact Node snapshots", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "tent-no-dispatch-gen-"));
   try {
     const systemFs = new NodeFs(root);
@@ -423,7 +423,9 @@ test("writeTaskEnvelope persists no dispatch-time generation and remains task-sp
     const b = await loadTaskEnvelope(systemFs, bPath);
     assert.equal(a.contextGeneration, undefined);
     assert.equal(b.contextGeneration, undefined);
-    assert.notEqual(a.taskDeltaDigest, b.taskDeltaDigest);
+    assert.notDeepEqual(a.contextCard.nodeSnapshots, b.contextCard.nodeSnapshots);
+    assert.equal("taskDeltaDigest" in a, false);
+    assert.equal("taskDeltaDigest" in b, false);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

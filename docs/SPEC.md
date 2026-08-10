@@ -139,7 +139,7 @@ Role and Session are different:
 - a temporary managed ACP Session is one Task execution instance;
 - that Session may resume only when the same provider conversation is
   still recoverable and Core proves compatibility;
-- persisted Nodes, Tasks, Deliveries, checkpoint, and Git are the recovery
+- persisted Nodes, Tasks, Deliveries, and Git are the recovery
   authority when a Session cannot continue.
 
 Two composable Skills define executor behavior:
@@ -163,8 +163,7 @@ Dispatch persists:
 - exact `parentActor` and `reviewer` authority;
 - optional durable `roleId` responsibility and/or exact executing `sessionId`;
 - the immutable raw prompt in the Task body;
-- optional structured objective, acceptance criteria, scope, decisions, and
-  strict Artifact references in Context Card v2;
+- frozen work/context Node ids and snapshots in Context Card v2;
 - optional Git WorkspaceLane;
 - optional execution provenance written only after a Session computes it.
 
@@ -334,7 +333,6 @@ tent task decision list|get|respond|escalate ...
 tent task dispatch --target role:<roleId>|connection:<connectionId> \
   --work-node <nodeId> [--context-node <nodeId> ...] ...
 tent role-init <role>
-tent role-checkpoint set|show|clear
 tent skill-install [--target ...] [--force]
 ```
 

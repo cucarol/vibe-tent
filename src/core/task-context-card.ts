@@ -12,7 +12,6 @@
 import { canonicalJson, sha256Hex } from "./canonical-digest.js";
 import {
   buildTaskContextCardV2,
-  computeTaskContextCardDeltaDigest,
   formatTaskContextCardV2Prompt,
   normalizeTaskContextCard,
   serializeTaskContextCard,
@@ -31,7 +30,6 @@ import type { TaskEnvelope } from "./task.js";
 export { canonicalJson, sha256Hex } from "./canonical-digest.js";
 export {
   buildTaskContextCardV2,
-  computeTaskContextCardDeltaDigest,
   formatTaskContextCardV2Prompt,
   normalizeTaskContextCard,
   serializeTaskContextCard,
@@ -95,22 +93,9 @@ export const CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS = [
   "taskPath",
   "objective",
   "acceptance",
-  "taskDeltaDigest",
   "userPrompt",
   "taskInputDelta",
-  "checkpoint",
 ] as const;
-
-/** Dynamic delta inputs (per Task / turn). */
-export type TaskDeltaInputs = {
-  card: TaskContextCard;
-  /** Immutable prompt that created the card. */
-  userPrompt: string;
-  /** Formatted TaskInput / review-feedback blocks, if any. */
-  taskInputDelta?: string;
-  /** Optional Role Checkpoint tail. */
-  checkpoint?: string;
-};
 
 export type TaskContextCardErrorCode =
   | "INVALID_ACTOR"
@@ -150,7 +135,7 @@ export function isContextGenerationId(value: unknown): value is string {
 
 /**
  * Build contextGeneration from stable prefix / compatibility inputs.
- * Does not include per-Task objective, TaskInput, acceptance, taskId, or checkpoint.
+ * Does not include per-Task objective, TaskInput, acceptance, or taskId.
  */
 export function computeContextGeneration(inputs: ContextGenerationInputs): string {
   const extraStable = sanitizeContextGenerationExtraStable(inputs.extraStable);
@@ -284,23 +269,6 @@ export function computeContextGenerationFromStableFacts(input: {
   });
 }
 
-/**
- * Digest of current Context Card body + TaskInput/review delta (+ optional checkpoint).
- * Excludes contextGeneration itself to avoid circular self-hash.
- */
-export function computeTaskDeltaDigest(inputs: TaskDeltaInputs): string {
-  return computeTaskContextCardDeltaDigest({
-    nodeContext: {
-      workNodeIds: inputs.card.workNodeIds,
-      contextNodeIds: inputs.card.contextNodeIds,
-      nodeSnapshots: inputs.card.nodeSnapshots,
-    },
-    userPrompt: inputs.userPrompt,
-    taskInputDelta: inputs.taskInputDelta,
-    checkpoint: inputs.checkpoint,
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Parse / validate / project
 // ---------------------------------------------------------------------------
@@ -315,7 +283,6 @@ export function buildTaskContextCard(input: BuildTaskContextCardInput): TaskCont
     "scope",
     "acceptance",
     "refs",
-    "taskDeltaDigest",
   ] as const;
   const record = input as unknown as Record<string, unknown>;
   const retiredField = retired.find((field) => field in record);
@@ -414,8 +381,6 @@ export type ManagedPromptAssemblyInput = {
   userPrompt?: string;
   /** TaskInput / review-feedback delta text. */
   taskInputDelta?: string;
-  /** Optional Role Checkpoint tail. */
-  checkpoint?: string;
   /**
    * When false, omit stable prefix (invariant → tent-task) and emit only
    * dynamic Context Card + deltas. Use when the Session already received
@@ -428,7 +393,6 @@ export type ManagedPromptAssembly = {
   /** Full prompt text in frozen order. */
   text: string;
   contextGeneration: string;
-  taskDeltaDigest: string;
   /** Whether the stable prefix was included. */
   includedStablePrefix: boolean;
   /** Stable prefix bytes only (empty when includeStablePrefix=false). */
@@ -471,16 +435,13 @@ function formatDynamicDelta(input: ManagedPromptAssemblyInput): string {
   if (input.taskInputDelta?.trim()) {
     parts.push("", input.taskInputDelta.trim());
   }
-  if (input.checkpoint?.trim()) {
-    parts.push("", "--- Role Checkpoint ---", input.checkpoint.trim());
-  }
   return parts.join("\n");
 }
 
 /**
  * Assemble managed Agent prompt in the frozen order:
  * invariant → stable project context → tent-role? → Role prompt →
- * tent-task → dynamic Context Card → TaskInput/review delta → checkpoint?
+ * tent-task → dynamic Context Card → TaskInput/review delta
  *
  * When `includeStablePrefix` is false (same contextGeneration already injected
  * on this Session), only the dynamic delta is returned.
@@ -504,7 +465,6 @@ export function assembleManagedPrompt(
     return {
       text: dynamicDelta + "\n",
       contextGeneration: input.contextGeneration,
-      taskDeltaDigest: card.taskDeltaDigest,
       includedStablePrefix: false,
       stablePrefix: "",
       dynamicDelta,
@@ -529,7 +489,6 @@ export function assembleManagedPrompt(
   return {
     text,
     contextGeneration: input.contextGeneration,
-    taskDeltaDigest: card.taskDeltaDigest,
     includedStablePrefix: true,
     stablePrefix,
     dynamicDelta,

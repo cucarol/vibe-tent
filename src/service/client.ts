@@ -600,7 +600,6 @@ export class ServiceClient {
       prompt?: string;
       description?: string;
       color?: string;
-      cli?: { command: string; resume?: string };
       actor?: string;
     }
   ) {
@@ -625,8 +624,6 @@ export class ServiceClient {
       description?: string | null;
       /** null or an empty string clears the field. */
       color?: string | null;
-      /** null clears the host CLI hint. */
-      cli?: { command: string; resume?: string } | null;
       actor?: string;
     }
   ) {
@@ -998,48 +995,6 @@ export class ServiceClient {
     } = {}
   ) {
     return this.call("session.enter", { ...args });
-  }
-
-  /**
-   * Optional Role Checkpoint (cooperative continuation note).
-   * Operational under temp/<role>/checkpoint.md — not Delivery or Task state.
-   */
-  roleCheckpointGet(workspaceId: string, role: string) {
-    return this.call("role.checkpoint.get", { workspaceId, role });
-  }
-  roleCheckpointSet(
-    workspaceId: string,
-    args: {
-      role: string;
-      text: string;
-      /** Soft authority: "user" (default) or exact target Role name. */
-      actor?: string;
-      sourceSessionId?: string;
-      sessionId?: string;
-      pointers?: {
-        nodes?: string[];
-        tasks?: string[];
-        deliveries?: string[];
-        git?: string[];
-      };
-      nodes?: string[];
-      tasks?: string[];
-      deliveries?: string[];
-      git?: string[];
-    }
-  ) {
-    return this.call("role.checkpoint.set", { workspaceId, ...args });
-  }
-  roleCheckpointClear(
-    workspaceId: string,
-    role: string,
-    opts?: { actor?: string }
-  ) {
-    return this.call("role.checkpoint.clear", {
-      workspaceId,
-      role,
-      ...(opts?.actor ? { actor: opts.actor } : {}),
-    });
   }
 
   /** Probe external/managed session + incomplete task bindings. */

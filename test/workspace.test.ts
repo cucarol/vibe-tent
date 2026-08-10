@@ -580,25 +580,6 @@ test("listRoleCommitsFor:只读列举 role 分支 commits,不创建 worktree", a
   );
 });
 
-test("completeClaim: retired — rejects without dual-writing Node owner/status", async () => {
-  const dir = await makeTent();
-  const adapter = new NodeFs(dir);
-  const { completeClaim } = await import("../src/core/ops.js");
-  await assert.rejects(
-    () => completeClaim(
-      { fs: adapter, clock: { now: () => "t" }, tentName: "x" },
-      "cx-g2",
-      async () => {
-        throw new Error("conflict");
-      }
-    ),
-    /retired|owner\/status|no longer write/i
-  );
-  const box = (await loadTent(adapter)).byId.get("cx-g2")!;
-  assert.equal(box.fm.owner, undefined);
-  assert.equal(box.fm.status, undefined);
-});
-
 async function makeGitWorkspace(prefix: string): Promise<string> {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   const workspace = path.join(parent, "repo");

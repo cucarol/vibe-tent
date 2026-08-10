@@ -411,7 +411,6 @@ test("renameNode: refuses collision and occupied range", async () => {
       "  reviewer: { kind: user, id: user }",
       "  assignee: { kind: role, id: executor }",
       "  contextGeneration: cg-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "  taskDeltaDigest: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "---",
       "",
       "# Task",

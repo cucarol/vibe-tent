@@ -318,7 +318,6 @@ test("moveNode: concurrent Task refs do not freeze move (cx-tsw53f)", async () =
       "  reviewer: { kind: user, id: user }",
       "  assignee: { kind: role, id: executor }",
       "  contextGeneration: cg-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "  taskDeltaDigest: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "---",
       "",
       "# Task",

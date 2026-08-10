@@ -88,6 +88,13 @@ test("CLIENT_METHODS includes registry.role.create/update/delete", () => {
   for (const retired of ["agent.list", "agent.get", "agent.create", "agent.update", "agent.delete"]) {
     assert.equal(isClientMethod(retired), false, retired);
   }
+  for (const retired of [
+    "role.checkpoint.get",
+    "role.checkpoint.set",
+    "role.checkpoint.clear",
+  ]) {
+    assert.equal(isClientMethod(retired), false, retired);
+  }
 });
 
 test("registry.roles projects durable Role metadata without route authorization", async () => {
@@ -143,6 +150,15 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
     });
     assert.ok(secretDenied.error);
     assert.equal(secretDenied.error!.code, -32602);
+    assert.equal(events.length, 0);
+
+    const cliDenied = await rpc(svc, "registry.role.create", {
+      workspaceId,
+      name: "retired-cli",
+      cli: { command: "retired" },
+    });
+    assert.ok(cliDenied.error);
+    assert.equal(cliDenied.error!.code, -32602);
     assert.equal(events.length, 0);
 
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
@@ -217,7 +233,6 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
       prompt: null,
       description: "",
       color: null,
-      cli: null,
     })) as {
       role: {
         prompt?: string;

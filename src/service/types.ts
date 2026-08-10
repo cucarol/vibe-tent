@@ -335,8 +335,6 @@ export type TaskProjection = {
   contextCard: import("../core/task-context-card.js").TaskContextCard;
   /** `cg-v1-<sha256>` stable-prefix generation when projected. */
   contextGeneration?: string;
-  /** Current task context + input delta digest when projected. */
-  taskDeltaDigest?: string;
 };
 
 export type DeliveryProjection = {
@@ -755,7 +753,7 @@ export const CLIENT_METHODS = [
   "registry.roles",
   /**
    * User-only role registry mutations (MutationBus).
-   * Persist id/name/displayName/prompt/description/color/cli —
+   * Persist id/name/displayName/prompt/description/color —
    * never provider secrets. id is server-assigned and immutable; displayName is
    * mutable; operational name is not renamed in identity batch 1.
    * Success emits exactly one registry.roles.updated.
@@ -868,15 +866,6 @@ export const CLIENT_METHODS = [
   "session.enter",
   "session.status",
   "session.leave",
-  /**
-   * Optional Role Checkpoint (cooperative Session replacement continuation note).
-   * Operational under temp/<role>/checkpoint.md only — not a Core entity, Task state,
-   * Delivery, or OS-temp artifact. set overwrites; get returns null when absent;
-   * clear is idempotent. Dynamic tail context only.
-   */
-  "role.checkpoint.get",
-  "role.checkpoint.set",
-  "role.checkpoint.clear",
   /** ACP tool permission approvals (permissionPolicy=ask). */
   "toolApproval.listPending",
   "toolApproval.get",

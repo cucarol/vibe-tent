@@ -21,7 +21,6 @@ tent node list|get|create|write|move|archive|restore|...
 tent role list|show|config
 tent session enter|status|leave
 tent task list|get|dispatch|claim|deliver|accept|reject|interrupt|cancel|...
-tent role-checkpoint set|show|clear
 tent status|tree|tags|find
 ```
 

@@ -12,7 +12,6 @@ import {
   buildTaskContextCard,
   canonicalJson,
   computeContextGeneration,
-  computeTaskDeltaDigest,
   formatContextGeneration,
   formatTaskContextCardPrompt,
   isContextGenerationId,
@@ -76,7 +75,6 @@ function sampleCard(
       },
     ],
     contextGeneration,
-    userPrompt: "Implement the Context Card core seam.",
   };
   return buildTaskContextCard({
     ...base,
@@ -159,21 +157,6 @@ test("contextGeneration changes when a skill version changes", () => {
   assert.notEqual(base, versionBump);
 });
 
-test("taskDeltaDigest is independent of contextGeneration and tracks Node context+delta", () => {
-  const card = sampleCard();
-  const d1 = computeTaskDeltaDigest({ card, userPrompt: "do the work" });
-  const d2 = computeTaskDeltaDigest({ card, userPrompt: "do the work" });
-  const d3 = computeTaskDeltaDigest({
-    card,
-    userPrompt: "do the work",
-    taskInputDelta: "## Review Feedback\nfix: fix tests",
-  });
-  assert.equal(d1, d2);
-  assert.notEqual(d1, d3);
-  assert.equal(d1.length, 64);
-  assert.equal(card.taskDeltaDigest.length, 64);
-});
-
 test("canonicalJson sorts object keys for stable hashing", () => {
   assert.equal(
     canonicalJson({ b: 1, a: { d: 2, c: 3 } }),
@@ -199,7 +182,6 @@ test("buildTaskContextCard requires Node context and rejects retired v1 fields",
       workNodeIds: card.workNodeIds,
       contextNodeIds: card.contextNodeIds,
       nodeSnapshots: card.nodeSnapshots,
-      userPrompt: "Implement the Context Card core seam.",
       contextGeneration: "bad",
     }),
     (err: unknown) =>
@@ -256,7 +238,7 @@ test("loadTaskContextCardFromFrontmatter reads only the nested card wire", () =>
 
 // ---- prompt ordering / cache ----
 
-test("assembleManagedPrompt order: invariant → project → role → task → card → delta → checkpoint", () => {
+test("assembleManagedPrompt order: invariant → project → role → task → card → delta", () => {
   const card = sampleCard();
   const assembled = assembleManagedPrompt({
     workspaceRoot: "C:/ws",
@@ -270,7 +252,6 @@ test("assembleManagedPrompt order: invariant → project → role → task → c
     taskPointers: "Task envelope: temp/x.md",
     userPrompt: "Implement the seam",
     taskInputDelta: "## Review Feedback\ntext: tighten tests",
-    checkpoint: "Next: commit",
     includeStablePrefix: true,
   });
 
@@ -289,7 +270,6 @@ test("assembleManagedPrompt order: invariant → project → role → task → c
   const iCard = idx("Tent Task Context Card v2");
   const iUser = idx("## User Prompt");
   const iReview = idx("## Review Feedback");
-  const iCp = idx("--- Role Checkpoint ---");
   assert.ok(iInv < iProj);
   assert.ok(iProj < iRoleSkill);
   assert.ok(iRoleSkill < iRolePrompt);
@@ -297,7 +277,6 @@ test("assembleManagedPrompt order: invariant → project → role → task → c
   assert.ok(iTaskSkill < iCard);
   assert.ok(iCard < iUser);
   assert.ok(iUser < iReview);
-  assert.ok(iReview < iCp);
   assert.match(text, /contextGeneration: cg-v1-/);
   assert.match(formatTaskContextCardPrompt(card), /Work Node cx-5q6za6/);
 });

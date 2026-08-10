@@ -57,7 +57,6 @@ const testTaskContextCard = (nodeId: string) =>
         etag: "000000000000000000000000",
       },
     ],
-    userPrompt: "test task",
   });
 
 // ---- pure UI model ----

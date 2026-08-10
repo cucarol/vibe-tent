@@ -2,21 +2,16 @@ import {
   normalizeTaskNodeContext,
   type TaskNodeContext,
 } from "./task-node-context.js";
-import { canonicalSha256 } from "./canonical-digest.js";
 
 export const TASK_CONTEXT_CARD_SCHEMA_VERSION = "v2" as const;
 
 export type TaskContextCard = TaskNodeContext & {
   schemaVersion: typeof TASK_CONTEXT_CARD_SCHEMA_VERSION;
   contextGeneration?: string;
-  taskDeltaDigest: string;
 };
 
 export type BuildTaskContextCardInput = TaskNodeContext & {
   contextGeneration?: string;
-  userPrompt: string;
-  taskInputDelta?: string;
-  checkpoint?: string;
 };
 
 export class TaskContextCardSchemaError extends Error {
@@ -40,7 +35,6 @@ export function normalizeTaskContextCard(value: unknown): TaskContextCard {
     "contextNodeIds",
     "nodeSnapshots",
     "contextGeneration",
-    "taskDeltaDigest",
   ]);
   if (Object.keys(record).some((key) => !expected.has(key))) {
     throw new TaskContextCardSchemaError("Task Context Card contains retired or unknown fields.");
@@ -59,11 +53,6 @@ export function normalizeTaskContextCard(value: unknown): TaskContextCard {
       "Task Context Card contextGeneration must be a canonical cg-v1 digest when present."
     );
   }
-  if (typeof record.taskDeltaDigest !== "string" || !/^[a-f0-9]{64}$/.test(record.taskDeltaDigest)) {
-    throw new TaskContextCardSchemaError(
-      "Task Context Card taskDeltaDigest must be a lowercase sha256 digest."
-    );
-  }
   try {
     const nodeContext = normalizeTaskNodeContext({
       workNodeIds: record.workNodeIds,
@@ -76,7 +65,6 @@ export function normalizeTaskContextCard(value: unknown): TaskContextCard {
       ...(record.contextGeneration !== undefined
         ? { contextGeneration: record.contextGeneration }
         : {}),
-      taskDeltaDigest: record.taskDeltaDigest,
     };
   } catch (error) {
     throw new TaskContextCardSchemaError(
@@ -84,26 +72,6 @@ export function normalizeTaskContextCard(value: unknown): TaskContextCard {
       error
     );
   }
-}
-
-export function computeTaskContextCardDeltaDigest(input: {
-  nodeContext: TaskNodeContext;
-  userPrompt: string;
-  taskInputDelta?: string;
-  checkpoint?: string;
-}): string {
-  const nodeContext = normalizeTaskNodeContext({
-    workNodeIds: input.nodeContext.workNodeIds,
-    contextNodeIds: input.nodeContext.contextNodeIds,
-    nodeSnapshots: input.nodeContext.nodeSnapshots,
-  });
-  return canonicalSha256({
-    schemaVersion: TASK_CONTEXT_CARD_SCHEMA_VERSION,
-    ...nodeContext,
-    userPrompt: input.userPrompt,
-    taskInputDelta: input.taskInputDelta?.trim() || "",
-    checkpoint: input.checkpoint?.trim() || "",
-  });
 }
 
 export function buildTaskContextCardV2(input: BuildTaskContextCardInput): TaskContextCard {
@@ -116,12 +84,6 @@ export function buildTaskContextCardV2(input: BuildTaskContextCardInput): TaskCo
     schemaVersion: TASK_CONTEXT_CARD_SCHEMA_VERSION,
     ...nodeContext,
     ...(input.contextGeneration ? { contextGeneration: input.contextGeneration } : {}),
-    taskDeltaDigest: computeTaskContextCardDeltaDigest({
-      nodeContext,
-      userPrompt: input.userPrompt,
-      taskInputDelta: input.taskInputDelta,
-      checkpoint: input.checkpoint,
-    }),
   });
 }
 
@@ -138,7 +100,6 @@ export function serializeTaskContextCard(card: TaskContextCard): Record<string, 
     ...(normalized.contextGeneration
       ? { contextGeneration: normalized.contextGeneration }
       : {}),
-    taskDeltaDigest: normalized.taskDeltaDigest,
   };
 }
 
@@ -152,7 +113,6 @@ export function formatTaskContextCardV2Prompt(card: TaskContextCard): string {
     ...(normalized.contextGeneration
       ? [`contextGeneration: ${normalized.contextGeneration}`]
       : []),
-    `taskDeltaDigest: ${normalized.taskDeltaDigest}`,
   ];
   for (const snapshot of normalized.nodeSnapshots) {
     lines.push(

@@ -247,8 +247,6 @@ export interface SessionRecord {
    * Not a new lifecycle entity — machine-local Session projection (cx-5q6za6).
    */
   contextGeneration?: string;
-  /** Last Task delta digest observed on this Session (diagnostic only). */
-  taskDeltaDigest?: string;
 }
 
 /**

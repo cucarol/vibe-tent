@@ -35,10 +35,6 @@ import { runTaskCommand, taskHelpText } from "./task-rpc.js";
 import { runSessionCommand, sessionHelpText } from "./session-rpc.js";
 import { runNodeCommand, nodeHelpText } from "./node-rpc.js";
 import { runRoleCommand, roleHelpText } from "./role-rpc.js";
-import {
-  runRoleCheckpointCommand,
-  roleCheckpointHelpText,
-} from "./role-checkpoint-rpc.js";
 import { runProposalSubmit } from "./proposal-rpc.js";
 
 export function isInWorkspaceSystemRoot(systemRoot: string): boolean {
@@ -222,22 +218,6 @@ async function main() {
     return;
   }
 
-  // Optional cooperative Role Checkpoint (continuation note for Session replacement).
-  if (cmd === "role-checkpoint") {
-    const [sub, ...rest] = args;
-    if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
-      console.log(roleCheckpointHelpText());
-      return;
-    }
-    const result = await runRoleCheckpointCommand(sub, rest, {
-      packageRoot: packageRoot(),
-    });
-    if (result.stdout) process.stdout.write(result.stdout);
-    if (result.stderr) process.stderr.write(result.stderr);
-    if (result.exitCode !== 0) process.exitCode = result.exitCode;
-    return;
-  }
-
   if (cmd === "propose") {
     const { positionals } = parseFlags(args);
     const [nodeId, bodySource] = positionals;
@@ -264,7 +244,7 @@ async function main() {
   const tentCommands = new Set(["role-init", "status", "tags", "find", "tree"]);
   if (!tentCommands.has(cmd)) {
     return fail(
-      `Unknown command: ${cmd || "(empty)"}\nCommands: new node task role propose role-init role-checkpoint status tags find tree skill-install agent-hooks`
+      `Unknown command: ${cmd || "(empty)"}\nCommands: new node task role propose role-init status tags find tree skill-install agent-hooks`
     );
   }
 
@@ -479,8 +459,6 @@ Node, Role, Task, Delivery, and Agent Connection:
 Service-backed workspace operations:
   tent node list|get|create|write|… Agent-facing Node operations through Local Service
   tent node --help                   Full Node subcommand help
-  tent role-checkpoint set|show|clear Optional cooperative Role continuation note
-  tent role-checkpoint --help         set/clear → Service; show read-only; --actor
   propose <nodeId> <file|->           Submit a Node proposal (in-workspace → proposal.submit RPC)
   CLI exit does not stop Local Service. Token stays in machine-local endpoint records.
 
@@ -496,8 +474,6 @@ Initialization and machine config:
                                      Project Tent-managed SessionStart/Stop hooks into
                                      verified agent configs (no permissions / MCP).
   role-init <role>                   Regenerate the derived stable role init document.
-  role-checkpoint set|show|clear     Continuation note: set/clear via Local Service; show read-only.
-                                     set/clear accept --actor user|<role> (default user).
 
 Read-only:
   status                             Print a read-only Tent status summary.

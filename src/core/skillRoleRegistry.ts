@@ -41,13 +41,6 @@ export interface RoleDefinition {
   description?: string;
   /** 色板色名(gray/red/.../brown);注册表行左侧强调条 + owner 取色用。 */
   color?: string;
-  /** Optional host-orchestrator hint. Tent records this but never spawns it. */
-  cli?: RoleCliConfig;
-}
-
-export interface RoleCliConfig {
-  command: string;
-  resume?: string;
 }
 
 /** Role row after normalize/load — id and displayName are always filled. */
@@ -311,23 +304,7 @@ export function normalizeRoleDefinition(
     role.description = value.description.trim();
   }
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
-  const cli = normalizeCliConfig(value.cli);
-  if (cli) role.cli = cli;
   return role;
-}
-
-function normalizeCliConfig(value: unknown): RoleCliConfig | undefined {
-  if (value === undefined) return undefined;
-  if (!isRecord(value)) throw new Error("role.cli must be an object.");
-  const command = typeof value.command === "string" ? value.command.trim() : "";
-  if (!command) throw new Error("role.cli.command must be a non-empty string.");
-  const cli: RoleCliConfig = { command };
-  if (value.resume !== undefined) {
-    const resume = typeof value.resume === "string" ? value.resume.trim() : "";
-    if (!resume) throw new Error("role.cli.resume must be a non-empty string.");
-    cli.resume = resume;
-  }
-  return cli;
 }
 
 function roleIdSet(roles: readonly RoleDefinition[], exceptId?: string): Set<string> {
@@ -352,7 +329,6 @@ function serializeRolesRegistry(registry: LoadedRolesRegistry): LoadedRolesRegis
       if (role.prompt) row.prompt = role.prompt;
       if (role.description) row.description = role.description;
       if (role.color) row.color = role.color;
-      if (role.cli) row.cli = { ...role.cli };
       return row;
     }),
   };

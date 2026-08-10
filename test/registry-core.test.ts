@@ -386,45 +386,6 @@ test("role 注册表:core 创建修改删除与 scaffold 模板写入", async ()
   );
 });
 
-test("role 注册表:可选 cli 宿主配置会校验并保留", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-cli-"));
-  const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, {
-    name: "demo",
-    rolesRegistry: {
-      roles: [
-        {
-          name: "planner",
-          cli: { command: "codex --ask-for-approval never", resume: "codex resume latest" },
-        },
-      ],
-    },
-  });
-
-  assert.deepEqual((await loadRolesRegistry(fsa)).roles[0].cli, {
-    command: "codex --ask-for-approval never",
-    resume: "codex resume latest",
-  });
-
-  await updateRole(fsa, "planner", { description: "规划者" });
-  assert.deepEqual((await loadRolesRegistry(fsa)).roles[0].cli, {
-    command: "codex --ask-for-approval never",
-    resume: "codex resume latest",
-  });
-
-  await createRole(fsa, {
-    name: "executor",
-    cli: { command: "claude" },
-  });
-  assert.deepEqual((await loadRolesRegistry(fsa)).roles.find((role) => role.name === "executor")?.cli, {
-    command: "claude",
-  });
-
-  await assert.rejects(
-    () => createRole(fsa, { name: "broken", cli: { command: "" } }),
-    /cli\.command/,
-  );
-});
 
 test("role registry drops retired routing authorization fields", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-retired-route-"));
@@ -438,6 +399,7 @@ test("role registry drops retired routing authorization fields", async () => {
         a2aPolicy: "allow",
         roster: ["worker-a"],
         allowedProfiles: ["fake-default"],
+        cli: { command: "retired" },
       }],
     }, null, 2) + "\n"
   );
@@ -447,6 +409,7 @@ test("role registry drops retired routing authorization fields", async () => {
   assert.equal(Object.prototype.hasOwnProperty.call(role, "a2aPolicy"), false);
   assert.equal(Object.prototype.hasOwnProperty.call(role, "roster"), false);
   assert.equal(Object.prototype.hasOwnProperty.call(role, "allowedProfiles"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(role, "cli"), false);
 
   await updateRole(fsa, "orchestrator", { description: "durable coordinator" });
   const disk = JSON.parse(await fsa.readFile("roles.json")) as {
@@ -455,6 +418,7 @@ test("role registry drops retired routing authorization fields", async () => {
   assert.equal("a2aPolicy" in disk.roles[0]!, false);
   assert.equal("roster" in disk.roles[0]!, false);
   assert.equal("allowedProfiles" in disk.roles[0]!, false);
+  assert.equal("cli" in disk.roles[0]!, false);
 });
 
 test("role 注册表: updateRole 可明确清除全部可选字段", async () => {
@@ -465,7 +429,6 @@ test("role 注册表: updateRole 可明确清除全部可选字段", async () =>
     prompt: "prompt",
     description: "description",
     color: "red",
-    cli: { command: "codex" },
   });
 
   const beforeClear = (await loadRolesRegistry(fsa)).roles.find((r) => r.name === "clearable");
@@ -476,7 +439,6 @@ test("role 注册表: updateRole 可明确清除全部可选字段", async () =>
     prompt: undefined,
     description: undefined,
     color: undefined,
-    cli: undefined,
   });
 
   const cleared = (await loadRolesRegistry(fsa)).roles;
@@ -485,7 +447,6 @@ test("role 注册表: updateRole 可明确清除全部可选字段", async () =>
   assert.equal(cleared[0]!.id, beforeClear!.id);
   assert.equal(cleared[0]!.displayName, "clearable");
   assert.equal(cleared[0]!.prompt, undefined);
-  assert.equal(cleared[0]!.cli, undefined);
 });
 
 test("role 注册表: 旧数据无 id 时内存确定性补齐；load 不写盘；displayName 可改；id/name 不可改", async () => {

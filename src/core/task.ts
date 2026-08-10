@@ -164,8 +164,6 @@ export interface TaskEnvelope extends TaskNodeContext {
   contextCard: TaskContextCard;
   /** In-memory projection of contextCard.contextGeneration. */
   contextGeneration?: string;
-  /** Convenience projection of contextCard.taskDeltaDigest when present. */
-  taskDeltaDigest?: string;
   acceptMode: AcceptMode;
   /** Exact executing Session; required for Session-only Tasks. */
   sessionId?: string;
@@ -467,7 +465,6 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   }
   // Context Card v2 already loaded above from its sole nested wire.
   task.contextGeneration = contextCard.contextGeneration;
-  task.taskDeltaDigest = contextCard.taskDeltaDigest;
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
   if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
     task.lastOutcome = data.lastOutcome;
@@ -745,7 +742,6 @@ export async function writeTaskEnvelope(
   // contextGeneration is absent until a managed Session computes and uses it.
   const contextCard = buildTaskContextCard({
     ...nodeContext,
-    userPrompt,
   });
 
   const data: Record<string, unknown> = {
@@ -995,7 +991,6 @@ export async function patchTaskEnvelope(
       contextGeneration: patch.contextGeneration,
     });
     delete data.contextGeneration;
-    delete data.taskDeltaDigest;
   }
 
   const roleId = typeof data.roleId === "string" ? data.roleId.trim() : "";
