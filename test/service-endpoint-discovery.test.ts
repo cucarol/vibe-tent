@@ -207,7 +207,7 @@ test("authenticated discovery classifies protocol before compatible identity", a
       discoverAuthenticatedServiceEndpoint(dataDir, async () => ({
         health: {
           status: "ok",
-          protocolVersion: 4,
+          protocolVersion: 5,
           pid: candidate.pid,
           startedAt: candidate.startedAt,
         },
@@ -220,7 +220,7 @@ test("authenticated discovery classifies protocol before compatible identity", a
     await discoverAuthenticatedServiceEndpoint(dataDir, async () => ({
       health: {
         status: "ok",
-        protocolVersion: 5,
+        protocolVersion: 6,
         instanceId: "wrong-instance",
         pid: candidate.pid,
         startedAt: candidate.startedAt,
@@ -243,7 +243,7 @@ test("authenticated discovery fails loud for any incompatible or multiple compat
       discoverAuthenticatedServiceEndpoint(dataDir, async (candidate) => ({
         health: {
           status: "ok",
-          protocolVersion: candidate.instanceId === first.instanceId ? 4 : 5,
+          protocolVersion: candidate.instanceId === first.instanceId ? 5 : 6,
           instanceId: candidate.instanceId,
           pid: candidate.pid,
           startedAt: candidate.startedAt,
@@ -257,7 +257,7 @@ test("authenticated discovery fails loud for any incompatible or multiple compat
       discoverAuthenticatedServiceEndpoint(dataDir, async (candidate) => ({
         health: {
           status: "ok",
-          protocolVersion: 5,
+          protocolVersion: 6,
           instanceId: candidate.instanceId,
           pid: candidate.pid,
           startedAt: candidate.startedAt,

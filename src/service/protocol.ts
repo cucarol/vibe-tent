@@ -6,7 +6,7 @@
  * Clients must reject healthy-but-incompatible or legacy (missing) services before
  * business RPC — never treat them as attach success or spawn a competing service.
  */
-export const TENT_SERVICE_PROTOCOL_VERSION = 5 as const;
+export const TENT_SERVICE_PROTOCOL_VERSION = 6 as const;
 
 export type TentServiceProtocolVersion = typeof TENT_SERVICE_PROTOCOL_VERSION;
 

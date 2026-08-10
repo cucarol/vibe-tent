@@ -133,7 +133,7 @@ test("managed auto-delivery refuses when stop and both seal probes fail", async 
       {}
     );
     assert.equal(health.status, "ok");
-    assert.equal(health.protocolVersion, 5);
+    assert.equal(health.protocolVersion, 6);
   } finally {
     await svc.stop();
     await fs.rm(workspace, { recursive: true, force: true });

@@ -927,7 +927,7 @@ test("tryAttachService: healthy legacy (no protocolVersion) fails before busines
   }
 });
 
-test("tryAttachService: healthy protocol 3 fails after the Launch Secret wire bump and does not spawn competitor", async () => {
+test("tryAttachService: healthy protocol 5 fails after the protocol 6 hard cut and does not spawn competitor", async () => {
   const dataDir = await tempDir("tent-proto-mismatch-");
   const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
   let spawnCalled = false;
@@ -939,7 +939,7 @@ test("tryAttachService: healthy protocol 3 fails after the Launch Secret wire bu
       const request = init?.body ? JSON.parse(String(init.body)) as { method?: string } : null;
       if (url.includes("/rpc") && request?.method === "service.health") {
         const body = (await res.json()) as { result?: Record<string, unknown> };
-        if (body.result) body.result.protocolVersion = 3;
+        if (body.result) body.result.protocolVersion = 5;
         return new Response(JSON.stringify(body), {
           status: 200,
           headers: { "content-type": "application/json" },

@@ -16,7 +16,7 @@ async function assertGeneratedFile(relativePath: string): Promise<void> {
   assert.ok(stat.size > 0, `${relativePath} must not be empty`);
 }
 
-test("generated release artifacts require protocol 5 delivery-bound review", async () => {
+test("generated release artifacts require protocol 6 delivery-bound review", async () => {
   const [cli, service, desktopMain, desktopRenderer] = await Promise.all([
     generated("cli.mjs"),
     generated("service.mjs"),
@@ -24,8 +24,8 @@ test("generated release artifacts require protocol 5 delivery-bound review", asy
     generated("desktop/dist/renderer-next/main.js"),
   ]);
 
-  assert.match(cli, /TENT_SERVICE_PROTOCOL_VERSION = 5/);
-  assert.match(service, /TENT_SERVICE_PROTOCOL_VERSION = 5/);
+  assert.match(cli, /TENT_SERVICE_PROTOCOL_VERSION = 6/);
+  assert.match(service, /TENT_SERVICE_PROTOCOL_VERSION = 6/);
   assert.match(cli, /tent task accept <taskPath> --delivery-id <deliveryId>/);
   assert.match(cli, /tent task reject <taskPath> --delivery-id <deliveryId>/);
   assert.doesNotMatch(cli, /--expected-delivery-id/);
@@ -40,17 +40,28 @@ test("generated release artifacts require protocol 5 delivery-bound review", asy
   );
   assert.doesNotMatch(service, /expectedDeliveryId/);
 
-  assert.match(desktopMain, /TENT_SERVICE_PROTOCOL_VERSION = 5/);
+  assert.match(desktopMain, /TENT_SERVICE_PROTOCOL_VERSION = 6/);
   assert.match(desktopMain, /task\.accept/);
   assert.match(desktopMain, /task\.reject/);
   assert.match(desktopMain, /deliveryId/);
   assert.doesNotMatch(desktopMain, /expectedDeliveryId/);
 
-  assert.match(desktopRenderer, /protocolVersion!==5/);
+  assert.match(desktopRenderer, /protocolVersion!==6/);
   assert.match(desktopRenderer, /acceptDelivery/);
   assert.match(desktopRenderer, /rejectDelivery/);
   assert.match(desktopRenderer, /deliveryId/);
   assert.doesNotMatch(desktopRenderer, /expectedDeliveryId/);
+
+  for (const artifact of [cli, service, desktopMain, desktopRenderer]) {
+    assert.doesNotMatch(artifact, /taskDeltaDigest/);
+    assert.doesNotMatch(artifact, /Role checkpoint/i);
+  }
+  assert.doesNotMatch(cli, /role-checkpoint/);
+  for (const artifact of [cli, service]) {
+    assert.doesNotMatch(artifact, /role\.checkpoint/);
+    assert.doesNotMatch(artifact, /role\.cli must be an object/);
+    assert.doesNotMatch(artifact, /role\.cli\.command must be a non-empty string/);
+  }
 });
 
 test("generated renderer-next dependency closure is complete", async () => {
