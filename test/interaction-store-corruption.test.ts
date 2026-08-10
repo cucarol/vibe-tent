@@ -122,37 +122,79 @@ for (const fixture of cases) {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-authority-corrupt-data-"));
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-authority-corrupt-ws-"));
     const primary = path.join(dataDir, fixture.fileName);
-    await fs.writeFile(primary, fixture.seed, "utf8");
     await scaffoldInWorkspace(new NodeFs(workspace), {
       name: "interaction-store-corruption",
       nodes: [{ name: "work", type: "prompt", body: "# work\n" }],
     });
 
-    const svc = await startLocalTentService({
-      dataDir,
-      writeEndpoint: true,
-      connections: [CONNECTION],
-    });
+    let svc: Awaited<ReturnType<typeof startLocalTentService>> | undefined;
     let workspaceId = "";
     let taskPath = "";
+    let taskId = "";
     let firstError: (Error & { code?: string }) | undefined;
     try {
+      if (fixture.kind === "task-input") {
+        // Connection dispatch now correctly consults TaskInput authority before
+        // provider continuation. Create the exact Task while authority is healthy,
+        // then prove corruption remains fail-closed across a real Service restart.
+        svc = await startLocalTentService({
+          dataDir,
+          writeEndpoint: true,
+          connections: [CONNECTION],
+        });
+        const healthyClient = createServiceClient({ baseUrl: svc.url, token: svc.token });
+        workspaceId = ((await healthyClient.mount(workspace)) as { workspaceId: string })
+          .workspaceId;
+        const note = await healthyClient.docsCreateNote(workspaceId, {
+          name: `corrupt-${fixture.kind}`,
+          type: "prompt",
+        });
+        const dispatched = (await healthyClient.taskDispatch(workspaceId, {
+          workNodeIds: [note.nodeId],
+          contextNodeIds: [],
+          connectionId: CONNECTION.connectionId,
+          prompt: "hold for corruption delivery gate",
+          parentActor: { kind: "user", id: "user" },
+          reviewer: { kind: "user", id: "user" },
+          acceptMode: "review-required",
+        })) as { taskPath: string };
+        taskPath = dispatched.taskPath;
+        taskId = ((await healthyClient.taskGet(workspaceId, taskPath)) as {
+          task: { id: string };
+        }).task.id;
+        await svc.stop();
+        svc = undefined;
+        await fs.writeFile(primary, fixture.seed, "utf8");
+      } else {
+        await fs.writeFile(primary, fixture.seed, "utf8");
+      }
+
+      svc = await startLocalTentService({
+        dataDir,
+        writeEndpoint: true,
+        connections: [CONNECTION],
+      });
       const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
       workspaceId = ((await client.mount(workspace)) as { workspaceId: string }).workspaceId;
-      const note = await client.docsCreateNote(workspaceId, {
-        name: `corrupt-${fixture.kind}`,
-        type: "prompt",
-      });
-      const dispatched = (await client.taskDispatch(workspaceId, {
-        workNodeIds: [note.nodeId],
-        contextNodeIds: [],
-        connectionId: CONNECTION.connectionId,
-        prompt: "hold for corruption delivery gate",
-        parentActor: { kind: "user", id: "user" },
-        reviewer: { kind: "user", id: "user" },
-        acceptMode: "review-required",
-      })) as { taskPath: string };
-      taskPath = dispatched.taskPath;
+      if (!taskPath) {
+        const note = await client.docsCreateNote(workspaceId, {
+          name: `corrupt-${fixture.kind}`,
+          type: "prompt",
+        });
+        const dispatched = (await client.taskDispatch(workspaceId, {
+          workNodeIds: [note.nodeId],
+          contextNodeIds: [],
+          connectionId: CONNECTION.connectionId,
+          prompt: "hold for corruption delivery gate",
+          parentActor: { kind: "user", id: "user" },
+          reviewer: { kind: "user", id: "user" },
+          acceptMode: "review-required",
+        })) as { taskPath: string };
+        taskPath = dispatched.taskPath;
+        taskId = ((await client.taskGet(workspaceId, taskPath)) as {
+          task: { id: string };
+        }).task.id;
+      }
 
       const failedDelivery = await captureError(() =>
         client.taskDeliver(workspaceId, taskPath, {
@@ -172,9 +214,16 @@ for (const fixture of cases) {
       const deliveries = await client.deliveryList(workspaceId);
       assert.equal(deliveries.deliveries.length, 0, "corrupt authority publishes no Delivery");
       const task = (await client.taskGet(workspaceId, taskPath)) as {
-        task: { state: string };
+        task: { id: string; state: string; wait?: { code?: string } | null };
       };
-      assert.equal(task.task.state, "running");
+      assert.equal(task.task.id, taskId, "the exact pre-corruption Task remains auditable");
+      assert.ok(
+        task.task.state === "running" || task.task.state === "waiting",
+        `Task remains legally recoverable, got ${task.task.state}`
+      );
+      if (task.task.state === "waiting") {
+        assert.equal(task.task.wait?.code, "session_unavailable");
+      }
 
       if (fixture.kind === "task-input") {
         firstError = await captureError(() =>
@@ -201,7 +250,7 @@ for (const fixture of cases) {
       const health = await client.call<{ status: string }>("service.health", {});
       assert.equal(health.status, "ok");
     } finally {
-      await svc.stop();
+      await svc?.stop();
     }
 
     try {
