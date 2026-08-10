@@ -17,6 +17,10 @@ import {
   DECISION_REQUEST_STORE_CORRUPT,
   DecisionRequestStore,
 } from "../src/service/decision-request-store.js";
+import {
+  authorityStoreCorruptionLatchPath,
+  persistAuthorityStoreCorruption,
+} from "../src/service/authority-store-corruption.js";
 import { startLocalTentService } from "../src/service/service.js";
 import {
   TASK_INPUT_STORE_CORRUPT,
@@ -263,3 +267,76 @@ for (const fixture of cases) {
     }
   });
 }
+
+for (const fixture of [
+  { kind: "task-input" as const, fileName: "task-inputs.json" },
+  { kind: "decision-request" as const, fileName: "decision-requests.json" },
+]) {
+  test(`${fixture.kind} transient authority read failure is retryable without quarantine`, async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-authority-io-retry-"));
+    const primary = path.join(dataDir, fixture.fileName);
+    const latch = authorityStoreCorruptionLatchPath(primary);
+    await fs.mkdir(primary);
+
+    try {
+      if (fixture.kind === "task-input") {
+        const store = new TaskInputStore(dataDir);
+        const first = await captureError(() =>
+          store.listBlockingForDeliver("ws-retry", "temp/retry.md")
+        );
+        assert.doesNotMatch(first.message, /TASK_INPUT_STORE_CORRUPT/);
+        await assert.rejects(fs.stat(latch), { code: "ENOENT" });
+        assert.deepEqual(listEvidenceBackups(await fs.readdir(dataDir), fixture.fileName), []);
+
+        await fs.rmdir(primary);
+        await fs.writeFile(primary, JSON.stringify({ items: [] }) + "\n", "utf8");
+        assert.deepEqual(
+          await store.listBlockingForDeliver("ws-retry", "temp/retry.md"),
+          []
+        );
+        await store.shutdown();
+      } else {
+        const store = new DecisionRequestStore(dataDir);
+        const first = await captureError(() => store.listPending());
+        assert.doesNotMatch(first.message, /DECISION_REQUEST_STORE_CORRUPT/);
+        await assert.rejects(fs.stat(latch), { code: "ENOENT" });
+        assert.deepEqual(listEvidenceBackups(await fs.readdir(dataDir), fixture.fileName), []);
+
+        await fs.rmdir(primary);
+        await fs.writeFile(primary, JSON.stringify({ items: [] }) + "\n", "utf8");
+        assert.deepEqual(await store.listPending(), []);
+        await store.shutdown();
+      }
+    } finally {
+      await fs.rm(dataDir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("failed corruption-latch write preserves the original authority evidence", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-authority-latch-fail-"));
+  const primary = path.join(dataDir, "task-inputs.json");
+  const latch = authorityStoreCorruptionLatchPath(primary);
+  const seed = "{not-json\n";
+  await fs.writeFile(primary, seed, "utf8");
+
+  try {
+    const first = await persistAuthorityStoreCorruption(
+      primary,
+      TASK_INPUT_STORE_CORRUPT,
+      "invalid JSON",
+      {
+        writeLatch: async () => {
+          throw Object.assign(new Error("injected latch write failure"), { code: "EACCES" });
+        },
+      }
+    );
+    assert.equal(first.code, TASK_INPUT_STORE_CORRUPT);
+    assert.match(first.message, /corruption latch persistence failed/);
+    assert.equal(await fs.readFile(primary, "utf8"), seed);
+    assert.deepEqual(listEvidenceBackups(await fs.readdir(dataDir), "task-inputs.json"), []);
+    await assert.rejects(fs.stat(latch), { code: "ENOENT" });
+  } finally {
+    await fs.rm(dataDir, { recursive: true, force: true });
+  }
+});

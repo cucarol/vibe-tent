@@ -103,11 +103,15 @@ export async function readAuthorityStoreCorruption(
 export async function persistAuthorityStoreCorruption(
   filePath: string,
   code: string,
-  reason: string
+  reason: string,
+  options?: {
+    /** Test-only seam for proving latch-first failure ordering. */
+    writeLatch?: typeof writeJsonAtomic;
+  }
 ): Promise<AuthorityStoreCorruptError> {
   const file = latchPath(filePath);
   try {
-    await writeJsonAtomic(file, {
+    await (options?.writeLatch ?? writeJsonAtomic)(file, {
       code,
       reason,
       createdAt: new Date().toISOString(),

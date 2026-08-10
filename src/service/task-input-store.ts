@@ -382,11 +382,10 @@ export class TaskInputStore {
           this.loaded = true;
           return;
         }
-        const code =
-          err && typeof err === "object" && "code" in err
-            ? String((err as NodeJS.ErrnoException).code)
-            : "UNKNOWN";
-        return this.latchCorrupt(`state file unreadable (${code})`);
+        // I/O failures are fail-closed for this operation but may be transient
+        // (for example a Windows sharing violation). Only malformed content is
+        // durably quarantined and latched.
+        throw err;
       }
     });
   }

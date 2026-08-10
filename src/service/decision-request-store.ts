@@ -196,11 +196,9 @@ export class DecisionRequestStore {
         if (error instanceof SyntaxError) {
           return this.latchCorrupt("invalid JSON");
         }
-        const code =
-          error && typeof error === "object" && "code" in error
-            ? String((error as NodeJS.ErrnoException).code)
-            : "UNKNOWN";
-        return this.latchCorrupt(`state file unreadable (${code})`);
+        // I/O failures are fail-closed for this operation but may be transient.
+        // Only malformed content is durably quarantined and latched.
+        throw error;
       }
     });
   }
