@@ -129,6 +129,7 @@ import {
   finalizeTaskDeliverAuto,
   prepareTaskAccept,
   prepareTaskDeliver,
+  recoverCommittedTaskDeliver,
   taskCancel,
   taskClaim,
   taskFail,
@@ -137,6 +138,7 @@ import {
   taskResume,
   taskWait,
   type TaskClaimWrite,
+  type TaskDeliverOptions,
   type TaskDeliverResult,
 } from "../core/task-lifecycle.js";
 import { runTaskLifecycle } from "./task-lifecycle-flight.js";
@@ -11565,70 +11567,46 @@ async function tryManagedAutoDeliver(
     const mount = ctx.host.get(input.workspaceId);
     if (!mount) return;
 
-    // Preflight: only seal/deliver while the task is still the active occupation
-    // for this session. Avoid killing an already-rebound reject-resume session.
+    // Identity-only preflight. Core owns lifecycle/WAL convergence below; raw
+    // Task state must not decide whether an already-committed Delivery is done.
+    // Avoid killing an already-rebound reject-resume session.
     const pre = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
-    if (!pre || pre.state !== "running") {
+    if (!pre || !["running", "delivered", "accepted"].includes(pre.state)) {
       return;
     }
-    if (pre.sessionId && pre.sessionId !== sessionId) {
+    if (pre.sessionId !== sessionId) {
       return;
     }
-    const existingReady = await loadDeliveries(mount.env.fs, {
-      taskId: pre.id || input.taskPath,
-    });
-    if (existingReady.some((d) => d.status === "ready")) {
-      managedAutoDeliverDone.add(key);
-      // Ready Delivery already published — drop any leftover draft.
-      try {
-        await ctx.managedDeliveryReportDrafts.clear(input.workspaceId, input.taskPath);
-      } catch {
-        // ignore
+
+    // The provider's final report must be durable before it can wait behind a
+    // Task flight or hit any Core/seal/Git failure. Never overwrite a different
+    // exact-Task draft: that row belongs to the earlier completion attempt.
+    const existingDraft = await ctx.managedDeliveryReportDrafts.get(
+      input.workspaceId,
+      input.taskPath
+    );
+    if (existingDraft) {
+      if (
+        existingDraft.sessionId !== sessionId ||
+        existingDraft.assistantText.trim() !== draftText
+      ) {
+        throw new Error(
+          "managed Delivery report draft conflicts with this Session or completion report"
+        );
       }
-      return;
+      draftPreserved = true;
+    } else {
+      await ctx.managedDeliveryReportDrafts.preserve({
+        workspaceId: input.workspaceId,
+        taskPath: input.taskPath,
+        taskId: pre.id || input.taskPath,
+        sessionId,
+        assistantText: draftText,
+      });
+      draftPreserved = true;
     }
 
-    // Durable preserve BEFORE seal/dirty/collect/integrate/publish so a later
-    // failure can retry without re-running the Agent turn. Operational only —
-    // not a ready Delivery, does not change task state.
-    await ctx.managedDeliveryReportDrafts.preserve({
-      workspaceId: input.workspaceId,
-      taskPath: input.taskPath,
-      taskId: pre.id || input.taskPath,
-      sessionId,
-      assistantText: draftText,
-    });
-    draftPreserved = true;
-
-    // Outside the mutation bus: capture-once baseline for legacy Git-lane tasks
-    // missing roleBranchBase. Nested mutations.run would deadlock.
-    if (input.commits === undefined) {
-      await ensureTaskWorkspaceLane(ctx, input.workspaceId, pre);
-    }
-
-    // Pre-seal TaskInput gate: refuse BEFORE stopping the managed session so
-    // open blockers leave Session live and intact. Same authority code as public
-    // deliver. Seal must not cancel TaskInput rows (see sealManagedSessionBeforeDelivery).
-    await assertNoBlockingTaskInputsForDeliver(ctx, input.workspaceId, pre);
-
-    // Seal turn BEFORE Delivery: process must not keep mutating the worktree
-    // after the task enters delivered. stop-after-deliver semantics preserved
-    // (role slot freed; registry resume metadata retained) but ordered first.
-    // Only reached when no open TaskInput blockers at pre-seal check.
-    const sealed = await sealManagedSessionBeforeDelivery(ctx, {
-      workspaceId: input.workspaceId,
-      sessionId,
-      taskPath: input.taskPath,
-    });
-    if (!sealed) {
-      // Leave task running for retry; do not publish a Delivery while the
-      // agent process may still write/commit.
-      throw new Error(
-        "managed session could not be sealed before auto-deliver (process still mutable)"
-      );
-    }
-
-    // Per-Task flight after seal: prepare → Git → finalize (MutationBus short).
+    // One exact-Task flight owns WAL recovery, seal, Git and finalization.
     let published = false;
     await runTaskLifecycle(input.workspaceId, input.taskPath, async () => {
       type Phase =
@@ -11640,15 +11618,65 @@ async function tryManagedAutoDeliver(
             deliveryId: string;
             commits: string[];
             targetHead?: string;
-            opts: {
-              summary: string;
-              decision?: DeliverDecision;
-              commits?: string[];
-              targetHead?: string;
-              lastOutcome?: "delivered";
-            };
+            opts: TaskDeliverOptions;
           };
-      const phase = await ctx.mutations.run(input.workspaceId, async (): Promise<Phase> => {
+
+      // Reconcile a previously committed Delivery before deriving anything
+      // from mutable current Git state. Core returns the exact persisted
+      // candidate/options; Service only verifies the bound managed Session.
+      const recovered = await ctx.mutations.run(input.workspaceId, () =>
+        recoverCommittedTaskDeliver(mount.env, input.taskPath, {
+          summary,
+          lastOutcome: "delivered",
+        })
+      );
+      const current = recovered?.task ?? await loadTaskEnvelope(mount.env.fs, input.taskPath);
+      if (current.sessionId !== sessionId) return;
+      if (!recovered && current.state !== "running") return;
+
+      if (!recovered) {
+        // Outside the mutation bus: capture-once baseline for legacy Git-lane
+        // tasks missing roleBranchBase. Nested mutations.run would deadlock.
+        if (input.commits === undefined) {
+          await ensureTaskWorkspaceLane(ctx, input.workspaceId, current);
+        }
+        // Refuse before stopping the managed Session. A committed Delivery has
+        // already passed this gate in its original attempt.
+        await assertNoBlockingTaskInputsForDeliver(ctx, input.workspaceId, current);
+      }
+
+      // A committed candidate was originally published only after a successful
+      // seal; re-proving the seal here also prevents stale drafts from clearing
+      // while the same managed process remains mutable.
+      const sealed = await sealManagedSessionBeforeDelivery(ctx, {
+        workspaceId: input.workspaceId,
+        sessionId,
+        taskPath: input.taskPath,
+      });
+      if (!sealed) {
+        throw new Error(
+          "managed session could not be sealed before auto-deliver (process still mutable)"
+        );
+      }
+
+      let phase: Phase;
+      if (recovered) {
+        if (recovered.prepared.kind === "done") {
+          phase = { kind: "done", result: recovered.prepared.result };
+        } else {
+          phase = {
+            kind: "auto",
+            sourceNodeId: recovered.prepared.sourceNodeId,
+            deliveryId: recovered.prepared.deliveryId,
+            commits: recovered.prepared.commits,
+            ...(recovered.prepared.targetHead
+              ? { targetHead: recovered.prepared.targetHead }
+              : {}),
+            opts: recovered.options,
+          };
+        }
+      } else {
+        phase = await ctx.mutations.run(input.workspaceId, async (): Promise<Phase> => {
         const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
 
         // Only deliver from active running managed session for this sessionId.
@@ -11657,16 +11685,6 @@ async function tryManagedAutoDeliver(
           return { kind: "skip" };
         }
         if (task.sessionId && task.sessionId !== sessionId) {
-          return { kind: "skip" };
-        }
-
-        // Ready delivery already present → lifecycle forbids double ready.
-        const existing = await loadDeliveries(mount.env.fs, {
-          taskId: task.id || input.taskPath,
-        });
-        if (existing.some((d) => d.status === "ready")) {
-          managedAutoDeliverDone.add(key);
-          published = true;
           return { kind: "skip" };
         }
 
@@ -11727,7 +11745,8 @@ async function tryManagedAutoDeliver(
           ...(prepared.targetHead ? { targetHead: prepared.targetHead } : {}),
           opts,
         };
-      });
+        });
+      }
 
       if (phase.kind === "skip") return;
       let result: TaskDeliverResult;

@@ -225,14 +225,15 @@ test("task interrupt/fail remove only their own non-accepted Delivery", async ()
   const secondTask = await loadTaskEnvelope(fsa, second.taskPath);
   const firstDelivery = await createDelivery(fsa, clock, {
     taskId: firstTask.id!,
-    sourceNodeId: "cx-g2",
+    // Deliberately swapped: cleanup authority is exact taskId, not source Node.
+    sourceNodeId: "cx-p1",
     deliveriesDir: "temp/sessions/ss-workera/deliveries",
     summary: "remove only this task",
     status: "rejected",
   });
   const secondDelivery = await createDelivery(fsa, clock, {
     taskId: secondTask.id!,
-    sourceNodeId: "cx-p1",
+    sourceNodeId: "cx-g2",
     deliveriesDir: "temp/sessions/ss-workerb/deliveries",
     summary: "must remain",
     status: "ready",

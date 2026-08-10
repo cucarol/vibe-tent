@@ -23,6 +23,8 @@ import {
 } from "../src/service/managed-delivery-report-draft-store.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
+import { createDelivery, loadDeliveries } from "../src/core/delivery.js";
+import { loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
 
 const FAKE_ROUTE = {
   connectionId: "fake-default",
@@ -118,6 +120,35 @@ async function initGitOnWorkspace(ws: string): Promise<void> {
   await configureTestGitIdentity(ws);
   await git(ws, "add", ".");
   await git(ws, "commit", "-q", "-m", "init");
+}
+
+async function setupManagedTask(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>,
+  ws: string,
+  acceptMode: "review-required" | "auto-accept"
+): Promise<{ workspaceId: string; nodeId: string; taskPath: string; sessionId: string }> {
+  const { workspaceId, nodeId } = await mountWorkItem(svc, ws);
+  const dispatched = await rpc(svc, "task.dispatch", {
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+    workspaceId,
+    workNodeIds: [nodeId],
+    contextNodeIds: [],
+    connectionId: "fake-default",
+    prompt: "managed Delivery WAL recovery",
+    acceptMode,
+  });
+  assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
+  const taskPath = (dispatched.result as { taskPath: string }).taskPath;
+  await rpc(svc, "task.claim", { workspaceId, taskPath });
+  const started = await rpc(svc, "task.startSession", {
+    workspaceId,
+    taskPath,
+    callerKind: "user",
+  });
+  assert.ok(!started.error, JSON.stringify(started.error));
+  const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+  return { workspaceId, nodeId, taskPath, sessionId };
 }
 
 // ---- unit: store ----
@@ -574,5 +605,160 @@ test("P0: publish preparation failure preserves draft; retry publishes without r
       undefined,
       "draft cleared after successful publish"
     );
+  });
+});
+
+test("managed report retry repairs ready Delivery plus running Task through Core WAL", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("mrd-ready-running-recovery");
+  await initGitOnWorkspace(ws);
+  await withService(async (svc) => {
+    const { workspaceId, nodeId, taskPath, sessionId } = await setupManagedTask(
+      svc,
+      ws,
+      "review-required"
+    );
+    const mount = svc.ctx.host.require(workspaceId);
+    const task = await loadTaskEnvelope(mount.env.fs, taskPath);
+    const delivery = await createDelivery(mount.env.fs, mount.env.clock, {
+      taskId: task.id!,
+      sourceNodeId: nodeId,
+      deliveriesDir: task.roleId
+        ? `temp/roles/${task.roleId}/deliveries`
+        : `temp/sessions/${task.sessionId}/deliveries`,
+      summary: "READY_RUNNING_RECOVERY",
+      taskLastOutcome: "delivered",
+      status: "ready",
+    });
+    const sessionsBefore = (await svc.runtime.registry.list()).map((row) => row.id).sort();
+
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "READY_RUNNING_RECOVERY",
+    });
+
+    const repaired = await loadTaskEnvelope(mount.env.fs, taskPath);
+    assert.equal(repaired.state, "delivered");
+    assert.equal(repaired.activeDeliveryId, delivery.id);
+    const deliveries = await loadDeliveries(mount.env.fs, { taskId: task.id! });
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0]!.id, delivery.id);
+    assert.equal(deliveries[0]!.status, "ready");
+    assert.equal(await svc.ctx.managedDeliveryReportDrafts.get(workspaceId, taskPath), undefined);
+    assert.deepEqual(
+      (await svc.runtime.registry.list()).map((row) => row.id).sort(),
+      sessionsBefore,
+      "WAL retry must not launch a replacement provider Session"
+    );
+  });
+});
+
+test("managed report retry repairs accepted Delivery plus delivered Task without deriving current commits", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("mrd-accepted-delivered-recovery");
+  await initGitOnWorkspace(ws);
+  await withService(async (svc) => {
+    const { workspaceId, nodeId, taskPath, sessionId } = await setupManagedTask(
+      svc,
+      ws,
+      "auto-accept"
+    );
+    const mount = svc.ctx.host.require(workspaceId);
+    const task = await loadTaskEnvelope(mount.env.fs, taskPath);
+    const historicalCommit = "a".repeat(40);
+    const delivery = await createDelivery(mount.env.fs, mount.env.clock, {
+      taskId: task.id!,
+      sourceNodeId: nodeId,
+      deliveriesDir: task.roleId
+        ? `temp/roles/${task.roleId}/deliveries`
+        : `temp/sessions/${task.sessionId}/deliveries`,
+      summary: "ACCEPTED_DELIVERED_RECOVERY",
+      commits: [historicalCommit],
+      targetHead: "b".repeat(40),
+      taskLastOutcome: "delivered",
+      status: "accepted",
+      integrationMode: "auto-accept",
+    });
+    await patchTaskEnvelope(mount.env.fs, taskPath, {
+      state: "delivered",
+      activeDeliveryId: delivery.id,
+      lastOutcome: "delivered",
+      updatedAt: mount.env.clock.now(),
+    });
+    const sessionsBefore = (await svc.runtime.registry.list()).map((row) => row.id).sort();
+
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "ACCEPTED_DELIVERED_RECOVERY",
+    });
+
+    const repaired = await loadTaskEnvelope(mount.env.fs, taskPath);
+    assert.equal(repaired.state, "accepted");
+    assert.equal(repaired.activeDeliveryId, delivery.id);
+    const deliveries = await loadDeliveries(mount.env.fs, { taskId: task.id! });
+    assert.equal(deliveries.length, 1);
+    assert.deepEqual(deliveries[0]!.commits, [historicalCommit]);
+    assert.equal(deliveries[0]!.status, "accepted");
+    assert.equal(await svc.ctx.managedDeliveryReportDrafts.get(workspaceId, taskPath), undefined);
+    assert.deepEqual(
+      (await svc.runtime.registry.list()).map((row) => row.id).sort(),
+      sessionsBefore,
+      "accepted WAL retry must not launch or replay the provider"
+    );
+  });
+});
+
+test("managed WAL recovery keeps the durable draft when the retry report mismatches", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("mrd-candidate-mismatch");
+  await initGitOnWorkspace(ws);
+  await withService(async (svc, dataDir) => {
+    const { workspaceId, nodeId, taskPath, sessionId } = await setupManagedTask(
+      svc,
+      ws,
+      "review-required"
+    );
+    const mount = svc.ctx.host.require(workspaceId);
+    const task = await loadTaskEnvelope(mount.env.fs, taskPath);
+    await svc.ctx.managedDeliveryReportDrafts.preserve({
+      workspaceId,
+      taskPath,
+      taskId: task.id!,
+      sessionId,
+      assistantText: "PERSISTED_REPORT",
+    });
+    await createDelivery(mount.env.fs, mount.env.clock, {
+      taskId: task.id!,
+      sourceNodeId: nodeId,
+      deliveriesDir: task.roleId
+        ? `temp/roles/${task.roleId}/deliveries`
+        : `temp/sessions/${task.sessionId}/deliveries`,
+      summary: "PERSISTED_REPORT",
+      taskLastOutcome: "delivered",
+      status: "ready",
+    });
+    const draftFile = path.join(dataDir, "managed-delivery-report-drafts.json");
+    const draftRaw = await fs.readFile(draftFile, "utf8");
+    const taskRaw = await mount.env.fs.readFile(taskPath);
+
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "DIFFERENT_RETRY_REPORT",
+    });
+
+    const retained = await svc.ctx.managedDeliveryReportDrafts.get(workspaceId, taskPath);
+    assert.equal(retained?.assistantText, "PERSISTED_REPORT");
+    assert.equal(await fs.readFile(draftFile, "utf8"), draftRaw);
+    assert.equal(await mount.env.fs.readFile(taskPath), taskRaw);
+    const deliveries = await loadDeliveries(mount.env.fs, { taskId: task.id! });
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0]!.status, "ready");
+    assert.equal((await loadTaskEnvelope(mount.env.fs, taskPath)).state, "running");
   });
 });

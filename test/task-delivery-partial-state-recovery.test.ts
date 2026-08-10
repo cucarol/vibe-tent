@@ -417,6 +417,64 @@ test("pre-WAL reject failure leaves Task and Delivery bytes unchanged", async ()
   assert.equal(await base.readFile(delivered.delivery.path), deliveryRaw);
 });
 
+test("pending reject validates incompatible Task state before Delivery write", async () => {
+  const { base, env, taskPath, arm } = await runningTask("review-required");
+  const delivered = await taskDeliver(env as never, taskPath, { summary: "review me" });
+  const options = {
+    actor: "user",
+    deliveryId: delivered.delivery.id,
+    note: "committed reject",
+    resume: true,
+  };
+  arm({ operation: "writeFile", path: isDeliveryPath, timing: "before" });
+  await assert.rejects(() => taskReject(env as never, taskPath, options), /fault/);
+  await patchTaskEnvelope(base, taskPath, {
+    state: "accepted",
+    updatedAt: "2026-08-10T01:01:00.000Z",
+  });
+  const taskRaw = await base.readFile(taskPath);
+  const deliveryRaw = await base.readFile(delivered.delivery.path);
+
+  await assert.rejects(
+    () => taskReject(env as never, taskPath, options),
+    (error: unknown) => (error as { code?: string }).code === "DELIVERY_CHANGED"
+  );
+  assert.equal(await base.readFile(taskPath), taskRaw);
+  assert.equal(await base.readFile(delivered.delivery.path), deliveryRaw);
+  assert.equal(await hasRejectIntent(base, taskPath), true);
+});
+
+for (const mismatch of ["source", "mode"] as const) {
+  test(`pending reject validates incompatible Delivery ${mismatch} before write`, async () => {
+    const { base, env, taskPath, arm } = await runningTask("review-required");
+    const delivered = await taskDeliver(env as never, taskPath, { summary: "review me" });
+    const options = {
+      actor: "user",
+      deliveryId: delivered.delivery.id,
+      note: "committed reject",
+      resume: false,
+    };
+    arm({ operation: "writeFile", path: isDeliveryPath, timing: "before" });
+    await assert.rejects(() => taskReject(env as never, taskPath, options), /fault/);
+    const malformed = (await loadDeliveries(base, {
+      taskId: (await loadTaskEnvelope(base, taskPath)).id,
+    }))[0]!;
+    if (mismatch === "source") malformed.sourceNodeId = "cx-p2";
+    else malformed.integrationMode = "auto-accept";
+    await writeDelivery(base, malformed);
+    const taskRaw = await base.readFile(taskPath);
+    const deliveryRaw = await base.readFile(malformed.path);
+
+    await assert.rejects(
+      () => taskReject(env as never, taskPath, options),
+      (error: unknown) => (error as { code?: string }).code === "DELIVERY_CHANGED"
+    );
+    assert.equal(await base.readFile(taskPath), taskRaw);
+    assert.equal(await base.readFile(malformed.path), deliveryRaw);
+    assert.equal(await hasRejectIntent(base, taskPath), true);
+  });
+}
+
 test("completed reject is exact-request idempotent and all mismatches are zero-write conflicts", async () => {
   const { base, env, taskPath } = await runningTask("review-required");
   const delivered = await taskDeliver(env as never, taskPath, { summary: "review me" });

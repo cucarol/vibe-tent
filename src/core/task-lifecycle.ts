@@ -222,6 +222,13 @@ export type TaskDeliverPrepared =
       targetHead?: string;
     };
 
+export interface CommittedTaskDeliverRecovery {
+  task: TaskEnvelope;
+  delivery: DeliveryRecord;
+  prepared: TaskDeliverPrepared;
+  options: TaskDeliverOptions;
+}
+
 export interface TaskAcceptPrepared {
   deliveryId: string;
   deliveryPath: string;
@@ -289,6 +296,64 @@ export async function prepareTaskDeliver(
       };
     }
     return { kind: "done", result: { task: next, delivery, autoIntegrated: false } };
+  });
+}
+
+/**
+ * Recover an already-committed exact-Task Delivery WAL without reconstructing
+ * its immutable candidate from current Git/lane state. Used by the managed
+ * report-draft retry path after a Service crash. It never creates a Delivery.
+ */
+export async function recoverCommittedTaskDeliver(
+  env: OpsEnv,
+  taskPath: string,
+  expected: { summary: string; lastOutcome?: "delivered" }
+): Promise<CommittedTaskDeliverRecovery | undefined> {
+  return withMutation(env.fs, async () => {
+    const task = await preflightTaskMutation(env, taskPath);
+    const delivery = await findCommittedTaskDelivery(env.fs, task);
+    if (!delivery || (delivery.status !== "ready" && delivery.status !== "accepted")) {
+      return undefined;
+    }
+    assertCommittedDeliveryMatchesTask(task, delivery);
+    if (
+      delivery.summary !== expected.summary.trim() ||
+      delivery.taskLastOutcome !== expected.lastOutcome
+    ) {
+      throw new TaskLifecycleError(
+        "DELIVERY_CHANGED",
+        "Persisted Delivery report or outcome does not match the managed report draft."
+      );
+    }
+    const prepared: TaskDeliverPrepared = delivery.status === "accepted"
+      ? {
+          kind: "done",
+          result: { task, delivery, autoIntegrated: isAutoIntegrationMode(delivery.integrationMode) },
+        }
+      : isAutoIntegrationMode(delivery.integrationMode)
+        ? {
+            kind: "auto",
+            sourceNodeId: delivery.sourceNodeId,
+            deliveryId: delivery.id,
+            commits: [...delivery.commits],
+            ...(delivery.targetHead ? { targetHead: delivery.targetHead } : {}),
+          }
+        : {
+            kind: "done",
+            result: { task, delivery, autoIntegrated: false },
+          };
+    const options: TaskDeliverOptions = {
+      summary: delivery.summary,
+      commits: [...delivery.commits],
+      checks: delivery.checks.map((check) => ({ ...check })),
+      artifactRefs: delivery.artifactRefs.map((ref) => ({ ...ref })),
+      ...(delivery.targetHead ? { targetHead: delivery.targetHead } : {}),
+      ...(delivery.taskLastOutcome ? { lastOutcome: delivery.taskLastOutcome } : {}),
+      ...(delivery.integrationMode === "agent-decided-integrate"
+        ? { decision: "integrate" as const }
+        : {}),
+    };
+    return { task, delivery, prepared, options };
   });
 }
 
@@ -623,7 +688,10 @@ export async function taskReject(
     const recovered = await reconcilePendingTaskReject(env, taskPath);
     if (recovered) {
       assertTaskRejectRequestMatchesIntent(recovered.intent, options);
-      return { task: recovered.task, delivery: recovered.delivery };
+      // The committed reject WAL wins, then the ordinary exact-Task preflight
+      // validates that no competing Delivery WAL remains before success.
+      const task = await preflightTaskMutation(env, taskPath);
+      return { task, delivery: recovered.delivery };
     }
     let task = await loadTaskEnvelope(env.fs, taskPath);
     task = await reconcileCommittedTaskDelivery(env, taskPath, task);
@@ -935,6 +1003,7 @@ async function reconcilePendingTaskReject(
     action: "reject",
   });
   const delivery = await requireTaskDeliveryById(env.fs, task, intent.deliveryId);
+  assertTaskRejectIntentCanConverge(task, delivery, intent);
   const completed = await completeTaskRejectIntent(env, taskPath, task, delivery, intent);
   return { ...completed, intent };
 }
@@ -1008,6 +1077,49 @@ async function completeTaskRejectIntent(
 
   await env.fs.remove(taskRejectIntentPath(taskPath));
   return { task: next, delivery };
+}
+
+/** Validate the complete committed reject operation before its first write. */
+function assertTaskRejectIntentCanConverge(
+  task: TaskEnvelope,
+  delivery: DeliveryRecord,
+  intent: TaskRejectIntent
+): void {
+  if (task.state !== "delivered" && task.state !== intent.to) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      `Exact-Task reject recovery cannot converge from Task state ${task.state}.`
+    );
+  }
+  if (
+    delivery.sourceNodeId !== primaryNodeId(task) ||
+    !isReadyDeliveryModeForTask(task, delivery.integrationMode)
+  ) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      "Persisted reject Delivery source or integration mode does not match its exact Task."
+    );
+  }
+  if (delivery.status === "ready") {
+    if (delivery.review) {
+      throw new TaskLifecycleError(
+        "DELIVERY_CHANGED",
+        "Ready Delivery already carries review authority; refusing reject recovery."
+      );
+    }
+    return;
+  }
+  if (
+    delivery.status !== "rejected" ||
+    delivery.review?.decision !== "reject" ||
+    delivery.review.by !== intent.actor ||
+    delivery.review.note !== intent.note
+  ) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      `Exact-Task reject recovery Delivery ${delivery.id} does not match its intent.`
+    );
+  }
 }
 
 async function recoverExistingTaskDeliver(
@@ -1129,10 +1241,7 @@ function assertCommittedDeliveryMatchesTask(
 ): void {
   const nodeId = primaryNodeId(task);
   const modeMatches = delivery.status === "ready"
-    ? (task.acceptMode === "review-required" && delivery.integrationMode === null) ||
-      (task.acceptMode === "auto-accept" && delivery.integrationMode === "auto-accept") ||
-      (task.acceptMode === "agent-decide" &&
-        (delivery.integrationMode === null || delivery.integrationMode === "agent-decided-integrate"))
+    ? isReadyDeliveryModeForTask(task, delivery.integrationMode)
     : delivery.status === "accepted"
       ? delivery.integrationMode === "manual-accept" ||
         (task.acceptMode === "auto-accept" && delivery.integrationMode === "auto-accept") ||
@@ -1144,6 +1253,18 @@ function assertCommittedDeliveryMatchesTask(
       "Persisted Delivery source or integration mode does not match its exact Task; refusing recovery."
     );
   }
+}
+
+function isReadyDeliveryModeForTask(
+  task: TaskEnvelope,
+  integrationMode: DeliveryRecord["integrationMode"]
+): boolean {
+  return (
+    (task.acceptMode === "review-required" && integrationMode === null) ||
+    (task.acceptMode === "auto-accept" && integrationMode === "auto-accept") ||
+    (task.acceptMode === "agent-decide" &&
+      (integrationMode === null || integrationMode === "agent-decided-integrate"))
+  );
 }
 
 function assertTaskDeliverCandidateMatches(
