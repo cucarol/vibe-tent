@@ -101,3 +101,10 @@ test("generated renderer-next dependency closure is complete", async () => {
   );
   assert.ok(chunks.length > 0, "Excalidraw worker sibling chunks must be packaged");
 });
+
+test("generated floating renderer directory contains the float window only", async () => {
+  const rendererRoot = path.join(repoRoot, "desktop", "dist", "renderer");
+  const files = (await fs.readdir(rendererRoot)).sort();
+  assert.deepEqual(files, ["float-ui.js", "float-ui.js.map", "float.css", "float.html"]);
+  for (const name of files) await assertGeneratedFile(`desktop/dist/renderer/${name}`);
+});

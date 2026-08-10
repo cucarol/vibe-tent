@@ -234,8 +234,6 @@ test("desktop sources: no clipboard startDrag IPC bridge remains", async () => {
     "preload/preload.ts",
     "types.ts",
     "renderer/api-types.ts",
-    "renderer/main-ui.ts",
-    "renderer/main/collaboration.ts",
     "renderer/float-ui.ts",
     "renderer/context-card-drag.ts",
   ];
@@ -253,13 +251,10 @@ test("desktop sources: no clipboard startDrag IPC bridge remains", async () => {
     }
   }
 
-  // Renderer drag handlers must set text/plain via helper, not call any startDrag
-  // Context-card list lives in collaboration inspector (main-ui is shell only).
-  const collabUi = await fs.readFile(path.join(root, "renderer/main/collaboration.ts"), "utf8");
+  // The retained float renderer sets text/plain via the shared helper and does
+  // not reintroduce an Electron startDrag capability.
   const floatUi = await fs.readFile(path.join(root, "renderer/float-ui.ts"), "utf8");
-  assert.match(collabUi, /bindContextCardDrag/);
   assert.match(floatUi, /bindContextCardDrag/);
-  assert.doesNotMatch(collabUi, /startDrag/);
   assert.doesNotMatch(floatUi, /startDrag/);
 });
 

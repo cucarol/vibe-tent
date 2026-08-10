@@ -7,7 +7,6 @@ import { test } from "node:test";
 import { CLIENT_METHODS } from "../src/service/types.js";
 import {
   PENDING_INTERACTION_EVENT_TYPES,
-  PENDING_INTERACTION_GAPS,
   buildTaskSendInputPayload,
   buildToolApprovalResolvePayload,
   buildDecisionDenyPayload,
@@ -25,11 +24,6 @@ import {
   summarizeToolApprovalOptions,
   taskInputKindLabel,
 } from "../src/desktop/workbench/pending-interactions.js";
-import {
-  DESKTOP_CONTRACT_GAPS,
-  contractGapIds,
-  findContractGap,
-} from "../src/desktop/renderer/main/contract-gaps.js";
 
 test("CLIENT_METHODS covers all pending closed-loop RPCs used by Desktop", () => {
   for (const m of [
@@ -252,27 +246,4 @@ test("pending interaction event types include tool/decisionRequest/taskInput/del
   assert.ok(isTaskProjectionEventType("task.state"));
   assert.ok(isTaskProjectionEventType("delivery.updated"));
   assert.equal(PENDING_INTERACTION_EVENT_TYPES.length > 8, true);
-});
-
-test("contract gaps record field holes without claiming missing RPCs that exist", () => {
-  const ids = contractGapIds();
-  assert.ok(ids.includes("toolApproval.params"));
-  assert.ok(ids.includes("taskInput.global-list"));
-  // Real methods stay in CLIENT_METHODS; gap ids use placeholder method names.
-  for (const gap of DESKTOP_CONTRACT_GAPS) {
-    if (
-      gap.id === "toolApproval.params" ||
-      gap.id === "taskInput.global-list"
-    ) {
-      for (const m of gap.methods) {
-        assert.equal(
-          CLIENT_METHODS.includes(m as (typeof CLIENT_METHODS)[number]),
-          false,
-          `gap method ${m} must not collide with real CLIENT_METHODS`
-        );
-      }
-    }
-  }
-  assert.match(findContractGap("toolApproval.params")!.fallback, /options/);
-  assert.ok(PENDING_INTERACTION_GAPS.some((g) => g.id === "toolApproval.params"));
 });

@@ -6,14 +6,11 @@ import * as esbuild from "esbuild";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-test("legacy desktop renderer graph stays browser-safe", async () => {
+test("floating desktop renderer stays browser-safe", async () => {
   const result = await esbuild.build({
     absWorkingDir: repoRoot,
     preserveSymlinks: true,
-    entryPoints: [
-      "src/desktop/renderer/main-ui.ts",
-      "src/desktop/renderer/float-ui.ts",
-    ],
+    entryPoints: ["src/desktop/renderer/float-ui.ts"],
     bundle: true,
     platform: "browser",
     format: "esm",

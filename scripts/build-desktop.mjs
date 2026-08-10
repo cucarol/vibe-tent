@@ -133,22 +133,14 @@ async function clean(buildOutRoot) {
   await fs.mkdir(path.join(buildOutRoot, "renderer-next"), { recursive: true });
 }
 
-async function copyRendererStatic(buildRoot, buildOutRoot) {
+async function copyFloatStatic(buildRoot, buildOutRoot) {
   const srcDir = path.join(buildRoot, "src", "desktop", "renderer");
-  for (const name of ["index.html", "float.html", "float.css", "styles.css"]) {
+  for (const name of ["float.html", "float.css"]) {
     await fs.copyFile(path.join(srcDir, name), path.join(buildOutRoot, "renderer", name));
-  }
-  // Layered CSS parts referenced by styles.css @import (file:// / asar relative).
-  const stylesSrc = path.join(srcDir, "styles");
-  const stylesOut = path.join(buildOutRoot, "renderer", "styles");
-  await fs.mkdir(stylesOut, { recursive: true });
-  for (const name of await fs.readdir(stylesSrc)) {
-    if (!name.endsWith(".css")) continue;
-    await fs.copyFile(path.join(stylesSrc, name), path.join(stylesOut, name));
   }
 }
 
-/** Isolated React next renderer — not the default Electron load path. */
+/** Production React renderer loaded by the main Electron window. */
 async function copyRendererNextStatic(buildRoot, buildOutRoot) {
   const srcDir = path.join(buildRoot, "src", "desktop", "renderer-next");
   const outDir = path.join(buildOutRoot, "renderer-next");
@@ -213,12 +205,10 @@ export async function build(buildRoot = root) {
     logLevel: "info",
   });
 
-  // Renderer modules (browser) — current default workbench
-  await buildBundle(absoluteRoot, "desktop-renderer", {
-    entryPoints: [
-      "src/desktop/renderer/main-ui.ts",
-      "src/desktop/renderer/float-ui.ts",
-    ],
+  // Floating control renderer (browser). The production main window is the
+  // React renderer-next bundle below.
+  await buildBundle(absoluteRoot, "desktop-float-renderer", {
+    entryPoints: ["src/desktop/renderer/float-ui.ts"],
     bundle: true,
     platform: "browser",
     format: "esm",
@@ -229,8 +219,6 @@ export async function build(buildRoot = root) {
     logLevel: "info",
   });
 
-  // Isolated next renderer (React). Output only under renderer-next/;
-  // Electron default mainHtml still points at desktop/dist/renderer/index.html.
   // Always emit a production React build (minify + NODE_ENV) so the tracked
   // dist artifact stays lean and never ships react-dom.development.js.
   await buildBundle(absoluteRoot, "desktop-renderer-next-asset-bootstrap", {
@@ -276,7 +264,7 @@ export async function build(buildRoot = root) {
     jsx: "automatic",
   }, ["react", "react-dom", "scheduler"]);
 
-  await copyRendererStatic(absoluteRoot, buildOutRoot);
+  await copyFloatStatic(absoluteRoot, buildOutRoot);
   await copyRendererNextStatic(absoluteRoot, buildOutRoot);
   await copyExcalidrawAssets(absoluteRoot, buildOutRoot);
 
@@ -297,7 +285,7 @@ export async function build(buildRoot = root) {
 
   await assertCanonicalDesktopArtifacts(absoluteRoot, buildOutRoot);
 
-  console.log("Desktop build complete → desktop/dist (renderer + renderer-next)");
+  console.log("Desktop build complete → desktop/dist (renderer-next + float)");
 }
 
 if (

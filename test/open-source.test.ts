@@ -98,6 +98,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.equal(pkg.devDependencies?.obsidian, undefined, "obsidian devDependency is retired");
   assert.equal(pkg.scripts?.["build:plugin"], undefined, "build:plugin script is retired");
   assert.equal(pkg.files.includes("main.js"), false, "npm package no longer ships plugin main.js");
+  assert.equal(await exists(path.join(repoRoot, "main.js")), false, "retired root plugin bundle is deleted");
   assert.equal(pkg.files.includes("styles.css"), false, "npm package no longer ships plugin styles.css");
   assert.equal(pkg.files.includes("versions.json"), false, "npm package no longer ships Obsidian versions.json");
   assert.match(releaseWorkflow, /npm pack --ignore-scripts/);
@@ -106,6 +107,21 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.doesNotMatch(releaseWorkflow, /styles\.css|versions\.json/);
   assert.match(desktopBuilder, /^\s*-\s+LICENSE\s*$/m, "Desktop package includes the project MIT LICENSE");
   assert.equal(await exists(path.join(repoRoot, "src", "plugin")), false, "src/plugin production source is retired");
+  assert.equal(
+    await exists(path.join(repoRoot, "src", "desktop", "renderer", "main-ui.ts")),
+    false,
+    "retired Desktop main renderer source is deleted"
+  );
+  assert.equal(
+    await exists(path.join(repoRoot, "src", "desktop", "renderer", "index.html")),
+    false,
+    "retired Desktop main renderer HTML is deleted"
+  );
+  assert.equal(
+    await exists(path.join(repoRoot, "src", "desktop", "renderer", "float-ui.ts")),
+    true,
+    "floating renderer remains supported"
+  );
   assert.equal(await exists(path.join(repoRoot, "versions.json")), false, "versions.json is retired");
   assert.equal(await exists(path.join(repoRoot, "test", "plugin.test.ts")), false, "plugin-only tests are retired");
   assert.ok(pkg.files.includes("skills/"), "npm 发布包包含 bundled skills/");

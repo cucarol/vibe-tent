@@ -139,3 +139,23 @@ test("desktop esbuild inputs are canonical across physical and junction node_mod
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("desktop build emits renderer-next main window plus the retained float renderer only", async () => {
+  const [buildSource, windowsSource] = await Promise.all([
+    fs.readFile(path.join(repoRoot, "scripts", "build-desktop.mjs"), "utf8"),
+    fs.readFile(path.join(repoRoot, "src", "desktop", "main", "windows.ts"), "utf8"),
+  ]);
+
+  assert.match(buildSource, /entryPoints:\s*\["src\/desktop\/renderer\/float-ui\.ts"\]/);
+  assert.doesNotMatch(buildSource, /src\/desktop\/renderer\/main-ui\.ts/);
+  assert.match(buildSource, /\["float\.html", "float\.css"\]/);
+  assert.doesNotMatch(buildSource, /\["index\.html", "float\.html"/);
+  assert.match(
+    windowsSource,
+    /mainHtml:\s*path\.join\(appRoot, "desktop", "dist", "renderer-next", "index\.html"\)/
+  );
+  assert.match(
+    windowsSource,
+    /floatHtml:\s*path\.join\(appRoot, "desktop", "dist", "renderer", "float\.html"\)/
+  );
+});
