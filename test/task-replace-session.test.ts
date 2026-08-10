@@ -526,13 +526,42 @@ test("replaceSession: session_unavailable + late events + atomic rebind; launch/
       svc.runtime.clearFollowUpAttemptsForTests();
       const recoveryHold = holdManagedTaskInputQueueForTests(workspaceId, taskPath);
       try {
+        const sessionIdsBeforeReplace = new Set(
+          (await svc.runtime.registry.list()).map((session) => session.id)
+        );
         let replaced = await rpc(svc, "task.replaceSession", {
           workspaceId, taskPath, callerKind: "user",
         });
         if (errCode(replaced) === "TASK_SESSION_BIND_CAS_FAILED") {
-          const orphan = (replaced.error?.data as { orphanSessionId?: string }).orphanSessionId;
-          assert.match(orphan ?? "", /^ss-/);
-          assert.equal((await svc.runtime.probe(orphan!)).alive, false);
+          const data = replaced.error?.data as {
+            orphanSessionId?: string;
+            expected?: { taskId?: string; sessionId?: string };
+            actual?: { taskId?: string; sessionId?: string };
+          };
+          const orphan = data.orphanSessionId;
+          if (orphan) {
+            assert.match(orphan, /^ss-/);
+            assert.equal((await svc.runtime.probe(orphan)).alive, false);
+          } else {
+            assert.equal(typeof data.expected?.taskId, "string");
+            assert.equal(typeof data.actual?.taskId, "string");
+            assert.equal(typeof data.expected?.sessionId, "string");
+            assert.equal(typeof data.actual?.sessionId, "string");
+            assert.deepEqual(
+              (await svc.runtime.registry.list())
+                .map((session) => session.id)
+                .filter((sessionId) => !sessionIdsBeforeReplace.has(sessionId)),
+              []
+            );
+            const retryableTask = await getTask(svc, workspaceId, taskPath);
+            assert.equal(retryableTask.sessionId, priorSessionId);
+            assert.ok(
+              retryableTask.state === "running" ||
+                (retryableTask.state === "waiting" &&
+                  retryableTask.wait?.code === SESSION_UNAVAILABLE_WAIT_CODE),
+              JSON.stringify(retryableTask)
+            );
+          }
           replaced = await rpc(svc, "task.replaceSession", {
             workspaceId, taskPath, callerKind: "user",
           });
