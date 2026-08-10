@@ -240,9 +240,22 @@ Every Task freezes one `acceptMode` at creation:
   integrates and accepts under Core;
 - `agent-decide`: the executor Session explicitly chooses integration or review.
 
-Reject may resume the same Task with review feedback. Accept may integrate
-declared commits and then atomically update Task/Delivery state. Integration is
+Reject may resume the same Task with review feedback. Accept may first integrate
+declared commits outside the final mutation boundary. After final validation,
+Core persists an exact-Task accept intent before the first Output provenance
+write, then forward-converges the intent through Output bindings, accepted
+Delivery, accepted Task, and intent removal. These authority files are not
+persisted as one atomic filesystem write; once the accept decision is durably
+committed, process or transport failure does not roll it back. Integration is
 fail-loud, never pushes, and does not write generic status back to Nodes.
+
+If a caller loses or abandons an in-flight request after Service persisted its
+accept intent, an exact retry first converges that same committed operation.
+Separately, if acceptance completed and only its successful response was lost,
+the intent is absent and a repeated command may return `INVALID_TRANSITION`
+because the Task is terminal. The caller must then reread the exact Task,
+Delivery, and Output projections to resolve the outcome. V0.2 adds no accept
+idempotency token, receipt, compatibility path, or automatic retry.
 
 A managed Delivery is published only after the producing turn and workspace
 lane have settled. A non-empty natural ACP final report defaults to a Delivery;

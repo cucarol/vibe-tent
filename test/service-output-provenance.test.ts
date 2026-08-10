@@ -20,6 +20,7 @@ import { rpcCall } from "../src/service/http-server.js";
 import { createServiceClient } from "../src/service/client.js";
 import {
   CLIENT_METHODS,
+  RPC_LIFECYCLE,
   isClientMethod,
   RESERVED_DOCS_WRITE_FIELDS,
 } from "../src/service/types.js";
@@ -249,6 +250,106 @@ test("accept binds output deliveryId atomically; unbound query; same-delivery id
       bindEvents.length >= 1,
       `expected output.provenance-bind event, got ${JSON.stringify(events)}`
     );
+  });
+});
+
+test("ServiceClient accept response loss resolves through terminal authority projections", async () => {
+  await withService(async (svc) => {
+    const ws = await makeWorkspace("accept-response-loss");
+    const workspaceId = await mountWorkspace(svc, ws);
+    const source = await createNote(svc, workspaceId, { name: "loss-job", type: "prompt" });
+    const output = await createNote(svc, workspaceId, { name: "loss-output", type: "output" });
+    const { taskPath, deliveryId } = await readyDeliveryTask(
+      svc,
+      workspaceId,
+      ws,
+      source.nodeId
+    );
+    const readyDelivery = await rpc(svc, "delivery.get", { workspaceId, id: deliveryId });
+    assert.ok(!readyDelivery.error, JSON.stringify(readyDelivery.error));
+    const deliveryPath = (
+      readyDelivery.result as { delivery: { path: string } }
+    ).delivery.path;
+    const systemFs = new NodeFs(path.join(ws, ".tent"));
+    const acceptIntentPath = `${taskPath.slice(0, -3)}.delivery-accept-intent.json`;
+    const acceptParams = {
+      workspaceId,
+      taskPath,
+      deliveryId,
+      actor: "user",
+      outputNodeIds: [output.nodeId],
+    };
+
+    let droppedAcceptResponse = false;
+    const client = createServiceClient({
+      baseUrl: svc.url,
+      token: svc.token,
+      fetchImpl: async (input, init) => {
+        const request = JSON.parse(String(init?.body ?? "{}")) as { method?: string };
+        const response = await fetch(input, init);
+        if (!droppedAcceptResponse && request.method === "task.accept") {
+          droppedAcceptResponse = true;
+          await response.text();
+          throw new Error("simulated task.accept transport response loss");
+        }
+        return response;
+      },
+    });
+
+    await assert.rejects(
+      () => client.taskAccept(workspaceId, taskPath, deliveryId, "user", {
+        outputNodeIds: [output.nodeId],
+      }),
+      /simulated task\.accept transport response loss/
+    );
+    assert.equal(droppedAcceptResponse, true);
+    assert.equal(await systemFs.exists(acceptIntentPath), false);
+    const authorityBeforeRetry = await Promise.all([
+      systemFs.readFile(taskPath),
+      systemFs.readFile(deliveryPath),
+      systemFs.readFile(nodeNotePath(output.path)),
+    ]);
+
+    const retry = await client.rpcRaw("task.accept", acceptParams);
+    assert.equal(retry.error?.code, RPC_LIFECYCLE);
+    assert.deepEqual(retry.error?.data, { code: "INVALID_TRANSITION" });
+    assert.equal(await systemFs.exists(acceptIntentPath), false);
+    assert.deepEqual(
+      await Promise.all([
+        systemFs.readFile(taskPath),
+        systemFs.readFile(deliveryPath),
+        systemFs.readFile(nodeNotePath(output.path)),
+      ]),
+      authorityBeforeRetry
+    );
+
+    const taskProjection = await client.rpcRaw("task.get", { workspaceId, taskPath });
+    assert.ok(!taskProjection.error, JSON.stringify(taskProjection.error));
+    const task = (taskProjection.result as { task: { state: string; activeDeliveryId?: string } }).task;
+    assert.equal(task.state, "accepted");
+    assert.equal(task.activeDeliveryId, deliveryId);
+
+    const deliveryProjection = await client.rpcRaw("delivery.get", {
+      workspaceId,
+      id: deliveryId,
+    });
+    assert.ok(!deliveryProjection.error, JSON.stringify(deliveryProjection.error));
+    const delivery = (
+      deliveryProjection.result as { delivery: { id: string; status: string } }
+    ).delivery;
+    assert.equal(delivery.id, deliveryId);
+    assert.equal(delivery.status, "accepted");
+
+    const outputProjection = await client.rpcRaw("output.provenance", {
+      workspaceId,
+      nodeId: output.nodeId,
+    });
+    assert.ok(!outputProjection.error, JSON.stringify(outputProjection.error));
+    const provenance = outputProjection.result as OutputProvenance;
+    assert.equal(provenance.bound, true);
+    assert.equal(provenance.deliveryId, deliveryId);
+    assert.equal(provenance.delivery?.status, "accepted");
+    assert.equal(provenance.task?.state, "accepted");
   });
 });
 
