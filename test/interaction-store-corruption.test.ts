@@ -174,7 +174,11 @@ for (const fixture of cases) {
         writeEndpoint: true,
         connections: [CONNECTION],
       });
-      const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+      const activeService = svc;
+      const client = createServiceClient({
+        baseUrl: activeService.url,
+        token: activeService.token,
+      });
       workspaceId = ((await client.mount(workspace)) as { workspaceId: string }).workspaceId;
       if (!taskPath) {
         const note = await client.docsCreateNote(workspaceId, {
@@ -227,18 +231,18 @@ for (const fixture of cases) {
 
       if (fixture.kind === "task-input") {
         firstError = await captureError(() =>
-          svc.ctx.taskInputs.listBlockingForDeliver(workspaceId, taskPath)
+          activeService.ctx.taskInputs.listBlockingForDeliver(workspaceId, taskPath)
         );
         const mutationError = await captureError(() =>
-          svc.ctx.taskInputs.add(pendingInput(workspaceId, taskPath))
+          activeService.ctx.taskInputs.add(pendingInput(workspaceId, taskPath))
         );
         assert.strictEqual(mutationError, firstError);
       } else {
         firstError = await captureError(() =>
-          svc.ctx.decisionRequests.getPendingForTask(workspaceId, taskPath)
+          activeService.ctx.decisionRequests.getPendingForTask(workspaceId, taskPath)
         );
         const mutationError = await captureError(() =>
-          svc.ctx.decisionRequests.add({
+          activeService.ctx.decisionRequests.add({
             workspaceId,
             taskPath,
             request: pendingDecision(),
