@@ -28,6 +28,7 @@ import { join, loadTent, type LoadedTent } from "./tree.js";
 import type { Node } from "./types.js";
 import {
   ackTaskEnvelope,
+  assertIsoTimestamp,
   loadTaskEnvelope,
   loadTaskEnvelopes,
   patchTaskEnvelope,
@@ -39,6 +40,7 @@ import { isSessionId } from "./id.js";
 import {
   assertReviewAuthority,
   assertTransition,
+  isDeliveryId,
   isTaskId,
   resolveDeliverRouting,
   TaskLifecycleError,
@@ -99,8 +101,8 @@ export interface TaskAcceptOptions {
   integrate?: (commits: string[]) => Promise<void>;
   /**
    * Optional Output Node ids to bind to the accepted Delivery (`deliveryId` FM).
-   * Validated all-or-nothing inside the final accept mutation; any failure
-   * leaves Task/Delivery/Output unchanged (not partially accepted).
+   * The complete canonical set is persisted in the accept WAL before binding:
+   * ordinary failures compensate, while process loss converges forward.
    */
   outputNodeIds?: string[];
 }
@@ -265,6 +267,11 @@ export interface TaskAcceptPrepared {
   deliveryId: string;
   deliveryPath: string;
   commits: string[];
+  /** Canonical complete Output set validated before Git integration. */
+  outputNodeIds: string[];
+  /** Present only when prepare recovered a previously committed accept intent. */
+  recovered?: TaskAcceptResult;
+  acceptIntent?: TaskAcceptIntent;
 }
 
 export interface TaskAcceptResult {
@@ -518,6 +525,21 @@ export async function prepareTaskAccept(
   options: TaskAcceptOptions
 ): Promise<TaskAcceptPrepared> {
   return withMutation(env.fs, async () => {
+    const intents = await loadTaskReviewIntents(env.fs, taskPath);
+    if (intents.accept) {
+      const recovered = await reconcilePendingTaskAccept(env, taskPath, intents.accept);
+      if (!recovered) throw new Error("Exact-Task accept recovery intent disappeared.");
+      assertTaskAcceptRequestMatchesIntent(intents.accept, options);
+      return {
+        deliveryId: recovered.delivery.id,
+        deliveryPath: recovered.delivery.path,
+        // Git integration already preceded the committed accept intent.
+        commits: [],
+        outputNodeIds: [...intents.accept.outputNodeIds],
+        recovered: recovered.result,
+        acceptIntent: intents.accept,
+      };
+    }
     const task = await preflightTaskMutation(env, taskPath);
     assertTransition(task.state, "accept", "accepted");
     const delivery = await requireExpectedActiveReadyDelivery(
@@ -532,21 +554,26 @@ export async function prepareTaskAccept(
       action: "accept",
     });
     // Pre-validate Outputs before integrate so bad selectors fail before side effects.
+    let outputNodeIds: string[] = [];
     if (options.outputNodeIds && options.outputNodeIds.length > 0) {
       const tent = await loadTent(env.fs);
-      validateOutputBindingsForAccept(tent, options.outputNodeIds, delivery.id);
+      outputNodeIds = canonicalAcceptOutputNodeIds(
+        validateOutputBindingsForAccept(tent, options.outputNodeIds, delivery.id).outputIds
+      );
     }
     return {
       deliveryId: delivery.id,
       deliveryPath: delivery.path,
       commits: [...delivery.commits],
+      outputNodeIds,
     };
   });
 }
 
 /**
  * Finalize accept under mutation.lock after Git integrate (when any) ran outside the lock.
- * Revalidates Delivery/authority, binds Outputs, writes accepted Task/Delivery atomically.
+ * Revalidates Delivery/authority, commits an exact accept WAL, then advances
+ * Output → Delivery → Task writes with restart-safe forward recovery.
  */
 export async function finalizeTaskAccept(
   env: OpsEnv,
@@ -555,6 +582,13 @@ export async function finalizeTaskAccept(
   prepared: TaskAcceptPrepared
 ): Promise<TaskAcceptResult> {
   return withMutation(env.fs, async () => {
+    if (prepared.recovered) {
+      if (!prepared.acceptIntent) {
+        throw new Error("Recovered task.accept preparation is missing its exact intent.");
+      }
+      assertTaskAcceptRequestMatchesIntent(prepared.acceptIntent, options);
+      return prepared.recovered;
+    }
     const task = await preflightTaskMutation(env, taskPath);
     assertTransition(task.state, "accept", "accepted");
     const delivery = await requireExpectedActiveReadyDelivery(
@@ -581,6 +615,17 @@ export async function finalizeTaskAccept(
       action: "accept",
     });
 
+    const tent = await loadTent(env.fs);
+    const outputNodeIds = canonicalAcceptOutputNodeIds(
+      validateOutputBindingsForAccept(tent, options.outputNodeIds, delivery.id).outputIds
+    );
+    if (!exactStringListEqual(outputNodeIds, prepared.outputNodeIds)) {
+      throw new TaskLifecycleError(
+        "DELIVERY_CHANGED",
+        "task.accept Output selection changed during integrate; refusing accept."
+      );
+    }
+
     // Snapshot Delivery + Task raw BEFORE any Output write so a later snapshot-read
     // failure cannot leave Outputs bound with no operational rollback material.
     // Order (final mutation, after delivery revalidation):
@@ -589,24 +634,34 @@ export async function finalizeTaskAccept(
     //   3) accepted Delivery/Task persistence (compensate with 1+2 on failure)
     const deliveryRawBefore = await env.fs.readFile(delivery.path);
     const taskRawBefore = await env.fs.readFile(taskPath);
-
-    const tent = await loadTent(env.fs);
+    const intent: TaskAcceptIntent = {
+      type: TASK_ACCEPT_INTENT_TYPE,
+      version: 1,
+      taskId: requireCanonicalTaskId(task),
+      deliveryId: delivery.id,
+      actor: options.actor,
+      commits: [...delivery.commits],
+      outputNodeIds,
+      updatedAt: env.clock.now(),
+    };
+    await writeTaskAcceptIntent(env.fs, taskPath, intent);
     /** Populated only after bind returns; mid-bind failures roll back inside bind. */
     let outputSnapshots: OutputBindSnapshot[] = [];
+    let result: TaskAcceptResult;
 
     try {
       const bindResult = await bindOutputsToDeliveryUnlocked(
         env.fs,
         tent,
-        options.outputNodeIds,
+        intent.outputNodeIds,
         delivery.id
       );
       outputSnapshots = bindResult.snapshots;
 
       delivery.status = "accepted";
       delivery.integrationMode = "manual-accept";
-      delivery.review = { by: options.actor, decision: "accept" };
-      delivery.updatedAt = env.clock.now();
+      delivery.review = { by: intent.actor, decision: "accept" };
+      delivery.updatedAt = intent.updatedAt;
       await writeDelivery(env.fs, delivery);
 
       // Accept ends occupation via task state; collab FM dual-write stays retired.
@@ -614,9 +669,9 @@ export async function finalizeTaskAccept(
       const next = await patchTaskEnvelope(env.fs, taskPath, {
         state: "accepted",
         wait: null,
-        updatedAt: env.clock.now(),
+        updatedAt: intent.updatedAt,
       });
-      return {
+      result = {
         task: next,
         delivery,
         boundOutputIds: bindResult.boundIds,
@@ -635,6 +690,11 @@ export async function finalizeTaskAccept(
       });
       throw err;
     }
+    // Removal is intentionally outside the compensation catch above. Once
+    // Delivery + Task are accepted, a failed remove leaves a forward-only
+    // intent that the next exact-Task preflight can safely finish.
+    await env.fs.remove(taskAcceptIntentPath(taskPath));
+    return result;
   });
 }
 
@@ -648,13 +708,34 @@ function exactStringListEqual(
   );
 }
 
+function canonicalAcceptOutputNodeIds(outputNodeIds: readonly string[]): string[] {
+  return [...new Set(outputNodeIds)].sort((a, b) => a.localeCompare(b));
+}
+
+function normalizeAcceptRetryOutputNodeIds(
+  outputNodeIds: readonly string[] | undefined
+): string[] {
+  if (!outputNodeIds || outputNodeIds.length === 0) return [];
+  const normalized: string[] = [];
+  for (const raw of outputNodeIds) {
+    if (typeof raw !== "string" || !raw.trim()) {
+      throw new TaskLifecycleError(
+        "DELIVERY_CHANGED",
+        "This task.accept request differs from the persisted accept operation that was recovered."
+      );
+    }
+    normalized.push(raw.trim());
+  }
+  return canonicalAcceptOutputNodeIds(normalized);
+}
+
 export async function taskAccept(
   env: OpsEnv,
   taskPath: string,
   options: TaskAcceptOptions
 ): Promise<TaskAcceptResult> {
   // Validate authority + ready delivery under lock; Git integrate outside;
-  // then re-validate, bind Outputs, and write accepted atomically under lock.
+  // then re-validate, commit the accept WAL, and converge accepted state under lock.
   const prepared = await prepareTaskAccept(env, taskPath, options);
 
   if (prepared.commits.length > 0) {
@@ -717,7 +798,15 @@ export async function taskReject(
   options: TaskRejectOptions
 ): Promise<{ task: TaskEnvelope; delivery: DeliveryRecord }> {
   return withMutation(env.fs, async () => {
-    const recovered = await reconcilePendingTaskReject(env, taskPath);
+    const intents = await loadTaskReviewIntents(env.fs, taskPath);
+    if (intents.accept) {
+      // A committed accept decision wins. Converge it before the later reject
+      // request is evaluated against the now-accepted Task.
+      await reconcilePendingTaskAccept(env, taskPath, intents.accept);
+    }
+    const recovered = intents.reject
+      ? await reconcilePendingTaskReject(env, taskPath)
+      : undefined;
     if (recovered) {
       assertTaskRejectRequestMatchesIntent(recovered.intent, options);
       // The committed reject WAL wins, then the ordinary exact-Task preflight
@@ -987,6 +1076,249 @@ async function requireExpectedActiveReadyDelivery(
   return delivery;
 }
 
+const TASK_ACCEPT_INTENT_TYPE = "task-delivery-accept-intent";
+
+type TaskAcceptIntent = {
+  type: typeof TASK_ACCEPT_INTENT_TYPE;
+  version: 1;
+  taskId: string;
+  deliveryId: string;
+  actor: string;
+  commits: string[];
+  outputNodeIds: string[];
+  updatedAt: string;
+};
+
+function taskAcceptIntentPath(taskPath: string): string {
+  if (!taskPath.endsWith(".md")) {
+    throw new Error(`Task accept recovery requires a canonical markdown Task path: ${taskPath}.`);
+  }
+  return `${taskPath.slice(0, -3)}.delivery-accept-intent.json`;
+}
+
+async function writeTaskAcceptIntent(
+  fs: FsAdapter,
+  taskPath: string,
+  intent: TaskAcceptIntent
+): Promise<void> {
+  const path = taskAcceptIntentPath(taskPath);
+  if (await fs.exists(path)) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      `Exact-Task accept recovery intent already exists: ${path}.`
+    );
+  }
+  await fs.writeFile(path, JSON.stringify(intent, null, 2) + "\n");
+}
+
+async function loadTaskAcceptIntent(
+  fs: FsAdapter,
+  taskPath: string
+): Promise<TaskAcceptIntent | undefined> {
+  const path = taskAcceptIntentPath(taskPath);
+  if (!(await fs.exists(path))) return undefined;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await fs.readFile(path));
+  } catch {
+    throw new Error(`Invalid exact-Task accept recovery intent: ${path}.`);
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`Invalid exact-Task accept recovery intent: ${path}.`);
+  }
+  const value = raw as Record<string, unknown>;
+  const keys = Object.keys(value).sort();
+  const expectedKeys = [
+    "actor",
+    "commits",
+    "deliveryId",
+    "outputNodeIds",
+    "taskId",
+    "type",
+    "updatedAt",
+    "version",
+  ];
+  let outputNodeIds: string[];
+  let updatedAt: string;
+  try {
+    outputNodeIds = normalizeAcceptRetryOutputNodeIds(
+      Array.isArray(value.outputNodeIds) ? value.outputNodeIds as string[] : undefined
+    );
+    updatedAt = assertIsoTimestamp(String(value.updatedAt ?? ""), "Task accept intent updatedAt");
+  } catch {
+    throw new Error(`Invalid exact-Task accept recovery intent: ${path}.`);
+  }
+  if (
+    !exactStringListEqual(keys, expectedKeys) ||
+    value.type !== TASK_ACCEPT_INTENT_TYPE ||
+    value.version !== 1 ||
+    typeof value.taskId !== "string" ||
+    !isTaskId(value.taskId) ||
+    typeof value.deliveryId !== "string" ||
+    !isDeliveryId(value.deliveryId) ||
+    typeof value.actor !== "string" ||
+    !value.actor.trim() ||
+    value.actor !== value.actor.trim() ||
+    !Array.isArray(value.commits) ||
+    !value.commits.every(
+      (item) => typeof item === "string" && Boolean(item.trim()) && item === item.trim()
+    ) ||
+    new Set(value.commits as string[]).size !== value.commits.length ||
+    !Array.isArray(value.outputNodeIds) ||
+    !value.outputNodeIds.every((item) => typeof item === "string") ||
+    !exactStringListEqual(value.outputNodeIds as string[], outputNodeIds) ||
+    typeof value.updatedAt !== "string" ||
+    value.updatedAt !== updatedAt
+  ) {
+    throw new Error(`Invalid exact-Task accept recovery intent: ${path}.`);
+  }
+  return value as TaskAcceptIntent;
+}
+
+async function loadTaskReviewIntents(
+  fs: FsAdapter,
+  taskPath: string
+): Promise<{ accept?: TaskAcceptIntent; reject?: TaskRejectIntent }> {
+  const accept = await loadTaskAcceptIntent(fs, taskPath);
+  const reject = await loadTaskRejectIntent(fs, taskPath);
+  if (accept && reject) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      "Conflicting exact-Task accept and reject recovery intents exist; refusing mutation."
+    );
+  }
+  return { ...(accept ? { accept } : {}), ...(reject ? { reject } : {}) };
+}
+
+function assertTaskAcceptRequestMatchesIntent(
+  intent: TaskAcceptIntent,
+  options: TaskAcceptOptions
+): void {
+  const outputNodeIds = normalizeAcceptRetryOutputNodeIds(options.outputNodeIds);
+  if (
+    options.deliveryId !== intent.deliveryId ||
+    options.actor !== intent.actor ||
+    !exactStringListEqual(outputNodeIds, intent.outputNodeIds)
+  ) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      "This task.accept request differs from the persisted accept operation that was recovered."
+    );
+  }
+}
+
+async function reconcilePendingTaskAccept(
+  env: OpsEnv,
+  taskPath: string,
+  knownIntent?: TaskAcceptIntent
+): Promise<
+  | { task: TaskEnvelope; delivery: DeliveryRecord; intent: TaskAcceptIntent; result: TaskAcceptResult }
+  | undefined
+> {
+  const intent = knownIntent ?? await loadTaskAcceptIntent(env.fs, taskPath);
+  if (!intent) return undefined;
+  const result = await completeTaskAcceptIntent(env, taskPath, intent);
+  await env.fs.remove(taskAcceptIntentPath(taskPath));
+  return { task: result.task, delivery: result.delivery, intent, result };
+}
+
+async function completeTaskAcceptIntent(
+  env: OpsEnv,
+  taskPath: string,
+  intent: TaskAcceptIntent
+): Promise<TaskAcceptResult> {
+  const task = await loadTaskEnvelope(env.fs, taskPath);
+  if (
+    intent.taskId !== requireCanonicalTaskId(task) ||
+    task.activeDeliveryId !== intent.deliveryId
+  ) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      `Exact-Task accept recovery intent does not match Task ${requireCanonicalTaskId(task)}.`
+    );
+  }
+  assertReviewAuthority({
+    actor: intent.actor,
+    executorRoleId: task.roleId,
+    reviewer: task.reviewer,
+    action: "accept",
+  });
+  const delivery = await requireTaskDeliveryById(env.fs, task, intent.deliveryId);
+  assertTaskAcceptIntentCanConverge(task, delivery, intent);
+
+  // Complete structural validation before the first recovery write. The
+  // persisted intent, never an Output scan, is the authoritative complete set.
+  const tent = await loadTent(env.fs);
+  const validatedOutputNodeIds = canonicalAcceptOutputNodeIds(
+    validateOutputBindingsForAccept(tent, intent.outputNodeIds, delivery.id).outputIds
+  );
+  if (!exactStringListEqual(validatedOutputNodeIds, intent.outputNodeIds)) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      "Exact-Task accept recovery Output set is not canonical."
+    );
+  }
+
+  const bindResult = await bindOutputsToDeliveryUnlocked(
+    env.fs,
+    tent,
+    intent.outputNodeIds,
+    delivery.id
+  );
+  if (delivery.status === "ready") {
+    delivery.status = "accepted";
+    delivery.integrationMode = "manual-accept";
+    delivery.review = { by: intent.actor, decision: "accept" };
+    delivery.updatedAt = intent.updatedAt;
+    await writeDelivery(env.fs, delivery);
+  }
+
+  let next = task;
+  if (task.state === "delivered") {
+    next = await patchTaskEnvelope(env.fs, taskPath, {
+      state: "accepted",
+      wait: null,
+      updatedAt: intent.updatedAt,
+    });
+  }
+  return {
+    task: next,
+    delivery,
+    boundOutputIds: bindResult.boundIds,
+    changedOutputIds: bindResult.changedIds,
+  };
+}
+
+function assertTaskAcceptIntentCanConverge(
+  task: TaskEnvelope,
+  delivery: DeliveryRecord,
+  intent: TaskAcceptIntent
+): void {
+  const taskStateMatches =
+    delivery.status === "ready"
+      ? task.state === "delivered"
+      : delivery.status === "accepted" &&
+        (task.state === "delivered" || task.state === "accepted");
+  const deliveryMatches =
+    delivery.status === "ready"
+      ? isReadyDeliveryModeForTask(task, delivery.integrationMode) && !delivery.review
+      : delivery.status === "accepted" &&
+        delivery.integrationMode === "manual-accept" &&
+        delivery.review?.decision === "accept" &&
+        delivery.review.by === intent.actor;
+  if (
+    delivery.sourceNodeId !== primaryNodeId(task) ||
+    !exactStringListEqual(delivery.commits, intent.commits) ||
+    !taskStateMatches ||
+    !deliveryMatches
+  ) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      `Exact-Task accept recovery cannot converge Delivery ${delivery.id} from Task ${requireCanonicalTaskId(task)}.`
+    );
+  }
+}
+
 const TASK_REJECT_INTENT_TYPE = "task-delivery-reject-intent";
 
 type TaskRejectIntent = {
@@ -1083,8 +1415,14 @@ async function preflightTaskMutation(
   env: OpsEnv,
   taskPath: string
 ): Promise<TaskEnvelope> {
-  const rejected = await reconcilePendingTaskReject(env, taskPath);
-  const task = rejected?.task ?? await loadTaskEnvelope(env.fs, taskPath);
+  const intents = await loadTaskReviewIntents(env.fs, taskPath);
+  const accepted = intents.accept
+    ? await reconcilePendingTaskAccept(env, taskPath, intents.accept)
+    : undefined;
+  const rejected = intents.reject
+    ? await reconcilePendingTaskReject(env, taskPath)
+    : undefined;
+  const task = accepted?.task ?? rejected?.task ?? await loadTaskEnvelope(env.fs, taskPath);
   return reconcileCommittedTaskDelivery(env, taskPath, task);
 }
 
