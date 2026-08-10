@@ -1694,9 +1694,6 @@ function canonicalJson(value) {
 function sha256Hex(text3) {
   return createHash2("sha256").update(text3, "utf8").digest("hex");
 }
-function canonicalSha256(value) {
-  return sha256Hex(canonicalJson(value));
-}
 
 // src/core/task-node-selection.ts
 var TaskNodeSelectionError = class extends Error {
@@ -1894,8 +1891,7 @@ function normalizeTaskContextCard(value) {
     "workNodeIds",
     "contextNodeIds",
     "nodeSnapshots",
-    "contextGeneration",
-    "taskDeltaDigest"
+    "contextGeneration"
   ]);
   if (Object.keys(record).some((key2) => !expected.has(key2))) {
     throw new TaskContextCardSchemaError("Task Context Card contains retired or unknown fields.");
@@ -1910,11 +1906,6 @@ function normalizeTaskContextCard(value) {
       "Task Context Card contextGeneration must be a canonical cg-v1 digest when present."
     );
   }
-  if (typeof record.taskDeltaDigest !== "string" || !/^[a-f0-9]{64}$/.test(record.taskDeltaDigest)) {
-    throw new TaskContextCardSchemaError(
-      "Task Context Card taskDeltaDigest must be a lowercase sha256 digest."
-    );
-  }
   try {
     const nodeContext = normalizeTaskNodeContext({
       workNodeIds: record.workNodeIds,
@@ -1924,8 +1915,7 @@ function normalizeTaskContextCard(value) {
     return {
       schemaVersion: TASK_CONTEXT_CARD_SCHEMA_VERSION,
       ...nodeContext,
-      ...record.contextGeneration !== void 0 ? { contextGeneration: record.contextGeneration } : {},
-      taskDeltaDigest: record.taskDeltaDigest
+      ...record.contextGeneration !== void 0 ? { contextGeneration: record.contextGeneration } : {}
     };
   } catch (error) {
     throw new TaskContextCardSchemaError(
@@ -1933,20 +1923,6 @@ function normalizeTaskContextCard(value) {
       error
     );
   }
-}
-function computeTaskContextCardDeltaDigest(input) {
-  const nodeContext = normalizeTaskNodeContext({
-    workNodeIds: input.nodeContext.workNodeIds,
-    contextNodeIds: input.nodeContext.contextNodeIds,
-    nodeSnapshots: input.nodeContext.nodeSnapshots
-  });
-  return canonicalSha256({
-    schemaVersion: TASK_CONTEXT_CARD_SCHEMA_VERSION,
-    ...nodeContext,
-    userPrompt: input.userPrompt,
-    taskInputDelta: input.taskInputDelta?.trim() || "",
-    checkpoint: input.checkpoint?.trim() || ""
-  });
 }
 function buildTaskContextCardV2(input) {
   const nodeContext = normalizeTaskNodeContext({
@@ -1957,13 +1933,7 @@ function buildTaskContextCardV2(input) {
   return normalizeTaskContextCard({
     schemaVersion: TASK_CONTEXT_CARD_SCHEMA_VERSION,
     ...nodeContext,
-    ...input.contextGeneration ? { contextGeneration: input.contextGeneration } : {},
-    taskDeltaDigest: computeTaskContextCardDeltaDigest({
-      nodeContext,
-      userPrompt: input.userPrompt,
-      taskInputDelta: input.taskInputDelta,
-      checkpoint: input.checkpoint
-    })
+    ...input.contextGeneration ? { contextGeneration: input.contextGeneration } : {}
   });
 }
 function serializeTaskContextCard(card) {
@@ -1976,8 +1946,7 @@ function serializeTaskContextCard(card) {
       ...snapshot,
       tags: [...snapshot.tags]
     })),
-    ...normalized.contextGeneration ? { contextGeneration: normalized.contextGeneration } : {},
-    taskDeltaDigest: normalized.taskDeltaDigest
+    ...normalized.contextGeneration ? { contextGeneration: normalized.contextGeneration } : {}
   };
 }
 function formatTaskContextCardV2Prompt(card) {
@@ -1987,8 +1956,7 @@ function formatTaskContextCardV2Prompt(card) {
     "Tent Task Context Card v2",
     `workNodeIds: ${normalized.workNodeIds.join(", ")}`,
     `contextNodeIds: ${normalized.contextNodeIds.join(", ") || "(none)"}`,
-    ...normalized.contextGeneration ? [`contextGeneration: ${normalized.contextGeneration}`] : [],
-    `taskDeltaDigest: ${normalized.taskDeltaDigest}`
+    ...normalized.contextGeneration ? [`contextGeneration: ${normalized.contextGeneration}`] : []
   ];
   for (const snapshot of normalized.nodeSnapshots) {
     lines.push(
@@ -2014,10 +1982,8 @@ var CONTEXT_GENERATION_FORBIDDEN_EXTRA_KEYS = [
   "taskPath",
   "objective",
   "acceptance",
-  "taskDeltaDigest",
   "userPrompt",
-  "taskInputDelta",
-  "checkpoint"
+  "taskInputDelta"
 ];
 var TaskContextCardError = class extends Error {
   constructor(code, message2, details) {
@@ -2113,8 +2079,7 @@ function buildTaskContextCard(input) {
     "frozenDecisions",
     "scope",
     "acceptance",
-    "refs",
-    "taskDeltaDigest"
+    "refs"
   ];
   const record = input;
   const retiredField = retired.find((field) => field in record);
@@ -2193,9 +2158,6 @@ function formatDynamicDelta(input) {
   if (input.taskInputDelta?.trim()) {
     parts.push("", input.taskInputDelta.trim());
   }
-  if (input.checkpoint?.trim()) {
-    parts.push("", "--- Role Checkpoint ---", input.checkpoint.trim());
-  }
   return parts.join("\n");
 }
 function assembleManagedPrompt(input) {
@@ -2212,7 +2174,6 @@ function assembleManagedPrompt(input) {
     return {
       text: dynamicDelta + "\n",
       contextGeneration: input.contextGeneration,
-      taskDeltaDigest: card.taskDeltaDigest,
       includedStablePrefix: false,
       stablePrefix: "",
       dynamicDelta
@@ -2239,7 +2200,6 @@ ${dynamicDelta}
   return {
     text: text3,
     contextGeneration: input.contextGeneration,
-    taskDeltaDigest: card.taskDeltaDigest,
     includedStablePrefix: true,
     stablePrefix,
     dynamicDelta
@@ -2727,7 +2687,6 @@ async function loadTaskEnvelope(fs22, path23) {
     );
   }
   task.contextGeneration = contextCard.contextGeneration;
-  task.taskDeltaDigest = contextCard.taskDeltaDigest;
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
   if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
     task.lastOutcome = data.lastOutcome;
@@ -2896,8 +2855,7 @@ async function writeTaskEnvelope(fs22, clock, input) {
     );
   }
   const contextCard = buildTaskContextCard({
-    ...nodeContext,
-    userPrompt
+    ...nodeContext
   });
   const data = {
     type: "task",
@@ -3058,7 +3016,6 @@ async function patchTaskEnvelope(fs22, path23, patch) {
       contextGeneration: patch.contextGeneration
     });
     delete data.contextGeneration;
-    delete data.taskDeltaDigest;
   }
   const roleId = typeof data.roleId === "string" ? data.roleId.trim() : "";
   const sessionId = typeof data.sessionId === "string" ? data.sessionId.trim() : "";
@@ -3444,22 +3401,7 @@ function normalizeRoleDefinition(value, opts = {}) {
     role.description = value.description.trim();
   }
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
-  const cli = normalizeCliConfig(value.cli);
-  if (cli) role.cli = cli;
   return role;
-}
-function normalizeCliConfig(value) {
-  if (value === void 0) return void 0;
-  if (!isRecord4(value)) throw new Error("role.cli must be an object.");
-  const command = typeof value.command === "string" ? value.command.trim() : "";
-  if (!command) throw new Error("role.cli.command must be a non-empty string.");
-  const cli = { command };
-  if (value.resume !== void 0) {
-    const resume = typeof value.resume === "string" ? value.resume.trim() : "";
-    if (!resume) throw new Error("role.cli.resume must be a non-empty string.");
-    cli.resume = resume;
-  }
-  return cli;
 }
 function roleIdSet(roles, exceptId) {
   const set = /* @__PURE__ */ new Set();
@@ -3481,7 +3423,6 @@ function serializeRolesRegistry(registry) {
       if (role.prompt) row.prompt = role.prompt;
       if (role.description) row.description = role.description;
       if (role.color) row.color = role.color;
-      if (role.cli) row.cli = { ...role.cli };
       return row;
     })
   };
@@ -6576,230 +6517,6 @@ function relatedNodes(reference, nodes) {
   return nodes.filter(
     (node2) => node2.path === reference.path || node2.path.startsWith(reference.path + "/") || reference.path.startsWith(node2.path + "/")
   );
-}
-
-// src/core/role-checkpoint.ts
-var ROLE_CHECKPOINT_TYPE = "role-checkpoint";
-var ROLE_CHECKPOINT_MAX_TEXT_CHARS = 4e3;
-var ROLE_CHECKPOINT_MAX_POINTERS = 32;
-var ROLE_CHECKPOINT_MAX_POINTER_CHARS = 256;
-var ROLE_CHECKPOINT_MAX_TAIL_CHARS = 8192;
-var ROLE_CHECKPOINT_FILENAME = "checkpoint.md";
-var WINDOWS_RESERVED_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
-function assertRoleCheckpointRoleName(role) {
-  const name = typeof role === "string" ? role.trim() : "";
-  if (!name) throw new Error("Role name cannot be empty.");
-  if (/[\u0000-\u001f\u007f]/.test(name)) {
-    throw new Error("Role name cannot contain control characters.");
-  }
-  if (/[\/\\<>:"|?*]/.test(name)) {
-    throw new Error("Role name cannot contain path separators or reserved path characters.");
-  }
-  if (name === "." || name === ".." || name.includes("..")) {
-    throw new Error("Role name cannot be a dot segment or contain path traversal.");
-  }
-  if (name.startsWith(".") || name.endsWith(".")) {
-    throw new Error("Role name cannot start or end with a dot.");
-  }
-  if (WINDOWS_RESERVED_DEVICE.test(name)) {
-    throw new Error(`Role name is a reserved Windows path segment: ${name}.`);
-  }
-  assertRoleNameAvailable(name);
-  if ([ROLES_TEMP_DIR, SESSIONS_TEMP_DIR].includes(name.toLowerCase())) {
-    throw new Error(`Role name is reserved by Tent: ${name}.`);
-  }
-  if (name.toLowerCase() === TEMP_DIR) {
-    throw new Error(`Role name is reserved by Tent: ${TEMP_DIR}.`);
-  }
-  return name;
-}
-function assertRoleSegment(role) {
-  return assertRoleCheckpointRoleName(role);
-}
-function roleCheckpointPath(role) {
-  const name = assertRoleCheckpointRoleName(role);
-  return join(TEMP_DIR, name, ROLE_CHECKPOINT_FILENAME);
-}
-function roleCheckpointFileReadPath(role) {
-  return join(".tent", roleCheckpointPath(role));
-}
-function normalizePointerList(raw, label) {
-  if (raw === void 0 || raw === null) return void 0;
-  if (!Array.isArray(raw)) {
-    throw new Error(`Role Checkpoint pointers.${label} must be an array of strings.`);
-  }
-  const out = [];
-  for (const item of raw) {
-    if (typeof item !== "string" || !item.trim()) {
-      throw new Error(`Role Checkpoint pointers.${label} entries must be non-empty strings.`);
-    }
-    const normalized = item.trim();
-    if (normalized.length > ROLE_CHECKPOINT_MAX_POINTER_CHARS) {
-      throw new Error(
-        `Role Checkpoint pointers.${label} entries cannot exceed ${ROLE_CHECKPOINT_MAX_POINTER_CHARS} characters.`
-      );
-    }
-    out.push(normalized);
-  }
-  return out.length > 0 ? out : void 0;
-}
-function normalizePointers(raw) {
-  if (!raw || typeof raw !== "object") return void 0;
-  const nodes = normalizePointerList(raw.nodes, "nodes");
-  const tasks = normalizePointerList(raw.tasks, "tasks");
-  const deliveries = normalizePointerList(raw.deliveries, "deliveries");
-  const git3 = normalizePointerList(raw.git, "git");
-  if (!nodes && !tasks && !deliveries && !git3) return void 0;
-  const total = (nodes?.length ?? 0) + (tasks?.length ?? 0) + (deliveries?.length ?? 0) + (git3?.length ?? 0);
-  if (total > ROLE_CHECKPOINT_MAX_POINTERS) {
-    throw new Error(
-      `Role Checkpoint cannot contain more than ${ROLE_CHECKPOINT_MAX_POINTERS} pointers across all buckets.`
-    );
-  }
-  return {
-    ...nodes ? { nodes } : {},
-    ...tasks ? { tasks } : {},
-    ...deliveries ? { deliveries } : {},
-    ...git3 ? { git: git3 } : {}
-  };
-}
-function normalizeText(text3) {
-  const trimmed = text3.replace(/\r\n/g, "\n").trim();
-  if (!trimmed) throw new Error("Role Checkpoint text cannot be empty.");
-  if (trimmed.length > ROLE_CHECKPOINT_MAX_TEXT_CHARS) {
-    throw new Error(
-      `Role Checkpoint text exceeds ${ROLE_CHECKPOINT_MAX_TEXT_CHARS} characters; keep a short continuation note with pointers only.`
-    );
-  }
-  return trimmed;
-}
-async function writeRoleCheckpoint(fs22, input) {
-  const role = assertRoleSegment(input.role);
-  const text3 = normalizeText(input.text);
-  const pointers = normalizePointers(input.pointers);
-  const updatedAt = input.updatedAt?.trim();
-  if (!updatedAt) throw new Error("Role Checkpoint updatedAt is required.");
-  const sourceSessionId = input.sourceSessionId?.trim() || void 0;
-  const path23 = roleCheckpointPath(role);
-  const record = {
-    role,
-    text: text3,
-    updatedAt,
-    ...sourceSessionId ? { sourceSessionId } : {},
-    ...pointers ? { pointers } : {},
-    path: path23
-  };
-  formatRoleCheckpointTail(record);
-  const data = {
-    type: ROLE_CHECKPOINT_TYPE,
-    role,
-    updatedAt
-  };
-  if (sourceSessionId) data.sourceSessionId = sourceSessionId;
-  if (pointers?.nodes) data.nodes = pointers.nodes;
-  if (pointers?.tasks) data.tasks = pointers.tasks;
-  if (pointers?.deliveries) data.deliveries = pointers.deliveries;
-  if (pointers?.git) data.git = pointers.git;
-  const body = `# Role Checkpoint
-
-Optional cooperative continuation for Role Session replacement/transfer.
-Dynamic tail only \u2014 not Delivery, not Task state, not stable Role init.
-
-## Continuation
-
-${text3}
-`;
-  await fs22.writeFile(path23, serializeFrontmatter(data, body));
-  return record;
-}
-async function readRoleCheckpoint(fs22, role) {
-  const name = assertRoleSegment(role);
-  const path23 = roleCheckpointPath(name);
-  if (!await fs22.exists(path23)) return null;
-  const raw = await fs22.readFile(path23);
-  const parsed = parseFrontmatter(raw);
-  const type = typeof parsed.data.type === "string" ? parsed.data.type.trim() : "";
-  if (type && type !== ROLE_CHECKPOINT_TYPE) {
-    throw new Error(
-      `Role Checkpoint at ${path23} has unexpected type ${type}; expected ${ROLE_CHECKPOINT_TYPE}.`
-    );
-  }
-  const fmRole = typeof parsed.data.role === "string" ? parsed.data.role.trim() : name;
-  if (fmRole !== name) {
-    throw new Error(`Role Checkpoint role mismatch at ${path23}: file has ${fmRole}, expected ${name}.`);
-  }
-  const updatedAt = typeof parsed.data.updatedAt === "string" ? parsed.data.updatedAt.trim() : "";
-  if (!updatedAt) {
-    throw new Error(`Role Checkpoint at ${path23} is missing updatedAt.`);
-  }
-  const sourceSessionId = typeof parsed.data.sourceSessionId === "string" ? parsed.data.sourceSessionId.trim() || void 0 : void 0;
-  const pointers = normalizePointers({
-    nodes: parsed.data.nodes,
-    tasks: parsed.data.tasks,
-    deliveries: parsed.data.deliveries,
-    git: parsed.data.git
-  });
-  let text3 = "";
-  const body = parsed.body.replace(/\r\n/g, "\n");
-  const cont = body.match(/##\s*Continuation\s*\r?\n+([\s\S]*?)\s*$/i);
-  if (cont) {
-    text3 = cont[1].trim();
-  } else {
-    text3 = body.replace(/^#\s*Role Checkpoint\s*/i, "").replace(
-      /^Optional cooperative continuation[\s\S]*?stable Role init\.\s*/i,
-      ""
-    ).trim();
-  }
-  const record = {
-    role: name,
-    text: normalizeText(text3),
-    updatedAt,
-    ...sourceSessionId ? { sourceSessionId } : {},
-    ...pointers ? { pointers } : {},
-    path: path23
-  };
-  formatRoleCheckpointTail(record);
-  return record;
-}
-async function clearRoleCheckpoint(fs22, role) {
-  const path23 = roleCheckpointPath(role);
-  if (!await fs22.exists(path23)) return false;
-  await fs22.remove(path23);
-  return true;
-}
-function formatRoleCheckpointTail(record) {
-  if (!record) return "";
-  const role = assertRoleCheckpointRoleName(record.role);
-  const text3 = normalizeText(record.text);
-  const pointers = normalizePointers(record.pointers);
-  const lines = [
-    "--- Tent Role Checkpoint (dynamic tail; optional) ---",
-    "This is cooperative continuation only. It is not Delivery, Task state, or stable Role init.",
-    "Abnormal recovery must re-query persisted Tent Nodes, Tasks, Deliveries, and Git \u2014 never invent from this note alone.",
-    `role: ${role}`,
-    `updatedAt: ${record.updatedAt}`,
-    `checkpointPath: ${record.path}`,
-    `fileRead: ${roleCheckpointFileReadPath(role)}`
-  ];
-  if (record.sourceSessionId) {
-    lines.push(`sourceSessionId: ${record.sourceSessionId}`);
-  }
-  const p = pointers;
-  if (p?.nodes?.length) lines.push(`nodes: ${p.nodes.join(", ")}`);
-  if (p?.tasks?.length) lines.push(`tasks: ${p.tasks.join(", ")}`);
-  if (p?.deliveries?.length) lines.push(`deliveries: ${p.deliveries.join(", ")}`);
-  if (p?.git?.length) lines.push(`git: ${p.git.join(", ")}`);
-  lines.push("");
-  lines.push("## Continuation");
-  lines.push("");
-  lines.push(text3);
-  const tail = lines.join("\n");
-  if (tail.length > ROLE_CHECKPOINT_MAX_TAIL_CHARS) {
-    throw new Error(
-      `Role Checkpoint dynamic tail exceeds ${ROLE_CHECKPOINT_MAX_TAIL_CHARS} characters.`
-    );
-  }
-  return tail;
 }
 
 // src/core/managed-skill-compose.ts
@@ -19057,8 +18774,7 @@ function parseSessionRecord(data, sessionId) {
     "replacedSessionId",
     "replacedBySessionId",
     "externalKey",
-    "contextGeneration",
-    "taskDeltaDigest"
+    "contextGeneration"
   ]);
   if (Object.keys(data).some((key2) => !allowedKeys.has(key2))) return null;
   if (!isNonEmptyString(data.id) || data.id !== sessionId) return null;
@@ -19089,8 +18805,7 @@ function parseSessionRecord(data, sessionId) {
     "lastTaskId",
     "lastError",
     "externalKey",
-    "contextGeneration",
-    "taskDeltaDigest"
+    "contextGeneration"
   ]) {
     if (key2 in data && data[key2] !== void 0 && typeof data[key2] !== "string") {
       return null;
@@ -21105,7 +20820,7 @@ var CLIENT_METHODS = [
   "registry.roles",
   /**
    * User-only role registry mutations (MutationBus).
-   * Persist id/name/displayName/prompt/description/color/cli —
+   * Persist id/name/displayName/prompt/description/color —
    * never provider secrets. id is server-assigned and immutable; displayName is
    * mutable; operational name is not renamed in identity batch 1.
    * Success emits exactly one registry.roles.updated.
@@ -21218,15 +20933,6 @@ var CLIENT_METHODS = [
   "session.enter",
   "session.status",
   "session.leave",
-  /**
-   * Optional Role Checkpoint (cooperative Session replacement continuation note).
-   * Operational under temp/<role>/checkpoint.md only — not a Core entity, Task state,
-   * Delivery, or OS-temp artifact. set overwrites; get returns null when absent;
-   * clear is idempotent. Dynamic tail context only.
-   */
-  "role.checkpoint.get",
-  "role.checkpoint.set",
-  "role.checkpoint.clear",
   /** ACP tool permission approvals (permissionPolicy=ask). */
   "toolApproval.listPending",
   "toolApproval.get",
@@ -25411,12 +25117,6 @@ async function dispatchMethod(ctx, method, params, callContext = {}) {
         return sessionStatus(ctx, p);
       case "session.leave":
         return sessionLeave(ctx, p);
-      case "role.checkpoint.get":
-        return roleCheckpointGetRpc(ctx, p);
-      case "role.checkpoint.set":
-        return roleCheckpointSetRpc(ctx, p);
-      case "role.checkpoint.clear":
-        return roleCheckpointClearRpc(ctx, p);
       case "toolApproval.listPending":
         return toolApprovalListPending(ctx, p);
       case "toolApproval.get":
@@ -26716,9 +26416,6 @@ async function registryRoleUpdate(ctx, p) {
       updatePatch.displayName = p.displayName;
     }
   }
-  if ("cli" in p && p.cli === null) {
-    updatePatch.cli = void 0;
-  }
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     try {
@@ -26837,8 +26534,7 @@ function parseRoleDefinitionParams(p, opts) {
       "displayName",
       "prompt",
       "description",
-      "color",
-      "cli"
+      "color"
     ]),
     surface
   );
@@ -26874,14 +26570,6 @@ function parseRoleDefinitionParams(p, opts) {
     }
     if (typeof p.color === "string") raw.color = p.color;
   }
-  if ("cli" in p) {
-    if (p.cli === null) {
-    } else if (typeof p.cli !== "object" || Array.isArray(p.cli)) {
-      throw new RpcError(-32602, "role.cli must be an object");
-    } else {
-      raw.cli = p.cli;
-    }
-  }
   try {
     const role = normalizeRoleDefinition(raw);
     if (opts.requireName && !role.name) {
@@ -26897,7 +26585,7 @@ function parseRoleDefinitionParams(p, opts) {
 function mapRoleRegistryError(err, surface) {
   if (err instanceof RpcError) return err;
   const message2 = err instanceof Error ? err.message : `${surface} failed`;
-  if (/already exists|does not exist|Confirmation mismatch|cannot be empty|cli\.|immutable|cannot be renamed/i.test(
+  if (/already exists|does not exist|Confirmation mismatch|cannot be empty|immutable|cannot be renamed/i.test(
     message2
   )) {
     if (/does not exist/i.test(message2)) {
@@ -30513,8 +30201,7 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
         const generation = liveGeneration;
         try {
           await ctx.runtime.registry.update(handle.sessionId, {
-            contextGeneration: generation,
-            ...next.taskDeltaDigest ? { taskDeltaDigest: next.taskDeltaDigest } : {}
+            contextGeneration: generation
           });
         } catch {
         }
@@ -31621,200 +31308,11 @@ async function sessionEnter(ctx, p) {
     createdAt: handle.createdAt,
     updatedAt: handle.updatedAt
   };
-  const roleCheckpointTail = handle.roleId ? await loadRoleCheckpointTailByIdSafe(ctx, workspaceId, handle.roleId) : "";
   return {
     session,
     sessionToken: handle.sessionToken,
-    reused: priorExternalId === handle.sessionId,
-    /**
-     * Optional cooperative Role Checkpoint tail for the durable Role just entered.
-     * Dynamic only — callers append after stable Role init / bootstrap prefix.
-     * Absent when no Role or no note on disk.
-     */
-    ...roleCheckpointTail ? { roleCheckpointTail } : {}
+    reused: priorExternalId === handle.sessionId
   };
-}
-function projectRoleCheckpoint(record) {
-  return {
-    role: record.role,
-    text: record.text,
-    updatedAt: record.updatedAt,
-    path: record.path,
-    ...record.sourceSessionId ? { sourceSessionId: record.sourceSessionId } : {},
-    ...record.pointers ? { pointers: record.pointers } : {}
-  };
-}
-async function resolveDurableCheckpointRole(ctx, workspaceId, roleRef) {
-  let safe;
-  try {
-    safe = assertRoleCheckpointRoleName(roleRef);
-  } catch (err) {
-    const message2 = err instanceof Error ? err.message : String(err);
-    throw new RpcError(-32602, message2, { code: "INVALID_ROLE_NAME", role: roleRef });
-  }
-  const mount = ctx.host.require(workspaceId);
-  const registry = await loadRolesRegistry(mount.env.fs);
-  const found = resolveRole(registry.roles, safe) ?? resolveRole(registry.roles, roleRef.trim());
-  if (!found?.name) {
-    throw new RpcError(-32602, `Unknown durable Role for checkpoint: ${roleRef.trim()}`, {
-      code: "UNKNOWN_ROLE",
-      role: roleRef.trim()
-    });
-  }
-  let roleName;
-  try {
-    roleName = assertRoleCheckpointRoleName(found.name);
-  } catch (err) {
-    const message2 = err instanceof Error ? err.message : String(err);
-    throw new RpcError(-32602, message2, { code: "INVALID_ROLE_NAME", role: found.name });
-  }
-  return { roleName, roleId: found.id };
-}
-function requireRoleCheckpointActor(p, targetRoleName, surface) {
-  const actorRaw = (optionalString2(p, "actor") ?? "user").trim();
-  if (!actorRaw) {
-    throw new RpcError(-32001, `${surface} actor cannot be empty`, { code: "ACTOR_FORBIDDEN" });
-  }
-  if (actorRaw === "user") return actorRaw;
-  if (actorRaw === targetRoleName) return actorRaw;
-  throw new RpcError(
-    -32001,
-    `${surface} allows actor "user" or the exact target Role "${targetRoleName}"; got "${actorRaw}"`,
-    { code: "ACTOR_FORBIDDEN", actor: actorRaw, role: targetRoleName }
-  );
-}
-async function resolveRoleCheckpointSourceSessionId(ctx, workspaceId, roleId, raw) {
-  const sessionId = raw?.trim();
-  if (!sessionId) return void 0;
-  try {
-    const rec = await ctx.runtime.registry.read(sessionId);
-    if (!rec) return void 0;
-    if (!rec.workspace || rec.workspace !== workspaceId) return void 0;
-    const recRole = rec.roleId?.trim() || "";
-    if (!recRole || recRole !== roleId) return void 0;
-    return sessionId;
-  } catch {
-    return void 0;
-  }
-}
-async function roleCheckpointGetRpc(ctx, p) {
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const roleRef = requireString(p, "role");
-  const { roleName } = await resolveDurableCheckpointRole(ctx, workspaceId, roleRef);
-  try {
-    const record = await readRoleCheckpoint(mount.env.fs, roleName);
-    return {
-      workspaceId,
-      role: roleName,
-      checkpoint: record ? projectRoleCheckpoint(record) : null,
-      tail: formatRoleCheckpointTail(record)
-    };
-  } catch (err) {
-    if (err instanceof RpcError) throw err;
-    const message2 = err instanceof Error ? err.message : String(err);
-    throw new RpcError(-32602, message2);
-  }
-}
-async function roleCheckpointSetRpc(ctx, p) {
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const roleRef = requireString(p, "role");
-  const { roleName, roleId } = await resolveDurableCheckpointRole(ctx, workspaceId, roleRef);
-  if (!roleId) throw new RpcError(-32602, `Durable Role is missing canonical id: ${roleRef}`);
-  const actor = requireRoleCheckpointActor(p, roleName, "role.checkpoint.set");
-  const text3 = requireString(p, "text");
-  const rawSource = optionalString2(p, "sourceSessionId") || optionalString2(p, "sessionId") || void 0;
-  const sourceSessionId = await resolveRoleCheckpointSourceSessionId(
-    ctx,
-    workspaceId,
-    roleId,
-    rawSource
-  );
-  const pointersRaw = p.pointers;
-  let pointers;
-  if (pointersRaw !== void 0 && pointersRaw !== null) {
-    if (typeof pointersRaw !== "object" || Array.isArray(pointersRaw)) {
-      throw new RpcError(-32602, "role.checkpoint.set pointers must be an object");
-    }
-    pointers = pointersRaw;
-  } else {
-    const nodes = optionalStringArray(p, "nodes");
-    const tasks = optionalStringArray(p, "tasks");
-    const deliveries = optionalStringArray(p, "deliveries");
-    const git3 = optionalStringArray(p, "git");
-    if (nodes || tasks || deliveries || git3) {
-      pointers = {
-        ...nodes ? { nodes } : {},
-        ...tasks ? { tasks } : {},
-        ...deliveries ? { deliveries } : {},
-        ...git3 ? { git: git3 } : {}
-      };
-    }
-  }
-  try {
-    const record = await ctx.mutations.run(workspaceId, async () => {
-      ctx.host.markSelfWrite(workspaceId);
-      return writeRoleCheckpoint(mount.env.fs, {
-        role: roleName,
-        text: text3,
-        updatedAt: mount.env.clock.now(),
-        sourceSessionId,
-        pointers
-      });
-    });
-    return {
-      workspaceId,
-      role: roleName,
-      actor,
-      checkpoint: projectRoleCheckpoint(record),
-      tail: formatRoleCheckpointTail(record),
-      // Echo whether caller-supplied sourceSessionId was kept (audit honesty).
-      sourceSessionIdAccepted: Boolean(sourceSessionId)
-    };
-  } catch (err) {
-    if (err instanceof RpcError) throw err;
-    const message2 = err instanceof Error ? err.message : String(err);
-    throw new RpcError(-32602, message2);
-  }
-}
-async function roleCheckpointClearRpc(ctx, p) {
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const roleRef = requireString(p, "role");
-  const { roleName } = await resolveDurableCheckpointRole(ctx, workspaceId, roleRef);
-  const actor = requireRoleCheckpointActor(p, roleName, "role.checkpoint.clear");
-  try {
-    const cleared = await ctx.mutations.run(workspaceId, async () => {
-      ctx.host.markSelfWrite(workspaceId);
-      return clearRoleCheckpoint(mount.env.fs, roleName);
-    });
-    return { workspaceId, role: roleName, actor, cleared };
-  } catch (err) {
-    if (err instanceof RpcError) throw err;
-    const message2 = err instanceof Error ? err.message : String(err);
-    throw new RpcError(-32602, message2);
-  }
-}
-async function loadRoleCheckpointTailSafe(ctx, workspaceId, roleName) {
-  if (!workspaceId || !roleName.trim()) return "";
-  try {
-    const safe = assertRoleCheckpointRoleName(roleName);
-    const mount = ctx.host.require(workspaceId);
-    const record = await readRoleCheckpoint(mount.env.fs, safe);
-    return formatRoleCheckpointTail(record);
-  } catch {
-    return "";
-  }
-}
-async function loadRoleCheckpointTailByIdSafe(ctx, workspaceId, roleId) {
-  if (!workspaceId || !roleId.trim()) return "";
-  try {
-    const resolved = await resolveDurableCheckpointRole(ctx, workspaceId, roleId);
-    return loadRoleCheckpointTailSafe(ctx, workspaceId, resolved.roleName);
-  } catch {
-    return "";
-  }
 }
 async function sessionStatus(ctx, p) {
   const sessionIdArg = optionalString2(p, "sessionId");
@@ -35016,26 +34514,9 @@ async function buildSessionBootstrapPrompt(ctx, task, roots, roleFs) {
     sessionContextGeneration: roots.sessionContextGeneration,
     currentContextGeneration: roots.currentContextGeneration,
     tentTaskSection: skillPrefix,
-    taskInputDelta: roots.taskInputDelta,
-    // Explicit caller checkpoint only (digest slot). On-disk Role Checkpoint is
-    // appended after full assembly as dynamic tail — never stable prefix.
-    checkpoint: roots.checkpoint
+    taskInputDelta: roots.taskInputDelta
   });
-  return appendRoleCheckpointTail(base, roleDef?.name, roleFs);
-}
-async function appendRoleCheckpointTail(base, roleName, roleFs) {
-  if (!roleName?.trim() || !roleFs) return base;
-  try {
-    const record = await readRoleCheckpoint(roleFs, roleName);
-    const tail = formatRoleCheckpointTail(record);
-    if (!tail) return base;
-    return `${base.trimEnd()}
-
-${tail}
-`;
-  } catch {
-    return base;
-  }
+  return base;
 }
 function buildContextCardManagedBootstrap(task, contextCard, roots) {
   const includeStablePrefix = shouldInjectStablePrefix({
@@ -35075,7 +34556,6 @@ function buildContextCardManagedBootstrap(task, contextCard, roots) {
     taskPointers: pointers,
     userPrompt: extractTaskUserPrompt(task),
     taskInputDelta: roots.taskInputDelta,
-    checkpoint: roots.checkpoint,
     includeStablePrefix
   });
   if (includeStablePrefix) {
@@ -35144,8 +34624,7 @@ function projectTask(task) {
     updatedAt: task.updatedAt,
     prompt: task.prompt,
     contextCard: task.contextCard,
-    ...task.contextGeneration ? { contextGeneration: task.contextGeneration } : {},
-    ...task.taskDeltaDigest ? { taskDeltaDigest: task.taskDeltaDigest } : {}
+    ...task.contextGeneration ? { contextGeneration: task.contextGeneration } : {}
   };
   return proj;
 }
@@ -36309,7 +35788,7 @@ function makeWorkspaceId(workspaceRoot) {
 }
 
 // src/service/protocol.ts
-var TENT_SERVICE_PROTOCOL_VERSION = 5;
+var TENT_SERVICE_PROTOCOL_VERSION = 6;
 
 // src/service/tool-approval-store.ts
 import * as fs19 from "node:fs/promises";
