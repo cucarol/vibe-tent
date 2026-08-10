@@ -11,6 +11,7 @@ import {
 import {
   createDeliveryUnlocked,
   loadDelivery,
+  peekDeliveryTaskId,
   removeNonAcceptedDeliveriesForTask,
   writeDelivery,
   type DeliveryRecord,
@@ -805,7 +806,7 @@ function assertDeliverPreconditions(task: TaskEnvelope): void {
 }
 
 async function assertNoReadyDelivery(fs: FsAdapter, task: TaskEnvelope): Promise<void> {
-  const existing = await loadTaskDeliveries(fs, task);
+  const existing = await discoverTaskDeliveries(fs, task);
   if (existing.some((d) => d.status === "ready")) {
     throw new Error("A delivery is already ready for review; accept or reject it first.");
   }
@@ -813,14 +814,14 @@ async function assertNoReadyDelivery(fs: FsAdapter, task: TaskEnvelope): Promise
 
 async function requireActiveReadyDelivery(fs: FsAdapter, task: TaskEnvelope): Promise<DeliveryRecord> {
   if (task.activeDeliveryId) {
-    const byId = (await loadTaskDeliveries(fs, task)).find((d) => d.id === task.activeDeliveryId);
+    const byId = await loadTaskDeliveryById(fs, task, task.activeDeliveryId);
     if (byId && byId.status === "ready") return byId;
     // Fall through: try path via role
     if (byId) {
       // reload by path if status drifted
     }
   }
-  const ready = (await loadTaskDeliveries(fs, task)).find((d) => d.status === "ready");
+  const ready = (await discoverTaskDeliveries(fs, task)).find((d) => d.status === "ready");
   if (!ready) {
     throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No ready delivery for this task.");
   }
@@ -1015,18 +1016,7 @@ async function recoverExistingTaskDeliver(
   task: TaskEnvelope,
   options: TaskDeliverOptions
 ): Promise<TaskDeliverPrepared | undefined> {
-  const deliveries = await loadTaskDeliveries(env.fs, task);
-  const ready = deliveries.filter((delivery) => delivery.status === "ready");
-  if (ready.length > 1) {
-    throw new Error(`Task ${task.id || task.path} has multiple ready Deliveries; refusing recovery.`);
-  }
-
-  let delivery = task.activeDeliveryId
-    ? deliveries.find((candidate) => candidate.id === task.activeDeliveryId)
-    : undefined;
-  if ((!delivery || (delivery.status !== "ready" && delivery.status !== "accepted")) && ready.length === 1) {
-    delivery = ready[0];
-  }
+  const delivery = await findCommittedTaskDelivery(env.fs, task);
   if (!delivery || (delivery.status !== "ready" && delivery.status !== "accepted")) return undefined;
   assertCommittedDeliveryMatchesTask(task, delivery);
 
@@ -1089,17 +1079,7 @@ async function reconcileCommittedTaskDelivery(
   taskPath: string,
   task: TaskEnvelope
 ): Promise<TaskEnvelope> {
-  const deliveries = await loadTaskDeliveries(env.fs, task);
-  const ready = deliveries.filter((delivery) => delivery.status === "ready");
-  if (ready.length > 1) {
-    throw new Error(`Task ${task.id || task.path} has multiple ready Deliveries; refusing recovery.`);
-  }
-  let delivery = task.activeDeliveryId
-    ? deliveries.find((candidate) => candidate.id === task.activeDeliveryId)
-    : undefined;
-  if ((!delivery || (delivery.status !== "ready" && delivery.status !== "accepted")) && ready.length === 1) {
-    delivery = ready[0];
-  }
+  const delivery = await findCommittedTaskDelivery(env.fs, task);
   if (!delivery) return task;
   if (delivery.status === "ready" || delivery.status === "accepted") {
     assertCommittedDeliveryMatchesTask(task, delivery);
@@ -1257,15 +1237,52 @@ async function requireTaskDeliveryById(
   task: TaskEnvelope,
   deliveryId: string
 ): Promise<DeliveryRecord> {
-  const delivery = (await loadTaskDeliveries(fs, task)).find((candidate) => candidate.id === deliveryId);
+  const delivery = await loadTaskDeliveryById(fs, task, deliveryId);
   if (!delivery) {
     throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No delivery for this exact task and id.");
   }
   return delivery;
 }
 
-/** Exact Task namespace only; never scans mounted workspaces or unrelated owners. */
-async function loadTaskDeliveries(fs: FsAdapter, task: TaskEnvelope): Promise<DeliveryRecord[]> {
+async function loadTaskDeliveryById(
+  fs: FsAdapter,
+  task: TaskEnvelope,
+  deliveryId: string
+): Promise<DeliveryRecord | undefined> {
+  const path = join(deliveryDirForTask(task), `${deliveryId}.md`);
+  if (!(await fs.exists(path))) return undefined;
+  const delivery = await loadDelivery(fs, path);
+  if (delivery.id !== deliveryId || delivery.taskId !== (task.id || task.path)) {
+    throw new TaskLifecycleError(
+      "DELIVERY_CHANGED",
+      `Delivery ${deliveryId} does not belong to exact Task ${task.id || task.path}.`
+    );
+  }
+  return delivery;
+}
+
+async function findCommittedTaskDelivery(
+  fs: FsAdapter,
+  task: TaskEnvelope
+): Promise<DeliveryRecord | undefined> {
+  if (task.activeDeliveryId) {
+    const active = await loadTaskDeliveryById(fs, task, task.activeDeliveryId);
+    if (active?.status === "ready" || active?.status === "accepted") return active;
+  }
+  const ready = (await discoverTaskDeliveries(fs, task)).filter(
+    (delivery) => delivery.status === "ready"
+  );
+  if (ready.length > 1) {
+    throw new Error(`Task ${task.id || task.path} has multiple ready Deliveries; refusing recovery.`);
+  }
+  return ready[0];
+}
+
+/**
+ * Shared owner directory, exact-Task validation: bounded identity-peek every
+ * filename, then fully parse only records whose frontmatter names this Task.
+ */
+async function discoverTaskDeliveries(fs: FsAdapter, task: TaskEnvelope): Promise<DeliveryRecord[]> {
   const dir = deliveryDirForTask(task);
   if (!(await fs.exists(dir))) return [];
   const taskId = task.id || task.path;
@@ -1274,8 +1291,16 @@ async function loadTaskDeliveries(fs: FsAdapter, task: TaskEnvelope): Promise<De
     .filter((entry) => !entry.isDir && entry.name.endsWith(".md"))
     .sort((a, b) => a.name.localeCompare(b.name));
   for (const entry of entries) {
-    const delivery = await loadDelivery(fs, join(dir, entry.name));
-    if (delivery.taskId === taskId) out.push(delivery);
+    const path = join(dir, entry.name);
+    if ((await peekDeliveryTaskId(fs, path)) !== taskId) continue;
+    const delivery = await loadDelivery(fs, path);
+    if (entry.name !== `${delivery.id}.md` || delivery.taskId !== taskId) {
+      throw new TaskLifecycleError(
+        "DELIVERY_CHANGED",
+        `Delivery identity does not match its exact Task path: ${path}.`
+      );
+    }
+    out.push(delivery);
   }
   return out;
 }

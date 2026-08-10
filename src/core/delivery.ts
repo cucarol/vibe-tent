@@ -189,6 +189,40 @@ export async function loadDelivery(fs: FsAdapter, inputPath: string): Promise<De
   };
 }
 
+const DELIVERY_IDENTITY_PREFIX_MAX_BYTES = 1024;
+
+/**
+ * Bounded identity peek for shared owner delivery directories. It deliberately
+ * validates only enough frontmatter to attribute a file to one exact Task;
+ * matching files still go through loadDelivery's complete strict parser.
+ */
+export async function peekDeliveryTaskId(
+  fs: FsAdapter,
+  inputPath: string
+): Promise<string | undefined> {
+  const path = normalizeDeliveryPath(inputPath);
+  if (!fs.readBinaryBounded) {
+    throw new Error("Delivery identity discovery requires bounded prefix reads.");
+  }
+  let bounded: Awaited<ReturnType<NonNullable<FsAdapter["readBinaryBounded"]>>>;
+  try {
+    bounded = await fs.readBinaryBounded(path, DELIVERY_IDENTITY_PREFIX_MAX_BYTES);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  // Non-fatal decoding is intentional: an exact byte prefix may end halfway
+  // through a later multibyte frontmatter/body value after the ASCII identity.
+  const raw = new TextDecoder("utf-8").decode(bounded.bytes);
+  // Hard-cut canonical identity header. Identity is attributed only from the
+  // opening frontmatter's first fields, never from report body examples; the
+  // closing fence and potentially large checks/artifact fields need not fit.
+  const identity = raw.match(
+    /^---\r?\ntype:\s*["']?delivery["']?\s*\r?\nid:\s*["']?(dl-[a-z0-9]+)["']?\s*\r?\ntaskId:\s*["']?(tk-[a-z0-9]+)["']?\s*\r?\n/i
+  );
+  return identity?.[2];
+}
+
 export async function loadDeliveries(
   fs: FsAdapter,
   filter?: { taskId?: string; sourceNodeId?: string }

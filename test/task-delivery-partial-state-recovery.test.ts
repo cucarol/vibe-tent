@@ -127,6 +127,20 @@ async function hasRejectIntent(base: NodeFs, taskPath: string): Promise<boolean>
   );
 }
 
+async function dispatchSecondRoleTask(env: unknown): Promise<string> {
+  const second = await dispatch(env as never, "cx-p2", {
+    roleId: "rl-executor",
+    workNodeIds: ["cx-p2"],
+    contextNodeIds: [],
+    userPrompt: "second exact Task",
+    parentActor: { kind: "user", id: "user" },
+    reviewer: { kind: "user", id: "user" },
+    acceptMode: "review-required",
+  });
+  await taskClaim(env as never, second.taskPath);
+  return second.taskPath;
+}
+
 for (const target of ["delivery", "task"] as const) {
   for (const timing of ["before", "after"] as const) {
     test(`prepareTaskDeliver recovers ${target} write ${timing} without duplicate publication`, async () => {
@@ -667,6 +681,209 @@ test("recovery ignores another Task's Delivery in the same Role namespace", asyn
   const recovered = await taskDeliver(env as never, taskPath, { summary: "first" });
   assert.equal(recovered.delivery.taskId, recovered.task.id);
   assert.equal((await loadDeliveries(base)).length, 2);
+});
+
+test("malformed Delivery attributed to Task B cannot block Task A mutation", async () => {
+  const { base, env, taskPath } = await runningTask("review-required");
+  const secondPath = await dispatchSecondRoleTask(env);
+  const secondTask = await loadTaskEnvelope(base, secondPath);
+  const secondDelivery = await createDelivery(base, env.clock, {
+    taskId: secondTask.id!,
+    sourceNodeId: "cx-p2",
+    deliveriesDir: "temp/roles/rl-executor/deliveries",
+    summary: "belongs only to B",
+    status: "ready",
+  });
+  const corrupt = (await base.readFile(secondDelivery.path)).replace(
+    /^sourceNodeId:.*$/m,
+    "sourceNodeId: not-a-node"
+  );
+  await base.writeFile(secondDelivery.path, corrupt);
+
+  const waited = await taskWait(env as never, taskPath, { reason: "external", summary: "A remains isolated" });
+  assert.equal(waited.state, "waiting");
+});
+
+test("malformed Delivery attributed to exact Task A fails loud with zero Task mutation", async () => {
+  const { base, env, taskPath } = await runningTask("review-required");
+  const task = await loadTaskEnvelope(base, taskPath);
+  const delivery = await createDelivery(base, env.clock, {
+    taskId: task.id!,
+    sourceNodeId: "cx-p1",
+    deliveriesDir: "temp/roles/rl-executor/deliveries",
+    summary: "belongs to A",
+    status: "ready",
+  });
+  const corrupt = (await base.readFile(delivery.path)).replace(
+    /^sourceNodeId:.*$/m,
+    "sourceNodeId: not-a-node"
+  );
+  await base.writeFile(delivery.path, corrupt);
+  const taskRaw = await base.readFile(taskPath);
+
+  await assert.rejects(
+    () => taskWait(env as never, taskPath, { reason: "external", summary: "must fail" }),
+    /Invalid delivery format/
+  );
+  assert.equal(await base.readFile(taskPath), taskRaw);
+});
+
+test("exact deliveryId lookup never reads or peeks unrelated Role Delivery files", async () => {
+  const { base, env, taskPath } = await runningTask("review-required");
+  const delivered = await taskDeliver(env as never, taskPath, { summary: "A ready" });
+  const secondPath = await dispatchSecondRoleTask(env);
+  const secondTask = await loadTaskEnvelope(base, secondPath);
+  const unrelated = await createDelivery(base, env.clock, {
+    taskId: secondTask.id!,
+    sourceNodeId: "cx-p2",
+    deliveriesDir: "temp/roles/rl-executor/deliveries",
+    summary: "B unrelated",
+    status: "ready",
+  });
+  let unrelatedReads = 0;
+  env.fs = new Proxy(base, {
+    get(target, property) {
+      if (property === "readFile") {
+        return async (path: string): Promise<string> => {
+          if (path === unrelated.path) unrelatedReads += 1;
+          return target.readFile(path);
+        };
+      }
+      if (property === "readBinaryBounded") {
+        return async (path: string, maxBytes: number) => {
+          if (path === unrelated.path) unrelatedReads += 1;
+          return target.readBinaryBounded(path, maxBytes);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as FsAdapter;
+
+  const prepared = await prepareTaskAccept(env as never, taskPath, {
+    actor: "user",
+    deliveryId: delivered.delivery.id,
+  });
+  assert.equal(prepared.deliveryId, delivered.delivery.id);
+  assert.equal(unrelatedReads, 0);
+});
+
+test("shared-directory discovery uses a 1KiB prefix and never full-reads unrelated large reports", async () => {
+  const { base, env, taskPath } = await runningTask("review-required");
+  const secondPath = await dispatchSecondRoleTask(env);
+  const secondTask = await loadTaskEnvelope(base, secondPath);
+  const unrelated = await createDelivery(base, env.clock, {
+    taskId: secondTask.id!,
+    sourceNodeId: "cx-p2",
+    deliveriesDir: "temp/roles/rl-executor/deliveries",
+    summary: "中".repeat(20_000),
+    status: "ready",
+  });
+  let fullReads = 0;
+  const bounds: number[] = [];
+  env.fs = new Proxy(base, {
+    get(target, property) {
+      if (property === "readFile") {
+        return async (path: string): Promise<string> => {
+          if (path === unrelated.path) fullReads += 1;
+          return target.readFile(path);
+        };
+      }
+      if (property === "readBinaryBounded") {
+        return async (path: string, maxBytes: number) => {
+          if (path === unrelated.path) bounds.push(maxBytes);
+          return target.readBinaryBounded(path, maxBytes);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as FsAdapter;
+
+  const waited = await taskWait(env as never, taskPath, { reason: "external", summary: "bounded" });
+  assert.equal(waited.state, "waiting");
+  assert.deepEqual(bounds, [1024]);
+  assert.equal(fullReads, 0);
+});
+
+test("discovery identifies exact Task before a frontmatter closing fence beyond the prefix", async () => {
+  const { base, env, taskPath } = await runningTask("review-required");
+  const task = await loadTaskEnvelope(base, taskPath);
+  const delivery = await createDelivery(base, env.clock, {
+    taskId: task.id!,
+    sourceNodeId: "cx-p1",
+    deliveriesDir: "temp/roles/rl-executor/deliveries",
+    summary: "large canonical candidate",
+    status: "ready",
+    checks: [{ name: "large", command: "x".repeat(4_000), exitCode: 0 }],
+  });
+  assert.ok((await base.readFile(delivery.path)).indexOf("\n---\n") > 1024);
+
+  await assert.rejects(
+    () => taskWait(env as never, taskPath, { reason: "external", summary: "WAL wins" }),
+    /Invalid task transition/
+  );
+  const repaired = await loadTaskEnvelope(base, taskPath);
+  assert.equal(repaired.state, "delivered");
+  assert.equal(repaired.activeDeliveryId, delivery.id);
+});
+
+test("taskId text in report body cannot attribute a noncanonical Delivery header", async () => {
+  const { base, env, taskPath } = await runningTask("review-required");
+  const task = await loadTaskEnvelope(base, taskPath);
+  await base.writeFile(
+    "temp/roles/rl-executor/deliveries/dl-body-example.md",
+    [
+      "---",
+      "type: delivery",
+      "id: dl-body-example",
+      "ownerTask: tk-unknown",
+      "sourceNodeId: not-a-node",
+      "status: ready",
+      "---",
+      `Example only: taskId: ${task.id}`,
+      "",
+    ].join("\n")
+  );
+  const waited = await taskWait(env as never, taskPath, {
+    reason: "external",
+    summary: "body is not identity",
+  });
+  assert.equal(waited.state, "waiting");
+});
+
+test("delivery identity discovery fails closed on non-ENOENT prefix read errors", async () => {
+  const { base, env, taskPath } = await runningTask("review-required");
+  const secondPath = await dispatchSecondRoleTask(env);
+  const secondTask = await loadTaskEnvelope(base, secondPath);
+  const unrelated = await createDelivery(base, env.clock, {
+    taskId: secondTask.id!,
+    sourceNodeId: "cx-p2",
+    deliveriesDir: "temp/roles/rl-executor/deliveries",
+    summary: "temporarily unreadable",
+    status: "ready",
+  });
+  const taskRaw = await base.readFile(taskPath);
+  env.fs = new Proxy(base, {
+    get(target, property) {
+      if (property === "readBinaryBounded") {
+        return async (path: string, maxBytes: number) => {
+          if (path === unrelated.path) {
+            throw Object.assign(new Error("delivery prefix is locked"), { code: "EACCES" });
+          }
+          return target.readBinaryBounded(path, maxBytes);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as FsAdapter;
+
+  await assert.rejects(
+    () => taskWait(env as never, taskPath, { reason: "external", summary: "must fail closed" }),
+    /delivery prefix is locked/
+  );
+  assert.equal(await base.readFile(taskPath), taskRaw);
 });
 
 test("agent-decide integrate recovery preserves the exact committed decision", async () => {
